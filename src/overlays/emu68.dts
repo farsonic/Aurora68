@@ -1,0 +1,60 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    fragment@0 {
+        target-path = "/";
+        __overlay__ {
+            emu68: emu68 {
+                args = "";
+                m68k-jit-size = <0x00000040>;
+                ppc-jit-size = <0x00000040>;
+
+                // THESE BOOLS ARE OFF BY DEFAULT!
+                // enable-ppc
+                // disable-zorro
+                // disable-fpu
+                // move-vbr
+                // fast-page-zero
+                
+                defs: defaults {
+                    insn-count = <0x00000100>;
+                    ccr-scan-depth = <0x00000014>;
+                    branch-inline-distance = <0x00001fff>;
+                    chip-slowdown-distance = <0x00000001>;
+
+                    // THESE BOOLS ARE OFF BY DEFAULT!
+                    // blitter-wait
+                    // dbf-slowdown
+                    // chip-slowdown
+                    // enable-interpreter
+                    // enable-soft-cache-flush
+                };
+            };
+        };
+    };
+
+    __overrides__ {
+        args = <&emu68>,"args";
+        ppc_enable = <&emu68>,"enable-ppc?";
+        ppc_jit_size = <&emu68>,"ppc-jit-size:0";
+        m68k_jit_size = <&emu68>,"m68k-jit-size:0";
+        no_fpu = <&emu68>,"disable-fpu?";
+        vbr_move = <&emu68>,"move-vbr?";
+        z3_disable = <&emu68>,"disable-zorro?";
+        fast_page_zero = <&emu68>,"fast-page-zero?";
+        FP0 = <&emu68>,"fast-page-zero?";
+
+        ICNT = <&defs>,"insn-count:0";
+        CCRD = <&defs>,"ccr-scan-depth:0";
+        IRNG = <&defs>,"branch-inline-distance:0";
+        SC = <&defs>,"chip-slowdown?";
+        chip_slowdown = <&defs>,"chip-slowdown?";
+        SCS = <&defs>,"chip-slowdown-distance:0";
+        BW = <&defs>,"blitter-wait?";
+        DBF = <&defs>,"dbf-slowdown?";
+        dbf_slowdown = <&defs>,"dbf-slowdown?";
+        interpreter = <&defs>,"enable-interpreter?";
+        INT = <&defs>,"enable-interpreter?";
+    };
+};
