@@ -396,10 +396,10 @@ c_attachph:
 	moveq	#LAPProtErr,%d0		| already attached
 	bra	ctl_done
 1:	move.w	#0xFFFF,%d1
-	bsr	find_prot
-	bne.s	2f
-	moveq	#LAPProtErr,%d0		| table full
-	bra	ctl_done
+	bsr	find_prot		| a free entry (type $FFFF)? Z set = found
+	beq.s	2f
+	moveq	#LAPProtErr,%d0		| table full (the first version had this branch inverted and
+	bra	ctl_done		| wrote the new protocol past the table, into the interrupt queue element)
 2:	move.w	eProtType(%a2),PROT_TYPE(%a1)
 	move.l	ePointer(%a2),%d0
 	bsr	strip24
@@ -612,18 +612,17 @@ set_filter:
 	rts
 
 | find_prot: d1 = type -> Z set and a1 -> entry if found
-find_prot:
-	move.w	%d1,-(%sp)
+find_prot:				| d1 = type -> a1 = its entry, Z set; Z clear when there is none
 	lea	G_PROT(%a3),%a1
 	moveq	#NPROT-1,%d0
 1:	cmp.w	PROT_TYPE(%a1),%d1
 	beq.s	2f
 	lea	PROT_SIZE(%a1),%a1
 	dbf	%d0,1b
-	moveq	#1,%d0
-	tst.w	%d0
-2:	move.w	(%sp)+,%d1
+	moveq	#1,%d0			| not found: Z clear
 	rts
+2:	moveq	#0,%d0			| found: Z set (the first version restored d1 from the stack
+	rts				| last, and that move set Z from d1, not from the search)
 
 | dequeue_pb: remove a2 (the PB being served, head of the DCE queue a4) from the queue and clear
 | drvrActive so the next request can start at once.

@@ -163,6 +163,11 @@ tools/run-fullstack.sh 400` selects another image.
    itself to the kernel (which then raises the line for the board's irq flag) before its
    SIntInstall, and the flag was already set. Both drivers now announce themselves as the last
    thing in Open, after the handler is in place, and the Ethernet driver clears the flag first.
+   With the log points in the driver the next run read like a script: EAttachPH 0, ERead -94,
+   EWrite 0. The protocol lookup restored D1 from the stack as its last instruction, and that
+   move set Z from D1 rather than from the search, so "found" and "not found" were decided by
+   the protocol number: EAttachPH wrote its entry past the table (over the interrupt queue
+   element) and ERead could not find it. The lookup now ends with the result in D0 and Z.
 
 ### Debug aids added
 - `mac.dbg=LO,HI` bootarg: translator prints the blocks it creates in that 68k range.

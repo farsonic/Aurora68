@@ -82,8 +82,12 @@ input events not yet read), the Mac's writes to the two enable registers are sno
 to the motherboard, the two flag registers are merged with the slot-9 bit on their way back, and
 the interrupt level the JIT sees is raised to 2 while the line is up and enabled. Nothing in the
 ROM changes and the motherboard (MAME's RBV, later the real one) never sees the line. The drivers
-install their handlers with `SIntInstall` at Open (sqParm carries their globals) and keep their
-VBL task as a safety net, slowed to every quarter second once the first interrupt has arrived.
+install their handlers with `SIntInstall` at Open (sqParm carries their globals), announce
+themselves to the kernel only after that (a line raised with nobody to clear it wedges the 68k in
+its level-2 handler, which happened once), and keep their VBL task as a safety net, slowed to
+every quarter second once the first interrupt has arrived. The kernel has a safety net of its
+own: a network-board flag left unserviced for half a second after the driver attached is cleared
+and logged, so a driver bug costs a frame rather than the machine.
 
 ## What was learned bringing the Alice68 modules over (second day)
 - The modules compiled for the psmac build with almost no change: a peripheral base macro (the
