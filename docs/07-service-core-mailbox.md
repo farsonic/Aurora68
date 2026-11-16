@@ -59,19 +59,31 @@ translates them page by page with the MMU shim, which also makes the flag bits i
 |---|---|---|
 | info | ping, a log line into the Pi console (`[MAC] ...`), time | the `log "text"` macro in every 68k source |
 | block | disk images: host files through QEMU semihosting in the testbed (`mac.disk0=`), SD-card images on hardware (to come) | `.PiDisk` DRVR, loaded from the declaration ROM at boot; the volume mounts on the desktop |
-| network board | Alice68's `alice_net.c`: unit 0 WiFi (SDIO, firmware preloaded by the kernel), unit 1 Ethernet (GENET on a Pi 4; in the testbed a bridge to host frame files and `tools/pinet.py`) | `.Network_EtherNet_PiStorm` DRVR on the `.ENET` interface, found by MacTCP/EtherTalk/Open Transport through the Slot Manager |
-| Bluetooth | Alice68's `bt/`: HCI over the PL011 UART, HID keyboards and mice, LE | keyboard and mouse reports go to the input ring; a Mac input driver will turn them into events (to come) |
+| network board | Alice68's `alice_net.c`: unit 0 WiFi (SDIO, firmware preloaded by the kernel), unit 1 Ethernet (GENET on a Pi 4; in the testbed a bridge to host frame files and `tools/pinet.py`) | `.Network_EtherNet_PiStorm` DRVR on the `.ENET` interface, found by MacTCP/EtherTalk/Open Transport through the Slot Manager; `PiWiFi` scans and joins networks through unit 0's command box |
+| Bluetooth | Alice68's `bt/`: HCI over the PL011 UART, HID keyboards and mice, LE | keyboard and mouse reports go to the input ring and `.PiInput` turns them into events; `PiBlue` scans, pairs, connects and forgets devices through the `an_bt` command box |
 | status page | Alice68's `alice_status.c`: seq odd while writing | a monitor application (to come) |
 | USB | Alice68's xHCI driver (Pi 4 only): compiled but not started; needs the DMA pool below 1 GiB | keyboards and mice through the input ring; no Mac USB stack exists |
 
-## Interrupts
-Version 1 has none: the service core sets the board's `irq` flag and the Mac drivers poll from
-VBL tasks (60 Hz), which is what a real card's receive interrupt would give at the latency of a
-System 6 machine. The proper version, planned, is a **virtual slot-9 interrupt**: the IIci routes
-NuBus interrupts through the RBV's slot-interrupt register at level 2; the service core can merge
-"slot 9 pending" into the interrupt level the JIT sees and answer the RBV register read with the
-slot-9 bit, after which the Mac drivers use the Slot Manager's standard `SIntInstall` and nothing
-in the ROM changes.
+## Interrupts: the virtual slot-9 line
+The first version had none: the service core set a board's `irq` flag and the Mac drivers polled
+from VBL tasks at 60 Hz, which is roughly what a real card's interrupt gave at the latency of a
+System 6 machine. The second version (the same day, after the input driver made the latency
+visible) gives the card the interrupt a real one would have. The IIci routes NuBus interrupts
+through the RBV: each slot has a line, shown active-low in the slot interrupt flag register
+(pseudo-VIA offset $02, bit 0 = slot $9), gated by the slot interrupt enable register ($12) into
+the "any slot" bit of the interrupt flag register ($03), gated by the interrupt enable register
+($13) onto 68030 level 2; the ROM's level-2 handler reads those registers and runs every routine
+queued for the slot with the Slot Manager's `SIntInstall` until one returns nonzero in D0.
+
+The Pi's card is not on the motherboard, so the kernel adds its line in the bus layer
+(`psmac_bus.c`, "the virtual slot-$9 interrupt"): the service core raises the line while a board
+has something the Mac has not taken (the network board's `irq` flag, which the Mac driver clears;
+input events not yet read), the Mac's writes to the two enable registers are snooped on their way
+to the motherboard, the two flag registers are merged with the slot-9 bit on their way back, and
+the interrupt level the JIT sees is raised to 2 while the line is up and enabled. Nothing in the
+ROM changes and the motherboard (MAME's RBV, later the real one) never sees the line. The drivers
+install their handlers with `SIntInstall` at Open (sqParm carries their globals) and keep their
+VBL task as a safety net, slowed to every quarter second once the first interrupt has arrived.
 
 ## What was learned bringing the Alice68 modules over (second day)
 - The modules compiled for the psmac build with almost no change: a peripheral base macro (the
@@ -82,9 +94,14 @@ in the ROM changes.
   modules on reprogrammed the console to 3 Mbit/s and the log went silent; `bt=off` in the testbed
   boot arguments keeps the console. On hardware the console moves to the mini-UART, as on a
   Raspberry Pi with Bluetooth enabled.
-- The WiFi code waits for firmware files before touching the chip; the Mac build will carry them in
-  the Emu68 initramfs next to the ROM (the Pi firmware loads one file), so no 68k cooperation is
-  needed and WiFi can come up before the Mac boots.
+- The WiFi code waits for firmware files before touching the chip. On the Amiga the 68k hands
+  them over from a WIFI folder; the Mac build carries them in the **initramfs container** instead:
+  the Pi firmware loads one file besides the kernel, and that file is now a plain cpio archive
+  (`tools/mkcontainer.py`) holding the Macintosh ROM (`*.rom`), the declaration ROM
+  (`*.declrom`) and the firmware files (`brcmfmac43455-sdio.bin/.txt/.clm_blob`, `BCM4345C0.hcd`),
+  which the kernel hands to the modules at start (`walk_container` in `psmac_bus.c`,
+  `alice_fw_preload`). No 68k cooperation is needed and WiFi can come up before the Mac boots.
+  A bare ROM file still works as the container, as it did on the first day.
 - Licence: the Alice68 modules are GPL-2.0-only; the psmac fork is MPL-2.0, which allows the
   combination, and the resulting kernel binary is distributed under the GPL.
 

@@ -48,6 +48,7 @@
 	.equ	OFF_INPUT,	0x51000
 	.equ	IN_MAGIC,	0x41364949	| 'A6II'
 	.equ	IN_SLOTS,	64
+	.equ	IN_ATTACHED,	12
 	.equ	IN_HEAD,	16
 	.equ	IN_TAIL,	20
 	.equ	IN_EV,		32
@@ -105,7 +106,13 @@
 	.equ	G_BUTTONS,	G_MODS+2	| word: last mouse buttons from the ring
 	.equ	G_DEAD,		G_BUTTONS+2	| long: KeyTranslate dead-key state
 	.equ	G_CAPS,		G_DEAD+4	| word: caps lock toggled on
-	.equ	G_SIZE,		G_CAPS+2
+	.equ	G_SIQ,		G_CAPS+2	| SlotIntQElement: sqLink 4, sqType 2, sqPrio 2, sqAddr 4, sqParm 4
+	.equ	G_INTS,		G_SIQ+16	| long: slot interrupts taken (for the log)
+	.equ	G_SIZE,		G_INTS+4
+	.equ	_SlotManager,	0xA06E
+	.equ	sIntInstall,	0x0B
+	.equ	sIQType,	6
+	.equ	PI_SLOT,	9
 
 | ---- DRVR header ----
 drvr_start:
@@ -155,6 +162,42 @@ do_log:
 	bne.s	4b
 5:	rts
 
+| log_err: d0.w = OSErr -> the log line "PiInput: SIntInstall error -NNN" (digits written into the
+| text; the driver runs from a RAM copy the Slot Manager made, so the text is writable)
+log_err:
+	movem.l	%d0-%d2/%a0-%a1,-(%sp)
+	lea	err_text(%pc),%a1
+	lea	err_digits(%pc),%a0
+	move.w	%d0,%d1
+	ext.l	%d1
+	move.b	#' ',(%a0)
+	tst.l	%d1
+	bpl.s	1f
+	neg.l	%d1
+	move.b	#'-',(%a0)
+1:	moveq	#2,%d2			| three digits, most significant first
+	move.l	%d1,%d0
+	divu	#100,%d0
+	add.b	#'0',%d0
+	move.b	%d0,1(%a0)
+	clr.w	%d0
+	swap	%d0
+	divu	#10,%d0
+	add.b	#'0',%d0
+	move.b	%d0,2(%a0)
+	swap	%d0
+	add.b	#'0',%d0
+	move.b	%d0,3(%a0)
+	bsr	do_log
+	movem.l	(%sp)+,%d0-%d2/%a0-%a1
+	rts
+err_text:
+	.ascii	"PiInput: SIntInstall error"
+err_digits:
+	.ascii	" 000"
+	.byte	0
+	.even
+
 | window: a0 = the slot-9 window for the current addressing mode
 window:
 	lea	WIN32,%a0
@@ -184,9 +227,30 @@ d_open:
 	cmp.l	#IN_MAGIC,(%a0)
 	bne	open_fail		| the service core has not published a ring
 	move.l	IN_HEAD(%a0),IN_TAIL(%a0)	| start from now: drop what happened before boot
+	move.l	#1,IN_ATTACHED(%a0)	| from now on the ring's events raise the card's interrupt
 	move.w	#0x8000,G_BUTTONS(%a2)	| "unknown" so the first report sets MBState
 	log	"PiInput: ring found"
-	| the VBL task: every tick, with the globals pointer right after the VBLTask record
+	| The card's interrupt: the kernel raises the slot-9 line while the ring holds events
+	| (docs/07), the ROM's level-2 handler runs every routine queued for the slot with the Slot
+	| Manager's SIntInstall, and ours drains the ring. _SlotManager takes the selector in the low
+	| word of D0 and SIntInstall's slot number in the high word, the queue element in A0.
+	lea	G_SIQ(%a2),%a0
+	clr.l	(%a0)
+	move.w	#sIQType,4(%a0)
+	move.w	#100,6(%a0)		| sqPrio: ordinary
+	lea	slot_int(%pc),%a1
+	move.l	%a1,8(%a0)
+	move.l	%a2,12(%a0)		| sqParm: our globals, handed back in A1
+	move.l	#(PI_SLOT<<16)+sIntInstall,%d0	| ("|" would start a comment)
+	.short	_SlotManager
+	tst.w	%d0
+	beq.s	1f
+	bsr	log_err			| "PiInput: SIntInstall error -NNN"
+	bra.s	2f
+1:	log	"PiInput: slot interrupt handler installed"
+2:	| The VBL task as well: every tick until the first slot interrupt arrives, then every 15
+	| ticks as a safety net (a System 6 install without working slot interrupts still works,
+	| at keyboard-and-mouse speed).
 	move.l	%a2,G_SELF(%a2)
 	lea	G_VBL(%a2),%a0
 	clr.l	(%a0)
@@ -218,15 +282,44 @@ d_close:
 	moveq	#noErr,%d0
 	rts
 
-| ---- the VBL task: drain the ring ----
+| ---- the slot interrupt handler ----
+| The Slot Manager calls it with A1 = sqParm (our globals) at interrupt level 2 and expects D0
+| nonzero if the interrupt was ours; registers other than D0 are preserved here although the
+| Slot Manager only asks for A4-A7 and D4-D7. PostEvent is interrupt-safe (the ADB Manager calls
+| it from the VIA interrupt), so draining the ring here is no different from doing it in a VBL.
+slot_int:
+	movem.l	%d1-%d7/%a0-%a4,-(%sp)
+	move.l	%a1,%a2
+	addq.l	#1,G_INTS(%a2)
+	cmp.l	#1,G_INTS(%a2)
+	bne.s	1f
+	log	"PiInput: first slot interrupt"
+1:	bsr	drain			| d0 = events taken
+	movem.l	(%sp)+,%d1-%d7/%a0-%a4
+	rts
+
+| ---- the VBL task ----
 | On entry a0 -> our VBLTask record; the globals pointer sits 14 bytes after it. VBL tasks run at
-| interrupt level 1 with the Event Manager's PostEvent allowed (it is interrupt-safe; the ADB
-| Manager itself calls it from the VIA interrupt).
+| interrupt level 1 with the Event Manager's PostEvent allowed.
 input_vbl:
 	movem.l	%d0-%d7/%a0-%a4,-(%sp)
 	move.l	14(%a0),%a2		| globals
+	bsr	drain
+	move.w	#1,%d0
+	tst.l	G_INTS(%a2)
+	beq.s	1f
+	move.w	#15,%d0
+1:	move.w	%d0,G_VBL+10(%a2)	| run again: next tick, or every quarter second once interrupts work
+	movem.l	(%sp)+,%d0-%d7/%a0-%a4
+	rts
+
+| ---- drain: a2 = globals -> d0 = events taken (at most 32 per call: leave time for others) ----
+drain:
+	movem.l	%d1-%d7/%a0-%a1/%a3-%a4,-(%sp)
 	move.l	G_RING(%a2),%a3
-	moveq	#31,%d7			| at most 32 events per tick: leave time for the rest of the VBL queue
+	moveq	#0,%d0
+	move.l	%d0,-(%sp)		| events taken, on the stack (d0..d5 are used by the event code)
+	moveq	#31,%d7
 vbl_loop:
 	move.l	IN_TAIL(%a3),%d6
 	cmp.l	IN_HEAD(%a3),%d6
@@ -365,10 +458,11 @@ mouse_buttons:
 ev_next:
 	addq.l	#1,%d6
 	move.l	%d6,IN_TAIL(%a3)
+	addq.l	#1,(%sp)
 	dbf	%d7,vbl_loop
 vbl_done:
-	move.w	#1,G_VBL+10(%a2)	| run again next tick
-	movem.l	(%sp)+,%d0-%d7/%a0-%a4
+	move.l	(%sp)+,%d0
+	movem.l	(%sp)+,%d1-%d7/%a0-%a1/%a3-%a4
 	rts
 
 | post_event: d0 = what, a0 = message, d5 = modifiers. _PostEvent builds the event record itself

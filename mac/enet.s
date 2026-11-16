@@ -34,22 +34,23 @@
 	.equ	AN_TX_SLOTS,	12
 	.equ	AN_SLOT_BYTES,	0x800
 	.equ	AN_HDR_IRQ,	12
-| struct an_unit offsets
+	.equ	AN_HDR_DRVVER,	20		| an_hdr.amiga_ver: the Mac driver's version, once open (the kernel raises the slot interrupt only then)
+| struct an_unit offsets (alice_net.h; `make check` compares them with the header the kernel compiles)
 	.equ	U_KIND,		0
 	.equ	U_STATE,	4
 	.equ	U_LINK,		12
 	.equ	U_MAC,		20		| 8 bytes, 6 used
-	.equ	U_RX_PKTS,	428
-	.equ	U_CMD_SEQ,	460
-	.equ	U_CMD,		464
-	.equ	U_CMD_DONE,	468
-	.equ	U_CMD_RESULT,	472
-	.equ	U_ARG,		476		| 128 bytes
-	.equ	U_RX_HEAD,	604
-	.equ	U_RX_TAIL,	608
-	.equ	U_TX_HEAD,	612
-	.equ	U_TX_TAIL,	616
-	.equ	U_RX_ON,	620
+	.equ	U_RX_PKTS,	384
+	.equ	U_CMD_SEQ,	424
+	.equ	U_CMD,		428
+	.equ	U_CMD_DONE,	432
+	.equ	U_CMD_RESULT,	436
+	.equ	U_ARG,		440		| 128 bytes
+	.equ	U_RX_HEAD,	568
+	.equ	U_RX_TAIL,	572
+	.equ	U_TX_HEAD,	576
+	.equ	U_TX_TAIL,	580
+	.equ	U_RX_ON,	584
 | commands
 	.equ	AN_CMD_START,	1
 	.equ	AN_CMD_RXON,	6
@@ -115,7 +116,13 @@
 	.equ	PROT_RDQ,	6		| long: first pending ERead PB (linked by qLink)
 	.equ	PROT_SIZE,	10
 	.equ	NPROT,		16
-	.equ	G_SIZE,		G_PROT+NPROT*PROT_SIZE
+	.equ	G_SIQ,		G_PROT+NPROT*PROT_SIZE	| SlotIntQElement (16 bytes): the slot-9 interrupt handler
+	.equ	G_INTS,		G_SIQ+16	| long: slot interrupts taken
+	.equ	G_SIZE,		G_INTS+4
+	.equ	_SlotManager,	0xA06E
+	.equ	sIntInstall,	0x0B
+	.equ	sIQType,	6
+	.equ	PI_SLOT,	9
 
 | ---- DRVR header ----
 drvr_start:
@@ -230,6 +237,7 @@ d_open:
 	move.l	%d0,%a1
 	cmp.l	#AN_MAGIC,(%a1)
 	bne	open_fail
+	move.l	#0x00010000,AN_HDR_DRVVER(%a1)	| version 1.0: from now on the board's irq flag raises the slot interrupt
 	lea	AN_OFF_UNIT1(%a1),%a1
 	tst.l	U_KIND(%a1)
 	beq	open_fail		| no Ethernet unit
@@ -250,8 +258,23 @@ d_open:
 	bsr	unitcmd
 	move.l	U_MAC(%a1),G_ADDR(%a3)
 	move.w	U_MAC+4(%a1),G_ADDR+4(%a3)
-	| VBL task: every tick
-	lea	G_VBL(%a3),%a0
+	| The card's interrupt (docs/07): the kernel raises the slot-9 line while the board's irq
+	| flag is set; the ROM's level-2 handler runs the routines queued with SIntInstall. The
+	| receive path runs from there, and from a VBL task as the safety net (every tick until the
+	| first interrupt, then every 15 ticks).
+	lea	G_SIQ(%a3),%a0
+	clr.l	(%a0)
+	move.w	#sIQType,4(%a0)
+	move.w	#100,6(%a0)
+	lea	slot_int(%pc),%a1
+	move.l	%a1,8(%a0)
+	move.l	%a3,12(%a0)		| sqParm: globals, back in A1
+	move.l	#(PI_SLOT<<16)+sIntInstall,%d0
+	.short	_SlotManager
+	tst.w	%d0
+	beq.s	1f
+	log	"ENET: SIntInstall failed"
+1:	lea	G_VBL(%a3),%a0
 	clr.l	(%a0)
 	move.w	#1,4(%a0)		| vType
 	lea	rx_vbl(%pc),%a1
@@ -613,16 +636,38 @@ complete_pb:
 1:	movem.l	(%sp)+,%d1-%d2/%a0-%a1
 	rts
 
-| ---- receive: VBL task (A0 = VBLTask record) ----
+| ---- receive: from the slot interrupt (A1 = globals; D0 = 1 "ours") or the VBL task ----
+slot_int:
+	movem.l	%d1-%d7/%a0-%a6,-(%sp)
+	move.l	%a1,%a3
+	addq.l	#1,G_INTS(%a3)
+	cmp.l	#1,G_INTS(%a3)
+	bne.s	1f
+	log	"ENET: first slot interrupt"
+1:	bsr	rx_body
+	moveq	#1,%d0
+	movem.l	(%sp)+,%d1-%d7/%a0-%a6
+	rts
 rx_vbl:
 	movem.l	%d0-%d7/%a0-%a6,-(%sp)
 	move.l	14(%a0),%a3		| globals (G_VBLSELF follows the task record)
-	move.w	#1,G_VBL+10(%a3)	| rearm: vblCount = 1
+	move.w	#1,%d0
+	tst.l	G_INTS(%a3)
+	beq.s	1f
+	move.w	#15,%d0
+1:	move.w	%d0,G_VBL+10(%a3)	| rearm
+	bsr	rx_body
+	movem.l	(%sp)+,%d0-%d7/%a0-%a6
+	rts
+| rx_body: A3 = globals; trashes everything (callers save). Clears the board's irq flag first so
+| that a frame arriving while we work sets it again and the line stays up.
+rx_body:
 	tst.w	G_INRX(%a3)
 	bne	rx_out
 	move.w	#1,G_INRX(%a3)
 	move.l	%a3,%a6
 	move.l	G_BOARD(%a3),%a5
+	clr.l	AN_HDR_IRQ(%a5)
 	lea	AN_OFF_UNIT1(%a5),%a5	| unit
 	moveq	#16,%d7			| frames per tick at most
 rx_loop:
@@ -698,7 +743,6 @@ rx_next:
 rx_end:
 	clr.w	G_INRX(%a6)
 rx_out:
-	movem.l	(%sp)+,%d0-%d7/%a0-%a6
 	rts
 
 | ---- ReadPacket (A4) / ReadRest (2(A4)) for protocol handlers; state in A6 = globals ----

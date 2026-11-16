@@ -1,7 +1,7 @@
 | pidisk_init.s — INIT that installs the ".PiDisk" driver from its own resource file and mounts
 | the Pi's volumes (System 6/7 Extensions). GNU as MIT syntax, 68020. MPL-2.0.
 |
-| Sequence: GetResource('DRVR',128) -> DetachResource -> find a free unit number in the unit
+| Sequence: _Open ".PiDisk" (done when the declaration-ROM copy is there) -> GetResource('DRVR',128) -> DetachResource -> find a free unit number in the unit
 | table -> _DrvrInstall -> _Open ".PiDisk" (Open adds the drive queue entries) -> for every drive
 | the driver added, _MountVol so the Finder sees the volume at startup.
 
@@ -41,6 +41,26 @@ init_start:
 	movem.l	%d1-%d7/%a0-%a5,-(%sp)
 	link	%a6,#-64		| ParamBlock on the stack
 	log	"PiDisk INIT: start" 
+	| Since the slot-$9 declaration ROM carries the same driver and the Start Manager opens it
+	| before any extension runs, this file only matters on a Mac booted without the card's ROM
+	| (a kernel started without mac.declrom=). If _Open ".PiDisk" by name already succeeds, the
+	| ROM's copy is in the unit table with its drives and there is nothing left to do; a second
+	| copy would add the same volumes twice.
+	lea	-64(%a6),%a0
+	move.l	%a0,%a2
+	moveq	#15,%d0
+0:	clr.l	(%a0)+
+	dbf	%d0,0b
+	lea	name(%pc),%a1
+	move.l	%a1,ioNamePtr(%a2)
+	move.b	#0,ioPermssn(%a2)
+	move.l	%a2,%a0
+	.short	_Open
+	tst.w	%d0
+	bne.s	install
+	log	"PiDisk INIT: the ROM's driver is already open, nothing to do"
+	bra	done
+install:
 	| our DRVR resource
 	subq.l	#4,%sp
 	move.l	#0x44525652,-(%sp)	| 'DRVR'

@@ -80,6 +80,7 @@ app_start:
 	bra	wait
 1:	lea	s_pi(%pc),%a0
 	bsr	say_prefix
+	bsr	window			| (say_prefix's a0 was the string, not the window)
 	lea	24(%a0),%a1		| fw_version string in the header
 	bsr	say_cstr
 	lea	s_blk(%pc),%a0
@@ -295,7 +296,7 @@ say_cstr:				| a1 -> C string (max 60)
 say_dec:				| d0 unsigned long -> decimal, no newline
 	lea	tmp+20(%pc),%a0
 	moveq	#0,%d1
-1:	divul	#10,%d2:%d0
+1:	divul	#10,%d2,%d0		| 32-bit form: remainder d2, quotient d0 (a colon makes it the 64-bit form)
 	add.b	#'0',%d2
 	move.b	%d2,-(%a0)
 	addq.w	#1,%d1

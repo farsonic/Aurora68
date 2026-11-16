@@ -2,7 +2,9 @@
 
 ## What exists
 Fork: `emu68/` (branch `psmac`, MPL-2.0), build dir `psmac-build/`, image `psmac-build/Emu68.img`
-(to be renamed `kernel8.img` for SD cards). Build:
+(to be renamed `kernel8.img` for SD cards; the `initramfs` next to it is the Mac ROM or, for
+hardware, the cpio container from `tools/mkcontainer.py` with the ROM, declaration ROM and
+firmware, docs/07). Build:
 ```
 cmake -S emu68 -B psmac-build -DCMAKE_TOOLCHAIN_FILE=emu68/toolchains/aarch64-linux-gnu-13.cmake \
       -DTARGET=raspi64 -DVARIANT=psmac -DCMAKE_BUILD_TYPE=Release
@@ -110,6 +112,27 @@ tools/run-fullstack.sh 400` selects another image.
    CHD file's own header. The testbed MAME could not open the CHD that `chdman createhd`
    had written with its default codecs and fell back to treating it as a raw image. Images for
    the testbed are created with `-c none` (docs/04 said so; docs/09 now says so too).
+
+15. **The virtual slot-9 interrupt, and the storm it caused first.** With the input driver
+   draining a ring from a VBL task, the latency of polling became visible, and the card got the
+   interrupt a real one has (docs/07 "Interrupts"): the RBV's slot interrupt registers are
+   snooped and merged in `psmac_bus.c`, the service core raises the line, the drivers queue
+   handlers with `SIntInstall`. The first version raised the line whenever a board had something
+   new; the IIci ROM enables every slot's interrupt early in the boot, the network board had set
+   its irq flag at start, no driver was open to clear it, and the level-2 handler ran for ever
+   (the heartbeat showed ipl 2 and the boot-chime loop). The line is now raised only for boards
+   whose Mac driver has attached (the Ethernet driver's version in the board header, the input
+   ring's `attached` word).
+   Found on the way: `mac/enet.s` had been written against an older Alice68 header and
+   addressed the command box and rings 36 bytes off; `make -C mac check` now compiles the
+   offsets from the header (`tools/mac/an_offsets.c`) and compares them with the source.
+
+16. **PiNet crashed after "PiDisk 0:" on System 7.1.** Not the JIT: `divul #10,%d2:%d0` in the
+   decimal printer assembles, in GNU as, to the 64-bit-dividend form (extension word bit 10),
+   with D2 never cleared; the divide overflowed, left D0 as it was, and the digit loop wrote
+   backwards through the application until it ran into its own code (the kernel's "Undefined
+   Line0" and an illegal-instruction trail inside the application's data). The 32-bit form is
+   written with a comma, `divul #10,%d2,%d0`, in PiNet, PiWiFi and PiBlue.
 
 ### Debug aids added
 - `mac.dbg=LO,HI` bootarg: translator prints the blocks it creates in that 68k range.
