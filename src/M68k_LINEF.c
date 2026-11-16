@@ -4925,6 +4925,41 @@ uint32_t EMIT_FPU(struct TranslatorContext *ctx)
     return insn_consumed;
 }
 
+#ifdef PSMAC
+/* Emit a call to the 68030 MMU shim: psmac_pmove(An + d16, ext). All caller-visible ARM registers are
+   preserved around the call (the JIT keeps 68k state in them). an == 0 with d16 == 0 passes ea = 0. */
+static void psmac_emit_mmu_call(struct TranslatorContext *ctx, uint8_t an, int16_t d16, uint16_t ext)
+{
+    extern void psmac_pmove(uint32_t ea, uint32_t ext);
+    union { uint64_t u64; uint16_t u16[4]; } u;
+    u.u64 = (uintptr_t)psmac_pmove;
+
+    EMIT(ctx, stp64_preindex(31, 0, 1, -256));
+    for (int i=2; i < 30; i += 2)
+        EMIT(ctx, stp64(31, i, i+1, i*8));
+    EMIT(ctx, str64_offset(31, 30, 240));
+
+    if (an == 0 && d16 == 0) EMIT(ctx, mov_immed_u16(0, 0, 0));
+    else if (d16 >= 0) EMIT(ctx, add_immed(0, an, d16));
+    else EMIT(ctx, sub_immed(0, an, -d16));
+    EMIT(ctx,
+        mov_immed_u16(1, ext, 0),
+        mov64_immed_u16(2, u.u16[3], 0),
+        movk64_immed_u16(2, u.u16[2], 1),
+        movk64_immed_u16(2, u.u16[1], 2),
+        movk64_immed_u16(2, u.u16[0], 3),
+        blr(2)
+    );
+
+    for (int i=2; i < 30; i += 2)
+        EMIT(ctx, ldp64(31, i, i+1, i*8));
+    EMIT(ctx,
+        ldr64_offset(31, 30, 240),
+        ldp64_postindex(31, 0, 1, 256)
+    );
+}
+#endif
+
 uint32_t EMIT_lineF(struct TranslatorContext *ctx)
 {
     uint32_t insn_consumed = 1;
@@ -4937,46 +4972,45 @@ uint32_t EMIT_lineF(struct TranslatorContext *ctx)
         return EMIT_FPU(ctx);
     }
 #ifdef PSMAC
-    /* 68030 PFLUSH (ext 001x) / PTEST (ext 100x): no MMU emulation at this level, ignore */
+    /* 68030 PFLUSH/PLOAD (ext 001x) / PTEST (ext 100x): no MMU emulation at this level, skip the
+       instruction including its effective-address extension words (PLOAD, PTEST and the FC+EA forms
+       of PFLUSH carry an EA; PFLUSHA and PFLUSH-by-FC do not) */
     else if ((opcode & 0xffc0) == 0xf000 && ((opcode2 & 0xe000) == 0x2000 || (opcode2 & 0xe000) == 0x8000))
     {
-        EMIT(ctx, nop());
-        ctx->tc_M68kCodePtr += 2;
-        EMIT_AdvancePC(ctx, 4);
+        int uses_ea = ((opcode2 & 0xe000) == 0x8000) || ((opcode2 & 0x1c00) == 0x0000) || ((opcode2 & 0x1800) == 0x1800);
+        int words = 2;
+        if (uses_ea) {
+            uint8_t mode = (opcode >> 3) & 7, reg = opcode & 7;
+            uint16_t brief = cache_read_16(ICACHE, (uintptr_t)&ctx->tc_M68kCodePtr[2]);
+            if (mode == 5) words += 1;
+            else if (mode == 6 || (mode == 7 && reg == 3)) {
+                if (!(brief & 0x100)) words += 1;              /* brief extension */
+                else {                                           /* full extension */
+                    words += 1;
+                    switch ((brief >> 4) & 3) { case 2: words += 1; break; case 3: words += 2; break; }
+                    switch (brief & 3)        { case 2: words += 1; break; case 3: words += 2; break; }
+                }
+            }
+            else if (mode == 7 && reg == 0) words += 1;
+            else if (mode == 7 && reg == 1) words += 2;
+            else if (mode == 7 && reg == 2) words += 1;
+        }
+        if ((opcode2 & 0xe000) == 0x2000 && (opcode2 & 0x1c00) != 0)
+            psmac_emit_mmu_call(ctx, 0, 0, opcode2);   /* PFLUSH*: lets the shim apply a deferred CRP change */
+        else
+            EMIT(ctx, nop());
+        ctx->tc_M68kCodePtr += words;
+        EMIT_AdvancePC(ctx, 2 * words);
     }
     /* 68030 PMOVE (ext 010x TC/SRP/CRP, 000x TT0/TT1, 011x MMUSR) with (An) or d16(An): shim call */
     else if ((opcode & 0xffc0) == 0xf000 && ((opcode2 & 0xe000) == 0x4000 || (opcode2 & 0xe000) == 0x0000 || (opcode2 & 0xe000) == 0x6000)
              && (((opcode >> 3) & 7) == 2 || ((opcode >> 3) & 7) == 5))
     {
-        extern void psmac_pmove(uint32_t ea, uint32_t ext);
         uint8_t mode = (opcode >> 3) & 7, reg = opcode & 7;
         int16_t d16 = 0; int words = 2;
         if (mode == 5) { d16 = (int16_t)cache_read_16(ICACHE, (uintptr_t)&ctx->tc_M68kCodePtr[2]); words = 3; }
         uint8_t an = RA_MapM68kRegister(ctx, 8 + reg);
-        union { uint64_t u64; uint16_t u16[4]; } u;
-        u.u64 = (uintptr_t)psmac_pmove;
-
-        EMIT(ctx, stp64_preindex(31, 0, 1, -256));
-        for (int i=2; i < 30; i += 2)
-            EMIT(ctx, stp64(31, i, i+1, i*8));
-        EMIT(ctx, str64_offset(31, 30, 240));
-
-        if (d16 >= 0) EMIT(ctx, add_immed(0, an, d16)); else EMIT(ctx, sub_immed(0, an, -d16));
-        EMIT(ctx,
-            mov_immed_u16(1, opcode2, 0),
-            mov64_immed_u16(2, u.u16[3], 0),
-            movk64_immed_u16(2, u.u16[2], 1),
-            movk64_immed_u16(2, u.u16[1], 2),
-            movk64_immed_u16(2, u.u16[0], 3),
-            blr(2)
-        );
-
-        for (int i=2; i < 30; i += 2)
-            EMIT(ctx, ldp64(31, i, i+1, i*8));
-        EMIT(ctx,
-            ldr64_offset(31, 30, 240),
-            ldp64_postindex(31, 0, 1, 256)
-        );
+        psmac_emit_mmu_call(ctx, an, d16, opcode2);
 
         ctx->tc_M68kCodePtr += words;
         EMIT_AdvancePC(ctx, 2 * words);

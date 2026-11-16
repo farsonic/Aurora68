@@ -11,7 +11,7 @@
 #define PSMAC_FLAG_POSTED  1
 
 /* IIci physical map handled locally vs forwarded to the bridge */
-#define PSMAC_FB_SIZE      0x00080000u   /* start of bank A doubles as RBV frame buffer: write-through */
+#define PSMAC_FB_SIZE      0x00050000u   /* IIci reserves the first 320 KiB of bank A for RBV video (low memory starts at 0x50000) */
 #define PSMAC_ROM_BASE     0x40800000u
 #define PSMAC_ROM_MIRROR   0x40000000u
 #define PSMAC_ROM_SIZE     0x00080000u
@@ -28,7 +28,13 @@ uint32_t psmac_io_read(uint32_t addr, int size);
 void     psmac_io_write(uint32_t addr, int size, uint32_t data, int posted);
 void     psmac_service_core(void);     /* runs forever on the service core */
 void     psmac_pmove(uint32_t ea, uint32_t ext);
+void     psmac_mmu_init(uintptr_t ram_phys, uint32_t ram_size, uintptr_t rom_phys);
+uint32_t psmac_mmu_l2p(uint32_t logical, int *valid);
 uint32_t psmac_ram_size(void);
+/* Mac-side RAM ceiling: the 32-bit map puts RAM at 0x00000000..0x3FFFFFFF, below the ROM at 0x40000000.
+   The IIci ROM itself only sizes two 64 MiB banks; anything above 128 MiB needs the memory-sizing
+   patch described in docs/06-rom-patches.md. */
+#define PSMAC_RAM_MAX_MB 1024u
 void     psmac_select_transport(int semihost_mode);
 
 #endif

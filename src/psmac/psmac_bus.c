@@ -27,7 +27,7 @@
 void mmu_map(uintptr_t phys, uintptr_t virt, uintptr_t length, uint32_t attr_low, uint32_t attr_high);
 uintptr_t mmu_virt2phys(uintptr_t addr);
 
-#define PERIPH_VA        0xf2000000ull
+#define PERIPH_VA        0x3f000000ull   /* relocated out of the Mac's reach (see start_rpi64.c) */
 #define AUX_ENABLES      (PERIPH_VA + 0x215004)
 #define AUX_MU_IO        (PERIPH_VA + 0x215040)
 #define AUX_MU_IER       (PERIPH_VA + 0x215044)
@@ -45,9 +45,19 @@ extern struct MemoryBlock *sys_memory;
 static uintptr_t ram_phys, rom_phys;
 static uint32_t  ram_size;
 static volatile int transport_up, transport_dead, service_running;
+static volatile int svc_phase; /* 0 idle, 1 writing req, 2 reading reply, 3 heartbeat */
+static volatile uint32_t svc_op, svc_addr;
 static volatile uint8_t last_ipl, last_flags;
 static uint32_t bus_errors, timeouts;
 static volatile uint32_t xfer_count, last_addr;
+uint64_t psmac_fault_elr;   /* set by the abort dispatcher: who faulted? */
+/* Emu68's own EL0 code (JIT helpers, debug prints) may legitimately touch the Pi peripherals, which share
+   the 68k's address space at 0xF2000000-0xF3FFFFFF but are mapped EL1-only in this fork. Perform those
+   accesses here; Mac (JIT-generated) code faulting on the same window is forwarded to the bridge. */
+static inline int emu68_own_fault(void) { return (psmac_fault_elr >> 32) == 0xffffff80ull; }   /* Emu68 text; JIT code is at 0xffffffe0... */
+static inline int in_periph_window(uint64_t a) { return a >= PERIPH_VA && a < 0x40000000ull; }
+static volatile uint32_t dev_cnt[8]; /* VIA1, SCC, SCSI, ASC, SWIM, RBV, FB, other */
+static inline int dev_class(uint32_t a) { uint32_t o = a & 0x000fffff; if (a < 0x80000) return 6; if ((a & 0xff000000) != 0x50000000) return 7; if (o < 0x2000 || (o >= 0x40000 && o < 0x42000)) return 0; if (o >= 0x4000 && o < 0x6000) return 1; if ((o >= 0x10000 && o < 0x14000) || (o >= 0x6000 && o < 0x8000)) return 2; if (o >= 0x14000 && o < 0x16000) return 3; if (o >= 0x16000 && o < 0x18000) return 4; if (o >= 0x24000 && o < 0x28000) return 5; return 7; }
 
 static inline uint64_t cnt_now(void) { uint64_t v; __asm__ volatile("mrs %0, CNTVCT_EL0":"=r"(v)); return v; }
 static inline uint64_t cnt_frq(void) { uint64_t v; __asm__ volatile("mrs %0, CNTFRQ_EL0":"=r"(v)); return v; }
@@ -99,7 +109,21 @@ static int64_t sh_open(const char *name, uint64_t mode)
     uint64_t p[3] = { shw((uint64_t)name), shw(mode), shw(strlen(name)) };
     return semihost(0x01, p);
 }
-static int sh_write(int64_t fd, const void *buf, uint64_t len) { uint64_t p[3] = { shw((uint64_t)fd), shw((uint64_t)buf), shw(len) }; return semihost(0x05, p) == 0; }
+static int sh_write(int64_t fd, const void *buf, uint64_t len)
+{
+    /* SYS_WRITE returns the number of bytes NOT written; a FIFO under back-pressure can take a
+       partial write, which would desynchronise the 12-byte request framing: loop until done. */
+    uint64_t done = 0;
+    while (done < len) {
+        uint64_t p[3] = { shw((uint64_t)fd), shw((uint64_t)buf + done), shw(len - done) };
+        int64_t left = semihost(0x05, p);
+        if (left < 0 || (uint64_t)left > len - done) return 0;
+        uint64_t n = (len - done) - (uint64_t)left;
+        if (n == 0) return 0;
+        done += n;
+    }
+    return 1;
+}
 static int sh_read(int64_t fd, void *buf, uint64_t len)
 {
     uint64_t got = 0;
@@ -151,9 +175,12 @@ static void bridge_xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, 
         (uint8_t)addr, (uint8_t)(addr >> 8), (uint8_t)(addr >> 16), (uint8_t)(addr >> 24),
         (uint8_t)data, (uint8_t)(data >> 8), (uint8_t)(data >> 16), (uint8_t)(data >> 24) };
     uint8_t rep[8];
+    svc_op = op; svc_addr = addr;
     if (use_semihost) {
+        svc_phase = 1;
         if (!sh_write(sh_req, req, 12)) { if (++timeouts == 1) kprintf("[PSMAC] semihosting bridge write failed\n"); transport_dead = 1; if (r) { r->status = 0; r->ipl = 0; r->flags = 0; r->data = 0xffffffff; } return; }
-        if (flags & PSMAC_FLAG_POSTED) return;
+        if (flags & PSMAC_FLAG_POSTED) { svc_phase = 0; return; }
+        svc_phase = 2;
         if (!sh_read(sh_rep, rep, 8)) { if (++timeouts == 1) kprintf("[PSMAC] semihosting bridge read failed/EOF\n"); transport_dead = 1; if (r) { r->status = 0; r->ipl = 0; r->flags = 0; r->data = 0xffffffff; } return; }
     } else {
         for (int i = 0; i < 12; i++) uart_putc(req[i]);
@@ -170,6 +197,7 @@ static void bridge_xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, 
             rep[i] = c;
         }
     }
+    svc_phase = 0;
     last_ipl = rep[1]; last_flags = rep[2];
     if (__m68k_state) __m68k_state->INTF.IPL = rep[1];
     if (r) { r->status = rep[0]; r->ipl = rep[1]; r->flags = rep[2]; r->data = rep[4] | (rep[5] << 8) | (rep[6] << 16) | ((uint32_t)rep[7] << 24); }
@@ -189,10 +217,60 @@ static void xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, uint32_
     slot.op = op; slot.size = size; slot.flags = flags; slot.addr = addr; slot.data = data;
     __atomic_store_n(&slot.state, SLOT_REQ, __ATOMIC_RELEASE);
     __asm__ volatile("sev");
-    while (__atomic_load_n(&slot.state, __ATOMIC_ACQUIRE) != SLOT_DONE) __asm__ volatile("yield");
+    { uint64_t t0 = cnt_now(), warn = t0 + cnt_frq() * 3; int warned = 0;
+      while (__atomic_load_n(&slot.state, __ATOMIC_ACQUIRE) != SLOT_DONE) {
+          __asm__ volatile("yield");
+          if (!warned && cnt_now() > warn) { warned = 1;
+              kprintf("[PSMAC] bridge stall: waiting on op %d size %d addr %08x; service core phase %d (op %d addr %08x), xfers %u\n", op, size, addr, svc_phase, svc_op, svc_addr, xfer_count); }
+      } }
     if (r) *r = slot.rep;
     __atomic_store_n(&slot.state, SLOT_FREE, __ATOMIC_RELEASE);
     __atomic_clear(&slot_lock, __ATOMIC_RELEASE);
+}
+
+/* 68k PC breadcrumbs: the service core samples the JIT's exported PC and records every change.
+   Dumped when the 68k stops producing bus traffic (stall / fatal exception on core 0). */
+#define PCRING 1024
+static uint32_t pcring[PCRING]; static uint32_t pcring_n;
+volatile uint32_t psmac_exc_flag;   /* set by the 68k exception entry on the first unexpected vector */
+static void pcring_dump(void)
+{
+    uint32_t n = pcring_n < PCRING ? pcring_n : PCRING, start = pcring_n - n;
+    kprintf("[PSMAC] last %u distinct 68k PC samples (oldest first):\n", n);
+    for (uint32_t i = 0; i < n; i += 8) {
+        kprintf("[PSMAC]  ");
+        for (uint32_t k = i; k < i + 8 && k < n; k++) kprintf(" %08x", pcring[(start + k) % PCRING]);
+        kprintf("\n");
+    }
+}
+
+/* Called by the translator before translating a new block: report jumps to addresses that cannot hold
+   code (odd, or not RAM/ROM in the current map), with the 68k state at that moment. */
+static uint32_t mac_rd32(uint32_t logical, int *ok)
+{
+    int valid; uint32_t ph = psmac_mmu_l2p(logical, &valid);
+    if (!valid || ph + 4 > ram_size) { *ok = 0; return 0; }
+    *ok = 1; return *(const uint32_t *)(KERNEL_ALIAS + ram_phys + ph);
+}
+void psmac_check_pc(uint32_t pc)
+{
+    static int reports;
+    if (reports >= 3) return;
+    int valid; uint32_t ph = psmac_mmu_l2p(pc, &valid);
+    int in_ram = valid && ph < ram_size, in_rom = valid && ph >= 0x40000000u && ph < 0x50000000u;
+    if (!(pc & 1) && (in_ram || in_rom)) return;
+    reports++;
+    struct M68KState *m = __m68k_state;
+    kprintf("[PSMAC:PC] translating at bad PC %08x (phys %08x %s)\n", pc, ph, valid ? (in_ram ? "RAM" : in_rom ? "ROM" : "other") : "INVALID");
+    if (!m) return;
+    kprintf("[PSMAC:PC]   D0-7 %08x %08x %08x %08x %08x %08x %08x %08x\n", BE32(m->D[0].u32), BE32(m->D[1].u32), BE32(m->D[2].u32), BE32(m->D[3].u32), BE32(m->D[4].u32), BE32(m->D[5].u32), BE32(m->D[6].u32), BE32(m->D[7].u32));
+    kprintf("[PSMAC:PC]   A0-7 %08x %08x %08x %08x %08x %08x %08x %08x SR %04x\n", BE32(m->A[0].u32), BE32(m->A[1].u32), BE32(m->A[2].u32), BE32(m->A[3].u32), BE32(m->A[4].u32), BE32(m->A[5].u32), BE32(m->A[6].u32), BE32(m->A[7].u32), BE16(m->SR));
+    uint32_t sp = BE32(m->A[7].u32); int ok;
+    kprintf("[PSMAC:PC]   stack:");
+    for (int i = 0; i < 16; i++) { uint32_t v = mac_rd32(sp + 4 * i, &ok); kprintf(" %08x", ok ? v : 0xdeaddead); }
+    kprintf("\n[PSMAC:PC]   OS trap table 0x400:");
+    for (int i = 0; i < 16; i++) { uint32_t v = mac_rd32(0x400 + 4 * i, &ok); kprintf(" %08x", ok ? v : 0xdeaddead); }
+    kprintf("\n");
 }
 
 void psmac_service_core(void)
@@ -203,13 +281,39 @@ void psmac_service_core(void)
     kprintf("[PSMAC] service core running (bridge transport owner, IPL poll 1 kHz)\n");
     uint64_t period = cnt_frq() / 1000, next_poll = cnt_now() + period;
     uint64_t hb_period = cnt_frq() * 5, next_hb = cnt_now() + hb_period; uint32_t hb_last = 0;
+    uint32_t pc_last = 0; int stall_dumped = 0, exc_dumped = 0;
     for (;;) {
         if (cnt_now() > next_hb) {
-            kprintf("[PSMAC] heartbeat: %u bus xfers (+%u), last addr %08x, ipl %d%s\n", xfer_count, xfer_count - hb_last, last_addr, last_ipl, transport_dead ? " TRANSPORT DEAD" : "");
+            svc_phase = 3;
+            kprintf("[PSMAC] heartbeat: %u bus xfers (+%u), last %08x, ipl %d%s | via %u scc %u scsi %u asc %u swim %u rbv %u fb %u other %u | PC %08x SR %04x\n", xfer_count, xfer_count - hb_last, last_addr, last_ipl, transport_dead ? " TRANSPORT DEAD" : "",
+                dev_cnt[0], dev_cnt[1], dev_cnt[2], dev_cnt[3], dev_cnt[4], dev_cnt[5], dev_cnt[6], dev_cnt[7],
+                __m68k_state ? BE32((uint32_t)(uintptr_t)__m68k_state->PC) : 0, __m68k_state ? BE16(__m68k_state->SR) : 0);
+            for (int k = 0; k < 8; k++) dev_cnt[k] = 0;
+            svc_phase = 0;
+            if (__m68k_state) {
+                struct M68KState *m = __m68k_state;
+                kprintf("[PSMAC]   D0-7 %08x %08x %08x %08x %08x %08x %08x %08x\n", BE32(m->D[0].u32), BE32(m->D[1].u32), BE32(m->D[2].u32), BE32(m->D[3].u32), BE32(m->D[4].u32), BE32(m->D[5].u32), BE32(m->D[6].u32), BE32(m->D[7].u32));
+                kprintf("[PSMAC]   A0-7 %08x %08x %08x %08x %08x %08x %08x %08x ISP %08x\n", BE32(m->A[0].u32), BE32(m->A[1].u32), BE32(m->A[2].u32), BE32(m->A[3].u32), BE32(m->A[4].u32), BE32(m->A[5].u32), BE32(m->A[6].u32), BE32(m->A[7].u32), BE32(m->ISP.u32));
+                uint32_t sp = BE32(m->A[7].u32); int valid; uint32_t ph = psmac_mmu_l2p(sp, &valid);
+                if (valid && ph + 32 <= ram_size) {
+                    const uint32_t *st = (const uint32_t *)(KERNEL_ALIAS + ram_phys + ph);
+                    kprintf("[PSMAC]   stack: %08x %08x %08x %08x %08x %08x %08x %08x\n", st[0], st[1], st[2], st[3], st[4], st[5], st[6], st[7]);
+                }
+            }
+            if (xfer_count == hb_last && !stall_dumped) { stall_dumped = 1; pcring_dump(); }
             hb_last = xfer_count; next_hb = cnt_now() + hb_period;
         }
+        if (__m68k_state) {
+            uint32_t pc = BE32((uint32_t)(uintptr_t)__m68k_state->PC);
+            if (pc != pc_last) { pc_last = pc; pcring[pcring_n++ % PCRING] = pc; }
+        }
+        if (psmac_exc_flag && !exc_dumped) {
+            exc_dumped = 1;
+            kprintf("[PSMAC] first unexpected 68k exception (vector %03x): PC trail follows\n", psmac_exc_flag & 0xfff);
+            pcring_dump();
+        }
         if (__atomic_load_n(&slot.state, __ATOMIC_ACQUIRE) == SLOT_REQ) {
-            xfer_count++; last_addr = slot.addr;
+            xfer_count++; last_addr = slot.addr; dev_cnt[dev_class(slot.addr)]++;
             bridge_xfer(slot.op, slot.size, slot.flags, slot.addr, slot.data, &slot.rep);
             __atomic_store_n(&slot.state, SLOT_DONE, __ATOMIC_RELEASE);
             continue;
@@ -234,16 +338,41 @@ void psmac_io_write(uint32_t addr, int size, uint32_t data, int posted)
     xfer(PSMAC_OP_WRITE, size, posted ? PSMAC_FLAG_POSTED : 0, addr, data, NULL);
 }
 
-static inline bool is_io(uint64_t a) { return (a >= PSMAC_IO_BASE && a < PSMAC_IO_END) || a >= PSMAC_SLOT_BASE; }
 
 /* Called from the data abort handler for every access the ARM MMU did not satisfy. Return 1 = handled. */
 static uint32_t trace_left = 400;
+void psmac_trace(uint32_t n) { trace_left = n; }
+uint64_t psmac_fault_pc;   /* JIT's 68k PC register at the fault (block granularity) */
 int psmac_bus_write(uint64_t value, uint64_t value2, int size, uint64_t far)
 {
     if ((far >> 32) == 1 || (far >> 32) == 0xffffffff) far &= 0xffffffff;
     if (far >> 32) return 0;
-    if (trace_left) { trace_left--; kprintf("[PSMAC:BUS] W%d %08x <- %08x\n", size, (uint32_t)far, (uint32_t)value); }
+    if (in_periph_window(far) && emu68_own_fault()) {
+        volatile uint8_t *p = (volatile uint8_t *)far;
+        switch (size) { case 1: *p = value; break; case 2: *(volatile uint16_t *)p = value; break; case 4: *(volatile uint32_t *)p = value; break; default: *(volatile uint64_t *)p = value; break; }
+        return 1;
+    }
+    { int valid; uint32_t phys = psmac_mmu_l2p((uint32_t)far, &valid);
+      if (trace_left) { trace_left--; kprintf("[PSMAC:BUS] W%d %08x (phys %08x%s) <- %08x\n", size, (uint32_t)far, phys, valid ? "" : " INVALID", (uint32_t)value); }
+      if (!valid) return 1;   /* unmapped logical page: write ignored (would be a bus error) */
+      far = phys; }
 
+    if ((far & ~0xfffull) == 0x50000) {
+        /* watched low-memory page: plain RAM write, report suspicious stores into the OS trap table */
+        static int reports;
+        uint8_t *p = (uint8_t *)(KERNEL_ALIAS + ram_phys + far);
+        uint32_t off = far & 0xfff, top = (uint32_t)(value >> 24) & 0xff;
+        if (reports < 24 && off >= 0x400 && off < 0x800 && size == 4 && top != 0x00 && top != 0x40) {
+            reports++;
+            kprintf("[PSMAC:WATCH] W%d trap table +%03x <- %08x from 68k PC %08x (ARM ELR %p)\n", size, off, (uint32_t)value, (uint32_t)psmac_fault_pc, (void *)psmac_fault_elr);
+        }
+        switch (size) {
+            case 1: *p = value; break; case 2: *(uint16_t *)p = value; break; case 4: *(uint32_t *)p = value; break;
+            case 8: *(uint64_t *)p = value; break; case 16: *(uint64_t *)p = value; *(uint64_t *)(p + 8) = value2; break;
+            default: return 0;
+        }
+        return 1;
+    }
     if (far < PSMAC_FB_SIZE) {
         /* write-through frame buffer: local copy + mirror to the motherboard */
         uint8_t *p = (uint8_t *)(KERNEL_ALIAS + ram_phys + far);
@@ -259,7 +388,8 @@ int psmac_bus_write(uint64_t value, uint64_t value2, int size, uint64_t far)
         }
         return 1;
     }
-    if (is_io(far)) {
+    /* everything that is not local RAM/ROM goes to the motherboard, exactly like the PiStorm would */
+    {
         switch (size) {
             case 1: psmac_io_write(far, 1, value & 0xff, 1); break;
             case 2: psmac_io_write(far, 2, value & 0xffff, 1); break;
@@ -271,17 +401,23 @@ int psmac_bus_write(uint64_t value, uint64_t value2, int size, uint64_t far)
         }
         return 1;
     }
-    /* unpopulated address (bank B probe, unused ranges): ignore */
-    return 1;
 }
 
 int psmac_bus_read(uint64_t *value, uint64_t *value2, int size, uint64_t far)
 {
     if ((far >> 32) == 1 || (far >> 32) == 0xffffffff) far &= 0xffffffff;
     if (far >> 32) return 0;
-    if (trace_left) { trace_left--; kprintf("[PSMAC:BUS] R%d %08x\n", size, (uint32_t)far); }
+    if (in_periph_window(far) && emu68_own_fault()) {
+        volatile uint8_t *p = (volatile uint8_t *)far;
+        switch (size) { case 1: *value = *p; break; case 2: *value = *(volatile uint16_t *)p; break; case 4: *value = *(volatile uint32_t *)p; break; default: *value = *(volatile uint64_t *)p; break; }
+        return 1;
+    }
+    { int valid; uint32_t phys = psmac_mmu_l2p((uint32_t)far, &valid);
+      if (trace_left) { trace_left--; kprintf("[PSMAC:BUS] R%d %08x (phys %08x%s)\n", size, (uint32_t)far, phys, valid ? "" : " INVALID"); }
+      if (!valid) { *value = 0xBAD0BAD0BAD0BAD0ull; if (value2) *value2 = *value; return 1; }
+      far = phys; }
 
-    if (is_io(far)) {
+    {
         switch (size) {
             case 1: *value = psmac_io_read(far, 1) & 0xff; break;
             case 2: *value = psmac_io_read(far, 2) & 0xffff; break;
@@ -294,9 +430,6 @@ int psmac_bus_read(uint64_t *value, uint64_t *value2, int size, uint64_t far)
         }
         return 1;
     }
-    /* unpopulated: constant pattern (never equals a RAM test pattern written just before) */
-    *value = 0xBAD0BAD0BAD0BAD0ull; if (value2) *value2 = 0xBAD0BAD0BAD0BAD0ull;
-    return 1;
 }
 
 /* ---------------- memory map ---------------- */
@@ -304,6 +437,8 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
 {
     psmac_read_options();
     uint32_t mb = globals.psmac_ram_mb ? globals.psmac_ram_mb : 8;
+    if (mb > PSMAC_RAM_MAX_MB) { kprintf("[PSMAC] mac.ram=%d clamped to %d MiB (RAM space below the ROM)\n", mb, PSMAC_RAM_MAX_MB); mb = PSMAC_RAM_MAX_MB; }
+    if (mb < 1) mb = 1;
     ram_size = mb << 20;
 
     uintptr_t base = (sys_memory[0].mb_Base + 0x1fffff) & ~0x1fffffull;
@@ -318,9 +453,6 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
 
     kprintf("[PSMAC] Mac RAM %d MiB at Pi %p, ROM at Pi %p (%d bytes from initramfs)\n", ram_size >> 20, ram_phys, rom_phys, rom_sz);
 
-    /* RAM: frame-buffer window read-only (write-through), rest cached RW */
-    mmu_map(ram_phys, 0x0, PSMAC_FB_SIZE, MMU_ACCESS | MMU_ISHARE | MMU_ALLOW_EL0 | MMU_READ_ONLY | MMU_ATTR_CACHED, 0);
-    mmu_map(ram_phys + PSMAC_FB_SIZE, PSMAC_FB_SIZE, ram_size - PSMAC_FB_SIZE, MMU_ACCESS | MMU_ISHARE | MMU_ALLOW_EL0 | MMU_ATTR_CACHED, 0);
 
     /* ROM image */
     uint8_t *romk = (uint8_t *)(KERNEL_ALIAS + rom_phys);
@@ -333,8 +465,8 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
     } else {
         kprintf("[PSMAC] WARNING: no ROM in initramfs!\n");
     }
-    mmu_map(rom_phys, PSMAC_ROM_BASE,   PSMAC_ROM_SIZE, MMU_ACCESS | MMU_ISHARE | MMU_ALLOW_EL0 | MMU_READ_ONLY | MMU_ATTR_CACHED, 0);
-    mmu_map(rom_phys, PSMAC_ROM_MIRROR, PSMAC_ROM_SIZE, MMU_ACCESS | MMU_ISHARE | MMU_ALLOW_EL0 | MMU_READ_ONLY | MMU_ATTR_CACHED, 0);
+    /* identity mapping (MMU disabled) and the 68030 MMU shadowing machinery */
+    psmac_mmu_init(ram_phys, ram_size, rom_phys);
 
     /* Overlay: reset vectors come from the ROM. Copy SP/PC to RAM 0 so the generic start-up finds them. */
     memcpy((void *)(KERNEL_ALIAS + ram_phys), romk, 8);
@@ -413,7 +545,12 @@ void fastSerial_init(void) {}
 
 /* Console: under the PiStorm build variants kprintf goes to the "fast serial" (CPLD) path; we send it
    to the PL011 instead so the QEMU/serial console keeps working. */
-#define PL011_BASE 0xf2201000ull
-static void con_putc(uint8_t c) { while (rd32le(PL011_BASE + 0x18) & (1 << 5)) ; wr32le(PL011_BASE, c); }
+#define PL011_BASE (PERIPH_VA + 0x201000)
+static void con_putc(uint8_t c)
+{
+    /* bounded wait: a wedged UART must never deadlock the emulation (the console lock is shared by all cores) */
+    for (int i = 0; i < 100000 && (rd32le(PL011_BASE + 0x18) & (1 << 5)); i++) ;
+    wr32le(PL011_BASE, c);
+}
 void fastSerial_putByte(uint8_t b) { if (b == '\n') con_putc('\r'); con_putc(b); }
 void bitbang_putByte(uint8_t b) { fastSerial_putByte(b); }

@@ -901,6 +901,9 @@ struct M68KTranslationUnit *M68K_GetTranslationUnit(uint16_t *m68kcodeptr)
     uint16_t *orig_m68kcodeptr = m68kcodeptr;
 
     int debug = 0;
+#ifdef PSMAC
+    { extern void psmac_check_pc(uint32_t pc); psmac_check_pc((uint32_t)(uintptr_t)m68kcodeptr); }
+#endif
 
     if ((uint32_t)(uintptr_t)m68kcodeptr >= globals.debug_range_min && (uint32_t)(uintptr_t)m68kcodeptr <= globals.debug_range_max) {
         debug = globalDebug();

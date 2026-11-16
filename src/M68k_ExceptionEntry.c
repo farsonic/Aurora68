@@ -40,6 +40,18 @@ uint32_t M68K_Exception(uint32_t M68k_SR, uint32_t type_and_format, uint32_t, ui
         }
     }
 
+#ifdef PSMAC
+    {   /* PiStorm-SE: log unexpected exceptions (not interrupts 0x60-0x7C, traps 0x80-0xBC, A-line 0x28) */
+        extern void kprintf(const char *, ...);
+        static int logged;
+        uint32_t vec = type_and_format & 0x0fff;
+        if (logged < 40 && !(vec >= 0x60 && vec <= 0x7c) && !(vec >= 0x80 && vec <= 0xbc) && vec != 0x28) {
+            logged++;
+            kprintf("[PSMAC:EXC] vector %03x format %x at PC %08x SR %04x ea %08x fault %08x\n", vec, type_and_format >> 12, M68k_PC, M68k_SR, ea, fault);
+            { extern volatile uint32_t psmac_exc_flag; if (!psmac_exc_flag) psmac_exc_flag = vec | 0x10000; }   /* service core dumps the PC trail */
+        }
+    }
+#endif
     /* Depending on exception format prepare place on stack frame and eventually push extra parameters */
     if (unlikely((type_and_format & 0xf000) == 0x2000 || (type_and_format & 0xf000) == 0x3000))
     {

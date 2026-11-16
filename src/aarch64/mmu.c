@@ -41,7 +41,11 @@
 static const uintptr_t PHYS_VIRT_OFFSET = 0xffffff9000000000;
 
 /* Number of 4K pages in the MMU pool */
+#ifdef PSMAC
+#define MMU_POOL_SIZE 8192   /* PiStorm-SE: the 24-bit Mac map replicates 16 MiB 256 times */
+#else
 #define MMU_POOL_SIZE 2048
+#endif
 
 struct mmu_page
 {
@@ -875,3 +879,62 @@ void mmu_unmap(uintptr_t virt, uintptr_t length)
  
     spinlock_release(&mmu_lock);
 }
+
+#ifdef PSMAC
+/*
+    PiStorm-SE: the 68k address space is the first 4 GiB of user space, i.e. user L1 entries 0..3
+    (plus their aliases, see l1_slots). The Mac MMU shim keeps one ARM subtree per 68030 table
+    configuration and swaps them in here instead of rebuilding thousands of mappings on every
+    SwapMMUMode. A subtree that is not installed is never touched by mmu_map/mmu_unmap.
+*/
+void mmu_low4g_get(uint64_t out[4])
+{
+    spinlock_acquire(&mmu_lock);
+    for (int i = 0; i < 4; i++)
+        out[i] = mmu_root(0)->mp_entries[i];
+    spinlock_release(&mmu_lock);
+}
+
+void mmu_low4g_set(const uint64_t in[4])
+{
+    spinlock_acquire(&mmu_lock);
+    for (int i = 0; i < 4; i++)
+        set_l1_entry((uintptr_t)i << 30, 0, 0);          /* break ... */
+    mmu_tlb_flush_all();
+    for (int i = 0; i < 4; i++)
+        set_l1_entry((uintptr_t)i << 30, in[i], 0);      /* ... before make */
+    mmu_tlb_flush_all();
+    spinlock_release(&mmu_lock);
+}
+
+/* Re-create, in the installed subtree, every mapping of the subtree described by from[] (used to
+   give a fresh Mac map the Pi peripheral windows that live inside the first 4 GiB). */
+void mmu_low4g_clone(const uint64_t from[4])
+{
+    for (int i = 0; i < 4; i++) {
+        uint64_t d1 = from[i];
+        uintptr_t va1 = (uintptr_t)i << 30;
+        if (!(d1 & 1)) continue;
+        if ((d1 & DESC_TYPE_MASK) == DESC_BLOCK) {
+            mmu_map(d1 & DESC_OA_MASK & ~(SZ_1G - 1), va1, SZ_1G, (uint32_t)(d1 & 0xffc), (uint32_t)(d1 >> 48));
+            continue;
+        }
+        struct mmu_page *l2 = desc_to_table(d1);
+        for (int j = 0; j < 512; j++) {
+            uint64_t d2 = l2->mp_entries[j];
+            uintptr_t va2 = va1 | ((uintptr_t)j << 21);
+            if (!(d2 & 1)) continue;
+            if ((d2 & DESC_TYPE_MASK) == DESC_BLOCK) {
+                mmu_map(d2 & DESC_OA_MASK & ~(SZ_2M - 1), va2, SZ_2M, (uint32_t)(d2 & 0xffc), (uint32_t)(d2 >> 48));
+                continue;
+            }
+            struct mmu_page *l3 = desc_to_table(d2);
+            for (int k = 0; k < 512; k++) {
+                uint64_t d3 = l3->mp_entries[k];
+                if (d3 & 1)
+                    mmu_map(d3 & DESC_OA_MASK, va2 | ((uintptr_t)k << 12), SZ_4K, (uint32_t)(d3 & 0xffc), (uint32_t)(d3 >> 48));
+            }
+        }
+    }
+}
+#endif

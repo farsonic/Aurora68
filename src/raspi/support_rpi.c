@@ -129,7 +129,11 @@ static inline void putByte(void *io_base, char chr)
 #endif
 
 #undef ARM_PERIIOBASE
+#ifdef PSMAC
+#define ARM_PERIIOBASE 0x3f000000
+#else
 #define ARM_PERIIOBASE 0xf2000000
+#endif
 
 volatile unsigned char print_lock = 0;
 

@@ -30,6 +30,14 @@
 #ifdef PISTORM_ANY_MODEL
 #include "ps_protocol.h"
 #endif
+/* PiStorm-SE: the Pi peripherals live inside the 68k's 4 GiB address space (0xF2000000..); the Mac
+   ROM treats that as NuBus slot space and probes it, so do not let 68k (EL0) code reach them.
+   Faulting accesses are forwarded to the bridge like any other non-local address. */
+#ifdef PSMAC
+#define PERIPH_EL0 0
+#else
+#define PERIPH_EL0 MMU_ALLOW_EL0
+#endif
 
 void _start();
 void _boot();
@@ -482,8 +490,8 @@ void map_peripheral_ranges(char *node_name, uint32_t *start_map)
             continue;
         }
 
-        mmu_map(addr_cpu, *start_map << 21, addr_len,
-                MMU_ACCESS | MMU_ALLOW_EL0 | MMU_ATTR_DEVICE, 0);
+        mmu_map(addr_cpu, (uintptr_t)*start_map << 21, addr_len,
+                MMU_ACCESS | PERIPH_EL0 | MMU_ATTR_DEVICE, 0);
 
         kprintf("bus: %08x, cpu: %08x, len: %08x\n", addr_bus, addr_cpu, addr_len);
 
@@ -582,7 +590,7 @@ static void map_pcie_mmio_window(uint32_t *start_map)
             kprintf("[PCIE] Next low-virt addr: %08x\n", (*start_map) << 21);
 
             mmu_map(phys, virt, (uintptr_t)map_size,
-                    MMU_ACCESS | MMU_ALLOW_EL0 | MMU_ATTR_DEVICE, 0);
+                    MMU_ACCESS | PERIPH_EL0 | MMU_ATTR_DEVICE, 0);
 
             kprintf("[PCIE] MMIO: phys=%08x%08x virt=%08x size=%08x\n",
                     (uint32_t)(phys >> 32), (uint32_t)phys, (uint32_t)virt, (uint32_t)map_size);
@@ -610,7 +618,15 @@ static void map_pcie_mmio_window(uint32_t *start_map)
 
 void platform_init()
 {
+#ifdef PSMAC
+    /* PiStorm-SE: the Pi peripheral window must not collide with addresses the Mac uses. The Mac
+       probes 0xF2000000.. (NuBus slot 2), Emu68's default. 0x3F000000 is the top of the IIci's
+       1 GiB RAM space: beyond any installable RAM, never mapped by the ROM's tables, and it is the
+       Pi 3's physical peripheral address anyway (the user table only spans 4 GiB). */
+    uint32_t start_map = 0x3f0 / 2;
+#else
     uint32_t start_map = 0xf20 / 2;
+#endif
 
     /*
         Prepare mapping for peripherals. Use and update the data from device tree here
@@ -990,7 +1006,11 @@ void platform_post_init()
 #define AARCH 32
 #define GENMASK(h, l) ((~0 - (1 << (l)) + 1) & (~0 >> (AARCH - 1 - (h))))
 
+#ifdef PSMAC
+#define ARM_IO_BASE (uintptr_t)0x3f000000
+#else
 #define ARM_IO_BASE (uintptr_t)0xf2000000
+#endif
 #define ARM_CSI0_BASE (ARM_IO_BASE + 0x800000)
 #define ARM_CSI0_END (ARM_CSI0_BASE + 0x7FF)
 #define ARM_CSI0_CLKGATE (ARM_IO_BASE + 0x802000) // 4 bytes
@@ -1010,7 +1030,7 @@ static void usleep(uint64_t delta)
     {
         uint32_t LO;
         uint32_t HI;
-    } *CLOCK = (volatile void *)0xf2003004;
+    } *CLOCK = (volatile void *)(ARM_IO_BASE + 0x3004);
 
     uint64_t hi = CLOCK->HI;
     uint64_t lo = CLOCK->LO;
