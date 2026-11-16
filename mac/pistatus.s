@@ -114,6 +114,10 @@ loop:
 	beq.s	loop
 	btst	#0,%d0			| odd: being written
 	bne.s	loop
+	move.l	Ticks,%d0		| at most every five seconds: the page moves once a second and
+	sub.l	V_LAST(%a6),%d0		| a full redraw through the testbed's frame buffer takes about
+	cmp.l	#300,%d0		| as long, so the window was forever half drawn
+	blo.s	loop
 	bsr	redraw
 	bra.s	loop
 have_event:
@@ -149,6 +153,7 @@ redraw:
 	bra	redraw_end
 1:	move.l	%a1,%a3
 	move.l	S_SEQ(%a3),V_SEQ(%a6)
+	move.l	Ticks,V_LAST(%a6)
 	lea	S_BUILD(%a3),%a1
 	bsr	say_cstr
 	lea	s_uptime(%pc),%a0
@@ -335,6 +340,7 @@ say_dec:				| d0 unsigned long -> decimal
 	.equ	V_Y,		0
 	.equ	V_X,		2
 	.equ	V_SEQ,		4
+	.equ	V_LAST,		8		| Ticks at the last redraw
 vars:	.space	16
 wrect:	.short	50, 30, 300, 500
 wtitle:	.byte	23
