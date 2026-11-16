@@ -225,6 +225,7 @@ static void psmac_read_options(void)
         if (*tok == ',') { tok++; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); }
         peek_addr = a; peek_len = n > 512 ? 512 : (n ? n : 64);
     }
+    if ((tok = find_token(args, "mac.inputright="))) { tok += 15; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_right(uint32_t); psmac_alice_input_right(n); }
     if ((tok = find_token(args, "mac.inputwifi="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_wifi(uint32_t); psmac_alice_input_wifi(n); }
     if ((tok = find_token(args, "mac.scsitrace="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); scsi_trace_left = n; }
     if ((tok = find_token(args, "mac.ram="))) { tok += 8; uint32_t mb = 0; while (*tok >= '0' && *tok <= '9') mb = mb * 10 + (*tok++ - '0'); globals.psmac_ram_mb = mb; }
@@ -624,13 +625,25 @@ static void walk_container(const uint8_t *img, uint32_t size, struct container_r
 void psmac_setup_memory(void *rom, uint32_t rom_sz)
 {
     psmac_read_options();
-    uint32_t mb = globals.psmac_ram_mb ? globals.psmac_ram_mb : 8;
+    uintptr_t base = (sys_memory[0].mb_Base + 0x1fffff) & ~0x1fffffull;
+    const uintptr_t extra = PSMB_WIN_SIZE + PSMB_DECLROM_SIZE;    /* slot $9 mailbox window + declaration ROM */
+    uint32_t mb = globals.psmac_ram_mb;
+    if (!mb) {
+        /* No mac.ram=: take what the Pi can spare. The kernel keeps PSMAC_PI_KEEP_MB for its own
+           pools (the JIT cache, the service core's buffers, firmware); the rest is the Mac's, up
+           to PSMAC_RAM_DEFAULT_MB, which is what the IIci ROM sizes without a memory patch (two
+           banks of 64 MiB, docs/08 item 11). A Pi Zero 2 W or 3A+ (512 MiB) and a Pi 4 (2-8 GiB)
+           both end up with 128 MiB; smaller boards get what is left. */
+        uintptr_t avail = sys_memory[0].mb_Base + sys_memory[0].mb_Size - base;
+        uintptr_t spare = avail > ((uintptr_t)PSMAC_PI_KEEP_MB << 20) ? avail - ((uintptr_t)PSMAC_PI_KEEP_MB << 20) : 0;
+        mb = (uint32_t)(spare >> 20) & ~7u;
+        if (mb > PSMAC_RAM_DEFAULT_MB) mb = PSMAC_RAM_DEFAULT_MB;
+        if (mb < 8) mb = 8;
+        kprintf("[PSMAC] no mac.ram=: %u MiB of the Pi's %u MiB free go to the Mac\n", mb, (uint32_t)(avail >> 20));
+    }
     if (mb > PSMAC_RAM_MAX_MB) { kprintf("[PSMAC] mac.ram=%d clamped to %d MiB (RAM space below the ROM)\n", mb, PSMAC_RAM_MAX_MB); mb = PSMAC_RAM_MAX_MB; }
     if (mb < 1) mb = 1;
     ram_size = mb << 20;
-
-    uintptr_t base = (sys_memory[0].mb_Base + 0x1fffff) & ~0x1fffffull;
-    const uintptr_t extra = PSMB_WIN_SIZE + PSMB_DECLROM_SIZE;    /* slot $9 mailbox window + declaration ROM */
     uintptr_t need = ram_size + PSMAC_ROM_SIZE + extra;
     if (sys_memory[0].mb_Base + sys_memory[0].mb_Size < base + need) {
         kprintf("[PSMAC] not enough system memory for %d MiB Mac RAM, falling back to 8 MiB\n", mb);

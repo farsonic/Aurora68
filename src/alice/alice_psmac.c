@@ -274,6 +274,12 @@ static void in_testbed_poll(void)
     if (now < intest_next) return;
     if (intest_kind == 1) { in_about_step(intest_step++); return; }
     if (intest_kind == 2) { in_wifi_step(); return; }
+    if (intest_kind == 3) {                                                 /* mac.inputright=: walk the mouse onto the second screen */
+        int s = intest_step++;
+        if (s < 60) { aga_virtual_mouse_update(30, 4, 0); intest_next = now + in_hz() * 50 / 1000; }
+        else { intest_at = 0; kprintf("[PSMAC] input right script done\n"); }
+        return;
+    }
     static const uint8_t typed[] = { 0x0b, 0x08, 0x0f, 0x0f, 0x12, 0 };     /* h e l l o in USB usages */
     int s = intest_step++;
     uint32_t gap_ms = 50;
@@ -292,10 +298,12 @@ static void in_testbed_poll(void)
 void psmac_alice_input_test(uint32_t seconds) { intest_at = seconds; intest_kind = 0; }
 void psmac_alice_input_about(uint32_t seconds) { intest_at = seconds; intest_kind = 1; }
 void psmac_alice_input_wifi(uint32_t seconds)  { intest_at = seconds; intest_kind = 2; }
+void psmac_alice_input_right(uint32_t seconds) { intest_at = seconds; intest_kind = 3; }   /* the cursor walks right, onto the second screen (docs/10) */
 
 /* heartbeat line for psmac_bus.c: the interrupt line and what holds it */
 void psmac_slot_irq_report(void)
 {
+    { extern void psmac_display_report(void); psmac_display_report(); }
     extern uint32_t psmac_slot_irq_state(void); extern volatile uint8_t *alice_net_board(void);
     volatile struct an_hdr *nh = (volatile struct an_hdr *)alice_net_board();
     uint32_t st = psmac_slot_irq_state();
@@ -528,6 +536,7 @@ void __attribute__((noreturn)) psmac_alice_core(void)
         alice_net_poll();
         in_repeat_poll();
         in_testbed_poll();
+        { extern void psmac_display_poll(void); psmac_display_poll(); }   /* the second display's tick and picture */
         /* The card's interrupt line: up while a board has something the Mac has not taken (the
            network board's irq flag, which the Mac's Ethernet driver clears; input events not yet
            read), but only from boards whose Mac driver has attached (the Ethernet driver writes
@@ -538,8 +547,9 @@ void __attribute__((noreturn)) psmac_alice_core(void)
         { extern volatile uint8_t *alice_net_board(void); extern void psmac_slot_irq(int);
           static uint64_t up_since; static uint32_t storms;
           volatile struct an_hdr *nh = (volatile struct an_hdr *)alice_net_board();
+          extern int psmac_display_irq(void);
           int net_line = nh && nh->amiga_ver && nh->irq;
-          int line = net_line || (inr && inr->attached && inr->head != inr->tail);
+          int line = net_line || (inr && inr->attached && inr->head != inr->tail) || psmac_display_irq();
           /* Safety net: a level-sensitive line that nobody services wedges the 68k in its
              level-2 handler for good (seen once, when a driver announced itself before its
              handler was in). A real card cannot help that; this one can: if the network

@@ -49,6 +49,8 @@ uint32_t psmac_ram_size(void);
    The IIci ROM itself only sizes two 64 MiB banks; anything above 128 MiB needs the memory-sizing
    patch described in docs/06-rom-patches.md. */
 #define PSMAC_RAM_MAX_MB 1024u
+#define PSMAC_RAM_DEFAULT_MB 64u     /* without mac.ram=: bank A full; 128 MiB (bank B) bombs during the boot, docs/08 item 24 */
+#define PSMAC_PI_KEEP_MB     192u    /* and never less than this left to the kernel itself */
 void     psmac_select_transport(int semihost_mode);
 /* slot $9 mailbox (psmb.h, psmac_mbox.c) */
 void     psmac_mmu_set_slot(uintptr_t win_phys, uintptr_t declrom_phys);

@@ -38,8 +38,37 @@
 #define PSMB_OFF_CMD         0x1000          /* PSMB_MAX_SERVICES x struct psmb_cmd (one slot each) */
 #define PSMB_OFF_BLKDEV      0x2000          /* PSMB_MAX_BLKDEV x struct psmb_blkdev */
 #define PSMB_OFF_NETRX       0x4000          /* net receive ring: header + PSMB_NETRX_SLOTS frames */
-#define PSMB_OFF_BOUNCE      0x80000         /* 512 KiB bounce area, free for drivers */
+#define PSMB_OFF_DISPLAY     0x58000         /* struct psmb_display: the second screen (below) */
+#define PSMB_OFF_BOUNCE      0x80000         /* 512 KiB: the second screen's frame buffer (640 x 480 at 8 bits is 300 KiB) */
 #define PSMB_BOUNCE_SIZE     0x80000
+
+/* ---- the second display (docs/10) -------------------------------------------------------------
+   The Mac sees a NuBus video card: a video sResource in the declaration ROM whose frame buffer is
+   the window's top 512 KiB (MinorBaseOS 0x80000, reachable in 24-bit mode too, which is why it is
+   not out in the slot's 16 MiB space), and a video DRVR (mac/pivideo.s) that keeps this block
+   current: the depth QuickDraw asked for, the colour table, whether the vertical-blank interrupt
+   is wanted. The service core turns the Mac's indexed pixels into the VideoCore's frame buffer
+   (the one the boot splash used) through the colour table, sixty times a second, and raises the
+   slot interrupt at each of those ticks while the driver wants it: that is the card's VBL, which
+   QuickDraw's cursor and the screen's VBL tasks run on. Nothing on the 68k side touches the
+   VideoCore; the Pi draws what the Mac drew. */
+#define PSMB_DISP_MAGIC      0x41363856u     /* 'A68V' */
+#define PSMB_DISP_ENABLED    1u              /* flags: the Mac's driver is open and the block is live */
+#define PSMB_DISP_GRAY       2u              /* luminance-mapped colours (cscSetGray) */
+struct psmb_display {
+    uint32_t magic, version;
+    uint32_t width, height;                  /* 640 x 480: the mode list in the declaration ROM says the same */
+    uint32_t depth, rowbytes;                /* Mac -> Pi: 1, 2, 4 or 8 and the row pitch QuickDraw uses */
+    uint32_t fb_off, fb_size;                /* Pi -> Mac: where the frame buffer is in the window */
+    uint32_t flags;                          /* PSMB_DISP_* (Mac) */
+    uint32_t vbl_enable;                     /* Mac: 1 = raise the slot interrupt at each tick */
+    uint32_t vbl_pending;                    /* Pi sets at a tick, the Mac's handler clears */
+    uint32_t vbl_count;                      /* Pi: ticks since boot */
+    uint32_t clut_seq;                       /* Mac: +1 after changing clut[] */
+    uint32_t frames;                         /* Pi: frames converted */
+    uint32_t pad[2];
+    uint32_t clut[256];                      /* Mac: 0x00RRGGBB per index */
+};
 
 #define PSMB_MAX_SERVICES    8
 #define PSMB_MAX_BLKDEV      4

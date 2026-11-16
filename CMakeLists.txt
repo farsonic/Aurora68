@@ -306,6 +306,7 @@ if (${VARIANT} IN_LIST SUPPORTED_VARIANTS)
                     src/psmac/psmac_bus.c
                     src/psmac/psmac_mmu.c
                     src/psmac/psmac_mbox.c
+                    src/psmac/psmac_display.c
                     src/alice/alice_psmac.c
                     src/alice/alice_net.c
                     src/alice/alice_status.c
