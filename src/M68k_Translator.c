@@ -788,7 +788,12 @@ struct M68KTranslationUnit *M68K_VerifyUnit(struct M68KTranslationUnit *unit)
         }
 
         /* Quick path - ROM is always valid as long as we don't use any fancy remapping, at least on Amiga */
+#ifdef PSMAC
+        if ((unit->mt_M68kAddress >= 0x40000000 && unit->mt_M68kAddress < 0x50000000) ||
+            (unit->mt_M68kAddress >= 0x800000 && unit->mt_M68kAddress < 0x900000)) {
+#else
         if (unit->mt_M68kAddress >= 0xf80000 && unit->mt_M68kAddress < 0x1000000) {
+#endif
             /* Update EPOCH of the unit */
             extern uint32_t EPOCH;
             unit->mt_Epoch = EPOCH;
@@ -866,7 +871,22 @@ struct M68KTranslationUnit *M68K_VerifyUnitCRC32(struct M68KTranslationUnit *uni
 {
     if (unit)
     {
+#ifdef PSMAC
+        /* The Mac runs this loop all the time (68030 code never sets the 68040 CACR IE bit) and a
+           checksum on every block entry made short loops crawl (the ROM's calibration loops ran
+           100x too slowly and System 7.1's speed probe divided by zero). ROM blocks never change;
+           RAM blocks are re-checked only after the Mac has cleared its instruction cache through
+           CACR (psmac_icache_epoch), which Mac OS does whenever it moves or loads code. */
+        extern uint32_t psmac_icache_epoch;
+        if ((unit->mt_M68kAddress >= 0x40000000 && unit->mt_M68kAddress < 0x50000000) ||
+            (unit->mt_M68kAddress >= 0x800000 && unit->mt_M68kAddress < 0x900000) ||
+            unit->mt_VerEpoch == psmac_icache_epoch)
+            return unit;
+#endif
         uint32_t crc = CalcCRC32((void *)(uintptr_t)unit->mt_M68kLow, (void*)(uintptr_t)unit->mt_M68kHigh);
+#ifdef PSMAC
+        if (crc == unit->mt_CRC32) unit->mt_VerEpoch = psmac_icache_epoch;
+#endif
 
         /* In case of FP or CRC mismatch, remove the unit and reclaim memory */
         if (crc != unit->mt_CRC32)
@@ -1002,6 +1022,9 @@ struct M68KTranslationUnit *M68K_GetTranslationUnit(uint16_t *m68kcodeptr)
     unit->mt_M68kHigh = (uint32_t)(uintptr_t)m68k_high;
     unit->mt_Fingerprint = cache_read_32(ICACHE, unit->mt_M68kAddress) ^ cache_read_32(ICACHE, unit->mt_M68kAddress + 4);
     unit->mt_CRC32 = CalcCRC32(m68k_low, m68k_high);
+#ifdef PSMAC
+    { extern uint32_t psmac_icache_epoch; unit->mt_VerEpoch = psmac_icache_epoch; }
+#endif
     unit->mt_PrologueSize = prologue_size;
     unit->mt_EpilogueSize = epilogue_size;
     unit->mt_Conditionals = conditionals_count;

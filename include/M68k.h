@@ -143,6 +143,7 @@ struct M68KTranslationUnit
     /* Cold part of the structure */
     uint32_t        mt_JIT_CONTROL;
     uint32_t        mt_JIT_CONTROL2;
+    uint32_t        mt_VerEpoch;        /* PSMAC: instruction-cache epoch at the last successful checksum */
     uint32_t        mt_PrologueSize;
     uint32_t        mt_EpilogueSize;
     uint32_t        mt_Conditionals;

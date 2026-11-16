@@ -2114,7 +2114,11 @@ static uint32_t EMIT_MOVEC(struct TranslatorContext *ctx, uint16_t opcode)
                     mov_reg_to_simd(REG_CACR, tmp)
                 );
 
+#ifdef PSMAC
+                void check_cacr(uint32_t raw);
+#else
                 void check_cacr();
+#endif
 
                 union {
                     uint64_t u64;
@@ -2128,6 +2132,9 @@ static uint32_t EMIT_MOVEC(struct TranslatorContext *ctx, uint16_t opcode)
                     EMIT(ctx, stp64(31, i, i+1, i*8));
                 EMIT(ctx, str64_offset(31, 30, 240));
 
+#ifdef PSMAC
+                EMIT(ctx, mov_reg(0, reg));      /* raw CACR value for check_cacr (68030 CI/CD bits) */
+#endif
                 EMIT(ctx, 
                     mov64_immed_u16(1, u.u16[3], 0),
                     movk64_immed_u16(1, u.u16[2], 1),
@@ -3381,13 +3388,21 @@ int M68K_GetLine4Length(uint16_t *insn_stream)
     return length;
 }
 
+#ifdef PSMAC
+uint32_t psmac_icache_epoch = 1;   /* bumped when the Mac clears the 68030 instruction cache (CACR CI/CEI) */
+void check_cacr(uint32_t raw)
+#else
 void check_cacr()
+#endif
 {
     extern struct List LRU;
     extern struct M68KState *__m68k_state;
     static uint32_t old_cacr;
     uint32_t cacr;
     uint32_t change;
+#ifdef PSMAC
+    if (raw & 0x0C) psmac_icache_epoch++;
+#endif
 
     asm volatile("mov %w0, " REG_CACR_ASM : "=r"(cacr));
 
