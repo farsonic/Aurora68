@@ -149,6 +149,12 @@ drvr_start:
 8:	movem.l	(%sp)+,%d0-%d1/%a0-%a1
 	.endm
 do_log:
+	| the first 60 lines only: under a real stack every control call would otherwise cost a
+	| round trip to the Pi's console (the counter lives in the code, which runs from RAM)
+	lea	log_count(%pc),%a0	| (the driver is position independent: no absolute addresses)
+	cmp.w	#60,(%a0)
+	bge	log_quiet
+	addq.w	#1,(%a0)
 	bsr	window
 	lea	0x1000(%a0),%a0		| INFO command block
 	moveq	#0,%d1
@@ -167,7 +173,11 @@ do_log:
 	beq.s	5f
 	subq.l	#1,%d1
 	bne.s	4b
-5:	rts
+5:
+log_quiet:
+	rts
+log_count:
+	.short	0
 
 | ---- helpers ----
 window:					| a0 = window base
