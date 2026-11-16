@@ -1,0 +1,4 @@
+[submodule "emu68"]
+	path = emu68
+	url = ../pistorm-se-emu68.git
+	branch = psmac

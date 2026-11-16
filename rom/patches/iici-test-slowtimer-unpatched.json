@@ -1,0 +1,12 @@
+{
+  "name": "TEST ONLY: IIci calibration fall-through on the UNPATCHED ROM (demonstrates the bug)",
+  "base": "0x40800000",
+  "patches": [
+    {
+      "name": "TEST: moveq #12,d1 / moveq #3,d2 (T2 = 0x030C) -> T2 = 0xFFFF",
+      "at": "0x820",
+      "expect": "720c 7403",
+      "bytes": "72ff 74ff"
+    }
+  ]
+}

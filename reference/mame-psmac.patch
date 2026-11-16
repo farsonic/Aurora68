@@ -1,0 +1,1461 @@
+From 49f89742900b2928514ec5afec196bdae7b396b7 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 16 Nov 2026 09:41:08 +0000
+Subject: [PATCH] maciici_ps: IIci motherboard with a bridged CPU for the
+ PiStorm-SE Emu68 testbed
+
+bridge68k_device serves bus cycles for an external CPU (Emu68 under QEMU) over a socket or a
+FIFO pair: 12-byte requests, 8-byte replies with status/IPL/flags. Replies go out immediately
+except for accesses to the SCSI register and pseudo-DMA windows, which are held until the next
+scheduler slice so the HALT hold (FIFO fill) and BERR pulses are honoured. Wall-clock credit keeps
+emulated time running while requests stream in.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_019sr5bF9ArmteRtTQJngKcP
+---
+ src/mame/apple/bridge68k.cpp  | 664 ++++++++++++++++++++++++++++++++++
+ src/mame/apple/bridge68k.h    | 143 ++++++++
+ src/mame/apple/maciici_ps.cpp | 595 ++++++++++++++++++++++++++++++
+ src/mame/mame.lst             |   3 +
+ 4 files changed, 1405 insertions(+)
+ create mode 100644 src/mame/apple/bridge68k.cpp
+ create mode 100644 src/mame/apple/bridge68k.h
+ create mode 100644 src/mame/apple/maciici_ps.cpp
+
+diff --git a/src/mame/apple/bridge68k.cpp b/src/mame/apple/bridge68k.cpp
+new file mode 100644
+index 00000000..73369af3
+--- /dev/null
++++ b/src/mame/apple/bridge68k.cpp
+@@ -0,0 +1,664 @@
++// license:BSD-3-Clause
++// copyright-holders:psmac project
++/****************************************************************************
++
++    bridge68k.cpp
++
++    "External CPU" placeholder for the psmac software testbed (see the header
++    and docs/05-bridge-protocol.md).
++
++    Timing model
++    ------------
++    * Every READ/WRITE served over the socket is charged ACCESS_CYCLES (4)
++      cycles of the device clock (25 MHz on the IIci).
++    * When no request is pending the device consumes cycles proportional to
++      the wall-clock time that has elapsed (osd_ticks()), so emulated time
++      follows real time and VIA timers / 60 Hz video / ADB keep running even
++      with -nothrottle.  A single catch-up is capped at 10 ms worth of cycles.
++    * Idle waiting is done in poll() with a 1 ms timeout, so the host CPU is
++      not spun needlessly.
++
++    Bus error / DTACK model
++    -----------------------
++    MAME delivers input-line changes through the scheduler (set_input_line()
++    is synchronised), so a M68K_LINE_BUSERROR pulse raised by a handler during
++    an access is only visible to this device after execute_run() has returned
++    once.  Therefore the reply for a READ/WRITE is not sent immediately: the
++    access is performed, execute_run() returns, and the reply (with the bus
++    error status) goes out at the start of the next execute_run() call.  If
++    the access made the motherboard hold the CPU (INPUT_LINE_HALT, e.g. the
++    SCSI pseudo-DMA FIFO fill), the base class suspends the device and the
++    reply is naturally delayed until the hold ends: that is the DTACK wait.
++
++****************************************************************************/
++
++#include "emu.h"
++#include "bridge68k.h"
++
++#include <cerrno>
++#include <cstring>
++
++#include <fcntl.h>
++#include <poll.h>
++#include <sys/socket.h>
++#include <sys/stat.h>
++#include <sys/un.h>
++#include <unistd.h>
++
++#define LOG_PROTO   (1U << 1)
++#define LOG_SOCK    (1U << 2)
++
++#define VERBOSE (LOG_SOCK)
++#include "logmacro.h"
++
++#define LOGPROTO(...) LOGMASKED(LOG_PROTO, __VA_ARGS__)
++#define LOGSOCK(...)  LOGMASKED(LOG_SOCK, __VA_ARGS__)
++
++DEFINE_DEVICE_TYPE(BRIDGE68K, bridge68k_device, "bridge68k", "psmac bridge 68030 socket (external CPU over UNIX socket)")
++
++namespace {
++
++static constexpr char DEFAULT_SOCK_PATH[] = "/tmp/psmac-bridge.sock";
++
++class bridge68k_disassembler : public util::disasm_interface
++{
++public:
++	bridge68k_disassembler() = default;
++	virtual ~bridge68k_disassembler() = default;
++
++	virtual u32 opcode_alignment() const override { return 2; }
++	virtual offs_t disassemble(std::ostream &stream, offs_t pc, const data_buffer &opcodes, const data_buffer &params) override
++	{
++		util::stream_format(stream, "dc.w    $%04x    ; bridge68k: code runs in the external CPU", opcodes.r16(pc));
++		return 2 | SUPPORTED;
++	}
++};
++
++inline u32 get_u32le(const u8 *p) { return u32(p[0]) | (u32(p[1]) << 8) | (u32(p[2]) << 16) | (u32(p[3]) << 24); }
++inline void put_u32le(u8 *p, u32 v) { p[0] = v & 0xff; p[1] = (v >> 8) & 0xff; p[2] = (v >> 16) & 0xff; p[3] = (v >> 24) & 0xff; }
++
++} // anonymous namespace
++
++
++//**************************************************************************
++//  CONSTRUCTION / DEVICE INTERFACE
++//**************************************************************************
++
++bridge68k_device::bridge68k_device(const machine_config &mconfig, const char *tag, device_t *owner, u32 clock) :
++	cpu_device(mconfig, BRIDGE68K, tag, owner, clock),
++	m_program_config("program", ENDIANNESS_BIG, 32, 32),
++	m_icount(0),
++	m_pc(0),
++	m_state_ipl(0),
++	m_state_flags(0),
++	m_irq_mask(0),
++	m_berr_hit(false),
++	m_reset_req(false),
++	m_listen_fd(-1),
++	m_client_fd(-1),
++	m_rxlen(0),
++	m_reply_pending(false),
++	m_reply_data(0),
++	m_reply_status(0),
++	m_last_ticks(0),
++	m_idle_credit(0),
++	m_stat_requests(0),
++	m_stat_connects(0),
++	m_stat_runs(0),
++	m_stat_polls(0),
++	m_stat_sleeps(0),
++	m_stat_cycles(0),
++	m_stat_inside(0)
++{
++	set_icountptr(m_icount);
++}
++
++bridge68k_device::~bridge68k_device()
++{
++	close_client();
++	close_listener();
++}
++
++device_memory_interface::space_config_vector bridge68k_device::memory_space_config() const
++{
++	return space_config_vector{ std::make_pair(AS_PROGRAM, &m_program_config) };
++}
++
++std::unique_ptr<util::disasm_interface> bridge68k_device::create_disassembler()
++{
++	return std::make_unique<bridge68k_disassembler>();
++}
++
++void bridge68k_device::device_start()
++{
++	space(AS_PROGRAM).specific(m_program);
++
++	const char *env = std::getenv("PSMAC_BRIDGE_SOCK");
++	if (const char *fifo = std::getenv("PSMAC_BRIDGE_FIFO"))
++	{
++		std::string f(fifo);
++		auto colon = f.find(':');
++		if (colon != std::string::npos)
++		{
++			m_fifo_mode = true;
++			m_fifo_req = f.substr(0, colon);
++			m_fifo_rep = f.substr(colon + 1);
++		}
++	}
++	m_sock_path = (env && *env) ? env : DEFAULT_SOCK_PATH;
++
++	state_add(BRIDGE68K_PC, "PC", m_pc).formatstr("%08X");
++	state_add(STATE_GENPC, "GENPC", m_pc).noshow();
++	state_add(STATE_GENPCBASE, "CURPC", m_pc).noshow();
++	state_add(BRIDGE68K_IPL, "IPL", m_state_ipl).callexport().formatstr("%1u");
++	state_add(BRIDGE68K_FLAGS, "FLAGS", m_state_flags).callexport().formatstr("%12s");
++	state_add(STATE_GENFLAGS, "GENFLAGS", m_state_flags).callexport().formatstr("%12s").noshow();
++
++	// the socket is created lazily on the first execute_run() so that
++	// -validate / -listxml and the like never touch the filesystem
++}
++
++void bridge68k_device::device_reset()
++{
++	m_pc = 0;
++	m_irq_mask = 0;
++	m_berr_hit = false;
++	m_idle_credit = 0;
++	m_last_ticks = 0;
++	// note: a pending reply / partially received request survives a reset so
++	// that the CPU side never waits forever
++
++	// tell the CPU side that the motherboard wants a reset (cleared by OP_RESET_ACK)
++	m_reset_req = true;
++}
++
++void bridge68k_device::device_stop()
++{
++	osd_printf_verbose("bridge68k: %llu requests over %llu connection(s); %llu execute_run calls, %llu polls (%llu with timeout), %llu cycles, %.3f s inside execute_run\n",
++			(unsigned long long)m_stat_requests, (unsigned long long)m_stat_connects, (unsigned long long)m_stat_runs,
++			(unsigned long long)m_stat_polls, (unsigned long long)m_stat_sleeps, (unsigned long long)m_stat_cycles,
++			double(m_stat_inside) / double(osd_ticks_per_second()));
++	close_client();
++	close_listener();
++}
++
++void bridge68k_device::state_export(const device_state_entry &entry)
++{
++	switch (entry.index())
++	{
++	case BRIDGE68K_IPL:
++		m_state_ipl = ipl();
++		break;
++
++	case BRIDGE68K_FLAGS:
++	case STATE_GENFLAGS:
++		m_state_flags = (m_reset_req ? 1 : 0) | (m_berr_hit ? 2 : 0) | (m_reply_pending ? 4 : 0) | ((m_client_fd >= 0) ? 8 : 0);
++		break;
++	}
++}
++
++void bridge68k_device::state_string_export(const device_state_entry &entry, std::string &str) const
++{
++	switch (entry.index())
++	{
++	case BRIDGE68K_IPL:
++		str = string_format("%u", ipl());
++		break;
++
++	case BRIDGE68K_FLAGS:
++	case STATE_GENFLAGS:
++		str = string_format("%s%s%s%s",
++				m_reset_req ? "R" : ".",
++				m_berr_hit ? "B" : ".",
++				m_reply_pending ? "P" : ".",
++				(m_client_fd >= 0) ? "C" : ".");
++		break;
++	}
++}
++
++u8 bridge68k_device::ipl() const noexcept
++{
++	for (int level = 7; level >= 1; level--)
++		if (BIT(m_irq_mask, level))
++			return level;
++	return 0;
++}
++
++
++//**************************************************************************
++//  INPUT LINES
++//**************************************************************************
++
++void bridge68k_device::execute_set_input(int inputnum, int state)
++{
++	if (inputnum >= IRQ_1 && inputnum <= IRQ_7)
++	{
++		if (state != CLEAR_LINE)
++			m_irq_mask |= 1 << inputnum;
++		else
++			m_irq_mask &= ~(1 << inputnum);
++	}
++	else if (inputnum == LINE_BUSERROR)
++	{
++		// pulsed (ASSERT then CLEAR) by the motherboard during the access
++		if (state != CLEAR_LINE)
++			m_berr_hit = true;
++	}
++	// INPUT_LINE_HALT / INPUT_LINE_RESET never get here: handled by device_execute_interface
++}
++
++
++//**************************************************************************
++//  SOCKET HANDLING
++//**************************************************************************
++
++void bridge68k_device::open_listener()
++{
++	if (m_fifo_mode)
++	{
++		if (m_client_fd >= 0)
++			return;
++		::mkfifo(m_fifo_req.c_str(), 0666);
++		::mkfifo(m_fifo_rep.c_str(), 0666);
++		if (m_reply_fd < 0)
++			m_reply_fd = ::open(m_fifo_rep.c_str(), O_RDWR | O_CLOEXEC);   // O_RDWR: never blocks, keeps the FIFO alive
++		int fd = ::open(m_fifo_req.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
++		if (fd < 0 || m_reply_fd < 0)
++		{
++			logerror("bridge68k: FIFO open failed: %s\n", std::strerror(errno));
++			return;
++		}
++		m_client_fd = fd;
++		m_rxlen = 0;
++		m_stat_connects++;
++		osd_printf_info("bridge68k: FIFO transport %s (requests) / %s (replies)\n", m_fifo_req, m_fifo_rep);
++		return;
++	}
++	if (m_listen_fd >= 0)
++		return;
++
++	int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
++	if (fd < 0)
++	{
++		logerror("bridge68k: socket(): %s\n", std::strerror(errno));
++		return;
++	}
++
++	sockaddr_un addr;
++	std::memset(&addr, 0, sizeof(addr));
++	addr.sun_family = AF_UNIX;
++	if (m_sock_path.length() >= sizeof(addr.sun_path))
++	{
++		logerror("bridge68k: socket path too long: %s\n", m_sock_path);
++		::close(fd);
++		return;
++	}
++	std::strncpy(addr.sun_path, m_sock_path.c_str(), sizeof(addr.sun_path) - 1);
++
++	// remove a stale socket file (we are the only server)
++	struct stat st;
++	if (::lstat(m_sock_path.c_str(), &st) == 0 && S_ISSOCK(st.st_mode))
++		::unlink(m_sock_path.c_str());
++
++	if (::bind(fd, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)) < 0)
++	{
++		logerror("bridge68k: bind(%s): %s\n", m_sock_path, std::strerror(errno));
++		::close(fd);
++		return;
++	}
++	if (::listen(fd, 4) < 0)
++	{
++		logerror("bridge68k: listen(%s): %s\n", m_sock_path, std::strerror(errno));
++		::close(fd);
++		::unlink(m_sock_path.c_str());
++		return;
++	}
++	::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
++
++	m_listen_fd = fd;
++	osd_printf_info("bridge68k: listening on %s\n", m_sock_path);
++}
++
++void bridge68k_device::close_listener()
++{
++	if (m_listen_fd >= 0)
++	{
++		::close(m_listen_fd);
++		m_listen_fd = -1;
++		::unlink(m_sock_path.c_str());
++	}
++}
++
++void bridge68k_device::close_client()
++{
++	if (m_client_fd >= 0)
++	{
++		::close(m_client_fd);
++		m_client_fd = -1;
++	}
++	m_rxlen = 0;
++	m_reply_pending = false;
++}
++
++void bridge68k_device::send_reply(u8 status, u32 data)
++{
++	if (m_client_fd < 0)
++		return;
++
++	u8 buf[REPLY_SIZE];
++	buf[0] = status;
++	buf[1] = ipl();
++	buf[2] = reply_flags();
++	buf[3] = 0;
++	put_u32le(&buf[4], data);
++
++	size_t done = 0;
++	while (done < REPLY_SIZE)
++	{
++		ssize_t n = m_fifo_mode ? ::write(m_reply_fd, buf + done, REPLY_SIZE - done)
++		                        : ::send(m_client_fd, buf + done, REPLY_SIZE - done, MSG_NOSIGNAL);
++		if (n < 0)
++		{
++			if (errno == EINTR)
++				continue;
++			if (errno == EAGAIN || errno == EWOULDBLOCK)
++			{
++				// the peer is not draining its socket; wait for it (bounded)
++				pollfd pfd = { m_client_fd, POLLOUT, 0 };
++				if (::poll(&pfd, 1, 1000) > 0)
++					continue;
++			}
++			LOGSOCK("bridge68k: send(): %s, dropping client\n", std::strerror(errno));
++			close_client();
++			return;
++		}
++		done += n;
++	}
++}
++
++u8 bridge68k_device::reply_flags() const
++{
++	u8 flags = 0;
++	if (m_reset_req)
++		flags |= REPLY_FLAG_RESET;
++	if (suspended(SUSPEND_REASON_HALT))
++		flags |= REPLY_FLAG_HALT;
++	return flags;
++}
++
++// Wait up to timeout_ms for socket activity, accept connections and buffer
++// incoming request bytes.  Never blocks longer than the timeout.
++void bridge68k_device::service_sockets(int timeout_ms)
++{
++	if (m_fifo_mode ? (m_client_fd < 0) : (m_listen_fd < 0))
++	{
++		open_listener();
++		if (m_fifo_mode ? (m_client_fd < 0) : (m_listen_fd < 0))
++		{
++			// could not create the socket: don't spin
++			if (timeout_ms > 0)
++				osd_sleep(osd_ticks_per_second() * timeout_ms / 1000);
++			return;
++		}
++	}
++
++	pollfd pfds[2];
++	int nfds = 0;
++	if (m_fifo_mode)
++	{
++		// FIFO: index 0 is the request descriptor; emulate the socket layout below
++		pfds[nfds++] = { -1, 0, 0 };
++		pfds[nfds++] = { m_client_fd, POLLIN, 0 };
++	}
++	else
++	{
++		pfds[nfds++] = { m_listen_fd, POLLIN, 0 };
++		if (m_client_fd >= 0)
++			pfds[nfds++] = { m_client_fd, POLLIN, 0 };
++	}
++
++	// if a complete request is already buffered there is nothing to wait for
++	if (m_rxlen >= REQ_SIZE)
++		timeout_ms = 0;
++
++	m_stat_polls++;
++	if (timeout_ms > 0)
++		m_stat_sleeps++;
++	int rc = ::poll(pfds, nfds, timeout_ms);
++	if (rc <= 0)
++		return;
++
++	if (pfds[0].revents & POLLIN)
++	{
++		int fd = ::accept4(m_listen_fd, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
++		if (fd >= 0)
++		{
++			if (m_client_fd >= 0)
++			{
++				// one client at a time: the newest connection wins
++				LOGSOCK("bridge68k: new client replaces the current one\n");
++				close_client();
++			}
++			m_client_fd = fd;
++			m_rxlen = 0;
++			m_stat_connects++;
++			osd_printf_info("bridge68k: client connected\n");
++			return; // poll again next time with the new descriptor
++		}
++	}
++
++	if (nfds > 1 && (pfds[1].revents & (POLLIN | POLLHUP | POLLERR)))
++	{
++		ssize_t n = m_fifo_mode ? ::read(m_client_fd, m_rxbuf + m_rxlen, REQ_SIZE - m_rxlen)
++		                        : ::recv(m_client_fd, m_rxbuf + m_rxlen, REQ_SIZE - m_rxlen, 0);
++		if (n > 0)
++			m_rxlen += n;
++		else if (n == 0 && m_fifo_mode)
++		{
++			// writer went away (QEMU restarted): reopen lazily
++			osd_printf_info("bridge68k: FIFO writer closed, waiting for a new one\n");
++			close_client();
++		}
++		else if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
++		{
++			osd_printf_info("bridge68k: client disconnected%s%s\n", (n < 0) ? ": " : "", (n < 0) ? std::strerror(errno) : "");
++			close_client();
++		}
++	}
++}
++
++// Accesses whose side effects (HALT hold, BERR pulse) must reach the scheduler
++// before the reply goes out: the IIci SCSI register and pseudo-DMA windows
++// (0x50F06000, 0x50F10000, 0x50F12000; A20-A23 are not decoded in I/O space).
++bool bridge68k_device::access_needs_sync(u32 addr) const
++{
++	if ((addr & 0xff000000) != 0x50000000)
++		return false;
++	const u32 off = addr & 0x000fffff;
++	return (off >= 0x06000 && off < 0x08000) || (off >= 0x10000 && off < 0x14000);
++}
++
++// Process one buffered request if complete.  Returns true if a bus access
++// was performed (the caller must then return from execute_run() so the
++// scheduler can deliver the input-line events the access caused).
++bool bridge68k_device::take_request()
++{
++	if (m_client_fd < 0 || m_rxlen < REQ_SIZE)
++		return false;
++
++	const u8 op = m_rxbuf[0];
++	const u8 size = m_rxbuf[1];
++	const u8 flags = m_rxbuf[2];
++	const u32 addr = get_u32le(&m_rxbuf[4]);
++	const u32 data = get_u32le(&m_rxbuf[8]);
++	m_rxlen = 0;
++	m_stat_requests++;
++
++	switch (op)
++	{
++	case OP_READ:
++	case OP_WRITE:
++	{
++		if (size != 1 && size != 2 && size != 4)
++		{
++			logerror("bridge68k: bad access size %u (op %u addr %08X)\n", size, op, addr);
++			send_reply(STATUS_BADREQ, 0);
++			return false;
++		}
++
++		m_pc = addr;
++		m_berr_hit = false;
++		u32 result = 0;
++
++		if (op == OP_READ)
++		{
++			switch (size)
++			{
++			case 1: result = m_program.read_byte(addr); break;
++			case 2: result = (addr & 1) ? m_program.read_word_unaligned(addr) : m_program.read_word(addr); break;
++			case 4: result = (addr & 3) ? m_program.read_dword_unaligned(addr) : m_program.read_dword(addr); break;
++			}
++			LOGPROTO("bridge68k: read%u  %08X -> %0*X\n", size * 8, addr, size * 2, result);
++		}
++		else
++		{
++			switch (size)
++			{
++			case 1: m_program.write_byte(addr, data & 0xff); break;
++			case 2: if (addr & 1) m_program.write_word_unaligned(addr, data & 0xffff); else m_program.write_word(addr, data & 0xffff); break;
++			case 4: if (addr & 3) m_program.write_dword_unaligned(addr, data); else m_program.write_dword(addr, data); break;
++			}
++			LOGPROTO("bridge68k: write%u %08X <- %0*X%s\n", size * 8, addr, size * 2, data, (flags & REQ_FLAG_POSTED) ? " (posted)" : "");
++		}
++
++		m_icount -= ACCESS_CYCLES;
++
++		if (op == OP_WRITE && (flags & REQ_FLAG_POSTED))
++		{
++			// posted write: no reply; a bus error is lost (as on the real PiStorm)
++			m_reply_pending = false;
++		}
++		else if (access_needs_sync(addr))
++		{
++			// SCSI space: the access may have asserted HALT (pseudo-DMA FIFO fill, the
++			// DTACK wait) or pulsed BERR (timeout), both of which the scheduler only
++			// delivers after execute_run() returns. Hold the reply until the next slice
++			// (or, if HALT suspends this device, until the hold ends) so the client
++			// neither reads the FIFO early nor misses the bus error.
++			m_reply_pending = true;
++			m_reply_status = STATUS_OK;
++			m_reply_data = result;
++		}
++		else
++		{
++			// Reply immediately: waiting for the next scheduler slice cost ~1 ms per
++			// access (measured from Emu68/QEMU) when the device was idle-polling.
++			m_reply_pending = false;
++			send_reply(m_berr_hit ? STATUS_BUSERROR : STATUS_OK, result);
++			m_berr_hit = false;
++		}
++		return true;
++	}
++
++	case OP_POLL:
++		send_reply(STATUS_OK, 0);
++		return false;
++
++	case OP_RESET_ACK:
++		m_reset_req = false;
++		send_reply(STATUS_OK, 0);
++		return false;
++
++	default:
++		logerror("bridge68k: unknown op %u (size %u flags %02X addr %08X data %08X)\n", op, size, flags, addr, data);
++		send_reply(STATUS_BADREQ, 0);
++		return false;
++	}
++}
++
++
++//**************************************************************************
++//  EXECUTION
++//**************************************************************************
++
++// Convert elapsed wall-clock time into cycle credit, capped at 10 ms per step.
++void bridge68k_device::account_idle_time()
++{
++	const osd_ticks_t now = osd_ticks();
++	const osd_ticks_t tps = osd_ticks_per_second();
++	const u64 cap_cycles = u64(clock()) / 100; // 10 ms worth of cycles
++
++	if (m_last_ticks == 0 || now < m_last_ticks)
++	{
++		m_last_ticks = now;
++		return;
++	}
++
++	osd_ticks_t delta = now - m_last_ticks;
++	const osd_ticks_t cap_ticks = tps / 100;
++	if (delta > cap_ticks)
++	{
++		// we fell behind (e.g. the CPU was held, or the host was busy): drop the excess
++		delta = cap_ticks;
++		m_last_ticks = now - cap_ticks;
++	}
++
++	const u64 cycles = (u64(delta) * clock()) / tps;
++	if (cycles != 0)
++	{
++		// only consume the ticks that correspond to whole cycles, keep the remainder
++		m_last_ticks += (cycles * tps) / clock();
++		m_idle_credit = std::min<u64>(m_idle_credit + cycles, cap_cycles);
++	}
++}
++
++void bridge68k_device::execute_run()
++{
++	const osd_ticks_t t_in = osd_ticks();
++	const int icount_in = m_icount;
++	m_stat_runs++;
++	// complete the access performed in the previous call: by now the scheduler
++	// has delivered any bus-error pulse (and HALT hold) that it caused
++	if (m_reply_pending)
++	{
++		m_reply_pending = false;
++		send_reply(m_berr_hit ? STATUS_BUSERROR : m_reply_status, m_reply_data);
++		m_berr_hit = false;
++	}
++
++	while (m_icount > 0)
++	{
++		debugger_instruction_hook(m_pc);
++
++		account_idle_time();
++
++		// Sleep in poll() unless emulated time lags wall-clock time by at least
++		// one poll period.  (Skipping the sleep whenever credit > 0 would busy-wait:
++		// wall-clock time keeps accruing credit while we spin.)  poll() returns
++		// early when a request arrives, so request latency is not affected.
++		const u64 cycles_per_poll = u64(clock()) * POLL_TIMEOUT_MS / 1000;
++		const int timeout_ms = (m_idle_credit >= cycles_per_poll) ? 0 : POLL_TIMEOUT_MS;
++		service_sockets(timeout_ms);
++
++		const bool served = take_request();
++
++		// A held reply means the access needs the scheduler to run (HALT/BERR
++		// delivery): give the slice back now, keeping the unused cycles.
++		if (m_reply_pending)
++			break;
++
++		// Emulated time must follow wall-clock time even while requests stream in,
++		// otherwise SCC transmits, VIA timers and interrupts never happen for a busy
++		// CPU: consume the accrued credit on every iteration, then keep serving.
++		if (m_idle_credit > 0)
++		{
++			const s32 take = s32(std::min<u64>(m_idle_credit, u64(m_icount)));
++			m_icount -= take;
++			m_idle_credit -= take;
++		}
++		if (served)
++			continue;
++	}
++	m_stat_cycles += icount_in - m_icount;
++	m_stat_inside += osd_ticks() - t_in;
++}
+diff --git a/src/mame/apple/bridge68k.h b/src/mame/apple/bridge68k.h
+new file mode 100644
+index 00000000..7e4f6d7b
+--- /dev/null
++++ b/src/mame/apple/bridge68k.h
+@@ -0,0 +1,143 @@
++// license:BSD-3-Clause
++// copyright-holders:psmac project
++/****************************************************************************
++
++    bridge68k.h
++
++    "External CPU" placeholder for the psmac software testbed.
++
++    The device occupies the 68030 socket of a MAME Macintosh driver but does
++    not execute any code: an external emulator (Emu68 under QEMU) owns CPU,
++    RAM and ROM and forwards the bus cycles that would reach the motherboard
++    over a UNIX-domain stream socket.  bridge68k_device listens on that
++    socket and performs the requested accesses on its big-endian program
++    address space, exactly as the 68030 would have done (byte lanes, mirrors,
++    side effects).  See docs/05-bridge-protocol.md for the wire protocol.
++
++****************************************************************************/
++
++#ifndef MAME_APPLE_BRIDGE68K_H
++#define MAME_APPLE_BRIDGE68K_H
++
++#pragma once
++
++class bridge68k_device : public cpu_device
++{
++public:
++	// input line numbers, compatible with cpu/m68000 (m68kcommon.h / m68kmusashi.h)
++	static constexpr int IRQ_1 = 1;
++	static constexpr int IRQ_2 = 2;
++	static constexpr int IRQ_3 = 3;
++	static constexpr int IRQ_4 = 4;
++	static constexpr int IRQ_5 = 5;
++	static constexpr int IRQ_6 = 6;
++	static constexpr int IRQ_7 = 7;
++	static constexpr int LINE_BUSERROR = 16;
++
++	bridge68k_device(const machine_config &mconfig, const char *tag, device_t *owner, u32 clock);
++	virtual ~bridge68k_device();
++
++	// read-only status for the driver / debugger
++	u8 ipl() const noexcept;
++	bool client_connected() const noexcept { return m_client_fd >= 0; }
++
++protected:
++	enum
++	{
++		BRIDGE68K_PC = 1,
++		BRIDGE68K_IPL,
++		BRIDGE68K_FLAGS
++	};
++
++	// device-level overrides
++	virtual void device_start() override;
++	virtual void device_reset() override;
++	virtual void device_stop() override;
++
++	// device_execute_interface overrides
++	virtual u32 execute_min_cycles() const noexcept override { return 1; }
++	virtual u32 execute_max_cycles() const noexcept override { return 4; }
++	virtual u32 execute_input_lines() const noexcept override { return 8; }
++	virtual bool execute_input_edge_triggered(int inputnum) const noexcept override { return inputnum == LINE_BUSERROR || inputnum == IRQ_7; }
++	virtual void execute_run() override;
++	virtual void execute_set_input(int inputnum, int state) override;
++
++	// device_memory_interface overrides
++	virtual space_config_vector memory_space_config() const override;
++
++	// device_state_interface overrides
++	virtual void state_export(const device_state_entry &entry) override;
++	virtual void state_string_export(const device_state_entry &entry, std::string &str) const override;
++
++	// device_disasm_interface overrides
++	virtual std::unique_ptr<util::disasm_interface> create_disassembler() override;
++
++private:
++	// wire protocol (docs/05-bridge-protocol.md)
++	static constexpr size_t REQ_SIZE = 12;
++	static constexpr size_t REPLY_SIZE = 8;
++	enum : u8 { OP_READ = 1, OP_WRITE = 2, OP_POLL = 3, OP_RESET_ACK = 4 };
++	enum : u8 { REQ_FLAG_POSTED = 0x01 };
++	enum : u8 { STATUS_OK = 0, STATUS_BUSERROR = 1, STATUS_BADREQ = 2 };
++	enum : u8 { REPLY_FLAG_RESET = 0x01, REPLY_FLAG_HALT = 0x02 };
++
++	static constexpr int ACCESS_CYCLES = 4;     // cycles charged per bus access
++	static constexpr int POLL_TIMEOUT_MS = 1;   // socket poll timeout when idle
++
++	void open_listener();
++	void close_listener();
++	void close_client();
++	void service_sockets(int timeout_ms);
++	bool take_request();
++	void send_reply(u8 status, u32 data);
++	void account_idle_time();
++	u8 reply_flags() const;
++
++	const address_space_config m_program_config;
++	memory_access<32, 2, 0, ENDIANNESS_BIG>::specific m_program;
++
++	int m_icount;
++
++	// debugger-visible state
++	u32 m_pc;
++	u8  m_state_ipl;
++	u8  m_state_flags;
++
++	// input lines
++	u8   m_irq_mask;        // bits 1..7: asserted IRQ lines
++	bool access_needs_sync(u32 addr) const;
++	bool m_berr_hit;        // M68K_LINE_BUSERROR pulsed since the current access started
++	bool m_reset_req;       // device_reset() happened, not yet acknowledged by RESET_ACK
++
++	// socket state
++	std::string m_sock_path;
++	int m_listen_fd;
++	int m_client_fd;
++	// FIFO transport (PSMAC_BRIDGE_FIFO=req:rep): m_client_fd reads requests, m_reply_fd writes replies
++	bool m_fifo_mode = false;
++	int m_reply_fd = -1;
++	std::string m_fifo_req, m_fifo_rep;
++	u8 m_rxbuf[REQ_SIZE];
++	size_t m_rxlen;
++
++	// access in flight: reply is sent on the next execute_run() so that the
++	// scheduler has processed the (synchronised) input-line events the access caused
++	bool m_reply_pending;
++	u32  m_reply_data;
++	u8   m_reply_status;
++
++	// wall-clock tracking for idle cycle consumption
++	osd_ticks_t m_last_ticks;
++	u64 m_idle_credit;
++	u64 m_stat_requests;
++	u64 m_stat_connects;
++	u64 m_stat_runs;
++	u64 m_stat_polls;
++	u64 m_stat_sleeps;
++	u64 m_stat_cycles;
++	osd_ticks_t m_stat_inside;
++};
++
++DECLARE_DEVICE_TYPE(BRIDGE68K, bridge68k_device)
++
++#endif // MAME_APPLE_BRIDGE68K_H
+diff --git a/src/mame/apple/maciici_ps.cpp b/src/mame/apple/maciici_ps.cpp
+new file mode 100644
+index 00000000..0239e8d4
+--- /dev/null
++++ b/src/mame/apple/maciici_ps.cpp
+@@ -0,0 +1,595 @@
++// license:BSD-3-Clause
++// copyright-holders:R. Belmont
++/****************************************************************************
++
++    maciici_ps.cpp
++    Mac IIci ("Cobra II, Aurora, Aurora25/16, Pacific, Atlantic") with the
++    68030 replaced by the psmac bridge CPU (bridge68k_device).
++
++    Derived from maciici.cpp by R. Belmont.  All peripherals are identical to
++    the stock maciici driver; only the CPU differs: bus accesses are served
++    from an external emulator over a UNIX-domain socket (see bridge68k.h and
++    docs/05-bridge-protocol.md).  The ROM region is kept (same files/CRCs as
++    maciici, of which this machine is a clone) even though the bridge CPU
++    never fetches instructions from it.
++
++    Deviations from maciici:
++    - no mac68k disassembler override (m68000-specific);
++    - the ROM overlay at address 0 is not installed: in the bridge topology
++      the CPU side owns ROM and RAM, so writes forwarded to 0x00000000-...
++      must always land in the frame-buffer RAM (and the CPU side never reads
++      0x40000000 through the bridge to drop the overlay);
++    - no IIsi variant.
++
++****************************************************************************/
++
++#include "emu.h"
++
++#include "macadb.h"
++#include "macrtc.h"
++#include "macscsi.h"
++#include "rbv.h"
++#include "bridge68k.h"
++
++#include "bus/nscsi/cd.h"
++#include "bus/nscsi/devices.h"
++#include "bus/nubus/nubus.h"
++#include "bus/nubus/cards.h"
++#include "bus/rs232/rs232.h"
++#include "machine/applefdintf.h"
++#include "machine/ram.h"
++#include "machine/swim1.h"
++#include "machine/timer.h"
++#include "machine/6522via.h"
++#include "machine/ncr5380.h"
++#include "machine/nscsi_bus.h"
++#include "machine/z80scc.h"
++#include "sound/asc.h"
++
++#include "softlist_dev.h"
++#include "speaker.h"
++
++namespace {
++
++static constexpr u32 C7M = 7833600;
++static constexpr u32 C15M = (C7M * 2);
++
++class maciici_ps_state : public driver_device
++{
++public:
++	maciici_ps_state(const machine_config &mconfig, device_type type, const char *tag) :
++		driver_device(mconfig, type, tag),
++		m_maincpu(*this, "maincpu"),
++		m_via1(*this, "via1"),
++		m_rbv(*this, "rbv"),
++		m_macadb(*this, "macadb"),
++		m_ram(*this, RAM_TAG),
++		m_asc(*this, "asc"),
++		m_scsibus1(*this, "scsi"),
++		m_ncr5380(*this, "scsi:7:ncr5380"),
++		m_scsihelp(*this, "scsihelp"),
++		m_fdc(*this, "fdc"),
++		m_floppy(*this, "fdc:%d", 0U),
++		m_scc(*this, "scc"),
++		m_rtc(*this, "rtc")
++	{
++	}
++
++	void maciici_ps(machine_config &config);
++
++protected:
++	virtual void machine_start() override;
++	virtual void machine_reset() override;
++
++private:
++	required_device<bridge68k_device> m_maincpu;
++	required_device<via6522_device> m_via1;
++	required_device<rbv_device> m_rbv;
++	required_device<macadb_device> m_macadb;
++	required_device<ram_device> m_ram;
++	required_device<asc_device> m_asc;
++	required_device<nscsi_bus_device> m_scsibus1;
++	required_device<ncr5380_device> m_ncr5380;
++	required_device<mac_scsi_helper_device> m_scsihelp;
++	required_device<applefdintf_device> m_fdc;
++	required_device_array<floppy_connector, 2> m_floppy;
++	required_device<z80scc_device> m_scc;
++	required_device<rtc3430042_device> m_rtc;
++
++	void set_via2_interrupt(int value);
++	void field_interrupts();
++
++	uint32_t m_overlay = 0;
++	u32 *m_rom_ptr = nullptr;
++	u32 m_rom_size = 0;
++	int m_scc_interrupt = false, m_via_interrupt = false, m_via2_interrupt = false, m_last_taken_interrupt = false;
++	int m_adb_irq_pending = 0;
++
++	uint16_t via_r(offs_t offset);
++	void via_w(offs_t offset, uint16_t data, uint16_t mem_mask);
++	uint8_t via_in_a();
++	uint8_t via_in_b();
++	void via_out_a(uint8_t data);
++	void via_out_b(uint8_t data);
++	void via_sync();
++	void via_irq(int state);
++	void via_out_cb2(int state);
++	void adb_irq_w(int state) { m_adb_irq_pending = state; }
++	void scc_irq_w(int state);
++
++	uint32_t rom_switch_r(offs_t offset);
++
++	void maciici_map(address_map &map);
++
++	u16 scc_r(offs_t offset)
++	{
++		u16 result = m_scc->dc_ab_r(offset);
++		return (result << 8) | result;
++	}
++	void scc_w(offs_t offset, u16 data)
++	{
++		m_scc->dc_ab_w(offset, data >> 8);
++	}
++
++	u16 scsi_r(offs_t offset, u16 mem_mask = ~0);
++	void scsi_w(offs_t offset, u16 data, u16 mem_mask = ~0);
++	u32 scsi_drq_r(offs_t offset, u32 mem_mask = ~0);
++	void scsi_drq_w(offs_t offset, u32 data, u32 mem_mask = ~0);
++
++	void scsi_berr_w(u8 data)
++	{
++		m_maincpu->pulse_input_line(bridge68k_device::LINE_BUSERROR, attotime::zero);
++	}
++
++	floppy_image_device *m_cur_floppy = nullptr;
++	int m_hdsel;
++	void phases_w(uint8_t phases);
++	void devsel_w(uint8_t devsel);
++
++	uint16_t iwm_r(offs_t offset, u16 mem_mask)
++	{
++		if (!machine().side_effects_disabled())
++		{
++			m_maincpu->adjust_icount(-5);
++		}
++
++		u16 result = m_fdc->read((offset >> 8) & 0xf);
++		return result << 8;
++	}
++
++	void iwm_w(offs_t offset, u16 data, u16 mem_mask)
++	{
++		if (ACCESSING_BITS_0_7)
++			m_fdc->write((offset >> 8) & 0xf, data & 0xff);
++		else
++			m_fdc->write((offset >> 8) & 0xf, data >> 8);
++	}
++
++	void write_6015(int state)
++	{
++		if (state)
++		{
++			m_macadb->adb_vblank();
++		}
++	}
++};
++
++void maciici_ps_state::machine_start()
++{
++	m_rbv->set_ram_info((u32 *)m_ram->pointer(), m_ram->size());
++
++	m_rom_ptr = (u32 *)memregion("bootrom")->base();
++	m_rom_size = memregion("bootrom")->bytes();
++
++	m_last_taken_interrupt = -1;
++}
++
++void maciici_ps_state::machine_reset()
++{
++	// Bridge topology: the external CPU owns ROM and RAM, so the ROM overlay
++	// at 0 is never installed here.  Writes forwarded to the first 512 KiB
++	// (frame buffer) must always reach the RAM device the RBV displays from.
++	address_space &space = m_maincpu->space(AS_PROGRAM);
++	const u32 memory_end = m_ram->size() - 1;
++	space.install_ram(0x00000000, memory_end, 0, m_ram->pointer());
++	m_overlay = false;
++}
++
++uint32_t maciici_ps_state::rom_switch_r(offs_t offset)
++{
++	// disable the overlay
++	if (m_overlay)
++	{
++		address_space &space = m_maincpu->space(AS_PROGRAM);
++		const u32 memory_end = m_ram->size() - 1;
++		void *memory_data = m_ram->pointer();
++		offs_t memory_mirror = memory_end & ~memory_end;
++
++		space.install_ram(0x00000000, memory_end & ~memory_mirror, memory_mirror, memory_data);
++		m_overlay = false;
++	}
++
++	// printf("rom_switch_r: offset %08x ROM_size -1 = %08x, masked = %08x\n", offset, m_rom_size-1, offset & ((m_rom_size - 1)>>2));
++
++	return m_rom_ptr[offset & ((m_rom_size - 1) >> 2)];
++}
++
++void maciici_ps_state::field_interrupts()
++{
++	int take_interrupt = -1;
++
++	if (m_scc_interrupt)
++	{
++		take_interrupt = 4;
++	}
++	else if (m_via2_interrupt)
++	{
++		take_interrupt = 2;
++	}
++	else if (m_via_interrupt)
++	{
++		take_interrupt = 1;
++	}
++
++	if (m_last_taken_interrupt > -1)
++	{
++		m_maincpu->set_input_line(m_last_taken_interrupt, CLEAR_LINE);
++		m_last_taken_interrupt = -1;
++	}
++
++	if (take_interrupt > -1)
++	{
++		m_maincpu->set_input_line(take_interrupt, ASSERT_LINE);
++		m_last_taken_interrupt = take_interrupt;
++	}
++}
++
++void maciici_ps_state::via_irq(int state)
++{
++	m_via_interrupt = state;
++	field_interrupts();
++}
++
++void maciici_ps_state::scc_irq_w(int state)
++{
++	m_scc_interrupt = state;
++	field_interrupts();
++}
++
++void maciici_ps_state::set_via2_interrupt(int value)
++{
++	m_via2_interrupt = value;
++	field_interrupts();
++}
++
++void maciici_ps_state::via_sync()
++{
++	// The via runs at 783.36KHz while the main cpu runs at 15MHz or
++	// more, so we need to sync the access with the via clock.  Plus
++	// the whole access takes half a (via) cycle and ends when synced
++	// with the main cpu again.
++
++	// Get the main cpu time
++	u64 cycle = m_maincpu->total_cycles();
++
++	// Get the number of the cycle the via is in at that time
++	u64 via_cycle = cycle * m_via1->clock() / m_maincpu->clock();
++
++	// The access is going to start at via_cycle+1 and end at
++	// via_cycle+1.5, compute what that means in maincpu cycles (the
++	// +1 rounds up, since the clocks are too different to ever be
++	// synced).
++	u64 main_cycle = (via_cycle * 2 + 3) * m_maincpu->clock() / (2 * m_via1->clock()) + 1;
++
++	// Finally adjust the main cpu icount as needed.
++	m_maincpu->adjust_icount(-int(main_cycle - cycle));
++}
++
++uint16_t maciici_ps_state::via_r(offs_t offset)
++{
++	uint16_t data;
++
++	offset >>= 8;
++	offset &= 0x0f;
++
++	if (!machine().side_effects_disabled())
++		via_sync();
++
++	data = m_via1->read(offset);
++
++	return (data & 0xff) | (data << 8);
++}
++
++void maciici_ps_state::via_w(offs_t offset, uint16_t data, uint16_t mem_mask)
++{
++	offset >>= 8;
++	offset &= 0x0f;
++
++	via_sync();
++
++	if (ACCESSING_BITS_0_7)
++		m_via1->write(offset, data & 0xff);
++	if (ACCESSING_BITS_8_15)
++		m_via1->write(offset, (data >> 8) & 0xff);
++}
++
++uint8_t maciici_ps_state::via_in_a()
++{
++	return 0xc7; // IIci: PA6 | PA2 | PA1
++}
++
++uint8_t maciici_ps_state::via_in_b()
++{
++	u8 val = m_macadb->get_adb_state() << 4;
++
++	if (!m_adb_irq_pending)
++	{
++		val |= 0x08;
++	}
++
++	val |= m_rtc->data_r();
++
++	return val;
++}
++
++void maciici_ps_state::via_out_a(uint8_t data)
++{
++	int hdsel = BIT(data, 5);
++	if (hdsel != m_hdsel)
++	{
++		if (m_cur_floppy)
++		{
++			m_cur_floppy->ss_w(hdsel);
++		}
++	}
++	m_hdsel = hdsel;
++}
++
++void maciici_ps_state::via_out_b(uint8_t data)
++{
++	//  printf("%s VIA1 OUT B: %02x\n", machine().describe_context().c_str(), data);
++	m_macadb->mac_adb_newaction((data & 0x30) >> 4);
++
++	m_rtc->ce_w(BIT(data, 2));
++	m_rtc->data_w(BIT(data, 0));
++	m_rtc->clk_w(BIT(data, 1));
++}
++
++void maciici_ps_state::via_out_cb2(int state)
++{
++	m_macadb->adb_data_w(state);
++}
++
++/***************************************************************************
++    ADDRESS MAPS
++***************************************************************************/
++
++void maciici_ps_state::maciici_map(address_map &map)
++{
++	map(0x40000000, 0x4007ffff).r(FUNC(maciici_ps_state::rom_switch_r)).mirror(0x0ff80000);
++
++	map(0x50000000, 0x50001fff).rw(FUNC(maciici_ps_state::via_r), FUNC(maciici_ps_state::via_w)).mirror(0x00f00000);
++	map(0x50004000, 0x50005fff).rw(FUNC(maciici_ps_state::scc_r), FUNC(maciici_ps_state::scc_w)).mirror(0x00f00000);
++	map(0x50006000, 0x50007fff).rw(FUNC(maciici_ps_state::scsi_drq_r), FUNC(maciici_ps_state::scsi_drq_w)).mirror(0x00f00000);
++	map(0x50010000, 0x50011fff).rw(FUNC(maciici_ps_state::scsi_r), FUNC(maciici_ps_state::scsi_w)).mirror(0x00f00000);
++	map(0x50012000, 0x50013fff).rw(FUNC(maciici_ps_state::scsi_drq_r), FUNC(maciici_ps_state::scsi_drq_w)).mirror(0x00f00000);
++	map(0x50014000, 0x50015fff).rw(m_asc, FUNC(asc_device::read), FUNC(asc_device::write)).mirror(0x00f00000);
++	map(0x50016000, 0x50017fff).rw(FUNC(maciici_ps_state::iwm_r), FUNC(maciici_ps_state::iwm_w)).mirror(0x00f00000);
++	map(0x50024000, 0x50027fff).m(m_rbv, FUNC(rbv_device::map)).mirror(0x00f00000);
++	map(0x50040000, 0x50041fff).rw(FUNC(maciici_ps_state::via_r), FUNC(maciici_ps_state::via_w)).mirror(0x00f00000);
++}
++
++u16 maciici_ps_state::scsi_r(offs_t offset, u16 mem_mask)
++{
++	const int reg = (offset >> 3) & 0xf;
++	const bool pseudo_dma = (reg == 6) && (offset == 0x130);
++
++	return m_scsihelp->read_wrapper(pseudo_dma, reg) << 8;
++}
++
++void maciici_ps_state::scsi_w(offs_t offset, u16 data, u16 mem_mask)
++{
++	const int reg = (offset >> 3) & 0xf;
++	const bool pseudo_dma = (reg == 0) && (offset == 0x100);
++
++	m_scsihelp->write_wrapper(pseudo_dma, reg, data >> 8);
++}
++
++u32 maciici_ps_state::scsi_drq_r(offs_t offset, u32 mem_mask)
++{
++	switch (mem_mask)
++	{
++	case 0xff000000:
++		return m_scsihelp->read_wrapper(true, 6) << 24;
++
++	case 0xffff0000:
++		return (m_scsihelp->read_wrapper(true, 6) << 24) | (m_scsihelp->read_wrapper(true, 6) << 16);
++
++	case 0xffffffff:
++		return (m_scsihelp->read_wrapper(true, 6) << 24) | (m_scsihelp->read_wrapper(true, 6) << 16) | (m_scsihelp->read_wrapper(true, 6) << 8) | m_scsihelp->read_wrapper(true, 6);
++
++	default:
++		logerror("scsi_drq_r: unknown mem_mask %08x\n", mem_mask);
++	}
++
++	return 0;
++}
++
++void maciici_ps_state::scsi_drq_w(offs_t offset, u32 data, u32 mem_mask)
++{
++	switch (mem_mask)
++	{
++	case 0xff000000:
++		m_scsihelp->write_wrapper(true, 0, data >> 24);
++		break;
++
++	case 0xffff0000:
++		m_scsihelp->write_wrapper(true, 0, data >> 24);
++		m_scsihelp->write_wrapper(true, 0, data >> 16);
++		break;
++
++	case 0xffffffff:
++		m_scsihelp->write_wrapper(true, 0, data >> 24);
++		m_scsihelp->write_wrapper(true, 0, data >> 16);
++		m_scsihelp->write_wrapper(true, 0, data >> 8);
++		m_scsihelp->write_wrapper(true, 0, data & 0xff);
++		break;
++
++	default:
++		logerror("scsi_drq_w: unknown mem_mask %08x\n", mem_mask);
++		break;
++	}
++}
++
++void maciici_ps_state::phases_w(uint8_t phases)
++{
++	if (m_cur_floppy)
++		m_cur_floppy->seek_phase_w(phases);
++}
++
++void maciici_ps_state::devsel_w(uint8_t devsel)
++{
++	if (devsel == 1)
++		m_cur_floppy = m_floppy[0]->get_device();
++	else if (devsel == 2)
++		m_cur_floppy = m_floppy[1]->get_device();
++	else
++		m_cur_floppy = nullptr;
++
++	m_fdc->set_floppy(m_cur_floppy);
++	if (m_cur_floppy)
++		m_cur_floppy->ss_w(m_hdsel);
++}
++
++static INPUT_PORTS_START(maciici_ps)
++INPUT_PORTS_END
++
++/***************************************************************************
++    MACHINE DRIVERS
++***************************************************************************/
++void maciici_ps_state::maciici_ps(machine_config &config)
++{
++	BRIDGE68K(config, m_maincpu, 25000000);
++	m_maincpu->set_addrmap(AS_PROGRAM, &maciici_ps_state::maciici_map);
++
++	RTC3430042(config, m_rtc, XTAL(32'768));
++	m_rtc->cko_cb().set(m_via1, FUNC(via6522_device::write_ca2));
++
++	SWIM1(config, m_fdc, C15M);
++	m_fdc->devsel_cb().set(FUNC(maciici_ps_state::devsel_w));
++	m_fdc->phases_cb().set(FUNC(maciici_ps_state::phases_w));
++
++	applefdintf_device::add_35_hd(config, m_floppy[0]);
++	applefdintf_device::add_35_nc(config, m_floppy[1]);
++
++	SOFTWARE_LIST(config, "flop35hd_list").set_original("mac_hdflop");
++
++	SCC85C30(config, m_scc, C7M);
++	m_scc->configure_channels(3'686'400, 3'686'400, 3'686'400, 3'686'400);
++	m_scc->out_int_callback().set(FUNC(maciici_ps_state::scc_irq_w));
++	m_scc->out_txda_callback().set("printer", FUNC(rs232_port_device::write_txd));
++	m_scc->out_txdb_callback().set("modem", FUNC(rs232_port_device::write_txd));
++
++	rs232_port_device &rs232a(RS232_PORT(config, "printer", default_rs232_devices, nullptr));
++	rs232a.rxd_handler().set(m_scc, FUNC(z80scc_device::rxa_w));
++	rs232a.dcd_handler().set(m_scc, FUNC(z80scc_device::dcda_w));
++	rs232a.cts_handler().set(m_scc, FUNC(z80scc_device::ctsa_w));
++
++	rs232_port_device &rs232b(RS232_PORT(config, "modem", default_rs232_devices, nullptr));
++	rs232b.rxd_handler().set(m_scc, FUNC(z80scc_device::rxb_w));
++	rs232b.dcd_handler().set(m_scc, FUNC(z80scc_device::dcdb_w));
++	rs232b.cts_handler().set(m_scc, FUNC(z80scc_device::ctsb_w));
++
++	SPEAKER(config, "lspeaker").front_left();
++	SPEAKER(config, "rspeaker").front_right();
++	ASC(config, m_asc, C15M, asc_device::asc_type::ASC);
++	m_asc->irqf_callback().set(m_rbv, FUNC(rbv_device::asc_irq_w));
++	m_asc->add_route(0, "lspeaker", 1.0);
++	m_asc->add_route(1, "rspeaker", 1.0);
++
++	R65NC22(config, m_via1, C7M / 10);
++	m_via1->readpa_handler().set(FUNC(maciici_ps_state::via_in_a));
++	m_via1->readpb_handler().set(FUNC(maciici_ps_state::via_in_b));
++	m_via1->writepa_handler().set(FUNC(maciici_ps_state::via_out_a));
++	m_via1->writepb_handler().set(FUNC(maciici_ps_state::via_out_b));
++	m_via1->cb2_handler().set(FUNC(maciici_ps_state::via_out_cb2));
++	m_via1->irq_handler().set(FUNC(maciici_ps_state::via_irq));
++
++	NSCSI_BUS(config, "scsi");
++	NSCSI_CONNECTOR(config, "scsi:0", mac_scsi_devices, nullptr);
++	NSCSI_CONNECTOR(config, "scsi:1", mac_scsi_devices, nullptr);
++	NSCSI_CONNECTOR(config, "scsi:2", mac_scsi_devices, nullptr);
++	NSCSI_CONNECTOR(config, "scsi:3").option_set("cdrom", NSCSI_CDROM_APPLE).machine_config(
++		[](device_t *device)
++		{
++			device->subdevice<cdda_device>("cdda")->add_route(0, "^^lspeaker", 1.0);
++			device->subdevice<cdda_device>("cdda")->add_route(1, "^^rspeaker", 1.0);
++		});
++	NSCSI_CONNECTOR(config, "scsi:4", mac_scsi_devices, nullptr);
++	NSCSI_CONNECTOR(config, "scsi:5", mac_scsi_devices, nullptr);
++	NSCSI_CONNECTOR(config, "scsi:6", mac_scsi_devices, "harddisk");
++	NSCSI_CONNECTOR(config, "scsi:7").option_set("ncr5380", NCR53C80).machine_config([this](device_t *device)
++																					 {
++		ncr53c80_device &adapter = downcast<ncr53c80_device &>(*device);
++		adapter.drq_handler().set(m_scsihelp, FUNC(mac_scsi_helper_device::drq_w)); });
++
++	MAC_SCSI_HELPER(config, m_scsihelp);
++	m_scsihelp->scsi_read_callback().set(m_ncr5380, FUNC(ncr53c80_device::read));
++	m_scsihelp->scsi_write_callback().set(m_ncr5380, FUNC(ncr53c80_device::write));
++	m_scsihelp->scsi_dma_read_callback().set(m_ncr5380, FUNC(ncr53c80_device::dma_r));
++	m_scsihelp->scsi_dma_write_callback().set(m_ncr5380, FUNC(ncr53c80_device::dma_w));
++	m_scsihelp->cpu_halt_callback().set_inputline(m_maincpu, INPUT_LINE_HALT);
++	m_scsihelp->timeout_error_callback().set(FUNC(maciici_ps_state::scsi_berr_w));
++
++	SOFTWARE_LIST(config, "hdd_list").set_original("mac_hdd");
++	SOFTWARE_LIST(config, "cd_list").set_original("mac_cdrom").set_filter("MC68030,MC68030_32");
++
++	RAM(config, m_ram);
++	m_ram->set_default_size("2M");
++	m_ram->set_extra_options("8M,32M,64M,96M,128M");
++
++	SOFTWARE_LIST(config, "flop_mac35_orig").set_original("mac_flop_orig");
++	SOFTWARE_LIST(config, "flop_mac35_clean").set_original("mac_flop_clcracked");
++	SOFTWARE_LIST(config, "flop35_list").set_original("mac_flop");
++
++	RBV(config, m_rbv, C15M);
++	m_rbv->via6015_callback().set(m_via1, FUNC(via6522_device::write_ca1));
++	m_rbv->via6015_callback().append(FUNC(maciici_ps_state::write_6015));
++	m_rbv->irq_callback().set(FUNC(maciici_ps_state::set_via2_interrupt));
++
++	/* internal ram */
++	m_ram->set_default_size("2M");
++	m_ram->set_extra_options("4M,8M,16M,32M,48M,64M,128M");
++
++	nubus_device &nubus(NUBUS(config, "nubus", 0));
++	nubus.set_space(m_maincpu, AS_PROGRAM);
++	nubus.out_irq9_callback().set(m_rbv, FUNC(rbv_device::slot_irq_w<0x01>));
++	nubus.out_irqa_callback().set(m_rbv, FUNC(rbv_device::slot_irq_w<0x02>));
++	nubus.out_irqb_callback().set(m_rbv, FUNC(rbv_device::slot_irq_w<0x04>));
++	nubus.out_irqc_callback().set(m_rbv, FUNC(rbv_device::slot_irq_w<0x08>));
++	nubus.out_irqd_callback().set(m_rbv, FUNC(rbv_device::slot_irq_w<0x10>));
++	nubus.out_irqe_callback().set(m_rbv, FUNC(rbv_device::slot_irq_w<0x20>));
++
++	NUBUS_SLOT(config, "nbc", "nubus", mac_nubus_cards, nullptr);
++	NUBUS_SLOT(config, "nbd", "nubus", mac_nubus_cards, nullptr);
++	NUBUS_SLOT(config, "nbe", "nubus", mac_nubus_cards, nullptr);
++
++	MACADB(config, m_macadb, C15M);
++	m_macadb->set_mcu_mode(false);
++	m_macadb->via_clock_callback().set(m_via1, FUNC(via6522_device::write_cb1));
++	m_macadb->via_data_callback().set(m_via1, FUNC(via6522_device::write_cb2));
++	m_macadb->adb_irq_callback().set(FUNC(maciici_ps_state::adb_irq_w));
++}
++
++ROM_START( maciici_ps )
++	// identical to maciici (this machine is a clone of it, so the roms/maciici set is used)
++	ROM_REGION32_BE(0x80000, "bootrom", 0)
++	ROM_LOAD32_BYTE( "341-0736.um12", 0x000000, 0x020000, CRC(7a1906e6) SHA1(3e39c80b52f40798502fcbdfc97b315545c4c4d3) )
++	ROM_LOAD32_BYTE( "341-0735.um11", 0x000001, 0x020000, CRC(a8942189) SHA1(be9f653cab04c304d7ee8d4ec312c23ff5d47efc) )
++	ROM_LOAD32_BYTE( "342-0734.um10", 0x000002, 0x020000, CRC(07f56402) SHA1(e11ca97181faf26cd0d05bd639d65998805c7822) )
++	ROM_LOAD32_BYTE( "342-0733.um9",  0x000003, 0x020000, CRC(20c28451) SHA1(fecf849c9ac9717c18c13184e24a471888028e46) )
++ROM_END
++
++} // anonymous namespace
++
++COMP(1989, maciici_ps, maciici, 0, maciici_ps, maciici_ps, maciici_ps_state, empty_init, "Apple Computer", "Macintosh IIci (psmac bridge CPU)", 0)
+diff --git a/src/mame/mame.lst b/src/mame/mame.lst
+index 5d4d0d80..c783a88f 100644
+--- a/src/mame/mame.lst
++++ b/src/mame/mame.lst
+@@ -885,6 +885,9 @@ macse30                         // 1989 Apple Macintosh SE/30
+ maciici                         // 1989 Apple Macintosh IIci
+ maciisi                         // 1990 Apple Macintosh IIsi
+ 
++@source:apple/maciici_ps.cpp
++maciici_ps                      // 1989 Apple Macintosh IIci (psmac bridge CPU)
++
+ @source:apple/maciifx.cpp
+ maciifx                         // 1990 Apple Macintosh IIfx
+ 
+-- 
+2.43.0
+

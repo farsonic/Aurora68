@@ -1,0 +1,42 @@
+{
+  "name": "Macintosh IIci ROM 368CADFE - PiStorm/Emu68 patches",
+  "base": "0x40800000",
+  "notes": [
+    "Timing calibration (TimeDBRA $D00, TimeSCCDB $D02, TimeSCSIDB $B24, TimeVIADB $CEA):",
+    "the four dbf loops at 0x40800880/88E/8A4/8BC count down d0.w from 0xFFFF until VIA1",
+    "timer 2 interrupts (vector $64 -> 0x40800866 -> jmp (a2)) or d0.w wraps to -1 after",
+    "65536 iterations (dbf falls through -> jmp (a2)).  The shared continuation at",
+    "0x4080084E does not.w d0, which turns the fall-through value 0xFFFF into 0, i.e. a",
+    "very fast CPU stores TimeDBRA = 0 and every derived delay collapses.  Fix: a2 points",
+    "to a 10-byte stub in the 14 bytes of zero padding after the last loop (0x408008D2,",
+    "nothing references it; the next routine 0x408008E0 is reached by braw from 0x408000B4)",
+    "that performs not.w d0 and turns a zero result into 0xFFFF (saturate), then branches",
+    "to 0x40800850 (the store).  Normal (slow-CPU) results are unchanged.",
+    "Source: see docs/06-rom-patches.md."
+  ],
+  "symbols": {
+    "calib_store": "0x40800850",
+    "calib_stub": "0x408008d2"
+  },
+  "patches": [
+    {
+      "name": "calib: point a2 (loop continuation) at the saturating stub",
+      "at": "0x844",
+      "expect": "45fa 0008",
+      "asm": "lea %pc@(calib_stub:w),%a2    | was lea %pc@(0x4080084e),%a2",
+      "max_len": 4
+    },
+    {
+      "name": "calib: saturating stub in the padding gap 0x8D2..0x8DF",
+      "at": "0x8d2",
+      "expect": "0000 0000 0000 0000 0000 0000 0000",
+      "asm": [
+        "        not.w   %d0             | d0.w = iterations completed (0 if dbf fell through)",
+        "        bne.s   1f",
+        "        subq.w  #1,%d0          | 0 -> 0xFFFF: saturate instead of wrapping",
+        "1:      bra.w   calib_store     | -> 0x40800850: move.w d0 to the low-memory global"
+      ],
+      "max_len": 14
+    }
+  ]
+}

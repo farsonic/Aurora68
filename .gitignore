@@ -1,11 +1,25 @@
-reference/
+# large or copyrighted inputs are never committed
+reference/mame/
 rom/original/*.rom
 rom/patched/*.rom
 *.dis
 mame/roms/
+mame/roms_*/
 mame/snap*/
 mame/cfg*/
 mame/nvram*/
 mame/*.txt
 images/
+snap/
+diff/
+# build outputs and logs
+psmac-build/
+emu68-build/
+*.log
 error.log
+__pycache__/
+# third-party reference checkouts (see reference/README.md)
+reference/*
+!reference/README.md
+!reference/mame-psmac.patch
+!reference/mame-src/

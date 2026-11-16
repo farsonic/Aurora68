@@ -5,14 +5,19 @@
 set -e
 cd "$(dirname "$0")/.."
 IMG=${IMG:-psmac-build/Emu68.img}
-DTB=${DTB:-$(find psmac-build emu68-build emu68 -name 'bcm2710-rpi-3-b.dtb' 2>/dev/null | head -1)}
+DTB=${DTB:-firmware/bcm2710-rpi-3-b.dtb}
 ROM=${ROM:-rom/original/MacIIci_368CADFE.rom}
 SOCK=${PSMAC_BRIDGE_SOCK:-/tmp/psmac-bridge.sock}
 RAM=${PSMAC_RAM:-8}
 [ -f "$IMG" ] || { echo "missing $IMG (build the psmac variant first)"; exit 1; }
 [ -f "$DTB" ] || { echo "missing device tree blob"; exit 1; }
-if [ -S "$SOCK" ]; then BRIDGE="-chardev socket,id=bridge,path=$SOCK -serial chardev:bridge"; else echo "note: $SOCK not present, bridge transport disconnected"; BRIDGE="-serial null"; fi
-exec qemu-system-aarch64 -M raspi3b -smp 4 -m 1G -display none \
+if [ "${PSMAC_TRANSPORT:-semihost}" = semihost ]; then
+  # semihosting FIFO transport: MAME must run with PSMAC_BRIDGE_FIFO=/tmp/psmac.req:/tmp/psmac.rep
+  [ -p /tmp/psmac.req ] || echo "note: /tmp/psmac.req missing (start the MAME bridge with PSMAC_BRIDGE_FIFO first)"
+  BRIDGE="-serial null -semihosting-config enable=on,target=native"; EXTRA="mac.bridge=semihost"
+elif [ -S "$SOCK" ]; then BRIDGE="-chardev socket,id=bridge,path=$SOCK -serial chardev:bridge"; EXTRA=""
+else echo "note: $SOCK not present, bridge transport disconnected"; BRIDGE="-serial null"; EXTRA=""; fi
+exec qemu-system-aarch64 -M raspi3b -smp 4 -m 1G -display none -monitor unix:/tmp/qemu-mon.sock,server,nowait \
   -kernel "$IMG" -dtb "$DTB" -initrd "$ROM" \
-  -append "mac.ram=$RAM enable_cache debug $*" \
-  -serial mon:stdio $BRIDGE -accel tcg,tb-size=256
+  -append "mac.ram=$RAM enable_cache debug $EXTRA $*" \
+  -serial stdio $BRIDGE -accel tcg,tb-size=256

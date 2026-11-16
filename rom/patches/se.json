@@ -1,0 +1,54 @@
+{
+  "name": "Macintosh SE ROM B2E362A8 - PiStorm/Emu68 patches",
+  "base": "0x400000",
+  "fill": "0x00",
+  "notes": [
+    "Timing calibration 0x40041C-0x4004B2 (TimeDBRA $D00 at 0x400466, TimeSCCDB $D02 at",
+    "0x4004A0): each dbf loop counts d0.w down from 0xFFFF until VIA timer 2 interrupts",
+    "(vector $64 -> 0x400460 / 0x40049A) or d0.w wraps to -1 after 65536 iterations (dbf",
+    "falls through -> bras to the same label).  'tst.b $1000(a1); not.w d0' there turns the",
+    "fall-through value into 0.  The SE ROM has no padding to patch in place, so the 6",
+    "bytes tst.b/not.w are replaced by a jmp to a stub appended at 0x440000 (the ROM grows",
+    "to 320 KiB; the Pi serves $400000-$57FFFF) which does tst.b (acknowledge T2), not.w,",
+    "saturates 0 -> 0xFFFF and jumps back to the move.w that stores the result.",
+    "Source: see docs/06-rom-patches.md."
+  ],
+  "patches": [
+    {
+      "name": "calib TimeDBRA: tst.b/not.w -> jmp stub_dbra",
+      "at": "0x460",
+      "expect": "4a29 1000 4640",
+      "asm": "jmp stub_dbra",
+      "max_len": 6,
+      "symbols": { "stub_dbra": "0x440000" }
+    },
+    {
+      "name": "calib TimeSCCDB: tst.b/not.w -> jmp stub_sccdb",
+      "at": "0x49a",
+      "expect": "4a29 1000 4640",
+      "asm": "jmp stub_sccdb",
+      "max_len": 6,
+      "symbols": { "stub_sccdb": "0x440010" }
+    },
+    {
+      "name": "saturating stubs (appended at 0x440000 / 0x440010)",
+      "append_asm": [
+        "stub_dbra:",
+        "        tst.b   %a1@(0x1000)    | read T2C-L: acknowledge the VIA timer 2 interrupt",
+        "        not.w   %d0             | d0.w = iterations completed (0 if dbf fell through)",
+        "        bne.s   1f",
+        "        subq.w  #1,%d0          | 0 -> 0xFFFF: saturate",
+        "1:      jmp     store_dbra      | -> 0x400466 move.w d0,TimeDBRA",
+        "        .balign 16, 0x00",
+        "stub_sccdb:",
+        "        tst.b   %a1@(0x1000)",
+        "        not.w   %d0",
+        "        bne.s   2f",
+        "        subq.w  #1,%d0",
+        "2:      jmp     store_sccdb     | -> 0x4004A0 move.w d0,TimeSCCDB"
+      ],
+      "align": 65536,
+      "symbols": { "store_dbra": "0x400466", "store_sccdb": "0x4004a0" }
+    }
+  ]
+}

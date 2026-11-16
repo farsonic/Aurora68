@@ -1,0 +1,18 @@
+{
+  "name": "TEST ONLY: IIci calibration fall-through test (not for real use)",
+  "include": ["iici.json"],
+  "notes": [
+    "Makes the calibration's VIA1 timer 2 period 0xFFFF ticks (~84 ms) instead of 0x030C",
+    "(~1 ms) so that even MAME's 25 MHz 68030 runs the dbf loops past 65536 iterations.",
+    "This exercises the fall-through path exactly like a very fast CPU does: with the",
+    "saturation patch the stored values must read 0xFFFF; the unpatched ROM stores 0."
+  ],
+  "patches": [
+    {
+      "name": "TEST: moveq #12,d1 / moveq #3,d2 (T2 = 0x030C) -> T2 = 0xFFFF",
+      "at": "0x820",
+      "expect": "720c 7403",
+      "bytes": "72ff 74ff"
+    }
+  ]
+}
