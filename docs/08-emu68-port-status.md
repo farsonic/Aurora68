@@ -168,6 +168,12 @@ tools/run-fullstack.sh 400` selects another image.
    move set Z from D1 rather than from the search, so "found" and "not found" were decided by
    the protocol number: EAttachPH wrote its entry past the table (over the interrupt queue
    element) and ERead could not find it. The lookup now ends with the result in D0 and Z.
+   Then EWrite went out (the host peer answered the ARP) and the 68k never came back from the
+   call: the heartbeat's PC was the ROM's slot interrupt dispatcher (0x40806EAA: acknowledge
+   IFR, read SIFR and SIER, dispatch). Two handlers share slot 9, the ROM stops at the first
+   that returns nonzero, and the Ethernet handler always said "ours", so from the moment it was
+   open the input driver's handler never ran, its ring never drained, and the line stayed up.
+   A handler now claims the interrupt only when its own board flagged it.
 
 ### Debug aids added
 - `mac.dbg=LO,HI` bootarg: translator prints the blocks it creates in that 68k range.

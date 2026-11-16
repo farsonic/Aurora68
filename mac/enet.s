@@ -360,7 +360,7 @@ ctl_err:
 ctl_noerr:
 	moveq	#noErr,%d0
 ctl_done:
-	log	"ENET: control done"
+	bsr	log_queue		| "ENET: done pb X qhead Y flags Z" (diagnostics for the Device Manager's queue)
 	move.l	%a2,%a0			| the parameter block and the DCE back in A0/A1: iodone reads
 	move.l	%a4,%a1			| ioTrap through A0 and IODone wants the DCE in A1 (EGetInfo
 	movem.l	(%sp)+,%d1-%d7/%a2-%a6	| had left its buffer pointers there: the first call returned to 0)
@@ -654,8 +654,14 @@ slot_int:
 	cmp.l	#1,G_INTS(%a3)
 	bne.s	1f
 	log	"ENET: first slot interrupt"
-1:	bsr	rx_body
-	moveq	#1,%d0
+1:	| Was it ours? The ROM runs the slot's handlers in order and stops at the first that
+	| answers nonzero, so answering "yes" when the board's flag was clear starves the other
+	| handlers on slot 9 (the input driver's, whose ring then stayed full and kept the line up:
+	| the 68k spent the rest of that boot in the level-2 dispatcher).
+	move.l	G_BOARD(%a3),%a0
+	move.l	AN_HDR_IRQ(%a0),%d2	| nonzero: the board wanted us
+	bsr	rx_body			| clears the flag, takes the frames
+	move.l	%d2,%d0
 	movem.l	(%sp)+,%d1-%d7/%a0-%a6
 	rts
 rx_vbl:
@@ -793,12 +799,56 @@ rp_rest:				| D3 = buffer size, A3 = buffer
 	moveq	#0,%d0			| Z set
 	rts
 
+| log_queue: the PB being completed (a2), the DCE queue head and the flags (a4), as hex
+log_queue:
+	movem.l	%d0-%d2/%a0-%a1,-(%sp)
+	move.l	%a2,%d0
+	lea	lq_pb(%pc),%a0
+	bsr	put_hex8
+	move.l	dCtlQHead(%a4),%d0
+	lea	lq_head(%pc),%a0
+	bsr	put_hex8
+	moveq	#0,%d0
+	move.w	dCtlFlags(%a4),%d0
+	lea	lq_flags(%pc),%a0
+	bsr	put_hex8
+	lea	lq_text(%pc),%a1
+	bsr	do_log
+	movem.l	(%sp)+,%d0-%d2/%a0-%a1
+	rts
+put_hex8:				| d0.l -> 8 hex digits at a0
+	movem.l	%d0-%d2,-(%sp)
+	moveq	#7,%d2
+1:	rol.l	#4,%d0
+	move.b	%d0,%d1
+	and.b	#15,%d1
+	add.b	#'0',%d1
+	cmp.b	#'9',%d1
+	bls.s	2f
+	addq.b	#7,%d1
+2:	move.b	%d1,(%a0)+
+	dbf	%d2,1b
+	movem.l	(%sp)+,%d0-%d2
+	rts
+lq_text:
+	.ascii	"ENET: done pb "
+lq_pb:
+	.ascii	"00000000 qhead "
+lq_head:
+	.ascii	"00000000 flags "
+lq_flags:
+	.ascii	"00000000"
+	.byte	0
+	.even
+
 | ---- common exit ----
 iodone:
 	btst	#noQueueBit,ioTrap(%a0)
 	beq.s	1f
+	log	"ENET: immediate call returns"
 	rts
-1:	move.l	JIODone,-(%sp)
+1:	log	"ENET: queued call -> IODone"
+	move.l	JIODone,-(%sp)
 	rts
 	.even
 drvr_end:

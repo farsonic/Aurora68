@@ -85,7 +85,10 @@ ROM changes and the motherboard (MAME's RBV, later the real one) never sees the 
 install their handlers with `SIntInstall` at Open (sqParm carries their globals), announce
 themselves to the kernel only after that (a line raised with nobody to clear it wedges the 68k in
 its level-2 handler, which happened once), and keep their VBL task as a safety net, slowed to
-every quarter second once the first interrupt has arrived. The kernel has a safety net of its
+every quarter second once the first interrupt has arrived. Several handlers share the slot and
+the ROM stops at the first that returns nonzero in D0, so each answers "mine" only when its own
+board or ring had something (the Ethernet handler once claimed every interrupt and starved the
+input handler's ring, which kept the line up). The kernel has a safety net of its
 own: a network-board flag left unserviced for half a second after the driver attached is cleared
 and logged, so a driver bug costs a frame rather than the machine.
 
