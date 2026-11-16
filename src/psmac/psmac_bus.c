@@ -395,15 +395,61 @@ void psmac_service_core(void)
     }
 }
 
+/* ---------------- the virtual slot-$9 interrupt ----------------
+   A NuBus card interrupts the IIci through the RBV: each slot has a line, the RBV shows the lines
+   in its slot interrupt flag register (SIFR, pseudo-VIA offset $02, a 0 bit = that slot's line is
+   asserted, bit 0 = slot $9 ... bit 5 = slot $E), the slot interrupt enable register (SIER, $12,
+   written with bit 7 set to enable the bits given, clear to disable them) gates them into the
+   "any slot" bit (bit 1) of the interrupt flag register (IFR, $03), which the interrupt enable
+   register (IER, $13) gates onto the 68030's level 2. The ROM's level-2 handler reads IFR, then
+   SIFR, and for each asserted slot runs the handlers queued with the Slot Manager's SIntInstall
+   (Inside Macintosh: Devices, "Slot Manager"; Designing Cards and Drivers, "Interrupts").
+   The Pi's card does not exist on the motherboard, so the kernel adds its line here: the service
+   core raises slot_line while a board has something the Mac has not taken (level-sensitive, as
+   on a real card), the Mac's SIER/IER writes are snooped as they pass through to the bridge, SIFR
+   and IFR reads coming back from the bridge have the slot-9 bit merged in, and the interrupt
+   level the JIT sees is raised to 2 while the line is up and enabled. MAME's own RBV never sees
+   the line (it is not wired to a slot) and keeps serving the real registers. */
+static volatile uint8_t slot_line, rbv_sier, rbv_ier;
+void psmac_slot_irq(int on) { slot_line = on ? 1 : 0; }
+static inline int slot_irq_pending(void) { return slot_line && (rbv_sier & 0x01) && (rbv_ier & 0x02); }
+static inline int rbv_reg(uint32_t addr)              /* pseudo-VIA register index, or -1 */
+{
+    if ((addr & 0xff0fe000u) != 0x50026000u) return -1;
+    uint32_t off = addr & 0x1fff;
+    if (off < 0x100) return (int)off;
+    switch (off >> 9) { case 13: return 0x03; case 14: return 0x13; default: return -1; }
+}
+static uint32_t rbv_merge_read(uint32_t addr, int size, uint32_t data)
+{
+    if (size != 1) return data;
+    switch (rbv_reg(addr)) {
+    case 0x02: return slot_line ? (data & ~0x01u) : data;                       /* SIFR: 0 = asserted */
+    case 0x03: return slot_irq_pending() ? (data | 0x82) : data;                /* IFR: any slot + IRQ */
+    case 0x12: return (data & ~0x01u) | (rbv_sier & 0x01);                      /* SIER: our enable bit */
+    default:   return data;
+    }
+}
+static void rbv_snoop_write(uint32_t addr, int size, uint32_t data)
+{
+    if (size != 1) return;
+    switch (rbv_reg(addr)) {
+    case 0x12: if (data & 0x80) rbv_sier |= data & 0x7f; else rbv_sier &= ~(data & 0x7f); break;
+    case 0x13: if (data & 0x80) rbv_ier |= data & 0x7f; else rbv_ier &= ~(data & 0x7f); break;
+    default: break;
+    }
+}
+
 /* ---------------- I/O helpers ---------------- */
 uint32_t psmac_io_read(uint32_t addr, int size)
 {
     struct psmac_reply r;
     xfer(PSMAC_OP_READ, size, 0, addr, 0, &r);
-    return r.data;
+    return rbv_merge_read(addr, size, r.data);
 }
 void psmac_io_write(uint32_t addr, int size, uint32_t data, int posted)
 {
+    rbv_snoop_write(addr, size, data);
     xfer(PSMAC_OP_WRITE, size, posted ? PSMAC_FLAG_POSTED : 0, addr, data, NULL);
 }
 
@@ -512,6 +558,51 @@ int psmac_bus_read(uint64_t *value, uint64_t *value2, int size, uint64_t far)
 }
 
 /* ---------------- memory map ---------------- */
+/* ---------------- the initramfs container ----------------
+   The Pi firmware loads exactly one file besides the kernel (initramfs in config.txt), so
+   everything the kernel needs before the Mac can help travels inside it. Emu68 on the Amiga uses
+   that slot for the Kickstart ROM; the first days of this project did the same with the bare
+   IIci ROM. Hardware needs more: the WiFi firmware (brcmfmac43455-sdio.bin, its NVRAM .txt and
+   .clm_blob), the Bluetooth firmware (BCM4345C0.hcd) and the declaration ROM. Rather than invent a
+   format, the container is a cpio archive in the "newc" format (the same one Linux initramfs
+   images use, so `cpio -o -H newc` and Python both write it, and `cpio -t` lists it):
+     *.rom                  the Macintosh ROM (one; the last one wins)
+     *.declrom              the slot-$9 declaration ROM
+     anything else          handed to the Alice68 modules as a firmware file, by its base name
+   A container that does not start with the cpio magic is taken to be a bare ROM, as before. */
+struct container_result { const uint8_t *rom; uint32_t rom_len; const uint8_t *declrom; uint32_t declrom_len; };
+static uint32_t hex8(const char *p) { uint32_t v = 0; for (int i = 0; i < 8; i++) { char c = p[i]; v = v * 16 + (c >= 'a' ? c - 'a' + 10 : c >= 'A' ? c - 'A' + 10 : c - '0'); } return v; }
+static int bytes_eq(const void *a, const char *b, uint32_t n) { const uint8_t *x = a; for (uint32_t i = 0; i < n; i++) if (x[i] != (uint8_t)b[i]) return 0; return 1; }
+static int ends_with(const char *name, const char *suffix)
+{
+    uint32_t n = 0, m = 0; while (name[n]) n++; while (suffix[m]) m++;
+    if (m > n) return 0;
+    for (uint32_t i = 0; i < m; i++) if (name[n - m + i] != suffix[i]) return 0;
+    return 1;
+}
+static void walk_container(const uint8_t *img, uint32_t size, struct container_result *r)
+{
+    r->rom = img; r->rom_len = size; r->declrom = NULL; r->declrom_len = 0;
+    if (size < 110 || !bytes_eq(img, "070701", 6)) return;         /* a bare ROM */
+    r->rom = NULL; r->rom_len = 0;
+    uint32_t off = 0;
+    while (off + 110 <= size && bytes_eq(img + off, "070701", 6)) {
+        const char *h = (const char *)(img + off);
+        uint32_t fsize = hex8(h + 54), nsize = hex8(h + 94);
+        const char *name = h + 110;
+        uint32_t data = (off + 110 + nsize + 3) & ~3u;
+        if (data + fsize > size) break;
+        if (nsize == 11 && bytes_eq(name, "TRAILER!!!", 10)) break;
+        const char *base = name; for (const char *p = name; *p; p++) if (*p == '/') base = p + 1;
+        if (fsize) {
+            if (ends_with(base, ".rom"))          { r->rom = img + data; r->rom_len = fsize; kprintf("[PSMAC] container: ROM %s, %u bytes\n", base, fsize); }
+            else if (ends_with(base, ".declrom")) { r->declrom = img + data; r->declrom_len = fsize; kprintf("[PSMAC] container: declaration ROM %s, %u bytes\n", base, fsize); }
+            else { extern int alice_fw_preload(const char *, const uint8_t *, uint32_t); alice_fw_preload(base, img + data, fsize); }
+        }
+        off = (data + fsize + 3) & ~3u;
+    }
+}
+
 void psmac_setup_memory(void *rom, uint32_t rom_sz)
 {
     psmac_read_options();
@@ -532,6 +623,8 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
     sys_memory[0].mb_Size -= (base + need) - sys_memory[0].mb_Base;
     sys_memory[0].mb_Base = base + need;
 
+    struct container_result cont; walk_container((const uint8_t *)rom, rom_sz, &cont);
+    rom = (void *)cont.rom; rom_sz = cont.rom_len;
     kprintf("[PSMAC] Mac RAM %d MiB at Pi %p, ROM at Pi %p (%d bytes from initramfs)\n", ram_size >> 20, ram_phys, rom_phys, rom_sz);
 
 
@@ -553,7 +646,10 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
         uint8_t *dr = (uint8_t *)(KERNEL_ALIAS + declrom_phys);
         for (uint32_t i = 0; i < PSMB_DECLROM_SIZE; i += 8) *(uint64_t *)(dr + i) = 0;
         const char *path = psmac_option("mac.declrom");
-        if (path && use_semihost) {
+        if (cont.declrom && cont.declrom_len <= PSMB_DECLROM_SIZE) {
+            memcpy(dr + PSMB_DECLROM_SIZE - cont.declrom_len, cont.declrom, cont.declrom_len);
+            kprintf("[PSMAC] declaration ROM from the container: %u bytes at Mac 0x%08x\n", cont.declrom_len, PSMB_DECLROM_PHYS + PSMB_DECLROM_SIZE - cont.declrom_len);
+        } else if (path && use_semihost) {
             int64_t fd = sh_open(path, 1);
             int64_t len = fd >= 0 ? psmac_sh_flen(fd) : -1;
             if (len > 0 && len <= (int64_t)PSMB_DECLROM_SIZE) {
@@ -625,11 +721,12 @@ void ps_pulse_reset(void) { struct psmac_reply r; xfer(PSMAC_OP_RESET_ACK, 0, 0,
 void ps_send_reset(void) { ps_pulse_reset(); }
 void ps_set_control(unsigned int v) { (void)v; }
 void ps_clr_control(unsigned int v) { (void)v; }
-unsigned int ps_read_status_reg(void) { return (unsigned int)last_ipl << 13; }
+static inline unsigned effective_ipl(void) { unsigned ipl = last_ipl; if (slot_irq_pending() && ipl < 2) ipl = 2; return ipl; }
+unsigned int ps_read_status_reg(void) { return effective_ipl() << 13; }
 void ps_write_status_reg(unsigned int v) { (void)v; }
 void ps_memtest(unsigned int s) { (void)s; }
 void ps_buptest(unsigned int s, unsigned int m) { (void)s; (void)m; }
-unsigned int ps_get_ipl_zero(void) { return last_ipl == 0; }
+unsigned int ps_get_ipl_zero(void) { return effective_ipl() == 0; }
 void ps_housekeeper(void) { psmac_service_core(); }
 void ps_efinix_setup(uint8_t model) { (void)model; }
 void ps_efinix_reset(void) {}

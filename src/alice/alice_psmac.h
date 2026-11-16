@@ -38,7 +38,8 @@
 #define ALICE_IN_WHEEL          3               /* a = wheel, b = pan */
 struct alice_input_event { uint32_t type; int32_t a, b, c; };
 struct alice_input_ring {
-    uint32_t magic, version, slots, reserved;
+    uint32_t magic, version, slots;
+    uint32_t attached;                          /* Mac: 1 once .PiInput has opened and will take events */
     uint32_t head;                              /* service core: events put */
     uint32_t tail;                              /* Mac: events taken */
     uint32_t dropped, pad;

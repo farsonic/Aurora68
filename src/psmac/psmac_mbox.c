@@ -269,7 +269,7 @@ void psmac_mbox_init(uintptr_t window_phys, uintptr_t ramp, uint32_t rams)
     wr32(h + 0, PSMB_MAGIC); wr16(h + 4, PSMB_VERSION); wr16(h + 6, 4);
     wr32(h + 8, PSMB_FEAT_BLOCK | (net_up ? PSMB_FEAT_NET : 0));
     wr32(h + 12, 0); wr32(h + 16, psmac_mac_ram_mb()); wr32(h + 20, 0);
-    const char *ver = "psmac " __DATE__; int k = 0; while (ver[k] && k < 31) { ((volatile uint8_t *)h)[24 + k] = ver[k]; k++; }
+    const char *ver = "Aurora68 psmac " __DATE__;   /* the build string PiNet shows */ int k = 0; while (ver[k] && k < 31) { ((volatile uint8_t *)h)[24 + k] = ver[k]; k++; }
     kprintf("[PSMAC:MBOX] window at Mac 0x%08x (Pi %p): %d block device(s), net %s\n", PSMB_WIN_PHYS, (void *)win_phys, nbdev, net_up ? "up" : "off");
 }
 

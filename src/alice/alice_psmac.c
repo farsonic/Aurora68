@@ -253,6 +253,17 @@ void __attribute__((noreturn)) psmac_alice_core(void)
         alice_net_poll();
         in_repeat_poll();
         in_testbed_poll();
+        /* The card's interrupt line: up while a board has something the Mac has not taken (the
+           network board's irq flag, which the Mac's Ethernet driver clears; input events not yet
+           read), but only from boards whose Mac driver has attached (the Ethernet driver writes
+           its version into the board header, the input driver sets the ring's attached word).
+           The first version raised the line unconditionally: the ROM enables every slot's
+           interrupt early in the boot, no driver was open to clear anything, and the level-2
+           storm kept the Mac in its boot chime for good. */
+        { extern volatile uint8_t *alice_net_board(void); extern void psmac_slot_irq(int);
+          volatile struct an_hdr *nh = (volatile struct an_hdr *)alice_net_board();
+          int line = (nh && nh->amiga_ver && nh->irq) || (inr && inr->attached && inr->head != inr->tail);
+          psmac_slot_irq(line); }
         __asm__ volatile("yield");
     }
 }

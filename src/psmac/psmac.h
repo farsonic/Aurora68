@@ -30,6 +30,7 @@ void     psmac_service_core(void);     /* runs forever on the service core */
 void     psmac_pmove(uint32_t ea, uint32_t ext);
 void     psmac_mmu_init(uintptr_t ram_phys, uint32_t ram_size, uintptr_t rom_phys);
 uint32_t psmac_mmu_l2p(uint32_t logical, int *valid);
+void     psmac_slot_irq(int on);                 /* psmac_bus.c: the virtual slot-$9 interrupt line */
 uint32_t psmac_ram_size(void);
 /* Mac-side RAM ceiling: the 32-bit map puts RAM at 0x00000000..0x3FFFFFFF, below the ROM at 0x40000000.
    The IIci ROM itself only sizes two 64 MiB banks; anything above 128 MiB needs the memory-sizing
