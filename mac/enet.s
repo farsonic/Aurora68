@@ -355,7 +355,9 @@ ctl_err:
 ctl_noerr:
 	moveq	#noErr,%d0
 ctl_done:
-	movem.l	(%sp)+,%d1-%d7/%a2-%a6
+	move.l	%a2,%a0			| the parameter block and the DCE back in A0/A1: iodone reads
+	move.l	%a4,%a1			| ioTrap through A0 and IODone wants the DCE in A1 (EGetInfo
+	movem.l	(%sp)+,%d1-%d7/%a2-%a6	| had left its buffer pointers there: the first call returned to 0)
 	bra	iodone
 
 | ESetGeneral: we always allow 1514-byte writes

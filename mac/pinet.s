@@ -289,6 +289,7 @@ crlf:
 say_prefix:				| a0 -> pstring, no newline
 say_pstr_nocr:
 	| running pen position: x in 6(%a6), y in 4(%a6); draw at (x, y)
+	bsr	log_draw		| diagnostics: "PiNet: draw len LLL at XXX,YYY" in the kernel log
 	movem.l	%a0,-(%sp)
 	move.w	6(%a6),-(%sp)
 	move.w	4(%a6),-(%sp)
@@ -406,6 +407,51 @@ do_log:
 	subq.l	#1,%d1
 	bne.s	4b
 5:	rts
+| log_draw: a0 = pstring about to be drawn -> "PiNet: draw len LLL at XXX,YYY"
+log_draw:
+	movem.l	%d0-%d2/%a0-%a1,-(%sp)
+	move.l	%a0,%a1
+	moveq	#0,%d0
+	move.b	(%a1),%d0
+	lea	draw_len(%pc),%a0
+	bsr	put3
+	move.w	6(%a6),%d0
+	lea	draw_x(%pc),%a0
+	bsr	put3
+	move.w	4(%a6),%d0
+	lea	draw_y(%pc),%a0
+	bsr	put3
+	lea	draw_text(%pc),%a1
+	bsr	do_log
+	movem.l	(%sp)+,%d0-%d2/%a0-%a1
+	rts
+put3:					| d0.w (0..999) -> three digits at a0
+	movem.l	%d0-%d1,-(%sp)
+	and.l	#0xFFFF,%d0
+	divu	#100,%d0
+	add.b	#'0',%d0
+	move.b	%d0,(%a0)
+	clr.w	%d0
+	swap	%d0
+	divu	#10,%d0
+	add.b	#'0',%d0
+	move.b	%d0,1(%a0)
+	swap	%d0
+	add.b	#'0',%d0
+	move.b	%d0,2(%a0)
+	movem.l	(%sp)+,%d0-%d1
+	rts
+draw_text:
+	.ascii	"PiNet: draw len "
+draw_len:
+	.ascii	"000 at "
+draw_x:
+	.ascii	"000,"
+draw_y:
+	.ascii	"000"
+	.byte	0
+	.even
+
 | log_err: d0.w = OSErr -> "PiNet: result -NNN" in the kernel log
 log_err:
 	movem.l	%d0-%d2/%a0-%a1,-(%sp)

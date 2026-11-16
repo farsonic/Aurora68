@@ -149,7 +149,16 @@ tools/run-fullstack.sh 400` selects another image.
    four bytes short on return and `key_char` returned to address 0. Fixed in `mac/piinput.s`.
    PiNet is now launched at boot under System 6 through the boot blocks' startup-application
    name (`tools/mac/bootblock.py --startup PiNet`: bbHelloName, not bbShellName, which was the
-   earlier mistake).
+   earlier mistake). Two more register-convention mistakes fell out of the same evening:
+   `_PostEvent` takes the event code in A0 and the message in D0 (the driver had them the other
+   way round, so the Pi's cursor moved but no click or key ever reached a program), and PiNet's
+   SpBlock had spCategory at 48 and spTBMask at 55 where Slots.h puts them at 40 and 48, so
+   SGetTypeSRsrc answered -344 "no more sResources" (also: SGetTypeSRsrc is selector $0C, and
+   $2B, used before, is SUpdateSRT). With those fixed, PiNet found the card (slot 9, sRsrcID
+   129), opened `.ENET` through OpenSlot (refNum -52) and the Ethernet driver took its first
+   slot interrupt; the EGetInfo control call then returned to address 0, because the driver's
+   Control exit left EGetInfo's buffer pointers in A0 and A1 where `iodone` expects the
+   parameter block and the DCE (the same mistake PiDisk had made a day earlier). Fixed.
 
 ### Debug aids added
 - `mac.dbg=LO,HI` bootarg: translator prints the blocks it creates in that 68k range.
