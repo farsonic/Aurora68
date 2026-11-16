@@ -1,5 +1,5 @@
 # Mac-side pieces for PiStorm-SE: 68k assembly (GNU binutils for m68k) packaged with tools/mac/*.py.
-#   make            builds the drivers, the declaration ROM, the PiDisk extension and the PiNet, PiWiFi and PiBlue applications
+#   make            builds the drivers, the declaration ROM, the PiDisk extension and the PiNet, PiWiFi, PiBlue and PiStatus applications
 #   The declaration ROM (build/psmac.declrom) carries the .PiDisk, .Network_EtherNet_PiStorm and .PiInput drivers.
 #   make check     compares the struct offsets in enet.s with emu68/src/alice/alice_net.h
 #   make install IMG=path/to/volume.img [PART=n]   copies the INIT into the System Folder of an HFS image
@@ -8,7 +8,7 @@ OBJCOPY = m68k-linux-gnu-objcopy
 PY      = python3
 B       = build
 
-all: $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/psmac.declrom
+all: $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/psmac.declrom
 
 $(B)/%.o: %.s
 	@mkdir -p $(B)
@@ -29,6 +29,9 @@ $(B)/PiWiFi.bin: $(B)/piwifi.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
 $(B)/PiBlue.bin: $(B)/piblue.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
 	$(PY) ../tools/mac/mkapp.py --code $(B)/piblue.bin.raw --name PiBlue --creator PIBL -o $@
 
+$(B)/PiStatus.bin: $(B)/pistatus.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
+	$(PY) ../tools/mac/mkapp.py --code $(B)/pistatus.bin.raw --name PiStatus --creator PIST -o $@
+
 $(B)/psmac.declrom: $(B)/pidisk.bin.raw $(B)/enet.bin.raw $(B)/piinput.bin.raw ../tools/mac/mkdeclrom.py ../tools/mac/declrom.py
 	$(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --enet $(B)/enet.bin.raw --input $(B)/piinput.bin.raw -o $@
 
@@ -41,7 +44,7 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 disasm: $(B)/pidisk.o
 	m68k-linux-gnu-objdump -d $(B)/pidisk.o | head -200
 
-install: $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/psmac.declrom
+install: $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/psmac.declrom
 	$(PY) ../tools/mac/hfsput.py $(IMG) $(B)/PiDisk.bin "System Folder" $(PART)
 
 clean:

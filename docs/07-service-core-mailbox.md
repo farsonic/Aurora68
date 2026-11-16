@@ -61,7 +61,7 @@ translates them page by page with the MMU shim, which also makes the flag bits i
 | block | disk images: host files through QEMU semihosting in the testbed (`mac.disk0=`), SD-card images on hardware (to come) | `.PiDisk` DRVR, loaded from the declaration ROM at boot; the volume mounts on the desktop |
 | network board | Alice68's `alice_net.c`: unit 0 WiFi (SDIO, firmware preloaded by the kernel), unit 1 Ethernet (GENET on a Pi 4; in the testbed a bridge to host frame files and `tools/pinet.py`) | `.Network_EtherNet_PiStorm` DRVR on the `.ENET` interface, found by MacTCP/EtherTalk/Open Transport through the Slot Manager; `PiWiFi` scans and joins networks through unit 0's command box |
 | Bluetooth | Alice68's `bt/`: HCI over the PL011 UART, HID keyboards and mice, LE | keyboard and mouse reports go to the input ring and `.PiInput` turns them into events; `PiBlue` scans, pairs, connects and forgets devices through the `an_bt` command box |
-| status page | Alice68's `alice_status.c`: seq odd while writing | a monitor application (to come) |
+| status page | Alice68's `alice_status.c`: seq odd while writing | `PiStatus`, a monitor application |
 | USB | Alice68's xHCI driver (Pi 4 only): compiled but not started; needs the DMA pool below 1 GiB | keyboards and mice through the input ring; no Mac USB stack exists |
 
 ## Interrupts: the virtual slot-9 line

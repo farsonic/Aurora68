@@ -117,10 +117,15 @@ app_start:
 	moveq	#15,%d0
 2:	clr.l	(%a0)+
 	dbf	%d0,2b
-	move.w	#4,48(%a2)		| spCategory
-	move.w	#1,50(%a2)		| spCType
-	move.b	#3,55(%a2)		| spTBMask: match category and type
-	move.l	#1,0(%a2)		| spParamData: include disabled? (bit 0 = fAll)
+	| SpBlock (Slots.h): spResult 0, spsPointer 4, spSize 8, spOffsetData 12, spIOFileName 16,
+	| spsExecPBlk 20, spParamData 24, spMisc 28, spReserved 32, spIOReserved 36, spRefNum 38,
+	| spCategory 40, spCType 42, spDrvrSW 44, spDrvrHW 46, spTBMask 48, spSlot 49, spID 50,
+	| spExtDev 51, spHwDev 52, spByteLanes 53, spFlags 54, spKey 55. (The first version had the
+	| category at 48 and the mask at 55 and got -344, "no more sResources", for its trouble.)
+	move.w	#4,40(%a2)		| spCategory: catNetwork
+	move.w	#1,42(%a2)		| spCType: typeEtherNet
+	move.b	#3,48(%a2)		| spTBMask: ignore drSW and drHW
+	move.l	#1,24(%a2)		| spParamData: fAll, include disabled sResources
 	move.l	%a2,%a0
 	moveq	#0x0C,%d0		| SGetTypeSRsrc (Slots.h: 0x0C; 0x2B is SUpdateSRT)
 	.short	_SlotManager
@@ -307,6 +312,11 @@ say_cstr:				| a1 -> C string (max 60)
 	cmp.w	#60,%d0
 	blt.s	1b
 2:	move.b	%d0,(%a0)
+	clr.b	1(%a0,%d0.w)		| NUL after the text so the Pi can log what was built
+	movem.l	%a0-%a1,-(%sp)
+	lea	1(%a0),%a1
+	bsr	do_log
+	movem.l	(%sp)+,%a0-%a1
 	bsr	say
 	rts
 say_dec:				| d0 unsigned long -> decimal, no newline
@@ -319,6 +329,12 @@ say_dec:				| d0 unsigned long -> decimal, no newline
 	tst.l	%d0
 	bne.s	1b
 	move.b	%d1,-(%a0)
+	movem.l	%a0-%a1/%d0,-(%sp)
+	lea	tmp+20(%pc),%a1
+	clr.b	(%a1)			| NUL after the digits: log them too
+	lea	1(%a0),%a1
+	bsr	do_log
+	movem.l	(%sp)+,%a0-%a1/%d0
 	bsr	say_pstr_nocr
 	rts
 say_sdec:

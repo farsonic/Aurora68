@@ -471,6 +471,9 @@ vbl_done:
 post_event:
 	movem.l	%d1-%d2/%a1,-(%sp)
 	bsr	keymap_modifiers
+	move.l	%a0,%d1			| _PostEvent wants the event code in A0 and the message in D0
+	move.l	%d0,%a0			| (the first version had them the other way round: the cursor
+	move.l	%d1,%d0			| moved, no click or key ever arrived)
 	.short	_PostEvent
 	movem.l	(%sp)+,%d1-%d2/%a1
 	rts
