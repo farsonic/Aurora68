@@ -1,5 +1,5 @@
 # Mac-side pieces for PiStorm-SE: 68k assembly (GNU binutils for m68k) packaged with tools/mac/*.py.
-#   make            builds the drivers, the declaration ROM, the PiDisk extension and the PiNet, PiWiFi, PiBlue and PiStatus applications
+#   make            builds the drivers, the declaration ROM, the PiDisk extension and the PiNet, PiWiFi, PiBlue, PiStatus and PiPing applications
 #   The declaration ROM (build/psmac.declrom) carries the .PiDisk, .Network_EtherNet_PiStorm and .PiInput drivers.
 #   make check     compares the struct offsets in enet.s with emu68/src/alice/alice_net.h
 #   make install IMG=path/to/volume.img [PART=n]   copies the INIT into the System Folder of an HFS image
@@ -8,7 +8,7 @@ OBJCOPY = m68k-linux-gnu-objcopy
 PY      = python3
 B       = build
 
-all: $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/psmac.declrom
+all: $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/psmac.declrom
 
 $(B)/%.o: %.s
 	@mkdir -p $(B)
@@ -32,6 +32,9 @@ $(B)/PiBlue.bin: $(B)/piblue.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
 $(B)/PiStatus.bin: $(B)/pistatus.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
 	$(PY) ../tools/mac/mkapp.py --code $(B)/pistatus.bin.raw --name PiStatus --creator PIST -o $@
 
+$(B)/PiPing.bin: $(B)/piping.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
+	$(PY) ../tools/mac/mkapp.py --code $(B)/piping.bin.raw --name PiPing --creator PIPG -o $@
+
 # the WiFi driver: the Ethernet source assembled for unit 0
 $(B)/enet_wifi.o: enet.s
 	@mkdir -p $(B)
@@ -49,7 +52,7 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 disasm: $(B)/pidisk.o
 	m68k-linux-gnu-objdump -d $(B)/pidisk.o | head -200
 
-install: $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/psmac.declrom
+install: $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/psmac.declrom
 	$(PY) ../tools/mac/hfsput.py $(IMG) $(B)/PiDisk.bin "System Folder" $(PART)
 
 clean:
