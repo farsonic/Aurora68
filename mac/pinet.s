@@ -33,6 +33,18 @@
 	.equ	Ticks,		0x016A
 	.equ	MMU32Bit,	0x0CB2
 
+| ---- log through the Pi's INFO service: `log "text"` appears as [MAC] ... in the kernel log ----
+	.macro	log text
+	movem.l	%d0-%d1/%a0-%a1,-(%sp)
+	lea	9f(%pc),%a1
+	bsr	do_log
+	bra.s	8f
+9:	.ascii	"\text"
+	.byte	0
+	.even
+8:	movem.l	(%sp)+,%d0-%d1/%a0-%a1
+	.endm
+
 | ---- our globals in the window-relative area below A5: use a static block instead (position independent) ----
 	.equ	LINEH,		14
 
@@ -71,6 +83,7 @@ app_start:
 
 	lea	s_title(%pc),%a0
 	bsr	say
+	log	"PiNet: started"
 	| --- mailbox header ---
 	bsr	window
 	cmp.l	#0x50534D42,(%a0)
@@ -83,6 +96,7 @@ app_start:
 	bsr	window			| (say_prefix's a0 was the string, not the window)
 	lea	24(%a0),%a1		| fw_version string in the header
 	bsr	say_cstr
+	log	"PiNet: firmware string shown"
 	lea	s_blk(%pc),%a0
 	bsr	say_prefix
 	bsr	window
@@ -96,6 +110,7 @@ app_start:
 	bsr	window
 	lea	0x2000+16(%a0),%a1
 	bsr	say_cstr
+	log	"PiNet: PiDisk 0 shown; looking for the Ethernet card"
 	| --- find the Ethernet card: SGetTypeSRsrc, spCategory 4, spCType 1, spTBMask 3 ---
 	lea	spblock(%pc),%a0
 	move.l	%a0,%a2
@@ -107,8 +122,9 @@ app_start:
 	move.b	#3,55(%a2)		| spTBMask: match category and type
 	move.l	#1,0(%a2)		| spParamData: include disabled? (bit 0 = fAll)
 	move.l	%a2,%a0
-	moveq	#0x2B,%d0		| sGetTypeSRsrc selector
+	moveq	#0x0C,%d0		| SGetTypeSRsrc (Slots.h: 0x0C; 0x2B is SUpdateSRT)
 	.short	_SlotManager
+	bsr	log_err			| "PiNet: result N" in the kernel log
 	tst.w	%d0
 	beq.s	3f
 	lea	s_nocard(%pc),%a0
@@ -296,7 +312,7 @@ say_cstr:				| a1 -> C string (max 60)
 say_dec:				| d0 unsigned long -> decimal, no newline
 	lea	tmp+20(%pc),%a0
 	moveq	#0,%d1
-1:	divul	#10,%d2,%d0		| 32-bit form: remainder d2, quotient d0 (a colon makes it the 64-bit form)
+1:	divull	#10,%d2:%d0		| GNU as: "divull" is the 32-bit form (ext $0002, remainder d2); "divul" encodes the 64-bit dividend (ext $0402)
 	add.b	#'0',%d2
 	move.b	%d2,-(%a0)
 	addq.w	#1,%d1
@@ -353,6 +369,60 @@ pbclear:
 	dbf	%d0,1b
 	movem.l	(%sp)+,%a0/%d0
 	rts
+| do_log: a1 = C string -> INFO service command (block 0): cmd 2, buf, len; waits briefly
+do_log:
+	bsr	window
+	lea	0x1000(%a0),%a0
+	moveq	#0,%d1
+2:	tst.b	(%a1,%d1.w)
+	beq.s	3f
+	addq.w	#1,%d1
+	bra.s	2b
+3:	move.w	#2,8(%a0)
+	move.l	%a1,28(%a0)
+	move.l	%d1,32(%a0)
+	move.l	(%a0),%d0
+	addq.l	#1,%d0
+	move.l	%d0,(%a0)
+	move.l	#200000,%d1
+4:	cmp.l	4(%a0),%d0
+	beq.s	5f
+	subq.l	#1,%d1
+	bne.s	4b
+5:	rts
+| log_err: d0.w = OSErr -> "PiNet: result -NNN" in the kernel log
+log_err:
+	movem.l	%d0-%d2/%a0-%a1,-(%sp)
+	lea	err_text(%pc),%a1
+	lea	err_digits(%pc),%a0
+	move.w	%d0,%d1
+	ext.l	%d1
+	move.b	#' ',(%a0)
+	tst.l	%d1
+	bpl.s	1f
+	neg.l	%d1
+	move.b	#'-',(%a0)
+1:	move.l	%d1,%d0
+	divu	#100,%d0
+	add.b	#'0',%d0
+	move.b	%d0,1(%a0)
+	clr.w	%d0
+	swap	%d0
+	divu	#10,%d0
+	add.b	#'0',%d0
+	move.b	%d0,2(%a0)
+	swap	%d0
+	add.b	#'0',%d0
+	move.b	%d0,3(%a0)
+	bsr	do_log
+	movem.l	(%sp)+,%d0-%d2/%a0-%a1
+	rts
+err_text:
+	.ascii	"PiNet: result"
+err_digits:
+	.ascii	" 000"
+	.byte	0
+	.even
 window:
 	lea	0xF9000000,%a0
 	tst.b	MMU32Bit

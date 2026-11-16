@@ -122,7 +122,12 @@ tools/run-fullstack.sh 400` selects another image.
    its irq flag at start, no driver was open to clear it, and the level-2 handler ran for ever
    (the heartbeat showed ipl 2 and the boot-chime loop). The line is now raised only for boards
    whose Mac driver has attached (the Ethernet driver's version in the board header, the input
-   ring's `attached` word).
+   ring's `attached` word). The drivers' first `SIntInstall` came back -344: it had been issued as
+   `_SlotManager` selector $0B, which in this ROM is SGetSRsrc. The ROM's dispatch table
+   (61 word offsets at 0x6D98, copied to the pointer at low memory $DB8) and the routine at
+   0x6E56 (slot in D0.w checked against 14, element inserted by priority with interrupts off)
+   settled it: `_SIntInstall` is an OS trap of its own, $A075 (`_SIntRemove` $A076), with the
+   element in A0 and the slot in D0.w, as Inside Macintosh V says.
    Found on the way: `mac/enet.s` had been written against an older Alice68 header and
    addressed the command box and rings 36 bytes off; `make -C mac check` now compiles the
    offsets from the header (`tools/mac/an_offsets.c`) and compares them with the source.
@@ -132,7 +137,19 @@ tools/run-fullstack.sh 400` selects another image.
    with D2 never cleared; the divide overflowed, left D0 as it was, and the digit loop wrote
    backwards through the application until it ran into its own code (the kernel's "Undefined
    Line0" and an illegal-instruction trail inside the application's data). The 32-bit form is
-   written with a comma, `divul #10,%d2,%d0`, in PiNet, PiWiFi and PiBlue.
+   GNU as calls the 32-bit form `divull` (extension word $0002) and encodes `divul`, whatever
+   the operand punctuation, as the 64-bit dividend ($0402): the three applications now use
+   `divull #10,%d2:%d0`.
+
+17. **System 6, with everything on (16 Nov, evening).** The declaration-ROM drivers load, the
+   PiDisk volume mounts, the slot-9 interrupt handler installs and fires for the first input
+   event, the cursor follows the Pi's "mouse" and the click opens the Apple menu. The first key
+   then bombed with "illegal instruction": `_KeyTranslate` is a Pascal function and the caller
+   must push room for its LONGINT result before the three parameters; without it the stack was
+   four bytes short on return and `key_char` returned to address 0. Fixed in `mac/piinput.s`.
+   PiNet is now launched at boot under System 6 through the boot blocks' startup-application
+   name (`tools/mac/bootblock.py --startup PiNet`: bbHelloName, not bbShellName, which was the
+   earlier mistake).
 
 ### Debug aids added
 - `mac.dbg=LO,HI` bootarg: translator prints the blocks it creates in that 68k range.

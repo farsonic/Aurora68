@@ -109,8 +109,7 @@
 	.equ	G_SIQ,		G_CAPS+2	| SlotIntQElement: sqLink 4, sqType 2, sqPrio 2, sqAddr 4, sqParm 4
 	.equ	G_INTS,		G_SIQ+16	| long: slot interrupts taken (for the log)
 	.equ	G_SIZE,		G_INTS+4
-	.equ	_SlotManager,	0xA06E
-	.equ	sIntInstall,	0x0B
+	.equ	_SIntInstall,	0xA075		| its own OS trap (Inside Macintosh V): A0 = SlotIntQElement, D0.w = slot
 	.equ	sIQType,	6
 	.equ	PI_SLOT,	9
 
@@ -232,8 +231,8 @@ d_open:
 	log	"PiInput: ring found"
 	| The card's interrupt: the kernel raises the slot-9 line while the ring holds events
 	| (docs/07), the ROM's level-2 handler runs every routine queued for the slot with the Slot
-	| Manager's SIntInstall, and ours drains the ring. _SlotManager takes the selector in the low
-	| word of D0 and SIntInstall's slot number in the high word, the queue element in A0.
+	| Manager's SIntInstall, and ours drains the ring. _SIntInstall is an OS trap of its own
+	| ($A075, not a _SlotManager selector: that was found the hard way), slot in D0.w, element in A0.
 	lea	G_SIQ(%a2),%a0
 	clr.l	(%a0)
 	move.w	#sIQType,4(%a0)
@@ -241,8 +240,8 @@ d_open:
 	lea	slot_int(%pc),%a1
 	move.l	%a1,8(%a0)
 	move.l	%a2,12(%a0)		| sqParm: our globals, handed back in A1
-	move.l	#(PI_SLOT<<16)+sIntInstall,%d0	| ("|" would start a comment)
-	.short	_SlotManager
+	move.w	#PI_SLOT,%d0
+	.short	_SIntInstall
 	tst.w	%d0
 	beq.s	1f
 	bsr	log_err			| "PiInput: SIntInstall error -NNN"
@@ -542,13 +541,14 @@ key_char:
 	movem.l	%d1-%d2/%a0-%a1,-(%sp)
 	move.l	KCHRPtr,%d0
 	beq.s	1f
+	clr.l	-(%sp)			| room for the LONGINT result (a Pascal function: the caller makes the room)
 	move.l	%d0,-(%sp)		| transData
 	move.w	%d5,%d0
 	and.w	#0xFF00,%d0
 	or.w	%d1,%d0
 	move.w	%d0,-(%sp)		| keycode with modifiers
 	pea	G_DEAD(%a2)		| state
-	.short	_KeyTranslate
+	.short	_KeyTranslate		| pops its three parameters and leaves the result
 	move.l	(%sp)+,%d0		| result: hi word first char (dead key), lo word the char
 	and.l	#0xFF,%d0
 	bra.s	9f

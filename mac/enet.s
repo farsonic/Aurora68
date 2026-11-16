@@ -119,8 +119,7 @@
 	.equ	G_SIQ,		G_PROT+NPROT*PROT_SIZE	| SlotIntQElement (16 bytes): the slot-9 interrupt handler
 	.equ	G_INTS,		G_SIQ+16	| long: slot interrupts taken
 	.equ	G_SIZE,		G_INTS+4
-	.equ	_SlotManager,	0xA06E
-	.equ	sIntInstall,	0x0B
+	.equ	_SIntInstall,	0xA075		| its own OS trap (Inside Macintosh V): A0 = SlotIntQElement, D0.w = slot
 	.equ	sIQType,	6
 	.equ	PI_SLOT,	9
 
@@ -269,8 +268,8 @@ d_open:
 	lea	slot_int(%pc),%a1
 	move.l	%a1,8(%a0)
 	move.l	%a3,12(%a0)		| sqParm: globals, back in A1
-	move.l	#(PI_SLOT<<16)+sIntInstall,%d0
-	.short	_SlotManager
+	move.w	#PI_SLOT,%d0
+	.short	_SIntInstall
 	tst.w	%d0
 	beq.s	1f
 	log	"ENET: SIntInstall failed"

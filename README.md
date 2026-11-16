@@ -12,8 +12,8 @@ documents for each part. The day-by-day record of what was found and fixed is `d
 | Directory | Contents |
 |---|---|
 | `emu68/` | the Emu68 fork, branch `psmac` (git submodule): the kernel. `src/psmac/` is the Macintosh host layer (bus bridge, 68030 MMU shim, mailbox window); `src/alice/` are the Alice68 service modules (network, Bluetooth, status, USB) with their Macintosh glue |
-| `mac/` | the Macintosh side in 68k assembly: the `.PiDisk` block driver, the `.ENET`-interface Ethernet driver, the loader extension, the PiNet test application, a Makefile |
-| `tools/` | ROM patching, declaration ROM and resource builders, the full-stack testbed launcher, the host network peer, debugging helpers |
+| `mac/` | the Macintosh side in 68k assembly: the `.PiDisk` block driver, the `.ENET`-interface Ethernet driver, the `.PiInput` keyboard-and-mouse driver, the loader extension, the PiNet test application, the PiWiFi and PiBlue applications, a Makefile (`make check` compares the drivers' structure offsets with the kernel's header) |
+| `tools/` | ROM patching, the initramfs container builder (`mkcontainer.py`: ROM, declaration ROM and firmware in one cpio for the Pi), the full-stack testbed launcher, the host network peer, debugging helpers |
 | `tools/mac/` | resource fork, MacBinary, application, extension and declaration ROM builders (pure Python) |
 | `rom/` | ROM patch descriptions and the patch tool's Makefile (ROM images themselves are not in the repository) |
 | `mame/` | Lua scripts for the MAME testbed and the testbed's configuration |
