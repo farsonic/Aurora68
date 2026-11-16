@@ -326,6 +326,32 @@ System 6 does not touch TimeDBRA that way and boots with either ROM.
    being redrawn through the bridge, and the system event queue, twenty events deep under
    System 7, would have dropped the rest; the script waits for the redraw now.
 
+24. **Memory sizes (17 November, small hours).** The user asked for more than the testbed's 8 MiB
+   and for Pis of every size. The testbed now runs with 16 MiB (`PSMAC_RAM`, default 16 in
+   `tools/run-psmac-qemu.sh`), and without `mac.ram=` the kernel takes what the Pi can spare,
+   up to `PSMAC_RAM_DEFAULT_MB`, keeping 192 MiB for itself. 64 MiB boots System 7.1 to the
+   Finder (fs133). 128 MiB does not: the boot bombs after the extensions with the 68k fetching
+   code from an odd address around 74 MiB (fs131, "translating at bad PC 046a003f"), which is
+   bank B territory in the IIci's memory map (bank A is the first 64 MiB at 0, bank B the next
+   at 0x04000000). The ROM sizes the two banks and builds its MMU tables for them; something
+   in how the kernel presents the second bank is wrong, and until that is found the default
+   stays at 64 MiB and `mac.ram=128` is a known crash. The RAM-size probe is the next thing to
+   read in docs/03's boot flow.
+25. **The second display, first light (17 November).** docs/10's design, built: a display block
+   in the slot window (psmb.h), the frame buffer in the window's top 512 KiB so that 24-bit
+   System 6 can reach it too, a video sResource with four modes (1, 2, 4, 8 bits at 640 by
+   480) copied field for field from the IIci ROM's own `Display_Video_Apple_RBV1`, a video
+   DRVR (`mac/pivideo.s`) answering Apple's Control and Status calls, and the service core
+   converting the Mac's indexed pixels through the colour table into the VideoCore frame
+   buffer that the boot splash set up, sixty ticks a second with the slot interrupt as the
+   card's VBL (`emu68/src/psmac/psmac_display.c`). QEMU emulates that frame buffer, and
+   `tools/vcshot.py` photographs it through the monitor socket: the testbed can show the Pi's
+   screen as well as the SE's. The first boot opened the driver from the declaration ROM, as
+   the Start Manager does for every video card, and the driver found no display block: it had
+   addressed the card at $F9058000, and in 24-bit mode, which is how the ROM boots, the slot's
+   megabyte is $900000-$9FFFFF (the slot number in bits 20-23), so $F9058000 was plain RAM.
+   The driver asks MMU32Bit now, as the disk and input drivers do.
+
 ## Next steps (in order, as of the evening of 16 November)
 1. MacTCP under System 6 (the same files; untested there), then a real client (Fetch, NCSA
    Telnet) against a TAP-bridged peer (`tools/pinet.py ... tap`), and the WiFi unit on hardware

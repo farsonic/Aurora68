@@ -12,6 +12,7 @@ syntax, `binutils-m68k-linux-gnu`) and is packaged by small Python tools in `too
 | `.Network_EtherNet_PiStorm` | `mac/enet.s` | `enet.bin.raw` | Apple `.ENET`-interface Ethernet driver over the NET service: EAttachPH/EDetachPH, ERead (default handler: queued parameter blocks completed from a VBL task), EWrite (WDS gather, source address inserted, 60-byte padding), EGetInfo (address + 3 counters), EAddMulti/EDelMulti, ESetGeneral, ERdCancel; real protocol handlers are called with the A3/A4/D1 convention and ReadPacket/ReadRest. Receives from the slot-9 interrupt (`SIntInstall`, docs/07) with the VBL task as a safety net. |
 | `.PiInput` | `mac/piinput.s` | `piinput.bin.raw` | Keyboards and mice attached to the Pi (USB on a Pi 4, Bluetooth) become Macintosh input. A VBL task drains the input ring the service core fills (`alice_psmac.h`), translates USB HID usages into Apple virtual key codes and, through `_KeyTranslate` and the Script Manager's current KCHR, into characters, keeps `KeyMap` and the modifier bits current, moves the cursor through `RawMouse`/`MTemp`/`CrsrNew`, and posts keyDown/keyUp/autoKey and mouseDown/mouseUp. Right and middle buttons become Command- and Option-clicks. Runs from the slot-9 interrupt (`SIntInstall`) with the VBL task as a safety net. Opened at start from the declaration ROM. |
 | `.Network_WiFi_PiStorm` | `mac/enet.s` assembled with `WIFI` | `enet_wifi.bin.raw` | The same driver for unit 0 of the network board, the WiFi chip, as a second network sResource (0x83) in slot 9: MacTCP and EtherTalk list two Ethernet cards and the user picks. In the testbed the unit is a simulated radio when `mac.wifisim=` is given (below); PiWiFi joins a network on hardware. |
+| `.Display_Video_PiStorm` | `mac/pivideo.s` | `pivideo.bin.raw` | The second display (docs/10): Apple's video driver interface over the display block in the slot window (psmb.h). Control: cscReset, cscSetMode (1/2/4/8 bits at 640 x 480), cscSetEntries and cscDirectSetEntries (the colour table), cscGrayPage, cscSetGray, cscSetInterrupt; Status: cscGetMode, cscGetEntries, cscGetPageCnt, cscGetPageBase, cscGetGray, cscGetInterrupt, cscGetDefaultMode. The frame buffer is the window's top 512 KiB ($980000 in 24-bit mode, $F9080000 in 32-bit); the Pi converts it to the VideoCore frame buffer sixty times a second and raises the slot interrupt as the card's VBL, which the driver's handler turns into `_DoVBLTask` for slot 9. Opened at boot by the Start Manager like any video card; `tools/vcshot.py` photographs the Pi's screen in the testbed. |
 | Declaration ROM | `tools/mac/mkdeclrom.py` | `psmac.declrom` | Slot $9 card: board sResource (BoardId 0x5053, vendor info), `PiDisk` functional sResource with the DRVR in its sDriverDir (opened at start by the Start Manager), `Network_EtherNet_PiStorm` sResource (catNetwork/typeEtherNet, not opened at start: the `.ENET` shell opens it through OpenSlot when MacTCP or EtherTalk ask), `PiInput` sResource (opened at start). Served by Emu68 at 0xF9FF0000 (`mac.declrom=` in the testbed). |
 | PiWiFi | `mac/piwifi.s` | `PiWiFi.bin` (application) | The Pi's WiFi from the Mac: shows unit 0 of the network board (state, the driver's message, network, signal, channel, address), scans and lists networks (name, signal, channel, security), joins a network (name and password typed on the status line, sent as a `struct an_join` through the command box), disconnects, switches the radio on or off. Single-letter commands in a text window, so it runs under System 6 without resources; the Macintosh counterpart of Alice68-Card. |
 | PiBlue | `mac/piblue.s` | `PiBlue.bin` (application) | The Pi's Bluetooth from the Mac: the host's state and message, its address, the paired devices (name, address, keyboard/mouse/device, connected), the devices found by the last scan (name, address, signal), the passkey while pairing; scan, pair with a found device, connect or forget a paired one, through the `struct an_bt` command box at board + 0x3800. |
@@ -23,6 +24,7 @@ syntax, `binutils-m68k-linux-gnu`) and is packaged by small Python tools in `too
 - `tools/mac/rsrc.py`: resource fork writer (type list, reference lists, name list; 28-byte map header) and MacBinary II writer. `hcopy -m` understands MacBinary, so files land on HFS images with their resource forks.
 - `tools/mac/mkinit.py`: DRVR + INIT code image → extension file. `tools/mac/mkapp.py`: flat code image → application (CODE 0 jump table, CODE 1, SIZE). `tools/mac/hfsput.py`: copy into a folder of an image (hfsutils). `tools/mac/bootblock.py`: show or set the boot blocks' startup names; `--startup PiNet` makes System 6 launch the application at boot (bbHelloName, what "Set Startup..." writes) with the Finder as the shell it returns to.
 - `tools/mac/declrom.py`: declaration ROM builder (format block at the top, sResource directory, entries with self-relative 24-bit offsets, sBlocks, sExec blocks, CRC = rotate-left-and-add verified against the IIci ROM's own built-in declaration ROM). `tools/declrom.py` parses the result.
+- `tools/vcshot.py`: a picture of the Pi's VideoCore display in the testbed (QEMU's emulated frame buffer, through the monitor socket): the second display (docs/10).
 - `tools/pinet.py`: host peer for the testbed net service (answers ARP, ICMP echo and UDP echo on port 7, or bridges to a TAP).
 
 ## Workflow in the testbed
@@ -52,7 +54,8 @@ The System 6 boot reaches PiNet in about three minutes; `docs/img/system6-pinet-
 it shows when everything works (the ARP reply arrives through the slot interrupt).
 `mac.inputabout=SECONDS` plays a second script that opens the Apple menu and chooses the first
 item, "About This Macintosh" (`docs/img/system71-about.png`: Macintosh IIci, System Software 7.1,
-8,192K, which is the testbed's `mac.ram=8`).
+8,192K, which is the testbed's `mac.ram=8`; with PiMach installed it says Macintosh SE,
+`docs/img/system71-about-se.png`, and with 128 MiB of Mac RAM `docs/img/system71-about-128mb.png`).
 
 The input path has no real keyboard in QEMU; `mac.inputtest=SECONDS` makes the service core play a
 scripted session that many seconds after the 68k starts (the mouse walks to the Apple menu, opens
@@ -60,6 +63,28 @@ and closes it, then five letters are typed) so the screenshots show whether `.Pi
 
 68k code can log to the Pi console through the INFO service (`log "text"` macro in the sources);
 the lines appear as `[MAC] ...` in `emu68.log`.
+
+## Saying "Macintosh SE": what it changes and what it might break
+PiMach changes two answers and nothing else: Gestalt's `'mach'` (5, gestaltMacSE, instead of
+11) and SysEnvirons' `machineType` (3, envSE, instead of 9). Every other selector keeps the
+ROM's truth: the processor (68030 as the kernel presents it), the FPU, QuickDraw's version,
+the MMU, 32-bit addressing, the Slot Manager, the sound and video drivers. Well-written
+software of the System 7 era asks those specific questions and never the machine type, so it
+does not notice. What can notice:
+- **Installers and System Enablers** that gate on the machine type ("this software cannot be
+  installed on this Macintosh"): Apple's installer scripts of the period check the box. Keep
+  PiMach out of the System Folder while installing system software, and put it back after.
+- **Programs that infer hardware from the box.** A game or utility that reads "SE" and assumes
+  a 68000, a 512x342 black-and-white screen, no FPU, no slots or 24-bit addressing may turn off
+  features it could use, or, if it then pokes SE hardware addresses, misbehave. The IIci ROM's
+  own code does not consult Gestalt for this; the ROM keeps thinking it is a IIci either way.
+- **The reverse case**: software that refuses to run on an SE at all (anything that needs
+  Color QuickDraw and checks the machine instead of the QuickDraw version) will refuse here.
+The remedy is always the same: PiMach is one file, and without it the machine is a IIci
+again. `make -C mac pimach-variant MACH=N` builds the extension with another type if a
+particular program wants one. The machine name the Finder shows comes from a string list
+indexed by this number, so only Apple's own types are available; an "Aurora68" name would need
+the Finder's resource edited rather than the answer changed.
 
 ## The WiFi in the testbed: a radio that exists only in software
 QEMU's raspi3b has no WiFi chip (no SDIO function, no firmware to load), so the real driver in

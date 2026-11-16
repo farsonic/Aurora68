@@ -48,10 +48,29 @@ driver's cscSetInterrupt). Until the virtual slot interrupt exists (docs/07), th
 counts frames into the mailbox and the Mac's Time Manager/VBL task approximates the 60 Hz tick; the
 proper version raises the slot-9 interrupt at every VideoCore vertical sync.
 
+## What exists (17 November)
+The first version is built and lit: `emu68/src/psmac/psmac_display.c` (the display block and the
+conversion into the VideoCore frame buffer the boot splash set up, sixty ticks a second, the
+slot interrupt as the VBL), `mac/pivideo.s` (the driver), the video sResource in
+`tools/mac/mkdeclrom.py --video` with the four indexed modes at 640 by 480, and
+`tools/vcshot.py`, which photographs QEMU's emulated VideoCore frame buffer through the monitor
+socket. The Start Manager opens the driver from the declaration ROM at boot, the system sets its
+colour table and luminance mode, and the desktop pattern appears on the Pi's screen beside the
+SE's (`docs/img/system71-second-display-desktop.png`). Two things changed from the design
+above as it met the machine: the frame buffer is in the window's top 512 KiB rather than out in
+the slot's 16 MiB, so that 24-bit System 6 can reach it (MinorBaseOS 0x80000: $980000 in 24-bit
+mode, $F9080000 in 32-bit, and the driver asks MMU32Bit which), and the Pi converts the indexed
+pixels instead of mapping the VideoCore buffer into the Mac's space, because the Mac's modes are
+1 to 8 bits with a colour table and the VideoCore's are direct; a 300 KB copy sixty times a
+second costs the service core nothing. Not yet: Monitors tried in the testbed (it needs a
+scripted trip through the control panel), 8-bit colour seen on the Pi's screen (the machinery
+is there: SetEntries fills the table, the conversion applies it), gamma, 16/32-bit direct modes,
+other resolutions, the HVS on real hardware.
+
 ## Order of work
 1. 1-bit and 8-bit modes at 640 by 480 (the IIci's own sizes), palette through the mailbox,
-   the frame buffer mapped at the slot's super space. QEMU's raspi3b has no VideoCore output, so
-   this is verified first by dumping the buffer from the testbed and then on hardware.
+   the frame buffer mapped at the slot's super space. (Done as described in "What exists":
+   QEMU does emulate the VideoCore frame buffer, so the testbed shows the second screen.)
 2. 16/32-bit modes, more resolutions, gamma, the Monitors control panel.
 3. Vertical blank through the slot interrupt.
 

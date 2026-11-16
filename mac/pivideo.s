@@ -1,0 +1,533 @@
+| pivideo.s — ".Display_Video_PiStorm": the second display, a NuBus video card whose monitor is the
+| Pi's HDMI output. MPL-2.0. GNU as MIT syntax, 68020.
+|
+| Backstory. Apple's video driver interface (Inside Macintosh: Devices, "Video Drivers"; Designing
+| Cards and Drivers, "Video Cards") is small and old: a card declares its modes in its declaration
+| ROM (tools/mac/mkdeclrom.py --video), the Start Manager opens the driver at boot, and from then on
+| QuickDraw draws straight into the frame buffer while the driver answers a dozen Control and Status
+| calls: which depth (cscSetMode / cscGetMode), the colour table (cscSetEntries / cscGetEntries),
+| a grey screen after a mode change (cscGrayPage), gamma (ignored here), luminance mapping
+| (cscSetGray), and whether the card should raise its vertical-blank interrupt (cscSetInterrupt).
+| The hardware behind this driver is the service core: the frame buffer is the top 512 KiB of the
+| slot window (MinorBaseOS 0x80000: $F9080000 in 32-bit mode, $980000 in 24-bit mode, which is
+| how the ROM boots and how System 6 stays; the driver asks MMU32Bit which it is), the
+| colour table and the depth live in the display block at window + $58000 (psmb.h, struct
+| psmb_display), and the Pi converts the picture to its VideoCore frame buffer sixty times a
+| second (emu68/src/psmac/psmac_display.c) and raises the slot interrupt at each tick while the
+| driver asks for it. That interrupt is the card's VBL: the handler below calls _DoVBLTask for
+| slot 9, which runs QuickDraw's cursor task and whatever SlotVInstall queued for this screen.
+|
+| What is not here yet: direct 16/32-bit modes, gamma tables, more than one resolution, the
+| sPRAMInit record for a remembered depth. Monitors can arrange the screen and set 1, 4, 16 or 256
+| colours or greys; the Finder treats it as any second monitor.
+
+	.text
+	.globl	drvr_start
+
+	.equ	WIN32,		0xF9000000	| the slot window in 32-bit mode ...
+	.equ	WIN24,		0x00900000	| ... and in 24-bit mode, where slot 9 is $900000-$9FFFFF (the slot
+	.equ	OFF_DISP,	0x58000		| number sits in bits 20-23, not 24-27: $F9080000 is RAM there)
+	.equ	OFF_FRAME,	0x80000
+	.equ	FRAME_SIZE,	0x80000
+	.equ	MMU32Bit,	0x0CB2
+	.equ	DISP_MAGIC,	0x41363856	| 'A68V'
+	.equ	D_MAGIC,	0
+	.equ	D_WIDTH,	8
+	.equ	D_HEIGHT,	12
+	.equ	D_DEPTH,	16
+	.equ	D_ROWBYTES,	20
+	.equ	D_FLAGS,	32
+	.equ	D_VBL_ENABLE,	36
+	.equ	D_VBL_PENDING,	40
+	.equ	D_CLUT_SEQ,	48
+	.equ	D_CLUT,		64
+	.equ	DISP_ENABLED,	1
+	.equ	DISP_GRAY,	2
+
+	.equ	SLOT,		9
+	.equ	ioTrap,		6
+	.equ	csCode,		26
+	.equ	csParam,	28
+	.equ	dCtlStorage,	20
+	.equ	noQueueBit,	9
+	.equ	JIODone,	0x08FC
+	.equ	noErr,		0
+	.equ	controlErr,	-17
+	.equ	statusErr,	-18
+	.equ	paramErr,	-50
+	.equ	_NewPtrSysClear, 0xA71E
+	.equ	_SIntInstall,	0xA075
+	.equ	_SIntRemove,	0xA076
+	.equ	_DoVBLTask,	0xA072		| D0.w = slot: the Vertical Retrace Manager runs that slot's VBL queue
+
+| video driver control codes (Video.h)
+	.equ	cscReset,	0
+	.equ	cscKillIO,	1
+	.equ	cscSetMode,	2
+	.equ	cscSetEntries,	3
+	.equ	cscSetGamma,	4
+	.equ	cscGrayPage,	5
+	.equ	cscSetGray,	6
+	.equ	cscSetInterrupt, 7
+	.equ	cscDirectSetEntries, 8
+	.equ	cscSetDefaultMode, 9
+| status codes
+	.equ	cscGetMode,	2
+	.equ	cscGetEntries,	3
+	.equ	cscGetPageCnt,	4
+	.equ	cscGetPageBase,	5
+	.equ	cscGetGray,	6
+	.equ	cscGetInterrupt, 7
+	.equ	cscGetGamma,	8
+	.equ	cscGetDefaultMode, 9
+| the records csParam points at
+	.equ	csMode,		0		| VDPageInfo: csMode.w, csData.l, csPage.w, csBaseAddr.l
+	.equ	csData,		2
+	.equ	csPage,		6
+	.equ	csBaseAddr,	8
+	.equ	csTable,	0		| VDSetEntryRecord: csTable.l, csStart.w, csCount.w
+	.equ	csStart,	4
+	.equ	csCount,	6
+	.equ	firstVidMode,	128		| mode ids: 128 one bit, 129 two, 130 four, 131 eight
+
+	.equ	G_SIQ,		0		| SlotIntQElement: sqLink 4, sqType 2, sqPrio 2, sqAddr 4, sqParm 4
+	.equ	G_MODE,		16		| word: the current mode id
+	.equ	G_GRAY,		18		| word: luminance mapping on
+	.equ	G_INT,		20		| word: VBL interrupts wanted
+	.equ	G_INTS,		22		| long: VBL interrupts taken
+	.equ	G_SIZE,		26
+
+drvr_start:
+	.short	0x4C00			| dNeedLock | dStatEnable | dCtlEnable
+	.short	0, 0, 0			| drvrDelay, drvrEMask, drvrMenu
+	.short	d_open-drvr_start
+	.short	d_prime-drvr_start
+	.short	d_control-drvr_start
+	.short	d_status-drvr_start
+	.short	d_close-drvr_start
+	.byte	22
+	.ascii	".Display_Video_PiStorm"
+	.even
+
+	.macro	log text
+	movem.l	%d0-%d1/%a0-%a1,-(%sp)
+	lea	9f(%pc),%a1
+	bsr	do_log
+	bra.s	8f
+9:	.ascii	"\text"
+	.byte	0
+	.even
+8:	movem.l	(%sp)+,%d0-%d1/%a0-%a1
+	.endm
+
+| ---- open: find the display block, announce the driver, install the VBL handler ----
+d_open:
+	movem.l	%d1-%d7/%a0-%a4,-(%sp)
+	move.l	%a1,%a4			| DCE
+	log	"PiVideo: open"
+	tst.l	dCtlStorage(%a4)
+	bne	open_ok
+	bsr	disp
+	move.l	%a0,%a3
+	cmp.l	#DISP_MAGIC,D_MAGIC(%a3)
+	bne	open_fail		| the service core has no display block: no card
+	move.l	#G_SIZE,%d0
+	.short	_NewPtrSysClear
+	move.l	%a0,%d0
+	beq	open_fail
+	move.l	%a0,dCtlStorage(%a4)
+	move.l	%a0,%a2			| globals
+	move.w	#firstVidMode,G_MODE(%a2)
+	move.l	#1,D_DEPTH(%a3)
+	move.l	#80,D_ROWBYTES(%a3)
+	clr.l	D_VBL_ENABLE(%a3)
+	| the one-bit table: 0 white, 1 black (QuickDraw's convention for indexed modes)
+	move.l	#0x00FFFFFF,D_CLUT(%a3)
+	clr.l	D_CLUT+4(%a3)
+	addq.l	#1,D_CLUT_SEQ(%a3)
+	bsr	gray_fill
+	| the VBL handler: a slot interrupt handler of our own (Inside Macintosh V, SIntInstall)
+	lea	G_SIQ(%a2),%a0
+	move.w	#6,4(%a0)		| sqType = sIQType
+	move.w	#1,6(%a0)		| sqPrio: between the network driver's and the catch-all
+	lea	slot_int(%pc),%a1
+	move.l	%a1,8(%a0)		| sqAddr
+	move.l	%a2,12(%a0)		| sqParm: our globals, handed back in A1
+	moveq	#SLOT,%d0
+	.short	_SIntInstall
+	tst.w	%d0
+	bne.s	1f
+	log	"PiVideo: VBL handler installed"
+1:	move.l	#DISP_ENABLED,D_FLAGS(%a3)	| the Pi starts converting frames
+	log	"PiVideo: 640x480, 1 bit, frame buffer at window + $80000"
+open_ok:
+	moveq	#noErr,%d0
+	movem.l	(%sp)+,%d1-%d7/%a0-%a4
+	rts
+open_fail:
+	log	"PiVideo: open failed (no display block)"
+	moveq	#-1,%d0			| openErr
+	movem.l	(%sp)+,%d1-%d7/%a0-%a4
+	rts
+
+d_prime:
+	moveq	#paramErr,%d0
+	bra	iodone
+
+d_close:
+	move.l	dCtlStorage(%a1),%d0
+	beq.s	1f
+	move.l	%d0,%a2
+	bsr	disp
+	move.l	%a0,%a1
+	move.l	%a2,%a0
+	clr.l	D_FLAGS(%a1)
+	clr.l	D_VBL_ENABLE(%a1)
+	lea	G_SIQ(%a0),%a0
+	moveq	#SLOT,%d0
+	.short	_SIntRemove
+1:	moveq	#noErr,%d0
+	rts
+
+| ---- control ----
+d_control:
+	movem.l	%d1-%d7/%a0-%a4,-(%sp)
+	move.l	%a0,%a3			| PB
+	move.l	%a1,%a4			| DCE
+	move.l	dCtlStorage(%a4),%a2	| globals
+	bsr	disp			| a0 = the display block
+	move.l	csParam(%a3),%a1	| the record
+	move.w	csCode(%a3),%d0
+	cmp.w	#cscReset,%d0
+	beq.s	c_reset
+	cmp.w	#cscKillIO,%d0
+	beq	c_ok
+	cmp.w	#cscSetMode,%d0
+	beq.s	c_setmode
+	cmp.w	#cscSetEntries,%d0
+	beq	c_setentries
+	cmp.w	#cscDirectSetEntries,%d0
+	beq	c_setentries
+	cmp.w	#cscSetGamma,%d0
+	beq	c_ok			| no gamma table yet: the Pi shows the colours as given
+	cmp.w	#cscGrayPage,%d0
+	beq	c_graypage
+	cmp.w	#cscSetGray,%d0
+	beq	c_setgray
+	cmp.w	#cscSetInterrupt,%d0
+	beq	c_setint
+	cmp.w	#cscSetDefaultMode,%d0
+	beq	c_ok			| no PRAM yet: the card wakes up in one bit
+	moveq	#controlErr,%d0
+	bra	c_out
+c_reset:
+	move.w	#firstVidMode,G_MODE(%a2)
+	move.l	#1,D_DEPTH(%a0)
+	move.l	#80,D_ROWBYTES(%a0)
+	clr.w	G_GRAY(%a2)
+	bsr	gray_fill
+	bra	c_ok
+c_setmode:
+	| csMode: 128..131; csPage must be 0 (one page); returns csBaseAddr
+	move.w	csMode(%a1),%d1
+	sub.w	#firstVidMode,%d1
+	bmi	c_param
+	cmp.w	#3,%d1
+	bhi	c_param
+	tst.w	csPage(%a1)
+	bne	c_param
+	move.w	csMode(%a1),G_MODE(%a2)
+	moveq	#1,%d2
+	lsl.w	%d1,%d2			| depth 1, 2, 4, 8
+	move.l	%d2,D_DEPTH(%a0)
+	mulu	#80,%d2
+	move.l	%d2,D_ROWBYTES(%a0)
+	bsr	frame_addr
+	bra	c_ok
+c_setentries:
+	| csTable -> ColorSpec[]: value.w, red.w, green.w, blue.w; csStart -1: use the values as indexes;
+	| csCount is the number of entries minus one
+	move.l	csTable(%a1),%d0
+	beq	c_param
+	move.l	%d0,%a1
+	move.l	csParam(%a3),%d0
+	move.l	%d0,%a3			| a3 = the record now (the PB pointer is on the stack)
+	move.w	csStart(%a3),%d3
+	move.w	csCount(%a3),%d4
+	moveq	#0,%d5			| index when csStart >= 0
+	move.w	%d3,%d5
+1:	move.w	(%a1),%d6		| value
+	tst.w	%d3
+	bmi.s	2f
+	move.w	%d5,%d6			| sequential
+2:	and.w	#0xFF,%d6
+	move.w	2(%a1),%d0		| red: the high byte of each 16-bit component
+	lsr.w	#8,%d0
+	moveq	#0,%d7
+	move.b	%d0,%d7
+	lsl.l	#8,%d7
+	move.w	4(%a1),%d0		| green
+	lsr.w	#8,%d0
+	move.b	%d0,%d7
+	lsl.l	#8,%d7
+	move.w	6(%a1),%d0		| blue
+	lsr.w	#8,%d0
+	move.b	%d0,%d7
+	lea	D_CLUT(%a0),%a2
+	move.l	%d7,(%a2,%d6.w*4)
+	addq.l	#8,%a1
+	addq.w	#1,%d5
+	dbf	%d4,1b
+	addq.l	#1,D_CLUT_SEQ(%a0)
+	bra	c_ok
+c_graypage:
+	tst.w	csPage(%a1)
+	bne	c_param
+	bsr	gray_fill
+	bra	c_ok
+c_setgray:
+	moveq	#0,%d1
+	move.b	csMode(%a1),%d1		| 0 colour, 1 luminance
+	move.w	%d1,G_GRAY(%a2)
+	move.l	D_FLAGS(%a0),%d0
+	and.l	#~DISP_GRAY,%d0
+	tst.w	%d1
+	beq.s	1f
+	or.l	#DISP_GRAY,%d0
+1:	move.l	%d0,D_FLAGS(%a0)
+	addq.l	#1,D_CLUT_SEQ(%a0)	| the Pi rebuilds its table with or without the mapping
+	bra	c_ok
+c_setint:
+	moveq	#0,%d1
+	move.b	csMode(%a1),%d1		| 0 enable, 1 disable
+	eor.w	#1,%d1			| -> 1 = wanted
+	move.w	%d1,G_INT(%a2)
+	move.l	%d1,D_VBL_ENABLE(%a0)
+	bra	c_ok
+c_param:
+	moveq	#paramErr,%d0
+	bra.s	c_out
+c_ok:
+	moveq	#noErr,%d0
+c_out:
+	movem.l	(%sp)+,%d1-%d7/%a0-%a4	| a0 = PB, a1 = DCE again for IODone
+	bra	iodone
+
+| ---- status ----
+d_status:
+	movem.l	%d1-%d7/%a0-%a4,-(%sp)
+	move.l	%a0,%a3
+	move.l	%a1,%a4
+	move.l	dCtlStorage(%a4),%a2
+	bsr	disp
+	move.l	csParam(%a3),%a1
+	move.w	csCode(%a3),%d0
+	cmp.w	#cscGetMode,%d0
+	beq.s	s_getmode
+	cmp.w	#cscGetEntries,%d0
+	beq.s	s_getentries
+	cmp.w	#cscGetPageCnt,%d0
+	beq	s_pagecnt
+	cmp.w	#cscGetPageBase,%d0
+	beq	s_pagebase
+	cmp.w	#cscGetGray,%d0
+	beq	s_getgray
+	cmp.w	#cscGetInterrupt,%d0
+	beq	s_getint
+	cmp.w	#cscGetDefaultMode,%d0
+	beq	s_defmode
+	moveq	#statusErr,%d0		| cscGetGamma and the rest
+	bra	c_out
+s_getmode:
+	move.w	G_MODE(%a2),csMode(%a1)
+	clr.w	csPage(%a1)
+	bsr	frame_addr
+	bra	c_ok
+s_getentries:
+	move.l	csTable(%a1),%d0
+	beq	c_param
+	move.w	csStart(%a1),%d3
+	move.w	csCount(%a1),%d4
+	move.l	%d0,%a1
+	moveq	#0,%d5
+	move.w	%d3,%d5
+	lea	D_CLUT(%a0),%a2
+1:	move.w	(%a1),%d6
+	tst.w	%d3
+	bmi.s	2f
+	move.w	%d5,%d6
+	move.w	%d6,(%a1)
+2:	and.w	#0xFF,%d6
+	move.l	(%a2,%d6.w*4),%d7	| 0x00RRGGBB -> three 16-bit components (byte doubled)
+	move.l	%d7,%d0
+	swap	%d0
+	bsr	wide
+	move.w	%d0,2(%a1)
+	move.l	%d7,%d0
+	lsr.l	#8,%d0
+	bsr	wide
+	move.w	%d0,4(%a1)
+	move.l	%d7,%d0
+	bsr	wide
+	move.w	%d0,6(%a1)
+	addq.l	#8,%a1
+	addq.w	#1,%d5
+	dbf	%d4,1b
+	bra	c_ok
+s_pagecnt:
+	move.w	#1,csPage(%a1)
+	bra	c_ok
+s_pagebase:
+	tst.w	csPage(%a1)
+	bne	c_param
+	bsr	frame_addr
+	bra	c_ok
+| frame_addr: csBaseAddr of the record at a1 = the frame buffer (a0 is kept)
+frame_addr:
+	move.l	%a0,-(%sp)
+	bsr	frame
+	move.l	%a0,csBaseAddr(%a1)
+	move.l	(%sp)+,%a0
+	rts
+s_getgray:
+	move.w	G_GRAY(%a2),%d0
+	move.b	%d0,csMode(%a1)
+	bra	c_ok
+s_getint:
+	move.w	G_INT(%a2),%d0
+	eor.w	#1,%d0			| 0 = enabled, 1 = disabled
+	move.b	%d0,csMode(%a1)
+	bra	c_ok
+s_defmode:
+	move.b	#firstVidMode,csMode(%a1)
+	bra	c_ok
+| wide: d0.b -> d0.w = the byte in both halves (8-bit component to 16-bit)
+wide:
+	and.w	#0xFF,%d0
+	move.w	%d0,%d1
+	lsl.w	#8,%d1
+	or.w	%d1,%d0
+	rts
+
+| ---- the grey screen: a 50% pattern of index 0 and the depth's last index, rows alternating ----
+gray_fill:
+	movem.l	%d0-%d3/%a0-%a1,-(%sp)
+	bsr	disp
+	move.l	%a0,%a1
+	bsr	frame
+	move.l	D_DEPTH(%a1),%d0
+	move.b	#0xAA,%d1		| 1 bit: 10101010 / 01010101
+	move.b	#0x55,%d2
+	cmp.l	#1,%d0
+	beq.s	1f
+	move.b	#0x33,%d1		| 2 bits: 00 11 00 11 / 11 00 11 00
+	move.b	#0xCC,%d2
+	cmp.l	#2,%d0
+	beq.s	1f
+	move.b	#0x0F,%d1		| 4 bits
+	move.b	#0xF0,%d2
+	cmp.l	#4,%d0
+	beq.s	1f
+	move.b	#0x00,%d1		| 8 bits: 00 FF / FF 00, two bytes a step (below)
+	move.b	#0xFF,%d2
+1:	move.l	#480,%d3		| rows
+2:	move.l	D_ROWBYTES(%a1),%d0
+	btst	#0,%d3
+	beq.s	3f
+	exg	%d1,%d2			| odd rows start with the other byte
+3:	bsr.s	row_fill
+	btst	#0,%d3
+	beq.s	4f
+	exg	%d1,%d2
+4:	subq.l	#1,%d3
+	bne.s	2b
+	movem.l	(%sp)+,%d0-%d3/%a0-%a1
+	rts
+| row_fill: a0 -> row (advanced), d0 = bytes, d1/d2 = the two bytes; 8-bit rows alternate the bytes
+row_fill:
+	movem.l	%d0/%d3,-(%sp)
+	move.l	D_DEPTH(%a1),%d3
+	cmp.l	#8,%d3
+	beq.s	2f
+1:	move.b	%d1,(%a0)+
+	subq.l	#1,%d0
+	bne.s	1b
+	bra.s	9f
+2:	move.b	%d1,(%a0)+
+	move.b	%d2,(%a0)+
+	subq.l	#2,%d0
+	bne.s	2b
+9:	movem.l	(%sp)+,%d0/%d3
+	rts
+
+| ---- the slot interrupt handler: the card's VBL ----
+| A1 = sqParm (globals). Ours only when the Pi flagged a tick: clear it, run slot 9's VBL queue
+| (the cursor, SlotVInstall tasks), say so with D0 = 1.
+slot_int:
+	movem.l	%d1-%d2/%a0-%a2,-(%sp)
+	move.l	%a1,%a2
+	bsr	disp
+	tst.l	D_VBL_PENDING(%a0)
+	beq.s	1f
+	clr.l	D_VBL_PENDING(%a0)
+	addq.l	#1,G_INTS(%a2)
+	cmp.l	#1,G_INTS(%a2)
+	bne.s	2f
+	log	"PiVideo: first VBL interrupt"
+2:	moveq	#SLOT,%d0
+	.short	_DoVBLTask
+	moveq	#1,%d0
+	bra.s	3f
+1:	moveq	#0,%d0
+3:	movem.l	(%sp)+,%d1-%d2/%a0-%a2
+	rts
+
+| window: a0 = the slot window for the addressing mode the Mac is in now
+window:
+	lea	WIN32,%a0
+	tst.b	MMU32Bit
+	bne.s	1f
+	lea	WIN24,%a0
+1:	rts
+| disp: a0 = the display block; frame: a0 = the frame buffer (both for the current mode)
+disp:
+	bsr.s	window
+	lea	OFF_DISP(%a0),%a0
+	rts
+frame:
+	bsr.s	window
+	lea	OFF_FRAME(%a0),%a0
+	rts
+
+| ---- common exit: immediate calls return, queued calls go through IODone ----
+iodone:
+	btst	#noQueueBit,ioTrap(%a0)
+	beq.s	1f
+	rts
+1:	move.l	JIODone,-(%sp)
+	rts
+
+| ---- the Pi's log through the INFO service (as the other drivers do it) ----
+do_log:
+	lea	WIN32,%a0
+	tst.b	0x0CB2
+	bne.s	1f
+	lea	0x00900000,%a0
+1:	lea	0x1000(%a0),%a0
+	moveq	#0,%d1
+2:	tst.b	(%a1,%d1.w)
+	beq.s	3f
+	addq.w	#1,%d1
+	bra.s	2b
+3:	move.w	#2,8(%a0)
+	move.l	%a1,28(%a0)
+	move.l	%d1,32(%a0)
+	move.l	(%a0),%d0
+	addq.l	#1,%d0
+	move.l	%d0,(%a0)
+	move.l	#200000,%d1
+4:	cmp.l	4(%a0),%d0
+	beq.s	5f
+	subq.l	#1,%d1
+	bne.s	4b
+5:	rts

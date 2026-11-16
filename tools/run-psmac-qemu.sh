@@ -8,7 +8,7 @@ IMG=${IMG:-psmac-build/Emu68.img}
 DTB=${DTB:-firmware/bcm2710-rpi-3-b.dtb}
 ROM=${ROM:-rom/original/MacIIci_368CADFE.rom}
 SOCK=${PSMAC_BRIDGE_SOCK:-/tmp/psmac-bridge.sock}
-RAM=${PSMAC_RAM:-8}
+RAM=${PSMAC_RAM-16}
 [ -f "$IMG" ] || { echo "missing $IMG (build the psmac variant first)"; exit 1; }
 [ -f "$DTB" ] || { echo "missing device tree blob"; exit 1; }
 if [ "${PSMAC_TRANSPORT:-semihost}" = semihost ]; then

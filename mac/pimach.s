@@ -11,7 +11,9 @@
 | returning 5, gestaltMacSE (Inside Macintosh: Operating System Utilities, "Gestalt Manager";
 | the machine types are in Gestalt.h: gestaltClassic 1 ... gestaltMacSE 5, gestaltMacIIci 11).
 |
-| The selector function must outlive the INIT, so it is copied into a block in the system heap.
+| SysEnvirons, the older call that System 6's Finder and pre-Gestalt programs use, gets a tail
+| patch that turns its "IIci" into "SE" as well. Both routines must outlive the INIT, so they are
+| copied into a block in the system heap.
 | Everything else the ROM says about itself (processor, ROM version, slots) is left as it is:
 | a program that asks for the processor still hears 68030, which is what the kernel presents.
 | Build: make -C mac (PiMach.bin); copy into the System Folder (System 6) or Extensions (7).
@@ -21,6 +23,11 @@
 	.equ	_NewPtrSys,	0xA51E
 	.equ	_ReplaceGestalt, 0xA5AD
 	.equ	_Gestalt,	0xA1AD
+	.equ	_NGetTrapAddress, 0xA346	| OS-trap form (bit 9 set)
+	.equ	_NSetTrapAddress, 0xA247
+	.equ	trapSysEnvirons, 0xA090
+	.equ	envMacIIci,	9		| SysEnvirons' own machine codes (Inside Macintosh: Operating
+	.equ	envSE,		3		| System Utilities, "System Environment Record"), not Gestalt's
 	.ifdef	MACH
 	.equ	gestaltMacSE,	MACH		| another type for experiments (make MACH=11 is a IIci again)
 	.else
@@ -39,10 +46,20 @@ init_start:
 1:	move.b	(%a2)+,(%a1)+
 	subq.l	#1,%d1
 	bne.s	1b
+	move.l	%a0,%a2			| the block: the selector function first, then the SysEnvirons patch
 	move.l	#0x6D616368,%d0		| 'mach'
 	.short	_ReplaceGestalt	| A0 = the new function, D0 = the selector; returns A0 = the old one
 	tst.w	%d0
 	bne.s	bad
+	| SysEnvirons too: the System 6 Finder's "About the Finder" and programs older than the
+	| Gestalt Manager ask it, and it answers from the ROM's box table. A tail patch: the old
+	| routine runs, then an answer of "IIci" in the record's machineType word becomes "SE".
+	move.w	#trapSysEnvirons,%d0
+	.short	_NGetTrapAddress	| D0 = trap -> A0 = its routine
+	move.l	%a0,env_old-sel_start(%a2)
+	lea	env_patch-sel_start(%a2),%a0
+	move.w	#trapSysEnvirons,%d0
+	.short	_NSetTrapAddress	| A0 = routine, D0 = trap
 	| read it back and say so in the Pi's log: "PiMach: Gestalt mach now N" (one digit, 1-9)
 	move.l	#0x6D616368,%d0
 	.short	_Gestalt		| D0 = selector -> A0 = response, D0 = error
@@ -100,4 +117,16 @@ sel_start:
 	move.l	#gestaltMacSE,(%a0)
 	clr.w	12(%sp)			| noErr
 	rtd	#8
+| the SysEnvirons patch: A0 = the record, D0.w = the version asked for; returns D0 = error.
+| The old routine's address is kept right behind it (filled in by the INIT).
+env_patch:
+	move.l	%a0,-(%sp)
+	move.l	env_old(%pc),%a1
+	jsr	(%a1)
+	move.l	(%sp)+,%a0
+	cmp.w	#envMacIIci,2(%a0)	| machineType
+	bne.s	1f
+	move.w	#envSE,2(%a0)
+1:	rts
+env_old:	.long	0
 sel_end:
