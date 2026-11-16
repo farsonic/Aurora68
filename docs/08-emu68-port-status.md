@@ -194,7 +194,13 @@ tools/run-fullstack.sh 400` selects another image.
    Items (PiNet, PiStatus). The one 7.1 boot where they did launch was the one where the PiDisk
    extension had done nothing; in between it had been taught to MountVol the ROM driver's drives
    at INIT time. The extension is back to doing nothing when the ROM driver is present: the
-   driver's own disk-inserted events mount the volume under 7.1 as well.
+   driver's own disk-inserted events mount the volume under 7.1 as well. With that, **System
+   7.1 runs the stack end to end too** (`docs/img/system71-pinet-arp.png`): PiNet from Startup
+   Items, the card, `.ENET` (refNum -53), the ARP round trip. One difference from System 6 is
+   visible in the log: the reply was taken by the driver's VBL poll before the slot interrupt
+   got its turn (the catch-all claimed the interrupt), which is the race the catch-all exists
+   for; the VBL fallback's first-phase period is the thing to lengthen when the interrupt is
+   to be the usual path.
 
 ### Debug aids added
 - `mac.dbg=LO,HI` bootarg: translator prints the blocks it creates in that 68k range.
