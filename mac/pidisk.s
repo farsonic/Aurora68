@@ -98,7 +98,8 @@ drvr_start:
 	.even
 
 
-| ---- log through the Pi's INFO service: `log "text"` (trashes nothing; spins briefly) ----
+| ---- log through the Pi's INFO service: `log "text"` (trashes nothing; spins briefly).
+|      The macro uses local labels 8 and 9: never branch to 8f/9f across a log. ----
 	.macro	log text
 	movem.l	%d0-%d1/%a0-%a1,-(%sp)
 	lea	9f(%pc),%a1
@@ -219,14 +220,15 @@ open_loop:
 	move.l	%d5,%d1
 	mulu	#DQE_SIZE,%d1
 	lea	G_DQE(%a2,%d1.l),%a1
-	move.b	#8,(%a1)		| disk in place, nonejectable (-8? 8 = nonejectable)
-	move.b	#0,1(%a1)		| don't verify
+	| the four flag bytes before the DrvQEl: 0 bit 7 = locked, 1 = disk state (8 = nonejectable disk
+	| in place), 2 internal, 3 internal
+	move.b	#0,(%a1)
+	move.b	#8,1(%a1)
 	move.b	#0,2(%a1)
 	move.b	#0,3(%a1)
-	tst.b	BD_FLAGS+3(%a0)		| writable?
-	btst	#1,BD_FLAGS+3(%a0)
+	btst	#1,BD_FLAGS+3(%a0)	| writable?
 	bne.s	1f
-	move.b	#0x80,3(%a1)		| locked? (bit 7 of byte 3 is not standard; locking handled via wPrErr)
+	move.b	#0x80,(%a1)		| read-only image: locked
 1:	lea	4(%a1),%a1		| DrvQEl
 	clr.l	0(%a1)			| qLink
 	move.w	#1,4(%a1)		| qType 1: dQDrvSz2 holds the high word
@@ -236,12 +238,12 @@ open_loop:
 	move.w	%d0,12(%a1)		| dQDrvSz (low)
 	swap	%d0
 	move.w	%d0,14(%a1)		| dQDrvSz2 (high)
-	| _AddDrive: a0 = DrvQEl, d0 = refNum<<16 | drive
+	| _AddDrive: a0 = DrvQEl, d0 = drive<<16 | refNum (it fills dQDrive/dQRefNum from d0)
 	movem.l	%a0,-(%sp)
 	move.l	%a1,%a0
-	move.w	dCtlRefNum(%a4),%d0
-	swap	%d0
 	move.w	%d7,%d0
+	swap	%d0
+	move.w	dCtlRefNum(%a4),%d0
 	.short	_AddDrive
 	movem.l	(%sp)+,%a0
 	log	"PiDisk: drive added" 
@@ -448,11 +450,11 @@ mount_vbl:
 	move.w	%d1,%d0
 	.short	0xA02F			| _PostEvent
 	tst.w	%d0
-	bne.s	9f
+	bne.s	6f
 	log	"PiDisk: diskEvt posted"
-	bra.s	8f
-9:	log	"PiDisk: PostEvent failed"
-8:	addq.w	#1,%d1
+	bra.s	7f
+6:	log	"PiDisk: PostEvent failed"
+7:	addq.w	#1,%d1
 	dbf	%d2,1b
 2:	move.w	#300,G_VBL+10(%a2)	| rearm
 	bra	4f
