@@ -16,9 +16,9 @@
 | the virtual key code in bits 8-15 (the Apple layout-independent code, 0x00 = A, 0x24 = Return)
 | and the character in bits 0-7. The virtual code comes from the usb_to_mac table below (Inside
 | Macintosh: Text, "Virtual Key Codes", against the USB HID Usage Tables 1.12 keyboard page). The
-| character comes from the current KCHR resource through _KeyTranslate (Inside Macintosh: Text,
-| KeyTranslate: pass the KCHR, the virtual code with the modifiers in the high byte, a dead-key
-| state) so the keyboard layout the user chose in the Keyboard control panel is honoured. Modifier
+| character comes from a KCHR resource read directly (Inside Macintosh: Text, "KCHR resource":
+| the modifier byte picks a table, the virtual code picks the character; dead keys not yet), for
+| now the ROM's U.S. layout, later the one chosen in the Keyboard control panel. Modifier
 | state (Shift, Option, Command, Control, Caps Lock) is kept in the driver from the HID modifier
 | byte and OR'd into the event's modifiers word the way the ADB Manager does.
 |
@@ -74,7 +74,10 @@
 	.equ	KeyTime,	0x0186		| long: when it went down
 	.equ	KeyRepTime,	0x018A		| long: last repeat
 	.equ	Ticks,		0x016A
-	.equ	KCHRPtr,	0x1B40		| long: the current keyboard layout (KCHR), kept by the Script Manager
+	.equ	_GetResource,	0xA9A0
+	.equ	_GetHandleSize,	0xA025
+	.equ	_NewPtrSys,	0xA51E
+	.equ	_StripAddress,	0xA055
 	.equ	dCtlStorage,	20
 	.equ	noErr,		0
 	.equ	ioErr,		-36
@@ -83,7 +86,6 @@
 	.equ	_NewPtrSysClear,	0xA71E
 	.equ	_VInstall,	0xA033
 	.equ	_PostEvent,	0xA02F
-	.equ	_KeyTranslate,	0xA9C3
 	.equ	mouseDown,	1
 	.equ	mouseUp,	2
 	.equ	keyDown,	3
@@ -104,12 +106,13 @@
 	.equ	G_SELF,		G_VBL+14	| long: globals pointer, read by the VBL task through a0
 	.equ	G_MODS,		G_SELF+4	| word: current modifier bits in event-record form
 	.equ	G_BUTTONS,	G_MODS+2	| word: last mouse buttons from the ring
-	.equ	G_DEAD,		G_BUTTONS+2	| long: KeyTranslate dead-key state
+	.equ	G_DEAD,		G_BUTTONS+2	| long: dead-key state (unused until dead keys are composed)
 	.equ	G_CAPS,		G_DEAD+4	| word: caps lock toggled on
 	.equ	G_SIQ,		G_CAPS+2	| SlotIntQElement: sqLink 4, sqType 2, sqPrio 2, sqAddr 4, sqParm 4
 	.equ	G_INTS,		G_SIQ+16	| long: slot interrupts taken (for the log)
 	.equ	G_SIQ2,		G_INTS+4	| a second queue element: the catch-all handler (below)
-	.equ	G_SIZE,		G_SIQ2+16
+	.equ	G_KCHR,		G_SIQ2+16	| long: the keyboard layout (KCHR data), 0 = built-in table
+	.equ	G_SIZE,		G_KCHR+4
 	.equ	_SIntInstall,	0xA075		| its own OS trap (Inside Macintosh V): A0 = SlotIntQElement, D0.w = slot
 	.equ	sIQType,	6
 	.equ	PI_SLOT,	9
@@ -229,6 +232,47 @@ d_open:
 	move.l	IN_HEAD(%a0),IN_TAIL(%a0)	| start from now: drop what happened before boot
 	move.w	#0x8000,G_BUTTONS(%a2)	| "unknown" so the first report sets MBState
 	log	"PiInput: ring found"
+	| the keyboard layout: 'KCHR' 0 (U.S.) from the resource chain (the System file's or the
+	| ROM's), copied into a block of our own so its address can be used from interrupt level.
+	| (The first version read the low-memory long at $1B40, documented as KCHRPtr: under 7.1 on
+	| this ROM it holds the address of a code patch, and every key came out as a random letter.)
+	clr.l	-(%sp)
+	move.l	#0x4B434852,-(%sp)	| 'KCHR'
+	clr.w	-(%sp)			| ID 0
+	.short	_GetResource
+	move.l	(%sp)+,%d0
+	beq.s	1f
+	move.l	%d0,%a0
+	.short	_GetHandleSize		| a0 = handle -> d0 = size
+	move.l	%d0,%d1
+	ble.s	1f
+	move.l	%a0,%a1
+	.short	_NewPtrSys		| our own copy: the resource's handle is the Script Manager's to
+	move.l	%a0,%d0			| release, move or purge, and a key arrives long after Open
+	beq.s	1f
+	move.l	%d0,G_KCHR(%a2)
+	move.l	(%a1),%d0
+	.short	_StripAddress		| Open runs in 24-bit mode: the master pointer carries flag bits in
+	move.l	%d0,%a1			| its top byte (E0...); the copy is addressed in 32-bit mode later
+2:	move.b	(%a1)+,(%a0)+
+	subq.l	#1,%d1
+	bne.s	2b
+	| "PiInput: KCHR 0 at AAAAAAAA: VVVVVVVV TTTTTTTT" (the address, its first long, the first long
+	| of table 0): which layout the driver got, for the log
+	move.l	G_KCHR(%a2),%d0
+	lea	kchr_text+19(%pc),%a0
+	moveq	#7,%d1
+	bsr	put_hex
+	move.l	G_KCHR(%a2),%a1
+	move.l	(%a1),%d0
+	lea	kchr_text+29(%pc),%a0
+	bsr	put_hex
+	move.l	260(%a1),%d0
+	lea	kchr_text+38(%pc),%a0
+	bsr	put_hex
+	lea	kchr_text(%pc),%a1
+	bsr	do_log
+1:
 	| The card's interrupt: the kernel raises the slot-9 line while the ring holds events
 	| (docs/07), the ROM's level-2 handler runs every routine queued for the slot with the Slot
 	| Manager's SIntInstall, and ours drains the ring. _SIntInstall is an OS trap of its own
@@ -325,12 +369,12 @@ slot_catchall:
 input_vbl:
 	movem.l	%d0-%d7/%a0-%a4,-(%sp)
 	move.l	14(%a0),%a2		| globals
-	bsr	drain
-	move.w	#1,%d0
-	tst.l	G_INTS(%a2)
-	beq.s	1f
 	move.w	#15,%d0
-1:	move.w	%d0,G_VBL+10(%a2)	| run again: next tick, or every quarter second once interrupts work
+	tst.l	G_INTS(%a2)
+	bne.s	1f			| interrupts work: the line is level-triggered and stays up while the
+	bsr	drain			| ring holds events, so nothing is lost by leaving them to the handler.
+	move.w	#1,%d0			| (Draining from both: the VBL task read an event, the slot interrupt
+1:	move.w	%d0,G_VBL+10(%a2)	| came in before it advanced the tail and posted the same key again.)
 	movem.l	(%sp)+,%d0-%d7/%a0-%a4
 	rts
 
@@ -387,7 +431,7 @@ ev_key:
 	bset	%d3,(%a0,%d2.w)
 	bra.s	3f
 2:	bclr	%d3,(%a0,%d2.w)
-3:	| message = virtual code << 8 | character; KeyTranslate wants code | (modifiers & 0xFF00)
+3:	| message = virtual code << 8 | character
 	move.w	%d1,%d4
 	lsl.w	#8,%d4			| d4 = code << 8
 	move.w	G_MODS(%a2),%d0
@@ -410,6 +454,7 @@ ev_key:
 	bne.s	6f
 	moveq	#autoKey,%d0
 6:	bsr	post_event		| d0 = what, a0 = message, d5 = modifiers
+	bsr	key_trace		| the first few keys go to the Pi's log: "PiInput: key WHAT MESSAGE post RESULT"
 	bra	ev_next
 
 | --- the mouse: a = dx, b = dy, c = buttons (bit 0 left, 1 right, 2 middle) ---
@@ -555,27 +600,32 @@ hid_modifiers:
 	rts
 
 | key_char: d1 = virtual code, d5 = modifiers -> d0.b = character for the current layout.
-| The Script Manager keeps a pointer to the KCHR of the current keyboard layout in low memory
-| (KCHRPtr, $1B40, MPW SysEqu.a: "pointer to current KCHR"), which is what the ADB Manager's own
-| key translation uses from interrupt level, so it is safe here too. _KeyTranslate (Inside
-| Macintosh: Text) takes that pointer, the virtual code with the modifier bits in the high byte,
-| and a dead-key state we keep in the globals; the low word of its result is the character (the
-| high word is the first half of a dead-key pair, which the ADB Manager posts as a separate event
-| and we drop). Before the Script Manager is up, KCHRPtr is zero and a built-in US table serves.
+| The layout is a 'KCHR' resource (G_KCHR, fetched and locked at Open; at boot the ROM's U.S.
+| one), read here directly: version word, then 256 bytes mapping the modifier byte (the high
+| byte of the event modifiers: Command, Shift, Caps Lock, Option, Control in bits 0-4) to a table
+| number, a table count, then the tables of 128 characters indexed by virtual key code (Inside
+| Macintosh: Text, "KCHR resource"). A character of 0 is a dead key or nothing; dead keys are not
+| composed yet (the ADB Manager would post the accent and then the letter). The first version
+| called _KeyTranslate with the pointer from $1B40 and then with this one; the trap answered random
+| letters with the former and zero with the latter, and a hand-written lookup of a documented
+| table was the end of guessing what the trap wanted. Without a KCHR a built-in US table serves.
 key_char:
 	movem.l	%d1-%d2/%a0-%a1,-(%sp)
-	move.l	KCHRPtr,%d0
+	move.l	G_KCHR(%a2),%d0
 	beq.s	1f
-	clr.l	-(%sp)			| room for the LONGINT result (a Pascal function: the caller makes the room)
-	move.l	%d0,-(%sp)		| transData
-	move.w	%d5,%d0
-	and.w	#0xFF00,%d0
-	or.w	%d1,%d0
-	move.w	%d0,-(%sp)		| keycode with modifiers
-	pea	G_DEAD(%a2)		| state
-	.short	_KeyTranslate		| pops its three parameters and leaves the result
-	move.l	(%sp)+,%d0		| result: hi word first char (dead key), lo word the char
-	and.l	#0xFF,%d0
+	move.l	%d0,%a0
+	moveq	#0,%d2
+	move.w	%d5,%d2
+	lsr.w	#8,%d2			| the modifier byte
+	move.b	2(%a0,%d2.w),%d2	| -> table number
+	and.w	#0xFF,%d2
+	cmp.w	258(%a0),%d2		| past the tables the KCHR has? (malformed) -> the first
+	blo.s	2f
+	moveq	#0,%d2
+2:	lsl.w	#7,%d2			| 128 bytes a table
+	add.w	%d1,%d2
+	moveq	#0,%d0
+	move.b	260(%a0,%d2.w),%d0	| the character
 	bra.s	9f
 1:	lea	us_chars(%pc),%a0
 	moveq	#0,%d0
@@ -593,6 +643,58 @@ key_char:
 	sub.b	#0x20,%d0
 9:	movem.l	(%sp)+,%d1-%d2/%a0-%a1
 	rts
+
+| key_trace: the first key events (trace_left of them), with PostEvent's answer, into the Pi's log, so a keyboard
+| that types nothing can be told apart from one whose characters come out wrong (the first test
+| of typing into a program, PiWiFi, showed a window that ignored every key). a0 = what, d0 = the
+| PostEvent result, d4.w = virtual code << 8 | character; the text is written in place (RAM copy).
+key_trace:
+	movem.l	%d0-%d3/%a0-%a1,-(%sp)
+	move.w	trace_left(%pc),%d3
+	beq.s	9f
+	subq.w	#1,%d3
+	lea	trace_left(%pc),%a1
+	move.w	%d3,(%a1)
+	move.l	%d0,%d2			| the result
+	move.l	%a0,%d0			| what
+	lea	trace_text+13(%pc),%a0
+	moveq	#1,%d1
+	bsr	put_hex			| what (2 digits)
+	moveq	#0,%d0
+	move.w	%d4,%d0
+	lea	trace_text+16(%pc),%a0
+	moveq	#3,%d1
+	bsr	put_hex			| message (4 digits)
+	move.l	%d2,%d0
+	lea	trace_text+26(%pc),%a0
+	moveq	#3,%d1
+	bsr	put_hex			| result (4 digits)
+	lea	trace_text(%pc),%a1
+	bsr	do_log
+9:	movem.l	(%sp)+,%d0-%d3/%a0-%a1
+	rts
+| put_hex: d0 = value, d1 = digits - 1, a0 = where (the digits land most significant first)
+put_hex:
+	movem.l	%d0-%d2/%a0,-(%sp)
+	lea	0(%a0,%d1.w),%a0
+	addq.l	#1,%a0			| one past the last digit: written backwards
+1:	move.b	%d0,%d2
+	and.b	#15,%d2
+	add.b	#'0',%d2
+	cmp.b	#'9',%d2
+	bls.s	2f
+	addq.b	#7,%d2
+2:	move.b	%d2,-(%a0)
+	lsr.l	#4,%d0
+	dbf	%d1,1b
+	movem.l	(%sp)+,%d0-%d2/%a0
+	rts
+trace_left:	.word	32
+trace_text:	.ascii	"PiInput: key XX MMMM post RRRR"
+	.byte	0
+kchr_text:	.ascii	"PiInput: KCHR 0 at AAAAAAAA: VVVVVVVV TTTTTTTT"
+	.byte	0
+	.even
 
 | ---- common exit: immediate calls return, queued calls go through IODone ----
 iodone:

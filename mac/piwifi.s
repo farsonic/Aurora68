@@ -78,6 +78,18 @@
 	.equ	J_COUNTRY,	104
 	.equ	LINEH,		12
 
+| the Pi's log through the INFO service (as the drivers do it): a1 = NUL-terminated text
+	.macro	log text
+	movem.l	%d0-%d1/%a0-%a1,-(%sp)
+	lea	9f(%pc),%a1
+	bsr	do_log
+	bra.s	8f
+9:	.ascii	"\text"
+	.byte	0
+	.even
+8:	movem.l	(%sp)+,%d0-%d1/%a0-%a1
+	.endm
+
 app_start:
 	lea	-4(%a5),%a0
 	move.l	%a0,-(%sp)
@@ -166,6 +178,7 @@ do_scan:
 	bra	loop
 
 do_join:
+	log	"PiWiFi: join: asking for the network name"
 	bsr	unit
 	move.l	%a1,%d0
 	beq	loop
@@ -182,6 +195,7 @@ do_join:
 	bsr	readline
 	tst.w	%d0
 	bmi	cancelled
+	log	"PiWiFi: join: name read, asking for the password"
 	lea	s_askpass(%pc),%a0
 	bsr	status_line
 	lea	J_PASS(%a2),%a0
@@ -189,6 +203,7 @@ do_join:
 	bsr	readline
 	tst.w	%d0
 	bmi	cancelled
+	log	"PiWiFi: join: password read, joining"
 	lea	s_joining(%pc),%a0
 	bsr	status_line
 	moveq	#CMD_JOIN,%d0
@@ -197,8 +212,30 @@ do_join:
 	bsr	redraw
 	bra	loop
 cancelled:
+	log	"PiWiFi: join: cancelled (Escape)"
 	bsr	redraw
 	bra	loop
+
+do_log:
+	bsr	window
+	lea	0x1000(%a0),%a0		| INFO command block
+	moveq	#0,%d1
+2:	tst.b	(%a1,%d1.w)
+	beq.s	3f
+	addq.w	#1,%d1
+	bra.s	2b
+3:	move.w	#2,8(%a0)
+	move.l	%a1,28(%a0)
+	move.l	%d1,32(%a0)
+	move.l	(%a0),%d0
+	addq.l	#1,%d0
+	move.l	%d0,(%a0)
+	move.l	#200000,%d1
+4:	cmp.l	4(%a0),%d0
+	beq.s	5f
+	subq.l	#1,%d1
+	bne.s	4b
+5:	rts
 
 do_disconnect:
 	moveq	#CMD_DISCONNECT,%d0
@@ -225,26 +262,27 @@ do_onoff:
 | command: d0 = command, d1 = timeout in ticks; the argument is already in U_ARG.
 | Returns d0 = cmd_result (0 ok, negative = the driver's error), or -1 after the timeout.
 command:
-	movem.l	%d1-%d3/%a0-%a1,-(%sp)
+	movem.l	%d1-%d4/%a0-%a2,-(%sp)
 	bsr	unit
 	move.l	%a1,%d2
 	beq.s	9f
-	move.l	%d0,U_CMD(%a1)
-	move.l	U_CMD_SEQ(%a1),%d2
-	addq.l	#1,%d2
-	move.l	%d2,U_CMD_SEQ(%a1)	| publishes the command
+	move.l	%a1,%a2			| d3, d4 and a2: Toolbox traps keep D3-D7 and A2-A6, and _SystemTask
+	move.l	%d0,U_CMD(%a2)		| in the loop below clobbered the sequence number when it sat in D2
+	move.l	U_CMD_SEQ(%a2),%d4	| (every command then "failed" with -1 after its timeout, although
+	addq.l	#1,%d4			| the board had long done it: the first scan in the testbed)
+	move.l	%d4,U_CMD_SEQ(%a2)	| publishes the command
 	move.l	Ticks,%d3
 	add.l	%d1,%d3
 1:	.short	_SystemTask		| let the rest of the machine breathe while we wait
-	cmp.l	U_CMD_DONE(%a1),%d2
+	cmp.l	U_CMD_DONE(%a2),%d4
 	beq.s	2f
 	cmp.l	Ticks,%d3
 	bhi.s	1b
 	moveq	#-1,%d0
 	bra.s	8f
-2:	move.l	U_CMD_RESULT(%a1),%d0
+2:	move.l	U_CMD_RESULT(%a2),%d0
 8:	move.l	%d0,V_RESULT(%a6)
-	movem.l	(%sp)+,%d1-%d3/%a0-%a1
+	movem.l	(%sp)+,%d1-%d4/%a0-%a2
 	rts
 9:	moveq	#-1,%d0
 	bra.s	8b
@@ -387,10 +425,10 @@ say_security:
 | ---- a line editor on the status line: a0 = C-string buffer, d0 = maximum characters.
 |      Return finishes (d0 = length), Escape cancels (d0 = -1), Delete erases. ----
 readline:
-	movem.l	%d1-%d3/%a0-%a2,-(%sp)
+	movem.l	%d1-%d5/%a0-%a2,-(%sp)	| the length and the limit live in D4/D5: traps keep D3-D7, not D2
 	move.l	%a0,%a2
-	move.w	%d0,%d3			| max
-	moveq	#0,%d2			| length
+	move.w	%d0,%d5			| max
+	moveq	#0,%d4			| length
 rl_loop:
 	.short	_SystemTask
 	clr.w	-(%sp)
@@ -413,10 +451,10 @@ rl_key:	move.b	5(%a0),%d1		| the character
 	beq.s	rl_cancel
 	cmp.b	#0x08,%d1		| Delete
 	bne.s	rl_char
-	tst.w	%d2
+	tst.w	%d4
 	beq.s	rl_loop
-	subq.w	#1,%d2
-	clr.b	(%a2,%d2.w)
+	subq.w	#1,%d4
+	clr.b	(%a2,%d4.w)
 	| step back and blank the character
 	sub.w	#6,V_X(%a6)
 	move.w	V_X(%a6),-(%sp)
@@ -428,11 +466,11 @@ rl_key:	move.b	5(%a0),%d1		| the character
 rl_char:
 	cmp.b	#' ',%d1
 	blo.s	rl_loop
-	cmp.w	%d3,%d2
+	cmp.w	%d5,%d4
 	bhs.s	rl_loop
-	move.b	%d1,(%a2,%d2.w)
-	addq.w	#1,%d2
-	clr.b	(%a2,%d2.w)
+	move.b	%d1,(%a2,%d4.w)
+	addq.w	#1,%d4
+	clr.b	(%a2,%d4.w)
 	move.w	V_X(%a6),-(%sp)
 	move.w	V_Y(%a6),-(%sp)
 	.short	_MoveTo
@@ -441,13 +479,13 @@ rl_char:
 	add.w	#6,V_X(%a6)
 	bra	rl_loop
 rl_done:
-	move.w	%d2,%d0
+	move.w	%d4,%d0
 	ext.l	%d0
 	bra.s	rl_out
 rl_cancel:
 	moveq	#-1,%d0
 rl_out:
-	movem.l	(%sp)+,%d1-%d3/%a0-%a2
+	movem.l	(%sp)+,%d1-%d5/%a0-%a2
 	rts
 
 | ---- the board ----

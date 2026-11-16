@@ -8,9 +8,10 @@ syntax, `binutils-m68k-linux-gnu`) and is packaged by small Python tools in `too
 |---|---|---|---|
 | `.PiDisk` | `mac/pidisk.s` | `pidisk.bin.raw` (DRVR image) | Block device driver over the mailbox BLOCK service: Open adds a drive queue entry per Pi block device and posts a disk-inserted event, Prime reads/writes 512-byte blocks synchronously, Control answers KillIO/verify/format/eject/icon/drive-info, Status answers drive status. |
 | PiDisk extension | `mac/pidisk_init.s` + the DRVR | `PiDisk.bin` (MacBinary, type `INIT`) | System 6/7 extension: installs the DRVR from its own resource fork (`_DrvrInstall`), opens it, mounts every drive it added (`_MountVol`). Used until the declaration ROM path loads the driver from ROM. |
+| PiMach extension | `mac/pimach.s` | `PiMach.bin` (MacBinary, type `INIT`) | Tells the Mac it is a Macintosh SE. The IIci ROM's Gestalt Manager answers the `'mach'` selector with 11 (gestaltMacIIci), so About This Macintosh, the Finder and every program that asks see a IIci. This INIT copies a four-instruction selector function into the system heap and installs it with `_ReplaceGestalt` ($A5AD) for `'mach'`; it answers 5, gestaltMacSE. Nothing else changes: the ROM's own view of its hardware is left alone (changing the ROM's box table would change its decisions about the IIci hardware it drives), the processor still reads 68030. Goes in the System Folder (System 6) or Extensions (System 7); `docs/img/system71-about-se.png`. |
 | `.Network_EtherNet_PiStorm` | `mac/enet.s` | `enet.bin.raw` | Apple `.ENET`-interface Ethernet driver over the NET service: EAttachPH/EDetachPH, ERead (default handler: queued parameter blocks completed from a VBL task), EWrite (WDS gather, source address inserted, 60-byte padding), EGetInfo (address + 3 counters), EAddMulti/EDelMulti, ESetGeneral, ERdCancel; real protocol handlers are called with the A3/A4/D1 convention and ReadPacket/ReadRest. Receives from the slot-9 interrupt (`SIntInstall`, docs/07) with the VBL task as a safety net. |
 | `.PiInput` | `mac/piinput.s` | `piinput.bin.raw` | Keyboards and mice attached to the Pi (USB on a Pi 4, Bluetooth) become Macintosh input. A VBL task drains the input ring the service core fills (`alice_psmac.h`), translates USB HID usages into Apple virtual key codes and, through `_KeyTranslate` and the Script Manager's current KCHR, into characters, keeps `KeyMap` and the modifier bits current, moves the cursor through `RawMouse`/`MTemp`/`CrsrNew`, and posts keyDown/keyUp/autoKey and mouseDown/mouseUp. Right and middle buttons become Command- and Option-clicks. Runs from the slot-9 interrupt (`SIntInstall`) with the VBL task as a safety net. Opened at start from the declaration ROM. |
-| `.Network_WiFi_PiStorm` | `mac/enet.s` assembled with `WIFI` | `enet_wifi.bin.raw` | The same driver for unit 0 of the network board, the WiFi chip, as a second network sResource (0x83) in slot 9: MacTCP and EtherTalk list two Ethernet cards and the user picks. In the testbed the unit is off (no WiFi in QEMU); PiWiFi joins a network on hardware. |
+| `.Network_WiFi_PiStorm` | `mac/enet.s` assembled with `WIFI` | `enet_wifi.bin.raw` | The same driver for unit 0 of the network board, the WiFi chip, as a second network sResource (0x83) in slot 9: MacTCP and EtherTalk list two Ethernet cards and the user picks. In the testbed the unit is a simulated radio when `mac.wifisim=` is given (below); PiWiFi joins a network on hardware. |
 | Declaration ROM | `tools/mac/mkdeclrom.py` | `psmac.declrom` | Slot $9 card: board sResource (BoardId 0x5053, vendor info), `PiDisk` functional sResource with the DRVR in its sDriverDir (opened at start by the Start Manager), `Network_EtherNet_PiStorm` sResource (catNetwork/typeEtherNet, not opened at start: the `.ENET` shell opens it through OpenSlot when MacTCP or EtherTalk ask), `PiInput` sResource (opened at start). Served by Emu68 at 0xF9FF0000 (`mac.declrom=` in the testbed). |
 | PiWiFi | `mac/piwifi.s` | `PiWiFi.bin` (application) | The Pi's WiFi from the Mac: shows unit 0 of the network board (state, the driver's message, network, signal, channel, address), scans and lists networks (name, signal, channel, security), joins a network (name and password typed on the status line, sent as a `struct an_join` through the command box), disconnects, switches the radio on or off. Single-letter commands in a text window, so it runs under System 6 without resources; the Macintosh counterpart of Alice68-Card. |
 | PiBlue | `mac/piblue.s` | `PiBlue.bin` (application) | The Pi's Bluetooth from the Mac: the host's state and message, its address, the paired devices (name, address, keyboard/mouse/device, connected), the devices found by the last scan (name, address, signal), the passkey while pairing; scan, pair with a found device, connect or forget a paired one, through the `struct an_bt` command box at board + 0x3800. |
@@ -60,6 +61,51 @@ and closes it, then five letters are typed) so the screenshots show whether `.Pi
 68k code can log to the Pi console through the INFO service (`log "text"` macro in the sources);
 the lines appear as `[MAC] ...` in `emu68.log`.
 
+## The WiFi in the testbed: a radio that exists only in software
+QEMU's raspi3b has no WiFi chip (no SDIO function, no firmware to load), so the real driver in
+`alice_net.c` can only report "off" there, and until 16 November the WiFi unit, PiWiFi and the
+`.Network_WiFi_PiStorm` driver had never run against anything that answered. Everything above the
+chip is worth testing all the same, and the Alice68 board protocol makes that easy: the Mac only
+ever sees unit 0's state word, message, command box, scan table and frame rings. So the service
+core got a simulated radio (`psmac_wifi_testbed_poll` in `emu68/src/alice/alice_psmac.c`), switched
+on by `mac.wifisim=SSID:PASSWORD` (or `mac.wifisim=1` for the defaults, Aurora68 / pistorm68):
+- it starts, a second later it is idle, exactly the states the real driver walks through;
+- a scan (AN_CMD_SCAN) takes two seconds and finds four networks: the one named on the command
+  line (WPA2, channel 6, -47 dBm), "Macintosh Garden" (WPA2, whose password nobody knows),
+  "LINKSYS" (WEP) and "Free Hotspot" (open), with BSSIDs, so PiWiFi's list has something to show;
+- a join (AN_CMD_JOIN, `struct an_join` in the command box) checks the name against the scan list
+  and the password against the network's, the way the firmware's association and four-way handshake
+  would: "no such network in range" and "the password was not accepted" come back as FAILED
+  states after a believable delay, the right pair goes JOINING then CONNECTED with the SSID,
+  BSSID, signal and channel filled in and the link word up;
+- `wifi.ssid=` / `wifi.psk=` on the command line join at boot, as on hardware;
+- disconnect, off, enable, the receive switch, the filter and the address change behave as the
+  real driver's;
+- while connected, frames in unit 0's transmit ring go to a second host file pair,
+  `mac.wifinet=BASE` (BASE.tx/.rx, served by `tools/pinet.py BASE peer` like the Ethernet's
+  `mac.net=`), and frames from it fill the receive ring; without a connection transmitted frames
+  are lost, as in the air.
+The real driver is never started when the simulation owns the unit, and without `mac.wifisim=` the
+simulation does not exist: `alice_net.c` asks once, before it would start the WiFi thread.
+
+Two scripted sessions exercise it without a keyboard (`mac.inputwifi=SECONDS`, like
+`mac.inputtest=`): with PiWiFi as the startup application the script presses S, waits for the scan
+list, presses J and types the network's name and password at PiWiFi's prompts
+(`docs/img/system71-piwifi-scan.png`, `docs/img/system71-piwifi-joined.png`). For MacTCP over the
+WiFi the card is built with the WiFi as its only network sResource (`mac/build/psmac_wifi.declrom`,
+`mkdeclrom.py --wifi` without `--enet`): MacTCP's Ethernet link layer takes the first Ethernet-type
+sResource it finds in the slot, so with the Ethernet sResource absent it opens
+`.Network_WiFi_PiStorm`, and PiPing's echoes go through unit 0, the simulated radio and the
+`mac.wifinet` files to the host peer (`docs/img/system71-mactcp-wifi-ping.png`):
+```
+ROM=rom/patched/MacIIci_psmac.rom HD=images/chd/sys710pi.chd tools/run-fullstack.sh 400 \
+    mac.disk0=$PWD/images/pidisk/pidisk.img mac.declrom=$PWD/mac/build/psmac_wifi.declrom \
+    mac.wifisim=Aurora68:pistorm68 wifi.ssid=Aurora68 wifi.psk=pistorm68 mac.wifinet=/tmp/psmac-wifi bt=off
+python3 tools/pinet.py /tmp/psmac-wifi peer        # in another shell
+```
+With both sResources present MacTCP takes the Ethernet; choosing the WiFi from the control panel's
+list (its interface-name string, `+48` in `'ipln'`) is not decoded yet.
+
 ## MacTCP
 MacTCP is Apple's TCP/IP of 1989-1996: the `.IPP` driver and a control panel, later folded into
 Open Transport. It is not in the repository (Apple's), and the user's images do not carry it; the
@@ -107,4 +153,7 @@ has, and pings the peer three times through MacTCP's own ICMP echo call.
   bits of `KeyMap` ($174, four longwords, bit 0 of each the lowest code) and the button from
   `MBState` ($172, $80 = up); a key event's message is ADB address << 16 | virtual code << 8 |
   character; the cursor follows `RawMouse` ($82C) and `MTemp` ($828) when `CrsrNew` ($8CE) is set,
-  clipped to `CrsrPin` ($834); `KCHRPtr` ($1B40) points at the current layout.
+  clipped to `CrsrPin` ($834). The keyboard layout is the `'KCHR'` 0 resource fetched, locked
+  and address-stripped at Open (the driver opens in 24-bit mode and uses the pointer in 32-bit
+  mode), read directly by the driver: the low-memory long at $1B40, which MPW's SysEqu.a calls
+  `KCHRPtr`, holds the address of a code patch under 7.1 on this ROM (docs/08, item 22).

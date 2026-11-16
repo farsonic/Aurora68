@@ -114,6 +114,16 @@ and logged, so a driver bug costs a frame rather than the machine.
 - Licence: the Alice68 modules are GPL-2.0-only; the psmac fork is MPL-2.0, which allows the
   combination, and the resulting kernel binary is distributed under the GPL.
 
+## The peripherals as the service cores see them
+The Pi's peripheral block is mapped twice. The low mapping at 0x3F000000 is upstream Emu68's
+(a 68k program could drive a Pi register through it); the Macintosh MMU shim replaces the whole
+first 4 GiB at every table switch, so for a moment that mapping is gone on every core. The
+kernel's own cores (the bus owner and the service core) therefore use a second mapping high in
+kernel space, `PSMAC_PERIPH_HI` (psmac/psmac.h, mapped in start_rpi64.c), for the console UART,
+the firmware mailbox, SDIO, the Bluetooth UART and GENET; `ALICE_PERI` in alice_psmac.h is that
+address. The low window remains what a 68k address is checked against. The story of how this was
+found, three stalled runs and a console lock held by a core that had just died, is docs/08, item 21.
+
 ## The hardware side, for the record
 The Alice68 drivers are written for the BCM2711 (Pi 4, CM4, Pi 400): GENET for Ethernet, the VL805
 xHCI over PCIe for USB, the Pi 4's GPIO pull registers for the SDIO pins. On a Pi 3A+ or Zero 2 W

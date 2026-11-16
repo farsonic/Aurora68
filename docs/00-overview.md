@@ -69,6 +69,11 @@ Boot takes about four minutes in the testbed; a Pi 4 will do it in seconds.
   that writes its undocumented configuration resource, it pings the testbed's peer through our
   `.ENET` driver (`docs/img/system71-mactcp-ping.png`). The WiFi unit is the same driver as a
   second card.
+- The Mac calls itself a Macintosh SE: a small extension replaces the Gestalt Manager's machine
+  answer, while the ROM keeps its IIci view of the hardware (docs/08, item 19).
+- The WiFi path is tested in the testbed against a simulated radio on the service core: PiWiFi
+  scans and joins it, and MacTCP pings through the WiFi driver (docs/09). The chip itself waits
+  for hardware.
 - A second display through the VideoCore is designed (docs/10).
 
 ## The documents

@@ -8,7 +8,7 @@ OBJCOPY = m68k-linux-gnu-objcopy
 PY      = python3
 B       = build
 
-all: $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/psmac.declrom
+all: $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom
 
 $(B)/%.o: %.s
 	@mkdir -p $(B)
@@ -19,6 +19,16 @@ $(B)/%.bin.raw: $(B)/%.o
 
 $(B)/PiDisk.bin: $(B)/pidisk.bin.raw $(B)/pidisk_init.bin.raw ../tools/mac/mkinit.py ../tools/mac/rsrc.py
 	$(PY) ../tools/mac/mkinit.py --drvr $(B)/pidisk.bin.raw --init $(B)/pidisk_init.bin.raw --name PiDisk -o $@
+
+$(B)/PiMach.bin: $(B)/pimach.bin.raw ../tools/mac/mkinit.py ../tools/mac/rsrc.py
+	$(PY) ../tools/mac/mkinit.py --init $(B)/pimach.bin.raw --name PiMach -o $@
+
+# the same extension answering another machine type (for experiments): make pimach-variant MACH=11
+pimach-variant: pimach.s
+	@mkdir -p $(B)
+	$(AS) --defsym MACH=$(MACH) -o $(B)/pimach$(MACH).o pimach.s
+	m68k-linux-gnu-objcopy -O binary -j .text $(B)/pimach$(MACH).o $(B)/pimach$(MACH).bin.raw
+	$(PY) ../tools/mac/mkinit.py --init $(B)/pimach$(MACH).bin.raw --name PiMach -o $(B)/PiMach$(MACH).bin
 
 $(B)/PiNet.bin: $(B)/pinet.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
 	$(PY) ../tools/mac/mkapp.py --code $(B)/pinet.bin.raw --name PiNet --creator PINT -o $@
@@ -43,6 +53,11 @@ $(B)/enet_wifi.o: enet.s
 $(B)/psmac.declrom: $(B)/pidisk.bin.raw $(B)/enet.bin.raw $(B)/enet_wifi.bin.raw $(B)/piinput.bin.raw ../tools/mac/mkdeclrom.py ../tools/mac/declrom.py
 	$(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --enet $(B)/enet.bin.raw --wifi $(B)/enet_wifi.bin.raw --input $(B)/piinput.bin.raw -o $@
 
+# the same card with the WiFi as its only network sResource: MacTCP and EtherTalk take the first
+# Ethernet-type sResource they find, so this is how the WiFi path is tested in the testbed
+$(B)/psmac_wifi.declrom: $(B)/pidisk.bin.raw $(B)/enet_wifi.bin.raw $(B)/piinput.bin.raw ../tools/mac/mkdeclrom.py ../tools/mac/declrom.py
+	$(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --wifi $(B)/enet_wifi.bin.raw --input $(B)/piinput.bin.raw -o $@
+
 # compare the struct offsets in enet.s with the header the kernel compiles (tools/mac/an_offsets.c)
 check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alice/alice_net.h
 	@mkdir -p $(B)
@@ -52,8 +67,9 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 disasm: $(B)/pidisk.o
 	m68k-linux-gnu-objdump -d $(B)/pidisk.o | head -200
 
-install: $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/psmac.declrom
+install: $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/psmac.declrom
 	$(PY) ../tools/mac/hfsput.py $(IMG) $(B)/PiDisk.bin "System Folder" $(PART)
+	$(PY) ../tools/mac/hfsput.py $(IMG) $(B)/PiMach.bin "System Folder" $(PART)
 
 clean:
 	rm -rf $(B)

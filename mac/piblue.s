@@ -240,26 +240,27 @@ set_addr:
 
 | command: d0 = command, d1 = timeout in ticks -> d0 = result (0 ok, < 0 error, -1 timeout)
 command:
-	movem.l	%d1-%d3/%a0-%a1,-(%sp)
+	movem.l	%d1-%d4/%a0-%a2,-(%sp)
 	bsr	bt
 	move.l	%a1,%d2
 	beq.s	9f
-	move.l	%d0,B_CMD(%a1)
-	move.l	B_CMD_SEQ(%a1),%d2
-	addq.l	#1,%d2
-	move.l	%d2,B_CMD_SEQ(%a1)
+	move.l	%a1,%a2			| d4 and a2: _SystemTask may clobber D0-D2/A0-A1 (see piwifi.s)
+	move.l	%d0,B_CMD(%a2)
+	move.l	B_CMD_SEQ(%a2),%d4
+	addq.l	#1,%d4
+	move.l	%d4,B_CMD_SEQ(%a2)
 	move.l	Ticks,%d3
 	add.l	%d1,%d3
 1:	.short	_SystemTask
-	cmp.l	B_CMD_DONE(%a1),%d2
+	cmp.l	B_CMD_DONE(%a2),%d4
 	beq.s	2f
 	cmp.l	Ticks,%d3
 	bhi.s	1b
 	moveq	#-1,%d0
 	bra.s	8f
-2:	move.l	B_CMD_RESULT(%a1),%d0
+2:	move.l	B_CMD_RESULT(%a2),%d0
 8:	move.l	%d0,V_RESULT(%a6)
-	movem.l	(%sp)+,%d1-%d3/%a0-%a1
+	movem.l	(%sp)+,%d1-%d4/%a0-%a2
 	rts
 9:	moveq	#-1,%d0
 	bra.s	8b

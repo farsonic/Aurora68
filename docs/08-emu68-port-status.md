@@ -250,9 +250,86 @@ unpatched ROM the JIT leaves TimeDBRA ($D00) = 0 and System 7.1's speed probe (c
 `move.w $D00,d1 ; mulu #4000,d1 ; divu d5,d1`) dies with a zero divide and the bomb dialog.
 System 6 does not touch TimeDBRA that way and boots with either ROM.
 
+19. **A Macintosh SE by name (16 November, late).** The user asked whether the ROM could be
+   patched to identify as a Macintosh SE. The IIci ROM's identity lives in two places: the box
+   table its Start Manager consults for the hardware it drives (video, sound, the VIA layout,
+   the memory map), and the Gestalt Manager's answer to `'mach'`, which is what programs and
+   About This Macintosh show. The first must stay "IIci": it is the reason the ROM runs on the SE
+   at all (docs/00). The second is a documented, replaceable selector: `mac/pimach.s` is a
+   66-byte INIT that installs a function returning gestaltMacSE (5) with `_ReplaceGestalt`,
+   so the Finder says "Macintosh SE", with the compact Mac's picture, which the Finder also
+   chooses by machine type (`docs/img/system71-about-se.png`), and the ROM goes on thinking
+   it is a IIci. The processor still reads 68030, which is what the kernel presents. For two
+   hours the About box refused to open with the extension installed, with 5 and with 11 as
+   the answer alike, and the extension was suspected; the cause was the input driver's double
+   drain (item 23), which turned the script's click on the Apple menu into two.
+20. **The WiFi, tested without a WiFi chip (16 November, late).** The user asked whether the WiFi
+   could be tested in this environment. The chip cannot be: QEMU's Pi has no SDIO function and
+   Broadcom's firmware would have nothing to run on. Everything above it can, because the Mac
+   only ever sees unit 0 of the network board. The service core now has a simulated radio
+   (`mac.wifisim=`, docs/09): it scans, joins with a name and password check, carries frames
+   through a second host file pair, and never starts the real driver. With it, PiWiFi's scan and
+   join dialogue runs from a scripted keyboard (`mac.inputwifi=`), and MacTCP, told to use the
+   WiFi card by building the declaration ROM without the Ethernet sResource, pings the host peer
+   through `.Network_WiFi_PiStorm`, the same driver as the Ethernet's assembled for unit 0.
+
+21. **The stall that was a race with the MMU (16 November, late).** Three runs in twenty-five
+   had frozen with the kernel log cut mid-line, the Mac's screen blank and MAME's bridge
+   waiting for requests that never came (fs83, fs108, fs110). Always just after the ROM's first
+   MMU table switch, always inside a line the bus core was printing. The cause is in two
+   designs meeting: upstream Emu68 maps the Pi's peripherals inside the first 4 GiB so a 68k
+   driver can reach them, and the Macintosh MMU shim (psmac_mmu.c) installs a whole new first
+   4 GiB each time the ROM switches translation tables, break-before-make: four level-1
+   entries cleared, a TLB flush, four new ones written. For those microseconds nothing below
+   4 GiB exists on any core. Core 0 is the one doing it and touches nothing there meanwhile;
+   core 2 was writing its heartbeat to the PL011 at 0x3F201000, and core 3 reads the firmware
+   mailbox at 0x3F00B880 for the status page. A core that falls into the gap takes a data
+   abort; the exception handler's first act is to print, the console lock is held by the
+   very print that was interrupted, and the machine stops: no console, no bus requests, no
+   heartbeat. Intermittent because the gap is short and the switch rare. On hardware the bus
+   core would hammer the GPIO block through the same window a hundred thousand times a
+   second, so this would have been the first thing to go wrong at the first MMU switch there.
+   The fix is a second mapping of the peripherals high in the kernel half of the address
+   space (`PSMAC_PERIPH_HI` in psmac.h, mapped beside the low one in start_rpi64.c), which an
+   MMU switch never touches; the bus core's console and UART, the Alice modules' mailbox,
+   SDIO, Bluetooth UART and GENET registers now go through it, and the low window stays for
+   the 68k's sake only.
+
+22. **The keyboard typed random letters (16 November, late).** The first program to take typed
+   input, PiWiFi, ignored every key. A trace in `.PiInput` (the first eight key events go to
+   the Pi's log with PostEvent's answer) showed the keys arriving, posted, and carrying the
+   wrong characters: S came out as control-B, J as N. The driver translated through
+   `_KeyTranslate` with the pointer it found at $1B40, which MPW's SysEqu.a names `KCHRPtr`; a
+   dump of that memory from the kernel (`mac.peek=`, added for this) showed 68k code, not a
+   keyboard layout: under 7.1 on this ROM the long holds the address of a patch. With the
+   `'KCHR'` 0 resource fetched at Open instead, the trap answered zero for everything, and so
+   did a hand-written lookup of the documented table. The driver's log line for the resource
+   gave it away: the KCHR was "at E009ACD4". The slot driver opens during the boot, in 24-bit
+   mode, where a master pointer carries the handle's flag bits in its top byte; the pointer is
+   used much later, in 32-bit mode, where E009ACD4 is nowhere. `_StripAddress` on the
+   dereferenced pointer, the call Apple made for exactly this, and S is S again. The driver
+   now reads the KCHR itself (the modifier byte picks a table, the virtual code the character,
+   as Inside Macintosh: Text documents the resource); dead keys and the layout chosen in the
+   Keyboard control panel are still to come. The trace stays in the driver; it is the first
+   thing to read when a keyboard misbehaves on hardware.
+
+23. **Every PiWiFi command "failed" after its timeout (16 November, late).** The first scan
+   through the simulated radio filled the list, and the window said "Last command failed:
+   -1" twenty seconds later. The command routine in PiWiFi (and PiBlue, the same code) kept
+   the sequence number it was waiting for in D2 and called `_SystemTask` in the loop; Toolbox
+   traps preserve only D3-D7 and A2-A6, and that one did not keep D2. The number lives in D4
+   now and the board pointer in A2. The line reader had the same flaw (its length in D2 across
+   GetNextEvent and DrawChar: Return then looked like a cancel), and so had the input driver's
+   VBL task, which kept draining the ring after the slot interrupt took over and posted a key
+   twice when the interrupt came in mid-drain. A lesson Inside Macintosh states in its first
+   volume, relearned the slow way. The scripted session also typed ahead while the list was
+   being redrawn through the bridge, and the system event queue, twenty events deep under
+   System 7, would have dropped the rest; the script waits for the redraw now.
+
 ## Next steps (in order, as of the evening of 16 November)
 1. MacTCP under System 6 (the same files; untested there), then a real client (Fetch, NCSA
-   Telnet) against a TAP-bridged peer (`tools/pinet.py ... tap`), and the WiFi unit on hardware.
+   Telnet) against a TAP-bridged peer (`tools/pinet.py ... tap`), and the WiFi unit on hardware
+   (the simulated radio proves the Mac side; the chip, the firmware and the SDIO path remain).
 2. Hardware: the PiStorm GPIO transport in place of the semihosting bridge (`ps_protocol.c` is
    already behind the `ps_read/ps_write` API), the initramfs container on the SD card with the
    ROM, the declaration ROM and the firmware, and the first boot on a Macintosh SE.
