@@ -48,6 +48,7 @@
 #define PSMB_SVC_NET         3
 #define PSMB_SVC_HID         4
 #define PSMB_SVC_RTC         5
+#define PSMB_SVC_ALICE       6      /* Alice68 boards: param[0] network board, [1] status page, [2] input ring (window offsets) */
 
 struct psmb_header {
     uint32_t magic;           /* 'PSMB' */

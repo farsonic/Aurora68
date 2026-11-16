@@ -11,6 +11,7 @@
 #include "support.h"
 #include "psmac.h"
 #include "psmb.h"
+#include "../alice/alice_psmac.h"
 
 #define KERNEL_ALIAS 0xffffff9000000000ull
 
@@ -162,6 +163,27 @@ static void net_poll_rx(void)
         wr32(ring, next);
     }
 }
+/* primitives for alice_psmac.c's testbed Ethernet (the same host file pair) */
+int psmac_netfile_up(void) { return net_up; }
+int psmac_netfile_send(const uint8_t *frame, uint32_t len)
+{
+    if (!net_up || len > PSMB_NETRX_FRAME) return 0;
+    uint8_t hdr[2] = { len >> 8, len & 0xff };
+    return psmac_sh_write(net_tx_fd, hdr, 2) && psmac_sh_write(net_tx_fd, frame, len);
+}
+int psmac_netfile_recv(uint8_t *buf, uint32_t max)
+{
+    if (!net_up) return 0;
+    int64_t len = psmac_sh_flen(net_rx_fd);
+    if (len < 0 || (uint64_t)len < net_rx_off + 2) return 0;
+    if (psmac_sh_seek(net_rx_fd, net_rx_off) < 0) return 0;
+    uint8_t hdr[2]; if (!psmac_sh_read(net_rx_fd, hdr, 2)) return 0;
+    uint32_t flen = (hdr[0] << 8) | hdr[1];
+    if (flen > max || (uint64_t)len < net_rx_off + 2 + flen) { if (flen > max) net_rx_off += 2 + flen; return 0; }
+    if (!psmac_sh_read(net_rx_fd, buf, flen)) return 0;
+    net_rx_off += 2 + flen;
+    return (int)flen;
+}
 static int net_send(uint32_t buf, uint32_t len)
 {
     if (!net_up) return PSMB_E_IO;
@@ -233,6 +255,10 @@ void psmac_mbox_init(uintptr_t window_phys, uintptr_t ramp, uint32_t rams)
     blk_publish();
     net_init();
 
+    /* the Alice68 boards inside the window (alice_psmac.h): network board, status page, input ring */
+    { extern void psmac_alice_init(uint8_t *win); psmac_alice_init(win); }
+    uint32_t pa[5] = { ALICE_NET_WINDOW_OFF, ALICE_STATUS_WINDOW_OFF, ALICE_INPUT_WINDOW_OFF, 0, 0 };
+    svc_set(3, PSMB_SVC_ALICE, 0, pa);
     svc_set(0, PSMB_SVC_INFO, 0, NULL);
     uint32_t pb[5] = { (uint32_t)nbdev, 0, 0, 0, 0 };
     svc_set(1, PSMB_SVC_BLOCK, 0, pb);
@@ -240,7 +266,7 @@ void psmac_mbox_init(uintptr_t window_phys, uintptr_t ramp, uint32_t rams)
     svc_set(2, PSMB_SVC_NET, net_up ? 1 : 0, pn);
 
     volatile uint8_t *h = win;
-    wr32(h + 0, PSMB_MAGIC); wr16(h + 4, PSMB_VERSION); wr16(h + 6, 3);
+    wr32(h + 0, PSMB_MAGIC); wr16(h + 4, PSMB_VERSION); wr16(h + 6, 4);
     wr32(h + 8, PSMB_FEAT_BLOCK | (net_up ? PSMB_FEAT_NET : 0));
     wr32(h + 12, 0); wr32(h + 16, psmac_mac_ram_mb()); wr32(h + 20, 0);
     const char *ver = "psmac " __DATE__; int k = 0; while (ver[k] && k < 31) { ((volatile uint8_t *)h)[24 + k] = ver[k]; k++; }
@@ -263,7 +289,8 @@ int psmac_mbox_poll(void)
         __atomic_store_n((volatile uint32_t *)(c + 4), req, __ATOMIC_RELEASE);
         did = 1;
     }
-    net_poll_rx();
+    /* frames for the old PSMB net service: only when nobody else consumes the host file */
+    { extern int psmac_alice_owns_net(void); if (!psmac_alice_owns_net()) net_poll_rx(); }
     return did;
 }
 

@@ -352,7 +352,7 @@ void psmac_service_core(void)
             kprintf("[PSMAC] first unexpected 68k exception (vector %03x): PC trail follows\n", psmac_exc_flag & 0xfff);
             pcring_dump();
         }
-        if (psmac_mbox_poll()) continue;
+        /* the mailbox services run on core 3 (alice_psmac.c) */
         if (scsi_reads != scsi_reads_seen && cnt_now() > next_epoch) {
             /* data came in from the SCSI chip: code loaded from disk may sit where translated
                blocks were; make the JIT re-check RAM blocks on their next entry (M68k_Translator.c) */

@@ -306,7 +306,16 @@ if (${VARIANT} IN_LIST SUPPORTED_VARIANTS)
                     src/psmac/psmac_bus.c
                     src/psmac/psmac_mmu.c
                     src/psmac/psmac_mbox.c
+                    src/alice/alice_psmac.c
+                    src/alice/alice_net.c
+                    src/alice/alice_status.c
+                    src/alice/wifi/sdio.c
+                    src/alice/wifi/chip.c
+                    src/alice/wifi/fmac.c
+                    src/alice/bt/bt_pi.c
+                    src/alice/bt/bthost.c
                 )
+                include_directories(src/alice)
             elseif(${VARIANT} STREQUAL "pistorm")
                 add_compile_definitions(PISTORM)
                 list(APPEND BASE_FILES

@@ -463,6 +463,12 @@ void secondary_boot(void)
         extern void StartupPPC();
         StartupPPC();
     }
+#ifdef PSMAC
+    if (cpu_id == 3) {
+        extern void psmac_alice_core(void);
+        psmac_alice_core();
+    }
+#endif
 
 #ifdef PISTORM_ANY_MODEL
     if (cpu_id == 1)
