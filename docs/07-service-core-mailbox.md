@@ -9,24 +9,50 @@
 | 3 | PowerPC | unused by us (PPC disabled) |
 Implemented today in `emu68/src/psmac/psmac_bus.c`: `psmac_service_core()` (bus transport owner + IPL poll, request hand-off slot from core 0). The mailbox services below plug into the same loop.
 
-## Mailbox window seen by the 68k
-A 64 KiB window at a fixed physical address the IIci decoder leaves free and the donor ROM never
-touches: **0x51000000** (32-bit mode only; drivers switch with SwapMMUMode when called from 24-bit
-mode, exactly as 32-bit-clean NuBus drivers do). It is ordinary Pi RAM mapped into the 68k space
-(cached, coherent on the Pi), except the last page which is the doorbell and traps to the service core.
+## Mailbox window seen by the 68k (revised: slot $9)
+The Pi presents itself as a **NuBus card in slot $9**. The bottom 1 MiB of the slot's super slot
+space, physical **0xF9000000**, is ordinary Pi RAM shared with the 68k; the IIci ROM's own tables map
+it in both modes (24-bit: logical **0x900000**, 32-bit: 0xF9000000), so drivers never switch MMU
+modes. The top 64 KiB (0xF9FF0000) holds a **declaration ROM** the Slot Manager finds at boot; it
+carries the Mac-side drivers (`.PiDisk`, `.ENET`) like any NuBus card. The authoritative layout is
+`emu68/src/psmac/psmb.h`:
 ```
-0x51000000  +0x0000  magic 'PSMB', version, feature bits, service count     (RO for the Mac)
-            +0x0100  service descriptor table: {type, id, ring offset, caps}  (RO)
-            +0x1000  per-service rings: request ring (Mac->Pi) / completion ring (Pi->Mac),
-                     16-byte descriptors {cmd, flags, tag, len, bufaddr(phys), lba/arg}
-            +0x8000  bounce buffers (for drivers that cannot hand over 68k physical addresses)
-0x5100F000  doorbell page: write = kick service core (traps to psmac_bus_write)
-0x5100F004  interrupt ack / status (Pi raises a 68k level-2 "slot" interrupt via the RBV path or,
-            simpler, drivers poll the completion ring from their VBL task)
++0x0000  header: magic 'PSMB', version, nservices, features, Pi/Mac RAM, uptime, firmware string
++0x0100  service table, 8 x 32 bytes: type (1 info, 2 block, 3 net, 4 hid, 5 rtc), command block offset
++0x1000  one 64-byte command block per service: req_seq, done_seq, cmd, args, buf (68k logical), len, status, result, xfer
++0x2000  block devices, 4 x 64 bytes: blocks, block size, flags, name
++0x4000  net receive ring: head (Pi), tail (Mac), 32 slots x (len + 1536 bytes)
++0x80000 bounce area (512 KiB)
 ```
-Data transfers: the Pi reads/writes the Mac buffer directly (it is Pi RAM) using the physical
-address the driver provides; drivers obtain it with `LockMemory`/`GetPhysical` under VM, or run in
-32-bit mode with VM off (System 6/7 without VM: logical = physical for RAM, see MMU shim notes).
+Rules (the same ones the Alice68 boards use, so that kernel code ports across): 32-bit fields, a
+magic and version first, payload written before the sequence word, ever-increasing counters with
+`index % size`, drop when a ring is full, the Pi polls the 68k->Pi direction (the service core loop
+runs the poll every iteration, far below a millisecond), no interrupts in v1 (drivers poll from a
+VBL task or spin with a timeout). Emu68 is big-endian AArch64 like the 68k: no byte swapping on
+either side. Buffer addresses are 68k logical; the service core translates them page by page with
+the MMU shim, which also makes the 24-bit flag bits in the high byte harmless.
+
+Implemented: `psmac_mbox.c` (info, block with host-file images `mac.disk0=/path`, net with a host
+frame-file pair `mac.net=/path` for the testbed), window and declaration ROM carved from Pi RAM in
+`psmac_setup_memory`, mapped by the MMU shim (`pi_phys`, window RW, declaration ROM RO), the
+declaration ROM image loaded from `mac.declrom=/path`. Mac side: `mac/pidisk.s` (`.PiDisk` DRVR),
+`mac/pidisk_init.s` (extension that installs it and mounts the volumes), packaged by
+`tools/mac/mkinit.py` (resource fork + MacBinary, `tools/mac/rsrc.py`), installed with
+`tools/mac/hfsput.py`; declaration ROM builder `tools/mac/declrom.py`.
+
+### Relation to Alice68
+The user's Alice68 kernel (Amiga PiStorm, same Emu68 base) already runs, on its service core, the
+hardware drivers this project needs: VL805 xHCI with USB pass-through, WiFi over SDIO, GENET
+Ethernet, Bluetooth HCI with firmware hand-over, a status page and log rings, published to the 68k
+through shared-memory "boards" with exactly the pattern above. The plan is to port `alice_net.c`,
+the xHCI/USB stack and the Bluetooth code onto the psmac service core behind the slot-$9 window,
+keeping the board field names (`an_hdr`, `an_unit`, `an_slot`, `an_bt`, `pt_req`,
+`alice68_status`) so the ARM code changes only in how the memory is mapped and how the 68k is
+interrupted. The Mac drivers then speak the protocol `alice68net.device` speaks today.
+Differences to keep in mind: the Mac has no autoconfig (fixed slot address instead), interrupts
+would be injected by Emu68 directly into the JIT's IPL rather than through a virtual CIA, and the
+VideoCore firmware mailbox sharing rules apply unchanged (one buffer per client below 1 GiB,
+replies matched by address, retries, few calls after boot).
 
 ## Services and the Mac-side pieces
 | service | Pi side (service core, ARM) | Mac side (68k, in ROM or as INIT) |

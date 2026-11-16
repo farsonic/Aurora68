@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+"""Build the PiStorm-SE slot-$9 declaration ROM.
+
+    mkdeclrom.py --pidisk mac/build/pidisk.bin.raw [--enet mac/build/enet.bin.raw] -o psmac.declrom
+
+sResources (ids ascending):
+    1    board:  type {catBoard 1, 0, 0, 0}, name "PiStorm-SE", BoardId (32) word 0x5053 ('PS'), VendorInfo
+    0x80 block:  type {0x7050 'pP' (vendor category), 1, 1, 1}, name "PiDisk", sRsrcDrvrDir {sMacOS68020 -> DRVR},
+                 flags omitted => opened at start by the Start Manager (OpenSlots), Open adds the drives
+    0x81 ethernet (optional): type {catNetwork 4, typeEtherNet 1, drSwApple 1, drHw 0x5053}, name
+                 "Network_EtherNet_PiStorm" (driver ".Network_EtherNet_PiStorm"), sRsrcDrvrDir, sRsrcFlags 0 (not
+                 opened at start: the .ENET shell opens it through OpenSlot when MacTCP/EtherTalk ask)
+Facts: Inside Macintosh: Devices (Slot Manager), Designing Cards and Drivers 3rd ed., ROMDefs.h.
+"""
+import argparse, os, struct, sys
+sys.path.insert(0, os.path.dirname(__file__))
+from declrom import DeclROM
+
+ap = argparse.ArgumentParser()
+ap.add_argument('--pidisk', required=True); ap.add_argument('--enet'); ap.add_argument('-o', required=True)
+a = ap.parse_args()
+
+def drvr_name(img):
+    return img[19:19 + img[18]].decode('mac_roman')
+
+rom = DeclROM(byte_lanes=0x0F)
+board = rom.sresource(1)
+board.type(1, 0, 0, 0)
+board.name('PiStorm-SE')
+board.word(32, 0x5053)                          # BoardId
+vendor = type(board)(0)                         # VendorInfo sub-list
+vendor.cstring(1, 'PiStorm-SE project')         # VendorId
+vendor.cstring(3, '0.1')                        # RevLevel
+vendor.cstring(4, 'PSMAC')                      # PartNum
+board.sublist(36, vendor)
+
+pidisk = open(a.pidisk, 'rb').read()
+blk = rom.sresource(0x80)
+blk.type(0x7050, 1, 1, 1)
+blk.name(drvr_name(pidisk)[1:])                 # ".PiDisk" -> "PiDisk"
+drv = type(blk)(0); drv.longblock(2, pidisk)    # sMacOS68020
+blk.sublist(4, drv)                             # sRsrcDrvrDir
+blk.word(8, 1)                                  # sRsrcHWDevId
+
+if a.enet:
+    enet = open(a.enet, 'rb').read()
+    net = rom.sresource(0x81)
+    net.type(4, 1, 1, 0x5053)
+    net.name(drvr_name(enet)[1:])
+    drv2 = type(net)(0); drv2.longblock(2, enet)
+    net.sublist(4, drv2)
+    net.word(7, 0)                              # sRsrcFlags: fOpenAtStart clear
+    net.word(8, 2)
+
+img = rom.build()
+open(a.o, 'wb').write(img)
+print(f"{a.o}: {len(img)} bytes, PiDisk driver {len(pidisk)} bytes" + (f", ENET driver {len(enet)} bytes" if a.enet else ""))
