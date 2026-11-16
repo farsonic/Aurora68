@@ -560,6 +560,7 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
         for (int i = 0; i < 200; i++) sink += psmac_io_read(0x50f00000, 1);
         uint64_t dt = cnt_now() - t0;
         kprintf("[PSMAC] bridge latency: %d us per read (service core %s)\n", (int)(dt * 1000000 / cnt_frq() / 200), service_running ? "active" : "inactive");
+        { extern void psmac_mbox_set_calib(uint32_t); psmac_mbox_set_calib((uint32_t)(dt * 1000000 / cnt_frq() / 200)); }
     }
     kprintf("[PSMAC] reset SP %08x PC %08x\n", BE32(*(uint32_t *)romk), BE32(*(uint32_t *)(romk + 4)));
 }

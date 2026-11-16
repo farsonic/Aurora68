@@ -294,6 +294,24 @@ int psmac_mbox_poll(void)
     return did;
 }
 
+/* The IIci ROM's timing calibration (TimeDBRA, TimeSCCDB, TimeSCSIDB, TimeVIADB: loop iterations
+   per millisecond) is meaningless under a JIT: the CPU loop overflows 16 bits and the bus loops
+   measure the bridge. The patched ROM takes the values from here instead. TimeDBRA stays large (the
+   OS re-probes it); the bus loops get the real bridge rate so that SCSI and VIA timeouts, which are
+   counted in bus accesses, keep their intended duration. */
+void psmac_mbox_set_calib(uint32_t bus_latency_us)
+{
+    if (!win) return;
+    uint32_t per_ms = bus_latency_us ? 1000 / bus_latency_us : 2000;
+    if (per_ms < 16) per_ms = 16;
+    if (per_ms > 0xffff) per_ms = 0xffff;
+    volatile uint8_t *t = win + PSMB_OFF_CALIB;
+    const uint16_t addr[4] = { 0xd00, 0xd02, 0xb24, 0xcea };
+    const uint16_t val[4]  = { 0x7fff, (uint16_t)per_ms, (uint16_t)per_ms, (uint16_t)per_ms };
+    for (int i = 0; i < 4; i++) { wr16(t + 4 * i, addr[i]); wr16(t + 4 * i + 2, val[i]); }
+    kprintf("[PSMAC:MBOX] calibration table: TimeDBRA 0x7fff, bus loops %u per ms (%u us per access)\n", per_ms, bus_latency_us);
+}
+
 void psmac_mbox_heartbeat(void)
 {
     if (!win) return;

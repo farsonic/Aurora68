@@ -32,6 +32,8 @@
 
 /* window layout (offsets from PSMB_WIN_PHYS) */
 #define PSMB_OFF_HEADER      0x0000
+#define PSMB_OFF_CALIB       0x0080          /* 4 x { u16 low-memory address, u16 value }: the ROM's timing
+                                               calibration results, supplied by the Pi (rom/patches/iici.json) */
 #define PSMB_OFF_SERVICES    0x0100          /* PSMB_MAX_SERVICES x struct psmb_service */
 #define PSMB_OFF_CMD         0x1000          /* PSMB_MAX_SERVICES x struct psmb_cmd (one slot each) */
 #define PSMB_OFF_BLKDEV      0x2000          /* PSMB_MAX_BLKDEV x struct psmb_blkdev */
