@@ -267,7 +267,7 @@ open_next:
 	move.w	#1,4(%a0)		| vType
 	lea	mount_vbl(%pc),%a1
 	move.l	%a1,6(%a0)
-	move.w	#300,10(%a0)		| 5 s
+	move.w	#3600,10(%a0)		| first event 60 s after Open: the Finder is up by then
 	move.w	#0,12(%a0)
 	.short	_VInstall
 open_ok:
@@ -296,6 +296,7 @@ free_drive_number:
 
 | ---- Prime: read / write ----
 d_prime:
+	log	"PiDisk: prime"
 	movem.l	%d1-%d5/%a2-%a4,-(%sp)
 	move.l	%a0,%a3			| PB
 	move.l	%a1,%a4			| DCE
@@ -360,6 +361,7 @@ prime_done:
 
 | ---- Control ----
 d_control:
+	log	"PiDisk: control"
 	move.w	csCode(%a0),%d0
 	cmp.w	#1,%d0			| KillIO
 	beq.s	ctl_ok
@@ -389,6 +391,7 @@ ctl_ok:
 
 | ---- Status ----
 d_status:
+	log	"PiDisk: status"
 	move.w	csCode(%a0),%d0
 	cmp.w	#8,%d0			| drive status
 	bne.s	st_err
@@ -415,10 +418,10 @@ d_status:
 	move.w	#0,(%a1)+		| diskErrs
 	movem.l	(%sp)+,%a2/%d1
 	moveq	#noErr,%d0
-	bra.s	iodone
+	bra	iodone
 st_err:
 	moveq	#statusErr,%d0
-	bra.s	iodone
+	bra	iodone
 
 | ---- Close ----
 d_close:
@@ -431,12 +434,12 @@ mount_vbl:
 	movem.l	%d0-%d2/%a0-%a2,-(%sp)
 	move.l	14(%a0),%a2		| globals
 	tst.w	G_PRIMED(%a2)
-	bne.s	3f
+	bne	3f
 	addq.w	#1,G_POSTS(%a2)
-	cmp.w	#24,G_POSTS(%a2)
-	bgt.s	3f
+	cmp.w	#200,G_POSTS(%a2)
+	bgt	3f
 	move.w	G_NDEV(%a2),%d2
-	beq.s	2f
+	beq	2f
 	move.w	G_FIRSTDRV(%a2),%d1
 	subq.w	#1,%d2
 1:	moveq	#7,%d0
@@ -444,10 +447,15 @@ mount_vbl:
 	moveq	#0,%d0
 	move.w	%d1,%d0
 	.short	0xA02F			| _PostEvent
-	addq.w	#1,%d1
+	tst.w	%d0
+	bne.s	9f
+	log	"PiDisk: diskEvt posted"
+	bra.s	8f
+9:	log	"PiDisk: PostEvent failed"
+8:	addq.w	#1,%d1
 	dbf	%d2,1b
 2:	move.w	#300,G_VBL+10(%a2)	| rearm
-	bra.s	4f
+	bra	4f
 3:	lea	G_VBL(%a2),%a0
 	.short	_VRemove
 4:	movem.l	(%sp)+,%d0-%d2/%a0-%a2
