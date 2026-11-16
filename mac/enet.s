@@ -1,35 +1,62 @@
-| enet.s — ".Network_EtherNet_PiStorm": Apple-style Ethernet driver (.ENET interface) over the
-| PiStorm-SE mailbox net service (psmb.h). 68k, GNU as MIT syntax, 68020. MPL-2.0.
+| enet.s — ".Network_EtherNet_PiStorm": the Macintosh Ethernet driver of PiStorm-SE (Aurora68).
+| 68k, GNU as MIT syntax, 68020. MPL-2.0.
 |
-| Loaded by the .ENET shell through the slot-$9 declaration ROM when MacTCP / EtherTalk / Open
-| Transport open the card (OpenSlot ".ENET", slot 9). Implements the control calls of Inside
-| Macintosh: Networking ch. 11: ESetGeneral 253, EGetInfo 252, ERdCancel 251, ERead 250, EWrite 249,
-| EDetachPH 248, EAttachPH 247, EAddMulti 246, EDelMulti 245. Received frames are taken from the
-| Pi's receive ring by a VBL task (60 Hz; interrupt level, like a card's receive interrupt) and
-| delivered either to the protocol handler attached for the type (A3/A4/D1 convention, ReadPacket /
-| ReadRest) or to the first pending ERead of that type (default handler mode).
+| Backstory. Classic Mac OS networking (MacTCP, EtherTalk, Open Transport's ENET link) talks to
+| Ethernet cards through one driver interface, Apple's ".ENET" (Inside Macintosh: Networking,
+| chapter 11): nine Control calls, a protocol table, and a protocol-handler calling convention
+| from the 1987 EtherTalk card. Any card whose declaration ROM carries a catNetwork/typeEtherNet
+| sResource with a driver in its sDriverDir is found by the ".ENET" shell and opened with OpenSlot.
+| This driver is that driver for the Pi: it speaks the Alice68 network board protocol underneath
+| (alice_net.h, shared with the user's Amiga kernel): a 128 KB region of the slot-$9 window with a
+| command box per unit and rings of 2 KB frame slots whose indexes count up for ever. Unit 1 is
+| the Pi's Ethernet (GENET on a Pi 4, the host file bridge in the QEMU testbed); unit 0 is WiFi,
+| which a control panel will join to a network; both look the same to this driver.
+|
+| Received frames are taken from the unit's receive ring by a VBL task (60 Hz, interrupt level,
+| the way a card's receive interrupt would) and delivered either to the protocol handler attached
+| for the frame's type (A3/A4/D1 convention, ReadPacket/ReadRest) or to the first pending ERead of
+| that type (Apple's "default protocol handler" mode, which MacTCP uses).
 
 	.text
 	.globl	drvr_start
 
-| ---- psmb.h ----
+| ---- the window (psmb.h) and the Alice68 network board inside it (alice_net.h) ----
 	.equ	WIN24,		0x00900000
 	.equ	WIN32,		0xF9000000
 	.equ	PSMB_MAGIC,	0x50534D42
-	.equ	OFF_SERVICES,	0x0100
-	.equ	OFF_CMD,	0x1000
-	.equ	NET_SVC,	2		| service index of the net service
-	.equ	CMD_NET,	OFF_CMD+NET_SVC*64
-	.equ	OFF_NETRX,	0x4000
-	.equ	RX_SLOTS,	32
-	.equ	RX_FRAME,	1536
-	.equ	RX_SLOT_SIZE,	8+RX_FRAME
-	.equ	NET_SEND,	1
-	.equ	NET_GETADDR,	2
-	.equ	NET_SETFILTER,	3
-	.equ	NET_LINK,	4
-	.equ	NETF_PROMISC,	1
-	.equ	NETF_MULTICAST,	2
+	.equ	OFF_SERVICES,	0x0100		| 8 x 32 bytes: type.w id.w cmd_off.l caps.l param[5].l
+	.equ	SVC_ALICE,	6		| service entry 3: param[0] = board offset
+	.equ	AN_MAGIC,	0x4136384E	| 'A68N'
+	.equ	AN_OFF_UNIT1,	0x0C00		| struct an_unit of unit 1 (Ethernet), 2 KB
+	.equ	AN_OFF_RX1,	0x0C000		| 16 receive slots of 2 KB
+	.equ	AN_OFF_TX1,	0x1A000		| 12 transmit slots of 2 KB
+	.equ	AN_RX_SLOTS,	16
+	.equ	AN_TX_SLOTS,	12
+	.equ	AN_SLOT_BYTES,	0x800
+	.equ	AN_HDR_IRQ,	12
+| struct an_unit offsets
+	.equ	U_KIND,		0
+	.equ	U_STATE,	4
+	.equ	U_LINK,		12
+	.equ	U_MAC,		20		| 8 bytes, 6 used
+	.equ	U_RX_PKTS,	428
+	.equ	U_CMD_SEQ,	460
+	.equ	U_CMD,		464
+	.equ	U_CMD_DONE,	468
+	.equ	U_CMD_RESULT,	472
+	.equ	U_ARG,		476		| 128 bytes
+	.equ	U_RX_HEAD,	604
+	.equ	U_RX_TAIL,	608
+	.equ	U_TX_HEAD,	612
+	.equ	U_TX_TAIL,	616
+	.equ	U_RX_ON,	620
+| commands
+	.equ	AN_CMD_START,	1
+	.equ	AN_CMD_RXON,	6
+	.equ	AN_CMD_RXOFF,	7
+	.equ	AN_CMD_FILTER,	8
+	.equ	AN_FILT_PROMISC, 1
+	.equ	AN_FILT_ALLMULTI, 2
 
 | ---- Mac OS ----
 	.equ	MMU32Bit,	0x0CB2
@@ -74,22 +101,21 @@
 	.equ	G_OVERFLOW,	12		| 3 longs for EGetInfo
 	.equ	G_TIMEOUT,	16
 	.equ	G_BADDEST,	20
-	.equ	G_NPROT,	24		| word
-	.equ	G_INRX,		26		| word: receive poll in progress (reentrancy guard)
-	.equ	G_VBL,		28		| VBLTask: qLink 4, qType 2, vblAddr 4, vblCount 2, vblPhase 2 = 14 bytes
-	.equ	G_VBLSELF,	42		| long: globals pointer, right after the VBL task record
-	.equ	G_CURPTR,	46		| long: frame data pointer for ReadPacket/ReadRest
-	.equ	G_CURLEFT,	50		| word: bytes left
-	.equ	G_NMULTI,	52		| word
-	.equ	G_MULTI,	54		| 8 x 6 bytes
+	.equ	G_BOARD,	24		| long: the Alice68 network board (68k address)
+	.equ	G_INRX,		28		| word: receive poll in progress (reentrancy guard)
+	.equ	G_VBL,		30		| VBLTask: qLink 4, qType 2, vblAddr 4, vblCount 2, vblPhase 2 = 14 bytes
+	.equ	G_VBLSELF,	44		| long: globals pointer, right after the VBL task record
+	.equ	G_CURPTR,	48		| long: frame data pointer for ReadPacket/ReadRest
+	.equ	G_CURLEFT,	52		| word: bytes left
+	.equ	G_NMULTI,	54		| word
+	.equ	G_MULTI,	56		| 8 x 6 bytes
 	.equ	G_PROT,		104		| 16 x PROT_SIZE
 	.equ	PROT_TYPE,	0		| word (0 = 802.3; 0xFFFF = free)
 	.equ	PROT_HANDLER,	2		| long (0 = default handler: ERead)
 	.equ	PROT_RDQ,	6		| long: first pending ERead PB (linked by qLink)
 	.equ	PROT_SIZE,	10
 	.equ	NPROT,		16
-	.equ	G_TXBUF,	G_PROT+NPROT*PROT_SIZE	| 1536 bytes, gathered frame
-	.equ	G_SIZE,		G_TXBUF+1536
+	.equ	G_SIZE,		G_PROT+NPROT*PROT_SIZE
 
 | ---- DRVR header ----
 drvr_start:
@@ -105,6 +131,38 @@ drvr_start:
 	.even
 	.short	0x0100			| version (the .ENET shell picks the newest driver)
 
+| ---- log through the Pi's INFO service: `log "text"` (uses local labels 8 and 9) ----
+	.macro	log text
+	movem.l	%d0-%d1/%a0-%a1,-(%sp)
+	lea	9f(%pc),%a1
+	bsr	do_log
+	bra.s	8f
+9:	.ascii	"\text"
+	.byte	0
+	.even
+8:	movem.l	(%sp)+,%d0-%d1/%a0-%a1
+	.endm
+do_log:
+	bsr	window
+	lea	0x1000(%a0),%a0		| INFO command block
+	moveq	#0,%d1
+2:	tst.b	(%a1,%d1.w)
+	beq.s	3f
+	addq.w	#1,%d1
+	bra.s	2b
+3:	move.w	#2,8(%a0)
+	move.l	%a1,28(%a0)
+	move.l	%d1,32(%a0)
+	move.l	(%a0),%d0
+	addq.l	#1,%d0
+	move.l	%d0,(%a0)
+	move.l	#200000,%d1
+4:	cmp.l	4(%a0),%d0
+	beq.s	5f
+	subq.l	#1,%d1
+	bne.s	4b
+5:	rts
+
 | ---- helpers ----
 window:					| a0 = window base
 	lea	WIN32,%a0
@@ -113,32 +171,6 @@ window:					| a0 = window base
 	lea	WIN24,%a0
 1:	rts
 
-| netcmd: d1 = cmd, d2 = arg0, a2 = buf (logical), d3 = len -> d0 = status, d4 = result, d5 = xfer
-netcmd:
-	movem.l	%a0/%d6,-(%sp)
-	bsr.s	window
-	lea	CMD_NET(%a0),%a0
-	move.w	%d1,8(%a0)
-	move.w	#0,10(%a0)
-	move.l	%d2,12(%a0)
-	move.l	%a2,28(%a0)
-	move.l	%d3,32(%a0)
-	move.l	(%a0),%d6
-	addq.l	#1,%d6
-	move.l	%d6,(%a0)
-	move.l	#2000000,%d0
-1:	cmp.l	4(%a0),%d6
-	beq.s	2f
-	subq.l	#1,%d0
-	bne.s	1b
-	moveq	#ioErr,%d0
-	bra.s	3f
-2:	move.l	36(%a0),%d0
-	move.l	40(%a0),%d4
-	move.l	44(%a0),%d5
-3:	movem.l	(%sp)+,%a0/%d6
-	rts
-
 | strip24: d0 = logical address made safe for 24-bit mode
 strip24:
 	tst.b	MMU32Bit
@@ -146,12 +178,33 @@ strip24:
 	and.l	#0x00FFFFFF,%d0
 1:	rts
 
+| unitcmd: a3 = globals, d1 = command, arg already written -> d0 = cmd_result (0 ok), ioErr on timeout
+unitcmd:
+	movem.l	%a0/%d2-%d3,-(%sp)
+	move.l	G_BOARD(%a3),%a0
+	lea	AN_OFF_UNIT1(%a0),%a0
+	move.l	%d1,U_CMD(%a0)
+	move.l	U_CMD_SEQ(%a0),%d2
+	addq.l	#1,%d2
+	move.l	%d2,U_CMD_SEQ(%a0)
+	move.l	#4000000,%d3
+1:	cmp.l	U_CMD_DONE(%a0),%d2
+	beq.s	2f
+	subq.l	#1,%d3
+	bne.s	1b
+	moveq	#ioErr,%d0
+	bra.s	3f
+2:	move.l	U_CMD_RESULT(%a0),%d0
+3:	movem.l	(%sp)+,%a0/%d2-%d3
+	rts
+
 | ---- Open ----
 d_open:
 	movem.l	%d1-%d7/%a0-%a4,-(%sp)
 	move.l	%a1,%a4			| DCE
 	tst.l	dCtlStorage(%a4)
 	bne	open_ok
+	log	"ENET: open"
 	move.l	#G_SIZE,%d0
 	.short	_NewPtrSysClear
 	move.l	%a0,%d0
@@ -163,30 +216,40 @@ d_open:
 	bsr	window
 	cmp.l	#PSMB_MAGIC,(%a0)
 	bne	open_fail
-	cmp.w	#3,OFF_SERVICES+NET_SVC*32(%a0)	| service 2 must be the net service
-	bne	open_fail
-	| protocol table empty
-	lea	G_PROT(%a3),%a1
-	moveq	#NPROT-1,%d0
-1:	move.w	#0xFFFF,PROT_TYPE(%a1)
-	clr.l	PROT_HANDLER(%a1)
-	clr.l	PROT_RDQ(%a1)
-	lea	PROT_SIZE(%a1),%a1
+	| find the Alice68 boards through the service table: entry with type 6
+	lea	OFF_SERVICES(%a0),%a1
+	moveq	#7,%d0
+1:	cmp.w	#SVC_ALICE,(%a1)
+	beq.s	2f
+	lea	32(%a1),%a1
 	dbf	%d0,1b
-	| our address
-	moveq	#NET_GETADDR,%d1
-	moveq	#0,%d2
-	suba.l	%a2,%a2
-	moveq	#0,%d3
-	bsr	netcmd
-	tst.l	%d0
+	bra	open_fail
+2:	move.l	12(%a1),%d0		| param[0]: board offset in the window
+	add.l	%a0,%d0
+	move.l	%d0,G_BOARD(%a3)
+	move.l	%d0,%a1
+	cmp.l	#AN_MAGIC,(%a1)
 	bne	open_fail
-	move.l	%d4,G_ADDR(%a3)
-	move.w	%d5,G_ADDR+4(%a3)
-	| start taking frames where the Pi is now
-	bsr	window
-	lea	OFF_NETRX(%a0),%a0
-	move.l	(%a0),4(%a0)		| tail = head
+	lea	AN_OFF_UNIT1(%a1),%a1
+	tst.l	U_KIND(%a1)
+	beq	open_fail		| no Ethernet unit
+	log	"ENET: board found"
+	| protocol table empty
+	lea	G_PROT(%a3),%a2
+	moveq	#NPROT-1,%d0
+3:	move.w	#0xFFFF,PROT_TYPE(%a2)
+	clr.l	PROT_HANDLER(%a2)
+	clr.l	PROT_RDQ(%a2)
+	lea	PROT_SIZE(%a2),%a2
+	dbf	%d0,3b
+	| bring the unit up and start taking frames from where the Pi is now
+	moveq	#AN_CMD_START,%d1
+	bsr	unitcmd
+	move.l	U_RX_HEAD(%a1),U_RX_TAIL(%a1)
+	moveq	#AN_CMD_RXON,%d1
+	bsr	unitcmd
+	move.l	U_MAC(%a1),G_ADDR(%a3)
+	move.w	U_MAC+4(%a1),G_ADDR+4(%a3)
 	| VBL task: every tick
 	lea	G_VBL(%a3),%a0
 	clr.l	(%a0)
@@ -198,6 +261,7 @@ d_open:
 	.short	_VInstall
 	tst.w	%d0
 	bne	open_fail
+	log	"ENET: open ok"
 open_ok:
 	moveq	#noErr,%d0
 	bra.s	open_ret
@@ -205,6 +269,7 @@ open_mem:
 	moveq	#memFullErr,%d0
 	bra.s	open_ret
 open_fail:
+	log	"ENET: open failed"
 	moveq	#ioErr,%d0
 open_ret:
 	movem.l	(%sp)+,%d1-%d7/%a0-%a4
@@ -212,16 +277,18 @@ open_ret:
 
 | ---- Close ----
 d_close:
-	movem.l	%a0/%a3,-(%sp)
+	movem.l	%a0/%a3/%d1,-(%sp)
 	move.l	dCtlStorage(%a1),%d0
 	beq.s	1f
 	move.l	%d0,%a3
+	moveq	#AN_CMD_RXOFF,%d1
+	bsr	unitcmd
 	lea	G_VBL(%a3),%a0
 	.short	_VRemove
 	move.l	%a3,%a0
 	.short	_DisposePtr
 	clr.l	dCtlStorage(%a1)
-1:	movem.l	(%sp)+,%a0/%a3
+1:	movem.l	(%sp)+,%a0/%a3/%d1
 	moveq	#noErr,%d0
 	rts
 
@@ -386,13 +453,29 @@ c_rdcancel:
 	bsr	complete_pb
 	bra	ctl_noerr
 
-| EWrite: gather the WDS into our buffer, insert the source address, send
+| EWrite: gather the WDS straight into the next transmit slot, insert the source address, bump tx_head
 c_write:
+	move.l	G_BOARD(%a3),%a4
+	lea	AN_OFF_UNIT1(%a4),%a5	| unit
+	move.l	U_TX_HEAD(%a5),%d3
+	move.l	%d3,%d4
+	sub.l	U_TX_TAIL(%a5),%d4
+	cmp.l	#AN_TX_SLOTS,%d4
+	blt.s	0f
+	moveq	#excessCollsns,%d0	| ring full
+	bra	ctl_done
+0:	move.l	%d3,%d4
+	divu	#AN_TX_SLOTS,%d4
+	swap	%d4			| remainder = slot index
+	and.l	#0xFFFF,%d4
+	mulu	#AN_SLOT_BYTES,%d4
+	lea	AN_OFF_TX1(%a4),%a6
+	add.l	%d4,%a6			| the slot: len, flags, data
+	lea	8(%a6),%a1		| data
 	move.l	ePointer(%a2),%d0
 	bsr	strip24
 	move.l	%d0,%a0			| WDS
 	moveq	#0,%d2			| total
-	lea	G_TXBUF(%a3),%a1
 	move.w	(%a0),%d1
 	cmp.w	#14,%d1
 	blt	w_len
@@ -400,30 +483,29 @@ c_write:
 	beq.s	3f
 	move.l	(%a0)+,%d0
 	bsr	strip24
-	move.l	%d0,%a5
+	move.l	%d0,%a4
 	ext.l	%d1
 	add.l	%d1,%d2
 	cmp.l	#1514,%d2
 	bgt	w_len
 	bra.s	2f
-4:	move.b	(%a5)+,(%a1)+
+4:	move.b	(%a4)+,(%a1)+
 2:	dbf	%d1,4b
 	bra.s	1b
-3:	lea	G_TXBUF(%a3),%a1
+3:	lea	8(%a6),%a1
 	move.l	G_ADDR(%a3),6(%a1)	| source address
 	move.w	G_ADDR+4(%a3),10(%a1)
 	cmp.l	#60,%d2
 	bge.s	5f
-	moveq	#60,%d2			| pad short frames (the Pi sends what we give it)
-5:	moveq	#NET_SEND,%d1
-	move.l	%a1,%a2
-	move.l	%d2,%d3
-	moveq	#0,%d2
-	bsr	netcmd
-	tst.l	%d0
-	beq	ctl_noerr
-	moveq	#excessCollsns,%d0
-	bra	ctl_done
+6:	clr.b	(%a1,%d2.l)		| pad short frames with zeros
+	addq.l	#1,%d2
+	cmp.l	#60,%d2
+	blt.s	6b
+5:	move.l	%d2,(%a6)		| slot.len
+	clr.l	4(%a6)			| slot.flags
+	addq.l	#1,%d3
+	move.l	%d3,U_TX_HEAD(%a5)	| publish
+	bra	ctl_noerr
 w_len:
 	moveq	#eLenErr,%d0
 	bra	ctl_done
@@ -480,17 +562,19 @@ find_multi:
 	tst.w	%d1
 4:	movem.l	(%sp)+,%d1/%a0
 	rts
+| set_filter: AN_CMD_FILTER with ALLMULTI when any multicast address is registered
 set_filter:
-	movem.l	%d1-%d5/%a2,-(%sp)
-	moveq	#NET_SETFILTER,%d1
+	movem.l	%d1-%d2/%a0,-(%sp)
+	move.l	G_BOARD(%a3),%a0
+	lea	AN_OFF_UNIT1(%a0),%a0
 	moveq	#0,%d2
 	tst.w	G_NMULTI(%a3)
 	beq.s	1f
-	moveq	#NETF_MULTICAST,%d2
-1:	suba.l	%a2,%a2
-	moveq	#0,%d3
-	bsr	netcmd
-	movem.l	(%sp)+,%d1-%d5/%a2
+	moveq	#AN_FILT_ALLMULTI,%d2
+1:	move.l	%d2,U_ARG(%a0)
+	moveq	#AN_CMD_FILTER,%d1
+	bsr	unitcmd
+	movem.l	(%sp)+,%d1-%d2/%a0
 	rts
 
 | find_prot: d1 = type -> Z set and a1 -> entry if found
@@ -524,9 +608,8 @@ complete_pb:
 	move.l	ioCompletion(%a0),%d1
 	beq.s	1f
 	move.l	%d1,%a1
-	move.l	G_DCE(%a3),%d2		| A1 = completion routine, A0 = PB, D0 = result (word)
 	ext.l	%d0
-	jsr	(%a1)
+	jsr	(%a1)			| A0 = PB, D0 = result
 1:	movem.l	(%sp)+,%d1-%d2/%a0-%a1
 	rts
 
@@ -539,17 +622,22 @@ rx_vbl:
 	bne	rx_out
 	move.w	#1,G_INRX(%a3)
 	move.l	%a3,%a6
-	bsr	window
-	lea	OFF_NETRX(%a0),%a5	| ring
+	move.l	G_BOARD(%a3),%a5
+	lea	AN_OFF_UNIT1(%a5),%a5	| unit
 	moveq	#16,%d7			| frames per tick at most
 rx_loop:
-	move.l	(%a5),%d0		| head (Pi)
-	move.l	4(%a5),%d1		| tail (ours)
+	move.l	U_RX_HEAD(%a5),%d0	| head (Pi)
+	move.l	U_RX_TAIL(%a5),%d1	| tail (ours)
 	cmp.l	%d0,%d1
 	beq	rx_end
 	move.l	%d1,%d2
-	mulu	#RX_SLOT_SIZE,%d2
-	lea	16(%a5,%d2.l),%a2	| slot: len, reserved, data
+	divu	#AN_RX_SLOTS,%d2
+	swap	%d2
+	and.l	#0xFFFF,%d2
+	mulu	#AN_SLOT_BYTES,%d2
+	move.l	G_BOARD(%a6),%a2
+	lea	AN_OFF_RX1(%a2),%a2
+	add.l	%d2,%a2			| slot: len, flags, data
 	move.l	(%a2),%d3		| frame length
 	lea	8(%a2),%a2		| data
 	cmp.l	#14,%d3
@@ -604,12 +692,8 @@ rx_default:
 	bsr	complete_pb
 rx_next:
 	move.l	%a6,%a3
-	addq.l	#1,4(%a5)		| tail++
-	move.l	4(%a5),%d0
-	cmp.l	#RX_SLOTS,%d0
-	blt.s	5f
-	clr.l	4(%a5)
-5:	subq.w	#1,%d7
+	addq.l	#1,U_RX_TAIL(%a5)	| taken
+	subq.w	#1,%d7
 	bne	rx_loop
 rx_end:
 	clr.w	G_INRX(%a6)
