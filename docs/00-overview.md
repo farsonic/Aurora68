@@ -53,7 +53,7 @@ Recommendation: build A first as Milestone 1 (it exercises 100% of the hardware,
 ROM-serving, driver and SD infrastructure), then B as Milestone 2 reusing all of it.
 For B, prefer the **IIci/IIsi ROM** (32-bit clean, 5380 SCSI Manager, VIA1 ADB like the
 SE) unless we accept bridging SCSI for the Quadra ROM's colour/040-native advantages.
-**Decision needed from you.**
+**Decided (16 Nov): IIci ROM 368CADFE is the donor.** It boots System 6 and 7.1 to the Finder in the MAME testbed (docs/04). Details in docs/03.
 
 ## 4. ROM patches (Milestone 1, SE ROM)
 1. Checksum: recompute (not disable) after patching.
@@ -90,5 +90,5 @@ M2 Timing + SCSI coexistence: calibration patch; real SCSI disk boots. Floppy wr
 M3 Virtual disk: mailbox protocol, `.PiDisk`, exFAT images, APM partitions, boot from image.
 M4 `sesd` host tool: partitioning, HFS create, image conversion.
 M5 Network: `.ENET` driver + lwIP + WiFi (Zero 2 W); later GbE on CM4 PDS card.
-M6 32-bit machine (donor ROM) per §3 decision: pseudo-slot video, VIA2, ASC, MMU shim.
+M6 32-bit machine (IIci donor ROM): RBV (sense 7 → 512×342), VIA1 front-end, ASC→SE sound, 5380/SCC/IWM address translation, 68030 MMU shim in Emu68. Testbed: MAME maciici.
 M7 Bluetooth (ADB keyboard/mouse bridge or serial), polish, release images.

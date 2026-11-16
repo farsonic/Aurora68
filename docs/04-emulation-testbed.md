@@ -31,11 +31,24 @@ Runs:
   Needs wrapping: DDR + APM + Apple_Driver + Apple_HFS. We must obtain or write a generic
   SCSI driver for that (also needed by the `sesd` host tool and for MAME tests).
 
+Boot results after fixing the driver problem:
+- Zip image with the Iomega driver patched to accept any target (`tools/iomega_patch.py`,
+  one `bne`→`nop` in Zip100::Make): **System 7.1 boots to the Finder** on the emulated IIci
+  (docs/img/iici-system71-finder.png, ~2 min emulated with 8 MB).
+- System 7.0.1 volume wrapped with `tools/apm_wrap.py` (donor DDR/PM/driver + volume): boots
+  the System, which then refuses: "created with Minimal software, will not work on this
+  Macintosh model" (docs/img/iici-system701-minimal-refused.png). It is a model-specific
+  minimal install → keep it for the SE-ROM (Milestone 1) path.
+- `HD20_512-1GB-MacPlus-6+7.hda` (BlueSCSI image, Apple_Driver43 from HD SC Setup 7.3.5,
+  System 6 + System 7.0.1 folders, HD SC Setup (Patched) and System Picker on the volume):
+  **boots System 6 to the Finder on the IIci** (docs/img/iici-hd20-system6-finder.png).
+  Its DDR + Apple_Driver43 (blocks 64..95) is now our donor for `apm_wrap.py`, replacing
+  the patched Iomega driver, and its HD SC Setup (Patched) can format images in-emulator.
+
 Conclusions for the project:
-1. MAME is a good reference for VIA1/RBV/ASC/ADB behaviour (sources in reference/mame-src)
-   but its 5380 path is not trustworthy enough for boot testing with this ROM in 0.264.
-   Options: newer MAME build, or our own harness using the Pi glue code + Frimples'
-   `macse_scsi.c` virtual target (the glue is what we must write anyway).
+1. MAME maciici is a working reference and regression rig for the whole IIci path: ROM,
+   VIA1, RBV, ASC, ADB, 68030 MMU and 5380 SCSI (sources in reference/mame-src). The Pi
+   glue can be validated against the register-level traces captured here (mame/*.lua).
 2. Virtual disks served by our own ROM-resident `.PiDisk` driver avoid the on-disk driver
    problem entirely; images stay plain HFS (or APM) files on exFAT.
 3. For real SCSI disks nothing changes: the IIci ROM's SCSI Manager + the disk's own driver.
