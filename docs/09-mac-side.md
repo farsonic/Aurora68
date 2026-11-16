@@ -56,6 +56,24 @@ and closes it, then five letters are typed) so the screenshots show whether `.Pi
 68k code can log to the Pi console through the INFO service (`log "text"` macro in the sources);
 the lines appear as `[MAC] ...` in `emu68.log`.
 
+## MacTCP
+MacTCP is Apple's TCP/IP of 1989-1996: the `.IPP` driver and a control panel, later folded into
+Open Transport. It is not in the repository (Apple's), and the user's images do not carry it; the
+full product shipped with System 7.5 and as "TCP/IP Connection for Macintosh", the 2.0.6 files
+on the CD-ROM archives are updaters for 2.0.4. To test it here, put MacTCP (the control panel,
+and "MacTCP DNR" if the version has one) into `images/incoming/`, then:
+```
+python3 tools/mac/hfsput.py images/sys710pi.image images/incoming/MacTCP.bin "System Folder/Control Panels" 1
+python3 tools/mac/rsrcdump.py images/incoming/MacTCP.bin        # what its configuration resources look like
+```
+MacTCP finds the card the way PiNet does (SGetTypeSRsrc for catNetwork/typeEtherNet, then
+OpenSlot ".ENET"); its control panel lists one entry per network sResource, so the Pi shows two,
+Ethernet (sRsrcID 0x81) and WiFi (0x83). The address can be set in the control panel ("Manually",
+192.168.68.2, mask 255.255.255.0, gateway 192.168.68.1 for the testbed peer) or obtained from a
+server: `tools/pinet.py` answers BOOTP, so a MacTCP left on "Server" gets 192.168.68.2 from the
+peer. `PiPing` then proves the stack: it opens `.IPP`, prints the address MacTCP has, and pings
+the peer three times through MacTCP's own ICMP echo call.
+
 ## Facts the drivers rely on (from Inside Macintosh and Designing Cards and Drivers)
 - Driver header: flags, delay, event mask, menu, five offsets, Pascal name, then a word-aligned
   version word (the `.ENET` shell and the Start Manager compare versions).
