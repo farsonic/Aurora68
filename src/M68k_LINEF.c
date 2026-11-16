@@ -4936,6 +4936,52 @@ uint32_t EMIT_lineF(struct TranslatorContext *ctx)
     {
         return EMIT_FPU(ctx);
     }
+#ifdef PSMAC
+    /* 68030 PFLUSH (ext 001x) / PTEST (ext 100x): no MMU emulation at this level, ignore */
+    else if ((opcode & 0xffc0) == 0xf000 && ((opcode2 & 0xe000) == 0x2000 || (opcode2 & 0xe000) == 0x8000))
+    {
+        EMIT(ctx, nop());
+        ctx->tc_M68kCodePtr += 2;
+        EMIT_AdvancePC(ctx, 4);
+    }
+    /* 68030 PMOVE (ext 010x TC/SRP/CRP, 000x TT0/TT1, 011x MMUSR) with (An) or d16(An): shim call */
+    else if ((opcode & 0xffc0) == 0xf000 && ((opcode2 & 0xe000) == 0x4000 || (opcode2 & 0xe000) == 0x0000 || (opcode2 & 0xe000) == 0x6000)
+             && (((opcode >> 3) & 7) == 2 || ((opcode >> 3) & 7) == 5))
+    {
+        extern void psmac_pmove(uint32_t ea, uint32_t ext);
+        uint8_t mode = (opcode >> 3) & 7, reg = opcode & 7;
+        int16_t d16 = 0; int words = 2;
+        if (mode == 5) { d16 = (int16_t)cache_read_16(ICACHE, (uintptr_t)&ctx->tc_M68kCodePtr[2]); words = 3; }
+        uint8_t an = RA_MapM68kRegister(ctx, 8 + reg);
+        union { uint64_t u64; uint16_t u16[4]; } u;
+        u.u64 = (uintptr_t)psmac_pmove;
+
+        EMIT(ctx, stp64_preindex(31, 0, 1, -256));
+        for (int i=2; i < 30; i += 2)
+            EMIT(ctx, stp64(31, i, i+1, i*8));
+        EMIT(ctx, str64_offset(31, 30, 240));
+
+        if (d16 >= 0) EMIT(ctx, add_immed(0, an, d16)); else EMIT(ctx, sub_immed(0, an, -d16));
+        EMIT(ctx,
+            mov_immed_u16(1, opcode2, 0),
+            mov64_immed_u16(2, u.u16[3], 0),
+            movk64_immed_u16(2, u.u16[2], 1),
+            movk64_immed_u16(2, u.u16[1], 2),
+            movk64_immed_u16(2, u.u16[0], 3),
+            blr(2)
+        );
+
+        for (int i=2; i < 30; i += 2)
+            EMIT(ctx, ldp64(31, i, i+1, i*8));
+        EMIT(ctx,
+            ldr64_offset(31, 30, 240),
+            ldp64_postindex(31, 0, 1, 256)
+        );
+
+        ctx->tc_M68kCodePtr += words;
+        EMIT_AdvancePC(ctx, 2 * words);
+    }
+#endif
     /* PFLUSHA or PTEST - ignore */
     else if ((opcode & 0xffe0) == 0xf500 || (opcode & 0xffd8) == 0xf548)
     {

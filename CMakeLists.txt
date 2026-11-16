@@ -65,7 +65,7 @@ set(SUPPORTED_TARGETS "raspi64" "pbpro" "rockpro64" "virt")
 set(TARGET "raspi64" CACHE STRING "One of target machines: ${SUPPORTED_TARGETS}")
 set_property(CACHE TARGET PROPERTY STRINGS ${SUPPORTED_TARGETS})
 
-set(SUPPORTED_VARIANTS "none" "pistorm" "pistorm-classic")
+set(SUPPORTED_VARIANTS "none" "pistorm" "pistorm-classic" "psmac")
 set(VARIANT "none" CACHE STRING "Compilation variant: ${SUPPORTED_VARIANTS}")
 set_property(CACHE VARIANT PROPERTY STRINGS ${SUPPORTED_VARIANTS})
 
@@ -295,10 +295,18 @@ endif()
 
 if (${VARIANT} IN_LIST SUPPORTED_VARIANTS)
     message("-- Selected variant: ${VARIANT}")
-    if(${VARIANT} STREQUAL "pistorm" OR ${VARIANT} STREQUAL "pistorm-classic")
+    if(${VARIANT} STREQUAL "pistorm" OR ${VARIANT} STREQUAL "pistorm-classic" OR ${VARIANT} STREQUAL "psmac")
         if(${TARGET} STREQUAL "raspi64")
             add_compile_definitions(PISTORM_ANY_MODEL)
-            if(${VARIANT} STREQUAL "pistorm")
+            if(${VARIANT} STREQUAL "psmac")
+                # PiStorm-SE: Macintosh host layer; PISTORM selects the 2-core IPL path and the pointer-based bus API
+                add_compile_definitions(PISTORM PSMAC)
+                include_directories(src/psmac)
+                list(APPEND BASE_FILES
+                    src/psmac/psmac_bus.c
+                    src/psmac/psmac_mmu.c
+                )
+            elseif(${VARIANT} STREQUAL "pistorm")
                 add_compile_definitions(PISTORM)
                 list(APPEND BASE_FILES
                     src/pistorm/ps_protocol.c

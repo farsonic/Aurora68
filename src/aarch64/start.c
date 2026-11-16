@@ -34,6 +34,9 @@
 #include "globals.h"
 #ifdef PISTORM_ANY_MODEL
 #include "ps_protocol.h"
+#ifdef PSMAC
+#include "psmac.h"
+#endif
 #endif
 
 void _start();
@@ -558,6 +561,15 @@ void parse_cmdline(const char *cmdline)
     {
         recalc_checksum = 1;
     }
+#ifdef PSMAC
+    if ((tok = find_token(cmdline, "mac.ram=")))
+    {
+        tok += 8;
+        uint32_t mb = 0;
+        while (*tok >= '0' && *tok <= '9') mb = mb * 10 + (*tok++ - '0');
+        globals.psmac_ram_mb = mb;
+    }
+#endif
     if ((tok = find_token(cmdline, "copy_rom=")))
     {
         tok += 9;
@@ -941,7 +953,7 @@ void boot(void *dtree)
             libdeflate_free_decompressor(decomp);
         }
     }
-#if defined(PISTORM)
+#if defined(PISTORM) && !defined(PSMAC)   /* PiStorm-SE: no FPGA firmware upload in the Mac testbed */
     else
     {
         #include "firmware_ps16.bin.gz.h"
@@ -1084,8 +1096,10 @@ void boot(void *dtree)
                     }
                 }
 
+#ifndef PSMAC
                 mmu_map(sys_memory[block].mb_Base, sys_memory[block].mb_Base, size,
                         MMU_ACCESS | MMU_ISHARE | MMU_ATTR_CACHED, 0);
+#endif
 
                 if (sys_memory[block].mb_Base + size > top_of_ram)
                 {
@@ -1393,7 +1407,11 @@ void boot(void *dtree)
     }
 
 #else
-
+#ifdef PSMAC
+    /* PiStorm-SE: Macintosh memory map, ROM from initramfs */
+    (void)rom_copy;
+    psmac_setup_memory(initramfs_loc, (uint32_t)initramfs_size);
+#else
     if (rom_copy != 0)
     {
         kprintf("[BOOT] %dk ROM copy requested\n", rom_copy);
@@ -1516,6 +1534,7 @@ void boot(void *dtree)
 
         tlsf_free(tlsf, initramfs_loc);
     }
+#endif /* PSMAC */
 
 #endif
 
@@ -1589,7 +1608,11 @@ void boot(void *dtree)
     }
 
     /* If fast_page_zero is enabled, map first 4K to ROM directly (Overlay active) */
+#ifdef PSMAC
+    if (0)
+#else
     if (dt_find_property(dt_find_node("/emu68/defaults"), "fast-page-zero"))
+#endif
     {
         mmu_map(0xf80000, 0x0, 4096, MMU_ACCESS | MMU_ISHARE | MMU_ALLOW_EL0 | MMU_READ_ONLY | MMU_ATTR_CACHED, 0);
     }

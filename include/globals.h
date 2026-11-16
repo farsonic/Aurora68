@@ -15,6 +15,7 @@ struct Globals
 {
     // Globals in /emu68
     bool zorro_disable;
+    uint32_t psmac_ram_mb;      /* PiStorm-SE: Macintosh RAM size (mac.ram=MB) */
     bool fpu_disable;
     bool ppc_enable;
     bool scsi_disable;

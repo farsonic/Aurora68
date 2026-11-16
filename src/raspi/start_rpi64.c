@@ -669,10 +669,18 @@ void platform_post_init()
     (void)usercode; //suppress warning for now...for later inclusion in DT
 #endif
 
+#ifdef PSMAC
+    ps_setup_protocol();
+    kprintf("[BOOT] PiStorm-SE: Macintosh host layer active\n");
+    globals.block_c0 = false;
+    if (0)
+    {
+#else
     kprintf("[BOOT] sending RESET signal to Amiga\n");
     ps_pulse_reset();
 
     globals.block_c0 = false;
+#endif
 
     ps_write_8_int(0xde1000, 0);
     if (ps_read_8_int(0xde1000) & 0x80)
@@ -705,6 +713,9 @@ void platform_post_init()
             ps_write_16_int(0xdff1dc, 0x20);
         }
     }
+#ifdef PSMAC
+    }
+#endif
 
 #endif
 
