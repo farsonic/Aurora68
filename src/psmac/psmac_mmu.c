@@ -26,6 +26,7 @@
 #include "tlsf.h"
 #include "A64.h"
 #include "psmac.h"
+#include "psmb.h"
 
 void mmu_map(uintptr_t phys, uintptr_t virt, uintptr_t length, uint32_t attr_low, uint32_t attr_high);
 void mmu_unmap(uintptr_t virt, uintptr_t length);
@@ -86,12 +87,23 @@ static inline void wr32(uint32_t ea, uint32_t v) { *(volatile uint32_t *)(uintpt
 /* RAM smaller than the bank window aliases across it (the ROM sizes memory by looking for the wrap);
    with 64 MiB or more installed, every address below ram_size is distinct RAM (up to the 1 GiB ceiling). */
 static inline uint32_t norm_phys(uint32_t p) { return (p < ram_size) ? p : (p < BANK_A_WINDOW ? p % ram_size : p); }
+static uintptr_t slot_win_phys, slot_declrom_phys;   /* Pi RAM behind slot $9 (0 until set) */
+void psmac_mmu_set_slot(uintptr_t w, uintptr_t d) { slot_win_phys = w; slot_declrom_phys = d; }
 static inline uintptr_t pi_phys(uint32_t p)
 {
     p = norm_phys(p);
     if (p < ram_size) return ram_phys + p;
     if (p >= 0x40000000u && p < 0x50000000u) return rom_phys + (p & (PSMAC_ROM_SIZE - 1));
+    if (slot_win_phys && p >= PSMB_WIN_PHYS && p < PSMB_WIN_PHYS + PSMB_WIN_SIZE) return slot_win_phys + (p - PSMB_WIN_PHYS);
+    if (slot_declrom_phys && p >= PSMB_DECLROM_PHYS && p < PSMB_DECLROM_PHYS + PSMB_DECLROM_SIZE) return slot_declrom_phys + (p - PSMB_DECLROM_PHYS);
     return 0;
+}
+/* Mac physical pages that must be read-only for the 68k: ROM, declaration ROM, write-through
+   frame buffer and the (debug) watched low-memory page */
+static inline int ro_phys(uint32_t p)
+{
+    return (p < PSMAC_FB_SIZE) || (p >= 0x40000000u && p < 0x50000000u) || (p == WATCH_PHYS_PAGE) ||
+           (p >= PSMB_DECLROM_PHYS && p < PSMB_DECLROM_PHYS + PSMB_DECLROM_SIZE);
 }
 
 /* ---- per-set bookkeeping of what we mapped ---- */
@@ -142,7 +154,7 @@ static void apply_l2p(void)
         while (i < region_pages) {
             uint32_t e = l2p[i];
             if (!(e & L2P_VALID) || !pi_phys(e & ~0xfffu)) { i++; continue; }
-            uint32_t attr_ro = (e & L2P_WP) || ((e & ~0xfffu) < PSMAC_FB_SIZE) || ((e & ~0xfffu) >= 0x40000000u) || ((e & ~0xfffu) == WATCH_PHYS_PAGE);
+            uint32_t attr_ro = (e & L2P_WP) || ro_phys(e & ~0xfffu);
             uintptr_t pi0 = pi_phys(e & ~0xfffu);
             uint32_t j = i + 1;
             while (j < region_pages) {
@@ -150,7 +162,7 @@ static void apply_l2p(void)
                 if (!(f & L2P_VALID)) break;
                 uintptr_t pj = pi_phys(f & ~0xfffu);
                 if (pj != pi0 + ((uintptr_t)(j - i) << 12)) break;
-                uint32_t ro = (f & L2P_WP) || ((f & ~0xfffu) < PSMAC_FB_SIZE) || ((f & ~0xfffu) >= 0x40000000u) || ((f & ~0xfffu) == WATCH_PHYS_PAGE);
+                uint32_t ro = (f & L2P_WP) || ro_phys(f & ~0xfffu);
                 if (ro != attr_ro) break;
                 j++;
             }
@@ -173,6 +185,8 @@ static void build_identity(void)
         l2p[(PSMAC_ROM_BASE + p) >> 12]   = (PSMAC_ROM_BASE + p) | L2P_VALID | L2P_WP;
         l2p[(PSMAC_ROM_MIRROR + p) >> 12] = (PSMAC_ROM_MIRROR + p) | L2P_VALID | L2P_WP;
     }
+    for (uint32_t p = 0; p < PSMB_WIN_SIZE; p += 4096) l2p[(PSMB_WIN_PHYS + p) >> 12] = (PSMB_WIN_PHYS + p) | L2P_VALID;
+    for (uint32_t p = 0; p < PSMB_DECLROM_SIZE; p += 4096) l2p[(PSMB_DECLROM_PHYS + p) >> 12] = (PSMB_DECLROM_PHYS + p) | L2P_VALID | L2P_WP;
 }
 
 /* ---- 68030 table walk ---- */

@@ -36,5 +36,10 @@ uint32_t psmac_ram_size(void);
    patch described in docs/06-rom-patches.md. */
 #define PSMAC_RAM_MAX_MB 1024u
 void     psmac_select_transport(int semihost_mode);
+/* slot $9 mailbox (psmb.h, psmac_mbox.c) */
+void     psmac_mmu_set_slot(uintptr_t win_phys, uintptr_t declrom_phys);
+void     psmac_mbox_init(uintptr_t window_phys, uintptr_t ram_phys, uint32_t ram_size);
+int      psmac_mbox_poll(void);
+void     psmac_mbox_heartbeat(void);
 
 #endif

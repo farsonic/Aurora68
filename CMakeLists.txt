@@ -305,6 +305,7 @@ if (${VARIANT} IN_LIST SUPPORTED_VARIANTS)
                 list(APPEND BASE_FILES
                     src/psmac/psmac_bus.c
                     src/psmac/psmac_mmu.c
+                    src/psmac/psmac_mbox.c
                 )
             elseif(${VARIANT} STREQUAL "pistorm")
                 add_compile_definitions(PISTORM)

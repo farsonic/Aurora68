@@ -22,6 +22,7 @@
 #include "globals.h"
 #include "ps_protocol.h"
 #include "psmac.h"
+#include "psmb.h"
 #include "devicetree.h"
 
 void mmu_map(uintptr_t phys, uintptr_t virt, uintptr_t length, uint32_t attr_low, uint32_t attr_high);
@@ -44,6 +45,7 @@ extern struct MemoryBlock *sys_memory;
 
 static uintptr_t ram_phys, rom_phys;
 static uint32_t  ram_size;
+static uintptr_t win_phys, declrom_phys;   /* slot $9 mailbox window and declaration ROM (Pi RAM) */
 static volatile int transport_up, transport_dead, service_running;
 static volatile int svc_phase; /* 0 idle, 1 writing req, 2 reading reply, 3 heartbeat */
 static volatile uint32_t svc_op, svc_addr;
@@ -137,6 +139,36 @@ static int sh_read(int64_t fd, void *buf, uint64_t len)
     }
     return 1;
 }
+static const char *psmac_bootargs(void)
+{
+    of_node_t *c = dt_find_node("/chosen");
+    of_property_t *p = c ? dt_find_property(c, "bootargs") : NULL;
+    return (p && p->op_value) ? (const char *)p->op_value : "";
+}
+/* exported for psmac_mbox.c (testbed backends) */
+int64_t psmac_sh_open(const char *name, uint64_t mode) { return sh_open(name, mode); }
+int     psmac_sh_read(int64_t fd, void *buf, uint64_t len) { return sh_read(fd, buf, len); }
+int     psmac_sh_write(int64_t fd, const void *buf, uint64_t len) { return sh_write(fd, buf, len); }
+int64_t psmac_sh_seek(int64_t fd, uint64_t pos) { uint64_t p[2] = { shw((uint64_t)fd), shw(pos) }; return semihost(0x0A, p); }
+int64_t psmac_sh_flen(int64_t fd) { uint64_t p[1] = { shw((uint64_t)fd) }; return semihost(0x0C, p); }
+int     psmac_sh_available(void) { return use_semihost && !transport_dead; }
+uint32_t psmac_mac_ram_mb(void) { return ram_size >> 20; }
+/* value of "key=" in the boot arguments, copied into a static buffer (space-terminated); NULL if absent */
+const char *psmac_option(const char *key)
+{
+    static char val[8][128]; static int slot;
+    const char *args = psmac_bootargs();
+    size_t kl = strlen(key);
+    for (const char *s = args; s && *s; s++) {
+        if ((s == args || s[-1] == ' ') && strncmp(s, key, kl) == 0 && s[kl] == '=') {
+            char *out = val[slot = (slot + 1) & 7]; int n = 0;
+            for (const char *v = s + kl + 1; *v && *v != ' ' && n < 127; v++) out[n++] = *v;
+            out[n] = 0; return out;
+        }
+    }
+    return NULL;
+}
+
 static int semihost_init(void)
 {
     static const char hello[] = "[PSMAC] semihosting SYS_WRITE0 probe OK\n";
@@ -307,6 +339,7 @@ void psmac_service_core(void)
                 }
             }
             if (xfer_count == hb_last && !stall_dumped) { stall_dumped = 1; pcring_dump(); }
+            psmac_mbox_heartbeat();
             hb_last = xfer_count; next_hb = cnt_now() + hb_period;
         }
         if (__m68k_state) {
@@ -318,6 +351,7 @@ void psmac_service_core(void)
             kprintf("[PSMAC] first unexpected 68k exception (vector %03x): PC trail follows\n", psmac_exc_flag & 0xfff);
             pcring_dump();
         }
+        if (psmac_mbox_poll()) continue;
         if (__atomic_load_n(&slot.state, __ATOMIC_ACQUIRE) == SLOT_REQ) {
             xfer_count++; last_addr = slot.addr; dev_cnt[dev_class(slot.addr)]++;
             bridge_xfer(slot.op, slot.size, slot.flags, slot.addr, slot.data, &slot.rep);
@@ -458,12 +492,14 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
     ram_size = mb << 20;
 
     uintptr_t base = (sys_memory[0].mb_Base + 0x1fffff) & ~0x1fffffull;
-    uintptr_t need = ram_size + PSMAC_ROM_SIZE;
+    const uintptr_t extra = PSMB_WIN_SIZE + PSMB_DECLROM_SIZE;    /* slot $9 mailbox window + declaration ROM */
+    uintptr_t need = ram_size + PSMAC_ROM_SIZE + extra;
     if (sys_memory[0].mb_Base + sys_memory[0].mb_Size < base + need) {
         kprintf("[PSMAC] not enough system memory for %d MiB Mac RAM, falling back to 8 MiB\n", mb);
-        ram_size = 8 << 20; need = ram_size + PSMAC_ROM_SIZE;
+        ram_size = 8 << 20; need = ram_size + PSMAC_ROM_SIZE + extra;
     }
     ram_phys = base; rom_phys = base + ram_size;
+    win_phys = rom_phys + PSMAC_ROM_SIZE; declrom_phys = win_phys + PSMB_WIN_SIZE;
     sys_memory[0].mb_Size -= (base + need) - sys_memory[0].mb_Base;
     sys_memory[0].mb_Base = base + need;
 
@@ -482,7 +518,22 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
         kprintf("[PSMAC] WARNING: no ROM in initramfs!\n");
     }
     /* identity mapping (MMU disabled) and the 68030 MMU shadowing machinery */
+    psmac_mmu_set_slot(win_phys, declrom_phys);
     psmac_mmu_init(ram_phys, ram_size, rom_phys);
+    {   /* declaration ROM image (testbed: host file via semihosting; hardware: SD card later) */
+        uint8_t *dr = (uint8_t *)(KERNEL_ALIAS + declrom_phys);
+        for (uint32_t i = 0; i < PSMB_DECLROM_SIZE; i += 8) *(uint64_t *)(dr + i) = 0;
+        const char *path = psmac_option("mac.declrom");
+        if (path && use_semihost) {
+            int64_t fd = sh_open(path, 1);
+            int64_t len = fd >= 0 ? psmac_sh_flen(fd) : -1;
+            if (len > 0 && len <= (int64_t)PSMB_DECLROM_SIZE) {
+                /* the format block must end at the top of the slot space: right-align the image */
+                if (sh_read(fd, dr + PSMB_DECLROM_SIZE - len, len)) kprintf("[PSMAC] declaration ROM %s: %d bytes at Mac 0x%08x\n", path, (int)len, PSMB_DECLROM_PHYS + PSMB_DECLROM_SIZE - (uint32_t)len);
+            } else kprintf("[PSMAC] declaration ROM %s not loaded (len %d)\n", path, (int)len);
+        }
+    }
+    psmac_mbox_init(win_phys, ram_phys, ram_size);
 
     /* Overlay: reset vectors come from the ROM. Copy SP/PC to RAM 0 so the generic start-up finds them. */
     memcpy((void *)(KERNEL_ALIAS + ram_phys), romk, 8);

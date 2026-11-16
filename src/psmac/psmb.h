@@ -1,0 +1,141 @@
+/*
+ * psmb.h — PiStorm-SE mailbox ABI between the Macintosh (68k) and the Pi service core. MPL-2.0.
+ *
+ * The Pi appears to the Mac as a NuBus card in slot $9. The bottom 1 MiB of the slot's
+ * super slot space is ordinary shared RAM ("the window"), reachable at 0xF9000000 in 32-bit
+ * mode and at 0x900000 through the IIci ROM's 24-bit map, so drivers need no mode switch.
+ * The top 64 KiB of the slot space (0xF9FF0000) holds the declaration ROM the Slot Manager
+ * reads at boot; it carries the Mac-side drivers.
+ *
+ * All fields are big-endian (68k order); the Pi side converts. Everything is polled: a
+ * request is posted by filling the service's command block and incrementing req_seq; the
+ * service core executes it and sets done_seq = req_seq (status/result in the block).
+ * There are no interrupts in v1; drivers poll from their VBL/Time Manager task or spin
+ * with a timeout.
+ *
+ * Buffer addresses handed to the Pi are 68k LOGICAL addresses; the service core translates
+ * them with the MMU shim page by page (24- or 32-bit mode, VM off). Drivers that run under
+ * Virtual Memory must LockMemory the buffer first.
+ */
+#ifndef PSMB_H
+#define PSMB_H
+#include <stdint.h>
+
+#define PSMB_SLOT            9
+#define PSMB_WIN_PHYS        0xF9000000u     /* 32-bit address of the window (24-bit: 0x900000) */
+#define PSMB_WIN_SIZE        0x00100000u     /* 1 MiB */
+#define PSMB_DECLROM_PHYS    0xF9FF0000u     /* declaration ROM, must end at the top of slot space */
+#define PSMB_DECLROM_SIZE    0x00010000u
+
+#define PSMB_MAGIC           0x50534D42u     /* 'PSMB' */
+#define PSMB_VERSION         1
+
+/* window layout (offsets from PSMB_WIN_PHYS) */
+#define PSMB_OFF_HEADER      0x0000
+#define PSMB_OFF_SERVICES    0x0100          /* PSMB_MAX_SERVICES x struct psmb_service */
+#define PSMB_OFF_CMD         0x1000          /* PSMB_MAX_SERVICES x struct psmb_cmd (one slot each) */
+#define PSMB_OFF_BLKDEV      0x2000          /* PSMB_MAX_BLKDEV x struct psmb_blkdev */
+#define PSMB_OFF_NETRX       0x4000          /* net receive ring: header + PSMB_NETRX_SLOTS frames */
+#define PSMB_OFF_BOUNCE      0x80000         /* 512 KiB bounce area, free for drivers */
+#define PSMB_BOUNCE_SIZE     0x80000
+
+#define PSMB_MAX_SERVICES    8
+#define PSMB_MAX_BLKDEV      4
+
+/* service types */
+#define PSMB_SVC_INFO        1
+#define PSMB_SVC_BLOCK       2
+#define PSMB_SVC_NET         3
+#define PSMB_SVC_HID         4
+#define PSMB_SVC_RTC         5
+
+struct psmb_header {
+    uint32_t magic;           /* 'PSMB' */
+    uint16_t version;
+    uint16_t nservices;
+    uint32_t features;        /* PSMB_FEAT_* */
+    uint32_t pi_ram_mb;       /* Pi RAM available to services */
+    uint32_t mac_ram_mb;      /* Mac RAM configured (mac.ram) */
+    uint32_t uptime_ms;       /* updated by the service core every heartbeat */
+    char     fw_version[32];  /* Emu68 psmac build string */
+};
+#define PSMB_FEAT_BLOCK      (1u << 0)
+#define PSMB_FEAT_NET        (1u << 1)
+#define PSMB_FEAT_RTC        (1u << 2)
+#define PSMB_FEAT_HID        (1u << 3)
+
+struct psmb_service {          /* 32 bytes */
+    uint16_t type;             /* PSMB_SVC_* , 0 = empty */
+    uint16_t id;               /* index into the command block table */
+    uint32_t cmd_off;          /* offset of this service's command block in the window */
+    uint32_t caps;             /* service-specific */
+    uint32_t param[5];         /* service-specific (block: ndev; net: MAC hi/lo, rx ring off) */
+};
+
+/* command block: the Mac fills cmd, args, buf and len, then increments req_seq; the Pi sets status,
+   result, xfer and copies req_seq to done_seq. 64 bytes. */
+struct psmb_cmd {
+    uint32_t req_seq;
+    uint32_t done_seq;
+    uint16_t cmd;
+    uint16_t flags;
+    uint32_t arg0, arg1, arg2, arg3;
+    uint32_t buf;              /* 68k logical address */
+    uint32_t len;              /* bytes */
+    int32_t  status;           /* 0 OK, else PSMB_E_* (negative) */
+    uint32_t result;           /* command specific */
+    uint32_t xfer;             /* bytes transferred */
+    uint32_t reserved[4];
+};
+
+#define PSMB_E_BADCMD        (-1)
+#define PSMB_E_BADDEV        (-2)
+#define PSMB_E_RANGE         (-3)
+#define PSMB_E_IO            (-4)
+#define PSMB_E_BADADDR       (-5)   /* buffer page not mapped */
+#define PSMB_E_RO            (-6)
+#define PSMB_E_NODATA        (-7)
+#define PSMB_E_BUSY          (-8)
+
+/* INFO service commands */
+#define PSMB_INFO_PING       1      /* result = ~arg0 */
+#define PSMB_INFO_LOG        2      /* buf/len: text appended to the Pi console log */
+#define PSMB_INFO_TIME       3      /* result = seconds since 1904-01-01 (Mac epoch), 0 if unknown */
+
+/* BLOCK service: arg0 = device index, arg1 = first block, arg2 = block count, buf = data */
+#define PSMB_BLK_READ        1
+#define PSMB_BLK_WRITE       2
+#define PSMB_BLK_FLUSH       3
+#define PSMB_BLK_INFO        4      /* refresh struct psmb_blkdev table */
+#define PSMB_BLK_EJECT       5
+
+struct psmb_blkdev {           /* 64 bytes, PSMB_OFF_BLKDEV + idx*64 */
+    uint32_t blocks;           /* capacity in 512-byte blocks, 0 = no device */
+    uint32_t block_size;       /* 512 */
+    uint32_t flags;            /* PSMB_BD_* */
+    uint32_t reserved;
+    char     name[48];         /* C string, Mac Roman */
+};
+#define PSMB_BD_PRESENT      (1u << 0)
+#define PSMB_BD_WRITABLE     (1u << 1)
+#define PSMB_BD_REMOVABLE    (1u << 2)
+
+/* NET service: Ethernet frames. TX by command; RX through a ring the Pi fills. */
+#define PSMB_NET_SEND        1      /* buf/len = frame (dst, src, type, payload), no FCS */
+#define PSMB_NET_GETADDR     2      /* result = MAC bytes 0..3, arg0 out: bytes 4..5 in xfer */
+#define PSMB_NET_SETFILTER   3      /* arg0 = PSMB_NETF_* */
+#define PSMB_NET_LINK        4      /* result = 1 if link up */
+#define PSMB_NETF_PROMISC    (1u << 0)
+#define PSMB_NETF_MULTICAST  (1u << 1)
+
+#define PSMB_NETRX_SLOTS     32
+#define PSMB_NETRX_FRAME     1536
+struct psmb_netrx {            /* at PSMB_OFF_NETRX */
+    uint32_t head;             /* written by the Pi: next slot to fill */
+    uint32_t tail;             /* written by the Mac: next slot to consume; empty when tail == head */
+    uint32_t dropped;
+    uint32_t reserved;
+    struct { uint32_t len; uint32_t reserved; uint8_t data[PSMB_NETRX_FRAME]; } slot[PSMB_NETRX_SLOTS];
+};
+
+#endif
