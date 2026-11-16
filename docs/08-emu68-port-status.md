@@ -202,6 +202,19 @@ tools/run-fullstack.sh 400` selects another image.
    for; the VBL fallback's first-phase period is the thing to lengthen when the interrupt is
    to be the usual path.
 
+18. **MacTCP (16 November, night).** The user supplied MacTCP 2.0.6. Its configuration resource
+   was decoded from its own code (`tools/mac/mactcpcfg.py`, docs/09) and the control panel set
+   to the Ethernet link layer, first card, 192.168.68.2. MacTCP opened `.ENET`, attached its IP
+   and ARP handlers and sent ARP requests for ever: the peer answered every one, MacTCP saw
+   none. Its handler glue (in the 'iplp' 129 code resource) saves the driver's A0-A2 and D1 at
+   entry and restores them before each ReadPacket/ReadRest call, which it makes from C with its
+   own A6, so those registers are the driver's read state by convention, exactly as Inside
+   Macintosh: Networking says ("A0, A1 reserved for the driver"); this driver had kept its
+   position through A6 and read garbage. ReadPacket and ReadRest now carry the position in A0
+   and the bytes left in D1 and nothing else. With that, **MacTCP works end to end on System
+   7.1** (`docs/img/system71-mactcp-ping.png`): PiPing's first echo times out while ARP resolves,
+   as on any Mac, the next two come back in 0 and 1 ticks through the host peer.
+
 ### Debug aids added
 - `mac.dbg=LO,HI` bootarg: translator prints the blocks it creates in that 68k range.
 - `[PSMAC:PC]` report when the translator is asked for code at an odd or unmapped address.
@@ -238,9 +251,8 @@ unpatched ROM the JIT leaves TimeDBRA ($D00) = 0 and System 7.1's speed probe (c
 System 6 does not touch TimeDBRA that way and boots with either ROM.
 
 ## Next steps (in order, as of the evening of 16 November)
-1. System 7.1 through the same end-to-end test as System 6 (PiNet from Startup Items, the ARP
-   round trip, the scripted input); then MacTCP on top of `.ENET` (the driver's protocol-handler
-   path, EAttachPH with a real handler, has only been exercised with the default handler).
+1. MacTCP under System 6 (the same files; untested there), then a real client (Fetch, NCSA
+   Telnet) against a TAP-bridged peer (`tools/pinet.py ... tap`), and the WiFi unit on hardware.
 2. Hardware: the PiStorm GPIO transport in place of the semihosting bridge (`ps_protocol.c` is
    already behind the `ps_read/ps_write` API), the initramfs container on the SD card with the
    ROM, the declaration ROM and the firmware, and the first boot on a Macintosh SE.

@@ -65,6 +65,10 @@ Boot takes about four minutes in the testbed; a Pi 4 will do it in seconds.
   its slot interrupt, and keyboards and mice on the Pi move the Mac's cursor and post its events
   (docs/09, `docs/img/system6-pinet-arp.png`, `docs/img/system71-pinet-arp.png`). PiWiFi, PiBlue and PiStatus give the WiFi,
   Bluetooth and the Pi's status page a Macintosh face.
+- MacTCP, Apple's TCP/IP, runs over the Pi's Ethernet under System 7.1: configured by a tool
+  that writes its undocumented configuration resource, it pings the testbed's peer through our
+  `.ENET` driver (`docs/img/system71-mactcp-ping.png`). The WiFi unit is the same driver as a
+  second card.
 - A second display through the VideoCore is designed (docs/10).
 
 ## The documents
