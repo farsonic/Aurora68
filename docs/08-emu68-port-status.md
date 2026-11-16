@@ -189,6 +189,12 @@ tools/run-fullstack.sh 400` selects another image.
    OpenSlot (refNum -52), the Ethernet address 02:50:53:4D:41:43, an ARP request out through
    the Pi to the host peer and its reply back through ERead, 60 bytes from 02:00:00:00:68:01,
    received by the driver's slot interrupt handler.
+   System 7.1 then boots the same stack to the Finder with the Pi disk mounted and the cursor
+   and clicks from the Pi's input ring working, but its Finder no longer launched the Startup
+   Items (PiNet, PiStatus). The one 7.1 boot where they did launch was the one where the PiDisk
+   extension had done nothing; in between it had been taught to MountVol the ROM driver's drives
+   at INIT time. The extension is back to doing nothing when the ROM driver is present: the
+   driver's own disk-inserted events mount the volume under 7.1 as well.
 
 ### Debug aids added
 - `mac.dbg=LO,HI` bootarg: translator prints the blocks it creates in that 68k range.

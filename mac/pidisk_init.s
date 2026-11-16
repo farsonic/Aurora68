@@ -58,8 +58,11 @@ init_start:
 	.short	_Open
 	tst.w	%d0
 	bne.s	install
-	log	"PiDisk INIT: the ROM's driver is already open; mounting its drives"
-	bra	mount			| System 7's Finder does not mount a drive from the card's own disk-inserted event
+	log	"PiDisk INIT: the ROM's driver is already open, nothing to do"
+	| (The driver's own disk-inserted events mount the volume under System 6 and 7.1 alike. A
+	| MountVol from here, at INIT time, left System 7.1's Finder without its Startup Items: the
+	| one boot where this file did nothing was the one where they launched.)
+	bra	done
 install:
 	| our DRVR resource
 	subq.l	#4,%sp
