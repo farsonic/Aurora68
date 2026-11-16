@@ -1,94 +1,85 @@
-# PiStorm-SE: Emu68-based accelerator for the Macintosh SE — architecture & plan
+# Aurora68 / PiStorm-SE: an Emu68 kernel for the Macintosh SE
 
-Goal: a PiStorm in the SE's 68000 socket running our own bare-metal `kernel8.img`
-(Emu68 fork) that presents a 68040, serves/augments the ROM from Pi memory, adds RAM,
-virtual disks from SD-card images and partitions, networking (GbE/WiFi/BT), while keeping
-the real NCR 5380 SCSI, display, sound, ADB keyboard/mouse and floppy working.
+*This document is the project's front page and its history. The later numbered documents are the
+working notes of each part, written as the work was done; this one is kept up to date and says
+where everything came from and why it is the way it is.*
 
-## 1. Hardware
-- SE 68000 is DIP-64, socketed on many boards; PDS also carries all 68000 pins.
-  Classic PiStorm (EPM240 CPLD) fits the socket; a PDS variant needs /BR takeover and is
-  unproven after reset. Start with the socket.
-- Frimples' `MacSE-PiStorm-DirectSocket` CPLD RTL adds /BR,/BG,/BGACK arbitration,
-  E-clock + /VPA->/VMA for the VIA (6800-style cycles). Unvalidated on hardware; it is our
-  CPLD starting point (classic PiStorm firmware lacks arbitration and FC handling).
-- Gigabit Ethernet forces a Pi 4-class SoC: a CM4 carrier in PDS-card form puts the RJ45
-  at the SE's rear expansion cutout. Pi Zero 2 W / 3A+ (WiFi only) fit the classic board.
-  Decide early: classic board + Pi Zero 2 W (WiFi/BT only) first, CM4 PDS card later.
+## The idea (16 November 2026)
+Take a PiStorm (a Raspberry Pi in the 68000 socket of an old computer, with a small CPLD turning
+the Pi's GPIO into a 68000 bus) and Emu68 (Michal Schulz's bare-metal AArch64 JIT that makes the Pi
+behave as a fast 68k), both built for the Amiga, and put them into a Macintosh SE. The SE keeps
+its motherboard, screen, keyboard, mouse, floppy and real NCR 5380 SCSI chip; the Pi replaces the
+8 MHz 68000 with a 68040 running at Pi speed, adds memory, bootable disk images from the SD card,
+networking (Ethernet, WiFi, Bluetooth) and, later, a second display from the Pi's own video output.
 
-## 2. Pi-side memory map and bus policy (the core of the Emu68 port)
-Emu68's bus layer is `src/pistorm/ps_protocol.c` (function pointers ps_read_*/ps_write_*)
-plus Amiga assumptions in `M68k_Translator.c` (Kickstart at $F80000) and boards. We add a
-"host = Macintosh SE" map:
-| 24-bit range | Served by | Policy |
-|---|---|---|
-| $000000–RAMtop | Pi RAM | reads from Pi; writes **also forwarded** for the top $E000 (screen, alt screen, sound buffers), which the BBU reads from motherboard DRAM |
-| $000000–$3FFFFF while overlay set | ROM image | first fetches after reset; cleared on VIA regA bit 4 write |
-| $400000–$57FFFF | Pi ROM image (up to 1.5 MiB) | our patched ROM |
-| $5FF000–$5FFFFF | real bus | NCR 5380 incl. pseudo-DMA (DTACK stall = DRQ wait, no timeout) |
-| $9FFFF8/$BFFFF9, $DFE1FF, $EFE1FE.. | real bus | SCC, IWM, VIA (VIA via /VPA + E-clock) |
-| one unused window (e.g. $F00000–$F7FFFF, undecoded on SE) | Pi | **PiStorm mailbox**: virtual block device, network, RTC, control |
-| 32-bit space above 16 MiB | Pi RAM | only usable with a 32-bit-clean ROM (see §3) |
-Addresses are masked to 24 bits for the SE map (board property, not CPU property).
-RAM size autodetect: probe motherboard DRAM aliasing at boot (1/2/2.5/4 MiB) to place the
-write-through window; or `mac.ram=` in cmdline.txt.
+The user already runs a sibling of this on the Amiga: **Alice68**, a Pi 4 Amiga kernel built on
+Emu68 with a virtual AGA chipset, whose spare ARM core drives the Pi's WiFi, Gigabit Ethernet,
+Bluetooth and USB and hands them to AmigaOS through shared-memory "boards". Much of the Mac work
+reuses it; where this project differs, the documents say so.
 
-## 3. The memory question: 24-bit SE ROM vs 32-bit donor ROM
-Facts (docs/01-rom-analysis.md): the SE ROM treats Emu68 as a 68020 and will boot a 68040,
-but it has ~264 24-bit-dirty pointer-flag sites. A 32-bit-clean SE ROM is a MODE32-scale
-reverse-engineering project; not recommended.
+## The name
+The Amiga kernel is named after Alice, the AGA chip. The Macintosh variant is **Aurora68**: Aurora
+was Apple's code name for the Macintosh IIci, whose ROM this machine runs (see below), and the
+name keeps the Alice68 pattern. The kernel binary is still called `kernel8.img` (the Pi firmware
+insists); the Emu68 build variant and source directory are `psmac`, the working name from the first
+day, and the project repository is `pistorm-se`. All three names refer to the same thing.
 
-| | A. SE ROM (24-bit) | B. 32-bit-clean donor ROM + Pi glue |
-|---|---|---|
-| CPU seen by OS | 68020 (040 behaviour) | 68030/68040 |
-| RAM | 4 MiB (8 MiB only by relocating ROM+I/O windows: large patch) | up to 128 MiB+ with System 7.1–7.5.5 |
-| Real 5380 SCSI | native | native **only** with a 5380-based donor (IIci/IIsi 368CADFE is 32-bit clean in ROM; SE/30 needs MODE32); Quadra 900 (Frimples' choice) has 53C96 → Pi must bridge 53C96→5380 |
-| Display | native | Pi emulates a pseudo-slot 1-bit 512×342 video card whose frame buffer is the SE screen RAM |
-| Sound | native | Pi converts ASC FIFO (22.25 kHz) → SE 370-byte sound buffer |
-| Floppy | native IWM | donor expects SWIM; IWM-only SEs may lose floppy |
-| MMU | none needed | donor's PMOVE/MOVEC-MMU code → Emu68 has no MMU; patch donor's SwapMMUMode/MMU setup to a Pi "address-mode" register, or emulate the subset |
-| Risk | low | high but with precedent (Frimples: 68040 + 128 MB + Quadra 900 ROM on Musashi) |
+## Why the Macintosh IIci ROM runs on a Macintosh SE
+The SE's own ROM is "24-bit dirty": it keeps flags in the top byte of pointers and can address at
+most 4 MB, and it knows nothing of a Slot Manager, colour video or a 68030/68040's MMU. Making it
+32-bit clean is a project the size of Connectix's MODE32. The first analysis (docs/01) showed the SE
+ROM would boot a 68040 but could never give the machine more than 4 MB without a rewrite.
 
-Recommendation: build A first as Milestone 1 (it exercises 100% of the hardware, bus,
-ROM-serving, driver and SD infrastructure), then B as Milestone 2 reusing all of it.
-For B, prefer the **IIci/IIsi ROM** (32-bit clean, 5380 SCSI Manager, VIA1 ADB like the
-SE) unless we accept bridging SCSI for the Quadra ROM's colour/040-native advantages.
-**Decided (16 Nov): IIci ROM 368CADFE is the donor.** It boots System 6 and 7.1 to the Finder in the MAME testbed (docs/04). Details in docs/03.
+The IIci ROM (version 368CADFE, 512 KB) is 32-bit clean, drives the same NCR 5380 SCSI chip and the
+same VIA/ADB keyboard interface as the SE, and carries a Slot Manager, a Start Manager that loads
+drivers from NuBus cards, and a built-in video driver; Apple used it for the IIci, IIsi and later
+machines. With it the Macintosh side of this project became a well-trodden path: every device the
+Pi adds is presented as a NuBus card in a slot the SE does not have, with a declaration ROM the
+Slot Manager finds at boot, exactly as a 1989 card would have been (docs/03, docs/09). The price
+is that the ROM expects IIci hardware around it: RBV video, ASC sound, SWIM floppy, a 68030 MMU.
+Each of those is either the real SE part behind a small translation on the Pi, or emulated by the
+kernel (the MMU, docs/08). The decision was taken on the first day after the IIci ROM booted
+System 6 and 7.1 in the emulated testbed.
 
-## 4. ROM patches (Milestone 1, SE ROM)
-1. Checksum: recompute (not disable) after patching.
-2. TimeDBRA/TimeSCCDB calibration (0x40041C): saturate + replace SCSI delay loops with
-   timer-based waits. This is the probable cause of "SCSI chip warm, no devices" in 2022.
-3. Add ROM DRVRs (new resource-map entries) and open them in the boot driver loop
-   (0x402FEA): `.PiDisk` block driver (multiple drive-queue entries, APM-aware, bootable),
-   `.ENET`-compatible Ethernet driver (MacTCP/OT), `.PiCtl` (RTC/time sync, config).
-   All talk to the Pi through the mailbox window; no 68k code touches Pi hardware.
-4. Memory sizing: trust Pi-reported size (4 MiB) regardless of installed SIMMs.
-5. Optional: ROM-disk volume appended to the >256 KiB ROM (ROM-inator style) for recovery.
+## How it was built without the hardware: the testbed
+No PiStorm was plugged into an SE while this was written. Instead the whole stack runs on a
+development machine: Emu68 (the psmac build) runs under QEMU's Raspberry Pi 3 model, and the Mac
+motherboard is MAME's IIci with its 68030 replaced by a *bridge* CPU device that serves bus cycles
+over a FIFO to Emu68 (docs/04, docs/05, docs/06-mame-bridge). Every byte the Mac reads or writes
+to VIA, SCC, SCSI or video goes through that bridge, so the JIT, the MMU shim, the ROM patches and
+the Mac-side drivers were all exercised against a faithful motherboard before any PCB existed.
+Boot takes about four minutes in the testbed; a Pi 4 will do it in seconds.
 
-## 5. Pi-side services (ARM, in kernel8.img)
-- Storage: SD card via Pi SDHC/EMMC; FatFs (exFAT+FAT32) for image files
-  (`.dsk/.img/.hda`, DiskCopy 4.2, BlueSCSI naming); raw Apple-Partition-Map partitions
-  on the card also exposed; whole-card passthrough device for Mac-side formatting tools.
-- Partition/format management (your requirement): two layers —
-  (a) host tool `sesd` (Python CLI, later GUI): lays out the SD card (FAT32 boot with
-  kernel8.img/ROM/cmdline, exFAT data), creates/resizes APM + HFS volumes (machfs/libhfs),
-  converts image formats, injects files; (b) Mac-side: Lido / patched HD SC Setup / our own
-  formatter work against the passthrough or image devices. Emu68 never needs to understand HFS.
-- Network: lwIP + bare-metal drivers (Circle project has GENET GbE, BCM43xx WLAN, BT HCI
-  drivers; GPLv3 vs Emu68 MPL-2.0 — licence check before adopting). 68k side sees a plain
-  Ethernet driver; WiFi config via cmdline.txt/control panel.
-- This is a fork: Emu68's AGENTS.md forbids ARM-side virtual devices and host-specific
-  maps upstream. Keep the JIT core unmodified and isolate everything under `src/mac/`.
+## Where the work stands (see docs/08 for the day-by-day account)
+- The IIci ROM runs on the Emu68 JIT with the MAME motherboard; System 6 and System 7.1 boot to the
+  Finder from the user's SCSI disk images.
+- The Pi is a NuBus card in slot 9: a shared mailbox window and a declaration ROM served from Pi
+  RAM. The Slot Manager accepts it, the Start Manager loads the Pi's block driver at boot, and a
+  disk image on the Pi mounts on the desktop (docs/07, docs/09).
+- The Alice68 service modules (network board, Bluetooth, status page) run on ARM core 3 behind
+  that window; in the testbed the network board is fed from host files, on hardware from the
+  Pi's chips. An Apple-interface Ethernet driver for the Mac sits on the same board (docs/09).
+- A second display through the VideoCore is designed (docs/10).
 
-## 6. Milestones
-M0 (now): toolchain, ROM tools (`romscan`, `romres`, `romfix`, patch assembler via
-   m68k-linux-gnu-as), disassembly annotations. ✔ started
-M1 Bring-up: Emu68 fork boots SE ROM from Pi memory in a Mini vMac-like test harness
-   (qemu raspi3 + bus simulator), then on hardware: grey screen → Happy Mac from floppy/SCSI.
-M2 Timing + SCSI coexistence: calibration patch; real SCSI disk boots. Floppy writes.
-M3 Virtual disk: mailbox protocol, `.PiDisk`, exFAT images, APM partitions, boot from image.
-M4 `sesd` host tool: partitioning, HFS create, image conversion.
-M5 Network: `.ENET` driver + lwIP + WiFi (Zero 2 W); later GbE on CM4 PDS card.
-M6 32-bit machine (IIci donor ROM): RBV (sense 7 → 512×342), VIA1 front-end, ASC→SE sound, 5380/SCC/IWM address translation, 68030 MMU shim in Emu68. Testbed: MAME maciici.
-M7 Bluetooth (ADB keyboard/mouse bridge or serial), polish, release images.
+## The documents
+| | |
+|---|---|
+| docs/01 | The SE ROM, read with a disassembler: why it cannot be the 32-bit ROM |
+| docs/02 | Prior art: PiStorm, Emu68, Frimples' SE socket adapter, MODE32, ROMinator |
+| docs/03 | The IIci ROM as donor: its memory map, MMU use, slot probing, the timing calibration |
+| docs/04 | The emulation testbed: QEMU and MAME, how the two are joined |
+| docs/05 | The bridge protocol between Emu68 and the MAME motherboard |
+| docs/06-mame-bridge | The MAME side: the bridge CPU device and the IIci machine built on it |
+| docs/06-rom-patches | ROM patches: checksum, timing calibration, why saturation is not enough |
+| docs/07 | The service core and the mailbox window; the Alice68 port plan |
+| docs/08 | Emu68 port status: every bug found and fixed, in order |
+| docs/09 | The Mac side: drivers, declaration ROM, tools, test application |
+| docs/10 | The second display from the VideoCore |
+
+## Hardware plan (unchanged from day one, decision pending)
+The classic PiStorm board with a Pi Zero 2 W or 3A+ fits the SE's socket (Frimples'
+`MacSE-PiStorm-DirectSocket` CPLD design adds the bus arbitration the Mac needs); it offers WiFi and
+Bluetooth only. Gigabit Ethernet and the Pi 4-class drivers in Alice68 need a CM4 carrier in the
+PDS slot, which also puts an RJ45 at the SE's rear cut-out. The software is written for both; the
+network and USB drivers taken from Alice68 are Pi 4 code and the differences for a Pi 3-class board
+are listed in docs/07.

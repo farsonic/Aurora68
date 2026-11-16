@@ -12,31 +12,60 @@
     "nothing references it; the next routine 0x408008E0 is reached by braw from 0x408000B4)",
     "that performs not.w d0 and turns a zero result into 0xFFFF (saturate), then branches",
     "to 0x40800850 (the store).  Normal (slow-CPU) results are unchanged.",
-    "Source: see docs/06-rom-patches.md."
+    "Source: see docs/06-rom-patches.md.",
+    "Second stub (16 Nov, later): the Pi supplies the calibration results. At JIT speed the CPU loop (TimeDBRA) overflows and the bus loops (TimeSCSIDB/TimeVIADB/TimeSCCDB) measure the bridge latency, which can leave absurd timeout counts (a saturated TimeSCSIDB made a SCSI wait last 48 minutes). The stub looks the loop's low-memory address up in a table at the slot-9 window + 0x80 (psmb.h PSMB_OFF_CALIB: 4 x {address.w, value.w}) that the kernel fills from its own measurements, and falls back to saturation when the window is absent or the entry is 0."
   ],
   "symbols": {
     "calib_store": "0x40800850",
-    "calib_stub": "0x408008d2"
+    "calib_stub": "0x408008d2",
+    "calib_stub2": "0x408629e0",
+    "psmb_window": "0xf9000000"
   },
   "patches": [
     {
-      "name": "calib: point a2 (loop continuation) at the saturating stub",
+      "name": "calib: point a2 (loop continuation) at the stub in the padding gap",
       "at": "0x844",
       "expect": "45fa 0008",
       "asm": "lea %pc@(calib_stub:w),%a2    | was lea %pc@(0x4080084e),%a2",
       "max_len": 4
     },
     {
-      "name": "calib: saturating stub in the padding gap 0x8D2..0x8DF",
+      "name": "calib: the 14-byte gap only holds a long branch to the real stub",
       "at": "0x8d2",
       "expect": "0000 0000 0000 0000 0000 0000 0000",
       "asm": [
-        "        not.w   %d0             | d0.w = iterations completed (0 if dbf fell through)",
-        "        bne.s   1f",
-        "        subq.w  #1,%d0          | 0 -> 0xFFFF: saturate instead of wrapping",
-        "1:      bra.w   calib_store     | -> 0x40800850: move.w d0 to the low-memory global"
+        "        bra.l   calib_stub2     | 68020 long branch: the stub is 400 KB away"
       ],
       "max_len": 14
+    },
+    {
+      "name": "calib: stub in the zero padding at 0x629E0: take the value from the Pi's table, else saturate",
+      "at": "0x629e0",
+      "expect": "0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000",
+      "asm": [
+        "        not.w   %d0             | d0.w = iterations completed (0 if dbf fell through)",
+        "        movem.l %d1/%a0-%a1,-(%sp)",
+        "        lea     psmb_window,%a1",
+        "        cmp.l   #0x50534D42,(%a1) | 'PSMB': is the Pi's window there?",
+        "        bne.s   9f",
+        "        lea     0x80(%a1),%a1   | 4 x { low-memory address.w, value.w }",
+        "        moveq   #3,%d1",
+        "1:      movea.w (%a1),%a0",
+        "        cmpa.w  (%a4),%a0       | (a4) = this loop's low-memory address (TimeDBRA, TimeSCCDB, TimeSCSIDB, TimeVIADB)",
+        "        bne.s   2f",
+        "        tst.w   2(%a1)",
+        "        beq.s   2f",
+        "        move.w  2(%a1),%d0      | the Pi's value",
+        "        bra.s   9f",
+        "2:      addq.l  #4,%a1",
+        "        dbf     %d1,1b",
+        "9:      movem.l (%sp)+,%d1/%a0-%a1",
+        "        tst.w   %d0",
+        "        bne.s   3f",
+        "        subq.w  #1,%d0          | 0 -> 0xFFFF: saturate instead of wrapping",
+        "3:      bra.w   calib_store     | -> 0x40800850: move.w d0 to the low-memory global"
+      ],
+      "max_len": 64
     }
   ]
 }
