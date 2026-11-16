@@ -205,13 +205,28 @@ int psmac_eth_testbed_poll(volatile struct an_unit *u)
    the top-left corner, across to the Apple menu, clicks it open, and a moment later the "keyboard"
    types a few letters, with the whole thing visible in the MAME screenshots. On hardware the
    option is simply not given. */
-static uint32_t intest_at; static int intest_step; static uint64_t intest_next;
+static uint32_t intest_at, intest_kind; static int intest_step; static uint64_t intest_next;
+/* mac.inputabout=SECONDS: a second script, for the Finder: the mouse walks to the Apple menu,
+   presses, moves down to the first item and releases, which under System 6 and 7 opens the
+   "About This Macintosh" window (the Finder must be in front: no startup items). */
+static void in_about_step(int s)
+{
+    uint32_t gap_ms = 50;
+    if (s < 40)       aga_virtual_mouse_update(-30, -20, 0);
+    else if (s < 42)  aga_virtual_mouse_update(8, 5, 0);                     /* onto the Apple menu title */
+    else if (s == 42) { aga_virtual_mouse_update(0, 0, 1); gap_ms = 300; }   /* press */
+    else if (s < 47)  { aga_virtual_mouse_update(0, 6, 1); gap_ms = 120; }   /* drag down onto "About..." */
+    else if (s == 47) { aga_virtual_mouse_update(0, 0, 0); gap_ms = 500; }   /* release: the item runs */
+    else { intest_at = 0; kprintf("[PSMAC] input about script done\n"); return; }
+    intest_next = in_now() + in_hz() * gap_ms / 1000;
+}
 static void in_testbed_poll(void)
 {
     if (!intest_at) return;
     uint64_t now = in_now();
     if (!intest_next) intest_next = now + in_hz() * intest_at;
     if (now < intest_next) return;
+    if (intest_kind == 1) { in_about_step(intest_step++); return; }
     static const uint8_t typed[] = { 0x0b, 0x08, 0x0f, 0x0f, 0x12, 0 };     /* h e l l o in USB usages */
     int s = intest_step++;
     uint32_t gap_ms = 50;
@@ -227,7 +242,8 @@ static void in_testbed_poll(void)
     } else { intest_at = 0; kprintf("[PSMAC] input test script done\n"); return; }
     intest_next = now + in_hz() * gap_ms / 1000;
 }
-void psmac_alice_input_test(uint32_t seconds) { intest_at = seconds; }
+void psmac_alice_input_test(uint32_t seconds) { intest_at = seconds; intest_kind = 0; }
+void psmac_alice_input_about(uint32_t seconds) { intest_at = seconds; intest_kind = 1; }
 
 /* heartbeat line for psmac_bus.c: the interrupt line and what holds it */
 void psmac_slot_irq_report(void)

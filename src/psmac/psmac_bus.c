@@ -216,6 +216,7 @@ static void psmac_read_options(void)
         globals.debug_range_min = lo; globals.debug_range_max = hi; globals.debug = 1; globals.disasm = true;
     }
     if ((tok = find_token(args, "mac.inputtest="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_test(uint32_t); psmac_alice_input_test(n); }
+    if ((tok = find_token(args, "mac.inputabout="))) { tok += 15; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_about(uint32_t); psmac_alice_input_about(n); }
     if ((tok = find_token(args, "mac.scsitrace="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); scsi_trace_left = n; }
     if ((tok = find_token(args, "mac.ram="))) { tok += 8; uint32_t mb = 0; while (*tok >= '0' && *tok <= '9') mb = mb * 10 + (*tok++ - '0'); globals.psmac_ram_mb = mb; }
     if (find_token(args, "mac.bridge=semihost")) use_semihost = 1;
