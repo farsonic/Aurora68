@@ -65,6 +65,10 @@ the lines appear as `[MAC] ...` in `emu68.log`.
   `ERead` returns the whole frame including the 14-byte header; the driver inserts the source address
   and pads to 60 bytes.
 - Buffer addresses handed to the Pi are logical; in 24-bit mode the driver strips the high byte.
+- An application in front must ask `GetNextEvent` for every event: the Event Manager mounts a
+  volume when the disk-inserted event is *taken*, so a test application that asked only for
+  mouse and key events kept the Pi disk off the desktop until it quit. The four applications
+  take everything and ignore what is not theirs.
 - Input (Inside Macintosh I "Toolbox Event Manager", Inside Macintosh: Text "Virtual Key Codes"
   and `KeyTranslate`, MPW `SysEqu.a`): `_PostEvent` fills an event's modifiers from the modifier
   bits of `KeyMap` ($174, four longwords, bit 0 of each the lowest code) and the button from
