@@ -12,6 +12,19 @@
 
 /* IIci physical map handled locally vs forwarded to the bridge */
 #define PSMAC_FB_SIZE      0x00050000u   /* IIci reserves the first 320 KiB of bank A for RBV video (low memory starts at 0x50000) */
+/* The Pi peripherals are mapped twice. Once in the first 4 GiB at 0x3F000000 (start_rpi64.c), where
+   upstream Emu68 keeps them so a 68k driver can reach them; and once more here, high in the kernel
+   half of the address space, for the kernel's own use from every core. The second mapping exists
+   because the Macintosh MMU shim (psmac_mmu.c) swaps the whole of the first 4 GiB when the ROM
+   switches translation tables: break-before-make, so for a few microseconds nothing below 4 GiB
+   is mapped on any core. The bus core (its console, on hardware the GPIO transport) and the service
+   core (the firmware mailbox, SDIO, the Bluetooth UART) touched the peripherals through the low
+   window and, now and then, fell into that gap: a data abort on a core whose exception handler
+   wants the console lock that the aborted print still holds, and the whole machine stops
+   mid-line (docs/08, item 21). Kernel-space addresses are never swapped; this one is above the
+   kernel's 320 GiB alias of physical memory and below the shadow of the low tables. */
+#define PSMAC_PERIPH_HI    0xffffffe800000000ull   /* clear of the JIT pools at 0xffffffe0..e2 and their read-only mirrors at 0xfffffff0..f2 (start.c) */
+#define PSMAC_PERIPH_LOW   0x3f000000ull
 #define PSMAC_ROM_BASE     0x40800000u
 #define PSMAC_ROM_MIRROR   0x40000000u
 #define PSMAC_ROM_SIZE     0x00080000u

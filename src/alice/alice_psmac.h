@@ -7,8 +7,9 @@
  * 68k through "boards" in shared memory. PiStorm-SE ("Aurora68", the Macintosh variant of the same
  * kernel) reuses those modules as they are: the hardware does not care which 68k OS consumes the
  * frames. What differs is the plumbing, and this header plus alice_psmac.c carry all of it:
- *   - the Pi peripherals sit at 0x3F000000 in Emu68's map on the Mac build (Alice68 maps them at
- *     0xF2000000, see src/raspi/start_rpi64.c);
+ *   - the Pi peripherals are reached through a kernel-space mapping (Alice68 maps them at
+ *     0xF2000000, the Mac build at 0x3F000000 for the 68k and high up for the kernel's cores,
+ *     see src/raspi/start_rpi64.c and psmac/psmac.h);
  *   - there is no Zorro autoconfig: the boards are fixed regions inside the NuBus slot-$9 window
  *     (psmac/psmb.h), announced to the Mac through the window's service table;
  *   - the 68k is interrupted by setting the board's irq flag; the Mac drivers poll from VBL
@@ -21,7 +22,14 @@
 #define ALICE_PSMAC_H
 #include <stdint.h>
 
-#define ALICE_PERI              0x3f000000u     /* Pi peripheral window in the psmac Emu68 map */
+/* A register address the device tree hands out (start_rpi64.c rewrites the ranges to the low
+   window) moved to the kernel-space twin of that window; anything else is returned as it is. */
+static inline unsigned long alice_periph_hi(unsigned long low_va)
+{
+    return (low_va >= 0x3f000000ul && low_va < 0x4f000000ul) ? low_va + (0xffffffe800000000ul - 0x3f000000ul) : low_va;
+}
+#define ALICE_PERI              0xffffffe800000000ull   /* the kernel-space mapping of the Pi peripherals (psmac/psmac.h: PSMAC_PERIPH_HI);
+                                                           the low one at 0x3F000000 vanishes for a moment at every Mac MMU switch */
 
 /* where the Alice68 boards live inside the slot-$9 window (psmb.h: 0x20000..0x7FFFF is free) */
 #define ALICE_NET_WINDOW_OFF    0x20000u        /* 128 KB network board (alice_net.h layout) */

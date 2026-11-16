@@ -164,6 +164,9 @@ static int pcie_find(void)
     uint32_t *r = reg->op_value;
     rc = scb_virt(r[ac - 1]);
     mmio_virt = ((uint32_t *)pv->op_value)[0];
+#ifdef PSMAC
+    rc = alice_periph_hi(rc); mmio_virt = alice_periph_hi(mmio_virt);   /* the mapping no Mac MMU switch unmaps */
+#endif
     uint32_t *g = rg->op_value;               /* first range: <space pci_hi pci_lo> <cpu..> <size..> */
     int cpu_cells = (int)dt_get_property_value_u32(n->on_parent, "#address-cells", 2, 0);
     mmio_pci = g[2];

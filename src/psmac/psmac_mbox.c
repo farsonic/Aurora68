@@ -116,81 +116,86 @@ static int blk_xfer(int write, struct blkdev *b, uint32_t lba, uint32_t count, u
 }
 
 /* ---- network: frames exchanged with a host helper through two append-only files ----
-   tx: we append {u16 len, frame}; rx: the helper appends the same records, we read from our offset. */
-static int64_t net_tx_fd = -1, net_rx_fd = -1; static uint64_t net_rx_off; static int net_up;
+   tx: we append {u16 len, frame}; rx: the helper appends the same records, we read from our offset.
+   There are two such pairs. Pair 0 (mac.net=BASE) is the testbed's Ethernet: the NET mailbox
+   service below and, through the primitives at the end, unit 1 of the Alice68 network board.
+   Pair 1 (mac.wifinet=BASE) stands in for the WiFi chip's air interface: unit 0's frames go
+   through it while the simulated radio (alice_psmac.c, mac.wifisim=) says it is connected, so the
+   Mac's WiFi driver and MacTCP over it can be exercised in QEMU, which has no WiFi chip. */
+struct netfile { int64_t tx_fd, rx_fd; uint64_t rx_off; int up; };
+static struct netfile nf[2] = { { -1, -1, 0, 0 }, { -1, -1, 0, 0 } };
+#define net_up (nf[0].up)
 static uint8_t net_mac[6] = { 0x02, 0x50, 0x53, 0x4D, 0x41, 0x43 };   /* locally administered "PSMAC" */
 static uint8_t net_buf[PSMB_NETRX_FRAME + 2];
 static uint32_t net_filter;
 static int mac_eq(const uint8_t *a, const uint8_t *b) { for (int i = 0; i < 6; i++) if (a[i] != b[i]) return 0; return 1; }
 
-static void net_init(void)
+static void netfile_open(struct netfile *f, const char *key)
 {
-    const char *base = psmac_option("mac.net");
+    const char *base = psmac_option(key);
     if (!base || !psmac_sh_available()) return;
     char tx[128], rx[128]; int n = 0; while (base[n] && n < 100 && base[n] != ' ') { tx[n] = rx[n] = base[n]; n++; }
     memcpy(tx + n, ".tx", 4); memcpy(rx + n, ".rx", 4);
-    net_tx_fd = psmac_sh_open(tx, 9 /* ab */);
-    net_rx_fd = psmac_sh_open(rx, 1 /* rb */);
-    net_up = net_tx_fd >= 0 && net_rx_fd >= 0;
-    if (net_up) net_rx_off = (uint64_t)psmac_sh_flen(net_rx_fd);   /* start from the current end */
-    kprintf("[PSMAC:MBOX] net: %s (%s.tx/.rx) %s\n", base, base, net_up ? "up" : "unavailable");
+    f->tx_fd = psmac_sh_open(tx, 9 /* ab */);
+    f->rx_fd = psmac_sh_open(rx, 1 /* rb */);
+    f->up = f->tx_fd >= 0 && f->rx_fd >= 0;
+    if (f->up) f->rx_off = (uint64_t)psmac_sh_flen(f->rx_fd);   /* start from the current end */
+    kprintf("[PSMAC:MBOX] %s: %s (%s.tx/.rx) %s\n", key, base, base, f->up ? "up" : "unavailable");
+}
+static void net_init(void) { netfile_open(&nf[0], "mac.net"); netfile_open(&nf[1], "mac.wifinet"); }
+/* one record from a pair's rx file into buf: the frame's length, 0 if none (or none that fits) */
+static int netfile_recv(struct netfile *f, uint8_t *buf, uint32_t max)
+{
+    if (!f->up) return 0;
+    int64_t len = psmac_sh_flen(f->rx_fd);
+    if (len < 0 || (uint64_t)len < f->rx_off + 2) return 0;
+    if (psmac_sh_seek(f->rx_fd, f->rx_off) < 0) return 0;
+    uint8_t hdr[2]; if (!psmac_sh_read(f->rx_fd, hdr, 2)) return 0;
+    uint32_t flen = (hdr[0] << 8) | hdr[1];
+    if (flen > max || (uint64_t)len < f->rx_off + 2 + flen) { if (flen > max) f->rx_off += 2 + flen; return 0; }
+    if (!psmac_sh_read(f->rx_fd, buf, flen)) return 0;
+    f->rx_off += 2 + flen;
+    return (int)flen;
+}
+static int netfile_send(struct netfile *f, const uint8_t *frame, uint32_t len)
+{
+    if (!f->up || len > PSMB_NETRX_FRAME) return 0;
+    uint8_t hdr[2] = { len >> 8, len & 0xff };
+    return psmac_sh_write(f->tx_fd, hdr, 2) && psmac_sh_write(f->tx_fd, frame, len);
 }
 static void net_poll_rx(void)
 {
     if (!net_up) return;
     volatile uint8_t *ring = win + PSMB_OFF_NETRX;
     for (int budget = 0; budget < 8; budget++) {
-        int64_t len = psmac_sh_flen(net_rx_fd);
-        if (len < 0 || (uint64_t)len < net_rx_off + 2) return;
         uint32_t head = rd32(ring), tail = rd32(ring + 4);
         uint32_t next = (head + 1) % PSMB_NETRX_SLOTS;
         if (next == tail) { return; }                 /* ring full: leave the frame in the file */
-        if (psmac_sh_seek(net_rx_fd, net_rx_off) < 0) return;
-        uint8_t hdr[2]; if (!psmac_sh_read(net_rx_fd, hdr, 2)) return;
-        uint32_t flen = (hdr[0] << 8) | hdr[1];
-        if (flen > PSMB_NETRX_FRAME || (uint64_t)len < net_rx_off + 2 + flen) return;
-        if (!psmac_sh_read(net_rx_fd, net_buf, flen)) return;
-        net_rx_off += 2 + flen;
+        int flen = netfile_recv(&nf[0], net_buf, PSMB_NETRX_FRAME);
+        if (flen <= 0) return;
         /* destination filter: ours, broadcast, multicast (if enabled) or promiscuous */
         int mine = (net_filter & PSMB_NETF_PROMISC) || mac_eq(net_buf, net_mac) ||
                    (net_buf[0] == 0xff && net_buf[1] == 0xff && net_buf[2] == 0xff && net_buf[3] == 0xff && net_buf[4] == 0xff && net_buf[5] == 0xff) ||
                    ((net_buf[0] & 1) && (net_filter & PSMB_NETF_MULTICAST));
         if (!mine) continue;
         volatile uint8_t *slot = ring + 16 + head * (8 + PSMB_NETRX_FRAME);
-        memcpy((void *)(slot + 8), net_buf, flen);
-        wr32(slot, flen);
+        memcpy((void *)(slot + 8), net_buf, (uint32_t)flen);
+        wr32(slot, (uint32_t)flen);
         __asm__ volatile("dmb ish" ::: "memory");
         wr32(ring, next);
     }
 }
-/* primitives for alice_psmac.c's testbed Ethernet (the same host file pair) */
-int psmac_netfile_up(void) { return net_up; }
-int psmac_netfile_send(const uint8_t *frame, uint32_t len)
-{
-    if (!net_up || len > PSMB_NETRX_FRAME) return 0;
-    uint8_t hdr[2] = { len >> 8, len & 0xff };
-    return psmac_sh_write(net_tx_fd, hdr, 2) && psmac_sh_write(net_tx_fd, frame, len);
-}
-int psmac_netfile_recv(uint8_t *buf, uint32_t max)
-{
-    if (!net_up) return 0;
-    int64_t len = psmac_sh_flen(net_rx_fd);
-    if (len < 0 || (uint64_t)len < net_rx_off + 2) return 0;
-    if (psmac_sh_seek(net_rx_fd, net_rx_off) < 0) return 0;
-    uint8_t hdr[2]; if (!psmac_sh_read(net_rx_fd, hdr, 2)) return 0;
-    uint32_t flen = (hdr[0] << 8) | hdr[1];
-    if (flen > max || (uint64_t)len < net_rx_off + 2 + flen) { if (flen > max) net_rx_off += 2 + flen; return 0; }
-    if (!psmac_sh_read(net_rx_fd, buf, flen)) return 0;
-    net_rx_off += 2 + flen;
-    return (int)flen;
-}
+/* primitives for alice_psmac.c's testbed network units: which = 0 Ethernet (mac.net), 1 WiFi (mac.wifinet) */
+int psmac_netfile_up(int which) { return nf[which & 1].up; }
+int psmac_netfile_send(int which, const uint8_t *frame, uint32_t len) { return netfile_send(&nf[which & 1], frame, len); }
+int psmac_netfile_recv(int which, uint8_t *buf, uint32_t max) { return netfile_recv(&nf[which & 1], buf, max); }
 static int net_send(uint32_t buf, uint32_t len)
 {
     if (!net_up) return PSMB_E_IO;
     if (len < 14 || len > PSMB_NETRX_FRAME) return PSMB_E_RANGE;
     int r = mac_copy(buf, net_buf + 2, NULL, len, 0); if (r) return r;
     net_buf[0] = len >> 8; net_buf[1] = len & 0xff;
-    return psmac_sh_write(net_tx_fd, net_buf, len + 2) ? 0 : PSMB_E_IO;
+    return psmac_sh_write(nf[0].tx_fd, net_buf, len + 2) ? 0 : PSMB_E_IO;
 }
 
 /* ---- services ---- */

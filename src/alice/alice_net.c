@@ -367,6 +367,8 @@ static const char *bootargs(void)
     return ba && ba->op_value ? ba->op_value : "";
 }
 /* key=value or key="value with spaces"; 1 if found */
+static int bootarg_val(const char *key, char *out, unsigned max);
+int psmac_bootarg_val(const char *key, char *out, unsigned max) { return bootarg_val(key, out, max); }   /* for alice_psmac.c */
 static int bootarg_val(const char *key, char *out, unsigned max)
 {
     out[0] = 0;
@@ -496,7 +498,7 @@ void alice_net_ring(const char *s, unsigned n) { ring_put(s, n); }
 
 /* ---- VideoCore mailbox (own buffer: the kernel's shared one is CPU0's) ------------- */
 #ifdef PSMAC
-#include "alice_psmac.h"            /* the Macintosh build: peripheral window at 0x3F000000, no autoconfig */
+#include "alice_psmac.h"            /* the Macintosh build: the peripheral window, no autoconfig */
 #endif
 #ifndef ALICE_PERI
 #define ALICE_PERI  0xf2000000u
@@ -504,8 +506,8 @@ void alice_net_ring(const char *s, unsigned n) { ring_put(s, n); }
 #define MBOX_READ   (ALICE_PERI + 0x00b880u)
 #define MBOX_STATUS (ALICE_PERI + 0x00b898u)
 #define MBOX_WRITE  (ALICE_PERI + 0x00b8a0u)
-static inline uint32_t mrd(uint32_t a) { return __builtin_bswap32(*(volatile uint32_t *)(uintptr_t)a); }
-static inline void mwr(uint32_t a, uint32_t v) { *(volatile uint32_t *)(uintptr_t)a = __builtin_bswap32(v); }
+static inline uint32_t mrd(uintptr_t a) { return __builtin_bswap32(*(volatile uint32_t *)(uintptr_t)a); }
+static inline void mwr(uintptr_t a, uint32_t v) { *(volatile uint32_t *)(uintptr_t)a = __builtin_bswap32(v); }
 static uint32_t *mbuf;
 static uint32_t mbox_code;                   /* the answer's code when a call failed (-4) */
 static uint32_t mbox_w0;                     /* the answer's first value word (GET_THROTTLED's bits) */
@@ -1624,6 +1626,9 @@ static int eth_find(void)
     if (!reg || reg->op_length < (uint32_t)ac * 4) return -1;
     uintptr_t v = scb_virt(((uint32_t *)reg->op_value)[ac - 1]);
     if (!v) { eth_log("GENET's registers are not mapped\n"); return -1; }
+#ifdef PSMAC
+    v = alice_periph_hi(v);                     /* through the mapping no Mac MMU switch unmaps */
+#endif
     E.regs = (volatile uint8_t *)v;
     of_property_t *m = dt_find_property(g, "local-mac-address");
     if (m && m->op_length >= 6) { memcpy(E.fmac, m->op_value, 6); mac_wanted(E.want_mac, E.want_oui, E.fmac, E.mac); }
@@ -2070,6 +2075,10 @@ void alice_net_poll(void)
     loop_stats();
     if (an_reset_req) an_reset_session();
     eth_poll();                                     /* the Ethernet: a state machine, never waits */
+#ifdef PSMAC
+    { extern int psmac_wifi_testbed_poll(volatile struct an_unit *u);   /* alice_psmac.c: 1 = a simulated radio owns unit 0 */
+      if (psmac_wifi_testbed_poll(U(0))) return; }
+#endif
     if (!wifi_running) { wifi_disabled = bootarg_word("wifi=off"); U(0)->kind = AN_KIND_WIFI; }
     fw_take();
     if (!wifi_running) {

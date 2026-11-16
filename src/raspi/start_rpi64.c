@@ -18,6 +18,9 @@
 #include "devicetree.h"
 #include "M68k.h"
 #include "HunkLoader.h"
+#ifdef PSMAC
+#include "../psmac/psmac.h"
+#endif
 #include "DuffCopy.h"
 #include "EmuLogo.h"
 #include "EmuFeatures.h"
@@ -492,6 +495,13 @@ void map_peripheral_ranges(char *node_name, uint32_t *start_map)
 
         mmu_map(addr_cpu, (uintptr_t)*start_map << 21, addr_len,
                 MMU_ACCESS | PERIPH_EL0 | MMU_ATTR_DEVICE, 0);
+#ifdef PSMAC
+        /* the same window once more in kernel space, at the same offsets, for the kernel's own
+           cores: the Macintosh MMU shim unmaps the first 4 GiB for a moment on every table
+           switch, and kernel-space mappings are the only ones it never touches (psmac.h) */
+        mmu_map(addr_cpu, PSMAC_PERIPH_HI + (((uintptr_t)*start_map << 21) - PSMAC_PERIPH_LOW), addr_len,
+                MMU_ACCESS | MMU_ATTR_DEVICE, 0);
+#endif
 
         kprintf("bus: %08x, cpu: %08x, len: %08x\n", addr_bus, addr_cpu, addr_len);
 
@@ -591,6 +601,10 @@ static void map_pcie_mmio_window(uint32_t *start_map)
 
             mmu_map(phys, virt, (uintptr_t)map_size,
                     MMU_ACCESS | PERIPH_EL0 | MMU_ATTR_DEVICE, 0);
+#ifdef PSMAC
+            mmu_map(phys, PSMAC_PERIPH_HI + (virt - PSMAC_PERIPH_LOW), (uintptr_t)map_size,
+                    MMU_ACCESS | MMU_ATTR_DEVICE, 0);     /* the kernel-space twin (psmac.h) */
+#endif
 
             kprintf("[PCIE] MMIO: phys=%08x%08x virt=%08x size=%08x\n",
                     (uint32_t)(phys >> 32), (uint32_t)phys, (uint32_t)virt, (uint32_t)map_size);

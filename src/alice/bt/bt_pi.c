@@ -55,8 +55,8 @@ extern void pt_mouse_extra(int wheel, int pan, unsigned buttons) __attribute__((
 #define CR_ON     (1u | (1u << 8) | (1u << 9) | (1u << 14) | (1u << 15))   /* on, TX, RX, RTS and CTS flow control */
 #define CR_CTSEN  (1u << 15)
 
-static inline uint32_t rd(uint32_t a) { return __builtin_bswap32(*(volatile uint32_t *)(uintptr_t)a); }
-static inline void wr(uint32_t a, uint32_t v) { *(volatile uint32_t *)(uintptr_t)a = __builtin_bswap32(v); }
+static inline uint32_t rd(uintptr_t a) { return __builtin_bswap32(*(volatile uint32_t *)(uintptr_t)a); }
+static inline void wr(uintptr_t a, uint32_t v) { *(volatile uint32_t *)(uintptr_t)a = __builtin_bswap32(v); }
 static inline uint64_t ticks(void) { uint64_t v; __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(v)); return v; }
 static inline uint64_t tick_hz(void) { uint64_t v; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(v)); return v; }
 static uint32_t ms_now(void) { return (uint32_t)(ticks() / (tick_hz() / 1000u)); }
