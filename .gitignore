@@ -2,3 +2,10 @@ reference/
 rom/original/*.rom
 rom/patched/*.rom
 *.dis
+mame/roms/
+mame/snap*/
+mame/cfg*/
+mame/nvram*/
+mame/*.txt
+images/
+error.log
