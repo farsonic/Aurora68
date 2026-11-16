@@ -29,5 +29,6 @@ void     psmac_io_write(uint32_t addr, int size, uint32_t data, int posted);
 void     psmac_service_core(void);     /* runs forever on the service core */
 void     psmac_pmove(uint32_t ea, uint32_t ext);
 uint32_t psmac_ram_size(void);
+void     psmac_select_transport(int semihost_mode);
 
 #endif

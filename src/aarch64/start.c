@@ -569,6 +569,8 @@ void parse_cmdline(const char *cmdline)
         while (*tok >= '0' && *tok <= '9') mb = mb * 10 + (*tok++ - '0');
         globals.psmac_ram_mb = mb;
     }
+    if (find_token(cmdline, "mac.bridge=semihost"))
+        psmac_select_transport(1);
 #endif
     if ((tok = find_token(cmdline, "copy_rom=")))
     {

@@ -22,8 +22,10 @@
 #include "globals.h"
 #include "ps_protocol.h"
 #include "psmac.h"
+#include "devicetree.h"
 
 void mmu_map(uintptr_t phys, uintptr_t virt, uintptr_t length, uint32_t attr_low, uint32_t attr_high);
+uintptr_t mmu_virt2phys(uintptr_t addr);
 
 #define PERIPH_VA        0xf2000000ull
 #define AUX_ENABLES      (PERIPH_VA + 0x215004)
@@ -45,6 +47,7 @@ static uint32_t  ram_size;
 static volatile int transport_up, transport_dead, service_running;
 static volatile uint8_t last_ipl, last_flags;
 static uint32_t bus_errors, timeouts;
+static volatile uint32_t xfer_count, last_addr;
 
 static inline uint64_t cnt_now(void) { uint64_t v; __asm__ volatile("mrs %0, CNTVCT_EL0":"=r"(v)); return v; }
 static inline uint64_t cnt_frq(void) { uint64_t v; __asm__ volatile("mrs %0, CNTFRQ_EL0":"=r"(v)); return v; }
@@ -77,27 +80,95 @@ static int uart_getc(uint64_t deadline)
     return rd32le(AUX_MU_IO) & 0xff;
 }
 
+/* ---------------- semihosting FIFO transport (QEMU -semihosting-config enable=on) ----------------
+   One host syscall per direction instead of one per byte through the UART model. The MAME bridge
+   opens /tmp/psmac.req (read) and /tmp/psmac.rep (write); we open them the other way round. */
+static int use_semihost = 0;            /* mac.bridge=semihost */
+static int64_t sh_req = -1, sh_rep = -1;
+static int64_t semihost(uint32_t op, void *param)
+{
+    register uint64_t x0 __asm__("x0") = op;
+    register uint64_t x1 __asm__("x1") = (uint64_t)param;
+    __asm__ volatile("hlt #0xf000" : "+r"(x0) : "r"(x1) : "memory");
+    return (int64_t)x0;
+}
+static int sh_swap = 0;   /* QEMU may read the parameter block little-endian while we run big-endian */
+static inline uint64_t shw(uint64_t v) { return sh_swap ? __builtin_bswap64(v) : v; }
+static int64_t sh_open(const char *name, uint64_t mode)
+{
+    uint64_t p[3] = { shw((uint64_t)name), shw(mode), shw(strlen(name)) };
+    return semihost(0x01, p);
+}
+static int sh_write(int64_t fd, const void *buf, uint64_t len) { uint64_t p[3] = { shw((uint64_t)fd), shw((uint64_t)buf), shw(len) }; return semihost(0x05, p) == 0; }
+static int sh_read(int64_t fd, void *buf, uint64_t len)
+{
+    uint64_t got = 0;
+    while (got < len) {
+        uint64_t p[3] = { shw((uint64_t)fd), shw((uint64_t)buf + got), shw(len - got) };
+        int64_t notread = semihost(0x06, p);
+        if (notread < 0 || (uint64_t)notread > len - got) return 0;
+        uint64_t n = (len - got) - (uint64_t)notread;
+        if (n == 0) return 0;   /* EOF */
+        got += n;
+    }
+    return 1;
+}
+static int semihost_init(void)
+{
+    static const char hello[] = "[PSMAC] semihosting SYS_WRITE0 probe OK\n";
+    semihost(0x04, (void *)hello);                       /* appears on QEMU's stdout if HLT is intercepted */
+    sh_swap = 0;
+    sh_req = sh_open("/tmp/psmac.req", 5 /* wb */);
+    if (sh_req < 0) { sh_swap = 1; sh_req = sh_open("/tmp/psmac.req", 5); }
+    sh_rep = sh_req >= 0 ? sh_open("/tmp/psmac.rep", 1 /* rb */) : -1;
+    kprintf("[PSMAC] semihosting bridge: req fd %d, rep fd %d (block byte-swap %d)\n", (int)sh_req, (int)sh_rep, sh_swap);
+    transport_up = 1;
+    return sh_req >= 0 && sh_rep >= 0;
+}
+void psmac_select_transport(int semihost_mode) { use_semihost = semihost_mode; }
+
+/* Options come from /chosen bootargs (this Emu68 branch does not parse the cmdline itself). */
+static int opts_read;
+static void psmac_read_options(void)
+{
+    if (opts_read) return;
+    opts_read = 1;
+    of_node_t *c = dt_find_node("/chosen");
+    of_property_t *p = c ? dt_find_property(c, "bootargs") : NULL;
+    if (!p || !p->op_value) return;
+    const char *args = p->op_value, *tok;
+    if ((tok = find_token(args, "mac.ram="))) { tok += 8; uint32_t mb = 0; while (*tok >= '0' && *tok <= '9') mb = mb * 10 + (*tok++ - '0'); globals.psmac_ram_mb = mb; }
+    if (find_token(args, "mac.bridge=semihost")) use_semihost = 1;
+    kprintf("[PSMAC] options: ram=%d MiB bridge=%s (bootargs: %s)\n", globals.psmac_ram_mb, use_semihost ? "semihost" : "uart", args);
+}
+
 /* One bridge transaction. Must only run on the transport owner. */
 static void bridge_xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, uint32_t data, struct psmac_reply *r)
 {
-    if (!transport_up) uart_init();
+    if (!transport_up) { if (use_semihost) { if (!semihost_init()) transport_dead = 1; } else uart_init(); }
     if (transport_dead) { if (r) { r->status = 0; r->ipl = 0; r->flags = 0; r->data = 0xffffffff; } return; }
     uint8_t req[12] = { op, size, flags, 0,
         (uint8_t)addr, (uint8_t)(addr >> 8), (uint8_t)(addr >> 16), (uint8_t)(addr >> 24),
         (uint8_t)data, (uint8_t)(data >> 8), (uint8_t)(data >> 16), (uint8_t)(data >> 24) };
-    for (int i = 0; i < 12; i++) uart_putc(req[i]);
-    if (flags & PSMAC_FLAG_POSTED) return;
     uint8_t rep[8];
-    uint64_t deadline = cnt_now() + cnt_frq() * 5;   /* 5 s: the bridge may be paused/halted */
-    for (int i = 0; i < 8; i++) {
-        int c = uart_getc(deadline);
-        if (c < 0) {
-            if (++timeouts == 1) kprintf("[PSMAC] bridge timeout (op %d addr %08x): is the MAME bridge connected?\n", op, addr);
-            transport_dead = 1;
-            if (r) { r->status = 0; r->ipl = 0; r->flags = 0; r->data = 0xffffffff; }
-            return;
+    if (use_semihost) {
+        if (!sh_write(sh_req, req, 12)) { if (++timeouts == 1) kprintf("[PSMAC] semihosting bridge write failed\n"); transport_dead = 1; if (r) { r->status = 0; r->ipl = 0; r->flags = 0; r->data = 0xffffffff; } return; }
+        if (flags & PSMAC_FLAG_POSTED) return;
+        if (!sh_read(sh_rep, rep, 8)) { if (++timeouts == 1) kprintf("[PSMAC] semihosting bridge read failed/EOF\n"); transport_dead = 1; if (r) { r->status = 0; r->ipl = 0; r->flags = 0; r->data = 0xffffffff; } return; }
+    } else {
+        for (int i = 0; i < 12; i++) uart_putc(req[i]);
+        if (flags & PSMAC_FLAG_POSTED) return;
+        uint64_t deadline = cnt_now() + cnt_frq() * 5;   /* 5 s: the bridge may be paused/halted */
+        for (int i = 0; i < 8; i++) {
+            int c = uart_getc(deadline);
+            if (c < 0) {
+                if (++timeouts == 1) kprintf("[PSMAC] bridge timeout (op %d addr %08x): is the MAME bridge connected?\n", op, addr);
+                transport_dead = 1;
+                if (r) { r->status = 0; r->ipl = 0; r->flags = 0; r->data = 0xffffffff; }
+                return;
+            }
+            rep[i] = c;
         }
-        rep[i] = c;
     }
     last_ipl = rep[1]; last_flags = rep[2];
     if (__m68k_state) __m68k_state->INTF.IPL = rep[1];
@@ -126,12 +197,19 @@ static void xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, uint32_
 
 void psmac_service_core(void)
 {
-    uart_init();
+    psmac_read_options();
+    if (!use_semihost) uart_init(); else { if (!semihost_init()) transport_dead = 1; }
     service_running = 1;
     kprintf("[PSMAC] service core running (bridge transport owner, IPL poll 1 kHz)\n");
     uint64_t period = cnt_frq() / 1000, next_poll = cnt_now() + period;
+    uint64_t hb_period = cnt_frq() * 5, next_hb = cnt_now() + hb_period; uint32_t hb_last = 0;
     for (;;) {
+        if (cnt_now() > next_hb) {
+            kprintf("[PSMAC] heartbeat: %u bus xfers (+%u), last addr %08x, ipl %d%s\n", xfer_count, xfer_count - hb_last, last_addr, last_ipl, transport_dead ? " TRANSPORT DEAD" : "");
+            hb_last = xfer_count; next_hb = cnt_now() + hb_period;
+        }
         if (__atomic_load_n(&slot.state, __ATOMIC_ACQUIRE) == SLOT_REQ) {
+            xfer_count++; last_addr = slot.addr;
             bridge_xfer(slot.op, slot.size, slot.flags, slot.addr, slot.data, &slot.rep);
             __atomic_store_n(&slot.state, SLOT_DONE, __ATOMIC_RELEASE);
             continue;
@@ -159,7 +237,7 @@ void psmac_io_write(uint32_t addr, int size, uint32_t data, int posted)
 static inline bool is_io(uint64_t a) { return (a >= PSMAC_IO_BASE && a < PSMAC_IO_END) || a >= PSMAC_SLOT_BASE; }
 
 /* Called from the data abort handler for every access the ARM MMU did not satisfy. Return 1 = handled. */
-static uint32_t trace_left = 96;
+static uint32_t trace_left = 400;
 int psmac_bus_write(uint64_t value, uint64_t value2, int size, uint64_t far)
 {
     if ((far >> 32) == 1 || (far >> 32) == 0xffffffff) far &= 0xffffffff;
@@ -224,6 +302,7 @@ int psmac_bus_read(uint64_t *value, uint64_t *value2, int size, uint64_t far)
 /* ---------------- memory map ---------------- */
 void psmac_setup_memory(void *rom, uint32_t rom_sz)
 {
+    psmac_read_options();
     uint32_t mb = globals.psmac_ram_mb ? globals.psmac_ram_mb : 8;
     ram_size = mb << 20;
 
@@ -263,6 +342,18 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
     arm_flush_cache(KERNEL_ALIAS + rom_phys, PSMAC_ROM_SIZE);
 
     globals.zorro_disable = true;
+    {
+        static const uint32_t probes[] = { 0x0, 0x7f000, 0x80000, 0x40800000, 0x50f01c00, 0x50f21c00, 0x50026000, 0x58000000, 0x04000000 };
+        for (unsigned i = 0; i < sizeof(probes)/sizeof(probes[0]); i++)
+            kprintf("[PSMAC] map %08x -> phys %p\n", probes[i], mmu_virt2phys(probes[i]));
+    }
+    kprintf("[PSMAC] EL1 probe read of 50f01c00 -> %02x\n", *(volatile uint8_t *)0x50f01c00ull);
+    {   /* bridge latency benchmark: 200 synchronous byte reads of VIA1 ORB */
+        uint64_t t0 = cnt_now(); volatile uint32_t sink = 0;
+        for (int i = 0; i < 200; i++) sink += psmac_io_read(0x50f00000, 1);
+        uint64_t dt = cnt_now() - t0;
+        kprintf("[PSMAC] bridge latency: %d us per read (service core %s)\n", (int)(dt * 1000000 / cnt_frq() / 200), service_running ? "active" : "inactive");
+    }
     kprintf("[PSMAC] reset SP %08x PC %08x\n", BE32(*(uint32_t *)romk), BE32(*(uint32_t *)(romk + 4)));
 }
 

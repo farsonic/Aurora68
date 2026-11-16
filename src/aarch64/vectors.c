@@ -519,6 +519,9 @@ int SYSWriteValToAddr(uint64_t value, uint64_t value2, int size, uint64_t far)
 int SYSReadValFromAddr(uint64_t *value, uint64_t *value2, int size, uint64_t far)
 {  
     D(kprintf("[JIT:SYS] SYSReadValFromAddr(%d, %p)\n", size, far));
+#ifdef PSMAC
+    return psmac_bus_read(value, value2, size, far);
+#endif
 
     /*
         Allow single wrap around the address space. This provides mirror areas for
@@ -756,9 +759,6 @@ int SYSWriteValToAddr(uint64_t value, uint64_t value2, int size, uint64_t far)
 int SYSReadValFromAddr(uint64_t *value, uint64_t *value2, int size, uint64_t far)
 {
     D(kprintf("[JIT:SYS] SYSReadValFromAddr(%d, %p)\n", size, far));
-#ifdef PSMAC
-    return psmac_bus_read(value, value2, size, far);
-#endif
     
     switch(size)
     {
