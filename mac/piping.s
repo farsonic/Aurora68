@@ -174,6 +174,7 @@ ping_loop:
 	beq.s	5f
 	lea	s_timeout(%pc),%a0
 	bsr	say_prefix
+	move.w	V_RESULT(%a6),%d0	| (say_prefix uses d0)
 	bsr	say_err
 	bra.s	4f
 5:	lea	s_reply(%pc),%a0

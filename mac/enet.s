@@ -744,18 +744,22 @@ rx_loop:
 	bne	rx_next			| nobody wants it
 	move.l	PROT_HANDLER(%a1),%d0
 	beq.s	rx_default
-	| protocol handler: A3 -> first byte after the 14-byte header, D1 = bytes left, A4 -> ReadPacket
-	move.l	%d0,%a0
-	lea	14(%a2),%a1
-	move.l	%a1,G_CURPTR(%a6)
+	| Protocol handler (Inside Macintosh: Networking, "How the .ENET Driver Calls Your Protocol
+	| Handler"): A3 -> first byte after the 14-byte header, D1 = bytes left, A4 -> ReadPacket,
+	| A0 and A1 "reserved for the driver" and preserved by the handler until ReadRest. Those two
+	| and D1 are where this driver keeps its read position: MacTCP's handler saves A0-A2 and D1
+	| at entry and puts them back before each ReadPacket/ReadRest call, from C code with its
+	| own A6, so state kept through A6 (the first version) was read as garbage and every reply
+	| was dropped. Here A0 = the next byte to read, D1 = bytes left.
+	move.l	%d0,%a1			| the handler
+	lea	14(%a2),%a0		| A0: read position
+	move.l	%a0,%a3
 	move.l	%d3,%d1
-	sub.w	#14,%d1
-	move.w	%d1,G_CURLEFT(%a6)
-	move.l	%a1,%a3
+	sub.l	#14,%d1			| D1: bytes left
 	lea	readpacket(%pc),%a4
-	movem.l	%a2/%a5/%d7,-(%sp)
-	jsr	(%a0)
-	movem.l	(%sp)+,%a2/%a5/%d7
+	movem.l	%a2/%a5-%a6/%d7,-(%sp)
+	jsr	(%a1)
+	movem.l	(%sp)+,%a2/%a5-%a6/%d7
 	bra.s	rx_next
 rx_default:
 	| first pending ERead
@@ -793,43 +797,36 @@ rx_end:
 rx_out:
 	rts
 
-| ---- ReadPacket (A4) / ReadRest (2(A4)) for protocol handlers; state in A6 = globals ----
+| ---- ReadPacket (A4) / ReadRest (2(A4)) for protocol handlers: state in A0 (position) and D1
+|      (bytes left), nothing else; A3 = the handler's buffer, D3 = the count ----
 readpacket:
 	bra.s	rp_packet
 	bra.s	rp_rest
-rp_packet:				| D3 = bytes wanted, A3 = buffer
-	move.l	G_CURPTR(%a6),%a0
-	moveq	#0,%d1
-	move.w	G_CURLEFT(%a6),%d1
+rp_packet:				| D3 = bytes wanted -> copied; Z set; D3 = 0. Too many: Z clear
 	cmp.l	%d1,%d3
 	bhi.s	rp_err
 	sub.l	%d3,%d1
-	move.w	%d1,G_CURLEFT(%a6)
 	bra.s	2f
 1:	move.b	(%a0)+,(%a3)+
 2:	dbf	%d3,1b
-	move.l	%a0,G_CURPTR(%a6)
 	moveq	#0,%d3			| Z set: OK
 	rts
 rp_err:
 	moveq	#eLenErr,%d0
 	tst.w	%d3			| Z clear
 	rts
-rp_rest:				| D3 = buffer size, A3 = buffer
-	move.l	G_CURPTR(%a6),%a0
-	moveq	#0,%d1
-	move.w	G_CURLEFT(%a6),%d1
+rp_rest:				| D3 = buffer size -> the rest copied; D3 = size - left (<0: did not fit, Z clear)
 	move.l	%d3,%d2
 	cmp.l	%d1,%d2
 	ble.s	1f
 	move.l	%d1,%d2			| copy what is left
-1:	sub.l	%d1,%d3			| result: <0 did not fit, >0 unused
+1:	sub.l	%d1,%d3
 	bra.s	3f
 2:	move.b	(%a0)+,(%a3)+
 3:	dbf	%d2,2b
-	clr.w	G_CURLEFT(%a6)
-	tst.l	%d3			| the packet did not fit: Z clear, the handler must give up
-	bmi.s	4f
+	moveq	#0,%d1			| nothing left
+	tst.l	%d3
+	bmi.s	4f			| the packet did not fit: Z clear, the handler must give up
 	moveq	#0,%d0			| Z set: all read
 4:	rts
 
