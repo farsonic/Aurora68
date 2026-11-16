@@ -1,0 +1,4 @@
+reference/
+rom/original/*.rom
+rom/patched/*.rom
+*.dis
