@@ -199,7 +199,7 @@ static void run_cmd(int idx, uint16_t type, volatile uint8_t *c)
         if (cmd == PSMB_BLK_INFO) { blk_publish(); result = nbdev; break; }
         if (a0 >= (uint32_t)nbdev) { status = PSMB_E_BADDEV; break; }
         struct blkdev *b = &bdev[a0];
-        if (cmd == PSMB_BLK_READ)       { status = blk_xfer(0, b, a1, a2, buf); if (!status) xfer = a2 * 512; }
+        if (cmd == PSMB_BLK_READ)       { status = blk_xfer(0, b, a1, a2, buf); if (!status) { xfer = a2 * 512; extern uint32_t psmac_icache_epoch; psmac_icache_epoch++; } }
         else if (cmd == PSMB_BLK_WRITE) { status = blk_xfer(1, b, a1, a2, buf); if (!status) xfer = a2 * 512; }
         else if (cmd == PSMB_BLK_FLUSH || cmd == PSMB_BLK_EJECT) status = 0;
         else status = PSMB_E_BADCMD;

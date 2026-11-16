@@ -320,6 +320,7 @@ void psmac_service_core(void)
     uint64_t period = cnt_frq() / 1000, next_poll = cnt_now() + period;
     uint64_t hb_period = cnt_frq() * 5, next_hb = cnt_now() + hb_period; uint32_t hb_last = 0;
     uint32_t pc_last = 0; int stall_dumped = 0, exc_dumped = 0;
+    uint32_t scsi_reads = 0, scsi_reads_seen = 0; uint64_t next_epoch = 0;
     for (;;) {
         if (cnt_now() > next_hb) {
             svc_phase = 3;
@@ -352,8 +353,15 @@ void psmac_service_core(void)
             pcring_dump();
         }
         if (psmac_mbox_poll()) continue;
+        if (scsi_reads != scsi_reads_seen && cnt_now() > next_epoch) {
+            /* data came in from the SCSI chip: code loaded from disk may sit where translated
+               blocks were; make the JIT re-check RAM blocks on their next entry (M68k_Translator.c) */
+            extern uint32_t psmac_icache_epoch;
+            psmac_icache_epoch++; scsi_reads_seen = scsi_reads; next_epoch = cnt_now() + cnt_frq() / 1000;
+        }
         if (__atomic_load_n(&slot.state, __ATOMIC_ACQUIRE) == SLOT_REQ) {
             xfer_count++; last_addr = slot.addr; dev_cnt[dev_class(slot.addr)]++;
+            if (slot.op == PSMAC_OP_READ && dev_class(slot.addr) == 2) scsi_reads++;
             bridge_xfer(slot.op, slot.size, slot.flags, slot.addr, slot.data, &slot.rep);
             __atomic_store_n(&slot.state, SLOT_DONE, __ATOMIC_RELEASE);
             continue;
