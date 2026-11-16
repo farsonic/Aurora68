@@ -233,19 +233,19 @@ pbclear:				| a3 -> 64-byte block
 	movem.l	(%sp)+,%a0/%d0
 	rts
 say_ip:					| d0 = IP address -> a.b.c.d
-	movem.l	%d1-%d3,-(%sp)
+	movem.l	%d1-%d4,-(%sp)
 	move.l	%d0,%d3
-	moveq	#3,%d2
+	moveq	#3,%d4			| (not d2: say_dec uses d0-d2, and the first version looped for ever)
 1:	rol.l	#8,%d3
 	moveq	#0,%d0
 	move.b	%d3,%d0
 	bsr	say_dec
-	tst.w	%d2
+	tst.w	%d4
 	beq.s	2f
 	lea	s_dot(%pc),%a0
 	bsr	say_pstr_nocr
-2:	dbf	%d2,1b
-	movem.l	(%sp)+,%d1-%d3
+2:	dbf	%d4,1b
+	movem.l	(%sp)+,%d1-%d4
 	rts
 
 do_log:

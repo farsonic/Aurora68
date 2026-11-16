@@ -66,13 +66,22 @@ and "MacTCP DNR" if the version has one) into `images/incoming/`, then:
 python3 tools/mac/hfsput.py images/sys710pi.image images/incoming/MacTCP.bin "System Folder/Control Panels" 1
 python3 tools/mac/rsrcdump.py images/incoming/MacTCP.bin        # what its configuration resources look like
 ```
-MacTCP finds the card the way PiNet does (SGetTypeSRsrc for catNetwork/typeEtherNet, then
-OpenSlot ".ENET"); its control panel lists one entry per network sResource, so the Pi shows two,
-Ethernet (sRsrcID 0x81) and WiFi (0x83). The address can be set in the control panel ("Manually",
-192.168.68.2, mask 255.255.255.0, gateway 192.168.68.1 for the testbed peer) or obtained from a
-server: `tools/pinet.py` answers BOOTP, so a MacTCP left on "Server" gets 192.168.68.2 from the
-peer. `PiPing` then proves the stack: it opens `.IPP`, prints the address MacTCP has, and pings
-the peer three times through MacTCP's own ICMP echo call.
+The user supplied MacTCP 2.0.6 (a floppy image with the control panel; `images/incoming/`).
+Out of the box it is set to LocalTalk and "Server", and its configuration lives in a resource
+Apple never documented, 'ipln' 128 in the control panel. Rather than drive the control panel's
+dialogs inside the emulator, the layout was read out of the control panel's and the `.IPP`
+driver's code (the driver takes the first 'ipln' of version 1 and copies 130 bytes into its
+globals; the link layer is the 'iplp' resource whose ID is the word at +90; the Ethernet link
+layer searches NuBus slots from the long at +92 with sNextTypeSRsrc and takes the first Ethernet
+card when it is 0) and `tools/mac/mactcpcfg.py` writes it:
+```
+python3 tools/mac/mactcpcfg.py images/incoming/MacTCP.bin --ip 192.168.68.2 --gateway 192.168.68.1 -o images/incoming/MacTCP-manual.bin
+python3 tools/mac/hfsput.py images/sys710pi.image images/incoming/MacTCP-manual.bin "System Folder/Control Panels" 1
+```
+(`--server` instead of `--ip` leaves the address to BOOTP, which `tools/pinet.py` answers with
+the same numbers.) MacTCP's Ethernet link layer then finds the card the way PiNet does and opens
+`.ENET` through OpenSlot. `PiPing` proves the stack: it opens `.IPP`, prints the address MacTCP
+has, and pings the peer three times through MacTCP's own ICMP echo call.
 
 ## Facts the drivers rely on (from Inside Macintosh and Designing Cards and Drivers)
 - Driver header: flags, delay, event mask, menu, five offsets, Pascal name, then a word-aligned
