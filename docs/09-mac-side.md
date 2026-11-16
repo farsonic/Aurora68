@@ -30,9 +30,23 @@ make -C mac install IMG=../images/sys710pi.image   # PiDisk into System Folder:E
 chdman createhd -i images/sys710pi.image -o images/chd/sys710pi.chd -c none -f   # -c none: the testbed MAME serves compressed CHDs as raw files
 dd if=/dev/zero of=images/pidisk/pidisk.img bs=1M count=20 && hformat -l PiDisk images/pidisk/pidisk.img
 ROM=rom/patched/MacIIci_psmac.rom HD=images/chd/sys710pi.chd tools/run-fullstack.sh 480 \
-    mac.disk0=$PWD/images/pidisk/pidisk.img mac.declrom=$PWD/mac/build/psmac.declrom mac.net=/tmp/psmac-net
+    mac.disk0=$PWD/images/pidisk/pidisk.img mac.declrom=$PWD/mac/build/psmac.declrom mac.net=/tmp/psmac-net \
+    bt=off wifi=off mac.inputtest=320
 python3 tools/pinet.py /tmp/psmac-net peer        # in another shell
 ```
+System 6 (`images/hd20pi.hda`, the user's System 6.0.8 volume): PiNet goes into the System Folder
+and the boot blocks name it as the startup application; the applications go in the root:
+```
+make -C mac install IMG=../images/hd20pi.hda PART=1          # or hfsput.py for each file
+python3 tools/mac/hfsput.py images/hd20pi.hda mac/build/PiNet.bin "System Folder" 1
+python3 tools/mac/bootblock.py images/hd20pi.hda --startup PiNet
+chdman createhd -i images/hd20pi.hda -o images/chd/hd20pi.chd -c none -f
+ROM=rom/patched/MacIIci_psmac.rom HD=images/chd/hd20pi.chd tools/run-fullstack.sh 380 \
+    mac.disk0=$PWD/images/pidisk/pidisk.img mac.declrom=$PWD/mac/build/psmac.declrom mac.net=/tmp/psmac-net \
+    bt=off wifi=off mac.inputtest=250
+```
+The System 6 boot reaches PiNet in about three minutes; `docs/img/system6-pinet-arp.png` is what
+it shows when everything works (the ARP reply arrives through the slot interrupt).
 The input path has no real keyboard in QEMU; `mac.inputtest=SECONDS` makes the service core play a
 scripted session that many seconds after the 68k starts (the mouse walks to the Apple menu, opens
 and closes it, then five letters are typed) so the screenshots show whether `.PiInput` works.
