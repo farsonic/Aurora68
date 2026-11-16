@@ -357,6 +357,7 @@ void psmac_service_core(void)
                     kprintf("[PSMAC]   stack: %08x %08x %08x %08x %08x %08x %08x %08x\n", st[0], st[1], st[2], st[3], st[4], st[5], st[6], st[7]);
                 }
             }
+            { extern void psmac_slot_irq_report(void); psmac_slot_irq_report(); }
             { int ok1, ok2, ok3; uint32_t t1 = mac_rd32(0xd00, &ok1), t2 = mac_rd32(0xb24, &ok2), t3 = mac_rd32(0xcea, &ok3);
               if (ok1 && ok2 && ok3) kprintf("[PSMAC]   timing globals: TimeDBRA %04x TimeSCCDB %04x TimeSCSIDB %04x TimeVIADB %04x\n", t1 >> 16, t1 & 0xffff, t2 >> 16, t3 >> 16); }
             if (xfer_count == hb_last && !stall_dumped) { stall_dumped = 1; pcring_dump(); }
@@ -412,6 +413,7 @@ void psmac_service_core(void)
    the line (it is not wired to a slot) and keeps serving the real registers. */
 static volatile uint8_t slot_line, rbv_sier, rbv_ier;
 void psmac_slot_irq(int on) { slot_line = on ? 1 : 0; }
+uint32_t psmac_slot_irq_state(void) { return (uint32_t)slot_line << 16 | (uint32_t)rbv_sier << 8 | rbv_ier; }
 static inline int slot_irq_pending(void) { return slot_line && (rbv_sier & 0x01) && (rbv_ier & 0x02); }
 static inline int rbv_reg(uint32_t addr)              /* pseudo-VIA register index, or -1 */
 {

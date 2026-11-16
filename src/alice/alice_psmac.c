@@ -229,6 +229,17 @@ static void in_testbed_poll(void)
 }
 void psmac_alice_input_test(uint32_t seconds) { intest_at = seconds; }
 
+/* heartbeat line for psmac_bus.c: the interrupt line and what holds it */
+void psmac_slot_irq_report(void)
+{
+    extern uint32_t psmac_slot_irq_state(void); extern volatile uint8_t *alice_net_board(void);
+    volatile struct an_hdr *nh = (volatile struct an_hdr *)alice_net_board();
+    uint32_t st = psmac_slot_irq_state();
+    kprintf("[PSMAC]   slot-9 line %u (SIER %02x IER %02x) | net irq %u drv %08x | input attached %u head %u tail %u\n",
+            st >> 16, (st >> 8) & 0xff, st & 0xff, nh ? nh->irq : 0, nh ? nh->amiga_ver : 0,
+            inr ? inr->attached : 0, inr ? inr->head : 0, inr ? inr->tail : 0);
+}
+
 /* ---- bring-up and the core-3 loop ---------------------------------------------------------- */
 static volatile int alice_ready;
 void psmac_alice_init(uint8_t *win)
