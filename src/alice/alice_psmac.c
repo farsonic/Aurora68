@@ -261,9 +261,22 @@ void __attribute__((noreturn)) psmac_alice_core(void)
            interrupt early in the boot, no driver was open to clear anything, and the level-2
            storm kept the Mac in its boot chime for good. */
         { extern volatile uint8_t *alice_net_board(void); extern void psmac_slot_irq(int);
+          static uint64_t up_since; static uint32_t storms;
           volatile struct an_hdr *nh = (volatile struct an_hdr *)alice_net_board();
-          int line = (nh && nh->amiga_ver && nh->irq) || (inr && inr->attached && inr->head != inr->tail);
-          psmac_slot_irq(line); }
+          int net_line = nh && nh->amiga_ver && nh->irq;
+          int line = net_line || (inr && inr->attached && inr->head != inr->tail);
+          /* Safety net: a level-sensitive line that nobody services wedges the 68k in its
+             level-2 handler for good (seen once, when a driver announced itself before its
+             handler was in). A real card cannot help that; this one can: if the network
+             board's flag stays up for half a second after the driver attached, it is cleared
+             here and the kernel log says so. The driver sees the frame on its next poll. */
+          if (!line) up_since = 0;
+          else if (!up_since) up_since = in_now();
+          else if (net_line && in_now() - up_since > in_hz() / 2) {
+              nh->irq = 0; up_since = 0;
+              if (storms++ < 3) kprintf("[PSMAC] slot-9 interrupt not serviced in 500 ms: network board flag cleared\n");
+          }
+          psmac_slot_irq(line && !(net_line && !nh->irq)); }
         __asm__ volatile("yield");
     }
 }
