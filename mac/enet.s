@@ -489,8 +489,9 @@ c_rdcancel:
 | EWrite: gather the WDS straight into the next transmit slot, insert the source address, bump tx_head
 c_write:
 	log	"ENET: EWrite"
-	move.l	G_BOARD(%a3),%a4
-	lea	AN_OFF_UNIT1(%a4),%a5	| unit
+	move.l	G_BOARD(%a3),%d6	| the board (not in A4: A4 is the DCE and must reach iodone intact)
+	move.l	%d6,%a0
+	lea	AN_OFF_UNIT1(%a0),%a5	| unit
 	move.l	U_TX_HEAD(%a5),%d3
 	move.l	%d3,%d4
 	sub.l	U_TX_TAIL(%a5),%d4
@@ -503,27 +504,31 @@ c_write:
 	swap	%d4			| remainder = slot index
 	and.l	#0xFFFF,%d4
 	mulu	#AN_SLOT_BYTES,%d4
-	lea	AN_OFF_TX1(%a4),%a6
+	move.l	%d6,%a6
+	lea	AN_OFF_TX1(%a6),%a6
 	add.l	%d4,%a6			| the slot: len, flags, data
 	lea	8(%a6),%a1		| data
 	move.l	ePointer(%a2),%d0
 	bsr	strip24
-	move.l	%d0,%a0			| WDS
+	move.l	%d0,%d7			| the WDS, walked through d7 (a0 is the data source below)
+	move.l	%d0,%a0
 	moveq	#0,%d2			| total
 	move.w	(%a0),%d1
 	cmp.w	#14,%d1
 	blt	w_len
-1:	move.w	(%a0)+,%d1
+1:	move.l	%d7,%a0
+	move.w	(%a0)+,%d1		| entry: length, pointer
 	beq.s	3f
 	move.l	(%a0)+,%d0
+	move.l	%a0,%d7
 	bsr	strip24
-	move.l	%d0,%a4
+	move.l	%d0,%a0			| the entry's data
 	ext.l	%d1
 	add.l	%d1,%d2
 	cmp.l	#1514,%d2
 	bgt	w_len
 	bra.s	2f
-4:	move.b	(%a4)+,(%a1)+
+4:	move.b	(%a0)+,(%a1)+
 2:	dbf	%d1,4b
 	bra.s	1b
 3:	lea	8(%a6),%a1

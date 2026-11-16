@@ -173,7 +173,12 @@ tools/run-fullstack.sh 400` selects another image.
    IFR, read SIFR and SIER, dispatch). Two handlers share slot 9, the ROM stops at the first
    that returns nonzero, and the Ethernet handler always said "ours", so from the moment it was
    open the input driver's handler never ran, its ring never drained, and the line stayed up.
-   A handler now claims the interrupt only when its own board flagged it.
+   A handler now claims the interrupt only when its own board flagged it. That was true but
+   not the whole story: with the queue state logged at every completion, EWrite's exit showed
+   "qhead 00000000 flags 0000", a DCE that was not one: EWrite had used A4, the register the
+   dispatcher keeps the DCE in, for the board pointer, so IODone was handed the board and the
+   Device Manager's synchronous wait never ended. The handler now walks its gather list through
+   D7 and leaves A4 alone.
 
 ### Debug aids added
 - `mac.dbg=LO,HI` bootarg: translator prints the blocks it creates in that 68k range.
