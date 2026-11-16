@@ -236,7 +236,7 @@ d_open:
 	move.l	%d0,%a1
 	cmp.l	#AN_MAGIC,(%a1)
 	bne	open_fail
-	move.l	#0x00010000,AN_HDR_DRVVER(%a1)	| version 1.0: from now on the board's irq flag raises the slot interrupt
+	clr.l	AN_HDR_IRQ(%a1)		| whatever happened before we existed is not ours to service
 	lea	AN_OFF_UNIT1(%a1),%a1
 	tst.l	U_KIND(%a1)
 	beq	open_fail		| no Ethernet unit
@@ -283,6 +283,11 @@ d_open:
 	.short	_VInstall
 	tst.w	%d0
 	bne	open_fail
+	| only now, with the handler installed, tell the kernel we are here: from this write on the
+	| board's irq flag raises the slot-9 interrupt (announcing earlier, before SIntInstall, left
+	| one boot in a level-2 storm with nobody to clear the flag)
+	move.l	G_BOARD(%a3),%a0
+	move.l	#0x00010000,AN_HDR_DRVVER(%a0)
 	log	"ENET: open ok"
 open_ok:
 	moveq	#noErr,%d0
@@ -355,6 +360,7 @@ ctl_err:
 ctl_noerr:
 	moveq	#noErr,%d0
 ctl_done:
+	log	"ENET: control done"
 	move.l	%a2,%a0			| the parameter block and the DCE back in A0/A1: iodone reads
 	move.l	%a4,%a1			| ioTrap through A0 and IODone wants the DCE in A1 (EGetInfo
 	movem.l	(%sp)+,%d1-%d7/%a2-%a6	| had left its buffer pointers there: the first call returned to 0)
@@ -383,16 +389,17 @@ c_getinfo:
 
 | EAttachPH: eProtType, ePointer = handler or 0
 c_attachph:
+	log	"ENET: EAttachPH"
 	move.w	eProtType(%a2),%d1
 	bsr	find_prot
 	bne.s	1f
 	moveq	#LAPProtErr,%d0		| already attached
-	bra.s	ctl_done
+	bra	ctl_done
 1:	move.w	#0xFFFF,%d1
 	bsr	find_prot
 	bne.s	2f
 	moveq	#LAPProtErr,%d0		| table full
-	bra.s	ctl_done
+	bra	ctl_done
 2:	move.w	eProtType(%a2),PROT_TYPE(%a1)
 	move.l	ePointer(%a2),%d0
 	bsr	strip24
@@ -422,6 +429,7 @@ c_detachph:
 
 | ERead: queue the PB on its protocol's read list (default handler mode only)
 c_read:
+	log	"ENET: ERead"
 	move.w	eProtType(%a2),%d1
 	bsr	find_prot
 	beq.s	1f
@@ -449,6 +457,7 @@ c_read:
 	move.l	(%a0),%a0
 	bra.s	5b
 6:	move.l	%a2,(%a0)
+	log	"ENET: ERead pending, dequeued"
 	movem.l	(%sp)+,%d1-%d7/%a2-%a6
 	rts				| no IODone: the PB completes when a frame arrives
 
@@ -479,6 +488,7 @@ c_rdcancel:
 
 | EWrite: gather the WDS straight into the next transmit slot, insert the source address, bump tx_head
 c_write:
+	log	"ENET: EWrite"
 	move.l	G_BOARD(%a3),%a4
 	lea	AN_OFF_UNIT1(%a4),%a5	| unit
 	move.l	U_TX_HEAD(%a5),%d3

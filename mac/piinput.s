@@ -226,7 +226,6 @@ d_open:
 	cmp.l	#IN_MAGIC,(%a0)
 	bne	open_fail		| the service core has not published a ring
 	move.l	IN_HEAD(%a0),IN_TAIL(%a0)	| start from now: drop what happened before boot
-	move.l	#1,IN_ATTACHED(%a0)	| from now on the ring's events raise the card's interrupt
 	move.w	#0x8000,G_BUTTONS(%a2)	| "unknown" so the first report sets MBState
 	log	"PiInput: ring found"
 	| The card's interrupt: the kernel raises the slot-9 line while the ring holds events
@@ -247,6 +246,8 @@ d_open:
 	bsr	log_err			| "PiInput: SIntInstall error -NNN"
 	bra.s	2f
 1:	log	"PiInput: slot interrupt handler installed"
+	move.l	G_RING(%a2),%a0
+	move.l	#1,IN_ATTACHED(%a0)	| only now: from this write on, ring events raise the card's interrupt
 2:	| The VBL task as well: every tick until the first slot interrupt arrives, then every 15
 	| ticks as a safety net (a System 6 install without working slot interrupts still works,
 	| at keyboard-and-mouse speed).

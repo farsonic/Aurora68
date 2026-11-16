@@ -499,12 +499,12 @@ say_pstr_nocr:
 	move.w	V_Y(%a6),-(%sp)
 	.short	_MoveTo
 	movem.l	(%sp)+,%a0
+	moveq	#0,%d0			| advance the pen before the trap: QuickDraw does not preserve A0
+	move.b	(%a0),%d0
+	mulu	#6,%d0			| Monaco 9: 6 pixels per character
+	add.w	%d0,V_X(%a6)
 	move.l	%a0,-(%sp)
 	.short	_DrawString
-	moveq	#0,%d0
-	move.b	(%a0),%d0
-	mulu	#6,%d0
-	add.w	%d0,V_X(%a6)
 	rts
 say_cstr:
 	bsr.s	say_cstr_nocr

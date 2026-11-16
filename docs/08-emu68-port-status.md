@@ -158,7 +158,11 @@ tools/run-fullstack.sh 400` selects another image.
    129), opened `.ENET` through OpenSlot (refNum -52) and the Ethernet driver took its first
    slot interrupt; the EGetInfo control call then returned to address 0, because the driver's
    Control exit left EGetInfo's buffer pointers in A0 and A1 where `iodone` expects the
-   parameter block and the DCE (the same mistake PiDisk had made a day earlier). Fixed.
+   parameter block and the DCE (the same mistake PiDisk had made a day earlier). Fixed. The
+   next boot sat in a level-2 storm inside the Ethernet driver's Open: the driver announced
+   itself to the kernel (which then raises the line for the board's irq flag) before its
+   SIntInstall, and the flag was already set. Both drivers now announce themselves as the last
+   thing in Open, after the handler is in place, and the Ethernet driver clears the flag first.
 
 ### Debug aids added
 - `mac.dbg=LO,HI` bootarg: translator prints the blocks it creates in that 68k range.

@@ -196,6 +196,7 @@ app_start:
 	clr.l	30(%a3)
 	move.l	%a3,%a0
 	.short	_Control
+	bsr	log_err			| "PiNet: result N": EAttachPH
 	tst.w	%d0
 	bne	ctlerr
 	lea	rdpb(%pc),%a4
@@ -211,6 +212,7 @@ app_start:
 	move.w	#1536,34(%a4)
 	move.l	%a4,%a0
 	.short	0xA404			| _Control ,ASYNC
+	bsr	log_err			| ERead posted
 	| ARP request frame: dst broadcast, src filled by the driver, type 0806
 	lea	frame(%pc),%a0
 	move.l	#0xFFFFFFFF,(%a0)
@@ -236,10 +238,12 @@ app_start:
 	move.l	%a1,30(%a3)
 	move.l	%a3,%a0
 	.short	_Control
+	bsr	log_err			| EWrite
 	tst.w	%d0
 	bne	ctlerr
 	lea	s_sent(%pc),%a0
 	bsr	say
+	log	"PiNet: waiting for the ERead"
 	| wait up to 3 s for the ERead to complete
 	move.l	Ticks,%d5
 	add.l	#180,%d5
@@ -289,19 +293,21 @@ crlf:
 say_prefix:				| a0 -> pstring, no newline
 say_pstr_nocr:
 	| running pen position: x in 6(%a6), y in 4(%a6); draw at (x, y)
-	bsr	log_draw		| diagnostics: "PiNet: draw len LLL at XXX,YYY" in the kernel log
+	| (bsr log_draw here logs every draw as "PiNet: draw len LLL at XXX,YYY"; it found the pen bug)
 	movem.l	%a0,-(%sp)
 	move.w	6(%a6),-(%sp)
 	move.w	4(%a6),-(%sp)
 	.short	_MoveTo
 	movem.l	(%sp)+,%a0
-	move.l	%a0,-(%sp)
-	.short	_DrawString
-	| advance x by 6 pixels per character (Monaco 9 is monospaced)
+	| advance x by 6 pixels per character (Monaco 9 is monospaced) BEFORE the trap: QuickDraw
+	| does not preserve A0, and reading the length through it afterwards moved the pen by
+	| whatever the trap left there (text off the window, or printed over the previous text)
 	moveq	#0,%d0
 	move.b	(%a0),%d0
 	mulu	#6,%d0
 	add.w	%d0,6(%a6)
+	move.l	%a0,-(%sp)
+	.short	_DrawString
 	rts
 say_cstr:				| a1 -> C string (max 60)
 	lea	tmp(%pc),%a0
@@ -313,11 +319,6 @@ say_cstr:				| a1 -> C string (max 60)
 	cmp.w	#60,%d0
 	blt.s	1b
 2:	move.b	%d0,(%a0)
-	clr.b	1(%a0,%d0.w)		| NUL after the text so the Pi can log what was built
-	movem.l	%a0-%a1,-(%sp)
-	lea	1(%a0),%a1
-	bsr	do_log
-	movem.l	(%sp)+,%a0-%a1
 	bsr	say
 	rts
 say_dec:				| d0 unsigned long -> decimal, no newline
@@ -330,12 +331,6 @@ say_dec:				| d0 unsigned long -> decimal, no newline
 	tst.l	%d0
 	bne.s	1b
 	move.b	%d1,-(%a0)
-	movem.l	%a0-%a1/%d0,-(%sp)
-	lea	tmp+20(%pc),%a1
-	clr.b	(%a1)			| NUL after the digits: log them too
-	lea	1(%a0),%a1
-	bsr	do_log
-	movem.l	(%sp)+,%a0-%a1/%d0
 	bsr	say_pstr_nocr
 	rts
 say_sdec:
