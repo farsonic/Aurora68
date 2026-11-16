@@ -276,12 +276,19 @@ wait:
 loop:
 	.short	_SystemTask
 	clr.w	-(%sp)
-	move.w	#0x002A,-(%sp)		| mouseDown | keyDown | autoKey
-	pea	event(%pc)
+	move.w	#0xFFFF,-(%sp)		| every event: a disk-inserted event must be taken by the front
+	pea	event(%pc)		| application for the Event Manager to mount the volume
 	.short	_GetNextEvent
 	tst.w	(%sp)+
 	beq.s	loop
-	.short	_ExitToShell
+	move.w	event(%pc),%d0		| what
+	cmp.w	#1,%d0			| mouseDown
+	beq.s	1f
+	cmp.w	#3,%d0			| keyDown
+	beq.s	1f
+	cmp.w	#5,%d0			| autoKey
+	bne.s	loop
+1:	.short	_ExitToShell
 
 | ---- text output helpers (a6 -> vars: 4 = y) ----
 say:					| a0 -> pstring, then newline

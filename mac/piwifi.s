@@ -113,7 +113,7 @@ app_start:
 loop:
 	.short	_SystemTask
 	clr.w	-(%sp)
-	move.w	#0x002A,-(%sp)		| mouseDown, keyDown, autoKey
+	move.w	#0xFFFF,-(%sp)		| every event (disk inserts must reach the front application; the rest is ignored)
 	pea	event(%pc)
 	.short	_GetNextEvent
 	tst.w	(%sp)+
@@ -394,13 +394,17 @@ readline:
 rl_loop:
 	.short	_SystemTask
 	clr.w	-(%sp)
-	move.w	#0x0028,-(%sp)		| keyDown, autoKey
+	move.w	#0xFFFF,-(%sp)		| every event; only keys are used here
 	pea	event(%pc)
 	.short	_GetNextEvent
 	tst.w	(%sp)+
 	beq.s	rl_loop
 	lea	event(%pc),%a0
-	move.b	5(%a0),%d1		| the character
+	cmp.w	#keyDown,(%a0)
+	beq.s	rl_key
+	cmp.w	#autoKey,(%a0)
+	bne.s	rl_loop
+rl_key:	move.b	5(%a0),%d1		| the character
 	cmp.b	#0x0D,%d1		| Return
 	beq.s	rl_done
 	cmp.b	#0x03,%d1		| Enter

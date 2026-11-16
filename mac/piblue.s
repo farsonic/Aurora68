@@ -114,7 +114,7 @@ app_start:
 loop:
 	.short	_SystemTask
 	clr.w	-(%sp)
-	move.w	#0x002A,-(%sp)
+	move.w	#0xFFFF,-(%sp)		| every event (disk inserts must reach the front application; the rest is ignored)
 	pea	event(%pc)
 	.short	_GetNextEvent
 	tst.w	(%sp)+
@@ -433,13 +433,17 @@ readnumber:
 	moveq	#0,%d2
 1:	.short	_SystemTask
 	clr.w	-(%sp)
-	move.w	#0x0028,-(%sp)
+	move.w	#0xFFFF,-(%sp)		| every event; only keys are used here
 	pea	event(%pc)
 	.short	_GetNextEvent
 	tst.w	(%sp)+
 	beq.s	1b
 	lea	event(%pc),%a0
-	move.b	5(%a0),%d1
+	cmp.w	#keyDown,(%a0)
+	beq.s	11f
+	cmp.w	#autoKey,(%a0)
+	bne.s	1b
+11:	move.b	5(%a0),%d1
 	cmp.b	#0x0D,%d1
 	beq.s	3f
 	cmp.b	#0x03,%d1

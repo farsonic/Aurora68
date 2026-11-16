@@ -101,7 +101,7 @@ app_start:
 loop:
 	.short	_SystemTask
 	clr.w	-(%sp)
-	move.w	#0x002A,-(%sp)
+	move.w	#0xFFFF,-(%sp)		| every event (disk inserts must reach the front application; the rest is ignored)
 	pea	event(%pc)
 	.short	_GetNextEvent
 	tst.w	(%sp)+
