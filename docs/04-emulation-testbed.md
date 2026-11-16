@@ -8,18 +8,24 @@ Disk images → CHD: `chdman createhd -i img -o out.chd -c none`; attach `-hard1
 (default SCSI ID 6; `-scsi:6 "" -scsi:0 harddisk` to move it).
 Headless: `-video none -sound none -nothrottle -seconds_to_run N -snapshot_directory dir`.
 Lua (`-autoboot_script`): keep tap/notifier objects in GLOBALS or they are GC'd and vanish.
-Memory taps see only untranslated accesses: after the ROM enables the 68030 MMU, I/O
-accesses were not visible on the 0x50F0xxxx alias (see mirror test in mame/mirror.txt).
+Memory taps see PHYSICAL addresses. The ROM's 32-bit MMU tables map the I/O block to the
+0x5000xxxx alias (A20-A23 ignored by the decoder), so after the MMU is enabled all I/O
+traffic appears at 0x50010000 (SCSI), 0x50026000 (RBV) etc., not at 0x50F0xxxx. Tap both,
+or just 0x50000000-0x50FFFFFF (mame/mirror.lua, results in mame/mirror.txt).
 
 Runs:
 - IIci ROM, 8 MB, 640×480 13" RGB default: boots in ~6 s to the blinking "?" disk icon.
   VIA1, RBV video, ADB, ASC chime all exercised (access census in mame/iolog.txt).
 - System 7.1 Zip image (96 MiB, APM: Iomega_DiskInfo, Apple_Driver "IoDr4.2"
   `.SC/IOMEGA`, Apple_HFS "Mac Volume" with valid LK boot blocks, System 7.1/Finder):
-  no boot. The ROM's Start Manager selects targets and times out waiting for BSY
-  (80 % of CPU time at 0x4080786A); MAME's SCSI helper logged "1 unread byte(s) lost" ×8,
-  i.e. the few transactions that did happen failed in the data phase (MAME 0.264 helper
-  vs this ROM's pseudo-DMA pattern). The Iomega driver may also refuse a non-Iomega target.
+  no boot, but the SCSI path itself is fine. Decoded dialogue (mame/scsi_dialog.lua):
+  arbitrate (ID 7) → select ID 6 → READ(6) blk 0 (DDR "ER") → READ(6) blk 91 ×4 (Iomega
+  loader "IoDr4.2") → READ(6) blk 1..6 (partition map, twice) → the loader reads its full
+  driver blk 95..198 one block at a time → INQUIRY on the bus: MAME disk answers
+  "SEAGATE", MAME CD-ROM (scsi:3) answers "SONY" → the Iomega driver refuses non-Iomega
+  devices → no drive queue entry → ROM falls back to the "?" icon (and keeps retrying,
+  hence 80 % of CPU time in the BSY-wait at 0x4080786A). The 8 "unread byte lost"
+  messages are the 1-byte INQUIRY probes. Fix = a generic Apple_Driver on the image.
 - System 7.0.1 image (10 MiB): a bare HFS volume (LK boot blocks, System 7.0.1, Finder)
   with NO partition map and NO driver → not bootable from SCSI by any Mac ROM as-is.
   Needs wrapping: DDR + APM + Apple_Driver + Apple_HFS. We must obtain or write a generic
