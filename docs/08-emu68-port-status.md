@@ -225,19 +225,21 @@ unpatched ROM the JIT leaves TimeDBRA ($D00) = 0 and System 7.1's speed probe (c
 `move.w $D00,d1 ; mulu #4000,d1 ; divu d5,d1`) dies with a zero divide and the bomb dialog.
 System 6 does not touch TimeDBRA that way and boots with either ROM.
 
-## Next steps (in order)
-1. Deliver bridge bus errors as 68030-style access faults for the SCSI Manager's timeout path;
-   remove the debug-only read-only mapping of the low-memory page once the watch is no longer
-   needed (every low-memory write traps today); make the calibration produce a real count
-   instead of the 0xFFFF saturation (docs/06 §2 options).
-2. Performance: the JIT runs in its CRC-verifying loop because 68030 code never sets the 68040
-   CACR IE bit; decide between forcing the fast loop with explicit invalidation on CACR CI or
-   keeping verification.
-3. Timing patches for the real Pi (docs/06-rom-patches.md) and TimeDBRA behaviour under JIT.
-4. Mailbox window + RAM-disk `block` service on the service core + `.PiDisk` ROM driver
-   (docs/07), then SD/exFAT, `.ENET`, WiFi/BT/USB on CM4.
-5. Real hardware: replace the semihosting transport with the PiStorm GPIO protocol
-   (`ps_protocol.c` functions are already behind the same `ps_read/ps_write` API).
+## Next steps (in order, as of the evening of 16 November)
+1. System 7.1 through the same end-to-end test as System 6 (PiNet from Startup Items, the ARP
+   round trip, the scripted input); then MacTCP on top of `.ENET` (the driver's protocol-handler
+   path, EAttachPH with a real handler, has only been exercised with the default handler).
+2. Hardware: the PiStorm GPIO transport in place of the semihosting bridge (`ps_protocol.c` is
+   already behind the `ps_read/ps_write` API), the initramfs container on the SD card with the
+   ROM, the declaration ROM and the firmware, and the first boot on a Macintosh SE.
+3. The Pi 4 drivers for real: GENET and the VL805 xHCI (the DMA pool below 1 GiB), WiFi and
+   Bluetooth firmware from the container, and the choice of board (docs/00) that decides which
+   of them matter.
+4. The second display (docs/10): frame buffer at the slot's super space, a video sResource, the
+   HVS on the Pi.
+5. Housekeeping: deliver bridge bus errors as 68030 access faults for the SCSI Manager's
+   timeout path; drop the debug-only read-only mapping of the low-memory page; take the
+   calibration patch and the rest of `rom/patches/iici.json` to the real Pi's timings.
 
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
