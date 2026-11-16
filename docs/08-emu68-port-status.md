@@ -141,3 +141,23 @@ System 6 does not touch TimeDBRA that way and boots with either ROM.
    (docs/07), then SD/exFAT, `.ENET`, WiFi/BT/USB on CM4.
 5. Real hardware: replace the semihosting transport with the PiStorm GPIO protocol
    (`ps_protocol.c` functions are already behind the same `ps_read/ps_write` API).
+
+## Mailbox and Mac-side software (later the same day)
+- The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
+  and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,
+  `psmac_mbox.c`; design in docs/07, Mac side in docs/09).
+- Verified in the testbed: the IIci ROM's Slot Manager accepts the declaration ROM built by
+  `tools/mac/mkdeclrom.py`, the Start Manager loads `.PiDisk` from it at boot, the driver's Open
+  reads the window and adds a drive queue entry (`[MAC] PiDisk: drive added` in the log, the INFO
+  and BLOCK services answer). Mounting the volume in the Finder is the open item: disk-inserted
+  events posted before the Finder runs are flushed, so the driver now reposts them from a VBL task.
+- An extension-file loader (`PiDisk.bin`) exists too but System 7.1 did not run it in the testbed
+  (cause not found; the declaration ROM path is the one that matters and works).
+- `.ENET`-interface Ethernet driver (`mac/enet.s`) and a test application (`mac/pinet.s`) are
+  written and assemble; the end-to-end test with `tools/pinet.py` is next.
+- Testbed timing: the bridge's idle wait is now 200 us (was 1 ms); with 1 ms steps System 7.1's
+  speed probe occasionally measured zero and bombed with a zero divide.
+- Alice68 (the user's Pi 4 Amiga kernel, `reference/Alice68`, GPL-2.0-only) carries the hardware
+  drivers to port: GENET, WiFi over SDIO, Bluetooth HCI, VL805 xHCI. The port plan (service code on
+  core 3, boards carved inside the slot window, firmware from the initramfs container, interrupts
+  as a virtual slot-9 interrupt) is recorded in docs/07.

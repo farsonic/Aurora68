@@ -76,7 +76,9 @@
 	.equ	DQE_SIZE,	24
 	.equ	G_VBL,		G_DQE+MAXDEV*DQE_SIZE	| VBLTask (14 bytes) + globals pointer (4)
 	.equ	G_VBLSELF,	G_VBL+14
-	.equ	G_SIZE,		G_VBLSELF+4
+	.equ	G_POSTS,	G_VBLSELF+4	| word: disk events posted so far
+	.equ	G_PRIMED,	G_VBLSELF+6	| word: nonzero once the File Manager has read from us
+	.equ	G_SIZE,		G_VBLSELF+8
 	.equ	_VInstall,	0xA033
 	.equ	_VRemove,	0xA034
 
@@ -337,6 +339,8 @@ d_prime:
 	move.l	ioReqCount(%a3),%d0
 	move.l	%d0,ioActCount(%a3)
 	add.l	%d0,dCtlPosition(%a4)
+	move.l	dCtlStorage(%a4),%a2
+	move.w	#1,G_PRIMED(%a2)
 	moveq	#noErr,%d0
 	bra.s	prime_done
 prime_io:
@@ -421,10 +425,16 @@ d_close:
 	moveq	#noErr,%d0
 	rts
 
-| ---- VBL task: post one diskEvt per drive, then remove itself (A0 = VBLTask) ----
+| ---- VBL task (every 5 s): post one diskEvt per drive until the File Manager has read from us
+|      (events posted before the Finder runs are flushed at startup), at most 24 times ----
 mount_vbl:
 	movem.l	%d0-%d2/%a0-%a2,-(%sp)
 	move.l	14(%a0),%a2		| globals
+	tst.w	G_PRIMED(%a2)
+	bne.s	3f
+	addq.w	#1,G_POSTS(%a2)
+	cmp.w	#24,G_POSTS(%a2)
+	bgt.s	3f
 	move.w	G_NDEV(%a2),%d2
 	beq.s	2f
 	move.w	G_FIRSTDRV(%a2),%d1
@@ -436,9 +446,11 @@ mount_vbl:
 	.short	0xA02F			| _PostEvent
 	addq.w	#1,%d1
 	dbf	%d2,1b
-2:	lea	G_VBL(%a2),%a0
+2:	move.w	#300,G_VBL+10(%a2)	| rearm
+	bra.s	4f
+3:	lea	G_VBL(%a2),%a0
 	.short	_VRemove
-	movem.l	(%sp)+,%d0-%d2/%a0-%a2
+4:	movem.l	(%sp)+,%d0-%d2/%a0-%a2
 	rts
 
 | ---- common exit: immediate calls return, queued calls go through IODone ----
