@@ -183,7 +183,12 @@ tools/run-fullstack.sh 400` selects another image.
    slot answers 0, and a driver's VBL poll can consume the board's flag between the line going
    up and the handlers running. A real card's driver knows its card raised the line; here the
    input driver installs a second handler at priority 0, called last, that always claims the
-   interrupt (`slot_catchall`).
+   interrupt (`slot_catchall`). With that, **System 6 runs the whole stack end to end**
+   (`docs/img/system6-pinet-arp.png`): PiNet launched at boot, the mailbox header, the 20 MiB
+   Pi disk, the card found by the Slot Manager (slot 9, sRsrcID 129), `.ENET` opened through
+   OpenSlot (refNum -52), the Ethernet address 02:50:53:4D:41:43, an ARP request out through
+   the Pi to the host peer and its reply back through ERead, 60 bytes from 02:00:00:00:68:01,
+   received by the driver's slot interrupt handler.
 
 ### Debug aids added
 - `mac.dbg=LO,HI` bootarg: translator prints the blocks it creates in that 68k range.

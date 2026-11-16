@@ -58,7 +58,13 @@ Boot takes about four minutes in the testbed; a Pi 4 will do it in seconds.
   disk image on the Pi mounts on the desktop (docs/07, docs/09).
 - The Alice68 service modules (network board, Bluetooth, status page) run on ARM core 3 behind
   that window; in the testbed the network board is fed from host files, on hardware from the
-  Pi's chips. An Apple-interface Ethernet driver for the Mac sits on the same board (docs/09).
+  Pi's chips. The card has a real interrupt: the kernel raises the IIci's slot-9 line and the
+  drivers install handlers with the Slot Manager (docs/07).
+- Under System 6 the whole stack works end to end: the Pi disk mounts, the Apple-interface
+  Ethernet driver (`.ENET`) sends an ARP request through the Pi and receives the reply through
+  its slot interrupt, and keyboards and mice on the Pi move the Mac's cursor and post its events
+  (docs/09, `docs/img/system6-pinet-arp.png`). PiWiFi, PiBlue and PiStatus give the WiFi,
+  Bluetooth and the Pi's status page a Macintosh face.
 - A second display through the VideoCore is designed (docs/10).
 
 ## The documents
