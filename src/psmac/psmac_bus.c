@@ -61,6 +61,22 @@ static inline int in_periph_window(uint64_t a) { return a >= PERIPH_VA && a < 0x
 static volatile uint32_t dev_cnt[8]; /* VIA1, SCC, SCSI, ASC, SWIM, RBV, FB, other */
 static inline int dev_class(uint32_t a) { uint32_t o = a & 0x000fffff; if (a < 0x80000) return 6; if ((a & 0xff000000) != 0x50000000) return 7; if (o < 0x2000 || (o >= 0x40000 && o < 0x42000)) return 0; if (o >= 0x4000 && o < 0x6000) return 1; if ((o >= 0x10000 && o < 0x14000) || (o >= 0x6000 && o < 0x8000)) return 2; if (o >= 0x14000 && o < 0x16000) return 3; if (o >= 0x16000 && o < 0x18000) return 4; if (o >= 0x24000 && o < 0x28000) return 5; return 7; }
 
+/* SCSI register trace (mac.scsitrace=N lines): every write, and every read whose value differs from
+   the previous read of the same register; a run of identical polls is folded into one line with its
+   count. This is how the ROM's selection and transfer sequences are read against the NCR 5380 data
+   sheet when a boot stalls in a SCSI wait loop (docs/08, fix 14). */
+static uint32_t scsi_trace_left;
+static void scsi_trace(int op, uint32_t addr, uint32_t wdata, uint32_t rdata)
+{
+    static uint32_t last_addr = 0xffffffffu, last_val, repeats;
+    if (!scsi_trace_left) return;
+    if (op == PSMAC_OP_READ && addr == last_addr && rdata == last_val) { repeats++; return; }
+    if (repeats) { kprintf("[SCSI]   ... %u more reads of %08x -> %02x\n", repeats, last_addr, last_val); repeats = 0; }
+    scsi_trace_left--;
+    if (op == PSMAC_OP_READ) { kprintf("[SCSI] R %08x -> %02x (reg %u) PC %08x\n", addr, rdata & 0xff, (addr >> 4) & 7, __m68k_state ? BE32((uint32_t)(uintptr_t)__m68k_state->PC) : 0); last_addr = addr; last_val = rdata; }
+    else { kprintf("[SCSI] W %08x <- %02x (reg %u) PC %08x\n", addr, wdata & 0xff, (addr >> 4) & 7, __m68k_state ? BE32((uint32_t)(uintptr_t)__m68k_state->PC) : 0); last_addr = 0xffffffffu; }
+}
+
 static inline uint64_t cnt_now(void) { uint64_t v; __asm__ volatile("mrs %0, CNTVCT_EL0":"=r"(v)); return v; }
 static inline uint64_t cnt_frq(void) { uint64_t v; __asm__ volatile("mrs %0, CNTFRQ_EL0":"=r"(v)); return v; }
 
@@ -199,6 +215,8 @@ static void psmac_read_options(void)
         if (*tok == ',') { tok++; while ((*tok >= '0' && *tok <= '9') || (*tok >= 'a' && *tok <= 'f')) { hi = hi * 16 + (*tok <= '9' ? *tok - '0' : *tok - 'a' + 10); tok++; } }
         globals.debug_range_min = lo; globals.debug_range_max = hi; globals.debug = 1; globals.disasm = true;
     }
+    if ((tok = find_token(args, "mac.inputtest="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_test(uint32_t); psmac_alice_input_test(n); }
+    if ((tok = find_token(args, "mac.scsitrace="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); scsi_trace_left = n; }
     if ((tok = find_token(args, "mac.ram="))) { tok += 8; uint32_t mb = 0; while (*tok >= '0' && *tok <= '9') mb = mb * 10 + (*tok++ - '0'); globals.psmac_ram_mb = mb; }
     if (find_token(args, "mac.bridge=semihost")) use_semihost = 1;
     kprintf("[PSMAC] options: ram=%d MiB bridge=%s (bootargs: %s)\n", globals.psmac_ram_mb, use_semihost ? "semihost" : "uart", args);
@@ -339,6 +357,8 @@ void psmac_service_core(void)
                     kprintf("[PSMAC]   stack: %08x %08x %08x %08x %08x %08x %08x %08x\n", st[0], st[1], st[2], st[3], st[4], st[5], st[6], st[7]);
                 }
             }
+            { int ok1, ok2, ok3; uint32_t t1 = mac_rd32(0xd00, &ok1), t2 = mac_rd32(0xb24, &ok2), t3 = mac_rd32(0xcea, &ok3);
+              if (ok1 && ok2 && ok3) kprintf("[PSMAC]   timing globals: TimeDBRA %04x TimeSCCDB %04x TimeSCSIDB %04x TimeVIADB %04x\n", t1 >> 16, t1 & 0xffff, t2 >> 16, t3 >> 16); }
             if (xfer_count == hb_last && !stall_dumped) { stall_dumped = 1; pcring_dump(); }
             psmac_mbox_heartbeat();
             hb_last = xfer_count; next_hb = cnt_now() + hb_period;
@@ -363,6 +383,7 @@ void psmac_service_core(void)
             xfer_count++; last_addr = slot.addr; dev_cnt[dev_class(slot.addr)]++;
             if (slot.op == PSMAC_OP_READ && dev_class(slot.addr) == 2) scsi_reads++;
             bridge_xfer(slot.op, slot.size, slot.flags, slot.addr, slot.data, &slot.rep);
+            if (scsi_trace_left && dev_class(slot.addr) == 2) scsi_trace(slot.op, slot.addr, slot.data, slot.rep.data);
             __atomic_store_n(&slot.state, SLOT_DONE, __ATOMIC_RELEASE);
             continue;
         }

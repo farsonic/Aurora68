@@ -60,6 +60,33 @@ static void in_put(uint32_t type, int32_t a, int32_t b, int32_t c)
     __asm__ volatile("dmb ish" ::: "memory");
     inr->head = head + 1;
 }
+static inline uint64_t in_now(void) { uint64_t v; __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(v)); return v; }
+static inline uint64_t in_hz(void)  { uint64_t v; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(v)); return v; }
+
+/* Key repeat. An ADB keyboard repeats keys itself and the Mac's Event Manager turns the repeated
+   downs into autoKey events; USB and Bluetooth keyboards only report state changes, so the repeat
+   is generated here: the last key held is re-sent with b = 2 ("repeat") after the Mac's default
+   delay, then at the default rate, until it is released. The Mac driver (mac/piinput.s) posts
+   those as autoKey. The two times are the Keyboard control panel's defaults, so a user who has
+   changed them will notice the Pi's keyboards keep their own rhythm; reading the panel's settings
+   from low memory (KeyThresh, KeyRepThresh) is a small later improvement. */
+static uint32_t rep_usage, rep_mods; static uint64_t rep_due;
+#define REP_DELAY_MS 400
+#define REP_RATE_MS  66
+static void in_key(uint32_t usage, int down, uint32_t mods)
+{
+    in_put(ALICE_IN_KEY, (int32_t)usage, down, (int32_t)mods);
+    if (!usage) return;
+    if (down) { rep_usage = usage; rep_mods = mods; rep_due = in_now() + in_hz() * REP_DELAY_MS / 1000; }
+    else if (usage == rep_usage) rep_usage = 0;
+}
+static void in_repeat_poll(void)
+{
+    if (!rep_usage || in_now() < rep_due) return;
+    in_put(ALICE_IN_KEY, (int32_t)rep_usage, 2, (int32_t)rep_mods);
+    rep_due = in_now() + in_hz() * REP_RATE_MS / 1000;
+}
+
 /* a USB boot-protocol keyboard report (modifiers, reserved, 6 usages): diff against the last one */
 void frf_native_usb_keyboard_boot_report(const uint8_t report[8])
 {
@@ -67,12 +94,12 @@ void frf_native_usb_keyboard_boot_report(const uint8_t report[8])
     for (int i = 2; i < 8; i++) {                    /* released: in last, not in report */
         if (!last[i]) continue;
         int still = 0; for (int j = 2; j < 8; j++) if (report[j] == last[i]) still = 1;
-        if (!still) in_put(ALICE_IN_KEY, last[i], 0, report[0]);
+        if (!still) in_key(last[i], 0, report[0]);
     }
     for (int i = 2; i < 8; i++) {                    /* pressed: in report, not in last */
         if (!report[i]) continue;
         int was = 0; for (int j = 2; j < 8; j++) if (last[j] == report[i]) was = 1;
-        if (!was) in_put(ALICE_IN_KEY, report[i], 1, report[0]);
+        if (!was) in_key(report[i], 1, report[0]);
     }
     if (report[0] != last[0]) in_put(ALICE_IN_KEY, 0, 0, report[0]);   /* modifiers alone */
     for (int i = 0; i < 8; i++) last[i] = report[i];
@@ -172,6 +199,36 @@ int psmac_eth_testbed_poll(volatile struct an_unit *u)
     return 1;
 }
 
+/* ---- testbed input script (mac.inputtest=SECONDS) ------------------------------------------- */
+/* QEMU's Pi has no USB or Bluetooth, so the input path is exercised with a scripted session: the
+   given number of seconds after the 68k starts (long enough for the Finder), the "mouse" walks to
+   the top-left corner, across to the Apple menu, clicks it open, and a moment later the "keyboard"
+   types a few letters, with the whole thing visible in the MAME screenshots. On hardware the
+   option is simply not given. */
+static uint32_t intest_at; static int intest_step; static uint64_t intest_next;
+static void in_testbed_poll(void)
+{
+    if (!intest_at) return;
+    uint64_t now = in_now();
+    if (!intest_next) intest_next = now + in_hz() * intest_at;
+    if (now < intest_next) return;
+    static const uint8_t typed[] = { 0x0b, 0x08, 0x0f, 0x0f, 0x12, 0 };     /* h e l l o in USB usages */
+    int s = intest_step++;
+    uint32_t gap_ms = 50;
+    if (s < 40)       aga_virtual_mouse_update(-30, -20, 0);                 /* to the top-left corner */
+    else if (s < 42)  aga_virtual_mouse_update(12, 6, 0);                    /* onto the Apple menu */
+    else if (s == 42) { aga_virtual_mouse_update(0, 0, 1); gap_ms = 300; }   /* press */
+    else if (s == 43) { aga_virtual_mouse_update(0, 0, 0); gap_ms = 1500; }  /* release: the menu stays open on System 7 */
+    else if (s == 44) { aga_virtual_mouse_update(0, 0, 1); gap_ms = 200; }   /* click again to close it */
+    else if (s == 45) { aga_virtual_mouse_update(0, 0, 0); gap_ms = 500; }
+    else if (s < 46 + 2 * (int)(sizeof typed - 1)) {                        /* type: down, up per letter */
+        int k = (s - 46) / 2, down = !((s - 46) & 1);
+        in_key(typed[k], down, 0); gap_ms = 80;
+    } else { intest_at = 0; kprintf("[PSMAC] input test script done\n"); return; }
+    intest_next = now + in_hz() * gap_ms / 1000;
+}
+void psmac_alice_input_test(uint32_t seconds) { intest_at = seconds; }
+
 /* ---- bring-up and the core-3 loop ---------------------------------------------------------- */
 static volatile int alice_ready;
 void psmac_alice_init(uint8_t *win)
@@ -194,6 +251,8 @@ void __attribute__((noreturn)) psmac_alice_core(void)
     for (;;) {
         psmac_mbox_poll();
         alice_net_poll();
+        in_repeat_poll();
+        in_testbed_poll();
         __asm__ volatile("yield");
     }
 }
