@@ -108,7 +108,8 @@
 	.equ	G_CAPS,		G_DEAD+4	| word: caps lock toggled on
 	.equ	G_SIQ,		G_CAPS+2	| SlotIntQElement: sqLink 4, sqType 2, sqPrio 2, sqAddr 4, sqParm 4
 	.equ	G_INTS,		G_SIQ+16	| long: slot interrupts taken (for the log)
-	.equ	G_SIZE,		G_INTS+4
+	.equ	G_SIQ2,		G_INTS+4	| a second queue element: the catch-all handler (below)
+	.equ	G_SIZE,		G_SIQ2+16
 	.equ	_SIntInstall,	0xA075		| its own OS trap (Inside Macintosh V): A0 = SlotIntQElement, D0.w = slot
 	.equ	sIQType,	6
 	.equ	PI_SLOT,	9
@@ -246,6 +247,21 @@ d_open:
 	bsr	log_err			| "PiInput: SIntInstall error -NNN"
 	bra.s	2f
 1:	log	"PiInput: slot interrupt handler installed"
+	| The catch-all. The ROM runs the slot's handlers from the highest sqPrio down and bombs
+	| with "unserviceable slot interrupt" when every one of them answers 0. Each driver here
+	| claims only what its own board flagged, and a flag can be consumed by a driver's VBL poll
+	| between the line going up and the handlers running, so one evening the ROM found nobody
+	| at home. A real card's driver knows its card raised the line; this one, at priority 0 and
+	| therefore last, simply says so.
+	lea	G_SIQ2(%a2),%a0
+	clr.l	(%a0)
+	move.w	#sIQType,4(%a0)
+	move.w	#0,6(%a0)		| sqPrio 0: called after everyone else
+	lea	slot_catchall(%pc),%a1
+	move.l	%a1,8(%a0)
+	move.l	%a2,12(%a0)
+	move.w	#PI_SLOT,%d0
+	.short	_SIntInstall
 	move.l	G_RING(%a2),%a0
 	move.l	#1,IN_ATTACHED(%a0)	| only now: from this write on, ring events raise the card's interrupt
 2:	| The VBL task as well: every tick until the first slot interrupt arrives, then every 15
@@ -296,6 +312,11 @@ slot_int:
 	log	"PiInput: first slot interrupt"
 1:	bsr	drain			| d0 = events taken
 	movem.l	(%sp)+,%d1-%d7/%a0-%a4
+	rts
+
+| the catch-all: "it was the card": D0 = 1 and nothing else
+slot_catchall:
+	moveq	#1,%d0
 	rts
 
 | ---- the VBL task ----

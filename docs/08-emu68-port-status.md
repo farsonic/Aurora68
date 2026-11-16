@@ -178,7 +178,12 @@ tools/run-fullstack.sh 400` selects another image.
    "qhead 00000000 flags 0000", a DCE that was not one: EWrite had used A4, the register the
    dispatcher keeps the DCE in, for the board pointer, so IODone was handed the board and the
    Device Manager's synchronous wait never ended. The handler now walks its gather list through
-   D7 and leaves A4 alone.
+   D7 and leaves A4 alone. EWrite then completed, the host peer answered the ARP, and the ROM
+   bombed with "unserviceable slot interrupt": that is its verdict when every handler on the
+   slot answers 0, and a driver's VBL poll can consume the board's flag between the line going
+   up and the handlers running. A real card's driver knows its card raised the line; here the
+   input driver installs a second handler at priority 0, called last, that always claims the
+   interrupt (`slot_catchall`).
 
 ### Debug aids added
 - `mac.dbg=LO,HI` bootarg: translator prints the blocks it creates in that 68k range.

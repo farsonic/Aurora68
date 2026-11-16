@@ -88,7 +88,9 @@ its level-2 handler, which happened once), and keep their VBL task as a safety n
 every quarter second once the first interrupt has arrived. Several handlers share the slot and
 the ROM stops at the first that returns nonzero in D0, so each answers "mine" only when its own
 board or ring had something (the Ethernet handler once claimed every interrupt and starved the
-input handler's ring, which kept the line up). The kernel has a safety net of its
+input handler's ring, which kept the line up), and a catch-all handler at priority 0 claims
+whatever is left, because the ROM bombs ("unserviceable slot interrupt") when nobody does and a
+VBL poll can have taken the flag already. The kernel has a safety net of its
 own: a network-board flag left unserviced for half a second after the driver attached is cleared
 and logged, so a driver bug costs a frame rather than the machine.
 
