@@ -1021,7 +1021,7 @@ struct M68KTranslationUnit *M68K_GetTranslationUnit(uint16_t *m68kcodeptr)
         kprintf("[ICache]   ARM code at %p\n", unit->mt_ARMEntryPoint);
     }
 
-    if (debug)
+    if (debug > 1)
     {
         kprintf("-- ARM Code dump --\n");
         for (uint32_t i=0; i < unit->mt_ARMInsnCnt; i++)

@@ -2248,7 +2248,7 @@ void SYSHandler(uint32_t vector, uint64_t *ctx)
     if ((vector & 0x1ff) == 0x00 && (esr & 0xf8000000) == 0x90000000)
     {
 #ifdef PSMAC
-        extern uint64_t psmac_fault_elr, psmac_fault_pc; psmac_fault_elr = elr; psmac_fault_pc = SYSGetValueFromReg(18, ctx);
+        extern uint64_t psmac_fault_elr, psmac_fault_pc, psmac_fault_a7; psmac_fault_elr = elr; psmac_fault_pc = SYSGetValueFromReg(18, ctx); psmac_fault_a7 = SYSGetValueFromReg(29, ctx);
 #endif
         int writeFault = (esr & (1 << 6)) != 0;
 

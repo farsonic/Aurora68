@@ -15,6 +15,15 @@
 #include "M68k.h"
 #include <stdint.h>
 
+/* PiStorm-SE: the Macintosh ROM/OS flushes its 68030 caches through CACR CI/CD, which this model
+   does not see, so code loaded from disk would be translated from stale lines. The Mac has no
+   use for the cache timing model: every access goes straight to memory. */
+#ifdef PSMAC
+#define CACHE_BYPASS(a) (1)
+#else
+#define CACHE_BYPASS(a) ((a) >= 0x01000000)
+#endif
+
 union CacheLine
 {
     uint128_t cl_128;
@@ -222,7 +231,7 @@ uint128_t cache_read_128(enum CacheType type, uint32_t address)
     const uint32_t set = GET_SET(address);
     int way = -1;
 
-    if (address >= 0x01000000)
+    if (CACHE_BYPASS(address))
         return *(uint128_t *)(uintptr_t)address;
 
     D(kprintf("[CACHE] %cCache read_128(%08lx)\n", type == ICACHE ? 'I':'D', address));
@@ -299,7 +308,7 @@ uint64_t cache_read_64(enum CacheType type, uint32_t address)
     const uint32_t set = GET_SET(address);
     int way = -1;
 
-    if (address >= 0x01000000)
+    if (CACHE_BYPASS(address))
         return *(uint64_t *)(uintptr_t)address;
 
     D(kprintf("[CACHE] %cCache read_64(%08lx)\n", type == ICACHE ? 'I':'D', address));
@@ -414,7 +423,7 @@ uint32_t cache_read_32(enum CacheType type, uint32_t address)
     const uint32_t set = GET_SET(address);
     int way = -1;
 
-    if (address >= 0x01000000)
+    if (CACHE_BYPASS(address))
         return *(uint32_t *)(uintptr_t)address;
 
     D(kprintf("[CACHE] %cCache read_32(%08lx)\n", type == ICACHE ? 'I':'D', address));
@@ -506,7 +515,7 @@ uint16_t cache_read_16(enum CacheType type, uint32_t address)
     const uint32_t set = GET_SET(address);
     int way = -1;
 
-    if (address >= 0x01000000)
+    if (CACHE_BYPASS(address))
         return *(uint16_t *)(uintptr_t)address;
 
     D(kprintf("[CACHE] %cCache read_16(%08lx)\n", type == ICACHE ? 'I':'D', address));
@@ -582,7 +591,7 @@ uint8_t cache_read_8(enum CacheType type, uint32_t address)
     const uint32_t set = GET_SET(address);
     int way = -1;
 
-    if (address >= 0x01000000)
+    if (CACHE_BYPASS(address))
         return *(uint8_t *)(uintptr_t)address;
 
     D(kprintf("[CACHE] %cCache read_8(%08lx)\n", type == ICACHE ? 'I':'D', address));

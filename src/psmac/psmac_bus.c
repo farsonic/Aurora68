@@ -161,6 +161,12 @@ static void psmac_read_options(void)
     of_property_t *p = c ? dt_find_property(c, "bootargs") : NULL;
     if (!p || !p->op_value) return;
     const char *args = p->op_value, *tok;
+    if ((tok = find_token(args, "mac.dbg="))) {   /* mac.dbg=LO,HI: print the translator's view of blocks starting in [LO,HI] */
+        tok += 8; uint32_t lo = 0, hi = 0;
+        while ((*tok >= '0' && *tok <= '9') || (*tok >= 'a' && *tok <= 'f')) { lo = lo * 16 + (*tok <= '9' ? *tok - '0' : *tok - 'a' + 10); tok++; }
+        if (*tok == ',') { tok++; while ((*tok >= '0' && *tok <= '9') || (*tok >= 'a' && *tok <= 'f')) { hi = hi * 16 + (*tok <= '9' ? *tok - '0' : *tok - 'a' + 10); tok++; } }
+        globals.debug_range_min = lo; globals.debug_range_max = hi; globals.debug = 1; globals.disasm = true;
+    }
     if ((tok = find_token(args, "mac.ram="))) { tok += 8; uint32_t mb = 0; while (*tok >= '0' && *tok <= '9') mb = mb * 10 + (*tok++ - '0'); globals.psmac_ram_mb = mb; }
     if (find_token(args, "mac.bridge=semihost")) use_semihost = 1;
     kprintf("[PSMAC] options: ram=%d MiB bridge=%s (bootargs: %s)\n", globals.psmac_ram_mb, use_semihost ? "semihost" : "uart", args);
@@ -201,7 +207,7 @@ static void bridge_xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, 
     last_ipl = rep[1]; last_flags = rep[2];
     if (__m68k_state) __m68k_state->INTF.IPL = rep[1];
     if (r) { r->status = rep[0]; r->ipl = rep[1]; r->flags = rep[2]; r->data = rep[4] | (rep[5] << 8) | (rep[6] << 16) | ((uint32_t)rep[7] << 24); }
-    if (rep[0]) bus_errors++;
+    if (rep[0]) { bus_errors++; if (bus_errors <= 8) kprintf("[PSMAC] bridge reported bus error #%u on op %u size %u addr %08x (68k PC %08x)\n", bus_errors, op, size, addr, __m68k_state ? BE32((uint32_t)(uintptr_t)__m68k_state->PC) : 0); }
 }
 
 /* ---------------- request hand-off to the service core ---------------- */
@@ -285,7 +291,7 @@ void psmac_service_core(void)
     for (;;) {
         if (cnt_now() > next_hb) {
             svc_phase = 3;
-            kprintf("[PSMAC] heartbeat: %u bus xfers (+%u), last %08x, ipl %d%s | via %u scc %u scsi %u asc %u swim %u rbv %u fb %u other %u | PC %08x SR %04x\n", xfer_count, xfer_count - hb_last, last_addr, last_ipl, transport_dead ? " TRANSPORT DEAD" : "",
+            kprintf("[PSMAC] heartbeat: %u bus xfers (+%u, %u berr), last %08x, ipl %d%s | via %u scc %u scsi %u asc %u swim %u rbv %u fb %u other %u | PC %08x SR %04x\n", xfer_count, xfer_count - hb_last, bus_errors, last_addr, last_ipl, transport_dead ? " TRANSPORT DEAD" : "",
                 dev_cnt[0], dev_cnt[1], dev_cnt[2], dev_cnt[3], dev_cnt[4], dev_cnt[5], dev_cnt[6], dev_cnt[7],
                 __m68k_state ? BE32((uint32_t)(uintptr_t)__m68k_state->PC) : 0, __m68k_state ? BE16(__m68k_state->SR) : 0);
             for (int k = 0; k < 8; k++) dev_cnt[k] = 0;
@@ -342,7 +348,7 @@ void psmac_io_write(uint32_t addr, int size, uint32_t data, int posted)
 /* Called from the data abort handler for every access the ARM MMU did not satisfy. Return 1 = handled. */
 static uint32_t trace_left = 400;
 void psmac_trace(uint32_t n) { trace_left = n; }
-uint64_t psmac_fault_pc;   /* JIT's 68k PC register at the fault (block granularity) */
+uint64_t psmac_fault_pc, psmac_fault_a7;   /* JIT's 68k PC (block granularity) and A7 at the fault */
 int psmac_bus_write(uint64_t value, uint64_t value2, int size, uint64_t far)
 {
     if ((far >> 32) == 1 || (far >> 32) == 0xffffffff) far &= 0xffffffff;
@@ -362,9 +368,19 @@ int psmac_bus_write(uint64_t value, uint64_t value2, int size, uint64_t far)
         static int reports;
         uint8_t *p = (uint8_t *)(KERNEL_ALIAS + ram_phys + far);
         uint32_t off = far & 0xfff, top = (uint32_t)(value >> 24) & 0xff;
-        if (reports < 24 && off >= 0x400 && off < 0x800 && size == 4 && top != 0x00 && top != 0x40) {
+        uint32_t pc68 = (uint32_t)psmac_fault_pc;
+        int ram_test = pc68 >= 0x40844000u && pc68 < 0x40846000u;      /* ROM memory test sweeps all of RAM */
+        uint32_t oldv = *(uint32_t *)p, oldtop = oldv >> 24;
+        int old_ok = (oldtop == 0x40) || (oldtop == 0x00 && oldv != 0);   /* entry currently holds a plausible address */
+        if (reports < 40 && !ram_test && off >= 0x400 && off < 0x800 && size == 4 && old_ok && top != 0x00 && top != 0x40 && (uint32_t)value != 0xffffffffu) {
             reports++;
-            kprintf("[PSMAC:WATCH] W%d trap table +%03x <- %08x from 68k PC %08x (ARM ELR %p)\n", size, off, (uint32_t)value, (uint32_t)psmac_fault_pc, (void *)psmac_fault_elr);
+            kprintf("[PSMAC:WATCH] W%d trap table +%03x <- %08x from 68k PC %08x A7 %08x (ARM ELR %p)\n", size, off, (uint32_t)value, (uint32_t)psmac_fault_pc, (uint32_t)psmac_fault_a7, (void *)psmac_fault_elr);
+            if (reports <= 3) {
+                uint32_t sp = (uint32_t)psmac_fault_a7; int ok;
+                kprintf("[PSMAC:WATCH]   stack:");
+                for (int i = 0; i < 24; i++) { uint32_t v = mac_rd32(sp + 4 * i, &ok); kprintf(" %08x", ok ? v : 0xdeaddead); }
+                kprintf("\n");
+            }
         }
         switch (size) {
             case 1: *p = value; break; case 2: *(uint16_t *)p = value; break; case 4: *(uint32_t *)p = value; break;
