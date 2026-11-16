@@ -1,5 +1,6 @@
 # Mac-side pieces for PiStorm-SE: 68k assembly (GNU binutils for m68k) packaged with tools/mac/*.py.
 #   make            builds build/PiDisk.bin (MacBinary INIT with the .PiDisk DRVR)
+#   The declaration ROM (build/psmac.declrom) carries the .PiDisk, .Network_EtherNet_PiStorm and .PiInput drivers.
 #   make install IMG=path/to/volume.img [PART=n]   copies the INIT into the System Folder of an HFS image
 AS      = m68k-linux-gnu-as -m68020
 OBJCOPY = m68k-linux-gnu-objcopy
@@ -21,8 +22,8 @@ $(B)/PiDisk.bin: $(B)/pidisk.bin.raw $(B)/pidisk_init.bin.raw ../tools/mac/mkini
 $(B)/PiNet.bin: $(B)/pinet.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
 	$(PY) ../tools/mac/mkapp.py --code $(B)/pinet.bin.raw --name PiNet --creator PINT -o $@
 
-$(B)/psmac.declrom: $(B)/pidisk.bin.raw $(B)/enet.bin.raw ../tools/mac/mkdeclrom.py ../tools/mac/declrom.py
-	$(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --enet $(B)/enet.bin.raw -o $@
+$(B)/psmac.declrom: $(B)/pidisk.bin.raw $(B)/enet.bin.raw $(B)/piinput.bin.raw ../tools/mac/mkdeclrom.py ../tools/mac/declrom.py
+	$(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --enet $(B)/enet.bin.raw --input $(B)/piinput.bin.raw -o $@
 
 disasm: $(B)/pidisk.o
 	m68k-linux-gnu-objdump -d $(B)/pidisk.o | head -200

@@ -41,7 +41,7 @@
     {
       "name": "calib: stub in the zero padding at 0x629E0: take the value from the Pi's table, else saturate",
       "at": "0x629e0",
-      "expect": "0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000",
+      "expect": "0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000",
       "asm": [
         "        not.w   %d0             | d0.w = iterations completed (0 if dbf fell through)",
         "        movem.l %d1/%a0-%a1,-(%sp)",
@@ -63,9 +63,9 @@
         "        tst.w   %d0",
         "        bne.s   3f",
         "        subq.w  #1,%d0          | 0 -> 0xFFFF: saturate instead of wrapping",
-        "3:      bra.w   calib_store     | -> 0x40800850: move.w d0 to the low-memory global"
+        "3:      jmp calib_store:l     | -> 0x40800850: move.w d0 to the low-memory global"
       ],
-      "max_len": 64
+      "max_len": 80
     }
   ]
 }

@@ -10,6 +10,8 @@ sResources (ids ascending):
     0x81 ethernet (optional): type {catNetwork 4, typeEtherNet 1, drSwApple 1, drHw 0x5053}, name
                  "Network_EtherNet_PiStorm" (driver ".Network_EtherNet_PiStorm"), sRsrcDrvrDir, sRsrcFlags 0 (not
                  opened at start: the .ENET shell opens it through OpenSlot when MacTCP/EtherTalk ask)
+    0x82 input (optional): type {0x7050 vendor category, 2, 1, 1}, name "PiInput" (driver ".PiInput"),
+                 opened at start: keyboards and mice on the Pi (USB, Bluetooth) become Mac events
 Facts: Inside Macintosh: Devices (Slot Manager), Designing Cards and Drivers 3rd ed., ROMDefs.h.
 """
 import argparse, os, struct, sys
@@ -17,7 +19,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from declrom import DeclROM
 
 ap = argparse.ArgumentParser()
-ap.add_argument('--pidisk', required=True); ap.add_argument('--enet'); ap.add_argument('-o', required=True)
+ap.add_argument('--pidisk', required=True); ap.add_argument('--enet'); ap.add_argument('--input'); ap.add_argument('-o', required=True)
 a = ap.parse_args()
 
 def drvr_name(img):
@@ -52,6 +54,15 @@ if a.enet:
     net.word(7, 0)                              # sRsrcFlags: fOpenAtStart clear
     net.word(8, 2)
 
+if a.input:
+    inp = open(a.input, 'rb').read()
+    ir = rom.sresource(0x82)
+    ir.type(0x7050, 2, 1, 1)
+    ir.name(drvr_name(inp)[1:])
+    drv3 = type(ir)(0); drv3.longblock(2, inp)
+    ir.sublist(4, drv3)
+    ir.word(8, 3)
+
 img = rom.build()
 open(a.o, 'wb').write(img)
-print(f"{a.o}: {len(img)} bytes, PiDisk driver {len(pidisk)} bytes" + (f", ENET driver {len(enet)} bytes" if a.enet else ""))
+print(f"{a.o}: {len(img)} bytes, PiDisk driver {len(pidisk)} bytes" + (f", ENET driver {len(enet)} bytes" if a.enet else "") + (f", input driver {len(inp)} bytes" if a.input else ""))

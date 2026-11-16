@@ -93,6 +93,24 @@ tools/run-fullstack.sh 400` selects another image.
    everything else still answers at once. Bus errors reported by the bridge are counted
    (`berr` in the heartbeat) but not yet delivered as 68k exceptions.
 
+14. **Timing calibration from the Pi, and a disk that was not a disk.** With the JIT fast, the
+   saturation patch (fix for the 7.1 zero divide) left TimeSCSIDB = 0xFFFF, and every SCSI wait
+   loop in the ROM multiplies its millisecond argument by that word: a selection timeout became
+   minutes. The ROM now takes the four results from a table the kernel writes into the slot-9
+   window (+0x80, `psmb.h` PSMB_OFF_CALIB): TimeDBRA saturated at 0x7FFF (the ROM's own tests
+   divide by it), the three bus loops at the bridge's measured latency (`psmac_bus.c` benchmark
+   → `psmac_mbox_set_calib`), with saturation as the fallback when no window answers. The stub
+   lives in the ROM's 7 KB of zero padding at 0x629E0 and is reached by `bra.l` from the first
+   stub (`rom/patches/iici.json`; the ROM's loop table at 0x86E is `{offset.w, lowmem.w}` pairs
+   and A4 points at the low-memory word when the stub runs). The heartbeat now prints the four
+   globals as the ROM left them.
+   The boot still showed the flashing "?" disk, and the new SCSI register trace
+   (`mac.scsitrace=N`, folded polls, PC per access) showed why in one screen: arbitration,
+   selection and the READ(6) command all worked, and the data phase returned `MComprHD` — the
+   CHD file's own header. The testbed MAME could not open the CHD that `chdman createhd`
+   had written with its default codecs and fell back to treating it as a raw image. Images for
+   the testbed are created with `-c none` (docs/04 said so; docs/09 now says so too).
+
 ### Debug aids added
 - `mac.dbg=LO,HI` bootarg: translator prints the blocks it creates in that 68k range.
 - `[PSMAC:PC]` report when the translator is asked for code at an odd or unmapped address.
@@ -159,6 +177,8 @@ System 6 does not touch TimeDBRA that way and boots with either ROM.
   (cause not found; the declaration ROM path is the one that matters and works).
 - `.ENET`-interface Ethernet driver (`mac/enet.s`) and a test application (`mac/pinet.s`) are
   written and assemble; the end-to-end test with `tools/pinet.py` is next.
+- `.PiInput` (`mac/piinput.s`): keyboards and mice on the Pi become Mac events through the input
+  ring (docs/09); key repeat and a scripted testbed session (`mac.inputtest=`) on the service core.
 - Testbed timing: the bridge's idle wait is now 200 us (was 1 ms); with 1 ms steps System 7.1's
   speed probe occasionally measured zero and bombed with a zero divide.
 - Alice68 (the user's Pi 4 Amiga kernel, `reference/Alice68`, GPL-2.0-only) carries the hardware
