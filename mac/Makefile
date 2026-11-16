@@ -32,8 +32,13 @@ $(B)/PiBlue.bin: $(B)/piblue.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
 $(B)/PiStatus.bin: $(B)/pistatus.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
 	$(PY) ../tools/mac/mkapp.py --code $(B)/pistatus.bin.raw --name PiStatus --creator PIST -o $@
 
-$(B)/psmac.declrom: $(B)/pidisk.bin.raw $(B)/enet.bin.raw $(B)/piinput.bin.raw ../tools/mac/mkdeclrom.py ../tools/mac/declrom.py
-	$(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --enet $(B)/enet.bin.raw --input $(B)/piinput.bin.raw -o $@
+# the WiFi driver: the Ethernet source assembled for unit 0
+$(B)/enet_wifi.o: enet.s
+	@mkdir -p $(B)
+	$(AS) --defsym WIFI=1 -o $@ $<
+
+$(B)/psmac.declrom: $(B)/pidisk.bin.raw $(B)/enet.bin.raw $(B)/enet_wifi.bin.raw $(B)/piinput.bin.raw ../tools/mac/mkdeclrom.py ../tools/mac/declrom.py
+	$(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --enet $(B)/enet.bin.raw --wifi $(B)/enet_wifi.bin.raw --input $(B)/piinput.bin.raw -o $@
 
 # compare the struct offsets in enet.s with the header the kernel compiles (tools/mac/an_offsets.c)
 check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alice/alice_net.h

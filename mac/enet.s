@@ -27,9 +27,21 @@
 	.equ	OFF_SERVICES,	0x0100		| 8 x 32 bytes: type.w id.w cmd_off.l caps.l param[5].l
 	.equ	SVC_ALICE,	6		| service entry 3: param[0] = board offset
 	.equ	AN_MAGIC,	0x4136384E	| 'A68N'
+| The board has two units: 0 is the WiFi chip, 1 the Ethernet. One source serves both; the
+| WiFi driver is the same code assembled with WIFI defined (make: enet_wifi), which selects unit
+| 0's structures and a driver name of its own, and the declaration ROM carries it as a second
+| network sResource. MacTCP and EtherTalk see two Ethernet cards in slot 9 and let the user pick.
+	.ifdef	WIFI
+	.equ	UNIT,		0
+	.equ	AN_OFF_UNIT1,	0x0400		| struct an_unit of unit 0 (WiFi), 2 KB
+	.equ	AN_OFF_RX1,	0x04000		| 16 receive slots of 2 KB
+	.equ	AN_OFF_TX1,	0x14000		| 12 transmit slots of 2 KB
+	.else
+	.equ	UNIT,		1
 	.equ	AN_OFF_UNIT1,	0x0C00		| struct an_unit of unit 1 (Ethernet), 2 KB
 	.equ	AN_OFF_RX1,	0x0C000		| 16 receive slots of 2 KB
 	.equ	AN_OFF_TX1,	0x1A000		| 12 transmit slots of 2 KB
+	.endif
 	.equ	AN_RX_SLOTS,	16
 	.equ	AN_TX_SLOTS,	12
 	.equ	AN_SLOT_BYTES,	0x800
@@ -132,8 +144,13 @@ drvr_start:
 	.short	d_control-drvr_start
 	.short	d_status-drvr_start
 	.short	d_close-drvr_start
-	.byte	24
+	.ifdef	WIFI
+	.byte	21
+	.ascii	".Network_WiFi_PiStorm"
+	.else
+	.byte	25
 	.ascii	".Network_EtherNet_PiStorm"
+	.endif
 	.even
 	.short	0x0100			| version (the .ENET shell picks the newest driver)
 
@@ -811,8 +828,10 @@ rp_rest:				| D3 = buffer size, A3 = buffer
 2:	move.b	(%a0)+,(%a3)+
 3:	dbf	%d2,2b
 	clr.w	G_CURLEFT(%a6)
-	moveq	#0,%d0			| Z set
-	rts
+	tst.l	%d3			| the packet did not fit: Z clear, the handler must give up
+	bmi.s	4f
+	moveq	#0,%d0			| Z set: all read
+4:	rts
 
 | log_queue: the PB being completed (a2), the DCE queue head and the flags (a4), as hex
 log_queue:

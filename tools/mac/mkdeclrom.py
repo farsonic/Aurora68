@@ -10,6 +10,8 @@ sResources (ids ascending):
     0x81 ethernet (optional): type {catNetwork 4, typeEtherNet 1, drSwApple 1, drHw 0x5053}, name
                  "Network_EtherNet_PiStorm" (driver ".Network_EtherNet_PiStorm"), sRsrcDrvrDir, sRsrcFlags 0 (not
                  opened at start: the .ENET shell opens it through OpenSlot when MacTCP/EtherTalk ask)
+    0x83 wifi (optional): the same driver assembled for the board's WiFi unit, type {4, 1, 1, 0x5054},
+                 name "Network_WiFi_PiStorm", not opened at start
     0x82 input (optional): type {0x7050 vendor category, 2, 1, 1}, name "PiInput" (driver ".PiInput"),
                  opened at start: keyboards and mice on the Pi (USB, Bluetooth) become Mac events
 Facts: Inside Macintosh: Devices (Slot Manager), Designing Cards and Drivers 3rd ed., ROMDefs.h.
@@ -19,7 +21,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from declrom import DeclROM
 
 ap = argparse.ArgumentParser()
-ap.add_argument('--pidisk', required=True); ap.add_argument('--enet'); ap.add_argument('--input'); ap.add_argument('-o', required=True)
+ap.add_argument('--pidisk', required=True); ap.add_argument('--enet'); ap.add_argument('--wifi'); ap.add_argument('--input'); ap.add_argument('-o', required=True)
 a = ap.parse_args()
 
 def drvr_name(img):
@@ -54,6 +56,16 @@ if a.enet:
     net.word(7, 0)                              # sRsrcFlags: fOpenAtStart clear
     net.word(8, 2)
 
+if a.wifi:
+    wifi = open(a.wifi, 'rb').read()
+    wn = rom.sresource(0x83)
+    wn.type(4, 1, 1, 0x5054)                    # catNetwork, typeEtherNet, drSwApple, drHw 'PT'
+    wn.name(drvr_name(wifi)[1:])
+    drv4 = type(wn)(0); drv4.longblock(2, wifi)
+    wn.sublist(4, drv4)
+    wn.word(7, 0)                               # not opened at start
+    wn.word(8, 4)
+
 if a.input:
     inp = open(a.input, 'rb').read()
     ir = rom.sresource(0x82)
@@ -65,4 +77,4 @@ if a.input:
 
 img = rom.build()
 open(a.o, 'wb').write(img)
-print(f"{a.o}: {len(img)} bytes, PiDisk driver {len(pidisk)} bytes" + (f", ENET driver {len(enet)} bytes" if a.enet else "") + (f", input driver {len(inp)} bytes" if a.input else ""))
+print(f"{a.o}: {len(img)} bytes, PiDisk driver {len(pidisk)} bytes" + (f", ENET driver {len(enet)} bytes" if a.enet else "") + (f", input driver {len(inp)} bytes" if a.input else "") + (f", WiFi driver {len(wifi)} bytes" if a.wifi else ""))
