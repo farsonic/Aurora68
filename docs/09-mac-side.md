@@ -49,6 +49,10 @@ ROM=rom/patched/MacIIci_psmac.rom HD=images/chd/hd20pi.chd tools/run-fullstack.s
 ```
 The System 6 boot reaches PiNet in about three minutes; `docs/img/system6-pinet-arp.png` is what
 it shows when everything works (the ARP reply arrives through the slot interrupt).
+`mac.inputabout=SECONDS` plays a second script that opens the Apple menu and chooses the first
+item, "About This Macintosh" (`docs/img/system71-about.png`: Macintosh IIci, System Software 7.1,
+8,192K, which is the testbed's `mac.ram=8`).
+
 The input path has no real keyboard in QEMU; `mac.inputtest=SECONDS` makes the service core play a
 scripted session that many seconds after the 68k starts (the mouse walks to the Apple menu, opens
 and closes it, then five letters are typed) so the screenshots show whether `.PiInput` works.
