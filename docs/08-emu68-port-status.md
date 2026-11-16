@@ -148,9 +148,13 @@ System 6 does not touch TimeDBRA that way and boots with either ROM.
   `psmac_mbox.c`; design in docs/07, Mac side in docs/09).
 - Verified in the testbed: the IIci ROM's Slot Manager accepts the declaration ROM built by
   `tools/mac/mkdeclrom.py`, the Start Manager loads `.PiDisk` from it at boot, the driver's Open
-  reads the window and adds a drive queue entry (`[MAC] PiDisk: drive added` in the log, the INFO
-  and BLOCK services answer). Mounting the volume in the Finder is the open item: disk-inserted
-  events posted before the Finder runs are flushed, so the driver now reposts them from a VBL task.
+  reads the window and adds a drive queue entry, and **the PiDisk volume mounts on the System 6
+  desktop with its own icon** (`docs/img/system6-pidisk-mounted.png`): the driver reposts a
+  disk-inserted event from a VBL task until the File Manager reads the volume (events posted before
+  the Finder runs are flushed), the Event Manager mounts it, 16 block reads through the mailbox.
+  Bugs found on the way: the drive-queue flag bytes (byte 1 is the disk-in-place byte), `_AddDrive`
+  takes drive<<16|refNum in D0, Status/Control must leave A1 (the DCE) intact for IODone, and the
+  log macro's local labels collided with the caller's.
 - An extension-file loader (`PiDisk.bin`) exists too but System 7.1 did not run it in the testbed
   (cause not found; the declaration ROM path is the one that matters and works).
 - `.ENET`-interface Ethernet driver (`mac/enet.s`) and a test application (`mac/pinet.s`) are

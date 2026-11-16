@@ -382,8 +382,10 @@ d_control:
 	moveq	#controlErr,%d0
 	bra	iodone
 ctl_icon:
-	lea	icon(%pc),%a1
-	move.l	%a1,csParam(%a0)
+	move.l	%a2,-(%sp)		| a1 (the DCE) must survive for IODone
+	lea	icon(%pc),%a2
+	move.l	%a2,csParam(%a0)
+	move.l	(%sp)+,%a2
 	bra.s	ctl_ok
 ctl_info:
 	move.l	#0x00000401,csParam(%a0)	| drive type 1 (fixed? ) bit 10 external? keep simple
@@ -398,27 +400,27 @@ d_status:
 	cmp.w	#8,%d0			| drive status
 	bne.s	st_err
 	| return the 22-byte "DrvSts" block: track, writeProt, diskInPlace, installed, sides, qLink..., we copy flags+DrvQEl
-	movem.l	%a2/%d1,-(%sp)
+	movem.l	%a2/%a3/%d1,-(%sp)	| a1 (the DCE) must survive for IODone
 	move.l	dCtlStorage(%a1),%a2
 	move.w	ioVRefNum(%a0),%d1
 	sub.w	G_FIRSTDRV(%a2),%d1
 	mulu	#DQE_SIZE,%d1
 	lea	G_DQE(%a2,%d1.l),%a2
-	lea	csParam(%a0),%a1
-	move.w	#0,(%a1)+		| track
-	move.b	#0,(%a1)+		| writeProt (0x80 = locked)
-	move.b	#8,(%a1)+		| diskInPlace: 8 = nonejectable
-	move.b	#1,(%a1)+		| installed
-	move.b	#0,(%a1)+		| sides
-	move.l	4(%a2),(%a1)+		| qLink
-	move.w	8(%a2),(%a1)+		| qType
-	move.w	10(%a2),(%a1)+		| dQDrive
-	move.w	12(%a2),(%a1)+		| dQRefNum
-	move.w	14(%a2),(%a1)+		| dQFSID
-	move.b	#0,(%a1)+		| twoSideFmt
-	move.b	#0,(%a1)+		| needsFlush
-	move.w	#0,(%a1)+		| diskErrs
-	movem.l	(%sp)+,%a2/%d1
+	lea	csParam(%a0),%a3
+	move.w	#0,(%a3)+		| track
+	move.b	(%a2),(%a3)+		| writeProt (0x80 = locked)
+	move.b	#8,(%a3)+		| diskInPlace: 8 = nonejectable
+	move.b	#1,(%a3)+		| installed
+	move.b	#0,(%a3)+		| sides
+	move.l	4(%a2),(%a3)+		| qLink
+	move.w	8(%a2),(%a3)+		| qType
+	move.w	10(%a2),(%a3)+		| dQDrive
+	move.w	12(%a2),(%a3)+		| dQRefNum
+	move.w	14(%a2),(%a3)+		| dQFSID
+	move.b	#0,(%a3)+		| twoSideFmt
+	move.b	#0,(%a3)+		| needsFlush
+	move.w	#0,(%a3)+		| diskErrs
+	movem.l	(%sp)+,%a2/%a3/%d1
 	moveq	#noErr,%d0
 	bra	iodone
 st_err:
