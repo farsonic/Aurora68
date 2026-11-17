@@ -1,4 +1,4 @@
-Aurora68 0.3.1 - the first build for a Macintosh SE, with the first hardware fixes
+Aurora68 0.4 - a Macintosh SE build that also boots System 7 on a Pi alone
 ==================================================
 
 What this is
@@ -127,6 +127,28 @@ log. Nothing at all on HDMI, not even the rainbow square: the firmware did not s
 the green ACT LED (a repeating pattern of flashes is the firmware's error code: 4 means
 start.elf not found, 7 kernel not found) and at the card (ejected properly, FAT32, files in the
 root).
+
+Booting System 7 on the bench, no SE at all (new in 0.4)
+--------------------------------------------------------
+The kernel can stand in for the whole logic board: with "mac.board=solo" it answers the VIA,
+the clock chip, the ADB transceiver (no keyboard or mouse yet), the SCC, the floppy controller
+(no drive) and a SCSI controller with a disk for each disk image in the container. So:
+  1. Get a Macintosh hard disk image that boots System 7 on a IIci: an Apple-partitioned image
+     with a driver partition and an HFS volume (what HD SC Setup or a Mac emulator makes). The
+     file name must end in .img, .hda, .image or .hfv. Up to a couple of hundred megabytes on a
+     1 GB Pi (it is loaded into memory with the rest of the container).
+  2. Add it to the container: python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom
+     aurora68.declrom aurora68-512x342.declrom MyMac.img  (plus the WiFi files if you want the
+     WiFi; the order does not matter). Copy aurora68.cpio to the card.
+  3. cmdline.txt, one line: "enable_cache debug mac.board=solo bt=off" (no mac.console=hdmi:
+     the log shows until the Mac's video driver takes the screen, then the Mac does). Add the
+     wifi.ssid= / wifi.psk= / wifi.country= words if you like, and mac.screen=WxH for a bigger
+     screen with the matching declaration ROM in the container.
+  4. Boot. The ROM's memory test takes a few seconds, the happy Mac appears, then "Welcome to
+     Macintosh" and the Finder, about a minute on a Pi 3.
+What the Mac writes to the image stays until the power goes (the card is not written back yet);
+the clock starts on 17 November 2026 and parameter RAM changes do not survive either. With
+mac.board=se (the SE board) the same image appears as a PiDisk volume instead.
 
 A Pi Zero W (the original, 2017) cannot run this: its processor is 32-bit only. The Zero 2 W can.
 

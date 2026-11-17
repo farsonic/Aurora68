@@ -25,7 +25,10 @@
 #include "psmac.h"
 #include "psmb.h"
 
-int psmac_board_se;                         /* mac.board=se */
+int psmac_board_se;                         /* mac.board=se (also set by mac.board=solo, psmac_board_solo.c) */
+extern int psmac_board_solo;
+int psmac_solo_access(uint32_t addr, int size, int write, uint32_t data, uint32_t *val);
+unsigned psmac_solo_ipl(void); void psmac_solo_service(void); void psmac_solo_options(const char *); void psmac_solo_report(void);
 static uint32_t se_ram_mb = 4;              /* mac.seram=N: the SE's own memory, 1, 2, 2.5 or 4 MB (its screen sits at the top) */
 static uint32_t se_ram_size(void) { return se_ram_mb << 20; }
 uint32_t psmac_se_fb_base(void) { return se_ram_size() - 0x5900; }   /* the main screen buffer: 21,888 bytes, 64 per row */
@@ -62,11 +65,13 @@ static void trace(const char *what, int write, uint32_t addr, uint32_t se, int s
 extern uint32_t psmac_slot_irq_state(void);
 static int slot_line(void) { return (psmac_slot_irq_state() >> 16) & 1; }
 
+int psmac_solo_scsi_irq(void);
 static void rbv_recalc(void)
 {
     uint8_t ifr = rbv_ifr & 0x7f;
     if (slot_line() && (rbv_regs[0x12] & 0x01)) ifr |= 0x02;          /* any slot interrupt, gated by the slot enable register */
     else ifr &= ~0x02;
+    if (psmac_board_solo) { if (psmac_solo_scsi_irq()) ifr |= 0x08; else ifr &= ~0x08; }   /* the 5380's interrupt, level-sensitive */
     rbv_ifr = ifr;
 }
 /* the level-2 interrupt the RBV would raise: any enabled flag */
@@ -159,6 +164,7 @@ int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t 
         if (!write) { *val = 0xffffffffu; local_reads++; } else local_writes++;
         return 1;
     }
+    if (psmac_board_solo && psmac_solo_access(addr, size, write, data, val)) return 1;   /* the four chips, modelled */
     uint32_t off = addr & 0x000fffffu;          /* the IIci decoder ignores A20-A23 in the I/O block */
     uint32_t r = 0;
     if (off < 0x2000 || (off >= 0x40000 && off < 0x42000)) {
@@ -226,6 +232,7 @@ int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t 
    IIci's level 2, the RBV, is this file's own. */
 unsigned psmac_se_ipl(unsigned raw)
 {
+    if (psmac_board_solo) return psmac_solo_ipl();
     unsigned ipl = 0;
     if (raw & 2) ipl = 4;
     else if (raw & 1) ipl = 1;
@@ -249,6 +256,7 @@ static uint32_t rows_sent, frames_marked;
 /* core 3: compare the card's frame with what the SE has and mark the rows that differ */
 void psmac_se_mark(const uint8_t *frame, uint32_t width, uint32_t height, uint32_t rowbytes, uint32_t depth)
 {
+    if (psmac_board_solo) return;
     if (!psmac_board_se || depth != 1 || width != 512 || height < SE_ROWS || rowbytes != SE_ROWBYTES) return;
     for (uint32_t y = 0; y < SE_ROWS; y++) {
         const uint64_t *a = (const uint64_t *)(frame + y * SE_ROWBYTES), *b = (const uint64_t *)(shadow + y * SE_ROWBYTES);
@@ -262,6 +270,7 @@ void psmac_se_mark(const uint8_t *frame, uint32_t width, uint32_t height, uint32
 /* the service core: a few rows per call, so the Mac's own accesses are never far behind */
 void psmac_se_service(void)
 {
+    if (psmac_board_solo) { psmac_solo_service(); return; }
     if (!psmac_board_se) return;
     for (int n = 0; n < 4; n++) {
         int y = -1;
@@ -282,7 +291,7 @@ void psmac_se_service(void)
    screen buffer must be. Then the SE's screen is cleared and the shadow forgotten. */
 void psmac_se_start(void)
 {
-    if (!psmac_board_se) return;
+    if (!psmac_board_se || psmac_board_solo) return;
     psmac_wire_read(0x400000u, 2);
     shadow_valid = 0;
     for (uint32_t w = 0; w < (SE_ROWS + 31) / 32; w++) dirty[w] = 0;
@@ -295,6 +304,7 @@ void psmac_se_options(const char *args)
     extern const char *find_token(const char *, const char *);
     const char *tok;
     if ((tok = find_token(args, "mac.board="))) { tok += 10; if (tok[0] == 's' && tok[1] == 'e') psmac_board_se = 1; }
+    psmac_solo_options(args);
     if ((tok = find_token(args, "mac.setrace="))) {
         tok += 12; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); se_trace_left = n;
         if (*tok == ',') { tok++; for (int i = 0; i < 4 && *tok && *tok != ' '; i++, tok++) se_trace_dev[i] = (*tok >= 'a' && *tok <= 'z') ? *tok - 32 : *tok; }
@@ -304,6 +314,7 @@ void psmac_se_options(const char *args)
 
 void psmac_se_report(void)
 {
+    if (psmac_board_solo) { psmac_solo_report(); return; }
     if (!psmac_board_se) return;
     kprintf("[PSMAC:SE] rows sent %u, frames compared %u, local reads %u writes %u, RBV IFR %02x IER %02x SIER %02x\n",
             rows_sent, frames_marked, local_reads, local_writes, rbv_ifr, rbv_ier, rbv_regs[0x12]);

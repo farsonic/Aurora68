@@ -541,6 +541,34 @@ uintptr_t mmu_virt2phys(uintptr_t addr)
 
 struct MemoryBlock *sys_memory;
 
+/* PiStorm-SE: where the last memory block will end once mmu_init has taken the MMU pool, the JIT
+   caches and the VideoCore/CMA/unicam reservations from its top: the same arithmetic as below, with
+   nothing changed. start.c uses it before mmu_init to put a large initramfs just below the kernel's
+   final home (the kernel's own KERNEL_RSRVD_PAGES come off this value too). */
+uintptr_t mmu_predict_top(void)
+{
+    of_node_t *e = dt_find_node("/memory");
+    if (!e) return 0;
+    of_property_t *p = dt_find_property(e, "reg");
+    uint32_t *range = p->op_value;
+    int size_cells = dt_get_property_value_u32(e, "#size-cells", 1, TRUE);
+    int address_cells = dt_get_property_value_u32(e, "#address-cells", 1, TRUE);
+    int block_size = 4 * (size_cells + address_cells);
+    int block_count = p->op_length / block_size;
+    uintptr_t addr = 0, size = 0;
+    range += (block_count - 1) * (block_size / 4);
+    for (int i = 0; i < address_cells; i++) addr = (addr << 32) | BE32(range[i]);
+    for (int i = 0; i < size_cells; i++) size = (size << 32) | BE32(range[i + address_cells]);
+    of_node_t *em = dt_find_node("/emu68");
+    size -= MMU_POOL_SIZE * sizeof(struct mmu_page);
+    size -= (uintptr_t)dt_get_property_value_u32(em, "m68k-jit-size", 0, FALSE) << 20;
+    if (dt_find_property(em, "enable-ppc")) size -= (uintptr_t)dt_get_property_value_u32(em, "ppc-jit-size", 0, FALSE) << 20;
+    if ((p = dt_find_property(em, "vc4-mem"))) { uint32_t *reg = p->op_value; if (reg[1] != 0 && reg[0] == 0 && addr + size <= 0x40000000) size -= (reg[1] + 0x00200000); }
+    if ((p = dt_find_property(dt_find_node("/emu68/cma@0"), "reg"))) { uint32_t *reg = p->op_value; if (reg[1] != 0 && reg[0] == 0 && addr + size <= 0x40000000) { size -= (reg[1] + 0x1fffff) & ~0x1fffff; size -= 2 << 20; } }
+    if ((p = dt_find_property(em, "unicam-mem"))) { uint32_t *reg = p->op_value; if (reg[1] != 0 && reg[0] == 0 && addr + size <= 0x40000000) { size -= (reg[1] + 0x1fffff) & ~0x1fffff; size -= 2 << 20; } }
+    return addr + size;
+}
+
 void mmu_init()
 {
     /*

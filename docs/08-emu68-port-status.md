@@ -580,6 +580,40 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    WiFi is complete; what remains for the Macintosh is a driver for the slot 9 network board
    (the Amiga side has one, the Mac side has none yet).
 
+35. **The solo board: System 7 on a Pi with nothing behind it (17 November, 10:30-12:30).** With
+   the WiFi up and the PiStorm board still in the post, the user asked for a disk image on the
+   card that boots and brings up the second screen. That means the kernel has to be the logic
+   board: `mac.board=solo` (psmac_board_solo.c, 700 lines) models the four chips the SE layer
+   forwards to the real SE, in the IIci's address map the ROM uses: a 6522 (ports, both timers at
+   783.36 kHz, the shift register; the 60.15 Hz vertical blank on CA1 and the clock chip's
+   one-second tick on CA2), the clock/PRAM chip on port B bits 0-2 after MAME's macrtc.cpp (256
+   bytes of PRAM seeded from the testbed IIci's rtc file, `psmac_pram_default.h`), the ADB
+   transceiver state machine after macadb.cpp with no devices (every Talk ends the way an empty
+   bus does), a Z8530 register file, an IWM whose sense lines say "no drive", and an NCR 5380 as
+   the initiator sees it with a direct-access SCSI target per disk image (INQUIRY, READ/WRITE 6
+   and 10, READ CAPACITY, MODE SENSE pages 1/3/4/8 and Apple's $30, REQUEST SENSE). The RBV, ASC
+   and VDAC stay the SE layer's. Disk images (`*.img`, `*.hda`, `*.image`, `*.hfv`) come from the
+   container, in the copy start.c makes on the heap, and are written there, so changes last until
+   the power goes; the testbed takes host files (`mac.scsi0=` through semihosting without the
+   bridge, `mac.semihost=1`). `tools/run-solo.sh` runs it under QEMU alone, no MAME, with
+   screenshots through the QEMU monitor. Three things stood between the first boot and the Finder:
+   - The first run reached "Welcome to Macintosh" in 90 s and then took a second per disk block.
+     The ROM's SCSI Manager enables the RBV's flag bit 3 (the 5380's interrupt) and waits for the
+     level-2 interrupt at the end of every transfer, falling back to a timeout. The chip's IRQ
+     (set on a phase change during pseudo-DMA, on bus reset and on loss of BSY with monitor-BSY
+     on) now drives that flag, level-sensitive.
+   - With that fixed, the boot stopped in an extension at the same place every time, spinning on a
+     flag that an interrupt would clear: the LAP Manager opening LocalTalk on SCC channel B (the
+     solo report's SCC dump showed channel B in SDLC mode with NRZI and transmit interrupts
+     enabled: 6,703 register writes). The testbed's PRAM had AppleTalk active on the printer port
+     (SPConfig $01); the solo default has both ports async ($22, Basilisk II's default) and
+     AppleTalk off. A real SCC model with interrupts would lift this; nothing on the bench needs it.
+   - The plain System 7.1 image (`sys710.chd`) is not bootable at all (the ROM reads 152 blocks
+     and shows the blinking question mark); `sys710pi.image` is. Not a solo problem.
+   System 7.1 then boots from the image to the Finder on the second screen in about 100 s under
+   QEMU, with PiDisk, PiMach and the PiPing startup item running (`docs/img/solo-finder.png`).
+   No keyboard or mouse yet: the ADB bus is empty until the Pi has input devices to put on it.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

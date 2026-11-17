@@ -121,6 +121,10 @@ firmware/brcmfmac43455-sdio.bin ...` builds the initramfs the Pi firmware loads 
 ROM as initramfs, which is what the testbed does.
 
 ## Running the testbed
+Two testbeds. The solo board needs no MAME: `tools/run-solo.sh 240 [options]` (QEMU with
+`mac.board=solo`, the disk image and declaration ROM through semihosting, `SHOT=20` for periodic
+screenshots in `$LOGDIR`, `CONTAINER=` to boot from a cpio); still one QEMU at a time (the
+monitor socket is shared). The full stack with MAME:
 ```
 ROM=rom/patched/MacIIci_psmac.rom HD=images/chd/sys710pi.chd tools/run-fullstack.sh 400 \
     mac.disk0=$PWD/images/pidisk/pidisk.img mac.declrom=$PWD/mac/build/psmac.declrom \

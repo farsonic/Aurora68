@@ -118,7 +118,9 @@ One line, options separated by spaces, no comments:
 | `net.oui=off` | keep the Pi's own MAC addresses (default: Commodore's prefix, as Alice68) |
 | `mac.screen=1024x768` | the second screen's size in pixels (default 640x480; 512 to 1920 by 342 to 1200). Set `hdmi_mode` to match and use the declaration ROM of that size |
 | `mac.console=hdmi` | keep the kernel's log on the HDMI screen for the whole run (the same text as the serial line); without it the log shows until the Macintosh's video driver takes the screen |
-| `mac.board=se` | the logic board the Pi sits in: `se` (the Macintosh SE: its chips behind the IIci ROM's addresses, docs/12) or the default, the testbed's IIci |
+| `mac.board=se` | the logic board the Pi sits in: `se` (the Macintosh SE: its chips behind the IIci ROM's addresses, docs/12), `solo` (no Macintosh: the kernel answers every chip and boots a disk image from the container, docs/12) or the default, the testbed's IIci |
+| `mac.scsi0=PATH` | testbed only: a host disk image for the solo board's SCSI ID 0 (`mac.scsi1=` ... `mac.scsi6=`), with `mac.semihost=1` for host file access without the MAME bridge. On hardware the images come from the container |
+| `mac.solotrace=N` | the solo board's first N SCSI commands and ADB commands in the log |
 | `mac.bridge=gpio` | how the motherboard is reached: `gpio` (the classic PiStorm's CPLD, the default on hardware), `semihost` or `uart` (the testbed's bridge to MAME) |
 | `mac.vcswap=1` | swap red and blue on the second screen, should a board's firmware disagree with the kernel about the pixel byte order (the firmware is asked; this overrides its answer) |
 
@@ -157,6 +159,9 @@ screen, booted from the SE's SCSI disk, with PiDisk mounted beside it (docs/08 i
 The kernel: see `docs/08` ("What exists"). The Mac side: `make -C mac`. The whole stack:
 `tools/run-fullstack.sh SECONDS [bootargs...]` with `ROM=`, `HD=`, `LOGDIR=` in the environment;
 `docs/09` gives the complete workflow with a disk image, the declaration ROM and the network peer.
+The solo board alone, no MAME: `tools/run-solo.sh SECONDS [bootargs...]` (`HD=` a raw disk image,
+`SHOT=20` for a screenshot every 20 s, `CONTAINER=file.cpio` to boot the hardware's way); System
+7.1 reaches the Finder on the second screen in about 100 s.
 
 ## Licences
 The Emu68 fork is MPL-2.0 like Emu68 itself. The Alice68 service modules under `emu68/src/alice/`

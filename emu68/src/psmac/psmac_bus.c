@@ -126,8 +126,12 @@ static int use_semihost = 0;            /* mac.bridge=semihost */
    GPIO (psmac_gpio.c), the default, because that is what a Pi plugged into an SE has; "semihost" and
    "uart" are the testbed's two ways to MAME's bridge CPU (QEMU passes both on its command line). */
 static int use_gpio = 1;
+/* mac.board=solo (psmac_board_solo.c): no motherboard at all; the kernel answers every chip itself */
+static int transport_none = 0;
+static int sh_files = 0;                /* mac.semihost=1: host files through semihosting without the bridge (the solo testbed) */
 /* the board layer (psmac_board_se.c): mac.board=se puts the Macintosh SE's chips behind the IIci ROM's addresses */
-extern int psmac_board_se;
+extern int psmac_board_se, psmac_board_solo;
+void psmac_solo_reset(void); void psmac_solo_init(void); void psmac_image_add(const char *, uint8_t *, uint32_t);
 int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t *val, int posted);
 unsigned psmac_se_ipl(unsigned raw); void psmac_se_service(void); void psmac_se_start(void); void psmac_se_options(const char *); void psmac_se_report(void);
 int psmac_se_rbv_irq(void);
@@ -192,7 +196,7 @@ int     psmac_sh_read(int64_t fd, void *buf, uint64_t len) { return sh_read(fd, 
 int     psmac_sh_write(int64_t fd, const void *buf, uint64_t len) { return sh_write(fd, buf, len); }
 int64_t psmac_sh_seek(int64_t fd, uint64_t pos) { uint64_t p[2] = { shw((uint64_t)fd), shw(pos) }; return semihost(0x0A, p); }
 int64_t psmac_sh_flen(int64_t fd) { uint64_t p[1] = { shw((uint64_t)fd) }; return semihost(0x0C, p); }
-int     psmac_sh_available(void) { return use_semihost && !transport_dead; }
+int     psmac_sh_available(void) { return (use_semihost && !transport_dead) || sh_files; }
 uint32_t psmac_mac_ram_mb(void) { return ram_size >> 20; }
 /* value of "key=" in the boot arguments, copied into a static buffer (space-terminated); NULL if absent */
 const char *psmac_option(const char *key)
@@ -249,7 +253,7 @@ static void psmac_read_options(void)
         if (*tok == 'x') { tok++; while (*tok >= '0' && *tok <= '9') h = h * 10 + (*tok++ - '0'); }
         if (w >= 512 && w <= 1920 && h >= 342 && h <= 1200) { screen_w = w; screen_h = h; }
     }
-    if (psmac_board_se && !screen_w) { screen_w = 512; screen_h = 342; }   /* the SE's own screen is the card's frame on that board */
+    if (psmac_board_se && !psmac_board_solo && !screen_w) { screen_w = 512; screen_h = 342; }   /* the SE's own screen is the card's frame on that board */
     if ((tok = find_token(args, "mac.bustrace="))) { tok += 13; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); psmac_trace(n); bustrace_asked = 1; }
     if ((tok = find_token(args, "mac.console="))) { tok += 12; extern void psmac_console_option(int); psmac_console_option(strncmp(tok, "hdmi", 4) == 0); }
     if ((tok = find_token(args, "mac.dbfslow="))) { tok += 12; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); psmac_dbf_slow = n > 8 ? 8 : n; }
@@ -272,7 +276,12 @@ static void psmac_read_options(void)
         else if (strncmp(tok, "uart", 4) == 0) { use_semihost = 0; use_gpio = 0; }
         else if (strncmp(tok, "gpio", 4) == 0) { use_semihost = 0; use_gpio = 1; }
     }
-    kprintf("[PSMAC] options: ram=%d MiB bridge=%s (bootargs: %s)\n", globals.psmac_ram_mb, use_gpio ? "gpio (classic PiStorm)" : use_semihost ? "semihost" : "uart", args);
+    if ((tok = find_token(args, "mac.semihost="))) {   /* host files without the bridge (the solo testbed): find the parameter block's byte order first */
+        tok += 13;
+        if (*tok == '1') { sh_swap = 0; int64_t fd = sh_open(":tt", 0); if (fd < 0) { sh_swap = 1; fd = sh_open(":tt", 0); } sh_files = fd >= 0; kprintf("[PSMAC] semihosting files %s (byte-swap %d)\n", sh_files ? "on" : "FAILED", sh_swap); }
+    }
+    if (psmac_board_solo) { use_gpio = 0; use_semihost = 0; transport_none = 1; psmac_solo_init(); }
+    kprintf("[PSMAC] options: ram=%d MiB bridge=%s (bootargs: %s)\n", globals.psmac_ram_mb, transport_none ? "none (solo)" : use_gpio ? "gpio (classic PiStorm)" : use_semihost ? "semihost" : "uart", args);
 }
 
 /* One bridge transaction. Must only run on the transport owner. */
@@ -308,6 +317,7 @@ static void gpio_xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, ui
 
 static void bridge_xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, uint32_t data, struct psmac_reply *r)
 {
+    if (transport_none) { if (op == PSMAC_OP_RESET_ACK) psmac_solo_reset(); if (r) { r->status = 0; r->ipl = 0; r->flags = 0; r->data = 0xffffffff; } return; }
     if (use_gpio) { if (!transport_dead) gpio_xfer(op, size, flags, addr, data, r); else if (r) { r->status = 0; r->ipl = 0; r->flags = 0; r->data = 0xffffffff; } return; }
     if (!transport_up) { if (use_semihost) { if (!semihost_init()) transport_dead = 1; } else uart_init(); }
     if (transport_dead) { if (r) { r->status = 0; r->ipl = 0; r->flags = 0; r->data = 0xffffffff; } return; }
@@ -416,11 +426,12 @@ void psmac_check_pc(uint32_t pc)
 void psmac_service_core(void)
 {
     psmac_read_options();
-    if (use_gpio) { psmac_gpio_init(); transport_up = 1; }
+    if (transport_none) transport_up = 1;
+    else if (use_gpio) { psmac_gpio_init(); transport_up = 1; }
     else if (!use_semihost) uart_init(); else { if (!semihost_init()) transport_dead = 1; }
     service_running = 1;
     if (use_gpio && !bustrace_asked) psmac_trace(0);        /* the first 400 bus cycles are the testbed's diagnostic; on a bench they bury the log (mac.bustrace=N asks for them) */
-    kprintf("[PSMAC] service core running (%s transport owner, IPL poll %s)\n", use_gpio ? "GPIO" : "bridge", use_gpio ? "20 kHz" : "1 kHz");
+    kprintf("[PSMAC] service core running (%s transport owner, IPL poll %s)\n", transport_none ? "no" : use_gpio ? "GPIO" : "bridge", transport_none ? "solo" : use_gpio ? "20 kHz" : "1 kHz");
     psmac_se_start();
     /* a status register read on the GPIO costs a microsecond, a bridge poll a round trip: poll accordingly */
     uint64_t period = cnt_frq() / (use_gpio ? 20000 : 1000), next_poll = cnt_now() + period;
@@ -430,7 +441,7 @@ void psmac_service_core(void)
     for (;;) {
         if (cnt_now() > next_hb) {
             svc_phase = 3;
-            kprintf("[PSMAC] heartbeat: %u bus xfers (+%u, %u berr), last %08x, ipl %d%s | via %u scc %u scsi %u asc %u swim %u rbv %u fb %u other %u | PC %08x SR %04x\n", xfer_count, xfer_count - hb_last, bus_errors, last_addr, last_ipl, transport_dead ? " TRANSPORT DEAD" : "",
+            kprintf("[PSMAC] heartbeat: %u bus xfers (+%u, %u berr), last %08x, ipl %d%s | via %u scc %u scsi %u asc %u swim %u rbv %u fb %u other %u | PC %08x SR %04x\n", xfer_count, xfer_count - hb_last, bus_errors, last_addr, last_ipl, transport_none ? " (solo)" : transport_dead ? " TRANSPORT DEAD" : "",
                 dev_cnt[0], dev_cnt[1], dev_cnt[2], dev_cnt[3], dev_cnt[4], dev_cnt[5], dev_cnt[6], dev_cnt[7],
                 __m68k_state ? BE32((uint32_t)(uintptr_t)__m68k_state->PC) : 0, __m68k_state ? BE16(__m68k_state->SR) : 0);
             for (int k = 0; k < 8; k++) dev_cnt[k] = 0;
@@ -489,7 +500,7 @@ void psmac_service_core(void)
             __atomic_store_n(&slot.state, SLOT_DONE, __ATOMIC_RELEASE);
             continue;
         }
-        if (!transport_dead && cnt_now() > next_poll) {
+        if (!transport_dead && !transport_none && cnt_now() > next_poll) {
             bridge_xfer(PSMAC_OP_POLL, 0, 0, 0, 0, NULL);
             next_poll = cnt_now() + period;
         }
@@ -748,6 +759,12 @@ static void walk_container(const uint8_t *img, uint32_t size, struct container_r
                 if (take) { r->declrom = img + data; r->declrom_len = fsize; r->declrom_sized = sized; }
                 kprintf("[PSMAC] container: declaration ROM %s, %u bytes%s\n", base, fsize, take ? " (taken)" : "");
             }
+            else if (ends_with(base, ".img") || ends_with(base, ".hda") || ends_with(base, ".image") || ends_with(base, ".hfv") || ends_with(base, ".scsi")) {
+                /* a disk image: the solo board's SCSI disk, or PiDisk's volume on the other boards; it
+                   lives in the initramfs copy start.c made on the heap, and is written there */
+                psmac_image_add(base, (uint8_t *)(img + data), fsize);
+                kprintf("[PSMAC] container: disk image %s, %u bytes (%u MB)\n", base, fsize, fsize >> 20);
+            }
             else { extern int alice_fw_preload(const char *, const uint8_t *, uint32_t); alice_fw_preload(base, img + data, fsize); }
         }
         off = (data + fsize + 3) & ~3u;
@@ -791,6 +808,7 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
     struct container_result cont; walk_container((const uint8_t *)rom, rom_sz, &cont);
     rom = (void *)cont.rom; rom_sz = cont.rom_len;
     kprintf("[PSMAC] Mac RAM %d MiB at Pi %p, ROM at Pi %p (%d bytes from initramfs)\n", ram_size >> 20, ram_phys, rom_phys, rom_sz);
+    { extern void psmac_solo_start(void); psmac_solo_start(); }      /* the solo board's disks, now that the container is read */
 
 
     /* ROM image */
@@ -827,7 +845,7 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
         if (cont.declrom && cont.declrom_len <= PSMB_DECLROM_SIZE) {
             memcpy(dr + PSMB_DECLROM_SIZE - cont.declrom_len, cont.declrom, cont.declrom_len);
             kprintf("[PSMAC] declaration ROM from the container: %u bytes at Mac 0x%08x\n", cont.declrom_len, PSMB_DECLROM_PHYS + PSMB_DECLROM_SIZE - cont.declrom_len);
-        } else if (path && use_semihost) {
+        } else if (path && (use_semihost || sh_files)) {
             int64_t fd = sh_open(path, 1);
             int64_t len = fd >= 0 ? psmac_sh_flen(fd) : -1;
             if (len > 0 && len <= (int64_t)PSMB_DECLROM_SIZE) {
@@ -893,7 +911,7 @@ unsigned int ps_read_16_int_nowbwait(unsigned int a) { return r16(a); }
 uint64_t ps_read_64_int(unsigned int a) { return r64(a); }
 void ps_write_64_int(unsigned int a, uint64_t d) { w64(a, d); }
 uint8_t pistorm_get_model(void) { return PISTORM_MODEL_32; }
-void ps_setup_protocol(void) { kprintf("[PSMAC] motherboard transport: %s\n", use_gpio ? "classic PiStorm CPLD over GPIO (mac.bridge=gpio)" : use_semihost ? "semihosting FIFOs -> MAME bridge" : "mini UART (QEMU -serial 1) -> MAME bridge"); }
+void ps_setup_protocol(void) { kprintf("[PSMAC] motherboard transport: %s\n", transport_none ? "none: the kernel is the logic board (mac.board=solo)" : use_gpio ? "classic PiStorm CPLD over GPIO (mac.bridge=gpio)" : use_semihost ? "semihosting FIFOs -> MAME bridge" : "mini UART (QEMU -serial 1) -> MAME bridge"); }
 void ps_reset_state_machine(void) {}
 void ps_pulse_reset(void) { struct psmac_reply r; xfer(PSMAC_OP_RESET_ACK, 0, 0, 0, 0, &r); }
 void ps_send_reset(void) { ps_pulse_reset(); }

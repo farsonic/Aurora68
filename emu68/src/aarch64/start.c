@@ -849,6 +849,7 @@ void boot(void *dtree)
     of_node_t *e = NULL;
     void *initramfs_loc = NULL;
     uintptr_t initramfs_size = 0;    
+    uintptr_t initramfs_hi_phys = 0, initramfs_hi_size = 0;   /* a large initramfs kept below the kernel's block at the top of RAM */
     boot_lock = 0;
 
     /* Get CTR_EL0 */
@@ -898,10 +899,25 @@ void boot(void *dtree)
             image_end = (void*)(intptr_t)BE32(*(uint32_t*)p->op_value);
 
             initramfs_size = (uintptr_t)image_end - (uintptr_t)image_start;
-            initramfs_loc = tlsf_malloc(tlsf, (initramfs_size + 3) & ~3);
+            if (initramfs_size <= (8u << 20))
+            {
+                initramfs_loc = tlsf_malloc(tlsf, (initramfs_size + 3) & ~3);
 
-            /* Align the length of image up to nearest 4 byte boundary */
-            DuffCopy(initramfs_loc, (void*)(0xffffff9000000000 + (uintptr_t)image_start), (initramfs_size + 3)/ 4);
+                /* Align the length of image up to nearest 4 byte boundary */
+                DuffCopy(initramfs_loc, (void*)(0xffffff9000000000 + (uintptr_t)image_start), (initramfs_size + 3)/ 4);
+            }
+            else
+            {
+                /* PiStorm-SE: a container with a Macintosh disk image inside is far bigger than the
+                   early pool (the first 100 MB one died silently in the copy above, 17 November 2026).
+                   It goes just below the kernel's final home at the top of RAM, and that memory is
+                   taken out of the free list once the memory blocks exist (below). */
+                uintptr_t top = mmu_predict_top();          /* mmu.c: the last block's end after its reservations */
+                initramfs_hi_size = (initramfs_size + 0x1fffff) & ~(uintptr_t)0x1fffff;
+                initramfs_hi_phys = top - (KERNEL_RSRVD_PAGES << 21) - initramfs_hi_size;
+                initramfs_loc = (void*)(0xffffff9000000000 + initramfs_hi_phys);
+                DuffCopy(initramfs_loc, (void*)(0xffffff9000000000 + (uintptr_t)image_start), (initramfs_size + 3)/ 4);
+            }
         }
     }
 
@@ -1064,6 +1080,14 @@ void boot(void *dtree)
         intptr_t kernel_old_loc = mmu_virt2phys((intptr_t)_boot) & 0x7fffe00000;
 
         sys_memory[block_top].mb_Size -= (KERNEL_RSRVD_PAGES << 21);
+        if (initramfs_hi_size)
+        {
+            uintptr_t end = sys_memory[block_top].mb_Base + sys_memory[block_top].mb_Size;
+            if (end != initramfs_hi_phys + initramfs_hi_size)
+                kprintf("[BOOT] WARNING: large initramfs placed for a block ending at %p, but it ends at %p\n", (void *)(initramfs_hi_phys + initramfs_hi_size), (void *)end);
+            if (end > initramfs_hi_phys) sys_memory[block_top].mb_Size = initramfs_hi_phys - sys_memory[block_top].mb_Base;
+            kprintf("[BOOT] large initramfs (%d MiB) kept at %p-%p, below the kernel\n", (int)(initramfs_size >> 20), (void *)initramfs_hi_phys, (void *)(initramfs_hi_phys + initramfs_hi_size - 1));
+        }
 
         range = p->op_value;
         top_of_ram = 0;
@@ -1388,7 +1412,7 @@ void boot(void *dtree)
                 }
             }
 
-            tlsf_free(tlsf, initramfs_loc);
+            if (!initramfs_hi_size) tlsf_free(tlsf, initramfs_loc);
 
             if (ptr) {
                 if (GetELFMachine() == 20) {

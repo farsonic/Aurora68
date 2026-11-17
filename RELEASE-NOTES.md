@@ -1,5 +1,19 @@
 # Aurora68 release notes
 
+## 0.4 — a Pi that boots System 7 on its own (17 November 2026, 12:30)
+
+- **The solo board** (`mac.board=solo`): no Macintosh behind the Pi at all. The kernel answers the
+  VIA with the clock/PRAM chip and the ADB transceiver behind it, the SCC, the IWM and an NCR
+  5380 with a SCSI disk for each disk image in the container, next to the RBV, ASC and VDAC it
+  already answered on the SE board. Put a System 7 disk image (`*.img`, `*.hda`, `*.image`) into
+  the container with make-container.py, set `mac.board=solo` in cmdline.txt, and the Mac boots
+  from it to the Finder on the HDMI screen. The image lives in RAM: what the Mac writes lasts
+  until the power goes (a 1 GB Pi takes images up to a couple of hundred megabytes). No keyboard
+  or mouse yet: the ADB bus is empty until the Pi has input devices to put on it. AppleTalk is
+  off in the kernel's PRAM (LocalTalk would wait for SCC interrupts the model does not raise).
+- On the other boards a disk image in the container becomes a PiDisk volume (RAM-backed).
+- The testbed grew `tools/run-solo.sh`: QEMU alone, no MAME, screenshots through the monitor.
+
 ## 0.3.1 — the first hardware fixes (17 November 2026, 10:00)
 
 The kernel from the first morning on a real Pi 3B v1.2, standalone with an HDMI monitor. The

@@ -91,6 +91,14 @@ static void blk_add_file(const char *path, int writable)
     kprintf("[PSMAC:MBOX] block%d: %s, %u blocks (%u MiB)%s\n", nbdev, path, b->blocks, b->blocks / 2048, writable ? "" : " read-only");
     nbdev++;
 }
+static void blk_add_ram(const char *name, uint8_t *data, uint32_t blocks)
+{
+    if (nbdev >= PSMB_MAX_BLKDEV) return;
+    struct blkdev *b = &bdev[nbdev];
+    b->fd = -1; b->blocks = blocks; b->writable = 1; b->ram = 1; b->rambase = data;
+    int k = 0; while (name[k] && k < 47) { b->name[k] = name[k]; k++; } b->name[k] = 0;
+    nbdev++;
+}
 static int blk_xfer(int write, struct blkdev *b, uint32_t lba, uint32_t count, uint32_t buf)
 {
     if ((uint64_t)lba + count > b->blocks) return PSMB_E_RANGE;
@@ -257,6 +265,10 @@ void psmac_mbox_init(uintptr_t window_phys, uintptr_t ramp, uint32_t rams)
     const char *d0 = psmac_option("mac.disk0"), *d1 = psmac_option("mac.disk1");
     if (d0) blk_add_file(d0, 1);
     if (d1) blk_add_file(d1, 1);
+    {   /* disk images from the container: PiDisk volumes here, the solo board's SCSI disks there */
+        extern int psmac_board_solo; extern int psmac_image_count(void); extern int psmac_image_get(int, const char **, uint8_t **, uint32_t *);
+        if (!psmac_board_solo) for (int i = 0; i < psmac_image_count(); i++) { const char *nm; uint8_t *dp; uint32_t bl; if (psmac_image_get(i, &nm, &dp, &bl)) blk_add_ram(nm, dp, bl); }
+    }
     blk_publish();
     net_init();
 
