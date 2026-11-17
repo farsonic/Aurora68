@@ -155,10 +155,14 @@ with the console lock held (docs/08 item 21 explains the one time that happened)
 
 ## Updating the dependencies
 - **Emu68 (upstream michalsc/Emu68).** The fork's base is upstream's 1.1 line (the merge of
-  `1_1_wip`, commit 61a61f7). The project's code sits almost entirely in files upstream does not
-  have; the islands in shared files are marked `#ifdef PSMAC`. To move to a newer upstream:
-  fetch it, merge it into `emu68-psmac` (the fork's history branch), resolve the few islands,
-  rebuild with the command above, then copy the tree into `emu68/` here. `docs/08` lists the
+  `1_1_wip`, upstream commit 61a61f7). The project's code sits almost entirely in files upstream
+  does not have; the islands in shared files are marked `#ifdef PSMAC`. The branch `emu68-psmac`
+  of this repository holds the fork's own commits on top of a snapshot of upstream at that
+  commit (its root commit is that snapshot, not upstream's history, which the development clone
+  never had). To move to a newer upstream: check out `emu68-psmac`, add upstream as a remote
+  and fetch it, reconnect the histories with `git replace --graft <root commit> 61a61f7`
+  (git then treats the snapshot as that upstream commit), `git merge upstream/master`, resolve
+  the few islands, rebuild with the command above, then copy the tree into `emu68/` on `main`. `docs/08` lists the
   upstream behaviours the fork depends on (the low-4-GiB identity map and its shadows, the
   semihosting path, the JIT's instruction cache model for addresses below 16 MiB).
 - **MAME.** Clone the new release tag, `git apply reference/mame-psmac.patch`, fix what moved
