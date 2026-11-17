@@ -463,6 +463,7 @@ void bt_pi_report(void)
         if (auto_pair) k = put_str(t, k, " | bt.pair on");
     }
     t[k] = 0; kprintf("%s\n", t);
+    if (phase == 4 && bh.nkeys) keys_log();             /* the bt.dev= words at every heartbeat: one photo whenever it suits */
 }
 void bt_pi_poll(void)
 {
