@@ -1,4 +1,4 @@
-Aurora68 0.3 - the first build for a Macintosh SE
+Aurora68 0.3.1 - the first build for a Macintosh SE, with the first hardware fixes
 ==================================================
 
 What this is

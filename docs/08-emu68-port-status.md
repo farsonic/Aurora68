@@ -573,6 +573,13 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    Alice68 WiFi module running on a Pi 3 for the first time. Nothing on the Mac side uses it yet;
    joining a network is `wifi.ssid= wifi.psk= wifi.country=` in cmdline.txt.
 
+34. **Joined a network (17 November, 09:40).** With `wifi.ssid= wifi.psk= wifi.country=AU` in
+   cmdline.txt the 3B scanned (8 networks), found the office network at -50 dBm on channel 1
+   (WPA2-PSK), derived the key from the password in 29 ms, authenticated and associated with
+   status 0, finished the WPA handshake and reported "connected". The radio side of the Pi 3
+   WiFi is complete; what remains for the Macintosh is a driver for the slot 9 network board
+   (the Amiga side has one, the Mac side has none yet).
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

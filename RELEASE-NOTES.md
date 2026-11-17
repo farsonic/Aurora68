@@ -1,5 +1,26 @@
 # Aurora68 release notes
 
+## 0.3.1 — the first hardware fixes (17 November 2026, 10:00)
+
+The kernel from the first morning on a real Pi 3B v1.2, standalone with an HDMI monitor. The
+WiFi joins a WPA2 network on the 3B; the rest of 0.3 is unchanged. Only `kernel8.img` differs.
+
+- **Black screen after the rainbow** (0.3): the VideoCore's memory map overlapped the peripheral
+  window the kernel keeps at 0x3F000000 on a Pi 3 with gpu_mem=64; clipped.
+- **Black screen a minute into the boot**: the VideoCore mailbox had no lock between the
+  display (CPU0, the 68k's RESET) and the WiFi (CPU1), and Emu68's receive loop matched replies
+  by channel only; one lock, replies matched by buffer address.
+- **The Pi 3B's WiFi chip did not answer**: the firmware boots from the SD card through the
+  same Arasan host the WiFi uses, and the card slot was still routed to it; the slot's pins are
+  detached first on a Pi 3. The host's pin pulls go through the BCM2837's registers now (the
+  BCM2711's do not exist there). WL_ON is selected by board type: the expander line on the 3B,
+  3B+, 3A+, 4 and CM4, GPIO 41 on the Zero W and Zero 2 W.
+- The heartbeat carries a `[WIFI]` line; the kernel's log draws each glyph completely (the
+  HDMI console smeared on the hardware); the GPIO transport's reset wait is bounded to two
+  seconds.
+- Known: the 68k ROM loops in decoder detection with "TRANSPORT DEAD" until a PiStorm board
+  and an SE are behind the Pi, as expected.
+
 ## 0.3 — the first build for the hardware (17 November 2026, 05:30)
 
 For a classic PiStorm (EPM240, stock firmware) in a Macintosh SE's 68000 socket with a Pi 3B,
