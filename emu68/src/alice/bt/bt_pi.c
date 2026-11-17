@@ -432,6 +432,25 @@ static void fr_log(const char *what)
 }
 
 /* ---- CPU1's turn ------------------------------------------------------------------- */
+/* one line for the kernel's heartbeat (psmac_bus.c): where Bluetooth stands, for a screen without scrollback */
+void bt_pi_report(void)
+{
+    static const char *const ph[] = { "not started", "waiting for firmware", "powering", "powering", "running", "?", "?", "restarting", "FAILED", "off" };
+    char t[200]; unsigned k = put_str(t, 0, "[BT]   ");
+    k = put_str(t, k, phase >= 0 && phase <= 9 ? ph[phase] : "?");
+    if (phase == 4) {
+        k = put_str(t, k, bh.state == BT_READY ? " ready" : bh.state == BT_FAILED ? " FAILED" : " starting");
+        k = put_str(t, k, ": "); for (unsigned i = 0; bh.status[i] && k < 150; i++) t[k++] = bh.status[i];
+        k = put_str(t, k, " | paired "); k = put_num(t, k, (uint32_t)bh.nkeys, 0);
+        k = put_str(t, k, " found "); k = put_num(t, k, (uint32_t)bh.nfound, 0);
+        if (bh.scanning) k = put_str(t, k, " scanning");
+        if (bh.pairing) k = put_str(t, k, " pairing");
+        if (bh.passkey_shown) { k = put_str(t, k, " passkey "); k = put_num(t, k, bh.passkey, 0); }
+        for (int i = 0; i < bh.nkeys; i++) if (bh.keys[i].flags & BTK_CONNECTED) { k = put_str(t, k, " | connected: "); for (unsigned j = 0; bh.keys[i].name[j] && k < 190; j++) t[k++] = bh.keys[i].name[j]; }
+        if (auto_pair) k = put_str(t, k, " | bt.pair on");
+    }
+    t[k] = 0; kprintf("%s\n", t);
+}
 void bt_pi_poll(void)
 {
     static const char *const stems[] = { "BCM4345C0", "BCM4345C5", "bcm4345c0", "BCM43430A1", "BCM4343A1", 0 };
