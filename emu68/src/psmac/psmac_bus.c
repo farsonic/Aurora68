@@ -131,6 +131,8 @@ int psmac_se_rbv_irq(void);
 void psmac_gpio_init(void); uint32_t psmac_gpio_read(uint32_t, int); void psmac_gpio_write(uint32_t, int, uint32_t);
 unsigned psmac_gpio_ipl(void); void psmac_gpio_pulse_reset(void); uint32_t psmac_gpio_timeouts(void); int psmac_gpio_reset_asserted(void);
 static uint32_t peek_addr, peek_len;
+static uint32_t pctrail_at;             /* mac.pctrail=N: dump the 68k PC ring at the Nth heartbeat (a loop that is not a stall) */
+static uint32_t pcwatch;                /* mac.pcwatch=HEX: dump the ring the first time the sampled PC lands in that 256-byte page */
 uint32_t psmac_dbf_slow = 1;            /* mac.dbfslow=N: device reads per turn of a self-looping dbf (M68k_LINE5.c) */    /* mac.peek=: Mac memory dumped at each heartbeat (debugging) */
 static int64_t sh_req = -1, sh_rep = -1;
 static int64_t semihost(uint32_t op, void *param)
@@ -246,6 +248,8 @@ static void psmac_read_options(void)
     }
     if (psmac_board_se && !screen_w) { screen_w = 512; screen_h = 342; }   /* the SE's own screen is the card's frame on that board */
     if ((tok = find_token(args, "mac.dbfslow="))) { tok += 12; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); psmac_dbf_slow = n > 8 ? 8 : n; }
+    if ((tok = find_token(args, "mac.pcwatch="))) { tok += 12; uint32_t a = 0; while (1) { char c = *tok; uint32_t d; if (c >= '0' && c <= '9') d = c - '0'; else if (c >= 'a' && c <= 'f') d = c - 'a' + 10; else if (c >= 'A' && c <= 'F') d = c - 'A' + 10; else if (c == 'x' || c == 'X') { tok++; continue; } else break; a = a * 16 + d; tok++; } pcwatch = a; }
+    if ((tok = find_token(args, "mac.pctrail="))) { tok += 12; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); pctrail_at = n; }
     if ((tok = find_token(args, "mac.peek="))) {        /* mac.peek=HEXADDR,LEN: dump Mac memory at each heartbeat (debugging) */
         tok += 9; uint32_t a = 0, n = 0;
         while (1) { char c = *tok; uint32_t d; if (c >= '0' && c <= '9') d = c - '0'; else if (c >= 'a' && c <= 'f') d = c - 'a' + 10; else if (c >= 'A' && c <= 'F') d = c - 'A' + 10; else if (c == 'x' || c == 'X') { tok++; continue; } else break; a = a * 16 + d; tok++; }
@@ -446,12 +450,17 @@ void psmac_service_core(void)
                 kprintf("\n");
             }
             if (xfer_count == hb_last && !stall_dumped) { stall_dumped = 1; pcring_dump(); }
+            { static uint32_t hb_n; if (++hb_n == pctrail_at) pcring_dump(); }
             psmac_mbox_heartbeat();
             hb_last = xfer_count; next_hb = cnt_now() + hb_period;
         }
         if (__m68k_state) {
             uint32_t pc = BE32((uint32_t)(uintptr_t)__m68k_state->PC);
-            if (pc != pc_last) { pc_last = pc; pcring[pcring_n++ % PCRING] = pc; }
+            if (pc != pc_last) {
+                pc_last = pc; pcring[pcring_n++ % PCRING] = pc;
+                static int watched;
+                if (pcwatch && !watched && (pc & ~0xffu) == (pcwatch & ~0xffu)) { watched = 1; kprintf("[PSMAC] PC reached %08x (mac.pcwatch): trail follows\n", pc); pcring_dump(); }
+            }
         }
         if (psmac_exc_flag && !exc_dumped) {
             exc_dumped = 1;
@@ -601,18 +610,20 @@ int psmac_bus_write(uint64_t value, uint64_t value2, int size, uint64_t far)
         }
         return 1;
     }
-    if (far < PSMAC_FB_SIZE && !psmac_board_se) {
+    if (far < PSMAC_FB_SIZE) {
         /* write-through frame buffer: local copy + mirror to the motherboard (the IIci's RBV scans
-           bank A; the SE's screen is fed by the board layer instead, so no mirror there) */
+           bank A). On the SE board the local copy only: its screen is fed by the board layer. The
+           first SE boots lost these writes altogether and failed the ROM's RAM test (fs176). */
         uint8_t *p = (uint8_t *)(KERNEL_ALIAS + ram_phys + far);
+        int m = !psmac_board_se;
         switch (size) {
-            case 1: *p = value; psmac_io_write(far, 1, value & 0xff, 1); break;
-            case 2: *(uint16_t *)p = value; psmac_io_write(far, 2, value & 0xffff, 1); break;
-            case 4: *(uint32_t *)p = value; psmac_io_write(far, 4, value, 1); break;
-            case 8: *(uint64_t *)p = value; psmac_io_write(far, 4, value >> 32, 1); psmac_io_write(far + 4, 4, value, 1); break;
+            case 1: *p = value; if (m) psmac_io_write(far, 1, value & 0xff, 1); break;
+            case 2: *(uint16_t *)p = value; if (m) psmac_io_write(far, 2, value & 0xffff, 1); break;
+            case 4: *(uint32_t *)p = value; if (m) psmac_io_write(far, 4, value, 1); break;
+            case 8: *(uint64_t *)p = value; if (m) { psmac_io_write(far, 4, value >> 32, 1); psmac_io_write(far + 4, 4, value, 1); } break;
             case 16: *(uint64_t *)p = value; *(uint64_t *)(p + 8) = value2;
-                     psmac_io_write(far, 4, value >> 32, 1); psmac_io_write(far + 4, 4, value, 1);
-                     psmac_io_write(far + 8, 4, value2 >> 32, 1); psmac_io_write(far + 12, 4, value2, 1); break;
+                     if (m) { psmac_io_write(far, 4, value >> 32, 1); psmac_io_write(far + 4, 4, value, 1);
+                              psmac_io_write(far + 8, 4, value2 >> 32, 1); psmac_io_write(far + 12, 4, value2, 1); } break;
             default: return 0;
         }
         return 1;

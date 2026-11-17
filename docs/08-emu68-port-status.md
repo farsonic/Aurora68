@@ -442,7 +442,21 @@ System 6 does not touch TimeDBRA that way and boots with either ROM.
      here and $40003 on the IIci. The flags come from the machine's identity, and the Mac II
      family reads that from VIA1 port A: bits 6, 2, 1, 0 are a box code, $C7 on a IIci. An
      SE's port A reads $81. The board layer now answers ORA reads with the IIci's identity bits
-     and the SE's own bits 7, 5, 4, 3 (`via_read_fix`).
+     and the SE's own bits 7, 5, 4, 3 (`via_read_fix`); port B's bit 6, an input tied high on
+     the IIci and the video beam on the SE, is read as high too.
+   - With the identity right the first 400 bus cycles match the IIci's to the byte, yet the
+     boot still ended in the ROM's error reporter (fs174: the "ERROR:" strings at $408442C6,
+     the SCC set up as a terminal, bit 17 of D7 set at $40842EA0 by that set-up and nothing
+     else). The registers at the time pointed at the ASC, whose 2 KB of wave RAM the kernel's
+     stand-in did not keep: writes went nowhere, reads came back zero, and the test that writes
+     and reads it failed. The stand-in now has the RAM (fs175), which did no harm and did not
+     help: the trail into the error reporter (`mac.pcwatch=`, a new option that dumps the PC
+     ring the first time the sampled PC enters a page) showed the chime itself was the way in.
+     The order is ROM checksum (test 1, $40844690), the startup chime, then the RAM test
+     ($408446BC); the chime had been read as the death chime because it took 140 s against the
+     SE where the IIci took 50. The RAM test failed at once because the board-layer change had
+     dropped not only the mirror of the first 320 KiB to the motherboard but the local write
+     with it: every store below $50000 vanished. Local write kept, mirror dropped (fs178).
 *(17 November, 03:30: the hardware is now known, a classic PiStorm with a Pi 3 in a socketed SE,
 WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.)*
 1. MacTCP under System 6 (the same files; untested there), then a real client (Fetch, NCSA

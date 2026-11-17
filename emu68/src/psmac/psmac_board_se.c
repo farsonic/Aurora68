@@ -88,8 +88,10 @@ static void rbv_write(uint32_t off, uint8_t data)
     default:   rbv_regs[reg] = data; break;
     }
 }
-/* the ASC: no sound chip on an SE. Version 0, both FIFOs always half empty so the ROM's chime
-   loop runs through, everything else remembered and handed back. */
+/* the ASC: no sound chip on an SE. Its 2 KB of wave RAM ($000-$7FF) is real memory here, because
+   the ROM's tests write it and read it back (the first SE boots failed exactly there, fs174, and
+   went to the serial-console error report); version 0; both FIFOs always half empty so the
+   ROM's chime loop runs through; the other registers remembered and handed back. */
 static uint32_t asc_read(uint32_t off)
 {
     off &= 0xfff;
@@ -97,7 +99,7 @@ static uint32_t asc_read(uint32_t off)
     if (off == 0x804) return 0x05;
     return asc_regs[off];
 }
-static void asc_write(uint32_t off, uint8_t data) { off &= 0xfff; if (off >= 0x800) asc_regs[off] = data; }
+static void asc_write(uint32_t off, uint8_t data) { asc_regs[off & 0xfff] = data; }
 
 /* ---- the VIA: the same chip, two bits apart --------------------------------------------------
    Port A on the IIci: 7 SCC wait/request, 6 (unused), 5 floppy head select, 4 overlay, 3 sync
@@ -127,6 +129,7 @@ static uint32_t via_data(uint32_t reg, uint32_t data)
 static uint32_t via_read_fix(uint32_t reg, uint32_t r)
 {
     if (reg == 1 || reg == 15) return (r & 0xb8) | 0x47;
+    if (reg == 0) return r | 0x40;                   /* PB6: an input tied high on the IIci; the SE's video beam / SCSI interrupt enable */
     return r;
 }
 
