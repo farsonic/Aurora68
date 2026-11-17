@@ -24,6 +24,7 @@
 #include <stddef.h>
 #include <stdarg.h>
 #include "support.h"
+#include "spinlock.h"
 #include "boards.h"
 #include "devicetree.h"
 #include "alice_net.h"
@@ -528,12 +529,14 @@ static int mbox_tag_(uint32_t tag, uint32_t a, uint32_t b, uint32_t *out)
        the request (every call failed with -4 until November 2026). This one is in the low
        page Emu68's own mailbox buffer (FBReq, support_rpi.c) uses, 2 KB past it. */
     if (!mbuf) mbuf = (uint32_t *)0xffffff9000001800ull;
+    extern spinlock_t vc_mbox_lock;                  /* support_rpi.c: one caller at a time, see mbox_recv there */
+    spinlock_acquire(&vc_mbox_lock);
     mbuf[0] = __builtin_bswap32(8 * 4); mbuf[1] = 0; mbuf[2] = __builtin_bswap32(tag);
     mbuf[3] = __builtin_bswap32(8); mbuf[4] = 0; mbuf[5] = __builtin_bswap32(a); mbuf[6] = __builtin_bswap32(b); mbuf[7] = 0;
     arm_flush_cache((uintptr_t)mbuf, 64);
     uint32_t addr = (uint32_t)mmu_virt2phys((uintptr_t)mbuf);
     uint64_t t = ticks(), hz = tick_hz();
-    while (mrd(MBOX_STATUS) & (1u << 31)) { if (ticks() - t > hz) return -2; an_yield(); }
+    while (mrd(MBOX_STATUS) & (1u << 31)) { if (ticks() - t > hz) { spinlock_release(&vc_mbox_lock); return -2; } an_yield(); }
     mwr(MBOX_WRITE, (addr & ~15u) | 8u);
     t = ticks();
     for (;;) {
@@ -541,9 +544,10 @@ static int mbox_tag_(uint32_t tag, uint32_t a, uint32_t b, uint32_t *out)
             uint32_t r = mrd(MBOX_READ);
             if ((r & 15u) == 8u && (r & ~15u) == (addr & ~15u)) break;
         }
-        if (ticks() - t > 2 * hz) return -3;
+        if (ticks() - t > 2 * hz) { spinlock_release(&vc_mbox_lock); return -3; }
         an_yield();
     }
+    spinlock_release(&vc_mbox_lock);
     arm_dcache_invalidate((uintptr_t)mbuf, 64);
     if (out) *out = __builtin_bswap32(mbuf[6]);
     mbox_w0 = __builtin_bswap32(mbuf[5]);
@@ -574,11 +578,13 @@ int alice_mbox2(uint32_t tag, uint32_t a, uint32_t b, uint32_t out[2])
     return e;
 }
 /* ---- the radio's power ----
-   Where WL_REG_ON is wired differs by board. The 3B+, 3A+, 4, 400 and CM4 have it on line 1
-   of the VideoCore's GPIO expander (mailbox SET_GPIO_STATE, GPIO 128+1). The 3B, the Zeros and
-   the CM3 have it on the SoC's own GPIO 41, and their chip also needs its 32.768 kHz sleep
-   clock, which the SoC's GPCLK2 drives on GPIO 43 (start.elf sets that clock up on most boards;
-   when it has not, it is set up here). The board type is bits 4-11 of the revision code. */
+   Where WL_REG_ON is wired differs by board. The 3B, 3B+, 3A+, 4, 400 and CM4 have it on line
+   1 of the VideoCore's GPIO expander (mailbox SET_GPIO_STATE, GPIO 128+1; the 3B's device tree
+   names the expander's lines BT_ON, WL_ON, ... and its GPIO 41 is PWM1_OUT, the audio). The
+   Zero W and Zero 2 W have WL_ON on the SoC's own GPIO 41 (BT_ON on 45 and 42). All of them
+   feed the chip's 32.768 kHz sleep clock from GPCLK2 on GPIO 43 (WIFI_CLK), which start.elf
+   sets up; it is checked and logged here, and set up only on the Zeros when it is not running.
+   The board type is bits 4-11 of the revision code. */
 #define GPIO_BASE   (ALICE_PERI + 0x200000u)
 #define CM_BASE     (ALICE_PERI + 0x101000u)
 static uint32_t board_rev;
@@ -591,7 +597,7 @@ static int board_type(void)
 static int wl_on_soc_gpio(void)
 {
     switch (board_type()) {
-    case 0x08: case 0x09: case 0x0a: case 0x0c: case 0x12:      /* 3B, Zero, CM3, Zero W, Zero 2 W */
+    case 0x09: case 0x0c: case 0x12:                            /* Zero, Zero W, Zero 2 W */
         return 1;
     default:
         return 0;
@@ -604,14 +610,14 @@ int alice_pi_is_2711(void)
     default: return 0;
     }
 }
-static void lpo_clock(void)
+static void lpo_clock(int fix)
 {
     /* GPIO 43 to ALT0 (GPCLK2), the clock from the 19.2 MHz oscillator divided by 585.9375 */
     uint32_t f = mrd(GPIO_BASE + 0x10);                         /* GPFSEL4: GPIO 40-49 */
     uint32_t ctl = mrd(CM_BASE + 0x80), div = mrd(CM_BASE + 0x84);
     int alt0 = ((f >> 9) & 7u) == 4u, on = (ctl & 0x10u) != 0;                   /* start.elf's own setting is kept, whatever its divider */
     wifi_log("sleep clock: GPIO 43 function %u, CM_GP2CTL %08x CM_GP2DIV %08x%s\n", (f >> 9) & 7u, ctl, div, alt0 && on ? " (already running)" : "");
-    if (alt0 && on) return;
+    if ((alt0 && on) || !fix) return;
     mwr(CM_BASE + 0x80, 0x5a000000u | (ctl & 0x0fu));           /* ENAB off, source kept */
     for (int i = 0; i < 100 && (mrd(CM_BASE + 0x80) & 0x80u); i++) wifi_udelay(10);  /* BUSY */
     mwr(CM_BASE + 0x84, 0x5a000000u | (585u << 12) | 3840u);    /* DIVI 585, DIVF 3840/4096 */
@@ -624,9 +630,10 @@ static void lpo_clock(void)
 }
 static void wl_on(int on)
 {
-    if (!wl_on_soc_gpio()) { mbox_try(0x00038041u, 128u + 1u, on ? 1u : 0u, 0); return; }   /* SET_GPIO_STATE, expander line 1 */
     static int said;
-    if (!said) { said = 1; wifi_log("board type %02x (revision %08x): WL_REG_ON on GPIO 41\n", board_type(), board_rev); lpo_clock(); }
+    int soc = wl_on_soc_gpio();
+    if (!said) { said = 1; wifi_log("board type %02x (revision %08x): WL_REG_ON on %s\n", board_type(), board_rev, soc ? "GPIO 41" : "the GPIO expander, line 1"); lpo_clock(soc); }
+    if (!soc) { mbox_try(0x00038041u, 128u + 1u, on ? 1u : 0u, 0); return; }   /* SET_GPIO_STATE, expander line 1 */
     uint32_t f = mrd(GPIO_BASE + 0x10);
     mwr(GPIO_BASE + 0x10, (f & ~(7u << 3)) | (1u << 3));        /* GPIO 41: output */
     mwr(GPIO_BASE + (on ? 0x20 : 0x2c), 1u << 9);               /* GPSET1 / GPCLR1 */
@@ -676,8 +683,8 @@ static const char *const state_word[] = { "off", "starting", "ready", "scanning"
 void alice_net_report(void)
 {
     static const char *const names[] = { "off", "starting", "idle", "scanning", "joining", "connected", "retry", "failed", "no firmware" };
+    if (!anb) { kprintf("[WIFI]   no board yet\n"); return; }
     volatile struct an_unit *u = U(0);
-    if (!u) { kprintf("[WIFI]   no board yet\n"); return; }
     unsigned st = u->state;
     kprintf("[WIFI]   %s: %s (chip %x rev %u, SD %u MHz)\n", st < 9 ? names[st] : "?", (const char *)u->msg, u->chip, u->chiprev, u->sdmhz);
 }

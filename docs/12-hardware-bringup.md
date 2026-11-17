@@ -67,12 +67,15 @@ be. What differs from the Pi 4 the Alice68 modules were written for:
 | Memory | 1 GB | 1 GB / 512 MB | the Macintosh gets its full 128 MB on all three |
 | Second screen | HDMI, VideoCore IV | same | as tested |
 
-One more row the table above hides: **the radio's power switch**. On the 3B+, 3A+, 4 and CM4,
-WL_REG_ON is line 1 of the VideoCore's GPIO expander, driven through the mailbox. On the 3B,
-Zero W, Zero 2 W and CM3 it is the SoC's own GPIO 41, and the chip also needs a 32.768 kHz sleep
-clock, which GPCLK2 supplies on GPIO 43. The kernel reads the board type from the revision code
-and takes the right path (`alice_net.c`, `wl_on()`); the pin pulls for the SD host differ between
-the BCM2837 and the BCM2711 too (`sdio.c`, `sdh_pins()`). The first 3B run found both.
+One more row the table above hides: **the radio's power switch**. On the 3B, 3B+, 3A+, 4 and
+CM4, WL_ON is line 1 of the VideoCore's GPIO expander, driven through the mailbox. On the Zero W
+and Zero 2 W it is the SoC's own GPIO 41 (the 3B's GPIO 41 is the audio PWM). The chip's
+32.768 kHz sleep clock comes from GPCLK2 on GPIO 43 on all of them, set up by start.elf. The
+kernel reads the board type from the revision code and takes the right path (`alice_net.c`,
+`wl_on()`). The pin pulls for the SD host differ between the BCM2837 (GPPUD/GPPUDCLK) and the
+BCM2711 (`sdio.c`, `sdh_pins()`): on the 3B the old code left DAT3 pulled down, which turns
+CMD0 into an SPI-mode entry and silences the SDIO card. The first 3B run found both, and a
+mailbox race between the display and the WiFi that blacked the screen (docs/08, items 30-31).
 
 So, for WiFi first: the Alice68 WiFi module over SDIO is expected to work on a 3B+/3A+ with the
 files already in the release notes, and on a 3B with the 43430 pair, which the kernel now looks

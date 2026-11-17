@@ -208,6 +208,17 @@ void vkprintf(const char * restrict format, va_list args)
 
 /*----------------------------------------------------------------------------*/
 
+/* The VideoCore mailbox has one reply FIFO for everyone: this file's calls (CPU0 and CPU2,
+   through FBReq), the Macintosh host layer's WiFi and Bluetooth modules on CPU1 (alice_net.c,
+   mbox_tag_) and, on the Amiga, the 68k's mailbox.resource. Without a lock, one caller's
+   receive loop took the other's answer, which only matched the channel: on the first Pi 3B
+   the 68k's RESET remade the VideoCore buffer while the WiFi asked for the board revision,
+   psmac_vc_setup read FBReq before the firmware had filled it, and the screen went black for
+   good (the firmware then scanned out a buffer nobody drew into). One lock held from send to
+   receive, and the reply matched by its buffer address as well as its channel. */
+spinlock_t vc_mbox_lock;
+static uint32_t mbox_sent;
+
 static uint32_t mbox_recv(uint32_t channel)
 {
 	volatile uint32_t *mbox_read = (uint32_t*)(ARM_PERIIOBASE + 0xB880);
@@ -227,8 +238,9 @@ static uint32_t mbox_recv(uint32_t channel)
 		response = LE32(*mbox_read);
 		dmb();
 	}
-	while ((response & MBOX_CHANMASK) != channel);
+	while ((response & MBOX_CHANMASK) != channel || (response & ~MBOX_CHANMASK) != (mbox_sent & ~MBOX_CHANMASK));
 
+	spinlock_release(&vc_mbox_lock);
 	return (response & ~MBOX_CHANMASK);
 }
 
@@ -242,6 +254,8 @@ static void mbox_send(uint32_t channel, uint32_t data)
 
 	data &= ~MBOX_CHANMASK;
 	data |= channel & MBOX_CHANMASK;
+	spinlock_acquire(&vc_mbox_lock);
+	mbox_sent = data;
 
 	do
 	{

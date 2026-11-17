@@ -527,15 +527,30 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
 
 30. **The WiFi chip did not answer on SDIO (17 November, 08:00).** On the same Pi 3B the
    kernel's own log read "SD host: spec 2", then "no SDIO card (CMD5)" and "the WiFi chip does
-   not answer on SDIO". A bare chip that ignores the very first SDIO command is not powered.
-   The Alice68 module switched the radio on through the VideoCore's GPIO expander (mailbox
-   SET_GPIO_STATE, line 1), which is where WL_REG_ON lives on the 3B+, 3A+, 4 and CM4. The 3B,
-   the Zeros and the CM3 wire WL_REG_ON to the SoC's own GPIO 41 and feed the chip's 32.768 kHz
-   sleep clock from GPCLK2 on GPIO 43. `wl_on()` now reads the board type (revision code bits
-   4-11, GET_BOARD_REVISION) and drives GPIO 41 on that family, checking that the sleep clock
-   runs (start.elf usually sets it up; the kernel does when it has not). The SD host's pin pulls
-   were also written to BCM2711 registers that do not exist on a BCM2837 (`sdh_pins()`, now
-   GPPUD/GPPUDCLK1 there). Still to be seen on the hardware.
+   not answer on SDIO". First guess, wrong: that the 3B has WL_REG_ON on SoC GPIO 41 like the
+   Zeros. Its device tree says otherwise: the 3B has the VideoCore GPIO expander (BT_ON line 0,
+   WL_ON line 1, like the 3B+), and its GPIO 41 is PWM1_OUT, the audio. Only the Zero W and
+   Zero 2 W drive WL_ON from GPIO 41; `wl_on()` now picks by board type (revision code bits 4-11)
+   and logs which. What was wrong on the 3B is the SD host's pin pulls: `sdh_pins()` wrote the
+   BCM2711 pull registers (0xec), which do not exist on a BCM2837, so GPIO 37-39 (DAT1-3) kept
+   their reset pull-down. DAT3 is the card's SPI select during CMD0: a GO_IDLE with DAT3 low
+   puts an SDIO card into SPI mode, after which the SD-mode CMD5 gets no answer. The pulls now
+   go through GPPUD/GPPUDCLK1 on the older SoCs (CLK none, CMD and DAT up). The 32.768 kHz sleep
+   clock (GPCLK2 on GPIO 43, WIFI_CLK) is start.elf's job on every board; the kernel logs its
+   state and only programs it on a Zero when it is not running.
+
+31. **Black screen on the first try of the fix (17 November, 08:15).** The console stopped in the
+   middle of a heartbeat line and the screen went black for good, kernel still running. The
+   VideoCore mailbox has one reply FIFO for every caller: `support_rpi.c` (CPU0 and CPU2, via
+   FBReq) and the WiFi module on CPU1 (`mbox_tag_`). Emu68's receive loop matched only the
+   channel. The 68k's RESET at the top of the ROM remakes the VideoCore buffer
+   (`psmac_display_reinit`) at the same moment the WiFi start asks the firmware for the board
+   revision: CPU0 took the WiFi's reply, read FBReq before the firmware had filled it (base
+   64, pitch 0, so the old buffer was kept and cleared) and the firmware, answering the real
+   request a moment later, moved the scan-out to a fresh buffer nobody drew into. One spinlock
+   (`vc_mbox_lock`) is now held from send to receive by both users, and both match the reply by
+   its buffer address as well as the channel. The heartbeat's WiFi line also read the board
+   before it existed (`U(0)` from a null base): now "no board yet".
 
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
