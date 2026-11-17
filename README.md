@@ -63,15 +63,18 @@ the next piece of work, so on hardware this build boots the Pi and waits (see
    and wants these instead (the kernel picks by the chip's id):
    ```bash
    curl -fL --remote-name-all \
-     https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/brcm/brcmfmac43430-sdio.bin \
+     https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/cypress/cyfmac43430-sdio.bin \
      https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/brcm/brcmfmac43430-sdio.txt \
-     https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/brcm/brcmfmac43430-sdio.clm_blob \
+     https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/cypress/cyfmac43430-sdio.clm_blob \
      https://raw.githubusercontent.com/RPi-Distro/bluez-firmware/master/broadcom/BCM43430A1.hcd
    python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom aurora68-512x342.declrom aurora68.declrom \
-     brcmfmac43430-sdio.bin brcmfmac43430-sdio.txt brcmfmac43430-sdio.clm_blob BCM43430A1.hcd
+     cyfmac43430-sdio.bin brcmfmac43430-sdio.txt cyfmac43430-sdio.clm_blob BCM43430A1.hcd
    ```
-   (On Windows, `curl.exe` and the `curl` part as one line.) The kernel finds the files in the
-   container by name (`cyfmac43455-sdio-standard` and `brcmfmac43455-sdio` are both accepted). Apple's ROM and Broadcom's firmware are not included in the release.
+   (On Windows, `curl.exe` and the `curl` part as one line. The `brcm/` copies of the 43430 `.bin`
+   and `.clm_blob` in that repository are links, and a raw download of a link is a 31-byte path:
+   expect about 400 KB and 5 KB.) The kernel finds the files in the container by name
+   (`cyfmac43455-sdio-standard` and `brcmfmac43455-sdio` are both accepted, as are `cyfmac43430`
+   and `brcmfmac43430`). Apple's ROM and Broadcom's firmware are not included in the release.
 5. `cmdline.txt` as shipped reads `enable_cache debug mac.board=se bt=off`: `mac.board=se` is
    what tells the kernel it sits in a Macintosh SE rather than the testbed's IIci.
 6. Put the Pi in the PiStorm, the PiStorm in the SE's 68000 socket (pin 1 at the notch end), a

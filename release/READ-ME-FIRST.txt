@@ -61,9 +61,9 @@ Setting up the SD card (a Pi 3B in an SE)
 
      Pi 3B (BCM43438):
         curl -fL --remote-name-all \
-          https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/brcm/brcmfmac43430-sdio.bin \
+          https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/cypress/cyfmac43430-sdio.bin \
           https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/brcm/brcmfmac43430-sdio.txt \
-          https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/brcm/brcmfmac43430-sdio.clm_blob \
+          https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/cypress/cyfmac43430-sdio.clm_blob \
           https://raw.githubusercontent.com/RPi-Distro/bluez-firmware/master/broadcom/BCM43430A1.hcd
 
      Pi 3B+, 3A+ (BCM43455):
@@ -72,6 +72,10 @@ Setting up the SD card (a Pi 3B in an SE)
           https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/cypress/cyfmac43455-sdio.clm_blob \
           https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/brcm/brcmfmac43455-sdio.txt \
           https://raw.githubusercontent.com/RPi-Distro/bluez-firmware/master/broadcom/BCM4345C0.hcd
+
+     (In that repository brcm/brcmfmac43430-sdio.bin and .clm_blob are links to the cypress files;
+     the raw download of a link is a 31-byte path, not firmware. The sizes to expect: the .bin
+     about 400 KB, the .clm_blob about 5 KB, the .txt about 1 KB, the .hcd about 30 KB.)
 
      Pi Zero 2 W (BCM43436):
         curl -fL --remote-name-all \
@@ -86,7 +90,7 @@ Setting up the SD card (a Pi 3B in an SE)
 
         python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom \
           aurora68-512x342.declrom aurora68.declrom \
-          brcmfmac43430-sdio.bin brcmfmac43430-sdio.txt brcmfmac43430-sdio.clm_blob BCM43430A1.hcd
+          cyfmac43430-sdio.bin brcmfmac43430-sdio.txt cyfmac43430-sdio.clm_blob BCM43430A1.hcd
 
      (for a 3B+/3A+, the cyfmac43455 files instead). The stock ROM is patched on the way; the
      output says so. Copy aurora68.cpio to the card. The two declaration ROMs: the kernel takes
