@@ -173,7 +173,17 @@ void sdh_pins(int bcm2711)
         }
         g[0xec / 4] = swap32(p);
     } else {
-        /* BCM2835-37: GPPUD (0x94) then the pins clocked in through GPPUDCLK1 (0x9c, GPIO 32-63) */
+        /* BCM2835-37: the firmware booted from the SD card through this same Arasan host, routed
+           to the card slot on GPIO 48-53 (ALT3, SD1). Left like that, the host now drives the
+           card and the WiFi chip at once and the chip's answers are lost (the first Pi 3B:
+           no answer to CMD5). The slot pins go back to inputs; the kernel does not read the
+           card after boot (everything comes from the initramfs). */
+        uint32_t f4 = swap32(g[0x10 / 4]), f5 = swap32(g[0x14 / 4]);
+        uint32_t was = ((f4 >> 24) & 7u) | (((f4 >> 27) & 7u) << 3) | ((f5 & 0xfffu) << 6);
+        g[0x10 / 4] = swap32(f4 & ~(0x3fu << 24));                 /* GPIO 48, 49 */
+        g[0x14 / 4] = swap32(f5 & ~0xfffu);                        /* GPIO 50-53 */
+        wifi_log("SD card slot pins 48-53 detached from the host (functions were %x)\n", was);
+        /* GPPUD (0x94) then the pins clocked in through GPPUDCLK1 (0x9c, GPIO 32-63) */
         for (int pass = 0; pass < 2; pass++) {
             g[0x94 / 4] = swap32(pass ? 2u : 0u);               /* 0 none (CLK), 2 up (CMD, DAT) */
             wifi_udelay(5);
@@ -205,7 +215,13 @@ int sdh_init(struct sdhost *h, uint32_t base_hz)
     wifi_udelay(2000);
 
     uint32_t ocr = 0;
-    if (cmd(h, 5, 0, CMD_RSP_48, &ocr)) { wifi_log("no SDIO card (CMD5)\n"); return -2; }
+    int e = 0;
+    for (int i = 0; i < 3 && (e = cmd(h, 5, 0, CMD_RSP_48, &ocr)); i++) wifi_udelay(10000);
+    if (e) {
+        wifi_log("no SDIO card (CMD5): error %x, status %08x interrupt %08x control1 %08x\n",
+                 (uint32_t)-e, rd(h, R_STATUS), h->last_int, rd(h, R_CONTROL1));
+        return -2;
+    }
     uint32_t t0 = wifi_usecs();
     do {
         if (cmd(h, 5, ocr & 0x00ff8000u, CMD_RSP_48, &ocr)) return -3;

@@ -552,6 +552,18 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    its buffer address as well as the channel. The heartbeat's WiFi line also read the board
    before it existed (`U(0)` from a null base): now "no board yet".
 
+32. **Still no answer to CMD5 with the pulls right (17 November, 08:45).** The second 3B run
+   confirmed the rest of the path: board type 08, WL_ON through the expander, the sleep clock
+   running (CM_GP2CTL 0x291, CM_GP2DIV 0x249f00: the oscillator divided by 585.9375, 32.768 kHz),
+   the Arasan host at 200 MHz, spec 3, and no reply to CMD5. What the Pi 4 never had to think
+   about: on a Pi 3 the firmware boots from the SD card through this same Arasan host, routed to
+   the card slot on GPIO 48-53 (ALT3, "SD1"); Linux moves the card to the sdhost controller
+   (ALT0) before it gives the Arasan to the WiFi. Left as the firmware leaves it, selecting ALT3
+   on GPIO 34-39 as well puts the card and the WiFi chip on the same host at once. `sdh_pins()`
+   now returns GPIO 48-53 to inputs on the older SoCs first (the kernel does not read the card
+   after boot: everything comes from the initramfs), and the CMD5 failure line carries the
+   host's status, interrupt and control words for the next photo.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,
