@@ -153,7 +153,7 @@ int sdh_set_clock(struct sdhost *h, uint32_t hz)
     return 0;
 }
 
-void sdh_pins(void)
+void sdh_pins(int bcm2711)
 {
     volatile uint32_t *g = (volatile uint32_t *)SDH_GPIO_BASE;
     /* GPIO 34-39: ALT3 (SD1 CLK, CMD, DAT0-3) */
@@ -163,13 +163,26 @@ void sdh_pins(void)
         f = (f & ~(7u << s)) | (7u << s);
     }
     g[0x0c / 4] = swap32(f);
-    /* BCM2711 pulls (GPIO_PUP_PDN_CNTRL_REG2 at 0xec, GPIO 32-47): CLK none, CMD/DAT up */
-    uint32_t p = swap32(g[0xec / 4]);
-    for (int pin = 34; pin <= 39; pin++) {
-        int s = (pin - 32) * 2;
-        p = (p & ~(3u << s)) | ((pin == 34 ? 0u : 1u) << s);
+    /* pulls: CLK none, CMD/DAT up */
+    if (bcm2711) {
+        /* GPIO_PUP_PDN_CNTRL_REG2 at 0xec, GPIO 32-47 */
+        uint32_t p = swap32(g[0xec / 4]);
+        for (int pin = 34; pin <= 39; pin++) {
+            int s = (pin - 32) * 2;
+            p = (p & ~(3u << s)) | ((pin == 34 ? 0u : 1u) << s);
+        }
+        g[0xec / 4] = swap32(p);
+    } else {
+        /* BCM2835-37: GPPUD (0x94) then the pins clocked in through GPPUDCLK1 (0x9c, GPIO 32-63) */
+        for (int pass = 0; pass < 2; pass++) {
+            g[0x94 / 4] = swap32(pass ? 2u : 0u);               /* 0 none (CLK), 2 up (CMD, DAT) */
+            wifi_udelay(5);
+            g[0x9c / 4] = swap32(pass ? 0x3eu << 2 : 1u << 2);  /* GPIO 35-39, GPIO 34 */
+            wifi_udelay(5);
+            g[0x94 / 4] = 0;
+            g[0x9c / 4] = 0;
+        }
     }
-    g[0xec / 4] = swap32(p);
 }
 
 int sdh_init(struct sdhost *h, uint32_t base_hz)

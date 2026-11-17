@@ -573,7 +573,64 @@ int alice_mbox2(uint32_t tag, uint32_t a, uint32_t b, uint32_t out[2])
     out[0] = mbox_w0;
     return e;
 }
-static void wl_on(int on) { mbox_try(0x00038041u, 128u + 1u, on ? 1u : 0u, 0); }   /* SET_GPIO_STATE, expander line 1 */
+/* ---- the radio's power ----
+   Where WL_REG_ON is wired differs by board. The 3B+, 3A+, 4, 400 and CM4 have it on line 1
+   of the VideoCore's GPIO expander (mailbox SET_GPIO_STATE, GPIO 128+1). The 3B, the Zeros and
+   the CM3 have it on the SoC's own GPIO 41, and their chip also needs its 32.768 kHz sleep
+   clock, which the SoC's GPCLK2 drives on GPIO 43 (start.elf sets that clock up on most boards;
+   when it has not, it is set up here). The board type is bits 4-11 of the revision code. */
+#define GPIO_BASE   (ALICE_PERI + 0x200000u)
+#define CM_BASE     (ALICE_PERI + 0x101000u)
+static uint32_t board_rev;
+static int board_type(void)
+{
+    if (!board_rev && !mbox_try(0x00010002u, 0, 0, 0)) board_rev = mbox_w0;      /* GET_BOARD_REVISION */
+    if (!(board_rev & 0x800000u)) return -1;                                      /* old-style code: a Pi 1 */
+    return (int)((board_rev >> 4) & 0xffu);
+}
+static int wl_on_soc_gpio(void)
+{
+    switch (board_type()) {
+    case 0x08: case 0x09: case 0x0a: case 0x0c: case 0x12:      /* 3B, Zero, CM3, Zero W, Zero 2 W */
+        return 1;
+    default:
+        return 0;
+    }
+}
+int alice_pi_is_2711(void)
+{
+    switch (board_type()) {
+    case 0x11: case 0x13: case 0x14: return 1;                  /* 4B, 400, CM4 */
+    default: return 0;
+    }
+}
+static void lpo_clock(void)
+{
+    /* GPIO 43 to ALT0 (GPCLK2), the clock from the 19.2 MHz oscillator divided by 585.9375 */
+    uint32_t f = mrd(GPIO_BASE + 0x10);                         /* GPFSEL4: GPIO 40-49 */
+    uint32_t ctl = mrd(CM_BASE + 0x80), div = mrd(CM_BASE + 0x84);
+    int alt0 = ((f >> 9) & 7u) == 4u, on = (ctl & 0x10u) != 0;                   /* start.elf's own setting is kept, whatever its divider */
+    wifi_log("sleep clock: GPIO 43 function %u, CM_GP2CTL %08x CM_GP2DIV %08x%s\n", (f >> 9) & 7u, ctl, div, alt0 && on ? " (already running)" : "");
+    if (alt0 && on) return;
+    mwr(CM_BASE + 0x80, 0x5a000000u | (ctl & 0x0fu));           /* ENAB off, source kept */
+    for (int i = 0; i < 100 && (mrd(CM_BASE + 0x80) & 0x80u); i++) wifi_udelay(10);  /* BUSY */
+    mwr(CM_BASE + 0x84, 0x5a000000u | (585u << 12) | 3840u);    /* DIVI 585, DIVF 3840/4096 */
+    wifi_udelay(10);
+    mwr(CM_BASE + 0x80, 0x5a000000u | (1u << 9) | 1u);          /* MASH 1, oscillator */
+    wifi_udelay(10);
+    mwr(CM_BASE + 0x80, 0x5a000000u | (1u << 9) | 0x10u | 1u);  /* and enable */
+    mwr(GPIO_BASE + 0x10, (f & ~(7u << 9)) | (4u << 9));
+    wifi_udelay(1000);
+}
+static void wl_on(int on)
+{
+    if (!wl_on_soc_gpio()) { mbox_try(0x00038041u, 128u + 1u, on ? 1u : 0u, 0); return; }   /* SET_GPIO_STATE, expander line 1 */
+    static int said;
+    if (!said) { said = 1; wifi_log("board type %02x (revision %08x): WL_REG_ON on GPIO 41\n", board_type(), board_rev); lpo_clock(); }
+    uint32_t f = mrd(GPIO_BASE + 0x10);
+    mwr(GPIO_BASE + 0x10, (f & ~(7u << 3)) | (1u << 3));        /* GPIO 41: output */
+    mwr(GPIO_BASE + (on ? 0x20 : 0x2c), 1u << 9);               /* GPSET1 / GPCLR1 */
+}
 
 /* ==== the WiFi =================================================================== */
 #define BUFSZ   2048
@@ -959,7 +1016,7 @@ static int bringup(void)
     W.chip_up = 0;
     scan_reset();
     wifi_where("pins and power");
-    sdh_pins();
+    sdh_pins(alice_pi_is_2711());
     wl_on(0);
     wifi_udelay(20000);
     wl_on(1);

@@ -26,6 +26,7 @@ extern int wifi_debug;                         /* DEBUG= in the prefs: 0; 1 file
 #endif
 #define SDH_BASE        (ALICE_PERI + 0x300000u)
 #define SDH_GPIO_BASE   (ALICE_PERI + 0x200000u)
+int alice_pi_is_2711(void);                                 /* alice_net.c: a Pi 4 family SoC (the GPIO pull registers differ) */
 
 struct sdhost {
     volatile uint32_t *regs;
@@ -42,7 +43,7 @@ struct sdhost {
     uint32_t last_int;      /* interrupt status at the last error */
 };
 
-void sdh_pins(void);                                        /* GPIO 34-39 to the SD host (ALT3) */
+void sdh_pins(int bcm2711);                                        /* GPIO 34-39 to the SD host (ALT3) */
 int  sdh_init(struct sdhost *h, uint32_t base_hz);          /* host reset, card identification, select */
 int  sdh_set_clock(struct sdhost *h, uint32_t hz);
 int  sdh_bus4(struct sdhost *h, uint32_t max_hz);          /* 4-bit bus, high speed if the card can */
