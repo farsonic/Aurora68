@@ -84,6 +84,15 @@ mask bit that cost an hour: clear allInit in the mask and every program's InitGr
 loader again, whose width test only works for a screen at the origin, and the second screen
 walks off to the right by its own width each time.
 
+## Colour (17 November, 01:30)
+PiColor (`mac/picolor.s`) opens a colour window on the Pi's screen and paints twelve hues at full
+and half strength, the primaries and a sixteen-step grey ramp with RGBForeColor and PaintRect.
+Color QuickDraw matches each colour to the card's 8-bit table, the driver hands the table to the
+Pi, the service core shows it: `docs/img/system71-two-screens.png` is the SE's screen and the Pi's
+side by side, the Finder on the left and PiColor's window on the right, 256 colours on a machine
+that was built with 512 by 342 black-and-white pixels. (The first run came out transposed:
+SetRect takes left, top, right, bottom, not a Rect's top, left, bottom, right.)
+
 ## Where it stood an hour earlier (17 November, 00:30)
 PiScreens (`mac/piscreens.s`, `docs/img/system71-piscreens.png`) lists QuickDraw's GDevices: the
 SE's own screen, active and main, and ours: 640 by 480, 1 bit, base $F9980000, driver -52, flags

@@ -8,7 +8,7 @@ OBJCOPY = m68k-linux-gnu-objcopy
 PY      = python3
 B       = build
 
-all: $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom
+all: $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom
 
 $(B)/%.o: %.s
 	@mkdir -p $(B)
@@ -45,6 +45,9 @@ $(B)/PiStatus.bin: $(B)/pistatus.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc
 $(B)/PiScreens.bin: $(B)/piscreens.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
 	$(PY) ../tools/mac/mkapp.py --code $(B)/piscreens.bin.raw --name PiScreens --creator PISC -o $@
 
+$(B)/PiColor.bin: $(B)/picolor.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
+	$(PY) ../tools/mac/mkapp.py --code $(B)/picolor.bin.raw --name PiColor --creator PICO -o $@
+
 $(B)/PiPing.bin: $(B)/piping.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
 	$(PY) ../tools/mac/mkapp.py --code $(B)/piping.bin.raw --name PiPing --creator PIPG -o $@
 
@@ -70,7 +73,7 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 disasm: $(B)/pidisk.o
 	m68k-linux-gnu-objdump -d $(B)/pidisk.o | head -200
 
-install: $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/psmac.declrom
+install: $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/psmac.declrom
 	$(PY) ../tools/mac/hfsput.py $(IMG) $(B)/PiDisk.bin "System Folder" $(PART)
 	$(PY) ../tools/mac/hfsput.py $(IMG) $(B)/PiMach.bin "System Folder" $(PART)
 

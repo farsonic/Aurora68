@@ -1,33 +1,9 @@
-From 49f89742900b2928514ec5afec196bdae7b396b7 Mon Sep 17 00:00:00 2001
-From: Claude <noreply@anthropic.com>
-Date: Mon, 16 Nov 2026 09:41:08 +0000
-Subject: [PATCH] maciici_ps: IIci motherboard with a bridged CPU for the
- PiStorm-SE Emu68 testbed
-
-bridge68k_device serves bus cycles for an external CPU (Emu68 under QEMU) over a socket or a
-FIFO pair: 12-byte requests, 8-byte replies with status/IPL/flags. Replies go out immediately
-except for accesses to the SCSI register and pseudo-DMA windows, which are held until the next
-scheduler slice so the HALT hold (FIFO fill) and BERR pulses are honoured. Wall-clock credit keeps
-emulated time running while requests stream in.
-
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_019sr5bF9ArmteRtTQJngKcP
----
- src/mame/apple/bridge68k.cpp  | 664 ++++++++++++++++++++++++++++++++++
- src/mame/apple/bridge68k.h    | 143 ++++++++
- src/mame/apple/maciici_ps.cpp | 595 ++++++++++++++++++++++++++++++
- src/mame/mame.lst             |   3 +
- 4 files changed, 1405 insertions(+)
- create mode 100644 src/mame/apple/bridge68k.cpp
- create mode 100644 src/mame/apple/bridge68k.h
- create mode 100644 src/mame/apple/maciici_ps.cpp
-
 diff --git a/src/mame/apple/bridge68k.cpp b/src/mame/apple/bridge68k.cpp
 new file mode 100644
-index 00000000..73369af3
+index 00000000..83a62e1c
 --- /dev/null
 +++ b/src/mame/apple/bridge68k.cpp
-@@ -0,0 +1,664 @@
+@@ -0,0 +1,674 @@
 +// license:BSD-3-Clause
 +// copyright-holders:psmac project
 +/****************************************************************************
@@ -454,7 +430,17 @@ index 00000000..73369af3
 +	m_stat_polls++;
 +	if (timeout_ms > 0)
 +		m_stat_sleeps++;
-+	int rc = ::poll(pfds, nfds, timeout_ms);
++	// Idle wait: 200 us, not a whole millisecond. Emulated time advances by wall-clock credit,
++	// so the VIA timers that Mac OS calibrates against move in steps of this size while the
++	// client CPU runs without bus accesses; 1 ms steps made System 7.1's speed probe read zero.
++	int rc;
++	if (timeout_ms > 0)
++	{
++		struct timespec ts = { 0, 200000 };
++		rc = ::ppoll(pfds, nfds, &ts, nullptr);
++	}
++	else
++		rc = ::poll(pfds, nfds, 0);
 +	if (rc <= 0)
 +		return;
 +
@@ -666,7 +652,7 @@ index 00000000..73369af3
 +		// one poll period.  (Skipping the sleep whenever credit > 0 would busy-wait:
 +		// wall-clock time keeps accruing credit while we spin.)  poll() returns
 +		// early when a request arrives, so request latency is not affected.
-+		const u64 cycles_per_poll = u64(clock()) * POLL_TIMEOUT_MS / 1000;
++		const u64 cycles_per_poll = u64(clock()) / 5000;   // 200 us of cycles
 +		const int timeout_ms = (m_idle_credit >= cycles_per_poll) ? 0 : POLL_TIMEOUT_MS;
 +		service_sockets(timeout_ms);
 +
@@ -1456,6 +1442,3 @@ index 5d4d0d80..c783a88f 100644
  @source:apple/maciifx.cpp
  maciifx                         // 1990 Apple Macintosh IIfx
  
--- 
-2.43.0
-

@@ -1,4 +1,9 @@
-[submodule "emu68"]
-	path = emu68
-	url = ../pistorm-se-emu68.git
-	branch = psmac
+[submodule "emu68/external/capstone"]
+	path = emu68/external/capstone
+	url = https://github.com/capstone-engine/capstone.git
+[submodule "emu68/external/libdeflate"]
+	path = emu68/external/libdeflate
+	url = https://github.com/ebiggers/libdeflate.git
+[submodule "emu68/external/tiny-stl"]
+	path = emu68/external/tiny-stl
+	url = https://github.com/michalsc/tiny-std.git
