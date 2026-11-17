@@ -3,7 +3,18 @@
  * core enumeration (EROM), the ARM CR4 core halt/release, firmware and NVRAM
  * download, clocks and function 2. The sequence follows OpenBSD's
  * if_bwfm_sdio.c/bwfm.c and Linux's brcmfmac sdio.c/chip.c (ISC); the 43455's
- * F2 watermark values are Linux's. */
+ * F2 watermark values are Linux's.
+ *
+ * Two families of chip come through here. The BCM43455/43456 (Pi 3A+, 3B+, 4,
+ * Zero 2 W's 43436 is a cousin) carry an ARM Cortex-R4 whose RAM is the core's
+ * own tightly-coupled memory, enumerated through the CR4's bank registers and
+ * based at 0x198000; the CPU is held with the CPUHALT bit and released with the
+ * firmware's reset vector written at address 0. The older BCM43438 (Pi 3B, Pi
+ * Zero W; chip id 43430) carries a Cortex-M3 and a separate SOCRAM core based at
+ * 0, enumerated through SOCRAM's bank registers, with its bank 3 brought out of
+ * power-down before the download; the M3 is simply disabled, the firmware written
+ * at 0, and the M3 reset to run it (Linux's brcmf_chip_cm3_*). Written for the
+ * user's Pi 3B v1.2 on 17 November 2026 (docs/12), untested until it arrives. */
 #include "bus.h"
 
 void *memcpy(void *d, const void *s, unsigned long n);
@@ -63,11 +74,21 @@ void *memset(void *d, int c, unsigned long n);
 #define CORE_80211          0x812
 #define CORE_PMU            0x827
 #define CORE_SDIO_DEV       0x829
+#define CORE_ARM_CM3        0x82a
 #define CORE_ARM_CR4        0x83e
 #define CORE_GCI            0x840
 #define CR4_CAP             0x004
 #define CR4_BANKIDX         0x040
 #define CR4_BANKINFO        0x044
+#define SOCRAM_COREINFO     0x000
+#define SOCRAM_BANKIDX      0x010
+#define SOCRAM_BANKINFO     0x040
+#define SOCRAM_BANKPDA      0x044
+#define CC_PMUCAPS_EXT      0x60c
+#define  PCAPEXT_SR_SUPPORTED   0x2
+#define CC_RETENTION_CTL    0x670
+#define  RCTL_MACPHY_DISABLE    (1u << 26)
+#define  RCTL_LOGIC_DISABLE     (1u << 27)
 
 /* ---- register access ------------------------------------------------------ */
 uint8_t chip_r8(struct chip *c, uint32_t addr)
@@ -259,6 +280,39 @@ static void cr4_passive(struct chip *c)
         ai_disable(c, k, IOCTL_D11_PHYRESET | IOCTL_D11_PHYCLOCKEN, IOCTL_D11_PHYCLOCKEN);
 }
 
+/* The Cortex-M3 chips: the CPU disabled, the radio cores reset, the SOCRAM core reset and, on the
+   43430, its bank 3 (the save/restore bank) powered up: Linux's brcmf_chip_cm3_set_passive. */
+static void cm3_passive(struct chip *c)
+{
+    struct chip_core *k = core(c, CORE_ARM_CM3, 0);
+    if (k) ai_disable(c, k, 0, 0);
+    for (int i = 0; (k = core(c, CORE_80211, i)); i++)
+        ai_reset(c, k, IOCTL_D11_PHYRESET | IOCTL_D11_PHYCLOCKEN, IOCTL_D11_PHYCLOCKEN, IOCTL_D11_PHYCLOCKEN);
+    if ((k = core(c, CORE_INTERNAL_MEM, 0))) {
+        ai_reset(c, k, 0, 0, 0);
+        if (c->id == 43430) { chip_w32(c, k->base + SOCRAM_BANKIDX, 3); chip_w32(c, k->base + SOCRAM_BANKPDA, 0); }
+    }
+}
+
+/* SOCRAM's size: the sum of its banks (core revisions above 7 describe each bank) */
+static uint32_t socram_size(struct chip *c)
+{
+    struct chip_core *k = core(c, CORE_INTERNAL_MEM, 0);
+    if (!k) return 0;
+    uint32_t info = chip_r32(c, k->base + SOCRAM_COREINFO), nb = (info >> 4) & 0xf, size = 0;
+    if (k->rev <= 7) {
+        uint32_t bsz = info & 0x3f, lss = (info >> 20) & 0xf;      /* banks of 16 KiB << bsz, plus a smaller last one */
+        if (lss) nb--;
+        size = nb * (1u << (bsz + 14)) + (lss ? 1u << (lss - 1 + 14) : 0);
+    } else {
+        for (uint32_t i = 0; i < nb; i++) {
+            chip_w32(c, k->base + SOCRAM_BANKIDX, i);
+            size += ((chip_r32(c, k->base + SOCRAM_BANKINFO) & 0x7f) + 1) * 8192;
+        }
+    }
+    return size;
+}
+
 static uint32_t pmu_base(struct chip *c)
 {
     struct chip_core *cc = core(c, CORE_CHIPCOMMON, 0), *pmu = core(c, CORE_PMU, 0);
@@ -317,31 +371,37 @@ int chip_attach(struct chip *c, struct sdhost *h)
 
     erom_scan(c);
     struct chip_core *k;
-    if (!(k = core(c, CORE_CHIPCOMMON, 0)) || !core(c, CORE_SDIO_DEV, 0) || !core(c, CORE_ARM_CR4, 0)) {
-        wifi_log("cores missing (%d found): not a CR4 FullMAC chip\n", c->ncores);
+    c->cm3 = core(c, CORE_ARM_CR4, 0) == 0 && core(c, CORE_ARM_CM3, 0) != 0 && core(c, CORE_INTERNAL_MEM, 0) != 0;
+    if (!(k = core(c, CORE_CHIPCOMMON, 0)) || !core(c, CORE_SDIO_DEV, 0) || !(core(c, CORE_ARM_CR4, 0) || c->cm3)) {
+        wifi_log("cores missing (%d found): neither a CR4 nor a CM3+SOCRAM FullMAC chip\n", c->ncores);
         return -6;
     }
     c->cc_base = k->base;
     c->sdio_base = core(c, CORE_SDIO_DEV, 0)->base;
 
-    cr4_passive(c);
-
-    /* RAM: banks of the CR4's tightly-coupled memory */
-    k = core(c, CORE_ARM_CR4, 0);
-    uint32_t cap = chip_r32(c, k->base + CR4_CAP), nb = (cap & 0xf) + ((cap >> 4) & 0xf), size = 0;
-    for (uint32_t i = 0; i < nb; i++) {
-        chip_w32(c, k->base + CR4_BANKIDX, i);
-        uint32_t bi = chip_r32(c, k->base + CR4_BANKINFO);
-        size += ((bi & 0x7f) + 1) * ((bi & 0x200) ? 1024 : 8192);
+    if (c->cm3) {
+        cm3_passive(c);
+        c->ramsize = socram_size(c);
+        c->rambase = 0;
+    } else {
+        cr4_passive(c);
+        /* RAM: banks of the CR4's tightly-coupled memory */
+        k = core(c, CORE_ARM_CR4, 0);
+        uint32_t cap = chip_r32(c, k->base + CR4_CAP), nb = (cap & 0xf) + ((cap >> 4) & 0xf), size = 0;
+        for (uint32_t i = 0; i < nb; i++) {
+            chip_w32(c, k->base + CR4_BANKIDX, i);
+            uint32_t bi = chip_r32(c, k->base + CR4_BANKINFO);
+            size += ((bi & 0x7f) + 1) * ((bi & 0x200) ? 1024 : 8192);
+        }
+        c->ramsize = size;
+        c->rambase = c->id == 0x4345 ? 0x198000 : 0x180000;
     }
-    c->ramsize = size;
-    c->rambase = c->id == 0x4345 ? 0x198000 : 0x180000;
 
     c->cc_caps = chip_r32(c, c->cc_base + CC_CAPS);
     c->cc_caps_ext = chip_r32(c, c->cc_base + CC_CAPS_EXT);
     uint32_t pmu = pmu_base(c);
     if (c->cc_caps & 0x10000000u) c->pmurev = chip_r32(c, pmu + CC_PMUCAPS) & 0xff;
-    wifi_log("RAM %u KB at %x, %d cores, PMU rev %u\n", c->ramsize / 1024, c->rambase, c->ncores, c->pmurev);
+    wifi_log("%s, RAM %u KB at %x, %d cores, PMU rev %u\n", c->cm3 ? "Cortex-M3 + SOCRAM" : "Cortex-R4", c->ramsize / 1024, c->rambase, c->ncores, c->pmurev);
 
     if (core(c, CORE_SDIO_DEV, 0)->rev >= 12) {
         v = chip_r8(c, F1_SLEEPCSR);
@@ -353,11 +413,16 @@ int chip_attach(struct chip *c, struct sdhost *h)
     sdh_cmd52(h, 1, 0, CCCR_IOEN, &v);
     chip_w8(c, F1_CHIPCLKCSR, 0);
 
-    /* save/restore: the 4345 reports it in chip control 3, bit 2 */
+    /* save/restore: the 4345 reports it in chip control 3, bit 2; other chips with a PMU of
+       revision 17 or later in the PMU's extended capabilities and retention control (Linux's
+       brcmf_sdio_sr_capable, default case: the 43430 goes this way) */
     c->sr = 0;
     if (c->pmurev >= 17 && c->id == 0x4345) {
         chip_w32(c, pmu + CC_CHIPCONTROL_ADDR, 3);
         c->sr = (chip_r32(c, pmu + CC_CHIPCONTROL_DATA) & 4) != 0;
+    } else if (c->pmurev >= 17) {
+        if (chip_r32(c, pmu + CC_PMUCAPS_EXT) & PCAPEXT_SR_SUPPORTED)
+            c->sr = (chip_r32(c, pmu + CC_RETENTION_CTL) & (RCTL_MACPHY_DISABLE | RCTL_LOGIC_DISABLE)) == 0;
     }
     return 0;
 }
@@ -412,10 +477,18 @@ int chip_load(struct chip *c, const uint8_t *fw, uint32_t fwlen, const uint8_t *
 
     /* start the CPU at the firmware's reset vector */
     chip_w32(c, c->sdio_base + SD_INTSTATUS, 0xffffffffu);
-    uint8_t rv[4];
-    memcpy(rv, fw, 4);
-    chip_ram(c, 0, rv, 4, 1);
-    ai_reset(c, core(c, CORE_ARM_CR4, 0), IOCTL_CR4_CPUHALT, 0, 0);
+    if (c->cm3) {
+        /* the M3 boots from SOCRAM address 0, where the firmware's own vector table now is; the
+           SOCRAM core must be up (Linux's brcmf_chip_cm3_set_active), then the M3 is reset to run */
+        struct chip_core *sr = core(c, CORE_INTERNAL_MEM, 0);
+        if (sr && (chip_r32(c, sr->wrap + AGENT_RESET_CTL) & 1)) { wifi_log("SOCRAM core is held in reset\n"); return -7; }
+        ai_reset(c, core(c, CORE_ARM_CM3, 0), 0, 0, 0);
+    } else {
+        uint8_t rv[4];
+        memcpy(rv, fw, 4);
+        chip_ram(c, 0, rv, 4, 1);
+        ai_reset(c, core(c, CORE_ARM_CR4, 0), IOCTL_CR4_CPUHALT, 0, 0);
+    }
     chip_w8(c, F1_CHIPCLKCSR, 0);
 
     if (clock_wait(c, CLK_HT_AVAIL_REQ, CLK_HT_AVAIL, 5000000)) { wifi_log("no HT clock: firmware did not start\n"); return -4; }

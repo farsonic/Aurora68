@@ -64,6 +64,7 @@ struct chip {
     uint16_t id;
     uint8_t  rev;
     uint8_t  sr;            /* save/restore capable: HT clock is kept by the chip */
+    uint8_t  cm3;           /* the CPU is a Cortex-M3 with SOCRAM (BCM43438 of a Pi 3B / Zero W), not a Cortex-R4 with TCM */
     uint32_t rambase, ramsize;
     uint32_t cc_caps, cc_caps_ext, pmurev;
     int      ncores;

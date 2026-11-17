@@ -74,14 +74,27 @@ for. Bluetooth needs the UART question settled; USB input needs a new driver.
 ## The transport: from the bridge to the GPIO
 
 In the testbed every motherboard access leaves `psmac_bus.c` as a bridge transfer to MAME over a
-UART or semihosting (`bridge_xfer`). Upstream Emu68 carries the classic PiStorm transport in
-`emu68/src/pistorm/ps_classic_protocol.c`: `ps_setup_protocol`, `ps_read_8/16/32`,
-`ps_write_8/16/32`, `ps_read_status_reg`, `ps_pulse_reset`, `ps_get_ipl_zero`, and the
-housekeeper that watches the interrupt lines. The step is a second back end behind the same
-calls: when the kernel finds no bridge (no `mac.bridge=`), it drives the GPIO protocol instead,
-with the same reply structure (bus error, data) so the MMU shim and the service core do not care
-which it is. The 24-bit address, the function codes and the interrupt-acknowledge cycle are what
-the classic firmware already does for the Amiga.
+UART or semihosting (`bridge_xfer`). The same call now has a second back end,
+`emu68/src/psmac/psmac_gpio.c` (written 17 November, 03:40, untested on hardware): the classic
+PiStorm's CPLD protocol as Emu68's `ps_classic_protocol.c` does it, with the bus cycle sequences
+kept word for word, the peripherals reached through the kernel's high alias instead of
+0xF2000000 (the low 4 GiB belong to the Macintosh here), and every wait on the CPLD bounded, so
+a Pi on the bench without an SE still boots to its second screen and its log instead of spinning
+for ever. `mac.bridge=gpio` is the default; the testbed passes `semihost` (or `uart`). The
+service core on core 2 owns it, as it owned the bridge: a read is a 68000 bus cycle, the
+interrupt level is the status register's top three bits, a RESET instruction pulses the
+motherboard's reset line, and the 200 MHz clock the CPLD needs comes from the Pi's GPCLK0 on
+GPIO 4. Only the low 24 bits of an address travel: the 68000 socket has no more.
+
+What the wire does not do is make the IIci ROM's addresses mean anything to an SE. The ROM
+talks to a VIA at 0x50F00000, an SCC at 0x50F04000, a 5380 at 0x50F10000, an RBV, a VDAC, an
+ASC; the SE has its VIA at $EFE1FE, the SCC at $9FFFF8/$BFFFF9, the 5380 at $5FF000, an IWM at
+$DFE1FF, and no RBV, VDAC or ASC at all (docs/01 and docs/03 have both tables). That translation,
+with the missing chips emulated by the kernel and the SE's video buffer fed from the Pi, is the
+**board layer**, the piece between the transport and the first picture on the SE's screen. It is
+best built against MAME's own `macse` driver with the bridge CPU attached to it (the same
+`bridge68k` device the IIci testbed uses, on a 16-bit, 24-bit bus), so it can be debugged here
+before the hardware arrives. That is the next piece after the 43438 path.
 
 Then the order on the bench:
 
@@ -95,9 +108,12 @@ Then the order on the bench:
    checked first of everything with the SE unplugged.
 4. **WiFi**: the service core on the real chip, PiWiFi, MacTCP over it. The simulated radio's
    command sequence is what the real one must answer.
-   4a. The user's Pi is a **3B v1.2**: BCM43438. Before step 4 the chip layer needs the Cortex-M3
-   and SOCRAM path (above), the 43430 firmware trio in the container (README) and
-   `BCM43430A1.hcd` for Bluetooth. 2.4 GHz only. Everything else in the WiFi module (SDIO
+   4a. The user's Pi is a **3B v1.2**: BCM43438. The chip layer now has the Cortex-M3 and SOCRAM
+   path (`wifi/chip.c`, 17 November, 03:45, from Linux's brcmf_chip_cm3_*: the M3 disabled, the
+   radio cores reset, SOCRAM reset with bank 3 powered up, the size from SOCRAM's bank registers,
+   firmware at 0, the M3 reset to run it; save/restore from the PMU's extended capabilities);
+   it is untested until the board is here. The 43430 firmware trio goes in the container (README)
+   and `BCM43430A1.hcd` for Bluetooth. 2.4 GHz only. Everything else in the WiFi module (SDIO
    host, the BCDC/firmware protocol, scanning, joining, the Mac-side driver) is chip-independent.
 5. **PiDisk on the SD card**: a driver for the Pi 3's SD card (the SDHOST controller, not the
    Arasan one the WiFi uses) so disk images live on the card.

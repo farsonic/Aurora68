@@ -81,7 +81,8 @@ declaration ROM (`aurora68-1024x768.declrom` and so on) in the container in plac
 offers black and white, 4, 16, 256, thousands and millions of colours in the Monitors control
 panel; the ROM sizes the Macintosh's memory and the frame buffer is the Pi's, so a 1080p screen in
 millions of colours costs the Macintosh nothing. `docs/img/system71-pi-1024x768-millions.png`
-is the Pi's screen at 1024 by 768 in millions of colours.
+is the Pi's screen at 1024 by 768 in millions of colours; `docs/img/system71-about-128mb.png`
+is About This Macintosh with 128 MB.
 
 ### cmdline.txt
 One line, options separated by spaces, no comments:
@@ -94,6 +95,7 @@ One line, options separated by spaces, no comments:
 | `wifi=off`, `bt=off`, `eth=off` | leave a radio or the Ethernet off |
 | `net.oui=off` | keep the Pi's own MAC addresses (default: Commodore's prefix, as Alice68) |
 | `mac.screen=1024x768` | the second screen's size in pixels (default 640x480; 512 to 1920 by 342 to 1200). Set `hdmi_mode` to match and use the declaration ROM of that size |
+| `mac.bridge=gpio` | how the motherboard is reached: `gpio` (the classic PiStorm's CPLD, the default on hardware), `semihost` or `uart` (the testbed's bridge to MAME) |
 | `mac.vcswap=1` | swap red and blue on the second screen, should a board's firmware disagree with the kernel about the pixel byte order (the firmware is asked; this overrides its answer) |
 
 ### Upgrading

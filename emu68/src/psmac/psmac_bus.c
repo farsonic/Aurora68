@@ -118,6 +118,12 @@ static int uart_getc(uint64_t deadline)
    One host syscall per direction instead of one per byte through the UART model. The MAME bridge
    opens /tmp/psmac.req (read) and /tmp/psmac.rep (write); we open them the other way round. */
 static int use_semihost = 0;            /* mac.bridge=semihost */
+/* mac.bridge=: how the motherboard is reached. "gpio" is the classic PiStorm's CPLD through the Pi's
+   GPIO (psmac_gpio.c), the default, because that is what a Pi plugged into an SE has; "semihost" and
+   "uart" are the testbed's two ways to MAME's bridge CPU (QEMU passes both on its command line). */
+static int use_gpio = 1;
+void psmac_gpio_init(void); uint32_t psmac_gpio_read(uint32_t, int); void psmac_gpio_write(uint32_t, int, uint32_t);
+unsigned psmac_gpio_ipl(void); void psmac_gpio_pulse_reset(void); uint32_t psmac_gpio_timeouts(void); int psmac_gpio_reset_asserted(void);
 static uint32_t peek_addr, peek_len;
 uint32_t psmac_dbf_slow = 1;            /* mac.dbfslow=N: device reads per turn of a self-looping dbf (M68k_LINE5.c) */    /* mac.peek=: Mac memory dumped at each heartbeat (debugging) */
 static int64_t sh_req = -1, sh_rep = -1;
@@ -205,7 +211,7 @@ static int semihost_init(void)
     transport_up = 1;
     return sh_req >= 0 && sh_rep >= 0;
 }
-void psmac_select_transport(int semihost_mode) { use_semihost = semihost_mode; }
+void psmac_select_transport(int semihost_mode) { use_semihost = semihost_mode; if (semihost_mode) use_gpio = 0; }
 
 /* Options come from /chosen bootargs (this Emu68 branch does not parse the cmdline itself). */
 static int opts_read;
@@ -243,13 +249,49 @@ static void psmac_read_options(void)
     if ((tok = find_token(args, "mac.inputwifi="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_wifi(uint32_t); psmac_alice_input_wifi(n); }
     if ((tok = find_token(args, "mac.scsitrace="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); scsi_trace_left = n; }
     if ((tok = find_token(args, "mac.ram="))) { tok += 8; uint32_t mb = 0; while (*tok >= '0' && *tok <= '9') mb = mb * 10 + (*tok++ - '0'); globals.psmac_ram_mb = mb; }
-    if (find_token(args, "mac.bridge=semihost")) use_semihost = 1;
-    kprintf("[PSMAC] options: ram=%d MiB bridge=%s (bootargs: %s)\n", globals.psmac_ram_mb, use_semihost ? "semihost" : "uart", args);
+    if ((tok = find_token(args, "mac.bridge="))) {        /* find_token matches up to the '=': compare the value ourselves */
+        tok += 11;
+        if (strncmp(tok, "semihost", 8) == 0) { use_semihost = 1; use_gpio = 0; }
+        else if (strncmp(tok, "uart", 4) == 0) { use_semihost = 0; use_gpio = 0; }
+        else if (strncmp(tok, "gpio", 4) == 0) { use_semihost = 0; use_gpio = 1; }
+    }
+    kprintf("[PSMAC] options: ram=%d MiB bridge=%s (bootargs: %s)\n", globals.psmac_ram_mb, use_gpio ? "gpio (classic PiStorm)" : use_semihost ? "semihost" : "uart", args);
 }
 
 /* One bridge transaction. Must only run on the transport owner. */
+/* The same transaction over the classic PiStorm's GPIO protocol. No bridge, no reply frame: a read
+   is a 68000 bus cycle and the interrupt level is a status register away. The 68000 socket has 24
+   address lines, so only the low 24 bits travel; what the IIci ROM's 32-bit addresses mean on an SE
+   bus is the board layer's business (docs/12), not the wire's. A cycle the CPLD never finishes
+   (no SE behind the Pi) is abandoned after the timeout and the transport declared dead, so the
+   kernel still reaches its second screen and its log on the bench. */
+static void gpio_xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, uint32_t data, struct psmac_reply *r)
+{
+    (void)flags;
+    if (!transport_up) { psmac_gpio_init(); transport_up = 1; }
+    uint32_t before = psmac_gpio_timeouts(), value = 0xffffffffu;
+    svc_op = op; svc_addr = addr; svc_phase = 1;
+    switch (op) {
+    case PSMAC_OP_READ:  value = psmac_gpio_read(addr, size); break;
+    case PSMAC_OP_WRITE: psmac_gpio_write(addr, size, data); break;
+    case PSMAC_OP_RESET_ACK: psmac_gpio_pulse_reset(); break;
+    default: break;                                          /* POLL: the level below is the whole point */
+    }
+    unsigned ipl = psmac_gpio_ipl();
+    svc_phase = 0;
+    if (psmac_gpio_timeouts() != before) {
+        if (++timeouts == 1) kprintf("[PSMAC:GPIO] the CPLD did not finish a bus cycle (op %d addr %08x): is the Pi in a Macintosh?\n", op, addr);
+        if (timeouts >= 16) transport_dead = 1;
+        ipl = 0;
+    }
+    last_ipl = ipl; last_flags = 0;
+    if (__m68k_state) __m68k_state->INTF.IPL = ipl;
+    if (r) { r->status = 0; r->ipl = ipl; r->flags = 0; r->data = value; }
+}
+
 static void bridge_xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, uint32_t data, struct psmac_reply *r)
 {
+    if (use_gpio) { if (!transport_dead) gpio_xfer(op, size, flags, addr, data, r); else if (r) { r->status = 0; r->ipl = 0; r->flags = 0; r->data = 0xffffffff; } return; }
     if (!transport_up) { if (use_semihost) { if (!semihost_init()) transport_dead = 1; } else uart_init(); }
     if (transport_dead) { if (r) { r->status = 0; r->ipl = 0; r->flags = 0; r->data = 0xffffffff; } return; }
     uint8_t req[12] = { op, size, flags, 0,
@@ -357,10 +399,12 @@ void psmac_check_pc(uint32_t pc)
 void psmac_service_core(void)
 {
     psmac_read_options();
-    if (!use_semihost) uart_init(); else { if (!semihost_init()) transport_dead = 1; }
+    if (use_gpio) { psmac_gpio_init(); transport_up = 1; }
+    else if (!use_semihost) uart_init(); else { if (!semihost_init()) transport_dead = 1; }
     service_running = 1;
-    kprintf("[PSMAC] service core running (bridge transport owner, IPL poll 1 kHz)\n");
-    uint64_t period = cnt_frq() / 1000, next_poll = cnt_now() + period;
+    kprintf("[PSMAC] service core running (%s transport owner, IPL poll %s)\n", use_gpio ? "GPIO" : "bridge", use_gpio ? "20 kHz" : "1 kHz");
+    /* a status register read on the GPIO costs a microsecond, a bridge poll a round trip: poll accordingly */
+    uint64_t period = cnt_frq() / (use_gpio ? 20000 : 1000), next_poll = cnt_now() + period;
     uint64_t hb_period = cnt_frq() * 5, next_hb = cnt_now() + hb_period; uint32_t hb_last = 0;
     uint32_t pc_last = 0; int stall_dumped = 0, exc_dumped = 0;
     uint32_t scsi_reads = 0, scsi_reads_seen = 0; uint64_t next_epoch = 0;
@@ -785,7 +829,7 @@ unsigned int ps_read_16_int_nowbwait(unsigned int a) { return r16(a); }
 uint64_t ps_read_64_int(unsigned int a) { return r64(a); }
 void ps_write_64_int(unsigned int a, uint64_t d) { w64(a, d); }
 uint8_t pistorm_get_model(void) { return PISTORM_MODEL_32; }
-void ps_setup_protocol(void) { kprintf("[PSMAC] bus bridge transport: mini UART (QEMU -serial 1) -> MAME bridge\n"); }
+void ps_setup_protocol(void) { kprintf("[PSMAC] motherboard transport: %s\n", use_gpio ? "classic PiStorm CPLD over GPIO (mac.bridge=gpio)" : use_semihost ? "semihosting FIFOs -> MAME bridge" : "mini UART (QEMU -serial 1) -> MAME bridge"); }
 void ps_reset_state_machine(void) {}
 void ps_pulse_reset(void) { struct psmac_reply r; xfer(PSMAC_OP_RESET_ACK, 0, 0, 0, 0, &r); }
 void ps_send_reset(void) { ps_pulse_reset(); }

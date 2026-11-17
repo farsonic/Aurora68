@@ -426,7 +426,8 @@ System 6 does not touch TimeDBRA that way and boots with either ROM.
      alone on the testbed (two runs at once share the bridge socket and corrupt each other,
      which had muddied fs161-fs163): 128 MiB boots System 7.1 to the Finder with the stack at
      $07F7FF32 and no exception in 400 s (fs166), 72 MiB the same with the stack at $04786F5E
-     (fs167).
+     (fs167); `docs/img/system71-about-128mb.png` is About This Macintosh on the 128 MiB boot
+     (fs171): a Macintosh SE with 131,072K of memory.
 
 ## Next steps (in order, as of the evening of 16 November)
 *(17 November, 03:30: the hardware is now known, a classic PiStorm with a Pi 3 in a socketed SE,
