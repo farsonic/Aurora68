@@ -19,7 +19,7 @@ What is in the zip
 ------------------
   kernel8.img            Aurora68 itself (the Emu68 fork, build variant psmac)
   config.txt             the Pi firmware's settings: 64-bit kernel, the container, UART, HDMI
-  cmdline.txt            the kernel's options: enable_cache debug mac.board=se bt=off
+  cmdline.txt            the kernel's options: enable_cache debug mac.board=se bt=off mac.console=hdmi
   aurora68-512x342.declrom   the slot-9 declaration ROM for the SE's screen size: PiDisk,
                          Ethernet, WiFi, input and video drivers for the Macintosh
   aurora68.declrom       the same for a 640 by 480 second screen (the IIci testbed); and
@@ -97,8 +97,12 @@ Setting up the SD card (a Pi 3B in an SE)
      container ("stock IIci ROM 368cadfe in the container: patched in memory ... verified" in
      the log), so an unpatched container works too. Copy aurora68.cpio to the card. The two declaration ROMs: the kernel takes
      the one whose name ends in the screen size in use, 512x342 on the SE board.
-  6. Check cmdline.txt: one line, "enable_cache debug mac.board=se bt=off". mac.board=se is what
-     tells the kernel it is in a Macintosh SE and not in the testbed's IIci. To join a WiFi
+  6. Check cmdline.txt: one line, "enable_cache debug mac.board=se bt=off mac.console=hdmi".
+     mac.board=se tells the kernel it is in a Macintosh SE and not in the testbed's IIci.
+     mac.console=hdmi keeps the kernel's log on the HDMI screen for the whole run, the same text
+     as the serial line, so a bench without a serial cable still sees everything; take it out
+     to have HDMI show the Macintosh's picture instead (the log then shows until the
+     Macintosh's video driver turns the screen on). To join a WiFi
      network at boot add wifi.ssid=NAME wifi.psk=PASSWORD wifi.country=XX (two letters).
      Memory: the kernel gives the Macintosh what the Pi can spare, up to 128 MB; mac.ram=N
      fixes it.
@@ -108,6 +112,23 @@ Setting up the SD card (a Pi 3B in an SE)
      under it touches the logic board.
   8. HDMI to a monitor if you have one (it shows the same 512 by 342 picture as the SE's screen
      in this build), the serial cable to GPIO 14 (TXD) and 15 (RXD), ground to 6. Power the SE.
+
+A Pi on the bench, no SE yet
+----------------------------
+That is a useful first test. Power the Pi from USB with HDMI connected. The firmware's rainbow
+square for a moment, Emu68's splash, then the log scrolling on HDMI (white on black, wrapping
+to the top when it reaches the bottom). Expect "bridge=gpio", "protocol up" with whatever the
+floating pins read, "board layer up", then either bus cycles that "complete" with junk or "the
+CPLD did not finish a bus cycle ... is the Pi in a Macintosh?" and "TRANSPORT DEAD" in the
+heartbeats: both are right for a Pi with nothing behind it. The "[WIFI]" lines are the ones that
+matter on the bench: the chip id (a9a6 is a Pi 3B's 43430), "Cortex-M3 + SOCRAM", the firmware
+loaded and running, a scan if wifi.ssid= is set. A photograph of the screen at a heartbeat is a
+log. Nothing at all on HDMI, not even the rainbow square: the firmware did not start; look at
+the green ACT LED (a repeating pattern of flashes is the firmware's error code: 4 means
+start.elf not found, 7 kernel not found) and at the card (ejected properly, FAT32, files in the
+root).
+
+A Pi Zero W (the original, 2017) cannot run this: its processor is 32-bit only. The Zero 2 W can.
 
 What to expect, and what the log says
 -------------------------------------

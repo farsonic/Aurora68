@@ -6,7 +6,8 @@ kernel=kernel8.img            # Aurora68 (the Emu68 fork, build variant psmac)
 arm_64bit=1
 initramfs aurora68.cpio followkernel   # the container: Macintosh IIci ROM, declaration ROM, firmware
                                        # (make it with make-container.py, see READ-ME-FIRST.txt)
-disable_splash=1              # no rainbow screen
+# (no disable_splash: the firmware's rainbow square for a moment at power-on says the firmware
+#  found its files; with it suppressed a card the firmware rejects and a dead board look the same)
 avoid_warnings=1
 enable_uart=1                 # the kernel's log on the serial pins (115200 8N1); leave on
 dtoverlay=disable-bt          # the kernel writes its log on the PL011, which this puts on GPIO 14/15

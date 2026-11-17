@@ -53,6 +53,9 @@ static void vc_byte_order(void);   /* the VideoCore buffer's depth: 32 asked for
 static uint32_t rgb[256];                    /* the colour table as XRGB */
 static uint32_t clut_seen = ~0u;
 static uint64_t next_tick;
+static int con_keep;                          /* the HDMI console (below): mac.console=hdmi keeps the log on the screen */
+static int con_off;                           /* the picture has the buffer */
+static uint32_t con_x, con_y, con_cols, con_rows;
 static unsigned tick_div;
 
 void psmac_display_init(uint8_t *win)
@@ -76,6 +79,7 @@ void psmac_display_init(uint8_t *win)
     vc_byte_order();
     if (framebuffer) vcfb = (uint8_t *)(KERNEL_ALIAS + (((uintptr_t)framebuffer) & 0x3fffffffull));
     if (vcfb) for (uint32_t i = 0; i < vc_pitch * vc_h; i += 8) *(uint64_t *)(vcfb + i) = 0;
+    con_cols = 0; con_x = 0; con_y = 0;                        /* the console starts again in the new buffer */
 
     disp->width = w; disp->height = h; disp->depth = 1;
     disp->fb_off = PSMB_OFF_BOUNCE; disp->fb_size = PSMB_BOUNCE_SIZE;
@@ -124,7 +128,62 @@ void psmac_display_reinit(void)
     if (fb && p) { framebuffer = fb; pitch = p; vc_pitch = p; vcfb = (uint8_t *)(KERNEL_ALIAS + (((uintptr_t)fb) & 0x3fffffffull)); }
     vc_byte_order();
     if (vcfb) for (uint32_t i = 0; i < vc_pitch * vc_h; i += 8) *(uint64_t *)(vcfb + i) = 0;
+    con_cols = 0; con_x = 0; con_y = 0;                        /* the console starts again in the new buffer */
 }
+
+/* ---- the HDMI console ------------------------------------------------------------------------
+   A bench with no serial cable has no log. So the kernel's text output is drawn here too, into
+   whatever VideoCore buffer there is (Emu68's 16-bit splash buffer first, the 32-bit one once
+   psmac_display_init has made it), with Emu68's own Topaz font, until the Macintosh's video driver
+   turns the second display on and the picture takes the buffer over. mac.console=hdmi keeps the
+   log there for the whole run and never shows the picture: that is the bench setting. The cursor
+   wraps to the top when it reaches the bottom and clears the line ahead of it, which costs nothing
+   and reads like a terminal that lost its scrollback. Written for the user's first standalone Pi,
+   17 November, 05:40 (docs/12). */
+extern const uint8_t topaz8_chardata[]; extern const uint32_t topaz8_charloc[]; extern const int modulo;
+static uint8_t *con_fb(void)
+{
+    if (vcfb) return vcfb;
+    if (framebuffer) return (uint8_t *)(KERNEL_ALIAS + (((uintptr_t)framebuffer) & 0x3fffffffull));
+    return 0;
+}
+static void con_cell(uint8_t *fb, uint32_t pitch_, int bpp32, uint32_t cx, uint32_t cy, uint8_t c)
+{
+    uint32_t loc = (topaz8_charloc[(c >= 32 && c < 128) ? c - 32 : 0] >> 16) >> 3;
+    const uint8_t *data = &topaz8_chardata[loc];
+    for (uint32_t y = 0; y < 16; y++) {
+        uint8_t *row = fb + (cy * 16 + y) * pitch_ + cx * 8 * (bpp32 ? 4 : 2);
+        uint8_t bits = c >= 32 ? *data : 0;
+        for (uint32_t x = 0; x < 8; x++) {
+            int on = bits & (0x80 >> x);
+            if (bpp32) ((uint32_t *)row)[x] = on ? LE32(0x00e0e0e0u) : 0; else ((uint16_t *)row)[x] = on ? LE16(0xe71c) : 0;
+        }
+        if (y & 1) data += modulo;
+    }
+}
+void psmac_console_putc(uint8_t c)
+{
+    if (con_off && !con_keep) return;
+    uint8_t *fb = con_fb();
+    uint32_t p = vc_pitch ? vc_pitch : pitch;
+    if (!fb || !p) return;
+    if (!con_cols) {
+        uint32_t w = vc_w ? vc_w : fb_width, h = vc_h ? vc_h : fb_height;
+        con_cols = w / 8; con_rows = h / 16;
+        if (!con_cols || !con_rows) { con_cols = 0; return; }
+        con_y = con_rows - 1; con_x = 0;                      /* start under the splash */
+    }
+    int bpp32 = vc_bpp == 32 && vcfb;
+    if (c == '\r') return;
+    if (c == '\n' || con_x >= con_cols) {
+        con_x = 0; con_y++;
+        if (con_y >= con_rows) con_y = 0;
+        for (uint32_t cx = 0; cx < con_cols; cx++) con_cell(fb, p, bpp32, cx, con_y, 0);
+        if (c == '\n') return;
+    }
+    con_cell(fb, p, bpp32, con_x++, con_y, c);
+}
+void psmac_console_option(int keep) { con_keep = keep; }
 
 /* one output pixel: XRGB8888 when the VideoCore buffer is 32 bits, RGB565 when it is 16 */
 static inline void put(void *row, uint32_t x, uint32_t xrgb)
@@ -183,7 +242,7 @@ void psmac_display_poll(void)
     next_tick += hz / 60; if ((int64_t)(now - next_tick) > (int64_t)hz) next_tick = now + hz / 60;
     disp->vbl_count++;
     if ((disp->flags & PSMB_DISP_ENABLED) && disp->vbl_enable) { disp->vbl_pending = 1; __asm__ volatile("dmb ish" ::: "memory"); }
-    if ((disp->flags & PSMB_DISP_ENABLED) && (++tick_div & 1)) convert();
+    if ((disp->flags & PSMB_DISP_ENABLED) && !con_keep) { con_off = 1; if (++tick_div & 1) convert(); }
 }
 
 /* for the heartbeat */

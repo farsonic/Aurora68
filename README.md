@@ -117,6 +117,7 @@ One line, options separated by spaces, no comments:
 | `wifi=off`, `bt=off`, `eth=off` | leave a radio or the Ethernet off |
 | `net.oui=off` | keep the Pi's own MAC addresses (default: Commodore's prefix, as Alice68) |
 | `mac.screen=1024x768` | the second screen's size in pixels (default 640x480; 512 to 1920 by 342 to 1200). Set `hdmi_mode` to match and use the declaration ROM of that size |
+| `mac.console=hdmi` | keep the kernel's log on the HDMI screen for the whole run (the same text as the serial line); without it the log shows until the Macintosh's video driver takes the screen |
 | `mac.board=se` | the logic board the Pi sits in: `se` (the Macintosh SE: its chips behind the IIci ROM's addresses, docs/12) or the default, the testbed's IIci |
 | `mac.bridge=gpio` | how the motherboard is reached: `gpio` (the classic PiStorm's CPLD, the default on hardware), `semihost` or `uart` (the testbed's bridge to MAME) |
 | `mac.vcswap=1` | swap red and blue on the second screen, should a board's firmware disagree with the kernel about the pixel byte order (the firmware is asked; this overrides its answer) |

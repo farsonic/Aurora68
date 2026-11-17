@@ -25,6 +25,10 @@ it ran in the testbed, where MAME's Macintosh SE stands in for the logic board.
   ROM, so nothing on the card has to be patched by hand at all.
 - `config.txt` carries `dtoverlay=disable-bt` so the kernel's log is on the header's GPIO 14/15;
   Bluetooth stays off in this build (`bt=off`).
+- **The kernel's log on the HDMI screen** (`mac.console=hdmi`, in the shipped `cmdline.txt`): the
+  same text as the serial line, drawn with Emu68's font into the VideoCore buffer, so a bench
+  without a serial cable still has a log. Without the option the log shows until the Macintosh's
+  video driver turns the second screen on.
 
 ### Known limits of 0.3
 - Nothing has met a real CPLD or a real SE yet; the SE's timing may differ from MAME's.
