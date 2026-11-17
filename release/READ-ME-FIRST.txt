@@ -38,9 +38,15 @@ SETTING UP THE SD CARD
         python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom aurora68.declrom
      and copy aurora68.cpio to the card. The Macintosh IIci ROM (version 368CADFE, 512 KB)
      is Apple's and is not included: dump it from a IIci or use an image you have the right
-     to. For WiFi and Bluetooth on a Pi 3B+/4/Zero 2 W add Broadcom's firmware files to the
-     command line: brcmfmac43455-sdio.bin, brcmfmac43455-sdio.txt, brcmfmac43455-sdio.clm_blob,
-     BCM4345C0.hcd (from the linux-firmware or Raspberry Pi OS packages).
+     to. For WiFi and Bluetooth on a Pi 3B+/3A+/4/Zero 2 W/CM4 add Broadcom's firmware files
+     (the versions Alice68 uses):
+        curl -fL --remote-name-all \
+          https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/cypress/cyfmac43455-sdio-standard.bin \
+          https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/cypress/cyfmac43455-sdio.clm_blob \
+          https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/brcm/brcmfmac43455-sdio.txt \
+          https://raw.githubusercontent.com/RPi-Distro/bluez-firmware/master/broadcom/BCM4345C0.hcd
+        python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom aurora68.declrom \
+          cyfmac43455-sdio-standard.bin brcmfmac43455-sdio.txt cyfmac43455-sdio.clm_blob BCM4345C0.hcd
   5. The Macintosh side: put the files from Mac/ onto the Macintosh (below).
 
 cmdline.txt

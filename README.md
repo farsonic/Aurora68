@@ -30,9 +30,21 @@ the next piece of work, so on hardware this build boots the Pi and waits (see
    ```bash
    python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom aurora68.declrom
    ```
-   For WiFi and Bluetooth on a Pi with the Broadcom chip, add the firmware files to that
-   command (`brcmfmac43455-sdio.bin`, `.txt`, `.clm_blob`, `BCM4345C0.hcd`). Apple's ROM and
-   Broadcom's firmware are not included.
+   For WiFi and Bluetooth on a Pi with the Broadcom CYW43455 (Pi 3B+, 3A+, 4, Zero 2 W, CM4),
+   fetch Broadcom's firmware (the same files and versions Alice68 uses: WiFi firmware
+   7.45.241 from Raspberry Pi's `bullseye` branch, the Bluetooth patch from `bluez-firmware`)
+   and add them to the command:
+   ```bash
+   curl -fL --remote-name-all \
+     https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/cypress/cyfmac43455-sdio-standard.bin \
+     https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/cypress/cyfmac43455-sdio.clm_blob \
+     https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/brcm/brcmfmac43455-sdio.txt \
+     https://raw.githubusercontent.com/RPi-Distro/bluez-firmware/master/broadcom/BCM4345C0.hcd
+   python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom aurora68.declrom \
+     cyfmac43455-sdio-standard.bin brcmfmac43455-sdio.txt cyfmac43455-sdio.clm_blob BCM4345C0.hcd
+   ```
+   (On Windows, `curl.exe` and the `curl` part as one line.) The kernel finds the files in the
+   container by name (`cyfmac43455-sdio-standard` and `brcmfmac43455-sdio` are both accepted). Apple's ROM and Broadcom's firmware are not included in the release.
 5. Put the Pi in the PiStorm, the PiStorm in the SE's 68000 socket, HDMI to a monitor if you
    want the second screen, and power on.
 
