@@ -82,6 +82,11 @@ struct bt_le {
     struct bt_kbmap kbm;
     uint8_t lastbtn;
     uint8_t nlog;                        /* notifications logged on this link (the first few) */
+    /* what the device presented, for the heartbeat (bt_pi.c): a bench has no scrollback */
+    uint16_t svcs[3][2]; uint8_t nsvc, svci;   /* HID service instances (start, end), the one in use */
+    uint8_t att_err, att_err_g;          /* the last ATT error and the discovery stage it came in */
+    uint16_t map_len; uint8_t map_head[48];
+    uint32_t nnotify;
 };
 struct bt_conn {
     int used;

@@ -496,7 +496,7 @@ static void gatt_next_cccd(struct bt_host *h, struct bt_conn *c);
 static void gatt_start(struct bt_host *h, struct bt_conn *c)
 {
     struct bt_le *l = &c->l;
-    l->nlog = 0;
+    l->nlog = 0; l->nsvc = l->svci = 0; l->att_err = l->att_err_g = 0; l->map_len = 0; l->nnotify = 0;
     l->g = G_MTU; l->nchr = 0; l->pm = l->kb_in = l->ms_in = l->map = 0; l->boot = 0; l->mouse_ok = 0;
     mset(&l->kbm, 0, sizeof l->kbm);
     l->mtu = 23;
@@ -557,8 +557,20 @@ static void gatt_next_ref(struct bt_host *h, struct bt_conn *c)
 static void gatt_map_done(struct bt_host *h, struct bt_conn *c)
 {
     struct bt_le *l = &c->l;
+    l->map_len = (uint16_t)h->rmap_n;
+    for (unsigned i = 0; i < sizeof l->map_head; i++) l->map_head[i] = i < h->rmap_n ? h->rmap[i] : 0;
     l->mouse_ok = (uint8_t)bt_hid_mouse_parse(h->rmap, (int)h->rmap_n, (struct hid_mouse *)(void *)l->hmouse);
     kb_parse(h->rmap, h->rmap_n, &l->kbm);
+    if (!l->kbm.ok && !l->mouse_ok && !l->kb_in && !l->ms_in && l->svci + 1 < l->nsvc) {
+        /* a device with several HID services (a mouse with a vendor one first): the next one */
+        l->svci++;
+        l->svc_s = l->svcs[l->svci][0]; l->svc_e = l->svcs[l->svci][1];
+        lg(h, "%a: nothing in that HID service, trying %x-%x", c->addr, l->svc_s, l->svc_e);
+        l->nchr = 0; l->pm = l->map = 0;
+        l->g = G_CHR; l->cursor = l->svc_s;
+        att_req3(h, c, 0x08, l->cursor, l->svc_e, 0x2803);
+        return;
+    }
     lg(h, "%a: Report Map %u bytes: %s%s", c->addr, h->rmap_n, l->kbm.ok ? "keyboard " : "", l->mouse_ok ? "mouse" : "");
     for (unsigned q = 0; q < l->kbm.n; q++)
         if (l->kbm.r[q].nkeys || l->kbm.r[q].bm_n) lg(h, "%a: keyboard report %u: %s", c->addr, l->kbm.r[q].id, l->kbm.r[q].bm_n ? "key bitmap (NKRO)" : "key array");
@@ -587,6 +599,7 @@ static void gatt_rsp(struct bt_host *h, struct bt_conn *c, const uint8_t *p, uns
     struct bt_le *l = &c->l;
     uint8_t op = p[0];
     int err = op == 0x01, notfound = err && n >= 5 && p[4] == 0x0a;
+    if (err && !notfound) { l->att_err = n >= 5 ? p[4] : 0xff; l->att_err_g = l->g; }
     switch (l->g) {
     case G_MTU:
         if (op == 0x03 && n >= 3) { uint16_t m = le16(p + 1); l->mtu = m < 247 ? (m < 23 ? 23 : m) : 247; }
@@ -599,8 +612,9 @@ static void gatt_rsp(struct bt_host *h, struct bt_conn *c, const uint8_t *p, uns
             l->g = G_FAIL; le_disconnect(h, c, 0x13);
             return;
         }
-        l->svc_s = le16(p + 1); l->svc_e = le16(p + 3);
-        lg(h, "%a: HID service %x-%x", c->addr, l->svc_s, l->svc_e);
+        for (unsigned i = 1; i + 4 <= n && l->nsvc < 3; i += 4) { l->svcs[l->nsvc][0] = le16(p + i); l->svcs[l->nsvc][1] = le16(p + i + 2); l->nsvc++; }
+        l->svc_s = l->svcs[0][0]; l->svc_e = l->svcs[0][1];
+        lg(h, "%a: HID service %x-%x (%u instance%s)", c->addr, l->svc_s, l->svc_e, l->nsvc, l->nsvc == 1 ? "" : "s");
         l->g = G_CHR; l->cursor = l->svc_s;
         att_req3(h, c, 0x08, l->cursor, l->svc_e, 0x2803);
         return;
@@ -672,6 +686,7 @@ static void le_notify(struct bt_host *h, struct bt_conn *c, uint16_t hd, const u
 {
     struct bt_le *l = &c->l;
     if (l->g != G_UP) return;
+    l->nnotify++;
     if (l->nlog < 4) {                               /* the first few, as they came: what the device really sends */
         l->nlog++;
         char t[40]; unsigned k = 0;
