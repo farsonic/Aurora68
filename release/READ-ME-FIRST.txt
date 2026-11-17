@@ -140,6 +140,11 @@ the clock chip, the ADB transceiver (no keyboard or mouse yet), the SCC, the flo
   2. Add it to the container: python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom
      aurora68.declrom aurora68-512x342.declrom MyMac.img  (plus the WiFi files if you want the
      WiFi; the order does not matter). Copy aurora68.cpio to the card.
+     For the network, use aurora68-wifi.declrom instead of aurora68.declrom: MacTCP takes the
+     first network card it finds, and that file has only the WiFi one (a Pi 3 has no wired
+     Ethernet). config.txt must say "initramfs aurora68.cpio 0x10000000" (0.4's does; with
+     "followkernel" a large container lands in the kernel's early tables and the Mac shows the
+     blinking question mark).
   3. cmdline.txt, one line: "enable_cache debug mac.board=solo bt=off" (no mac.console=hdmi:
      the log shows until the Mac's video driver takes the screen, then the Mac does). Add the
      wifi.ssid= / wifi.psk= / wifi.country= words if you like, and mac.screen=WxH for a bigger

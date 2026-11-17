@@ -8,7 +8,7 @@ OBJCOPY = m68k-linux-gnu-objcopy
 PY      = python3
 B       = build
 
-all: $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom declrom-sizes
+all: $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes
 
 $(B)/%.o: %.s
 	@mkdir -p $(B)
@@ -48,6 +48,14 @@ $(B)/PiScreens.bin: $(B)/piscreens.bin.raw ../tools/mac/mkapp.py ../tools/mac/rs
 $(B)/PiColor.bin: $(B)/picolor.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
 	$(PY) ../tools/mac/mkapp.py --code $(B)/picolor.bin.raw --name PiColor --creator PICO -o $@
 
+# PiPing's peer: the address it pings (the testbed's host peer by default; make PEER=192.168.0.1 for a real gateway)
+PEER ?= 192.168.68.1
+PEER_HEX = $(shell printf '0x%02x%02x%02x%02x' $(subst ., ,$(PEER)))
+.PHONY: peer-inc
+$(B)/piping_peer.inc: peer-inc | $(B)
+	@printf '\t.byte %d\n\t.ascii "Ping %s ... "\n' $(shell printf 'Ping %s ... ' "$(PEER)" | wc -c) "$(PEER)" > $@
+$(B)/piping.o: piping.s $(B)/piping_peer.inc
+	$(AS) --defsym PEER_IP=$(PEER_HEX) -I$(B) -o $@ $<
 $(B)/PiPing.bin: $(B)/piping.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
 	$(PY) ../tools/mac/mkapp.py --code $(B)/piping.bin.raw --name PiPing --creator PIPG -o $@
 
@@ -67,6 +75,10 @@ declrom-sizes: $(B)/pidisk.bin.raw $(B)/enet.bin.raw $(B)/enet_wifi.bin.raw $(B)
 
 # the same card with the WiFi as its only network sResource: MacTCP and EtherTalk take the first
 # Ethernet-type sResource they find, so this is how the WiFi path is tested in the testbed
+# the network is the WiFi only (a Pi with no wired Ethernet, the bench): MacTCP's Ethernet link layer takes
+# the first network card it finds, so the wired sResource must be absent for it to take the WiFi (docs/09)
+$(B)/psmac_wifi_video.declrom: $(B)/pidisk.bin.raw $(B)/enet_wifi.bin.raw $(B)/piinput.bin.raw $(B)/pivideo.bin.raw ../tools/mac/mkdeclrom.py ../tools/mac/declrom.py
+	$(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --wifi $(B)/enet_wifi.bin.raw --input $(B)/piinput.bin.raw --video $(B)/pivideo.bin.raw -o $@
 $(B)/psmac_wifi.declrom: $(B)/pidisk.bin.raw $(B)/enet_wifi.bin.raw $(B)/piinput.bin.raw ../tools/mac/mkdeclrom.py ../tools/mac/declrom.py
 	$(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --wifi $(B)/enet_wifi.bin.raw --input $(B)/piinput.bin.raw -o $@
 

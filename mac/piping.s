@@ -48,7 +48,9 @@
 	.equ	csCode,		26
 	.equ	ipctlGetAddr,	15
 	.equ	ipctlEchoICMP,	17
-	.equ	PEER_IP,	0xC0A84401	| 192.168.68.1: tools/pinet.py's peer
+	.ifndef	PEER_IP
+	.equ	PEER_IP,	0xC0A84401	| 192.168.68.1: tools/pinet.py's peer (make PEER=a.b.c.d for another)
+	.endif
 	.equ	PINGS,		3
 	.equ	LINEH,		14
 
@@ -395,8 +397,7 @@ s_addr:	   .byte 12
 s_mask:	   .byte 7
 	.ascii "  mask "
 	.even
-s_ping:	   .byte 22
-	.ascii "Ping 192.168.68.1 ... "
+s_ping:	.include "piping_peer.inc"	| the Makefile writes the text for PEER
 	.even
 s_reply:   .byte 9
 	.ascii "reply in "

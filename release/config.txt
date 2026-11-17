@@ -4,7 +4,10 @@
 [all]
 kernel=kernel8.img            # Aurora68 (the Emu68 fork, build variant psmac)
 arm_64bit=1
-initramfs aurora68.cpio followkernel   # the container: Macintosh IIci ROM, declaration ROM, firmware
+# at a fixed address, not followkernel: a container with a disk image inside is 100 MB and more, and
+# behind the kernel it reaches into the kernel's early tables (the first Pi 3B boot got a corrupted
+# image and the blinking question mark; docs/08 item 35)
+initramfs aurora68.cpio 0x10000000   # the container: Macintosh IIci ROM, declaration ROM, firmware
                                        # (make it with make-container.py, see READ-ME-FIRST.txt)
 # (no disable_splash: the firmware's rainbow square for a moment at power-on says the firmware
 #  found its files; with it suppressed a card the firmware rejects and a dead board look the same)
