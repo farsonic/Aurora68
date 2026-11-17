@@ -24,6 +24,7 @@
 #include "psmac.h"
 #include "psmb.h"
 #include "devicetree.h"
+#include "psmac_rom_delta.h"
 
 void mmu_map(uintptr_t phys, uintptr_t virt, uintptr_t length, uint32_t attr_low, uint32_t attr_high);
 uintptr_t mmu_virt2phys(uintptr_t addr);
@@ -791,6 +792,18 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
     if (rom && rom_sz) {
         uint32_t n = rom_sz > PSMAC_ROM_SIZE ? PSMAC_ROM_SIZE : rom_sz;
         memcpy(romk, rom, n);
+        /* A stock IIci ROM in the container: patch it here (psmac_rom_delta.h, the assembled
+           rom/patches/iici.json: the timing calibration taken from the Pi, docs/06). The checksum
+           word is part of the delta; the ROM's own test (test 1 at boot) then passes. Nothing on
+           the SD card needs patching by hand, which the first user asked for. */
+        if (n == PSMAC_ROM_SIZE && BE32(*(uint32_t *)romk) == PSMAC_ROM_DELTA_IN) {
+            for (unsigned i = 0; i < sizeof(psmac_rom_delta) / sizeof(psmac_rom_delta[0]); i++)
+                memcpy(romk + psmac_rom_delta[i].off, psmac_rom_delta[i].bytes, psmac_rom_delta[i].len);
+            uint32_t sum = 0;
+            for (uint32_t o = 4; o < PSMAC_ROM_SIZE; o += 2) sum += BE16(*(uint16_t *)(romk + o));
+            kprintf("[PSMAC] stock IIci ROM %08x in the container: patched in memory, checksum word %08x (%s)\n",
+                    PSMAC_ROM_DELTA_IN, BE32(*(uint32_t *)romk), sum == PSMAC_ROM_DELTA_OUT ? "verified" : "MISMATCH");
+        }
         for (uint32_t o = n; o < PSMAC_ROM_SIZE; o += n) {
             memcpy(romk + o, rom, (o + n <= PSMAC_ROM_SIZE) ? n : PSMAC_ROM_SIZE - o);
         }

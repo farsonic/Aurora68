@@ -93,7 +93,9 @@ Setting up the SD card (a Pi 3B in an SE)
           cyfmac43430-sdio.bin brcmfmac43430-sdio.txt cyfmac43430-sdio.clm_blob BCM43430A1.hcd
 
      (for a 3B+/3A+, the cyfmac43455 files instead). The stock ROM is patched on the way; the
-     output says so. Copy aurora68.cpio to the card. The two declaration ROMs: the kernel takes
+     output says so. The kernel also patches a stock ROM itself when it finds one in the
+     container ("stock IIci ROM 368cadfe in the container: patched in memory ... verified" in
+     the log), so an unpatched container works too. Copy aurora68.cpio to the card. The two declaration ROMs: the kernel takes
      the one whose name ends in the screen size in use, 512x342 on the SE board.
   6. Check cmdline.txt: one line, "enable_cache debug mac.board=se bt=off". mac.board=se is what
      tells the kernel it is in a Macintosh SE and not in the testbed's IIci. To join a WiFi

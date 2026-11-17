@@ -21,7 +21,8 @@ it ran in the testbed, where MAME's Macintosh SE stands in for the logic board.
   System 7.1 to an occasional zero divide at boot), with a precomputed byte delta
   (`patches/iici-368CADFE.delta.json`), so plain Python is enough; the first attempt wanted the
   m68k assembler, which a Mac does not have. `rompatch.py` and `patches/iici.json` remain the
-  delta's source.
+  delta's source. The kernel applies the same delta in memory when the container holds a stock
+  ROM, so nothing on the card has to be patched by hand at all.
 - `config.txt` carries `dtoverlay=disable-bt` so the kernel's log is on the header's GPIO 14/15;
   Bluetooth stays off in this build (`bt=off`).
 
