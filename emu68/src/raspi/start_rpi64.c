@@ -679,8 +679,21 @@ void platform_post_init()
 
     if (base_vcmem && size_vcmem)
     {
-        mmu_map((uintptr_t)base_vcmem, (uintptr_t)base_vcmem, size_vcmem,
-                MMU_ACCESS | MMU_ISHARE | MMU_ALLOW_EL0 | MMU_ATTR_WRITETHROUGH, 0);
+#ifdef PSMAC
+        /* The VideoCore's memory as the firmware reports it runs to the end of the 1 GiB (on a
+           Pi 3 with gpu_mem=64: 0x3C000000-0x3FFFFFFF), over the peripheral window this build
+           keeps at 0x3F000000. Mapping it whole put the mailbox, the UART and the GPIO under a
+           write-through *normal* mapping: QEMU does not care, silicon does, and the first real
+           Pi 3B stopped dead at the splash's mailbox call, polling a status register through its
+           cache. The last 16 MiB are not SDRAM the ARM can see anyway: clip them (docs/08 item 29). */
+        if ((uintptr_t)base_vcmem + size_vcmem > PSMAC_PERIPH_LOW && (uintptr_t)base_vcmem < PSMAC_PERIPH_LOW)
+            size_vcmem = (uint32_t)(PSMAC_PERIPH_LOW - (uintptr_t)base_vcmem);
+        if ((uintptr_t)base_vcmem >= PSMAC_PERIPH_LOW) size_vcmem = 0;
+        kprintf("[BOOT] VC4 memory mapped: %p-%p (clipped at the peripheral window)\n", (intptr_t)base_vcmem, (intptr_t)base_vcmem + size_vcmem - 1);
+#endif
+        if (size_vcmem)
+            mmu_map((uintptr_t)base_vcmem, (uintptr_t)base_vcmem, size_vcmem,
+                    MMU_ACCESS | MMU_ISHARE | MMU_ALLOW_EL0 | MMU_ATTR_WRITETHROUGH, 0);
     }
 
     display_logo();
