@@ -430,7 +430,7 @@ void psmac_service_core(void)
     else if (use_gpio) { psmac_gpio_init(); transport_up = 1; }
     else if (!use_semihost) uart_init(); else { if (!semihost_init()) transport_dead = 1; }
     service_running = 1;
-    if (use_gpio && !bustrace_asked) psmac_trace(0);        /* the first 400 bus cycles are the testbed's diagnostic; on a bench they bury the log (mac.bustrace=N asks for them) */
+    if ((use_gpio || transport_none) && !bustrace_asked) psmac_trace(0);   /* the first 400 bus cycles are the testbed's diagnostic; on a bench they bury the log, and on the HDMI console they cost the ROM minutes (mac.bustrace=N asks for them) */
     kprintf("[PSMAC] service core running (%s transport owner, IPL poll %s)\n", transport_none ? "no" : use_gpio ? "GPIO" : "bridge", transport_none ? "solo" : use_gpio ? "20 kHz" : "1 kHz");
     psmac_se_start();
     /* a status register read on the GPIO costs a microsecond, a bridge poll a round trip: poll accordingly */
