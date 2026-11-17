@@ -274,6 +274,16 @@ static void in_testbed_poll(void)
     if (now < intest_next) return;
     if (intest_kind == 1) { in_about_step(intest_step++); return; }
     if (intest_kind == 2) { in_wifi_step(); return; }
+    if (intest_kind == 4) {                                                 /* mac.inputdrag=: drag the first desktop icon onto the second screen */
+        int s = intest_step++; uint32_t gap_ms = 50;
+        if (s < 40)       aga_virtual_mouse_update(-30, -20, 0);               /* the corner */
+        else if (s < 60)  aga_virtual_mouse_update(30, 2, 0);                  /* to (600, 40): the volume icon */
+        else if (s == 60) { aga_virtual_mouse_update(0, 0, 1); gap_ms = 300; } /* press */
+        else if (s < 86)  { aga_virtual_mouse_update(40, 6, 1); gap_ms = 80; } /* drag right, across the edge */
+        else if (s == 86) { aga_virtual_mouse_update(0, 0, 0); gap_ms = 500; } /* drop */
+        else { intest_at = 0; kprintf("[PSMAC] input drag script done\n"); return; }
+        intest_next = now + in_hz() * gap_ms / 1000; return;
+    }
     if (intest_kind == 3) {                                                 /* mac.inputright=: walk the mouse onto the second screen */
         int s = intest_step++;
         if (s < 60) { aga_virtual_mouse_update(30, 4, 0); intest_next = now + in_hz() * 50 / 1000; }
@@ -298,7 +308,8 @@ static void in_testbed_poll(void)
 void psmac_alice_input_test(uint32_t seconds) { intest_at = seconds; intest_kind = 0; }
 void psmac_alice_input_about(uint32_t seconds) { intest_at = seconds; intest_kind = 1; }
 void psmac_alice_input_wifi(uint32_t seconds)  { intest_at = seconds; intest_kind = 2; }
-void psmac_alice_input_right(uint32_t seconds) { intest_at = seconds; intest_kind = 3; }   /* the cursor walks right, onto the second screen (docs/10) */
+void psmac_alice_input_right(uint32_t seconds) { intest_at = seconds; intest_kind = 3; }
+void psmac_alice_input_drag(uint32_t seconds)  { intest_at = seconds; intest_kind = 4; }   /* the cursor walks right, onto the second screen (docs/10) */
 
 /* heartbeat line for psmac_bus.c: the interrupt line and what holds it */
 void psmac_slot_irq_report(void)

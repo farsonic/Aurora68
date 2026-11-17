@@ -95,6 +95,10 @@ static inline uintptr_t pi_phys(uint32_t p)
     if (p < ram_size) return ram_phys + p;
     if (p >= 0x40000000u && p < 0x50000000u) return rom_phys + (p & (PSMAC_ROM_SIZE - 1));
     if (slot_win_phys && p >= PSMB_WIN_PHYS && p < PSMB_WIN_PHYS + PSMB_WIN_SIZE) return slot_win_phys + (p - PSMB_WIN_PHYS);
+    /* the same megabyte once more at $F9900000: NuBus geometry puts the slot's 24-bit megabyte
+       ($900000-$9FFFFF) there in 32-bit space, and the ROM's screen set-up addresses the video
+       card's frame buffer in that form (docs/10) */
+    if (slot_win_phys && p >= PSMB_WIN_PHYS + 0x900000u && p < PSMB_WIN_PHYS + 0x900000u + PSMB_WIN_SIZE) return slot_win_phys + (p - PSMB_WIN_PHYS - 0x900000u);
     if (slot_declrom_phys && p >= PSMB_DECLROM_PHYS && p < PSMB_DECLROM_PHYS + PSMB_DECLROM_SIZE) return slot_declrom_phys + (p - PSMB_DECLROM_PHYS);
     return 0;
 }
@@ -186,6 +190,7 @@ static void build_identity(void)
         l2p[(PSMAC_ROM_MIRROR + p) >> 12] = (PSMAC_ROM_MIRROR + p) | L2P_VALID | L2P_WP;
     }
     for (uint32_t p = 0; p < PSMB_WIN_SIZE; p += 4096) l2p[(PSMB_WIN_PHYS + p) >> 12] = (PSMB_WIN_PHYS + p) | L2P_VALID;
+    for (uint32_t p = 0; p < PSMB_WIN_SIZE; p += 4096) l2p[(PSMB_WIN_PHYS + 0x900000u + p) >> 12] = (PSMB_WIN_PHYS + 0x900000u + p) | L2P_VALID;   /* its 24-bit-megabyte alias */
     for (uint32_t p = 0; p < PSMB_DECLROM_SIZE; p += 4096) l2p[(PSMB_DECLROM_PHYS + p) >> 12] = (PSMB_DECLROM_PHYS + p) | L2P_VALID | L2P_WP;
 }
 
