@@ -525,6 +525,18 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    square left visible (no `disable_splash`), so a firmware that gave up and a kernel that did
    look different.
 
+30. **The WiFi chip did not answer on SDIO (17 November, 08:00).** On the same Pi 3B the
+   kernel's own log read "SD host: spec 2", then "no SDIO card (CMD5)" and "the WiFi chip does
+   not answer on SDIO". A bare chip that ignores the very first SDIO command is not powered.
+   The Alice68 module switched the radio on through the VideoCore's GPIO expander (mailbox
+   SET_GPIO_STATE, line 1), which is where WL_REG_ON lives on the 3B+, 3A+, 4 and CM4. The 3B,
+   the Zeros and the CM3 wire WL_REG_ON to the SoC's own GPIO 41 and feed the chip's 32.768 kHz
+   sleep clock from GPCLK2 on GPIO 43. `wl_on()` now reads the board type (revision code bits
+   4-11, GET_BOARD_REVISION) and drives GPIO 41 on that family, checking that the sleep clock
+   runs (start.elf usually sets it up; the kernel does when it has not). The SD host's pin pulls
+   were also written to BCM2711 registers that do not exist on a BCM2837 (`sdh_pins()`, now
+   GPPUD/GPPUDCLK1 there). Still to be seen on the hardware.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,
