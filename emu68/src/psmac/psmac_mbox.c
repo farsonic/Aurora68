@@ -106,7 +106,8 @@ static int blk_xfer(int write, struct blkdev *b, uint32_t lba, uint32_t count, u
     while (count) {
         uint32_t n = count > sizeof(sector_buf) / 512 ? sizeof(sector_buf) / 512 : count;
         if (b->ram) {
-            if (write) { int r = mac_copy(buf, NULL, b->rambase + (uint64_t)lba * 512, n * 512, 0); if (r) return r; }
+            if (write) { int r = mac_copy(buf, NULL, b->rambase + (uint64_t)lba * 512, n * 512, 0); if (r) return r;
+                         extern void psmac_card_dirty(const void *, uint32_t); psmac_card_dirty(b->rambase + (uint64_t)lba * 512, n * 512); }
             else       { int r = mac_copy(buf, NULL, b->rambase + (uint64_t)lba * 512, n * 512, 1); if (r) return r; }
         } else {
             if (psmac_sh_seek(b->fd, (uint64_t)lba * 512) < 0) return PSMB_E_IO;

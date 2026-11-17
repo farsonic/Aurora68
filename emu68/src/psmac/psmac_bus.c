@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "support.h"
+#include "spinlock.h"
 #include "M68k.h"
 #include "A64.h"
 #include "globals.h"
@@ -460,6 +461,7 @@ void psmac_service_core(void)
             psmac_se_report();
             { extern void alice_net_report(void); alice_net_report(); }
             { extern void bt_pi_report(void); bt_pi_report(); }
+            { extern void psmac_card_report(void); psmac_card_report(); }
             { int ok1, ok2, ok3; uint32_t t1 = mac_rd32(0xd00, &ok1), t2 = mac_rd32(0xb24, &ok2), t3 = mac_rd32(0xcea, &ok3);
               if (ok1 && ok2 && ok3) kprintf("[PSMAC]   timing globals: TimeDBRA %04x TimeSCCDB %04x TimeSCSIDB %04x TimeVIADB %04x\n", t1 >> 16, t1 & 0xffff, t2 >> 16, t3 >> 16); }
             if (peek_len) {                    /* mac.peek=: the long at $1B40 (KCHRPtr) and the bytes asked for */
@@ -740,6 +742,7 @@ static void walk_container(const uint8_t *img, uint32_t size, struct container_r
     extern uint32_t fb_width, fb_height;
     uint32_t want_w = screen_w ? screen_w : fb_width, want_h = screen_h ? screen_h : fb_height;
     if (size < 110 || !bytes_eq(img, "070701", 6)) return;         /* a bare ROM */
+    { extern void psmac_card_container(const uint8_t *, uint32_t); psmac_card_container(img, size); }
     r->rom = NULL; r->rom_len = 0;
     uint32_t off = 0;
     while (off + 110 <= size && bytes_eq(img + off, "070701", 6)) {
@@ -764,6 +767,7 @@ static void walk_container(const uint8_t *img, uint32_t size, struct container_r
                 /* a disk image: the solo board's SCSI disk, or PiDisk's volume on the other boards; it
                    lives in the initramfs copy start.c made on the heap, and is written there */
                 psmac_image_add(base, (uint8_t *)(img + data), fsize);
+                { extern void psmac_card_track(const char *, const uint8_t *, uint32_t, uint32_t); psmac_card_track(base, img + data, data, fsize); }
                 kprintf("[PSMAC] container: disk image %s, %u bytes (%u MB)\n", base, fsize, fsize >> 20);
             }
             else { extern int alice_fw_preload(const char *, const uint8_t *, uint32_t); alice_fw_preload(base, img + data, fsize); }
@@ -956,9 +960,12 @@ void psmac_console_miniuart(void)
     uint32_t core = get_clock_rate(4);                                  /* CORE */
     if (core < 100000000u) core = 250000000u;
     for (int i = 0; i < 100000 && (rd32le(PL011_BASE + 0x18) & (1 << 3)); i++) ;   /* the PL011 drains what it has */
+    extern spinlock_t psmac_gpfsel_lock;
+    spinlock_acquire(&psmac_gpfsel_lock);
     uint32_t f = rd32le(PERIPH_VA + 0x200004);                          /* GPFSEL1: GPIO 14, 15 to ALT5 (TXD1, RXD1) */
     f = (f & ~(077u << 12)) | (022u << 12);
     wr32le(PERIPH_VA + 0x200004, f);
+    spinlock_release(&psmac_gpfsel_lock);
     wr32le(AUX_ENABLES, rd32le(AUX_ENABLES) | 1);
     wr32le(AUX_MU_CNTL, 0);
     wr32le(AUX_MU_IER, 0);

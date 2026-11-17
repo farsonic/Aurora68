@@ -4,7 +4,8 @@
 # taken through the QEMU monitor every SHOT seconds and at the end.
 # usage: tools/run-solo.sh [seconds] [extra Emu68 cmdline tokens]
 #   env: HD (default images/sys710pi.image), ROM, DECLROM, LOGDIR, PSMAC_RAM (MiB, default 16; empty = the kernel's default),
-#        SHOT (s, default 0), CONTAINER (a cpio with ROM, declrom and image: the hardware's way, no semihosting)
+#        SHOT (s, default 0), CONTAINER (a cpio with ROM, declrom and image: the hardware's way, no semihosting),
+#        CARD (a raw SD card image for the card writer, psmac_card.c: an MBR and a FAT partition holding the container)
 set -e
 cd "$(dirname "$0")/.."
 SECS=${1:-240}; shift || true
@@ -26,7 +27,7 @@ rm -f /tmp/qemu-mon.sock
 qemu-system-aarch64 -M raspi3b -smp 4 -m 1G -display none -monitor unix:/tmp/qemu-mon.sock,server,nowait \
   -kernel "$IMG" -dtb "$DTB" -initrd "$INITRD" \
   -append "$RAMTOK enable_cache debug mac.board=solo $BTTOK $FILES $*" \
-  -serial stdio -serial file:$LOGDIR/miniuart.log -semihosting-config enable=on,target=native -accel tcg,tb-size=256 > "$LOGDIR/emu68.log" 2>&1 &
+  ${CARD:+-drive file=$CARD,if=sd,format=raw} -serial stdio -serial file:$LOGDIR/miniuart.log -semihosting-config enable=on,target=native -accel tcg,tb-size=256 > "$LOGDIR/emu68.log" 2>&1 &
 QP=$!
 n=0; t=0
 while kill -0 $QP 2>/dev/null && [ $t -lt $SECS ]; do

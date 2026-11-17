@@ -11,7 +11,20 @@
 - **Pairing without a pointer.** `bt.pair=1` pairs with the first keyboard or mouse a scan finds
   in pairing mode (`bt.pair=NAME` for one by name), and the log prints the `bt.dev=` word that
   makes the pairing permanent. The shipped cmdline.txt has it on.
-- Untested on hardware at the time of writing: the Pi 3's Bluetooth path is new.
+- **The card writer** (psmac_card.c): the kernel drives the Pi 3's SD card through the sdhost
+  controller (the Arasan stays the WiFi's) and keeps two things across a power cycle:
+  Bluetooth pairings in `pairings.txt` (created by the kernel), and the disk image's changes,
+  written back into `aurora68.cpio` at the image's own offset a second after the Mac stops
+  writing. The container is written only after its size and first sector match the copy in
+  memory; cmdline.txt and config.txt are never touched. `mac.card=ro` / `mac.card=off`.
+  Tested in QEMU (a FAT32 card image: the written-back container parses, its changes lie only
+  inside the image, fsck.vfat finds nothing, and the next boot reaches the Finder from it);
+  not yet on the Pi.
+- Also: a container larger than 8 MB is kept below the kernel's block at the top of RAM (the
+  firmware's followkernel placement corrupted a 100 MB one); config.txt loads it at a fixed
+  address. Bluetooth on the 3B/3B+/3A+ without CTS/RTS flow control (their chips have none).
+- The Pi 3B's Bluetooth path ran on the hardware: an LE mouse paired, reconnected and drove
+  the Mac's input (18 November).
 
 ## 0.4 — a Pi that boots System 7 on its own (17 November 2026, 12:30)
 

@@ -555,6 +555,7 @@ void __attribute__((noreturn)) psmac_alice_core(void)
     kprintf("[PSMAC] core 3: Alice68 services (network board, Bluetooth, status) and the mailbox\n");
     for (;;) {
         psmac_mbox_poll();
+        { extern void psmac_card_poll(void); psmac_card_poll(); }        /* the Pi's own SD card: pairings, the disk image's changes (psmac_card.c) */
         alice_net_poll();
         in_repeat_poll();
         in_testbed_poll();

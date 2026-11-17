@@ -657,6 +657,27 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    told them apart and stays. Still open: the pairing has to be copied from the screen into
    cmdline.txt by hand until the kernel can write the card.
 
+38. **The card writer (18 November).** The bench needed two things kept across a power cycle:
+   Bluetooth pairings (until now copied by hand from the screen into cmdline.txt) and what the
+   Mac wrote to its disk image. psmac_card.c drives the boot card through the BCM2835's sdhost
+   controller on GPIO 48-53 (ALT0), the split Linux uses on a Pi 3 (the Arasan is the WiFi's on
+   34-39; sdio.c now only takes 48-53 off the Arasan when they are still ALT3, and every GPFSEL
+   read-modify-write from the WiFi, Bluetooth, console and card code goes under one lock,
+   `psmac_gpfsel_lock`, since they run on different cores). Register layout and reset sequence
+   after Linux's bcm2835-sdhost; SD init per the Simplified Specification; single-block PIO
+   reads and writes, the write's programming time polled across passes of core 3's loop so the
+   Bluetooth UART beside it never waits. A FAT16/FAT32 layer that never moves or grows anything
+   but its own file: `pairings.txt` (created in one cluster of the root directory, rewritten in
+   place; bt_pi.c reads it after cmdline.txt's words and hands every change of the paired list
+   back), and in-place sector writes into `aurora68.cpio`. cpio aligns file data to 4 bytes, so
+   the image's blocks straddle card sectors: whole sectors are written from the container in
+   memory, whose bytes around the image are the unchanged cpio headers. The container is only
+   written after its size and first sector match the loaded copy. Tested under QEMU, whose GPIO
+   model moves the SD card to the sdhost when 48-53 go to ALT0 (`tools/run-solo.sh` with
+   `CARD=`): 99 KB written back after a System 7.1 boot, the extracted container parses with all
+   changes inside the image, fsck.vfat is clean, the next boot from it reaches the Finder, and
+   Bluetooth loads the pairing from the card.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

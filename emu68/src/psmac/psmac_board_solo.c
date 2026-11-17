@@ -369,6 +369,7 @@ static struct {
     uint8_t *buf; uint32_t buf_len, buf_pos;   /* the data phase's current chunk */
     uint32_t left, lba;                        /* bytes still to move after this chunk, next block */
     int chunked;                               /* chunks through sector_buf (file images) */
+    uint8_t *wr_ram; uint32_t wr_len;          /* a WRITE straight into a RAM image: marked for the card when its data is in */
     uint8_t status, msgin, sense_key, asc;
     uint8_t small[256];
     uint32_t cmds, mismatches, underflows;
@@ -408,7 +409,7 @@ static void execute(void)
     struct disk *d = t.d;
     uint8_t op = t.cdb[0];
     uint32_t lba = 0, cnt = 0;
-    t.status = 0; t.cmds++;
+    t.status = 0; t.cmds++; t.wr_ram = 0;
     { unsigned k = t.ring_n++ % 12; for (int i = 0; i < 10; i++) t.ring[k].cdb[i] = t.cdb[i]; t.ring[k].n = t.cmds; }
     TRACE("SCSI %d: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n", t.id, t.cdb[0], t.cdb[1], t.cdb[2], t.cdb[3], t.cdb[4], t.cdb[5], t.cdb[6], t.cdb[7], t.cdb[8], t.cdb[9]);
     if ((t.cdb[1] >> 5) && op != 0x12 && op != 0x03) { check_condition(5, 0x25); set_phase(PH_STATUS); return; }
@@ -462,7 +463,7 @@ static void execute(void)
     if (!cnt) { set_phase(PH_STATUS); return; }
     int write = (op == 0x0a || op == 0x2a);
     if (write && !d->writable) { check_condition(7, 0x27); set_phase(PH_STATUS); return; }
-    if (d->ram) { t.buf = d->ram + (uint64_t)lba * 512; t.buf_len = cnt * 512; t.buf_pos = 0; t.left = 0; t.chunked = 0; if (write) d->writes += cnt; else d->reads += cnt; }
+    if (d->ram) { t.buf = d->ram + (uint64_t)lba * 512; t.buf_len = cnt * 512; t.buf_pos = 0; t.left = 0; t.chunked = 0; if (write) { d->writes += cnt; t.wr_ram = t.buf; t.wr_len = cnt * 512; } else d->reads += cnt; }
     else { t.left = cnt * 512; t.lba = lba; t.chunked = 1; if (write) { uint32_t nb = cnt > sizeof(sector_buf) / 512 ? sizeof(sector_buf) / 512 : cnt; t.buf = sector_buf; t.buf_len = nb * 512; t.buf_pos = 0; t.left -= nb * 512; } else next_chunk(0); if (t.phase == PH_STATUS) return; }
     set_phase(write ? PH_DATAOUT : PH_DATAIN);
 }
@@ -516,6 +517,7 @@ static void advance(void)
                 t.lba += nb;
                 if (t.left) { nb = t.left / 512; if (nb > sizeof(sector_buf) / 512) nb = sizeof(sector_buf) / 512; t.buf_len = nb * 512; t.buf_pos = 0; t.left -= nb * 512; t.req = 1; break; }
             }
+            if (t.wr_ram) { extern void psmac_card_dirty(const void *, uint32_t); psmac_card_dirty(t.wr_ram, t.wr_len); t.wr_ram = 0; }
             set_phase(PH_STATUS);
         }
         break;

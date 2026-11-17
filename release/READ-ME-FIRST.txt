@@ -156,12 +156,15 @@ the clock chip, the ADB transceiver (no keyboard or mouse yet), the SCC, the flo
      keyboard or mouse it finds in pairing mode and looks again every 20 seconds, so put the
      device in pairing mode any time after the boot. A keyboard shows a passkey in the log
      (mac.console=hdmi to see it): type it on the keyboard and press Return. Once paired, the
-     log prints a "bt.dev=..." word: add it to cmdline.txt and the device reconnects at every
-     boot without pairing again (the Pi cannot write the card itself yet). Classic Bluetooth and
-     Bluetooth LE mice and keyboards both work; the pairing is forgotten at power off unless the
-     bt.dev= word is in cmdline.txt.
-What the Mac writes to the image stays until the power goes (the card is not written back yet);
-the clock starts on 17 November 2026 and parameter RAM changes do not survive either. With
+     kernel saves it in pairings.txt on the card and the device reconnects at every boot
+     without pairing again. Classic Bluetooth and Bluetooth LE mice and keyboards both work.
+What the Mac writes to the image is written back into aurora68.cpio on the card a second or two
+after the Mac stops writing (new in 0.5), so the next boot starts where the last one ended. Keep a
+copy of aurora68.cpio somewhere else: a power cut in the middle of a write can damage the image,
+as it would a real disk. Bluetooth pairings are kept in pairings.txt on the card, which the
+kernel creates; the bt.dev= words in cmdline.txt still work and are read first. mac.card=ro or
+mac.card=off in cmdline.txt stop the writing. The clock starts on 17 November 2026 and parameter
+RAM changes do not survive a power cycle yet. With
 mac.board=se (the SE board) the same image appears as a PiDisk volume instead.
 
 A Pi Zero W (the original, 2017) cannot run this: its processor is 32-bit only. The Zero 2 W can.

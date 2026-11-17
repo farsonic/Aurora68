@@ -217,6 +217,7 @@ void vkprintf(const char * restrict format, va_list args)
    good (the firmware then scanned out a buffer nobody drew into). One lock held from send to
    receive, and the reply matched by its buffer address as well as its channel. */
 spinlock_t vc_mbox_lock;
+spinlock_t psmac_gpfsel_lock;           /* GPFSEL read-modify-writes from different cores: WiFi pins, Bluetooth pins, the SD card's (psmac_card.c) */
 static uint32_t mbox_sent;
 
 static uint32_t mbox_recv(uint32_t channel)

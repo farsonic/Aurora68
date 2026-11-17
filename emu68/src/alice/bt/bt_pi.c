@@ -17,6 +17,7 @@
  */
 #include <stdint.h>
 #include "support.h"
+#include "spinlock.h"
 #include "bthost.h"
 #include "../alice_net.h"
 
@@ -119,8 +120,11 @@ static int bt_on(int on)
 {
     int t = alice_pi_board_type(), pin = t == 0x0c ? 45 : t == 0x12 ? 42 : 0;
     if (!pin) return alice_mbox(0x00038041u, 128u + 0u, on ? 1u : 0u, 0);
+    extern spinlock_t psmac_gpfsel_lock;
+    spinlock_acquire(&psmac_gpfsel_lock);
     uint32_t f = rd(GPIO + 0x10);                                       /* GPFSEL4: GPIO 40-49 */
     wr(GPIO + 0x10, (f & ~(7u << (3 * (pin - 40)))) | (1u << (3 * (pin - 40))));
+    spinlock_release(&psmac_gpfsel_lock);
     wr(GPIO + (on ? 0x20 : 0x2c), 1u << (pin - 32));                    /* GPSET1 / GPCLR1 */
     return 0;
 }
@@ -131,12 +135,15 @@ static void uart_init(void)
     int flow = alice_pi_is_2711() || t == 0x0c || t == 0x12;
     CR_ON = flow ? CR_FLOW : CR_NOFLOW;
     blog(flow ? "[BT] UART: TX, RX, CTS and RTS (GPIO 30-33)" : "[BT] UART: TX and RX only (GPIO 32, 33): this board has no CTS/RTS to the chip");
+    extern spinlock_t psmac_gpfsel_lock;
+    spinlock_acquire(&psmac_gpfsel_lock);
     uint32_t f = rd(GPIO + 0x0c);                       /* GPFSEL3: GPIO 30-33 (or 32-33) to ALT3 (UART0 CTS RTS TXD RXD) */
     if (flow) f = (f & ~0xfffu) | 07777u;
     else f = (f & ~(077u << 6)) | (077u << 6);
     wr(GPIO + 0x0c, f);
     uint32_t f1 = rd(GPIO + 0x04);                      /* GPIO 15 an input: UART0's RX comes from GPIO 33 only */
     wr(GPIO + 0x04, f1 & ~(7u << 15));
+    spinlock_release(&psmac_gpfsel_lock);
     if (alice_pi_is_2711()) {
         uint32_t p1 = rd(GPIO + 0xe8), p2 = rd(GPIO + 0xec);    /* pulls (BCM2711): CTS and RXD up */
         p1 = (p1 & ~(0xfu << 28)) | (1u << 28);
@@ -202,7 +209,8 @@ static void io_mouse(void *c, int dx, int dy, int w, unsigned b)
     if (pt_mouse_extra) pt_mouse_extra(w, 0, b);
 }
 static void keys_log(void);
-static void io_keys(void *c) { (void)c; keys_log(); }
+static void keys_save(void);
+static void io_keys(void *c) { (void)c; keys_log(); keys_save(); }
 static const struct bt_io bio = { 0, io_send, io_baud, io_ms, io_log, io_kb, io_mouse, io_keys, io_kick };
 
 static unsigned put_num(char *t, unsigned k, uint32_t v, int hex);
@@ -213,14 +221,41 @@ static unsigned put_hex(char *t, unsigned k, const uint8_t *p, int n, int rev)
     for (int i = 0; i < n; i++) { uint8_t b = p[rev ? n - 1 - i : i]; t[k++] = hexd[b >> 4]; t[k++] = hexd[b & 15]; }
     return k;
 }
+/* the Pi's own SD card (psmac_card.c, Macintosh build only): pairings.txt read at start, written on every change */
+extern const char *psmac_card_pairings(int *state) __attribute__((weak));
+extern void psmac_card_save_pairings(const char *text, uint32_t len) __attribute__((weak));
+static int card_saves(void) { int st = -1; if (psmac_card_pairings) psmac_card_pairings(&st); return st == 1 && psmac_card_save_pairings; }
+static unsigned key_word(char *t, unsigned n, const struct bt_key *k);
+static void keys_save(void)
+{
+    if (!card_saves()) return;
+    static char txt[4096]; unsigned n = 0;
+    n = put_str(txt, 0, "# Bluetooth pairings, written by the Aurora68 kernel (one bt.dev= per line; delete a line to forget)\n");
+    for (int i = 0; i < bh.nkeys && n < sizeof txt - 300; i++) {
+        const struct bt_key *k = &bh.keys[i];
+        txt[n++] = '#'; txt[n++] = ' '; for (int j = 0; k->name[j] && j < 39; j++) txt[n++] = (k->name[j] >= ' ' && k->name[j] < 127) ? k->name[j] : '?';
+        txt[n++] = '\n';
+        n = key_word(txt, n, k); txt[n++] = '\n';
+    }
+    psmac_card_save_pairings(txt, n);
+}
 /* every paired device as the cmdline.txt word that brings it back after a power cycle */
 static void keys_log(void)
 {
+    int saved = card_saves();
     for (int i = 0; i < bh.nkeys; i++) {
         struct bt_key *k = &bh.keys[i];
-        char t[200]; unsigned n = 0;
+        char t[240]; unsigned n = 0;
         n = put_str(t, 0, "[BT] paired: "); for (int j = 0; k->name[j] && j < 39; j++) t[n++] = k->name[j];
-        n = put_str(t, n, " -> add to cmdline.txt: bt.dev=");
+        n = put_str(t, n, saved ? " (kept in pairings.txt on the card): " : " -> add to cmdline.txt: ");
+        n = key_word(t, n, k);
+        t[n] = 0; blog(t);
+    }
+}
+static unsigned key_word(char *t, unsigned n, const struct bt_key *k)
+{
+    {
+        n = put_str(t, n, "bt.dev=");
         n = put_hex(t, n, k->addr, 6, 1); t[n++] = ':';
         n = put_hex(t, n, k->key, 16, 0); t[n++] = ':';
         unsigned kind = ((k->flags & BTK_KEYBOARD) ? 1u : 0u) | ((k->flags & BTK_MOUSE) ? 2u : 0u) | ((k->flags & BTK_LE) ? 4u : 0u);
@@ -232,7 +267,7 @@ static void keys_log(void)
             t[n++] = ':'; t[n++] = (char)('0' + (k->addr_type & 1));
             if (k->has_irk) { t[n++] = ':'; n = put_hex(t, n, k->irk, 16, 0); }
         }
-        t[n] = 0; blog(t);
+        return n;
     }
 }
 
@@ -313,11 +348,10 @@ static void auto_pair_poll(uint32_t now)
     }
 }
 static int hexv(char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1; }
-static void load_keys(void)
+static void load_keys(const char *s)
 {
-    const char *s = alice_bootargs();
     for (const char *p = s; *p; p++) {
-        if ((p != s && p[-1] != ' ') || p[0] != 'b' || p[1] != 't' || p[2] != '.' || p[3] != 'd' || p[4] != 'e' || p[5] != 'v' || p[6] != '=') continue;
+        if ((p != s && p[-1] != ' ' && p[-1] != '\n' && p[-1] != '\r' && p[-1] != '\t') || p[0] != 'b' || p[1] != 't' || p[2] != '.' || p[3] != 'd' || p[4] != 'e' || p[5] != 'v' || p[6] != '=') continue;
         const char *q = p + 7;
         uint8_t a[6], k[16];
         int ok = 1;
@@ -489,7 +523,18 @@ void bt_pi_poll(void)
 {
     static const char *const stems[] = { "BCM4345C0", "BCM4345C5", "bcm4345c0", "BCM43430A1", "BCM4343A1", 0 };
     uint32_t now = ms_now();
-    if (!keys_loaded) { keys_loaded = 1; load_keys(); pair_option(); }
+    if (!keys_loaded) {
+        /* cmdline.txt's bt.dev= words, then pairings.txt from the card (newer: it wins); the card is
+           read on core 3 at start, a few hundred milliseconds - wait for it, at most ten seconds */
+        static uint32_t card_wait;
+        int st = -1; const char *txt = psmac_card_pairings ? psmac_card_pairings(&st) : 0;
+        if (!card_wait) card_wait = now ? now : 1;
+        if (st == 0 && now - card_wait < 10000) return;
+        keys_loaded = 1;
+        load_keys(alice_bootargs());
+        if (txt && txt[0]) { int before = bh.nkeys; load_keys(txt); char t[64]; unsigned k = put_str(t, 0, "[BT] pairings.txt on the card: "); k = put_num(t, k, (uint32_t)bh.nkeys - (uint32_t)before, 0); k = put_str(t, k, " more device(s)"); t[k] = 0; blog(t); }
+        pair_option();
+    }
     switch (phase) {
     case 0:
         if (!bt_pi_wanted()) { phase = 9; post("off (bt=off)", 0); blog("[BT] off: bt=off in cmdline.txt"); break; }

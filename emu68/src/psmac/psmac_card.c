@@ -1,0 +1,608 @@
+/*
+ * psmac_card.c — the Pi's own SD card, written by the kernel. MPL-2.0.
+ *
+ * Two things a bench Pi needs to keep across a power cycle: its Bluetooth pairings, and what the
+ * Mac wrote to the disk image it booted from. Both live on the boot card, which the firmware read
+ * and then left alone. This file drives the card through the BCM2835's "sdhost" controller on
+ * GPIO 48-53 (ALT0), the way Linux does on a Pi 3: the other SD controller, the Arasan, belongs
+ * to the WiFi chip on GPIO 34-39 (alice/wifi/sdio.c). The register layout and the reset and
+ * clock sequences follow Linux's bcm2835-sdhost driver; the card protocol is the SD Physical
+ * Layer Simplified Specification (CMD0, CMD8, ACMD41, CMD2, CMD3, CMD7, ACMD6, CMD17, CMD24,
+ * CMD13).
+ *
+ * The filesystem side is deliberately small. Nothing on the card is ever moved, shrunk or grown
+ * except one file of the kernel's own:
+ *   pairings.txt   Bluetooth pairings as bt.dev= lines (bt_pi.c reads them at start and hands
+ *                  every change back). Created in the root directory, in one cluster, if absent.
+ *   aurora68.cpio  the container the firmware loaded (mac.container= for another name). A disk
+ *                  image inside it is written back sector by sector at its own offset, so the
+ *                  next boot loads what the Mac wrote. Only after the file's size and first
+ *                  sector have been checked against the copy in memory.
+ * cmdline.txt and config.txt are never written: a mistake here must not stop the Pi booting.
+ * FAT16 and FAT32, 512-byte sectors, the first FAT partition of an MBR card (or a card with no
+ * partition table). Options: mac.card=off (do not touch the card), mac.card=ro (read only:
+ * pairings are loaded, nothing is written).
+ *
+ * Everything runs on core 3 (psmac_alice_core), in small steps: one sector per pass at most, the
+ * card's programming time waited for between passes, so the Bluetooth UART beside it (no flow
+ * control on a Pi 3B) and the second display's tick never wait long. Written 18 November 2026.
+ */
+#include <stdint.h>
+#include "support.h"
+#include "tlsf.h"
+#include "spinlock.h"
+#include "psmac.h"
+
+extern uint32_t get_clock_rate(uint32_t clock_id);
+extern const char *psmac_option(const char *key);
+extern int alice_pi_is_2711(void);
+extern spinlock_t psmac_gpfsel_lock;
+
+#define PERI     PSMAC_PERIPH_HI
+#define GPIO     (PERI + 0x200000u)
+#define SDH      (PERI + 0x202000u)
+#define SDCMD    0x00
+#define SDARG    0x04
+#define SDTOUT   0x08
+#define SDCDIV   0x0c
+#define SDRSP0   0x10
+#define SDHSTS   0x20
+#define SDVDD    0x30
+#define SDEDM    0x34
+#define SDHCFG   0x38
+#define SDHBCT   0x3c
+#define SDDATA   0x40
+#define SDHBLC   0x50
+#define CMD_NEW      0x8000u
+#define CMD_FAIL     0x4000u
+#define CMD_BUSY     0x0800u
+#define CMD_NORSP    0x0400u
+#define CMD_LONG     0x0200u
+#define CMD_WRITE    0x0080u
+#define CMD_READ     0x0040u
+#define HSTS_ERRORS  0x00f8u
+#define HSTS_CLEAR   0x07f8u
+#define HSTS_CRC7    0x0010u
+#define HCFG_BUSY_EN 0x0400u
+#define HCFG_SLOW    0x0008u
+#define HCFG_WIDE_EXT 0x0004u
+#define HCFG_WIDE_INT 0x0002u
+#define EDM_FSM(e)   ((e) & 0xfu)
+#define EDM_FILL(e)  (((e) >> 4) & 0x1fu)
+#define FSM_IDENT    0x0u
+#define FSM_DATA     0x1u
+
+static inline uint32_t r(uint32_t o) { return rd32le(SDH + o); }
+static inline void w(uint32_t o, uint32_t v) { wr32le(SDH + o, v); }
+static inline uint64_t cnt(void) { uint64_t v; __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(v)); return v; }
+static inline uint64_t frq(void) { uint64_t v; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(v)); return v; }
+static uint32_t ms(void) { return (uint32_t)(cnt() / (frq() / 1000u)); }
+static void udelay(uint32_t us) { uint64_t e = cnt() + frq() * us / 1000000u; while (cnt() < e) ; }
+
+/* ==== the controller and the card ============================================================ */
+static struct {
+    int state;                      /* 0 not started, 1 ready, -1 no card / failed, -2 off */
+    uint32_t rca, ccs, last_hsts;   /* the card's address; block addressing (SDHC/SDXC) */
+    uint32_t errors, reads, writes;
+    int ro;
+} sd;
+
+static int sd_cmd(uint32_t idx, uint32_t arg, uint32_t flags, uint32_t *rsp)
+{
+    uint64_t t = cnt();
+    while (r(SDCMD) & CMD_NEW) if (cnt() - t > frq() / 20) { sd.errors++; return -1; }
+    uint32_t h = r(SDHSTS);
+    if (h & HSTS_CLEAR) w(SDHSTS, h & HSTS_CLEAR);
+    w(SDARG, arg);
+    w(SDCMD, (idx & 0x3fu) | flags | CMD_NEW);
+    t = cnt();
+    uint64_t lim = (flags & CMD_BUSY) ? frq() : frq() / 10;
+    while (r(SDCMD) & CMD_NEW) if (cnt() - t > lim) { sd.errors++; w(SDCMD, 0); return -2; }
+    if (r(SDCMD) & CMD_FAIL) {
+        h = r(SDHSTS); sd.last_hsts = h;
+        w(SDHSTS, h & HSTS_CLEAR);
+        /* R3 (ACMD41) and R2 carry no CRC7 the controller can check: that "error" is expected */
+        if (!((h & HSTS_ERRORS) == HSTS_CRC7 && (idx == 41 || (flags & CMD_LONG)))) { sd.errors++; return -3; }
+    }
+    if (rsp) { rsp[0] = r(SDRSP0); if (flags & CMD_LONG) { rsp[1] = r(SDRSP0 + 4); rsp[2] = r(SDRSP0 + 8); rsp[3] = r(SDRSP0 + 12); } }
+    return 0;
+}
+static int sd_acmd(uint32_t idx, uint32_t arg, uint32_t flags, uint32_t *rsp)
+{
+    uint32_t r1;
+    if (sd_cmd(55, sd.rca << 16, 0, &r1)) return -1;
+    return sd_cmd(idx, arg, flags, rsp);
+}
+static void sd_pins(void)
+{
+    spinlock_acquire(&psmac_gpfsel_lock);
+    uint32_t f4 = rd32le(GPIO + 0x10), f5 = rd32le(GPIO + 0x14);
+    f4 = (f4 & ~(077u << 24)) | (044u << 24);                  /* GPIO 48, 49: ALT0 (SD0 CLK, CMD) */
+    f5 = (f5 & ~07777u) | 04444u;                              /* GPIO 50-53: ALT0 (SD0 DAT0-3) */
+    wr32le(GPIO + 0x10, f4); wr32le(GPIO + 0x14, f5);
+    spinlock_release(&psmac_gpfsel_lock);
+}
+static void sd_clock(uint32_t hz)
+{
+    uint32_t core = get_clock_rate(4);
+    if (core < 100000000u) core = 250000000u;
+    uint32_t div = core / hz; div = div > 2 ? div - 2 : 0;
+    if (core / (div + 2) > hz) div++;
+    if (div > 0x7ff) div = 0x7ff;
+    w(SDCDIV, div);
+}
+static int sd_init(void)
+{
+    sd_pins();
+    w(SDVDD, 0); w(SDCMD, 0); w(SDARG, 0); w(SDTOUT, 0xf00000u); w(SDCDIV, 0);
+    w(SDHSTS, HSTS_CLEAR); w(SDHCFG, 0); w(SDHBCT, 0); w(SDHBLC, 0);
+    uint32_t e = r(SDEDM);
+    e &= ~((0x1fu << 9) | (0x1fu << 14)); e |= (4u << 9) | (4u << 14);   /* FIFO thresholds, as Linux */
+    w(SDEDM, e);
+    udelay(20000);
+    w(SDVDD, 1);
+    udelay(20000);
+    w(SDHCFG, HCFG_WIDE_INT | HCFG_SLOW | HCFG_BUSY_EN);
+    sd_clock(400000);
+    udelay(2000);
+    uint32_t rsp[4];
+    sd.rca = 0;
+    sd_cmd(0, 0, CMD_NORSP, 0);
+    udelay(2000);
+    int v2 = sd_cmd(8, 0x1aa, 0, rsp) == 0 && (rsp[0] & 0xfff) == 0x1aa;
+    uint32_t t0 = ms();
+    for (;;) {
+        int e = sd_acmd(41, v2 ? 0x40ff8000u : 0x00ff8000u, 0, rsp);
+        if (!e && (rsp[0] & 0x80000000u)) break;                      /* powered up */
+        if (ms() - t0 > 1500) return -1;
+        udelay(10000);
+    }
+    sd.ccs = (rsp[0] >> 30) & 1;
+    if (sd_cmd(2, 0, CMD_LONG, rsp)) return -2;
+    if (sd_cmd(3, 0, 0, rsp)) return -3;
+    sd.rca = rsp[0] >> 16;
+    if (sd_cmd(7, sd.rca << 16, CMD_BUSY, rsp)) return -4;
+    if (sd_acmd(6, 2, 0, rsp) == 0) w(SDHCFG, HCFG_WIDE_INT | HCFG_SLOW | HCFG_BUSY_EN | HCFG_WIDE_EXT);
+    if (!sd.ccs) sd_cmd(16, 512, 0, rsp);
+    sd_clock(25000000);
+    return 0;
+}
+/* the card's state from CMD13: 4 = transfer (idle), 7 = programming; -1 if it does not answer */
+static int sd_status(void)
+{
+    uint32_t rsp;
+    if (sd_cmd(13, sd.rca << 16, 0, &rsp)) return -1;
+    return (int)((rsp >> 9) & 0xf);
+}
+static int fsm_wait(uint32_t us)
+{
+    uint64_t t = cnt(), lim = frq() * us / 1000000u;
+    for (;;) { uint32_t f = EDM_FSM(r(SDEDM)); if (f == FSM_DATA || f == FSM_IDENT) return 0; if (cnt() - t > lim) return -1; }
+}
+static int sd_read(uint32_t lba, uint8_t *buf)
+{
+    if (sd.state != 1) return -1;
+    w(SDHBCT, 512); w(SDHBLC, 1);
+    if (sd_cmd(17, sd.ccs ? lba : lba * 512u, CMD_READ, 0)) return -2;
+    uint32_t *p = (uint32_t *)buf;
+    for (int i = 0; i < 128; i++) {
+        uint64_t t = cnt();
+        while (!EDM_FILL(r(SDEDM)) && !(r(SDHSTS) & 1u)) if (cnt() - t > frq() / 10) { sd.errors++; return -3; }
+        p[i] = *(volatile uint32_t *)(uintptr_t)(SDH + SDDATA);    /* raw: the bytes keep their order */
+    }
+    if (fsm_wait(100000) || (r(SDHSTS) & HSTS_ERRORS)) { uint32_t h = r(SDHSTS); sd.last_hsts = h; w(SDHSTS, h & HSTS_CLEAR); sd.errors++; return -4; }
+    sd.reads++;
+    return 0;
+}
+/* a write in two halves: the data goes out now, the card's programming is waited for by polling */
+static int sd_write_start(uint32_t lba, const uint8_t *buf)
+{
+    if (sd.state != 1 || sd.ro) return -1;
+    w(SDHBCT, 512); w(SDHBLC, 1);
+    if (sd_cmd(24, sd.ccs ? lba : lba * 512u, CMD_WRITE, 0)) return -2;
+    const uint32_t *p = (const uint32_t *)buf;
+    for (int i = 0; i < 128; i++) {
+        uint64_t t = cnt();
+        while (EDM_FILL(r(SDEDM)) >= 15) if (cnt() - t > frq() / 10) { sd.errors++; return -3; }
+        *(volatile uint32_t *)(uintptr_t)(SDH + SDDATA) = p[i];
+    }
+    return 0;
+}
+/* 1 done, 0 still programming, < 0 failed */
+static int sd_write_poll(void)
+{
+    uint32_t f = EDM_FSM(r(SDEDM));
+    if (f != FSM_DATA && f != FSM_IDENT) return 0;
+    uint32_t h = r(SDHSTS);
+    if (h & HSTS_ERRORS) { sd.last_hsts = h; w(SDHSTS, h & HSTS_CLEAR); sd.errors++; return -1; }
+    int s = sd_status();
+    if (s < 0) return -2;
+    if (s != 4) return 0;
+    sd.writes++;
+    return 1;
+}
+static int sd_write(uint32_t lba, const uint8_t *buf)                 /* the small writes: directory, FAT, pairings */
+{
+    if (sd_write_start(lba, buf)) return -1;
+    uint32_t t = ms();
+    for (;;) { int k = sd_write_poll(); if (k == 1) return 0; if (k < 0 || ms() - t > 1000) return -2; }
+}
+
+/* ==== FAT ===================================================================================== */
+static struct {
+    int ok, fat32;
+    uint32_t part, spc, fat_lba, nfats, fatsz, root_lba, rootsecs, data_lba, clusters, root_clus, fsinfo;
+} fs;
+static uint8_t sec[512] __attribute__((aligned(16)));
+static uint8_t fsec[512] __attribute__((aligned(16))); static uint32_t fsec_lba = 0xffffffffu;
+static inline uint16_t le16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }
+static inline uint32_t le32(const uint8_t *p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
+static inline void put16(uint8_t *p, uint32_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
+static inline void put32(uint8_t *p, uint32_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24); }
+static uint32_t clus_lba(uint32_t c) { return fs.data_lba + (c - 2) * fs.spc; }
+static int is_fat_vbr(const uint8_t *b) { return b[510] == 0x55 && b[511] == 0xaa && (b[0] == 0xeb || b[0] == 0xe9) && le16(b + 11) == 512 && b[13] && b[16]; }
+static int fs_mount(void)
+{
+    if (sd_read(0, sec)) return -1;
+    uint32_t part = 0;
+    if (!is_fat_vbr(sec)) {
+        if (sec[510] != 0x55 || sec[511] != 0xaa) return -2;
+        for (int i = 0; i < 4 && !part; i++) {
+            const uint8_t *e = sec + 0x1be + 16 * i;
+            uint8_t t = e[4];
+            if ((t == 0x0b || t == 0x0c || t == 0x0e || t == 0x06 || t == 0x04) && le32(e + 12)) part = le32(e + 8);
+        }
+        if (!part || sd_read(part, sec) || !is_fat_vbr(sec)) return -3;
+    }
+    fs.part = part; fs.spc = sec[13]; fs.nfats = sec[16];
+    uint32_t rsvd = le16(sec + 14), rootent = le16(sec + 17), tot = le16(sec + 19) ? le16(sec + 19) : le32(sec + 32);
+    fs.fatsz = le16(sec + 22) ? le16(sec + 22) : le32(sec + 36);
+    fs.rootsecs = (rootent * 32u + 511u) / 512u;
+    fs.fat_lba = part + rsvd;
+    fs.root_lba = fs.fat_lba + fs.nfats * fs.fatsz;
+    fs.data_lba = fs.root_lba + fs.rootsecs;
+    fs.clusters = (tot - (rsvd + fs.nfats * fs.fatsz + fs.rootsecs)) / fs.spc;
+    fs.fat32 = fs.clusters >= 65525u;
+    if (!fs.fat32 && fs.clusters < 4085u) return -4;                   /* FAT12: a floppy, not a boot card */
+    fs.root_clus = fs.fat32 ? le32(sec + 44) : 0;
+    fs.fsinfo = fs.fat32 ? part + le16(sec + 48) : 0;
+    fs.ok = 1;
+    return 0;
+}
+static uint32_t fat_get(uint32_t c)
+{
+    uint32_t off = c * (fs.fat32 ? 4u : 2u), lba = fs.fat_lba + off / 512u;
+    if (lba != fsec_lba) { if (sd_read(lba, fsec)) return 0x0fffffffu; fsec_lba = lba; }
+    return fs.fat32 ? le32(fsec + off % 512u) & 0x0fffffffu : le16(fsec + off % 512u);
+}
+static int fat_set(uint32_t c, uint32_t v)                             /* in every copy of the FAT */
+{
+    uint32_t off = c * (fs.fat32 ? 4u : 2u);
+    for (uint32_t i = 0; i < fs.nfats; i++) {
+        uint32_t lba = fs.fat_lba + i * fs.fatsz + off / 512u;
+        if (sd_read(lba, sec)) return -1;
+        if (fs.fat32) put32(sec + off % 512u, (le32(sec + off % 512u) & 0xf0000000u) | (v & 0x0fffffffu));
+        else put16(sec + off % 512u, v);
+        if (sd_write(lba, sec)) return -2;
+    }
+    fsec_lba = 0xffffffffu;
+    return 0;
+}
+static int eoc(uint32_t v) { return fs.fat32 ? v >= 0x0ffffff8u : v >= 0xfff8u; }
+
+/* a file in the root directory: where its entry is, its first cluster and size */
+struct cfile { uint32_t dir_lba, dir_off, clus, size; };
+static int lower(int c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
+static int name_eq(const char *a, const char *b) { while (*a && *b) if (lower(*a++) != lower(*b++)) return 0; return !*a && !*b; }
+/* calls f for every root directory sector; it returns 1 to stop */
+static int root_walk(int (*f)(uint32_t lba, void *ctx), void *ctx)
+{
+    if (!fs.fat32) {
+        for (uint32_t i = 0; i < fs.rootsecs; i++) { int k = f(fs.root_lba + i, ctx); if (k) return k; }
+        return 0;
+    }
+    uint32_t c = fs.root_clus;
+    for (int guard = 0; c >= 2 && !eoc(c) && guard < 4096; guard++) {
+        for (uint32_t i = 0; i < fs.spc; i++) { int k = f(clus_lba(c) + i, ctx); if (k) return k; }
+        c = fat_get(c);
+    }
+    return 0;
+}
+struct find_ctx { const char *name; struct cfile *out; char lfn[128]; int lfn_ok; };
+static int find_sector(uint32_t lba, void *vctx)
+{
+    struct find_ctx *x = vctx;
+    if (sd_read(lba, sec)) return -1;
+    for (int i = 0; i < 16; i++) {
+        const uint8_t *e = sec + 32 * i;
+        if (e[0] == 0) return 2;                                       /* the end of the directory */
+        if (e[0] == 0xe5) { x->lfn_ok = 0; continue; }
+        if (e[11] == 0x0f) {                                           /* a long-name piece */
+            unsigned seq = e[0] & 0x1f, base = (seq - 1) * 13;
+            if (e[0] & 0x40) { for (unsigned k = 0; k < sizeof x->lfn; k++) x->lfn[k] = 0; x->lfn_ok = 1; }
+            static const uint8_t at[13] = { 1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30 };
+            for (unsigned k = 0; k < 13; k++) { unsigned ch = le16(e + at[k]); if (base + k < sizeof x->lfn - 1) x->lfn[base + k] = (char)(ch == 0xffff ? 0 : ch); }
+            continue;
+        }
+        if (e[11] & 0x18) { x->lfn_ok = 0; continue; }                 /* volume label, directory */
+        char sn[13]; unsigned n = 0;
+        for (int k = 0; k < 8 && e[k] != ' '; k++) sn[n++] = (char)e[k];
+        if (e[8] != ' ') { sn[n++] = '.'; for (int k = 8; k < 11 && e[k] != ' '; k++) sn[n++] = (char)e[k]; }
+        sn[n] = 0;
+        int hit = name_eq(sn, x->name) || (x->lfn_ok && name_eq(x->lfn, x->name));
+        x->lfn_ok = 0;
+        if (hit) {
+            x->out->dir_lba = lba; x->out->dir_off = 32u * (unsigned)i;
+            x->out->clus = (fs.fat32 ? (uint32_t)le16(e + 20) << 16 : 0) | le16(e + 26);
+            x->out->size = le32(e + 28);
+            return 1;
+        }
+    }
+    return 0;
+}
+static int file_find(const char *name, struct cfile *f)
+{
+    struct find_ctx x; x.name = name; x.out = f; x.lfn_ok = 0;
+    return root_walk(find_sector, &x) == 1 ? 0 : -1;
+}
+struct free_ctx { uint32_t lba, off; };
+static int free_sector(uint32_t lba, void *vctx)
+{
+    struct free_ctx *x = vctx;
+    if (sd_read(lba, sec)) return -1;
+    for (int i = 0; i < 16; i++) if (sec[32 * i] == 0 || sec[32 * i] == 0xe5) { x->lba = lba; x->off = 32u * (unsigned)i; return 1; }
+    return 0;
+}
+static uint32_t clus_alloc(void)
+{
+    uint32_t start = 2;
+    if (fs.fsinfo && !sd_read(fs.fsinfo, sec) && le32(sec) == 0x41615252u && le32(sec + 484) == 0x61417272u) {
+        uint32_t hint = le32(sec + 492);
+        if (hint >= 2 && hint < fs.clusters + 2) start = hint;
+    }
+    for (uint32_t n = 0; n < fs.clusters; n++) {
+        uint32_t c = 2 + (start - 2 + n) % fs.clusters;
+        if (fat_get(c) == 0) {
+            if (fat_set(c, fs.fat32 ? 0x0fffffffu : 0xffffu)) return 0;
+            if (fs.fsinfo && !sd_read(fs.fsinfo, sec) && le32(sec) == 0x41615252u) {
+                uint32_t fc = le32(sec + 488); if (fc != 0xffffffffu && fc) put32(sec + 488, fc - 1);
+                put32(sec + 492, c + 1); sd_write(fs.fsinfo, sec);
+            }
+            return c;
+        }
+    }
+    return 0;
+}
+/* a new file, 8.3 name (stored upper case, shown lower case), one cluster, empty */
+static int file_create(const char *base8, const char *ext3, struct cfile *f)
+{
+    struct free_ctx x;
+    if (root_walk(free_sector, &x) != 1) return -1;
+    uint32_t c = clus_alloc();
+    if (!c) return -2;
+    if (sd_read(x.lba, sec)) return -3;
+    uint8_t *e = sec + x.off;
+    for (int k = 0; k < 32; k++) e[k] = 0;
+    for (int k = 0; k < 8; k++) e[k] = (uint8_t)(base8[k] ? base8[k] : ' ');
+    for (int k = 0; k < 3; k++) e[8 + k] = (uint8_t)(ext3[k] ? ext3[k] : ' ');
+    e[11] = 0x20; e[12] = 0x18;
+    uint32_t date = (uint32_t)((2026 - 1980) << 9 | 11 << 5 | 18);
+    put16(e + 14, 0); put16(e + 16, date); put16(e + 18, date); put16(e + 22, 0); put16(e + 24, date);
+    put16(e + 20, c >> 16); put16(e + 26, c & 0xffff); put32(e + 28, 0);
+    if (sd_write(x.lba, sec)) return -4;
+    f->dir_lba = x.lba; f->dir_off = x.off; f->clus = c; f->size = 0;
+    return 0;
+}
+
+/* ==== pairings.txt ============================================================================ */
+static char pair_text[4096]; static uint32_t pair_len; static int pair_state;   /* 0 pending, 1 read, -1 none */
+static char pair_new[4096]; static volatile uint32_t pair_new_len; static volatile int pair_dirty;
+static struct cfile pair_file; static int pair_have;
+static void pairings_load(void)
+{
+    pair_have = file_find("pairings.txt", &pair_file) == 0;
+    pair_len = 0;
+    if (pair_have && pair_file.clus >= 2) {
+        uint32_t n = pair_file.size < sizeof pair_text - 1 ? pair_file.size : sizeof pair_text - 1, c = pair_file.clus, got = 0;
+        while (got < n && c >= 2 && !eoc(c)) {
+            for (uint32_t i = 0; i < fs.spc && got < n; i++) {
+                if (sd_read(clus_lba(c) + i, sec)) { n = got; break; }
+                uint32_t k = n - got < 512 ? n - got : 512;
+                for (uint32_t j = 0; j < k; j++) pair_text[got + j] = (char)sec[j];
+                got += k;
+            }
+            c = fat_get(c);
+        }
+        pair_len = got;
+    }
+    pair_text[pair_len] = 0;
+    pair_state = 1;
+    kprintf("[CARD] pairings.txt: %s%u bytes\n", pair_have ? "" : "not on the card yet, ", pair_len);
+}
+static void pairings_write(void)
+{
+    uint32_t n = pair_new_len;
+    if (!pair_have) {
+        if (file_create("PAIRINGS", "TXT", &pair_file)) { kprintf("[CARD] could not create pairings.txt (root directory full?)\n"); pair_dirty = 0; return; }
+        pair_have = 1;
+        kprintf("[CARD] pairings.txt created\n");
+    }
+    uint32_t cap = fs.spc * 512u;
+    if (n > cap) { while (n > cap) n--; while (n && pair_new[n - 1] != '\n') n--; kprintf("[CARD] pairings.txt: only %u bytes fit in one cluster\n", n); }
+    for (uint32_t i = 0; i * 512u < n || i == 0; i++) {
+        for (uint32_t j = 0; j < 512; j++) sec[j] = i * 512u + j < n ? (uint8_t)pair_new[i * 512u + j] : 0;
+        if (sd_write(clus_lba(pair_file.clus) + i, sec)) { kprintf("[CARD] pairings.txt: write failed\n"); return; }
+    }
+    if (sd_read(pair_file.dir_lba, sec)) return;
+    put32(sec + pair_file.dir_off + 28, n);
+    if (sd_write(pair_file.dir_lba, sec)) return;
+    pair_file.size = n;
+    kprintf("[CARD] pairings.txt: %u bytes written\n", n);
+}
+/* bt_pi.c: the pairings as the card had them at start (state 0 pending, 1 ready, -1 no card) */
+const char *psmac_card_pairings(int *state) { *state = sd.state < 0 ? -1 : pair_state; return pair_state == 1 ? pair_text : 0; }
+void psmac_card_save_pairings(const char *text, uint32_t len)
+{
+    if (len > sizeof pair_new) len = sizeof pair_new;
+    for (uint32_t i = 0; i < len; i++) pair_new[i] = text[i];
+    pair_new_len = len;
+    __atomic_store_n(&pair_dirty, 1, __ATOMIC_RELEASE);
+}
+
+/* ==== disk images inside the container ========================================================= */
+#define CHUNK 4096u
+struct img { const uint8_t *ram; uint32_t off, len; volatile uint32_t *dirty; uint32_t nbits; char name[48]; uint32_t written; };
+static struct img imgs[4]; static int nimg;
+static const uint8_t *cont_ram; static uint32_t cont_len;
+static struct { uint32_t clus, n; } ext[256]; static int next_;                  /* the container file's extents */
+static int cont_ok;
+static volatile uint64_t last_dirty_t, first_dirty_t;
+void psmac_card_container(const uint8_t *ram, uint32_t len) { cont_ram = ram; cont_len = len; }
+void psmac_card_track(const char *name, const uint8_t *ram, uint32_t off, uint32_t len)
+{
+    if (nimg >= 4) return;
+    struct img *m = &imgs[nimg];
+    m->ram = ram; m->off = off; m->len = len; m->nbits = (len + CHUNK - 1) / CHUNK;
+    m->dirty = tlsf_malloc(tlsf, ((m->nbits + 31) / 32) * 4);
+    if (!m->dirty) return;
+    for (uint32_t i = 0; i < (m->nbits + 31) / 32; i++) m->dirty[i] = 0;
+    int k = 0; while (name[k] && k < 47) { m->name[k] = name[k]; k++; } m->name[k] = 0;
+    nimg++;
+}
+/* the Mac wrote [p, p+len) of an image in memory (psmac_board_solo.c, psmac_mbox.c) */
+static volatile uint32_t dirty_calls, dirty_miss; static const void *dirty_last;
+void psmac_card_dirty(const void *p, uint32_t len)
+{
+    const uint8_t *b = p;
+    dirty_calls++; dirty_last = p;
+    for (int i = 0; i < nimg; i++) {
+        struct img *m = &imgs[i];
+        if (b < m->ram || b >= m->ram + m->len) continue;
+        uint32_t s = (uint32_t)(b - m->ram) / CHUNK, e = ((uint32_t)(b - m->ram) + len - 1) / CHUNK;
+        for (uint32_t c = s; c <= e && c < m->nbits; c++) __atomic_fetch_or(&m->dirty[c / 32], 1u << (c % 32), __ATOMIC_RELEASE);
+        uint64_t now = cnt();
+        if (!first_dirty_t) first_dirty_t = now;
+        last_dirty_t = now;
+        return;
+    }
+    dirty_miss++;
+}
+static int cont_extents(const struct cfile *f)
+{
+    next_ = 0;
+    uint32_t c = f->clus, guard = 0;
+    while (c >= 2 && !eoc(c) && guard++ < fs.clusters) {
+        if (next_ && ext[next_ - 1].clus + ext[next_ - 1].n == c) ext[next_ - 1].n++;
+        else { if (next_ >= 256) return -1; ext[next_].clus = c; ext[next_].n = 1; next_++; }
+        c = fat_get(c);
+    }
+    return 0;
+}
+static uint32_t cont_lba(uint32_t off)                 /* the card sector holding byte off of the container */
+{
+    uint32_t cl = off / (fs.spc * 512u);
+    for (int i = 0; i < next_; i++) { if (cl < ext[i].n) return clus_lba(ext[i].clus + cl) + (off / 512u) % fs.spc; cl -= ext[i].n; }
+    return 0;
+}
+static void container_check(void)
+{
+    const char *name = psmac_option("mac.container");
+    if (!name) name = "aurora68.cpio";
+    struct cfile f;
+    if (!nimg) return;
+    if (!cont_ram || file_find(name, &f)) { kprintf("[CARD] %s not found in the card's root: the disk image's changes stay in memory\n", name); return; }
+    if (f.size != cont_len) { kprintf("[CARD] %s on the card is %u bytes, the one loaded %u: not the same file, nothing written to it\n", name, f.size, cont_len); return; }
+    if (cont_extents(&f)) { kprintf("[CARD] %s is in more than 256 pieces: nothing written to it\n", name); return; }
+    uint32_t l = cont_lba(0);
+    if (!l || sd_read(l, sec)) return;
+    for (int i = 0; i < 512; i++) if (sec[i] != cont_ram[i]) { kprintf("[CARD] %s's first sector differs from the one loaded: nothing written to it\n", name); return; }
+    cont_ok = 1;
+    kprintf("[CARD] %s checked (%u bytes, %d piece%s): the disk image's changes go back into it\n", name, f.size, next_, next_ == 1 ? "" : "s");
+}
+/* the flush: one sector in flight at a time. cpio aligns a file's data to 4 bytes, not 512, so the
+   image's blocks straddle the card's sectors: whole card sectors are written, copied from the
+   container in memory, whose bytes around the image are the unchanged cpio headers. */
+static struct { int busy; int img; uint32_t sec, last; } fl;
+static uint8_t wbuf[512] __attribute__((aligned(16)));
+static void flush_poll(void)
+{
+    if (!cont_ok || sd.ro) return;
+    if (fl.busy) {
+        int k = sd_write_poll();
+        if (k == 0) return;
+        fl.busy = 0;
+        if (k < 0) { kprintf("[CARD] write failed (status %x): the image's writes stop here\n", sd.last_hsts); cont_ok = 0; return; }
+        imgs[fl.img].written++;
+        if (++fl.sec <= fl.last) goto next_sector;
+        fl.img = -1;
+    }
+    if (fl.img < 0 || fl.img >= nimg) {
+        /* a new chunk: only once the Mac has been quiet a second, or five seconds after the first change */
+        uint64_t now = cnt(), q = last_dirty_t, f0 = first_dirty_t;
+        if (!f0 || (now - q < frq() && now - f0 < 5 * frq())) return;
+        for (int i = 0; i < nimg; i++) {
+            struct img *m = &imgs[i];
+            for (uint32_t wd = 0; wd < (m->nbits + 31) / 32; wd++) {
+                uint32_t v = m->dirty[wd];
+                if (!v) continue;
+                uint32_t b = (uint32_t)__builtin_ctz(v), c = wd * 32 + b;
+                __atomic_fetch_and(&m->dirty[wd], ~(1u << b), __ATOMIC_ACQUIRE);   /* cleared before the copy: a write after it marks it again */
+                uint32_t s = m->off + c * CHUNK, e = m->off + (c * CHUNK + CHUNK < m->len ? c * CHUNK + CHUNK : m->len);
+                fl.img = i; fl.sec = s / 512u; fl.last = (e - 1) / 512u;
+                goto next_sector;
+            }
+        }
+        first_dirty_t = 0;                             /* everything is on the card */
+        return;
+    }
+next_sector:
+    {
+        uint32_t at = fl.sec * 512u;                       /* a card sector of the container */
+        for (uint32_t j = 0; j < 512; j++) wbuf[j] = at + j < cont_len ? cont_ram[at + j] : 0;
+        uint32_t lba = cont_lba(at);
+        if (!lba) { kprintf("[CARD] container offset %u outside the file: writes stop\n", at); cont_ok = 0; return; }
+        if (sd_write_start(lba, wbuf)) { kprintf("[CARD] write could not start (status %x): writes stop\n", sd.last_hsts); cont_ok = 0; return; }
+        fl.busy = 1;
+    }
+}
+
+/* ==== core 3 ================================================================================== */
+static uint32_t start_at;
+void psmac_card_poll(void)
+{
+    if (sd.state == 0) {
+        if (!start_at) start_at = ms() ? ms() : 1;
+        const char *o = psmac_option("mac.card");
+        if (o && o[0] == 'o' && o[1] == 'f') { sd.state = -2; pair_state = -1; kprintf("[CARD] off (mac.card=off)\n"); return; }
+        if (alice_pi_is_2711()) { sd.state = -1; pair_state = -1; kprintf("[CARD] the Pi 4's card controller is not supported yet: nothing saved\n"); return; }
+        sd.ro = o && o[0] == 'r' && o[1] == 'o';
+        int e = sd_init();
+        if (e) { sd.state = -1; pair_state = -1; kprintf("[CARD] the SD card does not answer on the sdhost controller (%d, status %x)\n", e, sd.last_hsts); return; }
+        sd.state = 1;
+        e = fs_mount();
+        if (e) { sd.state = -1; pair_state = -1; kprintf("[CARD] no FAT16/FAT32 partition found (%d)\n", e); return; }
+        kprintf("[CARD] %s card, FAT%d at sector %u, %u-byte clusters%s\n", sd.ccs ? "SDHC/SDXC" : "SDSC", fs.fat32 ? 32 : 16, fs.part, fs.spc * 512u, sd.ro ? ", read only (mac.card=ro)" : "");
+        pairings_load();
+        container_check();
+        fl.img = -1;
+        { static const char test[] = "# mac.cardtest\nbt.dev=001122334455:00112233445566778899aabbccddeeff:2\n";
+          const char *t = psmac_option("mac.cardtest"); if (t && t[0] == '1') psmac_card_save_pairings(test, sizeof test - 1); }
+        return;
+    }
+    if (sd.state != 1) return;
+    if (fl.busy) { flush_poll(); return; }             /* a sector is being programmed: nothing else touches the card */
+    if (__atomic_load_n(&pair_dirty, __ATOMIC_ACQUIRE) && !sd.ro) { pair_dirty = 0; pairings_write(); return; }
+    flush_poll();
+}
+void psmac_card_report(void)
+{
+    if (sd.state == 0 || sd.state == -2) return;
+    if (sd.state < 0) return;
+    kprintf("[CARD]   %u reads, %u writes, %u errors%s; marks %u (%u outside the images, last %p, image 0 at %p)", sd.reads, sd.writes, sd.errors, cont_ok ? "" : ", image writes off",
+            dirty_calls, dirty_miss, dirty_last, nimg ? (const void *)imgs[0].ram : 0);
+    for (int i = 0; i < nimg; i++) {
+        uint32_t d = 0; for (uint32_t w2 = 0; w2 < (imgs[i].nbits + 31) / 32; w2++) d += (uint32_t)__builtin_popcount(imgs[i].dirty[w2]);
+        kprintf(" | %s: %u KB written, %u KB waiting", imgs[i].name, imgs[i].written / 2, d * (CHUNK / 1024));
+    }
+    kprintf("\n");
+}

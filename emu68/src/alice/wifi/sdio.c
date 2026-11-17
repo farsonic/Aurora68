@@ -10,6 +10,7 @@
  * load moves in order, so FIFO words are copied as they are - unless chip.c
  * finds the chip id swapped, which sets h->swap. */
 #include "bus.h"
+#include "spinlock.h"
 
 #define R_BLKSIZECNT    0x04
 #define R_ARG1          0x08
@@ -157,12 +158,15 @@ void sdh_pins(int bcm2711)
 {
     volatile uint32_t *g = (volatile uint32_t *)SDH_GPIO_BASE;
     /* GPIO 34-39: ALT3 (SD1 CLK, CMD, DAT0-3) */
+    extern spinlock_t psmac_gpfsel_lock;
+    spinlock_acquire(&psmac_gpfsel_lock);
     uint32_t f = swap32(g[0x0c / 4]);
     for (int pin = 34; pin <= 39; pin++) {
         int s = (pin - 30) * 3;
         f = (f & ~(7u << s)) | (7u << s);
     }
     g[0x0c / 4] = swap32(f);
+    spinlock_release(&psmac_gpfsel_lock);
     /* pulls: CLK none, CMD/DAT up */
     if (bcm2711) {
         /* GPIO_PUP_PDN_CNTRL_REG2 at 0xec, GPIO 32-47 */
@@ -178,11 +182,17 @@ void sdh_pins(int bcm2711)
            card and the WiFi chip at once and the chip's answers are lost (the first Pi 3B:
            no answer to CMD5). The slot pins go back to inputs; the kernel does not read the
            card after boot (everything comes from the initramfs). */
+        extern spinlock_t psmac_gpfsel_lock;
+        spinlock_acquire(&psmac_gpfsel_lock);
         uint32_t f4 = swap32(g[0x10 / 4]), f5 = swap32(g[0x14 / 4]);
         uint32_t was = ((f4 >> 24) & 7u) | (((f4 >> 27) & 7u) << 3) | ((f5 & 0xfffu) << 6);
-        g[0x10 / 4] = swap32(f4 & ~(0x3fu << 24));                 /* GPIO 48, 49 */
-        g[0x14 / 4] = swap32(f5 & ~0xfffu);                        /* GPIO 50-53 */
-        wifi_log("SD card slot pins 48-53 detached from the host (functions were %x)\n", was);
+        /* only the pins still on the Arasan (ALT3): the kernel may already have put them on the
+           sdhost controller (ALT0) to write the card (psmac_card.c), which must stay */
+        for (int pin = 48; pin <= 49; pin++) { unsigned sh = (unsigned)(pin - 40) * 3u; if (((f4 >> sh) & 7u) == 7u) f4 &= ~(7u << sh); }
+        for (int pin = 50; pin <= 53; pin++) { unsigned sh = (unsigned)(pin - 50) * 3u; if (((f5 >> sh) & 7u) == 7u) f5 &= ~(7u << sh); }
+        g[0x10 / 4] = swap32(f4); g[0x14 / 4] = swap32(f5);
+        spinlock_release(&psmac_gpfsel_lock);
+        wifi_log("SD card slot pins 48-53 detached from the Arasan host (functions were %x)\n", was);
         /* GPPUD (0x94) then the pins clocked in through GPPUDCLK1 (0x9c, GPIO 32-63) */
         for (int pass = 0; pass < 2; pass++) {
             g[0x94 / 4] = swap32(pass ? 2u : 0u);               /* 0 none (CLK), 2 up (CMD, DAT) */

@@ -619,6 +619,7 @@ static void lpo_clock(int fix)
     int alt0 = ((f >> 9) & 7u) == 4u, on = (ctl & 0x10u) != 0;                   /* start.elf's own setting is kept, whatever its divider */
     wifi_log("sleep clock: GPIO 43 function %u, CM_GP2CTL %08x CM_GP2DIV %08x%s\n", (f >> 9) & 7u, ctl, div, alt0 && on ? " (already running)" : "");
     if ((alt0 && on) || !fix) return;
+    extern spinlock_t psmac_gpfsel_lock;
     mwr(CM_BASE + 0x80, 0x5a000000u | (ctl & 0x0fu));           /* ENAB off, source kept */
     for (int i = 0; i < 100 && (mrd(CM_BASE + 0x80) & 0x80u); i++) wifi_udelay(10);  /* BUSY */
     mwr(CM_BASE + 0x84, 0x5a000000u | (585u << 12) | 3840u);    /* DIVI 585, DIVF 3840/4096 */
@@ -626,7 +627,10 @@ static void lpo_clock(int fix)
     mwr(CM_BASE + 0x80, 0x5a000000u | (1u << 9) | 1u);          /* MASH 1, oscillator */
     wifi_udelay(10);
     mwr(CM_BASE + 0x80, 0x5a000000u | (1u << 9) | 0x10u | 1u);  /* and enable */
+    spinlock_acquire(&psmac_gpfsel_lock);
+    f = mrd(GPIO_BASE + 0x10);
     mwr(GPIO_BASE + 0x10, (f & ~(7u << 9)) | (4u << 9));
+    spinlock_release(&psmac_gpfsel_lock);
     wifi_udelay(1000);
 }
 static void wl_on(int on)
@@ -635,8 +639,11 @@ static void wl_on(int on)
     int soc = wl_on_soc_gpio();
     if (!said) { said = 1; wifi_log("board type %02x (revision %08x): WL_REG_ON on %s\n", board_type(), board_rev, soc ? "GPIO 41" : "the GPIO expander, line 1"); lpo_clock(soc); }
     if (!soc) { mbox_try(0x00038041u, 128u + 1u, on ? 1u : 0u, 0); return; }   /* SET_GPIO_STATE, expander line 1 */
+    extern spinlock_t psmac_gpfsel_lock;
+    spinlock_acquire(&psmac_gpfsel_lock);
     uint32_t f = mrd(GPIO_BASE + 0x10);
     mwr(GPIO_BASE + 0x10, (f & ~(7u << 3)) | (1u << 3));        /* GPIO 41: output */
+    spinlock_release(&psmac_gpfsel_lock);
     mwr(GPIO_BASE + (on ? 0x20 : 0x2c), 1u << 9);               /* GPSET1 / GPCLR1 */
 }
 
