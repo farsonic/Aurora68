@@ -87,6 +87,24 @@ particular program wants one. The machine name the Finder shows comes from a str
 indexed by this number, so only Apple's own types are available; an "Aurora68" name would need
 the Finder's resource edited rather than the answer changed.
 
+## Two screens in the testbed
+```
+python3 tools/pram32.py                            # 32-bit addressing on (MAME's saved PRAM; once)
+python3 tools/mac/mkscrn.py -o /tmp/scrn.bin \
+    --screen hw=0x18,slot=0,base=0xFBB08000,mode=128,mask=0x1001,flags=0x8800,rect=0,0,480,640 \
+    --screen hw=0x5056,slot=9,base=0xF9980000,mode=131,mask=0x1001,flags=0x8001,rect=0,640,480,1280
+hmount images/sys710pi.image; hcopy -m ":System Folder:System" /tmp/System.bin; humount
+python3 tools/mac/rsrcadd.py /tmp/System.bin scrn 0 /tmp/scrn.bin -o /tmp/System-scrn.bin
+hmount images/sys710pi.image; hdel ":System Folder:System"; hcopy -m /tmp/System-scrn.bin ":System Folder:"; humount
+chdman createhd -i images/sys710pi.image -o images/chd/sys710pi.chd -c none -f
+PSMAC_RAM=16 ROM=rom/patched/MacIIci_psmac.rom HD=images/chd/sys710pi.chd tools/run-fullstack.sh 340 \
+    mac.disk0=$PWD/images/pidisk/pidisk.img mac.declrom=$PWD/mac/build/psmac.declrom bt=off wifi=off mac.inputdrag=285
+python3 tools/vcshot.py pi-screen.png              # the Pi's screen, during the run
+```
+`mac.inputdrag=SECONDS` drags the volume icon off the right edge of the SE's screen so that it
+lands on the Pi's; PiScreens (startup item or double-click) lists what QuickDraw made of the
+screens and the values a 'scrn' needs on another machine (docs/10).
+
 ## The WiFi in the testbed: a radio that exists only in software
 QEMU's raspi3b has no WiFi chip (no SDIO function, no firmware to load), so the real driver in
 `alice_net.c` can only report "off" there, and until 16 November the WiFi unit, PiWiFi and the

@@ -67,7 +67,24 @@ scripted trip through the control panel), 8-bit colour seen on the Pi's screen (
 is there: SetEntries fills the table, the conversion applies it), gamma, 16/32-bit direct modes,
 other resolutions, the HVS on real hardware.
 
-## Where it stands (17 November, 00:30)
+## It works (17 November, 01:15)
+With 32-bit addressing on (`tools/pram32.py`) and a 'scrn' resource in the System file naming
+both screens (`tools/mac/mkscrn.py`, installed with `tools/mac/rsrcadd.py`), System 7.1 boots
+with two screens: the SE's at (0,0)-(480,640), main, one bit; the Pi's at (0,640)-(480,1280),
+active, 256 colours (`docs/img/system71-piscreens-dual.png`). The Finder's desktop covers both,
+and an icon dragged off the right edge of the SE's screen appears on the Pi's
+(`docs/img/system71-second-display-icon-se.png`, `-pi.png`: the "Mac Volume" icon cut in two by
+the edge, half on each monitor). The values the 'scrn' needs come from PiScreens: the IIci's
+built-in video is sResource 134 of "slot 0" with hardware id $18 and device base $FBB08000,
+ours is sResource 132 of slot 9, hardware id $5056, device base $F9980000. The 7.1 image
+(`images/sys710pi.image`) carries the resource now; on a machine without the IIci's built-in
+video the count will not match and System 7 falls back to one screen, which is harmless.
+The record and the loader's rules are in mkscrn.py's notes and docs/08 item 26, including the
+mask bit that cost an hour: clear allInit in the mask and every program's InitGraf runs the
+loader again, whose width test only works for a screen at the origin, and the second screen
+walks off to the right by its own width each time.
+
+## Where it stood an hour earlier (17 November, 00:30)
 PiScreens (`mac/piscreens.s`, `docs/img/system71-piscreens.png`) lists QuickDraw's GDevices: the
 SE's own screen, active and main, and ours: 640 by 480, 1 bit, base $F9980000, driver -52, flags
 $2000, which is screenDevice without screenActive, and a rectangle equal to the main screen's.

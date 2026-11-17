@@ -357,6 +357,28 @@ System 6 does not touch TimeDBRA that way and boots with either ROM.
    buffer in the 32-bit form of its 24-bit megabyte ($F9980000), the kernel aliases the window
    there; and this 7.1 runs in 24-bit mode, which is its own 8 MiB ceiling (item 24).
 
+26. **32-bit addressing, and what activates a second screen (17 November, small hours).** The
+   user asked for both. The 24-bit finding of item 25 had a PRAM cause: the IIci ROM reads
+   extended PRAM byte $8A at start-up (0x4080CC60: one byte with _ReadXPRam, then bits 0 and 2
+   tested) and a fresh PRAM has both clear. Setting them (`tools/pram32.py` writes MAME's saved
+   PRAM) boots System 7.1 in 32-bit mode: PiScreens reads MMU32Bit 1 and the video driver's
+   trace says "mode 32" for every call. The screen question needed the ROM's own loader for
+   the 'scrn' resource, which Apple never documented beyond its name; it is at 0x40827BA0 in
+   this ROM, called from InitGraf's start-up pass, and reads as follows. GetResource('scrn', 0)
+   from the System file; if none, nothing (the screens stay as the Start Manager left them:
+   side by side, only the startup screen active). Otherwise a count word and one record per
+   video sResource in sNextTypeSRsrc order, each compared against the hardware: spDrvrHW,
+   spSlot, the driver's dCtlDevBase, and the rectangle's height and width against the device's
+   own; one mismatch or a wrong count, and the resource is ignored. A matching record sets the
+   mode (InitGDevice), gdFlags through a mask (screenActive is bit 15, mainScreen bit 11), the
+   colour and gamma tables by resource id, the rectangle, and sends any listed Control calls to
+   the driver. `tools/mac/mkscrn.py` builds the resource from those values and
+   `tools/mac/rsrcadd.py` puts it into the System file; the values themselves come from
+   PiScreens, which now lists the video sResources with exactly the fields the loader compares.
+   With those in place the second screen is active and the Finder's desktop spans both
+   monitors (docs/10, "It works"): the SE's one-bit screen on the left, the Pi's 256-colour
+   screen on the right, an icon dragged across the edge showing on both.
+
 ## Next steps (in order, as of the evening of 16 November)
 1. MacTCP under System 6 (the same files; untested there), then a real client (Fetch, NCSA
    Telnet) against a TAP-bridged peer (`tools/pinet.py ... tap`), and the WiFi unit on hardware

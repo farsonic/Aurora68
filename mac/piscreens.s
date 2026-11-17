@@ -29,6 +29,8 @@
 	.equ	_GetDeviceList,	0xAA29		| Pascal functions: a long result slot, then the call
 	.equ	_GetNextDevice,	0xAA2A
 	.equ	_GetMainDevice,	0xAA2D
+	.equ	_SlotManager,	0xA06E
+	.equ	UTableBase,	0x011C
 	.equ	MMU32Bit,	0x0CB2
 	.equ	keyDown,	3
 	.equ	autoKey,	5
@@ -150,6 +152,76 @@ next_dev:
 	move.l	gdNextGD(%a3),%d5	| the next device's handle, straight from the record
 	bra	next_dev
 done:
+	| the video sResources as the ROM's 'scrn' loader enumerates them (sNextTypeSRsrc, category
+	| 3 type 1 software 1, any hardware), with what it compares: spDrvrHW, spSlot, and the driver's
+	| dCtlDevBase from its DCE (the unit table entry for spRefNum). docs/10 says why.
+	bsr	crlf
+	lea	s_srsrc(%pc),%a0
+	bsr	say
+	lea	spblock(%pc),%a0
+	move.l	#0x00030001,40(%a0)	| spCategory 3, spCType 1
+	move.w	#1,44(%a0)		| spDrvrSW
+	move.b	#1,48(%a0)		| spTBMask: match category, type and software only
+	clr.b	49(%a0)
+	clr.b	50(%a0)
+	clr.b	51(%a0)
+next_sr:
+	lea	spblock(%pc),%a0
+	moveq	#21,%d0			| sNextTypeSRsrc
+	.short	_SlotManager
+	tst.w	%d0
+	bne	sr_done
+	lea	spblock(%pc),%a0
+	lea	s_slot(%pc),%a0
+	bsr	say_prefix
+	lea	spblock(%pc),%a0
+	moveq	#0,%d0
+	move.b	49(%a0),%d0		| spSlot
+	bsr	say_dec
+	lea	s_id(%pc),%a0
+	bsr	say_prefix
+	lea	spblock(%pc),%a0
+	moveq	#0,%d0
+	move.b	50(%a0),%d0		| spID
+	bsr	say_dec
+	lea	s_hw(%pc),%a0
+	bsr	say_prefix
+	lea	spblock(%pc),%a0
+	moveq	#0,%d0
+	move.w	46(%a0),%d0		| spDrvrHW
+	moveq	#3,%d1
+	bsr	say_hex
+	lea	s_ref(%pc),%a0
+	bsr	say_prefix
+	lea	spblock(%pc),%a0
+	move.w	38(%a0),%d0		| spRefNum
+	ext.l	%d0
+	bsr	say_sdec
+	lea	spblock(%pc),%a0
+	move.w	38(%a0),%d0
+	not.w	%d0
+	asl.w	#2,%d0
+	move.l	UTableBase,%a1
+	move.l	(%a1,%d0.w),%a1		| the DCE handle
+	move.l	(%a1),%a3		| the DCE (in a3: the Toolbox keeps A2-A6, not A1, across the text calls)
+	lea	s_devbase(%pc),%a0
+	bsr	say_prefix
+	move.l	42(%a3),%d0		| dCtlDevBase
+	moveq	#7,%d1
+	bsr	say_hex
+	lea	s_dslot(%pc),%a0
+	bsr	say_prefix
+	moveq	#0,%d0
+	move.b	40(%a3),%d0		| dCtlSlot
+	bsr	say_dec
+	lea	s_sep(%pc),%a0
+	bsr	say_prefix
+	moveq	#0,%d0
+	move.b	41(%a3),%d0		| dCtlSlotId
+	bsr	say_dec
+	bsr	crlf
+	bra	next_sr
+sr_done:
 	bsr	crlf
 	lea	s_mmu(%pc),%a0
 	bsr	say_prefix
@@ -276,6 +348,25 @@ s_ref:   .byte 5
 s_main:  .byte 7
 	.ascii	" (main)"
 	.even
+s_srsrc: .byte 46
+	.ascii	"Video sResources (sNextTypeSRsrc order):      "
+	.even
+s_slot:  .byte 5
+	.ascii	"slot "
+	.even
+s_id:    .byte 4
+	.ascii	" id "
+	.even
+s_hw:    .byte 4
+	.ascii	" hw "
+	.even
+s_devbase: .byte 9
+	.ascii	" devbase "
+	.even
+s_dslot: .byte 6
+	.ascii	" dctl "
+	.even
+spblock: .space 60
 s_mmu:   .byte 30
 	.ascii	"MMU32Bit (1 = 32-bit mode):   "
 	.even
