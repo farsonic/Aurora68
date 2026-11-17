@@ -110,7 +110,12 @@ as its main screen; the ASC's FIFOs always half empty so the chime loop ends), t
 342 screen fed from the card's frame buffer, changed rows only, by the service core between the
 Mac's own cycles. The card's declaration ROM is the 512x342 one, so Monitors sees the SE's
 screen as the card's screen; the Pi's HDMI shows the same picture for now. What the first boots
-against `macse_ps` say is in docs/08, item 28.
+against `macse_ps` said is in docs/08, item 28: six findings between the first bus cycle and
+the Finder (the machine identity on VIA port A, the lost RAM writes, the stale slot line, the
+byte lanes of the 68000 bus, the pseudo-DMA data register), and at 05:04 **System 7.1's Finder
+on the SE's own screen** (`docs/img/system71-finder-on-macse.png`), booted from the SE's SCSI
+disk with PiDisk mounted beside it. Step 1 of the bench order above is therefore done in the
+testbed; on the hardware it comes down to the GPIO wire and the SE's real timing.
 
 Then the order on the bench:
 

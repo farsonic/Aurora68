@@ -483,6 +483,17 @@ System 6 does not touch TimeDBRA that way and boots with either ROM.
      mirrors the registers, and the data comes from the input data register inside it,
      $5FF260, not from $5FF200 itself, which is the current-data register with DACK and reads
      whatever sits on the bus. The translation now reads $5FF260 a byte at a time (fs184).
+   - **fs184, 05:04: System 7.1's Finder on the Macintosh SE's screen**
+     (`docs/img/system71-finder-on-macse.png`): the IIci ROM read the boot blocks from the SE's
+     own 5380, loaded the System from the SCSI disk, opened PiDisk and PiInput from the slot-9
+     declaration ROM, ran PiMach and the other extensions, mounted PiDisk beside the SCSI
+     volume, and the Finder drew its desktop on a 512 by 342 screen the Pi's card feeds into the
+     SE's video RAM, 1,666 rows in all. Boot took three and a half minutes against the bridge
+     with 16 MB. No exception, no bus error. What this proves: the whole translation, VIA, SCC,
+     5380 with pseudo-DMA, RBV, ASC, VDAC stand-ins, the slot interrupt, the frame copy, works
+     on the SE's logic board as MAME models it. What it does not yet: keyboard and mouse on
+     that board (the SE's ADB through its VIA is wired but untried: the testbed's input has
+     been the Pi's input ring), the IWM, sound, and anything about the real CPLD.
 *(17 November, 03:30: the hardware is now known, a classic PiStorm with a Pi 3 in a socketed SE,
 WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.)*
 1. MacTCP under System 6 (the same files; untested there), then a real client (Fetch, NCSA

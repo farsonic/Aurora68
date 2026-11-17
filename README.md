@@ -111,7 +111,10 @@ DirectSocket E-clock build if the VIA needs it), and what a Pi 3 changes against
 network modules were written for: WiFi works the same way (the firmware differs between a 3B
 and a 3B+), there is no Gigabit Ethernet, Bluetooth shares the Pi 3's one PL011 with the
 console, and USB keyboards need a DWC2 driver that does not exist yet. The SE's own keyboard and
-mouse work regardless.
+mouse work regardless. The kernel's **board layer** (`mac.board=se`) already runs the IIci ROM
+against a Macintosh SE's logic board in the testbed, MAME's `macse` with the bridge CPU:
+`docs/img/system71-finder-on-macse.png` is System 7.1's Finder on the SE's own 512 by 342
+screen, booted from the SE's SCSI disk, with PiDisk mounted beside it (docs/08 item 28).
 
 ## Layout
 | Directory | Contents |
