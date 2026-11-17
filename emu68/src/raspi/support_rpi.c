@@ -395,6 +395,34 @@ uint32_t enable_unicam_domain()
     return LE32(FBReq[6]);
 }
 
+#ifdef PSMAC
+/* The second display (psmac/psmac_display.c): the VideoCore frame buffer again at the Macintosh
+   screen's size and 32 bits, physical size the same (the firmware picks or scales the HDMI mode).
+   Returns the new buffer's bus address and pitch, like init_display. */
+uint32_t psmac_vc_pixel_order = 1;          /* what the firmware says the byte order is: 1 RGB, 0 BGR (tag 0x40006) */
+uint32_t psmac_vc_setup(uint32_t w, uint32_t h, uint32_t depth, void **fb, uint32_t *pitch_out)
+{
+    int c = 1, pos_base = 0, pos_pitch = 0, pos_depth = 0, pos_order = 0;
+    FBReq[c++] = 0;
+    FBReq[c++] = LE32(0x48003); FBReq[c++] = LE32(8); FBReq[c++] = 0; FBReq[c++] = LE32(w); FBReq[c++] = LE32(h);
+    FBReq[c++] = LE32(0x48004); FBReq[c++] = LE32(8); FBReq[c++] = 0; FBReq[c++] = LE32(w); FBReq[c++] = LE32(h);
+    FBReq[c++] = LE32(0x48005); FBReq[c++] = LE32(4); FBReq[c++] = 0; pos_depth = c; FBReq[c++] = LE32(depth);
+    FBReq[c++] = LE32(0x40001); FBReq[c++] = LE32(8); FBReq[c++] = 0; pos_base = c; FBReq[c++] = LE32(64); FBReq[c++] = 0;
+    FBReq[c++] = LE32(0x40008); FBReq[c++] = LE32(4); FBReq[c++] = 0; pos_pitch = c; FBReq[c++] = 0;
+    FBReq[c++] = LE32(0x40006); FBReq[c++] = LE32(4); FBReq[c++] = 0; pos_order = c; FBReq[c++] = 0;
+    FBReq[c++] = 0;
+    FBReq[0] = LE32(c << 2);
+    arm_flush_cache((intptr_t)FBReq, c * 4);
+    mbox_send(8, mmu_virt2phys((intptr_t)FBReq));
+    mbox_recv(8);
+    arm_dcache_invalidate((intptr_t)FBReq, c * 4);
+    *fb = (void *)(intptr_t)(LE32(FBReq[pos_base]) & 0x3fffffff);
+    *pitch_out = LE32(FBReq[pos_pitch]);
+    psmac_vc_pixel_order = LE32(FBReq[pos_order]) & 1;
+    return LE32(FBReq[pos_depth]);              /* the depth the firmware (or QEMU) actually set */
+}
+#endif
+
 void init_display(struct Size dimensions, void **framebuffer, uint32_t *pitch)
 {
     int c = 1;

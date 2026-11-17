@@ -48,6 +48,17 @@ uint32_t M68K_Exception(uint32_t M68k_SR, uint32_t type_and_format, uint32_t, ui
         if (logged < 40 && !(vec >= 0x60 && vec <= 0x7c) && !(vec >= 0x80 && vec <= 0xbc) && vec != 0x28) {
             logged++;
             kprintf("[PSMAC:EXC] vector %03x format %x at PC %08x SR %04x ea %08x fault %08x\n", vec, type_and_format >> 12, M68k_PC, M68k_SR, ea, fault);
+            {   /* the instruction words around the faulting PC, read through the 68k's own translation
+                   (the shim's tables are live on this core), if both ends of the span are mapped */
+                extern uint32_t psmac_mmu_l2p(uint32_t logical, int *valid);
+                uint32_t pc = M68k_PC & ~1u; int v0, v1;
+                psmac_mmu_l2p(pc - 16, &v0); psmac_mmu_l2p(pc + 30, &v1);
+                if (v0 && v1) {
+                    kprintf("[PSMAC:EXC]   words at PC-16:");
+                    for (int i = -8; i < 16; i++) kprintf("%s%04x", i == 0 ? " |" : " ", *(volatile uint16_t *)(uintptr_t)(pc + 2 * i));
+                    kprintf("\n");
+                }
+            }
             { extern volatile uint32_t psmac_exc_flag; if (!psmac_exc_flag) psmac_exc_flag = vec | 0x10000; }   /* service core dumps the PC trail */
         }
     }

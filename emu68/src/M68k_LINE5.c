@@ -731,7 +731,32 @@ uint32_t EMIT_DBcc(struct TranslatorContext *ctx, uint16_t opcode)
         // Suggested by Paraj - a way to allow old code using DBF as busy loop work:
         // For busy loops (of the form l dbf dN,l) in chip mem add extra delay that is
         // at least 10 7MHz clocks (For old school replayer routines)
+#ifdef PSMAC
+        /* PiStorm-SE: a dbf that branches to itself is a delay loop, and on the Macintosh they are
+           timed: the ROM waits on hardware with them and System 7.1's speed probe measures four of
+           them (TimeDBRA iterations each) with the Time Manager and divides by the result. The JIT
+           runs such a loop in a few ARM instructions per turn, and in the testbed the measured
+           time came out as exactly zero often enough to bomb the boot with a zero divide (docs/08,
+           item 27). One device read per turn, the system timer's counter, costs about what the
+           68000 took per turn and keeps every such loop's duration real. mac.dbfslow=N (0 off). */
+        extern uint32_t psmac_dbf_slow;
+        if (m68k_condition == M_CC_F && branch_offset == 0 && psmac_dbf_slow)
+        {
+            uint8_t ra = RA_AllocARMRegister(ctx);
+            uint8_t rv = RA_AllocARMRegister(ctx);
+            EMIT(ctx,
+                I32(0xd2800000 | (0x3004 << 5) | ra),           /* movz xa, #0x3004: the system timer's CLO */
+                I32(0xf2c00000 | (0xffe8 << 5) | ra),           /* movk xa, #0xffe8, lsl 32: the peripherals' high alias (PSMAC_PERIPH_HI) */
+                I32(0xf2e00000 | (0xffff << 5) | ra)            /* movk xa, #0xffff, lsl 48 */
+            );
+            for (uint32_t i = 0; i < psmac_dbf_slow; i++) EMIT(ctx, ldr_offset(ra, rv, 0));
+            RA_FreeARMRegister(ctx, ra);
+            RA_FreeARMRegister(ctx, rv);
+        }
+        if (0)
+#else
         if (__m68k_state->JIT_CONTROL2 & JC2F_DBF_SLOWDOWN)
+#endif
         {
             if (m68k_condition == M_CC_F && branch_offset == 0 && (uintptr_t)ctx->tc_M68kCodePtr < 0x200000)
             {

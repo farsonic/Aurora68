@@ -17,9 +17,9 @@
 | driver asks for it. That interrupt is the card's VBL: the handler below calls _DoVBLTask for
 | slot 9, which runs QuickDraw's cursor task and whatever SlotVInstall queued for this screen.
 |
-| What is not here yet: direct 16/32-bit modes, gamma tables, more than one resolution, the
-| sPRAMInit record for a remembered depth. Monitors can arrange the screen and set 1, 4, 16 or 256
-| colours or greys; the Finder treats it as any second monitor.
+| Modes 128 to 133 are 1, 2, 4, 8, 16 and 32 bits; the depth, pitch and frame buffer address of each
+| come from the block's tables, which the Pi fills for the screen size in use (mac.screen=WxH or the
+| VideoCore's). Not here yet: gamma tables, the sPRAMInit record for a remembered depth.
 
 	.text
 	.globl	drvr_start
@@ -41,6 +41,10 @@
 	.equ	D_VBL_PENDING,	40
 	.equ	D_CLUT_SEQ,	48
 	.equ	D_CLUT,		64
+	.equ	D_MODE_BASE,	1088		| 8 longs: the frame buffer's 68k address per mode 128+i (0: none)
+	.equ	D_MODE_ROWBYTES, 1120		| 8 longs: the row pitch per mode
+	.equ	D_BIG_BASE,	1152
+	.equ	LAST_MODE_IX,	5		| modes 128..133: 1, 2, 4, 8, 16, 32 bits
 	.equ	DISP_ENABLED,	1
 	.equ	DISP_GRAY,	2
 
@@ -139,7 +143,7 @@ d_open:
 	move.l	%a0,%a2			| globals
 	move.w	#firstVidMode,G_MODE(%a2)
 	move.l	#1,D_DEPTH(%a3)
-	move.l	#80,D_ROWBYTES(%a3)
+	move.l	D_MODE_ROWBYTES(%a3),D_ROWBYTES(%a3)
 	move.l	#1,D_VBL_ENABLE(%a3)	| a video card's Open turns its VBL interrupts on (Designing Cards and
 	move.w	#1,G_INT(%a2)		| Drivers); cscSetInterrupt is how the system turns them off later. Without
 					| this the cursor never appears on the second screen: QuickDraw draws it
@@ -228,25 +232,31 @@ d_control:
 c_reset:
 	move.w	#firstVidMode,G_MODE(%a2)
 	move.l	#1,D_DEPTH(%a0)
-	move.l	#80,D_ROWBYTES(%a0)
+	move.l	D_MODE_ROWBYTES(%a0),D_ROWBYTES(%a0)
 	clr.w	G_GRAY(%a2)
 	bsr	gray_fill
 	bra	c_ok
 c_setmode:
-	| csMode: 128..131; csPage must be 0 (one page); returns csBaseAddr
+	| csMode: 128..133 (1, 2, 4, 8, 16, 32 bits); csPage must be 0 (one page); returns csBaseAddr.
+	| The depth, the row pitch and the frame buffer's address come from the block's mode tables:
+	| the Pi decided them for this screen size (indexed 640 x 480 modes live in the window where
+	| a 24-bit system can reach them, everything else in the big region).
 	move.w	csMode(%a1),%d1
 	sub.w	#firstVidMode,%d1
 	bmi	c_param
-	cmp.w	#3,%d1
+	cmp.w	#LAST_MODE_IX,%d1
 	bhi	c_param
 	tst.w	csPage(%a1)
 	bne	c_param
+	lea	D_MODE_BASE(%a0),%a3
+	tst.l	(%a3,%d1.w*4)
+	beq	c_param			| no such mode at this screen size
 	move.w	csMode(%a1),G_MODE(%a2)
 	moveq	#1,%d2
-	lsl.w	%d1,%d2			| depth 1, 2, 4, 8
+	lsl.w	%d1,%d2			| depth 1, 2, 4, 8, 16, 32
 	move.l	%d2,D_DEPTH(%a0)
-	mulu	#80,%d2
-	move.l	%d2,D_ROWBYTES(%a0)
+	lea	D_MODE_ROWBYTES(%a0),%a3
+	move.l	(%a3,%d1.w*4),D_ROWBYTES(%a0)
 	bsr	frame_addr
 	bra	c_ok
 c_setentries:
@@ -395,7 +405,14 @@ s_pagebase:
 | (The first version answered $980000 and the ROM made $F9980000 of it by itself, which told the
 | convention; the kernel maps the window at $F9900000 as well as $F9000000 so both forms reach it.)
 frame_addr:
-	move.l	#0xF9980000,csBaseAddr(%a1)
+	movem.l	%d0/%a0/%a3,-(%sp)
+	bsr	disp
+	moveq	#0,%d0
+	move.w	G_MODE(%a2),%d0
+	sub.w	#firstVidMode,%d0
+	lea	D_MODE_BASE(%a0),%a3
+	move.l	(%a3,%d0.w*4),csBaseAddr(%a1)
+	movem.l	(%sp)+,%d0/%a0/%a3
 	rts
 s_getgray:
 	move.w	G_GRAY(%a2),%d0
@@ -417,12 +434,19 @@ wide:
 	or.w	%d1,%d0
 	rts
 
-| ---- the grey screen: a 50% pattern of index 0 and the depth's last index, rows alternating ----
+| ---- the grey screen: a 50% pattern of index 0 and the depth's last index, rows alternating; the
+| direct modes get a flat mid grey. Rows and pitch from the block, the buffer from the mode table.
 gray_fill:
-	movem.l	%d0-%d3/%a0-%a1,-(%sp)
+	movem.l	%d0-%d4/%a0-%a2,-(%sp)
 	bsr	disp
 	move.l	%a0,%a1
-	bsr	frame
+	moveq	#0,%d0
+	move.w	G_MODE(%a2),%d0
+	sub.w	#firstVidMode,%d0
+	lea	D_MODE_BASE(%a1),%a0
+	move.l	(%a0,%d0.w*4),%d4
+	beq	9f
+	move.l	%d4,%a0			| the frame buffer
 	move.l	D_DEPTH(%a1),%d0
 	move.b	#0x88,%d1		| 1 bit: 10001000 / 00100010, a 25% grey: told apart from the desktop's
 	move.b	#0x22,%d2		| 50% pattern in a picture of the Pi's screen (the real cards used 50%)
@@ -436,27 +460,39 @@ gray_fill:
 	move.b	#0xF0,%d2
 	cmp.l	#4,%d0
 	beq.s	1f
-	move.b	#0x00,%d1		| 8 bits: 00 FF / FF 00, two bytes a step (below)
+	move.b	#0x00,%d1		| 8 bits: 00 FF / FF 00, two bytes a step
 	move.b	#0xFF,%d2
-1:	move.l	#480,%d3		| rows
+	cmp.l	#8,%d0
+	beq.s	1f
+	move.b	#0x42,%d1		| 16 bits: 0x4210 = 0 10000 10000 10000, mid grey, word by word (0x7BDE was nearly white)
+	move.b	#0x10,%d2
+	cmp.l	#16,%d0
+	beq.s	1f
+	move.b	#0x80,%d1		| 32 bits: 00 80 80 80 as 80 80 80 00 pairs is close enough: mid grey
+	move.b	#0x80,%d2
+1:	move.l	D_HEIGHT(%a1),%d3	| rows
 2:	move.l	D_ROWBYTES(%a1),%d0
 	btst	#0,%d3
 	beq.s	3f
+	cmp.l	#8,D_DEPTH(%a1)
+	bhi.s	3f			| direct modes: no alternation
 	exg	%d1,%d2			| odd rows start with the other byte
 3:	bsr.s	row_fill
 	btst	#0,%d3
 	beq.s	4f
+	cmp.l	#8,D_DEPTH(%a1)
+	bhi.s	4f
 	exg	%d1,%d2
 4:	subq.l	#1,%d3
 	bne.s	2b
-	movem.l	(%sp)+,%d0-%d3/%a0-%a1
+9:	movem.l	(%sp)+,%d0-%d4/%a0-%a2
 	rts
-| row_fill: a0 -> row (advanced), d0 = bytes, d1/d2 = the two bytes; 8-bit rows alternate the bytes
+| row_fill: a0 -> row (advanced), d0 = bytes, d1/d2 = the two bytes; 8-bit and wider rows alternate them
 row_fill:
 	movem.l	%d0/%d3,-(%sp)
 	move.l	D_DEPTH(%a1),%d3
 	cmp.l	#8,%d3
-	beq.s	2f
+	bhs.s	2f
 1:	move.b	%d1,(%a0)+
 	subq.l	#1,%d0
 	bne.s	1b

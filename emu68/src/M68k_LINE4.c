@@ -3457,8 +3457,14 @@ void do_reset()
 {
     void ps_send_reset();
 
+#ifdef PSMAC
+    /* the Macintosh's second display owns the VideoCore buffer (psmac_display.c) */
+    extern void psmac_display_reinit(void);
+    psmac_display_reinit();
+#else
     struct Size sz = get_display_size();
     init_display(sz, NULL, NULL);
+#endif
 
     ps_send_reset();
 }

@@ -1,1 +1,1 @@
-mac.ram=64 enable_cache
+enable_cache

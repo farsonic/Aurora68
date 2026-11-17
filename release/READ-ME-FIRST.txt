@@ -19,11 +19,13 @@ WHAT THIS RELEASE IS
 WHAT IS ON THE CARD
   kernel8.img            the kernel
   config.txt             the Pi firmware's settings (HDMI mode for the second screen, UART)
-  cmdline.txt            the kernel's options (mac.ram=64 enable_cache; see below)
+  cmdline.txt            the kernel's options (enable_cache; add mac.ram= and the rest below as needed)
   aurora68.declrom       the slot-9 declaration ROM: PiDisk, Ethernet, WiFi, input and
                          video drivers for the Macintosh (loaded through the container)
   aurora68-wifionly.declrom   the same with the WiFi as the only network card (MacTCP then
                          takes the WiFi; see RELEASE-NOTES.md)
+  aurora68-WxH.declrom   the same for a second screen of that size (1024x768, 1280x1024,
+                         1920x1080 ...): use with mac.screen=WxH and the matching hdmi_mode
   make-container.py      builds aurora68.cpio from your ROM, the declaration ROM and firmware
   Mac/                   the Macintosh-side files (below)
   RELEASE-NOTES.md, LICENSES/, SHA256SUMS
@@ -47,10 +49,17 @@ SETTING UP THE SD CARD
           https://raw.githubusercontent.com/RPi-Distro/bluez-firmware/master/broadcom/BCM4345C0.hcd
         python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom aurora68.declrom \
           cyfmac43455-sdio-standard.bin brcmfmac43455-sdio.txt cyfmac43455-sdio.clm_blob BCM4345C0.hcd
+
+        Those are the files for a Pi 3B+, 3A+ or 4. A Pi 3B has the older BCM43438 chip and wants
+        brcmfmac43430-sdio.bin, brcmfmac43430-sdio.txt and brcmfmac43430-sdio.clm_blob (same
+        place, the brcm folder) and BCM43430A1.hcd from bluez-firmware; the kernel picks by chip.
   5. The Macintosh side: put the files from Mac/ onto the Macintosh (below).
 
 cmdline.txt
-  mac.ram=MB            Macintosh memory (default: what the Pi can spare, up to 64)
+  mac.ram=MB            Macintosh memory (default: what the Pi can spare, up to 128)
+  mac.screen=WxH        the second screen's size, default 640x480; set hdmi_mode to match and
+                        use aurora68-WxH.declrom of the same size in the container
+  mac.vcswap=1          swap red and blue on the second screen if a board shows them swapped
   enable_cache          Emu68's instruction cache; leave it on
   wifi.ssid=NAME wifi.psk=PASSWORD wifi.country=GB   join a WiFi network at boot
   wifi=off bt=off eth=off   leave a radio or the Ethernet off

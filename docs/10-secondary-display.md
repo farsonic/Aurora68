@@ -84,6 +84,47 @@ mask bit that cost an hour: clear allInit in the mask and every program's InitGr
 loader again, whose width test only works for a screen at the origin, and the second screen
 walks off to the right by its own width each time.
 
+## Direct colour and other sizes (17 November, 02:00)
+Version 2 of the display block (psmb.h) adds per-mode tables the Pi fills in: for each of the six
+modes (128 to 133: 1, 2, 4, 8, 16, 32 bits) the 68k address of its frame buffer and its row pitch.
+Two regions exist: the window's top 512 KiB at $F9980000, which a 24-bit System 6 can reach and
+which holds 640 by 480 at up to 8 bits, and a big region of 8 MiB of Pi RAM mapped at $F9100000
+in the slot's 16 MiB space (enough for 1920 by 1080 at 32 bits), for direct colour and for larger
+screens; `psmac_mmu.c` maps it, `psmac_bus.c` carves it. The driver reads the tables and never
+decides placement. The VideoCore buffer is remade at start-up at the screen's size and 32 bits
+(`psmac_vc_setup` in support_rpi.c; the splash's was 16), and the conversion writes XRGB words:
+indexed pixels through the colour table, 16-bit 0RRRRRGGGGGBBBBB words widened, 32-bit 00RRGGBB
+longs byte-swapped. The screen's size is `mac.screen=WxH` (512..1920 by 342..1200) or the
+VideoCore's own, and the declaration ROM must agree: `make -C mac` now builds one per size
+(`psmac.declrom` for 640 by 480, `psmac-800x600.declrom`, `-1024x768`, `-1280x720`, `-1280x1024`,
+`-1920x1080`), and the kernel takes from the container the one whose name ends in the size in use,
+else the plain one. In the testbed `mac.declrom=` names the file and `mac.screen=` the size.
+Monitors' 'scrn' sets the depth with `mode=` (133 is millions of colours) and the rectangle must
+be the screen's size.
+
+The first 32-bit picture (fs153, fs154) was thin dark red stripes over the whole screen: pixels
+(128,16,0) and (0,16,0) in turn, which is what a 16-bit scan-out makes of 0x00808080 written
+four bytes wide. QEMU had granted 32 bits and the pitch said so; the depth was lost afterwards.
+The 68000 RESET instruction, which the ROM issues at the start of every boot, takes the JIT to
+Emu68's `do_reset`, and that remade the VideoCore buffer at 16 bits for the Amiga's splash screen.
+Under PSMAC it now calls `psmac_display_reinit`, which asks for the same buffer again at the Mac's
+depth. Byte order is the other trap: QEMU's model reads the first byte of a 32-bit pixel as red
+(its "pixel order 1, RGB"), a Pi's firmware answers the same tag for its own scan-out, so the
+kernel asks (tag 0x40006) and writes R,G,B,x or B,G,R,x accordingly; `mac.vcswap=0|1` overrides
+the answer if a board disagrees. The firmware's answer is also kept in the display block
+(`vc_depth`) for the Mac side to read.
+
+The third trap was the ROM's: with the scan-out right the 32-bit screen was a plain grey, and
+PiScreens showed the device active at 32 bits but based at $F9980000, the window, while the Pi
+converted the big region. InitGDevice never asks the driver where a mode's pixels are (no
+GetPageBase in the trace); it adds the mode's `vpBaseOffset` from the sResource to dCtlDevBase.
+mkdeclrom.py now writes that offset by the kernel's placement rule, and `docs/img/
+system71-pi-1024x768-millions.png` is the result: the Pi's screen at 1024 by 768 in millions of
+colours (`mac.screen=1024x768`, `psmac-1024x768.declrom`, a 'scrn' with mode 133 and the
+rectangle 0,640,768,1664), PiColor drawn by Color QuickDraw, the Finder's dither pattern behind
+it, 3 MiB of frame buffer that cost the Macintosh nothing. Thousands of colours at 640 by 480
+(mode 132, fs165) draws the same window with the 16-bit pixels widened.
+
 ## Colour (17 November, 01:30)
 PiColor (`mac/picolor.s`) opens a colour window on the Pi's screen and paints twelve hues at full
 and half strength, the primaries and a sixteen-step grey ramp with RGBForeColor and PaintRect.

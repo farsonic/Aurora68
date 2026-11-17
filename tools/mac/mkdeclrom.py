@@ -15,8 +15,9 @@ sResources (ids ascending):
     0x82 input (optional): type {0x7050 vendor category, 2, 1, 1}, name "PiInput" (driver ".PiInput"),
                  opened at start: keyboards and mice on the Pi (USB, Bluetooth) become Mac events
     0x84 video (optional): type {catDisplay 3, typVideo 1, drSwApple 1, drHw 0x5056}, name
-                 "Display_Video_PiStorm" (driver ".Display_Video_PiStorm"), the frame buffer at the window's
-                 top 512 KiB, modes 128-131 (1/2/4/8 bits, 640 x 480): the second display (docs/10)
+                 "Display_Video_PiStorm" (driver ".Display_Video_PiStorm"), modes 128-133 (1/2/4/8 bits indexed,
+                 16/32 bits direct) at the size --res gives (640x480 by default; one file per size, the
+                 kernel takes the one named for the screen in use): the second display (docs/10)
 Facts: Inside Macintosh: Devices (Slot Manager), Designing Cards and Drivers 3rd ed., ROMDefs.h.
 """
 import argparse, os, struct, sys
@@ -24,7 +25,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from declrom import DeclROM
 
 ap = argparse.ArgumentParser()
-ap.add_argument('--pidisk', required=True); ap.add_argument('--enet'); ap.add_argument('--wifi'); ap.add_argument('--input'); ap.add_argument('--video'); ap.add_argument('-o', required=True)
+ap.add_argument('--pidisk', required=True); ap.add_argument('--enet'); ap.add_argument('--wifi'); ap.add_argument('--input'); ap.add_argument('--video'); ap.add_argument('--res', default='640x480', help='the second display\'s size, WxH (the kernel picks the matching file from the container)'); ap.add_argument('-o', required=True)
 a = ap.parse_args()
 
 def drvr_name(img):
@@ -104,12 +105,28 @@ if a.video:
     # screen set-up reads a gamma table from the card and gives up on the screen without one.
     gd = type(vs)(0); gd.longblock(128, GAMMA)
     vs.sublist(64, gd)
-    for n, depth in enumerate((1, 2, 4, 8)):
+    W, H = (int(x) for x in a.res.lower().split('x'))
+    # modes 128-133: 1, 2, 4, 8 bits indexed (vpPixelType 0, one component), 16 and 32 bits direct
+    # (vpPixelType 16 RGBDirect, three components of 5 or 8 bits). The ROM's InitGDevice never asks
+    # the driver where a mode's pixels are: it adds the mode's vpBaseOffset to dCtlDevBase
+    # ($F9980000, MinorBaseOS in 32-bit form). So the offset must say what the kernel decided
+    # (psmac_display.c, the same rule): a mode of at most 8 bits that fits the window's 512 KiB
+    # stays there (offset 0, reachable in 24-bit mode too); anything larger lives in the big
+    # region at $F9100000, 8 MiB of Pi RAM in the slot's 16 MiB space, offset -$880000. Without
+    # this the first 32-bit boot drew into the window and past it while the Pi showed the big
+    # region: a grey screen (docs/08, item 27).
+    BIG, WIN = 0xF9100000, 0xF9980000
+    for n, depth in enumerate((1, 2, 4, 8, 16, 32)):
         m = type(vs)(0)
-        vp = struct.pack('>IHhhhhHHIIIHHHHI', 0, 80 * depth, 0, 0, 480, 640, 0, 0, 0, 0x00480000, 0x00480000, 0, depth, 1, depth, 0)
+        direct = depth >= 16
+        rowbytes = (W * depth + 7) // 8
+        in_window = depth <= 8 and rowbytes * H <= 0x80000
+        base_off = 0 if in_window else (BIG - WIN) & 0xffffffff
+        vp = struct.pack('>IHhhhhHHIIIHHHHI', base_off, rowbytes, 0, 0, H, W, 0, 0, 0, 0x00480000, 0x00480000,
+                         16 if direct else 0, depth, 3 if direct else 1, (5 if depth == 16 else 8) if direct else depth, 0)
         m.longblock(1, vp)                      # mVidParams
         m.word(3, 1)                            # mPageCnt
-        m.word(4, 0)                            # mDevType: CLUT
+        m.word(4, 2 if direct else 0)           # mDevType: 0 CLUT, 2 direct
         vs.sublist(128 + n, m)
 
 img = rom.build()

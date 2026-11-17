@@ -1,5 +1,39 @@
 # Aurora68 release notes
 
+## 0.2 — colour, bigger screens, more memory (17 November 2026)
+
+Still a testbed build (see 0.1 below for what that means); the same SD card layout. What changed:
+
+- **Thousands and millions of colours** on the Pi's screen: the second display offers six modes
+  (black and white, 4, 16, 256, thousands, millions) in the Monitors control panel. The direct
+  modes and all larger screens live in 8 MB of Pi memory mapped into the slot, so the Macintosh
+  pays nothing for them; the Pi's VideoCore scans out 32 bits.
+- **Screen sizes**: the second screen can be 800 by 600, 1024 by 768, 1280 by 720, 1280 by 1024
+  or 1920 by 1080 as well as 640 by 480. Set `hdmi_mode` in `config.txt`, add
+  `mac.screen=WxH` to `cmdline.txt` and build the container with the declaration ROM of that
+  size (`aurora68-1024x768.declrom` and the others are in the zip). The `'scrn'` resource's
+  rectangle must be the screen's size (docs/10).
+- **Up to 128 MB of Macintosh memory**, the most the IIci ROM sizes on its own (two banks of
+  64), and the default is now "what the Pi can spare, up to 128": a 512 MB Pi Zero 2 W and an
+  8 GB Pi 4 both give the Macintosh 128 MB, a smaller board gives what is left after the
+  kernel's 192 MB. `cmdline.txt` no longer pins `mac.ram=`. Memory sizes that fill bank A and
+  part of bank B (72, 80, 96 MB) work too.
+- **Two boot-time faults fixed** on the way: the JIT re-verifies code loaded into the second
+  megabyte of RAM in 32-bit mode (it used to treat that megabyte as ROM, which it is only in
+  24-bit mode), and self-looping `dbf` delay loops take real time again, which is what System
+  7.1's speed probe divides by (the intermittent zero divide at boot that 0.1 listed).
+- New options: `mac.screen=`, `mac.vcswap=` (red/blue order if a board's firmware disagrees),
+  `mac.dbfslow=` (reads per turn of a delay loop; 1 by default, 0 for none).
+- **Hardware target named**: a classic PiStorm (EPM240, DIP-64) with a Raspberry Pi 3 in a
+  socketed Macintosh SE; `docs/12-hardware-bringup.md` is the plan. The kernel now also looks
+  for the Pi 3B's WiFi and Bluetooth firmware files (BCM43438: `brcmfmac43430-sdio.*`,
+  `BCM43430A1.hcd`), but the WiFi module's chip layer still knows only the BCM43455 of the
+  3A+/3B+/4; the 43438's Cortex-M3 path is on the list before the first WiFi on a 3B.
+
+Macintosh-side files are unchanged except the declaration ROMs; replace `kernel8.img`, rebuild
+`aurora68.cpio` with the new `aurora68.declrom` (or the size you want) and keep your
+`config.txt` and `cmdline.txt` (drop `mac.ram=64` from it to get the new default).
+
 ## 0.1 — the testbed build, packaged (17 November 2026)
 
 Download: `Aurora68-0.1.zip` from the [v0.1 release](https://github.com/farsonic/Aurora68/releases).

@@ -6,7 +6,8 @@ moved to a newer version without losing the project's changes. The documents in 
 long form: `docs/00-overview.md` is the story, `docs/08-emu68-port-status.md` the day-by-day
 record of what was found and fixed (read it before touching anything that looks odd: it is
 usually odd for a reason that is written there), `docs/09-mac-side.md` the Macintosh software,
-`docs/07` the mailbox and the Alice68 boards, `docs/10` the second display, `docs/06` the MAME
+`docs/07` the mailbox and the Alice68 boards, `docs/10` the second display, `docs/12` the hardware
+bring-up plan (classic PiStorm, Pi 3, the SE), `docs/06` the MAME
 bridge and the ROM patches.
 
 ## What this is
@@ -69,6 +70,7 @@ explains the fork's relationship to upstream.
 make -C mac            # drivers (.PiDisk, .ENET x2, .PiInput, .Display_Video_PiStorm), extensions
                        # (PiDisk, PiMach), applications (PiNet, PiWiFi, PiBlue, PiStatus, PiPing,
                        # PiScreens, PiColor), the declaration ROMs psmac.declrom / psmac_wifi.declrom
+                       # and one per second-screen size (psmac-1024x768.declrom ...; RESES in the Makefile)
 make -C mac check      # the drivers' structure offsets against the kernel's alice_net.h (cc + python)
 make -C mac install IMG=../images/sys710pi.image [PART=1]   # PiDisk and PiMach into the System Folder
 ```
@@ -126,12 +128,16 @@ ROM=rom/patched/MacIIci_psmac.rom HD=images/chd/sys710pi.chd tools/run-fullstack
 python3 tools/pinet.py /tmp/psmac-net peer      # the host side of the Ethernet, in another shell
 ```
 `run-fullstack.sh SECONDS [kernel options]` starts MAME (`mamepsmac maciici_ps`, FIFO transport)
-and QEMU, writes `emu68.log` and `mame.log` to `$LOGDIR` (default `/tmp/psmac-logs`), and MAME
+and QEMU (one run at a time: the bridge socket, MAME's nvram and snapshot directories are shared,
+and two runs side by side corrupt each other's results silently), writes `emu68.log` and `mame.log` to `$LOGDIR` (default `/tmp/psmac-logs`), and MAME
 takes a screenshot every ten seconds into `mame/snapFS/maciici_ps/`. `PSMAC_RAM` (MiB, default 16)
 is the Mac's memory. Useful kernel options (all in `docs/09`): `mac.inputtest=`, `mac.inputabout=`,
 `mac.inputwifi=`, `mac.inputdrag=` (scripted mouse and keyboard, there is no real input in QEMU),
 `mac.wifisim=SSID:PASSWORD` with `mac.wifinet=BASE` (a simulated WiFi radio), `mac.peek=ADDR,LEN`
-(dump Mac memory at each heartbeat), `mac.scsitrace=`. `tools/vcshot.py out.png` photographs the
+(dump Mac memory at each heartbeat), `mac.scsitrace=`, `mac.screen=WxH` with the matching
+`mac.declrom=$PWD/mac/build/psmac-WxH.declrom` (a larger second screen; the 'scrn' resource's
+rectangle must agree, docs/09 "Two screens"), `mac.vcswap=0|1` (red/blue order on the Pi's screen).
+`tools/vcshot.py out.png` photographs the
 Pi's own screen (the second display) through QEMU's monitor socket. `tools/pram32.py` switches
 32-bit addressing on in MAME's saved PRAM (needed for more than 8 MiB and for the second screen's
 configuration; see docs/08 item 26). A System 7.1 boot reaches the Finder in about four minutes

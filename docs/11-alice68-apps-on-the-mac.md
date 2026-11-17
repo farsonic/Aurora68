@@ -39,6 +39,10 @@ and little else: GadTools/MUI and the Toolbox have nothing in common. One reposi
 `amiga/` and `mac/` beside the kernel is the natural shape when the Mac side settles.
 
 ## The first step: PiNetwork
+
+*17 November, later:* the user's hardware is a classic PiStorm with a Pi 3 and WiFi comes
+first (docs/12). PiNetwork's WiFi half is therefore the part to finish before the Ethernet
+half; on a Pi 3A+/3B+ the WiFi is the only network there is.
 PiNetwork grows out of PiWiFi (mac/piwifi.s), whose scan/join dialogue works end to end in the
 testbed against the simulated radio (docs/09). The order of work:
 1. Pages: the window shows one page at a time, the digits 1-5 switch (menus come with the

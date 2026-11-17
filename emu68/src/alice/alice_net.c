@@ -935,6 +935,9 @@ static int bringup(void)
     static const char *const s43456[] = { "brcmfmac43456-sdio", "brcmfmac43456-sdio.raspberrypi,4-compute-module", 0 };
     static const char *const nv43455[] = { "brcmfmac43455-sdio.raspberrypi,4-model-b", "brcmfmac43455-sdio", "cyfmac43455-sdio", 0 };
     static const char *const nv43456[] = { "brcmfmac43456-sdio.raspberrypi,4-compute-module", "brcmfmac43456-sdio", 0 };
+    /* the Pi 3B and Zero W carry the older BCM43438 (chip id 43430); the Zero 2 W a 43436 that answers as a 43430 too */
+    static const char *const s43430[] = { "brcmfmac43430-sdio", "cyfmac43430-sdio", "brcmfmac43436-sdio", "brcmfmac43430-sdio.raspberrypi,3-model-b", 0 };
+    static const char *const nv43430[] = { "brcmfmac43430-sdio.raspberrypi,3-model-b", "brcmfmac43430-sdio", "brcmfmac43436-sdio", 0 };
     volatile struct an_unit *u = U(0);
     wstate(AN_ST_STARTING, "starting the WiFi chip");
     if (!W.rxbuf) {
@@ -964,11 +967,14 @@ static int bringup(void)
     if (chip_attach(&W.c, &W.h)) { wstate(AN_ST_FAILED, "WiFi chip not recognised"); return -3; }
     u->chip = W.c.id; u->chiprev = W.c.rev;
     int is56 = W.c.id == 0x4345 && W.c.rev == 9;
-    const struct fwfile *fb = fw_find(is56 ? s43456 : s43455, ".bin");
-    const struct fwfile *nv = fw_find(is56 ? nv43456 : nv43455, ".txt");
-    const struct fwfile *clm = fw_find(is56 ? s43456 : s43455, ".clm_blob");
-    if (!fb) { wstate(AN_ST_NOFW, is56 ? "firmware missing: put brcmfmac43456-sdio.bin in WIFI on the SD card" : "firmware missing: put cyfmac43455-sdio-standard.bin in WIFI on the SD card"); return -4; }
-    if (!nv) { wstate(AN_ST_NOFW, "NVRAM missing: put brcmfmac43455-sdio.txt in WIFI on the SD card"); return -4; }
+    int is30 = W.c.id == 43430 || W.c.id == 0xa9a6;
+    const char *const *stems = is56 ? s43456 : is30 ? s43430 : s43455;
+    const char *const *nvs = is56 ? nv43456 : is30 ? nv43430 : nv43455;
+    const struct fwfile *fb = fw_find(stems, ".bin");
+    const struct fwfile *nv = fw_find(nvs, ".txt");
+    const struct fwfile *clm = fw_find(stems, ".clm_blob");
+    if (!fb) { wstate(AN_ST_NOFW, is56 ? "firmware missing: put brcmfmac43456-sdio.bin in WIFI on the SD card" : is30 ? "firmware missing: put brcmfmac43430-sdio.bin in WIFI on the SD card" : "firmware missing: put cyfmac43455-sdio-standard.bin in WIFI on the SD card"); return -4; }
+    if (!nv) { wstate(AN_ST_NOFW, is30 ? "NVRAM missing: put brcmfmac43430-sdio.txt in WIFI on the SD card" : "NVRAM missing: put brcmfmac43455-sdio.txt in WIFI on the SD card"); return -4; }
     wifi_log("chip %x rev %u: %s, %s%s%s\n", W.c.id, W.c.rev, fb->name, nv->name, clm ? ", " : "", clm ? clm->name : "");
     uint8_t *nvimg = tlsf_malloc(tlsf, nv->len + 64);
     if (!nvimg) { wstate(AN_ST_FAILED, "no memory"); return -1; }

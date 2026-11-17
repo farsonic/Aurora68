@@ -379,7 +379,58 @@ System 6 does not touch TimeDBRA that way and boots with either ROM.
    monitors (docs/10, "It works"): the SE's one-bit screen on the left, the Pi's 256-colour
    screen on the right, an icon dragged across the edge showing on both.
 
+27. **Direct colour, larger screens, and the road past 64 MiB (17 November, 02:00-03:00).** The
+   user asked for the three in order: thousands and millions of colours, the HDMI mode's
+   resolution, and the 128 MiB fault, with the memory policy right for Pis of every size.
+   - *Direct colour and sizes* are in docs/10 ("Direct colour and other sizes"): display block
+     v2 with per-mode frame buffer tables, the 8 MiB big region at $F9100000, `mac.screen=`,
+     a declaration ROM per size. The first 32-bit picture was dark red stripes: QEMU had granted
+     32 bits, then the ROM's RESET instruction took the JIT into Emu68's `do_reset`, which
+     remakes the VideoCore buffer at 16 bits for the Amiga splash. PSMAC now reinstates its own
+     buffer there (`psmac_display_reinit`). The byte order of a 32-bit pixel is asked of the
+     firmware (tag 0x40006; QEMU says "RGB" and reads the first byte as red) and `mac.vcswap=`
+     overrides it; PiColor's reds are red in QEMU with the answer honoured (fs158). The second
+     32-bit picture was a plain grey: PiScreens (fs159) showed the device active at 32 bits but
+     based at $F9980000, the window, while the Pi converted the big region. The ROM's
+     InitGDevice never asks the driver where a mode's pixels are; it adds the mode's
+     vpBaseOffset from the sResource to dCtlDevBase. mkdeclrom.py now writes the offset by the
+     kernel's own placement rule (0 for an indexed mode that fits the window's 512 KiB,
+     -$880000 to the big region for the rest), and the driver's tables agree.
+   - *The JIT and the ROM's second home.* The block verifier exempted $800000-$8FFFFF from
+     re-checking because the ROM appears there in 24-bit mode. In 32-bit mode with more than
+     8 MiB that megabyte is RAM: code the Memory Manager loaded over an old block was never
+     re-verified. The exemption now asks the MMU shim whether the block's logical address
+     translates into the ROM (`psmac_mmu_l2p`), whatever the mode.
+   - *The 128 MiB boot and the speed probe.* With the above, the 128 MiB boot (fs157) no longer
+     dies at an odd PC in bank B; it dies two minutes in with a zero divide (vector offset $14,
+     format 2, PC $9D1DE in the system heap, D5 = 0), and the code is System 7.1's speed probe
+     again, found by its bytes in the System file: `_InsTime; _PrimeTime; four times (move.w
+     TimeDBRA,d0; dbra d0,*); _RmvTime`, the smallest elapsed time over a few passes, less the
+     same measurement without the loops, then `move.w TimeDBRA,d1; mulu #4000,d1; divu d5,d1`.
+     The JIT runs a self-looping dbf in four ARM instructions per turn, so the four loops take
+     microseconds and the Time Manager, reading the VIA through the bridge with its jitter,
+     measures the same for both passes often enough: zero. `M68k_LINE5.c` now gives every
+     self-looping dbf one device read per turn under PSMAC (the system timer's counter through
+     the peripherals' high alias), about what a 68000 spent per turn, so the ROM's and the
+     System's timed loops take real time; `mac.dbfslow=N` sets the reads per turn, 0 for none.
+     The exception logger also prints the instruction words around a faulting PC now. With
+     the slowed loops the 128 MiB boot ran its five minutes to the Finder's extensions and
+     beyond without a fault (fs161).
+   - *A bank that is not full.* 72 MiB (fs162) never left the ROM's memory test: the shim
+     aliased RAM across bank A's 64 MiB window only, so a part-filled bank B had nothing past
+     its end where the ROM looks for the wrap. `norm_phys`, the identity map and the page filler
+     now alias bank B across its own window too. The default without `mac.ram=` is 128 MiB
+     (`PSMAC_RAM_DEFAULT_MB`), still bounded by what the Pi has after the kernel's 192 MiB, so a
+     512 MiB board and an 8 GiB board both give the Macintosh 128 MiB. More than that needs the
+     ROM's memory sizing patched (docs/06, item 3), which is the next memory step. Verified
+     alone on the testbed (two runs at once share the bridge socket and corrupt each other,
+     which had muddied fs161-fs163): 128 MiB boots System 7.1 to the Finder with the stack at
+     $07F7FF32 and no exception in 400 s (fs166), 72 MiB the same with the stack at $04786F5E
+     (fs167).
+
 ## Next steps (in order, as of the evening of 16 November)
+*(17 November, 03:30: the hardware is now known, a classic PiStorm with a Pi 3 in a socketed SE,
+WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.)*
 1. MacTCP under System 6 (the same files; untested there), then a real client (Fetch, NCSA
    Telnet) against a TAP-bridged peer (`tools/pinet.py ... tap`), and the WiFi unit on hardware
    (the simulated radio proves the Mac side; the chip, the firmware and the SDIO path remain).

@@ -8,36 +8,49 @@
  * sResource, the Start Manager opens its driver, QuickDraw draws into its frame buffer, Monitors
  * arranges it (docs/10). What a card does in hardware, scanning the buffer out to a monitor, the
  * Pi's VideoCore does here, and this file is the glue between the two: the Mac's video driver
- * (mac/pivideo.s) draws into a 512 KiB region of the slot window at the depth QuickDraw chose and
- * keeps a colour table beside it (struct psmb_display, psmb.h); the service core, sixty times a
- * second, converts those indexed pixels into the VideoCore frame buffer the boot splash set up
- * (start_rpi64.c: init_display, 640 by 480, RGB565) and, while the driver wants it, raises the
- * slot interrupt, which is the card's vertical blank. In the testbed QEMU emulates that frame
- * buffer and `tools/vcshot.py` photographs it; on hardware it is the HDMI output.
+ * (mac/pivideo.s) draws at the depth QuickDraw chose and keeps a colour table beside it (struct
+ * psmb_display, psmb.h); the service core, sixty times a second, converts those pixels into the
+ * VideoCore frame buffer and, while the driver wants it, raises the slot interrupt, which is the
+ * card's vertical blank. In the testbed QEMU emulates that frame buffer and `tools/vcshot.py`
+ * photographs it; on hardware it is the HDMI output.
  *
- * Why convert instead of mapping the VideoCore buffer into the Mac's address space: the Mac's
- * modes are 1, 2, 4 and 8 bits with a colour table, which is what System 6 and 7 software expects
- * of a card of 1989, and the VideoCore's are 16 and 32 bits direct; something has to apply the
- * table. A copy of 300 KB sixty times a second is nothing to an ARM core, and it keeps the frame
- * buffer in ordinary cached Pi RAM where the 68k's JIT is fastest. Direct 16/32-bit modes, in
- * which the Mac draws straight into the VideoCore buffer, can come later for the same card.
+ * Two frame buffers, by history. The first version kept the Mac's pixels in the window's top
+ * 512 KiB, because that megabyte is the one a 24-bit System 6 can reach ($980000); it holds
+ * 640 x 480 at up to 8 bits and still does. Direct colour (16 and 32 bits) and larger screens do
+ * not fit there, so there is also a big region, 8 MiB of Pi RAM mapped at $F9100000 in the slot's
+ * 16 MiB space, which 32-bit systems use. The block's mode tables say which region each mode
+ * uses; the driver never decides. The VideoCore buffer is remade at the screen's size and 32
+ * bits at start-up (the boot splash used 16), and the conversion loop writes XRGB words into it:
+ * the Mac's indexed pixels through the colour table, its 16-bit 0RRRRRGGGGGBBBBB words widened,
+ * its 32-bit 00RRGGBB longs byte-swapped. A copy is cheap next to the alternative of mapping the
+ * VideoCore buffer into the Mac's space: the pixel orders differ, the Mac's modes need the table,
+ * and Pi RAM is where the 68k's JIT is fastest. The screen's size comes from mac.screen=WxH, else
+ * from the VideoCore (the firmware's HDMI mode on hardware, 640 x 480 in QEMU).
  */
 #include <stdint.h>
 #include "support.h"
 #include "psmac.h"
 #include "psmb.h"
 
-extern void *framebuffer;                    /* start_rpi64.c: the VideoCore frame buffer, RGB565 */
+extern void *framebuffer;                    /* start_rpi64.c: the VideoCore frame buffer */
 extern uint32_t pitch, fb_width, fb_height;
+extern uint32_t psmac_vc_setup(uint32_t w, uint32_t h, uint32_t depth, void **fb, uint32_t *pitch_out);
+extern uintptr_t psmac_fb_big_phys(void);
+extern void psmac_screen_size(uint32_t *w, uint32_t *h);
 
-static volatile struct psmb_display *disp;
-static uint8_t *frame;                       /* the Mac's pixels, in the window */
-static uint8_t *vcfb;                        /* the VideoCore frame buffer through the kernel's alias of physical
-                                                memory: the low identity mapping start_rpi64.c drew the splash
-                                                through is inside the first 4 GiB, which the Mac MMU shim replaces
-                                                at the ROM's first table switch (docs/08, item 21) */
 #define KERNEL_ALIAS 0xffffff9000000000ull
-static uint16_t rgb565[256];                 /* the colour table as the VideoCore wants it */
+static volatile struct psmb_display *disp;
+static uint8_t *frame_win;                   /* the Mac's pixels: the window region ... */
+static uint8_t *frame_big;                   /* ... and the big region, through the kernel's alias */
+static uint8_t *vcfb;                        /* the VideoCore frame buffer, through the alias too (the low identity
+                                                mapping the splash drew through does not survive the Mac MMU shim's
+                                                table switches, docs/08 item 21) */
+static uint32_t vc_pitch, vc_w, vc_h, vc_bpp = 32;
+static int vc_swap;                          /* write the bytes R,G,B,x rather than B,G,R,x (see vc_byte_order) */
+extern uint32_t psmac_vc_pixel_order;        /* support_rpi.c: the firmware's answer to "get pixel order" */
+extern int psmac_bootarg_val(const char *key, char *out, unsigned max);   /* alice_net.c */
+static void vc_byte_order(void);   /* the VideoCore buffer's depth: 32 asked for, 16 if that is what came back */
+static uint32_t rgb[256];                    /* the colour table as XRGB */
 static uint32_t clut_seen = ~0u;
 static uint64_t next_tick;
 static unsigned tick_div;
@@ -45,48 +58,116 @@ static unsigned tick_div;
 void psmac_display_init(uint8_t *win)
 {
     disp = (volatile struct psmb_display *)(win + PSMB_OFF_DISPLAY);
-    frame = win + PSMB_OFF_BOUNCE;
+    frame_win = win + PSMB_OFF_BOUNCE;
+    frame_big = (uint8_t *)(KERNEL_ALIAS + psmac_fb_big_phys());
     for (uint32_t i = 0; i < sizeof(struct psmb_display) / 4; i++) ((volatile uint32_t *)disp)[i] = 0;
-    disp->width = 640; disp->height = 480; disp->depth = 1; disp->rowbytes = 80;
+
+    uint32_t w, h; psmac_screen_size(&w, &h);
+    if (!w || !h) { w = fb_width ? fb_width : 640; h = fb_height ? fb_height : 480; }
+    /* the VideoCore buffer at that size, 32 bits */
+    void *fb = 0; uint32_t p = 0;
+    uint32_t got = psmac_vc_setup(w, h, 32, &fb, &p);
+    if (got != 32 || p < w * 4) {               /* not granted (QEMU's model stays at 16): ask for 16 and convert to RGB565 */
+        got = psmac_vc_setup(w, h, 16, &fb, &p);
+        vc_bpp = 16;
+    }
+    if (fb && p) { framebuffer = fb; pitch = p; fb_width = w; fb_height = h; }
+    vc_w = fb_width; vc_h = fb_height; vc_pitch = pitch;
+    vc_byte_order();
+    if (framebuffer) vcfb = (uint8_t *)(KERNEL_ALIAS + (((uintptr_t)framebuffer) & 0x3fffffffull));
+    if (vcfb) for (uint32_t i = 0; i < vc_pitch * vc_h; i += 8) *(uint64_t *)(vcfb + i) = 0;
+
+    disp->width = w; disp->height = h; disp->depth = 1;
     disp->fb_off = PSMB_OFF_BOUNCE; disp->fb_size = PSMB_BOUNCE_SIZE;
+    disp->big_base = PSMB_FB_BIG_PHYS; disp->big_size = PSMB_FB_BIG_SIZE;
+    disp->vc_width = vc_w; disp->vc_height = vc_h; disp->vc_depth = vc_bpp;
+    /* the six modes: where each one's pixels live and its row pitch */
+    for (int i = 0; i < 6; i++) {
+        uint32_t d = 1u << i, rb = (w * d + 7) / 8;
+        uint32_t bytes = rb * h;
+        if (d <= 8 && bytes <= PSMB_BOUNCE_SIZE) { disp->mode_base[i] = PSMB_WIN_PHYS + 0x900000u + PSMB_OFF_BOUNCE; }   /* $F9980000: reachable in 24-bit mode */
+        else if (bytes <= PSMB_FB_BIG_SIZE) disp->mode_base[i] = PSMB_FB_BIG_PHYS;
+        else disp->mode_base[i] = 0;                                      /* no such mode at this size */
+        disp->mode_rowbytes[i] = rb;
+    }
+    disp->rowbytes = disp->mode_rowbytes[0];
     /* a colour table for a card that was just switched on: 0 white ... 255 black, the Mac's order */
     for (int i = 0; i < 256; i++) { uint32_t g = 255 - i; disp->clut[i] = g << 16 | g << 8 | g; }
-    for (uint32_t i = 0; i < PSMB_BOUNCE_SIZE; i += 8) *(uint64_t *)(frame + i) = 0;
+    for (uint32_t i = 0; i < PSMB_BOUNCE_SIZE; i += 8) *(uint64_t *)(frame_win + i) = 0;
     __asm__ volatile("dmb ish" ::: "memory");
-    disp->version = 1; disp->magic = PSMB_DISP_MAGIC;
-    if (framebuffer) vcfb = (uint8_t *)(KERNEL_ALIAS + (((uintptr_t)framebuffer) & 0x3fffffffull));   /* bus/identity -> physical -> alias */
-    kprintf("[PSMAC:DISP] second display: 640x480 in the window at +%x, VideoCore frame buffer %s at %p (%ux%u, pitch %u)\n",
-            PSMB_OFF_BOUNCE, framebuffer ? "present" : "absent", framebuffer, fb_width, fb_height, pitch);
+    disp->version = 2; disp->magic = PSMB_DISP_MAGIC;
+    kprintf("[PSMAC:DISP] second display %ux%u: indexed modes in the window at $F9980000, direct modes in the big region at $F9100000 (%u MiB); VideoCore %ux%u x%u pitch %u at %p\n",
+            w, h, PSMB_FB_BIG_SIZE >> 20, vc_w, vc_h, vc_bpp, vc_pitch, framebuffer);
 }
 
-/* the Mac's indexed pixels -> RGB565 through the table; depth 1/2/4: the leftmost pixel is in the
-   high bits of the byte (QuickDraw's packing), value 0 is normally white */
+/* Which byte of a 32-bit pixel is red. The firmware is asked (tag 0x40006): 1 means the bytes
+   run R,G,B,x in memory, 0 means B,G,R,x. QEMU's model answers 1 and reads the first byte as red;
+   a real Pi answers for its own scan-out. Should a board show the Mac's reds as blues anyway,
+   mac.vcswap=1 (or 0) overrides the answer, so no rebuild stands between a user and the right
+   colours. 16-bit buffers are RGB565 in both worlds and need no choice. */
+static void vc_byte_order(void)
+{
+    vc_swap = psmac_vc_pixel_order == 1;
+    char o[4];
+    if (psmac_bootarg_val("mac.vcswap", o, sizeof o) && (o[0] == '0' || o[0] == '1')) vc_swap = o[0] == '1';
+}
+
+/* After a 68000 RESET instruction (the ROM issues one at the start of every boot) the generic
+   Emu68 code used to remake the VideoCore buffer at 16 bits: the Mac's second display went
+   on converting into a 32-bit layout the scan-out no longer read, and showed thin dark stripes.
+   The JIT now calls this instead, which asks for the same buffer again. */
+void psmac_display_reinit(void)
+{
+    if (!vc_w || !vc_h) return;
+    void *fb = 0; uint32_t p = 0;
+    psmac_vc_setup(vc_w, vc_h, vc_bpp, &fb, &p);
+    if (fb && p) { framebuffer = fb; pitch = p; vc_pitch = p; vcfb = (uint8_t *)(KERNEL_ALIAS + (((uintptr_t)fb) & 0x3fffffffull)); }
+    vc_byte_order();
+    if (vcfb) for (uint32_t i = 0; i < vc_pitch * vc_h; i += 8) *(uint64_t *)(vcfb + i) = 0;
+}
+
+/* one output pixel: XRGB8888 when the VideoCore buffer is 32 bits, RGB565 when it is 16 */
+static inline void put(void *row, uint32_t x, uint32_t xrgb)
+{
+    if (vc_bpp == 32) ((uint32_t *)row)[x] = LE32(vc_swap ? (xrgb & 0xff00) | (xrgb >> 16 & 0xff) | (xrgb & 0xff) << 16 : xrgb);
+    else ((uint16_t *)row)[x] = LE16((uint16_t)(((xrgb >> 8) & 0xf800) | ((xrgb >> 5) & 0x07e0) | ((xrgb >> 3) & 0x001f)));
+}
+
+/* the Mac's pixels -> XRGB; depth 1/2/4: the leftmost pixel is in the high bits of the byte */
 static void convert(void)
 {
     if (!vcfb) return;
-    uint32_t depth = disp->depth, rb = disp->rowbytes, h = disp->height < fb_height ? disp->height : fb_height;
-    uint32_t w = disp->width < fb_width ? disp->width : fb_width;
-    if (depth != 1 && depth != 2 && depth != 4 && depth != 8) return;
-    if (rb * h > PSMB_BOUNCE_SIZE) return;
+    uint32_t depth = disp->depth, rb = disp->rowbytes;
+    uint32_t h = disp->height < vc_h ? disp->height : vc_h, w = disp->width < vc_w ? disp->width : vc_w;
+    int mi = depth == 1 ? 0 : depth == 2 ? 1 : depth == 4 ? 2 : depth == 8 ? 3 : depth == 16 ? 4 : depth == 32 ? 5 : -1;
+    if (mi < 0 || !disp->mode_base[mi]) return;
+    const uint8_t *frame = disp->mode_base[mi] == PSMB_FB_BIG_PHYS ? frame_big : frame_win;
+    uint32_t limit = disp->mode_base[mi] == PSMB_FB_BIG_PHYS ? PSMB_FB_BIG_SIZE : PSMB_BOUNCE_SIZE;
+    if (rb * h > limit) return;
     if (disp->clut_seq != clut_seen) {
         clut_seen = disp->clut_seq;
         for (int i = 0; i < 256; i++) {
-            uint32_t c = disp->clut[i];
+            uint32_t c = disp->clut[i] & 0xffffffu;
             if (disp->flags & PSMB_DISP_GRAY) { uint32_t y = (((c >> 16) & 255) * 77 + ((c >> 8) & 255) * 151 + (c & 255) * 28) >> 8; c = y << 16 | y << 8 | y; }
-            rgb565[i] = (uint16_t)(((c >> 8) & 0xf800) | ((c >> 5) & 0x07e0) | ((c >> 3) & 0x001f));
+            rgb[i] = c;
         }
     }
     for (uint32_t y = 0; y < h; y++) {
         const uint8_t *src = frame + y * rb;
-        uint16_t *dst = (uint16_t *)(vcfb + y * pitch);
+        void *dst = vcfb + y * vc_pitch;
         switch (depth) {
-        case 8: for (uint32_t x = 0; x < w; x++) dst[x] = LE16(rgb565[src[x]]); break;
-        case 4: for (uint32_t x = 0; x < w; x += 2) { uint8_t b = src[x >> 1]; dst[x] = LE16(rgb565[b >> 4]); dst[x + 1] = LE16(rgb565[b & 15]); } break;
-        case 2: for (uint32_t x = 0; x < w; x += 4) { uint8_t b = src[x >> 2]; for (int k = 0; k < 4; k++) dst[x + k] = LE16(rgb565[(b >> (6 - 2 * k)) & 3]); } break;
-        case 1: for (uint32_t x = 0; x < w; x += 8) { uint8_t b = src[x >> 3]; for (int k = 0; k < 8; k++) dst[x + k] = LE16(rgb565[(b >> (7 - k)) & 1]); } break;
+        case 32: { const uint32_t *s = (const uint32_t *)src; for (uint32_t x = 0; x < w; x++) put(dst, x, s[x] & 0xffffffu); break; }   /* 00RRGGBB, big-endian longs read natively */
+        case 16: { const uint16_t *s = (const uint16_t *)src;
+                   for (uint32_t x = 0; x < w; x++) { uint32_t v = s[x], r = (v >> 10) & 31, g = (v >> 5) & 31, b = v & 31;
+                       put(dst, x, (r << 3 | r >> 2) << 16 | (g << 3 | g >> 2) << 8 | (b << 3 | b >> 2)); }
+                   break; }
+        case 8: for (uint32_t x = 0; x < w; x++) put(dst, x, rgb[src[x]]); break;
+        case 4: for (uint32_t x = 0; x < w; x += 2) { uint8_t b = src[x >> 1]; put(dst, x, rgb[b >> 4]); put(dst, x + 1, rgb[b & 15]); } break;
+        case 2: for (uint32_t x = 0; x < w; x += 4) { uint8_t b = src[x >> 2]; for (int k = 0; k < 4; k++) put(dst, x + k, rgb[(b >> (6 - 2 * k)) & 3]); } break;
+        case 1: for (uint32_t x = 0; x < w; x += 8) { uint8_t b = src[x >> 3]; for (int k = 0; k < 8; k++) put(dst, x + k, rgb[(b >> (7 - k)) & 1]); } break;
         }
     }
-    arm_flush_cache((intptr_t)vcfb, pitch * h);
+    arm_flush_cache((intptr_t)vcfb, vc_pitch * h);
     disp->frames++;
 }
 
@@ -95,9 +176,10 @@ void psmac_display_poll(void)
 {
     if (!disp) return;
     uint64_t now; __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(now));
-    if (!next_tick) { uint64_t hz; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(hz)); next_tick = now + hz / 60; return; }
+    uint64_t hz; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(hz));
+    if (!next_tick) { next_tick = now + hz / 60; return; }
     if ((int64_t)(now - next_tick) < 0) return;
-    { uint64_t hz; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(hz)); next_tick += hz / 60; if ((int64_t)(now - next_tick) > (int64_t)hz) next_tick = now + hz / 60; }
+    next_tick += hz / 60; if ((int64_t)(now - next_tick) > (int64_t)hz) next_tick = now + hz / 60;
     disp->vbl_count++;
     if ((disp->flags & PSMB_DISP_ENABLED) && disp->vbl_enable) { disp->vbl_pending = 1; __asm__ volatile("dmb ish" ::: "memory"); }
     if ((disp->flags & PSMB_DISP_ENABLED) && (++tick_div & 1)) convert();
@@ -107,8 +189,8 @@ void psmac_display_poll(void)
 void psmac_display_report(void)
 {
     if (!disp) return;
-    kprintf("[PSMAC]   display: flags %x depth %u rowbytes %u vbl %s pending %u ticks %u frames %u clut seq %u\n",
-            disp->flags, disp->depth, disp->rowbytes, disp->vbl_enable ? "on" : "off", disp->vbl_pending, disp->vbl_count, disp->frames, disp->clut_seq);
+    kprintf("[PSMAC]   display: %ux%u flags %x depth %u rowbytes %u vbl %s pending %u ticks %u frames %u clut seq %u\n",
+            disp->width, disp->height, disp->flags, disp->depth, disp->rowbytes, disp->vbl_enable ? "on" : "off", disp->vbl_pending, disp->vbl_count, disp->frames, disp->clut_seq);
 }
 
 /* the slot interrupt line's share: the card's VBL is pending and the driver is there to take it */

@@ -84,11 +84,23 @@ static inline void wr32(uint32_t ea, uint32_t v) { *(volatile uint32_t *)(uintpt
 
 /* Mac physical -> Pi physical for mappable memory; returns 0 if not RAM/ROM */
 #define BANK_A_WINDOW 0x04000000u   /* IIci bank A decodes 64 MiB; installed RAM aliases across it */
-/* RAM smaller than the bank window aliases across it (the ROM sizes memory by looking for the wrap);
-   with 64 MiB or more installed, every address below ram_size is distinct RAM (up to the 1 GiB ceiling). */
-static inline uint32_t norm_phys(uint32_t p) { return (p < ram_size) ? p : (p < BANK_A_WINDOW ? p % ram_size : p); }
-static uintptr_t slot_win_phys, slot_declrom_phys;   /* Pi RAM behind slot $9 (0 until set) */
+/* RAM smaller than a bank's window aliases across it (the ROM sizes memory by looking for the wrap).
+   The IIci has two banks of 64 MiB: A at 0 and B at 0x04000000. Up to 64 MiB everything is bank A
+   and aliases across its window; past that bank A is full and the rest is bank B, which aliases
+   across its own window (72 MiB is 64 + 8: the first boot with a part-filled bank B found nothing
+   past 72 MiB and the ROM never got out of its memory test, docs/08 item 27). Beyond 128 MiB the
+   ROM sees nothing more without the memory-sizing patch (docs/06), but mac.ram= may ask. */
+static inline uint32_t norm_phys(uint32_t p)
+{
+    if (p < ram_size) return p;
+    if (ram_size <= BANK_A_WINDOW) return p < BANK_A_WINDOW ? p % ram_size : p;
+    uint32_t bank_b = ram_size - BANK_A_WINDOW;
+    if (p < 2 * BANK_A_WINDOW && bank_b < BANK_A_WINDOW) return BANK_A_WINDOW + (p - BANK_A_WINDOW) % bank_b;
+    return p;
+}
+static uintptr_t slot_win_phys, slot_declrom_phys, slot_fb_phys;   /* Pi RAM behind slot $9 (0 until set) */
 void psmac_mmu_set_slot(uintptr_t w, uintptr_t d) { slot_win_phys = w; slot_declrom_phys = d; }
+void psmac_mmu_set_fb(uintptr_t f) { slot_fb_phys = f; }       /* the second display's big frame buffer (psmb.h) */
 static inline uintptr_t pi_phys(uint32_t p)
 {
     p = norm_phys(p);
@@ -100,6 +112,7 @@ static inline uintptr_t pi_phys(uint32_t p)
        card's frame buffer in that form (docs/10) */
     if (slot_win_phys && p >= PSMB_WIN_PHYS + 0x900000u && p < PSMB_WIN_PHYS + 0x900000u + PSMB_WIN_SIZE) return slot_win_phys + (p - PSMB_WIN_PHYS - 0x900000u);
     if (slot_declrom_phys && p >= PSMB_DECLROM_PHYS && p < PSMB_DECLROM_PHYS + PSMB_DECLROM_SIZE) return slot_declrom_phys + (p - PSMB_DECLROM_PHYS);
+    if (slot_fb_phys && p >= PSMB_FB_BIG_PHYS && p < PSMB_FB_BIG_PHYS + PSMB_FB_BIG_SIZE) return slot_fb_phys + (p - PSMB_FB_BIG_PHYS);
     return 0;
 }
 /* Mac physical pages that must be read-only for the 68k: ROM, declaration ROM, write-through
@@ -183,7 +196,8 @@ static void build_identity(void)
 {
     is_bits = 0;
     for (uint32_t i = 0; i < PAGES_4K; i++) l2p[i] = 0;
-    uint32_t top = ram_size > BANK_A_WINDOW ? ram_size : BANK_A_WINDOW;
+    /* RAM and its aliases: bank A's window when that is all there is, both windows once bank B holds anything */
+    uint32_t top = ram_size <= BANK_A_WINDOW ? BANK_A_WINDOW : (ram_size < 2 * BANK_A_WINDOW ? 2 * BANK_A_WINDOW : ram_size);
     for (uint32_t p = 0; p < top; p += 4096) l2p[p >> 12] = norm_phys(p) | L2P_VALID;   /* RAM + its aliases */
     for (uint32_t p = 0; p < PSMAC_ROM_SIZE; p += 4096) {
         l2p[(PSMAC_ROM_BASE + p) >> 12]   = (PSMAC_ROM_BASE + p) | L2P_VALID | L2P_WP;
@@ -192,6 +206,7 @@ static void build_identity(void)
     for (uint32_t p = 0; p < PSMB_WIN_SIZE; p += 4096) l2p[(PSMB_WIN_PHYS + p) >> 12] = (PSMB_WIN_PHYS + p) | L2P_VALID;
     for (uint32_t p = 0; p < PSMB_WIN_SIZE; p += 4096) l2p[(PSMB_WIN_PHYS + 0x900000u + p) >> 12] = (PSMB_WIN_PHYS + 0x900000u + p) | L2P_VALID;   /* its 24-bit-megabyte alias */
     for (uint32_t p = 0; p < PSMB_DECLROM_SIZE; p += 4096) l2p[(PSMB_DECLROM_PHYS + p) >> 12] = (PSMB_DECLROM_PHYS + p) | L2P_VALID | L2P_WP;
+    for (uint32_t p = 0; p < PSMB_FB_BIG_SIZE; p += 4096) l2p[(PSMB_FB_BIG_PHYS + p) >> 12] = (PSMB_FB_BIG_PHYS + p) | L2P_VALID;   /* the big frame buffer */
 }
 
 /* ---- 68030 table walk ---- */
@@ -205,7 +220,7 @@ static void fill(uint32_t log, uint32_t size, uint32_t phys, int wp, struct walk
     for (uint32_t o = 0; o < size; o += 4096) {
         uint32_t idx = (log + o) >> 12;
         if (idx >= w->npages) break;
-        l2p[idx] = (phys + o < BANK_A_WINDOW) ? ((norm_phys(phys + o) & ~0xfffu) | (base & 3)) : (base + o);
+        l2p[idx] = (phys + o < 2 * BANK_A_WINDOW) ? ((norm_phys(phys + o) & ~0xfffu) | (base & 3)) : (base + o);   /* page by page through the bank aliases */
     }
 }
 /* table at Mac physical 'addr' with descriptors of 'dsize' bytes, this level has ti bits, covering

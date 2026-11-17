@@ -68,7 +68,19 @@ struct psmb_display {
     uint32_t frames;                         /* Pi: frames converted */
     uint32_t pad[2];
     uint32_t clut[256];                      /* Mac: 0x00RRGGBB per index */
+    /* version 2: direct modes and other resolutions (docs/10). Modes 128+i, i = 0..5: 1, 2, 4, 8, 16, 32
+       bits. The Pi fills in where each mode's frame buffer is (a 68k address: the window's top 512 KiB
+       for the indexed modes of a 640 x 480 screen, which 24-bit System 6 can reach, else the big region)
+       and its row pitch; the driver answers QuickDraw from these tables. */
+    uint32_t mode_base[8];                   /* Pi: 68k address of the frame buffer for mode 128+i (0 = no such mode) */
+    uint32_t mode_rowbytes[8];               /* Pi: bytes per row for mode 128+i */
+    uint32_t big_base, big_size;             /* Pi: the big frame buffer region (PSMB_FB_BIG_PHYS, 8 MiB) */
+    uint32_t vc_width, vc_height, vc_depth;  /* Pi: the VideoCore frame buffer behind it */
 };
+/* the big frame buffer region: 8 MiB of the slot's 16 MiB space above the window, enough for 1920 x
+   1080 at 32 bits (7.9 MiB); Pi RAM carved next to the window, 32-bit addressing only */
+#define PSMB_FB_BIG_PHYS     0xF9100000u
+#define PSMB_FB_BIG_SIZE     0x00800000u
 
 #define PSMB_MAX_SERVICES    8
 #define PSMB_MAX_BLKDEV      4

@@ -47,6 +47,11 @@ extern struct MemoryBlock *sys_memory;
 static uintptr_t ram_phys, rom_phys;
 static uint32_t  ram_size;
 static uintptr_t win_phys, declrom_phys;   /* slot $9 mailbox window and declaration ROM (Pi RAM) */
+void psmac_mmu_set_fb(uintptr_t f);                   /* psmac_mmu.c */
+static uintptr_t fb_big_phys;              /* the second display's big frame buffer (psmb.h) */
+static uint32_t screen_w, screen_h;        /* mac.screen=WxH: the second display's size (0: the VideoCore's) */
+uintptr_t psmac_fb_big_phys(void) { return fb_big_phys; }
+void psmac_screen_size(uint32_t *w, uint32_t *h) { *w = screen_w; *h = screen_h; }
 static volatile int transport_up, transport_dead, service_running;
 static volatile int svc_phase; /* 0 idle, 1 writing req, 2 reading reply, 3 heartbeat */
 static volatile uint32_t svc_op, svc_addr;
@@ -113,7 +118,8 @@ static int uart_getc(uint64_t deadline)
    One host syscall per direction instead of one per byte through the UART model. The MAME bridge
    opens /tmp/psmac.req (read) and /tmp/psmac.rep (write); we open them the other way round. */
 static int use_semihost = 0;            /* mac.bridge=semihost */
-static uint32_t peek_addr, peek_len;    /* mac.peek=: Mac memory dumped at each heartbeat (debugging) */
+static uint32_t peek_addr, peek_len;
+uint32_t psmac_dbf_slow = 1;            /* mac.dbfslow=N: device reads per turn of a self-looping dbf (M68k_LINE5.c) */    /* mac.peek=: Mac memory dumped at each heartbeat (debugging) */
 static int64_t sh_req = -1, sh_rep = -1;
 static int64_t semihost(uint32_t op, void *param)
 {
@@ -219,6 +225,13 @@ static void psmac_read_options(void)
     }
     if ((tok = find_token(args, "mac.inputtest="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_test(uint32_t); psmac_alice_input_test(n); }
     if ((tok = find_token(args, "mac.inputabout="))) { tok += 15; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_about(uint32_t); psmac_alice_input_about(n); }
+    if ((tok = find_token(args, "mac.screen="))) {      /* mac.screen=WxH: the second display's resolution */
+        tok += 11; uint32_t w = 0, h = 0;
+        while (*tok >= '0' && *tok <= '9') w = w * 10 + (*tok++ - '0');
+        if (*tok == 'x') { tok++; while (*tok >= '0' && *tok <= '9') h = h * 10 + (*tok++ - '0'); }
+        if (w >= 512 && w <= 1920 && h >= 342 && h <= 1200) { screen_w = w; screen_h = h; }
+    }
+    if ((tok = find_token(args, "mac.dbfslow="))) { tok += 12; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); psmac_dbf_slow = n > 8 ? 8 : n; }
     if ((tok = find_token(args, "mac.peek="))) {        /* mac.peek=HEXADDR,LEN: dump Mac memory at each heartbeat (debugging) */
         tok += 9; uint32_t a = 0, n = 0;
         while (1) { char c = *tok; uint32_t d; if (c >= '0' && c <= '9') d = c - '0'; else if (c >= 'a' && c <= 'f') d = c - 'a' + 10; else if (c >= 'A' && c <= 'F') d = c - 'A' + 10; else if (c == 'x' || c == 'X') { tok++; continue; } else break; a = a * 16 + d; tok++; }
@@ -590,7 +603,20 @@ int psmac_bus_read(uint64_t *value, uint64_t *value2, int size, uint64_t far)
      *.declrom              the slot-$9 declaration ROM
      anything else          handed to the Alice68 modules as a firmware file, by its base name
    A container that does not start with the cpio magic is taken to be a bare ROM, as before. */
-struct container_result { const uint8_t *rom; uint32_t rom_len; const uint8_t *declrom; uint32_t declrom_len; };
+struct container_result { const uint8_t *rom; uint32_t rom_len; const uint8_t *declrom; uint32_t declrom_len; int declrom_sized; };
+/* "...-WxH.declrom": the resolution a declaration ROM was built for (0 if the name has none) */
+static int declrom_res(const char *name, uint32_t *w, uint32_t *h)
+{
+    int n = 0; while (name[n]) n++;
+    int i = n - 1; while (i >= 0 && name[i] != '-') i--;
+    if (i < 0) return 0;
+    const char *p = name + i + 1; uint32_t a = 0, b = 0;
+    while (*p >= '0' && *p <= '9') a = a * 10 + (*p++ - '0');
+    if (*p++ != 'x') return 0;
+    while (*p >= '0' && *p <= '9') b = b * 10 + (*p++ - '0');
+    if (!a || !b) return 0;
+    *w = a; *h = b; return 1;
+}
 static uint32_t hex8(const char *p) { uint32_t v = 0; for (int i = 0; i < 8; i++) { char c = p[i]; v = v * 16 + (c >= 'a' ? c - 'a' + 10 : c >= 'A' ? c - 'A' + 10 : c - '0'); } return v; }
 static int bytes_eq(const void *a, const char *b, uint32_t n) { const uint8_t *x = a; for (uint32_t i = 0; i < n; i++) if (x[i] != (uint8_t)b[i]) return 0; return 1; }
 static int ends_with(const char *name, const char *suffix)
@@ -602,7 +628,9 @@ static int ends_with(const char *name, const char *suffix)
 }
 static void walk_container(const uint8_t *img, uint32_t size, struct container_result *r)
 {
-    r->rom = img; r->rom_len = size; r->declrom = NULL; r->declrom_len = 0;
+    r->rom = img; r->rom_len = size; r->declrom = NULL; r->declrom_len = 0; r->declrom_sized = 0;
+    extern uint32_t fb_width, fb_height;
+    uint32_t want_w = screen_w ? screen_w : fb_width, want_h = screen_h ? screen_h : fb_height;
     if (size < 110 || !bytes_eq(img, "070701", 6)) return;         /* a bare ROM */
     r->rom = NULL; r->rom_len = 0;
     uint32_t off = 0;
@@ -616,7 +644,14 @@ static void walk_container(const uint8_t *img, uint32_t size, struct container_r
         const char *base = name; for (const char *p = name; *p; p++) if (*p == '/') base = p + 1;
         if (fsize) {
             if (ends_with(base, ".rom"))          { r->rom = img + data; r->rom_len = fsize; kprintf("[PSMAC] container: ROM %s, %u bytes\n", base, fsize); }
-            else if (ends_with(base, ".declrom")) { r->declrom = img + data; r->declrom_len = fsize; kprintf("[PSMAC] container: declaration ROM %s, %u bytes\n", base, fsize); }
+            else if (ends_with(base, ".declrom")) {
+                /* one declaration ROM per screen size may be in the container: take the one whose name
+                   ends in the second display's WxH, else the plain one (docs/10) */
+                uint32_t w, h; int sized = declrom_res(base, &w, &h);
+                int take = sized ? (w == want_w && h == want_h) : !r->declrom_sized && !r->declrom;
+                if (take) { r->declrom = img + data; r->declrom_len = fsize; r->declrom_sized = sized; }
+                kprintf("[PSMAC] container: declaration ROM %s, %u bytes%s\n", base, fsize, take ? " (taken)" : "");
+            }
             else { extern int alice_fw_preload(const char *, const uint8_t *, uint32_t); alice_fw_preload(base, img + data, fsize); }
         }
         off = (data + fsize + 3) & ~3u;
@@ -627,14 +662,16 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
 {
     psmac_read_options();
     uintptr_t base = (sys_memory[0].mb_Base + 0x1fffff) & ~0x1fffffull;
-    const uintptr_t extra = PSMB_WIN_SIZE + PSMB_DECLROM_SIZE;    /* slot $9 mailbox window + declaration ROM */
+    const uintptr_t extra = PSMB_WIN_SIZE + PSMB_DECLROM_SIZE + PSMB_FB_BIG_SIZE;    /* slot $9 mailbox window + declaration ROM + the big frame buffer */
     uint32_t mb = globals.psmac_ram_mb;
     if (!mb) {
         /* No mac.ram=: take what the Pi can spare. The kernel keeps PSMAC_PI_KEEP_MB for its own
            pools (the JIT cache, the service core's buffers, firmware); the rest is the Mac's, up
            to PSMAC_RAM_DEFAULT_MB, which is what the IIci ROM sizes without a memory patch (two
            banks of 64 MiB, docs/08 item 11). A Pi Zero 2 W or 3A+ (512 MiB) and a Pi 4 (2-8 GiB)
-           both end up with 128 MiB; smaller boards get what is left. */
+           both end up with 128 MiB; smaller boards get what is left. Sizes that are not a full
+           bank or a full bank A plus part of bank B still work (the shim aliases what is
+           missing, psmac_mmu.c), but a real IIci never had them, so the rounding stays at 8. */
         uintptr_t avail = sys_memory[0].mb_Base + sys_memory[0].mb_Size - base;
         uintptr_t spare = avail > ((uintptr_t)PSMAC_PI_KEEP_MB << 20) ? avail - ((uintptr_t)PSMAC_PI_KEEP_MB << 20) : 0;
         mb = (uint32_t)(spare >> 20) & ~7u;
@@ -651,7 +688,7 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
         ram_size = 8 << 20; need = ram_size + PSMAC_ROM_SIZE + extra;
     }
     ram_phys = base; rom_phys = base + ram_size;
-    win_phys = rom_phys + PSMAC_ROM_SIZE; declrom_phys = win_phys + PSMB_WIN_SIZE;
+    win_phys = rom_phys + PSMAC_ROM_SIZE; declrom_phys = win_phys + PSMB_WIN_SIZE; fb_big_phys = declrom_phys + PSMB_DECLROM_SIZE;
     sys_memory[0].mb_Size -= (base + need) - sys_memory[0].mb_Base;
     sys_memory[0].mb_Base = base + need;
 
@@ -673,6 +710,7 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
     }
     /* identity mapping (MMU disabled) and the 68030 MMU shadowing machinery */
     psmac_mmu_set_slot(win_phys, declrom_phys);
+    psmac_mmu_set_fb(fb_big_phys);
     psmac_mmu_init(ram_phys, ram_size, rom_phys);
     {   /* declaration ROM image (testbed: host file via semihosting; hardware: SD card later) */
         uint8_t *dr = (uint8_t *)(KERNEL_ALIAS + declrom_phys);

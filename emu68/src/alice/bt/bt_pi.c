@@ -319,7 +319,7 @@ static void fr_log(const char *what)
 /* ---- CPU1's turn ------------------------------------------------------------------- */
 void bt_pi_poll(void)
 {
-    static const char *const stems[] = { "BCM4345C0", "BCM4345C5", "bcm4345c0", 0 };
+    static const char *const stems[] = { "BCM4345C0", "BCM4345C5", "bcm4345c0", "BCM43430A1", "BCM4343A1", 0 };
     uint32_t now = ms_now();
     if (!keys_loaded) { keys_loaded = 1; load_keys(); }
     switch (phase) {

@@ -8,7 +8,7 @@ OBJCOPY = m68k-linux-gnu-objcopy
 PY      = python3
 B       = build
 
-all: $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom
+all: $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom declrom-sizes
 
 $(B)/%.o: %.s
 	@mkdir -p $(B)
@@ -58,6 +58,12 @@ $(B)/enet_wifi.o: enet.s
 
 $(B)/psmac.declrom: $(B)/pidisk.bin.raw $(B)/enet.bin.raw $(B)/enet_wifi.bin.raw $(B)/piinput.bin.raw $(B)/pivideo.bin.raw ../tools/mac/mkdeclrom.py ../tools/mac/declrom.py
 	$(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --enet $(B)/enet.bin.raw --wifi $(B)/enet_wifi.bin.raw --input $(B)/piinput.bin.raw --video $(B)/pivideo.bin.raw -o $@
+
+# the same card for other screen sizes: the kernel takes psmac-WxH.declrom from the container when the
+# second display has that size (mac.screen=WxH, or the VideoCore's own size)
+RESES = 800x600 1024x768 1280x720 1280x1024 1920x1080
+declrom-sizes: $(B)/pidisk.bin.raw $(B)/enet.bin.raw $(B)/enet_wifi.bin.raw $(B)/piinput.bin.raw $(B)/pivideo.bin.raw
+	for r in $(RESES); do $(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --enet $(B)/enet.bin.raw --wifi $(B)/enet_wifi.bin.raw --input $(B)/piinput.bin.raw --video $(B)/pivideo.bin.raw --res $$r -o $(B)/psmac-$$r.declrom; done
 
 # the same card with the WiFi as its only network sResource: MacTCP and EtherTalk take the first
 # Ethernet-type sResource they find, so this is how the WiFi path is tested in the testbed

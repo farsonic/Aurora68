@@ -43,6 +43,17 @@ the next piece of work, so on hardware this build boots the Pi and waits (see
    python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom aurora68.declrom \
      cyfmac43455-sdio-standard.bin brcmfmac43455-sdio.txt cyfmac43455-sdio.clm_blob BCM4345C0.hcd
    ```
+   Those are the files for a Pi 3B+, 3A+ or 4 (BCM43455). A **Pi 3B** carries the older BCM43438
+   and wants these instead (the kernel picks by the chip's id):
+   ```bash
+   curl -fL --remote-name-all \
+     https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/brcm/brcmfmac43430-sdio.bin \
+     https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/brcm/brcmfmac43430-sdio.txt \
+     https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/brcm/brcmfmac43430-sdio.clm_blob \
+     https://raw.githubusercontent.com/RPi-Distro/bluez-firmware/master/broadcom/BCM43430A1.hcd
+   python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom aurora68.declrom \
+     brcmfmac43430-sdio.bin brcmfmac43430-sdio.txt brcmfmac43430-sdio.clm_blob BCM43430A1.hcd
+   ```
    (On Windows, `curl.exe` and the `curl` part as one line.) The kernel finds the files in the
    container by name (`cyfmac43455-sdio-standard` and `brcmfmac43455-sdio` are both accepted). Apple's ROM and Broadcom's firmware are not included in the release.
 5. Put the Pi in the PiStorm, the PiStorm in the SE's 68000 socket, HDMI to a monitor if you
@@ -62,24 +73,43 @@ enable_uart=1                          # the kernel's log on the serial pins, 11
 hdmi_group=2
 hdmi_mode=4                            # 640 x 480: the second screen, one pixel to one
 ```
-The Pi's HDMI output is the Macintosh's second screen (640 by 480, 256 colours); the firmware
-sets the HDMI mode at power-on and scales if the mode is larger. `hdmi_mode=16` is 1024 by 768,
-`82` is 1080p.
+The Pi's HDMI output is the Macintosh's second screen. By default it is 640 by 480 and the
+firmware scales it to whatever HDMI mode it chose. For a larger Macintosh screen, one pixel to one,
+set the HDMI mode and tell the kernel the same size with `mac.screen=` (below) and put the matching
+declaration ROM (`aurora68-1024x768.declrom` and so on) in the container in place of
+`aurora68.declrom`. `hdmi_mode=16` is 1024 by 768, `35` is 1280 by 1024, `82` is 1080p. The screen
+offers black and white, 4, 16, 256, thousands and millions of colours in the Monitors control
+panel; the ROM sizes the Macintosh's memory and the frame buffer is the Pi's, so a 1080p screen in
+millions of colours costs the Macintosh nothing. `docs/img/system71-pi-1024x768-millions.png`
+is the Pi's screen at 1024 by 768 in millions of colours.
 
 ### cmdline.txt
 One line, options separated by spaces, no comments:
 
 | Option | Meaning |
 |---|---|
-| `mac.ram=64` | Macintosh memory in MB (default: what the Pi can spare, up to 64; 128 does not boot yet) |
+| `mac.ram=128` | Macintosh memory in MB. Default: what the Pi can spare after the kernel's 192 MB, up to 128, which is all the IIci ROM sizes (two banks of 64). A 512 MB Pi Zero 2 W and an 8 GB Pi 4 both get 128 |
 | `enable_cache` | Emu68's instruction cache; leave it on |
 | `wifi.ssid=NAME wifi.psk=PASSWORD wifi.country=GB` | join a WiFi network at boot |
 | `wifi=off`, `bt=off`, `eth=off` | leave a radio or the Ethernet off |
 | `net.oui=off` | keep the Pi's own MAC addresses (default: Commodore's prefix, as Alice68) |
+| `mac.screen=1024x768` | the second screen's size in pixels (default 640x480; 512 to 1920 by 342 to 1200). Set `hdmi_mode` to match and use the declaration ROM of that size |
+| `mac.vcswap=1` | swap red and blue on the second screen, should a board's firmware disagree with the kernel about the pixel byte order (the firmware is asked; this overrides its answer) |
 
 ### Upgrading
 Replace `kernel8.img` and `aurora68.declrom`, rebuild `aurora68.cpio`, keep your `config.txt`
 and `cmdline.txt`. The release notes say when a Macintosh-side file changed.
+
+## The hardware
+The target is a classic PiStorm (the DIP-64 board with the EPM240 CPLD made for the Amiga 500
+and 2000) in a socket in the SE's 68000 position, carrying a Raspberry Pi 3. The classic board
+takes a Zero 2 W, 3A+, 3B or 3B+; a Pi 4 needs a different board. `docs/12-hardware-bringup.md`
+is the plan and what is known about the fit, the CPLD firmware (stock first; Frimples'
+DirectSocket E-clock build if the VIA needs it), and what a Pi 3 changes against the Pi 4 the
+network modules were written for: WiFi works the same way (the firmware differs between a 3B
+and a 3B+), there is no Gigabit Ethernet, Bluetooth shares the Pi 3's one PL011 with the
+console, and USB keyboards need a DWC2 driver that does not exist yet. The SE's own keyboard and
+mouse work regardless.
 
 ## Layout
 | Directory | Contents |

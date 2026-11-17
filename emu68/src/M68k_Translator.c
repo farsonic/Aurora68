@@ -878,10 +878,17 @@ struct M68KTranslationUnit *M68K_VerifyUnitCRC32(struct M68KTranslationUnit *uni
            RAM blocks are re-checked only after the Mac has cleared its instruction cache through
            CACR (psmac_icache_epoch), which Mac OS does whenever it moves or loads code. */
         extern uint32_t psmac_icache_epoch;
-        if ((unit->mt_M68kAddress >= 0x40000000 && unit->mt_M68kAddress < 0x50000000) ||
-            (unit->mt_M68kAddress >= 0x800000 && unit->mt_M68kAddress < 0x900000) ||
-            unit->mt_VerEpoch == psmac_icache_epoch)
-            return unit;
+        extern uint32_t psmac_mmu_l2p(uint32_t logical, int *valid);
+        if (unit->mt_VerEpoch == psmac_icache_epoch) return unit;
+        if (unit->mt_M68kAddress >= 0x40000000 && unit->mt_M68kAddress < 0x50000000) return unit;
+        {   /* a block whose logical address lands in the ROM never changes either: in 24-bit mode
+               the ROM also appears at $800000. The first version exempted $800000-$8FFFFF by
+               address, which in 32-bit mode is plain RAM holding whatever the Memory Manager put
+               there; code loaded over an old block was never re-checked, and a Mac with more than
+               8 MiB ran stale translations (docs/08, item 27). Ask the MMU shim where it really is. */
+            int valid; uint32_t ph = psmac_mmu_l2p(unit->mt_M68kAddress, &valid);
+            if (valid && ph >= 0x40000000u && ph < 0x50000000u) return unit;
+        }
 #endif
         uint32_t crc = CalcCRC32((void *)(uintptr_t)unit->mt_M68kLow, (void*)(uintptr_t)unit->mt_M68kHigh);
 #ifdef PSMAC

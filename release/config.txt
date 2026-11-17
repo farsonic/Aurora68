@@ -20,6 +20,9 @@ disable_overscan=1
 
 [pi3]
 gpu_mem=64
+# A Pi 3B+ or 3A+ carries the BCM43455 WiFi (firmware cyfmac43455-sdio-standard.bin and friends);
+# a Pi 3B the BCM43438 (brcmfmac43430-sdio.bin and brcmfmac43430-sdio.txt). The kernel picks by
+# chip id. Bluetooth shares the Pi 3's one PL011 with the console; see docs/12 in the repository.
 
 [pi4]
 gpu_mem=64
