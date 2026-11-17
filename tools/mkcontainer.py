@@ -20,10 +20,29 @@ def is_stock_iici(data):
     """A 512 KiB IIci ROM whose checksum word is Apple's (368CADFE): unpatched, needs the patch set."""
     return len(data) == 0x80000 and data[:4] == bytes.fromhex('368CADFE')
 
+def mac_checksum(d):
+    """Apple's ROM checksum: the 32-bit sum of the 16-bit words from offset 4 to the end."""
+    return sum(int.from_bytes(d[i:i + 2], 'big') for i in range(4, len(d), 2)) & 0xffffffff
+
 def patch_rom(path):
-    """Apply the kernel's patch set (timing calibration from the Pi, docs/06) with rompatch.py from
-    the same folder as this script; returns the patched image, or None if the tools are not there."""
+    """Apply the kernel's patch set (timing calibration from the Pi, docs/06). First choice: the
+    assembled delta next to this script (patches/iici-368CADFE.delta.json, byte ranges and the
+    expected checksum), which needs nothing but Python; the first user to run this on a Mac had no
+    m68k assembler for rompatch.py. Second choice: rompatch.py with the source patch set, where
+    the assembler exists. Returns the patched image, or None if neither is available."""
+    import json
     here = os.path.dirname(os.path.abspath(__file__))
+    delta = os.path.join(here, 'patches', 'iici-368CADFE.delta.json')
+    if os.path.exists(delta):
+        d = json.load(open(delta))
+        img = bytearray(open(path, 'rb').read())
+        if len(img) != d['size'] or img[:4].hex().upper() != d['input_checksum']:
+            sys.exit("the ROM is not the image the delta was made for")
+        for off, hx in d['runs']:
+            b = bytes.fromhex(hx); img[off:off + len(b)] = b
+        if img[:4].hex().upper() != d['output_checksum'] or mac_checksum(img) != int(d['output_checksum'], 16):
+            sys.exit("the patched ROM's checksum is not the expected one: the delta file is damaged")
+        return bytes(img)
     tool = os.path.join(here, 'rompatch.py')
     pset = os.path.join(here, 'patches', 'iici.json')
     if not (os.path.exists(tool) and os.path.exists(pset)):
@@ -61,7 +80,7 @@ for i, f in enumerate(a.files):
         # stock image when given one and left System 7.1 to a zero divide on some boots.
         patched = patch_rom(f)
         if patched is None:
-            sys.exit("the ROM is a stock 368CADFE image and rompatch.py/patches/iici.json are not next to this script: cannot patch it")
+            sys.exit("the ROM is a stock 368CADFE image and patches/iici-368CADFE.delta.json is not next to this script: cannot patch it")
         print(f"  {os.path.basename(f)}: stock 368CADFE image, patch set applied (checksum now {patched[:4].hex().upper()})")
         data = patched
     blob += newc_entry(os.path.basename(f), data, i + 1)

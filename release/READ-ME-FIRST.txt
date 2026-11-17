@@ -26,8 +26,10 @@ What is in the zip
   aurora68-WxH.declrom   one per larger HDMI screen size (not for the SE's screen yet)
   aurora68-wifionly.declrom   the WiFi as the only network card (MacTCP then takes the WiFi)
   make-container.py      builds aurora68.cpio from your ROM, the declaration ROM and firmware,
-  rompatch.py, patches/  and patches a stock IIci ROM on the way (new in 0.3; 0.1 and 0.2 did
-                         not, which left System 7.1 to an occasional zero divide at boot)
+  patches/               and patches a stock IIci ROM on the way with the byte delta in patches/
+                         (new in 0.3; 0.1 and 0.2 did not, which left System 7.1 to an occasional
+                         zero divide at boot). Python 3 is all it needs; rompatch.py and
+                         patches/iici.json are the source of that delta, for the record
   Mac/                   the Macintosh-side programs: PiMach, PiDisk (extensions), PiWiFi,
                          PiBlue, PiStatus, PiNet, PiPing, PiScreens, PiColor (applications),
                          as MacBinary files and on Aurora68-Utilities.img (an HFS disk image)

@@ -18,8 +18,10 @@ it ran in the testbed, where MAME's Macintosh SE stands in for the logic board.
   3B+/3A+/4's BCM43455; the firmware files for each are in the read-me, with the download
   commands.
 - **The container builder patches a stock IIci ROM** (0.1 and 0.2 packed it as given and left
-  System 7.1 to an occasional zero divide at boot). `rompatch.py` and `patches/iici.json` are in
-  the zip for it.
+  System 7.1 to an occasional zero divide at boot), with a precomputed byte delta
+  (`patches/iici-368CADFE.delta.json`), so plain Python is enough; the first attempt wanted the
+  m68k assembler, which a Mac does not have. `rompatch.py` and `patches/iici.json` remain the
+  delta's source.
 - `config.txt` carries `dtoverlay=disable-bt` so the kernel's log is on the header's GPIO 14/15;
   Bluetooth stays off in this build (`bt=off`).
 
