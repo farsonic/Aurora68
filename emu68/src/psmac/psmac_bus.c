@@ -25,6 +25,8 @@
 #include "psmb.h"
 #include "devicetree.h"
 #include "psmac_rom_delta.h"
+void psmac_trace(uint32_t n);           /* the first-N bus cycle trace (below) */
+static int bustrace_asked;              /* mac.bustrace= given: keep it even on the GPIO transport */
 
 void mmu_map(uintptr_t phys, uintptr_t virt, uintptr_t length, uint32_t attr_low, uint32_t attr_high);
 uintptr_t mmu_virt2phys(uintptr_t addr);
@@ -248,6 +250,7 @@ static void psmac_read_options(void)
         if (w >= 512 && w <= 1920 && h >= 342 && h <= 1200) { screen_w = w; screen_h = h; }
     }
     if (psmac_board_se && !screen_w) { screen_w = 512; screen_h = 342; }   /* the SE's own screen is the card's frame on that board */
+    if ((tok = find_token(args, "mac.bustrace="))) { tok += 13; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); psmac_trace(n); bustrace_asked = 1; }
     if ((tok = find_token(args, "mac.console="))) { tok += 12; extern void psmac_console_option(int); psmac_console_option(strncmp(tok, "hdmi", 4) == 0); }
     if ((tok = find_token(args, "mac.dbfslow="))) { tok += 12; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); psmac_dbf_slow = n > 8 ? 8 : n; }
     if ((tok = find_token(args, "mac.pcwatch="))) { tok += 12; uint32_t a = 0; while (1) { char c = *tok; uint32_t d; if (c >= '0' && c <= '9') d = c - '0'; else if (c >= 'a' && c <= 'f') d = c - 'a' + 10; else if (c >= 'A' && c <= 'F') d = c - 'A' + 10; else if (c == 'x' || c == 'X') { tok++; continue; } else break; a = a * 16 + d; tok++; } pcwatch = a; }
@@ -416,6 +419,7 @@ void psmac_service_core(void)
     if (use_gpio) { psmac_gpio_init(); transport_up = 1; }
     else if (!use_semihost) uart_init(); else { if (!semihost_init()) transport_dead = 1; }
     service_running = 1;
+    if (use_gpio && !bustrace_asked) psmac_trace(0);        /* the first 400 bus cycles are the testbed's diagnostic; on a bench they bury the log (mac.bustrace=N asks for them) */
     kprintf("[PSMAC] service core running (%s transport owner, IPL poll %s)\n", use_gpio ? "GPIO" : "bridge", use_gpio ? "20 kHz" : "1 kHz");
     psmac_se_start();
     /* a status register read on the GPIO costs a microsecond, a bridge poll a round trip: poll accordingly */

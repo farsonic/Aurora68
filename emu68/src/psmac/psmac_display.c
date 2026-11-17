@@ -159,6 +159,8 @@ static void con_cell(uint8_t *fb, uint32_t pitch_, int bpp32, uint32_t cx, uint3
             if (bpp32) ((uint32_t *)row)[x] = on ? LE32(0x00e0e0e0u) : 0; else ((uint16_t *)row)[x] = on ? LE16(0xe71c) : 0;
         }
         if (y & 1) data += modulo;
+        arm_flush_cache((intptr_t)row, 8 * (bpp32 ? 4 : 2));    /* the VideoCore reads memory, not our cache: on the
+                                                                   first real Pi the glyphs arrived a cache line at a time */
     }
 }
 void psmac_console_putc(uint8_t c)
