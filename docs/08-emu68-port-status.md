@@ -511,6 +511,20 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    timeout path; drop the debug-only read-only mapping of the low-memory page; take the
    calibration patch and the rest of `rom/patches/iici.json` to the real Pi's timings.
 
+29. **First silicon (17 November, 05:45).** The user put 0.3 on a Pi 3B v1.2 with an HDMI
+   monitor and nothing else: the firmware's rainbow square, then nothing, and no error pattern
+   on the ACT LED, so the firmware had handed over and the kernel died before Emu68's splash.
+   The splash is the first mailbox call after `platform_post_init` identity-maps the
+   VideoCore's memory as write-through normal memory, and on a Pi 3 with gpu_mem=64 that memory
+   is reported as 0x3C000000-0x3FFFFFFF: right over the peripheral window this build keeps at
+   0x3F000000, through which `support_rpi.c` drives the mailbox. A device behind a cacheable
+   mapping polls its own stale status for ever; QEMU does not model memory attributes and never
+   noticed. The mapping is clipped at the window now (the ARM cannot see SDRAM there anyway).
+   Two things made the night's first hardware report possible without a serial cable: the
+   kernel's log drawn on the HDMI screen (`mac.console=hdmi`, psmac_display.c) and the rainbow
+   square left visible (no `disable_splash`), so a firmware that gave up and a kernel that did
+   look different.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,
