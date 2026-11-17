@@ -508,8 +508,15 @@ void psmac_service_core(void)
    the line (it is not wired to a slot) and keeps serving the real registers. */
 static volatile uint8_t slot_line, rbv_sier, rbv_ier;
 void psmac_slot_irq(int on) { slot_line = on ? 1 : 0; }
-uint32_t psmac_slot_irq_state(void) { return (uint32_t)slot_line << 16 | (uint32_t)rbv_sier << 8 | rbv_ier; }
-static inline int slot_irq_pending(void) { return slot_line && (rbv_sier & 0x01) && (rbv_ier & 0x02); }
+/* The line as it is this instant, not as core 3 last sampled it. The ROM's level-2 handler reads
+   the slot flags again right after a handler returns; if the line it sees is a stale copy still
+   up, it dispatches once more, the handler finds nothing pending, and the ROM declares the
+   interrupt unserviceable (system error 51, the first Sad Mac on the SE, docs/08 item 28). On the
+   IIci the input driver's catch-all handler happened to be installed first and hid this. */
+extern int psmac_slot_line_now(void);
+static inline int line_now(void) { int l = psmac_slot_line_now(); if (l >= 0) slot_line = l; return slot_line; }
+uint32_t psmac_slot_irq_state(void) { return (uint32_t)line_now() << 16 | (uint32_t)rbv_sier << 8 | rbv_ier; }
+static inline int slot_irq_pending(void) { return line_now() && (rbv_sier & 0x01) && (rbv_ier & 0x02); }
 static inline int rbv_reg(uint32_t addr)              /* pseudo-VIA register index, or -1 */
 {
     if ((addr & 0xff0fe000u) != 0x50026000u) return -1;
@@ -521,7 +528,7 @@ static uint32_t rbv_merge_read(uint32_t addr, int size, uint32_t data)
 {
     if (size != 1) return data;
     switch (rbv_reg(addr)) {
-    case 0x02: return slot_line ? (data & ~0x01u) : data;                       /* SIFR: 0 = asserted */
+    case 0x02: return line_now() ? (data & ~0x01u) : data;                      /* SIFR: 0 = asserted */
     case 0x03: return slot_irq_pending() ? (data | 0x82) : data;                /* IFR: any slot + IRQ */
     case 0x12: return (data & ~0x01u) | (rbv_sier & 0x01);                      /* SIER: our enable bit */
     default:   return data;

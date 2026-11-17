@@ -537,6 +537,17 @@ void psmac_alice_init(uint8_t *win)
 }
 uint32_t psmac_alice_irqs(void) { return irq_raised; }
 
+/* The slot-9 line this instant, for the bus layer's register reads (psmac_bus.c): the same
+   expression the loop below samples, minus its storm guard. -1 before the services are up. */
+int psmac_slot_line_now(void)
+{
+    extern volatile uint8_t *alice_net_board(void); extern int psmac_display_irq(void);
+    if (!alice_ready) return -1;
+    volatile struct an_hdr *nh = (volatile struct an_hdr *)alice_net_board();
+    int net_line = nh && nh->amiga_ver && nh->irq;
+    return (net_line && nh->irq) || (inr && inr->attached && inr->head != inr->tail) || psmac_display_irq();
+}
+
 /* core 3: the Alice68 services plus the mailbox services, for ever */
 void __attribute__((noreturn)) psmac_alice_core(void)
 {

@@ -457,6 +457,14 @@ System 6 does not touch TimeDBRA that way and boots with either ROM.
      SE where the IIci took 50. The RAM test failed at once because the board-layer change had
      dropped not only the mirror of the first 320 KiB to the motherboard but the local write
      with it: every store below $50000 vanished. Local write kept, mirror dropped (fs178).
+   - **fs178, 04:29: the first picture on a Macintosh SE's screen drawn by the IIci ROM**
+     (`docs/img/macse-first-picture-sadmac-0f-33.png`). The ROM passed its tests, scanned the
+     SCSI bus through the translated 5380, found the slot-9 card, opened the video driver, took
+     its first VBL through the slot interrupt, and the service core wrote the card's frame into
+     the SE's screen buffer, 342 rows: a Sad Mac, codes $0000000F $00000033, system error 51,
+     an unserviceable slot interrupt. The dispatcher found the slot-9 line asserted and no
+     handler that owned it; the RBV stand-in's interrupt flags are the suspect (fs179 traces
+     them).
 *(17 November, 03:30: the hardware is now known, a classic PiStorm with a Pi 3 in a socketed SE,
 WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.)*
 1. MacTCP under System 6 (the same files; untested there), then a real client (Fetch, NCSA

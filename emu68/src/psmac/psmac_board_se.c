@@ -197,8 +197,11 @@ int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t 
         return 1;
     }
     /* chips the SE lacks: answered here */
-    if (se_trace_left && off >= 0x26000 && off < 0x28000) trace("RBV", write, addr, off, size, data);
-    if (off >= 0x26000 && off < 0x28000) { if (write) rbv_write(off, data & 0xff); else { r = rbv_read(off); *val = size == 1 ? r : r << 8 | r; } return 1; }
+    if (off >= 0x26000 && off < 0x28000) {
+        if (write) { trace("RBV", 1, addr, off, size, data & 0xff); rbv_write(off, data & 0xff); }
+        else { r = rbv_read(off); trace("RBV", 0, addr, off, size, r); *val = size == 1 ? r : r << 8 | r; }
+        return 1;
+    }
     if (off >= 0x14000 && off < 0x16000) { if (write) asc_write(off, data & 0xff); else { r = asc_read(off); *val = size == 1 ? r : r << 8 | r; } return 1; }
     if (off >= 0x24000 && off < 0x26000) { if (write) vdac_regs[off & 31] = data; else *val = vdac_regs[off & 31]; return 1; }
     /* VIA2 (0x2000: the ROM probes it to tell decoders apart; the IIci has none), 0x21C00, the rest: open bus */
