@@ -77,6 +77,12 @@ BCM2711 (`sdio.c`, `sdh_pins()`): on the 3B the old code left DAT3 pulled down, 
 CMD0 into an SPI-mode entry and silences the SDIO card. The first 3B run found both, and a
 mailbox race between the display and the WiFi that blacked the screen (docs/08, items 30-31).
 
+**Status, 17 November:** on a 3B v1.2 the chip is found, loads its firmware and reports its MAC
+address (docs/08, items 30-33). Three things stood between the Pi 4 code and the 3B: the pin
+pulls go through different registers, the firmware leaves the SD card slot on the same Arasan
+host (GPIO 48-53 must be detached), and the mailbox needed a lock between the display and the
+WiFi. A 3B+ or 3A+ has not been tried yet.
+
 So, for WiFi first: the Alice68 WiFi module over SDIO is expected to work on a 3B+/3A+ with the
 files already in the release notes, and on a 3B with the 43430 pair, which the kernel now looks
 for. Bluetooth needs the UART question settled; USB input needs a new driver.

@@ -564,6 +564,15 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    after boot: everything comes from the initramfs), and the CMD5 failure line carries the
    host's status, interrupt and control words for the next photo.
 
+33. **The 3B's WiFi chip answers (17 November, 09:15).** With the card slot detached from the
+   Arasan (its six pins had been on ALT3, "functions were 3ffff"), the same boot went: SDIO card
+   with 2 functions, OCR a0ffff00, 4-bit bus at 25 MHz, chip a9a6 rev 1, "Cortex-M3 + SOCRAM,
+   RAM 512 KB at 0, 7 cores, PMU rev 24", firmware and NVRAM loaded in 94 ms, firmware running
+   after 97 ms, the chip's MAC address and the firmware banner (wl0 7.45.98, July 2021). That is
+   the CM3/SOCRAM chip path of item 24 running on real silicon for the first time, and the whole
+   Alice68 WiFi module running on a Pi 3 for the first time. Nothing on the Mac side uses it yet;
+   joining a network is `wifi.ssid= wifi.psk= wifi.country=` in cmdline.txt.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,
