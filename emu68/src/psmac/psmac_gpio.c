@@ -140,8 +140,8 @@ int psmac_gpio_reset_asserted(void) { return gpio_ready && (LE32(gpio[13]) & (1 
    since at power-on the SE's own reset circuit holds it for a while. */
 void psmac_gpio_pulse_reset(void)
 {
-    uint32_t n = 0;
-    while ((LE32(gpio[13]) & (1 << PIN_RESET)) == 0 && ++n < 5000000) __asm__ volatile("yield");
+    uint64_t t0 = ustime();                                 /* two seconds at most: with no board the line floats low (the first bench Pi waited five) */
+    while ((LE32(gpio[13]) & (1 << PIN_RESET)) == 0 && ustime() - t0 < 2000000) __asm__ volatile("yield");
     status_write(0);
     usleep(30000);
     status_write(STATUS_BIT_RESET);

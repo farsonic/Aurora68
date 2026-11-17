@@ -615,6 +615,16 @@ static struct {
 static const char *const state_word[] = { "off", "starting", "ready", "scanning", "joining", "connected", "retrying", "FAILED", "no firmware" };
 
 /* state and message: the board, the splash, the log */
+/* one line for the kernel's heartbeat (psmac_bus.c): where the WiFi stands, for a screen without scrollback */
+void alice_net_report(void)
+{
+    static const char *const names[] = { "off", "starting", "idle", "scanning", "joining", "connected", "retry", "failed", "no firmware" };
+    volatile struct an_unit *u = U(0);
+    if (!u) { kprintf("[WIFI]   no board yet\n"); return; }
+    unsigned st = u->state;
+    kprintf("[WIFI]   %s: %s (chip %x rev %u, SD %u MHz)\n", st < 9 ? names[st] : "?", (const char *)u->msg, u->chip, u->chiprev, u->sdmhz);
+}
+
 static void wstate(unsigned st, const char *msg)
 {
     volatile struct an_unit *u = U(0);

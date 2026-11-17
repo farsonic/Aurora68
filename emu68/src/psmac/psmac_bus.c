@@ -447,6 +447,7 @@ void psmac_service_core(void)
             }
             { extern void psmac_slot_irq_report(void); psmac_slot_irq_report(); }
             psmac_se_report();
+            { extern void alice_net_report(void); alice_net_report(); }
             { int ok1, ok2, ok3; uint32_t t1 = mac_rd32(0xd00, &ok1), t2 = mac_rd32(0xb24, &ok2), t3 = mac_rd32(0xcea, &ok3);
               if (ok1 && ok2 && ok3) kprintf("[PSMAC]   timing globals: TimeDBRA %04x TimeSCCDB %04x TimeSCSIDB %04x TimeVIADB %04x\n", t1 >> 16, t1 & 0xffff, t2 >> 16, t3 >> 16); }
             if (peek_len) {                    /* mac.peek=: the long at $1B40 (KCHRPtr) and the bytes asked for */
