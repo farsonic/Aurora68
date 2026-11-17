@@ -497,6 +497,7 @@ static void gatt_start(struct bt_host *h, struct bt_conn *c)
 {
     struct bt_le *l = &c->l;
     l->nlog = 0; l->nsvc = l->svci = 0; l->att_err = l->att_err_g = 0; l->map_len = 0; l->nnotify = 0;
+    l->up_frames = l->up_att = l->up_other = 0; l->up_last_cid = 0; l->up_last_op = 0;
     l->g = G_MTU; l->nchr = 0; l->pm = l->kb_in = l->ms_in = l->map = 0; l->boot = 0; l->mouse_ok = 0;
     mset(&l->kbm, 0, sizeof l->kbm);
     l->mtu = 23;
@@ -778,6 +779,10 @@ static void lesig_in(struct bt_host *h, struct bt_conn *c, const uint8_t *p, uns
 }
 static void le_l2_in(struct bt_host *h, struct bt_conn *c, uint16_t cid, const uint8_t *d, unsigned n)
 {
+    if (c->l.g == G_UP) {                            /* the heartbeat's counters: does anything still come? */
+        c->l.up_frames++; c->l.up_last_cid = cid;
+        if (cid == CID_ATT) { c->l.up_att++; if (n) c->l.up_last_op = d[0]; } else c->l.up_other++;
+    }
     if (cid == CID_ATT) att_in(h, c, d, n);
     else if (cid == CID_SMP) smp_in(h, c, d, n);
     else if (cid == CID_LESIG) lesig_in(h, c, d, n);

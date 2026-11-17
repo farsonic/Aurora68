@@ -87,6 +87,7 @@ struct bt_le {
     uint8_t att_err, att_err_g;          /* the last ATT error and the discovery stage it came in */
     uint16_t map_len; uint8_t map_head[48];
     uint32_t nnotify;
+    uint32_t up_frames, up_att, up_other; uint16_t up_last_cid; uint8_t up_last_op;   /* what arrived after the link was up */
 };
 struct bt_conn {
     int used;

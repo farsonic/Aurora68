@@ -449,7 +449,7 @@ static void fr_log(const char *what)
 void bt_pi_report(void)
 {
     static const char *const ph[] = { "not started", "waiting for firmware", "powering", "powering", "running", "?", "?", "restarting", "FAILED", "off" };
-    char t[200]; unsigned k = put_str(t, 0, "[BT]   ");
+    char t[320]; unsigned k = put_str(t, 0, "[BT]   ");
     k = put_str(t, k, phase >= 0 && phase <= 9 ? ph[phase] : "?");
     if (phase == 4) {
         k = put_str(t, k, bh.state == BT_READY ? " ready" : bh.state == BT_FAILED ? " FAILED" : " starting");
@@ -470,12 +470,15 @@ void bt_pi_report(void)
         static const char *const gn[] = { "idle", "mtu", "svc", "chr", "desc", "refs", "map", "cccd", "up", "fail" };
         k = put_str(t, 0, "[BT]   LE: stage "); k = put_str(t, k, l->g < 10 ? gn[l->g] : "?");
         k = put_str(t, k, " svc "); k = put_num(t, k, l->svci + 1u, 0); k = put_str(t, k, "/"); k = put_num(t, k, l->nsvc, 0);
-        k = put_str(t, k, " chars"); for (int j = 0; j < l->nchr && k < 120; j++) { t[k++] = ' '; k = put_num(t, k, l->chr_uuid[j], 1); if (l->chr_uuid[j] == 0x2a4d) { t[k++] = '/'; k = put_num(t, k, l->rep_id[j], 0); t[k++] = '/'; k = put_num(t, k, l->rep_type[j], 0); } if (l->chr_cccd[j]) t[k++] = '*'; }
+        k = put_str(t, k, " chars"); for (int j = 0; j < l->nchr && k < 60; j++) { t[k++] = ' '; k = put_num(t, k, l->chr_uuid[j], 1); if (l->chr_uuid[j] == 0x2a4d) { t[k++] = '/'; k = put_num(t, k, l->rep_id[j], 0); t[k++] = '/'; k = put_num(t, k, l->rep_type[j], 0); } if (l->chr_cccd[j]) t[k++] = '*'; }
         k = put_str(t, k, " | map "); k = put_num(t, k, l->map_len, 0);
         k = put_str(t, k, l->mouse_ok ? " mouse" : ""); k = put_str(t, k, l->kbm.ok ? " kbd" : "");
         k = put_str(t, k, l->boot ? " boot" : " report"); k = put_str(t, k, " pm "); k = put_num(t, k, l->pm, 1);
         k = put_str(t, k, " | err "); k = put_num(t, k, l->att_err, 1); t[k++] = '@'; k = put_str(t, k, l->att_err_g < 10 ? gn[l->att_err_g] : "?");
         k = put_str(t, k, " | reports "); k = put_num(t, k, l->nnotify, 0);
+        k = put_str(t, k, " | since up: frames "); k = put_num(t, k, l->up_frames, 0);
+        k = put_str(t, k, " att "); k = put_num(t, k, l->up_att, 0); k = put_str(t, k, " last op "); k = put_num(t, k, l->up_last_op, 1);
+        k = put_str(t, k, " other "); k = put_num(t, k, l->up_other, 0); k = put_str(t, k, " cid "); k = put_num(t, k, l->up_last_cid, 1);
         t[k] = 0; kprintf("%s\n", t);
         k = put_str(t, 0, "[BT]   map:"); for (unsigned j = 0; j < sizeof l->map_head && j < l->map_len; j++) { t[k++] = ' '; t[k++] = hexd[l->map_head[j] >> 4]; t[k++] = hexd[l->map_head[j] & 15]; }
         t[k] = 0; kprintf("%s\n", t);
