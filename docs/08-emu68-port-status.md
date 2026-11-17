@@ -350,7 +350,12 @@ System 6 does not touch TimeDBRA that way and boots with either ROM.
    the Start Manager does for every video card, and the driver found no display block: it had
    addressed the card at $F9058000, and in 24-bit mode, which is how the ROM boots, the slot's
    megabyte is $900000-$9FFFFF (the slot number in bits 20-23), so $F9058000 was plain RAM.
-   The driver asks MMU32Bit now, as the disk and input drivers do.
+   The driver asks MMU32Bit now, as the disk and input drivers do. With that the ROM ran its
+   full screen set-up on the card and the VBL interrupt fires sixty times a second, but the
+   device it created is not activated (PiScreens, docs/10), so QuickDraw does not paint it yet;
+   that is where the work stops tonight. Along the way: the ROM wants a video card's frame
+   buffer in the 32-bit form of its 24-bit megabyte ($F9980000), the kernel aliases the window
+   there; and this 7.1 runs in 24-bit mode, which is its own 8 MiB ceiling (item 24).
 
 ## Next steps (in order, as of the evening of 16 November)
 1. MacTCP under System 6 (the same files; untested there), then a real client (Fetch, NCSA

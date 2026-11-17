@@ -140,7 +140,10 @@ d_open:
 	move.w	#firstVidMode,G_MODE(%a2)
 	move.l	#1,D_DEPTH(%a3)
 	move.l	#80,D_ROWBYTES(%a3)
-	clr.l	D_VBL_ENABLE(%a3)
+	move.l	#1,D_VBL_ENABLE(%a3)	| a video card's Open turns its VBL interrupts on (Designing Cards and
+	move.w	#1,G_INT(%a2)		| Drivers); cscSetInterrupt is how the system turns them off later. Without
+					| this the cursor never appears on the second screen: QuickDraw draws it
+					| from the screen's slot VBL task, which only _DoVBLTask from our handler runs.
 	| the one-bit table: 0 white, 1 black (QuickDraw's convention for indexed modes)
 	move.l	#0x00FFFFFF,D_CLUT(%a3)
 	clr.l	D_CLUT+4(%a3)
@@ -198,6 +201,8 @@ d_control:
 	bsr	disp			| a0 = the display block
 	move.l	csParam(%a3),%a1	| the record
 	move.w	csCode(%a3),%d0
+	move.w	#'c',%d1
+	bsr	trace			| "PiVideo: c NN mode M" in the Pi's log: what the system asks, and when
 	cmp.w	#cscReset,%d0
 	beq.s	c_reset
 	cmp.w	#cscKillIO,%d0
@@ -322,6 +327,8 @@ d_status:
 	bsr	disp
 	move.l	csParam(%a3),%a1
 	move.w	csCode(%a3),%d0
+	move.w	#'s',%d1
+	bsr	trace
 	cmp.w	#cscGetMode,%d0
 	beq.s	s_getmode
 	cmp.w	#cscGetEntries,%d0
@@ -382,12 +389,13 @@ s_pagebase:
 	bne	c_param
 	bsr	frame_addr
 	bra	c_ok
-| frame_addr: csBaseAddr of the record at a1 = the frame buffer (a0 is kept)
+| frame_addr: csBaseAddr of the record at a1 = the frame buffer, always in its 32-bit form. The ROM's
+| own built-in video answers $FBB08000 in 24-bit mode and QuickDraw works with the low 24 bits there,
+| $B08000; ours is $F9980000, the slot's 24-bit megabyte seen from 32-bit space, $980000 in 24-bit.
+| (The first version answered $980000 and the ROM made $F9980000 of it by itself, which told the
+| convention; the kernel maps the window at $F9900000 as well as $F9000000 so both forms reach it.)
 frame_addr:
-	move.l	%a0,-(%sp)
-	bsr	frame
-	move.l	%a0,csBaseAddr(%a1)
-	move.l	(%sp)+,%a0
+	move.l	#0xF9980000,csBaseAddr(%a1)
 	rts
 s_getgray:
 	move.w	G_GRAY(%a2),%d0
@@ -416,8 +424,8 @@ gray_fill:
 	move.l	%a0,%a1
 	bsr	frame
 	move.l	D_DEPTH(%a1),%d0
-	move.b	#0xAA,%d1		| 1 bit: 10101010 / 01010101
-	move.b	#0x55,%d2
+	move.b	#0x88,%d1		| 1 bit: 10001000 / 00100010, a 25% grey: told apart from the desktop's
+	move.b	#0x22,%d2		| 50% pattern in a picture of the Pi's screen (the real cards used 50%)
 	cmp.l	#1,%d0
 	beq.s	1f
 	move.b	#0x33,%d1		| 2 bits: 00 11 00 11 / 11 00 11 00
@@ -481,6 +489,49 @@ slot_int:
 1:	moveq	#0,%d0
 3:	movem.l	(%sp)+,%d1-%d2/%a0-%a2
 	rts
+
+| trace: d0.w = csCode, d1.b = 'c' or 's' -> the log line "PiVideo: c NN mode M" (M: 24 or 32-bit
+| addressing at the time). The first 48 calls only; it tells how the system drives a video card.
+trace:
+	movem.l	%d0-%d2/%a0-%a1,-(%sp)
+	move.w	trace_left(%pc),%d2
+	beq.s	9f
+	subq.w	#1,%d2
+	lea	trace_left(%pc),%a1
+	move.w	%d2,(%a1)
+	lea	trace_text+9(%pc),%a0
+	move.b	%d1,(%a0)+
+	addq.l	#1,%a0
+	moveq	#0,%d2
+	move.b	%d0,%d2
+	move.b	%d2,%d1
+	lsr.b	#4,%d1
+	add.b	#'0',%d1
+	cmp.b	#'9',%d1
+	bls.s	1f
+	addq.b	#7,%d1
+1:	move.b	%d1,(%a0)+
+	and.b	#15,%d2
+	add.b	#'0',%d2
+	cmp.b	#'9',%d2
+	bls.s	2f
+	addq.b	#7,%d2
+2:	move.b	%d2,(%a0)
+	lea	trace_text+19(%pc),%a0
+	move.b	#'2',(%a0)
+	move.b	#'4',1(%a0)
+	tst.b	MMU32Bit
+	beq.s	3f
+	move.b	#'3',(%a0)
+	move.b	#'2',1(%a0)
+3:	lea	trace_text(%pc),%a1
+	bsr	do_log
+9:	movem.l	(%sp)+,%d0-%d2/%a0-%a1
+	rts
+trace_left:	.word	48
+trace_text:	.ascii	"PiVideo: c NN mode MM"
+	.byte	0
+	.even
 
 | window: a0 = the slot window for the addressing mode the Mac is in now
 window:

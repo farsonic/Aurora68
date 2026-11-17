@@ -78,6 +78,8 @@ if a.input:
     ir.sublist(4, drv3)
     ir.word(8, 3)
 
+GAMMA = bytes.fromhex("20004d6163204869526573205374642047616d6d61000000000000000001010000080005090b0e10131517191b1d1e2022242527282a2c2d2f303133343637383a3b3c3e3f40424344454748494a4b4d4e4f5051525455565758595a5b5c5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818182838485868788898a8b8c8c8d8e8f90919293949595969798999a9b9b9c9d9e9fa0a1a1a2a3a4a5a6a6a7a8a9aaababacadaeafb0b0b1b2b3b4b4b5b6b7b8b8b9babbbcbcbdbebfc0c0c1c2c3c3c4c5c6c7c7c8c9cacacbcccdcdcecfd0d0d1d2d3d3d4d5d6d6d7d8d9d9dadbdcdcdddedfdfe0e1e1e2e3e4e4e5e6e7e7e8e9e9eaebececedeeeeeff0f1f1f2f3f3f4f5f5f6f7f8f8f9fafafbfcfcfdfeff")
+
 if a.video:
     # The second display (docs/10): a video sResource shaped exactly like the IIci ROM's own
     # 'Display_Video_Apple_RBV1' for 640 x 480 (tools/declrom.py lists it from the ROM): sRsrcType
@@ -93,8 +95,15 @@ if a.video:
     drv5 = type(vs)(0); drv5.longblock(2, video)
     vs.sublist(4, drv5)
     vs.word(8, 5)                               # sRsrcHWDevId
-    vs.long(10, 0x80000)                        # MinorBaseOS: the frame buffer's offset in the slot space
+    # MinorBaseOS: NuBus geometry puts the megabyte a 24-bit system can reach ($900000-$9FFFFF for
+    # slot 9) at $F9900000-$F99FFFFF of the slot's 32-bit space; the kernel maps the window there
+    # as well as at $F9000000 (psmac_mmu.c), and the frame buffer is its top 512 KiB.
+    vs.long(10, 0x980000)
     vs.long(11, 0x80000)                        # MinorLength
+    # sGammaDir: the IIci ROM's own "HiRes Std Gamma" table, copied from its RBV sResource; the ROM's
+    # screen set-up reads a gamma table from the card and gives up on the screen without one.
+    gd = type(vs)(0); gd.longblock(128, GAMMA)
+    vs.sublist(64, gd)
     for n, depth in enumerate((1, 2, 4, 8)):
         m = type(vs)(0)
         vp = struct.pack('>IHhhhhHHIIIHHHHI', 0, 80 * depth, 0, 0, 480, 640, 0, 0, 0, 0x00480000, 0x00480000, 0, depth, 1, depth, 0)

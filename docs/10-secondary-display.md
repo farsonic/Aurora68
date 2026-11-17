@@ -67,6 +67,25 @@ scripted trip through the control panel), 8-bit colour seen on the Pi's screen (
 is there: SetEntries fills the table, the conversion applies it), gamma, 16/32-bit direct modes,
 other resolutions, the HVS on real hardware.
 
+## Where it stands (17 November, 00:30)
+PiScreens (`mac/piscreens.s`, `docs/img/system71-piscreens.png`) lists QuickDraw's GDevices: the
+SE's own screen, active and main, and ours: 640 by 480, 1 bit, base $F9980000, driver -52, flags
+$2000, which is screenDevice without screenActive, and a rectangle equal to the main screen's.
+So the ROM's screen set-up ran the whole InitGDevice sequence on the card (SetMode, GrayPage,
+SetGray, SetEntries, SetGamma, SetEntries, all traced in the driver's log) and created the device,
+but nobody activated or placed it; the desktop is painted only on active devices, which is why
+the Pi's screen shows the driver's own grey and not QuickDraw's. The System file has no 'scrn'
+resource (Monitors' saved arrangement), so the default rule applies, and the default rule of this
+ROM and System 7.1 evidently is not "activate every card". The next step is to find what
+activates a second screen at boot on this ROM: the 'scrn' resource's format and a hand-made one
+naming both screens, or the ROM's own default-placement code (docs/03's boot flow, the
+InitGDevice/InitScreens pass after the Start Manager). Two side findings worth keeping: the ROM
+addresses a card's frame buffer in the 32-bit form of its 24-bit megabyte ($F9980000 for slot
+9's $980000), so the kernel now maps the window at $F9900000 as well as $F9000000; and this
+System 7.1 runs in 24-bit mode (MMU32Bit 0), which caps usable RAM at 8 MiB whatever is installed,
+so "more than 8 MiB" also needs 32-bit addressing switched on in the Memory control panel (a
+PRAM bit the testbed's saved PRAM does not have yet).
+
 ## Order of work
 1. 1-bit and 8-bit modes at 640 by 480 (the IIci's own sizes), palette through the mailbox,
    the frame buffer mapped at the slot's super space. (Done as described in "What exists":
