@@ -144,6 +144,20 @@ scheduler round trip per access (microseconds, far below the socket round trip).
 11. The **Average speed** MAME prints is ~100 % by construction (the device pins emulated time
     to wall-clock); with `-nothrottle` the stock `maciici` runs at ~500 % on this host.
 
+## The Macintosh SE machine (17 November, 04:00)
+`macse_ps` is the SE parts of MAME's `mac128.cpp` on a `bridge68000_device`: the same bridge
+class with a 16-bit data bus and 24-bit addresses (`bridge68k_device`'s protected constructor
+takes the widths; `bus_read`/`bus_write` pick the `memory_access` specific for the bus), the
+replies held a slice for the SE's SCSI window ($580000-$5FFFFF) instead of the IIci's, and
+byte writes on the 16-bit bus smeared onto both lanes as a 68000 does, which the SE's 5380
+decoding relies on. The overlay is cleared by an access to the ROM's own space ($400000), as
+the BBU does, besides mac128.cpp's "first RAM write". ADB is wired the IIci way (`macadb`
+straight on the VIA, `set_mcu_mode(false)`), because the SE's 6805 ADB modem needs a ROM the
+testbed does not have and the IIci ROM drives ADB that way regardless. The ROM folder is
+`mame/roms/macse_ps` (a link to `macse`): the parent `macse` is not in this subtarget. Run with
+`MACHINE=macse_ps tools/run-fullstack.sh ... mac.board=se mac.declrom=.../psmac-512x342.declrom`;
+its PRAM is `mame/nvramFS/macse_ps/rtc` (copy the IIci's for 32-bit addressing).
+
 ## Tests
 
 ### Build / static checks

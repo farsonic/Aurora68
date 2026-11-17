@@ -83,6 +83,7 @@ static void scsi_trace(int op, uint32_t addr, uint32_t wdata, uint32_t rdata)
     else { kprintf("[SCSI] W %08x <- %02x (reg %u) PC %08x\n", addr, wdata & 0xff, (addr >> 4) & 7, __m68k_state ? BE32((uint32_t)(uintptr_t)__m68k_state->PC) : 0); last_addr = 0xffffffffu; }
 }
 
+static inline int on_service_core(void) { uint64_t id; __asm__ volatile("mrs %0, MPIDR_EL1" : "=r"(id)); return (id & 3) == 2; }
 static inline uint64_t cnt_now(void) { uint64_t v; __asm__ volatile("mrs %0, CNTVCT_EL0":"=r"(v)); return v; }
 static inline uint64_t cnt_frq(void) { uint64_t v; __asm__ volatile("mrs %0, CNTFRQ_EL0":"=r"(v)); return v; }
 
@@ -122,6 +123,11 @@ static int use_semihost = 0;            /* mac.bridge=semihost */
    GPIO (psmac_gpio.c), the default, because that is what a Pi plugged into an SE has; "semihost" and
    "uart" are the testbed's two ways to MAME's bridge CPU (QEMU passes both on its command line). */
 static int use_gpio = 1;
+/* the board layer (psmac_board_se.c): mac.board=se puts the Macintosh SE's chips behind the IIci ROM's addresses */
+extern int psmac_board_se;
+int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t *val, int posted);
+unsigned psmac_se_ipl(unsigned raw); void psmac_se_service(void); void psmac_se_start(void); void psmac_se_options(const char *); void psmac_se_report(void);
+int psmac_se_rbv_irq(void);
 void psmac_gpio_init(void); uint32_t psmac_gpio_read(uint32_t, int); void psmac_gpio_write(uint32_t, int, uint32_t);
 unsigned psmac_gpio_ipl(void); void psmac_gpio_pulse_reset(void); uint32_t psmac_gpio_timeouts(void); int psmac_gpio_reset_asserted(void);
 static uint32_t peek_addr, peek_len;
@@ -223,6 +229,7 @@ static void psmac_read_options(void)
     of_property_t *p = c ? dt_find_property(c, "bootargs") : NULL;
     if (!p || !p->op_value) return;
     const char *args = p->op_value, *tok;
+    psmac_se_options(args);                              /* mac.board=se first: the screen default below depends on it */
     if ((tok = find_token(args, "mac.dbg="))) {   /* mac.dbg=LO,HI: print the translator's view of blocks starting in [LO,HI] */
         tok += 8; uint32_t lo = 0, hi = 0;
         while ((*tok >= '0' && *tok <= '9') || (*tok >= 'a' && *tok <= 'f')) { lo = lo * 16 + (*tok <= '9' ? *tok - '0' : *tok - 'a' + 10); tok++; }
@@ -237,6 +244,7 @@ static void psmac_read_options(void)
         if (*tok == 'x') { tok++; while (*tok >= '0' && *tok <= '9') h = h * 10 + (*tok++ - '0'); }
         if (w >= 512 && w <= 1920 && h >= 342 && h <= 1200) { screen_w = w; screen_h = h; }
     }
+    if (psmac_board_se && !screen_w) { screen_w = 512; screen_h = 342; }   /* the SE's own screen is the card's frame on that board */
     if ((tok = find_token(args, "mac.dbfslow="))) { tok += 12; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); psmac_dbf_slow = n > 8 ? 8 : n; }
     if ((tok = find_token(args, "mac.peek="))) {        /* mac.peek=HEXADDR,LEN: dump Mac memory at each heartbeat (debugging) */
         tok += 9; uint32_t a = 0, n = 0;
@@ -285,7 +293,7 @@ static void gpio_xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, ui
         ipl = 0;
     }
     last_ipl = ipl; last_flags = 0;
-    if (__m68k_state) __m68k_state->INTF.IPL = ipl;
+    if (__m68k_state) __m68k_state->INTF.IPL = psmac_board_se ? psmac_se_ipl(ipl) : ipl;
     if (r) { r->status = 0; r->ipl = ipl; r->flags = 0; r->data = value; }
 }
 
@@ -322,7 +330,7 @@ static void bridge_xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, 
     }
     svc_phase = 0;
     last_ipl = rep[1]; last_flags = rep[2];
-    if (__m68k_state) __m68k_state->INTF.IPL = rep[1];
+    if (__m68k_state) __m68k_state->INTF.IPL = psmac_board_se ? psmac_se_ipl(rep[1]) : rep[1];
     if (r) { r->status = rep[0]; r->ipl = rep[1]; r->flags = rep[2]; r->data = rep[4] | (rep[5] << 8) | (rep[6] << 16) | ((uint32_t)rep[7] << 24); }
     if (rep[0]) { bus_errors++; if (bus_errors <= 8) kprintf("[PSMAC] bridge reported bus error #%u on op %u size %u addr %08x (68k PC %08x)\n", bus_errors, op, size, addr, __m68k_state ? BE32((uint32_t)(uintptr_t)__m68k_state->PC) : 0); }
 }
@@ -403,6 +411,7 @@ void psmac_service_core(void)
     else if (!use_semihost) uart_init(); else { if (!semihost_init()) transport_dead = 1; }
     service_running = 1;
     kprintf("[PSMAC] service core running (%s transport owner, IPL poll %s)\n", use_gpio ? "GPIO" : "bridge", use_gpio ? "20 kHz" : "1 kHz");
+    psmac_se_start();
     /* a status register read on the GPIO costs a microsecond, a bridge poll a round trip: poll accordingly */
     uint64_t period = cnt_frq() / (use_gpio ? 20000 : 1000), next_poll = cnt_now() + period;
     uint64_t hb_period = cnt_frq() * 5, next_hb = cnt_now() + hb_period; uint32_t hb_last = 0;
@@ -427,6 +436,7 @@ void psmac_service_core(void)
                 }
             }
             { extern void psmac_slot_irq_report(void); psmac_slot_irq_report(); }
+            psmac_se_report();
             { int ok1, ok2, ok3; uint32_t t1 = mac_rd32(0xd00, &ok1), t2 = mac_rd32(0xb24, &ok2), t3 = mac_rd32(0xcea, &ok3);
               if (ok1 && ok2 && ok3) kprintf("[PSMAC]   timing globals: TimeDBRA %04x TimeSCCDB %04x TimeSCSIDB %04x TimeVIADB %04x\n", t1 >> 16, t1 & 0xffff, t2 >> 16, t3 >> 16); }
             if (peek_len) {                    /* mac.peek=: the long at $1B40 (KCHRPtr) and the bytes asked for */
@@ -467,6 +477,7 @@ void psmac_service_core(void)
             bridge_xfer(PSMAC_OP_POLL, 0, 0, 0, 0, NULL);
             next_poll = cnt_now() + period;
         }
+        psmac_se_service();                       /* the SE's screen, a few rows at a time */
         __asm__ volatile("yield");
     }
 }
@@ -521,13 +532,28 @@ static void rbv_snoop_write(uint32_t addr, int size, uint32_t data)
 uint32_t psmac_io_read(uint32_t addr, int size)
 {
     struct psmac_reply r;
+    if (psmac_board_se) { uint32_t v = 0; if (psmac_se_access(addr, size, 0, 0, &v, 0)) return v; }
     xfer(PSMAC_OP_READ, size, 0, addr, 0, &r);
     return rbv_merge_read(addr, size, r.data);
 }
 void psmac_io_write(uint32_t addr, int size, uint32_t data, int posted)
 {
+    if (psmac_board_se) { uint32_t v; if (psmac_se_access(addr, size, 1, data, &v, posted)) return; }
     rbv_snoop_write(addr, size, data);
     xfer(PSMAC_OP_WRITE, size, posted ? PSMAC_FLAG_POSTED : 0, addr, data, NULL);
+}
+/* the wire itself, for the board layer: an address already in the SE's own terms. From the JIT
+   core it goes through the service core's slot; from the service core it is direct. */
+uint32_t psmac_wire_read(uint32_t addr, int size)
+{
+    struct psmac_reply r;
+    if (service_running && on_service_core()) bridge_xfer(PSMAC_OP_READ, size, 0, addr, 0, &r); else xfer(PSMAC_OP_READ, size, 0, addr, 0, &r);
+    return r.data;
+}
+void psmac_wire_write(uint32_t addr, int size, uint32_t data, int posted)
+{
+    if (service_running && on_service_core()) bridge_xfer(PSMAC_OP_WRITE, size, posted ? PSMAC_FLAG_POSTED : 0, addr, data, NULL);
+    else xfer(PSMAC_OP_WRITE, size, posted ? PSMAC_FLAG_POSTED : 0, addr, data, NULL);
 }
 
 
@@ -575,8 +601,9 @@ int psmac_bus_write(uint64_t value, uint64_t value2, int size, uint64_t far)
         }
         return 1;
     }
-    if (far < PSMAC_FB_SIZE) {
-        /* write-through frame buffer: local copy + mirror to the motherboard */
+    if (far < PSMAC_FB_SIZE && !psmac_board_se) {
+        /* write-through frame buffer: local copy + mirror to the motherboard (the IIci's RBV scans
+           bank A; the SE's screen is fed by the board layer instead, so no mirror there) */
         uint8_t *p = (uint8_t *)(KERNEL_ALIAS + ram_phys + far);
         switch (size) {
             case 1: *p = value; psmac_io_write(far, 1, value & 0xff, 1); break;
@@ -835,7 +862,7 @@ void ps_pulse_reset(void) { struct psmac_reply r; xfer(PSMAC_OP_RESET_ACK, 0, 0,
 void ps_send_reset(void) { ps_pulse_reset(); }
 void ps_set_control(unsigned int v) { (void)v; }
 void ps_clr_control(unsigned int v) { (void)v; }
-static inline unsigned effective_ipl(void) { unsigned ipl = last_ipl; if (slot_irq_pending() && ipl < 2) ipl = 2; return ipl; }
+static inline unsigned effective_ipl(void) { unsigned ipl = last_ipl; if (psmac_board_se) return psmac_se_ipl(ipl); if (slot_irq_pending() && ipl < 2) ipl = 2; return ipl; }
 unsigned int ps_read_status_reg(void) { return effective_ipl() << 13; }
 void ps_write_status_reg(unsigned int v) { (void)v; }
 void ps_memtest(unsigned int s) { (void)s; }

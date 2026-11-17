@@ -168,6 +168,7 @@ static void convert(void)
         }
     }
     arm_flush_cache((intptr_t)vcfb, vc_pitch * h);
+    { extern void psmac_se_mark(const uint8_t *, uint32_t, uint32_t, uint32_t, uint32_t); psmac_se_mark(frame, disp->width, disp->height, rb, depth); }   /* the SE's own screen (psmac_board_se.c) */
     disp->frames++;
 }
 

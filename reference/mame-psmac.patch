@@ -1,9 +1,9 @@
 diff --git a/src/mame/apple/bridge68k.cpp b/src/mame/apple/bridge68k.cpp
 new file mode 100644
-index 00000000..83a62e1c
+index 00000000..f5b04356
 --- /dev/null
 +++ b/src/mame/apple/bridge68k.cpp
-@@ -0,0 +1,674 @@
+@@ -0,0 +1,725 @@
 +// license:BSD-3-Clause
 +// copyright-holders:psmac project
 +/****************************************************************************
@@ -61,6 +61,7 @@ index 00000000..83a62e1c
 +#define LOGSOCK(...)  LOGMASKED(LOG_SOCK, __VA_ARGS__)
 +
 +DEFINE_DEVICE_TYPE(BRIDGE68K, bridge68k_device, "bridge68k", "psmac bridge 68030 socket (external CPU over UNIX socket)")
++DEFINE_DEVICE_TYPE(BRIDGE68000, bridge68000_device, "bridge68000", "psmac bridge 68000 socket (external CPU over UNIX socket)")
 +
 +namespace {
 +
@@ -91,8 +92,20 @@ index 00000000..83a62e1c
 +//**************************************************************************
 +
 +bridge68k_device::bridge68k_device(const machine_config &mconfig, const char *tag, device_t *owner, u32 clock) :
-+	cpu_device(mconfig, BRIDGE68K, tag, owner, clock),
-+	m_program_config("program", ENDIANNESS_BIG, 32, 32),
++	bridge68k_device(mconfig, BRIDGE68K, tag, owner, clock, 32, 32)
++{
++}
++
++bridge68000_device::bridge68000_device(const machine_config &mconfig, const char *tag, device_t *owner, u32 clock) :
++	bridge68k_device(mconfig, BRIDGE68000, tag, owner, clock, 16, 24)
++{
++	set_board(board::SE);
++}
++
++bridge68k_device::bridge68k_device(const machine_config &mconfig, device_type type, const char *tag, device_t *owner, u32 clock, int data_width, int addr_width) :
++	cpu_device(mconfig, type, tag, owner, clock),
++	m_program_config("program", ENDIANNESS_BIG, data_width, addr_width),
++	m_wide16(data_width == 16),
 +	m_icount(0),
 +	m_pc(0),
 +	m_state_ipl(0),
@@ -137,7 +150,10 @@ index 00000000..83a62e1c
 +
 +void bridge68k_device::device_start()
 +{
-+	space(AS_PROGRAM).specific(m_program);
++	if (m_wide16)
++		space(AS_PROGRAM).specific(m_program16);
++	else
++		space(AS_PROGRAM).specific(m_program);
 +
 +	const char *env = std::getenv("PSMAC_BRIDGE_SOCK");
 +	if (const char *fifo = std::getenv("PSMAC_BRIDGE_FIFO"))
@@ -488,10 +504,55 @@ index 00000000..83a62e1c
 +// (0x50F06000, 0x50F10000, 0x50F12000; A20-A23 are not decoded in I/O space).
 +bool bridge68k_device::access_needs_sync(u32 addr) const
 +{
++	if (m_board == board::SE)
++		return (addr & 0xf80000) == 0x580000;       // the SE's 5380 and its pseudo-DMA window
 +	if ((addr & 0xff000000) != 0x50000000)
 +		return false;
 +	const u32 off = addr & 0x000fffff;
 +	return (off >= 0x06000 && off < 0x08000) || (off >= 0x10000 && off < 0x14000);
++}
++
++// the access itself, on whichever bus this socket has; a 32-bit access on the 16-bit bus is
++// two cycles, as the 68000 did it
++u32 bridge68k_device::bus_read(u32 addr, u8 size)
++{
++	if (m_wide16)
++	{
++		addr &= 0xffffff;
++		switch (size)
++		{
++		case 1: return m_program16.read_byte(addr);
++		case 2: return (addr & 1) ? m_program16.read_word_unaligned(addr) : m_program16.read_word(addr);
++		default: return (addr & 1) ? m_program16.read_dword_unaligned(addr) : m_program16.read_dword(addr);
++		}
++	}
++	switch (size)
++	{
++	case 1: return m_program.read_byte(addr);
++	case 2: return (addr & 1) ? m_program.read_word_unaligned(addr) : m_program.read_word(addr);
++	default: return (addr & 3) ? m_program.read_dword_unaligned(addr) : m_program.read_dword(addr);
++	}
++}
++
++void bridge68k_device::bus_write(u32 addr, u8 size, u32 data)
++{
++	if (m_wide16)
++	{
++		addr &= 0xffffff;
++		switch (size)
++		{
++		case 1: m_program16.write_byte(addr, data & 0xff); break;
++		case 2: if (addr & 1) m_program16.write_word_unaligned(addr, data & 0xffff); else m_program16.write_word(addr, data & 0xffff); break;
++		default: if (addr & 1) m_program16.write_dword_unaligned(addr, data); else m_program16.write_dword(addr, data); break;
++		}
++		return;
++	}
++	switch (size)
++	{
++	case 1: m_program.write_byte(addr, data & 0xff); break;
++	case 2: if (addr & 1) m_program.write_word_unaligned(addr, data & 0xffff); else m_program.write_word(addr, data & 0xffff); break;
++	default: if (addr & 3) m_program.write_dword_unaligned(addr, data); else m_program.write_dword(addr, data); break;
++	}
 +}
 +
 +// Process one buffered request if complete.  Returns true if a bus access
@@ -528,22 +589,12 @@ index 00000000..83a62e1c
 +
 +		if (op == OP_READ)
 +		{
-+			switch (size)
-+			{
-+			case 1: result = m_program.read_byte(addr); break;
-+			case 2: result = (addr & 1) ? m_program.read_word_unaligned(addr) : m_program.read_word(addr); break;
-+			case 4: result = (addr & 3) ? m_program.read_dword_unaligned(addr) : m_program.read_dword(addr); break;
-+			}
++			result = bus_read(addr, size);
 +			LOGPROTO("bridge68k: read%u  %08X -> %0*X\n", size * 8, addr, size * 2, result);
 +		}
 +		else
 +		{
-+			switch (size)
-+			{
-+			case 1: m_program.write_byte(addr, data & 0xff); break;
-+			case 2: if (addr & 1) m_program.write_word_unaligned(addr, data & 0xffff); else m_program.write_word(addr, data & 0xffff); break;
-+			case 4: if (addr & 3) m_program.write_dword_unaligned(addr, data); else m_program.write_dword(addr, data); break;
-+			}
++			bus_write(addr, size, data);
 +			LOGPROTO("bridge68k: write%u %08X <- %0*X%s\n", size * 8, addr, size * 2, data, (flags & REQ_FLAG_POSTED) ? " (posted)" : "");
 +		}
 +
@@ -680,10 +731,10 @@ index 00000000..83a62e1c
 +}
 diff --git a/src/mame/apple/bridge68k.h b/src/mame/apple/bridge68k.h
 new file mode 100644
-index 00000000..7e4f6d7b
+index 00000000..a8f8a7f3
 --- /dev/null
 +++ b/src/mame/apple/bridge68k.h
-@@ -0,0 +1,143 @@
+@@ -0,0 +1,166 @@
 +// license:BSD-3-Clause
 +// copyright-holders:psmac project
 +/****************************************************************************
@@ -723,11 +774,19 @@ index 00000000..7e4f6d7b
 +	bridge68k_device(const machine_config &mconfig, const char *tag, device_t *owner, u32 clock);
 +	virtual ~bridge68k_device();
 +
++	// which motherboard this socket is in: the IIci's SCSI windows or the SE's need the
++	// reply held until the scheduler has delivered their HALT/BERR side effects
++	enum class board { IICI, SE };
++	void set_board(board b) { m_board = b; }
++
 +	// read-only status for the driver / debugger
 +	u8 ipl() const noexcept;
 +	bool client_connected() const noexcept { return m_client_fd >= 0; }
 +
 +protected:
++	// a 68000 socket (16-bit data, 24-bit address): bridge68000_device below
++	bridge68k_device(const machine_config &mconfig, device_type type, const char *tag, device_t *owner, u32 clock, int data_width, int addr_width);
++
 +	enum
 +	{
 +		BRIDGE68K_PC = 1,
@@ -780,7 +839,12 @@ index 00000000..7e4f6d7b
 +	u8 reply_flags() const;
 +
 +	const address_space_config m_program_config;
-+	memory_access<32, 2, 0, ENDIANNESS_BIG>::specific m_program;
++	const bool m_wide16;        // 16-bit data bus (68000 socket)
++	board m_board = board::IICI;
++	memory_access<32, 2, 0, ENDIANNESS_BIG>::specific m_program;     // 68030 socket: 32-bit data, 32-bit address
++	memory_access<24, 1, 0, ENDIANNESS_BIG>::specific m_program16;   // 68000 socket: 16-bit data, 24-bit address
++	u32 bus_read(u32 addr, u8 size);
++	void bus_write(u32 addr, u8 size, u32 data);
 +
 +	int m_icount;
 +
@@ -825,6 +889,16 @@ index 00000000..7e4f6d7b
 +};
 +
 +DECLARE_DEVICE_TYPE(BRIDGE68K, bridge68k_device)
++
++// The same device in a 68000 socket: the Macintosh SE's. 16 data lines, 24 address lines,
++// which is also all a classic PiStorm carries; the external emulator still owns ROM and RAM.
++class bridge68000_device : public bridge68k_device
++{
++public:
++	bridge68000_device(const machine_config &mconfig, const char *tag, device_t *owner, u32 clock);
++};
++
++DECLARE_DEVICE_TYPE(BRIDGE68000, bridge68000_device)
 +
 +#endif // MAME_APPLE_BRIDGE68K_H
 diff --git a/src/mame/apple/maciici_ps.cpp b/src/mame/apple/maciici_ps.cpp
@@ -1428,16 +1502,693 @@ index 00000000..0239e8d4
 +} // anonymous namespace
 +
 +COMP(1989, maciici_ps, maciici, 0, maciici_ps, maciici_ps, maciici_ps_state, empty_init, "Apple Computer", "Macintosh IIci (psmac bridge CPU)", 0)
+diff --git a/src/mame/apple/macse_ps.cpp b/src/mame/apple/macse_ps.cpp
+new file mode 100644
+index 00000000..ce1f527c
+--- /dev/null
++++ b/src/mame/apple/macse_ps.cpp
+@@ -0,0 +1,668 @@
++// license:BSD-3-Clause
++// copyright-holders:R. Belmont, psmac project
++/****************************************************************************
++
++    macse_ps.cpp
++
++    Macintosh SE with the 68000 replaced by the psmac bridge CPU
++    (bridge68000_device): the testbed for Aurora68's board layer.
++
++    Derived from the SE parts of mac128.cpp by R. Belmont.  All peripherals
++    are the stock SE's (VIA, SCC, IWM, NCR 5380 through the SCSI helper,
++    ADB through the ADB modem, the RTC, the 512 by 342 screen and the PWM
++    sound both fed from RAM); only the CPU differs: bus cycles are served
++    from an external emulator over the bridge's FIFO (bridge68k.h,
++    docs/05-bridge-protocol.md), 16 bits wide on a 24-bit bus, exactly what
++    a classic PiStorm in the SE's 68000 socket would present.
++
++    What this machine is for: the IIci ROM, running on the Pi side, drives
++    IIci hardware; the kernel's board layer (docs/12) must translate that
++    into the SE's address map and emulate what the SE lacks.  Everything the
++    kernel sends down the wire lands here as it would on the real logic
++    board, so the translation can be debugged before the hardware arrives.
++
++    Deviations from mac128.cpp's macse:
++    - no m68000-specific hooks (VPA synchronisation on the VIA, the
++      disassembler override, trigger_bus_error): the bridge device takes
++      the bus-error pulse on its LINE_BUSERROR input like the IIci bridge;
++    - the overlay (ROM at 0 after reset) is cleared by the first access to
++      the ROM's own address space, as the SE's BBU does, and also by the
++      first write to RAM, as mac128.cpp does; the external CPU never
++      fetches from the SE's ROM, so the kernel reads $400000 once at start;
++    - no PDS slot (nothing to put in it in the testbed), no software lists;
++    - ADB without the SE's 6805 "ADB modem" (its ROM is not in the testbed's
++      set): the keyboard and mouse hang off the VIA's shift register and
++      port B state bits directly, the way maciici_ps.cpp wires them, which is
++      also exactly how the IIci ROM drives ADB.
++
++****************************************************************************/
++
++#include "emu.h"
++
++#include "macadb.h"
++#include "macrtc.h"
++#include "macscsi.h"
++#include "bridge68k.h"
++
++#include "bus/nscsi/devices.h"
++#include "bus/rs232/rs232.h"
++#include "cpu/m68000/m68000.h"
++#include "machine/applefdintf.h"
++#include "machine/iwm.h"
++#include "machine/ncr5380.h"
++#include "machine/nscsi_bus.h"
++#include "machine/ram.h"
++#include "machine/rescap.h"
++#include "machine/6522via.h"
++#include "machine/z80scc.h"
++#include "sound/dac.h"
++#include "sound/flt_biquad.h"
++#include "formats/ap_dsk35.h"
++
++#include "emupal.h"
++#include "screen.h"
++#include "speaker.h"
++
++namespace {
++
++#define C7M (15.6672_MHz_XTAL / 2)
++#define C3_7M (15.6672_MHz_XTAL / 4).value()
++
++static constexpr int MAC_H_VIS   = 512;
++static constexpr int MAC_V_VIS   = 342;
++static constexpr int MAC_H_TOTAL = 704;       // (512+192)
++static constexpr int MAC_V_TOTAL = 370;       // (342+28)
++
++static constexpr int MAC_MAIN_SND_BUF_OFFSET = (0x0300 >> 1);   // end of memory minus 0x0300
++static constexpr int MAC_ALT_SND_BUF_OFFSET  = (0x5F00 >> 1);   // end of memory minus 0x5F00
++static constexpr int MAC_MAIN_SCREEN_BUF_OFFSET = (0x5900 >> 1);
++static constexpr int MAC_ALT_SCREEN_BUF_OFFSET  = (0xD900 >> 1);
++
++class macse_ps_state : public driver_device
++{
++public:
++	macse_ps_state(const machine_config &mconfig, device_type type, const char *tag) :
++		driver_device(mconfig, type, tag),
++		m_maincpu(*this, "maincpu"),
++		m_via(*this, "via6522_0"),
++		m_macadb(*this, "macadb"),
++		m_ram(*this, RAM_TAG),
++		m_scsibus(*this, "scsibus"),
++		m_scsihelp(*this, "scsihelp"),
++		m_ncr5380(*this, "scsibus:7:ncr5380"),
++		m_iwm(*this, "fdc"),
++		m_floppy(*this, "fdc:%d", 0U),
++		m_rtc(*this, "rtc"),
++		m_screen(*this, "screen"),
++		m_dac(*this, "macdac"),
++		m_filter(*this, "dacfilter"),
++		m_volfilter(*this, "volfilter"),
++		m_scc(*this, "scc")
++	{
++	}
++
++	void macse_ps(machine_config &config);
++	void mac_driver_init();
++
++private:
++	required_device<bridge68000_device> m_maincpu;
++	required_device<via6522_device> m_via;
++	required_device<macadb_device> m_macadb;
++	required_device<ram_device> m_ram;
++	required_device<nscsi_bus_device> m_scsibus;
++	required_device<mac_scsi_helper_device> m_scsihelp;
++	required_device<ncr5380_device> m_ncr5380;
++	required_device<applefdintf_device> m_iwm;
++	required_device_array<floppy_connector, 2> m_floppy;
++	required_device<rtc3430042_device> m_rtc;
++	required_device<screen_device> m_screen;
++	required_device<dac_12bit_r2r_device> m_dac;
++	required_device<filter_biquad_device> m_filter;
++	required_device<filter_biquad_device> m_volfilter;
++	required_device<z80scc_device> m_scc;
++
++	virtual void machine_start() override;
++	virtual void machine_reset() override;
++
++	void set_via_interrupt(int value);
++	void field_interrupts();
++	void vblank_irq();
++
++	uint16_t ram_r(offs_t offset);
++	void ram_w_se(offs_t offset, uint16_t data, uint16_t mem_mask = ~0);
++	uint16_t rom_r(offs_t offset);
++	uint16_t mac_via_r(offs_t offset);
++	void mac_via_w(offs_t offset, uint16_t data);
++	uint16_t mac_autovector_r(offs_t offset);
++	void mac_autovector_w(offs_t offset, uint16_t data);
++	uint16_t mac_iwm_r(offs_t offset, uint16_t mem_mask = ~0);
++	void mac_iwm_w(offs_t offset, uint16_t data, uint16_t mem_mask = ~0);
++	uint16_t macse_scsi_r(offs_t offset, uint16_t mem_mask = ~0);
++	void macse_scsi_w(offs_t offset, uint16_t data, uint16_t mem_mask = ~0);
++	void scsi_irq_w(int state);
++	void scsi_berr_w(uint8_t data);
++	void set_scc_interrupt(int state);
++	void vblank_w(int state);
++	void adb_irq_w(int state) { m_adb_irq_pending = state; }
++	void via_out_cb2(int state) { m_macadb->adb_data_w(state); }
++
++	TIMER_CALLBACK_MEMBER(mac_scanline);
++	TIMER_CALLBACK_MEMBER(mac_hblank);
++	uint32_t screen_update_mac(screen_device &screen, bitmap_ind16 &bitmap, const rectangle &cliprect);
++	uint8_t mac_via_in_a();
++	uint8_t mac_via_in_b_se();
++	void mac_via_out_a_se(uint8_t data);
++	void mac_via_out_b_se(uint8_t data);
++	void mac_via_irq(int state);
++	void update_volume();
++
++	void macse_map(address_map &map);
++
++	floppy_image_device *m_cur_floppy = nullptr;
++	int m_hdsel = 0, m_devsel = 0;
++	int m_pwm_count_total = 0, m_pwm_count_1 = 0;
++	float m_pwm_current_rpm[2]{};
++	void phases_w(uint8_t phases);
++	void devsel_se_w(uint8_t devsel);
++	void snd_push(uint8_t data);
++	void pwm_push(uint8_t data);
++
++	uint32_t m_overlay = 0;
++	int m_screen_buffer = 0;
++	emu_timer *m_scan_timer = nullptr;
++	emu_timer *m_hblank_timer = nullptr;
++
++	int m_scc_interrupt = 0, m_via_interrupt = 0, m_scsi_interrupt = 0, m_last_taken_interrupt = 0;
++	bool m_snd_enable = false;
++	bool m_main_buffer = false;
++	int m_snd_vol = 0;
++	int m_adb_irq_pending = 0;
++	int m_drive_select = 0;
++	int m_scsiirq_enable = 0;
++
++	u16 *m_ram_ptr = nullptr, *m_rom_ptr = nullptr;
++	u32 m_ram_mask = 0, m_ram_size = 0;
++};
++
++void macse_ps_state::machine_start()
++{
++	m_ram_ptr = (u16 *)m_ram->pointer();
++	m_ram_size = m_ram->size() >> 1;
++	m_ram_mask = m_ram_size - 1;
++	m_rom_ptr = (u16 *)memregion("bootrom")->base();
++
++	m_scan_timer = timer_alloc(FUNC(macse_ps_state::mac_scanline), this);
++	m_hblank_timer = timer_alloc(FUNC(macse_ps_state::mac_hblank), this);
++
++	save_item(NAME(m_overlay));
++	save_item(NAME(m_screen_buffer));
++	save_item(NAME(m_scc_interrupt));
++	save_item(NAME(m_via_interrupt));
++	save_item(NAME(m_scsi_interrupt));
++	save_item(NAME(m_last_taken_interrupt));
++	save_item(NAME(m_snd_enable));
++	save_item(NAME(m_main_buffer));
++	save_item(NAME(m_snd_vol));
++	save_item(NAME(m_adb_irq_pending));
++	save_item(NAME(m_drive_select));
++	save_item(NAME(m_scsiirq_enable));
++	save_item(NAME(m_pwm_count_total));
++	save_item(NAME(m_pwm_count_1));
++	save_item(NAME(m_pwm_current_rpm));
++}
++
++void macse_ps_state::machine_reset()
++{
++	m_last_taken_interrupt = -1;
++	m_overlay = 1;
++	m_screen_buffer = 1;
++	m_last_taken_interrupt = 0;
++	m_snd_enable = false;
++	m_main_buffer = true;
++	m_snd_vol = 3;
++	m_adb_irq_pending = 0;
++	m_drive_select = 0;
++	m_scsiirq_enable = 0;
++
++	const int next_vpos = m_screen->vpos() + 1;
++	m_scan_timer->adjust(m_screen->time_until_pos(next_vpos), next_vpos % m_screen->height());
++}
++
++void macse_ps_state::mac_driver_init()
++{
++	m_scsi_interrupt = 0;
++	memset(m_ram->pointer(), 0, m_ram->size());
++}
++
++// RAM at 0: the SE's own ROM while the overlay is set (power-on), then RAM
++uint16_t macse_ps_state::ram_r(offs_t offset)
++{
++	if (m_overlay)
++		return m_rom_ptr[offset & 0x1ffff];
++	return m_ram_ptr[offset & m_ram_mask];
++}
++
++void macse_ps_state::ram_w_se(offs_t offset, uint16_t data, uint16_t mem_mask)
++{
++	m_overlay = 0;
++	COMBINE_DATA(&m_ram_ptr[offset & m_ram_mask]);
++}
++
++// the ROM at its own address: an access here is what clears the overlay on an SE
++uint16_t macse_ps_state::rom_r(offs_t offset)
++{
++	if (!machine().side_effects_disabled())
++		m_overlay = 0;
++	return m_rom_ptr[offset & 0x1ffff];
++}
++
++void macse_ps_state::field_interrupts()
++{
++	int take_interrupt = -1;
++
++	if ((m_scc_interrupt) || (m_scsi_interrupt))
++		take_interrupt = 2;
++	else if (m_via_interrupt)
++		take_interrupt = 1;
++
++	if (m_last_taken_interrupt > -1)
++	{
++		m_maincpu->set_input_line(m_last_taken_interrupt, CLEAR_LINE);
++		m_last_taken_interrupt = -1;
++	}
++
++	if (take_interrupt > -1)
++	{
++		m_maincpu->set_input_line(take_interrupt, ASSERT_LINE);
++		m_last_taken_interrupt = take_interrupt;
++	}
++}
++
++void macse_ps_state::set_scc_interrupt(int state)
++{
++	m_scc_interrupt = state;
++	field_interrupts();
++}
++
++void macse_ps_state::set_via_interrupt(int value)
++{
++	m_via_interrupt = value;
++	field_interrupts();
++}
++
++void macse_ps_state::vblank_irq()
++{
++	m_macadb->adb_vblank();
++}
++
++void macse_ps_state::update_volume()
++{
++	const double res_ohm_tbl[8] =
++	{
++		(1.0 / ( (1.0 / RES_K(470))                                                               ) ),
++		(1.0 / ( (1.0 / RES_K(470))                                          + (1.0 / RES_K(470)) ) ),
++		(1.0 / ( (1.0 / RES_K(470))                     + (1.0 / RES_K(150))                      ) ),
++		(1.0 / ( (1.0 / RES_K(470))                     + (1.0 / RES_K(150)) + (1.0 / RES_K(470)) ) ),
++		(1.0 / ( (1.0 / RES_K(470)) + (1.0 / RES_K(68))                                           ) ),
++		(1.0 / ( (1.0 / RES_K(470)) + (1.0 / RES_K(68))                      + (1.0 / RES_K(470)) ) ),
++		(1.0 / ( (1.0 / RES_K(470)) + (1.0 / RES_K(68)) + (1.0 / RES_K(150))                      ) ),
++		(1.0 / ( (1.0 / RES_K(470)) + (1.0 / RES_K(68)) + (1.0 / RES_K(150)) + (1.0 / RES_K(470)) ) )
++	};
++	m_volfilter->opamp_mfb_lowpass_modify(res_ohm_tbl[m_snd_vol & 7], RES_K(0), RES_K(200), CAP_U(0), CAP_P(220));
++}
++
++void macse_ps_state::vblank_w(int state)
++{
++	m_via->write_ca1(state);
++}
++
++TIMER_CALLBACK_MEMBER(macse_ps_state::mac_scanline)
++{
++	const int scanline = param;
++
++	if (scanline == 0)
++		vblank_irq();
++
++	/* video beam in display (! VBLANK && ! HBLANK basically) */
++	if (scanline >= 28)
++		m_via->write_pb6(1);
++
++	m_hblank_timer->adjust(m_screen->time_until_pos(scanline, MAC_H_TOTAL));
++	m_scan_timer->adjust(m_screen->time_until_pos(scanline + 1), (scanline + 1) % m_screen->height());
++}
++
++TIMER_CALLBACK_MEMBER(macse_ps_state::mac_hblank)
++{
++	const int scanline = m_screen->vpos();
++	uint16_t *mac_snd_buf_ptr;
++
++	if (m_main_buffer)
++		mac_snd_buf_ptr = (uint16_t *)(m_ram_ptr + m_ram_size - MAC_MAIN_SND_BUF_OFFSET);
++	else
++		mac_snd_buf_ptr = (uint16_t *)(m_ram_ptr + m_ram_size - MAC_ALT_SND_BUF_OFFSET);
++
++	snd_push(mac_snd_buf_ptr[scanline] >> 8);
++	pwm_push(mac_snd_buf_ptr[scanline] & 0xff);
++	m_via->write_pb6(0);
++}
++
++void macse_ps_state::snd_push(uint8_t data)
++{
++	double frac = (m_snd_enable ? (((double)(~data)) / (MAC_H_TOTAL / 2.0)) : 1.0);
++	m_dac->write((uint16_t)(frac * 4095.0));
++}
++
++void macse_ps_state::pwm_push(uint8_t data)
++{
++	static const uint8_t value_to_length[64] = {
++		 0,  1, 59,  2, 60, 40, 54,  3,
++		61, 32, 49, 41, 55, 19, 35,  4,
++		62, 52, 30, 33, 50, 12, 14, 42,
++		56, 16, 27, 20, 36, 23, 44,  5,
++		63, 58, 39, 53, 31, 48, 18, 34,
++		51, 29, 11, 13, 15, 26, 22, 43,
++		57, 38, 47, 17, 28, 10, 25, 21,
++		37, 46,  9, 24, 45,  8,  7,  6
++	};
++
++	m_pwm_count_1 += value_to_length[data & 0x3f];
++	m_pwm_count_total++;
++	if (m_pwm_count_total == 100)
++	{
++		int internal_index = m_pwm_count_1 / (m_pwm_count_total / 10) - 11;
++		if (internal_index < 0)
++			internal_index = 0;
++		if (internal_index > 399)
++			internal_index = 399;
++		float duty_cycle = internal_index / 419.0;
++		float rpm = (duty_cycle - 0.094) * (702.5 - 342.5) / (0.91 - 0.094) + 342.5;
++		if (rpm == m_pwm_current_rpm[1] && m_pwm_current_rpm[1] != m_pwm_current_rpm[0])
++		{
++			if (m_cur_floppy && m_cur_floppy->type() == OAD34V)
++			{
++				m_iwm->sync();
++				m_cur_floppy->set_rpm(rpm);
++			}
++		}
++		m_pwm_current_rpm[0] = m_pwm_current_rpm[1];
++		m_pwm_current_rpm[1] = rpm;
++		m_pwm_count_1 = 0;
++		m_pwm_count_total = 0;
++	}
++}
++
++void macse_ps_state::scsi_irq_w(int state)
++{
++	// the SE wires the 5380's IRQ to the interrupt logic through the VIA's PB6 gate: as mac128.cpp, unused here
++}
++
++void macse_ps_state::scsi_berr_w(uint8_t data)
++{
++	m_maincpu->pulse_input_line(bridge68k_device::LINE_BUSERROR, attotime::zero);
++}
++
++uint16_t macse_ps_state::macse_scsi_r(offs_t offset, uint16_t mem_mask)
++{
++	int reg = (offset >> 3) & 0xf;
++	return m_scsihelp->read_wrapper(BIT(offset, 8), reg) << 8;
++}
++
++void macse_ps_state::macse_scsi_w(offs_t offset, uint16_t data, uint16_t mem_mask)
++{
++	int reg = (offset >> 3) & 0xf;
++	m_scsihelp->write_wrapper(BIT(offset, 8), reg, data >> 8);
++}
++
++uint16_t macse_ps_state::mac_iwm_r(offs_t offset, uint16_t mem_mask)
++{
++	uint16_t result = m_iwm->read((offset >> 8) & 0xf);
++	return (result << 8) | result;
++}
++
++void macse_ps_state::mac_iwm_w(offs_t offset, uint16_t data, uint16_t mem_mask)
++{
++	if (ACCESSING_BITS_0_7)
++		m_iwm->write((offset >> 8) & 0xf, data & 0xff);
++	else
++		m_iwm->write((offset >> 8) & 0xf, data >> 8);
++}
++
++void macse_ps_state::mac_via_irq(int state)
++{
++	set_via_interrupt(state);
++}
++
++uint16_t macse_ps_state::mac_via_r(offs_t offset)
++{
++	offset >>= 8;
++	offset &= 0x0f;
++	uint16_t data = m_via->read(offset);
++	return (data & 0xff) | (data << 8);
++}
++
++void macse_ps_state::mac_via_w(offs_t offset, uint16_t data)
++{
++	offset >>= 8;
++	offset &= 0x0f;
++	m_via->write(offset, (data >> 8) & 0xff);
++}
++
++void macse_ps_state::mac_autovector_w(offs_t offset, uint16_t data)
++{
++}
++
++uint16_t macse_ps_state::mac_autovector_r(offs_t offset)
++{
++	return 0;
++}
++
++uint8_t macse_ps_state::mac_via_in_a()
++{
++	return 0x81;
++}
++
++uint8_t macse_ps_state::mac_via_in_b_se()
++{
++	int val = m_macadb->get_adb_state() << 4;
++	if (!m_adb_irq_pending)
++		val |= 0x08;
++	val |= m_rtc->data_r();
++	return val;
++}
++
++void macse_ps_state::mac_via_out_a_se(uint8_t data)
++{
++	m_screen_buffer = (data & 0x40) >> 6;
++	int hdsel = BIT(data, 5);
++	if (hdsel != m_hdsel)
++	{
++		if (m_cur_floppy)
++			m_cur_floppy->ss_w(hdsel);
++		m_hdsel = hdsel;
++	}
++	m_snd_vol = data & 0x07;
++	update_volume();
++	if (m_drive_select != BIT(data, 4))
++	{
++		m_drive_select = BIT(data, 4);
++		devsel_se_w(m_devsel);
++	}
++}
++
++void macse_ps_state::mac_via_out_b_se(uint8_t data)
++{
++	m_snd_enable = ((data & 0x80) == 0) ? true : false;
++	update_volume();
++	m_scsiirq_enable = (data & 0x40) ? 0 : 1;
++	m_macadb->mac_adb_newaction((data & 0x30) >> 4);
++	m_rtc->ce_w((data & 0x04) >> 2);
++	m_rtc->data_w(data & 0x01);
++	m_rtc->clk_w((data >> 1) & 0x01);
++}
++
++uint32_t macse_ps_state::screen_update_mac(screen_device &screen, bitmap_ind16 &bitmap, const rectangle &cliprect)
++{
++	uint32_t const video_base = m_ram_size - (m_screen_buffer ? MAC_MAIN_SCREEN_BUF_OFFSET : MAC_ALT_SCREEN_BUF_OFFSET);
++	uint16_t const *video_ram = (const uint16_t *)(m_ram_ptr + video_base);
++
++	for (int y = 0; y < MAC_V_VIS; y++)
++	{
++		uint16_t *const line = &bitmap.pix(y);
++		for (int x = 0; x < MAC_H_VIS; x += 16)
++		{
++			uint16_t const word = *(video_ram++);
++			for (int b = 0; b < 16; b++)
++				line[x + b] = (word >> (15 - b)) & 0x0001;
++		}
++	}
++	return 0;
++}
++
++void macse_ps_state::phases_w(uint8_t phases)
++{
++	if (m_cur_floppy)
++		m_cur_floppy->seek_phase_w(phases);
++}
++
++void macse_ps_state::devsel_se_w(uint8_t devsel)
++{
++	if (!m_drive_select)
++	{
++		if (devsel == 1)
++			m_cur_floppy = m_floppy[0]->get_device();
++		else if (devsel == 2)
++			m_cur_floppy = m_floppy[1]->get_device();
++		else
++			m_cur_floppy = nullptr;
++	}
++	else
++		m_cur_floppy = nullptr;
++
++	m_iwm->set_floppy(m_cur_floppy);
++	if (m_cur_floppy)
++	{
++		m_cur_floppy->ss_w(m_hdsel);
++		if (m_cur_floppy->type() == OAD34V)
++			m_cur_floppy->set_rpm(m_pwm_current_rpm[1]);
++	}
++	m_devsel = devsel;
++}
++
++/***************************************************************************
++    ADDRESS MAP: the SE's, as the 68000 socket sees it (docs/01)
++***************************************************************************/
++
++void macse_ps_state::macse_map(address_map &map)
++{
++	map(0x000000, 0x3fffff).rw(FUNC(macse_ps_state::ram_r), FUNC(macse_ps_state::ram_w_se));
++	map(0x400000, 0x4fffff).r(FUNC(macse_ps_state::rom_r));
++	map(0x580000, 0x5fffff).rw(FUNC(macse_ps_state::macse_scsi_r), FUNC(macse_ps_state::macse_scsi_w));
++	map(0x900000, 0x9fffff).r(m_scc, FUNC(z80scc_device::dc_ab_r)).umask16(0xff00);
++	map(0xb00000, 0xbfffff).w(m_scc, FUNC(z80scc_device::dc_ab_w)).umask16(0x00ff);
++	map(0xd00000, 0xdfffff).rw(FUNC(macse_ps_state::mac_iwm_r), FUNC(macse_ps_state::mac_iwm_w));
++	map(0xe80000, 0xefffff).rw(FUNC(macse_ps_state::mac_via_r), FUNC(macse_ps_state::mac_via_w));
++	map(0xfffff0, 0xffffff).rw(FUNC(macse_ps_state::mac_autovector_r), FUNC(macse_ps_state::mac_autovector_w));
++}
++
++/***************************************************************************
++    MACHINE
++***************************************************************************/
++
++void macse_ps_state::macse_ps(machine_config &config)
++{
++	BRIDGE68000(config, m_maincpu, C7M);        /* 7.8336 MHz: the SE's bus clock, for the cycle accounting */
++	m_maincpu->set_addrmap(AS_PROGRAM, &macse_ps_state::macse_map);
++
++	SCREEN(config, m_screen, SCREEN_TYPE_RASTER);
++	m_screen->set_raw(15.6672_MHz_XTAL, MAC_H_TOTAL, 0, MAC_H_VIS, MAC_V_TOTAL, 0, MAC_V_VIS);
++	m_screen->set_screen_update(FUNC(macse_ps_state::screen_update_mac));
++	m_screen->set_palette("palette");
++	m_screen->screen_vblank().set(FUNC(macse_ps_state::vblank_w));
++
++	PALETTE(config, "palette", palette_device::MONOCHROME_INVERTED);
++
++	SPEAKER(config, "speaker").front_center();
++	DAC_12BIT_R2R(config, m_dac, 0).add_route(ALL_OUTPUTS, m_volfilter, 1.0, 0);
++	FILTER_BIQUAD(config, m_volfilter).opamp_mfb_lowpass_setup(RES_K(470), RES_K(0), RES_K(200), CAP_U(0), CAP_P(220));
++	m_volfilter->add_route(ALL_OUTPUTS, m_filter, 1.0);
++	FILTER_BIQUAD(config, m_filter).opamp_sk_lowpass_setup(RES_K(47), RES_K(47), RES_M(999.99), RES_R(0.001), CAP_U(0.001), CAP_P(470));
++	m_filter->add_route(ALL_OUTPUTS, "speaker", 1.0);
++
++	IWM(config, m_iwm, C7M * 2);
++	m_iwm->phases_cb().set(FUNC(macse_ps_state::phases_w));
++	m_iwm->devsel_cb().set(FUNC(macse_ps_state::devsel_se_w));
++	applefdintf_device::add_35(config, m_floppy[0]);
++	applefdintf_device::add_35(config, m_floppy[1]);
++
++	SCC85C30(config, m_scc, C7M);
++	m_scc->configure_channels(C3_7M, 0, C3_7M, 0);
++	m_scc->out_int_callback().set(FUNC(macse_ps_state::set_scc_interrupt));
++	m_scc->out_txda_callback().set("printer", FUNC(rs232_port_device::write_txd));
++	m_scc->out_txdb_callback().set("modem", FUNC(rs232_port_device::write_txd));
++
++	rs232_port_device &rs232a(RS232_PORT(config, "printer", default_rs232_devices, nullptr));
++	rs232a.rxd_handler().set(m_scc, FUNC(z80scc_device::rxa_w));
++	rs232a.dcd_handler().set(m_scc, FUNC(z80scc_device::dcda_w));
++	rs232a.cts_handler().set(m_scc, FUNC(z80scc_device::ctsa_w));
++
++	rs232_port_device &rs232b(RS232_PORT(config, "modem", default_rs232_devices, nullptr));
++	rs232b.rxd_handler().set(m_scc, FUNC(z80scc_device::rxb_w));
++	rs232b.dcd_handler().set(m_scc, FUNC(z80scc_device::dcdb_w));
++	rs232b.cts_handler().set(m_scc, FUNC(z80scc_device::ctsb_w));
++
++	NSCSI_BUS(config, "scsibus");
++	NSCSI_CONNECTOR(config, "scsibus:0", mac_scsi_devices, nullptr);
++	NSCSI_CONNECTOR(config, "scsibus:1", mac_scsi_devices, nullptr);
++	NSCSI_CONNECTOR(config, "scsibus:2", mac_scsi_devices, nullptr);
++	NSCSI_CONNECTOR(config, "scsibus:3", mac_scsi_devices, nullptr);
++	NSCSI_CONNECTOR(config, "scsibus:4", mac_scsi_devices, nullptr);
++	NSCSI_CONNECTOR(config, "scsibus:5", mac_scsi_devices, nullptr);
++	NSCSI_CONNECTOR(config, "scsibus:6", mac_scsi_devices, "harddisk");
++	NSCSI_CONNECTOR(config, "scsibus:7").option_set("ncr5380", NCR5380).machine_config([this](device_t *device) {
++		ncr5380_device &adapter = downcast<ncr5380_device &>(*device);
++		adapter.irq_handler().set(*this, FUNC(macse_ps_state::scsi_irq_w));
++		adapter.drq_handler().set(m_scsihelp, FUNC(mac_scsi_helper_device::drq_w));
++	});
++
++	MAC_SCSI_HELPER(config, m_scsihelp);
++	m_scsihelp->scsi_read_callback().set(m_ncr5380, FUNC(ncr5380_device::read));
++	m_scsihelp->scsi_write_callback().set(m_ncr5380, FUNC(ncr5380_device::write));
++	m_scsihelp->scsi_dma_read_callback().set(m_ncr5380, FUNC(ncr5380_device::dma_r));
++	m_scsihelp->scsi_dma_write_callback().set(m_ncr5380, FUNC(ncr5380_device::dma_w));
++	m_scsihelp->cpu_halt_callback().set_inputline(m_maincpu, INPUT_LINE_HALT);
++	m_scsihelp->timeout_error_callback().set(FUNC(macse_ps_state::scsi_berr_w));
++
++	MACADB(config, m_macadb, C7M);
++	m_macadb->set_mcu_mode(false);
++	m_macadb->via_clock_callback().set(m_via, FUNC(via6522_device::write_cb1));
++	m_macadb->via_data_callback().set(m_via, FUNC(via6522_device::write_cb2));
++	m_macadb->adb_irq_callback().set(FUNC(macse_ps_state::adb_irq_w));
++
++	R65NC22(config, m_via, C7M / 10);
++	m_via->readpa_handler().set(FUNC(macse_ps_state::mac_via_in_a));
++	m_via->readpb_handler().set(FUNC(macse_ps_state::mac_via_in_b_se));
++	m_via->writepa_handler().set(FUNC(macse_ps_state::mac_via_out_a_se));
++	m_via->writepb_handler().set(FUNC(macse_ps_state::mac_via_out_b_se));
++	m_via->cb2_handler().set(FUNC(macse_ps_state::via_out_cb2));
++	m_via->irq_handler().set(FUNC(macse_ps_state::mac_via_irq));
++
++	RTC3430042(config, m_rtc, 32.768_kHz_XTAL);
++	m_rtc->cko_cb().set(m_via, FUNC(via6522_device::write_ca2));
++
++	RAM(config, m_ram);
++	m_ram->set_default_size("4M");
++	m_ram->set_extra_options("1M,2M,2560K,4M");
++}
++
++static INPUT_PORTS_START( macadb )
++INPUT_PORTS_END
++
++ROM_START( macse_ps )
++	ROM_REGION16_BE(0x100000, "bootrom", 0)
++	ROM_LOAD16_WORD( "macse.rom",  0x00000, 0x40000, CRC(0f7ff80c) SHA1(58532b7d0d49659fd5228ac334a1b094f0241968))
++ROM_END
++
++} // anonymous namespace
++
++//    YEAR  NAME      PARENT  COMPAT  MACHINE   INPUT   CLASS           INIT             COMPANY             FULLNAME                          FLAGS
++COMP( 1987, macse_ps, macse,  0,      macse_ps, macadb, macse_ps_state, mac_driver_init, "Apple Computer",   "Macintosh SE (psmac bridge CPU)", MACHINE_NOT_WORKING )
 diff --git a/src/mame/mame.lst b/src/mame/mame.lst
-index 5d4d0d80..c783a88f 100644
+index 5d4d0d80..e1ada24e 100644
 --- a/src/mame/mame.lst
 +++ b/src/mame/mame.lst
-@@ -885,6 +885,9 @@ macse30                         // 1989 Apple Macintosh SE/30
+@@ -885,6 +885,12 @@ macse30                         // 1989 Apple Macintosh SE/30
  maciici                         // 1989 Apple Macintosh IIci
  maciisi                         // 1990 Apple Macintosh IIsi
  
 +@source:apple/maciici_ps.cpp
 +maciici_ps                      // 1989 Apple Macintosh IIci (psmac bridge CPU)
++
++@source:apple/macse_ps.cpp
++macse_ps                        // 1987 Apple Macintosh SE (psmac bridge CPU)
 +
  @source:apple/maciifx.cpp
  maciifx                         // 1990 Apple Macintosh IIfx

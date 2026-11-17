@@ -97,7 +97,7 @@ has an `expect` field; the tool refuses to apply a patch whose bytes have moved.
 ```
 git clone --branch mame0264 --depth 1 https://github.com/mamedev/mame reference/mame
 git -C reference/mame apply ../mame-psmac.patch
-cd reference/mame && make SUBTARGET=psmac SOURCES=src/mame/apple/maciici.cpp,src/mame/apple/maciici_ps.cpp \
+cd reference/mame && make SUBTARGET=psmac SOURCES=src/mame/apple/maciici.cpp,src/mame/apple/maciici_ps.cpp,src/mame/apple/macse_ps.cpp \
      REGENIE=1 NOWERROR=1 TOOLS=1 -j4 && ln -sf psmac mamepsmac        # about 25 minutes on 4 cores
 ```
 Dependencies are the usual MAME ones (docs/06-mame-bridge.md lists the Ubuntu packages). The
@@ -127,7 +127,9 @@ ROM=rom/patched/MacIIci_psmac.rom HD=images/chd/sys710pi.chd tools/run-fullstack
     mac.net=/tmp/psmac-net bt=off wifi=off
 python3 tools/pinet.py /tmp/psmac-net peer      # the host side of the Ethernet, in another shell
 ```
-`run-fullstack.sh SECONDS [kernel options]` starts MAME (`mamepsmac maciici_ps`, FIFO transport)
+`run-fullstack.sh SECONDS [kernel options]` starts MAME (`mamepsmac maciici_ps`, FIFO transport;
+`MACHINE=macse_ps` for the bridged Macintosh SE, with `mac.board=se` and the 512x342 declaration
+ROM on the kernel side; its PRAM lives in `mame/nvramFS/macse_ps/`)
 and QEMU (one run at a time: the bridge socket, MAME's nvram and snapshot directories are shared,
 and two runs side by side corrupt each other's results silently), writes `emu68.log` and `mame.log` to `$LOGDIR` (default `/tmp/psmac-logs`), and MAME
 takes a screenshot every ten seconds into `mame/snapFS/maciici_ps/`. `PSMAC_RAM` (MiB, default 16)

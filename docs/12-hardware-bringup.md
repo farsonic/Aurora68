@@ -96,6 +96,22 @@ best built against MAME's own `macse` driver with the bridge CPU attached to it 
 `bridge68k` device the IIci testbed uses, on a 16-bit, 24-bit bus), so it can be debugged here
 before the hardware arrives. That is the next piece after the 43438 path.
 
+*04:00, the same night.* Both exist now. `reference/mame-psmac.patch` carries `macse_ps`: the SE
+parts of MAME's mac128.cpp with a `bridge68000_device` (the bridge on a 16-bit, 24-bit bus;
+the SE's SCSI window is the one whose replies wait a scheduler slice) and the overlay cleared,
+as the SE's BBU does, by an access to the ROM's own space. The kernel's board layer is
+`emu68/src/psmac/psmac_board_se.c`, `mac.board=se`: VIA, SCC, 5380 and IWM reached at the SE's
+addresses (the VIA with port A bit 6 and port B bit 6 forced, so the SE scans out its main
+buffer and keeps the 5380's interrupt to itself; the pseudo-DMA window read a byte at a time,
+since the SE's bus is 16 bits and its 5380 sits on the upper byte), the RBV, ASC and VDAC
+answered by the kernel (monitor sense 7, no built-in monitor, so the ROM takes the slot-9 card
+as its main screen; the ASC's FIFOs always half empty so the chime loop ends), the SE's level
+2 (SCC) reported to the ROM as level 4 and the RBV's level 2 made here, and the SE's 512 by
+342 screen fed from the card's frame buffer, changed rows only, by the service core between the
+Mac's own cycles. The card's declaration ROM is the 512x342 one, so Monitors sees the SE's
+screen as the card's screen; the Pi's HDMI shows the same picture for now. What the first boots
+against `macse_ps` say is in docs/08, item 28.
+
 Then the order on the bench:
 
 1. **The ROM runs, the SE's screen shows something.** The IIci ROM from the Pi, the SE's VIA,
