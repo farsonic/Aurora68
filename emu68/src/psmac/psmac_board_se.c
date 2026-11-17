@@ -43,8 +43,17 @@ static uint32_t se_trace_left;              /* mac.setrace=N[,dev]: the first N 
 static char se_trace_dev[5];
 static void trace(const char *what, int write, uint32_t addr, uint32_t se, int size, uint32_t v)
 {
+    static uint32_t hist_se[4] = { 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu }, hist_v[4], hist_n, repeats;
     if (!se_trace_left) return;
     if (se_trace_dev[0] && (what[0] != se_trace_dev[0] || what[1] != se_trace_dev[1] || what[2] != se_trace_dev[2])) return;
+    /* a read that repeats one of the last four (register, value) pairs is a poll: counted, not
+       printed, so a loop over two or three registers does not use up the trace before anything
+       happens; a write ends the run */
+    if (!write) {
+        for (int i = 0; i < 4; i++) if (hist_se[i] == se && hist_v[i] == v) { repeats++; return; }
+        hist_se[hist_n & 3] = se; hist_v[hist_n & 3] = v; hist_n++;
+    } else { for (int i = 0; i < 4; i++) hist_se[i] = 0xffffffffu; }
+    if (repeats) { kprintf("[PSMAC:SE]   ... %u polled reads folded\n", repeats); repeats = 0; }
     se_trace_left--;
     kprintf("[PSMAC:SE] %s %c%d %08x -> $%06x %s %08x\n", what, write ? 'W' : 'R', size, addr, se, write ? "<-" : "=", v);
 }
@@ -136,7 +145,9 @@ static uint32_t via_read_fix(uint32_t reg, uint32_t r)
 /* ---- the SCSI chip: the same 5380, read on even addresses, written on odd ones -------------- */
 #define SE_SCSI_RD   0x5FF000u
 #define SE_SCSI_WR   0x5FF001u
-#define SE_SCSI_PDMA 0x5FF200u                  /* the BBU holds DTACK until the 5380 raises DRQ */
+#define SE_SCSI_PDMA 0x5FF200u                  /* the register window again, with DACK: the BBU holds DTACK until the 5380 raises DRQ */
+#define SE_SCSI_PDMA_RD (SE_SCSI_PDMA + 0x60)   /* data comes from the input data register (6) in that window: $5FF260 */
+#define SE_SCSI_PDMA_WR (SE_SCSI_PDMA + 0x01)   /* and goes to the output data register (0), written on the odd byte: $5FF201 */
 
 /* ---- translation ----------------------------------------------------------------------------
    One IIci-side access of the given size, read or written. Returns 1 when answered (locally or
@@ -181,9 +192,10 @@ int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t 
     if ((off >= 0x12000 && off < 0x14000) || (off >= 0x6000 && off < 0x8000)) {
         /* pseudo-DMA, plain (0x12000) or with the DRQ handshake (0x6000): the SE has one window
            and its glue does the waiting. A byte per bus cycle; longs and words are several. */
-        if (write) { for (int i = 0; i < size; i++) psmac_wire_write(SE_SCSI_PDMA + 1, 1, (data >> (8 * (size - 1 - i))) & 0xff, 0); return 1; }
+        if (write) { trace("SCSI", 1, addr, SE_SCSI_PDMA_WR, size, data); for (int i = 0; i < size; i++) psmac_wire_write(SE_SCSI_PDMA_WR, 1, (data >> (8 * (size - 1 - i))) & 0xff, 0); return 1; }
         r = 0;
-        for (int i = 0; i < size; i++) r = r << 8 | (psmac_wire_read(SE_SCSI_PDMA, 1) & 0xff);
+        for (int i = 0; i < size; i++) r = r << 8 | (psmac_wire_read(SE_SCSI_PDMA_RD, 1) & 0xff);
+        trace("SCSI", 0, addr, SE_SCSI_PDMA_RD, size, r);
         *val = r;
         return 1;
     }

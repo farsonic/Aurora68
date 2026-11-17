@@ -1,9 +1,9 @@
 diff --git a/src/mame/apple/bridge68k.cpp b/src/mame/apple/bridge68k.cpp
 new file mode 100644
-index 00000000..f5b04356
+index 00000000..93a08757
 --- /dev/null
 +++ b/src/mame/apple/bridge68k.cpp
-@@ -0,0 +1,725 @@
+@@ -0,0 +1,727 @@
 +// license:BSD-3-Clause
 +// copyright-holders:psmac project
 +/****************************************************************************
@@ -541,7 +541,9 @@ index 00000000..f5b04356
 +		addr &= 0xffffff;
 +		switch (size)
 +		{
-+		case 1: m_program16.write_byte(addr, data & 0xff); break;
++		// a byte write on a 68000 puts the byte on both halves of the data bus; the Macintosh SE's
++		// decoding relies on it (its 5380 is written at odd addresses and read on the upper byte)
++		case 1: m_program16.write_word(addr & ~1, u16(data & 0xff) * 0x0101, (addr & 1) ? 0x00ff : 0xff00); break;
 +		case 2: if (addr & 1) m_program16.write_word_unaligned(addr, data & 0xffff); else m_program16.write_word(addr, data & 0xffff); break;
 +		default: if (addr & 1) m_program16.write_dword_unaligned(addr, data); else m_program16.write_dword(addr, data); break;
 +		}

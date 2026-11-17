@@ -463,8 +463,26 @@ System 6 does not touch TimeDBRA that way and boots with either ROM.
      its first VBL through the slot interrupt, and the service core wrote the card's frame into
      the SE's screen buffer, 342 rows: a Sad Mac, codes $0000000F $00000033, system error 51,
      an unserviceable slot interrupt. The dispatcher found the slot-9 line asserted and no
-     handler that owned it; the RBV stand-in's interrupt flags are the suspect (fs179 traces
-     them).
+     handler that owned it. The cause was a stale line: core 3 samples the card's interrupt
+     sources and the bus layer kept its last sample; the ROM's dispatcher re-reads the slot
+     flags right after a handler returns, saw the line still up, dispatched again, and the
+     handler found nothing pending. On the IIci the input driver's catch-all handler (D0 = 1
+     for anything left) had always been installed first, because there the card was the
+     second screen and its driver opened late; on the SE the card is the main screen and its
+     driver opens before any other. The line is evaluated on demand now (`psmac_slot_line_now`).
+   - **fs180, 04:36: the IIci ROM boots on the Macintosh SE's board** and draws its desktop
+     pattern, its cursor and the blinking disk on the SE's own screen
+     (`docs/img/macse-iici-rom-asks-for-a-disk.png`): everything up to "find me a startup
+     disk" runs through the translation. The SCSI scan found nothing because MAME's SE decodes
+     5380 writes on the upper byte of the word while the SE writes the chip at odd addresses,
+     which a 68000 serves by putting the byte on both halves of the bus; the bridge's byte
+     writes now do the same (fs181). With that the 5380 answers its register test, arbitrates,
+     selects the disk at ID 6 and gets a command across (fs183's trace, with polls folded: the
+     ROM's READ of block 0, the data phase entered, status and message read, and the whole
+     thing retried for ever). The retries were the pseudo-DMA: the SE's DACK window at $5FF200
+     mirrors the registers, and the data comes from the input data register inside it,
+     $5FF260, not from $5FF200 itself, which is the current-data register with DACK and reads
+     whatever sits on the bus. The translation now reads $5FF260 a byte at a time (fs184).
 *(17 November, 03:30: the hardware is now known, a classic PiStorm with a Pi 3 in a socketed SE,
 WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.)*
 1. MacTCP under System 6 (the same files; untested there), then a real client (Fetch, NCSA
