@@ -1,1 +1,1 @@
-enable_cache debug mac.board=se bt=off mac.console=hdmi
+enable_cache debug mac.board=se bt.pair=1 mac.console=hdmi

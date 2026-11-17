@@ -120,6 +120,9 @@ One line, options separated by spaces, no comments:
 | `mac.console=hdmi` | keep the kernel's log on the HDMI screen for the whole run (the same text as the serial line); without it the log shows until the Macintosh's video driver takes the screen |
 | `mac.board=se` | the logic board the Pi sits in: `se` (the Macintosh SE: its chips behind the IIci ROM's addresses, docs/12), `solo` (no Macintosh: the kernel answers every chip and boots a disk image from the container, docs/12) or the default, the testbed's IIci |
 | `aurora68-wifi.declrom` (a file, not an option) | the declaration ROM with the screen, PiDisk, input and the WiFi network card but no wired Ethernet: MacTCP takes the first network card it finds, so this is the one for a Pi without Ethernet (3B, 3A+, Zero 2 W, the bench) |
+| `bt=off` | leave the Bluetooth chip off. Without it the kernel starts Bluetooth: on a Pi 3 the log then moves from the PL011 to the mini UART on the same header pins |
+| `bt.pair=1` | pair with the first keyboard or mouse a scan finds in pairing mode, and look again every 20 s until one is connected (`bt.pair=NAME` takes only a device whose name contains NAME). The log then prints the `bt.dev=` word that makes the pairing permanent |
+| `bt.dev=ADDR:KEY:KIND...` | a paired device, as the log printed it after `bt.pair=`, so it reconnects at every boot without pairing again |
 | `mac.scsi0=PATH` | testbed only: a host disk image for the solo board's SCSI ID 0 (`mac.scsi1=` ... `mac.scsi6=`), with `mac.semihost=1` for host file access without the MAME bridge. On hardware the images come from the container |
 | `mac.solotrace=N` | the solo board's first N SCSI commands and ADB commands in the log |
 | `mac.bridge=gpio` | how the motherboard is reached: `gpio` (the classic PiStorm's CPLD, the default on hardware), `semihost` or `uart` (the testbed's bridge to MAME) |

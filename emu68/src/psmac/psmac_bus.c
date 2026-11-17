@@ -936,11 +936,38 @@ void fastSerial_init(void) {}
 /* Console: under the PiStorm build variants kprintf goes to the "fast serial" (CPLD) path; we send it
    to the PL011 instead so the QEMU/serial console keeps working. */
 #define PL011_BASE (PERIPH_VA + 0x201000)
+static int con_mini;                    /* the log goes to the mini UART: Bluetooth has the PL011 (bt_pi.c) */
 static void con_putc(uint8_t c)
 {
     /* bounded wait: a wedged UART must never deadlock the emulation (the console lock is shared by all cores) */
+    if (con_mini) { for (int i = 0; i < 100000 && !(rd32le(AUX_MU_LSR) & 0x20); i++) ; wr32le(AUX_MU_IO, c); return; }
     for (int i = 0; i < 100000 && (rd32le(PL011_BASE + 0x18) & (1 << 5)); i++) ;
     wr32le(PL011_BASE, c);
+}
+/* A Pi 3 has one PL011 and the Bluetooth half of its WiFi chip hangs off it (GPIO 30-33). When the
+   Bluetooth module takes it, the kernel's log moves to the mini UART on the same header pins (GPIO
+   14/15 in ALT5, 115200 from the core clock, which enable_uart=1 keeps fixed); the HDMI console is
+   unaffected. Called once by bt_pi.c before it touches the PL011. */
+extern uint32_t get_clock_rate(uint32_t clock_id);
+void psmac_console_miniuart(void)
+{
+    if (con_mini) return;
+    uint32_t core = get_clock_rate(4);                                  /* CORE */
+    if (core < 100000000u) core = 250000000u;
+    for (int i = 0; i < 100000 && (rd32le(PL011_BASE + 0x18) & (1 << 3)); i++) ;   /* the PL011 drains what it has */
+    uint32_t f = rd32le(PERIPH_VA + 0x200004);                          /* GPFSEL1: GPIO 14, 15 to ALT5 (TXD1, RXD1) */
+    f = (f & ~(077u << 12)) | (022u << 12);
+    wr32le(PERIPH_VA + 0x200004, f);
+    wr32le(AUX_ENABLES, rd32le(AUX_ENABLES) | 1);
+    wr32le(AUX_MU_CNTL, 0);
+    wr32le(AUX_MU_IER, 0);
+    wr32le(AUX_MU_LCR, 3);
+    wr32le(AUX_MU_MCR, 0);
+    wr32le(AUX_MU_BAUD, core / (8u * 115200u) - 1u);
+    wr32le(AUX_MU_IIR, 0xc6);
+    wr32le(AUX_MU_CNTL, 2);                                             /* transmitter only */
+    con_mini = 1;
+    kprintf("[PSMAC] the log continues on the mini UART (GPIO 14, 115200): Bluetooth has the PL011\n");
 }
 void psmac_console_putc(uint8_t c);     /* psmac_display.c: the same text on the HDMI screen */
 void fastSerial_putByte(uint8_t b) { if (b == '\n') con_putc('\r'); con_putc(b); psmac_console_putc(b); }

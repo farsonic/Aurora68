@@ -631,6 +631,18 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    missing on the bench: a mouse and keyboard; the Mac-side input driver and the Pi's Bluetooth
    HID path exist from the Pi 4 work, so the next step is Bluetooth on the Pi 3's PL011.
 
+37. **Bluetooth for the bench (17 November, 22:30).** The Alice68 Bluetooth host (bthost.c,
+   btle.c: Classic and LE HID, written for the Pi 4) gets its Pi 3 specifics in bt_pi.c: BT_ON
+   by board type (expander line 0 on the 3B/3B+/3A+/4/CM4, SoC GPIO 45 on the Zero W, 42 on the
+   Zero 2 W), pulls through GPPUD on the BCM2837, and the one-PL011 problem: the kernel's log is
+   on the PL011 and the Bluetooth half of the WiFi chip hangs off the same UART (GPIO 30-33), so
+   `psmac_console_miniuart()` moves the log to the mini UART on GPIO 14/15 the moment the module
+   takes the PL011. Pairing needed a pointer (PiBlue is a Mac application); `bt.pair=1` scans
+   and pairs with the first keyboard or mouse in pairing mode, repeating every 20 s until one is
+   connected, prints the passkey for a keyboard, and prints every paired device as the `bt.dev=`
+   word for cmdline.txt. Built and smoke-tested under QEMU (no chip there: the module fails
+   cleanly and the Mac still boots); the first real test waits for the Pi on the desk.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

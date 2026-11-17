@@ -603,6 +603,7 @@ static int wl_on_soc_gpio(void)
         return 0;
     }
 }
+int alice_pi_board_type(void) { return board_type(); }
 int alice_pi_is_2711(void)
 {
     switch (board_type()) {

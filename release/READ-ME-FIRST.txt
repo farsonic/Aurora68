@@ -151,6 +151,15 @@ the clock chip, the ADB transceiver (no keyboard or mouse yet), the SCC, the flo
      screen with the matching declaration ROM in the container.
   4. Boot. The ROM's memory test takes a few seconds, the happy Mac appears, then "Welcome to
      Macintosh" and the Finder, about a minute on a Pi 3.
+  5. Mouse and keyboard, over Bluetooth (new in 0.5). The kernel starts the Pi's Bluetooth unless
+     cmdline.txt says bt=off; with bt.pair=1 (in the shipped cmdline.txt) it pairs with the first
+     keyboard or mouse it finds in pairing mode and looks again every 20 seconds, so put the
+     device in pairing mode any time after the boot. A keyboard shows a passkey in the log
+     (mac.console=hdmi to see it): type it on the keyboard and press Return. Once paired, the
+     log prints a "bt.dev=..." word: add it to cmdline.txt and the device reconnects at every
+     boot without pairing again (the Pi cannot write the card itself yet). Classic Bluetooth and
+     Bluetooth LE mice and keyboards both work; the pairing is forgotten at power off unless the
+     bt.dev= word is in cmdline.txt.
 What the Mac writes to the image stays until the power goes (the card is not written back yet);
 the clock starts on 17 November 2026 and parameter RAM changes do not survive either. With
 mac.board=se (the SE board) the same image appears as a PiDisk volume instead.

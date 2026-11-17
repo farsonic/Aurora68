@@ -30,6 +30,9 @@ extern void frf_post_bt(const char *text, int col);
 extern void frf_native_usb_keyboard_boot_report(const uint8_t report[8]) __attribute__((weak));
 extern void aga_virtual_mouse_update(int dx, int dy, unsigned buttons);
 extern void pt_mouse_extra(int wheel, int pan, unsigned buttons) __attribute__((weak));
+extern int alice_pi_board_type(void);                    /* alice_net.c: revision code bits 4-11 */
+extern int alice_pi_is_2711(void);
+extern void psmac_console_miniuart(void) __attribute__((weak));   /* psmac_bus.c: the log leaves the PL011 */
 
 #ifdef PSMAC
 #include "../alice_psmac.h"
@@ -102,17 +105,39 @@ static void uart_flush(uint32_t cr)
     wr(UART0 + U_ICR, 0x7ffu);
     wr(UART0 + U_CR, cr);
 }
+/* ---- BT_ON: where it is wired differs by board, like the WiFi's WL_ON (alice_net.c) ----
+   The 3B, 3B+, 3A+, 4, 400 and CM4 have it on line 0 of the firmware's GPIO expander (mailbox
+   SET_GPIO_STATE, GPIO 128+0); the Zero W has it on SoC GPIO 45, the Zero 2 W on GPIO 42
+   (their device trees). Returns 0 when done, else "again later" (the mailbox was busy). */
+static int bt_on(int on)
+{
+    int t = alice_pi_board_type(), pin = t == 0x0c ? 45 : t == 0x12 ? 42 : 0;
+    if (!pin) return alice_mbox(0x00038041u, 128u + 0u, on ? 1u : 0u, 0);
+    uint32_t f = rd(GPIO + 0x10);                                       /* GPFSEL4: GPIO 40-49 */
+    wr(GPIO + 0x10, (f & ~(7u << (3 * (pin - 40)))) | (1u << (3 * (pin - 40))));
+    wr(GPIO + (on ? 0x20 : 0x2c), 1u << (pin - 32));                    /* GPSET1 / GPCLR1 */
+    return 0;
+}
 static void uart_init(void)
 {
+    if (psmac_console_miniuart) psmac_console_miniuart();    /* one PL011 on a Pi 3: the log leaves it first */
     uint32_t f = rd(GPIO + 0x0c);                       /* GPFSEL3: GPIO 30-33 to ALT3 (UART0 CTS RTS TXD RXD) */
     f = (f & ~0xfffu) | 07777u;
     wr(GPIO + 0x0c, f);
     uint32_t f1 = rd(GPIO + 0x04);                      /* GPIO 15 an input: UART0's RX comes from GPIO 33 only */
     wr(GPIO + 0x04, f1 & ~(7u << 15));
-    uint32_t p1 = rd(GPIO + 0xe8), p2 = rd(GPIO + 0xec);    /* pulls (BCM2711): CTS and RXD up */
-    p1 = (p1 & ~(0xfu << 28)) | (1u << 28);
-    p2 = (p2 & ~0xfu) | (1u << 2);
-    wr(GPIO + 0xe8, p1); wr(GPIO + 0xec, p2);
+    if (alice_pi_is_2711()) {
+        uint32_t p1 = rd(GPIO + 0xe8), p2 = rd(GPIO + 0xec);    /* pulls (BCM2711): CTS and RXD up */
+        p1 = (p1 & ~(0xfu << 28)) | (1u << 28);
+        p2 = (p2 & ~0xfu) | (1u << 2);
+        wr(GPIO + 0xe8, p1); wr(GPIO + 0xec, p2);
+    } else {                                            /* BCM2835-37: GPPUD, then the pins clocked in */
+        wr(GPIO + 0x94, 2u);
+        for (volatile int i = 0; i < 300; i++) ;
+        wr(GPIO + 0x98, 1u << 30); wr(GPIO + 0x9c, 1u << 1);          /* GPIO 30 (CTS), GPIO 33 (RXD) */
+        for (volatile int i = 0; i < 300; i++) ;
+        wr(GPIO + 0x94, 0); wr(GPIO + 0x98, 0); wr(GPIO + 0x9c, 0);
+    }
     uint32_t hz = 0;
     if (alice_mbox(0x00030002u, 2u, 0u, &hz) == 0 && hz > 1000000u) uart_hz = hz;    /* GET_CLOCK_RATE: UART */
     wr(UART0 + U_CR, 0);
@@ -165,8 +190,40 @@ static void io_mouse(void *c, int dx, int dy, int w, unsigned b)
     aga_virtual_mouse_update(dx, dy, b & 7u);
     if (pt_mouse_extra) pt_mouse_extra(w, 0, b);
 }
-static void io_keys(void *c) { (void)c; }
+static void keys_log(void);
+static void io_keys(void *c) { (void)c; keys_log(); }
 static const struct bt_io bio = { 0, io_send, io_baud, io_ms, io_log, io_kb, io_mouse, io_keys, io_kick };
+
+static unsigned put_num(char *t, unsigned k, uint32_t v, int hex);
+static unsigned put_str(char *t, unsigned k, const char *s);
+static const char hexd[] = "0123456789abcdef";
+static unsigned put_hex(char *t, unsigned k, const uint8_t *p, int n, int rev)
+{
+    for (int i = 0; i < n; i++) { uint8_t b = p[rev ? n - 1 - i : i]; t[k++] = hexd[b >> 4]; t[k++] = hexd[b & 15]; }
+    return k;
+}
+/* every paired device as the cmdline.txt word that brings it back after a power cycle */
+static void keys_log(void)
+{
+    for (int i = 0; i < bh.nkeys; i++) {
+        struct bt_key *k = &bh.keys[i];
+        char t[200]; unsigned n = 0;
+        n = put_str(t, 0, "[BT] paired: "); for (int j = 0; k->name[j] && j < 39; j++) t[n++] = k->name[j];
+        n = put_str(t, n, " -> add to cmdline.txt: bt.dev=");
+        n = put_hex(t, n, k->addr, 6, 1); t[n++] = ':';
+        n = put_hex(t, n, k->key, 16, 0); t[n++] = ':';
+        unsigned kind = ((k->flags & BTK_KEYBOARD) ? 1u : 0u) | ((k->flags & BTK_MOUSE) ? 2u : 0u) | ((k->flags & BTK_LE) ? 4u : 0u);
+        t[n++] = hexd[kind];
+        if (k->flags & BTK_LE) {
+            uint8_t ed[2] = { (uint8_t)(k->ediv >> 8), (uint8_t)k->ediv };
+            t[n++] = ':'; n = put_hex(t, n, ed, 2, 0);
+            t[n++] = ':'; n = put_hex(t, n, k->rand, 8, 0);
+            t[n++] = ':'; t[n++] = (char)('0' + (k->addr_type & 1));
+            if (k->has_irk) { t[n++] = ':'; n = put_hex(t, n, k->irk, 16, 0); }
+        }
+        t[n] = 0; blog(t);
+    }
+}
 
 /* ---- cmdline.txt: bt=off, bt.dev=ADDR:KEY:KIND -----------------------------------------
    KIND: a hex digit, 1 keyboard + 2 mouse + 4 LE. An LE device goes on with
@@ -186,6 +243,64 @@ static int word(const char *s, const char *w)
     return 0;
 }
 int bt_pi_wanted(void) { return !word(alice_bootargs(), "bt=off"); }
+/* bt.pair=1: pair with any keyboard or mouse a scan finds; bt.pair=NAME: only one whose name holds NAME.
+   For a bench with no pointer yet: there is no way to click "pair" in PiBlue without a mouse. */
+static int auto_pair; static char pair_name[32];
+static void pair_option(void)
+{
+    const char *s = alice_bootargs();
+    for (const char *p = s; *p; p++) {
+        if ((p != s && p[-1] != ' ') || p[0] != 'b' || p[1] != 't' || p[2] != '.' || p[3] != 'p' || p[4] != 'a' || p[5] != 'i' || p[6] != 'r' || p[7] != '=') continue;
+        const char *v = p + 8; unsigned n = 0;
+        while (v[n] && v[n] != ' ' && n < 31) { pair_name[n] = v[n]; n++; }
+        pair_name[n] = 0;
+        auto_pair = n > 0 && !(n == 1 && pair_name[0] == '0');
+        if (n == 1 && pair_name[0] == '1') pair_name[0] = 0;
+    }
+}
+static int name_has(const char *name, const char *part)
+{
+    if (!part[0]) return 1;
+    for (unsigned i = 0; name[i]; i++) {
+        unsigned j = 0;
+        while (part[j] && name[i + j] && ((name[i + j] | 32) == (part[j] | 32))) j++;
+        if (!part[j]) return 1;
+    }
+    return 0;
+}
+static uint32_t pair_scan_at, pair_tried_at; static uint8_t pair_tried[6]; static int passkey_said;
+static void auto_pair_poll(uint32_t now)
+{
+    if (!auto_pair || bh.state != BT_READY) return;
+    if (bh.passkey_shown && !passkey_said) {
+        passkey_said = 1;
+        char t[80]; unsigned k = put_str(t, 0, "[BT] type this passkey on the keyboard, then Return: ");
+        k = put_num(t, k, bh.passkey, 0); t[k] = 0; blog(t);
+    }
+    if (!bh.passkey_shown) passkey_said = 0;
+    if (bh.pairing || bh.scanning) return;
+    int connected = 0;
+    for (int i = 0; i < bh.nkeys; i++) if (bh.keys[i].flags & BTK_CONNECTED) connected = 1;
+    if (connected) return;
+    /* a scan just ended: pair with the first keyboard or mouse it found (the name, when asked for) */
+    for (int i = 0; i < bh.nfound; i++) {
+        struct bt_found *f = &bh.found[i];
+        if (!name_has(f->name, pair_name)) continue;
+        int same = 1; for (int j = 0; j < 6; j++) if (f->addr[j] != pair_tried[j]) same = 0;
+        if (same && now - pair_tried_at < 60000) continue;     /* not the same one again within a minute */
+        for (int j = 0; j < 6; j++) pair_tried[j] = f->addr[j];
+        pair_tried_at = now;
+        char t[96]; unsigned k = put_str(t, 0, "[BT] bt.pair: pairing with \""); for (unsigned j = 0; f->name[j] && j < 39; j++) t[k++] = f->name[j]; k = put_str(t, k, "\""); t[k] = 0; blog(t);
+        bt_pair(&bh, f->addr);
+        return;
+    }
+    if (now - pair_scan_at > 20000) {                           /* nothing yet: look again every 20 s */
+        pair_scan_at = now;
+        bh.nfound = 0;
+        blog("[BT] bt.pair: scanning for a keyboard or mouse in pairing mode");
+        bt_scan(&bh);
+    }
+}
 static int hexv(char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1; }
 static void load_keys(void)
 {
@@ -321,7 +436,7 @@ void bt_pi_poll(void)
 {
     static const char *const stems[] = { "BCM4345C0", "BCM4345C5", "bcm4345c0", "BCM43430A1", "BCM4343A1", 0 };
     uint32_t now = ms_now();
-    if (!keys_loaded) { keys_loaded = 1; load_keys(); }
+    if (!keys_loaded) { keys_loaded = 1; load_keys(); pair_option(); }
     switch (phase) {
     case 0:
         if (!bt_pi_wanted()) { phase = 9; post("off (bt=off)", 0); blog("[BT] off: bt=off in cmdline.txt"); break; }
@@ -341,7 +456,7 @@ void bt_pi_poll(void)
         if (!uart_done) { uart_init(); uart_done = 1; }
         if ((int32_t)(now - phase_t) < 250) break;      /* a mailbox try at most 4 times a second */
         phase_t = now;
-        if (alice_mbox(0x00038041u, 128u + 0u, 0u, 0)) {           /* BT_ON low first; the mailbox may be busy */
+        if (bt_on(0)) {                                             /* BT_ON low first; the mailbox may be busy */
             if (now - wait_since > 40000) { phase = 8; post("FAILED: BT_ON could not be set", 2); blog("[BT] FAIL: the mailbox would not set BT_ON"); }
             break;
         }
@@ -352,7 +467,7 @@ void bt_pi_poll(void)
     case 2:
         if ((int32_t)(now - phase_t) < 20) break;
         cts_note("[BT] chip off: CTS ");
-        if (alice_mbox(0x00038041u, 128u + 0u, 1u, 0)) { phase_t = now + 230; break; }   /* BT_ON high; again in 250 ms */
+        if (bt_on(1)) { phase_t = now + 230; break; }               /* BT_ON high; again in 250 ms */
         phase = 3; phase_t = now;
         break;
     case 3:
@@ -367,7 +482,7 @@ void bt_pi_poll(void)
         break;
     case 7:                                             /* BT_ON low again, for a fresh start */
         if ((int32_t)(now - phase_t) < 0) break;
-        if (alice_mbox(0x00038041u, 128u + 0u, 0u, 0)) { phase_t = now + 250; break; }
+        if (bt_on(0)) { phase_t = now + 250; break; }
         phase = 2; phase_t = now + 300;                 /* off long enough for the chip to really reset */
         break;
     case 4: {
@@ -405,6 +520,7 @@ void bt_pi_poll(void)
             bt_rx(&bh, buf, n);
         }
         bt_poll(&bh);
+        auto_pair_poll(now);
         tx_drain();
         int col = bh.state == BT_READY ? 1 : bh.state == BT_FAILED ? 2 : 0;
         if (bh.state == BT_FAILED && !fail_logged) {

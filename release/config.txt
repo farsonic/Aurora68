@@ -13,9 +13,8 @@ initramfs aurora68.cpio 0x10000000   # the container: Macintosh IIci ROM, declar
 #  found its files; with it suppressed a card the firmware rejects and a dead board look the same)
 avoid_warnings=1
 enable_uart=1                 # the kernel's log on the serial pins (115200 8N1); leave on
-dtoverlay=disable-bt          # the kernel writes its log on the PL011, which this puts on GPIO 14/15
-                              # (the header's TXD/RXD); Bluetooth, which shares that UART on a Pi 3,
-                              # stays off (bt=off in cmdline.txt) until the kernel moves it
+# no dtoverlay=disable-bt: Bluetooth has the PL011 (GPIO 30-33) and the kernel moves its log to the
+# mini UART on GPIO 14/15 the moment Bluetooth starts (same pins, same 115200 8N1)
 
 # The Pi's HDMI output is the Macintosh's second screen (640 x 480, 256 colours). The
 # firmware sets the HDMI mode at power-on and the kernel shows the Mac's frame buffer in it;

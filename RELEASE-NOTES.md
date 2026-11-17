@@ -1,5 +1,18 @@
 # Aurora68 release notes
 
+## 0.5 — Bluetooth mice and keyboards on the Pi 3 (17 November 2026, 23:00)
+
+- **Bluetooth on the Pi 3 family.** The Alice68 Bluetooth host (Classic and LE keyboards and mice,
+  from the Pi 4 work) now runs on a Pi 3B, 3B+, 3A+, Zero W and Zero 2 W: BT_ON by board type
+  (the firmware's GPIO expander, or GPIO 45/42 on the Zeros), the BCM2837's pull registers,
+  BCM43430A1.hcd for the 3B's chip. A Pi 3 has one PL011 and Bluetooth needs it, so the kernel
+  moves its log to the mini UART on the same header pins when Bluetooth starts; config.txt no
+  longer carries dtoverlay=disable-bt.
+- **Pairing without a pointer.** `bt.pair=1` pairs with the first keyboard or mouse a scan finds
+  in pairing mode (`bt.pair=NAME` for one by name), and the log prints the `bt.dev=` word that
+  makes the pairing permanent. The shipped cmdline.txt has it on.
+- Untested on hardware at the time of writing: the Pi 3's Bluetooth path is new.
+
 ## 0.4 — a Pi that boots System 7 on its own (17 November 2026, 12:30)
 
 - **The solo board** (`mac.board=solo`): no Macintosh behind the Pi at all. The kernel answers the

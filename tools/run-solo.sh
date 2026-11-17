@@ -19,11 +19,14 @@ SHOT=${SHOT:-0}
 # CONTAINER=file: boot from a container (ROM, declrom, disk image inside: the hardware's way) instead of host files
 if [ -n "$CONTAINER" ]; then INITRD="$CONTAINER"; FILES=""; else INITRD="$ROM"; FILES="mac.semihost=1 mac.declrom=$DECLROM mac.scsi0=$HD"; fi
 [ -n "$RAM" ] && RAMTOK="mac.ram=$RAM" || RAMTOK=""
+# QEMU has no Bluetooth chip: keep the module off unless the run asks for it (its start moves the log to
+# the mini UART, which lands in $LOGDIR/miniuart.log here)
+case " $* " in *" bt"*) BTTOK="";; *) BTTOK="bt=off";; esac
 rm -f /tmp/qemu-mon.sock
 qemu-system-aarch64 -M raspi3b -smp 4 -m 1G -display none -monitor unix:/tmp/qemu-mon.sock,server,nowait \
   -kernel "$IMG" -dtb "$DTB" -initrd "$INITRD" \
-  -append "$RAMTOK enable_cache debug mac.board=solo $FILES $*" \
-  -serial stdio -semihosting-config enable=on,target=native -accel tcg,tb-size=256 > "$LOGDIR/emu68.log" 2>&1 &
+  -append "$RAMTOK enable_cache debug mac.board=solo $BTTOK $FILES $*" \
+  -serial stdio -serial file:$LOGDIR/miniuart.log -semihosting-config enable=on,target=native -accel tcg,tb-size=256 > "$LOGDIR/emu68.log" 2>&1 &
 QP=$!
 n=0; t=0
 while kill -0 $QP 2>/dev/null && [ $t -lt $SECS ]; do
