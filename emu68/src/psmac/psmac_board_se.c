@@ -118,6 +118,17 @@ static uint32_t via_data(uint32_t reg, uint32_t data)
     default: return data;
     }
 }
+/* What the ROM reads back from port A is the machine's identity: the Mac II family wires bits
+   6, 2, 1 and 0 of VIA1 port A as a box code, and the IIci's reads as $C7 (MAME's maciici:
+   PA6, PA2, PA1 with PA7 and PA0 high). An SE's port A reads $81 (PA7 and PA0), which the IIci
+   ROM takes for another box and sets flags for that never let it past the SCC check (fs172, PC
+   $40842F6A). So the identity bits are the IIci's; bits 7, 5, 4 and 3 are the SE's own: the SCC
+   wait/request line and the latches the ROM wrote (overlay, head select, sync). */
+static uint32_t via_read_fix(uint32_t reg, uint32_t r)
+{
+    if (reg == 1 || reg == 15) return (r & 0xb8) | 0x47;
+    return r;
+}
 
 /* ---- the SCSI chip: the same 5380, read on even addresses, written on odd ones -------------- */
 #define SE_SCSI_RD   0x5FF000u
@@ -140,7 +151,7 @@ int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t 
         /* VIA1: register n at +n*0x200 on both machines */
         uint32_t reg = (off >> 9) & 15, se = SE_VIA + (reg << 9);
         if (write) { trace("VIA", 1, addr, se, size, via_data(reg, data & 0xff)); psmac_wire_write(se, 1, via_data(reg, data & 0xff), posted); return 1; }
-        r = psmac_wire_read(se, 1) & 0xff;
+        r = via_read_fix(reg, psmac_wire_read(se, 1) & 0xff);
         trace("VIA", 0, addr, se, size, r);
         *val = size == 1 ? r : size == 2 ? r << 8 | r : r << 24 | r << 16 | r << 8 | r;
         return 1;

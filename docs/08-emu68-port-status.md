@@ -429,7 +429,20 @@ System 6 does not touch TimeDBRA that way and boots with either ROM.
      (fs167); `docs/img/system71-about-128mb.png` is About This Macintosh on the 128 MiB boot
      (fs171): a Macintosh SE with 131,072K of memory.
 
-## Next steps (in order, as of the evening of 16 November)
+28. **The IIci ROM meets a Macintosh SE (17 November, 04:00-).** With the hardware known
+   (docs/12) the board layer was written the same night, and a Macintosh SE to test it against:
+   MAME's `macse` with the bridge CPU on a 16-bit, 24-bit bus (`macse_ps`, docs/06). What the
+   first boots found, in order:
+   - The IIci ROM's first cycles translate as expected: VIA interrupt-enable tests at $EFFDFE,
+     the decoder probes answered locally, the boot chime's wavetable going into the kernel's
+     ASC while its timing loop reads the SE's VIA. The chime took 140 s against the SE where
+     the IIci took 50: every VIA read is a bridge round trip and the SE machine's are slower.
+   - Then the ROM sat for ever at $40842F6A reading SCC channel A's RR0 (fs172). Not the SCC's
+     fault: the loop is guarded by bit 17 of D7, the ROM's hardware flags, which were $20011
+     here and $40003 on the IIci. The flags come from the machine's identity, and the Mac II
+     family reads that from VIA1 port A: bits 6, 2, 1, 0 are a box code, $C7 on a IIci. An
+     SE's port A reads $81. The board layer now answers ORA reads with the IIci's identity bits
+     and the SE's own bits 7, 5, 4, 3 (`via_read_fix`).
 *(17 November, 03:30: the hardware is now known, a classic PiStorm with a Pi 3 in a socketed SE,
 WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.)*
 1. MacTCP under System 6 (the same files; untested there), then a real client (Fetch, NCSA
