@@ -26,3 +26,4 @@ reference/*
 
 # the kernel tree is vendored; its build directories are not
 emu68/build/
+dist/

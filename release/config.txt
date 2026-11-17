@@ -1,0 +1,26 @@
+# Aurora68 (PiStorm-SE) - config.txt for the Raspberry Pi firmware.
+# Lines beginning with # are comments. The firmware reads this file at power-on.
+
+[all]
+kernel=kernel8.img            # Aurora68 (the Emu68 fork, build variant psmac)
+arm_64bit=1
+initramfs aurora68.cpio followkernel   # the container: Macintosh IIci ROM, declaration ROM, firmware
+                                       # (make it with make-container.py, see READ-ME-FIRST.txt)
+disable_splash=1              # no rainbow screen
+avoid_warnings=1
+enable_uart=1                 # the kernel's log on the serial pins (115200 8N1); leave on
+
+# The Pi's HDMI output is the Macintosh's second screen (640 x 480, 256 colours). The
+# firmware sets the HDMI mode at power-on and the kernel shows the Mac's frame buffer in it;
+# 640 x 480 at 60 Hz maps one pixel to one. A larger mode is scaled by the firmware.
+hdmi_force_hotplug=1
+hdmi_group=2                  # DMT (monitor) modes
+hdmi_mode=4                   # 640 x 480, 60 Hz. 9 = 800 x 600, 16 = 1024 x 768, 82 = 1080p
+disable_overscan=1
+
+[pi3]
+gpu_mem=64
+
+[pi4]
+gpu_mem=64
+# The Pi 4's USB (keyboards, mice through .PiInput) and Gigabit Ethernet are driven by the kernel.

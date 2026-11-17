@@ -1,0 +1,77 @@
+Aurora68 0.1 - PiStorm-SE: a Raspberry Pi in a Macintosh SE's 68000 socket
+===========================================================================
+
+WHAT THIS RELEASE IS
+  The first packaged build of the kernel (kernel8.img), the Macintosh-side drivers and
+  programs, and the boot files for the SD card. Everything in it runs end to end in the
+  project's testbed (Emu68 under QEMU, the IIci motherboard under MAME): System 6 and
+  System 7.1 boot, the Pi disk mounts, Ethernet with MacTCP, the simulated WiFi, keyboard
+  and mouse through the Pi, About This Macintosh says Macintosh SE, and a second 256-colour
+  screen on the Pi's HDMI.
+
+  It does NOT yet drive a real PiStorm: the kernel's bus transport to the Macintosh
+  motherboard is the testbed's (a bridge over semihosting / a UART); the PiStorm GPIO
+  transport is the next piece of work (docs/08, "Next steps", item 2). On real hardware
+  this build boots the Pi and waits for a motherboard that never answers. The package is
+  here so that the SD card layout, the container and the Mac-side files are settled before
+  the hardware step, and so that 0.2 is a drop-in replacement of kernel8.img.
+
+WHAT IS ON THE CARD
+  kernel8.img            the kernel
+  config.txt             the Pi firmware's settings (HDMI mode for the second screen, UART)
+  cmdline.txt            the kernel's options (mac.ram=64 enable_cache; see below)
+  aurora68.declrom       the slot-9 declaration ROM: PiDisk, Ethernet, WiFi, input and
+                         video drivers for the Macintosh (loaded through the container)
+  aurora68-wifionly.declrom   the same with the WiFi as the only network card (MacTCP then
+                         takes the WiFi; see RELEASE-NOTES.md)
+  make-container.py      builds aurora68.cpio from your ROM, the declaration ROM and firmware
+  Mac/                   the Macintosh-side files (below)
+  RELEASE-NOTES.md, LICENSES/, SHA256SUMS
+
+SETTING UP THE SD CARD
+  1. Take a microSD card with a FAT32 first partition.
+  2. Copy the Raspberry Pi firmware onto it: bootcode.bin, start.elf, fixup.dat and
+     bcm2710-rpi-3-b.dtb (Pi 3 / Zero 2 W), or start4.elf, fixup4.dat and
+     bcm2711-rpi-4-b.dtb (Pi 4 / CM4), from https://github.com/raspberrypi/firmware/tree/master/boot
+  3. Copy everything from this zip onto the card's root.
+  4. Make the container (on your PC, Python 3 needed):
+        python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom aurora68.declrom
+     and copy aurora68.cpio to the card. The Macintosh IIci ROM (version 368CADFE, 512 KB)
+     is Apple's and is not included: dump it from a IIci or use an image you have the right
+     to. For WiFi and Bluetooth on a Pi 3B+/4/Zero 2 W add Broadcom's firmware files to the
+     command line: brcmfmac43455-sdio.bin, brcmfmac43455-sdio.txt, brcmfmac43455-sdio.clm_blob,
+     BCM4345C0.hcd (from the linux-firmware or Raspberry Pi OS packages).
+  5. The Macintosh side: put the files from Mac/ onto the Macintosh (below).
+
+cmdline.txt
+  mac.ram=MB            Macintosh memory (default: what the Pi can spare, up to 64)
+  enable_cache          Emu68's instruction cache; leave it on
+  wifi.ssid=NAME wifi.psk=PASSWORD wifi.country=GB   join a WiFi network at boot
+  wifi=off bt=off eth=off   leave a radio or the Ethernet off
+  net.oui=off           keep the Pi's own MAC addresses (default: Commodore's prefix, as Alice68)
+  One line, no comments, options separated by spaces.
+
+THE MACINTOSH SIDE (Mac/)
+  The drivers themselves live in the declaration ROM: the Slot Manager loads them at boot,
+  nothing has to be installed for the Pi disk, the Ethernet and WiFi cards, the keyboard
+  and mouse or the second screen. The files in Mac/ are extensions and programs:
+  Aurora68-Utilities.img    an HFS disk image with everything below on it (mount it with
+                            an emulator or write it to a floppy with Disk Copy 4.2 / 6)
+  PiDisk.bin     extension (System Folder on 6, Extensions on 7): mounts the Pi disk when
+                 the ROM's driver is not present (it is a no-op when it is)
+  PiMach.bin     extension: the Mac calls itself a Macintosh SE (Gestalt and SysEnvirons)
+  PiWiFi.bin     application: scan, join, disconnect, radio on/off
+  PiBlue.bin     application: Bluetooth state, scan, pair
+  PiStatus.bin   application: the Pi's status page (cores, temperature, JIT, network)
+  PiNet.bin      test: Ethernet ARP round trip through the .ENET driver
+  PiPing.bin     test: MacTCP ping (needs MacTCP 2.0.6, configured for the Pi's card)
+  PiScreens.bin  test: QuickDraw's screens (for setting up the second display)
+  PiColor.bin    test: colour on the second screen
+  All files are MacBinary (.bin): decode them on the Macintosh with StuffIt Expander,
+  BinHex 4.0 or MacBinary II+, or let a MacBinary-aware transfer program do it.
+  The second screen's configuration (Monitors' 'scrn' resource) is explained in the
+  release notes: System 7 needs it to activate a second screen at boot.
+
+MORE
+  https://github.com/farsonic/Aurora68 - the source, the documents (docs/), the build
+  guide (CLAUDE.md), and the testbed that produced the screenshots in docs/img.
