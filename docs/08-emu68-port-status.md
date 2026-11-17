@@ -648,6 +648,14 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    CTS/RTS on GPIO 30/31). With CTS flow control on and nothing driving CTS, the PL011 held the
    first HCI_Reset in its FIFO for ever. Flow control is now chosen by board type, and only
    GPIO 32/33 are switched to the UART where 30/31 are not wired.
+   Then an LE mouse (report ID 3 mouse plus keyboard reports, 297-byte Report Map, no boot
+   characteristics) paired with `bt.pair=1`, reconnected from its `bt.dev=` word, and delivered
+   its reports: the heartbeat counted 52 notifications and the Mac's input ring took 50 of them
+   (18 November, 08:28). The interim "no keyboard or mouse reports found" and "reports 0" were
+   a first connection before the Report Map handling settled and a mouse not yet moved; the
+   heartbeat's LE line (stage, characteristics, map head, ATT error, frames since up) is what
+   told them apart and stays. Still open: the pairing has to be copied from the screen into
+   cmdline.txt by hand until the kernel can write the card.
 
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
