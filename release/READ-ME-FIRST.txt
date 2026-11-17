@@ -1,92 +1,129 @@
-Aurora68 0.1 - PiStorm-SE: a Raspberry Pi in a Macintosh SE's 68000 socket
-===========================================================================
+Aurora68 0.3 - the first build for a Macintosh SE
+==================================================
 
-WHAT THIS RELEASE IS
-  The first packaged build of the kernel (kernel8.img), the Macintosh-side drivers and
-  programs, and the boot files for the SD card. Everything in it runs end to end in the
-  project's testbed (Emu68 under QEMU, the IIci motherboard under MAME): System 6 and
-  System 7.1 boot, the Pi disk mounts, Ethernet with MacTCP, the simulated WiFi, keyboard
-  and mouse through the Pi, About This Macintosh says Macintosh SE, and a second 256-colour
-  screen on the Pi's HDMI.
+What this is
+------------
+Aurora68 puts a Raspberry Pi in a Macintosh SE's 68000 socket on a classic PiStorm board and
+runs the Macintosh IIci ROM on it: a 68040 to the Mac, memory on the Pi, a second screen on
+the Pi's HDMI, disks on the Pi, WiFi, and the SE's own screen, keyboard, mouse, SCSI and
+floppy kept. 0.3 is the first build meant for the hardware: a classic PiStorm (the DIP-64
+board with the EPM240 CPLD, stock firmware) and a Raspberry Pi 3B, 3B+, 3A+ or Zero 2 W.
 
-  It does NOT yet drive a real PiStorm: the kernel's bus transport to the Macintosh
-  motherboard is the testbed's (a bridge over semihosting / a UART); the PiStorm GPIO
-  transport is the next piece of work (docs/08, "Next steps", item 2). On real hardware
-  this build boots the Pi and waits for a motherboard that never answers. The package is
-  here so that the SD card layout, the container and the Mac-side files are settled before
-  the hardware step, and so that 0.2 is a drop-in replacement of kernel8.img.
+What has been tested: everything below runs in the project's testbed, where MAME stands in for
+the SE's logic board and QEMU for the Pi (docs/08 item 28 on GitHub: System 7.1's Finder on the
+SE's own screen, booted from the SE's SCSI disk). What has NOT been tested: the Pi talking to
+a real CPLD and a real SE. This build is how that gets tested. Keep a serial cable on the Pi's
+GPIO 14/15 (115200 8N1): the kernel's log is the only window into the first boots.
 
-WHAT IS ON THE CARD
-  kernel8.img            the kernel
-  config.txt             the Pi firmware's settings (HDMI mode for the second screen, UART)
-  cmdline.txt            the kernel's options (enable_cache; add mac.ram= and the rest below as needed)
-  aurora68.declrom       the slot-9 declaration ROM: PiDisk, Ethernet, WiFi, input and
-                         video drivers for the Macintosh (loaded through the container)
-  aurora68-wifionly.declrom   the same with the WiFi as the only network card (MacTCP then
-                         takes the WiFi; see RELEASE-NOTES.md)
-  aurora68-WxH.declrom   the same for a second screen of that size (1024x768, 1280x1024,
-                         1920x1080 ...): use with mac.screen=WxH and the matching hdmi_mode
-  make-container.py      builds aurora68.cpio from your ROM, the declaration ROM and firmware
-  Mac/                   the Macintosh-side files (below)
-  RELEASE-NOTES.md, LICENSES/, SHA256SUMS
+What is in the zip
+------------------
+  kernel8.img            Aurora68 itself (the Emu68 fork, build variant psmac)
+  config.txt             the Pi firmware's settings: 64-bit kernel, the container, UART, HDMI
+  cmdline.txt            the kernel's options: enable_cache debug mac.board=se bt=off
+  aurora68-512x342.declrom   the slot-9 declaration ROM for the SE's screen size: PiDisk,
+                         Ethernet, WiFi, input and video drivers for the Macintosh
+  aurora68.declrom       the same for a 640 by 480 second screen (the IIci testbed); and
+  aurora68-WxH.declrom   one per larger HDMI screen size (not for the SE's screen yet)
+  aurora68-wifionly.declrom   the WiFi as the only network card (MacTCP then takes the WiFi)
+  make-container.py      builds aurora68.cpio from your ROM, the declaration ROM and firmware,
+  rompatch.py, patches/  and patches a stock IIci ROM on the way (new in 0.3; 0.1 and 0.2 did
+                         not, which left System 7.1 to an occasional zero divide at boot)
+  Mac/                   the Macintosh-side programs: PiMach, PiDisk (extensions), PiWiFi,
+                         PiBlue, PiStatus, PiNet, PiPing, PiScreens, PiColor (applications),
+                         as MacBinary files and on Aurora68-Utilities.img (an HFS disk image)
+  RELEASE-NOTES.md       what works, what does not
+  LICENSES/              MPL-2.0 (Emu68, Aurora68) and GPL-2.0 (the Alice68 modules)
 
-SETTING UP THE SD CARD
-  1. Take a microSD card with a FAT32 first partition.
-  2. Copy the Raspberry Pi firmware onto it: bootcode.bin, start.elf, fixup.dat and
-     bcm2710-rpi-3-b.dtb (Pi 3 / Zero 2 W), or start4.elf, fixup4.dat and
-     bcm2711-rpi-4-b.dtb (Pi 4 / CM4), from https://github.com/raspberrypi/firmware/tree/master/boot
-  3. Copy everything from this zip onto the card's root.
-  4. Make the container (on your PC, Python 3 needed):
-        python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom aurora68.declrom
-     and copy aurora68.cpio to the card. The Macintosh IIci ROM (version 368CADFE, 512 KB)
-     is Apple's and is not included: dump it from a IIci or use an image you have the right
-     to. For WiFi and Bluetooth on a Pi 3B+/3A+/4/Zero 2 W/CM4 add Broadcom's firmware files
-     (the versions Alice68 uses):
+Setting up the SD card (a Pi 3B in an SE)
+-----------------------------------------
+  1. Format a microSD card as one FAT32 partition (any size from 1 GB).
+  2. Put the Raspberry Pi firmware on it. From a terminal in the card's root folder:
+
+        curl -fL --remote-name-all \
+          https://raw.githubusercontent.com/raspberrypi/firmware/master/boot/bootcode.bin \
+          https://raw.githubusercontent.com/raspberrypi/firmware/master/boot/start.elf \
+          https://raw.githubusercontent.com/raspberrypi/firmware/master/boot/fixup.dat \
+          https://raw.githubusercontent.com/raspberrypi/firmware/master/boot/bcm2710-rpi-3-b.dtb \
+          https://raw.githubusercontent.com/raspberrypi/firmware/master/boot/bcm2710-rpi-3-b-plus.dtb \
+          https://raw.githubusercontent.com/raspberrypi/firmware/master/boot/bcm2710-rpi-zero-2-w.dtb
+        mkdir -p overlays
+        curl -fL -o overlays/disable-bt.dtbo \
+          https://raw.githubusercontent.com/raspberrypi/firmware/master/boot/overlays/disable-bt.dtbo
+
+     (On Windows, curl.exe; the backslashes continue one command.) The .dtb for your board
+     and the disable-bt overlay are needed: the kernel reads the device tree, and the overlay
+     puts the PL011 serial port, where the kernel logs, on the header's GPIO 14/15.
+  3. Copy everything from this zip to the card's root folder (the Mac folder can stay on your
+     PC; its files go to the Macintosh, not the Pi).
+  4. Get Broadcom's firmware for the Pi's WiFi (and Bluetooth, for later). In the same folder:
+
+     Pi 3B (BCM43438):
+        curl -fL --remote-name-all \
+          https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/brcm/brcmfmac43430-sdio.bin \
+          https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/brcm/brcmfmac43430-sdio.txt \
+          https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/brcm/brcmfmac43430-sdio.clm_blob \
+          https://raw.githubusercontent.com/RPi-Distro/bluez-firmware/master/broadcom/BCM43430A1.hcd
+
+     Pi 3B+, 3A+ (BCM43455):
         curl -fL --remote-name-all \
           https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/cypress/cyfmac43455-sdio-standard.bin \
           https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/cypress/cyfmac43455-sdio.clm_blob \
           https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/brcm/brcmfmac43455-sdio.txt \
           https://raw.githubusercontent.com/RPi-Distro/bluez-firmware/master/broadcom/BCM4345C0.hcd
-        python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom aurora68.declrom \
-          cyfmac43455-sdio-standard.bin brcmfmac43455-sdio.txt cyfmac43455-sdio.clm_blob BCM4345C0.hcd
 
-        Those are the files for a Pi 3B+, 3A+ or 4. A Pi 3B has the older BCM43438 chip and wants
-        brcmfmac43430-sdio.bin, brcmfmac43430-sdio.txt and brcmfmac43430-sdio.clm_blob (same
-        place, the brcm folder) and BCM43430A1.hcd from bluez-firmware; the kernel picks by chip.
-  5. The Macintosh side: put the files from Mac/ onto the Macintosh (below).
+     Pi Zero 2 W (BCM43436):
+        curl -fL --remote-name-all \
+          https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/brcm/brcmfmac43436-sdio.bin \
+          https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/brcm/brcmfmac43436-sdio.txt \
+          https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/brcm/brcmfmac43436-sdio.clm_blob \
+          https://raw.githubusercontent.com/RPi-Distro/bluez-firmware/master/broadcom/BCM43430B0.hcd
 
-cmdline.txt
-  mac.ram=MB            Macintosh memory (default: what the Pi can spare, up to 128)
-  mac.screen=WxH        the second screen's size, default 640x480; set hdmi_mode to match and
-                        use aurora68-WxH.declrom of the same size in the container
-  mac.vcswap=1          swap red and blue on the second screen if a board shows them swapped
-  enable_cache          Emu68's instruction cache; leave it on
-  wifi.ssid=NAME wifi.psk=PASSWORD wifi.country=GB   join a WiFi network at boot
-  wifi=off bt=off eth=off   leave a radio or the Ethernet off
-  net.oui=off           keep the Pi's own MAC addresses (default: Commodore's prefix, as Alice68)
-  One line, no comments, options separated by spaces.
+  5. Make the container, the one file the Pi firmware loads besides the kernel. Put your own
+     Macintosh IIci ROM image (version 368CADFE, 512 KB; Apple's ROM is not included) next to
+     make-container.py as MacIIci_368CADFE.rom and run (Python 3 needed), for a Pi 3B:
 
-THE MACINTOSH SIDE (Mac/)
-  The drivers themselves live in the declaration ROM: the Slot Manager loads them at boot,
-  nothing has to be installed for the Pi disk, the Ethernet and WiFi cards, the keyboard
-  and mouse or the second screen. The files in Mac/ are extensions and programs:
-  Aurora68-Utilities.img    an HFS disk image with everything below on it (mount it with
-                            an emulator or write it to a floppy with Disk Copy 4.2 / 6)
-  PiDisk.bin     extension (System Folder on 6, Extensions on 7): mounts the Pi disk when
-                 the ROM's driver is not present (it is a no-op when it is)
-  PiMach.bin     extension: the Mac calls itself a Macintosh SE (Gestalt and SysEnvirons)
-  PiWiFi.bin     application: scan, join, disconnect, radio on/off
-  PiBlue.bin     application: Bluetooth state, scan, pair
-  PiStatus.bin   application: the Pi's status page (cores, temperature, JIT, network)
-  PiNet.bin      test: Ethernet ARP round trip through the .ENET driver
-  PiPing.bin     test: MacTCP ping (needs MacTCP 2.0.6, configured for the Pi's card)
-  PiScreens.bin  test: QuickDraw's screens (for setting up the second display)
-  PiColor.bin    test: colour on the second screen
-  All files are MacBinary (.bin): decode them on the Macintosh with StuffIt Expander,
-  BinHex 4.0 or MacBinary II+, or let a MacBinary-aware transfer program do it.
-  The second screen's configuration (Monitors' 'scrn' resource) is explained in the
-  release notes: System 7 needs it to activate a second screen at boot.
+        python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom \
+          aurora68-512x342.declrom aurora68.declrom \
+          brcmfmac43430-sdio.bin brcmfmac43430-sdio.txt brcmfmac43430-sdio.clm_blob BCM43430A1.hcd
 
-MORE
-  https://github.com/farsonic/Aurora68 - the source, the documents (docs/), the build
-  guide (CLAUDE.md), and the testbed that produced the screenshots in docs/img.
+     (for a 3B+/3A+, the cyfmac43455 files instead). The stock ROM is patched on the way; the
+     output says so. Copy aurora68.cpio to the card. The two declaration ROMs: the kernel takes
+     the one whose name ends in the screen size in use, 512x342 on the SE board.
+  6. Check cmdline.txt: one line, "enable_cache debug mac.board=se bt=off". mac.board=se is what
+     tells the kernel it is in a Macintosh SE and not in the testbed's IIci. To join a WiFi
+     network at boot add wifi.ssid=NAME wifi.psk=PASSWORD wifi.country=XX (two letters).
+     Memory: the kernel gives the Macintosh what the Pi can spare, up to 128 MB; mac.ram=N
+     fixes it.
+  7. The PiStorm: the classic board, with the firmware it came with. Remove the SE's 68000 (or
+     use the socket if yours has one), seat the PiStorm with pin 1 where the 68000's pin 1 was
+     (the notch end), the Pi on it. A full-size Pi 3B overhangs the board; make sure nothing
+     under it touches the logic board.
+  8. HDMI to a monitor if you have one (it shows the same 512 by 342 picture as the SE's screen
+     in this build), the serial cable to GPIO 14 (TXD) and 15 (RXD), ground to 6. Power the SE.
+
+What to expect, and what the log says
+-------------------------------------
+On the serial line, within a second: Emu68's banner, then "[PSMAC] options: ... bridge=gpio
+(classic PiStorm)", "[PSMAC:GPIO] classic PiStorm protocol up ... RESET free", "[PSMAC:SE]
+board layer up". Then the ROM runs: "[PSMAC] heartbeat" lines every five seconds with the bus
+cycle counts. On the SE's screen: nothing for the first seconds (the memory test), the
+startup chime from the SE's speaker is NOT expected yet (the ASC the ROM plays through is a
+stand-in), then the grey desktop with the blinking disk if no startup disk is found, or the
+"Welcome to Macintosh" from your SCSI disk.
+
+If the log says "the CPLD did not finish a bus cycle ... is the Pi in a Macintosh?" the Pi is
+not talking to the CPLD: seating, orientation, or the board's firmware. If the SE's screen
+stays blank while the heartbeats show bus traffic, send the log: that is the SE's real timing
+meeting a translation that has only met MAME's. Every finding goes into docs/08 on GitHub.
+
+On the Macintosh
+----------------
+The drivers need no installation: they are in the declaration ROM. From Mac/, put PiMach and
+PiDisk in the System Folder (System 6) or in Extensions (System 7) if you want them, and the
+applications anywhere. Aurora68-Utilities.img is an HFS disk image with all of them.
+
+Versions
+--------
+Emu68 1.1 line (upstream commit 61a61f7) with the psmac variant; Alice68 modules of 16
+November 2026; MAME 0.264 for the testbed; QEMU 8.2.2. The source and the day-by-day account
+are at https://github.com/farsonic/Aurora68.

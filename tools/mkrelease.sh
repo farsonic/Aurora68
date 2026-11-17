@@ -36,6 +36,7 @@ humount
 echo "== boot files, notes, licences"
 cp release/config.txt release/cmdline.txt release/READ-ME-FIRST.txt "$OUT/"
 cp tools/mkcontainer.py "$OUT/make-container.py"
+cp tools/rompatch.py "$OUT/rompatch.py"; mkdir -p "$OUT/patches"; cp rom/patches/iici.json "$OUT/patches/"   # make-container.py patches a stock ROM with these
 cp RELEASE-NOTES.md "$OUT/"
 cp emu68/LICENSE "$OUT/LICENSES/Emu68-and-Aurora68-MPL-2.0.txt"
 cp emu68/src/alice/../../COPYING "$OUT/LICENSES/Alice68-modules-GPL-2.0.txt" 2>/dev/null || \

@@ -1,5 +1,38 @@
 # Aurora68 release notes
 
+## 0.3 — the first build for the hardware (17 November 2026, 05:30)
+
+For a classic PiStorm (EPM240, stock firmware) in a Macintosh SE's 68000 socket with a Pi 3B,
+3B+, 3A+ or Zero 2 W. **Untested on hardware**: this is the build that tests it. Everything in
+it ran in the testbed, where MAME's Macintosh SE stands in for the logic board.
+
+- **The classic PiStorm's GPIO protocol** as the transport (`mac.bridge=gpio`, the default
+  outside the testbed): the CPLD driven with Emu68's own bus-cycle sequences, every wait
+  bounded, so a Pi with no SE behind it still reaches its HDMI screen and its log.
+- **The Macintosh SE board layer** (`mac.board=se`, in the shipped `cmdline.txt`): the IIci ROM's
+  VIA, SCC, 5380 and IWM reached where the SE has them; the RBV, ASC and VDAC answered by the
+  kernel; the SE's screen fed from the Pi card's frame buffer. In the testbed it boots System
+  7.1 from the SE's SCSI disk to the Finder on the SE's own 512 by 342 screen, with PiDisk
+  mounted beside it (`docs/img/system71-finder-on-macse.png`).
+- **A Pi 3B's WiFi chip** (BCM43438) has its own path in the WiFi module now, next to the
+  3B+/3A+/4's BCM43455; the firmware files for each are in the read-me, with the download
+  commands.
+- **The container builder patches a stock IIci ROM** (0.1 and 0.2 packed it as given and left
+  System 7.1 to an occasional zero divide at boot). `rompatch.py` and `patches/iici.json` are in
+  the zip for it.
+- `config.txt` carries `dtoverlay=disable-bt` so the kernel's log is on the header's GPIO 14/15;
+  Bluetooth stays off in this build (`bt=off`).
+
+### Known limits of 0.3
+- Nothing has met a real CPLD or a real SE yet; the SE's timing may differ from MAME's.
+- On the SE board: keyboard and mouse through the SE's own ADB are wired but untried (the
+  testbed had no ADB input); the floppy (IWM) and sound are untried; the SE's speaker is silent
+  (the ASC is a stand-in). Keyboards and mice through the Pi's USB need a driver the Pi 3
+  does not have yet (DWC2).
+- The Pi's HDMI shows the same 512 by 342 picture as the SE's screen; two different screens
+  on that board come later.
+- Bluetooth and the serial log share the Pi 3's one PL011; the log won this build.
+
 ## 0.2 — colour, bigger screens, more memory (17 November 2026)
 
 Still a testbed build (see 0.1 below for what that means); the same SD card layout. What changed:

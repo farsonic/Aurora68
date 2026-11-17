@@ -18,18 +18,34 @@ the next piece of work, so on hardware this build boots the Pi and waits (see
 `RELEASE-NOTES.md`). The card layout is final, and 0.2 will be a drop-in `kernel8.img`.
 
 1. Take a microSD card with a **FAT32** first partition.
-2. Copy the **Raspberry Pi firmware** onto it from
-   [raspberrypi/firmware](https://github.com/raspberrypi/firmware/tree/master/boot):
-   `bootcode.bin`, `start.elf`, `fixup.dat`, `bcm2710-rpi-3-b.dtb` for a Pi 3 or Zero 2 W;
-   `start4.elf`, `fixup4.dat`, `bcm2711-rpi-4-b.dtb` for a Pi 4 or CM4.
-3. Unzip the release and copy **everything in it** onto the card's root: `kernel8.img`,
-   `config.txt`, `cmdline.txt`, `aurora68.declrom`, `make-container.py`, the `Mac` folder, the
-   notes and licences.
-4. Copy **your own** Macintosh IIci ROM (version 368CADFE, 512 KB) next to them and build the
-   container the kernel loads as `initramfs`:
+2. Copy the **Raspberry Pi firmware** onto it, from the card's root folder (the device tree
+   for your board and the `disable-bt` overlay are needed: the kernel reads the device tree, and
+   the overlay puts the serial port the kernel logs on at GPIO 14/15):
    ```bash
-   python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom aurora68.declrom
+   curl -fL --remote-name-all \
+     https://raw.githubusercontent.com/raspberrypi/firmware/master/boot/bootcode.bin \
+     https://raw.githubusercontent.com/raspberrypi/firmware/master/boot/start.elf \
+     https://raw.githubusercontent.com/raspberrypi/firmware/master/boot/fixup.dat \
+     https://raw.githubusercontent.com/raspberrypi/firmware/master/boot/bcm2710-rpi-3-b.dtb \
+     https://raw.githubusercontent.com/raspberrypi/firmware/master/boot/bcm2710-rpi-3-b-plus.dtb \
+     https://raw.githubusercontent.com/raspberrypi/firmware/master/boot/bcm2710-rpi-zero-2-w.dtb
+   mkdir -p overlays
+   curl -fL -o overlays/disable-bt.dtbo \
+     https://raw.githubusercontent.com/raspberrypi/firmware/master/boot/overlays/disable-bt.dtbo
    ```
+   (A Pi 4 or CM4 wants `start4.elf`, `fixup4.dat` and `bcm2711-rpi-4-b.dtb` instead; a Pi 4
+   does not fit a classic PiStorm.)
+3. Unzip the release and copy **everything in it** onto the card's root: `kernel8.img`,
+   `config.txt`, `cmdline.txt`, the declaration ROMs, `make-container.py` with `rompatch.py`
+   and `patches/`, the `Mac` folder, the notes and licences.
+4. Copy **your own** Macintosh IIci ROM (version 368CADFE, 512 KB) next to them and build the
+   container the kernel loads as `initramfs`. A stock ROM is patched on the way (the kernel's
+   timing calibration; `make-container.py` says so):
+   ```bash
+   python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom aurora68-512x342.declrom aurora68.declrom
+   ```
+   `aurora68-512x342.declrom` is the card's declaration ROM for the SE's screen; the kernel takes
+   the one whose name ends in the screen size in use, so both can travel.
    For WiFi and Bluetooth on a Pi with the Broadcom CYW43455 (Pi 3B+, 3A+, 4, Zero 2 W, CM4),
    fetch Broadcom's firmware (the same files and versions Alice68 uses: WiFi firmware
    7.45.241 from Raspberry Pi's `bullseye` branch, the Bluetooth patch from `bluez-firmware`)
@@ -40,7 +56,7 @@ the next piece of work, so on hardware this build boots the Pi and waits (see
      https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/cypress/cyfmac43455-sdio.clm_blob \
      https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/brcm/brcmfmac43455-sdio.txt \
      https://raw.githubusercontent.com/RPi-Distro/bluez-firmware/master/broadcom/BCM4345C0.hcd
-   python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom aurora68.declrom \
+   python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom aurora68-512x342.declrom aurora68.declrom \
      cyfmac43455-sdio-standard.bin brcmfmac43455-sdio.txt cyfmac43455-sdio.clm_blob BCM4345C0.hcd
    ```
    Those are the files for a Pi 3B+, 3A+ or 4 (BCM43455). A **Pi 3B** carries the older BCM43438
@@ -51,13 +67,16 @@ the next piece of work, so on hardware this build boots the Pi and waits (see
      https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/brcm/brcmfmac43430-sdio.txt \
      https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/brcm/brcmfmac43430-sdio.clm_blob \
      https://raw.githubusercontent.com/RPi-Distro/bluez-firmware/master/broadcom/BCM43430A1.hcd
-   python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom aurora68.declrom \
+   python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom aurora68-512x342.declrom aurora68.declrom \
      brcmfmac43430-sdio.bin brcmfmac43430-sdio.txt brcmfmac43430-sdio.clm_blob BCM43430A1.hcd
    ```
    (On Windows, `curl.exe` and the `curl` part as one line.) The kernel finds the files in the
    container by name (`cyfmac43455-sdio-standard` and `brcmfmac43455-sdio` are both accepted). Apple's ROM and Broadcom's firmware are not included in the release.
-5. Put the Pi in the PiStorm, the PiStorm in the SE's 68000 socket, HDMI to a monitor if you
-   want the second screen, and power on.
+5. `cmdline.txt` as shipped reads `enable_cache debug mac.board=se bt=off`: `mac.board=se` is
+   what tells the kernel it sits in a Macintosh SE rather than the testbed's IIci.
+6. Put the Pi in the PiStorm, the PiStorm in the SE's 68000 socket (pin 1 at the notch end), a
+   serial cable on GPIO 14/15 for the kernel's log, HDMI to a monitor if you have one, and
+   power on. `READ-ME-FIRST.txt` in the zip says what the first boot should look like.
 
 The Macintosh side needs no installation: the Slot Manager loads the Pi's drivers from the
 declaration ROM. The `Mac` folder holds the extensions and programs (PiMach, PiDisk, PiWiFi,
@@ -95,6 +114,7 @@ One line, options separated by spaces, no comments:
 | `wifi=off`, `bt=off`, `eth=off` | leave a radio or the Ethernet off |
 | `net.oui=off` | keep the Pi's own MAC addresses (default: Commodore's prefix, as Alice68) |
 | `mac.screen=1024x768` | the second screen's size in pixels (default 640x480; 512 to 1920 by 342 to 1200). Set `hdmi_mode` to match and use the declaration ROM of that size |
+| `mac.board=se` | the logic board the Pi sits in: `se` (the Macintosh SE: its chips behind the IIci ROM's addresses, docs/12) or the default, the testbed's IIci |
 | `mac.bridge=gpio` | how the motherboard is reached: `gpio` (the classic PiStorm's CPLD, the default on hardware), `semihost` or `uart` (the testbed's bridge to MAME) |
 | `mac.vcswap=1` | swap red and blue on the second screen, should a board's firmware disagree with the kernel about the pixel byte order (the firmware is asked; this overrides its answer) |
 

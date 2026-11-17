@@ -1,1 +1,1 @@
-enable_cache
+enable_cache debug mac.board=se bt=off
