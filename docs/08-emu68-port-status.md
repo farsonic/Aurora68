@@ -642,6 +642,12 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    connected, prints the passkey for a keyboard, and prints every paired device as the `bt.dev=`
    word for cmdline.txt. Built and smoke-tested under QEMU (no chip there: the module fails
    cleanly and the Mac still boots); the first real test waits for the Pi on the desk.
+   First real test on the 3B: "the chip does not answer (command 0c03)". The 3B's Bluetooth UART
+   has TX and RX only: its device tree's uart0_pins is GPIO 32/33, and Raspberry Pi OS's btuart
+   runs it "noflow" at 921600 (the 3B+ and 3A+ are the same; the Pi 4 and the two Zeros wire
+   CTS/RTS on GPIO 30/31). With CTS flow control on and nothing driving CTS, the PL011 held the
+   first HCI_Reset in its FIFO for ever. Flow control is now chosen by board type, and only
+   GPIO 32/33 are switched to the UART where 30/31 are not wired.
 
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)

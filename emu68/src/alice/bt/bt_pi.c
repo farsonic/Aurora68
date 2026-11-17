@@ -55,7 +55,13 @@ extern void psmac_console_miniuart(void) __attribute__((weak));   /* psmac_bus.c
 #define FR_BUSY   (1u << 3)
 #define FR_CTS    (1u << 0)                   /* the chip lets us send */
 #define FR_TXFE   (1u << 7)
-#define CR_ON     (1u | (1u << 8) | (1u << 9) | (1u << 14) | (1u << 15))   /* on, TX, RX, RTS and CTS flow control */
+#define CR_FLOW   (1u | (1u << 8) | (1u << 9) | (1u << 14) | (1u << 15))   /* on, TX, RX, RTS and CTS flow control */
+#define CR_NOFLOW (1u | (1u << 8) | (1u << 9))                             /* on, TX, RX */
+/* Which boards wire the chip's CTS/RTS to GPIO 30/31: the Pi 4 family and the Zero W / Zero 2 W.
+   The 3B, 3B+ and 3A+ have TX and RX only (their device trees: uart0_pins <32 33>, and Raspberry Pi
+   OS's btuart runs them "noflow" at 921600). With CTS flow control on and nothing driving CTS, the
+   PL011 never sends: the first 3B try failed with "the chip does not answer (command 0c03)". */
+static uint32_t CR_ON = CR_FLOW;
 #define CR_CTSEN  (1u << 15)
 
 static inline uint32_t rd(uintptr_t a) { return __builtin_bswap32(*(volatile uint32_t *)(uintptr_t)a); }
@@ -121,8 +127,13 @@ static int bt_on(int on)
 static void uart_init(void)
 {
     if (psmac_console_miniuart) psmac_console_miniuart();    /* one PL011 on a Pi 3: the log leaves it first */
-    uint32_t f = rd(GPIO + 0x0c);                       /* GPFSEL3: GPIO 30-33 to ALT3 (UART0 CTS RTS TXD RXD) */
-    f = (f & ~0xfffu) | 07777u;
+    int t = alice_pi_board_type();
+    int flow = alice_pi_is_2711() || t == 0x0c || t == 0x12;
+    CR_ON = flow ? CR_FLOW : CR_NOFLOW;
+    blog(flow ? "[BT] UART: TX, RX, CTS and RTS (GPIO 30-33)" : "[BT] UART: TX and RX only (GPIO 32, 33): this board has no CTS/RTS to the chip");
+    uint32_t f = rd(GPIO + 0x0c);                       /* GPFSEL3: GPIO 30-33 (or 32-33) to ALT3 (UART0 CTS RTS TXD RXD) */
+    if (flow) f = (f & ~0xfffu) | 07777u;
+    else f = (f & ~(077u << 6)) | (077u << 6);
     wr(GPIO + 0x0c, f);
     uint32_t f1 = rd(GPIO + 0x04);                      /* GPIO 15 an input: UART0's RX comes from GPIO 33 only */
     wr(GPIO + 0x04, f1 & ~(7u << 15));
@@ -134,7 +145,7 @@ static void uart_init(void)
     } else {                                            /* BCM2835-37: GPPUD, then the pins clocked in */
         wr(GPIO + 0x94, 2u);
         for (volatile int i = 0; i < 300; i++) ;
-        wr(GPIO + 0x98, 1u << 30); wr(GPIO + 0x9c, 1u << 1);          /* GPIO 30 (CTS), GPIO 33 (RXD) */
+        wr(GPIO + 0x98, flow ? 1u << 30 : 0); wr(GPIO + 0x9c, 1u << 1);   /* GPIO 30 (CTS, when wired), GPIO 33 (RXD) */
         for (volatile int i = 0; i < 300; i++) ;
         wr(GPIO + 0x94, 0); wr(GPIO + 0x98, 0); wr(GPIO + 0x9c, 0);
     }
@@ -410,6 +421,7 @@ static int cts_last = -1, cts_changes;
 static uint32_t t_init;
 static void cts_note(const char *what)
 {
+    if (!(CR_ON & CR_CTSEN)) return;
     char t[48]; unsigned k = put_str(t, 0, what);
     k = put_str(t, k, (rd(UART0 + U_FR) & FR_CTS) ? "on" : "OFF"); t[k] = 0; blog(t);
 }
@@ -419,7 +431,8 @@ static void fr_log(const char *what)
     char t[96]; unsigned k = 0;
     uint32_t fr = rd(UART0 + U_FR), cr = rd(UART0 + U_CR);
     k = put_str(t, k, what);
-    k = put_str(t, k, " CTS "); k = put_str(t, k, fr & FR_CTS ? "on" : "OFF (chip not taking data)");
+    if (CR_ON & CR_CTSEN) { k = put_str(t, k, " CTS "); k = put_str(t, k, fr & FR_CTS ? "on" : "OFF (chip not taking data)"); }
+    else k = put_str(t, k, " no flow control");
     k = put_str(t, k, ", FIFO "); k = put_str(t, k, fr & FR_TXFE ? "empty" : "NOT EMPTY");
     k = put_str(t, k, fr & FR_BUSY ? ", busy" : "");
     t[k] = 0; blog(t);
@@ -507,7 +520,7 @@ void bt_pi_poll(void)
     case 4: {
         tx_drain();
         {
-            int c = (rd(UART0 + U_FR) & FR_CTS) ? 1 : 0;
+            int c = (CR_ON & CR_CTSEN) ? ((rd(UART0 + U_FR) & FR_CTS) ? 1 : 0) : 1;
             if (c != cts_last && cts_changes < 24) {        /* when the chip lets us send and when not: the firmware's launch shows here */
                 char t[64]; unsigned k = put_str(t, 0, "[BT] CTS ");
                 k = put_str(t, k, c ? "on" : "OFF"); k = put_str(t, k, " at +"); k = put_num(t, k, now - t_init, 0);
