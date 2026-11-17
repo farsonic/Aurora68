@@ -614,6 +614,23 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    QEMU, with PiDisk, PiMach and the PiPing startup item running (`docs/img/solo-finder.png`).
    No keyboard or mouse yet: the ADB bus is empty until the Pi has input devices to put on it.
 
+36. **System 7 on the Pi 3B alone, pinging the router over the WiFi (17 November, 21:00 local).**
+   The first hardware boot of the solo board ended in the blinking question mark: the Pi firmware
+   puts a `followkernel` initramfs right behind the kernel, where a 1 MB container never reached
+   anything but a 101 MB one lay across the kernel's early tables, and the image came out
+   corrupted. `initramfs aurora68.cpio 0x10000000` in config.txt (now the release default) fixed
+   it, and the boot then matched the QEMU log command for command. Two more things for the
+   network: MacTCP's Ethernet link layer takes the first network card the Slot Manager lists, and
+   the standard declaration ROM lists the wired one first, which a Pi 3 does not have, so
+   `aurora68-wifi.declrom` (psmac_wifi_video: screen, PiDisk, input, WiFi, no wired card) is the
+   one for the bench; and PiPing's peer address is now a Makefile parameter (`make PEER=`),
+   with `tools/mac/mactcpcfg.py` setting the image's MacTCP to the user's subnet. Result: the
+   Finder on the HDMI monitor, PiPing with "My address: 192.168.0.77" and three replies from the
+   router in 16-32 ticks (`docs/img/solo-pi3b-piping.webp`, the user's photo). A Macintosh IIci
+   ROM, System 7.1 and MacTCP running on a Raspberry Pi 3B with no Macintosh in sight. Still
+   missing on the bench: a mouse and keyboard; the Mac-side input driver and the Pi's Bluetooth
+   HID path exist from the Pi 4 work, so the next step is Bluetooth on the Pi 3's PL011.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,
