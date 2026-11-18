@@ -319,8 +319,16 @@ if (${VARIANT} IN_LIST SUPPORTED_VARIANTS)
                     src/alice/wifi/fmac.c
                     src/alice/bt/bt_pi.c
                     src/alice/bt/bthost.c
+                    src/psmac/psmac_usb.c
+                    src/alice/usb/frf_dwc2.c
+                    src/alice/usb/frf_dwc2_pio.c
+                    src/alice/usb/frf_usb_native_hid.c
                 )
                 include_directories(src/alice)
+                # Alice68's FIFO transport, unchanged, under other names: psmac_usb.c's
+                # frf_dwc2_pio_* choose between it and the DMA transport (usb=pio)
+                set_source_files_properties(src/alice/usb/frf_dwc2_pio.c PROPERTIES COMPILE_DEFINITIONS
+                    "frf_dwc2_pio_packet=frf_dwc2_fifo_packet;frf_dwc2_pio_init=frf_dwc2_fifo_init;frf_dwc2_pio_get_descriptor=frf_dwc2_fifo_get_descriptor")
             elseif(${VARIANT} STREQUAL "pistorm")
                 add_compile_definitions(PISTORM)
                 list(APPEND BASE_FILES

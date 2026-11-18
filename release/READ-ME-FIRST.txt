@@ -159,6 +159,9 @@ the clock chip, the ADB transceiver (no keyboard or mouse yet), the SCC, the flo
      (mac.console=hdmi to see it): type it on the keyboard and press Return. Once paired, the
      kernel saves it in pairings.txt on the card and the device reconnects at every boot
      without pairing again. Classic Bluetooth and Bluetooth LE mice and keyboards both work.
+     Or over USB (new in 0.7): plug a USB keyboard and mouse into the Pi 3's USB ports, before
+     or after the boot. The Pi uses the first keyboard and the first mouse it finds. If they do
+     not work, add usb=pio to cmdline.txt and send the [USB] lines of the log.
 What the Mac writes to the image is written back into aurora68.cpio on the card a second or two
 after the Mac stops writing (new in 0.5), so the next boot starts where the last one ended. Keep a
 copy of aurora68.cpio somewhere else: a power cut in the middle of a write can damage the image,

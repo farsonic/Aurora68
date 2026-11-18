@@ -63,7 +63,7 @@ be. What differs from the Pi 4 the Alice68 modules were written for:
 | WiFi firmware files | `brcmfmac43430-sdio.bin`, `brcmfmac43430-sdio.txt` | `cyfmac43455-sdio-standard.bin` (or `brcmfmac43455-sdio.bin`), `brcmfmac43455-sdio.txt`, `.clm_blob` | from RPi-Distro/firmware-nonfree, as the README's curl lines |
 | Bluetooth | BCM43438 over UART, `BCM43430A1.hcd` | BCM4345C0 over UART, `BCM4345C0.hcd` | the module now looks for either file by name (`bt_pi.c`). The Pi 3 has one PL011; Bluetooth sits on it unless `dtoverlay=miniuart-bt`. The kernel's log and the Bluetooth module must agree on which UART is whose (open) |
 | Ethernet | LAN9514 over USB (100 Mbit) | LAN7515 over USB on the 3B+, none on the 3A+ | no GENET; the Alice68 GENET module does not apply. The WiFi is the network until a DWC2 USB stack exists |
-| USB host | DWC2 (OTG) | DWC2 | not the Pi 4's VL805 xHCI; keyboards and mice through the Pi need a DWC2 driver (later; the SE's own ADB keyboard and mouse work regardless) |
+| USB host | DWC2 (OTG) | DWC2 | not the Pi 4's VL805 xHCI. Keyboards and mice use Alice68's native DWC2 HID host (docs/08 item 40; tested in QEMU; split transactions behind the LAN9514 still to be tested on the board). The SE's own ADB keyboard and mouse work regardless |
 | Memory | 1 GB | 1 GB / 512 MB | the Macintosh gets its full 128 MB on all three |
 | Second screen | HDMI, VideoCore IV | same | as tested |
 
@@ -154,7 +154,8 @@ Then the order on the bench:
    host, the BCDC/firmware protocol, scanning, joining, the Mac-side driver) is chip-independent.
 5. **PiDisk on the SD card**: a driver for the Pi 3's SD card (the SDHOST controller, not the
    Arasan one the WiFi uses) so disk images live on the card.
-6. **Bluetooth**, then **USB input** (DWC2).
+6. **Bluetooth**, then **USB input** (DWC2; written and tested in QEMU, docs/08 item 40: on the
+   board, check `[USB] start rc=0: 1 keyboard, 1 mouse` with both plugged in, then `usb=pio`).
 
 ## The Pi alone: `mac.board=solo`
 

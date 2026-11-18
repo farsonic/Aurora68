@@ -1,5 +1,15 @@
 # Aurora68 release notes
 
+## 0.7 — USB keyboards and mice (18 November 2026)
+
+- **USB keyboards and mice on the Pi 3.** Plug a USB keyboard and mouse into the Pi's USB ports and
+  they work on the Mac, as Bluetooth ones do: the cursor, the buttons (right is Command-click,
+  middle Option-click), typing, Command-key shortcuts. The Pi takes the first keyboard and the
+  first mouse it finds and leaves every other USB device alone. Unplugging and plugging back in
+  works (within two seconds). The kernel log shows `[USB] start rc=0: 1 keyboard, 1 mouse`.
+  Tested in the emulator; on a real Pi 3, if the devices do not appear, try `usb=pio` in
+  cmdline.txt and send the `[USB]` lines from the log. `usb=off` turns USB off.
+
 ## 0.6 — PiLog, and the modifier keys (18 November 2026)
 
 - **PiLog**, the Pi's log on the Mac: a window that moves, resizes, zooms and scrolls, follows

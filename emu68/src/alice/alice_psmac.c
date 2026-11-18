@@ -346,6 +346,7 @@ void psmac_alice_input_drag(uint32_t seconds)  { intest_at = seconds; intest_kin
 void psmac_slot_irq_report(void)
 {
     { extern void psmac_display_report(void); psmac_display_report(); }
+    { extern void psmac_usb_report(void); psmac_usb_report(); }
     extern uint32_t psmac_slot_irq_state(void); extern volatile uint8_t *alice_net_board(void);
     volatile struct an_hdr *nh = (volatile struct an_hdr *)alice_net_board();
     uint32_t st = psmac_slot_irq_state();
@@ -583,11 +584,13 @@ int psmac_slot_line_now(void)
 void __attribute__((noreturn)) psmac_alice_core(void)
 {
     while (!__atomic_load_n(&alice_ready, __ATOMIC_ACQUIRE)) __asm__ volatile("yield");
-    kprintf("[PSMAC] core 3: Alice68 services (network board, Bluetooth, status) and the mailbox\n");
+    kprintf("[PSMAC] core 3: Alice68 services (network board, Bluetooth, USB input, status) and the mailbox\n");
+    { extern void psmac_usb_start(void); psmac_usb_start(); }
     for (;;) {
         psmac_mbox_poll();
         { extern void psmac_card_poll(void); psmac_card_poll(); }        /* the Pi's own SD card: pairings, the disk image's changes (psmac_card.c) */
         alice_net_poll();
+        { extern void psmac_usb_poll(void); psmac_usb_poll(); }          /* USB keyboard and mouse (psmac_usb.c) */
         in_repeat_poll();
         in_testbed_poll();
         { extern void psmac_display_poll(void); psmac_display_poll(); }   /* the second display's tick and picture */

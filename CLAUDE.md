@@ -189,7 +189,9 @@ with the console lock held (docs/08 item 21 explains the one time that happened)
   the peripheral base (`ALICE_PERI`, now the kernel-space mapping). To take a newer Alice68,
   diff its `src/alice/` against this tree's and re-apply the hooks; the board protocol headers
   (`alice_net.h`, `alice_status.h`) are shared with the Macintosh drivers, and `make -C mac
-  check` tells you if an offset moved.
+  check` tells you if an offset moved. `src/alice/usb/` is Alice68's
+  `third_party/Emu68/src/frf_usb/native/` (frf_dwc2*, frf_usb_native_hid*), also verbatim: the Pi 3's
+  USB keyboard and mouse, with `src/psmac/psmac_usb.c` as its glue (docs/08 item 40).
 - **Toolchains.** A newer aarch64 GCC needs a matching `emu68/toolchains/*.cmake` (copy the
   13 one and change the version). Nothing else is version-sensitive.
 

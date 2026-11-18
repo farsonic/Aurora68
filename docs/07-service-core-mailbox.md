@@ -62,7 +62,7 @@ translates them page by page with the MMU shim, which also makes the flag bits i
 | network board | Alice68's `alice_net.c`: unit 0 WiFi (SDIO, firmware preloaded by the kernel), unit 1 Ethernet (GENET on a Pi 4; in the testbed a bridge to host frame files and `tools/pinet.py`) | `.Network_EtherNet_PiStorm` DRVR on the `.ENET` interface, found by MacTCP/EtherTalk/Open Transport through the Slot Manager; `PiWiFi` scans and joins networks through unit 0's command box |
 | Bluetooth | Alice68's `bt/`: HCI over the PL011 UART, HID keyboards and mice, LE | keyboard and mouse reports go to the input ring and `.PiInput` turns them into events; `PiBlue` scans, pairs, connects and forgets devices through the `an_bt` command box |
 | status page | Alice68's `alice_status.c`: seq odd while writing | `PiStatus`, a monitor application |
-| USB | Alice68's xHCI driver (Pi 4 only): compiled but not started; needs the DMA pool below 1 GiB | keyboards and mice through the input ring; no Mac USB stack exists |
+| USB | Pi 3: Alice68's native DWC2 HID host (`src/alice/usb`, glue `psmac_usb.c`; docs/08 item 40): the first boot keyboard and boot mouse, behind the LAN9514 hub. Pi 4: Alice68's xHCI driver, compiled but not started | keyboards and mice through the input ring; no Mac USB stack exists |
 
 ## Interrupts: the virtual slot-9 line
 The first version had none: the service core set a board's `irq` flag and the Mac drivers polled

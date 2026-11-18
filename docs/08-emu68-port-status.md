@@ -697,6 +697,48 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    Option and Control from a USB or Bluetooth keyboard never reached an event, and GetKeys saw
    every key in the wrong place. Fixed in both places, and the Option-click then worked.
 
+40. **USB keyboards and mice on the Pi 3 (18 November).** The Pi 3's USB is a Synopsys DWC2
+   controller (0x3F980000) with the LAN9514 hub behind its one port, not the Pi 4's xHCI, so
+   Alice68's USB board did not apply. Alice68 has a second, smaller USB host for exactly this:
+   `frf_usb/native`. It brings the DWC2 up as a host, resets the root port, enumerates the root
+   device and follows a hub port by port. A full- or low-speed device behind a high-speed hub
+   gets split transactions. The host takes the first HID boot keyboard and the first boot mouse
+   and polls their interrupt endpoints. Nothing else on the bus is touched, so keyboard and mouse
+   stay apart from any later USB stack, as in Alice68. Its three files are copied verbatim into
+   `src/alice/usb/`. `src/psmac/psmac_usb.c` is the Pi 3 glue:
+   - the controller's power (the firmware's SET_POWER_STATE, device 3, retried while the WiFi
+     holds the mailbox);
+   - its registers, byte-swapped for the big-endian kernel;
+   - a transport;
+   - a place in core 3's loop: enumeration at start, one poll a millisecond, and a look at the
+     hub's ports every two seconds. A plugged or unplugged device starts a fresh enumeration,
+     with every key released first.
+
+   Reports go where the Bluetooth host's go: `frf_native_usb_keyboard_boot_report` and
+   `aga_virtual_mouse_update`, into the input ring `.PiInput` reads.
+
+   Alice68's transport moves data through the channel FIFOs. QEMU's DWC2 model has no FIFO mode
+   (it is DMA only), so the glue adds a DMA transport behind the same one-packet interface:
+   - the bounce buffer goes through the VideoCore's 0xC0000000 alias, with the cache cleaned and
+     invalidated around it;
+   - the same start-split, complete-split and NYET steps;
+   - the same return codes.
+
+   It is the default. `usb=pio` selects Alice68's own transport, compiled unchanged under other
+   names (CMakeLists.txt renames its three functions); `usb=off` leaves the controller alone.
+
+   Two testbed findings:
+   - QEMU's model reports no high-speed PHY in GHWCFG2 (the BCM2837 reports UTMI+), which Alice68's
+     init refuses. The glue reads the field as the chip's value.
+   - QEMU's usb-hub is full speed, so no translator is behind it. The glue sends split
+     transactions only when the root port runs at high speed, as the Pi's LAN9514 does.
+
+   With `-device usb-kbd -device usb-mouse` (QEMU_EXTRA in `tools/run-solo.sh`), the log says
+   `[USB] start rc=0: 1 keyboard, 1 mouse (hub ports 8 ...)`. The monitor's `mouse_move 20 12`,
+   sent eight times, moved the Mac's cursor by exactly (160, 96), and the monitor's keys quit
+   PiPing, made a new folder (Command-N) and typed its name. Not yet tested on hardware: the
+   split path behind the real LAN9514, and the FIFO transport.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,
