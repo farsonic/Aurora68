@@ -267,10 +267,18 @@ static void psmac_read_options(void)
         peek_addr = a; peek_len = n > 512 ? 512 : (n ? n : 64);
     }
     if ((tok = find_token(args, "mac.inputclick="))) {
-        tok += 15; uint32_t v[3] = { 0, 0, 0 }; int k = 0, opt = 0;
-        while (k < 3) { while (*tok >= '0' && *tok <= '9') v[k] = v[k] * 10 + (uint32_t)(*tok++ - '0'); k++; if (*tok != ',') break; tok++; }
-        if (*tok == 'o') opt = 1;
-        extern void psmac_alice_input_click(uint32_t, int, int, int); psmac_alice_input_click(v[0], (int)v[1], (int)v[2], opt);
+        /* SECONDS,X,Y[,o],X,Y[,o]...: the points, each with an Option flag */
+        int pts[24], n = 0; uint32_t secs = 0;
+        tok += 15;
+        while (*tok >= '0' && *tok <= '9') secs = secs * 10 + (uint32_t)(*tok++ - '0');
+        while (*tok == ',' && n < 8) {
+            int xy[2] = { 0, 0 };
+            for (int k = 0; k < 2 && *tok == ','; k++) { tok++; while (*tok >= '0' && *tok <= '9') xy[k] = xy[k] * 10 + (*tok++ - '0'); }
+            pts[3 * n] = xy[0]; pts[3 * n + 1] = xy[1]; pts[3 * n + 2] = 0;
+            if (tok[0] == ',' && tok[1] == 'o') { pts[3 * n + 2] = 1; tok += 2; }
+            n++;
+        }
+        extern void psmac_alice_input_click(uint32_t, const int *, int); psmac_alice_input_click(secs, pts, n);
     }
     if ((tok = find_token(args, "mac.inputdrag="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_drag(uint32_t); psmac_alice_input_drag(n); }
     if ((tok = find_token(args, "mac.inputright="))) { tok += 15; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_right(uint32_t); psmac_alice_input_right(n); }

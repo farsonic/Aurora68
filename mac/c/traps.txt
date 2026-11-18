@@ -7,6 +7,9 @@
 # Pascal calling convention: room for the result, the arguments pushed left to right, the trap;
 # the trap pops the arguments and leaves the result on the stack.
 #
+# Trap words checked against Inside Macintosh (Traps.a); an earlier list had LineTo as A894, which
+# is Move (relative), so PiLog's separator line never drew.
+#
 # QuickDraw
 A86E - InitGraf(void *globalPtr:l)
 A873 - SetPort(void *port:l)
@@ -29,10 +32,11 @@ A8AD w PtInRect(long pt:l, const Rect *r:l)
 A8FE - InitFonts()
 A900 - GetFNum(const unsigned char *name:l, short *num:l)
 A88B - GetFontInfo(void *info:l)
-A86A - BackColor(long color:l)
-A862 - PenNormal()
-A894 - LineTo(int h:w, int v:w)
-A898 - PenPat(const void *pat:l)
+A863 - BackColor(long color:l)
+A862 - ForeColor(long color:l)
+A89E - PenNormal()
+A891 - LineTo(int h:w, int v:w)
+A89D - PenPat(const void *pat:l)
 # the Window Manager
 A912 - InitWindows()
 A913 l NewWindow(void *storage:l, const Rect *bounds:l, const unsigned char *title:l, int visible:b, int procID:w, void *behind:l, int goAway:b, long refCon:l)
@@ -87,7 +91,7 @@ A958 - HideControl(void *ctl:l)
 A957 - ShowControl(void *ctl:l)
 A969 - DrawControls(void *win:l)
 A95D - HiliteControl(void *ctl:l, int state:w)
-A95B - SetCTitle(void *ctl:l, const unsigned char *title:l)
+A95F - SetCTitle(void *ctl:l, const unsigned char *title:l)
 A955 - DisposeControl(void *ctl:l)
 # TextEdit
 A9CC - TEInit()
@@ -110,7 +114,7 @@ A9D0 - TECalText(void *te:l)
 A9DA - TEIdle(void *te:l)
 # the Dialog Manager
 A97B - InitDialogs(void *resume:l)
-A986 w Alert(int id:w, void *filter:l)
+A985 w Alert(int id:w, void *filter:l)
 A98B - ParamText(const unsigned char *a:l, const unsigned char *b:l, const unsigned char *c:l, const unsigned char *d:l)
 # events, the Scrap and the rest
 A860 b WaitNextEvent(int mask:w, void *event:l, long sleep:l, void *rgn:l)
