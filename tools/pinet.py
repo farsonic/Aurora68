@@ -16,6 +16,15 @@ replies to .rx. Two modes:
                             PINET_MDNS=NAME: every ten seconds an mDNS query for NAME.local
                             (224.0.0.251:5353, from the Mac's own subnet so the responder does
                             not ignore it as off-link); answers are logged as "mDNS answer".
+                            PINET_FORWARD="445=127.0.0.1:4450,548=127.0.0.1:5480": TCP to those
+                            ports of the peer is relayed to the host addresses (the Mac's file
+                            clients, Lagoon, reach servers on the host: Samba, Netatalk), in
+                            order, within the Mac's receive window; the testbed loses nothing,
+                            so nothing is sent again.
+                            PINET_MDNS_RELAY=127.0.0.1:PORT: the Mac's mDNS queries (224.0.0.251:5353)
+                            go to that responder on the host (Lagoon's tests/servers/mdns/
+                            responder.py --addr 192.168.68.1) and its answers come back to the Mac
+                            from the peer, as a legacy unicast answer (RFC 6762 6.7).
   pinet.py <base> tap tapN  bridge frames to a Linux TAP device (needs CAP_NET_ADMIN)
 
 Usage in the testbed: tools/run-fullstack.sh 400 mac.net=/tmp/psmac-net   (and run this helper).
@@ -86,11 +95,35 @@ def mdns_due():
     send(bytes.fromhex('01005e0000fb') + PEER_MAC + b'\x08\x00' + bytes(ip) + udp)
     print(f"peer -> mDNS query {MDNS_NAME}.local from {'.'.join(map(str, src_ip))}", flush=True)
 
+MDNS_RELAY = None
+if os.environ.get('PINET_MDNS_RELAY'):
+    h, p_ = os.environ['PINET_MDNS_RELAY'].rsplit(':', 1)
+    MDNS_RELAY = (h, int(p_))
+def mdns_relay(src, sip, udp):
+    sport = struct.unpack('>H', udp[0:2])[0]
+    q = udp[8:]
+    if len(q) < 12 or q[2] & 0x80:
+        return None                                  # an answer, not a query
+    s_ = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s_.settimeout(0.5)
+    try:
+        s_.sendto(q, MDNS_RELAY)
+        ans, _ = s_.recvfrom(9000)
+    except OSError:
+        return 'mDNS query: no answer from the relay'
+    finally:
+        s_.close()
+    out = struct.pack('>HHHH', 5353, sport, 8 + len(ans), 0) + ans
+    send4(src, sip, 17, out)
+    return f'mDNS query relayed: {len(ans)}-byte answer to port {sport}'
+
 def peer(frame):
     global mac_ip4
     dst, src, etype = frame[0:6], frame[6:12], struct.unpack('>H', frame[12:14])[0]
     if etype == 0x0800 and len(frame) >= 42 and frame[23] == 17 and frame[14 + (frame[14] & 15) * 4 + 2:14 + (frame[14] & 15) * 4 + 4] == b'\x14\xe9':
         if frame[26:30] != bytes(4): mac_ip4 = frame[26:30]
+        if MDNS_RELAY:
+            r = mdns_relay(src, frame[26:30], frame[14 + (frame[14] & 15) * 4:])
+            if r: return r
         return mdns_answer(src, frame[26:30], frame[14 + (frame[14] & 15) * 4:])
     if etype == 0x0800 and len(frame) >= 34 and frame[26:30] != bytes(4): mac_ip4 = frame[26:30]
     if etype == 0x0806 and len(frame) >= 42:                 # ARP
@@ -168,10 +201,91 @@ def tcp_seg(dstmac, dip, sport, dport, seq, ack, flags, data=b''):
     c = csum(pseudo + hdr + data)
     send4(dstmac, dip, 6, hdr[:16] + struct.pack('>H', c) + hdr[18:] + data)
 
+# TCP relay (PINET_FORWARD): one host socket per connection from the Mac
+FORWARD = {}
+for item in filter(None, os.environ.get('PINET_FORWARD', '').split(',')):
+    port, dest = item.split('=')
+    h, hp = dest.rsplit(':', 1)
+    FORWARD[int(port)] = (h, int(hp))
+relays = {}
+def relay_seg(r, flags, data=b''):
+    tcp_seg(r['mac'], r['ip'], r['lport'], r['rport'], r['snd'], r['rcv'], flags, data)
+def relay_tcp(frame, src, sip, t, sport, dport, seq, ack, flags, data, win):
+    key = (sip, sport, dport)
+    if flags & 0x02:                                               # SYN: connect to the host
+        try:
+            hs = socket.create_connection(FORWARD[dport], timeout=3)
+        except OSError as e:
+            tcp_seg(src, sip, dport, sport, 0, seq + 1, 0x14)
+            return f'TCP relay {dport}: host refused ({e})'
+        hs.setblocking(False)
+        relays[key] = {'sock': hs, 'mac': src, 'ip': sip, 'lport': dport, 'rport': sport, 'snd': 0x68100001,
+                       'una': 0x68100001, 'rcv': seq + 1, 'win': win, 'out': b'', 'fin_out': False, 'fin_sent': False}
+        tcp_seg(src, sip, dport, sport, 0x68100000, seq + 1, 0x12)
+        return f'TCP relay {dport} -> {FORWARD[dport][0]}:{FORWARD[dport][1]}: SYN-ACK'
+    r = relays.get(key)
+    if not r:
+        if not flags & 0x04:
+            tcp_seg(src, sip, dport, sport, 0, seq + 1, 0x14)
+        return 'TCP relay (no connection)'
+    if flags & 0x04:
+        r['sock'].close(); relays.pop(key, None); return 'TCP relay RST'
+    if flags & 0x10 and (ack - r['una']) & 0x80000000 == 0:
+        r['una'] = ack
+    r['win'] = win
+    what = 'TCP relay ack'
+    if data:
+        if seq == r['rcv']:
+            r['rcv'] += len(data)
+            try:
+                r['sock'].sendall(data)
+            except OSError:
+                pass
+            relay_seg(r, 0x10)
+            what = f'TCP relay {len(data)} bytes to the host'
+        else:
+            relay_seg(r, 0x10)                                     # out of order: ack what we have
+    if flags & 0x01 and seq + len(data) == r['rcv']:
+        r['rcv'] += 1
+        try:
+            r['sock'].shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+        relay_seg(r, 0x10)
+        what += ', FIN'
+    return what
+def relay_due():
+    for key, r in list(relays.items()):
+        if not r['fin_out']:
+            try:
+                d = r['sock'].recv(65536)
+                if d:
+                    r['out'] += d
+                else:
+                    r['fin_out'] = True
+            except BlockingIOError:
+                pass
+            except OSError:
+                r['fin_out'] = True
+        inflight = (r['snd'] - r['una']) & 0xffffffff
+        room = max(0, r['win'] - inflight)
+        while r['out'] and room > 0:
+            n = min(1400, room, len(r['out']))
+            relay_seg(r, 0x18, r['out'][:n])
+            r['snd'] += n; r['out'] = r['out'][n:]; room -= n
+        if r['fin_out'] and not r['out'] and not r['fin_sent']:
+            relay_seg(r, 0x11)
+            r['snd'] += 1; r['fin_sent'] = True
+        if r['fin_sent'] and r['una'] == r['snd'] and r['rcv'] and key in relays and r.get('closed_in'):
+            r['sock'].close(); relays.pop(key, None)
+
 def tcp_echo(frame, src, sip, t):
     sport, dport, seq, ack, off, flags = struct.unpack('>HHIIBB', t[:14])
     ip_total = struct.unpack('>H', frame[16:18])[0]
     data = t[(off >> 4) * 4:ip_total - 20]
+    if dport in FORWARD:
+        win = struct.unpack('>H', t[14:16])[0]
+        return relay_tcp(frame, src, sip, t, sport, dport, seq, ack, flags, data, win)
     if dport != 7:
         if not flags & 0x04:
             tcp_seg(src, sip, dport, sport, 0, seq + 1, 0x14)      # RST|ACK
@@ -311,6 +425,7 @@ while True:
     if tap is None:
         ping6_due()
         mdns_due()
+        relay_due()
     if tap is not None:
         try:
             while True:

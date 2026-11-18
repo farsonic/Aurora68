@@ -845,8 +845,16 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    Tested in QEMU with `mac.wifisim=` and an SD card image (`CARD=`): the scan list, the password
    dialog, the join, a solid icon once connected, and cmdline.txt on the card, one line, the old
    options kept and `wifi.ssid="Aurora68" wifi.psk="pistorm68"` added
-   (`docs/img/wifi-menu.png`, `docs/img/wifi-menu-password.png`). The password field shows what
-   is typed, and Join is not drawn as the default button (Return still joins).
+   (`docs/img/wifi-menu.png`, `docs/img/wifi-menu-password.png`).
+
+   Two corrections, as the user asked that Mac programs follow the Human Interface Guidelines
+   (1992):
+   - The menu stood a full item below the menu bar. PopUpMenuSelect's MDEF found the frame of a
+     menu whose first item was at MBarHeight + 1 touching the bar, and moved it down by an item.
+     At MBarHeight + 2 it hangs from the bar.
+   - The password dialog now has the default button's heavy rounded outline (a user item). A
+     ModalDialog filter makes Return and Enter Join, Escape and Command-period Cancel, with the
+     button flashing. The filter shows a bullet for each key typed and keeps the password itself.
 
 45. **mDNS on the Mac, and PC keyboards (18 November).** The user's `ping macse.local` got no
    answer. Riptide's mDNS responder starts off, and the Amiga glue turns it on, but the Mac

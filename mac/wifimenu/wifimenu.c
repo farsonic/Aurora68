@@ -231,6 +231,64 @@ static void put_item(unsigned char **p, short t, short l, short b, short r, unsi
 	if (n & 1) *q++ = 0;
 	*p = q;
 }
+/* The 1992 Human Interface Guidelines: the default button (Join) has the heavy rounded outline and
+   answers Return and Enter, Cancel answers Escape and Command-period, both buttons flash when
+   their key is used, and a password is shown as bullets (the field gets a bullet for each key;
+   the password itself is kept here). Clicks inside the field are ignored so typing always goes
+   to its end, and Command keys are not passed on (no pasting of text the bullets would hide). */
+void pas_useritem(void), pas_dlgfilter(void);
+static char hidden[64];
+static int hidden_n;
+void c_useritem(void *dlg, int item)
+{
+	short kind;
+	void *h;
+	Rect box;
+	GetDItem(dlg, item, &kind, &h, &box);
+	PenSize(3, 3);
+	FrameRoundRect(&box, 16, 16);
+	PenNormal();
+}
+static void flash(void *dlg, int item)
+{
+	short kind;
+	void *h;
+	Rect box;
+	GetDItem(dlg, item, &kind, &h, &box);
+	HiliteControl(h, 1);
+	unsigned long t = LM_TICKS + 8;
+	while (LM_TICKS < t) ;
+	HiliteControl(h, 0);
+}
+int c_dlgfilter(void *dlg, EventRecord *ev, short *item)
+{
+	if (ev->what == mouseDown) {
+		short kind;
+		void *h;
+		Rect box;
+		Point pt = ev->where;
+		void *save;
+		GetPort(&save);
+		SetPort(dlg);
+		GlobalToLocal(&pt);
+		SetPort(save);
+		GetDItem(dlg, 4, &kind, &h, &box);
+		if (pt.v >= box.top && pt.v < box.bottom && pt.h >= box.left && pt.h < box.right) ev->what = nullEvent;
+		return 0;
+	}
+	if (ev->what != keyDown && ev->what != autoKey) return 0;
+	unsigned char c = (unsigned char)(ev->message & 0xFF);
+	if (c == 0x0D || c == 0x03) { flash(dlg, 1); *item = 1; return 1; }
+	if (c == 0x1B || ((ev->modifiers & cmdKey) && c == '.')) { flash(dlg, 2); *item = 2; return 1; }
+	if (ev->modifiers & cmdKey) { ev->what = nullEvent; return 0; }
+	if (c == 0x08) { if (hidden_n) hidden_n--; return 0; }
+	if (c < 0x20 || c == 0x7F) { ev->what = nullEvent; return 0; }       /* tab, arrows: nothing */
+	if (hidden_n >= 63) { ev->what = nullEvent; return 0; }
+	hidden[hidden_n++] = (char)c;
+	ev->message = (ev->message & ~0xFFL) | 0xA5;                         /* a bullet in the field */
+	return 0;
+}
+
 static int ask_password(const char *ssid, char *pass, int *remember)
 {
 	char prompt[96];
@@ -239,46 +297,47 @@ static int ask_password(const char *ssid, char *pass, int *remember)
 	add(&p, ssid);
 	add(&p, "\xD3 needs a password.");
 	*p = 0;
-	void **items = mac_newhandle(400);
+	void **items = mac_newhandle(420);
 	if (!items) return 0;
 	unsigned char *q = (unsigned char *)*items;
-	*q++ = 0; *q++ = 5;                            /* six items */
+	*q++ = 0; *q++ = 6;                            /* seven items */
 	put_item(&q, 100, 290, 120, 360, 4, "Join");
 	put_item(&q, 100, 210, 120, 280, 4, "Cancel");
 	put_item(&q, 10, 60, 42, 360, 8 | 0x80, prompt);
 	put_item(&q, 48, 140, 64, 356, 16, "");
 	put_item(&q, 72, 60, 90, 360, 5, "Remember on this Pi (cmdline.txt)");
 	put_item(&q, 48, 60, 64, 136, 8 | 0x80, "Password:");
+	put_item(&q, 96, 286, 124, 364, 0 | 0x80, "");   /* the default button's outline */
 	void *wm;
 	GetWMgrPort(&wm);
 	Rect *pr = PORT_RECT(wm);
 	Rect r;
 	r.left = (short)((pr->right - 372) / 2); r.right = r.left + 372;
-	r.top = 60; r.bottom = r.top + 130;
+	r.top = (short)((pr->bottom - 130) / 3); r.bottom = r.top + 130;   /* the guidelines' alert position */
 	unsigned char title[2] = { 0, 0 };
 	void *dlg = (void *)NewDialog(0, &r, title, 1, 1, (void *)-1L, 0, 0, items);
 	if (!dlg) return 0;
 	short kind, hit = 0;
 	void *h;
 	Rect box;
+	GetDItem(dlg, 7, &kind, &h, &box);
+	SetDItem(dlg, 7, kind, (void *)pas_useritem, &box);
 	GetDItem(dlg, 5, &kind, &h, &box);
 	SetCtlValue(h, 1);
 	SelIText(dlg, 4, 0, 32767);
+	hidden_n = 0;
 	for (;;) {
-		ModalDialog(0, &hit);
+		ModalDialog((void *)pas_dlgfilter, &hit);
 		if (hit == 1 || hit == 2) break;
 		if (hit == 5) { GetDItem(dlg, 5, &kind, &h, &box); SetCtlValue(h, !GetCtlValue(h)); }
 	}
-	unsigned char s[256];
-	GetDItem(dlg, 4, &kind, &h, &box);
-	GetIText(h, s);
 	GetDItem(dlg, 5, &kind, &h, &box);
 	*remember = GetCtlValue(h);
 	DisposDialog(dlg);
-	if (hit != 1) return 0;
-	int n = s[0] > 63 ? 63 : s[0];
-	for (int i = 0; i < n; i++) pass[i] = (char)s[i + 1];
-	pass[n] = 0;
+	if (hit != 1) { for (int i = 0; i < 64; i++) hidden[i] = 0; return 0; }
+	for (int i = 0; i < hidden_n; i++) pass[i] = hidden[i];
+	pass[hidden_n] = 0;
+	for (int i = 0; i < 64; i++) hidden[i] = 0;
 	return 1;
 }
 
@@ -401,7 +460,10 @@ static int c_menuselect(long pt)
 	InsertMenu(m, -1);
 	PROBE("wm: after InsertMenu");
 	InvertRect(&icon_r);
-	long r = PopUpMenuSelect(m, LM_MBARHEIGHT + 1, icon_r.left - 4, 1);
+	/* item 1's top two rows below the bar: the frame then starts on the row under the bar's line.
+	   With one row (MBarHeight + 1) the MDEF found the frame touching the menu bar and moved the
+	   whole menu down by an item, leaving a gap of the desktop between bar and menu. */
+	long r = PopUpMenuSelect(m, LM_MBARHEIGHT + 2, icon_r.left - 4, 1);
 	PROBE("wm: after popup");
 	DeleteMenu(MENU_ID);
 	PROBE("wm: after DeleteMenu");

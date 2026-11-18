@@ -80,6 +80,36 @@ gne_filter:
 1:	addq.l	#4,%sp
 	rts
 
+| Pascal callbacks of the password dialog (wifimenu.c ask_password)
+| pascal void (DialogPtr dlg, short item): a user item's drawing procedure
+	.globl	pas_useritem
+pas_useritem:
+	move.w	4(%sp),%d0
+	ext.l	%d0
+	move.l	%d0,-(%sp)
+	move.l	10(%sp),-(%sp)
+	jsr	c_useritem		| void c_useritem(void *dlg, int item)
+	addq.l	#8,%sp
+	move.l	(%sp)+,%a0
+	addq.l	#6,%sp
+	jmp	(%a0)
+| pascal Boolean (DialogPtr dlg, EventRecord *ev, short *item): ModalDialog's filter
+	.globl	pas_dlgfilter
+pas_dlgfilter:
+	move.l	4(%sp),-(%sp)
+	move.l	12(%sp),-(%sp)
+	move.l	20(%sp),-(%sp)
+	jsr	c_dlgfilter		| int c_dlgfilter(void *dlg, EventRecord *ev, short *item)
+	lea	12(%sp),%sp
+	move.l	(%sp)+,%a0
+	lea	12(%sp),%sp
+	tst.l	%d0
+	sne	%d0
+	and.b	#1,%d0
+	move.b	%d0,(%sp)		| the BOOLEAN result: the high byte of the word
+	clr.b	1(%sp)
+	jmp	(%a0)
+
 | register-based traps, for C
 	.globl	get_tool_trap
 get_tool_trap:				| void *get_tool_trap(int trap)
