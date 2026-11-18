@@ -14,6 +14,8 @@
   the space bar is Command, as on a Mac keyboard.
 - **The Mac answers on the network by name** (Riptide: mDNS is on). `ping macintosh.local` from
   another computer reaches it; the name is the one in the Sharing Setup control panel.
+- **The FPU is found.** Programs saw no FPU (Speedometer: "No FPU"); they now see a 68882 beside
+  the 68030, and floating-point programs can use it.
 
 ## 0.9 — The WiFi menu, AppleTalk (18 November 2026)
 

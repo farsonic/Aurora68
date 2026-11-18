@@ -866,6 +866,16 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    `hostname macse` in riptide.conf or name the Mac in Sharing Setup.
    PC keyboards: Apple's mapping stays the default (Windows = Command, Alt = Option);
    `mac.altcmd=1` swaps them by position.
+46. **"No FPU" (18 November).** Speedometer said "No FPU", and so did Gestalt for every program.
+   The FPU was found at start-up: HWCfgFlags ($B22) read $FC00 in the testbed, bit 12 (hwCbFPU)
+   set. What failed is Gestalt's 'fpu ' (IIci ROM 0x40816600): it does an FSAVE and reads the
+   frame's first word, $1F18 or $3F18 a 68881, $1F38 or $3F38 a 68882, anything else
+   gestaltUnknownErr (-5550). Emu68 writes the 68040's idle frame, $41000000. With the CPU
+   presented as a 68030 since item 41, a 68882 is what the ROM expects beside it, so the PSMAC
+   build's FSAVE now writes a 68882 idle frame: $1F380000 and 56 bytes (`M68k_LINEF.c`; -(An)
+   gets all 60 bytes, as every FSAVE in the ROM and System uses it, other modes the format long).
+   FRESTORE (An)+ steps over a frame by its size byte (upstream knew only the 68881's $18).
+   Speedometer's System Information: "FPU: MC68882" (`docs/img/speedometer-fpu-68882.png`).
 
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
