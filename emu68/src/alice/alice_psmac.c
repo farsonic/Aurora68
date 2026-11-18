@@ -452,6 +452,118 @@ static void wsim_join(volatile struct an_unit *u, uint32_t seq)
 }
 static const char *wsim_script_ssid(void) { return wsim_nets[0].ssid; }
 static const char *wsim_script_pass(void) { return wsim_nets[0].pass; }
+/* ---- testbed Bluetooth: a simulated host (mac.btsim=1) ------------------------------------------
+   QEMU's raspi3b has no Bluetooth chip, so the board's Bluetooth block (alice_net.h struct an_bt)
+   only ever said "off" there. For the Mac programs that drive it (PiBlue, the Bluetooth menu of
+   mac/wifimenu) this answers the four commands the real host takes (bt_pi.c), with believable
+   delays: one paired mouse already connected; a scan that takes two seconds and finds a keyboard,
+   a mouse and a pair of headphones; pairing (the keyboard shows a passkey, 123456, for four
+   seconds first, as the real host shows one to type); connect; forget. Nothing reaches the input
+   ring: there is no device. */
+extern volatile uint8_t *alice_net_board(void);
+static int bsim_on = -1, bsim_phase;
+static uint64_t bsim_due;
+static uint32_t bsim_pending;                               /* a command in progress: its sequence number */
+static uint32_t bsim_cmd; static uint8_t bsim_addr[6];
+struct bsim_dev { const char *name; uint8_t addr[6]; uint32_t cod, flags; int rssi; };
+static const struct bsim_dev bsim_near[3] = {
+    { "Magic Keyboard", { 0x11, 0x22, 0x33, 0x44, 0x55, 0x66 }, 0x002540, AN_BTK_KEYBOARD, -52 },
+    { "MX Anywhere 2", { 0x21, 0x32, 0x43, 0x54, 0x65, 0x76 }, 0x002580, AN_BTK_MOUSE, -61 },
+    { "Studio Headphones", { 0x31, 0x42, 0x53, 0x64, 0x75, 0x86 }, 0x240404, 0, -70 },
+};
+static void bsim_name(volatile char *d, const char *s) { int i = 0; for (; s[i] && i < 39; i++) d[i] = s[i]; for (; i < 40; i++) d[i] = 0; }
+static void bsim_msg(volatile struct an_bt *b, const char *m) { int i = 0; for (; m[i] && i < 63; i++) b->msg[i] = m[i]; b->msg[i] = 0; }
+static int bsim_key(volatile struct an_bt *b, const uint8_t *a)
+{
+    for (unsigned k = 0; k < b->nkeys; k++) { int same = 1; for (int i = 0; i < 6; i++) if (b->keys[k].addr[i] != a[i]) same = 0; if (same) return (int)k; }
+    return -1;
+}
+static void bsim_add(volatile struct an_bt *b, const char *name, const uint8_t *a, uint32_t flags)
+{
+    if (b->nkeys >= AN_BT_KEYS || bsim_key(b, a) >= 0) return;
+    volatile struct an_btkey *k = &b->keys[b->nkeys];
+    for (int i = 0; i < 8; i++) k->addr[i] = i < 6 ? a[i] : 0;
+    for (int i = 0; i < 16; i++) k->key[i] = (uint8_t)(0x5a ^ i);
+    k->type = 4; k->flags = flags; bsim_name(k->name, name);
+    b->nkeys++; b->keys_gen++;
+}
+int psmac_bt_testbed_poll(void)
+{
+    if (bsim_on < 0) { const char *o = psmac_option("mac.btsim"); bsim_on = o && o[0] == '1'; }
+    if (!bsim_on) return 0;
+    volatile uint8_t *nb = alice_net_board();
+    if (!nb) return 1;
+    volatile struct an_bt *b = (volatile struct an_bt *)(nb + AN_OFF_BT);
+    uint64_t now = in_now();
+    if (bsim_phase == 0) {
+        for (unsigned i = 0; i < sizeof *b; i++) ((volatile uint8_t *)b)[i] = 0;
+        static const uint8_t own[6] = { 0x02, 0x50, 0x53, 0x42, 0x54, 0x01 }, mouse[6] = { 0x41, 0x52, 0x63, 0x74, 0x85, 0x96 };
+        for (int i = 0; i < 6; i++) b->bdaddr[i] = own[i];
+        bsim_add(b, "Logitech M337", mouse, AN_BTK_MOUSE | AN_BTK_CONNECTED);
+        b->state = AN_BT_READY; bsim_msg(b, "ready (simulated)");
+        bsim_phase = 1;
+        kprintf("[BT-SIM] testbed Bluetooth: a simulated host, one paired mouse\n");
+    }
+    /* a new command */
+    if (!bsim_pending && b->cmd_seq != b->cmd_done) {
+        bsim_pending = b->cmd_seq; bsim_cmd = b->cmd;
+        for (int i = 0; i < 6; i++) bsim_addr[i] = b->cmd_addr[i];
+        switch (bsim_cmd) {
+        case AN_BT_CMD_SCAN: b->scanning = 1; b->nfound = 0; bsim_msg(b, "scanning"); bsim_due = now + in_hz() * 2; break;
+        case AN_BT_CMD_PAIR: b->pairing = 1; bsim_msg(b, "pairing"); bsim_due = now + in_hz() * 3 / 2; break;
+        case AN_BT_CMD_CONNECT: bsim_msg(b, "connecting"); bsim_due = now + in_hz(); break;
+        default: bsim_due = now; break;
+        }
+        kprintf("[BT-SIM] command %u\n", bsim_cmd);
+    }
+    if (bsim_pending && now >= bsim_due) {
+        int r = 0;
+        switch (bsim_cmd) {
+        case AN_BT_CMD_SCAN:
+            for (int k = 0; k < 3; k++) {
+                if (bsim_key(b, bsim_near[k].addr) >= 0) continue;
+                volatile struct an_btfound *f = &b->found[b->nfound++];
+                for (int i = 0; i < 8; i++) f->addr[i] = i < 6 ? bsim_near[k].addr[i] : 0;
+                f->cod = bsim_near[k].cod; f->rssi = bsim_near[k].rssi; bsim_name(f->name, bsim_near[k].name);
+            }
+            b->scanning = 0; bsim_msg(b, "scan done");
+            break;
+        case AN_BT_CMD_PAIR: {
+            int k = -1;
+            for (int j = 0; j < 3; j++) { int same = 1; for (int i = 0; i < 6; i++) if (bsim_near[j].addr[i] != bsim_addr[i]) same = 0; if (same) k = j; }
+            if (k < 0 || !bsim_near[k].flags) { b->pairing = 0; bsim_msg(b, "pairing failed: not a keyboard or mouse"); r = -1; break; }
+            if ((bsim_near[k].flags & AN_BTK_KEYBOARD) && !b->passkey_shown) {      /* first the passkey, for four seconds */
+                b->passkey = 123456; b->passkey_shown = 1; bsim_msg(b, "type the passkey on the keyboard");
+                bsim_due = now + in_hz() * 4; return 1;
+            }
+            b->passkey_shown = 0; b->pairing = 0;
+            bsim_add(b, bsim_near[k].name, bsim_near[k].addr, bsim_near[k].flags | AN_BTK_CONNECTED);
+            unsigned n = 0;                                                   /* no longer "found": paired */
+            for (unsigned j = 0; j < b->nfound; j++) { int same = 1; for (int i = 0; i < 6; i++) if (b->found[j].addr[i] != bsim_addr[i]) same = 0; if (!same) { if (n != j) for (unsigned i = 0; i < sizeof b->found[0]; i++) ((volatile uint8_t *)&b->found[n])[i] = ((volatile uint8_t *)&b->found[j])[i]; n++; } }
+            b->nfound = n;
+            bsim_msg(b, "paired and connected");
+            break; }
+        case AN_BT_CMD_CONNECT: {
+            int k = bsim_key(b, bsim_addr);
+            if (k < 0) r = -1; else b->keys[k].flags |= AN_BTK_CONNECTED;
+            bsim_msg(b, k < 0 ? "no such device" : "connected");
+            break; }
+        case AN_BT_CMD_FORGET: {
+            int k = bsim_key(b, bsim_addr);
+            if (k < 0) { r = -1; break; }
+            for (unsigned j = (unsigned)k; j + 1 < b->nkeys; j++) for (unsigned i = 0; i < sizeof b->keys[0]; i++) ((volatile uint8_t *)&b->keys[j])[i] = ((volatile uint8_t *)&b->keys[j + 1])[i];
+            b->nkeys--; b->keys_gen++; bsim_msg(b, "forgotten");
+            break; }
+        default: r = -1; break;
+        }
+        b->cmd_result = (uint32_t)r;
+        __asm__ volatile("dmb ish" ::: "memory");
+        b->cmd_done = bsim_pending; bsim_pending = 0;
+        kprintf("[BT-SIM] command %u done: %d\n", bsim_cmd, r);
+    }
+    return 1;
+}
+
 int psmac_wifi_testbed_poll(volatile struct an_unit *u)
 {
     if (wsim_active < 0) {

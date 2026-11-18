@@ -133,14 +133,16 @@ $(B)/wm/entry.o: wifimenu/entry.s
 	$(AS) -o $@ $<
 $(B)/wm/toolbox_glue.o: $(B)/wm/toolbox_glue.s
 	$(AS) -o $@ $<
-$(B)/wm/wifimenu.o: wifimenu/wifimenu.c c/toolbox.h $(B)/wm/toolbox_gen.h
+$(B)/wm/wifimenu.o: wifimenu/wifimenu.c wifimenu/menus.h c/toolbox.h $(B)/wm/toolbox_gen.h
+	$(CC) $(subst -I$(B),-I$(B)/wm,$(CFLAGS)) -c -o $@ $<
+$(B)/wm/btmenu.o: wifimenu/btmenu.c wifimenu/menus.h c/toolbox.h $(B)/wm/toolbox_gen.h
 	$(CC) $(subst -I$(B),-I$(B)/wm,$(CFLAGS)) -c -o $@ $<
 $(B)/wm/libc.o: c/libc.c c/toolbox.h $(B)/wm/toolbox_gen.h
 	$(CC) $(subst -I$(B),-I$(B)/wm,$(CFLAGS)) -c -o $@ $<
-$(B)/wifimenu.elf: $(B)/wm/entry.o $(B)/wm/toolbox_glue.o $(B)/wm/wifimenu.o $(B)/wm/libc.o wifimenu/init.ld
-	$(LD) -T wifimenu/init.ld --emit-relocs --gc-sections --no-warn-rwx-segments -z noexecstack -o $@ $(B)/wm/entry.o $(B)/wm/toolbox_glue.o $(B)/wm/wifimenu.o $(B)/wm/libc.o $(LIBGCC)
+$(B)/wifimenu.elf: $(B)/wm/entry.o $(B)/wm/toolbox_glue.o $(B)/wm/wifimenu.o $(B)/wm/btmenu.o $(B)/wm/libc.o wifimenu/init.ld
+	$(LD) -T wifimenu/init.ld --emit-relocs --gc-sections --no-warn-rwx-segments -z noexecstack -o $@ $(B)/wm/entry.o $(B)/wm/toolbox_glue.o $(B)/wm/wifimenu.o $(B)/wm/btmenu.o $(B)/wm/libc.o $(LIBGCC)
 $(B)/WiFiMenu.bin: $(B)/wifimenu.elf ../tools/mac/elf2init.py ../tools/mac/macelf.py ../tools/mac/rsrc.py
-	$(PY) ../tools/mac/elf2init.py $< --name "WiFi Menu" --creator PSWM -o $@
+	$(PY) ../tools/mac/elf2init.py $< --name "Wi-Fi & Bluetooth" --creator PSWM -o $@
 
 install: $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/psmac.declrom
 	$(PY) ../tools/mac/hfsput.py $(IMG) $(B)/PiDisk.bin "System Folder" $(PART)

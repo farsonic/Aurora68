@@ -18,6 +18,7 @@
  * emu68/src/psmac/psmac_card.c), so the next power-on joins it by itself. Written 18 November 2026.
  */
 #include "toolbox.h"
+#include "menus.h"
 
 /* ---- the card window (emu68/src/psmac/psmb.h) and the network board (alice_net.h) ---- */
 #define PSMB_MAGIC    0x50534D42UL
@@ -56,12 +57,12 @@ void *old_drawmenubar, *old_gne;
 #define LM_JGNEFILTER (*(void **volatile *)0x29A)
 #define LM_SYSVERSION (*(volatile short *)0x15A)
 
-static volatile unsigned char *win(void)
+volatile unsigned char *win(void)
 {
 	return (volatile unsigned char *)(LM_MMU32BIT ? 0xF9000000UL : 0x00900000UL);
 }
-static unsigned long rd32(unsigned long off) { return *(volatile unsigned long *)(win() + off); }
-static void wr32(unsigned long off, unsigned long v) { *(volatile unsigned long *)(win() + off) = v; }
+unsigned long rd32(unsigned long off) { return *(volatile unsigned long *)(win() + off); }
+void wr32(unsigned long off, unsigned long v) { *(volatile unsigned long *)(win() + off) = v; }
 
 #ifdef WM_DEBUG
 static char dbuf[64];
@@ -94,7 +95,8 @@ static void probe(const char *step)
 /* ---- the icon: 16 x 12, a dot and three arcs; level 0-3 filled, the rest dotted ---- */
 static unsigned short icons[6][12];      /* 0-3 signal, 4 off, 5 searching */
 static struct { void *base; short rowBytes; Rect bounds; } bm;
-static Rect icon_r, hit_r;
+Rect icon_r;
+static Rect hit_r;
 static int shown = -1;
 
 static void make_icons(void)
@@ -154,6 +156,7 @@ void c_draw_icon(void)
 	bm.rowBytes = 2;
 	bm.bounds.top = 0; bm.bounds.left = 0; bm.bounds.bottom = 12; bm.bounds.right = 16;
 	CopyBits(&bm, (char *)wm + 2, &bm.bounds, &icon_r, 0, 0);
+	bt_draw(wm, mbh);
 	SetPort(save);
 }
 
@@ -187,7 +190,7 @@ static int set_options(const char *text, unsigned long len)
 }
 static char save_ssid[36], save_pass[68];
 static int save_pending;
-static void add(char **p, const char *s) { while (*s) *(*p)++ = *s++; }
+void add(char **p, const char *s) { while (*s) *(*p)++ = *s++; }
 static void save_network(void)
 {
 	char *p = edit;
@@ -212,12 +215,12 @@ void c_tick(void)
 		else if (st == ST_FAILED || st == ST_IDLE || --save_pending == 0) { save_pending = 0; for (unsigned i = 0; i < sizeof save_pass; i++) save_pass[i] = 0; }
 	}
 	PROBE("wm: tick before draw");
-	if (picture() != shown) c_draw_icon();
+	if (picture() != shown || bt_picture() != bt_shown) c_draw_icon();
 	PROBE("wm: tick after draw");
 }
 
 /* ---- the password dialog: Join, Cancel, the text, the field, Remember ---- */
-static void put_item(unsigned char **p, short t, short l, short b, short r, unsigned char kind, const char *text)
+void put_item(unsigned char **p, short t, short l, short b, short r, unsigned char kind, const char *text)
 {
 	unsigned char *q = *p;
 	int n = 0;
@@ -229,6 +232,18 @@ static void put_item(unsigned char **p, short t, short l, short b, short r, unsi
 	*q++ = (unsigned char)n;
 	for (int i = 0; i < n; i++) *q++ = (unsigned char)text[i];
 	if (n & 1) *q++ = 0;
+	*p = q;
+}
+/* an icon item: the system's alert icons are 'ICON' 0 stop, 1 note, 2 caution */
+void put_icon(unsigned char **p, short t, short l, short id)
+{
+	unsigned char *q = *p;
+	short v[4] = { t, l, (short)(t + 32), (short)(l + 32) };
+	for (int i = 0; i < 4; i++) *q++ = 0;
+	for (int i = 0; i < 4; i++) { *q++ = (unsigned char)(v[i] >> 8); *q++ = (unsigned char)v[i]; }
+	*q++ = 32 | 0x80;                              /* iconItem, disabled */
+	*q++ = 2;
+	*q++ = (unsigned char)(id >> 8); *q++ = (unsigned char)id;
 	*p = q;
 }
 /* The 1992 Human Interface Guidelines: the default button (Join) has the heavy rounded outline and
@@ -249,7 +264,7 @@ void c_useritem(void *dlg, int item)
 	FrameRoundRect(&box, 16, 16);
 	PenNormal();
 }
-static void flash(void *dlg, int item)
+void flash(void *dlg, int item)
 {
 	short kind;
 	void *h;
@@ -260,8 +275,17 @@ static void flash(void *dlg, int item)
 	while (LM_TICKS < t) ;
 	HiliteControl(h, 0);
 }
+int dlg_mode;                                     /* 0 the password, 1 a question, 2 Bluetooth pairing (btmenu.c) */
 int c_dlgfilter(void *dlg, EventRecord *ev, short *item)
 {
+	if (dlg_mode == 2) return bt_pair_filter(dlg, ev, item);
+	if (dlg_mode == 1) {
+		if (ev->what != keyDown && ev->what != autoKey) return 0;
+		unsigned char c = (unsigned char)(ev->message & 0xFF);
+		if (c == 0x0D || c == 0x03) { flash(dlg, 1); *item = 1; return 1; }
+		if (c == 0x1B || ((ev->modifiers & cmdKey) && c == '.')) { flash(dlg, 2); *item = 2; return 1; }
+		return 0;
+	}
 	if (ev->what == mouseDown) {
 		short kind;
 		void *h;
@@ -300,7 +324,7 @@ static int ask_password(const char *ssid, char *pass, int *remember)
 	void **items = mac_newhandle(420);
 	if (!items) return 0;
 	unsigned char *q = (unsigned char *)*items;
-	*q++ = 0; *q++ = 6;                            /* seven items */
+	*q++ = 0; *q++ = 7;                            /* eight items */
 	put_item(&q, 100, 290, 120, 360, 4, "Join");
 	put_item(&q, 100, 210, 120, 280, 4, "Cancel");
 	put_item(&q, 10, 60, 42, 360, 8 | 0x80, prompt);
@@ -308,6 +332,7 @@ static int ask_password(const char *ssid, char *pass, int *remember)
 	put_item(&q, 72, 60, 90, 360, 5, "Remember this network");
 	put_item(&q, 48, 60, 64, 136, 8 | 0x80, "Password:");
 	put_item(&q, 96, 286, 124, 364, 0 | 0x80, "");   /* the default button's outline */
+	put_icon(&q, 10, 20, 1);                        /* the note icon */
 	void *wm;
 	GetWMgrPort(&wm);
 	Rect *pr = PORT_RECT(wm);
@@ -326,6 +351,8 @@ static int ask_password(const char *ssid, char *pass, int *remember)
 	SetCtlValue(h, 1);
 	SelIText(dlg, 4, 0, 32767);
 	hidden_n = 0;
+	dlg_mode = 0;
+	InitCursor();
 	for (;;) {
 		ModalDialog((void *)pas_dlgfilter, &hit);
 		if (hit == 1 || hit == 2) break;
@@ -346,7 +373,7 @@ static int ask_password(const char *ssid, char *pass, int *remember)
 static char ssids[16][36];
 static int nets, secured[16];
 static unsigned long last_scan;
-static unsigned char *pcat(unsigned char *ps, const char *c) { while (*c && ps[0] < 255) ps[++ps[0]] = (unsigned char)*c++; return ps; }
+unsigned char *pcat(unsigned char *ps, const char *c) { while (*c && ps[0] < 255) ps[++ps[0]] = (unsigned char)*c++; return ps; }
 
 static void join(const char *ssid, int is_secured)
 {
@@ -459,6 +486,7 @@ static int c_menuselect(long pt)
 	PROBE("wm: after items");
 	InsertMenu(m, -1);
 	PROBE("wm: after InsertMenu");
+	InitCursor();                                    /* the arrow, whatever the program showed */
 	InvertRect(&icon_r);
 	/* item 1's top two rows below the bar: the frame then starts on the row under the bar's line.
 	   With one row (MBarHeight + 1) the MDEF found the frame touching the menu bar and moved the
@@ -498,7 +526,7 @@ int c_filter(EventRecord *ev)
 {
 	c_tick();
 	if (ev->what != mouseDown || LM_MBARHEIGHT < 12) return 0;
-	if (!c_menuselect(pt_long(ev->where))) return 0;
+	if (!c_menuselect(pt_long(ev->where)) && !bt_menuselect(pt_long(ev->where))) return 0;
 	ev->what = nullEvent;
 	return 1;
 }
@@ -508,6 +536,7 @@ void init_main(void)
 	if (LM_SYSVERSION < 0x0700) return;            /* PopUpMenuSelect and the rest are System 7's */
 	if (rd32(0) != PSMB_MAGIC) return;             /* not an Aurora68 Mac */
 	make_icons();
+	bt_make_icons();
 	old_drawmenubar = get_tool_trap(0xA937);
 	set_tool_trap((void *)patch_drawmenubar, 0xA937);
 	old_gne = (void *)LM_JGNEFILTER;

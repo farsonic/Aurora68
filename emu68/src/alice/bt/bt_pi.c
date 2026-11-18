@@ -521,6 +521,9 @@ void bt_pi_report(void)
 }
 void bt_pi_poll(void)
 {
+#ifdef PSMAC
+    { extern int psmac_bt_testbed_poll(void); if (psmac_bt_testbed_poll()) return; }   /* alice_psmac.c: mac.btsim= owns the board */
+#endif
     static const char *const stems[] = { "BCM4345C0", "BCM4345C5", "bcm4345c0", "BCM43430A1", "BCM4343A1", 0 };
     uint32_t now = ms_now();
     if (!keys_loaded) {
