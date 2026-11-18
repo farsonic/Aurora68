@@ -877,7 +877,7 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    FRESTORE (An)+ steps over a frame by its size byte (upstream knew only the 68881's $18).
    Speedometer's System Information: "FPU: MC68882" (`docs/img/speedometer-fpu-68882.png`).
 
-46. **AppleTalk over Ethernet, and an AppleShare server on the wire (18 November).** The user
+47. **AppleTalk over Ethernet, and an AppleShare server on the wire (18 November).** The user
    wanted AppleTalk over Ethernet only, and asked whether Lagoon (the user's network-share
    program, which has a Mac port) could bring its own EtherTalk, since System 7.1 has none.
    Lagoon now does (its `src/mac/ethertalk`, an 'adev'/'atlk' pair called "Lagoon EtherTalk"),

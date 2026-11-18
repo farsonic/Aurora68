@@ -169,7 +169,7 @@ item 43), so the boot and the Network control panel work. There is nobody to tal
 For AppleTalk over the Pi's Ethernet (or WiFi) card, Lagoon brings its own connection file,
 "Lagoon EtherTalk" (Lagoon's `src/mac/ethertalk`, its docs/mac.md): put it in the Extensions
 folder and choose "Lagoon / Slot #9" in the Network control panel. In the testbed, preset the
-choice and give the peer an AppleShare server to find (docs/08 item 46):
+choice and give the peer an AppleShare server to find (docs/08 item 47):
 ```
 PINET_ATALK="Lagoon Test" python3 tools/pinet.py /tmp/psmac-net peer
 tools/run-solo.sh 600 mac.net=/tmp/psmac-net mac.appletalk=1 mac.xpram=e0:098100a8
