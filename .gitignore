@@ -27,3 +27,12 @@ reference/*
 # the kernel tree is vendored; its build directories are not
 emu68/build/
 dist/
+# intermediates of the C programs in mac/ (mac/c: crt0, the generated Toolbox glue, objects);
+# the applications themselves (mac/build/*.bin) are committed
+mac/build/crt0.o
+mac/build/libc.o
+mac/build/toolbox_gen.h
+mac/build/toolbox_glue.o
+mac/build/toolbox_glue.s
+mac/build/pilog.o
+mac/build/pilog.elf
