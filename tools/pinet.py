@@ -10,7 +10,9 @@ replies to .rx. Two modes:
                             192.168.68.2), and IPv6: neighbour discovery for fe80::ff:fe00:6801
                             and fd68::1, a router advertisement of fd68::/64, ICMPv6 echo; each
                             address the Mac checks for duplicates (DAD) is pinged a second later
-                            and the answer logged. Logs every frame (default)
+                            and the answer logged; a TCP echo server on port 7 and a DNS
+                            server on port 53 (peer.testbed and anything.testbed is
+                            192.168.68.1, and back). Logs every frame (default)
   pinet.py <base> tap tapN  bridge frames to a Linux TAP device (needs CAP_NET_ADMIN)
 
 Usage in the testbed: tools/run-fullstack.sh 400 mac.net=/tmp/psmac-net   (and run this helper).
@@ -88,15 +90,85 @@ def peer(frame):
                 ip[10:12] = struct.pack('>H', csum(bytes(ip)))
                 send(b'\xff' * 6 + PEER_MAC + b'\x08\x00' + bytes(ip) + udp)
                 return {0: 'BOOTP reply', 1: 'DHCP OFFER', 3: 'DHCP ACK'}.get(mtype, 'DHCP type %d answered' % mtype) + ' 192.168.68.2'
+            if dport == 53 and len(payload) >= 8 + 12:
+                return dns_answer(frame, src, sip, sport, payload[8:ulen])
             if dport == 7:
                 udp = struct.pack('>HHHH', 7, sport, ulen, 0) + payload[8:]
                 ip = bytearray(frame[14:14 + ihl]); ip[12:16], ip[16:20] = PEER_IP, sip; ip[10:12] = b'\0\0'
                 ip[10:12] = struct.pack('>H', csum(bytes(ip)))
                 send(src + PEER_MAC + b'\x08\x00' + bytes(ip) + udp); return 'UDP echo'
+        if proto == 6 and len(payload) >= 20:
+            return tcp_echo(frame, src, sip, payload)
         return f'IP proto {proto}'
     if etype == 0x86dd and len(frame) >= 54:                 # IPv6
         return peer6(frame, src)
     return f'type {etype:04x}'
+
+def send4(dstmac, dip, proto, body):
+    ip = bytearray(struct.pack('>BBHHHBBH', 0x45, 0, 20 + len(body), 0, 0, 64, proto, 0) + PEER_IP + dip)
+    ip[10:12] = struct.pack('>H', csum(bytes(ip)))
+    send(dstmac + PEER_MAC + b'\x08\x00' + bytes(ip) + body)
+
+# TCP echo on port 7: one connection per client port, in order only (the testbed loses nothing)
+tcp_conns = {}
+def tcp_seg(dstmac, dip, sport, dport, seq, ack, flags, data=b''):
+    hdr = struct.pack('>HHIIBBHHH', sport, dport, seq & 0xffffffff, ack & 0xffffffff, 5 << 4, flags, 8192, 0, 0)
+    pseudo = PEER_IP + dip + struct.pack('>BBH', 0, 6, len(hdr) + len(data))
+    c = csum(pseudo + hdr + data)
+    send4(dstmac, dip, 6, hdr[:16] + struct.pack('>H', c) + hdr[18:] + data)
+
+def tcp_echo(frame, src, sip, t):
+    sport, dport, seq, ack, off, flags = struct.unpack('>HHIIBB', t[:14])
+    ip_total = struct.unpack('>H', frame[16:18])[0]
+    data = t[(off >> 4) * 4:ip_total - 20]
+    if dport != 7:
+        if not flags & 0x04:
+            tcp_seg(src, sip, dport, sport, 0, seq + 1, 0x14)      # RST|ACK
+        return f'TCP to port {dport}: reset'
+    key = (sip, sport)
+    if flags & 0x02:                                               # SYN
+        tcp_conns[key] = {'snd': 0x68000001, 'rcv': seq + 1}
+        tcp_seg(src, sip, 7, sport, 0x68000000, seq + 1, 0x12)     # SYN|ACK
+        return 'TCP SYN: SYN-ACK (echo)'
+    c = tcp_conns.get(key)
+    if not c:
+        return 'TCP (no connection)'
+    if flags & 0x04:
+        tcp_conns.pop(key, None); return 'TCP RST'
+    what = 'TCP ack'
+    if seq == c['rcv'] and data:
+        c['rcv'] += len(data)
+        tcp_seg(src, sip, 7, sport, c['snd'], c['rcv'], 0x18, data)    # PSH|ACK: the data back
+        c['snd'] += len(data)
+        what = 'TCP ECHO %d bytes: %r' % (len(data), bytes(data[:40]))
+    if flags & 0x01 and seq + len(data) == c['rcv'] - (0 if data else 0):
+        c['rcv'] += 1
+        tcp_seg(src, sip, 7, sport, c['snd'], c['rcv'], 0x11)      # FIN|ACK
+        c['snd'] += 1
+        what += ', FIN answered'
+    return what
+
+# DNS: peer.testbed and any name ending in .testbed is the peer; its address points back to peer.testbed
+def dns_answer(frame, src, sip, sport, q):
+    qid, fl, qd = struct.unpack('>HHH', q[:6])
+    p, labels = 12, []
+    while p < len(q) and q[p]:
+        labels.append(q[p + 1:p + 1 + q[p]].decode('ascii', 'replace')); p += 1 + q[p]
+    p += 1
+    qtype = struct.unpack('>H', q[p:p + 2])[0]
+    name = '.'.join(labels).lower()
+    question = q[12:p + 4]
+    ans, rcode = b'', 3
+    if qtype == 1 and (name == 'testbed' or name.endswith('.testbed')):
+        ans = b'\xc0\x0c' + struct.pack('>HHIH', 1, 1, 60, 4) + PEER_IP; rcode = 0
+    elif qtype == 12 and name == '1.68.168.192.in-addr.arpa':
+        rd = bytes([4]) + b'peer' + bytes([7]) + b'testbed' + b'\0'
+        ans = b'\xc0\x0c' + struct.pack('>HHIH', 12, 1, 60, len(rd)) + rd; rcode = 0
+    hdr = struct.pack('>HHHHHH', qid, 0x8180 | rcode, 1, 1 if ans else 0, 0, 0)
+    body = hdr + question + ans
+    udp = struct.pack('>HHHH', 53, sport, 8 + len(body), 0) + body
+    send4(src, sip, 17, udp)
+    return 'DNS %s %s: %s' % ('A' if qtype == 1 else 'PTR' if qtype == 12 else qtype, name, 'answered' if ans else 'no such name')
 
 def ip6_addr(a):
     return socket.inet_ntop(socket.AF_INET6, a)
