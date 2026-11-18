@@ -4855,6 +4855,14 @@ uint32_t EMIT_FPU(struct TranslatorContext *ctx)
         {
             uint8_t An = RA_MapM68kRegister(ctx, 8 + (opcode & 7));
             uint8_t tmp2 = RA_AllocARMRegister(ctx);
+#ifdef PSMAC
+            /* The Macintosh build's FSAVE writes a 68882 idle frame (below): step over the whole
+               frame, whatever its size byte says. A null frame's size is 0, so no test is needed. */
+            EMIT(ctx,
+                ubfx(tmp2, tmp, 16, 8),
+                add_reg(An, An, tmp2, LSL, 0)
+            );
+#else
             EMIT(ctx, 
                 tst_immed(tmp, 8, 8),
                 b_cc(A64_CC_EQ, 5),
@@ -4863,6 +4871,7 @@ uint32_t EMIT_FPU(struct TranslatorContext *ctx)
                 b_cc(A64_CC_NE, 2),
                 add_immed(An, An, 28 - 4)
             );
+#endif
             RA_FreeARMRegister(ctx, tmp2);
         }
 
@@ -4906,8 +4915,37 @@ uint32_t EMIT_FPU(struct TranslatorContext *ctx)
         
         ext_count = 0;
 
+#ifdef PSMAC
+        /* The Macintosh presents a 68030 (CPUFlag 3, M68k_LINE4.c check_cacr), and a 68030's FPU
+           is a 68881 or 68882. The ROM's Gestalt 'fpu ' (IIci ROM 0x40816600) tells them apart
+           by the FSAVE frame's first word: $1F18/$3F18 a 68881, $1F38/$3F38 a 68882, anything
+           else "unknown" (gestaltUnknownErr). The 68040's idle frame ($4100) fell in the last
+           group, so Speedometer and every program asking Gestalt said "no FPU". Here FSAVE
+           writes a 68882 idle frame: the format long $1F380000 and 56 bytes after it (zero:
+           nothing reads them; FRESTORE above only looks at the size byte). Only -(An) gets the
+           whole 60 bytes, as every FSAVE in the ROM and the System uses it; other modes get the
+           format long, which is all a later FRESTORE reads. */
+        if ((opcode & 0x38) == 0x20)
+        {
+            uint8_t An = RA_MapM68kRegister(ctx, 8 + (opcode & 7));
+            RA_SetDirtyM68kRegister(ctx, 8 + (opcode & 7));
+            EMIT(ctx,
+                sub_immed(An, An, 4 + 0x38),
+                mov_immed_u16(tmp, 0x1f38, 1),
+                str_offset(An, tmp, 0)
+            );
+            for (int off = 4; off < 4 + 0x38; off += 8)
+                EMIT(ctx, stur64_offset(An, 31, off));
+        }
+        else
+        {
+            EMIT(ctx, mov_immed_u16(tmp, 0x1f38, 1));
+            EMIT_StoreToEffectiveAddress(ctx, 4, &tmp, opcode & 0x3f, &ext_count, 0);
+        }
+#else
         EMIT(ctx, mov_immed_u16(tmp, 0x4100, 1));
         EMIT_StoreToEffectiveAddress(ctx, 4, &tmp, opcode & 0x3f, &ext_count, 0);
+#endif
 
         RA_FreeARMRegister(ctx, tmp);
 
