@@ -116,6 +116,50 @@ def mdns_relay(src, sip, udp):
     send4(src, sip, 17, out)
     return f'mDNS query relayed: {len(ans)}-byte answer to port {sport}'
 
+# AppleTalk Phase 2 (Inside AppleTalk, 2nd ed., ch. 2): 802.3 frames whose 802.2 SNAP header names
+# AARP (00 00 00 80 F3) or DDP (08 00 07 80 9B); logged, so a connection file's probes and an NBP
+# lookup from the Chooser can be seen on the wire
+def atalk_addr(b):
+    return f"{(b[1] << 8) | b[2]}.{b[3]}"
+NBP_FN = {1: 'BrRq', 2: 'LkUp', 3: 'LkUp-Reply', 4: 'FwdReq'}
+def nbp_tuple(d, p):
+    p += 5                                           # network, node, socket, enumerator
+    out = []
+    for _ in range(3):
+        n = d[p]; out.append(d[p + 1:p + 1 + n].decode('mac_roman', 'replace')); p += 1 + n
+    return f"{out[0]}:{out[1]}@{out[2]}", p
+def atalk(frame):
+    llc = frame[14:22]
+    if llc[:3] != b'\xaa\xaa\x03':
+        return None
+    if llc[3:8] == bytes.fromhex('00000080f3'):
+        a = frame[22:]
+        if len(a) < 28: return 'AARP (short)'
+        fn = struct.unpack('>H', a[6:8])[0]
+        what = {1: 'request', 2: 'response', 3: 'probe'}.get(fn, f'function {fn}')
+        return f"AARP {what} from {atalk_addr(a[14:18])} ({a[8:14].hex(':')}) for {atalk_addr(a[24:28])}"
+    if llc[3:8] == bytes.fromhex('080007809b'):
+        d = frame[22:]
+        if len(d) < 13: return 'DDP (short)'
+        ln = struct.unpack('>H', d[0:2])[0] & 0x3ff
+        dn, sn = struct.unpack('>HH', d[4:8])
+        s = f"DDP {sn}.{d[9]}:{d[11]} -> {dn}.{d[8]}:{d[10]} type {d[12]} len {ln}"
+        if d[12] == 2 and ln > 13:                   # NBP
+            fn, cnt = d[13] >> 4, d[13] & 15
+            s += f": NBP {NBP_FN.get(fn, fn)} id {d[14]}"
+            p = 15
+            for _ in range(cnt):
+                try:
+                    t, p = nbp_tuple(d, p); s += f" '{t}'"
+                except IndexError:
+                    break
+        elif d[12] == 6:
+            s += ': ZIP'
+        elif d[12] == 1:
+            s += ': RTMP'
+        return s
+    return 'SNAP ' + llc[3:8].hex()
+
 def peer(frame):
     global mac_ip4
     dst, src, etype = frame[0:6], frame[6:12], struct.unpack('>H', frame[12:14])[0]
@@ -186,6 +230,9 @@ def peer(frame):
         return f'IP proto {proto}'
     if etype == 0x86dd and len(frame) >= 54:                 # IPv6
         return peer6(frame, src)
+    if etype <= 1500 and len(frame) >= 22:                   # 802.3 with 802.2: AppleTalk Phase 2
+        r = atalk(frame)
+        if r: return r
     return f'type {etype:04x}'
 
 def send4(dstmac, dip, proto, body):

@@ -765,6 +765,22 @@ void psmac_solo_init(void)
        printer port is AppleTalk's). PRAM starts from the defaults at every power-on, so the
        Chooser's choice lasts until the Pi is switched off; this makes it the default. */
     { const char *a = psmac_option("mac.appletalk"); if (a && a[0] == '1') rtc.pram[0x13] = (uint8_t)((rtc.pram[0x13] & 0xf0) | 1); }
+    /* mac.xpram=ADDR:HEXBYTES[,ADDR:HEXBYTES]: preset extended PRAM, for testing what the
+       control panels would store (e0:098100a8 = the AppleTalk connection: slot 9, sResource
+       $81, 'atlk' 168, the LAP Manager's long at $E0) */
+    { const char *x = psmac_option("mac.xpram");
+      while (x && *x && *x != ' ') {
+          unsigned addr = 0; int nib = -1;
+          while (*x && *x != ':' && *x != ' ') { char c = *x++; addr = addr * 16 + (unsigned)(c <= '9' ? c - '0' : (c | 0x20) - 'a' + 10); }
+          if (*x != ':') break;
+          x++;
+          while (*x && *x != ',' && *x != ' ') {
+              char c = *x++; int v = c <= '9' ? c - '0' : (c | 0x20) - 'a' + 10;
+              if (nib < 0) nib = v;
+              else { rtc.pram[addr++ & 0xff] = (uint8_t)(nib << 4 | v); nib = -1; }
+          }
+          if (*x == ',') x++;
+      } }
     rtc.enb = 1;
     static const char *const keys[] = { "mac.scsi0", "mac.scsi1", "mac.scsi2", "mac.scsi3", "mac.scsi4", "mac.scsi5", "mac.scsi6" };
     for (int i = 0; i < 7; i++) { const char *p = psmac_option(keys[i]); if (p) disk_add_file(p); }
