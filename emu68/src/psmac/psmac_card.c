@@ -18,7 +18,11 @@
  *                  image inside it is written back sector by sector at its own offset, so the
  *                  next boot loads what the Mac wrote. Only after the file's size and first
  *                  sector have been checked against the copy in memory.
- * cmdline.txt and config.txt are never written: a mistake here must not stop the Pi booting.
+ *   cmdline.txt    edited only on the Mac's request (PSMB_INFO_SETOPT: the WiFi menu saves the
+ *                  network it joined), and carefully: one line of options, the requested ones
+ *                  dropped or replaced, every other byte kept, written only when the result fits
+ *                  the file's first cluster, and read back. A mistake here must not stop the Pi
+ *                  booting. config.txt is never written.
  * FAT16 and FAT32, 512-byte sectors, the first FAT partition of an MBR card (or a card with no
  * partition table). Options: mac.card=off (do not touch the card), mac.card=ro (read only:
  * pairings are loaded, nothing is written).
@@ -449,6 +453,96 @@ void psmac_card_save_pairings(const char *text, uint32_t len)
     __atomic_store_n(&pair_dirty, 1, __ATOMIC_RELEASE);
 }
 
+/* ==== cmdline.txt: the options the Mac asks to change ========================================
+   The edit list is Alice68's (alice_net.h, struct an_setup): lines "-NAME" (drop the option NAME)
+   and "+NAME=VALUE" (replace NAME, or add it at the end). Options are the line's words; a
+   quoted value ("wifi-office", "My Network") stays one word. */
+static char opt_edit[512]; static volatile uint32_t opt_edit_len; static volatile int opt_state;   /* 0 none, 1 pending, 2 saved, 3 failed */
+static char opt_old[2048], opt_out[2048];
+static int opt_key_eq(const char *w, uint32_t wl, const char *k, uint32_t kl)
+{
+    uint32_t n = 0;
+    while (n < wl && w[n] != '=') n++;
+    if (n != kl) return 0;
+    for (uint32_t i = 0; i < n; i++) if (w[i] != k[i]) return 0;
+    return 1;
+}
+static void cmdline_apply(void)
+{
+    struct cfile f;
+    uint32_t cap = fs.spc * 512u, n, o = 0;
+    if (file_find("cmdline.txt", &f) || f.clus < 2 || f.size == 0 || f.size >= sizeof opt_old || f.size > cap) {
+        kprintf("[CARD] cmdline.txt: not found or too large to edit\n"); opt_state = 3; return;
+    }
+    n = f.size;
+    for (uint32_t i = 0; i * 512u < n; i++) {
+        if (sd_read(clus_lba(f.clus) + i, sec)) { opt_state = 3; return; }
+        for (uint32_t j = 0; j < 512 && i * 512u + j < n; j++) opt_old[i * 512u + j] = (char)sec[j];
+    }
+    int nl = n && (opt_old[n - 1] == '\n' || opt_old[n - 1] == '\r');
+    /* the words of the old line, those the edit list keeps */
+    uint32_t p = 0;
+    while (p < n) {
+        while (p < n && (opt_old[p] == ' ' || opt_old[p] == '\t' || opt_old[p] == '\n' || opt_old[p] == '\r')) p++;
+        if (p >= n) break;
+        uint32_t w = p; int q = 0;
+        while (p < n && (q || (opt_old[p] != ' ' && opt_old[p] != '\t' && opt_old[p] != '\n' && opt_old[p] != '\r'))) { if (opt_old[p] == '"') q = !q; p++; }
+        int drop = 0;
+        for (uint32_t e = 0; e < opt_edit_len; ) {
+            uint32_t le = e; while (le < opt_edit_len && opt_edit[le] != '\n') le++;
+            if (le > e + 1 && (opt_edit[e] == '-' || opt_edit[e] == '+')) {
+                uint32_t kl = 0; while (e + 1 + kl < le && opt_edit[e + 1 + kl] != '=') kl++;
+                if (opt_key_eq(opt_old + w, p - w, opt_edit + e + 1, kl)) drop = 1;
+            }
+            e = le + 1;
+        }
+        if (!drop) {
+            if (o + (p - w) + 2 >= sizeof opt_out) { opt_state = 3; return; }
+            if (o) opt_out[o++] = ' ';
+            for (uint32_t i = w; i < p; i++) opt_out[o++] = opt_old[i];
+        }
+    }
+    /* the new words */
+    for (uint32_t e = 0; e < opt_edit_len; ) {
+        uint32_t le = e; while (le < opt_edit_len && opt_edit[le] != '\n') le++;
+        if (le > e + 1 && opt_edit[e] == '+') {
+            if (o + (le - e) + 2 >= sizeof opt_out) { opt_state = 3; return; }
+            if (o) opt_out[o++] = ' ';
+            for (uint32_t i = e + 1; i < le; i++) opt_out[o++] = opt_edit[i];
+        }
+        e = le + 1;
+    }
+    if (nl) opt_out[o++] = '\n';
+    if (!o || o > cap) { kprintf("[CARD] cmdline.txt: the new line does not fit\n"); opt_state = 3; return; }
+    for (uint32_t i = 0; i * 512u < o; i++) {
+        for (uint32_t j = 0; j < 512; j++) sec[j] = i * 512u + j < o ? (uint8_t)opt_out[i * 512u + j] : 0;
+        if (sd_write(clus_lba(f.clus) + i, sec)) { kprintf("[CARD] cmdline.txt: write failed\n"); opt_state = 3; return; }
+    }
+    if (sd_read(f.dir_lba, sec)) { opt_state = 3; return; }
+    put32(sec + f.dir_off + 28, o);
+    if (sd_write(f.dir_lba, sec)) { opt_state = 3; return; }
+    /* read back */
+    for (uint32_t i = 0; i * 512u < o; i++) {
+        if (sd_read(clus_lba(f.clus) + i, sec)) { opt_state = 3; return; }
+        for (uint32_t j = 0; j < 512 && i * 512u + j < o; j++)
+            if (sec[j] != (uint8_t)opt_out[i * 512u + j]) { kprintf("[CARD] cmdline.txt: read back differs\n"); opt_state = 3; return; }
+    }
+    kprintf("[CARD] cmdline.txt: %u bytes written (was %u)\n", o, n);
+    opt_state = 2;
+}
+/* the mailbox (PSMB_INFO_SETOPT): queue an edit list; the answer comes from psmac_card_options_state */
+int psmac_card_edit_options(const char *text, uint32_t len)
+{
+    if (sd.state < 0 || sd.ro) return -1;
+    if (opt_state == 1) return -2;
+    if (len >= sizeof opt_edit) return -3;
+    for (uint32_t i = 0; i < len; i++) opt_edit[i] = text[i];
+    opt_edit_len = len;
+    __atomic_store_n(&opt_state, 1, __ATOMIC_RELEASE);
+    return 0;
+}
+int psmac_card_options_state(void) { return opt_state; }
+
 /* ==== disk images inside the container ========================================================= */
 #define CHUNK 4096u
 struct img { const uint8_t *ram; uint32_t off, len; volatile uint32_t *dirty; uint32_t nbits; char name[48]; uint32_t written; };
@@ -592,6 +686,7 @@ void psmac_card_poll(void)
     if (sd.state != 1) return;
     if (fl.busy) { flush_poll(); return; }             /* a sector is being programmed: nothing else touches the card */
     if (__atomic_load_n(&pair_dirty, __ATOMIC_ACQUIRE) && !sd.ro) { pair_dirty = 0; pairings_write(); return; }
+    if (__atomic_load_n(&opt_state, __ATOMIC_ACQUIRE) == 1 && !sd.ro) { cmdline_apply(); return; }
     flush_poll();
 }
 void psmac_card_report(void)

@@ -152,6 +152,13 @@ python3 tools/pinet.py /tmp/psmac-wifi peer        # in another shell
 With both sResources present MacTCP takes the Ethernet; choosing the WiFi from the control panel's
 list (its interface-name string, `+48` in `'ipln'`) is not decoded yet.
 
+## AppleTalk on the solo board
+`mac.appletalk=1` starts with AppleTalk active (PRAM's SPConfig). LocalTalk runs over the solo
+board's SCC stand-in, whose transmitter finishes every frame into an empty network (docs/08
+item 43), so the boot and the Network control panel work. There is nobody to talk to there.
+EtherTalk over the Pi's Ethernet or WiFi card needs Apple's EtherTalk extension (Network
+Software Installer), which is not on the testbed images.
+
 ## USB keyboards and mice in the testbed
 QEMU's raspi3b has the Pi 3's DWC2 controller; give it devices and type or move through the monitor:
 ```

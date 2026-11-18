@@ -789,6 +789,34 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    checked by the user. The main keyboard's '.' types a period in Word here. The numeric
    keypad's '.' is Word's own menu key.
 
+43. **AppleTalk on the Pi alone, and cmdline.txt from the Mac (18 November).** The user's
+   Network control panel froze the Pi. With AppleTalk switched on in the Chooser, the testbed
+   stopped at "Welcome to Macintosh" instead, in LocalTalk's transmit coroutine
+   (`tst.b 1546(a2); bne` until a flag the transmitter's interrupt clears). The solo board's
+   SCC was a register file with no transmitter: nothing ever underran, nothing ever
+   interrupted. It now has one that sends nowhere at once:
+   - each data write empties the buffer and, with transmit interrupts on, sets Tx IP;
+   - 50 us later the transmitter underruns and the EOM latch rises (external/status IP with
+     WR15 bit 6);
+   - WR0's reset commands clear them; RR3 shows them, and RR2 read through channel B gives the
+     vector modified by the highest;
+   - the line goes to level 4 while WR9's MIE is set;
+   - in SDLC mode RR0 says "hunt" (no frame arriving).
+
+   With nobody answering its address claims, LocalTalk takes a node and carries on. The boot
+   reaches the Finder with AppleTalk active, and the Network control panel opens and lists
+   LocalTalk Built-in (`docs/img/network-cp-localtalk.png`). `mac.appletalk=1` presets
+   AppleTalk on in PRAM, which the solo board seeds from defaults at every power-on.
+
+   For the WiFi menu (item 44): `PSMB_INFO_SETOPT` hands the kernel an edit list for
+   cmdline.txt in Alice68's form ("-NAME", "+NAME=VALUE"). The card writer applies it:
+   - only the named options change, and every other word of the line is kept;
+   - quoted values stay one word;
+   - the result is written only if it fits the file's first cluster, then read back.
+
+   `PSMB_INFO_OPTSTATE` reports pending, saved or failed. The edit list is not logged, since it
+   carries the WiFi password.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

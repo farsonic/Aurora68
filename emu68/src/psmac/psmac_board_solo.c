@@ -268,18 +268,88 @@ static void via_write(uint32_t reg, uint8_t d)
     }
 }
 
-/* ==== the SCC: a register file ================================================================ */
-static struct { uint8_t wr[2][16], ptr[2]; uint32_t writes; } scc;
+/* ==== the SCC: a register file, and a transmitter that finishes ===========================
+   Nothing is plugged into the ports, so nothing is ever received. What is sent goes nowhere, but
+   the transmitter has to say it went. AppleTalk's LocalTalk driver (System 7.1's .MPP, active
+   once AppleTalk is switched on in the Chooser) sends its address claims in SDLC and runs as a
+   coroutine on the channel's interrupts. Each byte goes out on a transmit-buffer-empty interrupt
+   (WR1 bit 1), and the frame ends on the external/status interrupt for transmit underrun/EOM
+   (WR15 bit 6, RR0 bit 6). With a register file that never interrupted, the Mac waited for that
+   underrun for ever: a boot that stopped at "Welcome to Macintosh", and the Network control panel
+   that froze the user's Pi, 18 November. Now:
+   - a data write empties the transmit buffer at once and, with transmit interrupts on, sets the
+     channel's Tx IP;
+   - when no byte has followed for 50 us, the transmitter underruns, RR0's underrun/EOM bit
+     comes up and, with WR15 bit 6 and WR1 bit 0, so does the external/status IP;
+   - WR0 resets them (reset Tx IP, reset ext/status, reset Tx underrun/EOM latch) as the chip's
+     commands do;
+   - RR3 (channel A) shows the pending bits, RR2 read through channel B gives the vector modified
+     by the highest one (WR9 VIS, status low);
+   - the line goes to level 4 while WR9 MIE is set and something is pending.
+   In SDLC mode RR0 also says "hunt": no frame is coming, which is what an empty network looks
+   like. With nobody answering its claims, LocalTalk takes its node number and carries on. */
+static struct {
+    uint8_t wr[2][16], ptr[2];
+    uint8_t ip;                     /* RR3 layout: 0 B ext, 1 B Tx, 2 B Rx, 3 A ext, 4 A Tx, 5 A Rx */
+    uint8_t eom[2];                 /* the Tx underrun/EOM latch (RR0 bit 6): 1 = underrun reported */
+    uint8_t txbusy[2];              /* a byte written since the last underrun */
+    uint64_t txt[2];
+    uint32_t writes, irqs;
+} scc;
+static inline uint64_t scc_now(void) { uint64_t v; __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(v)); return v; }
+static inline uint64_t scc_hz(void)  { uint64_t v; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(v)); return v; }
+static int scc_sdlc(int ch) { return (scc.wr[ch][4] & 0x0c) == 0 && (scc.wr[ch][4] & 0x30) == 0x20; }
+/* ch 0 = B, 1 = A: the bit of a source in RR3 */
+static inline uint8_t scc_bit(int ch, int src) { return (uint8_t)(1u << (src + (ch ? 3 : 0))); }
+static void scc_tick(void)
+{
+    for (int ch = 0; ch < 2; ch++) {
+        if (scc.txbusy[ch] && scc_now() - scc.txt[ch] > scc_hz() / 20000) {
+            scc.txbusy[ch] = 0;
+            if (!scc.eom[ch]) {
+                scc.eom[ch] = 1;
+                if ((scc.wr[ch][15] & 0x40) && (scc.wr[ch][1] & 0x01))
+                    scc.ip |= scc_bit(ch, 0);
+            }
+        }
+    }
+}
+static int scc_irq(void)
+{
+    scc_tick();
+    return (scc.wr[1][9] & 0x08) && scc.ip;
+}
+static uint8_t scc_rr0(int ch)
+{
+    uint8_t r = 0x2c;                           /* Tx empty, DCD, CTS: an idle port */
+    if (scc.eom[ch] || !scc.txbusy[ch]) r |= 0x40;
+    if (scc_sdlc(ch)) r |= 0x10;                /* hunt: no frame arriving */
+    return r;
+}
+static uint8_t scc_rr2b(void)
+{
+    /* the highest pending source: A Rx, A Tx, A ext, B Rx, B Tx, B ext; none = 011 */
+    static const uint8_t code[6] = { 1, 0, 2, 5, 4, 6 };     /* by RR3 bit: B ext 001, B Tx 000, B Rx 010, A ext 101, A Tx 100, A Rx 110 */
+    uint8_t v = scc.wr[1][2], st = 3;
+    for (int b = 5; b >= 0; b--)
+        if (scc.ip & (1u << b)) { st = code[b]; break; }
+    if (scc.wr[1][9] & 0x01) {
+        if (scc.wr[1][9] & 0x10) v = (uint8_t)((v & 0x8f) | (uint8_t)((st & 1) << 6 | (st & 2) << 4 | (st & 4) << 2));   /* status high: bits 4-6, reversed */
+        else v = (uint8_t)((v & 0xf1) | (uint8_t)(st << 1));
+    }
+    return v;
+}
 static uint32_t scc_read(uint32_t off)
 {
     int ch = (off & 2) ? 1 : 0;                /* +0 B control, +2 A control, +4 B data, +6 A data; index 0 = B, 1 = A */
     if (off & 4) return 0;                      /* data: nothing received */
     int p = scc.ptr[ch]; scc.ptr[ch] = 0;
+    scc_tick();
     switch (p) {
-    case 0:  return 0x6c;                       /* Tx empty, DCD, CTS, Tx underrun: an idle port */
+    case 0:  return scc_rr0(ch);
     case 1:  return 0x07;                       /* all sent, residue codes */
-    case 2:  return scc.wr[ch][2];
-    case 3:  return 0;
+    case 2:  return ch ? scc.wr[1][2] : scc_rr2b();
+    case 3:  return ch ? scc.ip : 0;
     case 10: return 0;
     case 12: case 13: case 15: return scc.wr[ch][p];
     default: return 0;
@@ -289,14 +359,32 @@ static void scc_write(uint32_t off, uint8_t d)
 {
     int ch = (off & 2) ? 1 : 0;
     scc.writes++;
-    if (off & 4) return;                        /* data: swallowed */
+    if (off & 4) {                              /* data: sent nowhere, at once */
+        scc.txbusy[ch] = 1;
+        scc.txt[ch] = scc_now();
+        if (scc.wr[ch][1] & 0x02)
+            scc.ip |= scc_bit(ch, 1);
+        return;
+    }
     if (scc.ptr[ch] == 0) {
+        switch (d & 0x38) {
+        case 0x10: scc.ip &= (uint8_t)~scc_bit(ch, 0); break;         /* reset ext/status interrupts */
+        case 0x28: scc.ip &= (uint8_t)~scc_bit(ch, 1); break;         /* reset Tx int pending */
+        }
+        if ((d & 0xc0) == 0xc0) scc.eom[ch] = 0;                      /* reset Tx underrun/EOM latch */
         int p = d & 7; if ((d & 0x38) == 0x08) p += 8;
-        if (p) { scc.ptr[ch] = p; return; }
-        return;                                 /* WR0 commands: reset status, reset ints: nothing pending here */
+        if (p) scc.ptr[ch] = p;
+        return;
     }
     scc.wr[ch][scc.ptr[ch]] = d;
-    if (scc.ptr[ch] == 9) { scc.wr[0][9] = d; scc.wr[1][9] = d; }
+    if (scc.ptr[ch] == 9) {
+        scc.wr[0][9] = d; scc.wr[1][9] = d;
+        if (d & 0xc0) {                         /* channel or hardware reset: nothing pending */
+            if ((d & 0xc0) == 0xc0) scc.ip = 0;
+            else scc.ip &= (d & 0x80) ? 0x07 : 0x38;
+        }
+    }
+    if (scc.ptr[ch] == 1 && !(d & 0x02)) scc.ip &= (uint8_t)~scc_bit(ch, 1);     /* Tx interrupts off */
     scc.ptr[ch] = 0;
 }
 
@@ -636,11 +724,12 @@ int psmac_solo_access(uint32_t addr, int size, int write, uint32_t data, uint32_
    each command completed on a timeout and System 7 took a second per block (docs/08, item 35) */
 int psmac_solo_scsi_irq(void) { return n.irq; }
 
-/* the level the board drives: the VIA on 1, the RBV (psmac_board_se.c) on 2, nothing on 4 */
+/* the level the board drives: the VIA on 1, the RBV (psmac_board_se.c) on 2, the SCC on 4 */
 unsigned psmac_solo_ipl(void)
 {
     unsigned ipl = via_irq() ? 1 : 0;
     if (psmac_se_rbv_irq() && ipl < 2) ipl = 2;
+    if (scc_irq()) { ipl = 4; scc.irqs++; }
     return ipl;
 }
 
@@ -660,7 +749,8 @@ void psmac_solo_reset(void)
     via.orb = via.ora = via.ddrb = via.ddra = via.acr = via.pcr = via.ifr = via.ier = 0; via.t1_run = via.t2_run = 0;
     via.next_vbl = now + VBL_TICKS; rtc.next_second = now + VIA_HZ;
     adb.state = ADB_IDLE; adb.irq = 0; adb.pending = 0; adb.datasize = 0;
-    for (int c = 0; c < 2; c++) { for (int i = 0; i < 16; i++) scc.wr[c][i] = 0; scc.ptr[c] = 0; }
+    for (int c = 0; c < 2; c++) { for (int i = 0; i < 16; i++) scc.wr[c][i] = 0; scc.ptr[c] = 0; scc.eom[c] = 1; scc.txbusy[c] = 0; }
+    scc.ip = 0;
     iwm.lines = 0;
     n.odr = n.icr = n.mr = n.tcr = n.ser = 0; n.dma = n.irq = n.busy_err = n.aip = n.ack = 0;
     t.phase = PH_FREE; t.req = 0; t.d = 0;
@@ -671,6 +761,10 @@ void psmac_solo_init(void)
     t_base = cnt_now();
     for (int i = 0; i < 256; i++) rtc.pram[i] = psmac_pram_default[i];
     rtc.seconds = 0xe7214980u;              /* 17 November 2026, 00:00, in the Mac's seconds since 1904 */
+    /* mac.appletalk=1: AppleTalk active from the start (SPConfig, PRAM $13, low nibble 1 = the
+       printer port is AppleTalk's). PRAM starts from the defaults at every power-on, so the
+       Chooser's choice lasts until the Pi is switched off; this makes it the default. */
+    { const char *a = psmac_option("mac.appletalk"); if (a && a[0] == '1') rtc.pram[0x13] = (uint8_t)((rtc.pram[0x13] & 0xf0) | 1); }
     rtc.enb = 1;
     static const char *const keys[] = { "mac.scsi0", "mac.scsi1", "mac.scsi2", "mac.scsi3", "mac.scsi4", "mac.scsi5", "mac.scsi6" };
     for (int i = 0; i < 7; i++) { const char *p = psmac_option(keys[i]); if (p) disk_add_file(p); }
@@ -697,8 +791,8 @@ void psmac_solo_report(void)
     kprintf("[PSMAC:SOLO] VIA IFR %02x IER %02x ACR %02x T1 %s T2 %s, %u VBLs | ADB state %d %u cmds | RTC %u cmds secs %08x | SCSI %s req %d, %u cmds, %u phase irqs, %u underflows | disk 0: %u read %u written\n",
             via.ifr, via.ier, via.acr, via.t1_run ? "on" : "off", via.t2_run ? "on" : "off", via.vbls, adb.state, adb.cmds, rtc.cmds, rtc.seconds,
             phase_name(t.phase), t.req, t.cmds, t.mismatches, t.underflows, disks[0].reads, disks[0].writes);
-    kprintf("[PSMAC:SOLO]   SCC: %u writes; A (modem) WR1 %02x WR3 %02x WR4 %02x WR5 %02x WR9 %02x WR10 %02x WR11 %02x WR12 %02x WR14 %02x WR15 %02x | B (printer) WR1 %02x WR3 %02x WR4 %02x WR5 %02x WR10 %02x WR11 %02x WR12 %02x WR14 %02x WR15 %02x\n",
-            scc.writes, scc.wr[1][1], scc.wr[1][3], scc.wr[1][4], scc.wr[1][5], scc.wr[1][9], scc.wr[1][10], scc.wr[1][11], scc.wr[1][12], scc.wr[1][14], scc.wr[1][15],
+    kprintf("[PSMAC:SOLO]   SCC: %u writes, %u interrupts, pending %02x; A (modem) WR1 %02x WR3 %02x WR4 %02x WR5 %02x WR9 %02x WR10 %02x WR11 %02x WR12 %02x WR14 %02x WR15 %02x | B (printer) WR1 %02x WR3 %02x WR4 %02x WR5 %02x WR10 %02x WR11 %02x WR12 %02x WR14 %02x WR15 %02x\n",
+            scc.writes, scc.irqs, scc.ip, scc.wr[1][1], scc.wr[1][3], scc.wr[1][4], scc.wr[1][5], scc.wr[1][9], scc.wr[1][10], scc.wr[1][11], scc.wr[1][12], scc.wr[1][14], scc.wr[1][15],
             scc.wr[0][1], scc.wr[0][3], scc.wr[0][4], scc.wr[0][5], scc.wr[0][10], scc.wr[0][11], scc.wr[0][12], scc.wr[0][14], scc.wr[0][15]);
     static uint32_t shown;
     if (t.ring_n != shown) {
