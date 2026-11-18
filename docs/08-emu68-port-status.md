@@ -877,6 +877,45 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    FRESTORE (An)+ steps over a frame by its size byte (upstream knew only the 68881's $18).
    Speedometer's System Information: "FPU: MC68882" (`docs/img/speedometer-fpu-68882.png`).
 
+46. **AppleTalk over Ethernet, and an AppleShare server on the wire (18 November).** The user
+   wanted AppleTalk over Ethernet only, and asked whether Lagoon (the user's network-share
+   program, which has a Mac port) could bring its own EtherTalk, since System 7.1 has none.
+   Lagoon now does (its `src/mac/ethertalk`, an 'adev'/'atlk' pair called "Lagoon EtherTalk"),
+   and the testbed was taught to talk back:
+   - `mac.xpram=ADDR:HEX[,ADDR:HEX]` on the solo board presets extended PRAM. The AppleTalk
+     connection is the long at $E0 (the Network control panel and the LAP Manager read and
+     write it there): `mac.xpram=e0:098100a8` means slot 9, sResource $81 (the Ethernet unit),
+     connection 168 (Lagoon's), so AppleTalk starts on it at boot without a trip through the
+     control panel.
+   - `tools/pinet.py` names AppleTalk Phase 2 frames (802.3 with 802.2 SNAP): AARP requests,
+     responses and probes with their addresses, DDP headers, NBP lookups with their tuples,
+     ZIP, RTMP. With `PINET_ATALK=NAME` it is a node as well, number 104 on whatever network the
+     Mac uses: it answers AARP for that address, NBP lookups for NAME:AFPServer, ASP GetStatus
+     (a server information block: AFP 2.1, guest access only), and sends the Mac an AppleTalk
+     Echo request every ten seconds.
+
+   What the runs showed, in order. The first boot with the connection in PRAM loaded Lagoon's
+   'atlk' and opened `.ENET`, but .MPP wrote short-header datagrams to node $FF only: it had
+   taken the link for a non-extended one, because the 'atlk' compared the whole of D0 when .MPP
+   sets only its low word. With that fixed, the log showed nine AARP probes for 65375.1 (a node
+   in the startup range), ZIP GetNetInfo with nobody answering, and NBP confirmations of the
+   Mac's own name. Choosing LocalTalk in the Network control panel and then Lagoon again went
+   through AClose, AShutDown, AInstall, AOpen and new probes.
+
+   Datagrams going up took three more steps. At first .MPP discarded every one at once. A dump
+   of the LAP Manager's resident code showed why: its LRdDispatch is a jump through 1052(A2)
+   into .MPP, and on an extended network that routine compares the destination in the Read
+   Header Area before reading anything, so it wants the whole 13-byte DDP header there, not
+   LocalTalk's five bytes. With the header in place the Chooser's NBP replies reached their
+   socket but listed nothing, and the Echo replies went to 65496.0:0. .MPP's echo responder keeps
+   its place in D2 across ReadRest, and the 'atlk's ReadRest had used D2 as a counter. After that
+   the Echo replies came back unicast to the peer's Ethernet address, and the Chooser's
+   AppleShare panel listed "Lagoon Test". Choosing it sent ASP GetStatus, and the AppleShare
+   client showed its login dialog ("Connect ... as: Guest"). The LAP Manager's 802.2 dispatcher
+   leaves the frame's header behind A3 with the source address at -16(A3), which the 'atlk'
+   now uses to learn its neighbours' addresses. Logging in is next: the peer does not answer
+   ASP OpenSession yet.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

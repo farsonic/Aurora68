@@ -25,6 +25,10 @@ replies to .rx. Two modes:
                             go to that responder on the host (Lagoon's tests/servers/mdns/
                             responder.py --addr 192.168.68.1) and its answers come back to the Mac
                             from the peer, as a legacy unicast answer (RFC 6762 6.7).
+                            PINET_ATALK=NAME: an AppleTalk node too (Phase 2, node 104 on the
+                            Mac's network): AARP, NBP lookups for NAME:AFPServer, ASP GetStatus,
+                            so the Chooser's AppleShare list shows NAME. AppleTalk frames are
+                            decoded in the log either way.
   pinet.py <base> tap tapN  bridge frames to a Linux TAP device (needs CAP_NET_ADMIN)
 
 Usage in the testbed: tools/run-fullstack.sh 400 mac.net=/tmp/psmac-net   (and run this helper).
@@ -160,6 +164,90 @@ def atalk(frame):
         return s
     return 'SNAP ' + llc[3:8].hex()
 
+# PINET_ATALK=NAME: a small AppleTalk node on the wire, enough for a Mac's Chooser to list an
+# AppleShare server called NAME. Its address is node 104 on whatever network the Mac uses (learnt
+# from the Mac's first datagram; until then nothing is answered). It answers AARP requests and
+# probes for that address, NBP lookups that match NAME (or =) of type AFPServer (or =), and ASP
+# GetStatus (an ATP request with ASP function 3, Inside AppleTalk 11-17) with a server
+# information block: no login yet (Inside AppleTalk ch. 11 and 13, AppleTalk Filing Protocol 2.1).
+ATALK_NAME = os.environ.get('PINET_ATALK')
+ATALK_NODE = 104                 # the peer's node: Aurora68's "68" in hex, out of the way of the Mac's picks
+ATALK_SOCKET = 250               # the AFP server's ASP socket (a statically assigned number, 1-127, would do too)
+atalk_net = None                 # the network the Mac is on
+def snap_frame(dst, snap, body):
+    return dst + PEER_MAC + struct.pack('>H', 8 + len(body)) + b'\xaa\xaa\x03' + snap + body
+def ddp_send(dst_mac, dnet, dnode, dsock, ssock, dtype, data):
+    hdr = struct.pack('>HHHHBBBBB', 13 + len(data), 0, dnet, atalk_net, dnode, ATALK_NODE, dsock, ssock, dtype)
+    send(snap_frame(dst_mac, bytes.fromhex('080007809b'), hdr + data))
+def pstr(t):
+    t = t.encode('mac_roman'); return bytes([len(t)]) + t
+def nbp_match(pat, name):
+    return pat == '=' or pat.lower() == name.lower()
+def server_info():
+    # FPGetSrvrInfo's reply (AFP 2.1): offsets, then flags, the name; the strings after
+    machine, versions, uams = pstr('Aurora68'), bytes([1]) + pstr('AFPVersion 2.1'), bytes([1]) + pstr('No User Authent')
+    fixed = 2 + 2 + 2 + 2 + 2          # offsets: machine type, versions, UAMs, icon; flags
+    name = pstr(ATALK_NAME)
+    if (fixed + len(name)) & 1: name += b'\0'
+    o_mach = fixed + len(name); o_ver = o_mach + len(machine); o_uam = o_ver + len(versions)
+    return struct.pack('>HHHHH', o_mach, o_ver, o_uam, 0, 0) + name + machine + versions + uams
+atalk_mac = None                 # the Mac's Ethernet and AppleTalk addresses, from its datagrams
+atalk_mac_node = None
+aep_next = 0; aep_seq = 0
+def aep_due():
+    # an AppleTalk Echo request (AEP, DDP type 4, socket 4: Inside AppleTalk ch. 5) to the Mac every
+    # ten seconds: its .MPP answers by itself, which shows datagrams going up and coming back
+    global aep_next, aep_seq
+    if not ATALK_NAME or atalk_mac is None or time.time() < aep_next: return
+    aep_next = time.time() + 10; aep_seq += 1
+    ddp_send(atalk_mac, atalk_net, atalk_mac_node, 4, 253, 4, bytes([1]) + b'aurora68 echo %d' % aep_seq)
+    print(f"peer -> AEP echo request {aep_seq} to {atalk_net}.{atalk_mac_node}", flush=True)
+def atalk_respond(frame):
+    global atalk_net, atalk_mac, atalk_mac_node
+    llc, src = frame[14:22], frame[6:12]
+    if llc[3:8] == bytes.fromhex('00000080f3'):
+        a = frame[22:]
+        fn = struct.unpack('>H', a[6:8])[0]
+        want = a[24:28]
+        if atalk_net is None or (want[1] << 8 | want[2]) != atalk_net or want[3] != ATALK_NODE or fn not in (1, 3):
+            return None
+        body = struct.pack('>HHBBH', 1, 0x809b, 6, 4, 2) + PEER_MAC + bytes([0, atalk_net >> 8, atalk_net & 255, ATALK_NODE]) + a[8:18]
+        send(snap_frame(src, bytes.fromhex('00000080f3'), body))
+        return 'AARP response for our address'
+    if llc[3:8] != bytes.fromhex('080007809b'):
+        return None
+    d = frame[22:]
+    ln = struct.unpack('>H', d[0:2])[0] & 0x3ff
+    dnet, snet = struct.unpack('>HH', d[4:8])
+    dnode, snode, dsock, ssock, dtype = d[8], d[9], d[10], d[11], d[12]
+    if atalk_net is None and snet:
+        atalk_net = snet
+        print(f"peer: AppleTalk node {atalk_net}.{ATALK_NODE} (the Mac's network)", flush=True)
+    if snet == atalk_net and snode not in (0, 255):
+        atalk_mac, atalk_mac_node = src, snode
+    if dtype == 4 and dsock == 253 and ln > 13 and d[13] == 2:
+        return 'AEP echo REPLY from the Mac: ' + repr(bytes(d[14:ln]))
+    if dtype == 2 and dsock == 2 and d[13] >> 4 == 2:          # NBP LkUp
+        nid = d[14]
+        t, _ = nbp_tuple(d, 15)
+        obj, rest = t.split(':', 1); typ, zone = rest.split('@', 1)
+        if not (nbp_match(obj, ATALK_NAME) and nbp_match(typ, 'AFPServer')):
+            return None
+        rnet, rnode, rsock = struct.unpack('>HBB', d[15:19])
+        tup = struct.pack('>HBBB', atalk_net, ATALK_NODE, ATALK_SOCKET, 0) + pstr(ATALK_NAME) + pstr('AFPServer') + pstr('*')
+        ddp_send(src, rnet, rnode, rsock, 2, 2, bytes([0x31, nid]) + tup)
+        return f"NBP LkUp-Reply '{ATALK_NAME}:AFPServer@*' to {rnet}.{rnode}:{rsock}"
+    if dtype == 3 and dnode == ATALK_NODE and dsock == ATALK_SOCKET and ln >= 13 + 8:   # ATP
+        ctl, bmp, tid = d[13], d[14], struct.unpack('>H', d[15:17])[0]
+        user = d[17:21]
+        if ctl >> 6 == 1 and user[0] == 3:                     # TReq, ASP GetStatus
+            info = server_info()
+            resp = bytes([0x90, 0]) + struct.pack('>H', tid) + bytes(4) + info   # TResp, EOM, sequence 0
+            ddp_send(src, snet, snode, ssock, ATALK_SOCKET, 3, resp)
+            return f"ASP GetStatus: server information ({len(info)} bytes)"
+        return f"ATP to the server socket: control {ctl:02x}, ASP function {user[0]} (not answered yet)"
+    return None
+
 def peer(frame):
     global mac_ip4
     dst, src, etype = frame[0:6], frame[6:12], struct.unpack('>H', frame[12:14])[0]
@@ -232,6 +320,12 @@ def peer(frame):
         return peer6(frame, src)
     if etype <= 1500 and len(frame) >= 22:                   # 802.3 with 802.2: AppleTalk Phase 2
         r = atalk(frame)
+        if r and ATALK_NAME:
+            try:
+                a = atalk_respond(frame)
+                if a: r += ' -> ' + a
+            except (IndexError, ValueError, struct.error) as e:
+                r += f' (not understood: {e})'
         if r: return r
     return f'type {etype:04x}'
 
@@ -472,6 +566,7 @@ while True:
     if tap is None:
         ping6_due()
         mdns_due()
+        aep_due()
         relay_due()
     if tap is not None:
         try:

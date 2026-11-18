@@ -166,8 +166,16 @@ the next power-on joins by itself. The rest of cmdline.txt is kept (docs/08 item
 `mac.appletalk=1` starts with AppleTalk active (PRAM's SPConfig). LocalTalk runs over the solo
 board's SCC stand-in, whose transmitter finishes every frame into an empty network (docs/08
 item 43), so the boot and the Network control panel work. There is nobody to talk to there.
-EtherTalk over the Pi's Ethernet or WiFi card needs Apple's EtherTalk extension (Network
-Software Installer), which is not on the testbed images.
+For AppleTalk over the Pi's Ethernet (or WiFi) card, Lagoon brings its own connection file,
+"Lagoon EtherTalk" (Lagoon's `src/mac/ethertalk`, its docs/mac.md): put it in the Extensions
+folder and choose "Lagoon / Slot #9" in the Network control panel. In the testbed, preset the
+choice and give the peer an AppleShare server to find (docs/08 item 46):
+```
+PINET_ATALK="Lagoon Test" python3 tools/pinet.py /tmp/psmac-net peer
+tools/run-solo.sh 600 mac.net=/tmp/psmac-net mac.appletalk=1 mac.xpram=e0:098100a8
+```
+The peer's log shows the Mac's AARP probes, NBP lookups and Echo replies. The Chooser's
+AppleShare panel lists "Lagoon Test" and gets as far as the login dialog.
 
 ## USB keyboards and mice in the testbed
 QEMU's raspi3b has the Pi 3's DWC2 controller; give it devices and type or move through the monitor:
