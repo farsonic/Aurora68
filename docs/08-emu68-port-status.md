@@ -828,7 +828,7 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    - A press on the icon pops up a menu: the state, Turn Wi-Fi On/Off, the scanned networks
      (signal dots, "(open)", a tick on the one in use), Look for Networks, Disconnect, and Forget
      the Network Saved on the Pi.
-   - A secured network asks for its password in a dialog with "Remember on this Pi", ticked by
+   - A secured network asks for its password in a dialog with "Remember this network", ticked by
      default. The join goes through unit 0's command box as PiWiFi's does. Once the unit reports
      CONNECTED, `PSMB_INFO_SETOPT` writes `wifi.ssid=` / `wifi.psk=` into cmdline.txt (item 43).
 

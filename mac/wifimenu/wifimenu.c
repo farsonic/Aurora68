@@ -13,7 +13,7 @@
  *     changed.
  * The radio is the Pi's: unit 0 of the network board in the card window, driven through its
  * command box exactly as PiWiFi does (mac/piwifi.s, emu68/src/alice/alice_net.h). A network
- * joined with "Remember on this Pi" ticked is written into cmdline.txt on the Pi's card once the
+ * joined with "Remember this network" ticked is written into cmdline.txt on the Pi's card once the
  * join has succeeded (wifi.ssid= and wifi.psk=, through the mailbox's PSMB_INFO_SETOPT,
  * emu68/src/psmac/psmac_card.c), so the next power-on joins it by itself. Written 18 November 2026.
  */
@@ -305,7 +305,7 @@ static int ask_password(const char *ssid, char *pass, int *remember)
 	put_item(&q, 100, 210, 120, 280, 4, "Cancel");
 	put_item(&q, 10, 60, 42, 360, 8 | 0x80, prompt);
 	put_item(&q, 48, 140, 64, 356, 16, "");
-	put_item(&q, 72, 60, 90, 360, 5, "Remember on this Pi (cmdline.txt)");
+	put_item(&q, 72, 60, 90, 360, 5, "Remember this network");
 	put_item(&q, 48, 60, 64, 136, 8 | 0x80, "Password:");
 	put_item(&q, 96, 286, 124, 364, 0 | 0x80, "");   /* the default button's outline */
 	void *wm;

@@ -4,7 +4,7 @@
 
 - **The WiFi menu.** A WiFi icon at the right of the menu bar, as on today's Macs: it shows the
   signal, and its menu lists the networks around, joins one (asking for its password), switches
-  the WiFi off and on. "Remember on this Pi" saves the network in cmdline.txt on the card, so the
+  the WiFi off and on. "Remember this network" saves the network in cmdline.txt on the card, so the
   Pi joins it at every power-on. It is the `WiFi Menu` extension in the kit's disk image: drop it
   on the System Folder and restart.
 - **AppleTalk on the Pi alone.** Switching AppleTalk on in the Chooser no longer stops the next

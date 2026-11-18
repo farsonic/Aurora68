@@ -158,7 +158,7 @@ of the menu bar, left of the Help menu, on System 7. The icon shows the signal (
 arcs), the dot alone while not connected, faint arcs when the radio is off. A press on it lists
 the networks around with their signal and "(open)" for unsecured ones, ticks the one in use,
 switches the radio on or off, looks again, disconnects, and forgets the network saved on the Pi.
-Choosing a secured network asks for its password (shown as bullets; Return joins, Escape cancels). With "Remember on this Pi" ticked, the kernel
+Choosing a secured network asks for its password (shown as bullets; Return joins, Escape cancels). With "Remember this network" ticked, the kernel
 writes `wifi.ssid=` and `wifi.psk=` into cmdline.txt on the Pi's card once the join has worked, so
 the next power-on joins by itself. The rest of cmdline.txt is kept (docs/08 items 43 and 44).
 
