@@ -771,6 +771,23 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      device that was not ready, and a device that fails enumeration makes no port change.
      `psmac_usb.c` now tries again (four times, six seconds apart) while a keyboard or mouse is
      missing, and enumerates again when a device's polls have all failed for two seconds.
+   - *Lemmings* reaches its title screen with its music and plays its first level
+     (`docs/img/lemmings-playing.png`): the freeze was the ASC.
+
+42. **Word and self-modifying code (18 November).** The user's Word 5.1 showed the spinning
+   watch for ever. The image here has Word 4.0, which stopped at once with "bad F-Line
+   instruction". The kernel log had one illegal instruction first ("Undefined Line0 000e",
+   vector 4 at $00EAE12E) and then F-line traps at a nonsense PC. Word's trap glue is
+   self-modifying: `lea (pc,$1E),a1; move.w (a0)+,(a1)` writes a trap word into an instruction
+   28 bytes ahead, which then runs in the same straight run of code. Emu68 had translated the
+   run as one block while the slot still held its $0000 placeholder, so it decoded
+   `0000 45EE` as an ORI with an immediate operand and then `000E`. On a 68030 it works because
+   the trap dispatcher's cache flush leaves the slot uncached. The translator (PSMAC build)
+   now ends a block before any address that a LEA or PEA (d16,PC) points at up to 256 bytes
+   ahead, so a patched instruction is translated when execution reaches it. Word 4.0 opens a
+   document and takes typing (`docs/img/word4-typing.png`). Word 5.1 is the same family; to be
+   checked by the user. The main keyboard's '.' types a period in Word here. The numeric
+   keypad's '.' is Word's own menu key.
 
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)

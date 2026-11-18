@@ -357,12 +357,32 @@ static inline uintptr_t M68K_Translate(uint16_t *M68kCodePtr, uint32_t *arm_star
 
     m68k_low = ctx.tc_M68kCodePtr;
     m68k_high = ctx.tc_M68kCodePtr + 2;
+#ifdef PSMAC
+    /* Code that patches an instruction a few words ahead of itself: Microsoft Word 4's trap
+       glue does "lea (d16,pc),a1; move.w (a0)+,(a1)" and executes the trap word it wrote 28
+       bytes later, in the same straight run. Translated as one block, the slot was decoded as
+       it was before the write (a $0000 placeholder: "ori.b #$45EE,d0", then "$000E", an illegal
+       instruction; "bad F-Line instruction" next), 18 November. A 68030 runs it because the
+       trap dispatcher's cache flush leaves the slot uncached. So a LEA or PEA (d16,PC) that
+       points a little way ahead ends the block before that address: what is there is translated
+       when execution reaches it. */
+    uint16_t *smc_stop = NULL;
+#endif
 
     while (break_loop == FALSE && soft_break == FALSE && insn_count < var_EMU68_M68K_INSN_DEPTH)
     {
         uint16_t insn_consumed;
         uint16_t * const in_code = ctx.tc_M68kCodePtr;
         uint32_t * const out_code = ctx.tc_CodePtr;
+#ifdef PSMAC
+        if (insn_count && in_code == smc_stop)
+            break;
+        if ((in_code[0] & 0xf1ff) == 0x41fa || in_code[0] == 0x487a) {
+            uint16_t *t = (uint16_t *)((uintptr_t)in_code + 2 + (int16_t)in_code[1]);
+            if (t > in_code + 1 && t <= in_code + 128 && (!smc_stop || t < smc_stop))
+                smc_stop = t;
+        }
+#endif
 
         if (insn_count && ((uintptr_t)ctx.tc_M68kCodePtr < (uintptr_t)local_state[insn_count-1].mls_M68kPtr))
         {

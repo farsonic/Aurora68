@@ -9,6 +9,9 @@
 - **The Mac reports a 68030** (it said 68020): About This Macintosh, Gestalt and Speedometer.
 - **USB keyboards and mice plugged in at power-on** are found without unplugging them: the Pi
   tries again for half a minute.
+- **Microsoft Word** starts (4.0 stopped with "bad F-Line instruction"; 5.1 showed the spinning
+  watch): the emulator now handles programs that patch their own instructions.
+- **Lemmings** plays, with its music.
 
 ## 0.7 — USB keyboards and mice (18 November 2026)
 
