@@ -1,5 +1,20 @@
 # Aurora68 release notes
 
+## 0.10 — The Bluetooth menu, PC keyboards (18 November 2026)
+
+- **The Bluetooth menu.** A Bluetooth icon beside the WiFi one in the menu bar. Its menu shows the
+  keyboards and mice the Pi knows, searches for new ones and pairs them (showing the passkey to
+  type when a keyboard asks for one), and forgets a device from its submenu after asking. The two
+  menus are now one extension, `Wi-Fi & Bluetooth`: remove the old `WiFi Menu` from the Extensions
+  folder when you add it.
+- **The WiFi menu hangs from the menu bar** with no gap, and its password dialog follows Apple's
+  1992 Human Interface Guidelines (OK outlined, a note icon, bullets for the password). The check
+  box says "Remember this network".
+- **PC keyboards: `mac.altcmd=1`** in cmdline.txt swaps Alt and the Windows key, so the key beside
+  the space bar is Command, as on a Mac keyboard.
+- **The Mac answers on the network by name** (Riptide: mDNS is on). `ping macintosh.local` from
+  another computer reaches it; the name is the one in the Sharing Setup control panel.
+
 ## 0.9 — The WiFi menu, AppleTalk (18 November 2026)
 
 - **The WiFi menu.** A WiFi icon at the right of the menu bar, as on today's Macs: it shows the
