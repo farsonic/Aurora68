@@ -23,8 +23,11 @@ What is in the zip
   aurora68-512x342.declrom   the slot-9 declaration ROM for the SE's screen size: PiDisk,
                          Ethernet, WiFi, input and video drivers for the Macintosh
   aurora68.declrom       the same for a 640 by 480 second screen (the IIci testbed); and
-  aurora68-WxH.declrom   one per larger HDMI screen size (not for the SE's screen yet)
+  aurora68-WxH.declrom   one per larger HDMI screen size, 800x600 up to 1920x1200 (not for the
+                         SE's screen yet)
   aurora68-wifionly.declrom   the WiFi as the only network card (MacTCP then takes the WiFi)
+  aurora68-wifi.declrom  the screen with the WiFi as the only network card, for a Pi 3 alone; and
+  aurora68-wifi-WxH.declrom   the same for each larger screen size
   make-container.py      builds aurora68.cpio from your ROM, the declaration ROM and firmware,
   patches/               and patches a stock IIci ROM on the way with the byte delta in patches/
                          (new in 0.3; 0.1 and 0.2 did not, which left System 7.1 to an occasional
@@ -32,7 +35,8 @@ What is in the zip
                          patches/iici.json are the source of that delta, for the record
   Mac/                   the Macintosh-side programs: PiMach, PiDisk (extensions), PiWiFi,
                          PiBlue, PiStatus, PiNet, PiPing, PiScreens, PiColor, PiLog (applications;
-                         PiLog shows the Pi's log in a window, filtered by part),
+                         PiLog shows the Pi's log in a window, filtered by part), PiDepth (sets
+                         the screen's depth at startup from the number in its name),
                          as MacBinary files and on Aurora68-Utilities.img (an HFS disk image)
   RELEASE-NOTES.md       what works, what does not
   LICENSES/              MPL-2.0 (Emu68, Aurora68) and GPL-2.0 (the Alice68 modules)
@@ -150,6 +154,24 @@ the clock chip, the ADB transceiver (no keyboard or mouse yet), the SCC, the flo
      the log shows until the Mac's video driver takes the screen, then the Mac does). Add the
      wifi.ssid= / wifi.psk= / wifi.country= words if you like, and mac.screen=WxH for a bigger
      screen with the matching declaration ROM in the container.
+     A Pi 3 at a bigger screen with the WiFi: the Pi 3's wired Ethernet is not driven, and
+     MacTCP and Riptide take the first network card they find, so use the WiFi-only declaration
+     ROM of the screen's size. For a 1080p monitor (hdmi_group=2, hdmi_mode=82 in config.txt,
+     mac.screen=1920x1080 in cmdline.txt):
+
+        python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom \
+          aurora68-wifi-1920x1080.declrom MyMac.img \
+          cyfmac43430-sdio.bin brcmfmac43430-sdio.txt cyfmac43430-sdio.clm_blob BCM43430A1.hcd
+
+     Put only one declaration ROM of that size in the container: with both
+     aurora68-1920x1080.declrom and aurora68-wifi-1920x1080.declrom the kernel takes whichever
+     comes last, and the wired one leaves the Mac with no working network.
+     For a 1920 by 1200 monitor in millions of colours: in config.txt hdmi_group=2 and
+     hdmi_mode=69; in cmdline.txt mac.screen=1920x1200; aurora68-1920x1200.declrom (on a Pi 3,
+     aurora68-wifi-1920x1200.declrom) in the container in place of aurora68.declrom. On the Mac choose Millions in Monitors (32-bit
+     addressing must be on; the solo board's parameter RAM has it on). Parameter RAM does not
+     survive a power cycle yet, so to start in millions every time put PiDepth (in Mac/) in the
+     System Folder's Startup Items and rename it "PiDepth 32".
   4. Boot. The ROM's memory test takes a few seconds, the happy Mac appears, then "Welcome to
      Macintosh" and the Finder, about a minute on a Pi 3.
   5. Mouse and keyboard, over Bluetooth (new in 0.5). The kernel starts the Pi's Bluetooth unless

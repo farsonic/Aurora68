@@ -1,5 +1,22 @@
 # Aurora68 release notes
 
+## Unreleased
+
+- **1920 by 1200 in millions of colours.** The Pi's screen can now be a 1920 by 1200 monitor at
+  32 bits: `hdmi_group=2` and `hdmi_mode=69` in config.txt, `mac.screen=1920x1200` in
+  cmdline.txt, and the new `aurora68-1920x1200.declrom` in the container. Every screen size the
+  kernel accepts, up to 1920 by 1200, now offers millions of colours (1080p only just did).
+  Replace every declaration ROM along with `kernel8.img`: the frame buffer for thousands and
+  millions of colours has moved, and an old declaration ROM with the new kernel (or the other way
+  round) shows a grey screen in those modes.
+- **WiFi at every screen size.** Each larger screen size now has a declaration ROM with the WiFi
+  as the only network card, `aurora68-wifi-WxH.declrom` (`aurora68-wifi-1920x1080.declrom` and so
+  on), like `aurora68-wifi.declrom` at 640 by 480. A Pi 3 alone at a bigger screen had no network
+  on the Mac: the other sized ROMs list the wired Ethernet first, which a Pi 3 does not drive, and
+  MacTCP and Riptide take the first card. Put only one declaration ROM of a size in the container.
+- **PiDepth** is in the kit: renamed "PiDepth 32" and put in Startup Items, the Mac starts in
+  millions of colours on a board whose parameter RAM forgets the Monitors setting.
+
 ## 0.10 — The Bluetooth menu, PC keyboards (18 November 2026)
 
 - **The Bluetooth menu.** A Bluetooth icon beside the WiFi one in the menu bar. Its menu shows the

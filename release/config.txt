@@ -21,7 +21,11 @@ enable_uart=1                 # the kernel's log on the serial pins (115200 8N1)
 # 640 x 480 at 60 Hz maps one pixel to one. A larger mode is scaled by the firmware.
 hdmi_force_hotplug=1
 hdmi_group=2                  # DMT (monitor) modes
-hdmi_mode=4                   # 640 x 480, 60 Hz. 9 = 800 x 600, 16 = 1024 x 768, 82 = 1080p
+hdmi_mode=4                   # 640 x 480, 60 Hz. 9 = 800 x 600, 16 = 1024 x 768, 82 = 1080p,
+                              # 69 = 1920 x 1200 (60 Hz, reduced blanking; 68 is too fast for a Pi 3)
+# For a larger mode put mac.screen=WxH (e.g. mac.screen=1920x1200) in cmdline.txt and the declaration
+# ROM of that size (aurora68-1920x1200.declrom) in the container. Every size up to 1920 x 1200 offers
+# millions of colours in Monitors once 32-bit addressing is on; gpu_mem=64 below is enough for it.
 disable_overscan=1
 
 [pi3]

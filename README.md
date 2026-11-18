@@ -99,7 +99,8 @@ The Pi's HDMI output is the Macintosh's second screen. By default it is 640 by 4
 firmware scales it to whatever HDMI mode it chose. For a larger Macintosh screen, one pixel to one,
 set the HDMI mode and tell the kernel the same size with `mac.screen=` (below) and put the matching
 declaration ROM (`aurora68-1024x768.declrom` and so on) in the container in place of
-`aurora68.declrom`. `hdmi_mode=16` is 1024 by 768, `35` is 1280 by 1024, `82` is 1080p. The screen
+`aurora68.declrom`. `hdmi_mode=16` is 1024 by 768, `35` is 1280 by 1024, `82` is 1080p, `69` is
+1920 by 1200 (60 Hz, reduced blanking: the Pi 3's HDMI cannot drive the full-blanking `68`). The screen
 offers black and white, 4, 16, 256, thousands and millions of colours in the Monitors control
 panel; the ROM sizes the Macintosh's memory and the frame buffer is the Pi's, so a 1080p screen in
 millions of colours costs the Macintosh nothing. `docs/img/system71-pi-1024x768-millions.png`
@@ -116,10 +117,10 @@ One line, options separated by spaces, no comments:
 | `wifi.ssid=NAME wifi.psk=PASSWORD wifi.country=GB` | join a WiFi network at boot |
 | `wifi=off`, `bt=off`, `eth=off` | leave a radio or the Ethernet off |
 | `net.oui=off` | keep the Pi's own MAC addresses (default: Commodore's prefix, as Alice68) |
-| `mac.screen=1024x768` | the second screen's size in pixels (default 640x480; 512 to 1920 by 342 to 1200). Set `hdmi_mode` to match and use the declaration ROM of that size |
+| `mac.screen=1024x768` | the second screen's size in pixels (default 640x480; 512 to 1920 by 342 to 1200, every size up to 1920x1200 in millions of colours). Set `hdmi_mode` to match and use the declaration ROM of that size (`aurora68-1920x1200.declrom` for `mac.screen=1920x1200`, `hdmi_mode=69`) |
 | `mac.console=hdmi` | keep the kernel's log on the HDMI screen for the whole run (the same text as the serial line); without it the log shows until the Macintosh's video driver takes the screen |
 | `mac.board=se` | the logic board the Pi sits in: `se` (the Macintosh SE: its chips behind the IIci ROM's addresses, docs/12), `solo` (no Macintosh: the kernel answers every chip and boots a disk image from the container, docs/12) or the default, the testbed's IIci |
-| `aurora68-wifi.declrom` (a file, not an option) | the declaration ROM with the screen, PiDisk, input and the WiFi network card but no wired Ethernet: MacTCP takes the first network card it finds, so this is the one for a Pi without Ethernet (3B, 3A+, Zero 2 W, the bench) |
+| `aurora68-wifi.declrom` (a file, not an option) | the declaration ROM with the screen, PiDisk, input and the WiFi network card but no wired Ethernet: MacTCP and Riptide take the first network card they find, so this is the one for a Pi whose wired Ethernet is not driven (every Pi 3, the Zero 2 W, the bench). `aurora68-wifi-WxH.declrom` is the same for a larger screen (`aurora68-wifi-1920x1080.declrom` with `mac.screen=1920x1080`). Put only one declaration ROM of a size in the container: with both `aurora68-1920x1080` and `aurora68-wifi-1920x1080` the kernel takes whichever comes last |
 | `bt=off` | leave the Bluetooth chip off. Without it the kernel starts Bluetooth: on a Pi 3 the log then moves from the PL011 to the mini UART on the same header pins |
 | `bt.pair=1` | pair with the first keyboard or mouse a scan finds in pairing mode, and look again every 20 s until one is connected (`bt.pair=NAME` takes only a device whose name contains NAME). The log then prints the `bt.dev=` word that makes the pairing permanent |
 | `bt.dev=ADDR:KEY:KIND...` | a paired device, as the log printed it after `bt.pair=`, so it reconnects at every boot without pairing again |
