@@ -3405,6 +3405,17 @@ void check_cacr()
 #endif
 
     asm volatile("mov %w0, " REG_CACR_ASM : "=r"(cacr));
+#ifdef PSMAC
+    /* The 68030's CACR bits read back as they were written (WA, DBE, FD, ED, IBE, FI, EI; the
+       clear strobes CD/CED/CI/CEI read 0 as on the chip). The IIci ROM tells a 68030 from a 68020
+       by writing $2809 and looking for WA (bit 13) in what comes back (ROM 0x408007C8); a 68040's
+       CACR has no such bit, so the ROM recorded a 68020 in CPUFlag and Gestalt, Speedometer and
+       every program asking said 68020. The 68040's own bits (DE, IE) are kept by the JIT's store. */
+    if (raw & 0x00003313u) {
+        cacr |= raw & 0x00003313u;
+        asm volatile("mov " REG_CACR_ASM ", %w0" :: "r"(cacr));
+    }
+#endif
 
     change = old_cacr ^ cacr;
     old_cacr = cacr;

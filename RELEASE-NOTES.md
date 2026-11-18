@@ -1,5 +1,15 @@
 # Aurora68 release notes
 
+## 0.8 — Restart, sound, and the CPU (18 November 2026)
+
+- **Restart from the Special menu works.** It ended in a Sad Mac (0000000F 00000033) when the
+  mouse or keyboard was used during the restart.
+- **Programs that play sound no longer freeze the Mac** (the end of Speedometer's tests,
+  Lemmings): the stand-in sound chip now fills and empties at the real chip's rate.
+- **The Mac reports a 68030** (it said 68020): About This Macintosh, Gestalt and Speedometer.
+- **USB keyboards and mice plugged in at power-on** are found without unplugging them: the Pi
+  tries again for half a minute.
+
 ## 0.7 — USB keyboards and mice (18 November 2026)
 
 - **USB keyboards and mice on the Pi 3.** Plug a USB keyboard and mouse into the Pi's USB ports and

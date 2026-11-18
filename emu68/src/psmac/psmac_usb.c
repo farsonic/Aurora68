@@ -376,6 +376,38 @@ static int ports_changed(void)
     return 0;
 }
 
+/* A keyboard plugged in at power-on did not work on the user's Pi 3 until it was unplugged and
+   plugged back in (18 November): the enumeration at boot, a second or two after the firmware
+   handed over, can catch a device that is not ready, and a device that fails enumeration makes no
+   port change for ports_changed() to see. So the start is retried: while no keyboard or no mouse
+   was found, four times six seconds apart (a Pi with only a keyboard just ends up with the
+   keyboard); and at any time, a device whose polls have all failed for two seconds
+   (no report, no NAK) is enumerated again. */
+static unsigned retries;
+static uint32_t last_ok[2], last_bad[2];
+static int needs_retry(void)
+{
+    struct frf_native_hid_ep *ep[2] = { &hid.keyboard, &hid.mouse };
+    uint8_t have[2] = { hid.have_keyboard, hid.have_mouse };
+    int dead = 0;
+    for (int i = 0; i < 2; i++) {
+        uint32_t ok = ep[i]->success + ep[i]->nak, bad = ep[i]->faults;
+        if (have[i] && ok == last_ok[i] && bad - last_bad[i] > 20)
+            dead = 1;
+        last_ok[i] = ok;
+        last_bad[i] = bad;
+    }
+    if (dead) {
+        kprintf("[USB] a device stopped answering: enumerating again\n");
+        return 1;
+    }
+    /* an enumeration holds core 3 (the disk, the network) for about a second: four tries, six
+       seconds apart, in the boot's first half minute */
+    if ((!hid.have_keyboard || !hid.have_mouse) && retries < 12 && ++retries % 3 == 0)
+        return 1;
+    return 0;
+}
+
 void psmac_usb_poll(void)
 {
     uint64_t t;
@@ -386,6 +418,12 @@ void psmac_usb_poll(void)
         next_check = t + 2 * hz();
         if (ports_changed()) {
             enumerate("plug or unplug");
+            retries = 0;
+            next_poll = now();
+            return;
+        }
+        if (needs_retry()) {
+            enumerate("retry");
             next_poll = now();
             return;
         }

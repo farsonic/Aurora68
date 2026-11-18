@@ -104,16 +104,58 @@ static void rbv_write(uint32_t off, uint8_t data)
 }
 /* the ASC: no sound chip on an SE. Its 2 KB of wave RAM ($000-$7FF) is real memory here, because
    the ROM's tests write it and read it back (the first SE boots failed exactly there, fs174, and
-   went to the serial-console error report); version 0; both FIFOs always half empty so the
-   ROM's chime loop runs through; the other registers remembered and handed back. */
+   went to the serial-console error report); version 0; the other registers remembered and handed
+   back.
+
+   The FIFOs (mode register $801 = 1) fill and drain as the chip's do: each write to $000-$3FF
+   (channel A) or $400-$7FF (B) adds a byte, the chip plays them at 22257 per second, and the
+   status register ($804) says half empty (bits 0 and 2) below 512 bytes and full (bits 1 and 3)
+   at 1024. They used to read "half empty, never full", and the Sound Manager's feeder, which
+   writes until the FIFO is full and runs from the main screen's VBL task (our card's display on
+   the SE and the solo board), wrote up to 65535 bytes, three trapped accesses each, every
+   sixtieth of a second: seconds per tick, a Mac that froze whenever a sound played (the end of
+   Speedometer's tests, Lemmings), 18 November. Bit 7 of $803 empties both. */
+static uint32_t asc_level[2];
+static uint64_t asc_t[2];
+#define ASC_RATE 22257u
+static inline uint64_t asc_now(void) { uint64_t v; __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(v)); return v; }
+static inline uint64_t asc_hz(void)  { uint64_t v; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(v)); return v; }
+static void asc_drain(int ch)
+{
+    uint64_t now = asc_now(), hz = asc_hz();
+    uint64_t played = (now - asc_t[ch]) * ASC_RATE / hz;
+    if (!asc_level[ch] || played >= asc_level[ch]) { asc_level[ch] = 0; asc_t[ch] = now; return; }
+    asc_level[ch] -= (uint32_t)played;
+    asc_t[ch] += played * hz / ASC_RATE;
+}
 static uint32_t asc_read(uint32_t off)
 {
     off &= 0xfff;
     if (off == 0x800) return 0;
-    if (off == 0x804) return 0x05;
+    if (off == 0x804) {
+        if (asc_regs[0x801] != 1) return 0x05;      /* not in FIFO mode: nothing plays, both half empty */
+        uint32_t st = 0;
+        for (int ch = 0; ch < 2; ch++) {
+            asc_drain(ch);
+            if (asc_level[ch] < 512) st |= 1u << (2 * ch);
+            if (asc_level[ch] >= 1024) st |= 2u << (2 * ch);
+        }
+        return st;
+    }
     return asc_regs[off];
 }
-static void asc_write(uint32_t off, uint8_t data) { asc_regs[off & 0xfff] = data; }
+static void asc_write(uint32_t off, uint8_t data)
+{
+    off &= 0xfff;
+    asc_regs[off] = data;
+    if (off < 0x800 && asc_regs[0x801] == 1) {
+        int ch = off >= 0x400;
+        asc_drain(ch);
+        if (asc_level[ch] < 1024) asc_level[ch]++;
+    } else if (off == 0x803 && (data & 0x80)) {
+        asc_level[0] = asc_level[1] = 0;
+    }
+}
 
 /* ---- the VIA: the same chip, two bits apart --------------------------------------------------
    Port A on the IIci: 7 SCC wait/request, 6 (unused), 5 floppy head select, 4 overlay, 3 sync

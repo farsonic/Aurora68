@@ -571,6 +571,27 @@ uint32_t psmac_alice_irqs(void) { return irq_raised; }
 
 /* The slot-9 line this instant, for the bus layer's register reads (psmac_bus.c): the same
    expression the loop below samples, minus its storm guard. -1 before the services are up. */
+/* The 68k's RESET (psmac_bus.c ps_send_reset): what a NuBus card's /RESET does to its interrupt.
+   Restart from the Finder runs the ROM's boot again with the Pi's state as the last session left
+   it: .PiInput's ring still "attached", the Ethernet driver's version in the board header, the
+   video driver's VBL on. The first mouse movement during the restart, a frame, or the next VBL
+   then raised the slot-9 line before any driver of the new session had installed a handler, and
+   the ROM stopped with a Sad Mac, 0000000F 00000033 (system error 51, an unserviceable slot
+   interrupt), photographed on the user's Pi 3, 18 November. Every source now drops with the reset
+   and comes back when its driver opens again. */
+void psmac_card_reset(void)
+{
+    extern volatile uint8_t *alice_net_board(void); extern void psmac_display_bus_reset(void);
+    if (!alice_ready) return;
+    volatile struct an_hdr *nh = (volatile struct an_hdr *)alice_net_board();
+    if (nh) { nh->amiga_ver = 0; nh->irq = 0; }
+    alice_net_reset();                          /* the rest of the session (queues, buffers) on core 3's next turn */
+    if (inr) { inr->attached = 0; inr->tail = inr->head; }
+    psmac_display_bus_reset();
+    __asm__ volatile("dmb ish" ::: "memory");
+    kprintf("[PSMAC] 68k RESET: the card's interrupt sources are off until their drivers open\n");
+}
+
 int psmac_slot_line_now(void)
 {
     extern volatile uint8_t *alice_net_board(void); extern int psmac_display_irq(void);

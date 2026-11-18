@@ -739,6 +739,39 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    PiPing, made a new folder (Command-N) and typed its name. Not yet tested on hardware: the
    split path behind the real LAN9514, and the FIFO transport.
 
+41. **Restart, the CPU type, and sound (18 November, afternoon).** Four reports from the user's
+   Pi 3:
+   - *Restart from the Finder gave a Sad Mac, 0000000F 00000033* (system error 51, an
+     unserviceable slot interrupt: the code first seen on the SE board, item 30's fs178). The
+     68k's RESET reached Emu68's `do_reset` and the motherboard's reset line, but not the
+     virtual card. `.PiInput`'s ring stayed "attached", the Ethernet driver's version stayed in
+     the board header and the video driver's VBL stayed on. The first mouse movement during
+     the restart raised the slot line before any driver of the new session had a handler in.
+     `ps_send_reset` now calls `psmac_card_reset` (`alice_psmac.c`), which turns those three
+     off and resets the network board's session, as a NuBus card's /RESET would. In QEMU, Restart
+     chosen with the mouse moving continuously comes back to the Finder.
+   - *Speedometer said 68020.* The IIci ROM tells a 68030 from a 68020 by writing $2809 to CACR
+     and looking for the write-allocate bit (13) in what comes back (ROM 0x408007C8). A 68040's
+     CACR has no such bit, so CPUFlag ($12F) said 2, and Gestalt and every program agreed.
+     The PSMAC build's `check_cacr` keeps the 68030's bits readable (WA, DBE, FD, ED, IBE, FI,
+     EI; the clear strobes read 0), the ROM records a 68030 and takes its 68030 paths, which
+     are the ones it was written for and the ones the MMU shim already speaks. Speedometer:
+     "MC68030, MC68030 MMU". The FPU it reports as absent: next.
+   - *Speedometer froze at the end of its tests, Lemmings froze.* The heartbeat showed the 68k
+     at interrupt level 2 in the Sound Manager's ASC feeder, which writes both FIFOs until the
+     status register ($50F14804) says full. That runs from the main screen's VBL task, and the
+     main screen here is our card's. The ASC stand-in (`psmac_board_se.c`) always said "half
+     empty, never full", so every tick wrote the whole request, three trapped accesses per byte:
+     seconds per sixtieth of a second. The FIFOs now fill with each write and drain at the chip's
+     22257 samples per second, half empty below 512, full at 1024. Run ALL Tests finishes ("The
+     tests are done!", `docs/img/speedometer-all-tests.png`; in QEMU, Performance Rating 198,
+     65217 Dhrystones/s), Speedometer quits to the Finder.
+   - *The USB keyboard needed a replug at power-on.* The replug working is the first sign
+     that the split transactions behind the real LAN9514 work. The enumeration at boot caught a
+     device that was not ready, and a device that fails enumeration makes no port change.
+     `psmac_usb.c` now tries again (four times, six seconds apart) while a keyboard or mouse is
+     missing, and enumerates again when a device's polls have all failed for two seconds.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

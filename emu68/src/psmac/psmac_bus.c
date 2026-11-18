@@ -933,7 +933,9 @@ uint8_t pistorm_get_model(void) { return PISTORM_MODEL_32; }
 void ps_setup_protocol(void) { kprintf("[PSMAC] motherboard transport: %s\n", transport_none ? "none: the kernel is the logic board (mac.board=solo)" : use_gpio ? "classic PiStorm CPLD over GPIO (mac.bridge=gpio)" : use_semihost ? "semihosting FIFOs -> MAME bridge" : "mini UART (QEMU -serial 1) -> MAME bridge"); }
 void ps_reset_state_machine(void) {}
 void ps_pulse_reset(void) { struct psmac_reply r; xfer(PSMAC_OP_RESET_ACK, 0, 0, 0, 0, &r); }
-void ps_send_reset(void) { ps_pulse_reset(); }
+/* The 68k's RESET instruction (the ROM's first act on every boot, cold or after Restart): the
+   motherboard's reset line, and the virtual card's (alice_psmac.c: its interrupt sources drop) */
+void ps_send_reset(void) { extern void psmac_card_reset(void); psmac_card_reset(); ps_pulse_reset(); }
 void ps_set_control(unsigned int v) { (void)v; }
 void ps_clr_control(unsigned int v) { (void)v; }
 static inline unsigned effective_ipl(void) { unsigned ipl = last_ipl; if (psmac_board_se) return psmac_se_ipl(ipl); if (slot_irq_pending() && ipl < 2) ipl = 2; return ipl; }

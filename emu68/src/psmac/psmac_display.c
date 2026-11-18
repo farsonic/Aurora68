@@ -256,4 +256,6 @@ void psmac_display_report(void)
 }
 
 /* the slot interrupt line's share: the card's VBL is pending and the driver is there to take it */
+/* the 68k was reset: the video driver's VBL interrupt is off until it opens again */
+void psmac_display_bus_reset(void) { if (disp) { disp->vbl_enable = 0; disp->vbl_pending = 0; __asm__ volatile("dmb ish" ::: "memory"); } }
 int psmac_display_irq(void) { return disp && (disp->flags & PSMB_DISP_ENABLED) && disp->vbl_enable && disp->vbl_pending; }
