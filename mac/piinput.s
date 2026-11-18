@@ -419,10 +419,9 @@ ev_key:
 	beq	ev_next
 	eor.w	#1,G_CAPS(%a2)
 	bra	ev_next
-1:	| KeyMap: bit (code) of the 128-bit map, bytes in big-endian word order as the ADB Manager keeps it
+1:	| KeyMap: code k is byte k >> 3, bit k & 7 (keymap_modifiers), which GetKeys hands to programs
 	move.w	%d1,%d2
 	lsr.w	#3,%d2			| byte index
-	eor.w	#3,%d2			| the map is stored as four longwords, bit 0 of each long = lowest code
 	move.w	%d1,%d3
 	and.w	#7,%d3
 	lea	KeyMap,%a0
@@ -547,8 +546,10 @@ post_event:
 
 | keymap_modifiers: set or clear the KeyMap bits of the five modifier keys from d5. Virtual codes:
 | Command 0x37, Shift 0x38, Caps Lock 0x39, Option 0x3A, Control 0x3B (Inside Macintosh: Text).
-| KeyMap is four longwords with bit 0 of each the lowest code of its group of 32, so code k lives
-| in byte (k >> 3) ^ 3, bit k & 7 (big-endian longs).
+| Code k lives in byte k >> 3, bit k & 7 of KeyMap: the ROM's _PostEvent (IIci ROM 0xB406) takes the
+| event's modifier byte from the word at KeyMap+6 rotated left by one (Command, code 0x37, is bit 7
+| of byte 6; Shift to Control, 0x38-0x3B, bits 0-3 of byte 7). An earlier version used byte
+| (k >> 3) ^ 3, as if the map were little-endian longwords: no modifier reached an event.
 keymap_modifiers:
 	movem.l	%d0-%d4/%a0-%a1,-(%sp)
 	lea	KeyMap,%a0
@@ -558,7 +559,6 @@ keymap_modifiers:
 	move.w	(%a1)+,%d1		| event modifier bit
 	move.w	%d0,%d2
 	lsr.w	#3,%d2
-	eor.w	#3,%d2
 	move.w	%d0,%d3
 	and.w	#7,%d3
 	and.w	%d5,%d1

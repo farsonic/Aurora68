@@ -678,6 +678,25 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    changes inside the image, fsck.vfat is clean, the next boot from it reaches the Finder, and
    Bluetooth loads the pairing from the card.
 
+39. **PiLog, C on the Mac, and the modifier keys (18 November).** The bench wanted the kernel's
+   log on the Mac's own screen once it has booted. The kernel now copies every log character
+   into a 64 KiB ring in the card window at 0x60000 (`psmb.h`, struct psmb_log; `psmac_bus.c`
+   keeps what came before the window existed and copies it in when the window is made).
+   `mac/pilog.c` shows it in a window that moves, resizes, zooms and scrolls. It follows new
+   lines at the bottom, sleeps in WaitNextEvent between looks at the ring's head, and filters
+   by part (Kernel, Mac, WiFi, Bluetooth, Network, Card; Option-click for one part alone). The
+   image starts it from Startup Items. PiLog is the first Mac program in C: `mac/c` is a kit that
+   turns m68k-linux-gnu-gcc output into an application without Apple headers. It has Toolbox
+   glue generated from a one-line-per-call table, a self-relocating startup, and an ELF-to-CODE
+   packager (`mac/c/README.md`). The first build hung at NewWindow: GCC's m68k ABI takes a
+   pointer result from A0, and the glue left it only in D0. Testing the filter's Option-click
+   with a new testbed script (`mac.inputclick=SECONDS,X,Y[,o]`) found a bug in `.PiInput`
+   that predates PiLog. It kept KeyMap as if it were little-endian longwords (byte (k >> 3) ^ 3).
+   The ROM's `_PostEvent` (IIci ROM 0xB406) builds an event's modifiers from the word at
+   KeyMap+6 rotated left by one, i.e. code k at byte k >> 3, bit k & 7. So Command, Shift,
+   Option and Control from a USB or Bluetooth keyboard never reached an event, and GetKeys saw
+   every key in the wrong place. Fixed in both places, and the Option-click then worked.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

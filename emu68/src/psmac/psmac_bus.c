@@ -266,6 +266,12 @@ static void psmac_read_options(void)
         if (*tok == ',') { tok++; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); }
         peek_addr = a; peek_len = n > 512 ? 512 : (n ? n : 64);
     }
+    if ((tok = find_token(args, "mac.inputclick="))) {
+        tok += 15; uint32_t v[3] = { 0, 0, 0 }; int k = 0, opt = 0;
+        while (k < 3) { while (*tok >= '0' && *tok <= '9') v[k] = v[k] * 10 + (uint32_t)(*tok++ - '0'); k++; if (*tok != ',') break; tok++; }
+        if (*tok == 'o') opt = 1;
+        extern void psmac_alice_input_click(uint32_t, int, int, int); psmac_alice_input_click(v[0], (int)v[1], (int)v[2], opt);
+    }
     if ((tok = find_token(args, "mac.inputdrag="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_drag(uint32_t); psmac_alice_input_drag(n); }
     if ((tok = find_token(args, "mac.inputright="))) { tok += 15; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_right(uint32_t); psmac_alice_input_right(n); }
     if ((tok = find_token(args, "mac.inputwifi="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_wifi(uint32_t); psmac_alice_input_wifi(n); }
@@ -978,5 +984,34 @@ void psmac_console_miniuart(void)
     kprintf("[PSMAC] the log continues on the mini UART (GPIO 14, 115200): Bluetooth has the PL011\n");
 }
 void psmac_console_putc(uint8_t c);     /* psmac_display.c: the same text on the HDMI screen */
-void fastSerial_putByte(uint8_t b) { if (b == '\n') con_putc('\r'); con_putc(b); psmac_console_putc(b); }
+/* The log for the Mac (psmb.h, struct psmb_log; mac/pilog.c reads it). Until the window exists
+   the bytes go into a ring of the kernel's own, copied in by psmac_log_attach. The callers hold
+   the console lock (kprintf) or are the one serial writer, so there is one writer at a time. */
+static uint8_t log_early[PSMB_LOG_SIZE];
+static uint32_t log_head;
+static volatile uint8_t *log_win;            /* the window's struct psmb_log, once attached */
+static void log_putc(uint8_t c)
+{
+    if (c == '\r') return;
+    volatile uint8_t *w = log_win;
+    if (!w) { log_early[log_head++ % PSMB_LOG_SIZE] = c; return; }
+    w[PSMB_OFF_LOGDATA - PSMB_OFF_LOG + log_head % PSMB_LOG_SIZE] = c;
+    log_head++;
+    __asm__ volatile("dmb ishst" ::: "memory");
+    *(volatile uint32_t *)(w + 16) = log_head;
+}
+void psmac_log_attach(uint8_t *win)
+{
+    volatile uint8_t *w = win + PSMB_OFF_LOG;
+    uint32_t n = log_head < PSMB_LOG_SIZE ? log_head : PSMB_LOG_SIZE;
+    for (uint32_t i = log_head - n; i != log_head; i++) w[PSMB_OFF_LOGDATA - PSMB_OFF_LOG + i % PSMB_LOG_SIZE] = log_early[i % PSMB_LOG_SIZE];
+    *(volatile uint32_t *)(w + 0) = PSMB_LOG_MAGIC;
+    *(volatile uint32_t *)(w + 4) = 1;
+    *(volatile uint32_t *)(w + 8) = PSMB_LOG_SIZE;
+    *(volatile uint32_t *)(w + 12) = PSMB_OFF_LOGDATA;
+    *(volatile uint32_t *)(w + 16) = log_head;
+    __asm__ volatile("dmb ish" ::: "memory");
+    log_win = w;
+}
+void fastSerial_putByte(uint8_t b) { if (b == '\n') con_putc('\r'); con_putc(b); psmac_console_putc(b); log_putc(b); }
 void bitbang_putByte(uint8_t b) { fastSerial_putByte(b); }

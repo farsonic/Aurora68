@@ -208,6 +208,7 @@ int psmac_eth_testbed_poll(volatile struct an_unit *u)
    types a few letters, with the whole thing visible in the MAME screenshots. On hardware the
    option is simply not given. */
 static uint32_t intest_at, intest_kind; static int intest_step; static uint64_t intest_next;
+static int click_x, click_y, click_opt, click_phase;      /* mac.inputclick= */
 /* mac.inputabout=SECONDS: a second script, for the Finder: the mouse walks to the Apple menu,
    presses, moves down to the first item and releases, which under System 6 and 7 opens the
    "About This Macintosh" window (the Finder must be in front: no startup items). */
@@ -284,6 +285,24 @@ static void in_testbed_poll(void)
         else { intest_at = 0; kprintf("[PSMAC] input drag script done\n"); return; }
         intest_next = now + in_hz() * gap_ms / 1000; return;
     }
+    if (intest_kind == 5) {                                                 /* mac.inputclick=: a click at a point of the screen */
+        int s = intest_step++; uint32_t gap_ms = 50;
+        static int cx, cy;
+        if (s == 0) cx = cy = 0;
+        if (s < 40)       aga_virtual_mouse_update(-30, -20, 0);               /* the corner: (0, 0) */
+        else if (cx != click_x || cy != click_y) {                             /* to the point, 8 pixels a step */
+            int dx = click_x - cx, dy = click_y - cy;
+            if (dx > 8) dx = 8;
+            if (dx < -8) dx = -8;
+            if (dy > 8) dy = 8;
+            if (dy < -8) dy = -8;
+            aga_virtual_mouse_update(dx, dy, 0); cx += dx; cy += dy;
+        }
+        else if (click_phase == 0) { click_phase = 1; aga_virtual_mouse_update(0, 0, click_opt ? 4 : 1); gap_ms = 200; }   /* press (the middle button: .PiInput makes it an Option-click) */
+        else if (click_phase == 1) { click_phase = 2; aga_virtual_mouse_update(0, 0, 0); gap_ms = 200; }      /* release */
+        else { intest_at = 0; kprintf("[PSMAC] input click script done (%d, %d)\n", click_x, click_y); return; }
+        intest_next = now + in_hz() * gap_ms / 1000; return;
+    }
     if (intest_kind == 3) {                                                 /* mac.inputright=: walk the mouse onto the second screen */
         int s = intest_step++;
         if (s < 60) { aga_virtual_mouse_update(30, 4, 0); intest_next = now + in_hz() * 50 / 1000; }
@@ -309,6 +328,9 @@ void psmac_alice_input_test(uint32_t seconds) { intest_at = seconds; intest_kind
 void psmac_alice_input_about(uint32_t seconds) { intest_at = seconds; intest_kind = 1; }
 void psmac_alice_input_wifi(uint32_t seconds)  { intest_at = seconds; intest_kind = 2; }
 void psmac_alice_input_right(uint32_t seconds) { intest_at = seconds; intest_kind = 3; }
+/* mac.inputclick=SECONDS,X,Y[,o]: the mouse walks to the corner, then to (X, Y) of the main screen and
+   clicks there, an Option-click for ",o" (the middle button, which .PiInput turns into one) (PiLog's filter boxes in the testbed) */
+void psmac_alice_input_click(uint32_t seconds, int x, int y, int opt) { intest_at = seconds; intest_kind = 5; click_x = x; click_y = y; click_opt = opt; click_phase = 0; }
 void psmac_alice_input_drag(uint32_t seconds)  { intest_at = seconds; intest_kind = 4; }   /* the cursor walks right, onto the second screen (docs/10) */
 
 /* heartbeat line for psmac_bus.c: the interrupt line and what holds it */

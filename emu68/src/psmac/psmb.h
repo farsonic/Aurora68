@@ -38,9 +38,27 @@
 #define PSMB_OFF_CMD         0x1000          /* PSMB_MAX_SERVICES x struct psmb_cmd (one slot each) */
 #define PSMB_OFF_BLKDEV      0x2000          /* PSMB_MAX_BLKDEV x struct psmb_blkdev */
 #define PSMB_OFF_NETRX       0x4000          /* net receive ring: header + PSMB_NETRX_SLOTS frames */
+#define PSMB_OFF_LOG         0x60000         /* struct psmb_log: the kernel's log for the Mac (below) */
+#define PSMB_OFF_LOGDATA     0x61000         /* its 64 KiB ring */
+#define PSMB_LOG_SIZE        0x10000
 #define PSMB_OFF_DISPLAY     0x58000         /* struct psmb_display: the second screen (below) */
 #define PSMB_OFF_BOUNCE      0x80000         /* 512 KiB: the second screen's frame buffer (640 x 480 at 8 bits is 300 KiB) */
 #define PSMB_BOUNCE_SIZE     0x80000
+
+/* ---- the kernel's log (mac/pilog.c) ------------------------------------------------------------
+   Every character of the kernel's log (kprintf: the UART and the HDMI console get the same text)
+   also goes into a 64 KiB ring in the window, from boot: what was written before the window
+   existed is kept in the kernel and copied in when the window is made. head counts the bytes
+   written for ever; the byte numbered n is at data_off + n % size. A reader keeps its own count,
+   takes what is between it and head, and starts again from head - size when it fell behind by
+   more than the ring holds. The header is big-endian: Emu68 is built big-endian, like the 68k. */
+#define PSMB_LOG_MAGIC       0x4136384Cu     /* 'A68L' */
+struct psmb_log {
+    uint32_t magic, version;
+    uint32_t size, data_off;                 /* PSMB_LOG_SIZE, PSMB_OFF_LOGDATA */
+    uint32_t head;                           /* Pi: bytes written since boot */
+    uint32_t pad[3];
+};
 
 /* ---- the second display (docs/10) -------------------------------------------------------------
    The Mac sees a NuBus video card: a video sResource in the declaration ROM whose frame buffer is

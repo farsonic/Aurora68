@@ -31,7 +31,8 @@ What is in the zip
                          zero divide at boot). Python 3 is all it needs; rompatch.py and
                          patches/iici.json are the source of that delta, for the record
   Mac/                   the Macintosh-side programs: PiMach, PiDisk (extensions), PiWiFi,
-                         PiBlue, PiStatus, PiNet, PiPing, PiScreens, PiColor (applications),
+                         PiBlue, PiStatus, PiNet, PiPing, PiScreens, PiColor, PiLog (applications;
+                         PiLog shows the Pi's log in a window, filtered by part),
                          as MacBinary files and on Aurora68-Utilities.img (an HFS disk image)
   RELEASE-NOTES.md       what works, what does not
   LICENSES/              MPL-2.0 (Emu68, Aurora68) and GPL-2.0 (the Alice68 modules)

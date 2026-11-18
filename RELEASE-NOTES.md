@@ -1,5 +1,20 @@
 # Aurora68 release notes
 
+## 0.6 — PiLog, and the modifier keys (18 November 2026)
+
+- **PiLog**, the Pi's log on the Mac: a window that moves, resizes, zooms and scrolls, follows
+  new lines, and filters by part (Kernel, Mac, WiFi, Bluetooth, Network, Card; Option-click a box
+  for that part alone, All for everything). Text can be selected and copied. It starts at boot from
+  the image's Startup Items (drag it out of `System Folder:Startup Items` to stop that) and sleeps
+  between looks at the log. The kernel keeps the last 64 KB of its log in the card window from
+  boot, so PiLog shows the boot too.
+- **Modifier keys from USB and Bluetooth keyboards.** `.PiInput` set the wrong KeyMap bits, so
+  Command, Shift, Option and Control never reached the Mac's events: Command-key shortcuts and
+  Shift-click did nothing, and programs reading the keyboard with GetKeys (games) saw the
+  wrong keys. Fixed; this is in the declaration ROM (`aurora68-wifi.declrom`).
+- For developers: `mac/c`, a kit for writing Mac programs in C with the Debian m68k cross
+  compiler (`mac/c/README.md`); `mac.inputclick=` for scripted clicks in the testbed.
+
 ## 0.5 — Bluetooth mice and keyboards on the Pi 3 (17 November 2026, 23:00)
 
 - **Bluetooth on the Pi 3 family.** The Alice68 Bluetooth host (Classic and LE keyboards and mice,

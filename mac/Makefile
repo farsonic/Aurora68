@@ -1,5 +1,5 @@
 # Mac-side pieces for PiStorm-SE: 68k assembly (GNU binutils for m68k) packaged with tools/mac/*.py.
-#   make            builds the drivers, the declaration ROM, the PiDisk extension and the PiNet, PiWiFi, PiBlue, PiStatus and PiPing applications
+#   make            builds the drivers, the declaration ROM, the PiDisk extension and the PiNet, PiWiFi, PiBlue, PiStatus, PiPing and PiLog applications
 #   The declaration ROM (build/psmac.declrom) carries the .PiDisk, .Network_EtherNet_PiStorm and .PiInput drivers.
 #   make check     compares the struct offsets in enet.s with emu68/src/alice/alice_net.h
 #   make install IMG=path/to/volume.img [PART=n]   copies the INIT into the System Folder of an HFS image
@@ -8,7 +8,7 @@ OBJCOPY = m68k-linux-gnu-objcopy
 PY      = python3
 B       = build
 
-all: $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes
+all: $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/PiLog.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes
 
 $(B)/%.o: %.s
 	@mkdir -p $(B)
@@ -90,6 +90,30 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 
 disasm: $(B)/pidisk.o
 	m68k-linux-gnu-objdump -d $(B)/pidisk.o | head -200
+
+# ---- C programs (mac/c/README.md): PiLog ----
+CC      = m68k-linux-gnu-gcc
+LD      = m68k-linux-gnu-ld
+CFLAGS  = -m68020 -O2 -std=gnu99 -ffreestanding -fno-builtin -fno-pic -fno-pie -ffixed-a5 \
+          -fno-strict-aliasing -Wall -Wextra -Wno-unused-parameter --param=min-pagesize=0 -Ic -I$(B)
+LIBGCC  = $(shell $(CC) -m68020 -print-libgcc-file-name)
+C_KIT   = $(B)/crt0.o $(B)/toolbox_glue.o $(B)/libc.o
+$(B)/toolbox_glue.s $(B)/toolbox_gen.h: c/traps.txt ../tools/mac/mktraps.py
+	@mkdir -p $(B)
+	$(PY) ../tools/mac/mktraps.py c/traps.txt -s $(B)/toolbox_glue.s -H $(B)/toolbox_gen.h
+$(B)/crt0.o: c/crt0.s
+	@mkdir -p $(B)
+	$(AS) -o $@ $<
+$(B)/toolbox_glue.o: $(B)/toolbox_glue.s
+	$(AS) -o $@ $<
+$(B)/libc.o: c/libc.c c/toolbox.h $(B)/toolbox_gen.h
+	$(CC) $(CFLAGS) -c -o $@ $<
+$(B)/pilog.o: pilog.c c/toolbox.h $(B)/toolbox_gen.h
+	$(CC) $(CFLAGS) -c -o $@ $<
+$(B)/pilog.elf: $(C_KIT) $(B)/pilog.o c/app.ld
+	$(LD) -T c/app.ld --emit-relocs --no-warn-rwx-segments -z noexecstack -o $@ $(C_KIT) $(B)/pilog.o $(LIBGCC)
+$(B)/PiLog.bin: $(B)/pilog.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py
+	$(PY) ../tools/mac/elf2app.py $< --name PiLog --creator PILG --size 256 -o $@
 
 install: $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/psmac.declrom
 	$(PY) ../tools/mac/hfsput.py $(IMG) $(B)/PiDisk.bin "System Folder" $(PART)

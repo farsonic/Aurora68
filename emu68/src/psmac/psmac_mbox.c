@@ -275,7 +275,8 @@ void psmac_mbox_init(uintptr_t window_phys, uintptr_t ramp, uint32_t rams)
 
     /* the Alice68 boards inside the window (alice_psmac.h): network board, status page, input ring */
     { extern void psmac_alice_init(uint8_t *win); psmac_alice_init(win); }
-    { extern void psmac_display_init(uint8_t *win); psmac_display_init(win); }   /* the second display (psmac_display.c) */
+    { extern void psmac_display_init(uint8_t *win); psmac_display_init(win); }
+    { extern void psmac_log_attach(uint8_t *win); psmac_log_attach(win); }   /* the kernel's log for PiLog (psmb.h) */   /* the second display (psmac_display.c) */
     uint32_t pa[5] = { ALICE_NET_WINDOW_OFF, ALICE_STATUS_WINDOW_OFF, ALICE_INPUT_WINDOW_OFF, 0, 0 };
     svc_set(3, PSMB_SVC_ALICE, 0, pa);
     svc_set(0, PSMB_SVC_INFO, 0, NULL);
