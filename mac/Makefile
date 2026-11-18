@@ -8,7 +8,7 @@ OBJCOPY = m68k-linux-gnu-objcopy
 PY      = python3
 B       = build
 
-all: $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/PiLog.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes
+all: $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/PiLog.bin $(B)/PiDepth.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes
 
 $(B)/%.o: %.s
 	@mkdir -p $(B)
@@ -112,6 +112,12 @@ $(B)/pilog.o: pilog.c c/toolbox.h $(B)/toolbox_gen.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 $(B)/pilog.elf: $(C_KIT) $(B)/pilog.o c/app.ld
 	$(LD) -T c/app.ld --emit-relocs --no-warn-rwx-segments -z noexecstack -o $@ $(C_KIT) $(B)/pilog.o $(LIBGCC)
+$(B)/pidepth.o: pidepth.c c/toolbox.h $(B)/toolbox_gen.h
+	$(CC) $(CFLAGS) -c -o $@ $<
+$(B)/pidepth.elf: $(C_KIT) $(B)/pidepth.o c/app.ld
+	$(LD) -T c/app.ld --emit-relocs --no-warn-rwx-segments -z noexecstack -o $@ $(C_KIT) $(B)/pidepth.o $(LIBGCC)
+$(B)/PiDepth.bin: $(B)/pidepth.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py
+	$(PY) ../tools/mac/elf2app.py $< --name "PiDepth 8" --creator PIDP --size 64 -o $@
 $(B)/PiLog.bin: $(B)/pilog.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py
 	$(PY) ../tools/mac/elf2app.py $< --name PiLog --creator PILG --size 256 -o $@
 

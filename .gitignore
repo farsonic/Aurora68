@@ -36,3 +36,5 @@ mac/build/toolbox_glue.o
 mac/build/toolbox_glue.s
 mac/build/pilog.o
 mac/build/pilog.elf
+mac/build/pidepth.o
+mac/build/pidepth.elf

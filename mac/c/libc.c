@@ -26,3 +26,10 @@ unsigned char *pstr(unsigned char *buf, const char *c)
 	buf[0] = (unsigned char)n;
 	return buf;
 }
+
+/* a control's action procedure (crt0.s pas_ctl_action): programs with scroll bars give their own */
+__attribute__((weak)) void c_ctl_action(void *ctl, int part)
+{
+	(void)ctl;
+	(void)part;
+}

@@ -125,3 +125,5 @@ A9A0 l GetResource(long type:l, int id:w)
 A9A3 - ReleaseResource(void *h:l)
 A9F4 - ExitToShell()
 A9C8 - SysBeep(int ticks:w)
+# Color QuickDraw's screens, the Segment Loader
+A9F5 - GetAppParms(unsigned char *name:l, short *refNum:l, void **param:l)
