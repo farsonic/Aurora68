@@ -112,15 +112,21 @@ if a.video:
     # ($F9980000, MinorBaseOS in 32-bit form). So the offset must say what the kernel decided
     # (psmac_display.c, the same rule): a mode of at most 8 bits that fits the window's 512 KiB
     # stays there (offset 0, reachable in 24-bit mode too); anything larger lives in the big
-    # region at $F9100000, 8 MiB of Pi RAM in the slot's 16 MiB space, offset -$880000. Without
-    # this the first 32-bit boot drew into the window and past it while the Pi showed the big
-    # region: a grey screen (docs/08, item 27).
-    BIG, WIN = 0xF9100000, 0xF9980000
+    # region at $90000000, 9 MiB of Pi RAM in the slot's super slot space, offset $90000000 -
+    # $F9980000 (the sum wraps round to the right address in 32 bits). Every size mac.screen
+    # accepts (up to 1920 x 1200) fits there at 32 bits; a larger one is refused. Without the offset
+    # the first 32-bit boot drew into the window and past it while the Pi showed the big region:
+    # a grey screen (docs/08, item 27). Until 18 November the big region was 8 MiB at $F9100000,
+    # too small for 1920 x 1200 at 32 bits (docs/10, "1920 by 1200").
+    WIN, WIN_SIZE = 0xF9980000, 0x80000         # psmb.h: the window's top 512 KiB in its $F99 form
+    BIG, BIG_SIZE = 0x90000000, 0x900000        # psmb.h: PSMB_FB_BIG_PHYS, PSMB_FB_BIG_SIZE
     for n, depth in enumerate((1, 2, 4, 8, 16, 32)):
         m = type(vs)(0)
         direct = depth >= 16
         rowbytes = (W * depth + 7) // 8
-        in_window = depth <= 8 and rowbytes * H <= 0x80000
+        in_window = depth <= 8 and rowbytes * H <= WIN_SIZE
+        if not in_window and rowbytes * H > BIG_SIZE:
+            sys.exit(f"mkdeclrom: {W} x {H} at {depth} bits needs {rowbytes * H} bytes, the big region has {BIG_SIZE}")
         base_off = 0 if in_window else (BIG - WIN) & 0xffffffff
         vp = struct.pack('>IHhhhhHHIIIHHHHI', base_off, rowbytes, 0, 0, H, W, 0, 0, 0, 0x00480000, 0x00480000,
                          16 if direct else 0, depth, 3 if direct else 1, (5 if depth == 16 else 8) if direct else depth, 0)

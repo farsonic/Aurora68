@@ -17,9 +17,10 @@
  * Two frame buffers, by history. The first version kept the Mac's pixels in the window's top
  * 512 KiB, because that megabyte is the one a 24-bit System 6 can reach ($980000); it holds
  * 640 x 480 at up to 8 bits and still does. Direct colour (16 and 32 bits) and larger screens do
- * not fit there, so there is also a big region, 8 MiB of Pi RAM mapped at $F9100000 in the slot's
- * 16 MiB space, which 32-bit systems use. The block's mode tables say which region each mode
- * uses; the driver never decides. The VideoCore buffer is remade at the screen's size and 32
+ * not fit there, so there is also a big region, 9 MiB of Pi RAM mapped at $90000000 in the slot's
+ * super slot space (8 MiB at $F9100000 until 1920 x 1200 at 32 bits needed more, docs/10), which
+ * 32-bit systems use. The block's mode tables say which region each mode uses; the driver never
+ * decides, and tools/mac/mkdeclrom.py writes the same rule into the declaration ROM. The VideoCore buffer is remade at the screen's size and 32
  * bits at start-up (the boot splash used 16), and the conversion loop writes XRGB words into it:
  * the Mac's indexed pixels through the colour table, its 16-bit 0RRRRRGGGGGBBBBB words widened,
  * its 32-bit 00RRGGBB longs byte-swapped. A copy is cheap next to the alternative of mapping the
@@ -85,12 +86,14 @@ void psmac_display_init(uint8_t *win)
     disp->fb_off = PSMB_OFF_BOUNCE; disp->fb_size = PSMB_BOUNCE_SIZE;
     disp->big_base = PSMB_FB_BIG_PHYS; disp->big_size = PSMB_FB_BIG_SIZE;
     disp->vc_width = vc_w; disp->vc_height = vc_h; disp->vc_depth = vc_bpp;
-    /* the six modes: where each one's pixels live and its row pitch */
+    /* the six modes: where each one's pixels live and its row pitch. tools/mac/mkdeclrom.py applies
+       the same rule to each mode's vpBaseOffset, because the ROM takes the address from there and
+       never asks the driver (docs/10, "the third trap"); change one and change the other */
     for (int i = 0; i < 6; i++) {
         uint32_t d = 1u << i, rb = (w * d + 7) / 8;
         uint32_t bytes = rb * h;
         if (d <= 8 && bytes <= PSMB_BOUNCE_SIZE) { disp->mode_base[i] = PSMB_WIN_PHYS + 0x900000u + PSMB_OFF_BOUNCE; }   /* $F9980000: reachable in 24-bit mode */
-        else if (bytes <= PSMB_FB_BIG_SIZE) disp->mode_base[i] = PSMB_FB_BIG_PHYS;
+        else if (bytes <= PSMB_FB_BIG_SIZE) disp->mode_base[i] = PSMB_FB_BIG_PHYS;               /* $90000000: 32-bit addressing only */
         else disp->mode_base[i] = 0;                                      /* no such mode at this size */
         disp->mode_rowbytes[i] = rb;
     }
@@ -100,8 +103,8 @@ void psmac_display_init(uint8_t *win)
     for (uint32_t i = 0; i < PSMB_BOUNCE_SIZE; i += 8) *(uint64_t *)(frame_win + i) = 0;
     __asm__ volatile("dmb ish" ::: "memory");
     disp->version = 2; disp->magic = PSMB_DISP_MAGIC;
-    kprintf("[PSMAC:DISP] second display %ux%u: indexed modes in the window at $F9980000, direct modes in the big region at $F9100000 (%u MiB); VideoCore %ux%u x%u pitch %u at %p\n",
-            w, h, PSMB_FB_BIG_SIZE >> 20, vc_w, vc_h, vc_bpp, vc_pitch, framebuffer);
+    kprintf("[PSMAC:DISP] second display %ux%u: indexed modes in the window at $F9980000, direct modes in the big region at $%08x (%u MiB); VideoCore %ux%u x%u pitch %u at %p\n",
+            w, h, PSMB_FB_BIG_PHYS, PSMB_FB_BIG_SIZE >> 20, vc_w, vc_h, vc_bpp, vc_pitch, framebuffer);
 }
 
 /* Which byte of a 32-bit pixel is red. The firmware is asked (tag 0x40006): 1 means the bytes

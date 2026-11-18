@@ -2,10 +2,11 @@
  * psmb.h — PiStorm-SE mailbox ABI between the Macintosh (68k) and the Pi service core. MPL-2.0.
  *
  * The Pi appears to the Mac as a NuBus card in slot $9. The bottom 1 MiB of the slot's
- * super slot space is ordinary shared RAM ("the window"), reachable at 0xF9000000 in 32-bit
+ * 16 MiB slot space is ordinary shared RAM ("the window"), reachable at 0xF9000000 in 32-bit
  * mode and at 0x900000 through the IIci ROM's 24-bit map, so drivers need no mode switch.
  * The top 64 KiB of the slot space (0xF9FF0000) holds the declaration ROM the Slot Manager
- * reads at boot; it carries the Mac-side drivers.
+ * reads at boot; it carries the Mac-side drivers. The second display's big frame buffer is
+ * in the slot's 256 MiB super slot space at 0x90000000 (below).
  *
  * All fields are big-endian (68k order); the Pi side converts. Everything is polled: a
  * request is posted by filling the service's command block and incrementing req_seq; the
@@ -92,13 +93,17 @@ struct psmb_display {
        and its row pitch; the driver answers QuickDraw from these tables. */
     uint32_t mode_base[8];                   /* Pi: 68k address of the frame buffer for mode 128+i (0 = no such mode) */
     uint32_t mode_rowbytes[8];               /* Pi: bytes per row for mode 128+i */
-    uint32_t big_base, big_size;             /* Pi: the big frame buffer region (PSMB_FB_BIG_PHYS, 8 MiB) */
+    uint32_t big_base, big_size;             /* Pi: the big frame buffer region (PSMB_FB_BIG_PHYS, 9 MiB) */
     uint32_t vc_width, vc_height, vc_depth;  /* Pi: the VideoCore frame buffer behind it */
 };
-/* the big frame buffer region: 8 MiB of the slot's 16 MiB space above the window, enough for 1920 x
-   1080 at 32 bits (7.9 MiB); Pi RAM carved next to the window, 32-bit addressing only */
-#define PSMB_FB_BIG_PHYS     0xF9100000u
-#define PSMB_FB_BIG_SIZE     0x00800000u
+/* the big frame buffer region: 9 MiB at the bottom of slot 9's super slot space ($90000000-$9FFFFFFF,
+   the 256 MiB NuBus gives every slot in 32-bit space), enough for the largest mac.screen, 1920 x 1200,
+   at 32 bits (8.8 MiB). Pi RAM carved next to the window, 32-bit addressing only. Until 18 November
+   it was 8 MiB at $F9100000 inside the slot's 16 MiB space, which the window, its alias at $F9900000
+   and the declaration ROM leave no room to grow (docs/10, "1920 by 1200"). The block's layout did not
+   change with the move, so its version stays 2. */
+#define PSMB_FB_BIG_PHYS     0x90000000u
+#define PSMB_FB_BIG_SIZE     0x00900000u
 
 #define PSMB_MAX_SERVICES    8
 #define PSMB_MAX_BLKDEV      4

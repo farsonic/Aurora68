@@ -446,7 +446,13 @@ gray_fill:
 	lea	D_MODE_BASE(%a1),%a0
 	move.l	(%a0,%d0.w*4),%d4
 	beq	9f
-	move.l	%d4,%a0			| the frame buffer
+	tst.b	MMU32Bit
+	bne.s	5f
+	move.l	%d4,%d0			| 24-bit mode reaches only the slot's own megabyte ($F99xxxxx is $9xxxxx);
+	and.l	#0xFFF00000,%d0		| the big region at $90000000 would come out as $000000, the
+	cmp.l	#0xF9900000,%d0		| exception vectors, so a direct mode is left alone until the
+	bne	9f			| Mac is in 32-bit mode
+5:	move.l	%d4,%a0			| the frame buffer
 	move.l	D_DEPTH(%a1),%d0
 	move.b	#0x88,%d1		| 1 bit: 10001000 / 00100010, a 25% grey: told apart from the desktop's
 	move.b	#0x22,%d2		| 50% pattern in a picture of the Pi's screen (the real cards used 50%)

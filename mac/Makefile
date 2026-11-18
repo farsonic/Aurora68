@@ -69,7 +69,7 @@ $(B)/psmac.declrom: $(B)/pidisk.bin.raw $(B)/enet.bin.raw $(B)/enet_wifi.bin.raw
 
 # the same card for other screen sizes: the kernel takes psmac-WxH.declrom from the container when the
 # second display has that size (mac.screen=WxH, or the VideoCore's own size)
-RESES = 512x342 800x600 1024x768 1280x720 1280x1024 1920x1080
+RESES = 512x342 800x600 1024x768 1280x720 1280x1024 1920x1080 1920x1200
 declrom-sizes: $(B)/pidisk.bin.raw $(B)/enet.bin.raw $(B)/enet_wifi.bin.raw $(B)/piinput.bin.raw $(B)/pivideo.bin.raw
 	for r in $(RESES); do $(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --enet $(B)/enet.bin.raw --wifi $(B)/enet_wifi.bin.raw --input $(B)/piinput.bin.raw --video $(B)/pivideo.bin.raw --res $$r -o $(B)/psmac-$$r.declrom; done
 

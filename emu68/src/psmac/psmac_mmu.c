@@ -112,6 +112,8 @@ static inline uintptr_t pi_phys(uint32_t p)
        card's frame buffer in that form (docs/10) */
     if (slot_win_phys && p >= PSMB_WIN_PHYS + 0x900000u && p < PSMB_WIN_PHYS + 0x900000u + PSMB_WIN_SIZE) return slot_win_phys + (p - PSMB_WIN_PHYS - 0x900000u);
     if (slot_declrom_phys && p >= PSMB_DECLROM_PHYS && p < PSMB_DECLROM_PHYS + PSMB_DECLROM_SIZE) return slot_declrom_phys + (p - PSMB_DECLROM_PHYS);
+    /* the second display's big frame buffer, in the slot's super slot space ($90000000): the ROM's
+       32-bit tables map $40000000-$FBAFFFFF one to one, so logical and physical agree there */
     if (slot_fb_phys && p >= PSMB_FB_BIG_PHYS && p < PSMB_FB_BIG_PHYS + PSMB_FB_BIG_SIZE) return slot_fb_phys + (p - PSMB_FB_BIG_PHYS);
     return 0;
 }
