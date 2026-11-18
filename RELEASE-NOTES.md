@@ -1,5 +1,16 @@
 # Aurora68 release notes
 
+## 0.9 — The WiFi menu, AppleTalk (18 November 2026)
+
+- **The WiFi menu.** A WiFi icon at the right of the menu bar, as on today's Macs: it shows the
+  signal, and its menu lists the networks around, joins one (asking for its password), switches
+  the WiFi off and on. "Remember on this Pi" saves the network in cmdline.txt on the card, so the
+  Pi joins it at every power-on. It is the `WiFi Menu` extension in the kit's disk image: drop it
+  on the System Folder and restart.
+- **AppleTalk on the Pi alone.** Switching AppleTalk on in the Chooser no longer stops the next
+  start at "Welcome to Macintosh", and the Network control panel opens. `mac.appletalk=1` in
+  cmdline.txt starts with AppleTalk on.
+
 ## 0.8 — Restart, sound, and the CPU (18 November 2026)
 
 - **Restart from the Special menu works.** It ended in a Sad Mac (0000000F 00000033) when the

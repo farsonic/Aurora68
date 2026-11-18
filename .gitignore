@@ -38,3 +38,6 @@ mac/build/pilog.o
 mac/build/pilog.elf
 mac/build/pidepth.o
 mac/build/pidepth.elf
+mac/build/wifimenu.elf
+mac/build/wifimenu_traps.txt
+mac/build/wm/

@@ -8,7 +8,7 @@ OBJCOPY = m68k-linux-gnu-objcopy
 PY      = python3
 B       = build
 
-all: $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/PiLog.bin $(B)/PiDepth.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes
+all: $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/PiLog.bin $(B)/PiDepth.bin $(B)/WiFiMenu.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes
 
 $(B)/%.o: %.s
 	@mkdir -p $(B)
@@ -120,6 +120,27 @@ $(B)/PiDepth.bin: $(B)/pidepth.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py
 	$(PY) ../tools/mac/elf2app.py $< --name "PiDepth 8" --creator PIDP --size 64 -o $@
 $(B)/PiLog.bin: $(B)/pilog.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py
 	$(PY) ../tools/mac/elf2app.py $< --name PiLog --creator PILG --size 256 -o $@
+
+# ---- the WiFi menu: an INIT in C (mac/wifimenu, tools/mac/elf2init.py) ----
+$(B)/wifimenu_traps.txt: c/traps.txt wifimenu/traps.txt
+	@mkdir -p $(B)
+	cat c/traps.txt wifimenu/traps.txt > $@
+$(B)/wm/toolbox_glue.s $(B)/wm/toolbox_gen.h: $(B)/wifimenu_traps.txt ../tools/mac/mktraps.py
+	@mkdir -p $(B)/wm
+	$(PY) ../tools/mac/mktraps.py $< -s $(B)/wm/toolbox_glue.s -H $(B)/wm/toolbox_gen.h
+$(B)/wm/entry.o: wifimenu/entry.s
+	@mkdir -p $(B)/wm
+	$(AS) -o $@ $<
+$(B)/wm/toolbox_glue.o: $(B)/wm/toolbox_glue.s
+	$(AS) -o $@ $<
+$(B)/wm/wifimenu.o: wifimenu/wifimenu.c c/toolbox.h $(B)/wm/toolbox_gen.h
+	$(CC) $(subst -I$(B),-I$(B)/wm,$(CFLAGS)) -c -o $@ $<
+$(B)/wm/libc.o: c/libc.c c/toolbox.h $(B)/wm/toolbox_gen.h
+	$(CC) $(subst -I$(B),-I$(B)/wm,$(CFLAGS)) -c -o $@ $<
+$(B)/wifimenu.elf: $(B)/wm/entry.o $(B)/wm/toolbox_glue.o $(B)/wm/wifimenu.o $(B)/wm/libc.o wifimenu/init.ld
+	$(LD) -T wifimenu/init.ld --emit-relocs --gc-sections --no-warn-rwx-segments -z noexecstack -o $@ $(B)/wm/entry.o $(B)/wm/toolbox_glue.o $(B)/wm/wifimenu.o $(B)/wm/libc.o $(LIBGCC)
+$(B)/WiFiMenu.bin: $(B)/wifimenu.elf ../tools/mac/elf2init.py ../tools/mac/macelf.py ../tools/mac/rsrc.py
+	$(PY) ../tools/mac/elf2init.py $< --name "WiFi Menu" --creator PSWM -o $@
 
 install: $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/psmac.declrom
 	$(PY) ../tools/mac/hfsput.py $(IMG) $(B)/PiDisk.bin "System Folder" $(PART)

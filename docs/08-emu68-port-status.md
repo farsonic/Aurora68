@@ -817,6 +817,37 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    `PSMB_INFO_OPTSTATE` reports pending, saved or failed. The edit list is not logged, since it
    carries the WiFi password.
 
+44. **The WiFi menu (18 November).** The user asked for a WiFi menu at the right of the menu bar,
+   like today's Macs: discover and join networks, and keep the choice in cmdline.txt.
+   `mac/wifimenu` is an INIT in C (the mac/c kit; `tools/mac/elf2init.py` packs it, and its entry
+   copies itself into the system heap and relocates there).
+   - _DrawMenuBar is patched to draw a 16 x 12 fan left of the Help menu: solid arcs for the
+     signal, faint ones beyond it, hollow when off.
+   - Between events (jGNEFilter) it looks at unit 0 every second and redraws when the picture
+     changes.
+   - A press on the icon pops up a menu: the state, Turn Wi-Fi On/Off, the scanned networks
+     (signal dots, "(open)", a tick on the one in use), Look for Networks, Disconnect, and Forget
+     the Network Saved on the Pi.
+   - A secured network asks for its password in a dialog with "Remember on this Pi", ticked by
+     default. The join goes through unit 0's command box as PiWiFi's does. Once the unit reports
+     CONNECTED, `PSMB_INFO_SETOPT` writes `wifi.ssid=` / `wifi.psk=` into cmdline.txt (item 43).
+
+   The first version patched _MenuSelect and answered the press there without calling the real
+   MenuSelect. The Process Manager, whose own MenuSelect patch sits above an INIT's, then worked
+   on menu state nobody had set up. It wrote 32 bytes over low memory (exception vectors $48-$60,
+   and the OS trap table at $76A-$789, the _PPC trap among them), and the Finder died later with
+   "bad F-Line instruction" when the Edition Manager's idle filter called _PPC. Diffing low
+   memory around one press, then probing the trap entry after each step of the handler, showed
+   the damage came after the handler returned. The press is now taken from the event stream
+   instead: the filter turns it into a null event and returns false, and the Menu Manager never
+   sees it.
+
+   Tested in QEMU with `mac.wifisim=` and an SD card image (`CARD=`): the scan list, the password
+   dialog, the join, a solid icon once connected, and cmdline.txt on the card, one line, the old
+   options kept and `wifi.ssid="Aurora68" wifi.psk="pistorm68"` added
+   (`docs/img/wifi-menu.png`, `docs/img/wifi-menu-password.png`). The password field shows what
+   is typed, and Join is not drawn as the default button (Return still joins).
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

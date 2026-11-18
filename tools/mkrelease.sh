@@ -24,7 +24,7 @@ cp mac/build/psmac.declrom "$OUT/aurora68.declrom"
 cp mac/build/psmac_wifi.declrom "$OUT/aurora68-wifionly.declrom"
 cp mac/build/psmac_wifi_video.declrom "$OUT/aurora68-wifi.declrom"       # screen + WiFi network, no wired Ethernet: the bench and Pis without Ethernet
 for f in mac/build/psmac-*x*.declrom; do cp "$f" "$OUT/aurora68-${f#mac/build/psmac-}"; done   # one per screen size (aurora68-1024x768.declrom ...)
-for f in PiDisk PiMach PiWiFi PiBlue PiStatus PiNet PiPing PiScreens PiColor PiLog; do cp "mac/build/$f.bin" "$OUT/Mac/"; done
+for f in PiDisk PiMach PiWiFi PiBlue PiStatus PiNet PiPing PiScreens PiColor PiLog WiFiMenu; do cp "mac/build/$f.bin" "$OUT/Mac/"; done
 # an HFS disk image (2 MB) with the Macintosh files on it, for emulators and Disk Copy
 IMG="$OUT/Mac/Aurora68-Utilities.img"
 dd if=/dev/zero of="$IMG" bs=1k count=2048 status=none

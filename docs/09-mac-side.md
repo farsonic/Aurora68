@@ -152,6 +152,16 @@ python3 tools/pinet.py /tmp/psmac-wifi peer        # in another shell
 With both sResources present MacTCP takes the Ethernet; choosing the WiFi from the control panel's
 list (its interface-name string, `+48` in `'ipln'`) is not decoded yet.
 
+## The WiFi menu
+`WiFi Menu` (mac/wifimenu, an extension: drop it on the System Folder) puts a WiFi icon at the right
+of the menu bar, left of the Help menu, on System 7. The icon shows the signal (a fan of three
+arcs), the dot alone while not connected, faint arcs when the radio is off. A press on it lists
+the networks around with their signal and "(open)" for unsecured ones, ticks the one in use,
+switches the radio on or off, looks again, disconnects, and forgets the network saved on the Pi.
+Choosing a secured network asks for its password. With "Remember on this Pi" ticked, the kernel
+writes `wifi.ssid=` and `wifi.psk=` into cmdline.txt on the Pi's card once the join has worked, so
+the next power-on joins by itself. The rest of cmdline.txt is kept (docs/08 items 43 and 44).
+
 ## AppleTalk on the solo board
 `mac.appletalk=1` starts with AppleTalk active (PRAM's SPConfig). LocalTalk runs over the solo
 board's SCC stand-in, whose transmitter finishes every frame into an empty network (docs/08
