@@ -12,7 +12,10 @@ replies to .rx. Two modes:
                             address the Mac checks for duplicates (DAD) is pinged a second later
                             and the answer logged; a TCP echo server on port 7 and a DNS
                             server on port 53 (peer.testbed and anything.testbed is
-                            192.168.68.1, and back). Logs every frame (default)
+                            192.168.68.1, and back). Logs every frame (default).
+                            PINET_MDNS=NAME: every ten seconds an mDNS query for NAME.local
+                            (224.0.0.251:5353, from the Mac's own subnet so the responder does
+                            not ignore it as off-link); answers are logged as "mDNS answer".
   pinet.py <base> tap tapN  bridge frames to a Linux TAP device (needs CAP_NET_ADMIN)
 
 Usage in the testbed: tools/run-fullstack.sh 400 mac.net=/tmp/psmac-net   (and run this helper).
@@ -40,8 +43,56 @@ def csum(b):
     while s >> 16: s = (s & 0xffff) + (s >> 16)
     return (~s) & 0xffff
 
+MDNS_NAME = os.environ.get('PINET_MDNS')
+mac_ip4 = None
+mdns_next = 0
+def dns_names(m, p):
+    out = []; jumped = False; end = None
+    while p < len(m):
+        n = m[p]
+        if n == 0: p += 1; break
+        if n & 0xc0 == 0xc0:
+            if end is None: end = p + 2
+            p = ((n & 0x3f) << 8) | m[p + 1]; continue
+        out.append(m[p + 1:p + 1 + n].decode(errors='replace')); p += 1 + n
+    return '.'.join(out), (end if end is not None else p)
+def mdns_answer(src, sip, payload):
+    m = payload[8:]
+    if len(m) < 12: return 'mDNS (short)'
+    qd, an = struct.unpack('>HH', m[4:8]); p = 12
+    for _ in range(qd):
+        _, p = dns_names(m, p); p += 4
+    got = []
+    for _ in range(an):
+        name, p = dns_names(m, p)
+        t, c, ttl, l = struct.unpack('>HHIH', m[p:p + 10]); p += 10; d = m[p:p + l]; p += l
+        if t == 1 and l == 4: got.append(f"{name} A {'.'.join(map(str, d))}")
+        elif t == 28 and l == 16: got.append(f"{name} AAAA {ip6_addr(d)}")
+        elif t == 12: got.append(f"{name} PTR {dns_names(m, p - l)[0]}")
+        else: got.append(f"{name} type {t}")
+    if got: print("mDNS answer from " + '.'.join(map(str, sip)) + ": " + '; '.join(got), flush=True)
+    return f'mDNS ({an} answers)'
+def mdns_due():
+    global mdns_next
+    if not MDNS_NAME or time.time() < mdns_next: return
+    mdns_next = time.time() + 10
+    src_ip = (mac_ip4[:3] + b'\x01') if mac_ip4 else PEER_IP
+    q = struct.pack('>HHHHHH', 0, 0, 1, 0, 0, 0)
+    for lab in (MDNS_NAME + '.local').split('.'): q += bytes([len(lab)]) + lab.encode()
+    q += b'\0' + struct.pack('>HH', 1, 1)
+    udp = struct.pack('>HHHH', 5353, 5353, 8 + len(q), 0) + q
+    ip = bytearray(struct.pack('>BBHHHBBH', 0x45, 0, 20 + len(udp), 0, 0, 255, 17, 0) + src_ip + bytes([224, 0, 0, 251]))
+    ip[10:12] = struct.pack('>H', csum(bytes(ip)))
+    send(bytes.fromhex('01005e0000fb') + PEER_MAC + b'\x08\x00' + bytes(ip) + udp)
+    print(f"peer -> mDNS query {MDNS_NAME}.local from {'.'.join(map(str, src_ip))}", flush=True)
+
 def peer(frame):
+    global mac_ip4
     dst, src, etype = frame[0:6], frame[6:12], struct.unpack('>H', frame[12:14])[0]
+    if etype == 0x0800 and len(frame) >= 42 and frame[23] == 17 and frame[14 + (frame[14] & 15) * 4 + 2:14 + (frame[14] & 15) * 4 + 4] == b'\x14\xe9':
+        if frame[26:30] != bytes(4): mac_ip4 = frame[26:30]
+        return mdns_answer(src, frame[26:30], frame[14 + (frame[14] & 15) * 4:])
+    if etype == 0x0800 and len(frame) >= 34 and frame[26:30] != bytes(4): mac_ip4 = frame[26:30]
     if etype == 0x0806 and len(frame) >= 42:                 # ARP
         op = struct.unpack('>H', frame[20:22])[0]; sha, spa, tpa = frame[22:28], frame[28:32], frame[38:42]
         if op == 1 and tpa == PEER_IP:
@@ -259,6 +310,7 @@ while True:
             print(f"mac -> {frame[0:6].hex(':')} type {frame[12:14].hex()} len {n}: {what}", flush=True)
     if tap is None:
         ping6_due()
+        mdns_due()
     if tap is not None:
         try:
             while True:

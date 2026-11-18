@@ -52,9 +52,22 @@ void aga_reboot(int tryboot) { (void)tryboot; kprintf("[PSMAC] reboot requested 
 
 /* ---- input ring: keyboard and mouse reports for the Mac side ------------------------------- */
 static volatile struct alice_input_ring *inr;
+/* mac.altcmd=1: a PC keyboard's Alt is Command and its Windows key Option, by position (the key
+   beside the space bar is Command on a Mac keyboard). Without it Apple's own mapping holds:
+   Windows is Command, Alt is Option (mac/piinput.s hid_modifiers). Applied to the HID modifier
+   byte of every key event, USB and Bluetooth alike. */
+static int in_altcmd = -1;
 static void in_put(uint32_t type, int32_t a, int32_t b, int32_t c)
 {
     if (!inr) return;
+    if (type == ALICE_IN_KEY) {
+        if (in_altcmd < 0) { extern const char *psmac_option(const char *); const char *o = psmac_option("mac.altcmd"); in_altcmd = o && o[0] == '1'; }
+        if (in_altcmd) {
+            uint32_t m = (uint32_t)c;
+            m = (m & ~0xccu) | (m & 0x44u) << 1 | (m & 0x88u) >> 1;      /* L/R Alt (bits 2, 6) <-> L/R GUI (3, 7) */
+            c = (int32_t)m;
+        }
+    }
     uint32_t head = inr->head, tail = inr->tail;
     if (head - tail >= ALICE_IN_SLOTS) { inr->dropped++; return; }
     volatile struct alice_input_event *e = &inr->ev[head % ALICE_IN_SLOTS];

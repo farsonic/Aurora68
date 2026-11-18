@@ -181,6 +181,10 @@ with the transport, the number of enumerations and each device's completed, NAKe
 polls. Kernel options: `usb=off` (leave the controller alone), `usb=pio` (Alice68's FIFO transport
 instead of DMA). docs/08 item 40 has the design.
 
+PC keyboards: by default the Windows key is Command and Alt is Option (Apple's own mapping for PC
+keyboards). `mac.altcmd=1` swaps them, so the key beside the space bar is Command as on a Mac
+keyboard. Both apply to USB and Bluetooth keyboards.
+
 ## MacTCP
 MacTCP is Apple's TCP/IP of 1989-1996: the `.IPP` driver and a control panel, later folded into
 Open Transport. It is not in the repository (Apple's), and the user's images do not carry it; the

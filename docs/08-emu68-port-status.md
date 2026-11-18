@@ -848,6 +848,17 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    (`docs/img/wifi-menu.png`, `docs/img/wifi-menu-password.png`). The password field shows what
    is typed, and Join is not drawn as the default button (Return still joins).
 
+45. **mDNS on the Mac, and PC keyboards (18 November).** The user's `ping macse.local` got no
+   answer. Riptide's mDNS responder starts off, and the Amiga glue turns it on, but the Mac
+   driver never did. Riptide now turns it on unless riptide.conf says `mdns off` (riptide
+   a6ca4e4), and without a `hostname` line it takes the Macintosh Name from Sharing Setup
+   ('STR ' -16413), "macintosh" when that is empty. `tools/pinet.py` learned `PINET_MDNS=NAME`:
+   an mDNS query every ten seconds from the Mac's own subnet. With the Riptide image it logs
+   `mDNS answer from 192.168.0.77: macintosh.local A 192.168.0.77`. For `macse.local`, put
+   `hostname macse` in riptide.conf or name the Mac in Sharing Setup.
+   PC keyboards: Apple's mapping stays the default (Windows = Command, Alt = Option);
+   `mac.altcmd=1` swaps them by position.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,
