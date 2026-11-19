@@ -983,6 +983,137 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    older Systems subtracts one the same way); HWCfgFlags ($B22) $FC00 has the FPU bit. Speedometer:
    "MC68030, MC68882, MC68030 MMU". The user's "020" came from 0.7.
 
+50. **Booting fast: the Pi as the SE's processor (19 November).** The user: "when this is dropped
+   into a Mac SE with this acting as the CPU it needs to boot super fast to be ready for the Mac."
+   From the moment the SE is switched on nothing happens on it until the Pi's firmware has read its
+   files, the kernel has set up and the 68k is released, and then the IIci ROM does its own start.
+   Nobody had timed any of it.
+
+   *The clock.* `psmac_boot.c` prints one `[BOOT] t=N.NNNs what` line per phase. Each mark reads the
+   ARM's generic timer (one instruction, any core); the first time the peripherals are mapped the
+   generic timer is tied to the BCM2837's 1 MHz system timer, which the SoC's reset starts and the
+   firmware never resets, so on real hardware t counts from power-on and the first line, "kernel
+   entry", is the firmware's whole part (boot ROM, bootcode.bin, start.elf, config.txt, the device
+   tree, kernel8.img and the initramfs read from the card). Under QEMU the system timer starts with
+   QEMU and that line says nothing. The 68k's phases come from the PC the service core already
+   samples for its heartbeat: the ROM checksum ($40844690) and the RAM test ($408446BC) as spans
+   (first and last sample inside the routine), and from the Mac side the first log line (a
+   declaration ROM driver's Open), the first INIT's line and the Finder (CurApName, $910, read ten
+   times a second). The first SCSI selection and pseudo-DMA read on the SE board, the solo board's
+   first READ and PiDisk's first block are marked where they happen. The JIT does no extra work.
+
+   *Before* (solo board under QEMU, the user's set-up: a 101 MB container with the ROM, the
+   declaration ROM and a 96 MB System 7.1 image, 128 MB for the Mac): kernel entry 0.003 s; the
+   kernel's copy of the initramfs done 0.84 s; cores started 1.07 s; 68k released 1.19 s; ROM
+   checksum 1.22 s; RAM test 8.38-10.54 s; first SCSI read 59.2 s; first INIT 101.9 s; Finder 104.3 s.
+   The heartbeats between showed where the rest went:
+   - 1.2 s to 8.4 s, PC $40807116: the startup chime, a wavetable loop of 30000 steps of 14 VIA reads
+     each, timed by the reads themselves. Every VIA read is a trapped access to the kernel's VIA,
+     17 us under QEMU, about 1 us on a Pi 3 and 2 to 3 us through the SE's real VIA. Nothing plays
+     the ASC on an SE or a bare Pi: seven seconds of silence in QEMU, half a second to a second on
+     hardware.
+   - 8.4 s to 10.5 s, the RAM test: moving inversions over 128 MB. It tests the Pi's memory.
+   - 14 s to 59 s and again to 100 s, PC $4080786A: the SCSI Manager's selection loop, waiting for
+     BSY from six empty SCSI IDs. Its timeout is 250 ms ($62 of its globals, set at $40809554)
+     times TimeSCSIDB bus accesses, twice per boot (the Start Manager's scan and the System's).
+     About three seconds on hardware with one disk.
+   - Three heartbeats at PC $40807A5A: the half second the SCSI Manager waits after resetting the
+     bus, counted in TimeDBRA turns of a self-looping dbf. The kernel had given TimeDBRA as 0x7FFF
+     (item 14), but since item 27 every such turn reads the system timer once, so the half second
+     was 16 million reads: 23 s under QEMU, 1.5 to 3 s on a Pi 3.
+   And before the kernel at all, on the hardware: the firmware reads the whole container from the
+   card, at 10 to 20 MB/s on a Pi 3 (the firmware's SD speed is documented nowhere; the range is
+   that of the card in 4-bit mode at 25 to 50 MHz), five to ten seconds for 101 MB; kernel8.img is
+   5.3 MB more. The kernel then copied the 99 MB to the top of RAM (0.84 s under QEMU, about a
+   tenth of a second on a Pi 3). And it printed 7 KB of log before the 68k started, at 115200 baud:
+   0.6 s on hardware, spent waiting on the UART's FIFO.
+
+   *What changed:*
+   - **Disk images on the card** (`psmac_card.c`). An image can be a file of its own in the card's
+     root (`MyMac.hda`, any `*.hda`, `*.img`, `*.image`, `*.hfv`, `*.dsk` over a megabyte, not
+     `kernel*.img` or macOS's `._` files, or `mac.image=NAME`). Core 3 finds it at the card's first
+     look, takes the memory from the kernel's free list (block 0, which psmac_setup_memory carved
+     the Mac's RAM from), registers it as the solo board's next SCSI disk or a PiDisk volume, and
+     reads it in 16 KB chunks, four sectors per pass of core 3's loop (CMD18, stopped by CMD12:
+     about 170 us at 25 MHz, inside the 32-byte FIFO of the Bluetooth UART beside it). A chunk the
+     Mac needs first is read first (`psmac_card_need`): from core 0 (the solo board's SCSI) core 3 is
+     asked and the access waits, as the Mac would on a disk; from core 3 (PiDisk) it is read there
+     and then. Writes need their chunk in memory first, so the loader never overwrites them, and go
+     back into the same file through its own extents. The solo board's first SCSI selection waits
+     for the card's first look when it has no disk yet. An image in the container still wins.
+     The container is then the ROM, the declaration ROM and the WiFi/Bluetooth firmware, about
+     1 MB: the firmware's five to ten seconds become a few hundredths.
+   - **The ROM patch** (`rom/patches/iici.json`, so also the kernel's in-memory delta and
+     make-container.py's): StartTest's call of the RAM test becomes a branch to its return point
+     (sizing is a separate routine, $408431C0, and runs as before; the warm-start path of every
+     Restart never ran the test; no later test reads what it leaves); the chime's outer count is 1
+     instead of 30000; the selection timeout is 10 ms instead of 250 (a SCSI target must answer
+     its selection within 200 us, the standard's selection abort time).
+   - **TimeDBRA measured** (`psmac_mbox.c`): 4096 reads of the system timer at start give the dbf
+     turns per millisecond, so the ROM's TimeDBRA delays last what they say.
+   - **The log off the critical path** (`psmac_bus.c`): once the service core's loop runs, kprintf
+     puts characters into a 16 KB ring that the loop sends whenever the UART has room; a full ring is
+     sent from by the writer, and before the loop (or with `mac.synclog=1`) every character goes out
+     at once as before, so a kernel that dies early still says where. A lock keeps the sender and
+     Bluetooth's move of the log to the mini UART apart. The service core's heartbeat no longer
+     stops the bus for a sixth of a second every five.
+   - **The USB start on core 1** (`psmac_usb.c`, `alice_psmac.c`): the controller's power, reset and
+     first enumeration, about a second on hardware, held core 3's mailbox, card and display services
+     before their loop began. Core 1 had nothing to do.
+   - **The ROM's first RESET** no longer asks the firmware for the VideoCore buffer psmac_display_init
+     made a moment before and clears 9 MB again (`psmac_display.c`), and on the SE board the RESET
+     instruction holds the motherboard's reset line 1 ms and waits 1 ms, not 30 and 10
+     (`psmac_gpio.c`; a 68000 holds it 16 us; the power-on pulse keeps its timing).
+   - **PiDisk's volume** is announced 5 s after the driver's Open and every 2 s until mounted, not
+     first after 60 s (`mac/pidisk.s`), and logs only its first post.
+   - **The firmware's part:** `boot_delay=0` in config.txt (some firmware waits a second by
+     default; upstream Emu68's PiStorm config.txt says the same), and kernel8.img ships
+     gzip-compressed, 1 MB instead of 5.3, which the firmware inflates itself (the config.txt
+     documentation: a 64-bit kernel may be a gzip archive, recognised by its first bytes; upstream
+     Emu68 ships Emu68-pistorm.gz so to every Pi 3 PiStorm). `disable_splash=1` and, in the SE,
+     `gpu_mem=16` with start_cd.elf (the cut-down firmware, a third of the size) are offered as
+     options: the first hides the rainbow square that tells a dead card from a dead board (the
+     reason the template keeps it), the second does not leave room for the large HDMI screens.
+     None of the firmware settings was measured on hardware.
+
+   Not changed, on purpose: Lagoon EtherTalk's ten AARP probes at a fifth of a second (two seconds
+   at INIT time when AppleTalk is on Ethernet) are AppleTalk's own rule for claiming an address;
+   Riptide's INIT does not wait for DHCP. The kernel's copy of a large container stays: with the
+   image on the card there is nothing large to copy. The SCSI bus reset's half second is the
+   ROM's and the SE's disks may need it.
+
+   *After*, the same timeline (QEMU, so the absolute times are QEMU's; TCG makes every trapped
+   access 10 to 20 times dearer than on a Pi 3):
+
+   | Phase | QEMU before | QEMU after, image in the container | QEMU after, image on the card | Pi 3B before (estimate) | Pi 3B after (estimate) |
+   |---|---|---|---|---|---|
+   | power-on to kernel entry (firmware) | not modelled | not modelled | not modelled | 7-14 s | 1.6-2.7 s |
+   | kernel entry to 68k released | 1.19 s | 1.34 s | 0.34 s | 0.8-1 s | 0.2-0.3 s |
+   | 68k released to the first read of the boot disk | 58 s | 23.6 s | 30.9 s | 5-8 s | 0.6-1 s |
+   | the Finder (t) | 104.3 s | 48.4 s | 59.3 s | | about 15 s sooner than before |
+   | SE board (MAME), first block from the SE's disk | 109.5 s | 35.1 s | | | |
+   | SE board (MAME), the Finder | not reached in 300 s | 246.5 s | | | |
+
+   The Pi 3B column is arithmetic, not measurement. Firmware: bootcode.bin and start.elf about
+   1.5 to 2.5 s (a published Pi 3 measurement has 1.25 s to start.elf), plus a second where the
+   firmware's boot_delay default is 1, plus kernel8.img (5.3 MB, 0.3-0.5 s at 10-20 MB/s; 1 MB
+   gzipped and inflated by the firmware, about 0.1-0.2 s) plus the container (101 MB, 5-10 s; 0.5
+   to 1 MB, a few hundredths). Kernel: the 99 MB copy (0.1 s), the log before the service core
+   runs (7 KB at 115200 baud, 0.6 s, of which 2.3 KB still goes out synchronously, before core 2
+   starts), the VideoCore mailbox. ROM: the chime (420,000 VIA reads, 0.4-1 s), the RAM test of
+   128 MB (0.3-0.5 s), two scans of six empty SCSI IDs at 250 ms (3 s), the bus reset's half second
+   at 0x7FFF reads per ms (1.5-3 s). With the image on the card the boot disk's blocks come from
+   the card while the Mac asks for them, at the card's speed rather than RAM's; QEMU's SD model is
+   far slower than a card (0.5 MB/s), which is why that column's Finder is later than the
+   container's under QEMU, and the card's speed on a real Pi 3 is what the user's [BOOT] lines will
+   show. The target of under three seconds from power-on to the 68k's first instruction looks
+   reachable with the container at a megabyte; that is for the user's Pi to confirm, with the
+   first line's t.
+
+   To do on the hardware: the [BOOT] lines from a Pi 3B with the small container and the image on
+   the card; whether `gpu_mem=16` with start_cd.elf keeps the SE's HDMI picture; the card loader's
+   speed at 25 MHz (50 MHz high speed is a later step if it is the bottleneck).
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

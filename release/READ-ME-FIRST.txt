@@ -198,6 +198,38 @@ mac.board=se (the SE board) the same image appears as a PiDisk volume instead.
 
 A Pi Zero W (the original, 2017) cannot run this: its processor is 32-bit only. The Zero 2 W can.
 
+Booting fast (new in the next release)
+--------------------------------------
+In the SE the Pi is the processor: nothing happens on the Mac until the Pi's firmware has read its
+files from the card, the kernel has set up, and the 68k starts. The firmware reads EVERYTHING in
+the container before the kernel starts, at 10 to 20 MB a second on a Pi 3, so a container with a
+100 MB disk image in it costs five to ten seconds of a dark SE. So:
+  - The container holds only the ROM, the declaration ROM and the WiFi/Bluetooth firmware (about
+    1 MB). For the SE:
+        python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom aurora68-512x342.declrom \
+          cyfmac43430-sdio.bin brcmfmac43430-sdio.txt cyfmac43430-sdio.clm_blob BCM43430A1.hcd
+  - A disk image goes on the card as a file of its own, beside aurora68.cpio, with a name ending
+    in .hda, .img, .image, .hfv or .dsk (MyMac.hda; kernel8.img is never taken), or named in
+    cmdline.txt with mac.image=NAME. The kernel finds it a moment after the 68k has started and
+    reads it in the background while the Mac boots. In the SE it is the PiDisk volume; on the bench
+    (mac.board=solo) it is the startup disk, SCSI ID 0, and what the Mac asks for is read first.
+    What the Mac writes goes back into the same file. An image inside the container still works
+    as before, and wins if there is one.
+  - config.txt: boot_delay=0 (in this release's file). kernel8.img is gzip-compressed (1 MB
+    instead of 5); the firmware inflates it itself. Optional: disable_splash=1 (a little faster,
+    but the rainbow square is the sign that the firmware found its files) and, in the SE with HDMI
+    at 640 x 480 or none, gpu_mem=16 with start_cd.elf and fixup_cd.dat copied from the firmware
+    repository (smaller firmware; without those two files the Pi does not start).
+  - cmdline.txt for the SE: "enable_cache mac.board=se" plus the wifi.* and bt.* words you use.
+    mac.console=hdmi is fine: the log no longer holds the boot up.
+  - The bench: the same container with the declaration ROM for your screen, the disk image
+    on the card, "enable_cache mac.board=solo mac.screen=WxH ..." in cmdline.txt.
+The kernel's log says how long each step took: "[BOOT] t=N.NNNs what", t counted from power-on.
+The first line, "kernel entry", is the firmware's part. Please send those lines from your Pi.
+The ROM's own start is shorter too: the IIci ROM's memory test (the Pi's memory cannot fail as
+SIMMs do), its silent startup chime and its quarter-second wait at every empty SCSI ID are cut
+short by the ROM patch the kernel and make-container.py apply.
+
 What to expect, and what the log says
 -------------------------------------
 On the serial line, within a second: Emu68's banner, then "[PSMAC] options: ... bridge=gpio

@@ -9,8 +9,13 @@ arm_64bit=1
 # image and the blinking question mark; docs/08 item 35)
 initramfs aurora68.cpio 0x10000000   # the container: Macintosh IIci ROM, declaration ROM, firmware
                                        # (make it with make-container.py, see READ-ME-FIRST.txt)
+boot_delay=0                  # start the kernel at once (some firmware versions wait a second by default)
+# Booting fast (READ-ME-FIRST.txt, "Booting fast"): the firmware reads the whole container before the
+# kernel starts, 10 to 20 MB a second on a Pi 3, so keep disk images out of it and put them on the
+# card beside it (MyMac.hda): the kernel reads them while the Mac starts.
 # (no disable_splash: the firmware's rainbow square for a moment at power-on says the firmware
-#  found its files; with it suppressed a card the firmware rejects and a dead board look the same)
+#  found its files; with it suppressed a card the firmware rejects and a dead board look the same.
+#  disable_splash=1 saves a little more time once the card is known to work.)
 avoid_warnings=1
 enable_uart=1                 # the kernel's log on the serial pins (115200 8N1); leave on
 # no dtoverlay=disable-bt: Bluetooth has the PL011 (GPIO 30-33) and the kernel moves its log to the
@@ -30,6 +35,10 @@ disable_overscan=1
 
 [pi3]
 gpu_mem=64
+# In the SE, with the HDMI screen at 640 x 480 or none, gpu_mem=16 makes the firmware use its
+# smaller cut-down start_cd.elf (copy start_cd.elf and fixup_cd.dat to the card first, or the Pi will
+# not start): less to read at power-on. Not for the larger HDMI screens, whose frame buffer needs
+# the 64 MB. Not measured on hardware yet.
 # A Pi 3B carries the BCM43438 WiFi (firmware brcmfmac43430-sdio.bin, .txt and .clm_blob); a 3B+ or
 # 3A+ the BCM43455 (cyfmac43455-sdio-standard.bin and friends). The kernel picks by chip id; put the
 # right trio in the container (READ-ME-FIRST.txt).

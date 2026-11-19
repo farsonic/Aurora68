@@ -16,7 +16,11 @@ echo "== kernel"
       -DTARGET=raspi64 -DVARIANT=psmac -DCMAKE_BUILD_TYPE=Release > /dev/null
 cmake --build psmac-build -j4 > /dev/null
 gunzip -kf psmac-build/Emu68.img.gz
-cp psmac-build/Emu68.img "$OUT/kernel8.img"
+# kernel8.img goes on the card gzip-compressed, 1 MB instead of 5: the Pi firmware recognises a
+# gzip archive by its first bytes and inflates a 64-bit kernel itself (config.txt documentation,
+# arm_64bit), as upstream Emu68's own Emu68-pistorm.gz on every Pi 3 PiStorm (docs/08 item 50)
+cp psmac-build/Emu68.img.gz "$OUT/kernel8.img"
+
 
 echo "== Macintosh side"
 make -C mac > /dev/null

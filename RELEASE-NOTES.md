@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **Booting faster.** From power-on to the Mac's first instruction, and from there to the Finder,
+  is now much shorter (docs/08 item 50 has the timeline):
+  - A disk image can sit on the card as a file of its own beside `aurora68.cpio` (`MyMac.hda`, or
+    `mac.image=NAME`) instead of inside it. The Pi firmware reads the whole container before the
+    kernel even starts, five to ten seconds for 100 MB on a Pi 3; the kernel now reads the image
+    in the background while the Mac boots, the blocks the Mac asks for first, and writes the Mac's
+    changes back into the same file. On the bench it is the startup disk, in the SE the PiDisk
+    volume. An image inside the container still works and wins if there is one.
+  - The IIci ROM patch skips the memory test (the Pi's memory is not a SIMM), cuts the startup
+    chime nobody hears to nothing, and waits 10 ms instead of 250 at every empty SCSI ID (twice
+    per boot, six IDs). Make the container again, or let the kernel patch a stock ROM.
+  - The kernel's log no longer waits for the 115200 baud serial line (`mac.synclog=1` brings the
+    old behaviour back), the USB start runs on its own core, and the ROM's first RESET no longer
+    remakes the HDMI frame buffer or holds the SE's reset line for 40 ms.
+  - `kernel8.img` ships gzip-compressed (1 MB instead of 5) and `config.txt` has `boot_delay=0`.
+  - Every step is timed in the log, `[BOOT] t=N.NNNs what`, counted from power-on; the first line is
+    the firmware's part. Please send those lines from a real Pi 3B.
+  - PiDisk's volume appears a few seconds after the Finder instead of a minute after power-on.
 - **Fixed: no screen when the declaration ROM's size did not match `mac.screen`.** A container whose
   only declaration ROM was for another size (aurora68-1920x1200.declrom with mac.screen=1920x1080)
   left slot 9 empty: no Pi screen, no PiDisk, no input, the log on HDMI for ever. The kernel now

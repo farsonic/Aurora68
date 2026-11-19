@@ -90,7 +90,8 @@ PiBlue, PiStatus and the test programs) as MacBinary files and on an HFS image.
 [all]
 kernel=kernel8.img
 arm_64bit=1
-initramfs aurora68.cpio followkernel   # the ROM, the declaration ROM and firmware in one file
+initramfs aurora68.cpio 0x10000000     # the ROM, the declaration ROM and firmware in one file
+boot_delay=0                           # start the kernel at once ("Booting fast", below)
 enable_uart=1                          # the kernel's log on the serial pins, 115200 8N1
 hdmi_group=2
 hdmi_mode=4                            # 640 x 480: the second screen, one pixel to one
@@ -126,10 +127,35 @@ One line, options separated by spaces, no comments:
 | `bt.dev=ADDR:KEY:KIND...` | a paired device, as the log printed it after `bt.pair=`, so it reconnects at every boot without pairing again |
 | `mac.card=off` / `mac.card=ro` | the kernel's use of the Pi's own SD card (Pi 3 family, through the sdhost controller): by default it reads and writes `pairings.txt` (Bluetooth pairings) and writes the disk image's changes back into the container on the card. `ro` reads pairings only, `off` leaves the card alone. cmdline.txt and config.txt are never written |
 | `mac.container=NAME` | the container's file name on the card, when it is not `aurora68.cpio` (the card writer looks for it in the root directory and writes to it only if its size and first sector match what was loaded) |
+| `mac.image=NAME` | the disk image on the card, a file of its own beside the container (default: the first file in the card's root ending in `.hda`, `.img`, `.image`, `.hfv` or `.dsk`, not `kernel*.img`); `mac.image=off` takes none. Used only when the container has no disk image (below, "Booting fast") |
+| `mac.synclog=1` | send every log character to the serial line before going on, as the kernel used to (by default the service core sends the log from a ring, so the 115200 baud line no longer holds the kernel up) |
 | `mac.scsi0=PATH` | testbed only: a host disk image for the solo board's SCSI ID 0 (`mac.scsi1=` ... `mac.scsi6=`), with `mac.semihost=1` for host file access without the MAME bridge. On hardware the images come from the container |
 | `mac.solotrace=N` | the solo board's first N SCSI commands and ADB commands in the log |
 | `mac.bridge=gpio` | how the motherboard is reached: `gpio` (the classic PiStorm's CPLD, the default on hardware), `semihost` or `uart` (the testbed's bridge to MAME) |
 | `mac.vcswap=1` | swap red and blue on the second screen, should a board's firmware disagree with the kernel about the pixel byte order (the firmware is asked; this overrides its answer) |
+
+### Booting fast
+In the SE the Pi is the processor, so the SE stays dark until the Pi's firmware has read its files,
+the kernel has set up and the 68k starts. The kernel's log times every step, `[BOOT] t=N.NNNs what`,
+with t counted from power-on (the Pi's system timer starts at reset; the first line, "kernel
+entry", is the firmware's part). docs/08 item 50 has the measurements.
+- **The container holds no disk image.** The firmware reads the whole initramfs before the kernel
+  starts, 10 to 20 MB a second on a Pi 3: a 100 MB container is five to ten seconds. Keep the ROM,
+  the declaration ROM and the WiFi/Bluetooth firmware in it (about 1 MB) and put the disk image on
+  the card as a file of its own (`MyMac.hda`, or `mac.image=NAME`). The kernel finds it a moment
+  after the 68k has started and reads it in the background; on the bench (`mac.board=solo`) it is
+  the startup disk and what the Mac asks for is read first, in the SE it is the PiDisk volume.
+  The Mac's writes go back into the file.
+- **config.txt:** `boot_delay=0`; `kernel8.img` as the release ships it, gzip-compressed (the
+  firmware inflates it); `initramfs aurora68.cpio 0x10000000`. Optional: `disable_splash=1` (a
+  little faster, without the rainbow square that shows the firmware found its files) and, in the
+  SE with HDMI at 640 by 480 or none, `gpu_mem=16` with `start_cd.elf` and `fixup_cd.dat` on the
+  card (the cut-down firmware; without them the Pi does not start).
+- **cmdline.txt for the SE:** `enable_cache mac.board=se` and the `wifi.`/`bt.` words you use. For
+  the bench: `enable_cache mac.board=solo mac.screen=WxH` with the declaration ROM of that size.
+- **The ROM:** the patch (rom/patches/iici.json, applied by the kernel and by make-container.py)
+  skips the IIci ROM's memory test (it tests the Pi's memory, which cannot fail as SIMMs do),
+  shortens the startup chime nobody hears, and waits 10 ms instead of 250 at each empty SCSI ID.
 
 ### Upgrading
 Replace `kernel8.img` and `aurora68.declrom`, rebuild `aurora68.cpio`, keep your `config.txt`
