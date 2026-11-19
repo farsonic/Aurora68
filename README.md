@@ -198,6 +198,7 @@ screen, booted from the SE's SCSI disk, with PiDisk mounted beside it (docs/08 i
 | `reference/` | the MAME testbed patch and instructions to recreate the MAME checkout; third-party checkouts live here but are not committed |
 | `docs/` | the documents |
 | `release/` | the SD card's `config.txt`, `cmdline.txt` and read-me; `tools/mkrelease.sh VERSION` builds the release zip |
+| `dev/` | the development kit: a build container, the workspace of the four repositories and its CLAUDE.md, test-image and test-set tools, testbed helpers (`dev/README.md`) |
 
 ## Building and running the testbed
 The kernel: see `docs/08` ("What exists"). The Mac side: `make -C mac`. The whole stack:
