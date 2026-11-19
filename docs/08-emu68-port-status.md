@@ -1194,16 +1194,19 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    *After*, the same timeline (QEMU, so the absolute times are QEMU's; TCG makes every trapped
    access 10 to 20 times dearer than on a Pi 3):
 
-   | Phase | QEMU before | QEMU after, image in the container | QEMU after, image on the card | Pi 3B before (estimate) | Pi 3B after (estimate) |
+   | Phase | QEMU before | QEMU after, image in the container (1) | QEMU after, image on the card (2) | Pi 3B before (estimate) | Pi 3B after (estimate) |
    |---|---|---|---|---|---|
    | power-on to kernel entry (firmware) | not modelled | not modelled | not modelled | 7-14 s | 1.6-2.7 s |
-   | kernel entry to 68k released | 1.19 s | 1.34 s | 0.34 s | 0.8-1 s | 0.2-0.3 s |
-   | 68k released to the first read of the boot disk | 58 s | 23.6 s | 30.9 s | 5-8 s | 0.6-1 s |
-   | the Finder (t) | 104.3 s | 48.4 s | 59.3 s | | about 15 s sooner than before |
+   | kernel entry to 68k released | 1.19 s | 1.34 s | 0.36 s | 0.8-1 s | 0.2-0.3 s |
+   | 68k released to the first read of the boot disk | 58 s | 23.6 s | 7.0 s | 5-8 s | 0.6-1 s |
+   | the Finder (t) | 104.3 s | 48.4 s | 36.8 s | | about 15 s sooner than before |
    | SE board (MAME), first block from the SE's disk | 109.5 s | 35.1 s | | | |
    | SE board (MAME), the Finder | not reached in 300 s | 246.5 s | | | |
 
-   The Pi 3B column is arithmetic, not measurement. Firmware: bootcode.bin and start.elf about
+   (1) without the measured TimeDBRA: the SCSI Manager's half second after the bus reset still took
+   about 20 s of QEMU's time there. (2) the final kernel, TimeDBRA measured (435 turns per ms
+   under QEMU, from 0x7FFF); the same run without it took 30.9 s to the first read and 59.3 s to the
+   Finder. The Pi 3B column is arithmetic, not measurement. Firmware: bootcode.bin and start.elf about
    1.5 to 2.5 s (a published Pi 3 measurement has 1.25 s to start.elf), plus a second where the
    firmware's boot_delay default is 1, plus kernel8.img (5.3 MB, 0.3-0.5 s at 10-20 MB/s; 1 MB
    gzipped and inflated by the firmware, about 0.1-0.2 s) plus the container (101 MB, 5-10 s; 0.5
@@ -1213,9 +1216,8 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    128 MB (0.3-0.5 s), two scans of six empty SCSI IDs at 250 ms (3 s), the bus reset's half second
    at 0x7FFF reads per ms (1.5-3 s). With the image on the card the boot disk's blocks come from
    the card while the Mac asks for them, at the card's speed rather than RAM's; QEMU's SD model is
-   far slower than a card (0.5 MB/s), which is why that column's Finder is later than the
-   container's under QEMU, and the card's speed on a real Pi 3 is what the user's [BOOT] lines will
-   show. The target of under three seconds from power-on to the 68k's first instruction looks
+   far slower than a card (0.5 MB/s), and the card's speed on a real Pi 3 is what the user's [BOOT]
+   lines will show. The target of under three seconds from power-on to the 68k's first instruction looks
    reachable with the container at a megabyte; that is for the user's Pi to confirm, with the
    first line's t.
 
