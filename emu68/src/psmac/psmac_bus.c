@@ -418,6 +418,25 @@ static uint32_t mac_rd32(uint32_t logical, int *ok)
     if (!valid || ph + 4 > ram_size) { *ok = 0; return 0; }
     *ok = 1; return *(const uint32_t *)(KERNEL_ALIAS + ram_phys + ph);
 }
+/* for the crash record (psmac_crash.c): RAM or the ROM, wherever the 68k's map puts them */
+uint32_t psmac_mac_rd32(uint32_t logical, int *ok)
+{
+    int valid; uint32_t ph = psmac_mmu_l2p(logical, &valid);
+    if (valid && ph >= 0x40000000u && ph < 0x50000000u && !(ph & 3)) {
+        *ok = 1; return *(const uint32_t *)(KERNEL_ALIAS + rom_phys + (ph & (PSMAC_ROM_SIZE - 1)));
+    }
+    return mac_rd32(logical, ok);
+}
+void psmac_pcring_tail(unsigned n)
+{
+    if (n > pcring_n) n = pcring_n;
+    if (n > PCRING) n = PCRING;
+    for (unsigned i = 0; i < n; i += 8) {
+        kprintf("[CRASH]  ");
+        for (unsigned k = i; k < i + 8 && k < n; k++) kprintf(" %08x", pcring[(pcring_n - n + k) % PCRING]);
+        kprintf("\n");
+    }
+}
 void psmac_check_pc(uint32_t pc)
 {
     static int reports;
@@ -508,6 +527,7 @@ void psmac_service_core(void)
             if (ok1 && ok2) { const uint8_t n[8] = { a >> 24, a >> 16, a >> 8, a, b >> 24, b >> 16, b >> 8, b }; psmac_boot_curapname(n); }
             next_name = cnt_now() + cnt_frq() / 10;
         }
+        { extern void psmac_crash_poll(void); psmac_crash_poll(); }     /* the System error dialog's record (psmac_crash.c) */
         if (psmac_exc_flag && !exc_dumped) {
             exc_dumped = 1;
             kprintf("[PSMAC] first unexpected 68k exception (vector %03x): PC trail follows\n", psmac_exc_flag & 0xfff);

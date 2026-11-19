@@ -12,6 +12,10 @@
 #include <M68k.h>
 #include <support.h>
 
+#ifdef PSMAC
+struct psmac_crash_args { uint32_t vec, pc, sr, ea, fault, usp, isp, regs[16]; };   /* psmac/psmac_crash.c */
+#endif
+
 static inline struct M68KState *getCTX()
 {
     struct M68KState *ctx;
@@ -27,6 +31,53 @@ uint32_t M68K_Exception(uint32_t M68k_SR, uint32_t type_and_format, uint32_t, ui
     register uint32_t M68k_PC __asm__("w18");
     register void *M68k_A7 __asm__("x29");
 
+#ifdef PSMAC
+    {   /* Aurora68: the crash record (psmac/psmac_crash.c). Only two kinds of exception go there:
+           the unexpected ones, and the A-line trap that is _SysError ($A9C9, with or without the
+           auto-pop bit), which draws the System's error dialog. Every other A-line trap is a
+           Toolbox call and costs one read of its trap word here; the decoder has just read that
+           word from the same address, so it is mapped. */
+        uint32_t vec = type_and_format & 0x0fff;
+        int record;
+        if (vec == 0x28)
+            record = ((*(volatile uint16_t *)(uintptr_t)(M68k_PC & ~1u)) & ~0x0400) == 0xA9C9;
+        else
+            record = !(vec >= 0x64 && vec <= 0x7c) && !(vec >= 0x80 && vec <= 0xbc) && vec < 0x100;
+        if (unlikely(record)) {
+            /* The 68k's registers live in fixed ARM registers (M68k.h, REG_D0...), which this file
+               is compiled to leave alone; the recorder is ordinary C, so the call saves every
+               register the C convention lets it change (x0-x11, x13-x18, x30) and restores them. */
+            struct psmac_crash_args a;
+            __asm__ volatile(
+                "stp w19, w20, [%0, #0]\n\t"  "stp w21, w22, [%0, #8]\n\t"
+                "stp w23, w24, [%0, #16]\n\t" "stp w25, w26, [%0, #24]\n\t"
+                "stp w13, w14, [%0, #32]\n\t" "stp w15, w16, [%0, #40]\n\t"
+                "stp w17, w27, [%0, #48]\n\t" "str w28, [%0, #56]"
+                : : "r"(a.regs) : "memory");
+            a.regs[15] = (uint32_t)(uintptr_t)M68k_A7;
+            __asm__ volatile("umov %w0, " REG_USP_ASM : "=r"(a.usp));
+            __asm__ volatile("umov %w0, " REG_ISP_ASM : "=r"(a.isp));
+            a.vec = vec; a.pc = M68k_PC; a.sr = M68k_SR; a.ea = ea; a.fault = fault;
+            __asm__ volatile(
+                "sub sp, sp, #160\n\t"
+                "stp x0, x1, [sp, #0]\n\t"     "stp x2, x3, [sp, #16]\n\t"
+                "stp x4, x5, [sp, #32]\n\t"    "stp x6, x7, [sp, #48]\n\t"
+                "stp x8, x9, [sp, #64]\n\t"    "stp x10, x11, [sp, #80]\n\t"
+                "stp x13, x14, [sp, #96]\n\t"  "stp x15, x16, [sp, #112]\n\t"
+                "stp x17, x18, [sp, #128]\n\t" "str x30, [sp, #144]\n\t"
+                "mov x0, %0\n\t"
+                "bl psmac_crash_exception\n\t"
+                "ldp x0, x1, [sp, #0]\n\t"     "ldp x2, x3, [sp, #16]\n\t"
+                "ldp x4, x5, [sp, #32]\n\t"    "ldp x6, x7, [sp, #48]\n\t"
+                "ldp x8, x9, [sp, #64]\n\t"    "ldp x10, x11, [sp, #80]\n\t"
+                "ldp x13, x14, [sp, #96]\n\t"  "ldp x15, x16, [sp, #112]\n\t"
+                "ldp x17, x18, [sp, #128]\n\t" "ldr x30, [sp, #144]\n\t"
+                "add sp, sp, #160"
+                : : "r"(&a) : "memory", "cc");
+        }
+    }
+#endif
+
     /* If we are not in supervisor mode, swap stacks */
     if ((M68k_SR & SR_S) == 0) {
         /* Store current A7 to USP */
@@ -40,29 +91,6 @@ uint32_t M68K_Exception(uint32_t M68k_SR, uint32_t type_and_format, uint32_t, ui
         }
     }
 
-#ifdef PSMAC
-    {   /* PiStorm-SE: log unexpected exceptions (not interrupts 0x60-0x7C, traps 0x80-0xBC, A-line 0x28) */
-        extern void kprintf(const char *, ...);
-        static int logged;
-        uint32_t vec = type_and_format & 0x0fff;
-        if (logged < 40 && !(vec >= 0x60 && vec <= 0x7c) && !(vec >= 0x80 && vec <= 0xbc) && vec != 0x28) {
-            logged++;
-            kprintf("[PSMAC:EXC] vector %03x format %x at PC %08x SR %04x ea %08x fault %08x\n", vec, type_and_format >> 12, M68k_PC, M68k_SR, ea, fault);
-            {   /* the instruction words around the faulting PC, read through the 68k's own translation
-                   (the shim's tables are live on this core), if both ends of the span are mapped */
-                extern uint32_t psmac_mmu_l2p(uint32_t logical, int *valid);
-                uint32_t pc = M68k_PC & ~1u; int v0, v1;
-                psmac_mmu_l2p(pc - 16, &v0); psmac_mmu_l2p(pc + 30, &v1);
-                if (v0 && v1) {
-                    kprintf("[PSMAC:EXC]   words at PC-16:");
-                    for (int i = -8; i < 16; i++) kprintf("%s%04x", i == 0 ? " |" : " ", *(volatile uint16_t *)(uintptr_t)(pc + 2 * i));
-                    kprintf("\n");
-                }
-            }
-            { extern volatile uint32_t psmac_exc_flag; if (!psmac_exc_flag) psmac_exc_flag = vec | 0x10000; }   /* service core dumps the PC trail */
-        }
-    }
-#endif
     /* Depending on exception format prepare place on stack frame and eventually push extra parameters */
     if (unlikely((type_and_format & 0xf000) == 0x2000 || (type_and_format & 0xf000) == 0x3000))
     {
