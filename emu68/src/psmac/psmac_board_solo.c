@@ -451,7 +451,8 @@ static uint32_t iwm_access(uint32_t reg, int write, uint8_t d)
 }
 
 /* ==== disk images ============================================================================= */
-struct disk { char name[48]; uint8_t *ram; int64_t fd; uint32_t blocks; int writable; uint32_t reads, writes; };
+struct disk { char name[48]; uint8_t *ram; int64_t fd; uint32_t blocks; int writable; uint32_t reads, writes, cmds; };
+static uint32_t sel_seen[7];                /* selections of each SCSI ID, with a disk there or not (the heartbeat) */
 static struct disk disks[7]; static int ndisk;
 static uint8_t sector_buf[64 * 1024] __attribute__((aligned(64)));
 
@@ -548,7 +549,7 @@ static void execute(void)
     struct disk *d = t.d;
     uint8_t op = t.cdb[0];
     uint32_t lba = 0, cnt = 0;
-    t.status = 0; t.cmds++; t.wr_ram = 0;
+    t.status = 0; t.cmds++; t.wr_ram = 0; d->cmds++;
     { unsigned k = t.ring_n++ % 12; for (int i = 0; i < 10; i++) t.ring[k].cdb[i] = t.cdb[i]; t.ring[k].n = t.cmds; }
     TRACE("SCSI %d: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n", t.id, t.cdb[0], t.cdb[1], t.cdb[2], t.cdb[3], t.cdb[4], t.cdb[5], t.cdb[6], t.cdb[7], t.cdb[8], t.cdb[9]);
     if ((t.cdb[1] >> 5) && op != 0x12 && op != 0x03) { check_condition(5, 0x25); set_phase(PH_STATUS); return; }
@@ -670,6 +671,7 @@ static void advance(void)
 static void try_select(void)
 {
     if (t.phase != PH_FREE || !(n.icr & 0x04) || (n.icr & 0x08) || !(n.icr & 0x01) || (n.icr & 0x80)) return;
+    for (int i = 0; i < 7; i++) if (n.odr & (1u << i)) sel_seen[i]++;
     { static int first = 1; if (first && !ndisk) { extern void psmac_card_scan_wait(void); psmac_card_scan_wait(); } first = 0; }   /* no disk yet: a disk image on the card? wait for the card's first look */
     int nd = __atomic_load_n(&ndisk, __ATOMIC_ACQUIRE);
     for (int i = 0; i < nd; i++) {
@@ -884,9 +886,14 @@ void psmac_solo_options(const char *args)
 void psmac_solo_report(void)
 {
     if (!psmac_board_solo) return;
-    kprintf("[PSMAC:SOLO] VIA IFR %02x IER %02x ACR %02x T1 %s T2 %s, %u VBLs | ADB state %d %u cmds | RTC %u cmds secs %08x | SCSI %s req %d, %u cmds, %u phase irqs, %u underflows | disk 0: %u read %u written\n",
+    kprintf("[PSMAC:SOLO] VIA IFR %02x IER %02x ACR %02x T1 %s T2 %s, %u VBLs | ADB state %d %u cmds | RTC %u cmds secs %08x | SCSI %s req %d, %u cmds, %u phase irqs, %u underflows\n",
             via.ifr, via.ier, via.acr, via.t1_run ? "on" : "off", via.t2_run ? "on" : "off", via.vbls, adb.state, adb.cmds, rtc.cmds, rtc.seconds,
-            phase_name(t.phase), t.req, t.cmds, t.mismatches, t.underflows, disks[0].reads, disks[0].writes);
+            phase_name(t.phase), t.req, t.cmds, t.mismatches, t.underflows);
+    /* every disk, and how often each ID was selected: a second disk the Mac never shows (the user's
+       RiptideFix.img, 19 November) was invisible here when only disk 0 was counted */
+    kprintf("[PSMAC:SOLO]   SCSI selections by ID 0-6: %u %u %u %u %u %u %u", sel_seen[0], sel_seen[1], sel_seen[2], sel_seen[3], sel_seen[4], sel_seen[5], sel_seen[6]);
+    for (int i = 0; i < ndisk; i++) kprintf(" | ID %d %s: %u cmds, %u blocks read, %u written", i, disks[i].name, disks[i].cmds, disks[i].reads, disks[i].writes);
+    kprintf("\n");
     kprintf("[PSMAC:SOLO]   SCC: %u writes, %u interrupts, pending %02x; A (modem) WR1 %02x WR3 %02x WR4 %02x WR5 %02x WR9 %02x WR10 %02x WR11 %02x WR12 %02x WR14 %02x WR15 %02x | B (printer) WR1 %02x WR3 %02x WR4 %02x WR5 %02x WR10 %02x WR11 %02x WR12 %02x WR14 %02x WR15 %02x\n",
             scc.writes, scc.irqs, scc.ip, scc.wr[1][1], scc.wr[1][3], scc.wr[1][4], scc.wr[1][5], scc.wr[1][9], scc.wr[1][10], scc.wr[1][11], scc.wr[1][12], scc.wr[1][14], scc.wr[1][15],
             scc.wr[0][1], scc.wr[0][3], scc.wr[0][4], scc.wr[0][5], scc.wr[0][10], scc.wr[0][11], scc.wr[0][12], scc.wr[0][14], scc.wr[0][15]);
