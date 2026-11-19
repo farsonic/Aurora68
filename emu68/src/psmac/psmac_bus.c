@@ -240,6 +240,7 @@ static void psmac_read_options(void)
     of_property_t *p = c ? dt_find_property(c, "bootargs") : NULL;
     if (!p || !p->op_value) return;
     const char *args = p->op_value, *tok;
+    psmac_boot_check_args(args);                         /* an option given twice: say which one counts */
     psmac_se_options(args);                              /* mac.board=se first: the screen default below depends on it */
     if ((tok = find_token(args, "mac.dbg="))) {   /* mac.dbg=LO,HI: print the translator's view of blocks starting in [LO,HI] */
         tok += 8; uint32_t lo = 0, hi = 0;

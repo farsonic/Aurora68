@@ -1466,6 +1466,41 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    `docs/img/system71-pilog-card.png`). The save after a crash record was not provoked in the
    testbed.
 
+56. **Two disk images on the card: core 3 stopped for good (20 November).** The user's Pi 3B with
+   447febf and `mac.image=aurora-test3.image,riptide-update.img`, both files on the card: the log
+   ended with "[CARD] aurora-test3.image: the Mac waits for block 0 from the card" and nothing came
+   after it. With only the first image named the same kernel booted. The cmdline also held a
+   second `mac.image=` word, and the first one had silently won.
+   - *Cause:* a self-deadlock on core 3. 447febf gave the card one owner, `card_lock`, which core 3
+     holds for each pass of its card work. A second image is registered during that pass, and
+     registering a PiDisk volume reads its partition map (`hfs_partition`), which asks for the
+     image's first blocks through `psmac_card_need`; on core 3 that took `card_lock` again and spun
+     on it forever. The Mac's own core then waited for core 3's chunk, and core 0's own reads wait
+     for the lock: "waits for block 0". One image is never registered as a PiDisk volume, so it
+     never got there.
+   - *Fixed* (`psmac_card.c`): core 3 marks that it holds the lock for its pass, and the demand path
+     on core 3 takes the lock only if it does not hold it already; either way it finishes the chunk
+     in hand and then loads the one asked for before going on, so a block the Mac or PiDisk waits
+     for still comes before any further background loading. PiDisk's block service runs between
+     passes, so the demand path also finishes a sector the card writer has in programming before it
+     reads (`flush_finish`, shared with core 0's direct reads).
+   - *An option given twice* now says so (`psmac_boot.c`, from `psmac_read_options`): "[PSMAC]
+     cmdline.txt gives mac.image= more than once: the first is used, mac.image=A,B; mac.image=C is
+     ignored". It covers our options (mac., wifi, bt, net., usb, eth); for a name with psk, pass or
+     key in it the values are not shown.
+   - *Proved* in the solo testbed with a card holding the container, the 96 MB test image and two
+     2 MB HFS images (`mac.image=t3.image,RiptideFix.img,Spare.img`). 447febf's card code with two
+     images: the log stops after "disk image RiptideFix.img found", the same hang. The fix, six
+     boots: plain with a second `mac.image=` word (the warning in the log, the Finder at 38.0 s),
+     `mac.cardslow=300` (the Finder at 42.3 s, the large image 55 per cent read) and four with
+     `mac.cardstall=20` (the Finder at 30.2, 42.4, 42.8 and 56.9 s); in each the Mac wrote to both
+     small volumes (28 KB each in the card writer's count) and nothing bombed. Of two earlier boots
+     of the fix with `mac.cardstall=20`, before `flush_finish`, one froze just after the Finder
+     started: every core stopped logging, the heartbeat included, and the screen kept the grey
+     desktop. It did not come back in the five boots since; QEMU's card model finishes every write
+     at once, so `flush_finish` cannot be what cured it there, and the cause is not known. Watch for
+     a log that simply stops.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

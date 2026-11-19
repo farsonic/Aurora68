@@ -965,8 +965,11 @@ static volatile int want_img = -1; static volatile uint32_t want_chunk;
    the Finder loaded: "Error type 41", and a Restart, with the image complete by then, worked
    (docs/08 item 54). */
 static spinlock_t card_lock;
+static volatile int card_lock_core3;        /* core 3 holds card_lock: its card pass, which may reach PiDisk's
+                                               block reads through a new image's registration (hfs_partition) */
 static uint32_t card_slow_us;               /* mac.cardslow=N: N us more per card sector read, the testbed's slow card */
 static void chunk_load_direct(struct img *m, uint32_t c);
+static void flush_finish(void);
 static int chunk_in(const struct img *m, uint32_t c) { return (__atomic_load_n(&m->loaded[c / 32], __ATOMIC_ACQUIRE) >> (c % 32)) & 1; }
 static int load_pick(void)
 {
@@ -1047,10 +1050,15 @@ void psmac_card_need(const void *p, uint32_t len)
         for (uint32_t c = c0; c <= c1 && c < m->nload; c++) {
             if (chunk_in(m, c)) continue;
             if (on_core3()) {
-                spinlock_acquire(&card_lock);
+                /* already held when this comes from core 3's own card pass: a second image's
+                   registration reads its partition map here (447febf took the lock again and
+                   stopped core 3 for good on the user's Pi with two images on the card) */
+                int mine = card_lock_core3;
+                if (!mine) { spinlock_acquire(&card_lock); card_lock_core3 = 1; }
+                flush_finish();                             /* PiDisk's block service comes between passes */
                 if (ld.active && !(ld.img == i && ld.chunk == c)) while (ld.active) load_step();   /* the chunk in hand first */
                 if (!chunk_in(m, c)) { if (!ld.active) { ld.active = 1; ld.img = i; ld.chunk = c; ld.done = 0; } while (ld.active) load_step(); }
-                spinlock_release(&card_lock);
+                if (!mine) { card_lock_core3 = 0; spinlock_release(&card_lock); }
                 continue;
             }
             /* core 0 (the solo board's SCSI disk): core 3 is asked first, and given two milliseconds;
@@ -1134,7 +1142,8 @@ next_sector:
    flush goes on from the next one on core 3's next pass), then the chunk in one command per extent
    run. Core 3's loader leaves a chunk alone once its bit is set (load_step). */
 static uint8_t dbuf[LCHUNK] __attribute__((aligned(16)));
-static void chunk_load_direct(struct img *m, uint32_t c)
+/* a sector still being programmed is finished before anything else is read from the card */
+static void flush_finish(void)
 {
     while (fl.busy) {
         int k = sd_write_poll();
@@ -1144,6 +1153,10 @@ static void chunk_load_direct(struct img *m, uint32_t c)
         imgs[fl.img].written++;
         if (++fl.sec > fl.last) fl.img = -1;
     }
+}
+static void chunk_load_direct(struct img *m, uint32_t c)
+{
+    flush_finish();
     uint32_t first = c * (LCHUNK / 512u), secs = (m->len + 511u) / 512u, end = first + LCHUNK / 512u;
     if (end > secs) end = secs;
     for (uint32_t s = first; s < end; ) {
@@ -1168,7 +1181,9 @@ static void card_poll_locked(void);
 void psmac_card_poll(void)
 {
     if (!spinlock_try_acquire(&card_lock)) return;       /* core 0 is reading a chunk the Mac waits for */
+    card_lock_core3 = 1;
     card_poll_locked();
+    card_lock_core3 = 0;
     spinlock_release(&card_lock);
     /* mac.cardstall=S (testbed): once, as soon as an image is coming in, keep core 3 away from the
        card for S seconds, as the WiFi's turn did on the user's Pi; the Mac must still get its blocks */

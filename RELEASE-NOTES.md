@@ -11,6 +11,11 @@
   right after a crash record, so the log of a crash survives switching off. Passwords never show:
   wifi.psk and any option named psk, pass, key or secret, the password in mac.wifisim and the key
   in bt.dev become *** in PiLog, in saved files and in aurora68.log. Replace kernel8.img and PiLog.
+- **Fixed: the Pi stopping for good with two disk images on the card** (`mac.image=A,B`, both
+  files on the card): the log ended with "the Mac waits for block 0 from the card". One image was
+  never affected. A block the Mac waits for still comes before anything else is loaded.
+- **An option given twice in cmdline.txt is reported**: the log names the option, the value used
+  (the first) and the ones ignored. Passwords are not shown.
 - **Fixed: "Error type 41" (the Finder could not be loaded) booting from a disk image on the card.**
   When the Pi was busy elsewhere (joining the WiFi) the Mac could be given blocks of the image that
   had not yet come in from the card. Every read now waits for its blocks, and the Mac's own core
