@@ -59,8 +59,9 @@ cmake -S emu68 -B psmac-build -DCMAKE_TOOLCHAIN_FILE=$PWD/emu68/toolchains/aarch
       -DTARGET=raspi64 -DVARIANT=psmac -DCMAKE_BUILD_TYPE=Release
 cmake --build psmac-build -j4 && gunzip -kf psmac-build/Emu68.img.gz
 ```
-`psmac-build/Emu68.img` is what QEMU loads; on the card `kernel8.img` is `Emu68.img.gz` (the Pi
-firmware inflates it). Warnings are errors. Emu68's submodules (`emu68/external/capstone`,
+`psmac-build/Emu68.img` is what QEMU loads and what every test set so far has put on the card as
+`kernel8.img` (uncompressed: the safe choice). `tools/mkrelease.sh` ships `Emu68.img.gz` instead,
+which current Pi firmware inflates; that has not yet been confirmed on the user's Pi 3B. Warnings are errors. Emu68's submodules (`emu68/external/capstone`,
 `libdeflate`, `tiny-stl`) must be there: `git submodule update --init --depth 1` (bootstrap does it).
 
 **The Mac side:** `make -C mac` (everything into `mac/build/`: drivers, extensions, programs, the
