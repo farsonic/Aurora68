@@ -165,7 +165,8 @@ int psmac_boot_settled(void) { return finder_seen || (gt_now() - gt_entry) > 180
    The kernel takes the first of each (psmac_option, find_token). The user's cmdline.txt had two
    mac.image= words and the second, the one meant, was silently ignored (20 November). So each of
    the kernel's own options that appears more than once is named, with the value that counts. A
-   WiFi password is never printed. */
+   secret's value (wifi.psk= and the like) shows as ***, by the rule of the card's log file
+   (psmac_redact, psmac_card.c). */
 static int arg_ours(const char *w, unsigned kl)
 {
     static const char *const pre[] = { "mac.", "wifi", "bt", "net.", "usb", "eth" };
@@ -184,12 +185,6 @@ static const char *next_word(const char *s, unsigned *len)
     return w;
 }
 static int same(const char *a, const char *b, unsigned n) { for (unsigned i = 0; i < n; i++) if (a[i] != b[i]) return 0; return 1; }
-static int has(const char *w, unsigned n, const char *sub)
-{
-    unsigned m = 0; while (sub[m]) m++;
-    for (unsigned i = 0; i + m <= n; i++) if (same(w + i, sub, m)) return 1;
-    return 0;
-}
 static void copy_word(char *out, unsigned cap, const char *w, unsigned n)
 {
     if (n > cap - 1) n = cap - 1;
@@ -206,15 +201,15 @@ void psmac_boot_check_args(const char *args)
         for (const char *e = next_word(args, &vl); e < w; e = next_word(e + vl, &vl))
             if (vl > kl && e[kl] == '=' && same(e, w, kl)) { earlier = 1; break; }
         if (earlier) continue;
-        int secret = has(w, kl, "psk") || has(w, kl, "pass") || has(w, kl, "key");
-        char key[48], used[96], later[96];
+        char key[48], word[96], used[112], later[112];
         copy_word(key, sizeof key, w, kl + 1);
-        copy_word(used, sizeof used, w, wl);
+        copy_word(word, sizeof word, w, wl);
+        psmac_redact(word, used, sizeof used);
         for (const char *e = next_word(w + wl, &vl); vl; e = next_word(e + vl, &vl))
             if (vl > kl && e[kl] == '=' && same(e, w, kl)) {
-                copy_word(later, sizeof later, e, vl);
-                if (secret) kprintf("[PSMAC] cmdline.txt gives %s more than once: the first is used, the later ones are ignored\n", key);
-                else kprintf("[PSMAC] cmdline.txt gives %s more than once: the first is used, %s; %s is ignored\n", key, used, later);
+                copy_word(word, sizeof word, e, vl);
+                psmac_redact(word, later, sizeof later);
+                kprintf("[PSMAC] cmdline.txt gives %s more than once: the first is used, %s; %s is ignored\n", key, used, later);
             }
     }
 }

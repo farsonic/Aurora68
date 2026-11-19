@@ -1501,6 +1501,18 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      at once, so `flush_finish` cannot be what cured it there, and the cause is not known. Watch for
      a log that simply stops.
 
+57. **The WiFi password in the kernel's own log lines (20 November).** Item 55 hides secrets in
+   PiLog and in aurora68.log, but the kernel's `[PSMAC] options:` line still printed the whole
+   cmdline, `wifi.psk="..."` included, on the serial line and the HDMI screen, which users
+   photograph. Every kernel line that repeats cmdline.txt now goes through the same rule
+   (`psmac_redact`, a wrapper of the card log's `log_redact` in `psmac_card.c`): the options line,
+   the duplicate-option warning (item 56) and the device-tree dump (`dt_dump_node`, behind PSMAC,
+   which printed `/chosen/bootargs` in text and in hex). The rule gains "passkey" as a name.
+   Testbed, `wifi.psk=hunter2 wifi.psk=other bt.passkey=1234 mac.wifisim=Net:secretpw` on the
+   cmdline: "(bootargs: ... wifi.psk=*** wifi.psk=*** bt.passkey=*** mac.wifisim=Net:***)" and
+   "cmdline.txt gives wifi.psk= more than once: the first is used, wifi.psk=***; wifi.psk=*** is
+   ignored".
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

@@ -10,7 +10,8 @@
   root, overwritten each time, to read on another computer; the kernel also does it by itself
   right after a crash record, so the log of a crash survives switching off. Passwords never show:
   wifi.psk and any option named psk, pass, key or secret, the password in mac.wifisim and the key
-  in bt.dev become *** in PiLog, in saved files and in aurora68.log. Replace kernel8.img and PiLog.
+  in bt.dev become *** in PiLog, in saved files and in aurora68.log, and in the kernel's own lines
+  that repeat cmdline.txt (on the serial line and the HDMI screen). Replace kernel8.img and PiLog.
 - **Fixed: the Pi stopping for good with two disk images on the card** (`mac.image=A,B`, both
   files on the card): the log ended with "the Mac waits for block 0 from the card". One image was
   never affected. A block the Mac waits for still comes before anything else is loaded.

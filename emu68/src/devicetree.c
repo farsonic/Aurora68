@@ -399,6 +399,16 @@ void dt_dump_node(of_node_t *n, int level)
     kprintf("[BOOT] %s%s\n", &fill[25-2*level], n->on_name);
     for (p = n->on_properties; p; p = p->op_next)
     {
+#ifdef PSMAC
+        /* PiStorm-SE: the boot arguments hold the WiFi password; the dump shows them as the log does */
+        if (!_dt_strcmp(p->op_name, "bootargs") && p->op_length) {
+            extern void psmac_redact(const char *in, char *out, uint32_t cap);
+            static char shown[1024];
+            psmac_redact(p->op_value, shown, sizeof shown);
+            kprintf("[BOOT] %s  %s=%s\n", &fill[25-2*level], p->op_name, shown);
+            continue;
+        }
+#endif
         kprintf("[BOOT] %s  %s=", &fill[25-2*level], p->op_name);
         for (unsigned i=0; i < p->op_length; i++) {
             char *pchar = (char*)(p->op_value) + i;

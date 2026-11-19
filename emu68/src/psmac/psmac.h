@@ -67,5 +67,6 @@ void     psmac_boot_pc(uint32_t pc);
 void     psmac_boot_mac_line(const char *text);
 void     psmac_boot_curapname(const uint8_t *pascal_name);
 void     psmac_boot_check_args(const char *bootargs);
+void     psmac_redact(const char *in, char *out, uint32_t cap);    /* psmac_card.c: wifi.psk=*** and the like */
 
 #endif

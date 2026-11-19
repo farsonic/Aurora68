@@ -562,7 +562,7 @@ static int secret_name(const char *s, uint32_t n)
 {
     uint32_t b = n;
     while (b && s[b - 1] != '.') b--;                  /* the last part of a dotted name */
-    static const char *const names[] = { "psk", "pass", "passwd", "password", "passphrase", "key", "secret" };
+    static const char *const names[] = { "psk", "pass", "passwd", "password", "passphrase", "passkey", "key", "secret" };
     for (unsigned i = 0; i < sizeof names / sizeof names[0]; i++) {
         uint32_t m = 0, j;
         while (names[i][m]) m++;
@@ -600,6 +600,13 @@ static uint32_t log_redact(const uint8_t *in, uint32_t n, uint8_t *out, uint32_t
         i = e - 1; ns = o;
     }
     return o;
+}
+/* the same rule for the kernel's own lines that repeat cmdline.txt (psmac_boot.c): out is
+   NUL-terminated, cut short if it is too small */
+void psmac_redact(const char *in, char *out, uint32_t cap)
+{
+    uint32_t n = 0; while (in[n]) n++;
+    out[log_redact((const uint8_t *)in, n, (uint8_t *)out, cap - 1)] = 0;
 }
 /* psmac_mbox.c (PiLog) and psmac_crash.c: 0 asked, -1 no writable card */
 int psmac_card_save_log(int after_crash)
