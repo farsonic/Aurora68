@@ -689,6 +689,28 @@ static void pdma_write(uint8_t d)
 }
 
 /* ==== the bus layer's entry: the four chips the SE layer would forward ======================== */
+/* A real VIA drops its IRQ output the moment the handler clears the flag; the level the JIT sees
+   (INTF.IPL) was only brought up to date by the service core's poll, up to a millisecond later.
+   In that millisecond the 68k ran on with the old level standing, and any instruction that
+   lowered the mask took an interrupt that was no longer there. System 7 has such a place: the
+   level-1 handler's call to the Deferred Task Manager ($6E4) goes through a patch that clears
+   the mask before it returns to the handler's RTE. With deferred tasks pending and the Deferred
+   Task Manager busy (a task running at level 0, interrupted), every pass took the stale level 1
+   again, one level deeper each time, 44 bytes of stack each, until the stack ran through the
+   heap below it: Speedometer's Run ALL Tests ended in "bad F-Line instruction" in the Finder
+   (docs/08, item 48). So every access to a chip sets the level it now drives, under the lock, as
+   the service core's poll does, so that neither can store a level the other has just made stale. */
+extern struct M68KState *__m68k_state;
+unsigned psmac_solo_ipl(void);
+static void set_level(void)                 /* the caller holds the lock */
+{
+    if (__m68k_state) __m68k_state->INTF.IPL = psmac_solo_ipl();
+}
+void psmac_solo_level_now(void)             /* for the RBV in psmac_board_se.c */
+{
+    lock(); set_level(); unlock();
+}
+
 int psmac_solo_access(uint32_t addr, int size, int write, uint32_t data, uint32_t *val)
 {
     if ((addr & 0xff000000u) != 0x50000000u) return 0;
@@ -706,6 +728,7 @@ int psmac_solo_access(uint32_t addr, int size, int write, uint32_t data, uint32_
     } else if ((off >= 0x12000 && off < 0x14000) || (off >= 0x6000 && off < 0x8000)) {
         if (write) { for (int i = 0; i < size; i++) pdma_write((data >> (8 * (size - 1 - i))) & 0xff); }
         else { for (int i = 0; i < size; i++) r = (r << 8) | pdma_read(); }
+        set_level();
         unlock();
         *val = r;
         return 1;
@@ -713,6 +736,7 @@ int psmac_solo_access(uint32_t addr, int size, int write, uint32_t data, uint32_
         uint32_t reg = (off >> 9) & 15;
         r = iwm_access(reg, write, data & 0xff);
     } else handled = 0;
+    if (handled) set_level();
     unlock();
     if (!handled) return 0;
     if (!write) *val = size == 1 ? r : size == 2 ? (r << 8) | r : (r << 24) | (r << 16) | (r << 8) | r;
@@ -734,13 +758,10 @@ unsigned psmac_solo_ipl(void)
 }
 
 /* the service core: time passes for the chips, the JIT learns the level */
-extern struct M68KState *__m68k_state;
 void psmac_solo_service(void)
 {
     if (!psmac_board_solo) return;
-    lock(); via_timers(via_now()); unlock();
-    unsigned ipl = psmac_solo_ipl();
-    if (__m68k_state) __m68k_state->INTF.IPL = ipl;
+    lock(); via_timers(via_now()); set_level(); unlock();
 }
 void psmac_solo_reset(void)
 {

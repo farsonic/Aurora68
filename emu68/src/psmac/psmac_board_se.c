@@ -28,7 +28,7 @@
 int psmac_board_se;                         /* mac.board=se (also set by mac.board=solo, psmac_board_solo.c) */
 extern int psmac_board_solo;
 int psmac_solo_access(uint32_t addr, int size, int write, uint32_t data, uint32_t *val);
-unsigned psmac_solo_ipl(void); void psmac_solo_service(void); void psmac_solo_options(const char *); void psmac_solo_report(void);
+unsigned psmac_solo_ipl(void); void psmac_solo_level_now(void); void psmac_solo_service(void); void psmac_solo_options(const char *); void psmac_solo_report(void);
 static uint32_t se_ram_mb = 4;              /* mac.seram=N: the SE's own memory, 1, 2, 2.5 or 4 MB (its screen sits at the top) */
 static uint32_t se_ram_size(void) { return se_ram_mb << 20; }
 uint32_t psmac_se_fb_base(void) { return se_ram_size() - 0x5900; }   /* the main screen buffer: 21,888 bytes, 64 per row */
@@ -260,6 +260,7 @@ int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t 
     if (off >= 0x26000 && off < 0x28000) {
         if (write) { trace("RBV", 1, addr, off, size, data & 0xff); rbv_write(off, data & 0xff); }
         else { r = rbv_read(off); trace("RBV", 0, addr, off, size, r); *val = size == 1 ? r : r << 8 | r; }
+        if (psmac_board_solo) psmac_solo_level_now();   /* the level-2 line follows its flags at once (psmac_board_solo.c) */
         return 1;
     }
     if (off >= 0x14000 && off < 0x16000) { if (write) asc_write(off, data & 0xff); else { r = asc_read(off); *val = size == 1 ? r : r << 8 | r; } return 1; }
