@@ -180,8 +180,8 @@ Commit and push first: a set must name a commit anyone can find.
   and `aurora68.log` (PiLog's Save to Card, and after a crash record) beside them.
 
 **Gotchas met so far:**
-- A second `mac.image=` in cmdline.txt is ignored: the kernel takes the first. One line, each
-  option once (mktestset.sh refuses duplicates).
+- A second `mac.image=` in cmdline.txt is ignored: the kernel takes the first (since 2c8a80d it
+  names the duplicate in the log). One line, each option once (mktestset.sh refuses duplicates).
 - The declaration ROM's size must match `mac.screen=`. The kernel now falls back to the plain
   or the sized ROM it finds and gives the screen that ROM's size, saying so in the log; before
   that, a mismatch left slot 9 empty (no screen, no PiDisk, no input).
@@ -230,27 +230,30 @@ says "the Mac is at IP x.x.x.x":
 4. Then: screenshot the Mac's screen, click and type, read the kernel log, read the state
    (heartbeat, network, disks), restart; build, put the new kernel or image on the card when the
    service can, test, fix, repeat.
-Until it lands the fallbacks are PiLog's Save Log and Save to Card (being added by the PiLog
-worker: `aurora68.log` on the card, passwords replaced by `***`), and the card itself: the user
+Until it lands the fallbacks are PiLog's Save Log and Save to Card (docs/08 item 55:
+`aurora68.log` in the card's root, passwords replaced by `***`; written by itself after every
+crash record), and the card itself: the user
 moves it to the MacBook, and `aurora68.log`, `pram.bin` and the images can be read there
 (hfsutils for the images).
 
-## Open items and known issues (19 November 2026)
+## Open items and known issues (20 November 2026)
 
 To pick up, roughly in order. Check `git log` and docs/08's newest items first: others were
 working on several of these when this was written.
-1. **Two images on the card deadlock the boot.** With kernel 447febf (test set 4) and
-   `mac.image=A,B` both on the card, the boot stops after the MMU's set-up, before the first
-   heartbeat (the testbed reproduces it: two images on a card image, `--card`). A worker was
-   changing `psmac_card.c` and `start.c` for it on 19-20 November. Until fixed: one image on the
-   card, or test set 3's kernel (1df6f2a), which mounted two.
-2. **15 s of early kernel boot** on the real Pi before the 68k starts: moving the kernel and
-   waking the other cores (`start.c`, the `[BOOT] t=` lines). Same worker. docs/08 item 50 has
-   the timeline and the target (under three seconds from power-on to the 68k).
-3. **The WiFi password is echoed in the log**: `[PSMAC] options: ... (bootargs: ...)`
-   (`psmac_bus.c`) prints the whole command line, `wifi.psk=` included, to the serial log,
-   PiLog and anything saved from it. Redact as `psmac_card.c`'s `log_redact` does for
-   `aurora68.log` (psk, pass, key, secret, the password in `mac.wifisim`, the key in `bt.dev`).
+1. **To confirm on the Pi: three fixes of 20 November, proved only in the testbed so far**, to go
+   out in the next test set (kernel 833c371 or later):
+   - two images on the card (`mac.image=A,B`) stopped core 3 for good, and with it the boot
+     (test set 4's kernel, 447febf): core 3 took its own card lock twice (docs/08 item 56,
+     2c8a80d). Until the user has the fix: one image on the card, or test set 3's kernel;
+   - 15 s of rainbow before the 68k started on the Pi 3B: the kernel waited at every character
+     for a serial port that, with Bluetooth on the PL011, does not send (item 58, 833c371). The
+     `[BOOT] t=` lines will show the new figure; docs/08 item 50 has the target (under three
+     seconds from power-on to the 68k);
+   - the WiFi password in the kernel's own log lines (`[PSMAC] options:`, the duplicate-option
+     warning) is now `***` (item 57, 4b7c2fc), as in PiLog and `aurora68.log` (item 55).
+2. **PiLog's Save Log and Save to Card** (item 55, 8c9de71) are new: check them on the Pi, and
+   ask the user for `aurora68.log` from the card rather than photographs from now on.
+3. Look at docs/08's newest items and `git log` again before starting: these were moving fast.
 4. **Ping latency**: about 20 ms wired and 80 ms over the WiFi on the Pi 3B. Two fixes are in
    test set 4 and not yet confirmed on the hardware: the WiFi's power saving switched off after
    every join (`[WIFI] power save: PM ...`) and Riptide waking a waiting program at once
