@@ -526,6 +526,16 @@ static void target_free(void)
 static void set_phase(int p)
 {
     if (p == PH_STATUS && t.ring_n) t.ring[(t.ring_n - 1) % 12].status = t.status;
+    if (t.phase == PH_DATAIN && p == PH_STATUS) {
+        /* A read has put new bytes in the Mac's memory, perhaps code over code the JIT has
+           translated. The bus layer tells the translator so for every SCSI read that goes over the
+           wire (psmac_bus.c, psmac_icache_epoch: RAM blocks are checked again on their next entry);
+           this chip never goes over the wire, so it says so itself, once per transfer. Without it
+           a code resource read from the disk where other code had run was executed as the old
+           translation, as long as nothing else cleared the cache in between (docs/08 item 51). */
+        extern uint32_t psmac_icache_epoch;
+        psmac_icache_epoch++;
+    }
     if (p != t.phase && n.dma) { n.irq = 1; n.dma = 0; t.mismatches++; }   /* a phase change ends a DMA transfer with an interrupt */
     t.phase = p; t.req = 1;
 }
