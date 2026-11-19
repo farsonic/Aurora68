@@ -36,11 +36,13 @@
 	.equ	AN_OFF_UNIT1,	0x0400		| struct an_unit of unit 0 (WiFi), 2 KB
 	.equ	AN_OFF_RX1,	0x04000		| 16 receive slots of 2 KB
 	.equ	AN_OFF_TX1,	0x14000		| 12 transmit slots of 2 KB
+	.equ	AN_OFF_OTHER,	0x0C00		| the other unit (Ethernet), whose driver shares the board's irq flag
 	.else
 	.equ	UNIT,		1
 	.equ	AN_OFF_UNIT1,	0x0C00		| struct an_unit of unit 1 (Ethernet), 2 KB
 	.equ	AN_OFF_RX1,	0x0C000		| 16 receive slots of 2 KB
 	.equ	AN_OFF_TX1,	0x1A000		| 12 transmit slots of 2 KB
+	.equ	AN_OFF_OTHER,	0x0400		| the other unit (WiFi), whose driver shares the board's irq flag
 	.endif
 	.equ	AN_RX_SLOTS,	16
 	.equ	AN_TX_SLOTS,	12
@@ -51,6 +53,7 @@
 	.equ	U_KIND,		0
 	.equ	U_STATE,	4
 	.equ	U_LINK,		12
+	.equ	U_SPEED,	16
 	.equ	U_MAC,		20		| 8 bytes, 6 used
 	.equ	U_RX_PKTS,	384
 	.equ	U_CMD_SEQ,	424
@@ -78,6 +81,8 @@
 	.equ	ioCompletion,	12
 	.equ	ioResult,	16
 	.equ	csCode,		26
+	.equ	csParam,	28
+	.equ	csLinkStatus,	230		| this driver's own: the unit's link (Riptide asks, to fail over)
 	.equ	eProtType,	28
 	.equ	eMultiAddr,	28
 	.equ	ePointer,	30
@@ -130,7 +135,8 @@
 	.equ	NPROT,		16
 	.equ	G_SIQ,		G_PROT+NPROT*PROT_SIZE	| SlotIntQElement (16 bytes): the slot-9 interrupt handler
 	.equ	G_INTS,		G_SIQ+16	| long: slot interrupts taken
-	.equ	G_SIZE,		G_INTS+4
+	.equ	G_TAKEN,	G_INTS+4	| word: frames rx_body took on its last run
+	.equ	G_SIZE,		G_TAKEN+4
 	.equ	_SIntInstall,	0xA075		| its own OS trap (Inside Macintosh V): A0 = SlotIntQElement, D0.w = slot
 	.equ	sIQType,	6
 	.equ	PI_SLOT,	9
@@ -364,6 +370,8 @@ d_control:
 	move.w	csCode(%a2),%d0
 	cmp.w	#1,%d0			| KillIO
 	beq	ctl_noerr
+	cmp.w	#csLinkStatus,%d0
+	beq	c_linkstatus
 	sub.w	#245,%d0
 	blt	ctl_err
 	cmp.w	#8,%d0
@@ -392,6 +400,22 @@ ctl_done:
 	move.l	%a4,%a1			| ioTrap through A0 and IODone wants the DCE in A1 (EGetInfo
 	movem.l	(%sp)+,%d1-%d7/%a2-%a6	| had left its buffer pointers there: the first call returned to 0)
 	bra	iodone
+
+| csLinkStatus (230, this driver's own call, not Apple's): csParam = link (word, 1 up), speed in
+| Mbit/s (word), 'A68L' (long, so a caller can tell the answer from a driver that ignores the
+| call). The .ENET interface has no link state of its own; Riptide uses this to move its default
+| route to the other card when a cable is pulled or the WiFi drops (19 November, docs/08 item 49).
+c_linkstatus:
+	move.l	G_BOARD(%a3),%a0
+	lea	AN_OFF_UNIT1(%a0),%a0
+	moveq	#0,%d1
+	tst.l	U_LINK(%a0)
+	beq.s	1f
+	moveq	#1,%d1
+1:	move.w	%d1,csParam(%a2)
+	move.w	U_SPEED+2(%a0),csParam+2(%a2)
+	move.l	#0x4136384C,csParam+4(%a2)	| 'A68L'
+	bra	ctl_noerr
 
 | ESetGeneral: we always allow 1514-byte writes
 c_setgeneral:
@@ -690,11 +714,28 @@ slot_int:
 	| answers nonzero, so answering "yes" when the board's flag was clear starves the other
 	| handlers on slot 9 (the input driver's, whose ring then stayed full and kept the line up:
 	| the 68k spent the rest of that boot in the level-2 dispatcher).
+	| Both network drivers (the wired card $81 and the WiFi $83, one slot-9 card) share the
+	| board's one irq flag (19 November, docs/08 item 49). So "ours" is: frames taken from our
+	| own ring, or the flag up with nothing waiting in the other unit's ring (a command finished
+	| or a state changed: somebody must clear it). With frames waiting for the other driver,
+	| rx_body has put the flag back and this answers 0, so the ROM goes on to its handler.
+	clr.w	G_TAKEN(%a3)
 	move.l	G_BOARD(%a3),%a0
-	move.l	AN_HDR_IRQ(%a0),%d2	| nonzero: the board wanted us
-	bsr	rx_body			| clears the flag, takes the frames
-	move.l	%d2,%d0
-	movem.l	(%sp)+,%d1-%d7/%a0-%a6
+	move.l	AN_HDR_IRQ(%a0),%d2	| nonzero: the board wanted somebody
+	bsr	rx_body			| clears the flag, takes our frames, puts the flag back for the other
+	moveq	#1,%d0
+	tst.w	G_TAKEN(%a3)
+	bne.s	2f			| we took frames: ours
+	tst.l	%d2
+	beq.s	1f			| the flag was down: not the network board
+	move.l	G_BOARD(%a3),%a0
+	tst.l	AN_OFF_OTHER+U_RX_ON(%a0)
+	beq.s	2f			| the other unit has no driver taking frames: ours to clear
+	move.l	AN_OFF_OTHER+U_RX_HEAD(%a0),%d1
+	cmp.l	AN_OFF_OTHER+U_RX_TAIL(%a0),%d1
+	beq.s	2f			| nothing for the other driver: ours to clear
+1:	moveq	#0,%d0
+2:	movem.l	(%sp)+,%d1-%d7/%a0-%a6
 	rts
 rx_vbl:
 	movem.l	%d0-%d7/%a0-%a6,-(%sp)
@@ -793,7 +834,24 @@ rx_next:
 	subq.w	#1,%d7
 	bne	rx_loop
 rx_end:
-	clr.w	G_INRX(%a6)
+	| What is left on the board after our turn keeps the line up: frames for the other unit's
+	| driver (the flag is shared), or more of ours than one turn takes
+	moveq	#16,%d0
+	sub.w	%d7,%d0
+	move.w	%d0,G_TAKEN(%a6)
+	move.l	G_BOARD(%a6),%a0
+	tst.l	AN_OFF_OTHER+U_RX_ON(%a0)	| (frames left behind by a driver that closed do not count)
+	beq.s	3f
+	move.l	AN_OFF_OTHER+U_RX_HEAD(%a0),%d1
+	cmp.l	AN_OFF_OTHER+U_RX_TAIL(%a0),%d1
+	bne.s	1f
+3:
+	move.l	U_RX_HEAD(%a5),%d1
+	cmp.l	U_RX_TAIL(%a5),%d1
+	beq.s	2f
+1:	moveq	#1,%d1
+	move.l	%d1,AN_HDR_IRQ(%a0)
+2:	clr.w	G_INRX(%a6)
 rx_out:
 	rts
 

@@ -92,6 +92,8 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	@mkdir -p $(B)
 	cc -I ../emu68/src/alice -o $(B)/an_offsets ../tools/mac/an_offsets.c
 	$(PY) ../tools/mac/check_offsets.py enet.s $(B)/an_offsets
+	cc -std=c99 -Wall -I ../emu68/src/psmac -o $(B)/usbnet_frame_test ../tools/usbnet_frame_test.c ../emu68/src/psmac/usbnet_frame.c
+	$(B)/usbnet_frame_test
 
 disasm: $(B)/pidisk.o
 	m68k-linux-gnu-objdump -d $(B)/pidisk.o | head -200

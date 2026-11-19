@@ -884,6 +884,16 @@ static void event(const struct fm_event *e)
 }
 
 /* ---- receive: data frames into the board's slots ---- */
+#ifdef PSMAC
+/* psmac_netprobe.c: an echo's time through the kernel (the WiFi's 80 ms ping, 20 November) */
+void psmac_netprobe_tx(int unit, const volatile uint8_t *f, uint32_t len, int stage);
+void psmac_netprobe_rx(int unit, const volatile uint8_t *f, uint32_t len, uint32_t slot, volatile uint32_t *rx_tail);
+#define NETPROBE_TX(u, f, l, st) psmac_netprobe_tx(u, f, l, st)
+#define NETPROBE_RX(u, f, l, sl, t) psmac_netprobe_rx(u, f, l, sl, t)
+#else
+#define NETPROBE_TX(u, f, l, st) ((void)0)
+#define NETPROBE_RX(u, f, l, sl, t) ((void)0)
+#endif
 static void rx_payload(const uint8_t *p, unsigned len)
 {
     unsigned dl;
@@ -900,6 +910,7 @@ static void rx_payload(const uint8_t *p, unsigned len)
     ncopy(s->data, d, dl);
     s->len = dl;
     s->flags = (d[0] & 1) ? (d[0] == 0xff && d[1] == 0xff ? AN_SF_BCAST : AN_SF_MCAST) : 0;
+    NETPROBE_RX(0, d, dl, u->rx_head, &u->rx_tail);
     __asm__ volatile("dmb ish" ::: "memory");
     u->rx_head++;
     u->rx_pkts++; u->rx_bytes += dl;
@@ -1025,8 +1036,10 @@ static void tx_all(void)
         else {
             uint8_t *f = W.txbuf, *q = f + SDPCM_HDRLEN + BCDC_DATA_HDR;
             for (uint32_t i = 0; i < len; i++) q[i] = s->data[i];
+            NETPROBE_TX(0, q, len, 0);
             unsigned n = sdpcm_frame(f, SDPCM_CHAN_DATA, W.txseq, len);
             int bad = chip_frame(&W.c, f, n, 1);
+            if (!bad) NETPROBE_TX(0, q, len, 1);
             trace_tx(0, q, len, !bad);
             if (bad) { u->tx_err++; tx_fail(); }
             else { W.txseq++; u->tx_pkts++; u->tx_bytes += len; }
@@ -1095,6 +1108,13 @@ static int bringup(void)
     int is30 = W.c.id == 43430 || W.c.id == 0xa9a6;
     const char *const *stems = is56 ? s43456 : is30 ? s43430 : s43455;
     const char *const *nvs = is56 ? nv43456 : is30 ? nv43430 : nv43455;
+#ifdef PSMAC
+    /* one container for every board (get-firmware.sh): a Zero 2 W's 43436 answers as a 43430, so
+       the board says which of the two sets is its own */
+    static const char *const s43436[] = { "brcmfmac43436-sdio", "brcmfmac43430-sdio", "cyfmac43430-sdio", 0 };
+    static const char *const nv43436[] = { "brcmfmac43436-sdio", "brcmfmac43430-sdio", 0 };
+    if (is30 && board_type() == 0x12) { stems = s43436; nvs = nv43436; }
+#endif
     const struct fwfile *fb = fw_find(stems, ".bin");
     const struct fwfile *nv = fw_find(nvs, ".txt");
     const struct fwfile *clm = fw_find(stems, ".clm_blob");
@@ -1965,6 +1985,7 @@ static void eth_rx(void)
             ncopy(s->data, f, len);
             s->len = len;
             s->flags = (f[0] & 1) ? (f[0] == 0xff && f[1] == 0xff ? AN_SF_BCAST : AN_SF_MCAST) : 0;
+            NETPROBE_RX(1, f, len, u->rx_head, &u->rx_tail);
             __asm__ volatile("dmb ish" ::: "memory");
             u->rx_head++;
             u->rx_pkts++; u->rx_bytes += len;
@@ -1991,6 +2012,8 @@ static void eth_tx(void)
             uint8_t *q = E.txb + b * GBUF;
             ncopy(q, s->data, len);
             trace_tx(1, q, len, 1);
+            NETPROBE_TX(1, q, len, 0);
+            NETPROBE_TX(1, q, len, 1);                  /* GENET's DMA takes it from here: "out" when queued */
             for (; len < 60; len++) q[len] = 0;         /* the shortest Ethernet frame */
             uint64_t a = E.txp + (uint64_t)b * GBUF;
             gwr(G_TXD + d * 12 + 4, (uint32_t)a);

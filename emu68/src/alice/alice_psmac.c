@@ -128,6 +128,8 @@ volatile uint8_t frf_usb_boot_ready, frf_usb_mouse_seen, frf_usb_mouse_buttons, 
 uintptr_t frf_dma_phys;                              /* xHCI DMA pool: not carved yet (USB is Pi 4 only) */
 
 /* ---- testbed Ethernet: unit 1 served from the host frame files ------------------------------ */
+void psmac_netprobe_tx(int unit, const volatile uint8_t *f, uint32_t len, int stage);
+void psmac_netprobe_rx(int unit, const volatile uint8_t *f, uint32_t len, uint32_t slot, volatile uint32_t *rx_tail);
 /* psmac_mbox.c owns the host file pairs (0: mac.net=, 1: mac.wifinet=): these are its primitives */
 int psmac_netfile_up(int which);
 int psmac_netfile_send(int which, const uint8_t *frame, uint32_t len);
@@ -178,7 +180,12 @@ int psmac_eth_testbed_poll(volatile struct an_unit *u)
             kprintf("[ETH] testbed bridge: link %s at %u s (mac.netdown)\n", want ? "up" : "down", t);
         }
     }
-    if (!tb_active) return 0;
+    if (!tb_active) {
+        /* no file bridge: on a Pi 3B or 3B+ the wired port is the USB network chip (psmac_usbnet.c);
+           on a Pi 4 this answers 0 and alice_net.c drives the GENET */
+        extern int psmac_usbnet_poll(volatile struct an_unit *u);
+        return psmac_usbnet_poll(u);
+    }
     /* commands */
     if (u->cmd_seq != u->cmd_done) {
         int r = 0;
@@ -209,7 +216,8 @@ int psmac_eth_testbed_poll(volatile struct an_unit *u)
         uint32_t len = s->len;
         if (len >= 14 && len <= AN_SLOT_BYTES - 8 && u->link) {
             for (uint32_t i = 0; i < len; i++) tb_buf[i] = s->data[i];
-            if (psmac_netfile_send(0, tb_buf, len)) { u->tx_pkts++; u->tx_bytes += len; } else u->tx_err++;
+            psmac_netprobe_tx(1, tb_buf, len, 0);
+            if (psmac_netfile_send(0, tb_buf, len)) { u->tx_pkts++; u->tx_bytes += len; psmac_netprobe_tx(1, tb_buf, len, 1); } else u->tx_err++;
         } else u->tx_err++;
         __asm__ volatile("dmb ish" ::: "memory");
         u->tx_tail++;
@@ -228,6 +236,7 @@ int psmac_eth_testbed_poll(volatile struct an_unit *u)
         volatile struct an_slot *s = (volatile struct an_slot *)(board + AN_OFF_RX(1) + (u->rx_head % AN_RX_SLOTS) * AN_SLOT_BYTES);
         for (int i = 0; i < len; i++) s->data[i] = tb_buf[i];
         s->len = (uint32_t)len; s->flags = (bcast ? AN_SF_BCAST : 0) | (mcast ? AN_SF_MCAST : 0);
+        psmac_netprobe_rx(1, tb_buf, (uint32_t)len, u->rx_head, &u->rx_tail);
         __asm__ volatile("dmb ish" ::: "memory");
         u->rx_head++; u->rx_pkts++; u->rx_bytes += (uint32_t)len;
         ((volatile struct an_hdr *)board)->irq = 1;
@@ -376,11 +385,14 @@ void psmac_alice_input_click(uint32_t seconds, const int *pts, int n)
 }
 void psmac_alice_input_drag(uint32_t seconds)  { intest_at = seconds; intest_kind = 4; }   /* the cursor walks right, onto the second screen (docs/10) */
 
+void psmac_loop_report(void);
 /* heartbeat line for psmac_bus.c: the interrupt line and what holds it */
 void psmac_slot_irq_report(void)
 {
     { extern void psmac_display_report(void); psmac_display_report(); }
     { extern void psmac_usb_report(void); psmac_usb_report(); }
+    { extern void psmac_usbnet_report(void); psmac_usbnet_report(); }
+    psmac_loop_report();
     extern uint32_t psmac_slot_irq_state(void); extern volatile uint8_t *alice_net_board(void);
     volatile struct an_hdr *nh = (volatile struct an_hdr *)alice_net_board();
     uint32_t st = psmac_slot_irq_state();
@@ -675,7 +687,8 @@ int psmac_wifi_testbed_poll(volatile struct an_unit *u)
         uint32_t len = s->len;
         if (len >= 14 && len <= AN_SLOT_BYTES - 8 && u->link) {
             for (uint32_t i = 0; i < len; i++) wsim_buf[i] = s->data[i];
-            if (psmac_netfile_send(1, wsim_buf, len)) { u->tx_pkts++; u->tx_bytes += len; } else u->tx_err++;
+            psmac_netprobe_tx(0, wsim_buf, len, 0);
+            if (psmac_netfile_send(1, wsim_buf, len)) { u->tx_pkts++; u->tx_bytes += len; psmac_netprobe_tx(0, wsim_buf, len, 1); } else u->tx_err++;
         } else u->tx_err++;
         __asm__ volatile("dmb ish" ::: "memory");
         u->tx_tail++;
@@ -694,6 +707,7 @@ int psmac_wifi_testbed_poll(volatile struct an_unit *u)
         volatile struct an_slot *s = (volatile struct an_slot *)(board + AN_OFF_RX(0) + (u->rx_head % AN_RX_SLOTS) * AN_SLOT_BYTES);
         for (int i = 0; i < len; i++) s->data[i] = wsim_buf[i];
         s->len = (uint32_t)len; s->flags = (bcast ? AN_SF_BCAST : 0) | (mcast ? AN_SF_MCAST : 0);
+        psmac_netprobe_rx(0, wsim_buf, (uint32_t)len, u->rx_head, &u->rx_tail);
         __asm__ volatile("dmb ish" ::: "memory");
         u->rx_head++; u->rx_pkts++; u->rx_bytes += (uint32_t)len;
         ((volatile struct an_hdr *)board)->irq = 1;
@@ -757,6 +771,20 @@ void psmac_alice_core1(void)
     psmac_boot_mark("core 1: USB started");
 }
 
+/* the service loop's longest part-turns since the last heartbeat (ticks), and its turns */
+static uint64_t loop_max[5];
+static uint32_t loop_turns;
+#define LOOP_T(i, d) do { if ((d) > loop_max[i]) loop_max[i] = (d); } while (0)
+void psmac_loop_report(void)
+{
+    uint64_t us = in_hz() / 1000000u;
+    kprintf("[PSMAC]   service loop: %u turns/5 s, longest: mailbox %u us, card %u us, network %u us, USB %u us, display %u us\n",
+            loop_turns, (uint32_t)(loop_max[0] / us), (uint32_t)(loop_max[1] / us), (uint32_t)(loop_max[2] / us),
+            (uint32_t)(loop_max[3] / us), (uint32_t)(loop_max[4] / us));
+    for (int i = 0; i < 5; i++) loop_max[i] = 0;
+    loop_turns = 0;
+}
+
 /* core 3: the Alice68 services plus the mailbox services, for ever */
 void __attribute__((noreturn)) psmac_alice_core(void)
 {
@@ -764,13 +792,22 @@ void __attribute__((noreturn)) psmac_alice_core(void)
     kprintf("[PSMAC] core 3: Alice68 services (network board, Bluetooth, USB input, status) and the mailbox\n");
     psmac_boot_mark("core 3: the service loop begins");
     for (;;) {
+        /* every part of the turn timed: the longest of each over the heartbeat's five seconds goes
+           into its line (psmac_loop_report), so a photograph of the log says what holds the loop */
+        uint64_t t0 = in_now(), t1;
         psmac_mbox_poll();
+        t1 = in_now(); LOOP_T(0, t1 - t0); t0 = t1;
         { extern void psmac_card_poll(void); psmac_card_poll(); }        /* the Pi's own SD card: pairings, the disk image's changes (psmac_card.c) */
+        t1 = in_now(); LOOP_T(1, t1 - t0); t0 = t1;
         alice_net_poll();
+        t1 = in_now(); LOOP_T(2, t1 - t0); t0 = t1;
         { extern void psmac_usb_poll(void); psmac_usb_poll(); }          /* USB keyboard and mouse (psmac_usb.c) */
+        t1 = in_now(); LOOP_T(3, t1 - t0); t0 = t1;
         in_repeat_poll();
         in_testbed_poll();
+        { extern void psmac_netprobe_poll(void); psmac_netprobe_poll(); }  /* echo timings (psmac_netprobe.c) */
         { extern void psmac_display_poll(void); psmac_display_poll(); }   /* the second display's tick and picture */
+        t1 = in_now(); LOOP_T(4, t1 - t0); loop_turns++;
         /* The card's interrupt line: up while a board has something the Mac has not taken (the
            network board's irq flag, which the Mac's Ethernet driver clears; input events not yet
            read), but only from boards whose Mac driver has attached (the Ethernet driver writes

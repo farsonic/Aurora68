@@ -204,25 +204,21 @@ static inline void put(void *row, uint32_t x, uint32_t xrgb)
 }
 
 /* the Mac's pixels -> XRGB; depth 1/2/4: the leftmost pixel is in the high bits of the byte */
-static void convert(void)
+/* The picture, a band at a time. A whole 1920 by 1200 frame in millions of colours is 9 MB read,
+   9 MB written and 9 MB flushed, some 20 ms of a Pi 3's core on every other 60 Hz tick, and the
+   service loop runs nothing else meanwhile: on 19 November the user's Pi 3B at 1920 by 1200 pinged
+   its router over the WiFi in 80 ms, because the WiFi, the network board's interrupt and the disk
+   all waited behind the conversion (docs/08 item 49). Now each turn of the loop converts a band of
+   about 128 K pixels (a millisecond or so) and the next turn the next band; a frame starts at most
+   30 times a second, as before, and takes as many turns as it needs. Small screens are one band. */
+#define BAND_PIXELS 131072u
+static uint32_t band_y, band_h, band_w, band_mode, band_active;
+static uint64_t frame_t0;
+static void convert_rows(uint32_t y0, uint32_t y1)
 {
-    if (!vcfb) return;
-    uint32_t depth = disp->depth, rb = disp->rowbytes;
-    uint32_t h = disp->height < vc_h ? disp->height : vc_h, w = disp->width < vc_w ? disp->width : vc_w;
-    int mi = depth == 1 ? 0 : depth == 2 ? 1 : depth == 4 ? 2 : depth == 8 ? 3 : depth == 16 ? 4 : depth == 32 ? 5 : -1;
-    if (mi < 0 || !disp->mode_base[mi]) return;
-    const uint8_t *frame = disp->mode_base[mi] == PSMB_FB_BIG_PHYS ? frame_big : frame_win;
-    uint32_t limit = disp->mode_base[mi] == PSMB_FB_BIG_PHYS ? PSMB_FB_BIG_SIZE : PSMB_BOUNCE_SIZE;
-    if (rb * h > limit) return;
-    if (disp->clut_seq != clut_seen) {
-        clut_seen = disp->clut_seq;
-        for (int i = 0; i < 256; i++) {
-            uint32_t c = disp->clut[i] & 0xffffffu;
-            if (disp->flags & PSMB_DISP_GRAY) { uint32_t y = (((c >> 16) & 255) * 77 + ((c >> 8) & 255) * 151 + (c & 255) * 28) >> 8; c = y << 16 | y << 8 | y; }
-            rgb[i] = c;
-        }
-    }
-    for (uint32_t y = 0; y < h; y++) {
+    uint32_t depth = disp->depth, rb = disp->rowbytes, w = band_w;
+    const uint8_t *frame = disp->mode_base[band_mode] == PSMB_FB_BIG_PHYS ? frame_big : frame_win;
+    for (uint32_t y = y0; y < y1; y++) {
         const uint8_t *src = frame + y * rb;
         void *dst = vcfb + y * vc_pitch;
         switch (depth) {
@@ -237,23 +233,68 @@ static void convert(void)
         case 1: for (uint32_t x = 0; x < w; x += 8) { uint8_t b = src[x >> 3]; for (int k = 0; k < 8; k++) put(dst, x + k, rgb[(b >> (7 - k)) & 1]); } break;
         }
     }
-    arm_flush_cache((intptr_t)vcfb, vc_pitch * h);
-    { extern void psmac_se_mark(const uint8_t *, uint32_t, uint32_t, uint32_t, uint32_t); psmac_se_mark(frame, disp->width, disp->height, rb, depth); }   /* the SE's own screen (psmac_board_se.c) */
+    arm_flush_cache((intptr_t)(vcfb + y0 * vc_pitch), vc_pitch * (y1 - y0));
+}
+/* a new frame: what to convert (0 if nothing can be) */
+static int convert_start(void)
+{
+    if (!vcfb) return 0;
+    uint32_t depth = disp->depth, rb = disp->rowbytes;
+    uint32_t h = disp->height < vc_h ? disp->height : vc_h, w = disp->width < vc_w ? disp->width : vc_w;
+    int mi = depth == 1 ? 0 : depth == 2 ? 1 : depth == 4 ? 2 : depth == 8 ? 3 : depth == 16 ? 4 : depth == 32 ? 5 : -1;
+    if (mi < 0 || !disp->mode_base[mi]) return 0;
+    uint32_t limit = disp->mode_base[mi] == PSMB_FB_BIG_PHYS ? PSMB_FB_BIG_SIZE : PSMB_BOUNCE_SIZE;
+    if (rb * h > limit) return 0;
+    if (disp->clut_seq != clut_seen) {
+        clut_seen = disp->clut_seq;
+        for (int i = 0; i < 256; i++) {
+            uint32_t c = disp->clut[i] & 0xffffffu;
+            if (disp->flags & PSMB_DISP_GRAY) { uint32_t y = (((c >> 16) & 255) * 77 + ((c >> 8) & 255) * 151 + (c & 255) * 28) >> 8; c = y << 16 | y << 8 | y; }
+            rgb[i] = c;
+        }
+    }
+    band_y = 0; band_h = h; band_w = w; band_mode = (uint32_t)mi;
+    return 1;
+}
+/* one band; the frame's end does what the whole frame's conversion did at its end */
+static void convert_band(void)
+{
+    uint32_t n = band_w ? BAND_PIXELS / band_w : band_h;
+    if (!n) n = 1;
+    if (band_y + n > band_h) n = band_h - band_y;
+    convert_rows(band_y, band_y + n);
+    band_y += n;
+    if (band_y < band_h) return;
+    band_active = 0;
+    { extern void psmac_se_mark(const uint8_t *, uint32_t, uint32_t, uint32_t, uint32_t);   /* the SE's own screen (psmac_board_se.c) */
+      psmac_se_mark(disp->mode_base[band_mode] == PSMB_FB_BIG_PHYS ? frame_big : frame_win, disp->width, disp->height, disp->rowbytes, disp->depth); }
     disp->frames++;
 }
 
-/* from the service core's loop: the 60 Hz tick (VBL) and, every other tick, the picture */
+/* from the service core's loop, every turn: the 60 Hz tick (VBL), and a band of the picture */
 void psmac_display_poll(void)
 {
     if (!disp) return;
     uint64_t now; __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(now));
     uint64_t hz; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(hz));
     if (!next_tick) { next_tick = now + hz / 60; return; }
+    if (band_active) {
+        if ((disp->flags & PSMB_DISP_ENABLED) && !con_keep) convert_band();
+        else band_active = 0;
+    }
     if ((int64_t)(now - next_tick) < 0) return;
     next_tick += hz / 60; if ((int64_t)(now - next_tick) > (int64_t)hz) next_tick = now + hz / 60;
     disp->vbl_count++;
     if ((disp->flags & PSMB_DISP_ENABLED) && disp->vbl_enable) { disp->vbl_pending = 1; __asm__ volatile("dmb ish" ::: "memory"); }
-    if ((disp->flags & PSMB_DISP_ENABLED) && !con_keep) { con_off = 1; if (++tick_div & 1) convert(); }
+    if ((disp->flags & PSMB_DISP_ENABLED) && !con_keep) {
+        con_off = 1;
+        /* a new frame every other tick (30 a second) if the last one is done */
+        if (++tick_div & 1 && !band_active && now - frame_t0 >= hz / 31 && convert_start()) {
+            frame_t0 = now;
+            band_active = 1;
+            convert_band();
+        }
+    }
 }
 
 /* for the heartbeat */

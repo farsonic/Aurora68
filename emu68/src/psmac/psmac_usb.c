@@ -268,17 +268,24 @@ static void report(const char *what, int rc)
             hid.root_hub_ports, hid.ports_seen, (int)hid.port_error);
 }
 
+/* the bus's generation for psmac_usbnet.c (the Pi 3's wired Ethernet): one more after every
+   enumeration, which resets the root port and every device behind the hub with it */
+static uint32_t bus_gen;
+void psmac_usbnet_bus_reset(void);
+
 static void enumerate(const char *why)
 {
     struct frf_dwc2_state s;
     int rc;
     enumerations++;
     frf_native_usb_keyboard_force_release();
+    psmac_usbnet_bus_reset();                   /* the network chip's bulk channels stop before the reset takes it */
     rc = frf_dwc2_port_reset(&ops, &s);
     if (rc) {
         kprintf("[USB] %s: root port rc=%d (HPRT %08x, connected %u)\n", why, rc, s.port_status, s.port_connected);
         memset(&hid, 0, sizeof hid);
         root_connected = s.port_connected != 0;
+        __atomic_store_n(&bus_gen, bus_gen + 1, __ATOMIC_RELEASE);
         return;
     }
     root_connected = 1;
@@ -289,6 +296,7 @@ static void enumerate(const char *why)
        enumeration's, not the next plug */
     for (unsigned k = 1; k <= hid.root_hub_ports; k++)
         hub_clear(k, 16);                       /* C_PORT_CONNECTION */
+    __atomic_store_n(&bus_gen, bus_gen + 1, __ATOMIC_RELEASE);
 }
 
 void psmac_usb_start(void)
@@ -451,3 +459,15 @@ void psmac_usb_report(void)
             hid.stats.attempts, hid.stats.timeouts);
 }
 
+/* for psmac_usbnet.c: 0 until the bus is up, else its generation, with the root hub's port count,
+   the root port's speed (0 high, 1 full) and whether the DMA transport runs (the bulk path needs it) */
+uint32_t psmac_usb_bus(unsigned *hub_ports, int *speed, int *dma)
+{
+    if (!__atomic_load_n(&usb_on, __ATOMIC_ACQUIRE))
+        return 0;
+    *hub_ports = hid.root_hub_ports;
+    *speed = root_speed;
+    *dma = !use_fifo;
+    return __atomic_load_n(&bus_gen, __ATOMIC_ACQUIRE);
+}
+const struct frf_dwc2_ops *psmac_usb_ops(void) { return &ops; }

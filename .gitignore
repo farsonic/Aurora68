@@ -41,3 +41,4 @@ mac/build/pidepth.elf
 mac/build/wifimenu.elf
 mac/build/wifimenu_traps.txt
 mac/build/wm/
+mac/build/usbnet_frame_test

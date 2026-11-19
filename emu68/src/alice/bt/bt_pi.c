@@ -524,7 +524,23 @@ void bt_pi_poll(void)
 #ifdef PSMAC
     { extern int psmac_bt_testbed_poll(void); if (psmac_bt_testbed_poll()) return; }   /* alice_psmac.c: mac.btsim= owns the board */
 #endif
+#ifdef PSMAC
+    /* One SD card for a Pi 3B and a Pi 4 (19 November): the container may hold the .hcd of both
+       chips, so the board says which to take first, else a 3B's BCM43438 got the 4's BCM4345C0 */
+    static const char *const s_3b[] = { "BCM43430A1", "BCM4343A1", 0 };
+    static const char *const s_z2w[] = { "BCM43430B0", "BCM43430A1", 0 };
+    static const char *const s_4345[] = { "BCM4345C0", "bcm4345c0", "BCM4345C5", 0 };
+    static const char *const s_4345c5[] = { "BCM4345C5", "BCM4345C0", "bcm4345c0", 0 };
+    extern int psmac_board_bt_chip(void);           /* psmac_usbnet.c, from the device tree's model */
+    static const char *const *stems_by_board;
+    if (!stems_by_board) {
+        int c = psmac_board_bt_chip();
+        stems_by_board = c == 1 ? s_3b : c == 2 ? s_z2w : c == 3 ? s_4345c5 : s_4345;
+    }
+    const char *const *stems = stems_by_board;
+#else
     static const char *const stems[] = { "BCM4345C0", "BCM4345C5", "bcm4345c0", "BCM43430A1", "BCM4343A1", 0 };
+#endif
     uint32_t now = ms_now();
     if (!keys_loaded) {
         /* cmdline.txt's bt.dev= words, then pairings.txt from the card (newer: it wins); the card is

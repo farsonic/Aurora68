@@ -321,6 +321,9 @@ if (${VARIANT} IN_LIST SUPPORTED_VARIANTS)
                     src/alice/bt/bt_pi.c
                     src/alice/bt/bthost.c
                     src/psmac/psmac_usb.c
+                    src/psmac/psmac_usbnet.c
+                    src/psmac/usbnet_frame.c
+                    src/psmac/psmac_netprobe.c
                     src/alice/usb/frf_dwc2.c
                     src/alice/usb/frf_dwc2_pio.c
                     src/alice/usb/frf_usb_native_hid.c

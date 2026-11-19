@@ -14,7 +14,11 @@ for line in subprocess.run([prog], capture_output=True, text=True, check=True).s
     name, val = line.split()
     want[name] = int(val)
 bad = 0
-for m in re.finditer(r'^\s*\.equ\s+(\w+),\s*(0x[0-9A-Fa-f]+|\d+)', open(src).read(), re.M):
+text = open(src).read()
+# enet.s is assembled twice: the WiFi driver (.ifdef WIFI) uses unit 0's offsets, which the header
+# has no names for; the header's AN_OFF_UNIT1/RX1/TX1 are unit 1's, the other branch's
+text = re.sub(r'^\s*\.ifdef\s+WIFI\b.*?^\s*\.else\b', '', text, flags=re.M | re.S)
+for m in re.finditer(r'^\s*\.equ\s+(\w+),\s*(0x[0-9A-Fa-f]+|\d+)', text, re.M):
     name, val = m.group(1), int(m.group(2), 0)
     if name in want and want[name] != val:
         print(f"{src}: {name} is {val}, the header says {want[name]}")
