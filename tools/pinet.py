@@ -10,9 +10,15 @@ replies to .rx. Two modes:
                             192.168.68.2), and IPv6: neighbour discovery for fe80::ff:fe00:6801
                             and fd68::1, a router advertisement of fd68::/64, ICMPv6 echo; each
                             address the Mac checks for duplicates (DAD) is pinged a second later
-                            and the answer logged; a TCP echo server on port 7 and a DNS
+                            and the answer logged; a TCP echo server on port 7, an HTTP/1.0
+                            server on port 80 (/ a page, /big 256 KB, /slow the page in
+                            pieces a second apart, /reset a reset after the headers, /idle
+                            the page, then the server's close after 30 idle seconds), and a DNS
                             server on port 53 (peer.testbed and anything.testbed is
-                            192.168.68.1, and back). Logs every frame (default).
+                            192.168.68.1, and back; peer.testbed is also fd68::1, and
+                            v6only.testbed is fd68::80 with no IPv4 address, where HTTP
+                            answers over IPv6; silent.testbed and 192.168.68.66 are never
+                            answered, other addresses have no name). Logs every frame (default).
                             PINET_MDNS=NAME: every ten seconds an mDNS query for NAME.local
                             (224.0.0.251:5353, from the Mac's own subnet so the responder does
                             not ignore it as off-link); answers are logged as "mDNS answer".
@@ -47,6 +53,7 @@ PEER_IP = bytes([192, 168, NET, 1]); MAC_IP = bytes([192, 168, NET, 2])
 PEER_LL6 = bytes.fromhex('fe80000000000000000000fffe006801')      # EUI-64 of PEER_MAC
 PEER_GL6 = bytes.fromhex('fd680000000000000000000000000001')
 PREFIX6 = bytes.fromhex('fd680000000000000000000000000000')
+V6ONLY6 = bytes.fromhex('fd680000000000000000000000000080')   # v6only.testbed: IPv6 only (HTTP on 80)
 ALLNODES6 = bytes.fromhex('ff020000000000000000000000000001')
 pending_pings = []          # (time, mac, address): the Mac's addresses to ping after their DAD
 ping6_seq = 0
@@ -349,6 +356,20 @@ def tcp_seg(dstmac, dip, sport, dport, seq, ack, flags, data=b''):
     c = csum(pseudo + hdr + data)
     send4(dstmac, dip, 6, hdr[:16] + struct.pack('>H', c) + hdr[18:] + data)
 
+def tcp_seg6(dstmac, src6, dst6, sport, dport, seq, ack, flags, data=b''):
+    hdr = struct.pack('>HHIIBBHHH', sport, dport, seq & 0xffffffff, ack & 0xffffffff, 5 << 4, flags, 8192, 0, 0)
+    pseudo = src6 + dst6 + struct.pack('>I', len(hdr) + len(data)) + b'\0\0\0\x06'
+    c = csum(pseudo + hdr + data)
+    seg = hdr[:16] + struct.pack('>H', c) + hdr[18:] + data
+    send(dstmac + PEER_MAC + b'\x86\xdd' + struct.pack('>IHBB', 0x60000000, len(seg), 6, 64) + src6 + dst6 + seg)
+
+# a segment to the Mac over IPv4, or over IPv6 from me6 (the address of ours it connected to)
+def rseg(mac, ip, me6, sport, dport, seq, ack, flags, data=b''):
+    if me6:
+        tcp_seg6(mac, me6, ip, sport, dport, seq, ack, flags, data)
+    else:
+        tcp_seg(mac, ip, sport, dport, seq, ack, flags, data)
+
 # TCP relay (PINET_FORWARD): one host socket per connection from the Mac
 FORWARD = {}
 for item in filter(None, os.environ.get('PINET_FORWARD', '').split(',')):
@@ -357,54 +378,126 @@ for item in filter(None, os.environ.get('PINET_FORWARD', '').split(',')):
     FORWARD[int(port)] = (h, int(hp))
 relays = {}
 def relay_seg(r, flags, data=b''):
-    tcp_seg(r['mac'], r['ip'], r['lport'], r['rport'], r['snd'], r['rcv'], flags, data)
-def relay_tcp(frame, src, sip, t, sport, dport, seq, ack, flags, data, win):
+    rseg(r['mac'], r['ip'], r.get('me6'), r['lport'], r['rport'], r['snd'], r['rcv'], flags, data)
+# HTTP on port 80 (unless PINET_FORWARD takes the port): a small web server for the Mac's MacTCP
+# and Open Transport browser tests. HTTP/1.0, one request per connection, then the server closes
+# (as the servers of 1997 did for HTTP/1.0 clients):
+#   /           a small HTML page          /big       256 KB of text (a line pattern, checkable)
+#   /slow       the page in pieces, a second apart (the browser's receive timeouts and ASRs)
+#   /reset      the connection reset after the headers (TCPTerminate with remote abort)
+#   /idle       the page, kept alive, then closed by the server after 30 s of nothing
+#   anything else  404
+HTTP_PAGE = (b'<html><head><title>Aurora68 testbed</title></head>\r\n<body><h1>It works</h1>\r\n'
+             b'<p>Served by pinet.py to the Mac at 192.168.68.2.</p>\r\n</body></html>\r\n')
+def http_big(n=262144):
+    out, i = [], 0
+    while sum(map(len, out)) < n:
+        out.append(b'%06d Riptide on the Mac: line of the large file, 64 bytes long.\r\n'[:60] % i + b'\r\n'); i += 1
+    return b''.join(out)[:n]
+HTTP_BIG = http_big()
+def http_response(req):
+    line = req.split(b'\r\n', 1)[0].decode('latin-1', 'replace')
+    parts = line.split()
+    path = parts[1] if len(parts) > 1 else '/'
+    def resp(code, text, body, ctype=b'text/html'):
+        conn = b'keep-alive' if path == '/idle' else b'close'
+        return (b'HTTP/1.0 %d %s\r\nServer: pinet.py\r\nContent-Type: %s\r\nContent-Length: %d\r\n'
+                b'Connection: %s\r\n\r\n' % (code, text, ctype, len(body), conn)) + body, path
+    if path in ('/', '/index.html', '/slow', '/reset', '/idle'):
+        return resp(200, b'OK', HTTP_PAGE)
+    if path == '/big':
+        return resp(200, b'OK', HTTP_BIG, b'text/plain')
+    return resp(404, b'Not Found', b'<html><body>404: %s</body></html>\r\n' % path.encode('latin-1', 'replace'))
+def http_request(r, data):
+    r['req'] += data
+    if r['out'] or r['fin_out'] or b'\r\n\r\n' not in r['req']:
+        return ''
+    body, path = http_response(r['req'])
+    if path == '/slow':
+        r['later'] = [(time.time() + 1 + i, body[k:k + 40]) for i, k in enumerate(range(0, len(body), 40))]
+    elif path == '/reset':
+        r['out'] = body[:body.index(b'\r\n\r\n') + 4]; r['reset'] = True
+    elif path == '/idle':
+        r['out'] = body; r['later'] = [(time.time() + 30, b'')]          # the FIN after 30 idle seconds
+    else:
+        r['out'] = body; r['fin_out'] = True
+    return f', HTTP {r["req"].split(chr(13).encode(), 1)[0].decode("latin-1")!r}: {len(body)} bytes'
+
+def relay_tcp(frame, src, sip, t, sport, dport, seq, ack, flags, data, win, me6=None):
     key = (sip, sport, dport)
     if flags & 0x02:                                               # SYN: connect to the host
-        try:
-            hs = socket.create_connection(FORWARD[dport], timeout=3)
-        except OSError as e:
-            tcp_seg(src, sip, dport, sport, 0, seq + 1, 0x14)
-            return f'TCP relay {dport}: host refused ({e})'
-        hs.setblocking(False)
+        if dport in FORWARD:
+            try:
+                hs = socket.create_connection(FORWARD[dport], timeout=3)
+            except OSError as e:
+                rseg(src, sip, me6, dport, sport, 0, seq + 1, 0x14)
+                return f'TCP relay {dport}: host refused ({e})'
+            hs.setblocking(False)
+        else:
+            hs = None                                              # the HTTP server
         relays[key] = {'sock': hs, 'mac': src, 'ip': sip, 'lport': dport, 'rport': sport, 'snd': 0x68100001,
-                       'una': 0x68100001, 'rcv': seq + 1, 'win': win, 'out': b'', 'fin_out': False, 'fin_sent': False}
-        tcp_seg(src, sip, dport, sport, 0x68100000, seq + 1, 0x12)
+                       'una': 0x68100001, 'rcv': seq + 1, 'win': win, 'out': b'', 'fin_out': False, 'fin_sent': False,
+                       'sent': b'', 'moved': time.time(),
+                       'req': b'', 'later': [], 'reset': False, 'me6': me6}
+        rseg(src, sip, me6, dport, sport, 0x68100000, seq + 1, 0x12)
+        if hs is None:
+            return f'TCP {dport} (HTTP{" over IPv6 to " + ip6_addr(me6) if me6 else ""}): SYN-ACK'
         return f'TCP relay {dport} -> {FORWARD[dport][0]}:{FORWARD[dport][1]}: SYN-ACK'
     r = relays.get(key)
     if not r:
         if not flags & 0x04:
-            tcp_seg(src, sip, dport, sport, 0, seq + 1, 0x14)
+            rseg(src, sip, me6, dport, sport, ack, seq + len(data) + (1 if flags & 0x01 else 0), 0x14)
         return 'TCP relay (no connection)'
     if flags & 0x04:
-        r['sock'].close(); relays.pop(key, None); return 'TCP relay RST'
-    if flags & 0x10 and (ack - r['una']) & 0x80000000 == 0:
+        if r['sock']: r['sock'].close()
+        relays.pop(key, None); return 'TCP relay RST'
+    if flags & 0x10 and (ack - r['una']) & 0x80000000 == 0 and (r['snd'] - ack) & 0x80000000 == 0:
+        if ack != r['una']:
+            r['sent'] = r['sent'][(ack - r['una']) & 0xffffffff:]      # what is acknowledged is forgotten
+            r['moved'] = time.time()
         r['una'] = ack
     r['win'] = win
     what = 'TCP relay ack'
     if data:
         if seq == r['rcv']:
             r['rcv'] += len(data)
-            try:
-                r['sock'].sendall(data)
-            except OSError:
-                pass
+            if r['sock'] is None:
+                what = f'TCP {dport} {len(data)} bytes' + http_request(r, data)
+            else:
+                try:
+                    r['sock'].sendall(data)
+                except OSError:
+                    pass
+                what = f'TCP relay {len(data)} bytes to the host'
             relay_seg(r, 0x10)
-            what = f'TCP relay {len(data)} bytes to the host'
         else:
             relay_seg(r, 0x10)                                     # out of order: ack what we have
     if flags & 0x01 and seq + len(data) == r['rcv']:
         r['rcv'] += 1
-        try:
-            r['sock'].shutdown(socket.SHUT_WR)
-        except OSError:
-            pass
+        r['closed_in'] = True
+        if r['sock'] is not None:
+            try:
+                r['sock'].shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
         relay_seg(r, 0x10)
         what += ', FIN'
+    if r['fin_sent'] and r.get('closed_in') and r['una'] == r['snd']:
+        relays.pop(key, None)
+        what += ' (closed)'
     return what
 def relay_due():
+    now = time.time()
     for key, r in list(relays.items()):
-        if not r['fin_out']:
+        if r['sock'] is None:                                      # HTTP: pieces due, a reset
+            while r['later'] and r['later'][0][0] <= now:
+                r['out'] += r['later'].pop(0)[1]
+                if not r['later']: r['fin_out'] = True
+            if r['reset'] and not r['out'] and r['una'] == r['snd']:
+                relay_seg(r, 0x14); relays.pop(key, None)
+                print(f"peer -> TCP {r['lport']}: reset after the headers", flush=True)
+                continue
+        elif not r['fin_out']:
             try:
                 d = r['sock'].recv(65536)
                 if d:
@@ -415,23 +508,34 @@ def relay_due():
                 pass
             except OSError:
                 r['fin_out'] = True
+        # Go back N: a frame the Mac's receive ring had no room for is sent again, with what followed it,
+        # after a second without an acknowledgement (the Mac keeps acknowledging what it has)
+        if r['snd'] != r['una'] and now - r['moved'] > 1.0:
+            if r['fin_sent']:
+                r['fin_sent'] = False
+            r['out'] = r['sent'] + r['out']; r['sent'] = b''
+            r['snd'] = r['una']; r['moved'] = now
+            print(f"peer -> TCP {r['lport']}: nothing acknowledged for a second, sending again from {r['una']:#x}", flush=True)
         inflight = (r['snd'] - r['una']) & 0xffffffff
         room = max(0, r['win'] - inflight)
-        while r['out'] and room > 0:
+        burst = 4                                                  # a few frames a round: the Mac's ring is small
+        while r['out'] and room > 0 and burst:
             n = min(1400, room, len(r['out']))
             relay_seg(r, 0x18, r['out'][:n])
-            r['snd'] += n; r['out'] = r['out'][n:]; room -= n
+            r['sent'] += r['out'][:n]
+            r['snd'] += n; r['out'] = r['out'][n:]; room -= n; burst -= 1
         if r['fin_out'] and not r['out'] and not r['fin_sent']:
             relay_seg(r, 0x11)
             r['snd'] += 1; r['fin_sent'] = True
         if r['fin_sent'] and r['una'] == r['snd'] and r['rcv'] and key in relays and r.get('closed_in'):
-            r['sock'].close(); relays.pop(key, None)
+            if r['sock'] is not None: r['sock'].close()
+            relays.pop(key, None)
 
 def tcp_echo(frame, src, sip, t):
     sport, dport, seq, ack, off, flags = struct.unpack('>HHIIBB', t[:14])
     ip_total = struct.unpack('>H', frame[16:18])[0]
     data = t[(off >> 4) * 4:ip_total - 20]
-    if dport in FORWARD:
+    if dport in FORWARD or dport == 80:
         win = struct.unpack('>H', t[14:16])[0]
         return relay_tcp(frame, src, sip, t, sport, dport, seq, ack, flags, data, win)
     if dport != 7:
@@ -472,7 +576,17 @@ def dns_answer(frame, src, sip, sport, q):
     name = '.'.join(labels).lower()
     question = q[12:p + 4]
     ans, rcode = b'', 3
-    if qtype == 1 and (name == 'testbed' or name.endswith('.testbed')):
+    if name in ('silent.testbed', '66.68.168.192.in-addr.arpa'):
+        return 'DNS %s: not answered (a name server that does not reply)' % name
+    if name == 'v6only.testbed':                             # IPv6 only: AAAA, and no A (but the name exists)
+        rcode = 0
+        if qtype == 28:
+            ans = b'\xc0\x0c' + struct.pack('>HHIH', 28, 1, 60, 16) + V6ONLY6
+    elif qtype == 28 and name == 'peer.testbed':
+        ans = b'\xc0\x0c' + struct.pack('>HHIH', 28, 1, 60, 16) + PEER_GL6; rcode = 0
+    elif qtype == 28 and (name == 'testbed' or name.endswith('.testbed')):
+        rcode = 0                                            # the other names: IPv4 only
+    elif qtype == 1 and (name == 'testbed' or name.endswith('.testbed')):
         ans = b'\xc0\x0c' + struct.pack('>HHIH', 1, 1, 60, 4) + PEER_IP; rcode = 0
     elif qtype == 12 and name == '1.68.168.192.in-addr.arpa':
         rd = bytes([4]) + b'peer' + bytes([7]) + b'testbed' + b'\0'
@@ -481,7 +595,8 @@ def dns_answer(frame, src, sip, sport, q):
     body = hdr + question + ans
     udp = struct.pack('>HHHH', 53, sport, 8 + len(body), 0) + body
     send4(src, sip, 17, udp)
-    return 'DNS %s %s: %s' % ('A' if qtype == 1 else 'PTR' if qtype == 12 else qtype, name, 'answered' if ans else 'no such name')
+    return 'DNS %s %s: %s' % ({1: 'A', 12: 'PTR', 28: 'AAAA'}.get(qtype, qtype), name,
+                              'answered' if ans else 'no such name' if rcode else 'no record of that type')
 
 def ip6_addr(a):
     return socket.inet_ntop(socket.AF_INET6, a)
@@ -502,7 +617,27 @@ def mcast_mac(a6):
 
 def peer6(frame, src):
     global ping6_seq
-    ip6 = frame[14:54]; nh = ip6[6]; src6, dst6 = ip6[8:24], ip6[24:40]; pl = frame[54:]
+    ip6 = frame[14:54]; nh = ip6[6]; src6, dst6 = ip6[8:24], ip6[24:40]
+    pl = frame[54:54 + struct.unpack('>H', ip6[4:6])[0]]
+    if nh == 6 and len(pl) >= 20 and dst6 in (PEER_GL6, PEER_LL6, V6ONLY6):     # TCP over IPv6
+        sport, dport, seq, ack, off, flags = struct.unpack('>HHIIBB', pl[:14])
+        win = struct.unpack('>H', pl[14:16])[0]
+        data = pl[(off >> 4) * 4:]
+        if dport == 80:
+            return relay_tcp(frame, src, src6, pl, sport, dport, seq, ack, flags, data, win, me6=dst6)
+        if not flags & 0x04:
+            tcp_seg6(src, dst6, src6, dport, sport, 0, seq + 1, 0x14)
+        return f'TCP over IPv6 to port {dport}: reset'
+    if nh == 17 and len(pl) >= 8 and dst6 in (PEER_GL6, PEER_LL6, V6ONLY6):    # UDP echo over IPv6
+        sport, dport, ulen = struct.unpack('>HHH', pl[:6])
+        if dport != 7:
+            return f'UDP over IPv6 to port {dport}'
+        body = pl[8:ulen]
+        udp = struct.pack('>HHHH', 7, sport, 8 + len(body), 0) + body
+        pseudo = dst6 + src6 + struct.pack('>I', len(udp)) + b'\0\0\0\x11'
+        udp = udp[:6] + struct.pack('>H', csum(pseudo + udp) or 0xffff) + udp[8:]
+        send(src + PEER_MAC + b'\x86\xdd' + struct.pack('>IHBB', 0x60000000, len(udp), 17, 64) + dst6 + src6 + udp)
+        return 'UDP echo over IPv6 from ' + ip6_addr(dst6)
     if nh != 58 or len(pl) < 4:
         return f'IPv6 next header {nh}'
     t = pl[0]
@@ -519,7 +654,7 @@ def peer6(frame, src):
         if src6 == bytes(16):
             pending_pings.append((time.time() + 1.5, src, target))
             return 'IPv6 DAD for ' + ip6_addr(target)
-        if target in (PEER_LL6, PEER_GL6):
+        if target in (PEER_LL6, PEER_GL6, V6ONLY6):
             body = struct.pack('>BBHI', 136, 0, 0, 0xE0000000) + target + bytes([2, 1]) + PEER_MAC
             send6(src, target, src6, body)
             return 'IPv6 NS: advertisement for ' + ip6_addr(target)
