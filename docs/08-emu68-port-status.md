@@ -1548,6 +1548,91 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    - Nothing else waits early: the kernel's `[BOOT]` marks between kernel entry and the 68k cover
      every step, and in QEMU with `mac.deaduart=1` they add up to 0.4 s.
 
+59. **A remote control in the kernel: the Mac's screen, mouse, keyboard, log and reset over HTTP
+   (20 November).** The user: an agent should be able to see and drive the Mac directly, so that
+   problems can be reported and reproduced without photographs. The kernel already owns the frame
+   buffer, the input ring, the log and the 68k, so the remote is a kernel service and needs nothing
+   on the Mac (docs/13 is the design and the manual).
+   - *Stage 1, the capabilities* (`psmac_remote.c`): a PNG of the main screen read from the Mac's own
+     frame buffer at its depth through its colour table (`psmac_display_shot*` in psmac_display.c;
+     the VideoCore buffer before the video driver opens), encoded by our own streaming deflate (fixed
+     Huffman codes, matches one and two pixels back and one and two rows up), a band of 8 KB of rows
+     per turn of the service loop, each band its own IDAT chunk; input through `.PiInput`'s ring with
+     two new event types (an absolute mouse position, a Mac virtual key code: `mac/piinput.s`),
+     paced by a queue in the kernel; the log ring with a byte cursor and secrets hidden, plus the
+     `[BOOT] t=` and `[CRASH]` lines kept apart, since the 64 KB ring loses them within minutes; a
+     JSON state (CurApName, Ticks, DSErrCode at $AF0, the crash records of item 53 since the last
+     RESET, both network units, the disks); restart (the 68k sent to the ROM's reset entry
+     $4080002A from `ProcessIRQ`, through the unused `INTF.RESET` byte of the interrupt word, so it
+     works when the Mac is hung), NMI (`INTF.ARM_err`, level 7) and a watchdog reboot of the Pi.
+     `mac.remotefile=BASE` serves it all through semihosting, which is how it was first tried.
+   - *Stage 2, the transport* (`psmac_ip.c`): ARP answers, ICMP echo, DHCP with a client identifier
+     and host name, mDNS for `aurora68-pi.local`, a listening TCP (four connections, 32 KB send
+     buffers, go-back-N). Every driver shows the stack each received frame before the Mac's ring
+     (one call; "the kernel's, the Mac's, or nobody's") and sends its frames when the Mac's ring is
+     empty: the file bridge and the simulated radio (`alice_psmac.c`), the LAN9514/LAN7800/CDC-ECM
+     (`psmac_usbnet.c`), the WiFi and GENET (`alice_net.c`, `#ifdef PSMAC`). Wired, the kernel has
+     its own MAC address (the LAN7800's second perfect-filter slot; the LAN9514 and GENET
+     promiscuous with software filtering while the remote is on); on the WiFi it shares the Mac's
+     and gets its own IP address by its DHCP client identifier, or, if the router gives it the Mac's
+     address or none, shares that too and takes TCP port 8068 alone. `remote=on` and a token of at
+     least 8 characters are both needed, every request but the page needs the token, and sources
+     outside RFC 1918 and link-local are refused unless `remote.any=1`.
+   - *Stage 3*: `tools/aurora68-mcp.py` (MCP over stdio: screenshot, click, move, drag, type, key,
+     log, state, restart) and `tools/aurora68.py` (the command line). `tools/pinet.py` learnt to give
+     the kernel 192.168.N.3 by its host name and to relay a host port to the kernel's port 80
+     (`PINET_KERNEL=PORT`), beside the Mac's own traffic.
+
+   What the testbed showed (solo board, the full test image, `mac.net=` through pinet):
+   - The kernel bound 192.168.68.3 by DHCP on the file bridge with its own address
+     02:50:53:4d:41:c3 and announced itself by mDNS; the Mac's Riptide bound 192.168.68.2 beside it,
+     answered pinet's IPv6 pings and its own mDNS name throughout.
+   - A screenshot over HTTP matched `tools/vcshot.py`'s picture of the same moment pixel for pixel
+     (640 by 480, 0 of 307,200 pixels differ, twice, on two kernels). A Finder screen is 10 to 30 KB.
+   - Clicks and typing drove the Finder: a double-click opened the disk, a double-click its Apps
+     folder, typing "Octavo" selected the folder and Command-O opened it
+     (`docs/img/remote-finder-typed-cmd-o.png`), a double-click started Octavo, and a sentence typed
+     into its document arrived whole (`docs/img/remote-octavo-typed.png`). The first try kept 12 of
+     the 64 letters: Octavo under QEMU redraws for a second after each key and the Mac's event queue
+     holds 20; the queue now waits while `.PiInput`'s ring or the Event Manager's queue ($14A) holds
+     events (two seconds at most, since the system error dialog and the debugger take none).
+   - CrashTest (item 53) opened from the Finder by typing its name and Command-O: the state said
+     `"state": "system error"`, `ds_err_code` 10, "bad F-line instruction", the exception F-line at
+     $00F5C412 (`docs/img/remote-system-error-crashtest.png`); `/log?tags=CRASH` returned the record.
+     `POST /restart` from that dialog brought the Mac back to the Finder (the ROM's RESET reset the
+     card as Restart does); `?how=nmi` brought up the System's ">" debugger prompt
+     (`docs/img/remote-nmi-debugger.png`), and typing "G" and Return through the remote left it again;
+     `?how=pi` rebooted the whole Pi in QEMU, which booted the Mac again.
+   - The MCP server, run by a script as an MCP host would (initialize, tools/list, tools/call), returned
+     the screenshot as an image and its double-click on the disk brought the disk's window to the front
+     (`docs/img/remote-mcp-click.png`).
+   - On the simulated WiFi with the wired bridge up as well (`remote.link=wifi`): the kernel used the
+     Mac's MAC address 02:50:53:57:49:46 and pinet's DHCP gave it 192.168.69.3 by its host name while
+     the Mac kept 192.168.69.2 and 192.168.68.2; the HTTP API answered through the WiFi peer. With
+     `remote.wifi=shared` the kernel followed the Mac's address ("the Mac's WiFi address is now
+     192.168.69.2") and answered on 192.168.69.2:8068, the Mac's IPv6 echoes going on beside it. One
+     run of that setting (of two) had Riptide's WiFi interface take no frames at all and fall back to
+     a link-local address, with Riptide's start-up lines missing from the log; the kernel's hook was
+     checked natively to hand those frames to the Mac, and the second run bound normally. Not
+     understood yet.
+   - Cost. The 68k's own core runs none of this (only the interrupt word's check, which upstream
+     makes on every block anyway). Speedometer 3.23's CPU test, three runs each, driven the same way
+     (through the semihosting channel): remote off 27.5, 34.6, 35.3; remote on and idle 36.0, 32.0,
+     33.9 (`docs/img/remote-speedometer.png`): no drop beyond QEMU's spread. Run while another program
+     fetched screenshots without pause the figures fell to 23 and 18, but that was the host: four
+     vCPU threads on a four-core host beside the clients and pinet. Core 3: the first version did the
+     remote's rounds every turn, a fifth of the core's time under QEMU with nobody connected; it now
+     returns at once when idle and looks at the clock every 32nd turn. A screenshot is encoded in
+     bands of 8 KB of rows: 0.15 ms each natively on the host's x86 (1920 by 1200 in 31 ms in all),
+     2 to 12 ms under QEMU depending on the host's load; on a Pi 3 a band should be under a
+     millisecond and a 1920 by 1200 desktop a quarter of a second, with the Mac running throughout.
+
+   Not verified on hardware: everything above ran in QEMU; the LAN9514's promiscuous mode, the
+   LAN7800's second filter slot and GENET's promiscuous mode for the kernel's address, the WiFi
+   path through the Broadcom firmware (frames to the shared MAC address steered by IP address, and
+   whether the user's router keeps the two DHCP leases apart), the watchdog reboot on a real Pi,
+   mDNS from a MacBook, and the encoder's speed on a Cortex-A53.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

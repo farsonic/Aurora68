@@ -140,6 +140,7 @@ One line, options separated by spaces, no comments:
 | `mac.solotrace=N` | the solo board's first N SCSI commands and ADB commands in the log |
 | `mac.bridge=gpio` | how the motherboard is reached: `gpio` (the classic PiStorm's CPLD, the default on hardware), `semihost` or `uart` (the testbed's bridge to MAME) |
 | `mac.vcswap=1` | swap red and blue on the second screen, should a board's firmware disagree with the kernel about the pixel byte order (the firmware is asked; this overrides its answer) |
+| `remote=on remote.token=TOKEN` | the remote control (docs/13): the Mac's screen, mouse, keyboard, the kernel's log and a restart over HTTP from the local network, for a browser (`http://aurora68-pi.local/`) or an agent (`tools/aurora68-mcp.py`, an MCP server for Claude Code and Claude Desktop; `tools/aurora68.py`, a command line). The kernel gets an address of its own by DHCP (its own MAC address on the wired port; on the WiFi the Mac's, with a DHCP client identifier of its own). Off by default; the token (8 characters or more) is required. `remote.name=`, `remote.ip=A.B.C.D/24,ROUTER`, `remote.link=wired\|wifi`, `remote.wifi=shared`, `remote.any=1`: docs/13 |
 
 ### Booting fast
 In the SE the Pi is the processor, so the SE stays dark until the Pi's firmware has read its files,
@@ -165,6 +166,15 @@ entry", is the firmware's part). docs/08 item 50 has the measurements.
 - **The ROM:** the patch (rom/patches/iici.json, applied by the kernel and by make-container.py)
   skips the IIci ROM's memory test (it tests the Pi's memory, which cannot fail as SIMMs do),
   shortens the startup chime nobody hears, and waits 10 ms instead of 250 at each empty SCSI ID.
+
+### Remote control
+With `remote=on remote.token=TOKEN` in cmdline.txt the kernel answers on the local network at
+`http://aurora68-pi.local/` (or the address its log prints, `[REMOTE] address ...`): a page with the
+Mac's screen that clicks and types, and an HTTP API that `tools/aurora68-mcp.py` turns into tools
+for an agent (screenshot, click, move, drag, type, key, log, state, restart), so a problem can be
+shown and reproduced without a photograph. It needs nothing on the Mac and works while the Mac is
+hung or shows a system error. Setting it up, Claude Code's `claude mcp add` line and Claude
+Desktop's configuration: docs/13.
 
 ### Upgrading
 Replace `kernel8.img` and `aurora68.declrom`, rebuild `aurora68.cpio`, keep your `config.txt`

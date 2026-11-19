@@ -144,7 +144,12 @@ is the Mac's memory. Useful kernel options (all in `docs/09`): `mac.inputtest=`,
 `mac.declrom=$PWD/mac/build/psmac-WxH.declrom` (a larger second screen; the 'scrn' resource's
 rectangle must agree, docs/09 "Two screens"), `mac.vcswap=0|1` (red/blue order on the Pi's screen).
 `tools/vcshot.py out.png` photographs the
-Pi's own screen (the second display) through QEMU's monitor socket. `tools/pram32.py` switches
+Pi's own screen (the second display) through QEMU's monitor socket. The remote control (docs/13)
+drives the Mac from the host: `remote=on remote.token=T` with `PINET_KERNEL=18068 python3
+tools/pinet.py /tmp/psmac-net peer` makes the kernel's HTTP server `http://127.0.0.1:18068/`
+(`tools/aurora68.py --url ... --token T screenshot|click|type|key|log|state|restart`, and
+`tools/aurora68-mcp.py` for an MCP host); `mac.remotefile=BASE` serves the same requests through
+semihosting without the network. `tools/pram32.py` switches
 32-bit addressing on in MAME's saved PRAM (needed for more than 8 MiB and for the second screen's
 configuration; see docs/08 item 26). A System 7.1 boot reaches the Finder in about four minutes
 on four cores; System 6 in three. `bt=off wifi=off` keep the real drivers from touching QEMU's
