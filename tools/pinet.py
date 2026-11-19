@@ -691,6 +691,7 @@ if mode == 'tap':
 off = os.path.getsize(tx_path)
 print(f"pinet: {mode} on {base} (tx offset {off})", flush=True)
 buf = b''
+last_frame = 0.0
 while True:
     with open(tx_path, 'rb') as f:
         f.seek(off); data = f.read()
@@ -717,4 +718,7 @@ while True:
                 send(frame)
         except BlockingIOError:
             pass
-    time.sleep(0.01)
+    # an instant peer while frames flow (so the testbed's round trips measure the Pi and the Mac,
+    # not this loop: its 10 ms sleep was most of a ping's time, 19 November), 10 ms when quiet
+    if data: last_frame = time.monotonic()
+    time.sleep(0.0005 if time.monotonic() - last_frame < 2.0 else 0.01)

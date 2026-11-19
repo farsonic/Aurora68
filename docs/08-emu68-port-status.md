@@ -1092,6 +1092,31 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    duplex" (or "no link: is the cable in?"), and every 15 s "[ETH]   LAN9514: running, link 100 full,
    rx N frames ... tx N ...".
 
+   *First results on the Pi, and the fixed delays (19 November, evening).* The user's Pi 3B (test
+   set 3, 1df6f2a, solo board, 1920 by 1200 in millions of colours): **the LAN9514 wired port
+   works**, the first real proof of `psmac_usbnet.c`. A ping took about 20 ms over the wire and
+   still about 80 over the WiFi, to the router and to hosts on the Internet alike: the delay is all
+   inside the Pi and the Mac. In the testbed, with the host peer made instant (pinet slept 10 ms per
+   loop, which had been most of a testbed ping; it now polls every half millisecond while frames
+   flow), the kernel's part of an echo (the Mac's frame taken from the ring, sent, the reply back,
+   taken by the Mac) was 0.4 to 2.4 ms on both paths, under QEMU's emulated cores. The Riptide
+   Terminal's ping showed the rest: with the Riptide of the afternoon the Mac's side of each echo
+   was either about 5 ms or about 16 ms (5.1, 6.0, 7.0, 15.7, 16.5, 16.2, 22.4 ...), the second
+   group one tick. A program waiting in Riptide (ping in recv) sits in WaitNextEvent with a sleep of
+   one tick; the reply set its sleeper's flag but nothing woke the process, so it ran at the next
+   tick. Riptide now calls WakeUpProcess for a waiting program's process when it wakes the sleeper
+   (allowed at interrupt time), and the Mac's side became 4.0 to 8.2 ms for most echoes (outliers
+   to 19 ms remain, other processes' turns), the floor being QEMU's slow emulation of the 68k; on
+   the Pi it should be well under a millisecond. That accounts for most of the wired 20 ms. For the
+   WiFi's extra 60 ms the likeliest cause is the radio's power saving: the kernel sets PM 0 before
+   joining, but the firmware may take up its own on associating (Linux sets it again after every
+   connect), and with PM_FAST the radio dozes between beacons once idle, the access point holding
+   each reply until the next beacon. The kernel now reads PM back after the join, sets it to 0 if
+   it is not, and logs `[WIFI] power save: PM N after joining ...`. Neither change is proved on the
+   Pi yet; the `[NET] echo` lines (out->back is the chip, the air and the router; took->out and
+   back->mac the kernel) and the service-loop line will say. The card loader of 1df6f2a reads four
+   sectors per turn of the loop (about 170 us); the service-loop line's "card" figure is its share.
+
 50. **Booting fast: the Pi as the SE's processor (19 November).** The user: "when this is dropped
    into a Mac SE with this acting as the CPU it needs to boot super fast to be ready for the Mac."
    From the moment the SE is switched on nothing happens on it until the Pi's firmware has read its

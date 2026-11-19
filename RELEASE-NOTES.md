@@ -63,7 +63,10 @@
   which part of the service loop took longest. The big screen's picture is now converted a band at
   a time, a millisecond or so per turn of the loop, instead of 20 ms in one go at 1920 by 1200,
   which held up the WiFi, the disk and the network board's interrupt (the 80 ms pings to the
-  router on the user's Pi 3B at 1920 by 1200).
+  router on the user's Pi 3B at 1920 by 1200). The WiFi's power saving is now checked after every
+  join and switched off if the firmware took it up (`[WIFI] power save: PM ...` in the log): with it
+  on, the access point holds each reply until the next beacon. With Riptide's own fix (a waiting
+  program is woken at once, not at the next tick) the wired port's 20 ms should drop to a few.
 
 - **Booting faster.** From power-on to the Mac's first instruction, and from there to the Finder,
   is now much shorter (docs/08 item 50 has the timeline):

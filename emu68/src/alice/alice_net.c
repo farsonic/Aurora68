@@ -1394,6 +1394,20 @@ static void conn_tick(void)
             link_set(1);
             wstate(AN_ST_CONNECTED, m);
             wifi_log("channel %u, %d dBm, %d Mbit/s\n", W.cur.channel, W.rssi, W.rate);
+#ifdef PSMAC
+            /* The power-save mode is set before the join, but the firmware may take up its own on
+               associating (Linux sets it again after every connect). With PM_FAST the radio dozes
+               between beacons once the link has been idle a moment, and the access point keeps a
+               reply until the next beacon: tens of milliseconds on every ping a second apart, the
+               80 ms the user's Pi 3B showed on 19 November. Read it back and put it right. */
+            {
+                uint32_t pm = 99, want = (U(0)->cfg_flags & AN_WC_POWERSAVE) ? 2 : 0;
+                cmd_get_int(85 /* WLC_GET_PM */, &pm);
+                if (pm != want)
+                    cmd_int(WLC_SET_PM, want);
+                wifi_log("power save: PM %u after joining%s\n", pm, pm != want ? (want ? ", set to 2" : ", set to 0 (off)") : " (as wanted)");
+            }
+#endif
         } else if ((int32_t)(now - W.join_t0) > 20000)
             retry(W.ev_link_up || W.ev_assoc_ok ? "associated, but the WPA handshake did not finish: is the password right?" : "the network did not answer");
         break;
