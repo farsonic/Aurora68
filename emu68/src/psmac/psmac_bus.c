@@ -1088,14 +1088,31 @@ void fastSerial_init(void) {}
    to the PL011 instead so the QEMU/serial console keeps working. */
 #define PL011_BASE (PERIPH_VA + 0x201000)
 static int con_mini;                    /* the log goes to the mini UART: Bluetooth has the PL011 (bt_pi.c) */
+/* A UART that does not send. On a Pi 3 with Bluetooth on the PL011 (no disable-bt overlay, the
+   release's config.txt) the firmware leaves the PL011 switched off, so its FIFO stays full and every
+   character waited the whole bound below, 7 to 10 ms on a Pi 3B: the 2 KB the kernel prints before
+   the service core takes the log over held the boot for 15 seconds, most of it between "kernel
+   moved" and "cores 1-3 started" (the user's log, 20 November 2026). Now one such wait marks the
+   UART stuck, and from then on a character goes to it only if it has room at that moment, until it
+   sends again. The HDMI screen and the Mac's log window get every character either way.
+   mac.deaduart=1 makes the testbed's UART look full to the kernel (it still prints, so the log can
+   be read); mac.deaduart=2 also waits for every character as the kernel used to, to measure it. */
+static int con_stuck, con_dead_test = -1;
+static int con_room(void)
+{
+    if (con_dead_test < 0 && dt_find_node("/")) { const char *o = psmac_option("mac.deaduart"); con_dead_test = o ? o[0] - '0' : 0; }
+    int room = con_mini ? (rd32le(AUX_MU_LSR) & 0x20) != 0 : !(rd32le(PL011_BASE + 0x18) & (1 << 5));
+    return room && con_dead_test <= 0;                      /* the test still reads the port: the wait costs what it did */
+}
 static void con_send(uint8_t c)
 {
     /* bounded wait: a wedged UART must never deadlock the emulation (the console lock is shared by all cores) */
-    if (con_mini) { for (int i = 0; i < 100000 && !(rd32le(AUX_MU_LSR) & 0x20); i++) ; wr32le(AUX_MU_IO, c); return; }
-    for (int i = 0; i < 100000 && (rd32le(PL011_BASE + 0x18) & (1 << 5)); i++) ;
-    wr32le(PL011_BASE, c);
+    if (!con_stuck || con_dead_test == 2)
+        for (int i = 0; i < 100000 && !con_room(); i++) ;
+    if (!con_room()) { con_stuck = 1; if (con_dead_test <= 0) return; }   /* the testbed's port still prints, to be read */
+    else con_stuck = 0;
+    if (con_mini) wr32le(AUX_MU_IO, c); else wr32le(PL011_BASE, c);
 }
-static int con_room(void) { return con_mini ? (rd32le(AUX_MU_LSR) & 0x20) != 0 : !(rd32le(PL011_BASE + 0x18) & (1 << 5)); }
 /* The serial line runs at 115200 baud, 11.5 characters a millisecond, and every kprintf used to wait
    for it: the 6 KB the kernel prints before the 68k starts held the boot for half a second on real
    hardware, and the service core's heartbeat stopped the bus for a sixth of a second every five
@@ -1129,7 +1146,12 @@ static void con_putc(uint8_t c)
     __asm__ volatile("dmb ish" ::: "memory");
     con_head++;
 }
-static void con_start_async(void) { const char *o = psmac_option("mac.synclog"); if (!o || o[0] != '1') __atomic_store_n(&con_async, 1, __ATOMIC_RELEASE); }
+static void con_start_async(void)
+{
+    const char *o = psmac_option("mac.synclog");
+    if (!o || o[0] != '1') __atomic_store_n(&con_async, 1, __ATOMIC_RELEASE);
+    if (con_stuck) kprintf("[PSMAC] the serial port is not sending (on a Pi 3 the PL011 belongs to Bluetooth until it starts): the log is on the screen and in PiLog\n");
+}
 /* the service core's loop: a few characters per turn, never waiting on the UART */
 static void con_drain(void)
 {
@@ -1148,7 +1170,7 @@ void psmac_console_miniuart(void)
     uint32_t core = get_clock_rate(4);                                  /* CORE */
     if (core < 100000000u) core = 250000000u;
     spinlock_acquire(&con_lock);                                        /* the ring's sender stays off the PL011 from here */
-    for (int i = 0; i < 100000 && (rd32le(PL011_BASE + 0x18) & (1 << 3)); i++) ;   /* the PL011 drains what it has */
+    for (int i = 0; i < 100000 && !con_stuck && (rd32le(PL011_BASE + 0x18) & (1 << 3)); i++) ;   /* the PL011 drains what it has */
     extern spinlock_t psmac_gpfsel_lock;
     spinlock_acquire(&psmac_gpfsel_lock);
     uint32_t f = rd32le(PERIPH_VA + 0x200004);                          /* GPFSEL1: GPIO 14, 15 to ALT5 (TXD1, RXD1) */

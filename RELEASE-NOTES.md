@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Booting 15 seconds faster on a Pi 3 with Bluetooth.** The kernel waited at every character of
+  its log for a serial port that does not send (the Pi 3's PL011 belongs to Bluetooth), and that
+  was most of the time the firmware's rainbow screen stayed up: the 68k started at 19 s. It now
+  stops waiting after the first try; expect the 68k about half a second after the kernel starts.
 - **PiLog saves the log as text, and the kernel keeps it on the card.** Instead of photographing
   the window: File > Save Log (Command-S) writes the lines shown, with the parts and the filter, to
   a TeachText document named "PiLog <date> <time>" (Option for the whole log; TeachText opens up

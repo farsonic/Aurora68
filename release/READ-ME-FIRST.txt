@@ -247,6 +247,8 @@ the container before the kernel starts, at 10 to 20 MB a second on a Pi 3, so a 
     repository (smaller firmware; without those two files the Pi does not start).
   - cmdline.txt for the SE: "enable_cache mac.board=se" plus the wifi.* and bt.* words you use.
     mac.console=hdmi is fine: the log no longer holds the boot up.
+    Nor does a serial port that does not send: on a Pi 3 with Bluetooth on the PL011 the kernel
+    used to wait for it at every character, 15 seconds of the rainbow screen before the 68k.
   - The bench: the same container with the declaration ROM for your screen, the disk image
     on the card, "enable_cache mac.board=solo mac.screen=WxH ..." in cmdline.txt.
 The kernel's log says how long each step took: "[BOOT] t=N.NNNs what", t counted from power-on.

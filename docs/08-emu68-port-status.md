@@ -1513,6 +1513,41 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    "cmdline.txt gives wifi.psk= more than once: the first is used, wifi.psk=***; wifi.psk=*** is
    ignored".
 
+58. **Fifteen seconds of rainbow: the kernel waited for a serial port that does not send (20
+   November).** The user's Pi 3B (447febf, one image on the card, a 1 MB container) showed the
+   firmware's rainbow screen for about ten seconds, and its timeline had the 68k released at
+   18.96 s: kernel entry 2.77 s (the firmware's part, fine), MMU and peripherals 3.48 s, "kernel
+   moved to the top of RAM" 10.43 s (7.0 s), "cores 1-3 started" 18.40 s (8.0 s), then the ARM
+   clock, the splash and the container in half a second. Neither step does anything slow: moving
+   the kernel is a 64 MB copy with the caches on (KERNEL_SYS_PAGES, 32 blocks of 2 MB), and waking a core is a `sev` and a lock the core
+   clears at once. What they have in common is the log. Between "MMU" and "kernel moved" the
+   kernel prints about 960 characters, between "kernel moved" and "cores started" about 820, and
+   7.3 and 9.8 ms per character is what `con_send`'s bounded wait costs when the UART never takes
+   a byte: 100,000 reads of the PL011's flag register. On a Pi 3 with Bluetooth on the PL011 (the
+   release's config.txt has no disable-bt overlay) the firmware leaves the PL011 switched off, so
+   its FIFO stays full and every character waited the whole bound, until the service core's ring
+   (item 50) took the log over just before the splash. Item 50's figure (half a second for 6 KB
+   at 115200 baud) assumed a port that sends.
+   - *Fixed* (`psmac_bus.c`): one full wait marks the UART stuck, and from then on a character goes
+     to it only if it has room at that moment; the first character it takes again clears the mark.
+     The service core says so once: "the serial port is not sending ...: the log is on the screen
+     and in PiLog". The screen, PiLog and aurora68.log get every character either way. The mini
+     UART's path is the same code.
+   - *Measured* in QEMU, whose PL011 always sends, with a test option: `mac.deaduart=1` makes the
+     port look full to the kernel (it still prints, so the log can be read) and `mac.deaduart=2`
+     also waits at every character as the kernel used to. QEMU's register read is slower than the
+     Pi's (22 ms per character), and the same two phases grew as on the user's Pi: with
+     `mac.deaduart=2` MMU at 2.38 s, "kernel moved" at 25.26 s, "cores 1-3 started" at 49.58 s;
+     with `mac.deaduart=1` the same phases at 0.04, 0.33 and 0.34 s and the 68k released at
+     0.41 s, as with a working port (0.40 s).
+   - *Expected on the Pi 3B:* the 68k about half a second after kernel entry, near 3.5 s from
+     power-on instead of 19, and the Finder about 15 s earlier. The rest is the firmware (2.8 s,
+     most of it reading the card) and the Mac's own start (2 s to the first SCSI read, 5 s more to
+     the Finder on the user's Pi). Raising the ARM clock earlier is not worth doing now: what runs
+     before it is the kernel's own setup, a few milliseconds without the waits.
+   - Nothing else waits early: the kernel's `[BOOT]` marks between kernel entry and the 68k cover
+     every step, and in QEMU with `mac.deaduart=1` they add up to 0.4 s.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

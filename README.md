@@ -134,6 +134,7 @@ One line, options separated by spaces, no comments:
 | `mac.image=NAME` | the disk images on the card, files of their own beside the container: by default every file in the card's root ending in `.hda`, `.img`, `.image`, `.hfv` or `.dsk` (not `kernel*.img`), in the order they were copied there, up to four; `mac.image=A.hda,B.img` names them, `mac.image=off` takes none. Used only when the container has no disk image (below, "Booting fast") |
 | `mac.disks=scsi` | on the solo board every disk image is a SCSI disk. By default the first is SCSI ID 0, the startup disk, and every further one a PiDisk volume, which mounts by itself; an Apple-partitioned image is served as its first HFS partition (docs/08 item 52) |
 | `mac.synclog=1` | send every log character to the serial line before going on, as the kernel used to (by default the service core sends the log from a ring, so the 115200 baud line no longer holds the kernel up) |
+| `mac.deaduart=1` | testbed only: the serial port looks full to the kernel, as the Pi 3's PL011 does when Bluetooth has it (it still prints); `=2` also waits for every character as the kernel used to (docs/08 item 58) |
 | `mac.cardslow=N`, `mac.cardstall=S` | testbed only: N microseconds more per card sector read (a slow card), and core 3 kept away from the card for S seconds once a disk image starts coming in (docs/08 item 54) |
 | `mac.scsi0=PATH` | testbed only: a host disk image for the solo board's SCSI ID 0 (`mac.scsi1=` ... `mac.scsi6=`), with `mac.semihost=1` for host file access without the MAME bridge. On hardware the images come from the container |
 | `mac.solotrace=N` | the solo board's first N SCSI commands and ADB commands in the log |
@@ -159,6 +160,8 @@ entry", is the firmware's part). docs/08 item 50 has the measurements.
   card (the cut-down firmware; without them the Pi does not start).
 - **cmdline.txt for the SE:** `enable_cache mac.board=se` and the `wifi.`/`bt.` words you use. For
   the bench: `enable_cache mac.board=solo mac.screen=WxH` with the declaration ROM of that size.
+- **The serial port:** the kernel no longer waits for a serial port that does not send. On a Pi 3
+  with Bluetooth on the PL011 that wait was 15 seconds of the firmware's rainbow screen.
 - **The ROM:** the patch (rom/patches/iici.json, applied by the kernel and by make-container.py)
   skips the IIci ROM's memory test (it tests the Pi's memory, which cannot fail as SIMMs do),
   shortens the startup chime nobody hears, and waits 10 ms instead of 250 at each empty SCSI ID.
