@@ -408,9 +408,10 @@ static uint8_t sector_buf[64 * 1024] __attribute__((aligned(64)));
 void psmac_image_add(const char *name, uint8_t *data, uint32_t len)
 {
     if (ndisk >= 7 || len < 1024) return;
-    struct disk *d = &disks[ndisk++];
+    struct disk *d = &disks[ndisk];
     int k = 0; while (name[k] && k < 47) { d->name[k] = name[k]; k++; } d->name[k] = 0;
     d->ram = data; d->fd = -1; d->blocks = len / 512; d->writable = 1;
+    __atomic_store_n(&ndisk, ndisk + 1, __ATOMIC_RELEASE);   /* complete before it is seen: a disk image on the card arrives from core 3 (psmac_card.c) */
 }
 int psmac_image_count(void) { return ndisk; }
 int psmac_image_get(int i, const char **name, uint8_t **data, uint32_t *blocks)
@@ -551,6 +552,8 @@ static void execute(void)
     if (!cnt) { set_phase(PH_STATUS); return; }
     int write = (op == 0x0a || op == 0x2a);
     if (write && !d->writable) { check_condition(7, 0x27); set_phase(PH_STATUS); return; }
+    { static int first = 1; if (first && !write) { first = 0; psmac_boot_mark("SCSI: first read, ID %d block %u (%u blocks): the disk's driver or boot blocks", t.id, lba, cnt); } }
+    if (d->ram) { extern void psmac_card_need(const void *, uint32_t); psmac_card_need(d->ram + (uint64_t)lba * 512, cnt * 512); }   /* an image still coming in from the card */
     if (d->ram) { t.buf = d->ram + (uint64_t)lba * 512; t.buf_len = cnt * 512; t.buf_pos = 0; t.left = 0; t.chunked = 0; if (write) { d->writes += cnt; t.wr_ram = t.buf; t.wr_len = cnt * 512; } else d->reads += cnt; }
     else { t.left = cnt * 512; t.lba = lba; t.chunked = 1; if (write) { uint32_t nb = cnt > sizeof(sector_buf) / 512 ? sizeof(sector_buf) / 512 : cnt; t.buf = sector_buf; t.buf_len = nb * 512; t.buf_pos = 0; t.left -= nb * 512; } else next_chunk(0); if (t.phase == PH_STATUS) return; }
     set_phase(write ? PH_DATAOUT : PH_DATAIN);
@@ -617,7 +620,9 @@ static void advance(void)
 static void try_select(void)
 {
     if (t.phase != PH_FREE || !(n.icr & 0x04) || (n.icr & 0x08) || !(n.icr & 0x01) || (n.icr & 0x80)) return;
-    for (int i = 0; i < ndisk; i++) {
+    { static int first = 1; if (first && !ndisk) { extern void psmac_card_scan_wait(void); psmac_card_scan_wait(); } first = 0; }   /* no disk yet: a disk image on the card? wait for the card's first look */
+    int nd = __atomic_load_n(&ndisk, __ATOMIC_ACQUIRE);
+    for (int i = 0; i < nd; i++) {
         if (!(n.odr & (1u << i))) continue;
         t.d = &disks[i]; t.id = i; t.cdb_n = 0; t.cdb_len = 6; t.status = 0;
         n.aip = 0;
@@ -812,7 +817,7 @@ void psmac_solo_init(void)
 void psmac_solo_start(void)
 {
     if (!psmac_board_solo) return;
-    kprintf("[PSMAC:SOLO] %d SCSI disk%s%s\n", ndisk, ndisk == 1 ? "" : "s", ndisk ? ":" : " (put a *.img, *.hda or *.image file in the container)");
+    kprintf("[PSMAC:SOLO] %d SCSI disk%s%s\n", ndisk, ndisk == 1 ? "" : "s", ndisk ? ":" : " (put a *.img, *.hda or *.image file in the container, or on the card beside it)");
     for (int i = 0; i < ndisk; i++) kprintf("[PSMAC:SOLO]   SCSI %d: %s, %u blocks (%u MB)%s%s\n", i, disks[i].name, disks[i].blocks, disks[i].blocks / 2048, disks[i].ram ? ", in RAM (changes last until power off)" : ", host file", disks[i].writable ? "" : ", read-only");
 }
 void psmac_solo_options(const char *args)

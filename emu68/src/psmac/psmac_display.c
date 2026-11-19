@@ -58,6 +58,7 @@ static int con_keep;                          /* the HDMI console (below): mac.c
 static int con_off;                           /* the picture has the buffer */
 static uint32_t con_x, con_y, con_cols, con_rows;
 static unsigned tick_div;
+static int vc_fresh;                          /* the buffer was made moments ago and nothing has drawn the picture in it */
 
 void psmac_display_init(uint8_t *win)
 {
@@ -81,6 +82,7 @@ void psmac_display_init(uint8_t *win)
     if (framebuffer) vcfb = (uint8_t *)(KERNEL_ALIAS + (((uintptr_t)framebuffer) & 0x3fffffffull));
     if (vcfb) for (uint32_t i = 0; i < vc_pitch * vc_h; i += 8) *(uint64_t *)(vcfb + i) = 0;
     con_cols = 0; con_x = 0; con_y = 0;                        /* the console starts again in the new buffer */
+    vc_fresh = 1;
 
     disp->width = w; disp->height = h; disp->depth = 1;
     disp->fb_off = PSMB_OFF_BOUNCE; disp->fb_size = PSMB_BOUNCE_SIZE;
@@ -126,6 +128,10 @@ static void vc_byte_order(void)
 void psmac_display_reinit(void)
 {
     if (!vc_w || !vc_h) return;
+    /* The ROM's first RESET comes moments after psmac_display_init made and cleared this very
+       buffer; asking the firmware for it again held the 68k's first instruction for a mailbox
+       round trip and a clear of up to 9 MB (docs/08 item 50). A Restart's RESET still remakes it. */
+    if (vc_fresh) { vc_fresh = 0; return; }
     void *fb = 0; uint32_t p = 0;
     psmac_vc_setup(vc_w, vc_h, vc_bpp, &fb, &p);
     if (fb && p) { framebuffer = fb; pitch = p; vc_pitch = p; vcfb = (uint8_t *)(KERNEL_ALIAS + (((uintptr_t)fb) & 0x3fffffffull)); }

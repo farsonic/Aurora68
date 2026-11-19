@@ -3471,6 +3471,7 @@ void do_reset()
 #ifdef PSMAC
     /* the Macintosh's second display owns the VideoCore buffer (psmac_display.c) */
     extern void psmac_display_reinit(void);
+    { extern void psmac_boot_mark(const char *, ...); static int first = 1; if (first) { first = 0; psmac_boot_mark("68k: RESET instruction (the ROM's first act)"); } }
     psmac_display_reinit();
 #else
     struct Size sz = get_display_size();

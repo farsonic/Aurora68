@@ -99,10 +99,18 @@ static void blk_add_ram(const char *name, uint8_t *data, uint32_t blocks)
     int k = 0; while (name[k] && k < 47) { b->name[k] = name[k]; k++; } b->name[k] = 0;
     nbdev++;
 }
+/* a disk image found on the card after the 68k started (psmac_card.c, core 3: this core) */
+void psmac_mbox_add_disk(const char *name, uint8_t *data, uint32_t blocks)
+{
+    blk_add_ram(name, data, blocks);
+    blk_publish();
+    kprintf("[PSMAC:MBOX] block%d: %s, %u blocks (%u MiB), from the card\n", nbdev - 1, name, blocks, blocks / 2048);
+}
 static int blk_xfer(int write, struct blkdev *b, uint32_t lba, uint32_t count, uint32_t buf)
 {
     if ((uint64_t)lba + count > b->blocks) return PSMB_E_RANGE;
     if (write && !b->writable) return PSMB_E_RO;
+    if (b->ram) { extern void psmac_card_need(const void *, uint32_t); psmac_card_need(b->rambase + (uint64_t)lba * 512, count * 512); }   /* still coming in from the card? */
     while (count) {
         uint32_t n = count > sizeof(sector_buf) / 512 ? sizeof(sector_buf) / 512 : count;
         if (b->ram) {
@@ -227,7 +235,7 @@ static void run_cmd(int idx, uint16_t type, volatile uint8_t *c)
         if (cmd == PSMB_INFO_PING) result = ~a0;
         else if (cmd == PSMB_INFO_LOG) {
             char tmp[128]; uint32_t n = len > 127 ? 127 : len;
-            if (mac_copy(buf, tmp, NULL, n, 0) == 0) { tmp[n] = 0; kprintf("[MAC] %s\n", tmp); xfer = n; } else status = PSMB_E_BADADDR;
+            if (mac_copy(buf, tmp, NULL, n, 0) == 0) { tmp[n] = 0; kprintf("[MAC] %s\n", tmp); psmac_boot_mac_line((const char *)tmp); xfer = n; } else status = PSMB_E_BADADDR;
         } else if (cmd == PSMB_INFO_TIME) result = 0;
         else if (cmd == PSMB_INFO_SETOPT) {
             extern int psmac_card_edit_options(const char *, uint32_t);
@@ -241,7 +249,8 @@ static void run_cmd(int idx, uint16_t type, volatile uint8_t *c)
         if (cmd == PSMB_BLK_INFO) { blk_publish(); result = nbdev; break; }
         if (a0 >= (uint32_t)nbdev) { status = PSMB_E_BADDEV; break; }
         struct blkdev *b = &bdev[a0];
-        if (cmd == PSMB_BLK_READ)       { status = blk_xfer(0, b, a1, a2, buf); if (!status) { xfer = a2 * 512; extern uint32_t psmac_icache_epoch; psmac_icache_epoch++; } }
+        if (cmd == PSMB_BLK_READ)       { static int first = 1; if (first) { first = 0; psmac_boot_mark("PiDisk: first block read (device %u, block %u)", a0, a1); }
+                                          status = blk_xfer(0, b, a1, a2, buf); if (!status) { xfer = a2 * 512; extern uint32_t psmac_icache_epoch; psmac_icache_epoch++; } }
         else if (cmd == PSMB_BLK_WRITE) { status = blk_xfer(1, b, a1, a2, buf); if (!status) xfer = a2 * 512; }
         else if (cmd == PSMB_BLK_FLUSH || cmd == PSMB_BLK_EJECT) status = 0;
         else status = PSMB_E_BADCMD;
@@ -322,20 +331,42 @@ int psmac_mbox_poll(void)
 
 /* The IIci ROM's timing calibration (TimeDBRA, TimeSCCDB, TimeSCSIDB, TimeVIADB: loop iterations
    per millisecond) is meaningless under a JIT: the CPU loop overflows 16 bits and the bus loops
-   measure the bridge. The patched ROM takes the values from here instead. TimeDBRA stays large (the
-   OS re-probes it); the bus loops get the real bridge rate so that SCSI and VIA timeouts, which are
-   counted in bus accesses, keep their intended duration. */
+   measure the bridge. The patched ROM takes the values from here instead. The bus loops get the
+   real bridge rate so that SCSI and VIA timeouts, which are counted in bus accesses, keep their
+   intended duration.
+   TimeDBRA was 0x7FFF, "large", until 19 November. But every self-looping dbf costs one read of the
+   system timer per turn since docs/08 item 27 (M68k_LINE5.c, mac.dbfslow), so a delay the ROM
+   counts in TimeDBRA turns lasted 0x7FFF reads per millisecond asked: the half second the SCSI
+   Manager waits after resetting the bus took 23 s under QEMU and, at a tenth of a microsecond or
+   more per read, one and a half seconds or more on a Pi 3 (docs/08 item 50). The rate is measured
+   now, a few thousand reads of the same counter, so those delays last what the ROM meant. */
+static uint32_t dbf_turns_per_ms(void)
+{
+    extern uint32_t psmac_dbf_slow;
+    if (!psmac_dbf_slow) return 0x7fff;                  /* mac.dbfslow=0: the loops are free, "large" it is */
+    volatile uint32_t *clo = (volatile uint32_t *)(uintptr_t)(PSMAC_PERIPH_HI + 0x3004);
+    uint32_t sink = 0;
+    uint64_t t0 = cnt_now();
+    for (int i = 0; i < 4096; i++) sink += *clo;
+    uint64_t dt = cnt_now() - t0;
+    (void)sink;
+    uint64_t per_ms = dt ? (uint64_t)4096 * (cnt_frq() / 1000) / (dt * psmac_dbf_slow) : 0x7fff;
+    if (per_ms < 64) per_ms = 64;
+    if (per_ms > 0x7fff) per_ms = 0x7fff;
+    return (uint32_t)per_ms;
+}
 void psmac_mbox_set_calib(uint32_t bus_latency_us)
 {
     if (!win) return;
     uint32_t per_ms = bus_latency_us ? 1000 / bus_latency_us : 2000;
     if (per_ms < 16) per_ms = 16;
     if (per_ms > 0xffff) per_ms = 0xffff;
+    uint32_t dbra = dbf_turns_per_ms();
     volatile uint8_t *t = win + PSMB_OFF_CALIB;
     const uint16_t addr[4] = { 0xd00, 0xd02, 0xb24, 0xcea };
-    const uint16_t val[4]  = { 0x7fff, (uint16_t)per_ms, (uint16_t)per_ms, (uint16_t)per_ms };
+    const uint16_t val[4]  = { (uint16_t)dbra, (uint16_t)per_ms, (uint16_t)per_ms, (uint16_t)per_ms };
     for (int i = 0; i < 4; i++) { wr16(t + 4 * i, addr[i]); wr16(t + 4 * i + 2, val[i]); }
-    kprintf("[PSMAC:MBOX] calibration table: TimeDBRA 0x7fff, bus loops %u per ms (%u us per access)\n", per_ms, bus_latency_us);
+    kprintf("[PSMAC:MBOX] calibration table: TimeDBRA %u (dbf turns per ms, measured), bus loops %u per ms (%u us per access)\n", dbra, per_ms, bus_latency_us);
 }
 
 void psmac_mbox_heartbeat(void)

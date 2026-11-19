@@ -57,5 +57,14 @@ void     psmac_mmu_set_slot(uintptr_t win_phys, uintptr_t declrom_phys);
 void     psmac_mbox_init(uintptr_t window_phys, uintptr_t ram_phys, uint32_t ram_size);
 int      psmac_mbox_poll(void);
 void     psmac_mbox_heartbeat(void);
+/* the boot timeline (psmac_boot.c): "[BOOT] t=N.NNNs what", t from power-on on real hardware */
+void     psmac_boot_entry(void);
+void     psmac_boot_peripherals(void);
+void     psmac_boot_console(void);
+void     psmac_boot_mark(const char *fmt, ...);
+uint64_t psmac_boot_now_us(void);
+void     psmac_boot_pc(uint32_t pc);
+void     psmac_boot_mac_line(const char *text);
+void     psmac_boot_curapname(const uint8_t *pascal_name);
 
 #endif

@@ -311,6 +311,7 @@ if (${VARIANT} IN_LIST SUPPORTED_VARIANTS)
                     src/psmac/psmac_board_se.c
                     src/psmac/psmac_board_solo.c
                     src/psmac/psmac_card.c
+                    src/psmac/psmac_boot.c
                     src/alice/alice_psmac.c
                     src/alice/alice_net.c
                     src/alice/alice_status.c

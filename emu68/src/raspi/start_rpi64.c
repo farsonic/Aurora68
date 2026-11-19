@@ -696,6 +696,9 @@ void platform_post_init()
                     MMU_ACCESS | MMU_ISHARE | MMU_ALLOW_EL0 | MMU_ATTR_WRITETHROUGH, 0);
     }
 
+#ifdef PSMAC
+    { extern void psmac_boot_mark(const char *, ...); psmac_boot_mark("ARM clock set, VideoCore memory mapped"); }
+#endif
     display_logo();
 
 #ifdef PISTORM_ANY_MODEL

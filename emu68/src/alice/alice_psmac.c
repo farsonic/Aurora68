@@ -157,6 +157,27 @@ int psmac_eth_testbed_poll(volatile struct an_unit *u)
             kprintf("[ETH] unit 1 is the testbed file bridge (no GENET in QEMU)\n");
         }
     }
+    /* mac.netdown=S1[,S2]: the bridge's cable is pulled S1 seconds after the Pi started and put
+       back at S2 (the testbed's way to show a stack failing over to the WiFi, docs/08 item 49) */
+    if (tb_active > 0) {
+        static int nd_parsed; static uint32_t nd_down, nd_up;
+        if (!nd_parsed) {
+            extern const char *psmac_option(const char *);
+            const char *o = psmac_option("mac.netdown");
+            nd_parsed = 1;
+            for (; o && *o >= '0' && *o <= '9'; o++) nd_down = nd_down * 10 + (uint32_t)(*o - '0');
+            if (o && *o == ',') for (o++; *o >= '0' && *o <= '9'; o++) nd_up = nd_up * 10 + (uint32_t)(*o - '0');
+        }
+        uint32_t t = (uint32_t)(in_now() / in_hz());
+        int want = !(nd_down && t >= nd_down && (!nd_up || t < nd_up));
+        if (want != (int)u->link && u->state != AN_ST_OFF) {
+            u->link = (uint32_t)want;
+            u->speed_mbps = want ? 100 : 0;
+            if (!want) u->link_downs++;
+            tb_state(u, want ? AN_ST_CONNECTED : AN_ST_IDLE, want ? "testbed Ethernet: cable back in (mac.netdown)" : "testbed Ethernet: cable pulled (mac.netdown)");
+            kprintf("[ETH] testbed bridge: link %s at %u s (mac.netdown)\n", want ? "up" : "down", t);
+        }
+    }
     if (!tb_active) return 0;
     /* commands */
     if (u->cmd_seq != u->cmd_done) {
@@ -186,7 +207,7 @@ int psmac_eth_testbed_poll(volatile struct an_unit *u)
     while (u->tx_tail != u->tx_head) {
         volatile struct an_slot *s = (volatile struct an_slot *)(board + AN_OFF_TX(1) + (u->tx_tail % AN_TX_SLOTS) * AN_SLOT_BYTES);
         uint32_t len = s->len;
-        if (len >= 14 && len <= AN_SLOT_BYTES - 8) {
+        if (len >= 14 && len <= AN_SLOT_BYTES - 8 && u->link) {
             for (uint32_t i = 0; i < len; i++) tb_buf[i] = s->data[i];
             if (psmac_netfile_send(0, tb_buf, len)) { u->tx_pkts++; u->tx_bytes += len; } else u->tx_err++;
         } else u->tx_err++;
@@ -197,7 +218,7 @@ int psmac_eth_testbed_poll(volatile struct an_unit *u)
     for (int budget = 0; budget < 8; budget++) {
         int len = psmac_netfile_recv(0, tb_buf, AN_SLOT_BYTES - 8);
         if (len <= 0) break;
-        if (!tb_rx_on) { u->rx_drop++; continue; }
+        if (!tb_rx_on || !u->link) { u->rx_drop++; continue; }
         int bcast = tb_buf[0] == 0xff && tb_buf[1] == 0xff && tb_buf[2] == 0xff && tb_buf[3] == 0xff && tb_buf[4] == 0xff && tb_buf[5] == 0xff;
         int mcast = (tb_buf[0] & 1) && !bcast;
         int mine = tb_promisc || bcast || (mcast && tb_allmulti) ||
@@ -726,12 +747,22 @@ int psmac_slot_line_now(void)
     return (net_line && nh->irq) || (inr && inr->attached && inr->head != inr->tail) || psmac_display_irq();
 }
 
+/* core 1: the USB controller's start, which takes about a second (power, reset, the first
+   enumeration behind the hub), away from core 3's loop, whose mailbox, card and display services
+   the Mac needs from its first instruction; core 3 polls the devices once it is done */
+void psmac_alice_core1(void)
+{
+    while (!__atomic_load_n(&alice_ready, __ATOMIC_ACQUIRE)) __asm__ volatile("yield");
+    { extern void psmac_usb_start(void); psmac_usb_start(); }
+    psmac_boot_mark("core 1: USB started");
+}
+
 /* core 3: the Alice68 services plus the mailbox services, for ever */
 void __attribute__((noreturn)) psmac_alice_core(void)
 {
     while (!__atomic_load_n(&alice_ready, __ATOMIC_ACQUIRE)) __asm__ volatile("yield");
     kprintf("[PSMAC] core 3: Alice68 services (network board, Bluetooth, USB input, status) and the mailbox\n");
-    { extern void psmac_usb_start(void); psmac_usb_start(); }
+    psmac_boot_mark("core 3: the service loop begins");
     for (;;) {
         psmac_mbox_poll();
         { extern void psmac_card_poll(void); psmac_card_poll(); }        /* the Pi's own SD card: pairings, the disk image's changes (psmac_card.c) */

@@ -439,6 +439,7 @@ void psmac_check_pc(uint32_t pc)
     kprintf("\n");
 }
 
+static void con_start_async(void), con_drain(void);   /* the serial log's ring (below, beside con_putc) */
 void psmac_service_core(void)
 {
     psmac_read_options();
@@ -449,12 +450,14 @@ void psmac_service_core(void)
     if ((use_gpio || transport_none) && !bustrace_asked) psmac_trace(0);   /* the first 400 bus cycles are the testbed's diagnostic; on a bench they bury the log, and on the HDMI console they cost the ROM minutes (mac.bustrace=N asks for them) */
     kprintf("[PSMAC] service core running (%s transport owner, IPL poll %s)\n", transport_none ? "no" : use_gpio ? "GPIO" : "bridge", transport_none ? "solo" : use_gpio ? "20 kHz" : "1 kHz");
     psmac_se_start();
+    con_start_async();                        /* the serial log from a ring from now on (con_putc) */
     /* a status register read on the GPIO costs a microsecond, a bridge poll a round trip: poll accordingly */
     uint64_t period = cnt_frq() / (use_gpio ? 20000 : 1000), next_poll = cnt_now() + period;
     uint64_t hb_period = cnt_frq() * 5, next_hb = cnt_now() + hb_period; uint32_t hb_last = 0;
     uint32_t pc_last = 0; int stall_dumped = 0, exc_dumped = 0;
-    uint32_t scsi_reads = 0, scsi_reads_seen = 0; uint64_t next_epoch = 0;
+    uint32_t scsi_reads = 0, scsi_reads_seen = 0; uint64_t next_epoch = 0, next_name = 0;
     for (;;) {
+        con_drain();                              /* the serial log (con_putc), first: the bus's turns below may continue */
         if (cnt_now() > next_hb) {
             svc_phase = 3;
             kprintf("[PSMAC] heartbeat: %u bus xfers (+%u, %u berr), last %08x, ipl %d%s | via %u scc %u scsi %u asc %u swim %u rbv %u fb %u other %u | PC %08x SR %04x\n", xfer_count, xfer_count - hb_last, bus_errors, last_addr, last_ipl, transport_none ? " (solo)" : transport_dead ? " TRANSPORT DEAD" : "",
@@ -495,9 +498,15 @@ void psmac_service_core(void)
             uint32_t pc = BE32((uint32_t)(uintptr_t)__m68k_state->PC);
             if (pc != pc_last) {
                 pc_last = pc; pcring[pcring_n++ % PCRING] = pc;
+                psmac_boot_pc(pc);                 /* the boot timeline's 68k phases (psmac_boot.c) */
                 static int watched;
                 if (pcwatch && !watched && (pc & ~0xffu) == (pcwatch & ~0xffu)) { watched = 1; kprintf("[PSMAC] PC reached %08x (mac.pcwatch): trail follows\n", pc); pcring_dump(); }
             }
+        }
+        if (__m68k_state && cnt_now() > next_name) {     /* the boot timeline's "Finder is running" (psmac_boot.c) */
+            int ok1, ok2; uint32_t a = mac_rd32(0x910, &ok1), b = mac_rd32(0x914, &ok2);
+            if (ok1 && ok2) { const uint8_t n[8] = { a >> 24, a >> 16, a >> 8, a, b >> 24, b >> 16, b >> 8, b }; psmac_boot_curapname(n); }
+            next_name = cnt_now() + cnt_frq() / 10;
         }
         if (psmac_exc_flag && !exc_dumped) {
             exc_dumped = 1;
@@ -910,7 +919,9 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
     sys_memory[0].mb_Size -= (base + need) - sys_memory[0].mb_Base;
     sys_memory[0].mb_Base = base + need;
 
+    uint64_t parse_t0 = psmac_boot_now_us();
     struct container_result cont; walk_container((const uint8_t *)rom, rom_sz, &cont);
+    psmac_boot_mark("container parsed: %u KiB in %u us", rom_sz >> 10, (uint32_t)(psmac_boot_now_us() - parse_t0));
     rom = (void *)cont.rom; rom_sz = cont.rom_len;
     kprintf("[PSMAC] Mac RAM %d MiB at Pi %p, ROM at Pi %p (%d bytes from initramfs)\n", ram_size >> 20, ram_phys, rom_phys, rom_sz);
     { extern void psmac_solo_start(void); psmac_solo_start(); }      /* the solo board's disks, now that the container is read */
@@ -967,6 +978,7 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
             kprintf("[PSMAC] declaration ROM: the wired Ethernet card ($81) left out, this Pi has none that works; the WiFi is the Mac's network card\n");
     }
     psmac_mbox_init(win_phys, ram_phys, ram_size);
+    psmac_boot_mark("ROM, MMU shim, mailbox, boards and the second display's VideoCore buffer ready");
 
     /* Overlay: reset vectors come from the ROM. Copy SP/PC to RAM 0 so the generic start-up finds them. */
     memcpy((void *)(KERNEL_ALIAS + ram_phys), romk, 8);
@@ -1051,12 +1063,54 @@ void fastSerial_init(void) {}
    to the PL011 instead so the QEMU/serial console keeps working. */
 #define PL011_BASE (PERIPH_VA + 0x201000)
 static int con_mini;                    /* the log goes to the mini UART: Bluetooth has the PL011 (bt_pi.c) */
-static void con_putc(uint8_t c)
+static void con_send(uint8_t c)
 {
     /* bounded wait: a wedged UART must never deadlock the emulation (the console lock is shared by all cores) */
     if (con_mini) { for (int i = 0; i < 100000 && !(rd32le(AUX_MU_LSR) & 0x20); i++) ; wr32le(AUX_MU_IO, c); return; }
     for (int i = 0; i < 100000 && (rd32le(PL011_BASE + 0x18) & (1 << 5)); i++) ;
     wr32le(PL011_BASE, c);
+}
+static int con_room(void) { return con_mini ? (rd32le(AUX_MU_LSR) & 0x20) != 0 : !(rd32le(PL011_BASE + 0x18) & (1 << 5)); }
+/* The serial line runs at 115200 baud, 11.5 characters a millisecond, and every kprintf used to wait
+   for it: the 6 KB the kernel prints before the 68k starts held the boot for half a second on real
+   hardware, and the service core's heartbeat stopped the bus for a sixth of a second every five
+   (docs/08 item 50). Once the service core's loop runs, the log goes into a ring that the loop
+   sends from, a character whenever the UART has room. A full ring is sent from by the writer
+   itself, so nothing is lost, and before the loop runs (or with mac.synclog=1) every character is
+   sent at once as before, so a kernel that dies early still says where. con_lock keeps the sender
+   and the switch to the mini UART (Bluetooth's start) apart: a stray byte on the PL011 after the
+   switch would go to the Bluetooth chip. */
+static uint8_t con_ring[16384];
+static volatile uint32_t con_head, con_tail;
+static volatile int con_async;
+static spinlock_t con_lock;
+static int con_drain_one(void)
+{
+    if (con_tail == con_head || !con_room()) return 0;
+    con_send(con_ring[con_tail % sizeof con_ring]);
+    __asm__ volatile("dmb ish" ::: "memory");
+    con_tail++;
+    return 1;
+}
+static void con_putc(uint8_t c)
+{
+    if (!__atomic_load_n(&con_async, __ATOMIC_ACQUIRE)) { spinlock_acquire(&con_lock); con_send(c); spinlock_release(&con_lock); return; }
+    while (con_head - con_tail >= sizeof con_ring) {                 /* full: send from it here */
+        spinlock_acquire(&con_lock);
+        if (con_head - con_tail >= sizeof con_ring && !con_drain_one()) { con_send(con_ring[con_tail % sizeof con_ring]); con_tail++; }
+        spinlock_release(&con_lock);
+    }
+    con_ring[con_head % sizeof con_ring] = c;
+    __asm__ volatile("dmb ish" ::: "memory");
+    con_head++;
+}
+static void con_start_async(void) { const char *o = psmac_option("mac.synclog"); if (!o || o[0] != '1') __atomic_store_n(&con_async, 1, __ATOMIC_RELEASE); }
+/* the service core's loop: a few characters per turn, never waiting on the UART */
+static void con_drain(void)
+{
+    if (con_tail == con_head || !spinlock_try_acquire(&con_lock)) return;
+    for (int i = 0; i < 16 && con_drain_one(); i++) ;
+    spinlock_release(&con_lock);
 }
 /* A Pi 3 has one PL011 and the Bluetooth half of its WiFi chip hangs off it (GPIO 30-33). When the
    Bluetooth module takes it, the kernel's log moves to the mini UART on the same header pins (GPIO
@@ -1068,6 +1122,7 @@ void psmac_console_miniuart(void)
     if (con_mini) return;
     uint32_t core = get_clock_rate(4);                                  /* CORE */
     if (core < 100000000u) core = 250000000u;
+    spinlock_acquire(&con_lock);                                        /* the ring's sender stays off the PL011 from here */
     for (int i = 0; i < 100000 && (rd32le(PL011_BASE + 0x18) & (1 << 3)); i++) ;   /* the PL011 drains what it has */
     extern spinlock_t psmac_gpfsel_lock;
     spinlock_acquire(&psmac_gpfsel_lock);
@@ -1084,6 +1139,7 @@ void psmac_console_miniuart(void)
     wr32le(AUX_MU_IIR, 0xc6);
     wr32le(AUX_MU_CNTL, 2);                                             /* transmitter only */
     con_mini = 1;
+    spinlock_release(&con_lock);
     kprintf("[PSMAC] the log continues on the mini UART (GPIO 14, 115200): Bluetooth has the PL011\n");
 }
 void psmac_console_putc(uint8_t c);     /* psmac_display.c: the same text on the HDMI screen */

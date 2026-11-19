@@ -135,18 +135,23 @@ static void setup_gpclk(void)
 
 int psmac_gpio_reset_asserted(void) { return gpio_ready && (LE32(gpio[13]) & (1 << PIN_RESET)) == 0; }
 
-/* Pulse the motherboard's RESET: what the 68000's RESET instruction does, and what the ROM expects
-   at the start of a boot (every chip back to its reset state). Waits first for the line to be free,
-   since at power-on the SE's own reset circuit holds it for a while. */
-void psmac_gpio_pulse_reset(void)
+/* Pulse the motherboard's RESET (every chip back to its reset state). Waits first for the line to
+   be free, since at power-on the SE's own reset circuit holds it for a while. */
+static void pulse_reset(uint32_t low_us, uint32_t after_us)
 {
     uint64_t t0 = ustime();                                 /* two seconds at most: with no board the line floats low (the first bench Pi waited five) */
     while ((LE32(gpio[13]) & (1 << PIN_RESET)) == 0 && ustime() - t0 < 2000000) __asm__ volatile("yield");
     status_write(0);
-    usleep(30000);
+    usleep(low_us);
     status_write(STATUS_BIT_RESET);
-    usleep(10000);
+    usleep(after_us);
 }
+/* The 68000's RESET instruction, the ROM's first act on every boot: a real 68000 holds the line
+   for 124 clocks (16 us at 7.83 MHz) and goes straight on. This held it 30 ms and waited 10 ms
+   more, on the 68k's own path at every start (docs/08 item 50); one millisecond each way is still
+   sixty times what the SE's chips get from its own processor. The power-on pulse keeps the long
+   timing (psmac_gpio_init, on the service core, before the 68k is released). */
+void psmac_gpio_pulse_reset(void) { pulse_reset(1000, 1000); }
 
 void psmac_gpio_init(void)
 {
@@ -165,7 +170,7 @@ void psmac_gpio_init(void)
     usleep(1500);
     status_write(0);
     usleep(100);
-    psmac_gpio_pulse_reset();
+    pulse_reset(30000, 10000);
     kprintf("[PSMAC:GPIO] classic PiStorm protocol up (%s timings, 200 MHz CPLD clock on GPIO 4, status %04x, RESET %s)\n",
             pi4 ? "Pi 4" : "Pi 3", status_read(), psmac_gpio_reset_asserted() ? "asserted" : "free");
 }

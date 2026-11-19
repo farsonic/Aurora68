@@ -198,6 +198,29 @@ static int sd_read(uint32_t lba, uint8_t *buf)
     sd.reads++;
     return 0;
 }
+/* n consecutive sectors in one command (CMD18, stopped with CMD12): the disk image loader's read.
+   A card answers a run far faster than the same sectors one CMD17 at a time, since each command
+   costs it an access time of its own. */
+static int sd_read_multi(uint32_t lba, uint8_t *buf, uint32_t n)
+{
+    if (n == 1) return sd_read(lba, buf);
+    if (sd.state != 1) return -1;
+    w(SDHBCT, 512); w(SDHBLC, n);
+    if (sd_cmd(18, sd.ccs ? lba : lba * 512u, CMD_READ, 0)) return -2;
+    uint32_t *p = (uint32_t *)buf;
+    int err = 0;
+    for (uint32_t i = 0; i < n * 128u; i++) {
+        uint64_t t = cnt();
+        while (!EDM_FILL(r(SDEDM)) && !(r(SDHSTS) & 1u)) if (cnt() - t > frq() / 10) { err = -3; break; }
+        if (err) break;
+        p[i] = *(volatile uint32_t *)(uintptr_t)(SDH + SDDATA);
+    }
+    if (sd_cmd(12, 0, CMD_BUSY, 0) && !err) err = -5;                  /* STOP_TRANSMISSION, R1b */
+    if (!err && (fsm_wait(100000) || (r(SDHSTS) & HSTS_ERRORS))) err = -4;
+    if (err) { uint32_t h = r(SDHSTS); sd.last_hsts = h; w(SDHSTS, h & HSTS_CLEAR); sd.errors++; return err; }
+    sd.reads += n;
+    return 0;
+}
 /* a write in two halves: the data goes out now, the card's programming is waited for by polling */
 static int sd_write_start(uint32_t lba, const uint8_t *buf)
 {
@@ -312,7 +335,22 @@ static int root_walk(int (*f)(uint32_t lba, void *ctx), void *ctx)
     }
     return 0;
 }
-struct find_ctx { const char *name; struct cfile *out; char lfn[128]; int lfn_ok; };
+struct find_ctx { const char *name; struct cfile *out; char lfn[128]; int lfn_ok; char found[48]; };
+/* a disk image on the card by its name: what the container's own images end in (psmac_bus.c), less
+   the Pi's own kernel*.img, macOS's ._ shadow files and anything under a megabyte */
+static int ends_ci(const char *s, const char *suf)
+{
+    unsigned n = 0, m = 0; while (s[n]) n++; while (suf[m]) m++;
+    if (m > n) return 0;
+    for (unsigned i = 0; i < m; i++) if (lower(s[n - m + i]) != suf[i]) return 0;
+    return 1;
+}
+static int is_image_name(const char *s, uint32_t size)
+{
+    if (size < (1u << 20) || (s[0] == '.' && s[1] == '_')) return 0;
+    if (lower(s[0]) == 'k' && lower(s[1]) == 'e' && lower(s[2]) == 'r' && lower(s[3]) == 'n' && lower(s[4]) == 'e' && lower(s[5]) == 'l') return 0;
+    return ends_ci(s, ".img") || ends_ci(s, ".hda") || ends_ci(s, ".image") || ends_ci(s, ".hfv") || ends_ci(s, ".dsk");
+}
 static int find_sector(uint32_t lba, void *vctx)
 {
     struct find_ctx *x = vctx;
@@ -333,7 +371,9 @@ static int find_sector(uint32_t lba, void *vctx)
         for (int k = 0; k < 8 && e[k] != ' '; k++) sn[n++] = (char)e[k];
         if (e[8] != ' ') { sn[n++] = '.'; for (int k = 8; k < 11 && e[k] != ' '; k++) sn[n++] = (char)e[k]; }
         sn[n] = 0;
-        int hit = name_eq(sn, x->name) || (x->lfn_ok && name_eq(x->lfn, x->name));
+        const char *shown = x->lfn_ok ? x->lfn : sn;
+        int hit = x->name ? name_eq(sn, x->name) || (x->lfn_ok && name_eq(x->lfn, x->name)) : is_image_name(shown, le32(e + 28));
+        if (hit && !x->name) { unsigned k = 0; while (shown[k] && k < sizeof x->found - 1) { x->found[k] = shown[k]; k++; } x->found[k] = 0; }
         x->lfn_ok = 0;
         if (hit) {
             x->out->dir_lba = lba; x->out->dir_off = 32u * (unsigned)i;
@@ -543,24 +583,51 @@ int psmac_card_edit_options(const char *text, uint32_t len)
 }
 int psmac_card_options_state(void) { return opt_state; }
 
-/* ==== disk images inside the container ========================================================= */
-#define CHUNK 4096u
-struct img { const uint8_t *ram; uint32_t off, len; volatile uint32_t *dirty; uint32_t nbits; char name[48]; uint32_t written; };
+/* ==== disk images: inside the container, or files of their own ===============================
+   An image the container brought was loaded by the Pi firmware with everything else, and its
+   changes go back into the container at the image's offset. A container of 100 MB costs the
+   firmware seconds before the kernel even starts (docs/08 item 50), so an image can also sit on
+   the card as a file of its own (MyMac.hda, or mac.image=NAME): core 3 finds it when it mounts the
+   card, a few milliseconds after the 68k has been released, and reads it into memory in the
+   background while the Mac boots. Blocks the Mac asks for before they are in are read first
+   (psmac_card_need); its changes go back into the same file, in place. */
+#define CHUNK 4096u                    /* the unit of the Mac's changes waiting for the card */
+#define LCHUNK 16384u                  /* the loader's unit: 32 card sectors */
+#define LSLICE 4u                      /* card sectors read per pass of core 3's loop: about 170 us at
+                                          25 MHz, well inside the 32-byte receive FIFO of the
+                                          Bluetooth UART beside it (921600 baud, no flow control) */
+struct ext { uint32_t clus, n; };
+struct img {
+    const uint8_t *ram; uint32_t off, len;       /* the image in memory; its offset in its file, its length */
+    const uint8_t *file; uint32_t file_len;      /* the file it lives in, in memory: the container, or the image itself */
+    struct ext *ext; int next, ok;               /* that file's extents on the card; changes are written back */
+    volatile uint32_t *dirty; uint32_t nbits;    /* CHUNKs the Mac changed */
+    volatile uint32_t *loaded; uint32_t nload, nloaded;   /* LCHUNKs read from the card (images of their own) */
+    uint64_t load_t0; char name[48]; uint32_t written;
+};
 static struct img imgs[4]; static int nimg;
 static const uint8_t *cont_ram; static uint32_t cont_len;
-static struct { uint32_t clus, n; } ext[256]; static int next_;                  /* the container file's extents */
-static int cont_ok;
+static struct ext cont_ext[256]; static int cont_next;          /* the container file's extents */
 static volatile uint64_t last_dirty_t, first_dirty_t;
+static volatile int scan_done;                 /* the card has been looked at for images (or there is none) */
 void psmac_card_container(const uint8_t *ram, uint32_t len) { cont_ram = ram; cont_len = len; }
-void psmac_card_track(const char *name, const uint8_t *ram, uint32_t off, uint32_t len)
+static struct img *img_new(const char *name, const uint8_t *ram, uint32_t len)
 {
-    if (nimg >= 4) return;
+    if (nimg >= 4) return 0;
     struct img *m = &imgs[nimg];
-    m->ram = ram; m->off = off; m->len = len; m->nbits = (len + CHUNK - 1) / CHUNK;
+    m->ram = ram; m->len = len; m->nbits = (len + CHUNK - 1) / CHUNK;
     m->dirty = tlsf_malloc(tlsf, ((m->nbits + 31) / 32) * 4);
-    if (!m->dirty) return;
+    if (!m->dirty) return 0;
     for (uint32_t i = 0; i < (m->nbits + 31) / 32; i++) m->dirty[i] = 0;
     int k = 0; while (name[k] && k < 47) { m->name[k] = name[k]; k++; } m->name[k] = 0;
+    return m;
+}
+/* an image inside the container (psmac_bus.c walk_container, before the 68k starts) */
+void psmac_card_track(const char *name, const uint8_t *ram, uint32_t off, uint32_t len)
+{
+    struct img *m = img_new(name, ram, len);
+    if (!m) return;
+    m->off = off; m->file = 0; m->ext = cont_ext;        /* file and extents once the card is checked */
     nimg++;
 }
 /* the Mac wrote [p, p+len) of an image in memory (psmac_board_solo.c, psmac_mbox.c) */
@@ -581,21 +648,29 @@ void psmac_card_dirty(const void *p, uint32_t len)
     }
     dirty_miss++;
 }
-static int cont_extents(const struct cfile *f)
+static int file_extents(const struct cfile *f, struct ext *ext, int max)
 {
-    next_ = 0;
+    int n = 0;
     uint32_t c = f->clus, guard = 0;
     while (c >= 2 && !eoc(c) && guard++ < fs.clusters) {
-        if (next_ && ext[next_ - 1].clus + ext[next_ - 1].n == c) ext[next_ - 1].n++;
-        else { if (next_ >= 256) return -1; ext[next_].clus = c; ext[next_].n = 1; next_++; }
+        if (n && ext[n - 1].clus + ext[n - 1].n == c) ext[n - 1].n++;
+        else { if (n >= max) return -1; ext[n].clus = c; ext[n].n = 1; n++; }
         c = fat_get(c);
     }
-    return 0;
+    return n;
 }
-static uint32_t cont_lba(uint32_t off)                 /* the card sector holding byte off of the container */
+/* the card sector holding byte off of an image's file, and how many sectors follow it in the same extent */
+static uint32_t file_lba(const struct img *m, uint32_t off, uint32_t *run)
 {
     uint32_t cl = off / (fs.spc * 512u);
-    for (int i = 0; i < next_; i++) { if (cl < ext[i].n) return clus_lba(ext[i].clus + cl) + (off / 512u) % fs.spc; cl -= ext[i].n; }
+    for (int i = 0; i < m->next; i++) {
+        if (cl < m->ext[i].n) {
+            uint32_t in = (off / 512u) % fs.spc;
+            if (run) *run = (m->ext[i].n - cl) * fs.spc - in;
+            return clus_lba(m->ext[i].clus + cl) + in;
+        }
+        cl -= m->ext[i].n;
+    }
     return 0;
 }
 static void container_check(void)
@@ -606,26 +681,169 @@ static void container_check(void)
     if (!nimg) return;
     if (!cont_ram || file_find(name, &f)) { kprintf("[CARD] %s not found in the card's root: the disk image's changes stay in memory\n", name); return; }
     if (f.size != cont_len) { kprintf("[CARD] %s on the card is %u bytes, the one loaded %u: not the same file, nothing written to it\n", name, f.size, cont_len); return; }
-    if (cont_extents(&f)) { kprintf("[CARD] %s is in more than 256 pieces: nothing written to it\n", name); return; }
-    uint32_t l = cont_lba(0);
+    cont_next = file_extents(&f, cont_ext, 256);
+    if (cont_next < 0) { cont_next = 0; kprintf("[CARD] %s is in more than 256 pieces: nothing written to it\n", name); return; }
+    for (int i = 0; i < nimg; i++) { imgs[i].file = cont_ram; imgs[i].file_len = cont_len; imgs[i].next = cont_next; }
+    uint32_t l = file_lba(&imgs[0], 0, 0);
     if (!l || sd_read(l, sec)) return;
     for (int i = 0; i < 512; i++) if (sec[i] != cont_ram[i]) { kprintf("[CARD] %s's first sector differs from the one loaded: nothing written to it\n", name); return; }
-    cont_ok = 1;
-    kprintf("[CARD] %s checked (%u bytes, %d piece%s): the disk image's changes go back into it\n", name, f.size, next_, next_ == 1 ? "" : "s");
+    for (int i = 0; i < nimg; i++) imgs[i].ok = 1;
+    kprintf("[CARD] %s checked (%u bytes, %d piece%s): the disk image's changes go back into it\n", name, f.size, cont_next, cont_next == 1 ? "" : "s");
 }
-/* the flush: one sector in flight at a time. cpio aligns a file's data to 4 bytes, not 512, so the
-   image's blocks straddle the card's sectors: whole card sectors are written, copied from the
-   container in memory, whose bytes around the image are the unchanged cpio headers. */
+
+/* memory for an image of its own: from the kernel's list of free RAM, block 0, which
+   psmac_setup_memory carved the Mac's RAM from before the 68k started. Nothing takes from it
+   after that but this, on core 3. 16 MB stay free for whatever comes later. */
+static uint8_t *take_memory(uint32_t len)
+{
+    uintptr_t base = (sys_memory[0].mb_Base + 0xfffu) & ~(uintptr_t)0xfffu, end = sys_memory[0].mb_Base + sys_memory[0].mb_Size;
+    if (base + len + (16u << 20) > end) return 0;
+    sys_memory[0].mb_Size = end - (base + len);
+    sys_memory[0].mb_Base = base + len;
+    return (uint8_t *)(0xffffff9000000000ull + base);
+}
+/* at mount: an image of its own, when the container brought none */
+static void image_scan(void)
+{
+    extern int psmac_board_solo;
+    if (nimg) return;
+    const char *opt = psmac_option("mac.image");
+    if (opt && name_eq(opt, "off")) return;
+    struct cfile f; struct find_ctx x; x.out = &f; x.lfn_ok = 0; x.found[0] = 0;
+    if (opt) {
+        unsigned k = 0; while (opt[k] && k < sizeof x.found - 1) { x.found[k] = opt[k]; k++; } x.found[k] = 0;
+        if (file_find(x.found, &f)) { kprintf("[CARD] mac.image=%s: no such file in the card's root\n", x.found); return; }
+    } else {
+        x.name = 0;
+        if (root_walk(find_sector, &x) != 1) return;
+    }
+    if (f.clus < 2 || f.size < 1024) return;
+    uint8_t *ram = take_memory(f.size);
+    if (!ram) { kprintf("[CARD] %s (%u MB) is larger than the memory the Pi has left: not loaded\n", x.found, f.size >> 20); return; }
+    struct img *m = img_new(x.found, ram, f.size);
+    if (!m) return;
+    m->ext = tlsf_malloc(tlsf, 256 * sizeof(struct ext));
+    m->nload = (f.size + LCHUNK - 1) / LCHUNK;
+    m->loaded = tlsf_malloc(tlsf, ((m->nload + 31) / 32) * 4);
+    if (!m->ext || !m->loaded) return;
+    m->next = file_extents(&f, m->ext, 256);
+    if (m->next <= 0) { kprintf("[CARD] %s is in more than 256 pieces: copy it to a freshly formatted card\n", x.found); return; }
+    for (uint32_t i = 0; i < (m->nload + 31) / 32; i++) m->loaded[i] = 0;
+    m->off = 0; m->file = ram; m->file_len = f.size; m->ok = !sd.ro; m->nloaded = 0; m->load_t0 = cnt();
+    __atomic_store_n(&nimg, nimg + 1, __ATOMIC_RELEASE);
+    kprintf("[CARD] disk image %s, %u MB in %d piece%s: read in the background%s\n", x.found, f.size >> 20, m->next, m->next == 1 ? "" : "s", m->ok ? ", changes written back to it" : "");
+    psmac_boot_mark("card: disk image %s found (%u MB), loading in the background", x.found, f.size >> 20);
+    /* the Mac's view: a SCSI disk on the solo board, a PiDisk volume on the others */
+    if (psmac_board_solo) { extern void psmac_image_add(const char *, uint8_t *, uint32_t); psmac_image_add(m->name, ram, f.size); }
+    else { extern void psmac_mbox_add_disk(const char *, uint8_t *, uint32_t); psmac_mbox_add_disk(m->name, ram, f.size / 512u); }
+}
+
+/* the loader: one LCHUNK at a time, LSLICE sectors per pass; a chunk the Mac waits for first */
+static struct { int active, img; uint32_t chunk, done, cursor; } ld;
+static volatile int want_img = -1; static volatile uint32_t want_chunk;
+static int chunk_in(const struct img *m, uint32_t c) { return (__atomic_load_n(&m->loaded[c / 32], __ATOMIC_ACQUIRE) >> (c % 32)) & 1; }
+static int load_pick(void)
+{
+    int wi = __atomic_load_n(&want_img, __ATOMIC_ACQUIRE);
+    if (wi >= 0) {
+        uint32_t c = want_chunk;
+        if (!chunk_in(&imgs[wi], c)) { ld.active = 1; ld.img = wi; ld.chunk = c; ld.done = 0; return 1; }
+    }
+    for (int i = 0; i < nimg; i++) {
+        struct img *m = &imgs[i];
+        if (!m->loaded || m->nloaded >= m->nload) continue;
+        for (uint32_t k = 0; k < m->nload; k++) {
+            uint32_t c = (ld.cursor + k) % m->nload;
+            if (!chunk_in(m, c)) { ld.active = 1; ld.img = i; ld.chunk = c; ld.done = 0; ld.cursor = c + 1; return 1; }
+        }
+    }
+    return 0;
+}
+static uint8_t lbuf[LSLICE * 512] __attribute__((aligned(16)));
+/* one slice of the current chunk; 0 when there is nothing left to load */
+static int load_step(void)
+{
+    if (!ld.active && !load_pick()) return 0;
+    struct img *m = &imgs[ld.img];
+    uint32_t first = ld.chunk * (LCHUNK / 512u) + ld.done, secs = (m->len + 511u) / 512u;
+    uint32_t end = (ld.chunk + 1) * (LCHUNK / 512u); if (end > secs) end = secs;
+    uint32_t run = 0, lba = file_lba(m, first * 512u, &run), n = end - first;
+    if (n > LSLICE) n = LSLICE;
+    if (n > run) n = run;
+    int e = lba && n ? -9 : -8;
+    for (int tries = 0; tries < 3 && e; tries++) e = lba && n ? sd_read_multi(lba, lbuf, n) : -8;
+    if (e) {
+        /* the card failed under the image: what is missing stays zero, and nothing of this image
+           is written back, so the file on the card is not made worse */
+        kprintf("[CARD] %s: read error %d at sector %u (status %x): the image is incomplete, its changes stay in memory\n", m->name, e, first, sd.last_hsts);
+        m->ok = 0; n = end - first;
+    } else {
+        uint32_t bytes = n * 512u; if (first * 512u + bytes > m->len) bytes = m->len - first * 512u;
+        memcpy((uint8_t *)m->ram + first * 512u, lbuf, bytes);
+    }
+    ld.done += n;
+    if (first + n >= end) {
+        __atomic_fetch_or(&m->loaded[ld.chunk / 32], 1u << (ld.chunk % 32), __ATOMIC_RELEASE);
+        ld.active = 0;
+        if (++m->nloaded == m->nload) {
+            uint32_t ms_ = (uint32_t)((cnt() - m->load_t0) * 1000u / frq());
+            kprintf("[CARD] %s: all %u MB read from the card in %u ms (%u KB/s)\n", m->name, m->len >> 20, ms_, ms_ ? (uint32_t)((uint64_t)m->len / ms_) : 0);
+            psmac_boot_mark("card: disk image %s loaded (%u MB, %u ms)", m->name, m->len >> 20, ms_);
+        }
+    }
+    return 1;
+}
+/* [p, p+len) of an image is about to be read or written by the Mac: make sure it is in memory. On
+   core 3 (PiDisk's block service) the chunks are read here and now; from core 0 (the solo board's
+   SCSI disk) core 3 is asked and this waits, as the Mac would wait on a disk. */
+static inline int on_core3(void) { uint64_t id; __asm__ volatile("mrs %0, MPIDR_EL1" : "=r"(id)); return (id & 3) == 3; }
+void psmac_card_need(const void *p, uint32_t len)
+{
+    const uint8_t *b = p;
+    int n = __atomic_load_n(&nimg, __ATOMIC_ACQUIRE);
+    for (int i = 0; i < n; i++) {
+        struct img *m = &imgs[i];
+        if (!m->loaded || b < m->ram || b >= m->ram + m->len || !len) continue;
+        if (m->nloaded >= m->nload) return;
+        uint32_t c0 = (uint32_t)(b - m->ram) / LCHUNK, c1 = ((uint32_t)(b - m->ram) + len - 1) / LCHUNK;
+        for (uint32_t c = c0; c <= c1 && c < m->nload; c++) {
+            if (chunk_in(m, c)) continue;
+            if (on_core3()) {
+                if (ld.active && !(ld.img == i && ld.chunk == c)) while (ld.active) load_step();   /* the chunk in hand first */
+                if (!chunk_in(m, c)) { if (!ld.active) { ld.active = 1; ld.img = i; ld.chunk = c; ld.done = 0; } while (ld.active) load_step(); }
+                continue;
+            }
+            want_chunk = c;
+            __atomic_store_n(&want_img, i, __ATOMIC_RELEASE);
+            uint64_t t0 = cnt();
+            while (!chunk_in(m, c) && sd.state == 1 && cnt() - t0 < 10 * frq()) __asm__ volatile("yield");
+            __atomic_store_n(&want_img, -1, __ATOMIC_RELEASE);
+            if (!chunk_in(m, c)) { kprintf("[CARD] %s: block %u not read from the card in 10 s\n", m->name, c * (LCHUNK / 512u)); return; }
+        }
+        return;
+    }
+}
+/* the solo board's first SCSI selection waits for the card's first look (a few tens of ms after
+   the 68k starts), so a disk image on the card is there when the ROM looks for a startup disk */
+void psmac_card_scan_wait(void)
+{
+    uint64_t t0 = cnt();
+    while (!__atomic_load_n(&scan_done, __ATOMIC_ACQUIRE) && cnt() - t0 < 3 * frq()) __asm__ volatile("yield");
+}
+
+/* the flush: one sector in flight at a time. cpio aligns a file's data to 4 bytes, not 512, so an
+   image inside the container straddles card sectors: whole card sectors are written, copied from
+   the file in memory, whose bytes around the image are the unchanged cpio headers. */
 static struct { int busy; int img; uint32_t sec, last; } fl;
 static uint8_t wbuf[512] __attribute__((aligned(16)));
 static void flush_poll(void)
 {
-    if (!cont_ok || sd.ro) return;
+    if (sd.ro) return;
     if (fl.busy) {
         int k = sd_write_poll();
         if (k == 0) return;
         fl.busy = 0;
-        if (k < 0) { kprintf("[CARD] write failed (status %x): the image's writes stop here\n", sd.last_hsts); cont_ok = 0; return; }
+        if (k < 0) { kprintf("[CARD] write failed (status %x): %s's writes stop here\n", sd.last_hsts, imgs[fl.img].name); imgs[fl.img].ok = 0; fl.img = -1; return; }
         imgs[fl.img].written++;
         if (++fl.sec <= fl.last) goto next_sector;
         fl.img = -1;
@@ -636,6 +854,7 @@ static void flush_poll(void)
         if (!f0 || (now - q < frq() && now - f0 < 5 * frq())) return;
         for (int i = 0; i < nimg; i++) {
             struct img *m = &imgs[i];
+            if (!m->ok) continue;
             for (uint32_t wd = 0; wd < (m->nbits + 31) / 32; wd++) {
                 uint32_t v = m->dirty[wd];
                 if (!v) continue;
@@ -651,53 +870,65 @@ static void flush_poll(void)
     }
 next_sector:
     {
-        uint32_t at = fl.sec * 512u;                       /* a card sector of the container */
-        for (uint32_t j = 0; j < 512; j++) wbuf[j] = at + j < cont_len ? cont_ram[at + j] : 0;
-        uint32_t lba = cont_lba(at);
-        if (!lba) { kprintf("[CARD] container offset %u outside the file: writes stop\n", at); cont_ok = 0; return; }
-        if (sd_write_start(lba, wbuf)) { kprintf("[CARD] write could not start (status %x): writes stop\n", sd.last_hsts); cont_ok = 0; return; }
+        struct img *m = &imgs[fl.img];
+        uint32_t at = fl.sec * 512u;                       /* a card sector of the image's file */
+        for (uint32_t j = 0; j < 512; j++) wbuf[j] = at + j < m->file_len ? m->file[at + j] : 0;
+        uint32_t lba = file_lba(m, at, 0);
+        if (!lba) { kprintf("[CARD] %s: offset %u outside the file: writes stop\n", m->name, at); m->ok = 0; fl.img = -1; return; }
+        if (sd_write_start(lba, wbuf)) { kprintf("[CARD] write could not start (status %x): %s's writes stop\n", sd.last_hsts, m->name); m->ok = 0; fl.img = -1; return; }
         fl.busy = 1;
     }
 }
 
 /* ==== core 3 ================================================================================== */
 static uint32_t start_at;
+static void card_start(void);
 void psmac_card_poll(void)
 {
     if (sd.state == 0) {
-        if (!start_at) start_at = ms() ? ms() : 1;
-        const char *o = psmac_option("mac.card");
-        if (o && o[0] == 'o' && o[1] == 'f') { sd.state = -2; pair_state = -1; kprintf("[CARD] off (mac.card=off)\n"); return; }
-        if (alice_pi_is_2711()) { sd.state = -1; pair_state = -1; kprintf("[CARD] the Pi 4's card controller is not supported yet: nothing saved\n"); return; }
-        sd.ro = o && o[0] == 'r' && o[1] == 'o';
-        int e = sd_init();
-        if (e) { sd.state = -1; pair_state = -1; kprintf("[CARD] the SD card does not answer on the sdhost controller (%d, status %x)\n", e, sd.last_hsts); return; }
-        sd.state = 1;
-        e = fs_mount();
-        if (e) { sd.state = -1; pair_state = -1; kprintf("[CARD] no FAT16/FAT32 partition found (%d)\n", e); return; }
-        kprintf("[CARD] %s card, FAT%d at sector %u, %u-byte clusters%s\n", sd.ccs ? "SDHC/SDXC" : "SDSC", fs.fat32 ? 32 : 16, fs.part, fs.spc * 512u, sd.ro ? ", read only (mac.card=ro)" : "");
-        pairings_load();
-        container_check();
-        fl.img = -1;
-        { static const char test[] = "# mac.cardtest\nbt.dev=001122334455:00112233445566778899aabbccddeeff:2\n";
-          const char *t = psmac_option("mac.cardtest"); if (t && t[0] == '1') psmac_card_save_pairings(test, sizeof test - 1); }
+        card_start();
+        __atomic_store_n(&scan_done, 1, __ATOMIC_RELEASE);
         return;
     }
     if (sd.state != 1) return;
     if (fl.busy) { flush_poll(); return; }             /* a sector is being programmed: nothing else touches the card */
     if (__atomic_load_n(&pair_dirty, __ATOMIC_ACQUIRE) && !sd.ro) { pair_dirty = 0; pairings_write(); return; }
     if (__atomic_load_n(&opt_state, __ATOMIC_ACQUIRE) == 1 && !sd.ro) { cmdline_apply(); return; }
+    if (load_step()) return;                           /* a disk image still coming in from the card */
     flush_poll();
+}
+/* the card's first look, on core 3's first pass: the card, its FAT, pairings.txt, the container, an image */
+static void card_start(void)
+{
+    if (!start_at) start_at = ms() ? ms() : 1;
+    const char *o = psmac_option("mac.card");
+    if (o && o[0] == 'o' && o[1] == 'f') { sd.state = -2; pair_state = -1; kprintf("[CARD] off (mac.card=off)\n"); return; }
+    if (alice_pi_is_2711()) { sd.state = -1; pair_state = -1; kprintf("[CARD] the Pi 4's card controller is not supported yet: nothing saved\n"); return; }
+    sd.ro = o && o[0] == 'r' && o[1] == 'o';
+    int e = sd_init();
+    if (e) { sd.state = -1; pair_state = -1; kprintf("[CARD] the SD card does not answer on the sdhost controller (%d, status %x)\n", e, sd.last_hsts); return; }
+    sd.state = 1;
+    e = fs_mount();
+    if (e) { sd.state = -1; pair_state = -1; kprintf("[CARD] no FAT16/FAT32 partition found (%d)\n", e); return; }
+    kprintf("[CARD] %s card, FAT%d at sector %u, %u-byte clusters%s\n", sd.ccs ? "SDHC/SDXC" : "SDSC", fs.fat32 ? 32 : 16, fs.part, fs.spc * 512u, sd.ro ? ", read only (mac.card=ro)" : "");
+    pairings_load();
+    container_check();
+    image_scan();
+    psmac_boot_mark("card: mounted, pairings read, disk images found");
+    fl.img = -1;
+    { static const char test[] = "# mac.cardtest\nbt.dev=001122334455:00112233445566778899aabbccddeeff:2\n";
+      const char *t = psmac_option("mac.cardtest"); if (t && t[0] == '1') psmac_card_save_pairings(test, sizeof test - 1); }
 }
 void psmac_card_report(void)
 {
     if (sd.state == 0 || sd.state == -2) return;
     if (sd.state < 0) return;
-    kprintf("[CARD]   %u reads, %u writes, %u errors%s; marks %u (%u outside the images, last %p, image 0 at %p)", sd.reads, sd.writes, sd.errors, cont_ok ? "" : ", image writes off",
+    kprintf("[CARD]   %u reads, %u writes, %u errors; marks %u (%u outside the images, last %p, image 0 at %p)", sd.reads, sd.writes, sd.errors,
             dirty_calls, dirty_miss, dirty_last, nimg ? (const void *)imgs[0].ram : 0);
     for (int i = 0; i < nimg; i++) {
         uint32_t d = 0; for (uint32_t w2 = 0; w2 < (imgs[i].nbits + 31) / 32; w2++) d += (uint32_t)__builtin_popcount(imgs[i].dirty[w2]);
-        kprintf(" | %s: %u KB written, %u KB waiting", imgs[i].name, imgs[i].written / 2, d * (CHUNK / 1024));
+        kprintf(" | %s: %u KB written, %u KB waiting%s", imgs[i].name, imgs[i].written / 2, d * (CHUNK / 1024), imgs[i].ok ? "" : ", writes off");
+        if (imgs[i].loaded && imgs[i].nloaded < imgs[i].nload) kprintf(", %u%% read from the card", imgs[i].nloaded * 100u / imgs[i].nload);
     }
     kprintf("\n");
 }

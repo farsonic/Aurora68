@@ -25,8 +25,10 @@
  * Both follow the same steps for a device behind the hub: start split, on its ACK complete split,
  * complete split again on NYET (up to eight times), NAK = no data now.
  *
- * Core 3 runs it next to the mailbox services, the network and Bluetooth, so nothing may hold the
- * core long: enumeration at start (about a second, bounded), then one poll a millisecond, and every
+ * The start (the controller's power, its reset, the first enumeration: about a second, bounded)
+ * runs on core 1, which has nothing else to do, so the mailbox services on core 3 are there for
+ * the Mac from its first instruction (docs/08 item 50). Then core 3 runs it next to them, the
+ * network and Bluetooth, so nothing may hold the core long: one poll a millisecond, and every
  * two seconds a look at the hub's ports (one control request each); a port that changed (plugged,
  * unplugged) starts a fresh enumeration, with every key released first.
  *
@@ -321,10 +323,10 @@ void psmac_usb_start(void)
             use_fifo ? "FIFO (Alice68)" : "DMA");
     if (rc)
         return;
-    usb_on = 1;
     enumerate("start");
     next_poll = now();
     next_check = now() + 2 * hz();
+    __atomic_store_n(&usb_on, 1, __ATOMIC_RELEASE);     /* core 3's polls begin (start runs on core 1) */
 }
 
 /* control requests to the hub at address 1 (Alice68's enumeration gives the root device that
@@ -411,7 +413,7 @@ static int needs_retry(void)
 void psmac_usb_poll(void)
 {
     uint64_t t;
-    if (!usb_on)
+    if (!__atomic_load_n(&usb_on, __ATOMIC_ACQUIRE))
         return;
     t = now();
     if (t >= next_check) {
@@ -448,3 +450,4 @@ void psmac_usb_report(void)
             hid.keyboard.nak, hid.keyboard.faults, hid.have_mouse, hid.mouse.success, hid.mouse.nak, hid.mouse.faults,
             hid.stats.attempts, hid.stats.timeouts);
 }
+

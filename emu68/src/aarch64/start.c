@@ -464,6 +464,10 @@ void secondary_boot(void)
         StartupPPC();
     }
 #ifdef PSMAC
+    if (cpu_id == 1) {
+        extern void psmac_alice_core1(void);
+        psmac_alice_core1();                /* the USB start, then back here (alice_psmac.c) */
+    }
     if (cpu_id == 3) {
         extern void psmac_alice_core(void);
         psmac_alice_core();
@@ -850,6 +854,10 @@ void boot(void *dtree)
     void *initramfs_loc = NULL;
     uintptr_t initramfs_size = 0;    
     uintptr_t initramfs_hi_phys = 0, initramfs_hi_size = 0;   /* a large initramfs kept below the kernel's block at the top of RAM */
+#ifdef PSMAC
+    psmac_boot_entry();                 /* the boot timeline's zero point (psmac_boot.c) */
+    psmac_boot_mark("kernel entry");
+#endif
     boot_lock = 0;
 
     /* Get CTR_EL0 */
@@ -918,6 +926,9 @@ void boot(void *dtree)
                 initramfs_loc = (void*)(0xffffff9000000000 + initramfs_hi_phys);
                 DuffCopy(initramfs_loc, (void*)(0xffffff9000000000 + (uintptr_t)image_start), (initramfs_size + 3)/ 4);
             }
+#ifdef PSMAC
+            psmac_boot_mark("initramfs copied into the kernel's memory (%u KiB)", (uint32_t)(initramfs_size >> 10));
+#endif
         }
     }
 
@@ -926,6 +937,10 @@ void boot(void *dtree)
 
     /* Setup platform (peripherals etc) */
     platform_init();
+#ifdef PSMAC
+    psmac_boot_peripherals();
+    psmac_boot_mark("MMU and peripherals mapped");
+#endif
 
 #if defined(PISTORM)
     const uint8_t pistorm_model = pistorm_get_model();
@@ -1031,6 +1046,9 @@ void boot(void *dtree)
 
     /* Setup debug console on serial port */
     setup_serial();
+#ifdef PSMAC
+    psmac_boot_console();
+#endif
 
     kprintf("\033[2J[BOOT] Booting %s\n", bootstrapName);
     p = dt_find_property(dt_find_node("/"), "model");
@@ -1240,6 +1258,9 @@ void boot(void *dtree)
         move_kernel(kernel_old_loc, kernel_new_loc);
 
         kprintf("[BOOT] Kernel moved, MMU tables updated\n");
+#ifdef PSMAC
+        psmac_boot_mark("kernel moved to the top of RAM");
+#endif
 
         uint64_t TTBR0, TTBR1;
 
@@ -1294,6 +1315,9 @@ void boot(void *dtree)
     while(__atomic_test_and_set(&boot_lock, __ATOMIC_ACQUIRE)) { __asm__ volatile("yield"); }
 
     __atomic_clear(&boot_lock, __ATOMIC_RELEASE);
+#ifdef PSMAC
+    psmac_boot_mark("cores 1-3 started");
+#endif
 
     __asm__ volatile("msr VBAR_EL1, %0"::"r"((uintptr_t)&__vectors_start));
     kprintf("[BOOT] VBAR set to %p\n", (uintptr_t)&__vectors_start);
@@ -1309,6 +1333,9 @@ void boot(void *dtree)
     __asm__ volatile("msr PMCNTENSET_EL0, %0; isb"::"r"(tmp));
 
     platform_post_init();
+#ifdef PSMAC
+    psmac_boot_mark("splash drawn (VideoCore frame buffer)");
+#endif
 
 #ifndef PISTORM_ANY_MODEL
     if (initramfs_loc != NULL && initramfs_size != 0)
@@ -1937,6 +1964,9 @@ __asm__ volatile(
     spinlock_release(&PPCStart);
 
     /* Start M68k now */
+#ifdef PSMAC
+    psmac_boot_mark("68k released: the ROM's first instruction");
+#endif
 #ifndef PISTORM_ANY_MODEL
     __asm__ volatile("bl MainLoop" ::: "x0", "x1", "x2", "x3",
                                    "x4", "x5", "x6", "x7",

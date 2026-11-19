@@ -231,6 +231,7 @@ int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t 
     if ((off >= 0x10000 && off < 0x12000)) {
         /* the 5380's registers: reg*16 on both */
         uint32_t reg = (off >> 4) & 7;
+        { static int first = 1; if (first && write && reg == 1 && (data & 0x04)) { first = 0; psmac_boot_mark("SCSI: first selection on the SE's 5380"); } }
         if (write) { trace("SCSI", 1, addr, SE_SCSI_WR + (reg << 4), size, data & 0xff); psmac_wire_write(SE_SCSI_WR + (reg << 4), 1, data & 0xff, posted); return 1; }
         r = psmac_wire_read(SE_SCSI_RD + (reg << 4), 1) & 0xff;
         trace("SCSI", 0, addr, SE_SCSI_RD + (reg << 4), size, r);
@@ -241,6 +242,7 @@ int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t 
         /* pseudo-DMA, plain (0x12000) or with the DRQ handshake (0x6000): the SE has one window
            and its glue does the waiting. A byte per bus cycle; longs and words are several. */
         if (write) { trace("SCSI", 1, addr, SE_SCSI_PDMA_WR, size, data); for (int i = 0; i < size; i++) psmac_wire_write(SE_SCSI_PDMA_WR, 1, (data >> (8 * (size - 1 - i))) & 0xff, 0); return 1; }
+        { static int first = 1; if (first) { first = 0; psmac_boot_mark("SCSI: first pseudo-DMA read: the first block from the SE's disk"); } }
         r = 0;
         for (int i = 0; i < size; i++) r = r << 8 | (psmac_wire_read(SE_SCSI_PDMA_RD, 1) & 0xff);
         trace("SCSI", 0, addr, SE_SCSI_PDMA_RD, size, r);
