@@ -13,7 +13,8 @@
     "that performs not.w d0 and turns a zero result into 0xFFFF (saturate), then branches",
     "to 0x40800850 (the store).  Normal (slow-CPU) results are unchanged.",
     "Source: see docs/06-rom-patches.md.",
-    "Second stub (16 Nov, later): the Pi supplies the calibration results. At JIT speed the CPU loop (TimeDBRA) overflows and the bus loops (TimeSCSIDB/TimeVIADB/TimeSCCDB) measure the bridge latency, which can leave absurd timeout counts (a saturated TimeSCSIDB made a SCSI wait last 48 minutes). The stub looks the loop's low-memory address up in a table at the slot-9 window + 0x80 (psmb.h PSMB_OFF_CALIB: 4 x {address.w, value.w}) that the kernel fills from its own measurements, and falls back to saturation when the window is absent or the entry is 0."
+    "Second stub (16 Nov, later): the Pi supplies the calibration results. At JIT speed the CPU loop (TimeDBRA) overflows and the bus loops (TimeSCSIDB/TimeVIADB/TimeSCCDB) measure the bridge latency, which can leave absurd timeout counts (a saturated TimeSCSIDB made a SCSI wait last 48 minutes). The stub looks the loop's low-memory address up in a table at the slot-9 window + 0x80 (psmb.h PSMB_OFF_CALIB: 4 x {address.w, value.w}) that the kernel fills from its own measurements, and falls back to saturation when the window is absent or the entry is 0.",
+    "Boot time (19 Nov 2026, docs/08 item 50): the cold-start RAM test and the startup chime are cut short. The RAM test (moving inversions over every memory chunk, $408446BC, called from StartTest at $408436BE) tests the Pi's own RAM, which cannot fail as SIMMs do, and took most of the ROM's own start; sizing is a separate routine ($408431C0, d7 = 17) and runs as before, the warm-start path (Restart) never ran the test at all, and no later test reads what it leaves in memory. The chime's length is the outer count of its wavetable loop (30000 steps of 14 VIA reads each); nothing plays the ASC on an SE or a bare Pi, so it was half a second to a second of silence. The SCSI Manager's selection timeout ($62 of its globals, 250 ms, set at $40809554) is 10 ms: every empty SCSI ID cost the full timeout at each scan, twice per boot, about three seconds with one disk; a target must answer its selection within 200 microseconds (the SCSI standard's selection abort time), so 10 ms is fifty times that."
   ],
   "symbols": {
     "calib_store": "0x40800850",
@@ -66,6 +67,24 @@
         "3:      jmp calib_store:l     | -> 0x40800850: move.w d0 to the low-memory global"
       ],
       "max_len": 80
+    },
+    {
+      "name": "boot: skip the cold-start RAM test (StartTest's call of $408446BC: bra.s to its return point)",
+      "at": "0x436be",
+      "expect": "4efa 0ffc",
+      "bytes": "6002 4e71"
+    },
+    {
+      "name": "boot: the startup chime's wavetable loop runs 2 steps instead of 30000 (its table at $40807158, the outer count)",
+      "at": "0x7162",
+      "expect": "0000 7530",
+      "bytes": "0000 0001"
+    },
+    {
+      "name": "boot: SCSI selection timeout 10 ms instead of 250 ms (the SCSI Manager's default, $62 of its globals)",
+      "at": "0x9554",
+      "expect": "397c 00fa 0062",
+      "bytes": "397c 000a 0062"
     }
   ]
 }
