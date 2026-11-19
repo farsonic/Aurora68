@@ -790,6 +790,68 @@ static void walk_container(const uint8_t *img, uint32_t size, struct container_r
     }
 }
 
+/* ---- the wired network card, shown only where it works ------------------------------------------
+   The declaration ROM lists the wired Ethernet card (sResource $81, Alice68 unit 1) before the WiFi
+   ($83, unit 0), and MacTCP, Riptide and the Network control panel's EtherTalk take the first
+   Ethernet-type sResource the Slot Manager returns. A Pi 3's wired port is the LAN9514 on its USB
+   bus, which nothing drives, so on the user's Pi 3B Riptide bound the dead card and its pings found
+   nobody (19 November). The aurora68-wifi*.declrom files leave the card out, but a user should not
+   have to know that. So before the Mac starts, the kernel takes $81 out of the declaration ROM in
+   RAM when the Pi has no working wired Ethernet: no GENET in the device tree (every Pi 3, the Zero 2
+   W; the GENET is the Pi 4's), or eth=off; the testbed's file bridge (mac.net=) counts as working.
+   This is decided from the Pi at boot, not from the Ethernet thread's later failure, because the
+   Slot Manager reads the ROM once, at the 68k's first boot. Lagoon EtherTalk with $81 still in
+   parameter RAM ($E0) fails to open it and takes the first card, the WiFi. */
+static int wired_ethernet_works(void)
+{
+    const char *args = psmac_bootargs();
+    for (const char *s = args; s && *s; s++)
+        if ((s == args || s[-1] == ' ') && strncmp(s, "eth=off", 7) == 0 && (s[7] == 0 || s[7] == ' ')) return 0;
+    if (psmac_option("mac.net")) return 1;
+    of_node_t *al = dt_find_node("/aliases");
+    of_property_t *ap = al ? dt_find_property(al, "ethernet0") : 0;
+    of_node_t *eth = (ap && ap->op_value) ? dt_find_node((char *)ap->op_value) : 0;
+    of_property_t *compat = eth ? dt_find_property(eth, "compatible") : 0;
+    if (!compat) return 0;
+    const char *c = compat->op_value;                  /* a list of NUL-terminated strings */
+    for (uint32_t i = 0; i + 5 <= compat->op_length; i++)
+        if (strncmp(c + i, "genet", 5) == 0) return 1;
+    return 0;
+}
+/* drop one sResource from the declaration ROM whose format block ends at top: the entries after it
+   move up four bytes (their offsets are relative to their own address, so each grows by four),
+   and the CRC is made again over the image (declrom.py's rule: rol 1, add the byte, the CRC field
+   as zero) */
+static int declrom_drop(uint8_t *top, uint8_t rid, uint32_t want_type_lo)
+{
+    uint8_t *fb = top - 20;
+    int32_t dir_off = (int32_t)(BE32(*(uint32_t *)fb) << 8) >> 8;
+    uint32_t length = BE32(*(uint32_t *)(fb + 4));
+    if (length < 20 || length > PSMB_DECLROM_SIZE) return 0;
+    uint8_t *e = fb + dir_off;
+    while (e >= top - length && e < fb && e[0] != 0xff && e[0] != rid) e += 4;
+    if (e < top - length || e >= fb || e[0] != rid) return 0;
+    {   /* only a network card of ours: sRsrcType (entry 1) {catNetwork 4, typeEtherNet 1, 1, 'PS'} */
+        int32_t lo = (int32_t)(BE32(*(uint32_t *)e) << 8) >> 8;
+        uint8_t *list = e + lo, *t = 0;
+        for (uint8_t *l = list; l >= top - length && l < fb && l[0] != 0xff; l += 4)
+            if (l[0] == 1) { t = l + ((int32_t)(BE32(*(uint32_t *)l) << 8) >> 8); break; }
+        if (!t || BE32(*(uint32_t *)t) != 0x00040001u || BE32(*(uint32_t *)(t + 4)) != want_type_lo) return 0;
+    }
+    for (; e[4] != 0xff; e += 4) {
+        uint32_t next = BE32(*(uint32_t *)(e + 4));
+        int32_t off = ((int32_t)(next << 8) >> 8) + 4;
+        *(uint32_t *)e = BE32((next & 0xff000000u) | ((uint32_t)off & 0xffffffu));
+    }
+    *(uint32_t *)e = BE32(0xff000000u);                 /* the end mark, one entry earlier */
+    *(uint32_t *)(e + 4) = 0;
+    *(uint32_t *)(fb + 8) = 0;
+    uint32_t crc = 0;
+    for (uint8_t *p = top - length; p < top; p++) crc = ((crc << 1) | (crc >> 31)) + *p;
+    *(uint32_t *)(fb + 8) = BE32(crc);
+    return 1;
+}
+
 void psmac_setup_memory(void *rom, uint32_t rom_sz)
 {
     psmac_read_options();
@@ -872,6 +934,8 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
                 if (sh_read(fd, dr + PSMB_DECLROM_SIZE - len, len)) kprintf("[PSMAC] declaration ROM %s: %d bytes at Mac 0x%08x\n", path, (int)len, PSMB_DECLROM_PHYS + PSMB_DECLROM_SIZE - (uint32_t)len);
             } else kprintf("[PSMAC] declaration ROM %s not loaded (len %d)\n", path, (int)len);
         }
+        if (!wired_ethernet_works() && declrom_drop(dr + PSMB_DECLROM_SIZE, 0x81, 0x00015053u))   /* drSwApple 1, drHw 'PS' */
+            kprintf("[PSMAC] declaration ROM: the wired Ethernet card ($81) left out, this Pi has none that works; the WiFi is the Mac's network card\n");
     }
     psmac_mbox_init(win_phys, ram_phys, ram_size);
 

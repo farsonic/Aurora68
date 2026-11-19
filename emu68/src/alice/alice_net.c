@@ -2115,7 +2115,11 @@ static void an_reset_session(void)
         u->tx_tail = u->tx_head;
         u->cmd_done = u->cmd_seq;
     }
+#ifdef PSMAC
+    kprintf("[NET] new Mac session (68k reset)\n");
+#else
     kprintf("[NET] new AmigaOS session (68k reset)\n");
+#endif
 }
 /* How CPU1 serves the board, once a second into unit 1's "where" (Alice68-Monitor DUMP):
    how often this runs, the longest gap between two runs, and the frames moved. A board of

@@ -150,7 +150,15 @@ ROM=rom/patched/MacIIci_psmac.rom HD=images/chd/sys710pi.chd tools/run-fullstack
 python3 tools/pinet.py /tmp/psmac-wifi peer        # in another shell
 ```
 With both sResources present MacTCP takes the Ethernet; choosing the WiFi from the control panel's
-list (its interface-name string, `+48` in `'ipln'`) is not decoded yet.
+list (its interface-name string, `+48` in `'ipln'`) is not decoded yet. Since 19 November the
+kernel settles it on a Pi that has no working wired Ethernet: before the 68k starts it takes
+sResource $81 out of the declaration ROM in RAM (the directory entries after it move up, the CRC
+is made again; `declrom_drop` in psmac_bus.c) when the device tree has no GENET (every Pi 3 and
+the Zero 2 W; the GENET is the Pi 4's), or `eth=off` is given. The testbed's file bridge
+(`mac.net=`) counts as a working wired card. The user's Pi 3B at 1920 by 1080 had Riptide bound
+to the dead card, pinging nobody; with the card hidden the Slot Manager's first Ethernet-type
+sResource is the WiFi's, whatever the declaration ROM's size. Lagoon EtherTalk with $81 still in
+parameter RAM ($E0) fails to open it and takes the first card it finds, the WiFi.
 
 ## The WiFi menu
 `WiFi Menu` (mac/wifimenu, an extension: drop it on the System Folder) puts a WiFi icon at the right

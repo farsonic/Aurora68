@@ -9,11 +9,16 @@
   Replace every declaration ROM along with `kernel8.img`: the frame buffer for thousands and
   millions of colours has moved, and an old declaration ROM with the new kernel (or the other way
   round) shows a grey screen in those modes.
-- **WiFi at every screen size.** Each larger screen size now has a declaration ROM with the WiFi
-  as the only network card, `aurora68-wifi-WxH.declrom` (`aurora68-wifi-1920x1080.declrom` and so
-  on), like `aurora68-wifi.declrom` at 640 by 480. A Pi 3 alone at a bigger screen had no network
-  on the Mac: the other sized ROMs list the wired Ethernet first, which a Pi 3 does not drive, and
-  MacTCP and Riptide take the first card. Put only one declaration ROM of a size in the container.
+- **Fixed: the network not working at bigger screen sizes on a Pi 3.** The declaration ROMs for
+  the larger screens list the wired Ethernet card first, which a Pi 3 does not drive, and MacTCP
+  and Riptide take the first card they find: the Mac sent its packets into a dead card. The kernel
+  now leaves the wired card out of whatever declaration ROM it serves when the Pi has no working
+  wired Ethernet (no GENET, which only the Pi 4 has, or `eth=off`), so the WiFi is the Mac's card
+  at every size. The log says "the wired Ethernet card ($81) left out". Lagoon EtherTalk set to the
+  wired card falls back to the first card it finds, now the WiFi.
+- **WiFi-only declaration ROMs for every size**, `aurora68-wifi-WxH.declrom` (like
+  `aurora68-wifi.declrom` at 640 by 480), for anyone who wants the file to say it. Put only one
+  declaration ROM of a size in the container: the kernel takes whichever comes last.
 - **PiDepth** is in the kit: renamed "PiDepth 32" and put in Startup Items, the Mac starts in
   millions of colours on a board whose parameter RAM forgets the Monitors setting.
 

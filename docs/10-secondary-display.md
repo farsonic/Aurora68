@@ -125,6 +125,45 @@ rectangle 0,640,768,1664), PiColor drawn by Color QuickDraw, the Finder's dither
 it, 3 MiB of frame buffer that cost the Macintosh nothing. Thousands of colours at 640 by 480
 (mode 132, fs165) draws the same window with the 16-bit pixels widened.
 
+## 1920 by 1200 (18-19 November)
+The user asked for a 1920 by 1200 screen in millions of colours. Two things stood in the way. No
+declaration ROM had that size (`RESES` in mac/Makefile stopped at 1920x1080), and the big region
+was too small: 1920 x 1200 x 4 bytes is 9,216,000, the region 8 MiB (8,388,608); 1080p, at
+8,294,400, had only just fitted. The region could not grow where it was. The slot's 16 MiB is
+spoken for: the window at $F9000000, the big region from $F9100000, the window again at
+$F9900000 (the ROM addresses the frame buffer as $F9980000) and the declaration ROM at
+$F9FF0000. What is left, $F9A00000-$F9FEFFFF, is under 6 MiB.
+
+But a NuBus slot owns 256 MiB more in 32-bit space, its super slot space: $90000000-$9FFFFFFF
+for slot 9. The big region now lives at the bottom of it, 9 MiB at $90000000 (psmb.h), which
+holds every size `mac.screen` accepts, up to 1920 by 1200, at 32 bits. Only 32-bit systems
+could reach the old place either, so nothing is lost: indexed modes that fit the window's top
+512 KiB stay there for 24-bit System 6, as before. The IIci ROM's 32-bit tables map
+$40000000-$FBAFFFFF one to one, so the MMU shim maps logical $90000000 to the Pi RAM behind it
+just as it did $F9100000, and the carve-out next to the window grows by 1 MiB. The kernel's
+placement rule is unchanged, so is the display block's layout (it stays at version 2), and
+mkdeclrom.py writes the same rule into each mode's vpBaseOffset: $90000000 - $F9980000, a sum
+that wraps round to the right address in 32 bits, and an error for a mode the region could not
+hold. One safety catch went into the driver: its grey fill writes to the mode's address, and in
+24-bit mode $90000000 comes out as $000000, the exception vectors, so the fill leaves a mode
+outside the slot's 24-bit megabyte alone until the Mac is in 32-bit mode.
+
+On the solo board (`tools/run-solo.sh`, `mac.screen=1920x1200`, `psmac-1920x1200.declrom`, a
+System 7.1 image with "PiDepth 32" and PiColor in Startup Items) QEMU granted the VideoCore
+buffer at 1920 x 1200 x 32 with a pitch of 7680, the driver's SetMode went to mode 133, and the
+heartbeat read `depth 32 rowbytes 7680`. `docs/img/system71-pi-1920x1200-millions.png` is the
+result: PiColor's hues and its sixteen-step grey ramp in millions of colours on a 1920 by 1200
+desktop. The VideoCore buffer at that size is 8.8 MiB; the firmware allocates it out of the
+`gpu_mem=64` split, which leaves room for it (a Pi 3 drives 1920 by 1200 at 60 Hz only with
+reduced blanking, `hdmi_group=2`, `hdmi_mode=69`). Not seen yet on a real Pi and monitor.
+The same runs checked what was there before: 1920 by 1080 in millions (heartbeat `depth 32
+rowbytes 7680`, PiPing's window over the Finder, `docs/img/solo-1920x1080-wifi-piping.png`,
+which is also the WiFi test of docs/09), 640 by 480 at 256 colours (the window region, `depth 8
+rowbytes 640`, the Finder in colour), and a 1024 by 768 run at 256 colours, whose 768 KiB frame
+buffer is in the big region too, drawing for ten minutes in another session's testbed. PiColor's
+window is placed at x = 660 for the two-screen layout, so at 640 by 480 on the solo board it is
+off the screen; that is PiColor's, not the display's.
+
 ## Colour (17 November, 01:30)
 PiColor (`mac/picolor.s`) opens a colour window on the Pi's screen and paints twelve hues at full
 and half strength, the primaries and a sixteen-step grey ramp with RGBForeColor and PaintRect.

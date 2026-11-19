@@ -155,17 +155,20 @@ the clock chip, the ADB transceiver (no keyboard or mouse yet), the SCC, the flo
      wifi.ssid= / wifi.psk= / wifi.country= words if you like, and mac.screen=WxH for a bigger
      screen with the matching declaration ROM in the container.
      A Pi 3 at a bigger screen with the WiFi: the Pi 3's wired Ethernet is not driven, and
-     MacTCP and Riptide take the first network card they find, so use the WiFi-only declaration
-     ROM of the screen's size. For a 1080p monitor (hdmi_group=2, hdmi_mode=82 in config.txt,
-     mac.screen=1920x1080 in cmdline.txt):
+     MacTCP and Riptide take the first network card they find. The kernel now takes the wired
+     card out of the declaration ROM by itself on a Pi with no working wired Ethernet (every
+     Pi 3, the Zero 2 W, or eth=off), so the ordinary declaration ROM of the screen's size will
+     do; the WiFi-only ones (aurora68-wifi-WxH.declrom) say the same thing in the file. For a
+     1080p monitor (hdmi_group=2, hdmi_mode=82 in config.txt, mac.screen=1920x1080 in
+     cmdline.txt):
 
         python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom \
           aurora68-wifi-1920x1080.declrom MyMac.img \
           cyfmac43430-sdio.bin brcmfmac43430-sdio.txt cyfmac43430-sdio.clm_blob BCM43430A1.hcd
 
-     Put only one declaration ROM of that size in the container: with both
+     Put only one declaration ROM of each size in the container: with both
      aurora68-1920x1080.declrom and aurora68-wifi-1920x1080.declrom the kernel takes whichever
-     comes last, and the wired one leaves the Mac with no working network.
+     comes last. The log says "the wired Ethernet card ($81) left out" when it hides the card.
      For a 1920 by 1200 monitor in millions of colours: in config.txt hdmi_group=2 and
      hdmi_mode=69; in cmdline.txt mac.screen=1920x1200; aurora68-1920x1200.declrom (on a Pi 3,
      aurora68-wifi-1920x1200.declrom) in the container in place of aurora68.declrom. On the Mac choose Millions in Monitors (32-bit
