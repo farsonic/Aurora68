@@ -811,6 +811,16 @@ static void image_scan(void)
 /* the loader: one LCHUNK at a time, LSLICE sectors per pass; a chunk the Mac waits for first */
 static struct { int active, img; uint32_t chunk, done, cursor; } ld;
 static volatile int want_img = -1; static volatile uint32_t want_chunk;
+/* One owner of the card at a time. Core 3 holds it for each of its passes (psmac_card_poll) and for
+   PiDisk's blocks; core 0 takes it to read a chunk the Mac is waiting for itself when core 3 has not
+   come round to it (chunk_load_direct). Before 20 November core 0 only asked and waited, and gave up
+   after ten seconds: on the user's Pi 3B core 3 was busy elsewhere (the WiFi's turn joining the
+   network) and the solo board's SCSI disk served blocks that were not yet in memory, zeros, while
+   the Finder loaded: "Error type 41", and a Restart, with the image complete by then, worked
+   (docs/08 item 54). */
+static spinlock_t card_lock;
+static uint32_t card_slow_us;               /* mac.cardslow=N: N us more per card sector read, the testbed's slow card */
+static void chunk_load_direct(struct img *m, uint32_t c);
 static int chunk_in(const struct img *m, uint32_t c) { return (__atomic_load_n(&m->loaded[c / 32], __ATOMIC_ACQUIRE) >> (c % 32)) & 1; }
 static int load_pick(void)
 {
@@ -852,6 +862,8 @@ static int load_step(void)
     if (n > run) n = run;
     int e = lba && n ? -9 : -8;
     for (int tries = 0; tries < 3 && e; tries++) e = lba && n ? sd_read_multi(lba, lbuf, n) : -8;
+    if (card_slow_us) udelay(card_slow_us * n);
+    if (chunk_in(m, ld.chunk)) { ld.active = 0; return 1; }   /* core 0 read this chunk itself: its copy, and the Mac's writes since, stay */
     if (e) {
         /* the card failed under the image: what is missing stays zero, and nothing of this image
            is written back, so the file on the card is not made worse */
@@ -865,7 +877,7 @@ static int load_step(void)
     if (first + n >= end) {
         __atomic_fetch_or(&m->loaded[ld.chunk / 32], 1u << (ld.chunk % 32), __ATOMIC_RELEASE);
         ld.active = 0;
-        if (++m->nloaded == m->nload) {
+        if (__atomic_add_fetch(&m->nloaded, 1, __ATOMIC_RELAXED) == m->nload) {
             uint32_t ms_ = (uint32_t)((cnt() - m->load_t0) * 1000u / frq());
             kprintf("[CARD] %s: all %u MB read from the card in %u ms (%u KB/s)\n", m->name, m->len >> 20, ms_, ms_ ? (uint32_t)((uint64_t)m->len / ms_) : 0);
             psmac_boot_mark("card: disk image %s loaded (%u MB, %u ms)", m->name, m->len >> 20, ms_);
@@ -889,16 +901,28 @@ void psmac_card_need(const void *p, uint32_t len)
         for (uint32_t c = c0; c <= c1 && c < m->nload; c++) {
             if (chunk_in(m, c)) continue;
             if (on_core3()) {
+                spinlock_acquire(&card_lock);
                 if (ld.active && !(ld.img == i && ld.chunk == c)) while (ld.active) load_step();   /* the chunk in hand first */
                 if (!chunk_in(m, c)) { if (!ld.active) { ld.active = 1; ld.img = i; ld.chunk = c; ld.done = 0; } while (ld.active) load_step(); }
+                spinlock_release(&card_lock);
                 continue;
             }
+            /* core 0 (the solo board's SCSI disk): core 3 is asked first, and given two milliseconds;
+               then this core reads the chunk itself whenever the card is free. It never serves a
+               block that is not in memory while the card answers. */
             want_chunk = c;
             __atomic_store_n(&want_img, i, __ATOMIC_RELEASE);
-            uint64_t t0 = cnt();
-            while (!chunk_in(m, c) && sd.state == 1 && cnt() - t0 < 10 * frq()) __asm__ volatile("yield");
+            uint64_t t0 = cnt(); int said = 0;
+            while (!chunk_in(m, c) && sd.state == 1) {
+                if (cnt() - t0 > frq() / 500 && spinlock_try_acquire(&card_lock)) {
+                    if (!chunk_in(m, c)) chunk_load_direct(m, c);
+                    spinlock_release(&card_lock);
+                }
+                if (!said && cnt() - t0 > frq()) { said = 1; kprintf("[CARD] %s: the Mac waits for block %u from the card\n", m->name, c * (LCHUNK / 512u)); }
+                __asm__ volatile("yield");
+            }
             __atomic_store_n(&want_img, -1, __ATOMIC_RELEASE);
-            if (!chunk_in(m, c)) { kprintf("[CARD] %s: block %u not read from the card in 10 s\n", m->name, c * (LCHUNK / 512u)); return; }
+            if (!chunk_in(m, c)) { kprintf("[CARD] %s: the card stopped answering; block %u is not in memory\n", m->name, c * (LCHUNK / 512u)); return; }
         }
         return;
     }
@@ -960,10 +984,56 @@ next_sector:
     }
 }
 
+/* core 0's read of one chunk, the card lock held: a sector being programmed is finished first (the
+   flush goes on from the next one on core 3's next pass), then the chunk in one command per extent
+   run. Core 3's loader leaves a chunk alone once its bit is set (load_step). */
+static uint8_t dbuf[LCHUNK] __attribute__((aligned(16)));
+static void chunk_load_direct(struct img *m, uint32_t c)
+{
+    while (fl.busy) {
+        int k = sd_write_poll();
+        if (k == 0) continue;
+        fl.busy = 0;
+        if (k < 0) { kprintf("[CARD] write failed (status %x): %s's writes stop here\n", sd.last_hsts, imgs[fl.img].name); imgs[fl.img].ok = 0; fl.img = -1; break; }
+        imgs[fl.img].written++;
+        if (++fl.sec > fl.last) fl.img = -1;
+    }
+    uint32_t first = c * (LCHUNK / 512u), secs = (m->len + 511u) / 512u, end = first + LCHUNK / 512u;
+    if (end > secs) end = secs;
+    for (uint32_t s = first; s < end; ) {
+        uint32_t run = 0, lba = file_lba(m, s * 512u, &run), n = end - s;
+        if (n > run) n = run;
+        int e = lba && n ? -9 : -8;
+        for (int tries = 0; tries < 3 && e; tries++) e = lba && n ? sd_read_multi(lba, dbuf, n) : -8;
+        if (card_slow_us) udelay(card_slow_us * n);
+        if (e) { kprintf("[CARD] %s: read error %d at sector %u (status %x): the image is incomplete, its changes stay in memory\n", m->name, e, s, sd.last_hsts); m->ok = 0; if (!n) n = end - s; }
+        else { uint32_t bytes = n * 512u; if (s * 512u + bytes > m->len) bytes = m->len - s * 512u; memcpy((uint8_t *)m->ram + s * 512u, dbuf, bytes); }
+        s += n;
+    }
+    __atomic_fetch_or(&m->loaded[c / 32], 1u << (c % 32), __ATOMIC_RELEASE);
+    if (__atomic_add_fetch(&m->nloaded, 1, __ATOMIC_RELAXED) == m->nload)
+        kprintf("[CARD] %s: all %u MB read from the card\n", m->name, m->len >> 20);
+}
+
 /* ==== core 3 ================================================================================== */
 static uint32_t start_at;
 static void card_start(void);
+static void card_poll_locked(void);
 void psmac_card_poll(void)
+{
+    if (!spinlock_try_acquire(&card_lock)) return;       /* core 0 is reading a chunk the Mac waits for */
+    card_poll_locked();
+    spinlock_release(&card_lock);
+    /* mac.cardstall=S (testbed): once, as soon as an image is coming in, keep core 3 away from the
+       card for S seconds, as the WiFi's turn did on the user's Pi; the Mac must still get its blocks */
+    static int stall = -1;
+    if (stall < 0) { const char *o = psmac_option("mac.cardstall"); stall = 0; if (o) while (*o >= '0' && *o <= '9') stall = stall * 10 + (*o++ - '0'); }
+    if (stall > 0 && nimg && imgs[0].loaded && imgs[0].nloaded) {
+        kprintf("[CARD] mac.cardstall=%d: core 3 kept away from the card for %d s\n", stall, stall);
+        udelay((uint32_t)stall * 1000000u); stall = 0;
+    }
+}
+static void card_poll_locked(void)
 {
     if (sd.state == 0) {
         card_start();
@@ -976,13 +1046,18 @@ void psmac_card_poll(void)
     if (__atomic_load_n(&opt_state, __ATOMIC_ACQUIRE) == 1 && !sd.ro) { cmdline_apply(); return; }
     { extern int psmac_solo_pram_take(uint8_t out[260]); static uint8_t p[260];
       if (!sd.ro && psmac_solo_pram_take(p)) { pram_write(p); return; } }
-    if (load_step()) return;                           /* a disk image still coming in from the card */
+    /* a disk image still coming in from the card, and the Mac's changes going back: every other pass
+       each, so writes made while a large image loads are on the card long before it is complete */
+    static unsigned turn;
+    if ((++turn & 1) && first_dirty_t) { flush_poll(); if (fl.busy) return; }
+    if (load_step()) return;
     flush_poll();
 }
 /* the card's first look, on core 3's first pass: the card, its FAT, pairings.txt, the container, an image */
 static void card_start(void)
 {
     if (!start_at) start_at = ms() ? ms() : 1;
+    { const char *o = psmac_option("mac.cardslow"); if (o) { uint32_t v = 0; while (*o >= '0' && *o <= '9') v = v * 10 + (uint32_t)(*o++ - '0'); card_slow_us = v; kprintf("[CARD] mac.cardslow=%u: %u us more per sector read (a slow card, for the testbed)\n", v, v); } }
     const char *o = psmac_option("mac.card");
     if (o && o[0] == 'o' && o[1] == 'f') { sd.state = -2; pair_state = -1; kprintf("[CARD] off (mac.card=off)\n"); return; }
     if (alice_pi_is_2711()) { sd.state = -1; pair_state = -1; kprintf("[CARD] the Pi 4's card controller is not supported yet: nothing saved\n"); return; }

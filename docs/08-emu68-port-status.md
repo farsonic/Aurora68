@@ -1391,6 +1391,47 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    cache in between. The end of each data-in transfer now moves the epoch (`psmac_board_solo.c`).
    No crash was traced to this; it closes a gap the other boards never had.
 
+54. **"Error type 41" from a disk image on the card (20 November).** The user's Pi 3B (solo board,
+   1df6f2a, a 1 MB container, the 100 MB test image as a file on the card with `mac.image=`) stopped
+   with "Sorry, a system error occurred. 'Finder' Error type 41" (the Finder could not be loaded).
+   Restart then reached the desktop, and the next power-on did too: intermittent, and fine once the
+   image was all in memory. So blocks were served before they were loaded.
+   Every read of a memory image already asked for its whole range first (`psmac_card_need`, called
+   by the solo board's SCSI READ and WRITE before the data phase, and by PiDisk's block service), and
+   the pseudo-DMA and blind transfers only move what that range holds. The hole was in the asking.
+   Core 0 (the 68k's own core, which runs the solo board's SCSI target) only posted the chunk it
+   needed to core 3 and waited, and after ten seconds it gave up and served whatever was in memory,
+   zeros. Core 3 runs the card between other work, and on the user's Pi the WiFi's turn (joining
+   the network the cmdline names) could keep it away for that long; the testbed has no WiFi chip and
+   never saw it.
+   - *Reproduced* in the solo testbed with two test options: `mac.cardstall=S` keeps core 3 away from
+     the card for S seconds once the image has started coming in, as the WiFi did, and
+     `mac.cardslow=N` adds N microseconds per sector read, a slow card. With the old code and
+     `mac.cardstall=20` the log said "block 64 not read from the card in 10 s" and the Mac crashed
+     at once (an F-line trap in the system heap, in code that was zeros).
+   - *Fixed* (`psmac_card.c`): the card has one owner at a time, a lock that core 3 holds for each
+     pass of its card work and for PiDisk's blocks. Core 0 asks core 3 first and gives it two
+     milliseconds; after that it reads the chunk itself whenever the lock is free (`chunk_load_direct`,
+     the chunk in one command per extent run, after finishing any sector being programmed). It never
+     gives up while the card answers; after a second it says so once ("the Mac waits for block N").
+     Core 3's loader leaves a chunk alone if core 0 has read it meanwhile, so a block the Mac wrote
+     after core 0 read it is not overwritten from the card; writes still need their chunk in memory
+     first, as before.
+   - *Proved* in the testbed, the test image with Octavo and Speedometer in Startup Items, booted from
+     the card: with `mac.cardstall=20` the Finder at 29 s, Octavo drawing its first page and
+     Speedometer starting; with `mac.cardslow=300` the same with the image only three-quarters read
+     when the applications ran; with `mac.cardslow=1000` and `mac.cardstall=15`, and then
+     `mac.cardslow=2000` on the same card (a second power-on), the Finder and Octavo again with the
+     image 40 and 29 per cent read. No crash in any of the five boots, and the image on the card
+     still mounts with hfsutils afterwards.
+   - *Writes during loading:* the card writer's flush had waited until the whole image was in, so on
+     a real card the Mac's changes could sit in memory for minutes. Core 3 now alternates a pass of
+     flushing with a pass of loading; with `mac.cardslow=1000` the log read "144 KB written, 0 KB
+     waiting, 40% read from the card".
+
+   The workaround meanwhile, the image back inside the container, is safe with 1df6f2a: an image in
+   the container is all in memory before the 68k starts and a card image is then not taken.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

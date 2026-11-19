@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Fixed: "Error type 41" (the Finder could not be loaded) booting from a disk image on the card.**
+  When the Pi was busy elsewhere (joining the WiFi) the Mac could be given blocks of the image that
+  had not yet come in from the card. Every read now waits for its blocks, and the Mac's own core
+  reads them from the card itself when the rest of the Pi is busy. An image inside the container
+  was never affected.
 - **More than one disk on the Pi alone (`mac.board=solo`).** A second disk image, in the container or
   as a file on the card beside the first, never appeared on the desktop: as a SCSI disk it needed
   its own driver to mount it, and the Iomega driver on most images mounts only the startup disk.
