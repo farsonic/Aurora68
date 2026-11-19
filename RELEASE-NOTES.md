@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Parameter RAM kept on the card (the Pi alone, `mac.board=solo`).** AppleTalk active in the
+  Chooser, the Network control panel's connection (Lagoon EtherTalk), Monitors' depth, the startup
+  disk and the sound used to go back to the defaults at every power-on. The kernel now keeps them
+  in `pram.bin` on the SD card, as a real Mac keeps them in a chip with a battery: written a
+  second after the Mac changes them, once the Finder is up, and read before the Mac's first look at
+  the next power-on; the clock goes on from where the last save left it. `mac.appletalk=1` and
+  `mac.xpram=` still apply on top; `mac.card=ro` or `off` stop the writing; delete `pram.bin` for
+  the defaults.
 - **Both network cards on every board that has two: the Pi 3's wired port is driven.** The Pi 3B's
   RJ45 socket is a LAN9514 on the Pi's own USB bus and the 3B+'s a LAN7800 behind two USB hubs;
   the kernel now drives both (beside the USB keyboard and mouse, on the same bus), as the wired

@@ -493,6 +493,51 @@ void psmac_card_save_pairings(const char *text, uint32_t len)
     __atomic_store_n(&pair_dirty, 1, __ATOMIC_RELEASE);
 }
 
+/* ==== pram.bin: the solo board's parameter RAM ================================================
+   A real Mac keeps its parameter RAM in a chip with a battery: AppleTalk active (the Chooser), the
+   Network control panel's connection (extended PRAM $E0), Monitors' depth, the startup disk, the
+   sound. The solo board's chip (psmac_board_solo.c) started from its defaults at every power-on.
+   pram.bin in the card's root keeps the 256 bytes and then the clock (4 bytes, the Mac's seconds
+   since 1904, big-endian, as it was at the save), in one cluster, created the first time it is
+   written. Read at the card's first look; written when the board hands over a change, which it does
+   a second after the Mac's last one and never during the boot. mac.card=ro reads it only. */
+static uint8_t pram_text[512]; static uint32_t pram_len; static int pram_state;   /* 0 pending, 1 read, -1 none */
+static struct cfile pram_file; static int pram_have;
+static void pram_load(void)
+{
+    pram_have = file_find("pram.bin", &pram_file) == 0;
+    pram_len = 0;
+    if (pram_have && pram_file.clus >= 2 && pram_file.size >= 256 && !sd_read(clus_lba(pram_file.clus), sec)) {
+        pram_len = pram_file.size < 260 ? pram_file.size : 260;
+        for (uint32_t i = 0; i < pram_len; i++) pram_text[i] = sec[i];
+    }
+    __atomic_store_n(&pram_state, pram_len ? 1 : -1, __ATOMIC_RELEASE);
+    kprintf("[CARD] pram.bin: %s\n", pram_len ? "read" : pram_have ? "too short, not used" : "not on the card yet");
+}
+static void pram_write(const uint8_t *p)
+{
+    if (!pram_have) {
+        if (file_create("PRAM", "BIN", &pram_file)) { kprintf("[CARD] could not create pram.bin (root directory full?)\n"); return; }
+        pram_have = 1;
+    }
+    for (uint32_t j = 0; j < 512; j++) sec[j] = j < 260 ? p[j] : 0;
+    if (sd_write(clus_lba(pram_file.clus), sec)) { kprintf("[CARD] pram.bin: write failed\n"); return; }
+    if (pram_file.size != 260) {
+        if (sd_read(pram_file.dir_lba, sec)) return;
+        put32(sec + pram_file.dir_off + 28, 260);
+        if (sd_write(pram_file.dir_lba, sec)) return;
+        pram_file.size = 260;
+    }
+    kprintf("[CARD] pram.bin: parameter RAM saved\n");
+}
+/* psmac_board_solo.c: pram.bin as the card had it at start (state 0 pending, 1 read, -1 none) */
+const uint8_t *psmac_card_pram(int *state, uint32_t *len)
+{
+    *state = sd.state < 0 ? -1 : __atomic_load_n(&pram_state, __ATOMIC_ACQUIRE);
+    *len = pram_len;
+    return *state == 1 ? pram_text : 0;
+}
+
 /* ==== cmdline.txt: the options the Mac asks to change ========================================
    The edit list is Alice68's (alice_net.h, struct an_setup): lines "-NAME" (drop the option NAME)
    and "+NAME=VALUE" (replace NAME, or add it at the end). Options are the line's words; a
@@ -894,6 +939,8 @@ void psmac_card_poll(void)
     if (fl.busy) { flush_poll(); return; }             /* a sector is being programmed: nothing else touches the card */
     if (__atomic_load_n(&pair_dirty, __ATOMIC_ACQUIRE) && !sd.ro) { pair_dirty = 0; pairings_write(); return; }
     if (__atomic_load_n(&opt_state, __ATOMIC_ACQUIRE) == 1 && !sd.ro) { cmdline_apply(); return; }
+    { extern int psmac_solo_pram_take(uint8_t out[260]); static uint8_t p[260];
+      if (!sd.ro && psmac_solo_pram_take(p)) { pram_write(p); return; } }
     if (load_step()) return;                           /* a disk image still coming in from the card */
     flush_poll();
 }
@@ -912,6 +959,7 @@ static void card_start(void)
     if (e) { sd.state = -1; pair_state = -1; kprintf("[CARD] no FAT16/FAT32 partition found (%d)\n", e); return; }
     kprintf("[CARD] %s card, FAT%d at sector %u, %u-byte clusters%s\n", sd.ccs ? "SDHC/SDXC" : "SDSC", fs.fat32 ? 32 : 16, fs.part, fs.spc * 512u, sd.ro ? ", read only (mac.card=ro)" : "");
     pairings_load();
+    pram_load();
     container_check();
     image_scan();
     psmac_boot_mark("card: mounted, pairings read, disk images found");

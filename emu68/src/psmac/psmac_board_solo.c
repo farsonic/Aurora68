@@ -78,8 +78,58 @@ static struct {
     uint32_t cmds;
 } rtc;
 
+/* Parameter RAM across power cycles (19 November): a real Mac's chip has a battery, this one had
+   the defaults at every power-on, so AppleTalk, the Network control panel's connection, Monitors'
+   depth and the startup disk lasted only until the Pi was switched off. The card writer keeps it in
+   pram.bin on the SD card (psmac_card.c): read at the card's first look, which the chip's first
+   command waits for (a few tens of milliseconds at most after the 68k starts), and written back a
+   second after the Mac's last change, once the boot is over. mac.appletalk= and mac.xpram= still
+   apply on top of what the card held. */
+static volatile uint32_t pram_gen, pram_saved_gen;      /* changes made, changes handed to the card */
+static volatile uint64_t pram_changed_at;
+static int pram_loaded;
+static void pram_overrides(void);
+static void pram_set(int addr, uint8_t v)
+{
+    if (rtc.pram[addr & 0xff] == v) return;
+    rtc.pram[addr & 0xff] = v;
+    pram_gen++; pram_changed_at = cnt_now();
+}
+static void pram_from_card(void)
+{
+    extern const uint8_t *psmac_card_pram(int *state, uint32_t *len);
+    int st = 0; uint32_t len = 0; const uint8_t *p = 0;
+    uint64_t t0 = cnt_now();
+    while ((p = psmac_card_pram(&st, &len)) == 0 && st == 0 && cnt_now() - t0 < 3 * cnt_frq()) __asm__ volatile("yield");
+    pram_loaded = 1;
+    if (!p || len < 256) { kprintf("[PSMAC:SOLO] parameter RAM: the defaults (no pram.bin on the card)\n"); return; }
+    for (int i = 0; i < 256; i++) rtc.pram[i] = p[i];
+    if (len >= 260) {                        /* the clock as it was at the last save: better than 17 November */
+        uint32_t sec = (uint32_t)p[256] << 24 | (uint32_t)p[257] << 16 | (uint32_t)p[258] << 8 | p[259];
+        if (sec > rtc.seconds) rtc.seconds = sec;
+    }
+    pram_overrides();
+    pram_saved_gen = pram_gen;
+    kprintf("[PSMAC:SOLO] parameter RAM from pram.bin on the card (%u bytes)\n", len);
+}
+/* core 3 (psmac_card.c): the parameter RAM and the clock to save, once a second has passed since
+   the Mac's last change and the boot is over; 0 when there is nothing to save */
+int psmac_solo_pram_take(uint8_t out[260])
+{
+    extern int psmac_boot_settled(void);
+    if (!psmac_board_solo || pram_gen == pram_saved_gen || cnt_now() - pram_changed_at < cnt_frq() || !psmac_boot_settled()) return 0;
+    lock();
+    uint32_t g = pram_gen;
+    for (int i = 0; i < 256; i++) out[i] = rtc.pram[i];
+    out[256] = rtc.seconds >> 24; out[257] = rtc.seconds >> 16; out[258] = rtc.seconds >> 8; out[259] = rtc.seconds;
+    unlock();
+    pram_saved_gen = g;
+    return 1;
+}
+
 static void rtc_execute(uint8_t data)
 {
+    if (!pram_loaded) pram_from_card();
     rtc.cmds++;
     if (rtc.state == 2) {                   /* extended: second byte carries the low address bits */
         rtc.xpaddr = ((rtc.cmd & 7) << 5) | ((data & 0x7c) >> 2);
@@ -87,16 +137,16 @@ static void rtc_execute(uint8_t data)
         else { rtc.state = 3; rtc.byte = 0; rtc.bits = 0; }
         return;
     }
-    if (rtc.state == 3) { rtc.pram[rtc.xpaddr] = data; rtc.state = 0; return; }
+    if (rtc.state == 3) { pram_set(rtc.xpaddr, data); rtc.state = 0; return; }
     if (rtc.state == 1) {
         rtc.state = 0;
         int i = (rtc.cmd >> 2) & 0x1f;
         if (rtc.write_protect && i != 13) return;
         if (i < 4) { rtc.seconds = (rtc.seconds & ~(0xffu << (8 * i))) | ((uint32_t)data << (8 * i)); }
-        else if (i >= 8 && i < 12) rtc.pram[i] = data;
+        else if (i >= 8 && i < 12) pram_set(i, data);
         else if (i == 12) { /* test register */ }
         else if (i == 13) rtc.write_protect = (data & 0x80) != 0;
-        else if (i >= 16) rtc.pram[i] = data;
+        else if (i >= 16) pram_set(i, data);
         return;
     }
     rtc.cmd = data;
@@ -787,9 +837,18 @@ void psmac_solo_init(void)
     t_base = cnt_now();
     for (int i = 0; i < 256; i++) rtc.pram[i] = psmac_pram_default[i];
     rtc.seconds = 0xe7214980u;              /* 17 November 2026, 00:00, in the Mac's seconds since 1904 */
+    pram_loaded = 0;                         /* pram.bin from the card at the chip's first command */
+    pram_overrides();
+    rtc.enb = 1;
+    static const char *const keys[] = { "mac.scsi0", "mac.scsi1", "mac.scsi2", "mac.scsi3", "mac.scsi4", "mac.scsi5", "mac.scsi6" };
+    for (int i = 0; i < 7; i++) { const char *p = psmac_option(keys[i]); if (p) disk_add_file(p); }
+    psmac_solo_reset();
+    kprintf("[PSMAC:SOLO] no Macintosh: VIA, RTC/PRAM, ADB (no devices), SCC, IWM (no drive) and an NCR 5380 answered here\n");
+}
+static void pram_overrides(void)
+{
     /* mac.appletalk=1: AppleTalk active from the start (SPConfig, PRAM $13, low nibble 1 = the
-       printer port is AppleTalk's). PRAM starts from the defaults at every power-on, so the
-       Chooser's choice lasts until the Pi is switched off; this makes it the default. */
+       printer port is AppleTalk's), whatever the defaults or pram.bin on the card say */
     { const char *a = psmac_option("mac.appletalk"); if (a && a[0] == '1') rtc.pram[0x13] = (uint8_t)((rtc.pram[0x13] & 0xf0) | 1); }
     /* mac.xpram=ADDR:HEXBYTES[,ADDR:HEXBYTES]: preset extended PRAM, for testing what the
        control panels would store (e0:098100a8 = the AppleTalk connection: slot 9, sResource
@@ -807,11 +866,6 @@ void psmac_solo_init(void)
           }
           if (*x == ',') x++;
       } }
-    rtc.enb = 1;
-    static const char *const keys[] = { "mac.scsi0", "mac.scsi1", "mac.scsi2", "mac.scsi3", "mac.scsi4", "mac.scsi5", "mac.scsi6" };
-    for (int i = 0; i < 7; i++) { const char *p = psmac_option(keys[i]); if (p) disk_add_file(p); }
-    psmac_solo_reset();
-    kprintf("[PSMAC:SOLO] no Macintosh: VIA, RTC/PRAM, ADB (no devices), SCC, IWM (no drive) and an NCR 5380 answered here\n");
 }
 /* from psmac_setup_memory once the container has been read: the disks the Mac will find */
 void psmac_solo_start(void)

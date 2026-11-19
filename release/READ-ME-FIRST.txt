@@ -190,9 +190,9 @@ the clock chip, the ADB transceiver (no keyboard or mouse yet), the SCC, the flo
      For a 1920 by 1200 monitor in millions of colours: in config.txt hdmi_group=2 and
      hdmi_mode=69; in cmdline.txt mac.screen=1920x1200; aurora68-1920x1200.declrom (on a Pi 3,
      aurora68-wifi-1920x1200.declrom) in the container in place of aurora68.declrom. On the Mac choose Millions in Monitors (32-bit
-     addressing must be on; the solo board's parameter RAM has it on). Parameter RAM does not
-     survive a power cycle yet, so to start in millions every time put PiDepth (in Mac/) in the
-     System Folder's Startup Items and rename it "PiDepth 32".
+     addressing must be on; the solo board's parameter RAM has it on). The choice is kept in
+     pram.bin on the card (below); PiDepth (in Mac/), renamed "PiDepth 32" in the System Folder's
+     Startup Items, still sets it at every start if you prefer.
   4. Boot. The ROM's memory test takes a few seconds, the happy Mac appears, then "Welcome to
      Macintosh" and the Finder, about a minute on a Pi 3.
   5. Mouse and keyboard, over Bluetooth (new in 0.5). The kernel starts the Pi's Bluetooth unless
@@ -210,8 +210,13 @@ after the Mac stops writing (new in 0.5), so the next boot starts where the last
 copy of aurora68.cpio somewhere else: a power cut in the middle of a write can damage the image,
 as it would a real disk. Bluetooth pairings are kept in pairings.txt on the card, which the
 kernel creates; the bt.dev= words in cmdline.txt still work and are read first. mac.card=ro or
-mac.card=off in cmdline.txt stop the writing. The clock starts on 17 November 2026 and parameter
-RAM changes do not survive a power cycle yet. With
+mac.card=off in cmdline.txt stop the writing. Parameter RAM (new in the next release) is kept
+in pram.bin on the card, as a real Mac keeps it in a chip with a battery: AppleTalk active in the
+Chooser, the Network control panel's choice (Lagoon EtherTalk), Monitors' depth, the startup disk,
+the sound. The kernel writes it a second after the Mac changes it, once the Finder is up, and reads
+it before the Mac does at the next power-on; the clock goes on from where the last save left it.
+mac.appletalk=1 and mac.xpram= still apply on top of it. Delete pram.bin to start from the
+defaults. With
 mac.board=se (the SE board) the same image appears as a PiDisk volume instead.
 
 A Pi Zero W (the original, 2017) cannot run this: its processor is 32-bit only. The Zero 2 W can.

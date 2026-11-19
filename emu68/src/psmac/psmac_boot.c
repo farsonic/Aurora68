@@ -151,9 +151,12 @@ void psmac_boot_mac_line(const char *text)
 
 /* the Finder: the Process Manager names the frontmost application in CurApName ($910), a Pascal
    string; the service core looks ten times a second until it says Finder (psmac_bus.c) */
+static volatile int finder_seen;
 void psmac_boot_curapname(const uint8_t *s)
 {
-    static int seen;
-    if (seen || s[0] != 6) return;
-    if (s[1] == 'F' && s[2] == 'i' && s[3] == 'n' && s[4] == 'd' && s[5] == 'e' && s[6] == 'r') { seen = 1; psmac_boot_mark("Mac: the Finder is running (CurApName)"); }
+    if (finder_seen || s[0] != 6) return;
+    if (s[1] == 'F' && s[2] == 'i' && s[3] == 'n' && s[4] == 'd' && s[5] == 'e' && s[6] == 'r') { finder_seen = 1; psmac_boot_mark("Mac: the Finder is running (CurApName)"); }
 }
+/* the boot is over: the Finder has run, or three minutes have passed (a Mac that starts some other
+   shell); the solo board's parameter RAM is saved only after it (psmac_board_solo.c) */
+int psmac_boot_settled(void) { return finder_seen || (gt_now() - gt_entry) > 180u * gt_frq(); }

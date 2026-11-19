@@ -1223,6 +1223,32 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    the card; whether `gpu_mem=16` with start_cd.elf keeps the SE's HDMI picture; the card loader's
    speed at 25 MHz (50 MHz high speed is a later step if it is the bottleneck).
 
+51. **Parameter RAM kept on the card (19 November).** The user set AppleTalk active in the
+   Chooser and chose Lagoon EtherTalk in the Network control panel on the bench (solo board); a
+   power-off would have lost both. A real Mac keeps its parameter RAM in a chip with a battery; the
+   solo board's clock chip (`psmac_board_solo.c`) started from `psmac_pram_default.h` at every
+   power-on. Now the card writer keeps it in `pram.bin` in the card's root, the way it keeps
+   `pairings.txt` (`psmac_card.c`): 256 bytes of parameter RAM and then the clock, four bytes of the
+   Mac's seconds since 1904, in one cluster created the first time it is written.
+   - *Reading.* The card's first look on core 3 reads it. The chip's first command (the ROM's first
+     PRAM access, a few milliseconds after the 68k starts now that the RAM test and the chime are
+     gone) waits for that look, at most three seconds, then takes the 256 bytes over the defaults,
+     the clock if it is later than the default's 17 November, and applies `mac.appletalk=` and
+     `mac.xpram=` on top, as before.
+   - *Writing.* Every write the chip takes that changes a byte counts as a change. Core 3 hands the
+     256 bytes and the clock to the card a second after the last change, and only once the boot is
+     over (the Finder seen in CurApName, or three minutes): the ROM and the System write parameter
+     RAM while they start, and a power cut in a half-written file should not be the price of a
+     boot. `mac.card=ro` and `off` stop the writing (`ro` still reads it).
+   - *The clock* goes on from the last save, which is better than 17 November every time but still
+     stands still while the Pi is off.
+
+   Solo testbed with the card image (QEMU, `CARD=`): the first boot logs "pram.bin: not on the card
+   yet" and "parameter RAM: the defaults", then after the Finder "pram.bin: parameter RAM saved": the
+   Mac had changed $01 and $59 and written slot 9's parameter RAM at $46-$48 ('PS', $80). The next
+   boot from the same card logs "pram.bin: read" and "parameter RAM from pram.bin on the card (260
+   bytes)" before the ROM's first PRAM read.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

@@ -218,7 +218,9 @@ writes `wifi.ssid=` and `wifi.psk=` into cmdline.txt on the Pi's card once the j
 the next power-on joins by itself. The rest of cmdline.txt is kept (docs/08 items 43 and 44).
 
 ## AppleTalk on the solo board
-`mac.appletalk=1` starts with AppleTalk active (PRAM's SPConfig). LocalTalk runs over the solo
+`mac.appletalk=1` starts with AppleTalk active (PRAM's SPConfig), on top of whatever `pram.bin` on
+the card holds: the solo board keeps its parameter RAM there across power cycles (docs/08 item 51),
+so the Chooser's choice lasts by itself. LocalTalk runs over the solo
 board's SCC stand-in, whose transmitter finishes every frame into an empty network (docs/08
 item 43), so the boot and the Network control panel work. There is nobody to talk to there.
 For AppleTalk over the Pi's Ethernet (or WiFi) card, Lagoon brings its own connection file,
