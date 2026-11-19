@@ -269,7 +269,9 @@ open_next:
 	move.w	#1,4(%a0)		| vType
 	lea	mount_vbl(%pc),%a1
 	move.l	%a1,6(%a0)
-	move.w	#3600,10(%a0)		| first event 60 s after Open: the Finder is up by then
+	move.w	#300,10(%a0)		| first event 5 s after Open, then every 2 s until the File Manager reads
+					| us: an event posted before the Finder runs is flushed and posted again,
+					| and a fast boot (docs/08 item 50) no longer waits a minute for the volume
 	move.w	#0,12(%a0)
 	.short	_VInstall
 open_ok:
@@ -432,8 +434,9 @@ d_close:
 	moveq	#noErr,%d0
 	rts
 
-| ---- VBL task (every 5 s): post one diskEvt per drive until the File Manager has read from us
-|      (events posted before the Finder runs are flushed at startup), at most 24 times ----
+| ---- VBL task (every 2 s): post one diskEvt per drive until the File Manager has read from us
+|      (events posted before the Finder runs are flushed at startup), at most 200 times; the log
+|      has the first post only ----
 mount_vbl:
 	movem.l	%d0-%d2/%a0-%a2,-(%sp)
 	move.l	14(%a0),%a2		| globals
@@ -453,12 +456,14 @@ mount_vbl:
 	.short	0xA02F			| _PostEvent
 	tst.w	%d0
 	bne.s	6f
+	cmp.w	#1,G_POSTS(%a2)
+	bne.s	7f
 	log	"PiDisk: diskEvt posted"
 	bra.s	7f
 6:	log	"PiDisk: PostEvent failed"
 7:	addq.w	#1,%d1
 	dbf	%d2,1b
-2:	move.w	#300,G_VBL+10(%a2)	| rearm
+2:	move.w	#120,G_VBL+10(%a2)	| rearm: 2 s
 	bra	4f
 3:	lea	G_VBL(%a2),%a0
 	.short	_VRemove
