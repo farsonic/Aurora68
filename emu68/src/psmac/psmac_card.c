@@ -552,8 +552,8 @@ const uint8_t *psmac_card_pram(int *state, uint32_t *len)
    before it points to it, so an interruption leaves at worst a lost cluster, never a broken chain.
    A file already there with a shorter chain is lengthened the same way. The text is a snapshot of
    the ring taken when the writing starts, with the values of options that are secrets (wifi.psk
-   and anything named psk, pass, key or secret, the password in mac.wifisim, the link key in
-   bt.dev) replaced by ***. One sector per pass of core 3, like everything here (logf_step). */
+   and anything named psk, pass, key, secret or token (the remote control's remote.token=, docs/13),
+   the password in mac.wifisim, the link key in bt.dev) replaced by ***. One sector per pass of core 3, like everything here (logf_step). */
 static volatile int logf_req;                  /* asked; 2: after a crash record */
 static volatile int logf_state;                /* 0 nothing asked, 1 being written, 2 saved, 3 failed */
 static uint8_t *logf_buf; static uint32_t logf_len, logf_done, logf_clus, logf_ci;
@@ -562,7 +562,7 @@ static int secret_name(const char *s, uint32_t n)
 {
     uint32_t b = n;
     while (b && s[b - 1] != '.') b--;                  /* the last part of a dotted name */
-    static const char *const names[] = { "psk", "pass", "passwd", "password", "passphrase", "passkey", "key", "secret" };
+    static const char *const names[] = { "psk", "pass", "passwd", "password", "passphrase", "passkey", "key", "secret", "token" };
     for (unsigned i = 0; i < sizeof names / sizeof names[0]; i++) {
         uint32_t m = 0, j;
         while (names[i][m]) m++;

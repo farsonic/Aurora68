@@ -540,44 +540,26 @@ static const char page[] =
 ".catch(function(){}).then(function(){setTimeout(state,2000)})}shot();state();</script></body></html>\n";
 
 /* ---- the log: the window's ring (psmb.h, struct psmb_log), secrets hidden ---- */
-/* a value hidden after name=: the names of secrets end in one of these, as the card's aurora68.log does */
-static int secret_name(const char *s, unsigned n)
-{
-    unsigned b = n;
-    while (b && s[b - 1] != '.') b--;
-    static const char *const names[] = { "psk", "pass", "passwd", "password", "passphrase", "key", "secret", "token" };
-    for (unsigned i = 0; i < sizeof names / sizeof names[0]; i++) {
-        unsigned m = slen(names[i]);
-        if (n - b < m || !ieq_n(s + n - m, names[i], m)) continue;
-        if (n - m == b || s[n - m - 1] == '_' || s[n - m - 1] == '-') return 1;
-    }
-    return 0;
-}
-/* one line into out with secret values as *** and the token, wherever it appears, too */
+/* One line into out: the values of secrets as ***, by the rule the card's aurora68.log and the
+   kernel's own lines use (psmac_redact, psmac_card.c: wifi.psk, anything named psk, pass, key, secret
+   or token, mac.wifisim's password, bt.dev's key), and then the token itself wherever it still
+   appears, should some line have printed it bare. */
 #define RED_MAX 1600                        /* a line of 512 at most comes out no longer than this */
 static unsigned redact_line(const char *in, unsigned n, char *out)
 {
-    unsigned o = 0, ns = 0;
+    char line[513], red[RED_MAX];
     if (n > 512) n = 512;
-    for (unsigned i = 0; i < n && o + 8 < RED_MAX; i++) {
-        if (token_len && i + token_len <= n && in[i] == token[0] && !__builtin_memcmp(in + i, token, token_len)) {
-            out[o++] = '*'; out[o++] = '*'; out[o++] = '*'; i += token_len - 1; ns = o; continue;
+    for (unsigned i = 0; i < n; i++) line[i] = in[i] ? in[i] : ' ';
+    line[n] = 0;
+    psmac_redact(line, red, sizeof red);
+    unsigned o = 0;
+    for (unsigned i = 0; red[i] && o + 4 < RED_MAX; i++) {
+        if (token_len && red[i] == token[0] && !__builtin_strncmp(red + i, token, token_len)) {
+            out[o++] = '*'; out[o++] = '*'; out[o++] = '*'; i += token_len - 1; continue;
         }
-        char c = in[i];
-        out[o++] = c;
-        int namec = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
-        if (c != '=') { if (!namec) ns = o; continue; }
-        const char *nm = out + ns; unsigned nl = o - 1 - ns;
-        int keep_to_colon = (nl == 11 && ieq_n(nm, "mac.wifisim", 11)) || (nl == 6 && ieq_n(nm, "bt.dev", 6));   /* SSID:PASSWORD, ADDRESS:KEY */
-        if (!keep_to_colon && !secret_name(nm, nl)) { ns = o; continue; }
-        unsigned v = i + 1;
-        if (keep_to_colon) { while (v < n && in[v] != ':' && in[v] != ' ' && o + 8 < RED_MAX) out[o++] = in[v++]; if (v < n && in[v] == ':') out[o++] = in[v++]; }
-        unsigned e = v;
-        while (e < n && in[e] != ' ' && in[e] != '\t' && in[e] != ')' && in[e] != ',' && !(keep_to_colon && in[e] == ':')) e++;
-        if (e > v) { out[o++] = '*'; out[o++] = '*'; out[o++] = '*'; }
-        i = e - 1; ns = o;
+        out[o++] = red[i];
     }
-    return o < RED_MAX ? o : RED_MAX;
+    return o;
 }
 static uint32_t log_head(void) { return *(volatile uint32_t *)(win + PSMB_OFF_LOG + 16); }
 static uint8_t log_byte(uint32_t i) { return win[PSMB_OFF_LOGDATA + i % PSMB_LOG_SIZE]; }
