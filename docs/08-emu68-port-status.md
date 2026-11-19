@@ -916,6 +916,73 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    now uses to learn its neighbours' addresses. Logging in is next: the peer does not answer
    ASP OpenSession yet.
 
+48. **Speedometer locked up again: a stale interrupt level on the solo board (18-19 November).**
+   The user's Pi 3B on the bench (solo board) "locked up again" in Speedometer, then the FPU tests
+   "seem to have locked up the system although mouse still moves", and later "came back". (The card
+   first held release 0.7, from before item 41's fixes; the later reports are from 0.10.)
+   What the testbed showed, with the 0.10 kernel and the image item 41 was proved on:
+   - Run ALL Tests ended in the colour benchmarks with "Sorry, a system error occurred. Finder: bad
+     F-Line instruction". The log had an illegal instruction ($000D) at $01FD91C2, then a jump to
+     $81000040. Before the crash the colour tests had slowed to two and three times their usual
+     times.
+   - A second run, the colour benchmarks alone, finished, and the Mac then froze with the pointer
+     still moving. The heartbeat had the 68k in a loop at $6062E (a word-break routine, the byte
+     loop `move.b (a2)+,d0; jsr $40822850; dbeq d1`) with A2 = $66625C18, a pointer nobody
+     would make.
+
+   The words at $01FD91C2 were not code but stack, the same 44 bytes over and over: a level-1
+   interrupt frame (SR $2000, PC $000245E4, vector $64), the handler's MOVEM of D0-D3/A0-A3, and a
+   return address into the handler ($40809B84). After the freeze a dump of the whole 32 MB (QEMU's
+   `pmemsave`) found 1,595 such frames in a row below Speedometer's stack, 70 KB of them, reaching
+   down into its heap: that was A2.
+
+   The ROM's level-1 and level-2 handler ($40809B60), on its way back to level 0 with a deferred
+   task queued, calls the Deferred Task Manager through $6E4. System 7.1 patches that vector: the
+   patch (here at $245DA) calls the ROM's dispatcher and then does `andi #$F8FF,sr; rts`, so the
+   interrupt mask is cleared two instructions before the handler's own MOVEM and RTE. On a 68030 an
+   interrupt taken there is a new one, and rare. Here it was the old one. The solo board's VIA, SCC,
+   SCSI chip and RBV are modelled in the kernel, and the level the JIT sees (INTF.IPL) was worked out
+   again only by the service core's poll, once a millisecond. After the handler had cleared the VIA's
+   flag the level stayed up for up to a millisecond; the ANDI let it in again; the nested handler
+   found nothing to do, called the Deferred Task Manager again (busy, so it returned at once),
+   cleared the mask again, and so on, 44 bytes deeper each time, until the poll caught up or the
+   stack ran out.
+
+   The fix (`psmac_board_solo.c`): every access to a modelled chip sets the level the chips now drive
+   before it returns, as a real VIA drops its interrupt output the moment its flag is cleared. The
+   RBV's accesses (`psmac_board_se.c`) do the same. The access and the service core's poll both do it
+   under the board's lock, so neither can store a level the other has just made stale. The IIci and
+   SE boards were not affected: there each bus cycle's reply carries the motherboard's level.
+
+   Afterwards, in the solo testbed:
+   - Run ALL Tests finishes ("The tests are done!") on item 41's image
+     (`docs/img/speedometer-all-tests-fpu.png`) and on the full test image with every extension,
+     the network attached and the WiFi module on (`docs/img/speedometer-all-tests-full-image.png`).
+     Speedometer then quits to the desktop.
+   - A dump of memory after Run ALL Tests on the full image holds no nested frames at all.
+
+   The FPU tests, and the zeros. Speedometer's FPU tests use the 68882 directly (FADD, FMUL, FSIN,
+   FCOS, FATAN, FETOX, FLOGN, FSQRT, FMOVEM), and every one of them runs on Emu68's native path: no
+   "not implemented" lines in any run. The three FPU tests take a few seconds in QEMU
+   (`docs/img/speedometer-fpu-tests.png`), and 100 iterations of each about 20 seconds, most of it
+   Speedometer drawing between iterations. Speedometer times each iteration with Ticks ($16A,
+   sixtieths of a second), as all its tests: the tick count before, the test, the tick count after,
+   the differences added up and divided by the iterations in whole ticks. `mac.peek=16a,4`
+   showed Ticks advancing at 60 a second all through the tests. In QEMU the FPU Fast Fourier takes
+   one tick or none (0.017 or 0.000 s) and the FPU Whetstone one or two. A test that finishes
+   within one tick measures as no time at all: Speedometer then shows 0.000, or, where it divides
+   by that time, 2147483.647 (2^31/1000), the figure the user saw for the FPU Fast Fourier. On the Pi,
+   faster than QEMU, more tests fall under one tick. The figures are Speedometer's resolution, not a
+   timer that stopped; the 68030 Macs Speedometer was written for took seconds over the same work.
+   More iterations do not help: with 100 of each, the Fast Fourier still read 0.000 and the
+   Whetstone 2147483.647, because the sum of whole ticks is divided by the iterations in whole
+   ticks.
+
+   The processor, checked while Speedometer was up: CPUFlag ($12F) is 3 (68030); MMUType ($CB1) is
+   4, which the ROM's numbering makes Gestalt's 'mmu ' 3, a 68030 MMU (Speedometer's own glue for
+   older Systems subtracts one the same way); HWCfgFlags ($B22) $FC00 has the FPU bit. Speedometer:
+   "MC68030, MC68882, MC68030 MMU". The user's "020" came from 0.7.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

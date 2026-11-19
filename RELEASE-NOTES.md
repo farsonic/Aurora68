@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **Fixed: Speedometer, and anything busy with interrupts, freezing or bombing on the Pi alone**
+  (`mac.board=solo`). Run ALL Tests ended in "bad F-Line instruction" or a freeze with the pointer
+  still moving. An interrupt the Mac had already answered stayed raised for up to a millisecond,
+  and System 7 took it again and again, each time deeper into the stack, until the stack ran over
+  the program's memory. The kernel now lowers the interrupt the moment the Mac answers it, as the
+  real chip does. Run ALL Tests finishes, with every extension of the test image loaded.
+- **Speedometer's zeros are its own clock.** Speedometer times each test in sixtieths of a second.
+  On the Pi many tests, the FPU ones above all, finish within one sixtieth, and Speedometer shows
+  0.000 for them, or 2147483.65 where it divides by that time: read those as "faster than
+  Speedometer can measure". More iterations do not help, since it divides the time by them in
+  whole sixtieths. The FPU itself runs every 68882 instruction natively.
+- **The WiFi messages say where the firmware goes**: in the container, with make-container.py (they
+  said a WIFI folder on the SD card, which is the Amiga's way). A container with no WiFi firmware
+  is said once at boot, with the three file names a Pi 3B needs, and PiLog no longer shows the
+  WiFi's state line every five seconds, only when it changes.
 - **1920 by 1200 in millions of colours.** The Pi's screen can now be a 1920 by 1200 monitor at
   32 bits: `hdmi_group=2` and `hdmi_mode=69` in config.txt, `mac.screen=1920x1200` in
   cmdline.txt, and the new `aurora68-1920x1200.declrom` in the container. Every screen size the
