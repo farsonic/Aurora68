@@ -212,28 +212,42 @@ Commit and push first: a set must name a commit anyone can find.
 - On the same LAN: the user's MacBook (this machine) and an SMB share (Lagoon's test target).
   The Mac's host name is **MacSE** (`MacSE.local` by mDNS, from riptide.conf).
 - No serial cable is assumed: what the Pi says comes back as PiLog screenshots, PiLog's Save to
-  Card (`aurora68.log`) or, soon, the remote-control service below.
+  Card (`aurora68.log`) or the remote-control service below.
 
 ## Remote control: "the Mac is at IP x.x.x.x"
 
-**Pending: see `pistorm-se/docs/13-remote-control.md` when it lands.** Another worker is
-building a remote-control service into the kernel (its own small IP stack and an HTTP server on
-the Pi, an MCP server `pistorm-se/tools/aurora68-mcp.py`). The intended workflow, when the user
-says "the Mac is at IP x.x.x.x":
-1. The card's cmdline.txt has `remote=on remote.token=TOKEN` (the token is a secret like the
-   WiFi password: the user's card and an environment variable, never a file of ours).
-2. The Pi's address: the one the user gives, else the router's DHCP list, else PiLog (the
-   service logs where it listens).
-3. Add the MCP server to Claude Code, in the container:
-   `claude mcp add aurora68 -- python3 /work/pistorm-se/tools/aurora68-mcp.py --host x.x.x.x`
-   with `AURORA68_TOKEN` set in the environment (check docs/13 for the real arguments).
-4. Then: screenshot the Mac's screen, click and type, read the kernel log, read the state
-   (heartbeat, network, disks), restart; build, put the new kernel or image on the card when the
-   service can, test, fix, repeat.
-Until it lands the fallbacks are PiLog's Save Log and Save to Card (docs/08 item 55:
-`aurora68.log` in the card's root, passwords replaced by `***`; written by itself after every
-crash record), and the card itself: the user
-moves it to the MacBook, and `aurora68.log`, `pram.bin` and the images can be read there
+The kernel has it (docs/13-remote-control.md, docs/08 item 59, 20 November 2026): its own small
+IP stack (ARP, ping, DHCP, mDNS `aurora68-pi.local`, a TCP server) and an HTTP API on the Pi, so
+nothing runs on the Mac and it works while the Mac is hung or at a bomb. Tested in the QEMU testbed
+only so far. When the user says "the Mac is at IP x.x.x.x" (or the Pi is):
+1. The card's cmdline.txt has `remote=on remote.token=TOKEN` (8 characters or more; the token is a
+   secret like the WiFi password: the user's card and an environment variable, never a file of
+   ours; the kernel logs it as `***`). Optional: `remote.name=`, `remote.ip=A.B.C.D/24,ROUTER`,
+   `remote.link=wired|wifi`, `remote.wifi=shared` (on WiFi the kernel shares the Mac's MAC address
+   and gets its own IP by DHCP; shared mode uses the Mac's IP and port 8068 only), `remote.any=1`
+   (allow non-private source addresses; off by default).
+2. The Pi's address: the one the user gives; else `http://aurora68-pi.local/`; else the log line
+   `[REMOTE] address 192.168.x.y ... http://192.168.x.y/` (HDMI, PiLog, aurora68.log); else the
+   router's client list (`aurora68-pi`). On the wired port the kernel has its own MAC address (the
+   Pi's with the locally administered bit), so it gets its own lease.
+3. Add the MCP server to Claude Code:
+   `claude mcp add aurora68 --env AURORA68_URL=http://x.x.x.x --env AURORA68_TOKEN=$AURORA68_TOKEN -- python3 /work/pistorm-se/tools/aurora68-mcp.py`
+   (the command line `python3 pistorm-se/tools/aurora68.py --url ... --token ...
+   state|screenshot f.png|click X Y|type TEXT|key q --mods cmd|log --records|restart` does the
+   same by hand; `/` in a browser is a page with the screen to click and type into).
+4. Then: screenshot, click and type, read the log (`log --records` gives the [BOOT] and [CRASH]
+   records, kept apart from the 64 KB ring), read the state (front application, Ticks, system
+   error code and crash records, links, disks), restart the Mac (`restart`, `?how=nmi` for the
+   debugger, `?how=pi` reboots the whole Pi). Build, put the new kernel or image on the card (the
+   card still has to go through the MacBook for that), test, fix, repeat.
+Not yet proved on hardware: the wired chips in promiscuous mode or with a second filter slot, the
+real WiFi path and the router keeping two leases apart, mDNS over the radio, the PNG encoder's
+speed on the Pi 3 (about 0.25 s for 1920x1200 estimated), the browser page rendered. It is plain
+HTTP: the token crosses the LAN in the clear.
+
+Fallbacks: PiLog's Save Log and Save to Card (docs/08 item 55: `aurora68.log` in the card's root,
+passwords replaced by `***`; written by itself after every crash record), and the card itself:
+the user moves it to the MacBook, and `aurora68.log`, `pram.bin` and the images can be read there
 (hfsutils for the images).
 
 ## Open items and known issues (20 November 2026)
@@ -268,7 +282,8 @@ working on several of these when this was written.
    in four stages) and on hold; Internet Explorer 4.01 works over the MacTCP interface without it.
 8. **IPv6 stand-ins for MacTCP programs** (Riptide 64c09a0: an IPv6-only host gets a stand-in
    IPv4 address from 198.18.0.0/15): passes the Browser test in the testbed, untested on hardware.
-9. **The remote-control service** (above): being built; review and test it when it lands.
+9. **The remote-control service** (above, docs/13): built and tested in QEMU; first real-hardware
+   run pending (test set 6).
 10. Not proved on hardware: the LAN7800 (Pi 3B+), the Pi 4's GENET with the WiFi, the boot
     timeline's firmware settings (`gpu_mem=16`, start_cd.elf), the SE itself (the PiStorm GPIO
     transport, docs/12). Lagoon's bridge serves one share at a time, guest only, volumes at most
