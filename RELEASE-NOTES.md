@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **More than one disk on the Pi alone (`mac.board=solo`).** A second disk image, in the container or
+  as a file on the card beside the first, never appeared on the desktop: as a SCSI disk it needed
+  its own driver to mount it, and the Iomega driver on most images mounts only the startup disk.
+  The first image is now SCSI ID 0, the startup disk, and every further one a PiDisk volume, which
+  mounts itself a few seconds after the Finder starts; an Apple-partitioned image is served as its
+  HFS partition. Several images on the card work too (every image file in the card's root, or
+  `mac.image=A.hda,B.img`). `mac.disks=scsi` brings back the old way. **Fixed:** the first write to
+  a PiDisk volume held in memory (an image in the container or on the card) stopped the Pi's service
+  core, and with it the disk, the network and the screen's VBL. Replace the declaration ROMs: PiDisk
+  now waits long enough for a block still coming in from the card.
 - **PiLog: Clear, a text filter and Follow.** A second row of controls under the part check boxes.
   *Filter:* shows only the lines that contain the text, in any case, together with the check boxes;
   several words must all be there and `-word` hides the lines with it. Typing anywhere in the window

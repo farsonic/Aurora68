@@ -163,7 +163,10 @@ blkcmd:
 	move.l	C_REQ(%a0),%d5
 	addq.l	#1,%d5
 	move.l	%d5,C_REQ(%a0)		| post
-	move.l	#2000000,%d0		| spin limit (service core answers in microseconds)
+	move.l	#100000000,%d0		| spin limit: core 3 answers in microseconds, but a block of an image
+					| still coming in from the card, or the WiFi's turn, can take tens of
+					| milliseconds; 2,000,000 turns (2-5 ms at JIT speed) gave I/O errors
+					| and "This disk is unreadable" (docs/08 item 52)
 2:	cmp.l	C_DONE(%a0),%d5
 	beq.s	3f
 	subq.l	#1,%d0

@@ -91,9 +91,31 @@ static void blk_add_file(const char *path, int writable)
     kprintf("[PSMAC:MBOX] block%d: %s, %u blocks (%u MiB)%s\n", nbdev, path, b->blocks, b->blocks / 2048, writable ? "" : " read-only");
     nbdev++;
 }
+/* An image with an Apple partition map (a driver descriptor 'ER' in block 0, 'PM' entries from block
+   1) is served as its first Apple_HFS partition, which is what the File Manager mounts; a bare HFS
+   image as it is. PiDisk is one volume per device. */
+static void hfs_partition(uint8_t **data, uint32_t *blocks)
+{
+    const uint8_t *d = *data;
+    { extern void psmac_card_need(const void *, uint32_t); psmac_card_need(d, (*blocks < 64 ? *blocks : 64) * 512u); }   /* an image still coming in from the card: its map first */
+    if (*blocks < 3 || d[0] != 'E' || d[1] != 'R' || d[512] != 'P' || d[513] != 'M') return;
+    uint32_t n = (uint32_t)d[516] << 24 | d[517] << 16 | d[518] << 8 | d[519];
+    for (uint32_t i = 1; i <= n && i < 64 && i < *blocks; i++) {
+        const uint8_t *e = d + 512 * i;
+        if (e[0] != 'P' || e[1] != 'M') break;
+        uint32_t start = (uint32_t)e[8] << 24 | e[9] << 16 | e[10] << 8 | e[11], count = (uint32_t)e[12] << 24 | e[13] << 16 | e[14] << 8 | e[15];
+        const char *type = (const char *)e + 48, *want = "Apple_HFS";
+        int k = 0; while (want[k] && type[k] == want[k]) k++;
+        if (want[k] || !count || start + count > *blocks) continue;
+        *data += (uint64_t)start * 512; *blocks = count;
+        kprintf("[PSMAC:MBOX]   its Apple_HFS partition: blocks %u-%u\n", start, start + count - 1);
+        return;
+    }
+}
 static void blk_add_ram(const char *name, uint8_t *data, uint32_t blocks)
 {
     if (nbdev >= PSMB_MAX_BLKDEV) return;
+    hfs_partition(&data, &blocks);
     struct blkdev *b = &bdev[nbdev];
     b->fd = -1; b->blocks = blocks; b->writable = 1; b->ram = 1; b->rambase = data;
     int k = 0; while (name[k] && k < 47) { b->name[k] = name[k]; k++; } b->name[k] = 0;
@@ -114,7 +136,10 @@ static int blk_xfer(int write, struct blkdev *b, uint32_t lba, uint32_t count, u
     while (count) {
         uint32_t n = count > sizeof(sector_buf) / 512 ? sizeof(sector_buf) / 512 : count;
         if (b->ram) {
-            if (write) { int r = mac_copy(buf, NULL, b->rambase + (uint64_t)lba * 512, n * 512, 0); if (r) return r;
+            /* from the Mac into the image: the destination is the image (until 19 November the two were
+               swapped, and the first write to a PiDisk volume held in memory stopped core 3 with a
+               store to address 0: docs/08 item 52) */
+            if (write) { int r = mac_copy(buf, b->rambase + (uint64_t)lba * 512, NULL, n * 512, 0); if (r) return r;
                          extern void psmac_card_dirty(const void *, uint32_t); psmac_card_dirty(b->rambase + (uint64_t)lba * 512, n * 512); }
             else       { int r = mac_copy(buf, NULL, b->rambase + (uint64_t)lba * 512, n * 512, 1); if (r) return r; }
         } else {
@@ -283,7 +308,8 @@ void psmac_mbox_init(uintptr_t window_phys, uintptr_t ramp, uint32_t rams)
     if (d1) blk_add_file(d1, 1);
     {   /* disk images from the container: PiDisk volumes here, the solo board's SCSI disks there */
         extern int psmac_board_solo; extern int psmac_image_count(void); extern int psmac_image_get(int, const char **, uint8_t **, uint32_t *);
-        if (!psmac_board_solo) for (int i = 0; i < psmac_image_count(); i++) { const char *nm; uint8_t *dp; uint32_t bl; if (psmac_image_get(i, &nm, &dp, &bl)) blk_add_ram(nm, dp, bl); }
+        extern int psmac_image_is_scsi(int);       /* the solo board's first image is its SCSI disk, the rest are PiDisk volumes */
+        for (int i = 0; i < psmac_image_count(); i++) { const char *nm; uint8_t *dp; uint32_t bl; if (!(psmac_board_solo && psmac_image_is_scsi(i)) && psmac_image_get(i, &nm, &dp, &bl)) blk_add_ram(nm, dp, bl); }
     }
     blk_publish();
     net_init();

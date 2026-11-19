@@ -165,7 +165,7 @@ clock/PRAM chip and the ADB transceiver behind it), the SCC, the IWM and an NCR 
 disk per image in the container, next to the RBV, ASC and VDAC the SE layer already answers
 (`emu68/src/psmac/psmac_board_solo.c`; docs/08, item 35). The second screen is the main screen.
 A disk image goes into the container like any other file (`*.img`, `*.hda`, `*.image`, `*.hfv`;
-the first is SCSI ID 0): it is loaded into RAM with the rest of the initramfs, so a 1 GB Pi takes
+the first is SCSI ID 0, the startup disk; further ones are PiDisk volumes, docs/08 item 52): it is loaded into RAM with the rest of the initramfs, so a 1 GB Pi takes
 images up to a couple of hundred megabytes, and what the Mac writes lasts until the power goes.
 The PRAM is the kernel's (AppleTalk off, 32-bit addressing on, then whatever the Mac saved in
 `pram.bin` on the card, docs/08 item 51), the clock starts on 17 November 2026 (or where the last

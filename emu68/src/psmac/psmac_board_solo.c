@@ -451,17 +451,26 @@ static uint32_t iwm_access(uint32_t reg, int write, uint8_t d)
 }
 
 /* ==== disk images ============================================================================= */
-struct disk { char name[48]; uint8_t *ram; int64_t fd; uint32_t blocks; int writable; uint32_t reads, writes, cmds; };
+struct disk { char name[48]; uint8_t *ram; int64_t fd; uint32_t blocks; int writable, scsi; uint32_t reads, writes, cmds; };
 static uint32_t sel_seen[7];                /* selections of each SCSI ID, with a disk there or not (the heartbeat) */
 static struct disk disks[7]; static int ndisk;
 static uint8_t sector_buf[64 * 1024] __attribute__((aligned(64)));
 
+/* The first disk image is SCSI ID 0, the startup disk. Further images are PiDisk volumes (the
+   slot-9 card's own disk driver, psmac_mbox.c), which mount themselves after the Finder starts:
+   as SCSI disks they need their own driver from their own driver partition, and the one on the
+   user's images, Iomega's Zip driver, loads, reads its partition map and never mounts a second
+   drive (19 November, docs/08 item 52). mac.disks=scsi makes every image a SCSI disk as before. */
+static int disks_scsi = -1;
+int psmac_image_is_scsi(int i) { return i >= 0 && i < ndisk && disks[i].scsi; }
 void psmac_image_add(const char *name, uint8_t *data, uint32_t len)
 {
     if (ndisk >= 7 || len < 1024) return;
+    if (disks_scsi < 0) { const char *o = psmac_option("mac.disks"); disks_scsi = o && o[0] == 's'; }
     struct disk *d = &disks[ndisk];
     int k = 0; while (name[k] && k < 47) { d->name[k] = name[k]; k++; } d->name[k] = 0;
     d->ram = data; d->fd = -1; d->blocks = len / 512; d->writable = 1;
+    d->scsi = !psmac_board_solo || disks_scsi || ndisk == 0;
     __atomic_store_n(&ndisk, ndisk + 1, __ATOMIC_RELEASE);   /* complete before it is seen: a disk image on the card arrives from core 3 (psmac_card.c) */
 }
 int psmac_image_count(void) { return ndisk; }
@@ -479,7 +488,7 @@ static void disk_add_file(const char *path)
     struct disk *d = &disks[ndisk++];
     const char *base = path; for (const char *s = path; *s; s++) if (*s == '/') base = s + 1;
     int k = 0; while (base[k] && k < 47) { d->name[k] = base[k]; k++; } d->name[k] = 0;
-    d->ram = 0; d->fd = fd; d->blocks = (uint32_t)(psmac_sh_flen(fd) / 512); d->writable = writable;
+    d->ram = 0; d->fd = fd; d->blocks = (uint32_t)(psmac_sh_flen(fd) / 512); d->writable = writable; d->scsi = 1;
 }
 static int disk_read(struct disk *d, uint32_t lba, uint32_t n, uint8_t *buf)
 {
@@ -596,6 +605,16 @@ static void execute(void)
         if (!any && page != 0) { check_condition(5, 0x24); set_phase(PH_STATUS); return; }
         t.small[0] = p - 1;
         data_in_small(p, t.cdb[4]); return; }
+    case 0x06: {                                /* Iomega's "non-sense" (vendor unique), as a Zip drive answers it */
+        /* The Iomega driver on users' images (the full image's Apple_Driver, Zip 4.2, patched to take
+           any disk by tools/iomega_patch.py) asks every drive for page 2 of it, 22 bytes, and later 63,
+           and reads the disk's protection mode from byte 21 (0 none, 2 write-protected, 3 and 5 with a
+           password ...) and a flag from byte 62. A CHECK CONDITION here left a second disk's drive
+           without its disk-inserted event, so its volume never mounted (docs/08 item 52). All zeros:
+           a disk in place, not protected. Drivers that send no vendor commands (Apple's HD SC Setup
+           driver) never see it. */
+        for (unsigned i = 0; i < sizeof t.small; i++) t.small[i] = 0;
+        data_in_small(t.cdb[4] ? t.cdb[4] : 255, 0); return; }
     case 0x15: {                                /* MODE SELECT: taken and forgotten */
         uint32_t len = t.cdb[4];
         if (!len) { set_phase(PH_STATUS); return; }
@@ -685,7 +704,7 @@ static void try_select(void)
     { static int first = 1; if (first && !ndisk) { extern void psmac_card_scan_wait(void); psmac_card_scan_wait(); } first = 0; }   /* no disk yet: a disk image on the card? wait for the card's first look */
     int nd = __atomic_load_n(&ndisk, __ATOMIC_ACQUIRE);
     for (int i = 0; i < nd; i++) {
-        if (!(n.odr & (1u << i))) continue;
+        if (!(n.odr & (1u << i)) || !disks[i].scsi) continue;
         t.d = &disks[i]; t.id = i; t.cdb_n = 0; t.cdb_len = 6; t.status = 0;
         n.aip = 0;
         if (n.icr & 0x02) set_phase(PH_MSGOUT); else set_phase(PH_CMD);
@@ -884,7 +903,7 @@ void psmac_solo_start(void)
 {
     if (!psmac_board_solo) return;
     kprintf("[PSMAC:SOLO] %d SCSI disk%s%s\n", ndisk, ndisk == 1 ? "" : "s", ndisk ? ":" : " (put a *.img, *.hda or *.image file in the container, or on the card beside it)");
-    for (int i = 0; i < ndisk; i++) kprintf("[PSMAC:SOLO]   SCSI %d: %s, %u blocks (%u MB)%s%s\n", i, disks[i].name, disks[i].blocks, disks[i].blocks / 2048, disks[i].ram ? ", in RAM (changes last until power off)" : ", host file", disks[i].writable ? "" : ", read-only");
+    for (int i = 0; i < ndisk; i++) kprintf("[PSMAC:SOLO]   %s %d: %s, %u blocks (%u MB)%s%s\n", disks[i].scsi ? "SCSI" : "PiDisk volume, image", i, disks[i].name, disks[i].blocks, disks[i].blocks / 2048, disks[i].ram ? ", in RAM (changes last until power off)" : ", host file", disks[i].writable ? "" : ", read-only");
 }
 void psmac_solo_options(const char *args)
 {

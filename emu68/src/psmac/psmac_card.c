@@ -345,6 +345,7 @@ static int ends_ci(const char *s, const char *suf)
     for (unsigned i = 0; i < m; i++) if (lower(s[n - m + i]) != suf[i]) return 0;
     return 1;
 }
+static int image_taken(const char *name);                   /* below: already one of the Mac's disks */
 static int is_image_name(const char *s, uint32_t size)
 {
     if (size < (1u << 20) || (s[0] == '.' && s[1] == '_')) return 0;
@@ -372,7 +373,7 @@ static int find_sector(uint32_t lba, void *vctx)
         if (e[8] != ' ') { sn[n++] = '.'; for (int k = 8; k < 11 && e[k] != ' '; k++) sn[n++] = (char)e[k]; }
         sn[n] = 0;
         const char *shown = x->lfn_ok ? x->lfn : sn;
-        int hit = x->name ? name_eq(sn, x->name) || (x->lfn_ok && name_eq(x->lfn, x->name)) : is_image_name(shown, le32(e + 28));
+        int hit = x->name ? name_eq(sn, x->name) || (x->lfn_ok && name_eq(x->lfn, x->name)) : is_image_name(shown, le32(e + 28)) && !image_taken(shown);
         if (hit && !x->name) { unsigned k = 0; while (shown[k] && k < sizeof x->found - 1) { x->found[k] = shown[k]; k++; } x->found[k] = 0; }
         x->lfn_ok = 0;
         if (hit) {
@@ -747,40 +748,64 @@ static uint8_t *take_memory(uint32_t len)
     sys_memory[0].mb_Base = base + len;
     return (uint8_t *)(0xffffff9000000000ull + base);
 }
-/* at mount: an image of its own, when the container brought none */
-static void image_scan(void)
+/* at mount: images of their own, when the container brought none. Every disk image file in the
+   card's root in directory order (the order they were copied there: the first is SCSI ID 0 on the
+   solo board), or the names in mac.image=NAME[,NAME...], up to four */
+static int image_taken(const char *name)
+{
+    for (int i = 0; i < nimg; i++) if (name_eq(imgs[i].name, name)) return 1;
+    return 0;
+}
+static int image_take(const char *name, const struct cfile *f)
 {
     extern int psmac_board_solo;
+    if (f->clus < 2 || f->size < 1024) return 0;
+    uint8_t *ram = take_memory(f->size);
+    if (!ram) { kprintf("[CARD] %s (%u MB) is larger than the memory the Pi has left: not loaded\n", name, f->size >> 20); return 0; }
+    struct img *m = img_new(name, ram, f->size);
+    if (!m) return 0;
+    m->ext = tlsf_malloc(tlsf, 256 * sizeof(struct ext));
+    m->nload = (f->size + LCHUNK - 1) / LCHUNK;
+    m->loaded = tlsf_malloc(tlsf, ((m->nload + 31) / 32) * 4);
+    if (!m->ext || !m->loaded) return 0;
+    m->next = file_extents(f, m->ext, 256);
+    if (m->next <= 0) { kprintf("[CARD] %s is in more than 256 pieces: copy it to a freshly formatted card\n", name); return 0; }
+    for (uint32_t i = 0; i < (m->nload + 31) / 32; i++) m->loaded[i] = 0;
+    m->off = 0; m->file = ram; m->file_len = f->size; m->ok = !sd.ro; m->nloaded = 0; m->load_t0 = cnt();
+    __atomic_store_n(&nimg, nimg + 1, __ATOMIC_RELEASE);
+    kprintf("[CARD] disk image %s, %u MB in %d piece%s: read in the background%s\n", name, f->size >> 20, m->next, m->next == 1 ? "" : "s", m->ok ? ", changes written back to it" : "");
+    psmac_boot_mark("card: disk image %s found (%u MB), loading in the background", name, f->size >> 20);
+    /* the Mac's view: a SCSI disk on the solo board, a PiDisk volume on the others */
+    extern void psmac_image_add(const char *, uint8_t *, uint32_t); extern int psmac_image_count(void), psmac_image_is_scsi(int);
+    extern void psmac_mbox_add_disk(const char *, uint8_t *, uint32_t);
+    if (psmac_board_solo) psmac_image_add(m->name, ram, f->size);           /* the first is SCSI ID 0 */
+    if (!psmac_board_solo || !psmac_image_is_scsi(psmac_image_count() - 1)) psmac_mbox_add_disk(m->name, ram, f->size / 512u);
+    return 1;
+}
+static void image_scan(void)
+{
     if (nimg) return;
     const char *opt = psmac_option("mac.image");
     if (opt && name_eq(opt, "off")) return;
-    struct cfile f; struct find_ctx x; x.out = &f; x.lfn_ok = 0; x.found[0] = 0;
+    struct cfile f; struct find_ctx x; x.out = &f; x.lfn_ok = 0;
     if (opt) {
-        unsigned k = 0; while (opt[k] && k < sizeof x.found - 1) { x.found[k] = opt[k]; k++; } x.found[k] = 0;
-        if (file_find(x.found, &f)) { kprintf("[CARD] mac.image=%s: no such file in the card's root\n", x.found); return; }
-    } else {
-        x.name = 0;
-        if (root_walk(find_sector, &x) != 1) return;
+        char list[128]; unsigned n = 0;
+        while (opt[n] && n < sizeof list - 1) { list[n] = opt[n]; n++; }
+        list[n] = 0;
+        for (char *w = list; *w && nimg < 4; ) {
+            char *e = w; while (*e && *e != ',') e++;
+            char c = *e; *e = 0;
+            if (file_find(w, &f)) kprintf("[CARD] mac.image=%s: no such file in the card's root\n", w);
+            else if (!image_taken(w)) image_take(w, &f);
+            if (!c) break;
+            w = e + 1;
+        }
+        return;
     }
-    if (f.clus < 2 || f.size < 1024) return;
-    uint8_t *ram = take_memory(f.size);
-    if (!ram) { kprintf("[CARD] %s (%u MB) is larger than the memory the Pi has left: not loaded\n", x.found, f.size >> 20); return; }
-    struct img *m = img_new(x.found, ram, f.size);
-    if (!m) return;
-    m->ext = tlsf_malloc(tlsf, 256 * sizeof(struct ext));
-    m->nload = (f.size + LCHUNK - 1) / LCHUNK;
-    m->loaded = tlsf_malloc(tlsf, ((m->nload + 31) / 32) * 4);
-    if (!m->ext || !m->loaded) return;
-    m->next = file_extents(&f, m->ext, 256);
-    if (m->next <= 0) { kprintf("[CARD] %s is in more than 256 pieces: copy it to a freshly formatted card\n", x.found); return; }
-    for (uint32_t i = 0; i < (m->nload + 31) / 32; i++) m->loaded[i] = 0;
-    m->off = 0; m->file = ram; m->file_len = f.size; m->ok = !sd.ro; m->nloaded = 0; m->load_t0 = cnt();
-    __atomic_store_n(&nimg, nimg + 1, __ATOMIC_RELEASE);
-    kprintf("[CARD] disk image %s, %u MB in %d piece%s: read in the background%s\n", x.found, f.size >> 20, m->next, m->next == 1 ? "" : "s", m->ok ? ", changes written back to it" : "");
-    psmac_boot_mark("card: disk image %s found (%u MB), loading in the background", x.found, f.size >> 20);
-    /* the Mac's view: a SCSI disk on the solo board, a PiDisk volume on the others */
-    if (psmac_board_solo) { extern void psmac_image_add(const char *, uint8_t *, uint32_t); psmac_image_add(m->name, ram, f.size); }
-    else { extern void psmac_mbox_add_disk(const char *, uint8_t *, uint32_t); psmac_mbox_add_disk(m->name, ram, f.size / 512u); }
+    while (nimg < 4) {
+        x.name = 0; x.found[0] = 0; x.lfn_ok = 0;
+        if (root_walk(find_sector, &x) != 1 || !image_take(x.found, &f)) break;
+    }
 }
 
 /* the loader: one LCHUNK at a time, LSLICE sectors per pass; a chunk the Mac waits for first */
@@ -794,9 +819,19 @@ static int load_pick(void)
         uint32_t c = want_chunk;
         if (!chunk_in(&imgs[wi], c)) { ld.active = 1; ld.img = wi; ld.chunk = c; ld.done = 0; return 1; }
     }
+    /* the smallest image first: a second disk is a PiDisk volume the Finder mounts at once, and
+       PiDisk's driver waits only milliseconds for a block; the startup disk's blocks come first
+       anyway, as the Mac asks for them (want_img above) */
+    int order[4], no = 0;
     for (int i = 0; i < nimg; i++) {
+        if (!imgs[i].loaded || imgs[i].nloaded >= imgs[i].nload) continue;
+        int j = no++;
+        while (j > 0 && imgs[order[j - 1]].len > imgs[i].len) { order[j] = order[j - 1]; j--; }
+        order[j] = i;
+    }
+    for (int o = 0; o < no; o++) {
+        int i = order[o];
         struct img *m = &imgs[i];
-        if (!m->loaded || m->nloaded >= m->nload) continue;
         for (uint32_t k = 0; k < m->nload; k++) {
             uint32_t c = (ld.cursor + k) % m->nload;
             if (!chunk_in(m, c)) { ld.active = 1; ld.img = i; ld.chunk = c; ld.done = 0; ld.cursor = c + 1; return 1; }

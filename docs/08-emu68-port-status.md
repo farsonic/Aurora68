@@ -1251,6 +1251,51 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    boot from the same card logs "pram.bin: read" and "parameter RAM from pram.bin on the card (260
    bytes)" before the ROM's first PRAM read.
 
+52. **More than one disk on the Pi alone (19 November).** The user put a second image beside the
+   System 7.1 image in the container (RiptideFix.img: 2 MB, Apple-partitioned, the full image's
+   Iomega driver, a 4096-block HFS partition) and it never appeared on the desktop. The image is
+   sound (hfsutils mounts it; its driver descriptor, map and driver match the full image's byte
+   for byte). The new heartbeat line (every disk's counters and the selections per SCSI ID) and a
+   command trace showed what happened to it as SCSI ID 1. The ROM selects it, reads its driver
+   descriptor and loads the Iomega driver from its driver partition. The driver asks INQUIRY, START
+   UNIT, TEST UNIT READY, READ CAPACITY, MODE SENSE and Iomega's vendor command $06 ("non-sense",
+   page 2, 22 bytes; the target answered CHECK CONDITION), reads the partition map (blocks 0-4),
+   and stops. Nothing ever reads the HFS volume, and the drive is never polled again. For ID 0
+   the ROM mounts the startup volume itself, so the same driver looked fine there.
+   - The solo target now answers $06 as a Zip drive does: zeros, which the driver reads as "no
+     protection" (it takes the protection mode from byte 21 of the 22-byte page and a flag from
+     byte 62 of the 63-byte one; found in the driver's code at offsets $BC82 and $AEDE of its
+     partition). That changed nothing for ID 1: the driver still never mounts a second drive.
+     The answer stays (harmless, and right for the driver), but extra disks no longer depend on it.
+   - **The solo board's first disk image is SCSI ID 0, every further one a PiDisk volume**
+     (`psmac_board_solo.c`, `psmac_mbox.c`). PiDisk is the slot-9 card's own driver, in the
+     declaration ROM: it announces each volume until the File Manager reads it, so it mounts on
+     any System with any image. An Apple-partitioned image is served as its first Apple_HFS
+     partition (a bare HFS image as it is), on every board. `mac.disks=scsi` keeps every image a
+     SCSI disk, as before, for images whose own driver mounts them.
+   - **Several images on the card** (`psmac_card.c`): every disk image file in the card's root, in
+     directory order (the order they were copied there), up to four, or the names in
+     `mac.image=A.hda,B.img`.
+   - **A bug that came with it:** PiDisk's write path for an image held in memory had the copy's
+     source and destination swapped, so the first write to such a volume stopped core 3 with a store
+     to address 0 (and with it the mailbox, the card and the display's VBL). The Finder writes its
+     desktop database to a new volume at once, which is how the testbed found it. On the SE board a
+     PiDisk volume from the container would have done the same at the first write.
+
+   - **PiDisk waits longer for a block** (`mac/pidisk.s`: 100,000,000 turns instead of 2,000,000,
+     well under a second at JIT speed). With both images on the card the volume's first block was
+     still coming in from the card when the Finder asked for it; the driver gave up after 2-5 ms,
+     tried twice more and said "This disk is unreadable". The loader now also reads the smallest
+     image first (the startup disk's blocks still come first, as the Mac asks for them), so a small
+     second disk is in memory before the Finder looks.
+
+   Solo testbed with sys710pi-aurora-full.image and RiptideFix.img, both in the container and both as
+   files on the card (with the declaration ROM rebuilt for the new PiDisk): "its Apple_HFS
+   partition: blocks 491-4586", the Finder at 22 s (container) and 36 s (card, QEMU's slow SD
+   model), and "Riptide Fix" on the desktop beside the startup disk in both
+   (`docs/img/solo-second-disk-from-card.png`); the Finder's desktop database written to it goes
+   back into RiptideFix.img on the card.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,
