@@ -17,7 +17,10 @@
  *
  * The firmware files come from the SD card's FAT partition (folder WIFI or
  * the root): alice68hdf.device reads them at boot and offers them on the
- * board; the kernel copies them. cmdline.txt: wifi.ssid="name" wifi.psk="..."
+ * board; the kernel copies them. In the Macintosh build (PSMAC) they come
+ * from the initramfs container instead (make-container.py puts them there,
+ * psmac_bus.c hands each one to alice_fw_preload), and the messages say so.
+ * cmdline.txt: wifi.ssid="name" wifi.psk="..."
  * wifi.country=GB join at boot; wifi=off leaves the chip off; wifi.sdclock=Hz.
  */
 #include <stdint.h>
@@ -32,6 +35,15 @@
 #include "wifi/fmac.h"
 
 #define AN_KERNEL_VER 1
+
+/* where the user puts the WiFi firmware files, for the messages that ask for them */
+#ifdef PSMAC
+#define FW_WHERE "in the container (make-container.py)"
+#define FW_WAITING "waiting for the firmware files (in the container: make-container.py)"
+#else
+#define FW_WHERE "in WIFI on the SD card"
+#define FW_WAITING "waiting for the firmware files (WIFI folder on the SD card)"
+#endif
 
 _Static_assert(sizeof(struct an_hdr) == 64, "an_hdr");
 _Static_assert(sizeof(struct an_unit) <= 0x800, "an_unit");
@@ -484,6 +496,22 @@ static const struct fwfile *fw_find(const char *const *stems, const char *suffix
     return 0;
 }
 
+#ifdef PSMAC
+/* name starts with prefix (lower case), letters compared without case */
+static int istarts(const char *name, const char *prefix)
+{
+    for (; *prefix; name++, prefix++)
+        if ((*name | 0x20) != *prefix) return 0;
+    return 1;
+}
+/* 1 if any WiFi chip's firmware is among the files: a name starting brcmfmac43 or cyfmac43 */
+static int fw_have_wifi(void)
+{
+    for (int f = 0; f < nfw; f++)
+        if (fw[f].p && (istarts(fw[f].name, "brcmfmac43") || istarts(fw[f].name, "cyfmac43"))) return 1;
+    return 0;
+}
+#endif
 /* for bt_pi.c: a firmware file AmigaOS handed over, by stems and suffix ("BCM4345C0", ".hcd") */
 const uint8_t *alice_fw_get(const char *const *stems, const char *suffix, uint32_t *len)
 {
@@ -694,6 +722,21 @@ void alice_net_report(void)
     if (!anb) { kprintf("[WIFI]   no board yet\n"); return; }
     volatile struct an_unit *u = U(0);
     unsigned st = u->state;
+#ifdef PSMAC
+    /* The Mac shows the log in PiLog, where a heartbeat's unchanged line every five seconds
+       buried everything else ("no firmware" dozens of times): print it only when it changes. */
+    static unsigned last_st = ~0u, last_chip, last_mhz;
+    static char last_msg[96];
+    int same = st == last_st && u->chip == last_chip && u->sdmhz == last_mhz;
+    for (unsigned i = 0; same && i < sizeof last_msg; i++) {
+        if (last_msg[i] != u->msg[i]) same = 0;
+        if (!u->msg[i]) break;
+    }
+    if (same) return;
+    last_st = st; last_chip = u->chip; last_mhz = u->sdmhz;
+    for (unsigned i = 0; i < sizeof last_msg; i++)
+        last_msg[i] = u->msg[i];
+#endif
     kprintf("[WIFI]   %s: %s (chip %x rev %u, SD %u MHz)\n", st < 9 ? names[st] : "?", (const char *)u->msg, u->chip, u->chiprev, u->sdmhz);
 }
 
@@ -1055,8 +1098,8 @@ static int bringup(void)
     const struct fwfile *fb = fw_find(stems, ".bin");
     const struct fwfile *nv = fw_find(nvs, ".txt");
     const struct fwfile *clm = fw_find(stems, ".clm_blob");
-    if (!fb) { wstate(AN_ST_NOFW, is56 ? "firmware missing: put brcmfmac43456-sdio.bin in WIFI on the SD card" : is30 ? "firmware missing: put brcmfmac43430-sdio.bin in WIFI on the SD card" : "firmware missing: put cyfmac43455-sdio-standard.bin in WIFI on the SD card"); return -4; }
-    if (!nv) { wstate(AN_ST_NOFW, is30 ? "NVRAM missing: put brcmfmac43430-sdio.txt in WIFI on the SD card" : "NVRAM missing: put brcmfmac43455-sdio.txt in WIFI on the SD card"); return -4; }
+    if (!fb) { wstate(AN_ST_NOFW, is56 ? "firmware missing: put brcmfmac43456-sdio.bin " FW_WHERE : is30 ? "firmware missing: put brcmfmac43430-sdio.bin " FW_WHERE : "firmware missing: put cyfmac43455-sdio-standard.bin " FW_WHERE); return -4; }
+    if (!nv) { wstate(AN_ST_NOFW, is30 ? "NVRAM missing: put brcmfmac43430-sdio.txt " FW_WHERE : "NVRAM missing: put brcmfmac43455-sdio.txt " FW_WHERE); return -4; }
     wifi_log("chip %x rev %u: %s, %s%s%s\n", W.c.id, W.c.rev, fb->name, nv->name, clm ? ", " : "", clm ? clm->name : "");
     uint8_t *nvimg = tlsf_malloc(tlsf, nv->len + 64);
     if (!nvimg) { wstate(AN_ST_FAILED, "no memory"); return -1; }
@@ -1489,7 +1532,13 @@ static void wifi_thread(void)
     if (bootarg_val("wifi.psk", v, sizeof v)) { unsigned i = 0; for (; v[i] && i < 64; i++) W.pass[i] = v[i]; W.pass[i] = 0; }
     if (bootarg_val("wifi.country", v, sizeof v)) { W.country[0] = v[0]; W.country[1] = v[1]; W.country[2] = 0; }
     W.start_req = 1;                                /* as soon as the firmware is there */
-    wstate(AN_ST_NOFW, "waiting for the firmware files (WIFI folder on the SD card)");
+#ifdef PSMAC
+    /* the container was read at boot (psmac_bus.c), before this thread starts: with no WiFi
+       firmware in it nothing will ever arrive, so say once what to add */
+    if (!fw_have_wifi())
+        kprintf("[WIFI] the container has no WiFi firmware: add cyfmac43430-sdio.bin, brcmfmac43430-sdio.txt and cyfmac43430-sdio.clm_blob (Pi 3B) with make-container.py\n");
+#endif
+    wstate(AN_ST_NOFW, FW_WAITING);
     uint32_t seen_gen = 0;
     for (;;) {
         /* off, or no firmware yet: commands only */
