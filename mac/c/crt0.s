@@ -70,3 +70,21 @@ mac_newptr:
 	.short	0xA31E			| _NewPtr,clear
 	move.l	%a0,%d0
 	rts
+
+| The File Manager's calls take a parameter block in A0 and answer in D0 (they keep D2, as GCC
+| wants): short mac_PBxxx(ParamBlock *pb), synchronous, the result also in the block's ioResult.
+	.macro	pbcall name, trap
+	.globl	\name
+\name:	move.l	4(%sp),%a0
+	.short	\trap
+	ext.l	%d0
+	rts
+	.endm
+	pbcall	mac_PBOpen, 0xA000
+	pbcall	mac_PBClose, 0xA001
+	pbcall	mac_PBWrite, 0xA003
+	pbcall	mac_PBCreate, 0xA008
+	pbcall	mac_PBGetFInfo, 0xA00C
+	pbcall	mac_PBSetFInfo, 0xA00D
+	pbcall	mac_PBSetEOF, 0xA012
+	pbcall	mac_PBFlushVol, 0xA013

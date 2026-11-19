@@ -1194,5 +1194,15 @@ void psmac_log_attach(uint8_t *win)
     __asm__ volatile("dmb ish" ::: "memory");
     log_win = w;
 }
+/* psmac_card.c (aurora68.log): the ring's bytes, oldest first, at most max; returns how many */
+uint32_t psmac_log_copy(uint8_t *out, uint32_t max)
+{
+    uint32_t head = __atomic_load_n(&log_head, __ATOMIC_ACQUIRE), n = head < PSMB_LOG_SIZE ? head : PSMB_LOG_SIZE;
+    volatile uint8_t *w = log_win;
+    if (n > max) n = max;
+    for (uint32_t i = head - n, k = 0; i != head; i++, k++)
+        out[k] = w ? w[PSMB_OFF_LOGDATA - PSMB_OFF_LOG + i % PSMB_LOG_SIZE] : log_early[i % PSMB_LOG_SIZE];
+    return n;
+}
 void fastSerial_putByte(uint8_t b) { if (b == '\n') con_putc('\r'); con_putc(b); psmac_console_putc(b); log_putc(b); }
 void bitbang_putByte(uint8_t b) { fastSerial_putByte(b); }

@@ -197,6 +197,13 @@ static void print_header(const char *what, unsigned n)
     kprintf("[CRASH] %s in \"%s\", A5 %08x (crash record %u of at most %u)\n", what, name, a5, n, CRASH_BLOCKS_MAX);
 }
 
+/* the record and what led to it onto the card (aurora68.log, psmac_card.c), so it outlives a power cut */
+static void save_log(void)
+{
+    extern int psmac_card_save_log(int);
+    if (psmac_card_save_log(1) == 0) kprintf("[CRASH] the log goes to aurora68.log on the SD card\n");
+}
+
 /* the service core, every turn of its loop */
 void psmac_crash_poll(void)
 {
@@ -215,6 +222,7 @@ void psmac_crash_poll(void)
             print_regs(" ", &exc);
             kprintf("[CRASH] last 68k PCs the service core saw (oldest first):\n");
             psmac_pcring_tail(32);
+            save_log();
         } else if (notes < EXC_NOTES_MAX) {
             notes++;
             kprintf("[PSMAC:EXC] vector %03x (%s) at PC %08x SR %04x ea %08x fault %08x\n", exc.vec, vector_name(exc.vec),
@@ -235,4 +243,5 @@ void psmac_crash_poll(void)
     print_regs("_SysError:", &syserr);
     kprintf("[CRASH] last 68k PCs the service core saw (oldest first):\n");
     psmac_pcring_tail(32);
+    save_log();
 }

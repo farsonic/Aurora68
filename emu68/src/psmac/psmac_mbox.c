@@ -268,6 +268,8 @@ static void run_cmd(int idx, uint16_t type, volatile uint8_t *c)
             if (mac_copy(buf, tmp, NULL, n, 0)) status = PSMB_E_BADADDR;
             else { int r = psmac_card_edit_options(tmp, n); status = r == -1 ? PSMB_E_RO : r == -2 ? PSMB_E_BUSY : r ? PSMB_E_RANGE : 0; if (!r) { tmp[n] = 0; kprintf("[MAC] cmdline.txt edit asked: %u bytes\n", n); } }
         } else if (cmd == PSMB_INFO_OPTSTATE) { extern int psmac_card_options_state(void); result = (uint32_t)psmac_card_options_state(); }
+        else if (cmd == PSMB_INFO_SAVELOG) { extern int psmac_card_save_log(int); if (psmac_card_save_log(0)) status = PSMB_E_RO; else kprintf("[MAC] the log to the card asked\n"); }
+        else if (cmd == PSMB_INFO_LOGSTATE) { extern int psmac_card_log_state(void); result = (uint32_t)psmac_card_log_state(); }
         else status = PSMB_E_BADCMD;
         break;
     case PSMB_SVC_BLOCK: {

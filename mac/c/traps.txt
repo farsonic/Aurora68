@@ -126,5 +126,7 @@ A9A0 l GetResource(long type:l, int id:w)
 A9A3 - ReleaseResource(void *h:l)
 A9F4 - ExitToShell()
 A9C8 - SysBeep(int ticks:w)
+# Standard File (Pack3): the selector is the last argument, pushed after the others (1: SFPutFile)
+A9EA - SFPutFile(long where:l, const unsigned char *prompt:l, const unsigned char *name:l, void *hook:l, void *reply:l, int selector:w)
 # Color QuickDraw's screens, the Segment Loader
 A9F5 - GetAppParms(unsigned char *name:l, short *refNum:l, void **param:l)

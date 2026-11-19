@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **PiLog saves the log as text, and the kernel keeps it on the card.** Instead of photographing
+  the window: File > Save Log (Command-S) writes the lines shown, with the parts and the filter, to
+  a TeachText document named "PiLog <date> <time>" (Option for the whole log; TeachText opens up
+  to 32 KB, so read a whole log on another computer, copied there through Lagoon). Save to Card
+  (the button, or File > Save Log to SD Card) writes the whole log to aurora68.log in the SD card's
+  root, overwritten each time, to read on another computer; the kernel also does it by itself
+  right after a crash record, so the log of a crash survives switching off. Passwords never show:
+  wifi.psk and any option named psk, pass, key or secret, the password in mac.wifisim and the key
+  in bt.dev become *** in PiLog, in saved files and in aurora68.log. Replace kernel8.img and PiLog.
 - **Fixed: "Error type 41" (the Finder could not be loaded) booting from a disk image on the card.**
   When the Pi was busy elsewhere (joining the WiFi) the Mac could be given blocks of the image that
   had not yet come in from the card. Every read now waits for its blocks, and the Mac's own core

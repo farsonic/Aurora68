@@ -56,12 +56,13 @@ static int esc;                    /* inside an ANSI escape sequence */
 static unsigned long clear_pos;    /* Clear's mark: the first byte to show, at a line start */
 static int cleared, clear_cat;     /* the mark is set; the part of the line before it */
 static unsigned long n_lines, n_shown;     /* lines read since the mark, and those shown */
+static int save_all;               /* reading for File > Save Log with Option: every line */
 
 /* ---- the parts ---- */
 enum { C_KERNEL, C_MAC, C_WIFI, C_BT, C_NET, C_CARD, NCAT };
 static const char *const cat_name[NCAT] = { "Kernel", "Mac", "WiFi", "Bluetooth", "Network", "Card" };
 static int show[NCAT] = { 1, 1, 1, 1, 1, 1 };
-static void *cat_box[NCAT], *all_btn, *clear_btn, *follow_box;
+static void *cat_box[NCAT], *all_btn, *clear_btn, *follow_box, *card_btn;
 static int line_cat = C_KERNEL;    /* the category of the line being read (an untagged line keeps it) */
 static unsigned char line[400];    /* the line being read */
 static int line_n;
@@ -89,10 +90,66 @@ static int classify(const unsigned char *l, int n, int prev)
 	return C_KERNEL;
 }
 
+/* ---- secrets ---- */
+/* The kernel echoes its options ("[PSMAC] options: ... (bootargs: ...)"), and those can hold the
+   WiFi password. Whatever the kernel prints, the values of options that are secrets never reach
+   the window, the Scrap or a saved file: wifi.psk and anything named psk, pass, key or secret
+   (also as the end of a name after _ or -), the password in mac.wifisim=SSID:PASSWORD and the
+   link key in bt.dev=ADDRESS:KEY:FLAGS become ***. The kernel does the same for aurora68.log. */
+static unsigned char lower(unsigned char c);
+static int name_end(const unsigned char *s, int n, const char *k)
+{
+	int m = (int)strlen(k), j = 0, b = n;
+	while (b && s[b - 1] != '.') b--;              /* the last part of a dotted name */
+	if (n - b < m) return 0;
+	while (j < m && lower(s[n - m + j]) == (unsigned char)k[j]) j++;
+	return j == m && (n - m == b || s[n - m - 1] == '_' || s[n - m - 1] == '-');
+}
+static int name_is(const unsigned char *s, int n, const char *k)
+{
+	int j = 0;
+	while (j < n && k[j] && lower(s[j]) == (unsigned char)k[j]) j++;
+	return j == n && !k[j];
+}
+static void redact(unsigned char *l, int *len)
+{
+	static const char *const names[] = { "psk", "pass", "passwd", "password", "passphrase", "key", "secret" };
+	static unsigned char out[400];
+	int n = *len, i, o = 0, ns = 0, k, hide, colon;
+	i = 0;
+	while (i < n && l[i] != '=') i++;
+	if (i == n) return;                         /* most lines: nothing to look at */
+	for (i = 0; i < n && o < (int)sizeof out; i++) {
+		unsigned char c = l[i];
+		int namec = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+		out[o++] = c;
+		if (c != '=') { if (!namec) ns = o; continue; }
+		hide = colon = 0;
+		for (k = 0; k < (int)(sizeof names / sizeof names[0]); k++) if (name_end(out + ns, o - 1 - ns, names[k])) hide = 1;
+		if (!hide && (name_is(out + ns, o - 1 - ns, "mac.wifisim") || name_is(out + ns, o - 1 - ns, "bt.dev"))) hide = colon = 1;
+		if (!hide) { ns = o; continue; }
+		int e = i + 1;
+		if (colon) {                                /* keep the part before the first colon */
+			while (e < n && l[e] != ':' && l[e] != ' ') { if (o < (int)sizeof out) out[o++] = l[e]; e++; }
+			if (e < n && l[e] == ':' && o < (int)sizeof out) out[o++] = l[e++];
+			while (e < n && l[e] != ':' && l[e] != ' ' && l[e] != ')' && l[e] != ',') e++;
+		} else if (e < n && l[e] == '"') {
+			e++;
+			while (e < n && l[e] != '"') e++;
+			if (e < n) e++;
+		} else while (e < n && l[e] != ' ' && l[e] != ')' && l[e] != ',') e++;
+		for (k = 0; k < 3 && o < (int)sizeof out; k++) out[o++] = '*';
+		i = e - 1; ns = o;
+	}
+	memcpy(l, out, o);
+	*len = o;
+}
+
 /* ---- the text filter ---- */
 /* As many characters as the field shows: Monaco 9 is 6 pixels a character, the field's text
-   area 126 pixels. The field does not scroll sideways, so it takes no more. */
-#define FMAX       20
+   area 113 pixels. The field does not scroll sideways, so it takes no more. */
+#define FIELD_W    132
+#define FMAX       18
 #define NTERM      8
 static unsigned char fl[FMAX];     /* the filter in force, in lower case */
 static int fl_n;
@@ -172,9 +229,14 @@ static void *m_apple, *m_file, *m_edit, *m_view;
 static unsigned char pbuf[256];
 static Rect field_r, x_r;          /* the field's frame, its empty-it box */
 static int label_h, count_h;       /* where "Filter:" and the count are drawn */
+static int card_w;                 /* the Save to Card button's width (it sits at the right end) */
+static const char *note;           /* said in place of the count until note_until */
+static unsigned long note_until;
+static int card_asked;             /* Save to Card asked: the kernel's progress is looked at */
+static int card_wait;              /* looks left before an unanswered question counts as a failure */
 
 enum { M_APPLE = 128, M_FILE, M_EDIT, M_VIEW };
-enum { F_QUIT = 1 };
+enum { F_SAVE = 1, F_CARD, F_QUIT = 4 };
 enum { E_UNDO = 1, E_CUT = 3, E_COPY, E_PASTE, E_CLEAR, E_SELALL = 8, E_FILTER,
        E_CLEARLOG = 11, E_EARLIER };
 enum { V_FOLLOW = 1, V_NOFILTER = 3, V_ALLPARTS };
@@ -245,6 +307,7 @@ static void layout(void)
 	t->destRect.bottom = t->destRect.top + 30000;
 	TECalText(te);
 	ShowControl(vbar);
+	MoveControl(card_btn, r.right - 6 - card_w, ROW2 - 1);
 }
 
 /* ---- the second row's drawing ---- */
@@ -276,17 +339,31 @@ static int filtering(void)
 static void draw_count(void)
 {
 	char s[48], *p = s;
-	Rect r = { ROW2, count_h, ROW2 + 16, PORT_RECT(win)->right - 2 };
+	Rect r = { ROW2, count_h, ROW2 + 16, PORT_RECT(win)->right - 10 - card_w };
 	EraseRect(&r);
 	if (!lg) return;
+	TextFont(3); TextSize(9);           /* Geneva 9 */
+	MoveTo(count_h, BASE2);
+	ClipRect(&r);
+	if (note && (long)(note_until - LM_TICKS) > 0) {
+		DrawString(pstr(pbuf, note));
+		ClipRect(PORT_RECT(win));
+		TextFont(4); TextSize(9);
+		return;
+	}
 	if (filtering()) { p = put_num(p, n_shown); memcpy(p, " of ", 4); p += 4; }
 	p = put_num(p, n_lines);
 	memcpy(p, n_lines == 1 ? " line" : " lines", 6); p += n_lines == 1 ? 5 : 6;
 	*p = 0;
-	TextFont(3); TextSize(9);           /* Geneva 9 */
-	MoveTo(count_h, BASE2);
 	DrawString(pstr(pbuf, s));
+	ClipRect(PORT_RECT(win));
 	TextFont(4); TextSize(9);
+}
+static void say(const char *s, int secs)
+{
+	note = s;
+	note_until = LM_TICKS + 60UL * secs;
+	draw_count();
 }
 
 /* the rows of controls: the check boxes and All, then the filter, Clear and Follow, in the
@@ -307,7 +384,7 @@ static void make_controls(void)
 
 	label_h = 6;
 	h = label_h + StringWidth(pstr(pbuf, "Filter:")) + 5;
-	field_r.top = ROW2; field_r.bottom = ROW2 + 16; field_r.left = h; field_r.right = h + 144;
+	field_r.top = ROW2; field_r.bottom = ROW2 + 16; field_r.left = h; field_r.right = h + FIELD_W;
 	x_r.top = field_r.top + 3; x_r.bottom = field_r.bottom - 3;
 	x_r.right = field_r.right - 3; x_r.left = x_r.right - 10;
 	h = field_r.right + 8;
@@ -317,6 +394,9 @@ static void make_controls(void)
 	b.top = ROW2; b.bottom = ROW2 + 16; b.left = h; b.right = h + 20 + StringWidth(pstr(pbuf, "Follow"));
 	follow_box = NewControl(win, &b, pbuf, 1, follow, 0, 1, checkBoxProc, 0);
 	count_h = b.right + 8;
+	card_w = 16 + StringWidth(pstr(pbuf, "Save to Card"));
+	b.top = ROW2 - 1; b.bottom = ROW2 + 17; b.left = 0; b.right = card_w;    /* placed by layout() */
+	card_btn = NewControl(win, &b, pbuf, 1, 0, 0, 1, pushButProc, 0);
 
 	/* the field: one line of Monaco 9, wide enough never to wrap */
 	TextFont(4); TextSize(9);
@@ -394,9 +474,10 @@ static int read_log(unsigned long head, unsigned char *out, int len, int n, int 
 			if (line_n < (int)sizeof line) line[line_n++] = c;
 			continue;
 		}
+		redact(line, &line_n);
 		line_cat = classify(line, line_n, line_cat);
 		n_lines++;
-		if (show[line_cat] && matches(line, line_n)) {
+		if (save_all || (show[line_cat] && matches(line, line_n))) {
 			n_shown++;
 			if (n + line_n + 1 > len) n = flush(out, n);
 			memcpy(out + n, line, line_n);
@@ -425,6 +506,24 @@ static void poll_log(void)
    filter, into the window. The text is gathered in a buffer of its own, which keeps the newest
    KEEP bytes, and goes in at once. */
 static unsigned char *refill_buf;
+/* where a reading of the whole ring starts: Clear's mark while it is in the ring (and asked for),
+   else the oldest whole line. Returns the head to read to. */
+static unsigned long ring_start(int from_mark)
+{
+	unsigned long head = lg->head, size = lg->size;
+	pos = head > size ? head - size : 0;
+	line_cat = C_KERNEL;
+	if (from_mark && cleared && clear_pos - pos <= head - pos) {
+		pos = clear_pos;
+		line_cat = clear_cat;
+	} else if (head > size) {
+		/* the ring's oldest line is probably cut: start at the first line end */
+		while (pos != head && win_base[lg->data_off + pos % size] != '\n') pos++;
+		if (pos != head) pos++;
+	}
+	line_n = 0; esc = 0;
+	return head;
+}
 static int flush_refill(unsigned char *s, int n)
 {
 	/* the buffer is full: keep the newest half, from a line start */
@@ -440,19 +539,7 @@ static void refilter(void)
 	if (!lg) return;
 	if (!refill_buf) refill_buf = mac_newptr(KEEP + 4096);
 	if (!refill_buf) { SysBeep(5); return; }
-	unsigned long head = lg->head, size = lg->size;
-	pos = head > size ? head - size : 0;
-	line_cat = C_KERNEL;
-	if (cleared && clear_pos - pos <= head - pos) {
-		/* the mark is still in the ring: from there */
-		pos = clear_pos;
-		line_cat = clear_cat;
-	} else if (head > size) {
-		/* the ring's oldest line is probably cut: start at the first line end */
-		while (pos != head && win_base[lg->data_off + pos % size] != '\n') pos++;
-		if (pos != head) pos++;
-	}
-	line_n = 0; esc = 0;
+	unsigned long head = ring_start(1);
 	n_lines = n_shown = 0;
 	int n = read_log(head, refill_buf, KEEP + 4096, 0, flush_refill);
 	if (n > KEEP) n = flush_refill(refill_buf, n);
@@ -539,6 +626,164 @@ static void paste_field(void)
 	field_edited(0);
 }
 
+/* ---- saving the log ---- */
+/* For handing the log on as text instead of a photograph of the window. File > Save Log puts the
+   lines the window shows (the parts, the filter, from Clear's mark) into a TEXT file of
+   TeachText's, named "PiLog 2026-11-19 14.05"; with Option held, the whole ring. TeachText opens
+   files up to 32 KB; a whole ring is 64 KB, which a modern machine reads anyway (copy it there
+   through Lagoon's share). Save to Card asks the kernel to write the ring to aurora68.log in the
+   SD card's root (psmac_card.c), to be read on another computer. Secrets are hidden either way. */
+static int option_held(void) { return (LM_KEYMAP[7] & 0x04) != 0; }     /* key code 0x3A */
+
+static char *put_str(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
+static char *put2(char *p, int v) { *p++ = (char)('0' + v / 10); *p++ = (char)('0' + v % 10); return p; }
+/* the clock as "2026-11-19" and the time with sep between hours and minutes */
+static char *put_date(char *p, unsigned long t, char sep)
+{
+	static const unsigned char mdays[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+	unsigned long days = t / 86400, rest = t % 86400;
+	int y = 1904, m = 0;
+	while (days >= (unsigned long)(y % 4 ? 365 : 366)) { days -= y % 4 ? 365 : 366; y++; }    /* every fourth year to 2099 */
+	while (days >= (unsigned long)(mdays[m] + (m == 1 && y % 4 == 0))) { days -= mdays[m] + (m == 1 && y % 4 == 0); m++; }
+	p = put_num(p, (unsigned long)y); *p++ = '-'; p = put2(p, m + 1); *p++ = '-'; p = put2(p, (int)days + 1);
+	*p++ = ' '; p = put2(p, (int)(rest / 3600)); *p++ = sep; p = put2(p, (int)(rest / 60 % 60));
+	return p;
+}
+
+static ParamBlock spb;             /* the open file */
+static short save_err;
+static long save_at;
+static int flush_file(unsigned char *s, int n)
+{
+	if (n && !save_err) {
+		spb.u.io.ioBuffer = s; spb.u.io.ioReqCount = n;
+		spb.u.io.ioPosMode = fsFromStart; spb.u.io.ioPosOffset = save_at;
+		save_err = mac_PBWrite(&spb);
+		save_at += n;
+	}
+	return 0;
+}
+static void save_log(int all)
+{
+	static unsigned char name[64], buf[2048];
+	static unsigned char keep_line[sizeof line];
+	SFReply rep;
+	char t[300], *p;
+	int i;
+	if (!lg) return;
+	p = put_date(put_str(t, "PiLog "), LM_TIME, '.');
+	*p = 0;
+	pstr(name, t);
+	Point where = { 60, 104 };          /* the dialog's top left: centred on the SE's 512 x 342 */
+	SFPutFile(pt_long(where), pstr(pbuf, all ? "Save all of the log as:" : "Save the lines shown as:"), name, 0, &rep, 1);
+	if (!rep.good) return;
+	SetPort(win);
+
+	memset(&spb, 0, sizeof spb);
+	spb.ioNamePtr = rep.fName; spb.ioVRefNum = rep.vRefNum;
+	save_err = mac_PBCreate(&spb);
+	if (save_err == dupFNErr) save_err = 0;          /* Standard File has asked about replacing it */
+	if (!save_err) {
+		memset(&spb, 0, sizeof spb);
+		spb.ioNamePtr = rep.fName; spb.ioVRefNum = rep.vRefNum;
+		save_err = mac_PBGetFInfo(&spb);
+		spb.u.f.fdType = TYPE('T', 'E', 'X', 'T'); spb.u.f.fdCreator = TYPE('t', 't', 'x', 't');
+		if (!save_err) save_err = mac_PBSetFInfo(&spb);
+	}
+	if (!save_err) {
+		memset(&spb, 0, sizeof spb);
+		spb.ioNamePtr = rep.fName; spb.ioVRefNum = rep.vRefNum; spb.ioPermssn = fsWrPerm;
+		save_err = mac_PBOpen(&spb);
+	}
+	if (save_err) { SysBeep(5); say("Not saved", 5); return; }
+
+	/* a first line saying what this is */
+	save_at = 0;
+	p = put_date(put_str(t, "PiLog: the Aurora68 kernel log, saved "), LM_TIME, ':');
+	if (all) p = put_str(p, ". The whole ring.");
+	else {
+		if (cleared) p = put_str(p, ". From Clear on");
+		p = put_str(p, ". Parts:");
+		for (i = 0; i < NCAT; i++) if (show[i]) { *p++ = ' '; p = put_str(p, cat_name[i]); }
+		if ((*fte)->teLength) {
+			p = put_str(p, ". Filter: \"");
+			memcpy(p, *(*fte)->hText, (*fte)->teLength); p += (*fte)->teLength;
+			*p++ = '"';
+		}
+		*p++ = '.';
+	}
+	*p++ = '\r';
+	flush_file((unsigned char *)t, (int)(p - t));
+
+	/* the ring through the filter, as refilter() reads it, keeping the window's reading state */
+	unsigned long k_pos = pos, k_lines = n_lines, k_shown = n_shown;
+	int k_esc = esc, k_n = line_n, k_cat = line_cat;
+	memcpy(keep_line, line, line_n);
+	save_all = all;
+	unsigned long head = ring_start(!all);
+	flush_file(buf, read_log(head, buf, sizeof buf, 0, flush_file));
+	save_all = 0;
+	pos = k_pos; n_lines = k_lines; n_shown = k_shown; esc = k_esc; line_n = k_n; line_cat = k_cat;
+	memcpy(line, keep_line, line_n);
+
+	short werr = save_err;
+	spb.u.io.ioMisc = save_at;
+	mac_PBSetEOF(&spb);
+	mac_PBClose(&spb);
+	memset(&spb, 0, sizeof spb);
+	spb.ioVRefNum = rep.vRefNum;
+	mac_PBFlushVol(&spb);
+	if (werr) { SysBeep(5); say("Not saved", 5); }
+	else say("Saved", 4);
+}
+
+/* the mailbox's INFO service (psmb.h): one command, waited for; the drivers log through the same
+   block at interrupt time, so interrupts are held off meanwhile, as the WiFi menu does */
+#define INFO_CMD      0x1000
+#define INFO_SAVELOG  6
+#define INFO_LOGSTATE 7
+static long info_call(int cmd, unsigned long *result)
+{
+	volatile unsigned char *c = win_base + INFO_CMD;
+	volatile unsigned long *req = (volatile unsigned long *)c, *done = (volatile unsigned long *)(c + 4);
+	unsigned long r, n;
+	long st = -1;
+	short sr;
+	__asm__ volatile("move.w %%sr,%0\n\tori.w #0x0700,%%sr" : "=d"(sr) : : "cc");
+	r = *req;
+	for (n = 0; *done != r && n < 2000000; n++) { }
+	*(volatile unsigned short *)(c + 8) = (unsigned short)cmd;
+	*(volatile unsigned long *)(c + 28) = 0;
+	*(volatile unsigned long *)(c + 32) = 0;
+	*req = r + 1;
+	for (n = 0; *done != r + 1 && n < 4000000; n++) { }
+	if (*done == r + 1) {
+		st = *(volatile long *)(c + 36);
+		if (result) *result = *(volatile unsigned long *)(c + 40);
+	}
+	__asm__ volatile("move.w %0,%%sr" : : "d"(sr) : "cc");
+	return st;
+}
+static void save_to_card(void)
+{
+	if (!lg || card_asked) return;
+	long st = info_call(INFO_SAVELOG, 0);
+	if (st == 0) { card_asked = 1; card_wait = 240; say("Saving\xC9", 60); }
+	else { SysBeep(5); say(st == -6 ? "No SD card" : "Not saved", 5); }
+}
+static void card_progress(void)
+{
+	unsigned long state = 1;
+	long st = info_call(INFO_LOGSTATE, &state);
+	/* no answer: the core that writes the card also serves the mailbox, and may be in a card write */
+	if (st == -1) state = --card_wait > 0 ? 1 : 3;
+	else if (st) state = 3;
+	if (state == 1) return;
+	card_asked = 0;
+	if (state == 2) say("Saved to card", 6);
+	else { SysBeep(5); say("Not saved", 6); }
+}
+
 /* ---- menus ---- */
 static void setup_menus(void)
 {
@@ -548,7 +793,7 @@ static void setup_menus(void)
 	AddResMenu(m_apple, TYPE('D', 'R', 'V', 'R'));
 	InsertMenu(m_apple, 0);
 	m_file = NewMenu(M_FILE, pstr(pbuf, "File"));
-	AppendMenu(m_file, pstr(pbuf, "Quit/Q"));
+	AppendMenu(m_file, pstr(pbuf, "Save Log\xC9/S;Save Log to SD Card;(-;Quit/Q"));
 	InsertMenu(m_file, 0);
 	/* Undo to Clear in the standard order, so SystemEdit gives desk accessories the right ones */
 	m_edit = NewMenu(M_EDIT, pstr(pbuf, "Edit"));
@@ -572,6 +817,8 @@ static void fix_menus(void)
 	int da = FrontWindow() != win, i, some_off = 0;
 	TERec *t = *cur();
 	int sel = t->selEnd > t->selStart;
+	enable(m_file, F_SAVE, lg != 0);
+	enable(m_file, F_CARD, lg != 0 && !card_asked);
 	enable(m_edit, E_UNDO, da);
 	enable(m_edit, E_CUT, da || (focus && sel));
 	enable(m_edit, E_COPY, da || sel);
@@ -610,7 +857,9 @@ static void do_menu(long mr)
 		if (item == 1) about();
 		else { GetItem(m_apple, item, pbuf); OpenDeskAcc(pbuf); }
 	} else if (id == M_FILE) {
-		if (item == F_QUIT) quit = 1;
+		if (item == F_SAVE) save_log(option_held());
+		else if (item == F_CARD) save_to_card();
+		else if (item == F_QUIT) quit = 1;
 	} else if (id == M_EDIT) {
 		if (item <= E_CLEAR && SystemEdit(item - 1)) { HiliteMenu(0); return; }     /* a desk accessory's */
 		switch (item) {
@@ -656,6 +905,7 @@ static void activate(int on)
 	HiliteControl(all_btn, st);
 	HiliteControl(clear_btn, st);
 	HiliteControl(follow_box, st);
+	HiliteControl(card_btn, st);
 	DrawGrowIcon(win);
 }
 
@@ -670,6 +920,7 @@ static void content_click(EventRecord *ev)
 	if (ctl && ctl != vbar) {
 		if (!TrackControl(ctl, pt_long(p), 0)) return;
 		if (ctl == clear_btn) clear_log();
+		else if (ctl == card_btn) save_to_card();
 		else if (ctl == follow_box) set_follow(!follow);
 		else box_click(ctl, (ev->modifiers & optionKey) != 0);
 		return;
@@ -726,7 +977,12 @@ static void mouse_down(EventRecord *ev)
 static void key_down(EventRecord *ev)
 {
 	int c = (int)(ev->message & charCodeMask);
-	if (ev->modifiers & cmdKey) { fix_menus(); do_menu(MenuKey(c)); return; }
+	if (ev->modifiers & cmdKey) {
+		if (((ev->message >> 8) & 0xFF) == 0x01) c = 's';      /* S, whatever Option made of it */
+		fix_menus();
+		do_menu(MenuKey(c));
+		return;
+	}
 	SetPort(win);
 	int page = visible() > 1 ? visible() - 1 : 1;
 	switch (c) {
@@ -821,6 +1077,8 @@ int main(void)
 			last = LM_TICKS;
 			SetPort(win);
 			poll_log();
+			if (card_asked) card_progress();
+			if (note && (long)(note_until - LM_TICKS) <= 0) { note = 0; draw_count(); }
 		}
 	}
 	return 0;

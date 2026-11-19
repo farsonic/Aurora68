@@ -18,6 +18,8 @@
  *                  image inside it is written back sector by sector at its own offset, so the
  *                  next boot loads what the Mac wrote. Only after the file's size and first
  *                  sector have been checked against the copy in memory.
+ *   aurora68.log   the kernel's log, on the Mac's request (PiLog's Save to Card) and after a crash
+ *                  record: made once the size of the ring, rewritten in place (below).
  *   cmdline.txt    edited only on the Mac's request (PSMB_INFO_SETOPT: the WiFi menu saves the
  *                  network it joined), and carefully: one line of options, the requested ones
  *                  dropped or replaced, every other byte kept, written only when the result fits
@@ -36,6 +38,7 @@
 #include "tlsf.h"
 #include "spinlock.h"
 #include "psmac.h"
+#include "psmb.h"
 
 extern uint32_t get_clock_rate(uint32_t clock_id);
 extern const char *psmac_option(const char *key);
@@ -537,6 +540,149 @@ const uint8_t *psmac_card_pram(int *state, uint32_t *len)
     *state = sd.state < 0 ? -1 : __atomic_load_n(&pram_state, __ATOMIC_ACQUIRE);
     *len = pram_len;
     return *state == 1 ? pram_text : 0;
+}
+
+/* ==== aurora68.log: the kernel's log, for the user to hand on =================================
+   The bench user photographed PiLog's window to report a problem; the log is better as text. On
+   the Mac's request (PSMB_INFO_SAVELOG: PiLog's "Save to Card"), and by itself right after a
+   [CRASH] record (psmac_crash.c), the whole 64 KiB ring goes into aurora68.log in the card's root,
+   overwritten each time, so it can be read on another computer and survives a power cut.
+   The file is made once, the size the ring needs, and never grows afterwards: its first cluster as
+   for pairings.txt, then the rest one at a time, each taken (marked end of chain) before the one
+   before it points to it, so an interruption leaves at worst a lost cluster, never a broken chain.
+   A file already there with a shorter chain is lengthened the same way. The text is a snapshot of
+   the ring taken when the writing starts, with the values of options that are secrets (wifi.psk
+   and anything named psk, pass, key or secret, the password in mac.wifisim, the link key in
+   bt.dev) replaced by ***. One sector per pass of core 3, like everything here (logf_step). */
+static volatile int logf_req;                  /* asked; 2: after a crash record */
+static volatile int logf_state;                /* 0 nothing asked, 1 being written, 2 saved, 3 failed */
+static uint8_t *logf_buf; static uint32_t logf_len, logf_done, logf_clus, logf_ci;
+static struct cfile logf_file; static int logf_have;
+static int secret_name(const char *s, uint32_t n)
+{
+    uint32_t b = n;
+    while (b && s[b - 1] != '.') b--;                  /* the last part of a dotted name */
+    static const char *const names[] = { "psk", "pass", "passwd", "password", "passphrase", "key", "secret" };
+    for (unsigned i = 0; i < sizeof names / sizeof names[0]; i++) {
+        uint32_t m = 0, j;
+        while (names[i][m]) m++;
+        if (n - b < m) continue;
+        j = 0;
+        while (j < m && lower(s[n - m + j]) == names[i][j]) j++;
+        /* the whole part, or its end after _ or - (wpa_passphrase, wifi-key) */
+        if (j == m && (n - m == b || s[n - m - 1] == '_' || s[n - m - 1] == '-')) return 1;
+    }
+    return 0;
+}
+static int name_is(const char *s, uint32_t n, const char *k) { uint32_t j = 0; while (j < n && k[j] && lower(s[j]) == k[j]) j++; return j == n && !k[j]; }
+/* in into out with secret values as ***; returns the bytes in out */
+static uint32_t log_redact(const uint8_t *in, uint32_t n, uint8_t *out, uint32_t cap)
+{
+    uint32_t o = 0, ns = 0;
+    for (uint32_t i = 0; i < n && o < cap; i++) {
+        uint8_t c = in[i];
+        out[o++] = c;
+        int namec = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+        if (c != '=') { if (!namec) ns = o; continue; }
+        const char *nm = (const char *)out + ns; uint32_t nl = o - 1 - ns;
+        uint32_t keep = 0;                             /* value bytes kept before the secret part */
+        int hide = secret_name(nm, nl), skip_to = 0;
+        if (!hide && name_is(nm, nl, "mac.wifisim")) { hide = 1; skip_to = 1; }    /* SSID:PASSWORD */
+        if (!hide && name_is(nm, nl, "bt.dev")) { hide = 1; skip_to = 1; }         /* ADDRESS:KEY:FLAGS */
+        if (!hide) { ns = o; continue; }
+        uint32_t v = i + 1, q = v < n && in[v] == '"';
+        if (skip_to) { while (v + keep < n && in[v + keep] != ':' && in[v + keep] != ' ' && in[v + keep] != '\n') keep++; if (v + keep < n && in[v + keep] == ':') keep++; }
+        for (uint32_t k = 0; k < keep && o < cap; k++) out[o++] = in[v + k];
+        uint32_t e = v + keep;
+        if (q && !keep) { e++; while (e < n && in[e] != '"' && in[e] != '\n') e++; if (e < n && in[e] == '"') e++; }
+        else while (e < n && in[e] != ' ' && in[e] != '\t' && in[e] != '\n' && in[e] != ')' && in[e] != ',' && !(skip_to && in[e] == ':')) e++;
+        for (const char *r = "***"; *r && o < cap; r++) out[o++] = (uint8_t)*r;
+        i = e - 1; ns = o;
+    }
+    return o;
+}
+/* psmac_mbox.c (PiLog) and psmac_crash.c: 0 asked, -1 no writable card */
+int psmac_card_save_log(int after_crash)
+{
+    if (sd.state < 0 || sd.ro) return -1;
+    logf_req = after_crash ? 2 : 1;
+    __atomic_store_n(&logf_state, 1, __ATOMIC_RELEASE);
+    return 0;
+}
+int psmac_card_log_state(void) { return logf_state; }
+static int logf_phase;
+static void logf_fail(const char *why) { kprintf("[CARD] aurora68.log: %s\n", why); logf_phase = 0; logf_state = 3; }
+/* One step per pass of core 3: 0 the snapshot; 1 the file found or made (its directory entry and
+   first cluster, as file_create does for pairings.txt), its chain walked; 2 one more cluster on the
+   chain, until it holds the text; 3 one sector of the text; 4 the size in the directory entry. */
+static uint32_t logf_tail, logf_nclus;
+static void logf_step(void)
+{
+    extern uint32_t psmac_log_copy(uint8_t *out, uint32_t max);
+    static uint8_t *raw;
+    if (logf_req) {                                    /* a new request, or one during a save: from the start */
+        int crash = logf_req == 2;
+        logf_req = 0;
+        if (!logf_buf) logf_buf = tlsf_malloc(tlsf, PSMB_LOG_SIZE + 8192);
+        if (!raw) raw = tlsf_malloc(tlsf, PSMB_LOG_SIZE);
+        if (!logf_buf || !raw) { logf_fail("no memory for the copy"); return; }
+        uint32_t n = psmac_log_copy(raw, PSMB_LOG_SIZE), s = 0;
+        if (n == PSMB_LOG_SIZE) { while (s < n && raw[s] != '\n') s++; if (s < n) s++; }   /* the oldest line is cut: from the next */
+        const char *hd = crash ? "Aurora68 kernel log, saved after a crash record\n" : "Aurora68 kernel log, saved from the Mac\n";
+        uint32_t h = 0; while (hd[h]) { logf_buf[h] = (uint8_t)hd[h]; h++; }
+        logf_len = h + log_redact(raw + s, n - s, logf_buf + h, PSMB_LOG_SIZE + 8192 - h);
+        logf_phase = 1;
+        return;
+    }
+    if (logf_phase == 1) {
+        if (!logf_have) {
+            if (file_find("aurora68.log", &logf_file) == 0) logf_have = 1;
+            else if (file_create("AURORA68", "LOG", &logf_file)) { logf_fail("could not create it (root directory or card full?)"); return; }
+            else { logf_have = 1; kprintf("[CARD] aurora68.log created\n"); }
+        }
+        if (logf_file.clus < 2) {                      /* an empty file made elsewhere: no cluster yet */
+            uint32_t c = clus_alloc();
+            if (!c || sd_read(logf_file.dir_lba, sec)) { logf_fail("no free cluster"); return; }
+            put16(sec + logf_file.dir_off + 20, c >> 16); put16(sec + logf_file.dir_off + 26, c & 0xffff);
+            if (sd_write(logf_file.dir_lba, sec)) { logf_fail("directory write failed"); return; }
+            logf_file.clus = c;
+        }
+        uint32_t c = logf_file.clus, n = 1;
+        for (uint32_t nx = fat_get(c); nx >= 2 && !eoc(nx) && n < 65536; nx = fat_get(c)) { c = nx; n++; }
+        logf_tail = c; logf_nclus = n;
+        logf_phase = 2;
+        return;
+    }
+    if (logf_phase == 2) {
+        if (logf_nclus * fs.spc * 512u < logf_len) {
+            uint32_t nc = clus_alloc();                /* taken, marked end of chain... */
+            if (!nc) { logf_fail("the card is full"); return; }
+            if (fat_set(logf_tail, nc)) { logf_fail("FAT write failed"); return; }    /* ...then joined on */
+            logf_tail = nc; logf_nclus++;
+            return;
+        }
+        logf_done = 0; logf_clus = logf_file.clus; logf_ci = 0;
+        logf_phase = 3;
+    }
+    if (logf_phase == 3) {
+        for (uint32_t j = 0; j < 512; j++) sec[j] = logf_done + j < logf_len ? logf_buf[logf_done + j] : 0;
+        if (sd_write(clus_lba(logf_clus) + logf_ci, sec)) { logf_fail("write failed"); return; }
+        logf_done += 512;
+        if (++logf_ci == fs.spc && logf_done < logf_len) {
+            logf_ci = 0; logf_clus = fat_get(logf_clus);
+            if (logf_clus < 2 || eoc(logf_clus)) { logf_fail("its chain ended early"); return; }
+        }
+        if (logf_done >= logf_len) logf_phase = 4;
+        return;
+    }
+    if (logf_phase != 4) { logf_fail("lost its place"); return; }
+    if (sd_read(logf_file.dir_lba, sec)) { logf_fail("directory read failed"); return; }
+    put32(sec + logf_file.dir_off + 28, logf_len);
+    if (sd_write(logf_file.dir_lba, sec)) { logf_fail("directory write failed"); return; }
+    logf_file.size = logf_len;
+    logf_phase = 0;
+    logf_state = 2;
+    kprintf("[CARD] aurora68.log: %u bytes of the log written\n", logf_len);
 }
 
 /* ==== cmdline.txt: the options the Mac asks to change ========================================
@@ -1046,6 +1192,7 @@ static void card_poll_locked(void)
     if (__atomic_load_n(&opt_state, __ATOMIC_ACQUIRE) == 1 && !sd.ro) { cmdline_apply(); return; }
     { extern int psmac_solo_pram_take(uint8_t out[260]); static uint8_t p[260];
       if (!sd.ro && psmac_solo_pram_take(p)) { pram_write(p); return; } }
+    if (__atomic_load_n(&logf_state, __ATOMIC_ACQUIRE) == 1 && !sd.ro) { logf_step(); return; }
     /* a disk image still coming in from the card, and the Mac's changes going back: every other pass
        each, so writes made while a large image loads are on the card long before it is complete */
     static unsigned turn;

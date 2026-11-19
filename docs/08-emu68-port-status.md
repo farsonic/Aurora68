@@ -1432,6 +1432,40 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    The workaround meanwhile, the image back inside the container, is safe with 1df6f2a: an image in
    the container is all in memory before the 68k starts and a card image is then not taken.
 
+55. **The log as text: PiLog's Save Log, aurora68.log on the card (20 November).** The user reported
+   problems by photographing PiLog's window, and wanted the log handed over as text. Two ways now:
+   - *PiLog, File > Save Log* (mac/pilog.c): Standard File (SFPutFile, a new line in
+     `mac/c/traps.txt`) and the File Manager's register calls (PBCreate, PBGetFInfo/PBSetFInfo,
+     PBOpen, PBWrite, PBSetEOF, PBClose, PBFlushVol: eight small stubs in `mac/c/crt0.s`, the
+     parameter block in `toolbox.h`) write a TEXT file of TeachText's. The text is the ring read
+     again through the window's filter, from Clear's mark, under a first line naming the filter and
+     the parts; Option takes the whole ring. TeachText refuses files over 32 KB: a whole ring
+     (64 KB) is for a modern machine, reached through Lagoon's share.
+   - *Save to Card*: a new INFO command, `PSMB_INFO_SAVELOG` (6), with `PSMB_INFO_LOGSTATE` (7) for
+     the progress, asks the card writer for `aurora68.log` in the card's root. `psmac_log_copy`
+     (psmac_bus.c) copies the ring oldest first; the card writer makes the file once, the size the
+     ring needs (65 KB: 33 clusters of 2 KB on the testbed's FAT16 card), taking each new cluster
+     (marked end of chain) before the chain points to it, so a power cut leaves at worst a lost
+     cluster; afterwards it only rewrites the file in place. One sector per pass of core 3, as
+     everything there. The first try wrote four sectors a pass: PiLog's question about the
+     progress, which core 3 also answers, timed out under QEMU and PiLog said "Not saved" while the
+     kernel said written. One sector a pass, and PiLog counting an unanswered question as "still
+     busy" for a minute, mended it.
+   - *After a crash*: psmac_crash.c asks for the same save after each `[CRASH]` record, so the
+     record and what led to it are on the card before anyone switches off.
+   - *Secrets*: the kernel echoes its bootargs in the "[PSMAC] options:" line, which can carry
+     `wifi.psk`. PiLog (every line it reads) and the kernel (the snapshot for the card) replace the
+     values of options named psk, pass, passwd, password, passphrase, key or secret (also as the end
+     of a name after `_` or `-`), the password of `mac.wifisim=SSID:PASSWORD` and the key of
+     `bt.dev=ADDRESS:KEY:FLAGS` with `***`; "monkey=7" and "keyboard=9" are left alone. Both
+     scanners were checked on the host against the same lines.
+   Testbed (solo board, QEMU, `CARD=` a 64 MB FAT16 card image): Save Log with the filter "slot"
+   gave a 3.8 KB file of 37 lines, Option-Save the whole ring (64 KB, about 600 lines, in order), both
+   TEXT/ttxt; Save to Card made aurora68.log (65,558 bytes), `mtype` reads it back, `fsck.vfat -n`
+   is clean, and a second save rewrote it in place (`docs/img/system71-pilog-save.png`,
+   `docs/img/system71-pilog-card.png`). The save after a crash record was not provoked in the
+   testbed.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

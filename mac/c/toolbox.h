@@ -94,6 +94,42 @@ unsigned char *pstr(unsigned char *buf, const char *c);
 void *mac_newptr(long size);
 #define inCheckBox   11
 #define inButton     10
+/* the File Manager's parameter block (Inside Macintosh IV, File Manager): the I/O calls' fields
+   and, over the same bytes from offset 28, the file information calls' */
+typedef struct {
+	void *qLink;
+	short qType, ioTrap;
+	void *ioCmdAddr, *ioCompletion;
+	short ioResult;
+	const unsigned char *ioNamePtr;
+	short ioVRefNum;
+	short ioRefNum;                 /* ioFRefNum for the file information calls */
+	char ioVersNum, ioPermssn;
+	union {
+		struct { long ioMisc; void *ioBuffer; long ioReqCount, ioActCount; short ioPosMode; long ioPosOffset; } io;
+		struct { short ioFDirIndex; char ioFlAttrib, ioFlVersNum; long fdType, fdCreator; short fdFlags;
+		         Point fdLocation; short fdFldr; long ioFlNum; short ioFlStBlk; long ioFlLgLen, ioFlPyLen;
+		         short ioFlRStBlk; long ioFlRLgLen, ioFlRPyLen, ioFlCrDat, ioFlMdDat; } f;
+	} u;
+} ParamBlock;
+_Static_assert(sizeof(ParamBlock) == 80 && __builtin_offsetof(ParamBlock, u.f.fdType) == 32, "ParamBlock");
+#define fsWrPerm   2
+#define fsFromStart 1
+#define dupFNErr   (-48)
+short mac_PBOpen(ParamBlock *pb), mac_PBClose(ParamBlock *pb), mac_PBWrite(ParamBlock *pb),
+      mac_PBCreate(ParamBlock *pb), mac_PBGetFInfo(ParamBlock *pb), mac_PBSetFInfo(ParamBlock *pb),
+      mac_PBSetEOF(ParamBlock *pb), mac_PBFlushVol(ParamBlock *pb);
+/* Standard File's answer (SFPutFile, SFGetFile) */
+typedef struct {
+	char good, copy;
+	long fType;
+	short vRefNum, version;
+	unsigned char fName[64];
+} SFReply;
+_Static_assert(__builtin_offsetof(SFReply, fName) == 10, "SFReply");
+#define LM_TIME       (*(volatile unsigned long *)0x20C)  /* the clock: seconds since 1904, local time */
+#define LM_KEYMAP     ((volatile unsigned char *)0x174)  /* the keys held: key code k is bit k % 8 of byte k / 8 */
+
 /* crt0.s: a control's action procedure, calling c_ctl_action(ctl, part) of the program */
 void pas_ctl_action(void);
 void c_ctl_action(void *ctl, int part);

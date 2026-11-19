@@ -171,6 +171,9 @@ struct psmb_cmd {
 #define PSMB_INFO_SETOPT     4      /* buf/len: an edit list for cmdline.txt ("-NAME" / "+NAME=VALUE" lines),
                                        written by the card writer (psmac_card.c); status PSMB_E_RO without a card */
 #define PSMB_INFO_OPTSTATE   5      /* result: 0 nothing asked, 1 being written, 2 saved, 3 failed */
+#define PSMB_INFO_SAVELOG    6      /* the log ring into aurora68.log in the SD card's root (psmac_card.c), secrets
+                                       hidden; status PSMB_E_RO without a writable card */
+#define PSMB_INFO_LOGSTATE   7      /* result: 0 nothing asked, 1 being written, 2 saved, 3 failed */
 
 /* BLOCK service: arg0 = device index, arg1 = first block, arg2 = block count, buf = data */
 #define PSMB_BLK_READ        1

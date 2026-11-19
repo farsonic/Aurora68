@@ -38,7 +38,9 @@ What is in the zip
                          patches/iici.json are the source of that delta, for the record
   Mac/                   the Macintosh-side programs: PiMach, PiDisk (extensions), PiWiFi,
                          PiBlue, PiStatus, PiNet, PiPing, PiScreens, PiColor, PiLog (applications;
-                         PiLog shows the Pi's log in a window, filtered by part), PiDepth (sets
+                         PiLog shows the Pi's log in a window, filtered by part and by text; to
+                         send the log, use its File > Save Log, or Save to Card, which writes
+                         aurora68.log to the SD card, passwords hidden), PiDepth (sets
                          the screen's depth at startup from the number in its name),
                          as MacBinary files and on Aurora68-Utilities.img (an HFS disk image)
   RELEASE-NOTES.md       what works, what does not
