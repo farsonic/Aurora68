@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Fixed: no screen when the declaration ROM's size did not match `mac.screen`.** A container whose
+  only declaration ROM was for another size (aurora68-1920x1200.declrom with mac.screen=1920x1080)
+  left slot 9 empty: no Pi screen, no PiDisk, no input, the log on HDMI for ever. The kernel now
+  takes the plain declaration ROM, else the sized one, and gives the screen that ROM's size, saying
+  so in the log; a container with no declaration ROM at all is reported at every heartbeat.
 - **Fixed: Speedometer, and anything busy with interrupts, freezing or bombing on the Pi alone**
   (`mac.board=solo`). Run ALL Tests ended in "bad F-Line instruction" or a freeze with the pointer
   still moving. An interrupt the Mac had already answered stayed raised for up to a millisecond,

@@ -54,6 +54,7 @@ static uintptr_t win_phys, declrom_phys;   /* slot $9 mailbox window and declara
 void psmac_mmu_set_fb(uintptr_t f);                   /* psmac_mmu.c */
 static uintptr_t fb_big_phys;              /* the second display's big frame buffer (psmb.h) */
 static uint32_t screen_w, screen_h;        /* mac.screen=WxH: the second display's size (0: the VideoCore's) */
+static int no_declrom;                     /* no declaration ROM anywhere: said at every heartbeat, slot 9 is empty */
 uintptr_t psmac_fb_big_phys(void) { return fb_big_phys; }
 void psmac_screen_size(uint32_t *w, uint32_t *h) { *w = screen_w; *h = screen_h; }
 static volatile int transport_up, transport_dead, service_running;
@@ -487,6 +488,7 @@ void psmac_service_core(void)
             if (xfer_count == hb_last && !stall_dumped) { stall_dumped = 1; pcring_dump(); }
             { static uint32_t hb_n; if (++hb_n == pctrail_at) pcring_dump(); }
             psmac_mbox_heartbeat();
+            if (no_declrom) kprintf("[PSMAC] *** NO DECLARATION ROM in the container: slot 9 is empty (no Pi screen, PiDisk or input) ***\n");
             hb_last = xfer_count; next_hb = cnt_now() + hb_period;
         }
         if (__m68k_state) {
@@ -755,6 +757,7 @@ static void walk_container(const uint8_t *img, uint32_t size, struct container_r
     r->rom = img; r->rom_len = size; r->declrom = NULL; r->declrom_len = 0; r->declrom_sized = 0;
     extern uint32_t fb_width, fb_height;
     uint32_t want_w = screen_w ? screen_w : fb_width, want_h = screen_h ? screen_h : fb_height;
+    struct { const uint8_t *p; uint32_t len, w, h; const char *name; } plain = { 0, 0, 0, 0, 0 }, sized_one = { 0, 0, 0, 0, 0 };
     if (size < 110 || !bytes_eq(img, "070701", 6)) return;         /* a bare ROM */
     { extern void psmac_card_container(const uint8_t *, uint32_t); psmac_card_container(img, size); }
     r->rom = NULL; r->rom_len = 0;
@@ -773,8 +776,10 @@ static void walk_container(const uint8_t *img, uint32_t size, struct container_r
                 /* one declaration ROM per screen size may be in the container: take the one whose name
                    ends in the second display's WxH, else the plain one (docs/10) */
                 uint32_t w, h; int sized = declrom_res(base, &w, &h);
-                int take = sized ? (w == want_w && h == want_h) : !r->declrom_sized && !r->declrom;
+                int take = sized && w == want_w && h == want_h;
                 if (take) { r->declrom = img + data; r->declrom_len = fsize; r->declrom_sized = sized; }
+                if (!sized && !plain.p) { plain.p = img + data; plain.len = fsize; plain.name = base; }
+                if (sized && !sized_one.p) { sized_one.p = img + data; sized_one.len = fsize; sized_one.w = w; sized_one.h = h; sized_one.name = base; }
                 kprintf("[PSMAC] container: declaration ROM %s, %u bytes%s\n", base, fsize, take ? " (taken)" : "");
             }
             else if (ends_with(base, ".img") || ends_with(base, ".hda") || ends_with(base, ".image") || ends_with(base, ".hfv") || ends_with(base, ".scsi")) {
@@ -787,6 +792,25 @@ static void walk_container(const uint8_t *img, uint32_t size, struct container_r
             else { extern int alice_fw_preload(const char *, const uint8_t *, uint32_t); alice_fw_preload(base, img + data, fsize); }
         }
         off = (data + fsize + 3) & ~3u;
+    }
+    /* No declaration ROM of the screen's size. Until 19 November nothing was taken then, slot 9 stayed
+       empty, no video, disk or input driver ever opened, and the user's Pi 3B ran the Mac blind with
+       the log on HDMI (a 1920x1200 ROM with mac.screen=1920x1080), the only sign the missing
+       "(taken)". Now the plain ROM is taken, else a sized one, and the screen takes the size the ROM
+       describes, since that is the only size the Mac can use: the VideoCore is asked for it
+       (psmac_display_init, called after this). The SE board keeps its own 512x342. */
+    if (!r->declrom && (plain.p || sized_one.p)) {
+        int keep_size = psmac_board_se && !psmac_board_solo;
+        uint32_t w = plain.p ? 640 : sized_one.w, h = plain.p ? 480 : sized_one.h;   /* the plain ROM is mkdeclrom.py's default, 640x480 */
+        const char *nm = plain.p ? plain.name : sized_one.name;
+        r->declrom = plain.p ? plain.p : sized_one.p; r->declrom_len = plain.p ? plain.len : sized_one.len; r->declrom_sized = !plain.p;
+        if (!sized_one.p || keep_size || (w == want_w && h == want_h))
+            kprintf("[PSMAC] container: declaration ROM %s taken\n", nm);
+        else {
+            kprintf("[PSMAC] container: no declaration ROM for %ux%u; using %s, so the screen is %ux%u (set mac.screen=%ux%u or add the %ux%u ROM)\n",
+                    want_w, want_h, nm, w, h, w, h, want_w, want_h);
+            screen_w = w; screen_h = h;
+        }
     }
 }
 
@@ -932,8 +956,13 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
             if (len > 0 && len <= (int64_t)PSMB_DECLROM_SIZE) {
                 /* the format block must end at the top of the slot space: right-align the image */
                 if (sh_read(fd, dr + PSMB_DECLROM_SIZE - len, len)) kprintf("[PSMAC] declaration ROM %s: %d bytes at Mac 0x%08x\n", path, (int)len, PSMB_DECLROM_PHYS + PSMB_DECLROM_SIZE - (uint32_t)len);
-            } else kprintf("[PSMAC] declaration ROM %s not loaded (len %d)\n", path, (int)len);
-        }
+            } else { kprintf("[PSMAC] declaration ROM %s not loaded (len %d)\n", path, (int)len); no_declrom = 1; }
+        } else no_declrom = 1;
+        if (no_declrom)
+            kprintf("[PSMAC] ********************************************************************************\n"
+                    "[PSMAC] *** NO DECLARATION ROM: put aurora68.declrom (or the one for your screen size) ***\n"
+                    "[PSMAC] *** in the container. Without it the Mac has no Pi screen, PiDisk or input.  ***\n"
+                    "[PSMAC] ********************************************************************************\n");
         if (!wired_ethernet_works() && declrom_drop(dr + PSMB_DECLROM_SIZE, 0x81, 0x00015053u))   /* drSwApple 1, drHw 'PS' */
             kprintf("[PSMAC] declaration ROM: the wired Ethernet card ($81) left out, this Pi has none that works; the WiFi is the Mac's network card\n");
     }
