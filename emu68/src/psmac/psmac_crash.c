@@ -142,6 +142,16 @@ static const char *syserr_name(int16_t id)
 
 static uint32_t rd(uint32_t a, int *ok) { return psmac_mac_rd32(a, ok); }
 
+/* for the remote's state (psmac_remote.c, docs/13): how many records came, and the last of each */
+void psmac_crash_last(uint32_t *exc_n, uint32_t *exc_vec, uint32_t *exc_pc, const char **exc_what,
+                      uint32_t *sys_n, int16_t *sys_id, const char **sys_what)
+{
+    *exc_n = __atomic_load_n(&exc_seq, __ATOMIC_ACQUIRE); *exc_vec = exc.vec; *exc_pc = exc.pc; *exc_what = vector_name(exc.vec);
+    *sys_n = __atomic_load_n(&sys_seq, __ATOMIC_ACQUIRE); *sys_id = (int16_t)syserr.r[0]; *sys_what = syserr_name((int16_t)syserr.r[0]);
+}
+const char *psmac_crash_syserr_name(int16_t id) { return syserr_name(id); }
+
+
 /* where an address lies, in the Macintosh's terms, from the Memory Manager's low-memory globals */
 static const char *region(uint32_t a)
 {

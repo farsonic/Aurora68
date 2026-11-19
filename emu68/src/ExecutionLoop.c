@@ -405,6 +405,33 @@ void ProcessIRQ(struct M68KState *ctx)
     uint32_t vector;
     uint32_t vbr;
 
+#ifdef PSMAC
+    /* The Macintosh restarted from outside (psmac_remote.c, docs/13): the 68k goes to the ROM's
+       reset entry in supervisor mode with every interrupt masked, which is where Restart from the
+       Finder ends too. The ROM's first instructions switch the MMU off and issue RESET, so nothing
+       else needs undoing here. INTF.RESET is a byte of INT64 that upstream does not use. */
+    if (unlikely(ctx->INTF.RESET))
+    {
+        extern uint32_t psmac_restart_pc(void);
+        ctx->INTF.RESET = 0;
+        SR = getSR();
+        if ((SR & SR_S) == 0)
+        {
+            __asm__ volatile("mov "REG_USP_ASM", %w0": :"r"(A7));
+            __asm__ volatile("mov %w0, "REG_ISP_ASM:"=r"(A7));
+        }
+        else if (SR & SR_M)
+        {
+            __asm__ volatile("mov "REG_MSP_ASM", %w0": :"r"(A7));
+            __asm__ volatile("mov %w0, "REG_ISP_ASM:"=r"(A7));
+        }
+        setSR(0x2700);
+        ctx->VBR = 0;
+        PC = psmac_restart_pc();
+        return;
+    }
+#endif
+
     /* Find out requested IPL level based on ARM state and real IPL line */
     if (ctx->INTF.ARM_err)
     {

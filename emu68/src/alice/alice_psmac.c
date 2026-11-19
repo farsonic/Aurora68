@@ -31,6 +31,7 @@
 #include "psmb.h"
 #include "alice_net.h"
 #include "alice_psmac.h"
+#include "../psmac/psmac_ip.h"
 
 /* ---- time ---------------------------------------------------------------------------------- */
 static inline uint64_t ticks(void) { uint64_t v; __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(v)); return v; }
@@ -57,9 +58,22 @@ static volatile struct alice_input_ring *inr;
    Windows is Command, Alt is Option (mac/piinput.s hid_modifiers). Applied to the HID modifier
    byte of every key event, USB and Bluetooth alike. */
 static int in_altcmd = -1;
-static void in_put(uint32_t type, int32_t a, int32_t b, int32_t c)
+/* one event into the ring as it is: the remote's (psmac_remote.c) come here directly, since its
+   Command is Command whatever keyboard the bench has */
+void psmac_input_put(uint32_t type, int32_t a, int32_t b, int32_t c)
 {
     if (!inr) return;
+    uint32_t head = inr->head, tail = inr->tail;
+    if (head - tail >= ALICE_IN_SLOTS) { inr->dropped++; return; }
+    volatile struct alice_input_event *e = &inr->ev[head % ALICE_IN_SLOTS];
+    e->type = type; e->a = a; e->b = b; e->c = c;
+    __asm__ volatile("dmb ish" ::: "memory");
+    inr->head = head + 1;
+}
+int psmac_input_attached(void) { return inr && inr->attached; }
+uint32_t psmac_input_backlog(void) { return inr && inr->attached ? inr->head - inr->tail : 0; }   /* events .PiInput has not taken yet */
+static void in_put(uint32_t type, int32_t a, int32_t b, int32_t c)
+{
     if (type == ALICE_IN_KEY) {
         if (in_altcmd < 0) { extern const char *psmac_option(const char *); const char *o = psmac_option("mac.altcmd"); in_altcmd = o && o[0] == '1'; }
         if (in_altcmd) {
@@ -68,12 +82,7 @@ static void in_put(uint32_t type, int32_t a, int32_t b, int32_t c)
             c = (int32_t)m;
         }
     }
-    uint32_t head = inr->head, tail = inr->tail;
-    if (head - tail >= ALICE_IN_SLOTS) { inr->dropped++; return; }
-    volatile struct alice_input_event *e = &inr->ev[head % ALICE_IN_SLOTS];
-    e->type = type; e->a = a; e->b = b; e->c = c;
-    __asm__ volatile("dmb ish" ::: "memory");
-    inr->head = head + 1;
+    psmac_input_put(type, a, b, c);
 }
 static inline uint64_t in_now(void) { uint64_t v; __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(v)); return v; }
 static inline uint64_t in_hz(void)  { uint64_t v; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(v)); return v; }
@@ -216,16 +225,24 @@ int psmac_eth_testbed_poll(volatile struct an_unit *u)
         uint32_t len = s->len;
         if (len >= 14 && len <= AN_SLOT_BYTES - 8 && u->link) {
             for (uint32_t i = 0; i < len; i++) tb_buf[i] = s->data[i];
+            psmac_ip_mac_tx(1, tb_buf, len);
             psmac_netprobe_tx(1, tb_buf, len, 0);
             if (psmac_netfile_send(0, tb_buf, len)) { u->tx_pkts++; u->tx_bytes += len; psmac_netprobe_tx(1, tb_buf, len, 1); } else u->tx_err++;
         } else u->tx_err++;
         __asm__ volatile("dmb ish" ::: "memory");
         u->tx_tail++;
     }
+    /* the kernel's own frames (psmac_ip.c), once the Mac's are out */
+    if (psmac_ip_active && u->link) {
+        uint32_t len;
+        while ((len = psmac_ip_tx_take(1, tb_buf, sizeof tb_buf)))
+            psmac_netfile_send(0, tb_buf, len);
+    }
     /* receive ring: host -> Mac (only while the stack takes frames; drop when full) */
     for (int budget = 0; budget < 8; budget++) {
         int len = psmac_netfile_recv(0, tb_buf, AN_SLOT_BYTES - 8);
         if (len <= 0) break;
+        if (psmac_ip_active && u->link && psmac_ip_rx(1, tb_buf, (uint32_t)len, tb_mac, tb_promisc) != IPK_TO_MAC) continue;
         if (!tb_rx_on || !u->link) { u->rx_drop++; continue; }
         int bcast = tb_buf[0] == 0xff && tb_buf[1] == 0xff && tb_buf[2] == 0xff && tb_buf[3] == 0xff && tb_buf[4] == 0xff && tb_buf[5] == 0xff;
         int mcast = (tb_buf[0] & 1) && !bcast;
@@ -687,16 +704,24 @@ int psmac_wifi_testbed_poll(volatile struct an_unit *u)
         uint32_t len = s->len;
         if (len >= 14 && len <= AN_SLOT_BYTES - 8 && u->link) {
             for (uint32_t i = 0; i < len; i++) wsim_buf[i] = s->data[i];
+            psmac_ip_mac_tx(0, wsim_buf, len);
             psmac_netprobe_tx(0, wsim_buf, len, 0);
             if (psmac_netfile_send(1, wsim_buf, len)) { u->tx_pkts++; u->tx_bytes += len; psmac_netprobe_tx(0, wsim_buf, len, 1); } else u->tx_err++;
         } else u->tx_err++;
         __asm__ volatile("dmb ish" ::: "memory");
         u->tx_tail++;
     }
+    /* the kernel's own frames (psmac_ip.c): on the WiFi it shares the Mac's MAC address */
+    if (psmac_ip_active && u->link) {
+        uint32_t len;
+        while ((len = psmac_ip_tx_take(0, wsim_buf, sizeof wsim_buf)))
+            psmac_netfile_send(1, wsim_buf, len);
+    }
     /* receive ring: "air" -> Mac, only while connected and the stack takes frames */
     for (int budget = 0; budget < 8; budget++) {
         int len = psmac_netfile_recv(1, wsim_buf, AN_SLOT_BYTES - 8);
         if (len <= 0) break;
+        if (psmac_ip_active && u->link && psmac_ip_rx(0, wsim_buf, (uint32_t)len, wsim_mac, wsim_promisc) != IPK_TO_MAC) continue;
         if (!wsim_rx_on || !u->link) { u->rx_drop++; continue; }
         int bcast = wsim_buf[0] == 0xff && wsim_buf[1] == 0xff && wsim_buf[2] == 0xff && wsim_buf[3] == 0xff && wsim_buf[4] == 0xff && wsim_buf[5] == 0xff;
         int mcast = (wsim_buf[0] & 1) && !bcast;
@@ -717,8 +742,10 @@ int psmac_wifi_testbed_poll(volatile struct an_unit *u)
 
 /* ---- bring-up and the core-3 loop ---------------------------------------------------------- */
 static volatile int alice_ready;
+static uint8_t *alice_win;
 void psmac_alice_init(uint8_t *win)
 {
+    alice_win = win;
     alice_net_attach(win + ALICE_NET_WINDOW_OFF);
     alice_status_attach(win + ALICE_STATUS_WINDOW_OFF);
     inr = (volatile struct alice_input_ring *)(win + ALICE_INPUT_WINDOW_OFF);
@@ -748,6 +775,7 @@ void psmac_card_reset(void)
     alice_net_reset();                          /* the rest of the session (queues, buffers) on core 3's next turn */
     if (inr) { inr->attached = 0; inr->tail = inr->head; }
     psmac_display_bus_reset();
+    { extern void psmac_remote_mac_reset(void); psmac_remote_mac_reset(); }   /* the remote's input queue and records (psmac_remote.c) */
     __asm__ volatile("dmb ish" ::: "memory");
     kprintf("[PSMAC] 68k RESET: the card's interrupt sources are off until their drivers open\n");
 }
@@ -772,16 +800,18 @@ void psmac_alice_core1(void)
 }
 
 /* the service loop's longest part-turns since the last heartbeat (ticks), and its turns */
-static uint64_t loop_max[5];
+static uint64_t loop_max[6], loop_remote_sum;     /* the remote's share is also summed: its cost when nobody is connected */
 static uint32_t loop_turns;
 #define LOOP_T(i, d) do { if ((d) > loop_max[i]) loop_max[i] = (d); } while (0)
 void psmac_loop_report(void)
 {
     uint64_t us = in_hz() / 1000000u;
-    kprintf("[PSMAC]   service loop: %u turns/5 s, longest: mailbox %u us, card %u us, network %u us, USB %u us, display %u us\n",
+    kprintf("[PSMAC]   service loop: %u turns/5 s, longest: mailbox %u us, card %u us, network %u us, USB %u us, display %u us%s",
             loop_turns, (uint32_t)(loop_max[0] / us), (uint32_t)(loop_max[1] / us), (uint32_t)(loop_max[2] / us),
-            (uint32_t)(loop_max[3] / us), (uint32_t)(loop_max[4] / us));
-    for (int i = 0; i < 5; i++) loop_max[i] = 0;
+            (uint32_t)(loop_max[3] / us), (uint32_t)(loop_max[4] / us), psmac_ip_active ? ", remote " : "\n");
+    if (psmac_ip_active) kprintf("%u us (%u us in all)\n", (uint32_t)(loop_max[5] / us), (uint32_t)(loop_remote_sum / us));
+    for (int i = 0; i < 6; i++) loop_max[i] = 0;
+    loop_remote_sum = 0;
     loop_turns = 0;
 }
 
@@ -791,6 +821,7 @@ void __attribute__((noreturn)) psmac_alice_core(void)
     while (!__atomic_load_n(&alice_ready, __ATOMIC_ACQUIRE)) __asm__ volatile("yield");
     kprintf("[PSMAC] core 3: Alice68 services (network board, Bluetooth, USB input, status) and the mailbox\n");
     psmac_boot_mark("core 3: the service loop begins");
+    { extern void psmac_remote_init(uint8_t *win); psmac_remote_init(alice_win); }   /* remote=on: the remote control (docs/13) */
     for (;;) {
         /* every part of the turn timed: the longest of each over the heartbeat's five seconds goes
            into its line (psmac_loop_report), so a photograph of the log says what holds the loop */
@@ -807,7 +838,9 @@ void __attribute__((noreturn)) psmac_alice_core(void)
         in_testbed_poll();
         { extern void psmac_netprobe_poll(void); psmac_netprobe_poll(); }  /* echo timings (psmac_netprobe.c) */
         { extern void psmac_display_poll(void); psmac_display_poll(); }   /* the second display's tick and picture */
-        t1 = in_now(); LOOP_T(4, t1 - t0); loop_turns++;
+        t1 = in_now(); LOOP_T(4, t1 - t0); t0 = t1; loop_turns++;
+        { extern void psmac_remote_poll(void); psmac_remote_poll(); }     /* the remote control: its IP stack, HTTP and input queue (docs/13) */
+        t1 = in_now(); LOOP_T(5, t1 - t0); loop_remote_sum += t1 - t0;
         /* The card's interrupt line: up while a board has something the Mac has not taken (the
            network board's irq flag, which the Mac's Ethernet driver clears; input events not yet
            read), but only from boards whose Mac driver has attached (the Ethernet driver writes

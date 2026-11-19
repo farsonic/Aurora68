@@ -60,6 +60,8 @@
 	.equ	IN_KEY,		1
 	.equ	IN_MOUSE,	2
 	.equ	IN_WHEEL,	3
+	.equ	IN_MOUSEABS,	4		| the remote control (docs/13): a = x, b = y, c = buttons or -1
+	.equ	IN_MACKEY,	5		| the remote control: a = Mac virtual key code, b = down/up, c = HID modifiers
 
 | ---- Mac OS low memory and traps (Inside Macintosh, MPW SysEqu.a) ----
 	.equ	MMU32Bit,	0x0CB2
@@ -398,7 +400,27 @@ vbl_loop:
 	beq	ev_key
 	cmp.l	#IN_MOUSE,%d0
 	beq	ev_mouse
+	cmp.l	#IN_MOUSEABS,%d0
+	beq	ev_mouseabs
+	cmp.l	#IN_MACKEY,%d0
+	beq	ev_mackey
 	bra	ev_next			| wheel and unknown: dropped
+
+| --- the remote control's key: a = Mac virtual key code already, b = down/up, c = HID modifiers ---
+ev_mackey:
+	move.l	EV_C(%a4),%d0
+	bsr	hid_modifiers
+	move.l	EV_A(%a4),%d1
+	cmp.l	#0x7F,%d1
+	bhi	ev_next
+	and.w	#0x007F,%d1
+	bra	key_code		| from here on as a USB key would go
+
+| --- the remote control's mouse: a = x, b = y (global), c = buttons ---
+ev_mouseabs:
+	move.l	EV_A(%a4),%d2
+	move.l	EV_B(%a4),%d3
+	bra	mouse_clip
 
 | --- a key: a = HID usage, b = 1 down / 0 up, c = HID modifier byte ---
 ev_key:
@@ -413,6 +435,7 @@ ev_key:
 	cmp.b	#0xFF,%d1
 	beq	ev_next
 	and.w	#0x00FF,%d1
+key_code:				| d1 = the Mac virtual key code
 	cmp.b	#0x39,%d1		| caps lock toggles rather than holds
 	bne.s	1f
 	tst.l	EV_B(%a4)
@@ -469,6 +492,7 @@ ev_mouse:
 	add.w	%d0,%d2
 	move.w	RawMouse,%d3		| v
 	add.w	%d1,%d3
+mouse_clip:				| d2 = h, d3 = v: clipped to CrsrPin, into RawMouse and MTemp
 	cmp.w	CrsrPin+2,%d2		| left
 	bge.s	3f
 	move.w	CrsrPin+2,%d2

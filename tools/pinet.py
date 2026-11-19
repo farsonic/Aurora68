@@ -35,6 +35,12 @@ replies to .rx. Two modes:
                             Mac's network): AARP, NBP lookups for NAME:AFPServer, ASP GetStatus,
                             so the Chooser's AppleShare list shows NAME. AppleTalk frames are
                             decoded in the log either way.
+                            The kernel's own address (the remote control, docs/13): a DHCP client
+                            whose host name starts with "aurora68" gets 192.168.N.3, everyone else
+                            192.168.N.2 as before. PINET_KERNEL=PORT: the host reaches the kernel's
+                            HTTP server there: a connection to 127.0.0.1:PORT becomes a TCP connection
+                            from the peer to the kernel's address on port 80 (PINET_KERNEL_TO=8068
+                            for the other port; PINET_KERNEL_IP=A.B.C.D for a static address).
   pinet.py <base> tap tapN  bridge frames to a Linux TAP device (needs CAP_NET_ADMIN)
 
 Usage in the testbed: tools/run-fullstack.sh 400 mac.net=/tmp/psmac-net   (and run this helper).
@@ -271,6 +277,8 @@ def peer(frame):
     if etype == 0x0800 and len(frame) >= 34 and frame[26:30] != bytes(4): mac_ip4 = frame[26:30]
     if etype == 0x0806 and len(frame) >= 42:                 # ARP
         op = struct.unpack('>H', frame[20:22])[0]; sha, spa, tpa = frame[22:28], frame[28:32], frame[38:42]
+        if spa == kernel['ip'] and op in (1, 2):
+            kernel['mac'] = sha                                  # its gratuitous ARP, or an answer
         if op == 1 and tpa == PEER_IP:
             arp = struct.pack('>HHBBH', 1, 0x0800, 6, 4, 2) + PEER_MAC + PEER_IP + sha + spa
             send(sha + PEER_MAC + b'\x08\x06' + arp + bytes(18)); return 'ARP reply'
@@ -302,12 +310,18 @@ def peer(frame):
                 rep[44:108] = b'\0' * 64; rep[108:236] = b'\0' * 128
                 # DHCP (RFC 2131) when the request carries a message type: DISCOVER gets an OFFER,
                 # REQUEST an ACK, with the server, a lease, the mask, the router and a name server
-                mtype, k = 0, 240
+                mtype, k, hostname = 0, 240, b''
                 if req[236:240] == bytes([99, 130, 83, 99]):
                     while k + 1 < len(req) and req[k] != 255:
                         if req[k] == 0: k += 1; continue
                         if req[k] == 53: mtype = req[k + 2]
+                        if req[k] == 12: hostname = req[k + 2:k + 2 + req[k + 1]]
                         k += 2 + req[k + 1]
+                # the Pi's kernel (the remote control, docs/13) asks with its own host name: .3, so that
+                # the Mac keeps .2 whichever asks first; on the WiFi both have the same MAC address
+                is_kernel = hostname.lower().startswith(b'aurora68')
+                if is_kernel:
+                    rep[16:20] = kernel['ip']; kernel['mac'] = src
                 vend = bytes([99, 130, 83, 99])
                 if mtype:
                     vend += bytes([53, 1, 2 if mtype == 1 else 5]) + bytes([54, 4]) + PEER_IP + bytes([51, 4]) + struct.pack('>I', 3600)
@@ -319,7 +333,8 @@ def peer(frame):
                 ip[2:4] = struct.pack('>H', ihl + len(udp))
                 ip[10:12] = struct.pack('>H', csum(bytes(ip)))
                 send(b'\xff' * 6 + PEER_MAC + b'\x08\x00' + bytes(ip) + udp)
-                return {0: 'BOOTP reply', 1: 'DHCP OFFER', 3: 'DHCP ACK'}.get(mtype, 'DHCP type %d answered' % mtype) + ' 192.168.%d.2' % NET
+                return {0: 'BOOTP reply', 1: 'DHCP OFFER', 3: 'DHCP ACK'}.get(mtype, 'DHCP type %d answered' % mtype) + \
+                    (' %d.%d.%d.%d to the kernel (%s)' % (*kernel['ip'], hostname.decode('latin-1')) if is_kernel else ' 192.168.%d.2' % NET)
             if dport == 53 and len(payload) >= 8 + 12:
                 return dns_answer(frame, src, sip, sport, payload[8:ulen])
             if dport == 7:
@@ -328,6 +343,8 @@ def peer(frame):
                 ip[10:12] = struct.pack('>H', csum(bytes(ip)))
                 send(src + PEER_MAC + b'\x08\x00' + bytes(ip) + udp); return 'UDP echo'
         if proto == 6 and len(payload) >= 20:
+            if sip == kernel['ip'] and struct.unpack('>H', payload[2:4])[0] in kclients:
+                return kernel_in(frame, payload)
             return tcp_echo(frame, src, sip, payload)
         return f'IP proto {proto}'
     if etype == 0x86dd and len(frame) >= 54:                 # IPv6
@@ -682,6 +699,115 @@ def ping6_due():
             send6(mac, src6, a6, body)
             print(f"peer -> ping6 {ip6_addr(a6)}", flush=True)
 
+# PINET_KERNEL=PORT: the host's way to the kernel's own HTTP server (psmac_remote.c, docs/13). Each
+# connection to 127.0.0.1:PORT is a TCP connection from the peer (192.168.N.1) to the kernel's address,
+# port 80, through the file bridge, beside the Mac's own traffic. The testbed loses nothing, but the
+# kernel's receive queue is small, so the window is kept to what it advertises and a second without
+# an acknowledgement sends again from the oldest byte.
+kernel = {'mac': None, 'ip': bytes(int(x) for x in os.environ['PINET_KERNEL_IP'].split('.')) if os.environ.get('PINET_KERNEL_IP') else bytes([192, 168, NET, 3])}
+KERNEL_PORT = int(os.environ.get('PINET_KERNEL', '0'))
+KERNEL_TO = int(os.environ.get('PINET_KERNEL_TO', '80'))
+kclients = {}
+klisten = None
+if KERNEL_PORT:
+    klisten = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    klisten.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    klisten.bind(('127.0.0.1', KERNEL_PORT)); klisten.listen(8); klisten.setblocking(False)
+kport_next = 41000
+def kseg(k, flags, data=b'', seq=None):
+    opts = struct.pack('>BBH', 2, 4, 1460) if flags & 0x02 else b''
+    hl = 20 + len(opts)
+    hdr = struct.pack('>HHIIBBHHH', k['lport'], KERNEL_TO, (k['snd'] if seq is None else seq) & 0xffffffff, k['rcv'] & 0xffffffff,
+                      (hl // 4) << 4, flags, 65535, 0, 0) + opts
+    c = csum(PEER_IP + kernel['ip'] + struct.pack('>BBH', 0, 6, hl + len(data)) + hdr + data)
+    send4(kernel['mac'], kernel['ip'], 6, hdr[:16] + struct.pack('>H', c) + hdr[18:] + data)
+def kernel_in(frame, t):
+    sport, dport, seq, ack, off, flags = struct.unpack('>HHIIBB', t[:14])
+    win = struct.unpack('>H', t[14:16])[0]
+    ip_total = struct.unpack('>H', frame[16:18])[0]
+    data = t[(off >> 4) * 4:ip_total - 20]
+    k = kclients[dport]
+    k['win'] = win
+    if flags & 0x04:
+        k['sock'].close(); del kclients[dport]; return f'kernel TCP {dport}: reset by the kernel'
+    if k['state'] == 'syn':
+        if flags & 0x12 == 0x12 and ack == k['iss'] + 1:
+            k['state'] = 'est'; k['rcv'] = seq + 1; k['una'] = k['snd'] = ack; k['moved'] = time.time()
+            kseg(k, 0x10); return f'kernel TCP {dport}: connected'
+        return None
+    if flags & 0x10 and (ack - k['una']) & 0x80000000 == 0 and (k['snd'] - ack) & 0x80000000 == 0:
+        if ack != k['una']:
+            n = (ack - k['una']) & 0xffffffff
+            k['sent'] = k['sent'][n:]; k['moved'] = time.time()
+        k['una'] = ack
+    if data or flags & 0x01:
+        if seq == k['rcv']:
+            if data:
+                k['rcv'] += len(data); k['got'] += len(data)
+                try:
+                    k['sock'].sendall(data)
+                except OSError:
+                    pass
+            if flags & 0x01:
+                k['rcv'] += 1; k['fin_in'] = True
+                try:
+                    k['sock'].shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
+        kseg(k, 0x10)
+    if flags & 0x01:
+        return f'kernel TCP {dport}: FIN after {k["got"]} bytes'
+    return None
+def kernel_due():
+    global kport_next
+    if klisten is not None:
+        try:
+            hs, _ = klisten.accept()
+            if kernel['mac'] is None:
+                hs.close(); print('peer: a host connection for the kernel, but it has no address yet', flush=True)
+            else:
+                hs.setblocking(False)
+                kport_next = 41000 + (kport_next - 41000 + 1) % 20000
+                k = {'sock': hs, 'lport': kport_next, 'state': 'syn', 'iss': 0x50490000 + kport_next * 7919, 'rcv': 0,
+                     'win': 0, 'out': b'', 'sent': b'', 'fin_out': False, 'fin_sent': False, 'fin_in': False, 'got': 0,
+                     'tries': 1, 'moved': time.time(), 'opened': time.time()}
+                k['snd'] = k['una'] = k['iss']
+                kclients[kport_next] = k
+                kseg(k, 0x02, seq=k['iss'])
+                print(f"peer -> kernel TCP {kport_next}: SYN to {'.'.join(map(str, kernel['ip']))}:{KERNEL_TO}", flush=True)
+        except BlockingIOError:
+            pass
+    now = time.time()
+    for port, k in list(kclients.items()):
+        if k['state'] == 'syn':
+            if now - k['moved'] > 1.0:
+                if k['tries'] >= 6:
+                    k['sock'].close(); del kclients[port]; print(f'peer: kernel TCP {port}: no answer', flush=True); continue
+                k['tries'] += 1; k['moved'] = now; kseg(k, 0x02, seq=k['iss'])
+            continue
+        if not k['fin_out']:
+            try:
+                d = k['sock'].recv(65536)
+                if d: k['out'] += d
+                else: k['fin_out'] = True
+            except BlockingIOError:
+                pass
+            except OSError:
+                k['fin_out'] = True
+        if k['snd'] != k['una'] and now - k['moved'] > 1.0:            # go back to the oldest byte
+            k['fin_sent'] = False; k['out'] = k['sent'] + k['out']; k['sent'] = b''; k['snd'] = k['una']; k['moved'] = now
+        room = max(0, k['win'] - ((k['snd'] - k['una']) & 0xffffffff))
+        burst = 4
+        while k['out'] and room > 0 and burst:
+            n = min(1400, room, len(k['out']))
+            kseg(k, 0x18, k['out'][:n]); k['sent'] += k['out'][:n]; k['snd'] += n; k['out'] = k['out'][n:]; room -= n; burst -= 1
+        if k['fin_out'] and not k['out'] and not k['fin_sent']:
+            kseg(k, 0x11); k['snd'] += 1; k['fin_sent'] = True
+        if k['fin_in'] and k['fin_sent'] and k['una'] == k['snd']:
+            k['sock'].close(); del kclients[port]
+        elif now - k['opened'] > 120:
+            kseg(k, 0x14); k['sock'].close(); del kclients[port]; print(f'peer: kernel TCP {port}: given up after two minutes', flush=True)
+
 tap = None
 if mode == 'tap':
     TUNSETIFF = 0x400454ca; IFF_TAP = 0x0002; IFF_NO_PI = 0x1000
@@ -704,13 +830,15 @@ while True:
             if tap is not None:
                 os.write(tap, frame); what = 'to tap'
             else:
-                what = peer(frame)
-            print(f"mac -> {frame[0:6].hex(':')} type {frame[12:14].hex()} len {n}: {what}", flush=True)
+                what = peer(frame) if n >= 14 else f'a {n}-byte runt (the Pi reset in the middle of a frame?)'
+            if what is not None:                                       # the kernel's stream of segments is not logged one by one
+                print(f"mac -> {frame[0:6].hex(':')} type {frame[12:14].hex()} len {n}: {what}", flush=True)
     if tap is None:
         ping6_due()
         mdns_due()
         aep_due()
         relay_due()
+        kernel_due()
     if tap is not None:
         try:
             while True:
@@ -720,5 +848,5 @@ while True:
             pass
     # an instant peer while frames flow (so the testbed's round trips measure the Pi and the Mac,
     # not this loop: its 10 ms sleep was most of a ping's time, 19 November), 10 ms when quiet
-    if data: last_frame = time.monotonic()
+    if data or kclients: last_frame = time.monotonic()
     time.sleep(0.0005 if time.monotonic() - last_frame < 2.0 else 0.01)

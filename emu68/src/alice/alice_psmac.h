@@ -44,6 +44,8 @@ static inline unsigned long alice_periph_hi(unsigned long low_va)
 #define ALICE_IN_KEY            1               /* a = USB usage page/usage (boot report byte), b = 1 down / 0 up, c = modifiers */
 #define ALICE_IN_MOUSE          2               /* a = dx, b = dy (signed), c = buttons */
 #define ALICE_IN_WHEEL          3               /* a = wheel, b = pan */
+#define ALICE_IN_MOUSEABS       4               /* a = x, b = y (global, the main screen at 0,0), c = buttons or -1: the remote (docs/13) */
+#define ALICE_IN_MACKEY         5               /* a = Mac virtual key code, b = 1 down / 0 up, c = modifiers: the remote */
 struct alice_input_event { uint32_t type; int32_t a, b, c; };
 struct alice_input_ring {
     uint32_t magic, version, slots;
@@ -60,5 +62,8 @@ int  alice_fw_preload(const char *name, const uint8_t *data, uint32_t len);
 void alice_status_attach(void *page);           /* alice_status.c */
 void alice_net_poll(void);
 void psmac_alice_input_test(uint32_t seconds);  /* alice_psmac.c: scripted mouse and keys for the testbed */
+void psmac_input_put(uint32_t type, int32_t a, int32_t b, int32_t c);   /* alice_psmac.c: one event into the ring, as given (the remote) */
+int  psmac_input_attached(void);                /* .PiInput has opened and takes events */
+uint32_t psmac_input_backlog(void);             /* events in the ring .PiInput has not taken */
 
 #endif

@@ -309,3 +309,69 @@ void psmac_display_report(void)
 /* the 68k was reset: the video driver's VBL interrupt is off until it opens again */
 void psmac_display_bus_reset(void) { if (disp) { disp->vbl_enable = 0; disp->vbl_pending = 0; __asm__ volatile("dmb ish" ::: "memory"); } }
 int psmac_display_irq(void) { return disp && (disp->flags & PSMB_DISP_ENABLED) && disp->vbl_enable && disp->vbl_pending; }
+
+/* ---- the remote's screenshot (psmac_remote.c, docs/13) ---------------------------------------
+   The picture as the Mac drew it, not as the VideoCore scans it out: the frame buffer of the mode
+   in use, at its depth, through the colour table, so a screenshot is right whatever the HDMI side
+   does (mac.console=hdmi, a 16-bit scan-out, swapped bytes). Until the video driver has switched
+   the display on there is no Mac picture, and the VideoCore buffer is the screen (the boot log on
+   the console). The parameters are taken once per screenshot, so a depth change half way through
+   cannot mix two layouts; the pixels are read while the Mac goes on drawing, as a card's frame
+   grabber would. */
+static struct { int src; uint32_t w, h, depth, rb; const uint8_t *base; uint32_t pal[256]; } shot;
+int psmac_display_shot(uint32_t *w, uint32_t *h, uint32_t *depth, int want_hdmi)
+{
+    shot.src = 0;
+    if (!disp) return 0;
+    int mi = disp->depth == 1 ? 0 : disp->depth == 2 ? 1 : disp->depth == 4 ? 2 : disp->depth == 8 ? 3 : disp->depth == 16 ? 4 : disp->depth == 32 ? 5 : -1;
+    if (!want_hdmi && (disp->flags & PSMB_DISP_ENABLED) && mi >= 0 && disp->mode_base[mi]) {
+        shot.w = disp->width; shot.h = disp->height; shot.depth = disp->depth; shot.rb = disp->rowbytes;
+        shot.base = disp->mode_base[mi] == PSMB_FB_BIG_PHYS ? frame_big : frame_win;
+        uint32_t limit = disp->mode_base[mi] == PSMB_FB_BIG_PHYS ? PSMB_FB_BIG_SIZE : PSMB_BOUNCE_SIZE;
+        if (shot.rb * shot.h > limit || shot.rb < (shot.w * shot.depth + 7) / 8) return 0;
+        for (int i = 0; i < 256; i++) {
+            uint32_t c = disp->clut[i] & 0xffffffu;
+            if (disp->flags & PSMB_DISP_GRAY) { uint32_t y = (((c >> 16) & 255) * 77 + ((c >> 8) & 255) * 151 + (c & 255) * 28) >> 8; c = y << 16 | y << 8 | y; }
+            shot.pal[i] = c;
+        }
+        shot.src = 1;
+    } else if (vcfb && vc_w && vc_h) {
+        shot.w = vc_w; shot.h = vc_h; shot.depth = vc_bpp; shot.rb = vc_pitch; shot.base = vcfb;
+        shot.src = 2;
+    } else return 0;
+    *w = shot.w; *h = shot.h; *depth = shot.depth;
+    return shot.src;
+}
+/* row y of the screenshot begun above, as R,G,B bytes, at most maxw pixels of it */
+void psmac_display_shot_row(uint32_t y, uint8_t *out, uint32_t maxw)
+{
+    const uint8_t *src = shot.base + y * shot.rb;
+    uint32_t w = shot.w < maxw ? shot.w : maxw;
+    if (shot.src == 2) {                        /* the VideoCore buffer: little-endian XRGB (or swapped), or RGB565 */
+        if (shot.depth == 32) {
+            for (uint32_t x = 0; x < w; x++, src += 4, out += 3) {
+                if (vc_swap) { out[0] = src[0]; out[1] = src[1]; out[2] = src[2]; }
+                else { out[0] = src[2]; out[1] = src[1]; out[2] = src[0]; }
+            }
+        } else {
+            for (uint32_t x = 0; x < w; x++, src += 2, out += 3) {
+                uint32_t v = (uint32_t)src[0] | (uint32_t)src[1] << 8, r = v >> 11, g = (v >> 5) & 63, b = v & 31;
+                out[0] = (uint8_t)(r << 3 | r >> 2); out[1] = (uint8_t)(g << 2 | g >> 4); out[2] = (uint8_t)(b << 3 | b >> 2);
+            }
+        }
+        return;
+    }
+    uint32_t c = 0;
+    for (uint32_t x = 0; x < w; x++, out += 3) {
+        switch (shot.depth) {
+        case 32: c = (uint32_t)src[4 * x + 1] << 16 | (uint32_t)src[4 * x + 2] << 8 | src[4 * x + 3]; break;      /* 00RRGGBB, big-endian */
+        case 16: { uint32_t v = (uint32_t)src[2 * x] << 8 | src[2 * x + 1], r = (v >> 10) & 31, g = (v >> 5) & 31, b = v & 31;
+                   c = (r << 3 | r >> 2) << 16 | (g << 3 | g >> 2) << 8 | (b << 3 | b >> 2); break; }
+        case 8: c = shot.pal[src[x]]; break;
+        case 4: c = shot.pal[(src[x >> 1] >> ((x & 1) ? 0 : 4)) & 15]; break;
+        case 2: c = shot.pal[(src[x >> 2] >> (6 - 2 * (x & 3))) & 3]; break;
+        default: c = shot.pal[(src[x >> 3] >> (7 - (x & 7))) & 1]; break;
+        }
+        out[0] = (uint8_t)(c >> 16); out[1] = (uint8_t)(c >> 8); out[2] = (uint8_t)c;
+    }
+}

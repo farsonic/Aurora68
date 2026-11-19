@@ -62,6 +62,7 @@
 #include "../alice/alice_net.h"
 #include "../alice/usb/frf_dwc2_pio.h"
 #include "usbnet_frame.h"
+#include "psmac_ip.h"
 
 const char *psmac_option(const char *key);
 int alice_mbox2(uint32_t tag, uint32_t a, uint32_t b, uint32_t out[2]);
@@ -367,6 +368,8 @@ static int reg_wr(uint16_t reg, uint32_t v)
 #define L_MII_DATA    0x124
 #define L_MAF_HI0     0x400
 #define L_MAF_LO0     0x404
+#define L_MAF_HI1     0x408               /* the perfect filter's second slot: the remote control's address (docs/13) */
+#define L_MAF_LO1     0x40c
 #define L_HW_LRST     B(1)
 #define L_HW_MEF      B(4)
 #define L_HW_CLKS     (B(25) | B(24))                   /* CLK125_EN, REFCLK25_EN, as the chip's reference design runs */
@@ -657,7 +660,9 @@ static void apply_filter(void)
         uint32_t cr = 0;
         reg_rd(S_MAC_CR, &cr);
         cr &= ~(S_MAC_PRMS | S_MAC_MCPAS | S_MAC_HPFILT);
-        cr |= (N.promisc ? S_MAC_PRMS : 0) | (N.allmulti ? S_MAC_MCPAS : 0) | S_MAC_HPFILT;
+        /* one address register: while the remote control has an address of its own (psmac_ip.c)
+           the chip takes every frame and the kernel sorts them (psmac_ip_rx) */
+        cr |= (N.promisc || psmac_ip_promisc(1) ? S_MAC_PRMS : 0) | (N.allmulti ? S_MAC_MCPAS : 0) | S_MAC_HPFILT;
         reg_wr(S_HASHH, N.hash[1]);
         reg_wr(S_HASHL, N.hash[0]);
         reg_wr(S_MAC_CR, cr);
@@ -677,7 +682,7 @@ static void apply_filter(void)
     } else if (D.chip == USBNET_CDC_ECM) {
         /* SET_ETHERNET_PACKET_FILTER: directed, broadcast, all multicast (and promiscuous); the
            exact filter is applied here, frame by frame (usbnet_filter_pass) */
-        std_req(D.addr, 0x21, 0x43, (uint16_t)(0x0e | (N.promisc ? 1 : 0)), D.ctl_itf, 0, 0);
+        std_req(D.addr, 0x21, 0x43, (uint16_t)(0x0e | (N.promisc || psmac_ip_promisc(1) ? 1 : 0)), D.ctl_itf, 0, 0);
     }
 }
 static void apply_mac(void)
@@ -693,6 +698,12 @@ static void apply_mac(void)
         reg_wr(L_MAF_HI0, 0);
         reg_wr(L_MAF_LO0, lo);
         reg_wr(L_MAF_HI0, hi | B(31));                  /* perfect filter 0: our own address, valid */
+        uint8_t k[6];
+        if (psmac_ip_hwaddr(1, k)) {                    /* perfect filter 1: the remote control's */
+            reg_wr(L_MAF_HI1, 0);
+            reg_wr(L_MAF_LO1, (uint32_t)k[0] | (uint32_t)k[1] << 8 | (uint32_t)k[2] << 16 | (uint32_t)k[3] << 24);
+            reg_wr(L_MAF_HI1, ((uint32_t)k[4] | (uint32_t)k[5] << 8) | B(31));
+        }
     }
 }
 static void apply_phy(volatile struct an_unit *u)
@@ -907,6 +918,10 @@ static void rx_poll(volatile struct an_unit *u)
             if (r < 0)
                 break;
             if (r == 0) { N.rx_bad++; u->rx_drop++; rx_pos = pos; continue; }
+            if (psmac_ip_active) {                      /* the remote control's frames first (psmac_ip.c) */
+                int k = psmac_ip_rx(1, f, len, N.mac, N.promisc);
+                if (k != IPK_TO_MAC) { rx_pos = pos; continue; }
+            }
             if (D.chip == USBNET_CDC_ECM && !usbnet_filter_pass(D.chip, f, N.mac, N.hash, N.promisc, N.allmulti)) { rx_pos = pos; continue; }
             if (!u->rx_on || u->admin_off) { u->rx_drop++; rx_pos = pos; continue; }
             if (u->rx_head - u->rx_tail >= AN_RX_SLOTS) {
@@ -948,8 +963,18 @@ static void tx_poll(volatile struct an_unit *u)
         /* a transfer that filled its last packet exactly ends with a zero-length one */
         if (r == 0 && ch[CH_OUT].len && !(ch[CH_OUT].len % D.mps)) { tx_len = 0; ch_start(CH_OUT, txbuf, 0); return; }
     }
-    if (u->tx_tail == u->tx_head)
+    if (u->tx_tail == u->tx_head) {
+        /* the Mac has nothing to send: one of the remote control's frames, if it has any */
+        uint32_t n;
+        if (psmac_ip_active && N.link && !u->admin_off && (n = psmac_ip_tx_take(1, txbuf + USBNET_TX_HDR_MAX, USBNET_FRAME_MAX))) {
+            unsigned h = usbnet_tx_header(D.chip, txbuf, n);
+            for (uint32_t i = 0; i < n; i++)
+                txbuf[h + i] = txbuf[USBNET_TX_HDR_MAX + i];
+            tx_hdr = h; tx_len = 0;
+            ch_start(CH_OUT, txbuf, h + n);
+        }
         return;
+    }
     __asm__ volatile("dmb ish" ::: "memory");
     volatile struct an_slot *s = (volatile struct an_slot *)(board + AN_OFF_TX(1) + (u->tx_tail % AN_TX_SLOTS) * AN_SLOT_BYTES);
     uint32_t len = s->len;
@@ -960,6 +985,7 @@ static void tx_poll(volatile struct an_unit *u)
         h = usbnet_tx_header(D.chip, txbuf, pad);
         for (uint32_t i = 0; i < len; i++)
             txbuf[h + i] = s->data[i];
+        psmac_ip_mac_tx(1, txbuf + h, len);
         for (uint32_t i = len; i < pad; i++)
             txbuf[h + i] = 0;
         u->tx_pkts++; u->tx_bytes += len;

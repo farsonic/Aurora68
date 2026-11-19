@@ -890,6 +890,9 @@ void psmac_netprobe_tx(int unit, const volatile uint8_t *f, uint32_t len, int st
 void psmac_netprobe_rx(int unit, const volatile uint8_t *f, uint32_t len, uint32_t slot, volatile uint32_t *rx_tail);
 #define NETPROBE_TX(u, f, l, st) psmac_netprobe_tx(u, f, l, st)
 #define NETPROBE_RX(u, f, l, sl, t) psmac_netprobe_rx(u, f, l, sl, t)
+/* psmac_ip.c: the kernel's own address, for the remote control (docs/13). Every received frame is
+   shown to it first; its frames go out when the Amiga's (the Mac's) ring is empty */
+#include "../psmac/psmac_ip.h"
 #else
 #define NETPROBE_TX(u, f, l, st) ((void)0)
 #define NETPROBE_RX(u, f, l, sl, t) ((void)0)
@@ -903,6 +906,9 @@ static void rx_payload(const uint8_t *p, unsigned len)
     if (!d) return;
     if (fm_event_parse(d, dl, &e)) { event(&e); return; }
     if (dl < 14 || dl > AN_SLOT_BYTES - 8) { u->rx_drop++; trace_rx(0, d, dl, "DROPPED: length"); return; }
+#ifdef PSMAC
+    if (psmac_ip_active && psmac_ip_rx(0, d, dl, u->mac, 0) != IPK_TO_MAC) return;
+#endif
     if (!u->rx_on) { u->rx_drop++; trace_rx(0, d, dl, "DROPPED: the Amiga takes no frames (RXOFF)"); return; }
     if (u->rx_head - u->rx_tail >= AN_RX_SLOTS) { u->rx_drop++; trace_rx(0, d, dl, "DROPPED: all 16 slots full"); return; }
     trace_rx(0, d, dl, "to the Amiga");
@@ -1036,6 +1042,9 @@ static void tx_all(void)
         else {
             uint8_t *f = W.txbuf, *q = f + SDPCM_HDRLEN + BCDC_DATA_HDR;
             for (uint32_t i = 0; i < len; i++) q[i] = s->data[i];
+#ifdef PSMAC
+            psmac_ip_mac_tx(0, q, len);
+#endif
             NETPROBE_TX(0, q, len, 0);
             unsigned n = sdpcm_frame(f, SDPCM_CHAN_DATA, W.txseq, len);
             int bad = chip_frame(&W.c, f, n, 1);
@@ -1049,6 +1058,18 @@ static void tx_all(void)
         W.traffic_ms = now_ms();
         an_irq();                                   /* a slot free again */
     }
+#ifdef PSMAC
+    /* the kernel's own frames, once the Mac's are out, with the same credit */
+    while (psmac_ip_active && u->link && u->tx_tail == u->tx_head && sdpcm_credit(W.txseq, W.maxseq) && !W.fcstate && !(W.flowctl & 1)) {
+        uint8_t *f = W.txbuf, *q = f + SDPCM_HDRLEN + BCDC_DATA_HDR;
+        uint32_t len = psmac_ip_tx_take(0, q, 1518);
+        if (!len) break;
+        unsigned n = sdpcm_frame(f, SDPCM_CHAN_DATA, W.txseq, len);
+        if (chip_frame(&W.c, f, n, 1)) tx_fail();
+        else W.txseq++;
+        W.traffic_ms = now_ms();
+    }
+#endif
 }
 
 /* ---- bring-up ---- */
@@ -1605,7 +1626,11 @@ static void wifi_thread(void)
             commands();
             uint32_t now = now_ms();
             int busy = now - W.traffic_ms < 300 || u->state == AN_ST_JOINING || u->state == AN_ST_SCANNING || W.scan_busy || u->tx_tail != u->tx_head;
+#ifdef PSMAC
+            if ((int32_t)(now - W.next_poll) >= 0 || u->tx_tail != u->tx_head || psmac_ip_tx_pending(0)) {
+#else
             if ((int32_t)(now - W.next_poll) >= 0 || u->tx_tail != u->tx_head) {
+#endif
                 W.next_poll = now + (busy ? 1 : 10);
                 poll_frames();
                 if (W.chip_up) tx_all();
@@ -1702,6 +1727,12 @@ static struct {
 } E;
 enum { E_OFF, E_PHYRESET, E_LINKWAIT, E_RUN, E_FAILED };
 
+/* the remote control's own MAC address needs GENET to pass it too: GENET has one address register */
+#ifdef PSMAC
+#define GENET_PROMISC() (E.promisc || psmac_ip_promisc(1))
+#else
+#define GENET_PROMISC() (E.promisc)
+#endif
 static inline uint32_t grd(uint32_t o) { return __builtin_bswap32(*(volatile uint32_t *)(E.regs + o)); }
 static inline void gwr(uint32_t o, uint32_t v) { *(volatile uint32_t *)(E.regs + o) = __builtin_bswap32(v); }
 static void gdelay(uint32_t us) { uint64_t end = ticks() + tick_hz() * us / 1000000u; while ((int64_t)(end - ticks()) > 0) ; }
@@ -1950,7 +1981,7 @@ static void eth_link(int bmsr)
         int pause = (cf & AN_EC_AUTONEG) && (cf & AN_EC_PAUSE) && E.full && (adv & lpa & 0x400);
         E.cmd_base = (uint32_t)(E.speed == 1000 ? 2 : E.speed == 100 ? 1 : 0) << 2 | (E.full ? 0 : CMD_HD_EN)
                    | (pause ? 0 : (1u << 8) | (1u << 28));
-        gwr(G_CMD, E.cmd_base | (E.promisc ? CMD_PROMISC : 0) | CMD_TX_EN | CMD_RX_EN);
+        gwr(G_CMD, E.cmd_base | (GENET_PROMISC() ? CMD_PROMISC : 0) | CMD_TX_EN | CMD_RX_EN);
         E.up = 1;
         u->link_flags = ((cf & AN_EC_AUTONEG) && (bmsr & 0x20) ? AN_LF_AUTONEG : 0) | (E.full ? AN_LF_FULL : 0) |
                         (pause ? AN_LF_RXPAUSE | AN_LF_TXPAUSE : 0);
@@ -1984,7 +2015,11 @@ static void eth_rx(void)
             E.rx_err++, u->rx_drop++;
             if (len >= 16 && len <= 1536 + 2) trace_rx(1, f, len - 2, (st & 0x1f) ? "DROPPED: GENET says the frame is bad" : "DROPPED: not one buffer");
             else if (an_drops_logged < 40) { an_drops_logged++; eth_log("rx descriptor status %04x len %u: DROPPED\n", st, len); }
-        } else if (!u->rx_on) { u->rx_drop++; trace_rx(1, f, len - 2, "DROPPED: the Amiga takes no frames (RXOFF)"); }
+        }
+#ifdef PSMAC
+        else if (psmac_ip_active && psmac_ip_rx(1, f, len - 2, E.mac, E.promisc) != IPK_TO_MAC) { }
+#endif
+        else if (!u->rx_on) { u->rx_drop++; trace_rx(1, f, len - 2, "DROPPED: the Amiga takes no frames (RXOFF)"); }
         else if (u->rx_head - u->rx_tail >= AN_RX_SLOTS) {
             /* the Amiga's 16 slots are full: leave this frame, and the ones behind it, in GENET's
                own ring (256 frames) until a slot is free. Dropping it here cost a burst its tail
@@ -2025,6 +2060,9 @@ static void eth_tx(void)
             uint32_t b = E.tprod % NTXB, d = E.tprod & 0xff;
             uint8_t *q = E.txb + b * GBUF;
             ncopy(q, s->data, len);
+#ifdef PSMAC
+            psmac_ip_mac_tx(1, q, len);
+#endif
             trace_tx(1, q, len, 1);
             NETPROBE_TX(1, q, len, 0);
             NETPROBE_TX(1, q, len, 1);                  /* GENET's DMA takes it from here: "out" when queued */
@@ -2041,6 +2079,21 @@ static void eth_tx(void)
         u->tx_tail++;
         an_irq();
     }
+#ifdef PSMAC
+    /* the kernel's own frames, once the Mac's are out */
+    while (psmac_ip_active && E.up && u->tx_tail == u->tx_head && ((E.tprod - (grd(G_TR + 0x08) & 0xffff)) & 0xffff) < 32) {
+        uint32_t b = E.tprod % NTXB, d = E.tprod & 0xff;
+        uint8_t *q = E.txb + b * GBUF;
+        uint32_t len = psmac_ip_tx_take(1, q, GBUF);
+        if (!len) break;
+        uint64_t a = E.txp + (uint64_t)b * GBUF;
+        gwr(G_TXD + d * 12 + 4, (uint32_t)a);
+        gwr(G_TXD + d * 12 + 8, (uint32_t)(a >> 32));
+        gwr(G_TXD + d * 12 + 0, len << 16 | (0x3fu << 7) | DESC_CRC | DESC_SOP | DESC_EOP);
+        E.tprod = (E.tprod + 1) & 0xffff;
+        sent = 1;
+    }
+#endif
     if (sent) { __asm__ volatile("dsb sy" ::: "memory"); gwr(G_TR + 0x0c, E.tprod); }
 }
 static void eth_stop(void)
@@ -2118,7 +2171,7 @@ static void eth_commands(void)
     }
     case AN_CMD_FILTER:
         E.promisc = u->arg[3] & (AN_FILT_PROMISC | AN_FILT_ALLMULTI);   /* no multicast filter yet: all of it */
-        if (E.up) gwr(G_CMD, E.cmd_base | (E.promisc ? CMD_PROMISC : 0) | CMD_TX_EN | CMD_RX_EN);
+        if (E.up) gwr(G_CMD, E.cmd_base | (GENET_PROMISC() ? CMD_PROMISC : 0) | CMD_TX_EN | CMD_RX_EN);
         break;
     default: r = -3; break;
     }
