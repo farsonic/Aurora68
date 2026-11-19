@@ -3,22 +3,39 @@
  * The kernel copies every character of its log into a 64 KiB ring in the Aurora68 card's
  * window (emu68/src/psmac/psmb.h, struct psmb_log at window + 0x60000), from boot. PiLog shows
  * the ring in a window that can be moved, resized, zoomed and scrolled; new lines arrive while it
- * runs, in the background too. When the view is at the bottom it follows them; scrolled up, it
- * stays where it is. The text can be selected and copied (Edit menu or Command-C).
+ * runs, in the background too. The text can be selected and copied (Edit menu or Command-C).
  *
  * It costs next to nothing while nothing happens: WaitNextEvent sleeps a quarter of a second
  * between looks at the ring's head, which is one memory read.
  *
- * The check boxes along the top choose which parts of the log show: Kernel (Emu68's own lines and
+ * The first row of controls chooses which parts of the log show: Kernel (Emu68's own lines and
  * any other tag), Mac (the logic board, the Mac side's messages, SCSI), WiFi, Bluetooth, Network
  * and Card (the Pi's SD card). A line without a tag goes with the line before it. Option-click a
- * box to see that part alone; All shows everything again. A change of filter reads the whole ring
- * again, so earlier lines of that part appear too.
+ * box to see that part alone; All shows everything again.
  *
- * TextEdit holds at most 32 KB, so the window keeps the newest 24 KB or so and drops whole lines
- * from the top as new ones come in.
+ * The second row:
+ *   Filter:  shows only the lines that contain the text, in any case, together with the check
+ *            boxes. Several words must all be there; a word starting "-" and a letter must not
+ *            ("wifi -scan"). Typing anywhere in the window goes to the field. The view is redone
+ *            a moment after the last key, so typing is not held up by the whole ring being read
+ *            at every letter. Esc, or the small box at the field's right end, empties it.
+ *   Clear:   empties the view (Edit > Clear Log, Command-K). The kernel's ring is not touched,
+ *            other readers and the serial copy need it: PiLog remembers where the ring stood and
+ *            shows only what came after. Edit > Show Earlier Lines takes the mark away again.
+ *   Follow:  while it is checked (View > Follow New Lines, Command-T) the view stays at the bottom
+ *            as lines arrive. Scrolling up unchecks it; scrolling back to the bottom, or End,
+ *            checks it again, and so does a new filter, which starts the view at its newest line.
+ *   then how many lines show, "12 of 840 lines" while a filter hides some.
  *
- * Built with the C kit in mac/c (mac/c/README.md). Keys: arrows, Page Up and Down, Home, End.
+ * A change of filter reads the whole ring (or what follows the Clear mark) again, so earlier lines
+ * of that part appear too. TextEdit holds at most 32 KB, so the window keeps the newest 24 KB or
+ * so and drops whole lines from the top as new ones come in.
+ *
+ * The strings are in the code, in English, as in the project's other Mac programs (there are no
+ * catalogs on the Mac side). The window fits the SE's 512 x 342 screen.
+ *
+ * Built with the C kit in mac/c (mac/c/README.md). Keys: arrows, Page Up and Down, Home, End
+ * scroll the log; Left and Right, Delete and Tab work in the filter field.
  */
 #include "toolbox.h"
 
@@ -30,21 +47,29 @@ struct psmb_log { unsigned long magic, version, size, data_off, head, pad[3]; };
 #define KEEP       24000           /* the most text in the window */
 #define LIMIT      30000           /* above this, lines go from the top */
 #define POLL_TICKS 15
+#define TYPE_TICKS 12              /* the filter is applied this long after the last key */
 
 static volatile unsigned char *win_base;
 static volatile struct psmb_log *lg;
 static unsigned long pos;          /* the next byte of the log to show */
 static int esc;                    /* inside an ANSI escape sequence */
+static unsigned long clear_pos;    /* Clear's mark: the first byte to show, at a line start */
+static int cleared, clear_cat;     /* the mark is set; the part of the line before it */
+static unsigned long n_lines, n_shown;     /* lines read since the mark, and those shown */
 
-/* ---- the filter ---- */
+/* ---- the parts ---- */
 enum { C_KERNEL, C_MAC, C_WIFI, C_BT, C_NET, C_CARD, NCAT };
 static const char *const cat_name[NCAT] = { "Kernel", "Mac", "WiFi", "Bluetooth", "Network", "Card" };
 static int show[NCAT] = { 1, 1, 1, 1, 1, 1 };
-static void *cat_box[NCAT], *all_btn;
+static void *cat_box[NCAT], *all_btn, *clear_btn, *follow_box;
 static int line_cat = C_KERNEL;    /* the category of the line being read (an untagged line keeps it) */
 static unsigned char line[400];    /* the line being read */
 static int line_n;
-#define STRIP 22                   /* the height of the row of check boxes */
+
+/* the two rows of controls: check boxes and All; the filter, Clear, Follow and the count */
+#define ROW2       23              /* the second row's top */
+#define STRIP      44              /* the height of both rows */
+#define BASE2      (ROW2 + 12)     /* the second row's text baseline */
 
 /* what a line is, from its tag: "[WIFI] ...", "[PSMAC:SOLO] ..." */
 static int pfx(const unsigned char *l, int n, const char *p)
@@ -64,18 +89,97 @@ static int classify(const unsigned char *l, int n, int prev)
 	return C_KERNEL;
 }
 
+/* ---- the text filter ---- */
+/* As many characters as the field shows: Monaco 9 is 6 pixels a character, the field's text
+   area 126 pixels. The field does not scroll sideways, so it takes no more. */
+#define FMAX       20
+#define NTERM      8
+static unsigned char fl[FMAX];     /* the filter in force, in lower case */
+static int fl_n;
+static struct { unsigned char off, len, neg; } term[NTERM];
+static int nterm;
+static unsigned char low[sizeof line];     /* the line being matched, in lower case */
+
+static unsigned char lower(unsigned char c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
+
+/* is the word w (k bytes) somewhere in l (n bytes)? */
+static int has(const unsigned char *l, int n, const unsigned char *w, int k)
+{
+	int i, j;
+	for (i = 0; i + k <= n; i++) {
+		if (l[i] != w[0]) continue;
+		j = 1;
+		while (j < k && l[i + j] == w[j]) j++;
+		if (j == k) return 1;
+	}
+	return 0;
+}
+static int matches(const unsigned char *l, int n)
+{
+	int i;
+	if (!nterm) return 1;
+	for (i = 0; i < n; i++) low[i] = lower(l[i]);
+	for (i = 0; i < nterm; i++)
+		if (has(low, n, fl + term[i].off, term[i].len) == term[i].neg) return 0;
+	return 1;
+}
+
+/* the field's text as the filter in force: words between spaces, "-word" one that must not be
+   there ("-43", a minus and a digit, is looked for as it is: error numbers are written so) */
+static TEHandle fte;
+static void take_filter(void)
+{
+	TERec *t = *fte;
+	int n = t->teLength < FMAX ? t->teLength : FMAX, i = 0;
+	for (i = 0; i < n; i++) fl[i] = lower((unsigned char)(*t->hText)[i]);
+	fl_n = n;
+	nterm = 0;
+	i = 0;
+	while (i < n && nterm < NTERM) {
+		int neg = 0, start;
+		while (i < n && fl[i] == ' ') i++;
+		if (i + 1 < n && fl[i] == '-' && fl[i + 1] >= 'a' && fl[i + 1] <= 'z') { neg = 1; i++; }
+		start = i;
+		while (i < n && fl[i] != ' ') i++;
+		if (i > start) {
+			term[nterm].off = start; term[nterm].len = i - start; term[nterm].neg = neg;
+			nterm++;
+		}
+	}
+}
+/* the field differs from the filter in force */
+static int field_changed(void)
+{
+	TERec *t = *fte;
+	int i;
+	if (t->teLength != fl_n) return 1;
+	for (i = 0; i < fl_n; i++) if (lower((unsigned char)(*t->hText)[i]) != fl[i]) return 1;
+	return 0;
+}
+
 static void *win, *vbar;
 static void refilter(void);
 static TEHandle te;
 static int top;                    /* the first line in view */
+static int follow = 1;             /* the view stays at the bottom as lines arrive */
+static int focus;                  /* where keys and the Edit menu go: 0 the log, 1 the field */
+static int active = 1;             /* the window is active (and PiLog in front) */
 static int fg = 1;                 /* PiLog is the front program */
 static int quit;
-static void *m_apple, *m_file, *m_edit;
+static int refilter_due;           /* the field changed: apply it at refilter_at */
+static unsigned long refilter_at;
+static void *m_apple, *m_file, *m_edit, *m_view;
 static unsigned char pbuf[256];
+static Rect field_r, x_r;          /* the field's frame, its empty-it box */
+static int label_h, count_h;       /* where "Filter:" and the count are drawn */
 
-enum { M_APPLE = 128, M_FILE, M_EDIT };
-enum { F_CLEAR = 1, F_QUIT = 3 };
-enum { E_UNDO = 1, E_CUT = 3, E_COPY, E_PASTE, E_CLEAR, E_SELALL = 8 };
+enum { M_APPLE = 128, M_FILE, M_EDIT, M_VIEW };
+enum { F_QUIT = 1 };
+enum { E_UNDO = 1, E_CUT = 3, E_COPY, E_PASTE, E_CLEAR, E_SELALL = 8, E_FILTER,
+       E_CLEARLOG = 11, E_EARLIER };
+enum { V_FOLLOW = 1, V_NOFILTER = 3, V_ALLPARTS };
+
+static TEHandle cur(void) { return focus ? fte : te; }
 
 /* ---- layout and scrolling ---- */
 static int line_h(void) { return (*te)->lineHeight > 0 ? (*te)->lineHeight : 11; }
@@ -107,6 +211,22 @@ static void scroll_to(int n)
 	SetCtlValue(vbar, top);
 }
 
+static void set_follow(int on)
+{
+	follow = on;
+	SetCtlValue(follow_box, on);
+	if (on) scroll_to(32767);
+}
+/* the user scrolled: away from the bottom stops following, back at the bottom follows again */
+static void user_scroll(int n)
+{
+	scroll_to(n);
+	if ((top >= max_top()) != follow) {
+		follow = !follow;
+		SetCtlValue(follow_box, follow);
+	}
+}
+
 /* the scroll bar along the right, the text in the rest */
 static void layout(void)
 {
@@ -127,13 +247,56 @@ static void layout(void)
 	ShowControl(vbar);
 }
 
-/* the row of check boxes, in the system font, and All */
-static void make_boxes(void)
+/* ---- the second row's drawing ---- */
+static void draw_x(void)
+{
+	/* the empty-it box: a small box with a cross, like a window's close box, while there is text */
+	EraseRect(&x_r);
+	if (!(*fte)->teLength) return;
+	FrameRect(&x_r);
+	MoveTo(x_r.left + 2, x_r.top + 2); LineTo(x_r.right - 3, x_r.bottom - 3);
+	MoveTo(x_r.right - 3, x_r.top + 2); LineTo(x_r.left + 2, x_r.bottom - 3);
+}
+
+static char *put_num(char *p, unsigned long v)
+{
+	char b[12];
+	int i = 0;
+	do { b[i++] = (char)('0' + v % 10); v /= 10; } while (v);
+	while (i) *p++ = b[--i];
+	return p;
+}
+static int filtering(void)
+{
+	int i;
+	if (nterm) return 1;
+	for (i = 0; i < NCAT; i++) if (!show[i]) return 1;
+	return 0;
+}
+static void draw_count(void)
+{
+	char s[48], *p = s;
+	Rect r = { ROW2, count_h, ROW2 + 16, PORT_RECT(win)->right - 2 };
+	EraseRect(&r);
+	if (!lg) return;
+	if (filtering()) { p = put_num(p, n_shown); memcpy(p, " of ", 4); p += 4; }
+	p = put_num(p, n_lines);
+	memcpy(p, n_lines == 1 ? " line" : " lines", 6); p += n_lines == 1 ? 5 : 6;
+	*p = 0;
+	TextFont(3); TextSize(9);           /* Geneva 9 */
+	MoveTo(count_h, BASE2);
+	DrawString(pstr(pbuf, s));
+	TextFont(4); TextSize(9);
+}
+
+/* the rows of controls: the check boxes and All, then the filter, Clear and Follow, in the
+   system font */
+static void make_controls(void)
 {
 	int h = 6, i;
+	Rect b;
 	TextFont(0); TextSize(12);
 	for (i = 0; i < NCAT; i++) {
-		Rect b;
 		pstr(pbuf, cat_name[i]);
 		b.top = 3; b.bottom = 19; b.left = h; b.right = h + 20 + StringWidth(pbuf);
 		cat_box[i] = NewControl(win, &b, pbuf, 1, 1, 0, 1, checkBoxProc, i);
@@ -141,7 +304,27 @@ static void make_boxes(void)
 	}
 	Rect a = { 2, h + 4, 20, h + 4 + 36 };
 	all_btn = NewControl(win, &a, pstr(pbuf, "All"), 1, 0, 0, 1, pushButProc, 0);
+
+	label_h = 6;
+	h = label_h + StringWidth(pstr(pbuf, "Filter:")) + 5;
+	field_r.top = ROW2; field_r.bottom = ROW2 + 16; field_r.left = h; field_r.right = h + 144;
+	x_r.top = field_r.top + 3; x_r.bottom = field_r.bottom - 3;
+	x_r.right = field_r.right - 3; x_r.left = x_r.right - 10;
+	h = field_r.right + 8;
+	b.top = ROW2 - 1; b.bottom = ROW2 + 17; b.left = h; b.right = h + 16 + StringWidth(pstr(pbuf, "Clear"));
+	clear_btn = NewControl(win, &b, pbuf, 1, 0, 0, 1, pushButProc, 0);
+	h = b.right + 8;
+	b.top = ROW2; b.bottom = ROW2 + 16; b.left = h; b.right = h + 20 + StringWidth(pstr(pbuf, "Follow"));
+	follow_box = NewControl(win, &b, pbuf, 1, follow, 0, 1, checkBoxProc, 0);
+	count_h = b.right + 8;
+
+	/* the field: one line of Monaco 9, wide enough never to wrap */
 	TextFont(4); TextSize(9);
+	Rect v = { field_r.top + 3, field_r.left + 3, field_r.bottom - 2, x_r.left - 2 };
+	Rect d = v;
+	d.right = d.left + 2000;
+	fte = (TEHandle)TENew(&d, &v);
+	TEDeactivate(fte);
 }
 
 static void box_click(void *ctl, int option)
@@ -158,7 +341,6 @@ static void box_click(void *ctl, int option)
 
 static void resized(void)
 {
-	int follow = top >= max_top();
 	SetPort(win);
 	InvalRect(PORT_RECT(win));
 	layout();
@@ -168,7 +350,6 @@ static void resized(void)
 /* ---- new text from the ring ---- */
 static void add_text(const unsigned char *s, int n)
 {
-	int follow = top >= max_top();
 	TERec *t = *te;
 	int ss = t->selStart, se = t->selEnd;
 	if (t->teLength + n > LIMIT) {
@@ -184,7 +365,7 @@ static void add_text(const unsigned char *s, int n)
 		ss -= cut; se -= cut;
 		if (ss < 0) ss = 0;
 		if (se < 0) se = 0;
-		/* the same lines stay in view while the view is scrolled up */
+		/* the same lines stay in view while the view is not following */
 		if (!follow) {
 			int k = top < lines ? top : lines;
 			TEScroll(0, k * line_h(), te);
@@ -214,7 +395,9 @@ static int read_log(unsigned long head, unsigned char *out, int len, int n, int 
 			continue;
 		}
 		line_cat = classify(line, line_n, line_cat);
-		if (show[line_cat]) {
+		n_lines++;
+		if (show[line_cat] && matches(line, line_n)) {
+			n_shown++;
 			if (n + line_n + 1 > len) n = flush(out, n);
 			memcpy(out + n, line, line_n);
 			n += line_n;
@@ -231,14 +414,16 @@ static void poll_log(void)
 {
 	static unsigned char buf[2048];
 	if (!lg) return;
-	unsigned long head = lg->head, size = lg->size;
+	unsigned long head = lg->head, size = lg->size, was = n_lines;
 	if (head == pos) return;
 	if (head - pos > size) { pos = head - size; line_n = 0; }
 	flush_te(buf, read_log(head, buf, sizeof buf, 0, flush_te));
+	if (n_lines != was) draw_count();
 }
 
-/* The filter changed: the whole ring again, through the new filter, into the window. The text is
-   gathered in a buffer of its own, which keeps the newest KEEP bytes, and goes in at once. */
+/* The filter changed: the whole ring again (from Clear's mark, if there is one), through the new
+   filter, into the window. The text is gathered in a buffer of its own, which keeps the newest
+   KEEP bytes, and goes in at once. */
 static unsigned char *refill_buf;
 static int flush_refill(unsigned char *s, int n)
 {
@@ -250,23 +435,108 @@ static int flush_refill(unsigned char *s, int n)
 }
 static void refilter(void)
 {
+	refilter_due = 0;
+	take_filter();
 	if (!lg) return;
 	if (!refill_buf) refill_buf = mac_newptr(KEEP + 4096);
 	if (!refill_buf) { SysBeep(5); return; }
 	unsigned long head = lg->head, size = lg->size;
 	pos = head > size ? head - size : 0;
-	/* the ring's oldest line is probably cut: start at the first line end */
-	if (head > size) while (pos != head && win_base[lg->data_off + pos % size] != '\n') pos++;
-	if (pos != head && head > size) pos++;
-	line_n = 0; esc = 0; line_cat = C_KERNEL;
+	line_cat = C_KERNEL;
+	if (cleared && clear_pos - pos <= head - pos) {
+		/* the mark is still in the ring: from there */
+		pos = clear_pos;
+		line_cat = clear_cat;
+	} else if (head > size) {
+		/* the ring's oldest line is probably cut: start at the first line end */
+		while (pos != head && win_base[lg->data_off + pos % size] != '\n') pos++;
+		if (pos != head) pos++;
+	}
+	line_n = 0; esc = 0;
+	n_lines = n_shown = 0;
 	int n = read_log(head, refill_buf, KEEP + 4096, 0, flush_refill);
 	if (n > KEEP) n = flush_refill(refill_buf, n);
 	SetPort(win);
 	TESetText(refill_buf, n, te);
 	top = 0;
 	layout();
-	scroll_to(32767);
+	set_follow(1);                      /* the new view starts at its newest line */
 	InvalRect(PORT_RECT(win));
+}
+
+/* Edit > Clear Log: the view from here on. The mark goes at the start of the line being written,
+   so that line shows whole when it ends. */
+static void clear_log(void)
+{
+	if (!lg) return;
+	poll_log();                         /* line_cat is now the part of the last whole line */
+	unsigned long head = lg->head, size = lg->size, low_end = head > size ? head - size : 0;
+	unsigned long p = head;
+	while (p > low_end && win_base[lg->data_off + (p - 1) % size] != '\n') p--;
+	clear_pos = p;
+	clear_cat = line_cat;
+	cleared = 1;
+	refilter();
+}
+static void show_earlier(void)
+{
+	cleared = 0;
+	refilter();
+}
+
+/* ---- the filter field ---- */
+static void set_focus(int f)
+{
+	if (f == focus) return;
+	if (active) TEDeactivate(cur());
+	focus = f;
+	if (active) TEActivate(cur());
+}
+
+/* the field was edited: the view follows a moment later, or at once */
+static void field_edited(int now)
+{
+	draw_x();
+	if (now) { if (field_changed() || refilter_due) refilter(); }
+	else if (field_changed()) { refilter_due = 1; refilter_at = LM_TICKS + TYPE_TICKS; }
+	else refilter_due = 0;
+}
+
+static void empty_field(void)
+{
+	TESetSelect(0, 32767, fte);
+	TEDelete(fte);
+	field_edited(1);
+}
+
+static void field_key(int c)
+{
+	TERec *t = *fte;
+	set_focus(1);
+	if (c >= 32 && c != 127 && t->teLength - (t->selEnd - t->selStart) >= FMAX) { SysBeep(5); return; }
+	if (c == 127) {                     /* forward delete, which TextEdit does not know */
+		if (t->selStart == t->selEnd) {
+			if (t->selEnd >= t->teLength) return;
+			TESetSelect(t->selStart, t->selStart + 1, fte);
+		}
+		TEDelete(fte);
+	} else TEKey(c, fte);
+	field_edited(0);
+}
+
+/* the Scrap's text into the field: its first line, as much as fits */
+static void paste_field(void)
+{
+	char buf[FMAX];
+	long off = 0, len = GetScrap((void *)LM_TESCRPH, TYPE('T', 'E', 'X', 'T'), &off);
+	TERec *t = *fte;
+	int room = FMAX - (t->teLength - (t->selEnd - t->selStart)), n = 0;
+	if (len <= 0) return;
+	const char *s = *LM_TESCRPH;
+	while (n < len && n < room && s[n] != '\r' && s[n] != '\n') { buf[n] = s[n] == '\t' ? ' ' : s[n]; n++; }
+	TEDelete(fte);
+	TEInsert(buf, n, fte);
+	field_edited(0);
 }
 
 /* ---- menus ---- */
@@ -278,44 +548,85 @@ static void setup_menus(void)
 	AddResMenu(m_apple, TYPE('D', 'R', 'V', 'R'));
 	InsertMenu(m_apple, 0);
 	m_file = NewMenu(M_FILE, pstr(pbuf, "File"));
-	AppendMenu(m_file, pstr(pbuf, "Clear Window/K;(-;Quit/Q"));
+	AppendMenu(m_file, pstr(pbuf, "Quit/Q"));
 	InsertMenu(m_file, 0);
+	/* Undo to Clear in the standard order, so SystemEdit gives desk accessories the right ones */
 	m_edit = NewMenu(M_EDIT, pstr(pbuf, "Edit"));
-	AppendMenu(m_edit, pstr(pbuf, "(Undo/Z;(-;(Cut/X;Copy/C;(Paste/V;(Clear;(-;Select All/A"));
+	AppendMenu(m_edit, pstr(pbuf, "Undo/Z;(-;Cut/X;Copy/C;Paste/V;Clear;(-;Select All/A;Filter Lines/F;(-;"
+	                              "Clear Log/K;Show Earlier Lines"));
 	InsertMenu(m_edit, 0);
+	m_view = NewMenu(M_VIEW, pstr(pbuf, "View"));
+	AppendMenu(m_view, pstr(pbuf, "Follow New Lines/T;(-;Clear Filter;Show All Parts"));
+	InsertMenu(m_view, 0);
 	DrawMenuBar();
+}
+
+static void enable(void *m, int item, int on)
+{
+	if (on) EnableItem(m, item);
+	else DisableItem(m, item);
+}
+/* dim what cannot be done now, check Follow */
+static void fix_menus(void)
+{
+	int da = FrontWindow() != win, i, some_off = 0;
+	TERec *t = *cur();
+	int sel = t->selEnd > t->selStart;
+	enable(m_edit, E_UNDO, da);
+	enable(m_edit, E_CUT, da || (focus && sel));
+	enable(m_edit, E_COPY, da || sel);
+	enable(m_edit, E_PASTE, da || focus);
+	enable(m_edit, E_CLEAR, da || (focus && sel));
+	enable(m_edit, E_SELALL, !da);
+	enable(m_edit, E_FILTER, !da);
+	enable(m_edit, E_CLEARLOG, !da && lg);
+	enable(m_edit, E_EARLIER, !da && cleared);
+	CheckItem(m_view, V_FOLLOW, follow);
+	enable(m_view, V_NOFILTER, (*fte)->teLength > 0);
+	for (i = 0; i < NCAT; i++) if (!show[i]) some_off = 1;
+	enable(m_view, V_ALLPARTS, some_off);
 }
 
 static void about(void)
 {
 	/* a line in the window itself (an alert would need 'ALRT' and 'DITL' resources) */
-	static const char msg[] = "PiLog: the Pi kernel's log (Aurora68). It follows new lines while the view is at the bottom.\r";
+	static const char msg[] = "PiLog: the Pi kernel's log (Aurora68). Filter by part and by text; "
+	                          "Clear empties the view, Follow keeps it at the newest line.\r";
 	add_text((const unsigned char *)msg, sizeof msg - 1);
+}
+
+static void to_scrap(TEHandle h)
+{
+	TECopy(h);
+	ZeroScrap();
+	PutScrap(LM_TESCRPLEN, TYPE('T', 'E', 'X', 'T'), *LM_TESCRPH);
 }
 
 static void do_menu(long mr)
 {
 	int id = (int)(mr >> 16), item = (int)(mr & 0xFFFF);
+	SetPort(win);
 	if (id == M_APPLE) {
 		if (item == 1) about();
 		else { GetItem(m_apple, item, pbuf); OpenDeskAcc(pbuf); }
 	} else if (id == M_FILE) {
-		if (item == F_CLEAR) {
-			TESetSelect(0, 32767, te);
-			TEDelete(te);
-			top = 0;
-			layout();
-			scroll_to(0);
-			InvalRect(PORT_RECT(win));
-		} else if (item == F_QUIT) quit = 1;
+		if (item == F_QUIT) quit = 1;
 	} else if (id == M_EDIT) {
-		if (!SystemEdit(item - 1)) {
-			if (item == E_COPY) {
-				TECopy(te);
-				ZeroScrap();
-				PutScrap(LM_TESCRPLEN, TYPE('T', 'E', 'X', 'T'), *LM_TESCRPH);
-			} else if (item == E_SELALL) TESetSelect(0, 32767, te);
+		if (item <= E_CLEAR && SystemEdit(item - 1)) { HiliteMenu(0); return; }     /* a desk accessory's */
+		switch (item) {
+		case E_CUT:   if (focus) { to_scrap(fte); TEDelete(fte); field_edited(0); } break;
+		case E_COPY:  to_scrap(cur()); break;
+		case E_PASTE: if (focus) paste_field(); break;
+		case E_CLEAR: if (focus) { TEDelete(fte); field_edited(0); } break;
+		case E_SELALL: TESetSelect(0, 32767, cur()); break;
+		case E_FILTER: set_focus(1); TESetSelect(0, 32767, fte); break;
+		case E_CLEARLOG: clear_log(); break;
+		case E_EARLIER: show_earlier(); break;
 		}
+	} else if (id == M_VIEW) {
+		if (item == V_FOLLOW) set_follow(!follow);
+		else if (item == V_NOFILTER) empty_field();
+		else if (item == V_ALLPARTS) box_click(all_btn, 0);
 	}
 	HiliteMenu(0);
 }
@@ -326,21 +637,25 @@ void c_ctl_action(void *ctl, int part)
 	(void)ctl;
 	int page = visible() > 1 ? visible() - 1 : 1;
 	switch (part) {
-	case inUpButton:   scroll_to(top - 1); break;
-	case inDownButton: scroll_to(top + 1); break;
-	case inPageUp:     scroll_to(top - page); break;
-	case inPageDown:   scroll_to(top + page); break;
+	case inUpButton:   user_scroll(top - 1); break;
+	case inDownButton: user_scroll(top + 1); break;
+	case inPageUp:     user_scroll(top - page); break;
+	case inPageDown:   user_scroll(top + page); break;
 	}
 }
 
 static void activate(int on)
 {
+	int i, st = on ? 0 : 255;
 	SetPort(win);
-	int i;
-	if (on) { TEActivate(te); HiliteControl(vbar, 0); }
-	else { TEDeactivate(te); HiliteControl(vbar, 255); }
-	for (i = 0; i < NCAT; i++) HiliteControl(cat_box[i], on ? 0 : 255);
-	HiliteControl(all_btn, on ? 0 : 255);
+	active = on;
+	if (on) TEActivate(cur());
+	else TEDeactivate(cur());
+	HiliteControl(vbar, st);
+	for (i = 0; i < NCAT; i++) HiliteControl(cat_box[i], st);
+	HiliteControl(all_btn, st);
+	HiliteControl(clear_btn, st);
+	HiliteControl(follow_box, st);
 	DrawGrowIcon(win);
 }
 
@@ -348,22 +663,32 @@ static void content_click(EventRecord *ev)
 {
 	Point p = ev->where;
 	void *ctl = 0;
+	int shift = (ev->modifiers & shiftKey) != 0;
 	SetPort(win);
 	GlobalToLocal(&p);
 	int part = FindControl(pt_long(p), win, &ctl);
 	if (ctl && ctl != vbar) {
-		if (TrackControl(ctl, pt_long(p), 0)) box_click(ctl, (ev->modifiers & optionKey) != 0);
+		if (!TrackControl(ctl, pt_long(p), 0)) return;
+		if (ctl == clear_btn) clear_log();
+		else if (ctl == follow_box) set_follow(!follow);
+		else box_click(ctl, (ev->modifiers & optionKey) != 0);
 		return;
 	}
 	if (ctl == vbar && part) {
 		if (part == inThumb) {
 			TrackControl(ctl, pt_long(p), 0);
-			scroll_to(GetCtlValue(vbar));
+			user_scroll(GetCtlValue(vbar));
 		} else TrackControl(ctl, pt_long(p), (void *)pas_ctl_action);
 		return;
 	}
-	if (PtInRect(pt_long(p), &(*te)->viewRect))
-		TEClick(pt_long(p), (ev->modifiers & shiftKey) != 0, te);
+	if ((*fte)->teLength && PtInRect(pt_long(p), &x_r)) { empty_field(); return; }
+	if (PtInRect(pt_long(p), &field_r)) {
+		set_focus(1);
+		TEClick(pt_long(p), shift, fte);
+	} else if (PtInRect(pt_long(p), &(*te)->viewRect)) {
+		set_focus(0);
+		TEClick(pt_long(p), shift, te);
+	}
 }
 
 static void mouse_down(EventRecord *ev)
@@ -371,7 +696,7 @@ static void mouse_down(EventRecord *ev)
 	void *w = 0;
 	int part = FindWindow(pt_long(ev->where), &w);
 	switch (part) {
-	case inMenuBar: do_menu(MenuSelect(pt_long(ev->where))); break;
+	case inMenuBar: fix_menus(); do_menu(MenuSelect(pt_long(ev->where))); break;
 	case inSysWindow: SystemClick(ev, w); break;
 	case inDrag: DragWindow(w, pt_long(ev->where), RGN_BBOX(LM_GRAYRGN)); break;
 	case inGoAway: if (w == win && TrackGoAway(w, pt_long(ev->where))) quit = 1; break;
@@ -401,15 +726,24 @@ static void mouse_down(EventRecord *ev)
 static void key_down(EventRecord *ev)
 {
 	int c = (int)(ev->message & charCodeMask);
-	if (ev->modifiers & cmdKey) { do_menu(MenuKey(c)); return; }
+	if (ev->modifiers & cmdKey) { fix_menus(); do_menu(MenuKey(c)); return; }
+	SetPort(win);
 	int page = visible() > 1 ? visible() - 1 : 1;
 	switch (c) {
-	case 0x1E: scroll_to(top - 1); break;       /* up arrow */
-	case 0x1F: scroll_to(top + 1); break;       /* down arrow */
-	case 0x0B: scroll_to(top - page); break;    /* page up */
-	case 0x0C: scroll_to(top + page); break;    /* page down */
-	case 0x01: scroll_to(0); break;             /* home */
-	case 0x04: scroll_to(32767); break;         /* end */
+	case 0x1E: user_scroll(top - 1); break;     /* up arrow */
+	case 0x1F: user_scroll(top + 1); break;     /* down arrow */
+	case 0x0B: user_scroll(top - page); break;  /* page up */
+	case 0x0C: user_scroll(top + page); break;  /* page down */
+	case 0x01: user_scroll(0); break;           /* home */
+	case 0x04: user_scroll(32767); break;       /* end */
+	case 0x1B: if ((*fte)->teLength) empty_field(); break;     /* Esc, and the keypad's Clear */
+	case 0x0D: case 0x03: field_edited(1); break;              /* Return, Enter: the filter now */
+	case 0x09: set_focus(!focus); if (focus) TESetSelect(0, 32767, fte); break;    /* Tab */
+	case 0x1C: case 0x1D: if (focus) TEKey(c, fte); break;     /* left, right */
+	default:
+		/* the log takes no typing: letters, Delete and the rest go to the filter */
+		if (c >= 32 || c == 0x08) field_key(c);
+		break;
 	}
 }
 
@@ -420,6 +754,14 @@ static void update(void *w)
 	BeginUpdate(win);
 	EraseRect(PORT_RECT(win));
 	TEUpdate(PORT_RECT(win), te);
+	TEUpdate(PORT_RECT(win), fte);
+	FrameRect(&field_r);
+	draw_x();
+	TextFont(0); TextSize(12);
+	MoveTo(label_h, BASE2);
+	DrawString(pstr(pbuf, "Filter:"));
+	TextFont(4); TextSize(9);
+	draw_count();
 	DrawControls(win);
 	MoveTo(PORT_RECT(win)->left, STRIP - 1);
 	LineTo(PORT_RECT(win)->right - 16, STRIP - 1);
@@ -443,7 +785,7 @@ int main(void)
 	Rect r = *PORT_RECT(win);
 	vbar = NewControl(win, &r, pstr(pbuf, ""), 1, 0, 0, 0, scrollBarProc, 0);
 	te = (TEHandle)TENew(&r, &r);
-	make_boxes();
+	make_controls();
 	layout();
 	if (!lg) {
 		static const char msg[] = "No kernel log here: PiLog needs an Aurora68 kernel from version 0.5 on.\r";
@@ -454,7 +796,8 @@ int main(void)
 	unsigned long last = LM_TICKS;
 	EventRecord ev;
 	while (!quit) {
-		int got = WaitNextEvent(everyEvent, &ev, fg ? POLL_TICKS : POLL_TICKS * 2, 0);
+		long sleep = refilter_due ? 1 : fg ? POLL_TICKS : POLL_TICKS * 2;
+		int got = WaitNextEvent(everyEvent, &ev, sleep, 0);
 		if (got) {
 			switch (ev.what) {
 			case mouseDown: mouse_down(&ev); break;
@@ -469,7 +812,11 @@ int main(void)
 				break;
 			}
 		}
-		if (fg) TEIdle(te);
+		if (fg) TEIdle(cur());
+		if (refilter_due && (long)(LM_TICKS - refilter_at) >= 0) {
+			SetPort(win);
+			refilter();
+		}
 		if (LM_TICKS - last >= POLL_TICKS) {
 			last = LM_TICKS;
 			SetPort(win);

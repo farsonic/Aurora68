@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **PiLog: Clear, a text filter and Follow.** A second row of controls under the part check boxes.
+  *Filter:* shows only the lines that contain the text, in any case, together with the check boxes;
+  several words must all be there and `-word` hides the lines with it. Typing anywhere in the window
+  goes to the field, Esc or its small close box empties it, and the count beside it says how many
+  lines show ("5 of 688 lines"). *Clear* (Edit > Clear Log, Command-K) empties the window but
+  not the kernel's log, which the serial copy and other readers still have; Edit > Show Earlier
+  Lines brings the earlier lines back. *Follow* (View > Follow New Lines, Command-T) keeps the view at
+  the newest line; scrolling up unchecks it and scrolling back to the bottom, or End, checks it
+  again. Copy keeps working, Paste goes into the filter, and the window still fits the SE's screen.
 - **Parameter RAM kept on the card (the Pi alone, `mac.board=solo`).** AppleTalk active in the
   Chooser, the Network control panel's connection (Lagoon EtherTalk), Monitors' depth, the startup
   disk and the sound used to go back to the defaults at every power-on. The kernel now keeps them
