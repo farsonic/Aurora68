@@ -12,6 +12,13 @@
   a PiDisk volume held in memory (an image in the container or on the card) stopped the Pi's service
   core, and with it the disk, the network and the screen's VBL. Replace the declaration ROMs: PiDisk
   now waits long enough for a block still coming in from the card.
+- **A crash record in the log.** When the Mac bombs ("Sorry, a system error occurred"), the Pi's
+  log now holds what the processor was doing: the program, where in memory it was, its registers,
+  the instructions and the stack. After pressing Restart, open PiLog and filter for `CRASH`, or
+  copy those lines from the serial log, and send them with a report.
+- **Fixed: the Finder's "bad F-Line instruction" a few minutes after opening a window**, seen with
+  Lagoon installed on the Pi alone (`mac.board=solo`). It was the interrupt fault fixed for
+  Speedometer: with the fix, the same test runs clean.
 - **PiLog: Clear, a text filter and Follow.** A second row of controls under the part check boxes.
   *Filter:* shows only the lines that contain the text, in any case, together with the check boxes;
   several words must all be there and `-word` hides the lines with it. Typing anywhere in the window

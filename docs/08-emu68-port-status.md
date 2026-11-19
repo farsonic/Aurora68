@@ -1296,6 +1296,76 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    (`docs/img/solo-second-disk-from-card.png`); the Finder's desktop database written to it goes
    back into RiptideFix.img on the card.
 
+53. **A crash record for every bomb; Lagoon's "bad F-Line" was the stale interrupt level (19
+   November).** The user's Internet Explorer 4.01, left idle for an hour on the bench (solo board,
+   kernel bc44052, Riptide over the WiFi), came back to "Sorry, a system error occurred. 'Internet
+   Explorer 4.01' bad F-Line instruction", the error seen before in long sessions (items 42 and 44,
+   and Lagoon's docs). The dialog shows a number; the evidence is gone at Restart.
+
+   The crash record (`psmac_crash.c`). Emu68 raises every exception translated code takes in
+   `M68K_Exception` (`M68k_ExceptionEntry.c`); that is where it is taken, so the JIT's normal path
+   is untouched.
+   - *Unexpected exceptions* (bus and address errors, illegal instructions, zero divide, CHK,
+     TRAPV, privilege, trace, F-line, coprocessor, format and FPU errors, uninitialised and
+     spurious interrupts; not interrupts, TRAP #n or A-line). The registers, the 24 instruction
+     words around the PC and the 16 longs at A7 are copied at once. The service core prints a
+     block: what and where, the application (CurApName, $910) and its A5, the region the PC is in
+     (ROM, the system heap, the application's heap, stack or A5 world, a card's space, other RAM),
+     the registers, the code, the stack, and the last 32 PCs it sampled. At most eight blocks per
+     power-on, then one-line notes.
+   - *_SysError* ($A9C9), picked out of the A-line traps by its trap word (one 16-bit read per
+     Toolbox call), for the errors the System or a program raises itself. "Welcome to Macintosh"
+     (40) and the alerts from 20000 up are _SysError calls too and are left out. The ROM's own
+     exception handlers do not go through the trap: a test program that runs an F-line opcode
+     ($FE00, coprocessor 7) brought up "bad F-Line instruction" with no _SysError seen. So the
+     exception's block is the record that matters.
+   - The recorder is ordinary C. The exception entry is compiled to leave the 68k's registers
+     (fixed ARM registers) alone, and C code may change x0-x18, so the call saves those around
+     it. The one-line log it replaces called `kprintf` straight from the entry, which could
+     change A0-A4 of the program that faulted. That is also why its "words at PC-16" came out as
+     garbage.
+   - The kernel's log outlives the Mac's restart, and PiLog shows its last 64 KB.
+
+   Tested with that program, CrashTest, in Startup Items on the full test image:
+
+   ```
+   [CRASH] F-line (vector 02c) at PC 01f5a606 in "CrashTest", A5 01f9cdf4 (crash record 1 of at most 8)
+   [CRASH] the PC is in the application's heap
+   [CRASH]   D0-7 ffffffff 11111111 22222222 33333333 00000000 00000000 00000000 00000000
+   [CRASH]   A0-7 0006bb44 01f58fa8 00004444 00000000 00000000 01f9cdf4 000001e4 01f9adf0
+   [CRASH]   code at PC-16: 243c 2222 2222 263c 3333 3333 45f8 4444 |fe00 4e75 0000 ...
+   ```
+
+   The registers the program set (D1-D3, A2) and its two last instructions are there.
+
+   Lagoon's "bad F-Line" in the Finder. On the 0.11 test kernel (e5ff17d, before item 48's fix)
+   eight of nine solo-board runs with Lagoon installed ended in the Finder with "bad F-Line
+   instruction" within one to three minutes of opening a window. The Lagoon worker's logs show the
+   same signature as item 48's Speedometer crash: an illegal or CHK instruction at a PC near the
+   top of the 16 MB RAM ($FD652A, $FD7698, $FD859E, $FDDB8E: the Finder's stack, not code), then a
+   jump to $81000040. Rerun with their script and images on kernels with item 48's fix (42f15f2,
+   and origin/main with the crash record), the disk window opened and watched for three to four
+   minutes (four the last time), all three runs were clean, with no exception logged at all:
+   - the full Lagoon image;
+   - Lagoon EtherTalk alone;
+   - the full Lagoon image again.
+
+   It was the stale interrupt level, item 48. Whether the user's idle IE crash is the same is not
+   known: their kernel already had the fix. The next one will leave a record.
+
+   Code read from the solo board's disk. While looking for other ways to run stale code, one turned
+   up. The translator re-checks RAM blocks (a CRC of their bytes) on their next entry after
+   `psmac_icache_epoch` moves. That happens:
+   - when the Mac clears the 68030 instruction cache (CACR CI/CEI: System 7.1's BlockMove does it,
+     BlockMoveData does not; _HWPriv's FlushInstructionCache does it);
+   - after a PiDisk block read;
+   - after a SCSI read that goes over the wire to the motherboard.
+
+   The solo board's 5380 is modelled in the kernel and never goes over the wire, so a code resource
+   read from the boot disk into memory where other code had run relied on the System clearing the
+   cache in between. The end of each data-in transfer now moves the epoch (`psmac_board_solo.c`).
+   No crash was traced to this; it closes a gap the other boards never had.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

@@ -541,7 +541,7 @@ static void set_phase(int p)
            wire (psmac_bus.c, psmac_icache_epoch: RAM blocks are checked again on their next entry);
            this chip never goes over the wire, so it says so itself, once per transfer. Without it
            a code resource read from the disk where other code had run was executed as the old
-           translation, as long as nothing else cleared the cache in between (docs/08 item 51). */
+           translation, as long as nothing else cleared the cache in between (docs/08 item 53). */
         extern uint32_t psmac_icache_epoch;
         psmac_icache_epoch++;
     }
