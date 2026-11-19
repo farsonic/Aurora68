@@ -983,6 +983,115 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    older Systems subtracts one the same way); HWCfgFlags ($B22) $FC00 has the FPU bit. Speedometer:
    "MC68030, MC68882, MC68030 MMU". The user's "020" came from 0.7.
 
+49. **Both network cards on one slot-9 card: the Pi 3's wired port, Riptide on two interfaces
+   (19 November).** The baseline first, confirmed by the user on the real Pi 3B (solo board, a
+   test build of e5ff17d): 1920 by 1200 works, and the WiFi works on the Mac with the wired card
+   ($81) hidden. The user then asked for both: "get both wifi and ethernet going and have these
+   both active as usable interfaces", on a Pi 3B, a 3B+ and a Pi 4 from one SD card.
+
+   *The Pi 3's wired port.* A Pi 3B's RJ45 socket is a LAN9514: a USB hub (the one the HID host
+   already enumerates, address 1) whose port 1 is an Ethernet function with the LAN9512's register
+   set (USB 0424:ec00). A 3B+ has a LAN7515: a hub, a second hub on its port 1, and the LAN7800
+   (0424:7800) on that one's port 1. `src/psmac/psmac_usbnet.c` (new, MPL-2.0, written from the
+   Microchip datasheets; Linux's smsc95xx and lan78xx were read for register names and nothing
+   copied) drives both, plus a USB CDC-ECM device, which is what QEMU's `usb-net` is:
+   - It shares the DWC2 with the keyboard and mouse. Channel 0 stays psmac_usb.c's; the chips'
+     registers (vendor requests $A0/$A1) go through the same `frf_dwc2_pio_packet` from the same
+     core-3 loop. Bulk data uses channels 1 (in) and 2 (out) by DMA, started on one turn of the
+     loop and looked at on a later one, so nothing waits on the bus. The chips are set to answer an
+     empty bulk-in with a zero-length packet (HW_CFG/USB_CFG0 BIR clear), one frame per transfer
+     (MEF and burst cap off); the receive buffer is 16 KB and the parser takes several frames per
+     transfer anyway (`usbnet_frame.c`, portable, 53 native checks in `make -C mac check`:
+     framing of both chips, the multicast hash bits checked against an independent CRC, the PHY
+     decoding, the filter).
+   - Every wait (lite reset, the PHY's reset, autonegotiation) is a state with a deadline; the
+     link is polled every 500 ms with BMSR read in two halves on consecutive turns, so a turn does
+     one control transfer for it. When the frames for the Mac's 16 receive slots back up, the chip
+     is simply not read until a slot is free (its FIFO holds the rest), as GENET's ring does.
+   - A fresh HID enumeration resets the root port and the chip with it: psmac_usb.c now calls
+     `psmac_usbnet_bus_reset` first and moves a bus generation on afterwards; the chip is found
+     and set up again, and the Mac sees the link go down and up.
+   - The multicast filter: the board protocol carries only "promiscuous" and "all multicast"
+     (the Mac drivers ask for all multicast when any group is registered), so the hash tables are
+     all ones or empty; the hash code exists for when the protocol learns the list.
+   - MAC address: the Pi's own, from the firmware (GET_BOARD_MAC_ADDRESS), else the device tree.
+   The board decides, from the device tree before the 68k starts (`psmac_board_wired`: ethernet0's
+   compatible, else the model): GENET (Pi 4, 400, CM4) stays alice_net.c's, the LAN9514 and LAN7800
+   are this file's, the 3A+ and Zero 2 W have none, and only there (or with `eth=off`) is $81 left
+   out of the declaration ROM; e5ff17d's hiding is the exception now. A chip that is then not found
+   makes unit 1 report kind 0, so the Mac's wired driver fails its Open as with `eth=off`. The 3B+'s
+   inner hub is enumerated by this file (address 20), since Alice68's HID host goes one hub deep;
+   keyboards on that inner hub's other ports remain unseen, as before.
+
+   *Two drivers, one interrupt flag.* Both network drivers share slot 9's interrupt and the
+   network board's single irq flag. Each driver's slot handler cleared the flag and answered "mine"
+   if it had been set, so with both open the wired driver took the WiFi's interrupts and the WiFi's
+   frames waited for its VBL task, a quarter of a second. mac/enet.s now claims only for frames it
+   took from its own ring, or when the other unit's ring is empty (a command or a state change);
+   with frames waiting for the other driver it puts the flag back and answers 0. It also answers
+   csLinkStatus (230, its own Control call: link, speed, 'A68L') for Riptide's failover.
+   `tools/mac/check_offsets.py` now skips the WiFi branch of enet.s, whose unit-0 offsets had made
+   `make -C mac check` fail since the WiFi driver was added.
+
+   *Riptide on two interfaces* (Riptide's `mac-port` branch, its docs/MAC.md "Several cards"):
+   every catNetwork/typeEtherNet sResource is listed (SGetTypeSRsrc with fAll, SReadDrvrName for its
+   name) and opened with OpenSlot on its slot and id: two refnums, two protocol tables (one handler
+   entry point per card in drvr.S), two rings. riptide.conf names cards by kind, id or place:
+   `interface en0 device=.ENET card=ethernet`, `interface en1 device=.ENET slot=9 id=0x83`. DHCP's
+   routes take the interface's metric (wired 10, WiFi 20); the core keeps the same default route
+   through two interfaces; a link reported down stops an interface being used.
+
+   *What the testbed showed.* Run 1, QEMU with a `usb-hub`, a `usb-kbd` and `usb-net` (slirp
+   behind it) and the simulated WiFi on a second pinet peer (`PINET_NET=69`): "[ETH] CDC-ECM found
+   at USB address 3 (0525:a4a2), bulk endpoints in 2 out 2, 64-byte packets", the keyboard polled
+   beside it, and on the Mac "en0: 52:54:00:12:34:56 on .Network_EtherNet_PiStorm slot 9 id $81
+   (refnum -53, metric 10)", "en1: 02:50:53:57:49:46 on .Network_WiFi_PiStorm slot 9 id $83
+   (refnum -54, metric 20)", DHCP bound on both (10.0.2.15 through the USB bulk path from slirp,
+   192.168.69.2 from the WiFi's peer), pings out of each, two default routes with metrics 10 and 20
+   (`docs/img/system71-riptide-two-cards-usbnet.png`). The HID host's retries (no mouse) reset the
+   bus twice; the first try of this run stopped QEMU itself: its DWC2 model keeps retrying a NAKed
+   bulk-in after the channel is disabled and asserts when the address has gone with the reset, so
+   the bus-reset hook now gives the channel one last SETUP that ends at once. After that the chip
+   was found again each time. Run 2, the file bridge as the wired port and the simulated WiFi, both
+   peers answering pings to anywhere (`PINET_INTERNET=1`), the wired cable pulled at 160 s and put
+   back at 200 s (`mac.netdown=160,200`, new): a ping to 10.9.9.9 running throughout went out of en0,
+   then from the next second out of en1 ("en0: link down (the next route takes over)", "MacTCP's
+   address is now en1's"), then back out of en0 when the link returned, DHCP confirming the lease;
+   of the 309 echoes 124 went wired, 40 over the WiFi and 144 wired again; one was lost, the one
+   sent in the second the cable came out (`docs/img/system71-riptide-failback-wired.png`). An
+   earlier run with a 100-second outage ended in a system error a moment after the link came back;
+   the shorter run did not repeat it, and the cause is not known yet.
+
+   *The WiFi's 80 ms pings.* The user's Pi 3B at 1920 by 1200 pinged its router over the WiFi in
+   70 to 86 ms (IPv4 and IPv6), where a home network answers in a few. The testbed's file bridge
+   answers within a tick, so the Mac's side is not it. Every echo through either unit is now timed
+   in the kernel (`psmac_netprobe.c`): "[NET] echo wifi seq N: took->out .. us, out->back .. us,
+   back->mac .. us", and every heartbeat says which part of the service loop's turn took longest
+   ("[PSMAC]   service loop: N turns/5 s, longest: mailbox, card, network, USB, display"). The likely
+   culprit is the loop itself: the WiFi thread runs once per turn and yields during every SDIO wait
+   longer than 200 microseconds and while it wakes a sleeping chip (2.5 ms), and at 1920 by 1200 in
+   millions of colours one turn converted the whole picture, 9 MB read, written and flushed, some
+   20 ms, on every other 60 Hz tick. The picture is now converted a band of 128 K pixels per turn (a
+   millisecond or so on a Pi 3), still at most 30 frames a second. In QEMU the probe showed the
+   kernel's part of an echo at 0.5 to 12 ms (TCG timing) on both paths. The real numbers can only
+   come from the Pi: the [NET] echo lines and the service-loop line.
+
+   *One card for every board.* The kernel takes the WiFi firmware by the chip's id (and, new, the
+   Zero 2 W's own 43436 files by the board) and the Bluetooth firmware by the board (BCM43430A1 on a
+   3B, BCM43430B0 on a Zero 2 W, BCM4345C5 on a 400 or CM4, else BCM4345C0), so one container serves
+   all of them; `tools/get-firmware.sh` (shipped in the release) fetches the Pi's boot files and
+   every board's WiFi and Bluetooth firmware at pinned commits, checks each SHA-256, and prints the
+   make-container.py line. The card writer stays Pi 3 only (a Pi 4 writes nothing back, by design
+   until EMMC2 is supported), and Bluetooth pairings do not move between boards.
+
+   *Not verified:* the LAN9514 and LAN7800 themselves, on a real Pi 3B and 3B+ (QEMU has neither:
+   its raspi3b has no LAN9514, and it has no Pi 4 machine, so the GENET-plus-WiFi Pi 4 was reviewed
+   and built, not run); the lan78xx path has not met hardware or an emulation at all. The log lines
+   to look for on the Pi: "[ETH] wired port: LAN9514 (smsc95xx) on the USB bus; MAC ...", "[ETH]
+   LAN9514 found at USB address 2 (0424:ec00), chip id ec00 rev ...", "[ETH] link up, 100 Mbit/s full
+   duplex" (or "no link: is the cable in?"), and every 15 s "[ETH]   LAN9514: running, link 100 full,
+   rx N frames ... tx N ...".
+
 50. **Booting fast: the Pi as the SE's processor (19 November).** The user: "when this is dropped
    into a Mac SE with this acting as the CPU it needs to boot super fast to be ready for the Mac."
    From the moment the SE is switched on nothing happens on it until the Pi's firmware has read its

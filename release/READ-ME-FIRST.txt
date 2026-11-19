@@ -28,6 +28,9 @@ What is in the zip
   aurora68-wifionly.declrom   the WiFi as the only network card (MacTCP then takes the WiFi)
   aurora68-wifi.declrom  the screen with the WiFi as the only network card, for a Pi 3 alone; and
   aurora68-wifi-WxH.declrom   the same for each larger screen size
+  get-firmware.sh        fetches every third-party file the card needs (the Pi's boot files, the
+                         WiFi and Bluetooth firmware for every board), checks each one, and prints
+                         the make-container.py line ("Setting up the SD card", step 2)
   make-container.py      builds aurora68.cpio from your ROM, the declaration ROM and firmware,
   patches/               and patches a stock IIci ROM on the way with the byte delta in patches/
                          (new in 0.3; 0.1 and 0.2 did not, which left System 7.1 to an occasional
@@ -44,7 +47,20 @@ What is in the zip
 Setting up the SD card (a Pi 3B in an SE)
 -----------------------------------------
   1. Format a microSD card as one FAT32 partition (any size from 1 GB).
-  2. Put the Raspberry Pi firmware on it. From a terminal in the card's root folder:
+  2. Put the Raspberry Pi firmware on it, and fetch the WiFi and Bluetooth firmware. The easy
+     way: copy get-firmware.sh from this zip to the card's root folder and, from a terminal there
+     (macOS or Linux; on Windows use WSL or the manual way below):
+
+        sh get-firmware.sh
+
+     It downloads the Pi's boot files into the card's root (for a Pi 3B, 3B+, Zero 2 W and Pi 4
+     alike) and the WiFi and Bluetooth firmware of every board into wifi-firmware/, each from a
+     fixed version and checked against its SHA-256, refuses anything too small to be firmware,
+     and prints the make-container.py line for step 5. Run it again and it keeps what is already
+     right. With your ROM beside it, "sh get-firmware.sh --container MacIIci_368CADFE.rom"
+     makes aurora68.cpio as well. Nothing of Apple's is downloaded: the ROM and the system
+     software are yours to supply. Then skip step 4.
+     The manual way, from a terminal in the card's root folder:
 
         curl -fL --remote-name-all \
           https://raw.githubusercontent.com/raspberrypi/firmware/master/boot/bootcode.bin \
@@ -62,7 +78,8 @@ Setting up the SD card (a Pi 3B in an SE)
      puts the PL011 serial port, where the kernel logs, on the header's GPIO 14/15.
   3. Copy everything from this zip to the card's root folder (the Mac folder can stay on your
      PC; its files go to the Macintosh, not the Pi).
-  4. Get Broadcom's firmware for the Pi's WiFi (and Bluetooth, for later). In the same folder:
+  4. (Not needed after get-firmware.sh.) Get Broadcom's firmware for the Pi's WiFi (and
+     Bluetooth, for later). In the same folder:
 
      Pi 3B (BCM43438):
         curl -fL --remote-name-all \
@@ -154,11 +171,12 @@ the clock chip, the ADB transceiver (no keyboard or mouse yet), the SCC, the flo
      the log shows until the Mac's video driver takes the screen, then the Mac does). Add the
      wifi.ssid= / wifi.psk= / wifi.country= words if you like, and mac.screen=WxH for a bigger
      screen with the matching declaration ROM in the container.
-     A Pi 3 at a bigger screen with the WiFi: the Pi 3's wired Ethernet is not driven, and
-     MacTCP and Riptide take the first network card they find. The kernel now takes the wired
-     card out of the declaration ROM by itself on a Pi with no working wired Ethernet (every
-     Pi 3, the Zero 2 W, or eth=off), so the ordinary declaration ROM of the screen's size will
-     do; the WiFi-only ones (aurora68-wifi-WxH.declrom) say the same thing in the file. For a
+     A Pi 3 at a bigger screen with the WiFi: the kernel now drives the Pi 3B's and 3B+'s wired
+     port too, so the Mac gets both cards ("One card for a Pi 3 and a Pi 4" below); MacTCP takes
+     the first, the wired one. On a Pi with no wired port (3A+, Zero 2 W) or with eth=off the
+     kernel takes the wired card out of the declaration ROM by itself, so the ordinary
+     declaration ROM of the screen's size will do; the WiFi-only ones (aurora68-wifi-WxH.declrom)
+     say the same thing in the file. For a
      1080p monitor (hdmi_group=2, hdmi_mode=82 in config.txt, mac.screen=1920x1080 in
      cmdline.txt):
 
@@ -229,6 +247,49 @@ The first line, "kernel entry", is the firmware's part. Please send those lines 
 The ROM's own start is shorter too: the IIci ROM's memory test (the Pi's memory cannot fail as
 SIMMs do), its silent startup chime and its quarter-second wait at every empty SCSI ID are cut
 short by the ROM patch the kernel and make-container.py apply.
+
+One card for a Pi 3 and a Pi 4 (new in the next release)
+--------------------------------------------------------
+The same SD card boots a Pi 3B, a 3B+ and a Pi 4 (or 400): one kernel8.img picks its drivers by
+board when it starts. Each board gets both its network cards on the Mac, the wired port and the
+WiFi, side by side on the one slot-9 card:
+    Pi 3B       wired: the LAN9514 on the Pi's USB    WiFi: BCM43438 (the *43430* files)
+    Pi 3B+      wired: the LAN7800 on the Pi's USB    WiFi: BCM43455
+    Pi 4, 400   wired: the Pi 4's own Gigabit (GENET) WiFi: BCM43455
+    3A+, Zero 2 W   no wired port: the WiFi is the only card
+What the card needs (get-firmware.sh fetches all of it): bootcode.bin, start.elf and fixup.dat
+(the Pi 3's firmware), start4.elf and fixup4.dat (the Pi 4's), the device trees
+bcm2710-rpi-3-b.dtb, bcm2710-rpi-3-b-plus.dtb, bcm2710-rpi-zero-2-w.dtb, bcm2711-rpi-4-b.dtb and
+bcm2711-rpi-400.dtb, and config.txt with its [pi3] and [pi4] sections (this release's works for
+both). The container holds every board's WiFi and Bluetooth firmware; the kernel takes the WiFi
+set by the chip's id and the Bluetooth one by the board:
+
+        python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom aurora68-1920x1200.declrom \
+          wifi-firmware/cyfmac43430-sdio.bin wifi-firmware/brcmfmac43430-sdio.txt \
+          wifi-firmware/cyfmac43430-sdio.clm_blob wifi-firmware/BCM43430A1.hcd \
+          wifi-firmware/cyfmac43455-sdio-standard.bin wifi-firmware/brcmfmac43455-sdio.txt \
+          wifi-firmware/cyfmac43455-sdio.clm_blob wifi-firmware/BCM4345C0.hcd wifi-firmware/BCM4345C5.hcd
+
+(the declaration ROM of your screen size: one with both network cards, not a -wifi- one). On the
+Mac, Riptide uses both cards, en0 the wired one and en1 the WiFi, with DHCP on each and the
+default route through the wired one while its cable is in (Riptide's own read-me: "Several
+cards"). MacTCP can use one card only, the first: the wired one where there is one. In the
+Network control panel Lagoon EtherTalk shows one icon per card, "Lagoon (9)" and "Lagoon Wi-Fi (9)".
+Notes:
+  - Bluetooth pairings belong to the Pi's Bluetooth chip as much as to the keyboard: one paired
+    on the Pi 3 must be paired again on the Pi 4. pairings.txt keeps one key per device, so after
+    moving the card back the Pi 3 may need the device paired once more too.
+  - The card writer (pairings.txt, and the Mac's changes written back into the disk image on the
+    card) works on a Pi 3 only so far: on a Pi 4 the kernel says "the Pi 4's card controller is not
+    supported yet: nothing saved" and writes nothing. The image keeps the Pi 3's last state.
+  - A Pi 4 does not fit the classic PiStorm board in the SE: a Pi 4 means the bench (mac.board=solo)
+    or a different adapter.
+  - The wired port on a Pi 3B or 3B+ has only been tested in the project's emulator (with a
+    stand-in USB network device); the first real test is yours. The log lines to look for are
+    "[ETH] LAN9514 found at USB address 2", "[ETH] MAC ...", "[ETH] link up, 100 Mbit/s full
+    duplex", and every 15 seconds "[ETH]   LAN9514: running, link 100 full, rx ... tx ...".
+    If the chip is not found the Mac's wired card refuses to open and the WiFi carries on;
+    eth=off in cmdline.txt hides the wired card altogether.
 
 What to expect, and what the log says
 -------------------------------------

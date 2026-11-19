@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- **Both network cards on every board that has two: the Pi 3's wired port is driven.** The Pi 3B's
+  RJ45 socket is a LAN9514 on the Pi's own USB bus and the 3B+'s a LAN7800 behind two USB hubs;
+  the kernel now drives both (beside the USB keyboard and mouse, on the same bus), as the wired
+  card of the slot-9 card, so the Mac has its wired card ($81) and its WiFi ($83) side by side
+  on a Pi 3B, a 3B+ and a Pi 4. Only a board with no wired port (3A+, Zero 2 W) or `eth=off`
+  loses the wired card. Riptide uses both, en0 and en1, with DHCP on each and the default route
+  through the wired one while its link is up, moving to the WiFi when the cable is pulled; MacTCP
+  uses the first card, the wired one; the Network control panel shows one Lagoon EtherTalk icon
+  per card. **Not yet tested on a real Pi 3B or 3B+**: the USB network driver was proved in the
+  emulator against QEMU's USB network device, not against the LAN9514 or LAN7800 themselves. The
+  log lines to send: `[ETH] LAN9514 found at USB address 2`, `[ETH] link up, ...`, and the
+  `[ETH]   LAN9514: running ...` line every 15 seconds. If the chip is not found, the Mac's wired
+  card refuses to open and the WiFi carries on; `eth=off` hides the card as before.
+- **Two drivers, one interrupt.** With both network cards open the wired driver used to take the
+  WiFi's interrupts, and the WiFi's frames waited a quarter of a second for its timer: replace
+  every declaration ROM along with `kernel8.img`.
+- **One SD card for a Pi 3 and a Pi 4.** `get-firmware.sh` (new in the zip) fetches the Pi's boot
+  files for every board and every board's WiFi and Bluetooth firmware, checks each against its
+  SHA-256, and prints the `make-container.py` line; the kernel takes the WiFi firmware by the
+  chip's id and the Bluetooth firmware by the board, so one container serves a 3B, a 3B+ and a 4.
+  Bluetooth pairings do not move between boards; the card writer is the Pi 3's only (on a Pi 4
+  nothing is written back).
+- **Where a ping's time goes.** Every ICMP echo through either card is timed in the kernel log
+  (`[NET] echo wifi seq N: took->out ..., out->back ..., back->mac ...`), and the heartbeat says
+  which part of the service loop took longest. The big screen's picture is now converted a band at
+  a time, a millisecond or so per turn of the loop, instead of 20 ms in one go at 1920 by 1200,
+  which held up the WiFi, the disk and the network board's interrupt (the 80 ms pings to the
+  router on the user's Pi 3B at 1920 by 1200).
+
 - **Booting faster.** From power-on to the Mac's first instruction, and from there to the Finder,
   is now much shorter (docs/08 item 50 has the timeline):
   - A disk image can sit on the card as a file of its own beside `aurora68.cpio` (`MyMac.hda`, or

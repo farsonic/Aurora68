@@ -21,7 +21,6 @@ gunzip -kf psmac-build/Emu68.img.gz
 # arm_64bit), as upstream Emu68's own Emu68-pistorm.gz on every Pi 3 PiStorm (docs/08 item 50)
 cp psmac-build/Emu68.img.gz "$OUT/kernel8.img"
 
-
 echo "== Macintosh side"
 make -C mac > /dev/null
 cp mac/build/psmac.declrom "$OUT/aurora68.declrom"
@@ -42,6 +41,7 @@ humount
 echo "== boot files, notes, licences"
 cp release/config.txt release/cmdline.txt release/READ-ME-FIRST.txt "$OUT/"
 cp tools/mkcontainer.py "$OUT/make-container.py"
+cp tools/get-firmware.sh "$OUT/get-firmware.sh"      # the Pi's boot files and every board's WiFi/Bluetooth firmware, fetched and checked
 mkdir -p "$OUT/patches"; cp rom/patches/iici-368CADFE.delta.json "$OUT/patches/"   # make-container.py patches a stock ROM with this (no assembler needed)
 cp tools/rompatch.py "$OUT/rompatch.py"; cp rom/patches/iici.json "$OUT/patches/"     # the source of that delta, for the record
 cp RELEASE-NOTES.md "$OUT/"
@@ -49,6 +49,6 @@ cp emu68/LICENSE "$OUT/LICENSES/Emu68-and-Aurora68-MPL-2.0.txt"
 cp emu68/src/alice/../../COPYING "$OUT/LICENSES/Alice68-modules-GPL-2.0.txt" 2>/dev/null || \
   curl -sSf https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt -o "$OUT/LICENSES/Alice68-modules-GPL-2.0.txt" 2>/dev/null || \
   echo "The Alice68 service modules (emu68/src/alice) are GPL-2.0-only; see https://www.gnu.org/licenses/old-licenses/gpl-2.0.html" > "$OUT/LICENSES/Alice68-modules-GPL-2.0.txt"
-(cd "$OUT" && sha256sum kernel8.img *.declrom *.txt *.py Mac/* > SHA256SUMS)
+(cd "$OUT" && sha256sum kernel8.img *.declrom *.txt *.py *.sh Mac/* > SHA256SUMS)
 (cd dist && zip -qr "Aurora68-$V.zip" "Aurora68-$V")
 ls -la "dist/Aurora68-$V.zip"; unzip -l "dist/Aurora68-$V.zip" | tail -1

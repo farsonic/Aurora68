@@ -46,6 +46,10 @@ the next piece of work, so on hardware this build boots the Pi and waits (see
    ```
    `aurora68-512x342.declrom` is the card's declaration ROM for the SE's screen; the kernel takes
    the one whose name ends in the screen size in use, so both can travel.
+   The quickest way to the rest: `sh get-firmware.sh` (in the zip) from the card's root fetches the
+   Pi's boot files for a 3B, 3B+, Zero 2 W and 4 alike and every board's WiFi and Bluetooth
+   firmware into `wifi-firmware/`, checks each file's SHA-256, and prints the `make-container.py`
+   line with all of them: one card and one container then boot a Pi 3 and a Pi 4. By hand:
    For WiFi and Bluetooth on a Pi with the Broadcom CYW43455 (Pi 3B+, 3A+, 4, Zero 2 W, CM4),
    fetch Broadcom's firmware (the same files and versions Alice68 uses: WiFi firmware
    7.45.241 from Raspberry Pi's `bullseye` branch, the Bluetooth patch from `bluez-firmware`)
@@ -116,12 +120,12 @@ One line, options separated by spaces, no comments:
 | `mac.ram=128` | Macintosh memory in MB. Default: what the Pi can spare after the kernel's 192 MB, up to 128, which is all the IIci ROM sizes (two banks of 64). A 512 MB Pi Zero 2 W and an 8 GB Pi 4 both get 128 |
 | `enable_cache` | Emu68's instruction cache; leave it on |
 | `wifi.ssid=NAME wifi.psk=PASSWORD wifi.country=GB` | join a WiFi network at boot |
-| `wifi=off`, `bt=off`, `eth=off` | leave a radio or the Ethernet off |
+| `wifi=off`, `bt=off`, `eth=off` | leave a radio or the Ethernet off (`eth=off` also takes the wired card out of the Mac's slot 9) |
 | `net.oui=off` | keep the Pi's own MAC addresses (default: Commodore's prefix, as Alice68) |
 | `mac.screen=1024x768` | the second screen's size in pixels (default 640x480; 512 to 1920 by 342 to 1200, every size up to 1920x1200 in millions of colours). Set `hdmi_mode` to match and use the declaration ROM of that size (`aurora68-1920x1200.declrom` for `mac.screen=1920x1200`, `hdmi_mode=69`) |
 | `mac.console=hdmi` | keep the kernel's log on the HDMI screen for the whole run (the same text as the serial line); without it the log shows until the Macintosh's video driver takes the screen |
 | `mac.board=se` | the logic board the Pi sits in: `se` (the Macintosh SE: its chips behind the IIci ROM's addresses, docs/12), `solo` (no Macintosh: the kernel answers every chip and boots a disk image from the container, docs/12) or the default, the testbed's IIci |
-| `aurora68-wifi.declrom` (a file, not an option) | the declaration ROM with the screen, PiDisk, input and the WiFi network card but no wired Ethernet: MacTCP and Riptide take the first network card they find, so this was the one for a Pi whose wired Ethernet is not driven (every Pi 3, the Zero 2 W, the bench). The kernel now leaves the wired card out of any declaration ROM by itself when the Pi has no GENET (the Pi 4's Ethernet) or `eth=off` is given, so the ordinary ones work on a Pi 3 too. `aurora68-wifi-WxH.declrom` is the WiFi-only one for a larger screen. Put only one declaration ROM of a size in the container: with both `aurora68-1920x1080` and `aurora68-wifi-1920x1080` the kernel takes whichever comes last |
+| `aurora68-wifi.declrom` (a file, not an option) | the declaration ROM with the screen, PiDisk, input and the WiFi network card but no wired Ethernet: MacTCP and Riptide take the first network card they find, so this was the one for a Pi whose wired Ethernet is not driven (every Pi 3, the Zero 2 W, the bench). The kernel drives the Pi 3B's and 3B+'s wired ports now (both cards on the Mac), and leaves the wired card out of any declaration ROM by itself on a board with no wired port (3A+, Zero 2 W) or with `eth=off`, so the ordinary ones work everywhere. `aurora68-wifi-WxH.declrom` is the WiFi-only one for a larger screen. Put only one declaration ROM of a size in the container: with both `aurora68-1920x1080` and `aurora68-wifi-1920x1080` the kernel takes whichever comes last |
 | `bt=off` | leave the Bluetooth chip off. Without it the kernel starts Bluetooth: on a Pi 3 the log then moves from the PL011 to the mini UART on the same header pins |
 | `bt.pair=1` | pair with the first keyboard or mouse a scan finds in pairing mode, and look again every 20 s until one is connected (`bt.pair=NAME` takes only a device whose name contains NAME). The log then prints the `bt.dev=` word that makes the pairing permanent |
 | `bt.dev=ADDR:KEY:KIND...` | a paired device, as the log printed it after `bt.pair=`, so it reconnects at every boot without pairing again |
@@ -168,8 +172,10 @@ takes a Zero 2 W, 3A+, 3B or 3B+; a Pi 4 needs a different board. `docs/12-hardw
 is the plan and what is known about the fit, the CPLD firmware (stock first; Frimples'
 DirectSocket E-clock build if the VIA needs it), and what a Pi 3 changes against the Pi 4 the
 network modules were written for: WiFi works the same way (the firmware differs between a 3B
-and a 3B+), there is no Gigabit Ethernet, Bluetooth shares the Pi 3's one PL011 with the
-console, and USB keyboards need a DWC2 driver that does not exist yet. The SE's own keyboard and
+and a 3B+), the wired port is a USB chip (the 3B's LAN9514, the 3B+'s LAN7800, driven since
+19 November by `psmac_usbnet.c` over the DWC2 host that also serves USB keyboards and mice;
+docs/08 item 49) instead of the Pi 4's GENET, and Bluetooth shares the Pi 3's one PL011 with the
+console. The SE's own keyboard and
 mouse work regardless. The kernel's **board layer** (`mac.board=se`) already runs the IIci ROM
 against a Macintosh SE's logic board in the testbed, MAME's `macse` with the bridge CPU:
 `docs/img/system71-finder-on-macse.png` is System 7.1's Finder on the SE's own 512 by 342

@@ -150,15 +150,62 @@ ROM=rom/patched/MacIIci_psmac.rom HD=images/chd/sys710pi.chd tools/run-fullstack
 python3 tools/pinet.py /tmp/psmac-wifi peer        # in another shell
 ```
 With both sResources present MacTCP takes the Ethernet; choosing the WiFi from the control panel's
-list (its interface-name string, `+48` in `'ipln'`) is not decoded yet. Since 19 November the
-kernel settles it on a Pi that has no working wired Ethernet: before the 68k starts it takes
-sResource $81 out of the declaration ROM in RAM (the directory entries after it move up, the CRC
-is made again; `declrom_drop` in psmac_bus.c) when the device tree has no GENET (every Pi 3 and
-the Zero 2 W; the GENET is the Pi 4's), or `eth=off` is given. The testbed's file bridge
-(`mac.net=`) counts as a working wired card. The user's Pi 3B at 1920 by 1080 had Riptide bound
-to the dead card, pinging nobody; with the card hidden the Slot Manager's first Ethernet-type
-sResource is the WiFi's, whatever the declaration ROM's size. Lagoon EtherTalk with $81 still in
-parameter RAM ($E0) fails to open it and takes the first card it finds, the WiFi.
+list (its interface-name string, `+48` in `'ipln'`) is not decoded yet. On 19 November the
+kernel settled it on a Pi without a working wired port by taking sResource $81 out of the
+declaration ROM in RAM before the 68k starts (`declrom_drop` in psmac_bus.c). Later the same day
+the Pi 3B's LAN9514 and the 3B+'s LAN7800 are driven (docs/08 item 49), and hiding the card is the
+exception again: only a board with no wired port at all (3A+, Zero 2 W) or `eth=off` loses $81.
+
+### Two network cards on one NuBus card (19 November)
+
+The slot-9 card carries both network functions side by side, sResource $81 (the wired port,
+`.Network_EtherNet_PiStorm`, Alice68 unit 1) and $83 (the WiFi, `.Network_WiFi_PiStorm`, unit 0),
+beside PiDisk, input and video. Two drivers with two names, so two unit-table entries and two
+refnums; each has its own protocol table and its own rings on the network board. What each board
+gives unit 1, decided from the device tree before the 68k starts:
+
+| Board | Wired port (unit 1, $81) | WiFi (unit 0, $83) | Bluetooth firmware |
+|---|---|---|---|
+| Pi 3B (and 2B v1.2) | LAN9514 on USB, `psmac_usbnet.c` (smsc95xx) | BCM43438, files `*43430*` | BCM43430A1.hcd |
+| Pi 3B+ | LAN7800 on USB behind two hubs, `psmac_usbnet.c` (lan78xx) | BCM43455 | BCM4345C0.hcd |
+| Pi 3A+ | none: $81 left out | BCM43455 | BCM4345C0.hcd |
+| Zero 2 W | none: $81 left out | BCM43436 (answers as a 43430; `brcmfmac43436-sdio.*`) | BCM43430B0.hcd |
+| Pi 4B | GENET, Alice68's `alice_net.c` | BCM43455 | BCM4345C0.hcd |
+| Pi 400, CM4 | GENET | BCM43455/43456 | BCM4345C5.hcd |
+| testbed (QEMU) | the file bridge with `mac.net=`, else QEMU's `usb-net` (CDC-ECM) through `psmac_usbnet.c` | the simulated radio with `mac.wifisim=` | |
+
+A Pi 4 does not fit the classic PiStorm in the SE: Pi 4 means the solo bench, or a different
+adapter.
+
+**Interrupts.** Both drivers share slot 9's interrupt with PiDisk, input and video, and the
+network board has one irq flag for both units. Until then each driver's slot handler
+cleared the flag and answered "mine" whenever it had been set, so with both cards open the wired
+driver took the WiFi's interrupts and the WiFi's frames waited for its VBL task (a quarter of a
+second). Now (mac/enet.s, `slot_int` and the end of `rx_body`) a handler claims the interrupt only
+for frames it took from its own ring, or when nothing waits in the other unit's ring (a command
+finished: somebody must clear the flag); with frames waiting for the other driver it puts the flag
+back and answers 0, and the ROM goes on to the other handler. Frames left behind by a driver that
+closed do not count (the other unit's `rx_on` is checked).
+
+**Link state.** The .ENET interface has no link state, so the drivers answer a Control call of
+their own, csLinkStatus (230): csParam = link (word), speed in Mbit/s (word), 'A68L'. Riptide asks
+it once a second and moves its default route to the WiFi while the wired link is down
+(Riptide's docs/MAC.md, "Several cards").
+
+**Who uses which card.**
+- Riptide: both, as en0 and en1 (its docs/MAC.md); the default route prefers the wired card while
+  its link is up.
+- MacTCP: one card, the first Ethernet-type sResource of the slot, so the wired port; the control
+  panel's choice of the second is not decoded (above). On a board without the wired port it is the
+  WiFi.
+- AppleTalk (Lagoon EtherTalk): one card, chosen in the Network control panel, which shows one icon
+  per card, "Lagoon (9)" and "Lagoon Wi-Fi (9)"; parameter RAM ($E0) holds the slot and sResource
+  id. If the card in parameter RAM does not open, Lagoon takes the first card that does (since 20
+  November it walks the list instead of retrying the first card).
+- If a Pi 3B's network chip is not found on the USB bus, unit 1 reports no unit (kind 0) and
+  the wired driver's Open fails, as with `eth=off`: Riptide carries on with the WiFi, Lagoon
+  falls back to it. MacTCP, which takes only the first card, then has no network: `eth=off` in
+  cmdline.txt hides the card altogether and gives back the behaviour before (the WiFi as the only card).
 
 ## The WiFi menu
 `WiFi Menu` (mac/wifimenu, an extension: drop it on the System Folder) puts a WiFi icon at the right

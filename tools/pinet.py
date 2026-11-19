@@ -39,7 +39,11 @@ base = sys.argv[1]; mode = sys.argv[2] if len(sys.argv) > 2 else 'peer'
 tx_path, rx_path = base + '.tx', base + '.rx'
 open(rx_path, 'ab').close(); open(tx_path, 'ab').close()
 rx = open(rx_path, 'ab')
-PEER_MAC = bytes.fromhex('020000006801'); PEER_IP = bytes([192, 168, 68, 1]); MAC_IP = bytes([192, 168, 68, 2])
+# PINET_NET=N: the peer is 192.168.N.1 (02:00:00:00:N:01 in hex digits) and hands out 192.168.N.2, so
+# two peers (the wired file pair and the simulated WiFi's) can be two networks; default 68
+NET = int(os.environ.get('PINET_NET', '68'))
+PEER_MAC = bytes.fromhex('0200000068%02x' % (NET - 67)) if NET != 68 else bytes.fromhex('020000006801')
+PEER_IP = bytes([192, 168, NET, 1]); MAC_IP = bytes([192, 168, NET, 2])
 PEER_LL6 = bytes.fromhex('fe80000000000000000000fffe006801')      # EUI-64 of PEER_MAC
 PEER_GL6 = bytes.fromhex('fd680000000000000000000000000001')
 PREFIX6 = bytes.fromhex('fd680000000000000000000000000000')
@@ -266,14 +270,17 @@ def peer(frame):
         return 'ARP (ignored)'
     if etype == 0x0800 and len(frame) >= 34:                 # IPv4
         ihl = (frame[14] & 15) * 4; proto = frame[23]; sip, dip = frame[26:30], frame[30:34]
-        if dip != PEER_IP and dip != b'\xff\xff\xff\xff': return 'IP not for us'
+        # PINET_INTERNET=1: the peer is a router to everywhere, and answers an ICMP echo to any
+        # address (the testbed's way to see which interface a default route sends a ping out of)
+        internet = os.environ.get('PINET_INTERNET') == '1' and proto == 1 and dip[0] not in (127, 224, 255)
+        if dip != PEER_IP and dip != b'\xff\xff\xff\xff' and not internet: return 'IP not for us'
         payload = frame[14 + ihl:]
         if proto == 1 and payload[0] == 8:                   # ICMP echo
             icmp = b'\x00\x00' + b'\x00\x00' + payload[4:]
             icmp = icmp[:2] + struct.pack('>H', csum(icmp)) + icmp[4:]
-            ip = bytearray(frame[14:14 + ihl]); ip[12:16], ip[16:20] = PEER_IP, sip; ip[10:12] = b'\0\0'
+            ip = bytearray(frame[14:14 + ihl]); ip[12:16], ip[16:20] = dip, sip; ip[10:12] = b'\0\0'
             ip[10:12] = struct.pack('>H', csum(bytes(ip)))
-            send(src + PEER_MAC + b'\x08\x00' + bytes(ip) + icmp); return 'ICMP echo reply'
+            send(src + PEER_MAC + b'\x08\x00' + bytes(ip) + icmp); return 'ICMP echo reply' + ('' if dip == PEER_IP else ' (as the router, from %d.%d.%d.%d)' % tuple(dip))
         if proto == 17 and len(payload) >= 8:                # UDP echo on port 7, BOOTP on 67
             sport, dport, ulen = struct.unpack('>HHH', payload[0:6])
             if dport == 67 and len(payload) >= 8 + 236 and payload[8] == 1:
@@ -305,7 +312,7 @@ def peer(frame):
                 ip[2:4] = struct.pack('>H', ihl + len(udp))
                 ip[10:12] = struct.pack('>H', csum(bytes(ip)))
                 send(b'\xff' * 6 + PEER_MAC + b'\x08\x00' + bytes(ip) + udp)
-                return {0: 'BOOTP reply', 1: 'DHCP OFFER', 3: 'DHCP ACK'}.get(mtype, 'DHCP type %d answered' % mtype) + ' 192.168.68.2'
+                return {0: 'BOOTP reply', 1: 'DHCP OFFER', 3: 'DHCP ACK'}.get(mtype, 'DHCP type %d answered' % mtype) + ' 192.168.%d.2' % NET
             if dport == 53 and len(payload) >= 8 + 12:
                 return dns_answer(frame, src, sip, sport, payload[8:ulen])
             if dport == 7:

@@ -49,4 +49,7 @@ gpu_mem=64
 
 [pi4]
 gpu_mem=64
-# The Pi 4's USB (keyboards, mice through .PiInput) and Gigabit Ethernet are driven by the kernel.
+# The Pi 4's Gigabit Ethernet and WiFi are driven by the kernel (the Mac sees both cards). Its USB
+# ports (the VL805's xHCI) are not yet in the Macintosh build: Bluetooth keyboards and mice work.
+# The same card boots a Pi 3 and a Pi 4: start4.elf, fixup4.dat and bcm2711-rpi-4-b.dtb beside the
+# Pi 3's files (get-firmware.sh fetches them all).
