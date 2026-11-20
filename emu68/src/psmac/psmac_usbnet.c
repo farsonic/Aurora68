@@ -184,6 +184,13 @@ int psmac_board_wired(void)
     }
     return cached;
 }
+/* for psmac_usb.c: 1 when the board's own network chip is a device on its USB hub (the 3B's
+   LAN9514 and the 3B+'s LAN7515 sit on port 1), so an enumeration that saw one device saw that */
+int psmac_board_netchip_on_hub(void)
+{
+    int w = psmac_board_wired();
+    return w == WIRED_SMSC95XX || w == WIRED_LAN78XX;
+}
 /* the Bluetooth chip's firmware family, for bt_pi.c: 1 BCM43430A1 (3B), 2 BCM43430B0 (Zero 2 W),
    3 BCM4345C5 (400, CM4), 0 BCM4345C0 (3B+, 3A+, 4B, and anything else) */
 int psmac_board_bt_chip(void)

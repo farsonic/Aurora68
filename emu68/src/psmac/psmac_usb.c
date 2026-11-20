@@ -49,6 +49,7 @@
 const char *psmac_option(const char *key);
 int alice_mbox(uint32_t tag, uint32_t a, uint32_t b, uint32_t *out);
 void frf_native_usb_keyboard_force_release(void);
+int psmac_board_netchip_on_hub(void);
 
 /* frf_usb_native_hid.c's flags (alice_psmac.c has seen and buttons) */
 volatile uint8_t frf_usb_mouse_present;
@@ -288,8 +289,6 @@ static void enumerate(const char *why)
     struct frf_dwc2_state s;
     int rc;
     enumerations++;
-    frf_native_usb_keyboard_force_release();
-    psmac_usbnet_bus_reset();                   /* the network chip's bulk channels stop before the reset takes it */
     rc = frf_dwc2_port_reset(&ops, &s);
     if (rc) {
         kprintf("[USB] %s: root port rc=%d (HPRT %08x, connected %u)\n", why, rc, s.port_status, s.port_connected);
@@ -345,6 +344,38 @@ void psmac_usb_start(void)
     next_poll = now();
     next_check = now() + 2 * hz();
     __atomic_store_n(&usb_on, 1, __ATOMIC_RELEASE);     /* core 3's polls begin (start runs on core 1) */
+}
+
+/* Every later enumeration runs on core 1 as well. Until 20 November 2026 core 3 ran them itself,
+   in the middle of its loop: on the first SE boots (a Pi 3B with no keyboard or mouse) each retry
+   below held the loop for 360 ms (the root port's reset, the LAN9514's five ports powered, reset
+   and waited for), every six seconds of the boot's first half minute, and the mailbox, the card
+   and the network waited behind it. Now core 3 only stops its own users of the controller (the
+   key state, the network chip's bulk channels), takes usb_on down so that neither its polls nor
+   psmac_usbnet.c touch the controller, and hands the reason to core 1, which enumerates and puts
+   usb_on back. A Mac without USB input loses nothing; one with it has no keyboard or mouse for the
+   enumeration's second, as before. */
+static const char *volatile enum_why;
+static void enumerate_elsewhere(const char *why)       /* core 3 */
+{
+    frf_native_usb_keyboard_force_release();
+    psmac_usbnet_bus_reset();                   /* the network chip's bulk channels stop before the reset takes it */
+    __atomic_store_n(&usb_on, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&enum_why, why, __ATOMIC_RELEASE);
+    __asm__ volatile("dsb ish; sev" ::: "memory");
+}
+void __attribute__((noreturn)) psmac_usb_core1(void)  /* core 1, after psmac_usb_start, for ever */
+{
+    for (;;) {
+        const char *why;
+        while (!(why = __atomic_load_n(&enum_why, __ATOMIC_ACQUIRE)))
+            __asm__ volatile("wfe");
+        enumerate(why);
+        next_poll = now();
+        next_check = now() + 2 * hz();
+        __atomic_store_n(&enum_why, (const char *)0, __ATOMIC_RELAXED);
+        __atomic_store_n(&usb_on, 1, __ATOMIC_RELEASE);
+    }
 }
 
 /* control requests to the hub at address 1 (Alice68's enumeration gives the root device that
@@ -425,9 +456,14 @@ static int needs_retry(void)
         kprintf("[USB] a device stopped answering: enumerating again\n");
         return 1;
     }
-    /* an enumeration holds core 3 (the disk, the network) for about a second: four tries, six
-       seconds apart, in the boot's first half minute */
-    if ((!hid.have_keyboard || !hid.have_mouse) && retries < 12 && ++retries % 3 == 0)
+    /* four tries, six seconds apart, in the boot's first half minute, and only when a port of the
+       hub had a device on it that did not come out as the keyboard or the mouse: with nothing
+       plugged in (the first SE boots: "devices seen 1", the LAN9514's own network chip on its port
+       1) another enumeration finds nothing more, and each one resets the network chip as well */
+    unsigned seen = hid.root_hub_ports ? hid.ports_seen : (unsigned)root_connected;   /* no hub: the device on the root port */
+    unsigned others = hid.root_hub_ports ? (unsigned)psmac_board_netchip_on_hub() : 0;
+    if ((!hid.have_keyboard || !hid.have_mouse) && seen > hid.have_keyboard + hid.have_mouse + others
+        && retries < 12 && ++retries % 3 == 0)
         return 1;
     return 0;
 }
@@ -441,14 +477,12 @@ void psmac_usb_poll(void)
     if (t >= next_check) {
         next_check = t + 2 * hz();
         if (ports_changed()) {
-            enumerate("plug or unplug");
             retries = 0;
-            next_poll = now();
+            enumerate_elsewhere("plug or unplug");
             return;
         }
         if (needs_retry()) {
-            enumerate("retry");
-            next_poll = now();
+            enumerate_elsewhere("retry");
             return;
         }
     }

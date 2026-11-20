@@ -791,12 +791,14 @@ int psmac_slot_line_now(void)
 
 /* core 1: the USB controller's start, which takes about a second (power, reset, the first
    enumeration behind the hub), away from core 3's loop, whose mailbox, card and display services
-   the Mac needs from its first instruction; core 3 polls the devices once it is done */
+   the Mac needs from its first instruction; core 3 polls the devices once it is done. Then every
+   later enumeration (a plug, an unplug, a retry), for the same reason (psmac_usb.c) */
 void psmac_alice_core1(void)
 {
     while (!__atomic_load_n(&alice_ready, __ATOMIC_ACQUIRE)) __asm__ volatile("yield");
     { extern void psmac_usb_start(void); psmac_usb_start(); }
     psmac_boot_mark("core 1: USB started");
+    { extern void psmac_usb_core1(void); psmac_usb_core1(); }
 }
 
 /* the service loop's longest part-turns since the last heartbeat (ticks), and its turns */
