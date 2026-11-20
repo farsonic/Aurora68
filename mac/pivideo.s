@@ -20,13 +20,25 @@
 | Modes 128 to 133 are 1, 2, 4, 8, 16 and 32 bits; the depth, pitch and frame buffer address of each
 | come from the block's tables, which the Pi fills for the screen size in use (mac.screen=WxH or the
 | VideoCore's). Not here yet: gamma tables, the sPRAMInit record for a remembered depth.
+|
+| Assembled twice (20 November 2026). On the SE board the Mac has two screens (docs/10, "Two screens
+| on the SE"): the SE's own, the slot-9 card's, which this driver serves as before, and the HDMI
+| screen, a second card in slot $A whose driver is this same source assembled with --defsym
+| SCREEN2=1: another name (".Display_Video_PiHDMI"), the second display block (window + $59000,
+| psmb.h), its VBL queue that of slot $A, and "PiHDMI:" in front of its log lines. The slot $A card
+| is a declaration ROM and nothing more: the driver reaches the window at slot 9's addresses and
+| takes slot 9's interrupt, where each handler claims only its own block's tick.
 
 	.text
 	.globl	drvr_start
 
 	.equ	WIN32,		0xF9000000	| the slot window in 32-bit mode ...
 	.equ	WIN24,		0x00900000	| ... and in 24-bit mode, where slot 9 is $900000-$9FFFFF (the slot
-	.equ	OFF_DISP,	0x58000		| number sits in bits 20-23, not 24-27: $F9080000 is RAM there)
+	.ifdef	SCREEN2				| number sits in bits 20-23, not 24-27: $F9080000 is RAM there)
+	.equ	OFF_DISP,	0x59000		| the HDMI screen's block on the SE card (psmb.h, PSMB_OFF_DISPLAY2)
+	.else
+	.equ	OFF_DISP,	0x58000
+	.endif
 	.equ	OFF_FRAME,	0x80000
 	.equ	FRAME_SIZE,	0x80000
 	.equ	MMU32Bit,	0x0CB2
@@ -48,7 +60,12 @@
 	.equ	DISP_ENABLED,	1
 	.equ	DISP_GRAY,	2
 
-	.equ	SLOT,		9
+	.equ	SLOT,		9		| the slot whose interrupt the Pi raises (both screens' cards)
+	.ifdef	SCREEN2
+	.equ	VBL_SLOT,	10		| the slot whose VBL queue this screen's ticks run: its card's, $A
+	.else
+	.equ	VBL_SLOT,	9
+	.endif
 	.equ	ioTrap,		6
 	.equ	csCode,		26
 	.equ	csParam,	28
@@ -109,16 +126,31 @@ drvr_start:
 	.short	d_control-drvr_start
 	.short	d_status-drvr_start
 	.short	d_close-drvr_start
+	.ifdef	SCREEN2
+	.byte	21
+	.ascii	".Display_Video_PiHDMI"
+	.else
 	.byte	22
 	.ascii	".Display_Video_PiStorm"
+	.endif
 	.even
+
+| the name in front of every log line, so two drivers on one card can be told apart in the Pi's log
+	.macro	log_name
+	.ifdef	SCREEN2
+	.ascii	"PiHDMI: "
+	.else
+	.ascii	"PiVideo: "
+	.endif
+	.endm
 
 	.macro	log text
 	movem.l	%d0-%d1/%a0-%a1,-(%sp)
 	lea	9f(%pc),%a1
 	bsr	do_log
 	bra.s	8f
-9:	.ascii	"\text"
+9:	log_name
+	.ascii	"\text"
 	.byte	0
 	.even
 8:	movem.l	(%sp)+,%d0-%d1/%a0-%a1
@@ -128,7 +160,7 @@ drvr_start:
 d_open:
 	movem.l	%d1-%d7/%a0-%a4,-(%sp)
 	move.l	%a1,%a4			| DCE
-	log	"PiVideo: open"
+	log	"open"
 	tst.l	dCtlStorage(%a4)
 	bne	open_ok
 	bsr	disp
@@ -144,10 +176,6 @@ d_open:
 	move.w	#firstVidMode,G_MODE(%a2)
 	move.l	#1,D_DEPTH(%a3)
 	move.l	D_MODE_ROWBYTES(%a3),D_ROWBYTES(%a3)
-	move.l	#1,D_VBL_ENABLE(%a3)	| a video card's Open turns its VBL interrupts on (Designing Cards and
-	move.w	#1,G_INT(%a2)		| Drivers); cscSetInterrupt is how the system turns them off later. Without
-					| this the cursor never appears on the second screen: QuickDraw draws it
-					| from the screen's slot VBL task, which only _DoVBLTask from our handler runs.
 	| the one-bit table: 0 white, 1 black (QuickDraw's convention for indexed modes)
 	move.l	#0x00FFFFFF,D_CLUT(%a3)
 	clr.l	D_CLUT+4(%a3)
@@ -164,15 +192,21 @@ d_open:
 	.short	_SIntInstall
 	tst.w	%d0
 	bne.s	1f
-	log	"PiVideo: VBL handler installed"
-1:	move.l	#DISP_ENABLED,D_FLAGS(%a3)	| the Pi starts converting frames
-	log	"PiVideo: 640x480, 1 bit, frame buffer at window + $80000"
+	log	"VBL handler installed"
+1:	move.l	#1,D_VBL_ENABLE(%a3)	| a video card's Open turns its VBL interrupts on (Designing Cards and
+	move.w	#1,G_INT(%a2)		| Drivers); cscSetInterrupt is how the system turns them off later. Without
+					| this the cursor never appears on the second screen: QuickDraw draws it
+					| from the screen's slot VBL task, which only _DoVBLTask from our handler runs.
+					| Only once the handler is in: a tick before it raised slot 9's line with
+					| nobody to lower it (20 November 2026, docs/10)
+	move.l	#DISP_ENABLED,D_FLAGS(%a3)	| the Pi starts converting frames
+	log	"1 bit; the frame buffer and the size are the display block's"
 open_ok:
 	moveq	#noErr,%d0
 	movem.l	(%sp)+,%d1-%d7/%a0-%a4
 	rts
 open_fail:
-	log	"PiVideo: open failed (no display block)"
+	log	"open failed (no display block)"
 	moveq	#-1,%d0			| openErr
 	movem.l	(%sp)+,%d1-%d7/%a0-%a4
 	rts
@@ -249,9 +283,14 @@ c_setmode:
 	tst.w	csPage(%a1)
 	bne	c_param
 	lea	D_MODE_BASE(%a0),%a3
-	tst.l	(%a3,%d1.w*4)
+	move.l	(%a3,%d1.w*4),%d2
 	beq	c_param			| no such mode at this screen size
-	move.w	csMode(%a1),G_MODE(%a2)
+	tst.b	MMU32Bit
+	bne.s	1f
+	and.l	#0xFFF00000,%d2		| in 24-bit mode only the slot's megabyte is reachable: a mode in the big
+	cmp.l	#0xF9900000,%d2		| region ($90000000) would put QuickDraw's pixels on the exception vectors
+	bne	c_param			| (Monitors offers every mode the card has; 20 November 2026)
+1:	move.w	csMode(%a1),G_MODE(%a2)
 	moveq	#1,%d2
 	lsl.w	%d1,%d2			| depth 1, 2, 4, 8, 16, 32
 	move.l	%d2,D_DEPTH(%a0)
@@ -511,7 +550,7 @@ row_fill:
 	rts
 
 | ---- the slot interrupt handler: the card's VBL ----
-| A1 = sqParm (globals). Ours only when the Pi flagged a tick: clear it, run slot 9's VBL queue
+| A1 = sqParm (globals). Ours only when the Pi flagged a tick: clear it, run our card's VBL queue
 | (the cursor, SlotVInstall tasks), say so with D0 = 1.
 slot_int:
 	movem.l	%d1-%d2/%a0-%a2,-(%sp)
@@ -523,8 +562,8 @@ slot_int:
 	addq.l	#1,G_INTS(%a2)
 	cmp.l	#1,G_INTS(%a2)
 	bne.s	2f
-	log	"PiVideo: first VBL interrupt"
-2:	moveq	#SLOT,%d0
+	log	"first VBL interrupt"
+2:	moveq	#VBL_SLOT,%d0
 	.short	_DoVBLTask
 	moveq	#1,%d0
 	bra.s	3f
@@ -541,7 +580,7 @@ trace:
 	subq.w	#1,%d2
 	lea	trace_left(%pc),%a1
 	move.w	%d2,(%a1)
-	lea	trace_text+9(%pc),%a0
+	lea	trace_cs(%pc),%a0
 	move.b	%d1,(%a0)+
 	addq.l	#1,%a0
 	moveq	#0,%d2
@@ -559,7 +598,7 @@ trace:
 	bls.s	2f
 	addq.b	#7,%d2
 2:	move.b	%d2,(%a0)
-	lea	trace_text+19(%pc),%a0
+	lea	trace_mode(%pc),%a0
 	move.b	#'2',(%a0)
 	move.b	#'4',1(%a0)
 	tst.b	MMU32Bit
@@ -571,7 +610,9 @@ trace:
 9:	movem.l	(%sp)+,%d0-%d2/%a0-%a1
 	rts
 trace_left:	.word	48
-trace_text:	.ascii	"PiVideo: c NN mode MM"
+trace_text:	log_name
+trace_cs:	.ascii	"c NN mode "
+trace_mode:	.ascii	"MM"
 	.byte	0
 	.even
 

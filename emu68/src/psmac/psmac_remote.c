@@ -13,7 +13,8 @@
  *
  * What it offers (each one a function the HTTP layer calls):
  *   GET  /            a small page for a person: the screen, click to click, a box to type in
- *   GET  /screen.png  the main screen as PNG (?scale=2|4: smaller; ?src=hdmi: the VideoCore buffer)
+ *   GET  /screen.png  a screen as PNG (?display=0|1: the first or the second screen, ?scale=2|4: smaller;
+ *                     ?src=hdmi: the VideoCore buffer)
  *   POST /input       JSON events: move, down, up, click, drag, key, keydown, keyup, text, wait
  *   GET  /log         the kernel's log from byte N (?since=N), secrets hidden (?tags=BOOT,CRASH)
  *   GET  /state       JSON: board, screen, the application in front, Ticks, crashes, network, disks
@@ -50,7 +51,9 @@ int     psmac_sh_write(int64_t fd, const void *buf, uint64_t len);
 int64_t psmac_sh_seek(int64_t fd, uint64_t pos);
 int64_t psmac_sh_flen(int64_t fd);
 int     psmac_sh_available(void);
-int  psmac_display_shot(uint32_t *w, uint32_t *h, uint32_t *depth, int want_hdmi);   /* psmac_display.c */
+int  psmac_display_shot(uint32_t *w, uint32_t *h, uint32_t *depth, int display, int want_hdmi);   /* psmac_display.c */
+int  psmac_display_info(int i, uint32_t *w, uint32_t *h, uint32_t *depth, uint32_t *base);
+int  psmac_display_count(void);
 void psmac_display_shot_row(uint32_t y, uint8_t *rgb, uint32_t maxw);
 void psmac_crash_last(uint32_t *exc_n, uint32_t *exc_vec, uint32_t *exc_pc, const char **exc_what,
                       uint32_t *sys_n, int16_t *sys_id, const char **sys_what);  /* psmac_crash.c */
@@ -270,18 +273,30 @@ static int jnum(struct jfield *f, int nf, const char *key, int dflt) { struct jf
 static const char *jstr(struct jfield *f, int nf, const char *key) { struct jfield *x = jget(f, nf, key); return x && !x->has_num ? x->str : 0; }
 
 /* one event object into the queue; 0 if it was not understood */
+static int screen_place(int i, int16_t rect[4], uint32_t *flags);
 static int input_event(struct jfield *f, int nf, char *why, unsigned why_max)
 {
     const char *type = jstr(f, nf, "type");
     if (!type) { sprintf(why, "an event without \"type\""); return 0; }
     int x = jnum(f, nf, "x", -1), y = jnum(f, nf, "y", -1);
+    /* "display": N makes x, y (and to_x, to_y) a point of that screen rather than of the desktop:
+       its place on the desktop (the Mac's GDevice, where Monitors put it) is added */
+    int display = jnum(f, nf, "display", -1), ox = 0, oy = 0;
+    if (display >= 0) {
+        int16_t r[4]; uint32_t fl;
+        if (screen_place(display, r, &fl)) { ox = r[1]; oy = r[0]; }
+        else if (display) { sprintf(why, "display %d is not a screen QuickDraw knows (yet)", display); return 0; }
+        /* the first screen before QuickDraw has a device for it (the boot): at the origin */
+    }
     int m = parse_mods(jstr(f, nf, "mods"));
     const char *bs = jstr(f, nf, "button");
     int btn = bs && bs[0] == 'r' ? 2 : bs && bs[0] == 'm' ? 1 : 0;
     (void)why_max;
-    if (!__builtin_strcmp(type, "move")) { if (x < 0 || y < 0) { sprintf(why, "move needs x and y"); return 0; } q_move(x, y); return 1; }
+    int has_xy = x >= 0 && y >= 0;                                  /* the point as given; then on the desktop */
+    x += ox; y += oy;
+    if (!__builtin_strcmp(type, "move")) { if (!has_xy) { sprintf(why, "move needs x and y"); return 0; } q_move(x, y); return 1; }
     if (!__builtin_strcmp(type, "down") || !__builtin_strcmp(type, "up")) {
-        if (x >= 0 && y >= 0) q_move(x, y);
+        if (has_xy) q_move(x, y);
         q_mods(m, 20);
         q_button(type[0] == 'd', btn);
         if (type[0] == 'u') q_mods(0, 20);
@@ -291,7 +306,7 @@ static int input_event(struct jfield *f, int nf, char *why, unsigned why_max)
         int count = jnum(f, nf, "count", 1);
         if (count < 1) count = 1;
         if (count > 3) count = 3;
-        if (x >= 0 && y >= 0) q_move(x, y);
+        if (has_xy) q_move(x, y);
         q_mods(m, 20);
         for (int i = 0; i < count; i++) { q_button(1, btn); q_button(0, btn); }   /* inside the Mac's double-click time */
         q_mods(0, 20);
@@ -299,7 +314,8 @@ static int input_event(struct jfield *f, int nf, char *why, unsigned why_max)
     }
     if (!__builtin_strcmp(type, "drag")) {
         int x2 = jnum(f, nf, "to_x", -1), y2 = jnum(f, nf, "to_y", -1);
-        if (x < 0 || y < 0 || x2 < 0 || y2 < 0) { sprintf(why, "drag needs x, y, to_x and to_y"); return 0; }
+        if (!has_xy || x2 < 0 || y2 < 0) { sprintf(why, "drag needs x, y, to_x and to_y"); return 0; }
+        x2 += ox; y2 += oy;
         /* a pause after the press and before the release: a menu is drawn and tracked only once
            MenuSelect has seen the button down, and under QEMU that took longer than the steps */
         q_move(x, y); q_mods(m, 20); q_button(1, btn); iq_put(255, 0, 0, 0, 400);
@@ -382,11 +398,11 @@ static void chunk_close(uint32_t start)
 }
 static uint32_t chunk_open(const char *type) { uint32_t s = P.out_len; P.out_len += 4; for (int i = 0; i < 4; i++) P.out[P.out_len++] = (uint8_t)type[i]; return s; }
 
-static int png_begin(int conn, int scale, int hdmi)
+static int png_begin(int conn, int scale, int display, int hdmi)
 {
     uint32_t w, h, d;
     if (P.active) return -1;
-    if (!psmac_display_shot(&w, &h, &d, hdmi)) return 0;
+    if (!psmac_display_shot(&w, &h, &d, display, hdmi)) return 0;
     if (scale < 1) scale = 1;
     if (scale > 8) scale = 8;
     if (w > PNG_MAXW) w = PNG_MAXW;
@@ -515,12 +531,12 @@ static const char page[] =
 "<!DOCTYPE html><html><head><meta charset=utf-8><title>Aurora68</title><style>"
 "body{font:14px -apple-system,Helvetica,sans-serif;margin:12px;background:#ddd}#s{image-rendering:pixelated;border:1px solid #444;cursor:crosshair;max-width:100%}"
 "input,button,select{font:inherit}#st{font:12px monospace;white-space:pre}</style></head><body>"
-"<div>Token <input id=tk type=password size=16> Scale <select id=sc><option>1<option>2<option>4</select> "
+"<div>Token <input id=tk type=password size=16> Scale <select id=sc><option>1<option>2<option>4</select> Screen <select id=dp><option>0<option>1</select> "
 "<button onclick=k('return')>Return</button> <button onclick=k('escape')>Esc</button> <button onclick=\"k('q','cmd')\">Cmd-Q</button> "
 "<input id=tx size=24 placeholder='text to type'><button onclick=ty()>Type</button> "
 "<button onclick=\"if(confirm('Restart the Mac?'))cmd('/restart')\">Restart</button></div>"
 "<p><img id=s tabindex=0 alt='the Mac'></p><div id=st></div><script>"
-"var T=document.getElementById('tk'),S=document.getElementById('s'),sc=document.getElementById('sc');"
+"var T=document.getElementById('tk'),S=document.getElementById('s'),sc=document.getElementById('sc'),dp=document.getElementById('dp');"
 "T.value=localStorage.a68t||'';T.onchange=function(){localStorage.a68t=T.value};"
 "function H(){return{'X-Aurora-Token':T.value}}"
 "function send(ev){return fetch('/input',{method:'POST',headers:H(),body:JSON.stringify(ev)})}"
@@ -529,11 +545,11 @@ static const char page[] =
 "function ty(){var t=document.getElementById('tx');send({type:'text',text:t.value});t.value=''}"
 "function xy(e){var r=S.getBoundingClientRect(),f=S.naturalWidth/r.width*(+sc.value);"
 "return[Math.round((e.clientX-r.left)*f),Math.round((e.clientY-r.top)*f)]}"
-"S.onclick=function(e){var p=xy(e);send({type:'click',x:p[0],y:p[1],count:e.detail>1?2:1,mods:e.shiftKey?'shift':''})};"
+"S.onclick=function(e){var p=xy(e);send({type:'click',display:+dp.value,x:p[0],y:p[1],count:e.detail>1?2:1,mods:e.shiftKey?'shift':''})};"
 "S.onkeydown=function(e){var n={Enter:'return',Backspace:'delete',Tab:'tab',Escape:'escape',ArrowLeft:'left',ArrowRight:'right',ArrowUp:'up',ArrowDown:'down'}[e.key];"
 "var m=(e.metaKey?'cmd,':'')+(e.altKey?'opt,':'')+(e.ctrlKey?'ctrl':'');"
 "if(n)send({type:'key',key:n,mods:m});else if(e.key.length==1){if(m)send({type:'key',key:e.key.toLowerCase(),mods:m});else send({type:'text',text:e.key})}else return;e.preventDefault()};"
-"function shot(){fetch('/screen.png?scale='+sc.value,{headers:H()}).then(function(r){if(!r.ok)throw r.status;return r.blob()})"
+"function shot(){fetch('/screen.png?scale='+sc.value+'&display='+dp.value,{headers:H()}).then(function(r){if(!r.ok)throw r.status;return r.blob()})"
 ".then(function(b){var u=URL.createObjectURL(b);S.onload=function(){URL.revokeObjectURL(u);setTimeout(shot,300)};S.src=u})"
 ".catch(function(e){document.getElementById('st').textContent='screen: '+e;setTimeout(shot,2000)})}"
 "function state(){fetch('/state',{headers:H()}).then(function(r){return r.text()}).then(function(t){document.getElementById('st').textContent=t})"
@@ -663,6 +679,53 @@ static void cur_app(char *out)
     raw[len] = 0;
     json_name(out, raw, 64);
 }
+/* ---- the screens on the desktop ----
+   Screen i of the card (psmac_display.c: 0 the first, the SE's on the SE board; 1 the HDMI screen)
+   as QuickDraw has it: its GDevice, found in DeviceList ($8A8) by its pixel map's base address, which
+   the driver gave QuickDraw from the same table the kernel filled. gdRect is where Monitors (or the
+   'scrn' resource) put it on the desktop; gdFlags bit 15 is screenActive, bit 11 mainScreen. The
+   GDevice: gdFlags at 20, gdPMap at 22, gdNextGD at 30, gdRect at 34; a PixMap's baseAddr at 0.
+   Handles carry flag bits in their top byte in 24-bit mode (MMU32Bit, $CB2). */
+static uint32_t mac_long(uint32_t a, int *ok) { return psmac_mac_rd32(a, ok); }
+static int screen_place(int i, int16_t rect[4], uint32_t *flags)
+{
+    uint32_t w, h, d, base;
+    if (!psmac_display_info(i, &w, &h, &d, &base)) return 0;
+    int ok, ok2;
+    uint32_t mask = (mac_long(0xcb0, &ok) >> 8 & 0xff) ? 0xffffffffu : 0x00ffffffu;
+    uint32_t gdh = mac_long(0x8a8, &ok) & mask;
+    for (int n = 0; ok && gdh && n < 8; n++) {
+        uint32_t gd = mac_long(gdh, &ok) & mask;
+        if (!ok || !gd) return 0;
+        uint32_t pm = mac_long(mac_long(gd + 22, &ok) & mask, &ok2) & mask;
+        uint32_t ba = ok && ok2 && pm ? mac_long(pm, &ok2) : 0;
+        if (ok2 && ba && (ba == base || (ba & 0xffffffu) == (base & 0xffffffu))) {
+            uint32_t a = mac_long(gd + 34, &ok), b = mac_long(gd + 38, &ok2);
+            rect[0] = (int16_t)(a >> 16); rect[1] = (int16_t)a; rect[2] = (int16_t)(b >> 16); rect[3] = (int16_t)b;
+            *flags = mac_long(gd + 20, &ok2) >> 16;
+            return ok && ok2;
+        }
+        gdh = mac_long(gd + 30, &ok) & mask;
+    }
+    return 0;
+}
+/* "screens": each screen of the card, its size and depth, and where the Mac has it */
+static void screens_json(struct hconn *h)
+{
+    out_str(h, "  \"screens\": [");
+    for (int i = 0; i < psmac_display_count(); i++) {
+        uint32_t w, hh, d, base, fl = 0; int16_t r[4];
+        const char *what = psmac_board_se && !psmac_board_solo ? (i ? "hdmi" : "se") : "card";
+        if (!psmac_display_info(i, &w, &hh, &d, &base)) { OUTF(h, "%s\n    {\"display\": %d, \"what\": \"%s\", \"open\": false}", i ? "," : "", i, what); continue; }
+        OUTF(h, "%s\n    {\"display\": %d, \"what\": \"%s\", \"open\": true, \"width\": %u, \"height\": %u, \"depth\": %u, \"base\": \"0x%08x\"",
+             i ? "," : "", i, what, w, hh, d, base);
+        if (screen_place(i, r, &fl))
+            OUTF(h, ", \"left\": %d, \"top\": %d, \"right\": %d, \"bottom\": %d, \"active\": %s, \"main\": %s}",
+                 r[1], r[0], r[3], r[2], fl & 0x8000 ? "true" : "false", fl & 0x0800 ? "true" : "false");
+        else out_str(h, ", \"left\": null}");
+    }
+    out_str(h, "\n  ],\n");
+}
 /* the firmware's GET_THROTTLED bits (psmac_power.c): each "now" bit and each "since boot" bit by name */
 static void power_json(struct hconn *h)
 {
@@ -683,7 +746,7 @@ static void state_json(struct hconn *h)
     h->kind = R_BUF; h->out_len = h->out_pos = 0;
     head(h, 200, "OK", "application/json", -1);
     uint32_t w = 0, hh = 0, d = 0;
-    int src = psmac_display_shot(&w, &hh, &d, 0);
+    int src = psmac_display_shot(&w, &hh, &d, 0, 0);
     OUTF(h, "{\n  \"board\": \"%s\",\n  \"uptime_s\": %u,\n", psmac_board_solo ? "solo" : psmac_board_se ? "se" : "iici", t / 1000);
     OUTF(h, "  \"screen\": {\"width\": %u, \"height\": %u, \"depth\": %u, \"source\": \"%s\"},\n", w, hh, d, src == 1 ? "mac" : src == 2 ? "console" : "none");
     int ok; uint32_t ticks = psmac_mac_rd32(0x16a, &ok);
@@ -708,6 +771,7 @@ static void state_json(struct hconn *h)
     OUTF(h, "  \"remote\": {\"link\": \"%s\", \"phase\": \"%s\", \"ip\": \"%s\", \"mac\": \"%s\", \"name\": \"%s.local\", \"shares_mac\": %s, \"shares_ip\": %s, \"requests\": %u, \"refused\": %u, \"input_events\": %u, \"png_band_us_max\": %u},\n",
          in.unit == 1 ? "wired" : in.unit == 0 ? "wifi" : "none", in.phase, a, b, psmac_ip_name(), in.shared ? "true" : "false", in.shared == 2 ? "true" : "false",
          requests, refused, input_events, P.busy_us_max);
+    screens_json(h);
     power_json(h);
     out_str(h, "  \"network\": [");
     volatile uint8_t *nb = alice_net_board();
@@ -833,7 +897,9 @@ static void handle(int c)
     if (get && !__builtin_strcmp(path, "/screen.png")) {
         int scale = query(q, "scale", v, sizeof v) ? v[0] - '0' : 1;
         int hdmi = query(q, "src", v, sizeof v) && v[0] == 'h';
-        int k = png_begin(c, scale, hdmi);
+        int display = query(q, "display", v, sizeof v) ? v[0] - '0' : 0;
+        if (display < 0 || display >= psmac_display_count()) { respond_json_error(h, 404, "Not Found", "no such display (0 is the first screen, 1 the second)"); return; }
+        int k = png_begin(c, scale, display, hdmi);
         if (k < 0) { respond_json_error(h, 503, "Service Unavailable", "another screenshot is being sent: try again"); return; }
         if (!k) { respond_json_error(h, 503, "Service Unavailable", "no screen yet"); return; }
         h->kind = R_PNG; h->out_len = h->out_pos = 0;

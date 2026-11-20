@@ -7,8 +7,9 @@ The kernel serves the Mac's screen, input, log and state over HTTP when cmdline.
 scripts, and for checking the server without an MCP host. Python 3, standard library only.
 
   aurora68.py state                              the JSON status
-  aurora68.py screenshot out.png [--scale 2]     the main screen as PNG
-  aurora68.py click X Y [--double] [--mods cmd]  a click at a point of the screen (pixels, 0,0 top left)
+  aurora68.py screenshot out.png [--scale 2]     the first screen as PNG (--display 1: the second, HDMI on the SE)
+  aurora68.py click X Y [--double] [--mods cmd]  a click at a point of the desktop (pixels, 0,0 the main screen's
+                                                 top left; --display N: a point of screen N instead)
   aurora68.py move X Y | drag X Y TO_X TO_Y
   aurora68.py type "some text"                   typed on the US keyboard layout
   aurora68.py key return [--mods cmd]            one key: return, escape, tab, left ..., or a character
@@ -90,8 +91,8 @@ class Remote:
     def state(self):
         return self._json('GET', '/state')
 
-    def screenshot(self, scale=1, hdmi=False):
-        q = f'/screen.png?scale={int(scale)}' + ('&src=hdmi' if hdmi else '')
+    def screenshot(self, scale=1, hdmi=False, display=0):
+        q = f'/screen.png?scale={int(scale)}&display={int(display)}' + ('&src=hdmi' if hdmi else '')
         for attempt in range(20):                     # one screenshot at a time: another one may be under way
             status, _, data = self.request('GET', q)
             if status == 200:
@@ -133,6 +134,8 @@ def png_size(data):
 def main():
     ap = argparse.ArgumentParser(description='The Pi\'s remote control of the Mac (docs/13).')
     ap.add_argument('--url'); ap.add_argument('--token'); ap.add_argument('--semihost', metavar='BASE')
+    ap.add_argument('--display', type=int, help='the screen: 0 the first (the SE\'s on the SE board), 1 the second (HDMI); '
+                    'for input, coordinates are then that screen\'s rather than the desktop\'s')
     sub = ap.add_subparsers(dest='cmd', required=True)
     sub.add_parser('state')
     p = sub.add_parser('screenshot'); p.add_argument('out'); p.add_argument('--scale', type=int, default=1); p.add_argument('--hdmi', action='store_true')
@@ -147,19 +150,20 @@ def main():
     p = sub.add_parser('input'); p.add_argument('json')
     a = ap.parse_args()
     r = Remote(a.url, a.token, a.semihost)
+    on = {} if a.display is None else {'display': a.display}       # a point of that screen, not of the desktop
     if a.cmd == 'state':
         print(json.dumps(r.state(), indent=2))
     elif a.cmd == 'screenshot':
-        t0 = time.time(); data = r.screenshot(a.scale, a.hdmi)
+        t0 = time.time(); data = r.screenshot(a.scale, a.hdmi, a.display or 0)
         open(a.out, 'wb').write(data)
         w, h = png_size(data)
         print(f'{a.out}: {w}x{h}, {len(data)} bytes in {time.time() - t0:.2f} s')
     elif a.cmd == 'click':
-        print(r.input({'type': 'click', 'x': a.x, 'y': a.y, 'count': 2 if a.double else 1, 'mods': a.mods, 'button': a.button}))
+        print(r.input({'type': 'click', 'x': a.x, 'y': a.y, 'count': 2 if a.double else 1, 'mods': a.mods, 'button': a.button, **on}))
     elif a.cmd == 'move':
-        print(r.input({'type': 'move', 'x': a.x, 'y': a.y}))
+        print(r.input({'type': 'move', 'x': a.x, 'y': a.y, **on}))
     elif a.cmd == 'drag':
-        print(r.input({'type': 'drag', 'x': a.x, 'y': a.y, 'to_x': a.to_x, 'to_y': a.to_y, 'mods': a.mods}))
+        print(r.input({'type': 'drag', 'x': a.x, 'y': a.y, 'to_x': a.to_x, 'to_y': a.to_y, 'mods': a.mods, **on}))
     elif a.cmd == 'type':
         print(r.input({'type': 'text', 'text': a.text}))
     elif a.cmd == 'key':

@@ -27,6 +27,17 @@
  * VideoCore buffer into the Mac's space: the pixel orders differ, the Mac's modes need the table,
  * and Pi RAM is where the 68k's JIT is fastest. The screen's size comes from mac.screen=WxH, else
  * from the VideoCore (the firmware's HDMI mode on hardware, 640 x 480 in QEMU).
+ *
+ * Two screens on the SE board (20 November 2026, docs/10 "Two screens on the SE"). On mac.board=se
+ * the card's screen used to be the SE's own: its 512 by 342 one-bit frame went row by row into the
+ * SE's video RAM (psmac_board_se.c) and HDMI showed the same picture or the log. Now a second card
+ * in slot $A carries the HDMI screen (psmb.h, "two screens"; declaration ROMs psmac-se-WxH), so the
+ * Mac sees two screens, and this file keeps one display block per screen (struct screen below):
+ * screen 0 is the SE's, fed to the SE's video RAM and to nothing else; screen 1 is the HDMI screen,
+ * any size up to 1920 by 1200 at any depth, and is what the VideoCore shows. Both ticks come from
+ * the one 60 Hz clock and both raise slot 9's interrupt line; each driver claims its own block's
+ * tick and runs its own slot's VBL queue (9 and $A). mac.hdmi=mirror and =log keep one screen: the
+ * kernel leaves slot $A empty (psmac_bus.c) and HDMI shows the SE's picture, or the log.
  */
 #include <stdint.h>
 #include "support.h"
@@ -38,11 +49,24 @@ extern uint32_t pitch, fb_width, fb_height;
 extern uint32_t psmac_vc_setup(uint32_t w, uint32_t h, uint32_t depth, void **fb, uint32_t *pitch_out);
 extern uintptr_t psmac_fb_big_phys(void);
 extern void psmac_screen_size(uint32_t *w, uint32_t *h);
+extern void psmac_hdmi_size(uint32_t *w, uint32_t *h);
+extern int psmac_board_se, psmac_board_solo;
 
 #define KERNEL_ALIAS 0xffffff9000000000ull
-static volatile struct psmb_display *disp;
-static uint8_t *frame_win;                   /* the Mac's pixels: the window region ... */
-static uint8_t *frame_big;                   /* ... and the big region, through the kernel's alias */
+
+/* one screen of the card: its display block, its part of the window, its colour table */
+struct screen {
+    volatile struct psmb_display *disp;
+    uint8_t *win;                            /* its frame buffer in the window, through the kernel's alias ... */
+    uint32_t win_mac, win_size;              /* ... and as the Mac addresses it ($F9980000 or $F9988000), its size */
+    uint32_t clut_seen;
+    uint32_t rgb[256];                       /* the colour table as XRGB */
+};
+static struct screen scr[2];
+static int nscr;                             /* screens on the card: 1, or 2 on the SE board with its HDMI screen */
+static int se_card;                          /* the SE card's layout (psmac-se-*): screen 0 is the SE's, one bit, 32 KiB */
+static struct screen *vcs;                   /* the screen the VideoCore shows (0 with mac.hdmi=log) */
+static uint8_t *frame_big;                   /* the big region, through the kernel's alias */
 static uint8_t *vcfb;                        /* the VideoCore frame buffer, through the alias too (the low identity
                                                 mapping the splash drew through does not survive the Mac MMU shim's
                                                 table switches, docs/08 item 21) */
@@ -51,8 +75,6 @@ static int vc_swap;                          /* write the bytes R,G,B,x rather t
 extern uint32_t psmac_vc_pixel_order;        /* support_rpi.c: the firmware's answer to "get pixel order" */
 extern int psmac_bootarg_val(const char *key, char *out, unsigned max);   /* alice_net.c */
 static void vc_byte_order(void);   /* the VideoCore buffer's depth: 32 asked for, 16 if that is what came back */
-static uint32_t rgb[256];                    /* the colour table as XRGB */
-static uint32_t clut_seen = ~0u;
 static uint64_t next_tick;
 static int con_keep;                          /* the HDMI console (below): mac.console=hdmi keeps the log on the screen */
 static int con_off;                           /* the picture has the buffer */
@@ -60,23 +82,79 @@ static uint32_t con_x, con_y, con_cols, con_rows;
 static unsigned tick_div;
 static int vc_fresh;                          /* the buffer was made moments ago and nothing has drawn the picture in it */
 
+/* psmac_bus.c, once the declaration ROM is in place and before the mailbox is made: the SE card's
+   layout (a psmac-se file: slot 9's screen is the SE's, one bit), and whether the HDMI screen's card
+   in slot $A is there, making it the Mac's second screen */
+void psmac_display_layout(int se, int two) { se_card = se; nscr = two ? 2 : 1; }
+int psmac_display_count(void) { return nscr ? nscr : 1; }
+
+static int mode_index(uint32_t depth)
+{
+    return depth == 1 ? 0 : depth == 2 ? 1 : depth == 4 ? 2 : depth == 8 ? 3 : depth == 16 ? 4 : depth == 32 ? 5 : -1;
+}
+/* the Mac's pixels of mode 128+mi: the screen's part of the window, or the big region */
+static const uint8_t *mode_frame(const struct screen *s, int mi) { return s->disp->mode_base[mi] == PSMB_FB_BIG_PHYS ? frame_big : s->win; }
+static uint32_t mode_limit(const struct screen *s, int mi) { return s->disp->mode_base[mi] == PSMB_FB_BIG_PHYS ? PSMB_FB_BIG_SIZE : s->win_size; }
+
+/* A screen's display block: its size, the six modes' places and pitches, a colour table for a card
+   just switched on. tools/mac/mkdeclrom.py applies the same placement rule to each mode's
+   vpBaseOffset, because the ROM takes the address from there and never asks the driver (docs/10,
+   "the third trap"); change one and change the other. A mode of at most 8 bits that fits the
+   screen's part of the window stays there (reachable in 24-bit mode too), anything larger goes to
+   the big region; the SE's screen has only its one bit. */
+static void screen_init(struct screen *s, uint8_t *win, uint32_t block_off, uint32_t frame_off, uint32_t frame_size,
+                        uint32_t w, uint32_t h, int one_bit_only)
+{
+    volatile struct psmb_display *d = (volatile struct psmb_display *)(win + block_off);
+    s->disp = d; s->win = win + frame_off; s->win_size = frame_size;
+    s->win_mac = PSMB_WIN_PHYS + 0x900000u + frame_off;                 /* $F99xxxxx: the 24-bit megabyte in 32-bit form */
+    s->clut_seen = ~0u;
+    for (uint32_t i = 0; i < sizeof(struct psmb_display) / 4; i++) ((volatile uint32_t *)d)[i] = 0;
+    d->width = w; d->height = h; d->depth = 1;
+    d->fb_off = frame_off; d->fb_size = frame_size;
+    d->big_base = PSMB_FB_BIG_PHYS; d->big_size = PSMB_FB_BIG_SIZE;
+    d->vc_width = vc_w; d->vc_height = vc_h; d->vc_depth = vc_bpp;
+    for (int i = 0; i < 6; i++) {
+        uint32_t dep = 1u << i, rb = (w * dep + 7) / 8;
+        uint32_t bytes = rb * h;
+        if (one_bit_only && i) d->mode_base[i] = 0;
+        else if (dep <= 8 && bytes <= frame_size) d->mode_base[i] = s->win_mac;
+        else if (!one_bit_only && bytes <= PSMB_FB_BIG_SIZE) d->mode_base[i] = PSMB_FB_BIG_PHYS;   /* $90000000: 32-bit addressing only */
+        else d->mode_base[i] = 0;                                         /* no such mode at this size */
+        d->mode_rowbytes[i] = rb;
+    }
+    d->rowbytes = d->mode_rowbytes[0];
+    for (int i = 0; i < 256; i++) { uint32_t g = 255 - i; d->clut[i] = g << 16 | g << 8 | g; }   /* 0 white ... 255 black, the Mac's order */
+    for (uint32_t i = 0; i < frame_size; i += 8) *(uint64_t *)(s->win + i) = 0;
+    __asm__ volatile("dmb ish" ::: "memory");
+    d->version = 2; d->magic = PSMB_DISP_MAGIC;
+}
+
 void psmac_display_init(uint8_t *win)
 {
-    disp = (volatile struct psmb_display *)(win + PSMB_OFF_DISPLAY);
-    frame_win = win + PSMB_OFF_BOUNCE;
+    if (!nscr) nscr = 1;
     frame_big = (uint8_t *)(KERNEL_ALIAS + psmac_fb_big_phys());
-    for (uint32_t i = 0; i < sizeof(struct psmb_display) / 4; i++) ((volatile uint32_t *)disp)[i] = 0;
-
-    uint32_t w, h; psmac_screen_size(&w, &h);
-    if (!w || !h) { w = fb_width ? fb_width : 640; h = fb_height ? fb_height : 480; }
+    uint32_t w0, h0, w1 = 0, h1 = 0;
+    psmac_screen_size(&w0, &h0);                 /* the first screen: mac.screen, or 512 x 342 on the SE board */
+    if (!w0 || !h0) { w0 = fb_width ? fb_width : 640; h0 = fb_height ? fb_height : 480; }
+    if (se_card) { w0 = 512; h0 = 342; }
+    /* The VideoCore's size: the screen it shows. On the SE board that is the HDMI screen when there
+       are two, the log at the HDMI size with mac.hdmi=log, and the SE's picture (the firmware scales
+       it up) with mac.hdmi=mirror, as before. */
+    uint32_t vw = w0, vh = h0;
+    if (psmac_board_se && !psmac_board_solo && (nscr == 2 || con_keep)) {
+        psmac_hdmi_size(&w1, &h1);
+        if (!w1 || !h1) { w1 = fb_width ? fb_width : 640; h1 = fb_height ? fb_height : 480; }
+        vw = w1; vh = h1;
+    }
     /* the VideoCore buffer at that size, 32 bits */
     void *fb = 0; uint32_t p = 0;
-    uint32_t got = psmac_vc_setup(w, h, 32, &fb, &p);
-    if (got != 32 || p < w * 4) {               /* not granted (QEMU's model stays at 16): ask for 16 and convert to RGB565 */
-        got = psmac_vc_setup(w, h, 16, &fb, &p);
+    uint32_t got = psmac_vc_setup(vw, vh, 32, &fb, &p);
+    if (got != 32 || p < vw * 4) {              /* not granted (QEMU's model stays at 16): ask for 16 and convert to RGB565 */
+        got = psmac_vc_setup(vw, vh, 16, &fb, &p);
         vc_bpp = 16;
     }
-    if (fb && p) { framebuffer = fb; pitch = p; fb_width = w; fb_height = h; }
+    if (fb && p) { framebuffer = fb; pitch = p; fb_width = vw; fb_height = vh; }
     vc_w = fb_width; vc_h = fb_height; vc_pitch = pitch;
     vc_byte_order();
     if (framebuffer) vcfb = (uint8_t *)(KERNEL_ALIAS + (((uintptr_t)framebuffer) & 0x3fffffffull));
@@ -84,29 +162,18 @@ void psmac_display_init(uint8_t *win)
     con_cols = 0; con_x = 0; con_y = 0;                        /* the console starts again in the new buffer */
     vc_fresh = 1;
 
-    disp->width = w; disp->height = h; disp->depth = 1;
-    disp->fb_off = PSMB_OFF_BOUNCE; disp->fb_size = PSMB_BOUNCE_SIZE;
-    disp->big_base = PSMB_FB_BIG_PHYS; disp->big_size = PSMB_FB_BIG_SIZE;
-    disp->vc_width = vc_w; disp->vc_height = vc_h; disp->vc_depth = vc_bpp;
-    /* the six modes: where each one's pixels live and its row pitch. tools/mac/mkdeclrom.py applies
-       the same rule to each mode's vpBaseOffset, because the ROM takes the address from there and
-       never asks the driver (docs/10, "the third trap"); change one and change the other */
-    for (int i = 0; i < 6; i++) {
-        uint32_t d = 1u << i, rb = (w * d + 7) / 8;
-        uint32_t bytes = rb * h;
-        if (d <= 8 && bytes <= PSMB_BOUNCE_SIZE) { disp->mode_base[i] = PSMB_WIN_PHYS + 0x900000u + PSMB_OFF_BOUNCE; }   /* $F9980000: reachable in 24-bit mode */
-        else if (bytes <= PSMB_FB_BIG_SIZE) disp->mode_base[i] = PSMB_FB_BIG_PHYS;               /* $90000000: 32-bit addressing only */
-        else disp->mode_base[i] = 0;                                      /* no such mode at this size */
-        disp->mode_rowbytes[i] = rb;
-    }
-    disp->rowbytes = disp->mode_rowbytes[0];
-    /* a colour table for a card that was just switched on: 0 white ... 255 black, the Mac's order */
-    for (int i = 0; i < 256; i++) { uint32_t g = 255 - i; disp->clut[i] = g << 16 | g << 8 | g; }
-    for (uint32_t i = 0; i < PSMB_BOUNCE_SIZE; i += 8) *(uint64_t *)(frame_win + i) = 0;
-    __asm__ volatile("dmb ish" ::: "memory");
-    disp->version = 2; disp->magic = PSMB_DISP_MAGIC;
-    kprintf("[PSMAC:DISP] second display %ux%u: indexed modes in the window at $F9980000, direct modes in the big region at $%08x (%u MiB); VideoCore %ux%u x%u pitch %u at %p\n",
-            w, h, PSMB_FB_BIG_PHYS, PSMB_FB_BIG_SIZE >> 20, vc_w, vc_h, vc_bpp, vc_pitch, framebuffer);
+    if (se_card) screen_init(&scr[0], win, PSMB_OFF_DISPLAY, PSMB_OFF_BOUNCE, PSMB_SE_FRAME_SIZE, w0, h0, 1);
+    else screen_init(&scr[0], win, PSMB_OFF_DISPLAY, PSMB_OFF_BOUNCE, PSMB_BOUNCE_SIZE, w0, h0, 0);
+    if (nscr == 2) screen_init(&scr[1], win, PSMB_OFF_DISPLAY2, PSMB_OFF_BOUNCE2, PSMB_BOUNCE2_SIZE, w1, h1, 0);
+    vcs = nscr == 2 ? &scr[1] : &scr[0];
+    if (nscr == 2)
+        kprintf("[PSMAC:DISP] two screens: the SE's 512x342, 1 bit, at $%08x (its own video RAM); HDMI %ux%u: indexed modes that fit at $%08x, the rest in the big region at $%08x (%u MiB); VideoCore %ux%u x%u pitch %u at %p\n",
+                scr[0].win_mac, w1, h1, scr[1].win_mac, PSMB_FB_BIG_PHYS, PSMB_FB_BIG_SIZE >> 20, vc_w, vc_h, vc_bpp, vc_pitch, framebuffer);
+    else
+        kprintf("[PSMAC:DISP] %s %ux%u: indexed modes in the window at $%08x%s; VideoCore %ux%u x%u pitch %u at %p%s\n",
+                psmac_board_se && !psmac_board_solo ? "the SE's screen" : "second display", w0, h0, scr[0].win_mac,
+                se_card ? ", one bit only (the SE card)" : ", direct modes in the big region at $90000000",
+                vc_w, vc_h, vc_bpp, vc_pitch, framebuffer, con_keep ? ": the log stays there (mac.hdmi=log)" : psmac_board_se && !psmac_board_solo ? ": HDMI mirrors the SE (mac.hdmi=mirror)" : "");
 }
 
 /* Which byte of a 32-bit pixel is red. The firmware is asked (tag 0x40006): 1 means the bytes
@@ -203,21 +270,24 @@ static inline void put(void *row, uint32_t x, uint32_t xrgb)
     else ((uint16_t *)row)[x] = LE16((uint16_t)(((xrgb >> 8) & 0xf800) | ((xrgb >> 5) & 0x07e0) | ((xrgb >> 3) & 0x001f)));
 }
 
-/* the Mac's pixels -> XRGB; depth 1/2/4: the leftmost pixel is in the high bits of the byte */
+
 /* The picture, a band at a time. A whole 1920 by 1200 frame in millions of colours is 9 MB read,
    9 MB written and 9 MB flushed, some 20 ms of a Pi 3's core on every other 60 Hz tick, and the
    service loop runs nothing else meanwhile: on 19 November the user's Pi 3B at 1920 by 1200 pinged
    its router over the WiFi in 80 ms, because the WiFi, the network board's interrupt and the disk
    all waited behind the conversion (docs/08 item 49). Now each turn of the loop converts a band of
    about 128 K pixels (a millisecond or so) and the next turn the next band; a frame starts at most
-   30 times a second, as before, and takes as many turns as it needs. Small screens are one band. */
+   30 times a second, as before, and takes as many turns as it needs. Small screens are one band.
+   Only the screen the VideoCore shows is converted (vcs). */
 #define BAND_PIXELS 131072u
-static uint32_t band_y, band_h, band_w, band_mode, band_active;
+static uint32_t band_y, band_h, band_w, band_mode, band_active, band_depth, band_rb;
 static uint64_t frame_t0;
+/* the Mac's pixels -> XRGB; depth 1/2/4: the leftmost pixel is in the high bits of the byte */
 static void convert_rows(uint32_t y0, uint32_t y1)
 {
-    uint32_t depth = disp->depth, rb = disp->rowbytes, w = band_w;
-    const uint8_t *frame = disp->mode_base[band_mode] == PSMB_FB_BIG_PHYS ? frame_big : frame_win;
+    uint32_t depth = band_depth, rb = band_rb, w = band_w;
+    const uint8_t *frame = mode_frame(vcs, (int)band_mode);
+    const uint32_t *rgb = vcs->rgb;
     for (uint32_t y = y0; y < y1; y++) {
         const uint8_t *src = frame + y * rb;
         void *dst = vcfb + y * vc_pitch;
@@ -235,28 +305,34 @@ static void convert_rows(uint32_t y0, uint32_t y1)
     }
     arm_flush_cache((intptr_t)(vcfb + y0 * vc_pitch), vc_pitch * (y1 - y0));
 }
-/* a new frame: what to convert (0 if nothing can be) */
+/* a screen's colour table as XRGB, when the Mac has changed it (or its luminance mapping) */
+static void clut_update(struct screen *s)
+{
+    volatile struct psmb_display *d = s->disp;
+    if (d->clut_seq == s->clut_seen) return;
+    s->clut_seen = d->clut_seq;
+    for (int i = 0; i < 256; i++) {
+        uint32_t c = d->clut[i] & 0xffffffu;
+        if (d->flags & PSMB_DISP_GRAY) { uint32_t y = (((c >> 16) & 255) * 77 + ((c >> 8) & 255) * 151 + (c & 255) * 28) >> 8; c = y << 16 | y << 8 | y; }
+        s->rgb[i] = c;
+    }
+}
+/* a new frame: what to convert (0 if nothing can be). The depth and pitch are taken once per frame,
+   so a mode change half way through cannot mix two layouts in one picture. */
 static int convert_start(void)
 {
     if (!vcfb) return 0;
-    uint32_t depth = disp->depth, rb = disp->rowbytes;
-    uint32_t h = disp->height < vc_h ? disp->height : vc_h, w = disp->width < vc_w ? disp->width : vc_w;
-    int mi = depth == 1 ? 0 : depth == 2 ? 1 : depth == 4 ? 2 : depth == 8 ? 3 : depth == 16 ? 4 : depth == 32 ? 5 : -1;
-    if (mi < 0 || !disp->mode_base[mi]) return 0;
-    uint32_t limit = disp->mode_base[mi] == PSMB_FB_BIG_PHYS ? PSMB_FB_BIG_SIZE : PSMB_BOUNCE_SIZE;
-    if (rb * h > limit) return 0;
-    if (disp->clut_seq != clut_seen) {
-        clut_seen = disp->clut_seq;
-        for (int i = 0; i < 256; i++) {
-            uint32_t c = disp->clut[i] & 0xffffffu;
-            if (disp->flags & PSMB_DISP_GRAY) { uint32_t y = (((c >> 16) & 255) * 77 + ((c >> 8) & 255) * 151 + (c & 255) * 28) >> 8; c = y << 16 | y << 8 | y; }
-            rgb[i] = c;
-        }
-    }
-    band_y = 0; band_h = h; band_w = w; band_mode = (uint32_t)mi;
+    volatile struct psmb_display *d = vcs->disp;
+    uint32_t depth = d->depth, rb = d->rowbytes;
+    uint32_t h = d->height < vc_h ? d->height : vc_h, w = d->width < vc_w ? d->width : vc_w;
+    int mi = mode_index(depth);
+    if (mi < 0 || !d->mode_base[mi]) return 0;
+    if (rb * h > mode_limit(vcs, mi)) return 0;
+    clut_update(vcs);
+    band_y = 0; band_h = h; band_w = w; band_mode = (uint32_t)mi; band_depth = depth; band_rb = rb;
     return 1;
 }
-/* one band; the frame's end does what the whole frame's conversion did at its end */
+/* one band; the frame's end counts it */
 static void convert_band(void)
 {
     uint32_t n = band_w ? BAND_PIXELS / band_w : band_h;
@@ -266,30 +342,47 @@ static void convert_band(void)
     band_y += n;
     if (band_y < band_h) return;
     band_active = 0;
-    { extern void psmac_se_mark(const uint8_t *, uint32_t, uint32_t, uint32_t, uint32_t);   /* the SE's own screen (psmac_board_se.c) */
-      psmac_se_mark(disp->mode_base[band_mode] == PSMB_FB_BIG_PHYS ? frame_big : frame_win, disp->width, disp->height, disp->rowbytes, disp->depth); }
-    disp->frames++;
+    vcs->disp->frames++;
+}
+/* the SE's own screen (psmac_board_se.c compares the rows and sends what changed): screen 0's
+   frame, whatever the VideoCore shows. Until 20 November it was called at the end of each HDMI
+   conversion, so with mac.console=hdmi, which stops the conversion, the SE's screen never changed. */
+static void se_frame(void)
+{
+    extern void psmac_se_mark(const uint8_t *, uint32_t, uint32_t, uint32_t, uint32_t);
+    volatile struct psmb_display *d = scr[0].disp;
+    int mi = mode_index(d->depth);
+    if (mi < 0 || !d->mode_base[mi] || !(d->flags & PSMB_DISP_ENABLED)) return;
+    psmac_se_mark(mode_frame(&scr[0], mi), d->width, d->height, d->rowbytes, d->depth);
+    if (vcs != &scr[0] || con_keep) d->frames++;
 }
 
 /* from the service core's loop, every turn: the 60 Hz tick (VBL), and a band of the picture */
 void psmac_display_poll(void)
 {
-    if (!disp) return;
+    if (!vcs) return;
     uint64_t now; __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(now));
     uint64_t hz; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(hz));
     if (!next_tick) { next_tick = now + hz / 60; return; }
+    volatile struct psmb_display *vd = vcs->disp;
     if (band_active) {
-        if ((disp->flags & PSMB_DISP_ENABLED) && !con_keep) convert_band();
+        if ((vd->flags & PSMB_DISP_ENABLED) && !con_keep) convert_band();
         else band_active = 0;
     }
     if ((int64_t)(now - next_tick) < 0) return;
     next_tick += hz / 60; if ((int64_t)(now - next_tick) > (int64_t)hz) next_tick = now + hz / 60;
-    disp->vbl_count++;
-    if ((disp->flags & PSMB_DISP_ENABLED) && disp->vbl_enable) { disp->vbl_pending = 1; __asm__ volatile("dmb ish" ::: "memory"); }
-    if ((disp->flags & PSMB_DISP_ENABLED) && !con_keep) {
+    /* each screen's VBL: its driver's handler takes it and runs its own slot's VBL queue (QuickDraw's
+       cursor, SlotVInstall's tasks) with _DoVBLTask */
+    for (int i = 0; i < nscr; i++) {
+        volatile struct psmb_display *d = scr[i].disp;
+        d->vbl_count++;
+        if ((d->flags & PSMB_DISP_ENABLED) && d->vbl_enable) { d->vbl_pending = 1; __asm__ volatile("dmb ish" ::: "memory"); }
+    }
+    if (!(++tick_div & 1)) return;                                 /* a new frame every other tick: 30 a second */
+    if (psmac_board_se && !psmac_board_solo) se_frame();
+    if ((vd->flags & PSMB_DISP_ENABLED) && !con_keep) {
         con_off = 1;
-        /* a new frame every other tick (30 a second) if the last one is done */
-        if (++tick_div & 1 && !band_active && now - frame_t0 >= hz / 31 && convert_start()) {
+        if (!band_active && now - frame_t0 >= hz / 31 && convert_start()) {   /* if the last one is done */
             frame_t0 = now;
             band_active = 1;
             convert_band();
@@ -300,15 +393,47 @@ void psmac_display_poll(void)
 /* for the heartbeat */
 void psmac_display_report(void)
 {
-    if (!disp) return;
-    kprintf("[PSMAC]   display: %ux%u flags %x depth %u rowbytes %u vbl %s pending %u ticks %u frames %u clut seq %u\n",
-            disp->width, disp->height, disp->flags, disp->depth, disp->rowbytes, disp->vbl_enable ? "on" : "off", disp->vbl_pending, disp->vbl_count, disp->frames, disp->clut_seq);
+    for (int i = 0; vcs && i < nscr; i++) {
+        volatile struct psmb_display *d = scr[i].disp;
+        kprintf("[PSMAC]   display%s: %ux%u flags %x depth %u rowbytes %u vbl %s pending %u ticks %u frames %u clut seq %u\n",
+                nscr == 1 ? "" : i ? " 1 (HDMI)" : " 0 (SE)", d->width, d->height, d->flags, d->depth, d->rowbytes, d->vbl_enable ? "on" : "off",
+                d->vbl_pending, d->vbl_count, d->frames, d->clut_seq);
+    }
 }
 
-/* the slot interrupt line's share: the card's VBL is pending and the driver is there to take it */
-/* the 68k was reset: the video driver's VBL interrupt is off until it opens again */
-void psmac_display_bus_reset(void) { if (disp) { disp->vbl_enable = 0; disp->vbl_pending = 0; __asm__ volatile("dmb ish" ::: "memory"); } }
-int psmac_display_irq(void) { return disp && (disp->flags & PSMB_DISP_ENABLED) && disp->vbl_enable && disp->vbl_pending; }
+/* The 68k was reset: the video drivers' VBL interrupts are off until they open again, and so is the
+   display, whose flag a driver sets only once its interrupt handler is in. Until 20 November the flag
+   outlived the reset: the HDMI driver's Open, which turns VBLs on before it installs its handler
+   (and grey-fills 288 KB of a 1920 by 1200 screen in between), had its first tick raise slot 9's
+   line with nobody to take it but the input driver's catch-all, which cannot lower it, and the
+   restarted Mac spent the rest of its life in its level-2 interrupt (PiScrn's restart, docs/10). */
+void psmac_display_bus_reset(void)
+{
+    for (int i = 0; vcs && i < nscr; i++) { scr[i].disp->vbl_enable = 0; scr[i].disp->vbl_pending = 0; scr[i].disp->flags = 0; }
+    __asm__ volatile("dmb ish" ::: "memory");
+}
+/* the slot interrupt line's share: a screen's VBL is pending and its driver is there to take it */
+int psmac_display_irq(void)
+{
+    for (int i = 0; vcs && i < nscr; i++) {
+        volatile struct psmb_display *d = scr[i].disp;
+        if ((d->flags & PSMB_DISP_ENABLED) && d->vbl_enable && d->vbl_pending) return 1;
+    }
+    return 0;
+}
+
+/* screen i as the Mac uses it, for the remote (psmac_remote.c): its size, depth and the 68k address
+   of its pixels in the current mode, which is the baseAddr of its GDevice's pixel map; 0 if there
+   is no such screen or its driver is not open */
+int psmac_display_info(int i, uint32_t *w, uint32_t *h, uint32_t *depth, uint32_t *base)
+{
+    if (!vcs || i < 0 || i >= nscr) return 0;
+    volatile struct psmb_display *d = scr[i].disp;
+    int mi = mode_index(d->depth);
+    if (!(d->flags & PSMB_DISP_ENABLED) || mi < 0) return 0;
+    *w = d->width; *h = d->height; *depth = d->depth; *base = d->mode_base[mi];
+    return 1;
+}
 
 /* ---- the remote's screenshot (psmac_remote.c, docs/13) ---------------------------------------
    The picture as the Mac drew it, not as the VideoCore scans it out: the frame buffer of the mode
@@ -317,25 +442,27 @@ int psmac_display_irq(void) { return disp && (disp->flags & PSMB_DISP_ENABLED) &
    the display on there is no Mac picture, and the VideoCore buffer is the screen (the boot log on
    the console). The parameters are taken once per screenshot, so a depth change half way through
    cannot mix two layouts; the pixels are read while the Mac goes on drawing, as a card's frame
-   grabber would. */
+   grabber would. display is the screen: 0 the first (the SE's on the SE board), 1 the HDMI screen
+   when there are two. */
 static struct { int src; uint32_t w, h, depth, rb; const uint8_t *base; uint32_t pal[256]; } shot;
-int psmac_display_shot(uint32_t *w, uint32_t *h, uint32_t *depth, int want_hdmi)
+int psmac_display_shot(uint32_t *w, uint32_t *h, uint32_t *depth, int display, int want_hdmi)
 {
     shot.src = 0;
-    if (!disp) return 0;
-    int mi = disp->depth == 1 ? 0 : disp->depth == 2 ? 1 : disp->depth == 4 ? 2 : disp->depth == 8 ? 3 : disp->depth == 16 ? 4 : disp->depth == 32 ? 5 : -1;
-    if (!want_hdmi && (disp->flags & PSMB_DISP_ENABLED) && mi >= 0 && disp->mode_base[mi]) {
-        shot.w = disp->width; shot.h = disp->height; shot.depth = disp->depth; shot.rb = disp->rowbytes;
-        shot.base = disp->mode_base[mi] == PSMB_FB_BIG_PHYS ? frame_big : frame_win;
-        uint32_t limit = disp->mode_base[mi] == PSMB_FB_BIG_PHYS ? PSMB_FB_BIG_SIZE : PSMB_BOUNCE_SIZE;
-        if (shot.rb * shot.h > limit || shot.rb < (shot.w * shot.depth + 7) / 8) return 0;
+    if (!vcs || display < 0 || display >= nscr) return 0;
+    struct screen *s = &scr[display];
+    volatile struct psmb_display *d = s->disp;
+    int mi = mode_index(d->depth);
+    if (!want_hdmi && (d->flags & PSMB_DISP_ENABLED) && mi >= 0 && d->mode_base[mi]) {
+        shot.w = d->width; shot.h = d->height; shot.depth = d->depth; shot.rb = d->rowbytes;
+        shot.base = mode_frame(s, mi);
+        if (shot.rb * shot.h > mode_limit(s, mi) || shot.rb < (shot.w * shot.depth + 7) / 8) return 0;
         for (int i = 0; i < 256; i++) {
-            uint32_t c = disp->clut[i] & 0xffffffu;
-            if (disp->flags & PSMB_DISP_GRAY) { uint32_t y = (((c >> 16) & 255) * 77 + ((c >> 8) & 255) * 151 + (c & 255) * 28) >> 8; c = y << 16 | y << 8 | y; }
+            uint32_t c = d->clut[i] & 0xffffffu;
+            if (d->flags & PSMB_DISP_GRAY) { uint32_t y = (((c >> 16) & 255) * 77 + ((c >> 8) & 255) * 151 + (c & 255) * 28) >> 8; c = y << 16 | y << 8 | y; }
             shot.pal[i] = c;
         }
         shot.src = 1;
-    } else if (vcfb && vc_w && vc_h) {
+    } else if (vcfb && vc_w && vc_h && (want_hdmi || s == vcs)) {
         shot.w = vc_w; shot.h = vc_h; shot.depth = vc_bpp; shot.rb = vc_pitch; shot.base = vcfb;
         shot.src = 2;
     } else return 0;

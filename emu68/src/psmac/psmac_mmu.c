@@ -101,6 +101,11 @@ static inline uint32_t norm_phys(uint32_t p)
 static uintptr_t slot_win_phys, slot_declrom_phys, slot_fb_phys;   /* Pi RAM behind slot $9 (0 until set) */
 void psmac_mmu_set_slot(uintptr_t w, uintptr_t d) { slot_win_phys = w; slot_declrom_phys = d; }
 void psmac_mmu_set_fb(uintptr_t f) { slot_fb_phys = f; }       /* the second display's big frame buffer (psmb.h) */
+/* slot $A, the SE board's HDMI card (psmb.h, "two screens"): its declaration ROM lives in the slot-9
+   window's top 16 KiB; the rest of slot $A's space is empty, as before. 0: no such card (every other
+   board, and mac.hdmi=mirror or log, where slot $A stays empty for the Slot Manager) */
+static uintptr_t slot2_rom_phys;
+void psmac_mmu_set_slot2(uintptr_t d) { slot2_rom_phys = d; }
 static inline uintptr_t pi_phys(uint32_t p)
 {
     p = norm_phys(p);
@@ -112,6 +117,7 @@ static inline uintptr_t pi_phys(uint32_t p)
        card's frame buffer in that form (docs/10) */
     if (slot_win_phys && p >= PSMB_WIN_PHYS + 0x900000u && p < PSMB_WIN_PHYS + 0x900000u + PSMB_WIN_SIZE) return slot_win_phys + (p - PSMB_WIN_PHYS - 0x900000u);
     if (slot_declrom_phys && p >= PSMB_DECLROM_PHYS && p < PSMB_DECLROM_PHYS + PSMB_DECLROM_SIZE) return slot_declrom_phys + (p - PSMB_DECLROM_PHYS);
+    if (slot2_rom_phys && p >= PSMB_DECLROM2_PHYS && p < PSMB_DECLROM2_PHYS + PSMB_DECLROM2_SIZE) return slot2_rom_phys + (p - PSMB_DECLROM2_PHYS);
     /* the second display's big frame buffer, in the slot's super slot space ($90000000): the ROM's
        32-bit tables map $40000000-$FBAFFFFF one to one, so logical and physical agree there */
     if (slot_fb_phys && p >= PSMB_FB_BIG_PHYS && p < PSMB_FB_BIG_PHYS + PSMB_FB_BIG_SIZE) return slot_fb_phys + (p - PSMB_FB_BIG_PHYS);
@@ -122,7 +128,8 @@ static inline uintptr_t pi_phys(uint32_t p)
 static inline int ro_phys(uint32_t p)
 {
     return (p < PSMAC_FB_SIZE) || (p >= 0x40000000u && p < 0x50000000u) || (p == WATCH_PHYS_PAGE) ||
-           (p >= PSMB_DECLROM_PHYS && p < PSMB_DECLROM_PHYS + PSMB_DECLROM_SIZE);
+           (p >= PSMB_DECLROM_PHYS && p < PSMB_DECLROM_PHYS + PSMB_DECLROM_SIZE) ||
+           (slot2_rom_phys && p >= PSMB_DECLROM2_PHYS && p < PSMB_DECLROM2_PHYS + PSMB_DECLROM2_SIZE);
 }
 
 /* ---- per-set bookkeeping of what we mapped ---- */
@@ -208,6 +215,8 @@ static void build_identity(void)
     for (uint32_t p = 0; p < PSMB_WIN_SIZE; p += 4096) l2p[(PSMB_WIN_PHYS + p) >> 12] = (PSMB_WIN_PHYS + p) | L2P_VALID;
     for (uint32_t p = 0; p < PSMB_WIN_SIZE; p += 4096) l2p[(PSMB_WIN_PHYS + 0x900000u + p) >> 12] = (PSMB_WIN_PHYS + 0x900000u + p) | L2P_VALID;   /* its 24-bit-megabyte alias */
     for (uint32_t p = 0; p < PSMB_DECLROM_SIZE; p += 4096) l2p[(PSMB_DECLROM_PHYS + p) >> 12] = (PSMB_DECLROM_PHYS + p) | L2P_VALID | L2P_WP;
+    if (slot2_rom_phys)
+        for (uint32_t p = 0; p < PSMB_DECLROM2_SIZE; p += 4096) l2p[(PSMB_DECLROM2_PHYS + p) >> 12] = (PSMB_DECLROM2_PHYS + p) | L2P_VALID | L2P_WP;
     for (uint32_t p = 0; p < PSMB_FB_BIG_SIZE; p += 4096) l2p[(PSMB_FB_BIG_PHYS + p) >> 12] = (PSMB_FB_BIG_PHYS + p) | L2P_VALID;   /* the big frame buffer */
 }
 

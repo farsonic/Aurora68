@@ -10,6 +10,11 @@
 | the screen's colour table (the ROM gave the card the standard 8-bit table at boot), the driver
 | handed that table to the Pi, and the service core shows the result on HDMI; `tools/vcshot.py`
 | photographs it in the testbed. Click or press a key to quit.
+|
+| Since 20 November 2026 the window goes on the first active screen that is not the main one,
+| wherever Monitors or the 'scrn' put it (the HDMI screen right of the SE's 512 x 342 on the SE
+| board, the card's right of the IIci's built-in video in the testbed); on a Mac with one screen it
+| stays at the place above.
 
 	.text
 	.globl	app_start
@@ -48,6 +53,7 @@ app_start:
 	clr.l	-(%sp)
 	.short	_InitDialogs
 	.short	_InitCursor
+	bsr	place_window
 	clr.l	-(%sp)			| result
 	clr.l	-(%sp)			| wStorage
 	pea	wrect(%pc)
@@ -198,6 +204,37 @@ cell16:
 	add.w	#10,%d0
 	move.w	%d0,%d1
 	add.w	#34,%d1
+| place_window: wrect on the first active screen that is not the main one, 20 pixels in from its
+| left and 40 down from its top. QuickDraw's screens are a list of GDevices from DeviceList ($8A8):
+| gdFlags at 20 (bit 15 screenActive, bit 11 mainScreen), gdNextGD at 30, gdRect at 34.
+place_window:
+	move.l	0x8A8,%d0		| DeviceList: the first device's handle
+	moveq	#7,%d2			| eight devices at most
+1:	tst.l	%d0
+	beq.s	9f
+	move.l	%d0,%a0
+	move.l	(%a0),%a0		| the GDevice
+	move.w	20(%a0),%d1
+	btst	#15,%d1
+	beq.s	2f			| not active
+	btst	#11,%d1
+	bne.s	2f			| the main screen
+	lea	wrect(%pc),%a1
+	move.w	34(%a0),%d1		| its top
+	add.w	#40,%d1
+	move.w	%d1,(%a1)
+	add.w	#400,%d1
+	move.w	%d1,4(%a1)
+	move.w	36(%a0),%d1		| its left
+	add.w	#20,%d1
+	move.w	%d1,2(%a1)
+	add.w	#600,%d1
+	move.w	%d1,6(%a1)
+	rts
+2:	move.l	30(%a0),%d0		| gdNextGD
+	dbf	%d2,1b
+9:	rts
+
 paint_cell:				| d0 left, d1 right, d2 top, d3 bottom
 	pea	rect(%pc)
 	move.w	%d0,-(%sp)		| SetRect takes left, top, right, bottom (not a Rect's order:

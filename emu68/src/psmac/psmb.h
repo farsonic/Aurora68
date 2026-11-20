@@ -45,6 +45,7 @@
 #define PSMB_OFF_DISPLAY     0x58000         /* struct psmb_display: the second screen (below) */
 #define PSMB_OFF_BOUNCE      0x80000         /* 512 KiB: the second screen's frame buffer (640 x 480 at 8 bits is 300 KiB) */
 #define PSMB_BOUNCE_SIZE     0x80000
+#define PSMB_OFF_DISPLAY2    0x59000         /* struct psmb_display of the SE board's HDMI screen (below, "Two screens") */
 
 /* ---- the kernel's log (mac/pilog.c) ------------------------------------------------------------
    Every character of the kernel's log (kprintf: the UART and the HDMI console get the same text)
@@ -104,6 +105,31 @@ struct psmb_display {
    change with the move, so its version stays 2. */
 #define PSMB_FB_BIG_PHYS     0x90000000u
 #define PSMB_FB_BIG_SIZE     0x00900000u
+
+/* ---- two screens on the SE board (docs/10, "Two screens on the SE", 20 November 2026) -------------
+   Two cards. Slot 9 is the card it always was, its video sResource ($84) now the SE's own 512 x 342
+   screen, one bit only, display block at PSMB_OFF_DISPLAY. Slot $A is a second card with one video
+   sResource, the HDMI screen at WxH and every depth, its own driver (".Display_Video_PiHDMI",
+   mac/pivideo.s assembled with SCREEN2) and display block at PSMB_OFF_DISPLAY2. Two cards rather than
+   two video sResources on one: System 7.1's Monitors takes a screen's depths from the first video
+   sResource of its slot, and showed only the SE's one bit for the HDMI screen. The slot $A card is a
+   declaration ROM and nothing else: its driver reaches this window at slot 9's addresses, takes slot
+   9's interrupt (each driver claims only its own block's VBL) and its modes' vpBaseOffsets point into
+   slot 9's space, so the window's top 512 KiB is split between the screens and both keep what a
+   24-bit system can reach: the SE's frame (21,888 bytes) in the first 32 KiB at $F9980000, the HDMI
+   screen's indexed modes that fit in the other 480 KiB at $F9988000, its larger and direct modes in
+   the big region at $90000000. The declaration ROM file for the SE (psmac-se-WxH.declrom) holds
+   both ROMs, slot $A's first and slot 9's at the end; the kernel serves slot $A's from the top 16 KiB
+   of the window, mapped at the top of slot $A's space, on the SE board with mac.hdmi=screen only.
+   The kernel and tools/mac/mkdeclrom.py --se apply the same rules. */
+#define PSMB_SE_FRAME_SIZE   0x8000u
+#define PSMB_OFF_BOUNCE2     (PSMB_OFF_BOUNCE + PSMB_SE_FRAME_SIZE)
+#define PSMB_BOUNCE2_SIZE    (PSMB_BOUNCE_SIZE - PSMB_SE_FRAME_SIZE)
+#define PSMB_SLOT2           0xA
+#define PSMB_OFF_DECLROM2    0x7C000         /* slot $A's declaration ROM in the window ... */
+#define PSMB_DECLROM2_SIZE   0x4000u
+#define PSMB_DECLROM2_PHYS   0xFAFFC000u     /* ... and where the Mac reads it: the top of slot $A's space */
+#define PSMB_HW_SCREEN2      0x5048u         /* the HDMI screen's drHw, 'PH' (the SE's is 'PV', 0x5056) */
 
 #define PSMB_MAX_SERVICES    8
 #define PSMB_MAX_BLKDEV      4

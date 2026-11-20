@@ -8,7 +8,7 @@ OBJCOPY = m68k-linux-gnu-objcopy
 PY      = python3
 B       = build
 
-all: $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/PiLog.bin $(B)/PiDepth.bin $(B)/WiFiMenu.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes declrom-wifi-sizes
+all: $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/PiLog.bin $(B)/PiDepth.bin $(B)/WiFiMenu.bin $(B)/PiScrn.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes declrom-wifi-sizes declrom-se-sizes
 
 $(B)/%.o: %.s
 	@mkdir -p $(B)
@@ -77,6 +77,17 @@ declrom-sizes: $(B)/pidisk.bin.raw $(B)/enet.bin.raw $(B)/enet_wifi.bin.raw $(B)
 # find. The size stays at the end of the name (psmac-wifi-1920x1080.declrom), where the kernel reads it
 declrom-wifi-sizes: $(B)/pidisk.bin.raw $(B)/enet_wifi.bin.raw $(B)/piinput.bin.raw $(B)/pivideo.bin.raw
 	for r in $(RESES); do $(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --wifi $(B)/enet_wifi.bin.raw --input $(B)/piinput.bin.raw --video $(B)/pivideo.bin.raw --res $$r -o $(B)/psmac-wifi-$$r.declrom; done
+
+# The SE board's card with two screens (docs/10, "Two screens on the SE"): the SE's own 512x342 one-bit
+# screen and an HDMI screen of each size, named psmac-se-WxH.declrom (the kernel takes the one for the
+# HDMI size on mac.board=se). The HDMI screen's driver is pivideo.s assembled once more with SCREEN2.
+# No WiFi-only variants: the kernel leaves the wired card out by itself where there is no wired port.
+SE_RESES = 640x480 800x600 1024x768 1280x720 1280x1024 1600x1200 1920x1080 1920x1200
+$(B)/pivideo2.o: pivideo.s
+	@mkdir -p $(B)
+	$(AS) --defsym SCREEN2=1 -o $@ $<
+declrom-se-sizes: $(B)/pidisk.bin.raw $(B)/enet.bin.raw $(B)/enet_wifi.bin.raw $(B)/piinput.bin.raw $(B)/pivideo.bin.raw $(B)/pivideo2.bin.raw
+	for r in $(SE_RESES); do $(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --enet $(B)/enet.bin.raw --wifi $(B)/enet_wifi.bin.raw --input $(B)/piinput.bin.raw --se --video $(B)/pivideo.bin.raw --video2 $(B)/pivideo2.bin.raw --res $$r -o $(B)/psmac-se-$$r.declrom; done
 
 # the same card with the WiFi as its only network sResource: MacTCP and EtherTalk take the first
 # Ethernet-type sResource they find, so this is how the WiFi path is tested in the testbed
@@ -150,6 +161,27 @@ $(B)/wifimenu.elf: $(B)/wm/entry.o $(B)/wm/toolbox_glue.o $(B)/wm/wifimenu.o $(B
 	$(LD) -T wifimenu/init.ld --emit-relocs --gc-sections --no-warn-rwx-segments -z noexecstack -o $@ $(B)/wm/entry.o $(B)/wm/toolbox_glue.o $(B)/wm/wifimenu.o $(B)/wm/btmenu.o $(B)/wm/libc.o $(LIBGCC)
 $(B)/WiFiMenu.bin: $(B)/wifimenu.elf ../tools/mac/elf2init.py ../tools/mac/macelf.py ../tools/mac/rsrc.py
 	$(PY) ../tools/mac/elf2init.py $< --name "Wi-Fi & Bluetooth" --creator PSWM -o $@
+
+# ---- PiScrn: the SE board's two screens arranged at the first boot, an INIT in C (mac/piscrn) ----
+$(B)/piscrn_traps.txt: c/traps.txt piscrn/traps.txt
+	@mkdir -p $(B)
+	cat c/traps.txt piscrn/traps.txt > $@
+$(B)/ps/toolbox_glue.s $(B)/ps/toolbox_gen.h: $(B)/piscrn_traps.txt ../tools/mac/mktraps.py
+	@mkdir -p $(B)/ps
+	$(PY) ../tools/mac/mktraps.py $< -s $(B)/ps/toolbox_glue.s -H $(B)/ps/toolbox_gen.h
+$(B)/ps/entry.o: piscrn/entry.s
+	@mkdir -p $(B)/ps
+	$(AS) -o $@ $<
+$(B)/ps/toolbox_glue.o: $(B)/ps/toolbox_glue.s
+	$(AS) -o $@ $<
+$(B)/ps/piscrn.o: piscrn/piscrn.c c/toolbox.h $(B)/ps/toolbox_gen.h
+	$(CC) $(subst -I$(B),-I$(B)/ps,$(CFLAGS)) -c -o $@ $<
+$(B)/ps/libc.o: c/libc.c c/toolbox.h $(B)/ps/toolbox_gen.h
+	$(CC) $(subst -I$(B),-I$(B)/ps,$(CFLAGS)) -c -o $@ $<
+$(B)/piscrn.elf: $(B)/ps/entry.o $(B)/ps/toolbox_glue.o $(B)/ps/piscrn.o $(B)/ps/libc.o wifimenu/init.ld
+	$(LD) -T wifimenu/init.ld --emit-relocs --gc-sections --no-warn-rwx-segments -z noexecstack -o $@ $(B)/ps/entry.o $(B)/ps/toolbox_glue.o $(B)/ps/piscrn.o $(B)/ps/libc.o $(LIBGCC)
+$(B)/PiScrn.bin: $(B)/piscrn.elf ../tools/mac/elf2init.py ../tools/mac/macelf.py ../tools/mac/rsrc.py
+	$(PY) ../tools/mac/elf2init.py $< --name "PiScrn" --creator PISR -o $@
 
 install: $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/psmac.declrom
 	$(PY) ../tools/mac/hfsput.py $(IMG) $(B)/PiDisk.bin "System Folder" $(PART)

@@ -25,9 +25,9 @@
 | How a mouse moves. The Event Manager does not have a "mouse moved" event; the cursor follows the
 | low-memory point RawMouse/MTemp and the cursor task redraws it when CrsrNew is set (Inside
 | Macintosh I, "The Mouse"; Macintosh Technical Note "Mouse Movement" explains the coupling). The
-| driver adds the movement to RawMouse and MTemp (clipped to the screen rectangle CrsrPin), sets
-| CrsrNew, and posts mouseDown/mouseUp when the button bits change, mirroring MBState so that
-| _Button and _StillDown answer correctly. A second or third button is reported as Option-click
+| driver adds the movement to RawMouse and MTemp (clipped to the rectangle around every active
+| screen), sets CrsrNew, and posts mouseDown/mouseUp when the button bits change, mirroring
+| MBState so that _Button and _StillDown answer correctly. A second or third button is reported as Option-click
 | and Command-click, which is what Apple's own multi-button drivers of the day did.
 |
 | What is not done here. Scroll wheels (ALICE_IN_WHEEL) are dropped: System 6 and 7 have no notion
@@ -71,6 +71,7 @@
 	.equ	CrsrNew,	0x08CE		| byte: nonzero when the cursor must be redrawn
 	.equ	CrsrCouple,	0x08CF		| byte: cursor coupled to the mouse
 	.equ	CrsrPin,	0x0834		| Rect: cursor limits
+	.equ	DeviceList,	0x08A8		| Handle: the first GDevice (Color QuickDraw's screens)
 	.equ	KeyMap,		0x0174		| 16 bytes: keys down, one bit per virtual code
 	.equ	KeyLast,	0x0184		| word: last key code
 	.equ	KeyTime,	0x0186		| long: when it went down
@@ -380,6 +381,58 @@ input_vbl:
 	movem.l	(%sp)+,%d0-%d7/%a0-%a4
 	rts
 
+| clip_desk: d2 = h, d3 = v clipped to the rectangle around every active screen: QuickDraw's
+| GDevices from DeviceList ($8A8), gdFlags at 20 (screenActive is its bit 15), gdNextGD at 30, gdRect
+| at 34. The ROM's cursor task moves the cursor onto whichever screen holds the point and pins it to
+| the one it is on, as it does for an ADB mouse. Until 20 November this was CrsrPin, which is the
+| rectangle of the screen the cursor is on, so a USB or Bluetooth mouse and the remote control never
+| left the first screen of two (the SE board's HDMI screen, docs/10). CrsrPin is where the union
+| starts, so a Mac without the list (or before its first device) clips as before.
+clip_desk:
+	movem.l	%d0-%d1/%d4-%d7/%a0,-(%sp)
+	move.w	CrsrPin,%d4		| top
+	move.w	CrsrPin+2,%d5		| left
+	move.w	CrsrPin+4,%d6		| bottom
+	move.w	CrsrPin+6,%d7		| right
+	move.l	DeviceList,%d0
+	moveq	#7,%d1			| eight devices at most
+1:	tst.l	%d0
+	beq.s	6f
+	move.l	%d0,%a0
+	move.l	(%a0),%a0		| the GDevice
+	btst	#7,20(%a0)		| screenActive (the high byte of gdFlags)
+	beq.s	5f
+	cmp.w	34(%a0),%d4
+	ble.s	2f
+	move.w	34(%a0),%d4		| a higher top
+2:	cmp.w	36(%a0),%d5
+	ble.s	3f
+	move.w	36(%a0),%d5		| further left
+3:	cmp.w	38(%a0),%d6
+	bge.s	4f
+	move.w	38(%a0),%d6		| a lower bottom
+4:	cmp.w	40(%a0),%d7
+	bge.s	5f
+	move.w	40(%a0),%d7		| further right
+5:	move.l	30(%a0),%d0		| gdNextGD
+	dbf	%d1,1b
+6:	cmp.w	%d5,%d2
+	bge.s	7f
+	move.w	%d5,%d2
+7:	cmp.w	%d4,%d3
+	bge.s	8f
+	move.w	%d4,%d3
+8:	subq.w	#1,%d7
+	cmp.w	%d7,%d2
+	ble.s	9f
+	move.w	%d7,%d2
+9:	subq.w	#1,%d6
+	cmp.w	%d6,%d3
+	ble.s	10f
+	move.w	%d6,%d3
+10:	movem.l	(%sp)+,%d0-%d1/%d4-%d7/%a0
+	rts
+
 | ---- drain: a2 = globals -> d0 = events taken (at most 32 per call: leave time for others) ----
 drain:
 	movem.l	%d1-%d7/%a0-%a1/%a3-%a4,-(%sp)
@@ -487,29 +540,14 @@ ev_mouse:
 	bra.s	2f
 1:	tst.l	%d0
 	beq.s	mouse_buttons
-2:	| RawMouse.h += dx, RawMouse.v += dy, clipped to CrsrPin; MTemp follows; CrsrNew set
+2:	| RawMouse.h += dx, RawMouse.v += dy, clipped to the desktop; MTemp follows; CrsrNew set
 	move.w	RawMouse+2,%d2		| h
 	add.w	%d0,%d2
 	move.w	RawMouse,%d3		| v
 	add.w	%d1,%d3
-mouse_clip:				| d2 = h, d3 = v: clipped to CrsrPin, into RawMouse and MTemp
-	cmp.w	CrsrPin+2,%d2		| left
-	bge.s	3f
-	move.w	CrsrPin+2,%d2
-3:	cmp.w	CrsrPin,%d3		| top
-	bge.s	4f
-	move.w	CrsrPin,%d3
-4:	move.w	CrsrPin+6,%d4		| right
-	subq.w	#1,%d4
-	cmp.w	%d4,%d2
-	ble.s	5f
-	move.w	%d4,%d2
-5:	move.w	CrsrPin+4,%d4		| bottom
-	subq.w	#1,%d4
-	cmp.w	%d4,%d3
-	ble.s	6f
-	move.w	%d4,%d3
-6:	move.w	%d3,RawMouse
+mouse_clip:				| d2 = h, d3 = v: clipped to the desktop, into RawMouse and MTemp
+	bsr	clip_desk
+	move.w	%d3,RawMouse
 	move.w	%d2,RawMouse+2
 	move.w	%d3,MTemp
 	move.w	%d2,MTemp+2
