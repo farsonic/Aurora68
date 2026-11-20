@@ -212,7 +212,9 @@ struct psmb_cmd {
     int32_t  status;           /* 0 OK, else PSMB_E_* (negative) */
     uint32_t result;           /* command specific */
     uint32_t xfer;             /* bytes transferred */
-    uint32_t reserved[4];
+    uint32_t progress;         /* Pi: moves on while a command takes long (a USB disk's: psmac_usbdisk.c), so the
+                                  driver waits for as long as the Pi works on it (since 20 November 2026) */
+    uint32_t reserved[3];
 };
 
 #define PSMB_E_BADCMD        (-1)
@@ -240,7 +242,8 @@ struct psmb_cmd {
 #define PSMB_BLK_WRITE       2
 #define PSMB_BLK_FLUSH       3
 #define PSMB_BLK_INFO        4      /* refresh struct psmb_blkdev table */
-#define PSMB_BLK_EJECT       5
+#define PSMB_BLK_EJECT       5      /* a removable unit (a USB disk): flushed and released; the unit is then not
+                                       present until a disk is put in again */
 #define PSMB_BLK_BOOT        6      /* PiDisk's boot record (mac/pidisk_boot.s), as the Start Manager looks for a startup
                                        disk: result 0 = the card's image first, else the driver reference number of the
                                        SCSI disk to try first (psmac_mbox.c, mac.boot=); status PSMB_E_BUSY while the
@@ -250,12 +253,13 @@ struct psmb_blkdev {           /* 64 bytes, PSMB_OFF_BLKDEV + idx*64 */
     uint32_t blocks;           /* capacity in 512-byte blocks, 0 = no device */
     uint32_t block_size;       /* 512 */
     uint32_t flags;            /* PSMB_BD_* */
-    uint32_t reserved;
+    uint32_t media;            /* Pi: +1 each time a new disk is in the unit (a USB stick plugged in); the driver
+                                  then tells the Mac a disk was inserted. Written after blocks and name. */
     char     name[48];         /* C string, Mac Roman */
 };
-#define PSMB_BD_PRESENT      (1u << 0)
+#define PSMB_BD_PRESENT      (1u << 0)  /* a disk is in the unit (a removable one that is ejected or pulled out: clear) */
 #define PSMB_BD_WRITABLE     (1u << 1)
-#define PSMB_BD_REMOVABLE    (1u << 2)
+#define PSMB_BD_REMOVABLE    (1u << 2)  /* the Mac sees an ejectable disk (a USB stick, psmac_usbdisk.c) */
 
 /* NET service: Ethernet frames. TX by command; RX through a ring the Pi fills. */
 #define PSMB_NET_SEND        1      /* buf/len = frame (dst, src, type, payload), no FCS */

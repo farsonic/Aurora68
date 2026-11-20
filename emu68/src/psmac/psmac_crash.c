@@ -24,7 +24,8 @@
  *    exception handlers reach the dialog without the trap (a CrashTest program's F-line showed
  *    no _SysError), which is why the exception itself is the record that matters. "Welcome to
  *    Macintosh" (40) and the shutdown and disk alerts (20000 up) are _SysError calls too and are
- *    left out.
+ *    left out, and so is 30 (dsReinsert): the File Manager's "Please insert the disk" for an offline
+ *    volume, which a USB stick ejected or pulled out brings (psmac_usbdisk.c; a line of its own).
  *
  * The JIT core only fills the records and counts; all formatting and printing is on the service
  * core (psmac_crash_poll), so a crash costs the 68k a few dozen memory reads. At most eight blocks
@@ -244,6 +245,10 @@ void psmac_crash_poll(void)
     sys_seen = s;
     int16_t id = (int16_t)syserr.r[0];
     if (id <= 0 || id == 40 || id >= 20000) return;     /* "Welcome to Macintosh", the shutdown and disk alerts */
+    if (id == 30) {                                      /* dsReinsert: the disk-switch dialog, not a crash */
+        kprintf("[PSMAC:DISK] the Mac asks for a disk that is offline (\"Please insert the disk\", system error 30): put the USB stick back in, or press Command-period\n");
+        return;
+    }
     if (blocks >= CRASH_BLOCKS_MAX) return;
     blocks++;
     sprintf(what, "System error %d (%s) called at PC %08x", id, syserr_name(id), syserr.pc);

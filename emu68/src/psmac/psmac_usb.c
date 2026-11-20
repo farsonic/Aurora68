@@ -35,7 +35,12 @@
  * two seconds a look at the hub's ports (one control request each); a port that changed (plugged,
  * unplugged) starts a fresh enumeration, with every key released first.
  *
- * Kernel options: usb=off (leave the controller alone), usb=pio (Alice68's FIFO transport).
+ * USB flash drives (since 20 November 2026) are psmac_usbdisk.c's: after every enumeration, still
+ * on core 1 and before core 3 is let back onto the bus, it looks at the hub's ports for sticks and
+ * configures them, and between enumerations core 1 runs the sticks' work for the Mac.
+ *
+ * Kernel options: usb=off (leave the controller alone), usb=pio (Alice68's FIFO transport),
+ * mac.usbdisk=off|on|all (psmac_usbdisk.c).
  */
 #include <stdint.h>
 #include <string.h>
@@ -45,6 +50,7 @@
 #include "../alice/usb/frf_dwc2.h"
 #include "../alice/usb/frf_dwc2_pio.h"
 #include "../alice/usb/frf_usb_native_hid.h"
+#include "psmac_usbdisk.h"
 
 const char *psmac_option(const char *key);
 int alice_mbox(uint32_t tag, uint32_t a, uint32_t b, uint32_t *out);
@@ -289,16 +295,24 @@ static void report(const char *what, int rc)
 static uint32_t bus_gen;
 void psmac_usbnet_bus_reset(void);
 
+/* the ports that saw a plug or an unplug since the last enumeration (bit n: hub port n, bit 0: the
+   root port), for psmac_usbdisk.c: a stick taken out and put back between two looks at the ports is
+   a new disk, not the old one after a bus reset. Every port counts as changed at the start. */
+static uint32_t port_changes = ~0u;
+
 static void enumerate(const char *why)
 {
     struct frf_dwc2_state s;
     int rc;
+    uint32_t changed = port_changes;
+    port_changes = 0;
     enumerations++;
     rc = frf_dwc2_port_reset(&ops, &s);
     if (rc) {
         kprintf("[USB] %s: root port rc=%d (HPRT %08x, connected %u)\n", why, rc, s.port_status, s.port_connected);
         memset(&hid, 0, sizeof hid);
         root_connected = s.port_connected != 0;
+        psmac_usbdisk_claim(0, 0, 0, 0, !use_fifo, changed);      /* nothing on the bus: every stick is gone */
         __atomic_store_n(&bus_gen, bus_gen + 1, __ATOMIC_RELEASE);
         return;
     }
@@ -310,6 +324,8 @@ static void enumerate(const char *why)
        enumeration's, not the next plug */
     for (unsigned k = 1; k <= hid.root_hub_ports; k++)
         hub_clear(k, 16);                       /* C_PORT_CONNECTION */
+    /* USB flash drives (psmac_usbdisk.c), while core 3 still keeps off the bus */
+    psmac_usbdisk_claim(hid.root_hub_ports, root_speed, root_connected, hid.have_keyboard || hid.have_mouse, !use_fifo, changed);
     __atomic_store_n(&bus_gen, bus_gen + 1, __ATOMIC_RELEASE);
 }
 
@@ -383,9 +399,12 @@ void __attribute__((noreturn)) psmac_usb_core1(void)  /* core 1, after psmac_usb
     __asm__ volatile("msr CNTKCTL_EL1, %0; isb" :: "r"(k));
     for (;;) {
         const char *why;
-        while (!(why = __atomic_load_n(&enum_why, __ATOMIC_ACQUIRE)))
+        while (!(why = __atomic_load_n(&enum_why, __ATOMIC_ACQUIRE))) {
+            if (psmac_usbdisk_core1())          /* a USB stick's work for the Mac (psmac_usbdisk.c) */
+                continue;
             if (!psmac_audio_poll())
                 __asm__ volatile("wfe");
+        }
         psmac_audio_pause();
         enumerate(why);
         next_poll = now();
@@ -436,16 +455,22 @@ static int ports_changed(void)
     if (c != root_connected || !hid.root_hub_ports) {
         if (c != root_connected && hid.root_hub_ports)
             kprintf("[USB] root port: the hub was %s\n", c ? "plugged in" : "unplugged");
+        if (c != root_connected)
+            port_changes |= 1u;
         return c != root_connected;
     }
-    for (unsigned k = 1; k <= hid.root_hub_ports; k++) {
+    /* every port, so that psmac_usbdisk.c learns of each that changed (until 20 November 2026 the
+       first change ended the look) */
+    int any = 0;
+    for (unsigned k = 1; k <= hid.root_hub_ports && k < 32; k++) {
         uint32_t st;
         if (hub_port_status(k, &st) == 0 && (st & (1u << 16))) {      /* C_PORT_CONNECTION */
             kprintf("[USB] hub port %u: %s\n", k, st & 1u ? "connected" : "disconnected");
-            return 1;
+            port_changes |= 1u << k;
+            any = 1;
         }
     }
-    return 0;
+    return any;
 }
 
 /* A keyboard plugged in at power-on did not work on the user's Pi 3 until it was unplugged and
@@ -479,17 +504,29 @@ static int needs_retry(void)
        1) another enumeration finds nothing more, and each one resets the network chip as well */
     unsigned seen = hid.root_hub_ports ? hid.ports_seen : (unsigned)root_connected;   /* no hub: the device on the root port */
     unsigned others = hid.root_hub_ports ? (unsigned)psmac_board_netchip_on_hub() : 0;
+    others += psmac_usbdisk_seen();             /* USB flash drives found (psmac_usbdisk.c) are not a keyboard that failed */
     if ((!hid.have_keyboard || !hid.have_mouse) && seen > hid.have_keyboard + hid.have_mouse + others
         && retries < 12 && ++retries % 3 == 0)
         return 1;
     return 0;
 }
 
+/* core 1 (psmac_usbdisk.c): a stick stopped answering; core 3 starts a fresh enumeration, which
+   resets every device on the bus, at its next turn */
+static const char *volatile asked_why;
+void psmac_usb_ask_enumeration(const char *why) { __atomic_store_n(&asked_why, why, __ATOMIC_RELEASE); }
+
 void psmac_usb_poll(void)
 {
     uint64_t t;
+    const char *asked;
     if (!__atomic_load_n(&usb_on, __ATOMIC_ACQUIRE))
         return;
+    if ((asked = __atomic_exchange_n(&asked_why, (const char *)0, __ATOMIC_ACQ_REL))) {
+        kprintf("[USB] %s: enumerating again\n", asked);
+        enumerate_elsewhere(asked);
+        return;
+    }
     t = now();
     if (t >= next_check) {
         next_check = t + 2 * hz();
@@ -516,6 +553,7 @@ void psmac_usb_poll(void)
 void psmac_usb_report(void)
 {
     static unsigned beat;
+    psmac_usbdisk_report();
     if (!usb_on || beat++ % 6)
         return;
     kprintf("[USB]   %s, %u enumeration%s, kb %u (ok %u nak %u err %u), mouse %u (ok %u nak %u err %u), packets %u timeouts %u\n",

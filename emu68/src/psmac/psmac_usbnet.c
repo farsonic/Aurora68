@@ -65,6 +65,7 @@
 #include "../alice/usb/frf_dwc2_pio.h"
 #include "usbnet_frame.h"
 #include "psmac_ip.h"
+#include "psmac_usbdisk.h"
 
 const char *psmac_option(const char *key);
 int alice_mbox2(uint32_t tag, uint32_t a, uint32_t b, uint32_t out[2]);
@@ -713,7 +714,7 @@ static int probe(void)
 {
     uint8_t d[18];
     if (!N.hub_ports)
-        return try_device(1);                           /* a device on the root port itself (QEMU without a hub) */
+        return psmac_usbdisk_owns(1) ? -1 : try_device(1);     /* a device on the root port itself (QEMU without a hub) */
     for (unsigned port = 1; port <= N.hub_ports; port++) {
         uint8_t addr = (uint8_t)(1 + port);
         uint32_t st = 0;
@@ -721,6 +722,10 @@ static int probe(void)
            to an address nobody has); behind a high-speed hub only high-speed devices, as the bulk
            path has no split transactions */
         if (hub_status(1, (uint8_t)port, &st) || !(st & 1u))
+            continue;
+        /* a USB flash drive (psmac_usbdisk.c, core 1) is spoken to by core 1 alone: two control
+           transfers to one endpoint 0 at once would confuse it */
+        if (psmac_usbdisk_owns(addr))
             continue;
         if (!(st & 2u)) {
             if (address_port((uint8_t)port) < 0)

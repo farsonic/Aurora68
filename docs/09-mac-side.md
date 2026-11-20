@@ -6,7 +6,7 @@ syntax, `binutils-m68k-linux-gnu`) and is packaged by small Python tools in `too
 
 | Piece | Source | Output | What it is |
 |---|---|---|---|
-| `.PiDisk` | `mac/pidisk.s` | `pidisk.bin.raw` (DRVR image) | Block device driver over the mailbox BLOCK service: Open adds a drive queue entry per Pi block device and posts a disk-inserted event, Prime reads/writes 512-byte blocks synchronously, Control answers KillIO/verify/format/eject/icon/drive-info, Status answers drive status. |
+| `.PiDisk` | `mac/pidisk.s` | `pidisk.bin.raw` (DRVR image) | Block device driver over the mailbox BLOCK service: Open adds a drive queue entry per Pi block device and posts a disk-inserted event, Prime reads/writes 512-byte blocks synchronously, Control answers KillIO/verify/format/eject/icon/drive-info, Status answers drive status. Since 20 November 2026 also removable units (USB sticks): a VBL task adds a drive and posts a disk-inserted event when a disk is put in, marks the drive empty when it is taken out (Prime then answers offLinErr), and eject sends `PSMB_BLK_EJECT` (below, "USB flash drives"). |
 | PiDisk extension | `mac/pidisk_init.s` + the DRVR | `PiDisk.bin` (MacBinary, type `INIT`) | System 6/7 extension: installs the DRVR from its own resource fork (`_DrvrInstall`), opens it, mounts every drive it added (`_MountVol`). Used until the declaration ROM path loads the driver from ROM. |
 | PiMach extension | `mac/pimach.s` | `PiMach.bin` (MacBinary, type `INIT`) | Tells the Mac it is a Macintosh SE. The IIci ROM's Gestalt Manager answers the `'mach'` selector with 11 (gestaltMacIIci), so About This Macintosh, the Finder and every program that asks see a IIci. This INIT copies a four-instruction selector function into the system heap and installs it with `_ReplaceGestalt` ($A5AD) for `'mach'`; it answers 5, gestaltMacSE. Nothing else changes: the ROM's own view of its hardware is left alone (changing the ROM's box table would change its decisions about the IIci hardware it drives), the processor still reads 68030. Goes in the System Folder (System 6) or Extensions (System 7); `docs/img/system71-about-se.png`. |
 | `.Network_EtherNet_PiStorm` | `mac/enet.s` | `enet.bin.raw` | Apple `.ENET`-interface Ethernet driver over the NET service: EAttachPH/EDetachPH, ERead (default handler: queued parameter blocks completed from a VBL task), EWrite (WDS gather, source address inserted, 60-byte padding), EGetInfo (address + 3 counters), EAddMulti/EDelMulti, ESetGeneral, ERdCancel; real protocol handlers are called with the A3/A4/D1 convention and ReadPacket/ReadRest. Receives from the slot-9 interrupt (`SIntInstall`, docs/07) with the VBL task as a safety net. |
@@ -302,6 +302,79 @@ instead of DMA). docs/08 item 40 has the design.
 PC keyboards: by default the Windows key is Command and Alt is Option (Apple's own mapping for PC
 keyboards). `mac.altcmd=1` swaps them, so the key beside the space bar is Command as on a Mac
 keyboard. Both apply to USB and Bluetooth keyboards.
+
+## USB flash drives (20 November 2026)
+A USB stick plugged into the Pi appears on the Mac's desktop as a disk, while the Mac runs, and is
+ejected from the Finder like a floppy (docs/08 item 75). It is a PiDisk unit, so nothing has to be
+installed on the Mac: the kernel and the declaration ROM do it.
+
+**What you need.** The new `kernel8.img` and a container rebuilt with the new declaration ROM
+(`aurora68.declrom` or `aurora68-se-WxH.declrom`). An older declaration ROM's PiDisk sees a stick only if it
+was plugged in before the Mac started, and may give up on a slow one. Nothing in cmdline.txt:
+`mac.usbdisk=on` is the default.
+
+**What the stick must hold.** System 7 reads HFS ("Mac OS Standard"), not FAT, exFAT or HFS Plus
+("Mac OS Extended"). The stick can be:
+- formatted HFS on a Mac (Mac OS 9 or earlier, or Disk Utility up to 10.5);
+- a disk image written to it (`dd`), bare HFS or with an Apple partition map, like the card's images;
+- initialized on the Mac itself (below).
+
+Other sticks stay on the Pi, and the log says why: "[USB] disk 0: an MBR partition table, first
+partition FAT32 ... not offered to the Mac". That way the Finder never offers to erase a PC's stick.
+
+**Using it.**
+1. Plug the stick into any of the Pi's USB sockets, before or after the Mac starts. A few seconds
+   later its icon (the PiDisk icon) is on the desktop.
+2. Use it as any disk. Every write the Mac makes has reached the stick when the Finder says it is
+   done; the kernel caches nothing.
+3. To take it out, drag its icon to the Trash (Put Away) or choose Eject Disk (Command-E). Wait for
+   the icon to go (or turn grey), then unplug. The log says "[USB] disk 0 (...): ejected by the Mac
+   ...: safe to unplug".
+4. Pulled out without ejecting, the Mac is told the drive is empty, as for a floppy pulled out with a
+   paper clip. Using the volume then gives "error of type -65", and a volume ejected with Command-E
+   asks "Please insert the disk". Plug the stick back in and the volume carries on. Drag it to the
+   Trash if it is not coming back. A file being written when the stick was pulled is lost, as on any
+   computer.
+
+**To make a stick for the Mac on the Mac:** add `mac.usbdisk=all` to cmdline.txt, plug in a stick
+you can erase, and click Initialize when the Finder says "This is not a Macintosh disk"
+(`docs/img/system71-usb-stick-initialize.png`). It becomes an HFS stick (2 GB at most, HFS's limit on
+System 7). Take `mac.usbdisk=all` out again afterwards. With it, every stick, a PC's too, is offered,
+and the Finder offers to erase it. PC Exchange users may want it for FAT12/16 sticks.
+`mac.usbdisk=off` leaves sticks alone. Up to four disks in all: the card's images and sticks share
+PiDisk's four units.
+
+**Log lines to send back** (PiLog with the filter `disk`, or the serial log). In the testbed, with
+QEMU's stick, they read:
+```
+[USB] disk 0 on hub port 3: QEMU QEMU USB HARDDRIVE (46f4:0001), full speed, LUN 0 of 1
+[USB] disk 0: "QEMU QEMU HARDDISK 2.5+", 32832 blocks of 512 bytes (16 MB), writable
+[USB] disk 0: an Apple partition map, 2 entries: Apple_partition_map, Apple_HFS
+[USB] disk 0: its Apple_HFS partition (blocks 64-32831) holds the HFS volume "APM Stick"
+[USB] disk 0: offered to the Mac: 32768 blocks (16 MB) from block 64, writable
+[PSMAC:DISK] PiDisk unit 1 is USB disk 0, USB QEMU USB HARDDRIVE: 32768 blocks (16 MB), writable; the Mac's driver is told a disk was inserted
+[MAC] PiDisk: a disk was put in: disk-inserted event
+[PSMAC:DISK] PiDisk unit 1 (USB disk 0): the Mac's first read, block 2: it is mounting the disk
+[USB]   disk 0 (QEMU USB HARDDRIVE): on the Mac, 40 reads (804 blocks), 1 writes (1 blocks), 0 errors, 0 resets
+```
+On the Pi 3B the first line should say "high speed" for a USB 2 stick.
+Any line with "reset recovery", "failed", "not ready" or "did not answer", and the
+`[USB] start` / `plug or unplug` lines around it, say what went wrong.
+
+**In the testbed** (QEMU's raspi3b has the Pi's DWC2; its hub is full speed). Make an HFS image
+(`dd if=/dev/zero of=stick.img bs=1M count=32; hformat -l "USB Stick" stick.img`) and boot with a hub
+(`QEMU_EXTRA="-device usb-hub,id=h -device usb-kbd,bus=usb-bus.0,port=1.1"`, plus `mac.remotefile=BASE`
+to drive the Finder with `tools/aurora68.py --semihost BASE`). Once the Finder is up, plug the stick in
+with the virtual CPUs stopped: QEMU 8.2.2 hung on a `device_add` while they ran.
+```
+python3 tools/qemu-mon.py stop
+python3 tools/qemu-mon.py "drive_add 0 if=none,id=d1,file=$PWD/stick.img,format=raw"
+python3 tools/qemu-mon.py "device_add usb-storage,id=u1,drive=d1,bus=usb-bus.0,port=1.3"
+python3 tools/qemu-mon.py cont
+```
+and `stop`, `device_del u1`, `cont` to pull it out (each plug needs a new id). A stick alone on the root
+port (`-device usb-storage,bus=usb-bus.0,port=1,drive=...` at start) runs at high speed. hfsutils keeps
+its current volume in `$HOME/.hcwd`: give it a HOME of its own when another job uses hfsutils too.
 
 ## MacTCP
 MacTCP is Apple's TCP/IP of 1989-1996: the `.IPP` driver and a control panel, later folded into

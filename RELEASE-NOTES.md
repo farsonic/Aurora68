@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **USB flash drives on the Mac's desktop.** Plug a USB stick into the Pi and it appears on the Mac's
+  desktop a few seconds later, while the Mac runs; drag it to the Trash (or Command-E) and the log says
+  when it is safe to unplug. A stick pulled out without ejecting leaves the Mac asking for the disk, as a
+  floppy would, and carries on when it is plugged back in. System 7 reads HFS sticks (formatted on an
+  old Mac, or a disk image written to the stick); FAT, exFAT and HFS Plus sticks are not offered, so the
+  Finder never offers to erase a PC's stick, and the log says what the stick holds. `mac.usbdisk=all`
+  offers every stick (to initialize one on the Mac), `mac.usbdisk=off` none. Tested in QEMU only.
+  Replace kernel8.img and rebuild the container with the new declaration ROM.
 - **The Mac's sound in stereo on the HDMI monitor.** The startup chime, alert sounds and everything the
   Sound Manager plays come out of the HDMI monitor's loudspeakers (and, on the SE, out of its own speaker as
   before). The Pi mixes them on a core of its own and sends them to the HDMI transmitter; `mac.audio=jack`

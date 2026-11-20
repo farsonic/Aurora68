@@ -5,6 +5,19 @@
 | command slot (synchronous: post, spin until done_seq == req_seq), Control/Status answer the
 | calls the File Manager and Finder make for a fixed hard disk.
 |
+| Removable units (20 November 2026): a USB flash drive plugged into the Pi is a PiDisk unit too
+| (emu68/src/psmac/psmac_usbdisk.c), one that comes and goes while the Mac runs. The Pi marks such
+| a unit PSMB_BD_REMOVABLE, clears PSMB_BD_PRESENT while no disk is in it and moves the unit's
+| media count for every disk put in. A VBL task, every two seconds, does what the Sony driver does
+| for a floppy: a new disk gets its drive (added to the drive queue the first time) and a
+| disk-inserted event, which has the Event Manager mount it; a disk taken out leaves its drive
+| empty (disk-in-place 0), and Prime then answers offLinErr, so the File Manager puts the volume
+| offline and asks for the disk back, as for a floppy pulled out with a paper clip. Its drive says
+| "ejectable disk" (disk-in-place 1), so the Finder ejects it: Control's eject sends the Pi
+| PSMB_BLK_EJECT, which flushes the stick and releases it. A USB disk's command can take longer
+| than a card image's (a slow stick, a bus reset): the Pi moves the command block's progress word
+| while it works, and the spin goes on for as long as that moves.
+|
 | Window address: 0x900000 while the MMU is in 24-bit mode (lowmem MMU32Bit $CB2 == 0), else
 | 0xF9000000. Buffers are handed to the Pi as 68k logical addresses (the Pi translates).
 |
@@ -32,13 +45,20 @@
 	.equ	C_STATUS,	36
 	.equ	C_RESULT,	40
 	.equ	C_XFER,		44
+	.equ	C_PROG,		48		| the Pi's progress word while a command takes long
 	.equ	BLK_READ,	1
 	.equ	BLK_WRITE,	2
 	.equ	BLK_FLUSH,	3
 	.equ	BLK_INFO,	4
+	.equ	BLK_EJECT,	5
 	.equ	BD_BLOCKS,	0
 	.equ	BD_FLAGS,	8
-	.equ	BD_WRITABLE,	2
+	.equ	BD_MEDIA,	12
+	.equ	BD_PRESENT,	0		| bit numbers in the flags' low byte
+	.equ	BD_WRITABLE,	1
+	.equ	BD_REMOVABLE,	2
+	.equ	E_RO,		-6		| PSMB_E_RO: a write to a write-protected disk
+	.equ	E_NODATA,	-7		| PSMB_E_NODATA: no disk in the unit
 	.equ	MAXDEV,		4
 
 | ---- Mac OS ----
@@ -62,23 +82,31 @@
 	.equ	controlErr,	-17
 	.equ	statusErr,	-18
 	.equ	ioErr,		-36
+	.equ	wPrErr,		-44
 	.equ	paramErr,	-50
 	.equ	nsDrvErr,	-56
-	.equ	wPrErr,		-44
+	.equ	offLinErr,	-65
 	.equ	_NewPtrSysClear,	0xA71E
 	.equ	_AddDrive,	0xA04E
 
+| One record per device in the globals. The four flag bytes come first because the File Manager and
+| the Finder read them just before a drive queue element: byte 0 bit 7 locked, byte 1 the disk in
+| place (0 none, 1 an ejectable disk, 8 a fixed one).
+	.equ	D_FLAGS,	0
+	.equ	D_DQE,		4		| DrvQEl, 18 bytes: qLink, qType +4, dQDrive +6, dQRefNum +8, dQFSID +10, dQDrvSz +12, dQDrvSz2 +14
+	.equ	D_ADDED,	22		| word: the drive is in the drive queue
+	.equ	D_MEDIA,	24		| long: the Pi's media count for the unit, when last looked at
+	.equ	D_POSTS,	28		| word: disk-inserted events still to post
+	.equ	D_READ,		30		| word: read or written since the disk went in
+	.equ	D_REMOV,	32		| word: an ejectable unit (a USB stick)
+	.equ	DEV_SIZE,	36
 | driver globals (dCtlStorage -> pointer, allocated with NewPtrSysClear)
-	.equ	G_WIN,		0		| window base currently used (long)
-	.equ	G_NDEV,		4		| devices published (word)
-	.equ	G_FIRSTDRV,	6		| first drive number (word)
-	.equ	G_DQE,		8		| 4 x (4 flag bytes + 18-byte DrvQEl) = 4 x 22 -> use 24 each
-	.equ	DQE_SIZE,	24
-	.equ	G_VBL,		G_DQE+MAXDEV*DQE_SIZE	| VBLTask (14 bytes) + globals pointer (4)
+	.equ	G_WIN,		0		| window base at Open (long)
+	.equ	G_REFNUM,	4		| the driver's reference number (word), for drives added later
+	.equ	G_DEV,		8		| MAXDEV device records
+	.equ	G_VBL,		G_DEV+MAXDEV*DEV_SIZE	| VBLTask (14 bytes) + globals pointer (4)
 	.equ	G_VBLSELF,	G_VBL+14
-	.equ	G_POSTS,	G_VBLSELF+4	| word: disk events posted so far
-	.equ	G_PRIMED,	G_VBLSELF+6	| word: nonzero once the File Manager has read from us
-	.equ	G_SIZE,		G_VBLSELF+8
+	.equ	G_SIZE,		G_VBLSELF+4
 	.equ	_VInstall,	0xA033
 	.equ	_VRemove,	0xA034
 
@@ -145,9 +173,10 @@ window:
 	lea	WIN24,%a0
 1:	rts
 
-| blkcmd: d1 = cmd, d2 = device, d3 = first block, d4 = block count, a2 = buffer -> d0 = status (0 ok)
+| blkcmd: d1 = cmd, d2 = device, d3 = first block, d4 = block count, a2 = buffer
+|   -> d0 = 0 done, the Pi's status (PSMB_E_*, -1..-8) when it refused, ioErr when it did not answer
 blkcmd:
-	movem.l	%a0/%d5,-(%sp)
+	movem.l	%a0/%d5-%d7,-(%sp)
 	bsr.s	window
 	lea	CMD_BLOCK(%a0),%a0
 	move.w	%d1,C_CMD(%a0)
@@ -160,10 +189,11 @@ blkcmd:
 	lsl.l	#8,%d5
 	add.l	%d5,%d5			| count * 512
 	move.l	%d5,C_LEN(%a0)
+	move.l	C_PROG(%a0),%d6		| the Pi's progress word as we post
 	move.l	C_REQ(%a0),%d5
 	addq.l	#1,%d5
 	move.l	%d5,C_REQ(%a0)		| post
-	move.l	#100000000,%d0		| spin limit: core 3 answers in microseconds, but a block of an image
+1:	move.l	#100000000,%d0		| spin limit: core 3 answers in microseconds, but a block of an image
 					| still coming in from the card, or the WiFi's turn, can take tens of
 					| milliseconds; 2,000,000 turns (2-5 ms at JIT speed) gave I/O errors
 					| and "This disk is unreadable" (docs/08 item 52)
@@ -171,19 +201,98 @@ blkcmd:
 	beq.s	3f
 	subq.l	#1,%d0
 	bne.s	2b
-	moveq	#ioErr,%d0
+	| the spin is over: wait on while the Pi's progress word moves (a USB disk's command, a stick that
+	| is slow or a bus being enumerated again); the Pi bounds every command, so this ends
+	move.l	C_PROG(%a0),%d7
+	cmp.l	%d6,%d7
+	beq.s	5f
+	move.l	%d7,%d6
+	bra.s	1b
+5:	moveq	#ioErr,%d0
 	bra.s	4f
 3:	move.l	C_STATUS(%a0),%d0
-	beq.s	4f
-	moveq	#ioErr,%d0
-4:	movem.l	(%sp)+,%a0/%d5
+4:	movem.l	(%sp)+,%a0/%d5-%d7
 	rts
+
+| dev_ptrs: d5.w = device index, a2 = globals -> a0 = its descriptor in the window, a3 = its record
+dev_ptrs:
+	bsr.s	window
+	moveq	#0,%d0
+	move.w	%d5,%d0
+	lsl.l	#6,%d0
+	add.l	%d0,%a0
+	lea	OFF_BLKDEV(%a0),%a0
+	move.w	%d5,%d0
+	mulu	#DEV_SIZE,%d0
+	lea	G_DEV(%a2,%d0.l),%a3
+	rts
+
+| find_dev: d0.w = drive number, a2 = globals -> d2.l = device index and a3 = its record, d2 = -1 if
+| the drive is not ours
+find_dev:
+	moveq	#0,%d2
+	lea	G_DEV(%a2),%a3
+1:	tst.w	D_ADDED(%a3)
+	beq.s	2f
+	cmp.w	D_DQE+6(%a3),%d0	| dQDrive
+	beq.s	3f
+2:	lea	DEV_SIZE(%a3),%a3
+	addq.l	#1,%d2
+	cmp.l	#MAXDEV,%d2
+	blt.s	1b
+	moveq	#-1,%d2
+3:	rts
+
+| insert: a disk is in the unit. a0 = its descriptor, a3 = its record, a2 = globals. The record's
+| flags and size from the descriptor; the drive into the drive queue the first time (_AddDrive only
+| links the element into the queue, so the VBL task may call it too).
+insert:
+	movem.l	%d0-%d2/%d7/%a0-%a1,-(%sp)
+	move.b	#0,D_FLAGS(%a3)
+	btst	#BD_WRITABLE,BD_FLAGS+3(%a0)
+	bne.s	1f
+	move.b	#0x80,D_FLAGS(%a3)	| read-only: locked
+1:	move.b	#8,D_FLAGS+1(%a3)	| a fixed disk in place
+	tst.w	D_REMOV(%a3)
+	beq.s	2f
+	move.b	#1,D_FLAGS+1(%a3)	| an ejectable disk in place
+2:	clr.w	D_FLAGS+2(%a3)
+	move.l	BD_BLOCKS(%a0),%d0
+	move.w	%d0,D_DQE+12(%a3)	| dQDrvSz (low)
+	swap	%d0
+	move.w	%d0,D_DQE+14(%a3)	| dQDrvSz2 (high)
+	move.w	#1,D_DQE+4(%a3)		| qType 1: dQDrvSz2 holds the high word
+	clr.w	D_DQE+10(%a3)		| dQFSID
+	clr.w	D_READ(%a3)
+	tst.w	D_ADDED(%a3)
+	bne.s	3f
+	moveq	#5,%d7			| first drive number candidate (1..4: floppies and the ROM's own)
+	bsr	free_drive_number
+	clr.l	D_DQE(%a3)		| qLink
+	move.w	%d7,D_DQE+6(%a3)	| dQDrive
+	move.w	G_REFNUM(%a2),D_DQE+8(%a3)	| dQRefNum
+	| _AddDrive: a0 = DrvQEl, d0 = drive<<16 | refNum (it fills dQDrive/dQRefNum from d0)
+	lea	D_DQE(%a3),%a0
+	move.w	%d7,%d0
+	swap	%d0
+	move.w	G_REFNUM(%a2),%d0
+	.short	_AddDrive
+	move.w	#1,D_ADDED(%a3)
+3:	movem.l	(%sp)+,%d0-%d2/%d7/%a0-%a1
+	rts
+
+| removable: the unit's ejectable flag from its descriptor (a0) into its record (a3)
+removable:
+	clr.w	D_REMOV(%a3)
+	btst	#BD_REMOVABLE,BD_FLAGS+3(%a0)
+	beq.s	1f
+	move.w	#1,D_REMOV(%a3)
+1:	rts
 
 | ---- Open: allocate globals, publish drives ----
 d_open:
 	movem.l	%d1-%d7/%a0-%a4,-(%sp)
 	move.l	%a1,%a4			| DCE
-	move.l	%a0,%a3			| PB
 	log	"PiDisk: open"
 	tst.l	dCtlStorage(%a4)
 	bne	open_ok			| already open
@@ -193,6 +302,7 @@ d_open:
 	beq	open_fail
 	move.l	%a0,dCtlStorage(%a4)
 	move.l	%a0,%a2			| globals
+	move.w	dCtlRefNum(%a4),G_REFNUM(%a2)
 	bsr	window
 	move.l	%a0,G_WIN(%a2)
 	cmp.l	#PSMB_MAGIC,(%a0)
@@ -203,78 +313,39 @@ d_open:
 	moveq	#0,%d2
 	moveq	#0,%d3
 	moveq	#0,%d4
-	suba.l	%a2,%a2
-	move.l	dCtlStorage(%a4),%a2
 	movem.l	%a2,-(%sp)
 	suba.l	%a2,%a2
 	bsr	blkcmd
 	movem.l	(%sp)+,%a2
-	| walk the descriptors
-	bsr	window
-	lea	OFF_BLKDEV(%a0),%a0
+	| a drive for every unit with a disk in it now; the VBL task adds the others when theirs comes
 	moveq	#0,%d5			| device index
-	moveq	#0,%d6			| drives added
-	move.w	#5,%d7			| first drive number candidate (1..4 are floppies/SCSI ids are fine? use 5+)
-	bsr	free_drive_number
 open_loop:
-	move.l	BD_BLOCKS(%a0),%d0
-	beq	open_next
-	| build flags + DrvQEl in globals
-	move.l	%d5,%d1
-	mulu	#DQE_SIZE,%d1
-	lea	G_DQE(%a2,%d1.l),%a1
-	| the four flag bytes before the DrvQEl: 0 bit 7 = locked, 1 = disk state (8 = nonejectable disk
-	| in place), 2 internal, 3 internal
-	move.b	#0,(%a1)
-	move.b	#8,1(%a1)
-	move.b	#0,2(%a1)
-	move.b	#0,3(%a1)
-	btst	#1,BD_FLAGS+3(%a0)	| writable?
-	bne.s	1f
-	move.b	#0x80,(%a1)		| read-only image: locked
-1:	lea	4(%a1),%a1		| DrvQEl
-	clr.l	0(%a1)			| qLink
-	move.w	#1,4(%a1)		| qType 1: dQDrvSz2 holds the high word
-	move.w	%d7,6(%a1)		| dQDrive
-	move.w	dCtlRefNum(%a4),8(%a1)	| dQRefNum
-	move.w	#0,10(%a1)		| dQFSID
-	move.w	%d0,12(%a1)		| dQDrvSz (low)
-	swap	%d0
-	move.w	%d0,14(%a1)		| dQDrvSz2 (high)
-	| _AddDrive: a0 = DrvQEl, d0 = drive<<16 | refNum (it fills dQDrive/dQRefNum from d0)
-	movem.l	%a0,-(%sp)
-	move.l	%a1,%a0
-	move.w	%d7,%d0
-	swap	%d0
-	move.w	dCtlRefNum(%a4),%d0
-	.short	_AddDrive
-	movem.l	(%sp)+,%a0
+	bsr	dev_ptrs
+	move.l	BD_MEDIA(%a0),D_MEDIA(%a3)
+	bsr	removable
+	btst	#BD_PRESENT,BD_FLAGS+3(%a0)
+	beq.s	open_next
+	tst.l	BD_BLOCKS(%a0)
+	beq.s	open_next
+	bsr	insert
+	move.w	#200,D_POSTS(%a3)	| posted every 2 s until the File Manager reads the drive, at most 200 times
 	log	"PiDisk: drive added" 
-	tst.w	%d6
-	bne.s	2f
-	move.w	%d7,G_FIRSTDRV(%a2)
-2:	addq.w	#1,%d6
-	addq.w	#1,%d7
-	bsr	free_drive_number
 open_next:
-	lea	64(%a0),%a0
 	addq.w	#1,%d5
 	cmp.w	#MAXDEV,%d5
-	blt	open_loop
-	move.w	%d6,G_NDEV(%a2)
-	tst.w	%d6
-	beq.s	open_ok
-	| the volumes get mounted by the Finder when it sees a disk-inserted event: post them from a
-	| VBL task a few seconds from now (Open runs before the Event Manager exists)
+	blt.s	open_loop
+	| The volumes get mounted when the Event Manager takes a disk-inserted event: post them from a
+	| VBL task a few seconds from now (Open runs before the Event Manager exists), and keep the task
+	| for removable disks put in and taken out later
 	move.l	%a2,G_VBLSELF(%a2)
 	lea	G_VBL(%a2),%a0
 	clr.l	(%a0)
 	move.w	#1,4(%a0)		| vType
-	lea	mount_vbl(%pc),%a1
+	lea	disk_vbl(%pc),%a1
 	move.l	%a1,6(%a0)
-	move.w	#300,10(%a0)		| first event 5 s after Open, then every 2 s until the File Manager reads
-					| us: an event posted before the Finder runs is flushed and posted again,
-					| and a fast boot (docs/08 item 50) no longer waits a minute for the volume
+	move.w	#300,10(%a0)		| first look 5 s after Open, then every 2 s: an event posted before the
+					| Finder runs is flushed and posted again, and a fast boot (docs/08 item
+					| 50) no longer waits a minute for the volume
 	move.w	#0,12(%a0)
 	.short	_VInstall
 open_ok:
@@ -304,55 +375,63 @@ free_drive_number:
 | ---- Prime: read / write ----
 d_prime:
 	log	"PiDisk: prime"
-	movem.l	%d1-%d5/%a2-%a4,-(%sp)
-	move.l	%a0,%a3			| PB
-	move.l	%a1,%a4			| DCE
-	move.l	dCtlStorage(%a4),%a2
+	movem.l	%d1-%d7/%a0-%a4,-(%sp)
+	move.l	%a0,%a4			| PB (a1: the DCE, kept)
+	move.l	dCtlStorage(%a1),%a2
 	move.l	%a2,%d0
 	beq	prime_err
-	| device index from drive number
-	move.w	ioVRefNum(%a3),%d2
-	sub.w	G_FIRSTDRV(%a2),%d2
+	move.w	ioVRefNum(%a4),%d0
+	bsr	find_dev
+	tst.l	%d2
 	blt	prime_nodrv
-	cmp.w	G_NDEV(%a2),%d2
-	bge	prime_nodrv
-	ext.l	%d2
+	tst.b	D_FLAGS+1(%a3)
+	beq	prime_offline		| no disk in the drive
 	| block = dCtlPosition / 512, count = ioReqCount / 512
-	move.l	dCtlPosition(%a4),%d3
+	move.l	dCtlPosition(%a1),%d3
 	move.l	%d3,%d0
 	and.l	#0x1FF,%d0
 	bne	prime_param
 	lsr.l	#8,%d3
 	lsr.l	#1,%d3
-	move.l	ioReqCount(%a3),%d4
+	move.l	ioReqCount(%a4),%d4
 	move.l	%d4,%d0
 	and.l	#0x1FF,%d0
 	bne	prime_param
 	lsr.l	#8,%d4
 	lsr.l	#1,%d4
-	move.l	ioBuffer(%a3),%d0
+	move.l	ioBuffer(%a4),%d0
 	tst.b	MMU32Bit
 	bne.s	0f
 	and.l	#0x00FFFFFF,%d0		| 24-bit mode: drop the flag bits in the high byte
 0:	move.l	%d0,%a2
 	moveq	#BLK_READ,%d1
-	move.w	ioTrap(%a3),%d0
+	move.w	ioTrap(%a4),%d0
 	and.w	#0xFF,%d0
 	cmp.w	#3,%d0			| aWrCmd
 	bne.s	1f
 	moveq	#BLK_WRITE,%d1
 1:	bsr	blkcmd
 	tst.l	%d0
-	bne.s	prime_io
-	move.l	ioReqCount(%a3),%d0
-	move.l	%d0,ioActCount(%a3)
-	add.l	%d0,dCtlPosition(%a4)
-	move.l	dCtlStorage(%a4),%a2
-	move.w	#1,G_PRIMED(%a2)
+	bne.s	prime_status
+	move.w	#1,D_READ(%a3)
+	move.l	ioReqCount(%a4),%d0
+	move.l	%d0,ioActCount(%a4)
+	add.l	%d0,dCtlPosition(%a1)
 	moveq	#noErr,%d0
 	bra.s	prime_done
+prime_status:
+	cmp.l	#E_NODATA,%d0
+	beq.s	prime_offline
+	cmp.l	#E_RO,%d0
+	beq.s	prime_wprot
 prime_io:
 	moveq	#ioErr,%d0
+	bra.s	prime_done
+prime_offline:
+	moveq	#offLinErr,%d0		| as for a floppy taken out: the File Manager puts the volume offline
+	bra.s	prime_done
+prime_wprot:
+	moveq	#wPrErr,%d0
 	bra.s	prime_done
 prime_param:
 	moveq	#paramErr,%d0
@@ -363,7 +442,7 @@ prime_nodrv:
 prime_err:
 	moveq	#ioErr,%d0
 prime_done:
-	movem.l	(%sp)+,%d1-%d5/%a2-%a4
+	movem.l	(%sp)+,%d1-%d7/%a0-%a4
 	bra	iodone
 
 | ---- Control ----
@@ -376,8 +455,8 @@ d_control:
 	beq.s	ctl_ok
 	cmp.w	#6,%d0			| format
 	beq.s	ctl_ok
-	cmp.w	#7,%d0			| eject: nothing to do, keep the drive
-	beq.s	ctl_ok
+	cmp.w	#7,%d0			| eject
+	beq.s	ctl_eject
 	cmp.w	#21,%d0			| physical drive icon
 	beq.s	ctl_icon
 	cmp.w	#22,%d0			| media icon
@@ -397,6 +476,30 @@ ctl_info:
 ctl_ok:
 	moveq	#noErr,%d0
 	bra	iodone
+| eject: a fixed disk (a disk image) stays where it is; an ejectable one (a USB stick) is flushed and
+| released by the Pi, and its drive is empty from now on (the File Manager has flushed the volume and
+| put it offline, or unmounted it, before it asks)
+ctl_eject:
+	movem.l	%d1-%d7/%a0-%a4,-(%sp)
+	move.l	dCtlStorage(%a1),%a2
+	move.l	%a2,%d0
+	beq.s	1f
+	move.w	ioVRefNum(%a0),%d0
+	bsr	find_dev
+	tst.l	%d2
+	blt.s	1f
+	tst.w	D_REMOV(%a3)
+	beq.s	1f
+	log	"PiDisk: eject"
+	clr.b	D_FLAGS+1(%a3)		| no disk in the drive
+	clr.w	D_POSTS(%a3)
+	moveq	#BLK_EJECT,%d1
+	moveq	#0,%d3
+	moveq	#0,%d4
+	suba.l	%a2,%a2
+	bsr	blkcmd
+1:	movem.l	(%sp)+,%d1-%d7/%a0-%a4
+	bra.s	ctl_ok
 
 | ---- Status ----
 d_status:
@@ -404,29 +507,33 @@ d_status:
 	move.w	csCode(%a0),%d0
 	cmp.w	#8,%d0			| drive status
 	bne.s	st_err
-	| return the 22-byte "DrvSts" block: track, writeProt, diskInPlace, installed, sides, qLink..., we copy flags+DrvQEl
-	movem.l	%a2/%a3/%d1,-(%sp)	| a1 (the DCE) must survive for IODone
+	| the 22-byte DrvSts block: track, writeProt, diskInPlace, installed, sides, the DrvQEl, ...
+	movem.l	%a2/%a3/%d1/%d2,-(%sp)	| a1 (the DCE) must survive for IODone
 	move.l	dCtlStorage(%a1),%a2
-	move.w	ioVRefNum(%a0),%d1
-	sub.w	G_FIRSTDRV(%a2),%d1
-	mulu	#DQE_SIZE,%d1
-	lea	G_DQE(%a2,%d1.l),%a2
-	lea	csParam(%a0),%a3
-	move.w	#0,(%a3)+		| track
-	move.b	(%a2),(%a3)+		| writeProt (0x80 = locked)
-	move.b	#8,(%a3)+		| diskInPlace: 8 = nonejectable
-	move.b	#1,(%a3)+		| installed
-	move.b	#0,(%a3)+		| sides
-	move.l	4(%a2),(%a3)+		| qLink
-	move.w	8(%a2),(%a3)+		| qType
-	move.w	10(%a2),(%a3)+		| dQDrive
-	move.w	12(%a2),(%a3)+		| dQRefNum
-	move.w	14(%a2),(%a3)+		| dQFSID
-	move.b	#0,(%a3)+		| twoSideFmt
-	move.b	#0,(%a3)+		| needsFlush
-	move.w	#0,(%a3)+		| diskErrs
-	movem.l	(%sp)+,%a2/%a3/%d1
+	move.w	ioVRefNum(%a0),%d0
+	bsr	find_dev
+	tst.l	%d2
+	blt.s	st_nodrv
+	lea	csParam(%a0),%a2
+	move.w	#0,(%a2)+		| track
+	move.b	D_FLAGS(%a3),(%a2)+	| writeProt (0x80 = locked)
+	move.b	D_FLAGS+1(%a3),(%a2)+	| diskInPlace: 0 none, 1 ejectable, 8 fixed
+	move.b	#1,(%a2)+		| installed
+	move.b	#0,(%a2)+		| sides
+	move.l	D_DQE(%a3),(%a2)+	| qLink
+	move.w	D_DQE+4(%a3),(%a2)+	| qType
+	move.w	D_DQE+6(%a3),(%a2)+	| dQDrive
+	move.w	D_DQE+8(%a3),(%a2)+	| dQRefNum
+	move.w	D_DQE+10(%a3),(%a2)+	| dQFSID
+	move.b	#0,(%a2)+		| twoSideFmt
+	move.b	#0,(%a2)+		| needsFlush
+	move.w	#0,(%a2)+		| diskErrs
+	movem.l	(%sp)+,%a2/%a3/%d1/%d2
 	moveq	#noErr,%d0
+	bra	iodone
+st_nodrv:
+	movem.l	(%sp)+,%a2/%a3/%d1/%d2
+	moveq	#nsDrvErr,%d0
 	bra	iodone
 st_err:
 	moveq	#statusErr,%d0
@@ -437,40 +544,62 @@ d_close:
 	moveq	#noErr,%d0
 	rts
 
-| ---- VBL task (every 2 s): post one diskEvt per drive until the File Manager has read from us
-|      (events posted before the Finder runs are flushed at startup), at most 200 times; the log
-|      has the first post only ----
-mount_vbl:
-	movem.l	%d0-%d2/%a0-%a2,-(%sp)
-	move.l	14(%a0),%a2		| globals
-	tst.w	G_PRIMED(%a2)
-	bne	3f
-	addq.w	#1,G_POSTS(%a2)
-	cmp.w	#200,G_POSTS(%a2)
-	bgt	3f
-	move.w	G_NDEV(%a2),%d2
-	beq	2f
-	move.w	G_FIRSTDRV(%a2),%d1
-	subq.w	#1,%d2
-1:	moveq	#7,%d0
+| ---- VBL task (every 2 s, the first 5 s after Open), for each unit: a new disk (a unit that has one
+|      and whose drive is not in the queue yet, or whose media count moved) gets its drive and
+|      disk-inserted events; a drive whose disk went is marked empty; and the events are posted, one
+|      per drive each time, until the File Manager has read the drive (events posted before the
+|      Finder runs are flushed at startup) ----
+disk_vbl:
+	movem.l	%d0-%d7/%a0-%a4,-(%sp)
+	move.l	14(%a0),%a2		| globals (G_VBLSELF, after the task)
+	moveq	#0,%d5
+vbl_unit:
+	bsr	dev_ptrs
+	btst	#BD_PRESENT,BD_FLAGS+3(%a0)
+	beq	vbl_none
+	tst.l	BD_BLOCKS(%a0)
+	beq	vbl_none
+	tst.w	D_ADDED(%a3)
+	beq.s	1f
+	move.l	BD_MEDIA(%a0),%d0
+	cmp.l	D_MEDIA(%a3),%d0
+	beq	vbl_post
+1:	move.l	BD_MEDIA(%a0),D_MEDIA(%a3)
+	bsr	removable
+	bsr	insert
+	move.w	#15,D_POSTS(%a3)	| every 2 s for half a minute at most, until the drive is read
+	log	"PiDisk: a disk was put in: disk-inserted event"
+	bra	vbl_post
+vbl_none:
+	tst.w	D_ADDED(%a3)
+	beq	vbl_next
+	tst.b	D_FLAGS+1(%a3)
+	beq	vbl_next
+	clr.b	D_FLAGS+1(%a3)		| no disk in the drive
+	clr.w	D_POSTS(%a3)
+	log	"PiDisk: a disk was taken out: its drive is empty"
+	bra	vbl_next
+vbl_post:
+	tst.w	D_POSTS(%a3)
+	beq	vbl_next
+	tst.w	D_READ(%a3)
+	bne.s	2f
+	tst.b	D_FLAGS+1(%a3)
+	beq.s	2f
+	subq.w	#1,D_POSTS(%a3)
+	moveq	#7,%d0
 	move.l	%d0,%a0			| diskEvt
 	moveq	#0,%d0
-	move.w	%d1,%d0
+	move.w	D_DQE+6(%a3),%d0	| the message: the drive number
 	.short	0xA02F			| _PostEvent
-	tst.w	%d0
-	bne.s	6f
-	cmp.w	#1,G_POSTS(%a2)
-	bne.s	7f
-	log	"PiDisk: diskEvt posted"
-	bra.s	7f
-6:	log	"PiDisk: PostEvent failed"
-7:	addq.w	#1,%d1
-	dbf	%d2,1b
-2:	move.w	#120,G_VBL+10(%a2)	| rearm: 2 s
-	bra	4f
-3:	lea	G_VBL(%a2),%a0
-	.short	_VRemove
-4:	movem.l	(%sp)+,%d0-%d2/%a0-%a2
+	bra	vbl_next
+2:	clr.w	D_POSTS(%a3)		| read already (or empty): no more events
+vbl_next:
+	addq.w	#1,%d5
+	cmp.w	#MAXDEV,%d5
+	blt	vbl_unit
+	move.w	#120,G_VBL+10(%a2)	| again in 2 s
+	movem.l	(%sp)+,%d0-%d7/%a0-%a4
 	rts
 
 | ---- common exit: immediate calls return, queued calls go through IODone ----

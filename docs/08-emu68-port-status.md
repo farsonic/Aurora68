@@ -2410,6 +2410,137 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      monitor, the DMA channel, the PWM jack, the PLL readings; the latency (about 50 ms of output ring plus
      64 ms of card ring) as heard; a long sound's drift control on real clocks.
 
+75. **USB flash drives as disks on the Mac (20 November, evening).** The user's plan for USB on the Mac
+   is to keep USB on the Pi and show the Mac each device as something it already understands, through
+   the slot-9 card. Keyboards and mice already go that way (item 40). Flash drives were next: a stick
+   plugged into the Pi 3B appears on the Mac's desktop while the Mac runs, ejects from the Finder, and a
+   stick pulled out does not crash the Mac.
+   - *What was there.* PiDisk (`psmac_mbox.c`, `mac/pidisk.s`) publishes up to four units in the window's
+     device table, numbered in the order the images were found. The Mac learnt of them only at the
+     driver's Open: one drive each, marked "fixed disk in place" (disk-in-place 8), with disk-inserted
+     events posted until any drive was read. Its eject did nothing, and nothing could be added later. On
+     the USB side, Alice68's enumeration (item 40) gives the hub address 1 and the device on port N
+     address 1 + N; a device that is neither a keyboard, a mouse nor a hub it addresses and reads, then
+     leaves unconfigured (its error -28); it stops once it has a keyboard and a mouse, leaving later
+     ports unreset. A full- or low-speed device behind the LAN9514 gets split transactions, one packet of
+     at most 64 bytes at a time on channel 0 (start split, complete split, again on NYET up to eight
+     times: `dma_packet` in psmac_usb.c). The wired Ethernet's bulk path (item 49) speaks to high-speed
+     devices only.
+   - *Where the work runs.* Core 1, which already runs every enumeration (item 66) and the sound feed
+     (item 74), runs everything a stick needs (`psmac_usbdisk.c`, new): its work never overlaps an
+     enumeration, and core 3 (the mailbox, the card, the network) never waits for a slow stick. Core 1
+     claims the sticks after each enumeration, before core 3 is let back onto the bus. It resets the hub
+     ports the enumeration did not reach, reads every device's descriptors, and configures each device
+     whose interface is class 8, subclass 6, protocol $50 (SCSI over bulk-only transport). Other
+     mass-storage devices (CBI floppies, ATAPI) are logged and left alone. Its bulk transfers go on
+     channels 3 and 4 and its control requests on channel 5, all by DMA through bounce buffers, as
+     psmac_usbnet.c does on 1 and 2. psmac_usbnet.c's probe now leaves the sticks' addresses alone, so
+     two control transfers never meet on one endpoint 0. Every wait feeds the sound output.
+   - *Speeds.* A high-speed stick goes 64 KB per transfer (512-byte packets). A full-speed stick behind a
+     full-speed hub goes 32 KB per transfer (the channel takes 1023 packets of 64 bytes). A full-speed
+     stick behind the LAN9514 goes through the hub's translator, one packet at a time on channel 3 or 4,
+     with the same steps as `dma_packet`, 8 KB per job.
+   - *The protocol.* Each command is a CBW, data and a CSW. The recovery follows the class
+     specification:
+     - a stalled data stage is cleared and the CSW still read;
+     - a stalled CSW is cleared and read once more, and a truncated one is read again;
+     - a CSW that is not one, a phase error, a CBW that would not go or a transfer that timed out ends
+       in a reset recovery (Bulk-Only Mass Storage Reset, then CLEAR_FEATURE(ENDPOINT_HALT) on both bulk
+       endpoints);
+     - a GET_MAX_LUN that stalls means one LUN, and a CSW sent in place of the data is taken as the CSW.
+
+     These behaviours were read in Neptune's massstorage class (github.com/rondoval/neptune-usb-stack,
+     AROS Public License), as a reference only: none of its code is used. The bring-up runs INQUIRY
+     (anything but a disk is refused), then TEST UNIT READY with REQUEST SENSE: a unit attention is
+     retried, "becoming ready" waited for, and "medium not present" (a card reader with no card)
+     looked at again every two seconds. Then READ CAPACITY(10), and (16) when (10) says 0xFFFFFFFF.
+     Sectors other than 512 bytes are refused with a line in the log. MODE SENSE(6) reads the
+     write-protect bit; a stick that refuses it is taken as writable, and a write it then refuses with
+     DATA PROTECT makes the unit read-only. Last, the first 64 blocks are read.
+   - *What the Mac is offered.* System 7 reads HFS, and the Finder offers to initialize any disk it cannot
+     read: a FAT stick from the user's PC would be one click from being erased. So only HFS goes to the
+     Mac:
+     - a bare HFS volume ('BD' in block 2), whole;
+     - an Apple partition map's first Apple_HFS partition, as for the card's images;
+     - an MBR partition of type $AF, or a GPT partition of Apple's HFS type, whose block 2 holds 'BD'.
+
+     FAT, exFAT, NTFS, HFS Plus, Linux and blank sticks stay on the Pi. The log names the partition
+     table and the first partition's type, and says why the stick was not offered. `mac.usbdisk=all`
+     offers them anyway, as the whole stick capped at 2 GB, HFS's limit on System 7: for PC Exchange,
+     or to initialize a stick on the Mac. `mac.usbdisk=off` leaves sticks alone.
+   - *The Mac's side.* A stick is a PiDisk unit with a new flag, `PSMB_BD_REMOVABLE`. `psmb_blkdev`'s
+     spare word is now `media`, a count that moves for each disk put into the unit. A unit without a
+     disk loses `PSMB_BD_PRESENT`. A stick keeps its unit for the session, so a stick pulled out and put
+     back is a disk put back into its drive. The driver keeps a VBL task (every two seconds, after the
+     boot-time posting) that does what the Sony driver does for a floppy:
+     - a unit with a disk whose drive is not yet in the queue, or whose `media` moved, gets its drive
+       (`_AddDrive` from the VBL task: it only links the element into the queue) and disk-inserted
+       events until the File Manager reads it, half a minute at most;
+     - a unit that lost its disk leaves its drive empty (disk-in-place 0), and Prime answers offLinErr;
+     - a stick's drive says "ejectable disk in place" (1), so the Finder ejects it, and Control's eject
+       sends `PSMB_BLK_EJECT`.
+
+     Prime now maps the Pi's statuses: no disk gives offLinErr, write-protected gives wPrErr. The
+     posting is per drive now, where before any read stopped it for all.
+   - *The data path.* Core 3 hands core 1 one job at a time (a read or write of at most 64 KB, or an eject)
+     and copies the Mac's data in and out of the job's buffer itself; the command stays unanswered
+     meanwhile. A stick can take longer than any card image: a slow write, or a bus being enumerated
+     again when a keyboard is plugged in. So the command block's spare word is now `progress`, which
+     core 3 moves while a command is pending; the driver's spin (item 52's 100,000,000 turns) starts
+     again for as long as it moves. Core 3 bounds a command at a minute. A command the Mac stopped
+     waiting for, or one cut off by a 68k RESET, is finished on core 1 and dropped without touching the
+     Mac's memory. USB units do not count as the card's images for the startup disk (item 67).
+   - *Plug, unplug and bus resets.* Plugging or pulling a stick changes a hub port, and psmac_usb.c
+     enumerates again (item 66). That enumeration resets every device, so the same stick (same
+     vendor, product and serial number) is checked again rather than offered again. With the same
+     capacity it carries on, unnoticed by the Mac. psmac_usb.c's look at the ports now notes every
+     port that changed (it used to stop at the first), so a stick taken out and put back between two
+     looks is a new disk. A stick no enumeration finds is gone: an ejected one quietly, a mounted one
+     with a line saying so. A stick that answers no command three times asks for one fresh
+     enumeration. Sticks found no longer count as "a device that is not the keyboard" in item 66's
+     retries. Writes: nothing is cached on the Pi, so the Mac's write returns after the stick's CSW.
+     SYNCHRONIZE CACHE goes to the stick half a second after the last write, and before an eject; a
+     stick that refuses it is not asked again.
+   - *Two testbed findings.*
+     - QEMU 8.2.2 hung for good on a second `device_add` while the guest's cores ran. Its main loop
+       waited in `qmp_device_add`'s RCU drain for a vCPU that never left translated code (gdb's
+       backtrace). With the vCPUs stopped around the monitor commands (`stop`, `drive_add`,
+       `device_add`, `cont`) it did not happen again in the six plugs that followed.
+     - The File Manager's "Please insert the disk" is `_SysError` 30 (dsReinsert), which the crash
+       recorder of item 53 printed as a crash record. It is now one `[PSMAC:DISK]` line.
+   - *Verified* in the solo testbed (QEMU, System 7.1, `-device usb-hub` with a keyboard and a mouse,
+     sticks added through the monitor once the Finder was up):
+     - A 32 MB bare HFS stick plugged in was on the desktop at the next screenshot, twenty seconds later
+       (`docs/img/system71-usb-stick.png`). A 405,264-byte file dragged from it to the startup disk,
+       and the Finder's Duplicate of it on the stick, both read back with hfsutils identical to the
+       original (md5).
+     - Put Away flushed and ejected it: "[USB] disk 0 ... ejected by the Mac (1605 blocks read, 814
+       written): safe to unplug", and its icon left the desktop. The `device_del` afterwards was
+       quiet.
+     - Pulled while mounted with its window open: the drive went empty, and the Finder's copy from it
+       stopped with "error of type -65" (no crash). Plugged back in, the same volume came back and the
+       copy went through. Pulled again, Put Away removed it without a complaint.
+     - An Apple-partitioned stick mounted its Apple_HFS partition, and kept working across a keyboard
+       plugged in meanwhile ("answers again after the bus was reset; the Mac's disk carries on").
+       Ejected with Command-E it stayed on the desktop offline. Opening a folder on it then asked
+       "Please insert the disk: APM Stick" (`docs/img/system71-usb-stick-insert-again.png`), and
+       plugging it back in answered the dialog and opened the folder.
+     - A FAT16 stick was logged and not offered. With `mac.usbdisk=all` it was offered, the Finder
+       asked to initialize it (`docs/img/system71-usb-stick-initialize.png`), and Initialize made an
+       HFS volume hfsutils mounts.
+     - A stick alone on the root port, at high speed (512-byte packets, 64 KB jobs): the same copy and
+       duplicate test, identical.
+     - `mac.usbdisk=off`: the stick left alone.
+
+     MAME's `macse_ps` (128 MiB, `mac.rtcsim=dead`, no SCSI disk, System 7.1 as `mac.disk0=`) still
+     started from the PiDisk image with the new driver (the Finder at 89 s, 90 s without USB devices:
+     the same) and mounted a stick beside it. MAME's parameter RAM was a copy; the testbed's own was
+     not touched.
+   - *Not verified:* everything on hardware: a real stick behind the LAN9514, the split path for
+     full-speed sticks (QEMU has no high-speed hub), card readers, the write-protect switch, sticks
+     larger than 2 TB, the real controller's NAK handling on long bulk transfers, and whether a stick's
+     own cache survives a pull after SYNCHRONIZE CACHE.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

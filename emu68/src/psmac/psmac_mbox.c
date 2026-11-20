@@ -12,6 +12,7 @@
 #include "psmac.h"
 #include "psmb.h"
 #include "../alice/alice_psmac.h"
+#include "psmac_usbdisk.h"
 
 #define KERNEL_ALIAS 0xffffff9000000000ull
 
@@ -62,20 +63,31 @@ static int mac_copy(uint32_t logical, void *dst, const void *src, uint32_t len, 
 }
 
 /* ---- block devices ---- */
-struct blkdev { int64_t fd; uint32_t blocks, first; int writable; int ram; uint8_t *rambase; char name[48]; };   /* first: a host file's partition, in blocks */
+struct blkdev { int64_t fd; uint32_t blocks, first; int writable; int ram; uint8_t *rambase; char name[48];   /* first: a host file's partition, in blocks */
+                int usb;                           /* a USB stick's unit (psmac_usbdisk.c): its number + 1, 0 for an image */
+                int present;                       /* USB: a disk the Mac may use is in the unit */
+                uint32_t media, umedia;            /* the count the Mac's driver sees (psmb_blkdev.media), and psmac_usbdisk.c's */
+                int said_read; };
 static struct blkdev bdev[PSMB_MAX_BLKDEV]; static int nbdev;
+static int nimg;                                   /* the disk images among them (not the USB sticks): the startup disk's business */
 static uint8_t sector_buf[64 * 1024] __attribute__((aligned(16)));
 static int apm_hfs(const uint8_t *d, uint32_t have, uint32_t blocks, uint32_t *start, uint32_t *count);
 
+/* the device table the Mac's driver reads (its VBL task too, since 20 November 2026: a USB stick
+   comes and goes while the Mac runs). Size and name first, then the flags and the media count, which
+   are what the driver acts on. */
 static void blk_publish(void)
 {
     for (int i = 0; i < PSMB_MAX_BLKDEV; i++) {
         volatile uint8_t *d = win + PSMB_OFF_BLKDEV + i * 64;
-        wr32(d + 0, i < nbdev ? bdev[i].blocks : 0);
+        const struct blkdev *b = &bdev[i];
+        int in = i < nbdev && (!b->usb || b->present);
+        wr32(d + 0, i < nbdev ? b->blocks : 0);
         wr32(d + 4, 512);
-        wr32(d + 8, i < nbdev ? (PSMB_BD_PRESENT | (bdev[i].writable ? PSMB_BD_WRITABLE : 0)) : 0);
-        wr32(d + 12, 0);
-        for (int k = 0; k < 48; k++) ((volatile uint8_t *)d)[16 + k] = i < nbdev ? bdev[i].name[k] : 0;
+        for (int k = 0; k < 48; k++) ((volatile uint8_t *)d)[16 + k] = i < nbdev ? b->name[k] : 0;
+        __asm__ volatile("dmb ish" ::: "memory");
+        wr32(d + 12, i < nbdev ? b->media : 0);
+        wr32(d + 8, (in ? PSMB_BD_PRESENT : 0) | (in && b->writable ? PSMB_BD_WRITABLE : 0) | (i < nbdev && b->usb ? PSMB_BD_REMOVABLE : 0));
     }
 }
 static void blk_add_file(const char *path, int writable)
@@ -90,6 +102,7 @@ static void blk_add_file(const char *path, int writable)
     const char *base = path; for (const char *s = path; *s; s++) if (*s == '/') base = s + 1;
     int k = 0; while (base[k] && k < 47) { b->name[k] = base[k]; k++; } b->name[k] = 0;
     kprintf("[PSMAC:MBOX] block%d: %s, %u blocks (%u MiB)%s\n", nbdev, path, b->blocks, b->blocks / 2048, writable ? "" : " read-only");
+    nimg++;
     /* a partitioned image as its HFS partition, as the card's images are served (until 20 November
        the testbed served the whole file, map and all, which the File Manager cannot mount) */
     uint32_t have = b->blocks < 64 ? b->blocks : 64, st, ct;
@@ -130,7 +143,7 @@ static void blk_add_ram(const char *name, uint8_t *data, uint32_t blocks)
     struct blkdev *b = &bdev[nbdev];
     b->fd = -1; b->blocks = blocks; b->writable = 1; b->ram = 1; b->rambase = data;
     int k = 0; while (name[k] && k < 47) { b->name[k] = name[k]; k++; } b->name[k] = 0;
-    nbdev++;
+    nbdev++; nimg++;
 }
 /* a disk image found on the card after the 68k started (psmac_card.c, core 3: this core) */
 void psmac_mbox_add_disk(const char *name, uint8_t *data, uint32_t blocks)
@@ -208,9 +221,12 @@ static int startup_mode_get(void)
     }
     return startup_mode;
 }
-/* the 68k's RESET (psmac_bus.c): a new start, the view up again */
+/* the 68k's RESET (psmac_bus.c): a new start, the view up again. A USB disk's command still in
+   progress then has nobody waiting for it (usb_req_step). */
+static volatile uint32_t mbox_resets;
 void psmac_startup_reset(void)
 {
+    __atomic_store_n(&mbox_resets, mbox_resets + 1, __ATOMIC_RELEASE);
     startup_mode_get();
     for (int i = 0; i < 4; i++) startup_view[i] = startup_slot9[i];
     startup_said = 0;
@@ -223,7 +239,7 @@ void psmac_startup_reset(void)
    psmac_startup_write: the Mac wrote a byte there; 1 when it went into the view, and must go no
    further. psmac_startup_real: the parameter RAM's byte, if read this session (for the SE's chip,
    whose writes the board layer can only rewrite, not hold back). */
-int psmac_startup_card(void) { return startup_window && startup_mode_get() != 2 && nbdev > 0; }
+int psmac_startup_card(void) { return startup_window && startup_mode_get() != 2 && nimg > 0; }
 void psmac_startup_seen(int addr, uint8_t real)
 {
     int i = addr - 0x78;
@@ -267,8 +283,8 @@ static uint32_t startup_first(void)
     else if (ref < 0) { r = (uint16_t)ref; why = "the SCSI disk the parameter RAM names first, then the card's image (mac.boot=auto)"; }
     else { r = 0xffdf; why = "SCSI ID 0 first (the parameter RAM names none), then the card's image (mac.boot=auto)"; }
     __atomic_store_n(&startup_window, 0, __ATOMIC_RELEASE);
-    if (r >= 0xffd9 && r <= 0xffdf) kprintf("[PSMAC:MBOX] startup disk: %s: SCSI ID %u, refNum %d; %d image(s) on the card\n", why, 0xffdf - r, (int16_t)r, nbdev);
-    else kprintf("[PSMAC:MBOX] startup disk: %s; %d image(s) on the card\n", why, nbdev);
+    if (r >= 0xffd9 && r <= 0xffdf) kprintf("[PSMAC:MBOX] startup disk: %s: SCSI ID %u, refNum %d; %d image(s) on the card\n", why, 0xffdf - r, (int16_t)r, nimg);
+    else kprintf("[PSMAC:MBOX] startup disk: %s; %d image(s) on the card\n", why, nimg);
     return r;
 }
 
@@ -355,6 +371,148 @@ static int net_send(uint32_t buf, uint32_t len)
     return psmac_sh_write(nf[0].tx_fd, net_buf, len + 2) ? 0 : PSMB_E_IO;
 }
 
+/* ---- USB disks (psmac_usbdisk.c, core 1) as PiDisk units (20 November 2026) ----
+   A stick psmac_usbdisk.c offers becomes a unit of the device table the first time it is present and
+   keeps that unit for the session, so the Mac's driver keeps one drive for it: a stick pulled out and
+   put back is a disk put back into its drive, which is how the File Manager finds the volume it still
+   has (offline) and puts it back online. Each new disk moves the unit's media count, which is what
+   the driver's VBL task watches for: it then posts the disk-inserted event. A unit whose disk is
+   gone (ejected, pulled out) is published without PSMB_BD_PRESENT; the driver marks its drive empty
+   and answers the File Manager offLinErr, as for a floppy taken out.
+   The Mac's reads and writes go to core 1 as jobs of at most 64 KB (psmac_usbdisk_post); the command
+   stays unanswered meanwhile, its progress word moving so that the driver goes on waiting, and core 3
+   copies the data between the Mac's buffer and the job's. */
+static uint32_t stats_cmds, stats_err;            /* (the services' counters, below) */
+static int usb_slot[USBDISK_UNITS] = { -1, -1, -1, -1 };
+static uint32_t usb_changes_seen;
+static int usb_full_said;
+static void usb_sync(void)
+{
+    uint32_t ch = psmac_usbdisk_changes();
+    int retry = 0;
+    if (ch == usb_changes_seen) return;
+    for (int u = 0; u < USBDISK_UNITS; u++) {
+        struct usbdisk_info in;
+        if (!psmac_usbdisk_info(u, &in)) { retry = 1; continue; }
+        int s = usb_slot[u];
+        if (s < 0) {
+            if (!in.present) continue;
+            if (nbdev >= PSMB_MAX_BLKDEV) {
+                if (!usb_full_said++) kprintf("[PSMAC:DISK] USB disk %d: all %d PiDisk units are in use (disk images and sticks): the Mac is not told about it\n", u, PSMB_MAX_BLKDEV);
+                continue;
+            }
+            s = usb_slot[u] = nbdev++;
+            bdev[s] = (struct blkdev){ 0 };
+            bdev[s].fd = -1; bdev[s].usb = u + 1;
+        }
+        struct blkdev *b = &bdev[s];
+        int k = 0; while (in.name[k] && k < 47) { b->name[k] = in.name[k]; k++; } b->name[k] = 0;
+        b->blocks = in.blocks; b->writable = (int)in.writable;
+        if (in.present && (!b->present || in.media != b->umedia)) {
+            b->media++; b->umedia = in.media; b->said_read = 0;
+            kprintf("[PSMAC:DISK] PiDisk unit %d is USB disk %d, %s: %u blocks (%u MB), %s; the Mac's driver is told a disk was inserted\n",
+                    s, u, b->name, b->blocks, b->blocks / 2048, b->writable ? "writable" : "read-only");
+        } else if (!in.present && b->present)
+            kprintf("[PSMAC:DISK] PiDisk unit %d (USB disk %d): no disk in it now; the Mac's driver is told its drive is empty\n", s, u);
+        b->present = (int)in.present;
+    }
+    if (!retry) usb_changes_seen = ch;
+    blk_publish();
+}
+
+/* the Mac's command in progress on a USB unit */
+static struct { int active; int bdev, op, abandoned; uint32_t lba, left, buf, done, n, req, resets; uint64_t t0; int waiting; } ur;
+static void usb_finish(volatile uint8_t *c, int32_t status)
+{
+    if (!status && ur.op == USBDISK_OP_READ) { extern uint32_t psmac_icache_epoch; psmac_icache_epoch++; }
+    stats_cmds++; if (status) stats_err++;
+    wr32(c + 36, (uint32_t)status); wr32(c + 40, 0); wr32(c + 44, ur.done * 512);
+    __asm__ volatile("dmb ish" ::: "memory");
+    __atomic_store_n((volatile uint32_t *)(c + 4), ur.req, __ATOMIC_RELEASE);
+    ur.active = 0;
+}
+/* the next part of the command to core 1: 0 posted (or waiting for the job slot), else a status */
+static int32_t usb_next(void)
+{
+    struct blkdev *b = &bdev[ur.bdev];
+    int u = b->usb - 1;
+    int32_t old;
+    ur.waiting = 1;
+    if (psmac_usbdisk_result(&old) == 0) return 0;         /* a job the Mac gave up on is still running: wait for it */
+    if (!b->present) return PSMB_E_NODATA;
+    ur.n = ur.op == USBDISK_OP_EJECT ? 0 : ur.left;
+    { uint32_t m = psmac_usbdisk_max_blocks(u); if (ur.n > m) ur.n = m; }
+    if (ur.op == USBDISK_OP_WRITE) { int r = mac_copy(ur.buf, psmac_usbdisk_buffer(), NULL, ur.n * 512, 0); if (r) return r; }
+    if (psmac_usbdisk_post(u, b->umedia, ur.op, ur.lba, ur.n)) return 0;
+    ur.waiting = 0;
+    return 0;
+}
+/* a READ, WRITE or EJECT on a USB unit: 1 when it goes on in the background (usb_req_step answers it) */
+static int usb_begin(volatile uint8_t *c, int bi, uint16_t cmd, uint32_t lba, uint32_t count, uint32_t buf, uint32_t req, int32_t *status)
+{
+    struct blkdev *b = &bdev[bi];
+    int op = cmd == PSMB_BLK_READ ? USBDISK_OP_READ : cmd == PSMB_BLK_WRITE ? USBDISK_OP_WRITE : USBDISK_OP_EJECT;
+    (void)c;
+    if (!b->present) { *status = op == USBDISK_OP_EJECT ? 0 : PSMB_E_NODATA; return 0; }
+    if (op != USBDISK_OP_EJECT) {
+        if ((uint64_t)lba + count > b->blocks) { *status = PSMB_E_RANGE; return 0; }
+        if (op == USBDISK_OP_WRITE && !b->writable) { *status = PSMB_E_RO; return 0; }
+        if (!count) { *status = 0; return 0; }
+        if (op == USBDISK_OP_READ && !b->said_read) { b->said_read = 1; kprintf("[PSMAC:DISK] PiDisk unit %d (USB disk %d): the Mac's first read, block %u: it is mounting the disk\n", bi, b->usb - 1, lba); }
+    } else kprintf("[PSMAC:DISK] PiDisk unit %d (USB disk %d): the Mac ejects it\n", bi, b->usb - 1);
+    ur.active = 1; ur.bdev = bi; ur.op = op; ur.abandoned = 0; ur.lba = lba; ur.left = count; ur.buf = buf; ur.done = 0;
+    ur.req = req; ur.resets = __atomic_load_n(&mbox_resets, __ATOMIC_ACQUIRE); ur.t0 = cnt_now();
+    int32_t r = usb_next();
+    if (r) { ur.active = 0; *status = r; return 0; }
+    return 1;
+}
+static void usb_req_step(volatile uint8_t *c)
+{
+    int32_t st;
+    wr32(c + 48, rd32(c + 48) + 1);                       /* progress: the driver goes on waiting */
+    if (!ur.abandoned && (rd32(c) != ur.req || __atomic_load_n(&mbox_resets, __ATOMIC_ACQUIRE) != ur.resets)) {
+        ur.abandoned = 1;
+        kprintf("[PSMAC:DISK] PiDisk unit %d: the Mac stopped waiting for its %s (%s); it is finished and dropped\n", ur.bdev,
+                ur.op == USBDISK_OP_READ ? "read" : ur.op == USBDISK_OP_WRITE ? "write" : "eject", rd32(c) != ur.req ? "a new command" : "the 68k was reset");
+    }
+    if (ur.waiting) {
+        if (ur.abandoned) { if (psmac_usbdisk_result(&st) != 0) ur.active = 0; return; }
+        int32_t r = usb_next();
+        if (r) usb_finish(c, r);
+        return;
+    }
+    int r = psmac_usbdisk_result(&st);
+    if (r == 0) {
+        /* core 1 bounds every transfer, so a job ends; a minute is far beyond any of them */
+        if (!ur.abandoned && cnt_now() - ur.t0 > 60 * cnt_frq()) {
+            kprintf("[PSMAC:DISK] PiDisk unit %d: no answer from the USB disk in a minute: an I/O error for the Mac\n", ur.bdev);
+            ur.abandoned = 1;
+            ur.waiting = 1;                                /* the slot is drained before the next command */
+            wr32(c + 36, (uint32_t)PSMB_E_IO); wr32(c + 44, 0);
+            __asm__ volatile("dmb ish" ::: "memory");
+            __atomic_store_n((volatile uint32_t *)(c + 4), ur.req, __ATOMIC_RELEASE);
+        }
+        return;
+    }
+    if (r < 0) st = PSMB_E_IO;                             /* (no job: cannot happen) */
+    if (ur.abandoned) {
+        /* after a RESET nobody posts this command again: retire it, without touching the Mac's memory */
+        if (rd32(c) == ur.req && rd32(c + 4) != ur.req) {
+            wr32(c + 36, (uint32_t)PSMB_E_IO);
+            __asm__ volatile("dmb ish" ::: "memory");
+            __atomic_store_n((volatile uint32_t *)(c + 4), ur.req, __ATOMIC_RELEASE);
+        }
+        ur.active = 0;
+        return;
+    }
+    if (st) { usb_finish(c, st); return; }
+    if (ur.op == USBDISK_OP_READ) { int e = mac_copy(ur.buf, NULL, psmac_usbdisk_buffer(), ur.n * 512, 1); if (e) { usb_finish(c, e); return; } }
+    ur.done += ur.n; ur.left -= ur.n; ur.lba += ur.n; ur.buf += ur.n * 512;
+    if (!ur.left || ur.op == USBDISK_OP_EJECT) { usb_finish(c, 0); return; }
+    int32_t e = usb_next();
+    if (e) usb_finish(c, e);
+}
+
 /* ---- services ---- */
 static void svc_set(int idx, uint16_t type, uint32_t caps, const uint32_t *param)
 {
@@ -364,7 +522,7 @@ static void svc_set(int idx, uint16_t type, uint32_t caps, const uint32_t *param
 }
 static uint32_t stats_cmds, stats_err;
 
-static void run_cmd(int idx, uint16_t type, volatile uint8_t *c)
+static int run_cmd(int idx, uint16_t type, volatile uint8_t *c, uint32_t req)   /* 1: answered later (usb_req_step) */
 {
     uint16_t cmd = rd16(c + 8); uint32_t a0 = rd32(c + 12), a1 = rd32(c + 16), a2 = rd32(c + 20);
     uint32_t buf = rd32(c + 28), len = rd32(c + 32);
@@ -392,6 +550,11 @@ static void run_cmd(int idx, uint16_t type, volatile uint8_t *c)
         if (cmd == PSMB_BLK_BOOT) { extern int psmac_card_scanned(void); if (!psmac_card_scanned()) status = PSMB_E_BUSY; else result = startup_first(); break; }
         if (a0 >= (uint32_t)nbdev) { status = PSMB_E_BADDEV; break; }
         struct blkdev *b = &bdev[a0];
+        if (b->usb && (cmd == PSMB_BLK_READ || cmd == PSMB_BLK_WRITE || cmd == PSMB_BLK_EJECT)) {
+            if (usb_begin(c, (int)a0, cmd, a1, a2, buf, req, &status)) return 1;
+            if (!status && cmd != PSMB_BLK_EJECT) xfer = a2 * 512;
+            break;
+        }
         if (cmd == PSMB_BLK_READ)       { static int first = 1; if (first) { first = 0; psmac_boot_mark("PiDisk: first block read (device %u, block %u)", a0, a1); }
                                           status = blk_xfer(0, b, a1, a2, buf); if (!status) { xfer = a2 * 512; extern uint32_t psmac_icache_epoch; psmac_icache_epoch++; } }
         else if (cmd == PSMB_BLK_WRITE) { status = blk_xfer(1, b, a1, a2, buf); if (!status) xfer = a2 * 512; }
@@ -410,6 +573,7 @@ static void run_cmd(int idx, uint16_t type, volatile uint8_t *c)
     }
     stats_cmds++; if (status) stats_err++;
     wr32(c + 36, (uint32_t)status); wr32(c + 40, result); wr32(c + 44, xfer);
+    return 0;
 }
 
 /* ---- public ---- */
@@ -457,13 +621,15 @@ int psmac_mbox_poll(void)
 {
     if (!win) return 0;
     int did = 0;
+    usb_sync();                                            /* USB sticks come and go (psmac_usbdisk.c) */
     for (int i = 0; i < 3; i++) {
         volatile uint8_t *c = win + PSMB_OFF_CMD + i * 64;
+        if (i == 1 && ur.active) { usb_req_step(c); did = 1; continue; }   /* the block service waits for a USB disk */
         uint32_t req = __atomic_load_n((volatile uint32_t *)c, __ATOMIC_ACQUIRE);
         uint32_t done = *(volatile uint32_t *)(c + 4);
         if (req == done) continue;
         uint16_t type = rd16(win + PSMB_OFF_SERVICES + i * 32);
-        run_cmd(i, type, c);
+        if (run_cmd(i, type, c, req)) { did = 1; continue; }
         __asm__ volatile("dmb ish" ::: "memory");
         __atomic_store_n((volatile uint32_t *)(c + 4), req, __ATOMIC_RELEASE);
         did = 1;
