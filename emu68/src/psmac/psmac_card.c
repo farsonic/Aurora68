@@ -554,7 +554,7 @@ const uint8_t *psmac_card_pram(int *state, uint32_t *len)
    the ring taken when the writing starts, with the values of options that are secrets (wifi.psk
    and anything named psk, pass, key, secret or token (the remote control's remote.token=, docs/13),
    the password in mac.wifisim, the link key in bt.dev) replaced by ***. One sector per pass of core 3, like everything here (logf_step). */
-static volatile int logf_req;                  /* asked; 2: after a crash record */
+static volatile int logf_req;                  /* asked; 2: after a crash record; 3: on its own (mac.logsave) */
 static volatile int logf_state;                /* 0 nothing asked, 1 being written, 2 saved, 3 failed */
 static uint8_t *logf_buf; static uint32_t logf_len, logf_done, logf_clus, logf_ci;
 static struct cfile logf_file; static int logf_have;
@@ -623,19 +623,27 @@ static void logf_fail(const char *why) { kprintf("[CARD] aurora68.log: %s\n", wh
    first cluster, as file_create does for pairings.txt), its chain walked; 2 one more cluster on the
    chain, until it holds the text; 3 one sector of the text; 4 the size in the directory entry. */
 static uint32_t logf_tail, logf_nclus;
+/* mac.logsave=S: the log saved by itself every S seconds, 0 never. In the SE there is no serial
+   line (GPIO 14/15 are the PiStorm's data lines) and the HDMI console scrolls the early lines
+   away, so a boot that stops before the Mac's screen comes up left nothing to read but a
+   photograph of the last screenful (the first SE boot, 20 November 2026). The SE board saves
+   every 30 seconds unless told otherwise; the file is overwritten in place, never grows. */
+static uint32_t logsave_s, logsave_last, logf_saves; static int logf_quiet;
 static void logf_step(void)
 {
     extern uint32_t psmac_log_copy(uint8_t *out, uint32_t max);
     static uint8_t *raw;
     if (logf_req) {                                    /* a new request, or one during a save: from the start */
-        int crash = logf_req == 2;
+        int why = logf_req;
         logf_req = 0;
         if (!logf_buf) logf_buf = tlsf_malloc(tlsf, PSMB_LOG_SIZE + 8192);
         if (!raw) raw = tlsf_malloc(tlsf, PSMB_LOG_SIZE);
         if (!logf_buf || !raw) { logf_fail("no memory for the copy"); return; }
         uint32_t n = psmac_log_copy(raw, PSMB_LOG_SIZE), s = 0;
         if (n == PSMB_LOG_SIZE) { while (s < n && raw[s] != '\n') s++; if (s < n) s++; }   /* the oldest line is cut: from the next */
-        const char *hd = crash ? "Aurora68 kernel log, saved after a crash record\n" : "Aurora68 kernel log, saved from the Mac\n";
+        const char *hd = why == 2 ? "Aurora68 kernel log, saved after a crash record\n"
+                       : why == 3 ? "Aurora68 kernel log, saved on its own (mac.logsave)\n" : "Aurora68 kernel log, saved from the Mac\n";
+        logf_quiet = why == 3 && logf_saves > 0;       /* a timed save says so the first time only */
         uint32_t h = 0; while (hd[h]) { logf_buf[h] = (uint8_t)hd[h]; h++; }
         logf_len = h + log_redact(raw + s, n - s, logf_buf + h, PSMB_LOG_SIZE + 8192 - h);
         logf_phase = 1;
@@ -689,7 +697,8 @@ static void logf_step(void)
     logf_file.size = logf_len;
     logf_phase = 0;
     logf_state = 2;
-    kprintf("[CARD] aurora68.log: %u bytes of the log written\n", logf_len);
+    if (!logf_quiet) kprintf("[CARD] aurora68.log: %u bytes of the log written%s\n", logf_len, logsave_s ? " (and again every mac.logsave period)" : "");
+    logf_saves++;
 }
 
 /* ==== cmdline.txt: the options the Mac asks to change ========================================
@@ -1225,6 +1234,12 @@ static void card_poll_locked(void)
     { extern int psmac_solo_pram_take(uint8_t out[260]); static uint8_t p[260];
       if (!sd.ro && psmac_solo_pram_take(p)) { pram_write(p); return; } }
     if (__atomic_load_n(&logf_state, __ATOMIC_ACQUIRE) == 1 && !sd.ro) { logf_step(); return; }
+    if (logsave_s && !sd.ro && ms() - logsave_last >= logsave_s * 1000u) {
+        logsave_last = ms();
+        logf_req = 3;
+        __atomic_store_n(&logf_state, 1, __ATOMIC_RELEASE);
+        return;
+    }
     /* a disk image still coming in from the card, and the Mac's changes going back: every other pass
        each, so writes made while a large image loads are on the card long before it is complete */
     static unsigned turn;
@@ -1247,6 +1262,12 @@ static void card_start(void)
     e = fs_mount();
     if (e) { sd.state = -1; pair_state = -1; kprintf("[CARD] no FAT16/FAT32 partition found (%d)\n", e); return; }
     kprintf("[CARD] %s card, FAT%d at sector %u, %u-byte clusters%s\n", sd.ccs ? "SDHC/SDXC" : "SDSC", fs.fat32 ? 32 : 16, fs.part, fs.spc * 512u, sd.ro ? ", read only (mac.card=ro)" : "");
+    { extern int psmac_board_se, psmac_board_solo;
+      const char *ls = psmac_option("mac.logsave");
+      logsave_s = psmac_board_se && !psmac_board_solo ? 30 : 0;
+      if (ls) { logsave_s = 0; while (*ls >= '0' && *ls <= '9') logsave_s = logsave_s * 10 + (uint32_t)(*ls++ - '0'); }
+      logsave_last = ms();
+      if (logsave_s && !sd.ro) kprintf("[CARD] the log goes into aurora68.log every %u s (mac.logsave=%u; 0 stops it)\n", logsave_s, logsave_s); }
     pairings_load();
     pram_load();
     container_check();
