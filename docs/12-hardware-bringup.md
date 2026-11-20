@@ -270,6 +270,38 @@ For the next boot: the default memory (no `mac.ram=`), the rest of the cmdline a
 lines to look for are the `parameter RAM $8A` one, `switch #3: TC=80f06b00 ...` with
 "log 00000000-07ffffff -> phys 00000000", and the heartbeats' `scsi` and `via` counts.
 
+### The second boot: a clock chip that does not answer
+
+*20 November 2026* (docs/08 items 64-67). With the $8A mending the ROM got past its MMU tables, and
+then waited for ever, with no video, on its open of the floppy driver. The SE's clock chip read $FF
+every time, also after the ROM had rewritten it: it does not answer at all. The IIci ROM cannot
+start with parameter RAM like that (one byte, $AE, read as $FF sends it the wrong way; the MAME SE
+with such a chip stops at the same instruction with the same registers). The kernel now asks the
+chip before the Mac starts and, if it reads $FF for the signature and the clock, answers in its
+place with default parameter RAM and a clock of its own, kept until the Pi is switched off. One
+line says which case it found:
+
+    [PSMAC:SE] clock chip: answers; parameter RAM valid (signature 4e 75 4d 63), clock ...
+    [PSMAC:SE] clock chip: reads $FF for the signature and the clock: it does not answer (...). The board layer answers in its place (...)
+
+and every report line ends in `clock chip: answering|not answering, N bytes read (M of them $FF
+from the chip), K written`. `mac.sepram=chip` turns the stand-in off. A clock chip that reads $FF
+while the SE is switched on is worth a look: a leaked PRAM battery corrodes the board around the
+chip and the VIA, which is the usual reason on an SE; the SE's own ROM shrugs it off, the IIci's
+does not.
+
+Two more fixes from that boot: with `mac.console=hdmi` the log stays in the buffer the Pi's
+firmware made at boot (the kernel's 32-bit buffer at the same size stayed black on the user's
+monitor); and the USB keyboard retries, which held the service core for 360 ms each with nothing
+plugged in, now run on another core and only when a device is there to retry.
+
+For the next boot, with nothing else attached as on the second (no SCSI disk, no floppy), the SE's
+screen should show the grey desktop and the floppy with the question mark. A card image cannot be
+the startup disk yet (docs/08 item 67: the declaration ROM has no boot record for PiDisk), so the
+SE needs a startup disk of its own, a SCSI disk (or a BlueSCSI) with a System, or a System floppy;
+the card's images (`mac.image=NAME`) then mount beside it. Lines to look for: the `clock chip:` one,
+`[MAC] PiVideo: open`, and the heartbeats' `display:` line with `flags 3`.
+
 ## What to have ready
 
 - The release zip's SD card layout as it is (0.2): `kernel8.img`, `config.txt`, `cmdline.txt`,

@@ -1839,6 +1839,123 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      Finder at 20 s). Not yet on the hardware. `mac.ram=8` on the old kernel avoids the crash, as the
      user's second boot showed, but not the stall after it.
 
+64. **The second boot on the SE: a clock chip that does not answer (20 November).** The kernel of
+   `c6d203f` on the same SE (Pi 3B, 128 MiB, `enable_cache mac.board=se mac.console=hdmi bt=off
+   wifi=off mac.image=off`, no SCSI disk attached and no floppy in the drive) got past the MMU tables
+   ("switch #3: TC=80f06b00 ... log 00000000-07ffffff -> phys 00000000", so item 63's mending did its
+   job) and then sat at PC 0x4080EFDE for as long as it ran: never a video, about 2,130 VIA accesses
+   every five seconds, no SCSI, SWIM or SCC access after the first five, the display block's flags 0
+   and "rows sent 0". The log line of item 63 said "the SE's clock chip says $ff, the ROM is given
+   $ef" three times.
+   - *What the ROM waits for.* 0x4080EFDE is the File Manager's synchronous wait on ioResult
+     (`movew a0@(16),d0; bgts`) after a call queued on FSQHdr ($360). The stack names the call: the
+     trap dispatcher's return 0x40809A0A, the parameter block $040008AA, the name pointer 0x40801184
+     (the string ".Sony") and the return address 0x4080113A, just after the `_Open` at 0x40801138. So
+     the Start Manager had opened `.Sony` and the open never completed, and it had not opened slot
+     9's video driver first (no "[MAC] PiVideo: open", which every MAME SE boot logs at this point).
+   - *What the chip says.* $FF from byte $8A at all three reads, and the second and third came after
+     the ROM's InitUtil (0x4080C5CC), which finds the signature 'NuMc' at $0C-$0F missing, writes it,
+     clears the extended bytes and writes its defaults (0x4080C676, 0x4080C68A). A chip that
+     answered would have said $00 at those reads, as the MAME SE does. This one neither answers nor
+     keeps what it is told: the data line stays high (proven only as far as $8A; the other bytes were
+     not logged).
+   - *The MAME SE in that state.* MAME's PRAM copied aside first (`mame/nvramFS/macse_ps/rtc`,
+     restored after every run), no disk, 128 MiB, the hardware's cmdline. All 256 bytes $FF with
+     MAME's chip working: the ROM resets them and shows the question-mark disk on the SE's screen
+     (so garbage alone is not the trigger). A chip that never drives the line (`mac.rtcsim=dead`, a
+     testbed option that ORs 1 into port B bit 0 whenever DDRB bit 0 is an input): PC 0x4080EFDE,
+     A0 = $040008AA, the same eight stack words, VIA traffic at IER and T2, RBV IER $08, "local
+     reads 117 writes 31", all as on the hardware. Then, with the kernel answering every byte from
+     the defaults below, the same bytes put back to $FF by halves: $80-$FF hangs, $00-$7F does not,
+     and so on down to one byte, extended $AE. The ROM reads it at 0x4081AB44 (`_ReadXPRam`, one
+     byte), compares it with a limit from its ROM resource table with a signed compare (0x4081AB66),
+     so $FF, that is -1, passes, and goes on to choose its ROM resources with it; from the look of
+     the code that set is what decides whether the video and `.Sony` come up as they should. Why
+     exactly `.Sony`'s open never ends was not followed further.
+   - *The fix* (psmac_board_se.c). Before the 68k's first instruction the board layer asks the chip
+     itself, with the ROM's own sequence on port B (0x4080B1E4-B26A): the signature bytes $0C-$0F and
+     the four bytes of the clock, eight reads and no write. Core 0 waits for it (at most a second)
+     before it lets the 68k go, since the ROM's first RESET would reset the VIA under it. If all
+     eight read $FF the chip is taken as absent and the board layer answers in its place, on the
+     data bit of every port B read while a byte is coming out: parameter RAM from the solo board's
+     validated defaults (`psmac_pram_default.h`, $8A mended as in item 63), the clock from 20
+     November 2026 running with the Pi's timer, and whatever the ROM or the System writes kept for
+     the rest of the session (a Restart included). The writes still go to the chip; the kernel never
+     writes it. A chip that answers but holds no signature is left to the ROM, which resets it as any
+     Mac does after a flat battery. One line says which: "[PSMAC:SE] clock chip: answers; parameter
+     RAM valid (signature 4e 75 4d 63), clock e725c080", or "clock chip: reads $FF for the signature
+     and the clock: it does not answer ... The board layer answers in its place ...", and the report
+     line every five seconds adds "clock chip: answering|not answering, N bytes read (M of them $FF
+     from the chip), K written". `mac.sepram=chip` turns the stand-in off; `mac.pram8a=keep` still
+     only concerns $8A. Following the protocol is no longer limited to $8A: the file now tracks every
+     read and write command (traditional and extended), the write-protect register, and the clock's
+     bytes.
+   - *Verified* in MAME's `macse_ps`: the dead chip with no disk reaches the question-mark disk on
+     the SE's screen (the probe's line, video at 1 bit, "629 bytes read (629 of them $FF from the
+     chip)"); MAME's own valid PRAM with System 7.1 on the SE's SCSI disk reaches the Finder and
+     PiPing ("clock chip: answers; parameter RAM valid"), PRAM afterwards unchanged except slot $A's
+     record, which the Slot Manager clears when that card is absent. The solo board unchanged
+     (`tools/run-solo.sh`, 128 MiB, Finder at 27.8 s). *Inferred, not proven:* that the real chip
+     reads $FF for every byte and not only for $8A; the probe's line on the next hardware boot says
+     so either way. A chip that reads $FF while the SE is powered is more than a flat battery (the
+     343-0042 runs from the logic board's 5 V when the Mac is on): a leaked battery's corrosion
+     around the chip or the VIA, or a dead chip, are the usual reasons on an SE.
+
+65. **A black HDMI screen with the log on it (20 November).** With `mac.console=hdmi` the kernel of
+   `5ff7f89` (se3) showed its log on HDMI; `c6d203f` showed nothing. Its log says why it might:
+   the firmware's boot buffer was "Framebuffer @ 3ea7a000" (1024 x 768, 16 bits, the HDMI mode of
+   config.txt); the two-screen code of item 62 then asked, for the log, for a 32-bit buffer at the
+   HDMI size, which is the same 1024 x 768, and got "VideoCore 1024x768 x32 pitch 4096 at
+   0x3e8fa000", a new buffer whose top half overlaps the old one; se3 had asked for 512 x 342 there
+   and got a buffer at 0x3eb4a000, which was on the screen. The console draws into whatever buffer
+   the kernel last got (`vcfb`), so the log went into the new one; QEMU's VideoCore model scans out
+   either. Why the firmware did not show it is not known (the solo board, without `mac.screen=`,
+   also asks for a 32-bit buffer at the HDMI mode's size, and its picture has been on HDMI since item
+   29, so "the same size" is probably not the whole story; a mailbox call from the WiFi module failed
+   in that very moment, "[WIFI] mailbox tag 10002: error -4 (code 0)", which recalls item 31).
+   What is known is that the boot buffer is on the screen on every Pi: the splash and the first lines
+   of the log are drawn into it. So on the SE board with the log on HDMI and no second screen
+   (`mac.hdmi=log`, which `mac.console=hdmi` means) the kernel now keeps the firmware's buffer as it
+   is, 16 bits, and asks for nothing; a Restart's RESET leaves it alone as well. The line reads
+   "VideoCore 1024x768 x16 pitch 2048 at ...3ea7a000: the firmware's own buffer, kept; the log stays
+   there (mac.hdmi=log)". `mac.hdmi=mirror`, the two screens and the solo board remake the buffer as
+   before. QEMU: the VideoCore photograph (`tools/vcshot.py`) shows the log at 16 bits, heartbeats
+   and the clock chip's report line included. Not seen on hardware yet; if the two-screen mode
+   (`mac.hdmi=screen`) shows a black HDMI screen at the HDMI mode's own size, this is where to look.
+
+66. **USB retries held core 3 for 360 ms (20 November).** Both SE boots had "USB 360621 us" as the
+   service loop's longest part, every five to ten seconds, with "[USB] retry rc=-45: 0 keyboards, 0
+   mice (hub ports 5, devices seen 1, last port error -28)" and the LAN9514's network chip found
+   again after each: no keyboard or mouse was plugged in, so item 40's retry (four enumerations,
+   six seconds apart) ran in full, each one a root port reset, five hub ports powered, reset and
+   waited for, on core 3, while the mailbox, the card and the network waited. Two changes in
+   psmac_usb.c. Every enumeration after the start now runs on core 1, which did the first one and
+   then idled: core 3 releases the keys, stops the network chip's bulk channels, takes `usb_on`
+   down (so neither its polls nor psmac_usbnet.c touch the controller) and hands over the reason;
+   core 1 enumerates and puts `usb_on` back. And a retry is made only when the enumeration saw a
+   device on a hub port (or on the root port of a Pi without a hub) that did not come out as the
+   keyboard or the mouse, not counting the board's own network chip on the 3B's and 3B+'s hub port
+   1: with nothing plugged in there is nothing to find, and each enumeration resets the network chip
+   too. QEMU, solo board with a hub and a keyboard: one enumeration, no retries (before: four); a
+   mouse added later through the monitor (`device_add usb-mouse`) found by core 1 ("hub port 2:
+   connected", "plug or unplug rc=0: 1 keyboard, 1 mouse") and polled from then on.
+
+67. **A disk image as the SE's only disk is not a startup disk (20 November).** The user wants the
+   card's disk images (`mac.image=`, PiDisk volumes on the SE board) and, later, a BlueSCSI on the SE's
+   own 5380. The MAME SE with no SCSI disk, the stand-in parameter RAM of item 64 and System 7.1 as a
+   PiDisk volume (`mac.disk0=`, the testbed's way of giving it a card image) stayed at the
+   question-mark disk: "1 block device(s)", but `.PiDisk` was never opened. On the solo board too it
+   opens only after the System has started from the SCSI disk (the first "[MAC] PiDisk: open" comes
+   after 1,093 blocks read from SCSI ID 0), so a PiDisk volume has only ever mounted beside a startup
+   disk. The IIci ROM starts from a NuBus card only one way: `_GetDefaultStartup` (0x40801434) names
+   a slot and an sResource, and the Start Manager runs that sResource's boot record (ID 6) through
+   the Slot Manager's sExec (0x40801540 with state 0, 0x4080222A with state 1) and boots from the
+   driver it returns. PiDisk's sResource has no boot record. What it would take: a boot record in
+   the declaration ROM that loads and opens `.PiDisk` (tools/mac/mkdeclrom.py, mac/), and the default
+   startup device ($78-$7B) pointing at slot 9 and that sResource, which the stand-in parameter RAM
+   can supply when the chip does not answer and the Startup Disk control panel otherwise. Until then
+   the SE starts from a SCSI disk or a floppy and the card's images mount beside it.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,
