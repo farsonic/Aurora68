@@ -81,6 +81,7 @@ static int con_off;                           /* the picture has the buffer */
 static uint32_t con_x, con_y, con_cols, con_rows;
 static unsigned tick_div;
 static int vc_fresh;                          /* the buffer was made moments ago and nothing has drawn the picture in it */
+static int vc_boot;                           /* the firmware's boot buffer is kept (the SE board's log on HDMI, psmac_display_init) */
 
 /* psmac_bus.c, once the declaration ROM is in place and before the mailbox is made: the SE card's
    layout (a psmac-se file: slot 9's screen is the SE's, one bit), and whether the HDMI screen's card
@@ -147,19 +148,37 @@ void psmac_display_init(uint8_t *win)
         if (!w1 || !h1) { w1 = fb_width ? fb_width : 640; h1 = fb_height ? fb_height : 480; }
         vw = w1; vh = h1;
     }
-    /* the VideoCore buffer at that size, 32 bits */
-    void *fb = 0; uint32_t p = 0;
-    uint32_t got = psmac_vc_setup(vw, vh, 32, &fb, &p);
-    if (got != 32 || p < vw * 4) {              /* not granted (QEMU's model stays at 16): ask for 16 and convert to RGB565 */
-        got = psmac_vc_setup(vw, vh, 16, &fb, &p);
-        vc_bpp = 16;
+    /* With the log on HDMI and no second screen (mac.hdmi=log, which mac.console=hdmi means) the
+       VideoCore shows nothing but text, so the buffer the firmware made at boot for the splash is
+       kept, 16 bits as it is, rather than remade. On 20 November 2026 the second boot on the SE
+       (kernel c6d203f, HDMI mode 1024 x 768) asked the firmware for a 32-bit buffer of that same
+       size, got one at 0x3E8FA000 that overlapped the boot buffer's top half, drew the log into
+       it, and the HDMI stayed black from then on; the kernel before (5ff7f89) asked for 512 x 342
+       there and its log was on the screen. Why the firmware did not show the new buffer is not
+       known (QEMU's model of the VideoCore shows either); the boot buffer is the one it is known
+       to scan out, since the splash and the first lines of the log are drawn into it on every Pi.
+       The console draws 16-bit cells there (psmac_console_putc), and a Restart's RESET leaves it
+       alone (psmac_display_reinit). Every other case remakes the buffer as before. */
+    if (psmac_board_se && !psmac_board_solo && con_keep && nscr != 2 && framebuffer && pitch && fb_width && fb_height) {
+        vc_boot = 1;
+        vc_bpp = pitch >= fb_width * 4 ? 32 : 16;
+    } else {
+        /* the VideoCore buffer at that size, 32 bits */
+        void *fb = 0; uint32_t p = 0;
+        uint32_t got = psmac_vc_setup(vw, vh, 32, &fb, &p);
+        if (got != 32 || p < vw * 4) {          /* not granted (QEMU's model stays at 16): ask for 16 and convert to RGB565 */
+            got = psmac_vc_setup(vw, vh, 16, &fb, &p);
+            vc_bpp = 16;
+        }
+        if (fb && p) { framebuffer = fb; pitch = p; fb_width = vw; fb_height = vh; }
     }
-    if (fb && p) { framebuffer = fb; pitch = p; fb_width = vw; fb_height = vh; }
     vc_w = fb_width; vc_h = fb_height; vc_pitch = pitch;
     vc_byte_order();
     if (framebuffer) vcfb = (uint8_t *)(KERNEL_ALIAS + (((uintptr_t)framebuffer) & 0x3fffffffull));
-    if (vcfb) for (uint32_t i = 0; i < vc_pitch * vc_h; i += 8) *(uint64_t *)(vcfb + i) = 0;
-    con_cols = 0; con_x = 0; con_y = 0;                        /* the console starts again in the new buffer */
+    if (vcfb && !vc_boot) {
+        for (uint32_t i = 0; i < vc_pitch * vc_h; i += 8) *(uint64_t *)(vcfb + i) = 0;
+        con_cols = 0; con_x = 0; con_y = 0;                    /* the console starts again in the new buffer */
+    }
     vc_fresh = 1;
 
     if (se_card) screen_init(&scr[0], win, PSMB_OFF_DISPLAY, PSMB_OFF_BOUNCE, PSMB_SE_FRAME_SIZE, w0, h0, 1);
@@ -173,7 +192,7 @@ void psmac_display_init(uint8_t *win)
         kprintf("[PSMAC:DISP] %s %ux%u: indexed modes in the window at $%08x%s; VideoCore %ux%u x%u pitch %u at %p%s\n",
                 psmac_board_se && !psmac_board_solo ? "the SE's screen" : "second display", w0, h0, scr[0].win_mac,
                 se_card ? ", one bit only (the SE card)" : ", direct modes in the big region at $90000000",
-                vc_w, vc_h, vc_bpp, vc_pitch, framebuffer, con_keep ? ": the log stays there (mac.hdmi=log)" : psmac_board_se && !psmac_board_solo ? ": HDMI mirrors the SE (mac.hdmi=mirror)" : "");
+                vc_w, vc_h, vc_bpp, vc_pitch, framebuffer, vc_boot ? ": the firmware's own buffer, kept; the log stays there (mac.hdmi=log)" : con_keep ? ": the log stays there (mac.hdmi=log)" : psmac_board_se && !psmac_board_solo ? ": HDMI mirrors the SE (mac.hdmi=mirror)" : "");
 }
 
 /* Which byte of a 32-bit pixel is red. The firmware is asked (tag 0x40006): 1 means the bytes
@@ -199,6 +218,7 @@ void psmac_display_reinit(void)
        buffer; asking the firmware for it again held the 68k's first instruction for a mailbox
        round trip and a clear of up to 9 MB (docs/08 item 50). A Restart's RESET still remakes it. */
     if (vc_fresh) { vc_fresh = 0; return; }
+    if (vc_boot) return;                     /* the firmware's boot buffer, kept for the log (psmac_display_init) */
     void *fb = 0; uint32_t p = 0;
     psmac_vc_setup(vc_w, vc_h, vc_bpp, &fb, &p);
     if (fb && p) { framebuffer = fb; pitch = p; vc_pitch = p; vcfb = (uint8_t *)(KERNEL_ALIAS + (((uintptr_t)fb) & 0x3fffffffull)); }
