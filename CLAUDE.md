@@ -132,7 +132,7 @@ ROM=rom/patched/MacIIci_psmac.rom HD=images/chd/sys710pi.chd tools/run-fullstack
 python3 tools/pinet.py /tmp/psmac-net peer      # the host side of the Ethernet, in another shell
 ```
 `run-fullstack.sh SECONDS [kernel options]` starts MAME (`mamepsmac maciici_ps`, FIFO transport;
-`MACHINE=macse_ps` for the bridged Macintosh SE, with `mac.board=se` and the 512x342 declaration
+`MACHINE=macse_ps` for the bridged Macintosh SE (`MAME_RAM=2560K` and `mac.seram=2.5` for an SE with 2.5 MB of its own), with `mac.board=se` and the 512x342 declaration
 ROM on the kernel side; its PRAM lives in `mame/nvramFS/macse_ps/`)
 and QEMU (one run at a time: the bridge socket, MAME's nvram and snapshot directories are shared,
 and two runs side by side corrupt each other's results silently), writes `emu68.log` and `mame.log` to `$LOGDIR` (default `/tmp/psmac-logs`), and MAME

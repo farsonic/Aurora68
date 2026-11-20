@@ -166,6 +166,11 @@ Setting up the SD card (a Pi 3B in an SE)
      network at boot add wifi.ssid=NAME wifi.psk=PASSWORD wifi.country=XX (two letters).
      Memory: the kernel gives the Macintosh what the Pi can spare, up to 128 MB (on every board,
      the 512 MB 3A+ and Zero 2 W included); mac.ram=N fixes it.
+     The SE's own memory holds only its screen, at a place that depends on how much there is:
+     add mac.seram=1, 2 or 2.5 if your SE has 1, 2 or 2.5 MB (4 MB needs nothing). The log
+     says "board layer up: SE memory 2.5 MB (2560 KB), screen buffer at $27a700" (1 MB $0fa700,
+     2 MB $1fa700, 4 MB $3fa700); any other value is reported as "not understood" and 4 MB is
+     kept. A wrong value leaves the SE's screen blank or showing junk while the Mac runs.
   7. The PiStorm: the classic board, with the firmware it came with. Remove the SE's 68000 (or
      use the socket if yours has one), seat the PiStorm with pin 1 where the 68000's pin 1 was
      (the notch end), the Pi on it. A 3A+ or a Zero 2 W fits the board; a full-size Pi 3B or 3B+

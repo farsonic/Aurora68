@@ -270,6 +270,48 @@ For the next boot: the default memory (no `mac.ram=`), the rest of the cmdline a
 lines to look for are the `parameter RAM $8A` one, `switch #3: TC=80f06b00 ...` with
 "log 00000000-07ffffff -> phys 00000000", and the heartbeats' `scsi` and `via` counts.
 
+## The SE's own memory: `mac.seram=`
+
+*20 November 2026* (docs/08 item 64). The Macintosh gets its memory from the Pi; the SE's own RAM
+holds only its screen, which the kernel writes row by row into the SE's main screen buffer,
+$5900 below the top of the SE's RAM. So the kernel has to know how much the SE has:
+`mac.seram=1`, `2`, `2.5` or `4` (MB), 4 if not given. Until today the option was read as a whole
+number, so `2.5` was taken as 2 and the rows went 512 KB below the screen. It is a decimal now
+(`2.50` and `4.0` work too), kept in KB, and anything that is not one of the SE's four
+configurations is said and ignored:
+
+    [PSMAC:SE] mac.seram=3 not understood: 1, 2, 2.5 or 4 (MB, the SE's own memory); 4 MB kept
+    [PSMAC:SE] board layer up: SE memory 2.5 MB (2560 KB), screen buffer at $27a700, ...
+
+| SE memory | SIMMs (row 1 / row 2) | top of RAM (Guide, Table 5-1) | main screen buffer |
+|---|---|---|---|
+| 1 MB | 256K / 256K | $0FFFFF | $0FA700 |
+| 2 MB | 1M / none (resistor boards), none / 1M (jumper boards) | $1FFFFF | $1FA700 |
+| 2.5 MB | 1M / 256K (resistor boards), 256K / 1M (jumper boards, jumper off) | $27FFFF | $27A700 |
+| 4 MB | 1M / 1M | $3FFFFF | $3FA700 |
+
+The check for 2.5 MB, the only configuration whose SIMM rows differ in size: the Guide to the
+Macintosh Family Hardware (2nd ed., chapter 5) gives the SE the same four tops of RAM as the Plus,
+says the BBU chooses the row for each address range from the RAM SIZE resistors or the jumper,
+and requires the 1 Mbit pair in a fixed row (row 1 with resistors, row 2 with the jumper) so that
+RAM is contiguous: $000000-$1FFFFF is the 2 MB row and $200000-$27FFFF the 512 KB one. The screen
+at $27A700 is then $7A700 into the 512 KB row, where it is on a 1 MB SE. Apple's Macintosh Plus
+technical information lists $27A700 (main screen) and $27FD00 (main sound) for the 2.5 MB Plus,
+whose logic the BBU replaced. What the Guide does not say is which address the BBU's video counter
+produces; that it reads these cells at 2.5 MB is an inference from the Plus figures, not a
+measurement. MAME's macse with 2560K scans `m_ram_size - $5900`, the same place.
+
+Not yet verified on anything that scans: the change was built (the kernel compiles without
+warnings) and the parser run on the host for the four sizes and for rejected words (3, 2.25, 0.5,
+8, 2.5MB, an empty value), but no MAME or hardware boot with 2.5 MB has been made (the session that
+made the change had neither MAME nor the ROMs). The MAME SE takes 2560K (`tools/run-fullstack.sh`
+passes `MAME_RAM=` on as `-ramsize`):
+
+    MACHINE=macse_ps MAME_RAM=2560K ROM=... HD=... tools/run-fullstack.sh 300 mac.board=se mac.seram=2.5 ...
+
+and should show the Finder on the SE's screen as at 4 MB, with "screen buffer at $27a700" in the
+log; the old kernel, given `2.5`, would have drawn into $1FA700 and left the scanned buffer blank.
+
 ## What to have ready
 
 - The release zip's SD card layout as it is (0.2): `kernel8.img`, `config.txt`, `cmdline.txt`,

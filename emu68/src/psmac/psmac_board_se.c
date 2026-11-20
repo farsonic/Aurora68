@@ -29,9 +29,24 @@ int psmac_board_se;                         /* mac.board=se (also set by mac.boa
 extern int psmac_board_solo;
 int psmac_solo_access(uint32_t addr, int size, int write, uint32_t data, uint32_t *val);
 unsigned psmac_solo_ipl(void); void psmac_solo_level_now(void); void psmac_solo_service(void); void psmac_solo_options(const char *); void psmac_solo_report(void);
-static uint32_t se_ram_mb = 4;              /* mac.seram=N: the SE's own memory, 1, 2, 2.5 or 4 MB (its screen sits at the top) */
-static uint32_t se_ram_size(void) { return se_ram_mb << 20; }
-uint32_t psmac_se_fb_base(void) { return se_ram_size() - 0x5900; }   /* the main screen buffer: 21,888 bytes, 64 per row */
+/* The SE's own memory, which only its screen uses here: mac.seram=1, 2, 2.5 or 4 (MB), kept in KB
+   because 2.5 MB is not a whole number of MB. Until 20 November 2026 the option was read as a
+   whole number, so 2.5 became 2 and the rows went to $1FA700, 512 KB below the screen.
+   The main screen buffer is $5900 below the top of RAM (its 21,888 bytes end at top - $380, the
+   main sound buffer is at top - $300): $0FA700, $1FA700, $27A700, $3FA700 for 1, 2, 2.5, 4 MB.
+   Found, not designed: Apple's Macintosh Plus technical information lists those four addresses
+   (and $27FD00 for the 2.5 MB sound buffer); the Guide to the Macintosh Family Hardware (2nd ed.)
+   gives the SE the same four tops of RAM (Table 5-1: $0FFFFF, $1FFFFF, $27FFFF, $3FFFFF, MemTop
+   one above) and says the BBU picks the SIMM row for each address range from the RAM SIZE
+   resistors or jumper, with the 1 Mbit pair of a 2.5 MB SE in row 1 (resistor boards) or row 2
+   (jumper boards, jumper off). RAM being contiguous to $27FFFF, the 2 MB row answers
+   $000000-$1FFFFF and the 256 Kbit row $200000-$27FFFF, so the screen is $7A700 into the 512 KB
+   row, where it is on a 1 MB SE. Which address the BBU's video counter itself produces is not in
+   the Guide (only "ScrnBase"); that it reads these cells at 2.5 MB is inferred from the Plus,
+   whose general logic the BBU took over, scanning $27A700 there. MAME's macse (2560K) agrees. */
+static uint32_t se_ram_kb = 4096;
+uint32_t psmac_se_fb_base(void) { return (se_ram_kb << 10) - 0x5900; }   /* the main screen buffer: 21,888 bytes, 64 per row */
+static const char *se_ram_text(void) { return se_ram_kb == 1024 ? "1" : se_ram_kb == 2048 ? "2" : se_ram_kb == 2560 ? "2.5" : "4"; }
 
 /* the transport, as the bus layer exposes it to this file (psmac_bus.c) */
 uint32_t psmac_wire_read(uint32_t addr, int size);
@@ -432,8 +447,27 @@ void psmac_se_start(void)
     psmac_wire_read(0x400000u, 2);
     shadow_valid = 0;
     for (uint32_t w = 0; w < (SE_ROWS + 31) / 32; w++) dirty[w] = 0;
-    kprintf("[PSMAC:SE] board layer up: SE memory %u MB, screen buffer at $%06x, VIA $EFE1FE, SCC $9FFFF8/$BFFFF9, SCSI $5FF000, IWM $DFE1FF; RBV, ASC, VDAC answered here\n",
-            se_ram_mb, psmac_se_fb_base());
+    kprintf("[PSMAC:SE] board layer up: SE memory %s MB (%u KB), screen buffer at $%06x, VIA $EFE1FE, SCC $9FFFF8/$BFFFF9, SCSI $5FF000, IWM $DFE1FF; RBV, ASC, VDAC answered here\n",
+            se_ram_text(), se_ram_kb, psmac_se_fb_base());
+}
+
+/* mac.seram=: a decimal number of MB ("2.5", "4", "4.0"), turned into KB without floating point
+   (the kernel has none here): the whole part times 1024 plus up to three decimals scaled the same
+   way. Only the SE's four configurations are taken (the Guide's Figures 5-3 and 5-4: 1, 2, 2.5 and
+   4 MB; 512 KB is not one an SE can have); anything else is said and the size stays as it was. */
+static void se_ram_option(const char *tok)
+{
+    const char *p = tok;
+    uint32_t whole = 0, frac = 0, scale = 1, digits = 0;
+    while (*p >= '0' && *p <= '9' && digits < 4) { whole = whole * 10 + (*p++ - '0'); digits++; }
+    if (*p == '.') { p++; while (*p >= '0' && *p <= '9' && scale < 1000) { frac = frac * 10 + (*p++ - '0'); scale *= 10; } }
+    uint32_t kb = whole * 1024 + frac * 1024 / scale;
+    int ended = *p == 0 || *p == ' ' || *p == '\t' || *p == '\n' || *p == '\r';
+    if (digits && ended && (kb == 1024 || kb == 2048 || kb == 2560 || kb == 4096) && frac * 1024 % scale == 0) { se_ram_kb = kb; return; }
+    char shown[13]; int n = 0;              /* the kernel's kprintf has no %.*s: the word is copied out */
+    while (n < 12 && tok[n] && tok[n] != ' ' && tok[n] != '\t' && tok[n] != '\n' && tok[n] != '\r') { shown[n] = tok[n]; n++; }
+    shown[n] = 0;
+    kprintf("[PSMAC:SE] mac.seram=%s not understood: 1, 2, 2.5 or 4 (MB, the SE's own memory); %s MB kept\n", shown, se_ram_text());
 }
 
 void psmac_se_options(const char *args)
@@ -447,7 +481,7 @@ void psmac_se_options(const char *args)
         if (*tok == ',') { tok++; for (int i = 0; i < 4 && *tok && *tok != ' '; i++, tok++) se_trace_dev[i] = (*tok >= 'a' && *tok <= 'z') ? *tok - 32 : *tok; }
     }
     if ((tok = find_token(args, "mac.pram8a="))) { tok += 11; if (tok[0] == 'k') xp.keep = 1; }
-    if ((tok = find_token(args, "mac.seram="))) { tok += 10; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); if (n >= 1 && n <= 4) se_ram_mb = n; }
+    if ((tok = find_token(args, "mac.seram="))) se_ram_option(tok + 10);
 }
 
 void psmac_se_report(void)

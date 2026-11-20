@@ -8,7 +8,9 @@ export PSMAC_BRIDGE_FIFO=/tmp/psmac.req:/tmp/psmac.rep
 rm -f /tmp/psmac.req /tmp/psmac.rep
 rm -rf mame/snapFS
 MACHINE=${MACHINE:-maciici_ps}                       # macse_ps: the Macintosh SE board (pass mac.board=se to the kernel)
-reference/mame/mamepsmac $MACHINE -rompath mame/roms -cfg_directory mame/cfgFS -nvram_directory mame/nvramFS \
+# MAME_RAM=2560K (1M, 2M, 4M) gives the MAME SE that much of its own RAM, with mac.seram=2.5 (1, 2, 4)
+# on the kernel side; unset, MAME's default (4M on macse_ps)
+reference/mame/mamepsmac $MACHINE ${MAME_RAM:+-ramsize $MAME_RAM} -rompath mame/roms -cfg_directory mame/cfgFS -nvram_directory mame/nvramFS \
   -video none -sound none -nothrottle -frameskip 8 -hard1 ${HD:-images/chd/hd20.chd} -snapshot_directory mame/snapFS \
   -verbose -seconds_to_run $((SECS+20)) -autoboot_script ${MAME_SCRIPT:-mame/shots.lua} -skip_gameinfo > "$LOGDIR/mame.log" 2>&1 &
 MP=$!

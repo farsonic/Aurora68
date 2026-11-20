@@ -1839,6 +1839,40 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      Finder at 20 s). Not yet on the hardware. `mac.ram=8` on the old kernel avoids the crash, as the
      user's second boot showed, but not the stall after it.
 
+64. **The SE's 2.5 MB: `mac.seram=` read as a whole number (20 November).** The board layer writes
+   the SE's screen into the SE's own RAM at `psmac_se_fb_base()`, the top of that RAM less $5900.
+   Its size came from `mac.seram=N`, parsed digit by digit into whole MB with 1 to 4 accepted, so
+   `2.5` stopped at the dot and was taken as 2: the rows would have gone to $1FA700, inside the
+   SE's 2 MB row, while the BBU scanned $27A700. The comment beside it already named 2.5.
+   - *The memory map, checked.* The Guide to the Macintosh Family Hardware (2nd ed., chapter 5,
+     Table 5-1) gives the SE's highest RAM address as $0FFFFF, $1FFFFF, $27FFFF and $3FFFFF for 1,
+     2, 2.5 and 4 MB, MemTop one above. For 2.5 MB it requires the 1 Mbit SIMMs in row 1 on boards
+     with the RAM SIZE resistors (both resistors out) and in row 2 on boards with the jumper (the
+     jumper left off), and says the BBU uses the resistors or jumper to pick the row for each
+     address range: with RAM contiguous, the 2 MB row is $000000-$1FFFFF and the 256 Kbit pair
+     $200000-$27FFFF. For the screen the Guide gives only ScrnBase. Apple's Macintosh Plus
+     technical information has the table: main screen $FA700, $1FA700, $27A700, $3FA700, alternate
+     $8000 lower, main sound $27FD00 at 2.5 MB, i.e. top - $5900 and top - $300 on every size. The
+     SE's BBU replaced the Plus's PALs, so top - $5900 is kept for 2.5 MB: $7A700 into the 512 KB
+     row, the same offset as on a 1 MB SE. Which address the BBU's video counter puts out (top of
+     real RAM, or $3FA700 aliased into the small row) is not documented there, so that it scans
+     $27A700 at 2.5 MB is an inference, not a reading of the hardware. MAME's macse with 2560K
+     (`m_ram_size - MAC_MAIN_SCREEN_BUF_OFFSET`) agrees.
+   - *The change* (psmac_board_se.c): the size is kept in KB (`se_ram_kb`, default 4096) and the
+     option is a decimal parsed without floating point (whole part times 1024, up to three decimals
+     scaled the same way, exact values only); 1024, 2048, 2560 and 4096 KB are taken, anything else
+     gives "[PSMAC:SE] mac.seram=3 not understood: 1, 2, 2.5 or 4 (MB, the SE's own memory); 4 MB
+     kept". The "board layer up" line says "SE memory 2.5 MB (2560 KB), screen buffer at
+     $27a700". The kernel's kprintf has no `%.*s`, so the rejected word is copied into a buffer.
+     `tools/run-fullstack.sh` passes `MAME_RAM=` (e.g. 2560K) on to MAME as `-ramsize`.
+   - *Verified*: the kernel builds (aarch64 GCC 13.3, no warnings in the tree's settings); the
+     parser, compiled on the host from the file's own text, gives $0FA700, $1FA700, $27A700,
+     $3FA700 for 1, 2, 2.5 (and 2.50), 4 (and 4.0), and rejects 3, 2.25, 0.5, 8, 25, 12345, .5,
+     2.5MB and an empty value with the line above. *Not verified*: no boot of the MAME SE with
+     2560K and none on hardware; the environment that made the change had no MAME build and none
+     of the ROMs or System images. The test is `MACHINE=macse_ps MAME_RAM=2560K
+     tools/run-fullstack.sh ... mac.board=se mac.seram=2.5`, the Finder on the SE's screen.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,
