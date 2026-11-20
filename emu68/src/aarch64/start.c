@@ -1965,6 +1965,7 @@ __asm__ volatile(
 
     /* Start M68k now */
 #ifdef PSMAC
+    { extern void psmac_se_wait_ready(void); psmac_se_wait_ready(); }   /* the SE board's clock chip probe (psmac_board_se.c) */
     psmac_boot_mark("68k released: the ROM's first instruction");
 #endif
 #ifndef PISTORM_ANY_MODEL

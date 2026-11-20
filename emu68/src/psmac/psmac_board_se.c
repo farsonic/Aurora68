@@ -24,6 +24,7 @@
 #include "support.h"
 #include "psmac.h"
 #include "psmb.h"
+#include "psmac_pram_default.h"
 
 int psmac_board_se;                         /* mac.board=se (also set by mac.board=solo, psmac_board_solo.c) */
 extern int psmac_board_solo;
@@ -200,66 +201,122 @@ static uint32_t via_read_fix(uint32_t reg, uint32_t r)
     return r;
 }
 
-/* ---- the clock chip's byte $8A: what the IIci ROM makes of an SE's parameter RAM ------------
+/* ---- the clock chip: what the IIci ROM makes of an SE's parameter RAM ----------------------
    The SE's clock chip (343-0042-B, 256 bytes of parameter RAM) sits behind VIA port B as on the
-   IIci: bit 2 enable (low = selected), bit 1 clock, bit 0 data, MSB first, the chip's bits read
-   after each rising clock edge. The IIci ROM reads extended byte $8A before it builds its MMU
-   tables (0x408043D4) and that byte decides the memory layout: bit 0 32-bit addressing, bit 2 the
-   same for the next start (docs/08 item 26), bit 4 a layout with RAM at logical $38000000
-   (0x408043EE adds $37FF0000 to the logical top of RAM). On an SE nothing has kept the byte
-   meaningful for a IIci ROM: it holds whatever the battery kept. The first boot on a real SE (20 November 2026)
-   read it with bit 4 set: with 128 MiB the table builder at 0x4080476C ran past its 8 KiB frame
-   on the stack (more than the 2,070 descriptors it has room for) and returned to $00000011, one of
-   its own descriptors; with mac.ram=8 the ROM got past that, mapped RAM at $38000000 and never
-   started the video. The MAME SE with $8A = $15 reproduces the crash register
-   for register and, at 8 MiB, the same $38000000 mapping (docs/08 item 63).
+   IIci: bit 2 enable (low = selected), bit 1 clock, bit 0 data, MSB first. The ROM sets each bit
+   it sends with the clock low and raises the clock; for a byte it receives it turns DDRB bit 0
+   into an input, lowers and raises the clock and reads port B after the rise (0x4080B1E4-B26A).
+   This file follows that protocol on the ROM's writes to port B, so it always knows which byte is
+   in flight, and on two occasions hands the ROM something other than what the chip says.
 
-   So on the SE board the byte is mended on its way to the ROM, every time it is read, whoever
-   reads it (the ROM's start-up code or _ReadXPRam): bit 4 cleared always, bits 0 and 2 set when
-   the Mac has more than 8 MiB (in 24-bit mode the rest is unused, and the HDMI screen's thousands
-   and millions need 32-bit addressing), the other bits as the chip has them. The chip itself is
-   not written by this file: a write of $8A goes to it unchanged and is mended again at the next
-   read. (System 7.1 writes back the mode it started in, $05, so after one boot the chip agrees:
-   MAME's saved PRAM had $05 after runs that began with $15 and with $00.) mac.pram8a=keep turns the mending off. This file follows the chip's serial
-   protocol only to know when the byte is in flight; it answers nothing else. */
+   Byte $8A. The IIci ROM reads extended byte $8A before it builds its MMU tables (0x408043D4) and
+   that byte decides the memory layout: bit 0 32-bit addressing, bit 2 the same for the next start
+   (docs/08 item 26), bit 4 a layout with RAM at logical $38000000 (0x408043EE adds $37FF0000 to the
+   logical top of RAM). The first boot on a real SE (20 November 2026) read it with bit 4 set: with
+   128 MiB the table builder at 0x4080476C ran past its 8 KiB frame on the stack and returned to
+   $00000011, one of its own descriptors; with mac.ram=8 the ROM got past that, mapped RAM at
+   $38000000 and never started the video. The MAME SE with $8A = $15 reproduces the crash register
+   for register (docs/08 item 63). So on the SE board the byte is mended on its way to the ROM,
+   every time it is read, whoever reads it (the ROM's start-up code or _ReadXPRam): bit 4 cleared
+   always, bits 0 and 2 set when the Mac has more than 8 MiB (in 24-bit mode the rest is unused, and
+   the HDMI screen's thousands and millions need 32-bit addressing), the other bits as they are.
+   (System 7.1 writes back the mode it started in, $05, so after one boot a working chip agrees.)
+   mac.pram8a=keep turns this off.
+
+   A chip that does not answer. The second boot on the SE (kernel c6d203f, 20 November) read $FF
+   from byte $8A three times, before and after the ROM's InitUtil (0x4080C5CC) had found the
+   signature missing and written 'NuMc' and its defaults: the chip neither answered nor kept what
+   it was told, and the data line simply stayed high. The IIci ROM then never opened the video and
+   waited for ever in the File Manager's queue on its open of .Sony at 0x40801138 (PC 0x4080EFDE,
+   ioResult never set). The MAME SE with a chip made to read that way (mac.rtcsim=dead below) stops
+   at the same PC with the same registers, stack and VIA traffic, and serving the defaults with
+   one byte at a time put back to $FF found the one that matters: extended byte $AE, which the ROM
+   reads at 0x4081AB44 and, by the look of the code there, uses with its ROM resource table to
+   choose a set of ROM resources; it checks the byte with a signed compare (0x4081AB66), so $FF,
+   that is -1, passes for a valid choice. So the board layer asks the chip itself before the 68k
+   starts (rtc_probe): the signature at $0C-$0F and the four bytes of the clock, read with the
+   ROM's own sequence, nothing written. When every one of them reads $FF the chip is taken as absent and this file answers in
+   its place: each byte the ROM reads comes from pram[] (the solo board's validated defaults,
+   psmac_pram_default.h, with $8A mended as above) and the seconds from a clock that starts at
+   20 November 2026 and runs with the Pi's timer; what the ROM writes is kept there for the rest of
+   the session (Restart included) and still goes to the chip, which this file never writes itself.
+   A chip that answers but holds no signature (a flat battery) is left alone: the ROM resets it to
+   its defaults, which is what every Mac does then (the MAME SE with all bytes $FF but a working
+   chip boots to the question-mark disk). mac.sepram=chip turns the stand-in off. */
 static struct {
-    int enb, clk, dir, bits, state, mend, keep;   /* dir 1: the chip is sending; state 0 command, 1 data to write, 2 extended address, 3 extended data */
+    int enb, clk, dir, bits, state, keep, sim_dead, wp;
     int ddr0;                                     /* DDRB bit 0: 1 while the ROM drives the data line (then a read returns its own latch) */
+    int addr;                                     /* the byte in flight: 0-255 parameter RAM, 0x100-0x103 the clock's bytes, 0x1ff a register */
     uint8_t byte, cmd, real, given;               /* real: what the chip sent; given: what the ROM got */
     uint32_t mended;                              /* reads of $8A that were changed, for the log */
+    int serve, probed, chip_off;                  /* serve: the chip does not answer, this file does; chip_off: mac.sepram=chip */
+    uint8_t pram[256];
+    uint32_t secs; uint64_t secs_t0;              /* the stand-in clock: secs at the timer's secs_t0 */
+    uint32_t reads, reads_ff, writes;             /* bytes the ROM read (and how many of them the chip sent as $FF), bytes it wrote */
 } xp = { .enb = 1, .ddr0 = 1 };
+#define XP_SECS_START 0xe7253e00u                 /* 20 November 2026, 00:00, in the Mac's seconds since 1904 */
 static uint8_t xp8a_bits(void) { return psmac_ram_size() > (8u << 20) ? 0x05 : 0; }   /* bits 0 and 2: 32-bit addressing now and at the next start */
+static uint8_t xp8a_mend(uint8_t v) { return xp.keep ? v : (uint8_t)((v & ~0x10) | xp8a_bits()); }
+static uint32_t xp_secs(void) { return xp.secs + (uint32_t)((asc_now() - xp.secs_t0) / asc_hz()); }
+static void xp_set_secs(uint32_t s) { xp.secs = s; xp.secs_t0 = asc_now(); }
+/* what the stand-in sends for the byte in flight */
+static uint8_t xp_served(int addr)
+{
+    if (addr < 0x100) return addr == 0x8a ? xp8a_mend(xp.pram[0x8a]) : xp.pram[addr];
+    if (addr < 0x104) return (uint8_t)(xp_secs() >> (8 * (addr & 3)));
+    return 0;                                     /* the test and write-protect registers read 0 (MAME's macrtc) */
+}
+/* a byte the ROM wrote: the stand-in keeps it (the chip has had it too) */
+static void xp_store(int addr, uint8_t v)
+{
+    xp.writes++;
+    if (addr == 0x1fd) { xp.wp = (v & 0x80) != 0; return; }        /* register 13, write protect: always taken */
+    if (!xp.serve || xp.wp) return;
+    if (addr < 0x100) xp.pram[addr] = v;
+    else if (addr < 0x104) { uint32_t s = xp_secs(), sh = 8 * (addr & 3); xp_set_secs((s & ~(0xffu << sh)) | (uint32_t)v << sh); }
+}
 static void xp_end(void)
 {
-    if (xp.mend && xp.bits == 0 && xp.real != xp.given && xp.mended++ < 4) {
-        int b4 = (xp.real & 0x10) != 0, b02 = (~xp.real & xp8a_bits()) != 0;
-        kprintf("[PSMAC:SE] parameter RAM $8A: the SE's clock chip says $%02x, the ROM is given $%02x:%s%s (mac.pram8a=keep to leave it)\n",
-                xp.real, xp.given, b4 ? " bit 4 cleared (RAM at logical $38000000: with 128 MiB the ROM's MMU table builder overruns its stack, with 8 the boot stalls; docs/08 item 63)" : "",
-                b02 ? (b4 ? "; 32-bit addressing on (more than 8 MiB of RAM)" : " 32-bit addressing on (more than 8 MiB of RAM; 24-bit mode would use 8)") : "");
+    if (xp.dir && xp.bits == 0 && xp.addr >= 0) {
+        xp.reads++; if (xp.real == 0xff) xp.reads_ff++;
+        if (xp.addr == 0x8a && !xp.serve && xp.real != xp.given && xp.mended++ < 4) {
+            int b4 = (xp.real & 0x10) != 0, b02 = (~xp.real & xp8a_bits()) != 0;
+            kprintf("[PSMAC:SE] parameter RAM $8A: the SE's clock chip says $%02x, the ROM is given $%02x:%s%s (mac.pram8a=keep to leave it)\n",
+                    xp.real, xp.given, b4 ? " bit 4 cleared (RAM at logical $38000000: with 128 MiB the ROM's MMU table builder overruns its stack, with 8 the boot stalls; docs/08 item 63)" : "",
+                    b02 ? (b4 ? "; 32-bit addressing on (more than 8 MiB of RAM)" : " 32-bit addressing on (more than 8 MiB of RAM; 24-bit mode would use 8)") : "");
+        }
     }
-    xp.mend = 0;
+    xp.addr = -1;
+}
+/* a read command is complete: the chip sends the byte at addr from the next falling edge */
+static void xp_reading(int addr)
+{
+    xp.dir = 1; xp.bits = 8; xp.addr = addr; xp.real = 0; xp.state = 0;
+    xp.given = xp.serve ? xp_served(addr) : 0;
 }
 /* the ROM wrote port B (ORB): follow the enable, clock and data lines */
 static void xp_lines(uint8_t orb)
 {
     int enb = (orb >> 2) & 1, clk = (orb >> 1) & 1, data = orb & 1;
-    if (xp.keep) return;
-    if (enb != xp.enb) { if (enb) xp_end(); xp.enb = enb; xp.dir = 0; xp.bits = 0; xp.byte = 0; xp.state = 0; xp.mend = 0; }
+    if (enb != xp.enb) { if (enb) xp_end(); xp.enb = enb; xp.dir = 0; xp.bits = 0; xp.byte = 0; xp.state = 0; xp.addr = -1; }
     if (!clk && xp.clk && !xp.enb) {             /* falling edge: the next bit moves */
         if (xp.dir) { if (xp.bits > 0) xp.bits--; }
         else {
             xp.byte = (uint8_t)(xp.byte << 1 | data);
             if (++xp.bits == 8) {
-                uint8_t b = xp.byte; xp.bits = 0; xp.byte = 0;
+                uint8_t b = xp.byte; int i = (xp.cmd >> 2) & 0x1f; xp.bits = 0; xp.byte = 0;
                 if (xp.state == 2) {                 /* the second byte of an extended command: the low address bits */
                     int addr = ((xp.cmd & 7) << 5) | ((b & 0x7c) >> 2);
-                    if (xp.cmd & 0x80) { xp.dir = 1; xp.bits = 8; xp.mend = addr == 0x8a; xp.real = xp.given = 0; xp.state = 0; }
-                    else xp.state = 3;
-                } else if (xp.state == 1 || xp.state == 3) xp.state = 0;   /* a byte written to the chip: not ours to change */
-                else {
-                    xp.cmd = b;
+                    if (xp.cmd & 0x80) xp_reading(addr);
+                    else { xp.state = 3; xp.addr = addr; }
+                } else if (xp.state == 3) { xp_store(xp.addr, b); xp.state = 0; xp.addr = -1; }
+                else if (xp.state == 1) {            /* the data byte of a register write */
+                    xp_store(i < 4 ? 0x100 + i : (i >= 8 && i < 12) || i >= 16 ? i : 0x1f0 + i, b);
+                    xp.state = 0;
+                } else {
+                    xp.cmd = b; i = (b >> 2) & 0x1f;
                     if ((b & 0x78) == 0x38) xp.state = 2;
-                    else if (b & 0x80) { xp.dir = 1; xp.bits = 8; }
+                    else if (b & 0x80) xp_reading(i < 8 ? 0x100 + (i & 3) : (i >= 8 && i < 12) || i >= 16 ? i : 0x1ff);
                     else xp.state = 1;
                 }
             }
@@ -267,17 +324,81 @@ static void xp_lines(uint8_t orb)
     }
     xp.clk = clk;
 }
-/* the ROM reads port B: while byte $8A comes out of the chip, bit 0 is the mended bit */
+/* the ROM reads port B: while a byte comes out of the chip, bit 0 is the chip's, mended for $8A,
+   or the stand-in's */
 static uint32_t xp_read(uint32_t r)
 {
-    if (!xp.mend || xp.ddr0 || xp.bits > 7 || xp.bits < 0) return r;   /* after the last bit the ROM takes the line back first: its read-modify-write of the enable bit is its own */
+    if (xp.sim_dead && !xp.ddr0) r |= 1;             /* mac.rtcsim=dead: a chip that never drives the line */
+    if (!xp.dir || xp.addr < 0 || xp.ddr0 || xp.bits > 7 || xp.bits < 0) return r;   /* after the last bit the ROM takes the line back first: its read-modify-write of the enable bit is its own */
     int n = xp.bits;                                 /* the bit the chip presents now, 7 first */
-    uint8_t real = r & 1, set = xp8a_bits(), bit = real;
-    if (n == 4) bit = 0;
-    else if ((set >> n) & 1) bit = 1;
+    uint8_t real = r & 1, bit = real;
     xp.real = (uint8_t)((xp.real & ~(1u << n)) | (real << n));
-    xp.given = (uint8_t)((xp.given & ~(1u << n)) | (bit << n));
+    if (xp.serve) bit = (xp.given >> n) & 1;
+    else if (xp.addr == 0x8a && !xp.keep) {
+        if (n == 4) bit = 0;
+        else if ((xp8a_bits() >> n) & 1) bit = 1;
+        xp.given = (uint8_t)((xp.given & ~(1u << n)) | (bit << n));
+    }
     return (r & ~1u) | bit;
+}
+
+/* Before the 68k starts: is there a clock chip that answers? The ROM's sequence, on the service
+   core, with nothing written to the chip but the command bytes of eight reads. The VIA is as
+   reset left it (port B all inputs); its DDRB is put back afterwards and the ROM programs the
+   rest itself. */
+#define SE_ORB  (SE_VIA + 0 * 0x200)
+#define SE_DDRB (SE_VIA + 2 * 0x200)
+static void rtc_send(uint8_t b)
+{
+    for (int k = 7; k >= 0; k--) {
+        uint8_t o = 0x40 | ((b >> k) & 1);           /* enable low, clock low, the bit (PB6 high as via_data drives it) */
+        psmac_wire_write(SE_ORB, 1, o, 0);
+        psmac_wire_write(SE_ORB, 1, o | 0x02, 0);     /* clock high: the chip takes the bit */
+    }
+}
+static uint8_t rtc_recv(void)
+{
+    uint8_t v = 0;
+    psmac_wire_write(SE_DDRB, 1, 0x46, 0);           /* the data line an input */
+    for (int k = 7; k >= 0; k--) {
+        psmac_wire_write(SE_ORB, 1, 0x40, 0);
+        psmac_wire_write(SE_ORB, 1, 0x42, 0);
+        uint32_t r = psmac_wire_read(SE_ORB, 1);
+        if (xp.sim_dead) r |= 1;
+        v = (uint8_t)(v << 1 | (r & 1));
+    }
+    psmac_wire_write(SE_DDRB, 1, 0x47, 0);
+    psmac_wire_write(SE_ORB, 1, 0x46, 0);             /* enable high: the transaction is over */
+    return v;
+}
+static void rtc_probe(void)
+{
+    if (xp.probed) return;
+    xp.probed = 1;
+    uint8_t ddrb = psmac_wire_read(SE_DDRB, 1) & 0xff, sig[4], sec[4];
+    psmac_wire_write(SE_ORB, 1, 0x46, 0);             /* enable high, clock high, before the lines become outputs */
+    psmac_wire_write(SE_DDRB, 1, 0x47, 0);
+    for (int i = 0; i < 4; i++) { int a = 0x0c + i; rtc_send(0xb8 | (a >> 5)); rtc_send((a & 0x1f) << 2); sig[i] = rtc_recv(); }
+    for (int i = 0; i < 4; i++) { rtc_send(0x81 | (i << 2)); sec[i] = rtc_recv(); }
+    psmac_wire_write(SE_DDRB, 1, ddrb, 0);
+    int all_ff = 1;
+    for (int i = 0; i < 4; i++) if (sig[i] != 0xff || sec[i] != 0xff) all_ff = 0;
+    uint32_t s = (uint32_t)sec[3] << 24 | (uint32_t)sec[2] << 16 | (uint32_t)sec[1] << 8 | sec[0];
+    int numc = sig[0] == 'N' && sig[1] == 'u' && sig[2] == 'M' && sig[3] == 'c';
+    if (!all_ff) {
+        kprintf("[PSMAC:SE] clock chip: answers; parameter RAM %s (signature %02x %02x %02x %02x), clock %08x\n",
+                numc ? "valid" : "not valid, the ROM will reset it to its defaults", sig[0], sig[1], sig[2], sig[3], s);
+        return;
+    }
+    if (xp.chip_off) {
+        kprintf("[PSMAC:SE] clock chip: reads $FF for the signature and the clock: it does not answer, and mac.sepram=chip leaves it so (the ROM will not start its video)\n");
+        return;
+    }
+    for (int i = 0; i < 256; i++) xp.pram[i] = psmac_pram_default[i];
+    xp_set_secs(XP_SECS_START);
+    xp.serve = 1;
+    kprintf("[PSMAC:SE] clock chip: reads $FF for the signature and the clock: it does not answer (a dead or disconnected chip; look for a leaked battery around it). "
+            "The board layer answers in its place: default parameter RAM, kept until the Pi is switched off, and a clock from 20 November 2026 (mac.sepram=chip to leave the chip alone)\n");
 }
 
 /* ---- the SCSI chip: the same 5380, read on even addresses, written on odd ones -------------- */
@@ -425,15 +546,30 @@ void psmac_se_service(void)
 
 /* at the start, and after every reset the ROM pulses: the SE powers up with its ROM overlaid at
    0 and RAM at $600000; one access to the ROM's own space ($400000) puts RAM back at 0, where the
-   screen buffer must be. Then the SE's screen is cleared and the shadow forgotten. */
+   screen buffer must be. Then the SE's screen is cleared and the shadow forgotten, and the clock
+   chip is asked whether it answers (rtc_probe, above), before the 68k's first instruction:
+   core 0 waits for this (psmac_se_wait_ready), since the ROM's first act, a RESET, would reset the
+   VIA under the probe. */
+static volatile int se_ready;
 void psmac_se_start(void)
 {
-    if (!psmac_board_se || psmac_board_solo) return;
+    if (!psmac_board_se || psmac_board_solo) { se_ready = 1; return; }
     psmac_wire_read(0x400000u, 2);
     shadow_valid = 0;
     for (uint32_t w = 0; w < (SE_ROWS + 31) / 32; w++) dirty[w] = 0;
     kprintf("[PSMAC:SE] board layer up: SE memory %u MB, screen buffer at $%06x, VIA $EFE1FE, SCC $9FFFF8/$BFFFF9, SCSI $5FF000, IWM $DFE1FF; RBV, ASC, VDAC answered here\n",
             se_ram_mb, psmac_se_fb_base());
+    rtc_probe();
+    __asm__ volatile("dmb ish" ::: "memory");
+    se_ready = 1;
+}
+/* core 0, just before it releases the 68k: at most a second, so a service core that never comes
+   up cannot hold the boot for ever (its absence is logged elsewhere) */
+void psmac_se_wait_ready(void)
+{
+    if (!psmac_board_se || psmac_board_solo) return;
+    uint64_t t0 = asc_now(), hz = asc_hz();
+    while (!se_ready && asc_now() - t0 < hz) __asm__ volatile("yield");
 }
 
 void psmac_se_options(const char *args)
@@ -447,6 +583,8 @@ void psmac_se_options(const char *args)
         if (*tok == ',') { tok++; for (int i = 0; i < 4 && *tok && *tok != ' '; i++, tok++) se_trace_dev[i] = (*tok >= 'a' && *tok <= 'z') ? *tok - 32 : *tok; }
     }
     if ((tok = find_token(args, "mac.pram8a="))) { tok += 11; if (tok[0] == 'k') xp.keep = 1; }
+    if ((tok = find_token(args, "mac.sepram="))) { tok += 11; if (tok[0] == 'c') xp.chip_off = 1; }
+    if ((tok = find_token(args, "mac.rtcsim="))) { tok += 11; if (tok[0] == 'd') xp.sim_dead = 1; }   /* the testbed: the clock chip read as one that never answers */
     if ((tok = find_token(args, "mac.seram="))) { tok += 10; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); if (n >= 1 && n <= 4) se_ram_mb = n; }
 }
 
@@ -454,6 +592,7 @@ void psmac_se_report(void)
 {
     if (psmac_board_solo) { psmac_solo_report(); return; }
     if (!psmac_board_se) return;
-    kprintf("[PSMAC:SE] rows sent %u, frames compared %u, local reads %u writes %u, RBV IFR %02x IER %02x SIER %02x\n",
-            rows_sent, frames_marked, local_reads, local_writes, rbv_ifr, rbv_ier, rbv_regs[0x12]);
+    kprintf("[PSMAC:SE] rows sent %u, frames compared %u, local reads %u writes %u, RBV IFR %02x IER %02x SIER %02x | clock chip: %s, %u bytes read (%u of them $FF from the chip), %u written\n",
+            rows_sent, frames_marked, local_reads, local_writes, rbv_ifr, rbv_ier, rbv_regs[0x12],
+            xp.serve ? "not answering, the board layer answers" : "answering", xp.reads, xp.reads_ff, xp.writes);
 }
