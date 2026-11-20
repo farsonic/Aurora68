@@ -75,12 +75,17 @@ static void mmio_write(void *ctx, uint32_t r, uint32_t v)
 }
 static inline uint64_t now(void) { uint64_t v; __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(v)); return v; }
 static inline uint64_t hz(void)  { uint64_t v; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(v)); return v; }
+/* A wait of the USB code. On core 1 (the start, and every later enumeration) the sound output is fed
+   meanwhile (psmac_audio.c): an enumeration holds core 1 for a second, and most of it is in here. */
+extern int psmac_audio_poll(void);
+static inline int on_core1(void) { uint64_t m; __asm__ volatile("mrs %0, MPIDR_EL1" : "=r"(m)); return (m & 3) == 1; }
 static void delay_us(void *ctx, unsigned us)
 {
     (void)ctx;
     uint64_t t0 = now(), n = ((uint64_t)us * hz() + 999999u) / 1000000u;
+    int feed = us >= 50 && on_core1();
     while (now() - t0 < n)
-        ;
+        if (feed) psmac_audio_poll();
 }
 
 static const struct frf_dwc2_ops ops = { mmio_read, mmio_write, delay_us, (void *)(uintptr_t)DWC2 };
@@ -364,12 +369,24 @@ static void enumerate_elsewhere(const char *why)       /* core 3 */
     __atomic_store_n(&enum_why, why, __ATOMIC_RELEASE);
     __asm__ volatile("dsb ish; sev" ::: "memory");
 }
+/* Core 1 waits here between enumerations, feeding the sound output (psmac_audio.c) as it goes. Its
+   wfe wakes on core 3's sev and, since 20 November 2026, on the generic timer's event stream as well,
+   whenever bit 13 of the counter goes from 0 to 1 (every 0.85 ms at the Pi 3's 19.2 MHz), so the
+   output's ring is looked at a thousand times a second without core 1 spinning. Before an enumeration the ring is filled with
+   silence: the DMA goes on playing it while core 1 is busy, and repeats nothing stale. */
+extern void psmac_audio_pause(void);
 void __attribute__((noreturn)) psmac_usb_core1(void)  /* core 1, after psmac_usb_start, for ever */
 {
+    uint64_t k;
+    __asm__ volatile("mrs %0, CNTKCTL_EL1" : "=r"(k));
+    k = (k & ~0xf0ull) | 13u << 4 | 1u << 2;                    /* EVNTI = 13, EVNTEN */
+    __asm__ volatile("msr CNTKCTL_EL1, %0; isb" :: "r"(k));
     for (;;) {
         const char *why;
         while (!(why = __atomic_load_n(&enum_why, __ATOMIC_ACQUIRE)))
-            __asm__ volatile("wfe");
+            if (!psmac_audio_poll())
+                __asm__ volatile("wfe");
+        psmac_audio_pause();
         enumerate(why);
         next_poll = now();
         next_check = now() + 2 * hz();

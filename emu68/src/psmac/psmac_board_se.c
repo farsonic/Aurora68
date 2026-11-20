@@ -148,6 +148,11 @@ static void rbv_write(uint32_t off, uint8_t data)
    Pi's timer, as before, so whatever the speaker does the feeder never waits on it. */
 static uint32_t asc_level[2];
 static uint64_t asc_t[2];
+/* Since 20 November 2026 the bytes also go to the Pi's own sound output (psmac_audio.c, HDMI or the
+   jack, on core 1), which reads the chip's registers for the wavetable voices itself; the speaker's
+   rings below are the SE's alone. */
+void psmac_audio_asc_byte(int ch, uint8_t v); void psmac_audio_asc_flush(void);
+int psmac_audio_spk_level(void); uint8_t psmac_audio_spk_take(void); int psmac_audio_wanted(void);
 #define ASC_RATE 22257u
 static inline uint64_t asc_now(void) { uint64_t v; __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(v)); return v; }
 static inline uint64_t asc_hz(void)  { uint64_t v; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(v)); return v; }
@@ -161,6 +166,8 @@ static volatile uint32_t snd_flush;             /* bumped when the Mac empties t
 static volatile uint32_t snd_wt_gen;            /* bumped when the Mac writes a wavetable phase: the speaker takes the new phases */
 static uint32_t snd_dropped;                    /* bytes that found a ring full */
 static int snd_off;                             /* mac.sesound=off: the ASC's bytes are thrown away, as before */
+const volatile uint8_t *psmac_asc_regs(void) { return asc_regs; }   /* for psmac_audio.c's wavetable voices */
+uint32_t psmac_asc_wt_gen(void) { return snd_wt_gen; }
 static void snd_push(int ch, uint8_t v)
 {
     if (snd_off) return;
@@ -201,12 +208,12 @@ static void asc_write(uint32_t off, uint8_t data)
     if (off < 0x800 && mode == 1) {
         int ch = off >= 0x400;
         asc_drain(ch);
-        if (asc_level[ch] < 1024) { asc_level[ch]++; snd_push(ch, data); }   /* what the chip would have taken */
+        if (asc_level[ch] < 1024) { asc_level[ch]++; snd_push(ch, data); psmac_audio_asc_byte(ch, data); }   /* what the chip would have taken */
     } else if (off == 0x803 && (data & 0x80)) {
         asc_level[0] = asc_level[1] = 0;
-        snd_flush++;
+        snd_flush++; psmac_audio_asc_flush();
     } else if (off == 0x801 && data != mode) {
-        snd_flush++;                                /* a new mode starts with empty FIFOs (MAME's asc.cpp) */
+        snd_flush++; psmac_audio_asc_flush();       /* a new mode starts with empty FIFOs (MAME's asc.cpp) */
     } else if (off >= 0x810 && off < 0x830) {
         snd_wt_gen++;
     }
@@ -876,6 +883,7 @@ static uint8_t snd_next(void)
     int n = 0, sum = 0;
     for (int ch = 0; ch < 2; ch++)
         if (snd_fifo_level(ch) > 0) { sum += snd_ring[ch][snd_tail[ch] % SND_RING]; __atomic_store_n(&snd_tail[ch], snd_tail[ch] + 1, __ATOMIC_RELEASE); n++; }
+    if (psmac_audio_spk_level() > 0) { sum += psmac_audio_spk_take(); n++; }   /* the sound card's samples (psmac_audio.c), when the Sound Manager plays there */
     if (!n) { if (mode == 1 && snd.feeding) snd.underruns++; return snd.hold; }   /* a gap inside a sound, not the quiet after it */
     snd.played++;
     return snd.hold = (uint8_t)(sum / n);
@@ -951,7 +959,7 @@ static void snd_service(void)
     uint64_t now = asc_now(), hz = asc_hz();
     if (!snd.period) snd.period = hz * 704u * 370u / 15667200u;   /* the SE's frame: 704 dots by 370 lines at 15.6672 MHz, 60.15 Hz */
     if (snd.flush_seen != snd_flush) { snd.flush_seen = snd_flush; for (int ch = 0; ch < 2; ch++) snd_tail[ch] = __atomic_load_n(&snd_head[ch], __ATOMIC_ACQUIRE); }
-    int sounding = snd_fifo_level(0) > 0 || snd_fifo_level(1) > 0 || snd_wavetable_on();
+    int sounding = snd_fifo_level(0) > 0 || snd_fifo_level(1) > 0 || snd_wavetable_on() || psmac_audio_spk_level() > 0;
     if (sounding) snd.last_t = now;
     snd.feeding = now - snd.last_t < hz / 30;    /* the Sound Manager refills the FIFO at least every other frame while it plays */
     if (!snd.active) {
@@ -1241,7 +1249,9 @@ void psmac_se_report(void)
 void psmac_se_rom_fixup(uint8_t *rom, uint32_t len)
 {
     static const uint8_t table[] = { 0x02, 0x04, 0x00, 0x00, 0x00, 0x0d, 0x00, 0x00, 0x01, 0x2c, 0x00, 0x00, 0x00, 0x01, 0x00, 0x04 };
-    if (!psmac_board_se || psmac_board_solo || snd_off || len < 0x80000) return;
+    /* the SE with its speaker, or any board whose sound the Pi plays (psmac_audio.c, mac.audio) */
+    if (!psmac_audio_wanted() && (!psmac_board_se || psmac_board_solo || snd_off)) return;
+    if (len < 0x80000) return;
     for (unsigned i = 0; i < sizeof table; i++) if (rom[0x7158 + i] != table[i]) return;
     rom[0x7164] = 0x75; rom[0x7165] = 0x30;
     uint32_t sum = (uint32_t)rom[0] << 24 | (uint32_t)rom[1] << 16 | (uint32_t)rom[2] << 8 | rom[3];

@@ -407,6 +407,7 @@ void psmac_loop_report(void);
 void psmac_slot_irq_report(void)
 {
     { extern void psmac_display_report(void); psmac_display_report(); }
+    { extern void psmac_audio_report(void); psmac_audio_report(); }
     { extern void psmac_usb_report(void); psmac_usb_report(); }
     { extern void psmac_usbnet_report(void); psmac_usbnet_report(); }
     psmac_loop_report();
@@ -792,10 +793,14 @@ int psmac_slot_line_now(void)
 /* core 1: the USB controller's start, which takes about a second (power, reset, the first
    enumeration behind the hub), away from core 3's loop, whose mailbox, card and display services
    the Mac needs from its first instruction; core 3 polls the devices once it is done. Then every
-   later enumeration (a plug, an unplug, a retry), for the same reason (psmac_usb.c) */
+   later enumeration (a plug, an unplug, a retry), for the same reason (psmac_usb.c). Since 21
+   November 2026 core 1 is also the sound output's (psmac_audio.c): started first, so that the
+   startup chime, which comes during the USB start's second, reaches HDMI; fed from the USB code's
+   waits and from the loop between enumerations. */
 void psmac_alice_core1(void)
 {
     while (!__atomic_load_n(&alice_ready, __ATOMIC_ACQUIRE)) __asm__ volatile("yield");
+    { extern void psmac_audio_start(uint8_t *win); psmac_audio_start(alice_win); }   /* the sound output first: the chime comes within the USB start's second (psmac_audio.c) */
     { extern void psmac_usb_start(void); psmac_usb_start(); }
     psmac_boot_mark("core 1: USB started");
     { extern void psmac_usb_core1(void); psmac_usb_core1(); }

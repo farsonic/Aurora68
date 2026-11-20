@@ -131,6 +131,40 @@ struct psmb_display {
 #define PSMB_DECLROM2_PHYS   0xFAFFC000u     /* ... and where the Mac reads it: the top of slot $A's space */
 #define PSMB_HW_SCREEN2      0x5048u         /* the HDMI screen's drHw, 'PH' (the SE's is 'PV', 0x5056) */
 
+/* ---- the sound card (20 November 2026, docs/09 "Sound through HDMI") ------------------------------
+   One more function of slot 9's card: 16-bit stereo at 44.1 kHz, played by the Pi through HDMI or the
+   3.5 mm jack (psmac_audio.c, core 1). The Mac's side is the PiSound extension (mac/pisound.s), a Sound
+   Manager 3 output device component ('sdev') that takes the Sound Manager's mixed samples and writes
+   them into the ring; the Pi takes them out at the output's own pace and says how far it got (tail).
+   The block lies in the window's first megabyte, so a 24-bit system reaches it too ($911000). Frames
+   are left then right, each a big-endian signed 16-bit word, exactly what the Sound Manager's 'twos'
+   format holds. head and tail count frames for ever; head - tail is what is queued. */
+#define PSMB_OFF_SOUND       0x11000         /* struct psmb_sound */
+#define PSMB_OFF_SNDRING     0x12000         /* the ring: PSMB_SND_FRAMES frames of 4 bytes */
+#define PSMB_SND_FRAMES      8192u           /* 32 KiB, 186 ms at 44.1 kHz */
+#define PSMB_SND_MAGIC       0x41363853u     /* 'A68S' */
+#define PSMB_SND_OUT_NONE    0u              /* out_kind: nothing plays the card (mac.audio=off, or no output found) */
+#define PSMB_SND_OUT_HDMI    1u
+#define PSMB_SND_OUT_JACK    2u
+#define PSMB_SND_OUT_FILE    3u              /* the testbed: a file through semihosting (mac.audiodump=) */
+struct psmb_sound {
+    uint32_t magic, version;                 /* Pi: 'A68S', 1 */
+    uint32_t rate;                           /* Pi: the card's rate, 16.16 fixed (44100 << 16), as the Sound Manager writes rates */
+    uint32_t frames;                         /* Pi: the ring's size in frames */
+    uint32_t out_rate;                       /* Pi: the output's rate in Hz */
+    uint32_t out_kind;                       /* Pi: PSMB_SND_OUT_*; the Mac registers its component only when it is not NONE */
+    uint32_t tail;                           /* Pi: frames taken from the ring */
+    uint32_t underruns;                      /* Pi: frames the ring did not have while the Mac said it was playing */
+    uint32_t test;                           /* Pi: mac.audiotest=card: the extension plays its stereo test at start */
+    uint32_t pad0[3];
+    uint32_t head;                           /* Mac: frames written into the ring */
+    uint32_t state;                          /* Mac: 1 while the Sound Manager plays (an empty ring is then an underrun) */
+    uint32_t volume;                         /* Mac: left << 16 | right, $0100 full (the Sound Manager's 'hvol' scale) */
+    uint32_t sm_version;                     /* Mac: the Sound Manager's version (NumVersion), for the log */
+    uint32_t opens, starts, feeds;           /* Mac: counters for the log */
+    uint32_t pad1[9];
+};
+
 #define PSMB_MAX_SERVICES    8
 #define PSMB_MAX_BLKDEV      4
 
