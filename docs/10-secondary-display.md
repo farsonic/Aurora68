@@ -164,6 +164,129 @@ buffer is in the big region too, drawing for ten minutes in another session's te
 window is placed at x = 660 for the two-screen layout, so at 640 by 480 on the solo board it is
 off the screen; that is PiColor's, not the display's.
 
+## Two screens on the SE (20 November 2026)
+The user's SE bring-up begins with a Pi 3B on the classic PiStorm, and they asked for what the IIci
+testbed had shown on 17 November ("It works") on the SE as well: the SE's own 512 by 342 one-bit
+screen and the Pi's HDMI as a second, larger screen, at any size up to 1920 by 1200 and any depth,
+both in use at once, with the SE's as the main screen. Until today `mac.board=se` had one screen:
+the slot-9 card's single video sResource *was* the SE's (its 512 by 342 one-bit frame copied row
+by row into the SE's video RAM by `psmac_se_mark`), and HDMI showed the same picture or the log.
+
+**The choice.** Two shapes fit the Slot Manager. One card with two video sResources: one
+declaration ROM, one window, one interrupt line; the Start Manager installs a driver per sResource
+(a different driver name each, so the Device Manager gives each its own unit), and the ROM's
+screen set-up makes a GDevice for each. Or two cards: slot 9 as before and a second virtual card
+in another slot, each with its own declaration ROM. The SE has no NuBus, so the slot space is
+ours: on `mac.board=se` the kernel's board layer answers every slot address outside the I/O block
+with $FF (an empty slot), and the RBV it emulates reports slots $A-$E idle. The ROM size budget
+is no constraint either way (a two-screen card is 14 KB of the 64 KB). The first version was the
+single card, `$84` the SE's screen and `$85` the HDMI one; it booted with two screens at once, and
+then Monitors gave it away: for the HDMI screen it listed one depth, "Black & White", and drew
+both monitors the same size. Monitors 7.0 takes a screen's depths (and its proportions) from the
+first video sResource of the screen's slot, here the SE's one-bit `$84`; the driver's DCE, the
+GDevice and InitGDevice all had the right sResource (PiScreens: `dctl 9:133`). The same card on
+the solo board, alone in its slot, lists all six depths. So the HDMI screen moved to a card of its
+own, and the design is **two cards**:
+
+- *Slot 9*, the card it always was (disk, input, the two network cards, the status page, the
+  log), with its video sResource `$84` now the SE's own screen, 512 by 342, mode 128 (one bit)
+  only: the SE's hardware has no other.
+- *Slot $A*, the HDMI screen's card: a board sResource ("PiStorm-SE HDMI", BoardId 'PH') and one
+  video sResource `$80`, drHw `$5048`, every mode from one bit to millions at `mac.screen`'s size,
+  and a driver, `.Display_Video_PiHDMI`, which is `mac/pivideo.s` assembled with `SCREEN2`. The
+  card is a declaration ROM and nothing more. Its driver reaches the slot-9 window at its own
+  addresses (its display block is the second one, window + $59000, psmb.h), installs its slot
+  interrupt handler on slot 9, whose line the Pi raises, and runs slot $A's VBL queue at its
+  ticks; its modes' vpBaseOffsets reach from its dCtlDevBase ($FAA80000) into slot 9's space,
+  wrapping round in 32 bits as the big region's always did. The kernel serves the ROM from the
+  window's top 16 KiB, mapped at the top of slot $A's space ($FAFFC000), on the SE board only.
+- *The window's top 512 KiB* is split so that both screens keep what a 24-bit system reaches: the
+  SE's frame in its first 32 KiB ($F9980000, 21,888 bytes used), the HDMI screen's indexed modes
+  in the other 480 KiB ($F9988000) where they fit (640 by 480 and 800 by 600 up to 256 colours,
+  1024 by 768 up to 16), everything else in the big region at $90000000 as before. So System 6
+  and a 24-bit System 7 keep the SE's screen, and the HDMI screen where it fits; 32-bit addressing
+  gives millions at every size. The driver now refuses (paramErr) a mode whose pixels a 24-bit
+  system cannot reach, which Monitors would otherwise have offered.
+- *Interrupts*: one line, slot 9's, raised while either display block (or the network board, or
+  the input ring) has something pending. Each video driver's handler claims only its own block's
+  tick (`D0 = 1` only when its `vbl_pending` was set), the input driver's catch-all comes last, as
+  it always has. Each driver runs its own slot's VBL queue, so each queue runs sixty times a
+  second.
+- *One file*: the SE's declaration ROMs are `psmac-se-WxH.declrom` (`aurora68-se-WxH.declrom` in
+  the release), slot $A's ROM followed by slot 9's, so the top of the file is still slot 9's
+  format block; the kernel finds slot $A's by slot 9's length and checks its test pattern
+  (`declrom_below`, psmac_bus.c). `make -C mac` builds them for 640x480, 800x600, 1024x768,
+  1280x720, 1280x1024, 1600x1200, 1920x1080 and 1920x1200 (`SE_RESES`).
+
+**HDMI's three jobs, `mac.hdmi=`.** `screen` (the default on the SE board): the second screen,
+with an `-se-` ROM in the container of the HDMI size (`mac.screen=WxH`, else the size the
+firmware's HDMI mode gave the VideoCore). `mirror`: the SE's picture, as until today (the plain
+`psmac-512x342` ROM, or an `-se-` one whose slot $A card the kernel then leaves out). `log`: the
+kernel's log for the whole run, at the HDMI size rather than 512 by 342 (`mac.console=hdmi` means
+the same). Without an `-se-` ROM the kernel says so and mirrors. On the solo board and the IIci
+testbed nothing changed: an `-se-` file is the last choice there and its slot $A card is never
+served.
+
+**The second screen active without Monitors: PiScrn.** The ROM's 'scrn' loader (docs/08 item 26)
+activates a second screen only when the System file's 'scrn' names every screen and matches the
+hardware; without one the HDMI screen stays the driver's grey. Monitors writes one when a screen
+is dragged and OK clicked, but on a 9-inch screen that is a lot to ask. PiScrn
+(`mac/piscrn/piscrn.c`, an INIT built with the C kit) does it at startup: it lists the video
+sResources as the loader does, checks the 'scrn' by the loader's rules (count; each record's
+hardware id, slot, dCtlDevBase; a rectangle of the screen's size), and keeps it if it matches,
+which is also how a Monitors arrangement survives. If not (none, or the HDMI size changed), it
+writes one, the SE's screen main at the origin and the HDMI screen to its right, top-aligned, in
+millions with 32-bit addressing (else the deepest mode the 24-bit window holds), and restarts the
+Mac once, since the loader runs at InitGraf, before any extension. If the same bytes are already
+there and still do not match, it says so in the log rather than restart again. It does nothing on
+a Mac with one screen or without the Pi's window.
+
+**Two bugs the restart found.** The first two-card run hung right after PiScrn's restart, the 68k
+in its level-2 interrupt with no bus traffic: the display block's "enabled" flag had outlived the
+68k's RESET, and the HDMI driver's Open turns VBLs on before it installs its handler, with a grey
+fill of 288 KB (1920 by 1200 at one bit) in between, so the first tick raised slot 9's line with
+nobody to take it but the input driver's catch-all, which cannot lower it. Now the kernel clears
+the flag at RESET and the driver enables VBLs only once its handler is in. And the mouse: the
+input driver clipped every movement (USB, Bluetooth, the remote's absolute moves) to CrsrPin,
+the rectangle of the screen the cursor is on, so nothing but the SE's own ADB mouse could reach
+the second screen; the first click on the HDMI screen landed on the SE's right edge. It now clips
+to the rectangle around every active screen and leaves the rest to the ROM's cursor task, as
+for an ADB mouse.
+
+**The rest.** The kernel's display code keeps a block per screen (`struct screen`,
+psmac_display.c): screen 0 feeds the SE's video RAM (now every other tick whatever the
+VideoCore shows, which also mends `mac.console=hdmi` on the SE board: the SE's screen stopped
+changing then, because its rows were sent only at the end of an HDMI conversion), screen 1 is
+converted for the VideoCore. The remote control (docs/13) photographs either screen
+(`/screen.png?display=0|1`, `aurora68.py --display 1 screenshot`), takes `"display": N` on input
+events to mean a point of that screen, wherever Monitors put it, and lists both screens with
+their place on the desktop in `/state` ("screens", from QuickDraw's GDevices). PiColor opens its
+window on the first active screen that is not the main one.
+
+**What the testbed showed** (MAME `macse_ps`, System 7.1 on the SE's SCSI disk with PiScrn in the
+Extensions folder and PiColor in Startup Items, 16 MB, 32-bit addressing on in MAME's PRAM):
+- 1024 by 768, the first (one-card) version: the first boot wrote the 'scrn' and restarted; the
+  second came up with the Finder on the SE's screen and PiColor's twelve hues in millions of
+  colours on the HDMI screen at (512,0)-(1536,768); `/state` had both screens active, the SE's main.
+- 1920 by 1200, the same: PiScrn saw the HDMI size change, wrote a new 'scrn' and restarted;
+  PiColor in millions on 1920 by 1200, the disk window dragged by its title bar from the SE's
+  screen onto the HDMI one (with the input driver's clipping mended), PiScreens listing both
+  GDevices and both sResources with the values above, and Monitors' one-depth list that led to
+  the second card.
+- 1920 by 1200, two cards: PiScrn saw the HDMI screen's slot change from 9 to $A and rewrote the
+  'scrn' (that restart is the one that hung, above); with the fixes the next boot reached the
+  Finder in 146 s with both screens active and PiColor in millions on the HDMI screen
+  (`docs/img/se-hdmi-1920x1200-millions-picolor.png`). Monitors now shows monitor 2 in its true
+  proportion beside the SE's with the depths 4, 16, 256, thousands and millions, millions selected
+  (`docs/img/se-monitors-two-screens.png`, MAME's picture of the SE's own screen); choosing 256
+  switched the HDMI screen to 8 bits at once, and the Control Panels window, dragged by the remote
+  control from the SE's screen, came up on the HDMI one in colour
+  (`docs/img/se-hdmi-1920x1200-256-window-moved.png`), leaving the SE's Finder desktop behind
+  (`docs/img/se-two-screens-se-finder.png`, MAME).
+- 1024 by 768, two cards: PiScrn's restart again (the size changed), this time through to the
+  Finder; PiColor in millions on the VideoCore's own picture (`tools/vcshot.py`,
+  `docs/img/se-hdmi-1024x768-millions-picolor.png`).
+
 ## Colour (17 November, 01:30)
 PiColor (`mac/picolor.s`) opens a colour window on the Pi's screen and paints twelve hues at full
 and half strength, the primaries and a sixteen-step grey ramp with RGBForeColor and PaintRect.

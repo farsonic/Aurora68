@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **Two screens on the SE: its own and HDMI.** On `mac.board=se` the Pi's HDMI output can now be a
+  second screen beside the SE's 512 x 342, any size up to 1920 x 1200 and any depth up to millions of
+  colours (with 32-bit addressing), the SE's screen the main one: move windows across, set the HDMI
+  screen's depth in Monitors. The Mac sees two video cards, slot 9 (the SE's screen) and slot $A
+  (HDMI), from one declaration ROM file per HDMI size, `aurora68-se-1024x768.declrom` and so on. Put
+  it in the container, set the HDMI mode in config.txt, take `mac.console=hdmi` out of cmdline.txt
+  and add `mac.screen=WxH`, and copy the new extension **PiScrn** onto the System Folder: at the
+  first start it arranges the two screens and restarts the Mac once (READ-ME-FIRST.txt, docs/12).
+  `mac.hdmi=mirror` gives back the SE's picture on HDMI, `mac.hdmi=log` (or `mac.console=hdmi`, as
+  in the release's cmdline.txt) the log, at the HDMI size now. Also: USB and Bluetooth mice and the
+  remote control reach a second screen (they stopped at the first one's edge, on every board);
+  PiColor opens on the second screen wherever it is; with `mac.console=hdmi` the SE's own screen
+  no longer freezes; the remote control photographs either screen (`?display=1`). Replace
+  kernel8.img, the declaration ROM, PiColor; add PiScrn.
 - **The log says when the Pi's power is short.** In the SE the Pi is powered through the 68000
   socket, and a tired analog board or a Pi 3B's appetite can pull it below the firmware's
   threshold (about 4.63 V). The kernel now asks the Pi's firmware every two seconds and logs each

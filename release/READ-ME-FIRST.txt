@@ -54,6 +54,7 @@ What is in the zip
   aurora68.declrom       the same for a 640 by 480 second screen (the IIci testbed); and
   aurora68-WxH.declrom   one per larger HDMI screen size, 800x600 up to 1920x1200 (not for the
                          SE's screen yet)
+  aurora68-se-WxH.declrom    the SE with two screens: its own and HDMI at WxH (below, "Two screens")
   aurora68-wifionly.declrom   the WiFi as the only network card (MacTCP then takes the WiFi)
   aurora68-wifi.declrom  the screen with the WiFi as the only network card, for a Pi 3 alone; and
   aurora68-wifi-WxH.declrom   the same for each larger screen size
@@ -171,6 +172,22 @@ Setting up the SD card (a Pi 3B in an SE)
      overhangs it: make sure nothing under it touches the logic board.
   8. HDMI to a monitor if you have one (it shows the same 512 by 342 picture as the SE's screen
      in this build), the serial cable to GPIO 14 (TXD) and 15 (RXD), ground to 6. Power the SE.
+
+Two screens: the SE's and HDMI
+------------------------------
+Once the SE's own screen shows the Finder, HDMI can be a second screen beside it (any size up to
+1920 x 1200, up to millions of colours) instead of the log or a copy of the SE's picture:
+  1. In the container, aurora68-se-WxH.declrom for your monitor's size (e.g.
+     aurora68-se-1024x768.declrom) instead of aurora68-512x342.declrom.
+  2. config.txt: hdmi_group=2 and the hdmi_mode of that size (16 = 1024 x 768, 9 = 800 x 600,
+     82 = 1920 x 1080, 69 = 1920 x 1200); keep gpu_mem=64.
+  3. cmdline.txt: take out mac.console=hdmi and add mac.screen=WxH, e.g.
+     "enable_cache debug mac.board=se bt=off mac.screen=1024x768".
+  4. Copy PiScrn (on the Aurora68 disk image, or Mac/PiScrn.bin) onto the System Folder. At the next
+     start it arranges the two screens (the SE's main, HDMI to its right) and restarts the Mac once.
+  5. Millions of colours need 32-bit addressing: Memory control panel, On, restart, then Millions
+     for monitor 2 in Monitors.
+mac.hdmi=mirror shows the SE's picture on HDMI again, mac.hdmi=log (or mac.console=hdmi) the log.
 
 A Pi on the bench, no SE yet
 ----------------------------

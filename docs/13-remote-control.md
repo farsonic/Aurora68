@@ -29,7 +29,8 @@ HTTP layer and a semihosting debug channel (`mac.remotefile=BASE`, the testbed o
   so it is the Mac's picture and not the HDMI scan-out. Before the video driver is open (the boot,
   the console) it is the VideoCore buffer instead. On the SE board the card's 512 by 342 one-bit
   frame buffer *is* the SE's built-in screen (psmac_board_se.c mirrors it row by row), so the same
-  picture serves both. The encoder is our own and streams: a band of rows at a time, filter 0,
+  picture serves both. Since 20 November the SE board can have a second screen on HDMI (docs/10,
+  "Two screens on the SE"): `?display=1` photographs that one. The encoder is our own and streams: a band of rows at a time, filter 0,
   deflate with fixed Huffman codes and an LZ77 search over the pixel to the left, the two to the
   left, and the rows above (a Mac desktop is flat colour and dither patterns: a 1920 by 1200
   Finder screen comes out at tens of kilobytes). Each band is its own IDAT chunk, so nothing waits
@@ -180,7 +181,7 @@ and restart Claude Desktop. The tools are `screenshot`, `click`, `move`, `drag`,
 | Request | What |
 |---|---|
 | `GET /` | the page (no token needed: it holds nothing but asks for the token) |
-| `GET /screen.png[?scale=2\|4][&src=hdmi]` | the main screen, PNG, 24-bit RGB; one at a time (503 "another screenshot" while one is sent) |
+| `GET /screen.png[?display=0\|1][&scale=2\|4][&src=hdmi]` | a screen, PNG, 24-bit RGB: `display=0` (the default) the first, the SE's on the SE board, `display=1` the HDMI screen when the SE board has two (docs/10); one at a time (503 "another screenshot" while one is sent) |
 | `POST /input[?wait=1]` | a JSON event or an array of them (below); `wait=1` answers once they have all been played |
 | `GET /log[?since=N][&tags=BOOT,CRASH]` | the log from byte N as text; `X-Log-Next` is the N for next time, `X-Log-Lost` the bytes overwritten before they were read |
 | `GET /log?records=1` | the `[BOOT]` and `[CRASH]` lines kept since the Pi started (the first 4 KB of the boot's, the newest 12 KB of crash records), which the 64 KB ring soon loses |
@@ -191,7 +192,9 @@ Events: `{"type": "move", "x": X, "y": Y}`; `"down"` and `"up"` (x, y optional);
 `"count": 2` for a double-click, `"button": "right"` for a Command-click, `"mods": "shift"`;
 `"drag"` with `x, y, to_x, to_y`; `"key"` (or `"keydown"`, `"keyup"`) with `"key": "return"`, a
 character such as `"q"` or a Mac virtual key code as `"code"`, and `"mods": "cmd"`; `"text"` with
-`"text"`; `"wait"` with `"ms"`. Coordinates are global: the main screen's top left is 0,0.
+`"text"`; `"wait"` with `"ms"`. Coordinates are global: the main screen's top left is 0,0. With
+`"display": N` they are a point of screen N instead, wherever Monitors put it (the kernel adds the
+screen's place from QuickDraw's GDevice); `aurora68.py --display 1 click X Y` does that.
 Modifiers are `cmd`, `shift`, `option` (`opt`, `alt`) and `control` (`ctrl`).
 
 State: `board` (solo, se, iici), `screen` (width, height, depth, and `source`: `mac` for the Mac's
@@ -201,7 +204,9 @@ frame buffer, `console` before the video driver has opened), `mac` (`state`: `ru
 keeps at $AF0; the last `system_error` and `exception` since the last restart), `remote` (the
 link, the address, whether it shares the Mac's, the counters, the longest PNG band in
 microseconds), `network` (both units: kind, link, MAC address, the Mac's own IPv4 address on it,
-frames), `power` (the firmware's GET_THROTTLED bits as `throttled`, each "now" bit and each
+frames), `screens` (each screen of the card: `display`, `what` (se, hdmi or card), its size,
+depth and pixel base, and from QuickDraw where it is on the desktop, `left`, `top`, `right`,
+`bottom`, `active`, `main`), `power` (the firmware's GET_THROTTLED bits as `throttled`, each "now" bit and each
 "since boot" bit by name; `null` before the first reading and under QEMU, docs/12 "Power through
 the socket"), `disks`, `log_head`.
 

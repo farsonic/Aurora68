@@ -208,6 +208,43 @@ socket, so the remedies are the SE's 5 V rail itself (the analog board's adjustm
 a Pi that draws less (the 3A+ and the Zero 2 W, on order, have no USB hub or wired Ethernet chip
 to feed).
 
+## Two screens: the SE's and HDMI
+
+*20 November 2026* (docs/10, "Two screens on the SE", has the design and the testbed's record). On
+`mac.board=se` the Pi can present the HDMI output as a second screen of its own beside the SE's
+512 by 342: any size up to 1920 by 1200, any depth from one bit to millions, the SE's screen the
+main one with the menu bar. It is two virtual cards, slot 9 (the SE's screen, as before) and slot
+$A (the HDMI screen), in one declaration ROM file, `aurora68-se-WxH.declrom`. For the first boots
+the log on HDMI is more useful than a second desktop, which is why the release's cmdline.txt has
+`mac.console=hdmi`; once the SE's screen shows the Finder:
+
+1. **Container**: put `aurora68-se-WxH.declrom` for the HDMI size in it (instead of
+   `aurora68-512x342.declrom`; one `-se-` file only), e.g. `aurora68-se-1024x768.declrom`.
+   Sizes built: 640x480, 800x600, 1024x768, 1280x720, 1280x1024, 1600x1200, 1920x1080, 1920x1200.
+2. **config.txt**: the HDMI mode of that size, `hdmi_group=2` with `hdmi_mode=16` (1024 x 768),
+   `9` (800 x 600), `82` (1920 x 1080) or `69` (1920 x 1200, reduced blanking); keep `gpu_mem=64`
+   for anything over 640 x 480.
+3. **cmdline.txt**: take out `mac.console=hdmi` (it means `mac.hdmi=log`, one screen) and add the
+   size, e.g. `enable_cache debug mac.board=se bt.pair=1 mac.screen=1024x768`. `mac.hdmi=screen`
+   is the default; `mac.hdmi=mirror` gives back the SE's picture on HDMI, `mac.hdmi=log` the log.
+4. **The Mac**: copy **PiScrn** (on the Aurora68-Utilities disk) onto the System Folder, which
+   puts it into Extensions. At the next start it finds the two screens, writes their arrangement
+   (the SE's main at the left, HDMI to its right) into the System file and restarts the Mac once;
+   from then on both screens come up at every start. The log says
+   `[MAC] PiScrn: two screens: their arrangement written into the System file; restarting once`.
+   Without PiScrn the HDMI screen stays grey until it is arranged in Monitors.
+5. **Millions of colours** need 32-bit addressing (Memory control panel, On, restart). PiScrn
+   chooses millions when 32-bit addressing is on and otherwise the deepest mode a 24-bit system
+   reaches (256 colours at 640 x 480 and 800 x 600, 16 at 1024 x 768, fewer above); it keeps an
+   arrangement that still fits, so after switching 32-bit addressing on choose Millions for
+   monitor 2 in Monitors. Monitors also moves the screens and the menu bar as on any Mac II.
+
+What the kernel's log says at start: `declaration ROM: two cards, the SE's screen in slot 9 (main)
+and the HDMI screen in slot $A`, then `[PSMAC:DISP] two screens: ...` with the HDMI size and the
+VideoCore buffer the firmware granted. The remote control photographs either screen
+(`aurora68.py --display 1 screenshot hdmi.png`). Not seen on hardware yet: everything above ran
+on the MAME SE and QEMU's model of the VideoCore.
+
 ## What to have ready
 
 - The release zip's SD card layout as it is (0.2): `kernel8.img`, `config.txt`, `cmdline.txt`,

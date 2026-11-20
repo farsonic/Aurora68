@@ -1735,6 +1735,46 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    to send: "[PSMAC] board: ...", "[PSMAC] memory: ...", "[PSMAC:GPIO] CPLD clock ...", "[WIFI] chip
    ... rev ...", "[USB] start rc=...".
 
+61. **The Pi's power state in the log (20 November).** In the SE the Pi takes its 5 V through the
+   68000 socket from a thirty-year-old analog board, and a Pi 3B draws 0.5 to 0.8 A. The firmware's
+   GET_THROTTLED tag (0x00030046) says when the supply sagged; alice_status.c read it for the
+   Amiga's status page, but only with `status.sensors=mbox`. `psmac_power.c` now reads it every two
+   seconds on the service core, on every board, and logs each change (`[PSMAC] power: under-voltage
+   now; ARM frequency capped (0x30003)`, `power: normal again; ... occurred since boot`); the first
+   under-voltage is also a `[BOOT]` line, the remote's `/state` has the bits as `power`, the status
+   page gets them too. One mailbox call per reading, under the shared mailbox lock, never while the
+   WiFi coroutine holds it (it yields inside its own calls on the same core), and without retries:
+   `alice_mbox_once` in alice_net.c. QEMU 8.2's mailbox answers the buffer but not this tag (its
+   response bit set, length 0): the kernel says "the firmware does not report it" once and stops.
+   `mac.power=off` stops the watch. docs/12, "Power through the socket".
+
+62. **Two screens on the SE board (20 November).** The user's bring-up starts now, and they asked
+   for the SE's own screen plus HDMI as a second screen at any size and depth. docs/10, "Two screens
+   on the SE", is the record; in short:
+   - *Design*: two virtual cards in one declaration ROM file (`psmac-se-WxH.declrom`): slot 9 as
+     before with its video sResource now the SE's 512 by 342 one-bit screen, and slot $A, a
+     declaration ROM only, with the HDMI screen (`.Display_Video_PiHDMI`, pivideo.s with `SCREEN2`),
+     its driver reaching the slot-9 window and taking slot 9's interrupt, its modes pointing into
+     slot 9's space. The first version had both video sResources on one card; it worked, but Monitors
+     takes a screen's depths from the first video sResource of its slot and offered only one bit for
+     the HDMI screen. The kernel serves slot $A's ROM from the window's top 16 KiB, on the SE board
+     with `mac.hdmi=screen` (the default) only; `mirror` and `log` keep one screen.
+   - *PiScrn*, a new INIT, writes the 'scrn' resource the ROM needs to activate a second screen
+     (docs/08 item 26) when there is none or it no longer fits, and restarts once.
+   - *Found on the way*: the display block's "enabled" flag outlived the 68k's RESET, so after a
+     restart the HDMI driver's first tick came before its interrupt handler and the Mac lived in its
+     level-2 interrupt from then on (the flag is cleared at RESET; the driver turns VBLs on after
+     installing the handler); `.PiInput` clipped every mouse movement to CrsrPin, the current
+     screen, so no USB or Bluetooth mouse and no remote click ever reached a second screen (now the
+     rectangle around every active screen); with `mac.console=hdmi` on the SE board the SE's own
+     screen never changed, since its rows were sent only at the end of an HDMI conversion.
+   - *Tested* in MAME's `macse_ps` with System 7.1: the Finder on the SE's screen and a second desktop
+     on HDMI at 1024 by 768 and 1920 by 1200 in millions, PiColor on it, windows dragged across by the
+     remote control, Monitors with two monitors and the HDMI screen's six depths (256 chosen there
+     took effect at once), PiScrn's write-and-restart three times (new, HDMI size changed, slot
+     changed); `mac.hdmi=mirror` with the old 512x342 ROM and `mac.console=hdmi` with the new file
+     as regressions, and the solo board at 1920 by 1200. Not on hardware.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,
