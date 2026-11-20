@@ -2154,6 +2154,135 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      the image, the BlueSCSI mounting beside it. Not yet on the hardware; the line to look for is the
      `SCSI:` one, which names the bus status the probe read.
 
+71. **Sound through the SE's own speaker (20 November).** Until now the ASC was answered in the kernel
+   (docs/12) and its samples thrown away; the FIFO was only paced at 22257 Hz so the Sound Manager did not
+   freeze (18 November). The user asked for the SE's speaker.
+   - *The SE's sound hardware* (MAME's mac128.cpp, `mac_hblank`, `snd_push`, `mac_via_out_a_se`,
+     `mac_via_out_b_se`; Guide to the Macintosh Family Hardware for port A bit 3). No sound chip: in every
+     horizontal blanking interval the BBU reads one word of a 370-word buffer, the 342 visible lines and
+     the 28 of vertical blanking, and the high byte sets the width of a pulse (an LS161 pair counting
+     from it), so 370 samples a frame, 60.15 frames a second, 22,255 a second; the low byte is the 400K
+     drive's speed PWM. The main buffer starts $300 below the top of RAM ($3FFD00 with 4 MB, $27FD00 with
+     2.5, $1FFD00 with 2, $FFD00 with 1: MAME computes it from the RAM size, as it does the screen at
+     $5900 below the top), the alternate one $5F00 below, chosen by VIA port A bit 3 = 0 (MAME's macse
+     does not model the alternate sound buffer; its Plus does). VIA port A bits 0-2 are the volume (three
+     resistors into the amplifier's feedback, so volume 0 is quiet but not silent), port B bit 7 low
+     enables the sound; high forces the pulse output to a constant level. `mac.seram=2.5` is now accepted
+     (it took whole megabytes only, though its comment named 2.5).
+   - *What the IIci side plays.* The startup chime is the ASC's wavetable mode ($801 = 2): $40807040 fills
+     the four 512-byte tables with a stepped wave ($40, $FF, $01, $C0 in runs of 64: two periods a table),
+     sets $806 to $40 (version 0) and starts the four voices one by one every 300 steps with increments
+     $018000, $020000, $018179 and $030000 (9.15 fixed point over a 256-entry period: 260.8, 347.8, 261.8
+     and 521.6 Hz, C4, F4, a detuned C4 and C5), then for 30000 steps smooths the tables a little each step
+     (the timbre darkens), 14 reads of the VIA apart. The project's ROM patch had cut the steps to 2
+     (item 50: nothing played the ASC). System 7's sounds go through the Sound Manager in FIFO mode
+     ($801 = 1), both channels, the volume in $806 bits 5-7 from the Sound control panel.
+   - *The design* (psmac_board_se.c, "the SE's speaker"). asc_write keeps each channel's FIFO bytes in a
+     ring of its own (4096 bytes, core 0 the producer), taking only what the modelled FIFO accepts, so the
+     Sound Manager's pacing is exactly as before. The service core plays them: the SE's buffer is written
+     in halves of 185 words, byte writes to the high bytes; whenever the SE's play position crosses into
+     one half, the other half gets the next 185 samples, the two channels' mean (FIFO mode) or the four
+     voices synthesised at the SE's rate as MAME's asc.cpp does (wavetable mode), the last sample held when
+     there is none. The play position comes from the SE's vertical blanking: while sound plays the service
+     core reads the VIA's IFR every millisecond (no side effects) and takes each CA1 edge, placing word
+     342 there (MAME's first line of vertical blanking) and measuring the frame from consecutive edges.
+     While the Mac has CA1 disabled (the chime plays before interrupts are on) the service core clears
+     the flag itself to see the next edge. At most two halves are written per edge, so the samples go out
+     at the SE's own rate whatever the estimate says; past two frames without an edge it runs free. The
+     volume is $806's bits 5-7 on PA0-2, PA3 selects the main buffer, PB7 goes low once both halves hold
+     fresh samples and high a quarter second after the last one (so no hum between sounds; volume 0 keeps
+     it high). Those four bits are driven on the wire only: the service core rewrites every VIA write of
+     the Mac's as it executes it (`psmac_se_wire_write`, called from the slot loop in psmac_bus.c) and
+     writes the registers itself when they must change, port A through its no-handshake register 15 so
+     the VBL flag is never cleared by it; the ROM reads back its own values. On the SE board the kernel
+     now gives the chime its 30000 steps back in memory (`psmac_se_rom_fixup`, after the ROM delta, with
+     the checksum word adjusted so test 1 passes): about a second on the SE's VIA, 69 s in the testbed.
+     `mac.sesound=off` keeps everything as it was: bytes thrown away, the four bits the ROM's, the short
+     chime. The report line every five seconds adds `sound: N starts, M samples played, H halves written
+     (L late, K held for the next VBL), U underruns, D dropped | speaker on/off, volume v, ASC mode m |
+     VBL E edges (C cleared here), frame F us, a half written in W us at most`.
+   - *The testbed's transport.* Each bridge request through semihosting is a trap of its own, and a half
+     is 185 posted writes: in the first runs a half took longer to write than to play (30% of halves
+     "late", sidebands in the beep's spectrum). Posted writes through semihosting are now gathered, up to
+     64, into one trap, flushed before any request that wants an answer and whenever the service loop runs
+     out of work (psmac_bus.c, `psmac_bridge_flush`); MAME reads the same requests in the same order. The
+     GPIO path is untouched: a byte write there is a microsecond or two, a half some 0.3 ms.
+   - *Verified* in MAME's `macse_ps` with `-wavwrite` (128 MiB, `mac.rtcsim=dead`, System 7.1 from the
+     card's image), the recordings analysed by FFT (Hann window, the strongest peaks). The chime: one start
+     in wavetable mode, 1,537,165 samples played over 69 s of the Pi's timer, 3996 VBL edges all seen and
+     cleared by the service core (frame measured 16.3 ms), 0 underruns, 0 dropped; in the recording 53 s
+     above the threshold (the tail below it as the timbre darkens), peaks at 260.5, 347.5 and 522.5 Hz
+     with 695.5 Hz (2 x 347.8), 782.5 (3 x 260.8), 1565, 2086 and 2608 Hz: the chord the table predicts,
+     C4, F4 and C5, recognisably the Mac II family's chime. System 7's beep (SysBeep: the Finder's modal
+     Find dialog, Cmd-F through the remote control's testbed channel, then a click outside it, twice): two
+     more starts in FIFO mode at volume 3, each about 7,500 samples (a third of a second), a tone at
+     438-440 Hz with its odd harmonics at 1320 and 2198 Hz, a square wave at A4 (Simple Beep).
+     After the first two runs two changes. The service loop called the SE's service only when no request
+     of the Mac's was waiting, and the chime polls the VIA without a pause, so the speaker is now also
+     looked at after every request (`psmac_se_sound`; a check of the time and the rings when nothing is
+     due), which matters as much on the GPIO; and the semihosting batching above. With both (run a5): the
+     chime 39 s above the threshold in the recording, peaks 260.5, 349.0 and 521.5 Hz with 695.5, 1042,
+     1563.5, 2086 and 2608 Hz; the two beeps 440 Hz with 1320, 2205, 3080 and 3960 Hz (3, 5, 7 and 9
+     times 440), the Finder at 71 s instead of 96. Still, in the testbed 42% of the halves were noticed
+     late and a half took up to 12 ms to write (MAME drains the FIFO at its own pace), so the recordings
+     carry clicks and ±20 Hz sidebands where halves tore; that is the testbed's speed, not the design,
+     but the hardware's figures (the report line's "late", "held" and "a half written in ... us") are
+     what will tell. `mac.sesound=off` (a6): the old short chime, no sound line, the Finder at 28.6 s;
+     the solo board unchanged (Finder at 24.2 s).
+     Not verified: anything on the real SE (its speaker, the PWM's polarity and level, the volume steps,
+     whether word 342 is where its VBL falls; a wrong guess there costs a quarter frame of margin, not
+     sound), sounds other than the chime and the beep, wavetable mode beyond the chime, and the alternate
+     buffer (never used: PA3 is held at the main one).
+
+72. **Parameter RAM and clock on the card for the SE's stand-in (20 November).** Item 64's stand-in for a
+   clock chip that does not answer kept what the Mac wrote "until the Pi is switched off": AppleTalk, the
+   startup disk, Monitors' choices, the volume and the time were lost at every power-off, which the user's
+   SE (whose chip reads $FF) now does every evening.
+   - *The file.* The solo board's `pram.bin` (item 51) in the card's root: the 256 bytes, then the clock as
+     the Mac's seconds since 1904, big-endian, 260 bytes in one cluster. One format for both boards, so a
+     card moved between a bench Pi and the SE keeps one set of settings.
+   - *Reading* (psmac_board_se.c, `xp_card_load`): before the stand-in serves its first byte, on core 0,
+     waiting at most three seconds for the card's first look on core 3, as the solo board does. The clock
+     is taken from the file if it is later than the default of 20 November 2026.
+   - *Writing* (`psmac_se_pram_take`, called from the card loop in psmac_card.c beside the solo board's):
+     a second after the Mac's last change, once the boot is over (the Finder seen, or three minutes), at
+     most every ten seconds; and every ten minutes while the Mac runs, so the clock the next start resumes
+     from is never older than that. Bytes that are back where they were saved are not a change (the ROM's
+     parameter RAM test writes every byte at each start and restores it), a write to the clock is. A copy
+     taken while the Mac was writing is left for the next pass (a generation count). `mac.card=ro` reads
+     only.
+   - *The clock.* The Pi has no clock of its own and the kernel's network stack no time service (no NTP:
+     none was added for this), so the clock goes on from the last save: it stands still while the Pi is
+     off, and the Date & Time control panel (or the Alarm Clock) sets it, which is saved like any change.
+     The four bytes are the "offset" the design asked for: with no time source a saved value and an offset
+     against the Pi's timer are the same thing.
+   - *The mending rules, applied to what is loaded as to the defaults.* $8A: the file holds what the Mac
+     wrote; every read is mended as before (bit 4 cleared, bits 0 and 2 set with more than 8 MiB), so a
+     file can never bring back the $38000000 layout. $78-$7B: the Mac's view of the default startup device
+     (item 67) is never stored, so the file holds the real choice; the view is laid over it at each start
+     as before. The start-up test's failure record ($F0-$F3, $F9 bit 0 with $FB = $8E, item 69) is replaced
+     on loading by the defaults' bytes: the ROM writes it again at each start on the SE board (the first
+     save held $F0-$F3 00 01 00 02, $F9 01, $FA-$FB 00 8E), and a file from a solo kernel before item 69
+     may hold it too. Harmless with the plain IIci's identity (Gestalt 'prty' is 0 and INIT 10 looks no
+     further), but not carried from one start to the next. A chip that answers is never replaced by the
+     file, the file is not written for it, and the kernel never writes the chip either way.
+   - *Lines.* `[PSMAC:SE] stand-in parameter RAM from pram.bin on the card (260 bytes; signature 4e 75 4d
+     63; a parity test record replaced by the defaults), clock e7253e5f, from the last save`, or `... the
+     defaults (no pram.bin on the card, or no card) ...`, and `[CARD] pram.bin: parameter RAM saved`. The
+     clock chip's probe line now says where the stand-in's values come from, and with a chip that answers
+     "pram.bin on the card is not used".
+   - *Verified* in `macse_ps` with a 64 MB FAT16 card image in QEMU (`CARD=` for run-psmac-qemu.sh, new):
+     a first start with an empty card read "pram.bin: not on the card yet" and the defaults, reached the
+     Finder at 96 s (the chime's 69 s included) and wrote pram.bin after it (the Mac had changed $46-$48 to
+     slot 9's 'PS', $80, and written the test record), clock e7253e5f; QEMU and MAME stopped, a second start
+     from the same card (a kernel restart, as at power-on) read it before the ROM's first parameter RAM
+     access ("from pram.bin on the card (260 bytes ...; a parity test record replaced by the defaults),
+     clock e7253e5f, from the last save") and did not write it again, nothing having changed.
+     Two more starts from the same card (a4, a5, and a6 with `mac.sesound=off`) read it the same way and
+     left it alone.
+     Not verified: the real SE with its card, the ten-minute clock save (no run was that long), a clock
+     set from Date & Time, and the solo board with the shared code (its path is unchanged).
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

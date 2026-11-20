@@ -157,6 +157,7 @@ void psmac_solo_reset(void); void psmac_solo_init(void); void psmac_image_add(co
 int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t *val, int posted);
 unsigned psmac_se_ipl(unsigned raw); void psmac_se_service(void); void psmac_se_start(void); void psmac_se_options(const char *); void psmac_se_report(void);
 int psmac_se_rbv_irq(void);
+uint32_t psmac_se_wire_write(int reset, uint32_t addr, uint32_t data); void psmac_se_sound(void);
 void psmac_gpio_init(void); uint32_t psmac_gpio_read(uint32_t, int); void psmac_gpio_write(uint32_t, int, uint32_t);
 unsigned psmac_gpio_ipl(void); void psmac_gpio_pulse_reset(void); uint32_t psmac_gpio_timeouts(void); int psmac_gpio_reset_asserted(void);
 static uint32_t peek_addr, peek_len;
@@ -378,6 +379,20 @@ static void gpio_xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, ui
     if (r) { r->status = 0; r->ipl = ipl; r->flags = 0; r->data = value; }
 }
 
+/* Posted writes through semihosting, gathered (testbed only, 20 November 2026). Every request was a
+   SYS_WRITE trap of its own, some tens of microseconds each: the SE's speaker, 185 byte writes every
+   half frame, took longer to write than the half took to play (docs/08 item 71). Posted writes need
+   no answer, so they wait here, up to 64 of them, and go to the FIFO in one trap before the next
+   request that does want an answer, when the buffer is full, and when the service core's loop runs
+   out of work (psmac_bridge_flush). MAME reads the same 12-byte requests in the same order. */
+static uint8_t sh_batch[64 * 12]; static uint32_t sh_batch_len;
+static void sh_batch_flush(void)
+{
+    uint32_t n = sh_batch_len;
+    sh_batch_len = 0;
+    if (!transport_dead && !sh_write(sh_req, sh_batch, n)) { kprintf("[PSMAC] semihosting bridge write failed\n"); transport_dead = 1; }
+}
+void psmac_bridge_flush(void) { if (sh_batch_len) sh_batch_flush(); }
 static void bridge_xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, uint32_t data, struct psmac_reply *r)
 {
     if (transport_none) { if (op == PSMAC_OP_RESET_ACK) psmac_solo_reset(); if (r) { r->status = 0; r->ipl = 0; r->flags = 0; r->data = 0xffffffff; } return; }
@@ -391,8 +406,14 @@ static void bridge_xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, 
     svc_op = op; svc_addr = addr;
     if (use_semihost) {
         svc_phase = 1;
-        if (!sh_write(sh_req, req, 12)) { if (++timeouts == 1) kprintf("[PSMAC] semihosting bridge write failed\n"); transport_dead = 1; if (r) { r->status = 0; r->ipl = 0; r->flags = 0; r->data = 0xffffffff; } return; }
-        if (flags & PSMAC_FLAG_POSTED) { svc_phase = 0; return; }
+        if (flags & PSMAC_FLAG_POSTED) {
+            for (int i = 0; i < 12; i++) sh_batch[sh_batch_len++] = req[i];
+            if (sh_batch_len == sizeof sh_batch) sh_batch_flush();
+            svc_phase = 0;
+            return;
+        }
+        if (sh_batch_len) sh_batch_flush();
+        if (transport_dead || !sh_write(sh_req, req, 12)) { if (++timeouts == 1) kprintf("[PSMAC] semihosting bridge write failed\n"); transport_dead = 1; if (r) { r->status = 0; r->ipl = 0; r->flags = 0; r->data = 0xffffffff; } return; }
         svc_phase = 2;
         if (!sh_read(sh_rep, rep, 8)) { if (++timeouts == 1) kprintf("[PSMAC] semihosting bridge read failed/EOF\n"); transport_dead = 1; if (r) { r->status = 0; r->ipl = 0; r->flags = 0; r->data = 0xffffffff; } return; }
     } else {
@@ -589,10 +610,15 @@ void psmac_service_core(void)
         }
         if (__atomic_load_n(&slot.state, __ATOMIC_ACQUIRE) == SLOT_REQ) {
             xfer_count++; last_addr = slot.addr; dev_cnt[dev_class(slot.addr)]++;
+            /* the SE's speaker drives four bits of its VIA: every write of the Mac's to the VIA gets them as it goes out (psmac_board_se.c) */
+            if (psmac_board_se && (slot.op == PSMAC_OP_WRITE || slot.op == PSMAC_OP_RESET_ACK)) slot.data = psmac_se_wire_write(slot.op == PSMAC_OP_RESET_ACK, slot.addr, slot.data);
             if (slot.op == PSMAC_OP_READ && dev_class(slot.addr) == 2) scsi_reads++;
             bridge_xfer(slot.op, slot.size, slot.flags, slot.addr, slot.data, &slot.rep);
             if (scsi_trace_left && dev_class(slot.addr) == 2) scsi_trace(slot.op, slot.addr, slot.data, slot.rep.data);
             __atomic_store_n(&slot.state, SLOT_DONE, __ATOMIC_RELEASE);
+            /* the SE's speaker has deadlines, and a Mac that polls the VIA without pause (the startup
+               chime does for a second) would keep the loop from ever reaching psmac_se_service below */
+            if (psmac_board_se) psmac_se_sound();
             continue;
         }
         if (!transport_dead && !transport_none && cnt_now() > next_poll) {
@@ -600,6 +626,7 @@ void psmac_service_core(void)
             next_poll = cnt_now() + period;
         }
         psmac_se_service();                       /* the SE's screen, a few rows at a time */
+        psmac_bridge_flush();                     /* the testbed's gathered posted writes, now that there is nothing else to do */
         __asm__ volatile("yield");
     }
 }
@@ -1108,6 +1135,7 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
             kprintf("[PSMAC] stock IIci ROM %08x in the container: patched in memory, checksum word %08x (%s)\n",
                     PSMAC_ROM_DELTA_IN, BE32(*(uint32_t *)romk), sum == PSMAC_ROM_DELTA_OUT ? "verified" : "MISMATCH");
         }
+        { extern void psmac_se_rom_fixup(uint8_t *, uint32_t); psmac_se_rom_fixup(romk, n); }   /* the SE with its speaker: the full startup chime */
         for (uint32_t o = n; o < PSMAC_ROM_SIZE; o += n) {
             memcpy(romk + o, rom, (o + n <= PSMAC_ROM_SIZE) ? n : PSMAC_ROM_SIZE - o);
         }

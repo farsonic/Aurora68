@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Sound from the SE's own speaker.** What the Mac plays now comes out of the SE: the IIci ROM's
+  startup chime (back at its full length, about a second), System 7's alert sounds and everything else
+  the Sound Manager plays. The SE has no sound chip; the kernel writes the samples into the SE's own
+  sound buffer, 370 a frame, in time with the SE's vertical blanking, sets the SE's volume from the
+  Sound control panel, and switches the speaker off between sounds so it does not hum.
+  `mac.sesound=off` leaves the speaker alone as before. Replace kernel8.img.
+- **Parameter RAM and the clock kept on the card (SE board).** When the SE's clock chip does not
+  answer (a leaked battery is the usual reason), the kernel answers in its place; what the Mac sets
+  there (AppleTalk, the startup disk, Monitors, the sound volume, the time) used to be lost at
+  power-off. It is now kept in `pram.bin` in the card's root, the file the solo board already uses,
+  and read back at the next start. The clock goes on from the last save (the Pi has no clock of its
+  own); set it in the Date & Time control panel and it is saved too. A clock chip that answers is
+  used as it is. Replace kernel8.img.
 - **Fixed: an SE with nothing on its SCSI bus waited for ever at the question-mark disk.** With no
   internal disk and nothing on the external port (the BlueSCSI taken off), the bus has no terminator,
   its lines float, and the Mac's SCSI Manager waited for ever for the bus to become free, so a disk image

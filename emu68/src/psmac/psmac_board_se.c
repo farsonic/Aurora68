@@ -10,7 +10,8 @@
  * holds the 512 by 342 screen the BBU scans out, and nothing else (docs/01, docs/03). This file
  * is the translation: the first four chips are the real ones behind an address change and, for
  * the VIA, two port bits whose meaning differs; the RBV, ASC and VDAC are answered here; the
- * SE's screen is fed from the slot-9 card's frame buffer, row by row, as it changes.
+ * SE's screen is fed from the slot-9 card's frame buffer, row by row, as it changes, and the SE's
+ * speaker from the ASC's samples, through the SE's sound buffer (20 November 2026).
  *
  * Selected with mac.board=se (the testbed's IIci motherboard is the default); exercised against
  * MAME's macse with the bridge CPU (reference/mame-psmac.patch: macse_ps) before the hardware.
@@ -30,8 +31,8 @@ int psmac_board_se;                         /* mac.board=se (also set by mac.boa
 extern int psmac_board_solo;
 int psmac_solo_access(uint32_t addr, int size, int write, uint32_t data, uint32_t *val);
 unsigned psmac_solo_ipl(void); void psmac_solo_level_now(void); void psmac_solo_service(void); void psmac_solo_options(const char *); void psmac_solo_report(void);
-static uint32_t se_ram_mb = 4;              /* mac.seram=N: the SE's own memory, 1, 2, 2.5 or 4 MB (its screen sits at the top) */
-static uint32_t se_ram_size(void) { return se_ram_mb << 20; }
+static uint32_t se_ram_kb = 4096;           /* mac.seram=N: the SE's own memory, 1, 2, 2.5 or 4 MB (its screen and sound buffers sit at the top) */
+static uint32_t se_ram_size(void) { return se_ram_kb << 10; }
 /* mac.selinefault= (testbed, docs/08 item 68): an address-line fault on the wire to the SE's RAM (below
    $400000), so the address-line test below can be tried. N: line N stuck high; N,M: line N joined to
    M, M winning (the user's PiStorm had A14 and A15 bridged); N&M: the two joined, a 0 on either
@@ -53,7 +54,7 @@ void psmac_wire_write(uint32_t addr, int size, uint32_t data, int posted);
 
 /* ---- the chips the SE does not have: a pseudo-VIA (RBV), an ASC, a VDAC ------------------- */
 static uint8_t rbv_regs[256], rbv_ifr, rbv_ier;   /* MAME's rbv.cpp is the model: IFR/IER with the bit-7 set/clear convention */
-static uint8_t asc_regs[0x1000];
+static volatile uint8_t asc_regs[0x1000];       /* written by core 0, read by the speaker on the service core as well */
 static uint8_t vdac_regs[32];
 static uint32_t local_reads, local_writes;
 static uint32_t se_trace_left;              /* mac.setrace=N[,dev]: the first N translated accesses (of one chip), with their values */
@@ -139,12 +140,35 @@ static void rbv_write(uint32_t off, uint8_t data)
    writes until the FIFO is full and runs from the main screen's VBL task (our card's display on
    the SE and the solo board), wrote up to 65535 bytes, three trapped accesses each, every
    sixtieth of a second: seconds per tick, a Mac that froze whenever a sound played (the end of
-   Speedometer's tests, Lemmings), 18 November. Bit 7 of $803 empties both. */
+   Speedometer's tests, Lemmings), 18 November. Bit 7 of $803 empties both.
+
+   Since 20 November the bytes are also kept, for the SE's own speaker (below, "the SE's speaker"):
+   each channel's FIFO bytes go into a ring of their own, which the service core empties into the
+   SE's sound buffer as the SE plays it. The level above still paces the Sound Manager by the
+   Pi's timer, as before, so whatever the speaker does the feeder never waits on it. */
 static uint32_t asc_level[2];
 static uint64_t asc_t[2];
 #define ASC_RATE 22257u
 static inline uint64_t asc_now(void) { uint64_t v; __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(v)); return v; }
 static inline uint64_t asc_hz(void)  { uint64_t v; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(v)); return v; }
+/* the FIFO bytes on their way to the speaker: core 0 (the Mac's writes) moves the heads, the
+   service core (the speaker) the tails. 4096 bytes a channel is 184 ms, four times what the chip
+   holds, so the rings only overflow when the speaker has stopped taking them */
+#define SND_RING 4096u
+static uint8_t snd_ring[2][SND_RING];
+static uint32_t snd_head[2], snd_tail[2];
+static volatile uint32_t snd_flush;             /* bumped when the Mac empties the FIFOs or changes mode: the speaker drops what it has */
+static volatile uint32_t snd_wt_gen;            /* bumped when the Mac writes a wavetable phase: the speaker takes the new phases */
+static uint32_t snd_dropped;                    /* bytes that found a ring full */
+static int snd_off;                             /* mac.sesound=off: the ASC's bytes are thrown away, as before */
+static void snd_push(int ch, uint8_t v)
+{
+    if (snd_off) return;
+    uint32_t h = snd_head[ch];
+    if (h - __atomic_load_n(&snd_tail[ch], __ATOMIC_ACQUIRE) >= SND_RING) { snd_dropped++; return; }
+    snd_ring[ch][h % SND_RING] = v;
+    __atomic_store_n(&snd_head[ch], h + 1, __ATOMIC_RELEASE);
+}
 static void asc_drain(int ch)
 {
     uint64_t now = asc_now(), hz = asc_hz();
@@ -172,13 +196,19 @@ static uint32_t asc_read(uint32_t off)
 static void asc_write(uint32_t off, uint8_t data)
 {
     off &= 0xfff;
+    uint8_t mode = asc_regs[0x801];
     asc_regs[off] = data;
-    if (off < 0x800 && asc_regs[0x801] == 1) {
+    if (off < 0x800 && mode == 1) {
         int ch = off >= 0x400;
         asc_drain(ch);
-        if (asc_level[ch] < 1024) asc_level[ch]++;
+        if (asc_level[ch] < 1024) { asc_level[ch]++; snd_push(ch, data); }   /* what the chip would have taken */
     } else if (off == 0x803 && (data & 0x80)) {
         asc_level[0] = asc_level[1] = 0;
+        snd_flush++;
+    } else if (off == 0x801 && data != mode) {
+        snd_flush++;                                /* a new mode starts with empty FIFOs (MAME's asc.cpp) */
+    } else if (off >= 0x810 && off < 0x830) {
+        snd_wt_gen++;
     }
 }
 
@@ -218,15 +248,27 @@ static uint32_t via_data(uint32_t reg, uint32_t data)
    whatever the SE's pin is left at, and on one start of the user's SE (20 November) it read 1. So
    while DDRA bit 4 is an input the ROM reads 0 there: no parity, as the Pi's memory has none.
    mac.sepa4=1 (testbed) reads 1 instead, as that SE did (docs/08 item 69). */
-static uint8_t via_ddra, se_pa4_sim;
+/* Four more bits are the speaker's (20 November 2026, "the SE's speaker" below): on the SE port A bits
+   0-2 are the volume and bit 3 the sound buffer (1 = main), port B bit 7 the sound enable (0 = on).
+   The service core drives them as outputs on the wire (psmac_se_wire_write); the ROM, which has its
+   own uses for those bits on the IIci, reads back what it wrote itself (port A bit 3, port B bit 7
+   and the four data-direction bits), so it never sees the speaker's values. */
+static uint8_t via_ddra, via_ddrb, via_ora, via_orb, via_ier, se_pa4_sim;   /* the ROM's own values (core 0) */
 static uint32_t via_read_fix(uint32_t reg, uint32_t r)
 {
     if (reg == 1 || reg == 15) {
         r = (r & 0xb8) | 0x47;
         if (!(via_ddra & 0x10)) r = (r & ~0x10u) | (se_pa4_sim ? 0x10u : 0);
+        if (!snd_off) r = (r & ~0x08u) | (via_ddra & via_ora & 0x08);   /* PA3: the ROM's latch as an output, 0 as an input (MAME's SE reads $81) */
         return r;
     }
-    if (reg == 0) return r | 0x40;                   /* PB6: an input tied high on the IIci; the SE's video beam / SCSI interrupt enable */
+    if (reg == 0) {
+        r |= 0x40;                                   /* PB6: an input tied high on the IIci; the SE's video beam / SCSI interrupt enable */
+        if (!snd_off && (via_ddrb & 0x80)) r = (r & 0x7f) | (via_orb & 0x80);
+        return r;
+    }
+    if (!snd_off && reg == 2) return (r & 0x7f) | (via_ddrb & 0x80);
+    if (!snd_off && reg == 3) return (r & 0xf0) | (via_ddra & 0x0f);
     return r;
 }
 
@@ -273,7 +315,25 @@ static uint32_t via_read_fix(uint32_t reg, uint32_t r)
    the session (Restart included) and still goes to the chip, which this file never writes itself.
    A chip that answers but holds no signature (a flat battery) is left alone: the ROM resets it to
    its defaults, which is what every Mac does then (the MAME SE with all bytes $FF but a working
-   chip boots to the question-mark disk). mac.sepram=chip turns the stand-in off. */
+   chip boots to the question-mark disk). mac.sepram=chip turns the stand-in off.
+
+   The stand-in on the card (20 November 2026). Kept "until the Pi is switched off" meant AppleTalk,
+   the startup disk, Monitors' choices and the clock lost at every power-off. Now the stand-in keeps
+   them in pram.bin in the card's root, the solo board's file and format (psmac_card.c: the 256 bytes,
+   then the clock as the Mac's seconds since 1904, big-endian): read before the ROM's first parameter
+   RAM access (xp_card_load, which waits for the card's first look as the solo board does), written
+   by the card code on core 3 a second after the Mac's last change, at most every ten seconds, never
+   during the boot, and every ten minutes besides while the Mac runs, so that the clock the next start
+   resumes from is never older than that. The Pi has no clock of its own and the kernel's network
+   stack no time service, so the clock goes on from the last save: it stands still while the Pi is
+   off, and the Date & Time control panel (or the Alarm Clock) sets it, which is saved too. The rules
+   above apply to what is loaded exactly as to the defaults: the file holds what the Mac wrote, $8A
+   included, and every read of $8A is mended as before (bit 4 cleared, 32-bit addressing with more
+   than 8 MiB); the Mac's view of $78-$7B (psmac_mbox.c) is the Mac's view, never stored, so the file
+   keeps the real startup device; and a parity record ($F9 bit 0 with $FB = $8E, the start-up test's
+   "failed", which a solo kernel before item 69 may have saved) is replaced on loading by the
+   defaults' $F0-$F3 and $F9-$FB. A chip that answers is never replaced by the file and the file is
+   not written for it; the kernel never writes the chip either way. */
 static struct {
     int enb, clk, dir, bits, state, keep, sim_dead, wp;
     int ddr0;                                     /* DDRB bit 0: 1 while the ROM drives the data line (then a read returns its own latch) */
@@ -288,6 +348,10 @@ static struct {
     uint8_t pram[256];
     uint32_t secs; uint64_t secs_t0;              /* the stand-in clock: secs at the timer's secs_t0 */
     uint32_t reads, reads_ff, writes;             /* bytes the ROM read (and how many of them the chip sent as $FF), bytes it wrote */
+    int card_loaded;                              /* pram.bin looked for (xp_card_load) */
+    uint32_t clock_set;                           /* writes of the clock's bytes (the Mac setting the time) */
+    uint32_t gen;                                 /* changes the Mac made to the stand-in (core 0); the card saves them */
+    uint64_t changed_at;
 } xp = { .enb = 1, .ddr0 = 1, .hold_bit = -1 };
 #define XP_SECS_START 0xe7253e00u                 /* 20 November 2026, 00:00, in the Mac's seconds since 1904 */
 static uint8_t xp8a_bits(void) { return psmac_ram_size() > (8u << 20) ? 0x05 : 0; }   /* bits 0 and 2: 32-bit addressing now and at the next start */
@@ -306,6 +370,38 @@ static uint8_t xp_served(int addr)
     if (addr < 0x104) return (uint8_t)(xp_secs() >> (8 * (addr & 3)));
     return 0;                                     /* the test and write-protect registers read 0 (MAME's macrtc) */
 }
+/* pram.bin on the card, before the stand-in's first byte goes to the ROM (core 0). The card's first
+   look runs on core 3 and comes a few tens of milliseconds after the 68k starts; at most three
+   seconds are waited for it, as on the solo board. */
+static uint8_t xp_saved[256]; static int xp_have_saved; static uint64_t xp_saved_at;   /* what pram.bin holds now, and since when */
+static void xp_card_load(void)
+{
+    extern const uint8_t *psmac_card_pram(int *state, uint32_t *len);
+    if (xp.card_loaded) return;
+    int st = 0; uint32_t len = 0; const uint8_t *p = 0;
+    uint64_t t0 = asc_now();
+    while ((p = psmac_card_pram(&st, &len)) == 0 && st == 0 && asc_now() - t0 < 3 * asc_hz()) __asm__ volatile("yield");
+    xp_saved_at = asc_now();
+    if (!p || len < 256) {
+        kprintf("[PSMAC:SE] stand-in parameter RAM: the defaults (%s); it goes into pram.bin on the card once the Mac changes it\n",
+                st < 0 ? "no pram.bin on the card, or no card" : "the card did not answer in time");
+        __atomic_store_n(&xp.card_loaded, 1, __ATOMIC_RELEASE);
+        return;
+    }
+    for (int i = 0; i < 256; i++) xp_saved[i] = xp.pram[i] = p[i];
+    xp_have_saved = 1;
+    int parity = (xp.pram[0xf9] & 1) && xp.pram[0xfb] == 0x8e;
+    if (parity) {                                 /* the start-up test's record of a failed parity test: the defaults' bytes instead (docs/08 item 69) */
+        static const uint8_t rec[] = { 0xf0, 0xf1, 0xf2, 0xf3, 0xf9, 0xfa, 0xfb };
+        for (unsigned i = 0; i < sizeof rec; i++) xp.pram[rec[i]] = psmac_pram_default[rec[i]];
+    }
+    uint32_t sec = len >= 260 ? (uint32_t)p[256] << 24 | (uint32_t)p[257] << 16 | (uint32_t)p[258] << 8 | p[259] : 0;
+    if (sec > XP_SECS_START) xp_set_secs(sec);
+    kprintf("[PSMAC:SE] stand-in parameter RAM from pram.bin on the card (%u bytes; signature %02x %02x %02x %02x%s), clock %08x%s\n",
+            len, xp.pram[12], xp.pram[13], xp.pram[14], xp.pram[15], parity ? "; a parity test record replaced by the defaults" : "",
+            xp_secs(), sec > XP_SECS_START ? ", from the last save" : ", the default (the file's is earlier)");
+    __atomic_store_n(&xp.card_loaded, 1, __ATOMIC_RELEASE);
+}
 /* a byte the ROM wrote: the stand-in keeps it (the chip has had it too) */
 static void xp_store(int addr, uint8_t v)
 {
@@ -313,8 +409,41 @@ static void xp_store(int addr, uint8_t v)
     if (addr == 0x1fd) { xp.wp = (v & 0x80) != 0; return; }        /* register 13, write protect: always taken */
     if (psmac_startup_write(addr, v)) return;                       /* into the Mac's view of $78-$7B (for the chip, xp_wire_orb kept its own byte) */
     if (!xp.serve || xp.wp) return;
-    if (addr < 0x100) xp.pram[addr] = v;
-    else if (addr < 0x104) { uint32_t s = xp_secs(), sh = 8 * (addr & 3); xp_set_secs((s & ~(0xffu << sh)) | (uint32_t)v << sh); }
+    xp_card_load();
+    if (addr < 0x100) { if (xp.pram[addr] == v) return; xp.pram[addr] = v; }
+    else if (addr < 0x104) { uint32_t s = xp_secs(), sh = 8 * (addr & 3); xp_set_secs((s & ~(0xffu << sh)) | (uint32_t)v << sh); xp.clock_set++; }
+    else return;
+    xp.changed_at = asc_now();
+    __atomic_store_n(&xp.gen, xp.gen + 1, __ATOMIC_RELEASE);
+}
+/* core 3 (psmac_card.c): the stand-in's 256 bytes and clock to save, or 0 when nothing is due. Due:
+   a second after the Mac's last change, ten seconds after the last save, the boot over; and every ten
+   minutes for the clock. A copy the Mac changed while it was taken is left for the next call, and
+   bytes that are back to what was saved (the ROM's parameter RAM test writes every byte at each start
+   and puts it back) are not a change. */
+int psmac_se_pram_take(uint8_t out[260])
+{
+    extern int psmac_boot_settled(void);
+    static uint32_t saved_gen, saved_clock;
+    if (!psmac_board_se || psmac_board_solo || !xp.serve || !__atomic_load_n(&xp.card_loaded, __ATOMIC_ACQUIRE)) return 0;
+    uint64_t now = asc_now(), hz = asc_hz();
+    uint32_t g = __atomic_load_n(&xp.gen, __ATOMIC_ACQUIRE), c = xp.clock_set;
+    int clock_due = xp_have_saved && now - xp_saved_at >= 600 * hz;
+    if (g == saved_gen && !clock_due) return 0;
+    if (!psmac_boot_settled() || now - xp.changed_at < hz || now - xp_saved_at < 10 * hz) return 0;
+    for (int i = 0; i < 256; i++) out[i] = xp.pram[i];
+    uint32_t s = xp_secs();
+    __asm__ volatile("dmb ish" ::: "memory");
+    if (__atomic_load_n(&xp.gen, __ATOMIC_ACQUIRE) != g) return 0;
+    saved_gen = g;
+    int same = xp_have_saved;
+    for (int i = 0; i < 256 && same; i++) same = out[i] == xp_saved[i];
+    if (same && c == saved_clock && !clock_due) return 0;
+    saved_clock = c;
+    out[256] = s >> 24; out[257] = s >> 16; out[258] = s >> 8; out[259] = s;
+    for (int i = 0; i < 256; i++) xp_saved[i] = out[i];
+    xp_have_saved = 1; xp_saved_at = now;
+    return 1;
 }
 static void xp_end(void)
 {
@@ -334,6 +463,7 @@ static void xp_end(void)
 static void xp_reading(int addr)
 {
     xp.dir = 1; xp.bits = 8; xp.addr = addr; xp.real = 0; xp.state = 0;
+    if (xp.serve) xp_card_load();
     xp.given = xp.serve ? xp_served(addr) : 0;
     xp.startup = 0;
     /* The default startup device from a chip that answers: what the Mac is given is decided before
@@ -443,7 +573,7 @@ static void rtc_probe(void)
     uint32_t s = (uint32_t)sec[3] << 24 | (uint32_t)sec[2] << 16 | (uint32_t)sec[1] << 8 | sec[0];
     int numc = sig[0] == 'N' && sig[1] == 'u' && sig[2] == 'M' && sig[3] == 'c';
     if (!all_ff) {
-        kprintf("[PSMAC:SE] clock chip: answers; parameter RAM %s (signature %02x %02x %02x %02x), clock %08x\n",
+        kprintf("[PSMAC:SE] clock chip: answers; parameter RAM %s (signature %02x %02x %02x %02x), clock %08x; pram.bin on the card is not used\n",
                 numc ? "valid" : "not valid, the ROM will reset it to its defaults", sig[0], sig[1], sig[2], sig[3], s);
         return;
     }
@@ -455,7 +585,7 @@ static void rtc_probe(void)
     xp_set_secs(XP_SECS_START);
     xp.serve = 1;
     kprintf("[PSMAC:SE] clock chip: reads $FF for the signature and the clock: it does not answer (a dead or disconnected chip; look for a leaked battery around it). "
-            "The board layer answers in its place: default parameter RAM, kept until the Pi is switched off, and a clock from 20 November 2026 (mac.sepram=chip to leave the chip alone)\n");
+            "The board layer answers in its place: parameter RAM and clock from pram.bin on the card (the defaults and 20 November 2026 without it), saved there as the Mac changes them (mac.sepram=chip to leave the chip alone)\n");
 }
 
 /* ---- the SCSI chip: the same 5380, read on even addresses, written on odd ones -------------- */
@@ -583,9 +713,11 @@ int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t 
         /* VIA1: register n at +n*0x200 on both machines */
         uint32_t reg = (off >> 9) & 15, se = SE_VIA + (reg << 9);
         if (write) {
-            if (reg == 0) { xp_lines(data & 0xff); data = xp_wire_orb(data & 0xff); }
-            else if (reg == 2) xp.ddr0 = data & 1;
+            if (reg == 0) { via_orb = (uint8_t)data; xp_lines(data & 0xff); data = xp_wire_orb(data & 0xff); }
+            else if (reg == 1 || reg == 15) via_ora = (uint8_t)data;
+            else if (reg == 2) { xp.ddr0 = data & 1; via_ddrb = (uint8_t)data; }
             else if (reg == 3) via_ddra = (uint8_t)data;
+            else if (reg == 14) { if (data & 0x80) via_ier |= data & 0x7f; else via_ier &= ~(data & 0x7f); }
             trace("VIA", 1, addr, se, size, via_data(reg, data & 0xff));
             psmac_wire_write(se, 1, via_data(reg, data & 0xff), posted);
             return 1;
@@ -669,6 +801,195 @@ unsigned psmac_se_ipl(unsigned raw)
     return ipl;
 }
 
+/* ---- the SE's speaker ------------------------------------------------------------------------
+   (20 November 2026.) The SE has no sound chip: its BBU reads one word of a 370-word buffer at the
+   top of RAM in every horizontal blanking interval, the 342 visible lines and the 28 of vertical
+   blanking, and plays the word's high byte as the width of a pulse: 370 samples a frame, 60.15
+   frames a second, 22,255 samples a second, the ASC's 22,257 within a tenth of a per mille (the low
+   byte is the 400K drive's speed, left alone here). The main buffer starts $300 below the top of
+   RAM ($3FFD00 with 4 MB, $27FD00 with 2.5, $1FFD00 with 2, $FFD00 with 1; the alternate one $5F00
+   below, chosen by VIA port A bit 3 = 0). VIA port A bits 0-2 are the volume, port B bit 7 switches
+   the sound off when 1 (MAME's mac128.cpp: snd_push, mac_via_out_a_se, mac_via_out_b_se; Guide to
+   the Macintosh Family Hardware for PA3).
+   What the IIci ROM and the Sound Manager write into the ASC becomes the SE's samples here:
+   - FIFO mode (mode $801 = 1: System 7's alert sounds, everything the Sound Manager plays): the
+     two channels' bytes from the rings asc_write fills, mixed to one (their mean when both have
+     data); wavetable mode (2: the IIci ROM's startup chime): the chip's four voices, synthesised
+     here at the SE's rate, each a 512-byte table from wave RAM stepped by its 9.15 increment
+     ($814 + 8n) as MAME's asc.cpp does, their sum over four. With neither, the last sample is held.
+   - The buffer is written in halves of 185 words, from the service core between the Mac's own bus
+     cycles, as the screen's rows are: whenever the SE's play position crosses into one half, the
+     other half gets the next 185 samples, so a word is always written about a quarter to three
+     quarters of a frame before it is played and never while it is. Byte writes to the even
+     addresses: the high bytes only.
+   - The play position comes from the SE's vertical blanking, the VIA's CA1 flag, which the service
+     core reads every millisecond while sound plays (a read of the IFR has no side effects). The VBL
+     starts at word 342 (MAME's screen: the first line of vertical blanking); the frame's length is
+     measured from consecutive edges, so the position is known for the whole frame. While the Mac
+     has CA1 disabled (the chime plays before interrupts are on), the service core clears the flag
+     itself to see the next edge; once the Mac takes the interrupt, its own handler does.
+   - The volume is the ASC's (bits 5-7 of $806, which the ROM and the Sound Manager set from the
+     Sound control panel) on PA0-2, the main buffer on PA3, and PB7 low while there is sound: a
+     sound starts with both halves written first, and a quarter second after the last sample the
+     speaker is switched off again, so the SE does not hum between sounds. Volume 0 keeps it off.
+   These bits are driven on the wire alone (psmac_se_wire_write rewrites the Mac's VIA writes as
+   they go out, on the service core, and the speaker writes them itself when they must change, port
+   A through its no-handshake register so the VBL flag is not cleared); the ROM reads back its own.
+   mac.sesound=off leaves all of it as it was before: the bytes thrown away, the four bits the ROM's.
+   The Sound Manager's pacing does not depend on any of this (asc_drain, above). */
+#define SND_WORDS 370u                           /* one word a line, 342 visible and 28 of vertical blanking */
+#define SND_HALF  (SND_WORDS / 2)
+#define SND_VBL_WORD 342u                        /* the word played first after the VBL edge */
+#define SE_VIA_IFR (SE_VIA + 13 * 0x200)
+static uint32_t snd_base(void) { return se_ram_size() - 0x300; }
+static struct {
+    int active, edge_ok, ca1_held, clear_seen, half, fresh, on, vol, edge_halves, feeding;
+    uint64_t edge_t, period, poll_t, last_t;
+    uint8_t hold;
+    uint32_t flush_seen, wt_seen, phase[4];
+    uint8_t w_ora, w_ddra, w_orb, w_ddrb;        /* the VIA's registers as last written on the wire (service core) */
+    uint32_t edges, own_clears, halves, late, held, starts, underruns, played, half_us_max;
+} snd = { .half = -1 };
+
+/* the next sample, at the SE's rate */
+static uint32_t be24(uint32_t off) { return (uint32_t)asc_regs[off] << 16 | (uint32_t)asc_regs[off + 1] << 8 | asc_regs[off + 2]; }
+static int snd_wavetable_on(void)
+{
+    if (asc_regs[0x801] != 2) return 0;
+    for (int v = 0; v < 4; v++) if (be24(0x815 + 8 * v)) return 1;
+    return 0;
+}
+static int snd_fifo_level(int ch) { return (int)(__atomic_load_n(&snd_head[ch], __ATOMIC_ACQUIRE) - snd_tail[ch]); }
+static uint8_t snd_next(void)
+{
+    uint8_t mode = asc_regs[0x801];
+    if (mode == 2) {
+        if (snd.wt_seen != snd_wt_gen) { snd.wt_seen = snd_wt_gen; for (int v = 0; v < 4; v++) snd.phase[v] = be24(0x811 + 8 * v); }
+        int sum = 0;
+        for (int v = 0; v < 4; v++) {
+            snd.phase[v] = (snd.phase[v] + be24(0x815 + 8 * v)) & 0xffffffu;
+            sum += (int8_t)(asc_regs[(v >> 1) * 0x400 + (v & 1) * 0x200 + ((snd.phase[v] >> 15) & 0x1ff)] ^ 0x80);
+        }
+        snd.played++;
+        return snd.hold = (uint8_t)(0x80 + sum / 4);
+    }
+    int n = 0, sum = 0;
+    for (int ch = 0; ch < 2; ch++)
+        if (snd_fifo_level(ch) > 0) { sum += snd_ring[ch][snd_tail[ch] % SND_RING]; __atomic_store_n(&snd_tail[ch], snd_tail[ch] + 1, __ATOMIC_RELEASE); n++; }
+    if (!n) { if (mode == 1 && snd.feeding) snd.underruns++; return snd.hold; }   /* a gap inside a sound, not the quiet after it */
+    snd.played++;
+    return snd.hold = (uint8_t)(sum / n);
+}
+
+/* the VIA's lines for the speaker: what psmac_se_wire_write makes of a write, and what the speaker
+   writes itself when its state changes */
+static uint8_t snd_lines(uint32_t reg, uint8_t v)
+{
+    v = (uint8_t)via_data(reg, v);               /* bit 6 of both ports, as every write of the ROM's gets it */
+    switch (reg) {
+    case 0:  return (uint8_t)((v & 0x7f) | (snd.on ? 0 : 0x80));
+    case 2:  return v | 0x80;
+    case 1: case 15: return (uint8_t)((v & 0xf0) | 0x08 | (snd.vol & 7));
+    case 3:  return v | 0x0f;
+    default: return v;
+    }
+}
+static void snd_seen(uint32_t reg, uint8_t v)
+{
+    if (reg == 0) snd.w_orb = v; else if (reg == 2) snd.w_ddrb = v; else if (reg == 1 || reg == 15) snd.w_ora = v; else if (reg == 3) snd.w_ddra = v;
+}
+/* the service core, for every request it puts on the wire for core 0 (psmac_bus.c): a write to the
+   VIA gets the speaker's bits; a RESET (the VIA's registers back to 0) is noted */
+uint32_t psmac_se_wire_write(int reset, uint32_t addr, uint32_t data)
+{
+    if (!psmac_board_se || psmac_board_solo || snd_off) return data;
+    if (reset) { snd.w_ora = snd.w_ddra = snd.w_orb = snd.w_ddrb = 0; return data; }
+    if ((addr & ~0x1e00u) != SE_VIA) return data;
+    uint32_t reg = (addr >> 9) & 15;
+    uint8_t v = snd_lines(reg, (uint8_t)data);
+    snd_seen(reg, v);
+    return v;
+}
+static void snd_via(uint32_t reg, uint8_t v) { psmac_wire_write(SE_VIA + (reg << 9), 1, v, 0); snd_seen(reg, v); }
+static void snd_apply(void)
+{
+    if ((snd.w_ddra & 0x0f) != 0x0f) snd_via(3, snd_lines(3, snd.w_ddra));
+    if ((snd.w_ora & 0x0f) != (0x08 | (snd.vol & 7))) snd_via(15, snd_lines(15, snd.w_ora));
+    if (!(snd.w_ddrb & 0x80)) snd_via(2, snd_lines(2, snd.w_ddrb));
+    if (((snd.w_orb >> 7) & 1) != !snd.on) snd_via(0, snd_lines(0, snd.w_orb));
+}
+
+/* the SE's vertical blanking: an edge of CA1 seen in the IFR */
+static void snd_vbl_poll(uint64_t now, uint64_t hz)
+{
+    if (now - snd.poll_t < hz / 1000) return;
+    uint64_t prev = snd.poll_t;
+    snd.poll_t = now;
+    uint32_t ifr = psmac_wire_read(SE_VIA_IFR, 1) & 0xff;
+    if (!(ifr & 0x02)) { snd.ca1_held = 0; snd.clear_seen = 1; return; }
+    if (snd.ca1_held) return;                    /* the edge seen already; the Mac has not taken it yet */
+    uint64_t t = prev && now - prev < hz / 500 ? prev + (now - prev) / 2 : now;
+    if (snd.edge_ok && snd.clear_seen) {
+        /* consecutive edges (the flag was seen clear between them): the frame's length, smoothed */
+        uint64_t dt = t - snd.edge_t;
+        if (dt > snd.period / 2 && dt < snd.period * 3 / 2) snd.period = snd.period - snd.period / 8 + dt / 8;   /* the next edge: the frame's length, smoothed */
+    }
+    snd.edge_t = t; snd.edge_ok = 1; snd.edges++; snd.edge_halves = 0;
+    snd.clear_seen = 0;
+    if (!(via_ier & 0x02)) { psmac_wire_write(SE_VIA_IFR, 1, 0x02, 0); snd.own_clears++; snd.ca1_held = 0; }
+    else snd.ca1_held = 1;
+}
+/* the word the SE plays now */
+static uint32_t snd_beam(uint64_t now)
+{
+    uint64_t lines = (now - snd.edge_t) * SND_WORDS / snd.period;
+    return (uint32_t)((SND_VBL_WORD + lines) % SND_WORDS);
+}
+static void snd_service(void)
+{
+    if (snd_off) return;
+    uint64_t now = asc_now(), hz = asc_hz();
+    if (!snd.period) snd.period = hz * 704u * 370u / 15667200u;   /* the SE's frame: 704 dots by 370 lines at 15.6672 MHz, 60.15 Hz */
+    if (snd.flush_seen != snd_flush) { snd.flush_seen = snd_flush; for (int ch = 0; ch < 2; ch++) snd_tail[ch] = __atomic_load_n(&snd_head[ch], __ATOMIC_ACQUIRE); }
+    int sounding = snd_fifo_level(0) > 0 || snd_fifo_level(1) > 0 || snd_wavetable_on();
+    if (sounding) snd.last_t = now;
+    snd.feeding = now - snd.last_t < hz / 30;    /* the Sound Manager refills the FIFO at least every other frame while it plays */
+    if (!snd.active) {
+        if (!sounding) { snd_apply(); return; }  /* idle: the lines stay as they are, unless a RESET took them */
+        snd.active = 1; snd.edge_ok = 0; snd.ca1_held = 0; snd.clear_seen = 0; snd.half = -1; snd.fresh = 0; snd.starts++;
+    }
+    snd.vol = (asc_regs[0x806] >> 5) & 7;
+    snd_vbl_poll(now, hz);
+    if (snd.edge_ok) {
+        uint32_t pos = snd_beam(now);
+        int half = pos >= SND_HALF;
+        /* Two halves a frame, counted from the VBL edge: the frame's length only places them within
+           the frame, so the samples go out at the SE's own rate even when the estimate is off (MAME's
+           emulated time runs in bursts against the wall clock: 53 s of chime in its recording against
+           69 s of the Pi's timer). Past two frames without an edge (the Mac holding CA1) it runs free. */
+        if (half != snd.half && snd.edge_halves >= 2 && now - snd.edge_t < 2 * snd.period) { if (snd.edge_halves == 2) { snd.held++; snd.edge_halves = 3; } half = snd.half; }
+        if (half != snd.half) {
+            /* the SE has just moved into this half: the other one gets the next samples */
+            if (snd.half >= 0 && (pos % SND_HALF) > SND_HALF / 2) snd.late++;   /* noticed late: less than a quarter frame to write it in */
+            snd.half = half;
+            uint32_t dst = snd_base() + 2 * (half ? 0 : SND_HALF);
+            for (uint32_t i = 0; i < SND_HALF; i++) psmac_wire_write(dst + 2 * i, 1, snd_next(), 1);
+            uint32_t us = (uint32_t)((asc_now() - now) * 1000000u / hz);
+            if (us > snd.half_us_max) snd.half_us_max = us;
+            snd.halves++; snd.edge_halves++;
+            if (snd.fresh < 2) snd.fresh++;
+        }
+    }
+    /* on once both halves hold fresh samples; off a quarter second after the last one */
+    snd.on = snd.fresh >= 2 && snd.vol && now - snd.last_t < hz / 4;
+    if (now - snd.last_t >= hz / 4) snd.active = 0;
+    snd_apply();
+}
+
+/* the service core, between the Mac's requests as well as when it has none (psmac_bus.c): a check of
+   the time and the rings when nothing is due */
+void psmac_se_sound(void) { if (psmac_board_se && !psmac_board_solo) snd_service(); }
+
 /* ---- the SE's screen -------------------------------------------------------------------------
    The slot-9 card's frame (psmac_display.c) is 512 by 342 here, one bit a pixel, 64 bytes a row,
    exactly the SE's own layout. Core 3 marks the rows that changed since the last copy; the
@@ -721,6 +1042,7 @@ void psmac_se_service(void)
 {
     if (psmac_board_solo) { psmac_solo_service(); return; }
     if (!psmac_board_se) return;
+    snd_service();                                /* the speaker first: its halves have deadlines, the rows do not */
     for (int n = 0; n < 4; n++) {
         int y = -1;
         for (uint32_t w = 0; w < (SE_ROWS + 31) / 32 && y < 0; w++) {
@@ -836,8 +1158,11 @@ void psmac_se_start(void)
     se_ram_lines();
     shadow_valid = 0;
     for (uint32_t w = 0; w < (SE_ROWS + 31) / 32; w++) dirty[w] = 0;
-    kprintf("[PSMAC:SE] board layer up: SE memory %u MB, screen buffer at $%06x, VIA $EFE1FE, SCC $9FFFF8/$BFFFF9, SCSI $5FF000, IWM $DFE1FF; RBV, ASC, VDAC answered here\n",
-            se_ram_mb, psmac_se_fb_base());
+    kprintf("[PSMAC:SE] board layer up: SE memory %u%s MB, screen buffer at $%06x, VIA $EFE1FE, SCC $9FFFF8/$BFFFF9, SCSI $5FF000, IWM $DFE1FF; RBV, ASC, VDAC answered here\n",
+            se_ram_kb >> 10, se_ram_kb & 512 ? ".5" : "", psmac_se_fb_base());
+    if (snd_off) kprintf("[PSMAC:SE] sound: mac.sesound=off, the ASC's samples are not played (the SE's speaker stays as the ROM leaves it)\n");
+    else kprintf("[PSMAC:SE] sound: the ASC's samples go to the SE's speaker through its sound buffer at $%06x, 370 a frame, written in halves after the SE's own VBL; "
+                 "volume on VIA PA0-2, PB7 low only while a sound plays (mac.sesound=off to leave the speaker alone)\n", snd_base());
     scsi_probe();
     rtc_probe();
     __asm__ volatile("dmb ish" ::: "memory");
@@ -848,7 +1173,7 @@ void psmac_se_start(void)
 void psmac_se_after_reset(void)
 {
     if (!psmac_board_se || psmac_board_solo) return;
-    via_ddra = 0;
+    via_ddra = via_ddrb = via_ora = via_orb = via_ier = 0;
     psmac_wire_read(0x400000u, 2);
     if (scsi_mode == 0) scsi_probe();             /* the reset line has reset the 5380 too: a dozen cycles to look again */
     se5380.odr = se5380.icr = se5380.mr = se5380.tcr = 0; se5380.aip = se5380.irq = 0;
@@ -884,7 +1209,12 @@ void psmac_se_options(const char *args)
     }
     if ((tok = find_token(args, "mac.sescsi="))) { tok += 11; scsi_mode = tok[0] == 'r' ? 1 : tok[0] == 'e' ? 2 : 0; }
     if ((tok = find_token(args, "mac.sefloat="))) { tok += 12; scsi_float_sim = tok[0] == '1'; }   /* the testbed: the 5380 read as on an unterminated bus */
-    if ((tok = find_token(args, "mac.seram="))) { tok += 10; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); if (n >= 1 && n <= 4) se_ram_mb = n; }
+    if ((tok = find_token(args, "mac.seram="))) {   /* 1, 2, 2.5 or 4: the SE's address arithmetic takes the top of what is fitted */
+        tok += 10; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0');
+        uint32_t kb = n << 10; if (tok[0] == '.' && tok[1] == '5') kb += 512;
+        if (kb == 1024 || kb == 2048 || kb == 2560 || kb == 4096) se_ram_kb = kb;
+    }
+    if ((tok = find_token(args, "mac.sesound="))) { tok += 12; snd_off = tok[0] == 'o' && tok[1] == 'f'; }
 }
 
 void psmac_se_report(void)
@@ -895,4 +1225,27 @@ void psmac_se_report(void)
             rows_sent, se_lines_bad ? " (an address line failed its test at the start)" : "", frames_marked, local_reads, local_writes, rbv_ifr, rbv_ier, rbv_regs[0x12],
             xp.serve ? "not answering, the board layer answers" : "answering", xp.reads, xp.reads_ff, xp.writes);
     if (scsi_empty) kprintf("[PSMAC:SE]   SCSI: the empty bus answered here, %u selections (none answered)\n", se5380.selections);
+    if (!snd_off && (snd.starts || snd_dropped))
+        kprintf("[PSMAC:SE]   sound: %u starts, %u samples played, %u halves written (%u late, %u held for the next VBL), %u underruns, %u dropped | speaker %s, volume %d, ASC mode %u | "
+                "VBL %u edges (%u cleared here), frame %u us, a half written in %u us at most\n",
+                snd.starts, snd.played, snd.halves, snd.late, snd.held, snd.underruns, snd_dropped, snd.on ? "on" : "off", snd.vol, asc_regs[0x801],
+                snd.edges, snd.own_clears, (uint32_t)(snd.period * 1000000u / asc_hz()), snd.half_us_max);
+}
+
+/* The IIci ROM's startup chime is the ASC's wavetable for 30000 steps of 14 VIA reads; the project's
+   ROM patch (rom/patches/iici.json, docs/08 item 50) cut it to two steps, since nothing played the ASC
+   on an SE or a bare Pi. On the SE with its speaker it plays again: about a second on the SE's VIA.
+   Called with the ROM in the kernel's memory, once patched (psmac_bus.c); the checksum word follows,
+   so the ROM's own test still passes. The patched bytes are checked first, the table around them
+   ($40807158: volume $0204, the delay $0D, 300 steps per voice) as well. */
+void psmac_se_rom_fixup(uint8_t *rom, uint32_t len)
+{
+    static const uint8_t table[] = { 0x02, 0x04, 0x00, 0x00, 0x00, 0x0d, 0x00, 0x00, 0x01, 0x2c, 0x00, 0x00, 0x00, 0x01, 0x00, 0x04 };
+    if (!psmac_board_se || psmac_board_solo || snd_off || len < 0x80000) return;
+    for (unsigned i = 0; i < sizeof table; i++) if (rom[0x7158 + i] != table[i]) return;
+    rom[0x7164] = 0x75; rom[0x7165] = 0x30;
+    uint32_t sum = (uint32_t)rom[0] << 24 | (uint32_t)rom[1] << 16 | (uint32_t)rom[2] << 8 | rom[3];
+    sum += 0x7530u - 0x0001u;
+    rom[0] = sum >> 24; rom[1] = sum >> 16; rom[2] = sum >> 8; rom[3] = sum;
+    kprintf("[PSMAC:SE] sound: the startup chime's full length given back to the ROM (30000 steps; checksum word now %08x)\n", sum);
 }

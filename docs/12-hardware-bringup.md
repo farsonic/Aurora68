@@ -263,8 +263,8 @@ one line:
     [PSMAC:SE] parameter RAM $8A: the SE's clock chip says $15, the ROM is given $05: bit 4 cleared (...)
 
 System 7.1 writes back the mode it started in, so after the first good boot the chip holds $05 and
-the line no longer appears. `mac.pram8a=keep` turns the mending off; `pram.bin` on the card is the
-solo board's and is not used on the SE. The same change keeps the RBV stand-in's SCSI interrupt
+the line no longer appears. `mac.pram8a=keep` turns the mending off; `pram.bin` on the card was the
+solo board's alone then (since docs/08 item 72 the SE's stand-in, below, uses it too). The same change keeps the RBV stand-in's SCSI interrupt
 flag at 0 on the SE (the 5380's interrupt never reaches the Pi there), which is the likeliest cause
 of the stall at 8 MiB, and classes the heartbeat's bus cycles by the SE's address map.
 
@@ -280,7 +280,8 @@ every time, also after the ROM had rewritten it: it does not answer at all. The 
 start with parameter RAM like that (one byte, $AE, read as $FF sends it the wrong way; the MAME SE
 with such a chip stops at the same instruction with the same registers). The kernel now asks the
 chip before the Mac starts and, if it reads $FF for the signature and the clock, answers in its
-place with default parameter RAM and a clock of its own, kept until the Pi is switched off. One
+place with default parameter RAM and a clock of its own, kept until the Pi is switched off (since
+docs/08 item 72 kept in `pram.bin` on the card instead, below). One
 line says which case it found:
 
     [PSMAC:SE] clock chip: answers; parameter RAM valid (signature 4e 75 4d 63), clock ...
@@ -387,6 +388,30 @@ new kernel8.img. Lines to look for:
     [PSMAC:MBOX] startup disk: the SCSI disk the parameter RAM names first, then the card's image (mac.boot=auto): SCSI ID 0, refNum -33; 1 image(s) on the card
     [MAC] PiDisk boot: the SCSI disk the parameter RAM names first, the card's image after it
     [BOOT] t=...s PiDisk: first block read (device 0, block 0)
+
+### Sound from the SE's speaker, and parameter RAM on the card
+
+*20 November 2026* (docs/08 items 71 and 72). The SE has no sound chip: its video hardware reads one word
+of a 370-word buffer $300 below the top of its RAM ($3FFD00 with 4 MB) in every line, the visible ones
+and the vertical blanking, and plays the high byte, 22,255 samples a second; VIA port A bits 0-2 are the
+volume, port B bit 7 switches the sound off. The kernel now writes what the IIci ROM and the Sound
+Manager put into the ASC into that buffer, in halves of 185 words in time with the SE's own vertical
+blanking, sets the volume from the ASC's (the Sound control panel's), and switches the speaker off a
+quarter second after each sound. The IIci ROM's startup chime is back at its full length (about a second
+on the SE). `mac.sesound=off` leaves the speaker alone. In MAME the chime and System 7's beep come out
+recognisably (docs/08 item 71 has the frequencies); on the hardware it has not been heard yet. Lines to
+look for: `[PSMAC:SE] sound: the ASC's samples go to the SE's speaker ...` at the start, and in the
+report lines `sound: N starts, ... halves written (L late, H held ...) ... a half written in U us at
+most`: L and H should stay small next to the halves written, U well under 4,000.
+
+The stand-in parameter RAM (the SE's clock chip reads $FF, docs/08 item 64) is now kept in `pram.bin` in
+the card's root, as on the solo board: read before the ROM's first parameter RAM access, saved a second
+after the Mac changes something once the boot is over (at most every ten seconds), and every ten minutes
+for the clock, which goes on from the last save. The log says `stand-in parameter RAM from pram.bin on the
+card (... bytes; signature 4e 75 4d 63 ...), clock ...` or `the defaults ...`, and `[CARD] pram.bin:
+parameter RAM saved` when it writes. A clock chip that answers is used as it is and the file is left
+alone. To try it: set the time in Date & Time, change the startup disk or AppleTalk, wait ten seconds,
+switch off, switch on.
 
 ## What to have ready
 

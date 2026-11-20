@@ -497,14 +497,19 @@ void psmac_card_save_pairings(const char *text, uint32_t len)
     __atomic_store_n(&pair_dirty, 1, __ATOMIC_RELEASE);
 }
 
-/* ==== pram.bin: the solo board's parameter RAM ================================================
+/* ==== pram.bin: the parameter RAM of the solo board and of the SE board's stand-in ============
    A real Mac keeps its parameter RAM in a chip with a battery: AppleTalk active (the Chooser), the
    Network control panel's connection (extended PRAM $E0), Monitors' depth, the startup disk, the
    sound. The solo board's chip (psmac_board_solo.c) started from its defaults at every power-on.
    pram.bin in the card's root keeps the 256 bytes and then the clock (4 bytes, the Mac's seconds
    since 1904, big-endian, as it was at the save), in one cluster, created the first time it is
    written. Read at the card's first look; written when the board hands over a change, which it does
-   a second after the Mac's last one and never during the boot. mac.card=ro reads it only. */
+   a second after the Mac's last one and never during the boot. mac.card=ro reads it only.
+   Since 20 November the SE board uses the same file for the parameter RAM and clock it answers with
+   when the SE's own clock chip does not answer (psmac_board_se.c, xp_card_load and
+   psmac_se_pram_take: at most every ten seconds, and every ten minutes for the clock); with a chip
+   that answers the file is neither read nor written. One card moved between a bench Pi and the SE
+   keeps one set of settings. */
 static uint8_t pram_text[512]; static uint32_t pram_len; static int pram_state;   /* 0 pending, 1 read, -1 none */
 static struct cfile pram_file; static int pram_have;
 static void pram_load(void)
@@ -534,7 +539,7 @@ static void pram_write(const uint8_t *p)
     }
     kprintf("[CARD] pram.bin: parameter RAM saved\n");
 }
-/* psmac_board_solo.c: pram.bin as the card had it at start (state 0 pending, 1 read, -1 none) */
+/* psmac_board_solo.c and psmac_board_se.c: pram.bin as the card had it at start (state 0 pending, 1 read, -1 none) */
 const uint8_t *psmac_card_pram(int *state, uint32_t *len)
 {
     *state = sd.state < 0 ? -1 : __atomic_load_n(&pram_state, __ATOMIC_ACQUIRE);
@@ -1233,8 +1238,8 @@ static void card_poll_locked(void)
     if (fl.busy) { flush_poll(); return; }             /* a sector is being programmed: nothing else touches the card */
     if (__atomic_load_n(&pair_dirty, __ATOMIC_ACQUIRE) && !sd.ro) { pair_dirty = 0; pairings_write(); return; }
     if (__atomic_load_n(&opt_state, __ATOMIC_ACQUIRE) == 1 && !sd.ro) { cmdline_apply(); return; }
-    { extern int psmac_solo_pram_take(uint8_t out[260]); static uint8_t p[260];
-      if (!sd.ro && psmac_solo_pram_take(p)) { pram_write(p); return; } }
+    { extern int psmac_solo_pram_take(uint8_t out[260]), psmac_se_pram_take(uint8_t out[260]); static uint8_t p[260];
+      if (!sd.ro && (psmac_solo_pram_take(p) || psmac_se_pram_take(p))) { pram_write(p); return; } }
     if (__atomic_load_n(&logf_state, __ATOMIC_ACQUIRE) == 1 && !sd.ro) { logf_step(); return; }
     if (logsave_s && !sd.ro && ms() - logsave_last >= logsave_s * 1000u) {
         logsave_last = ms();

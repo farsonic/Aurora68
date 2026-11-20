@@ -1,7 +1,8 @@
 #!/bin/bash
 # Run the psmac Emu68 build under QEMU's Raspberry Pi 3 model, with the IIci ROM as initrd and the
 # bridge transport (mini UART = second serial) connected to the MAME bridge CPU socket.
-# usage: tools/run-psmac-qemu.sh [extra cmdline tokens]   env: PSMAC_BRIDGE_SOCK, PSMAC_RAM (MiB), ROM
+# usage: tools/run-psmac-qemu.sh [extra cmdline tokens]   env: PSMAC_BRIDGE_SOCK, PSMAC_RAM (MiB), ROM,
+#   CARD (a raw SD card image for the kernel's card code, psmac_card.c: an MBR and a FAT partition, as in run-solo.sh)
 set -e
 cd "$(dirname "$0")/.."
 IMG=${IMG:-psmac-build/Emu68.img}
@@ -20,4 +21,4 @@ else echo "note: $SOCK not present, bridge transport disconnected"; BRIDGE="-ser
 exec qemu-system-aarch64 -M raspi3b -smp 4 -m 1G -display none -monitor unix:/tmp/qemu-mon.sock,server,nowait \
   -kernel "$IMG" -dtb "$DTB" -initrd "$ROM" \
   -append "mac.ram=$RAM enable_cache debug $EXTRA $*" \
-  -serial stdio $BRIDGE -accel tcg,tb-size=256
+  ${CARD:+-drive file=$CARD,if=sd,format=raw} -serial stdio $BRIDGE -accel tcg,tb-size=256
