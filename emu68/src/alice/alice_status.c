@@ -180,6 +180,13 @@ void alice_status_poll(void)
         if (ok && alice_mbox2(0x00030046u, 0u, 0u, o) == 0) s->throttled = o[0]; else ok = 0; /* GET_THROTTLED */
         if (ok) s->sensors_ms = up;
     }
+#ifdef PSMAC
+    else if (!mbox_sensors) {                   /* the kernel's own power watch has the bits (psmac_power.c) */
+        extern int64_t psmac_power_bits(void);
+        int64_t pw = psmac_power_bits();
+        if (pw >= 0) s->throttled = (uint32_t)pw;
+    }
+#endif
     struct M68KState *m = __m68k_state;
     if (m) {
         s->jit_total = m->JIT_CACHE_TOTAL;

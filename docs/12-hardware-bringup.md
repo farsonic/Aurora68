@@ -173,6 +173,31 @@ save of `pram.bin` left it), and the ADB bus is empty: the Finder comes up but h
 `tools/run-solo.sh` (QEMU alone, no MAME, host files through semihosting, screenshots through the
 QEMU monitor).
 
+## Power through the socket
+
+*20 November 2026.* In the SE the Pi takes its 5 V through the 68000 socket and the PiStorm, from
+an analog board some thirty years old, while a Pi 3B draws 0.5 to 0.8 A. Under-voltage is the
+first suspect for anything odd on the first boots, and the Pi's firmware knows when it happens:
+the mailbox tag GET_THROTTLED (0x00030046). The kernel reads it every two seconds on the service
+core, on every board (`psmac_power.c`; `mac.power=off` stops it), and logs only changes:
+
+    [PSMAC] power: normal (0x0), watched every 2 s (mac.power=off to stop)
+    [PSMAC] power: under-voltage now; ARM frequency capped (0x30003)
+    [BOOT] t=41.207s power: under-voltage seen (GET_THROTTLED 0x30003)
+    [PSMAC] power: normal again; under-voltage, frequency capping occurred since boot (0x30000)
+
+Bits 0-3 are "now" (under-voltage, ARM frequency capped, throttled, soft temperature limit), bits
+16-19 the same "has occurred since boot". A first reading with the high bits already set means
+the dip came before the kernel (during the firmware's own boot, when the Pi draws most). The
+first under-voltage is also a `[BOOT]` line, which the remote control keeps with the boot's
+record (`aurora68.py log --records`), and `/state` carries the bits as `power` (docs/13). QEMU's
+mailbox does not know the tag; the kernel says so once and stops asking.
+
+What to do with a "power: under-voltage" line: shorter, thicker wiring is not available inside a
+socket, so the remedies are the SE's 5 V rail itself (the analog board's adjustment, recapping) or
+a Pi that draws less (the 3A+ and the Zero 2 W, on order, have no USB hub or wired Ethernet chip
+to feed).
+
 ## What to have ready
 
 - The release zip's SD card layout as it is (0.2): `kernel8.img`, `config.txt`, `cmdline.txt`,

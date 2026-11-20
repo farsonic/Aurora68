@@ -663,6 +663,19 @@ static void cur_app(char *out)
     raw[len] = 0;
     json_name(out, raw, 64);
 }
+/* the firmware's GET_THROTTLED bits (psmac_power.c): each "now" bit and each "since boot" bit by name */
+static void power_json(struct hconn *h)
+{
+    extern int64_t psmac_power_bits(void);
+    static const char *const names[4] = { "under_voltage", "frequency_capped", "throttled", "soft_temp_limit" };
+    int64_t pw = psmac_power_bits();
+    if (pw < 0) { out_str(h, "  \"power\": null,\n"); return; }          /* no reading yet, or a firmware (QEMU) that has none */
+    uint32_t v = (uint32_t)pw;
+    OUTF(h, "  \"power\": {\"throttled\": \"0x%x\"", v);
+    for (int i = 0; i < 4; i++) OUTF(h, ", \"%s%s\": %s", names[i], i == 2 ? "_now" : "", v & (1u << i) ? "true" : "false");
+    for (int i = 0; i < 4; i++) OUTF(h, ", \"%s_since_boot\": %s", names[i], v & (0x10000u << i) ? "true" : "false");
+    out_str(h, "},\n");
+}
 static void state_json(struct hconn *h)
 {
     char a[64], b[64], c[64];
@@ -695,6 +708,7 @@ static void state_json(struct hconn *h)
     OUTF(h, "  \"remote\": {\"link\": \"%s\", \"phase\": \"%s\", \"ip\": \"%s\", \"mac\": \"%s\", \"name\": \"%s.local\", \"shares_mac\": %s, \"shares_ip\": %s, \"requests\": %u, \"refused\": %u, \"input_events\": %u, \"png_band_us_max\": %u},\n",
          in.unit == 1 ? "wired" : in.unit == 0 ? "wifi" : "none", in.phase, a, b, psmac_ip_name(), in.shared ? "true" : "false", in.shared == 2 ? "true" : "false",
          requests, refused, input_events, P.busy_us_max);
+    power_json(h);
     out_str(h, "  \"network\": [");
     volatile uint8_t *nb = alice_net_board();
     for (int u = 0; u < 2 && nb; u++) {

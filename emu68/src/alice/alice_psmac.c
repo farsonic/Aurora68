@@ -837,6 +837,7 @@ void __attribute__((noreturn)) psmac_alice_core(void)
         in_repeat_poll();
         in_testbed_poll();
         { extern void psmac_netprobe_poll(void); psmac_netprobe_poll(); }  /* echo timings (psmac_netprobe.c) */
+        { extern void psmac_power_poll(void); psmac_power_poll(); }        /* the Pi's power state, every 2 s (psmac_power.c) */
         { extern void psmac_display_poll(void); psmac_display_poll(); }   /* the second display's tick and picture */
         t1 = in_now(); LOOP_T(4, t1 - t0); t0 = t1; loop_turns++;
         { extern void psmac_remote_poll(void); psmac_remote_poll(); }     /* the remote control: its IP stack, HTTP and input queue (docs/13) */

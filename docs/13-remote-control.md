@@ -201,7 +201,9 @@ frame buffer, `console` before the video driver has opened), `mac` (`state`: `ru
 keeps at $AF0; the last `system_error` and `exception` since the last restart), `remote` (the
 link, the address, whether it shares the Mac's, the counters, the longest PNG band in
 microseconds), `network` (both units: kind, link, MAC address, the Mac's own IPv4 address on it,
-frames), `disks`, `log_head`.
+frames), `power` (the firmware's GET_THROTTLED bits as `throttled`, each "now" bit and each
+"since boot" bit by name; `null` before the first reading and under QEMU, docs/12 "Power through
+the socket"), `disks`, `log_head`.
 
 In the testbed, `mac.remotefile=BASE` serves the same requests through semihosting (BASE.in and
 BASE.out must exist when QEMU starts; `tools/aurora68.py --semihost BASE state`), and

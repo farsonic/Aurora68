@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **The log says when the Pi's power is short.** In the SE the Pi is powered through the 68000
+  socket, and a tired analog board or a Pi 3B's appetite can pull it below the firmware's
+  threshold (about 4.63 V). The kernel now asks the Pi's firmware every two seconds and logs each
+  change: `power: under-voltage now`, `ARM frequency capped`, `throttled`, `soft temperature
+  limit`, and `power: normal again` with what has happened since boot. The first under-voltage is
+  also a `[BOOT]` line, and the remote control's `/state` has the bits under `power`. On by
+  default; `mac.power=off` stops it. Replace kernel8.img.
 - **Booting 15 seconds faster on a Pi 3 with Bluetooth.** The kernel waited at every character of
   its log for a serial port that does not send (the Pi 3's PL011 belongs to Bluetooth), and that
   was most of the time the firmware's rainbow screen stayed up: the 68k started at 19 s. It now

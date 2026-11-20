@@ -540,6 +540,7 @@ static inline void mwr(uintptr_t a, uint32_t v) { *(volatile uint32_t *)(uintptr
 static uint32_t *mbuf;
 static uint32_t mbox_code;                   /* the answer's code when a call failed (-4) */
 static uint32_t mbox_w0;                     /* the answer's first value word (GET_THROTTLED's bits) */
+static uint32_t mbox_rlen;                   /* the tag's response word: bit 31 once the firmware has answered the tag itself */
 static volatile int mbox_busy;               /* the WiFi coroutine is inside mbox_tag (it yields there) */
 static int mbox_tag_(uint32_t tag, uint32_t a, uint32_t b, uint32_t *out);
 static int mbox_tag(uint32_t tag, uint32_t a, uint32_t b, uint32_t *out)
@@ -579,6 +580,7 @@ static int mbox_tag_(uint32_t tag, uint32_t a, uint32_t b, uint32_t *out)
     arm_dcache_invalidate((uintptr_t)mbuf, 64);
     if (out) *out = __builtin_bswap32(mbuf[6]);
     mbox_w0 = __builtin_bswap32(mbuf[5]);
+    mbox_rlen = __builtin_bswap32(mbuf[4]);
     uint32_t code = __builtin_bswap32(mbuf[1]);
     if (code != 0x80000000u) { mbox_code = code; return -4; }
     return 0;
@@ -605,6 +607,19 @@ int alice_mbox2(uint32_t tag, uint32_t a, uint32_t b, uint32_t out[2])
     out[0] = mbox_w0;
     return e;
 }
+#ifdef PSMAC
+/* for psmac_power.c, every two seconds from the service loop: one try, no retries (a mailbox
+   that does not answer must not hold the loop for 8 s), and -5 when the firmware answered the
+   buffer but not the tag (QEMU's model knows only some tags, and says so this way) */
+int alice_mbox_once(uint32_t tag, uint32_t a, uint32_t b, uint32_t out[2])
+{
+    if (mbox_busy) return -9;
+    int e = mbox_tag(tag, a, b, &out[1]);
+    out[0] = mbox_w0;
+    if (!e && (!(mbox_rlen & 0x80000000u) || (mbox_rlen & 0x7fffffffu) < 4u)) e = -5;
+    return e;
+}
+#endif
 /* ---- the radio's power ----
    Where WL_REG_ON is wired differs by board. The 3B, 3B+, 3A+, 4, 400 and CM4 have it on line
    1 of the VideoCore's GPIO expander (mailbox SET_GPIO_STATE, GPIO 128+1; the 3B's device tree
