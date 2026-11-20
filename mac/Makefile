@@ -9,7 +9,7 @@ OBJCOPY = m68k-linux-gnu-objcopy
 PY      = python3
 B       = build
 
-all: $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/PiLog.bin $(B)/PiDepth.bin $(B)/WiFiMenu.bin $(B)/PiScrn.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes declrom-wifi-sizes declrom-se-sizes
+all: $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/PiLog.bin $(B)/PiDepth.bin $(B)/WiFiMenu.bin $(B)/PiScrn.bin $(B)/SoundPiStorm.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes declrom-wifi-sizes declrom-se-sizes
 
 $(B)/%.o: %.s
 	@mkdir -p $(B)
@@ -23,6 +23,11 @@ $(B)/PiDisk.bin: $(B)/pidisk.bin.raw $(B)/pidisk_init.bin.raw ../tools/mac/mkini
 
 $(B)/PiMach.bin: $(B)/pimach.bin.raw ../tools/mac/mkinit.py ../tools/mac/rsrc.py
 	$(PY) ../tools/mac/mkinit.py --init $(B)/pimach.bin.raw --name PiMach -o $@
+
+# the sound card as the Sound Manager 3 output device (docs/09, "Sound through HDMI"). The file's Mac name,
+# "Sound PiStorm", sorts after "Sound Manager", so System 7 runs it after the Sound Manager's own INIT
+$(B)/SoundPiStorm.bin: $(B)/pisound.bin.raw ../tools/mac/mkinit.py ../tools/mac/rsrc.py
+	$(PY) ../tools/mac/mkinit.py --init $(B)/pisound.bin.raw --name "Sound PiStorm" -o $@
 
 # the same extension answering another machine type (for experiments): make pimach-variant MACH=11
 pimach-variant: pimach.s
