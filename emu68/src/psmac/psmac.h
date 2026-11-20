@@ -34,6 +34,21 @@
 
 struct psmac_reply { uint8_t status, ipl, flags; uint32_t data; };
 
+/* Interrupts as the 68k takes them (ExecutionLoop.c's ProcessIRQ fills it, the heartbeat prints and
+   clears it; 20 November 2026, docs/08 item 76). ProcessIRQ runs with the 68k's registers in fixed
+   ARM registers and may not call C, so it only counts here. Two signs of a level the JIT saw after
+   its source had gone: the same level taken again at the same PC with the same stack (an RTE went
+   straight back into the handler, nothing in between), and the same level taken at the same PC
+   with the stack lower by the same stride each time (a handler lowered the mask and took its own
+   interrupt again, docs/08 item 48), whose depth in bytes is kept. */
+struct psmac_irqwatch {
+    uint32_t taken[8];                 /* by level */
+    uint32_t again;                    /* taken again at once: same level, PC and stack */
+    uint32_t deepest, deepest_pc;      /* the deepest run of nested entries, in bytes of stack, and where */
+    uint32_t last_level, last_pc, last_sp, run_sp, stride;
+};
+extern struct psmac_irqwatch psmac_irqwatch;
+
 void     psmac_setup_memory(void *rom, uint32_t rom_size);
 int      psmac_bus_write(uint64_t value, uint64_t value2, int size, uint64_t far);
 int      psmac_bus_read(uint64_t *value, uint64_t *value2, int size, uint64_t far);

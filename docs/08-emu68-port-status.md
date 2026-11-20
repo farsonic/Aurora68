@@ -2541,6 +2541,85 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      larger than 2 TB, the real controller's NAK handling on long bulk transfers, and whether a stick's
      own cache survives a pull after SYNCHRONIZE CACHE.
 
+76. **Speedometer 3.23's "bad F-Line instruction" on the SE, and the level-2 interrupt that outlived
+   its source (20 November, night).** The user's SE with the se9 kernel (5799de9), the two-screen
+   declaration ROM for 1024 by 768, `mac.image=sys710pi.image mac.boot=image`, the full test image
+   from the card and the sound card with Sound PiStorm, ran Speedometer 3.23 from the Utilities folder
+   and got "Sorry, a system error occurred. 'Speedometer 3.23' bad F-Line instruction", its System
+   Information window behind the alert. The same SE had run Speedometer 4 from the user's own BlueSCSI
+   System (7.1.2) on an earlier kernel with one screen (docs/12, rating 90.2). No crash record came
+   with the report.
+   - *Speedometer's own instructions first.* CODE 1 to 8 of Speedometer 3.23 were disassembled. Its
+     FPU code is FADD, FSUB, FMUL, FDIV, FNEG, FSIN, FCOS, FATAN, FETOX, FLOGN, FSQRT, FMOVE and
+     FMOVEM in ordinary addressing modes, and its Gestalt glue for older Systems does `fnop; fsave
+     -(sp)` and compares the frame's first word with $1F18, $3F18, $1F38 and $3F38, as the ROM's
+     'fpu ' does (item 46). There is no PMOVE, PFLUSH, PTEST, MOVE16, FMOVECR or coprocessor
+     save/restore; the two words objdump calls PRESTORE and FRESTORE in CODE 4 are entries of a jump
+     table. It is item 48's set, all on Emu68's native path. Not an instruction the JIT lacks.
+   - *The testbed, as the user had it.* MAME's `macse_ps` with 128 MiB, first the se9 kernel and its
+     own declaration ROM, then main (262c344) with `psmac-se-1024x768.declrom`; a copy of the user's
+     image on a 256 MB FAT32 card image (`CARD=` for run-psmac-qemu.sh) with `mac.image=` and
+     `mac.boot=image`, Speedometer 3.23 added to Startup Items; `mac.audiodump=/dev/null`, because
+     without an output the kernel plays no card and Sound PiStorm leaves the ASC in charge ("the Pi
+     plays no sound card"), which was not the user's case; MAME's parameter RAM a private copy.
+     The first start made PiScrn's arrangement and restarted, the second reached the Finder at 225 s.
+     Speedometer was driven through the remote's testbed channel (`mac.remotefile=`): its splash, the
+     shareware notice, the four pages of System Information (68030, 68882, 68030 MMU, 131072K; 32-bit
+     QuickDraw 2.30 at 1 bit on 512 by 342; System 7.1.6; 32-bit addressing), Run ALL Tests (Command-A,
+     the startup disk for the disk test): "The tests are done!", no exception logged, no crash record,
+     and a dump of the Mac's 128 MiB afterwards held no nested interrupt frames. Run ALL Tests did the
+     same twice more on main (with the counters below). The crash did not reproduce.
+   - *What the testbed did show.* Item 48's runaway needs a level the JIT still sees after its source
+     has gone, so the kernel now counts the interrupts the 68k takes (ExecutionLoop.c's ProcessIRQ, a
+     few counters and no calls; one heartbeat line, `[PSMAC]   interrupts taken: level 1 N, 2 N, 4 N,
+     other N; taken again at once N; nested N bytes deep`). "Taken again at once" is the same level
+     at the same PC with the same stack: an RTE that went straight back into the handler. "Nested" is
+     the same level at the same PC with the stack lower by the same stride each time: item 48's
+     frames. On main, at the Finder with Speedometer up, level 2 was taken 2,200 to 6,200 times in five
+     seconds, 87 to 95 per cent of them again at once; during Run ALL Tests up to 27,107 in five
+     seconds, 26,844 of them again at once. The card's VBL interrupt is 60 a second, 300 in five
+     seconds. On the solo board, with the same kernel and image, level 2 was 296 to 300 in five
+     seconds.
+   - *The cause.* On the SE board the IIci's level 2, the RBV, is the kernel's own
+     (psmac_board_se.c): its slot flag follows the card's interrupt line, which the screens' VBLs, the
+     network board and the input ring raise and the Mac's slot handlers clear by writing the slot-9
+     window, Pi memory, without a bus cycle. The level the JIT tests (INTF.IPL) was stored only by the
+     cycles on the wire (the SE's VIA and SCC) and by the service core's poll: 20 times a millisecond
+     on the GPIO, once a millisecond in the testbed. The ROM's slot dispatcher ($40806EAA) reads the
+     RBV again after each slot handler, and on the solo board that read stores the level since item
+     48. On the SE board it did not: item 48's fix added the RBV's refresh for the solo board only
+     (`if (psmac_board_solo)`), and its text says the SE board was not affected because each bus
+     cycle's reply carries the motherboard's level, which is true of the VIA and the SCC and not of the
+     RBV, the kernel's on that board. So after every VBL the level-2 handler's RTE went back into the
+     handler, which found nothing, until the next wire cycle or poll; and when the handler returns
+     with a deferred task queued and the Deferred Task Manager busy, System 7.1's patch at $6E4 (`andi
+     #$F8FF,sr; rts` before the handler's own RTE) takes the stale level inside the handler, a level
+     and 44 bytes of stack deeper each time, until the poll: item 48's runaway, which ended in "bad
+     F-Line instruction" in Speedometer and in the Finder (items 48 and 53). The test image queues
+     deferred tasks from Riptide's stack (its Time Manager task queues the next run while one is still
+     going) and from Lagoon EtherTalk. The testbed's quiet network never lined one up with a VBL in
+     these runs ("nested 0" throughout), but on the Pi each nested entry costs a fraction of what it
+     costs under QEMU, and 50 microseconds of them can run a few tens of kilobytes down an
+     application's stack into its heap. The two screens double the VBL interrupts; the earlier
+     Speedometer 4 run had one screen and a System without Riptide or Lagoon.
+   - *The fix* (`psmac_board_se.c`, `psmac_bus.c`): on the SE board every RBV access stores the level
+     as the poll does, the SE's last level from the wire combined with the RBV's, and the wire's
+     stores go through the same function (`psmac_se_set_level`) under one lock, so that neither
+     stores a level the other has just made stale. The solo board is unchanged.
+   - *Afterwards*, the same SE testbed and image: level 2 never more than 319 in five seconds at the
+     Finder and through Run ALL Tests (300 while both screens run), again at once 6 to 50 in five
+     seconds (level 1 entries in wait loops, mostly, as on the solo board's 3 to 62), nested 0; "The
+     tests are done!"; the Finder at 205 s as before.
+   - *Not known:* whether the user's crash was this. Their kernel had the hole, their image the
+     deferred tasks and their declaration ROM two screens, but there is no crash record. What would
+     settle it, from `aurora68.log` on the card (written after every crash record): the `[CRASH]` block
+     (the vector, the PC and its region, the stack, the last PCs; item 48's signature is an F-line or
+     illegal instruction at a PC in a stack, then a jump into the ROM's error code), and from the new
+     kernel the `interrupts taken` lines while Speedometer runs. One thing the testbed cannot show:
+     on the GPIO the VIA's level comes back with the cycle that clears its flag, read a moment after the
+     write; if the CPLD or the SE's interrupt lines are slower than that read, level 1 could stand
+     stale the same way. Level-1 "taken again at once" or "nested" on the hardware would show it.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

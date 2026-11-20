@@ -19,6 +19,9 @@
 #define PS_PROTOCOL_IMPL
 #include "pistorm/ps_protocol.h"
 #endif
+#ifdef PSMAC
+#include "psmac/psmac.h"
+#endif
 
 register uint64_t (*ARMCode)() __asm__("x12");
 extern uint32_t EPOCH;
@@ -510,6 +513,31 @@ void ProcessIRQ(struct M68KState *ctx)
         if ((SRcopy & 3) != 0 && (SRcopy & 3) != 3)
         SRcopy ^= 3;
         vector = 0x60 + (level << 2);
+
+#ifdef PSMAC
+        {   /* the interrupt watch (psmac.h): counted only, no calls from here */
+            struct psmac_irqwatch *w = &psmac_irqwatch;
+            w->taken[level & 7]++;
+            if ((uint32_t)level == w->last_level && PC == w->last_pc && A7 == w->last_sp)
+                w->again++;
+            else if ((uint32_t)level == w->last_level && PC == w->last_pc && A7 < w->last_sp)
+            {
+                /* deeper by the same stride as the entry before: a handler that took itself again */
+                if (w->last_sp - A7 == w->stride)
+                {
+                    if (w->run_sp - A7 > w->deepest) { w->deepest = w->run_sp - A7; w->deepest_pc = PC; }
+                }
+                else
+                {
+                    w->stride = w->last_sp - A7;
+                    w->run_sp = w->last_sp;
+                }
+            }
+            else
+                w->stride = 0;
+            w->last_level = level; w->last_pc = PC; w->last_sp = A7;
+        }
+#endif
 
         /* Set supervisor mode */
         SR |= SR_S;

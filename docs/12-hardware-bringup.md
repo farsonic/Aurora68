@@ -336,6 +336,18 @@ gave a performance rating of 90.2 (a Macintosh Classic is 1.0): CPU 41.2, graphi
 disk 0.82, and an average of 276 for its benchmark mix. The disk figure is the SE's own 5380 and the
 BlueSCSI behind it, which the Pi drives through the 68000 socket a byte at a time.
 
+Later the same day, with the se9 kernel, two screens and the test image from the card, Speedometer 3.23
+stopped with "bad F-Line instruction" (docs/08 item 76). It did not happen in the testbed, but the
+testbed showed the SE board taking the card's level-2 interrupt again and again after its handler had
+cleared it, the condition behind item 48's crashes; the next kernel stores the level at every access to
+the RBV. Lines to send back from a run with Speedometer (and after any system error, `aurora68.log`
+with its `[CRASH]` block):
+
+    [PSMAC]   interrupts taken: level 1 N, 2 N, 4 N, other N; taken again at once N; nested N bytes deep
+
+Level 2 should stay near 300 in five seconds (the screens' 60 a second), "taken again at once" small
+next to the levels, and "nested" 0.
+
 ### "Parity has been disabled"
 
 *20 November 2026* (docs/08 item 69). Booting from the BlueSCSI the Mac once greeted the user with

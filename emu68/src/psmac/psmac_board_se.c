@@ -23,6 +23,7 @@
  */
 #include <stdint.h>
 #include "support.h"
+#include "M68k.h"
 #include "psmac.h"
 #include "psmb.h"
 #include "psmac_pram_default.h"
@@ -30,6 +31,9 @@
 int psmac_board_se;                         /* mac.board=se (also set by mac.board=solo, psmac_board_solo.c) */
 extern int psmac_board_solo;
 int psmac_solo_access(uint32_t addr, int size, int write, uint32_t data, uint32_t *val);
+unsigned psmac_se_ipl(unsigned raw);
+static inline void level_lock(void), level_unlock(void); static void store_level(unsigned raw);   /* the level the JIT sees (psmac_se_set_level, below) */
+static unsigned se_wire_ipl;                /* the SE's level as the last cycle on the wire brought it */
 unsigned psmac_solo_ipl(void); void psmac_solo_level_now(void); void psmac_solo_service(void); void psmac_solo_options(const char *); void psmac_solo_report(void);
 static uint32_t se_ram_kb = 4096;           /* mac.seram=N: the SE's own memory, 1, 2, 2.5 or 4 MB (its screen and sound buffers sit at the top) */
 static uint32_t se_ram_size(void) { return se_ram_kb << 10; }
@@ -783,9 +787,11 @@ int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t 
     }
     /* chips the SE lacks: answered here */
     if (off >= 0x26000 && off < 0x28000) {
+        if (!psmac_board_solo) level_lock();
         if (write) { trace("RBV", 1, addr, off, size, data & 0xff); rbv_write(off, data & 0xff); }
         else { r = rbv_read(off); trace("RBV", 0, addr, off, size, r); *val = size == 1 ? r : r << 8 | r; }
         if (psmac_board_solo) psmac_solo_level_now();   /* the level-2 line follows its flags at once (psmac_board_solo.c) */
+        else { store_level(se_wire_ipl); level_unlock(); }   /* and on the SE board too (below, psmac_se_set_level) */
         return 1;
     }
     if (off >= 0x14000 && off < 0x16000) { if (write) asc_write(off, data & 0xff); else { r = asc_read(off); *val = size == 1 ? r : r << 8 | r; } return 1; }
@@ -793,6 +799,35 @@ int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t 
     /* VIA2 (0x2000: the ROM probes it to tell decoders apart; the IIci has none), 0x21C00, the rest: open bus */
     if (!write) { *val = 0; local_reads++; } else local_writes++;
     return 1;
+}
+
+/* The level the JIT sees (INTF.IPL) on the SE board (20 November 2026, docs/08 item 76). It is the
+   SE's own level, which comes back with every cycle on the wire (VIA, SCC), combined with the RBV's
+   level 2, which is this file's: the card's interrupt line (the screens' VBLs, the network, the
+   input ring), raised and cleared in the slot-9 window, Pi memory the Mac writes without a bus
+   cycle. Until now only the wire's cycles and the service core's poll stored the combination (20
+   times a millisecond on the GPIO, once a millisecond in the testbed), so after a slot handler had
+   cleared its source the JIT still saw level 2. The ROM's slot dispatcher reads the RBV again
+   after each handler ($40806EAA, the loop through Lvl2DT+4), but on this board that read did not
+   bring the level up to date, as it has on the solo board since item 48. Two things followed: the
+   handler's RTE went straight back into the level-2 handler with nothing to do, again and again
+   until the next poll, and with a deferred task queued, System 7.1's patch of the Deferred Task
+   Manager ($6E4: `andi #$F8FF,sr; rts` before the handler's own RTE) took the stale level 2 inside
+   the handler, a level deeper each time: item 48's runaway of the stack, now on the SE board,
+   whose two screens have twice the VBL interrupts. Now every RBV access stores the level as the
+   poll does, under one lock with the wire's stores, so that neither stores a level the other has
+   just made stale. The wire's last level is kept for it. */
+static volatile uint8_t se_level_lock;
+static inline void level_lock(void) { while (__atomic_test_and_set(&se_level_lock, __ATOMIC_ACQUIRE)) __asm__ volatile("yield"); }
+static inline void level_unlock(void) { __atomic_clear(&se_level_lock, __ATOMIC_RELEASE); }
+extern struct M68KState *__m68k_state;
+static void store_level(unsigned raw)        /* the caller holds the lock */
+{
+    if (__m68k_state) __m68k_state->INTF.IPL = psmac_se_ipl(raw);
+}
+void psmac_se_set_level(unsigned raw)         /* psmac_bus.c, after each cycle on the wire and each poll */
+{
+    level_lock(); se_wire_ipl = raw; store_level(raw); level_unlock();
 }
 
 /* The interrupt level the SE drives, read as the IIci ROM expects it: the SE's level 1 is the VIA

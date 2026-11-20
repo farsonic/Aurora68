@@ -74,6 +74,7 @@ static volatile int transport_up, transport_dead, service_running;
 static volatile int svc_phase; /* 0 idle, 1 writing req, 2 reading reply, 3 heartbeat */
 static volatile uint32_t svc_op, svc_addr;
 static volatile uint8_t last_ipl, last_flags;
+struct psmac_irqwatch psmac_irqwatch;      /* psmac.h: filled by ExecutionLoop.c's ProcessIRQ, printed at the heartbeat */
 static uint32_t bus_errors, timeouts;
 static volatile uint32_t xfer_count, last_addr;
 uint64_t psmac_fault_elr;   /* set by the abort dispatcher: who faulted? */
@@ -155,7 +156,7 @@ static int sh_files = 0;                /* mac.semihost=1: host files through se
 extern int psmac_board_se, psmac_board_solo;
 void psmac_solo_reset(void); void psmac_solo_init(void); void psmac_image_add(const char *, uint8_t *, uint32_t);
 int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t *val, int posted);
-unsigned psmac_se_ipl(unsigned raw); void psmac_se_service(void); void psmac_se_start(void); void psmac_se_options(const char *); void psmac_se_report(void);
+unsigned psmac_se_ipl(unsigned raw); void psmac_se_set_level(unsigned raw); void psmac_se_service(void); void psmac_se_start(void); void psmac_se_options(const char *); void psmac_se_report(void);
 int psmac_se_rbv_irq(void);
 uint32_t psmac_se_wire_write(int reset, uint32_t addr, uint32_t data); void psmac_se_sound(void);
 void psmac_gpio_init(void); uint32_t psmac_gpio_read(uint32_t, int); void psmac_gpio_write(uint32_t, int, uint32_t);
@@ -375,7 +376,7 @@ static void gpio_xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, ui
         ipl = 0;
     }
     last_ipl = ipl; last_flags = 0;
-    if (__m68k_state) __m68k_state->INTF.IPL = psmac_board_se ? psmac_se_ipl(ipl) : ipl;
+    if (psmac_board_se) psmac_se_set_level(ipl); else if (__m68k_state) __m68k_state->INTF.IPL = ipl;   /* the SE board adds its RBV, under its lock (psmac_board_se.c) */
     if (r) { r->status = 0; r->ipl = ipl; r->flags = 0; r->data = value; }
 }
 
@@ -433,7 +434,7 @@ static void bridge_xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, 
     }
     svc_phase = 0;
     last_ipl = rep[1]; last_flags = rep[2];
-    if (__m68k_state) __m68k_state->INTF.IPL = psmac_board_se ? psmac_se_ipl(rep[1]) : rep[1];
+    if (psmac_board_se) psmac_se_set_level(rep[1]); else if (__m68k_state) __m68k_state->INTF.IPL = rep[1];
     if (r) { r->status = rep[0]; r->ipl = rep[1]; r->flags = rep[2]; r->data = rep[4] | (rep[5] << 8) | (rep[6] << 16) | ((uint32_t)rep[7] << 24); }
     if (rep[0]) { bus_errors++; if (bus_errors <= 8) kprintf("[PSMAC] bridge reported bus error #%u on op %u size %u addr %08x (68k PC %08x)\n", bus_errors, op, size, addr, __m68k_state ? BE32((uint32_t)(uintptr_t)__m68k_state->PC) : 0); }
 }
@@ -563,6 +564,15 @@ void psmac_service_core(void)
                 }
             }
             { extern void psmac_slot_irq_report(void); psmac_slot_irq_report(); }
+            {   /* the interrupt watch (psmac.h), counted by the 68k's core in ProcessIRQ: a level taken
+                   again at once, or nested, is a level the JIT saw after its source had gone */
+                struct psmac_irqwatch *w = &psmac_irqwatch;
+                kprintf("[PSMAC]   interrupts taken: level 1 %u, 2 %u, 4 %u, other %u; taken again at once %u; nested %u bytes deep%s",
+                        w->taken[1], w->taken[2], w->taken[4], w->taken[3] + w->taken[5] + w->taken[6] + w->taken[7], w->again, w->deepest, w->deepest ? "" : "\n");
+                if (w->deepest) kprintf(" (at PC %08x)\n", w->deepest_pc);
+                for (int k = 0; k < 8; k++) w->taken[k] = 0;
+                w->again = 0; w->deepest = 0;
+            }
             psmac_se_report();
             { extern void alice_net_report(void); alice_net_report(); }
             { extern void bt_pi_report(void); bt_pi_report(); }
