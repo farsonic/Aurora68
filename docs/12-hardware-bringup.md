@@ -345,6 +345,26 @@ IIci with parity and complained. The board layer now always reads that bit as th
 Pi's memory has no parity), and the stand-in parameter RAM no longer carries the testbed IIci's old
 record of a failed parity test. Click Continue if it still appears once with an older kernel.
 
+### Nothing on the SCSI bus: no terminator
+
+*20 November 2026* (docs/08 item 70). With the BlueSCSI taken off and no internal disk, the se7 kernel with
+`mac.boot=image` found the image on the card ("startup disk: parameter RAM $78-$7B a5 a5 a5 a5, shown to
+the Mac as 00 00 09 80") and then sat at the question-mark disk, the 68k at PC $408076D8 from about five
+seconds on, 640,000 accesses a second to the 5380, the last at $5FF010: the SCSI Manager's arbitration,
+waiting for a bus that never became free. With the BlueSCSI attached SCSI had worked, because the BlueSCSI
+terminates the bus; with nothing on it the lines float and read asserted. The kernel now looks at the bus
+before the Mac starts (our own 5380 driving nothing, BSY and SEL read eight times) and, when they read
+asserted, answers the 5380 itself as an empty, terminated bus, so the ROM's scan ends in a moment and the
+image starts the Mac:
+
+    [PSMAC:SE] SCSI: the SE's SCSI bus has nothing on it, or no terminator: BSY and SEL read asserted with nobody arbitrating (bus status $fe, ...). The board layer answers the 5380 as an empty bus ...
+    [PSMAC:SE] SCSI: the SE's SCSI bus is terminated and free (bus status $00, ...): the SE's 5380 is used
+
+`mac.sescsi=real` uses the chip whatever the probe says, `mac.sescsi=empty` never uses it. With the
+BlueSCSI attached and `mac.boot=image` the image is the startup disk and the BlueSCSI mounts beside it
+(MAME). For the next boot: the `SCSI:` line, with and without the BlueSCSI; its bus status value tells
+which lines the SE's floating bus reads asserted.
+
 ### A disk image as the startup disk
 
 *20 November 2026* (docs/08 item 67). A disk image on the card (`mac.image=NAME`, a PiDisk volume on

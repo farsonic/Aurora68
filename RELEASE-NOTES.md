@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Fixed: an SE with nothing on its SCSI bus waited for ever at the question-mark disk.** With no
+  internal disk and nothing on the external port (the BlueSCSI taken off), the bus has no terminator,
+  its lines float, and the Mac's SCSI Manager waited for ever for the bus to become free, so a disk image
+  on the card never started the Mac. The kernel now looks at the bus before the Mac starts and, when it
+  floats, answers the SCSI chip as an empty bus: the scan ends at once and the image starts the Mac. The
+  log says which (`[PSMAC:SE] SCSI: ...`); `mac.sescsi=real` uses the chip all the same,
+  `mac.sescsi=empty` never. With the BlueSCSI attached nothing changes, and `mac.boot=image` starts from
+  the image with the BlueSCSI beside it. Replace kernel8.img.
 - **A disk image on the card as the SE's startup disk.** With no SCSI disk holding a System (or none
   at all), the SE now starts from a disk image on the card (`mac.image=NAME`), which until now only
   mounted beside a startup disk. The declaration ROM's PiDisk entry has a boot record, the code the

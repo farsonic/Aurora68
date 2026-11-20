@@ -2099,6 +2099,61 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      desktop at the start; without it the Finder and Startup Items come up with no alert, and again
      after a Restart through the remote control's testbed channel.
 
+70. **An SE with nothing on its SCSI bus (20 November).** The se7 kernel on the user's SE, with no internal
+   disk and the BlueSCSI taken off, `mac.boot=image` and a System 7.1 image on the card: the address lines
+   good, the image found, "startup disk: parameter RAM $78-$7B a5 a5 a5 a5, shown to the Mac as 00 00 09
+   80", and then the question-mark disk for good. No "[MAC] PiDisk boot" line. From about five seconds on
+   the heartbeats showed the 68k at PC $408076D8, some 640,000 accesses a second to the 5380, the last at
+   $5FF010.
+   - *Where it sits.* $408076BE-$40807712 is the SCSI Manager's arbitration. It sets the mode register to
+     ARBITRATE (`moveb #1,a3@(32)`) and waits for the ICR's "arbitration in progress" bit (`btst
+     #6,a3@(16)`, the read at $5FF010), for TimeSCSIDB x 256 reads ($1F4 on the SE: 128,000 reads, a fifth
+     of a second); on that timeout it returns 3. But once the bit is up it checks "lost arbitration" (ICR
+     bit 5, $408076F4) and a higher ID on the data lines ($408076FC), and either sends it back to the start
+     ($408076C2) with no timeout at all. The 5380 sets AIP when it has seen BSY and SEL false for a bus
+     settle delay, and LA when SEL is asserted while it arbitrates.
+   - *Why.* With the BlueSCSI attached SCSI had always worked: the BlueSCSI terminates the bus. With
+     nothing on it the SE's bus has no terminator, the lines float, and a floating SCSI line reads as
+     asserted (the bus is active low). Whether the real chip goes round the timeout or the retry without one
+     is not known from the log; the PC samples fit either, and the retry would explain "for ever". MAME's
+     SCSI bus is always clean, so the testbed had never shown it.
+   - *Reproduced* in MAME's `macse_ps` with `mac.sefloat=1`, a testbed option that makes the real 5380's
+     registers read as on a floating bus. With BSY and SEL alone read asserted (and AIP never set), the
+     ROM timed out its arbitrations and the image still started (the Finder at 37 s): not the hardware's
+     hang. With every line asserted and the ICR reading AIP and LA together, the bus seen free a moment
+     and lost the next, the hang is the hardware's: the boot record ran ("PiDisk boot: the card's image is
+     the startup disk"), and then the 68k sat in the retry at $408076F0-$408076F4, 45,000-56,000 5380
+     accesses every five seconds (the bridge's pace), and the image's first block was never read
+     (`mac.sescsi=real`, so the chip is used as it is). The hardware never logged the boot record; in the
+     testbed the ROM reaches it before the first long scan, on the SE it evidently did not, which the
+     different order and speed of the two may explain. Not followed further.
+   - *The fix* (psmac_board_se.c, `scsi_probe`). Before the 68k starts, after the address-line test, the
+     board layer clears our own 5380's ICR and mode register (it drives nothing then) and reads the
+     Current SCSI Bus Status (register 4) and the Bus and Status register (5) eight times, 250 us apart.
+     We are the only initiator and nobody has been selected, so a terminated bus, with devices or without,
+     reads BSY and SEL false; if every read has one of them asserted the bus is taken as floating, and the
+     5380's registers are answered by the kernel as an empty, terminated bus answers them (the solo board's
+     5380 with no target): arbitration wins at once, every selection times out (the ROM's 10 ms, item
+     50), the pseudo-DMA windows read $FF. One line says which:
+
+         [PSMAC:SE] SCSI: the SE's SCSI bus is terminated and free (bus status $00, bus and status $08): the SE's 5380 is used
+         [PSMAC:SE] SCSI: the SE's SCSI bus has nothing on it, or no terminator: BSY and SEL read asserted with nobody arbitrating (bus status $fe, bus and status $08). The board layer answers the 5380 as an empty bus: no SCSI disks this session (mac.sescsi=real to use the chip all the same)
+
+     and with the empty bus every report line adds "SCSI: the empty bus answered here, N selections (none
+     answered)". `mac.sescsi=auto` (the default) lets the probe decide, `real` always uses the SE's chip,
+     `empty` always the empty bus. The probe runs again after each RESET in auto mode (a dozen bus cycles,
+     logged only when the answer changes): the RESET resets the 5380 too. A disk plugged in while the SE is
+     on is not supported in any case.
+   - *Verified* in `macse_ps` (128 MiB, `mac.rtcsim=dead`, the System 7.1 image as `mac.disk0=`,
+     `mac.boot=image`): the floating bus with the probe deciding gave the second line above, the boot
+     record, the image's first block at 17.6 s and the Finder at 30.6 s, 15 selections answered "nobody"
+     by the end; a terminated bus with the System 7.1 disk on SCSI ID 0 (no `mac.sefloat`) gave the first
+     line, the SCSI disk's driver read at 17.9-19.5 s, the image's first block at 29-31 s and the Finder at
+     42 s, with the image as the startup disk: the ROM's boot driver ($B34, set at $408015DC) $FFCE, the
+     slot driver's -50, where SCSI ID 0's is -33. So `mac.boot=image` with a BlueSCSI attached starts from
+     the image, the BlueSCSI mounting beside it. Not yet on the hardware; the line to look for is the
+     `SCSI:` one, which names the bus status the probe read.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,
