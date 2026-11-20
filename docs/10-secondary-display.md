@@ -287,6 +287,25 @@ Extensions folder and PiColor in Startup Items, 16 MB, 32-bit addressing on in M
   Finder; PiColor in millions on the VideoCore's own picture (`tools/vcshot.py`,
   `docs/img/se-hdmi-1024x768-millions-picolor.png`).
 
+## On the hardware: the firmware's buffer, and sound (20 November 2026)
+Everything in "Two screens on the SE" ran on QEMU's model of the VideoCore, which shows any buffer the
+kernel is given. The real firmware had already shown one difference (docs/08 item 65): a 32-bit buffer
+asked for at the HDMI mode's own size stayed black on the user's monitor, while the boot buffer, where the
+splash and the first log lines are drawn, is on every Pi's screen. The HDMI screen of the two screens now
+takes that boot buffer when it already has the screen's size, which it has whenever `mac.screen=` matches
+the `hdmi_mode`, and converts into it at 16 bits: QuickDraw still draws in millions in the big region, the
+monitor shows RGB565. `mac.vcdepth=32` asks for a 32-bit buffer instead, by a sequence that now follows
+Circle's (physical and virtual size, depth, virtual offset, "alpha ignored", allocate, pitch) with the
+request handed to the firmware through the VideoCore's uncached alias, as Circle and Linux do; a message
+that only reads then puts the firmware's own view of the buffer into the log ("VideoCore read back"), so
+a black monitor can be told from a wrong buffer. docs/08 item 73.
+
+The monitor's loudspeakers play the Mac's sound now (docs/08 item 74): the ASC's two channels and a sound
+card of 16-bit stereo at 44.1 kHz, mixed on the Pi's core 1 and sent to the HDMI transmitter's audio
+FIFO by DMA. The card is a ring in slot 9's window that the Sound PiStorm extension makes the Sound
+Manager's output device. The user's steps for both are in docs/09, "Two screens and sound through HDMI
+on the real SE".
+
 ## Colour (17 November, 01:30)
 PiColor (`mac/picolor.s`) opens a colour window on the Pi's screen and paints twelve hues at full
 and half strength, the primaries and a sixteen-step grey ramp with RGBForeColor and PaintRect.

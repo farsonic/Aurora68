@@ -2283,6 +2283,133 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      Not verified: the real SE with its card, the ten-minute clock save (no run was that long), a clock
      set from Date & Time, and the solo board with the shared code (its path is unchanged).
 
+73. **The HDMI screen of the SE board, made ready for the hardware (20 November).** The two screens of
+   item 62 had run only on QEMU's model of the VideoCore, and item 65 had left one fact unexplained: on
+   the user's SE a 32-bit buffer asked for at the HDMI mode's own size stayed black while the firmware's
+   boot buffer was on the monitor. The two-screen path was gone through for what QEMU cannot show, against
+   the two references:
+   - *Upstream Emu68* (`init_display`, support_rpi.c) sends physical size, virtual size, depth 16,
+     "allocate buffer" (alignment 64) and "get pitch" in one property message, handing the firmware the
+     request's physical address. *Circle* (`CBcmFrameBuffer::Initialize`) sends physical size, virtual
+     size, depth, virtual offset (0, 0), "allocate buffer" and "get pitch", hands over the request through
+     the VideoCore's uncached alias (`BUS_ADDRESS`: 0xC0000000 on a Pi 2 and 3, as Linux's firmware driver
+     does), and writes its 32-bit pixels with an alpha byte of $FF.
+   - *What changed.* (1) Every property message, the kernel's and the WiFi module's, now goes through the
+     uncached alias (`mbox_send`, alice_net.c's `mbox_tag_`). A bare physical address is the VideoCore's
+     L1- and L2-cached view: the firmware may read a stale copy of the request or leave its answer in its
+     own cache for a while; item 65's "[WIFI] mailbox tag 10002: error -4 (code 0)", an answer whose code
+     word was still 0, looks exactly like that. QEMU models neither cache, and its GPU bus has the same
+     aliases, so the testbed cannot tell. The USB DMA (psmac_usb.c, psmac_usbnet.c) already used that alias.
+     (2) `psmac_vc_setup` follows Circle's order, adds the virtual offset and, for 32 bits, "set alpha mode:
+     ignored" (tag 0x48007; the kernel's pixels carry 0 in that byte, and whether the firmware ignores it
+     is otherwise `framebuffer_ignore_alpha` in config.txt; the solo board's 32-bit pictures on the user's
+     3B, item 49, say this firmware does, but the tag makes it certain). (3) After any set-up a message that
+     only reads (`psmac_vc_query`: physical and virtual size, depth, pitch, offset, pixel order) puts the
+     firmware's own view into the log: `[PSMAC:DISP] VideoCore read back: physical 1024x768, virtual
+     1024x768, depth 16, pitch 2048, offset 0,0, pixel order RGB: as asked`, or `NOT what was asked`.
+     (4) The HDMI screen of the two screens now uses the firmware's boot buffer whenever it already has the
+     screen's size, which is the usual case (`mac.screen=` equal to the `hdmi_mode`): it is the buffer the
+     splash and the first lines of the log prove on the monitor, and item 65 kept it for the log for the same
+     reason. It is 16 bits a pixel, so the conversion writes RGB565 (its path existed for QEMU's 16-bit-only
+     answer): the Mac draws in millions, the monitor shows 65,536 colours. `mac.vcdepth=32` asks for a
+     32-bit buffer by the new sequence instead, and a `mac.screen=` of another size gets a new buffer either
+     way. A Restart's RESET leaves the kept buffer alone, as for the log.
+   - *Testbed.* QEMU (solo board, 640 by 480): the read-back says "as asked" for the remade 32-bit buffer;
+     every mailbox call (board revision, clocks, power, the WiFi's) answered through the alias. MAME's SE
+     with `psmac-se-640x480.declrom` and `mac.screen=640x480`: "two screens ... VideoCore 640x480 x16 pitch
+     1280 ...: the firmware's own buffer, kept", read back depth 16.
+   - *Not verified on hardware:* whether the black 32-bit buffer of item 65 was the cached mailbox, the
+     alpha byte, or something else; the kept 16-bit buffer should not depend on the answer.
+
+74. **The Mac's sound in stereo on HDMI, and a sound card (20 November).** The user asked for the HDMI
+   monitor's loudspeakers: the Mac's sound in stereo, the SE's speaker playing as well, from a virtual
+   NuBus sound card, the mixing on core 1. Core 1, after the USB start of item 40, only waited in `wfe` for
+   the enumerations of item 66; core 0 is the 68k, core 2 the bus, core 3 the services.
+   - *Stage A: the ASC on HDMI* (`psmac_audio.c`, new). The ASC is answered in psmac_board_se.c on both
+     boards; every FIFO byte it accepts (`asc_write`) is now also copied into a ring per channel for core 1
+     (A left, B right, 16 KiB each), beside the SE speaker's rings of item 71. In wavetable mode (the
+     chime) core 1 synthesises the four voices from the chip's registers itself, as MAME's asc.cpp and the
+     speaker do. A polyphase filter turns the 22,257 Hz into the output's 48,000 (or 44,100, `mac.audiorate=`):
+     a windowed sinc, Blackman-Harris, cut off at 0.45 of the input rate, 32 taps by 128 phases in Q15,
+     written by `tools/mkfir.py` into `psmac_audio_fir.h` (the kernel keeps no floating point: the JIT owns
+     the FP registers). The Mac's FIFO is paced by the Pi's timer (`asc_drain`) and the output by its own
+     clock, so the ASC's ratio follows the rings' level, at most a quarter per cent either way, aiming at the
+     level the sound started with; a sound starts once the first burst is in. The volume is the ASC's
+     ($806 bits 5-7). The chime gets its 30000 steps back on any board whose sound the Pi plays
+     (`psmac_se_rom_fixup`).
+   - *Stage B: the sound card.* A block and a 32 KiB ring in slot 9's window (psmb.h `struct psmb_sound`,
+     $11000 and $12000, reachable in 24-bit mode too): 16-bit big-endian stereo at 44.1 kHz, the Mac
+     writing `head`, the Pi `tail`, its volume, state and counters beside them. On the Mac it is **Sound
+     PiStorm** (`mac/pisound.s`, an INIT of 2.6 KB in GNU as): a Sound Manager 3 output device component,
+     type 'sdev', subtype 'pist', registered at startup when the kernel says something plays the card,
+     and named in the Sound Manager's 'odev' preference so that every sound goes there. The shape of an
+     'sdev' was read from Sound Manager 3.0's own "Built-in" device in the testbed image (the disassembly
+     of its 'sift' resource, for the calls and their order, nothing copied): the dispatcher, the Apple Mixer
+     opened in InitOutputDevice with `OpenMixerSoundComponent` (_SoundDispatch $06140018) for the device's
+     format (here 'twos', two channels, 16 bits, 44100.0), every source call passed on with
+     `DelegateComponentCall`, GetInfo answering 'chan', 'chav', 'srat', 'srav', 'ssiz', 'ssav', 'hvol'
+     itself and the mixer the rest, the output device chosen by the preference 'odev' "Output Device"
+     (`SetSoundPreference`, $06340018: the Sound Manager's version, the ComponentDescription, the name).
+     A Time Manager task every 10 ms takes the mixer's samples with `SoundComponentGetSourceData` and keeps
+     the ring 2,816 frames (64 ms) ahead of the Pi; when the mixer has nothing the task stops and the Pi
+     plays out what is queued. The extension runs after the Sound Manager's (its name sorts after "Sound
+     Manager") and says in the Pi's log what it did; with a Sound Manager before 3.0 (System 7.1 without the
+     extension) it says so and leaves the ASC in charge, and when the kernel plays no card (`mac.audio=off`,
+     `mac.sndcard=off`, a DVI monitor) it points the preference back at the built-in device.
+   - *Output.* `mac.audio=hdmi` (the default): IEC 958 subframes into the HDMI block's MAI FIFO, by a DMA
+     channel looping over six blocks of 384 frames (two IEC 958 blocks, 8 ms each), channel from the
+     firmware's mask (GET_DMA_CHANNELS), DREQ 17. Set-up after Circle's HDMISoundBaseDevice and Linux's
+     vc4_hdmi (read, not copied): the MAI's divider from the HSM clock (CM_HSMDIV over PLLD), N = 128 fs /
+     1000 and CTS from the pixel clock (PLLH over 10) for the sink's clock recovery, the MAI format,
+     thresholds, channel map and configuration, the audio packet configuration, the audio InfoFrame in
+     packet RAM 4, the PHY's random generator on, the MAI enabled. It needs HDMI mode, not DVI: when the
+     packet RAM's enable bit is off the log says so and recommends `hdmi_drive=2`, now in the release's
+     config.txt. `mac.audio=jack`: the 3B's, 3B+'s and 3A+'s headphone socket, PWM0 and PWM1 on GPIO 40
+     (right) and 41 (left), ALT0, the PWM clock at 250 MHz from PLLD, one range per sample, DREQ 5, after
+     Circle's PWMSoundBaseDevice; refused on a Zero 2 W, whose GPIO 41 is its WiFi's power. Core 1 fills
+     every block behind the one the channel is on. In the testbed (`mac.audiodump=PATH`) the output goes
+     to a host file through semihosting, timed by the Pi's timer: QEMU has no HDMI audio, and its DMA model
+     ignores DREQ, so a looping channel would never end there.
+   - *Core 1.* `psmac_audio_start` runs before the USB start, so the chime, which comes inside the USB
+     start's second, is heard; the USB code's waits on core 1 feed the output (`delay_us`), and between
+     enumerations core 1 sleeps in `wfe` woken by core 3's `sev` and by the generic timer's event stream
+     (bit 13 of the counter, every 0.85 ms on a Pi 3), so it does not spin. Before an enumeration the ring is
+     filled with silence, so the DMA plays nothing stale while core 1 is away.
+   - *The SE's speaker plays the card too:* core 1 hands the speaker a mono feed at the ASC's rate (two
+     frames averaged), which `snd_next` mixes with the ASC's bytes.
+   - *Verified in the testbed* (`tools/audiocheck.py`, new: Hann-windowed spectra, standard library only):
+     solo board, QEMU, `mac.audiodump=` and `mac.audiotest=3`: 625 blocks of 384 frames every five seconds
+     (48,000 Hz); the kernel's test tone 440 Hz left and 660 Hz right with the channels apart by 86.5 and
+     87.2 dB; the chime (wavetable, 294,000 samples at 22,257 Hz under QEMU's slow VIA) with peaks at 261.3,
+     347.8 and 524.0 Hz and 695.5, 1043, 1565, 2086.5 Hz, item 71's chord. Sound PiStorm under Sound
+     Manager 3.0 in the System 7.1 image: "[MAC] PiSound: Sound Manager 3.0; the sound card ... registered
+     and chosen as the output device"; `mac.audiotest=card` gave 441 Hz on the left with 1323, 2205, 3087
+     Hz and 882 Hz on the right with 2646, 4410 Hz (square waves, odd harmonics), apart by 85.6 and 96.1 dB;
+     two System beeps (the Find dialog, a click outside it, through the remote's testbed channel) came
+     through the card, 27,648 frames, 440 Hz with 1320, 2200, 3080 Hz, the volume set by the Sound Manager
+     ('hvol' $006E006E), nothing through the ASC. With `mac.sndcard=off` the extension pointed the
+     preference back at the built-in device and the beeps went through the ASC to the output. MAME's SE
+     (`macse_ps`, 32 MiB, `psmac-se-640x480.declrom`, `mac.screen=640x480`, the same System with PiScrn,
+     Sound PiStorm and PiColor): the chime from the SE's speaker and the output together, PiScrn's
+     arrangement and restart, the Finder at 427 s with the HDMI screen in millions converted into the
+     firmware's kept 16-bit buffer (QEMU's VideoCore photograph shows the desktop pattern there), Sound
+     PiStorm registered, and two beeps through the card (33,630 frames, no underruns, 440 Hz with its odd
+     harmonics) that the SE's speaker played too (its report line: a third start, "speaker on").
+     The first SE run found one mistake: the speaker's feed from the card was fed silence whenever the
+     card's ring was empty, which kept the SE's speaker "on" and the service core writing its buffer
+     halves for ever, and slowed the whole boot; only frames really taken from the ring feed it now.
+     A run with `mac.audio=jack` under QEMU stopped core 1 at the first write to the PWM block, which
+     QEMU's raspi3b does not have: with semihosting (the testbed) the kernel now refuses both hardware
+     outputs and says so.
+   - *Seen on the way, not changed:* on the solo board under QEMU, Sound Manager 3.0's built-in device
+     goes on writing the ASC's FIFO after a beep, for as long as the run lasts (the beep's tone, smeared,
+     with gaps), with or without Sound PiStorm; through the card the same beeps end after a third of a
+     second. The MAME SE of item 71 played them a third of a second long through the ASC. The ASC model's
+     FIFO status or the missing ASC interrupt under QEMU's slower 68k is the likely place; to be looked at.
+   - *Not verified:* everything on hardware: the HDMI audio registers, N/CTS and the InfoFrame on a real
+     monitor, the DMA channel, the PWM jack, the PLL readings; the latency (about 50 ms of output ring plus
+     64 ms of card ring) as heard; a long sound's drift control on real clocks.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

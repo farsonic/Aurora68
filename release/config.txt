@@ -32,6 +32,8 @@ hdmi_mode=4                   # 640 x 480, 60 Hz. 9 = 800 x 600, 16 = 1024 x 768
 # ROM of that size (aurora68-1920x1200.declrom) in the container. Every size up to 1920 x 1200 offers
 # millions of colours in Monitors once 32-bit addressing is on; gpu_mem=64 below is enough for it.
 disable_overscan=1
+hdmi_drive=2                  # HDMI, not DVI: the Mac's sound goes to the monitor's loudspeakers (mac.audio=hdmi,
+                              # the default). The firmware otherwise picks DVI for many monitors, and DVI has no sound
 
 [pi3]
 gpu_mem=64

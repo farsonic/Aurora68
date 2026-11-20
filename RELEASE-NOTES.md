@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **The Mac's sound in stereo on the HDMI monitor.** The startup chime, alert sounds and everything the
+  Sound Manager plays come out of the HDMI monitor's loudspeakers (and, on the SE, out of its own speaker as
+  before). The Pi mixes them on a core of its own and sends them to the HDMI transmitter; `mac.audio=jack`
+  uses a Pi 3's headphone socket instead, `mac.audio=off` neither. config.txt needs `hdmi_drive=2` (the
+  new release config.txt has it): in the firmware's DVI mode there is no sound. Replace kernel8.img and
+  config.txt.
+- **A sound card for the Mac: 16-bit stereo at 44.1 kHz.** The new extension **Sound PiStorm** makes the
+  Sound Manager (3.0 or later: the Sound Manager extension on System 7.1) play into a sound card on slot 9
+  instead of the IIci's 8-bit sound chip; the Pi plays it on HDMI or the jack, and on the SE's speaker as
+  well. Copy it into the System Folder. With an older Sound Manager it says so in the log and the sound
+  stays on the chip, which reaches HDMI too. `mac.audiotest=card` plays a test tone on each side at start.
+- **Two screens on the SE, ready for the hardware.** The HDMI screen is drawn into the frame buffer the
+  Pi's firmware made at power-on when it has the screen's size (the one known to be on the monitor; 65,536
+  colours on the monitor, whatever depth the Mac uses); `mac.vcdepth=32` asks for a 32-bit one. Every
+  request to the firmware now goes the way Circle and Linux send it, and the log reads the frame buffer
+  back (`VideoCore read back: ...`). docs/09 has the steps for two screens and sound on the real SE.
+  Rebuild the container with `aurora68-se-WxH.declrom` for two screens.
 - **Sound from the SE's own speaker.** What the Mac plays now comes out of the SE: the IIci ROM's
   startup chime (back at its full length, about a second), System 7's alert sounds and everything else
   the Sound Manager plays. The SE has no sound chip; the kernel writes the samples into the SE's own

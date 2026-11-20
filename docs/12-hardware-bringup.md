@@ -413,6 +413,32 @@ parameter RAM saved` when it writes. A clock chip that answers is used as it is 
 alone. To try it: set the time in Date & Time, change the startup disk or AppleTalk, wait ten seconds,
 switch off, switch on.
 
+### Two screens and sound on HDMI, for the next boots
+
+*20 November 2026* (docs/08 items 73 and 74; the steps are in docs/09, "Two screens and sound through
+HDMI on the real SE"). The HDMI screen of the two screens is drawn into the firmware's own boot buffer when
+it has the screen's size (16 bits a pixel on the monitor), since that buffer is the one known to be visible;
+every frame-buffer request now reaches the firmware through the VideoCore's uncached alias, and the firmware's
+view of the buffer is read back into the log. The Mac's sound plays on the HDMI monitor in stereo, mixed on
+core 1, with the SE's speaker playing too: the ASC's two channels always, and a sound card of 16-bit stereo
+at 44.1 kHz when the **Sound PiStorm** extension finds Sound Manager 3.0. config.txt needs `hdmi_drive=2`
+(the release's has it): in DVI mode the transmitter sends no sound. `mac.audio=jack` uses the 3B's
+headphone socket instead. Lines to send back from the first boot with all of it:
+
+    [PSMAC:DISP] VideoCore read back: physical ..., depth ..., pitch ..., ...: as asked | NOT what was asked
+    [PSMAC:DISP] two screens: ... VideoCore 1024x768 x16 pitch 2048 at ...: the firmware's own buffer, kept
+    [AUDIO] HDMI: 48000 Hz stereo through DMA channel N; HSM clock ... Hz (MAI divider n/m), pixel clock ... Hz, N 6144 CTS ...
+    [AUDIO] HDMI: the transmitter sends no packets (packet RAM off): ... DVI ...      (if silent)
+    [MAC] PiScrn: ...
+    [MAC] PiSound: Sound Manager 3.0; the sound card (16-bit stereo, 44.1 kHz, played by the Pi) registered ...
+    [PSMAC]   audio: HDMI 48000 Hz, B blocks | ASC ... | card F frames, U underruns, queued Q, volume V | C clipped
+    [PSMAC:SE]   sound: ...
+    [AUDIO] DMA channel N error, debug ...                                           (should not appear)
+
+In the heartbeat's audio line, the blocks should grow by 625 every five seconds at 48 kHz (the DMA is
+running at the HDMI's pace), the card's underruns stay small next to its frames, and "(some filled late)"
+should not appear. Nothing of the HDMI audio, the DMA or the jack has run on hardware yet.
+
 ## What to have ready
 
 - The release zip's SD card layout as it is (0.2): `kernel8.img`, `config.txt`, `cmdline.txt`,

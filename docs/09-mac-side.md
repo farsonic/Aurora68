@@ -108,6 +108,58 @@ python3 tools/vcshot.py pi-screen.png              # the Pi's screen, during the
 lands on the Pi's; PiScreens (startup item or double-click) lists what QuickDraw made of the
 screens and the values a 'scrn' needs on another machine (docs/10).
 
+## Two screens and sound through HDMI on the real SE (20 November 2026)
+The SE's own screen plus the HDMI monitor as a second screen, with the Mac's sound in stereo on the
+monitor's loudspeakers (and still on the SE's speaker). docs/10 ("Two screens on the SE") and docs/08
+items 62, 73 and 74 are the record; these are the steps, starting from a card that already boots the
+SE with the log on HDMI (the container `aurora68.cpio` with `aurora68-512x342.declrom`, cmdline
+`enable_cache mac.board=se mac.console=hdmi bt=off wifi=off mac.image=sys710pi.image mac.boot=image`,
+config.txt with `hdmi_group=2` and `hdmi_mode=16`):
+
+1. **kernel8.img**: the new one.
+2. **The container**, rebuilt with the two-screen declaration ROM of the monitor's size in place of the
+   512x342 one (only one `-se-` file in it; 1024 by 768 here, as `hdmi_mode=16`):
+
+       python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom aurora68-se-1024x768.declrom \
+           cyfmac43430-sdio.bin brcmfmac43430-sdio.txt cyfmac43430-sdio.clm_blob BCM43430A1.hcd
+
+   Sizes built: 640x480, 800x600, 1024x768, 1280x720, 1280x1024, 1600x1200, 1920x1080, 1920x1200.
+3. **config.txt**: `hdmi_group=2`, the `hdmi_mode` of that size (16 = 1024 x 768, 9 = 800 x 600, 82 =
+   1920 x 1080, 69 = 1920 x 1200 reduced blanking), and **`hdmi_drive=2`**, which makes the firmware drive
+   the monitor as HDMI rather than DVI: DVI carries no sound. Keep `gpu_mem=64` (the release's [pi3]).
+4. **cmdline.txt**: take out `mac.console=hdmi` (it means one screen, the log on HDMI) and add the size:
+
+       enable_cache mac.board=se mac.screen=1024x768 bt=off wifi=off mac.image=sys710pi.image mac.boot=image
+
+   `mac.audio=hdmi` is the default; `mac.audio=jack` uses the Pi 3B's headphone socket instead,
+   `mac.audio=off` neither (the SE's speaker plays either way unless `mac.sesound=off`).
+5. **The Mac**: copy **PiScrn** and **Sound PiStorm** (Mac/PiScrn.bin and Mac/SoundPiStorm.bin, or the
+   Aurora68-Utilities disk) into the System Folder; System 7 puts both into Extensions. On a PC with
+   hfsutils, into the card's image directly:
+
+       hmount sys710pi.image
+       hcopy -m PiScrn.bin ":System Folder:Extensions:"
+       hcopy -m SoundPiStorm.bin ":System Folder:Extensions:"
+       humount
+
+   Sound PiStorm needs Sound Manager 3.0 or later (the "Sound Manager" extension in the Extensions
+   folder on System 7.1, built into 7.5); without it the Mac's sound still reaches HDMI through the
+   ASC, in 8 bits.
+6. **The first start**: PiScrn finds two screens with no arrangement, writes one (the SE's screen main,
+   HDMI to its right, top-aligned) and restarts the Mac once. From the second start both screens come up.
+7. **Monitors** (control panel): drag the two monitors where they stand on the desk, move the menu bar to
+   either, and choose the HDMI screen's depth (Millions needs 32-bit addressing, which the kernel switches
+   on with more than 8 MB). The **Sound** control panel's volume sets the card's volume.
+
+Lines in the log that say it worked: `declaration ROM: two cards, the SE's screen in slot 9 (main) and the
+HDMI screen in slot $A`, `[PSMAC:DISP] VideoCore read back: physical 1024x768, ... : as asked`, `[PSMAC:DISP]
+two screens: ... the firmware's own buffer, kept`, `[AUDIO] HDMI: 48000 Hz stereo through DMA channel N; HSM
+clock ..., pixel clock ..., N 6144 CTS ...`, `[MAC] PiScrn: ...`, `[MAC] PiSound: Sound Manager 3.0; the sound
+card ... registered and chosen as the output device`, and in every heartbeat `[PSMAC]   audio: HDMI 48000 Hz,
+... | ASC ... | card ... frames, ... underruns ...`. If HDMI is silent and the log says `the transmitter
+sends no packets ... DVI`, `hdmi_drive=2` is missing or the monitor declined; `mac.audiotest=card` plays a
+test tone on each side at start (441 Hz left, 882 Hz right).
+
 ## The WiFi in the testbed: a radio that exists only in software
 QEMU's raspi3b has no WiFi chip (no SDIO function, no firmware to load), so the real driver in
 `alice_net.c` can only report "off" there, and until 16 November the WiFi unit, PiWiFi and the
