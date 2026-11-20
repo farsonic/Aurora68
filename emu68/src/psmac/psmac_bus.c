@@ -288,6 +288,7 @@ static void psmac_read_options(void)
     { extern void psmac_console_option(int); psmac_console_option(psmac_hdmi_mode == 2); }   /* the log on HDMI for the whole run */
     if ((tok = find_token(args, "mac.dbfslow="))) { tok += 12; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); psmac_dbf_slow = n > 8 ? 8 : n; }
     if ((tok = find_token(args, "mac.pcwatch="))) { tok += 12; uint32_t a = 0; while (1) { char c = *tok; uint32_t d; if (c >= '0' && c <= '9') d = c - '0'; else if (c >= 'a' && c <= 'f') d = c - 'a' + 10; else if (c >= 'A' && c <= 'F') d = c - 'A' + 10; else if (c == 'x' || c == 'X') { tok++; continue; } else break; a = a * 16 + d; tok++; } pcwatch = a; }
+    if ((tok = find_token(args, "mac.watchtraps="))) { extern int psmac_watch_traps; psmac_watch_traps = tok[15] == '1'; }   /* report odd stores into the trap tables (psmac_mmu.c) */
     if ((tok = find_token(args, "mac.pctrail="))) { tok += 12; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); pctrail_at = n; }
     if ((tok = find_token(args, "mac.peek="))) {        /* mac.peek=HEXADDR,LEN: dump Mac memory at each heartbeat (debugging) */
         tok += 9; uint32_t a = 0, n = 0;
@@ -671,15 +672,21 @@ void psmac_io_write(uint32_t addr, int size, uint32_t data, int posted)
     xfer(PSMAC_OP_WRITE, size, posted ? PSMAC_FLAG_POSTED : 0, addr, data, NULL);
 }
 /* the wire itself, for the board layer: an address already in the SE's own terms. From the JIT
-   core it goes through the service core's slot; from the service core it is direct. */
+   core it goes through the service core's slot; from the service core it is direct.
+   mac.selinefault= (psmac_board_se.c) puts an address-line fault on it for the SE's RAM, so the board
+   layer's address-line test can be tried in the testbed. */
+uint32_t psmac_se_wire_addr(uint32_t addr);
+static inline uint32_t wire_addr(uint32_t addr) { return psmac_se_wire_addr(addr); }
 uint32_t psmac_wire_read(uint32_t addr, int size)
 {
     struct psmac_reply r;
+    addr = wire_addr(addr);
     if (service_running && on_service_core()) bridge_xfer(PSMAC_OP_READ, size, 0, addr, 0, &r); else xfer(PSMAC_OP_READ, size, 0, addr, 0, &r);
     return r.data;
 }
 void psmac_wire_write(uint32_t addr, int size, uint32_t data, int posted)
 {
+    addr = wire_addr(addr);
     if (service_running && on_service_core()) bridge_xfer(PSMAC_OP_WRITE, size, posted ? PSMAC_FLAG_POSTED : 0, addr, data, NULL);
     else xfer(PSMAC_OP_WRITE, size, posted ? PSMAC_FLAG_POSTED : 0, addr, data, NULL);
 }
@@ -703,8 +710,9 @@ int psmac_bus_write(uint64_t value, uint64_t value2, int size, uint64_t far)
       if (!valid) return 1;   /* unmapped logical page: write ignored (would be a bus error) */
       far = phys; }
 
-    if ((far & ~0xfffull) == 0x50000) {
-        /* watched low-memory page: plain RAM write, report suspicious stores into the OS trap table */
+    extern int psmac_watch_traps;
+    if (psmac_watch_traps && (far & ~0xfffull) == 0x50000) {
+        /* watched low-memory page (mac.watchtraps=1, psmac_mmu.c): plain RAM write, report suspicious stores into the OS trap table */
         static int reports;
         uint8_t *p = (uint8_t *)(KERNEL_ALIAS + ram_phys + far);
         uint32_t off = far & 0xfff, top = (uint32_t)(value >> 24) & 0xff;
@@ -1228,7 +1236,14 @@ void ps_reset_state_machine(void) {}
 void ps_pulse_reset(void) { struct psmac_reply r; xfer(PSMAC_OP_RESET_ACK, 0, 0, 0, 0, &r); }
 /* The 68k's RESET instruction (the ROM's first act on every boot, cold or after Restart): the
    motherboard's reset line, and the virtual card's (alice_psmac.c: its interrupt sources drop) */
-void ps_send_reset(void) { extern void psmac_card_reset(void); psmac_card_reset(); ps_pulse_reset(); }
+void ps_send_reset(void)
+{
+    extern void psmac_card_reset(void), psmac_startup_reset(void), psmac_se_after_reset(void);
+    psmac_card_reset();
+    psmac_startup_reset();                 /* the startup disk's view of parameter RAM (psmac_mbox.c) */
+    ps_pulse_reset();
+    psmac_se_after_reset();                /* the SE board: its VIA reset, its overlay back (psmac_board_se.c) */
+}
 void ps_set_control(unsigned int v) { (void)v; }
 void ps_clr_control(unsigned int v) { (void)v; }
 static inline unsigned effective_ipl(void) { unsigned ipl = last_ipl; if (psmac_board_se) return psmac_se_ipl(ipl); if (slot_irq_pending() && ipl < 2) ipl = 2; return ipl; }

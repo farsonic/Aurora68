@@ -247,6 +247,8 @@ on the MAME SE and QEMU's model of the VideoCore.
 
 ## The first boot on the SE
 
+The photographs of these boots, in the order they happened, are in `docs/14-the-se-in-pictures.md`.
+
 *20 November 2026* (docs/08 item 63 has the record). The first boot of `mac.board=se` in the user's
 SE died within a second, in the IIci ROM's MMU table builder, before anything reached the SE's
 screen; a second boot with `mac.ram=8` got further and stalled with no video. Neither was the
@@ -300,7 +302,71 @@ screen should show the grey desktop and the floppy with the question mark. A car
 the startup disk yet (docs/08 item 67: the declaration ROM has no boot record for PiDisk), so the
 SE needs a startup disk of its own, a SCSI disk (or a BlueSCSI) with a System, or a System floppy;
 the card's images (`mac.image=NAME`) then mount beside it. Lines to look for: the `clock chip:` one,
-`[MAC] PiVideo: open`, and the heartbeats' `display:` line with `flags 3`.
+`[MAC] PiVideo: open`, and the heartbeats' `display:` line with `flags 3`. (Superseded the same day:
+see "A disk image as the startup disk", below.)
+
+### Stripes over the top hundred rows: a solder bridge
+
+*20 November 2026* (docs/08 item 68). The next boots reached the question-mark disk, then, with a
+BlueSCSI attached, the happy Mac and the Finder, the mouse working; but the top hundred or so rows
+of the SE's screen stayed eight vertical bands of noise that never changed, whatever the Mac drew
+there (the menu bar never appeared), across screens and reboots. The photographs said where to look:
+the bands ended at row 100, which starts at $3FC000. Every row above it has address line A14 = 0
+and A15 = 1; every row below, and every address of the SE's chips the kernel uses (VIA, SCC, SCSI,
+IWM), has A14 = A15 = 1. Two lines that can only agree would break those rows and nothing else. The
+user found a sliver of solder joining pins 22 and 23 of U2 (A14 and A15) on the hand-built PiStorm
+(Rev B, 74LVC16373A latches); with it gone the screen is clean over its full height.
+
+The kernel now tests the address lines into the SE's memory before the Mac starts, each line alone
+(as 0 and as 1) and each pair of lines (all four combinations), and names a fault with the socket
+pins to look at:
+
+    [PSMAC:SE] address lines A1-A21 good: each line read back as 0 and as 1 ...
+    [PSMAC:SE] address line A14 does not reach the SE as both 0 and 1: ... Check the PiStorm's A14: the 68000 socket's pin 42 ...
+    [PSMAC:SE] address lines A14 and A15 are joined: ... Look for a solder bridge or a short between them: the 68000 socket's pins 42 and 43 ...
+
+Data lines show themselves sooner (the VIA, the SCC and the SCSI chip would not work); a bad address
+line can hide behind a working Mac, as this one did.
+
+### Speedometer on the real SE
+
+*20 November 2026.* With System 7.1 started from the BlueSCSI and 128 MiB, Speedometer 4 on the SE
+gave a performance rating of 90.2 (a Macintosh Classic is 1.0): CPU 41.2, graphics 83.3, math 486.2,
+disk 0.82, and an average of 276 for its benchmark mix. The disk figure is the SE's own 5380 and the
+BlueSCSI behind it, which the Pi drives through the 68000 socket a byte at a time.
+
+### "Parity has been disabled"
+
+*20 November 2026* (docs/08 item 69). Booting from the BlueSCSI the Mac once greeted the user with
+"Parity has been disabled because the parity circuitry is not functioning". The IIci ROM tells a
+plain IIci from an IIci with parity by one bit of the VIA's port A, which on an SE is the floppy
+drive select and reads whatever its pin is left at; when it read 1 the System took the SE for an
+IIci with parity and complained. The board layer now always reads that bit as the plain IIci's (the
+Pi's memory has no parity), and the stand-in parameter RAM no longer carries the testbed IIci's old
+record of a failed parity test. Click Continue if it still appears once with an older kernel.
+
+### A disk image as the startup disk
+
+*20 November 2026* (docs/08 item 67). A disk image on the card (`mac.image=NAME`, a PiDisk volume on
+the SE) is now a startup disk: when no SCSI disk with a System answers, the SE starts from the image.
+The declaration ROM's PiDisk entry has gained a boot record, the code the IIci ROM runs to start from
+a NuBus card; the kernel shows the Mac slot 9 as its default startup device until that code has run,
+and tells it which disk to try first (`mac.boot=`):
+
+- `auto` (the default): the SCSI disk the parameter RAM names (ID 0, the BlueSCSI's usual ID, unless
+  the Startup Disk control panel chose another), then the card's image, then the other SCSI disks;
+- `image`: the card's image first, then the SCSI disks;
+- `scsi`: the parameter RAM as it is; the image starts the Mac only if Startup Disk chose it.
+
+A floppy with a System always comes first, as on any Mac. The image must be a startup disk in its own
+right: a System Folder the Mac has started from (with its boot blocks); an Apple-partitioned `.hda`
+is served as its HFS partition. It needs the new declaration ROM in the container (rebuild it) and the
+new kernel8.img. Lines to look for:
+
+    [PSMAC:MBOX] startup disk: parameter RAM $78-$7B ..., shown to the Mac as 00 00 09 80, slot 9's PiDisk, until its boot record asks (mac.boot=auto)
+    [PSMAC:MBOX] startup disk: the SCSI disk the parameter RAM names first, then the card's image (mac.boot=auto): SCSI ID 0, refNum -33; 1 image(s) on the card
+    [MAC] PiDisk boot: the SCSI disk the parameter RAM names first, the card's image after it
+    [BOOT] t=...s PiDisk: first block read (device 0, block 0)
 
 ## What to have ready
 

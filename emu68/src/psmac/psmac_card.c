@@ -1107,6 +1107,8 @@ void psmac_card_need(const void *p, uint32_t len)
         return;
     }
 }
+/* PiDisk's boot record asks for the startup disk only once the card has been looked at (psmac_mbox.c) */
+int psmac_card_scanned(void) { return __atomic_load_n(&scan_done, __ATOMIC_ACQUIRE); }
 /* the solo board's first SCSI selection waits for the card's first look (a few tens of ms after
    the 68k starts), so a disk image on the card is there when the ROM looks for a startup disk */
 void psmac_card_scan_wait(void)

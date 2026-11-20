@@ -43,6 +43,11 @@ void mmu_low4g_clone(const uint64_t from[4]);
 #define RO_ATTR  (MMU_ACCESS | MMU_ISHARE | MMU_ALLOW_EL0 | MMU_READ_ONLY | MMU_ATTR_CACHED)
 #define NSETS    6
 #define WATCH_PHYS_PAGE 0x50000u   /* debug: Mac physical page holding low memory (trap tables); mapped RO so writes trap */
+/* mac.watchtraps=1 (psmac_bus.c): the watch above. Off by default since 20 November 2026: every
+   write to that page (the trap tables, and all of page 0's low-memory globals, Ticks among them)
+   was a data abort and a store by hand, and on the SE's HDMI log the ROM's own trap table set-up
+   (PC 0x4080C9DC) printed forty reports and their stacks at every start. */
+int psmac_watch_traps;
 
 static struct { uint32_t tc, tt0, tt1, srp_hi, srp_lo, crp_hi, crp_lo; uint16_t mmusr; } mmu;
 static uintptr_t ram_phys, rom_phys; static uint32_t ram_size;
@@ -127,7 +132,7 @@ static inline uintptr_t pi_phys(uint32_t p)
    frame buffer and the (debug) watched low-memory page */
 static inline int ro_phys(uint32_t p)
 {
-    return (p < PSMAC_FB_SIZE) || (p >= 0x40000000u && p < 0x50000000u) || (p == WATCH_PHYS_PAGE) ||
+    return (p < PSMAC_FB_SIZE) || (p >= 0x40000000u && p < 0x50000000u) || (psmac_watch_traps && p == WATCH_PHYS_PAGE) ||
            (p >= PSMB_DECLROM_PHYS && p < PSMB_DECLROM_PHYS + PSMB_DECLROM_SIZE) ||
            (slot2_rom_phys && p >= PSMB_DECLROM2_PHYS && p < PSMB_DECLROM2_PHYS + PSMB_DECLROM2_SIZE);
 }

@@ -1,6 +1,7 @@
 # Mac-side pieces for PiStorm-SE: 68k assembly (GNU binutils for m68k) packaged with tools/mac/*.py.
 #   make            builds the drivers, the declaration ROM, the PiDisk extension and the PiNet, PiWiFi, PiBlue, PiStatus, PiPing and PiLog applications
-#   The declaration ROM (build/psmac.declrom) carries the .PiDisk, .Network_EtherNet_PiStorm and .PiInput drivers.
+#   The declaration ROM (build/psmac.declrom) carries the .PiDisk, .Network_EtherNet_PiStorm and .PiInput drivers,
+#   and PiDisk's boot record (pidisk_boot.s), which lets an image on the card be the startup disk.
 #   make check     compares the struct offsets in enet.s with emu68/src/alice/alice_net.h
 #   make install IMG=path/to/volume.img [PART=n]   copies the INIT into the System Folder of an HFS image
 AS      = m68k-linux-gnu-as -m68020
@@ -64,19 +65,19 @@ $(B)/enet_wifi.o: enet.s
 	@mkdir -p $(B)
 	$(AS) --defsym WIFI=1 -o $@ $<
 
-$(B)/psmac.declrom: $(B)/pidisk.bin.raw $(B)/enet.bin.raw $(B)/enet_wifi.bin.raw $(B)/piinput.bin.raw $(B)/pivideo.bin.raw ../tools/mac/mkdeclrom.py ../tools/mac/declrom.py
-	$(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --enet $(B)/enet.bin.raw --wifi $(B)/enet_wifi.bin.raw --input $(B)/piinput.bin.raw --video $(B)/pivideo.bin.raw -o $@
+$(B)/psmac.declrom: $(B)/pidisk.bin.raw $(B)/pidisk_boot.bin.raw $(B)/enet.bin.raw $(B)/enet_wifi.bin.raw $(B)/piinput.bin.raw $(B)/pivideo.bin.raw ../tools/mac/mkdeclrom.py ../tools/mac/declrom.py
+	$(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --boot $(B)/pidisk_boot.bin.raw --enet $(B)/enet.bin.raw --wifi $(B)/enet_wifi.bin.raw --input $(B)/piinput.bin.raw --video $(B)/pivideo.bin.raw -o $@
 
 # the same card for other screen sizes: the kernel takes psmac-WxH.declrom from the container when the
 # second display has that size (mac.screen=WxH, or the VideoCore's own size)
 RESES = 512x342 800x600 1024x768 1280x720 1280x1024 1920x1080 1920x1200
-declrom-sizes: $(B)/pidisk.bin.raw $(B)/enet.bin.raw $(B)/enet_wifi.bin.raw $(B)/piinput.bin.raw $(B)/pivideo.bin.raw
-	for r in $(RESES); do $(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --enet $(B)/enet.bin.raw --wifi $(B)/enet_wifi.bin.raw --input $(B)/piinput.bin.raw --video $(B)/pivideo.bin.raw --res $$r -o $(B)/psmac-$$r.declrom; done
+declrom-sizes: $(B)/pidisk.bin.raw $(B)/pidisk_boot.bin.raw $(B)/enet.bin.raw $(B)/enet_wifi.bin.raw $(B)/piinput.bin.raw $(B)/pivideo.bin.raw
+	for r in $(RESES); do $(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --boot $(B)/pidisk_boot.bin.raw --enet $(B)/enet.bin.raw --wifi $(B)/enet_wifi.bin.raw --input $(B)/piinput.bin.raw --video $(B)/pivideo.bin.raw --res $$r -o $(B)/psmac-$$r.declrom; done
 # and each size once more with the WiFi as the only network card, like psmac_wifi_video.declrom below: a
 # Pi 3 has no driven wired Ethernet, and MacTCP and Riptide take the first Ethernet-type sResource they
 # find. The size stays at the end of the name (psmac-wifi-1920x1080.declrom), where the kernel reads it
-declrom-wifi-sizes: $(B)/pidisk.bin.raw $(B)/enet_wifi.bin.raw $(B)/piinput.bin.raw $(B)/pivideo.bin.raw
-	for r in $(RESES); do $(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --wifi $(B)/enet_wifi.bin.raw --input $(B)/piinput.bin.raw --video $(B)/pivideo.bin.raw --res $$r -o $(B)/psmac-wifi-$$r.declrom; done
+declrom-wifi-sizes: $(B)/pidisk.bin.raw $(B)/pidisk_boot.bin.raw $(B)/enet_wifi.bin.raw $(B)/piinput.bin.raw $(B)/pivideo.bin.raw
+	for r in $(RESES); do $(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --boot $(B)/pidisk_boot.bin.raw --wifi $(B)/enet_wifi.bin.raw --input $(B)/piinput.bin.raw --video $(B)/pivideo.bin.raw --res $$r -o $(B)/psmac-wifi-$$r.declrom; done
 
 # The SE board's card with two screens (docs/10, "Two screens on the SE"): the SE's own 512x342 one-bit
 # screen and an HDMI screen of each size, named psmac-se-WxH.declrom (the kernel takes the one for the
@@ -86,17 +87,17 @@ SE_RESES = 640x480 800x600 1024x768 1280x720 1280x1024 1600x1200 1920x1080 1920x
 $(B)/pivideo2.o: pivideo.s
 	@mkdir -p $(B)
 	$(AS) --defsym SCREEN2=1 -o $@ $<
-declrom-se-sizes: $(B)/pidisk.bin.raw $(B)/enet.bin.raw $(B)/enet_wifi.bin.raw $(B)/piinput.bin.raw $(B)/pivideo.bin.raw $(B)/pivideo2.bin.raw
-	for r in $(SE_RESES); do $(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --enet $(B)/enet.bin.raw --wifi $(B)/enet_wifi.bin.raw --input $(B)/piinput.bin.raw --se --video $(B)/pivideo.bin.raw --video2 $(B)/pivideo2.bin.raw --res $$r -o $(B)/psmac-se-$$r.declrom; done
+declrom-se-sizes: $(B)/pidisk.bin.raw $(B)/pidisk_boot.bin.raw $(B)/enet.bin.raw $(B)/enet_wifi.bin.raw $(B)/piinput.bin.raw $(B)/pivideo.bin.raw $(B)/pivideo2.bin.raw
+	for r in $(SE_RESES); do $(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --boot $(B)/pidisk_boot.bin.raw --enet $(B)/enet.bin.raw --wifi $(B)/enet_wifi.bin.raw --input $(B)/piinput.bin.raw --se --video $(B)/pivideo.bin.raw --video2 $(B)/pivideo2.bin.raw --res $$r -o $(B)/psmac-se-$$r.declrom; done
 
 # the same card with the WiFi as its only network sResource: MacTCP and EtherTalk take the first
 # Ethernet-type sResource they find, so this is how the WiFi path is tested in the testbed
 # the network is the WiFi only (a Pi with no wired Ethernet, the bench): MacTCP's Ethernet link layer takes
 # the first network card it finds, so the wired sResource must be absent for it to take the WiFi (docs/09)
-$(B)/psmac_wifi_video.declrom: $(B)/pidisk.bin.raw $(B)/enet_wifi.bin.raw $(B)/piinput.bin.raw $(B)/pivideo.bin.raw ../tools/mac/mkdeclrom.py ../tools/mac/declrom.py
-	$(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --wifi $(B)/enet_wifi.bin.raw --input $(B)/piinput.bin.raw --video $(B)/pivideo.bin.raw -o $@
-$(B)/psmac_wifi.declrom: $(B)/pidisk.bin.raw $(B)/enet_wifi.bin.raw $(B)/piinput.bin.raw ../tools/mac/mkdeclrom.py ../tools/mac/declrom.py
-	$(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --wifi $(B)/enet_wifi.bin.raw --input $(B)/piinput.bin.raw -o $@
+$(B)/psmac_wifi_video.declrom: $(B)/pidisk.bin.raw $(B)/pidisk_boot.bin.raw $(B)/enet_wifi.bin.raw $(B)/piinput.bin.raw $(B)/pivideo.bin.raw ../tools/mac/mkdeclrom.py ../tools/mac/declrom.py
+	$(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --boot $(B)/pidisk_boot.bin.raw --wifi $(B)/enet_wifi.bin.raw --input $(B)/piinput.bin.raw --video $(B)/pivideo.bin.raw -o $@
+$(B)/psmac_wifi.declrom: $(B)/pidisk.bin.raw $(B)/pidisk_boot.bin.raw $(B)/enet_wifi.bin.raw $(B)/piinput.bin.raw ../tools/mac/mkdeclrom.py ../tools/mac/declrom.py
+	$(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --boot $(B)/pidisk_boot.bin.raw --wifi $(B)/enet_wifi.bin.raw --input $(B)/piinput.bin.raw -o $@
 
 # compare the struct offsets in enet.s with the header the kernel compiles (tools/mac/an_offsets.c)
 check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alice/alice_net.h

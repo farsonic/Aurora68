@@ -207,6 +207,10 @@ struct psmb_cmd {
 #define PSMB_BLK_FLUSH       3
 #define PSMB_BLK_INFO        4      /* refresh struct psmb_blkdev table */
 #define PSMB_BLK_EJECT       5
+#define PSMB_BLK_BOOT        6      /* PiDisk's boot record (mac/pidisk_boot.s), as the Start Manager looks for a startup
+                                       disk: result 0 = the card's image first, else the driver reference number of the
+                                       SCSI disk to try first (psmac_mbox.c, mac.boot=); status PSMB_E_BUSY while the
+                                       card has not yet been looked at for images */
 
 struct psmb_blkdev {           /* 64 bytes, PSMB_OFF_BLKDEV + idx*64 */
     uint32_t blocks;           /* capacity in 512-byte blocks, 0 = no device */

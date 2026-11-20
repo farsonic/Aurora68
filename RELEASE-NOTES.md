@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **A disk image on the card as the SE's startup disk.** With no SCSI disk holding a System (or none
+  at all), the SE now starts from a disk image on the card (`mac.image=NAME`), which until now only
+  mounted beside a startup disk. The declaration ROM's PiDisk entry has a boot record, the code the
+  IIci ROM runs to start from a NuBus card, and the kernel points the Mac's default startup device at
+  it for as long as the start needs. `mac.boot=auto` (the default) tries the SCSI disk the parameter
+  RAM names first (ID 0 unless Startup Disk chose another), then the image; `mac.boot=image` the image
+  first; `mac.boot=scsi` leaves it to the parameter RAM. Works on the solo board too. The image must
+  be a startup disk (a System Folder with its boot blocks; a partitioned `.hda` is fine). Replace
+  kernel8.img and rebuild the container with the new declaration ROM.
+- **Address lines tested at every start (SE board).** The kernel writes and reads the SE's memory
+  with each address line alone and each pair of lines before the Mac starts, and names a stuck,
+  missing or bridged line with the 68000 socket's pins: the stripes over the top hundred rows of the
+  user's SE were A14 and A15 bridged by solder at the PiStorm's address latch.
+- **Fixed: "Parity has been disabled ..." at startup on the SE.** One bit of the VIA, the floppy drive
+  select on an SE, could make the IIci ROM take the SE for an IIci with parity. Also: after every
+  RESET (each Restart) the SE's RAM is put back at address 0, and the trap-table debugging watch,
+  which put forty lines on the HDMI log at every start and a trap on every low-memory write, is off
+  unless `mac.watchtraps=1`.
 - **Two screens on the SE: its own and HDMI.** On `mac.board=se` the Pi's HDMI output can now be a
   second screen beside the SE's 512 x 342, any size up to 1920 x 1200 and any depth up to millions of
   colours (with 32-bit addressing), the SE's screen the main one: move windows across, set the HDMI

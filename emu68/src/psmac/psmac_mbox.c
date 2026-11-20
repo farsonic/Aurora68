@@ -62,9 +62,10 @@ static int mac_copy(uint32_t logical, void *dst, const void *src, uint32_t len, 
 }
 
 /* ---- block devices ---- */
-struct blkdev { int64_t fd; uint32_t blocks; int writable; int ram; uint8_t *rambase; char name[48]; };
+struct blkdev { int64_t fd; uint32_t blocks, first; int writable; int ram; uint8_t *rambase; char name[48]; };   /* first: a host file's partition, in blocks */
 static struct blkdev bdev[PSMB_MAX_BLKDEV]; static int nbdev;
 static uint8_t sector_buf[64 * 1024] __attribute__((aligned(16)));
+static int apm_hfs(const uint8_t *d, uint32_t have, uint32_t blocks, uint32_t *start, uint32_t *count);
 
 static void blk_publish(void)
 {
@@ -85,32 +86,42 @@ static void blk_add_file(const char *path, int writable)
     if (fd < 0) { kprintf("[PSMAC:MBOX] cannot open block image %s\n", path); return; }
     int64_t len = psmac_sh_flen(fd);
     struct blkdev *b = &bdev[nbdev];
-    b->fd = fd; b->blocks = (uint32_t)(len / 512); b->writable = writable; b->ram = 0;
+    b->fd = fd; b->blocks = (uint32_t)(len / 512); b->writable = writable; b->ram = 0; b->first = 0;
     const char *base = path; for (const char *s = path; *s; s++) if (*s == '/') base = s + 1;
     int k = 0; while (base[k] && k < 47) { b->name[k] = base[k]; k++; } b->name[k] = 0;
     kprintf("[PSMAC:MBOX] block%d: %s, %u blocks (%u MiB)%s\n", nbdev, path, b->blocks, b->blocks / 2048, writable ? "" : " read-only");
+    /* a partitioned image as its HFS partition, as the card's images are served (until 20 November
+       the testbed served the whole file, map and all, which the File Manager cannot mount) */
+    uint32_t have = b->blocks < 64 ? b->blocks : 64, st, ct;
+    if (have && psmac_sh_seek(fd, 0) >= 0 && psmac_sh_read(fd, sector_buf, have * 512) && apm_hfs(sector_buf, have, b->blocks, &st, &ct)) { b->first = st; b->blocks = ct; }
     nbdev++;
 }
 /* An image with an Apple partition map (a driver descriptor 'ER' in block 0, 'PM' entries from block
-   1) is served as its first Apple_HFS partition, which is what the File Manager mounts; a bare HFS
-   image as it is. PiDisk is one volume per device. */
-static void hfs_partition(uint8_t **data, uint32_t *blocks)
+   1) is served as its first Apple_HFS partition, which is what the File Manager mounts and where the
+   Start Manager looks for boot blocks; a bare HFS image as it is. PiDisk is one volume per device.
+   d holds the image's first blocks (have of them); returns 1 with the partition in *start, *count. */
+static int apm_hfs(const uint8_t *d, uint32_t have, uint32_t blocks, uint32_t *start, uint32_t *count)
 {
-    const uint8_t *d = *data;
-    { extern void psmac_card_need(const void *, uint32_t); psmac_card_need(d, (*blocks < 64 ? *blocks : 64) * 512u); }   /* an image still coming in from the card: its map first */
-    if (*blocks < 3 || d[0] != 'E' || d[1] != 'R' || d[512] != 'P' || d[513] != 'M') return;
+    if (have < 3 || d[0] != 'E' || d[1] != 'R' || d[512] != 'P' || d[513] != 'M') return 0;
     uint32_t n = (uint32_t)d[516] << 24 | d[517] << 16 | d[518] << 8 | d[519];
-    for (uint32_t i = 1; i <= n && i < 64 && i < *blocks; i++) {
+    for (uint32_t i = 1; i <= n && i < have; i++) {
         const uint8_t *e = d + 512 * i;
         if (e[0] != 'P' || e[1] != 'M') break;
-        uint32_t start = (uint32_t)e[8] << 24 | e[9] << 16 | e[10] << 8 | e[11], count = (uint32_t)e[12] << 24 | e[13] << 16 | e[14] << 8 | e[15];
+        uint32_t st = (uint32_t)e[8] << 24 | e[9] << 16 | e[10] << 8 | e[11], ct = (uint32_t)e[12] << 24 | e[13] << 16 | e[14] << 8 | e[15];
         const char *type = (const char *)e + 48, *want = "Apple_HFS";
         int k = 0; while (want[k] && type[k] == want[k]) k++;
-        if (want[k] || !count || start + count > *blocks) continue;
-        *data += (uint64_t)start * 512; *blocks = count;
-        kprintf("[PSMAC:MBOX]   its Apple_HFS partition: blocks %u-%u\n", start, start + count - 1);
-        return;
+        if (want[k] || !ct || st + ct > blocks) continue;
+        kprintf("[PSMAC:MBOX]   its Apple_HFS partition: blocks %u-%u\n", st, st + ct - 1);
+        *start = st; *count = ct;
+        return 1;
     }
+    return 0;
+}
+static void hfs_partition(uint8_t **data, uint32_t *blocks)
+{
+    uint32_t have = *blocks < 64 ? *blocks : 64, st, ct;
+    { extern void psmac_card_need(const void *, uint32_t); psmac_card_need(*data, have * 512u); }   /* an image still coming in from the card: its map first */
+    if (apm_hfs(*data, have, *blocks, &st, &ct)) { *data += (uint64_t)st * 512; *blocks = ct; }
 }
 static void blk_add_ram(const char *name, uint8_t *data, uint32_t blocks)
 {
@@ -143,7 +154,7 @@ static int blk_xfer(int write, struct blkdev *b, uint32_t lba, uint32_t count, u
                          extern void psmac_card_dirty(const void *, uint32_t); psmac_card_dirty(b->rambase + (uint64_t)lba * 512, n * 512); }
             else       { int r = mac_copy(buf, NULL, b->rambase + (uint64_t)lba * 512, n * 512, 1); if (r) return r; }
         } else {
-            if (psmac_sh_seek(b->fd, (uint64_t)lba * 512) < 0) return PSMB_E_IO;
+            if (psmac_sh_seek(b->fd, ((uint64_t)b->first + lba) * 512) < 0) return PSMB_E_IO;
             if (write) {
                 int r = mac_copy(buf, sector_buf, NULL, n * 512, 0); if (r) return r;
                 if (!psmac_sh_write(b->fd, sector_buf, n * 512)) return PSMB_E_IO;
@@ -155,6 +166,110 @@ static int blk_xfer(int write, struct blkdev *b, uint32_t lba, uint32_t count, u
         lba += n; count -= n; buf += n * 512;
     }
     return 0;
+}
+
+/* ---- the startup disk: a disk image on the card as the Mac's startup disk (docs/08 item 67) ----
+   The IIci ROM starts from a NuBus card only when the default startup device in parameter RAM
+   ($78-$7B) names a slot and an sResource; it then runs that sResource's boot record, which opens
+   the card's driver and says which driver's drives to try first (mac/pidisk_boot.s). PiDisk's
+   driver is otherwise opened only after a System has started from somewhere else, so with no SCSI
+   disk and no floppy the Mac stopped at the question-mark disk.
+   So from each RESET until the boot record has asked which disk goes first (PSMB_BLK_BOOT), the
+   Mac's view of those four bytes is the record for slot 9's PiDisk, sResource $80, whenever an image
+   is published and mac.boot= is not scsi. Its own writes there in that time are kept in that view
+   and go no further: the ROM's parameter RAM test reads every byte, writes a pattern, reads it back
+   and writes back what it read (0x40841DA2), and a view that ignored writes failed that test at $78
+   and had the ROM store the slot-9 record in the real parameter RAM. Once the boot record has asked,
+   the bytes are the parameter RAM's own again, so the Startup Disk control panel sees and sets the
+   real choice. The board layers serve the view (psmac_board_se.c for the SE's clock chip or its
+   stand-in, psmac_board_solo.c) and report what the parameter RAM really holds. The answer to the
+   boot record follows mac.boot=:
+     auto (the default)  the SCSI disk the parameter RAM names (Apple's default, ID 0, when it names
+                         none or another card) first, then the card's image, then the other SCSI
+                         disks: the image starts the Mac when the usual startup disk is not there;
+     image               the card's image first, the SCSI disks after it;
+     scsi                parameter RAM as it is, the image only if it names the card (the Startup Disk
+                         control panel): the kernel changes nothing.
+   A floppy with a System is taken first in every case, as on any Mac. */
+static const uint8_t startup_slot9[4] = { 0, 0, 9, 0x80 };   /* sdExtDevID, sdPartition, sdSlotNum, sdSRsrcID */
+static uint8_t startup_real[4] = { 0xff, 0xff, 0xff, 0xdf };   /* the parameter RAM's own bytes, as last read */
+static uint8_t startup_known;                                  /* bit i: startup_real[i] was read from the parameter RAM this session */
+static uint8_t startup_view[4];                                /* what the Mac sees while the view is up */
+static volatile int startup_window = 1;                        /* the view is up: from each RESET until the boot record asks */
+static int startup_mode = -1;                                  /* 0 auto, 1 image, 2 scsi */
+static int startup_said;
+static int startup_mode_get(void)
+{
+    if (startup_mode < 0) {
+        const char *o = psmac_option("mac.boot");
+        startup_mode = !o ? 0 : o[0] == 'i' ? 1 : o[0] == 's' ? 2 : 0;
+        if (o && o[0] != 'i' && o[0] != 's' && o[0] != 'a') kprintf("[PSMAC:MBOX] mac.boot=%s not understood: auto, image or scsi; auto it is\n", o);
+        for (int i = 0; i < 4; i++) startup_view[i] = startup_slot9[i];
+    }
+    return startup_mode;
+}
+/* the 68k's RESET (psmac_bus.c): a new start, the view up again */
+void psmac_startup_reset(void)
+{
+    startup_mode_get();
+    for (int i = 0; i < 4; i++) startup_view[i] = startup_slot9[i];
+    startup_said = 0;
+    __atomic_store_n(&startup_window, 1, __ATOMIC_RELEASE);
+}
+/* For the board layers. psmac_startup_card: is the view up (an image published, mac.boot= not
+   scsi, the boot record has not yet asked)? psmac_startup_seen: a byte $78-$7B as the parameter
+   RAM really holds it. psmac_startup_view: what the Mac is given while the view is up.
+   psmac_startup_read: all three, for a board layer that has the byte before the Mac reads it.
+   psmac_startup_write: the Mac wrote a byte there; 1 when it went into the view, and must go no
+   further. psmac_startup_real: the parameter RAM's byte, if read this session (for the SE's chip,
+   whose writes the board layer can only rewrite, not hold back). */
+int psmac_startup_card(void) { return startup_window && startup_mode_get() != 2 && nbdev > 0; }
+void psmac_startup_seen(int addr, uint8_t real)
+{
+    int i = addr - 0x78;
+    if (i < 0 || i > 3) return;
+    startup_real[i] = real; startup_known |= (uint8_t)(1u << i);
+    if (i == 3 && !startup_said && psmac_startup_card()) {
+        startup_said = 1;
+        kprintf("[PSMAC:MBOX] startup disk: parameter RAM $78-$7B %02x %02x %02x %02x, shown to the Mac as 00 00 09 80, slot 9's PiDisk, until its boot record asks (mac.boot=%s)\n",
+                startup_real[0], startup_real[1], startup_real[2], startup_real[3], startup_mode == 1 ? "image" : "auto");
+    }
+}
+uint8_t psmac_startup_view(int addr) { return startup_view[(addr - 0x78) & 3]; }
+uint8_t psmac_startup_read(int addr, uint8_t real)
+{
+    if (addr < 0x78 || addr > 0x7b) return real;
+    psmac_startup_seen(addr, real);
+    return psmac_startup_card() ? psmac_startup_view(addr) : real;
+}
+int psmac_startup_write(int addr, uint8_t v)
+{
+    if (addr < 0x78 || addr > 0x7b || !psmac_startup_card()) return 0;
+    startup_view[addr - 0x78] = v;
+    return 1;
+}
+int psmac_startup_real(int addr, uint8_t *v)
+{
+    int i = addr - 0x78;
+    if (i < 0 || i > 3 || !(startup_known & (1u << i))) return 0;
+    *v = startup_real[i];
+    return 1;
+}
+/* PSMB_BLK_BOOT: 0 = the image first, else the reference number of the SCSI driver to try first.
+   The view comes down: the bytes are the parameter RAM's own from now on. */
+static uint32_t startup_first(void)
+{
+    const char *why;
+    uint32_t r = 0;
+    int16_t ref = (int16_t)(startup_real[2] << 8 | startup_real[3]);
+    if (startup_mode_get() != 0) why = startup_mode == 1 ? "the card's image first (mac.boot=image)" : "the card's image (the parameter RAM names it)";
+    else if (startup_real[2] == 9 && startup_real[3] == 0x80) why = "the card's image first (the parameter RAM names it)";
+    else if (ref < 0) { r = (uint16_t)ref; why = "the SCSI disk the parameter RAM names first, then the card's image (mac.boot=auto)"; }
+    else { r = 0xffdf; why = "SCSI ID 0 first (the parameter RAM names none), then the card's image (mac.boot=auto)"; }
+    __atomic_store_n(&startup_window, 0, __ATOMIC_RELEASE);
+    if (r >= 0xffd9 && r <= 0xffdf) kprintf("[PSMAC:MBOX] startup disk: %s: SCSI ID %u, refNum %d; %d image(s) on the card\n", why, 0xffdf - r, (int16_t)r, nbdev);
+    else kprintf("[PSMAC:MBOX] startup disk: %s; %d image(s) on the card\n", why, nbdev);
+    return r;
 }
 
 /* ---- network: frames exchanged with a host helper through two append-only files ----
@@ -274,6 +389,7 @@ static void run_cmd(int idx, uint16_t type, volatile uint8_t *c)
         break;
     case PSMB_SVC_BLOCK: {
         if (cmd == PSMB_BLK_INFO) { blk_publish(); result = nbdev; break; }
+        if (cmd == PSMB_BLK_BOOT) { extern int psmac_card_scanned(void); if (!psmac_card_scanned()) status = PSMB_E_BUSY; else result = startup_first(); break; }
         if (a0 >= (uint32_t)nbdev) { status = PSMB_E_BADDEV; break; }
         struct blkdev *b = &bdev[a0];
         if (cmd == PSMB_BLK_READ)       { static int first = 1; if (first) { first = 0; psmac_boot_mark("PiDisk: first block read (device %u, block %u)", a0, a1); }

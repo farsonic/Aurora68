@@ -135,11 +135,14 @@ One line, options separated by spaces, no comments:
 | `mac.card=off` / `mac.card=ro` | the kernel's use of the Pi's own SD card (Pi 3 family, through the sdhost controller): by default it reads and writes `pairings.txt` (Bluetooth pairings) and writes the disk image's changes back into the container on the card, and keeps the solo board's parameter RAM in `pram.bin` (AppleTalk, the Network control panel's connection, Monitors' depth, the startup disk; written a second after the Mac changes it, once the Finder is up; `mac.appletalk=` and `mac.xpram=` apply on top of it). `ro` reads pairings only, `off` leaves the card alone. cmdline.txt and config.txt are never written |
 | `mac.container=NAME` | the container's file name on the card, when it is not `aurora68.cpio` (the card writer looks for it in the root directory and writes to it only if its size and first sector match what was loaded) |
 | `mac.image=NAME` | the disk images on the card, files of their own beside the container: by default every file in the card's root ending in `.hda`, `.img`, `.image`, `.hfv` or `.dsk` (not `kernel*.img`), in the order they were copied there, up to four; `mac.image=A.hda,B.img` names them, `mac.image=off` takes none. Used only when the container has no disk image (below, "Booting fast") |
+| `mac.boot=auto` | the startup disk when a disk image on the card (`mac.image=`) holds a System: `auto` (the default) the SCSI disk the parameter RAM names (ID 0 unless the Startup Disk control panel chose another) first, then the card's image, then the other SCSI disks, so the image starts the Mac when there is no SCSI disk with a System, as in an SE with nothing attached; `image` the card's image first, the SCSI disks after it; `scsi` the parameter RAM as it is, so the image starts the Mac only if Startup Disk chose it. A floppy with a System is always taken first. The image must be bootable as a disk would be (a System Folder the Mac has started from, with its boot blocks; an Apple-partitioned `.hda` is served as its HFS partition). The kernel's log says which (`startup disk: ...`, `[MAC] PiDisk boot: ...`). docs/08 item 67 |
 | `mac.disks=scsi` | on the solo board every disk image is a SCSI disk. By default the first is SCSI ID 0, the startup disk, and every further one a PiDisk volume, which mounts by itself; an Apple-partitioned image is served as its first HFS partition (docs/08 item 52) |
 | `mac.synclog=1` | send every log character to the serial line before going on, as the kernel used to (by default the service core sends the log from a ring, so the 115200 baud line no longer holds the kernel up) |
 | `mac.deaduart=1` | testbed only: the serial port looks full to the kernel, as the Pi 3's PL011 does when Bluetooth has it (it still prints); `=2` also waits for every character as the kernel used to (docs/08 item 58) |
 | `mac.cardslow=N`, `mac.cardstall=S` | testbed only: N microseconds more per card sector read (a slow card), and core 3 kept away from the card for S seconds once a disk image starts coming in (docs/08 item 54) |
 | `mac.scsi0=PATH` | testbed only: a host disk image for the solo board's SCSI ID 0 (`mac.scsi1=` ... `mac.scsi6=`), with `mac.semihost=1` for host file access without the MAME bridge. On hardware the images come from the container |
+| `mac.selinefault=N`, `mac.selinefault=N,M`, `mac.sepa4=1` | testbed only, `mac.board=se`: address line N stuck high, or N joined to M, on the wire to the SE's memory (the kernel's address-line test at the start names such faults: `address lines A1-A21 good`, or which line and which socket pins, docs/08 item 68); VIA port A bit 4 read as 1, which made the IIci ROM take the SE for an IIci with parity and the System say "Parity has been disabled" (docs/08 item 69) |
+| `mac.watchtraps=1` | debugging: report odd writes into the OS trap tables (`[PSMAC:WATCH]`, docs/08 item 12). Off by default since 20 November: it costs a trap on every write to low memory's first page |
 | `mac.solotrace=N` | the solo board's first N SCSI commands and ADB commands in the log |
 | `mac.bridge=gpio` | how the motherboard is reached: `gpio` (the classic PiStorm's CPLD, the default on hardware), `semihost` or `uart` (the testbed's bridge to MAME) |
 | `mac.power=off` | stop watching the Pi's power. By default the kernel reads the firmware's under-voltage and throttling bits every two seconds and logs every change (`[PSMAC] power: under-voltage now ...`): in the SE the Pi is powered through the 68000 socket (docs/12, "Power through the socket") |
@@ -156,7 +159,8 @@ entry", is the firmware's part). docs/08 item 50 has the measurements.
   the declaration ROM and the WiFi/Bluetooth firmware in it (about 1 MB) and put the disk image on
   the card as a file of its own (`MyMac.hda`, or `mac.image=NAME`). The kernel finds it a moment
   after the 68k has started and reads it in the background; on the bench (`mac.board=solo`) it is
-  the startup disk and what the Mac asks for is read first, in the SE it is the PiDisk volume.
+  the startup disk and what the Mac asks for is read first, in the SE it is the PiDisk volume, and
+  the startup disk too when no SCSI disk holds a System (`mac.boot=`, above).
   The Mac's writes go back into the file.
 - **config.txt:** `boot_delay=0`; `kernel8.img` as the release ships it, gzip-compressed (the
   firmware inflates it); `initramfs aurora68.cpio 0x10000000`. Optional: `disable_splash=1` (a
@@ -185,6 +189,8 @@ Replace `kernel8.img` and `aurora68.declrom`, rebuild `aurora68.cpio`, keep your
 and `cmdline.txt`. The release notes say when a Macintosh-side file changed.
 
 ## The hardware
+Photographs of the first boots on a real Macintosh SE (20 November 2026): `docs/14-the-se-in-pictures.md`.
+
 The target is a classic PiStorm (the DIP-64 board with the EPM240 CPLD made for the Amiga 500
 and 2000) in a socket in the SE's 68000 position, carrying a Raspberry Pi 3. The classic board
 takes a Zero 2 W, 3A+, 3B or 3B+; a Pi 4 needs a different board. The board is laid out for the

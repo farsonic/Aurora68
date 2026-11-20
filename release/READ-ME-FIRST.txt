@@ -291,10 +291,14 @@ the container before the kernel starts, at 10 to 20 MB a second on a Pi 3, so a 
   - A disk image goes on the card as a file of its own, beside aurora68.cpio, with a name ending
     in .hda, .img, .image, .hfv or .dsk (MyMac.hda; kernel8.img is never taken), or named in
     cmdline.txt with mac.image=NAME. The kernel finds it a moment after the 68k has started and
-    reads it in the background while the Mac boots. In the SE it is the PiDisk volume; on the bench
-    (mac.board=solo) it is the startup disk, SCSI ID 0, and what the Mac asks for is read first.
-    What the Mac writes goes back into the same file. An image inside the container still works
-    as before, and wins if there is one.
+    reads it in the background while the Mac boots. In the SE it is the PiDisk volume, and the
+    startup disk as well when no SCSI disk with a System answers (an SE with nothing attached
+    starts from it); on the bench (mac.board=solo) it is the startup disk, SCSI ID 0, and what the
+    Mac asks for is read first. mac.boot=image in cmdline.txt makes the image the SE's startup disk
+    even with a SCSI disk attached, mac.boot=scsi leaves the choice to the Startup Disk control
+    panel. The image must be a startup disk (a System Folder the Mac has started from). What the
+    Mac writes goes back into the same file. An image inside the container still works as before,
+    and wins if there is one.
   - config.txt: boot_delay=0 (in this release's file). kernel8.img is gzip-compressed (1 MB
     instead of 5); the firmware inflates it itself. Optional: disable_splash=1 (a little faster,
     but the rainbow square is the sign that the firmware found its files) and, in the SE with HDMI

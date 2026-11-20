@@ -6,7 +6,11 @@
 sResources (ids ascending):
     1    board:  type {catBoard 1, 0, 0, 0}, name "PiStorm-SE", BoardId (32) word 0x5053 ('PS'), VendorInfo
     0x80 block:  type {0x7050 'pP' (vendor category), 1, 1, 1}, name "PiDisk", sRsrcDrvrDir {sMacOS68020 -> DRVR},
-                 flags omitted => opened at start by the Start Manager (OpenSlots), Open adds the drives
+                 flags omitted => opened at start, once the System file is open (the ROM at 0x40802240), Open adds
+                 the drives; with --boot also sRsrcBootRec (6), an sExec block (mac/pidisk_boot.s) that opens the
+                 driver itself, both when the Start Manager looks for a startup disk on this card (the default
+                 startup device in parameter RAM names slot 9, sResource $80) and in place of that later open:
+                 how a disk image on the card becomes the startup disk (docs/08 item 67)
     0x81 ethernet (optional): type {catNetwork 4, typeEtherNet 1, drSwApple 1, drHw 0x5053}, name
                  "Network_EtherNet_PiStorm" (driver ".Network_EtherNet_PiStorm"), sRsrcDrvrDir, sRsrcFlags 0 (not
                  opened at start: the .ENET shell opens it through OpenSlot when MacTCP/EtherTalk ask)
@@ -32,7 +36,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from declrom import DeclROM
 
 ap = argparse.ArgumentParser()
-ap.add_argument('--pidisk', required=True); ap.add_argument('--enet'); ap.add_argument('--wifi'); ap.add_argument('--input'); ap.add_argument('--video'); ap.add_argument('--res', default='640x480', help='the second display\'s size, WxH (the kernel picks the matching file from the container)'); ap.add_argument('-o', required=True)
+ap.add_argument('--pidisk', required=True); ap.add_argument('--boot', help='PiDisk\'s boot record (mac/pidisk_boot.s assembled)'); ap.add_argument('--enet'); ap.add_argument('--wifi'); ap.add_argument('--input'); ap.add_argument('--video'); ap.add_argument('--res', default='640x480', help='the second display\'s size, WxH (the kernel picks the matching file from the container)'); ap.add_argument('-o', required=True)
 ap.add_argument('--se', action='store_true', help='the SE board\'s card: --video is the SE\'s 512x342 one-bit screen, --video2 the HDMI screen at --res')
 ap.add_argument('--video2', help='the HDMI screen\'s driver (mac/pivideo.s assembled with SCREEN2), with --se')
 a = ap.parse_args()
@@ -57,6 +61,8 @@ blk.type(0x7050, 1, 1, 1)
 blk.name(drvr_name(pidisk)[1:])                 # ".PiDisk" -> "PiDisk"
 drv = type(blk)(0); drv.longblock(2, pidisk)    # sMacOS68020
 blk.sublist(4, drv)                             # sRsrcDrvrDir
+if a.boot:
+    blk.sexec(6, open(a.boot, 'rb').read())     # sRsrcBootRec: sExec block, revision 2, sCPU68020 (the ROM takes CPU ids up to 2)
 blk.word(8, 1)                                  # sRsrcHWDevId
 
 if a.enet:
@@ -180,4 +186,4 @@ if rom2:
         sys.exit(f"mkdeclrom: slot $A's declaration ROM is {len(img2)} bytes, the kernel has 16 KiB for it")
     img = img2 + img
 open(a.o, 'wb').write(img)
-print(f"{a.o}: {len(img)} bytes, PiDisk driver {len(pidisk)} bytes" + (f", ENET driver {len(enet)} bytes" if a.enet else "") + (f", input driver {len(inp)} bytes" if a.input else "") + (f", WiFi driver {len(wifi)} bytes" if a.wifi else "") + (f", video driver {len(video)} bytes" if a.video else "") + (f", and slot $A's ROM ({len(img2)} bytes): the SE's screen and HDMI" if a.se else ""))
+print(f"{a.o}: {len(img)} bytes, PiDisk driver {len(pidisk)} bytes" + (" with its boot record" if a.boot else "") + (f", ENET driver {len(enet)} bytes" if a.enet else "") + (f", input driver {len(inp)} bytes" if a.input else "") + (f", WiFi driver {len(wifi)} bytes" if a.wifi else "") + (f", video driver {len(video)} bytes" if a.video else "") + (f", and slot $A's ROM ({len(img2)} bytes): the SE's screen and HDMI" if a.se else ""))

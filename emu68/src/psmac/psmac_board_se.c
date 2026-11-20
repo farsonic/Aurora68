@@ -32,6 +32,19 @@ int psmac_solo_access(uint32_t addr, int size, int write, uint32_t data, uint32_
 unsigned psmac_solo_ipl(void); void psmac_solo_level_now(void); void psmac_solo_service(void); void psmac_solo_options(const char *); void psmac_solo_report(void);
 static uint32_t se_ram_mb = 4;              /* mac.seram=N: the SE's own memory, 1, 2, 2.5 or 4 MB (its screen sits at the top) */
 static uint32_t se_ram_size(void) { return se_ram_mb << 20; }
+/* mac.selinefault= (testbed, docs/08 item 68): an address-line fault on the wire to the SE's RAM (below
+   $400000), so the address-line test below can be tried. N: line N stuck high; N,M: line N joined to
+   M, M winning (the user's PiStorm had A14 and A15 bridged); N&M: the two joined, a 0 on either
+   winning */
+static uint32_t se_fault_or; static int se_fault_n, se_fault_m, se_fault_and;
+uint32_t psmac_se_wire_addr(uint32_t a)
+{
+    if (a >= 0x400000u) return a;
+    a |= se_fault_or;
+    if (se_fault_m && se_fault_and) { uint32_t b = (a >> se_fault_n) & (a >> se_fault_m) & 1; a = (a & ~(1u << se_fault_n) & ~(1u << se_fault_m)) | b << se_fault_n | b << se_fault_m; }
+    else if (se_fault_m) a = (a & ~(1u << se_fault_n)) | (((a >> se_fault_m) & 1) << se_fault_n);
+    return a;
+}
 uint32_t psmac_se_fb_base(void) { return se_ram_size() - 0x5900; }   /* the main screen buffer: 21,888 bytes, 64 per row */
 
 /* the transport, as the bus layer exposes it to this file (psmac_bus.c) */
@@ -194,9 +207,25 @@ static uint32_t via_data(uint32_t reg, uint32_t data)
    ROM takes for another box and sets flags for that never let it past the SCC check (fs172, PC
    $40842F6A). So the identity bits are the IIci's; bits 7, 5, 4 and 3 are the SE's own: the SCC
    wait/request line and the latches the ROM wrote (overlay, head select, sync). */
+/* Port A bit 4 decides one more thing. The ROM's product table (0x408032C4) has two entries for the
+   IIci's decoder, told apart by bit 4 read while the ROM has made it an input (the probe at
+   0x4080321A masks DDRA): 0 is the IIci (0x408036C0), 1 the IIci with parity (0x40803700), whose
+   UnivROMFlags ($DD4) bit 0 says parity hardware is there. With that bit the System's IIci patch
+   (PTCH 1660) answers Gestalt 'prty' with "parity capable", "enabled" only if VIA port B bit 6
+   reads 0, which on this board it never does (via_read_fix below), and its INIT 10 then shows
+   "Parity has been disabled because the parity circuitry is not functioning" at every start. On an
+   SE port A bit 4 is the floppy drive select, an output the ROM drives; as an input it reads
+   whatever the SE's pin is left at, and on one start of the user's SE (20 November) it read 1. So
+   while DDRA bit 4 is an input the ROM reads 0 there: no parity, as the Pi's memory has none.
+   mac.sepa4=1 (testbed) reads 1 instead, as that SE did (docs/08 item 69). */
+static uint8_t via_ddra, se_pa4_sim;
 static uint32_t via_read_fix(uint32_t reg, uint32_t r)
 {
-    if (reg == 1 || reg == 15) return (r & 0xb8) | 0x47;
+    if (reg == 1 || reg == 15) {
+        r = (r & 0xb8) | 0x47;
+        if (!(via_ddra & 0x10)) r = (r & ~0x10u) | (se_pa4_sim ? 0x10u : 0);
+        return r;
+    }
     if (reg == 0) return r | 0x40;                   /* PB6: an input tied high on the IIci; the SE's video beam / SCSI interrupt enable */
     return r;
 }
@@ -207,7 +236,9 @@ static uint32_t via_read_fix(uint32_t reg, uint32_t r)
    it sends with the clock low and raises the clock; for a byte it receives it turns DDRB bit 0
    into an input, lowers and raises the clock and reads port B after the rise (0x4080B1E4-B26A).
    This file follows that protocol on the ROM's writes to port B, so it always knows which byte is
-   in flight, and on two occasions hands the ROM something other than what the chip says.
+   in flight, and on three occasions hands the ROM something other than what the chip says (the
+   third, the default startup device at $78-$7B when a disk image on the card is to be the startup
+   disk, is psmac_mbox.c's business: docs/08 item 67).
 
    Byte $8A. The IIci ROM reads extended byte $8A before it builds its MMU tables (0x408043D4) and
    that byte decides the memory layout: bit 0 32-bit addressing, bit 2 the same for the next start
@@ -250,18 +281,27 @@ static struct {
     uint8_t byte, cmd, real, given;               /* real: what the chip sent; given: what the ROM got */
     uint32_t mended;                              /* reads of $8A that were changed, for the log */
     int serve, probed, chip_off;                  /* serve: the chip does not answer, this file does; chip_off: mac.sepram=chip */
+    int startup;                                  /* a byte of the default startup device ($78-$7B) from a chip that answers: given whole, below */
+    int hold_bit;                                 /* -1, or the data bit the chip is sent instead of the ROM's (xp_wire_orb) */
+    uint8_t hold_byte;                            /* the chip's own byte at the address being written, while the Mac's view of it is up */
+    int hold;                                     /* a write to $78-$7B goes into the view: the chip is sent its own byte back */
     uint8_t pram[256];
     uint32_t secs; uint64_t secs_t0;              /* the stand-in clock: secs at the timer's secs_t0 */
     uint32_t reads, reads_ff, writes;             /* bytes the ROM read (and how many of them the chip sent as $FF), bytes it wrote */
-} xp = { .enb = 1, .ddr0 = 1 };
+} xp = { .enb = 1, .ddr0 = 1, .hold_bit = -1 };
 #define XP_SECS_START 0xe7253e00u                 /* 20 November 2026, 00:00, in the Mac's seconds since 1904 */
 static uint8_t xp8a_bits(void) { return psmac_ram_size() > (8u << 20) ? 0x05 : 0; }   /* bits 0 and 2: 32-bit addressing now and at the next start */
 static uint8_t xp8a_mend(uint8_t v) { return xp.keep ? v : (uint8_t)((v & ~0x10) | xp8a_bits()); }
 static uint32_t xp_secs(void) { return xp.secs + (uint32_t)((asc_now() - xp.secs_t0) / asc_hz()); }
 static void xp_set_secs(uint32_t s) { xp.secs = s; xp.secs_t0 = asc_now(); }
 /* what the stand-in sends for the byte in flight */
+/* psmac_mbox.c: the default startup device, parameter RAM $78-$7B, as the Mac sees it while a disk
+   image on the card may start it (docs/08 item 67) */
+uint8_t psmac_startup_read(int addr, uint8_t real); int psmac_startup_card(void); void psmac_startup_seen(int addr, uint8_t real);
+uint8_t psmac_startup_view(int addr); int psmac_startup_write(int addr, uint8_t v); int psmac_startup_real(int addr, uint8_t *v);
 static uint8_t xp_served(int addr)
 {
+    if (addr >= 0x78 && addr <= 0x7b) return psmac_startup_read(addr, xp.pram[addr]);
     if (addr < 0x100) return addr == 0x8a ? xp8a_mend(xp.pram[0x8a]) : xp.pram[addr];
     if (addr < 0x104) return (uint8_t)(xp_secs() >> (8 * (addr & 3)));
     return 0;                                     /* the test and write-protect registers read 0 (MAME's macrtc) */
@@ -271,6 +311,7 @@ static void xp_store(int addr, uint8_t v)
 {
     xp.writes++;
     if (addr == 0x1fd) { xp.wp = (v & 0x80) != 0; return; }        /* register 13, write protect: always taken */
+    if (psmac_startup_write(addr, v)) return;                       /* into the Mac's view of $78-$7B (for the chip, xp_wire_orb kept its own byte) */
     if (!xp.serve || xp.wp) return;
     if (addr < 0x100) xp.pram[addr] = v;
     else if (addr < 0x104) { uint32_t s = xp_secs(), sh = 8 * (addr & 3); xp_set_secs((s & ~(0xffu << sh)) | (uint32_t)v << sh); }
@@ -279,6 +320,7 @@ static void xp_end(void)
 {
     if (xp.dir && xp.bits == 0 && xp.addr >= 0) {
         xp.reads++; if (xp.real == 0xff) xp.reads_ff++;
+        if (!xp.serve && xp.addr >= 0x78 && xp.addr <= 0x7b) psmac_startup_seen(xp.addr, xp.real);
         if (xp.addr == 0x8a && !xp.serve && xp.real != xp.given && xp.mended++ < 4) {
             int b4 = (xp.real & 0x10) != 0, b02 = (~xp.real & xp8a_bits()) != 0;
             kprintf("[PSMAC:SE] parameter RAM $8A: the SE's clock chip says $%02x, the ROM is given $%02x:%s%s (mac.pram8a=keep to leave it)\n",
@@ -293,22 +335,28 @@ static void xp_reading(int addr)
 {
     xp.dir = 1; xp.bits = 8; xp.addr = addr; xp.real = 0; xp.state = 0;
     xp.given = xp.serve ? xp_served(addr) : 0;
+    xp.startup = 0;
+    /* The default startup device from a chip that answers: what the Mac is given is decided before
+       the first bit, what the chip holds is known after the last (xp_end reports it) */
+    if (!xp.serve && addr >= 0x78 && addr <= 0x7b && psmac_startup_card()) { xp.startup = 1; xp.given = psmac_startup_view(addr); }
 }
 /* the ROM wrote port B (ORB): follow the enable, clock and data lines */
 static void xp_lines(uint8_t orb)
 {
     int enb = (orb >> 2) & 1, clk = (orb >> 1) & 1, data = orb & 1;
-    if (enb != xp.enb) { if (enb) xp_end(); xp.enb = enb; xp.dir = 0; xp.bits = 0; xp.byte = 0; xp.state = 0; xp.addr = -1; }
+    if (enb != xp.enb) { if (enb) xp_end(); xp.enb = enb; xp.dir = 0; xp.bits = 0; xp.byte = 0; xp.state = 0; xp.addr = -1; xp.hold = 0; xp.hold_bit = -1; }
     if (!clk && xp.clk && !xp.enb) {             /* falling edge: the next bit moves */
+        xp.hold_bit = -1;
         if (xp.dir) { if (xp.bits > 0) xp.bits--; }
         else {
+            if (xp.state == 3 && xp.hold) xp.hold_bit = (xp.hold_byte >> (7 - xp.bits)) & 1;   /* this bit, until the next falling edge */
             xp.byte = (uint8_t)(xp.byte << 1 | data);
             if (++xp.bits == 8) {
                 uint8_t b = xp.byte; int i = (xp.cmd >> 2) & 0x1f; xp.bits = 0; xp.byte = 0;
                 if (xp.state == 2) {                 /* the second byte of an extended command: the low address bits */
                     int addr = ((xp.cmd & 7) << 5) | ((b & 0x7c) >> 2);
                     if (xp.cmd & 0x80) xp_reading(addr);
-                    else { xp.state = 3; xp.addr = addr; }
+                    else { xp.state = 3; xp.addr = addr; xp.hold = !xp.serve && psmac_startup_card() && psmac_startup_real(addr, &xp.hold_byte); }
                 } else if (xp.state == 3) { xp_store(xp.addr, b); xp.state = 0; xp.addr = -1; }
                 else if (xp.state == 1) {            /* the data byte of a register write */
                     xp_store(i < 4 ? 0x100 + i : (i >= 8 && i < 12) || i >= 16 ? i : 0x1f0 + i, b);
@@ -324,6 +372,15 @@ static void xp_lines(uint8_t orb)
     }
     xp.clk = clk;
 }
+/* What goes to the chip when the ROM writes port B: as written, except while the ROM writes a byte
+   of $78-$7B that goes into the Mac's view (psmac_startup_write): then the chip is sent its own byte
+   back, bit for bit, so it keeps what it held (the ROM's parameter RAM test would otherwise leave the
+   slot-9 record in it: psmac_mbox.c). The chip takes a bit on the rising edge that follows the
+   falling one this file counts it on, so the substitute holds from one falling edge to the next. */
+static uint8_t xp_wire_orb(uint8_t orb)
+{
+    return xp.hold_bit < 0 ? orb : (uint8_t)((orb & ~1u) | (unsigned)xp.hold_bit);
+}
 /* the ROM reads port B: while a byte comes out of the chip, bit 0 is the chip's, mended for $8A,
    or the stand-in's */
 static uint32_t xp_read(uint32_t r)
@@ -333,7 +390,7 @@ static uint32_t xp_read(uint32_t r)
     int n = xp.bits;                                 /* the bit the chip presents now, 7 first */
     uint8_t real = r & 1, bit = real;
     xp.real = (uint8_t)((xp.real & ~(1u << n)) | (real << n));
-    if (xp.serve) bit = (xp.given >> n) & 1;
+    if (xp.serve || xp.startup) bit = (xp.given >> n) & 1;
     else if (xp.addr == 0x8a && !xp.keep) {
         if (n == 4) bit = 0;
         else if ((xp8a_bits() >> n) & 1) bit = 1;
@@ -424,7 +481,14 @@ int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t 
     if (off < 0x2000 || (off >= 0x40000 && off < 0x42000)) {
         /* VIA1: register n at +n*0x200 on both machines */
         uint32_t reg = (off >> 9) & 15, se = SE_VIA + (reg << 9);
-        if (write) { if (reg == 0) xp_lines(data & 0xff); else if (reg == 2) xp.ddr0 = data & 1; trace("VIA", 1, addr, se, size, via_data(reg, data & 0xff)); psmac_wire_write(se, 1, via_data(reg, data & 0xff), posted); return 1; }
+        if (write) {
+            if (reg == 0) { xp_lines(data & 0xff); data = xp_wire_orb(data & 0xff); }
+            else if (reg == 2) xp.ddr0 = data & 1;
+            else if (reg == 3) via_ddra = (uint8_t)data;
+            trace("VIA", 1, addr, se, size, via_data(reg, data & 0xff));
+            psmac_wire_write(se, 1, via_data(reg, data & 0xff), posted);
+            return 1;
+        }
         r = via_read_fix(reg, psmac_wire_read(se, 1) & 0xff);
         if (reg == 0) r = xp_read(r);
         trace("VIA", 0, addr, se, size, r);
@@ -509,7 +573,7 @@ unsigned psmac_se_ipl(unsigned raw)
 static uint8_t shadow[SE_ROWS * SE_ROWBYTES];
 static volatile uint32_t dirty[(SE_ROWS + 31) / 32];
 static volatile int shadow_valid;
-static uint32_t rows_sent, frames_marked;
+static uint32_t rows_sent, frames_marked, se_lines_bad;   /* se_lines_bad: address lines that failed the test at the start (bit n = An) */
 
 /* core 3: compare the card's frame with what the SE has and mark the rows that differ */
 void psmac_se_mark(const uint8_t *frame, uint32_t width, uint32_t height, uint32_t rowbytes, uint32_t depth)
@@ -523,6 +587,26 @@ void psmac_se_mark(const uint8_t *frame, uint32_t width, uint32_t height, uint32
         if (differs) { __builtin_memcpy(shadow + y * SE_ROWBYTES, frame + y * SE_ROWBYTES, SE_ROWBYTES); __atomic_fetch_or(&dirty[y >> 5], 1u << (y & 31), __ATOMIC_RELEASE); }
     }
     shadow_valid = 1; frames_marked++;
+}
+
+/* The first time rows 0 and 100 are sent ($3FA700 and $3FC000: the two sides of the boundary the
+   hardware's stripes stopped at, docs/08 item 68), they are read back at once and the log says
+   whether the SE's memory holds what was written there. */
+static void se_first_rows_check(uint32_t y)
+{
+    static int checked[2];
+    int k = y == 100;
+    if (checked[k]) return;
+    checked[k] = 1;
+    const uint16_t *want = (const uint16_t *)(shadow + y * SE_ROWBYTES);
+    uint32_t base = psmac_se_fb_base() + y * SE_ROWBYTES, bad = 0, first = 0, got = 0;
+    for (int i = 0; i < SE_ROWBYTES / 2; i++) {
+        uint32_t r = psmac_wire_read(base + 2 * i, 2) & 0xffff;
+        if (r != want[i] && !bad++) { first = i; got = r; }
+    }
+    if (!bad) kprintf("[PSMAC:SE] first send of screen row %u: its 32 words at $%06x read back as written\n", y, base);
+    else kprintf("[PSMAC:SE] first send of screen row %u: %u of its 32 words at $%06x read back differently (the first at $%06x: wrote $%04x, read $%04x)\n",
+                 y, bad, base, base + 2 * first, want[first], got);
 }
 
 /* the service core: a few rows per call, so the Mac's own accesses are never far behind */
@@ -541,20 +625,108 @@ void psmac_se_service(void)
         uint32_t dst = psmac_se_fb_base() + y * SE_ROWBYTES;
         for (int i = 0; i < SE_ROWBYTES / 2; i++) psmac_wire_write(dst + 2 * i, 2, src[i], 1);
         rows_sent++;
+        if (y == 0 || y == 100) se_first_rows_check(y);
     }
 }
 
-/* at the start, and after every reset the ROM pulses: the SE powers up with its ROM overlaid at
-   0 and RAM at $600000; one access to the ROM's own space ($400000) puts RAM back at 0, where the
-   screen buffer must be. Then the SE's screen is cleared and the shadow forgotten, and the clock
-   chip is asked whether it answers (rtc_probe, above), before the 68k's first instruction:
-   core 0 waits for this (psmac_se_wait_ready), since the ROM's first act, a RESET, would reset the
-   VIA under the probe. */
+/* The address lines between the Pi and the SE's memory. The second and third boots on a real SE
+   (20 November 2026) showed the top hundred rows of the SE's screen as stripes of old memory that
+   never changed, whatever the Mac drew there (the Finder's menu bar never appeared), and the rest
+   of the screen right. Row 100 starts at $3FC000: the rows above it have A14 = 0 and A15 = 1, every
+   row from there down A14 = A15 = 1, and so does every address of the SE's chips the kernel uses
+   (VIA $EFE1FE, SCC $9FFFF8 and $BFFFF9, SCSI $5FF000-$5FF260, IWM $DFE1FF): a sliver of solder
+   joined A14 and A15 at the PiStorm's address latch (U2, pins 22 and 23), so those two lines could
+   only agree, and nothing but those screen rows depended on their disagreeing (docs/08 item 68).
+   A read-back cannot see such a fault, since reads go astray exactly as the writes did. So before
+   anything is drawn the board layer tests the lines itself, in the SE's RAM (its own hardware sees
+   only the screen and the sound buffer there; the rest is the kernel's to use):
+   - each line alone: a word at a base address and another at the base with that line flipped,
+     both read back: a line stuck at 0 or 1, or not connected, makes the two the same memory;
+   - each pair of lines: the four addresses with the two lines at 00, 01, 10 and 11, each written a
+     word of its own and read back; those that read the same are the same memory. Two lines joined
+     so that a 0 (or a 1) on either wins make three of the four one memory, which no stuck line
+     does (a stuck line makes two pairs).
+   One kind of short looks exactly like a stuck line from here: a line that simply follows another
+   (A14 driven by A15, as on the user's board) leaves the memory in the same two halves as A14 stuck
+   would, and only the SE's video, which reads the RAM with its own addresses, sees the difference.
+   The first test names that line, and its message says a short is one of the possibilities.
+   About 1,800 bus cycles: a few milliseconds on the GPIO, a fraction of a second in the testbed.
+   The words are cleared again afterwards. */
+static int se_dip64_pin(int line) { return line <= 20 ? 28 + line : 29 + line; }   /* 68000 DIP-64: A1-A20 pins 29-48, VCC 49, A21-A23 pins 50-52 */
+static uint16_t se_rd(uint32_t a) { return psmac_wire_read(a, 2) & 0xffff; }
+static void se_wr(uint32_t a, uint16_t v) { psmac_wire_write(a, 2, v, 0); }
+/* one line alone: 1 if it works */
+static int se_line_ok(uint32_t base, int n, uint16_t *ra, uint16_t *rb)
+{
+    uint32_t alt = base ^ (1u << n);
+    se_wr(base, (uint16_t)(0x5a00 | n)); se_wr(alt, (uint16_t)(0xa500 | n));
+    *ra = se_rd(base); *rb = se_rd(alt);
+    se_wr(alt, 0);
+    return *ra == (0x5a00 | n) && *rb == (0xa500 | n);
+}
+/* two lines: write the four combinations, read them back, and group the ones that read the same (the
+   same memory: the last word written there). 1 if three of them are one memory, the mark of two
+   lines joined so that a 0 (or a 1) on either wins */
+static int se_pair_joined(uint32_t base, int n, int m)
+{
+    uint32_t a[4]; uint16_t r[4];
+    for (int c = 0; c < 4; c++) { a[c] = base ^ (c & 1 ? 1u << n : 0) ^ (c & 2 ? 1u << m : 0); se_wr(a[c], (uint16_t)(0x3300 | c << 6 | n)); }
+    for (int c = 0; c < 4; c++) r[c] = se_rd(a[c]);
+    for (int c = 0; c < 4; c++) se_wr(a[c], 0);
+    for (int c = 0; c < 4; c++) {
+        int same = 0;
+        for (int d = 0; d < 4; d++) same += r[d] == r[c];
+        if (same == 3) return 1;
+    }
+    return 0;
+}
+static void se_ram_lines(void)
+{
+    uint32_t base = psmac_se_fb_base(), size = se_ram_size(), stuck = 0, joined = 0;
+    int top = 0;
+    for (int n = 1; n <= 21 && (base ^ (1u << n)) < size; n++) top = n;
+    for (int n = 1; n <= top; n++)
+        for (int m = n + 1; m <= top; m++) {
+            if ((base ^ (1u << n) ^ (1u << m)) >= size || !se_pair_joined(base, n, m)) continue;
+            joined |= 1u << n | 1u << m;
+            uint32_t z = base & ~(1u << n) & ~(1u << m);   /* both lines 0 */
+            kprintf("[PSMAC:SE] address lines A%d and A%d are joined: of $%06x, $%06x, $%06x and $%06x (the two lines at 00, 01, 10, 11) three are the same memory. "
+                    "Look for a solder bridge or a short between them: the 68000 socket's pins %d and %d, and the address latch's outputs for them\n",
+                    n, m, z, z | 1u << m, z | 1u << n, z | 1u << n | 1u << m, se_dip64_pin(n), se_dip64_pin(m));
+        }
+    for (int n = 1; n <= top; n++) {
+        uint16_t ra, rb;
+        if (se_line_ok(base, n, &ra, &rb)) continue;
+        stuck |= 1u << n;
+        if (joined >> n & 1) continue;               /* named above */
+        kprintf("[PSMAC:SE] address line A%d does not reach the SE as both 0 and 1: written $%04x at $%06x and $%04x at $%06x (A%d flipped), read back $%04x and $%04x%s. "
+                "The line is stuck, not connected, or joined to another line that overrides it (from the Pi's side the three look the same; the user's PiStorm had A14 bridged to A15). "
+                "Check the PiStorm's A%d: the 68000 socket's pin %d, the address latch output that drives it and its neighbours\n",
+                n, 0x5a00 | n, base, 0xa500 | n, base ^ (1u << n), n, ra, rb, ra == rb ? ": the same memory" : "", n, se_dip64_pin(n));
+    }
+    se_wr(base, 0);
+    se_lines_bad = stuck | joined;
+    if (!se_lines_bad)
+        kprintf("[PSMAC:SE] address lines A1-A%d good: each line read back as 0 and as 1 (a word at $%06x and one at each address one line away), and every pair of them "
+                "kept four words apart at the four combinations of the two lines. Measured before the first screen row is sent\n", top, base);
+}
+
+/* Once, as the service core starts and before the 68k's first instruction: the SE powers up with
+   its ROM overlaid at 0 and RAM at $600000; one access to the ROM's own space ($400000) puts RAM
+   back at 0, where the screen buffer must be. Then the address lines are tested (above), the
+   shadow forgotten, and the clock chip is asked whether it answers (rtc_probe, above). Core 0
+   waits for all of it (psmac_se_wait_ready), since the ROM's first act, a RESET, would reset the
+   VIA under the probe. Each RESET the 68k issues afterwards (the ROM's first, every Restart)
+   pulses the SE's reset line, which brings the overlay back: psmac_se_after_reset clears it again.
+   (Until 20 November 2026 the comment here said this ran "after every reset the ROM pulses"; it
+   never did, and nothing put RAM back at 0 after the ROM's RESET. The screen showed all the same,
+   so the overlay evidently does not hide the kernel's writes to the screen buffer.) */
 static volatile int se_ready;
 void psmac_se_start(void)
 {
     if (!psmac_board_se || psmac_board_solo) { se_ready = 1; return; }
     psmac_wire_read(0x400000u, 2);
+    se_ram_lines();
     shadow_valid = 0;
     for (uint32_t w = 0; w < (SE_ROWS + 31) / 32; w++) dirty[w] = 0;
     kprintf("[PSMAC:SE] board layer up: SE memory %u MB, screen buffer at $%06x, VIA $EFE1FE, SCC $9FFFF8/$BFFFF9, SCSI $5FF000, IWM $DFE1FF; RBV, ASC, VDAC answered here\n",
@@ -562,6 +734,14 @@ void psmac_se_start(void)
     rtc_probe();
     __asm__ volatile("dmb ish" ::: "memory");
     se_ready = 1;
+}
+/* right after a RESET instruction has pulsed the SE's reset line: its VIA's ports are inputs again
+   (via_ddra, for port A bit 4), and one access to $400000 puts RAM back at 0 */
+void psmac_se_after_reset(void)
+{
+    if (!psmac_board_se || psmac_board_solo) return;
+    via_ddra = 0;
+    psmac_wire_read(0x400000u, 2);
 }
 /* core 0, just before it releases the 68k: at most a second, so a service core that never comes
    up cannot hold the boot for ever (its absence is logged elsewhere) */
@@ -584,7 +764,14 @@ void psmac_se_options(const char *args)
     }
     if ((tok = find_token(args, "mac.pram8a="))) { tok += 11; if (tok[0] == 'k') xp.keep = 1; }
     if ((tok = find_token(args, "mac.sepram="))) { tok += 11; if (tok[0] == 'c') xp.chip_off = 1; }
+    if ((tok = find_token(args, "mac.sepa4="))) { tok += 10; se_pa4_sim = tok[0] == '1'; }   /* the testbed: port A bit 4 read as 1 while an input (the IIci with parity) */
     if ((tok = find_token(args, "mac.rtcsim="))) { tok += 11; if (tok[0] == 'd') xp.sim_dead = 1; }   /* the testbed: the clock chip read as one that never answers */
+    if ((tok = find_token(args, "mac.selinefault="))) {   /* the testbed: N (stuck high), N,M (N follows M) or N&M (joined, 0 wins) on the wire to the SE's RAM */
+        tok += 16; int n = 0, m = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0');
+        if (*tok == ',' || *tok == '&') { se_fault_and = *tok == '&'; tok++; while (*tok >= '0' && *tok <= '9') m = m * 10 + (*tok++ - '0'); }
+        if (n >= 1 && n <= 21 && m >= 1 && m <= 21 && m != n) { se_fault_n = n; se_fault_m = m; }
+        else if (n >= 1 && n <= 21) se_fault_or = 1u << n;
+    }
     if ((tok = find_token(args, "mac.seram="))) { tok += 10; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); if (n >= 1 && n <= 4) se_ram_mb = n; }
 }
 
@@ -592,7 +779,7 @@ void psmac_se_report(void)
 {
     if (psmac_board_solo) { psmac_solo_report(); return; }
     if (!psmac_board_se) return;
-    kprintf("[PSMAC:SE] rows sent %u, frames compared %u, local reads %u writes %u, RBV IFR %02x IER %02x SIER %02x | clock chip: %s, %u bytes read (%u of them $FF from the chip), %u written\n",
-            rows_sent, frames_marked, local_reads, local_writes, rbv_ifr, rbv_ier, rbv_regs[0x12],
+    kprintf("[PSMAC:SE] rows sent %u%s, frames compared %u, local reads %u writes %u, RBV IFR %02x IER %02x SIER %02x | clock chip: %s, %u bytes read (%u of them $FF from the chip), %u written\n",
+            rows_sent, se_lines_bad ? " (an address line failed its test at the start)" : "", frames_marked, local_reads, local_writes, rbv_ifr, rbv_ier, rbv_regs[0x12],
             xp.serve ? "not answering, the board layer answers" : "answering", xp.reads, xp.reads_ff, xp.writes);
 }

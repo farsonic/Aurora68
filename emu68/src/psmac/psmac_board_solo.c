@@ -133,11 +133,14 @@ static void rtc_execute(uint8_t data)
     rtc.cmds++;
     if (rtc.state == 2) {                   /* extended: second byte carries the low address bits */
         rtc.xpaddr = ((rtc.cmd & 7) << 5) | ((data & 0x7c) >> 2);
-        if (rtc.cmd & 0x80) { rtc.dir = 1; rtc.byte = rtc.pram[rtc.xpaddr]; rtc.state = 0; }
+        if (rtc.cmd & 0x80) {
+            extern uint8_t psmac_startup_read(int addr, uint8_t real);   /* $78-$7B: slot 9's PiDisk while an image may start the Mac (psmac_mbox.c) */
+            rtc.dir = 1; rtc.byte = psmac_startup_read(rtc.xpaddr, rtc.pram[rtc.xpaddr]); rtc.state = 0;
+        }
         else { rtc.state = 3; rtc.byte = 0; rtc.bits = 0; }
         return;
     }
-    if (rtc.state == 3) { pram_set(rtc.xpaddr, data); rtc.state = 0; return; }
+    if (rtc.state == 3) { extern int psmac_startup_write(int addr, uint8_t v); if (!psmac_startup_write(rtc.xpaddr, data)) pram_set(rtc.xpaddr, data); rtc.state = 0; return; }
     if (rtc.state == 1) {
         rtc.state = 0;
         int i = (rtc.cmd >> 2) & 0x1f;

@@ -1955,6 +1955,149 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    startup device ($78-$7B) pointing at slot 9 and that sResource, which the stand-in parameter RAM
    can supply when the chip does not answer and the Startup Disk control panel otherwise. Until then
    the SE starts from a SCSI disk or a floppy and the card's images mount beside it.
+   - *What the ROM does with a card* (read in the disassembly the same evening). The search starts at
+     0x40801430: `_GetDefaultStartup`, and when the record names a slot (its second word positive)
+     0x408014F0 asks the Slot Manager for the sResource (`sFindsRsrcPtr`), fills an SEBlock (slot,
+     sResource, seDevice and sePartition from parameter RAM, seBootState 0) and runs its boot record
+     with `sExec`. sExec (0x40805C3A) copies the block into the heap, checks revision 2 and a CPU id of
+     at most 2, calls the code at offset field + offset with A0 = the SEBlock and every register saved,
+     and disposes of the copy. A zero seStatus makes seRefNum the driver whose drives the first pass of
+     the drive queue tries, a floppy included (the filter at 0x408016F0); the passes after it take any
+     drive (0x40801590), in the queue's order. All this before the SCSI drivers are loaded
+     (0x40801560). Later, once the System file is open, the ROM opens the slot drivers that are to be
+     opened at start (0x40802240): for an sResource with a boot record it runs the record once more,
+     seBootState 1 (0x4080222A), and leaves the driver to it. The ROM's own way of opening a slot
+     driver is OpenSlot with ioFlags fMulti and an SEBlock (0x40800CA0).
+   - *The boot record* (`mac/pidisk_boot.s`, sRsrcBootRec 6 in PiDisk's sResource,
+     `mkdeclrom.py --boot`): both times it opens `.PiDisk` exactly that way; the driver's Open adds a
+     drive for every image as before. At state 0 it asks the kernel which disk is to go first (a new
+     BLOCK command, `PSMB_BLK_BOOT`) and returns that driver's reference number: PiDisk's own, or a SCSI
+     disk's. A drive the first pass does not take stays in the queue, ahead of the SCSI drives the ROM
+     loads next, so the image comes before the other SCSI disks.
+   - *The default startup device*: from each RESET until the boot record has asked, the board layers
+     show the Mac $78-$7B as 00 00 09 80 (slot 9, sResource $80) whenever an image is published, and
+     report what the parameter RAM really holds (psmac_mbox.c, `psmac_startup_*`; the SE's clock chip,
+     its stand-in and the solo board's chip). The first version only changed what reads returned, and
+     the solo board's log showed the ROM writing the four bytes back: its parameter RAM test
+     (0x40841DA2) reads all 256 bytes, writes a pattern and reads it back, and restores what it read.
+     That test failed at $78 (the read-back was the override, not the pattern) and stored the slot-9
+     record in the real parameter RAM, so the next start took it for the user's choice. Now the Mac's
+     writes there go into the view until the boot record asks, and no further; on the SE's working
+     chip, whose writes the board layer can rewrite but not hold back, the chip is sent its own byte
+     back, bit for bit (`xp_wire_orb`). After the boot record has asked, the four bytes are the
+     parameter RAM's own again, so the Startup Disk control panel sees and sets the real choice.
+   - *Which disk first*, `mac.boot=`: `auto` (the default) the SCSI disk the parameter RAM names (ID 0
+     when it names none or another card), then the card's image, then the other SCSI disks; `image` the
+     card's image first; `scsi` the parameter RAM as it is (the kernel shows nothing). A floppy with a
+     System is taken first in every case. The log says it in three lines: "startup disk: parameter RAM
+     $78-$7B ff ff ff df, shown to the Mac as 00 00 09 80 ...", "startup disk: the SCSI disk the
+     parameter RAM names first, then the card's image (mac.boot=auto): SCSI ID 0, refNum -33" and
+     "[MAC] PiDisk boot: ...".
+   - *The testbed's images*: `mac.disk0=` served the whole host file, and the System 7.1 image used for
+     the card (an Iomega-formatted `.hda`) has an Apple partition map, so block 0 was the driver
+     descriptor and the Start Manager found no boot blocks there (it read, ejected and read again,
+     a "prime" and a "control" in the log every few seconds, at the question-mark disk). The card's
+     images have always been served as their HFS partition (item 52); host files are now too.
+   - *Verified* (`[BOOT]` times from the kernel's log). MAME's `macse_ps`, 128 MiB, no SCSI disk, the
+     System 7.1 image as `mac.disk0=`, `mac.boot` left at auto: with `mac.rtcsim=dead`, "PiDisk: first
+     block read (device 0, block 0)" at 19.3 s and the Finder at 31.1 s, PiPing from the image's
+     Startup Items on the SE's screen; a Restart through the remote control's testbed channel
+     (`tools/aurora68.py --semihost BASE restart`) started from the image again, the parameter RAM
+     still saying ff ff ff df. With MAME's working chip and its own parameter RAM: the Finder at
+     36.1 s, and the chip's $78-$7B unchanged afterwards (the ROM's test wrote them, the chip was sent
+     its own bytes). With the working chip, the System 7.1 disk on the SE's SCSI ID 0 and the image as
+     well: the SCSI disk first (its first pseudo-DMA block at 17.8 s, the image's first block at
+     30.7 s, once the System was up), the Finder at 47.3 s, $78-$7B again unchanged. The solo board
+     (`tools/run-solo.sh`, 128 MiB): the image alone (no SCSI disk) to the Finder in 17.0 and 19.0 s,
+     from the PiDisk volume; the SCSI disk alone in 21.3 and 21.4 s (no image published, so nothing is
+     shown to the Mac); the SCSI disk with the image beside it in 26.2 and 23.1 s from SCSI ID 0, the
+     image mounted beside it ("Mac Volume" twice, the second with PiDisk's icon). Not yet on the
+     hardware.
+
+68. **The SE's top hundred rows: two address lines joined (20 November).** The SE board's second and
+   third boots on the real SE (se5, se6 kernels) showed the grey desktop and the question-mark disk,
+   and later the happy Mac and the Finder from a BlueSCSI, with the top hundred or so rows of the SE's
+   screen as eight vertical bands of structured noise that never changed: the Finder's menu bar never
+   appeared there, whatever the Mac drew, and the same bands stood across screens and reboots. The
+   rows below were right.
+   - *Reading the photographs.* The bands ended at row 100, and row 100 starts at $3FA700 + 100 x 64 =
+     $3FC000. Rows 0-99 ($3FA700-$3FBFFF) have A14 = 0 and A15 = 1; every row from 100 down has
+     A14 = A15 = 1, and so does every address of the SE's chips the kernel uses (VIA $EFE1FE, SCC
+     $9FFFF8 and $BFFFF9, SCSI $5FF000-$5FF260, IWM $DFE1FF). A fault that only let A14 and A15
+     agree would break those rows and nothing else; old memory showing through (the SE's DRAM as it
+     powered up) fitted bands that never changed. Nothing in the kernel's path treats those addresses
+     apart: every write sends the data, the low address word and the high byte afresh (psmac_gpio.c,
+     the cycles word for word as upstream's ps_classic_protocol.c), the dirty bitmap's words hold 32
+     rows (96 and 128 are its edges, not 100), and the overlay does not depend on A14. The CPLD
+     latches A8-A15 into U2 (LTCH_A_8) with the same strobe as A0-A7.
+   - *The cause*, found by the user: a sliver of solder joining U2's pins 22 (A14) and 23 (A15) on the
+     hand-built PiStorm (Rev B layout, 74LVC16373A latches). With it removed the SE's screen is clean
+     over its full height.
+   - *What the kernel does about such a thing now* (psmac_board_se.c, `se_ram_lines`), before the 68k
+     starts and before the first screen row: each address line A1-A21 is written as 0 and as 1 (a word
+     at the screen's base and one at the base with that line flipped, both read back), and each pair
+     of lines is taken through its four combinations, each written a word of its own and read back. A
+     line stuck or not connected makes the first two addresses the same memory; two lines joined so
+     that a 0 (or a 1) on either wins make three of the four one memory, which no stuck line does. A
+     line that simply follows another cannot be told from a stuck one from the Pi's side (both leave
+     the memory in two halves); its message says so. One line names the fault and the socket pins (68000 DIP-64: A1-A20 on
+     pins 29-48, A21-A23 on 50-52), or says "address lines A1-A21 good". A read-back of the screen
+     would not have seen it, since reads go astray as the writes do. `mac.selinefault=N` (stuck high)
+     and `mac.selinefault=N,M` (N joined to M) put such faults on the testbed's wire to the SE's RAM.
+     The first sends of rows 0 and 100 are read back once and logged as well.
+   - *Two more things from the same investigation.* After every RESET instruction (the ROM's first act,
+     and every Restart) the board layer reads $400000 once more: the RESET pulses the SE's reset line,
+     which on an SE brings back the ROM overlay at 0, and until now only the start had cleared it (the
+     comment above psmac_se_start said otherwise). The screen showed all the same, so the overlay does
+     not seem to hide the kernel's writes to the screen buffer, but RAM is where it should be now. And
+     the trap-table watch (item 12: low-memory page $50000 mapped read-only so that writes into the
+     OS trap table could be reported) is off by default, `mac.watchtraps=1`
+     to turn it on: on the SE's HDMI log the ROM's own trap table set-up (PC 0x4080C9DC) printed forty
+     reports and their stacks at every start, and every write to that page, which holds all of page 0's
+     low-memory globals (Ticks among them), was a data abort and a store by hand. With the watch off the
+     page is mapped writable and costs nothing.
+   - *Verified* in MAME's `macse_ps`: `mac.selinefault=14` gave "address line A14 does not reach the SE
+     ... $3fa700 and $3fe700 are the same memory" and the SE's screen with its top 100 rows unwritten
+     (white in MAME, whose RAM starts cleared) and the rest right, as on the hardware;
+     `mac.selinefault=14&15` (the two joined, a 0 winning) gave "address lines A14 and A15 are joined:
+     of $3f2700, $3fa700, $3f6700 and $3fe700 ... three are the same memory"; `mac.selinefault=14,15`
+     (A14 following A15, the kind the user's bridge probably was) gave the A14 line of the stuck case,
+     whose message names a short as one of the possibilities: from the Pi's side a line that follows
+     another and a stuck line leave the memory in the same two halves. Without a fault: "address lines A1-A21 good", rows 0 and 100 read back as
+     written, no `[PSMAC:WATCH]` lines (43 in the se6 kernel's run with the SCSI disk).
+
+69. **"Parity has been disabled" on the SE (20 November).** With the se6 kernel booting System 7.1 from
+   the BlueSCSI, the user's SE showed at startup "Parity has been disabled because the parity circuitry
+   is not functioning. You may continue without parity checking." [Shut Down] [Continue]; the first
+   BlueSCSI boot had not.
+   - *Who says it.* The System's INIT 10 (compressed, 'dcmp' 2; decompressed for reading: 118 bytes)
+     asks Gestalt 'prty'. Bit 0 clear: nothing. Bit 0 set and bit 1 (enabled) clear: the alert
+     (ALRT/DITL -16392). Both set: it reads parameter RAM $F9-$FB and shows the alert, clearing $F9,
+     when $F9 bit 0 is set and $FB is $8E, the start-up test's record of a failed parity test. Gestalt
+     'prty' comes from the IIci's System patch (PTCH 1660): 0 unless UnivROMFlags ($DD4) bit 0 says the
+     machine has parity; then bit 0, and bit 1 if VIA1 port B bit 6 reads 0.
+   - *Why on the SE.* UnivROMFlags is the ROM's product table entry's (0x408032C4). The IIci's decoder
+     has two entries, the IIci (0x408036C0, flags 0) and the IIci with parity (0x40803700, flags 1),
+     told apart by VIA1 port A bit 4, read while the ROM has made it an input (0x4080321A). The board
+     layer gave the ROM the IIci's identity bits 6, 2, 1 and 0 and the SE's own bits 7, 5, 4 and 3
+     (item 28); on an SE bit 4 is the floppy drive select, an output, and as an input it
+     reads whatever the pin is left at. When it read 1 the ROM took the SE for an IIci with parity, and
+     port B bit 6, which the board layer reads as 1 (an input tied high on the IIci, the SCSI interrupt
+     enable on the SE), said "not enabled": the alert at every start from then on. That it read 1
+     only after a Restart is a guess, not confirmed; the stand-in parameter RAM was
+     not the cause.
+   - *The fix* (psmac_board_se.c): the board layer follows DDRA, and while bit 4 is an input the ROM
+     reads 0 there (its DDRA shadow is cleared at each RESET, as the VIA's is). The Pi's memory has no
+     parity, so the SE is always the plain IIci now. The stand-in parameter RAM's defaults
+     (psmac_pram_default.h, shared with the solo board) also lose the testbed IIci's record of a failed
+     start-up test ($F0-$F3 00 01 00 02, $F9 01, $FA-$FB 00 8E), which INIT 10 would act on on a Mac it
+     took for one with parity. No mending of $F9 on the real chip is needed: with the plain IIci's
+     entry, Gestalt 'prty' is 0 and INIT 10 looks no further. `mac.sepa4=1` (testbed) reads bit 4 as 1,
+     as the user's SE did.
+   - *Verified* in MAME's `macse_ps` (128 MiB, `mac.rtcsim=dead`, System 7.1 from the card's image):
+     `mac.sepa4=1` reproduces the alert as the user photographed it, [Shut Down] [Continue], over the
+     desktop at the start; without it the Finder and Startup Items come up with no alert, and again
+     after a Restart through the remote control's testbed channel.
 
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
