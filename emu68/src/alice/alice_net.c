@@ -575,6 +575,9 @@ static int mbox_tag_(uint32_t tag, uint32_t a, uint32_t b, uint32_t *out)
     mbuf[3] = __builtin_bswap32(8); mbuf[4] = 0; mbuf[5] = __builtin_bswap32(a); mbuf[6] = __builtin_bswap32(b); mbuf[7] = 0;
     arm_flush_cache((uintptr_t)mbuf, 64);
     uint32_t addr = (uint32_t)mmu_virt2phys((uintptr_t)mbuf);
+#ifdef PSMAC
+    addr = (addr & 0x3fffffffu) | 0xC0000000u;       /* the VideoCore's uncached alias, as support_rpi.c's mbox_send */
+#endif
     uint64_t t = ticks(), hz = tick_hz();
     while (mrd(MBOX_STATUS) & (1u << 31)) { if (ticks() - t > hz) { spinlock_release(&vc_mbox_lock); return -2; } an_yield(); }
     mwr(MBOX_WRITE, (addr & ~15u) | 8u);

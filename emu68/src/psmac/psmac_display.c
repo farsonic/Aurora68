@@ -75,6 +75,21 @@ static int vc_swap;                          /* write the bytes R,G,B,x rather t
 extern uint32_t psmac_vc_pixel_order;        /* support_rpi.c: the firmware's answer to "get pixel order" */
 extern int psmac_bootarg_val(const char *key, char *out, unsigned max);   /* alice_net.c */
 static void vc_byte_order(void);   /* the VideoCore buffer's depth: 32 asked for, 16 if that is what came back */
+extern uint32_t psmac_vc_alpha;              /* support_rpi.c: the answer to "set alpha mode" */
+extern int psmac_vc_query(uint32_t out[8]);
+/* What the firmware's frame buffer is after the set-up, read back with a message that changes
+   nothing, so that a photograph of the log shows what the HVS scans out, not only what was asked.
+   On 20 November 2026 the SE's HDMI stayed black with a buffer the request's answer called good
+   (docs/08 item 65); if that happens again this line says whether the firmware agrees. */
+static void vc_report(uint32_t want_w, uint32_t want_h)
+{
+    uint32_t q[8];
+    if (!psmac_vc_query(q)) { kprintf("[PSMAC:DISP] VideoCore: the firmware did not answer the read-back of its frame buffer\n"); return; }
+    int ok = q[0] == want_w && q[1] == want_h && q[2] == want_w && q[3] == want_h && q[6] == 0 && (!pitch || q[5] == pitch);
+    kprintf("[PSMAC:DISP] VideoCore read back: physical %ux%u, virtual %ux%u, depth %u, pitch %u, offset %u,%u, pixel order %s%s\n",
+            q[0], q[1], q[2], q[3], q[4], q[5], q[6] & 0xffff, q[6] >> 16, q[7] & 1 ? "RGB" : "BGR",
+            ok ? ": as asked" : ": NOT what was asked (the picture may not be on the monitor; mac.vcdepth=16 keeps the firmware's own buffer)");
+}
 static uint64_t next_tick;
 static int con_keep;                          /* the HDMI console (below): mac.console=hdmi keeps the log on the screen */
 static int con_off;                           /* the picture has the buffer */
@@ -159,7 +174,17 @@ void psmac_display_init(uint8_t *win)
        to scan out, since the splash and the first lines of the log are drawn into it on every Pi.
        The console draws 16-bit cells there (psmac_console_putc), and a Restart's RESET leaves it
        alone (psmac_display_reinit). Every other case remakes the buffer as before. */
-    if (psmac_board_se && !psmac_board_solo && con_keep && nscr != 2 && framebuffer && pitch && fb_width && fb_height) {
+    /* The HDMI screen of the SE board's two screens (20 November 2026, docs/08 item 73) takes the
+       same buffer when it is already the screen's size: the firmware's own, which the splash and the
+       first lines of the log prove on the monitor, converted into at 16 bits (RGB565: 65,536 colours
+       on the monitor whatever the Mac draws in, millions included). mac.vcdepth=32 asks the firmware
+       for a 32-bit buffer instead, by psmac_vc_setup's sequence; so does a mac.screen= of another
+       size, which needs a new buffer whatever its depth. */
+    char vd[4] = { 0 };
+    int want32 = psmac_bootarg_val("mac.vcdepth", vd, sizeof vd) && vd[0] == '3';
+    int keep_boot = psmac_board_se && !psmac_board_solo && framebuffer && pitch && fb_width && fb_height &&
+                    ((con_keep && nscr != 2) || (nscr == 2 && !want32 && fb_width == vw && fb_height == vh));
+    if (keep_boot) {
         vc_boot = 1;
         vc_bpp = pitch >= fb_width * 4 ? 32 : 16;
     } else {
@@ -171,7 +196,10 @@ void psmac_display_init(uint8_t *win)
             vc_bpp = 16;
         }
         if (fb && p) { framebuffer = fb; pitch = p; fb_width = vw; fb_height = vh; }
+        if (psmac_vc_alpha != ~0u && psmac_vc_alpha != 2)
+            kprintf("[PSMAC:DISP] VideoCore: \"alpha ignored\" answered %u (the pixels' top byte is 0)\n", psmac_vc_alpha);
     }
+    vc_report(vw, vh);
     vc_w = fb_width; vc_h = fb_height; vc_pitch = pitch;
     vc_byte_order();
     if (framebuffer) vcfb = (uint8_t *)(KERNEL_ALIAS + (((uintptr_t)framebuffer) & 0x3fffffffull));
@@ -186,8 +214,9 @@ void psmac_display_init(uint8_t *win)
     if (nscr == 2) screen_init(&scr[1], win, PSMB_OFF_DISPLAY2, PSMB_OFF_BOUNCE2, PSMB_BOUNCE2_SIZE, w1, h1, 0);
     vcs = nscr == 2 ? &scr[1] : &scr[0];
     if (nscr == 2)
-        kprintf("[PSMAC:DISP] two screens: the SE's 512x342, 1 bit, at $%08x (its own video RAM); HDMI %ux%u: indexed modes that fit at $%08x, the rest in the big region at $%08x (%u MiB); VideoCore %ux%u x%u pitch %u at %p\n",
-                scr[0].win_mac, w1, h1, scr[1].win_mac, PSMB_FB_BIG_PHYS, PSMB_FB_BIG_SIZE >> 20, vc_w, vc_h, vc_bpp, vc_pitch, framebuffer);
+        kprintf("[PSMAC:DISP] two screens: the SE's 512x342, 1 bit, at $%08x (its own video RAM); HDMI %ux%u: indexed modes that fit at $%08x, the rest in the big region at $%08x (%u MiB); VideoCore %ux%u x%u pitch %u at %p%s\n",
+                scr[0].win_mac, w1, h1, scr[1].win_mac, PSMB_FB_BIG_PHYS, PSMB_FB_BIG_SIZE >> 20, vc_w, vc_h, vc_bpp, vc_pitch, framebuffer,
+                vc_boot ? ": the firmware's own buffer, kept (mac.vcdepth=32 asks for a new 32-bit one)" : "");
     else
         kprintf("[PSMAC:DISP] %s %ux%u: indexed modes in the window at $%08x%s; VideoCore %ux%u x%u pitch %u at %p%s\n",
                 psmac_board_se && !psmac_board_solo ? "the SE's screen" : "second display", w0, h0, scr[0].win_mac,

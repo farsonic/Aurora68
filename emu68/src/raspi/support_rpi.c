@@ -253,6 +253,15 @@ static void mbox_send(uint32_t channel, uint32_t data)
 	volatile uint32_t *mbox_status = (uint32_t*)(ARM_PERIIOBASE + 0xB898);
 	uint32_t status;
 
+#ifdef PSMAC
+	/* The request's address as the VideoCore sees it: through its uncached alias (0xC0000000),
+	   as Circle (BUS_ADDRESS) and the Linux firmware driver hand it over on a Pi 2, 3 and 4. A
+	   bare physical address is the VideoCore's L1- and L2-cached view of the same memory: the
+	   firmware may read a stale copy of the request, or leave its answer in its own cache for a
+	   while. QEMU never models that cache, and its GPU bus has the same aliases (20 November 2026,
+	   for the HDMI screen and audio: docs/08 item 73). The reply carries the same value back. */
+	data = (data & 0x3fffffffu) | 0xC0000000u;
+#endif
 	data &= ~MBOX_CHANMASK;
 	data |= channel & MBOX_CHANMASK;
 	spinlock_acquire(&vc_mbox_lock);
@@ -411,17 +420,30 @@ uint32_t enable_unicam_domain()
 }
 
 #ifdef PSMAC
-/* The second display (psmac/psmac_display.c): the VideoCore frame buffer again at the Macintosh
-   screen's size and 32 bits, physical size the same (the firmware picks or scales the HDMI mode).
-   Returns the new buffer's bus address and pitch, like init_display. */
+/* The second display (psmac/psmac_display.c): the VideoCore frame buffer made again at the Macintosh
+   screen's size and depth.
+
+   How the buffer is asked for, compared with the two references (20 November 2026, docs/08 item
+   73). Upstream Emu68's init_display sends physical size, virtual size, depth 16, "allocate buffer"
+   (alignment 64) and "get pitch" in one message, through the request's physical address. Circle's
+   CBcmFrameBuffer::Initialize sends physical size, virtual size, depth, virtual offset (0, 0),
+   "allocate buffer" and "get pitch" in one message, through the VideoCore's uncached alias, and
+   writes 32-bit pixels with an alpha byte. This one follows Circle's order, adds "set alpha mode:
+   ignored" for a 32-bit buffer (the kernel's pixels carry 0 in that byte; the firmware's default
+   for the byte is a config.txt matter, framebuffer_ignore_alpha) and asks for the pixel order.
+   Then a second message that only reads (psmac_vc_query) says what the firmware actually has, so
+   the log shows the buffer the HVS scans out and not just the answer to the request. */
 uint32_t psmac_vc_pixel_order = 1;          /* what the firmware says the byte order is: 1 RGB, 0 BGR (tag 0x40006) */
+uint32_t psmac_vc_alpha = ~0u;              /* the answer to "set alpha mode" (2: ignored), ~0 if not asked */
 uint32_t psmac_vc_setup(uint32_t w, uint32_t h, uint32_t depth, void **fb, uint32_t *pitch_out)
 {
-    int c = 1, pos_base = 0, pos_pitch = 0, pos_depth = 0, pos_order = 0;
+    int c = 1, pos_base = 0, pos_pitch = 0, pos_depth = 0, pos_order = 0, pos_alpha = 0;
     FBReq[c++] = 0;
     FBReq[c++] = LE32(0x48003); FBReq[c++] = LE32(8); FBReq[c++] = 0; FBReq[c++] = LE32(w); FBReq[c++] = LE32(h);
     FBReq[c++] = LE32(0x48004); FBReq[c++] = LE32(8); FBReq[c++] = 0; FBReq[c++] = LE32(w); FBReq[c++] = LE32(h);
     FBReq[c++] = LE32(0x48005); FBReq[c++] = LE32(4); FBReq[c++] = 0; pos_depth = c; FBReq[c++] = LE32(depth);
+    FBReq[c++] = LE32(0x48009); FBReq[c++] = LE32(8); FBReq[c++] = 0; FBReq[c++] = 0; FBReq[c++] = 0;       /* virtual offset 0, 0 */
+    if (depth == 32) { FBReq[c++] = LE32(0x48007); FBReq[c++] = LE32(4); FBReq[c++] = 0; pos_alpha = c; FBReq[c++] = LE32(2); }
     FBReq[c++] = LE32(0x40001); FBReq[c++] = LE32(8); FBReq[c++] = 0; pos_base = c; FBReq[c++] = LE32(64); FBReq[c++] = 0;
     FBReq[c++] = LE32(0x40008); FBReq[c++] = LE32(4); FBReq[c++] = 0; pos_pitch = c; FBReq[c++] = 0;
     FBReq[c++] = LE32(0x40006); FBReq[c++] = LE32(4); FBReq[c++] = 0; pos_order = c; FBReq[c++] = 0;
@@ -434,7 +456,36 @@ uint32_t psmac_vc_setup(uint32_t w, uint32_t h, uint32_t depth, void **fb, uint3
     *fb = (void *)(intptr_t)(LE32(FBReq[pos_base]) & 0x3fffffff);
     *pitch_out = LE32(FBReq[pos_pitch]);
     psmac_vc_pixel_order = LE32(FBReq[pos_order]) & 1;
+    psmac_vc_alpha = pos_alpha ? LE32(FBReq[pos_alpha]) : ~0u;
     return LE32(FBReq[pos_depth]);              /* the depth the firmware (or QEMU) actually set */
+}
+/* What the firmware has now, asked without changing anything: physical and virtual size, depth,
+   pitch, virtual offset and pixel order. Returns 0 if the firmware did not answer. */
+int psmac_vc_query(uint32_t out[8])
+{
+    static const uint32_t tags[6] = { 0x40003, 0x40004, 0x40005, 0x40008, 0x40009, 0x40006 };
+    static const uint8_t words[6] = { 2, 2, 1, 1, 2, 1 };
+    int c = 1, pos[6];
+    FBReq[c++] = 0;
+    for (int i = 0; i < 6; i++) {
+        FBReq[c++] = LE32(tags[i]); FBReq[c++] = LE32(4u * words[i]); FBReq[c++] = 0;
+        pos[i] = c;
+        for (int k = 0; k < words[i]; k++) FBReq[c++] = 0;
+    }
+    FBReq[c++] = 0;
+    FBReq[0] = LE32(c << 2);
+    arm_flush_cache((intptr_t)FBReq, c * 4);
+    mbox_send(8, mmu_virt2phys((intptr_t)FBReq));
+    mbox_recv(8);
+    arm_dcache_invalidate((intptr_t)FBReq, c * 4);
+    if (LE32(FBReq[1]) != 0x80000000u) return 0;
+    out[0] = LE32(FBReq[pos[0]]); out[1] = LE32(FBReq[pos[0] + 1]);    /* physical width, height */
+    out[2] = LE32(FBReq[pos[1]]); out[3] = LE32(FBReq[pos[1] + 1]);    /* virtual width, height */
+    out[4] = LE32(FBReq[pos[2]]);                                       /* depth */
+    out[5] = LE32(FBReq[pos[3]]);                                       /* pitch */
+    out[6] = LE32(FBReq[pos[4]]) | LE32(FBReq[pos[4] + 1]) << 16;      /* virtual offset x | y << 16 */
+    out[7] = LE32(FBReq[pos[5]]);                                       /* pixel order */
+    return 1;
 }
 #endif
 
