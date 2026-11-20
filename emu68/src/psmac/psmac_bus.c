@@ -1087,7 +1087,8 @@ void fastSerial_init(void) {}
 /* Console: under the PiStorm build variants kprintf goes to the "fast serial" (CPLD) path; we send it
    to the PL011 instead so the QEMU/serial console keeps working. */
 #define PL011_BASE (PERIPH_VA + 0x201000)
-static int con_mini;                    /* the log goes to the mini UART: Bluetooth has the PL011 (bt_pi.c) */
+static int con_mini;                    /* 1: the log goes to the mini UART, Bluetooth has the PL011 (bt_pi.c);
+                                           2: no serial line at all (the classic PiStorm's GPIO transport owns GPIO 14/15) */
 /* A UART that does not send. On a Pi 3 with Bluetooth on the PL011 (no disable-bt overlay, the
    release's config.txt) the firmware leaves the PL011 switched off, so its FIFO stays full and every
    character waited the whole bound below, 7 to 10 ms on a Pi 3B: the 2 KB the kernel prints before
@@ -1101,11 +1102,13 @@ static int con_stuck, con_dead_test = -1;
 static int con_room(void)
 {
     if (con_dead_test < 0 && dt_find_node("/")) { const char *o = psmac_option("mac.deaduart"); con_dead_test = o ? o[0] - '0' : 0; }
+    if (con_mini == 2) return 1;                            /* no serial line: the ring drains into nothing */
     int room = con_mini ? (rd32le(AUX_MU_LSR) & 0x20) != 0 : !(rd32le(PL011_BASE + 0x18) & (1 << 5));
     return room && con_dead_test <= 0;                      /* the test still reads the port: the wait costs what it did */
 }
 static void con_send(uint8_t c)
 {
+    if (con_mini == 2) return;                              /* no serial line: GPIO 14/15 carry the PiStorm's data bus */
     /* bounded wait: a wedged UART must never deadlock the emulation (the console lock is shared by all cores) */
     if (!con_stuck || con_dead_test == 2)
         for (int i = 0; i < 100000 && !con_room(); i++) ;
@@ -1167,6 +1170,21 @@ extern uint32_t get_clock_rate(uint32_t clock_id);
 void psmac_console_miniuart(void)
 {
     if (con_mini) return;
+    /* In a Macintosh, on the classic PiStorm, GPIO 8-23 are the 68000's data bus (psmac_gpio.c):
+       GPIO 14 and 15 are D6 and D7, rewritten as outputs and inputs at every bus cycle. Putting them
+       in ALT5 for the mini UART would hand two data lines to the UART between cycles, so there the
+       log simply stops using a serial line once Bluetooth takes the PL011; the HDMI screen, PiLog
+       and aurora68.log still get every character. (The bench Pi, mac.board=solo, has no PiStorm on
+       those pins and keeps the mini UART.) */
+    extern int psmac_gpio_active(void);
+    if (psmac_gpio_active()) {
+        spinlock_acquire(&con_lock);
+        for (int i = 0; i < 100000 && !con_stuck && (rd32le(PL011_BASE + 0x18) & (1 << 3)); i++) ;   /* the PL011 drains what it has */
+        con_mini = 2;
+        spinlock_release(&con_lock);
+        kprintf("[PSMAC] no serial log from here: Bluetooth has the PL011, and GPIO 14/15 are the PiStorm's data lines (HDMI, PiLog and aurora68.log still have it)\n");
+        return;
+    }
     uint32_t core = get_clock_rate(4);                                  /* CORE */
     if (core < 100000000u) core = 250000000u;
     spinlock_acquire(&con_lock);                                        /* the ring's sender stays off the PL011 from here */

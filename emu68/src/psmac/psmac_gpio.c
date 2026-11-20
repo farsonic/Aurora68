@@ -133,6 +133,7 @@ static void setup_gpclk(void)
     gpio[PIN_CLK / 10] |= LE32(4 << ((PIN_CLK % 10) * 3));      /* GPIO 4: alternate function 0, GPCLK0 */
 }
 
+int psmac_gpio_active(void) { return gpio_ready; }     /* the PiStorm transport owns GPIO 0-27 (psmac_bus.c's console asks) */
 int psmac_gpio_reset_asserted(void) { return gpio_ready && (LE32(gpio[13]) & (1 << PIN_RESET)) == 0; }
 
 /* Pulse the motherboard's RESET (every chip back to its reset state). Waits first for the line to

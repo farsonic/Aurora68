@@ -178,9 +178,13 @@ QEMU monitor).
 - The release zip's SD card layout as it is (0.2): `kernel8.img`, `config.txt`, `cmdline.txt`,
   the container with the IIci ROM and declaration ROM, `WIFI/` with the firmware for the Pi
   model in hand.
-- A serial cable on the Pi's GPIO 14/15: the kernel's log is the only window into the first
-  boots. On a Pi 3 with Bluetooth on the PL011 this is the mini UART; `enable_uart=1` is in
-  `config.txt` already.
+- No serial cable: on the classic PiStorm GPIO 8-23 are the 68000's data bus (`psmac_gpio.c`), so
+  GPIO 14 and 15 are D6 and D7, not a UART. (Until 20 November 2026 this list asked for a cable
+  there, and the kernel moved its log onto those pins in ALT5 when Bluetooth took the PL011; with
+  the GPIO transport up it now stops using a serial line instead, `psmac_console_miniuart`.) The
+  windows into the first boots are the HDMI screen (`mac.console=hdmi` keeps the log there for the
+  whole run), PiLog once the Mac is up, and `aurora68.log` on the card (PiLog's Save to Card, and
+  written by itself after every crash record).
 - A known-good CPLD SVF (the shipped firmware) before any reflash.
 - An HDMI monitor for the second screen, which doubles as "is the kernel alive" before the SE
   side works.
