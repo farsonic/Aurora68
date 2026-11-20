@@ -1775,6 +1775,70 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      changed); `mac.hdmi=mirror` with the old 512x342 ROM and `mac.console=hdmi` with the new file
      as regressions, and the solo board at 1920 by 1200. Not on hardware.
 
+63. **The first boot on a real SE: a parameter RAM byte, not the memory size (20 November).** The
+   user's first boot of the SE board on the Macintosh SE itself (classic PiStorm, Pi 3B, kernel of
+   `5ff7f89`, cmdline `enable_cache mac.board=se mac.console=hdmi bt=off wifi=off`, so the default
+   128 MiB) died in the IIci ROM within a second of its first instruction; the SE's screen was never
+   written. The saved `aurora68.log` had the ROM's checksum test, the first SCSI selection, then
+   "translating at bad PC 00000011" and two crash records. The PC trail ended in the ROM's MMU table
+   builder (`link a4,#-8280` at 0x4080476C, called twice from InitMMU at 0x408042FE): a first pass
+   writing descriptors into the 8,280-byte frame on its stack, the pass at 0x408049E4 turning them
+   into tables at the top of RAM, then `moveml; unlk a4; rts` at 0x408047AC returning to $00000011
+   with A4 = $00000011 and the stack above it $00000011 five times and $00000022 ten: the first pass
+   had written past its frame, over the saved A4 and the return address. A5 = $007FFFF8 (InitMMU's
+   own frame, the stack the ROM caps at 8 MB) and A6 = $07FFFFE4 (its globals at the top of 128 MiB)
+   were the ROM's normal layout for that size, not a mis-sized bank.
+   - *What the frame's size depends on.* The builder's input is the RAM chunk list, the decoder's
+     template and the flags byte InitMMU keeps at A6-25, which is extended PRAM byte $8A as read at
+     0x408043D4: bit 0 32-bit addressing (with it clear the 24-bit table is built as well), bit 4,
+     only honoured with bit 0, a layout with RAM at logical $38000000 (0x408043EE adds $37FF0000 to
+     the logical top of RAM). On the SE board the PRAM is the SE's own clock chip (343-0042-B, 256
+     bytes) through the VIA; `pram.bin` on the card ("[CARD] pram.bin: read") is the solo board's and
+     is not used there. Nothing on an SE has kept $8A meaningful for a IIci ROM, while every testbed
+     run had either the solo board's default ($05) or MAME's PRAM set by hand (`tools/pram32.py`,
+     $05).
+   - *The MAME SE, with the PRAM aside* (`mame/nvramFS/macse_ps/rtc` copied away and restored after
+     each run), 128 MiB, the stock ROM as on the card: $8A = $00 (24-bit) boots to the Finder in
+     145 s, so neither 128 MiB nor 24-bit mode is the trigger. $8A = $15 (bits 0, 2 and 4) crashes at
+     PC $00000011 with every data and address register, the stack and the PC trail exactly as on the
+     hardware. At 8 MiB the same byte gives the mapping the user's second hardware boot
+     (`mac.ram=8`, kernel se3) photographed, "switch #3: TC=80f05480 CRP=7fff0003:007ffce0" with
+     "log 38000000-387effff -> phys 00010000": the SE's chip holds $8A with bits 0 and 4 set.
+   - *The fix*, in the board layer (psmac_board_se.c): it follows the clock chip's serial protocol on
+     port B (enable, clock, data; the command byte, the extended command's address byte, the
+     direction) and, while byte $8A comes out of the chip, hands the ROM a mended bit 0 of port B:
+     bit 4 cleared always, bits 0 and 2 set when the Mac has more than 8 MiB, the rest as the chip
+     has them. Every reader sees the same byte (InitMMU, the Start Manager at 0x4080CC60,
+     _ReadXPRam); writes go to the chip unchanged, and System 7.1 writes back the mode it started in,
+     so after one boot the chip itself holds $05. One log line says what was changed and why: "[PSMAC:SE]
+     parameter RAM $8A: the SE's clock chip says $15, the ROM is given $05: bit 4 cleared (...)";
+     `mac.pram8a=keep` leaves the byte alone. The first version logged the chip as saying $14: the
+     ROM's read-modify-write of the enable bit after the last data bit reads port B with the data line
+     driven again, and that read was counted as the chip's bit 0; reads while DDRB bit 0 is an output
+     are left alone now.
+   - *Where 8 MiB stopped on the hardware.* With `mac.ram=8` the ROM got past InitMMU into the
+     $38000000 layout and stalled: no video, the main code at 0x4080EFDE waiting for an I/O, the RBV
+     stand-in with IFR $08 and IER $08, and every bus cycle a read of $5FF070, the 5380's
+     reset-interrupt register. IFR bit 3 is the 5380's interrupt. The board layer kept whatever the
+     ROM's power-on test wrote there (MAME's RBV sets IFR bits written with bit 7), so it read 1 from
+     then on, and every time the SCSI Manager enabled it (IER bit 3, the store at 0x4080A08A) level 2
+     came at once, for no interrupt, until it was disabled again. The MAME SE has always run with
+     that (IFR $08 or $0A in every report line of a good boot, IER switching between $02, $0A, $12
+     and $1A) and got past at its pace; on the hardware it is the likeliest reason for that stall,
+     though the MAME SE could not show the stall itself, even in the $38000000 layout. On an SE the
+     5380's interrupt is kept off the bus (VIA port B bit 6), so bit 3 now reads 0 there; the solo
+     board still computes it from its 5380. Boot times in MAME did not change (Finder at 145 s with
+     128 MiB), so nothing was waiting on that interrupt.
+   - *Heartbeats*: on the SE board the wire carries the SE's addresses, which the heartbeat classed
+     by the IIci's map, so every cycle on the hardware was "other". They are classed by the SE's map
+     now ("via 1942 scc 0 scsi 46887 ... swim 16").
+   - *Verified* in MAME's `macse_ps` with the stock ROM and System 7.1 from the SE's SCSI disk:
+     128 MiB with $8A = $15 (the hardware's case) to the Finder in 145 s; 8 MiB with $15 to the
+     Finder in 138 s with RAM at logical 0 ("log 00000000-007fffff -> phys 00000000"); 128 MiB with
+     $00 to the Finder in 137 s, 32-bit. The solo board unchanged (`tools/run-solo.sh`, 128 MiB,
+     Finder at 20 s). Not yet on the hardware. `mac.ram=8` on the old kernel avoids the crash, as the
+     user's second boot showed, but not the stall after it.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

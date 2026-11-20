@@ -9,8 +9,10 @@ byte at $8A with _ReadXPRam and tests bits 0 and 2) and boots in 32-bit addressi
 both are set; a fresh PRAM has them clear, which is why System 7.1 in the testbed ran in 24-bit
 mode with an 8 MiB ceiling until this was found (docs/08, item 26). The Memory control panel sets
 the same bits; this does it without the control panel. MAME keeps the IIci's 256-byte PRAM in
-mame/nvramFS/maciici_ps/rtc. On the real SE the RTC chip has 20 bytes of PRAM and no byte $8A:
-the kernel will have to keep the extended PRAM itself (a note for the hardware stage).
+mame/nvramFS/maciici_ps/rtc. The SE's clock chip (343-0042-B) has the same 256 bytes, kept in
+mame/nvramFS/macse_ps/rtc for the MAME SE; on the SE board the kernel mends byte $8A as the ROM
+reads it (bit 4 cleared, 32-bit on above 8 MiB: docs/08 item 63), so that PRAM needs no edit
+unless mac.pram8a=keep is given.
 """
 import sys
 p = 'mame/nvramFS/maciici_ps/rtc'

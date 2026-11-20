@@ -72,6 +72,17 @@ static void rbv_recalc(void)
     if (slot_line() && (rbv_regs[0x12] & 0x01)) ifr |= 0x02;          /* any slot interrupt, gated by the slot enable register */
     else ifr &= ~0x02;
     if (psmac_board_solo) { if (psmac_solo_scsi_irq()) ifr |= 0x08; else ifr &= ~0x08; }   /* the 5380's interrupt, level-sensitive */
+    else ifr &= ~0x08;
+    /* On the SE the 5380's interrupt never reaches this file (port B bit 6 keeps it off the SE's
+       bus, above), so the flag is 0 whatever the ROM wrote. Until 20 November 2026 it kept the 1
+       the ROM's power-on test writes into the IFR (MAME's "1 bits write 1s"; the solo board
+       recomputes it from its model), so whenever the SCSI Manager enabled the interrupt (IER
+       bit 3, PC $4080A08A) the RBV raised level 2 at once, for nothing, until it was disabled
+       again. The real SE at 8 MiB (docs/08 item 63) stalled with IFR $08 and IER $08, the main
+       code waiting for an I/O at $4080EFDE and every bus cycle a read of the 5380's
+       reset-interrupt register ($5FF070), which is what that interrupt's handler reads; the MAME
+       SE, far slower per cycle, always got past. The MAME SE boots to the Finder with the flag
+       held at 0 in the same time as before (145 s), so nothing was waiting on it. */
     rbv_ifr = ifr;
 }
 /* the level-2 interrupt the RBV would raise: any enabled flag */
@@ -189,6 +200,86 @@ static uint32_t via_read_fix(uint32_t reg, uint32_t r)
     return r;
 }
 
+/* ---- the clock chip's byte $8A: what the IIci ROM makes of an SE's parameter RAM ------------
+   The SE's clock chip (343-0042-B, 256 bytes of parameter RAM) sits behind VIA port B as on the
+   IIci: bit 2 enable (low = selected), bit 1 clock, bit 0 data, MSB first, the chip's bits read
+   after each rising clock edge. The IIci ROM reads extended byte $8A before it builds its MMU
+   tables (0x408043D4) and that byte decides the memory layout: bit 0 32-bit addressing, bit 2 the
+   same for the next start (docs/08 item 26), bit 4 a layout with RAM at logical $38000000
+   (0x408043EE adds $37FF0000 to the logical top of RAM). On an SE nothing has kept the byte
+   meaningful for a IIci ROM: it holds whatever the battery kept. The first boot on a real SE (20 November 2026)
+   read it with bit 4 set: with 128 MiB the table builder at 0x4080476C ran past its 8 KiB frame
+   on the stack (more than the 2,070 descriptors it has room for) and returned to $00000011, one of
+   its own descriptors; with mac.ram=8 the ROM got past that, mapped RAM at $38000000 and never
+   started the video. The MAME SE with $8A = $15 reproduces the crash register
+   for register and, at 8 MiB, the same $38000000 mapping (docs/08 item 63).
+
+   So on the SE board the byte is mended on its way to the ROM, every time it is read, whoever
+   reads it (the ROM's start-up code or _ReadXPRam): bit 4 cleared always, bits 0 and 2 set when
+   the Mac has more than 8 MiB (in 24-bit mode the rest is unused, and the HDMI screen's thousands
+   and millions need 32-bit addressing), the other bits as the chip has them. The chip itself is
+   not written by this file: a write of $8A goes to it unchanged and is mended again at the next
+   read. (System 7.1 writes back the mode it started in, $05, so after one boot the chip agrees:
+   MAME's saved PRAM had $05 after runs that began with $15 and with $00.) mac.pram8a=keep turns the mending off. This file follows the chip's serial
+   protocol only to know when the byte is in flight; it answers nothing else. */
+static struct {
+    int enb, clk, dir, bits, state, mend, keep;   /* dir 1: the chip is sending; state 0 command, 1 data to write, 2 extended address, 3 extended data */
+    int ddr0;                                     /* DDRB bit 0: 1 while the ROM drives the data line (then a read returns its own latch) */
+    uint8_t byte, cmd, real, given;               /* real: what the chip sent; given: what the ROM got */
+    uint32_t mended;                              /* reads of $8A that were changed, for the log */
+} xp = { .enb = 1, .ddr0 = 1 };
+static uint8_t xp8a_bits(void) { return psmac_ram_size() > (8u << 20) ? 0x05 : 0; }   /* bits 0 and 2: 32-bit addressing now and at the next start */
+static void xp_end(void)
+{
+    if (xp.mend && xp.bits == 0 && xp.real != xp.given && xp.mended++ < 4) {
+        int b4 = (xp.real & 0x10) != 0, b02 = (~xp.real & xp8a_bits()) != 0;
+        kprintf("[PSMAC:SE] parameter RAM $8A: the SE's clock chip says $%02x, the ROM is given $%02x:%s%s (mac.pram8a=keep to leave it)\n",
+                xp.real, xp.given, b4 ? " bit 4 cleared (RAM at logical $38000000: with 128 MiB the ROM's MMU table builder overruns its stack, with 8 the boot stalls; docs/08 item 63)" : "",
+                b02 ? (b4 ? "; 32-bit addressing on (more than 8 MiB of RAM)" : " 32-bit addressing on (more than 8 MiB of RAM; 24-bit mode would use 8)") : "");
+    }
+    xp.mend = 0;
+}
+/* the ROM wrote port B (ORB): follow the enable, clock and data lines */
+static void xp_lines(uint8_t orb)
+{
+    int enb = (orb >> 2) & 1, clk = (orb >> 1) & 1, data = orb & 1;
+    if (xp.keep) return;
+    if (enb != xp.enb) { if (enb) xp_end(); xp.enb = enb; xp.dir = 0; xp.bits = 0; xp.byte = 0; xp.state = 0; xp.mend = 0; }
+    if (!clk && xp.clk && !xp.enb) {             /* falling edge: the next bit moves */
+        if (xp.dir) { if (xp.bits > 0) xp.bits--; }
+        else {
+            xp.byte = (uint8_t)(xp.byte << 1 | data);
+            if (++xp.bits == 8) {
+                uint8_t b = xp.byte; xp.bits = 0; xp.byte = 0;
+                if (xp.state == 2) {                 /* the second byte of an extended command: the low address bits */
+                    int addr = ((xp.cmd & 7) << 5) | ((b & 0x7c) >> 2);
+                    if (xp.cmd & 0x80) { xp.dir = 1; xp.bits = 8; xp.mend = addr == 0x8a; xp.real = xp.given = 0; xp.state = 0; }
+                    else xp.state = 3;
+                } else if (xp.state == 1 || xp.state == 3) xp.state = 0;   /* a byte written to the chip: not ours to change */
+                else {
+                    xp.cmd = b;
+                    if ((b & 0x78) == 0x38) xp.state = 2;
+                    else if (b & 0x80) { xp.dir = 1; xp.bits = 8; }
+                    else xp.state = 1;
+                }
+            }
+        }
+    }
+    xp.clk = clk;
+}
+/* the ROM reads port B: while byte $8A comes out of the chip, bit 0 is the mended bit */
+static uint32_t xp_read(uint32_t r)
+{
+    if (!xp.mend || xp.ddr0 || xp.bits > 7 || xp.bits < 0) return r;   /* after the last bit the ROM takes the line back first: its read-modify-write of the enable bit is its own */
+    int n = xp.bits;                                 /* the bit the chip presents now, 7 first */
+    uint8_t real = r & 1, set = xp8a_bits(), bit = real;
+    if (n == 4) bit = 0;
+    else if ((set >> n) & 1) bit = 1;
+    xp.real = (uint8_t)((xp.real & ~(1u << n)) | (real << n));
+    xp.given = (uint8_t)((xp.given & ~(1u << n)) | (bit << n));
+    return (r & ~1u) | bit;
+}
+
 /* ---- the SCSI chip: the same 5380, read on even addresses, written on odd ones -------------- */
 #define SE_SCSI_RD   0x5FF000u
 #define SE_SCSI_WR   0x5FF001u
@@ -212,8 +303,9 @@ int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t 
     if (off < 0x2000 || (off >= 0x40000 && off < 0x42000)) {
         /* VIA1: register n at +n*0x200 on both machines */
         uint32_t reg = (off >> 9) & 15, se = SE_VIA + (reg << 9);
-        if (write) { trace("VIA", 1, addr, se, size, via_data(reg, data & 0xff)); psmac_wire_write(se, 1, via_data(reg, data & 0xff), posted); return 1; }
+        if (write) { if (reg == 0) xp_lines(data & 0xff); else if (reg == 2) xp.ddr0 = data & 1; trace("VIA", 1, addr, se, size, via_data(reg, data & 0xff)); psmac_wire_write(se, 1, via_data(reg, data & 0xff), posted); return 1; }
         r = via_read_fix(reg, psmac_wire_read(se, 1) & 0xff);
+        if (reg == 0) r = xp_read(r);
         trace("VIA", 0, addr, se, size, r);
         *val = size == 1 ? r : size == 2 ? r << 8 | r : r << 24 | r << 16 | r << 8 | r;
         return 1;
@@ -354,6 +446,7 @@ void psmac_se_options(const char *args)
         tok += 12; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); se_trace_left = n;
         if (*tok == ',') { tok++; for (int i = 0; i < 4 && *tok && *tok != ' '; i++, tok++) se_trace_dev[i] = (*tok >= 'a' && *tok <= 'z') ? *tok - 32 : *tok; }
     }
+    if ((tok = find_token(args, "mac.pram8a="))) { tok += 11; if (tok[0] == 'k') xp.keep = 1; }
     if ((tok = find_token(args, "mac.seram="))) { tok += 10; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); if (n >= 1 && n <= 4) se_ram_mb = n; }
 }
 

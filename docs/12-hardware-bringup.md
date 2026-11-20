@@ -245,6 +245,31 @@ VideoCore buffer the firmware granted. The remote control photographs either scr
 (`aurora68.py --display 1 screenshot hdmi.png`). Not seen on hardware yet: everything above ran
 on the MAME SE and QEMU's model of the VideoCore.
 
+## The first boot on the SE
+
+*20 November 2026* (docs/08 item 63 has the record). The first boot of `mac.board=se` in the user's
+SE died within a second, in the IIci ROM's MMU table builder, before anything reached the SE's
+screen; a second boot with `mac.ram=8` got further and stalled with no video. Neither was the
+memory size. The SE's own clock chip, which is the PRAM on this board, holds extended byte $8A
+with bit 4 set, and the IIci ROM reads that byte to choose its memory layout: bit 4 puts RAM at
+logical $38000000, which with 128 MiB overruns the table builder's frame on the stack (the MAME SE
+crashes register for register like the hardware with $8A = $15) and at 8 MiB leads elsewhere. The
+board layer now mends the byte on its way to the ROM, whoever reads it: bit 4 cleared, 32-bit
+addressing on when the Mac has more than 8 MiB, the rest as the chip has it. The kernel says so in
+one line:
+
+    [PSMAC:SE] parameter RAM $8A: the SE's clock chip says $15, the ROM is given $05: bit 4 cleared (...)
+
+System 7.1 writes back the mode it started in, so after the first good boot the chip holds $05 and
+the line no longer appears. `mac.pram8a=keep` turns the mending off; `pram.bin` on the card is the
+solo board's and is not used on the SE. The same change keeps the RBV stand-in's SCSI interrupt
+flag at 0 on the SE (the 5380's interrupt never reaches the Pi there), which is the likeliest cause
+of the stall at 8 MiB, and classes the heartbeat's bus cycles by the SE's address map.
+
+For the next boot: the default memory (no `mac.ram=`), the rest of the cmdline as before; the
+lines to look for are the `parameter RAM $8A` one, `switch #3: TC=80f06b00 ...` with
+"log 00000000-07ffffff -> phys 00000000", and the heartbeats' `scsi` and `via` counts.
+
 ## What to have ready
 
 - The release zip's SD card layout as it is (0.2): `kernel8.img`, `config.txt`, `cmdline.txt`,

@@ -83,7 +83,14 @@ uint64_t psmac_fault_elr;   /* set by the abort dispatcher: who faulted? */
 static inline int emu68_own_fault(void) { return (psmac_fault_elr >> 32) == 0xffffff80ull; }   /* Emu68 text; JIT code is at 0xffffffe0... */
 static inline int in_periph_window(uint64_t a) { return a >= PERIPH_LOW && a < 0x40000000ull; }
 static volatile uint32_t dev_cnt[8]; /* VIA1, SCC, SCSI, ASC, SWIM, RBV, FB, other */
-static inline int dev_class(uint32_t a) { uint32_t o = a & 0x000fffff; if (a < 0x80000) return 6; if ((a & 0xff000000) != 0x50000000) return 7; if (o < 0x2000 || (o >= 0x40000 && o < 0x42000)) return 0; if (o >= 0x4000 && o < 0x6000) return 1; if ((o >= 0x10000 && o < 0x14000) || (o >= 0x6000 && o < 0x8000)) return 2; if (o >= 0x14000 && o < 0x16000) return 3; if (o >= 0x16000 && o < 0x18000) return 4; if (o >= 0x24000 && o < 0x28000) return 5; return 7; }
+extern int psmac_board_se, psmac_board_solo;
+/* On the SE board the wire carries the SE's own addresses (psmac_board_se.c translated them), so
+   they are classed by the SE's map: RAM below $400000 (the screen rows), the 5380 at $580000-
+   $5FFFFF, the SCC at $800000-$BFFFFF, the IWM at $C00000-$DFFFFF, the VIA at $E80000-$EFFFFF.
+   Until 20 November 2026 they were classed by the IIci's, and every cycle on the real SE counted
+   as "other". */
+static inline int dev_class_se(uint32_t a) { if (a < 0x400000) return 6; if (a >= 0x580000 && a < 0x600000) return 2; if (a >= 0x800000 && a < 0xC00000) return 1; if (a >= 0xC00000 && a < 0xE00000) return 4; if (a >= 0xE80000 && a < 0xF00000) return 0; return 7; }
+static inline int dev_class(uint32_t a) { uint32_t o = a & 0x000fffff; if (psmac_board_se && !psmac_board_solo) return dev_class_se(a); if (a < 0x80000) return 6; if ((a & 0xff000000) != 0x50000000) return 7; if (o < 0x2000 || (o >= 0x40000 && o < 0x42000)) return 0; if (o >= 0x4000 && o < 0x6000) return 1; if ((o >= 0x10000 && o < 0x14000) || (o >= 0x6000 && o < 0x8000)) return 2; if (o >= 0x14000 && o < 0x16000) return 3; if (o >= 0x16000 && o < 0x18000) return 4; if (o >= 0x24000 && o < 0x28000) return 5; return 7; }
 
 /* SCSI register trace (mac.scsitrace=N lines): every write, and every read whose value differs from
    the previous read of the same register; a run of identical polls is folded into one line with its
