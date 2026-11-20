@@ -407,7 +407,17 @@ static int bootarg_word(const char *w)
 
 /* ---- firmware, copied from what AmigaOS offered ---------------------------------- */
 struct fwfile { char name[64]; uint8_t *p; uint32_t len; };
-static struct fwfile fw[AN_FW_MAX];
+#ifdef PSMAC
+/* The container brings every board's WiFi and Bluetooth firmware (get-firmware.sh: 15 files for the
+   3B, the Zero 2 W's two chips, and the 3B+, 3A+ and Pi 4). With the board protocol's eight slots
+   the 43455 set, last in that list, never got in: a 3A+ or 3B+ booted from the one-card container
+   had no WiFi firmware (found 20 November 2026). The kernel's own table is larger; the 68k's offer
+   (fw_take) still reads at most AN_FW_MAX entries. */
+#define FW_TABLE 24
+#else
+#define FW_TABLE AN_FW_MAX
+#endif
+static struct fwfile fw[FW_TABLE];
 static int nfw;
 static int wifi_disabled;
 static volatile uint32_t fw_gen;              /* +1 each time new files came: the WiFi tries again */
@@ -451,7 +461,7 @@ static void fw_take(void)
             if (same) break;
         }
         if (k < nfw) continue;                      /* have it: never replaced under the WiFi's feet */
-        if (nfw == AN_FW_MAX) continue;
+        if (nfw == FW_TABLE) continue;
         nfw++;
         fw[k].p = tlsf_malloc(tlsf, len + 64);
         if (!fw[k].p) { kprintf("[WIFI] no memory for the firmware\n"); fw[k].len = 0; continue; }
@@ -471,7 +481,8 @@ static void fw_take(void)
    host files through semihosting in the testbed) instead of from the 68k. Same table as fw_take. */
 int alice_fw_preload(const char *name, const uint8_t *data, uint32_t len)
 {
-    if (nfw >= AN_FW_MAX || !len) return -1;
+    if (!len) return -1;
+    if (nfw >= FW_TABLE) { kprintf("[WIFI] firmware file %s left out: the kernel's table holds %d files\n", name, FW_TABLE); return -1; }
     struct fwfile *f = &fw[nfw];
     f->p = tlsf_malloc(tlsf, len + 64);
     if (!f->p) return -1;
@@ -647,6 +658,9 @@ static int wl_on_soc_gpio(void)
     }
 }
 int alice_pi_board_type(void) { return board_type(); }
+#ifdef PSMAC
+uint32_t alice_pi_board_rev(void) { board_type(); return board_rev; }   /* psmac_usbnet.c's board line */
+#endif
 int alice_pi_is_2711(void)
 {
     switch (board_type()) {
@@ -1145,11 +1159,23 @@ static int bringup(void)
     const char *const *stems = is56 ? s43456 : is30 ? s43430 : s43455;
     const char *const *nvs = is56 ? nv43456 : is30 ? nv43430 : nv43455;
 #ifdef PSMAC
-    /* one container for every board (get-firmware.sh): a Zero 2 W's 43436 answers as a 43430, so
-       the board says which of the two sets is its own */
+    /* one container for every board (get-firmware.sh): a Zero 2 W's chip answers as a 43430, so
+       the board says which set is its own. Zero 2 Ws come with two chips, the BCM43436 and the
+       later 43436s. Linux tells them apart by the 43430's revision: revision 1 is the name
+       "brcmfmac43430-sdio" (the Pi 3B's 43438 is revision 1 too), and Raspberry Pi's firmware
+       package points that name on a Zero 2 W (brcmfmac43430-sdio.raspberrypi,model-zero-2-w.bin
+       and .txt) at brcmfmac43436s-sdio, with no CLM blob of its own, so the 43430's is taken;
+       any other revision is "brcmfmac43436-sdio". The same choice here. */
     static const char *const s43436[] = { "brcmfmac43436-sdio", "brcmfmac43430-sdio", "cyfmac43430-sdio", 0 };
     static const char *const nv43436[] = { "brcmfmac43436-sdio", "brcmfmac43430-sdio", 0 };
-    if (is30 && board_type() == 0x12) { stems = s43436; nvs = nv43436; }
+    static const char *const s43436s[] = { "brcmfmac43436s-sdio", "brcmfmac43430-sdio", "cyfmac43430-sdio", 0 };
+    static const char *const nv43436s[] = { "brcmfmac43436s-sdio", "brcmfmac43430-sdio", 0 };
+    if (is30 && board_type() == 0x12) {
+        int s_variant = W.c.rev == 1;
+        stems = s_variant ? s43436s : s43436;
+        nvs = s_variant ? nv43436s : nv43436;
+        wifi_log("Zero 2 W: chip 43430 revision %u, the %s\n", W.c.rev, s_variant ? "BCM43436s (brcmfmac43436s-sdio)" : "BCM43436 (brcmfmac43436-sdio)");
+    }
 #endif
     const struct fwfile *fb = fw_find(stems, ".bin");
     const struct fwfile *nv = fw_find(nvs, ".txt");

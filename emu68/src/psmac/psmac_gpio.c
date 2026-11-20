@@ -117,14 +117,54 @@ static uint32_t status_read(void)
     return (value >> 8) & 0xffff;
 }
 
-/* the 200 MHz clock for the CPLD on GPIO 4 (GPCLK0 from PLLC: divider 6 on a Pi 3, 5 on a Pi 4) */
+/* The 200 MHz clock for the CPLD on GPIO 4: GPCLK0 from PLLC's peripheral output (clock source 5),
+   divided by 6 on a Pi 3 and by 5 on a Pi 4, as Emu68's ps_classic_protocol.c does on every board.
+   Those numbers assume PLLC_PER at 1200 and 1000 MHz, the firmware's settings for the default core
+   clock; the firmware picks PLLC, and a core_freq= in config.txt can move it. So the PLL is read
+   back first (its registers as Linux's clk-bcm2835 describes them: NDIV, PDIV and the 20-bit
+   fraction from the 19.2 MHz crystal, doubled when the feedback prescaler is on, then the PER
+   channel's divider), the usual divider is kept whenever it gives 200 MHz within a tenth, and only
+   a PLLC elsewhere gets the divider nearest 200 MHz. The log says what came out. The 3B, 3A+ and
+   Zero 2 W all run their core clock at 400 MHz by default, and upstream's divider of 6 is what
+   Emu68 uses on every Pi 3 board, the 3A+ the classic PiStorm was laid out for among them
+   (20 November 2026: the PLL read here, not yet on a 3A+ or Zero 2 W). */
+#define XOSC_HZ         19200000u
+#define A2W_PLLC_CTRL   0x1120
+#define A2W_PLLC_ANA1   0x1034
+#define A2W_PLLC_FRAC   0x1220
+#define A2W_PLLC_PER    0x1520
+static uint32_t gpclk_div, gpclk_src_mhz;
+static uint32_t pllc_per_hz(void)
+{
+    uint32_t ctrl = LE32(gpclk[A2W_PLLC_CTRL / 4]), frac = LE32(gpclk[A2W_PLLC_FRAC / 4]) & 0xfffffu;
+    uint32_t ndiv = ctrl & 0x3ffu, pdiv = (ctrl >> 12) & 7u, chan = LE32(gpclk[A2W_PLLC_PER / 4]) & 0xffu;
+    if (!ndiv || !pdiv || (ctrl & (1u << 16)))              /* not set up, or powered down */
+        return 0;
+    uint64_t vco = ((uint64_t)XOSC_HZ * (((uint64_t)ndiv << 20) + frac)) >> 20;
+    if (LE32(gpclk[A2W_PLLC_ANA1 / 4]) & (1u << 14))         /* the feedback prescaler doubles it */
+        vco *= 2;
+    vco /= pdiv;
+    return (uint32_t)(vco / (chan ? chan : 256));
+}
 static void setup_gpclk(void)
 {
+    uint32_t usual = pi4 ? 5 : 6, per = pllc_per_hz();
+    gpclk_div = usual;
+    if (per >= 400000000u && per <= 3200000000u) {
+        uint32_t f = per / usual;
+        if (f < 180000000u || f > 220000000u) {
+            gpclk_div = (per + 100000000u) / 200000000u;
+            if (gpclk_div < 2) gpclk_div = 2;
+        }
+    }
+    else
+        per = 0;                                            /* not a PLL rate: the registers mean something else */
+    gpclk_src_mhz = per / 1000000u;
     gpclk[CLK_GP0_CTL / 4] = LE32(CLK_PASSWD | (1 << 5));
     usleep(10);
     { uint32_t n = 0; while ((gpclk[CLK_GP0_CTL / 4] & LE32(1 << 7)) && ++n < 1000000) ; }
     usleep(100);
-    gpclk[CLK_GP0_DIV / 4] = LE32(CLK_PASSWD | ((pi4 ? 5 : 6) << 12));
+    gpclk[CLK_GP0_DIV / 4] = LE32(CLK_PASSWD | (gpclk_div << 12));
     usleep(10);
     gpclk[CLK_GP0_CTL / 4] = LE32(CLK_PASSWD | 5 | (1 << 4));
     usleep(10);
@@ -157,7 +197,16 @@ void psmac_gpio_pulse_reset(void) { pulse_reset(1000, 1000); }
 void psmac_gpio_init(void)
 {
     uint64_t frq; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(frq));
-    pi4 = frq > 20000000;                                  /* 54 MHz counter: a Pi 4 or CM4; 19.2 MHz: a Pi 3 or Zero 2 */
+    /* The Pi 4 timings for a BCM2711 board (4B, 400, CM4), the Pi 3 ones for every BCM2837 board,
+       the 3B, 3B+, 3A+ and Zero 2 W. The strobes below are counted in GPIO register writes, whose
+       length is the peripheral bus's (the core clock, 400 MHz on all four), not the ARM's (1.2,
+       1.4, 1.4 and 1.0 GHz): one set of Pi 3 timings serves them all, as in upstream Emu68. The
+       board type decides (psmac_usbnet.c); without one, the generic timer's frequency as upstream
+       does: 54 MHz on a Pi 4, 19.2 MHz on a Pi 3 (QEMU's raspi3 says 62.5, which until 20 November
+       2026 gave the testbed the Pi 4 timings) */
+    extern int psmac_board_type(void);
+    int t = psmac_board_type();
+    pi4 = t >= 0 ? (t == 0x11 || t == 0x13 || t == 0x14) : frq > 20000000;
     CLEAR_BITS = pi4 ? CLEAR_BITS_PI4 : CLEAR_BITS_PI3;
     OUTPUT[0] = GPFSEL0_OUTPUT; OUTPUT[1] = GPFSEL1_OUTPUT; OUTPUT[2] = pi4 ? GPFSEL2_OUTPUT_PI4 : GPFSEL2_OUTPUT_PI3;
     INPUT[0] = GPFSEL0_INPUT;   INPUT[1] = GPFSEL1_INPUT;   INPUT[2] = pi4 ? GPFSEL2_INPUT_PI4 : GPFSEL2_INPUT_PI3;
@@ -172,7 +221,12 @@ void psmac_gpio_init(void)
     status_write(0);
     usleep(100);
     pulse_reset(30000, 10000);
-    kprintf("[PSMAC:GPIO] classic PiStorm protocol up (%s timings, 200 MHz CPLD clock on GPIO 4, status %04x, RESET %s)\n",
+    if (gpclk_src_mhz)
+        kprintf("[PSMAC:GPIO] CPLD clock on GPIO 4: PLLC_PER %u MHz / %u = %u MHz%s\n", gpclk_src_mhz, gpclk_div, gpclk_src_mhz / gpclk_div,
+                gpclk_div == (pi4 ? 5u : 6u) ? "" : " (not the usual divider: PLLC is not where the firmware usually puts it)");
+    else
+        kprintf("[PSMAC:GPIO] CPLD clock on GPIO 4: PLLC unreadable, divider %u as usual (200 MHz from a %u MHz PLLC)\n", gpclk_div, pi4 ? 1000 : 1200);
+    kprintf("[PSMAC:GPIO] classic PiStorm protocol up (%s timings, status %04x, RESET %s)\n",
             pi4 ? "Pi 4" : "Pi 3", status_read(), psmac_gpio_reset_asserted() ? "asserted" : "free");
 }
 

@@ -303,6 +303,22 @@ static void psmac_read_options(void)
     kprintf("[PSMAC] options: ram=%d MiB bridge=%s (bootargs: %s)\n", globals.psmac_ram_mb, transport_none ? "none (solo)" : use_gpio ? "gpio (classic PiStorm)" : use_semihost ? "semihost" : "uart", shown);
 }
 
+/* The CPLD's start (its state machine reset, the motherboard's RESET pulse: some 40 ms) once, by
+   whichever core comes first. The service core brings it up as it starts, and on the SE board the
+   board layer's first access from core 0 can arrive in the same moment: until 20 November 2026 both
+   ran psmac_gpio_init side by side (the QEMU log showed it twice), two cores strobing the CPLD at
+   once. The second now waits for the first. */
+static void gpio_bring_up(void)
+{
+    static int claimed;
+    if (__atomic_exchange_n(&claimed, 1, __ATOMIC_ACQ_REL)) {
+        while (!transport_up)
+            __asm__ volatile("yield");
+        return;
+    }
+    psmac_gpio_init();
+    transport_up = 1;
+}
 /* One bridge transaction. Must only run on the transport owner. */
 /* The same transaction over the classic PiStorm's GPIO protocol. No bridge, no reply frame: a read
    is a 68000 bus cycle and the interrupt level is a status register away. The 68000 socket has 24
@@ -313,7 +329,7 @@ static void psmac_read_options(void)
 static void gpio_xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, uint32_t data, struct psmac_reply *r)
 {
     (void)flags;
-    if (!transport_up) { psmac_gpio_init(); transport_up = 1; }
+    if (!transport_up) gpio_bring_up();
     uint32_t before = psmac_gpio_timeouts(), value = 0xffffffffu;
     svc_op = op; svc_addr = addr; svc_phase = 1;
     switch (op) {
@@ -466,7 +482,7 @@ void psmac_service_core(void)
 {
     psmac_read_options();
     if (transport_none) transport_up = 1;
-    else if (use_gpio) { psmac_gpio_init(); transport_up = 1; }
+    else if (use_gpio) gpio_bring_up();
     else if (!use_semihost) uart_init(); else { if (!semihost_init()) transport_dead = 1; }
     service_running = 1;
     if ((use_gpio || transport_none) && !bustrace_asked) psmac_trace(0);   /* the first 400 bus cycles are the testbed's diagnostic; on a bench they bury the log, and on the HDMI console they cost the ROM minutes (mac.bustrace=N asks for them) */
@@ -784,6 +800,25 @@ static int ends_with(const char *name, const char *suffix)
     for (uint32_t i = 0; i < m; i++) if (name[n - m + i] != suffix[i]) return 0;
     return 1;
 }
+/* a disk image in the container, as walk_container will find it: the card's images are then not
+   loaded (psmac_card.c), so the memory they would need need not be kept free for them */
+static int container_has_image(const uint8_t *img, uint32_t size)
+{
+    uint32_t off = 0;
+    while (img && off + 110 <= size && bytes_eq(img + off, "070701", 6)) {
+        const char *h = (const char *)(img + off);
+        uint32_t fsize = hex8(h + 54), nsize = hex8(h + 94);
+        const char *name = h + 110;
+        uint32_t data = (off + 110 + nsize + 3) & ~3u;
+        if (data + fsize > size || (nsize == 11 && bytes_eq(name, "TRAILER!!!", 10)))
+            break;
+        if (fsize && (ends_with(name, ".img") || ends_with(name, ".hda") || ends_with(name, ".image") || ends_with(name, ".hfv") || ends_with(name, ".scsi")))
+            return 1;
+        off = (data + fsize + 3) & ~3u;
+    }
+    return 0;
+}
+
 static void walk_container(const uint8_t *img, uint32_t size, struct container_result *r)
 {
     r->rom = img; r->rom_len = size; r->declrom = NULL; r->declrom_len = 0; r->declrom_sized = 0;
@@ -858,9 +893,11 @@ static void walk_container(const uint8_t *img, uint32_t size, struct container_r
        Pi 3B, 2B v1.2      LAN9514 on USB (smsc95xx)    $81 kept
        Pi 3B+              LAN7800 on USB (lan78xx)     $81 kept
        Pi 3A+, Zero 2 W    none                         $81 left out: the WiFi is the Mac's first card
+       3A+, Zero 2 W with eth=usb   a USB adapter       $81 kept (psmac_usbnet.c)
        eth=off             (any board)                  $81 left out
-   The testbed's file bridge (mac.net=) counts as a wired port. The board comes from the device tree
-   (psmac_board_wired: the ethernet0 alias's compatible, else the board's model), so this is decided
+   The testbed's file bridge (mac.net=) counts as a wired port. The board comes from its revision
+   code, else the device tree (psmac_board_wired: the 3A+'s firmware passes the 3B+'s tree, so the
+   tree alone took a 3A+ for a 3B+ until 20 November 2026), so this is decided
    before the 68k starts, as it must be: the Slot Manager reads the ROM once, at the first boot, long
    before the USB bus is enumerated. A chip that is then not found makes unit 1 report no unit, so the
    card's driver fails its Open as with eth=off. Lagoon EtherTalk with $81 in parameter RAM ($E0) and
@@ -914,20 +951,40 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
     uintptr_t base = (sys_memory[0].mb_Base + 0x1fffff) & ~0x1fffffull;
     const uintptr_t extra = PSMB_WIN_SIZE + PSMB_DECLROM_SIZE + PSMB_FB_BIG_SIZE;    /* slot $9 mailbox window + declaration ROM + the big frame buffer */
     uint32_t mb = globals.psmac_ram_mb;
+    uintptr_t avail = sys_memory[0].mb_Base + sys_memory[0].mb_Size - base;
+    int image_inside = container_has_image((const uint8_t *)rom, rom_sz);
+    uint32_t keep_mb = image_inside ? PSMAC_PI_SLACK_MB : PSMAC_CARD_IMAGE_KEEP_MB;
+    {   /* the board first: its type decides the wired card and the firmware, and its memory is what
+           this function shares out (psmac_usbnet.c; the first call asks the mailbox, on this core,
+           before the services start) */
+        extern int psmac_board_type(void); extern const char *psmac_board_name(void); extern uint32_t psmac_board_revision(void);
+        extern const char *psmac_board_wired_name(void);
+        int t = psmac_board_type();
+        kprintf("[PSMAC] board: %s (revision %06x, type %02x); wired port: %s; %u MiB of RAM free for the Mac and its disks\n",
+                psmac_board_name(), psmac_board_revision(), t < 0 ? 0xff : t, psmac_board_wired_name(), (uint32_t)(avail >> 20));
+    }
     if (!mb) {
-        /* No mac.ram=: take what the Pi can spare. The kernel keeps PSMAC_PI_KEEP_MB for its own
-           pools (the JIT cache, the service core's buffers, firmware); the rest is the Mac's, up
-           to PSMAC_RAM_DEFAULT_MB, which is what the IIci ROM sizes without a memory patch (two
-           banks of 64 MiB, docs/08 item 11). A Pi Zero 2 W or 3A+ (512 MiB) and a Pi 4 (2-8 GiB)
-           both end up with 128 MiB; smaller boards get what is left. Sizes that are not a full
-           bank or a full bank A plus part of bank B still work (the shim aliases what is
-           missing, psmac_mmu.c), but a real IIci never had them, so the rounding stays at 8. */
-        uintptr_t avail = sys_memory[0].mb_Base + sys_memory[0].mb_Size - base;
-        uintptr_t spare = avail > ((uintptr_t)PSMAC_PI_KEEP_MB << 20) ? avail - ((uintptr_t)PSMAC_PI_KEEP_MB << 20) : 0;
+        /* No mac.ram=: take what the Pi can spare, up to PSMAC_RAM_DEFAULT_MB, which is what the IIci
+           ROM sizes without a memory patch (two banks of 64 MiB, docs/08 item 11). The kernel's own
+           pools (the JIT's 64 MiB, its heap, the VideoCore's memory) are already gone from this
+           block; what else comes out of it later is a disk image on the card (psmac_card.c), so that
+           much is kept back: PSMAC_CARD_IMAGE_KEEP_MB, room for a 96 MB System 7 image, or only the
+           loader's slack when the container brought its own image (the card's are then not read).
+           Until 20 November 2026 a flat 192 MiB was kept, which on a 512 MiB Pi (a 3A+ or Zero 2 W:
+           448 MiB for the ARM with gpu_mem=64) left the Mac 72 MiB, and 8 MiB with a 96 MB image in
+           the container (QEMU's raspi3ap, docs/08 item 60). Sizes that are not a full bank or a
+           full bank A plus part of bank B still work (the shim aliases what is missing,
+           psmac_mmu.c), but a real IIci never had them, so the rounding stays at 8. */
+        uintptr_t fixed = PSMAC_ROM_SIZE + extra + ((uintptr_t)keep_mb << 20);
+        uintptr_t spare = avail > fixed ? avail - fixed : 0;
         mb = (uint32_t)(spare >> 20) & ~7u;
         if (mb > PSMAC_RAM_DEFAULT_MB) mb = PSMAC_RAM_DEFAULT_MB;
         if (mb < 8) mb = 8;
-        kprintf("[PSMAC] no mac.ram=: %u MiB of the Pi's %u MiB free go to the Mac\n", mb, (uint32_t)(avail >> 20));
+        kprintf("[PSMAC] no mac.ram=: %u MiB for the Mac; %u MiB kept back for %s\n", mb, keep_mb,
+                image_inside ? "the kernel (the container brings the disk image)" : "a disk image on the card and the kernel");
+        if (mb < PSMAC_RAM_DEFAULT_MB)
+            kprintf("[PSMAC] MEMORY: the Mac gets less than %u MiB: the Pi has %u MiB free%s. A smaller disk image, or mac.ram=N to choose\n",
+                    PSMAC_RAM_DEFAULT_MB, (uint32_t)(avail >> 20), image_inside ? " beside the container's disk image" : "");
     }
     if (mb > PSMAC_RAM_MAX_MB) { kprintf("[PSMAC] mac.ram=%d clamped to %d MiB (RAM space below the ROM)\n", mb, PSMAC_RAM_MAX_MB); mb = PSMAC_RAM_MAX_MB; }
     if (mb < 1) mb = 1;
@@ -941,6 +998,17 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
     win_phys = rom_phys + PSMAC_ROM_SIZE; declrom_phys = win_phys + PSMB_WIN_SIZE; fb_big_phys = declrom_phys + PSMB_DECLROM_SIZE;
     sys_memory[0].mb_Size -= (base + need) - sys_memory[0].mb_Base;
     sys_memory[0].mb_Base = base + need;
+    {
+        uint32_t left = (uint32_t)(sys_memory[0].mb_Size >> 20);
+        if (image_inside)
+            kprintf("[PSMAC] memory: Mac %u MiB, %u MiB left for the kernel\n", ram_size >> 20, left);
+        else
+            kprintf("[PSMAC] memory: Mac %u MiB, %u MiB left: a disk image on the card can be up to %u MB\n", ram_size >> 20, left,
+                    left > PSMAC_PI_SLACK_MB ? left - PSMAC_PI_SLACK_MB : 0);
+        if (left < keep_mb && globals.psmac_ram_mb)
+            kprintf("[PSMAC] MEMORY: mac.ram=%u leaves %u MiB: a disk image on the card larger than %u MB will not be loaded\n",
+                    globals.psmac_ram_mb, left, left > PSMAC_PI_SLACK_MB ? left - PSMAC_PI_SLACK_MB : 0);
+    }
 
     uint64_t parse_t0 = psmac_boot_now_us();
     struct container_result cont; walk_container((const uint8_t *)rom, rom_sz, &cont);

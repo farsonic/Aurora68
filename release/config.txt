@@ -39,13 +39,18 @@ gpu_mem=64
 # smaller cut-down start_cd.elf (copy start_cd.elf and fixup_cd.dat to the card first, or the Pi will
 # not start): less to read at power-on. Not for the larger HDMI screens, whose frame buffer needs
 # the 64 MB. Not measured on hardware yet.
-# A Pi 3B carries the BCM43438 WiFi (firmware brcmfmac43430-sdio.bin, .txt and .clm_blob); a 3B+ or
-# 3A+ the BCM43455 (cyfmac43455-sdio-standard.bin and friends). The kernel picks by chip id; put the
-# right trio in the container (READ-ME-FIRST.txt).
-# A Pi 3B+ or 3A+ carries the BCM43455 WiFi (firmware cyfmac43455-sdio-standard.bin and friends);
-# a Pi 3B the BCM43438 (brcmfmac43430-sdio.bin and brcmfmac43430-sdio.txt). The kernel picks by
-# chip id. Bluetooth shares the Pi 3's one PL011 with the console; see docs/12 in the repository.
+# [pi3] is the 3B, 3B+ and 3A+ (the 3A+ boots with the 3B+'s bcm2710-rpi-3-b-plus.dtb). A Pi 3B
+# carries the BCM43438 WiFi (cyfmac43430-sdio.bin, brcmfmac43430-sdio.txt, .clm_blob); a 3B+ or 3A+
+# the BCM43455 (cyfmac43455-sdio-standard.bin and friends). The kernel picks by chip id; put the
+# right set in the container (READ-ME-FIRST.txt; get-firmware.sh fetches every board's).
+# Bluetooth shares the Pi 3's one PL011 with the console; see docs/12 in the repository.
 # USB keyboards and mice on the Pi 3's ports are driven by the kernel (usb=off in cmdline.txt stops it).
+
+[pi02]
+# The Zero 2 W is not a [pi3] to the firmware: it reads [pi0] and [pi02]. The same settings as the
+# Pi 3 (start.elf, fixup.dat, bcm2710-rpi-zero-2-w.dtb; mini-HDMI). Its WiFi is a BCM43436 or
+# 43436s (brcmfmac43436-sdio.* or brcmfmac43436s-sdio.*), its Bluetooth BCM43430B0.hcd.
+gpu_mem=64
 
 [pi4]
 gpu_mem=64

@@ -7,13 +7,18 @@
 #        SHOT (s, default 0), CONTAINER (a cpio with ROM, declrom and image: the hardware's way, no semihosting),
 #        CARD (a raw SD card image for the card writer, psmac_card.c: an MBR and a FAT partition holding the container),
 #        QEMU_EXTRA (more QEMU arguments, e.g. USB input: "-device usb-hub,id=h -device usb-kbd,bus=usb-bus.0,port=1.1
-#        -device usb-mouse,bus=usb-bus.0,port=1.2"; type and move with tools/qemu-mon.py sendkey / mouse_move)
+#        -device usb-mouse,bus=usb-bus.0,port=1.2"; type and move with tools/qemu-mon.py sendkey / mouse_move),
+#        MACHINE and MEM (default raspi3b and 1G; MACHINE=raspi3ap MEM=512M is a Pi 3A+, whose firmware passes
+#        the 3B+'s device tree: DTB=.../bcm2710-rpi-3-b-plus.dtb, fetched by tools/get-firmware.sh),
+#        QEMU_MON (the monitor socket, default /tmp/qemu-mon.sock; qemu-shot.py reads the same variable)
 set -e
 cd "$(dirname "$0")/.."
 SECS=${1:-240}; shift || true
 LOGDIR=${LOGDIR:-/tmp/psmac-solo}; mkdir -p "$LOGDIR"
 IMG=${IMG:-psmac-build/Emu68.img}
 DTB=${DTB:-firmware/bcm2710-rpi-3-b.dtb}
+MACHINE=${MACHINE:-raspi3b}
+MEM=${MEM:-1G}
 ROM=${ROM:-rom/original/MacIIci_368CADFE.rom}
 HD=${HD:-images/sys710pi.image}
 DECLROM=${DECLROM:-mac/build/psmac.declrom}
@@ -25,8 +30,9 @@ if [ -n "$CONTAINER" ]; then INITRD="$CONTAINER"; FILES=""; else INITRD="$ROM"; 
 # QEMU has no Bluetooth chip: keep the module off unless the run asks for it (its start moves the log to
 # the mini UART, which lands in $LOGDIR/miniuart.log here)
 case " $* " in *" bt"*) BTTOK="";; *) BTTOK="bt=off";; esac
-rm -f /tmp/qemu-mon.sock
-qemu-system-aarch64 -M raspi3b -smp 4 -m 1G -display none -monitor unix:/tmp/qemu-mon.sock,server,nowait \
+export QEMU_MON=${QEMU_MON:-/tmp/qemu-mon.sock}
+rm -f "$QEMU_MON"
+qemu-system-aarch64 -M $MACHINE -smp 4 -m $MEM -display none -monitor unix:$QEMU_MON,server,nowait \
   -kernel "$IMG" -dtb "$DTB" -initrd "$INITRD" \
   -append "$RAMTOK enable_cache debug mac.board=solo $BTTOK $FILES $*" \
   ${CARD:+-drive file=$CARD,if=sd,format=raw} $QEMU_EXTRA -serial stdio -serial file:$LOGDIR/miniuart.log -semihosting-config enable=on,target=native -accel tcg,tb-size=256 > "$LOGDIR/emu68.log" 2>&1 &

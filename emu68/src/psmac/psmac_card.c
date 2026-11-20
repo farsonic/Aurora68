@@ -892,11 +892,17 @@ static void container_check(void)
 
 /* memory for an image of its own: from the kernel's list of free RAM, block 0, which
    psmac_setup_memory carved the Mac's RAM from before the 68k started. Nothing takes from it
-   after that but this, on core 3. 16 MB stay free for whatever comes later. */
+   after that but this, on core 3. PSMAC_PI_SLACK_MB (16 MB) stay free for whatever comes later.
+   How much there is was decided with the Mac's RAM (psmac_setup_memory logs it). */
+static uint32_t memory_left_mb(void)
+{
+    uintptr_t base = (sys_memory[0].mb_Base + 0xfffu) & ~(uintptr_t)0xfffu, end = sys_memory[0].mb_Base + sys_memory[0].mb_Size;
+    return end > base + ((uintptr_t)PSMAC_PI_SLACK_MB << 20) ? (uint32_t)((end - base) >> 20) - PSMAC_PI_SLACK_MB : 0;
+}
 static uint8_t *take_memory(uint32_t len)
 {
     uintptr_t base = (sys_memory[0].mb_Base + 0xfffu) & ~(uintptr_t)0xfffu, end = sys_memory[0].mb_Base + sys_memory[0].mb_Size;
-    if (base + len + (16u << 20) > end) return 0;
+    if (base + len + ((uintptr_t)PSMAC_PI_SLACK_MB << 20) > end) return 0;
     sys_memory[0].mb_Size = end - (base + len);
     sys_memory[0].mb_Base = base + len;
     return (uint8_t *)(0xffffff9000000000ull + base);
@@ -914,7 +920,11 @@ static int image_take(const char *name, const struct cfile *f)
     extern int psmac_board_solo;
     if (f->clus < 2 || f->size < 1024) return 0;
     uint8_t *ram = take_memory(f->size);
-    if (!ram) { kprintf("[CARD] %s (%u MB) is larger than the memory the Pi has left: not loaded\n", name, f->size >> 20); return 0; }
+    if (!ram) {
+        kprintf("[CARD] MEMORY: %s (%u MB) is larger than the memory the Pi has left (%u MB for disk images): not loaded. "
+                "A smaller image, or a smaller mac.ram= (the Mac has %u MB)\n", name, f->size >> 20, memory_left_mb(), psmac_mac_ram_mb());
+        return 0;
+    }
     struct img *m = img_new(name, ram, f->size);
     if (!m) return 0;
     m->ext = tlsf_malloc(tlsf, 256 * sizeof(struct ext));

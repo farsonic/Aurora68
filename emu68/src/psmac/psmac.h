@@ -45,12 +45,14 @@ void     psmac_mmu_init(uintptr_t ram_phys, uint32_t ram_size, uintptr_t rom_phy
 uint32_t psmac_mmu_l2p(uint32_t logical, int *valid);
 void     psmac_slot_irq(int on);                 /* psmac_bus.c: the virtual slot-$9 interrupt line */
 uint32_t psmac_ram_size(void);
+uint32_t psmac_mac_ram_mb(void);              /* the same in MiB */
 /* Mac-side RAM ceiling: the 32-bit map puts RAM at 0x00000000..0x3FFFFFFF, below the ROM at 0x40000000.
    The IIci ROM itself only sizes two 64 MiB banks; anything above 128 MiB needs the memory-sizing
    patch described in docs/06-rom-patches.md. */
 #define PSMAC_RAM_MAX_MB 1024u
 #define PSMAC_RAM_DEFAULT_MB 128u    /* without mac.ram=: both of the IIci's banks full, the most the ROM sizes unpatched (docs/08 items 24, 27) */
-#define PSMAC_PI_KEEP_MB     192u    /* and never less than this left to the kernel itself */
+#define PSMAC_CARD_IMAGE_KEEP_MB 112u /* kept free for a disk image on the card: a 96 MB System 7 image and the loader's slack */
+#define PSMAC_PI_SLACK_MB     16u    /* kept free after the disk images (psmac_card.c's take_memory) */
 void     psmac_select_transport(int semihost_mode);
 /* slot $9 mailbox (psmb.h, psmac_mbox.c) */
 void     psmac_mmu_set_slot(uintptr_t win_phys, uintptr_t declrom_phys);

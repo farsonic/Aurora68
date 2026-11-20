@@ -1633,6 +1633,108 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    whether the user's router keeps the two DHCP leases apart), the watchdog reboot on a real Pi,
    mDNS from a MacBook, and the encoder's speed on a Cortex-A53.
 
+60. **A Pi that fits the SE: the 3A+ and the Zero 2 W (20 November).** The user's Pi 3B does not fit
+   the classic PiStorm inside the SE: the board is laid out for the 3A+'s footprint. The user asked
+   about a Pi Zero W; the original (2017, ARMv6) cannot run a 64-bit kernel, so the candidates are
+   the **3A+** (BCM2837B0 at 1.4 GHz, 512 MB, BCM43455, one USB-A port on the SoC's DWC2, full HDMI,
+   no Ethernet) and the **Zero 2 W** (RP3A0, a BCM2837 at 1.0 GHz, 512 MB, BCM43436, one micro-USB
+   OTG port, mini-HDMI). Every board-dependent path was gone through for both before anything is
+   bought or moved, and the 3A+ was booted in QEMU 8.2's `raspi3ap` (512 MB, revision 9020e0).
+   What was wrong:
+   - *The 3A+ was taken for a 3B+.* The Pi firmware has no device tree for the 3A+ (there is no
+     `bcm2710-rpi-3-a-plus.dtb` in raspberrypi/firmware, at the pinned commit or on master; the
+     mainline kernel's `bcm2837-rpi-3-a-plus` is not what the firmware loads) and passes it
+     `bcm2710-rpi-3-b-plus.dtb`: compatible `raspberrypi,3-model-b-plus`, an `ethernet0` alias naming
+     the LAN7800. `psmac_board_wired` read only the tree, so a 3A+ kept the wired card ($81) and
+     looked for a LAN7800; MacTCP would have bound the dead card. The first `raspi3ap` run with that
+     tree (the kernel of `dc3937c`) said exactly that: "the wired Ethernet card ($81) and the WiFi ($83)
+     both on slot 9; wired port: LAN7800", "no LAN7800 found behind the 3B+'s hubs". The board now
+     comes from the revision code, bits 4-11 (`psmac_board_type`, psmac_usbnet.c: the firmware's
+     `/system/linux,revision`, else the mailbox's GET_BOARD_REVISION, asked once on core 0 before the
+     services start), with the device tree as the fallback; one log line says it: "[PSMAC] board:
+     Raspberry Pi 3 Model A+ (revision 9020e0, type 0e); wired port: none (WiFi only); 254 MiB of RAM
+     free for the Mac and its disks", and "$81 left out". The Bluetooth firmware's choice uses the
+     same table (it was right by accident: the 3B+'s tree means BCM4345C0 too).
+   - *Unit 1 on a board without a wired port* was left to alice_net.c's GENET code, which called it
+     an Ethernet port and, with `eth=on`, would have started a GENET this SoC does not have.
+     psmac_usbnet.c now answers it as "no unit" there, as with `eth=off`. `eth=usb` (new) keeps $81
+     on a 3A+ or Zero 2 W and takes a USB Ethernet adapter (LAN9500, LAN7800 or CDC-ECM) instead;
+     Alice68's HID enumeration stops once it has a keyboard and a mouse, so an adapter on a later hub
+     port was never reset or addressed, and `address_port` now does that. In QEMU, a `usb-net` on hub
+     port 3 behind a keyboard and a mouse: "CDC-ECM found at USB address 4 (0525:a4a2)", "link up".
+   - *Memory.* Without `mac.ram=` the kernel kept 192 MiB of its free block back, though its own pools
+     (the JIT's 64 MiB, the 64 MiB of kernel pages, the VideoCore's) are already outside that block.
+     On a 512 MB Pi (448 MiB for the ARM with gpu_mem=64) the block is 254 MiB, so the Mac got 72 MiB;
+     with the user's 96 MB System 7.1 image in the container the block is 156 MiB and the Mac got
+     **8 MiB** (the first `raspi3ap` run: "no mac.ram=: 8 MiB of the Pi's 156 MiB free go to the
+     Mac"). What else comes out of the block later is a disk image on the card (psmac_card.c), so
+     that is what is kept back now: 112 MiB (a 96 MB image and the loader's 16 MiB of slack) when the
+     container has no image, 16 MiB when it has one. Both cases now give the Mac 128 MiB: "memory:
+     Mac 128 MiB, 17 MiB left for the kernel" with the image inside, "Mac 128 MiB, 115 MiB left: a disk
+     image on the card can be up to 99 MB" with it on the card, and the 96 MB image on the card loaded
+     beside the Mac's 128 (QEMU: Finder at 39 s, the image read in the background). A 1 GB Pi is
+     unchanged (128 MiB, 611 MB for card images). When the Mac gets less than 128, or an image does
+     not fit, the log says so in a line starting MEMORY, with the figures and what to change.
+   - *The kernel's firmware table had eight slots* (AN_FW_MAX, the board protocol's), and the
+     one-card container get-firmware.sh prints held thirteen files, the 43455 set last: on a 3A+,
+     3B+ or Pi 4 that container would have brought no WiFi firmware, silently. The kernel's own table
+     now holds 24 (the 68k's offer still reads eight), and a file that does not fit is logged. In
+     QEMU all fifteen files of the new list are taken.
+   - *The Zero 2 W's two chips.* Zero 2 Ws carry a BCM43436 or, later, a 43436s; both answer as chip
+     43430. Raspberry Pi's firmware package sends the name Linux gives revision 1
+     (`brcmfmac43430-sdio.raspberrypi,model-zero-2-w.bin` and `.txt`) to `brcmfmac43436s-sdio`, with
+     no CLM blob of its own (so the 43430's), and any other revision is `brcmfmac43436-sdio`. The
+     kernel loaded the 43436 files on either; it now picks by the revision the same way and logs
+     which. get-firmware.sh fetches the two 43436s files (pinned, SHA-256 checked) and the 3A+'s note.
+   - *Low-speed keyboards and mice on the root port.* On a 3B everything sits behind the LAN9514,
+     whose route tells the channel a device is low speed. On a 3A+ or Zero 2 W a keyboard can be on
+     the root port itself; Alice68's enumeration never marks that one low speed, so the channel
+     spoke full speed to it. psmac_usb.c sets HCCHAR's LSpdDev for every packet without a hub route
+     when the root port is at low speed (a low-speed device cannot be a hub). A hub pulled out of the
+     one port was not noticed (only its ports were watched); the root port's connection is now
+     looked at too. QEMU cannot show either: its DWC2 has one port and QEMU puts a full-speed hub on
+     it by itself as soon as a device is added, and its keyboard and mouse are full speed.
+   - *The GPIO transport.* The Pi 3 timings are strobes counted in GPIO register writes, whose length
+     is the peripheral bus's: the core clock, 400 MHz by default on the 3B, 3A+ and Zero 2 W alike,
+     whatever the ARM's clock (1.2, 1.4, 1.0 GHz). So one set serves all three, as in upstream Emu68.
+     The choice of set was by the generic timer's frequency (19.2 MHz on a Pi 3); QEMU's raspi3 says
+     62.5 MHz, so the testbed got the Pi 4 set. It now follows the board type. GPCLK0's 200 MHz is
+     PLLC_PER divided by 6, which assumes the firmware's 1200 MHz; the kernel now reads PLLC back
+     (NDIV, fraction, PDIV, prescaler, PER divider, as Linux's clk-bcm2835) and logs it: "CPLD clock
+     on GPIO 4: PLLC_PER 1200 MHz / 6 = 200 MHz" under QEMU, whose clock manager starts with the
+     firmware's values. The divider of 6 is kept whenever it gives 200 MHz within a tenth; only a
+     PLLC elsewhere (a core_freq= in config.txt) gets the nearest divider. And on the SE board the
+     service core and the board layer's first access on core 0 both ran the CPLD's start, side by
+     side (the log had it twice); the second now waits for the first.
+   - *Bluetooth's flow control.* bt_pi.c said the 3B+ and 3A+ have no CTS/RTS to the chip. They do,
+     on GPIO 30/31 (mainline's 3A+ tree says `uart-has-rtscts`; Raspberry Pi's tree routes them only
+     for the mini UART), but Raspberry Pi's own set-up runs those boards without them ("noflow" at
+     921600), and so does the kernel, at 115200: only the comment changed. The Zero 2 W's tree routes
+     all four (uart0_pins 30-33) and the kernel uses them there, as before.
+   - Checked and right as they were: WL_ON (the expander on the 3A+; GPIO 41 on the Zero 2 W) and BT_ON
+     (expander line 0; GPIO 42), the sleep clock on GPIO 43, the SD card on the sdhost (GPIO 48-53)
+     and the WiFi on the Arasan (GPIO 34-39) on both, the VideoCore frame buffer and HDMI (mini-HDMI
+     is HDMI), the card writer, the BCM43455 firmware (`brcmfmac43455-sdio.txt` serves the 3A+,
+     3B+ and 4: their board-specific names are links to it).
+   - config.txt: the Zero 2 W is not a `[pi3]` to the firmware; a `[pi02]` section says so.
+
+   *The QEMU runs* (`MACHINE=raspi3ap MEM=512M DTB=bcm2710-rpi-3-b-plus.dtb tools/run-solo.sh`, new
+   options; `QEMU_MON` gives a run its own monitor socket): the solo board with a hub, a keyboard and a
+   mouse; a key typed into PiPing's window closed it and the mouse opened the Apple menu
+   (`docs/img/solo-pi3aplus-usb-apple-menu.png`); the Finder at 21.7 s with the image in the
+   container, 37-39 s with it on the card. The SE board on `raspi3ap` (no MAME): "Pi 3 timings", the
+   PLLC line, one start of the CPLD. A `raspi3b` run still says "Raspberry Pi 3 Model B (revision
+   a02082, type 08); wired port: LAN9514" with $81 kept.
+
+   *Not verified:* anything on a real 3A+ or Zero 2 W. The Zero 2 W only by reading (QEMU's `raspi0`
+   is the ARMv6 Zero; there is no Zero 2 W model) and the board-table logic (revision type 0x12:
+   no wired port, BCM43430B0, WL_ON on GPIO 41). The 43436s revision rule comes from Raspberry Pi's
+   firmware links, not from a chip; which Bluetooth firmware the 43436s wants is not known (the kernel
+   offers BCM43430B0, then A1). A low-speed keyboard on the root port, a hub pulled out, a
+   LAN9500/LAN7800 USB adapter, and GPCLK0 measured on the pin are for the hardware. The log lines
+   to send: "[PSMAC] board: ...", "[PSMAC] memory: ...", "[PSMAC:GPIO] CPLD clock ...", "[WIFI] chip
+   ... rev ...", "[USB] start rc=...".
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

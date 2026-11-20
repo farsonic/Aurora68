@@ -11,7 +11,8 @@
  *                         function, the same register set as a LAN9512 (USB 0424:ec00, "smsc95xx")
  *   Pi 3B+                root port -> LAN7515 hub, its port 1 -> a second hub, its port 1 -> the
  *                         LAN7800 Ethernet function (0424:7800, "lan78xx")
- *   Pi 3A+, Zero 2 W      no wired Ethernet at all (WiFi only)
+ *   Pi 3A+, Zero 2 W      no wired Ethernet at all (WiFi only); with eth=usb, a USB Ethernet adapter
+ *                         (LAN9500, LAN7800 or CDC-ECM) on the one USB port or behind a hub there
  * The kernel learnt in November 2026 that a dead card confuses everybody (e5ff17d hid $81 on a
  * Pi 3); this file makes the card live instead, so the Mac gets both its network cards.
  *
@@ -41,9 +42,10 @@
  * The FIFO transport (usb=pio) has no bulk path; the wired port then says so and stays down.
  *
  * Which board gets what (psmac_board_wired, also used by psmac_bus.c to decide whether the Mac sees
- * the $81 card at all) comes from the device tree the Pi's firmware passed: the ethernet0 alias's
- * "compatible" (brcm,genet-v5 on a Pi 4; usb424,ec00 on a 3B; usb424,7800 on a 3B+), so it is known
- * before the 68k starts, long before the USB bus is enumerated.
+ * the $81 card at all) comes from the board's revision code, else the device tree the Pi's firmware
+ * passed (the ethernet0 alias's "compatible": brcm,genet-v5 on a Pi 4; usb424,ec00 on a 3B;
+ * usb424,7800 on a 3B+, and on a 3A+, whose firmware passes the 3B+'s tree), so it is known before
+ * the 68k starts, long before the USB bus is enumerated.
  *
  * Kernel log lines for the bench ([ETH], also in the network board's log that PiLog shows):
  *   [ETH] wired port: LAN9514 (smsc95xx) on the USB bus, the Pi 3B's ...    at boot, from the device tree
@@ -78,8 +80,17 @@ static inline uint64_t now(void) { uint64_t v; __asm__ volatile("mrs %0, CNTVCT_
 static inline uint64_t hz(void)  { uint64_t v; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(v)); return v; }
 static uint32_t now_ms(void) { return (uint32_t)(now() / (hz() / 1000u)); }
 
-/* ---- the board table --------------------------------------------------------------------------- */
-enum { WIRED_NONE = 0, WIRED_GENET, WIRED_SMSC95XX, WIRED_LAN78XX };
+/* ---- the board table ---------------------------------------------------------------------------
+   Which Pi this is decides three things before the 68k starts: whether the Mac sees a wired card
+   ($81) and which chip drives it, and which Bluetooth firmware the chip gets. The device tree alone
+   cannot say: the Pi firmware has no device tree of its own for the 3A+ and passes it the 3B+'s
+   (bcm2710-rpi-3-b-plus.dtb: compatible "raspberrypi,3-model-b-plus", an ethernet0 alias naming
+   the LAN7800), so until 20 November 2026 a 3A+ was taken for a 3B+, kept $81 and looked for a
+   LAN7800 it does not have. The board's revision code does say: the firmware writes it into the
+   device tree (/system/linux,revision) and answers it on the mailbox (GET_BOARD_REVISION, which
+   is also what QEMU's raspi3ap answers, 0x9020e0). Bits 4-11 are the board type. The device tree
+   is the fallback for a revision code nobody gave. */
+enum { WIRED_NONE = 0, WIRED_GENET, WIRED_SMSC95XX, WIRED_LAN78XX, WIRED_USB };
 static int dt_has(of_property_t *p, const char *what)
 {
     unsigned n = (unsigned)strlen(what);
@@ -89,39 +100,101 @@ static int dt_has(of_property_t *p, const char *what)
             return 1;
     return 0;
 }
-/* the Pi's wired Ethernet, from the device tree: ethernet0's compatible, else the board's model */
+static uint32_t board_rev;
+/* the board type, -1 if unknown. The first call is psmac_setup_memory's, on core 0 before the
+   services start (alice_pi_board_type asks the mailbox then caches; later callers on any core get
+   the cached value) */
+int psmac_board_type(void)
+{
+    static int cached = -2;
+    if (cached != -2)
+        return cached;
+    of_node_t *sys = dt_find_node("/system");
+    board_rev = sys ? dt_get_property_value_u32(sys, "linux,revision", 0, FALSE) : 0;
+    if (board_rev)
+        cached = (board_rev & 0x800000u) ? (int)((board_rev >> 4) & 0xffu) : -1;
+    else {
+        extern int alice_pi_board_type(void); extern uint32_t alice_pi_board_rev(void);
+        cached = alice_pi_board_type();
+        board_rev = alice_pi_board_rev();
+    }
+    return cached;
+}
+/* for the log: the board's name and what it has */
+const char *psmac_board_name(void)
+{
+    switch (psmac_board_type()) {
+    case 0x04: return "Raspberry Pi 2 Model B";
+    case 0x08: return "Raspberry Pi 3 Model B";
+    case 0x0a: return "Compute Module 3";
+    case 0x0c: return "Raspberry Pi Zero W (32-bit only: this kernel cannot run on it)";
+    case 0x0d: return "Raspberry Pi 3 Model B+";
+    case 0x0e: return "Raspberry Pi 3 Model A+";
+    case 0x10: return "Compute Module 3+";
+    case 0x11: return "Raspberry Pi 4 Model B";
+    case 0x12: return "Raspberry Pi Zero 2 W";
+    case 0x13: return "Raspberry Pi 400";
+    case 0x14: return "Compute Module 4";
+    default:   return "a board this kernel does not know";
+    }
+}
+uint32_t psmac_board_revision(void) { psmac_board_type(); return board_rev; }
+
+/* the Pi's wired Ethernet: by the board type, else ethernet0's compatible in the device tree, else
+   the board's model there. eth=usb on a board without one: a USB Ethernet adapter (a LAN9500,
+   LAN7800 or CDC-ECM device, on the root port or behind a high-speed hub) as the Mac's wired card */
 int psmac_board_wired(void)
 {
     static int cached = -1;
     if (cached >= 0)
         return cached;
-    of_node_t *al = dt_find_node("/aliases");
-    of_property_t *ap = al ? dt_find_property(al, "ethernet0") : 0;
-    of_node_t *eth = (ap && ap->op_value) ? dt_find_node((char *)ap->op_value) : 0;
-    of_property_t *c = eth ? dt_find_property(eth, "compatible") : 0;
-    of_node_t *root = dt_find_node("/");
-    of_property_t *model = root ? dt_find_property(root, "compatible") : 0;
-    if (dt_has(c, "genet"))
-        cached = WIRED_GENET;
-    else if (dt_has(c, "usb424,ec00") || dt_has(c, "usb424,9500") || dt_has(c, "usb424,9e00"))
-        cached = WIRED_SMSC95XX;
-    else if (dt_has(c, "usb424,7800"))
-        cached = WIRED_LAN78XX;
-    /* a device tree without the alias (an old one, or a hand-made one): by the board's name */
-    else if (dt_has(model, "raspberrypi,3-model-b-plus"))
-        cached = WIRED_LAN78XX;
-    else if (dt_has(model, "raspberrypi,3-model-b") || dt_has(model, "raspberrypi,2-model-b"))
-        cached = WIRED_SMSC95XX;
-    else if (dt_has(model, "raspberrypi,4-model-b") || dt_has(model, "raspberrypi,400") || dt_has(model, "raspberrypi,4-compute-module"))
-        cached = WIRED_GENET;
-    else
-        cached = WIRED_NONE;                    /* 3A+, Zero 2 W, CM3: WiFi only */
+    switch (psmac_board_type()) {
+    case 0x04: case 0x08:              cached = WIRED_SMSC95XX; break;     /* 2B, 3B: LAN9514 */
+    case 0x0d:                         cached = WIRED_LAN78XX; break;      /* 3B+: LAN7515 */
+    case 0x11: case 0x13: case 0x14:   cached = WIRED_GENET; break;        /* 4B, 400, CM4 */
+    case 0x0a: case 0x0e: case 0x10: case 0x12:
+                                       cached = WIRED_NONE; break;         /* CM3, 3A+, CM3+, Zero 2 W */
+    default: {
+        of_node_t *al = dt_find_node("/aliases");
+        of_property_t *ap = al ? dt_find_property(al, "ethernet0") : 0;
+        of_node_t *eth = (ap && ap->op_value) ? dt_find_node((char *)ap->op_value) : 0;
+        of_property_t *c = eth ? dt_find_property(eth, "compatible") : 0;
+        of_node_t *root = dt_find_node("/");
+        of_property_t *model = root ? dt_find_property(root, "compatible") : 0;
+        if (dt_has(c, "genet"))
+            cached = WIRED_GENET;
+        else if (dt_has(c, "usb424,ec00") || dt_has(c, "usb424,9500") || dt_has(c, "usb424,9e00"))
+            cached = WIRED_SMSC95XX;
+        else if (dt_has(c, "usb424,7800"))
+            cached = WIRED_LAN78XX;
+        /* a device tree without the alias (an old one, or a hand-made one): by the board's name */
+        else if (dt_has(model, "raspberrypi,3-model-b-plus"))
+            cached = WIRED_LAN78XX;
+        else if (dt_has(model, "raspberrypi,3-model-b") || dt_has(model, "raspberrypi,2-model-b"))
+            cached = WIRED_SMSC95XX;
+        else if (dt_has(model, "raspberrypi,4-model-b") || dt_has(model, "raspberrypi,400") || dt_has(model, "raspberrypi,4-compute-module"))
+            cached = WIRED_GENET;
+        else
+            cached = WIRED_NONE;
+    } }
+    if (cached == WIRED_NONE) {
+        const char *opt = psmac_option("eth");
+        if (opt && !strncmp(opt, "usb", 3))
+            cached = WIRED_USB;
+    }
     return cached;
 }
 /* the Bluetooth chip's firmware family, for bt_pi.c: 1 BCM43430A1 (3B), 2 BCM43430B0 (Zero 2 W),
    3 BCM4345C5 (400, CM4), 0 BCM4345C0 (3B+, 3A+, 4B, and anything else) */
 int psmac_board_bt_chip(void)
 {
+    switch (psmac_board_type()) {
+    case 0x08: return 1;
+    case 0x12: return 2;
+    case 0x13: case 0x14: return 3;
+    case 0x0d: case 0x0e: case 0x11: return 0;
+    default: break;
+    }
     of_node_t *root = dt_find_node("/");
     of_property_t *model = root ? dt_find_property(root, "compatible") : 0;
     if (dt_has(model, "3-model-b-plus") || dt_has(model, "3-model-a-plus"))
@@ -136,7 +209,8 @@ int psmac_board_bt_chip(void)
 }
 const char *psmac_board_wired_name(void)
 {
-    static const char *const n[] = { "none (WiFi only)", "GENET (the Pi 4's own)", "LAN9514 (smsc95xx) on the USB bus", "LAN7800 (lan78xx) on the USB bus" };
+    static const char *const n[] = { "none (WiFi only)", "GENET (the Pi 4's own)", "LAN9514 (smsc95xx) on the USB bus",
+                                     "LAN7800 (lan78xx) on the USB bus", "a USB Ethernet adapter (eth=usb)" };
     return n[psmac_board_wired()];
 }
 
@@ -525,6 +599,38 @@ static int enumerate_inner(uint8_t hub)
     return INNER_ADDR;
 }
 
+/* A device on the root hub's port that Alice68's enumeration never reached: it stops once it has a
+   keyboard and a mouse, so behind the hub on a 3A+'s or Zero 2 W's one port a USB Ethernet adapter
+   on a later port stays unreset at address 0 (the Pi 3B's LAN9514 is port 1, always reached
+   first). Reset the port and give the device the address the enumeration would have, 1 + port.
+   Not a low-speed device (no network adapter is one), and behind a high-speed hub only a
+   high-speed one, as for the rest of this file. */
+static int address_port(uint8_t port)
+{
+    uint32_t st = 0;
+    uint8_t d[18], addr = (uint8_t)(1 + port);
+    hub_feature(1, 3, 4, port);                         /* SET_FEATURE(PORT_RESET) */
+    for (int i = 0; i < 10; i++) {
+        spin_ms(20);
+        if (!hub_status(1, port, &st) && (st & 2u))
+            break;
+    }
+    if (!(st & 2u))
+        return -1;
+    hub_feature(1, 1, 20, port);                        /* CLEAR_FEATURE(C_PORT_RESET) */
+    if ((st & (1u << 9)) || (N.root_speed == 0 && !(st & (1u << 10))))
+        return -2;
+    spin_ms(10);
+    uint8_t s8[8] = { 0x80, 6, 0, 1, 0, 0, 8, 0 };
+    if (ctl(0, 64, s8, d, 8) != 8 || d[1] != 1)
+        return -3;
+    uint8_t sa[8] = { 0, 5, addr, 0, 0, 0, 0, 0 };      /* SET_ADDRESS */
+    if (ctl(0, d[7] ? d[7] : 64, sa, 0, 0) < 0)
+        return -4;
+    spin_ms(10);
+    return addr;
+}
+
 /* a configuration's interfaces: the bulk pair, and for CDC-ECM the data interface's setting */
 static int parse_config(const uint8_t *c, unsigned total, int ecm)
 {
@@ -607,9 +713,12 @@ static int probe(void)
         /* only a port with a device on it (QEMU's DWC2 model stops the whole emulator on a transfer
            to an address nobody has); behind a high-speed hub only high-speed devices, as the bulk
            path has no split transactions */
-        if (hub_status(1, (uint8_t)port, &st) || !(st & 1u) || !(st & 2u))
+        if (hub_status(1, (uint8_t)port, &st) || !(st & 1u))
             continue;
-        if (N.root_speed == 0 && !(st & (1u << 10)))
+        if (!(st & 2u)) {
+            if (address_port((uint8_t)port) < 0)
+                continue;
+        } else if (N.root_speed == 0 && !(st & (1u << 10)))
             continue;
         if (try_device(addr) == 0)
             return 0;
@@ -1099,9 +1208,18 @@ static void start_owner(volatile struct an_unit *u)
     const char *opt = psmac_option("eth");
     int w = psmac_board_wired();
     N.owner = 0;
-    if (w != WIRED_SMSC95XX && w != WIRED_LAN78XX)
-        return;                                         /* a Pi 4 (alice_net.c's GENET) or no wired port */
+    if (w == WIRED_GENET)
+        return;                                         /* a Pi 4: alice_net.c's GENET */
     N.owner = 1;
+    if (w == WIRED_NONE) {
+        /* a 3A+ or Zero 2 W: no wired port, and $81 is not in the declaration ROM. Unit 1 is
+           answered here as "no unit", as with eth=off: left to alice_net.c it would call itself
+           an Ethernet port and, on eth=on, start the Pi 4's GENET, which this SoC does not have */
+        u->kind = AN_KIND_NONE;
+        N.state = S_FAILED;
+        elog("none: this Pi has no wired port (eth=usb in cmdline.txt for a USB Ethernet adapter)");
+        return;
+    }
     u->kind = AN_KIND_ETHER;
     u->cfg_adv = AN_LM_10H | AN_LM_10F | AN_LM_100H | AN_LM_100F | (w == WIRED_LAN78XX ? AN_LM_1000H | AN_LM_1000F : 0);
     u->cfg_flags = AN_EC_AUTONEG | AN_EC_FULL;
@@ -1172,7 +1290,9 @@ int psmac_usbnet_poll(volatile struct an_unit *u)
            a driver that opens it now finds no unit (kind 0) and fails its Open, as with eth=off:
            Riptide then carries on with the WiFi, and EtherTalk falls back to the next card. */
         u->kind = AN_KIND_NONE;
-        ustate(u, AN_ST_FAILED, psmac_board_wired() == WIRED_LAN78XX ? "no LAN7800 found behind the 3B+'s hubs" : "no network chip found on the USB bus");
+        ustate(u, AN_ST_FAILED, psmac_board_wired() == WIRED_LAN78XX ? "no LAN7800 found behind the 3B+'s hubs" :
+                                psmac_board_wired() == WIRED_USB ? "no USB Ethernet adapter found (a LAN9500, LAN7800 or CDC-ECM device, high speed behind a hub)" :
+                                "no network chip found on the USB bus");
         break;
     case S_ABSENT:
         /* look again now and then: cheap, and the chip may have been slow to wake */
@@ -1226,8 +1346,8 @@ int psmac_usbnet_poll(volatile struct an_unit *u)
 void psmac_usbnet_report(void)
 {
     static unsigned beat;
-    if (N.owner != 1 || beat++ % 3)
-        return;
+    if (N.owner != 1 || psmac_board_wired() == WIRED_NONE || beat++ % 3)
+        return;                                         /* nothing to say on a Pi without a wired port */
     static const char *const st[] = { "waiting for the USB bus", "probing", "setting up", "no link", "running", "not found", "failed" };
     kprintf("[ETH]   %s: %s, link %u%s, rx %u frames (%u bytes) tx %u (%u bytes), bad %u held %u tx errors %u bulk errors %u\n",
             D.chip ? chip_name() : psmac_board_wired_name(), st[N.state], N.link ? N.speed : 0, N.link ? (N.full ? " full" : " half") : "",

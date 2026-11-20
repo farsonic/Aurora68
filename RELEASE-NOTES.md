@@ -9,6 +9,26 @@
   limit`, and `power: normal again` with what has happened since boot. The first under-voltage is
   also a `[BOOT]` line, and the remote control's `/state` has the bits under `power`. On by
   default; `mac.power=off` stops it. Replace kernel8.img.
+- **A Pi that fits the SE: the 3A+ and the Zero 2 W.** The classic PiStorm board is laid out for a
+  3A+; a 3A+ or a Zero 2 W fits it, a 3B or 3B+ overhangs it, the original Zero W cannot run this.
+  READ-ME-FIRST's new "Which Raspberry Pi" table says what each board has. Fixed for them:
+  - a 3A+ was taken for a 3B+ (its firmware passes the 3B+'s device tree), kept the wired card and
+    looked for an Ethernet chip it does not have; the kernel now reads the board's revision code
+    and logs "[PSMAC] board: ...". The wired card is left out on both, so the WiFi is the Mac's
+    network card; `eth=usb` takes a USB Ethernet adapter instead;
+  - a 512 MB Pi gave the Mac 72 MB, and 8 MB with a 96 MB disk image in the container: it now gets
+    128 MB either way, with room for a disk image on the card of up to about 99 MB (the log says
+    how much, and says so in a MEMORY line when something does not fit);
+  - the one-card container (every board's firmware, as get-firmware.sh prints it) brought no WiFi
+    firmware to a 3A+, 3B+ or Pi 4: the kernel kept only the first eight files;
+  - the Zero 2 W's later chip, the BCM43436s, gets its own firmware (get-firmware.sh fetches it);
+  - a low-speed USB keyboard or mouse plugged straight into the one port (no hub) is now spoken
+    to at low speed (not testable in QEMU), and a hub pulled out of that port is noticed;
+  - on the SE board the CPLD's start ran twice at once from two cores; once now. The 200 MHz
+    CPLD clock is checked against the Pi's PLL and logged ("CPLD clock on GPIO 4: ...").
+  Tested in QEMU's 3A+ model (512 MB, USB keyboard and mouse behind a hub); the Zero 2 W by reading
+  only. Replace kernel8.img, config.txt (a `[pi02]` section) and get-firmware.sh, and run
+  get-firmware.sh again for the two new Zero 2 W files.
 - **Booting 15 seconds faster on a Pi 3 with Bluetooth.** The kernel waited at every character of
   its log for a serial port that does not send (the Pi 3's PL011 belongs to Bluetooth), and that
   was most of the time the firmware's rainbow screen stayed up: the 68k started at 19 s. It now

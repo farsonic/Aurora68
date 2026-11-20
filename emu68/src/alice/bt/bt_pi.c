@@ -58,10 +58,14 @@ extern void psmac_console_miniuart(void) __attribute__((weak));   /* psmac_bus.c
 #define FR_TXFE   (1u << 7)
 #define CR_FLOW   (1u | (1u << 8) | (1u << 9) | (1u << 14) | (1u << 15))   /* on, TX, RX, RTS and CTS flow control */
 #define CR_NOFLOW (1u | (1u << 8) | (1u << 9))                             /* on, TX, RX */
-/* Which boards wire the chip's CTS/RTS to GPIO 30/31: the Pi 4 family and the Zero W / Zero 2 W.
-   The 3B, 3B+ and 3A+ have TX and RX only (their device trees: uart0_pins <32 33>, and Raspberry Pi
-   OS's btuart runs them "noflow" at 921600). With CTS flow control on and nothing driving CTS, the
-   PL011 never sends: the first 3B try failed with "the chip does not answer (command 0c03)". */
+/* Which boards use the chip's CTS/RTS on GPIO 30/31: the Pi 4 family and the Zero W / Zero 2 W
+   (their device trees: uart0_pins <30 31 32 33>). The 3B has TX and RX only. The 3B+ and 3A+ (one
+   device tree, bcm2710-rpi-3-b-plus.dtb) do have the lines on GPIO 30/31 (mainline Linux's
+   bcm2837-rpi-3-a-plus.dts says uart-has-rtscts; Raspberry Pi's tree routes them only for the mini
+   UART, uart1_bt_pins <32 33 30 31>), but Raspberry Pi's own set-up leaves them off the PL011
+   (uart0_pins <32 33>) and its btuart runs those boards "noflow" at 921600, as this file does at
+   115200 (checked 20 November 2026). With CTS flow control on and nothing driving CTS, the PL011
+   never sends: the first 3B try failed with "the chip does not answer (command 0c03)". */
 static uint32_t CR_ON = CR_FLOW;
 #define CR_CTSEN  (1u << 15)
 

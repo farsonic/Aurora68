@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: MPL-2.0
 #
-# get-firmware.sh - fetch every third-party file an Aurora68 SD card needs, for a Pi 3B, 3B+,
+# get-firmware.sh - fetch every third-party file an Aurora68 SD card needs, for a Pi 3B, 3B+, 3A+,
 # Zero 2 W and Pi 4 (or 400) on one card, and check each one.
 #
 # Run it from the card's root folder (macOS, Linux; POSIX sh and curl):
@@ -13,10 +13,13 @@
 # What it puts where:
 #   the card's root   the Raspberry Pi firmware's boot files (github.com/raspberrypi/firmware, boot/):
 #                     bootcode.bin, start.elf, fixup.dat (Pi 3), start4.elf, fixup4.dat (Pi 4), and
-#                     the device trees of the 3B, 3B+, Zero 2 W, 4B and 400. config.txt uses no
-#                     overlays, so none are fetched.
+#                     the device trees of the 3B, 3B+, Zero 2 W, 4B and 400. The 3A+ has none of
+#                     its own: its firmware loads bcm2710-rpi-3-b-plus.dtb (the kernel tells the
+#                     two apart by the revision code). config.txt uses no overlays, so none are
+#                     fetched.
 #   wifi-firmware/    the WiFi and Bluetooth firmware, which goes INTO the container, not on the card:
-#                     BCM43438 (Pi 3B; files named 43430), BCM43436 (Zero 2 W), BCM43455 (3B+, 3A+,
+#                     BCM43438 (Pi 3B; files named 43430), BCM43436 and 43436s (the two Zero 2 W
+#                     chips; the 43436s has no .clm_blob and takes the 43430's), BCM43455 (3B+, 3A+,
 #                     4B): the .bin, .txt and .clm_blob from RPi-Distro/firmware-nonfree, the .hcd
 #                     from RPi-Distro/bluez-firmware. The kernel takes the WiFi set by the chip's id
 #                     and the Bluetooth one by the board, so one container serves every board.
@@ -48,6 +51,8 @@ w $NF/brcm/brcmfmac43430-sdio.txt fc3949a4c32f07c18308e7e145c7615be314158e7d714a
 w $NF/brcm/brcmfmac43436-sdio.bin 510a7dd1e056199b309425548ee0bd846993a1837ac7fa1e4d3e641f05a1327a
 w $NF/brcm/brcmfmac43436-sdio.clm_blob fce7cbb62ffa6a5a65ca97b13f6fbf28d06c02d986c2072d65bf72164755fc34
 w $NF/brcm/brcmfmac43436-sdio.txt 4cda90facd8844cff60d80b34b24ecbae76adb9a62508a109461b8bf42b478d1
+w $NF/brcm/brcmfmac43436s-sdio.bin 68b9bcc9855d91733cd44c21de4cb507c91b0d32d838c0696def5eb96c99e2de
+w $NF/brcm/brcmfmac43436s-sdio.txt 37a8b85a5a9742761101b764a07bc4d0c8b09f2e180eaea3b503a834277ad595
 w $NF/cypress/cyfmac43455-sdio-standard.bin 8868b5420be1191355d62690da4d96d14d30c1b3899d02fd15e9d664596650f9
 w $NF/cypress/cyfmac43455-sdio.clm_blob 9823842cae9fb9a5dd1e5fb31f595516ec7deee341354bef30bb3026eee29cc1
 w $NF/brcm/brcmfmac43455-sdio.txt ca709be81a78bdb6932936374f39943acbd7af07fae6151011127599a3ce9e3d
@@ -125,11 +130,12 @@ fi
 W=wifi-firmware
 WIFI="$W/cyfmac43430-sdio.bin $W/brcmfmac43430-sdio.txt $W/cyfmac43430-sdio.clm_blob $W/BCM43430A1.hcd \
 $W/brcmfmac43436-sdio.bin $W/brcmfmac43436-sdio.txt $W/brcmfmac43436-sdio.clm_blob $W/BCM43430B0.hcd \
+$W/brcmfmac43436s-sdio.bin $W/brcmfmac43436s-sdio.txt \
 $W/cyfmac43455-sdio-standard.bin $W/brcmfmac43455-sdio.txt $W/cyfmac43455-sdio.clm_blob $W/BCM4345C0.hcd $W/BCM4345C5.hcd"
 [ -n "$DECLROM" ] || DECLROM=aurora68.declrom
 echo
 echo "All files present and checked. The boot files are in the card's root; the WiFi and Bluetooth"
-echo "firmware in wifi-firmware/ goes into the container (about 2.5 MB for every board's set):"
+echo "firmware in wifi-firmware/ goes into the container (about 3 MB for every board's set):"
 echo
 echo "  python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom $DECLROM \\"
 echo "    $WIFI"

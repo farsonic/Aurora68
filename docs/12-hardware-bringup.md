@@ -57,14 +57,14 @@ The testbed has been a Pi 3 all along: QEMU's `raspi3b`, peripherals at 0x3F0000
 SDHCI at 0x3F300000. A real Pi 3 is therefore closer to what has been tested than a Pi 4 would
 be. What differs from the Pi 4 the Alice68 modules were written for:
 
-| Piece | Pi 3B | Pi 3B+ / 3A+ | Notes |
+| Piece | Pi 3B | Pi 3B+ / 3A+ (Zero 2 W: see below) | Notes |
 |---|---|---|---|
 | WiFi chip | BCM43438 (id 43430), 2.4 GHz | BCM43455, dual band | same Arasan SDIO host as the Pi 4; the kernel picks the firmware by chip id (`alice_net.c`: 43455, 43456 and now 43430 name tables). **The 43438 is a different family inside**: an ARM Cortex-M3 with SOCRAM where the 43455 has a Cortex-R4 with tightly-coupled memory banks, and `wifi/chip.c` only knows the R4 (RAM at 0x198000, bank enumeration, CR4 halt and release). The CM3 path from Linux's brcmfmac (`brcmf_chip_cm3_*`, SOCRAM at 0, bank sizes from the SOCRAM core) is a day's work and is item 4a below |
 | WiFi firmware files | `brcmfmac43430-sdio.bin`, `brcmfmac43430-sdio.txt` | `cyfmac43455-sdio-standard.bin` (or `brcmfmac43455-sdio.bin`), `brcmfmac43455-sdio.txt`, `.clm_blob` | from RPi-Distro/firmware-nonfree, as the README's curl lines |
 | Bluetooth | BCM43438 over UART, `BCM43430A1.hcd` | BCM4345C0 over UART, `BCM4345C0.hcd` | the module now looks for either file by name (`bt_pi.c`). The Pi 3 has one PL011; Bluetooth sits on it unless `dtoverlay=miniuart-bt`. The kernel's log and the Bluetooth module must agree on which UART is whose (open) |
 | Ethernet | LAN9514 over USB (100 Mbit) | LAN7515 over USB on the 3B+, none on the 3A+ | no GENET; the Alice68 GENET module does not apply. The WiFi is the network until a DWC2 USB stack exists |
 | USB host | DWC2 (OTG) | DWC2 | not the Pi 4's VL805 xHCI. Keyboards and mice use Alice68's native DWC2 HID host (docs/08 item 40; tested in QEMU; split transactions behind the LAN9514 still to be tested on the board). The SE's own ADB keyboard and mouse work regardless |
-| Memory | 1 GB | 1 GB / 512 MB | the Macintosh gets its full 128 MB on all three |
+| Memory | 1 GB | 1 GB / 512 MB | the Macintosh gets its full 128 MB on all three (on 512 MB since 20 November: docs/08 item 60) |
 | Second screen | HDMI, VideoCore IV | same | as tested |
 
 One more row the table above hides: **the radio's power switch**. On the 3B, 3B+, 3A+, 4 and
@@ -76,6 +76,16 @@ kernel reads the board type from the revision code and takes the right path (`al
 BCM2711 (`sdio.c`, `sdh_pins()`): on the 3B the old code left DAT3 pulled down, which turns
 CMD0 into an SPI-mode entry and silences the SDIO card. The first 3B run found both, and a
 mailbox race between the display and the WiFi that blacked the screen (docs/08, items 30-31).
+
+**The 3A+ and the Zero 2 W (20 November).** The user's 3B does not fit the classic board, which is
+laid out for the 3A+. Both 512 MB boards were gone through for the SE (docs/08 item 60): the 3A+
+has no device tree of its own (the firmware passes it the 3B+'s, so the kernel now reads the
+board type from the revision code), one USB-A port on the DWC2 root port, the BCM43455 and
+BCM4345C0, no Ethernet; the Zero 2 W (RP3A0: a BCM2837 at 1 GHz) has the BCM43436 or 43436s and
+BCM43430B0, WL_ON on GPIO 41 and BT_ON on GPIO 42, CTS/RTS to the chip on GPIO 30/31, one micro-USB
+OTG port, mini-HDMI. Both run the core clock at 400 MHz like the 3B, so the GPIO transport's Pi 3
+timings and GPCLK0's PLLC/6 apply to both. The 3A+ boots to the Finder in QEMU's `raspi3ap` with
+USB input behind a hub (`docs/img/solo-pi3aplus-usb-apple-menu.png`); QEMU has no Zero 2 W.
 
 **Status, 17 November:** on a 3B v1.2 the chip is found, loads its firmware and reports its MAC
 address (docs/08, items 30-33). Three things stood between the Pi 4 code and the 3B: the pin

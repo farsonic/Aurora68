@@ -6,7 +6,10 @@
  * frf_usb_native_hid.c enumerates the root port's device, follows the Pi 3's LAN9514 hub port
  * by port, routes full- and low-speed devices through the hub's transaction translator (split
  * transactions), takes the first HID boot keyboard and the first boot mouse it finds and polls
- * their interrupt endpoints). Their reports go where the Bluetooth host's go:
+ * their interrupt endpoints). A 3A+ and a Zero 2 W have no hub on the board: the one port is the
+ * root port, with a keyboard, a mouse, a keyboard-and-mouse receiver or a hub of the user's on it,
+ * and all of those go the same way (a high-speed hub like the LAN9514, a full-speed one with
+ * the device spoken to directly, a device alone with no route at all). Their reports go where the Bluetooth host's go:
  * frf_native_usb_keyboard_boot_report and aga_virtual_mouse_update (alice_psmac.c), into the
  * input ring that .PiInput turns into Mac events. Anything else on the bus is left alone, for a
  * USB stack of its own later.
@@ -250,6 +253,13 @@ static int dma_packet(struct frf_dwc2_packet *p, struct frf_dwc2_pio_stats *st)
 
 int frf_dwc2_pio_packet(const struct frf_dwc2_ops *o, struct frf_dwc2_packet *p, struct frf_dwc2_pio_stats *st)
 {
+    /* A low-speed keyboard or mouse on the root port itself: a 3A+'s one USB socket, a Zero 2 W's
+       OTG adapter, no hub between. The channel must be told it talks to a low-speed device
+       (HCCHAR's LSpdDev) as much as for one behind a hub, but Alice68's enumeration marks only the
+       latter: on the Pi 3B's LAN9514 nothing else ever reached the root port. A low-speed device
+       cannot be a hub, so with the root port at low speed every packet without a hub route is its. */
+    if (p && !p->hub_address && root_speed == 2)
+        p->low_speed = 1;
     return use_fifo ? frf_dwc2_fifo_packet(o, p, st) : dma_packet(p, st);
 }
 
@@ -371,9 +381,13 @@ static void hub_clear(unsigned port, unsigned feature)
 
 static int ports_changed(void)
 {
-    if (!hid.root_hub_ports) {
-        /* nothing, or a device on the root port itself: its connection */
-        int c = (rd(0x440) & 1u) != 0;              /* HPRT: connect status */
+    /* the root port's own connection: nothing, a device on it, or a hub. On a Pi 3B the hub is the
+       LAN9514, soldered to the board; on a 3A+ or Zero 2 W it is whatever is plugged into the one
+       port, and pulling it out is a change like any other */
+    int c = (rd(0x440) & 1u) != 0;                  /* HPRT: connect status */
+    if (c != root_connected || !hid.root_hub_ports) {
+        if (c != root_connected && hid.root_hub_ports)
+            kprintf("[USB] root port: the hub was %s\n", c ? "plugged in" : "unplugged");
         return c != root_connected;
     }
     for (unsigned k = 1; k <= hid.root_hub_ports; k++) {

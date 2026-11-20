@@ -7,13 +7,42 @@ Aurora68 puts a Raspberry Pi in a Macintosh SE's 68000 socket on a classic PiSto
 runs the Macintosh IIci ROM on it: a 68040 to the Mac, memory on the Pi, a second screen on
 the Pi's HDMI, disks on the Pi, WiFi, and the SE's own screen, keyboard, mouse, SCSI and
 floppy kept. 0.3 is the first build meant for the hardware: a classic PiStorm (the DIP-64
-board with the EPM240 CPLD, stock firmware) and a Raspberry Pi 3B, 3B+, 3A+ or Zero 2 W.
+board with the EPM240 CPLD, stock firmware) and a Raspberry Pi 3A+, Zero 2 W, 3B or 3B+
+("Which Raspberry Pi", below).
 
 What has been tested: everything below runs in the project's testbed, where MAME stands in for
 the SE's logic board and QEMU for the Pi (docs/08 item 28 on GitHub: System 7.1's Finder on the
 SE's own screen, booted from the SE's SCSI disk). What has NOT been tested: the Pi talking to
 a real CPLD and a real SE. This build is how that gets tested. Keep a serial cable on the Pi's
 GPIO 14/15 (115200 8N1): the kernel's log is the only window into the first boots.
+
+Which Raspberry Pi
+------------------
+The classic PiStorm board is laid out for a Pi 3A+. In the SE take a 3A+ or a Zero 2 W: both
+fit the board. A 3B or 3B+ works but overhangs it; a Pi 4 does not go on the classic board (the
+bench only). The original Pi Zero W (2017) cannot run this at all: its processor is 32-bit only.
+
+  Pi        where                  WiFi                     Bluetooth    wired       USB input        card writer  RAM (Mac)
+  3A+       SE (fits) or bench     BCM43455, 2.4+5 GHz      BCM4345C0    none (1)    1 port, hub (2)  yes          512 MB (128)
+  Zero 2 W  SE (fits (3)) or bench BCM43436/43436s, 2.4 GHz BCM43430B0   none (1)    OTG adapter (2)  yes          512 MB (128)
+  3B        bench; SE overhanging  BCM43438, 2.4 GHz        BCM43430A1   LAN9514     4 ports          yes          1 GB (128)
+  3B+       bench; SE overhanging  BCM43455, 2.4+5 GHz      BCM4345C0    LAN7800     4 ports          yes          1 GB (128)
+  4B, 400   bench only             BCM43455                 BCM4345C0/C5 Gigabit     not yet          no           2-8 GB (128)
+  Zero W    does not work (32-bit only)
+
+  (1) No wired port: the kernel leaves the wired card out of the Mac's slot 9, so the WiFi is the
+      Mac's network card. eth=usb in cmdline.txt takes a USB Ethernet adapter instead (a LAN9500,
+      LAN7800 or CDC-ECM one, on the port or behind a high-speed hub there).
+  (2) One USB port only (the 3A+'s USB-A socket; the Zero 2 W's micro-USB "USB" port, not the one
+      marked PWR, through an OTG adapter). A keyboard and a mouse together need a small hub on it,
+      or a keyboard-and-mouse receiver (one device, both work). Plugging the hub in or out is seen.
+  (3) The Zero 2 W comes without a header: solder a 40-pin male header, or buy the Zero 2 WH.
+      Mini-HDMI for the Pi's screen, power on the PWR port.
+Memory on a 512 MB Pi: the Mac gets its 128 MB, the kernel its own pools, and a disk image on the
+card can be up to about 99 MB (one in the container about 100 MB; a larger one leaves the Mac
+less than 128 MB). The log says what it
+chose ("[PSMAC] board: ...", "[PSMAC] memory: Mac 128 MiB, ... a disk image on the card can be up
+to N MB"); an image that does not fit is reported ("[CARD] MEMORY: ...") and mac.ram=N makes room.
 
 What is in the zip
 ------------------
@@ -55,8 +84,8 @@ Setting up the SD card (a Pi 3B in an SE)
 
         sh get-firmware.sh
 
-     It downloads the Pi's boot files into the card's root (for a Pi 3B, 3B+, Zero 2 W and Pi 4
-     alike) and the WiFi and Bluetooth firmware of every board into wifi-firmware/, each from a
+     It downloads the Pi's boot files into the card's root (for a Pi 3B, 3B+, 3A+, Zero 2 W and
+     Pi 4 alike) and the WiFi and Bluetooth firmware of every board into wifi-firmware/, each from a
      fixed version and checked against its SHA-256, refuses anything too small to be firmware,
      and prints the make-container.py line for step 5. Run it again and it keeps what is already
      right. With your ROM beside it, "sh get-firmware.sh --container MacIIci_368CADFE.rom"
@@ -76,7 +105,8 @@ Setting up the SD card (a Pi 3B in an SE)
           https://raw.githubusercontent.com/raspberrypi/firmware/master/boot/overlays/disable-bt.dtbo
 
      (On Windows, curl.exe; the backslashes continue one command.) The .dtb for your board
-     and the disable-bt overlay are needed: the kernel reads the device tree, and the overlay
+     (a 3A+ has none of its own: its firmware loads bcm2710-rpi-3-b-plus.dtb, and the kernel
+     tells the two apart by the board's revision code) and the disable-bt overlay are needed: the kernel reads the device tree, and the overlay
      puts the PL011 serial port, where the kernel logs, on the header's GPIO 14/15.
   3. Copy everything from this zip to the card's root folder (the Mac folder can stay on your
      PC; its files go to the Macintosh, not the Pi).
@@ -101,11 +131,15 @@ Setting up the SD card (a Pi 3B in an SE)
      the raw download of a link is a 31-byte path, not firmware. The sizes to expect: the .bin
      about 400 KB, the .clm_blob about 5 KB, the .txt about 1 KB, the .hcd about 30 KB.)
 
-     Pi Zero 2 W (BCM43436):
+     Pi Zero 2 W (BCM43436, or the later BCM43436s: take both sets, the kernel picks by the chip's
+     revision, and the 43436s uses the 43430's .clm_blob from the Pi 3B list above):
         curl -fL --remote-name-all \
           https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/brcm/brcmfmac43436-sdio.bin \
           https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/brcm/brcmfmac43436-sdio.txt \
           https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/brcm/brcmfmac43436-sdio.clm_blob \
+          https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/brcm/brcmfmac43436s-sdio.bin \
+          https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/brcm/brcmfmac43436s-sdio.txt \
+          https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/bullseye/debian/config/brcm80211/cypress/cyfmac43430-sdio.clm_blob \
           https://raw.githubusercontent.com/RPi-Distro/bluez-firmware/master/broadcom/BCM43430B0.hcd
 
   5. Make the container, the one file the Pi firmware loads besides the kernel. Put your own
@@ -116,7 +150,8 @@ Setting up the SD card (a Pi 3B in an SE)
           aurora68-512x342.declrom aurora68.declrom \
           cyfmac43430-sdio.bin brcmfmac43430-sdio.txt cyfmac43430-sdio.clm_blob BCM43430A1.hcd
 
-     (for a 3B+/3A+, the cyfmac43455 files instead). The stock ROM is patched on the way; the
+     (for a 3B+/3A+, the cyfmac43455 files and BCM4345C0.hcd instead; for a Zero 2 W the 43436
+     ones above). The stock ROM is patched on the way; the
      output says so. The kernel also patches a stock ROM itself when it finds one in the
      container ("stock IIci ROM 368cadfe in the container: patched in memory ... verified" in
      the log), so an unpatched container works too. Copy aurora68.cpio to the card. The two declaration ROMs: the kernel takes
@@ -128,12 +163,12 @@ Setting up the SD card (a Pi 3B in an SE)
      to have HDMI show the Macintosh's picture instead (the log then shows until the
      Macintosh's video driver turns the screen on). To join a WiFi
      network at boot add wifi.ssid=NAME wifi.psk=PASSWORD wifi.country=XX (two letters).
-     Memory: the kernel gives the Macintosh what the Pi can spare, up to 128 MB; mac.ram=N
-     fixes it.
+     Memory: the kernel gives the Macintosh what the Pi can spare, up to 128 MB (on every board,
+     the 512 MB 3A+ and Zero 2 W included); mac.ram=N fixes it.
   7. The PiStorm: the classic board, with the firmware it came with. Remove the SE's 68000 (or
      use the socket if yours has one), seat the PiStorm with pin 1 where the 68000's pin 1 was
-     (the notch end), the Pi on it. A full-size Pi 3B overhangs the board; make sure nothing
-     under it touches the logic board.
+     (the notch end), the Pi on it. A 3A+ or a Zero 2 W fits the board; a full-size Pi 3B or 3B+
+     overhangs it: make sure nothing under it touches the logic board.
   8. HDMI to a monitor if you have one (it shows the same 512 by 342 picture as the SE's screen
      in this build), the serial cable to GPIO 14 (TXD) and 15 (RXD), ground to 6. Power the SE.
 
@@ -160,7 +195,8 @@ the clock chip, the ADB transceiver (no keyboard or mouse yet), the SCC, the flo
   1. Get a Macintosh hard disk image that boots System 7 on a IIci: an Apple-partitioned image
      with a driver partition and an HFS volume (what HD SC Setup or a Mac emulator makes). The
      file name must end in .img, .hda, .image or .hfv. Up to a couple of hundred megabytes on a
-     1 GB Pi (it is loaded into memory with the rest of the container).
+     1 GB Pi, about 100 MB on a 512 MB 3A+ or Zero 2 W with the Mac at 128 MB (it is loaded into
+     memory with the rest of the container; a larger one leaves the Mac less).
   2. Add it to the container: python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom
      aurora68.declrom aurora68-512x342.declrom MyMac.img  (plus the WiFi files if you want the
      WiFi; the order does not matter). Copy aurora68.cpio to the card.
@@ -205,7 +241,8 @@ the clock chip, the ADB transceiver (no keyboard or mouse yet), the SCC, the flo
      kernel saves it in pairings.txt on the card and the device reconnects at every boot
      without pairing again. Classic Bluetooth and Bluetooth LE mice and keyboards both work.
      Or over USB (new in 0.7): plug a USB keyboard and mouse into the Pi 3's USB ports, before
-     or after the boot. The Pi uses the first keyboard and the first mouse it finds. If they do
+     or after the boot (a 3A+ or Zero 2 W has one port: a small hub on it for both, or a
+     keyboard-and-mouse receiver). The Pi uses the first keyboard and the first mouse it finds. If they do
      not work, add usb=pio to cmdline.txt and send the [USB] lines of the log.
 What the Mac writes to the image is written back into aurora68.cpio on the card a second or two
 after the Mac stops writing (new in 0.5), so the next boot starts where the last one ended. Keep a
@@ -221,7 +258,8 @@ mac.appletalk=1 and mac.xpram= still apply on top of it. Delete pram.bin to star
 defaults. With
 mac.board=se (the SE board) the same image appears as a PiDisk volume instead.
 
-A Pi Zero W (the original, 2017) cannot run this: its processor is 32-bit only. The Zero 2 W can.
+A Pi Zero W (the original, 2017) cannot run this: its processor is 32-bit only. The Zero 2 W can
+("Which Raspberry Pi", at the top).
 
 Booting fast (new in the next release)
 --------------------------------------
@@ -259,7 +297,7 @@ short by the ROM patch the kernel and make-container.py apply.
 
 One card for a Pi 3 and a Pi 4 (new in the next release)
 --------------------------------------------------------
-The same SD card boots a Pi 3B, a 3B+ and a Pi 4 (or 400): one kernel8.img picks its drivers by
+The same SD card boots a Pi 3B, a 3B+, a 3A+, a Zero 2 W and a Pi 4 (or 400): one kernel8.img picks its drivers by
 board when it starts. Each board gets both its network cards on the Mac, the wired port and the
 WiFi, side by side on the one slot-9 card:
     Pi 3B       wired: the LAN9514 on the Pi's USB    WiFi: BCM43438 (the *43430* files)
@@ -268,14 +306,17 @@ WiFi, side by side on the one slot-9 card:
     3A+, Zero 2 W   no wired port: the WiFi is the only card
 What the card needs (get-firmware.sh fetches all of it): bootcode.bin, start.elf and fixup.dat
 (the Pi 3's firmware), start4.elf and fixup4.dat (the Pi 4's), the device trees
-bcm2710-rpi-3-b.dtb, bcm2710-rpi-3-b-plus.dtb, bcm2710-rpi-zero-2-w.dtb, bcm2711-rpi-4-b.dtb and
-bcm2711-rpi-400.dtb, and config.txt with its [pi3] and [pi4] sections (this release's works for
+bcm2710-rpi-3-b.dtb, bcm2710-rpi-3-b-plus.dtb (also the 3A+'s), bcm2710-rpi-zero-2-w.dtb,
+bcm2711-rpi-4-b.dtb and bcm2711-rpi-400.dtb, and config.txt with its [pi3] and [pi4] sections (this release's works for
 both). The container holds every board's WiFi and Bluetooth firmware; the kernel takes the WiFi
 set by the chip's id and the Bluetooth one by the board:
 
         python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom aurora68-1920x1200.declrom \
           wifi-firmware/cyfmac43430-sdio.bin wifi-firmware/brcmfmac43430-sdio.txt \
           wifi-firmware/cyfmac43430-sdio.clm_blob wifi-firmware/BCM43430A1.hcd \
+          wifi-firmware/brcmfmac43436-sdio.bin wifi-firmware/brcmfmac43436-sdio.txt \
+          wifi-firmware/brcmfmac43436-sdio.clm_blob wifi-firmware/BCM43430B0.hcd \
+          wifi-firmware/brcmfmac43436s-sdio.bin wifi-firmware/brcmfmac43436s-sdio.txt \
           wifi-firmware/cyfmac43455-sdio-standard.bin wifi-firmware/brcmfmac43455-sdio.txt \
           wifi-firmware/cyfmac43455-sdio.clm_blob wifi-firmware/BCM4345C0.hcd wifi-firmware/BCM4345C5.hcd
 

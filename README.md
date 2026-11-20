@@ -47,10 +47,11 @@ the next piece of work, so on hardware this build boots the Pi and waits (see
    `aurora68-512x342.declrom` is the card's declaration ROM for the SE's screen; the kernel takes
    the one whose name ends in the screen size in use, so both can travel.
    The quickest way to the rest: `sh get-firmware.sh` (in the zip) from the card's root fetches the
-   Pi's boot files for a 3B, 3B+, Zero 2 W and 4 alike and every board's WiFi and Bluetooth
+   Pi's boot files for a 3B, 3B+, 3A+, Zero 2 W and 4 alike and every board's WiFi and Bluetooth
    firmware into `wifi-firmware/`, checks each file's SHA-256, and prints the `make-container.py`
    line with all of them: one card and one container then boot a Pi 3 and a Pi 4. By hand:
-   For WiFi and Bluetooth on a Pi with the Broadcom CYW43455 (Pi 3B+, 3A+, 4, Zero 2 W, CM4),
+   For WiFi and Bluetooth on a Pi with the Broadcom CYW43455 (Pi 3B+, 3A+, 4, CM4; the Zero 2 W's
+   chip is a BCM43436, whose files get-firmware.sh fetches),
    fetch Broadcom's firmware (the same files and versions Alice68 uses: WiFi firmware
    7.45.241 from Raspberry Pi's `bullseye` branch, the Bluetooth patch from `bluez-firmware`)
    and add them to the command:
@@ -117,10 +118,11 @@ One line, options separated by spaces, no comments:
 
 | Option | Meaning |
 |---|---|
-| `mac.ram=128` | Macintosh memory in MB. Default: what the Pi can spare after the kernel's 192 MB, up to 128, which is all the IIci ROM sizes (two banks of 64). A 512 MB Pi Zero 2 W and an 8 GB Pi 4 both get 128 |
+| `mac.ram=128` | Macintosh memory in MB. Default: up to 128, which is all the IIci ROM sizes (two banks of 64), keeping back room for a 96 MB disk image on the card (none when the container brings the image). A 512 MB 3A+ or Zero 2 W and an 8 GB Pi 4 all get 128; on a 512 MB Pi that leaves room for a card image of up to about 99 MB, and the log says how much (`[PSMAC] memory: ...`). A larger image needs a smaller `mac.ram=` |
 | `enable_cache` | Emu68's instruction cache; leave it on |
 | `wifi.ssid=NAME wifi.psk=PASSWORD wifi.country=GB` | join a WiFi network at boot |
 | `wifi=off`, `bt=off`, `eth=off` | leave a radio or the Ethernet off (`eth=off` also takes the wired card out of the Mac's slot 9) |
+| `eth=usb` | on a Pi without a wired port (3A+, Zero 2 W): a USB Ethernet adapter as the Mac's wired card, a LAN9500, LAN7800 or CDC-ECM device on the USB port or behind a high-speed hub there (tested in QEMU with a CDC-ECM device only) |
 | `net.oui=off` | keep the Pi's own MAC addresses (default: Commodore's prefix, as Alice68) |
 | `mac.screen=1024x768` | the second screen's size in pixels (default 640x480; 512 to 1920 by 342 to 1200, every size up to 1920x1200 in millions of colours). Set `hdmi_mode` to match and use the declaration ROM of that size (`aurora68-1920x1200.declrom` for `mac.screen=1920x1200`, `hdmi_mode=69`) |
 | `mac.console=hdmi` | keep the kernel's log on the HDMI screen for the whole run (the same text as the serial line); without it the log shows until the Macintosh's video driver takes the screen |
@@ -184,7 +186,22 @@ and `cmdline.txt`. The release notes say when a Macintosh-side file changed.
 ## The hardware
 The target is a classic PiStorm (the DIP-64 board with the EPM240 CPLD made for the Amiga 500
 and 2000) in a socket in the SE's 68000 position, carrying a Raspberry Pi 3. The classic board
-takes a Zero 2 W, 3A+, 3B or 3B+; a Pi 4 needs a different board. `docs/12-hardware-bringup.md`
+takes a Zero 2 W, 3A+, 3B or 3B+; a Pi 4 needs a different board. The board is laid out for the
+3A+'s footprint: a 3A+ or a Zero 2 W fits it, a 3B or 3B+ overhangs it, and the original Zero W
+(ARMv6, 32-bit only) cannot run the kernel at all. Which Pi does what (docs/08 item 60):
+
+| Pi | Where | WiFi (files) | Bluetooth | Wired Ethernet | USB keyboard/mouse | Card writer | RAM: Mac default |
+|---|---|---|---|---|---|---|---|
+| 3A+ | the SE (fits the board) or the bench | BCM43455 (`cyfmac43455-sdio-standard.bin`, `brcmfmac43455-sdio.txt`, `.clm_blob`), 2.4 and 5 GHz | BCM4345C0 | none (`eth=usb`: a USB adapter) | the one USB-A port, a hub on it for both | yes | 512 MB: 128 MB |
+| Zero 2 W | the SE (smaller than a 3A+, same header position; it needs a soldered 40-pin header, or buy the Zero 2 WH) or the bench (mini-HDMI) | BCM43436 or 43436s (`brcmfmac43436-sdio.*` or `brcmfmac43436s-sdio.*`), 2.4 GHz | BCM43430B0 | none (`eth=usb`) | the micro-USB OTG port through an adapter, a hub on it for both | yes | 512 MB: 128 MB |
+| 3B | the bench; the SE with the Pi overhanging | BCM43438 (`cyfmac43430-sdio.*`), 2.4 GHz | BCM43430A1 | LAN9514 on USB | four ports (behind the LAN9514) | yes | 1 GB: 128 MB |
+| 3B+ | the bench; the SE with the Pi overhanging | BCM43455 | BCM4345C0 | LAN7800 on USB (not yet met on hardware) | four ports | yes | 1 GB: 128 MB |
+| 4B, 400 | the bench only | BCM43455 | BCM4345C0 (400: C5) | GENET | not yet | no | 2-8 GB: 128 MB |
+| Zero W (2017) | nowhere: ARMv6, 32-bit | | | | | | |
+
+The 3A+ has no device tree of its own: its firmware loads `bcm2710-rpi-3-b-plus.dtb`, and the
+kernel tells it from a 3B+ by the board's revision code. The 3A+ is the one tested in QEMU
+(`raspi3ap`); QEMU has no Zero 2 W, which was checked by reading only. `docs/12-hardware-bringup.md`
 is the plan and what is known about the fit, the CPLD firmware (stock first; Frimples'
 DirectSocket E-clock build if the VIA needs it), and what a Pi 3 changes against the Pi 4 the
 network modules were written for: WiFi works the same way (the firmware differs between a 3B

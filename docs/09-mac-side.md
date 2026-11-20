@@ -162,14 +162,14 @@ The slot-9 card carries both network functions side by side, sResource $81 (the 
 `.Network_EtherNet_PiStorm`, Alice68 unit 1) and $83 (the WiFi, `.Network_WiFi_PiStorm`, unit 0),
 beside PiDisk, input and video. Two drivers with two names, so two unit-table entries and two
 refnums; each has its own protocol table and its own rings on the network board. What each board
-gives unit 1, decided from the device tree before the 68k starts:
+gives unit 1, decided from the board's revision code (else the device tree) before the 68k starts:
 
 | Board | Wired port (unit 1, $81) | WiFi (unit 0, $83) | Bluetooth firmware |
 |---|---|---|---|
 | Pi 3B (and 2B v1.2) | LAN9514 on USB, `psmac_usbnet.c` (smsc95xx) | BCM43438, files `*43430*` | BCM43430A1.hcd |
 | Pi 3B+ | LAN7800 on USB behind two hubs, `psmac_usbnet.c` (lan78xx) | BCM43455 | BCM4345C0.hcd |
-| Pi 3A+ | none: $81 left out | BCM43455 | BCM4345C0.hcd |
-| Zero 2 W | none: $81 left out | BCM43436 (answers as a 43430; `brcmfmac43436-sdio.*`) | BCM43430B0.hcd |
+| Pi 3A+ (boots with the 3B+'s device tree) | none: $81 left out; `eth=usb`: a USB adapter | BCM43455 | BCM4345C0.hcd |
+| Zero 2 W | none: $81 left out; `eth=usb`: a USB adapter | BCM43436 or 43436s (both answer as a 43430; revision 1 is the 43436s: `brcmfmac43436s-sdio.*`, else `brcmfmac43436-sdio.*`) | BCM43430B0.hcd |
 | Pi 4B | GENET, Alice68's `alice_net.c` | BCM43455 | BCM4345C0.hcd |
 | Pi 400, CM4 | GENET | BCM43455/43456 | BCM4345C5.hcd |
 | testbed (QEMU) | the file bridge with `mac.net=`, else QEMU's `usb-net` (CDC-ECM) through `psmac_usbnet.c` | the simulated radio with `mac.wifisim=` | |
