@@ -83,15 +83,19 @@ does not change: its address, its filter, its frames.
 
 *WiFi* (unit 0, the Broadcom radio): an 802.11 station has one MAC address per association, and
 the FullMAC firmware of the 43430 and 43455 offers a second interface only as an access point or
-for P2P, not a second station on the same network. So the kernel shares the Mac's MAC address and
-asks for an IPv4 address of its own with a different DHCP client identifier (option 61, "aurora68-pi",
+for P2P, not a second station on the same network. So the kernel shares the Mac's MAC address,
+and by default its IP address too, taking TCP port 8068 on it: `http://MAC-ADDRESS:8068/`, or
+`http://aurora68-pi.local:8068/` (the kernel's mDNS answers with the Mac's address in this mode).
+The first real access point it met allowed one IP address per wireless station and never delivered
+the ARP request for a second one (docs/08 item 86); many do. With `remote.wifi=own` the kernel
+asks instead for an IPv4 address of its own with a different DHCP client identifier (option 61, "aurora68-pi",
 which RFC 2131 makes the lease's key) and host name (option 12). Frames are then steered by IP
 address: to the kernel's address, the kernel's; broadcasts and multicasts, both; everything else,
 the Mac's. Some home routers key leases by the hardware address alone and would hand both the same
 address; the kernel sees that (it watches the Mac's own frames for its address) and falls back to
-sharing the Mac's address as well, taking only TCP port 8068 to it. `remote.wifi=shared` chooses
-that from the start. The trade-off: in the shared mode the Mac cannot use port 8068 itself, and
-the remote is reachable only while the Mac has an address.
+sharing the Mac's address as well, taking only TCP port 8068 to it. The trade-off of the shared
+mode: the Mac cannot use port 8068 itself, and the remote is reachable only while the Mac has an
+address.
 
 The interface is the wired one while its link is up, else the WiFi (`remote.link=wired|wifi`
 fixes one). The HTTP server listens on port 80 and on 8068 of its own address.
@@ -126,11 +130,11 @@ remote=on remote.token=CHOOSE-A-LONG-TOKEN
 ```
 
 Optional words: `remote.name=NAME` (mDNS name, default `aurora68-pi`), `remote.ip=A.B.C.D/24,ROUTER`
-(a fixed address instead of DHCP), `remote.link=wired|wifi`, `remote.wifi=shared` (on the WiFi,
-share the Mac's IP address from the start), `remote.mac=02:...` (the wired address), `remote.any=1`
+(a fixed address instead of DHCP), `remote.link=wired|wifi`, `remote.wifi=own` (on the WiFi,
+an IP address of its own instead of the Mac's port 8068), `remote.mac=02:...` (the wired address), `remote.any=1`
 (answer every source address, not only the local network: only behind a firewall you trust).
 
-Finding the Pi: `http://aurora68-pi.local/` from a Mac (mDNS); or the address in the kernel's log
+Finding the Pi: `http://aurora68-pi.local/` from a Mac (mDNS), on the WiFi `http://aurora68-pi.local:8068/`; or the address in the kernel's log
 (the HDMI console during the boot, Aurora68 Log, or aurora68.log), a line such as
 `[REMOTE] address 192.168.1.23/255.255.255.0 on the wired port (DHCP from 192.168.1.1, lease 86400 s, router 192.168.1.1): http://192.168.1.23/ or http://aurora68-pi.local/`;
 or the router's list of clients, where it appears as `aurora68-pi`. When the kernel has to share

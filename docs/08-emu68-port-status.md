@@ -3251,7 +3251,24 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      Chrome; docs/13 "What was tested" has the list. Under System 6's MultiFinder only the front
      application's windows are seen: there are no layers, and WindowList is swapped with the rest of an
      application's low memory. The encoder needed two more match distances for doubled pixels (the SE's
-     grey desktop at scale 2: 780 KB before, 30 KB after). Not seen on hardware.
+     grey desktop at scale 2: 780 KB before, 30 KB after). On the real SE the same evening `aurora68.py
+     windows` from a laptop over WiFi listed Aurora68 Log and five Finder windows with their applications
+     (the remote on the Mac's address, port 8068: item 86).
+
+86. **The remote control on a real WiFi network: the kernel's own address unreachable (21 November).** The
+   owner turned the remote on over WiFi. The kernel took an address of its own as designed (the Mac's MAC
+   address, a second IPv4 address by its DHCP client identifier, announced by mDNS: the laptop resolved
+   `aurora68-pi.local` to it), but nothing reached it: pings timed out, HTTP failed at once, and the
+   laptop's ARP entry for that address stayed "incomplete" while the Mac's address beside it resolved to
+   the shared MAC. The access point never delivered the ARP request for a second address on that
+   station (many allow one IP address per wireless station, with proxy ARP or address binding from DHCP);
+   the testbed's simulated radio has no such rule, which is why it passed there (item 61 stage 2). With
+   `remote.wifi=shared` the kernel takes TCP port 8068 on the Mac's own address, and the remote answered at
+   once. That is now the WiFi's default; `remote.wifi=own` asks for the second address on networks known
+   to allow it. The wired port is unchanged (the kernel's own MAC address and IP). The heartbeat has a
+   `[REMOTE]` line, printed when anything changed: the address and mode, frames in, frames queued and
+   sent, ARP requests, pings, SYNs and resets, so the step where a connection stops shows in Aurora68 Log
+   after the start-up lines have scrolled out of the 64 KB log.
 
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)

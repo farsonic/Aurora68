@@ -63,7 +63,7 @@ static struct {
     int unit;                               /* 0 WiFi, 1 wired, -1 none */
     int shared;                             /* 0 own MAC; 1 the Mac's MAC, own IP; 2 the Mac's MAC and IP */
     int want_link;                          /* remote.link: -1 either (wired first), 0 WiFi, 1 wired */
-    int wifi_shared;                        /* remote.wifi=shared */
+    int wifi_shared;                        /* the WiFi's default; remote.wifi=own clears it */
     int have_static; uint8_t st_ip[4], st_mask[4], st_gw[4];
     uint8_t own_hw[6]; int own_hw_set;      /* remote.mac= */
     uint8_t hw[6], ip[4], mask[4], gw[4];
@@ -166,7 +166,13 @@ void psmac_ip_init(void)
     const char *o;
     I.want_link = -1;
     if ((o = psmac_option("remote.link"))) I.want_link = o[0] == 'w' && o[1] == 'i' ? 0 : o[0] == 'w' ? 1 : -1;   /* wifi | wired */
-    if ((o = psmac_option("remote.wifi")) && o[0] == 's') I.wifi_shared = 1;
+    /* On the WiFi the kernel shares the Mac's IP address by default and takes port 8068 alone. Its
+       own address (the Mac's MAC, a second IP by DHCP client identifier) worked on the testbed's
+       simulated radio, but the first real access point (21 November 2026) never delivered the ARP
+       request for it: many access points allow one IP address per wireless station. remote.wifi=own
+       asks for the own address anyway (a router and access point known to allow it). */
+    I.wifi_shared = 1;
+    if ((o = psmac_option("remote.wifi")) && o[0] == 'o') I.wifi_shared = 0;
     if ((o = psmac_option("remote.ip"))) {
         /* A.B.C.D/NN[,GATEWAY] */
         const char *e; uint8_t gw[4] = { 0 };
@@ -742,7 +748,7 @@ static void use_link(int u)
     else { volatile struct an_unit *x = unit_of(0); cpy(I.hw, x->mac, 6); I.shared = I.wifi_shared ? 2 : 1; }
     kprintf("[REMOTE] on %s, MAC address %02x:%02x:%02x:%02x:%02x:%02x%s\n", link_name(u),
             I.hw[0], I.hw[1], I.hw[2], I.hw[3], I.hw[4], I.hw[5], I.shared ? " (the Mac's: a station has one)" : " (the kernel's own)");
-    if (I.shared == 2) { I.shared = 1; go_shared("remote.wifi=shared"); return; }
+    if (I.shared == 2) { I.shared = 1; go_shared("the WiFi's default (remote.wifi=own for an address of its own)"); return; }
     if (I.have_static) {
         cpy(I.ip, I.st_ip, 4); cpy(I.mask, I.st_mask, 4); cpy(I.gw, I.st_gw, 4);
         bound("static, remote.ip=");
