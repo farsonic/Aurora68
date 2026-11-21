@@ -3044,6 +3044,83 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      in the window, the progress line running (0:28 of 1:50), the window on the SE's own one-bit screen.
      Heard through the HDMI monitor's headphone socket: "sounds clean".
 
+83. **PiPlay: internet radio over MacTCP (21 November).** With MP3 files playing on the card (item 82) and the
+   user's SE on WiFi through Riptide, the user asked for SomaFM, listener-supported radio from San
+   Francisco (https://somafm.com/), and for any plain-HTTP MP3 stream. The card already took an open-ended
+   stream; what was missing was the Mac's side: TCP, HTTP and the stations' metadata. docs/09, "Internet
+   radio in PiPlay", is the long form and has the user's steps.
+   - *What SomaFM serves today* (21 November, from this machine's network, which passes plain HTTP through
+     a proxy): its channel list (somafm.com/channels.json) and playlists (somafm.com/<channel>.pls) now
+     name `https://ice6.somafm.com/<channel>-128-mp3` and three other ice servers; `http://ice2.somafm.com/
+     groovesalad-128-mp3` on port 80 still answers 200 with `server: Icecast 2.4.0-kh22-Soma1.7`,
+     `content-type: audio/mpeg`, `icy-br: 128`, `icy-metaint: 45000` and the long `icy-name` ("Groove Salad:
+     a nicely chilled plate of ambient beats and grooves. [SomaFM]"), all header names in lower case, and a
+     burst of some 380 KB (about 24 s) at the start. Asked with HTTP/1.1 the body came in chunks; asked with
+     HTTP/1.0 this network's proxy answered "426 Upgrade Required" to SomaFM and to example.com alike, so
+     what SomaFM itself does with HTTP/1.0 could not be seen from here (Icecast answers HTTP/1.0 clients,
+     which Winamp-era players are). PiPlay therefore asks with HTTP/1.0, undoes chunks if they come
+     anyway, and on a 426 asks again with HTTP/1.1. Thirty seconds of the stream captured that way went
+     through the parser on the host: 740,625 bytes of audio out of 740,753 of body, one title, and the audio
+     a chain of 1,772 MPEG frames with no break (nothing of SomaFM's is kept or distributed).
+   - *The Mac's side* (`mac/piplay/radio.c`, `icy.c`, `net.s`; PiPlay 1.1, CODE 66 KB, SIZE 256 KB). MacTCP's
+     interface only: `.IPP` opened by name; TCPCreate with a 32 KB buffer, TCPActiveOpen (30 s), TCPSend
+     with a WDS, TCPRcv of 8 KB at a time, TCPAbort and TCPRelease; the parameter blocks are the MacTCP
+     Programmer's Guide's (rcvBuffLen at +40, wdsPtr at +38 ...). The resolver is found as Apple's DNR glue
+     finds it and called the glue's way (C convention, selector first: OPENRESOLVER, STRTOADDR with a
+     Pascal result procedure, CLOSERESOLVER at Quit); the stub keeps D2, which MPW C may change and GCC
+     does not expect to. The receive's completion routine runs at interrupt time and does the work there:
+     the parser (`icy.c`, no allocation, no traps), the audio into the ring, the next TCPRcv; a receive that
+     completes before PBControl returns is taken by the outer call's loop, not by recursion, and the loop's
+     last look is made with interrupts masked. So the stream goes on with a menu held: in the testbed a
+     menu held for 15 s left the tone without a break. The card is started paused and resumed at three
+     seconds in hand (the Pi alone starts at 48 KB, three seconds only at 128 kbit/s); Pause keeps the
+     connection, and the station goes on into the Pi's 2 MiB. A dropped connection or ten silent seconds
+     (TCPRcv's command timeout) bring a reconnection after 1, 2, 4 ... 30 s; a connection that has brought
+     64 KB resets the wait. Counts of reconnects (connections lost and made again) and underruns (times
+     the card's `underruns` began to rise) are in the window and the log.
+   - *The station list* is a TeachText file, "PiPlay Stations" ('TEXT', 'ttxt') in the Preferences folder,
+     written at the first start from the built-in twelve SomaFM channels (`http://ice2.somafm.com/<channel>-
+     128-mp3`) and read again whenever its modification date changes (PiPlay coming to the front, a click in
+     the menu bar). The Radio menu's items are set with SetItem, so a "/" or ";" in a name is not taken as a
+     menu command.
+   - *The testbed's station* (`tools/radiotest.py`, standard library): an MP3 played as a live stream
+     with one clock, Icecast's 64 KB burst, metadata every 16,000 bytes, a new title every 20 s, ICY and
+     HTTP answers, redirections, a playlist, AAC refused, and a control port to drop or stall the
+     listeners. Its stream, `tools/mksounds.py --radio`, is a steady 1 kHz left and 1.5 kHz right tone at 128
+     kbit/s, and `tools/audiocheck.py --breaks` finds what broke it. The first version of that check looked
+     for a jump in each sample's residual against the sine and found nothing at a junction where the
+     host test knew 158 frames had been repeated: MPEG audio's overlapping windows blend the two sides
+     over a millisecond or more, and a blend of two sines of one frequency is still a sine. It now
+     measures phase and amplitude every 10 ms (a whole number of periods of both tones) and keeps the
+     residual for damage.
+   - *Verified in the testbed* (solo board under QEMU, System 7.1, the kernel of item 82 unchanged, PiPlay
+     driven through the remote's semihosting channel, `tools/audiocheck.py --breaks 1000,1500` on
+     `mac.audiodump=`). With Riptide and Riptide DNR: the resolver found in "Riptide DNR", `radio.testbed`
+     looked up, a 302 followed, titles in the window (em dash and accent in Mac Roman) and in the kernel's
+     log; 33 s through 33 metadata blocks with no phase step, dip or damaged sample; the server's drop
+     answered by a reconnection in 2 s with no underrun and a 40 ms dip at the junction (the cut frame and
+     the first new one without its bit reservoir), the tone unbroken after it; a menu held 15 s without a
+     break; a 16 s stall: underrun counted, the receive's ten-second timeout, a reconnection, 5.1 s of
+     silence; Pause and Resume; ICY 200 OK from a dotted address; a .pls naming https first; seven failures
+     in their own words; the station list edited in SimpleText while PiPlay ran and read again at the
+     resume event. With Apple's MacTCP 2.0.6 (the user's image as it is): the list written at the first
+     start, a dotted station played and reconnected after a drop with the same 40 ms junction; a named
+     host found MacTCP's own `'dnrp'` in its control panel, whose StrToAddr answered noNameServer (-23044:
+     none configured), now said in those words. All in docs/09.
+   - *Seen on the way:* (1) the first driver of the test picked the menu next to Radio (a stray dark column
+     at the screen's edge counted as a title) - a test mistake. (2) With no Sound PiStorm in the image, each
+     error's beep through the ASC kept the Mac inside the beep for one to four minutes (the solo board's
+     ASC beep of item 74), and a Return meant for the error window then reached PiPlay's window and played
+     the failing station again; with Sound PiStorm the beeps end at once. (3) After the stall the card
+     played 1.04 s of the old connection after the silence: the decoder waits for its 16 KB window before it
+     decodes, so an underrun can begin with a second undecoded; nothing is lost.
+   - *Not verified:* SomaFM itself (no Internet in the testbed; its server's headers and 30 s of its
+     stream were checked from this machine through the host-side parser only), a real DNS lookup through
+     Riptide on the SE's WiFi, Apple's MacTCP with a name server, System 6.0.8, the 68k's load on a real SE
+     while the completion routine parses at interrupt time, stations other than SomaFM. To send back from
+     the SE: every `[MAC] PiPlay: radio:` line from the station's name on, the `[AUDIO] stream:` lines and a
+     `[PSMAC]   stream:` heartbeat.
+
 
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)

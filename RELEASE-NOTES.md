@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **PiPlay: internet radio.** PiPlay 1.1 has a **Radio** menu with twelve SomaFM channels (Groove Salad,
+  Drone Zone, Secret Agent, Lush, Space Station Soma and more; SomaFM is listener-supported radio,
+  https://somafm.com/) and **Open URL…** (Command-U) for any Shoutcast or Icecast MP3 stream over plain
+  `http://`, or a .pls/.m3u playlist. The Mac fetches the stream through MacTCP's interface (Riptide or
+  Apple's MacTCP), the Pi decodes it. The window shows the station, "Now playing" with the title the
+  station sends, the bit rate, a buffer meter and counts of reconnects and underruns; it buffers about
+  three seconds before it starts, keeps playing while a menu is held or another program is in front, and
+  reconnects by itself (after 1, 2, 4 … up to 30 s) when the connection drops. Your own stations go into
+  the text file "PiPlay Stations" in the Preferences folder (edit it with TeachText: `Name = http://...`
+  a line). Copy the new PiPlay (Mac/PiPlay.bin) onto the Mac; kernel8.img is unchanged. Tested in the
+  testbed against a test station of our own (no Internet there); not yet with SomaFM itself over WiFi.
 - **PiPlay: MP3 files on the Mac.** The new application **PiPlay** plays MP3 files, and AIFF and WAV files
   that are not compressed, through the sound card on HDMI or the Pi's headphone socket (the SE's own
   speaker only with `mac.sestream=on`, which is not yet safe: see docs/08 item 82): the Mac reads the file and the Pi decodes it, as some sound cards of the time did with a DSP.

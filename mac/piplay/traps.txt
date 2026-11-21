@@ -13,3 +13,15 @@ A89B - PenSize(int w:w, int h:w)
 A947 - SetItem(void *menu:l, int item:w, const unsigned char *s:l)
 # the window put back on a screen that is still there; the grow icon's corner
 A8E8 b PtInRgn(long pt:l, void *rgn:l)
+# the radio (radio.c): the Resource Manager for the resolver's 'dnrp', as Apple's DNR glue finds it
+# (a SignedByte permission goes in the high byte of its word, like a BOOLEAN)
+A99D l GetIndResource(long type:l, int index:w)
+A992 - DetachResource(void *h:l)
+A99A - CloseResFile(int ref:w)
+A9AF w ResError()
+A9C4 w OpenRFPerm(const unsigned char *name:l, int vref:w, int perm:b)
+A81A w HOpenResFile(int vref:w, long dirid:l, const unsigned char *name:l, int perm:b)
+# the Radio menu, rebuilt when the station list changes; Open URL...'s I-beam
+A950 w CountMItems(void *menu:l)
+A952 - DelMenuItem(void *menu:l, int item:w)
+A9B9 l GetCursor(int id:w)

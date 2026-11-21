@@ -57,5 +57,6 @@ mac/build/pd/
 mac/build/pidisplay.elf
 mac/build/pidisplay_traps.txt
 mac/build/edid_test
+mac/build/icy_test
 mac/build/edid_test.log
 mac/build/edid-sample.bin

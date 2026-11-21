@@ -73,7 +73,7 @@ def put(name, data):
 
 
 put('icn128.bin', bits(ICON) + bits(mask(ICON)))
-put('sig.bin', bytes([len('PiPlay 1.0')]) + b'PiPlay 1.0')
+put('sig.bin', bytes([len('PiPlay 1.1')]) + b'PiPlay 1.1')
 put('fref128.bin', b'APPL' + struct.pack('>H', 0) + b'\0')
 put('fref129.bin', b'****' + struct.pack('>H', 1) + b'\0')
 # BNDL: signature, its resource ID, number of types - 1; per type: the type, count - 1, (local ID, resource ID) pairs

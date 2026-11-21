@@ -31,6 +31,13 @@ Each MP3 carries an ID3v2 tag with the title and the artist "Aurora68 test", whi
 The notes were written down here from the pieces as they are generally known; any slip is ours.
 
 --quick renders the music at a quarter of its length (for a fast check of the script itself).
+
+--radio makes only the stream for the radio test (tools/radiotest.py, docs/09 "Internet radio"):
+  Radio tone       1000 Hz on the left and 1500 Hz on the right, steady, for 5 minutes at 44,100 Hz,
+                   MP3 at 128 kbit/s like SomaFM's streams. Ten milliseconds (441 samples) hold exactly
+                   10 and 15 periods, so the signal is one block repeated and is made in a moment; a
+                   steady sine shows every lost, doubled or damaged frame as a break in its phase
+                   (tools/audiocheck.py --breaks 1000,1500).
 """
 import argparse, array, math, os, shutil, struct, subprocess, sys
 
@@ -38,6 +45,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument('outdir')
 ap.add_argument('--no-mp3', action='store_true')
 ap.add_argument('--quick', action='store_true')
+ap.add_argument('--radio', action='store_true', help='only the radio test stream (Radio tone.mp3)')
 a = ap.parse_args()
 os.makedirs(a.outdir, exist_ok=True)
 ARTIST = 'Aurora68 test'
@@ -133,6 +141,24 @@ def tone(freq, secs, rate, amp=0.5):
 def silence(secs, rate):
     return [0.0] * int(secs * rate)
 
+
+if a.radio:
+    blk = array.array('h')
+    for i in range(441):
+        blk.append(int(round(0.4 * 32767 * math.sin(2 * math.pi * 1000 * i / 44100))))
+        blk.append(int(round(0.4 * 32767 * math.sin(2 * math.pi * 1500 * i / 44100))))
+    if sys.byteorder == 'big':
+        blk.byteswap()
+    secs = 30 if a.quick else 300
+    wav = os.path.join(a.outdir, 'Radio tone.wav')
+    data = blk.tobytes() * (secs * 100)
+    with open(wav, 'wb') as f:
+        f.write(b'RIFF' + struct.pack('<I', 36 + len(data)) + b'WAVEfmt ' + struct.pack('<IHHIIHH', 16, 1, 2, 44100, 176400, 4, 16)
+                + b'data' + struct.pack('<I', len(data)) + data)
+    print(f'Radio tone: {secs} s at 44100 Hz')
+    mp3(wav, os.path.join(a.outdir, 'Radio tone.mp3'), 128, 'Radio tone')
+    os.remove(wav)
+    sys.exit(0)
 
 R = 44100
 l, r = [], []

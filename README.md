@@ -246,7 +246,7 @@ screen, booted from the SE's SCSI disk, with PiDisk mounted beside it (docs/08 i
 | Directory | Contents |
 |---|---|
 | `emu68/` | the Emu68 fork (vendored; its own history is the branch `emu68-psmac`): the kernel. `src/psmac/` is the Macintosh host layer (bus bridge, 68030 MMU shim, mailbox window); `src/alice/` are the Alice68 service modules (network, Bluetooth, status, USB) with their Macintosh glue |
-| `mac/` | the Macintosh side in 68k assembly: the `.PiDisk` block driver, the `.ENET`-interface Ethernet driver, the `.PiInput` keyboard-and-mouse driver, the `.Display_Video_PiStorm` second-display driver, the PiDisk and PiMach extensions, the PiNet, PiPing, PiScreens and PiColor test applications, the PiWiFi, PiBlue and PiStatus applications, and in C (with the kit in `mac/c`) PiLog, PiSlots, PiDepth, the WiFi menu, PiScrn and PiPlay (MP3, AIFF and WAV on the sound card), a Makefile (`make check` compares the drivers' structure offsets with the kernel's header) |
+| `mac/` | the Macintosh side in 68k assembly: the `.PiDisk` block driver, the `.ENET`-interface Ethernet driver, the `.PiInput` keyboard-and-mouse driver, the `.Display_Video_PiStorm` second-display driver, the PiDisk and PiMach extensions, the PiNet, PiPing, PiScreens and PiColor test applications, the PiWiFi, PiBlue and PiStatus applications, and in C (with the kit in `mac/c`) PiLog, PiSlots, PiDepth, the WiFi menu, PiScrn and PiPlay (MP3, AIFF and WAV on the sound card, and internet radio over MacTCP), a Makefile (`make check` compares the drivers' structure offsets with the kernel's header) |
 | `tools/` | ROM patching, the initramfs container builder (`mkcontainer.py`: ROM, declaration ROM and firmware in one cpio for the Pi), the full-stack testbed launcher, the host network peer, debugging helpers |
 | `tools/mac/` | resource fork, MacBinary, application, extension and declaration ROM builders (pure Python) |
 | `rom/` | ROM patch descriptions and the patch tool's Makefile (ROM images themselves are not in the repository) |
@@ -273,3 +273,8 @@ Third-party code compiled into the kernel beyond Emu68 and Alice68: **minimp3** 
 (https://github.com/lieff/minimp3), the MPEG audio decoder behind PiPlay, dedicated to the public domain
 under CC0 1.0 and vendored unmodified in `emu68/src/psmac/third_party/minimp3/` with its licence text
 and a note of the commit it was taken from.
+
+PiPlay's Radio menu lists the public MP3 streams of **SomaFM** (https://somafm.com/), listener-supported,
+commercial-free internet radio from San Francisco; if you listen, consider supporting them
+(https://somafm.com/support/). Aurora68 holds only the streams' addresses: nothing of SomaFM's is
+recorded or redistributed.

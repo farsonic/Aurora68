@@ -376,6 +376,136 @@ not in the repository (about 35 MB): run the script. In the testbed (`tools/run-
   window put on the main screen (`docs/img/se-piplay.png`); the About box and the error windows centred
   with OK outlined.
 
+### Internet radio in PiPlay (21 November 2026)
+PiPlay 1.1 plays internet radio: SomaFM (https://somafm.com/), the listener-supported, commercial-free
+stations of San Francisco, and any other Shoutcast or Icecast station that sends MP3 over plain
+`http://`. The Mac fetches the stream with MacTCP's own programming interface (Riptide or Apple's
+MacTCP), takes the station's titles out of it and pours the audio into the card's stream channel; the
+Pi decodes it as it decodes an MP3 file. A 68k could not do the encryption of `https://` and does not
+try. SomaFM is supported by its listeners; if you enjoy it, support it at https://somafm.com/support/.
+Aurora68 carries no recording of theirs: PiPlay's list holds only the addresses of their public streams.
+
+**Listening, step by step.**
+1. Network first: Riptide (or MacTCP) set up and working, as for Internet Explorer: Riptide in the
+   Extensions folder and "Riptide DNR" in the System Folder (docs/09 "MacTCP"; Riptide's docs/MAC.md).
+2. Copy PiPlay (Mac/PiPlay.bin, `hcopy -m` or any MacBinary tool) onto the Mac, replacing the old one. The
+   kernel needs no change for the radio (the stream channel of item 82 already takes open-ended streams).
+3. Start PiPlay. The **Radio** menu lists the stations; choose one. The window shows the station's name,
+   "Connecting", then "Buffering" with a percentage, then "Playing", the station's name for itself, "Now
+   playing: ..." with the title of what is on, the format and bit rate, and a meter of what the card holds
+   (full at 30 seconds). Play/Pause (space, Command-P) pauses: the station goes on into the card's buffer
+   (up to two minutes at 128 kbit/s) and plays on from there; Stop (Esc, Command-.) closes the connection.
+4. **Radio > Open URL… (Command-U)** plays an address of your own: `http://host[:port]/path`, the
+   `http://` may be left out; a `.pls` or `.m3u` playlist's address works too (its first `http://` stream
+   is taken). Command-V pastes into the field.
+5. **Your own stations:** the list is the text file "PiPlay Stations" in the Preferences folder (System
+   6: the System Folder), written at PiPlay's first start from the built-in list. Open it with TeachText
+   or SimpleText (double-click it), add a line `Name = http://host[:port]/path` for each station (a line holding only an
+   address is named after its host; lines starting with # are notes), save, and come back to PiPlay: it
+   reads the file again when it comes to the front or when you open a menu. Throw the file away and the
+   built-in list comes back at the next start. At most 32 stations.
+
+The built-in list: Groove Salad, Drone Zone, Secret Agent, Lush, Space Station Soma, Indie Pop Rocks!,
+Beat Blender, Deep Space One, DEF CON Radio, Left Coast 70s, Underground 80s and Sonic Universe, each
+`http://ice2.somafm.com/<channel>-128-mp3`, the 128 kbit/s MP3 streams that SomaFM's playlists
+(somafm.com/<channel>.pls) name; their playlists now point at the same streams over https, which the
+ice servers still also serve over plain http on port 80 (seen 21 November 2026). If a channel moves,
+change its line.
+
+**How it works.** `mac/piplay/radio.c` opens `.IPP` by name, as every MacTCP program does, and finds the
+name resolver the way Apple's DNR glue does (the Control Panels folder for a `'cdev'` of creator
+`'ztcp'`, then the System Folder and the Control Panels folder for `'mtcp'`; the first file whose
+resource fork holds `'dnrp'` 1, which is "Riptide DNR" with Riptide and "MacTCP DNR" with Apple's MacTCP).
+It sends `GET /path HTTP/1.0` with `Host:`, `User-Agent: PiPlay/1.0 (Macintosh; Aurora68)` and
+`Icy-MetaData: 1`. `mac/piplay/icy.c` takes the answer apart: an `HTTP/1.x` or `ICY 200 OK` status line,
+the headers in any case (`icy-metaint`, `icy-name`, `icy-br`, `Content-Type`, `Location`,
+`Transfer-Encoding`), redirections (301, 302, 303, 307, 308; three at most; to plain http only), a
+playlist's first stream, HTTP/1.1's chunks (a server or proxy that answers 426 "Upgrade Required" is
+asked again with HTTP/1.1), and the metadata block after every `icy-metaint` bytes of audio, from which
+`StreamTitle='...';` is taken (UTF-8 or Latin-1 into Mac Roman). The title goes into the window and into
+the stream block's `title` field (`title_seq` bumped), which the Pi logs. The receive call is
+asynchronous and its completion routine (`mac/piplay/net.s`, `c_rcv_done`) runs the parser and puts the
+audio into the card's ring at interrupt time, then makes the next receive, so the stream goes on while a
+menu is held, a dialog is up or another program is in front; the event loop only connects, reconnects
+and redraws. The card is started paused and resumed when three seconds of audio are in hand. If the
+connection ends, or nothing comes for ten seconds (TCPRcv's command timeout), PiPlay connects again
+after 1 s, then 2, 4, 8, 16 and 30 s, while the card plays what it still holds; the decoder finds the next
+frame in what the new connection brings. Every step is in the log as `[MAC] PiPlay: radio: ...`.
+
+**Plain words when it fails:** "The name could not be found: is the network up?" (the resolver knows no
+such name, or no name server answered), "The station did not answer." (no connection), "The station has
+no stream at that address (404 Not Found).", "This station sends AAC (audio/aacp), and PiPlay plays MP3
+streams only.", "PiPlay plays plain http:// streams only: a Macintosh cannot do the encryption of
+https.", "The station sent PiPlay from one address to another more than three times.", "MacTCP is not
+there: PiPlay needs MacTCP (or Riptide) to play internet radio." Once a station has played, a lost
+connection is not an error: the window says "Lost: ..." and "Retrying in N s".
+
+**The log lines to send back** when a station does not play: every `[MAC] PiPlay: radio: ...` line from
+the station's name to the end, the `[AUDIO] stream: ...` lines and one `[PSMAC]   stream:` heartbeat line
+(PiLog's Mac tab shows them, or the Pi's log through the remote control).
+
+**In the testbed** (no Internet there, so the station is our own): `tools/radiotest.py` is a small
+Icecast-like station in Python's standard library. It plays an MP3 as a live stream with one clock for
+all listeners, a 64 KB burst at connection (Icecast's default), a metadata block every 16,000 bytes and a
+new StreamTitle every 20 s (with an apostrophe, an em dash and an e acute, in UTF-8); it answers `/stream`
+(HTTP/1.0 200), `/icy` (ICY 200 OK), `/redirect`, `/moved`, `/loop`, `/secure`, `/pls` and `/aac`, and on a
+control port of its own it drops or stalls its listeners on command. `tools/mksounds.py --radio` makes its
+stream, "Radio tone.mp3": five minutes of 1 kHz on the left and 1.5 kHz on the right at 128 kbit/s, in
+which `tools/audiocheck.py --breaks 1000,1500` finds every lost, doubled or damaged frame and every gap.
+```
+python3 tools/mksounds.py /tmp/snd --radio
+python3 tools/radiotest.py "/tmp/snd/Radio tone.mp3" &                       # 127.0.0.1:18000, control :18001
+PINET_FORWARD="8000=127.0.0.1:18000" python3 tools/pinet.py /tmp/net peer &
+HD=test.image tools/run-solo.sh 600 mac.net=/tmp/net mac.audiodump=/tmp/dump.pcm
+curl http://127.0.0.1:18001/drop          # the server closes the connection; ?how=reset, /stall?s=15
+python3 tools/audiocheck.py /tmp/dump.pcm --breaks 1000,1500
+```
+The Mac reaches the station as `http://radio.testbed:8000/stream` (pinet's DNS names every `*.testbed`
+with the peer's address) or `http://192.168.68.1:8000/stream`.
+
+**Seen in the testbed** (21 November 2026; the solo board under QEMU, System 7.1, PiPlay driven through the
+remote control's semihosting channel, the output recorded with `mac.audiodump=`):
+- *With Riptide* (Riptide and Riptide DNR installed, MacTCP taken out; a "PiPlay Stations" of the user's
+  kind already in the Preferences folder: a test station with a redirect, one with Shoutcast's answer, a
+  playlist, a bare address and two SomaFM lines): the Radio menu listed the six (`docs/img/system71-piplay-radio-menu.png`);
+  choosing the first, PiPlay opened the resolver in "Riptide DNR", looked up `radio.testbed`, followed the
+  302 to `/stream`, got `icy-metaint: 16000`, showed the station's name, "Now playing: Aurora68 test signal
+  - part 5 (Don't panic) — Café" with its em dash and accent, and started at 5.1 s in hand (the station's
+  64 KB burst arrives at once); each new title reached the window and the Pi's log (`[AUDIO] stream: now
+  playing ...`). The tone ran 33 s through 33 metadata blocks and two title changes with no phase step, no
+  dip and no damaged sample on either channel. The server dropped the connection: PiPlay was back two
+  seconds later ("reconnected: reconnect 1"), no underrun, and the junction, where the old connection's
+  last frame is cut short and the first new one lacks its bit reservoir, is 40 ms of a dip five seconds
+  later in the sound; then the tone again without a break. The Radio menu held down for 15 s: no break at
+  all. The server stalled for 16 s without closing: the card's 7 s ran out (underrun 1 counted), the
+  receive timed out at 10 s ("nothing came for ten seconds"), PiPlay reconnected, and after 5.1 s of
+  silence the sound went on. Pause (9 s) and Resume went on from where it paused (8.6 s in the buffer
+  meanwhile, `docs/img/system71-piplay-radio.png` is the window after the stall). Shoutcast's "ICY 200 OK"
+  from a dotted address and the playlist (an https stream first, then the plain one, which was taken)
+  played the same way. Every failure gave its own words (`docs/img/system71-piplay-radio-error.png`): a
+  redirect loop, a name that does not exist, a port with nothing behind it ("The station did not
+  answer."), AAC, an https address, a redirect to https, a 404; the SomaFM entries, with no Internet in the
+  testbed, "The name could not be found: is the network up?". Close and Quit while playing released the
+  stream.
+- *With Apple's MacTCP 2.0.6* (the user's image as it is, no station list yet): the first start wrote
+  "PiPlay Stations" ('TEXT', 'ttxt', the twelve SomaFM channels); `http://192.168.68.1:8000/stream` from Open
+  URL… played, the server's drop brought a reconnection two seconds later, and the tone was unbroken but for
+  the 40 ms junction. A named host found the resolver in the MacTCP control panel (its `'dnrp'`, as the
+  glue finds it) and was answered with "no name server" (-23044), since this MacTCP has none set: PiPlay
+  now says that in those words.
+- *The list edited while PiPlay ran:* from the Finder (Find, then Open), the file opened in SimpleText
+  (the image's TeachText-class editor; a 'ttxt' file opens in whichever is there), a line `My Own Station =
+  http://radio.testbed:8000/icy` typed at the top, saved, quit; one click in PiPlay's window brought it to
+  the front, the resume event read the file again ("read: 8 stations"), the Radio menu had the new station
+  first (`docs/img/system71-piplay-stations-edited.png`), and it played.
+- *Two things seen on the way, not PiPlay's:* the error beep through the ASC (an image without Sound
+  PiStorm) went on for one to four minutes with the Mac waiting inside it, the solo board's known ASC
+  beep (item 74's "Seen on the way"); with Sound PiStorm the same errors beeped and went on at once. And
+  after the stall the card played 1.04 s of the old connection's last audio after the silence: the
+  decoder waits for its 16 KB window to fill (or for the end to be said) before it decodes, so an
+  underrun can begin with up to a second of 128 kbit/s still undecoded. Nothing is lost, but the buffer could be drained to the last
+  frame; for later.
+
 ## The WiFi in the testbed: a radio that exists only in software
 QEMU's raspi3b has no WiFi chip (no SDIO function, no firmware to load), so the real driver in
 `alice_net.c` can only report "off" there, and until 16 November the WiFi unit, PiWiFi and the

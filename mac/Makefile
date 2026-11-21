@@ -2,7 +2,7 @@
 #   make            builds the drivers, the declaration ROM, the PiDisk extension and the PiNet, PiWiFi, PiBlue, PiStatus, PiPing, PiLog and PiPlay applications
 #   The declaration ROM (build/psmac.declrom) carries the .PiDisk, .Network_EtherNet_PiStorm and .PiInput drivers,
 #   and PiDisk's boot record (pidisk_boot.s), which lets an image on the card be the startup disk.
-#   make check     compares the struct offsets in enet.s with emu68/src/alice/alice_net.h
+#   make check     compares the struct offsets in enet.s with emu68/src/alice/alice_net.h; host tests (USB frames, EDID, PiPlay's radio parser)
 #   make install IMG=path/to/volume.img [PART=n]   copies the INIT into the System Folder of an HFS image
 AS      = m68k-linux-gnu-as -m68020
 OBJCOPY = m68k-linux-gnu-objcopy
@@ -129,6 +129,8 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	$(B)/usbnet_frame_test
 	cc -std=c99 -Wall -Wextra -Werror -I ../emu68/src/psmac -o $(B)/edid_test ../tools/edid_test.c ../emu68/src/psmac/psmac_edid.c
 	$(B)/edid_test > $(B)/edid_test.log && tail -1 $(B)/edid_test.log
+	cc -std=c99 -Wall -Wextra -Werror -o $(B)/icy_test ../tools/icy_test.c piplay/icy.c
+	$(B)/icy_test
 
 disasm: $(B)/pidisk.o
 	m68k-linux-gnu-objdump -d $(B)/pidisk.o | head -200
@@ -179,10 +181,21 @@ $(B)/pp/fs.o: piplay/fs.s
 	$(AS) -o $@ $<
 $(B)/pp/libc.o: c/libc.c c/toolbox.h $(B)/pp/toolbox_gen.h
 	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -c -o $@ $<
-$(B)/pp/piplay.o: piplay/piplay.c c/toolbox.h $(B)/pp/toolbox_gen.h ../emu68/src/psmac/psmb.h
+$(B)/pp/net.o: piplay/net.s
+	@mkdir -p $(B)/pp
+	$(AS) -o $@ $<
+PP_H = c/toolbox.h $(B)/pp/toolbox_gen.h ../emu68/src/psmac/psmb.h piplay/icy.h piplay/radio.h
+$(B)/pp/piplay.o: piplay/piplay.c $(PP_H)
 	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -I../emu68/src/psmac -c -o $@ $<
-$(B)/piplay.elf: $(B)/crt0.o $(B)/pp/toolbox_glue.o $(B)/pp/libc.o $(B)/pp/fs.o $(B)/pp/piplay.o c/app.ld
-	$(LD) -T c/app.ld --emit-relocs --no-warn-rwx-segments -z noexecstack -o $@ $(B)/crt0.o $(B)/pp/toolbox_glue.o $(B)/pp/libc.o $(B)/pp/fs.o $(B)/pp/piplay.o $(LIBGCC)
+# the internet radio: MacTCP and the resolver (radio.c), the stations' answers taken apart (icy.c, also
+# built for the host by `make check`: tools/icy_test.c)
+$(B)/pp/radio.o: piplay/radio.c $(PP_H)
+	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -I../emu68/src/psmac -c -o $@ $<
+$(B)/pp/icy.o: piplay/icy.c piplay/icy.h
+	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -c -o $@ $<
+PP_OBJ = $(B)/crt0.o $(B)/pp/toolbox_glue.o $(B)/pp/libc.o $(B)/pp/fs.o $(B)/pp/net.o $(B)/pp/piplay.o $(B)/pp/radio.o $(B)/pp/icy.o
+$(B)/piplay.elf: $(PP_OBJ) c/app.ld
+	$(LD) -T c/app.ld --emit-relocs --no-warn-rwx-segments -z noexecstack -o $@ $(PP_OBJ) $(LIBGCC)
 # the Finder's resources (signature, bundle, file references, icon: piplay/mkrsrc.py): files dropped on
 # PiPlay's icon reach it as the application's files (AppParmHandle)
 PP_RSRC = --rsrc PIPY:0:$(B)/pp/sig.bin --rsrc BNDL:128:$(B)/pp/bndl128.bin --rsrc FREF:128:$(B)/pp/fref128.bin \
@@ -191,7 +204,7 @@ $(B)/pp/bndl128.bin: piplay/mkrsrc.py
 	@mkdir -p $(B)/pp
 	$(PY) piplay/mkrsrc.py $(B)/pp
 $(B)/PiPlay.bin: $(B)/piplay.elf $(B)/pp/bndl128.bin ../tools/mac/elf2app.py ../tools/mac/rsrc.py
-	$(PY) ../tools/mac/elf2app.py $< --name PiPlay --creator PIPY --size 192 --bundle $(PP_RSRC) -o $@
+	$(PY) ../tools/mac/elf2app.py $< --name PiPlay --creator PIPY --size 256 --bundle $(PP_RSRC) -o $@
 
 # ---- the WiFi menu: an INIT in C (mac/wifimenu, tools/mac/elf2init.py) ----
 $(B)/wifimenu_traps.txt: c/traps.txt wifimenu/traps.txt

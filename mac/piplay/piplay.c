@@ -38,26 +38,37 @@
  * Everything is logged through the INFO service ("[MAC] PiPlay: ..."). It starts at 340 x 106, which
  * fits the SE's 512 x 342 screen, draws in black and white on any screen, and runs under System 6.0.8
  * and System 7 on a 68020 or later. Built with the C kit in mac/c (README.md).
+ *
+ * Internet radio (PiPlay 1.1, 21 November 2026, docs/08 item 83): a Radio menu with the stations of the
+ * text file "PiPlay Stations" (Preferences folder; written at the first start from SomaFM's channels)
+ * and Open URL... (Cmd-U) for any plain-http MP3 stream. radio.c fetches it with MacTCP and feeds the
+ * same stream channel as an open-ended MPEG stream, icy.c takes the station's answer apart; this file
+ * only draws the radio's window (the station, "Now playing", the format and the counts, a buffer meter,
+ * the state) and turns Play/Pause and Stop into the radio's.
  */
 #include "toolbox.h"
 #include "psmb.h"
+#include "icy.h"
+#include "radio.h"
 
 /* piplay/fs.s */
 short mac_PBRead(ParamBlock *pb), mac_PBGetEOF(ParamBlock *pb), mac_PBHOpen(ParamBlock *pb), mac_PBHCreate(ParamBlock *pb),
       mac_PBHGetFInfo(ParamBlock *pb), mac_PBHSetFInfo(ParamBlock *pb);
 short mac_FindFolder(short vRefNum, long type, int create, short *vref, long *dirid);
 #define eofErr (-39)
+/* piplay/net.s */
+void mac_HLock(void *h), mac_HUnlock(void *h);
 
 /* ---- the card -------------------------------------------------------------------------------- */
 static volatile unsigned char *win_base;
-static volatile struct psmb_stream *ps;
+volatile struct psmb_stream *ps;               /* radio.c writes the ring too */
 static volatile struct psmb_sound *snd;
-static volatile unsigned char *ring;
+volatile unsigned char *ring;
 static unsigned char pbuf[256];
 
 #define INFO_CMD 0x1000
 static unsigned char logline[128];
-static void pi_log(const char *text)
+void pi_log(const char *text)
 {
 	static const char who[] = "PiPlay: ";
 	unsigned long n = 0, k, req;
@@ -79,8 +90,8 @@ static void pi_log(const char *text)
 }
 
 /* ---- small text helpers ---------------------------------------------------------------------- */
-static char *put_str(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
-static char *put_num(char *p, unsigned long v)
+char *put_str(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
+char *put_num(char *p, unsigned long v)
 {
 	char t[12];
 	int n = 0;
@@ -132,26 +143,8 @@ static unsigned long le32(const unsigned char *b) { return (unsigned long)b[3] <
 static unsigned be16(const unsigned char *b) { return (unsigned)b[0] << 8 | b[1]; }
 static unsigned le16(const unsigned char *b) { return (unsigned)b[1] << 8 | b[0]; }
 
-/* text from a tag into Mac Roman: Latin-1 through a table, a few common punctuation marks of
-   Unicode, everything else a question mark */
-static const unsigned char latin1_mac[96] = {
-	0xCA, 0xC1, 0xA2, 0xA3, 0xDB, 0xB4, '|', 0xA4, 0xAC, 0xA9, 0xBB, 0xC7, 0xC2, '-', 0xA8, 0xF8,
-	0xA1, 0xB1, '2', '3', 0xAB, 0xB5, 0xA6, 0xE1, 0xFC, '1', 0xBC, 0xC8, '?', '?', '?', 0xC0,
-	0xCB, 0xE7, 0xE5, 0xCC, 0x80, 0x81, 0xAE, 0x82, 0xE9, 0x83, 0xE6, 0xE8, 0xED, 0xEA, 0xEB, 0xEC,
-	'?', 0x84, 0xF1, 0xEE, 0xEF, 0xCD, 0x85, 'x', 0xAF, 0xF4, 0xF2, 0xF3, 0x86, 'Y', '?', 0xA7,
-	0x88, 0x87, 0x89, 0x8B, 0x8A, 0x8C, 0xBE, 0x8D, 0x8F, 0x8E, 0x90, 0x91, 0x93, 0x92, 0x94, 0x95,
-	'?', 0x96, 0x98, 0x97, 0x99, 0x9B, 0x9A, 0xD6, 0xBF, 0x9D, 0x9C, 0x9E, 0x9F, 'y', '?', 0xD8 };
-static unsigned char mac_char(unsigned long u)
-{
-	if (u < 0x20) return ' ';
-	if (u < 0x80) return (unsigned char)u;
-	if (u >= 0xA0 && u <= 0xFF) return latin1_mac[u - 0xA0];
-	switch (u) {
-	case 0x2018: return 0xD4; case 0x2019: return 0xD5; case 0x201C: return 0xD2; case 0x201D: return 0xD3;
-	case 0x2013: return 0xD0; case 0x2014: return 0xD1; case 0x2026: return 0xC9; case 0x2022: return 0xA5;
-	}
-	return '?';
-}
+/* text from a tag into Mac Roman: icy.c's icy_mac_char (Latin-1 through a table, a few marks of
+   punctuation of Unicode, a question mark for the rest) */
 /* an ID3 text frame: an encoding byte, then the text (0 Latin-1, 1 UTF-16 with a byte order mark,
    2 UTF-16 big-endian, 3 UTF-8) */
 static void id3_text(const unsigned char *b, unsigned long n, char *out, int max)
@@ -172,7 +165,7 @@ static void id3_text(const unsigned char *b, unsigned long n, char *out, int max
 			for (i++; extra && i < n; extra--, i++) u = u << 6 | (b[i] & 0x3F);
 		} else u = b[i++];
 		if (!u) break;
-		out[o++] = (char)mac_char(u);
+		out[o++] = (char)icy_mac_char(u);
 	}
 	while (o && out[o - 1] == ' ') o--;
 	out[o] = 0;
@@ -351,7 +344,7 @@ static int state;
 static int vol = 80;                  /* the slider, 0-100 */
 static unsigned long last_pos;
 
-static int command(unsigned long c)
+int pi_command(unsigned long c)
 {
 	unsigned long seq = ps->cmd_seq + 1, t0 = LM_TICKS;
 	ps->cmd = c;
@@ -396,7 +389,7 @@ static int feed(void)
 }
 static void stop_stream(void)
 {
-	if (ps && ps->state != PSMB_STR_S_IDLE) command(PSMB_STR_C_STOP);
+	if (ps && ps->state != PSMB_STR_S_IDLE) pi_command(PSMB_STR_C_STOP);
 }
 static void say_error(const char *text);
 static void redraw_all(void);
@@ -422,7 +415,7 @@ static void start(void)
 	set_volume();
 	sent = 0;
 	feed();
-	if (!command(PSMB_STR_C_START)) { say_error("The sound card does not answer. Restart the Macintosh, or the Pi."); return; }
+	if (!pi_command(PSMB_STR_C_START)) { say_error("The sound card does not answer. Restart the Macintosh, or the Pi."); return; }
 	state = S_PLAYING;
 	last_pos = 0;
 	char t[120], *p = put_str(t, "playing \"");
@@ -445,8 +438,10 @@ static void close_file(void)
 
 /* ---- the window -------------------------------------------------------------------------------- */
 static void *win, *play_btn, *stop_btn, *vol_bar;
-static void *m_apple, *m_file, *m_edit, *m_ctl;
-enum { M_APPLE = 128, M_FILE, M_EDIT, M_CTL };
+static void *m_apple, *m_file, *m_edit, *m_ctl, *m_radio;
+enum { M_APPLE = 128, M_FILE, M_EDIT, M_CTL, M_RADIO };
+static int showing_radio;                            /* the window is the radio's (a station chosen) */
+static int radio_url_item;                           /* Open URL...'s place in the Radio menu */
 enum { F_OPEN = 1, F_CLOSE, F_QUIT = 4 };
 enum { C_PLAY = 1, C_STOP, C_LOUDER = 4, C_SOFTER };      /* Volume Up, Volume Down */
 static int quit, fg = 1, shown;
@@ -494,9 +489,11 @@ static void info_line(char *t)
 	}
 	*p = 0;
 }
+static void radio_progress(void);
 static void draw_progress(void)
 {
 	char t[60], *p = t;
+	if (showing_radio) { radio_progress(); return; }
 	unsigned long pos = ps ? ps->pos_ms : 0, len = ps ? ps->length_ms : 0;
 	if (state == S_NONE || state == S_STOPPED) pos = 0;
 	if (state == S_ENDED && len) pos = len;
@@ -524,21 +521,89 @@ static void draw_progress(void)
 	MoveTo(W - 10 - sw, 66);
 	DrawText(status_text, 0, (int)strlen(status_text));
 }
+static void radio_texts(void);
 static void draw_texts(void)
 {
 	char t[200];
+	if (showing_radio) { radio_texts(); return; }
 	SetPort(win);
 	Rect r = { 0, 0, 42, W };
 	EraseRect(&r);
 	TextFont(0); TextSize(12);                  /* Chicago: the title */
 	MoveTo(10, 19);
-	if (state == S_NONE && !file_open) draw_clipped("No sound open: choose Open\xC9 in the File menu.", W - 20);
+	if (state == S_NONE && !file_open) draw_clipped("Open a sound, or choose a station in Radio.", W - 20);
 	else if (title[0]) draw_clipped(title, W - 20);
 	else { put_pstr(t, fname)[0] = 0; draw_clipped(t, W - 20); }
 	TextFont(3); TextSize(9);
 	info_line(t);
 	MoveTo(10, 35);
 	draw_clipped(t, W - 20);
+}
+/* the radio's window: the station (what it calls itself), "Now playing", the format and the counts;
+   a meter of what the card holds (full at 30 seconds), and the state. Lines 31 and 42 are Geneva 9,
+   the meter sits between them and the state line, so the smallest window (106 high) still holds it. */
+static void radio_info(char *t)
+{
+	char *p = t;
+	const char *why = radio_problem();
+	if (why) { p = put_str(p, "Lost: "); p = put_str(p, why); *p = 0; return; }
+	p = put_str(p, "MP3");
+	if (radio.st == RS_PLAYING && ps->rate) {
+		p = put_str(p, ", "); p = put_khz(p, ps->rate);
+		p = put_str(p, ps->channels == 1 ? " mono" : " stereo");
+	}
+	if (radio.br) { p = put_str(p, ", "); p = put_num(p, radio.br); p = put_str(p, " kbit/s"); }
+	p = put_str(p, "; "); p = put_num(p, radio.reconnects); p = put_str(p, radio.reconnects == 1 ? " reconnect, " : " reconnects, ");
+	p = put_num(p, radio.underruns); p = put_str(p, radio.underruns == 1 ? " underrun" : " underruns");
+	*p = 0;
+}
+static void radio_texts(void)
+{
+	char t[200];
+	SetPort(win);
+	Rect r = { 0, 0, 45, W };
+	EraseRect(&r);
+	TextFont(0); TextSize(12);                  /* Chicago: the station */
+	MoveTo(10, 19);
+	draw_clipped(radio.name[0] ? radio.name : radio.station, W - 20);
+	TextFont(3); TextSize(9);                   /* Geneva 9 */
+	if (radio.title[0]) put_str(put_str(t, "Now playing: "), radio.title)[0] = 0;
+	else put_str(t, radio.url)[0] = 0;
+	MoveTo(10, 31);
+	draw_clipped(t, W - 20);
+	radio_info(t);
+	MoveTo(10, 42);
+	draw_clipped(t, W - 20);
+}
+static void radio_progress(void)
+{
+	char t[80], st[40], *p = t;
+	SetPort(win);
+	Rect r = { 46, 10, 54, (short)(W - 10) };
+	FrameRect(&r);
+	InsetRect(&r, 1, 1);
+	unsigned long held = radio.st == RS_PLAYING || radio.st == RS_RETRY ? radio.held_ms : 0;
+	short w = r.right - r.left, fillw = (short)((held > 30000 ? 30000 : held) * (unsigned long)w / 30000);
+	Rect a = r, b = r;
+	a.right = r.left + fillw; b.left = r.left + fillw;
+	static const unsigned char gray[8] = { 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55 };
+	if (fillw) FillRect(&a, gray);
+	if (b.left < b.right) EraseRect(&b);
+	Rect tr = { 55, 0, 70, W };
+	EraseRect(&tr);
+	TextFont(3); TextSize(9);
+	if (radio.st == RS_PLAYING || radio.st == RS_RETRY) {
+		p = put_str(p, "Buffer ");
+		p = put_num(p, held / 1000); *p++ = '.'; p = put_num(p, held / 100 % 10); p = put_str(p, " s");
+		if (ps->pos_ms) { p = put_str(p, ", "); p = put_time(p, ps->pos_ms); p = put_str(p, " played"); }
+	}
+	*p = 0;
+	MoveTo(10, 66);
+	DrawText(t, 0, (int)strlen(t));
+	radio_status(st);
+	int sw = TextWidth(st, 0, (int)strlen(st));
+	MoveTo(W - 10 - sw, 66);
+	DrawText(st, 0, (int)strlen(st));
 }
 static void grow_icon(void)                /* the grow box alone: the window has no scroll bars, so no lines along its edges */
 {
@@ -564,10 +629,14 @@ static void set_status(const char *s)
 	status_text = s;
 	draw_progress();
 }
+/* what Play/Pause and Stop do now: a file, or the radio (which pauses into the card's buffer) */
+static int playing_now(void) { return showing_radio ? radio.st != RS_OFF && !radio.paused : state == S_PLAYING; }
+static int can_stop_now(void) { return showing_radio ? radio.st != RS_OFF : state == S_PLAYING || state == S_PAUSED; }
 static void fix_buttons(void)
 {
-	SetCTitle(play_btn, pstr(pbuf, state == S_PLAYING ? "Pause" : "Play"));
-	int can_play = file_open, can_stop = state == S_PLAYING || state == S_PAUSED;
+	static int said = -1;                       /* the button's title, set only when it changes (it redraws) */
+	if (playing_now() != said) { said = playing_now(); SetCTitle(play_btn, pstr(pbuf, said ? "Pause" : "Play")); }
+	int can_play = file_open || showing_radio, can_stop = can_stop_now();
 	if (!fg) return;
 	HiliteControl(play_btn, can_play ? 0 : 255);
 	HiliteControl(stop_btn, can_stop ? 0 : 255);
@@ -577,15 +646,18 @@ static void enable(void *m, int item, int on)
 	if (on) EnableItem(m, item);
 	else DisableItem(m, item);
 }
+static int strcmp_(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a != *b; }
 /* dim what cannot be done now; Play says Pause while a sound plays */
 static void fix_menus(void)
 {
 	int da = FrontWindow() != win, i;
 	for (i = 1; i <= 6; i++) enable(m_edit, i, da && i != 2);
 	enable(m_file, F_CLOSE, shown);
-	SetItem(m_ctl, C_PLAY, pstr(pbuf, state == S_PLAYING ? "Pause" : "Play"));
-	enable(m_ctl, C_PLAY, shown && file_open);
-	enable(m_ctl, C_STOP, state == S_PLAYING || state == S_PAUSED);
+	SetItem(m_ctl, C_PLAY, pstr(pbuf, playing_now() ? "Pause" : "Play"));
+	enable(m_ctl, C_PLAY, shown && (file_open || showing_radio));
+	enable(m_ctl, C_STOP, can_stop_now());
+	for (i = 0; i < nstations; i++)             /* the station that plays, checked */
+		CheckItem(m_radio, i + 1, showing_radio && radio.st != RS_OFF && !strcmp_(stations[i].url, radio.url));
 	enable(m_ctl, C_LOUDER, vol < 100);
 	enable(m_ctl, C_SOFTER, vol > 0);
 }
@@ -610,7 +682,7 @@ static void message_box(const char *text, int lines_h)
 	EventRecord ev;
 	int done = 0;
 	while (!done) {
-		if (!WaitNextEvent(everyEvent, &ev, 10, 0)) { if (file_open && state == S_PLAYING) feed(); continue; }
+		if (!WaitNextEvent(everyEvent, &ev, 10, 0)) { if (file_open && state == S_PLAYING) feed(); radio_poll(); continue; }
 		if (ev.what == updateEvt && (void *)ev.message == d) {
 			BeginUpdate(d);
 			SetPort(d);
@@ -649,10 +721,11 @@ static void say_error(const char *text)
 }
 static void about(void)
 {
-	message_box("PiPlay 1.0 for the Aurora68 card.\r"
-	            "Plays MP3 files, and AIFF and WAV files that are not compressed. The Pi decodes them "
-	            "(minimp3, public domain) and plays them on HDMI or its headphone socket, mixed with the "
-	            "Macintosh's own sound. MPL-2.0.", 96);
+	message_box("PiPlay 1.1 for the Aurora68 card.\r"
+	            "Plays MP3 files, AIFF and WAV files that are not compressed, and internet radio: plain "
+	            "http:// MP3 streams through MacTCP. The Pi decodes them (minimp3, public domain) and plays "
+	            "them on HDMI or its headphone socket, mixed with the Macintosh's own sound.\r"
+	            "The stations in the Radio menu are SomaFM's, listener-supported radio (somafm.com). MPL-2.0.", 150);
 }
 
 /* ---- opening a file ------------------------------------------------------------------------------ */
@@ -676,8 +749,17 @@ static void open_file(void)
 }
 /* a file by volume (or working directory), directory ID and name: from Standard File, the Finder's
    application files (a working directory and a name) */
+static void leave_radio(void)
+{
+	if (!showing_radio) return;
+	radio_stop();
+	showing_radio = 0;
+	SetPort(win);
+	InvalRect(PORT_RECT(win));
+}
 static void open_path(short vref, long dirid, const unsigned char *name)
 {
+	leave_radio();
 	close_file();
 	if (!shown) { ShowWindow(win); SelectWindow(win); shown = 1; }
 	memcpy(fname, name, name[0] < 63 ? name[0] + 1 : 64);
@@ -711,16 +793,25 @@ static void open_path(short vref, long dirid, const unsigned char *name)
 }
 
 /* ---- the buttons, the slider, the keys ------------------------------------------------------- */
+static void start_station(const char *name, const char *url);
 static void play_pause(void)
 {
+	if (showing_radio) {
+		if (radio.st == RS_OFF) start_station(radio.station, radio.url);
+		else radio_pause(!radio.paused);
+		fix_buttons();
+		draw_progress();
+		return;
+	}
 	if (!file_open) { open_file(); return; }
-	if (state == S_PLAYING) { command(PSMB_STR_C_PAUSE); state = S_PAUSED; pi_log("paused"); set_status("Paused"); }
-	else if (state == S_PAUSED) { command(PSMB_STR_C_RESUME); state = S_PLAYING; pi_log("resumed"); set_status("Playing"); }
+	if (state == S_PLAYING) { pi_command(PSMB_STR_C_PAUSE); state = S_PAUSED; pi_log("paused"); set_status("Paused"); }
+	else if (state == S_PAUSED) { pi_command(PSMB_STR_C_RESUME); state = S_PLAYING; pi_log("resumed"); set_status("Playing"); }
 	else { start(); set_status("Playing"); }
 	fix_buttons();
 }
 static void stop(void)
 {
+	if (showing_radio) { radio_stop(); fix_buttons(); draw_progress(); return; }
 	if (state != S_PLAYING && state != S_PAUSED) return;
 	stop_stream();
 	state = S_STOPPED;
@@ -764,6 +855,169 @@ static void content_click(EventRecord *ev)
 	else if (ctl == stop_btn) stop();
 }
 
+/* ---- the radio: a station chosen, an address asked for ------------------------------------------ */
+static void start_station(const char *name, const char *url)
+{
+	char n[48], u[200];
+	int i;
+	for (i = 0; name[i] && i < 47; i++) n[i] = name[i];
+	n[i] = 0;
+	for (i = 0; url[i] && i < 199; i++) u[i] = url[i];
+	u[i] = 0;
+	close_file();
+	title[0] = artist[0] = 0; kind = K_NONE; status_text = "";
+	if (!shown) { ShowWindow(win); SelectWindow(win); shown = 1; }
+	showing_radio = 1;
+	SetPort(win);
+	InvalRect(PORT_RECT(win));
+	set_volume();
+	if (!radio_play(n, u)) {
+		const char *e = radio.error;
+		radio.error = 0;
+		fix_buttons();
+		say_error(e ? e : "The station could not be played.");
+	}
+	fix_buttons();
+}
+/* the Radio menu from the station list: the names put in with SetItem, which takes them as they are
+   (AppendMenu would read ";", "(" or "/" in a name as commands of its own) */
+static void build_radio_menu(void)
+{
+	int i, n = CountMItems(m_radio);
+	for (i = n; i > 0; i--) DelMenuItem(m_radio, i);
+	for (i = 0; i < nstations; i++) {
+		AppendMenu(m_radio, pstr(pbuf, "x"));
+		SetItem(m_radio, i + 1, pstr(pbuf, stations[i].name));
+	}
+	if (nstations) AppendMenu(m_radio, pstr(pbuf, "(-"));
+	AppendMenu(m_radio, pstr(pbuf, "Open URL\xC9/U"));
+	radio_url_item = CountMItems(m_radio);
+}
+static void TEFromScrap_(void)                 /* TextEdit's scrap from the desk scrap (Inside Macintosh I, TextEdit) */
+{
+	long off = 0, n = GetScrap(LM_TESCRPH, TYPE('T', 'E', 'X', 'T'), &off);
+	if (n >= 0) LM_TESCRPLEN = (short)n;
+}
+static void TEToScrap_(void)
+{
+	ZeroScrap();
+	mac_HLock(LM_TESCRPH);
+	PutScrap(LM_TESCRPLEN, TYPE('T', 'E', 'X', 'T'), *LM_TESCRPH);
+	mac_HUnlock(LM_TESCRPH);
+}
+/* "Open URL...": a small window with a text field, Open (the default) and Cancel; 1 if out has an address */
+static char last_url[200] = "http://";
+static int ask_url(char *out, int max)
+{
+	Rect s = screen_rect();
+	short w = 380, h = 136, left = (short)((s.right - s.left - w) / 2), top = (short)((s.bottom - s.top - h) / 3 + 10);
+	Rect b = { top, left, (short)(top + h), (short)(left + w) };
+	void *d = NewWindow(0, &b, pstr(pbuf, ""), 1, 1 /* dBoxProc */, (void *)-1, 0, 0);
+	SetPort(d);
+	TextFont(3); TextSize(9);                   /* the field in Geneva 9: long addresses fit */
+	Rect okr = { (short)(h - 30), (short)(w - 82), (short)(h - 10), (short)(w - 16) };
+	Rect car = { (short)(h - 30), (short)(w - 162), (short)(h - 10), (short)(w - 96) };
+	Rect fr = { 34, 18, 72, (short)(w - 18) }, vr = fr;
+	InsetRect(&vr, 4, 3);
+	void *ok = NewControl(d, &okr, pstr(pbuf, "Open"), 1, 0, 0, 1, pushButProc, 0);
+	NewControl(d, &car, pstr(pbuf, "Cancel"), 1, 0, 0, 1, pushButProc, 0);   /* any button but Open cancels */
+	TERec **te = (TERec **)TENew(&vr, &vr);
+	TESetText(last_url, (long)strlen(last_url), te);
+	TESetSelect(0, 32767, te);
+	TEActivate(te);
+	void **ibeam = (void **)GetCursor(1);       /* iBeamCursor */
+	EventRecord ev;
+	int done = 0;
+	while (!done) {
+		if (!WaitNextEvent(everyEvent, &ev, 6, 0)) {
+			Point p = ev.where;
+			SetPort(d);
+			GlobalToLocal(&p);
+			if (ibeam && *ibeam && PtInRect(pt_long(p), &fr)) SetCursor(*ibeam);
+			else InitCursor();
+			TEIdle(te);
+			if (file_open && state == S_PLAYING) feed();
+			radio_poll();
+			continue;
+		}
+		SetPort(d);
+		if (ev.what == updateEvt && (void *)ev.message == d) {
+			BeginUpdate(d);
+			TextFont(0); TextSize(12);
+			MoveTo(18, 24);
+			DrawText("Play the MP3 stream at this address:", 0, 36);
+			TextFont(3); TextSize(9);
+			MoveTo(18, 86);
+			DrawText("A plain http:// stream (Shoutcast, Icecast), or a .pls or .m3u playlist.", 0, 72);
+			Rect f = fr;
+			FrameRect(&f);
+			TEUpdate(&fr, te);
+			DrawControls(d);
+			f = okr;                            /* the default button's bold outline */
+			InsetRect(&f, -4, -4);
+			PenSize(3, 3);
+			FrameRoundRect(&f, 16, 16);
+			PenNormal();
+			EndUpdate(d);
+		} else if (ev.what == updateEvt) {
+			if ((void *)ev.message == win) { BeginUpdate(win); redraw_all(); EndUpdate(win); }
+		} else if (ev.what == keyDown || ev.what == autoKey) {
+			int c = (int)(ev.message & charCodeMask);
+			if (ev.modifiers & cmdKey) {
+				if (c == 'v' || c == 'V') { TEFromScrap_(); TEPaste(te); }
+				else if (c == 'c' || c == 'C') { TECopy(te); TEToScrap_(); }
+				else if (c == 'x' || c == 'X') { TECut(te); TEToScrap_(); }
+				else if (c == 'a' || c == 'A') TESetSelect(0, 32767, te);
+				else if (c == '.') done = 2;
+				else SysBeep(1);
+			} else if (c == 0x0D || c == 0x03) {
+				unsigned long t0 = LM_TICKS;    /* the button flashes, as a dialog's does */
+				HiliteControl(ok, 1);
+				while (LM_TICKS - t0 < 8) { }
+				HiliteControl(ok, 0);
+				done = 1;
+			} else if (c == 0x1B) done = 2;
+			else TEKey(c, te);
+		} else if (ev.what == mouseDown) {
+			void *w = 0;
+			int part = FindWindow(pt_long(ev.where), &w);
+			if (part == inContent && w == d) {
+				Point p = ev.where;
+				void *c = 0;
+				GlobalToLocal(&p);
+				if (PtInRect(pt_long(p), &fr)) TEClick(pt_long(p), (ev.modifiers & shiftKey) != 0, te);
+				else if (FindControl(pt_long(p), d, &c) && TrackControl(c, pt_long(p), 0)) done = c == ok ? 1 : 2;
+			} else SysBeep(1);
+		}
+	}
+	int n = 0;
+	if (done == 1) {
+		const char *t = *(*te)->hText;
+		int k, len = (*te)->teLength;
+		for (k = 0; k < len && n < max - 1; k++)
+			if (t[k] > ' ') out[n++] = t[k];     /* no spaces or line ends: a pasted address may have some */
+	}
+	out[n] = 0;
+	TEDispose(te);
+	DisposeWindow(d);
+	InitCursor();
+	SetPort(win);
+	return n > 0;
+}
+static void open_url(void)
+{
+	char u[200], name[48];
+	int i = 0;
+	if (!ask_url(u, sizeof u)) return;
+	memcpy(last_url, u, strlen(u) + 1);
+	const char *h = u;                          /* the window's name for it: its host */
+	if ((h[0] | 32) == 'h' && (h[1] | 32) == 't' && (h[2] | 32) == 't' && (h[3] | 32) == 'p' && h[4] == ':' && h[5] == '/' && h[6] == '/') h += 7;
+	while (h[i] && h[i] != '/' && h[i] != ':' && i < 47) { name[i] = h[i]; i++; }
+	name[i] = 0;
+	pi_log("radio: Open URL");
+	start_station(name, u);
+}
+
 /* ---- menus ----------------------------------------------------------------------------------------- */
 static void setup_menus(void)
 {
@@ -781,6 +1035,8 @@ static void setup_menus(void)
 	m_ctl = NewMenu(M_CTL, pstr(pbuf, "Controls"));
 	AppendMenu(m_ctl, pstr(pbuf, "Play/P;Stop/.;(-;Volume Up/];Volume Down/["));
 	InsertMenu(m_ctl, 0);
+	m_radio = NewMenu(M_RADIO, pstr(pbuf, "Radio"));     /* its items come from the station list */
+	InsertMenu(m_radio, 0);
 	DrawMenuBar();
 }
 static void do_menu(long mr)
@@ -801,6 +1057,9 @@ static void do_menu(long mr)
 		else if (item == C_STOP) stop();
 		else if (item == C_LOUDER) change_volume(vol + 10);
 		else if (item == C_SOFTER) change_volume(vol - 10);
+	} else if (id == M_RADIO) {
+		if (item == radio_url_item) open_url();
+		else if (item >= 1 && item <= nstations) start_station(stations[item - 1].name, stations[item - 1].url);
 	}
 	HiliteMenu(0);
 }
@@ -814,6 +1073,7 @@ static void resized(void)
 }
 static void close_window(void)
 {
+	leave_radio();
 	close_file();
 	title[0] = artist[0] = 0; kind = K_NONE; status_text = "";
 	HideWindow(win);
@@ -825,7 +1085,7 @@ static void close_window(void)
 #define PREF_MAGIC TYPE('P', 'I', 'P', 'Y')
 struct prefs { unsigned long magic; short version; Rect r; short vol; short pad; };
 static const unsigned char pref_name[] = "\x0CPiPlay Prefs";
-static int pref_place(short *vref, long *dirid)
+int pref_place(short *vref, long *dirid)
 {
 	*vref = *(volatile short *)0x210;          /* BootDrive: the System Folder's working directory */
 	*dirid = 0;
@@ -924,7 +1184,11 @@ static void mouse_down(EventRecord *ev)
 	void *w = 0;
 	int part = FindWindow(pt_long(ev->where), &w);
 	switch (part) {
-	case inMenuBar: fix_menus(); do_menu(MenuSelect(pt_long(ev->where))); break;
+	case inMenuBar:
+		if (stations_check()) build_radio_menu();   /* "PiPlay Stations" changed (TeachText) */
+		fix_menus();
+		do_menu(MenuSelect(pt_long(ev->where)));
+		break;
 	case inSysWindow: SystemClick(ev, w); break;
 	case inDrag: DragWindow(w, pt_long(ev->where), RGN_BBOX(LM_GRAYRGN)); break;
 	case inGoAway: if (w == win && TrackGoAway(w, pt_long(ev->where))) close_window(); break;
@@ -964,7 +1228,7 @@ static void key_down(EventRecord *ev)
 	else if (c == 0x1B) stop();                 /* Esc */
 	else if (c == 0x1E) change_volume(vol + 5); /* up arrow */
 	else if (c == 0x1F) change_volume(vol - 5); /* down arrow */
-	else if (c == 0x0D || c == 0x03) { if (!file_open) open_file(); else if (state != S_PLAYING) play_pause(); }
+	else if (c == 0x0D || c == 0x03) { if (!file_open && !showing_radio) open_file(); else if (!playing_now()) play_pause(); }
 	else SysBeep(1);
 }
 static void activate(int on)
@@ -973,11 +1237,33 @@ static void activate(int on)
 	if (on) { fix_buttons(); HiliteControl(vol_bar, 0); }
 	else { HiliteControl(play_btn, 255); HiliteControl(stop_btn, 255); HiliteControl(vol_bar, 255); }
 }
+/* the radio's part of the window: the texts when something in them changed, the meter and the state
+   twice a second; a failure said in a window of its own */
+static void watch_radio(void)
+{
+	static unsigned long seen = 0xFFFFFFFF, last_tick;
+	if (radio.error) {
+		const char *e = radio.error;
+		radio.error = 0;
+		fix_buttons();
+		draw_texts(); draw_progress();
+		say_error(e);
+		seen = 0xFFFFFFFF;
+	}
+	if (radio.st != RS_OFF && ps->state == PSMB_STR_S_ERROR) {
+		radio_stop();
+		say_error(ps->error == PSMB_STR_E_NOMEM ? "The Pi has no memory left for the sound." :
+		          "The station sends nothing the card can play: no MP3 sound was found in its stream.");
+	}
+	if (radio.seq != seen) { seen = radio.seq; draw_texts(); fix_buttons(); draw_progress(); last_tick = LM_TICKS; }
+	else if (LM_TICKS - last_tick >= 30) { last_tick = LM_TICKS; draw_progress(); }
+}
 /* what the Pi says, in the window */
 static void watch(void)
 {
 	static unsigned long last_tick, last_state = 99, last_rate;
 	if (!ps) return;
+	if (showing_radio) { if (shown) watch_radio(); return; }
 	unsigned long pst = ps->state;
 	if (state == S_PLAYING && pst == PSMB_STR_S_ENDED) {
 		state = S_ENDED;
@@ -1065,11 +1351,14 @@ int main(void)
 		if (!ps || !ps->out_kind || !iobuf) return 0;
 	}
 
+	radio_init();
+	stations_load();
+	build_radio_menu();
 	finder_files();
 	EventRecord ev;
 	while (!quit) {
 		int more = file_open && state == S_PLAYING && sent < data_len && PSMB_STR_SIZE - (ps->head - ps->tail) >= 4096;
-		long sleep = more ? 0 : state == S_PLAYING ? 6 : 30;
+		long sleep = more ? 0 : state == S_PLAYING || radio.st != RS_OFF ? 6 : 30;
 		if (WaitNextEvent(everyEvent, &ev, sleep, 0)) {
 			switch (ev.what) {
 			case mouseDown: mouse_down(&ev); break;
@@ -1079,7 +1368,11 @@ int main(void)
 				break;
 			case activateEvt: if ((void *)ev.message == win) activate(ev.modifiers & activeFlag); break;
 			case osEvt:
-				if (((unsigned long)ev.message >> 24) == suspendResumeMessage) { fg = ev.message & resumeFlag; activate(fg); }
+				if (((unsigned long)ev.message >> 24) == suspendResumeMessage) {
+					fg = ev.message & resumeFlag;
+					activate(fg);
+					if (fg && stations_check()) build_radio_menu();   /* back from TeachText, perhaps */
+				}
 				break;
 			}
 		}
@@ -1095,8 +1388,10 @@ int main(void)
 			unsigned long t0 = LM_TICKS;
 			while (feed() == 2 && LM_TICKS - t0 < 2) { }
 		}
+		radio_poll();
 		watch();
 	}
+	radio_quit();
 	close_file();
 	save_prefs();
 	pi_log("quit");
