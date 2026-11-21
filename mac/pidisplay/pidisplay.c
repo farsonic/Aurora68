@@ -521,14 +521,26 @@ static void draw_content(void)
 	Draw1Control(lbar);
 }
 
+/* HiliteControl draws the control again even when its state does not change, so on the real SE (21
+   November 2026) the two buttons, dimmed, flickered at every look at the kernel's answer: the state is
+   set only when it differs from the control record's contrlHilite (byte 17: nextControl, contrlOwner,
+   contrlRect, contrlVis come first). SetCtlValue likewise only for a change (contrlValue at 18). */
+static void set_hilite(void *h, int v)
+{
+	if ((*(unsigned char **)h)[17] != (unsigned char)v) HiliteControl(h, v);
+}
+static void set_value(void *h, int v)
+{
+	if (*(short *)(*(unsigned char **)h + 18) != v) SetCtlValue(h, v);
+}
 static void fix_buttons(void)
 {
 	int can = have && !busy && (di->cfg & PSMB_CF_WRITABLE) && (changed_mode() || changed_rot())
 	          && di->confirm_state != PSMB_CS_REVERTING;
-	HiliteControl(b_apply, active && can ? 0 : 255);
-	HiliteControl(b_revert, active && have && !busy && (changed_mode() || changed_rot()) ? 0 : 255);
+	set_hilite(b_apply, active && can ? 0 : 255);
+	set_hilite(b_revert, active && have && !busy && (changed_mode() || changed_rot()) ? 0 : 255);
 	int i;
-	for (i = 0; i < 4; i++) { SetCtlValue(radio[i], have && rot_sel == i * 90); HiliteControl(radio[i], active && have && !busy ? 0 : 255); }
+	for (i = 0; i < 4; i++) { set_value(radio[i], have && rot_sel == i * 90); set_hilite(radio[i], active && have && !busy ? 0 : 255); }
 }
 static void redraw_all(void) { SetPort(win); InvalRect(PORT_RECT(win)); }
 
@@ -1099,7 +1111,13 @@ int main(void)
 		/* the kernel's answer every two seconds: a mode kept or reverted elsewhere, the copy's time */
 		if (LM_TICKS - last >= 120) {
 			last = LM_TICKS;
-			if (refresh(0)) { SetPort(win); layout(); fix_buttons(); InvalRect(PORT_RECT(win)); }
+			if (refresh(0)) {
+				/* the content below the top strip only: the strip's note is drawn in place and its
+				   buttons are not erased, so nothing flickers when the answer changes */
+				Rect below = *PORT_RECT(win);
+				below.top = STRIP;
+				SetPort(win); layout(); fix_buttons(); draw_strip(); InvalRect(&below);
+			}
 		}
 	}
 	save_place();
