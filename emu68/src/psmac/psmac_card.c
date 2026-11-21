@@ -45,7 +45,6 @@
 #include "psmac.h"
 #include "psmb.h"
 
-extern uint32_t get_clock_rate(uint32_t clock_id);
 extern const char *psmac_option(const char *key);
 extern int alice_pi_is_2711(void);
 extern spinlock_t psmac_gpfsel_lock;
@@ -134,17 +133,52 @@ static void sd_pins(void)
     wr32le(GPIO + 0x10, f4); wr32le(GPIO + 0x14, f5);
     spinlock_release(&psmac_gpfsel_lock);
 }
+/* The core clock (the sdhost's input), asked once and kept. support_rpi.c's get_clock_rate waits for
+   the shared mailbox lock and for the answer without a limit; on core 3 a wait like that is a wait of
+   the whole service loop. Asked here through alice_net.c's single bounded call instead (-9: another
+   core holds the mailbox for a moment, so again a little later). Without an answer, 400 MHz, a Pi 3's
+   core_freq: a slower card clock if the truth is 250 MHz, never a faster one. */
+static uint32_t core_hz;
+static uint32_t sd_core_clock(void)
+{
+    if (core_hz) return core_hz;
+    extern int alice_mbox_once(uint32_t tag, uint32_t a, uint32_t b, uint32_t out[2]);
+    uint32_t o[2] = { 0, 0 };
+    int e = -9;
+    for (int i = 0; i < 20 && e == -9; i++) {
+        e = alice_mbox_once(0x00030002u, 4u, 0u, o);    /* GET_CLOCK_RATE: CORE */
+        if (e == -9) udelay(5000);
+    }
+    if (!e && o[1] >= 100000000u) core_hz = o[1];
+    else { core_hz = 400000000u; kprintf("[CARD] the firmware did not give the core clock (%d): 400 MHz assumed\n", e); }
+    return core_hz;
+}
 static void sd_clock(uint32_t hz)
 {
-    uint32_t core = get_clock_rate(4);
-    if (core < 100000000u) core = 250000000u;
+    uint32_t core = sd_core_clock();
     uint32_t div = core / hz; div = div > 2 ? div - 2 : 0;
     if (core / (div + 2) > hz) div++;
     if (div > 0x7ff) div = 0x7ff;
     w(SDCDIV, div);
 }
+/* mac.cardfail=early|all (testbed): the card does not answer, as a missing or broken one does (the same
+   1.5 s of ACMD41 first): "early" only for the early look on core 0, which card_start then retries,
+   "all" for every start. The boot must go on without the card's files. */
+static int early_phase;                     /* psmac_card_declroms is running (core 0, before core 3 starts) */
+static int card_fail_wanted(void)
+{
+    const char *o = psmac_option("mac.cardfail");
+    if (!o) return 0;
+    if (o[0] == 'a') return 1;
+    return o[0] == 'e' && early_phase;
+}
 static int sd_init(void)
 {
+    if (card_fail_wanted()) {
+        kprintf("[CARD] mac.cardfail=%s: the card does not answer (as a missing one: 1.5 s)\n", psmac_option("mac.cardfail"));
+        udelay(1500000);
+        return -1;
+    }
     sd_pins();
     w(SDVDD, 0); w(SDCMD, 0); w(SDARG, 0); w(SDTOUT, 0xf00000u); w(SDCDIV, 0);
     w(SDHSTS, HSTS_CLEAR); w(SDHCFG, 0); w(SDHBCT, 0); w(SDHBLC, 0);
@@ -1303,10 +1337,11 @@ static void card_start(void)
    does; psmac_bus.c decides), so that a testbed run with no card does not wait for a card that is not
    there. list gets each root file whose name ends in .declrom (its long name when it has one), at
    most 64 KiB; read then fetches the one psmac_bus.c chose. */
-struct dr_ctx { void (*cb)(const char *name, uint32_t size); char lfn[128]; int lfn_ok; };
+struct dr_ctx { void (*cb)(const char *name, uint32_t size); char lfn[128]; int lfn_ok; uint64_t t0; int late; };
 static int declrom_sector(uint32_t lba, void *vctx)
 {
     struct dr_ctx *x = vctx;
+    if (cnt() - x->t0 > frq()) { x->late = 1; return 2; }    /* a second for the whole look */
     if (sd_read(lba, sec)) return -1;
     for (int i = 0; i < 16; i++) {
         const uint8_t *e = sec + 32 * i;
@@ -1332,21 +1367,36 @@ static int declrom_sector(uint32_t lba, void *vctx)
     }
     return 0;
 }
+/* The early look is bounded (21 November 2026, docs/08 item 79): each card command has its limit
+   already, and the root's walk stops after a second. Whatever fails, the card is left as if it had
+   never been touched (early_done 0, sd.state 0), so card_start on core 3 starts it afresh with its
+   own reset, and the container's declaration ROM is used meanwhile. */
+static void early_undo(const char *why, uint64_t t0)
+{
+    kprintf("[CARD] looked for declaration ROMs in the card's root (%u ms): %s; the container's declaration ROM is used, and the card is started again later\n",
+            (uint32_t)((cnt() - t0) * 1000u / frq()), why);
+    early_done = 0; early_init_rc = 0; early_mount_rc = 0;
+    sd.state = 0;
+}
 int psmac_card_declroms(void (*cb)(const char *name, uint32_t size))
 {
-    if (!early_done) {
-        const char *o = psmac_option("mac.card");
-        if ((o && o[0] == 'o' && o[1] == 'f') || alice_pi_is_2711()) return -1;   /* card_start says why */
-        uint64_t t0 = cnt();
-        early_init_rc = sd_init();
-        if (!early_init_rc) { sd.state = 1; early_mount_rc = fs_mount(); }
-        early_done = 1;
-        kprintf("[CARD] looked for declaration ROMs in the card's root (%u ms): %s\n", (uint32_t)((cnt() - t0) * 1000u / frq()),
-                early_init_rc ? "the card does not answer" : early_mount_rc ? "no FAT partition" : "the card is mounted");
-    }
-    if (early_init_rc || early_mount_rc) return -1;
-    struct dr_ctx x; x.cb = cb; x.lfn_ok = 0;
+    if (early_done) return early_init_rc || early_mount_rc ? -1 : 0;
+    const char *o = psmac_option("mac.card");
+    if ((o && o[0] == 'o' && o[1] == 'f') || alice_pi_is_2711()) return -1;   /* card_start says why */
+    uint64_t t0 = cnt();
+    early_phase = 1;
+    early_init_rc = sd_init();
+    early_phase = 0;
+    if (early_init_rc) { early_undo("the card does not answer", t0); return -1; }
+    sd.state = 1;
+    early_mount_rc = fs_mount();
+    if (early_mount_rc) { early_undo("no FAT partition", t0); return -1; }
+    early_done = 1;
+    struct dr_ctx x; x.cb = cb; x.lfn_ok = 0; x.t0 = cnt(); x.late = 0;     /* a second for the walk itself */
     root_walk(declrom_sector, &x);
+    if (x.late)
+        kprintf("[CARD] the card's root took more than a second to read: the declaration ROMs found so far are offered\n");
+    kprintf("[CARD] looked for declaration ROMs in the card's root (%u ms): the card is mounted\n", (uint32_t)((cnt() - t0) * 1000u / frq()));
     return 0;
 }
 /* the file's bytes into buf (at most max): its length, or -1 */

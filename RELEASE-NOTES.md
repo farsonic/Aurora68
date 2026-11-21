@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **WiFi on the SE no longer stops the Mac.** With WiFi words in cmdline.txt the SE never started: the
+  WiFi's start, on the same Pi core as the Mac's disks and mailbox, was switched away by another core and
+  that core's loop stopped for good. The WiFi now waits only on its own core and never holds the Pi's
+  firmware mailbox while it waits; a WiFi chip that does not answer gives up with "the WiFi chip does not
+  answer (SDIO): WiFi off, the Mac carries on". If the Pi's service loop stops for two seconds, the log
+  says where (`WATCH: core 3's service loop has made no turn for 2 s: it is in ...`). `wifi.country=` takes
+  your own country's two letters; the placeholder `XX` is ignored. Replace kernel8.img.
+- **The right declaration ROM from a card full of old ones.** A card root holding an older release's
+  declaration ROMs made the SE take an old WiFi-only file whose PiDisk had no boot record, and the Mac
+  showed the question mark instead of starting from the disk image. The kernel now looks into the file:
+  one without PiDisk's boot record is taken only if nothing else will do (and the log says so loudly), the
+  full card beats a WiFi-only one of the same size, and one line lists the other files and why each was
+  passed over. Keep only `aurora68-se.declrom` and `aurora68-512x342.declrom` in the card's root.
+- **The early look at the card is bounded.** The look for declaration ROMs before the Mac starts stops
+  after a second, and a card that does not answer then is started again from scratch later, with the
+  container's declaration ROM used meanwhile.
+
 - **The HDMI screen follows config.txt.** The declaration ROM no longer fixes the screen's size: the kernel
   rewrites it at start-up for the size the firmware's HDMI mode set (or `mac.screen=`), any size from 512 by
   342 to 4096 by 2560 (1366 by 768 and 2048 by 1152 tested), with every depth that fits. One file,

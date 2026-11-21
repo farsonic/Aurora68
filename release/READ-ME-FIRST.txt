@@ -163,7 +163,9 @@ Setting up the SD card (a Pi 3B in an SE)
      as the serial line, so a bench without a serial cable still sees everything; take it out
      to have HDMI show the Macintosh's picture instead (the log then shows until the
      Macintosh's video driver turns the screen on). To join a WiFi
-     network at boot add wifi.ssid=NAME wifi.psk=PASSWORD wifi.country=XX (two letters).
+     network at boot add wifi.ssid=NAME wifi.psk=PASSWORD wifi.country=CC, where CC is your
+     own country's two-letter code (GB, DE, FR, US, AU ...); "XX" is not a country, and the
+     kernel ignores it.
      Memory: the kernel gives the Macintosh what the Pi can spare, up to 128 MB (on every board,
      the 512 MB 3A+ and Zero 2 W included); mac.ram=N fixes it.
   7. The PiStorm: the classic board, with the firmware it came with. Remove the SE's 68000 (or

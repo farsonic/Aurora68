@@ -2761,6 +2761,119 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      (whether the testbed's runs reached it is not known: on the patched ROM it leaves no trace, and
      the testbed's memory holds zeros where the user's held $55); the source of the $55 fill.
 
+79. **WiFi stopped the SE's service core, and an old declaration ROM on the card (21 November).** The
+   user's SE (classic PiStorm, Pi 3B, kernel d9ff341, `mac.console=hdmi`, the early card look on, two
+   declaration ROMs and the System 7.1 image on the card) with `wifi.ssid= wifi.psk= wifi.country=XX`
+   in cmdline.txt never started: the SE's screen kept its power-on stripes, and the HDMI log repeated
+   `[WIFI] starting: starting the WiFi chip (chip 0 rev 0, SD 0 MHz)`, 226 card reads (the early look and
+   the FAT), `sys710pi.image: ... 0% read from the card`, no mailbox commands, the 68k in the IIci ROM's
+   SCSI selection loop at $4080773E, and `service loop: 0 turns/5 s` with every part at 0 us (one earlier
+   heartbeat: card 63,706 us, network 471,020 us). Core 3 had stopped for good. With `wifi=off` instead
+   the Mac reached the question mark (below). WiFi had never run on the SE board before; on the user's
+   bench Pi 3B (solo board) it had, in releases before the USB start moved to core 1 (item 50, 19
+   November).
+   - *The cause.* The WiFi is a coroutine on core 3 (alice_net.c): core 3's loop switches into it in
+     `alice_net_poll`, and it switches back from its long waits (`an_yield`, through `wifi_udelay` and
+     `wifi_relax`). Whether to switch was decided by `in_wifi`, one global for the whole Pi. The mailbox
+     call `mbox_tag_` yields while it waits for the firmware, and it is not only the WiFi's: core 1's USB
+     start asks the firmware to power the USB controller through it (`alice_mbox`, SET_POWER_STATE with
+     its wait flag, psmac_usb.c), and core 0's early card look reads the board revision through it. When
+     core 1 waited there while core 3 was inside the coroutine (`in_wifi` 1), core 1 "yielded": it cleared
+     `in_wifi`, saved itself into the coroutine's context and loaded core 3's main context, and from then on
+     ran core 3's loop on core 3's stack, while core 3 stayed in the coroutine with `in_wifi` 0, where
+     every yield returned at once and every wait became a spin. What happened next depends on the order of
+     the switches; in the bad orders two cores run on one stack, or a core loads a context while the other
+     is still writing it, and core 3 never comes back. The timing explains why it struck now: with the
+     early look (item 77) card_start takes the mounted card on core 3's first turn (63 ms) instead of
+     initialising it (some hundreds of ms), so the WiFi's start, whose first 170 ms are the radio's power
+     sequence of yields and its mailbox calls, coincides with core 1's USB power request.
+     A second fault of the same call: it yielded with the Pi's mailbox lock (`vc_mbox_lock`, support_rpi.c)
+     held. Every other user of that lock waits for it without yielding (the card's clock rate, the HDMI
+     screen's frame buffer calls, core 1's sound): on another core they spun until core 3's loop came back
+     to the coroutine, and on core 3 itself one of them would have waited for ever.
+   - *Not the cause.* The country: `XX` would only have reached the firmware after the chip had started.
+     The pins: the WiFi's GPIO 34-39 (GPFSEL3), 43 and the expander's WL_ON do not overlap the PiStorm's
+     GPIO 0-27 (GPFSEL0-2, whole-register writes on the bus core); the SD card's 48-53 are left on the
+     sdhost when the early look put them there. The early look left no lock taken (it runs before core 3).
+   - *The fix* (alice_net.c, `#ifdef PSMAC`). The coroutine belongs to the core that switched into it
+     (`wifi_core`, from MPIDR): `an_yield` and `wifi_udelay` switch only there (`an_on_coroutine`), so core
+     1 and core 0 simply wait in the mailbox call, bounded by its limits. The mailbox call never yields with
+     the lock held: the coroutine takes the lock with `spinlock_try_acquire` and yields between tries (at
+     most a second), then waits for the answer without yielding for at most 100 ms (the firmware answers in
+     well under a millisecond), reads the answer before releasing the lock (the buffer is shared by every
+     core that calls it), and is not asked three more times after a timeout; other callers keep their 2 s.
+     `mbox_busy` (the -9 that `alice_mbox` returns) now means "someone holds the mailbox". psmac_card.c's
+     card clock no longer uses support_rpi.c's unbounded `get_clock_rate`: the core clock is asked once
+     through `alice_mbox_once`, kept, and 400 MHz is assumed without an answer (a slower card clock, never
+     a faster one). A WiFi chip that does not answer says so in plain words, `the WiFi chip does not answer
+     (SDIO): WiFi off, the Mac carries on` (or `WiFi chip not recognised: ...`), and nothing tries again on
+     its own; PiWiFi's Join or a restart does. `wifi.country=` must be two letters A-Z; `XX` is reported as
+     the instructions' placeholder and the firmware keeps its default.
+   - *The watch* (alice_psmac.c, called from the bus core, which kept going here). Core 3's loop marks each
+     part of its turn (`mailbox`, `card`, `network: the WiFi's turn`, `network: the Ethernet`, `USB`,
+     `display`, ...); when it has made no turn for 2 s the bus core prints `[PSMAC] WATCH: core 3's service
+     loop has made no turn for N s: it is in "network: the WiFi's turn" (the WiFi: "pins and power")`, again
+     every 10 s, and `core 3's service loop turns again, after N ms` when it does. The heartbeat's service
+     line gains `the WiFi's longest turn U us, at "..."` when one of the WiFi's turns between two yields took
+     20 ms or more, the part of "network" that is the WiFi's.
+   - *The early look* (psmac_card.c) is bounded too: the root's walk stops after a second, and a card that
+     does not answer or has no FAT partition is left as if untouched (early_done 0, state 0), so card_start
+     starts it afresh with its own reset on core 3 and the container's declaration ROM serves meanwhile.
+     789e265's fix (the early look's results taken only when there was one) is kept; it also explains the
+     user's `mac.cardrom=off` boot of d9ff341, which reached the question mark: with no early look the card
+     was never initialised on hardware either.
+   - *The question mark with `wifi=off`.* The user's card root held an older release's declaration ROMs
+     beside the two new ones: aurora68.declrom, -WxH, -wifi, -wifionly, -wifi-WxH (9,016 bytes, an old
+     build), -se-WxH, -se and aurora68-512x342.declrom. On the SE board aurora68-512x342 and
+     aurora68-wifi-512x342 rank the same (one-screen, the SE's size), and a tie went to the last one listed:
+     the old WiFi-only file, whose PiDisk entry has no boot record (262c344 added it), so the Slot Manager
+     had nothing to start from the image and the Mac showed "?" though the kernel had the image ready.
+     declrom_choose now looks into the file it is about to take, as it already did for a screen: one without
+     PiDisk's sRsrcBootRec (entry 6 of sResource $80) goes behind every file that has one and is taken only
+     if nothing else will do, with a `***` line saying the Mac cannot start from a disk image; at the same
+     rank the full card beats a file with "-wifi" in its name (it serves Pis without a wired port too, item
+     49's rule drops its wired card there), then the card's root beats the container, then the last listed;
+     and one line lists every other file and why it was passed over (`chosen over: aurora68-wifi-512x342.declrom
+     (its PiDisk has no boot record (an older file): no startup disk from an image), aurora68-se.declrom (the
+     two-screen card), ...`).
+   - *Test options.* `mac.vcslow=US` makes alice_net.c's mailbox call take the answer no sooner than US
+     microseconds after the request, as a real VideoCore's comes (QEMU's comes at once, so no caller ever
+     waited in that loop in the testbed, and the race could not happen there). `mac.cardfail=early|all`: the
+     card does not answer (1.5 s, as a missing one), for the early look only or for every start.
+   - *Reproduced, then fixed* (QEMU, solo board, a container with the 3B's WiFi firmware so that the start
+     runs, no WiFi chip: QEMU's Arasan host has nothing on it). The old kernel with `mac.vcslow=500` alone
+     booted (the USB start's one request came before the WiFi's start); with `mac.vcslow=500
+     mac.mboxstress=15` as well it stopped as the user's SE did, the same lines: `[WIFI] sleep clock: ...`
+     as the last WiFi line (the expander's WL_ON request, the first mailbox call of the start), `starting:
+     starting the WiFi chip (chip 0 rev 0, SD 0 MHz)`, `service loop: 0 turns/5 s, longest: mailbox 0 us,
+     card 0 us, network 0 us, ...` from then on, and the stress's own closing line never printed (core 1
+     was lost too). The new kernel with the same words: `the WiFi chip does not answer (SDIO): WiFi off, the
+     Mac carries on`, the Finder, 9,400 calls from core 1 with 4 that found the mailbox busy and none
+     failed, `wifi.country=XX is the instructions' placeholder`. `wifi=off`: the Finder as before. The
+     simulated radio (`mac.wifisim=TestNet:... wifi.ssid=TestNet`): joined at boot, "connected".
+     MAME `macse_ps` with the user's words (`mac.console=hdmi mac.image=sys710pi.image mac.boot=image
+     mac.logsave=10`, WiFi words with `XX`), a container with the IIci ROM, aurora68-512x342.declrom and the
+     WiFi firmware, and a card (`CARD=`) holding the image, aurora68.declrom, aurora68-se.declrom,
+     aurora68-512x342.declrom, aurora68-wifionly.declrom and an aurora68-wifi-512x342.declrom built without
+     PiDisk's boot record, in that order: aurora68-512x342.declrom from the card taken, `chosen over: the
+     container's aurora68-512x342.declrom (the card's root wins a tie), ..., aurora68-wifi-512x342.declrom (a
+     WiFi-only card ...)`, the WiFi given up, `PiDisk boot: the card's image is the startup disk`; with the
+     HDMI screen as a second screen (no `mac.console=hdmi`) and `mac.vcslow=500 mac.mboxstress=15`,
+     aurora68-se.declrom, the image as the startup disk and the Finder at 190 s (the testbed's FAT32 card has
+     512-byte clusters, and the image came in slowly). A card with only aurora68.declrom and the old file:
+     `aurora68.declrom ... taken`, the old one passed over for its missing boot record; with only the old
+     file: taken, and the `***` line. The watch printed `WATCH: core 3's service loop has made no turn for 2
+     s: it is in "card"` and `turns again, after 4252 ms` in those runs: card_start's first look at a 96 MB
+     image in 512-byte clusters (the FAT chain walked on core 3), which the user's card, with 32 KB
+     clusters, did in 63 ms. `mac.cardfail=early` with the card: the early look failed after 1.5 s, the
+     container's declaration ROM served, card_start initialised and mounted the card on core 3 and found
+     the image, the Finder; `mac.cardfail=all`: no card, the Finder.
+   - *Not verified on hardware:* the WiFi start on the SE (the chip's power through the expander, the Arasan
+     host beside the PiStorm), the firmware's real answer times in the mailbox call (the 100 ms limit), and
+     the watch on the HDMI console. The race itself was shown only with the stress option; on the user's Pi
+     the USB start's single power request, which waits for the controller's power, is enough by the timing
+     above.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

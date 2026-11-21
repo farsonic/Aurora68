@@ -451,6 +451,35 @@ In the heartbeat's audio line, the blocks should grow by 625 every five seconds 
 running at the HDMI's pace), the card's underruns stay small next to its frames, and "(some filled late)"
 should not appear. Nothing of the HDMI audio, the DMA or the jack has run on hardware yet.
 
+### WiFi on the SE, and the card's declaration ROMs
+
+*21 November 2026* (docs/08 item 79). With WiFi words in cmdline.txt the se11-hdmi kernel stopped core 3
+for good (`service loop: 0 turns/5 s`, `[WIFI] starting: ... (chip 0 rev 0, SD 0 MHz)`): the WiFi's start
+and the USB start on another core met in the firmware's mailbox call. Fixed in the next kernel; and with
+`wifi=off` the Mac showed the question mark because an old `aurora68-wifi-512x342.declrom` on the card,
+without PiDisk's boot record, was taken. The next boots, in this order:
+
+1. Card root: delete every `.declrom` except `aurora68-se.declrom` and `aurora68-512x342.declrom` (the
+   kernel now passes over an old file by itself, but one file fewer is one question fewer). Replace
+   `kernel8.img`. Keep `mac.console=hdmi`, `mac.image=sys710pi.image mac.boot=image mac.logsave=10`.
+2. First with `wifi=off`: the Mac should start from the image. Lines to send back:
+
+        [PSMAC] declaration ROM: aurora68-512x342.declrom from the card's root taken (the SE's screen 512x342, ...)
+        [PSMAC]   chosen over: ...
+        [PSMAC:MBOX] startup disk: the card's image first (mac.boot=image); 1 image(s) on the card
+        [MAC] PiDisk boot: the card's image is the startup disk
+
+3. Then the WiFi words again, with your own country's two letters in `wifi.country=` (not `XX`). Either
+   the WiFi starts (`[WIFI] chip ... rev ...: cyfmac43430-sdio.bin, ...`, `MAC ...`, then `connected`) or it gives up in plain words
+   (`the WiFi chip does not answer (SDIO): WiFi off, the Mac carries on`, `WiFi chip not recognised`,
+   `the firmware did not start`), and in every case the Mac goes on starting. Lines to send back: every
+   `[WIFI]` line, the `service loop:` lines and any `the WiFi's longest turn ...` line beside them.
+4. If the Mac stops again, the HDMI log now says where core 3 is within two seconds:
+
+        [PSMAC] WATCH: core 3's service loop has made no turn for 2 s: it is in "network: the WiFi's turn" (the WiFi: "pins and power")
+
+   A photograph of that line (and the ones before it) is what to send.
+
 ## What to have ready
 
 - The release zip's SD card layout as it is (0.2): `kernel8.img`, `config.txt`, `cmdline.txt`,

@@ -354,19 +354,56 @@ static int wifi_running;                     /* the coroutine exists */
 static int in_wifi;
 #define WIFI_STACK (64 * 1024)
 
+#ifdef PSMAC
+/* The coroutine is core 3's (psmac_alice_core), but in_wifi is a plain global, and the mailbox call
+   below, which yields, is also made from core 1 (the USB start's power request, psmac_usb.c) and
+   core 0 (the board revision, psmac_card.c's early look). A yield from core 1 while core 3 was inside
+   the coroutine switched core 1 onto core 3's own loop, on core 3's stack, and left core 3 in the
+   coroutine with in_wifi cleared, where every later yield returned at once: the user's SE with WiFi
+   enabled, 21 November 2026, "service loop: 0 turns/5 s" for good (docs/08 item 79). Only the core
+   that switched into the coroutine may switch out of it. */
+static int wifi_core = -1;
+static inline int an_this_core(void) { uint64_t id; __asm__ volatile("mrs %0, MPIDR_EL1" : "=r"(id)); return (int)(id & 3); }
+static int an_on_coroutine(void) { return in_wifi && an_this_core() == wifi_core; }
+/* the WiFi's turns, for the service loop's heartbeat line: the longest one and where it was */
+static uint64_t wifi_turn_t0, wifi_turn_max;
+static char wifi_turn_where[64];
+void alice_wifi_turn_report(uint32_t *us, const char **where)
+{
+    uint64_t hz = tick_hz();
+    *us = (uint32_t)(wifi_turn_max * 1000000u / (hz ? hz : 1));
+    *where = wifi_turn_where;
+    wifi_turn_max = 0;
+}
+#else
+static int an_on_coroutine(void) { return in_wifi; }
+#endif
 static void an_yield(void)
 {
-    if (!in_wifi) return;
+    if (!an_on_coroutine()) return;
+#ifdef PSMAC
+    uint64_t d = ticks() - wifi_turn_t0;
+    if (d > wifi_turn_max && anb) {
+        wifi_turn_max = d;
+        volatile char *w = U(0)->where;
+        unsigned i = 0;
+        for (; i < sizeof wifi_turn_where - 1 && w[i]; i++) wifi_turn_where[i] = w[i];
+        wifi_turn_where[i] = 0;
+    }
+#endif
     in_wifi = 0;
     an_switch(&ctx_wifi, &ctx_main);
     in_wifi = 1;
+#ifdef PSMAC
+    wifi_turn_t0 = ticks();
+#endif
 }
 /* the long polls in sdio.c and chip.c: CPU1's other work runs meanwhile */
 void wifi_relax(void) { an_yield(); }
 void wifi_udelay(uint32_t us)
 {
     uint64_t end = ticks() + tick_hz() * us / 1000000u;
-    if (us < 50 || !in_wifi) { while ((int64_t)(end - ticks()) > 0) ; return; }
+    if (us < 50 || !an_on_coroutine()) { while ((int64_t)(end - ticks()) > 0) ; return; }
     while ((int64_t)(end - ticks()) > 0) an_yield();
 }
 
@@ -552,14 +589,18 @@ static uint32_t *mbuf;
 static uint32_t mbox_code;                   /* the answer's code when a call failed (-4) */
 static uint32_t mbox_w0;                     /* the answer's first value word (GET_THROTTLED's bits) */
 static uint32_t mbox_rlen;                   /* the tag's response word: bit 31 once the firmware has answered the tag itself */
-static volatile int mbox_busy;               /* the WiFi coroutine is inside mbox_tag (it yields there) */
+static volatile int mbox_busy;               /* the WiFi coroutine is inside mbox_tag (it yields there); PSMAC: anyone holds the mailbox */
 static int mbox_tag_(uint32_t tag, uint32_t a, uint32_t b, uint32_t *out);
 static int mbox_tag(uint32_t tag, uint32_t a, uint32_t b, uint32_t *out)
 {
+#ifdef PSMAC
+    return mbox_tag_(tag, a, b, out);              /* mbox_busy: while the lock is held, below */
+#else
     mbox_busy = 1;
     int r = mbox_tag_(tag, a, b, out);
     mbox_busy = 0;
     return r;
+#endif
 }
 static int mbox_tag_(uint32_t tag, uint32_t a, uint32_t b, uint32_t *out)
 {
@@ -570,14 +611,68 @@ static int mbox_tag_(uint32_t tag, uint32_t a, uint32_t b, uint32_t *out)
        page Emu68's own mailbox buffer (FBReq, support_rpi.c) uses, 2 KB past it. */
     if (!mbuf) mbuf = (uint32_t *)0xffffff9000001800ull;
     extern spinlock_t vc_mbox_lock;                  /* support_rpi.c: one caller at a time, see mbox_recv there */
+#ifdef PSMAC
+    /* Never a yield with the lock held (21 November 2026, docs/08 item 79). The lock is the whole
+       Pi's: support_rpi.c's callers on core 0 and core 3 (the card's clock, the HDMI screen's frame
+       buffer) wait for it without yielding, so a coroutine that yielded while holding it left them
+       spinning, and one of them on core 3 itself could never get it back. The coroutine waits for the
+       lock in slices; once it has it, it waits for the answer without yielding, for at most 100 ms
+       (the firmware answers in well under a millisecond), and gives up after that. */
+    int coro = an_on_coroutine();
+    uint64_t t = ticks(), hz = tick_hz();
+    if (coro) {
+        while (!spinlock_try_acquire(&vc_mbox_lock)) {
+            if (ticks() - t > hz) return -2;
+            an_yield();
+        }
+    } else
+        spinlock_acquire(&vc_mbox_lock);
+    mbox_busy = 1;                                   /* -9 for alice_mbox's callers meanwhile (they ask again) */
+    mbuf[0] = __builtin_bswap32(8 * 4); mbuf[1] = 0; mbuf[2] = __builtin_bswap32(tag);
+    mbuf[3] = __builtin_bswap32(8); mbuf[4] = 0; mbuf[5] = __builtin_bswap32(a); mbuf[6] = __builtin_bswap32(b); mbuf[7] = 0;
+    arm_flush_cache((uintptr_t)mbuf, 64);
+    uint32_t addr = (uint32_t)mmu_virt2phys((uintptr_t)mbuf);
+    addr = (addr & 0x3fffffffu) | 0xC0000000u;       /* the VideoCore's uncached alias, as support_rpi.c's mbox_send */
+    /* mac.vcslow=US (testbed): the answer is taken no sooner than US microseconds after the request,
+       as a real VideoCore's comes; QEMU's comes at once, so no caller ever waited in this loop there */
+    static int vcslow = -1;
+    if (vcslow < 0) {
+        char v[16]; int n = 0;
+        if (bootarg_val("mac.vcslow", v, sizeof v))
+            for (char *q = v; *q >= '0' && *q <= '9'; q++)
+                n = n * 10 + (*q - '0');
+        vcslow = n;
+    }
+    uint64_t limit = coro ? hz / 10 : 2 * hz, slow = hz * (uint64_t)vcslow / 1000000u;
+    t = ticks();
+    while (mrd(MBOX_STATUS) & (1u << 31)) {
+        if (ticks() - t > limit) { mbox_busy = 0; spinlock_release(&vc_mbox_lock); return -2; }
+    }
+    mwr(MBOX_WRITE, (addr & ~15u) | 8u);
+    t = ticks();
+    for (;;) {
+        if (ticks() - t >= slow && !(mrd(MBOX_STATUS) & (1u << 30))) {
+            uint32_t r = mrd(MBOX_READ);
+            if ((r & 15u) == 8u && (r & ~15u) == (addr & ~15u)) break;
+        }
+        if (ticks() - t > limit) { mbox_busy = 0; spinlock_release(&vc_mbox_lock); return -3; }
+    }
+    /* the answer is read before the lock goes: the buffer is every caller's of this file, on any core */
+    arm_dcache_invalidate((uintptr_t)mbuf, 64);
+    uint32_t v6 = __builtin_bswap32(mbuf[6]), v5 = __builtin_bswap32(mbuf[5]), v4 = __builtin_bswap32(mbuf[4]), code = __builtin_bswap32(mbuf[1]);
+    mbox_busy = 0;
+    spinlock_release(&vc_mbox_lock);
+    if (out) *out = v6;
+    mbox_w0 = v5;
+    mbox_rlen = v4;
+    if (code != 0x80000000u) { mbox_code = code; return -4; }
+    return 0;
+#else
     spinlock_acquire(&vc_mbox_lock);
     mbuf[0] = __builtin_bswap32(8 * 4); mbuf[1] = 0; mbuf[2] = __builtin_bswap32(tag);
     mbuf[3] = __builtin_bswap32(8); mbuf[4] = 0; mbuf[5] = __builtin_bswap32(a); mbuf[6] = __builtin_bswap32(b); mbuf[7] = 0;
     arm_flush_cache((uintptr_t)mbuf, 64);
     uint32_t addr = (uint32_t)mmu_virt2phys((uintptr_t)mbuf);
-#ifdef PSMAC
-    addr = (addr & 0x3fffffffu) | 0xC0000000u;       /* the VideoCore's uncached alias, as support_rpi.c's mbox_send */
-#endif
     uint64_t t = ticks(), hz = tick_hz();
     while (mrd(MBOX_STATUS) & (1u << 31)) { if (ticks() - t > hz) { spinlock_release(&vc_mbox_lock); return -2; } an_yield(); }
     mwr(MBOX_WRITE, (addr & ~15u) | 8u);
@@ -598,13 +693,20 @@ static int mbox_tag_(uint32_t tag, uint32_t a, uint32_t b, uint32_t *out)
     uint32_t code = __builtin_bswap32(mbuf[1]);
     if (code != 0x80000000u) { mbox_code = code; return -4; }
     return 0;
+#endif
 }
 /* The mailbox is shared with CPU0, CPU2 and the 68k's mailbox.resource, each of which may take
    another's answer: try again rather than give up. */
 static int mbox_try(uint32_t tag, uint32_t a, uint32_t b, uint32_t *out)
 {
     int e = -1;
-    for (int i = 0; i < 4 && e; i++) { e = mbox_tag(tag, a, b, out); if (e) wifi_log("mailbox tag %x: error %d (code %x), again\n", tag, e, e == -4 ? mbox_code : 0); }
+    for (int i = 0; i < 4 && e; i++) {
+        e = mbox_tag(tag, a, b, out);
+        if (e) wifi_log("mailbox tag %x: error %d (code %x)%s\n", tag, e, e == -4 ? mbox_code : 0, i < 3 ? ", again" : "");
+#ifdef PSMAC
+        if (e == -3 && an_on_coroutine()) break;    /* no answer in 100 ms: asking again only holds core 3 longer */
+#endif
+    }
     return e;
 }
 /* for bt_pi.c, from CPU1's loop (not the WiFi coroutine): -9 while the WiFi has the mailbox */
@@ -1145,17 +1247,28 @@ static int bringup(void)
     wifi_udelay(20000);
     wl_on(1);
     wifi_udelay(150000);
+    wifi_where("the EMMC clock (mailbox)");
     mbox_try(0x00038001u, 1, 1, 0);                 /* SET_CLOCK_STATE: the EMMC clock on */
     uint32_t base = 0;
     if (mbox_try(0x00030002u, 1, 0, &base) || !base) base = 250000000u;     /* GET_CLOCK_RATE */
     wifi_log("SD host clock %u Hz\n", base);
     wifi_where("SD host");
     W.h.regs = (volatile uint32_t *)(uintptr_t)SDH_BASE;
+#ifdef PSMAC
+    /* the reason in plain words, and what it means for the Mac: nothing tries again on its own (PiWiFi's
+       Join or a restart does), so a Pi with no working WiFi chip costs the Mac this one start */
+    if (sdh_init(&W.h, base) || sdh_bus4(&W.h, W.sdclock)) { wstate(AN_ST_FAILED, "the WiFi chip does not answer (SDIO): WiFi off, the Mac carries on"); return -2; }
+#else
     if (sdh_init(&W.h, base) || sdh_bus4(&W.h, W.sdclock)) { wstate(AN_ST_FAILED, "the WiFi chip does not answer on SDIO"); return -2; }
+#endif
     W.h.regs[0x38 / 4] = 0;                         /* never signal: GIC 158 is the SD card's too */
     u->sdmhz = W.h.sd_hz / 1000000u;
     wifi_where("chip");
+#ifdef PSMAC
+    if (chip_attach(&W.c, &W.h)) { wstate(AN_ST_FAILED, "WiFi chip not recognised: WiFi off, the Mac carries on"); return -3; }
+#else
     if (chip_attach(&W.c, &W.h)) { wstate(AN_ST_FAILED, "WiFi chip not recognised"); return -3; }
+#endif
     u->chip = W.c.id; u->chiprev = W.c.rev;
     int is56 = W.c.id == 0x4345 && W.c.rev == 9;
     int is30 = W.c.id == 43430 || W.c.id == 0xa9a6;
@@ -1629,7 +1742,21 @@ static void wifi_thread(void)
     if (bootarg_val("wifi.sdclock", v, sizeof v)) { uint32_t n = 0; for (char *p = v; *p >= '0' && *p <= '9'; p++) n = n * 10 + (uint32_t)(*p - '0'); if (n >= 400000 && n <= 50000000) W.sdclock = n; }
     if (bootarg_val("wifi.ssid", v, sizeof v)) { unsigned i = 0; for (; v[i] && i < 32; i++) W.ssid[i] = v[i]; W.ssid[i] = 0; W.want = W.ssid[0] != 0; }
     if (bootarg_val("wifi.psk", v, sizeof v)) { unsigned i = 0; for (; v[i] && i < 64; i++) W.pass[i] = v[i]; W.pass[i] = 0; }
+#ifdef PSMAC
+    /* Two letters, A to Z (ISO 3166). "XX" is the placeholder of the instructions, not a country: the
+       user's SE had it on 21 November 2026. It never reached the chip (the WiFi stopped earlier), but
+       the firmware would have been handed a code it does not know; now it keeps its own default. */
+    if (bootarg_val("wifi.country", v, sizeof v)) {
+        char c0 = v[0] >= 'a' && v[0] <= 'z' ? (char)(v[0] - 32) : v[0], c1 = v[1] >= 'a' && v[1] <= 'z' ? (char)(v[1] - 32) : v[1];
+        if (c0 < 'A' || c0 > 'Z' || c1 < 'A' || c1 > 'Z' || v[2])
+            wifi_log("wifi.country=%s is not a two-letter country code: the firmware's default is kept\n", v);
+        else if (c0 == 'X' && c1 == 'X')
+            wifi_log("wifi.country=XX is the instructions' placeholder: put your own country's two letters (GB, DE, US ...); the firmware's default is kept\n");
+        else { W.country[0] = c0; W.country[1] = c1; W.country[2] = 0; }
+    }
+#else
     if (bootarg_val("wifi.country", v, sizeof v)) { W.country[0] = v[0]; W.country[1] = v[1]; W.country[2] = 0; }
+#endif
     W.start_req = 1;                                /* as soon as the firmware is there */
 #ifdef PSMAC
     /* the container was read at boot (psmac_bus.c), before this thread starts: with no WiFi
@@ -2330,13 +2457,24 @@ static void loop_stats(void)
     ls.t0 = now; ls.runs = 0; ls.gap = 0; ls.rx0 = rx; ls.tx0 = tx; ls.waits0 = E.rx_waits;
 }
 
+#ifdef PSMAC
+extern void psmac_loop_at(const char *name);       /* alice_psmac.c: for the service loop's watch */
+#define NET_AT(name) psmac_loop_at(name)
+/* where the WiFi is (wifi_where), for the watch's line */
+const char *alice_wifi_where(void) { return anb ? (const char *)U(0)->where : ""; }
+#else
+#define NET_AT(name) ((void)0)
+#endif
 void alice_net_poll(void)
 {
     extern void bt_pi_poll(void);
     extern void alice_status_loop(void), alice_status_poll(void);
+    NET_AT("network: the status page");
     alice_status_loop();                            /* CPU1's turn, timed for the status page */
     alice_status_poll();                            /* the status page, about once a second (alice_status.c) */
+    NET_AT("network: Bluetooth");
     bt_pi_poll();                                   /* Bluetooth (src/alice/bt/bt_pi.c): it waits for the board itself */
+    NET_AT("network: the Ethernet");
     if (!anb) return;
     setup_poll();                                   /* the setup screen's changes written yet? */
     if (H()->restart == AN_RESTART) {               /* AmigaOS asks for a fresh start (Alice68-Card) */
@@ -2373,9 +2511,15 @@ void alice_net_poll(void)
         claim_host_in_dt();
     }
     if (wifi_disabled) return;
+#ifdef PSMAC
+    wifi_core = an_this_core();
+    wifi_turn_t0 = ticks();
+    NET_AT("network: the WiFi's turn");
+#endif
     in_wifi = 1;
     an_switch(&ctx_main, &ctx_wifi);
     in_wifi = 0;
+    NET_AT("network: the Ethernet");
     if (E.up) { eth_rx(); eth_tx(); }               /* again after the WiFi's turn: a long one delays it less */
 }
 

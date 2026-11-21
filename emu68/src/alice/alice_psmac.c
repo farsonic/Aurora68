@@ -800,6 +800,32 @@ int psmac_slot_line_now(void)
 void psmac_alice_core1(void)
 {
     while (!__atomic_load_n(&alice_ready, __ATOMIC_ACQUIRE)) __asm__ volatile("yield");
+    {   /* mac.mboxstress=S (testbed): for S seconds core 1 asks the firmware's mailbox through alice_net.c's
+           call (the board revision) every millisecond, as the USB start's power request does once, while
+           core 3 starts the WiFi: the race of docs/08 item 79, which QEMU's timing seldom gives by itself */
+        extern const char *psmac_option(const char *);
+        const char *o = psmac_option("mac.mboxstress");
+        uint32_t secs = 0;
+        if (o)
+            for (; *o >= '0' && *o <= '9'; o++)
+                secs = secs * 10 + (uint32_t)(*o - '0');
+        if (secs) {
+            extern int alice_mbox(uint32_t tag, uint32_t a, uint32_t b, uint32_t *out);
+            uint64_t end = in_now() + in_hz() * secs;
+            uint32_t calls = 0, busy = 0, bad = 0, v;
+            kprintf("[PSMAC] mac.mboxstress=%u: core 1 asks the mailbox every millisecond for %u s\n", secs, secs);
+            while (in_now() < end) {
+                int e = alice_mbox(0x00010002u, 0, 0, &v);       /* GET_BOARD_REVISION */
+                calls++;
+                if (e == -9) busy++;
+                else if (e) bad++;
+                uint64_t t = in_now() + in_hz() / 1000;
+                while (in_now() < t)
+                    __asm__ volatile("yield");
+            }
+            kprintf("[PSMAC] mac.mboxstress: %u calls from core 1, %u found the mailbox busy, %u failed\n", calls, busy, bad);
+        }
+    }
     { extern void psmac_audio_start(uint8_t *win); psmac_audio_start(alice_win); }   /* the sound output first: the chime comes within the USB start's second (psmac_audio.c) */
     { extern void psmac_usb_start(void); psmac_usb_start(); }
     psmac_boot_mark("core 1: USB started");
@@ -809,7 +835,11 @@ void psmac_alice_core1(void)
 /* the service loop's longest part-turns since the last heartbeat (ticks), and its turns */
 static uint64_t loop_max[6], loop_remote_sum;     /* the remote's share is also summed: its cost when nobody is connected */
 static uint32_t loop_turns;
+static volatile uint32_t loop_turns_all;          /* never reset: the watch below compares it */
+static const char *volatile loop_step;            /* the part of the turn core 3 is in, for the watch */
 #define LOOP_T(i, d) do { if ((d) > loop_max[i]) loop_max[i] = (d); } while (0)
+#define LOOP_AT(name) (loop_step = (name))
+void psmac_loop_at(const char *name) { loop_step = name; }   /* alice_net.c: the network part's own parts */
 void psmac_loop_report(void)
 {
     uint64_t us = in_hz() / 1000000u;
@@ -817,9 +847,40 @@ void psmac_loop_report(void)
             loop_turns, (uint32_t)(loop_max[0] / us), (uint32_t)(loop_max[1] / us), (uint32_t)(loop_max[2] / us),
             (uint32_t)(loop_max[3] / us), (uint32_t)(loop_max[4] / us), psmac_ip_active ? ", remote " : "\n");
     if (psmac_ip_active) kprintf("%u us (%u us in all)\n", (uint32_t)(loop_max[5] / us), (uint32_t)(loop_remote_sum / us));
+    {   /* the WiFi's share of "network": its longest turn between two yields, and where it was then */
+        extern void alice_wifi_turn_report(uint32_t *us, const char **where);
+        uint32_t wus; const char *wwhere;
+        alice_wifi_turn_report(&wus, &wwhere);
+        if (wus >= 20000) kprintf("[PSMAC]   the WiFi's longest turn %u us, at \"%s\"\n", wus, wwhere);
+    }
     for (int i = 0; i < 6; i++) loop_max[i] = 0;
     loop_remote_sum = 0;
     loop_turns = 0;
+}
+/* The service loop's watch, from the bus core (psmac_bus.c), which keeps going when core 3 stops:
+   when the loop has made no turn for 2 s, one line says which part of the turn core 3 is in (and,
+   in the network part, where the WiFi is), then one every 10 s while it lasts, and one when it turns
+   again. Before 21 November 2026 a stopped core 3 showed only as "0 turns/5 s" (docs/08 item 79). */
+void psmac_loop_watch(void)
+{
+    static uint64_t next, last_change, said_at; static uint32_t last_turns; static int stalled;
+    uint64_t now = in_now(), hz = in_hz();
+    if (now < next) return;
+    next = now + hz / 4;
+    const char *step = loop_step;
+    if (!step) return;                              /* core 3's loop has not begun */
+    uint32_t t = loop_turns_all;
+    if (t != last_turns || !last_change) {
+        if (stalled) kprintf("[PSMAC] core 3's service loop turns again, after %u ms\n", (uint32_t)((now - last_change) * 1000u / hz));
+        last_turns = t; last_change = now; stalled = 0;
+        return;
+    }
+    if (now - last_change < 2 * hz || (stalled && now - said_at < 10 * hz)) return;
+    extern const char *alice_wifi_where(void);
+    const char *ww = alice_wifi_where();
+    kprintf("[PSMAC] WATCH: core 3's service loop has made no turn for %u s: it is in \"%s\"%s%s%s\n", (uint32_t)((now - last_change) / hz), step,
+            ww && ww[0] ? " (the WiFi: \"" : "", ww && ww[0] ? ww : "", ww && ww[0] ? "\")" : "");
+    stalled = 1; said_at = now;
 }
 
 /* core 3: the Alice68 services plus the mailbox services, for ever */
@@ -833,22 +894,32 @@ void __attribute__((noreturn)) psmac_alice_core(void)
         /* every part of the turn timed: the longest of each over the heartbeat's five seconds goes
            into its line (psmac_loop_report), so a photograph of the log says what holds the loop */
         uint64_t t0 = in_now(), t1;
+        LOOP_AT("mailbox");
         psmac_mbox_poll();
         t1 = in_now(); LOOP_T(0, t1 - t0); t0 = t1;
+        LOOP_AT("card");
         { extern void psmac_card_poll(void); psmac_card_poll(); }        /* the Pi's own SD card: pairings, the disk image's changes (psmac_card.c) */
         t1 = in_now(); LOOP_T(1, t1 - t0); t0 = t1;
+        LOOP_AT("network");
         alice_net_poll();
         t1 = in_now(); LOOP_T(2, t1 - t0); t0 = t1;
+        LOOP_AT("USB");
         { extern void psmac_usb_poll(void); psmac_usb_poll(); }          /* USB keyboard and mouse (psmac_usb.c) */
         t1 = in_now(); LOOP_T(3, t1 - t0); t0 = t1;
+        LOOP_AT("input");
         in_repeat_poll();
         in_testbed_poll();
+        LOOP_AT("echo timings");
         { extern void psmac_netprobe_poll(void); psmac_netprobe_poll(); }  /* echo timings (psmac_netprobe.c) */
+        LOOP_AT("power state");
         { extern void psmac_power_poll(void); psmac_power_poll(); }        /* the Pi's power state, every 2 s (psmac_power.c) */
+        LOOP_AT("display");
         { extern void psmac_display_poll(void); psmac_display_poll(); }   /* the second display's tick and picture */
-        t1 = in_now(); LOOP_T(4, t1 - t0); t0 = t1; loop_turns++;
+        t1 = in_now(); LOOP_T(4, t1 - t0); t0 = t1; loop_turns++; loop_turns_all++;
+        LOOP_AT("remote control");
         { extern void psmac_remote_poll(void); psmac_remote_poll(); }     /* the remote control: its IP stack, HTTP and input queue (docs/13) */
         t1 = in_now(); LOOP_T(5, t1 - t0); loop_remote_sum += t1 - t0;
+        LOOP_AT("the slot interrupt line");
         /* The card's interrupt line: up while a board has something the Mac has not taken (the
            network board's irq flag, which the Mac's Ethernet driver clears; input events not yet
            read), but only from boards whose Mac driver has attached (the Ethernet driver writes

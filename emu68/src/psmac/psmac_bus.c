@@ -597,6 +597,7 @@ void psmac_service_core(void)
             if (no_declrom) kprintf("[PSMAC] *** NO DECLARATION ROM in the container: slot 9 is empty (no Pi screen, PiDisk or input) ***\n");
             hb_last = xfer_count; next_hb = cnt_now() + hb_period;
         }
+        { extern void psmac_loop_watch(void); psmac_loop_watch(); }   /* core 3 stopped for 2 s: where (alice_psmac.c) */
         if (__m68k_state) {
             uint32_t pc = BE32((uint32_t)(uintptr_t)__m68k_state->PC);
             if (pc != pc_last) {
@@ -910,7 +911,7 @@ static int declrom_se(const char *name)
    card's root (psmac_card.c, docs/10 "Declaration ROMs from the card"), which win a tie. Each is known
    by its name: a size at the end (-WxH), "-se-" or "-se." for the SE board's two-screen file. The
    card's are read only once one of them is chosen. */
-struct declcand { const uint8_t *p; uint32_t len, w, h; int sized, se, card, bad, novideo; char name[64]; };
+struct declcand { const uint8_t *p; uint32_t len, w, h; int sized, se, card, bad, novideo, wifionly, noboot, booted; char name[64]; };
 #define DECLCAND_MAX 48                     /* a release has 29 declaration ROMs; room for the card's beside the container's */
 static struct declcand dcand[DECLCAND_MAX];
 static int ndcand;
@@ -920,8 +921,14 @@ static void declcand_add(const char *name, const uint8_t *p, uint32_t len, int c
     if (ndcand >= DECLCAND_MAX) return;
     struct declcand *c = &dcand[ndcand++];
     unsigned k = 0; while (name[k] && k < sizeof c->name - 1) { c->name[k] = name[k]; k++; } c->name[k] = 0;
-    c->p = p; c->len = len; c->card = card; c->bad = 0; c->novideo = 0;
+    c->p = p; c->len = len; c->card = card; c->bad = 0; c->novideo = 0; c->noboot = 0; c->booted = 0;
     c->sized = declrom_res(c->name, &c->w, &c->h);
+    /* "-wifi" in the name (aurora68-wifi-WxH, aurora68-wifionly, psmac_wifi): the cards with the WiFi
+       as their only network card, made for Pis without a wired port; the full card serves those too
+       (wired_ethernet_works drops its wired sResource there), so it wins a tie */
+    c->wifionly = 0;
+    for (const char *q = c->name; *q; q++)
+        if ((q[0] == '-' || q[0] == '_') && (q[1] | 32) == 'w' && (q[2] | 32) == 'i' && (q[3] | 32) == 'f' && (q[4] | 32) == 'i') c->wifionly = 1;
     c->se = declrom_se(c->name);
     if (!c->sized) { c->w = 640; c->h = 480; }                    /* the plain ROM is mkdeclrom.py's default, 640x480 */
 }
@@ -981,7 +988,42 @@ static int declrom_rank(const struct declcand *c, int se_board, int want_se, uin
     return exact ? 0 : c->sized ? 2 : 1;
 }
 static int declrom_has_video(const uint8_t *p, uint32_t len, int se);   /* below, with the ROM's lists */
+static int declrom_has_bootrec(const uint8_t *p, uint32_t len);         /* below */
 static const uint8_t *declrom_below(const uint8_t *top, uint32_t len, uint32_t *out_len);   /* below */
+/* the rank with what has been found out by looking into the file: no screen, no boot record */
+static int declrom_rank_now(const struct declcand *c, int se_board, int want_se, uint32_t want_w, uint32_t want_h)
+{
+    int rk = c->bad ? -1 : declrom_rank(c, se_board, want_se, want_w, want_h);
+    if (rk < 0) return rk;
+    if (c->novideo) rk += 10;                       /* a card without a screen (aurora68-wifionly): only if nothing else */
+    if (c->noboot) rk += 5;                         /* PiDisk without its boot record: an old file (docs/08 item 79) */
+    return rk;
+}
+/* whether a beats b at the same rank: the full card before a WiFi-only one, the card's root before the
+   container, and among exact matches from one place the last one listed (as before) */
+static int declrom_tie(const struct declcand *a, const struct declcand *b, int rk)
+{
+    if (a->wifionly != b->wifionly) return a->wifionly < b->wifionly;
+    if (a->card != b->card) return a->card > b->card;
+    return rk == 0;
+}
+/* one line: the other files, and why each was passed over */
+static void declrom_why(const struct declcand *best, int br, int se_board, int want_se, uint32_t want_w, uint32_t want_h)
+{
+    int n = 0;
+    for (int i = 0; i < ndcand; i++) {
+        const struct declcand *c = &dcand[i];
+        if (c == best) continue;
+        int rk = declrom_rank_now(c, se_board, want_se, want_w, want_h);
+        const char *why = c->bad ? "could not be read" : rk < 0 ? "not for this board" : c->novideo ? "no screen in it"
+                        : c->noboot ? "its PiDisk has no boot record (an older file): no startup disk from an image"
+                        : rk > br ? (c->se && !want_se ? "the two-screen card" : !c->se && want_se ? "a one-screen card" : "made for another screen size")
+                        : c->wifionly && !best->wifionly ? "a WiFi-only card (the full card has the WiFi too)"
+                        : c->card != best->card ? "the card's root wins a tie" : "listed before it";
+        kprintf("%s%s%s (%s)", n++ ? ", " : "[PSMAC]   chosen over: ", c->card ? "" : "the container's ", c->name, why);
+    }
+    if (n) kprintf("\n");
+}
 static struct declcand *declrom_choose(uint32_t want_w, uint32_t want_h)
 {
     int se_board = psmac_board_se && !psmac_board_solo, want_se = se_board && psmac_hdmi_mode == 1;
@@ -990,10 +1032,9 @@ static struct declcand *declrom_choose(uint32_t want_w, uint32_t want_h)
         struct declcand *best = 0; int br = 99;
         for (int i = 0; i < ndcand; i++) {
             struct declcand *c = &dcand[i];
-            int rk = c->bad ? -1 : declrom_rank(c, se_board, want_se, want_w, want_h);
+            int rk = declrom_rank_now(c, se_board, want_se, want_w, want_h);
             if (rk < 0) continue;
-            if (c->novideo) rk += 10;                   /* a card without a screen (aurora68-wifionly): only if nothing else */
-            if (!best || rk < br || (rk == br && (c->card > best->card || (c->card == best->card && rk == 0)))) { best = c; br = rk; }
+            if (!best || rk < br || (rk == br && declrom_tie(c, best, rk))) { best = c; br = rk; }
         }
         if (!best) {
             for (int i = 0; i < ndcand; i++)
@@ -1014,13 +1055,29 @@ static struct declcand *declrom_choose(uint32_t want_w, uint32_t want_h)
             if (best->card) best->p = 0;                 /* read again if it is taken after all */
             continue;
         }
+        /* The same for PiDisk's boot record (sRsrcBootRec in its sResource, 262c344): an older file
+           without it gives a Mac that cannot start from the disk image, only the question mark. The
+           user's SE, 21 November 2026: a card root with a whole older release's declaration ROMs, and
+           aurora68-wifi-512x342.declrom of an old build taken over aurora68-512x342.declrom, the last
+           of two equal ones listed. Such a file is taken only when no other will do. */
+        if (!best->noboot && !best->booted) {
+            if (!declrom_has_bootrec(best->p, best->len)) {
+                best->noboot = 1;
+                if (best->card) best->p = 0;
+                continue;
+            }
+            best->booted = 1;
+        }
         const char *from = best->card ? "the card's root" : "the container";
         if (want_se && !best->se) {
             kprintf("[PSMAC] declaration ROM: %s from %s, a one-screen card: no two-screen file (aurora68-se.declrom or aurora68-se-WxH.declrom), so HDMI mirrors the SE's screen\n", best->name, from);
             psmac_hdmi_mode = 0;
         } else
             kprintf("[PSMAC] declaration ROM: %s from %s taken (%s screen %ux%u%s)\n", best->name, from, want_se ? "the HDMI" : se_board ? "the SE's" : "the",
-                    want_w, want_h, br == 0 ? ", the file's own size" : ": the file's screen is rewritten for it");
+                    want_w, want_h, declrom_rank(best, se_board, want_se, want_w, want_h) == 0 ? ", the file's own size" : ": the file's screen is rewritten for it");
+        if (best->noboot)
+            kprintf("[PSMAC] *** declaration ROM %s: its PiDisk has no boot record, so the Mac cannot start from a disk image (only the question mark): put a current declaration ROM on the card ***\n", best->name);
+        declrom_why(best, br, se_board, want_se, want_w, want_h);
         return best;
     }
 }
@@ -1116,6 +1173,20 @@ static int declrom_has_video(const uint8_t *p, uint32_t len, int se)
     if (length < 20 || length > len || BE32(*(const uint32_t *)(fb + 14)) != 0x5A932BC7u) return 0;
     uint8_t *dir = (uint8_t *)fb + ((int32_t)(BE32(*(const uint32_t *)fb) << 8) >> 8);
     return list_entry(dir, top - length, fb, rid) != 0;
+}
+
+/* whether slot 9's ROM (at the file's end, in the two-screen files too) has PiDisk's boot record: entry
+   6, sRsrcBootRec, in sResource $80 (mkdeclrom.py --boot) */
+static int declrom_has_bootrec(const uint8_t *p, uint32_t len)
+{
+    if (!p || len < 20) return 0;
+    const uint8_t *top = p + len, *fb = top - 20;
+    uint32_t length = BE32(*(const uint32_t *)(fb + 4));
+    if (length < 20 || length > len || BE32(*(const uint32_t *)(fb + 14)) != 0x5A932BC7u) return 0;
+    uint8_t *dir = (uint8_t *)fb + ((int32_t)(BE32(*(const uint32_t *)fb) << 8) >> 8);
+    uint8_t *e = list_entry(dir, top - length, fb, 0x80);
+    if (!e) return 0;
+    return list_entry(e + ent_off(e), top - length, fb, 6) != 0;
 }
 
 /* ---- the wired network card, shown only where there is one ------------------------------------------
