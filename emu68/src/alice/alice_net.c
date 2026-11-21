@@ -1222,6 +1222,19 @@ static int clm_upload(const uint8_t *blob, uint32_t len)
     }
     return 0;
 }
+/* The Mac's receive filter (promiscuous, all multicast), as its driver last asked. Until 21 November
+   2026 a request that came while the chip was still starting was answered and dropped, and the chip
+   kept its default of no multicast at all. On the real SE the WiFi now comes up after Riptide has
+   opened its interfaces and asked for all multicast (IPv6's all-nodes and solicited-node groups), so
+   router advertisements and the router's neighbour solicitations never reached the Mac: no global
+   IPv6 address, and no IPv6 beyond the link. The wish is now kept and applied when the chip comes up. */
+static uint32_t wifi_filter_want;
+static int wifi_filter_set;
+static void wifi_filter_apply(void)
+{
+    cmd_int(10, (wifi_filter_want & AN_FILT_PROMISC) ? 1 : 0);                 /* 10: WLC_SET_PROMISC */
+    iov_int("allmulti", (wifi_filter_want & AN_FILT_ALLMULTI) ? 1 : 0);
+}
 static int bringup(void)
 {
     static const char *const s43455[] = { "cyfmac43455-sdio", "cyfmac43455-sdio-standard", "brcmfmac43455-sdio.raspberrypi,4-model-b", "brcmfmac43455-sdio", 0 };
@@ -1341,6 +1354,7 @@ static int bringup(void)
         fm_country(cc, W.country);
         if (iov_set("country", cc, 12)) wifi_log("country %s not accepted\n", W.country);
     }
+    if (wifi_filter_set) { wifi_filter_apply(); wifi_log("receive filter as the Mac asked before the chip was up: %s\n", (wifi_filter_want & AN_FILT_PROMISC) ? "promiscuous" : (wifi_filter_want & AN_FILT_ALLMULTI) ? "all multicast" : "unicast and broadcast"); }
     uint8_t mask[EVENT_MASK_LEN];
     memset(mask, 0, sizeof mask);
     static const uint8_t evs[] = { E_SET_SSID, E_LINK, E_AUTH, E_ASSOC, E_DEAUTH, E_DEAUTH_IND, E_DISASSOC, E_DISASSOC_IND, E_PSK_SUP, E_ESCAN_RESULT, E_IF };
@@ -1721,7 +1735,8 @@ static void commands(void)
     }
     case AN_CMD_FILTER: {
         uint32_t f = (uint32_t)u->arg[0] << 24 | (uint32_t)u->arg[1] << 16 | (uint32_t)u->arg[2] << 8 | u->arg[3];
-        if (W.chip_up) { cmd_int(10, (f & AN_FILT_PROMISC) ? 1 : 0); iov_int("allmulti", (f & AN_FILT_ALLMULTI) ? 1 : 0); }   /* 10: WLC_SET_PROMISC */
+        wifi_filter_want = f; wifi_filter_set = 1;     /* kept for a chip that comes up later (wifi_filter_apply) */
+        if (W.chip_up) wifi_filter_apply();
         cmd_finish(seq, 0);
         break;
     }

@@ -2878,6 +2878,23 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      "way better" for latency than before. The SE was running both screens (the HDMI one at 2560 by 1440)
      with the image on the card as its startup disk.
 
+80. **IPv6 beyond the link lost on the SE's WiFi: the receive filter asked for too early (21 November).**
+   With se12 the owner reported that IPv6 from the browser to hosts on the Internet no longer worked,
+   where on 19 November Internet Explorer had reached an IPv6-only site over the bench Pi's WiFi
+   (riptide docs/MAC.md). Reading the WiFi's command handler (`alice_net.c`, AN_CMD_FILTER): the Mac's
+   `.ENET` driver asks for all multicast as soon as a multicast address is registered (`mac/enet.s`
+   set_filter), and Riptide registers IPv6's all-nodes and solicited-node groups when it opens its
+   interfaces. The handler applied that to the chip only if the chip was already up, and otherwise
+   answered and forgot it, leaving the Broadcom firmware at its default of no multicast. On the bench the
+   chip was up before Riptide opened; on the SE, since item 79, the WiFi comes up later than the Mac's
+   extensions. Without multicast no router advertisement arrives (no global address, no default route)
+   and the router's neighbour solicitations for the Mac's address go unanswered. The wired port was never
+   affected: the LAN9514 path passes all multicast. The wish is now kept and applied when the chip
+   comes up (`wifi_filter_apply`, logged "receive filter as the Mac asked before the chip was up").
+   Built, not testable in QEMU (no chip; the simulated WiFi keeps its own filter). To check on the SE:
+   in the Riptide Command Terminal, `ifconfig en1` should show a global IPv6 address beside the link-local
+   one, and `ping6` to an outside IPv6 address should answer.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,
