@@ -70,3 +70,19 @@ speed): 90.2 overall, CPU 41.2, graphics 83.3, math 486.2, disk 0.82; the benchm
 averages 276. The disk figure is the BlueSCSI on the SE's own SCSI chip, every byte crossing
 the PiStorm's bus, which is slower than the Classic's own disk; the card image (PiDisk) does
 not go over that bus and is the fast disk.
+
+## 8. Two screens: the SE's own and a monitor at 2560 by 1440 (21 November 2026)
+
+![The SE beside a Dell monitor: PiLog, Octavo windows and About This Macintosh on the monitor, a Finder window on the SE; the SE's logic board out on the desk with the PiStorm and the Pi](img/se-hardware/08-two-screens-2560x1440.jpg)
+
+The next day the SE ran two screens: its own 512 by 342 screen, and a Dell UP2716D on the Pi's HDMI
+port as a second screen of 2560 by 1440, the panel's own resolution, at 30 Hz (a Pi 3 cannot drive
+that resolution at 60; docs/10 "2560 by 1440"). The size came from `config.txt` alone (`hdmi_mode=87`
+with `hdmi_cvt=2560 1440 30 3 0 0 1`): the kernel shaped the second screen's card to the firmware's
+mode (docs/08 item 77), PiScrn arranged the two screens and restarted the Mac once. On the monitor:
+PiLog with the kernel's log, Octavo's windows, a folder window and About This Macintosh ("Macintosh
+SE", System 7.1); on the SE, a Finder window of the card image's disk. The SE's logic board is out of
+the case on the desk, with the PiStorm in the 68000's socket and the Pi 3B on top of it, cabled back
+to the SE's analogue board. The startup disk was the 96 MB image on the Pi's SD card. The same
+afternoon's hardware findings (WiFi start stopping the service core, an old declaration ROM chosen
+from the card's root) are in docs/08.
