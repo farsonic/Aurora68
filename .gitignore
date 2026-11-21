@@ -64,3 +64,6 @@ mac/build/edid-sample.bin
 # the Aurora68 Agent's (mac/piagent)
 mac/build/ag/
 mac/build/piagent.elf
+
+# local working copies made for parallel work (git worktrees), never part of the repository
+.claude/worktrees/
