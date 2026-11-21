@@ -581,6 +581,7 @@ void psmac_service_core(void)
             }
             psmac_se_report();
             { extern void alice_net_report(void); alice_net_report(); }
+            { extern void psmac_ip_report(void); psmac_ip_report(); }
             { extern void bt_pi_report(void); bt_pi_report(); }
             { extern void psmac_card_report(void); psmac_card_report(); }
             { int ok1, ok2, ok3; uint32_t t1 = mac_rd32(0xd00, &ok1), t2 = mac_rd32(0xb24, &ok2), t3 = mac_rd32(0xcea, &ok3);

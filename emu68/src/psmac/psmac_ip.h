@@ -54,6 +54,7 @@ struct ipk_info {
     const char *phase;                          /* "no link", "DHCP", "bound", "static", "shared" */
 };
 void psmac_ip_info(struct ipk_info *out);
+void psmac_ip_report(void);                     /* the heartbeat's [REMOTE] line, when something changed */
 const char *psmac_ip_name(void);                /* the mDNS host name, without .local */
 
 #endif

@@ -69,6 +69,8 @@ static struct {
     uint8_t hw[6], ip[4], mask[4], gw[4];
     uint8_t mac_ip[2][4];                   /* the Mac's own address on each unit, learnt from its frames */
     uint32_t rx, tx, rx_dropped, tx_dropped;
+    uint32_t sent;                          /* frames the driver took from the queue (tx counts those queued) */
+    uint32_t arp_asks, arp_answers, pings, syns, resets;   /* for the heartbeat's line (psmac_ip_report) */
     uint32_t next_check;
     char name[32];
 } I = { .unit = -1 };
@@ -110,7 +112,7 @@ uint32_t psmac_ip_tx_take(int unit, uint8_t *buf, uint32_t max)
     uint32_t n = txq[txq_tail % TXQ].len;
     if (n > max) { txq_tail++; I.tx_dropped++; return 0; }
     cpy(buf, txq[txq_tail % TXQ].data, n);
-    txq_tail++;
+    txq_tail++; I.sent++;
     return n;
 }
 int psmac_ip_tx_pending(int unit) { return psmac_ip_active && txq_head != txq_tail && txq[txq_tail % TXQ].unit == unit; }
@@ -293,12 +295,16 @@ static void arp_send(int op, const uint8_t *dst_hw, const uint8_t *tha, const ui
 static void arp_in(const uint8_t *f, uint32_t len)
 {
     if (len < 42 || get16(f + 14) != 1 || get16(f + 16) != 0x0800) return;
-    if (get16(f + 20) == 1 && eq(f + 38, I.ip, 4) && !eq(I.ip, zero4, 4))
+    if (get16(f + 20) == 1 && eq(f + 38, I.ip, 4) && !eq(I.ip, zero4, 4)) {
+        I.arp_asks++;
         arp_send(2, f + 22, f + 22, f + 28);
+        I.arp_answers++;
+    }
 }
 static void icmp_in(const uint8_t *f, const uint8_t *ip, const uint8_t *p, uint32_t n)
 {
     if (n < 8 || p[0] != 8 || !ip_is_mine(ip + 16) || I.shared == 2 || n > FRAME_MAX - 34) return;
+    I.pings++;
     uint8_t *o = tx_begin();
     if (!o) return;
     uint8_t *q = ip_header(o, f + 6, I.ip, ip + 12, 1, n, 64);
@@ -620,10 +626,11 @@ static void tcp_in(const uint8_t *f, const uint8_t *ip, const uint8_t *h, uint32
     for (int i = 0; i < IPK_CONNS; i++)
         if (tcbs[i].state != T_FREE && tcbs[i].rport == sport && tcbs[i].lport == dport && eq(tcbs[i].ip, ip + 12, 4)) { c = i; break; }
     if (c < 0) {
-        if ((fl & 0x17) != 0x02) { tcp_reset_reply(f, ip, h, dlen); return; }   /* not a bare SYN */
+        if ((fl & 0x17) != 0x02) { I.resets++; tcp_reset_reply(f, ip, h, dlen); return; }   /* not a bare SYN */
+        I.syns++;
         int ok_port = I.shared == 2 ? dport == REMOTE_PORT_ALT : (dport == 80 || dport == REMOTE_PORT_ALT);
         for (int i = 0; i < IPK_CONNS && c < 0; i++) if (tcbs[i].state == T_FREE) c = i;
-        if (!ok_port || c < 0) { if (!ok_port) tcp_reset_reply(f, ip, h, dlen); return; }   /* all busy: the client tries again */
+        if (!ok_port || c < 0) { if (!ok_port) { I.resets++; tcp_reset_reply(f, ip, h, dlen); } return; }   /* all busy: the client tries again */
         struct tcb *t = &tcbs[c];
         t->state = T_SYN_RCVD; cpy(t->hw, f + 6, 6); cpy(t->ip, ip + 12, 4);
         t->lport = dport; t->rport = sport; t->rcv = seq + 1;
@@ -641,7 +648,7 @@ static void tcp_in(const uint8_t *f, const uint8_t *ip, const uint8_t *h, uint32
         if (t->mss < 64) t->mss = 64;
         t->sb_start = t->sb_len = 0; t->app_done = t->fin_sent = t->fin_acked = t->peer_fin = t->need_ack = 0;
         t->rto_ms = 300; t->rto_at = now_ms() + t->rto_ms; t->retries = 0; t->last_ms = now_ms();
-        if (!remote_tcp_accept(c, dport, t->ip)) { t->state = T_FREE; tcp_reset_reply(f, ip, h, dlen); return; }
+        if (!remote_tcp_accept(c, dport, t->ip)) { t->state = T_FREE; I.resets++; tcp_reset_reply(f, ip, h, dlen); return; }
         conns_total++;
         tcp_segment(t, t->iss, 0x12, 0, 0, 0, 0, 1);
         return;
@@ -790,4 +797,24 @@ void psmac_ip_info(struct ipk_info *o)
     o->lease_s = D.state == D_BOUND ? D.lease_s : 0;
     o->rx = I.rx; o->tx = I.tx; o->rx_dropped = I.rx_dropped; o->tx_dropped = I.tx_dropped; o->conns = conns_total;
     o->phase = I.unit < 0 ? "no link" : I.shared == 2 ? "shared" : I.have_static ? "static" : D.state == D_BOUND ? "bound" : "DHCP";
+}
+
+/* one line for the kernel's heartbeat (psmac_bus.c): the remote control's address and what came and
+   went, printed only when something changed so Aurora68 Log is not buried. It keeps the address in
+   the log after the start-up lines have scrolled away, and shows where a connection stops: ARP asked
+   and answered, pings answered, SYNs seen, frames queued against frames the driver actually sent */
+void psmac_ip_report(void)
+{
+    if (!psmac_ip_active) return;
+    static uint32_t last[9]; static int last_unit = -2, last_shared = -1;
+    uint32_t now[9] = { I.rx, I.tx, I.sent, I.rx_dropped + I.tx_dropped, I.arp_asks, I.pings, I.syns, I.resets, get32(I.ip) };
+    int same = I.unit == last_unit && I.shared == last_shared;
+    for (int i = 0; i < 9; i++) { if (now[i] != last[i]) same = 0; last[i] = now[i]; }
+    last_unit = I.unit; last_shared = I.shared;
+    if (same) return;
+    if (I.unit < 0) { kprintf("[REMOTE]   no network link\n"); return; }
+    kprintf("[REMOTE]   %d.%d.%d.%d on %s (%s): in %u, out %u queued %u sent, %u dropped | ARP asks %u answered %u, pings %u, SYNs %u, resets %u\n",
+            I.ip[0], I.ip[1], I.ip[2], I.ip[3], link_name(I.unit),
+            I.shared == 2 ? "the Mac's MAC and IP, port 8068" : I.shared ? "the Mac's MAC, its own IP" : "its own MAC and IP",
+            I.rx, I.tx, I.sent, I.rx_dropped + I.tx_dropped, I.arp_asks, I.arp_answers, I.pings, I.syns, I.resets);
 }
