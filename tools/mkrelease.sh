@@ -26,6 +26,7 @@ make -C mac > /dev/null
 cp mac/build/psmac.declrom "$OUT/aurora68.declrom"
 cp mac/build/psmac_wifi.declrom "$OUT/aurora68-wifionly.declrom"
 cp mac/build/psmac_wifi_video.declrom "$OUT/aurora68-wifi.declrom"       # screen + WiFi network, no wired Ethernet: the bench and Pis without Ethernet
+cp mac/build/psmac-se.declrom "$OUT/aurora68-se.declrom"           # the SE's two screens at any HDMI size (the kernel rewrites it)
 for f in mac/build/psmac-*x*.declrom; do cp "$f" "$OUT/aurora68-${f#mac/build/psmac-}"; done   # one per screen size (aurora68-1024x768.declrom ...),
                                                          # and each with the WiFi as the only network card (aurora68-wifi-1024x768.declrom ...)
 for f in PiDisk PiMach PiWiFi PiBlue PiStatus PiNet PiPing PiScreens PiColor PiLog PiDepth WiFiMenu PiScrn SoundPiStorm; do cp "mac/build/$f.bin" "$OUT/Mac/"; done

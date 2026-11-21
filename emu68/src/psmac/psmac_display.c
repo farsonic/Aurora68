@@ -18,8 +18,8 @@
  * 512 KiB, because that megabyte is the one a 24-bit System 6 can reach ($980000); it holds
  * 640 x 480 at up to 8 bits and still does. Direct colour (16 and 32 bits) and larger screens do
  * not fit there, so there is also a big region, 9 MiB of Pi RAM mapped at $90000000 in the slot's
- * super slot space (8 MiB at $F9100000 until 1920 x 1200 at 32 bits needed more, docs/10), which
- * 32-bit systems use. The block's mode tables say which region each mode uses; the driver never
+ * super slot space (8 MiB at $F9100000 until 1920 x 1200 at 32 bits needed more, docs/10; 15 MiB
+ * when the screen is 2560 x 1440, psmb.h), which 32-bit systems use. The block's mode tables say which region each mode uses; the driver never
  * decides, and tools/mac/mkdeclrom.py writes the same rule into the declaration ROM. The VideoCore buffer is remade at the screen's size and 32
  * bits at start-up (the boot splash used 16), and the conversion loop writes XRGB words into it:
  * the Mac's indexed pixels through the colour table, its 16-bit 0RRRRRGGGGGBBBBB words widened,
@@ -34,7 +34,7 @@
  * in slot $A carries the HDMI screen (psmb.h, "two screens"; declaration ROMs psmac-se-WxH), so the
  * Mac sees two screens, and this file keeps one display block per screen (struct screen below):
  * screen 0 is the SE's, fed to the SE's video RAM and to nothing else; screen 1 is the HDMI screen,
- * any size up to 1920 by 1200 at any depth, and is what the VideoCore shows. Both ticks come from
+ * any size up to 2560 by 1440 at any depth, and is what the VideoCore shows. Both ticks come from
  * the one 60 Hz clock and both raise slot 9's interrupt line; each driver claims its own block's
  * tick and runs its own slot's VBL queue (9 and $A). mac.hdmi=mirror and =log keep one screen: the
  * kernel leaves slot $A empty (psmac_bus.c) and HDMI shows the SE's picture, or the log.
@@ -48,6 +48,7 @@ extern void *framebuffer;                    /* start_rpi64.c: the VideoCore fra
 extern uint32_t pitch, fb_width, fb_height;
 extern uint32_t psmac_vc_setup(uint32_t w, uint32_t h, uint32_t depth, void **fb, uint32_t *pitch_out);
 extern uintptr_t psmac_fb_big_phys(void);
+extern uint32_t psmac_fb_big_size(void);
 extern void psmac_screen_size(uint32_t *w, uint32_t *h);
 extern void psmac_hdmi_size(uint32_t *w, uint32_t *h);
 extern int psmac_board_se, psmac_board_solo;
@@ -110,7 +111,7 @@ static int mode_index(uint32_t depth)
 }
 /* the Mac's pixels of mode 128+mi: the screen's part of the window, or the big region */
 static const uint8_t *mode_frame(const struct screen *s, int mi) { return s->disp->mode_base[mi] == PSMB_FB_BIG_PHYS ? frame_big : s->win; }
-static uint32_t mode_limit(const struct screen *s, int mi) { return s->disp->mode_base[mi] == PSMB_FB_BIG_PHYS ? PSMB_FB_BIG_SIZE : s->win_size; }
+static uint32_t mode_limit(const struct screen *s, int mi) { return s->disp->mode_base[mi] == PSMB_FB_BIG_PHYS ? psmac_fb_big_size() : s->win_size; }
 
 /* A screen's display block: its size, the six modes' places and pitches, a colour table for a card
    just switched on. tools/mac/mkdeclrom.py applies the same placement rule to each mode's
@@ -118,6 +119,18 @@ static uint32_t mode_limit(const struct screen *s, int mi) { return s->disp->mod
    "the third trap"); change one and change the other. A mode of at most 8 bits that fits the
    screen's part of the window stays there (reachable in 24-bit mode too), anything larger goes to
    the big region; the SE's screen has only its one bit. */
+/* Where a mode's pixels go, as the Mac addresses them: the screen's part of the window (win_mac,
+   win_size) for a mode of at most 8 bits that fits there, else the big region; 0 when neither holds
+   it, or its rows are wider than QuickDraw takes. psmac_bus.c rewrites the declaration ROM's modes by
+   this very function (declrom_resize), so the two cannot disagree. */
+uint32_t psmac_display_mode_base(uint32_t w, uint32_t h, uint32_t depth, uint32_t win_mac, uint32_t win_size, int one_bit_only)
+{
+    uint32_t rb = psmb_rowbytes(w, depth), bytes = rb * h;
+    if (rb > PSMB_ROWBYTES_MAX || (one_bit_only && depth > 1)) return 0;
+    if (depth <= 8 && bytes <= win_size) return win_mac;
+    if (!one_bit_only && bytes <= psmac_fb_big_size()) return PSMB_FB_BIG_PHYS;   /* $90000000: 32-bit addressing only */
+    return 0;
+}
 static void screen_init(struct screen *s, uint8_t *win, uint32_t block_off, uint32_t frame_off, uint32_t frame_size,
                         uint32_t w, uint32_t h, int one_bit_only)
 {
@@ -128,16 +141,17 @@ static void screen_init(struct screen *s, uint8_t *win, uint32_t block_off, uint
     for (uint32_t i = 0; i < sizeof(struct psmb_display) / 4; i++) ((volatile uint32_t *)d)[i] = 0;
     d->width = w; d->height = h; d->depth = 1;
     d->fb_off = frame_off; d->fb_size = frame_size;
-    d->big_base = PSMB_FB_BIG_PHYS; d->big_size = PSMB_FB_BIG_SIZE;
+    uint32_t big = psmac_fb_big_size();
+    d->big_base = PSMB_FB_BIG_PHYS; d->big_size = big;
     d->vc_width = vc_w; d->vc_height = vc_h; d->vc_depth = vc_bpp;
     for (int i = 0; i < 6; i++) {
-        uint32_t dep = 1u << i, rb = (w * dep + 7) / 8;
-        uint32_t bytes = rb * h;
-        if (one_bit_only && i) d->mode_base[i] = 0;
-        else if (dep <= 8 && bytes <= frame_size) d->mode_base[i] = s->win_mac;
-        else if (!one_bit_only && bytes <= PSMB_FB_BIG_SIZE) d->mode_base[i] = PSMB_FB_BIG_PHYS;   /* $90000000: 32-bit addressing only */
-        else d->mode_base[i] = 0;                                         /* no such mode at this size */
+        uint32_t dep = 1u << i, rb = psmb_rowbytes(w, dep);
+        d->mode_base[i] = psmac_display_mode_base(w, h, dep, s->win_mac, frame_size, one_bit_only);
         d->mode_rowbytes[i] = rb;
+        /* no such mode at this size: the declaration ROM leaves it out too (declrom_resize) */
+        if (!d->mode_base[i] && !one_bit_only)
+            kprintf("[PSMAC:DISP] %ux%u at %u bits: %u bytes a row, %u KiB a frame, the big region %u KiB: that depth is left out\n",
+                    w, h, dep, rb, rb * h >> 10, big >> 10);
     }
     d->rowbytes = d->mode_rowbytes[0];
     for (int i = 0; i < 256; i++) { uint32_t g = 255 - i; d->clut[i] = g << 16 | g << 8 | g; }   /* 0 white ... 255 black, the Mac's order */
@@ -215,7 +229,7 @@ void psmac_display_init(uint8_t *win)
     vcs = nscr == 2 ? &scr[1] : &scr[0];
     if (nscr == 2)
         kprintf("[PSMAC:DISP] two screens: the SE's 512x342, 1 bit, at $%08x (its own video RAM); HDMI %ux%u: indexed modes that fit at $%08x, the rest in the big region at $%08x (%u MiB); VideoCore %ux%u x%u pitch %u at %p%s\n",
-                scr[0].win_mac, w1, h1, scr[1].win_mac, PSMB_FB_BIG_PHYS, PSMB_FB_BIG_SIZE >> 20, vc_w, vc_h, vc_bpp, vc_pitch, framebuffer,
+                scr[0].win_mac, w1, h1, scr[1].win_mac, PSMB_FB_BIG_PHYS, psmac_fb_big_size() >> 20, vc_w, vc_h, vc_bpp, vc_pitch, framebuffer,
                 vc_boot ? ": the firmware's own buffer, kept (mac.vcdepth=32 asks for a new 32-bit one)" : "");
     else
         kprintf("[PSMAC:DISP] %s %ux%u: indexed modes in the window at $%08x%s; VideoCore %ux%u x%u pitch %u at %p%s\n",
@@ -327,10 +341,22 @@ static inline void put(void *row, uint32_t x, uint32_t xrgb)
    all waited behind the conversion (docs/08 item 49). Now each turn of the loop converts a band of
    about 128 K pixels (a millisecond or so) and the next turn the next band; a frame starts at most
    30 times a second, as before, and takes as many turns as it needs. Small screens are one band.
-   Only the screen the VideoCore shows is converted (vcs). */
+   Only the screen the VideoCore shows is converted (vcs).
+   2560 by 1440 (20 November 2026, docs/10) is 3.7 M pixels, 1.6 times 1920 by 1200: 14.7 MB read
+   in millions of colours, 7.4 MB written into the firmware's 16-bit buffer (14.7 MB into a 32-bit
+   one) and flushed, every frame. Thirty of those a second would keep core 3 at the conversion most of
+   the time, and its disk, network and remote work would get what is left between bands. So a frame is
+   also kept to its share of the core: the bands' own time is measured (frame_busy), and the next frame
+   starts no sooner than that long after this one ended (FRAME_SHARE: at most half of core 3, on
+   average). A frame that takes less than 1/60 s changes nothing: 30 frames a second (1080p and
+   below; 1920 by 1200 in millions is about 1/60 s). Larger screens get as many as half the core converts; the heartbeat's display line says
+   how long a frame took and how many there were. The two common pairs (millions into 16 or 32 bits)
+   have loops of their own, without the per-pixel choices of put(). */
 #define BAND_PIXELS 131072u
+#define FRAME_SHARE 1u                    /* idle time after a frame, in multiples of its busy time: 1 is half the core */
 static uint32_t band_y, band_h, band_w, band_mode, band_active, band_depth, band_rb;
-static uint64_t frame_t0;
+static uint64_t frame_t0, frame_end, frame_busy, frame_rest;
+static uint32_t frame_bands, rep_busy_max, rep_frames;   /* the last frame's bands; the heartbeat's figures */
 /* the Mac's pixels -> XRGB; depth 1/2/4: the leftmost pixel is in the high bits of the byte */
 static void convert_rows(uint32_t y0, uint32_t y1)
 {
@@ -341,15 +367,57 @@ static void convert_rows(uint32_t y0, uint32_t y1)
         const uint8_t *src = frame + y * rb;
         void *dst = vcfb + y * vc_pitch;
         switch (depth) {
-        case 32: { const uint32_t *s = (const uint32_t *)src; for (uint32_t x = 0; x < w; x++) put(dst, x, s[x] & 0xffffffu); break; }   /* 00RRGGBB, big-endian longs read natively */
-        case 16: { const uint16_t *s = (const uint16_t *)src;
-                   for (uint32_t x = 0; x < w; x++) { uint32_t v = s[x], r = (v >> 10) & 31, g = (v >> 5) & 31, b = v & 31;
-                       put(dst, x, (r << 3 | r >> 2) << 16 | (g << 3 | g >> 2) << 8 | (b << 3 | b >> 2)); }
-                   break; }
+        case 32: {                                                   /* 00RRGGBB, big-endian longs read natively */
+            const uint32_t *s = (const uint32_t *)src;
+            if (vc_bpp == 16) {                                      /* the firmware's buffer: RGB565 */
+                uint16_t *d = (uint16_t *)dst;
+                for (uint32_t x = 0; x < w; x++) {
+                    uint32_t v = s[x];
+                    d[x] = LE16((uint16_t)(((v >> 8) & 0xf800) | ((v >> 5) & 0x07e0) | ((v >> 3) & 0x001f)));
+                }
+            } else if (!vc_swap) {
+                uint32_t *d = (uint32_t *)dst;
+                for (uint32_t x = 0; x < w; x++)
+                    d[x] = LE32(s[x] & 0xffffffu);
+            } else {
+                for (uint32_t x = 0; x < w; x++)
+                    put(dst, x, s[x] & 0xffffffu);
+            }
+            break;
+        }
+        case 16: {                                                   /* 0RRRRRGGGGGBBBBB */
+            const uint16_t *s = (const uint16_t *)src;
+            if (vc_bpp == 16) {                                      /* RGB565: green widened from 5 bits to 6 */
+                uint16_t *d = (uint16_t *)dst;
+                for (uint32_t x = 0; x < w; x++) {
+                    uint32_t v = s[x], g = (v >> 5) & 31;
+                    d[x] = LE16((uint16_t)((v & 0x7c00) << 1 | (g << 1 | g >> 4) << 5 | (v & 31)));
+                }
+                break;
+            }
+            for (uint32_t x = 0; x < w; x++) {
+                uint32_t v = s[x], r = (v >> 10) & 31, g = (v >> 5) & 31, b = v & 31;
+                put(dst, x, (r << 3 | r >> 2) << 16 | (g << 3 | g >> 2) << 8 | (b << 3 | b >> 2));
+            }
+            break;
+        }
         case 8: for (uint32_t x = 0; x < w; x++) put(dst, x, rgb[src[x]]); break;
-        case 4: for (uint32_t x = 0; x < w; x += 2) { uint8_t b = src[x >> 1]; put(dst, x, rgb[b >> 4]); put(dst, x + 1, rgb[b & 15]); } break;
-        case 2: for (uint32_t x = 0; x < w; x += 4) { uint8_t b = src[x >> 2]; for (int k = 0; k < 4; k++) put(dst, x + k, rgb[(b >> (6 - 2 * k)) & 3]); } break;
-        case 1: for (uint32_t x = 0; x < w; x += 8) { uint8_t b = src[x >> 3]; for (int k = 0; k < 8; k++) put(dst, x + k, rgb[(b >> (7 - k)) & 1]); } break;
+        /* 1, 2 and 4 bits: a byte holds 8, 4 or 2 pixels, and a width that is not a multiple of that
+           (1366) ends inside a byte, whose last pixels are not the screen's: kmax stops there rather
+           than write past the row (and, on the last row, past the VideoCore buffer) */
+        case 4: for (uint32_t x = 0; x < w; x += 2) { uint8_t b = src[x >> 1]; put(dst, x, rgb[b >> 4]); if (x + 1 < w) put(dst, x + 1, rgb[b & 15]); } break;
+        case 2: for (uint32_t x = 0; x < w; x += 4) {
+                    uint8_t b = src[x >> 2]; uint32_t kmax = w - x < 4 ? w - x : 4;
+                    for (uint32_t k = 0; k < kmax; k++)
+                        put(dst, x + k, rgb[(b >> (6 - 2 * k)) & 3]);
+                }
+                break;
+        case 1: for (uint32_t x = 0; x < w; x += 8) {
+                    uint8_t b = src[x >> 3]; uint32_t kmax = w - x < 8 ? w - x : 8;
+                    for (uint32_t k = 0; k < kmax; k++)
+                        put(dst, x + k, rgb[(b >> (7 - k)) & 1]);
+                }
+                break;
         }
     }
     arm_flush_cache((intptr_t)(vcfb + y0 * vc_pitch), vc_pitch * (y1 - y0));
@@ -382,16 +450,25 @@ static int convert_start(void)
     return 1;
 }
 /* one band; the frame's end counts it */
+static uint64_t cnt_now(void) { uint64_t t; __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(t)); return t; }
 static void convert_band(void)
 {
     uint32_t n = band_w ? BAND_PIXELS / band_w : band_h;
     if (!n) n = 1;
     if (band_y + n > band_h) n = band_h - band_y;
+    uint64_t t0 = cnt_now();
     convert_rows(band_y, band_y + n);
+    uint64_t t1 = cnt_now();
+    frame_busy += t1 - t0; frame_bands++;
     band_y += n;
     if (band_y < band_h) return;
     band_active = 0;
     vcs->disp->frames++;
+    frame_end = t1; frame_rest = frame_busy * FRAME_SHARE;
+    uint64_t hz; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(hz));
+    uint32_t us = hz ? (uint32_t)(frame_busy * 1000000u / hz) : 0;
+    if (us > rep_busy_max) rep_busy_max = us;
+    rep_frames++;
 }
 /* the SE's own screen (psmac_board_se.c compares the rows and sends what changed): screen 0's
    frame, whatever the VideoCore shows. Until 20 November it was called at the end of each HDMI
@@ -431,8 +508,11 @@ void psmac_display_poll(void)
     if (psmac_board_se && !psmac_board_solo) se_frame();
     if ((vd->flags & PSMB_DISP_ENABLED) && !con_keep) {
         con_off = 1;
-        if (!band_active && now - frame_t0 >= hz / 31 && convert_start()) {   /* if the last one is done */
+        /* if the last one is done, a thirtieth of a second has gone by since it began, and core 3 has
+           had as long to itself as the last frame took (FRAME_SHARE) */
+        if (!band_active && now - frame_t0 >= hz / 31 && now - frame_end >= frame_rest && convert_start()) {
             frame_t0 = now;
+            frame_busy = 0; frame_bands = 0;
             band_active = 1;
             convert_band();
         }
@@ -444,9 +524,20 @@ void psmac_display_report(void)
 {
     for (int i = 0; vcs && i < nscr; i++) {
         volatile struct psmb_display *d = scr[i].disp;
-        kprintf("[PSMAC]   display%s: %ux%u flags %x depth %u rowbytes %u vbl %s pending %u ticks %u frames %u clut seq %u\n",
-                nscr == 1 ? "" : i ? " 1 (HDMI)" : " 0 (SE)", d->width, d->height, d->flags, d->depth, d->rowbytes, d->vbl_enable ? "on" : "off",
-                d->vbl_pending, d->vbl_count, d->frames, d->clut_seq);
+        const char *name = nscr == 1 ? "" : i ? " 1 (HDMI)" : " 0 (SE)";
+        /* the VideoCore's picture since the last heartbeat (five seconds): frames converted, and the
+           longest one's time on core 3 summed over its bands (FRAME_SHARE above); one kprintf per
+           line, so that another core's output cannot land in the middle of it */
+        if (&scr[i] == vcs && rep_frames)
+            kprintf("[PSMAC]   display%s: %ux%u flags %x depth %u rowbytes %u vbl %s pending %u ticks %u frames %u clut seq %u; "
+                    "VideoCore %u frames in 5 s, longest %u us in %u bands\n",
+                    name, d->width, d->height, d->flags, d->depth, d->rowbytes, d->vbl_enable ? "on" : "off",
+                    d->vbl_pending, d->vbl_count, d->frames, d->clut_seq, rep_frames, rep_busy_max, frame_bands);
+        else
+            kprintf("[PSMAC]   display%s: %ux%u flags %x depth %u rowbytes %u vbl %s pending %u ticks %u frames %u clut seq %u\n",
+                    name, d->width, d->height, d->flags, d->depth, d->rowbytes, d->vbl_enable ? "on" : "off",
+                    d->vbl_pending, d->vbl_count, d->frames, d->clut_seq);
+        if (&scr[i] == vcs) { rep_frames = 0; rep_busy_max = 0; }
     }
 }
 

@@ -123,7 +123,8 @@ config.txt with `hdmi_group=2` and `hdmi_mode=16`):
        python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom aurora68-se-1024x768.declrom \
            cyfmac43430-sdio.bin brcmfmac43430-sdio.txt cyfmac43430-sdio.clm_blob BCM43430A1.hcd
 
-   Sizes built: 640x480, 800x600, 1024x768, 1280x720, 1280x1024, 1600x1200, 1920x1080, 1920x1200.
+   Sizes built: 640x480, 800x600, 1024x768, 1280x720, 1280x1024, 1600x1200, 1920x1080, 1920x1200,
+   2560x1440 (below, "2560 by 1440").
 3. **config.txt**: `hdmi_group=2`, the `hdmi_mode` of that size (16 = 1024 x 768, 9 = 800 x 600, 82 =
    1920 x 1080, 69 = 1920 x 1200 reduced blanking), and **`hdmi_drive=2`**, which makes the firmware drive
    the monitor as HDMI rather than DVI: DVI carries no sound. Keep `gpu_mem=64` (the release's [pi3]).
@@ -159,6 +160,72 @@ card ... registered and chosen as the output device`, and in every heartbeat `[P
 ... | ASC ... | card ... frames, ... underruns ...`. If HDMI is silent and the log says `the transmitter
 sends no packets ... DVI`, `hdmi_drive=2` is missing or the monitor declined; `mac.audiotest=card` plays a
 test tone on each side at start (441 Hz left, 882 Hz right).
+
+### 2560 by 1440 on the SE (20 November 2026)
+A 2560 by 1440 monitor (the user's Dell UP2716D) as the HDMI screen. A Pi 3 cannot send that size at
+60 Hz: it needs a 241 MHz pixel clock, and the Pi 3's HDMI tops out below that (1920 by 1200 at 60 Hz
+already needs reduced blanking, 154 MHz). At 30 Hz with reduced blanking it is about 121 MHz, a custom
+mode the firmware makes from a CVT description. docs/10, "2560 by 1440", is the record. The steps
+differ from the ones above in three places:
+
+1. **The container** with `aurora68-se.declrom` (any two-screen file serves; `aurora68-se-2560x1440.declrom`
+   is the one of this size, below "One container for every monitor").
+2. **config.txt**, in place of the `hdmi_mode=` line (keep `hdmi_drive=2` and `gpu_mem=64`):
+
+       hdmi_group=2
+       hdmi_mode=87
+       hdmi_cvt=2560 1440 30 3 0 0 1
+       max_framebuffer_width=2560
+       max_framebuffer_height=1440
+
+   `hdmi_mode=87` is the custom mode, `hdmi_cvt` its width, height, refresh (30), aspect (3 = 16:9),
+   no margins, not interlaced, reduced blanking (the last 1). The last two lines let the firmware make
+   its frame buffer that large. Whether the monitor takes 30 Hz is the monitor's matter: if it shows
+   "no signal" or "out of range", nothing on the Mac side can help.
+3. **cmdline.txt**: nothing about the size (the firmware's mode is the screen's); `mac.screen=2560x1440`
+   says the same if you prefer it written down:
+
+       enable_cache mac.board=se bt=off wifi=off mac.image=sys710pi.image mac.boot=image
+
+PiScrn sees the size change at the next start, writes the arrangement again (the SE's screen at
+(0,0)-(512,342), HDMI at (512,0)-(3072,1440)) and restarts once. Monitors offers every depth; millions
+need 32-bit addressing, as at every size. **PiDepth HDMI 16** (a copy of PiDepth renamed, double-clicked
+or in Startup Items) sets the HDMI screen's depth without Monitors: any of 1, 2, 4, 8, 16, 32 at the end
+of the name; plain "PiDepth N" sets the main screen's, which on the SE is the one-bit screen.
+
+The log lines to look for: `[PSMAC] screen: 2560x1440, the firmware's HDMI mode (mac.screen= not given)`,
+`[PSMAC] screen 2560x1440: the big frame buffer region is 15 MiB`, `[PSMAC] declaration ROM: slot $A's screen
+rewritten for 2560x1440, 6 depths`, `[PSMAC:DISP]
+VideoCore read back: physical 2560x1440, virtual 2560x1440, depth 16, pitch 5120, ...: as asked`, `[PSMAC:DISP]
+two screens: ... HDMI 2560x1440 ... (15 MiB); VideoCore 2560x1440 x16 pitch 5120 ...: the firmware's own buffer,
+kept`, and in each heartbeat `display 1 (HDMI): 2560x1440 ... depth 32 rowbytes 10240 ...; VideoCore N frames in
+5 s, longest U us in B bands`: how long one frame of the picture takes core 3 on the real Pi, which no
+testbed can say. If the read-back says `depth 16` with any other size, or `NOT what was asked`, the firmware's
+buffer is not 2560 by 1440: check the two `max_framebuffer_` lines.
+
+### One container for every monitor, and declaration ROMs on the card (20 November 2026)
+The kernel now rewrites the declaration ROM's HDMI screen for the size the firmware set (docs/10, "Any
+size"), so the container no longer names a size and config.txt alone chooses the monitor's:
+
+1. **The container, once**, with the one two-screen file (it holds no size that matters):
+
+       python3 make-container.py -o aurora68.cpio MacIIci_368CADFE.rom aurora68-se.declrom \
+           cyfmac43430-sdio.bin brcmfmac43430-sdio.txt cyfmac43430-sdio.clm_blob BCM43430A1.hcd
+
+2. **cmdline.txt without `mac.screen=`**:
+
+       enable_cache mac.board=se bt=off wifi=off mac.image=sys710pi.image mac.boot=image
+
+3. **config.txt** chooses: `hdmi_group=2` and `hdmi_mode=16` (1024 x 768), `82` (1080p), `69` (1920 x
+   1200), `81` (1366 x 768), or the five 2560 by 1440 lines above. Change the mode, restart, and the Mac
+   has the new size; PiScrn rearranges the two screens and restarts once.
+
+**A new declaration ROM is a file on the card.** A `.declrom` file in the card's root (beside
+kernel8.img) is taken in preference to the container's of the same rank, so a new PiDisk, network, input
+or video driver needs no new container: copy the new `aurora68-se.declrom` to the card. The log's
+`[PSMAC] card: declaration ROM ...` lines list what the card holds, and `[PSMAC] declaration ROM: NAME from
+the card's root taken (...)` says which one was used. Take old ones off the card when you update: a file on
+the card beats the container's. `mac.cardrom=off` in cmdline.txt ignores the card's files.
 
 ## The WiFi in the testbed: a radio that exists only in software
 QEMU's raspi3b has no WiFi chip (no SDIO function, no firmware to load), so the real driver in

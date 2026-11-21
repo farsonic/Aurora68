@@ -9,7 +9,7 @@ OBJCOPY = m68k-linux-gnu-objcopy
 PY      = python3
 B       = build
 
-all: $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/PiLog.bin $(B)/PiDepth.bin $(B)/WiFiMenu.bin $(B)/PiScrn.bin $(B)/SoundPiStorm.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes declrom-wifi-sizes declrom-se-sizes
+all: $(B)/psmac-se.declrom $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/PiLog.bin $(B)/PiDepth.bin $(B)/WiFiMenu.bin $(B)/PiScrn.bin $(B)/SoundPiStorm.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes declrom-wifi-sizes declrom-se-sizes
 
 $(B)/%.o: %.s
 	@mkdir -p $(B)
@@ -75,7 +75,9 @@ $(B)/psmac.declrom: $(B)/pidisk.bin.raw $(B)/pidisk_boot.bin.raw $(B)/enet.bin.r
 
 # the same card for other screen sizes: the kernel takes psmac-WxH.declrom from the container when the
 # second display has that size (mac.screen=WxH, or the VideoCore's own size)
-RESES = 512x342 800x600 1024x768 1280x720 1280x1024 1920x1080 1920x1200
+# 2560x1440 (20 November 2026): on a Pi 3 at 30 Hz only (CVT reduced blanking, hdmi_cvt in config.txt;
+# 60 Hz needs a 241 MHz pixel clock, docs/10 "2560 by 1440"); its big frame buffer region is 15 MiB
+RESES = 512x342 800x600 1024x768 1280x720 1280x1024 1920x1080 1920x1200 2560x1440
 declrom-sizes: $(B)/pidisk.bin.raw $(B)/pidisk_boot.bin.raw $(B)/enet.bin.raw $(B)/enet_wifi.bin.raw $(B)/piinput.bin.raw $(B)/pivideo.bin.raw
 	for r in $(RESES); do $(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --boot $(B)/pidisk_boot.bin.raw --enet $(B)/enet.bin.raw --wifi $(B)/enet_wifi.bin.raw --input $(B)/piinput.bin.raw --video $(B)/pivideo.bin.raw --res $$r -o $(B)/psmac-$$r.declrom; done
 # and each size once more with the WiFi as the only network card, like psmac_wifi_video.declrom below: a
@@ -88,12 +90,19 @@ declrom-wifi-sizes: $(B)/pidisk.bin.raw $(B)/pidisk_boot.bin.raw $(B)/enet_wifi.
 # screen and an HDMI screen of each size, named psmac-se-WxH.declrom (the kernel takes the one for the
 # HDMI size on mac.board=se). The HDMI screen's driver is pivideo.s assembled once more with SCREEN2.
 # No WiFi-only variants: the kernel leaves the wired card out by itself where there is no wired port.
-SE_RESES = 640x480 800x600 1024x768 1280x720 1280x1024 1600x1200 1920x1080 1920x1200
+SE_RESES = 640x480 800x600 1024x768 1280x720 1280x1024 1600x1200 1920x1080 1920x1200 2560x1440
 $(B)/pivideo2.o: pivideo.s
 	@mkdir -p $(B)
 	$(AS) --defsym SCREEN2=1 -o $@ $<
 declrom-se-sizes: $(B)/pidisk.bin.raw $(B)/pidisk_boot.bin.raw $(B)/enet.bin.raw $(B)/enet_wifi.bin.raw $(B)/piinput.bin.raw $(B)/pivideo.bin.raw $(B)/pivideo2.bin.raw
 	for r in $(SE_RESES); do $(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --boot $(B)/pidisk_boot.bin.raw --enet $(B)/enet.bin.raw --wifi $(B)/enet_wifi.bin.raw --input $(B)/piinput.bin.raw --se --video $(B)/pivideo.bin.raw --video2 $(B)/pivideo2.bin.raw --res $$r -o $(B)/psmac-se-$$r.declrom; done
+
+# One two-screen file for every HDMI size (20 November 2026): the kernel rewrites its HDMI screen for the size
+# config.txt's HDMI mode gives (or mac.screen=), so psmac-se.declrom (aurora68-se.declrom in the release) is all
+# a container needs; the sized ones above stay for containers that name a size. Its own size, 1024x768, is
+# only what it says before the kernel rewrites it.
+$(B)/psmac-se.declrom: $(B)/pidisk.bin.raw $(B)/pidisk_boot.bin.raw $(B)/enet.bin.raw $(B)/enet_wifi.bin.raw $(B)/piinput.bin.raw $(B)/pivideo.bin.raw $(B)/pivideo2.bin.raw ../tools/mac/mkdeclrom.py ../tools/mac/declrom.py
+	$(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --boot $(B)/pidisk_boot.bin.raw --enet $(B)/enet.bin.raw --wifi $(B)/enet_wifi.bin.raw --input $(B)/piinput.bin.raw --se --video $(B)/pivideo.bin.raw --video2 $(B)/pivideo2.bin.raw --res 1024x768 -o $@
 
 # the same card with the WiFi as its only network sResource: MacTCP and EtherTalk take the first
 # Ethernet-type sResource they find, so this is how the WiFi path is tested in the testbed

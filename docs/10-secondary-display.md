@@ -306,6 +306,152 @@ FIFO by DMA. The card is a ring in slot 9's window that the Sound PiStorm extens
 Manager's output device. The user's steps for both are in docs/09, "Two screens and sound through HDMI
 on the real SE".
 
+## 2560 by 1440 (20 November 2026, evening)
+The user's SE has run two screens on hardware since the se9 kernel (5799de9), at 1024 by 768 and
+1920 by 1200. They now have a Dell UP2716D, 2560 by 1440, and asked for the HDMI screen at its
+native size.
+
+**The monitor's side: 30 Hz.** 2560 by 1440 at 60 Hz needs a pixel clock of about 241 MHz even with
+CVT's reduced blanking; the Pi 3's HDMI cannot send that (1920 by 1200 at 60 Hz already needed
+reduced blanking, 154 MHz, `hdmi_mode=69`). At 30 Hz with reduced blanking it is about 121 MHz, which
+it can. The firmware makes such a mode from a CVT description: in config.txt
+
+    hdmi_group=2
+    hdmi_mode=87
+    hdmi_cvt=2560 1440 30 3 0 0 1
+    max_framebuffer_width=2560
+    max_framebuffer_height=1440
+
+(`hdmi_mode=87` is "the custom mode", `hdmi_cvt` is width, height, refresh, aspect 3 = 16:9, no margins,
+not interlaced, reduced blanking; the last two lines let the firmware make its frame buffer that
+large). Whether the monitor takes 30 Hz is the monitor's affair; the user is finding out.
+
+**The Mac's side: every limit that stopped at 1920 by 1200.**
+- *mac.screen=* took 512..1920 by 342..1200 (psmac_bus.c). Now 512..4096 by 342..2560 (psmb.h,
+  `PSMB_SCREEN_*`), and with no `mac.screen=` the size the firmware's mode gave its frame buffer, as
+  before.
+- *The big region*, the Pi RAM behind $90000000 in slot 9's super slot space where every mode that does
+  not fit the window lives, was 9 MiB: 1920 x 1200 x 4 bytes is 8.8 MiB. 2560 x 1440 in millions is
+  2560 x 4 x 1440 = 14,745,600 bytes. The address range is no limit: the super slot space has 256 MiB,
+  and the slot $A card's modes reach into it from $FAA80000 by the same wrapping vpBaseOffset as the
+  1920 by 1200 ones; the IIci ROM's 32-bit tables map it one to one. What it costs is Pi RAM, carved at
+  start-up and taken from the Mac's memory and the disk images' room, so it grows only when the screen
+  needs it: 9 MiB up to 1920 by 1200, exactly as before, and the 32-bit frame rounded up to a MiB above
+  that (15 MiB at 2560 by 1440; at most 32 MiB, which holds 3840 by 2160). The MMU shim maps the size in
+  use. So millions of colours fit, and nothing had to be capped at thousands. QuickDraw's limit on a
+  pixel map's rowBytes, $3FFE, is the other bound: 2560 at 32 bits is 10,240; a depth whose rows would be
+  wider (4096 at 32 bits) is left out.
+- *The declaration ROMs* (`RESES`, `SE_RESES`, the WiFi ones) stopped at 1920x1200; 2560x1440 is built
+  too. Since the next section, every two-screen file serves every size anyway.
+- *The VideoCore*. With `mac.screen=` equal to the firmware's mode the HDMI screen keeps the firmware's
+  own 16-bit buffer (docs/08 item 73): 2560 x 1440 x 2 = 7.4 MB, out of the `gpu_mem=64` split, where the
+  1920 by 1200 one was 4.6 MB; the firmware's own needs at this setting are a few MB. `mac.vcdepth=32`
+  asks for a second, 32-bit buffer of 14.7 MB beside it, which should still fit in 64 MB but is the
+  first thing to suspect if the read-back line says `NOT what was asked` (then `gpu_mem=128`). QEMU's
+  model has 64 MB of VideoCore memory and takes either.
+- *The copy.* The service core converts the Mac's frame into the VideoCore's a band at a time (docs/08
+  item 49). A 2560 by 1440 frame in millions is 14.7 MB read and 7.4 MB written and flushed, 1.6 times
+  1920 by 1200: on a Pi 3, scaled from the 1920 by 1200 figure (20 ms for 9 + 9 + 9 MB), some 22 ms of
+  core 3 a frame into the 16-bit buffer and 33 ms into a 32-bit one. At 30 frames a second that is core 3
+  two-thirds to wholly full, and its disk, network and remote work
+  would get what is left between bands. Core 1 (USB, sound) and core 2 (the SE's bus, its screen and
+  speaker) do not run the conversion, but they share the memory bus with it. So the conversion now keeps
+  to half of core 3: the bands' own time is measured, and the next frame starts no sooner than that long
+  after the last one ended (`FRAME_SHARE`, psmac_display.c). A frame that takes less than 1/60 s
+  changes nothing (30 a second, as before: 1080p and below); 1920 by 1200 in millions, about 1/60 s,
+  may come out at 25 to 30; at 2560 by 1440 the picture is redrawn as often as half the core
+  allows, by the same scaling about 22 times a second into the 16-bit buffer and 15 into a 32-bit one,
+  on a monitor that shows 30. The loops for the common pairs
+  (millions into the 16-bit buffer, or into a 32-bit one; thousands into 16 bits) lost their per-pixel
+  choices, which is worth more than the pacing. The heartbeat's display line now says how many frames
+  were drawn in five seconds and how long the longest took on core 3: the number the testbed cannot
+  give, and the one to send back from the real Pi.
+- *The remote's screenshot* was cropped at 2048 pixels wide; now 2560.
+- *PiScrn and the driver* had no size of their own: PiScrn takes each screen's rectangle from its
+  GDevice, the driver its rows and pitch from the display block. 512 + 2560 = 3072 fits QuickDraw's
+  coordinates easily.
+- *PiDepth* set only the main screen's depth, which on the SE is the one-bit screen. "PiDepth HDMI 16"
+  (any depth at the end) now sets the first active screen that is not the main one, so the HDMI screen's
+  depth can be chosen without Monitors on a 9-inch screen.
+
+## Any size, and declaration ROMs from the card (20 November 2026, evening)
+The user then asked for a card that follows config.txt: no container rebuilt for a new monitor, and a
+new Mac-side driver by copying a file.
+
+**One two-screen file for every size.** Until now the screen's size was built into the declaration
+ROM: each mode's VPBlock (bounds, rowBytes, the vpBaseOffset of its place) is read by the Slot Manager
+and the ROM's screen set-up, which never ask the driver (the third trap above). So there was one file
+per size, and a container to rebuild for each monitor. Now the kernel rewrites the video sResource in
+Pi RAM before the 68k starts (`declrom_resize`, psmac_bus.c): the HDMI card's ($80 of slot $A) for the
+HDMI size, a one-screen card's ($84 of slot 9) for its screen. Each mode gets the screen's bounds, its
+row pitch and the vpBaseOffset of the place the display block gives it (`psmac_display_mode_base`, the
+one function both use); a depth that fits nowhere at that size (a frame larger than the big region can
+be, or rows wider than $3FFE) leaves the mode list, the later entries moving up as when the wired
+Ethernet card is left out; then the ROM's CRC again. Rewritten from a 1024 by 768 file, the slot $A ROMs
+for 640x480, 1366x768, 1920x1200, 2048x1152 and 2560x1440 come out byte for byte the same as the files
+mkdeclrom.py builds for those sizes (a host harness compiling the kernel's functions, docs/08 item 77). The size is `mac.screen=` if given, else the firmware's: config.txt's `hdmi_mode` or
+`hdmi_cvt` alone chooses it. `psmac-se.declrom` (`aurora68-se.declrom` in the release) is the one file
+a container needs; the sized ones stay, and an exact size is still preferred, so a container made for
+one size does what it did. Rows are now padded to a long (`psmb_rowbytes`): QuickDraw needs an even
+rowBytes and 1366 at one bit is 171 bytes; every width that is a multiple of 32, which every size before
+today was, comes out as before, and the existing files did not change by a byte. The conversion's 1-,
+2- and 4-bit loops stop at the screen's last pixel instead of the byte's, which a width like 1366 needs.
+
+**Declaration ROMs from the card's root.** `*.declrom` files in the card's FAT root are offered beside
+the container's, by the same rules, and win a tie. The Slot Manager reads slot 9 within the first second,
+long before core 3 takes over the card, so this one look is made on core 0 in psmac_setup_memory,
+before psmac_alice_init starts core 3: the card is initialised and mounted there, the root listed, and
+only the chosen file read; card_start later takes over the mounted card rather than resetting it again.
+Only when the Pi booted from a container (on hardware always; a testbed run from a bare ROM would wait
+1.5 s for a card that is not there); `mac.cardrom=off` leaves the card's files out. The log names the file
+and where it came from: `[PSMAC] declaration ROM: aurora68-se.declrom from the card's root taken (the
+HDMI screen 2560x1440: the file's screen is rewritten for it)`. A release's card root holds every
+declaration ROM of the release, among them `aurora68-wifionly.declrom`, which has no screen; a chosen
+file is looked into, and one without a video sResource is taken only if nothing else is left.
+
+**What the testbed showed** (21 November, after midnight). QEMU's VideoCore model starts its frame buffer at
+any size (`-global bcm2835-fb.xres=W -global bcm2835-fb.yres=H`, now passed by `QEMU_EXTRA` in
+tools/run-psmac-qemu.sh), which is what config.txt's HDMI mode does on a Pi, so these runs had no
+`mac.screen=` at all. MAME's `macse_ps`, System 7.1 on the SE's SCSI disk with PiScrn, PiColor in Startup
+Items and copies of PiDepth on the desktop; a private copy of MAME's parameter RAM.
+- *2560 by 1440, the ROM from the card.* The container held the IIci ROM and `psmac-se-1024x768.declrom`;
+  the card image's root `aurora68-se.declrom`. The log: `screen: 2560x1440, the firmware's HDMI mode`,
+  `the big frame buffer region is 15 MiB`, `[CARD] looked for declaration ROMs in the card's root (68 ms)`,
+  `declaration ROM: aurora68-se.declrom from the card's root taken (the HDMI screen 2560x1440: the file's
+  screen is rewritten for it)`, `slot $A's screen rewritten for 2560x1440, 6 depths`, `VideoCore read back:
+  physical 2560x1440, ..., depth 16, pitch 5120, ...: as asked`, `two screens: ... (15 MiB); VideoCore
+  2560x1440 x16 pitch 5120 ...: the firmware's own buffer, kept`. PiScrn saw the new size, rewrote the
+  arrangement and restarted; the second start reached the Finder with both screens active, the HDMI one
+  at (512,0)-(3072,1440) in millions (`/state`), the Finder's desktop and PiColor on it
+  (`docs/img/se-hdmi-2560x1440-millions-picolor.png`). "PiDepth HDMI N", double-clicked on the SE's
+  screen through the remote control, took the HDMI screen to 8, 4, 2, 1, 16 and 32 bits in turn, each
+  within six seconds; 256 colours with PiColor in front is `docs/img/se-hdmi-2560x1440-256-picolor.png`.
+  QEMU's frame took 44 to 50 ms of core 3 (TCG on the host, not a Pi), and the pacing held it to 63-72
+  frames in five seconds.
+- *1366 by 768*, the same container and card: rewritten for 1366x768, rowBytes 172, 344, 684, 1368, 2732,
+  5464 for the six depths (the heartbeat), 1 and 2 bits in the window at $F9988000 (24-bit reachable), the
+  rest at $90000000; every depth reached; the Mac's own frame (`docs/img/se-hdmi-1366x768-thousands-picolor.png`,
+  thousands) and the VideoCore buffer as the kernel wrote it (the remote's `--hdmi` picture) both right.
+  QEMU's own screendump of that buffer comes out sheared, because its display takes a different stride
+  for a 2732-byte row than the 2732 its mailbox reports; a Pi's firmware reports the pitch its scan-out
+  uses, and the kernel writes by the reported pitch.
+- *2048 by 1152*: rewritten, the Finder and PiColor in millions (`docs/img/se-hdmi-2048x1152-millions-picolor.png`).
+- *1024 by 768 with its own file and no card* (the regression): `psmac-se-1024x768.declrom from the
+  container taken (the HDMI screen 1024x768, the file's own size)`, `kept at 1024x768`, the card's absence
+  costing 1.55 s of the boot (`the card does not answer`); PiColor in millions, 144 frames in five
+  seconds, as before.
+- *The solo board at 2560 by 1440* from the plain 640 by 480 `psmac.declrom` through semihosting:
+  `slot $9's screen rewritten for 2560x1440 ... (the file described 640x480)`, a new 32-bit VideoCore
+  buffer (`depth 32, pitch 10240: as asked`), plain "PiDepth N" through 1, 2, 4, 8, 16 and 32 bits, the
+  Finder and PiColor in millions (`docs/img/solo-2560x1440-millions.png`).
+- *A release's card*: with `aurora68-wifionly.declrom` (no screen) listed before `aurora68-wifi.declrom`
+  in the card's root and no declaration ROM in the container, the kernel took `aurora68-wifi.declrom`.
+
+Not seen on hardware: the monitor's 30 Hz mode itself, the firmware's frame buffer at 2560 by 1440 within
+`gpu_mem=64`, the conversion's real cost on a Pi 3 (the heartbeat's `VideoCore N frames in 5 s, longest U
+us` line will say), and the early card look on the real sdhost controller (it is the code card_start
+always ran, run earlier and on core 0).
+
 ## Colour (17 November, 01:30)
 PiColor (`mac/picolor.s`) opens a colour window on the Pi's screen and paints twelve hues at full
 and half strength, the primaries and a sixteen-step grey ramp with RGBForeColor and PaintRect.

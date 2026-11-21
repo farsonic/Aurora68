@@ -52,7 +52,7 @@ What is in the zip
   aurora68-512x342.declrom   the slot-9 declaration ROM for the SE's screen size: PiDisk,
                          Ethernet, WiFi, input and video drivers for the Macintosh
   aurora68.declrom       the same for a 640 by 480 second screen (the IIci testbed); and
-  aurora68-WxH.declrom   one per larger HDMI screen size, 800x600 up to 1920x1200 (not for the
+  aurora68-WxH.declrom   one per larger HDMI screen size, 800x600 up to 2560x1440 (not for the
                          SE's screen yet)
   aurora68-se-WxH.declrom    the SE with two screens: its own and HDMI at WxH (below, "Two screens")
   aurora68-wifionly.declrom   the WiFi as the only network card (MacTCP then takes the WiFi)
@@ -176,13 +176,18 @@ Setting up the SD card (a Pi 3B in an SE)
 Two screens: the SE's and HDMI
 ------------------------------
 Once the SE's own screen shows the Finder, HDMI can be a second screen beside it (any size up to
-1920 x 1200, up to millions of colours) instead of the log or a copy of the SE's picture:
-  1. In the container, aurora68-se-WxH.declrom for your monitor's size (e.g.
-     aurora68-se-1024x768.declrom) instead of aurora68-512x342.declrom.
+2560 x 1440, up to millions of colours) instead of the log or a copy of the SE's picture:
+  1. In the container, aurora68-se.declrom instead of aurora68-512x342.declrom. It serves every HDMI
+     size: the kernel fits its screen to the HDMI mode of config.txt at every start, so the container
+     need not be rebuilt for another monitor (aurora68-se-WxH.declrom, one per size, still work). A
+     .declrom file in the card's root is taken before the container's: copy a new one there to
+     update the Mac's drivers, and remove old ones.
   2. config.txt: hdmi_group=2 and the hdmi_mode of that size (16 = 1024 x 768, 9 = 800 x 600,
-     82 = 1920 x 1080, 69 = 1920 x 1200); keep gpu_mem=64.
-  3. cmdline.txt: take out mac.console=hdmi and add mac.screen=WxH, e.g.
-     "enable_cache debug mac.board=se bt=off mac.screen=1024x768".
+     82 = 1920 x 1080, 69 = 1920 x 1200); keep gpu_mem=64. For 2560 x 1440 (30 Hz, the most a Pi 3
+     drives at that size): hdmi_mode=87, hdmi_cvt=2560 1440 30 3 0 0 1, max_framebuffer_width=2560
+     and max_framebuffer_height=1440, with aurora68-se-2560x1440.declrom and mac.screen=2560x1440.
+  3. cmdline.txt: take out mac.console=hdmi; the size is config.txt's (mac.screen=WxH only to
+     differ from it), e.g. "enable_cache debug mac.board=se bt=off".
   4. Copy PiScrn (on the Aurora68 disk image, or Mac/PiScrn.bin) onto the System Folder. At the next
      start it arranges the two screens (the SE's main, HDMI to its right) and restarts the Mac once.
   5. Millions of colours need 32-bit addressing: Memory control panel, On, restart, then Millions

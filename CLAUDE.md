@@ -140,9 +140,10 @@ takes a screenshot every ten seconds into `mame/snapFS/maciici_ps/`. `PSMAC_RAM`
 is the Mac's memory. Useful kernel options (all in `docs/09`): `mac.inputtest=`, `mac.inputabout=`,
 `mac.inputwifi=`, `mac.inputdrag=` (scripted mouse and keyboard, there is no real input in QEMU),
 `mac.wifisim=SSID:PASSWORD` with `mac.wifinet=BASE` (a simulated WiFi radio), `mac.peek=ADDR,LEN`
-(dump Mac memory at each heartbeat), `mac.scsitrace=`, `mac.screen=WxH` with the matching
-`mac.declrom=$PWD/mac/build/psmac-WxH.declrom` (a larger second screen; the 'scrn' resource's
-rectangle must agree, docs/09 "Two screens"), `mac.vcswap=0|1` (red/blue order on the Pi's screen).
+(dump Mac memory at each heartbeat), `mac.scsitrace=`, `mac.screen=WxH` (a larger second screen;
+the kernel rewrites any declaration ROM's screen for it, docs/10 "Any size"; the 'scrn' resource's
+rectangle must agree, docs/09 "Two screens"; `QEMU_EXTRA="-global bcm2835-fb.xres=W -global
+bcm2835-fb.yres=H"` starts QEMU's VideoCore at that size instead, as config.txt's HDMI mode does), `mac.vcswap=0|1` (red/blue order on the Pi's screen).
 `tools/vcshot.py out.png` photographs the
 Pi's own screen (the second display) through QEMU's monitor socket. The remote control (docs/13)
 drives the Mac from the host: `remote=on remote.token=T` with `PINET_KERNEL=18068 python3

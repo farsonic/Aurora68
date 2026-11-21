@@ -354,7 +354,7 @@ static void crc_init(void)
 }
 static uint32_t crc_update(uint32_t c, const uint8_t *p, uint32_t n) { while (n--) c = crc_table[(c ^ *p++) & 0xff] ^ (c >> 8); return c; }
 
-#define PNG_MAXW 2048
+#define PNG_MAXW 2560                                    /* the widest screen, 2560 x 1440 (2048 until 20 November 2026) */
 #define PNG_OUT  40960                                   /* one band's chunk: rows up to 16 KB raw, at worst 9/8 of it */
 static struct {
     int active, conn;

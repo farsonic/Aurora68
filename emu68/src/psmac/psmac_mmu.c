@@ -104,8 +104,9 @@ static inline uint32_t norm_phys(uint32_t p)
     return p;
 }
 static uintptr_t slot_win_phys, slot_declrom_phys, slot_fb_phys;   /* Pi RAM behind slot $9 (0 until set) */
+static uint32_t slot_fb_size;                                      /* the big frame buffer's size: 9 or 15 MiB (psmb.h) */
 void psmac_mmu_set_slot(uintptr_t w, uintptr_t d) { slot_win_phys = w; slot_declrom_phys = d; }
-void psmac_mmu_set_fb(uintptr_t f) { slot_fb_phys = f; }       /* the second display's big frame buffer (psmb.h) */
+void psmac_mmu_set_fb(uintptr_t f, uint32_t size) { slot_fb_phys = f; slot_fb_size = size; }   /* the second display's big frame buffer */
 /* slot $A, the SE board's HDMI card (psmb.h, "two screens"): its declaration ROM lives in the slot-9
    window's top 16 KiB; the rest of slot $A's space is empty, as before. 0: no such card (every other
    board, and mac.hdmi=mirror or log, where slot $A stays empty for the Slot Manager) */
@@ -125,7 +126,7 @@ static inline uintptr_t pi_phys(uint32_t p)
     if (slot2_rom_phys && p >= PSMB_DECLROM2_PHYS && p < PSMB_DECLROM2_PHYS + PSMB_DECLROM2_SIZE) return slot2_rom_phys + (p - PSMB_DECLROM2_PHYS);
     /* the second display's big frame buffer, in the slot's super slot space ($90000000): the ROM's
        32-bit tables map $40000000-$FBAFFFFF one to one, so logical and physical agree there */
-    if (slot_fb_phys && p >= PSMB_FB_BIG_PHYS && p < PSMB_FB_BIG_PHYS + PSMB_FB_BIG_SIZE) return slot_fb_phys + (p - PSMB_FB_BIG_PHYS);
+    if (slot_fb_phys && p >= PSMB_FB_BIG_PHYS && p < PSMB_FB_BIG_PHYS + slot_fb_size) return slot_fb_phys + (p - PSMB_FB_BIG_PHYS);
     return 0;
 }
 /* Mac physical pages that must be read-only for the 68k: ROM, declaration ROM, write-through
@@ -222,7 +223,7 @@ static void build_identity(void)
     for (uint32_t p = 0; p < PSMB_DECLROM_SIZE; p += 4096) l2p[(PSMB_DECLROM_PHYS + p) >> 12] = (PSMB_DECLROM_PHYS + p) | L2P_VALID | L2P_WP;
     if (slot2_rom_phys)
         for (uint32_t p = 0; p < PSMB_DECLROM2_SIZE; p += 4096) l2p[(PSMB_DECLROM2_PHYS + p) >> 12] = (PSMB_DECLROM2_PHYS + p) | L2P_VALID | L2P_WP;
-    for (uint32_t p = 0; p < PSMB_FB_BIG_SIZE; p += 4096) l2p[(PSMB_FB_BIG_PHYS + p) >> 12] = (PSMB_FB_BIG_PHYS + p) | L2P_VALID;   /* the big frame buffer */
+    for (uint32_t p = 0; p < slot_fb_size; p += 4096) l2p[(PSMB_FB_BIG_PHYS + p) >> 12] = (PSMB_FB_BIG_PHYS + p) | L2P_VALID;   /* the big frame buffer */
 }
 
 /* ---- 68030 table walk ---- */

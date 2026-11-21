@@ -2620,6 +2620,61 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      write; if the CPLD or the SE's interrupt lines are slower than that read, level 1 could stand
      stale the same way. Level-1 "taken again at once" or "nested" on the hardware would show it.
 
+77. **2560 by 1440, any HDMI size, and declaration ROMs from the card (20-21 November).** The user's new
+   monitor is a Dell UP2716D, 2560 by 1440; their SE had run two screens on hardware at 1024 by 768 and
+   1920 by 1200 (item 73, the se9 kernel). docs/10, "2560 by 1440" and "Any size", is the long form.
+   - *The monitor.* 60 Hz at that size needs about 241 MHz of pixel clock, beyond a Pi 3's HDMI; 30 Hz
+     with CVT reduced blanking is about 121 MHz: `hdmi_group=2`, `hdmi_mode=87`, `hdmi_cvt=2560 1440 30 3 0
+     0 1`, `max_framebuffer_width=2560`, `max_framebuffer_height=1440`. Whether the monitor accepts it was
+     being checked by the user while this was built.
+   - *What stopped at 1920 by 1200.* `mac.screen=` (512..1920 by 342..1200); the big region behind
+     $90000000, 9 MiB, where 2560 x 4 x 1440 needs 14.1 MiB; the declaration ROM size lists; the remote's
+     PNG width (2048). The super slot space has 256 MiB, so the region's address range was never the limit,
+     only the Pi RAM behind it: it now grows with the screen (9 MiB up to 1920 by 1200 as before, then the
+     32-bit frame rounded up to a MiB, 15 MiB here, 32 MiB at most), so millions fit and nothing was capped
+     at thousands. QuickDraw's rowBytes limit ($3FFE) holds 2560 at 32 bits (10,240). The firmware's 16-bit
+     buffer is 7.4 MB (4.6 at 1920 by 1200) inside `gpu_mem=64`; a 32-bit one (`mac.vcdepth=32`) adds
+     14.7 MB, and `gpu_mem=128` is the first thing to try if its read-back says `NOT what was asked`.
+   - *The copy.* Scaled from item 49's 20 ms for a 1920 by 1200 frame in millions, a 2560 by 1440 one is
+     some 22 ms of core 3 into the 16-bit buffer and 33 ms into a 32-bit one: at 30 a second, most of the
+     core that also runs the disk, the network and the remote. The conversion now measures its bands and
+     starts the next frame no sooner than the last one's busy time after it ended (half the core at most);
+     frames under 1/60 s are unaffected. The 32- and 16-bit loops into the common buffer depths lost their
+     per-pixel branches. The heartbeat's display line gained `VideoCore N frames in 5 s, longest U us in B
+     bands`, the number a Pi 3 has to supply.
+   - *Any size* (the user's next request, the same evening: a card that follows config.txt). The kernel
+     rewrites the video sResource of the HDMI card ($80, slot $A) or of a one-screen card ($84, slot 9) in
+     Pi RAM before the Slot Manager reads it: each mode's VPBlock gets the screen's bounds, its rowBytes
+     and the vpBaseOffset of its place by the display block's own rule (one function, two users), a depth
+     that fits nowhere leaves the list, and the CRC is made again. With no `mac.screen=` the size is the
+     firmware's. Checked on the host first: a harness compiling the kernel's `declrom_resize` turned a 1024
+     by 768 file into slot $A ROMs byte for byte equal to mkdeclrom.py's own for 640x480, 1366x768, 1920x1200,
+     2048x1152 and 2560x1440, and at 4096 by 2160 left out millions (16,384-byte rows) with a valid CRC.
+     Rows are padded to a long (1366 at one bit: 172 bytes, not 171); every older size is a multiple of 32
+     wide and no existing file changed. The 1-, 2- and 4-bit conversion stopped writing up to seven pixels
+     past a row that ends inside a byte. `psmac-se.declrom` (`aurora68-se.declrom`) is the one file a
+     container needs; exact-size files are still preferred.
+   - *Declaration ROMs from the card's root*, taken before the container's on a tie. The ROM must be in
+     place before the 68k's first instruction, and the card has been core 3's alone (psmac_card.c): the one look
+     is made on core 0 before psmac_alice_init starts core 3, and card_start takes over the mounted card.
+     Only after a container boot, since a bare-ROM testbed run would wait 1.5 s for a card; `mac.cardrom=off`
+     ignores the card. A release's card root holds every declaration ROM of the release, among them the
+     screenless `aurora68-wifionly.declrom`, which the old rule ("the first unsized file") could have taken
+     for a size no file names, leaving the Mac without a screen: a chosen file is now looked into, and one
+     without a video sResource goes last.
+   - *PiDepth HDMI N* sets the second screen's depth (plain PiDepth sets the main screen's, the SE's one bit).
+   - *Tested* (MAME `macse_ps`, System 7.1, QEMU's VideoCore started at the HDMI size with
+     `-global bcm2835-fb.xres/yres`, no `mac.screen=`): 2560 by 1440 from the card's `aurora68-se.declrom`
+     over the container's 1024 by 768 file, PiScrn's restart, the Finder and PiColor in millions, all six
+     depths through PiDepth HDMI; 1366 by 768 at all six depths (rowBytes 172 ... 5464); 2048 by 1152 in
+     millions; 1024 by 768 from its own file without a card, unchanged; the solo board at 2560 by 1440 from
+     the 640 by 480 file, all six depths into a 32-bit VideoCore buffer; a card with `aurora68-wifionly`
+     listed first, where `aurora68-wifi` was taken. QEMU's screendump shears a 1366-wide 16-bit buffer (its
+     display's stride is not the 2732 its mailbox reports); the buffer itself, read by the remote, is right.
+   - *Not verified on hardware:* the 30 Hz mode on the UP2716D, the firmware's 2560 by 1440 buffer within
+     `gpu_mem=64`, the conversion's cost on a Pi 3, the early card look on the real sdhost controller (the
+     same code card_start always ran, run sooner, on core 0).
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

@@ -123,19 +123,25 @@ def add_video(rom, rid, video, drhw, hwdev, W, H, win, win_size, one_bit_only=Fa
     # (psmac_display.c, the same rule): a mode of at most 8 bits that fits the window's 512 KiB
     # stays there (offset 0, reachable in 24-bit mode too); anything larger lives in the big
     # region at $90000000, 9 MiB of Pi RAM in the slot's super slot space, offset $90000000 -
-    # $F9980000 (the sum wraps round to the right address in 32 bits). Every size mac.screen
-    # accepts (up to 1920 x 1200) fits there at 32 bits; a larger one is refused. Without the offset
+    # $F9980000 (the sum wraps round to the right address in 32 bits). Every size up to 1920 x 1200
+    # fits there at 32 bits. A larger screen (2560 x 1440, 20 November 2026) gets a region of its
+    # 32-bit frame rounded up to a MiB, at most 15 MiB (psmb.h, PSMB_FB_BIG_MAX; the kernel sizes it
+    # the same way at start-up, psmac_setup_memory); a mode that would not fit is refused. Without the offset
     # the first 32-bit boot drew into the window and past it while the Pi showed the big region:
     # a grey screen (docs/08, item 27). Until 18 November the big region was 8 MiB at $F9100000,
     # too small for 1920 x 1200 at 32 bits (docs/10, "1920 by 1200"). The SE card's two screens
     # share the window's 512 KiB (win, win_size: psmb.h).
-    BIG, BIG_SIZE = 0x90000000, 0x900000        # psmb.h: PSMB_FB_BIG_PHYS, PSMB_FB_BIG_SIZE
+    # The kernel rewrites these modes for the screen size in use at start-up (psmac_bus.c,
+    # declrom_resize, 20 November 2026), by the same rules, so a file's own size matters only when it
+    # is the size in use; the rules are kept here so that the file is right on its own as well.
+    BIG = 0x90000000                            # psmb.h: PSMB_FB_BIG_PHYS
+    BIG_SIZE = min(max(0x900000, (W * H * 4 + 0xFFFFF) & ~0xFFFFF), 0x2000000)  # PSMB_FB_BIG_SIZE .. PSMB_FB_BIG_MAX
     for n, depth in enumerate((1, 2, 4, 8, 16, 32)):
         if one_bit_only and depth > 1:
             break
         m = type(vs)(0)
         direct = depth >= 16
-        rowbytes = (W * depth + 7) // 8
+        rowbytes = ((W * depth + 7) // 8 + 3) & ~3  # psmb.h, psmb_rowbytes: whole bytes, then a long
         in_window = depth <= 8 and rowbytes * H <= win_size
         if not in_window and (one_bit_only or rowbytes * H > BIG_SIZE):
             sys.exit(f"mkdeclrom: {W} x {H} at {depth} bits needs {rowbytes * H} bytes, the big region has {BIG_SIZE}")

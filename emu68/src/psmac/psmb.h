@@ -94,17 +94,39 @@ struct psmb_display {
        and its row pitch; the driver answers QuickDraw from these tables. */
     uint32_t mode_base[8];                   /* Pi: 68k address of the frame buffer for mode 128+i (0 = no such mode) */
     uint32_t mode_rowbytes[8];               /* Pi: bytes per row for mode 128+i */
-    uint32_t big_base, big_size;             /* Pi: the big frame buffer region (PSMB_FB_BIG_PHYS, 9 MiB) */
+    uint32_t big_base, big_size;             /* Pi: the big frame buffer region (PSMB_FB_BIG_PHYS, 9 or 15 MiB) */
     uint32_t vc_width, vc_height, vc_depth;  /* Pi: the VideoCore frame buffer behind it */
 };
 /* the big frame buffer region: 9 MiB at the bottom of slot 9's super slot space ($90000000-$9FFFFFFF,
-   the 256 MiB NuBus gives every slot in 32-bit space), enough for the largest mac.screen, 1920 x 1200,
-   at 32 bits (8.8 MiB). Pi RAM carved next to the window, 32-bit addressing only. Until 18 November
-   it was 8 MiB at $F9100000 inside the slot's 16 MiB space, which the window, its alias at $F9900000
-   and the declaration ROM leave no room to grow (docs/10, "1920 by 1200"). The block's layout did not
-   change with the move, so its version stays 2. */
+   the 256 MiB NuBus gives every slot in 32-bit space), enough for 1920 x 1200 at 32 bits (8.8 MiB).
+   Pi RAM carved next to the window, 32-bit addressing only. Until 18 November it was 8 MiB at
+   $F9100000 inside the slot's 16 MiB space, which the window, its alias at $F9900000 and the
+   declaration ROM leave no room to grow (docs/10, "1920 by 1200"). The block's layout did not
+   change with the move, so its version stays 2.
+   2560 x 1440 (20 November 2026, docs/10 "2560 by 1440"): 2560 x 4 x 1440 is 14,745,600 bytes, more than
+   the 9 MiB. The super slot space has 256 MiB, so the address range is no limit; the Pi RAM behind it
+   is carved once at start-up and taken from what the Mac and the disk images would get, so it grows
+   only when the screen needs it: 9 MiB (PSMB_FB_BIG_SIZE) for every size up to 1920 x 1200, as before,
+   and the screen's 32-bit frame rounded up to a MiB, at most PSMB_FB_BIG_MAX, for a larger one
+   (psmac_setup_memory; the size in use is psmac_fb_big_size(), and the display block's big_size):
+   15 MiB at 2560 x 1440. The same day the HDMI screen became any size the firmware sets (the
+   declaration ROM is rewritten for it at start-up, docs/10 "Any size"), so the ceiling is 32 MiB,
+   which holds 3840 x 2160 at 32 bits; a depth whose frame would not fit is left out of the ROM. */
 #define PSMB_FB_BIG_PHYS     0x90000000u
-#define PSMB_FB_BIG_SIZE     0x00900000u
+#define PSMB_FB_BIG_SIZE     0x00900000u     /* the region for screens up to 1920 x 1200 */
+#define PSMB_FB_BIG_MAX      0x02000000u     /* the most it grows to: 32 MiB, 3840 x 2160 at 32 bits */
+/* the screen sizes the kernel takes (mac.screen=, or the firmware's HDMI mode): the SE's own at the
+   bottom, at the top as wide as QuickDraw's coordinates and the ROM's 16-bit bounds comfortably allow */
+#define PSMB_SCREEN_MIN_W    512u
+#define PSMB_SCREEN_MIN_H    342u
+#define PSMB_SCREEN_MAX_W    4096u
+#define PSMB_SCREEN_MAX_H    2560u
+#define PSMB_ROWBYTES_MAX    0x3FFEu         /* QuickDraw's limit on a pixel map's rowBytes: a depth with wider rows is left out */
+/* A mode's row pitch: its pixels rounded up to whole bytes, then to a long. QuickDraw needs an even
+   rowBytes, and Apple's cards keep rows long-aligned, which 32-bit QuickDraw's blits like; every width
+   that is a multiple of 32 (all the sizes before 20 November 2026) comes out as it always did, and
+   1366 at one bit gets 172 bytes rather than 171. tools/mac/mkdeclrom.py applies the same rule. */
+static inline uint32_t psmb_rowbytes(uint32_t w, uint32_t depth) { return ((w * depth + 7) / 8 + 3) & ~3u; }
 
 /* ---- two screens on the SE board (docs/10, "Two screens on the SE", 20 November 2026) -------------
    Two cards. Slot 9 is the card it always was, its video sResource ($84) now the SE's own 512 x 342

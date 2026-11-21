@@ -21,16 +21,24 @@ enable_uart=1                 # the kernel's log on the serial pins (115200 8N1)
 # no dtoverlay=disable-bt: Bluetooth has the PL011 (GPIO 30-33) and the kernel moves its log to the
 # mini UART on GPIO 14/15 the moment Bluetooth starts (same pins, same 115200 8N1)
 
-# The Pi's HDMI output is the Macintosh's second screen (640 x 480, 256 colours). The
-# firmware sets the HDMI mode at power-on and the kernel shows the Mac's frame buffer in it;
-# 640 x 480 at 60 Hz maps one pixel to one. A larger mode is scaled by the firmware.
+# The Pi's HDMI output is the Macintosh's second screen, at the size of the HDMI mode below. The
+# firmware sets the HDMI mode at power-on and the kernel shows the Mac's frame buffer in it, one
+# pixel to one (until 20 November 2026 a mode larger than the declaration ROM's size was scaled).
 hdmi_force_hotplug=1
 hdmi_group=2                  # DMT (monitor) modes
 hdmi_mode=4                   # 640 x 480, 60 Hz. 9 = 800 x 600, 16 = 1024 x 768, 82 = 1080p,
                               # 69 = 1920 x 1200 (60 Hz, reduced blanking; 68 is too fast for a Pi 3)
-# For a larger mode put mac.screen=WxH (e.g. mac.screen=1920x1200) in cmdline.txt and the declaration
-# ROM of that size (aurora68-1920x1200.declrom) in the container. Every size up to 1920 x 1200 offers
+# The Mac's screen takes the size of this mode (the kernel fits the declaration ROM to it at every
+# start; mac.screen=WxH in cmdline.txt only to differ from it), so any declaration ROM in the container
+# serves every mode: aurora68-se.declrom for the SE's two screens. Every size up to 2560 x 1440 offers
 # millions of colours in Monitors once 32-bit addressing is on; gpu_mem=64 below is enough for it.
+# 2560 x 1440 has no mode a Pi 3 can drive at 60 Hz (241 MHz of pixel clock): use the custom mode at
+# 30 Hz with reduced blanking (about 121 MHz), with these five lines in place of hdmi_mode= above:
+#   hdmi_group=2
+#   hdmi_mode=87
+#   hdmi_cvt=2560 1440 30 3 0 0 1
+#   max_framebuffer_width=2560
+#   max_framebuffer_height=1440
 disable_overscan=1
 hdmi_drive=2                  # HDMI, not DVI: the Mac's sound goes to the monitor's loudspeakers (mac.audio=hdmi,
                               # the default). The firmware otherwise picks DVI for many monitors, and DVI has no sound

@@ -25,6 +25,11 @@
  *                  dropped or replaced, every other byte kept, written only when the result fits
  *                  the file's first cluster, and read back. A mistake here must not stop the Pi
  *                  booting. config.txt is never written.
+ *   *.declrom      read, never written: a declaration ROM in the root is offered to psmac_bus.c
+ *                  before the 68k starts, beside the container's, and wins a tie (20 November
+ *                  2026, docs/10 "Declaration ROMs from the card"): a new Mac-side driver is then a
+ *                  file copied to the card, not a container rebuilt. That one look happens on core 0
+ *                  (psmac_card_declroms), the only time this file runs anywhere but core 3.
  * FAT16 and FAT32, 512-byte sectors, the first FAT partition of an MBR card (or a card with no
  * partition table). Options: mac.card=off (do not touch the card), mac.card=ro (read only:
  * pairings are loaded, nothing is written).
@@ -1227,9 +1232,13 @@ void psmac_card_poll(void)
         udelay((uint32_t)stall * 1000000u); stall = 0;
     }
 }
+/* the early look for declaration ROMs (below): the card was initialised and mounted on core 0 before
+   core 3 began, and card_start takes its results rather than resetting the card a second time */
+static int early_done, early_init_rc, early_mount_rc;
 static void card_poll_locked(void)
 {
-    if (sd.state == 0) {
+    if (sd.state == 0 || early_done == 1) {
+        early_done = 2;
         card_start();
         __atomic_store_n(&scan_done, 1, __ATOMIC_RELEASE);
         return;
@@ -1263,10 +1272,10 @@ static void card_start(void)
     if (o && o[0] == 'o' && o[1] == 'f') { sd.state = -2; pair_state = -1; kprintf("[CARD] off (mac.card=off)\n"); return; }
     if (alice_pi_is_2711()) { sd.state = -1; pair_state = -1; kprintf("[CARD] the Pi 4's card controller is not supported yet: nothing saved\n"); return; }
     sd.ro = o && o[0] == 'r' && o[1] == 'o';
-    int e = sd_init();
+    int e = early_done ? early_init_rc : sd_init();
     if (e) { sd.state = -1; pair_state = -1; kprintf("[CARD] the SD card does not answer on the sdhost controller (%d, status %x)\n", e, sd.last_hsts); return; }
     sd.state = 1;
-    e = fs_mount();
+    e = early_done ? early_mount_rc : fs_mount();
     if (e) { sd.state = -1; pair_state = -1; kprintf("[CARD] no FAT16/FAT32 partition found (%d)\n", e); return; }
     kprintf("[CARD] %s card, FAT%d at sector %u, %u-byte clusters%s\n", sd.ccs ? "SDHC/SDXC" : "SDSC", fs.fat32 ? 32 : 16, fs.part, fs.spc * 512u, sd.ro ? ", read only (mac.card=ro)" : "");
     { extern int psmac_board_se, psmac_board_solo;
@@ -1284,6 +1293,77 @@ static void card_start(void)
     { static const char test[] = "# mac.cardtest\nbt.dev=001122334455:00112233445566778899aabbccddeeff:2\n";
       const char *t = psmac_option("mac.cardtest"); if (t && t[0] == '1') psmac_card_save_pairings(test, sizeof test - 1); }
 }
+/* ---- declaration ROMs in the card's root ------------------------------------------------------
+   psmac_bus.c asks once, on core 0 in psmac_setup_memory, before the Slot Manager can read slot 9 and
+   before core 3 starts (psmac_alice_init comes after): the card is initialised and mounted here, and
+   card_start later takes that over. Only for a Pi that booted from a container (on hardware it always
+   does; psmac_bus.c decides), so that a testbed run with no card does not wait for a card that is not
+   there. list gets each root file whose name ends in .declrom (its long name when it has one), at
+   most 64 KiB; read then fetches the one psmac_bus.c chose. */
+struct dr_ctx { void (*cb)(const char *name, uint32_t size); char lfn[128]; int lfn_ok; };
+static int declrom_sector(uint32_t lba, void *vctx)
+{
+    struct dr_ctx *x = vctx;
+    if (sd_read(lba, sec)) return -1;
+    for (int i = 0; i < 16; i++) {
+        const uint8_t *e = sec + 32 * i;
+        if (e[0] == 0) return 2;                                       /* the end of the directory */
+        if (e[0] == 0xe5) { x->lfn_ok = 0; continue; }
+        if (e[11] == 0x0f) {                                           /* a long-name piece, as in find_sector */
+            unsigned seq = e[0] & 0x1f, base = (seq - 1) * 13;
+            if (e[0] & 0x40) { for (unsigned k = 0; k < sizeof x->lfn; k++) x->lfn[k] = 0; x->lfn_ok = 1; }
+            static const uint8_t at[13] = { 1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30 };
+            for (unsigned k = 0; k < 13; k++) { unsigned ch = le16(e + at[k]); if (base + k < sizeof x->lfn - 1) x->lfn[base + k] = (char)(ch == 0xffff ? 0 : ch); }
+            continue;
+        }
+        if (e[11] & 0x18) { x->lfn_ok = 0; continue; }                 /* volume label, directory */
+        char sn[13]; unsigned n = 0;
+        for (int k = 0; k < 8 && e[k] != ' '; k++) sn[n++] = (char)e[k];
+        if (e[8] != ' ') { sn[n++] = '.'; for (int k = 8; k < 11 && e[k] != ' '; k++) sn[n++] = (char)e[k]; }
+        sn[n] = 0;
+        const char *shown = x->lfn_ok ? x->lfn : sn;
+        uint32_t size = le32(e + 28);
+        x->lfn_ok = 0;
+        if (ends_ci(shown, ".declrom") && !(shown[0] == '.' && shown[1] == '_') && size >= 20 && size <= PSMB_DECLROM_SIZE)
+            x->cb(shown, size);
+    }
+    return 0;
+}
+int psmac_card_declroms(void (*cb)(const char *name, uint32_t size))
+{
+    if (!early_done) {
+        const char *o = psmac_option("mac.card");
+        if ((o && o[0] == 'o' && o[1] == 'f') || alice_pi_is_2711()) return -1;   /* card_start says why */
+        uint64_t t0 = cnt();
+        early_init_rc = sd_init();
+        if (!early_init_rc) { sd.state = 1; early_mount_rc = fs_mount(); }
+        early_done = 1;
+        kprintf("[CARD] looked for declaration ROMs in the card's root (%u ms): %s\n", (uint32_t)((cnt() - t0) * 1000u / frq()),
+                early_init_rc ? "the card does not answer" : early_mount_rc ? "no FAT partition" : "the card is mounted");
+    }
+    if (early_init_rc || early_mount_rc) return -1;
+    struct dr_ctx x; x.cb = cb; x.lfn_ok = 0;
+    root_walk(declrom_sector, &x);
+    return 0;
+}
+/* the file's bytes into buf (at most max): its length, or -1 */
+int32_t psmac_card_read_file(const char *name, uint8_t *buf, uint32_t max)
+{
+    struct cfile f;
+    if (early_init_rc || early_mount_rc || sd.state != 1 || file_find(name, &f) || f.clus < 2 || f.size > max) return -1;
+    uint32_t c = f.clus, got = 0;
+    while (got < f.size && c >= 2 && !eoc(c)) {
+        for (uint32_t i = 0; i < fs.spc && got < f.size; i++) {
+            if (sd_read(clus_lba(c) + i, sec)) return -1;
+            uint32_t k = f.size - got < 512 ? f.size - got : 512;
+            for (uint32_t j = 0; j < k; j++) buf[got + j] = sec[j];
+            got += k;
+        }
+        c = fat_get(c);
+    }
+    return got == f.size ? (int32_t)got : -1;
+}
+
 void psmac_card_report(void)
 {
     if (sd.state == 0 || sd.state == -2) return;

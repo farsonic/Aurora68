@@ -67,7 +67,8 @@ done
 case "$SCREEN" in
 640x480) MODE=4 ;; 800x600) MODE=9 ;; 1024x768) MODE=16 ;; 1280x1024) MODE=35 ;; 1280x720) MODE=85 ;;
 1920x1080) MODE=82 ;; 1920x1200) MODE=69 ;; 512x342) MODE=4 ;;
-*) die "no DMT mode known for $SCREEN (the declaration ROMs come in 512x342 640x480 800x600 1024x768 1280x720 1280x1024 1920x1080 1920x1200)" ;;
+2560x1440) MODE=87 ;;   # no DMT mode a Pi 3 can drive: the custom CVT mode, 30 Hz reduced blanking (below; docs/10)
+*) die "no DMT mode known for $SCREEN (the declaration ROMs come in 512x342 640x480 800x600 1024x768 1280x720 1280x1024 1920x1080 1920x1200 2560x1440)" ;;
 esac
 
 # ---- the kernel, from a clean worktree at a pushed commit --------------------------------------
@@ -114,11 +115,18 @@ if [ $KONLY = 0 ]; then
 	cp "$MB/psmac.declrom" "$OUT/aurora68.declrom"
 	cp "$MB/psmac_wifi.declrom" "$OUT/aurora68-wifionly.declrom"
 	cp "$MB/psmac_wifi_video.declrom" "$OUT/aurora68-wifi.declrom"
+	cp "$MB/psmac-se.declrom" "$OUT/aurora68-se.declrom"
 	for f in "$MB"/psmac-*x*.declrom; do b=$(basename "$f"); cp "$f" "$OUT/aurora68-${b#psmac-}"; done
 	# config.txt: the release's, with the HDMI mode of the bench's screen
 	sed -E "s/^hdmi_mode=[0-9]+ +#.*/hdmi_mode=$MODE                  # $SCREEN (this test set). 4 = 640 x 480, 9 = 800 x 600, 16 = 1024 x 768, 82 = 1080p,/" \
 		"$K/src/release/config.txt" > "$OUT/config.txt"
 	grep -q "^hdmi_mode=$MODE " "$OUT/config.txt" || die "config.txt's hdmi_mode line has changed shape; set it by hand"
+	# 2560 x 1440: mode 87 is the custom mode hdmi_cvt describes, 30 Hz with reduced blanking (about
+	# 121 MHz; 60 Hz would need 241 MHz, beyond a Pi 3), and the firmware's frame buffer may not be
+	# that large unless it is told so
+	if [ "$SCREEN" = 2560x1440 ]; then
+		sed -i -E "/^hdmi_mode=87 /a hdmi_cvt=2560 1440 30 3 0 0 1\nmax_framebuffer_width=2560\nmax_framebuffer_height=1440" "$OUT/config.txt"
+	fi
 	# cmdline.txt: one line, each option once (the kernel takes the first of a repeated
 	# mac.image=, which cost the bench an evening), the network's name and password as placeholders
 	LINE=(enable_cache "mac.board=$BOARD")

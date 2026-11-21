@@ -51,11 +51,13 @@ extern struct MemoryBlock *sys_memory;
 static uintptr_t ram_phys, rom_phys;
 static uint32_t  ram_size;
 static uintptr_t win_phys, declrom_phys;   /* slot $9 mailbox window and declaration ROM (Pi RAM) */
-void psmac_mmu_set_fb(uintptr_t f);                   /* psmac_mmu.c */
-static uintptr_t fb_big_phys;              /* the second display's big frame buffer (psmb.h) */
+void psmac_mmu_set_fb(uintptr_t f, uint32_t size);    /* psmac_mmu.c */
+static uintptr_t fb_big_phys;              /* the second display's big frame buffer (psmb.h) ... */
+static uint32_t fb_big_size = PSMB_FB_BIG_SIZE;   /* ... and its size: 9 MiB, more for a screen above 1920 x 1200 */
 static uint32_t screen_w, screen_h;        /* mac.screen=WxH: the second display's size (0: the VideoCore's) */
 static int no_declrom;                     /* no declaration ROM anywhere: said at every heartbeat, slot 9 is empty */
 uintptr_t psmac_fb_big_phys(void) { return fb_big_phys; }
+uint32_t psmac_fb_big_size(void) { return fb_big_size; }
 /* mac.hdmi= on the SE board (psmac_read_options): what the HDMI output is when the SE's own screen is
    the Mac's first one. 1 screen (the default): the Mac's second screen, at mac.screen=WxH or the
    VideoCore's own size, with a declaration ROM psmac-se-WxH; 0 mirror: the SE's picture, as before
@@ -276,7 +278,11 @@ static void psmac_read_options(void)
         tok += 11; uint32_t w = 0, h = 0;
         while (*tok >= '0' && *tok <= '9') w = w * 10 + (*tok++ - '0');
         if (*tok == 'x') { tok++; while (*tok >= '0' && *tok <= '9') h = h * 10 + (*tok++ - '0'); }
-        if (w >= 512 && w <= 1920 && h >= 342 && h <= 1200) { screen_w = w; screen_h = h; }
+        /* up to 4096 x 2560 since 20 November 2026 (1920 x 1200 before): the declaration ROM is rewritten
+           for the size (declrom_resize) and the big region grows for it (psmb.h); a depth that does not
+           fit at that size is left out */
+        if (w >= PSMB_SCREEN_MIN_W && w <= PSMB_SCREEN_MAX_W && h >= PSMB_SCREEN_MIN_H && h <= PSMB_SCREEN_MAX_H) { screen_w = w; screen_h = h; }
+        else kprintf("[PSMAC] mac.screen=%ux%u: outside %ux%u to %ux%u, not taken\n", w, h, PSMB_SCREEN_MIN_W, PSMB_SCREEN_MIN_H, PSMB_SCREEN_MAX_W, PSMB_SCREEN_MAX_H);
     }
     if ((tok = find_token(args, "mac.hdmi="))) {        /* mac.hdmi=screen|mirror|log: the SE board's HDMI output */
         tok += 9;
@@ -858,7 +864,8 @@ static int declrom_res(const char *name, uint32_t *w, uint32_t *h)
     if (i < 0) return 0;
     const char *p = name + i + 1; uint32_t a = 0, b = 0;
     while (*p >= '0' && *p <= '9') a = a * 10 + (*p++ - '0');
-    if (*p++ != 'x') return 0;
+    if (*p != 'x' && *p != 'X') return 0;                       /* X: a card's short (8.3) name is in capitals */
+    p++;
     while (*p >= '0' && *p <= '9') b = b * 10 + (*p++ - '0');
     if (!a || !b) return 0;
     *w = a; *h = b; return 1;
@@ -891,24 +898,38 @@ static int container_has_image(const uint8_t *img, uint32_t size)
     return 0;
 }
 
-/* "...-se-WxH.declrom": the SE board's two cards, slot 9 with the SE's screen and slot $A with an HDMI one of WxH */
+/* "...-se-WxH.declrom", or "...-se.declrom" (any size, since 20 November 2026): the SE board's two cards,
+   slot 9 with the SE's screen and slot $A with an HDMI one */
 static int declrom_se(const char *name)
 {
-    for (const char *p = name; *p; p++) if (p[0] == '-' && p[1] == 's' && p[2] == 'e' && p[3] == '-') return 1;
+    for (const char *p = name; *p; p++)
+        if (p[0] == '-' && (p[1] == 's' || p[1] == 'S') && (p[2] == 'e' || p[2] == 'E') && (p[3] == '-' || p[3] == '.')) return 1;
     return 0;
 }
+/* The declaration ROMs on offer: the container's (walk_container) and, since 20 November 2026, the
+   card's root (psmac_card.c, docs/10 "Declaration ROMs from the card"), which win a tie. Each is known
+   by its name: a size at the end (-WxH), "-se-" or "-se." for the SE board's two-screen file. The
+   card's are read only once one of them is chosen. */
+struct declcand { const uint8_t *p; uint32_t len, w, h; int sized, se, card, bad, novideo; char name[64]; };
+#define DECLCAND_MAX 48                     /* a release has 29 declaration ROMs; room for the card's beside the container's */
+static struct declcand dcand[DECLCAND_MAX];
+static int ndcand;
+static uint8_t card_declrom[PSMB_DECLROM_SIZE] __attribute__((aligned(16)));   /* the card's chosen one, read here */
+static void declcand_add(const char *name, const uint8_t *p, uint32_t len, int card)
+{
+    if (ndcand >= DECLCAND_MAX) return;
+    struct declcand *c = &dcand[ndcand++];
+    unsigned k = 0; while (name[k] && k < sizeof c->name - 1) { c->name[k] = name[k]; k++; } c->name[k] = 0;
+    c->p = p; c->len = len; c->card = card; c->bad = 0; c->novideo = 0;
+    c->sized = declrom_res(c->name, &c->w, &c->h);
+    c->se = declrom_se(c->name);
+    if (!c->sized) { c->w = 640; c->h = 480; }                    /* the plain ROM is mkdeclrom.py's default, 640x480 */
+}
+static void declcand_card(const char *name, uint32_t size) { declcand_add(name, 0, size, 1); }
+
 static void walk_container(const uint8_t *img, uint32_t size, struct container_result *r)
 {
     r->rom = img; r->rom_len = size; r->declrom = NULL; r->declrom_len = 0; r->declrom_sized = 0;
-    extern uint32_t fb_width, fb_height;
-    uint32_t want_w = screen_w ? screen_w : fb_width, want_h = screen_h ? screen_h : fb_height;
-    /* Which kind of card. Everywhere but the SE board: a ROM of the screen's size (psmac-WxH). On the
-       SE board the SE's screen is the first, 512 x 342: with mac.hdmi=screen the two-screen card for
-       the HDMI size (psmac-se-WxH), otherwise the one-screen 512 x 342 card (psmac-512x342) */
-    int se_board = psmac_board_se && !psmac_board_solo, want_se = se_board && psmac_hdmi_mode == 1;
-    if (se_board && !want_se) { want_w = 512; want_h = 342; }
-    struct cand { const uint8_t *p; uint32_t len, w, h; const char *name; };
-    struct cand plain = { 0, 0, 0, 0, 0 }, sized_one = { 0, 0, 0, 0, 0 }, se_one = { 0, 0, 0, 0, 0 };
     if (size < 110 || !bytes_eq(img, "070701", 6)) return;         /* a bare ROM */
     { extern void psmac_card_container(const uint8_t *, uint32_t); psmac_card_container(img, size); }
     r->rom = NULL; r->rom_len = 0;
@@ -924,15 +945,8 @@ static void walk_container(const uint8_t *img, uint32_t size, struct container_r
         if (fsize) {
             if (ends_with(base, ".rom"))          { r->rom = img + data; r->rom_len = fsize; kprintf("[PSMAC] container: ROM %s, %u bytes\n", base, fsize); }
             else if (ends_with(base, ".declrom")) {
-                /* one declaration ROM per screen size may be in the container: take the one whose name
-                   ends in the second display's WxH, else the plain one (docs/10) */
-                uint32_t w, h; int sized = declrom_res(base, &w, &h), se = sized && declrom_se(base);
-                int take = sized && se == want_se && w == want_w && h == want_h;
-                if (take) { r->declrom = img + data; r->declrom_len = fsize; r->declrom_sized = sized; }
-                if (!sized && !plain.p) { plain.p = img + data; plain.len = fsize; plain.name = base; }
-                if (sized && !se && !sized_one.p) { sized_one.p = img + data; sized_one.len = fsize; sized_one.w = w; sized_one.h = h; sized_one.name = base; }
-                if (se && !se_one.p) { se_one.p = img + data; se_one.len = fsize; se_one.w = w; se_one.h = h; se_one.name = base; }
-                kprintf("[PSMAC] container: declaration ROM %s, %u bytes%s\n", base, fsize, take ? " (taken)" : "");
+                if (fsize <= PSMB_DECLROM_SIZE) declcand_add(base, img + data, fsize, 0);   /* chosen in declrom_choose */
+                kprintf("[PSMAC] container: declaration ROM %s, %u bytes\n", base, fsize);
             }
             else if (ends_with(base, ".img") || ends_with(base, ".hda") || ends_with(base, ".image") || ends_with(base, ".hfv") || ends_with(base, ".scsi")) {
                 /* a disk image: the solo board's SCSI disk, or PiDisk's volume on the other boards; it
@@ -945,34 +959,163 @@ static void walk_container(const uint8_t *img, uint32_t size, struct container_r
         }
         off = (data + fsize + 3) & ~3u;
     }
-    if (r->declrom) return;
-    /* No declaration ROM of the screen's size. Until 19 November nothing was taken then, slot 9 stayed
-       empty, no video, disk or input driver ever opened, and the user's Pi 3B ran the Mac blind with
-       the log on HDMI (a 1920x1200 ROM with mac.screen=1920x1080), the only sign the missing
-       "(taken)". Now the next best is taken, and the screen takes the size the ROM describes, since
-       that is the only size the Mac can use: the VideoCore is asked for it (psmac_display_init,
-       called after this). On the SE board, for two screens: a two-screen file of another HDMI size,
-       else a one-screen card, and HDMI mirrors the SE; for one screen: the one-screen card, else a
-       two-screen file without its slot $A card (psmac_setup_memory). The two-screen files are left
-       alone on the other boards: their first screen is the SE's 512 x 342 one bit. */
-    struct cand *c = 0;
-    if (want_se) c = se_one.p ? &se_one : sized_one.p ? &sized_one : plain.p ? &plain : 0;
-    else if (se_board) c = sized_one.p ? &sized_one : plain.p ? &plain : se_one.p ? &se_one : 0;
-    else c = plain.p ? &plain : sized_one.p ? &sized_one : 0;
-    if (!c) { if (se_one.p) kprintf("[PSMAC] container: %s is the SE board's two-screen card (mac.board=se); no declaration ROM for this board\n", se_one.name); return; }
-    if (c == &plain) { c->w = 640; c->h = 480; }                    /* the plain ROM is mkdeclrom.py's default, 640x480 */
-    r->declrom = c->p; r->declrom_len = c->len; r->declrom_sized = c != &plain;
-    int fits = c->w == want_w && c->h == want_h;
-    if (se_board && c != &se_one) {
-        if (want_se) kprintf("[PSMAC] container: no two-screen declaration ROM (aurora68-se-WxH.declrom); using %s, so HDMI mirrors the SE's screen\n", c->name);
-        else kprintf("[PSMAC] container: declaration ROM %s taken\n", c->name);
-        if (want_se) psmac_hdmi_mode = 0;
-    } else if (fits || (se_board && !want_se)) kprintf("[PSMAC] container: declaration ROM %s taken\n", c->name);
-    else {
-        kprintf("[PSMAC] container: no declaration ROM for %ux%u; using %s, so the %sscreen is %ux%u (set mac.screen=%ux%u or add the %ux%u ROM)\n",
-                want_w, want_h, c->name, se_board ? "HDMI " : "", c->w, c->h, c->w, c->h, want_w, want_h);
-        screen_w = c->w; screen_h = c->h;
+}
+
+/* Which declaration ROM. Everywhere but the SE board: a one-screen card, best of the screen's size.
+   On the SE board the SE's screen is the first, 512 x 342: with mac.hdmi=screen a two-screen file
+   (psmac-se-*), best of the HDMI size; otherwise the one-screen card, best of 512 x 342. Since
+   20 November 2026 every ROM's screen is rewritten for the size in use (declrom_resize, below), so a
+   file of another size serves as well as one of the right size: the exact size is preferred only so
+   that a container made for one size keeps doing what it did. Until then a ROM of another size gave
+   its size to the screen ("so the screen is WxH"), and before 19 November it was not taken at all and
+   slot 9 stayed empty. On the SE board with no two-screen file HDMI mirrors the SE, as before; the
+   two-screen files are left alone on the other boards (their first screen is the SE's one bit). Ties
+   go to the card's root, and among exact matches from one place to the last one listed (as before).
+   Lower ranks are better; -1 is "not for this board". */
+static int declrom_rank(const struct declcand *c, int se_board, int want_se, uint32_t want_w, uint32_t want_h)
+{
+    int exact = c->sized && c->w == want_w && c->h == want_h;
+    if (want_se) return c->se ? (exact ? 0 : 1) : c->sized ? (c->w == 512 && c->h == 342 ? 2 : 3) : 4;
+    if (se_board) return c->se ? 3 : c->sized ? (c->w == 512 && c->h == 342 ? 0 : 1) : 2;
+    if (c->se) return -1;
+    return exact ? 0 : c->sized ? 2 : 1;
+}
+static int declrom_has_video(const uint8_t *p, uint32_t len, int se);   /* below, with the ROM's lists */
+static const uint8_t *declrom_below(const uint8_t *top, uint32_t len, uint32_t *out_len);   /* below */
+static struct declcand *declrom_choose(uint32_t want_w, uint32_t want_h)
+{
+    int se_board = psmac_board_se && !psmac_board_solo, want_se = se_board && psmac_hdmi_mode == 1;
+    if (se_board && !want_se) { want_w = 512; want_h = 342; }
+    for (;;) {
+        struct declcand *best = 0; int br = 99;
+        for (int i = 0; i < ndcand; i++) {
+            struct declcand *c = &dcand[i];
+            int rk = c->bad ? -1 : declrom_rank(c, se_board, want_se, want_w, want_h);
+            if (rk < 0) continue;
+            if (c->novideo) rk += 10;                   /* a card without a screen (aurora68-wifionly): only if nothing else */
+            if (!best || rk < br || (rk == br && (c->card > best->card || (c->card == best->card && rk == 0)))) { best = c; br = rk; }
+        }
+        if (!best) {
+            for (int i = 0; i < ndcand; i++)
+                if (dcand[i].se) { kprintf("[PSMAC] declaration ROM: %s is the SE board's two-screen card (mac.board=se); no declaration ROM for this board\n", dcand[i].name); break; }
+            return 0;
+        }
+        if (best->card && !best->p) {
+            extern int32_t psmac_card_read_file(const char *name, uint8_t *buf, uint32_t max);
+            int32_t n = psmac_card_read_file(best->name, card_declrom, sizeof card_declrom);
+            if (n < 20) { kprintf("[PSMAC] declaration ROM %s on the card could not be read: the next best is taken\n", best->name); best->bad = 1; continue; }
+            best->p = card_declrom; best->len = (uint32_t)n;
+        }
+        /* A release's card root holds every declaration ROM of the release, and aurora68-wifionly.declrom
+           has no video sResource: taken for a size no file names, the Mac would have no screen at all.
+           So the chosen file is looked into, and one without a screen goes to the back of the queue. */
+        if (!best->novideo && !declrom_has_video(best->p, best->len, best->se)) {
+            best->novideo = 1;
+            if (best->card) best->p = 0;                 /* read again if it is taken after all */
+            continue;
+        }
+        const char *from = best->card ? "the card's root" : "the container";
+        if (want_se && !best->se) {
+            kprintf("[PSMAC] declaration ROM: %s from %s, a one-screen card: no two-screen file (aurora68-se.declrom or aurora68-se-WxH.declrom), so HDMI mirrors the SE's screen\n", best->name, from);
+            psmac_hdmi_mode = 0;
+        } else
+            kprintf("[PSMAC] declaration ROM: %s from %s taken (%s screen %ux%u%s)\n", best->name, from, want_se ? "the HDMI" : se_board ? "the SE's" : "the",
+                    want_w, want_h, br == 0 ? ", the file's own size" : ": the file's screen is rewritten for it");
+        return best;
     }
+}
+
+/* ---- the declaration ROM's screen, rewritten for the size in use (20 November 2026) ---------------
+   One ROM per screen size meant a container rebuilt for each monitor, and the screen took the ROM's
+   size when the two disagreed. Now the video sResource of the one-screen card ($84, slot 9) or of the
+   SE board's HDMI card ($80, slot $A) is rewritten in Pi RAM before the Slot Manager reads it: each
+   mode's VPBlock (mVidParams, entry 1 of mode 128+i) gets the screen's bounds, its row pitch
+   (psmb_rowbytes) and the vpBaseOffset of its place (psmac_display_mode_base, the rule the display
+   block uses: mkdeclrom.py's too), and a depth with no place at this size leaves the mode list (the
+   list's later entries move up, as in declrom_drop). Then the ROM's CRC again. The ROM's other
+   contents are not touched; the driver, PiScrn and Monitors take the size from the ROM and the
+   display block, never from tables of their own. Returns the modes left, 0 if the ROM has no such
+   video sResource. */
+static int32_t ent_off(const uint8_t *e) { return (int32_t)(BE32(*(const uint32_t *)e) << 8) >> 8; }
+static uint8_t *list_entry(uint8_t *list, const uint8_t *lo, const uint8_t *hi, uint8_t id)
+{
+    for (uint8_t *l = list; l >= lo && l + 4 <= hi && l[0] != 0xff; l += 4)
+        if (l[0] == id) return l;
+    return 0;
+}
+/* the entries after e move up four bytes (their offsets are relative to their own address, so each grows by four) */
+static void list_drop(uint8_t *e)
+{
+    for (; e[4] != 0xff; e += 4) {
+        uint32_t next = BE32(*(uint32_t *)(e + 4));
+        int32_t off = ((int32_t)(next << 8) >> 8) + 4;
+        *(uint32_t *)e = BE32((next & 0xff000000u) | ((uint32_t)off & 0xffffffu));
+    }
+    *(uint32_t *)e = BE32(0xff000000u);                 /* the end mark, one entry earlier */
+    *(uint32_t *)(e + 4) = 0;
+}
+static void declrom_crc(uint8_t *top)
+{
+    uint8_t *fb = top - 20;
+    uint32_t length = BE32(*(uint32_t *)(fb + 4)), crc = 0;
+    *(uint32_t *)(fb + 8) = 0;
+    for (uint8_t *p = top - length; p < top; p++) crc = ((crc << 1) | (crc >> 31)) + *p;
+    *(uint32_t *)(fb + 8) = BE32(crc);
+}
+static int declrom_resize(uint8_t *top, uint8_t rid, uint32_t slot, uint32_t w, uint32_t h, uint32_t win_mac, uint32_t win_size)
+{
+    extern uint32_t psmac_display_mode_base(uint32_t w, uint32_t h, uint32_t depth, uint32_t win_mac, uint32_t win_size, int one_bit_only);
+    uint8_t *fb = top - 20;
+    uint32_t length = BE32(*(uint32_t *)(fb + 4));
+    if (length < 20 || length > PSMB_DECLROM_SIZE || BE32(*(uint32_t *)(fb + 14)) != 0x5A932BC7u) return 0;
+    const uint8_t *lo = top - length;
+    uint8_t *e = list_entry(fb + ((int32_t)(BE32(*(uint32_t *)fb) << 8) >> 8), lo, fb, rid);
+    if (!e) return 0;
+    uint8_t *list = e + ent_off(e), *t = list_entry(list, lo, fb, 1), *mb = list_entry(list, lo, fb, 10);
+    if (!t || !mb || BE32(*(uint32_t *)(t + ent_off(t))) != 0x00030001u) return 0;   /* sRsrcType {catDisplay, typVideo} */
+    uint32_t devbase = 0xF0000000u | slot << 24 | (BE32(*(uint32_t *)(mb + ent_off(mb))) & 0xffffffu);   /* slot space + MinorBaseOS */
+    uint32_t ow = 0, oh = 0; int kept = 0;
+    for (int i = 5; i >= 0; i--) {                      /* the deepest first, so that a drop moves nothing still to be done */
+        uint8_t *m = list_entry(list, lo, fb, (uint8_t)(128 + i));
+        if (!m) continue;
+        uint8_t *ml = m + ent_off(m), *vp = list_entry(ml, lo, fb, 1);
+        if (!vp) continue;
+        uint8_t *b = vp + ent_off(vp) + 4;              /* the sBlock's length, then the VPBlock */
+        uint32_t depth = 1u << i;
+        if (BE16(*(uint16_t *)(b + 32)) != depth) continue;    /* vpPixelSize (VPBlock offset 32): not a mode this file has as the rule says */
+        if (!i) { oh = BE16(*(uint16_t *)(b + 10)) - BE16(*(uint16_t *)(b + 6)); ow = BE16(*(uint16_t *)(b + 12)) - BE16(*(uint16_t *)(b + 8)); }
+        uint32_t base = psmac_display_mode_base(w, h, depth, win_mac, win_size, 0);
+        if (!base) { list_drop(m); continue; }
+        *(uint32_t *)b = BE32(base - devbase);          /* vpBaseOffset: wraps round to the right address in 32 bits */
+        *(uint16_t *)(b + 4) = BE16((uint16_t)psmb_rowbytes(w, depth));
+        *(uint16_t *)(b + 6) = 0; *(uint16_t *)(b + 8) = 0;
+        *(uint16_t *)(b + 10) = BE16((uint16_t)h); *(uint16_t *)(b + 12) = BE16((uint16_t)w);
+        kept++;
+    }
+    declrom_crc(top);
+    if (kept) kprintf("[PSMAC] declaration ROM: slot $%X's screen %s%ux%u, %d depth%s (sResource $%02x)\n", slot,
+                      ow == w && oh == h ? "kept at " : "rewritten for ", w, h, kept, kept == 1 ? "" : "s", rid);
+    if (kept && (ow != w || oh != h)) kprintf("[PSMAC]   (the file described %ux%u)\n", ow, oh);
+    return kept;
+}
+/* whether a declaration ROM file has the screen it is chosen for: a video sResource ($84 of slot 9's
+   ROM at the file's end; for a two-screen file, $80 of slot $A's ROM below it) */
+static int declrom_has_video(const uint8_t *p, uint32_t len, int se)
+{
+    if (!p || len < 20) return 0;
+    const uint8_t *top = p + len;
+    uint8_t rid = 0x84;
+    if (se) {
+        uint32_t len2 = 0;
+        const uint8_t *r2 = declrom_below(top, len, &len2);
+        if (!r2) return 0;
+        top = r2 + len2; rid = 0x80;
+    }
+    const uint8_t *fb = top - 20;
+    uint32_t length = BE32(*(const uint32_t *)(fb + 4));
+    if (length < 20 || length > len || BE32(*(const uint32_t *)(fb + 14)) != 0x5A932BC7u) return 0;
+    uint8_t *dir = (uint8_t *)fb + ((int32_t)(BE32(*(const uint32_t *)fb) << 8) >> 8);
+    return list_entry(dir, top - length, fb, rid) != 0;
 }
 
 /* ---- the wired network card, shown only where there is one ------------------------------------------
@@ -1025,17 +1168,8 @@ static int declrom_drop(uint8_t *top, uint8_t rid, uint32_t want_type_lo)
             if (l[0] == 1) { t = l + ((int32_t)(BE32(*(uint32_t *)l) << 8) >> 8); break; }
         if (!t || BE32(*(uint32_t *)t) != 0x00040001u || BE32(*(uint32_t *)(t + 4)) != want_type_lo) return 0;
     }
-    for (; e[4] != 0xff; e += 4) {
-        uint32_t next = BE32(*(uint32_t *)(e + 4));
-        int32_t off = ((int32_t)(next << 8) >> 8) + 4;
-        *(uint32_t *)e = BE32((next & 0xff000000u) | ((uint32_t)off & 0xffffffu));
-    }
-    *(uint32_t *)e = BE32(0xff000000u);                 /* the end mark, one entry earlier */
-    *(uint32_t *)(e + 4) = 0;
-    *(uint32_t *)(fb + 8) = 0;
-    uint32_t crc = 0;
-    for (uint8_t *p = top - length; p < top; p++) crc = ((crc << 1) | (crc >> 31)) + *p;
-    *(uint32_t *)(fb + 8) = BE32(crc);
+    list_drop(e);
+    declrom_crc(top);
     return 1;
 }
 
@@ -1059,7 +1193,35 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
 {
     psmac_read_options();
     uintptr_t base = (sys_memory[0].mb_Base + 0x1fffff) & ~0x1fffffull;
-    const uintptr_t extra = PSMB_WIN_SIZE + PSMB_DECLROM_SIZE + PSMB_FB_BIG_SIZE;    /* slot $9 mailbox window + declaration ROM + the big frame buffer */
+    {   /* The big frame buffer region: 9 MiB holds every screen up to 1920 x 1200 in millions of colours,
+           and stays that size for them, so that nothing changes for the Mac's memory there. A larger
+           screen (mac.screen=, else the size the firmware's HDMI mode gave the VideoCore) gets its
+           32-bit frame rounded up to a MiB: 15 MiB at 2560 x 1440 (psmb.h). Decided here, before the
+           container is read: the declaration ROM is rewritten for this size later (declrom_resize),
+           with only the modes that fit. */
+        extern uint32_t fb_width, fb_height;
+        /* Without mac.screen= the screen is the size the firmware's HDMI mode gave its frame buffer
+           (config.txt's hdmi_mode, or hdmi_cvt), so that config.txt alone chooses it; outside the sizes
+           the kernel takes, 1024 x 768 */
+        if (!screen_w) {
+            if (fb_width >= PSMB_SCREEN_MIN_W && fb_width <= PSMB_SCREEN_MAX_W && fb_height >= PSMB_SCREEN_MIN_H && fb_height <= PSMB_SCREEN_MAX_H) {
+                screen_w = fb_width; screen_h = fb_height;
+                kprintf("[PSMAC] screen: %ux%u, the firmware's HDMI mode (mac.screen= not given)\n", screen_w, screen_h);
+            } else {
+                screen_w = 1024; screen_h = 768;
+                kprintf("[PSMAC] screen: the firmware's frame buffer is %ux%u, outside %ux%u to %ux%u: 1024x768 (mac.screen= chooses)\n",
+                        fb_width, fb_height, PSMB_SCREEN_MIN_W, PSMB_SCREEN_MIN_H, PSMB_SCREEN_MAX_W, PSMB_SCREEN_MAX_H);
+            }
+        }
+        uint64_t w = screen_w, h = screen_h;
+        uint64_t need = (w * h * 4 + 0xfffff) & ~0xfffffull;
+        if (need > PSMB_FB_BIG_SIZE) {
+            fb_big_size = need > PSMB_FB_BIG_MAX ? PSMB_FB_BIG_MAX : (uint32_t)need;
+            kprintf("[PSMAC] screen %ux%u: the big frame buffer region is %u MiB (9 MiB up to 1920x1200%s)\n",
+                    (uint32_t)w, (uint32_t)h, fb_big_size >> 20, need > PSMB_FB_BIG_MAX ? "; at most 32 MiB, the deepest modes are left out" : "");
+        }
+    }
+    const uintptr_t extra = PSMB_WIN_SIZE + PSMB_DECLROM_SIZE + fb_big_size;    /* slot $9 mailbox window + declaration ROM + the big frame buffer */
     uint32_t mb = globals.psmac_ram_mb;
     uintptr_t avail = sys_memory[0].mb_Base + sys_memory[0].mb_Size - base;
     int image_inside = container_has_image((const uint8_t *)rom, rom_sz);
@@ -1123,6 +1285,22 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
     uint64_t parse_t0 = psmac_boot_now_us();
     struct container_result cont; walk_container((const uint8_t *)rom, rom_sz, &cont);
     psmac_boot_mark("container parsed: %u KiB in %u us", rom_sz >> 10, (uint32_t)(psmac_boot_now_us() - parse_t0));
+    /* Declaration ROMs in the card's root, beside the container's (psmac_card.c), when the Pi booted
+       from a container, which on hardware it always does: a testbed run from a bare ROM has no card
+       to look at, and would wait 1.5 s for one. mac.cardrom=off leaves the card's out. */
+    {   extern int psmac_card_declroms(void (*cb)(const char *name, uint32_t size));
+        const char *o = psmac_option("mac.cardrom");
+        int from_container = cont.rom != (const uint8_t *)rom;      /* walk_container leaves a bare ROM where it was */
+        if (from_container && !(o && o[0] == 'o' && o[1] == 'f')) {
+            int before = ndcand;
+            if (psmac_card_declroms(declcand_card) == 0)
+                for (int i = before; i < ndcand; i++)
+                    kprintf("[PSMAC] card: declaration ROM %s, %u bytes\n", dcand[i].name, dcand[i].len);
+        }
+    }
+    {   struct declcand *c = declrom_choose(screen_w, screen_h);
+        if (c) { cont.declrom = c->p; cont.declrom_len = c->len; cont.declrom_sized = c->sized; }
+    }
     rom = (void *)cont.rom; rom_sz = cont.rom_len;
     kprintf("[PSMAC] Mac RAM %d MiB at Pi %p, ROM at Pi %p (%d bytes from initramfs)\n", ram_size >> 20, ram_phys, rom_phys, rom_sz);
     { extern void psmac_solo_start(void); psmac_solo_start(); }      /* the solo board's disks, now that the container is read */
@@ -1154,7 +1332,7 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
     }
     /* identity mapping (MMU disabled) and the 68030 MMU shadowing machinery */
     psmac_mmu_set_slot(win_phys, declrom_phys);
-    psmac_mmu_set_fb(fb_big_phys);
+    psmac_mmu_set_fb(fb_big_phys, fb_big_size);
     {   /* slot $A, the HDMI screen's card, on the SE board with mac.hdmi=screen (psmb.h, "two screens"):
            mapped before the identity map is made; its ROM is put in place below, if the file has one,
            else those 16 KiB stay zero and the Slot Manager finds no card there */
@@ -1171,7 +1349,7 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
         if (cont.declrom && cont.declrom_len <= PSMB_DECLROM_SIZE) {
             declrom_len = cont.declrom_len;
             memcpy(dr + PSMB_DECLROM_SIZE - cont.declrom_len, cont.declrom, cont.declrom_len);
-            kprintf("[PSMAC] declaration ROM from the container: %u bytes at Mac 0x%08x\n", cont.declrom_len, PSMB_DECLROM_PHYS + PSMB_DECLROM_SIZE - cont.declrom_len);
+            kprintf("[PSMAC] declaration ROM in place: %u bytes at Mac 0x%08x\n", cont.declrom_len, PSMB_DECLROM_PHYS + PSMB_DECLROM_SIZE - cont.declrom_len);
         } else if (path && (use_semihost || sh_files)) {
             int64_t fd = sh_open(path, 1);
             int64_t len = fd >= 0 ? psmac_sh_flen(fd) : -1;
@@ -1204,6 +1382,17 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
             else if (psmac_board_se && !psmac_board_solo && psmac_hdmi_mode == 1 && !no_declrom)
                 kprintf("[PSMAC] declaration ROM: one screen, the SE's; HDMI mirrors it (a psmac-se-WxH declaration ROM gives HDMI a screen of its own)\n");
             if (!two) slot2_rom = 0;
+            /* the screens' sizes into the ROM (declrom_resize): the HDMI card's for the HDMI size, a
+               one-screen card's for its screen (the SE's 512 x 342 on the SE board, where it is the
+               SE's; mac.screen or the firmware's size elsewhere). The SE file's own slot-9 screen is
+               the SE's one bit and stays as it is. */
+            if (two && !declrom_resize((uint8_t *)slot2_rom + slot2_len, 0x80, PSMB_SLOT2, screen_w, screen_h,
+                                       PSMB_WIN_PHYS + 0x900000u + PSMB_OFF_BOUNCE2, PSMB_BOUNCE2_SIZE))
+                kprintf("[PSMAC] declaration ROM: slot $A's video sResource not found; its screen stays as the file has it\n");
+            if (!se_card && !no_declrom) {
+                uint32_t w0 = psmac_board_se && !psmac_board_solo ? 512 : screen_w, h0 = psmac_board_se && !psmac_board_solo ? 342 : screen_h;
+                declrom_resize(dr + PSMB_DECLROM_SIZE, 0x84, 9, w0, h0, PSMB_WIN_PHYS + 0x900000u + PSMB_OFF_BOUNCE, PSMB_BOUNCE_SIZE);
+            }
             psmac_display_layout(se_card, two); }
     }
     psmac_mbox_init(win_phys, ram_phys, ram_size);

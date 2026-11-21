@@ -102,12 +102,15 @@ hdmi_group=2
 hdmi_mode=4                            # 640 x 480: the second screen, one pixel to one
 hdmi_drive=2                           # HDMI with sound (not DVI): the Mac's sound on the monitor
 ```
-The Pi's HDMI output is the Macintosh's second screen. By default it is 640 by 480 and the
-firmware scales it to whatever HDMI mode it chose. For a larger Macintosh screen, one pixel to one,
-set the HDMI mode and tell the kernel the same size with `mac.screen=` (below) and put the matching
-declaration ROM (`aurora68-1024x768.declrom` and so on) in the container in place of
-`aurora68.declrom`. `hdmi_mode=16` is 1024 by 768, `35` is 1280 by 1024, `82` is 1080p, `69` is
-1920 by 1200 (60 Hz, reduced blanking: the Pi 3's HDMI cannot drive the full-blanking `68`). The screen
+The Pi's HDMI output is the Macintosh's second screen, at the size of the HDMI mode config.txt sets,
+one pixel to one: the kernel fits the declaration ROM's screen to that size at every start (since 20
+November 2026; before, a declaration ROM per size had to be in the container, `aurora68-1024x768.declrom`
+and so on, with `mac.screen=` to match, and those still work). `mac.screen=` (below) gives the Mac
+another size than the mode's. `hdmi_mode=16` is 1024 by 768, `35` is 1280 by 1024, `82` is 1080p, `69` is
+1920 by 1200 (60 Hz, reduced blanking: the Pi 3's HDMI cannot drive the full-blanking `68`). 2560 by
+1440 has no mode a Pi 3 can drive at 60 Hz (it needs a 241 MHz pixel clock); at 30 Hz with reduced
+blanking (about 121 MHz) it is a custom mode, `hdmi_mode=87` with `hdmi_cvt=2560 1440 30 3 0 0 1`,
+`max_framebuffer_width=2560` and `max_framebuffer_height=1440` (docs/10, "2560 by 1440"). The screen
 offers black and white, 4, 16, 256, thousands and millions of colours in the Monitors control
 panel; the ROM sizes the Macintosh's memory and the frame buffer is the Pi's, so a 1080p screen in
 millions of colours costs the Macintosh nothing. `docs/img/system71-pi-1024x768-millions.png`
@@ -125,7 +128,8 @@ One line, options separated by spaces, no comments:
 | `wifi=off`, `bt=off`, `eth=off` | leave a radio or the Ethernet off (`eth=off` also takes the wired card out of the Mac's slot 9) |
 | `eth=usb` | on a Pi without a wired port (3A+, Zero 2 W): a USB Ethernet adapter as the Mac's wired card, a LAN9500, LAN7800 or CDC-ECM device on the USB port or behind a high-speed hub there (tested in QEMU with a CDC-ECM device only) |
 | `net.oui=off` | keep the Pi's own MAC addresses (default: Commodore's prefix, as Alice68) |
-| `mac.screen=1024x768` | the HDMI screen's size in pixels (default: the HDMI mode the firmware set, 640x480 in QEMU; 512 to 1920 by 342 to 1200, every size up to 1920x1200 in millions of colours). Set `hdmi_mode` to match and use the declaration ROM of that size (`aurora68-1920x1200.declrom` for `mac.screen=1920x1200`, `hdmi_mode=69`; on `mac.board=se`, `aurora68-se-1920x1200.declrom`). On the SE board the SE's own screen is always 512x342 and this is the second screen's size |
+| `mac.screen=1024x768` | the HDMI screen's size in pixels (default: the HDMI mode the firmware set, 640x480 in QEMU; 512 to 4096 by 342 to 2560, millions of colours up to 3840x2160). Since 20 November 2026 the kernel rewrites the declaration ROM's screen for the size in use, so `mac.screen=` is needed only to differ from the firmware's mode, and one declaration ROM serves every size (`aurora68-se.declrom` on the SE board). Older notes: set `hdmi_mode` to match and use the declaration ROM of that size (`aurora68-1920x1200.declrom` for `mac.screen=1920x1200`, `hdmi_mode=69`; on `mac.board=se`, `aurora68-se-1920x1200.declrom`; `mac.screen=2560x1440` with the custom 30 Hz mode above and `aurora68-se-2560x1440.declrom`). On the SE board the SE's own screen is always 512x342 and this is the second screen's size |
+| `*.declrom` in the card's root (files, not an option) | declaration ROMs on the card beside `kernel8.img` are offered with the container's and win a tie, so a new Mac-side driver (PiDisk, the network cards, input, video) is a file copied to the card; the log names the file taken and where from (`[PSMAC] declaration ROM: ... from the card's root taken`). Keep only the ones you mean on the card: an old file there beats the container's. `mac.cardrom=off` ignores them |
 | `mac.hdmi=screen` | on `mac.board=se`, what HDMI is: `screen` (the default) a second screen of its own beside the SE's, any size and depth, with an `aurora68-se-WxH.declrom` in the container and PiScrn in the Extensions folder to arrange the two at the first boot (docs/10, "Two screens on the SE"); `mirror` the SE's picture (what HDMI showed until now); `log` the kernel's log for the whole run (the same as `mac.console=hdmi`). Without an `-se-` declaration ROM HDMI mirrors the SE |
 | `mac.console=hdmi` | keep the kernel's log on the HDMI screen for the whole run (the same text as the serial line); without it the log shows until the Macintosh's video driver takes the screen. On the SE board the Mac then has one screen, the SE's |
 | `mac.board=se` | the logic board the Pi sits in: `se` (the Macintosh SE: its chips behind the IIci ROM's addresses, docs/12), `solo` (no Macintosh: the kernel answers every chip and boots a disk image from the container, docs/12) or the default, the testbed's IIci |

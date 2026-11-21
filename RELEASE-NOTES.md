@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **The HDMI screen follows config.txt.** The declaration ROM no longer fixes the screen's size: the kernel
+  rewrites it at start-up for the size the firmware's HDMI mode set (or `mac.screen=`), any size from 512 by
+  342 to 4096 by 2560 (1366 by 768 and 2048 by 1152 tested), with every depth that fits. One file,
+  `aurora68-se.declrom`, serves the SE's two screens at every size: build the container once, take
+  `mac.screen=` out of cmdline.txt and choose the monitor's mode in config.txt alone. The sized files are
+  still there and still preferred for their own size.
+- **Declaration ROMs from the card.** `*.declrom` files in the card's root (beside kernel8.img) are taken in
+  preference to the container's, so an updated Mac-side driver is a file copied to the card. The log says
+  which file was taken and from where. A release's card that holds every declaration ROM keeps working
+  (one without a screen is never taken while another is there), but an old file left on the card now beats
+  a new one in the container: replace them together. `mac.cardrom=off` ignores the card's.
+- **A 2560 by 1440 HDMI screen.** The HDMI screen (beside the SE's own, or alone on the other boards) can
+  now be 2560 by 1440, in every depth up to millions of colours: `aurora68-se-2560x1440.declrom` (or
+  `aurora68-2560x1440.declrom`) in the container, `mac.screen=2560x1440` in cmdline.txt, and in config.txt
+  `hdmi_group=2`, `hdmi_mode=87`, `hdmi_cvt=2560 1440 30 3 0 0 1`, `max_framebuffer_width=2560`,
+  `max_framebuffer_height=1440`. The monitor runs at 30 Hz: a Pi 3 cannot send 2560 by 1440 at 60 Hz
+  (that needs a 241 MHz pixel clock). The Pi keeps 15 MiB for the screen's pixels at this size (9 MiB up
+  to 1920 by 1200, as before), and the picture is redrawn at most as often as half of one Pi core allows;
+  the log's heartbeat says how often that is. **PiDepth HDMI 16** (PiDepth renamed) sets the HDMI screen's
+  depth without the Monitors control panel. Tested in the testbeds only. Replace kernel8.img and rebuild
+  the container.
 - **USB flash drives on the Mac's desktop.** Plug a USB stick into the Pi and it appears on the Mac's
   desktop a few seconds later, while the Mac runs; drag it to the Trash (or Command-E) and the log says
   when it is safe to unplug. A stick pulled out without ejecting leaves the Mac asking for the disk, as a
