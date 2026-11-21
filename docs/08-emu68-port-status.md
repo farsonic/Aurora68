@@ -3500,6 +3500,51 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      the recording. No movie was played: there is none on the disk.
    - *Not verified:* real hardware; movies.
 
+92. **An outside code review: six findings checked and fixed (21 November).** Someone sent the owner a
+   review of commit 865ebc6 (bus transport, storage, memory mapping, the latest agent change), each
+   finding reproduced by its author on a host with the original C function and mocked hardware. Each
+   was checked against the code here first; all six were real.
+   - *A failed bus cycle reported as success* (`psmac_bus.c`, `psmac_gpio.c`). A cycle the CPLD did not
+     finish within 100 ms came back with `$FF..` data and status 0, and any 16 of them over a whole run
+     gave the link up. The SE's own bus-error timeout is 265 ms (the BBU, Guide to the Macintosh Family
+     Hardware p. 126), and the SCSI chip's pseudo-DMA holds /DTACK until a slow drive has its byte, so a
+     cycle the SE would have finished could be cut short and read as `$FF`. The timeout is now 300 ms;
+     an unfinished cycle is status 1, counted and logged as a bus error; the link is given up only after
+     16 in a row. *Still open:* the 68k is not given a bus error exception for it; it reads `$FF..`.
+   - *Failed SD reads handed to the Mac as data* (`psmac_card.c`). After three failed reads the loaders
+     marked a 16 KB chunk loaded with zeros in it, and PiDisk or the solo board's SCSI disk served them as
+     good blocks. A chunk the card does not give is now also marked failed: a read or write that touches
+     it gets an I/O error (PiDisk `PSMB_E_IO`, SCSI CHECK CONDITION, medium error 3/11 or 3/0C), and the
+     next access tries the card again unless the Mac has written into the chunk since (`chunk_retry`).
+     Write-back of that image stays off, as before. `mac.cardfail=B` (testbed) fails the first read
+     covering block B. *Verified:* with `mac.cardfail=1000` the loader logged the failure and System 7.1
+     started normally (the Mac never read those blocks); with `mac.cardfail=0` the loader's read of
+     blocks 0-31 failed, the ROM's first SCSI read of block 0 retried them, "read from the card on a
+     second try", and the Mac started from the image.
+   - *USB eject after a failed flush* (`psmac_usbdisk.c`). `sync_cache` only logged a failure: the eject
+     went on, said "safe to unplug", and the background flush forgot the writes. It now returns the
+     result: a failed flush leaves the stick dirty (tried again half a second later) and refuses the
+     eject with an I/O error and "NOT safe to unplug". *Not verified:* no USB stick under QEMU.
+   - *A PFLUSH ignored* (`psmac_mmu.c`, `M68k_LINEF.c`). Every PFLUSH within 5 ms of a table switch was
+     skipped, meant for the PFLUSHA SwapMMUMode issues straight after its PMOVE to TC (item 9). A
+     descriptor changed and flushed in that time kept its old page. The JIT now tells the shim whether
+     a PFLUSH is the very next instruction after a PMOVE (An),TC or d16(An),TC (bit 16 of the shim's
+     argument), and only that one, within a millisecond of the switch's end, is skipped; every other
+     PFLUSH re-walks the tables. *Verified:* System 7.1 on the solo board started and ran Speedometer
+     and Octavo with the new kernel.
+   - *The programmer's interrupt switch ignored* (`psmac_board_se.c`). On the SE the switch pulls /IPL2
+     alone, raw level 4 (table 3-2); the level mapper kept only bits 0 and 1. Level 7 on a 68000 is taken
+     on its edge, so the switch is not mapped to a level: a press (bit 2 seen without a break for 10 ms)
+     asks once for the NMI the remote's `nmi` already uses (`INTF.ARM_err`), which brings up the debugger
+     prompt (item 59). *Not verified:* needs the real switch.
+   - *The agent taking another program's death notice* (`mac/piagent/agent.c`, item 90's `take_obit`).
+     It accepted the first `'obit'` once any watched child of that launcher had died, without looking at
+     whose death it was. It now reads the event's process serial number: the agent's own launch, the
+     event ends there; another child's, the event is posted back to the same program unchanged
+     (PostHighLevelEvent), and the watch stays for the agent's own event.
+   - The review's other points went to the floppy and serial work (item 93): the IWM's timing against
+     the speaker refill's 185 byte writes, and evidence that floppy and serial work at all.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

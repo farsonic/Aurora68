@@ -4964,9 +4964,11 @@ uint32_t EMIT_FPU(struct TranslatorContext *ctx)
 }
 
 #ifdef PSMAC
-/* Emit a call to the 68030 MMU shim: psmac_pmove(An + d16, ext). All caller-visible ARM registers are
-   preserved around the call (the JIT keeps 68k state in them). an == 0 with d16 == 0 passes ea = 0. */
-static void psmac_emit_mmu_call(struct TranslatorContext *ctx, uint8_t an, int16_t d16, uint16_t ext)
+/* Emit a call to the 68030 MMU shim: psmac_pmove(An + d16, ext | flags << 16). All caller-visible ARM
+   registers are preserved around the call (the JIT keeps 68k state in them). an == 0 with d16 == 0 passes
+   ea = 0. flags: PSMAC_PFLUSH_AFTER_TC for a PFLUSH that is the very next instruction after a PMOVE to TC
+   (SwapMMUMode's pflusha), which the shim's switch has already covered. */
+static void psmac_emit_mmu_call(struct TranslatorContext *ctx, uint8_t an, int16_t d16, uint16_t ext, uint16_t flags)
 {
     extern void psmac_pmove(uint32_t ea, uint32_t ext);
     union { uint64_t u64; uint16_t u16[4]; } u;
@@ -4982,6 +4984,7 @@ static void psmac_emit_mmu_call(struct TranslatorContext *ctx, uint8_t an, int16
     else EMIT(ctx, sub_immed(0, an, -d16));
     EMIT(ctx,
         mov_immed_u16(1, ext, 0),
+        movk_immed_u16(1, flags, 1),
         mov64_immed_u16(2, u.u16[3], 0),
         movk64_immed_u16(2, u.u16[2], 1),
         movk64_immed_u16(2, u.u16[1], 2),
@@ -5033,8 +5036,14 @@ uint32_t EMIT_lineF(struct TranslatorContext *ctx)
             else if (mode == 7 && reg == 1) words += 2;
             else if (mode == 7 && reg == 2) words += 1;
         }
-        if ((opcode2 & 0xe000) == 0x2000 && (opcode2 & 0x1c00) != 0)
-            psmac_emit_mmu_call(ctx, 0, 0, opcode2);   /* PFLUSH*: lets the shim apply a deferred CRP change */
+        if ((opcode2 & 0xe000) == 0x2000 && (opcode2 & 0x1c00) != 0) {
+            /* PFLUSH*: lets the shim apply a deferred CRP change, and re-check the tables. Is it the very next
+               instruction after a PMOVE (An),TC or PMOVE d16(An),TC (opcode $F010+n / $F028+n, extension $4000)? */
+            const uint16_t *p = ctx->tc_M68kCodePtr;
+            int after_tc = (cache_read_16(ICACHE, (uintptr_t)&p[-1]) == 0x4000 && (cache_read_16(ICACHE, (uintptr_t)&p[-2]) & 0xfff8) == 0xf010) ||
+                           (cache_read_16(ICACHE, (uintptr_t)&p[-2]) == 0x4000 && (cache_read_16(ICACHE, (uintptr_t)&p[-3]) & 0xfff8) == 0xf028);
+            psmac_emit_mmu_call(ctx, 0, 0, opcode2, after_tc ? 1 : 0);
+        }
         else
             EMIT(ctx, nop());
         ctx->tc_M68kCodePtr += words;
@@ -5048,7 +5057,7 @@ uint32_t EMIT_lineF(struct TranslatorContext *ctx)
         int16_t d16 = 0; int words = 2;
         if (mode == 5) { d16 = (int16_t)cache_read_16(ICACHE, (uintptr_t)&ctx->tc_M68kCodePtr[2]); words = 3; }
         uint8_t an = RA_MapM68kRegister(ctx, 8 + reg);
-        psmac_emit_mmu_call(ctx, an, d16, opcode2);
+        psmac_emit_mmu_call(ctx, an, d16, opcode2, 0);
 
         ctx->tc_M68kCodePtr += words;
         EMIT_AdvancePC(ctx, 2 * words);

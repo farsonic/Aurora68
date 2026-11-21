@@ -57,7 +57,7 @@ static int translate_on;       /* TC.E of the current set */
 static uint32_t is_bits;       /* TC.IS of the current set */
 static uint32_t rebuilds;
 static int crp_dirty;          /* CRP changed while translating; rebuild pending until TC load or PFLUSH */
-static uint64_t last_install;  /* counter value of the last TC/CRP switch (its PFLUSH is implied) */
+static uint64_t last_install;  /* counter value of the last TC/CRP switch (the PFLUSHA right after it is implied) */
 
 struct mapset {
     uint32_t tc, crp_hi, crp_lo;   /* key */
@@ -380,16 +380,20 @@ static void rebuild(void)
         kprintf("[PSMAC:MMU] switch #%u: cached (%u us)\n", rebuilds, (uint32_t)((cnt_now() - t0) * 1000000 / cnt_frq()));
     if (fresh && translate_on) dump_l2p(w.npages);
     if (fresh) mmu_print_stats();
+    last_install = cnt_now();              /* the switch is complete: the PFLUSHA right after it is implied */
 }
 
 /* PFLUSH: the 68030 drops its ATC, so table edits made in place become visible. Re-walk and remap if
    the tables differ from what the current set was built from. The PFLUSHA that follows every TC load
-   in SwapMMUMode is implied by the switch itself and skipped. */
-static void pflush(void)
+   in SwapMMUMode is implied by the switch itself and skipped: only that one, the JIT telling which it
+   is (the very next instruction after a PMOVE to TC, after_tc), and only within a millisecond of the
+   switch. Until 21 November 2026 every PFLUSH within 5 ms of a switch was skipped, so a descriptor the
+   guest changed and flushed in that time kept its old page (found by an outside review, docs/08 item 92). */
+static void pflush(int after_tc)
 {
     if (crp_dirty) { crp_dirty = 0; kprintf("[PSMAC:MMU] PFLUSH applies deferred CRP change\n"); rebuild(); return; }
     if (!cur || !translate_on) return;
-    if (cnt_now() - last_install < cnt_frq() / 200) return;     /* within 5 ms of the switch */
+    if (after_tc && cnt_now() - last_install < cnt_frq() / 1000) return;   /* SwapMMUMode's own pflusha */
     struct walk w;
     fill_enabled = 0;
     if (!walk_current(&w)) return;
@@ -432,10 +436,10 @@ uint32_t psmac_mmu_l2p(uint32_t logical, int *valid)
 
 void psmac_pmove(uint32_t ea, uint32_t ext)
 {
-    int fmt = (ext >> 13) & 7, preg = (ext >> 10) & 7, rw = (ext >> 9) & 1;
+    int fmt = (ext >> 13) & 7, preg = (ext >> 10) & 7, rw = (ext >> 9) & 1;   /* ext: the extension word, flags above it */
     switch (fmt) {
-    case 1: /* PFLUSH / PFLUSHA (PLOAD never gets here) */
-        pflush();
+    case 1: /* PFLUSH / PFLUSHA (PLOAD never gets here); bit 16 of ext: right after a PMOVE to TC */
+        pflush((ext >> 16) & 1);
         break;
     case 2: /* TC, SRP, CRP */
         if (preg == 0) {

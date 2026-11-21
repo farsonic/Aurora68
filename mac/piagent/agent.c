@@ -832,7 +832,8 @@ static short open7(void)
    arriving at a launcher while one of the agent's own launches from it has died is accepted by the agent,
    and the launcher gets a null event instead. The filter sees the event while the Finder is in front, as
    it is during the rebuild; a Finder in the background does not come through it. */
-short hle_accept(void *sender, long *refcon, void *buffer, long *size);
+short hle_accept(void *sender, long *refcon, void *buffer, long *size),
+      hle_post(const EventRecord *ev, const PSN *to, long refcon, const void *buffer, long size, long options);
 static struct { PSN child, launcher; } watch[8];              /* the agent's launches, the latest eight */
 static unsigned watch_turn;
 static unsigned char hle_sender[512], hle_data[1024];         /* a TargetID (about 250 bytes) and the event */
@@ -843,21 +844,43 @@ static int process_alive(const PSN *p)
 	pinfo.length = sizeof pinfo; pinfo.name = name32; pinfo.spec = &run_spec;
 	return !pm_info(p, &pinfo);
 }
-/* an 'obit' in front of the current program: 1 when it was the death of one of the agent's launches and
-   the agent has taken it */
-static int take_obit(void)
+/* does the event's data name process p? An 'obit' carries the dead process's serial number as its
+   keyProcessSerialNumber parameter: eight bytes somewhere in the event as it was accepted */
+static int names_psn(const unsigned char *data, long size, const PSN *p)
+{
+	const unsigned char *want = (const unsigned char *)p;
+	for (long i = 0; i + 8 <= size; i++) {
+		int k = 0;
+		while (k < 8 && data[i + k] == want[k])
+			k++;
+		if (k == 8) return 1;
+	}
+	return 0;
+}
+/* An 'obit' in front of the current program: 1 when the agent has taken it. The event is accepted only when
+   one of the agent's own launches from this program has died; its data then says whose death it reports.
+   The agent's own: that watch ends and the event goes no further. Another child's (a program the Finder
+   launched itself that ended at the same moment): posted back to this program unchanged, so that it still
+   hears of it, and the watch stays for the agent's own event, which follows. */
+static int take_obit(const EventRecord *ev)
 {
 	PSN cur;
 	if (pm_current(&cur)) return 0;
-	for (unsigned i = 0; i < 8; i++) {
-		if (!watch[i].child.lo || !same_psn(&watch[i].launcher, &cur) || process_alive(&watch[i].child)) continue;
-		long refcon = 0, size = sizeof hle_data;
-		short e = hle_accept(hle_sender, &refcon, hle_data, &size);
-		watch[i].child.hi = watch[i].child.lo = 0;
-		if (e) { log_err("an application-died event could not be taken: ", e); return 0; }
-		return 1;
-	}
-	return 0;
+	int candidates = 0;
+	for (unsigned i = 0; i < 8; i++)
+		if (watch[i].child.lo && same_psn(&watch[i].launcher, &cur) && !process_alive(&watch[i].child)) candidates++;
+	if (!candidates) return 0;
+	long refcon = 0, size = sizeof hle_data;
+	short e = hle_accept(hle_sender, &refcon, hle_data, &size);
+	if (e) { log_err("an application-died event could not be taken: ", e); return 0; }
+	for (unsigned i = 0; i < 8; i++)
+		if (watch[i].child.lo && same_psn(&watch[i].launcher, &cur) && names_psn(hle_data, size, &watch[i].child)) {
+			watch[i].child.hi = watch[i].child.lo = 0;
+			return 1;
+		}
+	e = hle_post(ev, &cur, refcon, hle_data, size, 0x00008000L /* receiverIDisPSN */);
+	if (e) log_err("another program's application-died event could not be given back: ", e);
+	return 1;
 }
 
 /* The launch itself, once the request is answered and the filter is no longer inside it. LaunchApplication
@@ -1099,7 +1122,7 @@ int c_filter(EventRecord *ev)
 {
 	if (busy) return 0;
 	if (ev->what == 23 /* kHighLevelEvent */ && (unsigned long)ev->message == 0x61657674UL /* 'aevt' */
-	    && (unsigned long)pt_long(ev->where) == 0x6F626974UL /* 'obit' (the event ID is in where) */ && sys7() && take_obit()) {
+	    && (unsigned long)pt_long(ev->where) == 0x6F626974UL /* 'obit' (the event ID is in where) */ && sys7() && take_obit(ev)) {
 		ev->what = 0;                                         /* a null event, and GetNextEvent's answer false */
 		return 1;
 	}

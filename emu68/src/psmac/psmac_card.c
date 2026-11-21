@@ -860,6 +860,7 @@ struct img {
     struct ext *ext; int next, ok;               /* that file's extents on the card; changes are written back */
     volatile uint32_t *dirty; uint32_t nbits;    /* CHUNKs the Mac changed */
     volatile uint32_t *loaded; uint32_t nload, nloaded;   /* LCHUNKs read from the card (images of their own) */
+    volatile uint32_t *failed;                   /* LCHUNKs the card did not give: the Mac gets an I/O error for them */
     uint64_t load_t0; char name[48]; uint32_t written;
 };
 static struct img imgs[4]; static int nimg;
@@ -988,10 +989,11 @@ static int image_take(const char *name, const struct cfile *f)
     m->ext = tlsf_malloc(tlsf, 256 * sizeof(struct ext));
     m->nload = (f->size + LCHUNK - 1) / LCHUNK;
     m->loaded = tlsf_malloc(tlsf, ((m->nload + 31) / 32) * 4);
-    if (!m->ext || !m->loaded) return 0;
+    m->failed = tlsf_malloc(tlsf, ((m->nload + 31) / 32) * 4);
+    if (!m->ext || !m->loaded || !m->failed) return 0;
     m->next = file_extents(f, m->ext, 256);
     if (m->next <= 0) { kprintf("[CARD] %s is in more than 256 pieces: copy it to a freshly formatted card\n", name); return 0; }
-    for (uint32_t i = 0; i < (m->nload + 31) / 32; i++) m->loaded[i] = 0;
+    for (uint32_t i = 0; i < (m->nload + 31) / 32; i++) m->loaded[i] = m->failed[i] = 0;
     m->off = 0; m->file = ram; m->file_len = f->size; m->ok = !sd.ro; m->nloaded = 0; m->load_t0 = cnt();
     __atomic_store_n(&nimg, nimg + 1, __ATOMIC_RELEASE);
     kprintf("[CARD] disk image %s, %u MB in %d piece%s: read in the background%s\n", name, f->size >> 20, m->next, m->next == 1 ? "" : "s", m->ok ? ", changes written back to it" : "");
@@ -1043,9 +1045,24 @@ static spinlock_t card_lock;
 static volatile int card_lock_core3;        /* core 3 holds card_lock: its card pass, which may reach PiDisk's
                                                block reads through a new image's registration (hfs_partition) */
 static uint32_t card_slow_us;               /* mac.cardslow=N: N us more per card sector read, the testbed's slow card */
+static uint32_t card_fail_block = 0xffffffffu;   /* mac.cardfail=B: the first read covering block B of an image fails (testbed) */
+/* the testbed's failing card: one read error, the first time block B's sectors are read, then good */
+static int card_fail_now(uint32_t first, uint32_t n)
+{
+    if (card_fail_block == 0xffffffffu || card_fail_block < first || card_fail_block >= first + n) return 0;
+    kprintf("[CARD] mac.cardfail=%u: this read fails (the testbed's failing card)\n", card_fail_block);
+    card_fail_block = 0xffffffffu;
+    return 1;
+}
 static void chunk_load_direct(struct img *m, uint32_t c);
+static int chunk_retry(struct img *m, uint32_t c);
 static void flush_finish(void);
 static int chunk_in(const struct img *m, uint32_t c) { return (__atomic_load_n(&m->loaded[c / 32], __ATOMIC_ACQUIRE) >> (c % 32)) & 1; }
+/* A chunk the card failed to give is marked loaded, so the loader goes on with the rest, and failed, so
+   that the Mac is told: until 21 November 2026 it was handed the zeros in its place as good data (an
+   outside review, docs/08 item 92). */
+static int chunk_failed(const struct img *m, uint32_t c) { return m->failed && ((__atomic_load_n(&m->failed[c / 32], __ATOMIC_ACQUIRE) >> (c % 32)) & 1); }
+static void mark_failed(struct img *m, uint32_t c) { __atomic_fetch_or(&m->failed[c / 32], 1u << (c % 32), __ATOMIC_RELEASE); }
 static int load_pick(void)
 {
     int wi = __atomic_load_n(&want_img, __ATOMIC_ACQUIRE);
@@ -1086,12 +1103,16 @@ static int load_step(void)
     if (n > run) n = run;
     int e = lba && n ? -9 : -8;
     for (int tries = 0; tries < 3 && e; tries++) e = lba && n ? sd_read_multi(lba, lbuf, n) : -8;
+    if (!e && card_fail_now(first, n)) e = -7;
     if (card_slow_us) udelay(card_slow_us * n);
     if (chunk_in(m, ld.chunk)) { ld.active = 0; return 1; }   /* core 0 read this chunk itself: its copy, and the Mac's writes since, stay */
     if (e) {
-        /* the card failed under the image: what is missing stays zero, and nothing of this image
-           is written back, so the file on the card is not made worse */
-        kprintf("[CARD] %s: read error %d at sector %u (status %x): the image is incomplete, its changes stay in memory\n", m->name, e, first, sd.last_hsts);
+        /* the card failed under the image: the chunk is marked failed (the Mac gets an I/O error for
+           it, and it is tried again when the Mac next reads it), and nothing of this image is written
+           back, so the file on the card is not made worse */
+        kprintf("[CARD] %s: read error %d at sector %u (status %x): blocks %u-%u give the Mac an I/O error; nothing is written back to the card\n",
+                m->name, e, first, sd.last_hsts, ld.chunk * (LCHUNK / 512u), end - 1);
+        mark_failed(m, ld.chunk);
         m->ok = 0; n = end - first;
     } else {
         uint32_t bytes = n * 512u; if (first * 512u + bytes > m->len) bytes = m->len - first * 512u;
@@ -1109,21 +1130,32 @@ static int load_step(void)
     }
     return 1;
 }
-/* [p, p+len) of an image is about to be read or written by the Mac: make sure it is in memory. On
+/* [p, p+len) of an image is about to be read or written by the Mac: make sure it is in memory; 0, or -1
+   when part of it could not be read from the card (the Mac is to get an I/O error: a read of it would be
+   the zeros in its place, a write of part of it would be saved over blocks nobody has seen). On
    core 3 (PiDisk's block service) the chunks are read here and now; from core 0 (the solo board's
    SCSI disk) core 3 is asked and this waits, as the Mac would wait on a disk. */
 static inline int on_core3(void) { uint64_t id; __asm__ volatile("mrs %0, MPIDR_EL1" : "=r"(id)); return (id & 3) == 3; }
-void psmac_card_need(const void *p, uint32_t len)
+int psmac_card_need(const void *p, uint32_t len)
 {
     const uint8_t *b = p;
     int n = __atomic_load_n(&nimg, __ATOMIC_ACQUIRE);
     for (int i = 0; i < n; i++) {
         struct img *m = &imgs[i];
         if (!m->loaded || b < m->ram || b >= m->ram + m->len || !len) continue;
-        if (m->nloaded >= m->nload) return;
         uint32_t c0 = (uint32_t)(b - m->ram) / LCHUNK, c1 = ((uint32_t)(b - m->ram) + len - 1) / LCHUNK;
+        int bad = 0;
         for (uint32_t c = c0; c <= c1 && c < m->nload; c++) {
-            if (chunk_in(m, c)) continue;
+            if (chunk_in(m, c)) {
+                if (!chunk_failed(m, c)) continue;
+                /* the card failed here before: once more, when the card is free, else an I/O error */
+                int mine = on_core3() && card_lock_core3;
+                if (mine || spinlock_try_acquire(&card_lock)) {
+                    if (chunk_failed(m, c) && chunk_retry(m, c)) bad = 1;
+                    if (!mine) spinlock_release(&card_lock);
+                } else bad = 1;
+                continue;
+            }
             if (on_core3()) {
                 /* already held when this comes from core 3's own card pass: a second image's
                    registration reads its partition map here (447febf took the lock again and
@@ -1134,6 +1166,7 @@ void psmac_card_need(const void *p, uint32_t len)
                 if (ld.active && !(ld.img == i && ld.chunk == c)) while (ld.active) load_step();   /* the chunk in hand first */
                 if (!chunk_in(m, c)) { if (!ld.active) { ld.active = 1; ld.img = i; ld.chunk = c; ld.done = 0; } while (ld.active) load_step(); }
                 if (!mine) { card_lock_core3 = 0; spinlock_release(&card_lock); }
+                if (chunk_failed(m, c)) bad = 1;
                 continue;
             }
             /* core 0 (the solo board's SCSI disk): core 3 is asked first, and given two milliseconds;
@@ -1151,10 +1184,12 @@ void psmac_card_need(const void *p, uint32_t len)
                 __asm__ volatile("yield");
             }
             __atomic_store_n(&want_img, -1, __ATOMIC_RELEASE);
-            if (!chunk_in(m, c)) { kprintf("[CARD] %s: the card stopped answering; block %u is not in memory\n", m->name, c * (LCHUNK / 512u)); return; }
+            if (!chunk_in(m, c)) { kprintf("[CARD] %s: the card stopped answering; block %u is not in memory\n", m->name, c * (LCHUNK / 512u)); return -1; }
+            if (chunk_failed(m, c)) bad = 1;
         }
-        return;
+        return bad ? -1 : 0;
     }
+    return 0;
 }
 /* PiDisk's boot record asks for the startup disk only once the card has been looked at (psmac_mbox.c) */
 int psmac_card_scanned(void) { return __atomic_load_n(&scan_done, __ATOMIC_ACQUIRE); }
@@ -1231,24 +1266,50 @@ static void flush_finish(void)
         if (++fl.sec > fl.last) fl.img = -1;
     }
 }
-static void chunk_load_direct(struct img *m, uint32_t c)
+/* chunk c of the image read from the card into memory, whole: 0, or -1 if the card failed under it (the
+   failure logged). The caller holds the card lock. */
+static int chunk_read(struct img *m, uint32_t c)
 {
     flush_finish();
     uint32_t first = c * (LCHUNK / 512u), secs = (m->len + 511u) / 512u, end = first + LCHUNK / 512u;
     if (end > secs) end = secs;
+    int bad = 0;
     for (uint32_t s = first; s < end; ) {
         uint32_t run = 0, lba = file_lba(m, s * 512u, &run), n = end - s;
         if (n > run) n = run;
         int e = lba && n ? -9 : -8;
         for (int tries = 0; tries < 3 && e; tries++) e = lba && n ? sd_read_multi(lba, dbuf, n) : -8;
+        if (!e && card_fail_now(s, n)) e = -7;
         if (card_slow_us) udelay(card_slow_us * n);
-        if (e) { kprintf("[CARD] %s: read error %d at sector %u (status %x): the image is incomplete, its changes stay in memory\n", m->name, e, s, sd.last_hsts); m->ok = 0; if (!n) n = end - s; }
+        if (e) {
+            kprintf("[CARD] %s: read error %d at sector %u (status %x): blocks %u-%u give the Mac an I/O error; nothing is written back to the card\n",
+                    m->name, e, s, sd.last_hsts, first, end - 1);
+            bad = 1; if (!n) n = end - s;
+        }
         else { uint32_t bytes = n * 512u; if (s * 512u + bytes > m->len) bytes = m->len - s * 512u; memcpy((uint8_t *)m->ram + s * 512u, dbuf, bytes); }
         s += n;
     }
+    return bad ? -1 : 0;
+}
+static void chunk_load_direct(struct img *m, uint32_t c)
+{
+    if (chunk_read(m, c)) { mark_failed(m, c); m->ok = 0; }
     __atomic_fetch_or(&m->loaded[c / 32], 1u << (c % 32), __ATOMIC_RELEASE);
     if (__atomic_add_fetch(&m->nloaded, 1, __ATOMIC_RELAXED) == m->nload)
         kprintf("[CARD] %s: all %u MB read from the card\n", m->name, m->len >> 20);
+}
+/* A failed chunk tried again when the Mac reads it: unless the Mac has written into it since (its writes
+   are in memory and a fresh copy from the card would lose them), the card is read once more, and if it
+   answers now the chunk is good. 0 when the chunk is good. The caller holds the card lock. */
+static int chunk_retry(struct img *m, uint32_t c)
+{
+    uint32_t d0 = c * (LCHUNK / CHUNK), d1 = d0 + LCHUNK / CHUNK;
+    for (uint32_t d = d0; d < d1 && d < m->nbits; d++)
+        if ((m->dirty[d / 32] >> (d % 32)) & 1) return -1;
+    if (chunk_read(m, c)) return -1;
+    __atomic_fetch_and(&m->failed[c / 32], ~(1u << (c % 32)), __ATOMIC_RELEASE);
+    kprintf("[CARD] %s: blocks %u-%u read from the card on a second try\n", m->name, c * (LCHUNK / 512u), (c + 1) * (LCHUNK / 512u) - 1);
+    return 0;
 }
 
 /* ==== core 3 ================================================================================== */
@@ -1311,6 +1372,7 @@ static void card_poll_locked(void)
 static void card_start(void)
 {
     if (!start_at) start_at = ms() ? ms() : 1;
+    { const char *o = psmac_option("mac.cardfail"); if (o) { uint32_t v = 0; while (*o >= '0' && *o <= '9') v = v * 10 + (uint32_t)(*o++ - '0'); card_fail_block = v; kprintf("[CARD] mac.cardfail=%u: the first read of block %u fails (the testbed's failing card)\n", v, v); } }
     { const char *o = psmac_option("mac.cardslow"); if (o) { uint32_t v = 0; while (*o >= '0' && *o <= '9') v = v * 10 + (uint32_t)(*o++ - '0'); card_slow_us = v; kprintf("[CARD] mac.cardslow=%u: %u us more per sector read (a slow card, for the testbed)\n", v, v); } }
     const char *o = psmac_option("mac.card");
     if (o && o[0] == 'o' && o[1] == 'f') { sd.state = -2; pair_state = -1; kprintf("[CARD] off (mac.card=off)\n"); return; }

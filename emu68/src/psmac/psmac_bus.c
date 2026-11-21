@@ -376,14 +376,25 @@ static void gpio_xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, ui
     }
     unsigned ipl = psmac_gpio_ipl();
     svc_phase = 0;
+    /* A cycle the CPLD did not finish is a bus error, reported as one (status 1, counted and logged as
+       the MAME bridge's are) and not as a good cycle with $FF.. data. The link is given up only after 16
+       such cycles in a row, a Pi with no Macintosh behind it; one that answers in between resets the
+       count. Until 21 November 2026 any 16 over the whole run gave it up, and every reply said success
+       (an outside review, docs/08 item 92). The 68k itself still sees the $FF.. data: raising a bus error
+       exception in the guest is not done yet. */
+    uint8_t status = 0;
     if (psmac_gpio_timeouts() != before) {
-        if (++timeouts == 1) kprintf("[PSMAC:GPIO] the CPLD did not finish a bus cycle (op %d addr %08x): is the Pi in a Macintosh?\n", op, addr);
-        if (timeouts >= 16) transport_dead = 1;
+        status = 1;
+        bus_errors++;
+        if (++timeouts == 1 || bus_errors <= 8)
+            kprintf("[PSMAC:GPIO] the CPLD did not finish a bus cycle (op %d addr %08x, %u in a row): %s\n", op, addr, timeouts,
+                    bus_errors == 1 ? "a bus error (is the Pi in a Macintosh?)" : "a bus error");
+        if (timeouts >= 16) { transport_dead = 1; kprintf("[PSMAC:GPIO] 16 bus cycles in a row unfinished: the link to the Macintosh is given up\n"); }
         ipl = 0;
-    }
+    } else timeouts = 0;
     last_ipl = ipl; last_flags = 0;
     if (psmac_board_se) psmac_se_set_level(ipl); else if (__m68k_state) __m68k_state->INTF.IPL = ipl;   /* the SE board adds its RBV, under its lock (psmac_board_se.c) */
-    if (r) { r->status = 0; r->ipl = ipl; r->flags = 0; r->data = value; }
+    if (r) { r->status = status; r->ipl = ipl; r->flags = 0; r->data = value; }
 }
 
 /* Posted writes through semihosting, gathered (testbed only, 20 November 2026). Every request was a

@@ -173,6 +173,22 @@ hle_accept:
 	move.l	-4(%a6),%d2
 	unlk	%a6
 	rts
+| PostHighLevelEvent(theEvent, receiverID, msgRefcon, msgBuff, msgLen, postingOptions): an event given back
+	.globl	hle_post			| short hle_post(ev, to, refcon, buffer, size, options)
+hle_post:
+	link	%a6,#0
+	move.l	%d2,-(%sp)
+	clr.w	-(%sp)
+	.irp	k, 0, 1, 2, 3, 4, 5
+	move.l	(8+4*\k)(%a6),-(%sp)
+	.endr
+	move.w	#0x34,-(%sp)
+	.short	0xA88F
+	move.w	(%sp)+,%d0
+	ext.l	%d0
+	move.l	-4(%a6),%d2
+	unlk	%a6
+	rts
 	.globl	pm_info				| short pm_info(const psn *, ProcessInfoRec *): GetProcessInformation
 pm_info:
 	move.l	%d2,-(%sp)

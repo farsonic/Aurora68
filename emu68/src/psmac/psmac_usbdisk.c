@@ -379,7 +379,7 @@ struct unit {
     char vendor[9], product[17], rev[5], mfr[32], prod[32], serial[40];
     uint32_t tag, dev_blocks, first, count, writable;
     uint32_t next_try, last_write;
-    int dirty, no_sync, removable, said_nomedium;
+    int dirty, no_sync, removable, said_nomedium, sync_fails;   /* sync_fails: SYNCHRONIZE CACHEs in a row that failed */
     uint8_t key, asc, ascq;                     /* the last CHECK CONDITION's sense */
     uint32_t reads, writes, rblocks, wblocks, errors, resets;
 };
@@ -580,17 +580,25 @@ static int rw10(struct unit *u, int write, uint32_t lba, uint32_t count, uint8_t
     c[8] = (uint8_t)count;
     return scsi(u, c, 10, !write, buf, count * 512u, timeout_ms);
 }
-static void sync_cache(struct unit *u, const char *when)
+/* The stick's own cache onto its flash: 0 when done (or when the stick has no cache to flush), else -1.
+   Until 21 November 2026 a failure was only logged: the eject then said "safe to unplug" and the
+   background flush forgot the writes were still in the stick's cache (an outside review, docs/08 item 92). */
+static int sync_cache(struct unit *u, const char *when)
 {
     static const uint8_t c[10] = { 0x35, 0 };
     if (u->no_sync)
-        return;
+        return 0;
     int r = scsi(u, c, 10, 0, 0, 0, 10000);
     if (r == 1 && u->key == 5) {
         u->no_sync = 1;                                 /* ILLEGAL REQUEST: a stick without a cache to flush */
         kprintf("[USB] disk %d: it does not take SYNCHRONIZE CACHE (%s): its writes are done when it says so\n", (int)(u - U), when);
-    } else if (r)
-        kprintf("[USB] disk %d: SYNCHRONIZE CACHE %s: %s (sense %x/%02x/%02x)\n", (int)(u - U), when, r < 0 ? "no answer" : "refused", u->key, u->asc, u->ascq);
+        return 0;
+    }
+    if (!r) { u->sync_fails = 0; return 0; }
+    if (u->sync_fails++ < 3)
+        kprintf("[USB] disk %d: SYNCHRONIZE CACHE %s: %s (sense %x/%02x/%02x): its last writes may not be on the stick yet\n",
+                (int)(u - U), when, r < 0 ? "no answer" : "refused", u->key, u->asc, u->ascq);
+    return -1;
 }
 
 /* ---- finding the sticks (after an enumeration; core 3 keeps off the bus meanwhile) ------------------ */
@@ -1189,12 +1197,18 @@ static void run_job(void)
     else if (J.op == USBDISK_OP_WRITE)
         st = job_rw(u, n, 1);
     else if (J.op == USBDISK_OP_EJECT) {
-        sync_cache(u, "at the eject");
-        u->dirty = 0;
-        u->state = U_EJECTED;
-        publish(n, 0, 0);
-        kprintf("[USB] disk %d (%s): ejected by the Mac (%u blocks read, %u written): safe to unplug\n", n, uname(u), u->rblocks, u->wblocks);
-        st = 0;
+        /* a stick whose cache would not flush stays mounted, and the Mac's eject fails: its writes may
+           still be only in the stick's cache, so it is not safe to unplug */
+        if (u->dirty && sync_cache(u, "at the eject")) {
+            kprintf("[USB] disk %d (%s): not ejected: the stick did not confirm its writes; NOT safe to unplug\n", n, uname(u));
+            st = PSMB_E_IO;
+        } else {
+            u->dirty = 0;
+            u->state = U_EJECTED;
+            publish(n, 0, 0);
+            kprintf("[USB] disk %d (%s): ejected by the Mac (%u blocks read, %u written): safe to unplug\n", n, uname(u), u->rblocks, u->wblocks);
+            st = 0;
+        }
     } else
         st = PSMB_E_BADCMD;
     J.status = st;
@@ -1220,8 +1234,10 @@ int psmac_usbdisk_core1(void)
     for (int n = 0; n < USBDISK_UNITS; n++) {
         struct unit *u = &U[n];
         if (u->state == U_UP && u->dirty && t - u->last_write >= 500) {
-            sync_cache(u, "after writes");
-            u->dirty = 0;
+            if (sync_cache(u, "after writes"))
+                u->last_write = t;                      /* still dirty: tried again half a second on */
+            else
+                u->dirty = 0;
             return 1;
         }
         if (u->state == U_NOMEDIUM && (int32_t)(t - u->next_try) >= 0) {

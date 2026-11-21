@@ -636,7 +636,10 @@ static void execute(void)
     int write = (op == 0x0a || op == 0x2a);
     if (write && !d->writable) { check_condition(7, 0x27); set_phase(PH_STATUS); return; }
     { static int first = 1; if (first && !write) { first = 0; psmac_boot_mark("SCSI: first read, ID %d block %u (%u blocks): the disk's driver or boot blocks", t.id, lba, cnt); } }
-    if (d->ram) { extern void psmac_card_need(const void *, uint32_t); psmac_card_need(d->ram + (uint64_t)lba * 512, cnt * 512); }   /* an image still coming in from the card */
+    if (d->ram) {                               /* an image still coming in from the card; blocks it did not give: a medium error */
+        extern int psmac_card_need(const void *, uint32_t);
+        if (psmac_card_need(d->ram + (uint64_t)lba * 512, cnt * 512)) { check_condition(3, write ? 0x0c : 0x11); set_phase(PH_STATUS); return; }
+    }
     if (d->ram) { t.buf = d->ram + (uint64_t)lba * 512; t.buf_len = cnt * 512; t.buf_pos = 0; t.left = 0; t.chunked = 0; if (write) { d->writes += cnt; t.wr_ram = t.buf; t.wr_len = cnt * 512; } else d->reads += cnt; }
     else { t.left = cnt * 512; t.lba = lba; t.chunked = 1; if (write) { uint32_t nb = cnt > sizeof(sector_buf) / 512 ? sizeof(sector_buf) / 512 : cnt; t.buf = sector_buf; t.buf_len = nb * 512; t.buf_pos = 0; t.left -= nb * 512; } else next_chunk(0); if (t.phase == PH_STATUS) return; }
     set_phase(write ? PH_DATAOUT : PH_DATAIN);

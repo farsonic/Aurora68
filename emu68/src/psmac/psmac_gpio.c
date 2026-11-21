@@ -66,7 +66,12 @@ static volatile uint32_t *const stmr  = (volatile uint32_t *)(PERI + 0x003000); 
 #define GPFSEL2_OUTPUT_PI3 (0x00000249 | (1 << 18) | (1 << 21) | (1 << 27))
 #define GPFSEL2_OUTPUT_PI4 (0x00000249 | (1 << 18) | (1 << 21) | (2 << 27) | (2 << 24))
 
-#define PSMAC_GPIO_TIMEOUT_US 100000u
+/* A cycle is abandoned after 300 ms: longer than the SE's own bus-error timeout (the BBU ends a cycle
+   nobody answers after 265 ms, Guide to the Macintosh Family Hardware p. 126), so that no cycle the SE
+   would still finish is cut short. The SCSI chip's pseudo-DMA holds /DTACK until the drive has the byte,
+   which a slow drive can make long; with the 100 ms of the first version such a read came back as $FF
+   bytes (found by an outside review, 21 November 2026, docs/08 item 92). */
+#define PSMAC_GPIO_TIMEOUT_US 300000u
 
 static uint32_t INPUT[3], OUTPUT[3], CLEAR_BITS;
 static int pi4;                 /* a Pi 4 / CM4 strobes twice as long (its GPIO block is faster) */

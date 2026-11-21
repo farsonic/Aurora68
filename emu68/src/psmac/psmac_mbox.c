@@ -133,7 +133,7 @@ static int apm_hfs(const uint8_t *d, uint32_t have, uint32_t blocks, uint32_t *s
 static void hfs_partition(uint8_t **data, uint32_t *blocks)
 {
     uint32_t have = *blocks < 64 ? *blocks : 64, st, ct;
-    { extern void psmac_card_need(const void *, uint32_t); psmac_card_need(*data, have * 512u); }   /* an image still coming in from the card: its map first */
+    { extern int psmac_card_need(const void *, uint32_t); psmac_card_need(*data, have * 512u); }   /* an image still coming in from the card: its map first */
     if (apm_hfs(*data, have, *blocks, &st, &ct)) { *data += (uint64_t)st * 512; *blocks = ct; }
 }
 static void blk_add_ram(const char *name, uint8_t *data, uint32_t blocks)
@@ -156,7 +156,10 @@ static int blk_xfer(int write, struct blkdev *b, uint32_t lba, uint32_t count, u
 {
     if ((uint64_t)lba + count > b->blocks) return PSMB_E_RANGE;
     if (write && !b->writable) return PSMB_E_RO;
-    if (b->ram) { extern void psmac_card_need(const void *, uint32_t); psmac_card_need(b->rambase + (uint64_t)lba * 512, count * 512); }   /* still coming in from the card? */
+    if (b->ram) {                                /* still coming in from the card? Blocks the card did not give: an I/O error */
+        extern int psmac_card_need(const void *, uint32_t);
+        if (psmac_card_need(b->rambase + (uint64_t)lba * 512, count * 512)) return PSMB_E_IO;
+    }
     while (count) {
         uint32_t n = count > sizeof(sector_buf) / 512 ? sizeof(sector_buf) / 512 : count;
         if (b->ram) {

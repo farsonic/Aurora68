@@ -825,14 +825,35 @@ static void store_level(unsigned raw)        /* the caller holds the lock */
 {
     if (__m68k_state) __m68k_state->INTF.IPL = psmac_se_ipl(raw);
 }
+/* The programmer's interrupt switch (21 November 2026, docs/08 item 92). On the SE it pulls /IPL2 alone,
+   raw level 4 (Guide to the Macintosh Family Hardware, table 3-2); on the IIci it is the NMI, level 7.
+   Until an outside review pointed it out the mapper below dropped the bit, so pressing the switch on a
+   hung Mac did nothing. Level 7 is taken on its edge by the 68000, so it is not a level here: a press
+   is the bit seen without a break for 10 ms (a switch is held far longer; a glitch on the wire is not),
+   and each press asks once for the NMI the remote's "nmi" also uses (INTF.ARM_err). */
+static void interrupt_switch(unsigned raw)
+{
+    static uint64_t held_since;
+    static int pressed;
+    uint64_t now = asc_now();
+    if (!(raw & 4)) { held_since = 0; pressed = 0; return; }
+    if (!held_since) held_since = now;
+    if (!pressed && now - held_since >= asc_hz() / 100) {
+        pressed = 1;
+        kprintf("[PSMAC:SE] the programmer's interrupt switch: an NMI for the Mac\n");
+        if (__m68k_state) __atomic_store_n(&__m68k_state->INTF.ARM_err, 1, __ATOMIC_RELEASE);
+    }
+}
 void psmac_se_set_level(unsigned raw)         /* psmac_bus.c, after each cycle on the wire and each poll */
 {
+    interrupt_switch(raw);
     level_lock(); se_wire_ipl = raw; store_level(raw); level_unlock();
 }
 
 /* The interrupt level the SE drives, read as the IIci ROM expects it: the SE's level 1 is the VIA
    on both; its level 2 is the SCC (the IIci's level 4; the 5380's interrupt is kept off); the
-   IIci's level 2, the RBV, is this file's own. */
+   IIci's level 2, the RBV, is this file's own. Bit 2, the interrupt switch, is an edge, handled by
+   interrupt_switch above, not a level. */
 unsigned psmac_se_ipl(unsigned raw)
 {
     if (psmac_board_solo) return psmac_solo_ipl();
