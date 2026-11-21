@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: MPL-2.0
+# PiSlots' Toolbox calls beyond mac/c/traps.txt (the build puts the two lists together): the About
+# box's and the alerts' default-button outline, text and icon, and GetNextEvent for a System without
+# WaitNextEvent.
+A8B0 - FrameRoundRect(const Rect *r:l, int ow:w, int oh:w)
+A89B - PenSize(int w:w, int h:w)
+A9CE - TETextBox(const void *text:l, long len:l, const Rect *box:l, int just:w)
+A970 b GetNextEvent(int mask:w, void *event:l)
+A888 - TextFace(int face:w)
+A9BB l GetIcon(int id:w)
+A94B - PlotIcon(const Rect *r:l, void *icon:l)
+A886 w TextWidth(const void *text:l, int first:w, int count:w)

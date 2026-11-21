@@ -9,7 +9,7 @@ OBJCOPY = m68k-linux-gnu-objcopy
 PY      = python3
 B       = build
 
-all: $(B)/psmac-se.declrom $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/PiLog.bin $(B)/PiDepth.bin $(B)/WiFiMenu.bin $(B)/PiScrn.bin $(B)/SoundPiStorm.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes declrom-wifi-sizes declrom-se-sizes
+all: $(B)/psmac-se.declrom $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/PiLog.bin $(B)/PiDepth.bin $(B)/WiFiMenu.bin $(B)/PiScrn.bin $(B)/SoundPiStorm.bin $(B)/PiSlots.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes declrom-wifi-sizes declrom-se-sizes
 
 $(B)/%.o: %.s
 	@mkdir -p $(B)
@@ -204,6 +204,24 @@ $(B)/piscrn.elf: $(B)/ps/entry.o $(B)/ps/toolbox_glue.o $(B)/ps/piscrn.o $(B)/ps
 	$(LD) -T wifimenu/init.ld --emit-relocs --gc-sections --no-warn-rwx-segments -z noexecstack -o $@ $(B)/ps/entry.o $(B)/ps/toolbox_glue.o $(B)/ps/piscrn.o $(B)/ps/libc.o $(LIBGCC)
 $(B)/PiScrn.bin: $(B)/piscrn.elf ../tools/mac/elf2init.py ../tools/mac/macelf.py ../tools/mac/rsrc.py
 	$(PY) ../tools/mac/elf2init.py $< --name "PiScrn" --creator PISR -o $@
+
+# ---- PiSlots: the NuBus cards the Slot Manager knows about, an application in C (mac/pislots) ----
+$(B)/pislots_traps.txt: c/traps.txt pislots/traps.txt
+	@mkdir -p $(B)
+	cat c/traps.txt pislots/traps.txt > $@
+$(B)/sl/toolbox_glue.s $(B)/sl/toolbox_gen.h: $(B)/pislots_traps.txt ../tools/mac/mktraps.py
+	@mkdir -p $(B)/sl
+	$(PY) ../tools/mac/mktraps.py $< -s $(B)/sl/toolbox_glue.s -H $(B)/sl/toolbox_gen.h
+$(B)/sl/toolbox_glue.o: $(B)/sl/toolbox_glue.s
+	$(AS) -o $@ $<
+$(B)/sl/pislots.o: pislots/pislots.c c/toolbox.h $(B)/sl/toolbox_gen.h
+	$(CC) $(subst -I$(B),-I$(B)/sl,$(CFLAGS)) -c -o $@ $<
+$(B)/sl/libc.o: c/libc.c c/toolbox.h $(B)/sl/toolbox_gen.h
+	$(CC) $(subst -I$(B),-I$(B)/sl,$(CFLAGS)) -c -o $@ $<
+$(B)/pislots.elf: $(B)/crt0.o $(B)/sl/toolbox_glue.o $(B)/sl/libc.o $(B)/sl/pislots.o c/app.ld
+	$(LD) -T c/app.ld --emit-relocs --no-warn-rwx-segments -z noexecstack -o $@ $(B)/crt0.o $(B)/sl/toolbox_glue.o $(B)/sl/libc.o $(B)/sl/pislots.o $(LIBGCC)
+$(B)/PiSlots.bin: $(B)/pislots.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py
+	$(PY) ../tools/mac/elf2app.py $< --name PiSlots --creator PISL --size 192 -o $@
 
 install: $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/psmac.declrom
 	$(PY) ../tools/mac/hfsput.py $(IMG) $(B)/PiDisk.bin "System Folder" $(PART)

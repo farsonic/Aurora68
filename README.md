@@ -88,7 +88,9 @@ the next piece of work, so on hardware this build boots the Pi and waits (see
 
 The Macintosh side needs no installation: the Slot Manager loads the Pi's drivers from the
 declaration ROM. The `Mac` folder holds the extensions and programs (PiMach, PiDisk, PiWiFi,
-PiBlue, PiStatus and the test programs) as MacBinary files and on an HFS image.
+PiBlue, PiStatus, PiLog, PiSlots and the test programs) as MacBinary files and on an HFS image.
+PiSlots lists the NuBus cards the Mac sees (the Pi's card in slot 9, the SE's HDMI screen in
+slot $A, real cards on a IIci or SE/30): each card's maker and what its functions are and do.
 
 ### config.txt
 ```ini
@@ -240,7 +242,7 @@ screen, booted from the SE's SCSI disk, with PiDisk mounted beside it (docs/08 i
 | Directory | Contents |
 |---|---|
 | `emu68/` | the Emu68 fork (vendored; its own history is the branch `emu68-psmac`): the kernel. `src/psmac/` is the Macintosh host layer (bus bridge, 68030 MMU shim, mailbox window); `src/alice/` are the Alice68 service modules (network, Bluetooth, status, USB) with their Macintosh glue |
-| `mac/` | the Macintosh side in 68k assembly: the `.PiDisk` block driver, the `.ENET`-interface Ethernet driver, the `.PiInput` keyboard-and-mouse driver, the `.Display_Video_PiStorm` second-display driver, the PiDisk and PiMach extensions, the PiNet, PiPing, PiScreens and PiColor test applications, the PiWiFi, PiBlue and PiStatus applications, a Makefile (`make check` compares the drivers' structure offsets with the kernel's header) |
+| `mac/` | the Macintosh side in 68k assembly: the `.PiDisk` block driver, the `.ENET`-interface Ethernet driver, the `.PiInput` keyboard-and-mouse driver, the `.Display_Video_PiStorm` second-display driver, the PiDisk and PiMach extensions, the PiNet, PiPing, PiScreens and PiColor test applications, the PiWiFi, PiBlue and PiStatus applications, and in C (with the kit in `mac/c`) PiLog, PiSlots, PiDepth, the WiFi menu and PiScrn, a Makefile (`make check` compares the drivers' structure offsets with the kernel's header) |
 | `tools/` | ROM patching, the initramfs container builder (`mkcontainer.py`: ROM, declaration ROM and firmware in one cpio for the Pi), the full-stack testbed launcher, the host network peer, debugging helpers |
 | `tools/mac/` | resource fork, MacBinary, application, extension and declaration ROM builders (pure Python) |
 | `rom/` | ROM patch descriptions and the patch tool's Makefile (ROM images themselves are not in the repository) |

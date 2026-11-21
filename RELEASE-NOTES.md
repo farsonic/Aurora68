@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **PiSlots: which NuBus cards the Mac has.** A new program in the Mac folder lists every card the
+  Slot Manager knows about, in plain words: the Pi's card in slot 9 (its disk, network, WiFi, input and
+  screen functions), the SE's HDMI screen in slot $A, the logic board's own entries, and real cards on a
+  IIci or SE/30. For each card its name, maker, revision and part number; for each function what it is,
+  its driver, whether that driver is open, and for a screen its size and depth. File > Save As... keeps
+  the list as a TeachText document, Edit > Copy copies it; the window resizes, zooms and comes back where
+  it was left. It also writes a summary into the Pi's log. System 6.0.8 and 7; nothing to install.
 - **WiFi on the SE no longer stops the Mac.** With WiFi words in cmdline.txt the SE never started: the
   WiFi's start, on the same Pi core as the Mac's disks and mailbox, was switched away by another core and
   that core's loop stopped for good. The WiFi now waits only on its own core and never holds the Pi's

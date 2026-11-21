@@ -21,6 +21,7 @@ syntax, `binutils-m68k-linux-gnu`) and is packaged by small Python tools in `too
 | PiPing | `mac/piping.s` | `PiPing.bin` (application) | MacTCP over the Pi: opens Apple's `.IPP` driver, shows the configured address and mask (ipctlGetAddr), sends three ICMP echo requests to the testbed peer (ipctlEchoICMP, completion routine) and prints the round trips in ticks. Needs MacTCP installed and pointed at the card. |
 | PiLog | `mac/pilog.c` | `PiLog.bin` (application) | The Pi kernel's log in a window that moves, resizes, zooms and scrolls (`docs/img/system71-pilog.png`). The kernel copies its log into a 64 KiB ring at window + 0x60000 (`psmb.h`, struct psmb_log) from boot; PiLog costs one memory read a quarter-second. Check boxes filter by part: Kernel, Mac, WiFi, Bluetooth, Network, Card; Option-click shows one part alone (`docs/img/system71-pilog-wifi.png`). Since 19 November a second row: **Filter:** shows only lines containing the text, in any case, together with the check boxes (several words must all match, `-word` hides lines with it; typing anywhere in the window goes to the field, the view is redone a fifth of a second after the last key; Esc or the field's small close box empties it) and says how many lines show, "5 of 688 lines" for WIFI in the testbed (`docs/img/system71-pilog-filter.png`); **Clear** (Edit > Clear Log, Command-K) empties the view without touching the kernel's ring, which other readers and the serial copy use: PiLog remembers where the ring stood and shows only what came after; Edit > Show Earlier Lines brings the rest back (`docs/img/system71-pilog-clear.png`); **Follow** (View > Follow New Lines, Command-T), checked at the start, keeps the view at the newest line; scrolling up unchecks it, scrolling back to the bottom or End checks it again (`docs/img/system71-pilog-follow.png`). Text can be selected and copied, and pasted into the filter. Since 20 November the log can be handed on as text instead of a photograph: **File > Save Log…** (⌘S) puts the lines shown (the parts, the filter, from Clear's mark, under a first line saying which) into a TeachText document (TEXT, 'ttxt') named "PiLog 2026-11-19 14.05"; with Option held (⌘⌥S) the whole ring. TeachText opens 32 KB at most, a whole ring is 64 KB: copy it to a modern machine (Lagoon's share) and read it there. **Save to Card** (the button at the right of the second row, or File > Save Log to SD Card) asks the kernel (`PSMB_INFO_SAVELOG`, progress through `PSMB_INFO_LOGSTATE`) to write the whole ring to `aurora68.log` in the SD card's root, overwritten each time; the kernel also does it by itself after a `[CRASH]` record (docs/08 item 55). Secrets never show: the values of `wifi.psk` and of any option named psk, pass, key or secret, the password in `mac.wifisim=` and the link key in `bt.dev=` become `***` in the window, the Scrap, a saved file and `aurora68.log` (the kernel echoes its bootargs) (`docs/img/system71-pilog-save.png`, `docs/img/system71-pilog-card.png`). Menus File, Edit (Undo to Clear in the standard order for desk accessories, then Select All, Filter Lines Command-F, Clear Log, Show Earlier Lines) and View; items that cannot be used are dimmed (`docs/img/system71-pilog-menu.png`). The 496-pixel window fits the SE's screen. In C, built with the kit in `mac/c` (`mac/c/README.md`); the image starts it from Startup Items. |
 | PiScreens | `mac/piscreens.s` | `PiScreens.bin` (application) | QuickDraw's GDevice list: each screen's rectangle, flags, depth, frame buffer base, row bytes and driver, then MMU32Bit. Written for the second display's bring-up (docs/10): it is how the Pi's screen was found created but not activated. |
+| PiSlots | `mac/pislots/pislots.c` | `PiSlots.bin` (application) | The NuBus cards the Slot Manager knows about, in plain words (System 7.1 has no Apple System Profiler): for the logic board's own declaration ROM (slot 0) and each slot $9-$E, whether a card is there and started, its name, board ID, maker, revision, part number and date as far as its declaration ROM gives them, and its start-up code's answer; then each function (sResource): id, name, kind in words (display, network, processor, disk, input...) with the four numbers, its driver, whether the driver is open and its reference number (from the unit table), and for a screen its size and depth. A resizable, zoomable window with two scroll bars that comes back where it was left; File > Save As… (a TeachText document), Edit > Copy, File > Look Again (⌘R), About PiSlots…. A summary also goes to the Pi's log (`[MAC] PiSlots: slot 9 "PiStorm-SE", ...`). On a Mac without a Slot Manager it says so. In C (`mac/c` kit), 68020, System 6.0.8 and 7; below, "PiSlots" (`docs/img/system71-pislots-se.png`). |
 | PiColor | `mac/picolor.s` | `PiColor.bin` (application) | Colour on the Pi's screen: a colour window placed on the second display paints twelve hues at full and half strength, the primaries and a sixteen-step grey ramp with RGBForeColor and PaintRect (`docs/img/system71-two-screens.png`, both screens side by side). |
 | PiNet | `mac/pinet.s` | `PiNet.bin` (application) | Test application: shows the mailbox header, PiDisk 0, finds the Ethernet card through `SGetTypeSRsrc`, opens `.ENET` with `OpenSlot`, prints the address from EGetInfo, sends an ARP request for 192.168.68.1 and waits for the reply through ERead. Pair with `tools/pinet.py` on the host. |
 
@@ -442,6 +443,141 @@ python3 tools/qemu-mon.py cont
 and `stop`, `device_del u1`, `cont` to pull it out (each plug needs a new id). A stick alone on the root
 port (`-device usb-storage,bus=usb-bus.0,port=1,drive=...` at start) runs at high speed. hfsutils keeps
 its current volume in `$HOME/.hcwd`: give it a HOME of its own when another job uses hfsutils too.
+
+## PiSlots: the NuBus cards (21 November 2026)
+The user asked how to see which NuBus cards the Mac has. On the SE the Pi presents two cards that
+exist only in software (slot 9, the Aurora68 card; slot $A, the HDMI screen), and the IIci ROM's Slot
+Manager treats them like real ones. System 7.1 has no Apple System Profiler and the project gives away
+nothing it did not write, so PiSlots (`mac/pislots/pislots.c`, `PiSlots.bin`) is the project's own.
+Double-click it, or put it in Startup Items. It needs nothing else and changes nothing.
+
+**What it asks.** For the logic board's own declaration ROM (slot 0) and for slots $9 to $E, the Slot
+Manager (`_SlotManager`, $A06E): `SReadInfo` for whether a card is there and started (`siInitStatusA`)
+and what its start-up code answered (`siInitStatusV`); `SNextSRsrc` slot by slot for every sResource,
+the board sResource (category 1) first; `SGetCString`, `SReadWord` and `SFindStruct` for the name,
+board ID, vendor information (maker, serial number, revision, part number, date: whatever the card
+gives) and whether there is a primary init; `SReadDrvrName` for each function's driver name. Whether the
+driver is open comes from the unit table (`UTableBase`, `UnitNtryCnt`): a DCE whose `dCtlSlot`,
+`dCtlSlotId` and `dCtlExtDev` are the sResource's, `dOpened` in its flags, the reference number
+`~unit`. A screen's size and depth come from the GDevice whose `gdRefNum` is that driver. Kinds are
+put in words where the numbers are Apple's (ROMDefs: display/video, network/Ethernet, processor 68000
+to 68040, scanner, test, internal bus, dock) or Aurora68's own (category $7050 'pP': type 1 disk, type
+2 keyboard and mouse); the four numbers follow on a line of their own. A function with no driver in
+the card's ROM and none in the unit table says "driver: none" (`SReadDrvrName` makes a name either
+way). An empty slot answers `smEmptySlot` (-300) on a real Mac; the IIci ROM in the testbed answered
+-309 (`smBLFieldBad`, no byte lane holds a format block) for every empty slot, and both count as
+empty. Empty slots are listed once, at the end.
+
+**The window**, by the Human Interface Guidelines (1992), as the user asked of the project's Mac
+programs: a document window with close, zoom and grow boxes and two scroll bars that follow every
+resize; the report is not wrapped, so its columns stay in line in a narrow window and the horizontal bar
+moves it. The zoom box zooms to the screen that holds most of the window, as wide as the widest line and
+as tall as the report. The window's place and size are kept in "PiSlots Prefs" (type 'pref', the
+Preferences folder through `FindFolder` on System 7, the System Folder through `SysEnvirons` on System
+6) and put back only while a screen still shows its title bar. Menus: Apple (About PiSlots…), File
+(Close ⌘W, Save As…, Look Again ⌘R, Quit ⌘Q), Edit (Undo, Cut, Copy, Paste, Clear, Select All, with the
+usual keys; only Copy and Select All are PiSlots' own, the rest are there for desk accessories and dimmed
+otherwise). Copy copies the selection, or the whole report when nothing is selected. Save As… writes a
+TeachText document, "PiSlots 2026-11-21" by default. The About box and the alert for a failed save are
+centred on the main screen with the default button outlined; Return, Enter, Escape and Command-period
+answer them. Update, activate, suspend and resume events are handled; an inactive window's scroll bars
+are blank, as the Finder's are (System 7.1's control definition still draws the arrows of a bar dimmed
+with `HiliteControl` 255, so they are hidden instead); the 'SIZE' resource says MultiFinder-aware and
+can run in the background. Look Again redoes the list: a network driver is opened only when MacTCP or
+AppleTalk asks, so "closed until a program asks for it" changes to "open" after that. No Balloon Help:
+the C kit has no resource compiler and no 'hmnu' writer. It runs on the SE's one-bit screen and on
+colour screens, on System 6.0.8 and 7.
+
+On an Aurora68 Mac (slot 9 holding board ID $5053) it also writes a summary into the Pi's log through
+the mailbox's INFO service, one line per card's functions and one for the cards, so the kernel log and
+PiLog show what the Mac saw (the kernel takes 127 characters of a line, so a long card takes two):
+```
+[MAC] PiSlots: slot 9: PiDisk open, Network_EtherNet_PiStorm closed, PiInput open, Network_WiFi_PiStorm closed
+[MAC] PiSlots: slot 9, more: Display_Video_PiStorm open
+[MAC] PiSlots: slot 9 "PiStorm-SE"; empty: $A $B $C $D $E
+```
+
+**On the SE board** (MAME's `macse_ps`, 32 MiB, the System 7.1 image as the startup disk,
+`psmac-se-1024x768.declrom` with `mac.screen=1024x768`, PiScrn in Extensions; 21 November 2026), saved
+with File > Save As…:
+```
+The cards in this Macintosh, as the Slot Manager sees them.
+
+The logic board (slot 0, the built-in declaration ROM)
+  Card:        Macintosh II Built-In Video
+  Board ID:    $001F
+  Made by:     Apple Computer, Inc
+  Revision:    Macintosh II Family 1.0
+  Part number: 342-0733/342-0734/342-0735/342-0736
+  Date:        18-Jul-89
+  Start-up:    its own code (primary init) ran, answer 1
+  Functions:
+  $B5 CPU_68030_\_MacIIci
+      kind:    processor, 68030
+      numbers: category 10, type 4, software 0, hardware $0018
+      driver:  none
+
+Slot 9: a card
+  Card:        PiStorm-SE
+  Board ID:    $5053 'PS'
+  Made by:     PiStorm-SE project
+  Revision:    0.1
+  Part number: PSMAC
+  Start-up:    no start-up code of its own
+  Functions:
+  $80 PiDisk
+      kind:    disk (Aurora68's own kind)
+      numbers: category $7050 'pP', type 1, software 1, hardware $0001
+      driver:  .PiDisk, open, reference number -50
+  $81 Network_EtherNet_PiStorm
+      kind:    network, Ethernet
+      numbers: category 4, type 1, software 1, hardware $5053 'PS'
+      driver:  .Network_EtherNet_PiStorm, closed until a program asks for it
+  $82 PiInput
+      kind:    keyboard and mouse (Aurora68's own kind)
+      numbers: category $7050 'pP', type 2, software 1, hardware $0001
+      driver:  .PiInput, open, reference number -51
+  $83 Network_WiFi_PiStorm
+      kind:    network, Ethernet
+      numbers: category 4, type 1, software 1, hardware $5054 'PT'
+      driver:  .Network_WiFi_PiStorm, closed until a program asks for it
+  $84 Display_Video_PiStorm
+      kind:    display, video
+      numbers: category 3, type 1, software 1, hardware $5056 'PV'
+      driver:  .Display_Video_PiStorm, open, reference number -49
+      screen:  512 x 342, 1 bit (black and white), the main screen
+
+Slot $A: a card
+  Card:        PiStorm-SE HDMI
+  Board ID:    $5048 'PH'
+  Made by:     PiStorm-SE project
+  Revision:    0.1
+  Part number: PSMAC-HDMI
+  Start-up:    no start-up code of its own
+  Functions:
+  $80 Display_Video_PiHDMI
+      kind:    display, video
+      numbers: category 3, type 1, software 1, hardware $5048 'PH'
+      driver:  .Display_Video_PiHDMI, open, reference number -52
+      screen:  1024 x 768, 32 bits (millions of colours)
+
+Empty slots: $B, $C, $D, $E
+```
+(`docs/img/system71-pislots-se.png` on the SE's screen; `docs/img/system71-pislots-hdmi-zoom.png` after
+dragging the window onto the HDMI screen and clicking its zoom box: it zooms on that screen, the whole
+report in view; `docs/img/system71-pislots-se-resized.png` resized and scrolled on the SE's screen). The
+solo board with `psmac.declrom` shows the same slot 0 and slot 9 (its screen 640 x 480) and "Empty slots:
+$A, $B, $C, $D, $E"; with `psmac_wifi_video.declrom` the wired card $81 is absent
+(`docs/img/system71-pislots-solo-resized.png`, narrowed, with the horizontal bar).
+
+*Tested* in the testbed, driven through the remote's semihosting channel (`mac.remotefile=`,
+`tools/aurora68.py --semihost`): the list on the solo board (System 7.1, both declaration ROMs) and on
+the SE board (two screens, then one); resize, zoom (on the main screen and on the HDMI screen), both
+scroll bars (arrows, page, thumb); About and Command-period; the File and Edit menus; Save As… (the file
+opens in SimpleText); Copy; Quit and Close; suspend and resume behind the Finder; the window back where it
+was left, and back on the SE's screen at the default place when the HDMI screen it was saved on is gone.
+*Not verified:* real NuBus cards (on a IIci or SE/30: other vendors' declaration ROMs, a card whose start
+failed), a real SE, System 6 on the SE board, the Balloon Help that is not there.
 
 ## MacTCP
 MacTCP is Apple's TCP/IP of 1989-1996: the `.IPP` driver and a control panel, later folded into
