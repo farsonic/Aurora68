@@ -3592,6 +3592,10 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      - The loss alone did not reproduce the owner's stall; what the owner's WiFi does that the testbed
        does not is still unknown. If it happens again, a packet capture on the client (`tcpdump` of port
        8068) will show it.
+     - An upload that sent half its body with `force=1` and went silent: after 22 s the client had
+       `408 Request Timeout`, "the upload stopped arriving: 268992 of 537984 bytes in, nothing more for
+       20 s; the partial file was deleted". Riptide in Extensions was unchanged (537,566 bytes of
+       resources before and after), no Riptide.part was left, and the next jobs ran at once.
 
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
