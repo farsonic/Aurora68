@@ -283,6 +283,75 @@ struct psmb_dispinfo {
 #define PSMB_CS_KEPT         3u
 #define PSMB_CS_REVERTING    4u              /* the old file back, the Pi restarts */
 
+/* ---- the sound card's stream channel: PiPlay (21 November 2026, docs/09 "PiPlay") ----------------
+   The card's second function, for whole sound files: the Mac writes a file's bytes as they are into a
+   byte ring (MPEG audio, which is MP3, or the PCM samples of an AIFF or WAV file), and core 1 does the
+   rest (psmac_audio.c, "source 4"): it takes the bytes into a buffer of its own of some megabytes, so
+   that the Mac may fall behind for many seconds (a menu held down, another program in front, a slow
+   SCSI disk) without a gap; it decodes MPEG audio with minimp3 (third_party/minimp3), converts PCM,
+   resamples to the output's rate and mixes the result with the ASC and the card's ring above, so a beep
+   still sounds over the music. A 68k could not decode an MP3 in time; some real sound cards of the
+   period carried a DSP for such work, and this one has a Cortex-A53. The ring lies in the window's first
+   megabyte (24-bit systems reach it at $971000), between the log's ring and slot $A's declaration ROM.
+   head and tail count bytes for ever; the byte numbered n is at data_off + n % size.
+   A new file: STOP (the ring is emptied: the Pi sets tail = head), wait for done_seq, fill in format and
+   the PCM fields, write the first bytes, then START. More bytes may follow at any time; eof = 1 after the
+   last. PAUSE and RESUME keep everything; STOP forgets everything. A command: cmd, then cmd_seq + 1; the
+   Pi copies cmd_seq to done_seq when it has carried it out. The stream may be open-ended (data_bytes 0, eof
+   never set: a radio stream); the decoder finds the next frame after a gap or damage, and a gap is counted as
+   underruns, not an error. The block is 384 bytes, $11100-$1127F. */
+#define PSMB_OFF_STREAM      0x11100         /* struct psmb_stream, in the page of struct psmb_sound */
+#define PSMB_OFF_STRRING     0x71000         /* the byte ring: after the log's ring (0x61000-0x71000) */
+#define PSMB_STR_SIZE        0xB000u         /* 44 KiB: up to slot $A's declaration ROM at 0x7C000 */
+#define PSMB_STR_MAGIC       0x41363850u     /* 'A68P' */
+#define PSMB_STR_MPEG        1u              /* format: MPEG audio, layers I-III; rate and channels from the frames */
+#define PSMB_STR_PCM         2u              /* format: PCM, as pcm_rate, pcm_channels, pcm_bits, pcm_flags say */
+#define PSMB_STR_PCM_LE      1u              /* pcm_flags: little-endian words (WAV, AIFF-C 'sowt'); else big-endian (AIFF) */
+#define PSMB_STR_PCM_UNSIGNED 2u             /* pcm_flags: 8-bit samples are unsigned (WAV); else signed (AIFF) */
+#define PSMB_STR_C_START     1u              /* cmd: a new stream from what the ring holds */
+#define PSMB_STR_C_PAUSE     2u
+#define PSMB_STR_C_RESUME    3u
+#define PSMB_STR_C_STOP      4u              /* silence at once; the ring and the Pi's buffer emptied */
+#define PSMB_STR_S_IDLE      0u              /* state */
+#define PSMB_STR_S_PLAYING   1u
+#define PSMB_STR_S_PAUSED    2u
+#define PSMB_STR_S_ENDED     3u              /* the last sample has been played */
+#define PSMB_STR_S_ERROR     4u              /* error says why */
+#define PSMB_STR_E_FORMAT    1u              /* a format or PCM layout the Pi does not play */
+#define PSMB_STR_E_NOAUDIO   2u              /* no MPEG audio frame in the first 256 KB */
+#define PSMB_STR_E_NOMEM     3u              /* no memory for the Pi's buffer */
+struct psmb_stream {
+    uint32_t magic, version;                 /* Pi: 'A68P', 1 */
+    uint32_t size, data_off;                 /* Pi: PSMB_STR_SIZE, PSMB_OFF_STRRING */
+    uint32_t out_kind;                       /* Pi: PSMB_SND_OUT_*; NONE: nothing plays (mac.audio=off, no output found) */
+    uint32_t out_rate;                       /* Pi: the output's rate in Hz */
+    uint32_t pibuf_size;                     /* Pi: the size of its own buffer, bytes */
+    uint32_t done_seq;                       /* Pi: the last cmd_seq carried out */
+    uint32_t tail;                           /* Pi: bytes taken from the ring */
+    uint32_t state, error;                   /* Pi: PSMB_STR_S_*, PSMB_STR_E_* */
+    uint32_t rate, channels;                 /* Pi: the stream's, once known (MPEG: from its first frame) */
+    uint32_t bitrate;                        /* Pi: kbit/s, the average of the MPEG frames so far */
+    uint32_t layer;                          /* Pi: MPEG layer 1-3, 0 for PCM */
+    uint32_t pos_ms, length_ms;              /* Pi: what has been played; the length, 0 while not known */
+    uint32_t buffered;                       /* Pi: bytes in its own buffer, not yet decoded */
+    uint32_t mpeg_frames;                    /* Pi: MPEG frames decoded */
+    uint32_t skipped;                        /* Pi: bytes that were no audio (tags, damage) */
+    uint32_t underruns;                      /* Pi: output frames the stream did not have while it played */
+    uint32_t load;                           /* Pi: core 1's time in the decoder, per mille, over the last second */
+    uint32_t pad0[10];
+    uint32_t cmd_seq, cmd;                   /* Mac (from +0x80): cmd, then cmd_seq + 1 */
+    uint32_t head;                           /* Mac: bytes written into the ring */
+    uint32_t eof;                            /* Mac: 1 once the last byte is in the ring */
+    uint32_t format;                         /* Mac: PSMB_STR_MPEG or PSMB_STR_PCM, read at START */
+    uint32_t pcm_rate, pcm_channels, pcm_bits, pcm_flags;   /* Mac: the PCM's layout, read at START */
+    uint32_t data_bytes;                     /* Mac: the stream's length in bytes (0: not known), for length_ms */
+    uint32_t volume;                         /* Mac: left << 16 | right, $0100 full */
+    uint32_t title_seq;                      /* Mac: +1 after writing title */
+    char     title[128];                     /* Mac: what is playing, Mac Roman, NUL-terminated: the ID3 title, the
+                                                file's name, or later an internet radio station's "now playing" */
+    uint32_t pad1[20];
+};
+
 #define PSMB_MAX_SERVICES    8
 #define PSMB_MAX_BLKDEV      4
 

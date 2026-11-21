@@ -20,6 +20,7 @@ syntax, `binutils-m68k-linux-gnu`) and is packaged by small Python tools in `too
 | PiStatus | `mac/pistatus.s` | `PiStatus.bin` (application) | The Pi's status page (Alice68's `alice_status.h` at window + 0x50000): build string, uptime, the four ARM cores' names and load, SoC temperature, the JIT's cache and translation counts, the network units' link and counters; redraws when the kernel's seq moves, at most every five seconds (`docs/img/system71-pistatus.png`: under System 7.1 after PiNet's ARP exchange, the Ethernet unit shows one frame each way and core 3, the service core, its load). |
 | PiPing | `mac/piping.s` | `PiPing.bin` (application) | MacTCP over the Pi: opens Apple's `.IPP` driver, shows the configured address and mask (ipctlGetAddr), sends three ICMP echo requests to the testbed peer (ipctlEchoICMP, completion routine) and prints the round trips in ticks. Needs MacTCP installed and pointed at the card. |
 | PiLog | `mac/pilog.c` | `PiLog.bin` (application) | The Pi kernel's log in a window that moves, resizes, zooms and scrolls (`docs/img/system71-pilog.png`). The kernel copies its log into a 64 KiB ring at window + 0x60000 (`psmb.h`, struct psmb_log) from boot; PiLog costs one memory read a quarter-second. Check boxes filter by part: Kernel, Mac, WiFi, Bluetooth, Network, Card; Option-click shows one part alone (`docs/img/system71-pilog-wifi.png`). Since 19 November a second row: **Filter:** shows only lines containing the text, in any case, together with the check boxes (several words must all match, `-word` hides lines with it; typing anywhere in the window goes to the field, the view is redone a fifth of a second after the last key; Esc or the field's small close box empties it) and says how many lines show, "5 of 688 lines" for WIFI in the testbed (`docs/img/system71-pilog-filter.png`); **Clear** (Edit > Clear Log, Command-K) empties the view without touching the kernel's ring, which other readers and the serial copy use: PiLog remembers where the ring stood and shows only what came after; Edit > Show Earlier Lines brings the rest back (`docs/img/system71-pilog-clear.png`); **Follow** (View > Follow New Lines, Command-T), checked at the start, keeps the view at the newest line; scrolling up unchecks it, scrolling back to the bottom or End checks it again (`docs/img/system71-pilog-follow.png`). Text can be selected and copied, and pasted into the filter. Since 20 November the log can be handed on as text instead of a photograph: **File > Save Log…** (⌘S) puts the lines shown (the parts, the filter, from Clear's mark, under a first line saying which) into a TeachText document (TEXT, 'ttxt') named "PiLog 2026-11-19 14.05"; with Option held (⌘⌥S) the whole ring. TeachText opens 32 KB at most, a whole ring is 64 KB: copy it to a modern machine (Lagoon's share) and read it there. **Save to Card** (the button at the right of the second row, or File > Save Log to SD Card) asks the kernel (`PSMB_INFO_SAVELOG`, progress through `PSMB_INFO_LOGSTATE`) to write the whole ring to `aurora68.log` in the SD card's root, overwritten each time; the kernel also does it by itself after a `[CRASH]` record (docs/08 item 55). Secrets never show: the values of `wifi.psk` and of any option named psk, pass, key or secret, the password in `mac.wifisim=` and the link key in `bt.dev=` become `***` in the window, the Scrap, a saved file and `aurora68.log` (the kernel echoes its bootargs) (`docs/img/system71-pilog-save.png`, `docs/img/system71-pilog-card.png`). Menus File, Edit (Undo to Clear in the standard order for desk accessories, then Select All, Filter Lines Command-F, Clear Log, Show Earlier Lines) and View; items that cannot be used are dimmed (`docs/img/system71-pilog-menu.png`). The 496-pixel window fits the SE's screen. In C, built with the kit in `mac/c` (`mac/c/README.md`); the image starts it from Startup Items. |
+| PiPlay | `mac/piplay/piplay.c` | `PiPlay.bin` (application) | MP3, AIFF and WAV files on the sound card, decoded on the Pi (below, "PiPlay"): File > Open… (Standard File, every file shown; the kind is found from the content, so a file from a PC with no type plays), Play/Pause and Stop, the title and artist from the ID3 tag, the time played and the length, a volume slider. Hands the file's bytes to the card's stream channel (`psmb.h` struct psmb_stream); the Pi's core 1 decodes with minimp3 and mixes with the Mac's own sound. In C, with the kit in `mac/c`. Since 21 November 2026. |
 | PiScreens | `mac/piscreens.s` | `PiScreens.bin` (application) | QuickDraw's GDevice list: each screen's rectangle, flags, depth, frame buffer base, row bytes and driver, then MMU32Bit. Written for the second display's bring-up (docs/10): it is how the Pi's screen was found created but not activated. |
 | PiSlots | `mac/pislots/pislots.c` | `PiSlots.bin` (application) | The NuBus cards the Slot Manager knows about, in plain words (System 7.1 has no Apple System Profiler): for the logic board's own declaration ROM (slot 0) and each slot $9-$E, whether a card is there and started, its name, board ID, maker, revision, part number and date as far as its declaration ROM gives them, and its start-up code's answer; then each function (sResource): id, name, kind in words (display, network, processor, disk, input...) with the four numbers, its driver, whether the driver is open and its reference number (from the unit table), and for a screen its size and depth. A resizable, zoomable window with two scroll bars that comes back where it was left; File > Save As… (a TeachText document), Edit > Copy, File > Look Again (⌘R), About PiSlots…. A summary also goes to the Pi's log (`[MAC] PiSlots: slot 9 "PiStorm-SE", ...`). On a Mac without a Slot Manager it says so. In C (`mac/c` kit), 68020, System 6.0.8 and 7; below, "PiSlots" (`docs/img/system71-pislots-se.png`). |
 | PiColor | `mac/picolor.s` | `PiColor.bin` (application) | Colour on the Pi's screen: a colour window placed on the second display paints twelve hues at full and half strength, the primaries and a sixteen-step grey ramp with RGBForeColor and PaintRect (`docs/img/system71-two-screens.png`, both screens side by side). |
@@ -268,6 +269,112 @@ back`, `[PSMAC:EDID] the whole Pi restarts now (its watchdog)`, after the restar
 config.txt read (it includes aurora68-display.txt), ...; a new mode waits to be confirmed`, `[MAC] PiScrn: a
 new HDMI mode waits to be kept`, `[MAC] PiDisplay: ...`, and from the heartbeat `display 1 (HDMI): ...
 VideoCore N frames in 5 s, longest U us in B bands, turned 90` for a rotated screen.
+
+## PiPlay: MP3, AIFF and WAV on the sound card (21 November 2026)
+The user's SE plays the Mac's sound in stereo on HDMI (above); they wanted to play MP3 files. System 7.1
+on a 68k has no MP3 player, the test image has no sound-file player at all, and third-party Mac software
+is not to be downloaded; a 68000-class Mac could not decode MP3 in time anyway. So the card decodes, as
+some real cards did with a DSP: **PiPlay** (`mac/piplay/piplay.c`, C, the kit of `mac/c`) reads the file
+with the File Manager and hands its bytes, as they are, to the card's **stream channel**; the Pi's core 1
+decodes MPEG audio with minimp3 (`emu68/src/psmac/third_party/minimp3/`, CC0, unmodified; compiled in
+`psmac_mp3.c`), converts the PCM of AIFF and WAV files, resamples to the output's rate with the card's
+filter and mixes the result with the ASC and the card's Sound Manager ring, so beeps sound over the music.
+The SE's speaker plays the stream only with `mac.sestream=on` (in MAME's SE a beep during music hung the Mac
+while the stream fed the speaker; docs/08 item 82 is the record).
+
+**The stream channel** (`psmb.h`, struct psmb_stream): a 384-byte block at window + $11100, beside the
+sound card's, and a 44 KiB byte ring at window + $71000 (between the log's ring and slot $A's declaration
+ROM; $971000 in 24-bit mode). The Mac writes `head`, the Pi `tail`, both counting bytes for ever. A new
+file: STOP (the Pi empties the ring), wait for `done_seq`, fill in `format` (MPEG or PCM, and for PCM the
+rate, channels, bits, byte order and signedness) and `data_bytes`, write the first bytes, START; more bytes
+whenever the ring has room, `eof` after the last; PAUSE, RESUME, STOP. The Pi answers with the state
+(playing, paused, ended, error and why), what it found (rate, channels, layer, the bit rate), the position
+and the length in ms, how much it holds, MPEG frames decoded, bytes skipped, underruns, and its decoder's
+load on core 1 in per mille. The Mac also writes `title` (128 bytes, Mac Roman, what is playing) and then
+bumps `title_seq`; the kernel logs it (`[AUDIO] stream: now playing "..."`). PiPlay writes the ID3 title or
+the file's name there. Made ready for a radio stream (the next step: an MP3 stream over MacTCP, its ICY
+metadata stripped on the Mac): a stream may be open-ended (`data_bytes` 0, no `eof`: the length shows as
+unknown and the stream plays as long as bytes come), minimp3 looks for the next frame header after a gap
+or damage and the decoder never stops on bad bytes once a first frame was found (the bytes are counted as
+skipped, a gap as underruns, and playback starts again once enough is in hand), the station's "now
+playing" goes into `title`, and STOP followed by START restarts everything without a reset of the Pi. Core 1 empties the ring into 2 MiB of its own at once, so the Mac fills that
+much ahead: about 90 s of a 192 kbit/s MP3, 12 s of CD-quality PCM; a held menu, a dialog, another program
+in front or a slow SCSI disk cost nothing until that runs out. Decoding is one MPEG frame (1,152 samples)
+per poll of core 1's loop and only while fewer than 8,192 decoded frames wait, so the output's DMA blocks
+and the USB work on the same core are never held up by more than one frame's decoding. The length comes
+from the Xing/Info frame LAME and ffmpeg write (its frame count; the LAME tag's encoder delay and padding
+are taken off, so a file starts with its first sample), else from the bit rate and `data_bytes`.
+
+**PiPlay** finds what a file is from its content, never its type or name (a file copied from a PC has
+none): an ID3v2 tag ("ID3") or an MPEG frame header confirmed by the next one is MPEG audio (layers I-III,
+all MPEG-1, 2 and 2.5 rates); "FORM" ... "AIFF"/"AIFC" is AIFF (uncompressed: 'NONE', 'twos', 'sowt'); "RIFF"
+... "WAVE" is WAV (PCM, 8, 16 or 24 bits; format 0x55, MP3 inside a WAV, goes to the decoder). Compressed
+AIFF-C (IMA, MACE, µ-law) and floating-point WAV are refused in plain words. The ID3v2 tag gives the title
+and artist (TIT2, TPE1; Latin-1, UTF-16 and UTF-8 into Mac Roman), else the ID3v1 tag at the end, else the
+file's name; neither tag is sent to the card.
+
+The window follows the Human Interface Guidelines of 1992: a document window with a grow box and a zoom
+box (340 by 106 at the first start and at the smallest, which fits the SE's screen; the zoom box's other
+state is as wide as the main screen allows, 140 high); the title in Chicago, the artist and the format
+("Aurora68 test — MP3, 44.1 kHz stereo, 192 kbit/s") and the progress line with "0:42 of 1:44" and the
+state run the window's width, the Play/Pause and Stop buttons and the volume slider sit along its bottom,
+clear of the grow box (drawn alone, without the scroll-bar lines a window without scroll bars should not
+have). Menus: Apple (About PiPlay…), File (Open… ⌘O, Close ⌘W, Quit ⌘Q), Edit (Undo, Cut, Copy, Paste,
+Clear: for desk accessories, dimmed while PiPlay is in front), Controls (Play/Pause ⌘P, Stop ⌘., Volume
+Up ⌘], Volume Down ⌘[); the space bar plays and pauses while the window is in front, Esc stops, the
+arrows change the volume, Return opens or plays; a ⌘-key that is no command beeps. Closing the window
+(⌘W or its close box) closes the sound and leaves PiPlay running; Open… brings the window back. The
+window's place and size and the volume go into "PiPlay Prefs" (type 'pref', in the Preferences folder
+from FindFolder on System 7, in the System Folder on System 6) at Quit, and come back at the next start
+when the place is still on a screen (both ends of the title bar inside the desktop region), else the
+window goes on the main screen and the log says so. Update, activate, suspend and resume events are
+handled, the SIZE resource says canBackground, so the music goes on with another program in front. The
+volume is the slider times the Sound control panel's level (SdVolume). Errors and the About box come in a
+small window of their own, centred a third of the way down the main screen, with OK outlined as the
+default button (Return, Enter or Esc); Standard File's dialog is centred the same way. Everything is drawn
+with patterns, in black and white, so the SE's one-bit screen and a colour screen show the same. Not done:
+Balloon Help (the project has no resource compiler, and a hand-built 'hmnu' that the Help Manager reads
+wrongly is worse than none), a playlist, and seeking.
+
+From the Finder: PiPlay carries a bundle (`mac/piplay/mkrsrc.py`: signature 'PIPY', BNDL 128, FREF 128 for
+the application and FREF 129 '****' for every kind of document, and its icon, ICN# 128, a loudspeaker and a
+note) and the has-bundle flag (`elf2app.py --bundle`), so the Finder registers it; files dropped on its icon,
+or opened while their creator is 'PIPY', reach it as the application's files (AppParmHandle), the way
+System 6 does it and System 7 does for a program that is not high-level-event aware. (An Apple-event version,
+'odoc', stopped with "bad F-Line instruction" in the testbed when the Finder launched it with a document; it
+was taken out, docs/08 item 82.)
+Every step is in the Pi's log as `[MAC] PiPlay: ...`, the kernel's as `[AUDIO] stream: ...`, and each
+heartbeat has a `[PSMAC]   stream:` line while a stream has been used. mac.audio=off (or no output found):
+PiPlay says the Pi plays no sound and quits; an older kernel without the channel: it says so.
+
+Test sounds: `tools/mksounds.py OUTDIR` (standard library; the MP3 step runs `lame`, else ffmpeg) makes a
+left-then-right check (440 Hz left, 660 Hz right, 880 Hz both, 2 s each), a sweep from 100 Hz to 10 kHz
+and 1 kHz, as AIFF, WAV, AIFF-C 'sowt', 8-bit mono WAV and MP3, and three pieces of public-domain music
+played by a small synthesizer, each with an ID3v2 title and the artist "Aurora68 test": the Minuet in G
+of the Anna Magdalena Notebook (44.1 kHz, 192 kbit/s, and as AIFF), Beethoven's Ode to Joy (32 kHz,
+160 kbit/s) and Joplin's The Entertainer (22.05 kHz, 128 kbit/s). Nothing is downloaded; the files are
+not in the repository (about 35 MB): run the script. In the testbed (`tools/run-solo.sh` with
+`mac.audiodump=PATH` and `mac.remotefile=BASE`, the files copied raw, with no type, by `hcopy -r`):
+- LR check (MP3 at 192 kbit/s, AIFF, WAV, AIFF-C 'sowt'): 440.0 Hz on the left alone, 660.0 Hz on the right
+  alone, 880.0 Hz on both, each 2.05 s with 0.45 s between (tools/audiocheck.py on `mac.audiodump=`), the
+  other channel silent; the MP3 starts with its first sample (the encoder's delay dropped).
+- Sweep (MP3, and the 8-bit mono WAV at 22,050 Hz): 10.05 s of glide, then 1000.0 Hz for 3.05 s; 50 ms
+  windows found 310, 978 and 3095 Hz where the glide should be at 312, 986 and 3112 Hz.
+- Minuet in G (MP3, 104 s): played to the end, no underruns, length 1:44 from the Info frame; paused for
+  4.8 s (silent within 0.3 s of the key, a 6 ms fade) and resumed; two System beeps through Sound PiStorm
+  sounded over it (440 Hz with 1320 and 2200 Hz, a square wave, against the music), nothing clipped. Ode to
+  Joy (32 kHz MPEG-1) and The Entertainer (22.05 kHz MPEG-2) found, played and stopped.
+- The decoder on core 1, under QEMU's emulation: 30 to 75 per mille of the core, the longest slice 13 to
+  28 ms; on the x86 host the same code decodes 104 s in 0.14 s, so a Pi 3 should be near 1 or 2 per cent
+  (to be read from the heartbeat's `stream:` line on hardware).
+- CD-quality PCM needs 176 KB/s from the Mac's disk. The short AIFF and WAV files play without a gap; the
+  18 MB AIFF of the minuet had gaps adding up to 9 s in 104 (the testbed's System 7.1 reads its disk image
+  through semihosting at about 160 KB/s). MP3s need 16 to 24 KB/s.
+- The window: grown, zoomed (the standard state across the screen) and back, the contents following
+  (`docs/img/system71-piplay-resize.png`); its place and size came back at the next start, and on MAME's SE
+  (512 by 342, one bit) a place remembered from the 640 by 480 screen was found off the screen and the
+  window put on the main screen (`docs/img/se-piplay.png`); the About box and the error windows centred
+  with OK outlined.
 
 ## The WiFi in the testbed: a radio that exists only in software
 QEMU's raspi3b has no WiFi chip (no SDIO function, no firmware to load), so the real driver in

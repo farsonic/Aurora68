@@ -1,5 +1,5 @@
 # Mac-side pieces for PiStorm-SE: 68k assembly (GNU binutils for m68k) packaged with tools/mac/*.py.
-#   make            builds the drivers, the declaration ROM, the PiDisk extension and the PiNet, PiWiFi, PiBlue, PiStatus, PiPing and PiLog applications
+#   make            builds the drivers, the declaration ROM, the PiDisk extension and the PiNet, PiWiFi, PiBlue, PiStatus, PiPing, PiLog and PiPlay applications
 #   The declaration ROM (build/psmac.declrom) carries the .PiDisk, .Network_EtherNet_PiStorm and .PiInput drivers,
 #   and PiDisk's boot record (pidisk_boot.s), which lets an image on the card be the startup disk.
 #   make check     compares the struct offsets in enet.s with emu68/src/alice/alice_net.h
@@ -9,7 +9,7 @@ OBJCOPY = m68k-linux-gnu-objcopy
 PY      = python3
 B       = build
 
-all: $(B)/psmac-se.declrom $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/PiLog.bin $(B)/PiDepth.bin $(B)/WiFiMenu.bin $(B)/PiScrn.bin $(B)/PiDisplay.bin $(B)/SoundPiStorm.bin $(B)/PiSlots.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes declrom-wifi-sizes declrom-se-sizes
+all: $(B)/psmac-se.declrom $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/PiLog.bin $(B)/PiDepth.bin $(B)/WiFiMenu.bin $(B)/PiScrn.bin $(B)/PiDisplay.bin $(B)/SoundPiStorm.bin $(B)/PiSlots.bin $(B)/PiPlay.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes declrom-wifi-sizes declrom-se-sizes
 
 $(B)/%.o: %.s
 	@mkdir -p $(B)
@@ -162,6 +162,36 @@ $(B)/PiDepth.bin: $(B)/pidepth.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py
 	$(PY) ../tools/mac/elf2app.py $< --name "PiDepth 8" --creator PIDP --size 64 -o $@
 $(B)/PiLog.bin: $(B)/pilog.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py
 	$(PY) ../tools/mac/elf2app.py $< --name PiLog --creator PILG --size 256 -o $@
+
+# ---- PiPlay: MP3, AIFF and WAV on the sound card's stream channel, an application in C (mac/piplay) ----
+# its Toolbox list is c/traps.txt and piplay/traps.txt together, its glue in build/pp/, so that the other
+# C programs' binaries do not change; it includes the kernel's psmb.h for the stream block
+$(B)/piplay_traps.txt: c/traps.txt piplay/traps.txt
+	@mkdir -p $(B)
+	cat c/traps.txt piplay/traps.txt > $@
+$(B)/pp/toolbox_glue.s $(B)/pp/toolbox_gen.h: $(B)/piplay_traps.txt ../tools/mac/mktraps.py
+	@mkdir -p $(B)/pp
+	$(PY) ../tools/mac/mktraps.py $< -s $(B)/pp/toolbox_glue.s -H $(B)/pp/toolbox_gen.h
+$(B)/pp/toolbox_glue.o: $(B)/pp/toolbox_glue.s
+	$(AS) -o $@ $<
+$(B)/pp/fs.o: piplay/fs.s
+	@mkdir -p $(B)/pp
+	$(AS) -o $@ $<
+$(B)/pp/libc.o: c/libc.c c/toolbox.h $(B)/pp/toolbox_gen.h
+	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -c -o $@ $<
+$(B)/pp/piplay.o: piplay/piplay.c c/toolbox.h $(B)/pp/toolbox_gen.h ../emu68/src/psmac/psmb.h
+	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -I../emu68/src/psmac -c -o $@ $<
+$(B)/piplay.elf: $(B)/crt0.o $(B)/pp/toolbox_glue.o $(B)/pp/libc.o $(B)/pp/fs.o $(B)/pp/piplay.o c/app.ld
+	$(LD) -T c/app.ld --emit-relocs --no-warn-rwx-segments -z noexecstack -o $@ $(B)/crt0.o $(B)/pp/toolbox_glue.o $(B)/pp/libc.o $(B)/pp/fs.o $(B)/pp/piplay.o $(LIBGCC)
+# the Finder's resources (signature, bundle, file references, icon: piplay/mkrsrc.py): files dropped on
+# PiPlay's icon reach it as the application's files (AppParmHandle)
+PP_RSRC = --rsrc PIPY:0:$(B)/pp/sig.bin --rsrc BNDL:128:$(B)/pp/bndl128.bin --rsrc FREF:128:$(B)/pp/fref128.bin \
+          --rsrc FREF:129:$(B)/pp/fref129.bin --rsrc ICN\#:128:$(B)/pp/icn128.bin
+$(B)/pp/bndl128.bin: piplay/mkrsrc.py
+	@mkdir -p $(B)/pp
+	$(PY) piplay/mkrsrc.py $(B)/pp
+$(B)/PiPlay.bin: $(B)/piplay.elf $(B)/pp/bndl128.bin ../tools/mac/elf2app.py ../tools/mac/rsrc.py
+	$(PY) ../tools/mac/elf2app.py $< --name PiPlay --creator PIPY --size 192 --bundle $(PP_RSRC) -o $@
 
 # ---- the WiFi menu: an INIT in C (mac/wifimenu, tools/mac/elf2init.py) ----
 $(B)/wifimenu_traps.txt: c/traps.txt wifimenu/traps.txt

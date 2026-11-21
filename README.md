@@ -246,7 +246,7 @@ screen, booted from the SE's SCSI disk, with PiDisk mounted beside it (docs/08 i
 | Directory | Contents |
 |---|---|
 | `emu68/` | the Emu68 fork (vendored; its own history is the branch `emu68-psmac`): the kernel. `src/psmac/` is the Macintosh host layer (bus bridge, 68030 MMU shim, mailbox window); `src/alice/` are the Alice68 service modules (network, Bluetooth, status, USB) with their Macintosh glue |
-| `mac/` | the Macintosh side in 68k assembly: the `.PiDisk` block driver, the `.ENET`-interface Ethernet driver, the `.PiInput` keyboard-and-mouse driver, the `.Display_Video_PiStorm` second-display driver, the PiDisk and PiMach extensions, the PiNet, PiPing, PiScreens and PiColor test applications, the PiWiFi, PiBlue and PiStatus applications, and in C (with the kit in `mac/c`) PiLog, PiSlots, PiDepth, the WiFi menu and PiScrn, a Makefile (`make check` compares the drivers' structure offsets with the kernel's header) |
+| `mac/` | the Macintosh side in 68k assembly: the `.PiDisk` block driver, the `.ENET`-interface Ethernet driver, the `.PiInput` keyboard-and-mouse driver, the `.Display_Video_PiStorm` second-display driver, the PiDisk and PiMach extensions, the PiNet, PiPing, PiScreens and PiColor test applications, the PiWiFi, PiBlue and PiStatus applications, and in C (with the kit in `mac/c`) PiLog, PiSlots, PiDepth, the WiFi menu, PiScrn and PiPlay (MP3, AIFF and WAV on the sound card), a Makefile (`make check` compares the drivers' structure offsets with the kernel's header) |
 | `tools/` | ROM patching, the initramfs container builder (`mkcontainer.py`: ROM, declaration ROM and firmware in one cpio for the Pi), the full-stack testbed launcher, the host network peer, debugging helpers |
 | `tools/mac/` | resource fork, MacBinary, application, extension and declaration ROM builders (pure Python) |
 | `rom/` | ROM patch descriptions and the patch tool's Makefile (ROM images themselves are not in the repository) |
@@ -268,3 +268,8 @@ The solo board alone, no MAME: `tools/run-solo.sh SECONDS [bootargs...]` (`HD=` 
 The Emu68 fork is MPL-2.0 like Emu68 itself. The Alice68 service modules under `emu68/src/alice/`
 are GPL-2.0-only, as in Alice68. The Macintosh-side drivers, tools and documents of this project
 are MPL-2.0. Apple ROM images and disk images are not distributed.
+
+Third-party code compiled into the kernel beyond Emu68 and Alice68: **minimp3** by lieff
+(https://github.com/lieff/minimp3), the MPEG audio decoder behind PiPlay, dedicated to the public domain
+under CC0 1.0 and vendored unmodified in `emu68/src/psmac/third_party/minimp3/` with its licence text
+and a note of the commit it was taken from.

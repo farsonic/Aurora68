@@ -40,6 +40,13 @@
  * level, a few hundredths of a per cent either way. A sound that starts after silence starts with
  * whatever the ring holds; the level the ratio aims at is the one it had then.
  *
+ * Since 21 November 2026 there is a fourth source (docs/08 item 82): the card's stream channel, for
+ * PiPlay (mac/piplay.c). The Mac hands over a sound file's bytes as they are, MPEG audio (MP3) or the
+ * PCM of an AIFF or WAV file, through a byte ring in the window (psmb.h, struct psmb_stream); core 1
+ * takes them into a buffer of its own of 2 MiB, decodes MPEG audio with minimp3 (psmac_mp3.c), one
+ * frame at a time and only while fewer than a few frames are decoded ahead, converts PCM, and plays the
+ * result through a resampler of its own beside the other three, so a beep still sounds over the music.
+ *
  * Not verified on hardware (20 November 2026): the HDMI and PWM output and their DMA; everything
  * from the rings to the samples is, in QEMU, through mac.audiodump=. */
 #include <stdint.h>
@@ -49,6 +56,7 @@
 #include "psmac.h"
 #include "psmb.h"
 #include "psmac_audio_fir.h"
+#include "third_party/minimp3/minimp3.h"              /* the declarations; psmac_mp3.c compiles the decoder */
 
 extern const char *psmac_option(const char *key);                /* psmac_bus.c */
 extern int64_t psmac_sh_open(const char *name, uint64_t mode);
@@ -62,6 +70,7 @@ extern uint32_t psmac_asc_wt_gen(void);                          /* ... bumped w
 
 static inline uint64_t now(void) { uint64_t v; __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(v)); return v; }
 static inline uint64_t hz(void)  { uint64_t v; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(v)); return v; }
+_Static_assert(sizeof(struct psmb_stream) == 384 && __builtin_offsetof(struct psmb_stream, cmd_seq) == 0x80, "psmb_stream");
 
 /* the peripherals through the kernel's own mapping (psmac.h), little-endian registers */
 #define IO(a) ((volatile uint32_t *)(uintptr_t)(PSMAC_PERIPH_HI + ((a) - PSMAC_PERIPH_LOW)))
@@ -102,6 +111,7 @@ enum { OUT_OFF, OUT_HDMI, OUT_JACK, OUT_FILE };
 static int opt_read, out_want = OUT_HDMI, out_kind = OUT_OFF, card_on = 1;
 static uint32_t out_rate = 48000, test_secs;
 static int test_card;
+static int str_spk;                           /* mac.sestream=on: the SE's speaker plays the stream too (below, mix_frame) */
 static const char *dump_path;
 static void options(void)
 {
@@ -112,6 +122,7 @@ static void options(void)
     if ((v = psmac_option("mac.audiorate")) && v[0] == '4' && v[1] == '4') out_rate = 44100;
     if ((v = psmac_option("mac.audiodump")) && v[0]) { dump_path = v; out_want = OUT_FILE; }
     if ((v = psmac_option("mac.sndcard")) && v[0] == 'o' && v[1] == 'f') card_on = 0;
+    if ((v = psmac_option("mac.sestream")) && v[0] == 'o' && v[1] == 'n') str_spk = 1;
     if ((v = psmac_option("mac.audiotest"))) {
         if (v[0] == 'c') test_card = 1;
         else { uint32_t n = 0; while (*v >= '0' && *v <= '9') n = n * 10 + (uint32_t)(*v++ - '0'); test_secs = n ? n : 3; }
@@ -268,20 +279,25 @@ static void card_next(int32_t *l, int32_t *rt)
     *l = a * (int32_t)(card_vol >> 16) / 256; *rt = b * (int32_t)(card_vol & 0xffff) / 256;
 }
 
-/* the SE's speaker plays the card too: a mono feed at the ASC's rate, taken by psmac_board_se.c's
-   speaker beside the ASC's own bytes. Two card frames averaged, every 44100/22257th one, which is
-   a speaker of 8 bits and two inches. */
+/* the SE's speaker plays the card and the stream too: a mono feed at the ASC's rate, taken by
+   psmac_board_se.c's speaker beside the ASC's own bytes. Fed at the output's rate from what the card
+   and the stream sound (mix_frame), the frames between two speaker samples averaged, which is a
+   speaker of 8 bits and two inches. Only while either really plays: silence would keep the speaker
+   writing its buffer for ever (docs/08 item 74). */
 #define SPK_RING 4096u
 static uint8_t spk_ring[SPK_RING];
-static uint32_t spk_head, spk_tail, spk_frac;
-static int32_t spk_prev;
+static uint32_t spk_head, spk_tail, spk_frac, spk_n;
+static int32_t spk_sum;
 static void spk_feed(int32_t l, int32_t rt)
 {
-    int32_t m = (l + rt) / 2, v = (m + spk_prev) / 2;
-    spk_prev = m;
+    spk_sum += (l + rt) / 2;
+    spk_n++;
     spk_frac += ASC_RATE;
-    if (spk_frac < CARD_RATE) return;
-    spk_frac -= CARD_RATE;
+    if (spk_frac < out_rate) return;
+    spk_frac -= out_rate;
+    int32_t v = spk_sum / (int32_t)spk_n;
+    spk_sum = 0; spk_n = 0;
+    if (v > 32767) v = 32767; else if (v < -32768) v = -32768;
     if (spk_head - __atomic_load_n(&spk_tail, __ATOMIC_ACQUIRE) >= SPK_RING) return;
     spk_ring[spk_head % SPK_RING] = (uint8_t)((v >> 8) + 128);
     __atomic_store_n(&spk_head, spk_head + 1, __ATOMIC_RELEASE);
@@ -318,6 +334,352 @@ static void test_next(int32_t *l, int32_t *rt)
     *l = sine(test_ph[0]) / 2; *rt = sine(test_ph[1]) / 2;
 }
 
+/* ---- source 4: the stream channel (PiPlay; psmb.h struct psmb_stream) --------------------------
+   Everything here runs on core 1, in psmac_audio_poll (the commands, the bytes, the decoding) and in
+   mix_frame (the samples), so the queues between them need no atomics. The Mac's half of the block
+   is read with care: a command is taken once its cmd_seq moves, and the ring's head is used only
+   once it has been seen for STR_HEAD_LAG: the 68k's stores come from the JIT on core 0 with no
+   barrier between the bytes and the head, and an ARM core may make them visible out of order. */
+#define STR_PIBUF    (2u << 20)               /* the Pi's own buffer: 87 s of 192 kbit/s MP3, 12 s of CD-quality PCM */
+#define STR_WIN      16384u                   /* the decoder's window: minimp3 checks a frame against the next ones in it */
+#define STR_PCM      8192u                    /* decoded frames waiting for the resampler */
+#define STR_PREFILL  2304u                    /* frames decoded before a stream sounds (two MP3 frames) */
+#define STR_NOAUDIO  (256u << 10)             /* bytes looked through for a first MPEG frame */
+#define STR_HEAD_LAG 50u                      /* us: how long a new head must have been seen */
+static volatile struct psmb_stream *str;
+static const volatile uint8_t *str_ring;
+static struct rs str_rs;
+static uint8_t *pibuf;
+static uint32_t pb_head, pb_tail;             /* count for ever; the buffer is a power of two */
+static uint32_t head_seen, head_ok;           /* the Mac's head as last seen, and the one that may be used */
+static uint64_t head_seen_t;
+static uint8_t dwin[STR_WIN];
+static uint32_t dwin_n;
+static mp3dec_t mp3d;
+static int16_t mp3_pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
+static int16_t spcm[STR_PCM][2];
+static uint32_t spcm_head, spcm_tail;
+static volatile uint32_t str_reset_req;      /* the 68k was reset (psmac_audio_mac_reset, another core) */
+static uint64_t str_busy, str_busy_t0;       /* the decoder's time over the last second */
+static uint32_t str_max_us, str_used;
+static struct {
+    int on, playing, paused, stopping, src_done, ended, logged;
+    uint32_t format, rate, channels, bits, flags, fbytes;
+    int32_t gain, gain_target;                /* 0-256: a fade of 256 input frames on pause, resume and stop */
+    uint64_t frames;                          /* input frames played */
+    uint32_t skip;                            /* frames still to drop at the start: the encoder's delay (LAME tag) */
+    int first;                                /* the first MPEG frame is still to come (Xing/Info, LAME tag) */
+    uint32_t xing_frames, delay, padding, spf;
+    uint64_t kbps_sum;
+    uint32_t mpeg_frames, skipped, underruns;
+    uint64_t stop_t;
+} st;
+
+static uint32_t str_level(void) { return spcm_head - spcm_tail; }
+static void str_clear(void)                   /* everything about the last stream forgotten */
+{
+    pb_head = pb_tail = 0; dwin_n = 0; spcm_head = spcm_tail = 0;
+    for (uint32_t i = 0; i < sizeof st; i++) ((uint8_t *)&st)[i] = 0;
+    for (uint32_t i = 0; i < sizeof str_rs; i++) ((uint8_t *)&str_rs)[i] = 0;
+    str_rs.idle = FIR_TAPS;
+    mp3dec_init(&mp3d);
+    str->rate = str->channels = str->bitrate = str->layer = 0;
+    str->pos_ms = str->length_ms = str->buffered = str->mpeg_frames = str->skipped = str->underruns = 0;
+    str->error = 0;
+}
+static uint32_t str_ms(uint64_t frames) { return st.rate ? (uint32_t)(frames * 1000u / st.rate) : 0; }
+static void str_fail(uint32_t why, const char *say)
+{
+    kprintf("[AUDIO] stream: %s\n", say);
+    st.on = st.playing = 0;
+    str->error = why;
+    str->state = PSMB_STR_S_ERROR;
+}
+static void str_start(void)
+{
+    str_clear();
+    if (!pibuf) pibuf = tlsf_malloc(tlsf, STR_PIBUF);
+    if (!pibuf) { str_fail(PSMB_STR_E_NOMEM, "no memory for the buffer"); return; }
+    st.format = str->format;
+    st.gain = st.gain_target = 256;
+    st.first = 1;
+    str_used++;
+    if (st.format == PSMB_STR_PCM) {
+        st.rate = str->pcm_rate; st.channels = str->pcm_channels; st.bits = str->pcm_bits; st.flags = str->pcm_flags;
+        if (st.rate < 4000 || st.rate > 192000 || st.channels < 1 || st.channels > 8 || (st.bits != 8 && st.bits != 16 && st.bits != 24)) {
+            kprintf("[AUDIO] stream: PCM at %u Hz, %u channels, %u bits: ", st.rate, st.channels, st.bits);
+            str_fail(PSMB_STR_E_FORMAT, "not a layout this card plays");
+            return;
+        }
+        st.fbytes = st.channels * st.bits / 8;
+        str_rs.step = ratio(st.rate, out_rate);
+        str->rate = st.rate; str->channels = st.channels;
+        if (str->data_bytes) str->length_ms = (uint32_t)((uint64_t)str->data_bytes / st.fbytes * 1000u / st.rate);
+        kprintf("[AUDIO] stream: PCM, %u Hz, %u channel%s, %u bits%s%s, %u bytes (%u.%u s)\n", st.rate, st.channels, st.channels > 1 ? "s" : "",
+                st.bits, st.bits > 8 ? (st.flags & PSMB_STR_PCM_LE ? " little-endian" : " big-endian") : (st.flags & PSMB_STR_PCM_UNSIGNED ? " unsigned" : " signed"),
+                st.channels > 2 ? " (the first two played)" : "", str->data_bytes, str->length_ms / 1000, str->length_ms / 100 % 10);
+    } else if (st.format == PSMB_STR_MPEG) {
+        kprintf("[AUDIO] stream: MPEG audio, %u bytes\n", str->data_bytes);
+    } else {
+        str_fail(PSMB_STR_E_FORMAT, "a format number this kernel does not know");
+        return;
+    }
+    st.on = 1;
+    str->state = PSMB_STR_S_PLAYING;
+}
+static void str_finish_stop(void)
+{
+    if (st.on && !st.ended) kprintf("[AUDIO] stream: stopped at %u.%u s\n", str_ms(st.frames) / 1000, str_ms(st.frames) / 100 % 10);
+    uint32_t h = str->head;
+    str_clear();
+    str->tail = h; head_seen = head_ok = h; head_seen_t = now();
+    str->state = PSMB_STR_S_IDLE;
+}
+static void str_command(void)
+{
+    if (__atomic_load_n(&str_reset_req, __ATOMIC_ACQUIRE)) {
+        str_reset_req = 0;
+        if (st.on) kprintf("[AUDIO] stream: the 68k was reset; the stream stopped\n");
+        st.on = 0;
+        str_finish_stop();
+        str->done_seq = str->cmd_seq;
+        return;
+    }
+    if (st.stopping) {                         /* a STOP waits for its fade, at most 50 ms */
+        if (st.gain && now() - st.stop_t < hz() / 20) return;
+        st.stopping = 0;
+        str_finish_stop();
+        str->done_seq = str->cmd_seq;
+    }
+    uint32_t seq = str->cmd_seq;
+    if (seq == str->done_seq) return;
+    __asm__ volatile("dmb ish" ::: "memory");
+    switch (str->cmd) {
+    case PSMB_STR_C_START: str_start(); break;
+    case PSMB_STR_C_PAUSE:
+        if (st.on && !st.ended) { st.paused = 1; st.gain_target = 0; str->state = PSMB_STR_S_PAUSED; }
+        break;
+    case PSMB_STR_C_RESUME:
+        if (st.on && st.paused) { st.paused = 0; st.gain_target = 256; str->state = PSMB_STR_S_PLAYING; }
+        break;
+    case PSMB_STR_C_STOP:
+        if (st.playing && st.gain) { st.stopping = 1; st.gain_target = 0; st.stop_t = now(); return; }
+        str_finish_stop();
+        break;
+    }
+    str->done_seq = seq;
+}
+/* the ring's bytes into the Pi's buffer, as far as it has room */
+static void str_take(void)
+{
+    uint32_t h = str->head;
+    uint64_t t0 = now(), lag = hz() / 1000000u * STR_HEAD_LAG;
+    if (h != head_seen) {                     /* a new head: the one before is safe if it stood long enough */
+        if (t0 - head_seen_t >= lag) head_ok = head_seen;
+        head_seen = h; head_seen_t = t0;
+    } else if (head_ok != h && t0 - head_seen_t >= lag) head_ok = h;
+    if (!st.on) return;
+    uint32_t t = str->tail, n = head_ok - t, room = STR_PIBUF - (pb_head - pb_tail);
+    if ((int32_t)n <= 0) return;
+    if (n > room) n = room;
+    for (uint32_t k = 0; k < n; ) {
+        uint32_t ro = (t + k) % PSMB_STR_SIZE, po = (pb_head + k) & (STR_PIBUF - 1);
+        uint32_t c = n - k;
+        if (c > PSMB_STR_SIZE - ro) c = PSMB_STR_SIZE - ro;
+        if (c > STR_PIBUF - po) c = STR_PIBUF - po;
+        memcpy(pibuf + po, (const void *)(str_ring + ro), c);
+        k += c;
+    }
+    pb_head += n;
+    __asm__ volatile("dmb ish" ::: "memory");
+    str->tail = t + n;
+}
+static int str_all_in(void) { return str->eof && head_ok == str->head && str->tail == str->head; }
+static void str_put(int32_t l, int32_t r)
+{
+    if (st.skip) { st.skip--; return; }
+    int16_t *f = spcm[spcm_head % STR_PCM];
+    f[0] = (int16_t)l; f[1] = (int16_t)r;
+    spcm_head++;
+}
+static uint8_t pb_byte(uint32_t k) { return pibuf[(pb_tail + k) & (STR_PIBUF - 1)]; }
+/* a frame's first bytes after the side information: "Xing" or "Info", the LAME tag's encoder delay */
+static void mpeg_first(const uint8_t *h, int len, const mp3dec_frame_info_t *info)
+{
+    int mpeg1 = (h[1] & 0x08) != 0, mono = (h[3] >> 6) == 3;
+    int x = 4 + (mpeg1 ? (mono ? 17 : 32) : (mono ? 9 : 17)) + ((h[1] & 1) ? 0 : 2);
+    st.spf = info->layer == 1 ? 384 : (info->layer == 3 && !mpeg1) ? 576 : 1152;
+    if (x + 16 > len || !((h[x] == 'X' && h[x + 1] == 'i' && h[x + 2] == 'n' && h[x + 3] == 'g') ||
+                          (h[x] == 'I' && h[x + 1] == 'n' && h[x + 2] == 'f' && h[x + 3] == 'o'))) return;
+    uint32_t flags = (uint32_t)h[x + 4] << 24 | (uint32_t)h[x + 5] << 16 | (uint32_t)h[x + 6] << 8 | h[x + 7];
+    if (flags & 1) st.xing_frames = (uint32_t)h[x + 8] << 24 | (uint32_t)h[x + 9] << 16 | (uint32_t)h[x + 10] << 8 | h[x + 11];
+    if (flags == 15 && x + 144 <= len) {      /* frames, bytes, TOC and quality all there: the LAME tag follows (LAME's and ffmpeg's) */
+        st.delay = (uint32_t)h[x + 141] << 4 | h[x + 142] >> 4;
+        st.padding = (uint32_t)(h[x + 142] & 15) << 8 | h[x + 143];
+        if (st.delay > 3000) st.delay = st.padding = 0;     /* not a LAME tag after all */
+    }
+    st.first = -1;                            /* this frame is the tag: its samples are dropped */
+}
+/* one slice of work: one MPEG frame decoded, or up to 1152 PCM frames converted */
+static void str_decode(void)
+{
+    if (!st.on || st.src_done || STR_PCM - str_level() < MINIMP3_MAX_SAMPLES_PER_FRAME / 2) return;
+    int all = str_all_in();
+    uint64_t t0 = now();
+    if (st.format == PSMB_STR_PCM) {
+        uint32_t n = (pb_head - pb_tail) / st.fbytes, room = STR_PCM - str_level(), bps = st.bits / 8;
+        if (!n) { if (all) st.src_done = 1; return; }
+        if (n > room) n = room;
+        if (n > 1152) n = 1152;
+        int le = (st.flags & PSMB_STR_PCM_LE) != 0, uns = (st.flags & PSMB_STR_PCM_UNSIGNED) != 0;
+        for (uint32_t i = 0; i < n; i++) {
+            int32_t v[2] = { 0, 0 };
+            for (uint32_t c = 0; c < 2; c++) {
+                uint32_t k = i * st.fbytes + (c < st.channels ? c : 0) * bps;
+                if (bps == 1) v[c] = uns ? ((int32_t)pb_byte(k) - 128) * 256 : (int8_t)pb_byte(k) * 256;
+                if (bps == 2) v[c] = (int16_t)(le ? pb_byte(k) | pb_byte(k + 1) << 8 : pb_byte(k) << 8 | pb_byte(k + 1));
+                if (bps == 3) v[c] = (int16_t)(le ? pb_byte(k + 1) | pb_byte(k + 2) << 8 : pb_byte(k) << 8 | pb_byte(k + 1));
+            }
+            str_put(v[0], v[1]);
+        }
+        pb_tail += n * st.fbytes;
+    } else {
+        uint32_t want = STR_WIN - dwin_n, have = pb_head - pb_tail;
+        if (want > have) want = have;
+        for (uint32_t k = 0; k < want; k++)
+            dwin[dwin_n + k] = pb_byte(k);
+        pb_tail += want; dwin_n += want;
+        if (dwin_n < STR_WIN && !all) return;  /* minimp3 wants the frames that follow to be sure of one */
+        if (!dwin_n) { st.src_done = 1; return; }
+        mp3dec_frame_info_t info;
+        int ns = mp3dec_decode_frame(&mp3d, dwin, (int)dwin_n, mp3_pcm, &info);
+        uint32_t used = info.frame_bytes > 0 ? (uint32_t)info.frame_bytes : 0;
+        if (!used) {
+            if (all) st.src_done = 1;         /* the end: what is left is no whole frame */
+            else used = dwin_n > 4 ? dwin_n - 4 : 0;   /* cannot happen with a full window; move on, keeping a header's worth */
+        }
+        if (ns > 0) {
+            if (info.frame_offset > 0) st.skipped += (uint32_t)info.frame_offset;
+            if (st.first > 0) {
+                mpeg_first(dwin + info.frame_offset, (int)(used - (uint32_t)info.frame_offset), &info);
+                st.rate = (uint32_t)info.hz; st.channels = (uint32_t)info.channels;
+                str_rs.step = ratio(st.rate, out_rate);
+                str->rate = st.rate; str->channels = st.channels; str->layer = (uint32_t)info.layer;
+                if (st.delay) st.skip = st.delay + 529;     /* the encoder's delay and the decoder's own (529 samples) */
+                uint64_t total = st.xing_frames ? (uint64_t)st.xing_frames * st.spf : 0;
+                if (total > st.delay + st.padding) total -= st.delay + st.padding;
+                if (total) str->length_ms = (uint32_t)(total * 1000u / st.rate);
+                else if (str->data_bytes && info.bitrate_kbps) str->length_ms = (uint32_t)((uint64_t)str->data_bytes * 8u / (uint32_t)info.bitrate_kbps);
+                kprintf("[AUDIO] stream: MPEG-%s layer %s, %u Hz %s, %u kbit/s; %u.%u s%s%s",
+                        (dwin[info.frame_offset + 1] & 0x18) == 0x18 ? "1" : (dwin[info.frame_offset + 1] & 0x18) == 0x10 ? "2" : "2.5",
+                        info.layer == 3 ? "III" : info.layer == 2 ? "II" : "I", st.rate, st.channels == 2 ? "stereo" : "mono",
+                        (uint32_t)info.bitrate_kbps, str->length_ms / 1000, str->length_ms / 100 % 10,
+                        st.xing_frames ? " (the Xing/Info frame's count)" : str->length_ms ? " (from the bit rate)" : " (length not known)",
+                        st.delay ? "" : "\n");
+                if (st.delay) kprintf("; the LAME tag's encoder delay %u and padding %u samples dropped\n", st.delay, st.padding);
+                if (st.first > 0) st.first = 0;
+            }
+            if (st.first < 0) st.first = 0;    /* the Xing/Info frame: no audio */
+            else {
+                st.mpeg_frames++;
+                st.kbps_sum += (uint32_t)info.bitrate_kbps;
+                for (int i = 0; i < ns; i++) {
+                    if (info.channels == 2) str_put(mp3_pcm[2 * i], mp3_pcm[2 * i + 1]);
+                    else str_put(mp3_pcm[i], mp3_pcm[i]);
+                }
+            }
+        } else if (used) {
+            st.skipped += used;               /* a tag, or damage: no frame there */
+            if (!st.mpeg_frames && st.skipped > STR_NOAUDIO) { str_fail(PSMB_STR_E_NOAUDIO, "no MPEG audio frame in the first 256 KB"); return; }
+        }
+        if (used > dwin_n) used = dwin_n;
+        memmove(dwin, dwin + used, dwin_n - used);
+        dwin_n -= used;
+    }
+    uint64_t d = now() - t0;
+    str_busy += d;
+    uint32_t us = (uint32_t)(d * 1000000u / hz());
+    if (us > str_max_us) str_max_us = us;
+}
+/* enough decoded and buffered to start, or to go on after an underrun: two MPEG frames decoded and, behind
+   them, half a second of PCM or 48 KB of MPEG in the Pi's buffer (two seconds at 192 kbit/s), unless the
+   Mac has sent everything. The first testbed run started CD-quality PCM with 9 KB in hand, and the Mac,
+   reading a disk image through semihosting, then fell behind by a fifth of the time in short gaps. */
+static int str_ready(void)
+{
+    if (st.src_done) return str_level() > 0;
+    if (str_level() < STR_PREFILL) return 0;
+    uint32_t have = pb_head - pb_tail + dwin_n, want = st.format == PSMB_STR_PCM ? st.rate * st.fbytes / 2 : 48u << 10;
+    return have >= want || str_all_in();
+}
+/* one input frame of the stream, at its own rate */
+static void str_next(int32_t *l, int32_t *rt)
+{
+    *l = *rt = 0;
+    if (!st.on || !st.playing) {
+        if (st.on && st.frames && !st.paused && !st.src_done && !st.ended) st.underruns++;    /* a gap after the start: an underrun */
+        return;
+    }
+    if (st.gain != st.gain_target) st.gain += st.gain < st.gain_target ? 1 : -1;
+    if (!st.gain && (st.paused || st.stopping)) return;
+    if (!str_level()) {
+        if (st.src_done) { st.ended = 1; st.playing = 0; }
+        else { st.underruns++; st.playing = 0; }       /* starved: wait for another prefill rather than stutter */
+        return;
+    }
+    const int16_t *f = spcm[spcm_tail % STR_PCM];
+    spcm_tail++;
+    st.frames++;
+    uint32_t vol = str->volume;
+    *l = (int32_t)f[0] * (int32_t)(vol >> 16) / 256 * st.gain / 256;
+    *rt = (int32_t)f[1] * (int32_t)(vol & 0xffff) / 256 * st.gain / 256;
+}
+/* the stream's part of a poll: commands, bytes, one slice of decoding, the block's numbers */
+static void str_poll(void)
+{
+    static uint32_t title_seen;
+    if (!str) return;
+    str_command();
+    if (str->title_seq != title_seen) {       /* "now playing", as the Mac says it; only plain ASCII goes to the log */
+        char t[129];
+        title_seen = str->title_seq;
+        __asm__ volatile("dmb ish" ::: "memory");
+        for (int i = 0; i < 128; i++) {
+            char c = str->title[i];
+            t[i] = c;
+            if (!c) break;
+            if ((uint8_t)c < 32 || (uint8_t)c > 126) t[i] = '?';
+        }
+        t[128] = 0;
+        kprintf("[AUDIO] stream: now playing \"%s\"\n", t);
+    }
+    str_take();
+    str_decode();
+    if (st.on && !st.playing && !st.ended && !st.paused && str_ready()) st.playing = 1;
+    if (st.on && st.src_done && !str_level() && !st.playing) st.ended = 1;
+    if (st.on && st.ended && !st.logged) {
+        st.logged = 1;
+        uint32_t ms = str_ms(st.frames);
+        kprintf("[AUDIO] stream: played to the end, %u.%u s (%llu frames at %u Hz); %u MPEG frames, %u bytes skipped, %u underruns; "
+                "the decoder at most %u us a slice, %u per mille of core 1 over the last second\n",
+                ms / 1000, ms / 100 % 10, (unsigned long long)st.frames, st.rate, st.mpeg_frames, st.skipped, st.underruns, str_max_us, str->load);
+        str->state = PSMB_STR_S_ENDED;
+    }
+    uint64_t t = now();
+    if (t - str_busy_t0 >= hz()) {
+        str->load = (uint32_t)(str_busy * 1000u / (t - str_busy_t0));
+        str_busy = 0; str_busy_t0 = t;
+    }
+    str->pos_ms = str_ms(st.frames);
+    str->buffered = pb_head - pb_tail + dwin_n;
+    str->mpeg_frames = st.mpeg_frames;
+    str->skipped = st.skipped;
+    str->underruns = st.underruns;
+    str->bitrate = st.mpeg_frames ? (uint32_t)(st.kbps_sum / st.mpeg_frames) : 0;
+}
+/* psmac_bus.c's 68k RESET (through psmac_card_reset, another core): the stream stops at core 1's next poll */
+void psmac_audio_mac_reset(void) { __atomic_store_n(&str_reset_req, 1, __ATOMIC_RELEASE); }
+
 /* one output frame: each source stepped through its resampler, then mixed and clipped */
 static uint32_t clips;
 static void rs_step(struct rs *r, void (*next)(int32_t *, int32_t *), int32_t *l, int32_t *rt)
@@ -325,10 +687,8 @@ static void rs_step(struct rs *r, void (*next)(int32_t *, int32_t *), int32_t *l
     uint64_t a = (uint64_t)r->frac + r->step;
     for (uint32_t n = (uint32_t)(a >> 32); n; n--) {
         int32_t x, y;
-        card_took = 0;
         next(&x, &y);
         rs_push(r, x, y);
-        if (card_took && psmac_board_se && !psmac_board_solo) spk_feed(x, y);   /* only real frames: silence would keep the speaker writing */
     }
     r->frac = (uint32_t)a;
     rs_out(r, l, rt);
@@ -336,8 +696,19 @@ static void rs_step(struct rs *r, void (*next)(int32_t *, int32_t *), int32_t *l
 static void mix_frame(int16_t *lo, int16_t *ro)
 {
     int32_t l = 0, r = 0, x, y;
+    int32_t sl = 0, sr = 0;                                          /* what the card and the stream sound, for the SE's speaker */
+    static uint32_t card_recent;                                     /* output frames since the card's ring last gave a frame */
     rs_step(&asc_rs, asc_next, &x, &y); l += x; r += y;
-    if (card) { rs_step(&card_rs, card_next, &x, &y); l += x; r += y; }
+    card_took = 0;
+    if (card) { rs_step(&card_rs, card_next, &x, &y); l += x; r += y; sl += x; sr += y; }
+    if (card_took) card_recent = 0; else if (card_recent < 2 * FIR_TAPS) card_recent++;
+    if (str) { rs_step(&str_rs, str_next, &x, &y); l += x; r += y; if (str_spk) { sl += x; sr += y; } }
+    /* The stream reaches the SE's speaker only with mac.sestream=on: in MAME's SE (21 November 2026,
+       docs/08 item 82) a System beep while a stream fed the speaker left the Mac hung in the beep, the
+       beep's sound going round in the card's ring; the same beep with the speaker kept for the card
+       alone, or with mac.sesound=off, ended as it should. Not understood yet; the music plays on HDMI
+       or the jack either way. */
+    if (psmac_board_se && !psmac_board_solo && (card_recent < 2 * FIR_TAPS || (str_spk && st.playing && st.gain))) spk_feed(sl, sr);
     if (test_secs && test_n < test_secs * ASC_RATE + FIR_TAPS) { rs_step(&test_rs, test_next, &x, &y); l += x; r += y; }
     if (l > 32767) { l = 32767; clips++; } else if (l < -32768) { l = -32768; clips++; }
     if (r > 32767) { r = 32767; clips++; } else if (r < -32768) { r = -32768; clips++; }
@@ -613,6 +984,15 @@ void psmac_audio_start(uint8_t *win)
     __asm__ volatile("dmb ish" ::: "memory");
     card->version = 1; card->magic = PSMB_SND_MAGIC;
     if (!card_on) card = 0;
+    /* the stream channel (PiPlay): there whenever something plays, with or without the card's ring */
+    str = (volatile struct psmb_stream *)(win + PSMB_OFF_STREAM);
+    str_ring = win + PSMB_OFF_STRRING;
+    for (uint32_t i = 0; i < sizeof(struct psmb_stream) / 4; i++) ((volatile uint32_t *)str)[i] = 0;
+    str->size = PSMB_STR_SIZE; str->data_off = PSMB_OFF_STRRING; str->pibuf_size = STR_PIBUF;
+    str->out_kind = (uint32_t)out_kind; str->out_rate = out_kind ? out_rate : 0;
+    mp3dec_init(&mp3d); str_rs.idle = FIR_TAPS;
+    __asm__ volatile("dmb ish" ::: "memory");
+    str->version = 1; str->magic = PSMB_STR_MAGIC;
     if (out_want == OUT_OFF && !quiet) kprintf("[AUDIO] mac.audio=off: the Mac's sound stays on %s\n", psmac_board_se && !psmac_board_solo ? "the SE's speaker" : "nothing here");
     else if (out_kind) kprintf("[AUDIO] the ASC (22257 Hz, both FIFOs) %s mixed on core 1 at %u Hz%s\n",
                                card_on ? "and the sound card (44.1 kHz, the PiSound extension)" : "alone (mac.sndcard=off)", out_rate,
@@ -626,6 +1006,7 @@ int psmac_audio_poll(void)
 {
     if (!__atomic_load_n(&started, __ATOMIC_ACQUIRE) || out_kind == OUT_OFF) return 0;
     if (card) card_vol = card->volume;
+    str_poll();
     asc_steer();
     if (out_kind == OUT_FILE) {
         uint64_t due = (now() - dump_t0) * out_rate / hz() / BLK;
@@ -662,4 +1043,13 @@ void psmac_audio_report(void)
             out_kind == OUT_HDMI ? "HDMI" : out_kind == OUT_JACK ? "jack" : "file", out_rate, out_kind == OUT_FILE ? dump_blocks : blocks_filled,
             dma_ch >= 0 ? (late_fills ? " (some filled late)" : "") : "", asc.starts, asc.samples, asc.wt_samples, asc.underruns, asc_dropped,
             card_frames, card ? card->underruns : 0, card ? (int)(card->head - card->tail) : 0, card_vol, clips);
+    if (str && str_used) {
+        static const char *const sn[] = { "idle", "playing", "paused", "ended", "error" };
+        uint32_t s = str->state < 5 ? str->state : 4;
+        kprintf("[PSMAC]   stream: %s, %s %u Hz %u ch %u kbit/s, %u.%u of %u.%u s, %u MPEG frames, %u KB buffered, %d in the ring, "
+                "%u underruns, %u bytes skipped, decoder %u per mille of core 1 (slice at most %u us), volume %08x\n",
+                sn[s], st.format == PSMB_STR_PCM ? "PCM" : "MPEG", str->rate, str->channels, str->bitrate, str->pos_ms / 1000, str->pos_ms / 100 % 10,
+                str->length_ms / 1000, str->length_ms / 100 % 10, str->mpeg_frames, str->buffered >> 10, (int)(str->head - str->tail),
+                str->underruns, str->skipped, str->load, str_max_us, str->volume);
+    }
 }

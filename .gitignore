@@ -44,6 +44,9 @@ mac/build/wm/
 mac/build/ps/
 mac/build/piscrn.elf
 mac/build/piscrn_traps.txt
+mac/build/pp/
+mac/build/piplay.elf
+mac/build/piplay_traps.txt
 mac/build/pivideo2.o
 mac/build/usbnet_frame_test
 mac/build/sl/

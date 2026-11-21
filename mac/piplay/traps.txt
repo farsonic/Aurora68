@@ -1,0 +1,15 @@
+# PiPlay's Toolbox calls beyond mac/c/traps.txt (the build puts the two lists together).
+# Standard File (Pack3, selector 2: SFGetFile); numTypes -1 shows every file
+A9EA - SFGetFile(long where:l, const unsigned char *prompt:l, void *filter:l, int numTypes:w, void *types:l, void *hook:l, void *reply:l, int selector:w)
+# QuickDraw and TextEdit's TextBox
+A8A2 - PaintRect(const Rect *r:l)
+A888 - TextFace(int face:w)
+A9CE - TextBox(const void *text:l, long len:l, const Rect *box:l, int just:w)
+A886 w TextWidth(const void *text:l, int first:w, int count:w)
+A8A5 - FillRect(const Rect *r:l, const void *pat:l)
+A8B0 - FrameRoundRect(const Rect *r:l, int ow:w, int oh:w)
+A89B - PenSize(int w:w, int h:w)
+# the Menu Manager: Play becomes Pause
+A947 - SetItem(void *menu:l, int item:w, const unsigned char *s:l)
+# the window put back on a screen that is still there; the grow icon's corner
+A8E8 b PtInRgn(long pt:l, void *rgn:l)

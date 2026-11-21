@@ -777,6 +777,7 @@ void psmac_card_reset(void)
     if (inr) { inr->attached = 0; inr->tail = inr->head; }
     psmac_display_bus_reset();
     { extern void psmac_remote_mac_reset(void); psmac_remote_mac_reset(); }   /* the remote's input queue and records (psmac_remote.c) */
+    { extern void psmac_audio_mac_reset(void); psmac_audio_mac_reset(); }     /* PiPlay's stream stops (psmac_audio.c) */
     __asm__ volatile("dmb ish" ::: "memory");
     kprintf("[PSMAC] 68k RESET: the card's interrupt sources are off until their drivers open\n");
 }

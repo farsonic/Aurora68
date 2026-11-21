@@ -2942,6 +2942,105 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    - *Not verified on hardware:* the EDID tag on the Pi 3's firmware, the UP2716D's EDID, the firmware with
      a missing included file, the watchdog restart with the SE on the bus, the turned copy on a Pi 3.
 
+82. **PiPlay: MP3 files decoded on the card (21 November).** With the Mac's sound in stereo on the SE's
+   HDMI monitor (item 74, heard through a Dell monitor's headphone socket), the user asked for MP3s. System
+   7.1 on a 68k has no MP3 player, the test image has no sound-file player at all, and third-party Mac
+   software is not to be fetched; a 68000-class Mac could not decode MP3 in real time in any case. Some
+   sound cards of the period carried a DSP for such work; this one has core 1 of a Cortex-A53.
+   - *The decoder.* minimp3 (github.com/lieff/minimp3, CC0, commit 1428237, `minimp3.h` only, unmodified,
+     with its licence and a README naming the commit and checksum in `src/psmac/third_party/minimp3/`),
+     compiled once in `psmac_mp3.c` with the kernel's own flags. It needs `memcpy`, `memset`, `memmove`
+     and `memcmp`, which the kernel has; Ubuntu's compiler defines `_FORTIFY_SOURCE`, which pulled in
+     `__memcpy_chk`, so the file undefines it. Its scratch is 17.8 KB of stack (`-fstack-usage`), within
+     core 1's 64 KiB. It works in single precision: the kernel keeps floating point off core 0, where the
+     JIT owns the vector registers, but core 1 runs no JIT and the global `-ffixed-v19`... reservations
+     hold in this file too. Big-endian: the bit reader takes bytes, and a host harness run under
+     `qemu-aarch64_be` (freestanding, raw system calls) decoded the test MP3s to within one LSB of the same
+     source built for x86-64, with the scalar code and with NEON alike. The scalar code is used
+     (`MINIMP3_NO_SIMD`): the NEON intrinsics were written for little-endian lanes, and the scalar decoder
+     decodes 104 s of 192 kbit/s stereo in 0.14 s on the x86 host, which leaves a Cortex-A53 at 1.2 GHz
+     (an estimate, some ten times slower per core) at one or two per cent of a core.
+   - *The stream channel* (psmb.h struct psmb_stream, $11100, beside the card's block; a 44 KiB byte ring
+     at $71000, the free space between the log's ring and slot $A's declaration ROM, so 24-bit systems
+     reach it at $971000). The Mac writes the file's bytes as they are; core 1 copies them at once into
+     2 MiB of its own (87 s of 192 kbit/s MP3, 12 s of CD-quality PCM), so the Mac fills that far ahead and
+     a held menu, a dialog or another program in front costs nothing; then one slice of work per poll of
+     core 1's loop: one MPEG frame decoded, or up to 1,152 PCM frames converted, and only while fewer than
+     8,192 decoded frames wait. A slice is the longest core 1 is away from the output's DMA blocks and the
+     USB work it shares the core with. The decoded frames go through a resampler of their own (the card's
+     windowed-sinc filter, the ratio from the stream's rate) and are mixed with the ASC and the card's
+     Sound Manager ring, so beeps sound over the music; the SE's speaker is now fed at the output's rate
+     from what the card plays (before, from the card's frames at 44.1 kHz), and from the stream only with
+     `mac.sestream=on` (below). The head the
+     Mac writes is used only once it has stood for 50 µs: the 68k's stores come from the JIT on core 0
+     with no barrier between the bytes and the head. The Xing/Info frame LAME and ffmpeg put first gives
+     the length; its LAME tag's encoder delay and padding are dropped (delay + 529 samples, as minimp3's
+     own player does), so a file starts at its first sample; without one, the length comes from the bit
+     rate. Commands START, PAUSE, RESUME and STOP fade over 256 frames, so pausing does not click; a 68k
+     RESET stops the stream (`psmac_card_reset`). Playback starts with two MPEG frames decoded and half a
+     second of PCM or 48 KB of MPEG in hand, and starts again on those terms after an underrun rather
+     than stuttering. mac.audio=off: the block says nothing plays and PiPlay says so.
+   - *PiPlay* (`mac/piplay/`, C with PiLog's kit in `mac/c`, its own glue for the File Manager's HFS
+     calls and the Folder Manager). It recognises a file by its content (an ID3v2 tag or an MPEG frame
+     header confirmed by the next; "FORM"/"AIFF" or "AIFC" with 'NONE', 'twos' or 'sowt'; "RIFF"/"WAVE"
+     with PCM or format $55), shows the title and artist of the ID3 tag (Latin-1, UTF-16 and UTF-8 into
+     Mac Roman), and follows the Guidelines of 1992 as the user asked: a resizable, zoomable window whose
+     contents follow its size, its place and size kept in "PiPlay Prefs" (Preferences folder or System
+     Folder) and put back on the main screen when the screen it was on is gone, standard Apple, File,
+     Edit and Controls menus with their keys, an About box and alerts of its own, centred, with the
+     default button outlined, suspend and resume, canBackground; a bundle and an icon, so that a file
+     dropped on it or opened with it from the Finder arrives as the application's files.
+   - *Mistakes found in the testbed, in order.* (1) The hand-written Folder Manager and Apple Event glue
+     did not keep D2, which a Pascal trap may change and GCC keeps live (a loop counter): the first
+     PiPlay hung in its handler-installation loop; the glue now saves D2 as mktraps.py's does. (2)
+     TextWidth's trap word was taken as $A88D, which is CharWidth; $A886 is right (the status at the
+     right of the progress line was drawn off the window's edge). (3) A resize left the old grow box and
+     label behind: the update now erases its region first. (4) The SIZE flag for "high-level-event aware"
+     was set as $0002; it is bit 6, $0040. With it right, the Finder launched PiPlay with a document in
+     Startup Items and PiPlay stopped at once with "bad F-Line instruction", before it logged anything
+     after its start; without a document it ran. Rather than chase it, the Apple events went: the
+     Finder hands an application that is not high-level-event aware its files the System 6 way
+     (AppParmHandle), and PiPlay takes them so on both systems: a document with creator 'PIPY' in
+     Startup Items then opened and played. (5) The first CD-quality AIFF had a fifth of its time in
+     gaps: the Mac fed one 16 KB piece per pass of its event loop, each pass giving the Finder its turn;
+     it now reads 32 KB pieces for up to two ticks a pass, and the Pi starts with half a second in hand.
+   - *Verified in the testbed* (solo board under QEMU with System 7.1, `mac.audiodump=` and
+     `tools/audiocheck.py`; PiPlay driven through `mac.remotefile=` with Standard File and the keyboard):
+     the LR check as MP3, AIFF, WAV and AIFF-C 'sowt': 440.0 Hz left alone, 660.0 Hz right alone, 880.0 Hz
+     on both, 2.05 s each with 0.45 s between, the other side silent; the sweep (MP3, and 8-bit mono WAV at
+     22,050 Hz): 10.05 s of glide, then 1000.0 Hz for 3.05 s, 310, 978 and 3095 Hz in 50 ms windows where
+     the glide should be at 312, 986 and 3112 Hz; the minuet (104 s MP3) to the end with no underrun, a
+     4.8 s pause (silent 0.3 s after the key) and two System beeps through Sound PiStorm over the music
+     (440, 1320, 2200 Hz), nothing clipped; Ode to Joy (MPEG-1 at 32 kHz) and The Entertainer (MPEG-2 at
+     22.05 kHz) with their lengths 1:50 and 1:43 from their Info frames; LR check, WAV and sowt with no
+     underrun after (5), the 18 MB AIFF still with 9 s of gaps in 104 (the testbed's disk image comes
+     through semihosting at about 160 KB/s, CD-quality PCM needs 176); grow, zoom, Close and Open again,
+     the About box, `mac.audio=off` (PiPlay says the Pi plays no sound), the document from the Finder.
+     The decoder under QEMU's emulation took 30 to 76 per mille of core 1 and at most 11 to 28 ms a
+     slice; the same code decodes 104 s in 0.14 s on the x86 host. A host model of the whole channel
+     (`psmac_audio.c` and `psmac_mp3.c` built big-endian with a fake Mac, under `qemu-aarch64_be`) played
+     every test file to its exact length before the first testbed run. MAME's SE (`macse_ps`, 32 MiB,
+     the 512 by 342 declaration ROM, System 7.1 as `mac.disk0=`): the LR check right, PiPlay's window put
+     back on the SE's one-bit screen from a place remembered on the 640 by 480 one.
+   - *Open: a beep during music on the SE board.* In MAME's SE a System beep while the minuet played
+     left the Mac hung inside the beep: the beep's square wave went round in the card's ring for as long
+     as the run lasted, PiPlay took no more keys, and the heartbeats showed the 68k in the ROM with its
+     interrupt mask at 7. The same beep with no stream playing ended after 0.37 s, and with the stream
+     playing but `mac.sesound=off` it ended too and PiPlay went on. The difference is the SE's speaker,
+     which the stream kept switched on and fed (psmac_board_se.c's speaker polls the VIA's CA1 flag and
+     writes the speaker's VIA bits while it plays). Until that is understood the stream does not feed the
+     SE's speaker unless `mac.sestream=on`; the music plays on HDMI or the jack. With that default the
+     beep during music ended after 0.38 s in MAME's SE (16,928 card frames), and PiPlay stopped and quit.
+   - *Ready for a radio stream* (the next step: an MP3 stream over MacTCP with its ICY metadata stripped
+     on the Mac): the channel takes an open-ended stream (`data_bytes` 0, no `eof`), the decoder resumes
+     at the next frame header after a gap or damage and counts gaps as underruns, STOP then START needs no
+     reset of the Pi, and `title` (128 bytes, with `title_seq`) carries "now playing"; PiPlay already puts
+     the ID3 title or the file's name there and the kernel logs it.
+   - *Not verified:* everything on hardware: the decoder's load on a Cortex-A53 (the heartbeat's
+     `stream:` line says it), the Mac's disk speed for PCM on a real SE's SCSI, HDMI and jack output of
+     the stream; the SE-speaker hang above on real hardware.
+
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

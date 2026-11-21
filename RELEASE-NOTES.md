@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **PiPlay: MP3 files on the Mac.** The new application **PiPlay** plays MP3 files, and AIFF and WAV files
+  that are not compressed, through the sound card on HDMI or the Pi's headphone socket (the SE's own
+  speaker only with `mac.sestream=on`, which is not yet safe: see docs/08 item 82): the Mac reads the file and the Pi decodes it, as some sound cards of the time did with a DSP.
+  File > Open… shows every file, and PiPlay finds what a file is from its content, so MP3s copied from a PC
+  with no Mac type play too. It shows the title and the artist from the MP3's tag, the time played and the
+  length; Play/Pause, Stop and a volume slider (the Sound control panel's volume applies on top); beeps
+  still sound over the music. It keeps playing while a menu is held or another program is in front (the
+  Pi holds up to 2 MB of the file ahead, about a minute and a half of a 192 kbit/s MP3). The decoder is
+  minimp3 (public domain). Replace kernel8.img and copy PiPlay (Mac/PiPlay.bin) onto the Mac; Sound
+  PiStorm is not needed for it, but beeps then come from the sound chip. `tools/mksounds.py` makes test
+  sounds and three short pieces of public-domain music. Tested in the testbed (QEMU and MAME's SE); not yet on hardware.
 - **PiDisplay: the HDMI resolution and rotation chosen on the Mac.** A new program shows what the HDMI
   monitor says about itself (name, maker, model, serial number, date, size, shape, its sound and its
   connection) and every resolution it lists, each marked usable by a Pi 3, too fast (with a slower

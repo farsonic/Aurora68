@@ -73,7 +73,8 @@ What is in the zip
                          aurora68.log to the SD card, passwords hidden), PiSlots (the NuBus
                          cards the Mac sees, the Pi's own included, with their makers and
                          drivers; File > Save As... keeps the list as text), PiDepth (sets
-                         the screen's depth at startup from the number in its name),
+                         the screen's depth at startup from the number in its name), PiPlay
+                         (plays MP3, AIFF and WAV files on the sound card: the Pi decodes them),
                          as MacBinary files and on Aurora68-Utilities.img (an HFS disk image)
   RELEASE-NOTES.md       what works, what does not
   LICENSES/              MPL-2.0 (Emu68, Aurora68) and GPL-2.0 (the Alice68 modules)
@@ -228,6 +229,11 @@ The Mac's sound plays on the HDMI monitor's loudspeakers in stereo (and on the S
      the right for three seconds at start, to check the channels.
 The log says what happened: "[AUDIO] HDMI: 48000 Hz stereo ..." and "[MAC] PiSound: ...". If it says
 "the transmitter sends no packets ... DVI", hdmi_drive=2 is missing or the monitor has no sound.
+
+MP3 files: copy PiPlay (Mac/PiPlay.bin) onto the Mac and the MP3s anywhere on its disks (a USB stick
+or the Lagoon share will do; files from a PC need no Mac type). Open one with File > Open...; the
+space bar plays and pauses. The Pi decodes the MP3 and plays it with the Mac's own sound; the log
+says "[AUDIO] stream: MPEG-1 layer III, 44100 Hz stereo, ..." and "[MAC] PiPlay: ...".
 
 A Pi on the bench, no SE yet
 ----------------------------
