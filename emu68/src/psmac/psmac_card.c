@@ -25,6 +25,11 @@
  *                  dropped or replaced, every other byte kept, written only when the result fits
  *                  the file's first cluster, and read back. A mistake here must not stop the Pi
  *                  booting. config.txt is never written.
+ *   aurora68-display.txt, aurora68-display.bak
+ *                  the HDMI mode PiDisplay chose (psmac_hdmi.c, docs/10 "PiDisplay"): small files of the
+ *                  kernel's own, which config.txt reads through its "include aurora68-display.txt" line.
+ *                  Made with long names when absent, written in their first cluster, read back.
+ *                  config.txt itself is only read.
  *   *.declrom      read, never written: a declaration ROM in the root is offered to psmac_bus.c
  *                  before the 68k starts, beside the container's, and wins a tie (20 November
  *                  2026, docs/10 "Declaration ROMs from the card"): a new Mac-side driver is then a
@@ -1269,6 +1274,7 @@ void psmac_card_poll(void)
 /* the early look for declaration ROMs (below): the card was initialised and mounted on core 0 before
    core 3 began, and card_start takes its results rather than resetting the card a second time */
 static int early_done, early_init_rc, early_mount_rc;
+static volatile int sf_pending; static void sfile_step(void);     /* small files of the kernel's own (below) */
 static void card_poll_locked(void)
 {
     if (sd.state == 0 || early_done == 1) {
@@ -1286,6 +1292,7 @@ static void card_poll_locked(void)
     if (__atomic_load_n(&opt_state, __ATOMIC_ACQUIRE) == 1 && !sd.ro) { cmdline_apply(); return; }
     { extern int psmac_solo_pram_take(uint8_t out[260]), psmac_se_pram_take(uint8_t out[260]); static uint8_t p[260];
       if (!sd.ro && (psmac_solo_pram_take(p) || psmac_se_pram_take(p))) { pram_write(p); return; } }
+    if (__atomic_load_n(&sf_pending, __ATOMIC_ACQUIRE) && !sd.ro) { sfile_step(); return; }
     if (__atomic_load_n(&logf_state, __ATOMIC_ACQUIRE) == 1 && !sd.ro) { logf_step(); return; }
     if (logsave_s && !sd.ro && ms() - logsave_last >= logsave_s * 1000u) {
         logsave_last = ms();
@@ -1330,6 +1337,138 @@ static void card_start(void)
     { static const char test[] = "# mac.cardtest\nbt.dev=001122334455:00112233445566778899aabbccddeeff:2\n";
       const char *t = psmac_option("mac.cardtest"); if (t && t[0] == '1') psmac_card_save_pairings(test, sizeof test - 1); }
 }
+/* ==== small files of the kernel's own, with long names: aurora68-display.txt and .bak ===========
+   PiDisplay's HDMI settings (psmac_hdmi.c) go into aurora68-display.txt, which config.txt includes, and
+   the file before into aurora68-display.bak. Both names are longer than 8.3, and the firmware finds
+   config.txt's include by its long name, so a file that is not there yet is made with VFAT long-name
+   entries: the pieces of the name (13 UTF-16 characters each, the last first, the 0x40 bit on it), each
+   carrying the checksum of the short name, then the short entry itself (AURORA~1.TXT, the first number
+   no other file has), all in one directory sector, which is written in one go. A file is at most its
+   first cluster (the texts are under 1 KB, clusters 4 KB or more on any card the firmware boots), so
+   nothing but the directory and that one cluster is ever written; the text is read back. Jobs are
+   queued from any core (psmac_card_put_file) and done one per pass of core 3, in order. */
+struct sfjob { char name[32]; char text[1536]; uint32_t len; };
+static struct sfjob sf_q[3]; static volatile int sf_head, sf_n; static volatile int sf_result;   /* 0 none, 1 busy, 2 done, 3 failed */
+static uint8_t lfn_sum(const uint8_t *sn) { uint8_t c = 0; for (int i = 0; i < 11; i++) c = (uint8_t)(((c & 1) << 7) + (c >> 1) + sn[i]); return c; }
+struct run_ctx { uint32_t want, lba, off; };
+static int run_sector(uint32_t lba, void *vctx)
+{
+    struct run_ctx *x = vctx;
+    if (sd_read(lba, sec)) return -1;
+    uint32_t run = 0;
+    for (int i = 0; i < 16; i++) {
+        uint8_t c = sec[32 * i];
+        if (c == 0 || c == 0xe5) { if (++run == x->want) { x->lba = lba; x->off = 32u * (uint32_t)(i + 1 - (int)x->want); return 1; } }
+        else run = 0;
+    }
+    return 0;
+}
+static int lfn_create(const char *name, struct cfile *f)
+{
+    uint32_t n = 0; while (name[n]) n++;
+    uint32_t dot = n; while (dot && name[dot - 1] != '.') dot--;
+    if (!dot || n > 64) return -1;
+    /* the short name: the first six letters of the long one, ~N, and its extension, upper case */
+    uint8_t sn[11]; char probe[13];
+    for (int i = 0; i < 11; i++) sn[i] = ' ';
+    int k = 0;
+    for (uint32_t i = 0; i < dot - 1 && k < 6; i++) { char c = name[i]; if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) sn[k++] = (uint8_t)(c >= 'a' && c <= 'z' ? c - 32 : c); }
+    for (uint32_t i = dot, j = 8; i < n && j < 11; i++, j++) sn[j] = (uint8_t)(name[i] >= 'a' && name[i] <= 'z' ? name[i] - 32 : name[i]);
+    int num = 1;
+    for (; num < 10; num++) {
+        int p = 0;
+        for (int i = 0; i < k; i++) probe[p++] = (char)sn[i];
+        probe[p++] = '~'; probe[p++] = (char)('0' + num); probe[p++] = '.';
+        for (int i = 8; i < 11 && sn[i] != ' '; i++) probe[p++] = (char)sn[i];
+        probe[p] = 0;
+        struct cfile t;
+        if (file_find(probe, &t)) break;                               /* nobody has this short name */
+    }
+    if (num >= 10) return -2;
+    sn[k] = '~'; sn[k + 1] = (uint8_t)('0' + num);
+    uint32_t pieces = (n + 12) / 13;
+    struct run_ctx x; x.want = pieces + 1;
+    if (root_walk(run_sector, &x) != 1) return -3;                     /* no room in one sector of the root directory */
+    uint32_t c = clus_alloc();
+    if (!c) return -4;
+    if (sd_read(x.lba, sec)) return -5;
+    uint8_t sum = lfn_sum(sn);
+    static const uint8_t at[13] = { 1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30 };
+    for (uint32_t p = 0; p < pieces; p++) {
+        uint32_t seq = pieces - p;                                     /* the last piece first */
+        uint8_t *e = sec + x.off + 32 * p;
+        for (int i = 0; i < 32; i++) e[i] = 0;
+        e[0] = (uint8_t)(seq | (p == 0 ? 0x40 : 0)); e[11] = 0x0f; e[13] = sum;
+        for (int i = 0; i < 13; i++) {
+            uint32_t ci = (seq - 1) * 13 + (uint32_t)i, ch = ci < n ? (uint8_t)name[ci] : ci == n ? 0 : 0xffff;
+            put16(e + at[i], ch);
+        }
+    }
+    uint8_t *e = sec + x.off + 32 * pieces;
+    for (int i = 0; i < 32; i++) e[i] = 0;
+    for (int i = 0; i < 11; i++) e[i] = sn[i];
+    e[11] = 0x20;
+    uint32_t date = (uint32_t)((2026 - 1980) << 9 | 11 << 5 | 21);
+    put16(e + 16, date); put16(e + 18, date); put16(e + 24, date);
+    put16(e + 20, c >> 16); put16(e + 26, c & 0xffff);
+    if (sd_write(x.lba, sec)) return -6;
+    f->dir_lba = x.lba; f->dir_off = x.off + 32 * pieces; f->clus = c; f->size = 0;
+    kprintf("[CARD] %s created (short name %.8s.%.3s)\n", name, (const char *)sn, (const char *)sn + 8);
+    return 0;
+}
+static void sfile_step(void)
+{
+    struct sfjob *j = &sf_q[sf_head];
+    struct cfile f;
+    int e = 0;
+    uint32_t cap = fs.spc * 512u;
+    if (j->len > cap) e = -10;
+    else if (file_find(j->name, &f)) e = lfn_create(j->name, &f);
+    if (!e && f.clus < 2) {                                            /* an empty file made elsewhere: no cluster yet */
+        uint32_t c = clus_alloc();
+        if (!c || sd_read(f.dir_lba, sec)) e = -11;
+        else { put16(sec + f.dir_off + 20, c >> 16); put16(sec + f.dir_off + 26, c & 0xffff); if (sd_write(f.dir_lba, sec)) e = -12; else f.clus = c; }
+    }
+    for (uint32_t i = 0; !e && (i * 512u < j->len || i == 0); i++) {
+        for (uint32_t b = 0; b < 512; b++) sec[b] = i * 512u + b < j->len ? (uint8_t)j->text[i * 512u + b] : 0;
+        if (sd_write(clus_lba(f.clus) + i, sec)) e = -13;
+    }
+    if (!e) { if (sd_read(f.dir_lba, sec)) e = -14; else { put32(sec + f.dir_off + 28, j->len); if (sd_write(f.dir_lba, sec)) e = -15; } }
+    for (uint32_t i = 0; !e && i * 512u < j->len; i++) {               /* read back */
+        if (sd_read(clus_lba(f.clus) + i, sec)) { e = -16; break; }
+        for (uint32_t b = 0; b < 512 && i * 512u + b < j->len; b++) if (sec[b] != (uint8_t)j->text[i * 512u + b]) { e = -17; break; }
+    }
+    if (e) kprintf("[CARD] %s: not written (%d%s)\n", j->name, e, e == -3 ? ": no room in the root directory" : e == -10 ? ": longer than a cluster" : "");
+    else kprintf("[CARD] %s: %u bytes written and read back\n", j->name, j->len);
+    sf_head = (sf_head + 1) % 3;
+    if (e) sf_result = 3;
+    if (--sf_n == 0) { if (sf_result != 3) sf_result = 2; __atomic_store_n(&sf_pending, 0, __ATOMIC_RELEASE); }
+}
+/* queue a small file (psmac_hdmi.c): 0 queued, -1 no writable card, -2 the queue is full, -3 too long.
+   Jobs queued together are reported together by psmac_card_files_state. */
+int psmac_card_put_file(const char *name, const char *text, uint32_t len)
+{
+    if (sd.state < 0 || sd.ro) return -1;
+    if (sf_n >= 3) return -2;
+    if (len > sizeof sf_q[0].text) return -3;
+    struct sfjob *j = &sf_q[(sf_head + sf_n) % 3];
+    uint32_t i = 0; while (name[i] && i + 1 < sizeof j->name) { j->name[i] = name[i]; i++; } j->name[i] = 0;
+    for (uint32_t k = 0; k < len; k++) j->text[k] = text[k];
+    j->len = len;
+    if (!sf_pending) sf_result = 1;
+    sf_n++;
+    __atomic_store_n(&sf_pending, 1, __ATOMIC_RELEASE);
+    return 0;
+}
+int psmac_card_files_state(void) { return sf_result; }              /* 0 none, 1 being written, 2 written, 3 failed */
+int psmac_card_writable(void) { return sd.state == 1 && !sd.ro; }
+/* nothing waits to go onto the card: no small file, no change of a disk image, no sector being
+   programmed, no log or pairings (the Pi is about to restart, psmac_hdmi.c) */
+int psmac_card_idle(void)
+{
+    return !sf_pending && !first_dirty_t && !fl.busy && logf_state != 1 && !pair_dirty && opt_state != 1;
+}
+
 /* ---- declaration ROMs in the card's root ------------------------------------------------------
    psmac_bus.c asks once, on core 0 in psmac_setup_memory, before the Slot Manager can read slot 9 and
    before core 3 starts (psmac_alice_init comes after): the card is initialised and mounted here, and
@@ -1371,19 +1510,25 @@ static int declrom_sector(uint32_t lba, void *vctx)
    already, and the root's walk stops after a second. Whatever fails, the card is left as if it had
    never been touched (early_done 0, sd.state 0), so card_start on core 3 starts it afresh with its
    own reset, and the container's declaration ROM is used meanwhile. */
+static uint64_t early_t0;
+static int early_failed;                    /* tried once and failed: not tried again before core 3's start */
 static void early_undo(const char *why, uint64_t t0)
 {
-    kprintf("[CARD] looked for declaration ROMs in the card's root (%u ms): %s; the container's declaration ROM is used, and the card is started again later\n",
+    kprintf("[CARD] the card's first look, before the 68k starts (%u ms): %s; the container's declaration ROM is used, and the card is started again later\n",
             (uint32_t)((cnt() - t0) * 1000u / frq()), why);
     early_done = 0; early_init_rc = 0; early_mount_rc = 0;
     sd.state = 0;
+    early_failed = 1;
 }
-int psmac_card_declroms(void (*cb)(const char *name, uint32_t size))
+/* the card initialised and mounted on core 0, once, before core 3 starts: for the declaration ROMs below
+   and for psmac_hdmi.c's look at config.txt and aurora68-display.txt (PiDisplay). 0 when it is mounted */
+int psmac_card_early(void)
 {
     if (early_done) return early_init_rc || early_mount_rc ? -1 : 0;
+    if (early_failed) return -1;
     const char *o = psmac_option("mac.card");
     if ((o && o[0] == 'o' && o[1] == 'f') || alice_pi_is_2711()) return -1;   /* card_start says why */
-    uint64_t t0 = cnt();
+    uint64_t t0 = early_t0 = cnt();
     early_phase = 1;
     early_init_rc = sd_init();
     early_phase = 0;
@@ -1392,6 +1537,13 @@ int psmac_card_declroms(void (*cb)(const char *name, uint32_t size))
     early_mount_rc = fs_mount();
     if (early_mount_rc) { early_undo("no FAT partition", t0); return -1; }
     early_done = 1;
+    kprintf("[CARD] the card's first look, before the 68k starts (%u ms): the card is mounted\n", (uint32_t)((cnt() - t0) * 1000u / frq()));
+    return 0;
+}
+int psmac_card_declroms(void (*cb)(const char *name, uint32_t size))
+{
+    if (psmac_card_early()) return -1;
+    uint64_t t0 = early_t0;
     struct dr_ctx x; x.cb = cb; x.lfn_ok = 0; x.t0 = cnt(); x.late = 0;     /* a second for the walk itself */
     root_walk(declrom_sector, &x);
     if (x.late)

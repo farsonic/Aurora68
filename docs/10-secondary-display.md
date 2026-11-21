@@ -452,6 +452,181 @@ Not seen on hardware: the monitor's 30 Hz mode itself, the firmware's frame buff
 us` line will say), and the early card look on the real sdhost controller (it is the code card_start
 always ran, run earlier and on core 0).
 
+## PiDisplay: the monitor, its resolution and rotation (21 November 2026)
+The user's SE has had two screens since 20 November, its own and a Dell UP2716D on HDMI, and choosing
+the HDMI mode meant taking the card out and typing `hdmi_` lines into config.txt on another computer,
+after finding out what a Pi 3 can send. They asked for a Macintosh program: choose the resolution and
+the rotation, read what the monitor says about itself, see which resolutions suit it. The design was
+agreed with them before a line was written; this is what was built.
+
+**The monitor's own description.** Every HDMI monitor carries an EDID: VESA E-EDID 1.3 or 1.4 in
+128-byte blocks, the first with the maker's PNP ID, the product code, the serial number, the week and
+year of manufacture, the picture's size in centimetres, the established and standard timings, four
+18-byte descriptors (detailed timings, the first of them the preferred mode; the name, the serial
+number as text, the range limits with the monitor's maximum pixel clock), and usually a CEA-861
+extension block with the TV modes (short video descriptors, VICs), the sound (short audio descriptors,
+the speaker allocation) and the HDMI vendor block (OUI 00-0C-03, without which the link is DVI and
+silent). The Pi's firmware reads it over DDC at boot and gives it out through the mailbox's property
+tag 0x00030020, "get EDID block": a block number in, the number, a status and 128 bytes out, the
+status 0 while the block exists (`psmac_vc_edid_block`, support_rpi.c). The tag is in the firmware's
+property interface since 2013, older than the Pi 3's legacy firmware; whether that firmware answers it
+on the user's Pi is the first thing the hardware has to say (`[PSMAC:EDID] the firmware's EDID: N
+blocks`). `psmac_edid.c` parses it, pure C that `tools/edid_test.c` compiles on the host (`make -C mac
+check`): every mode once (a detailed timing and its VIC are one entry), each judged:
+- *usable* when its pixel clock is within the Pi 3's. The figure is 162 MHz: Raspberry Pi's own
+  documentation (the legacy config.txt options, under `hdmi_mode`) names 1920 by 1200 at 60 Hz with
+  reduced blanking, 154 MHz, as the highest mode of every model before the Pi 4, and the firmware's own
+  group 2 list has 1600 by 1200 at 60 Hz (DMT mode 51, 162 MHz), which these Pis are generally reported
+  to send. `mac.hdmiclock=MHZ` moves the line. The monitor's own maximum (range limits) applies too.
+- *too fast*, and then the same size with CVT reduced blanking at the mode's own refresh, else 50, else
+  30 Hz, as long as the monitor's range limits go that low: the first that fits is offered. VESA CVT
+  1.1's formulas, in integers (`edid_cvt_khz`), checked against VESA's own figures: 1920x1080 at 60 Hz
+  173.00 MHz, 2560x1440 at 60 Hz reduced 241.50 MHz, 1920x1200 at 60 Hz reduced 154.00 MHz (DMT mode 69
+  exactly). 2560 by 1440 at 30 Hz reduced is 119.00 MHz by the formula ("about 121 MHz" in "2560 by 1440" above was a
+  rounder estimate).
+- *the wrong shape* when its picture's aspect differs from the panel's (its size in millimetres, else its
+  preferred mode) by more than 4%: a 4:3 or 5:4 mode on a 16:9 panel is stretched by the monitor.
+- *not for the Mac*: interlaced, or outside the 512..4096 by 342..2560 the kernel takes.
+The suggestion is the panel's own size if the Pi can send it at all (its highest usable refresh, else its
+reduced-blanking alternative), else the largest usable mode of the panel's shape, with a one-line
+reason. The kernel logs it all at boot, a line per mode (`[PSMAC:EDID]   2560x1440 at 59.95 Hz, 241.50
+MHz (detailed timing): too fast, 30 Hz with reduced blanking fits (119.00 MHz), preferred`), and serves it
+to the Mac as `struct psmb_dispinfo` (psmb.h) through the INFO service, `PSMB_INFO_DISPINFO`: 1,956
+bytes copied into the Mac's buffer, laid out so that m68k GCC and the kernel agree (every long at a
+multiple of four; asserted on both sides).
+
+**Applying a resolution without touching config.txt.** config.txt is the user's and is never written.
+They add one line to it, once, at its end: `include aurora68-display.txt`. The kernel writes only that
+small file in the card's root (psmac_card.c, `psmac_card_put_file`): `hdmi_group` and `hdmi_mode` (a VIC
+the firmware knows, group 1; a DMT number, group 2; else the custom mode 87 with `hdmi_timings` copied
+from the monitor's own detailed timing, or `hdmi_cvt` for a reduced-blanking alternative),
+`max_framebuffer_width` and `_height`, `hdmi_drive` (2 for an HDMI monitor: sound), and two comment lines
+of its own that the firmware skips: `#aurora68 rotate=N` and `#aurora68 confirm=WxH@R`. The file before
+goes to `aurora68-display.bak`. Both names are longer than 8.3 and the firmware's include looks the file up
+by its long name, so a file that is not there yet is made with VFAT long-name entries (the name in 13-
+character pieces, last first, each with the short name's checksum, then the short entry `AURORA~1.TXT`
+with the first number nobody has), in one directory sector written at once; the text lives in the file's
+first cluster and is read back. The firmware takes the last value of a setting it reads, which is why the
+include goes at the end: an `hdmi_mode=` after it would win, and the kernel, which reads config.txt before
+the 68k starts (on core 0, with the card's early look of "Any size" above), tells PiDisplay so
+(`PSMB_CF_OVERRIDE`), as it does when the line is missing.
+
+**The restart.** The firmware reads config.txt only when the Pi starts, so a new mode needs the whole Pi
+restarted. PiDisplay asks the kernel to write the file (`PSMB_INFO_DISPSET`), waits until it is on the
+card, arms the Pi's restart (`PSMB_INFO_DISPRESTART`) and restarts the Mac through the Shutdown Manager,
+so that every program quits and every volume is put away first. The ROM's restart ends in the 68k's
+RESET instruction, which reaches the kernel (`psmac_hdmi_bus_reset`); core 3 then waits until the card
+has nothing left to write (the disk image's changes included: `psmac_card_idle`) and pulls the Pi's
+watchdog, with the boot partition set to 0 in PM_RSTS, exactly as upstream PiStorm's housekeeper restarts
+a Pi when the Amiga's reset is held (ps_classic_protocol.c). Is that safe for the SE's bus? It is the
+classic PiStorm's ordinary way of restarting, and the SE is reset anyway: the kernel's start brings the
+CPLD up and pulses the motherboard's RESET (psmac_gpio.c), as at power-on; while the Pi is down the 68000
+socket is the CPLD's, which drives nothing until asked. The remote control's `restart?how=pi` (docs/13) has
+done the same since 20 November.
+
+**Keep this resolution?** After that restart the confirm mark is in the file. Nobody knows yet whether the
+monitor shows the new mode, so the question is asked on the SE's own screen, which always works, and it
+answers itself: Keep (the default button, Return) or Revert (Escape, Command-period), with "If you do
+nothing, the previous resolution comes back in 15 seconds" counting down. Revert, or the countdown, puts
+`aurora68-display.bak` back (without its mark) and restarts the Pi again. PiScrn asks it: it runs at every
+start of such a Mac anyway, and now, when the kernel says a mode waits to be kept, it stays in the system
+heap (its entry copies the image there, as the WiFi menu's does, and gives the copy back otherwise), puts
+a filter on GetNextEvent and, at the first null event of the first program two seconds on, puts up the
+dialog (mac/pidisplay/pdcommon.c, shared with PiDisplay, which asks itself if it is started while the
+question is still open). The kernel keeps its own clock as well: once the question is on the screen
+(`PSMB_DC_ASKING`) it reverts by itself 25 seconds later without an answer, and if nothing asks at all (no
+PiScrn) it reverts `mac.displaywait=` seconds after its start, 300 by default.
+
+**Rotation.** 0, 90, 180 and 270 degrees, the picture turned clockwise on the monitor: at 90 the Mac's top
+row is the monitor's right-hand column, so a monitor stood on its side anticlockwise shows the Mac upright.
+The kernel turns it while it copies the Mac's frame into the VideoCore's (`convert_turned`,
+psmac_display.c), and the Mac's HDMI screen is then H by W: the screen size decided at start (psmac_bus.c)
+is swapped, the declaration ROM rewritten for it, the display block made for it. The setting is the
+`#aurora68 rotate=` line, so it outlasts a power cut, and it needs only a restart of the Mac: the kernel
+keeps the HDMI card's declaration ROM as it was loaded, and at the 68k's RESET, before the Slot Manager
+reads the cards again, rewrites it for the turned size (`psmac_declrom_rescreen`) and makes the display
+block again (`psmac_display_rotate`); PiScrn then sees the new size and arranges the screens once more. A
+turn of 90 or 270 writes the Mac's rows as the monitor's columns, which caches dislike: a 1440-pixel row
+lands one pixel on each of 1440 lines. So a band is done in tiles of 32 of the Mac's columns, each written
+as one short run along a VideoCore row and flushed as such; millions of colours into the 16-bit or 32-bit
+buffer have loops of their own.
+
+**PiDisplay** (mac/pidisplay/pidisplay.c, an application in C with the kit in mac/c; 68020, System 6.0.8 and
+7). One document window, written to the 1992 Human Interface Guidelines as the user asked: it moves, grows,
+zooms to the screen it is on (as large as its contents want, on the screen holding most of it) and scrolls
+both ways; on a narrow screen its sections stand in one column, from 720 pixels wide in two. A strip at the
+top says what is in force or what has been chosen and carries the two buttons, **Revert** (back to the
+settings in force) and **Restart to Apply...** (dimmed until something is chosen, and while the card cannot be
+written). The sections: *Monitor* (name, maker, model, serial number, date, size in centimetres and inches
+with the diagonal, shape, the EDID's version), *Current* (the HDMI mode and its refresh, the config.txt
+lines that set it, the Mac's screen and its rotation, the depth the Mac draws in and the one the Pi sends,
+the copy's time on core 3, and a note when config.txt lacks the include line, overrides it, or the card is
+read-only), *Resolutions* (the list with its own scroll bar: size, refresh, clock and the judgement, the
+monitor's preferred mode and the one in force marked, the suggested one in bold with a bullet and its reason
+under the list, the modes that cannot be chosen dimmed; arrow keys move the choice), *Rotation* (four radio
+buttons), *Sound* (the formats, rates and sample sizes the monitor plays, its speakers, and where the Mac's
+sound goes now), *Connection* (HDMI or DVI, the Pi's, the monitor's and the HDMI link's pixel clocks, the
+range limits, the colour depths). Menus: Apple (About PiDisplay...), File (Close, Save Report As..., Quit),
+Edit (Copy copies the report as text; Undo, Cut, Paste, Clear and Select All are there, dimmed, and work for
+desk accessories), Display (Use Suggested Resolution, Revert, Restart to Apply...). Balloon Help for all four
+menus on System 7 ('hmnu' resources made by tools/mac/mkhmnu.py). Dialogs are built in memory, centred a
+third of the way down the main screen, their default button outlined, Escape and Command-period cancelling.
+The window's place and size are kept in "PiDisplay Prefs" (the Preferences folder through FindFolder on
+System 7, the System Folder through SysEnvirons on System 6) and used only if its title bar is on a screen
+that is there now. It takes every event, runs in the background, and refreshes its answer every two
+seconds. Its lines in the kernel's log start `[MAC] PiDisplay:`.
+
+**What the testbed showed** (21 November, MAME's `macse_ps` with System 7.1 on the SE's SCSI disk, PiScrn in the
+Extensions folder and PiDisplay in Startup Items, QEMU's VideoCore started at 1920 by 1080 as config.txt's
+`hdmi_mode=82` would, a 64 MB FAT16 card image with that config.txt and its include line, `mac.edidtest=sample
+mac.hdmisim=1`; a private copy of MAME's parameter RAM):
+- The boot logs the sample's 17 modes, 14 usable, 3 too fast (2560x1440 at 59.95 Hz with 30 Hz fitting at
+  119.00 MHz; 1920x1200 at 60 Hz with its 154.00 MHz reduced-blanking twin; 3840x2160 at 30 Hz with nothing
+  that fits), 8 of the wrong shape, the suggestion 2560x1440 at 30 Hz and the mode in use, 1920x1080 at 60 Hz
+  from config.txt. PiDisplay opens on the SE's screen (`docs/img/pidisplay-se.png`); dragged onto the HDMI
+  screen and zoomed it fills it as two columns (`docs/img/pidisplay-hdmi-1080.png`).
+- 2560x1440 chosen, Restart to Apply, the alert (`docs/img/pidisplay-restart-alert.png`), Restart: the kernel
+  made `aurora68-display.bak` (92 bytes, the empty first state) and `aurora68-display.txt` (515 bytes), both new
+  with long names (mtools lists them as `aurora68-display.bak` and `.txt`, short names `AURORA~1.BAK` and
+  `.TXT`), the Mac quit its programs and restarted, and the 68k's RESET restarted QEMU's Pi through the watchdog.
+  The new start read the file, `mac.hdmisim` made a 2560x1440 buffer, PiScrn rearranged the screens and
+  restarted, and at the next start put up "Keep this resolution?" over the Finder, counting down
+  (`docs/img/pidisplay-keep.png`). Left alone, it answered Revert at 0: the .bak went back, the Pi restarted, and
+  the Mac came up at 1920x1080 again. A second time, Keep: the mark left the file and 2560x1440 at 30 Hz stayed
+  (the kernel: `in use: 2560x1440 at 30 Hz (aurora68-display.txt, hdmi_group=2 hdmi_mode=87 hdmi_cvt=2560
+  1440 30)`), with the log saved into aurora68.log before the restart.
+- Rotation 90, then 270, each with a Mac restart only: `declaration ROM: slot $A's screen rewritten for
+  1080x1920`, `rotation 90 from this restart: the Mac's HDMI screen is 1080x1920, the VideoCore 1920x1080`,
+  PiScrn's rearrangement, and PiDisplay on the turned screen (`docs/img/pidisplay-hdmi-rot90.png`, the
+  VideoCore's own picture, the Mac's top along the monitor's right; `-rot270.png` along its left). Then
+  2560x1440 again with 270 kept in the file: the Mac's screen 1440x2560 (`docs/img/pidisplay-hdmi-1440-rot270.png`).
+- The copy's time on core 3 under QEMU (TCG on the host, not a Pi): 1920x1080 in millions into the 16-bit
+  buffer unturned 17-24 ms a frame; turned 90, 90-100 ms; turned 270, 36-45 ms; 2560x1440 turned 270,
+  80 ms (42-45 frames in five seconds with the pacing). The turned copy is the expensive one, as expected;
+  the bands of a turned frame were then made twice as tall, halving the separate flushes, and 1080x1920
+  turned 90 came down to 47-56 ms (68-74 frames in five seconds; the last run, on the kernel rebased onto
+  main). But the next run, with the rotation read from the file at the start rather than set at a restart,
+  measured 380-520 ms a frame for the same copy (6 or 7 frames in five seconds; the loop's "display" step
+  60-95 ms a band), on the same host and the same code. Nothing in the copy differs between the two paths;
+  QEMU's software TLB, walked by a turned copy one 4 KiB page per source row (4,320-byte rows), is the likely
+  reason the figure jumps about. A Pi 3's 512-entry TLB over the kernel's block mappings will not see that,
+  so QEMU's figures say only that the copy works; what a Pi 3 makes of it is the heartbeat's `turned N`
+  line on the real machine.
+- PiDisplay on the SE's own screen at its first place (`docs/img/pidisplay-se.png`), scrolled to its
+  end with the Rotation buttons (`-se-bottom.png`), and made smaller with the grow box, the document then
+  scrolling sideways too (`-se-resized.png`).
+- Found on the way: the remote control's testbed channel (`mac.remotefile=`) loses its answers after a
+  restart of QEMU's Pi (its requests still arrive, so clicks work; screenshots were taken with
+  `tools/vcshot.py` and MAME's own pictures instead); and PiDisplay's first build hid and showed its radio
+  buttons at every redraw, which, with a redraw every two seconds as the copy's time changed, left them
+  invisible in some pictures: controls now move only when their place changes, and the copy's time alone
+  no longer redraws the window.
+
+Not verified on hardware: the firmware's answer to the EDID tag on the Pi 3's firmware and the UP2716D's real
+EDID (the user's monitor already runs 2560x1440 at 30 Hz from hand-written config.txt lines, the mode
+PiDisplay would write); whether a missing included file stops the firmware (the release ships an empty one);
+the Pi's watchdog restart with the SE attached; the turned copy's cost on a Pi 3.
+
 ## Colour (17 November, 01:30)
 PiColor (`mac/picolor.s`) opens a colour window on the Pi's screen and paints twelve hues at full
 and half strength, the primaries and a sixteen-step grey ramp with RGBForeColor and PaintRect.

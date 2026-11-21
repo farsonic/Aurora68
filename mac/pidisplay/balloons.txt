@@ -1,0 +1,27 @@
+# PiDisplay's Balloon Help (System 7), one block per menu, in the menus' order (tools/mac/mkhmnu.py)
+menu 128
+title = The Apple menu: About PiDisplay, and the desk accessories.
+item Tells which version of PiDisplay this is and what it is for. | Tells about PiDisplay. Not available while a dialog is open.
+item -
+menu 129
+title = File menu: close PiDisplay's window, save the report, quit.
+item Closes the window, which ends PiDisplay. | Closes the window. Not available now.
+item Saves the report about the monitor and its resolutions as a TeachText document. | Saves the report. Not available while a desk accessory is in front.
+item -
+item Quits PiDisplay. Nothing is changed unless Restart to Apply was used. | Quits PiDisplay.
+menu 130
+title = Edit menu: Copy puts the report about the monitor on the Clipboard.
+item = Undo is not available in PiDisplay: nothing in its window is edited.
+item -
+item = Cut is not available in PiDisplay: nothing in its window is edited.
+item Copies the report about the monitor and its resolutions to the Clipboard, as text. | Copies the report.
+item = Paste is not available in PiDisplay: nothing in its window is edited.
+item = Clear is not available in PiDisplay: nothing in its window is edited.
+item -
+item = Select All is not available in PiDisplay: Copy always takes the whole report.
+menu 131
+title Display menu: choose the suggested resolution, go back to the settings in force, or apply your choice. | Display menu. Not available until the Pi's kernel has answered.
+item Selects the resolution PiDisplay suggests for this monitor (the one with the bullet). | Selects the suggested resolution. Not available: it is already chosen, or there is none.
+item Puts the resolution and rotation back to the ones in force. | Puts back the settings in force. Not available: nothing has been changed.
+item -
+item Writes your choice to the SD card and restarts; a new resolution restarts the Pi as well. | Applies your choice. Not available: nothing has been changed, or the SD card cannot be written.

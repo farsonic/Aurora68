@@ -2895,6 +2895,50 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    in the Riptide Command Terminal, `ifconfig en1` should show a global IPv6 address beside the link-local
    one, and `ping6` to an outside IPv6 address should answer.
 
+81. **PiDisplay: the HDMI monitor's EDID, its resolution and rotation chosen on the Mac (21 November).**
+   With the UP2716D on the SE (item 77) the user asked for a Mac program to choose the HDMI resolution and
+   rotation, read the monitor's details and see which resolutions suit it; the design (EDID through the
+   mailbox, a file of the kernel's own that config.txt includes, a Pi restart with a keep-or-revert
+   question, rotation in the copy) was agreed first. docs/10, "PiDisplay", is the long form.
+   - *The EDID.* The firmware's property tag 0x00030020 hands out the EDID block by block
+     (`psmac_vc_edid_block`). `psmac_edid.c` (pure C; `tools/edid_test.c` runs it on the host in `make -C mac
+     check`) parses the base block, the CEA-861 extension (VICs, short audio descriptors, speaker
+     allocation, the HDMI vendor block) and judges every mode against a Pi 3's pixel clock: 162 MHz
+     (Raspberry Pi's documentation names 1920x1200 at 60 Hz reduced, 154 MHz, as the top mode before the
+     Pi 4; the firmware lists 1600x1200 at 60 Hz, 162 MHz; `mac.hdmiclock=` moves it). Too fast offers CVT
+     reduced blanking at the mode's refresh, 50 or 30 Hz; VESA's own CVT figures check the integer formulas
+     (173.00, 241.50, 154.00 MHz). QEMU has no monitor, so `mac.edidtest=sample` gives a made-up 27-inch
+     2560x1440 HDMI monitor with sound (built in code, not copied from any real EDID), `=FILE` any EDID.
+   - *The file.* config.txt is never written. One line at its end, `include aurora68-display.txt`; the
+     kernel writes that file (the old one as `.bak`) through the card writer, with VFAT long-name entries
+     when it is new (`lfn_create`, psmac_card.c), and reads config.txt and the file on core 0 before the
+     68k starts, so it knows the mode in force, whether the include is there or overridden, the rotation
+     and whether a new mode waits to be confirmed.
+   - *The restart.* `PSMB_INFO_DISPRESTART`, then the Shutdown Manager's restart; at the 68k's RESET the
+     kernel saves the log to aurora68.log, waits for the card to be idle (the disk image's changes too) and
+     pulls the watchdog as upstream's housekeeper does. After it PiScrn, now staying in the system heap when
+     there is something to ask, puts up "Keep this resolution?" on the SE's screen from a GetNextEvent
+     filter, counting down 15 seconds; Revert or silence puts the .bak back and restarts again. The kernel
+     reverts by itself 25 s after the question appeared without an answer, or `mac.displaywait=` (300) s
+     after its start if nothing asked.
+   - *Rotation* is the kernel's: the copy into the VideoCore buffer turns the picture (tiles of 32 columns
+     for 90 and 270), the Mac's screen is H by W, and at a Mac restart the HDMI card's declaration ROM is
+     rewritten from the loaded file for the turned size before the Slot Manager reads it again.
+   - *PiDisplay* (mac/pidisplay/), the 1992 guidelines throughout: a document window that grows, zooms to
+     its screen and scrolls, one column or two; Monitor, Current, Resolutions, Rotation, Sound and
+     Connection; Revert and Restart to Apply; Apple, File, Edit and Display menus with Balloon Help;
+     Copy and Save Report As; the window's place in a preferences file, put back on a screen that exists.
+   - *Tested* (MAME `macse_ps`, System 7.1, a FAT16 card image, `mac.edidtest=sample mac.hdmisim=1`): the
+     sample's 17 modes judged and logged; PiDisplay on the SE's screen and zoomed to two columns on HDMI;
+     2560x1440 at 30 Hz applied through a Pi restart, the question left to count down (reverted, the Pi
+     restarted, 1920x1080 back), then applied again and kept; rotation 90 and 270 with a Mac restart each,
+     and 2560x1440 turned 270 (the Mac's screen 1440x2560). Under QEMU the turned copy took 36-100 ms a
+     frame against 17-24 unturned, 47-56 ms for 1080x1920 turned 90 once its bands were made twice as tall, and 380-520 ms for the same in the
+     next run (QEMU's figures for a turned copy jump about; docs/10). The testbed's remote file channel loses its answers after QEMU's Pi
+     restarts (docs/10).
+   - *Not verified on hardware:* the EDID tag on the Pi 3's firmware, the UP2716D's EDID, the firmware with
+     a missing included file, the watchdog restart with the SE on the bus, the turned copy on a Pi 3.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

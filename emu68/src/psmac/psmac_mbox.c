@@ -543,6 +543,12 @@ static int run_cmd(int idx, uint16_t type, volatile uint8_t *c, uint32_t req)   
         } else if (cmd == PSMB_INFO_OPTSTATE) { extern int psmac_card_options_state(void); result = (uint32_t)psmac_card_options_state(); }
         else if (cmd == PSMB_INFO_SAVELOG) { extern int psmac_card_save_log(int); if (psmac_card_save_log(0)) status = PSMB_E_RO; else kprintf("[MAC] the log to the card asked\n"); }
         else if (cmd == PSMB_INFO_LOGSTATE) { extern int psmac_card_log_state(void); result = (uint32_t)psmac_card_log_state(); }
+        else if (cmd >= PSMB_INFO_DISPINFO && cmd <= PSMB_INFO_DISPRESTART) {      /* PiDisplay (psmac_hdmi.c) */
+            extern int psmac_hdmi_cmd(uint16_t, uint32_t, uint32_t, uint32_t, uint32_t *, const void **, uint32_t *);
+            const void *out; uint32_t n;
+            status = psmac_hdmi_cmd(cmd, a0, a1, a2, &result, &out, &n);
+            if (!status && out) { if (n > len) n = len; if (mac_copy(buf, NULL, out, n, 1)) status = PSMB_E_BADADDR; else xfer = n; }
+        }
         else status = PSMB_E_BADCMD;
         break;
     case PSMB_SVC_BLOCK: {

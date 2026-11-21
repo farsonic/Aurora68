@@ -68,3 +68,11 @@ gpu_mem=64
 # ports (the VL805's xHCI) are not yet in the Macintosh build: Bluetooth keyboards and mice work.
 # The same card boots a Pi 3 and a Pi 4: start4.elf, fixup4.dat and bcm2711-rpi-4-b.dtb beside the
 # Pi 3's files (get-firmware.sh fetches them all).
+
+[all]
+# PiDisplay (the Mac program; docs/10, "PiDisplay") chooses the HDMI mode: the kernel writes it into
+# aurora68-display.txt beside this file (the previous one as aurora68-display.bak) and never edits this
+# file. Keep the include line last: the firmware takes the last value of a setting, so an hdmi_ line
+# after it would win over PiDisplay's. The release's aurora68-display.txt holds comments only, so the
+# hdmi_ lines above apply until PiDisplay writes one.
+include aurora68-display.txt

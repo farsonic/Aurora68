@@ -1,0 +1,2 @@
+# aurora68-display.txt: no HDMI mode chosen in PiDisplay yet; config.txt's own lines apply.
+# The Aurora68 kernel rewrites this file when PiDisplay (on the Mac) applies a resolution or a rotation.

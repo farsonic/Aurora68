@@ -198,6 +198,23 @@ Once the SE's own screen shows the Finder, HDMI can be a second screen beside it
      for monitor 2 in Monitors.
 mac.hdmi=mirror shows the SE's picture on HDMI again, mac.hdmi=log (or mac.console=hdmi) the log.
 
+Choosing the HDMI resolution on the Mac: PiDisplay
+--------------------------------------------------
+PiDisplay (Mac/PiDisplay.bin) shows what the HDMI monitor says about itself (name, maker, serial number,
+size, sound) and every resolution it lists, each marked usable, too fast for a Pi 3 (with a slower
+alternative when one fits, such as 2560 x 1440 at 30 Hz) or the wrong shape, with a suggestion; and it
+sets the resolution and turns the picture (0, 90, 180, 270 degrees).
+  1. Once: config.txt ends with the line "include aurora68-display.txt" (this release's config.txt has
+     it), and aurora68-display.txt is on the card beside it (this release's holds comments only).
+     Keep the include line last: an hdmi_ line after it would win.
+  2. PiScrn in the System Folder (it asks "Keep this resolution?" after a change).
+  3. In PiDisplay choose a resolution and/or a rotation, then Restart to Apply. A new resolution
+     restarts the Pi and the Mac; on the SE's screen PiScrn then asks "Keep this resolution?": Keep,
+     or within 15 seconds the previous one comes back by itself (the Pi restarts once more). A rotation
+     restarts the Mac only.
+The kernel writes aurora68-display.txt and keeps the one before as aurora68-display.bak; config.txt is
+never written. The log's [PSMAC:EDID] lines list the monitor's modes; send them if something is wrong.
+
 Sound on the HDMI monitor
 -------------------------
 The Mac's sound plays on the HDMI monitor's loudspeakers in stereo (and on the SE's speaker as before):

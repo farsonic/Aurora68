@@ -1,10 +1,14 @@
-| mac/piscrn/entry.s - PiScrn's way in: the INIT entry. MPL-2.0.
+| mac/piscrn/entry.s - PiScrn's way in: the INIT entry, and its filter on GetNextEvent. MPL-2.0.
 |
 | The Start Manager runs 'INIT' 128 once, from a locked resource in the system heap, and releases it
-| afterwards. PiScrn does all its work in that one call and leaves nothing behind (no patch, no
-| task), so the image is relocated where it lies: every 32-bit field the table names (tools/mac/
-| elf2init.py, macelf.py) gets the image's address added, the instruction cache is flushed, and
-| init_main() in piscrn.c runs. The C code keeps D2-D7/A2-A6 (GCC) and is compiled -ffixed-a5.
+| afterwards. Most starts PiScrn does all its work in that one call and leaves nothing behind. But
+| when a new HDMI mode waits to be kept (PiDisplay, 21 November 2026) it must stay to ask once the
+| Finder is up, through a filter on GetNextEvent. So the image is copied into a pointer in the system
+| heap first, as the WiFi menu's is (mac/wifimenu/entry.s), every 32-bit field the table names
+| (tools/mac/elf2init.py, macelf.py) gets the copy's address added, the instruction cache is
+| flushed, and init_main() in piscrn.c runs in the copy. It answers 1 when it has put the filter in
+| (the copy stays), else 0, and the copy is given back. The C code keeps D2-D7/A2-A6 (GCC) and is
+| compiled -ffixed-a5.
 
 	.text
 	.globl	_start
@@ -14,9 +18,19 @@ _start:
 _reloc_off:
 	.long	0			| filled in by elf2init.py: the image's size, where the table starts
 1:	movem.l	%d0-%d7/%a0-%a6,-(%sp)
-	lea	_start(%pc),%a2		| the image, here
+	lea	_start(%pc),%a3		| the image, in the resource
 	move.l	_reloc_off(%pc),%d2
-	lea	(%a2,%d2.l),%a4		| the table: a count, then the offsets of the fields
+	move.l	%d2,%d0
+	.short	0xA51E			| _NewPtr,Sys
+	move.l	%a0,%d0
+	beq.s	9f
+	move.l	%a0,%a2			| the copy
+	move.l	%a3,%a1
+	move.l	%d2,%d1
+2:	move.b	(%a1)+,(%a0)+
+	subq.l	#1,%d1
+	bne.s	2b
+	lea	(%a3,%d2.l),%a4		| the table (in the resource): a count, then the offsets of the fields
 	move.l	(%a4)+,%d3
 	move.l	%a2,%d4
 	bra.s	4f
@@ -26,8 +40,29 @@ _reloc_off:
 	bcc.s	3b
 	moveq	#1,%d0
 	.short	0xA198			| _HWPriv 1: FlushInstructionCache
-	bsr.l	init_main
-	movem.l	(%sp)+,%d0-%d7/%a0-%a6
+	move.l	#init_main,%a0		| an offset here: this code is not relocated
+	add.l	%a2,%a0
+	jsr	(%a0)
+	tst.l	%d0
+	bne.s	9f			| the filter is in: the copy stays
+	move.l	%a2,%a0
+	.short	0xA01F			| _DisposPtr
+9:	movem.l	(%sp)+,%d0-%d7/%a0-%a6
+	rts
+
+| jGNEFilter: A1 the event, the result word at 4(sp); every register kept, the next filter after
+| (mac/wifimenu/entry.s has the same, and why a press is taken there; PiScrn takes nothing)
+	.globl	gne_filter
+gne_filter:
+	movem.l	%d0-%d2/%a0-%a1,-(%sp)
+	move.l	%a1,-(%sp)
+	jsr	c_filter		| int c_filter(EventRecord *ev): always 0
+	addq.l	#4,%sp
+	movem.l	(%sp)+,%d0-%d2/%a0-%a1
+	move.l	old_gne,-(%sp)
+	beq.s	1f
+	rts				| into the filter that was there before
+1:	addq.l	#4,%sp
 	rts
 
 | short slot_next_video(void *spblock): _SlotManager sNextTypeSRsrc (21), the result in D0

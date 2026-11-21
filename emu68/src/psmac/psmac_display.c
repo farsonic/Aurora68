@@ -62,6 +62,8 @@ struct screen {
     uint32_t win_mac, win_size;              /* ... and as the Mac addresses it ($F9980000 or $F9988000), its size */
     uint32_t clut_seen;
     uint32_t rgb[256];                       /* the colour table as XRGB */
+    uint32_t block_off, frame_off;           /* where screen_init put it (psmac_display_rotate makes it again) */
+    int one_bit;
 };
 static struct screen scr[2];
 static int nscr;                             /* screens on the card: 1, or 2 on the SE board with its HDMI screen */
@@ -98,6 +100,9 @@ static uint32_t con_x, con_y, con_cols, con_rows;
 static unsigned tick_div;
 static int vc_fresh;                          /* the buffer was made moments ago and nothing has drawn the picture in it */
 static int vc_boot;                           /* the firmware's boot buffer is kept (the SE board's log on HDMI, psmac_display_init) */
+static uint8_t *win_base;                     /* the window, for psmac_display_rotate */
+static int rot;                               /* the picture turned this far clockwise on the monitor (PiDisplay, below) */
+static uint32_t hdmi_w, hdmi_h;               /* the firmware's frame buffer at start: the HDMI mode */
 
 /* psmac_bus.c, once the declaration ROM is in place and before the mailbox is made: the SE card's
    layout (a psmac-se file: slot 9's screen is the SE's, one bit), and whether the HDMI screen's card
@@ -136,6 +141,7 @@ static void screen_init(struct screen *s, uint8_t *win, uint32_t block_off, uint
 {
     volatile struct psmb_display *d = (volatile struct psmb_display *)(win + block_off);
     s->disp = d; s->win = win + frame_off; s->win_size = frame_size;
+    s->block_off = block_off; s->frame_off = frame_off; s->one_bit = one_bit_only;
     s->win_mac = PSMB_WIN_PHYS + 0x900000u + frame_off;                 /* $F99xxxxx: the 24-bit megabyte in 32-bit form */
     s->clut_seen = ~0u;
     for (uint32_t i = 0; i < sizeof(struct psmb_display) / 4; i++) ((volatile uint32_t *)d)[i] = 0;
@@ -163,6 +169,9 @@ static void screen_init(struct screen *s, uint8_t *win, uint32_t block_off, uint
 void psmac_display_init(uint8_t *win)
 {
     if (!nscr) nscr = 1;
+    win_base = win;
+    hdmi_w = fb_width; hdmi_h = fb_height;
+    { extern int psmac_hdmi_rotation(void); rot = psmac_hdmi_rotation(); }
     frame_big = (uint8_t *)(KERNEL_ALIAS + psmac_fb_big_phys());
     uint32_t w0, h0, w1 = 0, h1 = 0;
     psmac_screen_size(&w0, &h0);                 /* the first screen: mac.screen, or 512 x 342 on the SE board */
@@ -177,6 +186,12 @@ void psmac_display_init(uint8_t *win)
         if (!w1 || !h1) { w1 = fb_width ? fb_width : 640; h1 = fb_height ? fb_height : 480; }
         vw = w1; vh = h1;
     }
+    /* PiDisplay's rotation (psmac_hdmi.c): at 90 and 270 the Mac's screen is the VideoCore's turned on
+       its side, H x W (psmac_bus.c swapped the size), and the VideoCore keeps the HDMI mode's W x H.
+       The SE's own screen is never turned; with mac.hdmi=mirror or log there is nothing to turn. */
+    int can_turn = nscr == 2 || (!se_card && !(psmac_board_se && !psmac_board_solo));
+    if (!can_turn) rot = 0;
+    if (rot == 90 || rot == 270) { uint32_t t = vw; vw = vh; vh = t; }
     /* With the log on HDMI and no second screen (mac.hdmi=log, which mac.console=hdmi means) the
        VideoCore shows nothing but text, so the buffer the firmware made at boot for the splash is
        kept, 16 bits as it is, rather than remade. On 20 November 2026 the second boot on the SE
@@ -236,6 +251,9 @@ void psmac_display_init(uint8_t *win)
                 psmac_board_se && !psmac_board_solo ? "the SE's screen" : "second display", w0, h0, scr[0].win_mac,
                 se_card ? ", one bit only (the SE card)" : ", direct modes in the big region at $90000000",
                 vc_w, vc_h, vc_bpp, vc_pitch, framebuffer, vc_boot ? ": the firmware's own buffer, kept; the log stays there (mac.hdmi=log)" : con_keep ? ": the log stays there (mac.hdmi=log)" : psmac_board_se && !psmac_board_solo ? ": HDMI mirrors the SE (mac.hdmi=mirror)" : "");
+    /* the HDMI monitor's EDID and the mode in force, for PiDisplay (psmac_hdmi.c): the firmware's buffer as it
+       was at the start is the HDMI mode */
+    { extern void psmac_hdmi_init(uint32_t, uint32_t); psmac_hdmi_init(hdmi_w, hdmi_h); }
 }
 
 /* Which byte of a 32-bit pixel is red. The firmware is asked (tag 0x40006): 1 means the bytes
@@ -354,9 +372,9 @@ static inline void put(void *row, uint32_t x, uint32_t xrgb)
    have loops of their own, without the per-pixel choices of put(). */
 #define BAND_PIXELS 131072u
 #define FRAME_SHARE 1u                    /* idle time after a frame, in multiples of its busy time: 1 is half the core */
-static uint32_t band_y, band_h, band_w, band_mode, band_active, band_depth, band_rb;
+static uint32_t band_y, band_h, band_w, band_mode, band_active, band_depth, band_rb, band_rot;
 static uint64_t frame_t0, frame_end, frame_busy, frame_rest;
-static uint32_t frame_bands, rep_busy_max, rep_frames;   /* the last frame's bands; the heartbeat's figures */
+static uint32_t frame_bands, rep_busy_max, rep_frames, last_busy_max;   /* the last frame's bands; the heartbeat's figures */
 /* the Mac's pixels -> XRGB; depth 1/2/4: the leftmost pixel is in the high bits of the byte */
 static void convert_rows(uint32_t y0, uint32_t y1)
 {
@@ -422,6 +440,80 @@ static void convert_rows(uint32_t y0, uint32_t y1)
     }
     arm_flush_cache((intptr_t)(vcfb + y0 * vc_pitch), vc_pitch * (y1 - y0));
 }
+/* The picture turned (PiDisplay's rotation, psmac_hdmi.c, 21 November 2026). rot is how far the picture
+   is turned clockwise on the monitor: at 90 the Mac's top row is the monitor's right-hand column, at
+   270 its left-hand one, at 180 the Mac is upside down; a monitor stood on its side the other way round
+   then shows the Mac upright. The Mac's pixel (x, y) goes to
+       90:  (vc_w - 1 - y, x)       180: (vc_w - 1 - x, vc_h - 1 - y)       270: (y, vc_h - 1 - x)
+   A turn of 90 or 270 writes the Mac's rows as the monitor's columns, which is what caches dislike: a
+   row of 1440 pixels lands one pixel on each of 1440 lines of the VideoCore buffer. So the band is
+   done in tiles: TURN_TILE columns of the Mac's band rows at a time (for millions of colours 32 x 4
+   bytes = two cache lines of each source row, the whole tile a few KB), each column written as one
+   short run along a VideoCore row and flushed as such. The common pairs (millions into the firmware's
+   16-bit buffer or a 32-bit one) have loops of their own; the rest go through src_pixel() and put(). */
+#define TURN_TILE 32u
+static inline uint32_t src_pixel(const uint8_t *row, uint32_t x, uint32_t depth, const uint32_t *rgb)
+{
+    switch (depth) {
+    case 32: return ((const uint32_t *)row)[x] & 0xffffffu;
+    case 16: { uint32_t v = ((const uint16_t *)row)[x], r = (v >> 10) & 31, g = (v >> 5) & 31, b = v & 31;
+               return (r << 3 | r >> 2) << 16 | (g << 3 | g >> 2) << 8 | (b << 3 | b >> 2); }
+    case 8: return rgb[row[x]];
+    case 4: return rgb[(row[x >> 1] >> ((x & 1) ? 0 : 4)) & 15];
+    case 2: return rgb[(row[x >> 2] >> (6 - 2 * (x & 3))) & 3];
+    default: return rgb[(row[x >> 3] >> (7 - (x & 7))) & 1];
+    }
+}
+static void convert_turned(uint32_t y0, uint32_t y1)
+{
+    uint32_t depth = band_depth, rb = band_rb, w = band_w, r = band_rot;
+    const uint8_t *frame = mode_frame(vcs, (int)band_mode);
+    const uint32_t *rgb = vcs->rgb;
+    uint32_t bpp = vc_bpp == 32 ? 4 : 2, n = y1 - y0;
+    if (r == 180) {
+        for (uint32_t y = y0; y < y1; y++) {
+            const uint8_t *src = frame + y * rb;
+            uint8_t *dst = vcfb + (vc_h - 1 - y) * vc_pitch;
+            if (depth == 32 && vc_bpp == 16) {
+                const uint32_t *sp = (const uint32_t *)src; uint16_t *d = (uint16_t *)dst;
+                for (uint32_t x = 0; x < w; x++) {
+                    uint32_t v = sp[x];
+                    d[vc_w - 1 - x] = LE16((uint16_t)(((v >> 8) & 0xf800) | ((v >> 5) & 0x07e0) | ((v >> 3) & 0x001f)));
+                }
+            } else {
+                for (uint32_t x = 0; x < w; x++)
+                    put(dst, vc_w - 1 - x, src_pixel(src, x, depth, rgb));
+            }
+            arm_flush_cache((intptr_t)(dst + (vc_w - w) * bpp), w * bpp);
+        }
+        return;
+    }
+    for (uint32_t x0 = 0; x0 < w; x0 += TURN_TILE) {
+        uint32_t x1 = x0 + TURN_TILE < w ? x0 + TURN_TILE : w;
+        for (uint32_t x = x0; x < x1; x++) {
+            /* the Mac's column x is the VideoCore's row x (90) or vc_h - 1 - x (270); the band's rows
+               y0..y1 fill a run of it, right to left at 90, left to right at 270 */
+            uint8_t *drow = vcfb + (r == 90 ? x : vc_h - 1 - x) * vc_pitch;
+            uint32_t first = r == 90 ? vc_w - y1 : y0;                    /* the run's leftmost pixel */
+            const uint8_t *src = frame + y0 * rb;
+            if (depth == 32 && vc_bpp == 16) {
+                uint16_t *d = (uint16_t *)drow;
+                for (uint32_t k = 0; k < n; k++, src += rb) {
+                    uint32_t v = ((const uint32_t *)src)[x];
+                    d[r == 90 ? vc_w - 1 - (y0 + k) : y0 + k] = LE16((uint16_t)(((v >> 8) & 0xf800) | ((v >> 5) & 0x07e0) | ((v >> 3) & 0x001f)));
+                }
+            } else if (depth == 32 && vc_bpp == 32 && !vc_swap) {
+                uint32_t *d = (uint32_t *)drow;
+                for (uint32_t k = 0; k < n; k++, src += rb)
+                    d[r == 90 ? vc_w - 1 - (y0 + k) : y0 + k] = LE32(((const uint32_t *)src)[x] & 0xffffffu);
+            } else {
+                for (uint32_t k = 0; k < n; k++, src += rb)
+                    put(drow, r == 90 ? vc_w - 1 - (y0 + k) : y0 + k, src_pixel(src, x, depth, rgb));
+            }
+            arm_flush_cache((intptr_t)(drow + first * bpp), n * bpp);
+        }
+    }
+}
 /* a screen's colour table as XRGB, when the Mac has changed it (or its luminance mapping) */
 static void clut_update(struct screen *s)
 {
@@ -441,23 +533,27 @@ static int convert_start(void)
     if (!vcfb) return 0;
     volatile struct psmb_display *d = vcs->disp;
     uint32_t depth = d->depth, rb = d->rowbytes;
-    uint32_t h = d->height < vc_h ? d->height : vc_h, w = d->width < vc_w ? d->width : vc_w;
+    uint32_t r = (uint32_t)rot, tw = r == 90 || r == 270 ? vc_h : vc_w, th = r == 90 || r == 270 ? vc_w : vc_h;   /* the VideoCore as the Mac sees it */
+    uint32_t h = d->height < th ? d->height : th, w = d->width < tw ? d->width : tw;
     int mi = mode_index(depth);
     if (mi < 0 || !d->mode_base[mi]) return 0;
     if (rb * h > mode_limit(vcs, mi)) return 0;
     clut_update(vcs);
-    band_y = 0; band_h = h; band_w = w; band_mode = (uint32_t)mi; band_depth = depth; band_rb = rb;
+    band_y = 0; band_h = h; band_w = w; band_mode = (uint32_t)mi; band_depth = depth; band_rb = rb; band_rot = r;
     return 1;
 }
 /* one band; the frame's end counts it */
 static uint64_t cnt_now(void) { uint64_t t; __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(t)); return t; }
 static void convert_band(void)
 {
-    uint32_t n = band_w ? BAND_PIXELS / band_w : band_h;
+    /* a turned band twice as tall: each of its columns is one run along a VideoCore row, flushed on its own,
+       and longer runs mean fewer of them for the same pixels */
+    uint32_t n = band_w ? (band_rot == 90 || band_rot == 270 ? 2 * BAND_PIXELS : BAND_PIXELS) / band_w : band_h;
     if (!n) n = 1;
     if (band_y + n > band_h) n = band_h - band_y;
     uint64_t t0 = cnt_now();
-    convert_rows(band_y, band_y + n);
+    if (band_rot) convert_turned(band_y, band_y + n);
+    else convert_rows(band_y, band_y + n);
     uint64_t t1 = cnt_now();
     frame_busy += t1 - t0; frame_bands++;
     band_y += n;
@@ -530,14 +626,15 @@ void psmac_display_report(void)
            line, so that another core's output cannot land in the middle of it */
         if (&scr[i] == vcs && rep_frames)
             kprintf("[PSMAC]   display%s: %ux%u flags %x depth %u rowbytes %u vbl %s pending %u ticks %u frames %u clut seq %u; "
-                    "VideoCore %u frames in 5 s, longest %u us in %u bands\n",
+                    "VideoCore %u frames in 5 s, longest %u us in %u bands%s\n",
                     name, d->width, d->height, d->flags, d->depth, d->rowbytes, d->vbl_enable ? "on" : "off",
-                    d->vbl_pending, d->vbl_count, d->frames, d->clut_seq, rep_frames, rep_busy_max, frame_bands);
+                    d->vbl_pending, d->vbl_count, d->frames, d->clut_seq, rep_frames, rep_busy_max, frame_bands,
+                    rot == 90 ? ", turned 90" : rot == 180 ? ", turned 180" : rot == 270 ? ", turned 270" : "");
         else
             kprintf("[PSMAC]   display%s: %ux%u flags %x depth %u rowbytes %u vbl %s pending %u ticks %u frames %u clut seq %u\n",
                     name, d->width, d->height, d->flags, d->depth, d->rowbytes, d->vbl_enable ? "on" : "off",
                     d->vbl_pending, d->vbl_count, d->frames, d->clut_seq);
-        if (&scr[i] == vcs) { rep_frames = 0; rep_busy_max = 0; }
+        if (&scr[i] == vcs) { if (rep_frames) last_busy_max = rep_busy_max; rep_frames = 0; rep_busy_max = 0; }
     }
 }
 
@@ -641,4 +738,38 @@ void psmac_display_shot_row(uint32_t y, uint8_t *out, uint32_t maxw)
         }
         out[0] = (uint8_t)(c >> 16); out[1] = (uint8_t)(c >> 8); out[2] = (uint8_t)c;
     }
+}
+
+/* ---- PiDisplay (psmac_hdmi.c) --------------------------------------------------------------------- */
+/* the screen the VideoCore shows, as the Mac has it, the VideoCore buffer's depth and the longest frame
+   on core 3 in the last heartbeat period */
+int psmac_display_hdmi_screen(uint32_t *w, uint32_t *h, uint32_t *vc_depth, uint32_t *frame_us)
+{
+    if (!vcs) return 0;
+    *w = vcs->disp->width; *h = vcs->disp->height; *vc_depth = vc_bpp; *frame_us = last_busy_max;
+    return 1;
+}
+/* The 68k's RESET, with a new rotation asked for (core 0, psmac_hdmi_bus_reset): the Mac restarts, and
+   its Slot Manager is about to read the declaration ROMs again. The HDMI screen's card gets the turned
+   size (psmac_bus.c rewrites its video sResource from the file as it was loaded) and its display block
+   is made again for it; the VideoCore keeps its buffer. The display's flags are 0 since the reset
+   (psmac_display_bus_reset), so core 3 starts no frame meanwhile, and a band it is converting has its
+   own copy of the geometry (band_*). PiScrn then sees the new size and arranges the screens again. */
+int psmac_display_rotate(int r)
+{
+    extern int psmac_declrom_rescreen(uint32_t w, uint32_t h);
+    if (!vcs || !win_base || (r != 0 && r != 90 && r != 180 && r != 270)) return 0;
+    if (!(nscr == 2 || (!se_card && !(psmac_board_se && !psmac_board_solo)))) { kprintf("[PSMAC:DISP] rotation: the screen HDMI shows here is not turned (mac.hdmi=mirror or log)\n"); return 0; }
+    uint32_t vw = vc_w, vh = vc_h, w = r == 90 || r == 270 ? vh : vw, h = r == 90 || r == 270 ? vw : vh;
+    if (w < PSMB_SCREEN_MIN_W || h < PSMB_SCREEN_MIN_H || w > PSMB_SCREEN_MAX_W || h > PSMB_SCREEN_MAX_H) {
+        kprintf("[PSMAC:DISP] rotation %d: the Mac's screen would be %ux%u, outside the sizes it takes\n", r, w, h); return 0;
+    }
+    if (!psmac_declrom_rescreen(w, h)) { kprintf("[PSMAC:DISP] rotation %d: the declaration ROM could not be rewritten\n", r); return 0; }
+    struct screen *s = vcs;
+    screen_init(s, win_base, s->block_off, s->frame_off, s->win_size, w, h, s->one_bit);
+    rot = r;
+    for (uint32_t i = 0; vcfb && i < vc_pitch * vc_h; i += 8) *(uint64_t *)(vcfb + i) = 0;
+    arm_flush_cache((intptr_t)vcfb, vc_pitch * vc_h);
+    kprintf("[PSMAC:DISP] rotation %d from this restart: the Mac's HDMI screen is %ux%u, the VideoCore %ux%u\n", r, w, h, vw, vh);
+    return 1;
 }

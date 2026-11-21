@@ -29,7 +29,7 @@ cp mac/build/psmac_wifi_video.declrom "$OUT/aurora68-wifi.declrom"       # scree
 cp mac/build/psmac-se.declrom "$OUT/aurora68-se.declrom"           # the SE's two screens at any HDMI size (the kernel rewrites it)
 for f in mac/build/psmac-*x*.declrom; do cp "$f" "$OUT/aurora68-${f#mac/build/psmac-}"; done   # one per screen size (aurora68-1024x768.declrom ...),
                                                          # and each with the WiFi as the only network card (aurora68-wifi-1024x768.declrom ...)
-for f in PiDisk PiMach PiWiFi PiBlue PiStatus PiNet PiPing PiScreens PiColor PiLog PiSlots PiDepth WiFiMenu PiScrn SoundPiStorm; do cp "mac/build/$f.bin" "$OUT/Mac/"; done
+for f in PiDisk PiMach PiWiFi PiBlue PiStatus PiNet PiPing PiScreens PiColor PiLog PiSlots PiDepth WiFiMenu PiScrn PiDisplay SoundPiStorm; do cp "mac/build/$f.bin" "$OUT/Mac/"; done
 # an HFS disk image (2 MB) with the Macintosh files on it, for emulators and Disk Copy
 IMG="$OUT/Mac/Aurora68-Utilities.img"
 dd if=/dev/zero of="$IMG" bs=1k count=2048 status=none
@@ -40,7 +40,7 @@ hcopy -t release/READ-ME-FIRST.txt ":Read Me"
 humount
 
 echo "== boot files, notes, licences"
-cp release/config.txt release/cmdline.txt release/READ-ME-FIRST.txt "$OUT/"
+cp release/config.txt release/cmdline.txt release/aurora68-display.txt release/READ-ME-FIRST.txt "$OUT/"
 cp tools/mkcontainer.py "$OUT/make-container.py"
 cp tools/get-firmware.sh "$OUT/get-firmware.sh"      # the Pi's boot files and every board's WiFi/Bluetooth firmware, fetched and checked
 mkdir -p "$OUT/patches"; cp rom/patches/iici-368CADFE.delta.json "$OUT/patches/"   # make-container.py patches a stock ROM with this (no assembler needed)

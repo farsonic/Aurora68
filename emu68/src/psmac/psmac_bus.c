@@ -1260,9 +1260,35 @@ static const uint8_t *declrom_below(const uint8_t *top, uint32_t len, uint32_t *
     return top2 - len2;
 }
 
+/* PiDisplay's rotation (psmac_hdmi.c): the declaration ROM as it was before its screen was rewritten,
+   so that a restart with another rotation can rewrite it again from the file's own (psmac_declrom_rescreen) */
+static uint8_t rescreen_copy[PSMB_DECLROM_SIZE];
+static uint32_t rescreen_len;
+static uint8_t *rescreen_top;                  /* where the live ROM ends: slot $A's in the window, or slot 9's */
+static uint8_t rescreen_rid, rescreen_slot;
+static uint32_t rescreen_win, rescreen_winsize;
+int psmac_declrom_rescreen(uint32_t w, uint32_t h)
+{
+    if (!rescreen_len || !rescreen_top) return 0;
+    uint8_t *lo = rescreen_top - rescreen_len;
+    memcpy(lo, rescreen_copy, rescreen_len);
+    int k = declrom_resize(rescreen_top, rescreen_rid, rescreen_slot, w, h, rescreen_win, rescreen_winsize);
+    arm_flush_cache((uintptr_t)lo, rescreen_len);
+    return k;
+}
+static void rescreen_keep(uint8_t *top, uint32_t len, uint8_t rid, uint8_t slot, uint32_t win, uint32_t winsize)
+{
+    if (len > sizeof rescreen_copy) return;
+    memcpy(rescreen_copy, top - len, len);
+    rescreen_len = len; rescreen_top = top; rescreen_rid = rid; rescreen_slot = slot; rescreen_win = win; rescreen_winsize = winsize;
+}
+
 void psmac_setup_memory(void *rom, uint32_t rom_sz)
 {
     psmac_read_options();
+    /* the card's config.txt and aurora68-display.txt, before the screen's size is decided: PiDisplay's
+       rotation turns it, and in the testbed mac.hdmisim=1 makes the firmware's buffer the mode they set */
+    { extern void psmac_hdmi_early(const void *, uint32_t); psmac_hdmi_early(rom, rom_sz); }
     uintptr_t base = (sys_memory[0].mb_Base + 0x1fffff) & ~0x1fffffull;
     {   /* The big frame buffer region: 9 MiB holds every screen up to 1920 x 1200 in millions of colours,
            and stays that size for them, so that nothing changes for the Mac's memory there. A larger
@@ -1282,6 +1308,14 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
                 screen_w = 1024; screen_h = 768;
                 kprintf("[PSMAC] screen: the firmware's frame buffer is %ux%u, outside %ux%u to %ux%u: 1024x768 (mac.screen= chooses)\n",
                         fb_width, fb_height, PSMB_SCREEN_MIN_W, PSMB_SCREEN_MIN_H, PSMB_SCREEN_MAX_W, PSMB_SCREEN_MAX_H);
+            }
+        }
+        {   /* PiDisplay's rotation: at 90 and 270 the Mac's HDMI screen is the mode turned on its side */
+            extern int psmac_hdmi_rotation(void);
+            int r = psmac_hdmi_rotation();
+            if (r == 90 || r == 270) {
+                uint32_t t = screen_w; screen_w = screen_h; screen_h = t;
+                kprintf("[PSMAC] screen: turned %d (aurora68-display.txt): the Mac's HDMI screen is %ux%u\n", r, screen_w, screen_h);
             }
         }
         uint64_t w = screen_w, h = screen_h;
@@ -1470,11 +1504,13 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
                one-screen card's for its screen (the SE's 512 x 342 on the SE board, where it is the
                SE's; mac.screen or the firmware's size elsewhere). The SE file's own slot-9 screen is
                the SE's one bit and stays as it is. */
+            if (two) rescreen_keep((uint8_t *)slot2_rom + slot2_len, slot2_len, 0x80, PSMB_SLOT2, PSMB_WIN_PHYS + 0x900000u + PSMB_OFF_BOUNCE2, PSMB_BOUNCE2_SIZE);
             if (two && !declrom_resize((uint8_t *)slot2_rom + slot2_len, 0x80, PSMB_SLOT2, screen_w, screen_h,
                                        PSMB_WIN_PHYS + 0x900000u + PSMB_OFF_BOUNCE2, PSMB_BOUNCE2_SIZE))
                 kprintf("[PSMAC] declaration ROM: slot $A's video sResource not found; its screen stays as the file has it\n");
             if (!se_card && !no_declrom) {
                 uint32_t w0 = psmac_board_se && !psmac_board_solo ? 512 : screen_w, h0 = psmac_board_se && !psmac_board_solo ? 342 : screen_h;
+                if (!(psmac_board_se && !psmac_board_solo)) rescreen_keep(dr + PSMB_DECLROM_SIZE, declrom_len, 0x84, 9, PSMB_WIN_PHYS + 0x900000u + PSMB_OFF_BOUNCE, PSMB_BOUNCE_SIZE);
                 declrom_resize(dr + PSMB_DECLROM_SIZE, 0x84, 9, w0, h0, PSMB_WIN_PHYS + 0x900000u + PSMB_OFF_BOUNCE, PSMB_BOUNCE_SIZE);
             }
             psmac_display_layout(se_card, two); }
@@ -1484,6 +1520,7 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
         uint8_t *w2 = (uint8_t *)(KERNEL_ALIAS + win_phys + PSMB_OFF_DECLROM2);
         memcpy(w2 + PSMB_DECLROM2_SIZE - slot2_len, slot2_rom, slot2_len);
         arm_flush_cache((uintptr_t)w2, PSMB_DECLROM2_SIZE);
+        rescreen_top = w2 + PSMB_DECLROM2_SIZE;     /* the live copy of slot $A's ROM is this one from now on */
     }
     psmac_boot_mark("ROM, MMU shim, mailbox, boards and the second display's VideoCore buffer ready");
 
@@ -1549,8 +1586,9 @@ void ps_pulse_reset(void) { struct psmac_reply r; xfer(PSMAC_OP_RESET_ACK, 0, 0,
    motherboard's reset line, and the virtual card's (alice_psmac.c: its interrupt sources drop) */
 void ps_send_reset(void)
 {
-    extern void psmac_card_reset(void), psmac_startup_reset(void), psmac_se_after_reset(void);
+    extern void psmac_card_reset(void), psmac_startup_reset(void), psmac_se_after_reset(void), psmac_hdmi_bus_reset(void);
     psmac_card_reset();
+    psmac_hdmi_bus_reset();                /* PiDisplay: the Pi's restart, or a new rotation for the Slot Manager to read (psmac_hdmi.c) */
     psmac_startup_reset();                 /* the startup disk's view of parameter RAM (psmac_mbox.c) */
     ps_pulse_reset();
     psmac_se_after_reset();                /* the SE board: its VIA reset, its overlay back (psmac_board_se.c) */

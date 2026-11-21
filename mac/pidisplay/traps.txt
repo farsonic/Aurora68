@@ -1,0 +1,22 @@
+# PiDisplay's Toolbox calls beyond mac/c/traps.txt (the build puts the lists together; PiScrn's build adds
+# this list too, for the keep-or-revert question in pdcommon.c). Trap words from Inside Macintosh.
+# the Dialog Manager: dialogs built in memory (pdcommon.c)
+A97D l NewDialog(void *storage:l, const Rect *r:l, const unsigned char *title:l, int vis:b, int proc:w, void *behind:l, int goAway:b, long refCon:l, void *items:l)
+A991 - ModalDialog(void *filter:l, short *item:l)
+A98D - GetDItem(void *dlg:l, int item:w, short *kind:l, void **h:l, Rect *box:l)
+A98E - SetDItem(void *dlg:l, int item:w, int kind:w, void *h:l, const Rect *box:l)
+A98F - SetIText(void *h:l, const unsigned char *s:l)
+A983 - DisposDialog(void *dlg:l)
+# QuickDraw
+A8B0 - FrameRoundRect(const Rect *r:l, int ow:w, int oh:w)
+A89B - PenSize(int w:w, int h:w)
+A888 - TextFace(int face:w)
+A8A2 - PaintRect(const Rect *r:l)
+A89C - PenMode(int mode:w)
+A8A4 - InvertRect(const Rect *r:l)
+A886 w TextWidth(const void *text:l, int first:w, int count:w)
+A8A8 - OffsetRect(Rect *r:l, int dh:w, int dv:w)
+A8AA b SectRect(const Rect *a:l, const Rect *b:l, Rect *out:l)
+# the Control Manager, the Toolbox's cursors
+A96D - Draw1Control(void *ctl:l)
+A9B9 l GetCursor(int id:w)

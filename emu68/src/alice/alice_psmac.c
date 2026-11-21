@@ -915,6 +915,7 @@ void __attribute__((noreturn)) psmac_alice_core(void)
         { extern void psmac_power_poll(void); psmac_power_poll(); }        /* the Pi's power state, every 2 s (psmac_power.c) */
         LOOP_AT("display");
         { extern void psmac_display_poll(void); psmac_display_poll(); }   /* the second display's tick and picture */
+        { extern void psmac_hdmi_poll(void); psmac_hdmi_poll(); }         /* PiDisplay's card writes, its keep-or-revert question, the Pi's restart */
         t1 = in_now(); LOOP_T(4, t1 - t0); t0 = t1; loop_turns++; loop_turns_all++;
         LOOP_AT("remote control");
         { extern void psmac_remote_poll(void); psmac_remote_poll(); }     /* the remote control: its IP stack, HTTP and input queue (docs/13) */

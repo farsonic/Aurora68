@@ -307,6 +307,8 @@ if (${VARIANT} IN_LIST SUPPORTED_VARIANTS)
                     src/psmac/psmac_mmu.c
                     src/psmac/psmac_mbox.c
                     src/psmac/psmac_display.c
+                    src/psmac/psmac_edid.c
+                    src/psmac/psmac_hdmi.c
                     src/psmac/psmac_audio.c
                     src/psmac/psmac_gpio.c
                     src/psmac/psmac_board_se.c

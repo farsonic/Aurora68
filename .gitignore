@@ -49,3 +49,10 @@ mac/build/usbnet_frame_test
 mac/build/sl/
 mac/build/pislots.elf
 mac/build/pislots_traps.txt
+# PiDisplay's (mac/pidisplay) and the EDID test's (tools/edid_test.c)
+mac/build/pd/
+mac/build/pidisplay.elf
+mac/build/pidisplay_traps.txt
+mac/build/edid_test
+mac/build/edid_test.log
+mac/build/edid-sample.bin

@@ -228,6 +228,47 @@ or video driver needs no new container: copy the new `aurora68-se.declrom` to th
 the card's root taken (...)` says which one was used. Take old ones off the card when you update: a file on
 the card beats the container's. `mac.cardrom=off` in cmdline.txt ignores the card's files.
 
+### PiDisplay: choosing the HDMI resolution and rotation on the Mac (21 November 2026)
+**PiDisplay** (`mac/pidisplay/pidisplay.c`, `PiDisplay.bin`, an application) shows the HDMI monitor's own
+description and every resolution it lists, judged for a Pi 3 (usable, too fast with a slower alternative,
+the wrong shape), suggests one with its reason, and sets the HDMI resolution and the picture's rotation.
+docs/10, "PiDisplay", is the record of how; these are the steps on the user's SE.
+
+1. **kernel8.img**, the new one, and the new **PiScrn** in the System Folder (it asks "Keep this
+   resolution?" after a change; Mac/PiScrn.bin). **PiDisplay** anywhere on the Mac.
+2. **config.txt, once**: the line
+
+       include aurora68-display.txt
+
+   at the very end, after every `hdmi_` line and in an `[all]` section (the release's config.txt ends so).
+   The firmware takes the last value of a setting it reads, so an `hdmi_mode=` or `hdmi_cvt=` after the
+   include would win over PiDisplay's choice; PiDisplay says so under Current. The release's
+   `aurora68-display.txt` (comments only) goes on the card beside config.txt; the kernel makes the file
+   itself if it is not there, but a firmware that is strict about a missing include would be the first
+   thing to suspect if a card without it does not start. config.txt is never written by the kernel.
+3. **In PiDisplay**: click a resolution (the bullet marks the suggested one; dimmed ones cannot be
+   chosen), or a rotation, then **Restart to Apply...** and **Restart** in the dialog. A new resolution:
+   the kernel writes `aurora68-display.txt` (the old one becomes `aurora68-display.bak`), the Mac shuts
+   down its programs and restarts, and the Pi restarts with it, so that the firmware reads config.txt
+   again. A rotation alone restarts only the Mac.
+4. **After a new resolution**: on the SE's own screen PiScrn asks **Keep this resolution?** with a
+   countdown. **Keep** (Return) keeps it. **Revert** (Escape), or 15 seconds without an answer, puts the
+   previous file back and restarts the Pi once more. PiScrn also rearranges the two screens for the new
+   size, which costs one restart of the Mac, as after any change of monitor.
+
+For 2560 by 1440 on the UP2716D PiDisplay should suggest 2560 x 1440 at 30 Hz (60 Hz needs 241.5 MHz, the
+Pi 3 sends about 162), which writes `hdmi_group=2`, `hdmi_mode=87`, `hdmi_cvt=2560 1440 30 3 0 0 1`, the two
+`max_framebuffer_` lines and `hdmi_drive=2`: the same as the five lines of "2560 by 1440 on the SE" above,
+which can then come out of config.txt.
+
+Lines in the log to send back: every `[PSMAC:EDID]` line (the first, `the firmware's EDID: N blocks in U
+us`, says whether the firmware gave the EDID at all; then the monitor, its sound, a line per mode with
+its judgement, the suggestion and the mode in use), `[CARD] aurora68-display.txt: N bytes written and read
+back`, `[PSMAC:EDID] the whole Pi restarts now (its watchdog)`, after the restart `[PSMAC:EDID] the card:
+config.txt read (it includes aurora68-display.txt), ...; a new mode waits to be confirmed`, `[MAC] PiScrn: a
+new HDMI mode waits to be kept`, `[MAC] PiDisplay: ...`, and from the heartbeat `display 1 (HDMI): ...
+VideoCore N frames in 5 s, longest U us in B bands, turned 90` for a rotated screen.
+
 ## The WiFi in the testbed: a radio that exists only in software
 QEMU's raspi3b has no WiFi chip (no SDIO function, no firmware to load), so the real driver in
 `alice_net.c` can only report "off" there, and until 16 November the WiFi unit, PiWiFi and the

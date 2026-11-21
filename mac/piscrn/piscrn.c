@@ -26,10 +26,20 @@
  * Nothing on any other Mac: without the Pi's mailbox window, or without an HDMI screen of the Pi's
  * (mac.hdmi=mirror or log, the solo board, the IIci testbed), it returns at once. Written for the
  * first SE bring-up, 20 November 2026. Built with the C kit in mac/c (mac/c/README.md).
+ *
+ * The keep-or-revert question (21 November 2026, PiDisplay, docs/10). After PiDisplay has chosen a
+ * new HDMI mode, the Pi restarts with it and nobody knows yet whether the monitor shows it. PiScrn
+ * runs at every startup of such a Mac, so it is the one that asks: when the kernel says the mode
+ * waits to be confirmed, PiScrn stays in the system heap (entry.s copies it there; otherwise the
+ * copy goes again) and puts a filter on GetNextEvent (jGNEFilter, as the WiFi menu does); at the
+ * first null event of the first program, two seconds on, the filter asks "Keep this resolution?"
+ * with its countdown (mac/pidisplay/pdcommon.c), on the main screen, which on the SE board is the
+ * SE's own. The filter then does nothing more. Asked on any board, the solo one included, where
+ * the question shares the screen whose mode changed and the countdown is what helps.
  */
 #include "toolbox.h"
+#include "pdcommon.h"
 
-#define PSMB_MAGIC        0x50534D42UL
 #define INFO_CMD          0x1000UL              /* the INFO service's command block (psmb.h) */
 #define DISP2             0x59000UL             /* the HDMI screen's display block (psmb.h, PSMB_OFF_DISPLAY2) */
 #define DISP_MAGIC        0x41363856UL          /* 'A68V' */
@@ -38,6 +48,7 @@
 #define HW_HDMI           0x5048                /* drHw of the HDMI screen, 'PH' */
 #define MAX_SCREENS       4
 
+#undef LM_DEVICELIST
 #define LM_DEVICELIST     (*(char **volatile *)0x8A8)            /* the first GDevice (a handle) */
 #define LM_UTABLEBASE     (*(char ***volatile *)0x11C)           /* the unit table: a DCE handle per unit */
 #define LM_UNITNTRYCNT    (*(volatile short *)0x1D2)
@@ -182,13 +193,51 @@ static short best_mode(void)
 
 static unsigned char want[2 + MAX_SCREENS * sizeof(ScrnRec)];
 
-void init_main(void)
+/* ---- the keep-or-revert question: a filter on GetNextEvent (entry.s gne_filter) ---- */
+static struct psmb_dispinfo dinfo;
+static int asked;
+static unsigned long not_before;
+void *old_gne;
+#define LM_JGNEFILTER (*(void **volatile *)0x29A)
+void gne_filter(void);
+int c_filter(EventRecord *ev)
+{
+	if (asked || ev->what != nullEvent || LM_TICKS < not_before || !LM_CURAPNAME[0]) return 0;
+	asked = 1;
+	volatile unsigned char *w = pd_window();
+	/* PiDisplay, started first, may have asked already, or the kernel given up waiting */
+	if (!pd_fetch(w, &dinfo) || dinfo.confirm_state != PSMB_CS_PENDING) return 0;
+	void *port;
+	GetPort(&port);
+	pd_confirm(w, &dinfo);
+	SetPort(port);
+	return 0;
+}
+static int wait_confirm(void)
+{
+	volatile unsigned char *w = pd_window();
+	if (!pd_fetch(w, &dinfo) || dinfo.confirm_state != PSMB_CS_PENDING) return 0;
+	old_gne = LM_JGNEFILTER;
+	LM_JGNEFILTER = (void *)gne_filter;
+	not_before = LM_TICKS + 120;
+	pi_log("a new HDMI mode waits to be kept: the question comes once the Finder is up");
+	return 1;                                                 /* the copy in the system heap stays */
+}
+
+static int arrange(void);
+int init_main(void)
+{
+	if (rd32(0) != PSMB_MAGIC) return 0;                      /* not an Aurora68 Mac */
+	arrange();                                                /* restarts the Mac if the screens need a new 'scrn' */
+	return wait_confirm();
+}
+
+static int arrange(void)
 {
 	struct screen s[MAX_SCREENS];
-	if (rd32(0) != PSMB_MAGIC) return;                        /* not an Aurora68 Mac */
 	int n = list_screens(s), hdmi = 0;
 	for (int i = 0; i < n; i++) if (s[i].hw == HW_HDMI) hdmi = 1;
-	if (n < 2 || !hdmi) return;                               /* one screen (mirror, log, another board): nothing to arrange */
+	if (n < 2 || !hdmi) return 0;                             /* one screen (mirror, log, another board): nothing to arrange */
 
 	short old = CurResFile();
 	UseResFile(LM_SYSMAP);
@@ -197,7 +246,7 @@ void init_main(void)
 	if (have && scrn_matches((const unsigned char *)*have, have_len, s, n)) {
 		ReleaseResource(have);                                /* Monitors' arrangement, or ours: kept */
 		UseResFile(old);
-		return;
+		return 0;
 	}
 
 	/* the arrangement: the first screen (the SE's) main at the origin, the others to its right */
@@ -222,20 +271,21 @@ void init_main(void)
 			ReleaseResource(have);
 			UseResFile(old);
 			pi_log("the 'scrn' written at the last start did not take; leaving it (arrange the screens in Monitors)");
-			return;
+			return 0;
 		}
 	}
 	if (have) { RmveResource(have); dispose_handle(have); }
 	char **h = new_handle_sys(len);
-	if (!h) { UseResFile(old); pi_log("no memory for the 'scrn' resource"); return; }
+	if (!h) { UseResFile(old); pi_log("no memory for the 'scrn' resource"); return 0; }
 	for (long i = 0; i < len; i++) (*h)[i] = (char)want[i];
 	AddResource(h, TYPE('s', 'c', 'r', 'n'), 0, (const unsigned char *)"");
 	WriteResource(h);
 	UpdateResFile(LM_SYSMAP);
 	short err = ResError();
 	UseResFile(old);
-	if (err) { pi_log("could not write the 'scrn' resource into the System file (a locked disk?)"); return; }
+	if (err) { pi_log("could not write the 'scrn' resource into the System file (a locked disk?)"); return 0; }
 	pi_log(have ? "the screens changed: a new arrangement in the System file; restarting once"
 	            : "two screens: their arrangement written into the System file; restarting once");
 	restart_mac();
+	return 1;
 }

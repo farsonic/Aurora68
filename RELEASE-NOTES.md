@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **PiDisplay: the HDMI resolution and rotation chosen on the Mac.** A new program shows what the HDMI
+  monitor says about itself (name, maker, model, serial number, date, size, shape, its sound and its
+  connection) and every resolution it lists, each marked usable by a Pi 3, too fast (with a slower
+  alternative when one fits: 2560 by 1440 at 30 Hz on a 1440p monitor) or the wrong shape for the panel,
+  with a suggestion and its reason. **Restart to Apply** writes the choice into `aurora68-display.txt` on
+  the card (the previous one kept as `aurora68-display.bak`; config.txt itself is never written) and
+  restarts the Pi and the Mac; PiScrn then asks **Keep this resolution?** on the SE's own screen, and if
+  nobody answers within 15 seconds the previous resolution comes back. The picture can be turned 90, 180
+  or 270 degrees for a monitor on its side (a Mac restart only). config.txt needs one line at its end,
+  `include aurora68-display.txt` (the release's config.txt has it, and the release's empty
+  `aurora68-display.txt` goes beside it). The log lists the monitor's modes (`[PSMAC:EDID]`). Tested in
+  the testbeds with a made-up monitor; not yet with a real monitor's EDID. Replace kernel8.img and PiScrn.
 - **PiSlots: which NuBus cards the Mac has.** A new program in the Mac folder lists every card the
   Slot Manager knows about, in plain words: the Pi's card in slot 9 (its disk, network, WiFi, input and
   screen functions), the SE's HDMI screen in slot $A, the logic board's own entries, and real cards on a

@@ -459,6 +459,33 @@ uint32_t psmac_vc_setup(uint32_t w, uint32_t h, uint32_t depth, void **fb, uint3
     psmac_vc_alpha = pos_alpha ? LE32(FBReq[pos_alpha]) : ~0u;
     return LE32(FBReq[pos_depth]);              /* the depth the firmware (or QEMU) actually set */
 }
+/* One block of the HDMI monitor's EDID, as the firmware read it over DDC at boot (tag 0x00030020, "get
+   EDID block": the block number in, the block number, a status and 128 bytes out; the status is 0 while
+   the block exists, so a caller asks for 0, 1, ... until it is not). The tag has been in the firmware's
+   property interface since 2013, well before the Pi 3's (raspberrypi/firmware's mailbox wiki); QEMU's
+   model does not know it and answers with an empty value. Returns 1 for a block. (PiDisplay,
+   psmac_hdmi.c, 21 November 2026.) */
+int psmac_vc_edid_block(uint32_t block, uint8_t out[128])
+{
+    int c = 1;
+    FBReq[c++] = 0;
+    FBReq[c++] = LE32(0x00030020); FBReq[c++] = LE32(136); FBReq[c++] = 0;
+    int pos = c;
+    FBReq[c++] = LE32(block);
+    for (int i = 0; i < 33; i++) FBReq[c++] = 0;
+    FBReq[c++] = 0;
+    FBReq[0] = LE32(c << 2);
+    arm_flush_cache((intptr_t)FBReq, c * 4);
+    mbox_send(8, mmu_virt2phys((intptr_t)FBReq));
+    mbox_recv(8);
+    arm_dcache_invalidate((intptr_t)FBReq, c * 4);
+    uint32_t code = LE32(FBReq[pos - 1]);              /* the tag's response word: bit 31 and the length of the answer */
+    if (LE32(FBReq[1]) != 0x80000000u || !(code & 0x80000000u) || (code & 0x7fffffffu) < 136) return 0;
+    if (LE32(FBReq[pos]) != block || LE32(FBReq[pos + 1]) != 0) return 0;
+    const uint8_t *p = (const uint8_t *)&FBReq[pos + 2];
+    for (int i = 0; i < 128; i++) out[i] = p[i];
+    return 1;
+}
 /* What the firmware has now, asked without changing anything: physical and virtual size, depth,
    pitch, virtual offset and pixel order. Returns 0 if the firmware did not answer. */
 int psmac_vc_query(uint32_t out[8])

@@ -69,7 +69,7 @@ explains the fork's relationship to upstream.
 ```
 make -C mac            # drivers (.PiDisk, .ENET x2, .PiInput, .Display_Video_PiStorm), extensions
                        # (PiDisk, PiMach), applications (PiNet, PiWiFi, PiBlue, PiStatus, PiPing,
-                       # PiScreens, PiColor), the declaration ROMs psmac.declrom / psmac_wifi.declrom
+                       # PiScreens, PiColor, PiLog, PiScrn, PiDisplay), the declaration ROMs psmac.declrom / psmac_wifi.declrom
                        # and one per second-screen size (psmac-1024x768.declrom ...; RESES in the Makefile)
 make -C mac check      # the drivers' structure offsets against the kernel's alice_net.h (cc + python)
 make -C mac install IMG=../images/sys710pi.image [PART=1]   # PiDisk and PiMach into the System Folder

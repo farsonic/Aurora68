@@ -187,6 +187,102 @@ struct psmb_sound {
     uint32_t pad1[9];
 };
 
+/* ---- the HDMI monitor, for PiDisplay (21 November 2026, docs/10 "PiDisplay") ----------------------------
+   What PSMB_INFO_DISPINFO copies into the Mac's buffer: the monitor's EDID as the kernel read it over the
+   VideoCore mailbox (tag 0x00030020, block by block) and parsed (psmac_edid.c), every mode it lists, each
+   judged against what a Pi 3's HDMI can send, and the state of the HDMI settings on the card. Big-endian,
+   every long at a multiple of 4, so m68k GCC's two-byte alignment and the kernel's lay it out alike. */
+#define PSMB_DISPINFO_MAGIC  0x41363844u     /* 'A68D' */
+#define PSMB_DISP_MAXMODES   48
+struct psmb_dispmode {                       /* 32 bytes */
+    uint16_t width, height;
+    uint16_t refresh;                        /* centihertz: 6000 is 60.00 Hz */
+    uint16_t flags;                          /* PSMB_DM_* */
+    uint32_t pixclk;                         /* kHz, the mode's own timing */
+    uint16_t alt_refresh;                    /* PSMB_DM_ALT: the reduced-blanking alternative's refresh (centihertz) ... */
+    uint16_t source;                         /* PSMB_DS_* << 8 | the CEA VIC or the descriptor's number */
+    uint32_t alt_pixclk;                     /* ... and its pixel clock, kHz */
+    uint16_t aspect_w, aspect_h;             /* the shape, reduced: 16, 9 */
+    uint16_t cfg_group, cfg_mode;            /* what config.txt gets for the mode itself: hdmi_group, hdmi_mode (87 = custom) */
+    uint32_t reserved;
+};
+#define PSMB_DM_PREFERRED    0x0001u         /* the monitor's preferred mode (its first detailed timing) */
+#define PSMB_DM_USABLE       0x0002u         /* a Pi 3 sends it at its own refresh */
+#define PSMB_DM_TOOFAST      0x0004u         /* its pixel clock is beyond the Pi 3's HDMI (or the monitor's own limit) */
+#define PSMB_DM_ALT          0x0008u         /* too fast, but CVT reduced blanking at alt_refresh fits */
+#define PSMB_DM_SHAPE        0x0010u         /* not the panel's shape: the monitor stretches it */
+#define PSMB_DM_INTERLACED   0x0020u
+#define PSMB_DM_NATIVE       0x0040u         /* the panel's own size */
+#define PSMB_DM_CURRENT      0x0080u         /* the mode in force now */
+#define PSMB_DM_SUGGESTED    0x0100u         /* the one PiDisplay suggests (dispinfo.reason says why) */
+#define PSMB_DM_MACSIZE      0x0200u         /* outside the sizes the kernel gives the Mac (PSMB_SCREEN_*) */
+#define PSMB_DS_DETAILED     1u              /* source: a detailed timing descriptor */
+#define PSMB_DS_ESTABLISHED  2u
+#define PSMB_DS_STANDARD     3u
+#define PSMB_DS_CEA          4u              /* a CEA-861 short video descriptor (low byte: the VIC) */
+struct psmb_dispinfo {
+    uint32_t magic, version, size, flags;    /* 'A68D', 1, the bytes of this struct, PSMB_DI_* */
+    uint32_t edid_blocks, edid_status;       /* blocks read; PSMB_ES_* */
+    char     name[16], serial_text[16];      /* the monitor's name and serial-number descriptors */
+    char     maker[4], maker_name[20];       /* the PNP ID ("DEL") and, if the kernel knows it, the company */
+    uint32_t product, serial;                /* product code, the binary serial number */
+    uint16_t week, year;                     /* of manufacture (week 0: not given; 255: the model year) */
+    uint16_t edid_version, input;            /* 0x0104; bit 0 digital input, bits 4-6 the EDID 1.4 bits per colour code */
+    uint16_t size_w_mm, size_h_mm;           /* the picture's size */
+    uint16_t min_vhz, max_vhz, min_hkhz, max_hkhz;   /* the range limits descriptor (0: none) */
+    uint32_t max_pixclk;                     /* the monitor's own maximum, kHz (range limits; 0: not said) */
+    uint32_t pi_pixclk;                      /* the Pi 3's limit used for the judgement, kHz */
+    uint32_t audio_formats;                  /* bit n: CEA audio format code n (1 LPCM, 2 AC-3, ...) */
+    uint32_t lpcm_channels, lpcm_rates, lpcm_bits;   /* rates bit 0 32 kHz ... 6 192 kHz; bits bit 0 16, 1 20, 2 24 */
+    uint32_t speakers;                       /* the CEA speaker allocation byte (bit 0 front left and right ...) */
+    uint32_t conn;                           /* PSMB_CN_*: the connection */
+    uint32_t tmds_max;                       /* the HDMI vendor block's maximum TMDS clock, kHz (0: not said) */
+    uint16_t cur_w, cur_h, cur_refresh, cur_source;  /* the HDMI mode in force (the firmware's frame buffer), its refresh
+                                                        (centihertz, 0 unknown), where it came from: PSMB_SRC_* */
+    uint16_t mac_w, mac_h, rotation, rotation_next;  /* the Mac's HDMI screen (W and H swapped at 90 and 270) */
+    uint16_t vc_depth, board;                /* the VideoCore buffer's depth; 0 the IIci testbed, 1 solo, 2 SE */
+    uint32_t cfg;                            /* PSMB_CF_* */
+    uint32_t apply_state;                    /* PSMB_INFO_DISPSET: 0 idle, 1 being written, 2 written, 3 failed */
+    uint32_t confirm_state;                  /* PSMB_CS_NONE ... */
+    uint32_t confirm_secs;                   /* while asking: seconds left before the kernel reverts by itself */
+    uint32_t restart_armed;                  /* PSMB_INFO_DISPRESTART asked */
+    uint16_t confirm_w, confirm_h, confirm_refresh, nmodes;
+    uint16_t suggested, frame_us;            /* index of the suggested mode (0xFFFF none); the longest frame on core 3 lately, us */
+    char     reason[96];                     /* one line: why the suggested mode */
+    char     cur_text[64];                   /* the HDMI lines in force, as config.txt has them */
+    char     message[64];                    /* the last thing the card writer said */
+    struct psmb_dispmode mode[PSMB_DISP_MAXMODES];
+};
+#define PSMB_DI_EDID         1u              /* an EDID was read */
+#define PSMB_DI_SAMPLE       2u              /* ... the built-in sample or a file (mac.edidtest=), not a monitor */
+#define PSMB_ES_OK           0u
+#define PSMB_ES_NONE         1u              /* the firmware gave no EDID (no monitor, QEMU) */
+#define PSMB_ES_HEADER       2u
+#define PSMB_ES_CHECKSUM     3u              /* read, but a block's checksum is wrong (used anyway) */
+#define PSMB_CN_HDMI         1u              /* conn: an HDMI vendor block (else DVI: no sound) */
+#define PSMB_CN_BASICAUDIO   2u
+#define PSMB_CN_YCC444       4u
+#define PSMB_CN_YCC422       8u
+#define PSMB_CN_DC30         16u             /* deep colour, 30 bits a pixel */
+#define PSMB_CN_DC36         32u
+#define PSMB_CN_DC48         64u
+#define PSMB_CN_DIGITAL      128u
+#define PSMB_CN_CEA          256u            /* a CEA-861 extension block */
+#define PSMB_SRC_UNKNOWN     0u              /* cur_source: the firmware's own choice (no hdmi_mode anywhere) */
+#define PSMB_SRC_CONFIG      1u              /* config.txt */
+#define PSMB_SRC_FILE        2u              /* aurora68-display.txt, through config.txt's include */
+#define PSMB_CF_INCLUDE      1u              /* config.txt has "include aurora68-display.txt" */
+#define PSMB_CF_OVERRIDE     2u              /* ... but sets an hdmi_ mode after it, which wins */
+#define PSMB_CF_WRITABLE     4u              /* the card can be written */
+#define PSMB_CF_FILE         8u              /* aurora68-display.txt is on the card */
+#define PSMB_CF_BAK          16u             /* aurora68-display.bak is on the card */
+#define PSMB_CF_CONFIG       32u             /* config.txt was read */
+#define PSMB_CS_NONE         0u              /* confirm_state: nothing to confirm */
+#define PSMB_CS_PENDING      1u              /* a new mode, not yet confirmed: the Mac's PiScrn asks at startup */
+#define PSMB_CS_ASKING       2u              /* the question is on the screen (confirm_secs counts down) */
+#define PSMB_CS_KEPT         3u
+#define PSMB_CS_REVERTING    4u              /* the old file back, the Pi restarts */
+
 #define PSMB_MAX_SERVICES    8
 #define PSMB_MAX_BLKDEV      4
 
@@ -258,6 +354,20 @@ struct psmb_cmd {
 #define PSMB_INFO_SAVELOG    6      /* the log ring into aurora68.log in the SD card's root (psmac_card.c), secrets
                                        hidden; status PSMB_E_RO without a writable card */
 #define PSMB_INFO_LOGSTATE   7      /* result: 0 nothing asked, 1 being written, 2 saved, 3 failed */
+/* PiDisplay (mac/pidisplay.c, docs/10 "PiDisplay", 21 November 2026): the HDMI monitor's EDID, the modes a Pi 3
+   can send it, and the HDMI settings the kernel keeps in aurora68-display.txt on the card (psmac_hdmi.c) */
+#define PSMB_INFO_DISPINFO   8      /* buf/len: struct psmb_dispinfo (below) copied into the Mac's buffer; result = bytes */
+#define PSMB_INFO_DISPSET    9      /* arg0 = index into dispinfo's modes, arg1 = 1 for its reduced-blanking alternative,
+                                       arg2 = rotation (0, 90, 180, 270): aurora68-display.txt rewritten (the old one kept as
+                                       aurora68-display.bak), with a mark that the new mode waits to be confirmed; progress in
+                                       dispinfo.apply_state. status PSMB_E_RO without a writable card, PSMB_E_RANGE for a bad index */
+#define PSMB_INFO_DISPROTATE 10     /* arg0 = rotation: kept in aurora68-display.txt, in force from the Mac's next restart */
+#define PSMB_INFO_DISPCONFIRM 11    /* arg0: PSMB_DC_* (the keep-or-revert question after a new mode) */
+#define PSMB_INFO_DISPRESTART 12    /* the whole Pi restarts (its watchdog) at the 68k's next RESET, once the card is written:
+                                       PiDisplay then restarts the Mac through the Shutdown Manager */
+#define PSMB_DC_REVERT       0      /* aurora68-display.bak back in place, then the Pi restarts */
+#define PSMB_DC_KEEP         1      /* the confirm mark taken out of aurora68-display.txt */
+#define PSMB_DC_ASKING       2      /* the question is on the screen now: the kernel reverts by itself if no answer follows */
 
 /* BLOCK service: arg0 = device index, arg1 = first block, arg2 = block count, buf = data */
 #define PSMB_BLK_READ        1
