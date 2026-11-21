@@ -67,10 +67,11 @@ struct blkdev { int64_t fd; uint32_t blocks, first; int writable; int ram; uint8
                 int usb;                           /* a USB stick's unit (psmac_usbdisk.c): its number + 1, 0 for an image */
                 int present;                       /* USB: a disk the Mac may use is in the unit */
                 uint32_t media, umedia;            /* the count the Mac's driver sees (psmb_blkdev.media), and psmac_usbdisk.c's */
+                int view;                          /* the card's exchange folder as a locked HFS volume (psmac_card.c, issue #20) */
                 int said_read; };
 static struct blkdev bdev[PSMB_MAX_BLKDEV]; static int nbdev;
 static int nimg;                                   /* the disk images among them (not the USB sticks): the startup disk's business */
-static uint8_t sector_buf[64 * 1024] __attribute__((aligned(16)));
+static uint8_t sector_buf[64 * 1024] __attribute__((aligned(64)));   /* 64: a USB or view read may go straight in */
 static int apm_hfs(const uint8_t *d, uint32_t have, uint32_t blocks, uint32_t *start, uint32_t *count);
 
 /* the device table the Mac's driver reads (its VBL task too, since 20 November 2026: a USB stick
@@ -152,10 +153,33 @@ void psmac_mbox_add_disk(const char *name, uint8_t *data, uint32_t blocks)
     blk_publish();
     kprintf("[PSMAC:MBOX] block%d: %s, %u blocks (%u MiB), from the card\n", nbdev - 1, name, blocks, blocks / 2048);
 }
+/* the card's exchange folder, once psmac_card.c has made its HFS volume (core 3: this core). Not one of the
+   card's images, so not a startup disk; a fixed disk, locked */
+void psmac_mbox_add_view(const char *name, uint32_t blocks)
+{
+    if (nbdev >= PSMB_MAX_BLKDEV) { kprintf("[PSMAC:DISK] %s: all %d PiDisk units are in use: the Mac is not told about it\n", name, PSMB_MAX_BLKDEV); return; }
+    struct blkdev *b = &bdev[nbdev];
+    *b = (struct blkdev){ 0 };
+    b->fd = -1; b->blocks = blocks; b->writable = 0; b->view = 1;
+    int k = 0; while (name[k] && k < 47) { b->name[k] = name[k]; k++; } b->name[k] = 0;
+    nbdev++;
+    blk_publish();
+    kprintf("[PSMAC:DISK] PiDisk unit %d is the card's folder \"%s\": %u blocks (%u MB), locked; the Mac's driver adds its drive\n", nbdev - 1, name, blocks, blocks / 2048);
+}
 static int blk_xfer(int write, struct blkdev *b, uint32_t lba, uint32_t count, uint32_t buf)
 {
     if ((uint64_t)lba + count > b->blocks) return PSMB_E_RANGE;
     if (write && !b->writable) return PSMB_E_RO;
+    if (b->view) {                               /* made of the card's FAT, read when the Mac asks */
+        extern int psmac_card_view_read(uint32_t, uint32_t, uint8_t *);
+        while (count) {
+            uint32_t n = count > sizeof(sector_buf) / 512 ? sizeof(sector_buf) / 512 : count;
+            if (psmac_card_view_read(lba, n, sector_buf)) return PSMB_E_IO;
+            int r = mac_copy(buf, NULL, sector_buf, n * 512, 1); if (r) return r;
+            lba += n; count -= n; buf += n * 512;
+        }
+        return 0;
+    }
     if (b->ram) {                                /* still coming in from the card? Blocks the card did not give: an I/O error */
         extern int psmac_card_need(const void *, uint32_t);
         if (psmac_card_need(b->rambase + (uint64_t)lba * 512, count * 512)) return PSMB_E_IO;

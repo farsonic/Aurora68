@@ -896,14 +896,53 @@ installed on the Mac: the kernel and the declaration ROM do it.
 was plugged in before the Mac started, and may give up on a slow one. Nothing in cmdline.txt:
 `mac.usbdisk=on` is the default.
 
-**What the stick must hold.** System 7 reads HFS ("Mac OS Standard"), not FAT, exFAT or HFS Plus
-("Mac OS Extended"). The stick can be:
-- formatted HFS on a Mac (Mac OS 9 or earlier, or Disk Utility up to 10.5);
+**What the stick can hold.** System 7 reads HFS ("Mac OS Standard") only. The stick can be:
+- formatted HFS on a Mac (Mac OS 9 or earlier, or Disk Utility up to 10.5): the Mac uses it as it is;
 - a disk image written to it (`dd`), bare HFS or with an Apple partition map, like the card's images;
-- initialized on the Mac itself (below).
+- initialized on the Mac itself (below);
+- **FAT32 or exFAT, as Windows, Linux or a modern Mac format it (since 21 November 2026, below).**
 
-Other sticks stay on the Pi, and the log says why: "[USB] disk 0: an MBR partition table, first
-partition FAT32 ... not offered to the Mac". That way the Finder never offers to erase a PC's stick.
+NTFS, HFS Plus ("Mac OS Extended"), APFS and blank sticks stay on the Pi, and the log says why. That way
+the Finder never offers to erase a PC's stick.
+
+### FAT32 and exFAT sticks, and the card's exchange folder (21 November 2026)
+A stick formatted FAT32 ("MS-DOS (FAT)") or exFAT, with a Master Boot Record or a GUID partition map, or
+none, is used two ways at once (docs/08 item 97):
+- **Its disk images** (`.image`, `.dsk`, `.hda`, `.img`, `.hfv` in the stick's root, bare HFS or
+  Apple-partitioned) appear on the desktop as disks of their own, writable, exactly like the card's.
+  The Mac writes into the image file where it lies; the stick's FAT is never changed.
+- **Its files** appear as one more disk, named after the stick ("USB STICK"), **locked**: a real HFS volume
+  the Pi makes of the stick's folders, so the Finder, Standard File and every program open them like any
+  disk's. A Mac file copied to the stick on a modern Mac keeps its resource fork, type, creator and Finder
+  flags in the `._name` file macOS writes beside it, so a classic application copied there runs; the
+  `._` files, `.DS_Store` and other dot files are not shown. Names are converted to Mac Roman; a
+  character Mac Roman does not have is shown as `?`, a name longer than 31 characters keeps its
+  extension behind an ellipsis ("Quarterly report for the y….doc"), and two names that would then be
+  the same get " #2", " #3". Disk images shown on their own are not repeated in it.
+  The disk is locked because the Pi does not write FAT yet (the issue's stage 3): copy files *from* it.
+  At most 32,000 files and folders, and 2 GB (System 7.1's largest HFS volume): with more data than that,
+  the largest files are left out and the log says how many.
+
+Making it takes a moment after the stick is plugged in: about a second for a few hundred files, a few
+seconds for ten thousand (core 1 does it between its other work). The log says when it is ready:
+```
+[USB] disk 0: exFAT in a GPT partition at block 43008, 27088 clusters of 4 KB, label "USB STICK"
+[USB] disk 0: disk image Floppy.image (1 MB, 1 piece) holds the HFS volume "Stick Floppy": offered to the Mac, writable
+[USB] disk 0: its files are being read, to be shown to the Mac as a locked HFS volume
+[USB] disk 0: ready as the HFS volume "USB STICK": 10002 files, 1 folders, 1 of them with Mac information from AppleDouble files; ...
+```
+Eject each of the stick's disks (drag to the Trash); "safe to unplug" comes when the last one is out.
+`mac.usbview=off` shows only the disk images; `mac.usbdisk=all` offers the whole stick raw, as before.
+
+**The exchange folder on the SD card.** A folder named **Mac Exchange** in the card's root appears on
+the desktop the same way, as a locked disk of that name. Copy files into it on any computer (with their
+`._` files from a modern Mac) and start the Pi. `mac.exchange=NAME` uses another folder, `mac.exchange=off`
+none. It takes one of PiDisk's four units, which the card's disk images, the exchange folder and the
+sticks' disks share.
+
+**Formatting a stick on a modern Mac.** Disk Utility, the stick, Erase: Format "ExFAT" (or "MS-DOS (FAT)"),
+Scheme "Master Boot Record" or "GUID Partition Map". Copy files and applications to it in the Finder;
+macOS adds the `._` files by itself.
 
 **Using it.**
 1. Plug the stick into any of the Pi's USB sockets, before or after the Mac starts. A few seconds

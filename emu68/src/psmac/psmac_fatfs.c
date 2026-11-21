@@ -70,6 +70,7 @@ int fx_mount(struct fx_vol *v, fx_read_fn read, void *ctx, uint32_t lba)
     uint8_t *b = v->sec;
     v->read = read; v->ctx = ctx; v->type = FX_NONE; v->part = lba; v->fat_at = 0xffffffffu;
     v->label_len = 0;
+    v->reads = v->read_secs = v->errors = 0;     /* the caller's memory need not be zeros (the kernel's heap is not) */
     if (rd(v, lba, 1, b))
         return -1;
     if (is_exfat(b)) {
@@ -106,8 +107,14 @@ int fx_mount(struct fx_vol *v, fx_read_fn read, void *ctx, uint32_t lba)
     if (tot <= rsvd + nfats * fatsz + v->root_secs)
         return -5;
     v->clusters = (tot - (rsvd + nfats * fatsz + v->root_secs)) / v->spc;
-    /* the type follows from the number of clusters alone (the overview's "the only way") */
-    v->type = v->clusters < 4085u ? FX_FAT12 : v->clusters < 65525u ? FX_FAT16 : FX_FAT32;
+    /* The overview says the type follows from the number of clusters alone. mkfs.vfat -F 32 makes FAT32
+       volumes with fewer than 65,525 clusters all the same (a 256 MB card with 4 KB clusters, in the
+       testbed on 21 November 2026), and Linux reads them as FAT32: a boot sector with no 16-bit FAT size
+       and no fixed root directory is FAT32's layout, whatever the count. Otherwise the count decides. */
+    if (!le16(b + 22) && !rootent)
+        v->type = FX_FAT32;
+    else
+        v->type = v->clusters < 4085u ? FX_FAT12 : v->clusters < 65525u ? FX_FAT16 : FX_FAT32;
     v->root_clus = v->type == FX_FAT32 ? le32(b + 44) : 0;
     if (v->type == FX_FAT32) {
         v->root_lba = v->root_secs = 0;
@@ -199,6 +206,7 @@ static int vbr_type(struct fx_vol *s, uint32_t lba)
 int fx_probe(fx_read_fn read, void *ctx, uint32_t dev_blocks, struct fx_vol *s, uint32_t *lba, int *type, const char **what)
 {
     s->read = read; s->ctx = ctx;
+    s->reads = s->read_secs = s->errors = 0;
     uint8_t m[512];
     if (rd(s, 0, 1, s->sec))
         return 0;

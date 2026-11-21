@@ -3596,6 +3596,78 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
        `408 Request Timeout`, "the upload stopped arriving: 268992 of 537984 bytes in, nothing more for
        20 s; the partial file was deleted". Riptide in Extensions was unchanged (537,566 bytes of
        resources before and after), no Riptide.part was left, and the next jobs ran at once.
+97. **FAT32 and exFAT on the Mac: disk images on sticks, and an HFS view of a stick or a card folder (21
+   November, issue #20).** The owner wants sticks formatted by Windows, Linux or a modern Mac, and a folder
+   on the SD card, usable on the SE as ordinary disks with nothing installed on the Mac. No file system is
+   native to both: macOS 10.15 and later have no HFS, System 6 and 7 read only HFS (FAT needs PC Exchange
+   from Mac OS 8). So the Pi translates. Until now (item 75) a non-HFS stick was refused with a log line.
+   - *One reader* (`psmac_fatfs.c`): FAT12/16/32 and exFAT through the caller's sector function, no
+     allocation; the volume on a bare stick, in an MBR partition, or in a GPT's Microsoft basic data
+     partition (a stick from Disk Utility has a 200 MB EFI system partition, FAT32 itself, in front: it is
+     passed over); VFAT long names, exFAT entry sets with their checksum and UTF-16 names, FAT chains and
+     exFAT's NoFatChain runs, ValidDataLength. Directory reads are resumable so callers can bound a step.
+     Found while testing: mkfs.vfat makes "FAT32" volumes with fewer than 65,525 clusters (a 256 MB card
+     with 4 KB clusters), which Microsoft's cluster-count rule calls FAT16; as Linux does, a boot sector with
+     no 16-bit FAT size and no fixed root is taken as FAT32. The card's own small FAT writer (pairings,
+     logs, cmdline.txt, its disk images) stays as it was; the new reader serves the exchange folder and sticks.
+   - *Stage 1, disk images on FAT/exFAT sticks* (`psmac_usbdisk.c`). A stick is now a list of volumes; the
+     published slots and core 1's job slot are numbered by volume (four, PiDisk's units). Every disk image in
+     a FAT/exFAT stick's root (`.image .dsk .hda .img .hfv`) that holds HFS, bare or as an Apple partition
+     map's Apple_HFS partition, is a writable volume read and written in place in the file's clusters (at most
+     256 pieces): writing inside a file changes no FAT, directory or size. An image that is not HFS (a Pi OS
+     `.img`) is skipped with a line. Ejecting one volume leaves the others; "safe to unplug" when none is left.
+   - *Stage 2, the HFS view* (`psmac_hfsview.c`): a genuine HFS volume made in memory from a folder (the
+     card's "Mac Exchange", `mac.exchange=`) or a whole stick (`mac.usbview=off` to skip): boot blocks, MDB,
+     volume bitmap, an extents B-tree that is only its header (every fork is one extent), a catalog B-tree;
+     512-byte nodes as Inside Macintosh: Files describes them. Only metadata is in memory: the allocation
+     blocks are laid out fork after fork and a read of one becomes a read of the clusters holding those bytes.
+     AppleDouble `._name` files (entry 9 Finder info, entry 2 resource fork, read in place at its offset in
+     the `._` file) give files their type, creator, flags and resource fork; the `._` files and dot files
+     (.DS_Store, .Trashes, .Spotlight-V100) are not shown, FAT-hidden files are invisible. Names: UTF-16 to Mac
+     Roman with decomposed accents composed first (macOS writes NFD), `?` for what Mac Roman lacks, `:` as `-`,
+     names over 31 characters keep a short extension behind an ellipsis, clashes in one folder (in the File
+     Manager's order: case folded, accents kept) get " #2", " #3" in directory order, so the same medium
+     always gives the same names. DOS dates (local time, as the Mac's clock) to Mac time. The allocation block
+     is the smallest multiple of 512 that fits everything in 65,535 blocks; over 2 GB (System 7.1's limit) the
+     largest files are left out and the log says how many. At most 32,000 entries. The volume is locked
+     (drAtrb bit 15, and the unit not writable), so the Finder refuses writes. Leaf nodes of the catalog are
+     put together again at each read, so its bulk never sits in memory. The making is split into steps of at
+     most 48 sectors (core 3 for the card, every other card pass; core 1 for sticks, between the Mac's jobs).
+     The view is at least 800 KB (hfsutils refuses smaller volumes; the rest is free blocks).
+   - *What hfsutils showed while it was written:* a map node's record must end at $1FA, 492 bytes, not 494
+     ("malformed b*-tree map node"), which a 10,000-file catalog needs (more than 2048 nodes).
+   - *What the testbed showed:* the first stick's view "gave read errors" without any transfer failing: the
+     reader's counters were never zeroed, and the kernel's heap is not zeros as the host's fresh memory is.
+     The host tests now fill every allocation with $A5, and reproduce it with the old reader.
+   - *Memory per volume* (the log's "KB of memory"): about 130 bytes per file or folder, 8 per fragment, 4 per
+     catalog record, 512 per index node, 8 KB of scratch: 342 KB for the card folder of 1,522 files and 27
+     folders; 2.6 MB for 10,000 files. While it is made, the UTF-16 names too (freed after). 8 MB of the
+     kernel's heap are always left to the rest; a volume that would need more fails with a line.
+   - *Verified on the host* (`make -C mac check`: `tools/fatfs_test.sh`, `tools/hfsview_test.sh`): a test tree
+     (Mac files with hand-made AppleDouble files laid out as macOS writes them, long, accented, CJK and emoji
+     names, clashes, 20 folders deep, an empty file, a fragmented file, hidden and system names) as FAT16 and
+     FAT32 (mkfs.vfat, mcopy) and exFAT (the new `tools/mkexfat.py`, fsck.exfat clean; bare, MBR, GPT after an
+     EFI partition, NFD names, 4/32/64 KB clusters): the reader finds all 325 files with their bytes; the view,
+     read with hfsutils (private HOME), has exactly the expected names, every file's data fork, and both forks,
+     type and creator of the Mac files (`hcopy -m`); 10,000 files in one exFAT folder (2,770 catalog nodes,
+     depth 5, a map node); three 900 MB files (sparse) of which the largest is left out and the rest read back
+     with 29,184-byte blocks; a folder as the volume. No step reads more than 48 sectors.
+   - *Verified in the solo testbed* (QEMU, System 7.1, the card with "Mac Exchange" holding SimpleText (from
+     the test image, split into data and `._` file) and Aurora68 Slots (mac/build, split the same way) beside
+     the test tree with 1,500 files in one folder; an exFAT stick in a GPT after an EFI partition with an HFS
+     floppy image, Aurora68 Slots with its `._` file, 10,000 files in one folder), through the Aurora68 Agent,
+     that is, the Mac's own File Manager: "Mac Exchange" made in 382 ms (224 reads), mounted, locked
+     ("403: the volume is locked" for a push); its names as on the host ("Quarterly report for th… #2.doc",
+     "?? #2.txt", "Grüße aus Köln.txt", "Ω and π.txt"); a file 20 folders down; SimpleText pulled back as
+     MacBinary with both forks and APPL/ttxt identical to the original; a fragmented 300,000-byte file
+     identical; SimpleText and Aurora68 Slots launched from the card's folder and running
+     (`docs/img/system71-exchange-slots.png`). The floppy image on the exFAT stick mounted writable, a file
+     pushed into it, and on the host the image inside the stick holds it ("written on the Mac").
+     The stick's own file view failed in that run (the counters above); the run with the fix is below.
+   - *Not verified:* real hardware (a stick formatted on a modern Mac, the SE); System 6.0.8 (the view is
+     plain HFS, which System 6 reads, but no run was made); the Finder's handling of a view of many thousand
+     files in its windows at the SE's speed. Stage 3 (writes back to FAT/exFAT) is not done; its plan is in
+     issue #20.
 
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)

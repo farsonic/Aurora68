@@ -9,7 +9,10 @@ of what the view made of them, through hfsutils.
                                           a folder tree 20 deep, a folder with N files, an empty file, a
                                           fragmented file (exFAT: "frag" in the name), files that are not
                                           to show (.DS_Store, System Volume Information)
-  hfsview_check.py check OUT.hfs DIR [--nfd]
+  hfsview_check.py split MACBINARY DIR [NAME]
+                                          a MacBinary file (hcopy -m, mac/build/*.bin) as a modern Mac leaves
+                                          it on FAT or exFAT: NAME with the data fork, ._NAME with the rest
+  hfsview_check.py check OUT.hfs DIR
                                           hls -R lists exactly the expected names; every file's data fork,
                                           and for Mac files the resource fork, type and creator (hcopy -m,
                                           MacBinary), are byte for byte the originals
@@ -195,9 +198,26 @@ def check(img, d):
     print('check: volume "%s", %d names as expected (%d folders), %d files compared byte for byte, %d of them Mac files with both forks, type and creator'
           % (vol.decode('mac_roman'), len(exp), len(dirs), len(sel), nmac))
 
+def split(mb_path, outdir, name=None):
+    """a MacBinary file (hcopy -m, mac/build/*.bin) as a modern Mac would leave it on FAT or exFAT: the
+    data fork as NAME, the type, creator, Finder flags and resource fork in ._NAME"""
+    mb = open(mb_path, 'rb').read()
+    nlen = mb[1]
+    mname = mb[2:2 + nlen].decode('mac_roman')
+    ftype, creator, flags = mb[65:69], mb[69:73], mb[73] << 8 | mb[101]
+    dl, rl = struct.unpack('>II', mb[83:91])
+    data = mb[128:128 + dl]
+    rsrc = mb[128 + ((dl + 127) // 128) * 128:][:rl]
+    name = name or mname.replace('/', ':')
+    write(os.path.join(outdir, name), data)
+    write(os.path.join(outdir, '._' + name), appledouble(ftype, creator, flags & ~0x0100, rsrc))
+    print('split: %s -> %s (%d data, %d resource bytes, %s/%s)' % (mb_path, name, dl, rl, ftype.decode('mac_roman'), creator.decode('mac_roman')))
+
 if __name__ == '__main__':
     a = sys.argv[1:]
-    if a[0] == 'tree':
+    if a[0] == 'split':
+        split(a[1], a[2], a[3] if len(a) > 3 else None)
+    elif a[0] == 'tree':
         tree(a[1], int(a[a.index('--many') + 1]) if '--many' in a else 300)
     elif a[0] == 'check':
         check(a[1], a[2])

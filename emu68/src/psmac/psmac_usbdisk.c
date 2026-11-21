@@ -66,7 +66,9 @@
  * Mac write, is read with psmac_fatfs.c: every HFS disk image in its root (.image, .dsk, .hda, .img,
  * .hfv) is a volume of its own, read and written in place in the file's clusters, as the card's images
  * are. Writing inside an image changes no FAT, no directory and no size, so it cannot damage the stick's
- * file system.
+ * file system. The stick's files themselves become one more volume (stage 2 of the issue): a locked HFS
+ * volume psmac_hfsview.c makes of them, a step at a time on this core between the Mac's jobs, offered when
+ * it is ready (mac.usbview=off leaves it out); its reads are mapped to the files' clusters here.
  *
  * Writes. Nothing is cached here: a write job ends when the stick's CSW says the WRITE(10) is done,
  * and the Mac's write call returns after that. A stick may keep the data in its own RAM for a
@@ -85,6 +87,7 @@
 #include "tlsf.h"
 #include "psmac_usbdisk.h"
 #include "psmac_fatfs.h"
+#include "psmac_hfsview.h"
 
 const char *psmac_option(const char *key);
 extern int psmac_audio_poll(void);
@@ -390,6 +393,10 @@ struct unit {
     uint32_t reads, writes, rblocks, wblocks, errors, resets;
     uint32_t gen;                               /* moves at each bring-up: its volumes are taken afresh (vol_take) */
     struct fx_vol *fx;                          /* a FAT or exFAT stick: its file system (psmac_fatfs.c) */
+    struct hv *hv;                              /* ... and the HFS view of its files (psmac_hfsview.c) */
+    int building, view_slot, nimgs;
+    uint32_t build_t0, img_clus[USBDISK_UNITS];  /* the disk images offered on their own: not in the view */
+    char vtag[16];                              /* the view's log lines: "[USB] disk 0" */
 };
 static struct unit U[USBDISK_UNITS];
 static uint32_t seen_last;                      /* sticks found in the last enumeration (psmac_usb.c's retries) */
@@ -401,8 +408,10 @@ static volatile uint32_t changes;
    one PiDisk unit, the whole stick or its HFS partition. A FAT or exFAT stick can carry several disk images
    (.image, .dsk, .hda, .img, .hfv, as the card's), each a PiDisk unit of its own, read and written in place
    in the file's clusters. The published slots P[] and the job slot are numbered by volume, so psmac_mbox.c
-   sees volumes where it saw sticks; four in all, as PiDisk has four units. */
-enum { VK_RAW, VK_IMAGE };
+   sees volumes where it saw sticks; four in all, as PiDisk has four units. Stage 2 of the issue adds one
+   more kind: the stick's files as a locked HFS volume (psmac_hfsview.c), made on core 1 a step at a time
+   after the stick is brought up, offered when it is ready. */
+enum { VK_RAW, VK_IMAGE, VK_VIEW };
 struct run { uint32_t clus, n; };
 struct vol {
     int used, unit, kind, present;              /* present: offered and not ejected */
@@ -432,7 +441,7 @@ static void pub_slot(int s, int present, int new_medium)
     __asm__ volatile("dmb ish" ::: "memory");
     p->i.present = (uint32_t)present;
     p->i.blocks = v->count;
-    p->i.writable = u->writable;
+    p->i.writable = u->writable && v->kind != VK_VIEW;  /* the view is read-only (writing back is stage 3) */
     if (new_medium)
         p->i.media++;
     memcpy(p->i.name, v->name, sizeof p->i.name);
@@ -480,6 +489,7 @@ static void vol_drop(int n, int all)
         memset(v, 0, sizeof *v);
     }
 }
+static void view_free(struct unit *u);
 static void vol_name(struct vol *v, const char *a, const char *b)
 {
     unsigned k = 0;
@@ -830,6 +840,7 @@ static void gone(int n)
     u->dirty = 0;
     u->again = 0;
     vol_drop(n, 1);
+    view_free(u);
     mem_free(u->fx);
     u->fx = 0;
 }
@@ -1063,14 +1074,92 @@ static int image_hfs(struct unit *u, int n, const struct run *r, uint32_t nr, ui
     hfs_name(vbuf, vname);
     return 1;
 }
+/* the stick's files as an HFS volume (stage 2): the disk images offered on their own are left out of it */
+static int view_skip(void *arg, const struct fx_dirent *e)
+{
+    const struct unit *u = arg;
+    for (int i = 0; i < u->nimgs; i++)
+        if (e->clus == u->img_clus[i] && is_image16(e))
+            return 1;
+    return 0;
+}
+static void view_free(struct unit *u)
+{
+    if (u->hv) {
+        hv_release(u->hv);
+        mem_free(u->hv);
+        u->hv = 0;
+    }
+    u->building = 0;
+}
+static int view_start(int n)
+{
+    struct unit *u = &U[n];
+    const char *o = psmac_option("mac.usbview");
+    if (o && !strncmp(o, "off", 3)) {
+        kprintf("[USB] disk %d: its files are not shown to the Mac (mac.usbview=off)\n", n);
+        return 0;
+    }
+    int s = vol_take(n, VK_VIEW);
+    if (s < 0) {
+        kprintf("[USB] disk %d: all %d PiDisk units are taken: its files cannot be shown to the Mac\n", n, USBDISK_UNITS);
+        return 0;
+    }
+    u->hv = mem(sizeof *u->hv);
+    if (!u->hv) {
+        kprintf("[USB] disk %d: no memory to show its files to the Mac\n", n);
+        V[s].used = 0;
+        return 0;
+    }
+    u->vtag[0] = 0;
+    {
+        const char *a = "[USB] disk ";
+        unsigned k = 0;
+        while (*a) u->vtag[k++] = *a++;
+        u->vtag[k++] = (char)('0' + n);
+        u->vtag[k] = 0;
+    }
+    hv_init(u->hv, u->fx, mem, mem_free, kprintf, u->vtag);
+    u->hv->skip = view_skip;
+    u->hv->skip_arg = u;
+    u->building = 1;
+    u->view_slot = s;
+    u->build_t0 = ms();
+    vol_name(&V[s], "USB ", uname(u));
+    kprintf("[USB] disk %d: its files are being read, to be shown to the Mac as a locked HFS volume\n", n);
+    return 1;
+}
+/* one step of the view's making, on core 1 between the Mac's jobs */
+static void view_step(int n)
+{
+    struct unit *u = &U[n];
+    int r = hv_step(u->hv);
+    if (!r)
+        return;
+    int s = u->view_slot;
+    u->building = 0;
+    if (r < 0 || !V[s].used || V[s].unit != n) {
+        kprintf("[USB] disk %d: its files cannot be shown to the Mac\n", n);
+        view_free(u);
+        if (V[s].used && V[s].unit == n)
+            V[s] = (struct vol){ 0 };
+        return;
+    }
+    hv_report(u->hv, ms() - u->build_t0);
+    V[s].count = u->hv->total;
+    V[s].present = 1;
+    pub_slot(s, 1, 1);
+}
 /* A FAT or exFAT stick: every disk image in its root that holds HFS becomes a volume of its own, in
-   directory order, as many as PiDisk has units for. 1 when the Mac was offered something. */
+   directory order, as many as PiDisk has units for; then its files, as an HFS volume (view_start). 1
+   when the Mac was offered something, or will be. */
 static int fat_offer(int n)
 {
     struct unit *u = &U[n];
     struct fx_dir *d = mem(sizeof *d);
     struct fx_dirent *e = mem(sizeof *e);
     int offered = 0;
+    u->nimgs = 0;
     runs_tmp = mem(256 * sizeof *runs_tmp);
     if (!d || !e || !runs_tmp) {
         kprintf("[USB] disk %d: no memory to read its root folder\n", n);
@@ -1112,6 +1201,8 @@ static int fat_offer(int n)
         v->count = count;
         v->present = 1;
         vol_name(v, "USB ", fname);
+        if (u->nimgs < USBDISK_UNITS)
+            u->img_clus[u->nimgs++] = e->clus;
         kprintf("[USB] disk %d: disk image %s (%u MB, %u piece%s) holds the HFS volume \"%s\": offered to the Mac, %s\n", n, fname,
                 blocks / 2048u, runs_tmp_n, runs_tmp_n == 1 ? "" : "s", vname, u->writable ? "writable" : "read-only");
         offered++;
@@ -1124,7 +1215,11 @@ out:
     mem_free(runs_tmp);
     runs_tmp = 0;
     if (!offered)
-        kprintf("[USB] disk %d: no HFS disk image (.image, .dsk, .hda, .img, .hfv) in its root: nothing offered to the Mac\n", n);
+        kprintf("[USB] disk %d: no HFS disk image (.image, .dsk, .hda, .img, .hfv) in its root\n", n);
+    if (view_start(n))
+        offered++;
+    else if (!offered)
+        kprintf("[USB] disk %d: nothing offered to the Mac\n", n);
     return offered;
 }
 
@@ -1258,6 +1353,7 @@ static void bring_up(int n)
     u->again = 0;
     if (!again) {
         u->gen++;                               /* its volumes are taken afresh (the same slots first) */
+        view_free(u);
         mem_free(u->fx);
         u->fx = 0;
     }
@@ -1516,6 +1612,11 @@ static int32_t vol_rw(int s, int write)
         return PSMB_E_RANGE;
     if (write && !u->writable)
         return PSMB_E_RO;
+    if (v->kind == VK_VIEW) {
+        if (write)
+            return PSMB_E_RO;
+        return !u->hv || hv_read(u->hv, lba, count, jbuf) ? PSMB_E_IO : 0;
+    }
     if (v->kind == VK_IMAGE)
         return runs_rw(u, v->unit, v->runs, v->nruns, write, v->first + lba, count, jbuf);
     return phys_rw(u, v->unit, write, v->first + lba, count, jbuf);
@@ -1577,6 +1678,11 @@ int psmac_usbdisk_core1(void)
         run_job();
         return 1;
     }
+    for (int n = 0; n < USBDISK_UNITS; n++)
+        if (U[n].state == U_UP && U[n].building) {
+            view_step(n);
+            return 1;
+        }
     uint32_t t = ms();
     for (int n = 0; n < USBDISK_UNITS; n++) {
         struct unit *u = &U[n];

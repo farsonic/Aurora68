@@ -30,6 +30,10 @@
  *                  kernel's own, which config.txt reads through its "include aurora68-display.txt" line.
  *                  Made with long names when absent, written in their first cluster, read back.
  *                  config.txt itself is only read.
+ *   Mac Exchange/  a folder (mac.exchange=NAME for another, =off for none) whose files the Mac sees as a
+ *                  locked HFS volume, read only (21 November 2026, issue #20; exchange_* below): made by
+ *                  psmac_hfsview.c from what psmac_fatfs.c reads, a step per pass of core 3, its files'
+ *                  blocks read from the card when the Mac asks for them.
  *   *.declrom      read, never written: a declaration ROM in the root is offered to psmac_bus.c
  *                  before the 68k starts, beside the container's, and wins a tie (20 November
  *                  2026, docs/10 "Declaration ROMs from the card"): a new Mac-side driver is then a
@@ -49,6 +53,8 @@
 #include "spinlock.h"
 #include "psmac.h"
 #include "psmb.h"
+#include "psmac_fatfs.h"
+#include "psmac_hfsview.h"
 
 extern const char *psmac_option(const char *key);
 extern int alice_pi_is_2711(void);
@@ -1312,6 +1318,113 @@ static int chunk_retry(struct img *m, uint32_t c)
     return 0;
 }
 
+/* ==== the exchange folder: a folder of the card as an HFS volume for the Mac (issue #20) =========
+   A folder in the card's root, "Mac Exchange" unless mac.exchange= names another (off: none), is shown to
+   the Mac as a disk of its own: a locked HFS volume psmac_hfsview.c makes of the folder's files, with the
+   resource forks, types and creators of the AppleDouble "._" files a modern Mac writes beside them. Only
+   the volume's catalog lives in memory; its files' blocks are read from the card when the Mac reads them
+   (psmac_card_view_read, from PiDisk's block service on this core). The volume is made a step at a time,
+   every other pass of core 3 (each step reads at most about 30 KB), so a folder of thousands of files
+   holds up neither the mailbox nor a disk image coming in. The card's own FAT code above stays the writer
+   of the kernel's files; this is psmac_fatfs.c reading the same partition, nothing is written. */
+static struct { int state; struct fx_vol *fx; struct hv *hv; uint32_t t0; char tag[48]; } xv;   /* state 0 none, 1 making, 2 ready, -1 failed */
+static void *xv_mem(uint32_t n)
+{
+    if (tlsf_get_free_size(tlsf) < (uintptr_t)n + (8u << 20))
+        return 0;                                      /* 8 MB of the kernel's heap are always left to the rest */
+    return tlsf_malloc_aligned(tlsf, n ? n : 4, 64);
+}
+static void xv_free(void *p) { if (p) tlsf_free(tlsf, p); }
+/* psmac_fatfs.c's sectors from the card: on core 3, the card lock taken unless this core's card pass holds it */
+static int card_fx_read(void *ctx, uint32_t lba, uint32_t n, uint8_t *buf)
+{
+    (void)ctx;
+    int mine = card_lock_core3, e = 0;
+    if (!mine) { spinlock_acquire(&card_lock); card_lock_core3 = 1; }
+    flush_finish();
+    while (n && !e) {
+        uint32_t k = n > 64 ? 64 : n;
+        e = -1;
+        for (int t = 0; t < 3 && e; t++)
+            e = sd_read_multi(lba, buf, k);
+        lba += k; buf += k * 512u; n -= k;
+    }
+    if (!mine) { card_lock_core3 = 0; spinlock_release(&card_lock); }
+    return e ? -1 : 0;
+}
+static void exchange_start(void)
+{
+    const char *name = psmac_option("mac.exchange"), *given = name;
+    if (!name)
+        name = "Mac Exchange";
+    if (name_eq(name, "off"))
+        return;
+    struct fx_dir *d = xv_mem(sizeof *d);
+    struct fx_dirent *e = xv_mem(sizeof *e);
+    int found = 0;
+    xv.fx = xv_mem(sizeof *xv.fx);
+    if (!d || !e || !xv.fx || fx_mount(xv.fx, card_fx_read, 0, fs.part)) {
+        kprintf("[CARD] %s: the card's FAT could not be read for it (no memory, or a boot sector psmac_fatfs.c does not take)\n", name);
+        goto out;
+    }
+    fx_dir_open(d, xv.fx, 0);
+    while (!found && fx_dir_next(d, e) == 1) {
+        if (!(e->attr & FX_ATTR_DIR))
+            continue;
+        int i = 0;
+        while (i < e->nlen && name[i] && e->name[i] < 128 && lower(e->name[i]) == lower(name[i]))
+            i++;
+        found = i == e->nlen && !name[i];
+    }
+    if (!found) {
+        kprintf("[CARD] no folder \"%s\" in the card's root: %s\n", name,
+                given ? "no exchange volume for the Mac" : "make one for files to show on the Mac (mac.exchange=NAME for another name)");
+        goto out;
+    }
+    unsigned k = 0;
+    for (const char *a = "[CARD] "; *a; ) xv.tag[k++] = *a++;
+    for (int i = 0; i < e->nlen && k < sizeof xv.tag - 1; i++) xv.tag[k++] = (char)e->name[i];
+    xv.tag[k] = 0;
+    xv.hv = xv_mem(sizeof *xv.hv);
+    if (!xv.hv) {
+        kprintf("%s: no memory to show it to the Mac\n", xv.tag);
+        goto out;
+    }
+    hv_init(xv.hv, xv.fx, xv_mem, xv_free, kprintf, xv.tag);
+    hv_set_root(xv.hv, e);
+    xv.state = 1;
+    xv.t0 = ms();
+    kprintf("%s: the folder is being read, to be shown to the Mac as a locked HFS volume\n", xv.tag);
+out:
+    xv_free(d);
+    xv_free(e);
+    if (xv.state != 1) { xv_free(xv.fx); xv.fx = 0; }
+}
+static void exchange_step(void)
+{
+    int r = hv_step(xv.hv);
+    if (!r)
+        return;
+    if (r < 0) {
+        kprintf("%s: cannot be shown to the Mac\n", xv.tag);
+        hv_release(xv.hv);
+        xv_free(xv.hv); xv.hv = 0;
+        xv.state = -1;
+        return;
+    }
+    xv.state = 2;
+    hv_report(xv.hv, ms() - xv.t0);
+    extern void psmac_mbox_add_view(const char *name, uint32_t blocks);
+    psmac_mbox_add_view(xv.hv->vname_c, xv.hv->total);
+}
+/* PiDisk's block service (psmac_mbox.c, core 3): blocks of the exchange volume. 0, or -1 */
+int psmac_card_view_read(uint32_t lba, uint32_t n, uint8_t *buf)
+{
+    if (xv.state != 2 || sd.state != 1)
+        return -1;
+    return hv_read(xv.hv, lba, n, buf);
+}
+
 /* ==== core 3 ================================================================================== */
 static uint32_t start_at;
 static void card_start(void);
@@ -1364,6 +1477,8 @@ static void card_poll_locked(void)
     /* a disk image still coming in from the card, and the Mac's changes going back: every other pass
        each, so writes made while a large image loads are on the card long before it is complete */
     static unsigned turn;
+    static unsigned xturn;
+    if (xv.state == 1 && (++xturn & 1)) { exchange_step(); return; }   /* the exchange folder, every other pass */
     if ((++turn & 1) && first_dirty_t) { flush_poll(); if (fl.busy) return; }
     if (load_step()) return;
     flush_poll();
@@ -1394,6 +1509,7 @@ static void card_start(void)
     pram_load();
     container_check();
     image_scan();
+    exchange_start();
     psmac_boot_mark("card: mounted, pairings read, disk images found");
     fl.img = -1;
     { static const char test[] = "# mac.cardtest\nbt.dev=001122334455:00112233445566778899aabbccddeeff:2\n";

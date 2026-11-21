@@ -330,6 +330,7 @@ if (${VARIANT} IN_LIST SUPPORTED_VARIANTS)
                     src/psmac/psmac_usbnet.c
                     src/psmac/psmac_usbdisk.c
                     src/psmac/psmac_fatfs.c
+                    src/psmac/psmac_hfsview.c
                     src/psmac/usbnet_frame.c
                     src/psmac/psmac_netprobe.c
                     src/psmac/psmac_ip.c

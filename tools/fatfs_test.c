@@ -22,7 +22,9 @@ static int rd(void *ctx, uint32_t lba, uint32_t n, uint8_t *buf)
     if (fseek(img, (long)lba * 512L, SEEK_SET) || fread(buf, 512, n, img) != n) return -1;
     return 0;
 }
-static void *al(uint32_t n) { void *p = 0; return posix_memalign(&p, 64, n ? n : 1) ? 0 : p; }
+/* 64-byte aligned, and full of 0xA5 rather than zeros: the kernel's heap (tlsf) is not cleared either, and a
+   counter left uninitialised made the first stick's view "give read errors" in the testbed (21 November 2026) */
+static void *al(uint32_t n) { void *p = 0; if (posix_memalign(&p, 64, n ? n : 1)) return 0; memset(p, 0xa5, n); return p; }
 static int utf8(const struct fx_dirent *e, char *o)
 {
     int k = 0;
