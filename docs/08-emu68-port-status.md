@@ -3374,6 +3374,76 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      are the built-in list's only ones with IPv6), an IPv6 address that does not answer (ipDestDeadErr after
      about 3 s, then the next address: the code path is the one the refused fd68::1 took), System 6.0.8.
 
+89. **Files and programs on the Mac from the MacBook: the Aurora68 Agent (21 November).** The owner asked for "a
+   command line on the client for jobs like this. Screen shots. Push files etc". docs/13, "Files and
+   applications", is the long form; the window job's `front=1` is in docs/13's "Windows".
+   - *Design.* Files need the Mac's File Manager (the kernel cannot write a mounted volume behind its cache, nor
+     reach a SCSI disk), so an INIT on the Mac, `mac/piagent` (C, the `mac/c` kit, 22 KB), takes requests from a
+     new block in the card window (`psmb.h`: request block at $5A000, a 24 KiB buffer at $52000, the free space
+     after the input ring and after the HDMI display block) and does them from the GetNextEvent filter, which
+     is application time on System 6 and 7. A request is a full path and an operation; files are opened and
+     closed within it, since the filter runs in other programs' processes. The kernel side, `psmac_files.c`,
+     serves `/files/list`, `/info`, `/data` (GET and PUT, MacBinary II or raw), `/mkdir`, `/delete`, `/rename`,
+     `/apps`, `/apps/open`, `/apps/quit`, streaming chunk by chunk with deadlines; `aurora68.py` gained `ls`,
+     `info`, `pull`, `push`, `mkdir`, `rm`, `mv`, `open`, `apps`, `quit`, the MCP server `list_files`,
+     `read_file`, `write_file`, `open`, `list_apps`. An icon in the family: a terminal with a prompt and an
+     arrow each way, on the extensions' puzzle piece.
+   - *Found on the way* (QEMU's solo board, System 7.1, through HTTP and pinet):
+     - The first boot hung right after the agent's log line, the PC at odd addresses. The stack held the text
+       "startup volume ": the start-up message was built in a 48-byte buffer and is 70 characters. 100 bytes.
+     - Then the Finder crashed within a minute (an RTS into the agent's data) and `apps` crashed the program it
+       ran in (a CHK in its stack): GetFrontProcess's glue. Apple's interface pushes one more long, -1, after
+       its argument (`moveq #-1,D0; move.l D0,-(SP)` before the selector); without it the Process Manager popped
+       four bytes that were never pushed. The VBL task's WakeUpProcess, blamed first and taken out for a run,
+       came back once the glue was right: without it each request waited for the front program's next null
+       event, 120 to 200 ms (a megabyte took nine seconds instead of six).
+     - A folder of 120 files listed one twice: the kernel began LIST at index 0 and the agent read 0 as 1.
+     - Rename answered bdNamErr (-37): a bare new name in ioMisc is taken relative to the default volume; the
+       full new path works. A folder made shortly before the Mac crashed was gone after the restart: the File
+       Manager had kept the catalog change in its cache; mkdir, delete and rename now flush the volume.
+     - An upload whose last piece was 324 bytes stalled until the 30 s idle timeout: the kernel's TCP sent a
+       window update only once two segments' worth had come free. It now updates as soon as a window below one
+       segment grows (`psmac_ip.c`). The receive window had been a fixed 8 KiB with everything accepted; it is
+       now the file job's room (up to 24 KiB), so a large upload waits in the sender's socket.
+     - LaunchApplication from inside the filter came back into the filter with the request still under way:
+       the launch request was carried out twice (the second time finding the program it had just launched),
+       and with a guard against that the filter spun until the kernel's deadline. The launch is now made after
+       the request is answered, like System 6's Launch, which never comes back. A launch started while the
+       previous one's process was still starting failed with "the application 'unknown' has unexpectedly quit,
+       error 25": the FSSpec it pointed to was overwritten by the next request; each launch has its own now,
+       and its Apple event is kept until the next launch.
+     - Documents. The desktop database knew none of the disk's applications (PBDTGetAPPL -5012), and after
+       each such look the Finder fell into a loop of alerts "an unexpected error ... of type -192"; the agent
+       now searches the catalog (PBCatSearch) for an 'APPL' of the creator instead. The System 7.1 Finder
+       takes no Apple events (AESend to it: noPortErr, -903), so it cannot be asked to open a document as a
+       double-click would. Aurora68 Play takes none either (destPortErr, -906): a document reaches it as the
+       Finder information of a launch with an 'odoc' event as launch parameters, which the Process Manager
+       translates; a document for a running Play is refused with a clear reason.
+     - System 6.0.8 did not run the agent at all: its system heap does not grow by itself, and an INIT that
+       needs more than it has is skipped silently. A 'sysz' resource of 64 KB (`elf2init.py --sysz`) fixed it.
+       System 6.0.8 reports SysVersion $0607, which the agent's log line and `/state` show as it is.
+     - A MacBinary round trip is byte for byte the same but for bytes 16-127 of the resource fork, which the
+       Mac rewrites with the file's name, type, creator and a date when the fork is written: that part of a
+       resource fork is reserved for the system.
+   - *Tested* (QEMU, the solo board, HTTP from the host through pinet and the semihosting channel): System 7.1
+     (16 MB, 32-bit): a 1 MB MacBinary file (BINA/A68T, a 5 KB resource fork) pushed and pulled back,
+     identical but for the reserved bytes above, its data fork byte for byte, type and creator kept, about
+     140-165 KB/s each way; a text file with `--text` both ways; a second push refused (409) and replaced with
+     `--force`; a folder of 120 files listed (unique names, 0.6 s); mkdir with and without `-p`, rm of a full
+     folder refused, rm of a file and of empty folders, mv within a folder, to another folder, into a folder
+     and with a new name; `open` of SimpleText and TeachText (launched; "running already" the second time),
+     `apps`, `quit` of both, quit of the Finder refused; `open` of an MP3 started Aurora68 Play with it, and a
+     1 MB upload while it played (0 underruns, the remote's screenshots during the transfer); the agent's own
+     new build pushed into Extensions with `--force` and the Mac restarted through the remote, several times;
+     without the agent, 503 after three seconds for `ls` and for an upload; the MCP server's five new tools.
+     `front=1`: SimpleText's window under TeachText's (the agent, `front agent`, then TeachText back with
+     `restore`), a Finder window under another (`front click`, the other back on top with `restore`), Aurora68
+     Log's window under the Finder's (agent), refused with a Standard File dialog in front. System 6.0.8 (8 MB,
+     24-bit, the Finder alone): the same file jobs (the MacBinary round trip, text, overwrite, mkdir, mv, rm),
+     `apps` (the Finder), `open` of an application in place of the Finder, a document and `quit` refused (501).
+   - *Not verified:* real hardware and its speed; System 7.5 and later; MultiFinder under System 6; a volume
+     other than the startup disk; files over 16 MB.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

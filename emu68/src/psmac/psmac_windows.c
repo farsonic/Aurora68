@@ -61,6 +61,7 @@ uint32_t psmac_mac_rd32(uint32_t logical, int *ok);                         /* p
 #define WR_HILITED    111         /* hilited */
 #define WR_STRUCRGN   114         /* strucRgn: the frame, title bar and content, global coordinates */
 #define WR_CONTRGN    118         /* contRgn: the content */
+#define WR_UPDATERGN  122         /* updateRgn: what the application has still to draw (the remote's front=1 waits for it) */
 #define WR_DEFPROC    126         /* windowDefProc */
 #define WR_DATA       130         /* dataHandle; a layer's parent layer */
 #define WR_TITLE      134         /* titleHandle: a StringHandle */
@@ -145,6 +146,8 @@ static int read_window(uint32_t p, struct psmac_window *w)
     w->ptr = p; w->visible = vis != 0; w->hilited = hil != 0; w->app = -1;
     w->has_rect = mrd32(p + WR_STRUCRGN, &sh) && region_box(sh, w->rect);
     w->has_content = mrd32(p + WR_CONTRGN, &ch) && region_box(ch, w->content);
+    { uint32_t uh; int16_t u[4];                                  /* an empty update region: drawn */
+      w->update_empty = !(mrd32(p + WR_UPDATERGN, &uh) && region_box(uh, u)) || u[0] >= u[2] || u[1] >= u[3]; }
     w->title_len = 0;
     uint32_t ts = mrd32(p + WR_TITLE, &th) && th ? deref(th, 1) : 0;
     if (ts && mrd8(ts, &len) && ptr_ok(ts, 1u + len)) {
@@ -190,6 +193,27 @@ unsigned psmac_macroman_utf8(const uint8_t *in, unsigned n, char *out, unsigned 
     }
     if (max) out[o] = 0;
     return o;
+}
+
+/* UTF-8 to Mac Roman, for the paths the remote's file endpoints are given (psmac_files.c, 21 November
+   2026): each character found in the table above, '?' for one Mac Roman does not have, NUL-terminated.
+   Returns the bytes written, or -1 if a character was not in Mac Roman (the path could not name a file). */
+int psmac_utf8_macroman(const char *in, uint8_t *out, unsigned max)
+{
+    unsigned o = 0; int lost = 0;
+    const uint8_t *p = (const uint8_t *)in;
+    while (*p && o + 1 < max) {
+        uint32_t c = *p++;
+        if (c >= 0xc0 && c < 0xe0 && (p[0] & 0xc0) == 0x80) { c = (c & 31) << 6 | (p[0] & 63); p += 1; }
+        else if (c >= 0xe0 && c < 0xf0 && (p[0] & 0xc0) == 0x80 && (p[1] & 0xc0) == 0x80) { c = (c & 15) << 12 | (p[0] & 63) << 6 | (p[1] & 63); p += 2; }
+        else if (c >= 0x80) { lost = 1; out[o++] = '?'; continue; }
+        if (c < 0x80) { out[o++] = (uint8_t)c; continue; }
+        unsigned k = 0;
+        while (k < 128 && mac_roman_hi[k] != c) k++;
+        if (k == 128) { lost = 1; out[o++] = '?'; } else out[o++] = (uint8_t)(0x80 + k);
+    }
+    if (max) out[o] = 0;
+    return lost ? -1 : (int)o;
 }
 
 /* ---- the walk ---- */

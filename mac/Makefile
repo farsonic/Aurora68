@@ -12,7 +12,7 @@ PY      = python3
 B       = build
 ICONS   = ../tools/mac/mkicons.py
 
-all: $(B)/psmac-se.declrom $(B)/Aurora68-Machine.bin $(B)/Aurora68-Disk.bin $(B)/Aurora68-Network.bin $(B)/Aurora68-WiFi.bin $(B)/Aurora68-Bluetooth.bin $(B)/Aurora68-Status.bin $(B)/Aurora68-Ping.bin $(B)/Aurora68-Screens.bin $(B)/Aurora68-Colour.bin $(B)/Aurora68-Log.bin $(B)/Aurora68-Depth.bin $(B)/Aurora68-WiFi-Bluetooth.bin $(B)/Aurora68-ScreenSetup.bin $(B)/Aurora68-Display.bin $(B)/Aurora68-Sound.bin $(B)/Aurora68-Slots.bin $(B)/Aurora68-Play.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes declrom-wifi-sizes declrom-se-sizes
+all: $(B)/psmac-se.declrom $(B)/Aurora68-Machine.bin $(B)/Aurora68-Disk.bin $(B)/Aurora68-Network.bin $(B)/Aurora68-WiFi.bin $(B)/Aurora68-Bluetooth.bin $(B)/Aurora68-Status.bin $(B)/Aurora68-Ping.bin $(B)/Aurora68-Screens.bin $(B)/Aurora68-Colour.bin $(B)/Aurora68-Log.bin $(B)/Aurora68-Depth.bin $(B)/Aurora68-WiFi-Bluetooth.bin $(B)/Aurora68-ScreenSetup.bin $(B)/Aurora68-Display.bin $(B)/Aurora68-Sound.bin $(B)/Aurora68-Slots.bin $(B)/Aurora68-Play.bin $(B)/Aurora68-Agent.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes declrom-wifi-sizes declrom-se-sizes
 
 $(B)/%.o: %.s
 	@mkdir -p $(B)
@@ -234,6 +234,26 @@ $(B)/wifimenu.elf: $(B)/wm/entry.o $(B)/wm/toolbox_glue.o $(B)/wm/wifimenu.o $(B
 	$(LD) -T wifimenu/init.ld --emit-relocs --gc-sections --no-warn-rwx-segments -z noexecstack -o $@ $(B)/wm/entry.o $(B)/wm/toolbox_glue.o $(B)/wm/wifimenu.o $(B)/wm/btmenu.o $(B)/wm/libc.o $(LIBGCC)
 $(B)/Aurora68-WiFi-Bluetooth.bin: $(B)/wifimenu.elf ../tools/mac/elf2init.py ../tools/mac/macelf.py ../tools/mac/rsrc.py $(ICONS)
 	$(PY) ../tools/mac/elf2init.py $< --name "Aurora68 Wi-Fi & Bluetooth" --creator PSWM --icons menus -o $@
+
+# ---- the Aurora68 Agent: an INIT in C (mac/piagent), files and programs for the remote control (docs/13) ----
+# entry.s carries its own glue for the File Manager, Process Manager and Apple Event calls; c/traps.txt only
+# for toolbox.h's prototypes. It includes the kernel's psmb.h for the agent's block in the card window.
+# 'sysz' 64 KB: System 6's system heap does not grow by itself, and the INIT (about 22 KB, loaded and then
+# copied) was not run at all on System 6.0.8 without it.
+$(B)/ag/toolbox_glue.s $(B)/ag/toolbox_gen.h: c/traps.txt ../tools/mac/mktraps.py
+	@mkdir -p $(B)/ag
+	$(PY) ../tools/mac/mktraps.py $< -s $(B)/ag/toolbox_glue.s -H $(B)/ag/toolbox_gen.h
+$(B)/ag/entry.o: piagent/entry.s
+	@mkdir -p $(B)/ag
+	$(AS) -o $@ $<
+$(B)/ag/agent.o: piagent/agent.c c/toolbox.h $(B)/ag/toolbox_gen.h ../emu68/src/psmac/psmb.h
+	$(CC) $(subst -I$(B),-I$(B)/ag,$(CFLAGS)) -I../emu68/src/psmac -c -o $@ $<
+$(B)/ag/libc.o: c/libc.c c/toolbox.h $(B)/ag/toolbox_gen.h
+	$(CC) $(subst -I$(B),-I$(B)/ag,$(CFLAGS)) -c -o $@ $<
+$(B)/piagent.elf: $(B)/ag/entry.o $(B)/ag/agent.o $(B)/ag/libc.o wifimenu/init.ld
+	$(LD) -T wifimenu/init.ld --emit-relocs --gc-sections --no-warn-rwx-segments -z noexecstack -o $@ $(B)/ag/entry.o $(B)/ag/agent.o $(B)/ag/libc.o $(LIBGCC)
+$(B)/Aurora68-Agent.bin: $(B)/piagent.elf ../tools/mac/elf2init.py ../tools/mac/macelf.py ../tools/mac/rsrc.py $(ICONS)
+	$(PY) ../tools/mac/elf2init.py $< --name "Aurora68 Agent" --creator PIAG --icons agent --sysz 65536 -o $@
 
 # ---- PiScrn: the SE board's two screens arranged at the first boot, an INIT in C (mac/piscrn) ----
 $(B)/piscrn_traps.txt: c/traps.txt piscrn/traps.txt pidisplay/traps.txt

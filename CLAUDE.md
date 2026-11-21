@@ -68,7 +68,7 @@ explains the fork's relationship to upstream.
 ### The Macintosh side
 ```
 make -C mac            # drivers (.PiDisk, .ENET x2, .PiInput, .Display_Video_PiStorm), the extensions and
-                       # applications as build/Aurora68-*.bin ("Aurora68 Play", "Aurora68 Disk"...: PiPlay,
+                       # applications as build/Aurora68-*.bin ("Aurora68 Play", "Aurora68 Disk", "Aurora68 Agent"...: PiPlay,
                        # PiDisk... until 21 November 2026, docs/09 "The programs and their folders"; icons from
                        # tools/mac/mkicons.py), the declaration ROMs psmac.declrom / psmac_wifi.declrom
                        # and one per second-screen size (psmac-1024x768.declrom ...; RESES in the Makefile)
@@ -152,7 +152,10 @@ drives the Mac from the host: `remote=on remote.token=T` with `PINET_KERNEL=1806
 tools/pinet.py /tmp/psmac-net peer` makes the kernel's HTTP server `http://127.0.0.1:18068/`
 (`tools/aurora68.py --url ... --token T screenshot|windows|click|type|key|log|state|restart`, and
 `tools/aurora68-mcp.py` for an MCP host); `mac.remotefile=BASE` serves the same requests through
-semihosting without the network. `tools/pram32.py` switches
+semihosting without the network. Files and programs (`aurora68.py ls|info|pull|push|mkdir|rm|mv|open|apps|quit`,
+`/files/...`, `/apps`) go through the Aurora68 Agent, an INIT in C on the Mac (`mac/piagent`, the card's agent
+block in `psmb.h`, the kernel's half `psmac_files.c`; docs/13 "Files and applications"); install it in the test
+image's Extensions (System 6: System Folder) with `tools/mac/aurora68-layout.py install`. `tools/pram32.py` switches
 32-bit addressing on in MAME's saved PRAM (needed for more than 8 MiB and for the second screen's
 configuration; see docs/08 item 26). A System 7.1 boot reaches the Finder in about four minutes
 on four cores; System 6 in three. `bt=off wifi=off` keep the real drivers from touching QEMU's

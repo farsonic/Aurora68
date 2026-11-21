@@ -177,7 +177,9 @@ Claude Desktop: Settings, Developer, Edit Config opens `claude_desktop_config.js
 }
 ```
 
-and restart Claude Desktop. The tools are `screenshot` (the main screen, or with `window` one window),
+and restart Claude Desktop. The tools are `screenshot` (the main screen, or with `window` one window; `front`
+brings it forward first), `list_files`, `read_file`, `write_file`, `open` and `list_apps` (with the Aurora68 Agent
+on the Mac, "Files and applications", below),
 `list_windows`, `click`, `move`, `drag`, `type`, `key`, `log`, `state` and `restart`.
 
 ## The HTTP API
@@ -193,6 +195,7 @@ and restart Claude Desktop. The tools are `screenshot` (the main screen, or with
 | `GET /screenshot?window=ID\|title=TEXT\|screen=N\|rect=l,t,r,b[&content=1][&scale=2]` | a PNG of one window, one screen or a rectangle of the desktop, composed from the screens it is on; `scale` here doubles ("Windows", below) |
 | `GET /state` | JSON (below) |
 | `POST /restart[?how=mac\|nmi\|pi]` | restart the Mac (default), the programmer's interrupt, or reboot the Pi |
+| `GET /files/list`, `/files/info`, `/files/data`, `PUT /files/data`, `POST /files/mkdir`, `/files/delete`, `/files/rename`, `GET /apps`, `POST /apps/open`, `/apps/quit` | files and programs on the Mac, through the Aurora68 Agent ("Files and applications", below) |
 
 Events: `{"type": "move", "x": X, "y": Y}`; `"down"` and `"up"` (x, y optional); `"click"` with
 `"count": 2` for a double-click, `"button": "right"` for a Command-click, `"mods": "shift"`;
@@ -291,9 +294,32 @@ screenshot"); the encoder is the streaming one of `/screen.png`, a band of rows 
 | `GET /screenshot?title=TEXT...` | the frontmost visible window whose title contains TEXT (case ignored for ASCII; %-encode it) |
 | `GET /screenshot?screen=0\|1[&scale=2]` | one whole screen, as the Mac has it on the desktop |
 | `GET /screenshot?rect=l,t,r,b[&scale=2]` | any rectangle of the desktop, global coordinates |
+| `GET /screenshot?window=ID\|title=TEXT&front=1[&restore=1]` | the window brought to the front first ("Bringing a window to the front", below); `restore=1` puts back the application (and window) that was in front afterwards |
 
 The headers of a picture: `X-Aurora-Rect` (what was taken, global), `X-Aurora-Scale`, `X-Aurora-Window`,
-and when they apply `X-Aurora-Clipped-From` and `X-Aurora-Covered-By`.
+and when they apply `X-Aurora-Clipped-From` and `X-Aurora-Covered-By`; with `front=1` also `X-Aurora-Front`
+(how the window came forward) and `X-Aurora-Covered-By` always, empty when nothing covers it any more.
+
+**Bringing a window to the front** (21 November 2026). On the real SE the owner photographed a window that
+was half under another one, and the picture showed the other one, as the screen does. `front=1` brings the
+window forward first, the way a person would. Under System 7 the Aurora68 Agent (below) makes the window's
+application the front one (SetFrontProcess for the application the window list names); if the window is
+then still behind another window of its own application, the kernel clicks once on a visible part of its
+title bar: 24 pixels are kept clear at each end for the close, zoom and collapse boxes, the part between
+the close box and the title is tried first, and a point is visible when no window in front covers it and a
+screen is under it. The pointer goes back where it was (past the window's corner if that was on the window).
+Then the kernel waits until the window is first in the list and its update region is empty (the
+application has drawn it; `psmac_windows.c` now reads `updateRgn`), at most a second and a half, and takes
+the picture. Without the agent, or under System 6, the click alone does it when part of the title bar shows.
+Nothing is clicked while a dialog (windowKind 2) is in front, since an alert or a modal dialog would take
+the click: 409 "a dialog is in front". A window with no title bar showing that the agent cannot bring
+forward: 409. `X-Aurora-Front` says `already`, `agent`, `click`, `agent and click`, or `timeout, still
+behind` / `timeout, still drawing` when the wait ran out (the picture is taken anyway). With `restore=1` the
+previously front application is made front again by the agent after the picture, and when it was the same
+application, its previous front window is clicked forward. `aurora68.py screenshot --window T --front
+[--restore]`, the MCP screenshot tool's `front` (which always restores), and the page's "bring to front"
+checkbox ask for it. Tested on System 7.1 in the testbed (below, "What was tested" of "Files and
+applications").
 
 **The page** has a "Windows" panel below the screen: Refresh lists the windows (title, size, screens),
 each row has a Grab button that shows the window's picture under the list with a "Save ... .png" link;
@@ -341,3 +367,138 @@ board, over HTTP from the host through pinet; `docs/img/se-window-across-screens
   fall back to WindowList); titles outside ASCII on a real Mac (the Mac Roman table was checked against
   Python's on the host). The mouse pointer is part of the picture where it is over the window, because
   QuickDraw draws it into the frame buffer.
+
+## Files and applications (21 November 2026)
+
+The owner asked for "a command line on the client for jobs like this. Screen shots. Push files etc".
+Screenshots, windows and input the kernel does alone; a file or a program needs the Mac's own File Manager
+and Process Manager. The kernel could read a disk image's blocks itself, but not while the Mac has the
+volume mounted (the File Manager keeps the catalog and the allocation map in its cache) and not at all on a
+SCSI disk only the Mac reaches. So a small program on the Mac does these jobs for the kernel: the
+**Aurora68 Agent**.
+
+**The agent** (`mac/piagent/agent.c`, `entry.s`; `mac/build/Aurora68-Agent.bin`, an INIT of 22 KB, creator
+`PIAG`) goes into System Folder:Extensions under System 7 and the System Folder under System 6 (the layout
+helper and the release's "Extensions (to install)" folder put it there). It is in C, built with the project's
+m68k GCC kit (`mac/c`, `tools/mac/elf2init.py`) like the Wi-Fi menu. At startup it copies itself into the
+system heap, installs a VBL task and hooks the GetNextEvent filter (jGNEFilter), and logs `[MAC] A68 Agent:
+installed under System 7.1, the Process Manager, startup volume Mac HD`.
+- *When it works.* A synchronous File Manager call at interrupt time can deadlock the File Manager's queue,
+  and the Process Manager's calls are not allowed there either. The GetNextEvent filter runs at the end of
+  every GetNextEvent and WaitNextEvent of any program, at application time, under System 6 (Finder alone or
+  MultiFinder) and System 7 alike; it does nothing while FSBusy ($360) says the File Manager is inside a call
+  (a disk-switch dialog's ModalDialog calls GetNextEvent from inside one). The VBL task counts a heartbeat
+  the kernel watches and, under System 7, wakes the program in front with WakeUpProcess while a request
+  waits, so that a program asleep in WaitNextEvent comes round within a tick (without it each request
+  waited for the end of the front program's sleep, 120 to 200 ms in the testbed). Consecutive requests (a
+  transfer's chunks) are served in one go for up to five ticks, then the program in front gets its turn.
+- *No state between requests.* The filter runs in whichever program's process; System 7 closes a quitting
+  program's files. So every request names a full path and the agent opens and closes the file within it;
+  the kernel keeps everything else (offsets, the MacBinary header, the HTTP connection). A request is
+  carried out once even if the filter is entered again while it runs. A change to the catalog (mkdir,
+  delete, rename, the end of an upload) is flushed to the disk at once.
+- *The card.* `psmb.h` "the Aurora68 Agent": a 2 KiB block at window offset $5A000 (the request: op, path,
+  offsets, type and creator; the answer: status, result, a note) and a 24 KiB transfer buffer at $52000,
+  both in the first megabyte so a 24-bit System 6 reaches them ($95A000, $952000). The agent reads and
+  writes files straight into the buffer. The kernel writes the block's magic at start-up; an agent on an
+  older kernel says so in the log and does not install.
+- *Programs* (System 7). `open` launches an application with LaunchApplication, or brings it to the front
+  (SetFrontProcess) when it runs already. A document: its application is found by searching the catalog
+  for an 'APPL' of the document's creator (PBCatSearch, the document's volume first); not running, it is
+  launched with an 'odoc' Apple event as its launch parameters (AECoerceDesc to 'appa'), which the Process
+  Manager also turns into the Finder information of the applications of before System 7 (Aurora68 Play
+  takes no Apple events and played the file it was launched with); running, it is sent the 'odoc' event,
+  which only applications that take Apple events accept (409 "takes no Apple events: quit it, then open the
+  document" otherwise). `apps` lists the processes (GetNextProcess, GetProcessInformation), `quit` sends a
+  'quit' Apple event (the program may ask to save first; the Finder is never quit). Under System 6: `open`
+  launches applications with _Launch (beside the others under MultiFinder, in place of the Finder without
+  it, as a double-click would), `apps` is the current application (CurApName), documents and `quit` answer
+  501. The launch itself is made after the request has been answered: from inside it LaunchApplication came
+  back into the filter while the request was still under way.
+
+**The HTTP API** (each needs the token, like every other request; one file job at a time, a second one gets
+503 "another file job", which both tools retry):
+
+| Request | What |
+|---|---|
+| `GET /files/list?path=P` | a folder's entries as JSON, `{"path", "entries": [...], "count"}`; each entry `name`, `kind` (file, folder, volume), for a file `type`, `creator`, `data` and `rsrc` (the forks' lengths), `created`, `modified` (the Mac's local time), `flags` (the Finder flags), `locked`, `open`, `id`; for a folder `entries`; without `path` the volumes, with `free_kb`, `size_kb`, `startup`. A file's path lists the file. Large folders come in chunks of up to 307 entries (or six ticks of the Mac's time each) |
+| `GET /files/info?path=P` | one entry, with `path` |
+| `GET /files/data?path=P[&fork=rsrc][&macbinary=1]` | the data fork (or the resource fork) as it is, or with `macbinary=1` a MacBinary II file (both forks, type, creator, Finder flags, dates; the header's CRC). `Content-Length` is known from the start; `X-Aurora-Name`, `-Type`, `-Creator` (%-encoded bytes), `-Flags`, `-Data-Length`, `-Rsrc-Length`, `-Created`, `-Modified`, `-Format` |
+| `PUT /files/data?path=P[&macbinary=1][&type=TEXT&creator=ttxt][&force=1][&mkdir=1]` | the body (with `Content-Length`) as the file: MacBinary sets the forks, type, creator, Finder flags and dates, a raw body is the data fork with `type`/`creator` (`????` otherwise). A path ending in `:` is a folder and the MacBinary file's own name is used. An existing file is refused (409) unless `force=1`, which empties both its forks first; missing folders on the way are made only with `mkdir=1`. A new file that does not arrive whole is deleted again |
+| `POST /files/mkdir?path=P[&parents=1]` | a folder (with `parents`, the missing ones above it too, and no error if it is there) |
+| `POST /files/delete?path=P` | a file, or a folder that is empty (409 otherwise): never more than one item |
+| `POST /files/rename?path=P&to=Q` | a new name, another folder on the same volume, or both; an existing folder as `to` moves the item into it |
+| `GET /apps` | JSON: `system`, and `apps` with `name`, `type`, `creator`, `psn`, `front`, `background_only`, `desk_accessory`, `apple_events`, `size`, `free` |
+| `POST /apps/open?path=P` | `{"opened": true, "how": "being launched" \| "running already: brought to the front" \| "its application is being launched with it" ...}` |
+| `POST /apps/quit?name=N` or `?creator=C` | `{"quit": N, "sent": true}` |
+
+Paths are UTF-8 in the URL (%-encoded) and Mac Roman on the Mac: "Mac HD:Folder:File", and a leading `:`
+is the startup volume (":System Folder:Extensions"). Names of more than 31 characters, empty parts ("a::b",
+which climbs a folder in the File Manager's syntax) and characters Mac Roman does not have are refused (400).
+Errors are JSON with the Mac's reason in words: 404 not found (or a folder on the way, or no such volume),
+409 it is there already / busy: the file is open / the folder is not empty / it is a folder, 403 locked or
+write-protected, 507 the disk is full, 501 not on this system, 503 when the agent is not there, 504 when it
+does not answer within 20 seconds (30 for `open`): "the Mac is busy (a menu held down, a modal dialog, a long
+disk operation) or the program in front takes no events". When the agent is not installed (no heartbeat for
+5 s, or no magic) a request waits three seconds and answers 503 "the Aurora68 Agent is not running on the
+Mac: put it into the System Folder (System 6) or System Folder:Extensions (System 7) and restart". An error in
+the middle of a download, after the headers have gone, can only cut the connection short: the client sees
+fewer bytes than `Content-Length`, and `/state`'s `agent.last` says why. `/state` has an `agent` member:
+`installed`, `alive`, `version`, `system`, `startup`, `process_manager`, `multifinder`, `served`, `repeats`,
+`wakes`, the job under way, counts, and the last job's outcome.
+
+**Streaming.** Nothing waits on core 3. A download asks the agent for the next 24 KiB as soon as the last
+chunk has been copied out of the window and the answer's buffer (56 KiB) has room, so the Mac reads the next
+chunk while the network sends the last. An upload is flow-controlled: the TCP window the kernel advertises
+is now what the job can take (`remote_tcp_room`, `psmac_ip.c`; until today it was always 8 KiB and
+everything was handed over), so a large file waits in the sender's socket; a window update goes out as soon
+as the job has taken a chunk (the first test of an upload whose last part was 324 bytes stalled until the
+30 s idle timeout: the update waited for two segments' worth of room). The semihosting channel streams
+uploads the same way.
+
+**The command line** (`tools/aurora68.py`, standard library; `-h` lists every command with a line each):
+
+```
+aurora68.py ls                                   the disks
+aurora68.py ls ":System Folder:Extensions" [--json]
+aurora68.py info ":SimpleText"
+aurora68.py pull ":Documents:Letter" [letter.txt] [--text]      the data fork (--text: Mac Roman and CR to UTF-8)
+aurora68.py pull ":Applications:MacPaint" --macbinary           MacPaint.bin: both forks, type, creator, dates
+aurora68.py push MacPaint.bin ":Applications:"                   MacBinary: its forks, type and creator, its name
+aurora68.py push notes.txt ":Documents:" --text                  UTF-8 to Mac Roman, TEXT/ttxt
+aurora68.py push song.mp3 ":Aurora68:Aurora68 Play:Music:"       MPG3/PIPY by the extension
+aurora68.py push x.bin "Mac HD:New:Deeper:x" --mkdir --force --type BINA --creator ????
+aurora68.py mkdir ":Work:2026" -p | rm ":Work:old.txt" | mv ":Work:a" ":Archive:"
+aurora68.py open ":Applications:SimpleText" | open ":Aurora68:Aurora68 Play:Music:Minuet in G.mp3"
+aurora68.py apps [--json] | quit SimpleText | quit --creator ttxt
+```
+
+A raw file's type and creator come from its extension: `.txt` TEXT/ttxt, `.mp3` MPG3/PIPY (Aurora68 Play's
+creator), `.aif`/`.aiff` AIFF/PIPY, `.wav` WAVE/PIPY, anything else ????/????; `--type` and `--creator`
+override. A file is taken as MacBinary when its header checks (MacBinary II's CRC, the forks' lengths against
+the file's size); `--raw` sends it as data, `--macbinary` insists. A pull is written to `NAME.part` and renamed
+once it is whole. Like the other commands, when `AURORA68_URL` has no port and port 80 does not answer within
+two seconds, the tools try 8068 (the port the kernel keeps when it shares the Mac's address on the WiFi) and
+say on stderr which answered.
+
+**The MCP server** (`tools/aurora68-mcp.py`) has `list_files` (a folder, or the disks), `read_file` (the data
+fork as text, Mac Roman and CR turned into UTF-8 and newlines, or base64; at most `max_bytes`), `write_file`
+(text or base64 as the data fork, TEXT/ttxt by default; `overwrite` and `make_folders` as `--force` and
+`--mkdir`), `open` and `list_apps`.
+
+**Safety.** The agent does what the token's holder asks, as the Finder would for someone at the Mac, and no
+more: `rm` takes one file or an empty folder and never recurses; nothing is overwritten without `force`; no
+folder is made without `mkdir`; `mv` stays on one volume; the Finder is not quit; the volume root cannot be
+deleted or opened. It changes no system setting and runs no code it is sent (a pushed application runs only
+when it is opened). The remote's other rules hold: off unless `remote=on`, the token on every request, the
+local network only. Without the remote on, the agent waits and does nothing.
+
+**Limits.** One job at a time. Speed is the Mac's: in the testbed (QEMU's solo board, the disk an image
+behind the emulated SCSI) about 140 KB/s either way, every chunk spending its time in the File Manager and
+the emulated SCSI; real hardware has not been measured. Document opening and `quit` need System 7; under
+System 6 the agent cannot see other programs (MultiFinder's are not enumerated). A document's application is
+the first 'APPL' of its creator the catalog search finds (the Finder would ask its desktop database: on the
+testbed's disk that knew none of the applications, and after the agent had asked it the Finder fell into a
+loop of alerts "an error of type -192", so it is not asked). An old application that takes no Apple events
+gets a document only when it is launched with it. Only the data fork is read by `read_file`; aliases are not
+resolved; paths with two volumes of one name reach the first.

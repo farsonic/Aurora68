@@ -779,6 +779,31 @@ def g_menus(n):
     return draw
 
 
+def g_agent(n):
+    """the Agent: a terminal with a prompt, and an arrow each way beside it (files in and out)"""
+    def draw(c, box):
+        if n == 32:
+            x, y = centre(box, 20, 14)
+            c.fill(x, y, x + 13, y + 10, (1, NAVY))           # the screen: black at one bit, the sky's navy in colour
+            c.rect(x, y, x + 13, y + 10, INK_K)
+            for k in range(3):                                # the prompt ">", white at one bit, aurora green in colour
+                c.set(x + 2 + k, y + 2 + k, (0, GREEN)); c.set(x + 2 + k, y + 6 - k, (0, GREEN))
+            c.hline(x + 6, x + 9, y + 6, (0, CYAN))           # the cursor
+            c.hline(x + 5, x + 8, y + 11, INK_K); c.hline(x + 3, x + 10, y + 12, INK_K)   # its foot
+            ax = x + 17                                       # up, then down
+            c.vline(ax, y, y + 5, (1, VIOLET)); c.hline(ax - 2, ax + 2, y + 2, (1, VIOLET)); c.hline(ax - 1, ax + 1, y + 1, (1, VIOLET))
+            c.vline(ax, y + 7, y + 12, (1, BLUE)); c.hline(ax - 2, ax + 2, y + 10, (1, BLUE)); c.hline(ax - 1, ax + 1, y + 11, (1, BLUE))
+        else:
+            x, y = centre(box, 10, 7)
+            c.fill(x, y, x + 6, y + 5, (1, NAVY))
+            c.set(x + 1, y + 1, (0, GREEN)); c.set(x + 2, y + 2, (0, GREEN)); c.set(x + 1, y + 3, (0, GREEN))
+            c.hline(x + 3, x + 4, y + 3, (0, CYAN))
+            c.hline(x + 2, x + 4, y + 6, INK_K)
+            c.vline(x + 8, y, y + 2, (1, VIOLET)); c.set(x + 7, y + 1, (1, VIOLET)); c.set(x + 9, y + 1, (1, VIOLET))
+            c.vline(x + 8, y + 4, y + 6, (1, BLUE)); c.set(x + 7, y + 5, (1, BLUE)); c.set(x + 9, y + 5, (1, BLUE))
+    return draw
+
+
 def g_common(n):
     """the extensions' common icon: 68"""
     def draw(c, box):
@@ -854,6 +879,7 @@ PROGRAMS = {
     'setup':     ('Aurora68 Screen Setup', 'ext', g_setup, []),
     'sound':     ('Aurora68 Sound', 'ext', g_sound, []),
     'menus':     ('Aurora68 Wi-Fi & Bluetooth', 'ext', g_menus, []),
+    'agent':     ('Aurora68 Agent', 'ext', g_agent, []),
     'common':    ('Aurora68 extension', 'ext', g_common, []),
 }
 DOCS = {'doc-MPG3': 'MPG3', 'doc-AIFF': 'AIFF', 'doc-WAVE': 'WAVE', 'doc-pref': 'pref'}

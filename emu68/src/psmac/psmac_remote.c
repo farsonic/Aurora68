@@ -23,6 +23,8 @@
  *                     doubles each pixel (21 November 2026)
  *   GET  /state       JSON: board, screen, the application in front, Ticks, crashes, network, disks
  *   POST /restart     the Mac restarts (?how=nmi: the programmer's switch; ?how=pi: the whole Pi)
+ *   /files/..., /apps files and programs on the Mac, through the Aurora68 Agent (psmac_files.c, 21 November
+ *                     2026): list, info, data (GET a file, PUT one), mkdir, delete, rename; open, quit
  * Every request but the page needs the token (remote.token=, as X-Aurora-Token or Authorization:
  * Bearer), and requests from outside the local network are refused unless remote.any=1.
  *
@@ -47,6 +49,7 @@
 #include "../alice/alice_net.h"
 #include "psmac_ip.h"
 #include "psmac_windows.h"
+#include "psmac_files.h"
 
 const char *psmac_option(const char *key);                                  /* psmac_bus.c */
 uint32_t psmac_mac_rd32(uint32_t logical, int *ok);                         /* psmac_bus.c */
@@ -147,6 +150,7 @@ void psmac_remote_mac_reset(void)
     const char *w1, *w2; uint32_t v, pc; int16_t id;
     psmac_crash_last(&reset_exc_n, &v, &pc, &w1, &reset_sys_n, &id, &w2);
     mac_resets++; reset_ms = now_ms();
+    psmac_files_mac_reset();                                       /* the agent of the next start announces itself again */
 }
 
 /* HID modifier byte: Control 0x01, Shift 0x02, Option (Alt) 0x04, Command (GUI) 0x08 */
@@ -551,7 +555,7 @@ static void png_band(void)
 #define NCONN (IPK_CONNS + 1)                     /* the last one is the semihosting channel */
 #define REQ_MAX 8192
 #define OUT_MAX 12288
-enum { R_NONE, R_BUF, R_PNG, R_LOG, R_RECORDS, R_INPUT_WAIT, R_WINDOWS };
+enum { R_NONE, R_BUF, R_PNG, R_LOG, R_RECORDS, R_INPUT_WAIT, R_WINDOWS, R_FILES, R_FRONT };
 struct hconn {
     int used, local; uint8_t peer[4];
     char req[REQ_MAX + 1]; uint32_t req_len; int handled;
@@ -597,7 +601,7 @@ static const char page[] =
 "<input id=tx size=24 placeholder='text to type'><button onclick=ty()>Type</button> "
 "<button onclick=\"if(confirm('Restart the Mac?'))cmd('/restart')\">Restart</button></div>"
 "<p><img id=s tabindex=0 alt='the Mac'></p>"
-"<h4>Windows <button onclick=wins()>Refresh</button> <label><input id=gz type=checkbox> doubled</label> <label><input id=gc type=checkbox> content only</label></h4>"
+"<h4>Windows <button onclick=wins()>Refresh</button> <label><input id=gz type=checkbox> doubled</label> <label><input id=gc type=checkbox> content only</label> <label><input id=gf type=checkbox> bring to front</label></h4>"
 "<table id=wt></table><p id=gs></p><p><img id=g alt=''></p><div id=st></div><script>"
 "var T=document.getElementById('tk'),S=document.getElementById('s'),sc=document.getElementById('sc'),dp=document.getElementById('dp');"
 "T.value=localStorage.a68t||'';T.onchange=function(){localStorage.a68t=T.value};"
@@ -625,7 +629,7 @@ static const char page[] =
 "r.appendChild(E('td',w.screens.join(', ')));b.onclick=function(){grab(w)};b.disabled=!w.visible||!w.screens.length;var d=document.createElement('td');d.appendChild(b);r.appendChild(d);t.appendChild(r)})})"
 ".catch(function(e){document.getElementById('gs').textContent='windows: '+e})}"
 "function grab(w){var s=document.getElementById('gs'),g=document.getElementById('g');s.textContent='taking '+w.title+' ...';"
-"fetch('/screenshot?window='+w.id+(document.getElementById('gz').checked?'&scale=2':'')+(document.getElementById('gc').checked?'&content=1':''),{headers:H()})"
+"fetch('/screenshot?window='+w.id+(document.getElementById('gz').checked?'&scale=2':'')+(document.getElementById('gc').checked?'&content=1':'')+(document.getElementById('gf').checked?'&front=1':''),{headers:H()})"
 ".then(function(r){if(!r.ok)return r.json().then(function(j){throw j.error});return r.blob()}).then(function(b){var u=URL.createObjectURL(b);g.src=u;"
 "var a=E('a','Save '+((w.title||'window').replace(/[^A-Za-z0-9 ._-]/g,'_'))+'.png');a.href=u;a.download=a.textContent.substring(5);s.textContent='';s.appendChild(a)})"
 ".catch(function(e){s.textContent='screenshot: '+e})}"
@@ -870,7 +874,9 @@ static void state_json(struct hconn *h)
         json_name(a, nm, sizeof a);
         OUTF(h, "%s\n    {\"name\": \"%s\", \"blocks\": %u, \"as\": \"%s\"}", i ? "," : "", a, blocks, psmac_image_is_scsi(i) ? "SCSI" : "PiDisk");
     }
-    OUTF(h, "\n  ],\n  \"log_head\": %u\n}\n", log_head());
+    out_str(h, "\n  ],\n  \"agent\": ");
+    { static char ag[1600]; psmac_files_state_json(ag, sizeof ag); out_str(h, ag); }
+    OUTF(h, ",\n  \"log_head\": %u\n}\n", log_head());
 }
 
 /* ---- windows (21 November 2026): the list, and pictures of one window or of a rectangle ----
@@ -988,6 +994,8 @@ static int parse_int(const char **p, int *v)
 /* GET /screenshot: ?window=ID or ?title=TEXT (the frontmost visible window whose title has TEXT,
    case ignored), ?screen=N, or ?rect=l,t,r,b; &content=1 the content only; &scale=2..4 each pixel
    doubled (or more). The rectangle is clipped to the desktop. */
+static void shot_rect(struct hconn *h, int c, int16_t *r, const int16_t *desk, int zoom, int found, const char *note, const char *front);
+static void front_begin(struct hconn *h, int c, int found, int zoom, int content, int restore);
 static void screenshot(struct hconn *h, int c, const char *q)
 {
     char v[256];
@@ -1050,6 +1058,17 @@ static void screenshot(struct hconn *h, int c, const char *q)
         for (int k = 0; k < 4; k++)
             r[k] = (int16_t)(x[k] < -32000 ? -32000 : x[k] > 32000 ? 32000 : x[k]);
     } else { respond_json_error(h, 400, "Bad Request", "screenshot needs window=ID, title=TEXT, screen=N or rect=l,t,r,b"); return; }
+    if (found >= 0 && query(q, "front", v, sizeof v) && v[0] == '1') {      /* first to the front (below) */
+        front_begin(h, c, found, zoom, content, query(q, "restore", v, sizeof v) && v[0] == '1');
+        return;
+    }
+    shot_rect(h, c, r, desk, zoom, found, note, 0);
+}
+
+/* The picture of rectangle r of the desktop, clipped to it, as the answer; found: the window it is (its id
+   and the windows covering it in note go into the headers), front: how /screenshot?front=1 brought it forward */
+static void shot_rect(struct hconn *h, int c, int16_t *r, const int16_t *desk, int zoom, int found, const char *note, const char *front)
+{
     /* clipped to the desktop: a window partly dragged off the screens is pictured where it is on them */
     int16_t want[4] = { r[0], r[1], r[2], r[3] };
     if (r[0] < desk[0]) r[0] = desk[0];
@@ -1067,9 +1086,169 @@ static void screenshot(struct hconn *h, int c, const char *q)
         OUTF(h, "X-Aurora-Clipped-From: %d,%d,%d,%d\r\n", want[0], want[1], want[2], want[3]);
     if (found >= 0) {
         OUTF(h, "X-Aurora-Window: 0x%08x\r\n", wl[found].ptr);
-        if (note[0]) OUTF(h, "X-Aurora-Covered-By: %s\r\n", note);
+        if (note[0] || front) OUTF(h, "X-Aurora-Covered-By: %s\r\n", note);
     }
+    if (front) OUTF(h, "X-Aurora-Front: %s\r\n", front);
     out_str(h, "\r\n");
+}
+
+/* ---- /screenshot?window=...&front=1 (21 November 2026): the window brought forward first ----
+   A picture of a covered window shows the windows in front of it, as the screen does. With front=1 the
+   window comes to the front first, the way a person would bring it: under System 7 the Aurora68 Agent
+   makes its application the front one (SetFrontProcess, psmac_files_front); if the window is still behind
+   another of its own application's windows, one click on a visible part of its title bar selects it (never
+   on the close, zoom or collapse box: 24 pixels are kept clear at each end, and the part between the close
+   box and the title is tried first). Then the kernel waits until the window is in front and its update
+   region is empty, the application having drawn it (at most a second and a half), and takes the picture.
+   Without the agent, or under System 6, the click alone does it when part of the title bar shows. Nothing
+   is clicked while a dialog is in front (an alert or a modal dialog would take the click), and a window
+   with no title bar showing cannot be brought: both answer 409. With restore=1 the application that was in
+   front is put back afterwards (and, in the same application, its front window by a click on its title). */
+enum { F_IDLE, F_AGENT, F_LOOK, F_WAIT, F_SHOT, F_RESTORE };
+static struct {
+    int state, conn, zoom, content, restore, clicked, agent;
+    uint32_t id, t0, until, next_look;
+    uint32_t prev_win; uint8_t prev_app[32], own_app[32];
+} F;
+static int front_app_of(int i, uint8_t *out)                     /* the application of window i, Mac Roman; 0 if not known */
+{
+    if (i < 0 || i >= wi.n || wl[i].app < 0 || wl[i].app >= wi.napps || !wi.app_len[(int)wl[i].app]) { out[0] = 0; return 0; }
+    unsigned n = wi.app_len[(int)wl[i].app];
+    if (n > 31) n = 31;
+    __builtin_memcpy(out, wi.app[(int)wl[i].app], n); out[n] = 0;
+    return (int)n;
+}
+static int find_win(uint32_t id) { for (int i = 0; i < wi.n; i++) if (wl[i].ptr == id) return i; return -1; }
+static int on_desktop(int x, int y)
+{
+    struct place s[2]; int16_t d[4];
+    int n = comp_screens(s, d, 0);
+    for (int k = 0; k < n; k++) if (x >= s[k].l && x < s[k].r && y >= s[k].t && y < s[k].b) return 1;
+    return 0;
+}
+/* a point of window t's title bar that no window in front covers, on a screen: 1 and *x, *y, else 0 */
+static int title_point(int t, int *px, int *py)
+{
+    struct psmac_window *w = &wl[t];
+    if (!w->has_rect || !w->has_content || w->content[1] - w->rect[1] < 12) return 0;   /* no title bar */
+    int y = w->rect[1] + (w->content[1] - w->rect[1]) / 2, l = w->rect[0] + 24, r = w->rect[2] - 24, mid = (w->rect[0] + w->rect[2]) / 2;
+    for (int pass = 0; pass < 3; pass++) {
+        int a = pass == 0 ? l : pass == 1 ? mid + 40 : mid - 40, b = pass == 0 ? mid - 40 : pass == 1 ? r : mid + 40;
+        for (int x = a; x <= b; x += 3) {
+            int hidden = !on_desktop(x, y);
+            for (int i = 0; i < t && !hidden; i++)
+                if (wl[i].visible && wl[i].has_rect && x >= wl[i].rect[0] && x < wl[i].rect[2] && y >= wl[i].rect[1] && y < wl[i].rect[3]) hidden = 1;
+            if (!hidden) { *px = x; *py = y; return 1; }
+        }
+    }
+    return 0;
+}
+static void front_fail(struct hconn *h, int code, const char *msg)
+{
+    respond_json_error(h, code, code == 409 ? "Conflict" : "Service Unavailable", msg);
+    F.state = F_IDLE;
+}
+static void front_begin(struct hconn *h, int c, int found, int zoom, int content, int restore)
+{
+    if (F.state != F_IDLE) { respond_json_error(h, 503, "Service Unavailable", "another window is being brought to the front: try again"); return; }
+    F.conn = c; F.zoom = zoom; F.content = content; F.restore = restore; F.clicked = 0; F.agent = 0;
+    F.id = wl[found].ptr; F.t0 = now_ms(); F.next_look = 0;
+    F.prev_win = wi.n ? wl[0].ptr : 0;
+    front_app_of(0, F.prev_app);
+    h->kind = R_FRONT; h->out_len = h->out_pos = 0;
+    if (found == 0) { F.state = F_WAIT; F.until = now_ms() + 1500; return; }   /* in front already: drawn yet? */
+    if (wi.n && wl[0].kind == 2 && wl[0].visible) { front_fail(h, 409, "a dialog is in front: it would take the click (answer it first)"); return; }
+    uint8_t own[32]; int n = front_app_of(found, own);
+    __builtin_memcpy(F.own_app, own, sizeof own);
+    /* another application's window: the agent switches applications, if it is there */
+    if (n && __builtin_strcmp((const char *)own, (const char *)F.prev_app) && psmac_files_front(own, (unsigned)n)) {
+        F.agent = 1; F.state = F_AGENT; F.until = now_ms() + 4000;
+        return;
+    }
+    F.state = F_LOOK;
+}
+/* one step, from the service loop */
+static void front_poll(void)
+{
+    if (F.state == F_IDLE || F.state == F_SHOT) return;
+    if (F.state == F_RESTORE) {                                       /* after the picture: the application that was in front */
+        if ((int32_t)(now_ms() - F.until) >= 0) { F.state = F_IDLE; return; }
+        int r = psmac_files_front_result(0, 0);
+        if (F.agent == 1) { if (psmac_files_front(F.prev_app, slen((const char *)F.prev_app))) F.agent = 2; return; }
+        if (F.agent == 2 && !r) return;
+        psmac_windows_read(wl, PSMAC_WIN_MAX, &wi);                  /* its front window too, when it was the same application's */
+        int p = find_win(F.prev_win), x, y;
+        if (p > 0 && wl[p].visible && wl[0].kind != 2 && psmac_input_attached() && title_point(p, &x, &y)) {
+            int mx = mouse_x, my = mouse_y;
+            q_move(x, y); q_button(1, 0); q_button(0, 0); q_move(mx, my);
+        }
+        F.state = F_IDLE;
+        return;
+    }
+    struct hconn *h = &hc[F.conn];
+    if (!h->used || h->kind != R_FRONT) { F.state = F_IDLE; return; }  /* the client has gone */
+    uint32_t t = now_ms();
+    if (F.state == F_AGENT) {
+        int r = psmac_files_front_result(0, 0);
+        if (!r && (int32_t)(t - F.until) < 0) return;
+        if (r < 0 || !r) F.agent = 0;                                 /* not done: the click below may still do it */
+        F.state = F_LOOK; F.next_look = t + 150;                      /* the Process Manager's switch takes a moment */
+        return;
+    }
+    if ((int32_t)(t - F.next_look) < 0) return;
+    F.next_look = t + 100;
+    psmac_windows_read(wl, PSMAC_WIN_MAX, &wi);
+    int i = find_win(F.id);
+    if (i < 0) { front_fail(h, 404, "the window has been closed"); return; }
+    if (F.state == F_LOOK) {
+        int x, y;
+        if (i == 0) { F.state = F_WAIT; F.until = t + 1500; return; }
+        if (wl[0].kind == 2 && wl[0].visible) { front_fail(h, 409, "a dialog is in front: it would take the click (answer it first)"); return; }
+        if (!psmac_input_attached()) { front_fail(h, 503, ".PiInput is not open on the Mac (yet): no click can bring the window"); return; }
+        if (!title_point(i, &x, &y)) {
+            front_fail(h, 409, F.agent ? "the window is behind another of its application's windows and no part of its title bar shows: bring it forward on the Mac"
+                                       : "the window is covered and no part of its title bar shows (without the Aurora68 Agent the window can only be clicked forward)");
+            return;
+        }
+        int mx = mouse_x, my = mouse_y;
+        q_move(x, y); q_button(1, 0); q_button(0, 0);
+        /* the pointer back where it was, out of the picture; if that is on the window, just past its corner */
+        if (mx >= wl[i].rect[0] && mx < wl[i].rect[2] && my >= wl[i].rect[1] && my < wl[i].rect[3]) {
+            mx = wl[i].rect[2] + 2; my = wl[i].rect[3] + 2;
+            if (!on_desktop(mx, my)) { mx = wl[i].rect[0] - 3; my = wl[i].rect[3] + 2; }
+            if (!on_desktop(mx, my)) { mx = wl[i].rect[0] - 3; my = wl[i].rect[1] - 3; }
+        }
+        q_move(mx, my);
+        F.clicked = 1; F.state = F_WAIT; F.until = t + 1500 + 250;     /* the click's own pacing, then the redraw */
+        return;
+    }
+    /* F_WAIT: in front and drawn, or the time is up */
+    int drawn = i == 0 && wl[0].update_empty && iq_tail == iq_head;
+    if (!drawn && (int32_t)(t - F.until) < 0) return;
+    int16_t r[4], desk[4]; char note[160] = "";
+    struct psmac_window *w = &wl[i];
+    if (!(P.ns = comp_screens(P.s, desk, 1))) { front_fail(h, 503, "no Mac screen"); return; }
+    for (int k = 0; k < 4; k++)
+        r[k] = F.content ? w->content[k] : w->rect[k];
+    for (int k = 0, n = 0; k < i && n < 4; k++)
+        if (wl[k].visible && wl[k].has_rect && rect_meets(wl[k].rect, r)) {
+            char b[16]; sprintf(b, "%s0x%08x", n ? "," : "", wl[k].ptr);
+            if (slen(note) + slen(b) < sizeof note) __builtin_memcpy(note + slen(note), b, slen(b) + 1);
+            n++;
+        }
+    const char *how = !drawn ? (i ? "timeout, still behind" : "timeout, still drawing") :
+                      F.agent && F.clicked ? "agent and click" : F.agent ? "agent" : F.clicked ? "click" : "already";
+    if (P.active) { F.next_look = t + 50; return; }                   /* another picture first */
+    shot_rect(h, F.conn, r, desk, F.zoom, i, note, how);
+    kprintf("[REMOTE] window 0x%08x to the front (%s) in %u ms\n", F.id, how, t - F.t0);
+    F.state = F.restore ? F_SHOT : F_IDLE;
+}
+/* the picture has been sent: put back what was in front (restore=1) */
+static void front_png_done(int c)
+{
+    if (F.state != F_SHOT || F.conn != c) return;
+    F.state = F_RESTORE; F.until = now_ms() + 5000;
+    F.agent = F.agent && F.prev_app[0] && __builtin_strcmp((const char *)F.prev_app, (const char *)F.own_app) ? 1 : 0;
 }
 
 /* ---- control ---- */
@@ -1151,10 +1330,18 @@ static void handle(int c)
         else if (n > 21 && ieq_n(l, "authorization: bearer", 21)) { tok = l + 21; while (*tok == ' ') tok++; tok_n = (unsigned)(e - tok); }
         l = e + 2;
     }
-    if ((uint32_t)(eoh - r) + clen > REQ_MAX) { h->handled = 1; respond_json_error(h, 413, "Request Entity Too Large", "the request is too long"); return; }
-    if ((uint32_t)(eoh - r) + clen > h->req_len) return;          /* the body is still coming */
+    /* An upload to /files/data streams: its body goes to the file job as it comes (psmac_files.c), with
+       the TCP window as wide as the job has room, so its length has no limit here. Every other body must
+       fit the request buffer. */
+    int upload = starts(r, "PUT /files/data") || starts(r, "POST /files/data");
+    if (!upload && (uint32_t)(eoh - r) + clen > REQ_MAX) { h->handled = 1; respond_json_error(h, 413, "Request Entity Too Large", "the request is too long"); return; }
+    if (!upload && (uint32_t)(eoh - r) + clen > h->req_len) return;          /* the body is still coming */
     h->handled = 1; requests++;
-    char *body = eoh; body[clen] = 0;
+    char *body = eoh;
+    uint32_t have = h->req_len - (uint32_t)(eoh - r);
+    if (!upload) body[clen] = 0;
+    int has_clen = 0;
+    for (char *l = r; l + 15 < eoh; l++) if ((l == r || l[-1] == '\n') && ieq_n(l, "content-length:", 15)) { has_clen = 1; break; }
     /* the request line: METHOD PATH?QUERY HTTP/x */
     char *sp = r; while (*sp && *sp != ' ') sp++;
     if (!*sp) { respond_json_error(h, 400, "Bad Request", "no request line"); return; }
@@ -1246,8 +1433,17 @@ static void handle(int c)
         return;
     }
     if (post && !__builtin_strcmp(path, "/restart")) { control(h, query(q, "how", v, sizeof v)); return; }
-    if (get || post) { respond_json_error(h, 404, "Not Found", "GET /, /screen.png, /screenshot, /windows, /state, /log; POST /input, /restart"); return; }
-    respond_json_error(h, 405, "Method Not Allowed", "GET or POST");
+    if (starts(path, "/files/") || !__builtin_strcmp(path, "/apps") || starts(path, "/apps/")) {
+        int code; char msg[300];
+        if (psmac_files_request(c, method, path, q, (const uint8_t *)body, have, has_clen ? (int32_t)clen : -1, &code, msg, sizeof msg)) {
+            h->kind = R_FILES; h->out_len = h->out_pos = 0;
+            return;
+        }
+        respond_json_error(h, code, code == 404 ? "Not Found" : code == 411 ? "Length Required" : code == 503 ? "Service Unavailable" : "Bad Request", msg);
+        return;
+    }
+    if (get || post) { respond_json_error(h, 404, "Not Found", "GET /, /screen.png, /screenshot, /windows, /state, /log, /files/..., /apps; POST /input, /restart"); return; }
+    respond_json_error(h, 405, "Method Not Allowed", "GET, POST, or PUT /files/data");
 }
 
 /* the bytes of the answer, as room allows; *finished once it is all out */
@@ -1256,6 +1452,8 @@ static uint32_t produce(int c, uint8_t *buf, uint32_t room, int *finished)
     struct hconn *h = &hc[c];
     *finished = 0;
     if (!h->handled) return 0;
+    if (h->kind == R_FILES) return psmac_files_produce(c, buf, room, finished);
+    if (h->kind == R_FRONT) return 0;                              /* the window is being brought to the front */
     if (h->kind == R_INPUT_WAIT) {
         if ((int32_t)(iq_tail - h->wait_head) < 0 && (int32_t)(now_ms() - h->wait_until) < 0) return 0;   /* still being played */
         char b[96]; uint32_t left = (int32_t)(iq_tail - h->wait_head) < 0 ? h->wait_head - iq_tail : 0;
@@ -1284,6 +1482,7 @@ static uint32_t produce(int c, uint8_t *buf, uint32_t room, int *finished)
             }
             if (P.active == 2) {
                 P.active = 0; *finished = 1;
+                front_png_done(c);
                 kprintf("[REMOTE] screenshot %ux%u: %u bytes in %u ms, longest band %u us\n", P.w, P.h, P.bytes, now_ms() - P.t0, P.busy_us_max);
                 return n;
             }
@@ -1306,7 +1505,7 @@ static uint32_t produce(int c, uint8_t *buf, uint32_t room, int *finished)
 }
 
 /* ---- the TCP side (psmac_ip.c) ---- */
-static void conn_reset(int c) { struct hconn *h = &hc[c]; if (P.active && P.conn == c) P.active = 0; if (wtext_conn == c) wtext_conn = -1; h->used = 0; h->req_len = 0; h->handled = 0; h->kind = R_NONE; h->out_len = h->out_pos = 0; h->done = 0; }
+static void conn_reset(int c) { struct hconn *h = &hc[c]; if (h->kind == R_FILES) psmac_files_gone(c); if (P.active && P.conn == c) P.active = 0; if (wtext_conn == c) wtext_conn = -1; h->used = 0; h->req_len = 0; h->handled = 0; h->kind = R_NONE; h->out_len = h->out_pos = 0; h->done = 0; }
 int remote_tcp_accept(int c, uint16_t port, const uint8_t peer[4])
 {
     (void)port;
@@ -1318,11 +1517,23 @@ int remote_tcp_accept(int c, uint16_t port, const uint8_t peer[4])
 void remote_tcp_recv(int c, const uint8_t *data, uint32_t len)
 {
     struct hconn *h = &hc[c];
-    if (h->handled) return;                                        /* one request per connection */
+    if (h->handled) {                                              /* one request per connection */
+        if (h->kind == R_FILES) psmac_files_body(c, data, len);    /* an upload's body */
+        return;
+    }
     if (len > REQ_MAX - h->req_len) len = REQ_MAX - h->req_len;
     __builtin_memcpy(h->req + h->req_len, data, len);
     h->req_len += len; h->req[h->req_len] = 0;
     handle(c);
+}
+/* how many bytes the connection takes now: the TCP window psmac_ip.c advertises. A request being
+   collected has its buffer's room; an upload what the file job can take; anything else is dropped. */
+uint32_t remote_tcp_room(int c)
+{
+    struct hconn *h = &hc[c];
+    if (!h->handled) return REQ_MAX - h->req_len;
+    if (h->kind == R_FILES) return psmac_files_room(c);
+    return 65535;
 }
 uint32_t remote_tcp_produce(int c, uint8_t *buf, uint32_t room)
 {
@@ -1336,6 +1547,7 @@ void remote_tcp_closed(int c) { conn_reset(c); }
 /* ---- the testbed's channel: mac.remotefile=BASE through semihosting ---- */
 static int64_t sh_in = -1, sh_out = -1; static uint64_t sh_off;
 static uint8_t sh_buf[16384];
+static uint64_t sh_body_pos; static uint32_t sh_body_left;       /* an upload longer than the request buffer: the rest, read as the job takes it */
 static void semihost_poll(void)
 {
     const int c = NCONN - 1;
@@ -1350,15 +1562,27 @@ static void semihost_poll(void)
         uint8_t l4[4];
         if (psmac_sh_seek(sh_in, sh_off) < 0 || !psmac_sh_read(sh_in, l4, 4)) return;
         uint32_t n = (uint32_t)l4[0] << 24 | (uint32_t)l4[1] << 16 | (uint32_t)l4[2] << 8 | l4[3];
-        if (n > REQ_MAX || (uint64_t)len < sh_off + 4 + n) return;
+        if ((uint64_t)len < sh_off + 4 + n) return;
         conn_reset(c);
         h->used = 1; h->local = 1;
-        if (!psmac_sh_read(sh_in, h->req, n)) return;
+        uint32_t first = n > REQ_MAX ? REQ_MAX : n;
+        if (!psmac_sh_read(sh_in, h->req, first)) return;
+        sh_body_pos = sh_off + 4 + first; sh_body_left = n - first;
         sh_off += 4 + n;
-        h->req_len = n; h->req[n] = 0;
+        h->req_len = first; h->req[first] = 0;
         handle(c);
         if (!h->handled) { respond_json_error(h, 400, "Bad Request", "an incomplete request"); h->handled = 1; }
+        if (sh_body_left && h->kind != R_FILES) { respond_json_error(h, 413, "Request Entity Too Large", "the request is too long"); sh_body_left = 0; }
         return;
+    }
+    if (sh_body_left && h->kind == R_FILES) {                      /* the upload's next piece, as far as the job has room */
+        uint32_t k = psmac_files_room(c);
+        if (k > sh_body_left) k = sh_body_left;
+        if (k > sizeof sh_buf) k = sizeof sh_buf;
+        if (k && psmac_sh_seek(sh_in, sh_body_pos) >= 0 && psmac_sh_read(sh_in, sh_buf, k)) {
+            psmac_files_body(c, sh_buf, k);
+            sh_body_pos += k; sh_body_left -= k;
+        }
     }
     /* the answer, a piece per turn, each piece {u32 length, bytes}; a length of 0 ends it */
     int fin;
@@ -1372,6 +1596,7 @@ void psmac_remote_init(uint8_t *window)
 {
     win = window;
     crc_init();
+    psmac_files_init(window);                                       /* the Aurora68 Agent's block, remote on or off (psmac_files.c) */
     rec_pos = log_head() > PSMB_LOG_SIZE ? log_head() - PSMB_LOG_SIZE : 0;
     const char *o = psmac_option("mac.remotefile");
     if (o && psmac_sh_available()) {
@@ -1407,7 +1632,7 @@ void psmac_remote_poll(void)
 {
     if (!enabled && sh_in < 0) return;
     static uint64_t next_round; static uint32_t turns;
-    int busy = (enabled && psmac_ip_busy()) || iq_tail != iq_head || P.active || hc[NCONN - 1].used;
+    int busy = (enabled && psmac_ip_busy()) || iq_tail != iq_head || P.active || hc[NCONN - 1].used || psmac_files_busy() || F.state != F_IDLE;
     if (!busy && (++turns & 31)) return;
     uint64_t t = now_ticks();
     if (!busy && (int64_t)(t - next_round) < 0) return;
@@ -1417,5 +1642,7 @@ void psmac_remote_poll(void)
     input_poll();
     pi_reset_poll();
     mac_sample();
+    psmac_files_poll();
+    front_poll();
     if (enabled) psmac_ip_poll();
 }

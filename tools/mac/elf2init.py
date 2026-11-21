@@ -19,10 +19,14 @@ ap.add_argument('elf'); ap.add_argument('--name', required=True); ap.add_argumen
 ap.add_argument('-o', required=True)
 ap.add_argument('--icons', help="the extension's key in mkicons.py: bundle and icons (21 November 2026)")
 ap.add_argument('--version', default='1.0')
+ap.add_argument('--sysz', type=int, help="system heap the INIT needs, bytes: a 'sysz' resource, so that System 6, whose "
+                "system heap does not grow by itself, makes room for it before it loads the INIT (21 November 2026)")
 a = ap.parse_args()
 img, nrel = build_image(a.elf)
 rf = ResourceFork()
 rf.add(b'INIT', 128, img, attrs=0x50)          # system heap, locked
+if a.sysz:
+    rf.add(b'sysz', 0, a.sysz.to_bytes(4, 'big'))
 creator = a.creator.encode('mac_roman')[:4].ljust(4, b' ')
 flags = 0
 if a.icons:

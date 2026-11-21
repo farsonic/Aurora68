@@ -38,7 +38,8 @@ int  psmac_ip_busy(void);                        /* frames or connections to see
 #define IPK_CONNS 4
 /* the application: psmac_remote.c */
 int      remote_tcp_accept(int c, uint16_t port, const uint8_t peer[4]);   /* 1: take it; 0: refuse (RST) */
-void     remote_tcp_recv(int c, const uint8_t *data, uint32_t len);
+void     remote_tcp_recv(int c, const uint8_t *data, uint32_t len);     /* at most remote_tcp_room(c) bytes */
+uint32_t remote_tcp_room(int c);                                         /* bytes it takes now: the receive window */
 uint32_t remote_tcp_produce(int c, uint8_t *buf, uint32_t room);         /* more bytes to send, 0 if none yet */
 void     remote_tcp_closed(int c);                                       /* gone: the slot may be reused */
 /* the stack */

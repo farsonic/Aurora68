@@ -15,6 +15,7 @@ struct psmac_window {
     int16_t  kind;                /* windowKind */
     uint8_t  visible, hilited;
     uint8_t  has_rect, has_content;
+    uint8_t  update_empty;        /* the update region is empty (or could not be read): nothing waits to be drawn */
     int16_t  rect[4];             /* the structure region's bounding box, global: left, top, right, bottom */
     int16_t  content[4];          /* the content region's */
     int8_t   app;                 /* index into psmac_winlist.app, -1 if the owner is not known */
@@ -36,5 +37,7 @@ int psmac_windows_read(struct psmac_window *w, int max, struct psmac_winlist *in
 /* Mac Roman to UTF-8; with json set, '"', '\\' and control characters escaped for a JSON string.
    Returns the bytes written to out (NUL-terminated within max). */
 unsigned psmac_macroman_utf8(const uint8_t *in, unsigned n, char *out, unsigned max, int json);
+/* UTF-8 to Mac Roman, NUL-terminated; -1 if a character has no Mac Roman form (psmac_files.c) */
+int psmac_utf8_macroman(const char *in, uint8_t *out, unsigned max);
 
 #endif

@@ -44,6 +44,8 @@ Layout of the window (`emu68/src/psmac/psmb.h` is authoritative):
 +0x40000  Alice68 USB pass-through board, 64 KiB (alice68_usbpt.h; not yet served on the Mac)
 +0x50000  Alice68 status page, 4 KiB (alice_status.h: cores, temperature, JIT counters, network counters)
 +0x51000  input event ring, 4 KiB (alice_psmac.h: keyboard and mouse reports from USB and Bluetooth)
++0x52000  the Aurora68 Agent's transfer buffer, 24 KiB (psmb.h; files for the remote control, docs/13)
++0x5A000  the Aurora68 Agent's request block, 2 KiB (psmb.h struct psmb_agent)
 +0x80000  bounce area, 512 KiB, free for drivers
 ```
 Rules, the same on both sides and the same as Alice68's: every field is a 32-bit word or an

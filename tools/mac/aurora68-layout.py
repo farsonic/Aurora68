@@ -26,8 +26,8 @@ The layout (the build products of `make -C mac`, their Finder names inside the M
       Network/                Aurora68 Network, Aurora68 Wi-Fi, Aurora68 Bluetooth, Aurora68 Ping
       System/                 Aurora68 Slots, Aurora68 Log, Aurora68 Status
       Extensions (to install)/  Aurora68 Disk, Aurora68 Machine, Aurora68 Screen Setup, Aurora68 Sound,
-                              Aurora68 Wi-Fi & Bluetooth, Read Me     (stage and disk only; install puts
-                              them into the System Folder)
+                              Aurora68 Wi-Fi & Bluetooth, Aurora68 Agent, Read Me     (stage and disk only;
+                              install puts them into the System Folder)
 
 --remove-old takes away the programs' files under their names before 21 November 2026 (PiPlay,
 PiDisk, "Sound PiStorm", "Wi-Fi & Bluetooth"...) from the System Folder, Extensions, Startup Items,
@@ -62,6 +62,7 @@ EXTENSIONS = [
     ('Aurora68-ScreenSetup.bin', 'Aurora68 Screen Setup'),
     ('Aurora68-Sound.bin', 'Aurora68 Sound'),
     ('Aurora68-WiFi-Bluetooth.bin', 'Aurora68 Wi-Fi & Bluetooth'),
+    ('Aurora68-Agent.bin', 'Aurora68 Agent'),
 ]
 OLD_EXTENSIONS = ['PiDisk', 'PiMach', 'PiScrn', 'Sound PiStorm', 'Wi-Fi & Bluetooth']
 OLD_APPS = ['PiPlay', 'PiDisplay', 'PiSlots', 'PiLog', 'PiStatus', 'PiNet', 'PiWiFi', 'PiBlue', 'PiPing',
@@ -83,6 +84,9 @@ Aurora68 Screen Setup - the SE board's two screens arranged at the first start; 
 Aurora68 Sound - the Pi's sound card as the Sound Manager's output (HDMI or the headphone socket).
     Needs Sound Manager 3.0 (the "Sound Manager" extension on System 7.1, built into 7.5).
 Aurora68 Wi-Fi & Bluetooth - the Wi-Fi and Bluetooth menus in the menu bar.
+Aurora68 Agent - files and programs for the Pi's remote control: aurora68.py ls, pull, push, open,
+    apps and quit from another computer (docs/13, "Files and applications"). It does nothing
+    until the remote control asks; without remote=on in cmdline.txt it only waits.
 """
 
 

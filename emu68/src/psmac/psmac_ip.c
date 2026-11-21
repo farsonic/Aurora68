@@ -527,7 +527,11 @@ static void mdns_in(const uint8_t *f, const uint8_t *ip, const uint8_t *u, uint3
 
 /* ---- TCP ---- */
 #define SBUF 32768u                         /* a power of two: the send buffer is a ring */
-#define RCV_WIN 8192u
+/* The receive window: what the application can take now (remote_tcp_room), at most RCV_WIN. Until 21
+   November 2026 it was always 8 KiB and everything that came was handed over; an upload to the Mac's
+   disk (psmac_files.c) goes only as fast as the Mac writes it, so the window now closes while the file
+   job's buffer is full and opens again (a window update) when the Mac has taken a chunk. */
+#define RCV_WIN 24576u
 enum { T_FREE, T_SYN_RCVD, T_ESTAB, T_CLOSING };
 struct tcb {
     int state;
@@ -538,10 +542,17 @@ struct tcb {
     uint32_t sb_start, sb_len;              /* the ring: sb_len bytes from una on, sent or not */
     int app_done, fin_sent, fin_acked, peer_fin, need_ack;
     uint32_t rto_ms, rto_at, retries, last_ms;
+    uint32_t adv;                           /* the window last advertised */
     uint8_t sb[SBUF];
 };
 static struct tcb tcbs[IPK_CONNS];
 static uint32_t conns_total;
+static uint32_t rcv_room(struct tcb *t)
+{
+    if (t < tcbs || t >= tcbs + IPK_CONNS) return 0;           /* a reset's reply: no connection */
+    uint32_t r = remote_tcp_room((int)(t - tcbs));
+    return r < RCV_WIN ? r : RCV_WIN;
+}
 
 static void tcp_segment(struct tcb *t, uint32_t seq, uint8_t flags, const uint8_t *data1, uint32_t n1, const uint8_t *data2, uint32_t n2, int syn_opts)
 {
@@ -550,7 +561,8 @@ static void tcp_segment(struct tcb *t, uint32_t seq, uint8_t flags, const uint8_
     uint32_t hl = syn_opts ? 24 : 20, n = n1 + n2;
     uint8_t *h = ip_header(f, t->hw, I.ip, t->ip, 6, hl + n, 64);
     put16(h, t->lport); put16(h + 2, t->rport); put32(h + 4, seq); put32(h + 8, t->rcv);
-    h[12] = (uint8_t)((hl / 4) << 4); h[13] = flags; put16(h + 14, RCV_WIN); put16(h + 16, 0); put16(h + 18, 0);
+    t->adv = rcv_room(t);
+    h[12] = (uint8_t)((hl / 4) << 4); h[13] = flags; put16(h + 14, (uint16_t)t->adv); put16(h + 16, 0); put16(h + 18, 0);
     if (syn_opts) { h[20] = 2; h[21] = 4; put16(h + 22, 1460); }
     cpy(h + hl, data1, n1); cpy(h + hl + n1, data2, n2);
     put16(h + 16, l4_sum(I.ip, t->ip, 6, h, hl + n));
@@ -617,6 +629,12 @@ static void tcp_output(int c)
         t->nxt += n;
         if (!t->rto_at) t->rto_at = now_ms() + t->rto_ms;
     }
+    /* a window update once the application has taken enough to matter (two segments' worth), or as soon as
+       a window below one segment has grown at all: the end of an upload may need only a few hundred bytes
+       more, and a sender held at a zero window waits for an update (the first test of an upload whose last
+       chunk was 324 bytes stalled until the 30 s idle timeout) */
+    uint32_t room = rcv_room(t);
+    if (!t->peer_fin && room > t->adv && (t->adv < t->mss || room >= t->adv + 2u * t->mss)) t->need_ack = 1;
     if (t->need_ack) tcp_segment(t, t->nxt, 0x10, 0, 0, 0, 0, 0);
 }
 static void tcp_in(const uint8_t *f, const uint8_t *ip, const uint8_t *h, uint32_t n)
@@ -678,8 +696,9 @@ static void tcp_in(const uint8_t *f, const uint8_t *ip, const uint8_t *h, uint32
     /* data, in order only */
     if (dlen || (fl & 0x01)) {
         if (seq == t->rcv) {
-            if (dlen) { remote_tcp_recv(c, data, dlen); t->rcv += dlen; }
-            if (fl & 0x01) { t->rcv++; t->peer_fin = 1; }
+            uint32_t room = rcv_room(t), take = dlen < room ? dlen : room;   /* what does not fit comes again */
+            if (take) { remote_tcp_recv(c, data, take); t->rcv += take; }
+            if ((fl & 0x01) && take == dlen) { t->rcv++; t->peer_fin = 1; }
         }
         t->need_ack = 1;
     }

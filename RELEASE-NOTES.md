@@ -20,6 +20,28 @@
   own file is not replaced:** choose **Radio > Add Default Stations** to add the new stations it lacks at
   its end (nothing else in it changes; SomaFM's channels and NPO Radio 2, which the old list had, are not
   added twice), or throw the file away to get the new list whole at the next start.
+- **Files and programs on the Mac from another computer: the Aurora68 Agent.** A new extension, **Aurora68
+  Agent** (System Folder:Extensions on System 7, the System Folder on System 6), lets the remote control
+  reach the Mac's disks and programs: `aurora68.py ls ":System Folder"` lists a folder (type, creator, both
+  forks' sizes, dates; `ls` alone the disks), `pull PATH` copies a file to your computer (`--macbinary` for
+  both forks, the type and creator as one MacBinary file, `--text` turns the Mac's text into UTF-8), `push
+  FILE PATH` copies one to the Mac (a MacBinary file keeps its forks and type; others get a type from their
+  extension: .txt TEXT/ttxt, .mp3 MPG3 for Aurora68 Play...; nothing is overwritten without `--force`, no
+  folder made without `--mkdir`), `mkdir`, `rm` (a file or an empty folder, never more), `mv` (on one disk),
+  `open` (an application, or a document with its application: an MP3 starts Aurora68 Play with it), `apps`
+  and `quit` (a 'quit' Apple event; System 7). Files of any size go through the Pi's card a chunk at a time,
+  about 150 KB/s in the testbed; the Mac keeps working, music keeps playing. The MCP server has `list_files`,
+  `read_file`, `write_file`, `open` and `list_apps` for an agent. The HTTP endpoints (`/files/...`, `/apps`)
+  need the token like the rest. Install the extension and restart, and replace kernel8.img, aurora68.py and
+  aurora68-mcp.py. Under System 6, documents and `quit` are not available.
+- **A window brought to the front before its picture.** `aurora68.py screenshot --window "Untitled" --front
+  out.png` (`front=1`; the MCP tool's `front`; the page's "bring to front" box) brings the window forward
+  first, so windows in front no longer cover it: its application is made the front one by the agent, or a
+  click on its title bar does it, and the picture is taken once the window has been drawn; `--restore` puts
+  back what was in front. Nothing is clicked while a dialog is in front.
+- **The tools find the remote on port 8068 by themselves.** When `AURORA68_URL` has no port and port 80 does
+  not answer within two seconds, `aurora68.py` and `aurora68-mcp.py` try 8068 (the port of the remote on
+  the WiFi when it shares the Mac's address) and say which answered.
 - **The remote control lists the Mac's windows and photographs one.** `GET /windows` gives every window
   front to back, with its title, kind (document, dialog, desk accessory ...), the screens it is on and,
   under System 7, the application it belongs to; `GET /screenshot?window=ID` (or `?title=part of the

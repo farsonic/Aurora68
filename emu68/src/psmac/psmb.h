@@ -46,6 +46,7 @@
 #define PSMB_OFF_BOUNCE      0x80000         /* 512 KiB: the second screen's frame buffer (640 x 480 at 8 bits is 300 KiB) */
 #define PSMB_BOUNCE_SIZE     0x80000
 #define PSMB_OFF_DISPLAY2    0x59000         /* struct psmb_display of the SE board's HDMI screen (below, "Two screens") */
+/* 0x52000 and 0x5A000: the Aurora68 Agent's transfer buffer and request block (below, PSMB_OFF_AGENTBUF, PSMB_OFF_AGENT) */
 
 /* ---- the kernel's log (mac/pilog.c) ------------------------------------------------------------
    Every character of the kernel's log (kprintf: the UART and the HDMI console get the same text)
@@ -351,6 +352,134 @@ struct psmb_stream {
                                                 file's name, or later an internet radio station's "now playing" */
     uint32_t pad1[20];
 };
+
+/* ---- the Aurora68 Agent: files and programs for the remote control (21 November 2026, docs/13 "Files and applications") ----
+   The remote control (psmac_remote.c) reads the Mac's screen and memory by itself, but a file or a program needs the
+   Mac's own File Manager and Process Manager, which only code on the 68k may call, and only at application time:
+   a synchronous File Manager call from an interrupt can deadlock the File Manager's queue. The Aurora68 Agent
+   (mac/piagent) is an INIT that hooks the GetNextEvent filter (jGNEFilter) and carries out each request there,
+   between two events of whichever program calls GetNextEvent or WaitNextEvent: application time under System 6
+   and 7 alike, and the moment the WiFi menu already uses (mac/wifimenu). Its VBL task counts vbl_beat (so the
+   kernel can tell an agent that is installed from one that is not) and, under System 7, wakes the program in
+   front with WakeUpProcess when a request waits, so that a program asleep in WaitNextEvent comes round at once
+   (PSMB_AGX_WAKE).
+   One request at a time, the kernel the client and the agent the server: the kernel fills in the request (op,
+   path, offsets, the bytes to write in the buffer), then req_seq + 1; the agent answers in the reply fields and
+   the buffer, then done_seq = req_seq. The agent opens and closes a file within each request: it runs in other
+   programs' process contexts, and System 7 closes a quitting program's files, so it keeps nothing open between
+   requests and needs no state; the kernel keeps it all (offsets, the MacBinary header, the HTTP connection).
+   Paths are Mac Roman full paths, "Volume:Folder:File"; a leading ':' is the startup volume; "" (LIST) the
+   volumes. The block is 2 KiB at $5A000, after the HDMI screen's display block; the buffer 24 KiB at $52000,
+   after the input ring and up to the display block. Both are in the first megabyte, which a 24-bit System 6
+   reaches ($95A000, $952000); the Agent reads and writes files straight into the buffer. */
+#define PSMB_OFF_AGENT       0x5A000         /* struct psmb_agent */
+#define PSMB_OFF_AGENTBUF    0x52000         /* the transfer buffer */
+#define PSMB_AGENT_BUF       0x6000u         /* 24 KiB: what the window has free in one piece in its first megabyte */
+#define PSMB_AGENT_KMAGIC    0x41363846u     /* 'A68F': the kernel serves the block */
+#define PSMB_AGENT_MAGIC     0x41363841u     /* 'A68A': the agent is installed */
+#define PSMB_AG_PING         1u              /* nothing: the agent answers */
+#define PSMB_AG_LIST         2u              /* path, index (1 = the first entry): struct psmb_agent_entry records into the
+                                                buffer; result = how many, more = entries after them; path "" lists the volumes */
+#define PSMB_AG_STAT         3u              /* path: one struct psmb_agent_entry into the buffer */
+#define PSMB_AG_READ         4u              /* path, fork, offset, length (at most the buffer): result = bytes read (fewer at the end) */
+#define PSMB_AG_CREATE       5u              /* path, ftype, fcreator, fdflags; PSMB_AGF_FORCE: an existing file is emptied
+                                                (both forks); PSMB_AGF_MKDIR: missing folders on the way are made */
+#define PSMB_AG_WRITE        6u              /* path, fork, offset, length: the bytes from the buffer; result = bytes written */
+#define PSMB_AG_SETINFO      7u              /* path, ftype, fcreator, fdflags, crdate, mddate (0: keep): the Finder information
+                                                and dates once the forks are written; the volume is flushed */
+#define PSMB_AG_MKDIR        8u              /* path; PSMB_AGF_MKDIR: the missing folders above it too; result = its directory ID */
+#define PSMB_AG_DELETE       9u              /* path: a file, or a folder that is empty; never more */
+#define PSMB_AG_RENAME       10u             /* path to path2, on one volume: a new name, another folder, or both (an existing
+                                                folder as path2: into it, keeping the name) */
+#define PSMB_AG_OPEN         11u             /* path: an application is launched (or brought to the front), a document opened
+                                                with its creator's application (System 7: an 'odoc' Apple event, sent to it when
+                                                it runs, its launch parameters when it does not). result 1 launched, 2 it ran
+                                                already; note says which in words */
+#define PSMB_AG_APPS         12u             /* index (0 = the first): struct psmb_agent_proc records into the buffer; result,
+                                                more as for LIST. System 6: the current application only */
+#define PSMB_AG_QUIT         13u             /* path: an application's name, or fcreator its signature: a 'quit' Apple event
+                                                (System 7 only) */
+#define PSMB_AG_FRONT        14u             /* path: an application's name, or fcreator its signature: SetFrontProcess (System 7);
+                                                note = the name of the application that was in front, for putting it back
+                                                (the remote's /screenshot?front=1) */
+#define PSMB_AGF_FORCE       1u              /* flags */
+#define PSMB_AGF_MKDIR       2u
+#define PSMB_AGF_FRONT       4u              /* OPEN: bring an application that runs already to the front */
+#define PSMB_AGX_PROCMGR     1u              /* features: the Process Manager (System 7) */
+#define PSMB_AGX_AEVENTS     2u              /* the Apple Event Manager */
+#define PSMB_AGX_MULTIFINDER 4u              /* System 6 with MultiFinder */
+#define PSMB_AGX_WAKE        8u              /* the VBL task wakes the program in front (WakeUpProcess) */
+/* status: 0, a Mac OSErr (fnfErr -43, dupFNErr -48, fBsyErr -47, dirNFErr -120, nsvErr -35, dskFulErr -34 ...), or one of
+   the agent's own */
+#define PSMB_AGE_NOTEMPTY    (-30001)        /* DELETE of a folder that holds something */
+#define PSMB_AGE_ISDIR       (-30002)        /* a file was asked for and path is a folder */
+#define PSMB_AGE_NOTDIR      (-30003)        /* a folder was asked for and path is a file */
+#define PSMB_AGE_UNSUPPORTED (-30004)        /* not on this system (QUIT under System 6, a document under System 6) */
+#define PSMB_AGE_XVOLUME     (-30005)        /* RENAME to another volume */
+#define PSMB_AGE_BADPATH     (-30006)        /* empty, too long, a name longer than 31, or a part that is empty */
+#define PSMB_AGE_NOAPP       (-30007)        /* OPEN: no application for the document's creator */
+#define PSMB_AGE_NOPROC      (-30008)        /* QUIT: no such application running */
+#define PSMB_AGE_BADOP       (-30009)
+#define PSMB_AGE_BUSY        (-30010)        /* not yet: the Process Manager has not started (System 7's boot) */
+struct psmb_agent {
+    /* the kernel's, +$000 */
+    uint32_t kmagic, kversion;               /* 'A68F', 1 */
+    uint32_t buf_off, buf_size;              /* PSMB_OFF_AGENTBUF, PSMB_AGENT_BUF */
+    uint32_t req_seq;                        /* +1 for a request, once the fields below are written */
+    uint32_t op, flags;                      /* PSMB_AG_*, PSMB_AGF_* */
+    uint32_t fork;                           /* 0 the data fork, 1 the resource fork */
+    uint32_t offset, length;                 /* READ, WRITE: bytes of the fork */
+    uint32_t index;                          /* LIST, APPS: where to start */
+    uint32_t ftype, fcreator, fdflags;       /* CREATE, SETINFO; QUIT: fcreator */
+    uint32_t crdate, mddate;                 /* SETINFO: seconds since 1904, local time; 0 keeps */
+    uint32_t kpad[16];
+    char     path[256];                      /* +$080: Mac Roman, NUL-terminated */
+    char     path2[256];                     /* +$180: RENAME's new path */
+    uint32_t kpad2[64];
+    /* the agent's, +$380 */
+    uint32_t magic, version;                 /* 'A68A', 1: written once the agent is installed */
+    uint32_t beat;                           /* +1 at each look at the block (every GetNextEvent while one is waiting, else once a tick) */
+    uint32_t vbl_beat;                       /* +1 at each VBL (60 Hz): the agent is installed and interrupts run */
+    uint32_t sysversion;                     /* SysVersion ($15A): 0x0710 for 7.1 */
+    uint32_t features;                       /* PSMB_AGX_* */
+    uint32_t done_seq;                       /* = req_seq once the answer is complete */
+    int32_t  status;                         /* 0 or an error (above) */
+    uint32_t result, more;                   /* op-specific (above) */
+    uint32_t served;                         /* requests answered since the agent started */
+    uint32_t wakes;                          /* WakeUpProcess calls of the VBL task */
+    uint32_t repeats;                        /* a request looked at again while it was being carried out (a launch's) */
+    uint32_t apad[3];
+    char     note[64];                       /* a few words more about an error, Mac Roman ("no application for 'ttxt'") */
+    char     startup[32];                    /* the startup volume's name, Mac Roman */
+    uint32_t apad2[64];
+};
+struct psmb_agent_entry {                    /* 80 bytes, LIST and STAT */
+    uint32_t flags;                          /* PSMB_AGN_*, and the low byte ioFlAttrib */
+    uint32_t type, creator;                  /* a file's; 0 for a folder */
+    uint32_t dlen, rlen;                     /* the forks' lengths; a folder: dlen its entries; a volume: dlen KiB free, rlen KiB in all */
+    uint32_t crdate, mddate, bkdate;         /* seconds since 1904, local time */
+    uint32_t fdflags;                        /* the Finder flags */
+    uint32_t location;                       /* v << 16 | h in its folder's window */
+    uint32_t id, parid;                      /* the file's number or the folder's ID; its folder's ID; a volume: its vRefNum */
+    char     name[32];                       /* Mac Roman, NUL-terminated (HFS names have 31 characters at most) */
+};
+#define PSMB_AGN_DIR         0x100u          /* a folder */
+#define PSMB_AGN_VOLUME      0x200u          /* a volume (LIST of "") */
+#define PSMB_AGN_LOCKED      0x400u          /* the file is locked, or the volume */
+#define PSMB_AGN_OPEN        0x800u          /* the file is open (by someone) */
+#define PSMB_AGN_STARTUP     0x1000u         /* the startup volume */
+struct psmb_agent_proc {                     /* 72 bytes, APPS */
+    uint32_t psn_hi, psn_lo;                 /* the ProcessSerialNumber */
+    uint32_t type, creator;                  /* the file's type ('APPL', 'appe', 'FNDR') and signature */
+    uint32_t mode;                           /* processMode (the SIZE resource's flags: $0100 onlyBackground ...) */
+    uint32_t size, free;                     /* its partition and what is free in it, bytes */
+    uint32_t launched, active;               /* Ticks at its launch; ticks it has had the processor */
+    uint32_t flags;                          /* PSMB_AGP_* */
+    char     name[32];                       /* Mac Roman */
+};
+#define PSMB_AGP_FRONT       1u              /* the application in front */
+#define PSMB_AGP_AGENT       2u              /* the one the agent answered in (its GetNextEvent) */
+#define PSMB_AGP_CURRENT     4u              /* System 6: CurApName, the only one known */
 
 #define PSMB_MAX_SERVICES    8
 #define PSMB_MAX_BLKDEV      4
