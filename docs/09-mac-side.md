@@ -617,6 +617,10 @@ the SE board (two screens, then one); resize, zoom (on the main screen and on th
 scroll bars (arrows, page, thumb); About and Command-period; the File and Edit menus; Save As… (the file
 opens in SimpleText); Copy; Quit and Close; suspend and resume behind the Finder; the window back where it
 was left, and back on the SE's screen at the default place when the HDMI screen it was saved on is gone.
+System 6.0.8 on the solo board (the user's System 6 volume, PiSlots as the startup application, 8 MiB and
+`mac.xpram=8a:00` so that the ROM starts in 24-bit mode instead of asking, which `.PiInput` is not yet
+open to answer): the same list, resize, About, the File menu and Quit, "PiSlots Prefs" in the System
+Folder.
 *Not verified:* real NuBus cards (on a IIci or SE/30: other vendors' declaration ROMs, a card whose start
 failed), a real SE, System 6 on the SE board, the Balloon Help that is not there.
 
