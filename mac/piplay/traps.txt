@@ -25,3 +25,9 @@ A81A w HOpenResFile(int vref:w, long dirid:l, const unsigned char *name:l, int p
 A950 w CountMItems(void *menu:l)
 A952 - DelMenuItem(void *menu:l, int item:w)
 A9B9 l GetCursor(int id:w)
+# the Radio menu's submenus (hierarchical menus, Inside Macintosh V): the parent item's command character
+# $1B and the submenu's ID as its mark; old submenus taken out of the menu list and disposed of
+A84F - SetItemCmd(void *menu:l, int item:w, int cmd:c)
+A944 - SetItemMark(void *menu:l, int item:w, int mark:c)
+A936 - DeleteMenu(int id:w)
+A932 - DisposeMenu(void *menu:l)

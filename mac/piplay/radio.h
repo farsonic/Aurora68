@@ -5,6 +5,7 @@
  */
 #ifndef PIPLAY_RADIO_H
 #define PIPLAY_RADIO_H
+#include "stations.h"
 
 enum { RS_OFF, RS_RESOLVE, RS_OPEN, RS_SEND, RS_HEADERS, RS_PLAYING, RS_RETRY };
 
@@ -26,10 +27,7 @@ struct radio_ui {
 };
 extern struct radio_ui radio;
 
-struct station { char name[48]; char url[200]; };
-#define MAX_STATIONS 32
-extern struct station *stations;       /* MAX_STATIONS of them, from the heap */
-extern int nstations;
+extern struct stations *slist;         /* the station list (stations.h), from the heap */
 
 void radio_init(void);
 /* plays the station at url (name for the window); 0 with radio.error set if it cannot even start */
@@ -44,6 +42,9 @@ const char *radio_problem(void);       /* while it waits to try again: why the c
    there); 1 if it was read again because it changed since the last look */
 int stations_load(void);
 int stations_check(void);
+/* Radio > Add Default Stations: the built-in stations the file lacks added at its end (stations.c says which
+   count as there) and the list read again; how many, 0 if it has them all, -1 if the file could not be written */
+int stations_add_defaults(void);
 
 /* from piplay.c */
 void pi_log(const char *text);

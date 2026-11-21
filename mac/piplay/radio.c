@@ -30,13 +30,28 @@
  * seconds, and leaves the card playing what it has; the Pi's decoder finds the next frame in what the
  * new connection brings (psmac_audio.c), so a reconnect costs at most what the buffer cannot cover.
  *
- * Everything is logged as "[MAC] PiPlay: radio: ...". Plain words for the user when something fails:
+ * Everything is logged as "[MAC] A68 Play: radio: ...". Plain words for the user when something fails:
  * "The station did not answer.", "The name could not be found: is the network up?" ...
+ *
+ * Riptide's .IPP6 (21 November 2026, docs/08 item 88). Riptide now offers a second driver beside .IPP,
+ * ".IPP6", with MacTCP's calls and blocks but 20-byte addresses that hold IPv6 (IPv4 as ::ffff:a.b.c.d)
+ * and a resolver of its own (Riptide's docs/IPP6.md; IPP6.h is its header, copied). When Gestalt
+ * 'ipp6' answers version 1 or later and .IPP6 opens, the radio uses it: a name goes to ip6Resolve
+ * (asynchronous, IPv6 addresses first), an address in the URL ("[fd68::80]" or dotted) to
+ * ip6StrToAddr, and TCPActiveOpen gets each address in turn, at offset 36, until one connects. Every
+ * other call (TCPCreate, TCPSend, the receive chain, TCPAbort, TCPRelease) is byte for byte MacTCP's,
+ * so that code is shared. The window's "IPv4"/"IPv6" is then the family of the address connected to.
+ * Without .IPP6 (Apple's MacTCP, an older Riptide) everything goes through .IPP and the DNR as before.
+ *
+ * The station list "Aurora68 Play Stations" is read and written here; what is in it (the built-in list,
+ * the groups of the Radio menu's submenus, the defaults a user's file lacks) is stations.c's (item 87).
  */
 #include "toolbox.h"
 #include "psmb.h"
 #include "icy.h"
 #include "radio.h"
+#define __MACTCP__ 1                             /* MacTCP's calls and results are named below, not in IPP6.h */
+#include "IPP6.h"
 
 extern volatile struct psmb_stream *ps;          /* piplay.c: the card's stream block and ring */
 extern volatile unsigned char *ring;
@@ -45,6 +60,7 @@ extern volatile unsigned char *ring;
 short mac_PBControl(void *pb), mac_PBControlAsync(void *pb);
 void mac_rcv_completion(void);
 long mac_dnr_call(void *code, long sel, long a, long b, long c, long d);
+long mac_Gestalt(long selector, long *response);
 void mac_dnr_result(void);
 void mac_HLock(void *h), mac_HUnlock(void *h), mac_DisposPtr(void *p), mac_DisposHandle(void *h);
 short mac_PBRead(ParamBlock *pb), mac_PBGetEOF(ParamBlock *pb), mac_PBHOpen(ParamBlock *pb), mac_PBHCreate(ParamBlock *pb),
@@ -52,8 +68,7 @@ short mac_PBRead(ParamBlock *pb), mac_PBGetEOF(ParamBlock *pb), mac_PBHOpen(Para
 short mac_FindFolder(short vRefNum, long type, int create, short *vref, long *dirid);
 
 struct radio_ui radio;
-struct station *stations;
-int nstations;
+struct stations *slist;
 
 /* ---- MacTCP (the MacTCP Programmer's Guide, 1993) --------------------------------------------- */
 enum { TCPCreate = 30, TCPActiveOpen = 32, TCPSend = 34, TCPRcv = 37, TCPAbort = 39, TCPRelease = 42 };
@@ -69,9 +84,10 @@ enum { TCPCreate = 30, TCPActiveOpen = 32, TCPSend = 34, TCPRcv = 37, TCPAbort =
 #define TCP_BUF   32768u                       /* the stream's receive buffer: MacTCP wants 4 KB at least */
 #define RBUF      8192u                        /* one TCPRcv: half a second of 128 kbit/s */
 #define RCV_TIMEOUT 10                         /* seconds without a byte: the station is gone */
-#define PB_SIZE   128                          /* a TCPiopb is 104 bytes; room to spare */
+#define PB_SIZE   132                          /* MacTCP's TCPiopb is 104 bytes, .IPP6's TCP6iopb 130 */
 
-static short ipp;                              /* .IPP's reference number */
+static short ipp;                              /* the driver's reference number: .IPP6's or .IPP's */
+static int v6;                                 /* 1: Riptide's .IPP6 (IPv6 and IPv4, names by the driver); 0: .IPP */
 static unsigned long stream;                   /* the TCP stream (StreamPtr), 0 when there is none */
 static unsigned char *tcp_buf, *rbuf;
 static unsigned char pb_ctl[PB_SIZE];          /* open and send: asynchronous, looked at by the event loop */
@@ -94,21 +110,41 @@ static short ints_off(void)
 }
 static void ints_on(short sr) { __asm__ volatile("move.w %0,%%sr" : : "d"(sr) : "cc", "memory"); }
 
-static int ipp_open(void)
+static short driver_open(const unsigned char *name)
 {
-	static const unsigned char name[] = "\x04.IPP";
 	ParamBlock pb;
-	if (ipp) return 1;
 	memset(&pb, 0, sizeof pb);
 	pb.ioNamePtr = name;
 	short e = mac_PBOpen(&pb);
+	if (!e) ipp = pb.ioRefNum;
+	return e;
+}
+/* the network: Riptide's .IPP6 when Gestalt says it is there (docs/IPP6.md in Riptide, section 2: ask
+   Gestalt first, as an OpenDriver of a name that is not installed searches the resource files), else
+   MacTCP's .IPP with Apple's DNR for names, as every MacTCP program does */
+static int net_open(void)
+{
+	long version = 0;
+	char t[80];
+	if (ipp) return 1;
+	if (LM_SYSVERSION >= 0x0604 && !mac_Gestalt((long)gestaltIPP6, &version) && version >= 1) {
+		short e = driver_open((const unsigned char *)"\x05.IPP6");
+		if (!e) {
+			v6 = 1;
+			put_num(put_str(t, "radio: Riptide's .IPP6 is there, interface version "), (unsigned long)version)[0] = 0;
+			pi_log(t);
+			return 1;
+		}
+		put_num(put_str(t, "radio: Gestalt names .IPP6 but it did not open, error -"), (unsigned long)-e)[0] = 0;
+		pi_log(t);
+	}
+	v6 = 0;
+	short e = driver_open((const unsigned char *)"\x04.IPP");
 	if (e) {
-		char t[80];
 		put_num(put_str(t, "radio: MacTCP's .IPP driver could not be opened, error -"), (unsigned long)-e)[0] = 0;
 		pi_log(t);
 		return 0;
 	}
-	ipp = pb.ioRefNum;
 	return 1;
 }
 
@@ -259,8 +295,15 @@ static void close_resolver(void)
 
 /* ---- the station's address --------------------------------------------------------------------- */
 static char host[100], path[160], cur_url[200];
+static int host6;                              /* host is an IPv6 address written in brackets: [fd68::80] */
 static unsigned short port;
-static unsigned long addr;
+static unsigned long addr;                     /* .IPP: the station's IPv4 address */
+/* .IPP6: ip6Resolve's answers, IPv6 first, each with the port in it; connected to in turn (ai) until an
+   open succeeds. The lookup's block stays put until it completes or is withdrawn (ip6ResolveCancel). */
+#define MAX_ADDRS 8
+static IP6Address addrs[MAX_ADDRS];
+static int naddr, ai, resolving;
+static IP6iopb rpb;
 static int redirects, http11, connected_once, playlist_hop;
 static unsigned long backoff, t_state, conn_audio;
 static const char *last_problem;
@@ -289,7 +332,13 @@ static const char *parse_url(const char *u)
 	if (prefix(u, "http://")) u += 7;
 	else if (prefix(u, "icy://")) u += 6;
 	else { const char *c = u; while (*c && *c != '/' && *c != ':') c++; if (c[0] == ':' && c[1] == '/') return "Aurora68 Play plays http:// addresses only."; }
-	while (*u && *u != '/' && *u != ':' && i < (int)sizeof host - 1) host[i++] = *u++;
+	host6 = 0;
+	if (*u == '[') {                             /* an IPv6 address (RFC 3986's IP-literal) */
+		for (u++; *u && *u != ']' && i < (int)sizeof host - 1; ) host[i++] = *u++;
+		if (*u++ != ']') return "That address has an IPv6 address without its closing bracket.";
+		host6 = 1;
+	} else
+		while (*u && *u != '/' && *u != ':' && i < (int)sizeof host - 1) host[i++] = *u++;
 	host[i] = 0;
 	if (!i || (*u && *u != '/' && *u != ':')) return "That address has no station's name in it.";
 	if (*u == ':') {
@@ -328,6 +377,38 @@ static char *put_addr(char *p, unsigned long a)
 	for (i = 24; i >= 0; i -= 8) { p = put_num(p, a >> i & 255); if (i) *p++ = '.'; }
 	return p;
 }
+/* the host as a URL or Host header writes it: an IPv6 address in brackets, and the port if not 80 */
+static char *put_host(char *p)
+{
+	if (host6) *p++ = '[';
+	p = put_str(p, host);
+	if (host6) *p++ = ']';
+	if (port != 80) { *p++ = ':'; p = put_num(p, port); }
+	return p;
+}
+/* one of .IPP6's addresses: "192.168.68.1" for an IPv4-mapped one, "[fd68::80]" for IPv6 (the text from
+   ip6AddrToStr, which may be called synchronously anywhere); put_addr6 adds the port */
+static char *put_ip6(char *p, const IP6Address *a)
+{
+	if (IP6_IS_V4(a)) return put_addr(p, IP6_GET_V4(a));
+	IP6iopb b;
+	char text[64];
+	memset(&b, 0, sizeof b);
+	b.ioCRefNum = ipp; b.csCode = ip6AddrToStr;
+	b.csParam.resolve.hostName = text; b.csParam.resolve.hostNameLen = sizeof text;
+	b.csParam.resolve.addr = *a;
+	if (mac_PBControl(&b)) put_str(text, "an IPv6 address")[0] = 0;
+	*p++ = '[';
+	p = put_str(p, text);
+	*p++ = ']';
+	return p;
+}
+static char *put_addr6(char *p, const IP6Address *a)
+{
+	p = put_ip6(p, a);
+	*p++ = ':';
+	return put_num(p, a->port);
+}
 static void logs(const char *a, const char *b, const char *c)
 {
 	char t[128];
@@ -351,9 +432,22 @@ static void set_state(int s) { radio.st = s; t_state = LM_TICKS; radio.seq++; }
 static int busy(const unsigned char *pb) { return IO_RESULT(pb) > 0; }
 /* everything given back: the receive and any open or send finished (TCPAbort makes them end), the
    stream released. Waits three seconds at most for each, with the event loop's work suspended. */
+static void cancel_lookup(void)
+{
+	if (resolving && rpb.ioResult > 0) {         /* withdrawn: it completes with ip6CancelledErr first */
+		IP6iopb c;
+		memset(&c, 0, sizeof c);
+		c.ioCRefNum = ipp; c.csCode = ip6ResolveCancel;
+		c.csParam.cancel.target = &rpb;
+		mac_PBControl(&c);
+		logs("the name lookup withdrawn", 0, 0);
+	}
+	resolving = 0;
+}
 static void teardown(void)
 {
 	unsigned long t0;
+	cancel_lookup();
 	rcv_stop = 1;
 	if (stream) {
 		pb_setup(pb_end, TCPAbort);
@@ -425,10 +519,19 @@ static void open_start(void)
 	pb_ctl[32] = 30;                             /* ulpTimeoutValue: 30 s to connect */
 	pb_ctl[33] = 1;                              /* ulpTimeoutAction: abort */
 	pb_ctl[34] = 0xC0;                           /* validityFlags: those two are set */
-	*(unsigned long *)(pb_ctl + 36) = addr;      /* remoteHost */
-	*(unsigned short *)(pb_ctl + 40) = port;     /* remotePort; localHost, localPort 0: MacTCP's choice */
-	mac_PBControlAsync(pb_ctl);
-	put_num(put_str(put_addr(put_str(t, "connecting to "), addr), " port "), port)[0] = 0;
+	if (v6) {
+		/* TCP6iopb: the 20-byte remoteAddr at 36 where MacTCP has remoteHost and remotePort, localAddr
+		   at 56 left zero (the stack's choice); the fields after them 28 bytes on, all zero here */
+		memcpy(pb_ctl + 36, &addrs[ai], sizeof addrs[ai]);
+		if (naddr - ai > 1) pb_ctl[32] = 15;     /* more addresses to try: less time for each */
+		mac_PBControlAsync(pb_ctl);
+		put_addr6(put_str(t, "connecting to "), &addrs[ai])[0] = 0;
+	} else {
+		*(unsigned long *)(pb_ctl + 36) = addr;      /* remoteHost */
+		*(unsigned short *)(pb_ctl + 40) = port;     /* remotePort; localHost, localPort 0: MacTCP's choice */
+		mac_PBControlAsync(pb_ctl);
+		put_num(put_str(put_addr(put_str(t, "connecting to "), addr), " port "), port)[0] = 0;
+	}
 	logs(t, 0, 0);
 	set_state(RS_OPEN);
 }
@@ -439,8 +542,7 @@ static void send_request(void)
 	char *p = put_str(request, "GET ");
 	p = put_str(p, path);
 	p = put_str(p, http11 ? " HTTP/1.1\r\nHost: " : " HTTP/1.0\r\nHost: ");
-	p = put_str(p, host);
-	if (port != 80) { *p++ = ':'; p = put_num(p, port); }
+	p = put_host(p);
 	p = put_str(p, "\r\nUser-Agent: Aurora68-Play/1.1 (Macintosh)\r\nAccept: */*\r\nIcy-MetaData: 1\r\nConnection: close\r\n\r\n");
 	wds.len = (unsigned short)(p - request); wds.ptr = request; wds.end = 0;
 	pb_setup(pb_ctl, TCPSend);
@@ -450,10 +552,42 @@ static void send_request(void)
 	mac_PBControlAsync(pb_ctl);
 	set_state(RS_SEND);
 }
+/* .IPP6: an address written in the URL (IPv6 in brackets, or dotted IPv4) through ip6StrToAddr, which
+   answers at once; a name through ip6Resolve, asynchronously, IPv6 addresses first: RFC 6724's default
+   order would put a unique local address (the testbed's fd68::) after IPv4 */
+static void connect_start6(void)
+{
+	unsigned long a4;
+	memset(&rpb, 0, sizeof rpb);
+	rpb.ioCRefNum = ipp;
+	rpb.csParam.resolve.hostName = host;
+	rpb.csParam.resolve.port = port;
+	naddr = ai = 0;
+	if (host6 || dotted(host, &a4)) {
+		rpb.csCode = ip6StrToAddr;
+		short r = mac_PBControl(&rpb);
+		if (r) { failed("That is not an IP address Aurora68 Play understands.", r); return; }
+		addrs[0] = rpb.csParam.resolve.addr;
+		naddr = 1;
+		open_start();
+		return;
+	}
+	rpb.csCode = ip6Resolve;
+	rpb.csParam.resolve.flags = kIP6OrderIPv6First;
+	rpb.csParam.resolve.results = addrs;
+	rpb.csParam.resolve.maxResults = MAX_ADDRS;
+	rpb.csParam.resolve.timeout = 0;             /* the driver's 10 seconds */
+	resolving = 1;
+	mac_PBControlAsync(&rpb);
+	logs("looking up ", host, " (IPv6 first, then IPv4)");
+	set_state(RS_RESOLVE);
+}
 static void connect_start(void)
 {
 	const char *e = parse_url(cur_url);
 	if (e) { failed(e, 0); return; }
+	if (v6) { connect_start6(); return; }
+	if (host6) { failed("An IPv6 address needs Riptide's .IPP6, which this Macintosh does not have. Use the station's name instead.", 0); return; }
 	if (dotted(host, &addr)) { open_start(); return; }
 	if (!open_resolver()) { failed("Aurora68 Play could not find MacTCP's name resolver (the \"MacTCP DNR\"). A station's number address (such as 192.168.1.20) still works.", 0); return; }
 	lk = look[0].busy && !look[0].done ? 1 : 0;   /* a lookup given up on may still answer into the other */
@@ -475,9 +609,7 @@ static void redirect(const char *to, const char *why)
 	if (++redirects > 3) { failed("The station sent Aurora68 Play from one address to another more than three times.", 0); return; }
 	if (prefix(to, "https://")) { failed("The station sent Aurora68 Play on to a secure (https) address, and Aurora68 Play plays plain http:// streams only.", 0); return; }
 	if (to[0] == '/') {                          /* a path on the same server */
-		char *p = put_str(loc, "http://");
-		p = put_str(p, host);
-		if (port != 80) { *p++ = ':'; p = put_num(p, port); }
+		char *p = put_host(put_str(loc, "http://"));
 		copy(p, to, (int)(sizeof loc - (unsigned long)(p - loc)));
 	} else copy(loc, to, sizeof loc);
 	logs(why, loc, "");
@@ -578,6 +710,32 @@ void radio_poll(void)
 	if (radio.st == RS_OFF) return;
 	switch (radio.st) {
 	case RS_RESOLVE:
+		if (v6) {
+			if (rpb.ioResult > 0) {
+				if (now - t_state > 40 * 60) { logs(host, ": no answer from .IPP6 in 40 s", 0); teardown(); failed("The name could not be found: is the network up?", 0); }
+				return;
+			}
+			short r = rpb.ioResult;
+			resolving = 0;
+			if (r || !rpb.csParam.resolve.count) {
+				logs(host, r == authNameErr ? ": the name servers know no such name" : r == noAnsErr ? ": no address, or no name server answered" :
+				           r == noNameServer ? ": Riptide knows no name server" : ": the lookup failed", 0);
+				failed(r == noNameServer ? "Riptide knows no name server: give it one in RiptidePrefs, or use the station's number address."
+				                         : "The name could not be found: is the network up?", r);
+				return;
+			}
+			naddr = rpb.csParam.resolve.count;
+			{
+				char t[200], *q = put_str(put_str(t, host), " is ");
+				int k;
+				for (k = 0; k < naddr && k < 3; k++) { if (k) q = put_str(q, ", "); q = put_ip6(q, &addrs[k]); }
+				if (naddr > 3) q = put_str(q, " ...");
+				*q = 0;
+				logs(t, 0, 0);
+			}
+			open_start();
+			return;
+		}
 		if (look[lk].done) {
 			long r = look[lk].hi.rtnCode;
 			look[lk].busy = 0;
@@ -594,13 +752,31 @@ void radio_poll(void)
 		return;
 	case RS_OPEN:
 		if (busy(pb_ctl)) return;
-		if (IO_RESULT(pb_ctl)) { failed("The station did not answer.", IO_RESULT(pb_ctl)); return; }
+		if (IO_RESULT(pb_ctl)) {
+			if (v6 && ai + 1 < naddr) {          /* the next address (an unanswered IPv6 one: ipDestDeadErr in ~3 s) */
+				char t[100];
+				put_str(put_addr6(put_str(t, "no connection to "), &addrs[ai]), ", error ")[0] = 0;
+				logn(t, IO_RESULT(pb_ctl), ": trying the next address");
+				ai++;
+				open_start();
+				return;
+			}
+			failed("The station did not answer.", IO_RESULT(pb_ctl));
+			return;
+		}
 		{
-			char t[100], *q;
-			radio.ipv = icy_ip_version(addr);
+			char t[120], *q;
+			if (v6) {                            /* the address connected to, as the open gave it back */
+				IP6Address *a = (IP6Address *)(pb_ctl + 36);
+				radio.ipv = IP6_IS_V4(a) ? 4 : 6;
+				q = put_addr6(put_str(t, "connected to "), a);
+				q = put_str(q, radio.ipv == 6 ? " (IPv6); asking for " : " (IPv4); asking for ");
+			} else {
+				radio.ipv = icy_ip_version(addr);
+				q = put_num(put_str(put_addr(put_str(t, "connected to "), addr), ":"), port);
+				q = put_str(q, radio.ipv == 6 ? " (IPv6 through Riptide's stand-in); asking for " : " (IPv4); asking for ");
+			}
 			radio.seq++;
-			q = put_num(put_str(put_addr(put_str(t, "connected to "), addr), ":"), port);
-			q = put_str(q, radio.ipv == 6 ? " (IPv6 through Riptide's stand-in); asking for " : " (IPv4); asking for ");
 			*q = 0;
 			logs(t, path, "");
 		}
@@ -683,14 +859,14 @@ void radio_init(void)
 	tcp_buf = mac_newptr(TCP_BUF);
 	rbuf = mac_newptr(RBUF);
 	icy = mac_newptr(sizeof *icy);
-	stations = mac_newptr(MAX_STATIONS * sizeof *stations);
+	slist = mac_newptr(sizeof *slist);
 }
 int radio_play(const char *name, const char *url)
 {
 	const char *e;
 	radio_stop();
 	radio.error = 0;
-	if (!tcp_buf || !rbuf || !icy || !stations) { radio.error = "There is not enough memory for the radio: give Aurora68 Play more in the Finder's Get Info."; return 0; }
+	if (!tcp_buf || !rbuf || !icy || !slist) { radio.error = "There is not enough memory for the radio: give Aurora68 Play more in the Finder's Get Info."; return 0; }
 	copy(radio.station, name, sizeof radio.station);
 	copy(radio.url, url, sizeof radio.url);
 	radio.name[0] = radio.title[0] = 0;
@@ -699,8 +875,9 @@ int radio_play(const char *name, const char *url)
 	radio.br = 0;
 	radio.paused = 0;
 	if ((e = parse_url(url))) { radio.error = e; return 0; }
-	if (!ipp_open()) { radio.error = "MacTCP is not there: Aurora68 Play needs MacTCP (or Riptide) to play internet radio."; return 0; }
+	if (!net_open()) { radio.error = "MacTCP is not there: Aurora68 Play needs MacTCP (or Riptide) to play internet radio."; return 0; }
 	logs(name, ", ", url);
+	logs(v6 ? "via .IPP6 (Riptide: IPv6 and IPv4 addresses, names by the driver)" : "via .IPP (MacTCP's interface: IPv4, names through the DNR)", 0, 0);
 	card_start();
 	card_title(name);
 	connected_once = 0; backoff = 1; redirects = 0; http11 = 0; playlist_hop = 0; lost = 0;
@@ -766,32 +943,8 @@ const char *radio_status(char *b)
 }
 const char *radio_problem(void) { return radio.st == RS_RETRY ? last_problem : 0; }
 
-/* ---- the station list: "PiPlay Stations", a text file TeachText opens -------------------------- */
-static const char builtin[] =
-	"# Aurora68 Play Stations: the internet radio stations in Aurora68 Play's Radio menu.\r"
-	"# One station a line: its name, an equals sign, its address:\r"
-	"#     Name = http://host[:port]/path\r"
-	"# Plain http:// MP3 streams (Shoutcast, Icecast) only; lines that start with # are notes.\r"
-	"# Change the list with TeachText; Aurora68 Play reads it again when it comes to the front.\r"
-	"# Throw this file away and Aurora68 Play writes the list below again.\r"
-	"#\r"
-	"# SomaFM: listener-supported, commercial-free radio from San Francisco (somafm.com).\r"
-	"Groove Salad = http://ice2.somafm.com/groovesalad-128-mp3\r"
-	"Drone Zone = http://ice2.somafm.com/dronezone-128-mp3\r"
-	"Secret Agent = http://ice2.somafm.com/secretagent-128-mp3\r"
-	"Lush = http://ice2.somafm.com/lush-128-mp3\r"
-	"Space Station Soma = http://ice2.somafm.com/spacestation-128-mp3\r"
-	"Indie Pop Rocks! = http://ice2.somafm.com/indiepop-128-mp3\r"
-	"Beat Blender = http://ice2.somafm.com/beatblender-128-mp3\r"
-	"Deep Space One = http://ice2.somafm.com/deepspaceone-128-mp3\r"
-	"DEF CON Radio = http://ice2.somafm.com/defcon-128-mp3\r"
-	"Left Coast 70s = http://ice2.somafm.com/seventies-128-mp3\r"
-	"Underground 80s = http://ice2.somafm.com/u80s-128-mp3\r"
-	"Sonic Universe = http://ice2.somafm.com/sonicuniverse-128-mp3\r"
-	"#\r"
-	"# NPO Radio 2, Dutch public radio, 192 kbit/s: its server has IPv6 as well as IPv4. With Riptide's\r"
-	"# \"mactcp ipv6 prefer\" the window says IPv6 after the counts, else IPv4.\r"
-	"NPO Radio 2 = http://icecast.omroep.nl/radio2-bb-mp3\r";
+/* ---- the station list: "Aurora68 Play Stations", a text file TeachText opens --------------------- */
+/* the built-in list, the file's groups and the defaults it lacks are stations.c's; here the file itself */
 static const unsigned char st_name[] = "\x16" "Aurora68 Play Stations";
 static const unsigned char st_old_name[] = "\x0F" "PiPlay Stations";   /* the program was PiPlay until 21 November 2026 */
 static unsigned long st_mdat;                  /* the file's modification date when it was read */
@@ -803,47 +956,14 @@ static void st_pb(ParamBlock *pb, short vref, long dir)
 	pb->ioNamePtr = st_name; pb->ioVRefNum = vref;
 	pb->u.f.ioFlNum = dir;                       /* ioDirID */
 }
-static void parse_stations(const char *t, long n)
-{
-	long i = 0;
-	nstations = 0;
-	while (i < n && nstations < MAX_STATIONS) {
-		long a = i, e, eq;
-		while (i < n && t[i] != '\r' && t[i] != '\n') i++;
-		e = i;
-		while (i < n && (t[i] == '\r' || t[i] == '\n')) i++;
-		while (a < e && (t[a] == ' ' || t[a] == '\t')) a++;
-		while (e > a && (t[e - 1] == ' ' || t[e - 1] == '\t')) e--;
-		if (a == e || t[a] == '#' || t[a] == ';') continue;
-		for (eq = a; eq < e && t[eq] != '='; eq++) { }
-		struct station *s = &stations[nstations];
-		long ue = e, ua = eq < e ? eq + 1 : a, ne = eq;
-		while (ua < ue && (t[ua] == ' ' || t[ua] == '\t')) ua++;
-		while (ne > a && (t[ne - 1] == ' ' || t[ne - 1] == '\t')) ne--;
-		if (eq >= e) ne = a;                     /* a bare address: its host is its name */
-		long k;
-		int o = 0;
-		for (k = ua; k < ue && o < (int)sizeof s->url - 1; k++) s->url[o++] = t[k];
-		s->url[o] = 0;
-		if (!o) continue;
-		o = 0;
-		for (k = a; k < ne && o < (int)sizeof s->name - 1; k++) s->name[o++] = t[k];
-		if (!o) {                                /* the host, then */
-			const char *h = s->url;
-			if (prefix(h, "http://")) h += 7;
-			while (*h && *h != '/' && *h != ':' && o < (int)sizeof s->name - 1) s->name[o++] = *h++;
-		}
-		s->name[o] = 0;
-		nstations++;
-	}
-}
+static void parse_stations(const char *t, long n) { stations_parse(slist, t, n); }
 int stations_load(void)
 {
 	ParamBlock pb;
 	short vref, e;
 	long dir;
 	char t[80];
-	if (!stations) return 0;
+	if (!slist) return 0;
 	pref_place(&vref, &dir);
 	st_pb(&pb, vref, dir);
 	if (mac_PBHGetFInfo(&pb)) {                  /* PiPlay's list, edited by the user, takes the new name */
@@ -867,7 +987,7 @@ int stations_load(void)
 			st_pb(&pb, vref, dir);
 			pb.ioPermssn = fsWrPerm;
 			if (!mac_PBHOpen(&pb)) {
-				pb.u.io.ioBuffer = (void *)builtin; pb.u.io.ioReqCount = sizeof builtin - 1;
+				pb.u.io.ioBuffer = (void *)stations_builtin; pb.u.io.ioReqCount = stations_builtin_len;
 				pb.u.io.ioPosMode = fsFromStart; pb.u.io.ioPosOffset = 0;
 				mac_PBWrite(&pb);
 				mac_PBClose(&pb);
@@ -877,7 +997,7 @@ int stations_load(void)
 		}
 		st_pb(&pb, vref, dir);
 		if (mac_PBHGetFInfo(&pb)) {              /* a locked disk: the built-in list, from memory */
-			parse_stations(builtin, sizeof builtin - 1);
+			parse_stations(stations_builtin, stations_builtin_len);
 			st_have = 0;
 			pi_log("radio: \"Aurora68 Play Stations\" could not be written: the built-in list is used");
 			return 1;
@@ -887,10 +1007,10 @@ int stations_load(void)
 	st_have = 1;
 	st_pb(&pb, vref, dir);
 	pb.ioPermssn = 1;
-	if (mac_PBHOpen(&pb)) { parse_stations(builtin, sizeof builtin - 1); return 1; }
+	if (mac_PBHOpen(&pb)) { parse_stations(stations_builtin, stations_builtin_len); return 1; }
 	pb.u.io.ioMisc = 0;
 	mac_PBGetEOF(&pb);
-	long n = pb.u.io.ioMisc > 16384 ? 16384 : pb.u.io.ioMisc;
+	long n = pb.u.io.ioMisc > 32768 ? 32768 : pb.u.io.ioMisc;     /* 128 stations of 250 bytes at most */
 	char *text = mac_newptr(n + 1);
 	if (text) {
 		pb.u.io.ioBuffer = text; pb.u.io.ioReqCount = n; pb.u.io.ioPosMode = fsFromStart; pb.u.io.ioPosOffset = 0;
@@ -899,7 +1019,9 @@ int stations_load(void)
 		mac_DisposPtr(text);
 	}
 	mac_PBClose(&pb);
-	put_str(put_num(put_str(t, "radio: \"Aurora68 Play Stations\" read: "), (unsigned long)nstations), " stations")[0] = 0;
+	char *p = put_str(put_num(put_str(t, "radio: \"Aurora68 Play Stations\" read: "), (unsigned long)slist->nstations), " stations");
+	if (slist->ngroups) p = put_str(put_num(put_str(p, " in "), (unsigned long)slist->ngroups), " groups");
+	*p = 0;
 	pi_log(t);
 	return 1;
 }
@@ -914,4 +1036,51 @@ int stations_check(void)
 	if (mac_PBHGetFInfo(&pb)) { st_have = 0; return stations_load(); }   /* thrown away: written again */
 	if ((unsigned long)pb.u.f.ioFlMdDat == st_mdat) return 0;
 	return stations_load();
+}
+
+/* Radio > Add Default Stations. The user's file is theirs: nothing in it is changed, the built-in stations
+   it lacks go at its end under their headings (stations_missing), after a note saying where they came from */
+#define fsFromLEOF 2                           /* ioPosMode: from the logical end of the file */
+int stations_add_defaults(void)
+{
+	static const char intro[] = "\r# Added by Aurora68 Play's Radio > Add Default Stations:\r";
+	ParamBlock pb;
+	short vref, e;
+	long dir, n, max = stations_builtin_len + 256;   /* the built-in lines and a Return before each heading */
+	int added = 0;
+	char t[100], *out;
+	stations_check();                            /* the file as it is now (written again if it was thrown away) */
+	if (!slist || !st_have) { pi_log("radio: Add Default Stations: there is no stations file to add to"); return -1; }
+	if (!(out = mac_newptr(max))) return -1;
+	memcpy(out, intro, sizeof intro - 1);
+	n = sizeof intro - 1;
+	n += stations_missing(slist, stations_builtin, stations_builtin_len, out + n, max - n, &added);
+	if (!added) {
+		pi_log("radio: Add Default Stations: the file has every one of them");
+		mac_DisposPtr(out);
+		return 0;
+	}
+	pref_place(&vref, &dir);
+	st_pb(&pb, vref, dir);
+	pb.ioPermssn = fsWrPerm;
+	e = mac_PBHOpen(&pb);
+	if (!e) {
+		pb.u.io.ioBuffer = out; pb.u.io.ioReqCount = n;
+		pb.u.io.ioPosMode = fsFromLEOF; pb.u.io.ioPosOffset = 0;
+		e = mac_PBWrite(&pb);
+		mac_PBClose(&pb);
+		memset(&pb, 0, sizeof pb); pb.ioVRefNum = vref; mac_PBFlushVol(&pb);
+	}
+	mac_DisposPtr(out);
+	if (e) {                                     /* open in TeachText with write permission, a locked disk ... */
+		char *p = put_str(t, "radio: Add Default Stations: the file could not be written (");
+		if (e < 0) { *p++ = '-'; e = (short)-e; }
+		put_str(put_num(p, (unsigned long)e), ")")[0] = 0;
+		pi_log(t);
+		return -1;
+	}
+	put_str(put_num(put_str(t, "radio: Add Default Stations: "), (unsigned long)added), " stations added at the end of the file")[0] = 0;
+	pi_log(t);
+	stations_load();
+	return added;
 }

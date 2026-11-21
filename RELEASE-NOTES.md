@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **Aurora68 Play: IPv6 through Riptide's .IPP6.** With a Riptide that has the new `.IPP6` interface
+  (Riptide's `mac-port` branch from f592402: install its "Riptide" extension too), Aurora68 Play looks
+  stations up with Riptide's own resolver, tries their IPv6 addresses first and then the IPv4 ones, and
+  connects to IPv6 stations directly instead of through Riptide's stand-in addresses; the window's "IPv6" or
+  "IPv4" is the address it is connected to. Addresses in brackets work in Open URL… and the stations file
+  (`http://[2001:db8::1]:8000/stream`). With Apple's MacTCP or an older Riptide it works as before (MacTCP's
+  `.IPP` and the DNR); the log says `via .IPP6` or `via .IPP` for each station.
+- **Aurora68 Play: forty stations, in submenus.** The Radio menu now has **SomaFM ▸** (the twelve channels),
+  **Listener-supported ▸** (Radio Paradise Main, Mellow, Rock and Global, KEXP Seattle, WFMU Freeform, WWOZ New
+  Orleans, Radio Swiss Jazz, Classic and Pop) and **By country ▸** with a submenu for each of the
+  Netherlands (NPO Radio 2, 3FM, Klassiek: the ones with IPv6), Switzerland, Austria (Ö1), the United Kingdom
+  (Classic FM, BBC World Service), France (Radio Nova), Germany (90s90s Pop), Greece (ERT Kosmos), New Zealand
+  (RNZ Concert) and the United States (KEXP, WFMU, WWOZ, 181.fm The Beatles and Classic Hits); all plain-http
+  MP3 streams that answered on 21 November 2026. In "Aurora68 Play Stations" a line `[Group]` starts a
+  submenu and `[Group/Sub]` one inside it; a file without such lines gives the flat menu as before. **Your
+  own file is not replaced:** choose **Radio > Add Default Stations** to add the new stations it lacks at
+  its end (nothing else in it changes; SomaFM's channels and NPO Radio 2, which the old list had, are not
+  added twice), or throw the file away to get the new list whole at the next start.
 - **The remote control lists the Mac's windows and photographs one.** `GET /windows` gives every window
   front to back, with its title, kind (document, dialog, desk accessory ...), the screens it is on and,
   under System 7, the application it belongs to; `GET /screenshot?window=ID` (or `?title=part of the

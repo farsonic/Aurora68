@@ -40,11 +40,16 @@
  * and System 7 on a 68020 or later. Built with the C kit in mac/c (README.md).
  *
  * Internet radio (PiPlay 1.1, 21 November 2026, docs/08 item 83): a Radio menu with the stations of the
- * text file "Aurora68 Play Stations" (Preferences folder; written at the first start from SomaFM's channels)
+ * text file "Aurora68 Play Stations" (Preferences folder; written at the first start from the built-in list)
  * and Open URL... (Cmd-U) for any plain-http MP3 stream. radio.c fetches it with MacTCP and feeds the
  * same stream channel as an open-ended MPEG stream, icy.c takes the station's answer apart; this file
  * only draws the radio's window (the station, "Now playing", the format and the counts, a buffer meter,
  * the state) and turns Play/Pause and Stop into the radio's.
+ *
+ * Groups of stations (21 November 2026, docs/08 item 87): a heading "[Group]" or "[Group/Sub]" in the
+ * station list makes a submenu of the Radio menu, or of a submenu (stations.c reads the file; the menus
+ * are hierarchical ones, built in fill_menu). The built-in list is SomaFM, Listener-supported and By
+ * country (nine countries); Radio > Add Default Stations adds those a user's own file lacks, at its end.
  */
 #include "toolbox.h"
 #include "psmb.h"
@@ -440,8 +445,14 @@ static void close_file(void)
 static void *win, *play_btn, *stop_btn, *vol_bar;
 static void *m_apple, *m_file, *m_edit, *m_ctl, *m_radio;
 enum { M_APPLE = 128, M_FILE, M_EDIT, M_CTL, M_RADIO };
+/* the Radio menu's submenus, one per group of the station list (stations.h): group g's menu ID is M_SUB + g.
+   Inside Macintosh V (the Menu Manager): a submenu is inserted with InsertMenu(menu, -1), its parent item
+   has the command character $1B and the submenu's ID as its mark, and an application's submenus take IDs
+   1 to 235 (desk accessories have the ones above). 140 to 187, clear of the menu bar's 128 to 132 */
+#define M_SUB 140
+static void *m_sub[MAX_GROUPS];                      /* the submenus in the menu list now, 0 for none */
 static int showing_radio;                            /* the window is the radio's (a station chosen) */
-static int radio_url_item;                           /* Open URL...'s place in the Radio menu */
+static int radio_url_item, radio_add_item;           /* Open URL... and Add Default Stations in the Radio menu */
 enum { F_OPEN = 1, F_CLOSE, F_QUIT = 4 };
 enum { C_PLAY = 1, C_STOP, C_LOUDER = 4, C_SOFTER };      /* Volume Up, Volume Down */
 static int quit, fg = 1, shown;
@@ -648,6 +659,16 @@ static void enable(void *m, int item, int on)
 	else DisableItem(m, item);
 }
 static int strcmp_(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a != *b; }
+/* in one menu of the Radio menu's (group ST_TOP: its own items), a check by the station that plays; the
+   same address may be in two groups (KEXP: Listener-supported and United States), and both get it */
+static void check_stations(void *menu, int group)
+{
+	short it[MAX_ITEMS];
+	int n = stations_items(slist, group, it, MAX_ITEMS), k;
+	for (k = 0; k < n; k++)
+		if (it[k] >= 0)                          /* not a submenu's item: its mark is the submenu's ID */
+			CheckItem(menu, k + 1, showing_radio && radio.st != RS_OFF && !strcmp_(slist->station[it[k]].url, radio.url));
+}
 /* dim what cannot be done now; Play says Pause while a sound plays */
 static void fix_menus(void)
 {
@@ -657,8 +678,9 @@ static void fix_menus(void)
 	SetItem(m_ctl, C_PLAY, pstr(pbuf, playing_now() ? "Pause" : "Play"));
 	enable(m_ctl, C_PLAY, shown && (file_open || showing_radio));
 	enable(m_ctl, C_STOP, can_stop_now());
-	for (i = 0; i < nstations; i++)             /* the station that plays, checked */
-		CheckItem(m_radio, i + 1, showing_radio && radio.st != RS_OFF && !strcmp_(stations[i].url, radio.url));
+	check_stations(m_radio, ST_TOP);             /* the station that plays, checked wherever it is */
+	for (i = 0; i < MAX_GROUPS; i++)
+		if (m_sub[i]) check_stations(m_sub[i], i);
 	enable(m_ctl, C_LOUDER, vol < 100);
 	enable(m_ctl, C_SOFTER, vol > 0);
 }
@@ -726,7 +748,7 @@ static void about(void)
 	            "Plays MP3 files, AIFF and WAV files that are not compressed, and internet radio: plain "
 	            "http:// MP3 streams through MacTCP. The Pi decodes them (minimp3, public domain) and plays "
 	            "them on HDMI or its headphone socket, mixed with the Macintosh's own sound.\r"
-	            "The stations in the Radio menu are SomaFM's, listener-supported radio (somafm.com), and NPO Radio 2. MPL-2.0.", 172);
+	            "The Radio menu holds SomaFM (somafm.com), other listener-supported radio and stations of nine countries. MPL-2.0.", 172);
 }
 
 /* ---- opening a file ------------------------------------------------------------------------------ */
@@ -880,19 +902,58 @@ static void start_station(const char *name, const char *url)
 	}
 	fix_buttons();
 }
-/* the Radio menu from the station list: the names put in with SetItem, which takes them as they are
-   (AppendMenu would read ";", "(" or "/" in a name as commands of its own) */
+/* one menu's items from the station list (group ST_TOP: the Radio menu's own), a group's as a submenu made
+   here. The names go in with SetItem, which takes them as they are (AppendMenu would read ";", "(" or "/"
+   in a name as commands of its own) */
+static void fill_menu(void *menu, int group)
+{
+	short it[MAX_ITEMS];
+	int n = stations_items(slist, group, it, MAX_ITEMS), k;
+	for (k = 0; k < n; k++) {
+		AppendMenu(menu, pstr(pbuf, "x"));
+		if (it[k] >= 0) { SetItem(menu, k + 1, pstr(pbuf, slist->station[it[k]].name)); continue; }
+		int g = -1 - it[k];
+		SetItem(menu, k + 1, pstr(pbuf, slist->group[g].name));
+		m_sub[g] = NewMenu(M_SUB + g, pbuf);
+		fill_menu(m_sub[g], g);
+		InsertMenu(m_sub[g], -1);                /* -1: into the hierarchical part of the menu list */
+		SetItemCmd(menu, k + 1, 0x1B);           /* hMenuCmd: this item has a submenu ... */
+		SetItemMark(menu, k + 1, M_SUB + g);     /* ... and this is its ID */
+	}
+}
+/* the Radio menu from the station list: the stations and the groups' submenus, then the commands */
 static void build_radio_menu(void)
 {
 	int i, n = CountMItems(m_radio);
+	for (i = 0; i < MAX_GROUPS; i++)             /* the old submenus out of the menu list and away */
+		if (m_sub[i]) { DeleteMenu(M_SUB + i); DisposeMenu(m_sub[i]); m_sub[i] = 0; }
 	for (i = n; i > 0; i--) DelMenuItem(m_radio, i);
-	for (i = 0; i < nstations; i++) {
-		AppendMenu(m_radio, pstr(pbuf, "x"));
-		SetItem(m_radio, i + 1, pstr(pbuf, stations[i].name));
-	}
-	if (nstations) AppendMenu(m_radio, pstr(pbuf, "(-"));
+	fill_menu(m_radio, ST_TOP);
+	if (CountMItems(m_radio)) AppendMenu(m_radio, pstr(pbuf, "(-"));
 	AppendMenu(m_radio, pstr(pbuf, "Open URL\xC9/U"));
 	radio_url_item = CountMItems(m_radio);
+	AppendMenu(m_radio, pstr(pbuf, "Add Default Stations"));
+	radio_add_item = CountMItems(m_radio);
+}
+/* Radio > Add Default Stations: the built-in stations the user's file lacks, added at its end */
+static void add_defaults(void)
+{
+	char t[200], *p;
+	int n = stations_add_defaults();
+	if (n < 0) {
+		say_error("The stations file could not be changed. If it is open in TeachText or SimpleText, close it there and try again.");
+		return;
+	}
+	build_radio_menu();
+	if (!n) p = put_str(t, "Your Radio menu has every station of Aurora68 Play's own list already.");
+	else {
+		p = put_num(t, (unsigned long)n);
+		p = put_str(p, n == 1 ? " station was" : " stations were");
+		p = put_str(p, " added at the end of the file \"Aurora68 Play Stations\" in the Preferences folder, "
+		               "under their groups' headings. Nothing else in the file was changed.");
+	}
+	*p = 0;
+	message_box(t, 64);
 }
 static void TEFromScrap_(void)                 /* TextEdit's scrap from the desk scrap (Inside Macintosh I, TextEdit) */
 {
@@ -1013,6 +1074,8 @@ static void open_url(void)
 	memcpy(last_url, u, strlen(u) + 1);
 	const char *h = u;                          /* the window's name for it: its host */
 	if ((h[0] | 32) == 'h' && (h[1] | 32) == 't' && (h[2] | 32) == 't' && (h[3] | 32) == 'p' && h[4] == ':' && h[5] == '/' && h[6] == '/') h += 7;
+	if (h[0] == '[')                            /* an IPv6 address: up to its closing bracket */
+		while (h[i] && i < 47 && (name[i] = h[i]) != ']') i++;
 	while (h[i] && h[i] != '/' && h[i] != ':' && i < 47) { name[i] = h[i]; i++; }
 	name[i] = 0;
 	pi_log("radio: Open URL");
@@ -1040,6 +1103,14 @@ static void setup_menus(void)
 	InsertMenu(m_radio, 0);
 	DrawMenuBar();
 }
+/* a station chosen in the Radio menu (group ST_TOP) or one of its submenus */
+static void choose_station(int group, int item)
+{
+	short it[MAX_ITEMS];
+	int n = stations_items(slist, group, it, MAX_ITEMS);
+	if (item >= 1 && item <= n && it[item - 1] >= 0)
+		start_station(slist->station[it[item - 1]].name, slist->station[it[item - 1]].url);
+}
 static void do_menu(long mr)
 {
 	int id = (int)(mr >> 16), item = (int)(mr & 0xFFFF);
@@ -1060,7 +1131,10 @@ static void do_menu(long mr)
 		else if (item == C_SOFTER) change_volume(vol - 10);
 	} else if (id == M_RADIO) {
 		if (item == radio_url_item) open_url();
-		else if (item >= 1 && item <= nstations) start_station(stations[item - 1].name, stations[item - 1].url);
+		else if (item == radio_add_item) add_defaults();
+		else choose_station(ST_TOP, item);
+	} else if (id >= M_SUB && id < M_SUB + MAX_GROUPS) {
+		choose_station(id - M_SUB, item);
 	}
 	HiliteMenu(0);
 }

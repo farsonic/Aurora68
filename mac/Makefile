@@ -4,7 +4,7 @@
 #                   their icons come from tools/mac/mkicons.py)
 #   The declaration ROM (build/psmac.declrom) carries the .PiDisk, .Network_EtherNet_PiStorm and .PiInput drivers,
 #   and PiDisk's boot record (pidisk_boot.s), which lets an image on the card be the startup disk.
-#   make check     compares the struct offsets in enet.s with emu68/src/alice/alice_net.h; host tests (USB frames, EDID, PiPlay's radio parser)
+#   make check     compares the struct offsets in enet.s with emu68/src/alice/alice_net.h; host tests (USB frames, EDID, PiPlay's radio parser and station list)
 #   make install IMG=path/to/volume.img [PART=n]   the extensions into the System Folder of an HFS image, the programs into its Aurora68 folder
 AS      = m68k-linux-gnu-as -m68020
 OBJCOPY = m68k-linux-gnu-objcopy
@@ -135,6 +135,8 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	$(B)/edid_test > $(B)/edid_test.log && tail -1 $(B)/edid_test.log
 	cc -std=c99 -Wall -Wextra -Werror -o $(B)/icy_test ../tools/icy_test.c piplay/icy.c
 	$(B)/icy_test
+	cc -std=c99 -Wall -Wextra -Werror -o $(B)/stations_test ../tools/stations_test.c piplay/stations.c
+	$(B)/stations_test
 
 disasm: $(B)/pidisk.o
 	m68k-linux-gnu-objdump -d $(B)/pidisk.o | head -200
@@ -188,16 +190,20 @@ $(B)/pp/libc.o: c/libc.c c/toolbox.h $(B)/pp/toolbox_gen.h
 $(B)/pp/net.o: piplay/net.s
 	@mkdir -p $(B)/pp
 	$(AS) -o $@ $<
-PP_H = c/toolbox.h $(B)/pp/toolbox_gen.h ../emu68/src/psmac/psmb.h piplay/icy.h piplay/radio.h
+PP_H = c/toolbox.h $(B)/pp/toolbox_gen.h ../emu68/src/psmac/psmb.h piplay/icy.h piplay/radio.h piplay/stations.h
 $(B)/pp/piplay.o: piplay/piplay.c $(PP_H)
 	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -I../emu68/src/psmac -c -o $@ $<
-# the internet radio: MacTCP and the resolver (radio.c), the stations' answers taken apart (icy.c, also
+# the internet radio: Riptide's .IPP6 (IPP6.h, its interface header) or MacTCP and the resolver (radio.c), the stations' answers taken apart (icy.c, also
 # built for the host by `make check`: tools/icy_test.c)
-$(B)/pp/radio.o: piplay/radio.c $(PP_H)
+$(B)/pp/radio.o: piplay/radio.c $(PP_H) piplay/IPP6.h
 	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -I../emu68/src/psmac -c -o $@ $<
 $(B)/pp/icy.o: piplay/icy.c piplay/icy.h
 	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -c -o $@ $<
-PP_OBJ = $(B)/crt0.o $(B)/pp/toolbox_glue.o $(B)/pp/libc.o $(B)/pp/fs.o $(B)/pp/net.o $(B)/pp/piplay.o $(B)/pp/radio.o $(B)/pp/icy.o
+# the station list: the built-in one, the file's groups (the Radio menu's submenus), the defaults a file
+# lacks; also built for the host by `make check` (tools/stations_test.c)
+$(B)/pp/stations.o: piplay/stations.c piplay/stations.h
+	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -c -o $@ $<
+PP_OBJ = $(B)/crt0.o $(B)/pp/toolbox_glue.o $(B)/pp/libc.o $(B)/pp/fs.o $(B)/pp/net.o $(B)/pp/piplay.o $(B)/pp/radio.o $(B)/pp/icy.o $(B)/pp/stations.o
 $(B)/piplay.elf: $(PP_OBJ) c/app.ld
 	$(LD) -T c/app.ld --emit-relocs --no-warn-rwx-segments -z noexecstack -o $@ $(PP_OBJ) $(LIBGCC)
 # the Finder's resources (signature, bundle, file references for the application, its MP3, AIFF and WAV

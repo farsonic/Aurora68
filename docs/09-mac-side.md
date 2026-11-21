@@ -499,7 +499,8 @@ Aurora68 carries no recording of theirs: Aurora68 Play's list holds only the add
    Extensions folder and "Riptide DNR" in the System Folder (docs/09 "MacTCP"; Riptide's docs/MAC.md).
 2. Copy Aurora68 Play (Mac/Aurora68/Aurora68 Play/Aurora68-Play.bin, `hcopy -m` or any MacBinary tool) onto the Mac, replacing the old one. The
    kernel needs no change for the radio (the stream channel of item 82 already takes open-ended streams).
-3. Start Aurora68 Play. The **Radio** menu lists the stations; choose one. The window shows the station's name,
+3. Start Aurora68 Play. The **Radio** menu lists the stations, in submenus (SomaFM ▸, Listener-supported ▸,
+   By country ▸ Netherlands ▸ ...); choose one. The window shows the station's name,
    "Connecting", then "Buffering" with a percentage, then "Playing", the station's name for itself, "Now
    playing: ..." with the title of what is on, the format and bit rate, and a meter of what the card holds
    (full at 30 seconds). Play/Pause (space, Command-P) pauses: the station goes on into the card's buffer
@@ -511,18 +512,93 @@ Aurora68 carries no recording of theirs: Aurora68 Play's list holds only the add
    6: the System Folder), written at Aurora68 Play's first start from the built-in list. Open it with TeachText
    or SimpleText (double-click it), add a line `Name = http://host[:port]/path` for each station (a line holding only an
    address is named after its host; lines starting with # are notes), save, and come back to Aurora68 Play: it
-   reads the file again when it comes to the front or when you open a menu. Throw the file away and the
-   built-in list comes back at the next start. At most 32 stations.
+   reads the file again when it comes to the front or when you open a menu. A line `[Group]` puts the
+   stations below it into a submenu of the Radio menu, `[Group/Sub]` into a submenu of that one (below,
+   "Groups of stations"). Throw the file away and the built-in list comes back at the next start;
+   **Radio > Add Default Stations** adds the built-in stations your file lacks without touching the rest. At
+   most 128 stations and 48 groups.
 
-The built-in list: Groove Salad, Drone Zone, Secret Agent, Lush, Space Station Soma, Indie Pop Rocks!,
-Beat Blender, Deep Space One, DEF CON Radio, Left Coast 70s, Underground 80s and Sonic Universe (and since
-21 November NPO Radio 2, below "IPv4 or IPv6"), each SomaFM channel
-`http://ice2.somafm.com/<channel>-128-mp3`, the 128 kbit/s MP3 streams that SomaFM's playlists
-(somafm.com/<channel>.pls) name; their playlists now point at the same streams over https, which the
-ice servers still also serve over plain http on port 80 (seen 21 November 2026). If a channel moves,
-change its line.
+The built-in list (since 21 November 2026, Aurora68 Play's first start writes it; a file written earlier
+keeps its flat list until Add Default Stations or the file is thrown away), as the Radio menu shows it:
+- **SomaFM ▸** Groove Salad, Drone Zone, Secret Agent, Lush, Space Station Soma, Indie Pop Rocks!, Beat
+  Blender, Deep Space One, DEF CON Radio, Left Coast 70s, Underground 80s, Sonic Universe: each SomaFM
+  channel `http://ice2.somafm.com/<channel>-128-mp3`, the 128 kbit/s MP3 streams that SomaFM's playlists
+  (somafm.com/<channel>.pls) name; their playlists now point at the same streams over https, which the
+  ice servers still also serve over plain http on port 80 (seen 21 November 2026).
+- **Listener-supported ▸** Radio Paradise Main, Mellow, Rock and Global (`http://stream.radioparadise.com/mp3-192`,
+  `mellow-192`, `rock-192`, `global-192`), KEXP Seattle (`http://kexp-mp3-128.streamguys1.com/kexp128.mp3`), WFMU
+  Freeform (`http://stream0.wfmu.org/freeform-128k.mp3`), WWOZ New Orleans
+  (`http://wwoz-sc.streamguys1.com/wwoz-hi.mp3`), Radio Swiss Jazz, Classic and Pop
+  (`http://stream.srg-ssr.ch/m/rsj/mp3_128`, `.../m/rsc_de/mp3_128`, `.../m/rsp/mp3_128`; each sends Aurora68 Play
+  on twice, to `/srgssr/rsj/mp3/128` and then to a `livestreaming-node-N.srg-ssr.ch`, within the three
+  redirections it follows).
+- **By country ▸** Netherlands ▸ NPO Radio 2, NPO 3FM, NPO Klassiek (`http://icecast.omroep.nl/radio2-bb-mp3`,
+  `3fm-bb-mp3`, `radio4-bb-mp3`); Switzerland ▸ the three Radio Swiss channels; Austria ▸ Ö1
+  (`http://ors-sn05.ors-shoutcast.at/oe1-q2a`); United Kingdom ▸ Classic FM
+  (`http://media-ice.musicradio.com/ClassicFMMP3`), BBC World Service
+  (`http://stream.live.vc.bbcmedia.co.uk/bbc_world_service`); France ▸ Radio Nova
+  (`http://novazz.ice.infomaniak.ch/novazz-128.mp3`); Germany ▸ 90s90s Pop (`http://streams.90s90s.de/pop/mp3-128/`);
+  Greece ▸ ERT Kosmos (`http://radiostreaming.ert.gr/ert-kosmos`); New Zealand ▸ RNZ Concert
+  (`http://radionz-ice.streamguys.com/concert.mp3`); United States ▸ KEXP, WFMU, WWOZ, 181.fm The Beatles
+  (`http://listen.181fm.com/181-beatles_128k.mp3`) and 181.fm Classic Hits (`http://listen.181fm.com/181-greatoldies_128k.mp3`).
 
-**How it works.** `mac/piplay/radio.c` opens `.IPP` by name, as every MacTCP program does, and finds the
+Forty stations, each address answered from a test machine on 21 November 2026 with HTTP 200 or 206 and
+`audio/mpeg` over plain http (the Radio Swiss ones after their two redirections). Asked for too and left
+out, because they did not answer over plain http or refused: Australia's ABC, FIP, Deutschlandfunk, RAI,
+Jazz24, Radio Caroline and Linn (they may need https, which a 68k cannot do). If a station moves, change
+its line. **IPv6:** of the forty, only NPO's server (`icecast.omroep.nl`, eight AAAA records) has IPv6
+addresses (looked up the same day through a public resolver; none of the other hosts, nor the Radio Swiss
+servers the redirections lead to, has any), so NPO Radio 2, 3FM and Klassiek are the stations to try
+Riptide's `mactcp ipv6 prefer` with (below, "IPv4 or IPv6").
+
+#### Groups of stations: the Radio menu's submenus (21 November 2026)
+The owner asked for many more stations, grouped. Forty stations in one menu would not fit the SE's 342
+lines, so the station list got headings and the Radio menu got hierarchical submenus, as Inside Macintosh
+volume V describes them (the Menu Manager of the Macintosh II and SE and of System 7):
+```
+# notes start with #
+My Station = http://radio.example.net:8000/stream     <- above the first heading: in the Radio menu itself
+[Testbed]                                             <- Radio > Testbed >
+Test tone = http://radio.testbed:8000/stream
+[Testbed/Over IPv6]                                   <- Radio > Testbed > Over IPv6 >
+Test tone over IPv6 = http://v6only.testbed/stream
+[]                                                    <- back to the Radio menu itself
+```
+A heading seen again adds to the group it named first (letters of either case alike), a heading with no
+station under it makes no submenu, one level of nesting only (in `[A/B/C]` the submenu of A is called
+"B/C"), and a line that only begins with `[` (`[Live] = http://...`) is a station. Items stand in the order
+the file first names them, the Radio menu's commands below a line: **Open URL… ⌘U** and **Add Default
+Stations**. A file without headings, as every file written before 21 November 2026 is, gives the flat menu
+it gave before. The station that plays is checked in its submenu, and in every other submenu that has the
+same address (KEXP is in Listener-supported and in United States).
+
+**Add Default Stations** compares the file with the built-in list and appends, at the end of the file,
+every built-in station that the file does not have in the same group (a heading compared without regard
+to case) or in the Radio menu itself, under its heading and that heading's notes, after a note
+"# Added by Aurora68 Play's Radio > Add Default Stations:". Nothing already in the file is changed, moved
+or removed; a second time it adds nothing and says so. A file of the first kind, with SomaFM's twelve and
+NPO Radio 2 at the top, gets Listener-supported and By country (27 stations; not SomaFM, which it has, and
+not NPO Radio 2 again under Netherlands); its own stations stay where they were. A window says how many
+were added; if the file cannot be written (open in an editor that keeps it open for writing, a locked
+disk) it says so and adds nothing.
+
+How it is made: `mac/piplay/stations.c` (portable C, also run on the host by `make -C mac check` through
+`tools/stations_test.c`) holds the built-in list (Mac Roman: the Ö of Ö1 is $85) and takes the file apart
+into stations, groups and their order; `radio.c` reads and writes the file; `piplay.c`'s `fill_menu` builds a
+menu per group with NewMenu, puts it into the menu list with `InsertMenu(menu, -1)` (the hierarchical
+part) and marks its parent item with the command character $1B (SetItemCmd) and the submenu's menu ID as
+the item's mark (SetItemMark). Submenus take IDs 140 to 187 (group 0 to 47): an application's submenus
+must have IDs from 1 to 235, as the IDs above are the desk accessories', and the menu bar's own are 128 to
+132. When the file changes the submenus are taken out (DeleteMenu) and disposed of (DisposeMenu) and the
+menu is built again. MenuSelect answers with the submenu's ID and the item, which `choose_station` turns
+back into a station. A Radio > Stations File… command that would open the file in TeachText (an 'odoc'
+Apple event to the creator 'ttxt', or LaunchApplication with the event) was considered and left out: it
+needs the Apple Event Manager, the Alias Manager and a search of the desktop database for the editor,
+none of which this program uses yet, and Aurora68 Play's own Apple-event handling was taken out after a
+"bad F-Line instruction" (item 82); a double-click on the file in the Finder does the same.
+
+**How it works.** `mac/piplay/radio.c` opens `.IPP` by name, as every MacTCP program does (or Riptide's
+`.IPP6` when it is there: below, "Riptide's .IPP6"), and finds the
 name resolver the way Apple's DNR glue does (the Control Panels folder for a `'cdev'` of creator
 `'ztcp'`, then the System Folder and the Control Panels folder for `'mtcp'`; the first file whose
 resource fork holds `'dnrp'` 1, which is "Riptide DNR" with Riptide and "MacTCP DNR" with Apple's MacTCP).
@@ -552,8 +628,44 @@ real host has) for a host it reaches over IPv6, carrying the connection over IPv
 IPv6 and every other one IPv4 (`icy_ip_version` in `mac/piplay/icy.c`, checked by `make -C mac check`); with
 Apple's MacTCP it always says IPv4. A station with only IPv6 addresses gets a stand-in by itself; one with
 both (dual stack) is reached over IPv4 unless riptide.conf says `mactcp ipv6 prefer`. The built-in list
-ends with such a station, NPO Radio 2 (Dutch public radio, `http://icecast.omroep.nl/radio2-bb-mp3`, MP3
-at 192 kbit/s, with AAAA records), as the test of it; SomaFM has no IPv6.
+ended with such a station, NPO Radio 2 (Dutch public radio, `http://icecast.omroep.nl/radio2-bb-mp3`, MP3
+at 192 kbit/s, with AAAA records), as the test of it; since the groups (above) it is in By country ▸
+Netherlands with NPO 3FM and NPO Klassiek, the built-in list's only stations with IPv6; SomaFM has none.
+
+**Riptide's .IPP6** (21 November 2026, the owner's request). Riptide (branch `mac-port` from commit
+f592402) installs a second driver beside `.IPP`: `.IPP6`, MacTCP's calls and parameter blocks with
+20-byte addresses that hold IPv6 (IPv4 as `::ffff:a.b.c.d`) and a resolver of its own (Riptide's
+`docs/IPP6.md` is the specification, `sdk/mac/IPP6.h` its header, copied into `mac/piplay/IPP6.h`).
+Aurora68 Play asks Gestalt for `'ipp6'` (version 1 or later) and then opens `.IPP6`; if either fails it
+uses `.IPP` and the DNR exactly as before. The log says which at every station: `radio: via .IPP6
+(Riptide: IPv6 and IPv4 addresses, names by the driver)` or `radio: via .IPP (MacTCP's interface: IPv4,
+names through the DNR)`. Over `.IPP6`:
+- a name goes to `ip6Resolve` (csCode 72), asynchronously, with the port filled in and the flag for IPv6
+  addresses first (RFC 6724's default order would put a unique local address such as the testbed's
+  `fd68::` after IPv4): `radio: peer.testbed is [fd68::1], 192.168.68.1`. No `'dnrp'` is needed;
+- `TCPActiveOpen` gets the addresses in turn, the 20-byte address at offset 36 (where MacTCP has
+  remoteHost and remotePort; the fields after it are 28 bytes further on, `TCP6iopb` is 130 bytes):
+  `no connection to [fd68::1]:8000, error -23015: trying the next address`, then `connected to
+  192.168.68.1:8000 (IPv4)`. With more than one address each gets 15 s instead of 30; an IPv6 address that
+  nothing answers fails with ipDestDeadErr after about 3 s;
+- an IPv6 address in the URL, in brackets as RFC 3986 writes it (`http://[2001:db8::1]:8000/stream`), goes
+  through `ip6StrToAddr`, a dotted one too. Over `.IPP` such a URL is refused: "An IPv6 address needs
+  Riptide's .IPP6, which this Macintosh does not have. Use the station's name instead." The `Host:` header and a redirection to a path on the same server keep the
+  brackets;
+- the IPv4/IPv6 after the counts is the family of the address actually connected to (an IPv4-mapped one is
+  IPv4), and the log writes it `[fd68::80]:80` or `192.168.68.1:8000`;
+- TCPCreate, TCPSend, the receive chain at interrupt time, TCPAbort and TCPRelease are MacTCP's calls byte
+  for byte and the same code serves both drivers. A lookup still out when a station stops is withdrawn
+  (`ip6ResolveCancel`), as `docs/IPP6.md` asks of a program before it quits.
+
+The testbed's Riptide with `.IPP6` was built from that commit for the test image
+(`Riptide-aurora68.bin`, the "Riptide" extension); the image's older Riptide (no `.IPP6`) is what the
+fallback was tested with. Seen in the testbed (System 7.1, a station list with a Testbed group and
+an Over IPv6 submenu): over `.IPP6` `http://radio.testbed:8000/stream` (IPv4 only) played over IPv4,
+`http://v6only.testbed/stream` (IPv6 only) and `http://[fd68::80]/stream` over IPv6 (window: "— IPv6",
+`docs/img/system71-aurora68-play-ipp6.png`), `http://peer.testbed:8000/stream` (both kinds) tried
+`[fd68::1]:8000` first, was refused there (the testbed's peer relays port 8000 over IPv4 only) and played
+over IPv4; with the older Riptide the same list played over `.IPP` (docs/08 item 88 has the record).
 
 **Plain words when it fails:** "The name could not be found: is the network up?" (the resolver knows no
 such name, or no name server answered), "The station did not answer." (no connection), "The station has

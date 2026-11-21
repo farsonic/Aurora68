@@ -3210,7 +3210,6 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    - *Not verified:* the icons on a real SE and on real HDMI; System 6.0.8 (no custom icons there: the three
      'PSMC' extensions show the common one); the extensions' new order with the owner's other extensions;
      NPO Radio 2 itself (no Internet in the testbed).
-
 85. **The remote control lists the Mac's windows and photographs one (21 November).** The owner shows
    results by photographing the Mac's screens; they asked for the Mac's windows as a list and a
    screenshot of the window they choose. docs/13, "Windows", is the long form.
@@ -3269,6 +3268,111 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    `[REMOTE]` line, printed when anything changed: the address and mode, frames in, frames queued and
    sent, ARP requests, pings, SYNs and resets, so the step where a connection stops shows in Aurora68 Log
    after the start-up lines have scrolled out of the 64 KB log.
+
+87. **Aurora68 Play: forty stations, in submenus (21 November).** The owner asked for more stations in the
+   Radio menu, grouped into submenus, with a list of plain-http MP3 streams that had answered from a test
+   server that day (HTTP 200 or 206, `audio/mpeg`) and a list of stations not to add (Australia's ABC, FIP,
+   Deutschlandfunk, RAI, Jazz24, Radio Caroline, Linn: no answer over plain http, or refused). docs/09,
+   "Groups of stations: the Radio menu's submenus", is the long form.
+   - *The file.* "Aurora68 Play Stations" keeps its form and gains headings: `[Group]` starts a submenu,
+     `[Group/Sub]` one inside it (one level; the rest of the line is the inner name), `[]` goes back to the
+     Radio menu itself, and stations above the first heading stand there. A file without headings, which
+     every user had, makes the flat menu it made before; a heading seen again adds to its group (letters of
+     either case alike); a group with no station is not shown. The parsing moved out of `radio.c` into
+     `mac/piplay/stations.c`, portable C like `icy.c`, so that `make -C mac check` runs it on the host
+     (`tools/stations_test.c`: the built-in list, a flat file of the first kind, odd headings, the limits,
+     Add Default Stations three ways; 3,934 checks). Limits now 128 stations (was 32) and 48 groups; the file
+     is read up to 32 KB.
+   - *The built-in list*, written at the first start only: SomaFM ▸ (the twelve), Listener-supported ▸ (Radio
+     Paradise Main, Mellow, Rock, Global; KEXP; WFMU; WWOZ; Radio Swiss Jazz, Classic, Pop) and By country ▸
+     with nine submenus (Netherlands: NPO Radio 2, 3FM, Klassiek; Switzerland; Austria: Ö1; United Kingdom:
+     Classic FM, BBC World Service; France: Radio Nova; Germany: 90s90s Pop; Greece: ERT Kosmos; New Zealand:
+     RNZ Concert; United States: KEXP, WFMU, WWOZ, 181.fm The Beatles and Classic Hits): forty stations, the
+     Radio Swiss three and KEXP, WFMU, WWOZ in two groups each. Ö is stored as Mac Roman $85, as TeachText
+     and the Menu Manager read it. Looked up the same day through a public resolver, only NPO's
+     `icecast.omroep.nl` has AAAA records (eight); none of the other hosts, nor the `livestreaming-node-N.srg-ssr.ch`
+     servers that Radio Swiss's two redirections end on, has any.
+   - *The menus* are the Menu Manager's hierarchical menus (Inside Macintosh V): a NewMenu per group with ID
+     140 + its number, `InsertMenu(menu, -1)`, and on the parent item the command character $1B (SetItemCmd)
+     and the submenu's ID as its mark (SetItemMark); application submenus must have IDs 1 to 235. Rebuilt,
+     after DeleteMenu and DisposeMenu of the old submenus, whenever the file's modification date changes, as
+     before. The playing station is checked in every menu where its address stands. Below the stations: Open
+     URL… ⌘U as before, and the new **Add Default Stations**.
+   - *Add Default Stations* never rewrites the user's file: it appends, after a note, each built-in station
+     the file lacks in the same group (or at the top level, so the old flat SomaFM list is not repeated in a
+     SomaFM submenu), under its heading and the heading's notes, then reads the file again and says how many
+     it added; a second time it says the menu has them all. A file it cannot open for writing is reported
+     and left alone. The optional Radio > Stations File… (opening the file in TeachText) was left out: it
+     needs the Apple Event Manager, the Alias Manager and a desktop-database search for the editor, and
+     Apple events were taken out of this program after item 82's "bad F-Line instruction".
+   - *Tested* (the solo board under QEMU, System 7.1, copies of the owner's test image of the day with the
+     new Aurora68 Play in its folder and in Startup Items, the kernel of item 84, driven through the remote
+     control's semihosting channel; the stations of the testbed group are `tools/radiotest.py` reached
+     through pinet as in item 83). The runs:
+     (1) No list in the Preferences folder: `written from the built-in list`, `read: 40 stations in 12 groups`;
+     the Radio menu showed SomaFM ▸, Listener-supported ▸, By country ▸, a line, Open URL… ⌘U and Add Default
+     Stations, and By country ▸ Netherlands ▸ NPO Radio 2, NPO 3FM, NPO Klassiek opened as three levels
+     (`docs/img/system71-aurora68-play-by-country.png`); By country ▸ Austria showed "Ö1" with its two dots
+     (`docs/img/system71-aurora68-play-oe1.png`; the file written holds $85 there). Choosing NPO Radio 2 in the
+     third level started it (`radio: NPO Radio 2, http://icecast.omroep.nl/radio2-bb-mp3`, the resolver opened,
+     `looking up icecast.omroep.nl`) and, with no Internet in the testbed, ended in "The name could not be
+     found: is the network up?". Add Default Stations: "Your Radio menu has every station of Aurora68 Play's
+     own list already." The About box's new last line fits.
+     (2) A list of the new kind put in first: `My Station` at the top, `[Testbed]` with the test station,
+     `[Testbed/Over IPv6]` with `http://v6only.testbed/stream`, `[SomaFM]` with Groove Salad. Testbed ▸ Test
+     tone connected, buffered 5.0 s and played, and was checked in its submenu; Add Default Stations added 39
+     (SomaFM's other eleven under a second `[SomaFM]`, which joined the first: one SomaFM submenu, Groove Salad
+     first, no channel twice), `read: 43 stations in 14 groups`, the menu then My Station, Testbed ▸, SomaFM ▸,
+     Listener-supported ▸, By country ▸; a second Add Default Stations added nothing; My Station (Shoutcast's
+     ICY answer) played from the top level. The file taken off the image afterwards: the user's lines
+     untouched, then the note and the groups; the only addresses in it twice are the five the built-in list
+     has in two groups. In that run, and in a fourth made for it, the drive script's choice inside Over IPv6 ▸
+     missed (it measured where the second menu ends on rows the third one shared); item 88's runs, with the
+     script mended, opened that third level and played its stations.
+     (3) A flat list of the first kind (the old built-in thirteen, a test station first): the flat menu as
+     before, the test station played and was checked (the dump: 1000 Hz left, 1500 Hz right); Add Default
+     Stations added 27 (Listener-supported and By country; not SomaFM, not NPO Radio 2 again), `read: 41
+     stations in 11 groups`, the old stations above the new submenus
+     (`docs/img/system71-aurora68-play-added-defaults.png`: Netherlands ▸ NPO 3FM, NPO Klassiek); the file's
+     first 1,477 bytes, the user's, byte for byte as before; a second time nothing added.
+
+88. **Aurora68 Play over Riptide's .IPP6 (21 November).** The same afternoon Riptide gained `.IPP6` (its branch
+   `mac-port`, commit f592402; its `docs/IPP6.md`): MacTCP's programming model with 20-byte addresses that
+   hold IPv6 (IPv4 as `::ffff:a.b.c.d`) and a resolver in the driver, written with Aurora68 Play's
+   interrupt-time receive chain in mind. The owner asked for Aurora68 Play to use it, with `.IPP` and the DNR
+   kept, untouched, for every Mac without it. docs/09, "Riptide's .IPP6", is the long form.
+   - *What changed in `radio.c`.* Gestalt `'ipp6'` (version 1 or later; `_Gestalt` from System 6.0.4 on, glue
+     in `net.s`) and then OpenDriver `.IPP6`; else `.IPP` as before. A name goes to `ip6Resolve`
+     (asynchronous, port filled in, IPv6 first: with RFC 6724's default the testbed's `fd68::` would come after
+     IPv4), withdrawn with `ip6ResolveCancel` if the station is stopped while it runs; a bracketed IPv6
+     address or a dotted one in the URL to `ip6StrToAddr`. TCPActiveOpen takes each address in turn at offset
+     36 (the TCP6iopb's remoteAddr; its blocks are 130 bytes, so the three static blocks grew from 128 to 132)
+     and goes on to the next when an open fails. TCPCreate, TCPSend, TCPRcv and its completion chain,
+     TCPAbort and TCPRelease are unchanged, the same bytes for both drivers. The window's IPv4/IPv6 comes from
+     the address the open answered with (IPv4-mapped: IPv4); on `.IPP` it is still Riptide's 198.18.0.0/15
+     stand-ins that mean IPv6. Over `.IPP` an IPv6 URL is refused in plain words. Every station's start logs
+     `radio: via .IPP6 ...` or `radio: via .IPP ...`. Riptide's header is copied into `mac/piplay/IPP6.h`, as
+     its licence note allows (radio.c defines `__MACTCP__` first, since it names MacTCP's calls itself). CODE
+     grew from 75.7 to 80.2 KB.
+   - *Tested* (the solo board under QEMU, System 7.1, copies of the day's test image with this Aurora68 Play,
+     a station list with `[Testbed]` and `[Testbed/Over IPv6]`, `tools/radiotest.py` behind pinet as in item
+     83). With Riptide built from f592402 in the Extensions folder: `Riptide's .IPP6 is there, interface version
+     1`; `http://radio.testbed:8000/stream` (IPv4 only) looked up by `ip6Resolve`, `connected to
+     192.168.68.1:8000 (IPv4)`, played; `http://v6only.testbed/stream` (IPv6 only): `v6only.testbed is
+     [fd68::80]`, `connected to [fd68::80]:80 (IPv6)`, played, "— IPv6" in the window;
+     `http://peer.testbed:8000/stream` (both): `peer.testbed is [fd68::1], 192.168.68.1`, `no connection to
+     [fd68::1]:8000, error -23015: trying the next address` (pinet relays its port 8000 over IPv4 only), then
+     `connected to 192.168.68.1:8000 (IPv4)`, played; `http://[fd68::80]/stream`: no lookup, `connected to
+     [fd68::80]:80 (IPv6)`, played (`docs/img/system71-aurora68-play-ipp6.png`). In each the dump held the
+     test tone, 1000 Hz left and 1500 Hz right. With the image's older Riptide (no `.IPP6`): `via .IPP`, the
+     IPv4 station played, v6only.testbed played through Riptide's stand-in (`connected to 198.18.0.1:80 (IPv6
+     through Riptide's stand-in)`), peer.testbed over IPv4, and the bracketed address was refused (a first
+     wording ran past the error window's three lines and was shortened). The three-level menu Radio >
+     Testbed > Over IPv6 opened and chose its items (`docs/img/system71-aurora68-play-nested.png`; the drive
+     script had to learn that a submenu of the first item opens 6 pixels lower, clear of the menu bar).
+   - *Not verified:* `.IPP6` on the real SE and with a real station (no Internet in the testbed: NPO's servers
+     are the built-in list's only ones with IPv6), an IPv6 address that does not answer (ipDestDeadErr after
+     about 3 s, then the next address: the code path is the one the refused fd68::1 took), System 6.0.8.
 
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)

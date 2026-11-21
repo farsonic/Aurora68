@@ -2,7 +2,8 @@
 | mac/piplay/net.s - the calls PiPlay's radio (radio.c) makes that the C kit's trap list cannot express:
 | the Device Manager's Control call to MacTCP's .IPP driver, synchronous and asynchronous; the
 | completion routine of the receive call; the resolver's code resource called the way Apple's DNR glue
-| calls it, and its result procedure; HLock. Written on 21 November 2026 (docs/08 item 83).
+| calls it, and its result procedure; HLock; Gestalt, which asks for Riptide's .IPP6 (the Control calls
+| serve .IPP6 as they serve .IPP). Written on 21 November 2026 (docs/08 items 83 and 88).
 |
 | Register conventions met here, from Inside Macintosh and the MacTCP Programmer's Guide:
 | - _Control takes the parameter block in A0 and answers in D0 (asynchronous: at once, with ioResult 1
@@ -85,4 +86,15 @@ mac_DisposPtr:
 mac_DisposHandle:
 	move.l	4(%sp),%a0
 	.short	0xA023			| _DisposHandle
+	rts
+
+| long mac_Gestalt(long selector, long *response): _Gestalt is register-based (the selector in D0, the
+| answer in A0, the result in D0); System 6.0.4 and later have it (radio.c checks SysVersion first)
+	.globl	mac_Gestalt
+mac_Gestalt:
+	move.l	4(%sp),%d0
+	.short	0xA1AD			| _Gestalt
+	move.l	8(%sp),%a1
+	move.l	%a0,(%a1)
+	ext.l	%d0
 	rts
