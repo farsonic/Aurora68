@@ -86,3 +86,17 @@ the case on the desk, with the PiStorm in the 68000's socket and the Pi 3B on to
 to the SE's analogue board. The startup disk was the 96 MB image on the Pi's SD card. The same
 afternoon's hardware findings (WiFi start stopping the service core, an old declaration ROM chosen
 from the card's root) are in docs/08.
+
+## 9. Speedometer 4.02 again, from the card image (21 November 2026)
+
+![Speedometer 4.02 on the SE: performance rating 169.331, Mac Classic = 1.0; System Information says Mac SE, MC68030, MC68882, 131072K](img/se-hardware/09-speedometer-4-se12-card-image.jpg)
+
+The same SE a day after picture 7, on kernel 34283e9 ("se12"), started from the 96 MB disk image on
+the Pi's SD card, with both screens running (the HDMI one at 2560 by 1440) and WiFi joined.
+Speedometer 4.02's performance rating, against a Mac Classic: 169.3 (picture 7: 90.2); CPU 39.3,
+graphics 105.2, disk 382.8, math 455.0; Speedometer 4's newer rating 72.6. The benchmark mix averages
+259.4 and the FPU tests 129.4 against a Mac II. Most of the difference from picture 7 is the disk: picture
+7's was the BlueSCSI on the SE's own SCSI chip, every byte over the PiStorm's bus (0.82), this one is the
+card image, served from the Pi's memory (docs/08 items 54 and 67). System Information: Mac SE (PiMach),
+MC68030 with MC68882 and the 68030 MMU, 131,072K. The colour tests ran at one bit only: they use the
+main screen, the SE's own.
