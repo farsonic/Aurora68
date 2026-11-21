@@ -2873,6 +2873,10 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      the watch on the HDMI console. The race itself was shown only with the stress option; on the user's Pi
      the USB start's single power request, which waits for the controller's power, is enough by the timing
      above.
+   - *On the real SE, the same afternoon (kernel 34283e9, "se12"):* with the WiFi words back in
+     cmdline.txt the Mac started, the WiFi joined the owner's network, and the owner found the Mac's network
+     "way better" for latency than before. The SE was running both screens (the HDMI one at 2560 by 1440)
+     with the image on the card as its startup disk.
 
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
