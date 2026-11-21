@@ -206,7 +206,9 @@ With `remote=on remote.token=TOKEN` in cmdline.txt the kernel answers on the loc
 `http://aurora68-pi.local/` (or the address its log prints, `[REMOTE] address ...`): a page with the
 Mac's screen that clicks and types, and an HTTP API that `tools/aurora68-mcp.py` turns into tools
 for an agent (screenshot, click, move, drag, type, key, log, state, restart), so a problem can be
-shown and reproduced without a photograph. It needs nothing on the Mac and works while the Mac is
+shown and reproduced without a photograph. It lists the Mac's windows and takes a picture of one
+of them (`/windows`, `/screenshot?window=...`; the page's Windows panel, `aurora68.py windows` and
+`aurora68.py screenshot --window "title" out.png`), read from the Mac's memory by the kernel. It needs nothing on the Mac and works while the Mac is
 hung or shows a system error. Setting it up, Claude Code's `claude mcp add` line and Claude
 Desktop's configuration: docs/13.
 

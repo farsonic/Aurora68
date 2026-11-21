@@ -3211,6 +3211,47 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      'PSMC' extensions show the common one); the extensions' new order with the owner's other extensions;
      NPO Radio 2 itself (no Internet in the testbed).
 
+85. **The remote control lists the Mac's windows and photographs one (21 November).** The owner shows
+   results by photographing the Mac's screens; they asked for the Mac's windows as a list and a
+   screenshot of the window they choose. docs/13, "Windows", is the long form.
+   - *Read by the kernel* (`emu68/src/psmac/psmac_windows.c`). The Window Manager's WindowRecords are in
+     the Mac's RAM, which the kernel reads directly, so no Mac software is involved. The first version
+     walked WindowList ($9D6) and on the solo board under System 7.1 found one window, the Calculator's,
+     with the Finder's and PiLog's windows on the screen: under System 7 WindowList is only the
+     current application's layer. A RAM dump through the remote's file channel (16 MB in 1.5 s, by a
+     debugging request made for the day and left out of the commit) showed the layers: a layer is a
+     WindowRecord whose `windowPic` field is its first window and whose `dataHandle` is its parent,
+     with one window definition for all of them; $A90 holds the current layer; the root holds one
+     layer that holds the applications' layers front to back; a layer's `refCon` is the Process
+     Manager's record of its application (type and creator at 4, the layer at $70, a handle at $54 to
+     the application's saved low memory with its CurApName at $38 and the layer again at $58). None of
+     this is documented, so each step is checked (the parent chain ends at a root within six levels, a
+     layer's parent link is the layer it is listed in, both back links agree before a name is taken)
+     and anything that does not hold together falls back to WindowList. Two things the first reading
+     got wrong: `hilited` is $FF, not 1, under System 7.1 (the record check rejected it), and MemTop
+     ($108) is no bound for pointers, since the Process Manager leaves it at 2.8 MB on a 16 MB Mac (the
+     whole list came back empty); the bound is now the RAM the kernel gave the Mac, 8 MB in 24-bit mode.
+   - *Safety.* Pointers even and inside RAM before they are followed, handles masked in 24-bit mode
+     ($CB2), purged handles skipped, regions checked, every loop bounded, the list read until two
+     readings agree (up to five). On the host the same file ran against the dump with 20,000 random
+     corruptions (pointers bent into loops, bytes set to $FF) under AddressSanitizer: no hang, no read
+     outside the dump.
+   - *The picture* (`psmac_remote.c`, `psmac_display.c`). The streaming PNG encoder now also composes a
+     rectangle of the desktop from the screens' own frame buffers, each at its depth and colour table,
+     grey where no screen is, clipped to the screens, with `scale` 2 to 4 doubling pixels. Each screen
+     keeps its own screenshot parameters now, and the state endpoint looks at a screen without starting
+     a picture (until today a /state during a picture of the HDMI screen switched that picture to the
+     first screen's frame buffer half way).
+   - *Endpoints and tools.* `GET /windows`; `GET /screenshot?window=ID|title=TEXT|screen=N|rect=l,t,r,b`
+     with `content=1` and `scale=`; the page's Windows panel; `aurora68.py windows` and `screenshot
+     --window/--rect/--content`; the MCP server's `list_windows` and the screenshot tool's `window`.
+   - *Tested* in QEMU (the solo board, System 7.1 in 32-bit and in 24-bit mode, System 6.0.8 with the
+     Finder alone and with MultiFinder) and MAME's SE with two screens (the HDMI screen in thousands and
+     in millions), through the file channel and over HTTP, with the MCP server and the page in headless
+     Chrome; docs/13 "What was tested" has the list. Under System 6's MultiFinder only the front
+     application's windows are seen: there are no layers, and WindowList is swapped with the rest of an
+     application's low memory. The encoder needed two more match distances for doubled pixels (the SE's
+     grey desktop at scale 2: 780 KB before, 30 KB after). Not seen on hardware.
 
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)

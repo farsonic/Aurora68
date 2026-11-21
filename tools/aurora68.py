@@ -8,6 +8,12 @@ scripts, and for checking the server without an MCP host. Python 3, standard lib
 
   aurora68.py state                              the JSON status
   aurora68.py screenshot out.png [--scale 2]     the first screen as PNG (--display 1: the second, HDMI on the SE)
+  aurora68.py windows                            the Mac's windows, front to back (id, size, screens, title)
+  aurora68.py screenshot --window "Untitled" out.png [--content] [--scale 2]
+                                                 one window: the frontmost visible one whose title has the text
+                                                 (or an id from `windows`, 0x...); --content without its frame;
+                                                 --scale 2 doubles each pixel here (on whole screens it shrinks)
+  aurora68.py screenshot --rect 0,0,640,480 out.png   a rectangle of the desktop, global coordinates
   aurora68.py click X Y [--double] [--mods cmd]  a click at a point of the desktop (pixels, 0,0 the main screen's
                                                  top left; --display N: a point of screen N instead)
   aurora68.py move X Y | drag X Y TO_X TO_Y
@@ -22,7 +28,7 @@ Where: --url (default $AURORA68_URL, else http://aurora68-pi.local), --token (de
 $AURORA68_TOKEN). In the QEMU testbed, --semihost BASE talks to the kernel through the files of
 mac.remotefile=BASE instead of the network.
 """
-import argparse, json, os, struct, sys, time, urllib.error, urllib.request
+import argparse, json, os, re, struct, sys, time, urllib.error, urllib.parse, urllib.request
 
 
 class Remote:
@@ -102,6 +108,38 @@ class Remote:
             time.sleep(0.25)
         raise RuntimeError('the screen stayed busy')
 
+    def windows(self):
+        status, headers, data = self.request('GET', '/windows')
+        if status != 200:
+            raise RuntimeError(f'{status}: {data.decode("utf-8", "replace").strip()}')
+        return json.loads(data.decode('utf-8'))
+
+    def window_screenshot(self, window=None, rect=None, screen=None, content=False, scale=1):
+        """(png, headers) of a window (an id 0x..., or a title substring), a rectangle (l, t, r, b) or a screen"""
+        if window is not None:
+            w = str(window)
+            if re.fullmatch(r'0x[0-9a-fA-F]+', w):
+                q = 'window=' + w
+            else:
+                q = 'title=' + urllib.parse.quote(w, safe='')
+        elif rect is not None:
+            q = 'rect=' + ','.join(str(int(v)) for v in rect)
+        else:
+            q = f'screen={int(screen or 0)}'
+        q = f'/screenshot?{q}&scale={int(scale)}' + ('&content=1' if content else '')
+        for attempt in range(20):
+            status, headers, data = self.request('GET', q)
+            if status == 200:
+                return data, {k.lower(): v for k, v in headers.items()}
+            if status != 503 or b'another' not in data:
+                try:
+                    msg = json.loads(data.decode('utf-8')).get('error', '')
+                except ValueError:
+                    msg = data.decode('utf-8', 'replace').strip()
+                raise RuntimeError(f'{status}: {msg}')
+            time.sleep(0.25)
+        raise RuntimeError('the screen stayed busy')
+
     def input(self, events, wait=True):
         return self._json('POST', '/input' + ('?wait=1' if wait else ''), events)
 
@@ -139,6 +177,10 @@ def main():
     sub = ap.add_subparsers(dest='cmd', required=True)
     sub.add_parser('state')
     p = sub.add_parser('screenshot'); p.add_argument('out'); p.add_argument('--scale', type=int, default=1); p.add_argument('--hdmi', action='store_true')
+    p.add_argument('--window', help='a window: text of its title, or its id (0x...) from `windows`')
+    p.add_argument('--rect', help='a rectangle of the desktop: left,top,right,bottom in global coordinates')
+    p.add_argument('--content', action='store_true', help='the window\'s content only, without the frame and title bar')
+    sub.add_parser('windows')
     p = sub.add_parser('click'); p.add_argument('x', type=int); p.add_argument('y', type=int)
     p.add_argument('--double', action='store_true'); p.add_argument('--mods', default=''); p.add_argument('--button', default='left')
     p = sub.add_parser('move'); p.add_argument('x', type=int); p.add_argument('y', type=int)
@@ -153,6 +195,22 @@ def main():
     on = {} if a.display is None else {'display': a.display}       # a point of that screen, not of the desktop
     if a.cmd == 'state':
         print(json.dumps(r.state(), indent=2))
+    elif a.cmd == 'windows':
+        ws = r.windows()
+        print(f'{"id":10}  {"#":>2}  {"kind":14} {"size":>11}  {"screens":7}  {"application":16} title')
+        for w in ws:
+            q = w.get('rect') or [0, 0, 0, 0]
+            size = f'{q[2] - q[0]}x{q[3] - q[1]}' + ('' if w.get('visible') else ' hidden')
+            print(f'{w["id"]:10}  {w["front_index"]:2}  {w["kind"]:14} {size:>11}  {",".join(map(str, w.get("screens", []))):7}  '
+                  f'{w.get("application", "")[:16]:16} {w["title"]}')
+    elif a.cmd == 'screenshot' and (a.window or a.rect):
+        t0 = time.time()
+        rect = [int(v) for v in a.rect.split(',')] if a.rect else None
+        data, h = r.window_screenshot(window=a.window, rect=rect, content=a.content, scale=a.scale)
+        open(a.out, 'wb').write(data)
+        w, hh = png_size(data)
+        extra = ''.join(f', {k[9:]} {v}' for k, v in h.items() if k.startswith('x-aurora-'))
+        print(f'{a.out}: {w}x{hh}, {len(data)} bytes in {time.time() - t0:.2f} s{extra}')
     elif a.cmd == 'screenshot':
         t0 = time.time(); data = r.screenshot(a.scale, a.hdmi, a.display or 0)
         open(a.out, 'wb').write(data)

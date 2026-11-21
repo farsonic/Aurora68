@@ -681,63 +681,91 @@ int psmac_display_info(int i, uint32_t *w, uint32_t *h, uint32_t *depth, uint32_
    cannot mix two layouts; the pixels are read while the Mac goes on drawing, as a card's frame
    grabber would. display is the screen: 0 the first (the SE's on the SE board), 1 the HDMI screen
    when there are two. */
-static struct { int src; uint32_t w, h, depth, rb; const uint8_t *base; uint32_t pal[256]; } shot;
-int psmac_display_shot(uint32_t *w, uint32_t *h, uint32_t *depth, int display, int want_hdmi)
+struct shot { int src; uint32_t w, h, depth, rb; const uint8_t *base; uint32_t pal[256]; };
+static struct shot shots[2];                  /* one per screen, so a picture of a window can take from both (21 November) */
+static struct shot *shot = &shots[0];         /* the one psmac_display_shot_row reads */
+/* the parameters of screen display's picture into t: 1 the Mac's frame buffer, 2 the VideoCore's, 0 none */
+static int shot_take(struct shot *t, int display, int want_hdmi)
 {
-    shot.src = 0;
-    if (!vcs || display < 0 || display >= nscr) return 0;
+    t->src = 0;
+    if (!vcs || display < 0 || display >= nscr || display >= 2) return 0;
     struct screen *s = &scr[display];
     volatile struct psmb_display *d = s->disp;
     int mi = mode_index(d->depth);
     if (!want_hdmi && (d->flags & PSMB_DISP_ENABLED) && mi >= 0 && d->mode_base[mi]) {
-        shot.w = d->width; shot.h = d->height; shot.depth = d->depth; shot.rb = d->rowbytes;
-        shot.base = mode_frame(s, mi);
-        if (shot.rb * shot.h > mode_limit(s, mi) || shot.rb < (shot.w * shot.depth + 7) / 8) return 0;
+        t->w = d->width; t->h = d->height; t->depth = d->depth; t->rb = d->rowbytes;
+        t->base = mode_frame(s, mi);
+        if (t->rb * t->h > mode_limit(s, mi) || t->rb < (t->w * t->depth + 7) / 8) return 0;
         for (int i = 0; i < 256; i++) {
             uint32_t c = d->clut[i] & 0xffffffu;
             if (d->flags & PSMB_DISP_GRAY) { uint32_t y = (((c >> 16) & 255) * 77 + ((c >> 8) & 255) * 151 + (c & 255) * 28) >> 8; c = y << 16 | y << 8 | y; }
-            shot.pal[i] = c;
+            t->pal[i] = c;
         }
-        shot.src = 1;
+        t->src = 1;
     } else if (vcfb && vc_w && vc_h && (want_hdmi || s == vcs)) {
-        shot.w = vc_w; shot.h = vc_h; shot.depth = vc_bpp; shot.rb = vc_pitch; shot.base = vcfb;
-        shot.src = 2;
-    } else return 0;
-    *w = shot.w; *h = shot.h; *depth = shot.depth;
-    return shot.src;
+        t->w = vc_w; t->h = vc_h; t->depth = vc_bpp; t->rb = vc_pitch; t->base = vcfb;
+        t->src = 2;
+    }
+    return t->src;
 }
-/* row y of the screenshot begun above, as R,G,B bytes, at most maxw pixels of it */
-void psmac_display_shot_row(uint32_t y, uint8_t *out, uint32_t maxw)
+/* a screenshot of screen display begins: its parameters are kept until the next one of that screen */
+int psmac_display_shot(uint32_t *w, uint32_t *h, uint32_t *depth, int display, int want_hdmi)
 {
-    const uint8_t *src = shot.base + y * shot.rb;
-    uint32_t w = shot.w < maxw ? shot.w : maxw;
-    if (shot.src == 2) {                        /* the VideoCore buffer: little-endian XRGB (or swapped), or RGB565 */
-        if (shot.depth == 32) {
-            for (uint32_t x = 0; x < w; x++, src += 4, out += 3) {
-                if (vc_swap) { out[0] = src[0]; out[1] = src[1]; out[2] = src[2]; }
-                else { out[0] = src[2]; out[1] = src[1]; out[2] = src[0]; }
+    if (display < 0 || display >= 2) return 0;
+    shot = &shots[display];
+    if (!shot_take(shot, display, want_hdmi)) return 0;
+    *w = shot->w; *h = shot->h; *depth = shot->depth;
+    return shot->src;
+}
+/* what a screenshot of screen display would be, without disturbing one being sent (the state
+   endpoint asks while a picture of the other screen may be under way) */
+int psmac_display_probe(uint32_t *w, uint32_t *h, uint32_t *depth, int display)
+{
+    static struct shot t;
+    if (!shot_take(&t, display, 0)) return 0;
+    *w = t.w; *h = t.h; *depth = t.depth;
+    return t.src;
+}
+/* n pixels of row y from pixel x0 of the screenshot of screen display begun above, as R,G,B bytes;
+   the caller keeps x0 + n within the screen's width and y within its height */
+void psmac_display_shot_span(int display, uint32_t y, uint32_t x0, uint32_t n, uint8_t *out)
+{
+    const struct shot *t = &shots[display & 1];
+    const uint8_t *src = t->base + y * t->rb;
+    if (t->src == 2) {                          /* the VideoCore buffer: little-endian XRGB (or swapped), or RGB565 */
+        if (t->depth == 32) {
+            for (uint32_t x = x0; x < x0 + n; x++, out += 3) {
+                const uint8_t *p = src + 4 * x;
+                if (vc_swap) { out[0] = p[0]; out[1] = p[1]; out[2] = p[2]; }
+                else { out[0] = p[2]; out[1] = p[1]; out[2] = p[0]; }
             }
         } else {
-            for (uint32_t x = 0; x < w; x++, src += 2, out += 3) {
-                uint32_t v = (uint32_t)src[0] | (uint32_t)src[1] << 8, r = v >> 11, g = (v >> 5) & 63, b = v & 31;
+            for (uint32_t x = x0; x < x0 + n; x++, out += 3) {
+                const uint8_t *p = src + 2 * x;
+                uint32_t v = (uint32_t)p[0] | (uint32_t)p[1] << 8, r = v >> 11, g = (v >> 5) & 63, b = v & 31;
                 out[0] = (uint8_t)(r << 3 | r >> 2); out[1] = (uint8_t)(g << 2 | g >> 4); out[2] = (uint8_t)(b << 3 | b >> 2);
             }
         }
         return;
     }
     uint32_t c = 0;
-    for (uint32_t x = 0; x < w; x++, out += 3) {
-        switch (shot.depth) {
+    for (uint32_t x = x0; x < x0 + n; x++, out += 3) {
+        switch (t->depth) {
         case 32: c = (uint32_t)src[4 * x + 1] << 16 | (uint32_t)src[4 * x + 2] << 8 | src[4 * x + 3]; break;      /* 00RRGGBB, big-endian */
         case 16: { uint32_t v = (uint32_t)src[2 * x] << 8 | src[2 * x + 1], r = (v >> 10) & 31, g = (v >> 5) & 31, b = v & 31;
                    c = (r << 3 | r >> 2) << 16 | (g << 3 | g >> 2) << 8 | (b << 3 | b >> 2); break; }
-        case 8: c = shot.pal[src[x]]; break;
-        case 4: c = shot.pal[(src[x >> 1] >> ((x & 1) ? 0 : 4)) & 15]; break;
-        case 2: c = shot.pal[(src[x >> 2] >> (6 - 2 * (x & 3))) & 3]; break;
-        default: c = shot.pal[(src[x >> 3] >> (7 - (x & 7))) & 1]; break;
+        case 8: c = t->pal[src[x]]; break;
+        case 4: c = t->pal[(src[x >> 1] >> ((x & 1) ? 0 : 4)) & 15]; break;
+        case 2: c = t->pal[(src[x >> 2] >> (6 - 2 * (x & 3))) & 3]; break;
+        default: c = t->pal[(src[x >> 3] >> (7 - (x & 7))) & 1]; break;
         }
         out[0] = (uint8_t)(c >> 16); out[1] = (uint8_t)(c >> 8); out[2] = (uint8_t)c;
     }
+}
+/* row y of the screenshot begun last, as R,G,B bytes, at most maxw pixels of it */
+void psmac_display_shot_row(uint32_t y, uint8_t *out, uint32_t maxw)
+{
+    psmac_display_shot_span((int)(shot - shots), y, 0, shot->w < maxw ? shot->w : maxw, out);
 }
 
 /* ---- PiDisplay (psmac_hdmi.c) --------------------------------------------------------------------- */

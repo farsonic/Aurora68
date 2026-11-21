@@ -150,7 +150,7 @@ bcm2835-fb.yres=H"` starts QEMU's VideoCore at that size instead, as config.txt'
 Pi's own screen (the second display) through QEMU's monitor socket. The remote control (docs/13)
 drives the Mac from the host: `remote=on remote.token=T` with `PINET_KERNEL=18068 python3
 tools/pinet.py /tmp/psmac-net peer` makes the kernel's HTTP server `http://127.0.0.1:18068/`
-(`tools/aurora68.py --url ... --token T screenshot|click|type|key|log|state|restart`, and
+(`tools/aurora68.py --url ... --token T screenshot|windows|click|type|key|log|state|restart`, and
 `tools/aurora68-mcp.py` for an MCP host); `mac.remotefile=BASE` serves the same requests through
 semihosting without the network. `tools/pram32.py` switches
 32-bit addressing on in MAME's saved PRAM (needed for more than 8 MiB and for the second screen's

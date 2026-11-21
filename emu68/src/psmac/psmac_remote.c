@@ -17,6 +17,10 @@
  *                     ?src=hdmi: the VideoCore buffer)
  *   POST /input       JSON events: move, down, up, click, drag, key, keydown, keyup, text, wait
  *   GET  /log         the kernel's log from byte N (?since=N), secrets hidden (?tags=BOOT,CRASH)
+ *   GET  /windows     JSON: the Mac's windows front to back, read from the Window Manager (psmac_windows.c)
+ *   GET  /screenshot  a PNG of one window (?window=ID or ?title=TEXT, &content=1), one screen (?screen=N) or a
+ *                     rectangle of the desktop (?rect=l,t,r,b), composed from the screens under it; &scale=2..4
+ *                     doubles each pixel (21 November 2026)
  *   GET  /state       JSON: board, screen, the application in front, Ticks, crashes, network, disks
  *   POST /restart     the Mac restarts (?how=nmi: the programmer's switch; ?how=pi: the whole Pi)
  * Every request but the page needs the token (remote.token=, as X-Aurora-Token or Authorization:
@@ -42,6 +46,7 @@
 #include "../alice/alice_psmac.h"
 #include "../alice/alice_net.h"
 #include "psmac_ip.h"
+#include "psmac_windows.h"
 
 const char *psmac_option(const char *key);                                  /* psmac_bus.c */
 uint32_t psmac_mac_rd32(uint32_t logical, int *ok);                         /* psmac_bus.c */
@@ -55,6 +60,8 @@ int  psmac_display_shot(uint32_t *w, uint32_t *h, uint32_t *depth, int display, 
 int  psmac_display_info(int i, uint32_t *w, uint32_t *h, uint32_t *depth, uint32_t *base);
 int  psmac_display_count(void);
 void psmac_display_shot_row(uint32_t y, uint8_t *rgb, uint32_t maxw);
+void psmac_display_shot_span(int display, uint32_t y, uint32_t x0, uint32_t n, uint8_t *rgb);
+int  psmac_display_probe(uint32_t *w, uint32_t *h, uint32_t *depth, int display);
 void psmac_crash_last(uint32_t *exc_n, uint32_t *exc_vec, uint32_t *exc_pc, const char **exc_what,
                       uint32_t *sys_n, int16_t *sys_id, const char **sys_what);  /* psmac_crash.c */
 const char *psmac_crash_syserr_name(int16_t id);
@@ -347,6 +354,7 @@ static int input_event(struct jfield *f, int nf, char *why, unsigned why_max)
 }
 
 /* ======================================================================================= PNG */
+struct place { int display; int16_t l, t, r, b; };     /* a screen of the card at its place on the desktop */
 static uint32_t crc_table[256];
 static void crc_init(void)
 {
@@ -365,6 +373,10 @@ static struct {
     uint64_t bits; int nbits;                            /* the deflate bit writer */
     uint8_t out[PNG_OUT]; uint32_t out_len, out_pos;
     uint32_t bytes, t0, busy_us_max;
+    /* a rectangle of the desktop rather than a whole screen (/screenshot, 21 November): its global
+       coordinates, the pixel doubling, and the screens it takes its pixels from, each at its place */
+    int comp; int16_t rl, rt, rr, rb; uint32_t zoom;
+    int ns; struct place s[2];
 } P;
 static inline void put_bits(uint32_t v, int n) { P.bits |= (uint64_t)v << P.nbits; P.nbits += n; while (P.nbits >= 8) { P.out[P.out_len++] = (uint8_t)P.bits; P.bits >>= 8; P.nbits -= 8; } }
 /* a Huffman code goes most significant bit first */
@@ -398,6 +410,7 @@ static void chunk_close(uint32_t start)
 }
 static uint32_t chunk_open(const char *type) { uint32_t s = P.out_len; P.out_len += 4; for (int i = 0; i < 4; i++) P.out[P.out_len++] = (uint8_t)type[i]; return s; }
 
+static void png_start(int conn);
 static int png_begin(int conn, int scale, int display, int hdmi)
 {
     uint32_t w, h, d;
@@ -406,10 +419,29 @@ static int png_begin(int conn, int scale, int display, int hdmi)
     if (scale < 1) scale = 1;
     if (scale > 8) scale = 8;
     if (w > PNG_MAXW) w = PNG_MAXW;
-    P.active = 1; P.conn = conn; P.sw = w; P.sh = h; P.scale = (uint32_t)scale;
-    P.w = w / P.scale; P.h = h / P.scale; P.y = 0; P.src_y = 0;
+    P.comp = 0; P.sw = w; P.sh = h; P.scale = (uint32_t)scale;
+    P.w = w / P.scale; P.h = h / P.scale;
     if (!P.w) P.w = 1;
     if (!P.h) P.h = 1;
+    png_start(conn);
+    return 1;
+}
+/* The rectangle l, t, r, b of the desktop (global coordinates, QuickDraw's: the main screen's top
+   left is 0,0), each pixel zoom times over, from the screens in P.s[] (comp_screens). Where no screen
+   is (between two screens of different heights, beside one that Monitors put lower), the picture is
+   grey. The caller has clipped the rectangle to the desktop and made sure it fits PNG_MAXW. */
+static int png_begin_rect(int conn, const int16_t r[4], uint32_t zoom)
+{
+    if (P.active) return -1;
+    P.comp = 1; P.rl = r[0]; P.rt = r[1]; P.rr = r[2]; P.rb = r[3]; P.zoom = zoom; P.scale = 1;
+    P.w = (uint32_t)(r[2] - r[0]) * zoom; P.h = (uint32_t)(r[3] - r[1]) * zoom;
+    png_start(conn);
+    return 1;
+}
+/* the signature, IHDR, and the zlib and deflate block headers for a picture of P.w by P.h */
+static void png_start(int conn)
+{
+    P.active = 1; P.conn = conn; P.y = 0; P.src_y = 0;
     P.adler_a = 1; P.adler_b = 0; P.bits = 0; P.nbits = 0; P.out_len = P.out_pos = 0; P.bytes = 0; P.t0 = now_ms();
     static const uint8_t sig[8] = { 0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n' };
     for (int i = 0; i < 8; i++) P.out[P.out_len++] = sig[i];
@@ -421,13 +453,36 @@ static int png_begin(int conn, int scale, int display, int hdmi)
     P.out[P.out_len++] = 0x78; P.out[P.out_len++] = 0x01;          /* zlib: deflate, 32 KiB window, no dictionary */
     put_bits(1, 1); put_bits(1, 2);                                /* the one block: final, fixed codes */
     chunk_close(s);
-    return 1;
+}
+#define GAP_GREY 0x40                                    /* where the rectangle has no screen under it: darker than any desktop grey */
+/* the composite's next row: P.rr - P.rl pixels of the desktop's row P.rt + P.y / zoom, each screen's
+   part converted at its own depth and through its own colour table, then doubled zoom times across */
+static void comp_row(uint8_t *dst)
+{
+    int gy = P.rt + (int)(P.y / P.zoom);
+    uint32_t n = (uint32_t)(P.rr - P.rl);
+    uint8_t *row = P.zoom == 1 ? dst : P.srow;
+    for (uint32_t i = 0; i < 3 * n; i++)
+        row[i] = GAP_GREY;
+    for (int k = 0; k < P.ns; k++) {
+        if (gy < P.s[k].t || gy >= P.s[k].b) continue;
+        int x0 = P.rl > P.s[k].l ? P.rl : P.s[k].l, x1 = P.rr < P.s[k].r ? P.rr : P.s[k].r;
+        if (x0 < x1) psmac_display_shot_span(P.s[k].display, (uint32_t)(gy - P.s[k].t), (uint32_t)(x0 - P.s[k].l), (uint32_t)(x1 - x0), row + 3 * (x0 - P.rl));
+    }
+    if (P.zoom == 1) return;
+    for (uint32_t x = 0; x < n; x++)
+        for (uint32_t k = 0; k < P.zoom; k++) {
+            uint8_t *o = dst + 3 * (x * P.zoom + k);
+            o[0] = row[3 * x]; o[1] = row[3 * x + 1]; o[2] = row[3 * x + 2];
+        }
 }
 /* the next output row into P.rows[y % 3], box-averaged over scale x scale source pixels */
 static void png_source_row(uint8_t *dst)
 {
     uint32_t sc = P.scale, n = P.w * 3;
+    if (P.comp && P.y % P.zoom) { __builtin_memcpy(dst, P.rows[(P.y + 2) % 3], 1 + n); return; }   /* a doubled row: the one above again */
     dst[0] = 0;                                                    /* filter: none (the LZ77 search does the work) */
+    if (P.comp) { comp_row(dst + 1); return; }
     if (sc == 1) { psmac_display_shot_row(P.src_y++, dst + 1, PNG_MAXW); return; }
     for (uint32_t i = 0; i < n; i++) P.acc[i] = 0;
     for (uint32_t r = 0; r < sc; r++) {
@@ -451,9 +506,14 @@ static void png_encode_row(void)
     for (uint32_t i = 0; i < stride; i++) { P.adler_a += c[i]; if (P.adler_a >= 65521) P.adler_a -= 65521; P.adler_b += P.adler_a; if (P.adler_b >= 65521) P.adler_b -= 65521; }
     for (uint32_t j = 0; j < stride; ) {
         uint32_t best = 0, bdist = 0, lim = stride - j > 258 ? 258 : stride - j;
-        const uint8_t *cand[4] = { j >= 3 ? c + j - 3 : 0, j >= 6 ? c + j - 6 : 0, y >= 1 ? up1 + j : 0, y >= 2 && 2 * stride <= 32768 ? up2 + j : 0 };
-        const uint32_t dist[4] = { 3, 6, stride, 2 * stride };
-        for (int k = 0; k < 4; k++) {
+        /* with doubled pixels (a /screenshot's scale), a dither pattern repeats every two or four
+           pixels further: one and two source pixels back as well (the SE's grey desktop at scale 2
+           came to 780 KB without them) */
+        uint32_t zd = P.comp && P.zoom > 1 ? 3 * P.zoom : 0;
+        const uint8_t *cand[6] = { j >= 3 ? c + j - 3 : 0, j >= 6 ? c + j - 6 : 0, y >= 1 ? up1 + j : 0, y >= 2 && 2 * stride <= 32768 ? up2 + j : 0,
+                                   zd && j >= zd ? c + j - zd : 0, zd && j >= 2 * zd ? c + j - 2 * zd : 0 };
+        const uint32_t dist[6] = { 3, 6, stride, 2 * stride, zd, 2 * zd };
+        for (int k = 0; k < 6; k++) {
             if (!cand[k] || (k >= 2 && dist[k] > 32768)) continue;
             uint32_t n = 0;
             while (n < lim && cand[k][n] == c[j + n]) n++;
@@ -491,7 +551,7 @@ static void png_band(void)
 #define NCONN (IPK_CONNS + 1)                     /* the last one is the semihosting channel */
 #define REQ_MAX 8192
 #define OUT_MAX 12288
-enum { R_NONE, R_BUF, R_PNG, R_LOG, R_RECORDS, R_INPUT_WAIT };
+enum { R_NONE, R_BUF, R_PNG, R_LOG, R_RECORDS, R_INPUT_WAIT, R_WINDOWS };
 struct hconn {
     int used, local; uint8_t peer[4];
     char req[REQ_MAX + 1]; uint32_t req_len; int handled;
@@ -520,9 +580,10 @@ static void respond(struct hconn *h, int code, const char *text, const char *cty
     head(h, code, text, ctype, (int)slen(body));
     out_str(h, body);
 }
+static void json_name(char *out, const char *in, unsigned max);
 static void respond_json_error(struct hconn *h, int code, const char *text, const char *msg)
 {
-    char b[300]; sprintf(b, "{\"error\": \"%s\"}\n", msg);
+    char b[300], m[256]; json_name(m, msg, sizeof m); sprintf(b, "{\"error\": \"%s\"}\n", m);
     respond(h, code, text, "application/json", b);
 }
 
@@ -530,12 +591,14 @@ static void respond_json_error(struct hconn *h, int code, const char *text, cons
 static const char page[] =
 "<!DOCTYPE html><html><head><meta charset=utf-8><title>Aurora68</title><style>"
 "body{font:14px -apple-system,Helvetica,sans-serif;margin:12px;background:#ddd}#s{image-rendering:pixelated;border:1px solid #444;cursor:crosshair;max-width:100%}"
-"input,button,select{font:inherit}#st{font:12px monospace;white-space:pre}</style></head><body>"
+"input,button,select{font:inherit}#st{font:12px monospace;white-space:pre}#wt td{padding:1px 8px}#g{image-rendering:pixelated;max-width:100%}</style></head><body>"
 "<div>Token <input id=tk type=password size=16> Scale <select id=sc><option>1<option>2<option>4</select> Screen <select id=dp><option>0<option>1</select> "
 "<button onclick=k('return')>Return</button> <button onclick=k('escape')>Esc</button> <button onclick=\"k('q','cmd')\">Cmd-Q</button> "
 "<input id=tx size=24 placeholder='text to type'><button onclick=ty()>Type</button> "
 "<button onclick=\"if(confirm('Restart the Mac?'))cmd('/restart')\">Restart</button></div>"
-"<p><img id=s tabindex=0 alt='the Mac'></p><div id=st></div><script>"
+"<p><img id=s tabindex=0 alt='the Mac'></p>"
+"<h4>Windows <button onclick=wins()>Refresh</button> <label><input id=gz type=checkbox> doubled</label> <label><input id=gc type=checkbox> content only</label></h4>"
+"<table id=wt></table><p id=gs></p><p><img id=g alt=''></p><div id=st></div><script>"
 "var T=document.getElementById('tk'),S=document.getElementById('s'),sc=document.getElementById('sc'),dp=document.getElementById('dp');"
 "T.value=localStorage.a68t||'';T.onchange=function(){localStorage.a68t=T.value};"
 "function H(){return{'X-Aurora-Token':T.value}}"
@@ -553,7 +616,20 @@ static const char page[] =
 ".then(function(b){var u=URL.createObjectURL(b);S.onload=function(){URL.revokeObjectURL(u);setTimeout(shot,300)};S.src=u})"
 ".catch(function(e){document.getElementById('st').textContent='screen: '+e;setTimeout(shot,2000)})}"
 "function state(){fetch('/state',{headers:H()}).then(function(r){return r.text()}).then(function(t){document.getElementById('st').textContent=t})"
-".catch(function(){}).then(function(){setTimeout(state,2000)})}shot();state();</script></body></html>\n";
+".catch(function(){}).then(function(){setTimeout(state,2000)})}"
+"function E(t,x){var e=document.createElement(t);e.textContent=x;return e}"
+"function wins(){fetch('/windows',{headers:H()}).then(function(r){return r.json()}).then(function(a){var t=document.getElementById('wt');t.innerHTML='';"
+"var h=document.createElement('tr');['Window','Size','Screen',''].forEach(function(x){h.appendChild(E('th',x))});t.appendChild(h);"
+"a.forEach(function(w){var r=document.createElement('tr'),b=E('button','Grab'),q=w.rect||[0,0,0,0];"
+"r.appendChild(E('td',(w.title||'('+w.kind+')')+(w.visible?'':' (hidden)')));r.appendChild(E('td',(q[2]-q[0])+' x '+(q[3]-q[1])));"
+"r.appendChild(E('td',w.screens.join(', ')));b.onclick=function(){grab(w)};b.disabled=!w.visible||!w.screens.length;var d=document.createElement('td');d.appendChild(b);r.appendChild(d);t.appendChild(r)})})"
+".catch(function(e){document.getElementById('gs').textContent='windows: '+e})}"
+"function grab(w){var s=document.getElementById('gs'),g=document.getElementById('g');s.textContent='taking '+w.title+' ...';"
+"fetch('/screenshot?window='+w.id+(document.getElementById('gz').checked?'&scale=2':'')+(document.getElementById('gc').checked?'&content=1':''),{headers:H()})"
+".then(function(r){if(!r.ok)return r.json().then(function(j){throw j.error});return r.blob()}).then(function(b){var u=URL.createObjectURL(b);g.src=u;"
+"var a=E('a','Save '+((w.title||'window').replace(/[^A-Za-z0-9 ._-]/g,'_'))+'.png');a.href=u;a.download=a.textContent.substring(5);s.textContent='';s.appendChild(a)})"
+".catch(function(e){s.textContent='screenshot: '+e})}"
+"shot();state();</script></body></html>\n";
 
 /* ---- the log: the window's ring (psmb.h, struct psmb_log), secrets hidden ---- */
 /* One line into out: the values of secrets as ***, by the rule the card's aurora68.log and the
@@ -675,8 +751,12 @@ static void cur_app(char *out)
     unsigned len = w[0] >> 24;
     char raw[33];
     if (len > 31) len = 0;
-    for (unsigned i = 0; i < len; i++) raw[i] = (char)(w[(i + 1) / 4] >> (24 - 8 * ((i + 1) % 4)));
-    raw[len] = 0;
+    unsigned o = 0;
+    for (unsigned i = 0; i < len; i++) {
+        char c = (char)(w[(i + 1) / 4] >> (24 - 8 * ((i + 1) % 4)));
+        if (o || c) raw[o++] = c;                                /* System 7's DA Handler runs under the DA's name, which begins with a NUL */
+    }
+    raw[o] = 0;
     json_name(out, raw, 64);
 }
 /* ---- the screens on the desktop ----
@@ -746,7 +826,7 @@ static void state_json(struct hconn *h)
     h->kind = R_BUF; h->out_len = h->out_pos = 0;
     head(h, 200, "OK", "application/json", -1);
     uint32_t w = 0, hh = 0, d = 0;
-    int src = psmac_display_shot(&w, &hh, &d, 0, 0);
+    int src = psmac_display_probe(&w, &hh, &d, 0);
     OUTF(h, "{\n  \"board\": \"%s\",\n  \"uptime_s\": %u,\n", psmac_board_solo ? "solo" : psmac_board_se ? "se" : "iici", t / 1000);
     OUTF(h, "  \"screen\": {\"width\": %u, \"height\": %u, \"depth\": %u, \"source\": \"%s\"},\n", w, hh, d, src == 1 ? "mac" : src == 2 ? "console" : "none");
     int ok; uint32_t ticks = psmac_mac_rd32(0x16a, &ok);
@@ -791,6 +871,205 @@ static void state_json(struct hconn *h)
         OUTF(h, "%s\n    {\"name\": \"%s\", \"blocks\": %u, \"as\": \"%s\"}", i ? "," : "", a, blocks, psmac_image_is_scsi(i) ? "SCSI" : "PiDisk");
     }
     OUTF(h, "\n  ],\n  \"log_head\": %u\n}\n", log_head());
+}
+
+/* ---- windows (21 November 2026): the list, and pictures of one window or of a rectangle ----
+   psmac_windows.c reads the Window Manager's records; here they become JSON, and a window's rectangle
+   becomes the rectangle of the desktop the PNG encoder composes from the screens. */
+static const char *query(const char *q, const char *key, char *out, unsigned max);
+static struct psmac_window wl[PSMAC_WIN_MAX];
+static struct psmac_winlist wi;
+static char wtext[65536]; static uint32_t wtext_len; static int wtext_conn = -1;   /* one /windows answer at a time */
+
+/* the card's screens that show a Mac picture now, each at its place on the desktop, into s[]; desk[]
+   gets their bounding box. With take, a screenshot of each begins (psmac_display_shot: its depth and
+   colour table are held for the picture); without, they are only looked at. */
+static int comp_screens(struct place *s, int16_t desk[4], int take)
+{
+    int ns = 0;
+    for (int i = 0; i < psmac_display_count() && i < 2; i++) {
+        uint32_t w, h, d, fl; int16_t r[4];
+        if ((take ? psmac_display_shot(&w, &h, &d, i, 0) : psmac_display_probe(&w, &h, &d, i)) != 1) continue;   /* only the Mac's own frame buffers */
+        if (!screen_place(i, r, &fl)) {
+            if (i) continue;                                        /* a second screen QuickDraw has not placed */
+            r[0] = 0; r[1] = 0; r[2] = (int16_t)h; r[3] = (int16_t)w;   /* the first one before QuickDraw: at the origin */
+        }
+        /* gdRect is top, left, bottom, right; the frame buffer may be no smaller than it */
+        int16_t l = r[1], t = r[0], rr = r[3], b = r[2];
+        if (rr - l > (int)w) rr = (int16_t)(l + (int)w);
+        if (b - t > (int)h) b = (int16_t)(t + (int)h);
+        if (rr <= l || b <= t) continue;
+        s[ns].display = i; s[ns].l = l; s[ns].t = t; s[ns].r = rr; s[ns].b = b; ns++;
+    }
+    if (!ns) return 0;
+    desk[0] = s[0].l; desk[1] = s[0].t; desk[2] = s[0].r; desk[3] = s[0].b;
+    for (int k = 1; k < ns; k++) {
+        if (s[k].l < desk[0]) desk[0] = s[k].l;
+        if (s[k].t < desk[1]) desk[1] = s[k].t;
+        if (s[k].r > desk[2]) desk[2] = s[k].r;
+        if (s[k].b > desk[3]) desk[3] = s[k].b;
+    }
+    return ns;
+}
+static int rect_meets(const int16_t a[4], const int16_t b[4]) { return a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]; }
+static const char *kind_name(int16_t k)
+{
+    /* windowKind (IM I-275): negative, a desk accessory's driver reference number; 2 dialogKind (dialogs
+       and alerts); 8 userKind (an application's document windows); 0 to 7 the system's; others the application's own */
+    return k < 0 ? "desk accessory" : k == 2 ? "dialog" : k == 8 ? "document" : k < 8 ? "system" : "application";
+}
+static void wtext_add(const char *s) { unsigned n = slen(s); if (wtext_len + n < sizeof wtext) { __builtin_memcpy(wtext + wtext_len, s, n); wtext_len += n; } }
+#define WTF(...) do { char b_[256]; sprintf(b_, __VA_ARGS__); wtext_add(b_); } while (0)
+/* the list as JSON: an array, front to back */
+static void windows_json(void)
+{
+    int16_t desk[4]; struct place sp[2];
+    psmac_windows_read(wl, PSMAC_WIN_MAX, &wi);
+    int ns = comp_screens(sp, desk, 0);
+    char t[800];
+    wtext_len = 0;
+    wtext_add("[");
+    for (int i = 0; i < wi.n && wtext_len + 1800 < sizeof wtext; i++) {
+        struct psmac_window *w = &wl[i];
+        psmac_macroman_utf8(w->title, w->title_len, t, sizeof t, 1);
+        WTF("%s\n  {\"id\": \"0x%08x\", \"title\": \"", i ? "," : "", w->ptr);
+        wtext_add(t);
+        WTF("\", \"kind\": \"%s\", \"window_kind\": %d, \"visible\": %s, \"hilited\": %s, \"front_index\": %d",
+            kind_name(w->kind), w->kind, w->visible ? "true" : "false", w->hilited ? "true" : "false", i);
+        if (w->has_rect) WTF(", \"rect\": [%d, %d, %d, %d]", w->rect[0], w->rect[1], w->rect[2], w->rect[3]);
+        else wtext_add(", \"rect\": null");
+        if (w->has_content) WTF(", \"content\": [%d, %d, %d, %d]", w->content[0], w->content[1], w->content[2], w->content[3]);
+        else wtext_add(", \"content\": null");
+        wtext_add(", \"screens\": [");
+        for (int k = 0, first = 1; k < ns && w->has_rect; k++) {
+            int16_t sr[4] = { sp[k].l, sp[k].t, sp[k].r, sp[k].b };
+            if (rect_meets(w->rect, sr)) { WTF("%s%d", first ? "" : ", ", sp[k].display); first = 0; }
+        }
+        wtext_add("]");
+        if (w->app >= 0 && w->app < wi.napps) {
+            psmac_macroman_utf8(wi.app[w->app], wi.app_len[w->app], t, sizeof t, 1);
+            wtext_add(", \"application\": \""); wtext_add(t); wtext_add("\"");
+        }
+        wtext_add("}");
+    }
+    wtext_add("\n]\n");
+}
+/* a %XX-encoded query value, decoded in place */
+static void url_decode(char *s)
+{
+    char *o = s;
+    for (; *s; s++) {
+        int a, b;
+        if (*s == '%' && s[1] && s[2] &&
+            (a = s[1] >= '0' && s[1] <= '9' ? s[1] - '0' : lower(s[1]) >= 'a' && lower(s[1]) <= 'f' ? lower(s[1]) - 'a' + 10 : -1) >= 0 &&
+            (b = s[2] >= '0' && s[2] <= '9' ? s[2] - '0' : lower(s[2]) >= 'a' && lower(s[2]) <= 'f' ? lower(s[2]) - 'a' + 10 : -1) >= 0) {
+            *o++ = (char)(a * 16 + b); s += 2;
+        } else *o++ = *s;
+    }
+    *o = 0;
+}
+static int has_substr_ci(const char *hay, const char *needle)
+{
+    unsigned n = slen(needle);
+    if (!n) return 1;
+    for (; *hay; hay++)
+        if (ieq_n(hay, needle, n)) return 1;
+    return 0;
+}
+static int parse_int(const char **p, int *v)
+{
+    const char *s = *p; int neg = 0, x = 0, any = 0;
+    while (*s == ' ') s++;
+    if (*s == '-') { neg = 1; s++; }
+    while (*s >= '0' && *s <= '9') { x = x * 10 + (*s++ - '0'); any = 1; if (x > 100000) return 0; }
+    *v = neg ? -x : x; *p = s;
+    return any;
+}
+/* GET /screenshot: ?window=ID or ?title=TEXT (the frontmost visible window whose title has TEXT,
+   case ignored), ?screen=N, or ?rect=l,t,r,b; &content=1 the content only; &scale=2..4 each pixel
+   doubled (or more). The rectangle is clipped to the desktop. */
+static void screenshot(struct hconn *h, int c, const char *q)
+{
+    char v[256];
+    int16_t r[4], desk[4];
+    int zoom = query(q, "scale", v, sizeof v) ? v[0] - '0' : 1;
+    if (zoom < 1 || zoom > 4) zoom = 1;
+    int content = query(q, "content", v, sizeof v) && v[0] == '1';
+    uint32_t id = 0; int found = -1;
+    char note[160] = "";
+    if (P.active) { respond_json_error(h, 503, "Service Unavailable", "another screenshot is being sent: try again"); return; }
+    if (!(P.ns = comp_screens(P.s, desk, 1))) { respond_json_error(h, 503, "Service Unavailable", "no Mac screen yet (the video driver has not opened)"); return; }
+    if (query(q, "window", v, sizeof v) || query(q, "title", v, sizeof v)) {
+        int by_title = !query(q, "window", v, sizeof v);
+        if (by_title) { query(q, "title", v, sizeof v); url_decode(v); }
+        else {
+            const char *p = v;
+            if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) for (p += 2; *p; p++) id = id * 16 + (uint32_t)(*p <= '9' ? *p - '0' : (lower(*p) - 'a' + 10) & 15);
+            else for (; *p >= '0' && *p <= '9'; p++) id = id * 10 + (uint32_t)(*p - '0');
+        }
+        psmac_windows_read(wl, PSMAC_WIN_MAX, &wi);
+        char t[800];
+        for (int i = 0; i < wi.n && found < 0; i++) {
+            if (!by_title) { if (wl[i].ptr == id) found = i; continue; }
+            if (!wl[i].visible) continue;
+            psmac_macroman_utf8(wl[i].title, wl[i].title_len, t, sizeof t, 0);
+            if (has_substr_ci(t, v)) found = i;
+        }
+        if (found < 0) {
+            char b[400];
+            if (by_title) { v[128] = 0; sprintf(b, "no visible window has \"%s\" in its title (GET /windows lists them)", v); }
+            else sprintf(b, "no window 0x%08x: it has been closed, or the id is not one from GET /windows", id);
+            respond_json_error(h, 404, "Not Found", b);
+            return;
+        }
+        struct psmac_window *w = &wl[found];
+        if (!w->visible) { respond_json_error(h, 409, "Conflict", "the window is hidden (visible false): nothing of it is on a screen"); return; }
+        if (!(content ? w->has_content : w->has_rect)) { respond_json_error(h, 409, "Conflict", "the window's region could not be read (the Mac may be changing it): try again"); return; }
+        for (int k = 0; k < 4; k++)
+            r[k] = content ? w->content[k] : w->rect[k];
+        if (r[2] <= r[0] || r[3] <= r[1]) { respond_json_error(h, 409, "Conflict", "the window's region is empty (the Finder's desktop window has an empty frame): nothing to take"); return; }
+        /* windows in front of it that overlap: the picture shows them, as the screen does */
+        for (int i = 0, n = 0; i < found && n < 4; i++)
+            if (wl[i].visible && wl[i].has_rect && rect_meets(wl[i].rect, r)) {
+                char b[16]; sprintf(b, "%s0x%08x", n ? "," : "", wl[i].ptr);
+                if (slen(note) + slen(b) < sizeof note) { __builtin_memcpy(note + slen(note), b, slen(b) + 1); }
+                n++;
+            }
+    } else if (query(q, "screen", v, sizeof v)) {
+        int d = v[0] - '0', k;
+        for (k = 0; k < P.ns && P.s[k].display != d; k++)
+            ;
+        if (k == P.ns) { respond_json_error(h, 404, "Not Found", "no such screen with a Mac picture (0 is the first, 1 the second)"); return; }
+        r[0] = P.s[k].l; r[1] = P.s[k].t; r[2] = P.s[k].r; r[3] = P.s[k].b;
+    } else if (query(q, "rect", v, sizeof v)) {
+        const char *p = v; int x[4];
+        for (int k = 0; k < 4; k++) {
+            if (!parse_int(&p, &x[k])) { respond_json_error(h, 400, "Bad Request", "rect is left,top,right,bottom in global coordinates"); return; }
+            if (*p == ',') p++;
+        }
+        for (int k = 0; k < 4; k++)
+            r[k] = (int16_t)(x[k] < -32000 ? -32000 : x[k] > 32000 ? 32000 : x[k]);
+    } else { respond_json_error(h, 400, "Bad Request", "screenshot needs window=ID, title=TEXT, screen=N or rect=l,t,r,b"); return; }
+    /* clipped to the desktop: a window partly dragged off the screens is pictured where it is on them */
+    int16_t want[4] = { r[0], r[1], r[2], r[3] };
+    if (r[0] < desk[0]) r[0] = desk[0];
+    if (r[1] < desk[1]) r[1] = desk[1];
+    if (r[2] > desk[2]) r[2] = desk[2];
+    if (r[3] > desk[3]) r[3] = desk[3];
+    if (r[2] <= r[0] || r[3] <= r[1]) { respond_json_error(h, 404, "Not Found", "the rectangle is off every screen"); return; }
+    while (zoom > 1 && (uint32_t)(r[2] - r[0]) * (uint32_t)zoom > PNG_MAXW) zoom--;   /* the encoder's widest row */
+    if ((uint32_t)(r[2] - r[0]) > PNG_MAXW) r[2] = (int16_t)(r[0] + PNG_MAXW);
+    if (png_begin_rect(c, r, (uint32_t)zoom) < 0) { respond_json_error(h, 503, "Service Unavailable", "another screenshot is being sent: try again"); return; }
+    h->kind = R_PNG; h->out_len = h->out_pos = 0;
+    OUTF(h, "HTTP/1.0 200 OK\r\nServer: Aurora68\r\nConnection: close\r\nCache-Control: no-store\r\nContent-Type: image/png\r\n"
+            "X-Aurora-Rect: %d,%d,%d,%d\r\nX-Aurora-Scale: %d\r\n", r[0], r[1], r[2], r[3], zoom);
+    if (want[0] != r[0] || want[1] != r[1] || want[2] != r[2] || want[3] != r[3])
+        OUTF(h, "X-Aurora-Clipped-From: %d,%d,%d,%d\r\n", want[0], want[1], want[2], want[3]);
+    if (found >= 0) {
+        OUTF(h, "X-Aurora-Window: 0x%08x\r\n", wl[found].ptr);
+        if (note[0]) OUTF(h, "X-Aurora-Covered-By: %s\r\n", note);
+    }
+    out_str(h, "\r\n");
 }
 
 /* ---- control ---- */
@@ -907,6 +1186,16 @@ static void handle(int c)
         return;
     }
     if (get && !__builtin_strcmp(path, "/state")) { state_json(h); return; }
+    if (get && !__builtin_strcmp(path, "/windows")) {
+        if (wtext_conn >= 0) { respond_json_error(h, 503, "Service Unavailable", "another window list is being sent: try again"); return; }
+        windows_json();
+        wtext_conn = c; h->kind = R_WINDOWS; h->log_pos = 0; h->out_len = h->out_pos = 0;
+        OUTF(h, "HTTP/1.0 200 OK\r\nServer: Aurora68\r\nConnection: close\r\nCache-Control: no-store\r\nContent-Type: application/json; charset=utf-8\r\n"
+                "Content-Length: %u\r\nX-Aurora-Windows: %s, %s%s\r\n\r\n", wtext_len, wi.how, wi.consistent ? "consistent" : "changing while read",
+                wi.truncated ? ", truncated" : "");
+        return;
+    }
+    if (get && !__builtin_strcmp(path, "/screenshot")) { screenshot(h, c, q); return; }
     if (get && !__builtin_strcmp(path, "/log") && query(q, "records", v, sizeof v) && v[0] == '1') {
         h->kind = R_RECORDS; h->log_pos = 0; h->out_len = h->out_pos = 0;
         OUTF(h, "HTTP/1.0 200 OK\r\nServer: Aurora68\r\nConnection: close\r\nContent-Type: text/plain; charset=iso-8859-1\r\n\r\n");
@@ -957,7 +1246,7 @@ static void handle(int c)
         return;
     }
     if (post && !__builtin_strcmp(path, "/restart")) { control(h, query(q, "how", v, sizeof v)); return; }
-    if (get || post) { respond_json_error(h, 404, "Not Found", "GET /, /screen.png, /state, /log; POST /input, /restart"); return; }
+    if (get || post) { respond_json_error(h, 404, "Not Found", "GET /, /screen.png, /screenshot, /windows, /state, /log; POST /input, /restart"); return; }
     respond_json_error(h, 405, "Method Not Allowed", "GET or POST");
 }
 
@@ -1004,13 +1293,20 @@ static uint32_t produce(int c, uint8_t *buf, uint32_t room, int *finished)
         }
         if (h->kind == R_LOG && !h->done) { log_fill(h); continue; }
         if (h->kind == R_RECORDS && !h->done) { records_fill(h); continue; }
+        if (h->kind == R_WINDOWS && wtext_conn == c && h->log_pos < wtext_len) {
+            uint32_t k = wtext_len - h->log_pos;
+            if (k > OUT_MAX) k = OUT_MAX;
+            __builtin_memcpy(h->out, wtext + h->log_pos, k); h->log_pos += k; h->out_len = k; h->out_pos = 0;
+            continue;
+        }
+        if (h->kind == R_WINDOWS && wtext_conn == c) wtext_conn = -1;
         *finished = 1;
         return n;
     }
 }
 
 /* ---- the TCP side (psmac_ip.c) ---- */
-static void conn_reset(int c) { struct hconn *h = &hc[c]; if (P.active && P.conn == c) P.active = 0; h->used = 0; h->req_len = 0; h->handled = 0; h->kind = R_NONE; h->out_len = h->out_pos = 0; h->done = 0; }
+static void conn_reset(int c) { struct hconn *h = &hc[c]; if (P.active && P.conn == c) P.active = 0; if (wtext_conn == c) wtext_conn = -1; h->used = 0; h->req_len = 0; h->handled = 0; h->kind = R_NONE; h->out_len = h->out_pos = 0; h->done = 0; }
 int remote_tcp_accept(int c, uint16_t port, const uint8_t peer[4])
 {
     (void)port;

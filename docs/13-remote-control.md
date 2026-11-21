@@ -173,8 +173,8 @@ Claude Desktop: Settings, Developer, Edit Config opens `claude_desktop_config.js
 }
 ```
 
-and restart Claude Desktop. The tools are `screenshot`, `click`, `move`, `drag`, `type`, `key`,
-`log`, `state` and `restart`.
+and restart Claude Desktop. The tools are `screenshot` (the main screen, or with `window` one window),
+`list_windows`, `click`, `move`, `drag`, `type`, `key`, `log`, `state` and `restart`.
 
 ## The HTTP API
 
@@ -185,6 +185,8 @@ and restart Claude Desktop. The tools are `screenshot`, `click`, `move`, `drag`,
 | `POST /input[?wait=1]` | a JSON event or an array of them (below); `wait=1` answers once they have all been played |
 | `GET /log[?since=N][&tags=BOOT,CRASH]` | the log from byte N as text; `X-Log-Next` is the N for next time, `X-Log-Lost` the bytes overwritten before they were read |
 | `GET /log?records=1` | the `[BOOT]` and `[CRASH]` lines kept since the Pi started (the first 4 KB of the boot's, the newest 12 KB of crash records), which the 64 KB ring soon loses |
+| `GET /windows` | the Mac's windows, front to back, as JSON ("Windows", below) |
+| `GET /screenshot?window=ID\|title=TEXT\|screen=N\|rect=l,t,r,b[&content=1][&scale=2]` | a PNG of one window, one screen or a rectangle of the desktop, composed from the screens it is on; `scale` here doubles ("Windows", below) |
 | `GET /state` | JSON (below) |
 | `POST /restart[?how=mac\|nmi\|pi]` | restart the Mac (default), the programmer's interrupt, or reboot the Pi |
 
@@ -215,3 +217,123 @@ BASE.out must exist when QEMU starts; `tools/aurora68.py --semihost BASE state`)
 `PINET_KERNEL=PORT python3 tools/pinet.py BASE peer` makes the kernel's HTTP server reachable at
 `http://127.0.0.1:PORT/` from the host, through the file bridge (pinet's DHCP gives the kernel
 192.168.68.3 and the Mac 192.168.68.2).
+
+## Windows: the list, and a picture of one (21 November 2026)
+
+The user shows results by photographing the Mac's screens, and asked for the Mac's windows as a list
+and a screenshot of the one they choose. The kernel reads them out of the Mac's memory
+(`emu68/src/psmac/psmac_windows.c`), so nothing runs on the Mac for it and it works under any system.
+
+**Where the windows are.** The Window Manager keeps each window as a WindowRecord in a heap, linked
+front to back by `nextWindow` from the low-memory global WindowList ($9D6) (Inside Macintosh I,
+"Window Records"). From the record: the title (`titleHandle`, a Pascal string in Mac Roman, given as
+UTF-8), `windowKind` (2 a dialog or alert, 8 an application's document, negative a desk accessory,
+others the application's own), `visible`, `hilited`, and the bounding boxes of the structure region
+(frame, title bar and content, global coordinates) and the content region. Which screens a window is
+on comes from the screens' places on the desktop, which QuickDraw's GDevices hold (`gdRect`).
+
+**System 7's layers.** Under System 7 WindowList holds the windows of one application only: the
+Window Manager puts each application's windows in a layer of their own, and the Process Manager makes
+an application's layer current when it switches to it (System 6's MultiFinder swapped WindowList
+itself). Layers are not documented. A RAM dump of System 7.1 with the Finder, PiLog and the Calculator
+open (taken through the remote's semihosting channel) showed how they are kept: a layer is itself a
+WindowRecord, with one window definition for all layers, its first window in the `windowPic` field
+(148) and its parent layer in `dataHandle` (130), 0 for the root; the long at $A90 is the current
+layer, whose first window is WindowList; the root holds one layer, which holds the applications'
+layers front to back. A layer's `refCon` is the Process Manager's record of its application, which
+points back to the layer at $70 and holds at $54 a handle to the application's saved low memory, its
+CurApName at $38 and the layer once more at $58. So the kernel climbs from $A90 to the root by the
+parent links, walks the tree front to back, takes the current layer's windows from WindowList, and
+names each layer's windows by their application: CurApName for the current one, the saved CurApName
+for the others, each only when both links back to the layer agree (a desk accessory's name, which
+begins with a NUL, without it). If anything does not hold together (System 6, a later system that
+keeps layers differently, a moment when the tree is being changed), the list is WindowList alone,
+which is always right for the application whose turn it is, and the answer's `X-Aurora-Windows`
+header says `WindowList` instead of `layers`.
+
+**Safety.** The 68k goes on running while the kernel reads, and may be closing a window or compacting
+a heap. Every pointer is checked to be even and inside the Mac's RAM (as the kernel gave it; MemTop
+is no use, System 7's Process Manager leaves it at 2.8 MB on a 16 MB Mac) before it is followed;
+handles' master pointers are masked to 24 bits when MMU32Bit ($CB2) says 24-bit mode, where their top
+byte holds the lock, purge and resource bits, and a purged handle (NIL) means no title; a region must
+be 10 bytes or more, even, and its box ordered; every list has a bound (64 windows a layer, 32 layers,
+6 levels, 128 windows in all). Reads are whole aligned longs through the 68k's current MMU tables,
+which refuse anything that is not RAM or ROM, so a wrong pointer that passed the checks still cannot
+read outside the Mac's memory. The list is read twice, and again up to four times until two readings
+agree (`X-Aurora-Windows: ..., consistent`, or `changing while read`). On the host, the reader ran on
+the RAM dump with 20,000 random corruptions of the low-memory globals, records, layers, regions and
+Process Manager records (pointers bent to other records to make loops, bytes set to $FF): no hang, no
+read outside the dump, at most the windows that were still sane.
+
+**The picture.** `/screenshot` takes a rectangle of the desktop in global coordinates and composes it
+from the screens' own frame buffers, each at its own depth and through its own colour table, as
+`/screen.png` does for a whole screen: a window across the SE's screen and the HDMI screen comes from
+both, and what lies under no screen (below the 342-pixel SE screen when the HDMI screen is taller) is
+dark grey ($404040, darker than any desktop pattern; the first test used $808080 and the gap could not
+be told from the HDMI screen's grey desktop). The rectangle is clipped to the bounding box of the screens, so a window dragged
+partly off them is shown where it is on them (`X-Aurora-Clipped-From` gives the rectangle asked for).
+It is a crop of the screen: windows in front that overlap it are in the picture, as they are on the
+screen (`X-Aurora-Covered-By` lists them); a hidden window is refused (409). `scale=2` (3, 4) doubles
+each pixel, for the SE's small one-bit screen; this is the opposite of `/screen.png`'s `scale`, which
+shrinks, and is lowered by itself if the picture would be wider than 2560. Rotation (PiDisplay's 90,
+180 and 270 degrees) changes nothing here: the frame buffers are the Mac's, in the Mac's coordinates,
+and the turning is done on the way to the VideoCore. One picture at a time, as before (503 "another
+screenshot"); the encoder is the streaming one of `/screen.png`, a band of rows per turn.
+
+| Request | What |
+|---|---|
+| `GET /windows` | JSON, an array front to back: `{"id": "0x00fa3090", "title": "Mac Volume", "kind": "application", "window_kind": 20, "visible": true, "hilited": true, "front_index": 0, "rect": [291, 110, 698, 319], "content": [292, 129, 696, 317], "screens": [0], "application": "Finder"}`. `id` is the WindowPtr, the same while the window exists (a window opened later may get the address of one closed); `rect` and `content` are left, top, right, bottom; `application` only where it is known |
+| `GET /screenshot?window=ID[&content=1][&scale=2]` | the window by its id (`0x...` or decimal): its structure rectangle, or with `content=1` its content rectangle. A closed window: 404 "no window ... it has been closed" |
+| `GET /screenshot?title=TEXT...` | the frontmost visible window whose title contains TEXT (case ignored for ASCII; %-encode it) |
+| `GET /screenshot?screen=0\|1[&scale=2]` | one whole screen, as the Mac has it on the desktop |
+| `GET /screenshot?rect=l,t,r,b[&scale=2]` | any rectangle of the desktop, global coordinates |
+
+The headers of a picture: `X-Aurora-Rect` (what was taken, global), `X-Aurora-Scale`, `X-Aurora-Window`,
+and when they apply `X-Aurora-Clipped-From` and `X-Aurora-Covered-By`.
+
+**The page** has a "Windows" panel below the screen: Refresh lists the windows (title, size, screens),
+each row has a Grab button that shows the window's picture under the list with a "Save ... .png" link;
+"doubled" and "content only" apply to the next grab.
+
+**The command line and the MCP server.** `aurora68.py windows` prints the list as a table;
+`aurora68.py screenshot --window "Mac Vol" out.png [--content] [--scale 2]` saves one window (a title's
+text, or an id from the table), `--rect l,t,r,b` a rectangle. The MCP server has a `list_windows` tool,
+and its `screenshot` tool takes `window` (an id or a title's text) and `content`; with `window`, its
+`scale` 2 or 4 enlarges.
+
+**What was tested** (21 November 2026, QEMU and MAME, through the semihosting channel and, on the solo
+board, over HTTP from the host through pinet; `docs/img/se-window-across-screens.png`):
+- *System 7.1, solo board, 32-bit, 16 MB, the screen in thousands*: the Calculator (DA Handler's
+  layer), PiLog (now Aurora68 Log) and two Finder windows listed front to back with their applications
+  (`X-Aurora-Windows: layers, consistent`), and again in the new order after the Finder came to the front;
+  the Finder's Find dialog (its windowKind is the Finder's own, 20) and a Standard File dialog (2,
+  `dialog`); pictures of each, with `content=1` and `scale=2`, of a window covered by two others (the
+  header named both), of PiLog dragged half off the right edge (clipped, `X-Aurora-Clipped-From`), and a
+  404 for the Find dialog's id after Cancel had closed it. A window of 360 by 204 took 16 ms, the whole
+  screen doubled to 1280 by 960 in thousands 368 ms (663 KB), the longest band 2.7 ms of core 3.
+- *System 7.1, solo board, 24-bit mode* (`mac.ram=8 mac.xpram=8a:00`, MMU32Bit 0, 256 colours): the same
+  list and pictures, over HTTP with the token (`aurora68.py windows`, `screenshot --window`), the MCP
+  server's `list_windows` and `screenshot` with `window` (and its error for an id that is not there), and
+  the page in headless Chrome: Refresh listed the four windows, Grab showed the Calculator doubled with a
+  "Save Calculator.png" link, the Finder's desktop window's Grab greyed out.
+- *System 7.1, MAME's SE with two screens* (the SE's 512 by 342 and HDMI 1024 by 768 at (512,0), in
+  thousands, then in millions): a Finder window on the SE's screen at `scale=2`; Aurora68 Log and the
+  Calculator dragged onto the HDMI screen and taken there in colour; a Finder window dragged across
+  both screens and below the SE's 342 rows (`screens: [0, 1]`; the SE's part in one bit, the HDMI part
+  in colour, the corner under no screen grey); a window dragged past the HDMI screen's right edge
+  (clipped); a closed window's id (404). The SE's screen doubled was 780 KB at first, its 50% grey
+  desktop defeating the encoder's four distances; with one and two source pixels back as two more it
+  is 30 KB.
+- *System 6.0.8, solo board, 24-bit, 8 MB*: with the Finder alone, every window (the disk's, the
+  Alarm Clock desk accessory in the Finder's list, the Set Startup dialog as `dialog`, the hidden
+  Clipboard window); pictures of them. With MultiFinder (switched on through Set Startup and a restart)
+  WindowList holds only the windows of the application whose turn it is, as MultiFinder swaps it with
+  the rest of the application's low memory: with the Alarm Clock open the list was the Alarm Clock
+  alone, `application` "DA Handler". System 6 has no layers to walk, so under MultiFinder the list is the
+  front application's windows only; MultiFinder's own records of the others were not looked into.
+- *Not verified*: real hardware; a window on a screen turned by PiDisplay (the code takes the Mac's
+  frame buffers, which are in the Mac's coordinates, so nothing should differ); System 7.5 and later,
+  whose Process Manager may keep its records differently (the names would then be missing, or the list
+  fall back to WindowList); titles outside ASCII on a real Mac (the Mac Roman table was checked against
+  Python's on the host). The mouse pointer is part of the picture where it is over the window, because
+  QuickDraw draws it into the frame buffer.

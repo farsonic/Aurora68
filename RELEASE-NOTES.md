@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **The remote control lists the Mac's windows and photographs one.** `GET /windows` gives every window
+  front to back, with its title, kind (document, dialog, desk accessory ...), the screens it is on and,
+  under System 7, the application it belongs to; `GET /screenshot?window=ID` (or `?title=part of the
+  title`) is a PNG of just that window, with frame and title bar or (`content=1`) without, taken from
+  whichever screens it is on, even across the SE's screen and the HDMI screen, and `scale=2` doubles the
+  pixels of the small one-bit SE screen. `?screen=0|1` and `?rect=l,t,r,b` take a whole screen or any part
+  of the desktop. The kernel reads the windows from the Mac's memory, so nothing needs installing on the
+  Mac. The remote's web page has a Windows panel with a Grab button for each window; `aurora68.py windows`
+  and `aurora68.py screenshot --window "Untitled" out.png`, and the MCP server's `list_windows` tool and
+  `window` argument, do the same from a terminal or an agent. Replace kernel8.img and the two tools.
 - **The programs are "Aurora68 Xxxx", in folders, with icons of their own.** PiPlay is now **Aurora68
   Play**, and so on: Aurora68 Display, Slots, Log, Status, Network (PiNet), Wi-Fi (PiWiFi), Bluetooth
   (PiBlue), Ping, Colour (PiColor), Screens and Depth; the extensions are **Aurora68 Disk** (PiDisk),
