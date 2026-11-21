@@ -2894,6 +2894,9 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    Built, not testable in QEMU (no chip; the simulated WiFi keeps its own filter). To check on the SE:
    in the Riptide Command Terminal, `ifconfig en1` should show a global IPv6 address beside the link-local
    one, and `ping6` to an outside IPv6 address should answer.
+   - *Confirmed on the real SE the same afternoon* (kernel a99cd0f, "se13", over the WiFi): the owner
+     reported "That fixed it": IPv6 from the browser to hosts on the Internet works again, as it did on the
+     bench Pi on 19 November.
 
 81. **PiDisplay: the HDMI monitor's EDID, its resolution and rotation chosen on the Mac (21 November).**
    With the UP2716D on the SE (item 77) the user asked for a Mac program to choose the HDMI resolution and

@@ -21,6 +21,13 @@
   its driver, whether that driver is open, and for a screen its size and depth. File > Save As... keeps
   the list as a TeachText document, Edit > Copy copies it; the window resizes, zooms and comes back where
   it was left. It also writes a summary into the Pi's log. System 6.0.8 and 7; nothing to install.
+- **IPv6 over the WiFi again.** On the SE the WiFi chip now comes up after Riptide has opened its
+  interfaces, and the Mac's request for multicast (which IPv6 needs: the router's advertisements and its
+  neighbour solicitations) arrived before the chip was up and was dropped. The Mac then had no global IPv6
+  address and reached no IPv6 host beyond the local network. The request is now kept and applied when the
+  chip comes up (the log says "receive filter as the Mac asked before the chip was up"). Confirmed on the
+  real SE: IPv6 to Internet hosts from the browser works. The wired port was never affected. Replace
+  kernel8.img.
 - **WiFi on the SE no longer stops the Mac.** With WiFi words in cmdline.txt the SE never started: the
   WiFi's start, on the same Pi core as the Mac's disks and mailbox, was switched away by another core and
   that core's loop stopped for good. The WiFi now waits only on its own core and never holds the Pi's
