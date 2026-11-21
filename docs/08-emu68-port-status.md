@@ -2742,6 +2742,14 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      MMU32Bit 0): the second DisposPtr -111 through the stub's 24-bit path, the Finder. (The solo board
      with mac.ram=8 still started in 32-bit mode, its parameter RAM's $8A being $05.) Speedometer 3.23's
      Run ALL Tests on the MAME SE with 128 MB and both screens: "The tests are done!", no exception.
+     Rebased on item 77's kernel, the same SE: DisposeTest as above, then the user's own Speedometer
+     4.02 (the one that ran on their SE from its BlueSCSI disk), Run ALL Tests: "The tests are done!".
+   - *A card that was never mounted.* That rebased run first found no disk image: "[CARD] SDSC card,
+     FAT16 at sector 0, 0-byte clusters". Item 77's early look for declaration ROMs runs only when the
+     Pi booted from a container, and card_poll_locked marked it done (early_done = 2) before calling
+     card_start, which then took the early look's results, two zeros, for a card nobody had initialised.
+     On hardware the look always runs, so only the testbed (a bare ROM as initrd, `CARD=`) met it. The
+     mark is now set after card_start (`psmac_card.c`); the run above is with that.
    - *PiDisk's log.* The user's 64 KB log had 1,790 lines, 1,300 of them "PiDisk: prime": Prime logged
      every read and write, through an INFO command each, and pushed everything else out. Prime, Control
      and Status now log only the first six requests after Open, and Prime's errors the first sixteen times

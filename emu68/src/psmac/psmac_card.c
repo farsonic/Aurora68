@@ -1238,8 +1238,11 @@ static int early_done, early_init_rc, early_mount_rc;
 static void card_poll_locked(void)
 {
     if (sd.state == 0 || early_done == 1) {
-        early_done = 2;
+        /* card_start takes the early look's results only when there was one (early_done 1); set to 2
+           before the call (as at first), a card with no early look (a testbed run whose initrd is a bare
+           ROM) was never initialised or mounted: "FAT16 at sector 0, 0-byte clusters", no disk image */
         card_start();
+        early_done = 2;
         __atomic_store_n(&scan_done, 1, __ATOMIC_RELEASE);
         return;
     }
