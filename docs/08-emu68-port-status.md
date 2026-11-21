@@ -3120,6 +3120,9 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      while the completion routine parses at interrupt time, stations other than SomaFM. To send back from
      the SE: every `[MAC] PiPlay: radio:` line from the station's name on, the `[AUDIO] stream:` lines and a
      `[PSMAC]   stream:` heartbeat.
+   - *On the real SE the same evening* (PiPlay 1.1 from 58f26bf on the kernel c4438d6, the test image of
+     that day, Riptide over the WiFi): the owner reported "Streaming radio works": a SomaFM station
+     through the Radio menu, fetched by the Mac over MacTCP, decoded on the Pi and heard on HDMI.
 
 
 ## Mailbox and Mac-side software (later the same day)
