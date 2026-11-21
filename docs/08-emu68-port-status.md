@@ -3481,6 +3481,25 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      409 with Play's box in front, the 1 MB round trip.
    - *Not verified:* real hardware; System 6 with MultiFinder.
 
+91. **QuickTime 2.5.1 on the test image, and Sound Manager 3.2 (21 November).** The owner asked for
+   QuickTime installed on the disk image, from their own copy of the QuickTime 2.5.1 installer (Apple
+   software: it goes on the owner's image only and is never committed).
+   - *Installed by Apple's own Installer in the testbed:* the test11 image booted on the solo board, the
+     Installer opened through the Aurora68 Agent (`aurora68.py open`) and driven with remote clicks: Easy
+     Install onto the startup disk, which quit the other programs, read both "Install Disk" folders and
+     installed QuickTime™, QuickTime™ Musical Instruments, Sound Manager 3.2 (in place of System 7.1's 3.0)
+     and MoviePlayer (in a QuickTime™ Folder). After the Installer's restart the Mac was shut down from the
+     Finder, and that disk became the base the test images are built on.
+   - *Found on the way:* the image script made folders from UTF-8 names, so "QuickTime™ Install Disk 1"
+     arrived as "QuickTime‚Ñ¢ ..." and the Installer could not have found its archives; the folders were
+     renamed with `aurora68.py mv` on the running Mac, and the script now converts folder names to Mac Roman.
+   - *Verified in the testbed:* the Mac starts with QuickTime and MoviePlayer opens (its personalisation box
+     was cancelled and left for the owner). With `mac.audiodump=`, Aurora68 Sound finds Sound Manager 3.2
+     (it waits for the Sound Manager extension, which loads after it) and registers the card as the output
+     device; the startup chime, two Finder beeps of half a second each and an MP3 in Aurora68 Play were in
+     the recording. No movie was played: there is none on the disk.
+   - *Not verified:* real hardware; movies.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,
