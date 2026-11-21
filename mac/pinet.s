@@ -83,7 +83,7 @@ app_start:
 
 	lea	s_title(%pc),%a0
 	bsr	say
-	log	"PiNet: started"
+	log	"A68 Network: started"
 	| --- mailbox header ---
 	bsr	window
 	cmp.l	#0x50534D42,(%a0)
@@ -96,7 +96,7 @@ app_start:
 	bsr	window			| (say_prefix's a0 was the string, not the window)
 	lea	24(%a0),%a1		| fw_version string in the header
 	bsr	say_cstr
-	log	"PiNet: firmware string shown"
+	log	"A68 Network: firmware string shown"
 	lea	s_blk(%pc),%a0
 	bsr	say_prefix
 	bsr	window
@@ -110,7 +110,7 @@ app_start:
 	bsr	window
 	lea	0x2000+16(%a0),%a1
 	bsr	say_cstr
-	log	"PiNet: PiDisk 0 shown; looking for the Ethernet card"
+	log	"A68 Network: PiDisk 0 shown; looking for the Ethernet card"
 	| --- find the Ethernet card: SGetTypeSRsrc, spCategory 4, spCType 1, spTBMask 3 ---
 	lea	spblock(%pc),%a0
 	move.l	%a0,%a2
@@ -243,7 +243,7 @@ app_start:
 	bne	ctlerr
 	lea	s_sent(%pc),%a0
 	bsr	say
-	log	"PiNet: waiting for the ERead"
+	log	"A68 Network: waiting for the ERead"
 	| wait up to 3 s for the ERead to complete
 	move.l	Ticks,%d5
 	add.l	#180,%d5
@@ -444,7 +444,7 @@ put3:					| d0.w (0..999) -> three digits at a0
 	movem.l	(%sp)+,%d0-%d1
 	rts
 draw_text:
-	.ascii	"PiNet: draw len "
+	.ascii	"A68 Network: draw len "
 draw_len:
 	.ascii	"000 at "
 draw_x:
@@ -482,7 +482,7 @@ log_err:
 	movem.l	(%sp)+,%d0-%d2/%a0-%a1
 	rts
 err_text:
-	.ascii	"PiNet: result"
+	.ascii	"A68 Network: result"
 err_digits:
 	.ascii	" 000"
 	.byte	0
@@ -497,8 +497,8 @@ window:
 | ---- data (in the code segment; the app is position independent) ----
 	.even
 wrect:	.short	60, 40, 300, 480		| top, left, bottom, right
-wtitle:	.byte	21
-	.ascii	"PiNet - PiStorm-SE test"
+wtitle:	.byte	16			| the window's title: the program's name (since 21 November 2026)
+	.ascii	"Aurora68 Network"
 	.even
 s_title:  .byte 36
 	.ascii "PiStorm-SE mailbox and .ENET test   "

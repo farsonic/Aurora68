@@ -66,16 +66,30 @@ What is in the zip
                          (new in 0.3; 0.1 and 0.2 did not, which left System 7.1 to an occasional
                          zero divide at boot). Python 3 is all it needs; rompatch.py and
                          patches/iici.json are the source of that delta, for the record
-  Mac/                   the Macintosh-side programs: PiMach, PiDisk (extensions), PiWiFi,
-                         PiBlue, PiStatus, PiNet, PiPing, PiScreens, PiColor, PiLog (applications;
-                         PiLog shows the Pi's log in a window, filtered by part and by text; to
-                         send the log, use its File > Save Log, or Save to Card, which writes
-                         aurora68.log to the SD card, passwords hidden), PiSlots (the NuBus
-                         cards the Mac sees, the Pi's own included, with their makers and
-                         drivers; File > Save As... keeps the list as text), PiDepth (sets
-                         the screen's depth at startup from the number in its name), PiPlay
-                         (plays MP3, AIFF and WAV files on the sound card: the Pi decodes them),
-                         as MacBinary files and on Aurora68-Utilities.img (an HFS disk image)
+  Mac/                   the Macintosh-side programs, in the folder Aurora68, as MacBinary files
+                         and on Aurora68-Utilities.img (an HFS disk image with the same folders):
+                           Aurora68 Play/   Aurora68 Play (MP3, AIFF and WAV files and internet
+                                            radio on the sound card: the Pi decodes them) and
+                                            Music, a folder for your sound files
+                           Display/         Aurora68 Display (the HDMI resolution and rotation),
+                                            Aurora68 Screens, Aurora68 Colour, Aurora68 Depth 8
+                                            (sets the screen's depth at startup from the number
+                                            in its name)
+                           Network/         Aurora68 Network, Aurora68 Wi-Fi, Aurora68 Bluetooth,
+                                            Aurora68 Ping
+                           System/          Aurora68 Slots (the NuBus cards the Mac sees, with
+                                            their makers and drivers), Aurora68 Log (the Pi's log
+                                            in a window, filtered by part and by text; File >
+                                            Save Log, or Save to Card, which writes aurora68.log
+                                            to the SD card, passwords hidden), Aurora68 Status
+                           Extensions (to install)/  Aurora68 Disk, Aurora68 Machine, Aurora68
+                                            Screen Setup, Aurora68 Sound, Aurora68 Wi-Fi &
+                                            Bluetooth, and a Read Me
+                         Until 21 November 2026 the programs were PiPlay, PiDisplay, PiSlots,
+                         PiLog, PiStatus, PiNet, PiWiFi, PiBlue, PiPing, PiColor, PiScreens and
+                         PiDepth, the extensions PiDisk, PiMach, PiScrn, Sound PiStorm and
+                         "Wi-Fi & Bluetooth": take the old extensions out when you put the new
+                         ones in. Preferences and the radio's station list carry over.
   RELEASE-NOTES.md       what works, what does not
   LICENSES/              MPL-2.0 (Emu68, Aurora68) and GPL-2.0 (the Alice68 modules)
 
@@ -193,24 +207,25 @@ Once the SE's own screen shows the Finder, HDMI can be a second screen beside it
      and max_framebuffer_height=1440, with aurora68-se-2560x1440.declrom and mac.screen=2560x1440.
   3. cmdline.txt: take out mac.console=hdmi; the size is config.txt's (mac.screen=WxH only to
      differ from it), e.g. "enable_cache debug mac.board=se bt=off".
-  4. Copy PiScrn (on the Aurora68 disk image, or Mac/PiScrn.bin) onto the System Folder. At the next
+  4. Copy Aurora68 Screen Setup (Mac/Aurora68/Extensions (to install)/, or the Aurora68 disk
+     image) onto the System Folder. At the next
      start it arranges the two screens (the SE's main, HDMI to its right) and restarts the Mac once.
   5. Millions of colours need 32-bit addressing: Memory control panel, On, restart, then Millions
      for monitor 2 in Monitors.
 mac.hdmi=mirror shows the SE's picture on HDMI again, mac.hdmi=log (or mac.console=hdmi) the log.
 
-Choosing the HDMI resolution on the Mac: PiDisplay
---------------------------------------------------
-PiDisplay (Mac/PiDisplay.bin) shows what the HDMI monitor says about itself (name, maker, serial number,
+Choosing the HDMI resolution on the Mac: Aurora68 Display
+---------------------------------------------------------
+Aurora68 Display (Mac/Aurora68/Display/) shows what the HDMI monitor says about itself (name, maker, serial number,
 size, sound) and every resolution it lists, each marked usable, too fast for a Pi 3 (with a slower
 alternative when one fits, such as 2560 x 1440 at 30 Hz) or the wrong shape, with a suggestion; and it
 sets the resolution and turns the picture (0, 90, 180, 270 degrees).
   1. Once: config.txt ends with the line "include aurora68-display.txt" (this release's config.txt has
      it), and aurora68-display.txt is on the card beside it (this release's holds comments only).
      Keep the include line last: an hdmi_ line after it would win.
-  2. PiScrn in the System Folder (it asks "Keep this resolution?" after a change).
-  3. In PiDisplay choose a resolution and/or a rotation, then Restart to Apply. A new resolution
-     restarts the Pi and the Mac; on the SE's screen PiScrn then asks "Keep this resolution?": Keep,
+  2. Aurora68 Screen Setup in the System Folder (it asks "Keep this resolution?" after a change).
+  3. In Aurora68 Display choose a resolution and/or a rotation, then Restart to Apply. A new
+     resolution restarts the Pi and the Mac; on the SE's screen Aurora68 Screen Setup then asks "Keep this resolution?": Keep,
      or within 15 seconds the previous one comes back by itself (the Pi restarts once more). A rotation
      restarts the Mac only.
 The kernel writes aurora68-display.txt and keeps the one before as aurora68-display.bak; config.txt is
@@ -220,20 +235,23 @@ Sound on the HDMI monitor
 -------------------------
 The Mac's sound plays on the HDMI monitor's loudspeakers in stereo (and on the SE's speaker as before):
   1. config.txt: hdmi_drive=2 (in this release's config.txt): HDMI with sound rather than DVI.
-  2. Copy Sound PiStorm (Mac/SoundPiStorm.bin, or the Aurora68 disk image) into the System Folder. It
+  2. Copy Aurora68 Sound (Mac/Aurora68/Extensions (to install)/, or the disk image) into the System Folder. It
      needs Sound Manager 3.0 or later (the "Sound Manager" extension on System 7.1): the Sound Manager
      then plays into a 16-bit stereo sound card that the Pi plays. Without it the sound still reaches
      HDMI, from the IIci's 8-bit sound chip.
   3. Nothing in cmdline.txt: mac.audio=hdmi is the default. mac.audio=jack uses a Pi 3's headphone
      socket instead, mac.audio=off neither; mac.audiotest=card plays 441 Hz on the left and 882 Hz on
      the right for three seconds at start, to check the channels.
-The log says what happened: "[AUDIO] HDMI: 48000 Hz stereo ..." and "[MAC] PiSound: ...". If it says
+The log says what happened: "[AUDIO] HDMI: 48000 Hz stereo ..." and "[MAC] A68 Sound: ...". If it says
 "the transmitter sends no packets ... DVI", hdmi_drive=2 is missing or the monitor has no sound.
 
-MP3 files: copy PiPlay (Mac/PiPlay.bin) onto the Mac and the MP3s anywhere on its disks (a USB stick
-or the Lagoon share will do; files from a PC need no Mac type). Open one with File > Open...; the
-space bar plays and pauses. The Pi decodes the MP3 and plays it with the Mac's own sound; the log
-says "[AUDIO] stream: MPEG-1 layer III, 44100 Hz stereo, ..." and "[MAC] PiPlay: ...".
+MP3 files: copy the folder Aurora68 Play (Mac/Aurora68/) onto the Mac and the MP3s anywhere on its
+disks (a USB stick or the Lagoon share will do; files from a PC need no Mac type). Open one with File >
+Open..., or drop it on Aurora68 Play's icon; the space bar plays and pauses. Files given the type MPG3
+and the creator PIPY (aurora68-layout.py does it for the Music folder) open with a double-click. The Pi
+decodes the MP3 and plays it with the Mac's own sound; the log says "[AUDIO] stream: MPEG-1 layer III,
+44100 Hz stereo, ..." and "[MAC] A68 Play: ...". Every Aurora68 program's lines in the log start
+"[MAC] A68 " and its short name: A68 Play, A68 Display, A68 Slots, A68 Sound, A68 Screen Setup...
 
 A Pi on the bench, no SE yet
 ----------------------------
@@ -292,8 +310,8 @@ the clock chip, the ADB transceiver (no keyboard or mouse yet), the SCC, the flo
      hdmi_mode=69; in cmdline.txt mac.screen=1920x1200; aurora68-1920x1200.declrom (on a Pi 3,
      aurora68-wifi-1920x1200.declrom) in the container in place of aurora68.declrom. On the Mac choose Millions in Monitors (32-bit
      addressing must be on; the solo board's parameter RAM has it on). The choice is kept in
-     pram.bin on the card (below); PiDepth (in Mac/), renamed "PiDepth 32" in the System Folder's
-     Startup Items, still sets it at every start if you prefer.
+     pram.bin on the card (below); Aurora68 Depth 8 (in Mac/Aurora68/Display/), renamed
+     "Aurora68 Depth 32" in the System Folder's Startup Items, still sets it at every start if you prefer.
   4. Boot. The ROM's memory test takes a few seconds, the happy Mac appears, then "Welcome to
      Macintosh" and the Finder, about a minute on a Pi 3.
   5. Mouse and keyboard, over Bluetooth (new in 0.5). The kernel starts the Pi's Bluetooth unless
@@ -425,9 +443,11 @@ meeting a translation that has only met MAME's. Every finding goes into docs/08 
 
 On the Macintosh
 ----------------
-The drivers need no installation: they are in the declaration ROM. From Mac/, put PiMach and
-PiDisk in the System Folder (System 6) or in Extensions (System 7) if you want them, and the
-applications anywhere. Aurora68-Utilities.img is an HFS disk image with all of them.
+The drivers need no installation: they are in the declaration ROM. From Mac/Aurora68/Extensions (to
+install)/, put the extensions you want into the System Folder (System 6) or drop them on the closed
+System Folder (System 7 puts them into Extensions); copy the Aurora68 folder anywhere.
+Aurora68-Utilities.img is an HFS disk image with all of them in the same folders. With hfsutils on a
+PC, tools/mac/aurora68-layout.py (in the source) installs the whole set onto a Mac disk image.
 
 Versions
 --------

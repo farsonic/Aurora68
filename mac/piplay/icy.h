@@ -66,5 +66,9 @@ void icy_to_mac(const unsigned char *in, unsigned long n, char *out, int max);
 /* the first plain-http URL in a playlist's text (.pls "File1=", .m3u lines); 0 if none; *https set
    when the playlist names only https streams */
 int icy_playlist_url(const unsigned char *t, unsigned n, char *out, int max, int *https);
+/* the IP version a connection to a MacTCP address really uses: 6 for 198.18.0.0/15, the addresses
+   Riptide hands MacTCP programs for IPv6-only and IPv6-preferred hosts (RFC 6535, Bump-in-the-Host),
+   4 for every other address (21 November 2026) */
+int icy_ip_version(unsigned long addr);
 
 #endif

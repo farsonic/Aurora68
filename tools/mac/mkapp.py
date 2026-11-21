@@ -7,7 +7,8 @@ CODE 0: the jump table header (above-A5 size, below-A5 size, jump table size, of
 jump table entry pointing at offset 0 of CODE 1. CODE 1: 4-byte segment header (first JT entry
 offset 0, 1 entry) followed by the code, which must be position independent and start with its
 entry point. SIZE -1: flags (multi-finder aware, background null events off), 256 KiB preferred
-and minimum. A minimal BNDL/FREF/ICN# is not generated (the Finder shows a generic icon).
+and minimum. --icons KEY adds the Finder's bundle and the program's icon family from mkicons.py
+(since 21 November 2026; without it the Finder shows a generic icon).
 """
 import argparse, os, struct, sys
 sys.path.insert(0, os.path.dirname(__file__))
@@ -16,6 +17,8 @@ from rsrc import ResourceFork, macbinary
 ap = argparse.ArgumentParser()
 ap.add_argument('--code', required=True); ap.add_argument('--name', required=True)
 ap.add_argument('--creator', default='PSMC'); ap.add_argument('-o', required=True)
+ap.add_argument('--icons', help="the program's key in mkicons.py: bundle, file references, icons")
+ap.add_argument('--version', default='1.0', help="the signature resource's text: NAME VERSION")
 a = ap.parse_args()
 code = open(a.code, 'rb').read()
 code1 = struct.pack('>HH', 0, 1) + code
@@ -28,5 +31,9 @@ rf.add(b'CODE', 0, code0)
 rf.add(b'CODE', 1, code1)
 rf.add(b'SIZE', -1, size)
 creator = a.creator.encode('mac_roman')[:4].ljust(4, b' ')
-open(a.o, 'wb').write(macbinary(a.name, b'APPL', creator, b'', rf.build()))
+flags = 0
+if a.icons:
+    from mkicons import add_bundle
+    flags = add_bundle(rf, a.icons, creator, f"{a.name} {a.version}")
+open(a.o, 'wb').write(macbinary(a.name, b'APPL', creator, b'', rf.build(), finder_flags=flags))
 print(f"{a.o}: CODE 1 {len(code1)} bytes")

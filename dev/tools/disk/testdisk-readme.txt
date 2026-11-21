@@ -1,15 +1,15 @@
 Aurora68 test disk, @DATE@
 
-System 7.1 with every program built so far: Aurora68 @AURORA68@, Riptide @RIPTIDE@, Lagoon @LAGOON@, Octavo (Quill) @QUILL@. The programs that can write to the Pi's kernel log do so: open PiLog (it also starts at boot) to read it.
+System 7.1 with every program built so far: Aurora68 @AURORA68@, Riptide @RIPTIDE@, Lagoon @LAGOON@, Octavo (Quill) @QUILL@. The programs that can write to the Pi's kernel log do so: open Aurora68 Log (it also starts at boot) to read it.
 
 System Folder
-- Extensions: PiDisk, PiMach, Wi-Fi & Bluetooth (the two menu-bar menus), Riptide (TCP/IP), Lagoon EtherTalk (AppleTalk over Ethernet).
+- Extensions: Aurora68 Disk, Aurora68 Machine, Aurora68 Screen Setup, Aurora68 Sound, Aurora68 Wi-Fi & Bluetooth (the two menu-bar menus), Riptide (TCP/IP), Lagoon EtherTalk (AppleTalk over Ethernet).
 - Riptide DNR (names for MacTCP programs). MacTCP is in "Control Panels (disabled)".
-- Startup Items: PiLog.
+- Startup Items: Aurora68 Log.
 
-Top level of the disk: PiBlue, PiNet, PiPing, PiStatus, PiWiFi.
+Aurora68 (a folder at the top of the disk): Aurora68 Play (with its Music folder); Display: Aurora68 Display, Screens, Colour, Depth 8 (rename it "Aurora68 Depth 1", "Aurora68 Depth 16"... to set that depth); Network: Aurora68 Network, Wi-Fi, Bluetooth, Ping; System: Aurora68 Slots, Log, Status. They were PiPlay, PiDisplay, PiSlots... until 21 November 2026.
 
-Utilities: PiLog, PiPing, PiColor, PiScreens, PiDepth (rename it "PiDepth 1", "PiDepth 16"... to set that depth), Riptide Command Terminal, RiptidePrefs, MacTCP test, Browser test.
+Utilities: Riptide Command Terminal, RiptidePrefs, MacTCP test, Browser test.
 
 Apps
 - Octavo: the word processor (the Mac edition of Quill). Its Fonts folder must stay beside it. Sample, Charts, Pictures, Tables and Headers are test documents.

@@ -559,7 +559,7 @@ static int refresh(int first)
 {
 	if (!w) return 0;
 	if (!pd_fetch(w, di_new)) {
-		if (first) { have = 0; why_not = "The Pi's kernel does not answer PiDisplay's question: it needs an Aurora68 kernel from 21 November 2026 on."; build_text(); }
+		if (first) { have = 0; why_not = "The Pi's kernel does not answer Aurora68 Display's question: it needs an Aurora68 kernel from 21 November 2026 on."; build_text(); }
 		return 0;
 	}
 	/* only a change is redrawn: the answer is the same most of the time, and the copy's time on core 3
@@ -589,7 +589,7 @@ static long build_report(char *buf)
 {
 	char *p = buf, t[120];
 	int i;
-	p = pd_put(p, "PiDisplay: the Aurora68 card's HDMI screen\r\r");
+	p = pd_put(p, "Aurora68 Display: the Aurora68 card's HDMI screen\r\r");
 	p = rep_section(p, &s_mon);
 	p = rep_section(p, &s_cur);
 	if (have) {
@@ -621,7 +621,7 @@ static void save_report(void)
 	SFReply rep;
 	Point where = { 60, 104 };
 	if (LM_MAINDEVICE) { Rect m = *GD_RECT(LM_MAINDEVICE); where.h = (short)(m.left + (m.right - m.left - 304) / 2); where.v = (short)(m.top + 50); }
-	SFPutFile(pt_long(where), pstr(pbuf, "Save the report as:"), pstr(pbuf + 128, "PiDisplay Report"), 0, &rep, 1);
+	SFPutFile(pt_long(where), pstr(pbuf, "Save the report as:"), pstr(pbuf + 128, "Aurora68 Display Report"), 0, &rep, 1);
 	SetPort(win);
 	if (!rep.good) return;
 	char *buf = mac_newptr(12000);
@@ -648,7 +648,7 @@ static void save_report(void)
 	}
 	mac_disposeptr(buf);
 	if (e) pd_alert("The report could not be saved (the disk may be full or locked).", "OK", 0, 2);
-	else pd_log(w, "PiDisplay: report saved");
+	else pd_log(w, "A68 Display: report saved");
 }
 
 /* ---- the window's place: the preferences file ---- */
@@ -671,7 +671,7 @@ static void prefs_io(int write)
 	short vref; long dir;
 	ParamBlock pb;
 	if (!prefs_where(&vref, &dir)) return;
-	pstr(pbuf, "PiDisplay Prefs");
+	pstr(pbuf, "Aurora68 Display Prefs");
 	memset(&pb, 0, sizeof pb); pb.ioNamePtr = pbuf; pb.ioVRefNum = vref; PB_DIRID(&pb) = dir;
 	if (write) {
 		short e = mac_PBHCreate(&pb);
@@ -680,7 +680,13 @@ static void prefs_io(int write)
 		if (!mac_PBHGetFInfo(&pb)) { pb.u.f.fdType = TYPE('p', 'r', 'e', 'f'); pb.u.f.fdCreator = TYPE('P', 'I', 'D', 'Y'); PB_DIRID(&pb) = dir; mac_PBHSetFInfo(&pb); }
 	}
 	memset(&pb, 0, sizeof pb); pb.ioNamePtr = pbuf; pb.ioVRefNum = vref; PB_DIRID(&pb) = dir; pb.ioPermssn = write ? fsWrPerm : 1;
-	if (mac_PBHOpen(&pb)) return;
+	if (mac_PBHOpen(&pb)) {
+		if (write) return;
+		/* the program was PiDisplay until 21 November 2026: its file still holds the place */
+		pstr(pbuf, "PiDisplay Prefs");
+		memset(&pb, 0, sizeof pb); pb.ioNamePtr = pbuf; pb.ioVRefNum = vref; PB_DIRID(&pb) = dir; pb.ioPermssn = 1;
+		if (mac_PBHOpen(&pb)) return;
+	}
 	pb.u.io.ioBuffer = &pf; pb.u.io.ioReqCount = sizeof pf; pb.u.io.ioPosMode = fsFromStart; pb.u.io.ioPosOffset = 0;
 	if (write) { mac_PBWrite(&pb); pb.u.io.ioMisc = sizeof pf; mac_PBSetEOF(&pb); }
 	else if (mac_PBRead(&pb) || pb.u.io.ioActCount != sizeof pf) pf.magic = 0;
@@ -757,7 +763,7 @@ static void apply(void)
 		p = pd_put(p, "? Programs are asked to quit, then the Pi and the Macintosh restart. If the monitor shows nothing, the previous resolution comes back after 15 seconds.");
 	} else {
 		p = pd_put(msg, "Restart the Macintosh to turn the HDMI screen to "); p = pd_num(p, (unsigned long)rot_sel);
-		p = pd_put(p, "\xA1? Programs are asked to quit first. The Pi keeps running; PiScrn arranges the screens again, which takes one more restart.");
+		p = pd_put(p, "\xA1? Programs are asked to quit first. The Pi keeps running; Aurora68 Screen Setup arranges the screens again, which takes one more restart.");
 	}
 	if (pd_alert(msg, "Restart", "Cancel", 2) != 1) return;
 	SetPort(win);
@@ -783,7 +789,7 @@ static void apply(void)
 		return;
 	}
 	if (mode) pd_info(w, PSMB_INFO_DISPRESTART, 0, 0, 0, 0, 0, 0);
-	pd_log(w, mode ? "PiDisplay: a new resolution written; restarting the Pi and the Mac" : "PiDisplay: a new rotation written; restarting the Mac");
+	pd_log(w, mode ? "A68 Display: a new resolution written; restarting the Pi and the Mac" : "A68 Display: a new rotation written; restarting the Mac");
 	set_note("Restarting\xC9"); draw_strip();
 	save_place();
 	mac_restart();
@@ -812,7 +818,7 @@ static void setup_menus(void)
 {
 	unsigned char t[2] = { 1, 0x14 };              /* the apple */
 	m_apple = NewMenu(M_APPLE, t);
-	AppendMenu(m_apple, pstr(pbuf, "About PiDisplay\xC9;(-"));
+	AppendMenu(m_apple, pstr(pbuf, "About Aurora68 Display\xC9;(-"));
 	AddResMenu(m_apple, TYPE('D', 'R', 'V', 'R'));
 	InsertMenu(m_apple, 0);
 	m_file = NewMenu(M_FILE, pstr(pbuf, "File"));
@@ -842,7 +848,7 @@ static void fix_menus(void)
 }
 static void about(void)
 {
-	pd_alert("PiDisplay 1.0, for the Aurora68 card's HDMI screen: what the monitor says about itself, which of its resolutions a Pi 3 can send, and the screen's resolution and rotation. MPL-2.0, 2026.", "OK", 0, 1);
+	pd_alert("Aurora68 Display 1.0, for the Aurora68 card's HDMI screen: what the monitor says about itself, which of its resolutions a Pi 3 can send, and the screen's resolution and rotation. MPL-2.0, 2026.", "OK", 0, 1);
 	SetPort(win);
 }
 static void do_menu(long mr)
@@ -1067,7 +1073,7 @@ int main(void)
 	di = mac_newptr(sizeof *di); di_new = mac_newptr(sizeof *di);
 	w = pd_window();
 	if (!di || !di_new) { SysBeep(10); return 0; }
-	if (!w) why_not = "There is no Aurora68 card in this Macintosh: PiDisplay shows the HDMI screen of the Pi in a PiStorm.";
+	if (!w) why_not = "There is no Aurora68 card in this Macintosh: Aurora68 Display shows the HDMI screen of the Pi in a PiStorm.";
 	refresh(1);
 	if (!have) build_text();
 	/* the window: where it was last time, if that is on a screen now, else the main screen's top left
@@ -1075,7 +1081,7 @@ int main(void)
 	Rect b = { 42, 6, 334, 506 };
 	prefs_io(0);
 	if (pf.magic == PREFS_MAGIC && pf.version == 1 && place_ok(&pf.place)) b = pf.place;
-	win = NewWindow(0, &b, pstr(pbuf, "PiDisplay"), 1, zoomDocProc, (void *)-1, 1, 0);
+	win = NewWindow(0, &b, pstr(pbuf, "Aurora68 Display"), 1, zoomDocProc, (void *)-1, 1, 0);
 	SetPort(win);
 	Rect z = { 0, 0, 10, 10 };
 	vbar = NewControl(win, &z, pstr(pbuf, ""), 1, 0, 0, 0, scrollBarProc, 0);
@@ -1086,7 +1092,7 @@ int main(void)
 	{ static const char *const rn[4] = { "0\xA1", "90\xA1", "180\xA1", "270\xA1" };
 	  for (i = 0; i < 4; i++) radio[i] = NewControl(win, &z, pstr(pbuf, rn[i]), 0, 0, 0, 1, radioButProc, i); }
 	if (have) {
-		char t[100], *p = pd_put(t, "PiDisplay: ");
+		char t[100], *p = pd_put(t, "A68 Display: ");
 		p = pd_put(p, di->name[0] ? di->name : "no monitor description"); p = pd_put(p, ", ");
 		p = pd_num(p, di->cur_w); p = pd_put(p, "x"); p = pd_num(p, di->cur_h); p = pd_put(p, ", ");
 		p = pd_num(p, di->nmodes); pd_put(p, " modes");

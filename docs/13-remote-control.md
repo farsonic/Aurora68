@@ -4,7 +4,7 @@
 MacBook) to see and drive the Mac directly, so that a problem can be reported and reproduced
 without photographs of the screen. The Pi is the Mac's processor and already owns everything
 such a remote needs: the frame buffer the Mac draws into (it converts it to HDMI, docs/10), the
-mouse and keyboard (it feeds `.PiInput`'s ring, docs/09), the kernel's log (PiLog's ring) and the
+mouse and keyboard (it feeds `.PiInput`'s ring, docs/09), the kernel's log (Aurora68 Log's ring) and the
 68k itself. So the remote lives in the kernel, needs no program on the Mac, and keeps working
 when the Mac has hung or shows a system error. This note is the design; what was built and how
 it was tested follows it.
@@ -44,7 +44,7 @@ HTTP layer and a semihosting debug channel (`mac.remotefile=BASE`, the testbed o
   layout's keys with Shift where needed. A queue in the kernel paces the events (a key's down and
   up 30 ms apart, a click's 80 ms, a double-click inside the Mac's default double-click time), so
   the Mac's 20-event queue never overflows.
-- *log*: the kernel's 64 KiB log ring with a byte cursor (`since=N`, the count PiLog uses), the
+- *log*: the kernel's 64 KiB log ring with a byte cursor (`since=N`, the count Aurora68 Log uses), the
   values of secrets hidden (`wifi.psk`, anything whose name ends in psk, pass, key, secret or
   token, `mac.wifisim`'s password, `bt.dev`'s link key), and optionally only the lines of some
   parts (`tags=BOOT,CRASH`).
@@ -131,7 +131,7 @@ share the Mac's IP address from the start), `remote.mac=02:...` (the wired addre
 (answer every source address, not only the local network: only behind a firewall you trust).
 
 Finding the Pi: `http://aurora68-pi.local/` from a Mac (mDNS); or the address in the kernel's log
-(the HDMI console during the boot, PiLog, or aurora68.log), a line such as
+(the HDMI console during the boot, Aurora68 Log, or aurora68.log), a line such as
 `[REMOTE] address 192.168.1.23/255.255.255.0 on the wired port (DHCP from 192.168.1.1, lease 86400 s, router 192.168.1.1): http://192.168.1.23/ or http://aurora68-pi.local/`;
 or the router's list of clients, where it appears as `aurora68-pi`. When the kernel has to share
 the Mac's address on the WiFi the line says `http://ADDRESS:8068/`.

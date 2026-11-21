@@ -17,10 +17,16 @@ from macelf import build_image
 ap = argparse.ArgumentParser()
 ap.add_argument('elf'); ap.add_argument('--name', required=True); ap.add_argument('--creator', required=True)
 ap.add_argument('-o', required=True)
+ap.add_argument('--icons', help="the extension's key in mkicons.py: bundle and icons (21 November 2026)")
+ap.add_argument('--version', default='1.0')
 a = ap.parse_args()
 img, nrel = build_image(a.elf)
 rf = ResourceFork()
 rf.add(b'INIT', 128, img, attrs=0x50)          # system heap, locked
 creator = a.creator.encode('mac_roman')[:4].ljust(4, b' ')
-open(a.o, 'wb').write(macbinary(a.name, b'INIT', creator, b'', rf.build(), finder_flags=0))
+flags = 0
+if a.icons:
+    from mkicons import add_bundle
+    flags = add_bundle(rf, a.icons, creator, f"{a.name} {a.version}", ftype=b'INIT')
+open(a.o, 'wb').write(macbinary(a.name, b'INIT', creator, b'', rf.build(), finder_flags=flags))
 print(f"{a.o}: INIT {len(img)} bytes, {nrel} relocations")

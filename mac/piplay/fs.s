@@ -29,6 +29,7 @@ mac_PBGetEOF:
 	pbcall	mac_PBHCreate, 0xA208
 	pbcall	mac_PBHGetFInfo, 0xA20C
 	pbcall	mac_PBHSetFInfo, 0xA20D
+	pbcall	mac_PBHRename, 0xA20B		| the station list's old name (radio.c): the new name in ioMisc
 
 | short mac_FindFolder(short vRefNum, long type, int create, short *foundVRefNum, long *foundDirID):
 | the Folder Manager (System 7), a Pascal function whose selector goes in D0 (moveq #0, _AliasDispatch)

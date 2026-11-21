@@ -343,8 +343,8 @@ say_dec:				| d0 unsigned long -> decimal
 	.equ	V_LAST,		8		| Ticks at the last redraw
 vars:	.space	16
 wrect:	.short	50, 30, 300, 500
-wtitle:	.byte	23
-	.ascii	"PiStatus - the Pi's state"
+wtitle:	.byte	15			| the window's title: the program's name (since 21 November 2026)
+	.ascii	"Aurora68 Status"
 	.even
 s_title:    .byte 24
 	.ascii "The PiStorm's status    "

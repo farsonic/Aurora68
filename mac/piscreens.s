@@ -318,8 +318,8 @@ say_hex:				| d0 = value, d1 = digits - 1
 	.equ	V_X,		2
 vars:	.space	8
 wrect:	.short	40, 20, 300, 620
-wtitle:	.byte	25
-	.ascii	"PiScreens - the GDevices"
+wtitle:	.byte	16			| the window's title: the program's name (since 21 November 2026)
+	.ascii	"Aurora68 Screens"
 	.even
 s_title: .byte 44
 	.ascii	"QuickDraw's screens (the GDevice list), now:"

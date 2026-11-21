@@ -103,10 +103,10 @@ do_log:
 	subq.l	#1,%d1
 	bne.s	4b
 5:	rts
-ok_text:	.ascii	"PiMach: Gestalt mach now "
+ok_text:	.ascii	"A68 Machine: Gestalt mach now "
 ok_digit:	.ascii	"?"
 	.byte	0
-bad_text:	.ascii	"PiMach: ReplaceGestalt or Gestalt failed"
+bad_text:	.ascii	"A68 Machine: ReplaceGestalt or Gestalt failed"
 	.byte	0
 	.even
 

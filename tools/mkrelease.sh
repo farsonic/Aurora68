@@ -29,15 +29,19 @@ cp mac/build/psmac_wifi_video.declrom "$OUT/aurora68-wifi.declrom"       # scree
 cp mac/build/psmac-se.declrom "$OUT/aurora68-se.declrom"           # the SE's two screens at any HDMI size (the kernel rewrites it)
 for f in mac/build/psmac-*x*.declrom; do cp "$f" "$OUT/aurora68-${f#mac/build/psmac-}"; done   # one per screen size (aurora68-1024x768.declrom ...),
                                                          # and each with the WiFi as the only network card (aurora68-wifi-1024x768.declrom ...)
-for f in PiDisk PiMach PiWiFi PiBlue PiStatus PiNet PiPing PiScreens PiColor PiLog PiSlots PiDepth WiFiMenu PiScrn PiDisplay SoundPiStorm PiPlay; do cp "mac/build/$f.bin" "$OUT/Mac/"; done
-# an HFS disk image (2 MB) with the Macintosh files on it, for emulators and Disk Copy
+# the programs in their folders (21 November 2026: Mac/Aurora68/Aurora68 Play, Display, Network, System,
+# Extensions (to install); docs/09 "The programs and their folders"), as MacBinary files
+python3 tools/mac/aurora68-layout.py stage "$OUT/Mac" --build mac/build
+# an HFS disk image (2 MB) with the same folders on it, for emulators and Disk Copy. hfsutils keeps its
+# current volume in $HOME/.hcwd, shared by every hfsutils process of the user: a HOME of our own
 IMG="$OUT/Mac/Aurora68-Utilities.img"
 dd if=/dev/zero of="$IMG" bs=1k count=2048 status=none
-hformat -l "Aurora68 $V" "$IMG" > /dev/null
-hmount "$IMG" > /dev/null
-for f in "$OUT"/Mac/*.bin; do hcopy -m "$f" :; done
-hcopy -t release/READ-ME-FIRST.txt ":Read Me"
-humount
+HFSHOME=$(mktemp -d)
+HOME=$HFSHOME hformat -l "Aurora68 $V" "$IMG" > /dev/null
+HOME=$HFSHOME hcopy -t release/READ-ME-FIRST.txt ":Read Me"
+HOME=$HFSHOME humount
+rm -f "$HFSHOME/.hcwd"; rmdir "$HFSHOME"
+python3 tools/mac/aurora68-layout.py disk "$IMG" --build mac/build
 
 echo "== boot files, notes, licences"
 cp release/config.txt release/cmdline.txt release/aurora68-display.txt release/READ-ME-FIRST.txt "$OUT/"
@@ -50,6 +54,6 @@ cp emu68/LICENSE "$OUT/LICENSES/Emu68-and-Aurora68-MPL-2.0.txt"
 cp emu68/src/alice/../../COPYING "$OUT/LICENSES/Alice68-modules-GPL-2.0.txt" 2>/dev/null || \
   curl -sSf https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt -o "$OUT/LICENSES/Alice68-modules-GPL-2.0.txt" 2>/dev/null || \
   echo "The Alice68 service modules (emu68/src/alice) are GPL-2.0-only; see https://www.gnu.org/licenses/old-licenses/gpl-2.0.html" > "$OUT/LICENSES/Alice68-modules-GPL-2.0.txt"
-(cd "$OUT" && sha256sum kernel8.img *.declrom *.txt *.py *.sh Mac/* > SHA256SUMS)
+(cd "$OUT" && { sha256sum kernel8.img *.declrom *.txt *.py *.sh; find Mac -type f -print0 | sort -z | xargs -0 sha256sum; } > SHA256SUMS)
 (cd dist && zip -qr "Aurora68-$V.zip" "Aurora68-$V")
 ls -la "dist/Aurora68-$V.zip"; unzip -l "dist/Aurora68-$V.zip" | tail -1

@@ -995,7 +995,7 @@ void psmac_audio_start(uint8_t *win)
     str->version = 1; str->magic = PSMB_STR_MAGIC;
     if (out_want == OUT_OFF && !quiet) kprintf("[AUDIO] mac.audio=off: the Mac's sound stays on %s\n", psmac_board_se && !psmac_board_solo ? "the SE's speaker" : "nothing here");
     else if (out_kind) kprintf("[AUDIO] the ASC (22257 Hz, both FIFOs) %s mixed on core 1 at %u Hz%s\n",
-                               card_on ? "and the sound card (44.1 kHz, the PiSound extension)" : "alone (mac.sndcard=off)", out_rate,
+                               card_on ? "and the sound card (44.1 kHz, the Aurora68 Sound extension)" : "alone (mac.sndcard=off)", out_rate,
                                psmac_board_se && !psmac_board_solo ? "; the SE's speaker plays as well" : "");
     __atomic_store_n(&started, 1, __ATOMIC_RELEASE);
 }

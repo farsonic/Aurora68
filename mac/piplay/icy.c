@@ -313,3 +313,13 @@ int icy_playlist_url(const unsigned char *t, unsigned n, char *out, int max, int
 	}
 	return 0;
 }
+
+/* MacTCP sees IPv4 addresses only. Riptide gives a MacTCP program a stand-in from 198.18.0.0/15 (the
+   benchmarking block, RFC 2544, which no real host has) for a host it reaches over IPv6, and carries the
+   connection over IPv6 (RFC 6535, "Bump-in-the-Host"; Riptide's docs/MAC.md, "IPv6 for MacTCP
+   programs"). So the address alone says which: nothing Riptide's own is asked, and with Apple's MacTCP
+   every address is an IPv4 one. */
+int icy_ip_version(unsigned long addr)
+{
+	return (addr & 0xFFFE0000ul) == 0xC6120000ul ? 6 : 4;
+}

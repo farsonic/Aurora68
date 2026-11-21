@@ -23,6 +23,8 @@ ap.add_argument('--size', type=int, default=384, help='the partition, KB')
 ap.add_argument('--rsrc', action='append', default=[], help='TYPE:ID:file, another resource')
 ap.add_argument('--size-flags', type=lambda v: int(v, 0), default=0x5880, help="the SIZE resource's flags")
 ap.add_argument('--bundle', action='store_true', help='set the Finder\'s has-bundle flag (the program brings BNDL, FREF and ICN#)')
+ap.add_argument('--icons', help="the program's key in mkicons.py: bundle, file references and icons, and the has-bundle flag")
+ap.add_argument('--version', default='1.0', help="the signature resource's text: NAME VERSION")
 ap.add_argument('-o', required=True)
 a = ap.parse_args()
 img, nrel = build_image(a.elf)
@@ -37,5 +39,9 @@ for r in a.rsrc:
     t, i, f = r.split(':', 2)
     rf.add(t.encode('mac_roman'), int(i), open(f, 'rb').read())
 creator = a.creator.encode('mac_roman')[:4].ljust(4, b' ')
-open(a.o, 'wb').write(macbinary(a.name, b'APPL', creator, b'', rf.build(), finder_flags=0x2000 if a.bundle else 0))
+flags = 0x2000 if a.bundle else 0
+if a.icons:
+    from mkicons import add_bundle
+    flags |= add_bundle(rf, a.icons, creator, f"{a.name} {a.version}")
+open(a.o, 'wb').write(macbinary(a.name, b'APPL', creator, b'', rf.build(), finder_flags=flags))
 print(f"{a.o}: CODE 1 {len(code1)} bytes, {nrel} relocations")

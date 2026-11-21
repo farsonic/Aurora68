@@ -3123,6 +3123,93 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    - *On the real SE the same evening* (PiPlay 1.1 from 58f26bf on the kernel c4438d6, the test image of
      that day, Riptide over the WiFi): the owner reported "Streaming radio works": a SomaFM station
      through the Radio menu, fetched by the Mac over MacTCP, decoded on the Pi and heard on HDMI.
+84. **The programs renamed "Aurora68 Xxxx", put into folders and given icons (21 November).** The owner
+   asked: "rename all the apps to Aurora68 XXXXX so, PiPlay is Aurora68 Play etc. Put them all into
+   relevant folders. Give them new custom icons." docs/09, "The programs and their folders", is the long
+   form (the table of old and new names, the folders, the log tags, the icons).
+   - *Names.* PiPlay, PiDisplay, PiSlots, PiLog, PiStatus became Aurora68 Play, Display, Slots, Log,
+     Status; PiNet, PiWiFi, PiBlue, PiPing, PiColor, PiScreens and PiDepth became Aurora68 Network, Wi-Fi,
+     Bluetooth, Ping, Colour (the project's spelling everywhere else), Screens and Depth; the extensions
+     PiDisk, PiMach, PiScrn, Sound PiStorm and "Wi-Fi & Bluetooth" became Aurora68 Disk, Machine, Screen
+     Setup, Sound and Aurora68 Wi-Fi & Bluetooth (the old name with the prefix: the menus are both). The
+     Finder names, window titles (the assembly programs' titles were "PiWiFi - the Pi's WiFi" and the like;
+     now the name alone, and PiStatus's length byte, 23 for 25 characters, which cut its title short, is
+     gone with it: the lengths are counted now), About boxes, the Apple menu's About items, Aurora68
+     Display's Balloon Help, alerts, the Stations file's comments and the HTTP User-Agent
+     (`Aurora68-Play/1.1 (Macintosh)`) say the new names; the kernel's messages that name a program too
+     (`Aurora68 Display chose ...`, `is Aurora68 Screen Setup installed?`, the simulated radio's "S / J in
+     Aurora68 Wi-Fi"). Kept: creator codes and file types, the drivers' names, the declaration ROM's
+     sResource names, the mailbox, the sources' file names, the drivers' own log lines and the kernel's
+     tags. The build products are `mac/build/Aurora68-Play.bin` and so on (no spaces, for make and the
+     shell; the MacBinary header carries the Finder name). The programs' log lines are `[MAC] A68 Play:`,
+     `[MAC] A68 Sound:` and so on, short because the kernel keeps 127 characters of a line.
+   - *Preferences.* The three programs with a preferences file read the old one when the new is missing
+     ("PiPlay Prefs" for "Aurora68 Play Prefs"...) and write the new one; the radio's "PiPlay Stations", which
+     users edit, is renamed (_HRename) to "Aurora68 Play Stations" at the first start, so that there is one
+     list. Aurora68 Depth skips the "68" of its own name before it takes the last number ("Aurora68 Depth HDMI
+     32"); the old way of reading the last number would have given 16 for "Aurora68 Depth 16" too, but 68
+     for "Aurora68 Depth", which only fell back to 8 by luck.
+   - *Order of the extensions.* System 7 runs extensions in the order of their names. "Sound PiStorm" was
+     named to sort after Apple's "Sound Manager" (item 74); "Aurora68 Sound" sorts before it. Rather than a
+     name outside the scheme, the extension now waits: finding a Sound Manager older than 3.0 it copies its
+     whole code into the system heap and hooks the GetNextEvent filter (jGNEFilter), which runs the copy's
+     start once the Sound Manager says 3.0, after every extension; then it registers the device as before.
+     The first build of this crashed the Finder with an illegal instruction in the system heap, its PC in
+     the middle of a message string (the kernel's crash record printed the bytes): `lea init_start(%pc)` and
+     `bsr init_start` named the global symbol, which GNU as leaves to a linker as a relocation, and
+     `objcopy -O binary` of the object put 0 in its place, so the copy began 398 bytes into the code and the
+     filter's address pointed into text. A local label at the same place fixed it; `objdump -r` of every
+     assembly program now shows no relocations.
+   - *Folders.* `tools/mac/aurora68-layout.py` (standard library and hfsutils, each call with a HOME of its
+     own, as hfsutils keeps its current volume in `$HOME/.hcwd`): `stage` for the release's `Mac/` folder,
+     `disk` for Aurora68-Utilities.img, `install` for a startup disk (extensions into System Folder:
+     Extensions, the folder "Aurora68" with Aurora68 Play and its Music folder, Display, Network, System;
+     the old extensions taken out, the old programs too with `--remove-old`, sound files typed MPG3/AIFF/WAVE
+     with the creator PIPY by `--music`, the desktop database deleted by `--rebuild-desktop`). hfsutils'
+     `hls` answers 0 for a file that is not there, so the helper reads its output instead.
+     `tools/mkrelease.sh`, `make -C mac install` and `dev/tools/mkfullimage.sh` use it.
+   - *Icons.* `tools/mac/mkicons.py` draws every icon from nothing, one-bit first: a rounded tile, a night
+     sky with an aurora across its top, a glyph below; puzzle pieces for the extensions; pages for Aurora68
+     Play's MP3, AIFF and WAV documents and the preferences. ICN#, ics#, icl4, icl8, ics4, ics8 each, in
+     the system palettes; a bundle (signature, BNDL, FREFs) in every program; `docs/img/aurora68-icons.png`
+     is the sheet. The three extensions that share the creator 'PSMC' carry a common icon in their bundle
+     and their own as a custom icon (ID -16455, hasCustomIcon), since the desktop database keeps one icon
+     per creator and type. The old PiPlay icon (`mac/piplay/mkrsrc.py`, a loudspeaker and a note) is gone.
+   - *IPv4 or IPv6* (the owner's addition the same hour, done here because it touches Aurora68 Play's
+     radio): the counts line ends with "— IPv6" when MacTCP's remote address is one of Riptide's stand-ins
+     (198.18.0.0/15, RFC 6535), "— IPv4" otherwise, and the log's "connected to" line says so; the middle
+     dot first tried showed as a box, Geneva 9 having none. NPO Radio 2 (dual stack) joined the built-in
+     list for `mactcp ipv6 prefer`.
+   - *Tested* (the solo board under QEMU and MAME's SE once, System 7.1, a copy of the owner's test image
+     with the set installed by `aurora68-layout.py install --remove-old --rebuild-desktop --music`, a
+     "PiPlay Prefs", "PiSlots Prefs" and "PiPlay Stations" of the old kind put into its Preferences folder
+     first, the kernel of this change, driven through the remote control's semihosting channel). The Finder
+     rebuilt its desktop and showed every icon: in colour on the solo board's screen, where a copy of the
+     program named "Aurora68 Depth 16" in Startup Items had set thousands of colours by its name
+     (`docs/img/system71-aurora68-folders.png`), and at one bit on the SE's screen
+     (`docs/img/se-aurora68-folders.png`); the MP3 files in the Music folder with their document icon. A
+     double-click on "Minuet in G.mp3" started Aurora68 Play with it (`a file from the Finder`, `playing
+     "Minuet in G.mp3"`), its window where "PiPlay Prefs" had put it and the volume from it (`the preferences
+     of PiPlay, its old name, read`), the Radio menu holding the old list's three stations (`radio: "PiPlay
+     Stations" renamed "Aurora68 Play Stations"`, `read: 3 stations`); on quitting, "Aurora68 Play Prefs" was
+     written. On the SE the window's place from the 640 by 480 screen was found on no screen and the window
+     put on the main one. Aurora68 Slots came up where "PiSlots Prefs" said. Every program started from its
+     folder with its name in its window's title (Display, Screens, Network, Wi-Fi, Bluetooth, Ping, Slots,
+     Status, Log), About Aurora68 Play and About Aurora68 Slots said the new names (the About box of Aurora68
+     Play was then made taller: "and NPO Radio 2" had pushed its last line out; a last run showed it whole,
+     and the radio's line ending "0 underruns — IPv6"), and the log said `[MAC] A68
+     Machine: Gestalt mach now 5`, `[MAC] A68 Disk: ...`, `[MAC] A68 Network: started`, `[MAC] A68 Ping: ...`,
+     `[MAC] A68 Slots: slot 9 "PiStorm-SE"; ...`, `[MAC] A68 Display: ...`. Aurora68 Sound waited and then
+     registered: `A68 Sound: no Sound Manager 3.0 yet; waiting ...`, then `A68 Sound: Sound Manager 3.0; the
+     sound card ... registered and chosen as the output device` once the Finder took events (on the SE, with
+     no sound output in that testbed, the second run said so instead). The radio over IPv6: a station at
+     `http://v6only.testbed/stream` (pinet's IPv6-only name, relayed to `tools/radiotest.py`) through Riptide
+     gave `radio: connected to 198.18.0.1:80 (IPv6 through Riptide's stand-in)` and "IPv6" in the window
+     (`docs/img/system71-aurora68-play-ipv6.png`);
+     `http://radio.testbed:8000/stream` gave `connected to 192.168.68.1:8000 (IPv4)`.
+   - *Not verified:* the icons on a real SE and on real HDMI; System 6.0.8 (no custom icons there: the three
+     'PSMC' extensions show the common one); the extensions' new order with the owner's other extensions;
+     NPO Radio 2 itself (no Internet in the testbed).
 
 
 ## Mailbox and Mac-side software (later the same day)

@@ -207,6 +207,13 @@ int main(void)
 		icy_to_mac((const unsigned char *)u8, sizeof u8 - 1, t, sizeof t);
 		check(!strcmp(t, "Bj\x9Ark \xD2J\x97ga\xD3"), "UTF-8 into Mac Roman, the trailing spaces dropped");
 	}
+	/* the IP version from MacTCP's address: Riptide's IPv6 stand-ins are 198.18.0.0/15 */
+	check(icy_ip_version(0xC6120005ul) == 6, "198.18.0.5 is an IPv6 stand-in");
+	check(icy_ip_version(0xC613FFFEul) == 6, "198.19.255.254 is an IPv6 stand-in");
+	check(icy_ip_version(0xC6110001ul) == 4, "198.17.0.1 is IPv4");
+	check(icy_ip_version(0xC6140000ul) == 4, "198.20.0.0 is IPv4");
+	check(icy_ip_version(0xC0A84401ul) == 4, "192.168.68.1 is IPv4");
+	check(icy_ip_version(0x2D4F7012ul) == 4, "a public IPv4 address is IPv4");
 	printf("icy_test: %d checks, %d failed\n", checks, fails);
 	return fails != 0;
 }

@@ -591,7 +591,7 @@ uint32_t edid_display_text(const struct psmb_dispinfo *di, int mi, int alt, int 
     const struct psmb_dispmode *m = &di->mode[mi];
     uint32_t hz = alt ? m->alt_refresh : m->refresh, khz = alt ? m->alt_pixclk : m->pixclk;
     out[0] = 0;
-    put(&b, "# aurora68-display.txt: the HDMI mode chosen in PiDisplay, written by the Aurora68 kernel.\n"
+    put(&b, "# aurora68-display.txt: the HDMI mode chosen in Aurora68 Display, written by the Aurora68 kernel.\n"
             "# config.txt reads it through the line \"include aurora68-display.txt\", at the end of\n"
             "# config.txt (an hdmi_ line after it would win). The previous file is aurora68-display.bak.\n");
     put(&b, "# "); put(&b, di->name[0] ? di->name : "the monitor"); if (di->maker[0]) { put(&b, " ("); put(&b, di->maker); put(&b, ")"); }

@@ -18,6 +18,7 @@ struct radio_ui {
 	char title[128];                 /* now playing (StreamTitle), Mac Roman */
 	unsigned long br;                /* kbit/s, from icy-br or the decoder */
 	unsigned long reconnects, underruns;   /* connections lost and made again; times the card ran dry */
+	int ipv;                         /* 4 or 6: the IP version of the connection (icy_ip_version), 0 before one */
 	unsigned long held_ms;           /* what the card holds and has not played, in ms */
 	unsigned long retry_at;          /* Ticks of the next attempt (RS_RETRY) */
 	const char *error;               /* a failure to tell the user; the window clears it after showing it */
@@ -39,7 +40,7 @@ void radio_poll(void);                 /* from the event loop, as often as it ca
 void radio_quit(void);                 /* everything given back to MacTCP and the resolver */
 const char *radio_status(char *buf);   /* a few words for the window: "Buffering 40%", "Playing" ... */
 const char *radio_problem(void);       /* while it waits to try again: why the connection was lost */
-/* the station list ("PiPlay Stations"): read (written first from the built-in list if it is not
+/* the station list ("Aurora68 Play Stations", "PiPlay Stations" before 21 November 2026): read (written first from the built-in list if it is not
    there); 1 if it was read again because it changed since the last look */
 int stations_load(void);
 int stations_check(void);

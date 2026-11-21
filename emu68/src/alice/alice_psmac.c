@@ -637,7 +637,7 @@ int psmac_wifi_testbed_poll(volatile struct an_unit *u)
           for (; f[i]; i++) u->fwver[i] = f[i];
           u->fwver[i] = 0; }
         wsim_state(u, AN_ST_STARTING, "testbed WiFi: simulated radio starting");
-        wsim_later(1200, AN_ST_IDLE, "idle: scan or join (S / J in PiWiFi)", 0, 0);
+        wsim_later(1200, AN_ST_IDLE, "idle: scan or join (S / J in Aurora68 Wi-Fi)", 0, 0);
         kprintf("[WIFI-SIM] unit 0 is a simulated radio: network \"%s\" lets the Mac in; frames %s\n",
                 wsim_nets[0].ssid, psmac_netfile_up(1) ? "through mac.wifinet" : "go nowhere (no mac.wifinet=)");
         /* wifi.ssid=/wifi.psk= on the command line join at boot, as the real driver does */

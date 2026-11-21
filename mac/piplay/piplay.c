@@ -40,7 +40,7 @@
  * and System 7 on a 68020 or later. Built with the C kit in mac/c (README.md).
  *
  * Internet radio (PiPlay 1.1, 21 November 2026, docs/08 item 83): a Radio menu with the stations of the
- * text file "PiPlay Stations" (Preferences folder; written at the first start from SomaFM's channels)
+ * text file "Aurora68 Play Stations" (Preferences folder; written at the first start from SomaFM's channels)
  * and Open URL... (Cmd-U) for any plain-http MP3 stream. radio.c fetches it with MacTCP and feeds the
  * same stream channel as an open-ended MPEG stream, icy.c takes the station's answer apart; this file
  * only draws the radio's window (the station, "Now playing", the format and the counts, a buffer meter,
@@ -70,7 +70,7 @@ static unsigned char pbuf[256];
 static unsigned char logline[128];
 void pi_log(const char *text)
 {
-	static const char who[] = "PiPlay: ";
+	static const char who[] = "A68 Play: ";
 	unsigned long n = 0, k, req;
 	if (!win_base) return;
 	for (k = 0; who[k]; k++) logline[n++] = (unsigned char)who[k];
@@ -269,11 +269,11 @@ static int identify(void)
 		else {
 			char *q = put_str(err_buf, "This AIFF-C file is compressed (");
 			for (int i = 24; i >= 0; i -= 8) *q++ = (char)(comp >> i);
-			put_str(q, "), and PiPlay plays only uncompressed sound.")[0] = 0;
+			put_str(q, "), and Aurora68 Play plays only uncompressed sound.")[0] = 0;
 			err_text = err_buf;
 			return 0;
 		}
-		if (pcm_bits != 8 && pcm_bits != 16 && pcm_bits != 24) { err_text = "PiPlay plays AIFF files of 8, 16 or 24 bits only."; return 0; }
+		if (pcm_bits != 8 && pcm_bits != 16 && pcm_bits != 24) { err_text = "Aurora68 Play plays AIFF files of 8, 16 or 24 bits only."; return 0; }
 		data_start = ssnd;
 		data_len = frames * pcm_ch * (pcm_bits / 8);
 		if (ssnd_len && data_len > ssnd_len) data_len = ssnd_len;
@@ -305,8 +305,8 @@ static int identify(void)
 		}
 		if (!have_fmt || !data_start) { err_text = "This WAV file has no sound in it, or it is damaged."; return 0; }
 		if (fmt == 0x55) { kind = K_MP3; put_str(what, "MP3 in WAV")[0] = 0; return 1; }
-		if (fmt != 1) { err_text = "This WAV file is compressed or in floating point, and PiPlay plays only plain PCM and MP3."; return 0; }
-		if (pcm_bits != 8 && pcm_bits != 16 && pcm_bits != 24) { err_text = "PiPlay plays WAV files of 8, 16 or 24 bits only."; return 0; }
+		if (fmt != 1) { err_text = "This WAV file is compressed or in floating point, and Aurora68 Play plays only plain PCM and MP3."; return 0; }
+		if (pcm_bits != 8 && pcm_bits != 16 && pcm_bits != 24) { err_text = "Aurora68 Play plays WAV files of 8, 16 or 24 bits only."; return 0; }
 		pcm_flags = PSMB_STR_PCM_LE | (pcm_bits == 8 ? PSMB_STR_PCM_UNSIGNED : 0);
 		kind = K_WAV;
 		put_str(what, "WAV")[0] = 0;
@@ -319,7 +319,7 @@ static int identify(void)
 	} else {
 		long i;
 		for (i = 0; i + 4 <= got && !mpeg_at(b, got, i); i++) { }
-		if (i + 4 > got) { err_text = "PiPlay does not know this kind of file. It plays MP3 files, and AIFF and WAV files that are not compressed."; return 0; }
+		if (i + 4 > got) { err_text = "Aurora68 Play does not know this kind of file. It plays MP3 files, and AIFF and WAV files that are not compressed."; return 0; }
 		skip = (unsigned long)i;
 	}
 	data_start = skip;
@@ -555,6 +555,7 @@ static void radio_info(char *t)
 	if (radio.br) { p = put_str(p, ", "); p = put_num(p, radio.br); p = put_str(p, " kbit/s"); }
 	p = put_str(p, "; "); p = put_num(p, radio.reconnects); p = put_str(p, radio.reconnects == 1 ? " reconnect, " : " reconnects, ");
 	p = put_num(p, radio.underruns); p = put_str(p, radio.underruns == 1 ? " underrun" : " underruns");
+	if (radio.ipv) p = put_str(p, radio.ipv == 6 ? " \xD1 IPv6" : " \xD1 IPv4");   /* an em dash: Geneva 9 has no middle dot */
 	*p = 0;
 }
 static void radio_texts(void)
@@ -721,11 +722,11 @@ static void say_error(const char *text)
 }
 static void about(void)
 {
-	message_box("PiPlay 1.1 for the Aurora68 card.\r"
+	message_box("Aurora68 Play 1.1 for the Aurora68 card.\r"
 	            "Plays MP3 files, AIFF and WAV files that are not compressed, and internet radio: plain "
 	            "http:// MP3 streams through MacTCP. The Pi decodes them (minimp3, public domain) and plays "
 	            "them on HDMI or its headphone socket, mixed with the Macintosh's own sound.\r"
-	            "The stations in the Radio menu are SomaFM's, listener-supported radio (somafm.com). MPL-2.0.", 150);
+	            "The stations in the Radio menu are SomaFM's, listener-supported radio (somafm.com), and NPO Radio 2. MPL-2.0.", 172);
 }
 
 /* ---- opening a file ------------------------------------------------------------------------------ */
@@ -1023,7 +1024,7 @@ static void setup_menus(void)
 {
 	unsigned char t[2] = { 1, 0x14 };       /* the apple */
 	m_apple = NewMenu(M_APPLE, t);
-	AppendMenu(m_apple, pstr(pbuf, "About PiPlay\xC9;(-"));
+	AppendMenu(m_apple, pstr(pbuf, "About Aurora68 Play\xC9;(-"));
 	AddResMenu(m_apple, TYPE('D', 'R', 'V', 'R'));
 	InsertMenu(m_apple, 0);
 	m_file = NewMenu(M_FILE, pstr(pbuf, "File"));
@@ -1084,7 +1085,8 @@ static void close_window(void)
    place and size and the volume, a few bytes in the data fork */
 #define PREF_MAGIC TYPE('P', 'I', 'P', 'Y')
 struct prefs { unsigned long magic; short version; Rect r; short vol; short pad; };
-static const unsigned char pref_name[] = "\x0CPiPlay Prefs";
+static const unsigned char pref_name[] = "\x13" "Aurora68 Play Prefs";
+static const unsigned char pref_old_name[] = "\x0C" "PiPlay Prefs";    /* the program's name until 21 November 2026 */
 int pref_place(short *vref, long *dirid)
 {
 	*vref = *(volatile short *)0x210;          /* BootDrive: the System Folder's working directory */
@@ -1093,6 +1095,12 @@ int pref_place(short *vref, long *dirid)
 		*vref = *(volatile short *)0x210; *dirid = 0;
 	}
 	return 1;
+}
+static void pref_pb_named(ParamBlock *pb, short vref, long dirid, const unsigned char *name)
+{
+	memset(pb, 0, sizeof *pb);
+	pb->ioNamePtr = name; pb->ioVRefNum = vref;
+	pb->u.f.ioFlNum = dirid;                    /* ioDirID */
 }
 static void pref_pb(ParamBlock *pb, short vref, long dirid)
 {
@@ -1107,7 +1115,12 @@ static int load_prefs(struct prefs *p)
 	pref_place(&vref, &dirid);
 	pref_pb(&pb, vref, dirid);
 	pb.ioPermssn = 1;
-	if (mac_PBHOpen(&pb)) return 0;
+	if (mac_PBHOpen(&pb)) {
+		pref_pb_named(&pb, vref, dirid, pref_old_name);      /* left by PiPlay: read it, write the new one */
+		pb.ioPermssn = 1;
+		if (mac_PBHOpen(&pb)) return 0;
+		pi_log("the preferences of PiPlay, its old name, read");
+	}
 	pb.u.io.ioBuffer = p; pb.u.io.ioReqCount = sizeof *p; pb.u.io.ioPosMode = fsFromStart; pb.u.io.ioPosOffset = 0;
 	short e = mac_PBRead(&pb);
 	mac_PBClose(&pb);
@@ -1313,7 +1326,7 @@ int main(void)
 		if (on_screen(&pr.r)) b = pr.r;
 		else pi_log("the remembered window place is on no screen now: the window goes on the main screen");
 	}
-	win = NewWindow(0, &b, pstr(pbuf, "PiPlay"), 0, zoomDocProc, (void *)-1, 1, 0);
+	win = NewWindow(0, &b, pstr(pbuf, "Aurora68 Play"), 0, zoomDocProc, (void *)-1, 1, 0);
 	{   /* the zoom box's standard state: as wide as the main screen allows, a little taller */
 		Rect *std = (Rect *)((char *)**(void ***)((char *)win + 130) + 8);
 		std->top = 40; std->left = 8; std->bottom = 40 + 140;
@@ -1331,10 +1344,10 @@ int main(void)
 
 	/* is there a card that plays, and does this kernel have the stream channel? */
 	const char *problem = 0;
-	if (!win_base) problem = "There is no Aurora68 sound card in this Macintosh, so PiPlay has nothing to play on.";
-	else if (ps->magic != PSMB_STR_MAGIC) { problem = "This Aurora68 kernel is too old for PiPlay: put a newer kernel8.img on the Pi's SD card."; ps = 0; }
+	if (!win_base) problem = "There is no Aurora68 sound card in this Macintosh, so Aurora68 Play has nothing to play on.";
+	else if (ps->magic != PSMB_STR_MAGIC) { problem = "This Aurora68 kernel is too old for Aurora68 Play: put a newer kernel8.img on the Pi's SD card."; ps = 0; }
 	else if (!ps->out_kind) problem = "The Pi plays no sound now: mac.audio=off is in cmdline.txt, or neither HDMI nor the headphone socket could be started (the Pi's log says why).";
-	else if (!iobuf) problem = "There is not enough memory for PiPlay.";
+	else if (!iobuf) problem = "There is not enough memory for Aurora68 Play.";
 	if (ps) {
 		char t[90], *p = put_str(t, "started; the card plays on ");
 		p = put_str(p, ps->out_kind == PSMB_SND_OUT_HDMI ? "HDMI" : ps->out_kind == PSMB_SND_OUT_JACK ? "the headphone socket" :

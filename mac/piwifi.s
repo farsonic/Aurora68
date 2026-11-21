@@ -178,7 +178,7 @@ do_scan:
 	bra	loop
 
 do_join:
-	log	"PiWiFi: join: asking for the network name"
+	log	"A68 Wi-Fi: join: asking for the network name"
 	bsr	unit
 	move.l	%a1,%d0
 	beq	loop
@@ -195,7 +195,7 @@ do_join:
 	bsr	readline
 	tst.w	%d0
 	bmi	cancelled
-	log	"PiWiFi: join: name read, asking for the password"
+	log	"A68 Wi-Fi: join: name read, asking for the password"
 	lea	s_askpass(%pc),%a0
 	bsr	status_line
 	lea	J_PASS(%a2),%a0
@@ -203,7 +203,7 @@ do_join:
 	bsr	readline
 	tst.w	%d0
 	bmi	cancelled
-	log	"PiWiFi: join: password read, joining"
+	log	"A68 Wi-Fi: join: password read, joining"
 	lea	s_joining(%pc),%a0
 	bsr	status_line
 	moveq	#CMD_JOIN,%d0
@@ -212,7 +212,7 @@ do_join:
 	bsr	redraw
 	bra	loop
 cancelled:
-	log	"PiWiFi: join: cancelled (Escape)"
+	log	"A68 Wi-Fi: join: cancelled (Escape)"
 	bsr	redraw
 	bra	loop
 
@@ -603,8 +603,8 @@ nib:	add.b	#'0',%d1
 vars:	.space	16
 wrect:	.short	50, 30, 320, 500		| top, left, bottom, right
 erase_status: .short 218, 4, 244, 468
-wtitle:	.byte	22
-	.ascii	"PiWiFi - the Pi's WiFi"
+wtitle:	.byte	14			| the window's title: the program's name (since 21 November 2026)
+	.ascii	"Aurora68 Wi-Fi"
 	.even
 s_title:    .byte 31
 	.ascii "The PiStorm's WiFi (unit 0)    "

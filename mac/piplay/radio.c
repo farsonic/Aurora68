@@ -48,7 +48,7 @@ long mac_dnr_call(void *code, long sel, long a, long b, long c, long d);
 void mac_dnr_result(void);
 void mac_HLock(void *h), mac_HUnlock(void *h), mac_DisposPtr(void *p), mac_DisposHandle(void *h);
 short mac_PBRead(ParamBlock *pb), mac_PBGetEOF(ParamBlock *pb), mac_PBHOpen(ParamBlock *pb), mac_PBHCreate(ParamBlock *pb),
-      mac_PBHGetFInfo(ParamBlock *pb), mac_PBHSetFInfo(ParamBlock *pb);
+      mac_PBHGetFInfo(ParamBlock *pb), mac_PBHSetFInfo(ParamBlock *pb), mac_PBHRename(ParamBlock *pb);
 short mac_FindFolder(short vRefNum, long type, int create, short *vref, long *dirid);
 
 struct radio_ui radio;
@@ -285,10 +285,10 @@ static const char *parse_url(const char *u)
 	int i = 0;
 	unsigned long p = 80;
 	while (*u == ' ') u++;
-	if (prefix(u, "https://")) return "PiPlay plays plain http:// streams only: a Macintosh cannot do the encryption of https.";
+	if (prefix(u, "https://")) return "Aurora68 Play plays plain http:// streams only: a Macintosh cannot do the encryption of https.";
 	if (prefix(u, "http://")) u += 7;
 	else if (prefix(u, "icy://")) u += 6;
-	else { const char *c = u; while (*c && *c != '/' && *c != ':') c++; if (c[0] == ':' && c[1] == '/') return "PiPlay plays http:// addresses only."; }
+	else { const char *c = u; while (*c && *c != '/' && *c != ':') c++; if (c[0] == ':' && c[1] == '/') return "Aurora68 Play plays http:// addresses only."; }
 	while (*u && *u != '/' && *u != ':' && i < (int)sizeof host - 1) host[i++] = *u++;
 	host[i] = 0;
 	if (!i || (*u && *u != '/' && *u != ':')) return "That address has no station's name in it.";
@@ -441,7 +441,7 @@ static void send_request(void)
 	p = put_str(p, http11 ? " HTTP/1.1\r\nHost: " : " HTTP/1.0\r\nHost: ");
 	p = put_str(p, host);
 	if (port != 80) { *p++ = ':'; p = put_num(p, port); }
-	p = put_str(p, "\r\nUser-Agent: PiPlay/1.0 (Macintosh; Aurora68)\r\nAccept: */*\r\nIcy-MetaData: 1\r\nConnection: close\r\n\r\n");
+	p = put_str(p, "\r\nUser-Agent: Aurora68-Play/1.1 (Macintosh)\r\nAccept: */*\r\nIcy-MetaData: 1\r\nConnection: close\r\n\r\n");
 	wds.len = (unsigned short)(p - request); wds.ptr = request; wds.end = 0;
 	pb_setup(pb_ctl, TCPSend);
 	pb_ctl[32] = 30; pb_ctl[33] = 1; pb_ctl[34] = 0xC0;
@@ -455,7 +455,7 @@ static void connect_start(void)
 	const char *e = parse_url(cur_url);
 	if (e) { failed(e, 0); return; }
 	if (dotted(host, &addr)) { open_start(); return; }
-	if (!open_resolver()) { failed("PiPlay could not find MacTCP's name resolver (the \"MacTCP DNR\"). A station's number address (such as 192.168.1.20) still works.", 0); return; }
+	if (!open_resolver()) { failed("Aurora68 Play could not find MacTCP's name resolver (the \"MacTCP DNR\"). A station's number address (such as 192.168.1.20) still works.", 0); return; }
 	lk = look[0].busy && !look[0].done ? 1 : 0;   /* a lookup given up on may still answer into the other */
 	if (look[lk].busy && !look[lk].done) { failed("The last name lookup has not finished yet: try again in a moment.", 0); return; }
 	memset(&look[lk].hi, 0, sizeof look[lk].hi);
@@ -472,8 +472,8 @@ static void connect_start(void)
 static void redirect(const char *to, const char *why)
 {
 	char loc[200];
-	if (++redirects > 3) { failed("The station sent PiPlay from one address to another more than three times.", 0); return; }
-	if (prefix(to, "https://")) { failed("The station sent PiPlay on to a secure (https) address, and PiPlay plays plain http:// streams only.", 0); return; }
+	if (++redirects > 3) { failed("The station sent Aurora68 Play from one address to another more than three times.", 0); return; }
+	if (prefix(to, "https://")) { failed("The station sent Aurora68 Play on to a secure (https) address, and Aurora68 Play plays plain http:// streams only.", 0); return; }
 	if (to[0] == '/') {                          /* a path on the same server */
 		char *p = put_str(loc, "http://");
 		p = put_str(p, host);
@@ -524,9 +524,9 @@ static void on_headers(void)
 	static char say[160];
 	if (s->status >= 200 && s->status < 300) {
 		if (prefix(s->ctype, "audio/aac") || prefix(s->ctype, "audio/mp4") || prefix(s->ctype, "audio/x-aac"))
-			put_str(put_str(put_str(say, "This station sends AAC ("), s->ctype), "), and PiPlay plays MP3 streams only.")[0] = 0;
+			put_str(put_str(put_str(say, "This station sends AAC ("), s->ctype), "), and Aurora68 Play plays MP3 streams only.")[0] = 0;
 		else if (prefix(s->ctype, "audio/ogg") || prefix(s->ctype, "application/ogg"))
-			put_str(say, "This station sends Ogg Vorbis or Opus, and PiPlay plays MP3 streams only.")[0] = 0;
+			put_str(say, "This station sends Ogg Vorbis or Opus, and Aurora68 Play plays MP3 streams only.")[0] = 0;
 		else if (prefix(s->ctype, "text/"))
 			put_str(say, "That address is a web page, not a radio stream.")[0] = 0;
 		else put_str(put_str(put_str(say, "That address sends "), s->ctype), ", not an MP3 stream.")[0] = 0;
@@ -534,7 +534,7 @@ static void on_headers(void)
 	} else if (s->status == 404)
 		put_str(say, "The station has no stream at that address (404 Not Found).")[0] = 0;
 	else {
-		p = put_num(put_str(say, s->status >= 500 ? "The station has a problem (" : "The station refused PiPlay's request ("), (unsigned long)s->status);
+		p = put_num(put_str(say, s->status >= 500 ? "The station has a problem (" : "The station refused Aurora68 Play's request ("), (unsigned long)s->status);
 		*p++ = ' ';
 		put_str(put_str(p, s->reason), s->status >= 500 ? "): try again later." : ").")[0] = 0;
 	}
@@ -547,8 +547,8 @@ static void playlist_done(void)
 	int https;
 	playlist_hop = 0;
 	if (icy_playlist_url(icy->pl, icy->pl_len, u, sizeof u, &https)) { redirect(u, "the playlist names "); return; }
-	failed(https ? "The playlist names only secure (https) streams, and PiPlay plays plain http:// streams only."
-	             : "The playlist names no stream PiPlay can play.", 0);
+	failed(https ? "The playlist names only secure (https) streams, and Aurora68 Play plays plain http:// streams only."
+	             : "The playlist names no stream Aurora68 Play can play.", 0);
 }
 /* the receive chain has stopped: why, and what next */
 static void chain_ended(void)
@@ -595,12 +595,20 @@ void radio_poll(void)
 	case RS_OPEN:
 		if (busy(pb_ctl)) return;
 		if (IO_RESULT(pb_ctl)) { failed("The station did not answer.", IO_RESULT(pb_ctl)); return; }
-		logs("connected; asking for ", path, "");
+		{
+			char t[100], *q;
+			radio.ipv = icy_ip_version(addr);
+			radio.seq++;
+			q = put_num(put_str(put_addr(put_str(t, "connected to "), addr), ":"), port);
+			q = put_str(q, radio.ipv == 6 ? " (IPv6 through Riptide's stand-in); asking for " : " (IPv4); asking for ");
+			*q = 0;
+			logs(t, path, "");
+		}
 		send_request();
 		return;
 	case RS_SEND:
 		if (busy(pb_ctl)) return;
-		if (IO_RESULT(pb_ctl)) { failed("The station did not take PiPlay's request.", IO_RESULT(pb_ctl)); return; }
+		if (IO_RESULT(pb_ctl)) { failed("The station did not take Aurora68 Play's request.", IO_RESULT(pb_ctl)); return; }
 		icy_init(icy);
 		hdr_seen = bad_answer = 0;
 		rcv_issue();
@@ -626,7 +634,7 @@ void radio_poll(void)
 		} else { chain_ended(); return; }
 	}
 	if (radio.st == RS_HEADERS) {
-		if (now - t_state > 30 * 60) failed("The station did not answer PiPlay's request in 30 seconds.", 0);
+		if (now - t_state > 30 * 60) failed("The station did not answer Aurora68 Play's request in 30 seconds.", 0);
 		return;
 	}
 	/* playing */
@@ -682,15 +690,16 @@ int radio_play(const char *name, const char *url)
 	const char *e;
 	radio_stop();
 	radio.error = 0;
-	if (!tcp_buf || !rbuf || !icy || !stations) { radio.error = "There is not enough memory for the radio: give PiPlay more in the Finder's Get Info."; return 0; }
+	if (!tcp_buf || !rbuf || !icy || !stations) { radio.error = "There is not enough memory for the radio: give Aurora68 Play more in the Finder's Get Info."; return 0; }
 	copy(radio.station, name, sizeof radio.station);
 	copy(radio.url, url, sizeof radio.url);
 	radio.name[0] = radio.title[0] = 0;
 	radio.reconnects = radio.underruns = radio.held_ms = 0;
+	radio.ipv = 0;
 	radio.br = 0;
 	radio.paused = 0;
 	if ((e = parse_url(url))) { radio.error = e; return 0; }
-	if (!ipp_open()) { radio.error = "MacTCP is not there: PiPlay needs MacTCP (or Riptide) to play internet radio."; return 0; }
+	if (!ipp_open()) { radio.error = "MacTCP is not there: Aurora68 Play needs MacTCP (or Riptide) to play internet radio."; return 0; }
 	logs(name, ", ", url);
 	card_start();
 	card_title(name);
@@ -759,12 +768,12 @@ const char *radio_problem(void) { return radio.st == RS_RETRY ? last_problem : 0
 
 /* ---- the station list: "PiPlay Stations", a text file TeachText opens -------------------------- */
 static const char builtin[] =
-	"# PiPlay Stations: the internet radio stations in PiPlay's Radio menu.\r"
+	"# Aurora68 Play Stations: the internet radio stations in Aurora68 Play's Radio menu.\r"
 	"# One station a line: its name, an equals sign, its address:\r"
 	"#     Name = http://host[:port]/path\r"
 	"# Plain http:// MP3 streams (Shoutcast, Icecast) only; lines that start with # are notes.\r"
-	"# Change the list with TeachText; PiPlay reads it again when it comes to the front.\r"
-	"# Throw this file away and PiPlay writes the list below again.\r"
+	"# Change the list with TeachText; Aurora68 Play reads it again when it comes to the front.\r"
+	"# Throw this file away and Aurora68 Play writes the list below again.\r"
 	"#\r"
 	"# SomaFM: listener-supported, commercial-free radio from San Francisco (somafm.com).\r"
 	"Groove Salad = http://ice2.somafm.com/groovesalad-128-mp3\r"
@@ -778,8 +787,13 @@ static const char builtin[] =
 	"DEF CON Radio = http://ice2.somafm.com/defcon-128-mp3\r"
 	"Left Coast 70s = http://ice2.somafm.com/seventies-128-mp3\r"
 	"Underground 80s = http://ice2.somafm.com/u80s-128-mp3\r"
-	"Sonic Universe = http://ice2.somafm.com/sonicuniverse-128-mp3\r";
-static const unsigned char st_name[] = "\x0FPiPlay Stations";
+	"Sonic Universe = http://ice2.somafm.com/sonicuniverse-128-mp3\r"
+	"#\r"
+	"# NPO Radio 2, Dutch public radio, 192 kbit/s: its server has IPv6 as well as IPv4. With Riptide's\r"
+	"# \"mactcp ipv6 prefer\" the window says IPv6 after the counts, else IPv4.\r"
+	"NPO Radio 2 = http://icecast.omroep.nl/radio2-bb-mp3\r";
+static const unsigned char st_name[] = "\x16" "Aurora68 Play Stations";
+static const unsigned char st_old_name[] = "\x0F" "PiPlay Stations";   /* the program was PiPlay until 21 November 2026 */
 static unsigned long st_mdat;                  /* the file's modification date when it was read */
 static int st_have;
 
@@ -832,6 +846,14 @@ int stations_load(void)
 	if (!stations) return 0;
 	pref_place(&vref, &dir);
 	st_pb(&pb, vref, dir);
+	if (mac_PBHGetFInfo(&pb)) {                  /* PiPlay's list, edited by the user, takes the new name */
+		memset(&pb, 0, sizeof pb);
+		pb.ioNamePtr = st_old_name; pb.ioVRefNum = vref; pb.u.f.ioFlNum = dir;
+		pb.u.io.ioMisc = (long)st_name;          /* ioNewName */
+		if (!mac_PBHRename(&pb))
+			pi_log("radio: \"PiPlay Stations\" renamed \"Aurora68 Play Stations\"");
+		st_pb(&pb, vref, dir);
+	}
 	if (mac_PBHGetFInfo(&pb)) {                  /* not there: written from the built-in list */
 		st_pb(&pb, vref, dir);
 		e = mac_PBHCreate(&pb);
@@ -850,14 +872,14 @@ int stations_load(void)
 				mac_PBWrite(&pb);
 				mac_PBClose(&pb);
 				memset(&pb, 0, sizeof pb); pb.ioVRefNum = vref; mac_PBFlushVol(&pb);
-				pi_log("radio: \"PiPlay Stations\" written from the built-in list");
+				pi_log("radio: \"Aurora68 Play Stations\" written from the built-in list");
 			}
 		}
 		st_pb(&pb, vref, dir);
 		if (mac_PBHGetFInfo(&pb)) {              /* a locked disk: the built-in list, from memory */
 			parse_stations(builtin, sizeof builtin - 1);
 			st_have = 0;
-			pi_log("radio: \"PiPlay Stations\" could not be written: the built-in list is used");
+			pi_log("radio: \"Aurora68 Play Stations\" could not be written: the built-in list is used");
 			return 1;
 		}
 	}
@@ -877,7 +899,7 @@ int stations_load(void)
 		mac_DisposPtr(text);
 	}
 	mac_PBClose(&pb);
-	put_str(put_num(put_str(t, "radio: \"PiPlay Stations\" read: "), (unsigned long)nstations), " stations")[0] = 0;
+	put_str(put_num(put_str(t, "radio: \"Aurora68 Play Stations\" read: "), (unsigned long)nstations), " stations")[0] = 0;
 	pi_log(t);
 	return 1;
 }

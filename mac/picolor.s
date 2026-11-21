@@ -248,8 +248,8 @@ paint_cell:				| d0 left, d1 right, d2 top, d3 bottom
 
 	.even
 wrect:	.short	40, 660, 440, 1260	| on the Pi's screen: (0,640)-(480,1280) in the 'scrn'
-wtitle:	.byte	25
-	.ascii	"PiColor - the Pi's screen"
+wtitle:	.byte	15			| the window's title: the program's name (since 21 November 2026)
+	.ascii	"Aurora68 Colour"
 	.even
 s_title: .byte 52
 	.ascii	"Twelve hues, half strength, primaries, sixteen greys"

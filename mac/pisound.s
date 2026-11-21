@@ -1,4 +1,5 @@
-| pisound.s — "Sound PiStorm": the sound card as the Sound Manager's output. MPL-2.0. GNU as MIT syntax, 68020.
+| pisound.s — "Aurora68 Sound" ("Sound PiStorm" until 21 November 2026): the sound card as the Sound
+| Manager's output. MPL-2.0. GNU as MIT syntax, 68020.
 |
 | The kernel plays a ring of 16-bit stereo at 44.1 kHz in slot 9's window through the Pi's HDMI or
 | its headphone jack (emu68/src/psmac/psmac_audio.c; the block is struct psmb_sound in psmb.h). This
@@ -13,8 +14,12 @@
 | Manager's version, a ComponentDescription and the name). Sound Manager 3.0's documentation
 | ("Sound Components") gives the same shape; nothing of Apple's code is in here.
 |
-| What it does at startup (an INIT, after the Sound Manager's own: the file's name sorts after
-| "Sound Manager", which is how System 7 orders extensions):
+| What it does at startup (an INIT, after the Sound Manager's own). System 7 runs extensions in the
+| order of their names, and Sound Manager 3.0 on System 7.1 is the extension "Sound Manager". Until
+| 21 November 2026 this file was "Sound PiStorm", which sorts after it; "Aurora68 Sound" sorts before,
+| so when the Sound Manager it finds is older than 3.0 it waits (below, "Waiting for the Sound
+| Manager"): the file copies itself into the system heap and runs again from the GetNextEvent filter,
+| once the Sound Manager 3.0 is there, after every extension. Then:
 |   - no Aurora68 window, or the kernel's block says nothing plays the card (mac.audio=off, or
 |     neither HDMI nor the jack would take sound): it says so in the Pi's log and leaves the Sound
 |     Manager on the built-in device (the ASC, which the kernel plays to the SE's speaker and, if it
@@ -27,7 +32,7 @@
 | up to 64 ms ahead (2816 frames): enough for a 16 ms system tick, little enough to feel immediate.
 | With mac.audiotest=card it plays three seconds of a stereo test at startup, 441 Hz on the left,
 | 882 Hz on the right, square waves written straight into the ring (tools/audiocheck.py).
-| Written 20 November 2026 (docs/08 item 74). Build: make -C mac (Sound PiStorm.bin).
+| Written 20 November 2026 (docs/08 item 74). Build: make -C mac (build/Aurora68-Sound.bin).
 
 	.text
 	.globl	init_start
@@ -71,7 +76,8 @@
 	.equ	TEST_FRAMES, 132300		| mac.audiotest=card: three seconds
 	.equ	badSelector, 0x80008002		| badComponentSelector
 
-init_start:
+image_start:				| a local name for the start: a global one (init_start) would be left to
+init_start:				| the linker, and there is none (pc-relative references to it come out 0)
 	movem.l	%d3-%d7/%a2-%a6,-(%sp)
 	bsr	window
 	cmp.l	#0x50534D42,(%a0)		| 'PSMB': an Aurora68 Mac?
@@ -79,20 +85,9 @@ init_start:
 	lea	OFF_SND(%a0),%a2
 	cmp.l	#0x41363853,S_MAGIC(%a2)		| 'A68S': a kernel with the sound card
 	bne	init_old_kernel
-	| the Sound Manager's version, if it has the call (System 6.0.7 and later)
-	move.w	#0xA800,%d0
-	.short	_GetToolTrapAddress
-	move.l	%a0,%d3
-	move.w	#0xA89F,%d0			| _Unimplemented
-	.short	_GetToolTrapAddress
-	moveq	#0,%d4
-	cmp.l	%a0,%d3
-	beq.s	1f
-	subq.l	#4,%sp
-	move.l	#0x000C0008,%d0			| SndSoundManagerVersion
-	.short	_SoundDispatch
-	move.l	(%sp)+,%d4
-1:	move.l	%d4,S_SMVERS(%a2)
+	bsr	sm_version
+	move.l	%d0,%d4
+	move.l	%d4,S_SMVERS(%a2)
 	lea	t_vers(%pc),%a0		| "N.N" into the message
 	move.l	%d4,%d0
 	rol.l	#8,%d0
@@ -167,7 +162,15 @@ init_old_kernel:
 	lea	t_oldk(%pc),%a1
 	bra.s	init_say
 init_too_old:
-	lea	t_old(%pc),%a1
+	lea	g_deferred(%pc),%a0		| the second run, from the filter: too old for good
+	tst.w	(%a0)
+	bne.s	1f
+	bsr	defer
+	tst.l	%d0
+	beq.s	1f
+	lea	t_wait(%pc),%a1			| waiting for the Sound Manager extension
+	bra.s	init_say
+1:	lea	t_old(%pc),%a1
 	bra.s	init_say
 init_no_cm:
 	lea	t_nocm(%pc),%a1
@@ -185,6 +188,86 @@ init_no_output:
 init_say:
 	bsr	do_log
 	bra.s	init_done
+
+| sm_version: d0 = the Sound Manager's version (SndSoundManagerVersion), 0 without the call (it came
+| with System 6.0.7)
+sm_version:
+	move.l	%d3,-(%sp)
+	move.w	#0xA800,%d0
+	.short	_GetToolTrapAddress
+	move.l	%a0,%d3
+	move.w	#0xA89F,%d0			| _Unimplemented
+	.short	_GetToolTrapAddress
+	moveq	#0,%d0
+	cmp.l	%a0,%d3
+	beq.s	1f
+	subq.l	#4,%sp
+	move.l	#0x000C0008,%d0			| SndSoundManagerVersion
+	.short	_SoundDispatch
+	move.l	(%sp)+,%d0
+1:	move.l	(%sp)+,%d3
+	rts
+
+| ---- Waiting for the Sound Manager (21 November 2026) ----
+| defer: this whole file's code into a pointer of the system heap (it is position independent, as
+| the component below is), the copy's GetNextEvent filter put at the head of the chain (jGNEFilter,
+| $29A). d0 = 1 if it waits, 0 if there was no memory. The filter runs whenever a program (a dialog of
+| a later extension, then the Finder) takes an event; once the Sound Manager says 3.0 or later it runs
+| init_start of the copy once, which then registers the device as at a start after the Sound
+| Manager's. With no Sound Manager 3.0 after twenty minutes it says so and stays a plain link of the
+| chain (a filter cannot take itself out safely once another one has chained behind it).
+	.equ	jGNEFilter,	0x029A
+	.equ	Ticks,		0x016A
+	.equ	WAIT_TICKS,	72000		| twenty minutes
+defer:
+	move.l	#image_end-image_start,%d0
+	.short	_NewPtrSysClear
+	move.l	%a0,%d0
+	beq.s	9f
+	move.l	%a0,%a1				| the copy, byte by byte (fresh memory: nothing of it ran yet)
+	lea	image_start(%pc),%a0
+	move.l	#image_end-image_start,%d1
+1:	move.b	(%a0)+,(%a1)+
+	subq.l	#1,%d1
+	bne.s	1b
+	move.l	%d0,%a0
+	move.w	#1,g_deferred-image_start(%a0)
+	move.l	Ticks,g_since-image_start(%a0)
+	move.l	jGNEFilter,g_oldgne-image_start(%a0)
+	lea	gne_filter-image_start(%a0),%a1
+	move.l	%a1,jGNEFilter
+	moveq	#1,%d0
+	rts
+9:	moveq	#0,%d0
+	rts
+
+| the filter: called with A1 = the event record and D0.W = GetNextEvent's answer, both handed on
+| unchanged to the next filter (an rts into it) or the caller
+gne_filter:
+	movem.l	%d0-%d7/%a0-%a6,-(%sp)
+	lea	g_waiting(%pc),%a0
+	tst.w	(%a0)
+	bne.s	3f
+	bsr	sm_version
+	cmp.l	#0x03000000,%d0
+	bhs.s	1f
+	move.l	Ticks,%d0
+	sub.l	g_since(%pc),%d0
+	cmp.l	#WAIT_TICKS,%d0
+	blo.s	3f
+1:	lea	g_waiting(%pc),%a0		| once only, whichever way
+	move.w	#1,(%a0)
+	bsr	image_start			| with g_deferred set: registers, or says it is too old
+3:	movem.l	(%sp)+,%d0-%d7/%a0-%a6
+	tst.l	g_oldgne(%pc)
+	beq.s	4f
+	move.l	g_oldgne(%pc),-(%sp)
+4:	rts
+	.even
+g_deferred: .short 0				| set in the copy: this is the run from the filter
+g_waiting: .short 0				| the filter has done its run
+g_since: .long	0				| Ticks when the wait began
+g_oldgne: .long	0				| the filter that was there before
 
 | SetSoundPreference('odev', "Output Device", h) with h = { the Sound Manager's version, the
 | device's ComponentDescription (20 bytes), its name }: a0 = the description, a1 = the name
@@ -251,20 +334,22 @@ do_log:
 	bne.s	4b
 5:	rts
 
-t_ok:	.ascii	"PiSound: Sound Manager "
+t_ok:	.ascii	"A68 Sound: Sound Manager "
 t_vers:	.ascii	"?.?; the sound card (16-bit stereo, 44.1 kHz, played by the Pi) registered and chosen as the output device"
 	.byte	0
-t_test:	.ascii	"PiSound: mac.audiotest=card: three seconds of 441 Hz left, 882 Hz right, into the card's ring"
+t_test:	.ascii	"A68 Sound: mac.audiotest=card: three seconds of 441 Hz left, 882 Hz right, into the card's ring"
 	.byte	0
-t_old:	.ascii	"PiSound: the Sound Manager is too old for the sound card (3.0 or later is needed: the Sound Manager extension on System 7.1); sound stays on the built-in ASC"
+t_wait: .ascii	"A68 Sound: no Sound Manager 3.0 yet; waiting for the Sound Manager extension, which starts after this one"
 	.byte	0
-t_nocm:	.ascii	"PiSound: no Component Manager: the sound card is not used"
+t_old:	.ascii	"A68 Sound: the Sound Manager is too old for the sound card (3.0 or later is needed: the Sound Manager extension on System 7.1); sound stays on the built-in ASC"
 	.byte	0
-t_regf:	.ascii	"PiSound: RegisterComponent failed: the sound card is not used"
+t_nocm:	.ascii	"A68 Sound: no Component Manager: the sound card is not used"
 	.byte	0
-t_noout: .ascii	"PiSound: the Pi plays no sound card (mac.audio=off, mac.sndcard=off, or no HDMI audio and no jack): the Sound Manager stays on the built-in ASC"
+t_regf:	.ascii	"A68 Sound: RegisterComponent failed: the sound card is not used"
 	.byte	0
-t_oldk:	.ascii	"PiSound: this kernel has no sound card: nothing to do"
+t_noout: .ascii	"A68 Sound: the Pi plays no sound card (mac.audio=off, mac.sndcard=off, or no HDMI audio and no jack): the Sound Manager stays on the built-in ASC"
+	.byte	0
+t_oldk:	.ascii	"A68 Sound: this kernel has no sound card: nothing to do"
 	.byte	0
 odev_name: .byte 13
 	.ascii	"Output Device"
@@ -732,3 +817,4 @@ feed_test:	| d0 frames of test left: 441 Hz (100 frames) left, 882 Hz (50 frames
 	rts
 	.even
 comp_end:
+image_end:

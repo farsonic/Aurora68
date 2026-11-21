@@ -333,7 +333,7 @@ static void pi_log(const char *text)
 	int n = 0;
 	short sr;
 	if (!aurora68 || *(volatile unsigned long *)win != PSMB_MAGIC) return;
-	sadd(line, &n, "PiSlots: ");
+	sadd(line, &n, "A68 Slots: ");
 	sadd(line, &n, text);
 	__asm__ volatile("move.w %%sr,%0\n\tori.w #0x0700,%%sr" : "=d"(sr) : : "cc");
 	r = *req;
@@ -676,8 +676,13 @@ static int load_prefs(Rect *r)
 	long dir, buf[3];
 	if (!pref_place(&vref, &dir)) return 0;
 	memset(&pb, 0, sizeof pb);
-	pb.ioNamePtr = pstr(pbuf, "PiSlots Prefs"); pb.ioVRefNum = vref; DIR_ID(&pb) = dir; pb.ioPermssn = 1;
-	if (fs_hopen(&pb)) return 0;
+	pb.ioNamePtr = pstr(pbuf, "Aurora68 Slots Prefs"); pb.ioVRefNum = vref; DIR_ID(&pb) = dir; pb.ioPermssn = 1;
+	if (fs_hopen(&pb)) {
+		/* the program was PiSlots until 21 November 2026: its file still holds the place */
+		memset(&pb, 0, sizeof pb);
+		pb.ioNamePtr = pstr(pbuf, "PiSlots Prefs"); pb.ioVRefNum = vref; DIR_ID(&pb) = dir; pb.ioPermssn = 1;
+		if (fs_hopen(&pb)) return 0;
+	}
 	ref = pb.ioRefNum;
 	memset(&pb, 0, sizeof pb);
 	pb.ioRefNum = ref; pb.u.io.ioBuffer = buf; pb.u.io.ioReqCount = sizeof buf; pb.u.io.ioPosMode = fsFromStart;
@@ -697,7 +702,7 @@ static void save_prefs(void)
 	content_global(&c);
 	buf[0] = (long)PREF_MAGIC;
 	memcpy(&buf[1], &c, sizeof c);
-	pstr(pbuf, "PiSlots Prefs");
+	pstr(pbuf, "Aurora68 Slots Prefs");
 	memset(&pb, 0, sizeof pb);
 	pb.ioNamePtr = pbuf; pb.ioVRefNum = vref; DIR_ID(&pb) = dir;
 	if (!fs_hcreate(&pb)) {                                    /* a new file: say whose it is */
@@ -904,7 +909,7 @@ static void modal_box(int w, int h, const char *head, const char *body, int icon
 }
 static void about(void)
 {
-	modal_box(360, 168, "PiSlots",
+	modal_box(360, 168, "Aurora68 Slots",
 	          "The NuBus cards in this Macintosh: each slot's card, its maker, and what it does, with "
 	          "each function's driver and whether it is open.\r\r"
 	          "Part of Aurora68, the Macintosh SE with a Raspberry Pi inside. Free software under the "
@@ -939,8 +944,8 @@ static void save_as(void)
 	SFReply rep;
 	ParamBlock pb;
 	char t[40], *p;
-	memcpy(t, "PiSlots ", 8);
-	p = put_date(t + 8, LM_TIME);           /* "PiSlots 2026-11-20" */
+	memcpy(t, "Aurora68 Slots ", 15);
+	p = put_date(t + 15, LM_TIME);          /* "Aurora68 Slots 2026-11-20" */
 	*p = 0;
 	pstr(name, t);
 	/* Standard File's box (304 x 104 on System 6) centred on the main screen, a third of the way down */
@@ -996,7 +1001,7 @@ static void setup_menus(void)
 {
 	unsigned char t[2] = { 1, 0x14 };     /* the apple */
 	m_apple = NewMenu(M_APPLE, t);
-	AppendMenu(m_apple, pstr(pbuf, "About PiSlots\xC9;(-"));
+	AppendMenu(m_apple, pstr(pbuf, "About Aurora68 Slots\xC9;(-"));
 	AddResMenu(m_apple, TYPE('D', 'R', 'V', 'R'));
 	InsertMenu(m_apple, 0);
 	m_file = NewMenu(M_FILE, pstr(pbuf, "File"));
@@ -1166,7 +1171,7 @@ int main(void)
 
 	Rect b;
 	if (!load_prefs(&b) || !on_screen(&b)) default_rect(&b);
-	win = NewWindow(0, &b, pstr(pbuf, "PiSlots"), 1, zoomDocProc, (void *)-1, 1, 0);
+	win = NewWindow(0, &b, pstr(pbuf, "Aurora68 Slots"), 1, zoomDocProc, (void *)-1, 1, 0);
 	SetPort(win);
 	TextFont(4); TextSize(9);                  /* Monaco 9: the numbers line up */
 	Rect r = *PORT_RECT(win);

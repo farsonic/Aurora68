@@ -1,15 +1,18 @@
 # Mac-side pieces for PiStorm-SE: 68k assembly (GNU binutils for m68k) packaged with tools/mac/*.py.
-#   make            builds the drivers, the declaration ROM, the PiDisk extension and the PiNet, PiWiFi, PiBlue, PiStatus, PiPing, PiLog and PiPlay applications
+#   make            builds the drivers, the declaration ROMs, the extensions and the applications (build/Aurora68-*.bin:
+#                   the programs are "Aurora68 Play", "Aurora68 Display"... since 21 November 2026, PiPlay, PiDisplay... before;
+#                   their icons come from tools/mac/mkicons.py)
 #   The declaration ROM (build/psmac.declrom) carries the .PiDisk, .Network_EtherNet_PiStorm and .PiInput drivers,
 #   and PiDisk's boot record (pidisk_boot.s), which lets an image on the card be the startup disk.
 #   make check     compares the struct offsets in enet.s with emu68/src/alice/alice_net.h; host tests (USB frames, EDID, PiPlay's radio parser)
-#   make install IMG=path/to/volume.img [PART=n]   copies the INIT into the System Folder of an HFS image
+#   make install IMG=path/to/volume.img [PART=n]   the extensions into the System Folder of an HFS image, the programs into its Aurora68 folder
 AS      = m68k-linux-gnu-as -m68020
 OBJCOPY = m68k-linux-gnu-objcopy
 PY      = python3
 B       = build
+ICONS   = ../tools/mac/mkicons.py
 
-all: $(B)/psmac-se.declrom $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/PiLog.bin $(B)/PiDepth.bin $(B)/WiFiMenu.bin $(B)/PiScrn.bin $(B)/PiDisplay.bin $(B)/SoundPiStorm.bin $(B)/PiSlots.bin $(B)/PiPlay.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes declrom-wifi-sizes declrom-se-sizes
+all: $(B)/psmac-se.declrom $(B)/Aurora68-Machine.bin $(B)/Aurora68-Disk.bin $(B)/Aurora68-Network.bin $(B)/Aurora68-WiFi.bin $(B)/Aurora68-Bluetooth.bin $(B)/Aurora68-Status.bin $(B)/Aurora68-Ping.bin $(B)/Aurora68-Screens.bin $(B)/Aurora68-Colour.bin $(B)/Aurora68-Log.bin $(B)/Aurora68-Depth.bin $(B)/Aurora68-WiFi-Bluetooth.bin $(B)/Aurora68-ScreenSetup.bin $(B)/Aurora68-Display.bin $(B)/Aurora68-Sound.bin $(B)/Aurora68-Slots.bin $(B)/Aurora68-Play.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes declrom-wifi-sizes declrom-se-sizes
 
 $(B)/%.o: %.s
 	@mkdir -p $(B)
@@ -18,47 +21,48 @@ $(B)/%.o: %.s
 $(B)/%.bin.raw: $(B)/%.o
 	$(OBJCOPY) -O binary -j .text $< $@
 
-$(B)/PiDisk.bin: $(B)/pidisk.bin.raw $(B)/pidisk_init.bin.raw ../tools/mac/mkinit.py ../tools/mac/rsrc.py
-	$(PY) ../tools/mac/mkinit.py --drvr $(B)/pidisk.bin.raw --init $(B)/pidisk_init.bin.raw --name PiDisk -o $@
+$(B)/Aurora68-Disk.bin: $(B)/pidisk.bin.raw $(B)/pidisk_init.bin.raw ../tools/mac/mkinit.py ../tools/mac/rsrc.py $(ICONS)
+	$(PY) ../tools/mac/mkinit.py --drvr $(B)/pidisk.bin.raw --init $(B)/pidisk_init.bin.raw --name "Aurora68 Disk" --icons disk -o $@
 
-$(B)/PiMach.bin: $(B)/pimach.bin.raw ../tools/mac/mkinit.py ../tools/mac/rsrc.py
-	$(PY) ../tools/mac/mkinit.py --init $(B)/pimach.bin.raw --name PiMach -o $@
+$(B)/Aurora68-Machine.bin: $(B)/pimach.bin.raw ../tools/mac/mkinit.py ../tools/mac/rsrc.py $(ICONS)
+	$(PY) ../tools/mac/mkinit.py --init $(B)/pimach.bin.raw --name "Aurora68 Machine" --icons machine -o $@
 
-# the sound card as the Sound Manager 3 output device (docs/09, "Sound through HDMI"). The file's Mac name,
-# "Sound PiStorm", sorts after "Sound Manager", so System 7 runs it after the Sound Manager's own INIT
-$(B)/SoundPiStorm.bin: $(B)/pisound.bin.raw ../tools/mac/mkinit.py ../tools/mac/rsrc.py
-	$(PY) ../tools/mac/mkinit.py --init $(B)/pisound.bin.raw --name "Sound PiStorm" -o $@
+# the sound card as the Sound Manager 3 output device (docs/09, "Sound through HDMI"). Its Mac name was
+# "Sound PiStorm", which sorts after "Sound Manager"; "Aurora68 Sound" (21 November 2026) sorts before it,
+# so the extension waits for the Sound Manager 3.0 by itself (mac/pisound.s, "Waiting for the Sound Manager")
+$(B)/Aurora68-Sound.bin: $(B)/pisound.bin.raw ../tools/mac/mkinit.py ../tools/mac/rsrc.py $(ICONS)
+	$(PY) ../tools/mac/mkinit.py --init $(B)/pisound.bin.raw --name "Aurora68 Sound" --icons sound -o $@
 
 # the same extension answering another machine type (for experiments): make pimach-variant MACH=11
 pimach-variant: pimach.s
 	@mkdir -p $(B)
 	$(AS) --defsym MACH=$(MACH) -o $(B)/pimach$(MACH).o pimach.s
 	m68k-linux-gnu-objcopy -O binary -j .text $(B)/pimach$(MACH).o $(B)/pimach$(MACH).bin.raw
-	$(PY) ../tools/mac/mkinit.py --init $(B)/pimach$(MACH).bin.raw --name PiMach -o $(B)/PiMach$(MACH).bin
+	$(PY) ../tools/mac/mkinit.py --init $(B)/pimach$(MACH).bin.raw --name "Aurora68 Machine" --icons machine -o $(B)/Aurora68-Machine$(MACH).bin
 
-$(B)/PiNet.bin: $(B)/pinet.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
-	$(PY) ../tools/mac/mkapp.py --code $(B)/pinet.bin.raw --name PiNet --creator PINT -o $@
+$(B)/Aurora68-Network.bin: $(B)/pinet.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py $(ICONS)
+	$(PY) ../tools/mac/mkapp.py --code $(B)/pinet.bin.raw --name "Aurora68 Network" --creator PINT --icons network -o $@
 
-$(B)/PiWiFi.bin: $(B)/piwifi.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
-	$(PY) ../tools/mac/mkapp.py --code $(B)/piwifi.bin.raw --name PiWiFi --creator PIWF -o $@
+$(B)/Aurora68-WiFi.bin: $(B)/piwifi.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py $(ICONS)
+	$(PY) ../tools/mac/mkapp.py --code $(B)/piwifi.bin.raw --name "Aurora68 Wi-Fi" --creator PIWF --icons wifi -o $@
 
-$(B)/PiBlue.bin: $(B)/piblue.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
-	$(PY) ../tools/mac/mkapp.py --code $(B)/piblue.bin.raw --name PiBlue --creator PIBL -o $@
+$(B)/Aurora68-Bluetooth.bin: $(B)/piblue.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py $(ICONS)
+	$(PY) ../tools/mac/mkapp.py --code $(B)/piblue.bin.raw --name "Aurora68 Bluetooth" --creator PIBL --icons bluetooth -o $@
 
-$(B)/PiStatus.bin: $(B)/pistatus.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
-	$(PY) ../tools/mac/mkapp.py --code $(B)/pistatus.bin.raw --name PiStatus --creator PIST -o $@
+$(B)/Aurora68-Status.bin: $(B)/pistatus.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py $(ICONS)
+	$(PY) ../tools/mac/mkapp.py --code $(B)/pistatus.bin.raw --name "Aurora68 Status" --creator PIST --icons status -o $@
 
-$(B)/PiScreens.bin: $(B)/piscreens.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
-	$(PY) ../tools/mac/mkapp.py --code $(B)/piscreens.bin.raw --name PiScreens --creator PISC -o $@
+$(B)/Aurora68-Screens.bin: $(B)/piscreens.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py $(ICONS)
+	$(PY) ../tools/mac/mkapp.py --code $(B)/piscreens.bin.raw --name "Aurora68 Screens" --creator PISC --icons screens -o $@
 
-$(B)/PiColor.bin: $(B)/picolor.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
-	$(PY) ../tools/mac/mkapp.py --code $(B)/picolor.bin.raw --name PiColor --creator PICO -o $@
+$(B)/Aurora68-Colour.bin: $(B)/picolor.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py $(ICONS)
+	$(PY) ../tools/mac/mkapp.py --code $(B)/picolor.bin.raw --name "Aurora68 Colour" --creator PICO --icons colour -o $@
 
 # DisposeTest: a pointer and a handle disposed of once too often above 16 MB (docs/08 item 78). A test,
 # not part of `all`: it fills a few bytes of memory that are not its own for the length of one call
 .PHONY: DisposeTest
 DisposeTest: $(B)/DisposeTest.bin
-$(B)/DisposeTest.bin: $(B)/disptest.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
+$(B)/DisposeTest.bin: $(B)/disptest.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py $(ICONS)
 	$(PY) ../tools/mac/mkapp.py --code $(B)/disptest.bin.raw --name DisposeTest --creator PIDT -o $@
 
 # PiPing's peer: the address it pings (the testbed's host peer by default; make PEER=192.168.0.1 for a real gateway)
@@ -69,8 +73,8 @@ $(B)/piping_peer.inc: peer-inc | $(B)
 	@printf '\t.byte %d\n\t.ascii "Ping %s ... "\n' $(shell printf 'Ping %s ... ' "$(PEER)" | wc -c) "$(PEER)" > $@
 $(B)/piping.o: piping.s $(B)/piping_peer.inc
 	$(AS) --defsym PEER_IP=$(PEER_HEX) -I$(B) -o $@ $<
-$(B)/PiPing.bin: $(B)/piping.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
-	$(PY) ../tools/mac/mkapp.py --code $(B)/piping.bin.raw --name PiPing --creator PIPG -o $@
+$(B)/Aurora68-Ping.bin: $(B)/piping.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py $(ICONS)
+	$(PY) ../tools/mac/mkapp.py --code $(B)/piping.bin.raw --name "Aurora68 Ping" --creator PIPG --icons ping -o $@
 
 # the WiFi driver: the Ethernet source assembled for unit 0
 $(B)/enet_wifi.o: enet.s
@@ -160,10 +164,10 @@ $(B)/pidepth.o: pidepth.c c/toolbox.h $(B)/toolbox_gen.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 $(B)/pidepth.elf: $(C_KIT) $(B)/pidepth.o c/app.ld
 	$(LD) -T c/app.ld --emit-relocs --no-warn-rwx-segments -z noexecstack -o $@ $(C_KIT) $(B)/pidepth.o $(LIBGCC)
-$(B)/PiDepth.bin: $(B)/pidepth.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py
-	$(PY) ../tools/mac/elf2app.py $< --name "PiDepth 8" --creator PIDP --size 64 -o $@
-$(B)/PiLog.bin: $(B)/pilog.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py
-	$(PY) ../tools/mac/elf2app.py $< --name PiLog --creator PILG --size 256 -o $@
+$(B)/Aurora68-Depth.bin: $(B)/pidepth.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py $(ICONS)
+	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Depth 8" --creator PIDP --size 64 --icons depth -o $@
+$(B)/Aurora68-Log.bin: $(B)/pilog.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py $(ICONS)
+	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Log" --creator PILG --size 256 --icons log -o $@
 
 # ---- PiPlay: MP3, AIFF and WAV on the sound card's stream channel, an application in C (mac/piplay) ----
 # its Toolbox list is c/traps.txt and piplay/traps.txt together, its glue in build/pp/, so that the other
@@ -196,15 +200,11 @@ $(B)/pp/icy.o: piplay/icy.c piplay/icy.h
 PP_OBJ = $(B)/crt0.o $(B)/pp/toolbox_glue.o $(B)/pp/libc.o $(B)/pp/fs.o $(B)/pp/net.o $(B)/pp/piplay.o $(B)/pp/radio.o $(B)/pp/icy.o
 $(B)/piplay.elf: $(PP_OBJ) c/app.ld
 	$(LD) -T c/app.ld --emit-relocs --no-warn-rwx-segments -z noexecstack -o $@ $(PP_OBJ) $(LIBGCC)
-# the Finder's resources (signature, bundle, file references, icon: piplay/mkrsrc.py): files dropped on
-# PiPlay's icon reach it as the application's files (AppParmHandle)
-PP_RSRC = --rsrc PIPY:0:$(B)/pp/sig.bin --rsrc BNDL:128:$(B)/pp/bndl128.bin --rsrc FREF:128:$(B)/pp/fref128.bin \
-          --rsrc FREF:129:$(B)/pp/fref129.bin --rsrc ICN\#:128:$(B)/pp/icn128.bin
-$(B)/pp/bndl128.bin: piplay/mkrsrc.py
-	@mkdir -p $(B)/pp
-	$(PY) piplay/mkrsrc.py $(B)/pp
-$(B)/PiPlay.bin: $(B)/piplay.elf $(B)/pp/bndl128.bin ../tools/mac/elf2app.py ../tools/mac/rsrc.py
-	$(PY) ../tools/mac/elf2app.py $< --name PiPlay --creator PIPY --size 256 --bundle $(PP_RSRC) -o $@
+# the Finder's resources (signature, bundle, file references for the application, its MP3, AIFF and WAV
+# documents, its preferences and '****', icons: tools/mac/mkicons.py): files dropped on its icon reach it
+# as the application's files (AppParmHandle)
+$(B)/Aurora68-Play.bin: $(B)/piplay.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py $(ICONS)
+	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Play" --creator PIPY --size 256 --icons play --version 1.1 -o $@
 
 # ---- the WiFi menu: an INIT in C (mac/wifimenu, tools/mac/elf2init.py) ----
 $(B)/wifimenu_traps.txt: c/traps.txt wifimenu/traps.txt
@@ -226,8 +226,8 @@ $(B)/wm/libc.o: c/libc.c c/toolbox.h $(B)/wm/toolbox_gen.h
 	$(CC) $(subst -I$(B),-I$(B)/wm,$(CFLAGS)) -c -o $@ $<
 $(B)/wifimenu.elf: $(B)/wm/entry.o $(B)/wm/toolbox_glue.o $(B)/wm/wifimenu.o $(B)/wm/btmenu.o $(B)/wm/libc.o wifimenu/init.ld
 	$(LD) -T wifimenu/init.ld --emit-relocs --gc-sections --no-warn-rwx-segments -z noexecstack -o $@ $(B)/wm/entry.o $(B)/wm/toolbox_glue.o $(B)/wm/wifimenu.o $(B)/wm/btmenu.o $(B)/wm/libc.o $(LIBGCC)
-$(B)/WiFiMenu.bin: $(B)/wifimenu.elf ../tools/mac/elf2init.py ../tools/mac/macelf.py ../tools/mac/rsrc.py
-	$(PY) ../tools/mac/elf2init.py $< --name "Wi-Fi & Bluetooth" --creator PSWM -o $@
+$(B)/Aurora68-WiFi-Bluetooth.bin: $(B)/wifimenu.elf ../tools/mac/elf2init.py ../tools/mac/macelf.py ../tools/mac/rsrc.py $(ICONS)
+	$(PY) ../tools/mac/elf2init.py $< --name "Aurora68 Wi-Fi & Bluetooth" --creator PSWM --icons menus -o $@
 
 # ---- PiScrn: the SE board's two screens arranged at the first boot, an INIT in C (mac/piscrn) ----
 $(B)/piscrn_traps.txt: c/traps.txt piscrn/traps.txt pidisplay/traps.txt
@@ -253,8 +253,8 @@ $(B)/ps/libc.o: c/libc.c c/toolbox.h $(B)/ps/toolbox_gen.h
 	$(CC) $(subst -I$(B),-I$(B)/ps,$(CFLAGS)) -c -o $@ $<
 $(B)/piscrn.elf: $(B)/ps/entry.o $(B)/ps/toolbox_glue.o $(B)/ps/piscrn.o $(B)/ps/pdcommon.o $(B)/ps/dlgglue.o $(B)/ps/libc.o wifimenu/init.ld
 	$(LD) -T wifimenu/init.ld --emit-relocs --gc-sections --no-warn-rwx-segments -z noexecstack -o $@ $(B)/ps/entry.o $(B)/ps/toolbox_glue.o $(B)/ps/piscrn.o $(B)/ps/pdcommon.o $(B)/ps/dlgglue.o $(B)/ps/libc.o $(LIBGCC)
-$(B)/PiScrn.bin: $(B)/piscrn.elf ../tools/mac/elf2init.py ../tools/mac/macelf.py ../tools/mac/rsrc.py
-	$(PY) ../tools/mac/elf2init.py $< --name "PiScrn" --creator PISR -o $@
+$(B)/Aurora68-ScreenSetup.bin: $(B)/piscrn.elf ../tools/mac/elf2init.py ../tools/mac/macelf.py ../tools/mac/rsrc.py $(ICONS)
+	$(PY) ../tools/mac/elf2init.py $< --name "Aurora68 Screen Setup" --creator PISR --icons setup -o $@
 
 # ---- PiSlots: the NuBus cards the Slot Manager knows about, an application in C (mac/pislots) ----
 $(B)/pislots_traps.txt: c/traps.txt pislots/traps.txt
@@ -271,8 +271,8 @@ $(B)/sl/libc.o: c/libc.c c/toolbox.h $(B)/sl/toolbox_gen.h
 	$(CC) $(subst -I$(B),-I$(B)/sl,$(CFLAGS)) -c -o $@ $<
 $(B)/pislots.elf: $(B)/crt0.o $(B)/sl/toolbox_glue.o $(B)/sl/libc.o $(B)/sl/pislots.o c/app.ld
 	$(LD) -T c/app.ld --emit-relocs --no-warn-rwx-segments -z noexecstack -o $@ $(B)/crt0.o $(B)/sl/toolbox_glue.o $(B)/sl/libc.o $(B)/sl/pislots.o $(LIBGCC)
-$(B)/PiSlots.bin: $(B)/pislots.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py
-	$(PY) ../tools/mac/elf2app.py $< --name PiSlots --creator PISL --size 192 -o $@
+$(B)/Aurora68-Slots.bin: $(B)/pislots.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py $(ICONS)
+	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Slots" --creator PISL --size 192 --icons slots -o $@
 # ---- PiDisplay: the HDMI screen's monitor, resolution and rotation, an application in C (mac/pidisplay, docs/10) ----
 PD_CFLAGS = $(subst -I$(B),-I$(B)/pd,$(CFLAGS)) -Ipidisplay -I../emu68/src/psmac
 $(B)/pidisplay_traps.txt: c/traps.txt pidisplay/traps.txt
@@ -303,14 +303,15 @@ $(B)/pd/pd-hmnu-128.bin: pidisplay/balloons.txt ../tools/mac/mkhmnu.py
 	@mkdir -p $(B)/pd
 	$(PY) ../tools/mac/mkhmnu.py pidisplay/balloons.txt -o $(B)/pd/pd
 	$(PY) ../tools/mac/mkhmnu.py --vers 1.0 "1.0, Aurora68 (21 November 2026)" -o $(B)/pd/pd-vers.bin
-$(B)/PiDisplay.bin: $(B)/pidisplay.elf $(B)/pd/pd-hmnu-128.bin ../tools/mac/elf2app.py ../tools/mac/rsrc.py
-	$(PY) ../tools/mac/elf2app.py $< --name PiDisplay --creator PIDY --size 384 \
+$(B)/Aurora68-Display.bin: $(B)/pidisplay.elf $(B)/pd/pd-hmnu-128.bin ../tools/mac/elf2app.py ../tools/mac/rsrc.py $(ICONS)
+	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Display" --creator PIDY --size 384 --icons display \
 	    --rsrc hmnu:128:$(B)/pd/pd-hmnu-128.bin --rsrc hmnu:129:$(B)/pd/pd-hmnu-129.bin --rsrc hmnu:130:$(B)/pd/pd-hmnu-130.bin \
 	    --rsrc hmnu:131:$(B)/pd/pd-hmnu-131.bin --rsrc vers:1:$(B)/pd/pd-vers.bin -o $@
 
-install: $(B)/PiMach.bin $(B)/PiDisk.bin $(B)/PiNet.bin $(B)/PiWiFi.bin $(B)/PiBlue.bin $(B)/PiStatus.bin $(B)/PiPing.bin $(B)/PiScreens.bin $(B)/PiColor.bin $(B)/psmac.declrom
-	$(PY) ../tools/mac/hfsput.py $(IMG) $(B)/PiDisk.bin "System Folder" $(PART)
-	$(PY) ../tools/mac/hfsput.py $(IMG) $(B)/PiMach.bin "System Folder" $(PART)
+# the whole set onto a startup disk: the extensions into the System Folder, the programs in their folders
+# (tools/mac/aurora68-layout.py; the old names' extensions taken out, as two copies would both run)
+install: all
+	$(PY) ../tools/mac/aurora68-layout.py install $(IMG) $(if $(PART),--part $(PART)) --build $(B)
 
 clean:
 	rm -rf $(B)

@@ -18,7 +18,7 @@ link to it, so a change made here is a change to Aurora68 and is committed there
 
 | Folder | Repository, branch | What it is |
 |---|---|---|
-| `pistorm-se/` | farsonic/Aurora68, `main` | The hub. Emu68 forked to run the Macintosh IIci ROM on a Raspberry Pi 3: the "solo" board (the Pi alone, the kernel being the logic board) on the bench now, and later the CPU of a Mac SE through a classic PiStorm. `emu68/` the kernel (`kernel8.img`), `mac/` the Mac-side drivers and programs (68k GNU as, and C with the `mac/c` kit: PiLog, PiDepth), `tools/` the testbed, container and ROM tools, `docs/` the record, `dev/` this kit. MPL-2.0 (the Alice68 modules GPL-2.0-only). |
+| `pistorm-se/` | farsonic/Aurora68, `main` | The hub. Emu68 forked to run the Macintosh IIci ROM on a Raspberry Pi 3: the "solo" board (the Pi alone, the kernel being the logic board) on the bench now, and later the CPU of a Mac SE through a classic PiStorm. `emu68/` the kernel (`kernel8.img`), `mac/` the Mac-side drivers and programs (68k GNU as, and C with the `mac/c` kit: Aurora68 Log, Aurora68 Depth), `tools/` the testbed, container and ROM tools, `docs/` the record, `dev/` this kit. MPL-2.0 (the Alice68 modules GPL-2.0-only). |
 | `riptide/` | farsonic/Riptide, `mac-port` | A TCP/IP stack for the Amiga, ported to the classic Mac OS: a MacTCP-compatible `.IPP` driver, the Riptide DNR, RiptidePrefs, the Riptide Command Terminal, the Browser test. Its tree is also the Mac application kit Lagoon and Octavo build against (`RIPTIDE=../riptide`). GPL-2.0-only. |
 | `lagoon/` | farsonic/Lagoon, `mac-port` | Network shares (SMB 2/3, AFP, NFS v3) for the Amiga, with a Mac port: a bridge that shows a share as an AppleShare volume, and Lagoon EtherTalk (AppleTalk over Ethernet for System 7.1). GPL-2.0-only. |
 | `quill/` | farsonic/Quill, `mac-port` | Quill, a word processor for the Amiga (MUI), with a classic Mac port called **Octavo** (a Mac program called Quill exists already). GPL-2.0-only. |
@@ -69,14 +69,14 @@ declaration ROMs `psmac*.declrom`, one per screen size), `make -C mac check` (st
 against the kernel's headers, and 53 native checks of the USB network framing). The binaries in
 `mac/build/*.bin` and `*.declrom` are committed: rebuild and commit them with the sources. Two
 things make a rebuild touch more than you changed: every MacBinary file carries its build date
-(bytes 91-98), so `git status` lists every `.bin` after `make -C mac`; and PiPing's target is a
-make variable, `PEER` (default 192.168.68.1, the testbed's peer), while the committed PiPing pings
+(bytes 91-98), so `git status` lists every `.bin` after `make -C mac`; and Aurora68 Ping's target is a
+make variable, `PEER` (default 192.168.68.1, the testbed's peer), while the committed Aurora68 Ping pings
 the bench's router, `make -C mac PEER=192.168.0.1`. Commit only the binaries whose sources
 changed and `git checkout` the rest.
 
 **Riptide (Mac):** in `riptide/`, `make -f Makefile.mac` (build/mac) and
 `make -f Makefile.mac AURORA68=1 BUILD=build/mac-a68` (the logging build: its log also goes to the
-Pi's kernel log, which PiLog shows); `test` adds MacTCPTest.bin and BrowserTest.bin. Host tests:
+Pi's kernel log, which Aurora68 Log shows); `test` adds MacTCPTest.bin and BrowserTest.bin. Host tests:
 `make check`.
 
 **Lagoon:** host tests `make test` (unit tests always; the Samba, Netatalk and nfs-ganesha
@@ -178,7 +178,7 @@ Commit and push first: a set must name a commit anyone can find.
 - Disk images as files in the root (`*.image`, `*.img`, `*.hda`, `*.hfv`, `*.dsk` over 1 MB),
   named by `mac.image=A.image,B.img`: the first is the startup disk (SCSI ID 0), the others
   PiDisk volumes. The card code writes `pram.bin` (parameter RAM), `pairings.txt` (Bluetooth)
-  and `aurora68.log` (PiLog's Save to Card, and after a crash record) beside them.
+  and `aurora68.log` (Aurora68 Log's Save to Card, and after a crash record) beside them.
 
 **Gotchas met so far:**
 - A second `mac.image=` in cmdline.txt is ignored: the kernel takes the first (since 2c8a80d it
@@ -212,7 +212,7 @@ Commit and push first: a set must name a commit anyone can find.
 - The eventual target: a Macintosh SE with a classic PiStorm (docs/12), the Pi as its CPU.
 - On the same LAN: the user's MacBook (this machine) and an SMB share (Lagoon's test target).
   The Mac's host name is **MacSE** (`MacSE.local` by mDNS, from riptide.conf).
-- No serial cable is assumed: what the Pi says comes back as PiLog screenshots, PiLog's Save to
+- No serial cable is assumed: what the Pi says comes back as Aurora68 Log screenshots, Aurora68 Log's Save to
   Card (`aurora68.log`) or the remote-control service below.
 
 ## Remote control: "the Mac is at IP x.x.x.x"
@@ -228,7 +228,7 @@ only so far. When the user says "the Mac is at IP x.x.x.x" (or the Pi is):
    and gets its own IP by DHCP; shared mode uses the Mac's IP and port 8068 only), `remote.any=1`
    (allow non-private source addresses; off by default).
 2. The Pi's address: the one the user gives; else `http://aurora68-pi.local/`; else the log line
-   `[REMOTE] address 192.168.x.y ... http://192.168.x.y/` (HDMI, PiLog, aurora68.log); else the
+   `[REMOTE] address 192.168.x.y ... http://192.168.x.y/` (HDMI, Aurora68 Log, aurora68.log); else the
    router's client list (`aurora68-pi`). On the wired port the kernel has its own MAC address (the
    Pi's with the locally administered bit), so it gets its own lease.
 3. Add the MCP server to Claude Code:
@@ -246,7 +246,7 @@ real WiFi path and the router keeping two leases apart, mDNS over the radio, the
 speed on the Pi 3 (about 0.25 s for 1920x1200 estimated), the browser page rendered. It is plain
 HTTP: the token crosses the LAN in the clear.
 
-Fallbacks: PiLog's Save Log and Save to Card (docs/08 item 55: `aurora68.log` in the card's root,
+Fallbacks: Aurora68 Log's Save Log and Save to Card (docs/08 item 55: `aurora68.log` in the card's root,
 passwords replaced by `***`; written by itself after every crash record), and the card itself:
 the user moves it to the MacBook, and `aurora68.log`, `pram.bin` and the images can be read there
 (hfsutils for the images).
@@ -265,8 +265,8 @@ working on several of these when this was written.
      `[BOOT] t=` lines will show the new figure; docs/08 item 50 has the target (under three
      seconds from power-on to the 68k);
    - the WiFi password in the kernel's own log lines (`[PSMAC] options:`, the duplicate-option
-     warning) is now `***` (item 57, 4b7c2fc), as in PiLog and `aurora68.log` (item 55).
-2. **PiLog's Save Log and Save to Card** (item 55, 8c9de71) are new: check them on the Pi, and
+     warning) is now `***` (item 57, 4b7c2fc), as in Aurora68 Log and `aurora68.log` (item 55).
+2. **Aurora68 Log's Save Log and Save to Card** (item 55, 8c9de71) are new: check them on the Pi, and
    ask the user for `aurora68.log` from the card rather than photographs from now on.
 3. Look at docs/08's newest items and `git log` again before starting: these were moving fast.
 4. **Ping latency**: about 20 ms wired and 80 ms over the WiFi on the Pi 3B. Two fixes are in

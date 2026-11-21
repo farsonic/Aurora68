@@ -40,7 +40,7 @@
 init_start:
 	movem.l	%d1-%d7/%a0-%a5,-(%sp)
 	link	%a6,#-64		| ParamBlock on the stack
-	log	"PiDisk INIT: start" 
+	log	"A68 Disk: start" 
 	| Since the slot-$9 declaration ROM carries the same driver and the Start Manager opens it
 	| before any extension runs, this file only matters on a Mac booted without the card's ROM
 	| (a kernel started without mac.declrom=). If _Open ".PiDisk" by name already succeeds, the
@@ -58,7 +58,7 @@ init_start:
 	.short	_Open
 	tst.w	%d0
 	bne.s	install
-	log	"PiDisk INIT: the ROM's driver is already open, nothing to do"
+	log	"A68 Disk: the ROM's driver is already open, nothing to do"
 	| (The driver's own disk-inserted events mount the volume under System 6 and 7.1 alike. A
 	| MountVol from here, at INIT time, left System 7.1's Finder without its Startup Items: the
 	| one boot where this file did nothing was the one where they launched.)
@@ -94,7 +94,7 @@ install:
 	.short	_DrvrInstall
 	tst.w	%d0
 	bne	done
-	log	"PiDisk INIT: driver installed" 
+	log	"A68 Disk: driver installed" 
 	| open it: PB.ioNamePtr = ".PiDisk"
 	lea	-64(%a6),%a0
 	move.l	%a0,%a2
@@ -108,7 +108,7 @@ install:
 	.short	_Open
 	tst.w	%d0
 	bne	done
-	log	"PiDisk INIT: open ok" 
+	log	"A68 Disk: open ok" 
 	| mount every drive that belongs to this refNum
 mount:
 	move.w	ioRefNum(%a2),%d5
@@ -124,11 +124,11 @@ mount:
 	move.w	6(%a3),ioVRefNum(%a2)	| dQDrive
 	move.l	%a2,%a0
 	.short	_MountVol
-	log	"PiDisk INIT: mountvol done"
+	log	"A68 Disk: mountvol done"
 5:	move.l	(%a3),%a3
 	bra.s	4b
 done:
-	log	"PiDisk INIT: end"
+	log	"A68 Disk: end"
 	unlk	%a6
 	movem.l	(%sp)+,%d1-%d7/%a0-%a5
 	rts

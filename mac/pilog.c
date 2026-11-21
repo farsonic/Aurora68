@@ -671,7 +671,7 @@ static void save_log(int all)
 	char t[300], *p;
 	int i;
 	if (!lg) return;
-	p = put_date(put_str(t, "PiLog "), LM_TIME, '.');
+	p = put_date(put_str(t, "Aurora68 Log "), LM_TIME, '.');
 	*p = 0;
 	pstr(name, t);
 	Point where = { 60, 104 };          /* the dialog's top left: centred on the SE's 512 x 342 */
@@ -699,7 +699,7 @@ static void save_log(int all)
 
 	/* a first line saying what this is */
 	save_at = 0;
-	p = put_date(put_str(t, "PiLog: the Aurora68 kernel log, saved "), LM_TIME, ':');
+	p = put_date(put_str(t, "Aurora68 Log: the kernel log, saved "), LM_TIME, ':');
 	if (all) p = put_str(p, ". The whole ring.");
 	else {
 		if (cleared) p = put_str(p, ". From Clear on");
@@ -789,7 +789,7 @@ static void setup_menus(void)
 {
 	unsigned char t[2] = { 1, 0x14 };       /* the apple */
 	m_apple = NewMenu(M_APPLE, t);
-	AppendMenu(m_apple, pstr(pbuf, "About PiLog\xC9;(-"));
+	AppendMenu(m_apple, pstr(pbuf, "About Aurora68 Log\xC9;(-"));
 	AddResMenu(m_apple, TYPE('D', 'R', 'V', 'R'));
 	InsertMenu(m_apple, 0);
 	m_file = NewMenu(M_FILE, pstr(pbuf, "File"));
@@ -837,7 +837,7 @@ static void fix_menus(void)
 static void about(void)
 {
 	/* a line in the window itself (an alert would need 'ALRT' and 'DITL' resources) */
-	static const char msg[] = "PiLog: the Pi kernel's log (Aurora68). Filter by part and by text; "
+	static const char msg[] = "Aurora68 Log: the Pi kernel's log. Filter by part and by text; "
 	                          "Clear empties the view, Follow keeps it at the newest line.\r";
 	add_text((const unsigned char *)msg, sizeof msg - 1);
 }
@@ -1034,7 +1034,7 @@ int main(void)
 
 	/* the main screen's top left, room for the menu bar; the SE's screen is 512 x 342 */
 	Rect b = { 44, 8, 330, 504 };
-	win = NewWindow(0, &b, pstr(pbuf, "PiLog"), 1, zoomDocProc, (void *)-1, 1, 0);
+	win = NewWindow(0, &b, pstr(pbuf, "Aurora68 Log"), 1, zoomDocProc, (void *)-1, 1, 0);
 	SetPort(win);
 	TextFont(4);        /* Monaco */
 	TextSize(9);
@@ -1044,7 +1044,7 @@ int main(void)
 	make_controls();
 	layout();
 	if (!lg) {
-		static const char msg[] = "No kernel log here: PiLog needs an Aurora68 kernel from version 0.5 on.\r";
+		static const char msg[] = "No kernel log here: Aurora68 Log needs an Aurora68 kernel from version 0.5 on.\r";
 		add_text((const unsigned char *)msg, sizeof msg - 1);
 	}
 	refilter();

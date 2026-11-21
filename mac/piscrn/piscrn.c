@@ -101,7 +101,7 @@ static void wr32(unsigned long off, unsigned long v) { *(volatile unsigned long 
 static char line[128];
 static void pi_log(const char *text)
 {
-	static const char who[] = "PiScrn: ";
+	static const char who[] = "A68 Screen Setup: ";
 	unsigned long n = 0, k, req;
 	for (k = 0; who[k]; k++) line[n++] = who[k];
 	for (k = 0; text[k] && n < sizeof line - 1; k++) line[n++] = text[k];

@@ -74,7 +74,7 @@ with two screens: the SE's at (0,0)-(480,640), main, one bit; the Pi's at (0,640
 active, 256 colours (`docs/img/system71-piscreens-dual.png`). The Finder's desktop covers both,
 and an icon dragged off the right edge of the SE's screen appears on the Pi's
 (`docs/img/system71-second-display-icon-se.png`, `-pi.png`: the "Mac Volume" icon cut in two by
-the edge, half on each monitor). The values the 'scrn' needs come from PiScreens: the IIci's
+the edge, half on each monitor). The values the 'scrn' needs come from Aurora68 Screens: the IIci's
 built-in video is sResource 134 of "slot 0" with hardware id $18 and device base $FBB08000,
 ours is sResource 132 of slot 9, hardware id $5056, device base $F9980000. The 7.1 image
 (`images/sys710pi.image`) carries the resource now; on a machine without the IIci's built-in
@@ -115,13 +115,13 @@ the answer if a board disagrees. The firmware's answer is also kept in the displ
 (`vc_depth`) for the Mac side to read.
 
 The third trap was the ROM's: with the scan-out right the 32-bit screen was a plain grey, and
-PiScreens showed the device active at 32 bits but based at $F9980000, the window, while the Pi
+Aurora68 Screens showed the device active at 32 bits but based at $F9980000, the window, while the Pi
 converted the big region. InitGDevice never asks the driver where a mode's pixels are (no
 GetPageBase in the trace); it adds the mode's `vpBaseOffset` from the sResource to dCtlDevBase.
 mkdeclrom.py now writes that offset by the kernel's placement rule, and `docs/img/
 system71-pi-1024x768-millions.png` is the result: the Pi's screen at 1024 by 768 in millions of
 colours (`mac.screen=1024x768`, `psmac-1024x768.declrom`, a 'scrn' with mode 133 and the
-rectangle 0,640,768,1664), PiColor drawn by Color QuickDraw, the Finder's dither pattern behind
+rectangle 0,640,768,1664), Aurora68 Colour drawn by Color QuickDraw, the Finder's dither pattern behind
 it, 3 MiB of frame buffer that cost the Macintosh nothing. Thousands of colours at 640 by 480
 (mode 132, fs165) draws the same window with the 16-bit pixels widened.
 
@@ -149,20 +149,20 @@ hold. One safety catch went into the driver: its grey fill writes to the mode's 
 outside the slot's 24-bit megabyte alone until the Mac is in 32-bit mode.
 
 On the solo board (`tools/run-solo.sh`, `mac.screen=1920x1200`, `psmac-1920x1200.declrom`, a
-System 7.1 image with "PiDepth 32" and PiColor in Startup Items) QEMU granted the VideoCore
+System 7.1 image with "Aurora68 Depth 32" and Aurora68 Colour in Startup Items) QEMU granted the VideoCore
 buffer at 1920 x 1200 x 32 with a pitch of 7680, the driver's SetMode went to mode 133, and the
 heartbeat read `depth 32 rowbytes 7680`. `docs/img/system71-pi-1920x1200-millions.png` is the
-result: PiColor's hues and its sixteen-step grey ramp in millions of colours on a 1920 by 1200
+result: Aurora68 Colour's hues and its sixteen-step grey ramp in millions of colours on a 1920 by 1200
 desktop. The VideoCore buffer at that size is 8.8 MiB; the firmware allocates it out of the
 `gpu_mem=64` split, which leaves room for it (a Pi 3 drives 1920 by 1200 at 60 Hz only with
 reduced blanking, `hdmi_group=2`, `hdmi_mode=69`). Not seen yet on a real Pi and monitor.
 The same runs checked what was there before: 1920 by 1080 in millions (heartbeat `depth 32
-rowbytes 7680`, PiPing's window over the Finder, `docs/img/solo-1920x1080-wifi-piping.png`,
+rowbytes 7680`, Aurora68 Ping's window over the Finder, `docs/img/solo-1920x1080-wifi-piping.png`,
 which is also the WiFi test of docs/09), 640 by 480 at 256 colours (the window region, `depth 8
 rowbytes 640`, the Finder in colour), and a 1024 by 768 run at 256 colours, whose 768 KiB frame
-buffer is in the big region too, drawing for ten minutes in another session's testbed. PiColor's
+buffer is in the big region too, drawing for ten minutes in another session's testbed. Aurora68 Colour's
 window is placed at x = 660 for the two-screen layout, so at 640 by 480 on the solo board it is
-off the screen; that is PiColor's, not the display's.
+off the screen; that is Aurora68 Colour's, not the display's.
 
 ## Two screens on the SE (20 November 2026)
 The user's SE bring-up begins with a Pi 3B on the classic PiStorm, and they asked for what the IIci
@@ -184,7 +184,7 @@ single card, `$84` the SE's screen and `$85` the HDMI one; it booted with two sc
 then Monitors gave it away: for the HDMI screen it listed one depth, "Black & White", and drew
 both monitors the same size. Monitors 7.0 takes a screen's depths (and its proportions) from the
 first video sResource of the screen's slot, here the SE's one-bit `$84`; the driver's DCE, the
-GDevice and InitGDevice all had the right sResource (PiScreens: `dctl 9:133`). The same card on
+GDevice and InitGDevice all had the right sResource (Aurora68 Screens: `dctl 9:133`). The same card on
 the solo board, alone in its slot, lists all six depths. So the HDMI screen moved to a card of its
 own, and the design is **two cards**:
 
@@ -227,10 +227,10 @@ the same). Without an `-se-` ROM the kernel says so and mirrors. On the solo boa
 testbed nothing changed: an `-se-` file is the last choice there and its slot $A card is never
 served.
 
-**The second screen active without Monitors: PiScrn.** The ROM's 'scrn' loader (docs/08 item 26)
+**The second screen active without Monitors: Aurora68 Screen Setup.** The ROM's 'scrn' loader (docs/08 item 26)
 activates a second screen only when the System file's 'scrn' names every screen and matches the
 hardware; without one the HDMI screen stays the driver's grey. Monitors writes one when a screen
-is dragged and OK clicked, but on a 9-inch screen that is a lot to ask. PiScrn
+is dragged and OK clicked, but on a 9-inch screen that is a lot to ask. Aurora68 Screen Setup
 (`mac/piscrn/piscrn.c`, an INIT built with the C kit) does it at startup: it lists the video
 sResources as the loader does, checks the 'scrn' by the loader's rules (count; each record's
 hardware id, slot, dCtlDevBase; a rectangle of the screen's size), and keeps it if it matches,
@@ -241,7 +241,7 @@ Mac once, since the loader runs at InitGraf, before any extension. If the same b
 there and still do not match, it says so in the log rather than restart again. It does nothing on
 a Mac with one screen or without the Pi's window.
 
-**Two bugs the restart found.** The first two-card run hung right after PiScrn's restart, the 68k
+**Two bugs the restart found.** The first two-card run hung right after Aurora68 Screen Setup's restart, the 68k
 in its level-2 interrupt with no bus traffic: the display block's "enabled" flag had outlived the
 68k's RESET, and the HDMI driver's Open turns VBLs on before it installs its handler, with a grey
 fill of 288 KB (1920 by 1200 at one bit) in between, so the first tick raised slot 9's line with
@@ -260,22 +260,22 @@ changing then, because its rows were sent only at the end of an HDMI conversion)
 converted for the VideoCore. The remote control (docs/13) photographs either screen
 (`/screen.png?display=0|1`, `aurora68.py --display 1 screenshot`), takes `"display": N` on input
 events to mean a point of that screen, wherever Monitors put it, and lists both screens with
-their place on the desktop in `/state` ("screens", from QuickDraw's GDevices). PiColor opens its
+their place on the desktop in `/state` ("screens", from QuickDraw's GDevices). Aurora68 Colour opens its
 window on the first active screen that is not the main one.
 
-**What the testbed showed** (MAME `macse_ps`, System 7.1 on the SE's SCSI disk with PiScrn in the
-Extensions folder and PiColor in Startup Items, 16 MB, 32-bit addressing on in MAME's PRAM):
+**What the testbed showed** (MAME `macse_ps`, System 7.1 on the SE's SCSI disk with Aurora68 Screen Setup in the
+Extensions folder and Aurora68 Colour in Startup Items, 16 MB, 32-bit addressing on in MAME's PRAM):
 - 1024 by 768, the first (one-card) version: the first boot wrote the 'scrn' and restarted; the
-  second came up with the Finder on the SE's screen and PiColor's twelve hues in millions of
+  second came up with the Finder on the SE's screen and Aurora68 Colour's twelve hues in millions of
   colours on the HDMI screen at (512,0)-(1536,768); `/state` had both screens active, the SE's main.
-- 1920 by 1200, the same: PiScrn saw the HDMI size change, wrote a new 'scrn' and restarted;
-  PiColor in millions on 1920 by 1200, the disk window dragged by its title bar from the SE's
-  screen onto the HDMI one (with the input driver's clipping mended), PiScreens listing both
+- 1920 by 1200, the same: Aurora68 Screen Setup saw the HDMI size change, wrote a new 'scrn' and restarted;
+  Aurora68 Colour in millions on 1920 by 1200, the disk window dragged by its title bar from the SE's
+  screen onto the HDMI one (with the input driver's clipping mended), Aurora68 Screens listing both
   GDevices and both sResources with the values above, and Monitors' one-depth list that led to
   the second card.
-- 1920 by 1200, two cards: PiScrn saw the HDMI screen's slot change from 9 to $A and rewrote the
+- 1920 by 1200, two cards: Aurora68 Screen Setup saw the HDMI screen's slot change from 9 to $A and rewrote the
   'scrn' (that restart is the one that hung, above); with the fixes the next boot reached the
-  Finder in 146 s with both screens active and PiColor in millions on the HDMI screen
+  Finder in 146 s with both screens active and Aurora68 Colour in millions on the HDMI screen
   (`docs/img/se-hdmi-1920x1200-millions-picolor.png`). Monitors now shows monitor 2 in its true
   proportion beside the SE's with the depths 4, 16, 256, thousands and millions, millions selected
   (`docs/img/se-monitors-two-screens.png`, MAME's picture of the SE's own screen); choosing 256
@@ -283,8 +283,8 @@ Extensions folder and PiColor in Startup Items, 16 MB, 32-bit addressing on in M
   control from the SE's screen, came up on the HDMI one in colour
   (`docs/img/se-hdmi-1920x1200-256-window-moved.png`), leaving the SE's Finder desktop behind
   (`docs/img/se-two-screens-se-finder.png`, MAME).
-- 1024 by 768, two cards: PiScrn's restart again (the size changed), this time through to the
-  Finder; PiColor in millions on the VideoCore's own picture (`tools/vcshot.py`,
+- 1024 by 768, two cards: Aurora68 Screen Setup's restart again (the size changed), this time through to the
+  Finder; Aurora68 Colour in millions on the VideoCore's own picture (`tools/vcshot.py`,
   `docs/img/se-hdmi-1024x768-millions-picolor.png`).
 
 ## On the hardware: the firmware's buffer, and sound (20 November 2026)
@@ -302,7 +302,7 @@ a black monitor can be told from a wrong buffer. docs/08 item 73.
 
 The monitor's loudspeakers play the Mac's sound now (docs/08 item 74): the ASC's two channels and a sound
 card of 16-bit stereo at 44.1 kHz, mixed on the Pi's core 1 and sent to the HDMI transmitter's audio
-FIFO by DMA. The card is a ring in slot 9's window that the Sound PiStorm extension makes the Sound
+FIFO by DMA. The card is a ring in slot 9's window that the Aurora68 Sound extension makes the Sound
 Manager's output device. The user's steps for both are in docs/09, "Two screens and sound through HDMI
 on the real SE".
 
@@ -367,10 +367,10 @@ large). Whether the monitor takes 30 Hz is the monitor's affair; the user is fin
   were drawn in five seconds and how long the longest took on core 3: the number the testbed cannot
   give, and the one to send back from the real Pi.
 - *The remote's screenshot* was cropped at 2048 pixels wide; now 2560.
-- *PiScrn and the driver* had no size of their own: PiScrn takes each screen's rectangle from its
+- *Aurora68 Screen Setup and the driver* had no size of their own: Aurora68 Screen Setup takes each screen's rectangle from its
   GDevice, the driver its rows and pitch from the display block. 512 + 2560 = 3072 fits QuickDraw's
   coordinates easily.
-- *PiDepth* set only the main screen's depth, which on the SE is the one-bit screen. "PiDepth HDMI 16"
+- *Aurora68 Depth* set only the main screen's depth, which on the SE is the one-bit screen. "Aurora68 Depth HDMI 16"
   (any depth at the end) now sets the first active screen that is not the main one, so the HDMI screen's
   depth can be chosen without Monitors on a 9-inch screen.
 
@@ -412,20 +412,20 @@ file is looked into, and one without a video sResource is taken only if nothing 
 **What the testbed showed** (21 November, after midnight). QEMU's VideoCore model starts its frame buffer at
 any size (`-global bcm2835-fb.xres=W -global bcm2835-fb.yres=H`, now passed by `QEMU_EXTRA` in
 tools/run-psmac-qemu.sh), which is what config.txt's HDMI mode does on a Pi, so these runs had no
-`mac.screen=` at all. MAME's `macse_ps`, System 7.1 on the SE's SCSI disk with PiScrn, PiColor in Startup
-Items and copies of PiDepth on the desktop; a private copy of MAME's parameter RAM.
+`mac.screen=` at all. MAME's `macse_ps`, System 7.1 on the SE's SCSI disk with Aurora68 Screen Setup, Aurora68 Colour in Startup
+Items and copies of Aurora68 Depth on the desktop; a private copy of MAME's parameter RAM.
 - *2560 by 1440, the ROM from the card.* The container held the IIci ROM and `psmac-se-1024x768.declrom`;
   the card image's root `aurora68-se.declrom`. The log: `screen: 2560x1440, the firmware's HDMI mode`,
   `the big frame buffer region is 15 MiB`, `[CARD] looked for declaration ROMs in the card's root (68 ms)`,
   `declaration ROM: aurora68-se.declrom from the card's root taken (the HDMI screen 2560x1440: the file's
   screen is rewritten for it)`, `slot $A's screen rewritten for 2560x1440, 6 depths`, `VideoCore read back:
   physical 2560x1440, ..., depth 16, pitch 5120, ...: as asked`, `two screens: ... (15 MiB); VideoCore
-  2560x1440 x16 pitch 5120 ...: the firmware's own buffer, kept`. PiScrn saw the new size, rewrote the
+  2560x1440 x16 pitch 5120 ...: the firmware's own buffer, kept`. Aurora68 Screen Setup saw the new size, rewrote the
   arrangement and restarted; the second start reached the Finder with both screens active, the HDMI one
-  at (512,0)-(3072,1440) in millions (`/state`), the Finder's desktop and PiColor on it
-  (`docs/img/se-hdmi-2560x1440-millions-picolor.png`). "PiDepth HDMI N", double-clicked on the SE's
+  at (512,0)-(3072,1440) in millions (`/state`), the Finder's desktop and Aurora68 Colour on it
+  (`docs/img/se-hdmi-2560x1440-millions-picolor.png`). "Aurora68 Depth HDMI N", double-clicked on the SE's
   screen through the remote control, took the HDMI screen to 8, 4, 2, 1, 16 and 32 bits in turn, each
-  within six seconds; 256 colours with PiColor in front is `docs/img/se-hdmi-2560x1440-256-picolor.png`.
+  within six seconds; 256 colours with Aurora68 Colour in front is `docs/img/se-hdmi-2560x1440-256-picolor.png`.
   QEMU's frame took 44 to 50 ms of core 3 (TCG on the host, not a Pi), and the pacing held it to 63-72
   frames in five seconds.
 - *1366 by 768*, the same container and card: rewritten for 1366x768, rowBytes 172, 344, 684, 1368, 2732,
@@ -435,15 +435,15 @@ Items and copies of PiDepth on the desktop; a private copy of MAME's parameter R
   QEMU's own screendump of that buffer comes out sheared, because its display takes a different stride
   for a 2732-byte row than the 2732 its mailbox reports; a Pi's firmware reports the pitch its scan-out
   uses, and the kernel writes by the reported pitch.
-- *2048 by 1152*: rewritten, the Finder and PiColor in millions (`docs/img/se-hdmi-2048x1152-millions-picolor.png`).
+- *2048 by 1152*: rewritten, the Finder and Aurora68 Colour in millions (`docs/img/se-hdmi-2048x1152-millions-picolor.png`).
 - *1024 by 768 with its own file and no card* (the regression): `psmac-se-1024x768.declrom from the
   container taken (the HDMI screen 1024x768, the file's own size)`, `kept at 1024x768`, the card's absence
-  costing 1.55 s of the boot (`the card does not answer`); PiColor in millions, 144 frames in five
+  costing 1.55 s of the boot (`the card does not answer`); Aurora68 Colour in millions, 144 frames in five
   seconds, as before.
 - *The solo board at 2560 by 1440* from the plain 640 by 480 `psmac.declrom` through semihosting:
   `slot $9's screen rewritten for 2560x1440 ... (the file described 640x480)`, a new 32-bit VideoCore
-  buffer (`depth 32, pitch 10240: as asked`), plain "PiDepth N" through 1, 2, 4, 8, 16 and 32 bits, the
-  Finder and PiColor in millions (`docs/img/solo-2560x1440-millions.png`).
+  buffer (`depth 32, pitch 10240: as asked`), plain "Aurora68 Depth N" through 1, 2, 4, 8, 16 and 32 bits, the
+  Finder and Aurora68 Colour in millions (`docs/img/solo-2560x1440-millions.png`).
 - *A release's card*: with `aurora68-wifionly.declrom` (no screen) listed before `aurora68-wifi.declrom`
   in the card's root and no declaration ROM in the container, the kernel took `aurora68-wifi.declrom`.
 
@@ -452,7 +452,7 @@ Not seen on hardware: the monitor's 30 Hz mode itself, the firmware's frame buff
 us` line will say), and the early card look on the real sdhost controller (it is the code card_start
 always ran, run earlier and on core 0).
 
-## PiDisplay: the monitor, its resolution and rotation (21 November 2026)
+## Aurora68 Display: the monitor, its resolution and rotation (21 November 2026)
 The user's SE has had two screens since 20 November, its own and a Dell UP2716D on HDMI, and choosing
 the HDMI mode meant taking the card out and typing `hdmi_` lines into config.txt on another computer,
 after finding out what a Pi 3 can send. They asked for a Macintosh program: choose the resolution and
@@ -508,11 +508,11 @@ character pieces, last first, each with the short name's checksum, then the shor
 with the first number nobody has), in one directory sector written at once; the text lives in the file's
 first cluster and is read back. The firmware takes the last value of a setting it reads, which is why the
 include goes at the end: an `hdmi_mode=` after it would win, and the kernel, which reads config.txt before
-the 68k starts (on core 0, with the card's early look of "Any size" above), tells PiDisplay so
+the 68k starts (on core 0, with the card's early look of "Any size" above), tells Aurora68 Display so
 (`PSMB_CF_OVERRIDE`), as it does when the line is missing.
 
 **The restart.** The firmware reads config.txt only when the Pi starts, so a new mode needs the whole Pi
-restarted. PiDisplay asks the kernel to write the file (`PSMB_INFO_DISPSET`), waits until it is on the
+restarted. Aurora68 Display asks the kernel to write the file (`PSMB_INFO_DISPSET`), waits until it is on the
 card, arms the Pi's restart (`PSMB_INFO_DISPRESTART`) and restarts the Mac through the Shutdown Manager,
 so that every program quits and every volume is put away first. The ROM's restart ends in the 68k's
 RESET instruction, which reaches the kernel (`psmac_hdmi_bus_reset`); core 3 then waits until the card
@@ -528,14 +528,14 @@ done the same since 20 November.
 monitor shows the new mode, so the question is asked on the SE's own screen, which always works, and it
 answers itself: Keep (the default button, Return) or Revert (Escape, Command-period), with "If you do
 nothing, the previous resolution comes back in 15 seconds" counting down. Revert, or the countdown, puts
-`aurora68-display.bak` back (without its mark) and restarts the Pi again. PiScrn asks it: it runs at every
+`aurora68-display.bak` back (without its mark) and restarts the Pi again. Aurora68 Screen Setup asks it: it runs at every
 start of such a Mac anyway, and now, when the kernel says a mode waits to be kept, it stays in the system
 heap (its entry copies the image there, as the WiFi menu's does, and gives the copy back otherwise), puts
 a filter on GetNextEvent and, at the first null event of the first program two seconds on, puts up the
-dialog (mac/pidisplay/pdcommon.c, shared with PiDisplay, which asks itself if it is started while the
+dialog (mac/pidisplay/pdcommon.c, shared with Aurora68 Display, which asks itself if it is started while the
 question is still open). The kernel keeps its own clock as well: once the question is on the screen
 (`PSMB_DC_ASKING`) it reverts by itself 25 seconds later without an answer, and if nothing asks at all (no
-PiScrn) it reverts `mac.displaywait=` seconds after its start, 300 by default.
+Aurora68 Screen Setup) it reverts `mac.displaywait=` seconds after its start, 300 by default.
 
 **Rotation.** 0, 90, 180 and 270 degrees, the picture turned clockwise on the monitor: at 90 the Mac's top
 row is the monitor's right-hand column, so a monitor stood on its side anticlockwise shows the Mac upright.
@@ -545,13 +545,13 @@ is swapped, the declaration ROM rewritten for it, the display block made for it.
 `#aurora68 rotate=` line, so it outlasts a power cut, and it needs only a restart of the Mac: the kernel
 keeps the HDMI card's declaration ROM as it was loaded, and at the 68k's RESET, before the Slot Manager
 reads the cards again, rewrites it for the turned size (`psmac_declrom_rescreen`) and makes the display
-block again (`psmac_display_rotate`); PiScrn then sees the new size and arranges the screens once more. A
+block again (`psmac_display_rotate`); Aurora68 Screen Setup then sees the new size and arranges the screens once more. A
 turn of 90 or 270 writes the Mac's rows as the monitor's columns, which caches dislike: a 1440-pixel row
 lands one pixel on each of 1440 lines. So a band is done in tiles of 32 of the Mac's columns, each written
 as one short run along a VideoCore row and flushed as such; millions of colours into the 16-bit or 32-bit
 buffer have loops of their own.
 
-**PiDisplay** (mac/pidisplay/pidisplay.c, an application in C with the kit in mac/c; 68020, System 6.0.8 and
+**Aurora68 Display** (mac/pidisplay/pidisplay.c, an application in C with the kit in mac/c; 68020, System 6.0.8 and
 7). One document window, written to the 1992 Human Interface Guidelines as the user asked: it moves, grows,
 zooms to the screen it is on (as large as its contents want, on the screen holding most of it) and scrolls
 both ways; on a narrow screen its sections stand in one column, from 720 pixels wide in two. A strip at the
@@ -566,30 +566,30 @@ monitor's preferred mode and the one in force marked, the suggested one in bold 
 under the list, the modes that cannot be chosen dimmed; arrow keys move the choice), *Rotation* (four radio
 buttons), *Sound* (the formats, rates and sample sizes the monitor plays, its speakers, and where the Mac's
 sound goes now), *Connection* (HDMI or DVI, the Pi's, the monitor's and the HDMI link's pixel clocks, the
-range limits, the colour depths). Menus: Apple (About PiDisplay...), File (Close, Save Report As..., Quit),
+range limits, the colour depths). Menus: Apple (About Aurora68 Display...), File (Close, Save Report As..., Quit),
 Edit (Copy copies the report as text; Undo, Cut, Paste, Clear and Select All are there, dimmed, and work for
 desk accessories), Display (Use Suggested Resolution, Revert, Restart to Apply...). Balloon Help for all four
 menus on System 7 ('hmnu' resources made by tools/mac/mkhmnu.py). Dialogs are built in memory, centred a
 third of the way down the main screen, their default button outlined, Escape and Command-period cancelling.
-The window's place and size are kept in "PiDisplay Prefs" (the Preferences folder through FindFolder on
+The window's place and size are kept in "Aurora68 Display Prefs" (the Preferences folder through FindFolder on
 System 7, the System Folder through SysEnvirons on System 6) and used only if its title bar is on a screen
 that is there now. It takes every event, runs in the background, and refreshes its answer every two
-seconds. Its lines in the kernel's log start `[MAC] PiDisplay:`.
+seconds. Its lines in the kernel's log start `[MAC] A68 Display:`.
 
-**What the testbed showed** (21 November, MAME's `macse_ps` with System 7.1 on the SE's SCSI disk, PiScrn in the
-Extensions folder and PiDisplay in Startup Items, QEMU's VideoCore started at 1920 by 1080 as config.txt's
+**What the testbed showed** (21 November, MAME's `macse_ps` with System 7.1 on the SE's SCSI disk, Aurora68 Screen Setup in the
+Extensions folder and Aurora68 Display in Startup Items, QEMU's VideoCore started at 1920 by 1080 as config.txt's
 `hdmi_mode=82` would, a 64 MB FAT16 card image with that config.txt and its include line, `mac.edidtest=sample
 mac.hdmisim=1`; a private copy of MAME's parameter RAM):
 - The boot logs the sample's 17 modes, 14 usable, 3 too fast (2560x1440 at 59.95 Hz with 30 Hz fitting at
   119.00 MHz; 1920x1200 at 60 Hz with its 154.00 MHz reduced-blanking twin; 3840x2160 at 30 Hz with nothing
   that fits), 8 of the wrong shape, the suggestion 2560x1440 at 30 Hz and the mode in use, 1920x1080 at 60 Hz
-  from config.txt. PiDisplay opens on the SE's screen (`docs/img/pidisplay-se.png`); dragged onto the HDMI
+  from config.txt. Aurora68 Display opens on the SE's screen (`docs/img/pidisplay-se.png`); dragged onto the HDMI
   screen and zoomed it fills it as two columns (`docs/img/pidisplay-hdmi-1080.png`).
 - 2560x1440 chosen, Restart to Apply, the alert (`docs/img/pidisplay-restart-alert.png`), Restart: the kernel
   made `aurora68-display.bak` (92 bytes, the empty first state) and `aurora68-display.txt` (515 bytes), both new
   with long names (mtools lists them as `aurora68-display.bak` and `.txt`, short names `AURORA~1.BAK` and
   `.TXT`), the Mac quit its programs and restarted, and the 68k's RESET restarted QEMU's Pi through the watchdog.
-  The new start read the file, `mac.hdmisim` made a 2560x1440 buffer, PiScrn rearranged the screens and
+  The new start read the file, `mac.hdmisim` made a 2560x1440 buffer, Aurora68 Screen Setup rearranged the screens and
   restarted, and at the next start put up "Keep this resolution?" over the Finder, counting down
   (`docs/img/pidisplay-keep.png`). Left alone, it answered Revert at 0: the .bak went back, the Pi restarted, and
   the Mac came up at 1920x1080 again. A second time, Keep: the mark left the file and 2560x1440 at 30 Hz stayed
@@ -597,7 +597,7 @@ mac.hdmisim=1`; a private copy of MAME's parameter RAM):
   1440 30)`), with the log saved into aurora68.log before the restart.
 - Rotation 90, then 270, each with a Mac restart only: `declaration ROM: slot $A's screen rewritten for
   1080x1920`, `rotation 90 from this restart: the Mac's HDMI screen is 1080x1920, the VideoCore 1920x1080`,
-  PiScrn's rearrangement, and PiDisplay on the turned screen (`docs/img/pidisplay-hdmi-rot90.png`, the
+  Aurora68 Screen Setup's rearrangement, and Aurora68 Display on the turned screen (`docs/img/pidisplay-hdmi-rot90.png`, the
   VideoCore's own picture, the Mac's top along the monitor's right; `-rot270.png` along its left). Then
   2560x1440 again with 270 kept in the file: the Mac's screen 1440x2560 (`docs/img/pidisplay-hdmi-1440-rot270.png`).
 - The copy's time on core 3 under QEMU (TCG on the host, not a Pi): 1920x1080 in millions into the 16-bit
@@ -612,32 +612,32 @@ mac.hdmisim=1`; a private copy of MAME's parameter RAM):
   reason the figure jumps about. A Pi 3's 512-entry TLB over the kernel's block mappings will not see that,
   so QEMU's figures say only that the copy works; what a Pi 3 makes of it is the heartbeat's `turned N`
   line on the real machine.
-- PiDisplay on the SE's own screen at its first place (`docs/img/pidisplay-se.png`), scrolled to its
+- Aurora68 Display on the SE's own screen at its first place (`docs/img/pidisplay-se.png`), scrolled to its
   end with the Rotation buttons (`-se-bottom.png`), and made smaller with the grow box, the document then
   scrolling sideways too (`-se-resized.png`).
 - Found on the way: the remote control's testbed channel (`mac.remotefile=`) loses its answers after a
   restart of QEMU's Pi (its requests still arrive, so clicks work; screenshots were taken with
-  `tools/vcshot.py` and MAME's own pictures instead); and PiDisplay's first build hid and showed its radio
+  `tools/vcshot.py` and MAME's own pictures instead); and Aurora68 Display's first build hid and showed its radio
   buttons at every redraw, which, with a redraw every two seconds as the copy's time changed, left them
   invisible in some pictures: controls now move only when their place changes, and the copy's time alone
   no longer redraws the window.
 
 Not verified on hardware: the firmware's answer to the EDID tag on the Pi 3's firmware and the UP2716D's real
 EDID (the user's monitor already runs 2560x1440 at 30 Hz from hand-written config.txt lines, the mode
-PiDisplay would write); whether a missing included file stops the firmware (the release ships an empty one);
+Aurora68 Display would write); whether a missing included file stops the firmware (the release ships an empty one);
 the Pi's watchdog restart with the SE attached; the turned copy's cost on a Pi 3.
 
 ## Colour (17 November, 01:30)
-PiColor (`mac/picolor.s`) opens a colour window on the Pi's screen and paints twelve hues at full
+Aurora68 Colour (`mac/picolor.s`) opens a colour window on the Pi's screen and paints twelve hues at full
 and half strength, the primaries and a sixteen-step grey ramp with RGBForeColor and PaintRect.
 Color QuickDraw matches each colour to the card's 8-bit table, the driver hands the table to the
 Pi, the service core shows it: `docs/img/system71-two-screens.png` is the SE's screen and the Pi's
-side by side, the Finder on the left and PiColor's window on the right, 256 colours on a machine
+side by side, the Finder on the left and Aurora68 Colour's window on the right, 256 colours on a machine
 that was built with 512 by 342 black-and-white pixels. (The first run came out transposed:
 SetRect takes left, top, right, bottom, not a Rect's top, left, bottom, right.)
 
 ## Where it stood an hour earlier (17 November, 00:30)
-PiScreens (`mac/piscreens.s`, `docs/img/system71-piscreens.png`) lists QuickDraw's GDevices: the
+Aurora68 Screens (`mac/piscreens.s`, `docs/img/system71-piscreens.png`) lists QuickDraw's GDevices: the
 SE's own screen, active and main, and ours: 640 by 480, 1 bit, base $F9980000, driver -52, flags
 $2000, which is screenDevice without screenActive, and a rectangle equal to the main screen's.
 So the ROM's screen set-up ran the whole InitGDevice sequence on the card (SetMode, GrayPage,

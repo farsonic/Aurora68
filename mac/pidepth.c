@@ -1,14 +1,15 @@
-/* mac/pidepth.c - "PiDepth": sets the main screen's depth and quits. MPL-2.0.
+/* mac/pidepth.c - "Aurora68 Depth" (PiDepth until 21 November 2026): sets the main screen's depth
+ * and quits. MPL-2.0.
  *
- * The depth is the last number in the program's own name: put a copy called "PiDepth 8" into the
+ * The depth is the last number in the program's own name: put a copy called "Aurora68 Depth 8" into the
  * System Folder's Startup Items and the Mac comes up in 256 colours (1, 2, 4, 8, 16 or 32; no
  * number: 8). For the testbed above all, whose screen otherwise starts in one bit per pixel, so
- * that colour drawing (RiptidePrefs on the Mac, PiColor) can be checked without clicking through
+ * that colour drawing (RiptidePrefs on the Mac, Aurora68 Colour) can be checked without clicking through
  * the Monitors control panel. SetDepth (the Palette Manager's selector $13) asks the screen's
  * driver for the mode; the colour flag is set so the screen is colour, not grey. Built with the
  * C kit in mac/c (mac/c/README.md).
  *
- * With "HDMI" in the name ("PiDepth HDMI 16") it sets the depth of the second screen instead: the
+ * With "HDMI" in the name ("Aurora68 Depth HDMI 16") it sets the depth of the second screen instead: the
  * first active screen that is not the main one, which on the SE board's two screens is the HDMI
  * screen (the SE's one-bit screen is the main one and has no other depth). Added on 20 November 2026
  * for the 2560 by 1440 screen (docs/10), whose depths were otherwise reachable only through
@@ -59,8 +60,13 @@ int main(void)
 	for (i = 1; i + 3 <= name[0]; i++)
 		if (name[i] == 'H' && name[i + 1] == 'D' && name[i + 2] == 'M' && name[i + 3] == 'I')
 			hdmi = 1;
-	/* the last number in the name */
-	for (i = 1, cur = 0; i <= name[0]; i++) {
+	/* the last number in the name, after the "68" of "Aurora68 Depth 16": the program's name since
+	   21 November 2026 ("PiDepth 16", its name before, works the same) */
+	i = 1;
+	if (name[0] >= 8 && name[1] == 'A' && name[2] == 'u' && name[3] == 'r' && name[4] == 'o' &&
+	    name[5] == 'r' && name[6] == 'a' && name[7] == '6' && name[8] == '8')
+		i = 9;
+	for (cur = 0; i <= name[0]; i++) {
 		if (name[i] >= '0' && name[i] <= '9') {
 			cur = (short)(cur * 10 + (name[i] - '0'));
 			continue;

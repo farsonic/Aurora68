@@ -588,8 +588,8 @@ nib:	add.b	#'0',%d1
 vars:	.space	16
 wrect:	.short	40, 30, 360, 500
 erase_status: .short 268, 4, 292, 468
-wtitle:	.byte	27
-	.ascii	"PiBlue - the Pi's Bluetooth"
+wtitle:	.byte	18			| the window's title: the program's name (since 21 November 2026)
+	.ascii	"Aurora68 Bluetooth"
 	.even
 s_title:    .byte 26
 	.ascii "The PiStorm's Bluetooth   "

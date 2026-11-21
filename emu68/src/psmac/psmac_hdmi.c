@@ -123,7 +123,7 @@ static void log_summary(void)
 {
     char a[16], b[16];
     if (!(di.flags & PSMB_DI_EDID)) {
-        kprintf("[PSMAC:EDID] no EDID from the firmware (%s); PiDisplay shows the current mode only (mac.edidtest=sample in the testbed)\n",
+        kprintf("[PSMAC:EDID] no EDID from the firmware (%s); Aurora68 Display shows the current mode only (mac.edidtest=sample in the testbed)\n",
                 di.edid_status == PSMB_ES_HEADER ? "its first block is not an EDID" : "no monitor, or a firmware without the tag");
         return;
     }
@@ -217,7 +217,7 @@ static void fill_dynamic(void)
     uint32_t now = secs();
     di.confirm_secs = di.confirm_state == PSMB_CS_ASKING && ask_deadline > now ? ask_deadline - now : 0;
 }
-static const char default_text[] = "# aurora68-display.txt: no HDMI mode chosen in PiDisplay yet; config.txt's own lines apply.\n";
+static const char default_text[] = "# aurora68-display.txt: no HDMI mode chosen in Aurora68 Display yet; config.txt's own lines apply.\n";
 static int queue(const char *name, const char *text, uint32_t n)
 {
     int r = psmac_card_put_file(name, text, n);
@@ -242,7 +242,7 @@ int psmac_hdmi_cmd(uint16_t cmd, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t
         if (queue("aurora68-display.bak", old, on) || queue("aurora68-display.txt", new_text, n)) { di.apply_state = 3; return PSMB_E_BUSY; }
         op = 1; di.apply_state = 1; rotation_next = (int)a2;
         const struct psmb_dispmode *m = &di.mode[a0];
-        kprintf("[PSMAC:EDID] PiDisplay chose %ux%u at %u Hz%s, rotation %u: aurora68-display.txt is being written (the old one as .bak)\n",
+        kprintf("[PSMAC:EDID] Aurora68 Display chose %ux%u at %u Hz%s, rotation %u: aurora68-display.txt is being written (the old one as .bak)\n",
                 m->width, m->height, (a1 ? m->alt_refresh : m->refresh) / 100u, a1 ? " (reduced blanking)" : "", a2);
         msg("writing aurora68-display.txt");
         return 0; }
@@ -337,7 +337,7 @@ void psmac_hdmi_poll(void)
         uint32_t a; const void *o; uint32_t l; psmac_hdmi_cmd(PSMB_INFO_DISPCONFIRM, PSMB_DC_REVERT, 0, 0, &a, &o, &l);
     }
     if (di.confirm_state == PSMB_CS_PENDING && wait_s && now - start_s >= wait_s && !op) {
-        kprintf("[PSMAC:EDID] the new mode was not confirmed within %u s of the start (mac.displaywait; is PiScrn installed?): the old mode comes back\n", wait_s);
+        kprintf("[PSMAC:EDID] the new mode was not confirmed within %u s of the start (mac.displaywait; is Aurora68 Screen Setup installed?): the old mode comes back\n", wait_s);
         uint32_t a; const void *o; uint32_t l; psmac_hdmi_cmd(PSMB_INFO_DISPCONFIRM, PSMB_DC_REVERT, 0, 0, &a, &o, &l);
     }
     if (restart_due == 1 && !op) {

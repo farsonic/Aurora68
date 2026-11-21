@@ -224,7 +224,7 @@ int pd_confirm(volatile unsigned char *w, const struct psmb_dispinfo *di)
 	p = pd_put(msg, "Keep this resolution? The HDMI screen is now ");
 	p = pd_num(p, di->cur_w); p = pd_put(p, " x "); p = pd_num(p, di->cur_h);
 	if (di->confirm_refresh || di->cur_refresh) { p = pd_put(p, " at "); p = pd_hz(p, di->cur_refresh ? di->cur_refresh : di->confirm_refresh); p = pd_put(p, " Hz"); }
-	p = pd_put(p, ", chosen in PiDisplay.");
+	p = pd_put(p, ", chosen in Aurora68 Display.");
 	if (di->confirm_w && (di->confirm_w != di->cur_w || di->confirm_h != di->cur_h))
 		p = pd_put(p, " (The Pi's firmware did not take the mode asked for: check config.txt's include line.)");
 	void **items = mac_newhandle(700);
@@ -249,7 +249,7 @@ int pd_confirm(volatile unsigned char *w, const struct psmb_dispinfo *di)
 	SetDItem(dlg, 4, kind, (void *)pas_useritem, &box);
 	GetDItem(dlg, 5, &kind, &cd_text, &box);
 	pd_info(w, PSMB_INFO_DISPCONFIRM, PSMB_DC_ASKING, 0, 0, 0, 0, 0);
-	pd_log(w, "PiDisplay: Keep this resolution? asked, 15 seconds");
+	pd_log(w, "A68 Display: Keep this resolution? asked, 15 seconds");
 	cd_end = LM_TICKS + 15 * 60; cd_shown = 15;
 	pd_dlg_mode = 0;
 	SysBeep(10);
@@ -259,6 +259,6 @@ int pd_confirm(volatile unsigned char *w, const struct psmb_dispinfo *di)
 	DisposDialog(dlg);
 	unsigned long res = 0;
 	pd_info(w, PSMB_INFO_DISPCONFIRM, hit == 1 ? PSMB_DC_KEEP : PSMB_DC_REVERT, 0, 0, 0, 0, &res);
-	pd_log(w, hit == 1 ? "PiDisplay: the new resolution kept" : cd_shown ? "PiDisplay: Revert chosen" : "PiDisplay: no answer in 15 seconds, reverting");
+	pd_log(w, hit == 1 ? "A68 Display: the new resolution kept" : cd_shown ? "A68 Display: Revert chosen" : "A68 Display: no answer in 15 seconds, reverting");
 	return hit == 1;
 }

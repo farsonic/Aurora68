@@ -153,7 +153,7 @@ Then the order on the bench:
    the testbed only approximated (docs/08 item 13).
 3. **The second screen** on the Pi 3's HDMI, which needs no motherboard at all and can be
    checked first of everything with the SE unplugged.
-4. **WiFi**: the service core on the real chip, PiWiFi, MacTCP over it. The simulated radio's
+4. **WiFi**: the service core on the real chip, Aurora68 Wi-Fi, MacTCP over it. The simulated radio's
    command sequence is what the real one must answer.
    4a. The user's Pi is a **3B v1.2**: BCM43438. The chip layer now has the Cortex-M3 and SOCRAM
    path (`wifi/chip.c`, 17 November, 03:45, from Linux's brcmf_chip_cm3_*: the M3 disabled, the
@@ -227,13 +227,13 @@ the log on HDMI is more useful than a second desktop, which is why the release's
 3. **cmdline.txt**: take out `mac.console=hdmi` (it means `mac.hdmi=log`, one screen) and add the
    size, e.g. `enable_cache debug mac.board=se bt.pair=1 mac.screen=1024x768`. `mac.hdmi=screen`
    is the default; `mac.hdmi=mirror` gives back the SE's picture on HDMI, `mac.hdmi=log` the log.
-4. **The Mac**: copy **PiScrn** (on the Aurora68-Utilities disk) onto the System Folder, which
+4. **The Mac**: copy **Aurora68 Screen Setup** (on the Aurora68-Utilities disk) onto the System Folder, which
    puts it into Extensions. At the next start it finds the two screens, writes their arrangement
    (the SE's main at the left, HDMI to its right) into the System file and restarts the Mac once;
    from then on both screens come up at every start. The log says
-   `[MAC] PiScrn: two screens: their arrangement written into the System file; restarting once`.
-   Without PiScrn the HDMI screen stays grey until it is arranged in Monitors.
-5. **Millions of colours** need 32-bit addressing (Memory control panel, On, restart). PiScrn
+   `[MAC] A68 Screen Setup: two screens: their arrangement written into the System file; restarting once`.
+   Without Aurora68 Screen Setup the HDMI screen stays grey until it is arranged in Monitors.
+5. **Millions of colours** need 32-bit addressing (Memory control panel, On, restart). Aurora68 Screen Setup
    chooses millions when 32-bit addressing is on and otherwise the deepest mode a 24-bit system
    reaches (256 colours at 640 x 480 and 800 x 600, 16 at 1024 x 768, fewer above); it keeps an
    arrangement that still fits, so after switching 32-bit addressing on choose Millions for
@@ -433,7 +433,7 @@ it has the screen's size (16 bits a pixel on the monitor), since that buffer is 
 every frame-buffer request now reaches the firmware through the VideoCore's uncached alias, and the firmware's
 view of the buffer is read back into the log. The Mac's sound plays on the HDMI monitor in stereo, mixed on
 core 1, with the SE's speaker playing too: the ASC's two channels always, and a sound card of 16-bit stereo
-at 44.1 kHz when the **Sound PiStorm** extension finds Sound Manager 3.0. config.txt needs `hdmi_drive=2`
+at 44.1 kHz when the **Aurora68 Sound** extension finds Sound Manager 3.0. config.txt needs `hdmi_drive=2`
 (the release's has it): in DVI mode the transmitter sends no sound. `mac.audio=jack` uses the 3B's
 headphone socket instead. Lines to send back from the first boot with all of it:
 
@@ -441,8 +441,8 @@ headphone socket instead. Lines to send back from the first boot with all of it:
     [PSMAC:DISP] two screens: ... VideoCore 1024x768 x16 pitch 2048 at ...: the firmware's own buffer, kept
     [AUDIO] HDMI: 48000 Hz stereo through DMA channel N; HSM clock ... Hz (MAI divider n/m), pixel clock ... Hz, N 6144 CTS ...
     [AUDIO] HDMI: the transmitter sends no packets (packet RAM off): ... DVI ...      (if silent)
-    [MAC] PiScrn: ...
-    [MAC] PiSound: Sound Manager 3.0; the sound card (16-bit stereo, 44.1 kHz, played by the Pi) registered ...
+    [MAC] A68 Screen Setup: ...
+    [MAC] A68 Sound: Sound Manager 3.0; the sound card (16-bit stereo, 44.1 kHz, played by the Pi) registered ...
     [PSMAC]   audio: HDMI 48000 Hz, B blocks | ASC ... | card F frames, U underruns, queued Q, volume V | C clipped
     [PSMAC:SE]   sound: ...
     [AUDIO] DMA channel N error, debug ...                                           (should not appear)
@@ -490,7 +490,7 @@ without PiDisk's boot record, was taken. The next boots, in this order:
   there, and the kernel moved its log onto those pins in ALT5 when Bluetooth took the PL011; with
   the GPIO transport up it now stops using a serial line instead, `psmac_console_miniuart`.) The
   windows into the first boots are the HDMI screen (`mac.console=hdmi` keeps the log there for the
-  whole run), PiLog once the Mac is up, and `aurora68.log` on the card (PiLog's Save to Card, and
+  whole run), Aurora68 Log once the Mac is up, and `aurora68.log` on the card (Aurora68 Log's Save to Card, and
   written by itself after every crash record).
 - A known-good CPLD SVF (the shipped firmware) before any reflash.
 - An HDMI monitor for the second screen, which doubles as "is the kernel alive" before the SE

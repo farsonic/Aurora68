@@ -67,12 +67,14 @@ explains the fork's relationship to upstream.
 
 ### The Macintosh side
 ```
-make -C mac            # drivers (.PiDisk, .ENET x2, .PiInput, .Display_Video_PiStorm), extensions
-                       # (PiDisk, PiMach), applications (PiNet, PiWiFi, PiBlue, PiStatus, PiPing,
-                       # PiScreens, PiColor, PiLog, PiScrn, PiDisplay), the declaration ROMs psmac.declrom / psmac_wifi.declrom
+make -C mac            # drivers (.PiDisk, .ENET x2, .PiInput, .Display_Video_PiStorm), the extensions and
+                       # applications as build/Aurora68-*.bin ("Aurora68 Play", "Aurora68 Disk"...: PiPlay,
+                       # PiDisk... until 21 November 2026, docs/09 "The programs and their folders"; icons from
+                       # tools/mac/mkicons.py), the declaration ROMs psmac.declrom / psmac_wifi.declrom
                        # and one per second-screen size (psmac-1024x768.declrom ...; RESES in the Makefile)
 make -C mac check      # the drivers' structure offsets against the kernel's alice_net.h (cc + python)
-make -C mac install IMG=../images/sys710pi.image [PART=1]   # PiDisk and PiMach into the System Folder
+make -C mac install IMG=../images/sys710pi.image [PART=1]   # extensions into the System Folder, programs into Aurora68
+                       # (tools/mac/aurora68-layout.py: also `stage DIR` and `disk IMAGE`, the release's layout)
 ```
 Everything is assembled with `m68k-linux-gnu-as -m68020` in GNU MIT syntax and packaged by the
 Python tools (`mkapp.py`, `mkinit.py`, `mkdeclrom.py`). Conventions that cost time when broken
@@ -166,9 +168,9 @@ with the console lock held (docs/08 item 21 explains the one time that happened)
 - `make -C rom check`, `make -C mac check` (static).
 - MAME bridge end to end: `tools/bridge_e2e.py` (docs/06, "Tests").
 - The scripted sessions above are the integration tests; the screenshots in `docs/img/` are
-  their expected results (System 6 and 7.1 to the Finder with the Pi disk mounted; PiNet's ARP
-  round trip; MacTCP pinging over Ethernet and over the simulated WiFi; PiWiFi's scan and join;
-  About This Macintosh saying Macintosh SE; the two-screen desktop; PiColor's colours on the
+  their expected results (System 6 and 7.1 to the Finder with the Pi disk mounted; Aurora68 Network's
+  ARP round trip; MacTCP pinging over Ethernet and over the simulated WiFi; Aurora68 Wi-Fi's scan and join;
+  About This Macintosh saying Macintosh SE; the two-screen desktop; Aurora68 Colour's colours on the
   Pi's screen).
 
 ## Updating the dependencies

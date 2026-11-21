@@ -99,7 +99,7 @@ app_start:
 	move.w	#8,V_X(%a6)
 	lea	s_title(%pc),%a0
 	bsr	say
-	log	"PiPing: started"
+	log	"A68 Ping: started"
 
 	| --- open the MacTCP driver ---
 	lea	pb(%pc),%a3
@@ -308,7 +308,7 @@ log_err:				| d0.w = OSErr -> "PiPing: result -NNN"
 	movem.l	(%sp)+,%d0-%d2/%a0-%a1
 	rts
 err_text:
-	.ascii	"PiPing: result"
+	.ascii	"A68 Ping: result"
 err_digits:
 	.ascii	" 00000"
 	.byte	0
@@ -376,8 +376,8 @@ say_err:				| d0.w = OSErr, then a new line
 	.equ	V_IN,		12
 vars:	.space	16
 wrect:	.short	60, 40, 300, 480
-wtitle:	.byte	23
-	.ascii	"PiPing - MacTCP over Pi"
+wtitle:	.byte	13			| the window's title: the program's name (since 21 November 2026)
+	.ascii	"Aurora68 Ping"
 	.even
 s_title:   .byte 34
 	.ascii "MacTCP over the PiStorm's Ethernet"

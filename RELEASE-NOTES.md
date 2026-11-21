@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- **The programs are "Aurora68 Xxxx", in folders, with icons of their own.** PiPlay is now **Aurora68
+  Play**, and so on: Aurora68 Display, Slots, Log, Status, Network (PiNet), Wi-Fi (PiWiFi), Bluetooth
+  (PiBlue), Ping, Colour (PiColor), Screens and Depth; the extensions are **Aurora68 Disk** (PiDisk),
+  **Aurora68 Machine** (PiMach), **Aurora68 Screen Setup** (PiScrn), **Aurora68 Sound** (Sound PiStorm) and
+  **Aurora68 Wi-Fi & Bluetooth**. The release's `Mac` folder and its disk image hold them in the folder
+  **Aurora68**: Aurora68 Play (with a Music folder), Display, Network, System, and Extensions (to install)
+  with a Read Me. Every program has an icon of one family (an aurora over a tile; puzzle pieces for the
+  extensions; documents for Aurora68 Play's MP3, AIFF and WAV files and the preferences), in black and white
+  for the SE's screen and in colour (docs/img/aurora68-icons.png). Window titles, About boxes and menus say
+  the new names; the log's lines say `[MAC] A68 Play: ...`, `[MAC] A68 Sound: ...`, `[MAC] A68 Screen Setup:
+  ...` and so on (the drivers' `[MAC] PiDisk: ...` and the kernel's tags stay). Creator codes and file types
+  are unchanged; preferences carry over ("PiPlay Prefs" is read when there is no "Aurora68 Play Prefs"), and
+  the radio's "PiPlay Stations" becomes "Aurora68 Play Stations" at the first start. **Take the old
+  extensions out** when you put the new ones in (PiDisk, PiMach, PiScrn, Sound PiStorm, Wi-Fi & Bluetooth):
+  both copies would run. Aurora68 Depth still reads the depth from its name ("Aurora68 Depth 16",
+  "Aurora68 Depth HDMI 32"; "PiDepth 16" too). Aurora68 Sound now sorts before Apple's Sound Manager
+  extension, so it waits for it by itself. `tools/mac/aurora68-layout.py install IMAGE` puts the whole set
+  onto a Mac disk image with hfsutils. If the Finder shows blank icons, rebuild the desktop (hold
+  Command-Option while the Finder starts). In the entries below, the programs have the names they had then.
+- **Aurora68 Play: IPv4 or IPv6.** The radio's line of counts ends with the IP version the stream uses,
+  "0 reconnects, 0 underruns — IPv6" when Riptide carries it over IPv6 (its stand-in addresses,
+  198.18.0.0/15) and "— IPv4" otherwise; the log's "connected to" line says the same. Riptide's `mactcp ipv6
+  prefer` makes stations with both kinds of address use IPv6; NPO Radio 2 (Dutch public radio, which has
+  IPv6) is in the built-in list to try it.
 - **PiPlay: internet radio.** PiPlay 1.1 has a **Radio** menu with twelve SomaFM channels (Groove Salad,
   Drone Zone, Secret Agent, Lush, Space Station Soma and more; SomaFM is listener-supported radio,
   https://somafm.com/) and **Open URL…** (Command-U) for any Shoutcast or Icecast MP3 stream over plain

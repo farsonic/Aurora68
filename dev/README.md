@@ -126,7 +126,7 @@ On the cloud machine the work was done on (Ubuntu 24.04, x86-64, Docker 29):
   device), Lagoon's Mac build and host tests (Samba's skipped: no root for smbd), Octavo's build and
   Quill's native tests (2679 tests, 0 failed).
 - `tools/testbed/boot.sh --net` with the image from `mkfullimage.sh`: the Finder at 24 s, pinet's
-  DHCP answered, then `keys.py` typing into PiLog's filter, `mouse.py` holding the Apple menu open,
+  DHCP answered, then `keys.py` typing into Aurora68 Log's filter, `mouse.py` holding the Apple menu open,
   `shot.sh` pictures of both, `stop.sh`.
 - `mktestset.sh` with an update disk: the set, its checks and its zip; and its refusals (a key in
   an added file, a password in the notes, the IIci ROM by name and the same ROM renamed).

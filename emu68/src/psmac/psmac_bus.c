@@ -1680,7 +1680,7 @@ static void con_start_async(void)
 {
     const char *o = psmac_option("mac.synclog");
     if (!o || o[0] != '1') __atomic_store_n(&con_async, 1, __ATOMIC_RELEASE);
-    if (con_stuck) kprintf("[PSMAC] the serial port is not sending (on a Pi 3 the PL011 belongs to Bluetooth until it starts): the log is on the screen and in PiLog\n");
+    if (con_stuck) kprintf("[PSMAC] the serial port is not sending (on a Pi 3 the PL011 belongs to Bluetooth until it starts): the log is on the screen and in Aurora68 Log\n");
 }
 /* the service core's loop: a few characters per turn, never waiting on the UART */
 static void con_drain(void)
@@ -1709,7 +1709,7 @@ void psmac_console_miniuart(void)
         for (int i = 0; i < 100000 && !con_stuck && (rd32le(PL011_BASE + 0x18) & (1 << 3)); i++) ;   /* the PL011 drains what it has */
         con_mini = 2;
         spinlock_release(&con_lock);
-        kprintf("[PSMAC] no serial log from here: Bluetooth has the PL011, and GPIO 14/15 are the PiStorm's data lines (HDMI, PiLog and aurora68.log still have it)\n");
+        kprintf("[PSMAC] no serial log from here: Bluetooth has the PL011, and GPIO 14/15 are the PiStorm's data lines (HDMI, Aurora68 Log and aurora68.log still have it)\n");
         return;
     }
     uint32_t core = get_clock_rate(4);                                  /* CORE */

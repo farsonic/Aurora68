@@ -21,12 +21,15 @@
 # QUILL override the checkouts). A build that is missing stops it, except the optional ones.
 #
 # Where things go (the layout the bench's notes and docs/09 refer to):
-#   System Folder:Extensions   PiDisk, PiMach, Wi-Fi & Bluetooth, Riptide, Lagoon EtherTalk
+#   System Folder:Extensions   Aurora68 Disk, Machine, Screen Setup, Sound, Wi-Fi & Bluetooth
+#                              (tools/mac/aurora68-layout.py install, which also takes out the
+#                              programs' files under their names before 21 November 2026), Riptide,
+#                              Lagoon EtherTalk
 #   System Folder              Riptide DNR; Preferences:Riptide:riptide.conf
-#   System Folder:Startup Items PiLog
-#   the top level              PiBlue, PiNet, PiPing, PiStatus, PiWiFi; "Test Disk Read Me"
-#   Utilities                  PiLog, PiPing, PiColor, PiScreens, PiDepth, Riptide Command
-#                              Terminal, RiptidePrefs, MacTCP test, Browser test
+#   System Folder:Startup Items Aurora68 Log
+#   Aurora68                   the programs in their folders (Aurora68 Play, Display, Network, System)
+#   the top level              "Test Disk Read Me"
+#   Utilities                  Riptide Command Terminal, RiptidePrefs, MacTCP test, Browser test
 #   Apps:Lagoon, Apps:Octavo   Lagoon; Octavo with its Fonts folder and five test documents
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
@@ -51,12 +54,14 @@ done
 
 A=$AURORA68/mac/build R=$RIPTIDE/build L=$LAGOON/build/$VAR Q=$QUILL
 need() { [ -f "$1" ] || die "missing $1 (dev/tools/buildall.sh)"; }
-for f in PiDisk PiMach WiFiMenu PiLog PiBlue PiNet PiPing PiStatus PiWiFi PiColor PiScreens PiDepth; do need $A/$f.bin; done
+for f in Disk Machine ScreenSetup Sound WiFi-Bluetooth Play Display Slots Log Status Network WiFi Bluetooth Ping Colour Screens Depth; do need $A/Aurora68-$f.bin; done
 need $R/$VAR/Riptide.bin; need $R/mac/RiptideDNR.bin; need $R/mac/RiptidePrefs.bin; need $R/mac/MacTCPTest.bin
 need $L/LagoonEtherTalk.bin; need $L/Lagoon.bin
 QB=$Q/build/$VAR/Octavo.bin; need $QB
 
 cp "$BASE" "$OUT.part"
+note "Aurora68's extensions and programs"
+python3 "$AURORA68/tools/mac/aurora68-layout.py" install "$OUT.part" ${PART:+--part $PART} --build "$A" --remove-old --startup-log
 hmount "$OUT.part" $PART >/dev/null
 trap 'humount >/dev/null 2>&1 || true' EXIT
 SF=":System Folder"
@@ -68,18 +73,11 @@ put() {   # put FILE.bin FOLDER: replaces the file of the same name
 }
 mkd() { hmkdir "$1" 2>/dev/null || true; }
 note "System Folder"
-put $A/PiDisk.bin "$SF:Extensions"
-put $A/PiMach.bin "$SF:Extensions"
-put $A/WiFiMenu.bin "$SF:Extensions"
 put $R/$VAR/Riptide.bin "$SF:Extensions"
 put $L/LagoonEtherTalk.bin "$SF:Extensions"
 put $R/mac/RiptideDNR.bin "$SF"
-put $A/PiLog.bin "$SF:Startup Items"
-note "Aurora68's programs (the disk's top level)"
-for p in PiBlue PiNet PiPing PiStatus PiWiFi; do put $A/$p.bin ""; done
 note "Utilities"
 mkd ":Utilities"
-for p in PiLog PiPing PiColor PiScreens PiDepth; do put $A/$p.bin ":Utilities"; done
 for t in $R/$VAR/RiptideTerminal.bin $R/mac/RiptideTerminal.bin; do [ -f $t ] && { put $t ":Utilities"; break; }; done
 put $R/mac/RiptidePrefs.bin ":Utilities"
 put $R/mac/MacTCPTest.bin ":Utilities"
