@@ -174,6 +174,21 @@ $(B)/Aurora68-Depth.bin: $(B)/pidepth.elf ../tools/mac/elf2app.py ../tools/mac/r
 $(B)/Aurora68-Log.bin: $(B)/pilog.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py $(ICONS)
 	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Log" --creator PILG --size 256 --icons log -o $@
 
+# ---- Aurora68 IO Test: the SE's floppy and modem port from the Mac, reported in the Pi's log (mac/iotest,
+# docs/08 item 93). A test program, not in "all" nor in the release: make iotest. Its own OS-call glue
+# (iotest/glue.s), so crt0.s and the other programs stay as they are.
+iotest: $(B)/Aurora68-IOTest.bin
+$(B)/it/glue.o: iotest/glue.s
+	@mkdir -p $(B)/it
+	$(AS) -o $@ $<
+$(B)/it/iotest.o: iotest/iotest.c c/toolbox.h $(B)/toolbox_gen.h
+	@mkdir -p $(B)/it
+	$(CC) $(CFLAGS) -c -o $@ $<
+$(B)/iotest.elf: $(C_KIT) $(B)/it/glue.o $(B)/it/iotest.o c/app.ld
+	$(LD) -T c/app.ld --emit-relocs --no-warn-rwx-segments -z noexecstack -o $@ $(C_KIT) $(B)/it/glue.o $(B)/it/iotest.o $(LIBGCC)
+$(B)/Aurora68-IOTest.bin: $(B)/iotest.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py
+	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 IO Test" --creator A68T --size 1024 -o $@
+
 # ---- PiPlay: MP3, AIFF and WAV on the sound card's stream channel, an application in C (mac/piplay) ----
 # its Toolbox list is c/traps.txt and piplay/traps.txt together, its glue in build/pp/, so that the other
 # C programs' binaries do not change; it includes the kernel's psmb.h for the stream block

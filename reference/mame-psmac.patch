@@ -1,9 +1,8 @@
 diff --git a/src/mame/apple/bridge68k.cpp b/src/mame/apple/bridge68k.cpp
 new file mode 100644
-index 00000000..93a08757
 --- /dev/null
 +++ b/src/mame/apple/bridge68k.cpp
-@@ -0,0 +1,727 @@
+@@ -0,0 +1,741 @@
 +// license:BSD-3-Clause
 +// copyright-holders:psmac project
 +/****************************************************************************
@@ -23,6 +22,13 @@ index 00000000..93a08757
 +      with -nothrottle.  A single catch-up is capped at 10 ms worth of cycles.
 +    * Idle waiting is done in poll() with a 1 ms timeout, so the host CPU is
 +      not spun needlessly.
++    * Time dilation (21 November 2026, Aurora68 docs/08 item 93): with a
++      divisor N (PSMAC_BRIDGE_TDIV=N at start, or the debugger/Lua state
++      register "TDIV" at any time) emulated time follows 1/N of wall-clock
++      time.  A bus cycle over the FIFO costs tens of microseconds of wall
++      clock, and the floppy turns in emulated time: the ROM's floppy code,
++      which must read the IWM within a GCR byte (16 us), only keeps up when
++      emulated time is slowed to match.  1 (the default) is the old model.
 +
 +    Bus error / DTACK model
 +    -----------------------
@@ -41,7 +47,9 @@ index 00000000..93a08757
 +#include "emu.h"
 +#include "bridge68k.h"
 +
++#include <algorithm>
 +#include <cerrno>
++#include <cstdlib>
 +#include <cstring>
 +
 +#include <fcntl.h>
@@ -121,6 +129,7 @@ index 00000000..93a08757
 +	m_reply_status(0),
 +	m_last_ticks(0),
 +	m_idle_credit(0),
++	m_time_div(1),
 +	m_stat_requests(0),
 +	m_stat_connects(0),
 +	m_stat_runs(0),
@@ -168,6 +177,8 @@ index 00000000..93a08757
 +		}
 +	}
 +	m_sock_path = (env && *env) ? env : DEFAULT_SOCK_PATH;
++	if (const char *tdiv = std::getenv("PSMAC_BRIDGE_TDIV"))
++		m_time_div = std::max(1, std::atoi(tdiv));
 +
 +	state_add(BRIDGE68K_PC, "PC", m_pc).formatstr("%08X");
 +	state_add(STATE_GENPC, "GENPC", m_pc).noshow();
@@ -175,6 +186,7 @@ index 00000000..93a08757
 +	state_add(BRIDGE68K_IPL, "IPL", m_state_ipl).callexport().formatstr("%1u");
 +	state_add(BRIDGE68K_FLAGS, "FLAGS", m_state_flags).callexport().formatstr("%12s");
 +	state_add(STATE_GENFLAGS, "GENFLAGS", m_state_flags).callexport().formatstr("%12s").noshow();
++	state_add(BRIDGE68K_TDIV, "TDIV", m_time_div);
 +
 +	// the socket is created lazily on the first execute_run() so that
 +	// -validate / -listxml and the like never touch the filesystem
@@ -672,11 +684,12 @@ index 00000000..93a08757
 +		m_last_ticks = now - cap_ticks;
 +	}
 +
-+	const u64 cycles = (u64(delta) * clock()) / tps;
++	const u64 div = m_time_div ? m_time_div : 1;
++	const u64 cycles = (u64(delta) * clock()) / tps / div;
 +	if (cycles != 0)
 +	{
 +		// only consume the ticks that correspond to whole cycles, keep the remainder
-+		m_last_ticks += (cycles * tps) / clock();
++		m_last_ticks += (cycles * div * tps) / clock();
 +		m_idle_credit = std::min<u64>(m_idle_credit + cycles, cap_cycles);
 +	}
 +}
@@ -733,10 +746,9 @@ index 00000000..93a08757
 +}
 diff --git a/src/mame/apple/bridge68k.h b/src/mame/apple/bridge68k.h
 new file mode 100644
-index 00000000..a8f8a7f3
 --- /dev/null
 +++ b/src/mame/apple/bridge68k.h
-@@ -0,0 +1,166 @@
+@@ -0,0 +1,168 @@
 +// license:BSD-3-Clause
 +// copyright-holders:psmac project
 +/****************************************************************************
@@ -793,7 +805,8 @@ index 00000000..a8f8a7f3
 +	{
 +		BRIDGE68K_PC = 1,
 +		BRIDGE68K_IPL,
-+		BRIDGE68K_FLAGS
++		BRIDGE68K_FLAGS,
++		BRIDGE68K_TDIV
 +	};
 +
 +	// device-level overrides
@@ -881,6 +894,7 @@ index 00000000..a8f8a7f3
 +	// wall-clock tracking for idle cycle consumption
 +	osd_ticks_t m_last_ticks;
 +	u64 m_idle_credit;
++	u32 m_time_div;         // emulated time runs 1/m_time_div of wall-clock time (PSMAC_BRIDGE_TDIV, state "TDIV")
 +	u64 m_stat_requests;
 +	u64 m_stat_connects;
 +	u64 m_stat_runs;

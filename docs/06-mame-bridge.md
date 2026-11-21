@@ -100,6 +100,12 @@ tools/bridge_client.py dump 0x50F26000 0x20
   worth (250 000 cycles) per step, so emulated time follows real time even with
   `-nothrottle`. When it is ahead of wall-clock it sleeps in `poll()` (1 ms), so the host CPU
   load is a few percent while idle; while a client is hammering the socket it never sleeps.
+* Time dilation (21 November 2026, docs/08 item 93): `PSMAC_BRIDGE_TDIV=N` at start, or the
+  state register `TDIV` at any time (`manager.machine.devices[":maincpu"].state["TDIV"].value = N`
+  from a Lua script), makes emulated time follow 1/N of wall-clock time. A bridged cycle costs
+  tens of microseconds of wall clock and the floppy turns in emulated time, so the ROM's floppy
+  code, which must read the IWM once per GCR byte (16 us), only sees whole bytes with N in the
+  tens. 1, the default, is the model above.
 
 ### Why the reply is deferred by one scheduler slice
 

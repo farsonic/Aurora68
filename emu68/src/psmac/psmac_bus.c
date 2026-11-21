@@ -79,6 +79,8 @@ static volatile uint8_t last_ipl, last_flags;
 struct psmac_irqwatch psmac_irqwatch;      /* psmac.h: filled by ExecutionLoop.c's ProcessIRQ, printed at the heartbeat */
 static uint32_t bus_errors, timeouts;
 static volatile uint32_t xfer_count, last_addr;
+static int buswait_on;                     /* mac.buswait=1: how long each of the 68k's requests waits (below) */
+static volatile uint32_t wire_cycles;      /* every cycle the transport owner has put on the wire */
 uint64_t psmac_fault_elr;   /* set by the abort dispatcher: who faulted? */
 /* Emu68's own EL0 code (JIT helpers, debug prints) may legitimately touch the Pi peripherals, which share
    the 68k's address space at 0xF2000000-0xF3FFFFFF but are mapped EL1-only in this fork. Perform those
@@ -321,6 +323,7 @@ static void psmac_read_options(void)
     if ((tok = find_token(args, "mac.inputdrag="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_drag(uint32_t); psmac_alice_input_drag(n); }
     if ((tok = find_token(args, "mac.inputright="))) { tok += 15; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_right(uint32_t); psmac_alice_input_right(n); }
     if ((tok = find_token(args, "mac.inputwifi="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_wifi(uint32_t); psmac_alice_input_wifi(n); }
+    if ((tok = find_token(args, "mac.buswait="))) buswait_on = tok[12] == '1';   /* the 68k's waits for the wire, at each heartbeat (bw_report) */
     if ((tok = find_token(args, "mac.scsitrace="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); scsi_trace_left = n; }
     if ((tok = find_token(args, "mac.ram="))) { tok += 8; uint32_t mb = 0; while (*tok >= '0' && *tok <= '9') mb = mb * 10 + (*tok++ - '0'); globals.psmac_ram_mb = mb; }
     if ((tok = find_token(args, "mac.bridge="))) {        /* find_token matches up to the '=': compare the value ourselves */
@@ -413,6 +416,7 @@ static void sh_batch_flush(void)
 void psmac_bridge_flush(void) { if (sh_batch_len) sh_batch_flush(); }
 static void bridge_xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, uint32_t data, struct psmac_reply *r)
 {
+    wire_cycles++;
     if (transport_none) { if (op == PSMAC_OP_RESET_ACK) psmac_solo_reset(); if (r) { r->status = 0; r->ipl = 0; r->flags = 0; r->data = 0xffffffff; } return; }
     if (use_gpio) { if (!transport_dead) gpio_xfer(op, size, flags, addr, data, r); else if (r) { r->status = 0; r->ipl = 0; r->flags = 0; r->data = 0xffffffff; } return; }
     if (!transport_up) { if (use_semihost) { if (!semihost_init()) transport_dead = 1; } else uart_init(); }
@@ -457,7 +461,8 @@ static void bridge_xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, 
 }
 
 /* ---------------- request hand-off to the service core ---------------- */
-struct slot { volatile uint32_t state; uint8_t op, size, flags; uint32_t addr, data; struct psmac_reply rep; };
+struct slot { volatile uint32_t state; uint8_t op, size, flags; uint32_t addr, data; struct psmac_reply rep;
+              uint64_t posted_at; uint32_t wire_at; };   /* mac.buswait: when core 0 put it there, and the wire's count then */
 static struct slot slot __attribute__((aligned(64)));
 enum { SLOT_FREE = 0, SLOT_REQ = 1, SLOT_DONE = 2 };
 static volatile uint8_t slot_lock;
@@ -467,6 +472,7 @@ static void xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, uint32_
     if (!service_running) { bridge_xfer(op, size, flags, addr, data, r); return; }
     while (__atomic_test_and_set(&slot_lock, __ATOMIC_ACQUIRE)) __asm__ volatile("yield");
     slot.op = op; slot.size = size; slot.flags = flags; slot.addr = addr; slot.data = data;
+    if (buswait_on) { slot.posted_at = cnt_now(); slot.wire_at = wire_cycles; }
     __atomic_store_n(&slot.state, SLOT_REQ, __ATOMIC_RELEASE);
     __asm__ volatile("sev");
     { uint64_t t0 = cnt_now(), warn = t0 + cnt_frq() * 3; int warned = 0;
@@ -478,6 +484,104 @@ static void xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, uint32_
     if (r) *r = slot.rep;
     __atomic_store_n(&slot.state, SLOT_FREE, __ATOMIC_RELEASE);
     __atomic_clear(&slot_lock, __ATOMIC_RELEASE);
+}
+
+/* ---------------- how long the 68k waits for the wire (mac.buswait=1) ----------------
+   (21 November 2026, docs/08 item 93.) Core 0 stops at every bus cycle of the Mac's until the
+   service core has carried it out, and the service core has errands of its own on the wire: the
+   SE's speaker buffer (185 byte writes a half, item 71), the SE's screen rows (32 words each), the
+   VIA polls of the speaker and the interrupt level. A request that arrives during an errand waits
+   for it. Most of the Mac's cycles do not mind, but the floppy driver polls the IWM in tight loops,
+   a GCR byte every 16 us, and a write must hand the IWM its next byte before the previous one has
+   gone out. An outside review asked for the worst case, with sound on and off.
+   With mac.buswait=1 core 0 notes when it posts each request and how many cycles the wire had seen
+   then; the service core, as it takes the request, files the wait and the number of its own cycles
+   that went out in between, by whether the SE's speaker was playing, for every request and for the
+   IWM's alone. The heartbeat prints each five seconds' figures and the longest since the start.
+   Waits are filed in half-octave steps (1, 1.5, 2, 3, 4, 6 us ...), so a percentile is given as the
+   upper edge of its step; the longest is exact. The cycle count is the transport's business, not
+   the Pi's: under QEMU a cycle is a semihosting trap, on the GPIO a microsecond or two, so "N of the
+   service core's cycles" is the figure that carries from the testbed to the SE. */
+#define BW_STEPS 48
+struct bw_set { uint32_t n, step[BW_STEPS], longest_ns, longest_cycles, most_cycles; };
+static struct bw_set bw_win[2][2], bw_run[2][2];  /* [speaker playing][0 every request, 1 the IWM's] */
+int psmac_se_speaker_busy(void);                  /* psmac_board_se.c: the SE's speaker is writing its buffer */
+static uint32_t bw_step(uint32_t ns)
+{
+    if (ns < 1024) return 0;                       /* under a microsecond (1024 ns) */
+    uint32_t top = 31 - __builtin_clz(ns), half = (ns >> (top - 1)) & 1, k = 2 * (top - 10) + half + 1;
+    return k < BW_STEPS ? k : BW_STEPS - 1;
+}
+static uint32_t bw_edge_ns(uint32_t k)             /* the upper edge of step k */
+{
+    if (!k) return 1024;
+    uint32_t top = (k - 1) / 2 + 10, half = (k - 1) & 1;
+    return (2 + half + 1) << (top - 1);
+}
+static void bw_file(struct bw_set *b, uint32_t ns, uint32_t cycles)
+{
+    b->n++; b->step[bw_step(ns)]++;
+    if (ns > b->longest_ns) { b->longest_ns = ns; b->longest_cycles = cycles; }
+    if (cycles > b->most_cycles) b->most_cycles = cycles;
+}
+static void bw_note(void)
+{
+    uint64_t ticks = cnt_now() - slot.posted_at;
+    uint64_t ns64 = ticks * 1000000000ull / cnt_frq();
+    uint32_t ns = ns64 > 0xffffffffull ? 0xffffffffu : (uint32_t)ns64, cycles = wire_cycles - slot.wire_at;
+    int playing = psmac_board_se && psmac_se_speaker_busy() ? 1 : 0, iwm = dev_class(slot.addr) == 4;
+    bw_file(&bw_win[playing][0], ns, cycles); bw_file(&bw_run[playing][0], ns, cycles);
+    if (iwm) { bw_file(&bw_win[playing][1], ns, cycles); bw_file(&bw_run[playing][1], ns, cycles); }
+}
+static uint32_t bw_within(const struct bw_set *b, uint32_t permille)   /* the step edge below which permille of the waits fell, ns */
+{
+    uint64_t want = ((uint64_t)b->n * permille + 999) / 1000, seen = 0;
+    for (uint32_t k = 0; k < BW_STEPS; k++) { seen += b->step[k]; if (seen >= want) return bw_edge_ns(k); }
+    return bw_edge_ns(BW_STEPS - 1);
+}
+static void bw_line(const char *what, const struct bw_set *b, const struct bw_set *run)
+{
+    uint32_t p50 = bw_within(b, 500), p99 = bw_within(b, 990), p999 = bw_within(b, 999);
+    if (!run->n) return;
+    /* microseconds with one decimal */
+    kprintf("[PSMAC]   bus waits, %s: %u requests, half within %u.%u us, 99%% within %u.%u, 99.9%% within %u.%u, the longest %u.%u us "
+            "(%u of the service core's own cycles before it, at most %u) | since the start %u requests, the longest %u.%u us (%u cycles, at most %u)\n",
+            what, b->n, p50 / 1000, p50 % 1000 / 100, p99 / 1000, p99 % 1000 / 100, p999 / 1000, p999 % 1000 / 100,
+            b->longest_ns / 1000, b->longest_ns % 1000 / 100, b->longest_cycles, b->most_cycles,
+            run->n, run->longest_ns / 1000, run->longest_ns % 1000 / 100, run->longest_cycles, run->most_cycles);
+}
+static void bw_report(void)
+{
+    if (!buswait_on) return;
+    bw_line("speaker quiet, every request", &bw_win[0][0], &bw_run[0][0]);
+    bw_line("speaker quiet, the IWM", &bw_win[0][1], &bw_run[0][1]);
+    bw_line("speaker playing, every request", &bw_win[1][0], &bw_run[1][0]);
+    bw_line("speaker playing, the IWM", &bw_win[1][1], &bw_run[1][1]);
+    for (int i = 0; i < 2; i++) for (int j = 0; j < 2; j++) bw_win[i][j] = (struct bw_set){ 0 };
+}
+
+/* The 68k's request, carried out (the service core only). */
+static uint32_t scsi_reads;                /* reads of the SCSI chip: the JIT re-checks RAM blocks after them (the service loop) */
+static void serve_request(void)
+{
+    if (buswait_on) bw_note();
+    xfer_count++; last_addr = slot.addr; dev_cnt[dev_class(slot.addr)]++;
+    /* the SE's speaker drives four bits of its VIA: every write of the Mac's to the VIA gets them as it goes out (psmac_board_se.c) */
+    if (psmac_board_se && (slot.op == PSMAC_OP_WRITE || slot.op == PSMAC_OP_RESET_ACK)) slot.data = psmac_se_wire_write(slot.op == PSMAC_OP_RESET_ACK, slot.addr, slot.data);
+    if (slot.op == PSMAC_OP_READ && dev_class(slot.addr) == 2) scsi_reads++;
+    bridge_xfer(slot.op, slot.size, slot.flags, slot.addr, slot.data, &slot.rep);
+    if (scsi_trace_left && dev_class(slot.addr) == 2) scsi_trace(slot.op, slot.addr, slot.data, slot.rep.data);
+    __atomic_store_n(&slot.state, SLOT_DONE, __ATOMIC_RELEASE);
+}
+/* For the board layer's errands of many cycles (the SE's speaker buffer and screen rows,
+   psmac_board_se.c): between two of their cycles, the 68k's request, if one has come, goes first.
+   The 68000's bus has no notion of who asked: a cycle of the Mac's between two of the speaker's is
+   as good as one before them, and the two never touch the same addresses. Not re-entrant into the
+   errands: serve_request only carries the one request out. */
+void psmac_serve_waiting(void)
+{
+    if (!service_running || !on_service_core()) return;
+    if (__atomic_load_n(&slot.state, __ATOMIC_ACQUIRE) == SLOT_REQ) serve_request();
 }
 
 /* 68k PC breadcrumbs: the service core samples the JIT's exported PC and records every change.
@@ -560,7 +664,7 @@ void psmac_service_core(void)
     uint64_t period = cnt_frq() / (use_gpio ? 20000 : 1000), next_poll = cnt_now() + period;
     uint64_t hb_period = cnt_frq() * 5, next_hb = cnt_now() + hb_period; uint32_t hb_last = 0;
     uint32_t pc_last = 0; int stall_dumped = 0, exc_dumped = 0;
-    uint32_t scsi_reads = 0, scsi_reads_seen = 0; uint64_t next_epoch = 0, next_name = 0;
+    uint32_t scsi_reads_seen = 0; uint64_t next_epoch = 0, next_name = 0;
     for (;;) {
         con_drain();                              /* the serial log (con_putc), first: the bus's turns below may continue */
         if (cnt_now() > next_hb) {
@@ -591,6 +695,7 @@ void psmac_service_core(void)
                 w->again = 0; w->deepest = 0;
             }
             psmac_se_report();
+            bw_report();
             { extern void alice_net_report(void); alice_net_report(); }
             { extern void psmac_ip_report(void); psmac_ip_report(); }
             { extern void bt_pi_report(void); bt_pi_report(); }
@@ -638,13 +743,7 @@ void psmac_service_core(void)
             psmac_icache_epoch++; scsi_reads_seen = scsi_reads; next_epoch = cnt_now() + cnt_frq() / 1000;
         }
         if (__atomic_load_n(&slot.state, __ATOMIC_ACQUIRE) == SLOT_REQ) {
-            xfer_count++; last_addr = slot.addr; dev_cnt[dev_class(slot.addr)]++;
-            /* the SE's speaker drives four bits of its VIA: every write of the Mac's to the VIA gets them as it goes out (psmac_board_se.c) */
-            if (psmac_board_se && (slot.op == PSMAC_OP_WRITE || slot.op == PSMAC_OP_RESET_ACK)) slot.data = psmac_se_wire_write(slot.op == PSMAC_OP_RESET_ACK, slot.addr, slot.data);
-            if (slot.op == PSMAC_OP_READ && dev_class(slot.addr) == 2) scsi_reads++;
-            bridge_xfer(slot.op, slot.size, slot.flags, slot.addr, slot.data, &slot.rep);
-            if (scsi_trace_left && dev_class(slot.addr) == 2) scsi_trace(slot.op, slot.addr, slot.data, slot.rep.data);
-            __atomic_store_n(&slot.state, SLOT_DONE, __ATOMIC_RELEASE);
+            serve_request();
             /* the SE's speaker has deadlines, and a Mac that polls the VIA without pause (the startup
                chime does for a second) would keep the loop from ever reaching psmac_se_service below */
             if (psmac_board_se) psmac_se_sound();

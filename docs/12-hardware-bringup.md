@@ -480,6 +480,32 @@ without PiDisk's boot record, was taken. The next boots, in this order:
 
    A photograph of that line (and the ones before it) is what to send.
 
+### The floppy and the modem port
+
+*22 November 2026* (docs/08 item 93). The ROM's floppy driver left the SE's VIA port A bit 4 floating,
+which selects the SE's second internal drive; the kernel now drives it low, so the internal drive should
+answer for the first time. Nothing here has run on the SE yet. To try, with a kernel from that date:
+
+1. Add `mac.buswait=1` to cmdline.txt. An 800K floppy formatted on another Mac, named **Floppy**, in the
+   internal drive; Aurora68 IO Test (`make -C mac iotest`) in the image's Startup Items. Start as usual.
+2. The Mac should show the floppy on the desktop. The IO Test writes MACFILE on it, reads it back, ejects
+   the disk and asks for it back (put it in again within five minutes). Lines to send back: every
+   `[MAC] IO Test:` line, and the `bus waits` lines of the minute when the floppy was busy, e.g.
+
+        [MAC] IO Test: MACFILE read back at once: 65536 bytes, CRC-32 ..., every byte as written, in N ticks
+        [PSMAC]   bus waits, speaker quiet, the IWM: ... the longest X us (C of the service core's own cycles before it, at most M) ...
+
+   "at most M" should be 0 or 1 for the IWM. If the floppy is "unreadable", the IO Test's
+   `block 0 from the .Sony driver: result ...` line names the error.
+3. Rename the program "IO Test Sound" and repeat: the same with the speaker playing a tone (the
+   `speaker playing, the IWM` line).
+4. The modem port, with a Mac-to-PC serial cable to a computer running a terminal at 9600 8N1: rename the
+   program "IO Test NoFloppy 9600". The terminal should show `A68SER  9600 BEGIN`, 4096 bytes and
+   `A68SER END`, and the Mac then waits a minute for 4096 bytes back. For a byte-for-byte check on both
+   sides run `tools/iotest_host.py --port 6809` there with a TCP-to-serial bridge such as `socat
+   TCP:127.0.0.1:6809 /dev/ttyUSB0,b9600,raw` (the script listens on TCP, as MAME's null modem connects
+   in the testbed). "IO Test NoFloppy 57600" for the higher speed, with the terminal at 57600.
+
 ## What to have ready
 
 - The release zip's SD card layout as it is (0.2): `kernel8.img`, `config.txt`, `cmdline.txt`,

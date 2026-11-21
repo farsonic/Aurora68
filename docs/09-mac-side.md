@@ -142,6 +142,22 @@ saved reports are TeachText documents as before.
 - `tools/vcshot.py`: a picture of the Pi's VideoCore display in the testbed (QEMU's emulated frame buffer, through the monitor socket): the second display (docs/10).
 - `tools/pinet.py`: host peer for the testbed net service (answers ARP, ICMP echo and UDP echo on port 7, or bridges to a TAP).
 
+## Aurora68 IO Test: the floppy and the modem port (22 November 2026)
+
+`mac/iotest/` (`make -C mac iotest`, `build/Aurora68-IOTest.bin`; a test program, not in the release's
+layout), written for docs/08 item 93. Put it in Startup Items. It waits for a volume named **Floppy**,
+reads HOSTFILE from it if there is one, writes MACFILE (64 KiB, byte i = ((i·37 + 11) xor (i >> 8)) & 255),
+reads it back and compares, unmounts and ejects the disk, waits for it to come back and compares again;
+if no Floppy mounts within a minute it reads blocks 0 and 2 from the .Sony driver and logs the result
+code. Then it opens .AOut/.AIn at the speed in its own name (rename it "IO Test 57600"; 9600 by default),
+sends a line `A68SER <speed> BEGIN`, 4096 bytes of the same pattern and `A68SER END`, and reads 4096 bytes
+for up to a minute, expecting byte i = ((i·13 + 5) xor (i >> 7)) & 255. "NoFloppy" or "NoSerial" in its
+name leaves a part out; "Sound" plays a tone through the Sound Manager while it works. Every result is a
+`[MAC] IO Test:` line in the kernel's log (byte counts, CRC-32s, result codes, the serial driver's error
+flags). The far end of the line in the testbed is `tools/iotest_host.py` with MAME's null modem in the slot
+called `printer`, which is SCC channel A, the Mac's modem port. Its own glue (`iotest/glue.s`) carries the
+register-based File Manager, Device Manager and Sound Manager calls.
+
 ## Workflow in the testbed
 ```
 make -C mac                                        # drivers, extension, app, declaration ROM

@@ -3545,6 +3545,123 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    - The review's other points went to the floppy and serial work (item 93): the IWM's timing against
      the speaker refill's 185 byte writes, and evidence that floppy and serial work at all.
 
+93. **The SE's floppy, its modem port and the IWM's waits behind the speaker (21-22 November).** An outside
+   review of the SE board (item 92 took its other findings) asked for evidence that the 800K floppy (the
+   SE's IWM) and the serial ports (its SCC) work through the board layer, and named a risk: "Its
+   bus-owning core can also perform 185 consecutive speaker-buffer byte writes without checking for a new
+   CPU request inside that loop. That creates a plausible delay between IWM polls. Capture worst-case poll
+   gaps with sound on and off." The owner cannot try either on the SE yet. Everything below is MAME's
+   `macse_ps` (System 7.1 from the card's image as `mac.disk0=`, `mac.boot=image`, 32 MiB,
+   `mac.rtcsim=dead`, `psmac-512x342.declrom`).
+   - *A test program:* **Aurora68 IO Test** (`mac/iotest/`, `make -C mac iotest`; not in the release). Put
+     in Startup Items it waits for a volume named Floppy, reads HOSTFILE (put there on the host), writes
+     MACFILE (64 KiB of a fixed pattern), flushes, reads it back byte for byte, unmounts, ejects, waits for
+     the disk to come back and compares again; then opens .AOut/.AIn at the speed in its own name (9600 when
+     there is none), sends "A68SER <speed> BEGIN", 4096 bytes of a pattern and "A68SER END", and reads 4096
+     bytes of a second pattern for up to a minute. Every step is a `[MAC] IO Test:` line with byte counts,
+     CRC-32s, result codes and the driver's error flags; if the disk does not mount it reads blocks 0 and 2
+     from the .Sony driver itself and logs the result code. "Sound" in its name plays a 50 s tone through
+     the Sound Manager (again every 40 s while it waits), so the speaker's buffer is refilled while the IWM
+     works. `tools/iotest_host.py` is the far end of the serial line in the testbed.
+   - *The floppy drive was never selected* (psmac_board_se.c, `via_data`). With an 819,200-byte HFS image
+     in MAME's internal drive the Mac never saw a disk: 157 IWM accesses at boot, then 20 every five
+     seconds (the Sony driver's look for a disk), the desktop without a floppy. A tap on MAME's bus
+     (Lua, `install_read_tap`/`install_write_tap` on $DFE000-$DFFFFF and the VIA's port A) showed why: the
+     ROM's floppy driver, as it starts, writes DDRA with bit 4 clear (`$6F` on the wire), and on the SE port
+     A bit 4 is vDriveSel, the choice between the two *internal* drives. A pin the 6522 does not drive is
+     left to the TTL input it feeds, which floats high; MAME's 6522 presents it as 1, and `devsel_se_w`
+     then connects no drive at all: every sense read came back 1, "no drive". On the IIci bit 4 is the
+     overlay, an input after the boot (item 69 reads it for the parity question), so the ROM has no reason
+     to drive it. The user's SE read that bit as 1 on one start (item 69), so the same is expected there.
+     The board layer now drives bit 4 as an output at 0 on the wire, as it already drove bit 6 (the screen
+     buffer); what the ROM reads back is unchanged (item 69's rule for an input bit 4 still applies). The
+     second internal drive of a two-drive SE is not reachable (the IIci ROM knows of one internal drive
+     and an external one, chosen by the IWM's SELECT line).
+   - *After the fix* the drive answers: the sense lines (disk in place, ready after two index pulses),
+     the motor, steps, and the IWM's data register, 12,000-16,000 IWM accesses every five seconds while the
+     Mac reads. The Start Manager reads the disk at boot and ejects it (not a startup disk), and the Finder
+     tries to mount it. It ends in "This disk is unreadable: Do you want to initialize it?".
+   - *Why the testbed cannot read a floppy as it is.* MAME's emulated time is pinned to the wall clock
+     (docs/06), the disk turns in emulated time, and a bridged cycle costs 45-450 us of wall clock under
+     QEMU's semihosting: the tap's timestamps show the ROM's read loop sampling the data register every
+     60-200 us, while a GCR byte lasts 16 us. The driver sees one byte in five or ten. The bridge now has a
+     time divisor (`PSMAC_BRIDGE_TDIV`, the state register `TDIV`; reference/mame-psmac.patch, docs/06), and
+     `mame/floppy.lua` slows emulated time by 64 while the IWM moves data. With it the reads are whole:
+     address fields `D5 AA 96 96 9A 96 D9 D6 DE AA` (track 0, sector 2, side 0, format $22: two sides,
+     2:1 interleave; checksum $20, the four exclusive-ored), data fields of `96`s (zeros) ending in `DE
+     AA`, sync `FF`s, at the IWM's 16 us a byte. The mount still failed. The IO Test's own reads from the .Sony driver
+     (the disk put in at 115 s, after the Finder had started the program; divisor 64): block 0 came back
+     whole (result 0, 512 bytes, the zeros of a disk that is not a startup disk) in 134 ticks; block 2
+     came back with -72, badDCksum, the data field's checksum wrong, with the buffer already holding the
+     master directory block's signature `BD` and creation date (`4244E727`). So the bytes arrive and
+     decode, and now and then one is lost: under QEMU a bridged cycle is held back 5-15 ms now and then by
+     QEMU's own scheduling of its virtual cores (the bus-wait figures below), still 80-230 us of emulated
+     time at 1/64, ten GCR bytes or more. A divisor that covered those would stretch a boot to hours. In
+     the testbed the floppy is shown through the board layer as far as sectors read from the disk, not as
+     a mounted volume.
+   - *Not shown in the testbed:* a file written and read back on the floppy, eject and reinsert, and a boot
+     from a floppy (no System 6.0.8 floppy among this machine's test assets). The IWM's write path was never
+     reached, so MACFILE never existed for `hcopy` on the host (MAME writes the image back on an eject,
+     `call_unload`, which the test relied on).
+   - *Serial.* MAME's SE (and IIci) machines wire SCC channel A, the Mac's modem port (.AIn/.AOut), to
+     the slot named `printer`, channel B to `modem`: `-printer null_modem -bitb socket.127.0.0.1:PORT` is
+     the modem port. With nothing attached to channel A the IO Test's write at 9600 completed: 4096 bytes
+     and the two lines, CRC-32 a4574272, in 454 ticks (7.6 s; the line itself needs 4.3 s). With MAME's null
+     modem there (which asserts CTS, DCD and DSR) the write never completed at 9600 or 57600 (at 9600 the
+     Mac took no level-4, SCC, interrupt in the whole run), and what reached the host was not the data: at
+     the null modem's 57600 the bytes were `00` and `E0` (each one bit of a slower line, as a receiver at
+     the wrong speed sees it); at 9600 a descending run `FE FD FC ...` of 255 bytes, the same in the
+     `modem` slot as in `printer`, so not the test's. With MAME's RS-232 loopback in the slot instead (transmit back to receive) the write completed far too fast for the line: the 4132 bytes
+     in 144 ticks at 9600 (2.4 s; the line needs 4.3 s) and in 4 ticks at 57600 (it needs 0.72 s), and the
+     Mac got back 2064 of them at 9600 and 6 at 57600, with no error flag from the driver (the 2064 match no
+     simple part of what was sent: not the first half, not every other byte). So in this testbed the SCC
+     moves bytes in both directions, but at a speed that is not the one asked for, and the far end cannot
+     decode them. A guess, not checked: MAME's `macse_ps` gives the SCC no TRxC clock (`configure_channels(
+     C3_7M, 0, C3_7M, 0)`, as mac128.cpp's SE) where its `maciici` gives 3.6864 MHz on all four clock pins,
+     and the IIci ROM's serial driver may take a different clock source from the SE ROM's. Serial is not
+     shown working, in either direction, at either speed; the SE itself is the place to find out.
+   - *The poll gaps.* `mac.buswait=1` (psmac_bus.c, `bw_report`): core 0 notes when it posts each request
+     and how many cycles the wire had seen; the service core, as it takes the request, files the wait and
+     the number of its own cycles that went out in between, by whether the SE's speaker is playing
+     (`psmac_se_speaker_busy`), for every request and for the IWM's alone, and the heartbeat prints each
+     five seconds' half, 99 % and 99.9 % (half-octave steps) and the longest since the start. Under QEMU
+     the microseconds are mostly QEMU's own scheduling of its four virtual cores (waits of 5-15 ms with
+     *no* cycle of the service core's in front of them); the cycle count is the figure that carries to the
+     GPIO, where one byte write is a microsecond or two (item 71).
+     The old refill (the same kernel with `psmac_serve_waiting` returning at once; System 7.1 with the
+     chime, then the IO Test's tone; 400 s): with the speaker playing, up to **188** of the service core's
+     own cycles went out in front of a request of the Mac's (185 of a half, the VBL poll, the VIA's speaker
+     bits), up to **174** in front of an IWM access (134 of them came while it played); with the speaker quiet up to **160** (113 in front of
+     an IWM access): the SE's screen rows, four of 32 words a call, have the same shape. On the GPIO that is
+     some 0.2-0.4 ms, a dozen to two dozen GCR bytes: enough to lose a sector being read, and for a write,
+     where the IWM must have its next byte within 16 us, an underrun. With `mac.sesound=off` and
+     the old kernel (300 s): at most **128** in front of a request (four rows of 32 words), at most 1 in front
+     of any of 107,668 IWM accesses, whose bursts happened not to meet a screen update in that run; in the
+     sound run above one did, 113 cycles of rows in front of an IWM access.
+   - *The fix* (psmac_bus.c `psmac_serve_waiting`, psmac_board_se.c). The request hand-off of the service
+     loop is now a function of its own (`serve_request`), and the speaker's 185 byte writes and the screen
+     rows' 32 word writes call `psmac_serve_waiting` after each one: a request that has come is carried out
+     there and then, between two of the errand's cycles. The 68000's bus has no notion of who asked, and
+     the two never touch the same addresses (the speaker and screen buffers are the kernel's part of the
+     SE's RAM). serve_request does not call back into the speaker, so the errands cannot nest. On the
+     GPIO a half with the Mac polling flat out now takes up to twice as long (one cycle of the Mac's per
+     byte), well inside the quarter frame (4 ms) it has. The same run with the new kernel (400 s): with
+     the speaker playing at most **4** of its own cycles in front of a request in all but two windows (22
+     and 11 once each, during the startup chime), at most **1** in front of any of 335 IWM accesses; with
+     the speaker quiet at most 1 in front of an IWM access (97,249 of them) and 33 once in front of any
+     request, the one-time read-back of screen rows 0 and 100 (item 68), which stays as it was. The
+     speaker's report line, old against new: halves noticed late 21 % against 12 %; underruns (the FIFO
+     empty inside a sound) 0.37 against 1.2 million, with 2.8 against 4.0 million samples played. The
+     underruns are the testbed's FIFO pacing over the bridge (item 71: they were there before, and the
+     two runs played different amounts); they need the hardware's figures to be judged. A half now takes
+     up to 14.7 ms there (4.2 ms before): each cycle of the Mac's let
+     in is a semihosting round trip under QEMU; on the GPIO the 185 cycles at most let in add a third of a
+     millisecond to the 0.3 ms a half takes. The kernel as merged with items 94-97, once more (240 s, the chime and
+     the tone): the Finder at 95.8 s, at most 4 cycles in front of any of 422,376 requests with the
+     speaker playing, at most 1 in front of an IWM access.
+   - *Not verified:* anything on the real SE: the floppy through the PiStorm's GPIO (now that the drive is
+     selected), the IWM's timing there with and without sound, writes, serial at any speed.
+
 94. **No IPv6 station would play on the SE (21 November).** The owner: "can't connect to any IPv6 radio in
    Aurora68 Play". The only stations with IPv6 are NPO's, at icecast.omroep.nl. The streams still answer
    plain HTTP; the name is a CNAME to icecast.npocloud.nl, which has eight or more AAAA records beside its

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **The SE's internal floppy drive is selected.** The IIci ROM's floppy driver leaves VIA port A bit 4
+  undriven, and on the SE that bit chooses between the two internal drives: left floating it chose the
+  second one, which hardly any SE has, so the internal floppy was never seen (in the testbed: no disk,
+  whatever was inserted). The kernel now drives that bit low on the SE. External drives are unaffected.
+- **The speaker no longer holds up the Mac's bus cycles.** While the SE's speaker buffer (185 bytes a
+  half) or a screen row (32 words) is being written, a cycle the Mac asks for now goes out between two of
+  those writes instead of after all of them: the floppy driver polls the IWM every 16 us, and the old
+  order could keep it waiting a third of a millisecond. `mac.buswait=1` prints, every five seconds, how
+  long the Mac's cycles waited and how many of the kernel's own went out in front of them, with sound
+  playing and without (docs/08 item 93).
+- **Aurora68 IO Test** (a test program, not in the release's folders: `make -C mac iotest`): writes and
+  reads back a file on a floppy named Floppy, ejects it, checks it again after reinsertion, and sends and
+  receives 4096 bytes on the modem port, all reported in the kernel's log.
 - **Aurora68 Play: IPv6 through Riptide's .IPP6.** With a Riptide that has the new `.IPP6` interface
   (Riptide's `mac-port` branch from f592402: install its "Riptide" extension too), Aurora68 Play looks
   stations up with Riptide's own resolver, tries their IPv6 addresses first and then the IPv4 ones, and

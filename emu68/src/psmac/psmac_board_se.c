@@ -55,6 +55,7 @@ uint32_t psmac_se_fb_base(void) { return se_ram_size() - 0x5900; }   /* the main
 /* the transport, as the bus layer exposes it to this file (psmac_bus.c) */
 uint32_t psmac_wire_read(uint32_t addr, int size);
 void psmac_wire_write(uint32_t addr, int size, uint32_t data, int posted);
+void psmac_serve_waiting(void);                  /* the 68k's request, if one is waiting: between the cycles of a long errand */
 
 /* ---- the chips the SE does not have: a pseudo-VIA (RBV), an ASC, a VDAC ------------------- */
 static uint8_t rbv_regs[256], rbv_ifr, rbv_ier;   /* MAME's rbv.cpp is the model: IFR/IER with the bit-7 set/clear convention */
@@ -227,8 +228,13 @@ static void asc_write(uint32_t off, uint8_t data)
    Port A on the IIci: 7 SCC wait/request, 6 (unused), 5 floppy head select, 4 overlay, 3 sync
    modem, 2-0 unused. On the SE: 7 SCC wait/request, 6 screen buffer (1 = main), 5 head select,
    4 floppy drive select (0 = internal), 3 unused, 2-0 speaker volume. Bit 6 is forced to 1 so the
-   SE scans out its main buffer whatever the ROM wrote; the ROM's clearing of the overlay (bit 4)
-   selects the internal drives, which is what we want. Port B is the same on both (RTC on 0-2,
+   SE scans out its main buffer whatever the ROM wrote. Bit 4 is forced to an output at 0, the
+   SE's internal drive: as its floppy driver starts, the ROM writes DDRA with bit 4 clear ($6F
+   reached the wire), and a pin the 6522 does not drive is left to the logic it feeds, a TTL input
+   that floats high (MAME's 6522 presents it as 1); high selects the SE's second internal drive
+   (vDriveSel), absent from nearly every SE, and the internal floppy was never seen (docs/08 item
+   93). The IIci ROM knows nothing of a second internal drive, so it is not reachable; the
+   external drive is, by the IWM's own SELECT line. Port B is the same on both (RTC on 0-2,
    ADB interrupt 3, ADB state 4-5, sound enable 7) except bit 6: the SE's SCSI interrupt enable,
    active low; it is forced to 1, so the 5380's interrupt never reaches the 68000's level 2, which
    the IIci ROM would take for its RBV. The data-direction registers get the same bits set so
@@ -238,7 +244,8 @@ static uint32_t via_data(uint32_t reg, uint32_t data)
 {
     switch (reg) {
     case 0: case 2: return data | 0x40;                /* ORB / DDRB */
-    case 1: case 3: case 15: return data | 0x40;       /* ORA / DDRA / ORA without handshake */
+    case 1: case 15: return (data | 0x40) & ~0x10u;    /* ORA / ORA without handshake: the main screen, the internal drive */
+    case 3: return data | 0x50;                        /* DDRA: both of those driven */
     default: return data;
     }
 }
@@ -884,7 +891,9 @@ unsigned psmac_se_ipl(unsigned raw)
      cycles, as the screen's rows are: whenever the SE's play position crosses into one half, the
      other half gets the next 185 samples, so a word is always written about a quarter to three
      quarters of a frame before it is played and never while it is. Byte writes to the even
-     addresses: the high bytes only.
+     addresses: the high bytes only. A cycle the Mac asks for while a half is being written goes
+     out between two of its bytes (psmac_serve_waiting, 21 November): before, it waited for all
+     185, a third of a millisecond on the GPIO, twenty GCR bytes of a floppy (docs/08 item 93).
    - The play position comes from the SE's vertical blanking, the VIA's CA1 flag, which the service
      core reads every millisecond while sound plays (a read of the IFR has no side effects). The VBL
      starts at word 342 (MAME's screen: the first line of vertical blanking); the frame's length is
@@ -1037,7 +1046,12 @@ static void snd_service(void)
             if (snd.half >= 0 && (pos % SND_HALF) > SND_HALF / 2) snd.late++;   /* noticed late: less than a quarter frame to write it in */
             snd.half = half;
             uint32_t dst = snd_base() + 2 * (half ? 0 : SND_HALF);
-            for (uint32_t i = 0; i < SND_HALF; i++) psmac_wire_write(dst + 2 * i, 1, snd_next(), 1);
+            /* a request of the Mac's that comes meanwhile goes between two bytes, not after the 185th
+               (docs/08 item 93): the floppy driver polls the IWM a byte every 16 us */
+            for (uint32_t i = 0; i < SND_HALF; i++) {
+                psmac_wire_write(dst + 2 * i, 1, snd_next(), 1);
+                psmac_serve_waiting();
+            }
             uint32_t us = (uint32_t)((asc_now() - now) * 1000000u / hz);
             if (us > snd.half_us_max) snd.half_us_max = us;
             snd.halves++; snd.edge_halves++;
@@ -1053,6 +1067,8 @@ static void snd_service(void)
 /* the service core, between the Mac's requests as well as when it has none (psmac_bus.c): a check of
    the time and the rings when nothing is due */
 void psmac_se_sound(void) { if (psmac_board_se && !psmac_board_solo) snd_service(); }
+/* mac.buswait's figures (psmac_bus.c) are filed by this: a sound is playing and its halves are being written */
+int psmac_se_speaker_busy(void) { return psmac_board_se && !psmac_board_solo && !snd_off && snd.active; }
 
 /* ---- the SE's screen -------------------------------------------------------------------------
    The slot-9 card's frame (psmac_display.c) is 512 by 342 here, one bit a pixel, 64 bytes a row,
@@ -1116,7 +1132,10 @@ void psmac_se_service(void)
         if (y < 0) return;
         const uint16_t *src = (const uint16_t *)(shadow + y * SE_ROWBYTES);
         uint32_t dst = psmac_se_fb_base() + y * SE_ROWBYTES;
-        for (int i = 0; i < SE_ROWBYTES / 2; i++) psmac_wire_write(dst + 2 * i, 2, src[i], 1);
+        for (int i = 0; i < SE_ROWBYTES / 2; i++) {
+            psmac_wire_write(dst + 2 * i, 2, src[i], 1);
+            psmac_serve_waiting();                /* the Mac's own cycles between the words, as for the speaker */
+        }
         rows_sent++;
         if (y == 0 || y == 100) se_first_rows_check(y);
     }
