@@ -58,11 +58,15 @@
  * What the Mac is offered. System 7 reads HFS: a stick that is a bare HFS volume (the signature
  * 'BD' in its block 2) is offered whole; one with an Apple partition map, like the card's images,
  * as its first Apple_HFS partition; an MBR or GPT disk whose HFS partition really holds HFS
- * likewise. FAT, exFAT, NTFS, HFS Plus and blank sticks are not offered, so the Finder never asks to
- * initialize a stick of the user's PC; the log says what the stick holds and why it was not
- * offered. mac.usbdisk=all offers them anyway, as the whole stick (its first 2 GB, which is what
- * HFS on System 7 reaches): for a Mac with PC Exchange, or to initialize a stick on the Mac.
- * mac.usbdisk=off leaves sticks alone.
+ * likewise. NTFS, HFS Plus and blank sticks are not offered, so the Finder never asks to initialize
+ * a stick of the user's PC; the log says what the stick holds and why it was not offered.
+ * mac.usbdisk=all offers them anyway, as the whole stick (its first 2 GB, which is what HFS on System 7
+ * reaches): for a Mac with PC Exchange, or to initialize a stick on the Mac. mac.usbdisk=off leaves
+ * sticks alone. Since 21 November 2026 (issue #20) a FAT or exFAT stick, what Windows, Linux and a modern
+ * Mac write, is read with psmac_fatfs.c: every HFS disk image in its root (.image, .dsk, .hda, .img,
+ * .hfv) is a volume of its own, read and written in place in the file's clusters, as the card's images
+ * are. Writing inside an image changes no FAT, no directory and no size, so it cannot damage the stick's
+ * file system.
  *
  * Writes. Nothing is cached here: a write job ends when the stick's CSW says the WRITE(10) is done,
  * and the Mac's write call returns after that. A stick may keep the data in its own RAM for a
@@ -78,7 +82,9 @@
 #include "mmu.h"
 #include "../alice/alice_psmac.h"
 #include "psmb.h"
+#include "tlsf.h"
 #include "psmac_usbdisk.h"
+#include "psmac_fatfs.h"
 
 const char *psmac_option(const char *key);
 extern int psmac_audio_poll(void);
@@ -382,6 +388,8 @@ struct unit {
     int dirty, no_sync, removable, said_nomedium, sync_fails;   /* sync_fails: SYNCHRONIZE CACHEs in a row that failed */
     uint8_t key, asc, ascq;                     /* the last CHECK CONDITION's sense */
     uint32_t reads, writes, rblocks, wblocks, errors, resets;
+    uint32_t gen;                               /* moves at each bring-up: its volumes are taken afresh (vol_take) */
+    struct fx_vol *fx;                          /* a FAT or exFAT stick: its file system (psmac_fatfs.c) */
 };
 static struct unit U[USBDISK_UNITS];
 static uint32_t seen_last;                      /* sticks found in the last enumeration (psmac_usb.c's retries) */
@@ -389,30 +397,97 @@ static uint32_t seen_last;                      /* sticks found in the last enum
 /* the published state (core 1 writes, core 3 reads with the sequence count) */
 static struct pub { volatile uint32_t seq; struct usbdisk_info i; } P[USBDISK_UNITS];
 static volatile uint32_t changes;
-static void publish(int n, int present, int new_medium)
+/* What the Mac is offered of a stick: its volumes (21 November 2026, issue #20). Until then a stick was
+   one PiDisk unit, the whole stick or its HFS partition. A FAT or exFAT stick can carry several disk images
+   (.image, .dsk, .hda, .img, .hfv, as the card's), each a PiDisk unit of its own, read and written in place
+   in the file's clusters. The published slots P[] and the job slot are numbered by volume, so psmac_mbox.c
+   sees volumes where it saw sticks; four in all, as PiDisk has four units. */
+enum { VK_RAW, VK_IMAGE };
+struct run { uint32_t clus, n; };
+struct vol {
+    int used, unit, kind, present;              /* present: offered and not ejected */
+    uint32_t gen, first, count;                 /* RAW: blocks of the stick; IMAGE: blocks of the image file */
+    struct run *runs; uint32_t nruns;           /* IMAGE: the file's clusters */
+    char name[48];
+};
+static struct vol V[USBDISK_UNITS];
+static void *mem(uint32_t n)
 {
-    struct pub *p = &P[n];
-    struct unit *u = &U[n];
+    /* the kernel's heap is shared with everything on the Pi: 8 MB are always left to the rest */
+    if (tlsf_get_free_size(tlsf) < (uintptr_t)n + (8u << 20))
+        return 0;
+    return tlsf_malloc_aligned(tlsf, n ? n : 4, 64);
+}
+static void mem_free(void *p)
+{
+    if (p)
+        tlsf_free(tlsf, p);
+}
+static void pub_slot(int s, int present, int new_medium)
+{
+    struct pub *p = &P[s];
+    const struct vol *v = &V[s];
+    const struct unit *u = &U[v->unit];
     __atomic_store_n(&p->seq, p->seq + 1, __ATOMIC_RELAXED);
     __asm__ volatile("dmb ish" ::: "memory");
     p->i.present = (uint32_t)present;
-    p->i.blocks = u->count;
+    p->i.blocks = v->count;
     p->i.writable = u->writable;
     if (new_medium)
         p->i.media++;
-    {
-        char *s = p->i.name;
-        unsigned k = 0;
-        const char *a = "USB ", *v = u->prod[0] ? u->prod : u->product;
-        while (*a && k < sizeof p->i.name - 1)
-            s[k++] = *a++;
-        while (*v && k < sizeof p->i.name - 1)
-            s[k++] = *v++;
-        s[k] = 0;
-    }
+    memcpy(p->i.name, v->name, sizeof p->i.name);
     __asm__ volatile("dmb ish" ::: "memory");
     __atomic_store_n(&p->seq, p->seq + 1, __ATOMIC_RELEASE);
     __atomic_store_n(&changes, changes + 1, __ATOMIC_RELEASE);
+}
+/* every volume of stick n: present (if it is offered and not ejected) or not */
+static void publish(int n, int present, int new_medium)
+{
+    for (int s = 0; s < USBDISK_UNITS; s++)
+        if (V[s].used && V[s].unit == n)
+            pub_slot(s, present && V[s].present, new_medium);
+}
+/* a slot for a volume of stick n: one it had before this bring-up first (the Mac keeps the drive), else a
+   free one; -1 when PiDisk's units are all taken */
+static int vol_take(int n, int kind)
+{
+    int s = -1;
+    for (int k = 0; k < USBDISK_UNITS && s < 0; k++)
+        if (V[k].used && V[k].unit == n && V[k].gen != U[n].gen)
+            s = k;
+    for (int k = 0; k < USBDISK_UNITS && s < 0; k++)
+        if (!V[k].used)
+            s = k;
+    if (s < 0)
+        return -1;
+    struct vol *v = &V[s];
+    mem_free(v->runs);
+    memset(v, 0, sizeof *v);
+    v->used = 1; v->unit = n; v->kind = kind; v->gen = U[n].gen;
+    return s;
+}
+/* a stick's volumes that this bring-up did not offer again (all: every one, the stick is gone): gone
+   from the Mac, their slots free */
+static void vol_drop(int n, int all)
+{
+    for (int s = 0; s < USBDISK_UNITS; s++) {
+        struct vol *v = &V[s];
+        if (!v->used || v->unit != n || (!all && v->gen == U[n].gen))
+            continue;
+        if (P[s].i.present)
+            pub_slot(s, 0, 0);
+        mem_free(v->runs);
+        memset(v, 0, sizeof *v);
+    }
+}
+static void vol_name(struct vol *v, const char *a, const char *b)
+{
+    unsigned k = 0;
+    while (*a && k < sizeof v->name - 1)
+        v->name[k++] = *a++;
+    while (b && *b && k < sizeof v->name - 1)
+        v->name[k++] = *b++;
+    v->name[k] = 0;
 }
 uint32_t psmac_usbdisk_changes(void) { return __atomic_load_n(&changes, __ATOMIC_ACQUIRE); }
 int psmac_usbdisk_info(int n, struct usbdisk_info *out)
@@ -426,6 +501,7 @@ int psmac_usbdisk_info(int n, struct usbdisk_info *out)
     __asm__ volatile("dmb ish" ::: "memory");
     return __atomic_load_n(&P[n].seq, __ATOMIC_ACQUIRE) == s1;
 }
+static const char *uname(const struct unit *u);
 int psmac_usbdisk_owns(unsigned addr)
 {
     for (int n = 0; n < USBDISK_UNITS; n++)
@@ -753,6 +829,9 @@ static void gone(int n)
         u->state = U_GONE;
     u->dirty = 0;
     u->again = 0;
+    vol_drop(n, 1);
+    mem_free(u->fx);
+    u->fx = 0;
 }
 
 /* psmac_usb.c, core 1, after every enumeration (and once at start), before core 3 is let back onto
@@ -837,8 +916,220 @@ static void hfs_name(const uint8_t *mdb, char *out)
 }
 #define HFS_MAX_BLOCKS 4194304u                 /* 2 GB: the largest HFS volume System 7 knows */
 
+/* ---- FAT and exFAT sticks (issue #20) -------------------------------------------------------------- */
+static int32_t phys_rw(struct unit *u, int n, int write, uint32_t lba, uint32_t count, uint8_t *buf);
+static uint32_t dev_max_blocks(const struct dev *d);
+/* psmac_fatfs.c's sectors: through phys_rw, in pieces the stick's bus takes, into the caller's buffer
+   (64-byte aligned, as the DMA wants; any other through pbuf) */
+static int usb_fx_read(void *ctx, uint32_t lba, uint32_t cnt, uint8_t *buf)
+{
+    struct unit *u = ctx;
+    int n = (int)(u - U);
+    uint32_t max = dev_max_blocks(&u->d);
+    while (cnt) {
+        uint32_t k = cnt < max ? cnt : max;
+        uint8_t *dst = ((uintptr_t)buf & 63u) ? pbuf : buf;
+        if (dst == pbuf && k > sizeof pbuf / 512u)
+            k = sizeof pbuf / 512u;
+        if (phys_rw(u, n, 0, lba, k, dst))
+            return -1;
+        if (dst != buf)
+            memcpy(buf, pbuf, k * 512u);
+        buf += k * 512u;
+        lba += k;
+        cnt -= k;
+    }
+    return 0;
+}
+/* blocks [b, b + count) of a file whose clusters are runs, read or written in place */
+static int32_t runs_rw(struct unit *u, int n, const struct run *runs, uint32_t nruns, int write, uint32_t b, uint32_t count, uint8_t *buf)
+{
+    uint32_t spc = u->fx->spc;
+    while (count) {
+        uint32_t ci = b / spc, in = b % spc, k, plba = 0, avail = 0;
+        for (k = 0; k < nruns; k++) {
+            if (ci < runs[k].n) {
+                plba = fx_clus_lba(u->fx, runs[k].clus + ci) + in;
+                avail = (runs[k].n - ci) * spc - in;
+                break;
+            }
+            ci -= runs[k].n;
+        }
+        if (k == nruns)
+            return PSMB_E_RANGE;
+        uint32_t m = count < avail ? count : avail;
+        int32_t r = phys_rw(u, n, write, plba, m, buf);
+        if (r)
+            return r;
+        buf += m * 512u;
+        b += m;
+        count -= m;
+    }
+    return 0;
+}
+static void ascii16(char *out, unsigned max, const uint16_t *s, int n)
+{
+    unsigned k = 0;
+    for (int i = 0; i < n && k < max - 1; i++)
+        out[k++] = s[i] >= 32 && s[i] < 127 ? (char)s[i] : '?';
+    out[k] = 0;
+}
+/* the stick's FAT or exFAT volume, found and mounted: 1, or 0 when it has none */
+static int fat_mount(struct unit *u, int n)
+{
+    uint32_t lba;
+    int type;
+    const char *what;
+    if (!u->fx)
+        u->fx = mem(sizeof *u->fx);
+    if (!u->fx) {
+        kprintf("[USB] disk %d: no memory to read its FAT\n", n);
+        return 0;
+    }
+    if (!fx_probe(usb_fx_read, u, u->dev_blocks, u->fx, &lba, &type, &what)) {
+        mem_free(u->fx);
+        u->fx = 0;
+        return 0;
+    }
+    int e = fx_mount(u->fx, usb_fx_read, u, lba);
+    if (e) {
+        kprintf("[USB] disk %d: %s %s at block %u, but its boot sector does not make sense (%d)\n", n, fx_type_name(type), what, lba, e);
+        mem_free(u->fx);
+        u->fx = 0;
+        return 0;
+    }
+    char lab[16];
+    ascii16(lab, sizeof lab, u->fx->label, u->fx->label_len);
+    kprintf("[USB] disk %d: %s %s at block %u, %u clusters of %u KB%s%s%s\n", n, fx_type_name(u->fx->type), what, lba, u->fx->clusters,
+            u->fx->spc / 2u, lab[0] ? ", label \"" : "", lab, lab[0] ? "\"" : "");
+    return 1;
+}
+static int ends16(const struct fx_dirent *e, const char *x)
+{
+    int m = (int)strlen(x);
+    if (e->nlen <= m)
+        return 0;
+    for (int i = 0; i < m; i++)
+        if ((e->name[e->nlen - m + i] | 0x20) != (uint8_t)x[i])
+            return 0;
+    return 1;
+}
+static int is_image16(const struct fx_dirent *e)
+{
+    if (e->attr & FX_ATTR_DIR || e->size < 65536u || e->size >= 0x100000000ull || (e->nlen > 1 && e->name[0] == '.'))
+        return 0;
+    return ends16(e, ".image") || ends16(e, ".dsk") || ends16(e, ".hda") || ends16(e, ".img") || ends16(e, ".hfv");
+}
+static struct run *runs_tmp; static uint32_t runs_tmp_n;
+static int runs_add(void *arg, uint32_t c, uint32_t k)
+{
+    (void)arg;
+    if (runs_tmp_n >= 256)
+        return -1;                              /* more pieces than a disk image should be in */
+    runs_tmp[runs_tmp_n].clus = c;
+    runs_tmp[runs_tmp_n++].n = k;
+    return 0;
+}
+/* an image file on the stick, if it holds HFS: what of it the Mac is given (a bare HFS image whole, an
+   Apple-partitioned one its first Apple_HFS partition, as the card's images): 1, or 0 */
+static int image_hfs(struct unit *u, int n, const struct run *r, uint32_t nr, uint32_t blocks, uint32_t *first, uint32_t *count, char *vname)
+{
+    uint32_t have = blocks < 64 ? blocks : 64;
+    if (runs_rw(u, n, r, nr, 0, 0, have, pbuf))
+        return 0;
+    const uint8_t *b = pbuf;
+    *first = 0;
+    *count = blocks;
+    if (have >= 3 && b[0] == 'E' && b[1] == 'R' && b[512] == 'P' && b[513] == 'M') {
+        uint32_t entries = be32(b + 516), found = 0;
+        for (uint32_t i = 1; i <= entries && i < have && i <= 16 && !found; i++) {
+            const uint8_t *e = b + 512 * i;
+            char t[33];
+            if (e[0] != 'P' || e[1] != 'M')
+                break;
+            field(t, e + 48, 32);
+            uint32_t s0 = be32(e + 8), c0 = be32(e + 12);
+            if (!strcmp(t, "Apple_HFS") && c0 && s0 + c0 <= blocks) {
+                *first = s0;
+                *count = c0;
+                found = 1;
+            }
+        }
+        if (!found)
+            return 0;
+    }
+    if (runs_rw(u, n, r, nr, 0, *first + 2, 1, vbuf) || be16(vbuf) != 0x4244)
+        return 0;
+    hfs_name(vbuf, vname);
+    return 1;
+}
+/* A FAT or exFAT stick: every disk image in its root that holds HFS becomes a volume of its own, in
+   directory order, as many as PiDisk has units for. 1 when the Mac was offered something. */
+static int fat_offer(int n)
+{
+    struct unit *u = &U[n];
+    struct fx_dir *d = mem(sizeof *d);
+    struct fx_dirent *e = mem(sizeof *e);
+    int offered = 0;
+    runs_tmp = mem(256 * sizeof *runs_tmp);
+    if (!d || !e || !runs_tmp) {
+        kprintf("[USB] disk %d: no memory to read its root folder\n", n);
+        goto out;
+    }
+    fx_dir_open(d, u->fx, 0);
+    int r;
+    while ((r = fx_dir_next(d, e)) == 1) {
+        if (!is_image16(e))
+            continue;
+        char fname[40], vname[32];
+        uint32_t nc, first, count, blocks = (uint32_t)(e->size / 512u);
+        ascii16(fname, sizeof fname, e->name, e->nlen);
+        runs_tmp_n = 0;
+        if (fx_runs(u->fx, e->clus, e->size, e->contig, runs_add, 0, &nc)) {
+            kprintf("[USB] disk %d: disk image %s is in more than 256 pieces, or its chain is broken: not offered\n", n, fname);
+            continue;
+        }
+        if (!image_hfs(u, n, runs_tmp, runs_tmp_n, blocks, &first, &count, vname)) {
+            kprintf("[USB] disk %d: %s is not an HFS disk image: not offered\n", n, fname);
+            continue;
+        }
+        int s = vol_take(n, VK_IMAGE);
+        if (s < 0) {
+            kprintf("[USB] disk %d: disk image %s: all %d PiDisk units are taken\n", n, fname, USBDISK_UNITS);
+            break;
+        }
+        struct vol *v = &V[s];
+        v->runs = mem(runs_tmp_n * sizeof *v->runs);
+        if (!v->runs) {
+            kprintf("[USB] disk %d: no memory for disk image %s\n", n, fname);
+            vol_drop(n, 0);
+            v->used = 0;
+            break;
+        }
+        memcpy(v->runs, runs_tmp, runs_tmp_n * sizeof *v->runs);
+        v->nruns = runs_tmp_n;
+        v->first = first;
+        v->count = count;
+        v->present = 1;
+        vol_name(v, "USB ", fname);
+        kprintf("[USB] disk %d: disk image %s (%u MB, %u piece%s) holds the HFS volume \"%s\": offered to the Mac, %s\n", n, fname,
+                blocks / 2048u, runs_tmp_n, runs_tmp_n == 1 ? "" : "s", vname, u->writable ? "writable" : "read-only");
+        offered++;
+    }
+    if (r < 0)
+        kprintf("[USB] disk %d: its root folder could not be read to the end\n", n);
+out:
+    mem_free(d);
+    mem_free(e);
+    mem_free(runs_tmp);
+    runs_tmp = 0;
+    if (!offered)
+        kprintf("[USB] disk %d: no HFS disk image (.image, .dsk, .hda, .img, .hfv) in its root: nothing offered to the Mac\n", n);
+    return offered;
+}
+
 /* what the stick holds (its first 64 blocks are in pbuf); sets u->first and u->count; 1 when the
-   Mac is to be offered it */
+   Mac is to be offered it, 2 for a FAT or exFAT stick (mounted in u->fx: its disk images are offered) */
 static int classify(struct unit *u, int n, uint32_t have)
 {
     const uint8_t *b = pbuf;
@@ -947,6 +1238,8 @@ static int classify(struct unit *u, int n, uint32_t have)
         kprintf("[USB] disk %d: %s\n", n, blank ? "blank (its first blocks are all zero: no partition table, no volume)" :
                                                    "no partition table and no volume this kernel knows");
     }
+    if (mode != MODE_ALL && fat_mount(u, n))
+        return 2;                               /* FAT or exFAT: its disk images (fat_offer) */
     if (mode == MODE_ALL) {
         u->count = u->dev_blocks > HFS_MAX_BLOCKS ? HFS_MAX_BLOCKS : u->dev_blocks;
         kprintf("[USB] disk %d: offered to the Mac all the same (mac.usbdisk=all), as %s: the Finder may offer to initialize it, which erases it\n",
@@ -963,6 +1256,11 @@ static void bring_up(int n)
     static const uint8_t inq[6] = { 0x12, 0, 0, 0, 36, 0 }, tur[6] = { 0 };
     int r = -1, again = u->again;
     u->again = 0;
+    if (!again) {
+        u->gen++;                               /* its volumes are taken afresh (the same slots first) */
+        mem_free(u->fx);
+        u->fx = 0;
+    }
     for (int k = 0; k < 3 && r; k++) {
         r = scsi(u, inq, 6, 1, pbuf, 36, 2000);
         if (r)
@@ -1085,32 +1383,56 @@ static void bring_up(int n)
             publish(n, 0, 0);
         return;
     }
-    if (!classify(u, n, have)) {
+    int kind = classify(u, n, have);
+    if (!kind) {
         u->state = U_REFUSED;
         if (again)
             publish(n, 0, 0);
+        vol_drop(n, 0);
+        return;
+    }
+    if (kind == 2) {
+        u->said_nomedium = 0;
+        u->asked_reset = 0;
+        u->state = fat_offer(n) ? U_UP : U_REFUSED;
+        vol_drop(n, 0);
+        publish(n, 1, 1);
         return;
     }
     u->state = U_UP;
     u->said_nomedium = 0;
     u->asked_reset = 0;
+    int s = vol_take(n, VK_RAW);
+    if (s < 0) {
+        kprintf("[USB] disk %d: all %d PiDisk units are taken: not offered to the Mac\n", n, USBDISK_UNITS);
+        u->state = U_REFUSED;
+        return;
+    }
+    V[s].first = u->first;
+    V[s].count = u->count;
+    V[s].present = 1;
+    vol_name(&V[s], "USB ", uname(u));
+    vol_drop(n, 0);
     kprintf("[USB] disk %d: offered to the Mac: %u blocks (%u MB) from block %u, %s\n", n, u->count, u->count / 2048u, u->first,
             u->writable ? "writable" : "read-only");
-    publish(n, 1, 1);
+    pub_slot(s, 1, 1);
 }
 
 /* ---- the job slot ---------------------------------------------------------------------------------- */
 enum { J_IDLE, J_POSTED, J_RUNNING, J_DONE };
 static struct { volatile int state; int unit, op; uint32_t media, lba, count; int32_t status; } J;
 uint8_t *psmac_usbdisk_buffer(void) { return jbuf; }
-uint32_t psmac_usbdisk_max_blocks(int n)
+static uint32_t dev_max_blocks(const struct dev *d)
 {
-    if (n < 0 || n >= USBDISK_UNITS)
-        return 1;
-    const struct dev *d = &U[n].d;
     if (d->split)
         return 16;                                      /* 128 packets, one at a time: 8 KB */
     return d->mps >= 512 ? USBDISK_BUF / 512u : 64;     /* high speed: 128 packets; full: 512 (the channel takes 1023) */
+}
+uint32_t psmac_usbdisk_max_blocks(int s)
+{
+    if (s < 0 || s >= USBDISK_UNITS || !V[s].used)
+        return 1;
+    return dev_max_blocks(&U[V[s].unit].d);
 }
 int psmac_usbdisk_post(int n, uint32_t media, int op, uint32_t lba, uint32_t count)
 {
@@ -1133,16 +1455,16 @@ int psmac_usbdisk_result(int32_t *status)
     return 1;
 }
 
-static int32_t job_rw(struct unit *u, int n, int write)
+/* count blocks at the stick's block lba, with the class's recovery: 0 or PSMB_E_* */
+static int32_t phys_rw(struct unit *u, int n, int write, uint32_t lba, uint32_t count, uint8_t *buf)
 {
-    uint32_t lba = J.lba, count = J.count;
     int transport = 0;
-    if (count > psmac_usbdisk_max_blocks(n) || (uint64_t)lba + count > u->count)
+    if ((uint64_t)lba + count > u->dev_blocks)
         return PSMB_E_RANGE;
     if (write && !u->writable)
         return PSMB_E_RO;
     for (int attempt = 0; attempt < 3; attempt++) {
-        int r = rw10(u, write, u->first + lba, count, jbuf, 10000);
+        int r = rw10(u, write, lba, count, buf, 10000);
         if (r == 0) {
             if (write) { u->writes++; u->wblocks += count; u->dirty = 1; u->last_write = ms(); }
             else { u->reads++; u->rblocks += count; }
@@ -1184,18 +1506,34 @@ static int32_t job_rw(struct unit *u, int n, int write)
     }
     return PSMB_E_IO;
 }
+/* the Mac's read or write of volume s, in jbuf */
+static int32_t vol_rw(int s, int write)
+{
+    struct vol *v = &V[s];
+    struct unit *u = &U[v->unit];
+    uint32_t lba = J.lba, count = J.count;
+    if (count > dev_max_blocks(&u->d) || (uint64_t)lba + count > v->count)
+        return PSMB_E_RANGE;
+    if (write && !u->writable)
+        return PSMB_E_RO;
+    if (v->kind == VK_IMAGE)
+        return runs_rw(u, v->unit, v->runs, v->nruns, write, v->first + lba, count, jbuf);
+    return phys_rw(u, v->unit, write, v->first + lba, count, jbuf);
+}
 static void run_job(void)
 {
-    int n = J.unit;
+    int s = J.unit;
     int32_t st;
     __atomic_store_n(&J.state, J_RUNNING, __ATOMIC_RELAXED);
-    struct unit *u = (n >= 0 && n < USBDISK_UNITS) ? &U[n] : 0;
-    if (!u || u->state != U_UP || P[n].i.media != J.media)
+    struct vol *v = (s >= 0 && s < USBDISK_UNITS && V[s].used) ? &V[s] : 0;
+    int n = v ? v->unit : 0;
+    struct unit *u = v ? &U[n] : 0;
+    if (!u || u->state != U_UP || !v->present || P[s].i.media != J.media)
         st = PSMB_E_NODATA;                             /* the stick went (or another is in its place) */
     else if (J.op == USBDISK_OP_READ)
-        st = job_rw(u, n, 0);
+        st = vol_rw(s, 0);
     else if (J.op == USBDISK_OP_WRITE)
-        st = job_rw(u, n, 1);
+        st = vol_rw(s, 1);
     else if (J.op == USBDISK_OP_EJECT) {
         /* a stick whose cache would not flush stays mounted, and the Mac's eject fails: its writes may
            still be only in the stick's cache, so it is not safe to unplug */
@@ -1203,10 +1541,19 @@ static void run_job(void)
             kprintf("[USB] disk %d (%s): not ejected: the stick did not confirm its writes; NOT safe to unplug\n", n, uname(u));
             st = PSMB_E_IO;
         } else {
+            /* one volume of the stick ejected; the stick is safe to unplug once none is left on the Mac */
+            int left = 0;
             u->dirty = 0;
-            u->state = U_EJECTED;
-            publish(n, 0, 0);
-            kprintf("[USB] disk %d (%s): ejected by the Mac (%u blocks read, %u written): safe to unplug\n", n, uname(u), u->rblocks, u->wblocks);
+            v->present = 0;
+            pub_slot(s, 0, 0);
+            for (int k = 0; k < USBDISK_UNITS; k++)
+                if (V[k].used && V[k].unit == n && V[k].present)
+                    left++;
+            if (!left) {
+                u->state = U_EJECTED;
+                kprintf("[USB] disk %d (%s): ejected by the Mac (%u blocks read, %u written): safe to unplug\n", n, uname(u), u->rblocks, u->wblocks);
+            } else
+                kprintf("[USB] disk %d (%s): %s ejected by the Mac; %d more of its volumes are on the Mac: not yet safe to unplug\n", n, uname(u), v->name, left);
             st = 0;
         }
     } else

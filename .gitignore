@@ -67,3 +67,5 @@ mac/build/piagent.elf
 
 # local working copies made for parallel work (git worktrees), never part of the repository
 .claude/worktrees/
+# the FAT/exFAT HFS view test (tools/hfsview_test.sh): its images and trees are never committed
+mac/build/hfsview/

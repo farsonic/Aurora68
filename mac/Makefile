@@ -4,7 +4,8 @@
 #                   their icons come from tools/mac/mkicons.py)
 #   The declaration ROM (build/psmac.declrom) carries the .PiDisk, .Network_EtherNet_PiStorm and .PiInput drivers,
 #   and PiDisk's boot record (pidisk_boot.s), which lets an image on the card be the startup disk.
-#   make check     compares the struct offsets in enet.s with emu68/src/alice/alice_net.h; host tests (USB frames, EDID, PiPlay's radio parser and station list)
+#   make check     compares the struct offsets in enet.s with emu68/src/alice/alice_net.h; host tests (USB frames, EDID, PiPlay's radio parser and station list,
+#                  the kernel's FAT/exFAT reader: tools/fatfs_test.sh)
 #   make install IMG=path/to/volume.img [PART=n]   the extensions into the System Folder of an HFS image, the programs into its Aurora68 folder
 AS      = m68k-linux-gnu-as -m68020
 OBJCOPY = m68k-linux-gnu-objcopy
@@ -137,6 +138,7 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	$(B)/icy_test
 	cc -std=c99 -Wall -Wextra -Werror -o $(B)/stations_test ../tools/stations_test.c piplay/stations.c
 	$(B)/stations_test
+	sh ../tools/fatfs_test.sh
 
 disasm: $(B)/pidisk.o
 	m68k-linux-gnu-objdump -d $(B)/pidisk.o | head -200
