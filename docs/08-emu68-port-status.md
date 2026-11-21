@@ -3039,6 +3039,9 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    - *Not verified:* everything on hardware: the decoder's load on a Cortex-A53 (the heartbeat's
      `stream:` line says it), the Mac's disk speed for PCM on a real SE's SCSI, HDMI and jack output of
      the stream; the SE-speaker hang above on real hardware.
+   - *On the real SE the same afternoon* (kernel c4438d6, "se15", the test image of that day): PiPlay
+     played "Ode to Joy" from the image's Music folder, its ID3 title and "MP3, 32 kHz stereo, 160 kbit/s"
+     in the window, the progress line running (0:28 of 1:50), the window on the SE's own one-bit screen.
 
 
 ## Mailbox and Mac-side software (later the same day)
