@@ -693,7 +693,14 @@ static void tcp_in(const uint8_t *f, const uint8_t *ip, const uint8_t *h, uint32
         t->rto_at = t->una == t->nxt ? 0 : now_ms() + t->rto_ms;
     } else if (t->state == T_SYN_RCVD && ack == t->una + 1) { t->state = T_ESTAB; t->una = ack; t->rto_at = 0; }
     t->win = get16(h + 14);
-    /* data, in order only */
+    /* data, in order only. A segment that begins before rcv.nxt but runs past it (a retransmission that
+       overlaps what was already taken, as after a segment taken only in part because the window was
+       nearly full) is trimmed to its new bytes rather than dropped: dropping it left the sender resending
+       the same overlapping segment (docs/08 item 95, an upload over the owner's WiFi that stalled). */
+    if (dlen && seq != t->rcv && (int32_t)(t->rcv - seq) > 0 && (int32_t)(seq + dlen - t->rcv) > 0) {
+        uint32_t old = t->rcv - seq;
+        data += old; dlen -= old; seq = t->rcv;
+    }
     if (dlen || (fl & 0x01)) {
         if (seq == t->rcv) {
             uint32_t room = rcv_room(t), take = dlen < room ? dlen : room;   /* what does not fit comes again */

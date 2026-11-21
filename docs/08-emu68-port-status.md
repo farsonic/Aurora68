@@ -3565,6 +3565,34 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      address", "connected to 192.168.68.1:8000 (IPv4)", HTTP 200 and the stream playing.
    - *Not verified:* NPO from the owner's network.
 
+95. **A push over the owner's WiFi that stalled and held the agent (21 November).** The owner pushed the
+   fixed Riptide (537 KB, MacBinary) into System Folder:Extensions with `--force` over WiFi. The client
+   hung; stopped and run again, it was told "another file job kept the agent busy", and every later
+   attempt was refused. The log showed `[FILES] push` and then no end to it, about 15,000 frames each way
+   in half a minute, 18 dropped, and the SYN count climbing with the client's retries.
+   - *Three faults:*
+     - **No timeout:** nothing ended an upload whose body stopped arriving (the agent's requests had
+       deadlines, the wait for the network did not), so the stalled job held the one job slot until the
+       Pi restarted.
+     - **Unsafe overwrite:** `force=1` emptied the existing file at the start and wrote into it, so the
+       Riptide extension on the owner's Mac was left part-written.
+     - **Overlapping retransmissions dropped:** the kernel's TCP took only segments starting exactly at
+       rcv.nxt, so a retransmission overlapping bytes already taken was dropped rather than trimmed.
+   - *Fixed:*
+     - `psmac_files.c`: an upload with nothing new for 20 s ends with 408 "the upload stopped arriving".
+     - `force=1` writes a new file beside the old one ("name.part", cleaned up like any new file if the
+       upload breaks); only once its information is set is the old file deleted and the new one renamed
+       into place. If the old file cannot be deleted (in use), the new one stays beside it and the answer
+       says so.
+     - `psmac_ip.c` trims an overlapping segment to its new bytes.
+     - pinet has `PINET_LOSS=P`, losing P per cent of TCP segments each way.
+   - *Tested in the testbed:*
+     - With 3% loss, the old kernel and the new one both pushed Riptide whole (13 and 18 s), the new one
+       through Riptide.part, delete and rename.
+     - The loss alone did not reproduce the owner's stall; what the owner's WiFi does that the testbed
+       does not is still unknown. If it happens again, a packet capture on the client (`tcpdump` of port
+       8068) will show it.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

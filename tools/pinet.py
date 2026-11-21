@@ -64,7 +64,15 @@ ALLNODES6 = bytes.fromhex('ff020000000000000000000000000001')
 pending_pings = []          # (time, mac, address): the Mac's addresses to ping after their DAD
 ping6_seq = 0
 
+# PINET_LOSS=P (testbed): P per cent of the TCP segments each way are lost, as on a busy WiFi network
+# (21 November 2026: an upload to the Mac over the owner's WiFi stalled, docs/08 item 95)
+import random
+LOSS = float(os.environ.get('PINET_LOSS', '0') or 0) / 100.0
+def lost(frame):
+    return LOSS > 0 and len(frame) >= 34 and frame[12:14] == b'\x08\x00' and frame[23] == 6 and random.random() < LOSS
+
 def send(frame):
+    if lost(frame): return
     rx.write(struct.pack('>H', len(frame)) + frame); rx.flush()
 
 def csum(b):
@@ -847,6 +855,7 @@ while True:
             n = struct.unpack('>H', buf[:2])[0]
             if len(buf) < 2 + n: break
             frame = buf[2:2 + n]; buf = buf[2 + n:]
+            if lost(frame): continue
             if tap is not None:
                 os.write(tap, frame); what = 'to tap'
             else:

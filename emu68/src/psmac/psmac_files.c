@@ -78,11 +78,12 @@ static int agent_alive(void) { return agent_installed() && now_ms() - beat_ms < 
 enum { J_NONE, J_LIST, J_STAT, J_PULL, J_PUSH, J_MKDIR, J_DELETE, J_RENAME, J_OPEN, J_APPS, J_QUIT, J_FRONT };
 static const char *const kind_name[] = { "", "list", "info", "pull", "push", "mkdir", "delete", "rename", "open", "apps", "quit", "front" };
 #define FRONT_CONN 1000                          /* the job of psmac_files_front: the remote's own, no connection */
-enum { S_WAIT_AGENT, S_GO, S_STREAM, S_HEAD, S_CREATE, S_BODY, S_SETINFO, S_CLEAN, S_DONE };
+enum { S_WAIT_AGENT, S_GO, S_STREAM, S_HEAD, S_CREATE, S_BODY, S_SETINFO, S_REPLACE_DEL, S_REPLACE_REN, S_CLEAN, S_DONE };
 #define OUT_SZ   (2 * PSMB_AGENT_BUF + 8192)     /* a chunk being sent, the next one, and headers */
 #define ONE_JSON 1200                            /* the most one entry's JSON takes */
 #define T_AGENT  3000u                           /* how long a job waits for an agent that is not there (yet) */
 #define T_REQ    20000u                          /* how long one request may take: longer than a menu is usually held */
+#define T_BODY   20000u                          /* an upload that sends nothing for this long has stopped (below, psmac_files_poll) */
 static struct {
     int kind, conn, state;
     int posted; uint32_t seq, op, deadline, waited_from;
@@ -94,7 +95,8 @@ static struct {
     /* pull and push: the fork under way and the position in it; the forks' lengths */
     int macbinary, fork; uint32_t pos, len[2], total;
     /* push: the body */
-    int32_t clen; uint32_t body_got, skip; int created, discard;
+    int32_t clen; uint32_t body_got, skip, last_rx; int created, discard;
+    int replacing; uint8_t target[256];          /* force=1: the file to replace, written once the upload is whole (start_replace) */
     uint32_t in_len;
     /* list, apps: the records of the last answer, turned into JSON as the connection takes it */
     uint32_t raw_n, raw_i, listed, more;
@@ -206,7 +208,7 @@ static int err_http(int32_t st, const char **text)
 static const char *http_text(int code)
 {
     switch (code) {
-    case 400: return "Bad Request"; case 403: return "Forbidden"; case 404: return "Not Found"; case 409: return "Conflict";
+    case 400: return "Bad Request"; case 403: return "Forbidden"; case 408: return "Request Timeout"; case 404: return "Not Found"; case 409: return "Conflict";
     case 411: return "Length Required"; case 501: return "Not Implemented"; case 503: return "Service Unavailable";
     case 504: return "Gateway Timeout"; case 507: return "Insufficient Storage"; default: return "Internal Server Error";
     }
@@ -278,6 +280,25 @@ static void post_io(uint32_t op, int fork, uint32_t offset, uint32_t length)
 {
     ag->fork = (uint32_t)fork; ag->offset = offset; ag->length = length;
     post(op, T_REQ);
+}
+
+/* ---- force=1: the old file replaced only once the new one is whole (21 November 2026) ----
+   The first version emptied the existing file at the start (CREATE with PSMB_AGF_FORCE) and wrote into it.
+   An upload that broke off then left the Mac with half a file: on the owner's SE a push of Riptide over
+   WiFi stalled, and the Riptide extension in the System Folder was no longer whole (docs/08 item 95). Now
+   the upload goes into a new file beside it ("name.part", made like any new file, so a broken upload
+   deletes it again), and only after its information is set is the old file deleted and the new one
+   renamed into its place. If the old file cannot be deleted (in use), the new one stays beside it and the
+   answer says so. */
+static void start_replace(void)
+{
+    unsigned n = slen((const char *)J.path), cut = n;
+    while (cut && J.path[cut - 1] != ':') cut--;               /* the leaf starts at cut */
+    unsigned leaf = n - cut, keep = leaf > 26 ? 26 : leaf;     /* name.part within HFS's 31 characters */
+    if (cut + keep + 5 > 255) return;                          /* too long to make: the old way, in place */
+    __builtin_memcpy(J.target, J.path, n + 1);
+    __builtin_memcpy(J.path + cut + keep, ".part", 6);
+    J.replacing = 1;
 }
 
 /* ---- JSON of the records ---- */
@@ -436,7 +457,19 @@ static void step(void)
             }
             J.total = J.len[0] + J.len[1];
         }
-        if (J.state == S_CREATE) { post(PSMB_AG_CREATE, T_REQ); return; }
+        if (J.state == S_CREATE) {
+            if ((J.flags & PSMB_AGF_FORCE) && !J.replacing) start_replace();   /* a leftover .part is emptied: FORCE stays */
+            post(PSMB_AG_CREATE, T_REQ);
+            return;
+        }
+        if (J.state == S_REPLACE_DEL) {                    /* the new file is whole: the old one goes */
+            uint8_t part[256]; __builtin_memcpy(part, J.path, sizeof part);
+            __builtin_memcpy(J.path, J.target, sizeof J.path); J.flags = 0;
+            post(PSMB_AG_DELETE, T_REQ);
+            __builtin_memcpy(J.path, part, sizeof J.path);  /* J.path stays the new file's (a cleanup deletes it, not the old) */
+            return;
+        }
+        if (J.state == S_REPLACE_REN) { __builtin_memcpy(J.path2, J.target, sizeof J.path2); J.flags = 0; post(PSMB_AG_RENAME, T_REQ); return; }
         if (J.state == S_BODY) {
             for (;;) {
                 if (J.skip) {                              /* padding and headers between the forks */
@@ -487,6 +520,15 @@ static void reply(void)
         else { unsigned n = slen(J.err); sprintf(J.err + n, "; the partial file was deleted"); }
         if (J.conn < 0) { J.state = S_DONE; J.done = 1; finish_log(0); return; }
         respond_error_now();
+        return;
+    }
+    if (st && J.kind == J_PUSH && J.state == S_REPLACE_DEL && st == -43) { J.state = S_REPLACE_REN; return; }   /* no old file after all */
+    if (st && J.kind == J_PUSH && (J.state == S_REPLACE_DEL || J.state == S_REPLACE_REN)) {
+        J.created = 0;                                    /* the new file is whole: it stays */
+        char m[200], t[300]; js(t, sizeof t, J.path, slen((const char *)J.path));
+        sprintf(m, "the upload is complete as \"%s\", but the old file could not be %s (the Mac's error %d%s): replace it by hand",
+                t, J.state == S_REPLACE_DEL ? "deleted" : "replaced", (int)st, st == -47 ? ", the file is in use" : "");
+        fail(409, m);
         return;
     }
     if (st) { fail_status(st); return; }
@@ -548,13 +590,15 @@ static void reply(void)
             return;
         }
     case J_PUSH:
-        if (J.state == S_CREATE) { J.created = res ? 1 : 0; J.state = S_BODY; J.fork = 0; J.pos = 0; return; }
+        if (J.state == S_CREATE) { J.created = res || J.replacing ? 1 : 0; J.state = S_BODY; J.fork = 0; J.pos = 0; return; }
         if (J.state == S_BODY) {
             if (res != a->length) { fail(507, "the disk took fewer bytes than were written (full?)"); return; }
             J.pos += res; J.bytes += res;
             return;
         }
-        if (J.state == S_SETINFO) {
+        if (J.state == S_SETINFO && J.replacing) { J.state = S_REPLACE_DEL; return; }
+        if (J.state == S_REPLACE_DEL) { J.state = S_REPLACE_REN; return; }
+        if (J.state == S_SETINFO || J.state == S_REPLACE_REN) {
             char ty[32], cr[32];
             js4(ty, J.ftype); js4(cr, J.fcreator);
             J.created = 0;
@@ -646,6 +690,15 @@ void psmac_files_poll(void)
     }
     if (J.state == S_DONE) return;
     if (J.conn < 0 && J.state != S_CLEAN) { job_end(); return; }
+    /* An upload whose bytes stopped coming: until 21 November 2026 nothing ended it, and a stalled push held
+       the agent, refusing every later job ("another file job"), until the Pi restarted (docs/08 item 95). */
+    if (J.kind == J_PUSH && (J.state == S_HEAD || J.state == S_BODY) && !J.discard && J.clen >= 0 &&
+        J.body_got < (uint32_t)J.clen && now_ms() - J.last_rx > T_BODY) {
+        char m[160];
+        sprintf(m, "the upload stopped arriving: %u of %d bytes in, nothing more for %u s", J.body_got, (int)J.clen, T_BODY / 1000);
+        fail(408, m);
+        return;
+    }
     step();
 }
 int psmac_files_busy(void) { return J.kind != J_NONE; }
@@ -785,6 +838,7 @@ int psmac_files_request(int conn, const char *method, const char *path, const ch
     J.t0 = now_ms();
     J.state = S_WAIT_AGENT;
     J.deadline = now_ms() + T_AGENT;
+    J.last_rx = now_ms();
     kprintf("[FILES] %s %s\n", kind_name[kind], J.upath);
     if (kind == J_PUSH && have) psmac_files_body(conn, body, have);
     return 1;
@@ -821,6 +875,7 @@ void psmac_files_body(int conn, const uint8_t *data, uint32_t len)
     if (J.kind != J_PUSH || J.conn != conn) return;
     if (J.clen >= 0 && len > (uint32_t)J.clen - J.body_got) len = (uint32_t)J.clen - J.body_got;
     J.body_got += len;
+    if (len) J.last_rx = now_ms();
     if (J.discard) return;
     if (len > PSMB_AGENT_BUF - J.in_len) len = PSMB_AGENT_BUF - J.in_len;   /* the transport keeps to the room given */
     __builtin_memcpy(jin + J.in_len, data, len);
