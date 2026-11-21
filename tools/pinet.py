@@ -595,6 +595,26 @@ def dns_answer(frame, src, sip, sport, q):
     ans, rcode = b'', 3
     if name in ('silent.testbed', '66.68.168.192.in-addr.arpa'):
         return 'DNS %s: not answered (a name server that does not reply)' % name
+    if name == 'many.testbed':
+        # NPO's shape (21 November 2026): a CNAME to many-cdn.testbed, which has nine IPv6 addresses that
+        # answer nothing (fd68::901 ...) and the peer's IPv4 address. A program that keeps only the first
+        # eight addresses in IPv6-first order never gets to IPv4 (docs/08 item 94).
+        rcode = 0
+        target = bytes([8]) + b'many-cdn' + bytes([7]) + b'testbed' + b'\0'
+        ans = b'\xc0\x0c' + struct.pack('>HHIH', 5, 1, 60, len(target)) + target
+        tptr = 12 + len(question)                             # where the target name starts in the message
+        tref = struct.pack('>H', 0xC000 | (tptr + 12))
+        count = 1
+        if qtype == 28:
+            for k in range(9):
+                ans += tref + struct.pack('>HHIH', 28, 1, 60, 16) + bytes.fromhex('fd68000000000000000000000000%04x' % (0x901 + k))
+                count += 1
+        elif qtype == 1:
+            ans += tref + struct.pack('>HHIH', 1, 1, 60, 4) + PEER_IP; count += 1
+        hdr = struct.pack('>HHHHHH', qid, 0x8180, 1, count, 0, 0)
+        body = hdr + question + ans
+        send4(src, sip, 17, struct.pack('>HHHH', 53, sport, 8 + len(body), 0) + body)
+        return 'DNS %s many.testbed: a CNAME and %d records' % ({1: 'A', 28: 'AAAA'}.get(qtype, qtype), count - 1)
     if name == 'v6only.testbed':                             # IPv6 only: AAAA, and no A (but the name exists)
         rcode = 0
         if qtype == 28:

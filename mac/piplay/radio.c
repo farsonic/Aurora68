@@ -523,7 +523,10 @@ static void open_start(void)
 		/* TCP6iopb: the 20-byte remoteAddr at 36 where MacTCP has remoteHost and remotePort, localAddr
 		   at 56 left zero (the stack's choice); the fields after them 28 bytes on, all zero here */
 		memcpy(pb_ctl + 36, &addrs[ai], sizeof addrs[ai]);
-		if (naddr - ai > 1) pb_ctl[32] = 15;     /* more addresses to try: less time for each */
+		/* more addresses to try: 8 s for this one. Riptide alternates the families in a long answer, so the
+		   next is an IPv4 address when this IPv6 one does not answer (a network whose IPv6 does not reach
+		   the station costs 8 s, not the whole list) */
+		if (naddr - ai > 1) pb_ctl[32] = 8;
 		mac_PBControlAsync(pb_ctl);
 		put_addr6(put_str(t, "connecting to "), &addrs[ai])[0] = 0;
 	} else {

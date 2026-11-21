@@ -3545,6 +3545,26 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    - The review's other points went to the floppy and serial work (item 93): the IWM's timing against
      the speaker refill's 185 byte writes, and evidence that floppy and serial work at all.
 
+94. **No IPv6 station would play on the SE (21 November).** The owner: "can't connect to any IPv6 radio in
+   Aurora68 Play". The only stations with IPv6 are NPO's, at icecast.omroep.nl. The streams still answer
+   plain HTTP; the name is a CNAME to icecast.npocloud.nl, which has eight or more AAAA records beside its
+   A records.
+   - *Cause:* Riptide's `ip6Resolve` put every IPv6 address before every IPv4 one and cut the list to the
+     caller's array, and Aurora68 Play asks for eight. So the answer held eight IPv6 addresses and no
+     IPv4: on a network whose IPv6 does not reach NPO's servers, Play tried the eight, each until it gave
+     up, and never fell back to IPv4. Item 88's test name had one address of each family and could not
+     show it. Why IPv6 does not reach NPO from the owner's network is a separate question (the Mac's
+     log will say which error each address gave).
+   - *Fix:* Riptide 7b3c3b1 alternates the families when an answer does not fit (RFC 8305, section 4),
+     so the second address is an IPv4 one; Aurora68 Play gives each address but the last 8 seconds to
+     connect (15 before), so a dead IPv6 path costs 8 seconds. pinet answers a new name of NPO's shape,
+     `many.testbed` (a CNAME, nine IPv6 addresses that answer nothing, the peer's IPv4 address).
+   - *Verified in the testbed* (System 7.1, the QuickTime image with this Riptide and Play, a station
+     list with `Many (like NPO) = http://many.testbed:8000/stream`, radiotest.py behind pinet): "many.testbed
+     is [fd68::901], 192.168.68.1, [fd68::902] ...", "no connection to [fd68::901]:8000 ... trying the next
+     address", "connected to 192.168.68.1:8000 (IPv4)", HTTP 200 and the stream playing.
+   - *Not verified:* NPO from the owner's network.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,
