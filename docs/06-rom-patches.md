@@ -126,6 +126,79 @@ delays are still 10x too short, but they are no longer zero (a zero TimeSCSIDB m
   a per-iteration stall so the measured count is in the 68030 range, or
 - the delay sites are re-pointed to a VIA1/Pi-timer based wait (see §4).
 
+(Later items in the same set: the calibration values taken from the Pi, docs/08 item 14; the
+cold-start RAM test, the chime's length and the SCSI selection timeout, docs/08 item 50; the
+Memory Manager's 24-bit retry, §2b.)
+
+### How the patches reach a real Pi
+The SD card holds Apple's ROM as it is: the patched image is never distributed. `tools/mkdelta.py`
+turns `rom/original` and `rom/patched` into `rom/patches/iici-368CADFE.delta.json` (the byte runs
+that differ, with both checksum words) and `emu68/src/psmac/psmac_rom_delta.h` (the same runs as
+a C table). At start the kernel copies the ROM out of the container and, when its checksum word
+is 368CADFE, writes the runs over it and checks the sum of the result (`psmac_bus.c`: "stock IIci
+ROM ... patched in memory, checksum word ... (verified)"). `tools/mkcontainer.py` applies the same
+delta when it packs a stock ROM, so a container it made holds the patched image of its day; since
+21 November 2026 the kernel also brings such an image up to date: the delta is a superset of every
+earlier patch set (checked against each version of `iici.json` in the history: 368FAA5C, 369A8139,
+369A5A97), so it is written over any 512 KiB ROM that is not already the current one, and kept
+only if the result's sum is the current checksum; anything else is copied back as it came. After
+changing `iici.json`: `make -C rom check && make -C rom iici && python3 tools/mkdelta.py`, then
+rebuild the kernel.
+
+## 2b. The Memory Manager's 24-bit retry (21 November 2026, docs/08 item 78)
+
+The IIci ROM carries one Memory Manager for both block layouts: 24-bit zones (8-byte block
+headers, the zone's routines in the table at $1E00) and 32-bit zones (12-byte headers, the table
+at $1F00). Low memory $1EFC holds its flags, read from parameter RAM byte $8A at start
+($4080CC64): bit 2 says the Mac starts in 32-bit mode, bit 0 which layout the Memory Manager
+uses now. A call that takes a pointer (DisposPtr and three others, through the vector at $1EE4)
+or a handle (through $1EEC) goes through a dispatcher that finds the block's zone first:
+
+```
+4080dc2e  movea.l (sp)+,a1          a1 = the call's offset in the zone's table ($44: DisposPtr)
+          movem.l d3-d7/a2-a6,-(sp) ; move.b $1EFC,-(sp) ; movea.l a1,a4 ; clr.w -(sp)   retry flag 0
+4080dc3e  suba.l a1,a1 ; bsr $4080DB9C    check the block: the header 12 bytes (32-bit) or 8 bytes
+                                          (24-bit, the pointer masked with Lo3Bytes) below it; its
+                                          tag byte (0 free: -111), its zone, and the zone's first
+                                          block's back pointer (zone+60 or +56) must be the zone (-113)
+4080dc44  bmi.s $4080DC5C                 the check failed
+          addq.l #2,sp ; move.l d2,d0 ; move.l 32(a6),d3 ; bne.s 1f ; move.l #$1E00,d3
+        1:adda.l d3,a4 ; move.l (a4),-(sp) ; rts      jump through the zone's table (zone+32)
+4080dc5c  tst.w (sp)+ ; bne.w $4080DDE0   failed after the retry: MemErr = d0, return
+          bchg #0,$1EFC ; move.w #1,-(sp) ; bra.s $4080DC3E     check again in the other layout
+```
+
+The handle dispatcher at $4080DC6E is the same around $4080DB6A (which reads the master pointer
+through the handle, masked in 24-bit mode) and retries at $4080DCCE. Neither knows how much memory
+there is. In 32-bit mode with more than 16 MB the 24-bit retry checks a different address, the
+pointer's low 24 bits, which is other RAM, and a uniform fill of any byte from $40 to $7F there
+passes every test: the tag says nonrelocatable, the zone pointer is the fill masked to 24 bits
+(more RAM made of the same fill), and that zone's back pointer, the fill masked again, is the
+zone. The dispatcher then adds the fill to the table offset and jumps through it. On the user's SE
+(128 MB, a $55 fill) Speedometer 3.23 disposing a pointer twice ended at $FFFFFFFF.
+
+The patch (four items in `iici.json`): the two retries jump to stubs in the zero padding at
+0x62A40 and 0x62A80, which do what the ROM did, except that when the 68k is in 32-bit mode
+(MMU32Bit $CB2 not zero), the check that failed used the 32-bit layout and the pointer (or the
+handle) is above $00FFFFFF, they return the 32-bit check's error instead of retrying:
+
+| Offset | VMA | Old | New |
+|---|---|---|---|
+| 0xDC5C | 0x4080DC5C | `4A5F 6600 0080 0878 0000 1EFC 3F3C 0001 60D0` | `4EF9 4086 2A40` `jmp` the pointer stub, NOPs |
+| 0xDCCE | 0x4080DCCE | `4A5F 660E 2049 0878 0000 1EFC 3F3C 0001 609E` | `4EF9 4086 2A80` `jmp` the handle stub, NOPs |
+| 0x62A40 | 0x40862A40 | 48 x `00` | `tst.w (sp)+; bne 9f; tst.b $CB2; beq 1f; btst #0,$1EFC; beq 1f; cmpa.l #$00FFFFFF,a0; bhi 9f; 1: bchg #0,$1EFC; move.w #1,-(sp); jmp $4080DC3E; 9: jmp $4080DDE0` |
+| 0x62A80 | 0x40862A80 | 56 x `00` | the same with a1 (the handle), `movea.l a1,a0` before the retry, `jmp $4080DC7E` |
+
+Why it is safe. A 24-bit zone's blocks lie below 16 MB, and in 32-bit mode the 68k uses an address
+as it is, so a pointer or handle with a non-zero high byte cannot be in one; the retry can only
+find a block that is not there. Everything else takes the ROM's own path: 24-bit mode (MMU32Bit
+0, as on every Mac with 8 MB and 32-bit addressing off, and while a driver runs in 24-bit mode),
+a first check made in the 24-bit layout, addresses below 16 MB (where the mask changes nothing),
+and every call whose first check passes, which is every legitimate one. The error returned is
+what the 32-bit check found (memWZErr -111 for a free block, memAZErr -113 for a block whose zone
+does not check), the kind of error a Mac with 16 MB or less returns for the same call: there the
+retry looks at the same address in the other layout and fails too. Checksum 369A5A97 -> 36AC1C28.
+
 ## 3. Patch set `se.json`: the same for the SE ROM B2E362A8
 
 Code 0x40041C-0x4004B2 (docs/01). Two loops (TimeDBRA at 0x40044C..0x40045A, TimeSCCDB at

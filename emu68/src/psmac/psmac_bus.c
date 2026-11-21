@@ -1315,13 +1315,26 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
            rom/patches/iici.json: the timing calibration taken from the Pi, docs/06). The checksum
            word is part of the delta; the ROM's own test (test 1 at boot) then passes. Nothing on
            the SD card needs patching by hand, which the first user asked for. */
-        if (n == PSMAC_ROM_SIZE && BE32(*(uint32_t *)romk) == PSMAC_ROM_DELTA_IN) {
+        /* A container made by make-container.py holds the ROM as that script patched it, with the
+           patch set of its day (369A5A97 until 21 November 2026). The delta is a superset of every
+           earlier set, so it is tried on such an image too: if the result's sum is the current
+           patched ROM's, the image was an older patched IIci ROM and is now the current one (the
+           Memory Manager's 24-bit retry, docs/08 item 78, would otherwise never reach those cards);
+           otherwise it was some other ROM and is copied back as it came. */
+        uint32_t first = BE32(*(uint32_t *)romk);
+        if (n == PSMAC_ROM_SIZE && first != PSMAC_ROM_DELTA_OUT) {
             for (unsigned i = 0; i < sizeof(psmac_rom_delta) / sizeof(psmac_rom_delta[0]); i++)
                 memcpy(romk + psmac_rom_delta[i].off, psmac_rom_delta[i].bytes, psmac_rom_delta[i].len);
             uint32_t sum = 0;
             for (uint32_t o = 4; o < PSMAC_ROM_SIZE; o += 2) sum += BE16(*(uint16_t *)(romk + o));
-            kprintf("[PSMAC] stock IIci ROM %08x in the container: patched in memory, checksum word %08x (%s)\n",
-                    PSMAC_ROM_DELTA_IN, BE32(*(uint32_t *)romk), sum == PSMAC_ROM_DELTA_OUT ? "verified" : "MISMATCH");
+            if (first == PSMAC_ROM_DELTA_IN)
+                kprintf("[PSMAC] stock IIci ROM %08x in the container: patched in memory, checksum word %08x (%s)\n",
+                        PSMAC_ROM_DELTA_IN, BE32(*(uint32_t *)romk), sum == PSMAC_ROM_DELTA_OUT ? "verified" : "MISMATCH");
+            else if (sum == PSMAC_ROM_DELTA_OUT)
+                kprintf("[PSMAC] IIci ROM %08x in the container, patched by an older patch set: brought up to date in memory (checksum word %08x, verified)\n",
+                        first, PSMAC_ROM_DELTA_OUT);
+            else
+                memcpy(romk, rom, n);
         }
         { extern void psmac_se_rom_fixup(uint8_t *, uint32_t); psmac_se_rom_fixup(romk, n); }   /* the SE with its speaker: the full startup chime */
         for (uint32_t o = n; o < PSMAC_ROM_SIZE; o += n) {

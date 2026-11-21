@@ -2,12 +2,12 @@
  "name": "Macintosh IIci ROM 368CADFE -> Aurora68 (the patch set rom/patches/iici.json, assembled)",
  "note": "Byte ranges that differ between the stock image and the patched one, so make-container.py can apply them without the m68k assembler rompatch.py needs. Regenerate with tools/mkdelta.py after changing the patch set.",
  "input_checksum": "368CADFE",
- "output_checksum": "369A5A97",
+ "output_checksum": "36AC1C28",
  "size": 524288,
  "runs": [
   [
    1,
-   "9a5a97"
+   "ac1c28"
   ],
   [
    2119,
@@ -26,6 +26,14 @@
    "0a"
   ],
   [
+   56412,
+   "4ef940862a404e714e714e714e714e714e71"
+  ],
+  [
+   56526,
+   "4ef940862a804e714e714e714e714e714e71"
+  ],
+  [
    276158,
    "60024e71"
   ],
@@ -36,6 +44,30 @@
   [
    403948,
    "0c9150534d42661e43e9008072033051b0d4660c4a6900026706302900026006588951c9ffea4cdf03024a40660253404ef9408008504e714e714e714e714e714e714e71"
+  ],
+  [
+   404032,
+   "4a5f66264a380cb267100838"
+  ],
+  [
+   404046,
+   "1efc6708b1fc00ffffff62100878"
+  ],
+  [
+   404062,
+   "1efc3f3c00014ef94080dc3e4ef94080dde0"
+  ],
+  [
+   404096,
+   "4a5f66284a380cb267100838"
+  ],
+  [
+   404110,
+   "1efc6708b3fc00ffffff621220490878"
+  ],
+  [
+   404128,
+   "1efc3f3c00014ef94080dc7e4ef94080dde04e714e714e71"
   ]
  ]
 }

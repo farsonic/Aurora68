@@ -54,6 +54,13 @@ $(B)/PiScreens.bin: $(B)/piscreens.bin.raw ../tools/mac/mkapp.py ../tools/mac/rs
 $(B)/PiColor.bin: $(B)/picolor.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
 	$(PY) ../tools/mac/mkapp.py --code $(B)/picolor.bin.raw --name PiColor --creator PICO -o $@
 
+# DisposeTest: a pointer and a handle disposed of once too often above 16 MB (docs/08 item 78). A test,
+# not part of `all`: it fills a few bytes of memory that are not its own for the length of one call
+.PHONY: DisposeTest
+DisposeTest: $(B)/DisposeTest.bin
+$(B)/DisposeTest.bin: $(B)/disptest.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
+	$(PY) ../tools/mac/mkapp.py --code $(B)/disptest.bin.raw --name DisposeTest --creator PIDT -o $@
+
 # PiPing's peer: the address it pings (the testbed's host peer by default; make PEER=192.168.0.1 for a real gateway)
 PEER ?= 192.168.68.1
 PEER_HEX = $(shell printf '0x%02x%02x%02x%02x' $(subst ., ,$(PEER)))

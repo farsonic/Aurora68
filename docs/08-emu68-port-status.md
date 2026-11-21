@@ -2675,6 +2675,84 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      `gpu_mem=64`, the conversion's cost on a Pi 3, the early card look on the real sdhost controller (the
      same code card_start always ran, run sooner, on core 0).
 
+78. **Speedometer 3.23 again: a pointer disposed of twice, and a Memory Manager that looked for it below
+   16 MB (21 November).** The user's SE with the se11 kernel (ba004d5) ran Speedometer 3.23 for a long
+   time and got a crash record: an F-line exception at PC $FFFFFFFF in "Speedometer 3.23", D1 $07FDA01F,
+   D3 $55555555, A0 $00FD7A4E, A3 $4080DB50, A4 $55555599, A6 $00555555, the last PCs in the ROM between
+   $4080D3A0 and $4080DC5C. The interrupt watch of item 76 was normal (level 2 about 330 in five seconds,
+   nested 0): not that runaway.
+   - *The reading, checked against the ROM.* D1.W $A01F is _DisposPtr. Its ROM entry ($4080D3A0) pushes
+     $44, its offset in the zone's table of routines, and jumps through $1EE4 to the dispatcher for calls
+     that take a pointer ($4080DC2E; handles have a twin at $4080DC6E through $1EEC). The IIci ROM has one
+     Memory Manager for both block layouts, 24-bit (8-byte headers, routines at $1E00) and 32-bit (12-byte
+     headers, $1F00); low memory $1EFC holds its flags, read from parameter RAM byte $8A at start
+     ($4080CC64): bit 2 the mode the Mac starts in, bit 0 the layout used now. The dispatcher checks the
+     block in the current layout ($4080DB9C: the tag byte, 0 for a free block, -111; the zone the header
+     names; and that zone's first block's back pointer, zone+60 or +56, which must be the zone, -113),
+     and when that fails it flips bit 0 and checks again in the other layout, with the pointer masked to
+     24 bits and a bus error handler at vector 8 ($4080DB50, which makes a faulting read return 0). If a
+     check passes it jumps through the zone's table: the long at zone+32 (0 for $1E00) plus the offset.
+     Speedometer's pointer $07FD7A4E was free (tag 0): -111, then the retry at $00FD7A4E. With 128 MB
+     that is RAM, and it held $55 bytes, as did the "zone" at $00555555 the header named. The tag $55 says
+     nonrelocatable, the zone's back pointer $55555555 masked is $555555, the zone itself: every test
+     passed, the table pointer was $55555555, A4 = $44 + $55555555, and the long there, in the IIci's
+     I/O space where the SE board answers nothing, read $FFFFFFFF. A pointer disposed of twice, by
+     Speedometer or something on its behalf; its other addresses on the stack ($07EF382C, $07EDB028) are
+     in its own heap.
+   - *Any uniform fill from $40 to $7F does it*, because each value the checks read is the fill masked to
+     24 bits, which points at more of the same fill. Zeros do not (tag 0: free). Nor does what the ROM's
+     cold-start RAM test leaves on a real IIci (the three-byte pattern $6D $B6 $DB): its tag can be $6D,
+     but the back pointer then has to land on the right phase of the pattern 56 bytes on. Where the $55
+     came from was not found. Not from the ROM: item 50 skips the RAM test, and nothing else in it writes
+     $55555555. Not from the kernel: it writes nothing into the Mac's RAM before the 68k starts but the
+     reset vectors. Not in the testbed: QEMU's memory starts as zeros. On the Pi it is whatever the
+     DRAM held when the kernel handed it to the Mac (power-on contents or the firmware's), or what an
+     earlier session left: the Mac's restart does not clear it.
+   - *A real IIci.* With 16 MB or less a pointer's high byte is zero in 32-bit mode, so the retry looks at
+     the same address in the other layout and fails as the first check did: DisposPtr returns an error
+     and nothing happens. Only with more than 16 MB does the mask send the retry somewhere else, and an
+     IIci with 32 MB or more has the same hole, closed in practice by what its memory holds.
+   - *Reproduced* with a test program, DisposeTest (`mac/disptest.s`, `make -C mac DisposeTest`, in
+     Startup Items): it disposes of a pointer, disposes of it again (-111), then fills the pointer's
+     24-bit image, -16 to +64, and $00555555 -16 to +96 with $55 (interrupts off, the bytes saved) and
+     disposes of it a third time. The first version allocated its save area after freeing the pointer,
+     got the same block back and disposed of a live one; it now allocates everything first. On the
+     unpatched kernel (ba004d5) both testbeds stopped exactly where the user's SE did: PC $FFFFFFFF,
+     D1 $07F8A01F, D3 $55555555, A0 the masked pointer ($00F487FC on the MAME SE with 128 MB,
+     $00F4D164 on the solo board), A3 $4080DB50, A4 $55555599, A6 $00555555; the long at $55555599 reads
+     $FFFFFFFF on both boards. (With interrupts off no exception record came; the 68k sat at $FFFFFFFF.)
+   - *What the 24-bit retry is for.* It lets one ROM serve both layouts: a block of the other kind is
+     found by trying the other way. Whether System 7.1 ever keeps a 24-bit zone while the 68k is in 32-bit
+     mode was not settled, and the fix does not depend on it:
+     a 24-bit zone lies below 16 MB, and in 32-bit mode the 68k uses an address as it is, so a pointer
+     or a handle whose high byte is not zero cannot be in one.
+   - *The fix*, a ROM patch the kernel applies at load (`rom/patches/iici.json`, docs/06 §2b): the two
+     retries ($4080DC5C, $4080DCCE) jump to stubs in the zero padding at 0x62A40 and 0x62A80, which retry
+     as the ROM did except when MMU32Bit ($CB2) is set, the failed check was the 32-bit one and the
+     pointer (or handle) is above $00FFFFFF: then the 32-bit check's error is returned (-111 for a freed
+     block). 24-bit mode, addresses below 16 MB and every call whose first check passes take the ROM's
+     own path. Checksum 36AC1C28. Each item has its `expect`. A container made by make-container.py holds
+     the ROM it patched then (369A5A97 and earlier); the kernel now brings such an image up to date too,
+     since the delta is a superset of every earlier set (checked for 368FAA5C, 369A8139 and 369A5A97: the
+     result is byte for byte the current image), and copies anything else back as it came (docs/06).
+   - *Afterwards.* DisposeTest on the patched kernel: the ordinary calls 0, the second DisposPtr -111, the
+     third, with the $55 fill, -111 and MemErr -111, and a bad handle above 16 MB with its image filled
+     the same way -111, on the MAME SE (128 MB, two screens) and on the solo board (128 MB); both went on
+     to the Finder. A 24-bit boot (the MAME SE with 8 MB and parameter RAM $8A bits 0 and 2 clear,
+     MMU32Bit 0): the second DisposPtr -111 through the stub's 24-bit path, the Finder. (The solo board
+     with mac.ram=8 still started in 32-bit mode, its parameter RAM's $8A being $05.) Speedometer 3.23's
+     Run ALL Tests on the MAME SE with 128 MB and both screens: "The tests are done!", no exception.
+   - *PiDisk's log.* The user's 64 KB log had 1,790 lines, 1,300 of them "PiDisk: prime": Prime logged
+     every read and write, through an INFO command each, and pushed everything else out. Prime, Control
+     and Status now log only the first six requests after Open, and Prime's errors the first sixteen times
+     ("PiDisk: prime error -NNN"). A boot to the Finder and Run ALL Tests now leave five such lines where
+     they left about 1,200. The other drivers were already quiet: .ENET stops after 60 lines, PiInput's key
+     trace and PiVideo's control trace after 48, the others log at open or once; WiFiMenu's per-call
+     log is compiled only with WM_DEBUG.
+   - *Not verified on hardware:* the patched ROM on the user's SE; Speedometer 3.23's own double dispose
+     (whether the testbed's runs reached it is not known: on the patched ROM it leaves no trace, and
+     the testbed's memory holds zeros where the user's held $55); the source of the $55 fill.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

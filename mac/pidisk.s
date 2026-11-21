@@ -106,7 +106,12 @@
 	.equ	G_DEV,		8		| MAXDEV device records
 	.equ	G_VBL,		G_DEV+MAXDEV*DEV_SIZE	| VBLTask (14 bytes) + globals pointer (4)
 	.equ	G_VBLSELF,	G_VBL+14
-	.equ	G_SIZE,		G_VBLSELF+4
+	.equ	G_LOGS,		G_VBLSELF+4	| word: Prime, Control and Status lines still to log after Open
+	.equ	G_ERRS,		G_LOGS+2	| word: Prime error lines still to log
+	.equ	G_TEXT,		G_ERRS+2	| 32 bytes: the text of an error line
+	.equ	G_SIZE,		G_TEXT+32
+	.equ	FIRST_LOGS,	6		| the first requests after Open, to show the driver at work
+	.equ	ERR_LOGS,	16		| a disk that fails fails many times: the first sixteen say how
 	.equ	_VInstall,	0xA033
 	.equ	_VRemove,	0xA034
 
@@ -139,6 +144,17 @@ drvr_start:
 8:	movem.l	(%sp)+,%d0-%d1/%a0-%a1
 	.endm
 
+| `log_first "text"`: the line only for the first FIRST_LOGS requests after Open (a1 = the DCE).
+| Until 21 November 2026 Prime logged every read and write: 1,300 of the 1,790 lines in a user's
+| 64 KB log, which pushed everything else out, and an INFO command (a round trip to the Pi's
+| console) for every disk I/O (docs/08 item 78). Uses label 7 besides the log macro's 8 and 9.
+	.macro	log_first text
+	bsr	log_left
+	beq.s	7f
+	log	"\text"
+7:
+	.endm
+
 | ---- helpers ----
 | do_log: a1 = C string -> INFO command (block 0): cmd 2, buf, len
 do_log:
@@ -164,6 +180,58 @@ do_log:
 	subq.l	#1,%d1
 	bne.s	4b
 5:	rts
+
+| log_left: Z clear (and one line fewer to come) while the first requests after Open are logged,
+| Z set after that or before Open made the globals; a1 = the DCE, every register kept
+log_left:
+	movem.l	%d0/%a0,-(%sp)
+	move.l	dCtlStorage(%a1),%d0
+	beq.s	1f			| no globals: Z set
+	move.l	%d0,%a0
+	tst.w	G_LOGS(%a0)
+	beq.s	1f			| none left: Z set
+	subq.w	#1,G_LOGS(%a0)
+	moveq	#1,%d0			| Z clear
+1:	movem.l	(%sp)+,%d0/%a0		| (movem to registers leaves the condition codes alone)
+	rts
+
+| log_prime_err: "PiDisk: prime error -NNN" for d0.w = the result, the first ERR_LOGS times; a1 = the
+| DCE, every register kept. The text is put together in the globals (G_TEXT).
+log_prime_err:
+	movem.l	%d0-%d1/%a0-%a2,-(%sp)
+	move.l	dCtlStorage(%a1),%d1
+	beq.s	9f
+	move.l	%d1,%a2
+	tst.w	G_ERRS(%a2)
+	beq.s	9f
+	subq.w	#1,G_ERRS(%a2)
+	lea	G_TEXT(%a2),%a0
+	lea	prime_err_text(%pc),%a1
+1:	move.b	(%a1)+,(%a0)+
+	bne.s	1b
+	subq.l	#1,%a0			| onto the NUL
+	moveq	#0,%d1
+	move.w	%d0,%d1
+	neg.w	%d1			| a Device Manager error, -1 .. -999
+	divu	#100,%d1		| hundreds in the low word, the rest in the high
+	add.b	#'0',%d1
+	move.b	%d1,(%a0)+
+	clr.w	%d1
+	swap	%d1
+	divu	#10,%d1
+	add.b	#'0',%d1
+	move.b	%d1,(%a0)+
+	swap	%d1
+	add.b	#'0',%d1
+	move.b	%d1,(%a0)+
+	clr.b	(%a0)
+	lea	G_TEXT(%a2),%a1
+	bsr	do_log
+9:	movem.l	(%sp)+,%d0-%d1/%a0-%a2
+	rts
+prime_err_text:
+	.asciz	"PiDisk: prime error -"
+	.even
 
 | window(): a0 = window base according to the MMU mode
 window:
@@ -303,6 +371,8 @@ d_open:
 	move.l	%a0,dCtlStorage(%a4)
 	move.l	%a0,%a2			| globals
 	move.w	dCtlRefNum(%a4),G_REFNUM(%a2)
+	move.w	#FIRST_LOGS,G_LOGS(%a2)
+	move.w	#ERR_LOGS,G_ERRS(%a2)
 	bsr	window
 	move.l	%a0,G_WIN(%a2)
 	cmp.l	#PSMB_MAGIC,(%a0)
@@ -374,7 +444,7 @@ free_drive_number:
 
 | ---- Prime: read / write ----
 d_prime:
-	log	"PiDisk: prime"
+	log_first "PiDisk: prime (logged for the first requests after open only)"
 	movem.l	%d1-%d7/%a0-%a4,-(%sp)
 	move.l	%a0,%a4			| PB (a1: the DCE, kept)
 	move.l	dCtlStorage(%a1),%a2
@@ -442,12 +512,15 @@ prime_nodrv:
 prime_err:
 	moveq	#ioErr,%d0
 prime_done:
-	movem.l	(%sp)+,%d1-%d7/%a0-%a4
+	tst.w	%d0
+	beq.s	1f
+	bsr	log_prime_err
+1:	movem.l	(%sp)+,%d1-%d7/%a0-%a4
 	bra	iodone
 
 | ---- Control ----
 d_control:
-	log	"PiDisk: control"
+	log_first "PiDisk: control"
 	move.w	csCode(%a0),%d0
 	cmp.w	#1,%d0			| KillIO
 	beq.s	ctl_ok
@@ -503,7 +576,7 @@ ctl_eject:
 
 | ---- Status ----
 d_status:
-	log	"PiDisk: status"
+	log_first "PiDisk: status"
 	move.w	csCode(%a0),%d0
 	cmp.w	#8,%d0			| drive status
 	bne.s	st_err
