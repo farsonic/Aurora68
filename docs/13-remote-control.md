@@ -311,8 +311,9 @@ screen is under it. The pointer goes back where it was (past the window's corner
 Then the kernel waits until the window is first in the list and its update region is empty (the
 application has drawn it; `psmac_windows.c` now reads `updateRgn`), at most a second and a half, and takes
 the picture. Without the agent, or under System 6, the click alone does it when part of the title bar shows.
-Nothing is clicked while a dialog (windowKind 2) is in front, since an alert or a modal dialog would take
-the click: 409 "a dialog is in front". A window with no title bar showing that the agent cannot bring
+Nothing is clicked while a dialog is in front, since an alert or a modal dialog would take the click: 409
+"a dialog is in front". A dialog is a Dialog Manager window (windowKind 2) or any front window with no title
+bar, such as the message boxes Aurora68 Play draws itself. A window with no title bar showing that the agent cannot bring
 forward: 409. `X-Aurora-Front` says `already`, `agent`, `click`, `agent and click`, or `timeout, still
 behind` / `timeout, still drawing` when the wait ran out (the picture is taken anyway). With `restore=1` the
 previously front application is made front again by the agent after the picture, and when it was the same
@@ -500,5 +501,10 @@ System 6 the agent cannot see other programs (MultiFinder's are not enumerated).
 the first 'APPL' of its creator the catalog search finds (the Finder would ask its desktop database: on the
 testbed's disk that knew none of the applications, and after the agent had asked it the Finder fell into a
 loop of alerts "an error of type -192", so it is not asked). An old application that takes no Apple events
-gets a document only when it is launched with it. Only the data fork is read by `read_file`; aliases are not
+gets a document only when it is launched with it. `quit`, and `open` of a document for a program that runs
+already, send an Apple event, which only a program aware of high-level events can send: when the program in
+front is not one (Aurora68 Log, for example), the agent first brings the program being quit, or the Finder,
+to the front. On the first start of a new disk image the Finder rebuilds its desktop file, and while it does,
+quit a program that `open` started only while the Finder is in front (docs/08 item 90). Only the data fork is
+read by `read_file`; aliases are not
 resolved; paths with two volumes of one name reach the first.

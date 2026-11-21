@@ -62,7 +62,7 @@ static volatile uint8_t *agbuf;
 
 /* ---- is the agent there? ---- */
 /* Its VBL task counts vbl_beat sixty times a second. Seen moving in the last 1.5 s: installed and the
-   Mac's interrupts running. Installed but still: the Mac has stopped (a system error, the debugger). */
+   Mac's interrupts running. Installed but still: the Mac takes no interrupts (a system error, the debugger). */
 static uint32_t beat_seen, beat_ms;
 static int beat_known;
 static void agent_sample(void)
@@ -626,7 +626,7 @@ void psmac_files_poll(void)
             int alive = agent_alive();
             sprintf(m, "the Aurora68 Agent did not answer within %u s: %s", (now_ms() - J.waited_from) / 1000,
                     alive ? "the Mac is busy (a menu held down, a modal dialog, a long disk operation) or the program in front takes no events"
-                          : "the Mac has stopped (a system error, the debugger)");
+                          : "the Mac has stopped taking interrupts (a system error, the debugger, a long time with interrupts off)");
             J.posted = 0;
             if (J.state == S_CLEAN) { J.created = 0; respond_error_now(); }
             else { if (J.kind == J_PUSH && J.created == 1) J.created = 0; fail(504, m); }

@@ -57,14 +57,18 @@ _reloc_off:
 	rts
 
 | jGNEFilter: A1 the event, the result word at 4(sp); every register kept, the next filter after.
-| The agent takes no event: c_filter only does the waiting request.
+| c_filter does the waiting request; it answers 1 when it has taken the event (an application-died
+| event of the agent's own launch, agent.c take_obit), and GetNextEvent's result is made false.
 	.globl	gne_filter
 gne_filter:
 	movem.l	%d0-%d2/%a0-%a1,-(%sp)
 	move.l	%a1,-(%sp)
-	jsr	c_filter		| void c_filter(void *event)
+	jsr	c_filter		| int c_filter(EventRecord *event)
 	addq.l	#4,%sp
-	movem.l	(%sp)+,%d0-%d2/%a0-%a1
+	tst.l	%d0
+	beq.s	2f
+	clr.w	24(%sp)			| the result word, above the five registers and the return address
+2:	movem.l	(%sp)+,%d0-%d2/%a0-%a1
 	move.l	old_gne,-(%sp)
 	beq.s	1f
 	rts				| into the filter that was there before
@@ -151,6 +155,23 @@ pm_front:
 	move.w	(%sp)+,%d0
 	ext.l	%d0
 	move.l	(%sp)+,%d2
+	rts
+| AcceptHighLevelEvent(VAR sender, VAR refcon, buffer, VAR size): the high-level event in front taken
+	.globl	hle_accept			| short hle_accept(void *sender, long *refcon, void *buffer, long *size)
+hle_accept:
+	link	%a6,#0
+	move.l	%d2,-(%sp)
+	clr.w	-(%sp)
+	move.l	8(%a6),-(%sp)
+	move.l	12(%a6),-(%sp)
+	move.l	16(%a6),-(%sp)
+	move.l	20(%a6),-(%sp)
+	move.w	#0x33,-(%sp)
+	.short	0xA88F
+	move.w	(%sp)+,%d0
+	ext.l	%d0
+	move.l	-4(%a6),%d2
+	unlk	%a6
 	rts
 	.globl	pm_info				| short pm_info(const psn *, ProcessInfoRec *): GetProcessInformation
 pm_info:

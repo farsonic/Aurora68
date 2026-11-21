@@ -789,8 +789,8 @@ static short open7(void)
 	} else {
 		/* Not running: launched with the 'odoc' event as its launch parameters (AECoerceDesc to 'appa', the
 		   documented way), which the Process Manager also turns into the Finder information an application
-		   of before System 7 reads (Aurora68 Play takes no Apple events). The System 7.1 Finder itself takes no
-		   Apple events (noPortErr), so it cannot be asked to open the document as a double-click would. */
+		   of before System 7 reads (Aurora68 Play takes no Apple events). The System 7.1 Finder cannot be asked
+		   to open it as a double-click would: it ignores 'odoc', and its 'FNDR' 'sope' crashed it (docs/08 item 90). */
 		e = doc ? make_odoc(0x7369676EUL /* 'sign' */, &creator, 4) : 0;
 		if (!e && doc && !(e = ae_coerce_desc(&d_event, 0x61707061UL /* 'appa' */, &d_params))) mac_hlock(d_params.data);
 		if (!e) {
@@ -821,6 +821,45 @@ static short open7(void)
 	return e;
 }
 
+/* The launcher's "application died" event. LaunchApplication makes the program it is called in the new
+   process's launcher, and here that is whichever program's GetNextEvent the filter runs in: nearly always
+   the Finder. The Process Manager tells a launcher whose SIZE resource asks for it (the 7.1 Finder's does,
+   modeGetAppDiedMsg) when its child quits, with an 'aevt' 'obit' high-level event. The 7.1 Finder takes
+   that well once it is up, but while it is rebuilding the desktop file (the first start of a new disk
+   image) the death of a program it never launched made it jump to a wild address: "bad F-Line
+   instruction" (found in the test11 check, 21 November 2026). It takes the event in its own event loop,
+   not through an Apple event handler that could be replaced, so the filter takes it first: an 'obit'
+   arriving at a launcher while one of the agent's own launches from it has died is accepted by the agent,
+   and the launcher gets a null event instead. The filter sees the event while the Finder is in front, as
+   it is during the rebuild; a Finder in the background does not come through it. */
+short hle_accept(void *sender, long *refcon, void *buffer, long *size);
+static struct { PSN child, launcher; } watch[8];              /* the agent's launches, the latest eight */
+static unsigned watch_turn;
+static unsigned char hle_sender[512], hle_data[1024];         /* a TargetID (about 250 bytes) and the event */
+
+static int same_psn(const PSN *a, const PSN *b) { return a->hi == b->hi && a->lo == b->lo; }
+static int process_alive(const PSN *p)
+{
+	pinfo.length = sizeof pinfo; pinfo.name = name32; pinfo.spec = &run_spec;
+	return !pm_info(p, &pinfo);
+}
+/* an 'obit' in front of the current program: 1 when it was the death of one of the agent's launches and
+   the agent has taken it */
+static int take_obit(void)
+{
+	PSN cur;
+	if (pm_current(&cur)) return 0;
+	for (unsigned i = 0; i < 8; i++) {
+		if (!watch[i].child.lo || !same_psn(&watch[i].launcher, &cur) || process_alive(&watch[i].child)) continue;
+		long refcon = 0, size = sizeof hle_data;
+		short e = hle_accept(hle_sender, &refcon, hle_data, &size);
+		watch[i].child.hi = watch[i].child.lo = 0;
+		if (e) { log_err("an application-died event could not be taken: ", e); return 0; }
+		return 1;
+	}
+	return 0;
+}
+
 /* The launch itself, once the request is answered and the filter is no longer inside it. LaunchApplication
    from inside the request came back into the filter while the request was still under way, as if the
    filter's guard had been lifted: in the first tests the request ran twice, and with a guard against that
@@ -840,8 +879,12 @@ static void launch_now(void)
 	mac_setzone(zone);
 	held[0] = d_target; held[1] = d_event; held[2] = d_list; held[3] = d_alias; held[4] = d_params; held[5] = d_reply;
 	d_target.data = d_event.data = d_list.data = d_alias.data = d_params.data = d_reply.data = 0;
-	short e = mac_launch(&launch);
-	if (e) log_err("LaunchApplication answered ", e);
+	PSN launcher;
+	short e = pm_current(&launcher);
+	if (!e) e = mac_launch(&launch);
+	if (e) { log_err("LaunchApplication answered ", e); return; }
+	watch[watch_turn & 7].launcher = launcher;
+	watch[watch_turn++ & 7].child = launch.psn;
 }
 
 /* System 6: an application only, by _Launch from its folder (made the default through a working directory);
@@ -1015,13 +1058,51 @@ static int serve(unsigned long req)
 	return 1;
 }
 
+/* QUIT and OPEN send Apple events (a 'quit', an 'odoc' to a program that runs already), and an Apple event
+   goes out from the program the filter is running in: one that is not high-level-event aware has no port
+   to send from, and AESend answers noPortErr (-903). Aurora68 Log, in front, made the agent's quit fail
+   that way while the same quit from the Finder's filter worked. A program in the background does not come
+   through the filter (woken with WakeUpProcess, the Finder still never did), so such a request first makes
+   an aware program the front one: for QUIT the program to be quit (it would come forward anyway to ask
+   about saving), else the Finder or the first aware program (OPEN brings its own program forward after
+   sending). The request is carried out in that program's filter, or after five seconds where it is, with
+   its error. */
+static int can_send_events(unsigned long req)
+{
+	static unsigned long seen_req, seen_at;
+	static int moved;
+	if (req != seen_req) { seen_req = req; seen_at = LM_TICKS; moved = 0; }
+	if (LM_TICKS - seen_at > 300) return 1;
+	PSN p;
+	if (!pm_ready() || pm_current(&p) || !process_alive(&p)) return 1;
+	if (pinfo.mode & 0x40 /* modeHighLevelEventAware */) return 1;
+	if (moved) return 0;
+	moved = 1;
+	if (A->op == PSMB_AG_QUIT) {
+		unsigned char want[33];
+		unsigned n = 0;
+		for (; A->path[n] && n < 31; n++) want[n + 1] = (unsigned char)A->path[n];
+		want[0] = (unsigned char)n;
+		if (find_process(0, want, A->fcreator, &p) && (pinfo.mode & 0x40) && !pm_setfront(&p)) return 0;
+	}
+	p.hi = p.lo = 0;
+	while (!pm_next(&p))
+		if (process_alive(&p) && (pinfo.mode & 0x40)) { pm_setfront(&p); break; }
+	return 0;
+}
+
 /* The GetNextEvent filter. Idle: one look at the block. A request: carried out, and the next ones too
    while they follow at once (a transfer's chunks), for at most five ticks, so that the program in front
-   is not held up for long; the kernel's next request comes within a millisecond of the answer. */
-void c_filter(void *event)
+   is not held up for long; the kernel's next request comes within a millisecond of the answer. Answers 1
+   when it has taken the event (take_obit), and GetNextEvent's result is then false (entry.s). */
+int c_filter(EventRecord *ev)
 {
-	(void)event;
-	if (busy) return;
+	if (busy) return 0;
+	if (ev->what == 23 /* kHighLevelEvent */ && (unsigned long)ev->message == 0x61657674UL /* 'aevt' */
+	    && (unsigned long)pt_long(ev->where) == 0x6F626974UL /* 'obit' (the event ID is in where) */ && sys7() && take_obit()) {
+		ev->what = 0;                                         /* a null event, and GetNextEvent's answer false */
+		return 1;
+	}
 	A = blk();
 	A->beat++;
 	unsigned long req = A->req_seq;
@@ -1029,12 +1110,13 @@ void c_filter(void *event)
 		static unsigned long looked;
 		if (LM_TICKS - looked > 30) { looked = LM_TICKS; if (pm_ready()) pm_front(&front_psn); }
 	}
-	if (req == A->done_seq || LM_FSBUSY) return;
+	if (req == A->done_seq || LM_FSBUSY) return 0;
+	if ((A->op == PSMB_AG_QUIT || A->op == PSMB_AG_OPEN) && sys7() && !can_send_events(req)) return 0;
 	busy = 1;
 	unsigned long t0 = LM_TICKS;
 	for (;;) {
 		if (!serve(req)) break;                               /* that one is under way already (above) */
-		if (!busy) return;                                    /* System 6's Launch answered for itself (open6) */
+		if (!busy) return 0;                                  /* System 6's Launch answered for itself (open6) */
 		if (launch_pending) break;
 		unsigned long t1 = LM_TICKS;
 		while ((req = A->req_seq) == A->done_seq && LM_TICKS - t1 < 2) ;   /* a transfer's next chunk follows at once */
@@ -1042,6 +1124,7 @@ void c_filter(void *event)
 	}
 	busy = 0;
 	if (launch_pending) launch_now();
+	return 0;
 }
 
 /* The VBL task: a heartbeat for the kernel, and the program in front woken while a request waits, again

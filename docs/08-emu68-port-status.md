@@ -3444,6 +3444,43 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    - *Not verified:* real hardware and its speed; System 7.5 and later; MultiFinder under System 6; a volume
      other than the startup disk; files over 16 MB.
 
+90. **The test11 check: the Finder bombed while rebuilding its desktop, and a quit that could not be sent
+   (21 November).** The check of the test11 image before it went to the owner found three faults.
+   - *The Finder and "application died".* Programs the agent opened (SimpleText, Aurora68 Play) brought the
+     Finder down when they quit, "bad F-Line instruction" (a jump to `$F8408026`), but only while the Finder
+     was rebuilding its desktop file, which it does on the first start of a new image (the image is built
+     with `--rebuild-desktop`); after the rebuild the same steps were fine, and Play started from Startup
+     Items quit cleanly at any time. The cause is the launcher: LaunchApplication makes the program it is
+     called in the new process's launcher, and the agent calls it in the GetNextEvent filter of the program
+     in front, nearly always the Finder. A launcher whose SIZE resource asks for it (the 7.1 Finder's flags
+     are `$7BE0`, acceptAppDiedEvents among them) is told of its child's death by an `'aevt' 'obit'`
+     high-level event; with that flag cleared on a copy of the Finder, the crash went away. The 7.1 Finder
+     takes the event in its own event loop (it has no `'obit'` handler in its Apple event table:
+     AEGetEventHandler -1717), so the agent's filter takes it first (`take_obit`): an `'obit'` arriving at a
+     launcher after one of the agent's own launches from it has died is accepted (AcceptHighLevelEvent) and
+     replaced by a null event, with GetNextEvent's answer false. The filter sees it while the Finder is in
+     front, as it is during the rebuild; a Finder in the background does not come through the filter (woken
+     with WakeUpProcess, it still never did), so a launched program quit while another is in front during the
+     rebuild is still a risk. Asking the Finder to open things itself was tried and dropped: it ignores
+     `'aevt' 'odoc'`, and its "open selection" Finder event (`'FNDR' 'sope'`) sent from its own filter crashed
+     it during the rebuild too.
+   - *A quit that could not be sent.* An Apple event goes out from the program the filter runs in, and one
+     that is not high-level-event aware has no port: with Aurora68 Log in front the agent's `quit` answered
+     noPortErr (-903), "does not take Apple events", where the same quit from the Finder's filter worked.
+     (The 7.1 Finder's -903 recorded in item 89 was probably the same thing.) A QUIT or OPEN request now waits
+     until the filter runs in an aware program, and makes one the front program first: for QUIT the program
+     to be quit, otherwise the Finder; after five seconds it is carried out where it is (`can_send_events`).
+   - *`front=1` behind a message box.* Aurora68 Play's message boxes are windows without a title bar (kind 8),
+     not Dialog Manager windows, so the remote clicked behind one. A front window without a title bar now
+     counts as a dialog (409). The 504 for an agent whose heartbeat has stopped now says the Mac takes no
+     interrupts: here it was the testbed's ASC (item 74's beep that never ends) holding interrupt level 2
+     after Play's SysBeep, which the real SE does not have.
+   - *Verified in the testbed (System 7.1, the test11 image):* during the desktop rebuild, SimpleText opened
+     and quit with Command-Q, and Aurora68 Play quitting after its no-sound box, with the Finder up after both;
+     after the rebuild, a quit sent with Aurora68 Log in front, a document opened, `front=1` with restore,
+     409 with Play's box in front, the 1 MB round trip.
+   - *Not verified:* real hardware; System 6 with MultiFinder.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,

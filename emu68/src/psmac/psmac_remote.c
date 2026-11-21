@@ -1157,7 +1157,10 @@ static void front_begin(struct hconn *h, int c, int found, int zoom, int content
     front_app_of(0, F.prev_app);
     h->kind = R_FRONT; h->out_len = h->out_pos = 0;
     if (found == 0) { F.state = F_WAIT; F.until = now_ms() + 1500; return; }   /* in front already: drawn yet? */
-    if (wi.n && wl[0].kind == 2 && wl[0].visible) { front_fail(h, 409, "a dialog is in front: it would take the click (answer it first)"); return; }
+    /* a dialog: the Dialog Manager's (windowKind 2), or a program's own modal box, a window with no title
+       bar (dBoxProc and its kind; Aurora68 Play's messages are such windows of kind 8) */
+    if (wi.n && wl[0].visible && (wl[0].kind == 2 || (wl[0].has_rect && wl[0].has_content && wl[0].content[1] - wl[0].rect[1] < 12)))
+        { front_fail(h, 409, "a dialog is in front: it would take the click (answer it first)"); return; }
     uint8_t own[32]; int n = front_app_of(found, own);
     __builtin_memcpy(F.own_app, own, sizeof own);
     /* another application's window: the agent switches applications, if it is there */
