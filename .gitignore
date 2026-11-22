@@ -70,3 +70,8 @@ mac/build/piagent.elf
 .claude/worktrees/
 # the FAT/exFAT HFS view test (tools/hfsview_test.sh): its images and trees are never committed
 mac/build/hfsview/
+
+# Aurora68 Play for macOS: SwiftPM and make-app.sh outputs
+macos/Aurora68Play/.build/
+macos/Aurora68Play/build/
+macos/Aurora68Play/.swiftpm/
