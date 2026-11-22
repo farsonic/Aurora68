@@ -490,6 +490,14 @@ def main():
             if a.macbinary and not mb:
                 raise RuntimeError(f'{a.local} is not a MacBinary file')
             path = a.path
+            target = path + (mb['name'] if mb else mac_name(a.local)) if path.endswith(':') else path
+            try:                                    # a folder of that name is there: say so before sending
+                there = r.info(target)
+            except RuntimeError:
+                there = {}
+            if there.get('kind') == 'folder':
+                raise RuntimeError(f'"{target}" is a folder, so the file cannot replace it: to put it inside, '
+                                   f'push to "{target}:"')
             if mb:
                 kind = f'MacBinary: {mb["type"]}/{mb["creator"]}, data {mb["data"]}, resources {mb["rsrc"]}'
                 res = r.push(f, size, path, macbinary=True, force=a.force, mkdir=a.mkdir)

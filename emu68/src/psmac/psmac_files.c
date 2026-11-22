@@ -527,7 +527,8 @@ static void reply(void)
         J.created = 0;                                    /* the new file is whole: it stays */
         char m[200], t[300]; js(t, sizeof t, J.path, slen((const char *)J.path));
         sprintf(m, "the upload is complete as \"%s\", but the old file could not be %s (the Mac's error %d%s): replace it by hand",
-                t, J.state == S_REPLACE_DEL ? "deleted" : "replaced", (int)st, st == -47 ? ", the file is in use" : "");
+                t, J.state == S_REPLACE_DEL ? "deleted" : "replaced", (int)st, st == -47 ? ", the file is in use" :
+                st == PSMB_AGE_NOTEMPTY || st == PSMB_AGE_ISDIR ? ": that name is a folder" : "");
         fail(409, m);
         return;
     }
