@@ -31,7 +31,7 @@ final class DeviceLink: ObservableObject {
 
     let id: String
     let name: String
-    static let version = "1.2"
+    static let version = "1.3"
 
     var api: MusicAPI? { didSet { restart() } }
     var onCommand: (@MainActor (DeviceCommand) -> Void)?

@@ -41,6 +41,17 @@ Since 0.13 (docs/08 items 96 and 103):
     radio stations still offers the built-in ones; after a probe the address the answer came from is tried
     first; songs added after the queue has ended are the ones that play. `Package.swift` is now at the
     repository's top (`swift test` there; `make-app.sh` as before).
+- **Music videos in Aurora68 Play** (22 November 2026, docs/08 item 109). The music server finds the music videos
+  beside the albums (MP4, M4V, MOV, MKV, WebM, AVI, MPEG, TS), attaches each to its album or artist, and sends each
+  the cheapest way a Mac plays it: the file as it is (MP4 or QuickTime of H.264 or HEVC), else remuxed into MP4 with
+  the picture copied, else transcoded (H.264 and AAC; `VIDEO_TRANSCODE=off` refuses, `VIDEO_TRANSCODES` limits);
+  posters, the sound alone as MP3, and HLS for AVFoundation. **Update the server image** (`docker compose pull`, then
+  `up -d`), and give it a cache folder (`MUSIC_CACHE`, a volume the server's user can write; tools/music-server/
+  README.md, "Music videos"). Its web panel lists and plays videos and has the Setup and Recovery page's look.
+  - **Aurora68 Play for macOS 1.3:** videos after an album's songs and an artist's albums, played in a Video
+    window (AVKit, full screen), in the queue with the songs, and on other players (the SE gets the sound).
+  - **Aurora68 Play 1.5 (classic):** videos in the Library marked "Video:", playing their sound like a track; an
+    artist with videos alone opens on them. The picture on the SE waits for the video card's program (docs/16).
 - **Aurora68 Recovery** (docs/08 item 106, README "Recovery"): when the Mac does not reach the Finder three
   starts in a row, when the programmer's interrupt switch (or Esc on a USB keyboard) is held at power-on, when
   `recovery.txt` is on the card (`aurora68.py restart recovery`) or with `mac.recovery=1`, the Pi starts without

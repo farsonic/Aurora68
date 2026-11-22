@@ -2,7 +2,8 @@
 
 A folder of music, organised in folders however you like, served as internet radio stations over IPv4
 and IPv6. MP3s are sent as they are; FLAC, M4A (AAC and ALAC), Ogg, Opus, WAV and AIFF are converted to
-MP3 as they are sent (ffmpeg, which the Docker image has; 192 kbit/s by default). Every folder is a
+MP3 as they are sent (ffmpeg, which the Docker image has; 192 kbit/s by default), and music videos beside the
+albums are listed and played too (Music videos, below). Every folder is a
 station: its songs and those of the folders inside it, one after another,
 with each song's title, at the rate they play. Aurora68 Play on the SE plays them like any station
 (Radio menu, or Radio > Open URL...), and so do VLC, Apple Music/iTunes (File > Open Stream), foobar2000,
@@ -23,6 +24,14 @@ Shuffle rest, who is listening, and a "Listen here" button that plays it in the 
 (at the top) sends the library's buttons and the transport to another player instead: any Aurora68 Play
 that is online, a Mac or the SE (Devices, below); the **Devices** list shows each with what it plays, and
 **Radio** lists the internet radio stations to play on one.
+
+Its look (22 November 2026) is the Setup and Recovery page's (`tools/recovery/page.html`), so the project's two web
+pages match, as the owner asked ("an 80s Apple style and colour"): the Macintosh of 1984-89, black on white over the
+grey desktop pattern, each box a window with a pinstriped title bar and a close box, a hard drop shadow, rounded
+buttons with the default button's ring, messages in an alert box, Chicago and Monaco where the computer has them
+(nothing is fetched from the network), the six colours of the period in a stripe under the top bar and one for each
+window, and the Aurora68 logo (`docs/img/aurora68-logo.svg`, inline, and the favicon). On a phone the windows stack,
+Now Playing first.
 
 Tune the SE to Live once (it is the second station in the stations file, or Radio > Open URL... with
 `http://NAS:8423/live`; the server's bare address `http://NAS:8423/` works too, because a player that does
@@ -237,6 +246,111 @@ for their device (32 at most; the oldest are dropped) until it asks.
 curl -X POST -H 'X-Aurora: 1' -d '{"action":"play","what":"r:0"}' http://NAS:8423/api/devices/mac-0123456789ab/command
 ```
 
+## Music videos
+Since 22 November 2026 the server also finds the music videos in the library: `.mp4`, `.m4v`, `.mov`, `.mkv`,
+`.webm`, `.avi`, `.mpg`, `.mpeg` and `.ts` files (any case), in the same folders as the albums or in an artist's
+folder. Nothing has to be moved or renamed. Each video is attached:
+
+- in an album's folder (one holding songs): to that album and its artist;
+- in a folder named `Videos`, `Video`, `Music Videos` or `Clips` inside an album's or an artist's folder: as if it
+  were in that folder;
+- in an artist's folder (one whose albums are folders inside it), or a folder inside that: to that artist;
+- in any other folder: to the artist its name gives ("Artist - Videos" gives "Artist", else the folder's name);
+- at the top of the library: to the artist its own name gives ("Artist - Title.mp4"), else the library's name.
+
+A video's title is its file's name tidied as a track's is ("03. Artist - Title (Official Video).mp4" is
+"Title (Official Video)", number 3). Its length, picture size and codecs come from ffprobe, asked once per file and
+kept in the cache folder (`videos.json`, by path, modification time and size), so a rescan of a slow NAS costs
+nothing and a restart probes nothing it has seen; a file ffprobe finds no picture in is passed over with a line in
+the log. Copies of one video (the same title, sizes within 2%, as a download made twice leaves) are listed once, the
+one that plays as it is kept (MUSIC_COPIES as for tracks). Videos count in the library's generation (a video copied
+in makes the players fetch their lists again) and in `/api/info` (`"videos"`).
+
+**How a video is sent**, the cheapest way that plays on a Mac, decided per file from what ffprobe said:
+
+| | when | what is sent |
+|---|---|---|
+| as it is | MP4, M4V or QuickTime holding H.264 (8-bit 4:2:0) or HEVC (tagged `hvc1`), with AAC, ALAC or MP3 sound or none | `/video/ID`: the file, with Range, as AVFoundation (the macOS Play, Safari, QuickTime Player) and browsers ask for it |
+| remuxed | H.264 or HEVC in another container (MKV, TS, AVI), or with sound a Mac lacks (AC-3, DTS, Opus, Vorbis), or HEVC tagged `hev1` | the picture copied, not encoded again, into fragmented MP4 as it is sent; sound a Mac lacks converted to AAC (sound is cheap; the picture is what a NAS cannot afford) |
+| transcoded | anything else: VP9, AV1, VP8, MPEG-2, MPEG-4 Part 2, 10-bit or 4:2:2 H.264 | H.264 (x264 `veryfast`, CRF 21 under `VIDEO_BITRATE`, no taller than `VIDEO_MAX_HEIGHT`, a keyframe every 2 seconds) and AAC at 192 kbit/s; at most `VIDEO_TRANSCODES` at once (503 beyond, "N transcodes running already"); refused with `VIDEO_TRANSCODE=off` (415, in words). The reason is logged |
+
+A remuxed or transcoded stream has no length before it is made, and AVFoundation does not play a progressive file
+whose server cannot answer a byte range (its error -11850, "server not correctly configured"). So those two are also
+offered as HLS, which AVFoundation plays as it grows: `/video/ID/index.m3u8`, segments of fragmented MP4 of four
+seconds written to the cache folder as ffmpeg makes them (`/video/ID/init.mp4`, `/video/ID/seg00000.m4s`...), the
+playlist served with `#EXT-X-START:TIME-OFFSET=0` so a player starts at the beginning, not at the growing end. A
+finished conversion is kept (until the cache's limit) and served again without ffmpeg; one nobody has fetched from
+for a minute is stopped. The macOS Play opens the file for a video sent as it is and the HLS for the others; the
+panel does the same in Safari and takes the plain fragmented MP4 (`/video/ID`, `?start=S` to begin later) in other
+browsers.
+
+Also for each video:
+
+| | |
+|---|---|
+| `/vthumb/ID` | its poster: a JPEG of the picture a tenth of the way in (past the titles), 480 pixels wide at most, kept |
+| `/vaudio/ID?start=S` | its sound as MP3 at the library's bit rate, an MP3 stream with an end exactly as `/t/ID` is: the classic Play plays a video so. Converted as it is sent the first time and kept whole (when sent from the start), then sent from the cache. `/t/ID` with a video's id gives the same (an older Play given a video as a track) |
+| `/vmpeg/ID?w=W&h=H&start=S` | for the Aurora68 Video Decoder card (the kernel's MPEG-1 card, docs/16): an MPEG program stream made exactly as the video helper's `/play` makes it (`tools/video-helper`, the same ffmpeg arguments): MPEG-1 video fitted into W x H and padded black (even sizes, 64 to 1280 x 720, 320 x 240 when not given), 25 frames a second, no B-frames, a keyframe every second, about 0.09 bit per pixel per frame (300 to 2,500 kbit/s); MP2 sound at 44.1 kHz stereo, 128 kbit/s. No Content-Length; it ends with the video, and stops (with its ffmpeg) when the client closes. Always a transcode: counted against `VIDEO_TRANSCODES`, refused with `VIDEO_TRANSCODE=off`. `mpeg1` in the capabilities says a server has it. No Play uses it yet |
+| `/file/PATH` | the original file, with Range, as for songs |
+
+**JSON:** `GET /api/videos` (every video), `?artist=ID` or `?album=ID`: `{"videos": [{"id", "title", "artist",
+"artist_id", "album" (its id, or empty), "album_title", "folder", "path", "number", "seconds", "width", "height",
+"vcodec", "acodec", "how": "direct"|"remux"|"transcode", "why" (in words), "playable", "video": "/video/ID", "hls"
+(empty for one sent as it is), "poster": "/vthumb/ID", "audio": "/vaudio/ID"}]}`. `/api/tracks` answers carry the
+album's (or the artist's) `"videos"` after `"tracks"`; `/api/catalog` counts each album's and artist's `"videos"`
+and lists artists with videos and no album; `/api/list` (the panel's) has a folder's `"videos"` (a folder of videos
+alone shows in its parent) and each grouped artist's; `/api/info` has `"videos"`, `"capabilities"` (`videos`,
+`remux`, `hls`, `transcode`, `mpeg1`, as this server is set up) and `"transcoding"` (how many run now).
+
+**The players' text (`/mac/`).** A third parameter, `videos=1`, which the classic Play 1.4 and the macOS Play 1.2 do
+not send: without it every answer is byte for byte what it was (the test compares every `/mac/` answer with those
+of a server with `VIDEOS=off`). With it, in Mac Roman or with `enc=utf8`, short or with `full=1`:
+
+| | with `videos=1` |
+|---|---|
+| `/mac/info` | adds `every`, the number of videos and the capabilities: `name, version, artists, albums, tracks, generation, every, videos, caps` (`caps` like `videos,remux,hls,transcode,mpeg1`) |
+| `/mac/artists` | a fifth field, the artist's videos; an artist with videos and no album is listed (0 albums) |
+| `/mac/tracks?album=ID` or `?artist=ID` | the tracks, then the album's (or artist's) videos as `V` records: `V, id, title, artist, seconds, album (its id, or empty), width, height`; with `full=1` also `path` (for `/file/`), the album's title, the folder and how it is sent (`direct`, `remux`, `transcode`). TOTAL counts both and pages run through the tracks, then the videos. An artist with videos alone has an answer here (without `videos=1`, 404 as before) |
+| `/mac/videos` | (new) every video, or `?artist=ID` or `?album=ID`: `A68M 1 videos TOTAL FROM COUNT`, then `V` records as above |
+| `/mac/search` | also `V, id, title, artist, album, seconds` (after the albums, before the tracks), and artists with videos alone |
+| `/mac/devices` | the full record (as `full=1`) and an 18th field: `1` if the device shows videos |
+| `/mac/commands` | a video in a command is a `V` line: `V, id, title, artist, seconds`, with `full=1` also `path, album, how, width, height`. Without `videos=1` it is a `T` line whose id `/t/` answers with the sound |
+
+**Devices.** A player says whether it shows videos: `"video": true` in `POST /api/devices/announce`, `&video=1` on
+`/mac/announce` (the macOS Play 1.3 does; the classic Play does not: it plays their sound until the video card's
+program exists). `/api/devices` has `"video"` for each. `what` takes `v:ID`, a music video, with `play`, `add` and
+`next`, to any device: the command's track says `"video": true`, `"how"`, `"width"`, `"height"`; to a device that
+shows none the answer adds `"audio_only": true` and the device plays its sound; to Live, its sound joins the queue. A
+device reporting a video's id in `/mac/state` (`t=ID`) is named from the catalogue, its state with `"video": true`.
+
+**The control panel** lists a folder's videos under its songs (an artist's under their albums), and a Videos
+button (shown when the library has any) lists them all, each as its poster with its title and length. A click opens
+it in a window of the page (HTML5 `<video>`: the file, HLS in Safari, else the fragmented MP4), with **Play on** the
+chosen player (Live: its sound) and **Add to queue**.
+
+**Settings** (in docker-compose's `environment:`):
+
+| Environment | |
+|---|---|
+| `VIDEOS` | `off`: no videos found, listed or served (`on`, the default) |
+| `VIDEO_TRANSCODE` | `off`: refuse what would need encoding again (a slow NAS); files sent as they are and remuxes still play. `on` by default |
+| `VIDEO_TRANSCODES` | transcodes at once (HLS, streams and the video card's MPEG-1 together): 1. A NAS's CPU encodes about one 1080p H.264 at its own speed |
+| `VIDEO_BITRATE` | kbit/s at most for a transcode's picture: 4000 |
+| `VIDEO_MAX_HEIGHT` | a transcode taller than this is scaled down: 1080 |
+| `VIDEO_PRESET` | x264's speed: `veryfast` (`ultrafast` ... `medium`) |
+| `VIDEO_CACHE_MB` | posters, soundtracks and finished HLS conversions kept, at most: 2048 MB (the least recently used go first) |
+| `MUSIC_CACHE` | the folder for all that and `videos.json`: the system's temporary folder by default (in the container `/tmp`, emptied by each image update), so give it a folder of its own the server's user can write |
+
+```yaml
+    volumes:
+      - /volume1/music:/music:ro
+      - /volume1/docker/aurora68-cache:/cache      # a folder PUID can write
+    environment:
+      MUSIC_CACHE: "/cache"
+      # VIDEO_TRANSCODE: "off"
+      # VIDEO_TRANSCODES: "1"
+```
+
 ## Internet radio for every player
 `GET /api/radio` gives `{"stations": [{"group", "name", "url"}, ...]}` and `GET /mac/radio` the same as
 lines `group`, `name`, `url`: the classic Aurora68 Play's own list (`play/core/stations.c`: SomaFM, the
@@ -282,6 +396,7 @@ about a minute, without restarting anything.
 | `/api/info` | the library's generation and counts (above) |
 | `/api/devices`, `/api/devices/...`, `/mac/announce`, `/mac/state`, `/mac/devices`, `/mac/commands` | the players (Devices, above) |
 | `/api/radio`, `/mac/radio` | the internet radio stations (above) |
+| `/api/videos`, `/mac/videos`, `/video/ID`, `/video/ID/index.m3u8`, `/vthumb/ID`, `/vaudio/ID`, `/vmpeg/ID` | music videos (above) |
 
 ## Settings
 | Option | Environment | |
@@ -300,6 +415,8 @@ about a minute, without restarting anything.
 | | `MUSIC_RESCAN` | seconds a scan of the folder is trusted: 30 |
 | | `MUSIC_RADIO` | your own stations file (else `Aurora68 Play Stations` or `radio.txt` in the music folder) |
 | | `MUSIC_DEVICE_TTL` | seconds after which a player not heard from is offline: 60 |
+| | `MUSIC_CACHE` | the server's own folder for what it makes once (video posters, soundtracks, HLS, `videos.json`): the system's temporary folder |
+| | `VIDEOS`, `VIDEO_TRANSCODE`, `VIDEO_TRANSCODES`, `VIDEO_BITRATE`, `VIDEO_MAX_HEIGHT`, `VIDEO_PRESET`, `VIDEO_CACHE_MB` | music videos (above) |
 
 New music is found by itself: the folder is scanned again when a request comes and the last scan is
 more than 30 seconds old, and players are told (New albums without a restart, above).
@@ -335,6 +452,15 @@ Live channel as a device, refusals, a player going offline and coming back; the 
 `play/core/stations.c` and a stations file of your own; and the library's generation going up when an
 album is copied in, with the catalogue listing it, and not otherwise; and the macOS Play's side of `/mac/`
 (UTF-8, the full records, a folder longer than 120 characters whole, `/mac/now`, `/mac/command` to Live and to a
-player, its refusals). The shared core's own test (`tools/play_core_fixtures.py`, in `make -C mac check`) starts
+player, its refusals). Music videos (videos_check, 22 November 2026): ffmpeg makes four of a few seconds at 160 x 120
+in a temporary folder (an MP4 of H.264 and AAC, its copy as QuickTime, an MKV of H.264 and AAC, a WebM of VP9 and
+Opus in an artist's Videos folder) and a .mp4 with no picture; the test checks the scan, the copy left out, the
+facts from ffprobe and their cache, the attachment, Range, the remux (ffprobe reads it, ffmpeg decodes it cleanly,
+and its H.264 bytes are the original's) and its HLS, the transcode, a transcode refused with `VIDEO_TRANSCODE=off`
+and beyond `VIDEO_TRANSCODES=1` (a minute-long video held open by a client that reads no more), no ffmpeg left
+behind, posters, soundtracks through the classic Play's parser (from the start and from 2 s, then from the cache),
+`/vmpeg/` at three sizes (MPEG-1 at the size asked, MP2 at 44.1 kHz stereo, no B-frames), the JSON, the `/mac/` text
+with `videos=1` both ways, every `/mac/` answer without it byte for byte a `VIDEOS=off` server's, and videos sent to a
+Mac, to the SE (its sound) and to Live (62 checks; 203 in all). The shared core's own test (`tools/play_core_fixtures.py`, in `make -C mac check`) starts
 this server too and reads its answers with the core both Plays use.
 GitHub runs it before each image build.
