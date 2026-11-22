@@ -27,7 +27,7 @@
  *             sends as Shift-arrows, become ADB's keypad keys (kb_key).
  *   mouse     X1 and Y1 on the SCC's DCD inputs, X2 and Y2 on VIA PB4 and PB5, the button on PB3
  *             (0 = down). The Plus ROM takes an SCC interrupt on each X1 or Y1 edge; here the service
- *             core reads both channels' RR0 (mac.plusmouse= times a second, 2000 by default) and, on an
+ *             core reads both channels' RR0 and port B (mac.plusmouse= times a second, 8000 by default) and, on an
  *             edge, port B: with the pins, X2 equal to X1 is right and Y2 different from Y1 down; one count per edge
  *             as on the Plus. The Mac's writes to WR15 lose the DCD interrupt enable, so the IIci ROM's
  *             serial driver is never interrupted by a moving mouse and RR0 follows the lines.
@@ -332,16 +332,66 @@ void psmac_plus_scc_read(uint32_t ch)
     if (scc_ptr) { scc_ptr = 0; __atomic_store_n(&scc_pending, 0, __ATOMIC_RELEASE); }
 }
 
-/* ---- the Plus's mouse (service core) ------------------------------------------------------- */
-static uint32_t mouse_hz = 2000;            /* mac.plusmouse=: RR0 polls a second, 0 = off */
+/* ---- the Plus's mouse (service core) -------------------------------------------------------
+   A quadrature decoder (22 November 2026). The first version counted one step on each X1 or Y1 edge seen
+   in RR0 and read X2 and Y2 from port B afterwards, and only when X1 or Y1 had moved. On the owner's
+   tester's real Plus the pointer was jerky and wandered ("a mind of its own"): a real mouse moved briskly
+   gives X1 edges faster than one poll's worth, so two edges between polls were no edge at all, and an X2
+   that changed between the RR0 read and the port B read turned a step round. MAME's mouse makes slow,
+   clean pulses and showed neither. Now each poll reads both RR0s and port B back to back and follows
+   each axis's two-bit state (X1, X2) through every transition, X2's as well as X1's; two transitions are
+   one step, the Plus's own resolution (it counts X1 edges only). The tester's first log (114 s) had 1,180
+   X1 edges and 49,584 Y1 edges, 435 a second: a line that chatters, or reads that are not the line. So a
+   line's new level counts only once two polls in a row agree (mac.plusdebounce=0 takes the first), a poll
+   that finds both bits of an axis changed is counted as a jump and ignored (crediting it in the last
+   direction turned noise into drift), and the heartbeat counts each of the four lines' changes apart. */
+static uint32_t mouse_hz = 8000;            /* mac.plusmouse=: polls a second (3 reads each), 0 = off; the debounce
+                                               needs two polls per transition, so a brisk mouse (2,000 a second) wants 8,000 */
+static int mouse_debounce = 1;              /* mac.plusdebounce=0: a line's level as read, not confirmed */
 static struct {
-    int init; uint8_t x1, y1; int button;
-    uint64_t next, next_pb;
-    uint32_t polls, skipped, edges_x, edges_y, clicks;
+    int init; uint8_t qx, qy; int button;   /* qx: (X1 as RR0 reads it) << 1 | X2; qy the same for Y (accepted) */
+    uint8_t rx, ry;                         /* the last poll's reading, for the debounce */
+    int accx, accy;                         /* transitions not yet a whole step */
+    uint64_t next;
+    uint32_t polls, skipped, edges_x, edges_y, jumps, clicks, glitches;
+    uint32_t line[4];                       /* accepted changes of X1, X2, Y1, Y2 */
 } ms;
 /* Reading VIA port B clears CB1's flag, which the keyboard's turn-round waits for (KB_EDGE below): while it
    waits, the mouse leaves port B alone (both run on the service core, one after the other) */
 static int kb_edge_watch;
+/* One axis's transition from state o to n (bit 1 the RR0 line, bit 0 the port B line): +1, -1, 0 for none,
+   2 for both bits changed. The signs are the first version's, which the Plus ROM agrees with in the testbed:
+   on an RR0-line change X moves +1 when RR0's bit differs from X2, Y +1 when it equals Y2; on a port-B-line
+   change, the other way round (the next quarter of the same cycle). */
+static int quad_step(uint8_t o, uint8_t n, int y)
+{
+    if (o == n) return 0;
+    uint8_t a = n >> 1, b = n & 1;
+    if ((o ^ n) == 3) return 2;
+    int d = (o ^ n) == 2 ? (a != b ? 1 : -1) : (b == a ? 1 : -1);
+    return y ? -d : d;               /* Y: the same rules the other way round */
+}
+static int quad_count(uint8_t o, uint8_t n, int y, int *acc, uint32_t *edges, uint32_t *line)
+{
+    int t = quad_step(o, n, y);
+    if (!t) return 0;
+    if ((o ^ n) & 2) line[0]++;
+    if ((o ^ n) & 1) line[1]++;
+    if (t == 2) { ms.jumps++; return 0; }
+    *edges += 1;
+    *acc += t;
+    int step = *acc / 2;            /* two transitions a step; the remainder waits for the next */
+    *acc -= step * 2;
+    return step;
+}
+/* the debounce: a reading becomes the accepted state only when the poll before read the same */
+static uint8_t settle(uint8_t raw, uint8_t *prev, uint8_t cur)
+{
+    uint8_t keep = (uint8_t)~(raw ^ *prev) & 3;      /* bits read the same twice running */
+    if ((*prev ^ cur) & ~(raw ^ cur) & 3) ms.glitches++;   /* a level read once, then gone back: filtered */
+    *prev = raw;
+    return mouse_debounce ? (uint8_t)((cur & ~keep) | (raw & keep)) : raw;
+}
 static void mouse_poll(uint64_t now)
 {
     if (!mouse_hz || now < ms.next || kb_edge_watch) return;
@@ -349,16 +399,14 @@ static void mouse_poll(uint64_t now)
     if (__atomic_load_n(&scc_pending, __ATOMIC_ACQUIRE)) { ms.skipped++; return; }
     ms.polls++;
     uint8_t x1 = (psmac_wire_read(PLUS_SCC_A_RD, 1) >> 3) & 1, y1 = (psmac_wire_read(PLUS_SCC_B_RD, 1) >> 3) & 1;
-    int moved = ms.init && (x1 != ms.x1 || y1 != ms.y1);
-    if (ms.init && !moved && now < ms.next_pb) return;
     uint8_t pb = (uint8_t)psmac_wire_read(PLUS_VIA(0), 1);
-    int x2 = (pb >> 4) & 1, y2 = (pb >> 5) & 1, button = !(pb & 0x08);
-    int dx = 0, dy = 0;
-    /* RR0's DCD bit is the pin inverted (the Z8530's, and MAME's); with the pins, X1 equal to X2 is right
-       and Y1 different from Y2 is down (MAME's mac128.cpp, which the Plus ROM agrees with). In RR0 terms: */
-    if (moved && x1 != ms.x1) { dx = x1 != x2 ? 1 : -1; ms.edges_x++; }
-    if (moved && y1 != ms.y1) { dy = y1 == y2 ? 1 : -1; ms.edges_y++; }
-    ms.x1 = x1; ms.y1 = y1; ms.init = 1; ms.next_pb = now + cnt_frq() / 100;
+    uint8_t rx = (uint8_t)(x1 << 1 | ((pb >> 4) & 1)), ry = (uint8_t)(y1 << 1 | ((pb >> 5) & 1));
+    int button = !(pb & 0x08), dx = 0, dy = 0;
+    if (!ms.init) { ms.qx = ms.rx = rx; ms.qy = ms.ry = ry; ms.init = 1; ms.button = button; return; }
+    uint8_t qx = settle(rx, &ms.rx, ms.qx), qy = settle(ry, &ms.ry, ms.qy);
+    dx = quad_count(ms.qx, qx, 0, &ms.accx, &ms.edges_x, &ms.line[0]);
+    dy = quad_count(ms.qy, qy, 1, &ms.accy, &ms.edges_y, &ms.line[2]);
+    ms.qx = qx; ms.qy = qy;
     if (!dx && !dy && button == ms.button) return;
     if (button != ms.button && button) ms.clicks++;
     ms.button = button;
@@ -603,6 +651,7 @@ void psmac_plus_options(const char *args)
     if ((tok = find_token(args, "mac.plustrace="))) {
         tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); adb_trace_left = n;
     }
+    if ((tok = find_token(args, "mac.plusdebounce="))) mouse_debounce = tok[17] != '0';
     if ((tok = find_token(args, "mac.plusmouse="))) {
         tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); mouse_hz = n > 20000 ? 20000 : n;
     }
@@ -618,7 +667,7 @@ void psmac_plus_report(void)
     kprintf("[PSMAC:PLUS] ADB: state %d, %u commands (%u talk, %u answered, %u listen, %u reset/flush), %u autopolls, %u SRQs, last %02x | keyboard at %d, mouse at %d | SR interrupts %u, IFR.SR %d IER.SR %d, ACR %02x\n",
             adb.state, adb.cmds, adb.talks, adb.answered, adb.listens, adb.resets, adb.autopolls, adb.srqs, adb.last_cmd, kbd.addr, mouse.addr,
             pv.sr_irqs, pv.ifr_sr, pv.ier_sr, pv.acr);
-    kprintf("[PSMAC:PLUS]   Plus keyboard: %s, %u bytes (%u keys, %u none), %u answer timeouts, %u turns without the last edge, last %02x | Plus mouse: %u Hz, %u polls (%u skipped for the SCC pointer), %u x and %u y edges, %u clicks, button %s | WR15 DCD enables cleared %u\n",
+    kprintf("[PSMAC:PLUS]   Plus keyboard: %s, %u bytes (%u keys, %u none), %u answer timeouts, %u turns without the last edge, last %02x | Plus mouse: %u Hz, %u polls (%u skipped for the SCC pointer), %u x and %u y transitions (lines X1 %u X2 %u Y1 %u Y2 %u), %u jumps, %u one-poll glitches%s, %u clicks, button %s | WR15 DCD enables cleared %u\n",
             !kbd_on ? "off (mac.pluskbd=off)" : kb.present ? "answering" : "not answering", kb.bytes, kb.keys, kb.nulls, kb.timeouts, kb.edge_missed, kb.last,
-            mouse_hz, ms.polls, ms.skipped, ms.edges_x, ms.edges_y, ms.clicks, ms.button ? "down" : "up", scc_dcd_ie_cleared);
+            mouse_hz, ms.polls, ms.skipped, ms.edges_x, ms.edges_y, ms.line[0], ms.line[1], ms.line[2], ms.line[3], ms.jumps, ms.glitches, mouse_debounce ? " filtered" : " (not filtered)", ms.clicks, ms.button ? "down" : "up", scc_dcd_ie_cleared);
 }

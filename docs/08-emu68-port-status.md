@@ -3760,6 +3760,21 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      image; moved to ID 0 (`MAME_EXTRA='-scsibus:6 cdrom -scsibus:0 harddisk -hard ...'`) the SE started
      from SCSI and mounted the image after it. This is the order item 67 wrote down; whether a disk at
      another ID should come before the card is the owner's to decide.
+   - *The first real Plus (22 November, a tester of the owner's).* System 7.0.1 started from a disk image on
+     the card (the Plus's SCSI bus empty, answered by the kernel), keyboard and mouse working; but the pointer
+     was jerky and moved on its own. The heartbeat over 114 s: 227,534 polls, 1,180 X1 edges and 49,584 Y1
+     edges, 435 a second, so a Y line that chatters or reads that are not the line. The decoder counted a
+     step at each X1 or Y1 edge read in RR0 and read X2/Y2 from port B after it, only when X1 or Y1 had moved:
+     two edges between polls were no edge, and a port B line that changed between the two reads turned the
+     step round. Rewritten as a quadrature decoder: both RR0s and port B read back to back at each poll
+     (8,000 a second by default, `mac.plusmouse=`), each axis's two-bit state followed through every
+     transition (two a step, the Plus's resolution), a level taken only when two polls in a row agree
+     (`mac.plusdebounce=0` for none), a poll with both bits of an axis changed counted and ignored. A host
+     simulation (a quadrature mouse with jittered polls): exact up to 3,000 transitions a second; at rest no
+     movement with 5 or 20% of reads corrupted; moving with 5% corrupted, 98% of the distance (90% without
+     the debounce). The old decoder in the same simulation was 205 steps out after 3,500 a second there and
+     back. The heartbeat now counts each line's changes (X1, X2, Y1, Y2), jumps and one-poll glitches, which
+     says on the next log whether the Y line itself is noisy. Not yet tried on the Plus.
 
 97. **FAT32 and exFAT on the Mac: disk images on sticks, and an HFS view of a stick or a card folder (21
    November, issue #20).** The owner wants sticks formatted by Windows, Linux or a modern Mac, and a folder
