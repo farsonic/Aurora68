@@ -39,7 +39,7 @@ final class AddressTests: XCTestCase {
         XCTAssertEqual(Address.baseURL(host: "[fd00::20]", port: 80)?.absoluteString, "http://[fd00::20]:80")
         XCTAssertEqual(Address.baseURL(host: "192.168.1.20", port: 8423)?.absoluteString, "http://192.168.1.20:8423")
         XCTAssertEqual(Address.urlHost("fe80::1%en0"), "[fe80::1%25en0]")
-        XCTAssertTrue(Address.isIPv6("2401:db8:4f02::be24:11ff:fe3f:b27e"))
+        XCTAssertTrue(Address.isIPv6("2001:db8:4f02::21a:2bff:fe3c:4d5e"))
         XCTAssertFalse(Address.isIPv6("nas.local"))
         XCTAssertTrue(Address.isIPv4("192.168.1.20"))
         XCTAssertFalse(Address.isIPv4("192.168.1.256"))

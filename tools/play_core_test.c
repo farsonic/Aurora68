@@ -114,7 +114,7 @@ static void address_units(void)
 	check(!a68_parse_address("", 8000, h, sizeof h, &port) && !a68_parse_address("nas:99999", 8000, h, sizeof h, &port) &&
 	      !a68_parse_address("[fd00::20", 8000, h, sizeof h, &port) && !a68_parse_address("my nas", 8000, h, sizeof h, &port) &&
 	      !a68_parse_address("nas:", 8000, h, sizeof h, &port), "not addresses");
-	check(a68_is_ipv6("2401:db8:4f02::be24:11ff:fe3f:b27e") && a68_is_ipv6("[fd00::20]") && a68_is_ipv6("fe80::1%en0") &&
+	check(a68_is_ipv6("2001:db8:4f02::21a:2bff:fe3c:4d5e") && a68_is_ipv6("[fd00::20]") && a68_is_ipv6("fe80::1%en0") &&
 	      !a68_is_ipv6("nas.local") && a68_is_ipv4("192.168.1.20") && !a68_is_ipv4("192.168.1.256") && !a68_is_ipv4("1.2.3") &&
 	      !a68_is_ipv4("1.2.3.4.5"), "families");
 	check(a68_url(u, sizeof u, "fd00::20", 8423, "/t/x") && !strcmp(u, "http://[fd00::20]:8423/t/x"), "a URL brackets IPv6");
