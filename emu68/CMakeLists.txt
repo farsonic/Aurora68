@@ -311,6 +311,10 @@ if (${VARIANT} IN_LIST SUPPORTED_VARIANTS)
                     src/psmac/psmac_hdmi.c
                     src/psmac/psmac_audio.c
                     src/psmac/psmac_mp3.c
+                    src/psmac/psmac_codec.c
+                    src/psmac/psmac_flac.c
+                    src/psmac/psmac_ogg.c
+                    src/psmac/psmac_alac.c
                     src/psmac/psmac_plmpeg.c
                     src/psmac/psmac_video.c
                     src/psmac/psmac_videocard.c

@@ -58,6 +58,7 @@
 #include "psmac_audio_fir.h"
 #include "psmac_video.h"                       /* source 5's calls, below */
 #include "third_party/minimp3/minimp3.h"              /* the declarations; psmac_mp3.c compiles the decoder */
+#include "psmac_codec.h"                               /* FLAC, Ogg Vorbis, ALAC (psmac_flac.c, psmac_ogg.c, psmac_alac.c) */
 
 extern const char *psmac_option(const char *key);                /* psmac_bus.c */
 extern int64_t psmac_sh_open(const char *name, uint64_t mode);
@@ -361,6 +362,14 @@ static mp3dec_t mp3d;
 static int16_t mp3_pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
 static int16_t spcm[STR_PCM][2];
 static uint32_t spcm_head, spcm_tail;
+/* FLAC, Ogg Vorbis and ALAC (22 November 2026, docs/08 item 103): psmac_codec.h's decoders, their memory from
+   the kernel's TLSF (which has a lock, so core 1 may allocate while core 0's JIT does) */
+static struct pcodec codec;
+static int16_t codec_pcm[2 * 1152];
+static void *codec_alloc(size_t n) { return tlsf_malloc(tlsf, n); }
+static void codec_free(void *p) { tlsf_free(tlsf, p); }
+static const struct pc_alloc codec_mem = { codec_alloc, codec_free };
+static int is_codec(uint32_t f) { return f == PSMB_STR_FLAC || f == PSMB_STR_OGG || f == PSMB_STR_ALAC; }
 static volatile uint32_t str_reset_req;      /* the 68k was reset (psmac_audio_mac_reset, another core) */
 static uint64_t str_busy, str_busy_t0;       /* the decoder's time over the last second */
 static uint32_t str_max_us, str_used;
@@ -375,6 +384,7 @@ static struct {
     uint64_t kbps_sum;
     uint32_t mpeg_frames, skipped, underruns;
     uint64_t stop_t;
+    uint32_t start_ms;                        /* the Mac's: the file's time at the first byte (a seek) */
 } st;
 
 static uint32_t str_level(void) { return spcm_head - spcm_tail; }
@@ -385,11 +395,19 @@ static void str_clear(void)                   /* everything about the last strea
     for (uint32_t i = 0; i < sizeof str_rs; i++) ((uint8_t *)&str_rs)[i] = 0;
     str_rs.idle = FIR_TAPS;
     mp3dec_init(&mp3d);
+    pc_close(&codec);
     str->rate = str->channels = str->bitrate = str->layer = 0;
     str->pos_ms = str->length_ms = str->buffered = str->mpeg_frames = str->skipped = str->underruns = 0;
     str->error = 0;
 }
 static uint32_t str_ms(uint64_t frames) { return st.rate ? (uint32_t)(frames * 1000u / st.rate) : 0; }
+/* where the stream is in its file: the decoder's own frame number when it knows it (FLAC frames, Ogg granules),
+   else the time the Mac said it starts at, plus what has been played */
+static uint32_t str_pos_ms(void)
+{
+    if (is_codec(st.format) && codec.base >= 0 && st.rate) return (uint32_t)(((uint64_t)codec.base + st.frames) * 1000u / st.rate);
+    return st.start_ms + str_ms(st.frames);
+}
 static void str_fail(uint32_t why, const char *say)
 {
     kprintf("[AUDIO] stream: %s\n", say);
@@ -405,6 +423,7 @@ static void str_start(void)
     st.format = str->format;
     st.gain = st.gain_target = 256;
     st.first = 1;
+    st.start_ms = str->start_ms;
     str_used++;
     if (st.format == PSMB_STR_PCM) {
         st.rate = str->pcm_rate; st.channels = str->pcm_channels; st.bits = str->pcm_bits; st.flags = str->pcm_flags;
@@ -421,7 +440,11 @@ static void str_start(void)
                 st.bits, st.bits > 8 ? (st.flags & PSMB_STR_PCM_LE ? " little-endian" : " big-endian") : (st.flags & PSMB_STR_PCM_UNSIGNED ? " unsigned" : " signed"),
                 st.channels > 2 ? " (the first two played)" : "", str->data_bytes, str->length_ms / 1000, str->length_ms / 100 % 10);
     } else if (st.format == PSMB_STR_MPEG) {
-        kprintf("[AUDIO] stream: MPEG audio, %u bytes\n", str->data_bytes);
+        kprintf("[AUDIO] stream: MPEG audio, %u bytes%s\n", str->data_bytes, st.start_ms ? " (from a seek)" : "");
+    } else if (is_codec(st.format)) {
+        if (!pc_open(&codec, st.format, st.start_ms != 0, &codec_mem)) { str_fail(PSMB_STR_E_NOMEM, codec.error ? codec.error : "no memory for the decoder"); return; }
+        kprintf("[AUDIO] stream: %s, %u bytes, from %u.%u s\n", st.format == PSMB_STR_FLAC ? "FLAC" : st.format == PSMB_STR_OGG ? "Ogg Vorbis" : "Apple Lossless",
+                str->data_bytes, st.start_ms / 1000, st.start_ms / 100 % 10);
     } else {
         str_fail(PSMB_STR_E_FORMAT, "a format number this kernel does not know");
         return;
@@ -431,7 +454,7 @@ static void str_start(void)
 }
 static void str_finish_stop(void)
 {
-    if (st.on && !st.ended) kprintf("[AUDIO] stream: stopped at %u.%u s\n", str_ms(st.frames) / 1000, str_ms(st.frames) / 100 % 10);
+    if (st.on && !st.ended) kprintf("[AUDIO] stream: stopped at %u.%u s\n", str_pos_ms() / 1000, str_pos_ms() / 100 % 10);
     uint32_t h = str->head;
     str_clear();
     str->tail = h; head_seen = head_ok = h; head_seen_t = now();
@@ -545,6 +568,34 @@ static void str_decode(void)
             str_put(v[0], v[1]);
         }
         pb_tail += n * st.fbytes;
+    } else if (is_codec(st.format)) {
+        struct pc_src src = { pibuf, STR_PIBUF - 1, pb_head, pb_tail, all };
+        uint32_t room = STR_PCM - str_level();
+        int n = pc_decode(&codec, &src, codec_pcm, (int)(room < 1152 ? room : 1152));
+        pb_tail = src.tail;
+        if (codec.rate && !st.rate) {          /* the header read: the stream's rate and channels */
+            if (codec.rate < 4000 || codec.rate > 192000) { str_fail(PSMB_STR_E_FORMAT, "a sample rate this card does not play"); return; }
+            st.rate = codec.rate; st.channels = codec.channels; st.bits = codec.bits;
+            str_rs.step = ratio(st.rate, out_rate);
+            str->rate = st.rate; str->channels = st.channels;
+            if (codec.total) str->length_ms = (uint32_t)(codec.total * 1000u / st.rate);
+            kprintf("[AUDIO] stream: %u Hz, %u channel%s, %u bits%s; %u.%u s\n", st.rate, st.channels, st.channels > 1 ? "s" : "", st.bits,
+                    st.channels > 2 ? " (the first two played)" : "", str->length_ms / 1000, str->length_ms / 100 % 10);
+        }
+        if (n == PC_ERROR) { str_fail(PSMB_STR_E_DECODE, codec.error ? codec.error : "the decoder failed"); return; }
+        if (n == PC_END) st.src_done = 1;
+        static uint32_t idle_more;                /* a decoder that only ever wants more once everything is in: the end */
+        idle_more = n == PC_MORE && all && !(pb_head - pb_tail) ? idle_more + 1 : 0;
+        if (idle_more > 64) st.src_done = 1;
+        if (n > 0) {
+            if (codec.base >= 0 && st.first && st.start_ms) {   /* a seek: where the decoder found itself */
+                uint32_t at = (uint32_t)((uint64_t)codec.base * 1000u / st.rate);
+                kprintf("[AUDIO] stream: the decoder starts at %u.%03u s (the Mac asked for %u.%03u)\n", at / 1000, at % 1000, st.start_ms / 1000, st.start_ms % 1000);
+                st.first = 0;
+            }
+            for (int i = 0; i < n; i++)
+                str_put(codec_pcm[2 * i], codec_pcm[2 * i + 1]);
+        }
     } else {
         uint32_t want = STR_WIN - dwin_n, have = pb_head - pb_tail;
         if (want > have) want = have;
@@ -611,7 +662,8 @@ static int str_ready(void)
 {
     if (st.src_done) return str_level() > 0;
     if (str_level() < STR_PREFILL) return 0;
-    uint32_t have = pb_head - pb_tail + dwin_n, want = st.format == PSMB_STR_PCM ? st.rate * st.fbytes / 2 : 48u << 10;
+    uint32_t have = pb_head - pb_tail + dwin_n, want = st.format == PSMB_STR_PCM ? st.rate * st.fbytes / 2 :
+                    st.format == PSMB_STR_FLAC || st.format == PSMB_STR_ALAC ? 256u << 10 : 48u << 10;   /* lossless: about two seconds */
     return have >= want || str_all_in();
 }
 /* one input frame of the stream, at its own rate */
@@ -661,7 +713,7 @@ static void str_poll(void)
     if (st.on && st.src_done && !str_level() && !st.playing) st.ended = 1;
     if (st.on && st.ended && !st.logged) {
         st.logged = 1;
-        uint32_t ms = str_ms(st.frames);
+        uint32_t ms = str_pos_ms();
         kprintf("[AUDIO] stream: played to the end, %u.%u s (%llu frames at %u Hz); %u MPEG frames, %u bytes skipped, %u underruns; "
                 "the decoder at most %u us a slice, %u per mille of core 1 over the last second\n",
                 ms / 1000, ms / 100 % 10, (unsigned long long)st.frames, st.rate, st.mpeg_frames, st.skipped, st.underruns, str_max_us, str->load);
@@ -672,7 +724,7 @@ static void str_poll(void)
         str->load = (uint32_t)(str_busy * 1000u / (t - str_busy_t0));
         str_busy = 0; str_busy_t0 = t;
     }
-    str->pos_ms = str_ms(st.frames);
+    str->pos_ms = str_pos_ms();
     str->buffered = pb_head - pb_tail + dwin_n;
     str->mpeg_frames = st.mpeg_frames;
     str->skipped = st.skipped;
@@ -1042,7 +1094,7 @@ void psmac_audio_start(uint8_t *win)
     str->out_kind = (uint32_t)out_kind; str->out_rate = out_kind ? out_rate : 0;
     mp3dec_init(&mp3d); str_rs.idle = FIR_TAPS;
     __asm__ volatile("dmb ish" ::: "memory");
-    str->version = 1; str->magic = PSMB_STR_MAGIC;
+    str->version = PSMB_STR_VERSION; str->magic = PSMB_STR_MAGIC;
     if (out_want == OUT_OFF && !quiet) kprintf("[AUDIO] mac.audio=off: the Mac's sound stays on %s\n", psmac_board_se && !psmac_board_solo ? "the SE's speaker" : "nothing here");
     else if (out_kind) kprintf("[AUDIO] the ASC (22257 Hz, both FIFOs) %s mixed on core 1 at %u Hz%s\n",
                                card_on ? "and the sound card (44.1 kHz, the Aurora68 Sound extension)" : "alone (mac.sndcard=off)", out_rate,

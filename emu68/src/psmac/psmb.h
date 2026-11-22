@@ -319,6 +319,9 @@ struct psmb_dispinfo {
 #define PSMB_STR_MAGIC       0x41363850u     /* 'A68P' */
 #define PSMB_STR_MPEG        1u              /* format: MPEG audio, layers I-III; rate and channels from the frames */
 #define PSMB_STR_PCM         2u              /* format: PCM, as pcm_rate, pcm_channels, pcm_bits, pcm_flags say */
+#define PSMB_STR_FLAC        3u              /* format: FLAC (version 2: psmac_codec.h says what the Mac sends) */
+#define PSMB_STR_OGG         4u              /* format: Ogg Vorbis (version 2) */
+#define PSMB_STR_ALAC        5u              /* format: Apple Lossless, packets from an .m4a file (version 2) */
 #define PSMB_STR_PCM_LE      1u              /* pcm_flags: little-endian words (WAV, AIFF-C 'sowt'); else big-endian (AIFF) */
 #define PSMB_STR_PCM_UNSIGNED 2u             /* pcm_flags: 8-bit samples are unsigned (WAV); else signed (AIFF) */
 #define PSMB_STR_C_START     1u              /* cmd: a new stream from what the ring holds */
@@ -333,8 +336,13 @@ struct psmb_dispinfo {
 #define PSMB_STR_E_FORMAT    1u              /* a format or PCM layout the Pi does not play */
 #define PSMB_STR_E_NOAUDIO   2u              /* no MPEG audio frame in the first 256 KB */
 #define PSMB_STR_E_NOMEM     3u              /* no memory for the Pi's buffer */
+#define PSMB_STR_E_DECODE    5u              /* FLAC, Ogg or ALAC data the decoder could not read (version 2) */
+/* version 2 (22 November 2026, docs/08 item 103): FLAC, Ogg Vorbis and ALAC (formats 3-5), start_ms (where the
+   bytes start in the file's time: a seek), and pos_ms counts from start_ms. A version-1 card answers formats
+   3-5 with PSMB_STR_E_FORMAT, so the Mac checks the version first and says the card's software is too old. */
+#define PSMB_STR_VERSION     2u
 struct psmb_stream {
-    uint32_t magic, version;                 /* Pi: 'A68P', 1 */
+    uint32_t magic, version;                 /* Pi: 'A68P', PSMB_STR_VERSION */
     uint32_t size, data_off;                 /* Pi: PSMB_STR_SIZE, PSMB_OFF_STRRING */
     uint32_t out_kind;                       /* Pi: PSMB_SND_OUT_*; NONE: nothing plays (mac.audio=off, no output found) */
     uint32_t out_rate;                       /* Pi: the output's rate in Hz */
@@ -355,14 +363,15 @@ struct psmb_stream {
     uint32_t cmd_seq, cmd;                   /* Mac (from +0x80): cmd, then cmd_seq + 1 */
     uint32_t head;                           /* Mac: bytes written into the ring */
     uint32_t eof;                            /* Mac: 1 once the last byte is in the ring */
-    uint32_t format;                         /* Mac: PSMB_STR_MPEG or PSMB_STR_PCM, read at START */
+    uint32_t format;                         /* Mac: PSMB_STR_*, read at START */
     uint32_t pcm_rate, pcm_channels, pcm_bits, pcm_flags;   /* Mac: the PCM's layout, read at START */
     uint32_t data_bytes;                     /* Mac: the stream's length in bytes (0: not known), for length_ms */
     uint32_t volume;                         /* Mac: left << 16 | right, $0100 full */
     uint32_t title_seq;                      /* Mac: +1 after writing title */
     char     title[128];                     /* Mac: what is playing, Mac Roman, NUL-terminated: the ID3 title, the
                                                 file's name, or later an internet radio station's "now playing" */
-    uint32_t pad1[20];
+    uint32_t start_ms;                       /* Mac (version 2): the file's time at the first byte sent, read at START */
+    uint32_t pad1[19];
 };
 
 /* ---- the Aurora68 Agent: files and programs for the remote control (21 November 2026, docs/13 "Files and applications") ----
