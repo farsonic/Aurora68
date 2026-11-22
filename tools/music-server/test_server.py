@@ -109,6 +109,204 @@ def raw(host, port, path, seconds=None, family=socket.AF_INET):
     return out
 
 
+def post(base, path, obj, aurora=True):
+    req = urllib.request.Request(base + path, data=json.dumps(obj).encode(),
+                                 headers={'Content-Type': 'application/json', **({'X-Aurora': '1'} if aurora else {})})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read() or b'{}')
+
+
+def stations_c():
+    """the classic Play's built-in stations (mac/piplay/stations.c's C string, Mac Roman) as text"""
+    import re
+    src = open(os.path.join(ROOT, 'mac/piplay/stations.c'), encoding='latin-1').read()
+    a = src.index('const char stations_builtin[] =')
+    out = bytearray()
+    for t in re.findall(r'"((?:[^"\\]|\\.)*)"', src[a:src.index('const long stations_builtin_len', a)]):
+        i = 0
+        while i < len(t):
+            if t[i] == '\\':
+                if t[i + 1] == 'x':
+                    h = re.match(r'[0-9a-fA-F]+', t[i + 2:]).group(0)
+                    out.append(int(h, 16) & 0xff)
+                    i += 2 + len(h)
+                    continue
+                out += {'r': b'\r', 'n': b'\n', 't': b'\t'}.get(t[i + 1], t[i + 1].encode('latin-1'))
+                i += 2
+                continue
+            out += t[i].encode('latin-1')
+            i += 1
+    return out.decode('mac_roman')
+
+
+def devices_check(tmp):
+    """22 November 2026: players as devices (announce, state, list, commands by long poll, the classic Play's
+    text forms), internet radio for every player, and the library's generation, on a server of its own with
+    a rescan every second and devices offline after three"""
+    import shutil
+    sys.path.insert(0, HERE)
+    import aurora68_music_server as m
+    check(m.parse_stations(m.RADIO_BUILTIN) == m.parse_stations(stations_c()) and len(m.parse_stations(m.RADIO_BUILTIN)) >= 40,
+          'the server\'s radio list is the classic Play\'s built-in one (mac/piplay/stations.c)')
+    lib = os.path.join(tmp, 'music-devices')
+    os.makedirs(lib)
+    shutil.copytree(os.path.join(tmp, 'music', 'Alpha Band', 'First Album'), os.path.join(lib, 'Alpha - First'))
+    s = socket.socket(); s.bind(('127.0.0.1', 0)); port = s.getsockname()[1]; s.close()
+    env = dict(os.environ, MUSIC_RESCAN='1', MUSIC_DEVICE_TTL='3')
+    srv = subprocess.Popen([sys.executable, os.path.join(HERE, 'aurora68_music_server.py'), lib, '--port', str(port),
+                            '--name', 'Dev Music', '--discovery', '0'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           text=True, env=env)
+    base = f'http://127.0.0.1:{port}'
+    for _ in range(50):
+        try:
+            socket.create_connection(('127.0.0.1', port), timeout=0.2).close()
+            break
+        except OSError:
+            time.sleep(0.1)
+    A = {'X-Aurora': '1'}
+    try:
+        # the library's generation: the same while nothing changes, one more when an album arrives
+        info = json.loads(get(base, '/api/info')[2])
+        g = info.get('library')
+        check(info.get('name') == 'Dev Music' and isinstance(g, int) and info.get('albums') == 1, f'/api/info ({info})')
+        time.sleep(1.3)
+        check(json.loads(get(base, '/api/info')[2])['library'] == g, 'a rescan that finds nothing new keeps the generation')
+        shutil.copytree(os.path.join(tmp, 'music', 'Shelf', 'Zed - One'), os.path.join(lib, 'Zed - One'))
+        time.sleep(1.3)
+        info = json.loads(get(base, '/api/info')[2])
+        cat = json.loads(get(base, '/api/catalog')[2])
+        check(info['library'] == g + 1 and info['albums'] == 2 and 'Zed' in [a['name'] for a in cat['artists']],
+              f'a new album: the generation goes up and the catalogue has it, no restart ({g} -> {info["library"]})')
+        g += 1
+        mi = get(base, '/mac/info')[2].split(b'\r')[1].split(b'\t')
+        check(mi[5] == str(g).encode(), f'/mac/info\'s sixth field is the generation ({mi})')
+
+        # internet radio
+        st = json.loads(get(base, '/api/radio')[2])['stations']
+        check(st[0] == {'group': 'SomaFM', 'name': 'Groove Salad', 'url': 'http://ice2.somafm.com/groovesalad-128-mp3'}
+              and any(x['name'] == 'Ö1' and x['group'] == 'By country/Austria' for x in st), '/api/radio: the stations, grouped')
+        open(os.path.join(lib, 'radio.txt'), 'w').write('# mine\n[Home]\nKitchen = http://192.168.1.20:8000/kitchen.mp3\n')
+        st2 = json.loads(get(base, '/api/radio')[2])['stations']
+        check(len(st2) == len(st) + 1 and st2[-1] == {'group': 'Home', 'name': 'Kitchen', 'url': 'http://192.168.1.20:8000/kitchen.mp3'},
+              'a stations file in the music folder adds the owner\'s own')
+        os.rename(os.path.join(lib, 'radio.txt'), os.path.join(tmp, 'radio.txt.aside'))
+        code, _, mr = get(base, '/mac/radio')
+        check(code == 200 and b'By country/Austria\t\x851\thttp://ors-sn05.ors-shoutcast.at/oe1-q2a\r' in mr and b'\n' not in mr,
+              '/mac/radio: tab fields, Return-ended lines, Mac Roman (Ö: $85)')
+
+        # announce, state, list
+        check(post(base, '/api/devices/announce', {'id': 'mac1', 'name': 'Study iMac', 'kind': 'macos'}, aurora=False)[0] == 403,
+              'an announce without X-Aurora is refused')
+        code, j = post(base, '/api/devices/announce', {'id': '../x', 'name': 'Bad', 'kind': 'macos'})
+        check(code == 400 and 'id' in j.get('error', ''), 'an id that is not letters and digits is refused')
+        code, j = post(base, '/api/devices/announce', {'id': 'mac1', 'name': 'Study iMac', 'kind': 'macos', 'version': '1.3'})
+        check(code == 200 and j == {'ok': True, 'every': 20, 'library': g}, f'announce: every 20 s, and the generation ({j})')
+        check(post(base, '/api/devices/nobody/state', {'playing': True})[0] == 404, 'a state from a device that never announced: refused')
+        code, j = post(base, '/api/devices/mac1/state', {'playing': True, 'title': 'Opening', 'artist': 'Alpha Band', 'album': 'First',
+                                                       'folder': 'Alpha - First', 'position': 12.34, 'length': 120, 'volume': 250})
+        check(code == 200, 'a device\'s state')
+        devs = json.loads(get(base, '/api/devices')[2])['devices']
+        live_d, mac = devs[0], next((d for d in devs if d['id'] == 'mac1'), {})
+        check(live_d['id'] == 'live' and live_d['is_live'] and live_d['online'] and live_d['name'] == 'Dev Music Live',
+              'the list: the Live channel first, as the device "live"')
+        check(mac.get('online') and mac['name'] == 'Study iMac' and mac['kind'] == 'macos' and not mac['is_live'] and
+              mac['state']['title'] == 'Opening' and mac['state']['position'] == 12.3 and mac['state']['volume'] == 100,
+              f'and the Mac, online, with what it plays ({mac})')
+
+        # commands: queued for the device, fetched by a long poll
+        tracks = json.loads(get(base, '/api/catalog')[2])['albums']
+        alpha = next(a for a in tracks if a['artist'] == 'Alpha')
+        code, j = post(base, '/api/devices/mac1/command', {'action': 'play', 'what': 'f:' + alpha['folder']})
+        check(code == 200 and j.get('id') == 1, f'a command to the Mac: queued as number 1 ({j})')
+        t0 = time.monotonic()
+        code, _, body = get(base, '/api/devices/mac1/commands?wait=10', A)
+        c = json.loads(body)['commands']
+        check(code == 200 and time.monotonic() - t0 < 2 and len(c) == 1 and c[0]['action'] == 'play' and c[0]['id'] == 1 and
+              [t['title'] for t in c[0]['tracks']] == ['Opening', 'Second Song'] and c[0]['tracks'][0]['seconds'] == 2 and
+              c[0]['tracks'][0]['path'] == 'Alpha - First/01 Opening.mp3' and len(c[0]['tracks'][0]['tid']) == 8,
+              f'the device fetches it at once: the tracks with path, id, title and length ({c})')
+        check(get(base, '/api/devices/mac1/commands?wait=1')[0] == 403, 'fetching commands needs X-Aurora too')
+        t0 = time.monotonic()
+        c = json.loads(get(base, '/api/devices/mac1/commands?wait=1.5', A)[2])['commands']
+        check(c == [] and 1.3 < time.monotonic() - t0 < 3, 'nothing to do: an empty list when the wait is over')
+        got = {}
+        th = __import__('threading').Thread(target=lambda: got.update(r=get(base, '/api/devices/mac1/commands?wait=10', A)))
+        t0 = time.monotonic()
+        th.start()
+        time.sleep(0.5)
+        post(base, '/api/devices/mac1/command', {'action': 'seek', 'position': 42.5})
+        th.join(15)
+        c = json.loads(got['r'][2])['commands']
+        check(c and c[0]['action'] == 'seek' and c[0]['position'] == 42.5 and time.monotonic() - t0 < 3,
+              'a command sent during the wait arrives at once (the long poll)')
+        post(base, '/api/devices/mac1/command', {'action': 'volume', 'volume': 150})
+        post(base, '/api/devices/mac1/command', {'action': 'play', 'what': 'r:0'})
+        post(base, '/api/devices/mac1/command', {'action': 'play', 'what': 's:' + alpha['id'], 'shuffle': 1})
+        c = json.loads(get(base, '/api/devices/mac1/commands?wait=0', A)[2])['commands']
+        check([x['action'] for x in c] == ['volume', 'play', 'play'] and c[0]['volume'] == 100 and
+              c[1]['radio'] == {'name': 'Groove Salad', 'url': 'http://ice2.somafm.com/groovesalad-128-mp3'} and c[1]['tracks'] == [],
+              f'volume (kept to 100), and a radio station by its index in /api/radio ({c[:2]})')
+        check(post(base, '/api/devices/mac1/command', {'action': 'dance'})[0] == 400 and
+              post(base, '/api/devices/mac1/command', {'action': 'play', 'what': 't:../../etc/passwd'})[0] == 400 and
+              post(base, '/api/devices/mac1/command', {'action': 'play', 'what': 'r:999'})[0] == 400 and
+              post(base, '/api/devices/mac1/command', {'action': 'seek'})[0] == 400 and
+              post(base, '/api/devices/nobody/command', {'action': 'pause'})[0] == 404, 'nonsense commands are refused')
+
+        # the Live channel as a device
+        code, j = post(base, '/api/devices/live/command', {'action': 'play', 'what': 'f:' + alpha['folder']})
+        check(code == 200 and [q['path'] for q in j['live']['queue']] == ['Alpha - First/01 Opening.mp3', 'Alpha - First/02 Second.mp3'],
+              'a command to "live" is the Live channel\'s own')
+        check(post(base, '/api/devices/live/command', {'action': 'seek', 'position': 3})[0] == 400 and
+              post(base, '/api/devices/live/command', {'action': 'play', 'what': 'r:0'})[0] == 400, 'Live does not seek or play radio')
+        post(base, '/api/devices/live/command', {'action': 'stop'})
+        check(json.loads(get(base, '/api/now')[2])['queue'] == [], 'stop on Live empties its queue')
+
+        # the classic Play: text
+        check(get(base, '/mac/announce?id=se1&name=Caf%8E%20SE&kind=classic&v=1.3')[0] == 403, 'a classic announce without X-Aurora: refused')
+        code, _, body = get(base, '/mac/announce?id=se1&name=Caf%8E%20SE&kind=classic&v=1.3', A)
+        check(code == 200 and body == f'ok\r20\r{g}\r'.encode(), f'/mac/announce: ok, 20, the generation ({body})')
+        tid = c[2]['tracks'][0]['tid']
+        title = c[2]['tracks'][0]['title']
+        code, _, body = get(base, f'/mac/state?id=se1&p=1&pos=10&len=0&vol=80&t={tid}', A)
+        se = next(d for d in json.loads(get(base, '/api/devices')[2])['devices'] if d['id'] == 'se1')
+        check(code == 200 and se['name'] == 'Café SE' and se['kind'] == 'classic' and se['state']['title'] == title and
+              se['state']['artist'] == 'Alpha Band' and se['state']['length'] == 2 and se['state']['volume'] == 80,
+              f'/mac/state: the track\'s names and length from its id ({se["state"]})')
+        code, _, body = get(base, '/mac/devices')
+        rows = [r.split(b'\t') for r in body.split(b'\r') if r]
+        check(code == 200 and rows[0][:4] == [b'live', b'Dev Music Live', b'live', b'1'] and
+              [b'se1', b'Caf\x8e SE', b'classic', b'1', title.encode(), b'Alpha Band'] in rows, f'/mac/devices ({rows})')
+        post(base, '/api/devices/se1/command', {'action': 'play', 'what': 'f:' + alpha['folder']})
+        post(base, '/api/devices/se1/command', {'action': 'play', 'what': 'r:' + str(next(i for i, x in enumerate(st) if x['name'] == 'Ö1'))})
+        code, _, body = get(base, '/mac/commands?id=se1&wait=5', A)
+        rows = [r.split(b'\t') for r in body.split(b'\r') if r]
+        check(code == 200 and rows[0] == [b'1', b'play', b'0', b''] and rows[1][0] == b'T' and rows[1][2] == b'Opening'
+              and rows[1][4] == b'2' and rows[3] == [b'2', b'play', b'0', b''] and rows[4] == [b'R', b'\x851', b'http://ors-sn05.ors-shoutcast.at/oe1-q2a'],
+              f'/mac/commands: N action position volume, then T and R lines ({rows})')
+        t0 = time.monotonic()
+        code, _, body = get(base, '/mac/commands?id=se1&wait=1', A)
+        check(code == 200 and body == b'' and time.monotonic() - t0 > 0.8, 'and an empty answer when the wait is over')
+
+        # offline: not heard from for the TTL (3 s here, 60 normally)
+        for _ in range(4):                         # se1 keeps asking for commands: that counts as being heard from
+            get(base, '/mac/commands?id=se1&wait=1', A)
+        devs = {d['id']: d for d in json.loads(get(base, '/api/devices')[2])['devices']}
+        check(not devs['mac1']['online'] and devs['se1']['online'], 'a device not heard from goes offline; one asking for commands stays on')
+        code, j = post(base, '/api/devices/mac1/command', {'action': 'pause'})
+        check(code == 409 and 'not online' in j.get('error', ''), f'a command to an offline device is refused ({j})')
+        check(post(base, '/api/devices/announce', {'id': 'mac1', 'name': 'Study iMac', 'kind': 'macos'})[0] == 200 and
+              post(base, '/api/devices/mac1/command', {'action': 'pause'})[0] == 200, 'and it is back with its next announce')
+    finally:
+        srv.terminate()
+        srv.wait(10)
+    out = srv.stdout.read()
+    check('devices: Study iMac (macos, 127.0.0.1) is online' in out and '(changed: generation' in out,
+          'the log says who came online and that the library changed')
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix='a68-music-test-')
     lib = os.path.join(tmp, 'music')
@@ -462,6 +660,8 @@ def main():
     fk.shutdown()
 
     # without ffmpeg: MP3s only, and the scan says what it passed over
+    devices_check(tmp)
+
     s2 = socket.socket(); s2.bind(('127.0.0.1', 0)); port2 = s2.getsockname()[1]; s2.close()
     srv2 = subprocess.Popen([sys.executable, os.path.join(HERE, 'aurora68_music_server.py'), lib, '--port', str(port2),
                              '--bind', '0.0.0.0', '--ffmpeg', ''], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)

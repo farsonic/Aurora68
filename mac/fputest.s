@@ -42,7 +42,15 @@
 
 init_start:
 	movem.l	%d0-%d7/%a0-%a6,-(%sp)
-	fmovem.x %fp0-%fp7,-(%sp)
+	| no FPU (mac.fpu=none, docs/08 item 103): HWCfgFlags' hwCbFPU clear, as Gestalt tests it. Its first FPU
+	| instruction would take the line-F exception and the System's handler would stop the Mac with error 90
+	btst	#4,0x0B22
+	bne.s	1f
+	lea	t_nofpu(%pc),%a1
+	bsr	do_log
+	movem.l	(%sp)+,%d0-%d7/%a0-%a6
+	rts
+1:	fmovem.x %fp0-%fp7,-(%sp)
 	fmove.l	%fpcr,-(%sp)
 	lea	v_r(%pc),%a3			| a3: the result buffer (12 bytes), a4: the failure list
 	lea	fails(%pc),%a4
@@ -395,6 +403,7 @@ n_movem: .asciz	"fmovem"
 n_fsave: .asciz	"fsave"
 n_trap:	.asciz	"operr-trap"
 t_head:	.asciz	"FPU test: "
+t_nofpu: .asciz	"FPU test: no FPU (HWCfgFlags hwCbFPU clear), nothing tested"
 t_passed: .asciz " passed, "
 t_failed: .asciz " failed "
 	.ifdef	SPEEDONLY

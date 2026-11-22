@@ -119,11 +119,34 @@ Vectors: BSUN 48, INEX 49, DZ 50, UNFL 51, OPERR 52, OVFL 53, SNAN 54, in that p
 opmode or addressing mode the F-line vector, 11; FSAVE and FRESTORE in user mode, 8.
 
 ## What stays as it was
-- `mac.fpu=double` gives Emu68's own translation, unchanged.
+- `mac.fpu=double` gives Emu68's own translation, unchanged. `mac.fpu=none` (docs/08 item 103) gives no
+  FPU at all; `exact` is the default (also `mac.fpu=on`).
 - The interpreter (`M68k_INT_LINEF.cpp`), which Emu68 uses only when tracing or with its cache off, still
   computes in doubles: a run with those debugging options gets the old FPU.
 - Speed. Every FPU instruction is now a call into C with 31 registers saved and restored, and SoftFloat
   works in integer arithmetic. The numbers are in "Testing" below.
 
 ## Testing
-(See the end of this document: filled in as the stages were run.)
+Run on 22 November 2026; the record with the logs is docs/08 item 104.
+
+- *On the host*, `tools/fpu_test.sh` builds `psmac_fpu.c` and SoftFloat natively with `tools/fpu_test.c`:
+  every instruction's decoding, length and effective addresses, the PC the C side leaves (the next
+  instruction unless it branches or faults), the FPCR's rounding modes and precisions, the FPSR's flags,
+  FMOVEM, FSAVE/FRESTORE, conditions and the exceptions' vector offsets, the packed decimal format, 20,000
+  random operations against the host's x87 (0 different), and 2,000 arguments for each transcendental
+  function against 80-digit decimal (0 not correctly rounded, worst 0.500 ulp): 20,273 checks, 0 failed.
+  The lines it prints of 2 or 3 ulp are the C library's own error against the same 80-digit values.
+- *In the testbed*, `mac/fputest.s` ("Aurora68 FPU Test", `make -C mac fputest`, not in the release) runs
+  24 checks from the 68k's side at startup, through the JIT's call, and times the arithmetic: 24 passed, 0
+  failed. On a Mac without an FPU it logs that and does nothing. `make -C mac fputest-speed` builds the
+  timing alone with ten times the loops, for comparing with `mac.fpu=double`, on which the checks
+  themselves end in a crash (Emu68's own FPU, not changed here).
+- *Speed* (solo testbed in QEMU, System 7.1, 64 MB; ticks are sixtieths of a second, and QEMU's speed is not
+  the Pi's, so only the ratios mean anything): 2,000,000 FADD and FMUL on registers in 46 ticks exact
+  against 1 double; 2,000,000 with memory operands (.X and .D) 71 against 3 to 4; 200,000 FSIN 210 against
+  3 to 5. SANE (A68 Machine's additions a second): the IIci ROM's on the exact FPU 94,000 to 258,000, on
+  `double` 379,000 to 681,000 (but rounded to double), the SE ROM's software SANE 11,500 to 26,000.
+  Speedometer 3.23's FPU Benchmarks on the exact FPU: 3529 KWhetstones (4.94 against a Mac II), matrix
+  multiply 0.650 s (11.03), FFT 0.283 s (9.47), average 8.48.
+- *SANE.* With the exact FPU the IIci ROM's SANE is kept: `(1 + 2^-60) - 1 = 2^-60`, the exact answer, as
+  the SE ROM's SANE gives and `double` does not.

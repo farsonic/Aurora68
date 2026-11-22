@@ -204,3 +204,119 @@ struct SeededGenerator: RandomNumberGenerator {
         return state
     }
 }
+
+/// 22 November 2026: players as devices, internet radio, the library's generation, the position bar
+final class DeviceTests: XCTestCase {
+    func testDecodeDevicesAndInfo() throws {
+        let list = """
+        {"devices": [{"id": "live", "name": "Home Music Live", "kind": "live", "version": "3", "online": true, "last_seen": 1795336800,
+                      "is_live": true, "listeners": 1, "state": {"playing": true, "title": "Closing Time", "artist": "Semisonic",
+                      "album": "Feeling Strangely Fine", "folder": "Semisonic - Feeling Strangely Fine", "position": 12.5,
+                      "length": 273.0, "volume": 100}},
+                     {"id": "mac-0123456789ab", "name": "Study iMac", "kind": "macos", "version": "1.1", "online": true,
+                      "last_seen": 1795336790, "is_live": false, "state": {}},
+                     {"id": "se1", "name": "Caf\u{e9} SE", "kind": "classic", "version": "1.3", "online": false,
+                      "last_seen": 1795330000, "is_live": false,
+                      "state": {"playing": false, "title": "Lossless", "artist": "Gamma", "album": "Converted", "folder": "Gamma - Converted",
+                                "position": 3.0, "length": 2.0, "volume": 80, "at": 1795330000}}]}
+        """
+        let d = try JSONDecoder().decode(DeviceList.self, from: Data(list.utf8)).devices
+        XCTAssertEqual(d.map(\.id), ["live", "mac-0123456789ab", "se1"])
+        XCTAssertTrue(d[0].isLive)
+        XCTAssertEqual(d[0].state.title, "Closing Time")
+        XCTAssertEqual(d[1].state, DeviceState())                      // an empty state: the defaults
+        XCTAssertEqual(d[2].name, "Caf\u{e9} SE")
+        XCTAssertEqual(d[2].symbol, "desktopcomputer")
+        XCTAssertFalse(d[2].online)
+
+        let info = try JSONDecoder().decode(ServerInfo.self, from: Data("""
+        {"name": "Home Music", "version": "3", "library": 7, "artists": 2, "albums": 3, "tracks": 30, "every": 20}
+        """.utf8))
+        XCTAssertEqual(info.library, 7)
+        let ann = try JSONDecoder().decode(AnnounceReply.self, from: Data(#"{"ok": true, "every": 20, "library": 8}"#.utf8))
+        XCTAssertEqual(ann.library, 8)
+    }
+
+    func testCommandsBecomePlayerActions() throws {
+        let json = """
+        {"commands": [
+          {"id": 1, "action": "play", "shuffle": 1, "tracks": [
+            {"path": "Semisonic - Feeling Strangely Fine/01. Semisonic - Closing Time.m4a", "tid": "abcd1234",
+             "title": "Closing Time", "artist": "Semisonic", "album": "Feeling Strangely Fine", "seconds": 273}]},
+          {"id": 2, "action": "play", "tracks": [], "radio": {"name": "Groove Salad", "url": "http://ice2.somafm.com/groovesalad-128-mp3"}},
+          {"id": 3, "action": "seek", "position": 42.5},
+          {"id": 4, "action": "volume", "volume": 150},
+          {"id": 5, "action": "pause"},
+          {"id": 6, "action": "dance"},
+          {"id": 7, "action": "add", "tracks": [{"path": "Loose.mp3", "tid": "t2", "title": "", "artist": "", "album": "", "seconds": 0}]}]}
+        """
+        let c = try JSONDecoder().decode(CommandList.self, from: Data(json.utf8)).commands
+        guard case .play(let tracks, let from)? = c[0].playerAction else { return XCTFail("play") }
+        XCTAssertEqual(from, 0)
+        XCTAssertEqual(tracks.first?.id, "abcd1234")
+        XCTAssertEqual(tracks.first?.number, 1)
+        XCTAssertEqual(tracks.first?.folder, "Semisonic - Feeling Strangely Fine")
+        XCTAssertEqual(tracks.first?.albumTitle, "Feeling Strangely Fine")
+        XCTAssertEqual(c[1].playerAction, .radio(name: "Groove Salad", url: URL(string: "http://ice2.somafm.com/groovesalad-128-mp3")!))
+        XCTAssertEqual(c[2].playerAction, .seek(42.5))
+        XCTAssertEqual(c[3].playerAction, .volume(1.0))
+        XCTAssertEqual(c[4].playerAction, .pause)
+        XCTAssertNil(c[5].playerAction)
+        guard case .add(let added)? = c[6].playerAction else { return XCTFail("add") }
+        XCTAssertEqual(added.first?.title, "Loose")                    // no title: from the file's name
+        XCTAssertEqual(added.first?.folder, "")
+    }
+
+    func testRadioGroups() throws {
+        let json = """
+        {"stations": [{"group": "SomaFM", "name": "Groove Salad", "url": "http://ice2.somafm.com/groovesalad-128-mp3"},
+                      {"group": "SomaFM", "name": "Drone Zone", "url": "http://ice2.somafm.com/dronezone-128-mp3"},
+                      {"group": "By country/Austria", "name": "\u{d6}1", "url": "http://ors-sn05.ors-shoutcast.at/oe1-q2a"},
+                      {"group": "SomaFM", "name": "Lush", "url": "http://ice2.somafm.com/lush-128-mp3"}]}
+        """
+        let r = try JSONDecoder().decode(RadioList.self, from: Data(json.utf8))
+        let g = r.groups
+        XCTAssertEqual(g.map(\.group), ["SomaFM", "By country/Austria", "SomaFM"])
+        XCTAssertEqual(g[0].stations.map(\.index), [0, 1])
+        XCTAssertEqual(g[2].stations.first?.index, 3)                   // "r:3" plays Lush
+        XCTAssertNotEqual(g[0].id, g[2].id)
+        XCTAssertEqual(LiveWhat.radio(3), "r:3")
+        XCTAssertEqual(LiveWhat.everything, "f:")
+    }
+
+    func testIdentityAndGeneration() {
+        XCTAssertEqual(DeviceIdentity.id(kept: "mac-0123456789ab"), "mac-0123456789ab")
+        let made = DeviceIdentity.id(kept: nil, make: { UUID(uuidString: "E621E1F8-C36C-495A-93FC-0C247A3E6E5F")! })
+        XCTAssertEqual(made, "mac-e621e1f8c36c")
+        XCTAssertTrue(DeviceIdentity.isValid(made))
+        XCTAssertNotEqual(DeviceIdentity.id(kept: "../etc"), "../etc")
+        XCTAssertNotEqual(DeviceIdentity.id(kept: "live"), "live")
+        XCTAssertFalse(DeviceIdentity.isValid(String(repeating: "a", count: 65)))
+        XCTAssertFalse(DeviceIdentity.isValid("caf\u{e9}"))
+
+        var w = GenerationWatch()
+        XCTAssertFalse(w.changed(3))                                   // the first one seen: nothing to refresh
+        XCTAssertFalse(w.changed(3))
+        XCTAssertFalse(w.changed(nil))
+        XCTAssertTrue(w.changed(4))                                    // albums were added
+        XCTAssertFalse(w.changed(4))
+        XCTAssertTrue(w.changed(1))                                    // the server restarted
+    }
+
+    func testScrubAndPosition() {
+        XCTAssertEqual(Scrub.time(x: 50, width: 200, duration: 240), 60)        // a click a quarter along
+        XCTAssertEqual(Scrub.time(x: -10, width: 200, duration: 240), 0)
+        XCTAssertEqual(Scrub.time(x: 500, width: 200, duration: 240), 240)
+        XCTAssertEqual(Scrub.time(x: 50, width: 0, duration: 240), 0)
+        XCTAssertEqual(Scrub.time(x: 50, width: 200, duration: 0), 0)
+        XCTAssertEqual(Scrub.fraction(60, duration: 240), 0.25)
+        XCTAssertEqual(Scrub.fraction(.nan, duration: 240), 0)
+
+        let s = DeviceState(playing: true, title: "x", position: 10, length: 100, at: 1000)
+        XCTAssertEqual(s.estimatedPosition(at: 1005), 15)
+        XCTAssertEqual(s.estimatedPosition(at: 2000), 100)
+        var paused = s
+        paused.playing = false
+        XCTAssertEqual(paused.estimatedPosition(at: 1005), 10)
+    }
+}

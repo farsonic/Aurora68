@@ -981,6 +981,8 @@ void psmac_fpu_init(void)
     const char *o = psmac_option("mac.fpu");
     psmac_fpu_reset();
     psmac_fpu_exact = !(o && o[0] == 'd');
+    if (o && (o[0] == 'n' || (o[0] == 'o' && o[1] == 'f')))        /* mac.fpu=none: psmac_bus.c says so (issue #28) */
+        return;
     kprintf("[PSMAC] FPU: %s\n", psmac_fpu_exact ? "exact, a 68882 in extended precision (mac.fpu=exact)"
                                                  : "Emu68's, in double precision (mac.fpu=double)");
 }

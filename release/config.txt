@@ -1,4 +1,4 @@
-# Aurora68 (PiStorm-SE) - config.txt for the Raspberry Pi firmware.
+# Aurora68 - config.txt for the Raspberry Pi firmware.
 # Lines beginning with # are comments. The firmware reads this file at power-on.
 
 [all]

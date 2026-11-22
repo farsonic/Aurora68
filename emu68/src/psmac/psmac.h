@@ -1,4 +1,4 @@
-/* psmac: Macintosh host layer for the Emu68 fork (PiStorm-SE). MPL-2.0. */
+/* psmac: Macintosh host layer for the Emu68 fork (Aurora68). MPL-2.0. */
 #ifndef PSMAC_H
 #define PSMAC_H
 #include <stdint.h>

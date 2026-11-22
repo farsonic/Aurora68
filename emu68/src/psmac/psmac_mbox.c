@@ -1,5 +1,5 @@
 /*
- * psmac_mbox.c — Pi-side mailbox services for the Macintosh (PiStorm-SE fork of Emu68). MPL-2.0.
+ * psmac_mbox.c — Pi-side mailbox services for the Macintosh (Aurora68 fork of Emu68). MPL-2.0.
  *
  * The window (see psmb.h) is Pi RAM shared with the 68k at slot $9. The service core calls
  * psmac_mbox_poll() from its main loop; each service has one command block and is executed
@@ -166,6 +166,21 @@ void psmac_mbox_add_view(const char *name, uint32_t blocks)
     blk_publish();
     kprintf("[PSMAC:DISK] PiDisk unit %d is the card's folder \"%s\": %u blocks (%u MB), locked; the Mac's driver adds its drive\n", nbdev - 1, name, blocks, blocks / 2048);
 }
+/* The BLOCK command in hand while blk_xfer runs, and its progress word moved before each step that may
+   wait: a host file's semihosting call, a chunk of an image still to come from the card (psmac_card.c
+   calls this between its card reads). PiDisk spins a fixed number of turns on the done word and then
+   waits on only while the progress word moves (psmac_usbdisk.c's commands always moved it); the other
+   commands never did, and on 22 November 2026 one semihosting read of a host file not yet in the host's
+   page cache (the first testbed run after a power cut) took 0.7 s, longer than the spin, and the
+   Macintosh 512Ke's start ended in "prime error -036" and the question-mark disk (docs/08 item 96). */
+static volatile uint8_t *blk_cmd_busy;
+void psmac_mbox_blk_progress(void)
+{
+    volatile uint8_t *c = blk_cmd_busy;
+    if (!c) return;
+    wr32(c + 48, rd32(c + 48) + 1);
+    __asm__ volatile("dmb ish" ::: "memory");
+}
 static int blk_xfer(int write, struct blkdev *b, uint32_t lba, uint32_t count, uint32_t buf)
 {
     if ((uint64_t)lba + count > b->blocks) return PSMB_E_RANGE;
@@ -182,6 +197,7 @@ static int blk_xfer(int write, struct blkdev *b, uint32_t lba, uint32_t count, u
     }
     if (b->ram) {                                /* still coming in from the card? Blocks the card did not give: an I/O error */
         extern int psmac_card_need(const void *, uint32_t);
+        psmac_mbox_blk_progress();
         if (psmac_card_need(b->rambase + (uint64_t)lba * 512, count * 512)) return PSMB_E_IO;
     }
     while (count) {
@@ -194,6 +210,7 @@ static int blk_xfer(int write, struct blkdev *b, uint32_t lba, uint32_t count, u
                          extern void psmac_card_dirty(const void *, uint32_t); psmac_card_dirty(b->rambase + (uint64_t)lba * 512, n * 512); }
             else       { int r = mac_copy(buf, NULL, b->rambase + (uint64_t)lba * 512, n * 512, 1); if (r) return r; }
         } else {
+            psmac_mbox_blk_progress();
             if (psmac_sh_seek(b->fd, ((uint64_t)b->first + lba) * 512) < 0) return PSMB_E_IO;
             if (write) {
                 int r = mac_copy(buf, sector_buf, NULL, n * 512, 0); if (r) return r;
@@ -221,7 +238,14 @@ static int blk_xfer(int write, struct blkdev *b, uint32_t lba, uint32_t count, u
    and writes back what it read (0x40841DA2), and a view that ignored writes failed that test at $78
    and had the ROM store the slot-9 record in the real parameter RAM. Once the boot record has asked,
    the bytes are the parameter RAM's own again, so the Startup Disk control panel sees and sets the
-   real choice. The board layers serve the view (psmac_board_se.c for the SE's clock chip or its
+   real choice. A byte the Mac writes there is given back only to a read of that same byte that comes
+   next, with no other access to $78-$7B between; every other read is given slot 9. The test writes a
+   pattern into one byte and reads that byte at once, then the next byte; when the ROM resets a
+   parameter RAM it does not trust it writes zeros to the four bytes, then ff ff ff df (SCSI ID 0, its
+   default startup device), and reads the four back. A view that kept every write showed the Mac that
+   SCSI default, the card's boot record never ran, and the first start of a Macintosh 512Ke whose clock
+   chip held no IIci parameter RAM ended at the question-mark disk (22 November 2026, docs/08 item 96).
+   The board layers serve the view (psmac_board_se.c for the SE's clock chip or its
    stand-in, psmac_board_solo.c) and report what the parameter RAM really holds. The answer to the
    boot record follows mac.boot=:
      auto (the default)  the SCSI disk the parameter RAM names (Apple's default, ID 0, when it names
@@ -234,7 +258,8 @@ static int blk_xfer(int write, struct blkdev *b, uint32_t lba, uint32_t count, u
 static const uint8_t startup_slot9[4] = { 0, 0, 9, 0x80 };   /* sdExtDevID, sdPartition, sdSlotNum, sdSRsrcID */
 static uint8_t startup_real[4] = { 0xff, 0xff, 0xff, 0xdf };   /* the parameter RAM's own bytes, as last read */
 static uint8_t startup_known;                                  /* bit i: startup_real[i] was read from the parameter RAM this session */
-static uint8_t startup_view[4];                                /* what the Mac sees while the view is up */
+static uint8_t startup_view[4];                                /* bytes the Mac wrote while the view is up */
+static int startup_last = -1;                                  /* the byte the Mac wrote last, until its next access to $78-$7B */
 static volatile int startup_window = 1;                        /* the view is up: from each RESET until the boot record asks */
 static int startup_mode = -1;                                  /* 0 auto, 1 image, 2 scsi */
 static int startup_said;
@@ -256,6 +281,7 @@ void psmac_startup_reset(void)
     __atomic_store_n(&mbox_resets, mbox_resets + 1, __ATOMIC_RELEASE);
     startup_mode_get();
     for (int i = 0; i < 4; i++) startup_view[i] = startup_slot9[i];
+    startup_last = -1;
     startup_said = 0;
     __atomic_store_n(&startup_window, 1, __ATOMIC_RELEASE);
 }
@@ -278,7 +304,12 @@ void psmac_startup_seen(int addr, uint8_t real)
                 startup_real[0], startup_real[1], startup_real[2], startup_real[3], startup_mode == 1 ? "image" : "auto");
     }
 }
-uint8_t psmac_startup_view(int addr) { return startup_view[(addr - 0x78) & 3]; }
+uint8_t psmac_startup_view(int addr)
+{
+    int i = (addr - 0x78) & 3, last = startup_last;
+    startup_last = -1;
+    return last == i ? startup_view[i] : startup_slot9[i];
+}
 uint8_t psmac_startup_read(int addr, uint8_t real)
 {
     if (addr < 0x78 || addr > 0x7b) return real;
@@ -289,6 +320,7 @@ int psmac_startup_write(int addr, uint8_t v)
 {
     if (addr < 0x78 || addr > 0x7b || !psmac_startup_card()) return 0;
     startup_view[addr - 0x78] = v;
+    startup_last = addr - 0x78;
     return 1;
 }
 int psmac_startup_real(int addr, uint8_t *v)
@@ -598,8 +630,8 @@ static int run_cmd(int idx, uint16_t type, volatile uint8_t *c, uint32_t req)   
             break;
         }
         if (cmd == PSMB_BLK_READ)       { static int first = 1; if (first) { first = 0; psmac_boot_mark("PiDisk: first block read (device %u, block %u)", a0, a1); }
-                                          status = blk_xfer(0, b, a1, a2, buf); if (!status) { xfer = a2 * 512; extern uint32_t psmac_icache_epoch; psmac_icache_epoch++; } }
-        else if (cmd == PSMB_BLK_WRITE) { status = blk_xfer(1, b, a1, a2, buf); if (!status) xfer = a2 * 512; }
+                                          blk_cmd_busy = c; status = blk_xfer(0, b, a1, a2, buf); blk_cmd_busy = NULL; if (!status) { xfer = a2 * 512; extern uint32_t psmac_icache_epoch; psmac_icache_epoch++; } }
+        else if (cmd == PSMB_BLK_WRITE) { blk_cmd_busy = c; status = blk_xfer(1, b, a1, a2, buf); blk_cmd_busy = NULL; if (!status) xfer = a2 * 512; }
         else if (cmd == PSMB_BLK_FLUSH || cmd == PSMB_BLK_EJECT) status = 0;
         else status = PSMB_E_BADCMD;
         break; }
@@ -655,6 +687,9 @@ void psmac_mbox_init(uintptr_t window_phys, uintptr_t ramp, uint32_t rams)
     wr32(h + 8, PSMB_FEAT_BLOCK | (net_up ? PSMB_FEAT_NET : 0));
     wr32(h + 12, 0); wr32(h + 16, psmac_mac_ram_mb()); wr32(h + 20, 0);
     const char *ver = "Aurora68 psmac " __DATE__;   /* the build string PiNet shows */ int k = 0; while (ver[k] && k < 31) { ((volatile uint8_t *)h)[24 + k] = ver[k]; k++; }
+    { extern int psmac_board_se, psmac_board_solo, psmac_board_plus, psmac_board_orig;   /* which logic board the Mac is in (psmb.h, struct psmb_header.board) */
+      static const uint32_t orig[] = { PSMB_BOARD_PLUS, PSMB_BOARD_128K, PSMB_BOARD_512K, PSMB_BOARD_512KE };
+      wr32(h + 56, psmac_board_plus ? orig[psmac_board_orig & 3] : psmac_board_solo ? PSMB_BOARD_SOLO : psmac_board_se ? PSMB_BOARD_SE : PSMB_BOARD_IICI); }
     kprintf("[PSMAC:MBOX] window at Mac 0x%08x (Pi %p): %d block device(s), net %s\n", PSMB_WIN_PHYS, (void *)win_phys, nbdev, net_up ? "up" : "off");
 }
 

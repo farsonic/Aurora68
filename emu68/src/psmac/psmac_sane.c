@@ -30,7 +30,9 @@
  * with a branch, a zero word, 'PACK' and its number, which is checked.
  */
 #include <stdint.h>
+#include <stdbool.h>
 #include "support.h"
+#include "globals.h"
 #include "psmac.h"
 #include "psmb.h"
 
@@ -110,16 +112,18 @@ static const char *find_packs(void)
     return "no PACK resources in the map";
 }
 
-static void load(void)
+static void load_packs(void)
 {
     const char *opt = psmac_option("mac.sane"), *path = psmac_option("mac.serom"), *src, *why;
     state = -1;
-    if (opt && opt[0] == 'r') { kprintf("[PSMAC] SANE: the IIci ROM's (mac.sane=rom)\n"); return; }
+    int no_fpu = globals.fpu_disable;   /* mac.fpu=none: the IIci ROM's SANE is FPU code and would stop at its first FPU instruction */
+    if (opt && opt[0] == 'r' && !no_fpu) { kprintf("[PSMAC] SANE: the IIci ROM's (mac.sane=rom)\n"); return; }
+    if (opt && opt[0] == 'r') kprintf("[PSMAC] SANE: mac.sane=rom needs the FPU and mac.fpu=none has none: the SE ROM's SANE instead\n");
     /* With the exact FPU (mac.fpu=exact, psmac_fpu.c, docs/17) the IIci ROM's SANE computes on a 68882 that
        keeps extended precision, so it is exact as well as fast: it is the default then, and mac.sane=se
        asks for the SE ROM's packages all the same (22 November 2026, issue #27). */
     extern int psmac_fpu_exact;
-    if (!(opt && opt[0] == 's') && psmac_fpu_exact) {
+    if (!no_fpu && psmac_fpu_exact && !(opt && opt[0] == 's')) {
         kprintf("[PSMAC] SANE: the IIci ROM's, on the exact FPU (mac.sane=se for the SE ROM's)\n");
         return;
     }
@@ -147,6 +151,14 @@ static void load(void)
     state = 1;
     kprintf("[PSMAC] SANE: from %s (checksum %08x): PACK 4 (FP68K) %u bytes, PACK 5 (Elems68K) %u bytes, for A68 Machine to install\n",
             src, sum, pack_len[0], pack_len[1]);
+}
+
+static void load(void)
+{
+    load_packs();
+    if (state != 1 && globals.fpu_disable)
+        kprintf("[PSMAC] SANE: WARNING: mac.fpu=none and no SE ROM to take SANE from: the IIci ROM's SANE is FPU code, and a "
+                "program's first floating-point call will stop at an FPU instruction (line-F). Give mac.serom=, or use the SE board\n");
 }
 
 /* PSMB_INFO_SANE: package n (4 or 5): 0 and its bytes, or a PSMB_E_* status */

@@ -3714,6 +3714,53 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
        20 s; the partial file was deleted". Riptide in Extensions was unchanged (537,566 bytes of
        resources before and after), no Riptide.part was left, and the next jobs ran at once.
 
+96. **The Macintosh Plus, 128K, 512K and 512Ke; a first start from blank parameter RAM; a slow card; the
+   SCSI ID the testbeds use (22 November).** The owner asked for the Plus as a board beside the SE, and
+   then the original Macintosh. Neither owner nor project has one: everything here is the MAME
+   testbed's, and the owner's testers will try the hardware.
+   - *The testbed machines* (`reference/mame-psmac.patch`, `src/mame/apple/macplus_ps.cpp`):
+     `macplus_ps` (the Plus's logic board, its 5380 with pseudo-DMA, the M0110A keyboard with `-kbd usp`,
+     which wants `mame/roms/mackbd_m0110a.zip`), `mac512ke_ps` (the Plus without the 5380, 512K) and
+     `mac512k_ps` (the 128K/512K board: the 20-byte clock chip, 400K drives, `-ramsize 128K` for the
+     128K). None of them needs a ROM dump, the bridged CPU never running the board's own ROM; `macse_ps`
+     now fills its ROM region the same way (it had asked for `macse.rom`, which this build machine never
+     had, and would not start). `tools/run-fullstack.sh` takes `HD=none` for a machine without SCSI and
+     `MAME_EXTRA=` for more options (a half-done edit had left `HD=` ignored for a few hours).
+   - *The kernel* (`mac.board=plus`, `128k`, `512k`, `512ke`; `psmac_board_plus.c` beside
+     `psmac_board_se.c`, whose SE layer they share): the overlay through VIA PA4, DDRB bits 3-6 left as
+     inputs, a software ADB transceiver in place of the SE's ADB chip with the Plus's own keyboard and
+     mouse (and USB and Bluetooth input) as ADB devices, SCSI pseudo-DMA by polling DRQ, the board's own
+     RAM size for the screen and sound buffers. On the 128K and 512K, whose chip has no extended parameter
+     RAM, the clock-chip stand-in answers for all of it from `pram.bin` on the card. Aurora68 Machine sets
+     Gestalt: About This Macintosh reads "Macintosh Plus", "Macintosh 512Ke", and plain "Macintosh" on the
+     128K and 512K (System 7.1's name for type 1; the owner chose to leave it so). All four reached the
+     Finder under System 7.1: the 128K/512K/512Ke at 128 MiB from the card's image (they have no SCSI),
+     the Plus at 32 MiB from its SCSI disk; 8 MiB in 24-bit mode crashes QuickTime on every board with the test
+     image, so 32 MiB or more for tests.
+   - *A first start from blank parameter RAM.* The first 512Ke boot stopped at the question-mark disk
+     without opening PiDisk. A trace of $78-$7B showed why: the IIci ROM, finding no valid parameter RAM
+     (a Plus's or a blank chip's), writes zeros to the four bytes, then ff ff ff df (SCSI ID 0, its
+     default startup device), and reads them back; the view of item 67 kept every write the Mac made, so
+     the Mac read the SCSI default and the card's boot record never ran. The view now gives a written byte
+     back only to a read of that byte that comes next, with no other access to $78-$7B between (the ROM's
+     parameter RAM test, 0x40841DA2, writes one byte and reads it at once); every other read is given
+     slot 9. Verified from an all-zero `rtc` file: the card's image to the Finder, "Macintosh 512Ke".
+     A real Plus or SE meets this at its first start with Aurora68.
+   - *A slow card.* The first run after a power cut (the host's page cache cold) ended in "PiDisk: prime
+     error -036" and the question-mark disk: one semihosting read of the image took 0.7 s, longer than
+     PiDisk's spin on the done word, and only USB commands moved the progress word the driver then waits
+     on. The BLOCK service now moves it before each step that may wait (a semihosting chunk, each card
+     chunk `psmac_card_need` loads). Verified with `mac.cardslow=10000` and a 256 MB FAT16 card image
+     (`CARD=`): the Finder, with mailbox calls of up to 3.7 s; the same kernel without the bump, prime
+     error -036.
+   - *The SCSI ID.* MAME puts these Macs' disk at SCSI ID 6. With the card's image published and the
+     parameter RAM naming no disk, `mac.boot=auto` asks for ID 0 first; the Start Manager waits for it
+     (0x40801460, about 15 s), then takes the first startup disk in the drive queue, the card's, whose
+     drive is queued before the SCSI drivers load. So on the SE and the Plus a disk at ID 6 lost to the
+     image; moved to ID 0 (`MAME_EXTRA='-scsibus:6 cdrom -scsibus:0 harddisk -hard ...'`) the SE started
+     from SCSI and mounted the image after it. This is the order item 67 wrote down; whether a disk at
+     another ID should come before the card is the owner's to decide.
+
 97. **FAT32 and exFAT on the Mac: disk images on sticks, and an HFS view of a stick or a card folder (21
    November, issue #20).** The owner wants sticks formatted by Windows, Linux or a modern Mac, and a folder
    on the SD card, usable on the SE as ordinary disks with nothing installed on the Mac. No file system is
@@ -4046,3 +4093,164 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      (64-bit), 895293 additions a second" to "= 2^-60 (exact), 159717 additions a second" (5.6 times
      slower on the hardware, not the testbed's 25). **Photoshop, which had sat under the stopwatch for
      minutes, opened.**
+
+102. **Aurora68 Play on a modern Mac: other players, stations, new albums, seeking, an icon (22 November).** The
+     owner's list, after a day with the macOS Aurora68 Play: "Photorealistic Icon for MacOS (modern); Needs to
+     detect when new albums are added without restart; Pressing Live shows nothing... should there not be a list
+     of stations; Perhaps other devices running Aurora Player need to broadcast they are online for redirection;
+     I can't jump to a position in the song on the MacOS version (works on classic Mac)". (Their last item, FLAC
+     and the like on the classic Play, is the classic Play's own work, against the same server interface.)
+   - *Players as devices (the music server).* Every Aurora68 Play now announces itself every 20 seconds
+     (`POST /api/devices/announce`; the classic Play `GET /mac/announce`), posts what it plays, and fetches
+     commands by a long poll: the server holds `GET /api/devices/ID/commands?wait=20` until a command comes or
+     20 seconds pass, so no player needs an open port (a Mac with its firewall on, MacTCP on the SE). A player
+     not heard from for 60 seconds is offline. `GET /api/devices` lists them, the Live channel first as the
+     device `live`; `POST /api/devices/ID/command` sends one "play this": the server turns `s:`, `f:`, `t:` or
+     `r:N` into the tracks themselves (path for `/file/`, id for `/t/`, title, artist, album, length) or a radio
+     station's address, so a player plays what it gets without asking again. The classic Play has the same in
+     text (`/mac/state`, `/mac/devices`, `/mac/commands`). The interface is `tools/music-server/README.md`,
+     "Devices"; both Plays were written against one shared design, so neither waits on the other.
+   - *Stations.* `GET /api/radio` (and `/mac/radio`) hands every player the classic Play's built-in radio list
+     (`mac/piplay/stations.c`), checked by the test against the C source so the two cannot drift apart, plus a
+     stations file of the owner's own in the music folder. The macOS Play's Live page (now "Live and Radio")
+     starts with stations: everything shuffled (on This Mac the server's own `/radio/?shuffle=1` stream), each
+     artist shuffled, and the radio stations grouped as the classic Play's Radio menu, each playable on This
+     Mac, on Live (the library only: Live plays no radio) or on another player.
+   - *New albums.* The library scan already ran again when a request came 30 seconds after the last; nothing
+     told the app. The scan now keeps a signature of the folders and files, and a scan that finds a change adds
+     one to the library's generation (`/api/info`, the announce answer, `/mac/info`'s sixth field). The app
+     watches it and fetches the catalogue again when it changes; the navigation keeps artists and albums by
+     value and the views look them up again by id, so an open artist shows its new album where it is. A scan
+     that finds nothing new no longer logs the library summary every 30 seconds.
+   - *Seeking.* The position bar was a SwiftUI `Slider` that seeked in `onEditingChanged(false)`. On macOS a
+     click on a slider's bar moves its value without that call coming, so the click left the knob "held" at the
+     place clicked (the app showed the new time) and never seeked; only a drag that ended on the knob did. The bar
+     is now a scrubber of the app's own (a `DragGesture` with no minimum distance: a click is a drag of length
+     zero, and both end in a seek). The seek itself is exact (zero tolerance: AVFoundation otherwise picks a
+     convenient point, seconds away in a long MP3), waits for an item that is not ready yet instead of being
+     lost, and holds the clock until it finishes. The server now names `/file/`'s Content-Type itself for `.m4a`,
+     `.flac` and the rest: a NAS's slim Linux image may have no `/etc/mime.types`, and AVFoundation decides by
+     it whether it can play a file. The Range answers were already what AVFoundation asks for (206 with
+     Content-Range for `bytes=0-1`, HEAD, Accept-Ranges).
+   - *The icon.* `macos/Aurora68Play/make-icon.py` paints it with numpy and Pillow, nothing taken from anyone
+     else's artwork: Apple's icon grid (an 824-pixel superellipse on 1024, a soft shadow), the aurora (curtains
+     bright at their wavy lower edge, green turning violet above, with rays), stars, dark hills, and a black
+     vinyl record in front (3.2-pixel grooves, four gaps between songs, the two glossy wedges tinted by the
+     aurora, a specular, a rim, a soft shadow, an aurora-green label). Every size is made from the 1024-pixel
+     picture; the record and its label still read at 16 pixels. The macOS workflow installs numpy and Pillow in a
+     virtual environment and keeps a preview (artifact Aurora68-Play-icon).
+   - *Tested:* the server test (now 127 checks, all passing) adds the devices on a server of its own with a
+     one-second rescan and a three-second time to go offline (`MUSIC_RESCAN`, `MUSIC_DEVICE_TTL`): announce,
+     state and the list in JSON and in text, commands fetched at once and during a wait, radio by index, `live`,
+     refusals, offline and back; the radio list against stations.c; the generation with a new album. The macOS
+     app's core tests add the devices' JSON, commands as player actions, the radio groups, the kept id, the
+     generation watch, and the scrubber's arithmetic; GitHub's macOS runner builds and tests it.
+   - *Not verified here (no Mac with a screen, no SE on this network):* the app on a real Mac (a click on the
+     position bar; Play on another Mac and on the SE; a radio station on This Mac; a new album appearing; the
+     icon in the Dock and Finder), and the classic Play's side of the devices.
+
+103. **`mac.fpu=none`: a Mac with no FPU, as the SE is (22 November, issue #28).** Emu68 executes FPU
+   instructions, and keeps the 68881's 96-bit extended format as a 64-bit double. Item 101 replaced the IIci
+   ROM's FPU SANE with the SE ROM's software SANE, but a program built for the FPU (a 68881 build from THINK C
+   or MPW, an application's "FPU version") still finds an FPU and runs its own FPU code at double precision.
+   A real SE has no FPU: such programs take their software paths there. `mac.fpu=none` gives the Mac the same.
+   - *The JIT already had it.* Upstream Emu68 has a `disable-fpu` property (`globals.fpu_disable`, read from
+     the device tree in `aarch64/start.c`). With it, `EMIT_lineF` (`M68k_LINEF.c`) sends every coprocessor-1
+     instruction (`(opcode & 0x0e00) == 0x0200`, FSAVE and FRESTORE included) to the line-F exception, vector
+     11, as a 68000 or a 68LC040 would. The other F-line forms are not affected: the MMU shim's PMOVE/PFLUSH
+     forms are coprocessor 0, MOVE16 and the cache instructions coprocessor 3 and 2. The new option only sets
+     that flag (`psmac_read_options` in `psmac_bus.c`; `mac.fpu=on` sets it back).
+   - *The first run did not reach the Finder.* With the flag set, the kernel's heartbeat showed HWCfgFlags
+     ($0B22) still at $FC00, its bit 12 (hwCbFPU) set. System 7.1 then executed an FPU instruction at $0001C128
+     during startup, and the Mac did not reach the Finder in 190 seconds. The IIci ROM's power-on FPU test
+     ($408456FC, `fmove.l d0,fp0` at $40845704) trapped as expected, but that test only decides pass or fail.
+   - *Where HWCfgFlags comes from.* The IIci ROM does not probe for the FPU to set HWCfgFlags. At $40800612 it
+     loads UnivInfoPtr ($0DD8) and copies two words from the ProductInfo record it points to:
+     `move.w 16(a0),$B22`. `mac.peek=dd8,4` showed UnivInfoPtr at $408036C0, so the flags come from ROM offset
+     $36D0, where the word is $DC00 (bit 13 is set later during startup, hence $FC00 at run time). Gestalt's `'fpu '`
+     function ($40816600) tests bit 12 first (`btst #4,$B22`) and answers 0 when it is clear; only when it is
+     set does it run FSAVE and read the frame's first word ($1F18/$3F18 a 68881, $1F38/$3F38 a 68882).
+   - *The fix: clear hwCbFPU in the ROM's record.* `psmac_fpu_rom_fixup` (`psmac_board_se.c`) runs at ROM load
+     beside the SE's chime and SCSI fixups. With `mac.fpu=none` it checks the record's first 18 bytes against
+     the IIci's, changes $DC00 to $CC00, and subtracts $1000 from the checksum word at offset 0 so that the
+     ROM's start-up checksum test still passes. If the bytes do not match, it changes nothing and logs a
+     warning. Only this one record is changed: the ROM's other ProductInfo records are for other models.
+   - *Expected traps are not crashes.* The crash recorder treated vector 11 as a crash. With `mac.fpu=none`,
+     `M68k_ExceptionEntry.c` now counts a coprocessor-1 opcode at the faulting PC instead of recording it, and
+     the heartbeat reports the count and the last PC ("FPU (none): N FPU instructions took the line-F
+     exception so far"). Other line-F opcodes are still recorded.
+   - *SANE.* The IIci ROM's SANE is FPU code. With no FPU, `psmac_sane.c` ignores `mac.sane=rom` and says so,
+     and warns if no SE ROM is at hand: then the first SANE call ends in system error 90 ("no FPU"). The second
+     run showed one more problem: A68 Machine measures the IIci ROM's SANE before it installs the SE ROM's
+     (item 101), and that first FOADD at $40870AD4 (`fmove.l fpsr,d5` in PACK 4) ended in system error 90.
+     `mac/pimach.s` now skips that measurement when hwCbFPU is clear. It also logs Gestalt's answer:
+     "A68 Machine: Gestalt fpu N".
+   - *Tested.* Solo testbed, System 7.1, 64 MB, `mac.serom=` the SE ROM image, `mac.fpu=none`, two runs:
+     ```
+     [PSMAC] FPU: none (mac.fpu=none): FPU instructions take the line-F exception, as on a 68000 Mac; Gestalt reports no FPU
+     [PSMAC] FPU: the ROM's ProductInfo HWCfgFlags $DC00 -> $CC00 (hwCbFPU clear: no FPU for Gestalt; checksum word now 36ac8157)
+     [PSMAC]   the Mac's HWCfgFlags $ec00: no FPU found at start-up (mac.fpu=none)
+     [PSMAC]   FPU (none): 1 FPU instructions took the line-F exception so far, the last at PC 40845704
+     [MAC] A68 Machine: Gestalt fpu 0
+     [MAC] A68 Machine: SANE, the SE ROM's: (1 + 2^-60) - 1 = 2^-60 (exact), square root of 2 settled in 6 steps, 25554 additions a second
+     [BOOT] t=48.821s Mac: the Finder is running (CurApName)
+     ```
+     The only FPU instruction executed during startup was the ROM's own power-on test. There were no crash
+     records. On the MAME SE board (`macse_ps`, 16 MB, the same disk as a CHD, no `mac.serom=`), the kernel read
+     PACK 4 and 5 from the SE's own ROM over the wire. SANE gave 2^-60, again with one trap, and the Finder was
+     running at 529 s (the SE board runs at the real machine's bus speed). With the FPU left on (no
+     `mac.fpu=`), nothing changed: "FPU: present", HWCfgFlags $FC00, "Gestalt fpu 2", the IIci ROM's SANE 0
+     (64-bit) and then the SE ROM's 2^-60, the Finder at 56 to 59 s, no crash records.
+   - *Not yet tried:* Speedometer's FPU line and an FPU-only program (which should say it needs an FPU) with
+     `mac.fpu=none`, and the owner's SE. The default stays `on` until issue #27's exact FPU decides the SE
+     board's default.
+
+104. **The exact FPU: `mac.fpu=exact`, a 68882 in extended precision, now the default (22 November, issue
+   #27).** Item 101 found the IIci ROM's SANE rounding extended results to double, because Emu68 keeps the
+   68881's 80-bit registers as 64-bit doubles; item 103 offered no FPU at all. This item gives the Mac an FPU
+   that computes as the real one does. The design is docs/17: Berkeley SoftFloat 3e (vendored, BSD-3, with
+   a 68881 specialization) does the arithmetic in C, the 68881's rules (FPCR precisions and rounding, FPSR
+   flags, exceptions, FSAVE frames, packed decimal) sit on top in `psmac/psmac_fpu.c`, and the JIT
+   (`EMIT_FPU_exact` in `M68k_LINEF.c`) translates every coprocessor-1 instruction into a call to it.
+   - *Who moves the PC.* The first version advanced the 68k's PC in the JIT after the call
+     (`EMIT_AdvancePC`), as Emu68's own FPU code does. But the call's exception path leaves the block through a
+     local exit, and the JIT's pending PC offset is flushed into the exit it meets first: there it was the
+     exception path's, and the normal path lost it. Now the C side sets x18 itself, to the next instruction
+     (its length is `psmac_fpu_length`'s, the same function the translator uses), a branch's target, or the
+     PC an exception stacks, and the JIT emits no advance after the call. `tools/fpu_test.c` checks the PC
+     the C side leaves after every instruction that goes on in the block.
+   - *Vectors.* The C side returned vector numbers; `M68K_Exception` takes the vector's offset (vector times 4,
+     `VECTOR_LINE_F` is $02C). It returns offsets now, (format << 12) | offset.
+   - *SANE.* On the exact FPU the IIci ROM's SANE gives the exact answer, so `psmac_sane.c` keeps it by
+     default and logs "SANE: the IIci ROM's, on the exact FPU"; `mac.sane=se` still installs the SE ROM's
+     packages. With `mac.fpu=double` the SE ROM's SANE is installed as before; with `mac.fpu=none` it always is.
+   - *Merging item 103.* `mac.fpu=` now takes `exact` (the default; `on` means the same), `double` and `none`.
+     The banner "FPU: present (... 64-bit doubles)" from item 103 was no longer true and is gone:
+     `psmac_bus.c` announces `none`, `psmac_fpu_init` announces `exact` or `double`. The crash recorder no
+     longer records the FPU's exceptions (vectors 48 to 54): they are taken only when a program has enabled
+     them in the FPCR with a handler of its own (the test INIT's OPERR check was the first crash record).
+   - *The test INIT on a Mac without an FPU.* "Aurora68 FPU Test" loads before A68 Machine, and with
+     `mac.fpu=none` its first FPU instruction ended in system error 90 at startup. It now tests HWCfgFlags'
+     hwCbFPU (`btst #4,$B22`, as Gestalt does) and logs "no FPU" instead.
+   - *Tested.* Host: `tools/fpu_test.sh`, 20,273 checks, 0 failed (docs/17 "Testing" has the parts). Solo
+     testbed, System 7.1, 64 MB, `mac.serom=` the SE ROM image, the merged kernel:
+     ```
+     (no mac.fpu)  [PSMAC] FPU: exact, a 68882 in extended precision (mac.fpu=exact)
+                   [MAC] FPU test: 24 passed, 0 failed
+                   [MAC] A68 Machine: SANE, the IIci ROM's: (1 + 2^-60) - 1 = 2^-60 (exact), ... 247902 additions a sec
+                   [PSMAC] SANE: the IIci ROM's, on the exact FPU (mac.sane=se for the SE ROM's)
+                   [BOOT] t=42.621s Mac: the Finder is running (CurApName)          no crash records
+     mac.fpu=none  [MAC] FPU test: no FPU (HWCfgFlags hwCbFPU clear), nothing tested
+                   [MAC] A68 Machine: SANE, the SE ROM's: (1 + 2^-60) - 1 = 2^-60 (exact), ... 22323 additions a second
+                   [BOOT] t=44.048s Mac: the Finder is running (CurApName)          no crash records
+     mac.fpu=double (the speed-only INIT) the IIci ROM's SANE 0 (64-bit), then the SE ROM's 2^-60,
+                   the Finder at 43 s, no crash records
+     ```
+     `mac.fpu=exact mac.sane=se` installed the SE ROM's packages (2^-60) and reached the Finder. Speedometer
+     3.23 (before the merge, the same FPU code) reported an MC68882 and ran its FPU Benchmarks to the end:
+     3529 KWhetstones, matrix multiply 0.650 s, FFT 0.283 s, average 8.48 against a Mac II. Speeds against
+     `double` are in docs/17: in QEMU the exact FPU is about 20 to 70 times slower per instruction, and the
+     IIci ROM's SANE on it still several times faster than the SE ROM's software SANE.
+   - *Not yet tried:* the MAME SE board and the owner's SE (a real Pi's speed for the exact FPU); Photoshop
+     and other FPU builds of programs on the exact FPU; the full test INIT with `mac.fpu=double`, which ends in
+     an F-line crash at $81000040 (Emu68's own FPU, not changed here: the speed-only INIT exists for that).

@@ -40,8 +40,8 @@ struct Sidebar: View {
                 Label("Artists", systemImage: "music.mic").tag(AppModel.Section.artists)
                 Label("Albums", systemImage: "square.stack").tag(AppModel.Section.albums)
             }
-            Section("Mac SE") {
-                Label("Live", systemImage: "dot.radiowaves.left.and.right").tag(AppModel.Section.live)
+            Section("Stations") {
+                Label("Live and Radio", systemImage: "dot.radiowaves.left.and.right").tag(AppModel.Section.live)
             }
         }
         .safeAreaInset(edge: .bottom) { ServerStatus().padding(10) }
@@ -202,6 +202,7 @@ struct ArtistView: View {
     let artist: Artist
 
     var body: some View {
+        let artist = model.current(self.artist)            // its albums as they are now (new ones appear)
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading) {
@@ -271,8 +272,8 @@ struct AlbumView: View {
             .padding(24)
         }
         .navigationTitle(album.title)
-        .task(id: album.id) {
-            loading = true
+        .task(id: "\(album.id) \(model.generation)") {     // again when the library changed
+            loading = tracks.isEmpty
             tracks = await model.tracks(album: album)
             loading = false
         }

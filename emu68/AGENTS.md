@@ -1,4 +1,4 @@
-# psmac — downstream fork of Emu68 for the Macintosh (PiStorm-SE project)
+# psmac — downstream fork of Emu68 for the Macintosh (Aurora68 project)
 
 This tree is a fork of michalsc/Emu68 (MPL-2.0). It targets a Macintosh SE fitted with a
 PiStorm, booting Apple ROMs (Mac SE 24-bit, Mac IIci 32-bit donor). It is NOT intended to be

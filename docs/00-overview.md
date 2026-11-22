@@ -1,4 +1,4 @@
-# Aurora68 / PiStorm-SE: an Emu68 kernel for the Macintosh SE
+# Aurora68: an Emu68 kernel for the Macintosh SE
 
 *This document is the project's front page and its history. The later numbered documents are the
 working notes of each part, written as the work was done; this one is kept up to date and says

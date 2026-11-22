@@ -7,7 +7,7 @@
 
 MacTCP keeps its configuration in a 129-byte resource, 'ipln' 128, inside the control panel
 (and a copy in "MacTCP Prep"), with a layout Apple never published. It was read out of the
-control panel's own code and the .IPP driver on 16 November 2026 for the PiStorm-SE project,
+control panel's own code and the .IPP driver on 16 November 2026 for the Aurora68 project,
 because the alternative, driving the control panel's dialogs inside an emulator, was worse:
   +0   long   version, 1 (the driver takes the first 'ipln' whose version is 1)
   +4   long   flags: 0x800 "Manually", 0x348 "Server" (BOOTP/RARP), 0x400 "Dynamically"

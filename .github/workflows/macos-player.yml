@@ -18,9 +18,18 @@ jobs:
       - name: Test
         working-directory: macos/Aurora68Play
         run: swift test
+      - name: Icon tools (numpy and Pillow, in a virtual environment)
+        run: python3 -m venv "$RUNNER_TEMP/icon" && "$RUNNER_TEMP/icon/bin/pip" install --quiet numpy pillow
       - name: Build the app
         working-directory: macos/Aurora68Play
-        run: BUILD=${{ github.run_number }} ./make-app.sh
+        run: PYTHON="$RUNNER_TEMP/icon/bin/python" BUILD=${{ github.run_number }} ./make-app.sh
+      - name: Icon preview
+        working-directory: macos/Aurora68Play
+        run: |
+          "$RUNNER_TEMP/icon/bin/python" make-icon.py --preview build/icon-preview.png
+          test "$(sips -g pixelWidth build/AppIcon.iconset/icon_512x512@2x.png | awk '/pixelWidth/ {print $2}')" = 1024
+          iconutil -c iconset -o build/check.iconset "build/Aurora68 Play.app/Contents/Resources/AppIcon.icns"
+          ls build/check.iconset
       - name: Zip
         working-directory: macos/Aurora68Play/build
         run: ditto -c -k --sequesterRsrc --keepParent "Aurora68 Play.app" Aurora68-Play-macOS.zip
@@ -28,4 +37,9 @@ jobs:
         with:
           name: Aurora68-Play-macOS
           path: macos/Aurora68Play/build/Aurora68-Play-macOS.zip
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Aurora68-Play-icon
+          path: macos/Aurora68Play/build/icon-preview.png
           if-no-files-found: error

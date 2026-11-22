@@ -1,4 +1,4 @@
-| pimach.s — "PiMach": tell the Mac it is a Macintosh SE. MPL-2.0. GNU as MIT syntax, 68020.
+| pimach.s — "PiMach": tell the Mac it is a Macintosh SE (or Plus). MPL-2.0. GNU as MIT syntax, 68020.
 |
 | The IIci ROM identifies the machine it was made for: its Gestalt Manager answers the 'mach'
 | selector with 11, gestaltMacIIci, and "About This Macintosh", the Finder and every program
@@ -16,6 +16,12 @@
 | copied into a block in the system heap.
 | Everything else the ROM says about itself (processor, ROM version, slots) is left as it is:
 | a program that asks for the processor still hears 68030, which is what the kernel presents.
+| On the Plus board (mac.board=plus, 22 November 2026) the answers are the Plus's instead: Gestalt
+| 4, gestaltMacPlus, and SysEnvirons' envMacPlus, 2; on the original Macintosh (mac.board=128k,
+| 512k: gestaltClassic 1, envMac -1; 512ke: gestaltMac512KE 3, env512KE 1). The INIT reads which board it is on from the
+| slot-9 window's header (psmb.h, struct psmb_header.board at offset 56, PSMB_BOARD_PLUS = 3);
+| an older kernel leaves that word 0 and the answer stays the SE's.
+|
 | Exact SANE (22 November 2026, docs/08 item 101): the IIci ROM's SANE packages, PACK 4 (FP68K) and
 | PACK 5 (Elems68K), are the versions for a 68881/68882 and compute with FPU instructions, which
 | Emu68 carries out in 64-bit doubles: extended precision loses eleven bits, and a program that
@@ -39,6 +45,13 @@
 	.equ	trapSysEnvirons, 0xA090
 	.equ	envMacIIci,	9		| SysEnvirons' own machine codes (Inside Macintosh: Operating
 	.equ	envSE,		3		| System Utilities, "System Environment Record"), not Gestalt's
+	.equ	envMacPlus,	2
+	.equ	env512KE,	1
+	.equ	envMac,		-1		| the 128K and 512K
+	.equ	gestaltMacPlus,	4
+	.equ	gestaltMac512KE, 3
+	.equ	gestaltClassic,	1		| Gestalt.h's name for the original Macintosh, 128K and 512K
+	.equ	boardPlus,	3		| psmb.h PSMB_BOARD_PLUS
 	.ifdef	MACH
 	.equ	gestaltMacSE,	MACH		| another type for experiments (make MACH=11 is a IIci again)
 	.else
@@ -50,7 +63,7 @@ init_start:
 	move.l	#sel_end-sel_start,%d0
 	.short	_NewPtrSys
 	move.l	%a0,%d0
-	beq.s	done			| no memory: stay a IIci
+	beq.w	done			| no memory: stay a IIci
 	move.l	%a0,%a1
 	lea	sel_start(%pc),%a2
 	move.l	#sel_end-sel_start,%d1
@@ -58,6 +71,25 @@ init_start:
 	subq.l	#1,%d1
 	bne.s	1b
 	move.l	%a0,%a2			| the block: the selector function first, then the SysEnvirons patch
+	.ifndef	MACH
+	| the Plus board? the slot-9 window's header says (psmb.h: 'PSMB' at 0, the board at 56)
+	lea	0xF9000000,%a1
+	tst.b	0x0CB2			| MMU32Bit: 24-bit mode uses the slot's 24-bit alias
+	bne.s	2f
+	lea	0x00900000,%a1
+2:	cmp.l	#0x50534D42,(%a1)
+	bne.s	3f
+	move.l	56(%a1),%d0		| the board: 3 Plus, 4 128K, 5 512K, 6 512Ke (psmb.h PSMB_BOARD_*)
+	subq.l	#boardPlus,%d0
+	bcs.s	3f			| 0-2: the IIci testbed, solo, the SE: the SE's answers
+	cmp.l	#3,%d0
+	bhi.s	3f
+	add.w	%d0,%d0
+	move.w	board_mach(%pc,%d0.w),%d1
+	move.l	%d1,mach_val-sel_start(%a2)	| (high word clear: D1 was cleared above as the copy's counter)
+	move.w	board_env(%pc,%d0.w),env_val-sel_start(%a2)
+3:	move.l	%a2,%a0
+	.endif
 	move.l	#0x6D616368,%d0		| 'mach'
 	.short	_ReplaceGestalt	| A0 = the new function, D0 = the selector; returns A0 = the old one
 	tst.w	%d0
@@ -86,6 +118,9 @@ done:
 	bsr	sane_setup
 	movem.l	(%sp)+,%d0-%d2/%a0-%a2
 	rts
+| by board, from PSMB_BOARD_PLUS on: Gestalt 'mach' and SysEnvirons' machineType
+board_mach:	.word	gestaltMacPlus, gestaltClassic, gestaltClassic, gestaltMac512KE
+board_env:	.word	envMacPlus, envMac, envMac, env512KE
 bad:	lea	bad_text(%pc),%a1
 	bsr	do_log
 	bra.s	done
@@ -125,6 +160,7 @@ do_log:
 	.equ	_FP68K,		0xA9EB
 	.equ	Ticks,		0x016A
 	.equ	AppPacks,	0x0AB8
+	.equ	HWCfgFlags,	0x0B22
 	.equ	INFO_SANE,	13
 	.equ	FOADD,		0x0000		| SANE operations, extended operands (Apple Numerics Manual)
 	.equ	FOSUB,		0x0002
@@ -148,9 +184,33 @@ do_log:
 
 sane_setup:
 	movem.l	%d0-%d7/%a0-%a4,-(%sp)
+	| what Gestalt says of the FPU, for the log: "A68 Machine: Gestalt fpu N" (0 none, 1 a 68881,
+	| 2 a 68882, 3 a 68040's; mac.fpu=none gives 0)
+	move.l	#0x66707520,%d0			| 'fpu '
+	.short	_Gestalt			| D0 = selector -> A0 = response, D0 = error
+	move.l	%a0,%d3
+	lea	msg(%pc),%a1
+	lea	t_fpu(%pc),%a0
+	tst.w	%d0
+	beq.s	1f
+	lea	t_fpuerr(%pc),%a0		| "... fpu: error -N"
+	move.w	%d0,%d3
+	neg.w	%d3
+	ext.l	%d3
+1:	bsr	puts
+	move.l	%d3,%d0
+	bsr	putdec
+	clr.b	(%a1)
+	lea	msg(%pc),%a1
+	bsr	do_log
+2:
+	| with no FPU (mac.fpu=none: HWCfgFlags' hwCbFPU, bit 12, clear, as Gestalt 'fpu ' reads it) the IIci
+	| ROM's SANE is FPU code and its first instruction would end in system error 90: not tested then
+	btst	#4,HWCfgFlags			| bit 12 of the word is bit 4 of its first byte
+	beq.s	1f
 	lea	t_rom(%pc),%a2
 	bsr	sane_report			| the IIci ROM's SANE, as it is
-	moveq	#4,%d3
+1:	moveq	#4,%d3
 	bsr	install_pack
 	tst.l	%d0
 	bne.s	9f
@@ -417,6 +477,8 @@ v_y:	.space	10
 v_x:	.space	10
 v_old:	.space	10
 v_t:	.space	10
+t_fpu:	.asciz	"A68 Machine: Gestalt fpu "
+t_fpuerr: .asciz	"A68 Machine: Gestalt fpu: error -"
 t_rom:	.asciz	"the IIci ROM's"
 t_se:	.asciz	"the SE ROM's"
 t_sane:	.asciz	"A68 Machine: SANE, "
@@ -448,7 +510,7 @@ bad_text:	.ascii	"A68 Machine: ReplaceGestalt or Gestalt failed"
 | stack: 4(sp) response pointer, 8(sp) selector, 12(sp) the result word
 sel_start:
 	move.l	4(%sp),%a0
-	move.l	#gestaltMacSE,(%a0)
+	move.l	mach_val(%pc),(%a0)
 	clr.w	12(%sp)			| noErr
 	rtd	#8
 | the SysEnvirons patch: A0 = the record, D0.w = the version asked for; returns D0 = error.
@@ -460,7 +522,9 @@ env_patch:
 	move.l	(%sp)+,%a0
 	cmp.w	#envMacIIci,2(%a0)	| machineType
 	bne.s	1f
-	move.w	#envSE,2(%a0)
+	move.w	env_val(%pc),2(%a0)
 1:	rts
 env_old:	.long	0
+mach_val:	.long	gestaltMacSE		| the answers, set by the INIT for the board it is on
+env_val:	.word	envSE
 sel_end:

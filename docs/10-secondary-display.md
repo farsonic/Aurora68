@@ -191,7 +191,7 @@ own, and the design is **two cards**:
 - *Slot 9*, the card it always was (disk, input, the two network cards, the status page, the
   log), with its video sResource `$84` now the SE's own screen, 512 by 342, mode 128 (one bit)
   only: the SE's hardware has no other.
-- *Slot $A*, the HDMI screen's card: a board sResource ("PiStorm-SE HDMI", BoardId 'PH') and one
+- *Slot $A*, the HDMI screen's card: a board sResource ("Aurora68 HDMI", BoardId 'PH') and one
   video sResource `$80`, drHw `$5048`, every mode from one bit to millions at `mac.screen`'s size,
   and a driver, `.Display_Video_PiHDMI`, which is `mac/pivideo.s` assembled with `SCREEN2`. The
   card is a declaration ROM and nothing more. Its driver reaches the slot-9 window at its own
