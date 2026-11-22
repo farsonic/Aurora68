@@ -43,6 +43,7 @@ struct Aurora68PlayApp: App {
                 .environmentObject(model)
                 .environmentObject(model.player)
                 .environmentObject(model.live)
+                .environmentObject(model.devices)
                 .frame(minWidth: 860, minHeight: 540)
                 .onAppear {
                     let m = model
@@ -53,7 +54,7 @@ struct Aurora68PlayApp: App {
         .commands { PlayCommands(model: model) }
 
         Settings {
-            SettingsView().environmentObject(model)
+            SettingsView().environmentObject(model).environmentObject(model.devices)
         }
     }
 }

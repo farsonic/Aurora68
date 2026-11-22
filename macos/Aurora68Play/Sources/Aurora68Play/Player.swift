@@ -8,7 +8,16 @@
 // the server. AVQueuePlayer holds the playing item and the next one, so songs follow without a gap;
 // the queue the owner sees is Aurora68Core's PlayQueue, which says what plays now and what follows.
 // MPNowPlayingInfoCenter and MPRemoteCommandCenter put the song in Control Center and make the
-// keyboard's media keys work. "Listen here" plays the server's Live channel (/live) instead.
+// keyboard's media keys work. "Listen here" plays the server's Live channel (/live) instead, and an internet
+// radio station (from the Live page, or sent by another player) plays the same way, as a stream.
+//
+// Seeking (22 November 2026). The owner could not jump to a place in a song on the Mac (on the classic
+// Play it works). The position bar was a SwiftUI Slider that seeked only in onEditingChanged(false), which
+// macOS does not send for a click on the bar, so a click moved the knob, left it held there, and never
+// seeked. The bar is now Scrubber (PlayerViews.swift), which seeks on every click and at the end of every
+// drag; and seek(to:) here seeks exactly (zero tolerance, which AVFoundation otherwise widens to the
+// nearest convenient point, seconds away in a long MP3), waits for an item that is not ready yet, and
+// keeps the periodic clock from showing the old place until the seek has finished.
 import AppKit
 import AVFoundation
 import Combine
@@ -21,7 +30,8 @@ final class Player: ObservableObject {
     @Published private(set) var isPlaying = false
     @Published private(set) var elapsed: Double = 0
     @Published private(set) var duration: Double = 0
-    @Published private(set) var listeningLive = false
+    @Published private(set) var listeningLive = false          // a stream plays: Live, or a radio station
+    @Published private(set) var streamTitle = "Live"
     @Published private(set) var error: String?
     @Published var repeatMode: RepeatMode = .off {
         didSet { queue.repeatMode = repeatMode; refillNext() }
@@ -38,6 +48,9 @@ final class Player: ObservableObject {
     private var timeObserver: Any?
     private var bag = Set<AnyCancellable>()
     private var artwork: (folder: String, image: NSImage)?
+    private var seeking = false                                  // a seek under way: the clock waits for it
+    private var pendingSeek: Double?                             // asked for before the item was ready
+    private var streamURL: URL?
 
     init() {
         av.volume = Float(volume)
@@ -117,10 +130,22 @@ final class Player: ObservableObject {
 
     func togglePlay() {
         if av.currentItem == nil {
-            if listeningLive { listenLive() } else if queue.current != nil { rebuild() }
+            if listeningLive, let u = streamURL { playStream(title: streamTitle, url: u) } else if queue.current != nil { rebuild() }
             return
         }
         av.timeControlStatus == .paused ? av.play() : av.pause()
+    }
+
+    func pause() { av.pause() }
+
+    func resume() {
+        if av.currentItem == nil { togglePlay() } else { av.play() }
+    }
+
+    /// everything stops: the queue is emptied, a stream ends
+    func stop() {
+        listeningLive = false
+        clear()
     }
 
     func skip() {
@@ -137,19 +162,38 @@ final class Player: ObservableObject {
 
     func seek(to seconds: Double) {
         guard !listeningLive else { return }
-        av.seek(to: CMTime(seconds: max(0, seconds), preferredTimescale: 600))
-        elapsed = seconds
+        var target = max(0, seconds)
+        if duration > 1 { target = min(target, duration - 0.5) }
+        elapsed = target
         updateNowPlaying()
+        guard let item = av.currentItem else { return }
+        guard item.status == .readyToPlay else { pendingSeek = target; return }   // done when it is ready (tick)
+        seeking = true
+        av.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+            Task { @MainActor in
+                self?.seeking = false
+                self?.updateNowPlaying()
+            }
+        }
     }
 
     /// play the server's Live channel here (the SE hears the same)
     func listenLive() {
         guard let api else { return }
+        playStream(title: "Live", url: api.liveURL)
+    }
+
+    /// a stream: Live, a radio station, the server's whole library shuffled
+    func playStream(title: String, url: URL) {
         av.removeAllItems()
         tracks.removeAll()
         listeningLive = true
-        av.insert(AVPlayerItem(url: api.liveURL), after: nil)
+        streamTitle = title
+        streamURL = url
+        elapsed = 0; duration = 0
+        av.insert(AVPlayerItem(url: url), after: nil)
         av.play()
+        error = nil
         updateNowPlaying()
     }
 
@@ -169,6 +213,8 @@ final class Player: ObservableObject {
     }
 
     private func rebuild() {
+        pendingSeek = nil
+        seeking = false
         av.removeAllItems()
         tracks.removeAll()
         elapsed = 0
@@ -206,8 +252,14 @@ final class Player: ObservableObject {
     }
 
     private func tick(_ t: CMTime) {
+        if let p = pendingSeek, av.currentItem?.status == .readyToPlay {
+            pendingSeek = nil
+            seek(to: p)
+            return
+        }
+        guard !seeking, pendingSeek == nil else { return }
         elapsed = t.seconds.isFinite ? t.seconds : 0
-        if let d = av.currentItem?.duration.seconds, d.isFinite, d > 0 { duration = d }
+        if !listeningLive, let d = av.currentItem?.duration.seconds, d.isFinite, d > 0 { duration = d }
     }
 
     // ---- the system's Now Playing and media keys
@@ -230,7 +282,7 @@ final class Player: ObservableObject {
         let center = MPNowPlayingInfoCenter.default()
         var info: [String: Any] = [:]
         if listeningLive {
-            info[MPMediaItemPropertyTitle] = "Live"
+            info[MPMediaItemPropertyTitle] = streamTitle
             info[MPNowPlayingInfoPropertyIsLiveStream] = true
         } else if let t = queue.current {
             info[MPMediaItemPropertyTitle] = t.title

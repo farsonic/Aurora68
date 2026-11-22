@@ -6,8 +6,14 @@
 // that answers the discovery probe. A name is looked up and its addresses tried as numbers in the
 // order the owner prefers (IPv6 first or IPv4 first), each with a four-second limit, then the name
 // itself; the first that answers /api/catalog is the server. Playing: "Play on" is This Mac (the
-// Player, original files) or Live (the server's channel that the Mac SE hears), and every Play, Play
-// Next and Add to Queue goes to the one chosen.
+// Player, original files), Live (the server's channel that the Mac SE hears), or, since the same day's
+// later requests, any other Aurora68 Play that is online (DeviceLink.swift): every Play, Play Next and
+// Add to Queue goes to the one chosen, and the player bar shows and controls it.
+//
+// New albums without a restart (the owner, the same day): the server counts its library's generation
+// and says it in every announce answer (or /api/info, every 20 seconds, on a server without devices);
+// when it changes the catalogue is fetched again. What is open stays open: the navigation path holds
+// artists and albums by value and the views look them up again by id.
 import AppKit
 import Foundation
 import Aurora68Core
@@ -18,21 +24,37 @@ final class AppModel: ObservableObject {
         case idle, searching, connecting(String), connected, failed(String)
     }
     enum Section: Hashable { case artists, albums, live }
-    enum Output: String, CaseIterable, Identifiable {
-        case thisMac, live
-        var id: String { rawValue }
-        var label: String { self == .thisMac ? "This Mac" : "Live (Mac SE)" }
-        var symbol: String { self == .thisMac ? "laptopcomputer" : "dot.radiowaves.left.and.right" }
+    enum Output: Hashable {
+        case thisMac, live, device(String)
+
+        var key: String {
+            switch self {
+            case .thisMac: return "thisMac"
+            case .live: return "live"
+            case .device(let id): return "device:" + id
+            }
+        }
+
+        init(key: String) {
+            if key == "live" { self = .live }
+            else if key.hasPrefix("device:") { self = .device(String(key.dropFirst(7))) }
+            else { self = .thisMac }
+        }
+
+        var deviceID: String? { if case .device(let id) = self { return id } else { return nil } }
     }
 
     @Published private(set) var status: Status = .idle
     @Published private(set) var index: LibraryIndex?
     @Published private(set) var api: MusicAPI?
     @Published private(set) var discovered: [DiscoveryReply] = []
+    @Published private(set) var generation = 0             // bumped at each refresh of the library
+    @Published private(set) var radio: RadioList?
+    @Published var message: String?                         // a refusal from the server, shown in the bar
     @Published var section: Section? = .artists
     @Published var search = ""
-    @Published var output: Output = Output(rawValue: UserDefaults.standard.string(forKey: "output") ?? "") ?? .thisMac {
-        didSet { UserDefaults.standard.set(output.rawValue, forKey: "output") }
+    @Published var output: Output = Output(key: UserDefaults.standard.string(forKey: "output") ?? "") {
+        didSet { UserDefaults.standard.set(output.key, forKey: "output") }
     }
     @Published var address: String = UserDefaults.standard.string(forKey: "address") ?? ""
     @Published var prefer: IPFamily = IPFamily(rawValue: UserDefaults.standard.string(forKey: "prefer") ?? "") ?? .ipv6 {
@@ -41,12 +63,20 @@ final class AppModel: ObservableObject {
 
     let player: Player
     let live: LiveController
+    let devices: DeviceLink
     private var trackCache: [String: [Track]] = [:]
     private var started = false
+    private var watch = GenerationWatch()
+    private var volumeSend: Task<Void, Never>?
+    private var heldPosition: (device: String, position: Double, until: Date)?
 
     init() {
         player = Player()
         live = LiveController()
+        devices = DeviceLink()
+        devices.onCommand = { [weak self] c in self?.obey(c) }
+        devices.onGeneration = { [weak self] g in self?.libraryGeneration(g) }
+        devices.currentState = { [weak self] in self?.localState() ?? DeviceState() }
     }
 
     var serverName: String { index?.catalog.name ?? "" }
@@ -106,13 +136,17 @@ final class AppModel: ObservableObject {
                 self.api = api
                 index = LibraryIndex(catalog)
                 trackCache = [:]
+                watch = GenerationWatch()
+                radio = nil
                 player.api = api
                 live.api = api
+                devices.api = api
                 status = .connected
                 if let remember {
                     address = remember
                     UserDefaults.standard.set(remember, forKey: "address")
                 }
+                loadRadio()
                 return
             } catch {
                 lastError = "\(base.host ?? base.absoluteString): \(error.localizedDescription)"
@@ -121,11 +155,25 @@ final class AppModel: ObservableObject {
         status = .failed(lastError)
     }
 
+    /// the catalogue again (Command-R, or a new generation): what is open stays open
     func reload() {
         guard let api else { return }
         Task {
-            if let c = try? await api.catalog() { index = LibraryIndex(c); trackCache = [:] }
+            if let c = try? await api.catalog() {
+                index = LibraryIndex(c)
+                trackCache = [:]
+                generation += 1
+            }
         }
+    }
+
+    private func libraryGeneration(_ g: Int) {
+        if watch.changed(g) { reload() }
+    }
+
+    func loadRadio() {
+        guard let api else { return }
+        Task { if let r = try? await api.radio() { radio = r } }
     }
 
     // ---- the library
@@ -148,6 +196,13 @@ final class AppModel: ObservableObject {
 
     func albums(of artist: Artist) -> [Album] { index?.albums(of: artist) ?? [] }
 
+    /// the artist as the library has it now (its albums may have changed since it was opened)
+    func current(_ artist: Artist) -> Artist {
+        index?.catalog.artists.first { $0.id == artist.id } ?? artist
+    }
+
+    func current(_ album: Album) -> Album { index?.albumsByID[album.id] ?? album }
+
     func coverURL(_ album: Album?) -> URL? {
         guard let api, let album else { return nil }
         return api.artURL(folder: album.folder)
@@ -155,56 +210,205 @@ final class AppModel: ObservableObject {
 
     func coverURL(folder: String) -> URL? { api?.artURL(folder: folder) }
 
-    // ---- playing, wherever "Play on" says
-    func play(album: Album, shuffled: Bool = false) {
-        Task {
-            if output == .live { await live.play(album: album, shuffled: shuffled); return }
-            player.play(await tracks(album: album), shuffled: shuffled)
+    // ---- where music plays: This Mac, Live, or another player
+    var outputs: [Output] {
+        var out: [Output] = [.thisMac, .live] + devices.others.map { .device($0.id) }
+        if !out.contains(output) { out.append(output) }    // a chosen player that went offline stays shown
+        return out
+    }
+
+    func label(_ o: Output) -> String {
+        switch o {
+        case .thisMac: return "This Mac"
+        case .live: return "Live (Mac SE)"
+        case .device(let id):
+            guard let d = devices.device(id) else { return "A player that is not online" }
+            return d.online ? d.name : d.name + " (offline)"
         }
     }
 
-    func play(artist: Artist, shuffled: Bool = false) {
+    func symbol(_ o: Output) -> String {
+        switch o {
+        case .thisMac: return "laptopcomputer"
+        case .live: return "dot.radiowaves.left.and.right"
+        case .device(let id): return devices.device(id)?.symbol ?? "hifispeaker"
+        }
+    }
+
+    /// the state of the chosen player, when it is another one
+    var remoteState: DeviceState? {
+        guard let id = output.deviceID, var s = devices.state(of: id) else { return nil }
+        if let h = heldPosition, h.device == id, Date() < h.until { s.position = h.position }
+        return s
+    }
+
+    private func toDevice(_ id: String, _ bodies: [[String: Any]]) {
         Task {
-            if output == .live { await live.play(albums: albums(of: artist), shuffled: shuffled); return }
-            player.play(await tracks(artist: artist), shuffled: shuffled)
+            message = await devices.send(id, bodies)
+        }
+    }
+
+    func play(album: Album, shuffled: Bool = false) {
+        switch output {
+        case .live: Task { await live.play(album: album, shuffled: shuffled) }
+        case .device(let id): toDevice(id, [["action": "play", "what": LiveWhat.folder(album.folder), "shuffle": shuffled ? 1 : 0]])
+        case .thisMac: Task { player.play(await tracks(album: album), shuffled: shuffled) }
+        }
+    }
+
+    func play(artist: Artist, shuffled: Bool = false, on o: Output? = nil) {
+        let albums = albums(of: current(artist))
+        switch o ?? output {
+        case .live: Task { await live.play(albums: albums, shuffled: shuffled) }
+        case .device(let id):
+            guard let first = albums.first else { return }
+            let s = shuffled ? 1 : 0
+            var bodies: [[String: Any]] = [["action": "play", "what": LiveWhat.folder(first.folder), "shuffle": s]]
+            for a in albums.dropFirst() { bodies.append(["action": "add", "what": LiveWhat.folder(a.folder), "shuffle": s]) }
+            toDevice(id, bodies)
+        case .thisMac: Task { player.play(await tracks(artist: current(artist)), shuffled: shuffled) }
         }
     }
 
     func play(_ tracks: [Track], from start: Int) {
-        Task {
-            if output == .live { await live.play(tracks: tracks, from: start); return }
-            player.play(tracks, from: start)
+        switch output {
+        case .live: Task { await live.play(tracks: tracks, from: start) }
+        case .device(let id):
+            guard tracks.indices.contains(start) else { return }
+            var bodies: [[String: Any]] = [["action": "play", "what": LiveWhat.track(tracks[start].path)]]
+            for t in tracks[(start + 1)...] { bodies.append(["action": "add", "what": LiveWhat.track(t.path)]) }
+            toDevice(id, bodies)
+        case .thisMac: player.play(tracks, from: start)
         }
     }
 
     func playNext(_ tracks: [Track]) {
-        Task {
-            if output == .live { await live.playNext(tracks) } else { player.playNext(tracks) }
+        switch output {
+        case .live: Task { await live.playNext(tracks) }
+        case .device(let id): toDevice(id, tracks.reversed().map { t -> [String: Any] in ["action": "next", "what": LiveWhat.track(t.path)] })
+        case .thisMac: player.playNext(tracks)
         }
     }
 
     func add(_ tracks: [Track]) {
-        Task {
-            if output == .live { await live.add(tracks) } else { player.add(tracks) }
+        switch output {
+        case .live: Task { await live.add(tracks) }
+        case .device(let id): toDevice(id, tracks.map { t -> [String: Any] in ["action": "add", "what": LiveWhat.track(t.path)] })
+        case .thisMac: player.add(tracks)
         }
     }
 
     func add(album: Album) {
-        Task {
-            if output == .live { await live.add(album: album) } else { player.add(await tracks(album: album)) }
+        switch output {
+        case .live: Task { await live.add(album: album) }
+        case .device(let id): toDevice(id, [["action": "add", "what": LiveWhat.folder(album.folder)]])
+        case .thisMac: Task { player.add(await tracks(album: album)) }
         }
     }
 
+    // ---- stations (the Live page): everything shuffled, an artist, an internet radio station
+    func playEverything(on o: Output? = nil) {
+        switch o ?? output {
+        case .live: Task { await live.act(["action": "play", "what": LiveWhat.everything, "shuffle": 1]) }
+        case .device(let id): toDevice(id, [["action": "play", "what": LiveWhat.everything, "shuffle": 1]])
+        case .thisMac:                     // the server's own station of the whole library, shuffled, as a stream
+            guard let api else { return }
+            player.playStream(title: "Everything, shuffled", url: api.url("/radio/", query: [("shuffle", "1")]))
+        }
+    }
+
+    func playStation(_ artist: Artist, on o: Output? = nil) {
+        play(artist: artist, shuffled: true, on: o)
+    }
+
+    /// whether a radio station can play there: Live plays the library only
+    func canPlayRadio(on o: Output) -> Bool { o != .live }
+
+    func playRadio(_ index: Int, on o: Output? = nil) {
+        guard let st = radio?.stations, st.indices.contains(index) else { return }
+        switch o ?? output {
+        case .live: message = "Live plays the library; choose This Mac or another player for internet radio."
+        case .device(let id): toDevice(id, [["action": "play", "what": LiveWhat.radio(index)]])
+        case .thisMac:
+            guard let url = URL(string: st[index].url) else { return }
+            player.playStream(title: st[index].name, url: url)
+        }
+    }
+
+    // ---- the player bar's buttons, wherever "Play on" says
     func togglePlay() {
-        if output == .live && !player.listeningLive { Task { await live.togglePlay() } } else { player.togglePlay() }
+        switch output {
+        case .live where !player.listeningLive: Task { await live.togglePlay() }
+        case .device(let id): toDevice(id, [["action": (remoteState?.playing ?? false) ? "pause" : "resume"]])
+        default: player.togglePlay()
+        }
     }
 
     func next() {
-        if output == .live { Task { await live.skip() } } else { player.skip() }
+        switch output {
+        case .live: Task { await live.skip() }
+        case .device(let id): toDevice(id, [["action": "skip"]])
+        case .thisMac: player.skip()
+        }
     }
 
     func previous() {
-        if output == .live { Task { await live.previous() } } else { player.previous() }
+        switch output {
+        case .live: Task { await live.previous() }
+        case .device(let id): toDevice(id, [["action": "previous"]])
+        case .thisMac: player.previous()
+        }
+    }
+
+    func seek(to seconds: Double) {
+        switch output {
+        case .live: break                                      // the Live channel cannot seek
+        case .device(let id):
+            heldPosition = (id, seconds, Date().addingTimeInterval(4))   // shown until the player says where it is
+            toDevice(id, [["action": "seek", "position": seconds]])
+        case .thisMac: player.seek(to: seconds)
+        }
+    }
+
+    /// the volume slider for another player: sent when the slider rests for a moment
+    func setRemoteVolume(_ v: Double) {
+        guard let id = output.deviceID else { return }
+        volumeSend?.cancel()
+        volumeSend = Task {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            if Task.isCancelled { return }
+            message = await devices.send(id, [["action": "volume", "volume": Int((v * 100).rounded())]])
+        }
+    }
+
+    // ---- this Mac as a player for the others
+    func obey(_ c: DeviceCommand) {
+        guard let a = c.playerAction else { return }
+        switch a {
+        case .play(let t, let from):
+            player.play(t)
+            if from > 0 { player.seek(to: from) }
+        case .add(let t): player.add(t)
+        case .playNext(let t): player.playNext(t)
+        case .radio(let name, let url): player.playStream(title: name, url: url)
+        case .pause: player.pause()
+        case .resume: player.resume()
+        case .skip: player.skip()
+        case .previous: player.previous()
+        case .stop: player.stop()
+        case .seek(let s): player.seek(to: s)
+        case .volume(let v): player.volume = v
+        }
+    }
+
+    func localState() -> DeviceState {
+        let vol = Int((player.volume * 100).rounded())
+        if player.listeningLive {
+            return DeviceState(playing: player.isPlaying, title: player.streamTitle, volume: vol)
+        }
+        guard let t = player.current else { return DeviceState(volume: vol) }
+        return DeviceState(playing: player.isPlaying, title: t.title, artist: t.artist, album: t.albumTitle, folder: t.folder,
+                           position: player.elapsed, length: player.duration, volume: vol)
     }
 
     /// Cmd-F: the search field in the toolbar

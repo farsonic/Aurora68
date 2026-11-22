@@ -110,6 +110,59 @@ public final class MusicAPI {
         try MusicAPI.check(resp, data)
         do { return try JSONDecoder().decode(LiveNow.self, from: data) } catch { throw MusicAPIError.notJSON }
     }
+
+    // ---- devices, radio and the library's generation (Devices.swift)
+    /// a session for the long poll: the server holds the request up to 20 seconds
+    public static func waiting() -> URLSession {
+        let c = URLSessionConfiguration.ephemeral
+        c.timeoutIntervalForRequest = 45
+        c.timeoutIntervalForResource = 60
+        return URLSession(configuration: c)
+    }
+
+    func post<T: Decodable>(_ type: T.Type, _ path: String, _ body: Any) async throws -> T {
+        var req = URLRequest(url: url(path))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("1", forHTTPHeaderField: "X-Aurora")
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, resp) = try await session.data(for: req)
+        try MusicAPI.check(resp, data)
+        do { return try JSONDecoder().decode(T.self, from: data) } catch { throw MusicAPIError.notJSON }
+    }
+
+    public func info() async throws -> ServerInfo { try await get(ServerInfo.self, url("/api/info")) }
+
+    public func radio() async throws -> RadioList { try await get(RadioList.self, url("/api/radio")) }
+
+    public func devices() async throws -> [Device] { try await get(DeviceList.self, url("/api/devices")).devices }
+
+    public func announce(id: String, name: String, version: String) async throws -> AnnounceReply {
+        try await post(AnnounceReply.self, "/api/devices/announce", ["id": id, "name": name, "kind": "macos", "version": version])
+    }
+
+    public func postState(id: String, _ state: DeviceState) async throws {
+        let body: [String: Any] = ["playing": state.playing, "title": state.title, "artist": state.artist, "album": state.album,
+                                   "folder": state.folder, "position": state.position, "length": state.length,
+                                   "volume": state.volume]
+        _ = try await post(OK.self, "/api/devices/\(Address.encodePath(id))/state", body)
+    }
+
+    /// a command for another player (or "live"): ["action": "play", "what": "f:FOLDER"] and so on
+    public func command(_ device: String, _ body: [String: Any]) async throws {
+        _ = try await post(OK.self, "/api/devices/\(Address.encodePath(device))/command", body)
+    }
+
+    /// this player's commands, waiting up to `wait` seconds for one (use a session from waiting())
+    public func commands(id: String, wait: Int = 20) async throws -> [DeviceCommand] {
+        var req = URLRequest(url: url("/api/devices/\(Address.encodePath(id))/commands", query: [("wait", String(wait))]))
+        req.setValue("1", forHTTPHeaderField: "X-Aurora")
+        let (data, resp) = try await session.data(for: req)
+        try MusicAPI.check(resp, data)
+        do { return try JSONDecoder().decode(CommandList.self, from: data).commands } catch { throw MusicAPIError.notJSON }
+    }
+
+    struct OK: Decodable {}
 }
 
 /// what the Live channel is told to play: a whole folder (an album), or one file
