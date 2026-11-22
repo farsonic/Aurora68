@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MPL-2.0
 """mkpage.py - turn tools/recovery/page.html into emu68/src/psmac/psmac_recovery_page.h.
 
-22 November 2026. Aurora68 Recovery's web page (psmac_recovery.c serves it at /) was a C string literal
+22 November 2026. Aurora68 Setup and Recovery's web page (psmac_recovery.c serves it at /) was a C string literal
 written by hand; to make it a tabbed page in a modern style it moved into page.html, edited as HTML, and
 this script makes the header the kernel includes. Run it after editing the page:
 
@@ -32,7 +32,7 @@ data = open(src, 'rb').read()
 lines = data.split(b'\n')
 body = '\n'.join('    ' + c_line(l + b'\n') for l in lines if l or l is not lines[-1])
 hdr = ('/* SPDX-License-Identifier: MPL-2.0\n'
-       ' * psmac_recovery_page.h - Aurora68 Recovery\'s web page, made from tools/recovery/page.html by\n'
+       ' * psmac_recovery_page.h - Aurora68 Setup and Recovery\'s web page, made from tools/recovery/page.html by\n'
        ' * tools/recovery/mkpage.py. Do not edit: edit the page and run the script. */\n'
        'const char recovery_page[] =\n' + body + ';\n')
 open(dst, 'w').write(hdr)

@@ -1453,7 +1453,7 @@ void psmac_card_poll(void)
    core 3 began, and card_start takes its results rather than resetting the card a second time */
 static int early_done, early_init_rc, early_mount_rc;
 static volatile int sf_pending; static void sfile_step(void);     /* small files of the kernel's own (below) */
-static int boot_jobs(void);                                       /* boot.txt and recovery.txt (Aurora68 Recovery, at the end) */
+static int boot_jobs(void);                                       /* boot.txt and recovery.txt (Aurora68 Setup and Recovery, at the end) */
 static void card_poll_locked(void)
 {
     if (sd.state == 0 || early_done == 1) {
@@ -1515,7 +1515,7 @@ static void card_start(void)
     pairings_load();
     pram_load();
     if (psmac_recovery_on()) {
-        /* Aurora68 Recovery: no disk image loaded, nothing of the Mac's written, and aurora68.log left as
+        /* Aurora68 Setup and Recovery: no disk image loaded, nothing of the Mac's written, and aurora68.log left as
            the last start wrote it, since the recovery page shows it */
         logsave_s = 0;
         fl.img = -1;
@@ -1777,7 +1777,7 @@ void psmac_card_report(void)
     kprintf("\n");
 }
 
-/* ==== Aurora68 Recovery: the card's root as a file manager sees it (22 November 2026) ============
+/* ==== Aurora68 Setup and Recovery: the card's root as a file manager sees it (22 November 2026) ============
    The recovery start (psmac_recovery.c, docs/08 item 106) lists, reads, writes, renames and deletes any
    file in the card's root, of any size: a new kernel8.img, a disk image of a hundred megabytes, a
    declaration ROM, cmdline.txt. Everything above this point only ever rewrote files of its own in place;
@@ -2427,7 +2427,7 @@ static volatile int boot_reset_pending;
 static void boot_text(int n, uint8_t *out)
 {
     static const char head[] = "Aurora68 boot counter: ";
-    static const char tail[] = "\nStarts in a row that did not reach the Finder; Aurora68 Recovery starts at mac.bootcount (3). 00 once the Finder runs.\n";
+    static const char tail[] = "\nStarts in a row that did not reach the Finder; Aurora68 Setup and Recovery starts at mac.bootcount (3). 00 once the Finder runs.\n";
     unsigned o = 0;
     for (unsigned i = 0; head[i]; i++) out[o++] = (uint8_t)head[i];
     if (n < 0) n = 0;
@@ -2527,7 +2527,7 @@ static int boot_jobs(void)
                 if (!sd_write(clus_lba(c), dsec) && !entries_write("recovery.txt", c, n, 0x20, 0, &l, &o)) { ok = 1; fsinfo_adjust(-1, alloc_hint); }
             }
         }
-        kprintf("[CARD] recovery.txt %s\n", ok ? "written: the next start is Aurora68 Recovery" : "could not be written");
+        kprintf("[CARD] recovery.txt %s\n", ok ? "written: the next start is Aurora68 Setup and Recovery" : "could not be written");
         __atomic_store_n(&ask_state, ok ? 2 : 3, __ATOMIC_RELEASE);
         return 1;
     }

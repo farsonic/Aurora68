@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0
  *
- * psmac_recovery.c - Aurora68 Recovery: the kernel as a small file server for its own SD card, with the
+ * psmac_recovery.c - Aurora68 Setup and Recovery: the kernel as a small file server for its own SD card, with the
  * Mac left switched off.
  *
  * Backstory (22 November 2026, docs/08 item 106). Inside an SE or a Plus the Pi sits in the 68000 socket
@@ -114,7 +114,7 @@ static void enter(int w, const char *text)
     scpy(why_text, text, sizeof why_text);
     psmac_display_recovery();                                    /* the HDMI console stays off the page from now on */
     __atomic_store_n(&rec_on, 1, __ATOMIC_RELEASE);
-    kprintf("[RECOVERY] Aurora68 Recovery: %s. The 68k is not started; the card is served on the network (docs/08 item 106)\n", why_text);
+    kprintf("[RECOVERY] Aurora68 Setup and Recovery: %s. The 68k is not started; the card is served on the network (docs/08 item 106)\n", why_text);
     psmac_boot_mark("recovery start: %s", why_text);
 }
 
@@ -417,7 +417,7 @@ static void build_page(void)
 {
     nlines = 0;
     struct ipk_info ii; psmac_ip_info(&ii);
-    L(1, " Aurora68 Recovery");
+    L(1, " Aurora68 Setup and Recovery");
     L(0, "Why: %s", why_text);
     L(0, "The 68k was not started: no Mac code runs. Restart from the page.");
     if (ii.unit >= 0 && ii.ip[0])
@@ -800,7 +800,7 @@ static void out_head(struct rconn *h, int code, const char *ctype, int64_t len, 
                       code == 409 ? "Conflict" : code == 411 ? "Length Required" : code == 413 ? "Request Entity Too Large" : code == 422 ? "Unprocessable Entity" :
                       code == 429 ? "Too Many Requests" : code == 503 ? "Service Unavailable" : code == 507 ? "Insufficient Storage" : "Error";
     struct sb b = { h->out, 0, sizeof h->out };
-    bprintf(&b, "HTTP/1.0 %d %s\r\nServer: Aurora68 Recovery\r\nConnection: close\r\nCache-Control: no-store\r\nContent-Type: %s\r\n", code, txt, ctype);
+    bprintf(&b, "HTTP/1.0 %d %s\r\nServer: Aurora68 Setup and Recovery\r\nConnection: close\r\nCache-Control: no-store\r\nContent-Type: %s\r\n", code, txt, ctype);
     if (len >= 0) bprintf(&b, "Content-Length: %u\r\n", (uint32_t)len);
     if (extra) bput(&b, extra);
     bput(&b, "\r\n");

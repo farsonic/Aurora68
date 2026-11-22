@@ -235,7 +235,7 @@ One line, options separated by spaces, no comments:
 | `mac.bridge=gpio` | how the motherboard is reached: `gpio` (the classic PiStorm's CPLD, the default on hardware), `semihost` or `uart` (the testbed's bridge to MAME) |
 | `mac.power=off` | stop watching the Pi's power. By default the kernel reads the firmware's under-voltage and throttling bits every two seconds and logs every change (`[PSMAC] power: under-voltage now ...`): in the SE the Pi is powered through the 68000 socket (docs/12, "Power through the socket") |
 | `mac.vcswap=1` | swap red and blue on the second screen, should a board's firmware disagree with the kernel about the pixel byte order (the firmware is asked; this overrides its answer) |
-| `mac.recovery=1` | start in Aurora68 Recovery: the 68k is not started, the Pi serves its SD card on the network (README "Recovery", docs/08 item 106). "Restart normally" on the recovery page takes the option out again |
+| `mac.recovery=1` | start in Aurora68 Setup and Recovery: the 68k is not started, the Pi serves its SD card on the network (README "Setup and Recovery", docs/08 item 106). "Restart normally" on the recovery page takes the option out again |
 | `mac.bootcount=3` | the starts in a row without the Finder after which the next start is a recovery start (counted in `boot.txt` in the card's root); `off` for none, for a Mac whose startup program is not the Finder |
 | `mac.switchsim=1`, `mac.recoverypin=NNNN` | testbed only: the programmer's interrupt switch held at power-on (MAME's SE has none to press), and a fixed recovery PIN for scripts (never use it on a real card) |
 | `remote=on remote.token=TOKEN` | the remote control (docs/13): the Mac's screen, mouse, keyboard, the kernel's log and a restart over HTTP from the local network, for a browser (`http://aurora68-pi.local/`) or an agent (`tools/aurora68-mcp.py`, an MCP server for Claude Code and Claude Desktop; `tools/aurora68.py`, a command line). On the wired port the kernel gets an address of its own by DHCP (its own MAC address); on the WiFi it takes port 8068 on the Mac's address (`http://MAC-ADDRESS:8068/`). Off by default; the token (8 characters or more) is required. `remote.name=`, `remote.ip=A.B.C.D/24,ROUTER`, `remote.link=wired\|wifi`, `remote.wifi=own`, `remote.any=1`: docs/13 |
@@ -281,10 +281,10 @@ and changes files and starts programs: `aurora68.py ls`, `pull` (MacBinary with 
 `write_file`, `open`, `list_apps` (docs/13, "Files and applications"). Setting it up, Claude Code's
 `claude mcp add` line and Claude Desktop's configuration: docs/13.
 
-### Recovery
+### Setup and Recovery
 For a Mac that will not start, or a Pi whose SD card cannot be reached because it is inside the Mac (docs/08
 item 106). In a recovery start the 68k is never started and no Mac code runs: the Pi serves its own SD card on
-the network and shows on the Mac's screen (SE, Plus, 512K) and on HDMI what to open: "Aurora68 Recovery", why,
+the network and shows on the Mac's screen (SE, Plus, 512K) and on HDMI what to open: "Aurora68 Setup and Recovery", why,
 the address and `http://aurora68.local/`, a four-digit PIN, the network and what is being done.
 
 Getting in, any of:

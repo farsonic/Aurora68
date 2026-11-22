@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0
  *
- * psmac_recovery.h - Aurora68 Recovery (docs/08 item 106): a start of the kernel in which the 68k is never
+ * psmac_recovery.h - Aurora68 Setup and Recovery (docs/08 item 106): a start of the kernel in which the 68k is never
  * released and the Pi offers its own SD card over the network instead, for a Mac that will not start or a
  * Pi whose card cannot be reached. psmac_recovery.c is the mode (getting in, the screen, the web page, the
  * keyboard menu); psmac_card.c has the card's side (the root directory as a file manager sees it, the boot

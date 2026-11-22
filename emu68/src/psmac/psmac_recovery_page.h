@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: MPL-2.0
- * psmac_recovery_page.h - Aurora68 Recovery's web page, made from tools/recovery/page.html by
+ * psmac_recovery_page.h - Aurora68 Setup and Recovery's web page, made from tools/recovery/page.html by
  * tools/recovery/mkpage.py. Do not edit: edit the page and run the script. */
 const char recovery_page[] =
     "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n"
-    "<meta name=\"color-scheme\" content=\"light dark\"><title>Aurora68 Recovery</title><style>\n"
+    "<meta name=\"color-scheme\" content=\"light dark\"><title>Aurora68 Setup and Recovery</title><style>\n"
     ":root{--bg:#f3f4f7;--card:#fff;--fg:#14171f;--mut:#667085;--line:#e4e7ec;--acc:#3b5bdb;--acc2:#e8edff;--warn:#fff4d6;--warnb:#f0c14b;--bad:#d92d20;--ok:#12805c;--sh:0 1px 2px #1018280f,0 1px 3px #1018281a}\n"
     "@media(prefers-color-scheme:dark){:root{--bg:#0f1218;--card:#181c25;--fg:#e8eaf0;--mut:#98a2b3;--line:#2a3040;--acc:#7c9cff;--acc2:#222a44;--warn:#2d2614;--warnb:#a88320;--sh:none}}\n"
     "*{box-sizing:border-box}body{margin:0;font:15px/1.5 -apple-system,BlinkMacSystemFont,\"Segoe UI\",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--fg)}\n"
@@ -35,7 +35,7 @@ const char recovery_page[] =
     "#toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:#1b2440;color:#fff;padding:10px 16px;border-radius:12px;font-size:14px;opacity:0;transition:opacity .25s;pointer-events:none;max-width:90vw;z-index:6}\n"
     "#toast.on{opacity:1}#toast.bad{background:var(--bad)}.pill{display:inline-block;font-size:12px;padding:2px 8px;border-radius:99px;background:var(--acc2);color:var(--acc)}\n"
     "</style></head><body>\n"
-    "<header><div class=\"top\"><div class=\"logo\"></div><div class=\"ttl\"><h1>Aurora68 Recovery</h1><div class=\"why\" id=\"why\">Connecting</div></div><div class=\"state\" id=\"hstate\">...</div></div>\n"
+    "<header><div class=\"top\"><div class=\"logo\"></div><div class=\"ttl\"><h1>Aurora68 Setup and Recovery</h1><div class=\"why\" id=\"why\">Connecting</div></div><div class=\"state\" id=\"hstate\">...</div></div>\n"
     "<nav id=\"nav\"><button data-t=\"ov\" class=\"on\">Overview</button><button data-t=\"fi\">Files</button><button data-t=\"wi\">WiFi</button><button data-t=\"op\">Options</button><button data-t=\"tx\">Text files</button><button data-t=\"lo\">Log</button></nav></header>\n"
     "<main>\n"
     "<section class=\"tab on\" id=\"ov\">\n"
