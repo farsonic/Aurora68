@@ -183,8 +183,19 @@ final class Player: ObservableObject {
         playStream(title: "Live", url: api.liveURL)
     }
 
-    /// a stream: Live, a radio station, the server's whole library shuffled
+    /// a stream: Live, a radio station, the server's whole library shuffled. A station's address that is a
+    /// playlist (.pls, .m3u) is fetched and its first stream played, as the classic Play does (the shared core's
+    /// icy_playlist_url, since 22 November 2026): AVFoundation plays streams, not playlists
     func playStream(title: String, url: URL) {
+        guard Playlist.isPlaylist(url) else { return startStream(title: title, url: url) }
+        Task { [weak self] in
+            var stream = url
+            if let r = try? await URLSession.shared.data(from: url), let first = Playlist.firstStream(r.0) { stream = first }
+            self?.startStream(title: title, url: stream)
+        }
+    }
+
+    private func startStream(title: String, url: URL) {
         av.removeAllItems()
         tracks.removeAll()
         listeningLive = true

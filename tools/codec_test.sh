@@ -14,8 +14,8 @@ if ! command -v ffmpeg >/dev/null 2>&1; then echo "codec_test: ffmpeg not instal
 mkdir -p "$B/codec"
 D=$B/codec
 P=$top/emu68/src/psmac
-cc -std=c99 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-sign-compare -I "$P" -o "$D/codec_test" \
-   "$here/codec_test.c" "$top/mac/piplay/media.c" "$top/mac/piplay/icy.c" \
+cc -std=c99 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-sign-compare -I "$P" -I "$top/play/core/include" -o "$D/codec_test" \
+   "$here/codec_test.c" "$top/mac/piplay/media.c" "$top/play/core/icy.c" \
    "$P/psmac_codec.c" "$P/psmac_flac.c" "$P/psmac_ogg.c" "$P/psmac_alac.c" -lm
 ff() { ffmpeg -nostdin -hide_banner -loglevel error -y "$@"; }
 # twelve seconds: a chord on each side, a sweep, and noise under it (noise makes the residuals work)

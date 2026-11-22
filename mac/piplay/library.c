@@ -12,12 +12,19 @@
  * How the work is shared. The server does all that a 68k should not: it reads the tags and lengths,
  * converts M4A and FLAC to MP3, scales and dithers each cover to a bitmap of the size and depth asked
  * for (Atkinson's dithering for the SE's one bit, the System's own 256 colours for a colour screen), and
- * answers in lines of text a C loop can split (libparse.c). The Mac shows lists and pictures and plays an
- * MP3 stream, which it already knew how to do: a track is a radio stream with an end (radio.c's
- * radio_play_track), and when one ends the next track's stream follows it into the same card stream,
- * so an album plays without gaps. The card's position (ps->pos_ms) is where the boundaries are: radio.c
- * says where the next track will begin (the audio the card holds at the moment the last stream ended),
- * and the player's display moves on when the card gets there.
+ * answers in lines of text a C loop can split. The Mac shows lists and pictures and plays an MP3 stream,
+ * which it already knew how to do: a track is a radio stream with an end (radio.c's radio_play_track),
+ * and when one ends the next track's stream follows it into the same card stream, so an album plays
+ * without gaps. The card's position (ps->pos_ms) is where the boundaries are: radio.c says where the next
+ * track will begin (the audio the card holds at the moment the last stream ended), and the player's
+ * display moves on when the card gets there.
+ *
+ * The shared core (22 November 2026, docs/08 item 107). What this file knew that is not the window went
+ * into play/core, which the macOS Play compiles too: the requests and the answers (proto.c), a page of a
+ * list as rows with its "previous page" and "next page" lines, a row found again after a refresh and found
+ * by typing (catalog.c), the queue with the stream sent ahead (queue.c, which brought Library > Repeat),
+ * the device (devices.c), a typed address and a URL with IPv6 in brackets (address.c). This file keeps the
+ * window, the views one above the other, the covers, and what the network does when.
  *
  * The window. One window after the Human Interface Guidelines of 1992, as large as the SE's screen
  * allows (500 x 292 at first; any size from 360 x 200): a header with the place in the library ("Artists",
@@ -35,26 +42,24 @@
 #include "psmb.h"
 #include "radio.h"
 #include "fetch.h"
-#include "libparse.h"
+#include "text.h"
+#include "address.h"
+#include "proto.h"
+#include "catalog.h"
+#include "queue.h"
 #include "devices.h"
 #include "library.h"
 
 extern volatile struct psmb_stream *ps;
 static unsigned char pb[256];
+static const struct a68_client cl = { 0, 0 };    /* Mac Roman, the short records: what the classic Play always asked */
 
-/* ---- what the library holds now ----------------------------------------------------------------- */
-enum { V_ARTISTS, V_ALBUMS, V_TRACKS, V_SEARCH };
-struct lrow {                                    /* one row of the list */
-	char id[9], album[9], kind;              /* kind: 'A' artist, 'L' album, 'T' track */
-	unsigned short num, count;               /* a track's number; an artist's albums, an album's tracks */
-	unsigned long secs;
-	char text[48], sub[40];
-};
-#define MAX_ROWS 200
-#define PAGE     200
-static struct lrow *rows;
-static int nrows;
-static long total;                               /* the rows the server has for the view */
+/* ---- what the library holds now: a page of the view's list (play/core/catalog.c) -------------------------- */
+enum { V_ARTISTS = A68_V_ARTISTS, V_ALBUMS = A68_V_ALBUMS, V_TRACKS = A68_V_TRACKS, V_SEARCH = A68_V_SEARCH };
+#define MAX_ROWS A68_PAGE
+#define PAGE     A68_PAGE
+static struct a68_row *rows;                     /* list.rows */
+static struct a68_list list;
 struct view { int kind; char id[9]; char title[48], sub[40]; char q[40]; int sel, top; long from; };
 static struct view stack[6];
 static int depth;                                /* stack[depth - 1] is shown */
@@ -73,19 +78,20 @@ static struct art view_art, now_art, bar_art;
 
 /* the server */
 static char srv_host[64], srv_name[48] = "Library";
-static unsigned short srv_port = 8423;
+static unsigned short srv_port = A68_DEFAULT_PORT;
 static int srv_known;                            /* /mac/info answered */
 static int finding;                              /* the UDP probe is out */
-static char alt_host[48];                        /* the server's other address (discovery): tried if this one fails */
+static char alt_host[2][64];                     /* the server's other addresses (discovery): tried in turn if this one fails */
+static int nalt;
 static const char *problem;                      /* the list area says this instead of rows */
 static char problem_buf[160];
 
-/* ---- the queue ------------------------------------------------------------------------------------- */
+/* ---- the queue (play/core/queue.c): the songs, the one heard (Q.cur), the one whose stream is sent (Q.feed) ---- */
 struct qitem { char id[9], album[9]; unsigned long secs; char title[48], artist[40]; };
 #define MAX_Q 250
-static struct qitem *queue;
-static int qn, qcur, qfeed;                      /* what is heard; what the stream being received is */
-static unsigned long base_ms, offset_s;          /* ps->pos_ms where qcur began; seconds into it at that point */
+static struct qitem *qitems;
+static struct a68_queue Q;
+static unsigned long base_ms, offset_s;          /* ps->pos_ms where Q.cur began; seconds into it at that point */
 static struct { unsigned long at; int idx; } bounds[8];
 static int nb;
 static int mode;                                 /* a library track is the player's */
@@ -93,6 +99,7 @@ enum { L_STOPPED, L_PLAYING, L_ENDED };
 static int lstate;
 static int shuffle;
 static char album_title[48];                     /* the album of what is heard, for Now Playing */
+static struct qitem *qat(int i) { return (struct qitem *)a68q_at(&Q, i); }
 
 /* ---- the window ------------------------------------------------------------------------------------ */
 static void *lw, *back_btn, *play_btn, *shuf_cb, *sbar, *prev_btn, *pp_btn, *next_btn;
@@ -126,22 +133,13 @@ static int user_waiting;                         /* a click or a key in the Libr
 static char keep_sel[9];                         /* a refresh: the row to select again */
 static unsigned long secs_now(void) { return LM_TICKS / 60; }
 
-static void run_commands(const char *b, long n);
+static void run_commands(char *b, long n);
 static unsigned long pos_s(void);
 static void lib_refresh(void);
-static void copy(char *d, const char *s, int max) { int i = 0; while (s[i] && i < max - 1) { d[i] = s[i]; i++; } d[i] = 0; }
+static void copy(char *d, const char *s, int max) { a68_copy(d, s, max); }
 static int same_id(const char *a, const char *b) { int i; for (i = 0; i < 8; i++) if (a[i] != b[i]) return 0; return a[0] != 0; }
-static int strchr_(const char *s, int c) { while (*s) if (*s++ == c) return 1; return 0; }
-static int lower(int c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
-static char *put_time(char *p, unsigned long s)
-{
-	if (s >= 3600) { p = put_num(p, s / 3600); *p++ = ':'; *p++ = (char)('0' + s / 600 % 6); *p++ = (char)('0' + s / 60 % 10); }
-	else p = put_num(p, s / 60);
-	*p++ = ':';
-	*p++ = (char)('0' + s % 60 / 10);
-	*p++ = (char)('0' + s % 10);
-	return p;
-}
+static int lower(int c) { return a68_lower(c); }
+static char *put_time(char *p, unsigned long s) { return a68_put_time(p, p + 12, s); }
 static void logs(const char *a, const char *b)
 {
 	char t[128], *p = put_str(t, "library: ");
@@ -154,9 +152,11 @@ static void logs(const char *a, const char *b)
 void lib_init(int c)
 {
 	colour = c;
-	rows = mac_newptr(sizeof(struct lrow) * MAX_ROWS);
+	rows = mac_newptr(sizeof(struct a68_row) * MAX_ROWS);
+	a68_list_init(&list, rows, rows ? MAX_ROWS : 0, V_ARTISTS);
 	thumbs = mac_newptr(THUMB_BYTES * MAX_ROWS);
-	queue = mac_newptr(sizeof(struct qitem) * MAX_Q);
+	qitems = mac_newptr(sizeof(struct qitem) * MAX_Q);
+	a68q_init(&Q, qitems, sizeof(struct qitem), qitems ? MAX_Q : 0);
 	view_art.bits = mac_newptr(ART * ART); view_art.size = ART;
 	now_art.bits = mac_newptr(ART * ART); now_art.size = ART;
 	bar_art.bits = mac_newptr(THUMB * THUMB); bar_art.size = THUMB;
@@ -169,6 +169,7 @@ void lib_init(int c)
 void *lib_window(void) { return lw; }
 int lib_have_server(void) { return srv_host[0] != 0; }
 int lib_shuffle(void) { return shuffle; }
+int lib_repeat(void) { return Q.repeat != A68_REPEAT_OFF; }
 
 /* a screen's depth where a rectangle of the window is: 8 or more on a colour screen asks for colour covers */
 static int depth_at(void *w, const Rect *local)
@@ -200,14 +201,14 @@ static void set_title(void)
 static void use_server(const char *host, unsigned short port)
 {
 	copy(srv_host, host, sizeof srv_host);
-	srv_port = port ? port : 8423;
+	srv_port = port ? port : A68_DEFAULT_PORT;
 	srv_known = 0;
 	fetch_cancel();
 	fetch_forget_host();
 	job = J_NONE;
 	want_info = 1;
 	want_list = 1;
-	nrows = 0; total = 0;
+	list.n = 0; list.total = 0;
 	set_problem("Asking the music server\xC9");     /* an ellipsis */
 	logs("server ", host);
 }
@@ -226,7 +227,8 @@ static void find_server(void)
 /* ---- the list's views -------------------------------------------------------------------------------- */
 static void view_changed(void)
 {
-	nrows = 0; total = 0;
+	a68_list_init(&list, rows, list.max, CUR->kind);
+	list.from = CUR->from;
 	memset(thumb_state, 0, sizeof thumb_state);
 	want_list = 1;
 	if (job == J_LIST || job == J_THUMBS || job == J_VIEWART) { fetch_cancel(); job = J_NONE; }
@@ -252,15 +254,10 @@ static void go_back(void)
 	view_changed();
 }
 
-/* the lines of the list: a "previous page" line, the rows, a "next page" line */
-static int has_prev(void) { return CUR->from > 0; }
-static int has_next(void) { return CUR->from + nrows < total; }
-static int nlines(void) { return nrows + has_prev() + has_next(); }
-static int line_row(int i)                      /* the row of line i; -1 the previous page, -2 the next */
-{
-	if (has_prev()) { if (i == 0) return -1; i--; }
-	return i < nrows ? i : -2;
-}
+/* the lines of the list: a "previous page" line, the rows, a "next page" line (play/core/catalog.c) */
+static int has_prev(void) { return a68_list_has_prev(&list); }
+static int nlines(void) { return a68_list_lines(&list); }
+static int line_row(int i) { return a68_list_line_row(&list, i); }   /* -1 the previous page, -2 the next */
 static short row_h(void) { return CUR->kind == V_ALBUMS ? R_ALBUM : R_LINE; }
 static Rect list_rect(void)
 {
@@ -290,66 +287,43 @@ static void fail_text(const char *why)
 }
 static void got_info(void)
 {
-	struct lp l;
-	char line[200], *f[6];
-	if (!lp_begin(&l, fetch.body, fetch.len) || lp_next(&l, line, sizeof line, f, 6) < 1) {
+	struct a68_rec r;
+	struct a68_head h;
+	struct a68_info inf;
+	a68_rec_init(&r, fetch.body, fetch.len);
+	if (!a68_read_head(&r, &h) || !a68_info_of(&r, &inf)) {
 		dv_stop(&dev);
 		fail_text("That address answers, but not as Aurora68's music server.");
 		want_list = 0;
 		return;
 	}
-	copy(srv_name, f[0], sizeof srv_name);
+	copy(srv_name, inf.name, sizeof srv_name);
 	srv_known = 1;
 	set_title();
-	dv_set_generation(&dev, lp_num(f[5]));          /* the library's generation (servers of 22 November 2026 on) */
+	dv_set_generation(&dev, inf.generation);       /* the library's generation (servers of 22 November 2026 on) */
 	dev.gen_changed = 0;
 	if (dev_ready) dv_start(&dev, secs_now());     /* this server (perhaps another one): announce now */
 	char t[120], *p = put_str(t, "the server is \"");
-	p = put_str(p, srv_name); p = put_str(p, "\": "); p = put_str(p, f[2]); p = put_str(p, " artists, ");
-	p = put_str(p, f[3]); p = put_str(p, " albums, "); p = put_str(p, f[4]); p = put_str(p, " tracks");
+	p = put_str(p, srv_name); p = put_str(p, "\": "); p = put_num(p, inf.artists); p = put_str(p, " artists, ");
+	p = put_num(p, inf.albums); p = put_str(p, " albums, "); p = put_num(p, inf.tracks); p = put_str(p, " tracks");
 	*p = 0;
 	logs(t, fetch.ipv == 6 ? " (IPv6)" : " (IPv4)");
 }
 static void got_list(void)
 {
-	struct lp l;
-	char line[240], *f[7];
 	int k;
-	if (!lp_begin(&l, fetch.body, fetch.len)) { fail_text("The music server's answer could not be read."); return; }
 	if (fetch.status != 200) {                   /* "error" and its words */
-		if (lp_next(&l, line, sizeof line, f, 1) >= 1) { copy(problem_buf, f[0], sizeof problem_buf); set_problem(problem_buf); }
+		const char *t = a68_error_text(fetch.body, fetch.len);
+		if (t[0]) { copy(problem_buf, t, sizeof problem_buf); set_problem(problem_buf); }
 		else fail_text("The music server could not give that list.");
 		return;
 	}
-	total = l.total;
-	nrows = 0;
-	while (nrows < MAX_ROWS && (k = lp_next(&l, line, sizeof line, f, 7)) >= 0) {
-		struct lrow *r = &rows[nrows];
-		memset(r, 0, sizeof *r);
-		switch (CUR->kind) {
-		case V_ARTISTS:                          /* id, name, albums, tracks */
-			r->kind = 'A'; copy(r->id, f[0], 9); copy(r->text, f[1], sizeof r->text);
-			r->count = (unsigned short)lp_num(f[2]);
-			break;
-		case V_ALBUMS:                           /* id, title, artist, tracks, seconds */
-			r->kind = 'L'; copy(r->id, f[0], 9); copy(r->text, f[1], sizeof r->text); copy(r->sub, f[2], sizeof r->sub);
-			r->count = (unsigned short)lp_num(f[3]); r->secs = lp_num(f[4]);
-			break;
-		case V_TRACKS:                           /* id, number, title, artist, seconds, album */
-			r->kind = 'T'; copy(r->id, f[0], 9); r->num = (unsigned short)lp_num(f[1]);
-			copy(r->text, f[2], sizeof r->text); copy(r->sub, f[3], sizeof r->sub);
-			r->secs = lp_num(f[4]); copy(r->album, f[5], 9);
-			break;
-		default:                                 /* search: kind, id, text, sub [, album, seconds] */
-			r->kind = f[0][0]; copy(r->id, f[1], 9); copy(r->text, f[2], sizeof r->text); copy(r->sub, f[3], sizeof r->sub);
-			if (r->kind == 'T') { copy(r->album, f[4], 9); r->secs = lp_num(f[5]); }
-		}
-		if (r->id[0]) nrows++;
-	}
-	problem = nrows || total ? 0 : CUR->kind == V_SEARCH ? "Nothing in the library matches." : "There is nothing here.";
+	list.kind = CUR->kind;
+	if (!a68_list_load(&list, fetch.body, fetch.len)) { fail_text("The music server's answer could not be read."); return; }
+	problem = list.n || list.total ? 0 : CUR->kind == V_SEARCH ? "Nothing in the library matches." : "There is nothing here.";
 	if (keep_sel[0]) {                           /* a refresh: the same row selected, wherever it is now */
-		for (k = 0; k < nrows; k++)
-			if (same_id(rows[k].id, keep_sel)) { CUR->sel = k + has_prev(); break; }
+		k = a68_list_find(&list, keep_sel);
+		if (k >= 0) CUR->sel = a68_list_row_line(&list, k);
 		keep_sel[0] = 0;
 	}
 	if (CUR->sel >= nlines()) CUR->sel = 0;
@@ -359,7 +333,7 @@ static void got_list(void)
 static void got_art(struct art *a)
 {
 	long v[4], at, n = a->size;                  /* W, H, depth, rowBytes */
-	if (fetch.status != 200 || !lp_art(fetch.body, fetch.len, "A68ART", v, 4, &at) || v[0] != n || v[1] != n ||
+	if (fetch.status != 200 || !a68_art(fetch.body, fetch.len, "A68ART", v, 4, &at) || v[0] != n || v[1] != n ||
 	    fetch.len - at < v[3] * n || v[3] * n > n * n) { a->state = 3; return; }
 	a->depth = (int)v[2]; a->rb = (int)v[3];
 	memcpy(a->bits, fetch.body + at, (unsigned long)(v[3] * n));
@@ -369,7 +343,7 @@ static void got_thumbs(void)
 {
 	long v[5], at;                               /* N, W, H, depth, rowBytes */
 	int i;
-	if (fetch.status != 200 || !lp_art(fetch.body, fetch.len, "A68ARTS", v, 5, &at) || v[1] != THUMB || v[4] != THUMB_RB) {
+	if (fetch.status != 200 || !a68_art(fetch.body, fetch.len, "A68ARTS", v, 5, &at) || v[1] != THUMB || v[4] != THUMB_RB) {
 		for (i = 0; i < nthumb; i++) thumb_state[thumb_rows[i]] = 3;
 		return;
 	}
@@ -383,60 +357,57 @@ static void got_thumbs(void)
 }
 
 /* ---- playing ------------------------------------------------------------------------------------------ */
-static char *track_url(char *p, int i, unsigned long start)
+/* a track's stream: http://HOST:PORT/t/ID?start=S (an IPv6 address in brackets) */
+static void track_url(char *u, long max, int i, unsigned long start)
 {
-	p = put_str(p, "http://");
-	if (strchr_(srv_host, ':')) *p++ = '[';
-	p = put_str(p, srv_host);
-	if (strchr_(srv_host, ':')) *p++ = ']';
-	*p++ = ':'; p = put_num(p, srv_port);
-	p = put_str(p, "/t/");
-	p = put_str(p, queue[i].id);
-	if (start) { p = put_str(p, "?start="); p = put_num(p, start); }
-	*p = 0;
-	return p;
+	char path[40];
+	struct qitem *q = qat(i);
+	a68_path_stream(q ? q->id : "", start, path, sizeof path);
+	a68_url(u, max, srv_host, srv_port, path);
 }
 static void want_now_art(void)
 {
-	if (qcur < 0 || qcur >= qn) return;
-	if (!same_id(now_art.album, queue[qcur].album)) { copy(now_art.album, queue[qcur].album, 9); now_art.state = 0; }
-	if (!same_id(bar_art.album, queue[qcur].album)) { copy(bar_art.album, queue[qcur].album, 9); bar_art.state = 0; }
-}
-/* radio.c asks, when a track's stream has ended: the next track's address, and where it will start */
-static int next_url(char *url, int max, unsigned long at)
-{
-	(void)max;
-	if (!mode || qfeed + 1 >= qn) return 0;
-	qfeed++;
-	track_url(url, qfeed, 0);
-	if (nb < 8) { bounds[nb].at = at; bounds[nb].idx = qfeed; nb++; }
-	logs("next in the stream: ", queue[qfeed].title);
-	return 1;
+	struct qitem *q = qat(Q.cur);
+	if (!q) return;
+	if (!same_id(now_art.album, q->album)) { copy(now_art.album, q->album, 9); now_art.state = 0; }
+	if (!same_id(bar_art.album, q->album)) { copy(bar_art.album, q->album, 9); bar_art.state = 0; }
 }
 /* radio.c, when a track's connection was lost: from where its audio stopped */
-static unsigned long feed_start;                 /* the seconds into qfeed its connection began at */
+static unsigned long feed_start;                 /* the seconds into Q.feed its connection began at */
+/* radio.c asks, when a track's stream has ended: the next track's address (the queue's follower of the one sent:
+   the next, or with Library > Repeat the first again), and where it will start */
+static int next_url(char *url, int max, unsigned long at)
+{
+	int f;
+	if (!mode || (f = a68q_feed_next(&Q)) < 0) return 0;
+	feed_start = 0;                              /* the new stream from its start (a lost one resumes from here) */
+	track_url(url, max, f, 0);
+	if (nb < 8) { bounds[nb].at = at; bounds[nb].idx = f; nb++; }
+	logs("next in the stream: ", qat(f)->title);
+	return 1;
+}
 static void resume_url(char *url, int max, unsigned long secs)
 {
-	(void)max;
 	feed_start += secs;
-	track_url(url, qfeed, feed_start);
+	track_url(url, max, Q.feed, feed_start);
 }
 static void play_at(int i, unsigned long start)
 {
 	char u[200], name[60], *p;
-	if (i < 0 || i >= qn) return;
+	struct qitem *q = qat(i);
+	if (!q) return;
 	player_lib_mode();
 	mode = 1;
-	qcur = qfeed = i;
+	a68q_jump(&Q, i);
 	nb = 0;
 	base_ms = 0;
 	offset_s = feed_start = start;
 	radio.next = next_url;
 	radio.resume = resume_url;
-	track_url(u, i, start);
-	p = put_str(name, queue[i].artist);
+	track_url(u, sizeof u, i, start);
+	p = put_str(name, q->artist);
 	p = put_str(p, " - ");
-	copy(p, queue[i].title, (int)(sizeof name - (unsigned long)(p - name)));
+	copy(p, q->title, (int)(sizeof name - (unsigned long)(p - name)));
 	want_now_art();
 	if (!radio_play_track(name, u)) {
 		const char *e = radio.error;
@@ -447,48 +418,42 @@ static void play_at(int i, unsigned long start)
 	player_refresh();
 	if (lw) { SetPort(lw); InvalRect(PORT_RECT(lw)); }
 }
-static void shuffle_queue(int keep_first)
+static unsigned long seed_now(void) { return LM_TICKS * 2654435761ul + 1; }
+/* the queue's song at at moved to the front (the one chosen, before a shuffle of the rest) */
+static void to_front(int at)
 {
-	int i;
-	unsigned long seed = LM_TICKS * 2654435761ul + 1;
-	for (i = qn - 1; i > keep_first; i--) {
-		seed = seed * 1103515245ul + 12345ul;
-		int j = keep_first + 1 + (int)((seed >> 8) % (unsigned long)(i - keep_first));
-		struct qitem t = queue[i]; queue[i] = queue[j]; queue[j] = t;
-	}
+	struct qitem t;
+	if (at <= 0 || !qat(at)) return;
+	t = *qat(at);
+	a68q_remove(&Q, at);
+	a68q_insert(&Q, 0, &t);
 }
-/* the queue from the rows of a tracks view (start at row s); or ask the server for an album's or an artist's */
+static void fill_item(struct qitem *q, const char *id, const char *album, const char *title, const char *artist, unsigned long secs)
+{
+	memset(q, 0, sizeof *q);
+	copy(q->id, id, 9); copy(q->album, album, 9);
+	copy(q->title, title, sizeof q->title); copy(q->artist, artist, sizeof q->artist);
+	q->secs = secs;
+}
+/* the queue from the rows of a tracks view (start at row s, -1 for Play); in order from the chosen one, or the
+   chosen one first and the rest shuffled */
 static void queue_from_rows(int s)
 {
-	int i;
-	qn = 0;
-	for (i = 0; i < nrows && qn < MAX_Q; i++) {
+	int i, n = 0, at = 0;
+	for (i = 0; i < list.n && n < MAX_Q; i++) {
 		if (rows[i].kind != 'T') continue;
-		struct qitem *q = &queue[qn++];
-		copy(q->id, rows[i].id, 9); copy(q->album, rows[i].album, 9);
-		copy(q->title, rows[i].text, sizeof q->title); copy(q->artist, rows[i].sub, sizeof q->artist);
-		q->secs = rows[i].secs;
-		if (i == s) { struct qitem t = queue[0]; queue[0] = *q; *q = t; }   /* the chosen one first ... */
+		if (i == s) at = n;
+		fill_item(&qitems[n++], rows[i].id, rows[i].album, rows[i].text, rows[i].sub, rows[i].secs);
 	}
-	if (!qn) return;
-	if (s > 0 && !shuffle) {                     /* ... unless in order: then from it, the album as it is */
-		qn = 0;
-		for (i = 0; i < nrows && qn < MAX_Q; i++) {
-			if (rows[i].kind != 'T') continue;
-			struct qitem *q = &queue[qn++];
-			copy(q->id, rows[i].id, 9); copy(q->album, rows[i].album, 9);
-			copy(q->title, rows[i].text, sizeof q->title); copy(q->artist, rows[i].sub, sizeof q->artist);
-			q->secs = rows[i].secs;
-		}
-		int at = 0;
-		for (i = 0; i < qn; i++) if (same_id(queue[i].id, rows[s].id)) at = i;
-		copy(album_title, CUR->title, sizeof album_title);
-		play_at(at, 0);
-		return;
-	}
-	if (shuffle) shuffle_queue(s >= 0 ? 0 : -1);
+	if (!n || !qitems) return;
+	a68q_set(&Q, n, 0);
 	copy(album_title, CUR->kind == V_TRACKS ? CUR->title : "", sizeof album_title);
-	play_at(0, 0);
+	if (shuffle) {
+		if (s >= 0) to_front(at);
+		a68q_shuffle_from(&Q, s >= 0 ? 1 : 0, seed_now());
+		at = 0;
+	}
+	play_at(at, 0);
 }
 static void ask_queue(const char *album, const char *artist, const char *start)
 {
@@ -500,93 +465,78 @@ static void ask_queue(const char *album, const char *artist, const char *start)
 }
 static void got_queue(void)
 {
-	struct lp l;
-	char line[240], *f[7];
-	int at = 0, k;
-	if (fetch.status != 200 || !lp_begin(&l, fetch.body, fetch.len)) { say_error("The music server could not give those tracks."); return; }
-	qn = 0;
-	while (qn < MAX_Q && (k = lp_next(&l, line, sizeof line, f, 7)) >= 0) {
-		struct qitem *q = &queue[qn];
-		copy(q->id, f[0], 9); copy(q->title, f[2], sizeof q->title); copy(q->artist, f[3], sizeof q->artist);
-		q->secs = lp_num(f[4]); copy(q->album, f[5], 9);
-		if (!q->id[0]) continue;
-		if (q_start[0] && same_id(q->id, q_start)) at = qn;
-		qn++;
+	struct a68_rec r;
+	struct a68_head h;
+	struct a68_track t;
+	int at = 0, n = 0;
+	a68_rec_init(&r, fetch.body, fetch.len);
+	if (fetch.status != 200 || !a68_read_head(&r, &h)) { say_error("The music server could not give those tracks."); return; }
+	while (n < MAX_Q && qitems && a68_next_track(&r, &t)) {
+		if (q_start[0] && same_id(t.id, q_start)) at = n;
+		fill_item(&qitems[n++], t.id, t.album, t.title, t.artist, t.secs);
 	}
-	if (!qn) return;
+	if (!n) return;
+	a68q_set(&Q, n, 0);
 	if (shuffle) {
-		struct qitem t = queue[0]; queue[0] = queue[at]; queue[at] = t;
-		shuffle_queue(q_start[0] ? 0 : -1);
+		to_front(at);
+		a68q_shuffle_from(&Q, q_start[0] ? 1 : 0, seed_now());
 		at = 0;
 	}
 	album_title[0] = 0;
 	play_at(at, 0);
 }
 
-/* ---- the device's commands (devices.c reads them; this carries them out) ----------------------------------- */
-static void add_track(int at, const struct dv_item *c)
-{
-	struct qitem *q;
-	if (qn >= MAX_Q) return;
-	if (at < 0 || at > qn) at = qn;
-	memmove(&queue[at + 1], &queue[at], sizeof queue[0] * (unsigned long)(qn - at));
-	q = &queue[at];
-	memset(q, 0, sizeof *q);
-	copy(q->id, c->tid, 9);                      /* no album id in a command's tracks: no cover for them */
-	copy(q->title, c->title, sizeof q->title);
-	copy(q->artist, c->artist, sizeof q->artist);
-	q->secs = c->secs;
-	qn++;
-}
+/* ---- the device's commands (play/core/proto.c reads them; this carries them out) --------------------------- */
 struct pending { int act; long pos; int vol, first, n, radio; char rname[48], rurl[200]; };
 static void finish_command(struct pending *c)
 {
 	switch (c->act) {
-	case DA_PLAY:
+	case A68_ACT_PLAY:
 		if (c->radio) { lib_leave(); start_station(c->rname, c->rurl); break; }
 		if (c->n) { album_title[0] = 0; play_at(0, (unsigned long)c->pos); }
 		break;
-	case DA_ADD: case DA_NEXT:                   /* into the queue; playing it if nothing plays */
+	case A68_ACT_ADD: case A68_ACT_NEXT:         /* into the queue; playing it if nothing plays */
 		if (c->n && (!mode || lstate != L_PLAYING)) play_at(c->first, 0);
 		else player_refresh();
 		break;
-	case DA_PAUSE: player_pause(1); break;
-	case DA_RESUME: player_pause(0); break;
-	case DA_STOP: player_stop(); break;
-	case DA_SKIP: if (mode) lib_skip(1); break;
-	case DA_PREVIOUS: if (mode) lib_skip(-1); break;
-	case DA_SEEK: player_seek((unsigned long)c->pos); break;
-	case DA_VOLUME: if (c->vol >= 0) player_volume(c->vol); break;
+	case A68_ACT_PAUSE: player_pause(1); break;
+	case A68_ACT_RESUME: player_pause(0); break;
+	case A68_ACT_STOP: player_stop(); break;
+	case A68_ACT_SKIP: if (mode) lib_skip(1); break;
+	case A68_ACT_PREVIOUS: if (mode) lib_skip(-1); break;
+	case A68_ACT_SEEK: player_seek((unsigned long)c->pos); break;
+	case A68_ACT_VOLUME: if (c->vol >= 0) player_volume(c->vol); break;
 	}
 	if (lw) { SetPort(lw); InvalRect(PORT_RECT(lw)); }
 }
-static void run_commands(const char *b, long n)
+static void run_commands(char *b, long n)
 {
-	static const char *const said[] = { "?", "play", "add", "next", "pause", "resume", "skip", "previous", "seek", "volume", "stop" };
-	struct dv_iter it;
-	struct dv_item c;
+	struct a68_rec r;
+	struct a68_cmd c;
 	struct pending pc;
+	struct qitem item;
 	int more;
 	memset(&pc, 0, sizeof pc);
-	dv_iter_init(&it, b, n);
+	a68_rec_init(&r, b, n);
 	do {
-		more = dv_next_item(&it, &c);
+		more = a68_next_cmd(&r, &c);
 		if (!more || c.kind == 'C') {
 			if (pc.act) finish_command(&pc);
 			memset(&pc, 0, sizeof pc);
 			if (!more) break;
-			pc.act = dv_action(c.action); pc.pos = c.position; pc.vol = c.volume;
-			logs("a command from the server: ", said[pc.act]);
+			pc.act = a68_action(c.action); pc.pos = c.position; pc.vol = c.volume;
+			if (pc.act > A68_ACT_STOP) pc.act = A68_ACT_UNKNOWN;     /* the Live channel's own: not for a player */
+			logs("a command from the server: ", a68_action_name(pc.act));
 			continue;
 		}
-		if (c.kind == 'T' && (pc.act == DA_PLAY || pc.act == DA_ADD || pc.act == DA_NEXT)) {
+		if (c.kind == 'T' && (pc.act == A68_ACT_PLAY || pc.act == A68_ACT_ADD || pc.act == A68_ACT_NEXT) && qitems) {
 			int at;
-			if (pc.act == DA_PLAY && !pc.n) { lib_leave(); qn = 0; }   /* the queue replaced (once its first track is here) */
+			if (pc.act == A68_ACT_PLAY && !pc.n) { lib_leave(); a68q_clear(&Q); }   /* the queue replaced (once its first track is here) */
 			/* "next": after what is being received (the stream may already be on the track after the one heard) */
-			at = pc.act == DA_NEXT && mode ? qfeed + 1 + pc.n : pc.act == DA_PLAY ? pc.n : qn;
-			if (!pc.n) pc.first = at > qn ? qn : at;
-			add_track(at, &c);
-			pc.n++;
+			at = pc.act == A68_ACT_NEXT && mode ? a68q_next_place(&Q) + pc.n : pc.act == A68_ACT_PLAY ? pc.n : Q.n;
+			if (!pc.n) pc.first = at > Q.n ? Q.n : at;
+			fill_item(&item, c.tid, "", c.title, c.artist, c.secs);   /* no album id in a command's tracks: no cover for them */
+			if (a68q_insert(&Q, at, &item) >= 0) pc.n++;
 		} else if (c.kind == 'R') { copy(pc.rname, c.name, sizeof pc.rname); copy(pc.rurl, c.url, sizeof pc.rurl); pc.radio = 1; }
 	} while (more);
 }
@@ -597,30 +547,32 @@ static void lib_refresh(void)
 	if (!lw || !srv_known) return;
 	r = line_row(CUR->sel);
 	keep_sel[0] = 0;
-	if (r >= 0 && r < nrows) copy(keep_sel, rows[r].id, 9);
+	if (r >= 0 && r < list.n) copy(keep_sel, rows[r].id, 9);
 	view_changed();
 }
 /* the device's part of the player: an id kept in the preferences and the Mac's name */
 void lib_device(const char *id, const char *name)
 {
-	dv_init(&dev, id, name, "1.3");
+	dv_init(&dev, id, name, "1.4", "classic");
 	dev_ready = id[0] != 0;
 	if (dev_ready && srv_known) dv_start(&dev, secs_now());
 }
 /* what a library track is, for the device's state: 1 if one plays (or is paused) */
 int lib_now(char *tid, unsigned long *pos, unsigned long *len)
 {
-	if (!mode || lstate != L_PLAYING || qcur < 0 || qcur >= qn) return 0;
-	copy(tid, queue[qcur].id, 9);
+	struct qitem *q = qat(Q.cur);
+	if (!mode || lstate != L_PLAYING || !q) return 0;
+	copy(tid, q->id, 9);
 	*pos = pos_s();
-	*len = queue[qcur].secs;
+	*len = q->secs;
 	return 1;
 }
 void lib_seek(unsigned long s)
 {
-	if (!mode || qcur < 0 || qcur >= qn) return;
-	if (queue[qcur].secs && s >= queue[qcur].secs) s = queue[qcur].secs - 1;
-	play_at(qcur, s);
+	struct qitem *q = qat(Q.cur);
+	if (!mode || !q) return;
+	if (q->secs && s >= q->secs) s = q->secs - 1;
+	play_at(Q.cur, s);
 }
 
 /* ---- the network, from the event loop ------------------------------------------------------------- */
@@ -630,32 +582,14 @@ static void start_job(int j, const char *path)
 }
 static void next_job(void)
 {
-	char path[220], *p;
+	char path[220];
 	int i;
 	if (!srv_host[0]) return;
-	if (want_info) { want_info = 0; start_job(J_INFO, "/mac/info"); return; }
+	if (want_info) { want_info = 0; a68_path_info(&cl, path, sizeof path); start_job(J_INFO, path); return; }
 	if (want_list && srv_known) {
 		struct view *v = CUR;
 		want_list = 0;
-		p = put_str(path, "/mac/");
-		switch (v->kind) {
-		case V_ARTISTS: p = put_str(p, "artists?count="); break;
-		case V_ALBUMS: p = put_str(put_str(put_str(p, "albums?artist="), v->id), "&count="); break;
-		case V_TRACKS: p = put_str(put_str(put_str(p, "tracks?album="), v->id), "&count="); break;
-		default: {
-			const char *s;
-			p = put_str(p, "search?q=");
-			for (s = v->q; *s; s++) {            /* the words as the URL wants them, Mac Roman bytes as %XX */
-				unsigned char c = (unsigned char)*s;
-				if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) *p++ = (char)c;
-				else { static const char hx[] = "0123456789ABCDEF"; *p++ = '%'; *p++ = hx[c >> 4]; *p++ = hx[c & 15]; }
-			}
-			p = put_str(p, "&count=");
-		}
-		}
-		p = put_num(p, PAGE);
-		if (v->from) { p = put_str(p, "&from="); p = put_num(p, (unsigned long)v->from); }
-		*p = 0;
+		a68_list_path(&cl, v->kind, v->id, v->q, v->from, path, sizeof path);
 		start_job(J_LIST, path);
 		return;
 	}
@@ -671,9 +605,7 @@ static void next_job(void)
 	}
 	if (want_queue) {
 		want_queue = 0;
-		p = put_str(path, "/mac/tracks?count=250&");
-		p = q_album[0] ? put_str(put_str(p, "album="), q_album) : put_str(put_str(p, "artist="), q_artist);
-		*p = 0;
+		a68_path_tracks(&cl, q_album, q_artist, 0, MAX_Q, path, sizeof path);
 		start_job(J_QUEUE, path);
 		return;
 	}
@@ -697,28 +629,23 @@ static void next_job(void)
 		Rect br = { (short)(LH - 36), 8, (short)(LH - 4), 40 };
 		a->depth = a == &now_art ? depth_at(pwin ? pwin : lw, &pr) : depth_at(lw, a == &bar_art ? &br : &vr);
 		a->state = 1;
-		p = put_str(path, a->size == ART ? "/mac/art?w=64&h=64&album=" : "/mac/art?w=32&h=32&album=");
-		p = put_str(p, a->album);
-		p = put_str(p, a->depth == 8 ? "&depth=8" : "&depth=1");
-		*p = 0;
+		a68_path_art(&cl, a->album, a->size, a->depth, path, sizeof path);
 		start_job(a == &now_art ? J_NOWART : a == &bar_art ? J_BARART : J_VIEWART, path);
 		return;
 	}
 	if (CUR->kind == V_ALBUMS && lw) {           /* the covers of the albums in view, sixteen at a time */
 		int first = CUR->top - has_prev(), last = first + visible();
+		const char *ids[16];
 		if (first < 0) first = 0;
 		nthumb = 0;
-		p = put_str(path, "/mac/arts?w=32&h=32&albums=");
-		for (i = first; i <= last && i < nrows && nthumb < 16; i++)
+		for (i = first; i <= last && i < list.n && nthumb < 16; i++)
 			if (!thumb_state[i]) {
-				if (nthumb) *p++ = ',';
-				p = put_str(p, rows[i].id);
 				copy(thumb_ids[nthumb], rows[i].id, 9);
+				ids[nthumb] = thumb_ids[nthumb];
 				thumb_rows[nthumb++] = i;
 				thumb_state[i] = 1;
 			}
-		*p = 0;
-		if (nthumb) { start_job(J_THUMBS, path); return; }
+		if (nthumb) { a68_path_arts(&cl, ids, nthumb, THUMB, path, sizeof path); start_job(J_THUMBS, path); return; }
 	}
 	if (dv_want(&dev, secs_now()) == DV_COMMANDS) {   /* nothing else to do: wait for a command */
 		dv_path(&dev, DV_COMMANDS, path, sizeof path);
@@ -736,19 +663,19 @@ void lib_poll(void)
 	if (finding) {
 		discover_poll();
 		if (disc.st == D_FOUND) {
-			/* the address of the family Connect By names, the other one kept in case it fails. IPv4: the address
-			   the answer came from, which is known to reach this Mac (the server's own idea of its address may be
-			   a container's); IPv6: the one the server names, and only through Riptide's .IPP6 */
-			const char *first = disc.host, *other = "";
-			if (net_is_v6() && disc.v6[0]) {
-				if (net_prefer != 4) { first = disc.v6; other = disc.host; }
-				else other = disc.v6;
-			}
+			/* the addresses to try, best first (play/core/address.c): the family Connect By names first; for IPv4 the
+			   address the answer came from, which is known to reach this Mac, before the one the server names (which
+			   may be its container's); IPv6 only through Riptide's .IPP6. The others are kept in case it fails */
+			const char *c[3];
+			int n = a68_disc_hosts(&disc.d, disc.host, net_prefer == 4 ? A68_IPV4 : A68_IPV6, net_is_v6(), c), k;
+			char first[64];
 			finding = 0;
-			use_server(first, disc.port);
-			copy(alt_host, other, sizeof alt_host);
+			if (!n) { set_problem("The music server's answer named no address this Mac can use."); return; }
+			copy(first, c[0], sizeof first);
+			for (nalt = 0, k = 1; k < n && nalt < 2; k++) copy(alt_host[nalt++], c[k], sizeof alt_host[0]);
+			use_server(first, (unsigned short)disc.d.port);
 			srv_known = 0;
-			copy(srv_name, disc.name, sizeof srv_name);
+			copy(srv_name, disc.d.name, sizeof srv_name);
 		} else if (disc.st == D_NONE) {
 			finding = 0;
 			set_problem("No music server answered on this network. Choose Library > Connect to Server\xC9 and type its "
@@ -782,10 +709,12 @@ void lib_poll(void)
 		int j = job;
 		job = J_NONE;
 		if (fetch.st == FS_FAILED) {
-			if (j == J_INFO && alt_host[0]) {        /* the other family's address, once */
-				char h[48];
-				copy(h, alt_host, sizeof h);
-				alt_host[0] = 0;
+			if (j == J_INFO && nalt) {               /* the server's other addresses, each once */
+				char h[64];
+				int k;
+				copy(h, alt_host[0], sizeof h);
+				for (k = 1; k < nalt; k++) copy(alt_host[k - 1], alt_host[k], sizeof alt_host[0]);
+				nalt--;
 				logs("trying the server's other address, ", h);
 				use_server(h, srv_port);
 				fetch.st = FS_IDLE;
@@ -808,8 +737,12 @@ void lib_poll(void)
 			case J_BARART: got_art(&bar_art); if (lw) { SetPort(lw); draw_bar(); } break;
 			case J_THUMBS: got_thumbs(); if (lw) { SetPort(lw); draw_list(); } break;
 			case J_DEV:
-				if (dv_answer(&dev, dev_what, fetch.status, fetch.body, fetch.len, secs_now()) && dev_what == DV_COMMANDS && fetch.len)
-					run_commands(fetch.body, fetch.len);
+				/* answers are read in place, once: a commands answer's commands here (devices.c wants only its status),
+				   an announce's lines by devices.c */
+				if (dev_what == DV_COMMANDS) {
+					if (fetch.status == 200 && fetch.len) run_commands(fetch.body, fetch.len);
+					dv_answer(&dev, dev_what, fetch.status, 0, 0, secs_now());
+				} else dv_answer(&dev, dev_what, fetch.status, fetch.body, fetch.len, secs_now());
 				break;
 			}
 		}
@@ -819,13 +752,12 @@ void lib_poll(void)
 	/* what is heard: the next track when the card has reached it */
 	if (mode && ps) {
 		while (nb && ps->pos_ms >= bounds[0].at) {
-			qcur = bounds[0].idx;
+			a68q_heard(&Q, bounds[0].idx);
 			base_ms = bounds[0].at;
 			offset_s = 0;
-			if (qfeed == qcur) feed_start = 0;
 			nb--;
 			memmove(bounds, bounds + 1, sizeof bounds[0] * (unsigned long)nb);
-			logs("now playing ", queue[qcur].title);
+			logs("now playing ", qat(Q.cur) ? qat(Q.cur)->title : "");
 			want_now_art();
 			player_refresh();
 			if (lw) { SetPort(lw); draw_bar(); if (CUR->kind == V_TRACKS) draw_list(); }
@@ -895,7 +827,7 @@ static void draw_cover(void *w, struct art *a, short size, short left, short top
 }
 static void row_texts(int i, char *right)
 {
-	struct lrow *r = &rows[i];
+	struct a68_row *r = &rows[i];
 	char *p = right;
 	switch (r->kind) {
 	case 'A': p = put_num(p, r->count); p = put_str(p, r->count == 1 ? " album" : " albums"); break;
@@ -906,7 +838,7 @@ static void row_texts(int i, char *right)
 }
 static int playing_row(int i)
 {
-	return mode && lstate != L_STOPPED && qcur >= 0 && qcur < qn && rows[i].kind == 'T' && same_id(rows[i].id, queue[qcur].id);
+	return mode && lstate != L_STOPPED && Q.cur >= 0 && Q.cur < Q.n && rows[i].kind == 'T' && same_id(rows[i].id, qat(Q.cur)->id);
 }
 static void draw_line(int li, Rect *lr)
 {
@@ -990,8 +922,8 @@ static void draw_album_head(void)
 	TextFont(3); TextSize(9);
 	MoveTo(86, HEAD_H + 36);
 	clip_text(CUR->sub, LW - 96);
-	for (i = 0; i < nrows; i++) secs += rows[i].secs;
-	p = put_num(t, (unsigned long)total); p = put_str(p, total == 1 ? " track" : " tracks");
+	for (i = 0; i < list.n; i++) secs += rows[i].secs;
+	p = put_num(t, (unsigned long)list.total); p = put_str(p, list.total == 1 ? " track" : " tracks");
 	if (secs) { p = put_str(p, ", "); p = put_time(p, secs); }
 	*p = 0;
 	MoveTo(86, HEAD_H + 50);
@@ -1013,8 +945,8 @@ static void draw_bar(void)
 	MoveTo(0, (short)(LH - BAR_H)); LineTo((short)LW, (short)(LH - BAR_H));
 	TextFont(3); TextSize(9);
 	short tx = 8, right = (short)(LW - 150);
-	if (mode && qcur >= 0 && qcur < qn) {
-		struct qitem *q = &queue[qcur];
+	if (mode && Q.cur >= 0 && Q.cur < Q.n) {
+		struct qitem *q = qat(Q.cur);
 		draw_cover(lw, bar_art.state == 2 && same_id(bar_art.album, q->album) ? &bar_art : 0, THUMB, 8, (short)(LH - 36));
 		tx = 48;
 		TextFace(1);
@@ -1038,7 +970,7 @@ static void draw_bar(void)
 		static int said = -1;
 		int pl = lib_playing();
 		if (pl != said) { said = pl; SetCTitle(pp_btn, pstr(pb, pl ? "Pause" : "Play")); }
-		HiliteControl(pp_btn, active && (mode || nrows) ? 0 : 255);
+		HiliteControl(pp_btn, active && (mode || list.n) ? 0 : 255);
 		HiliteControl(prev_btn, active && lib_can_skip(-1) ? 0 : 255);
 		HiliteControl(next_btn, active && lib_can_skip(1) ? 0 : 255);
 	}
@@ -1156,7 +1088,7 @@ static void open_line(int li)
 	if (li < 0 || li >= nlines()) return;
 	if (i == -1) { CUR->from -= PAGE; if (CUR->from < 0) CUR->from = 0; CUR->sel = CUR->top = 0; view_changed(); return; }
 	if (i == -2) { CUR->from += PAGE; CUR->sel = CUR->top = 0; view_changed(); return; }
-	struct lrow *r = &rows[i];
+	struct a68_row *r = &rows[i];
 	switch (r->kind) {
 	case 'A': push_view(V_ALBUMS, r->id, r->text, 0); break;
 	case 'L': push_view(V_TRACKS, r->id, r->text, r->sub[0] ? r->sub : CUR->title); break;
@@ -1254,20 +1186,15 @@ void lib_key(EventRecord *ev)
 	if (ev->when - typed_t > 60) ntyped = 0;
 	typed_t = ev->when;
 	if (ntyped < 15) typed[ntyped++] = (char)lower(c);
-	for (i = 0; i < nrows; i++) {
-		const char *s = rows[i].text;
-		int k;
-		if (lower(s[0]) == 't' && lower(s[1]) == 'h' && lower(s[2]) == 'e' && s[3] == ' ' && !(typed[0] == 't' && ntyped > 1 && typed[1] == 'h')) s += 4;
-		for (k = 0; k < ntyped && lower(s[k]) == typed[k]; k++) { }
-		if (k == ntyped) { select_line(i + has_prev()); return; }
-	}
+	i = a68_list_typed(&list, typed, ntyped);
+	if (i >= 0) select_line(a68_list_row_line(&list, i));
 }
 
 /* ---- the player window's part ------------------------------------------------------------------------- */
 int lib_active(void) { return mode; }
 int lib_playing(void) { return mode && lstate == L_PLAYING && radio.st != RS_OFF && !radio.paused; }
 int lib_can_stop(void) { return mode && lstate == L_PLAYING; }
-int lib_can_skip(int dir) { return mode && qn && (dir < 0 ? qcur > 0 || pos_s() > 3 : qcur + 1 < qn); }
+int lib_can_skip(int dir) { return mode && Q.n && (dir < 0 ? Q.cur > 0 || pos_s() > 3 : Q.cur + 1 < Q.n || Q.repeat != A68_REPEAT_OFF); }
 void lib_leave(void)
 {
 	if (!mode) return;
@@ -1279,8 +1206,8 @@ void lib_leave(void)
 }
 void lib_play_pause(void)
 {
-	if (!mode) { if (CUR->kind == V_TRACKS || CUR->kind == V_ALBUMS) lib_play_all(); else if (nrows) open_line(CUR->sel); return; }
-	if (lstate != L_PLAYING) { play_at(lstate == L_ENDED ? 0 : qcur, 0); return; }
+	if (!mode) { if (CUR->kind == V_TRACKS || CUR->kind == V_ALBUMS) lib_play_all(); else if (list.n) open_line(CUR->sel); return; }
+	if (lstate != L_PLAYING) { play_at(lstate == L_ENDED ? 0 : Q.cur, 0); return; }
 	radio_pause(!radio.paused);
 	player_refresh();
 	if (lw) { SetPort(lw); draw_bar(); }
@@ -1295,12 +1222,17 @@ void lib_stop(void)
 	player_refresh();
 	if (lw) { SetPort(lw); draw_bar(); draw_list(); }
 }
+/* Previous: the start of this track more than three seconds in, or on the first; else the one before. Next: the one
+   after, round to the first with Repeat; a beep on the last without it (play/core/queue.c's rules) */
 void lib_skip(int dir)
 {
-	if (!mode || !qn) return;
-	if (dir < 0 && pos_s() > 3) { play_at(qcur, 0); return; }   /* Previous: the start of this track first */
-	int i = qcur + dir;
-	if (i < 0 || i >= qn) { SysBeep(1); return; }
+	int i, restart;
+	if (!mode || !Q.n) return;
+	if (dir < 0) i = a68q_previous(&Q, pos_s(), &restart);
+	else {
+		if (Q.cur + 1 >= Q.n && Q.repeat == A68_REPEAT_OFF) { SysBeep(1); return; }
+		i = a68q_skip(&Q);
+	}
 	play_at(i, 0);
 }
 const char *lib_status(char *b)
@@ -1319,7 +1251,7 @@ void lib_draw_now(void *win, short W, short H)
 	pwin = win;
 	SetPort(win);
 	EraseRect(&r);
-	struct qitem *q = qcur >= 0 && qcur < qn ? &queue[qcur] : 0;
+	struct qitem *q = Q.cur >= 0 && Q.cur < Q.n ? qat(Q.cur) : 0;
 	if (now_art.state == 2 && now_art.depth != depth_at(win, &cr)) now_art.state = 0;   /* moved to another screen */
 	draw_cover(win, q && same_id(now_art.album, q->album) ? &now_art : 0, ART, 9, 5);
 	TextFont(0); TextSize(12); TextFace(0);
@@ -1329,15 +1261,16 @@ void lib_draw_now(void *win, short W, short H)
 	p = t;
 	if (q) {
 		p = put_str(p, q->artist);
-		if (album_title[0] && qcur >= 0) { p = put_str(p, " \xD1 "); p = put_str(p, album_title); }
+		if (album_title[0] && Q.cur >= 0) { p = put_str(p, " \xD1 "); p = put_str(p, album_title); }
 	}
 	*p = 0;
 	MoveTo(84, 30);
 	clip_text(t, W - 94);
 	p = t;
 	if (q) {
-		p = put_str(p, "Track "); p = put_num(p, (unsigned long)qcur + 1); p = put_str(p, " of "); p = put_num(p, (unsigned long)qn);
+		p = put_str(p, "Track "); p = put_num(p, (unsigned long)Q.cur + 1); p = put_str(p, " of "); p = put_num(p, (unsigned long)Q.n);
 		p = put_str(p, shuffle ? ", shuffled" : "");
+		p = put_str(p, Q.repeat != A68_REPEAT_OFF ? ", repeated" : "");
 		if (ps && ps->rate && lstate == L_PLAYING) { p = put_str(p, " \xD1 MP3 "); p = put_num(p, ps->bitrate ? ps->bitrate : radio.br); p = put_str(p, " kbit/s"); }
 		if (radio.ipv) p = put_str(p, radio.ipv == 6 ? ", IPv6" : ", IPv4");
 	}
@@ -1351,7 +1284,7 @@ void lib_draw_progress(void *win, short W, short H)
 	(void)H;
 	SetPort(win);
 	Rect r = { 46, 84, 54, (short)(W - 10) };
-	struct qitem *q = qcur >= 0 && qcur < qn ? &queue[qcur] : 0;
+	struct qitem *q = Q.cur >= 0 && Q.cur < Q.n ? qat(Q.cur) : 0;
 	unsigned long pos = pos_s(), len = q ? q->secs : 0;
 	FrameRect(&r);
 	InsetRect(&r, 1, 1);
@@ -1375,13 +1308,13 @@ void lib_draw_progress(void *win, short W, short H)
 int lib_bar_click(Point p, short W)
 {
 	Rect r = { 42, 84, 58, (short)(W - 10) };
-	if (!mode || !PtInRect(pt_long(p), &r) || qcur < 0 || qcur >= qn || !queue[qcur].secs) return 0;
-	unsigned long s = (unsigned long)(p.h - 85) * queue[qcur].secs / (unsigned long)(W - 96);
-	if (s >= queue[qcur].secs) s = queue[qcur].secs - 1;
+	if (!mode || !PtInRect(pt_long(p), &r) || !qat(Q.cur) || !qat(Q.cur)->secs) return 0;
+	unsigned long s = a68_bar_time(p.h - 85, W - 96, qat(Q.cur)->secs);
+	if (s >= qat(Q.cur)->secs) s = qat(Q.cur)->secs - 1;
 	char t[40];
 	put_num(put_str(t, "seek to "), s)[0] = 0;
 	logs(t, " s");
-	play_at(qcur, s);
+	play_at(Q.cur, s);
 	return 1;
 }
 
@@ -1390,37 +1323,27 @@ void lib_connect(void)
 {
 	char a[80], cur[80], *p = cur;
 	if (srv_host[0]) {
-		if (strchr_(srv_host, ':')) *p++ = '[';
-		p = put_str(p, srv_host);
-		if (strchr_(srv_host, ':')) *p++ = ']';
+		p = a68_put_url_host(p, cur + 70, srv_host);
 		*p++ = ':'; p = put_num(p, srv_port);
 	}
 	*p = 0;
 	if (!ask_text("Connect to the music server at this address:",
 	              "Such as 192.168.1.20:8423 or [fd00::20]:8423. Empty: look again.", cur, a, sizeof a))
 		return;                                  /* Cancel */
-	alt_host[0] = 0;
+	nalt = 0;
 	lib_show();
-	if (!a[0]) { find_server(); return; }
-	/* host[:port], [ipv6]:port, or ipv6 alone */
-	char h[64];
-	unsigned long port = 8423;
-	int i = 0, k = 0;
-	const char *s = a;
-	if ((s[0] | 32) == 'h' && (s[1] | 32) == 't' && (s[2] | 32) == 't' && (s[3] | 32) == 'p' && s[4] == ':' && s[5] == '/' && s[6] == '/') s += 7;
-	if (s[0] == '[') {
-		for (i = 1; s[i] && s[i] != ']' && k < 63; i++) h[k++] = s[i];
-		if (s[i] == ']') i++;
-	} else {
-		int colons = 0;
-		for (k = 0; s[k]; k++) colons += s[k] == ':';
-		k = 0;
-		if (colons > 1) { while (s[i] && s[i] != '/' && k < 63) h[k++] = s[i++]; }   /* IPv6 without brackets: no port */
-		else while (s[i] && s[i] != ':' && s[i] != '/' && k < 63) h[k++] = s[i++];
+	{
+		const char *s = a;
+		while (*s == ' ') s++;
+		if (!*s) { find_server(); return; }
 	}
-	h[k] = 0;
-	if (s[i] == ':') { port = 0; for (i++; s[i] >= '0' && s[i] <= '9'; i++) port = port * 10 + (unsigned long)(s[i] - '0'); }
-	if (!k || !port || port > 65535) { say_error("That is not an address Aurora68 Play understands. Type a name or number and a port, such as 192.168.1.20:8423."); return; }
+	/* host[:port], [ipv6]:port, ipv6 alone, a URL (play/core/address.c); no port: the server's own, 8000 */
+	char h[64];
+	unsigned port;
+	if (!a68_parse_address(a, A68_DEFAULT_PORT, h, sizeof h, &port)) {
+		say_error("That is not an address Aurora68 Play understands. Type a name or number and a port, such as 192.168.1.20:8423.");
+		return;
+	}
 	if (finding) { discover_stop(); finding = 0; }
 	depth = 1;
 	CUR->sel = CUR->top = 0; CUR->from = 0;
@@ -1444,7 +1367,7 @@ void lib_find(void)
 int lib_can_play_all(void) { return lw && srv_known && (CUR->kind == V_ALBUMS || CUR->kind == V_TRACKS); }
 void lib_play_all(void)
 {
-	if (CUR->kind == V_TRACKS && nrows) queue_from_rows(-1);
+	if (CUR->kind == V_TRACKS && list.n) queue_from_rows(-1);
 	else if (CUR->kind == V_ALBUMS) ask_queue(0, CUR->id, 0);
 	else SysBeep(1);
 }
@@ -1452,27 +1375,23 @@ void lib_toggle_shuffle(void)
 {
 	shuffle = !shuffle;
 	if (shuf_cb) SetCtlValue(shuf_cb, shuffle);
-	if (mode && qn > 1 && shuffle && qcur + 1 < qn) {   /* what is still to come, shuffled; the stream in flight stays */
-		int i, keep = qfeed;
-		unsigned long seed = LM_TICKS * 2654435761ul + 7;
-		for (i = qn - 1; i > keep + 1; i--) {
-			seed = seed * 1103515245ul + 12345ul;
-			int j = keep + 1 + (int)((seed >> 8) % (unsigned long)(i - keep));
-			struct qitem t = queue[i]; queue[i] = queue[j]; queue[j] = t;
-		}
-	}
+	if (mode && Q.n > 1 && shuffle && Q.cur + 1 < Q.n)   /* what is still to come, shuffled; the stream in flight stays */
+		a68q_shuffle_upcoming(&Q, seed_now() + 7);
+	player_refresh();
+}
+/* Library > Repeat (Aurora68 Play 1.4, with the shared queue): the queue again from its first song when it ends,
+   gaplessly as from one song to the next */
+void lib_toggle_repeat(void)
+{
+	Q.repeat = Q.repeat == A68_REPEAT_OFF ? A68_REPEAT_ALL : A68_REPEAT_OFF;
+	logs(Q.repeat ? "repeat: on" : "repeat: off", 0);
 	player_refresh();
 }
 void lib_live(void)
 {
-	char u[120], n[60], *p;
+	char u[120], n[60];
 	if (!srv_host[0]) { lib_show(); return; }
-	p = put_str(u, "http://");
-	if (strchr_(srv_host, ':')) *p++ = '[';
-	p = put_str(p, srv_host);
-	if (strchr_(srv_host, ':')) *p++ = ']';
-	*p++ = ':'; p = put_num(p, srv_port);
-	put_str(p, "/live")[0] = 0;
+	a68_url(u, sizeof u, srv_host, srv_port, "/live");
 	put_str(put_str(n, "Live: "), srv_known ? srv_name : srv_host)[0] = 0;
 	lib_leave();
 	start_station(n, u);
@@ -1492,6 +1411,7 @@ void lib_get_prefs(struct lib_prefs *p)
 	p->port = srv_port;
 	p->shuffle = (short)shuffle;
 	p->shown = (short)shown;
+	p->repeat = (short)Q.repeat;
 	if (lw) {
 		Point tl = { 0, 0 };
 		SetPort(lw);
@@ -1501,8 +1421,9 @@ void lib_get_prefs(struct lib_prefs *p)
 }
 void lib_set_prefs(const struct lib_prefs *p)
 {
-	if (p->host[0]) { copy(srv_host, p->host, sizeof srv_host); srv_port = p->port ? p->port : 8423; want_info = 1; want_list = 1; }
+	if (p->host[0]) { copy(srv_host, p->host, sizeof srv_host); srv_port = p->port ? p->port : A68_DEFAULT_PORT; want_info = 1; want_list = 1; }
 	shuffle = p->shuffle != 0;
+	Q.repeat = p->repeat == A68_REPEAT_ALL ? A68_REPEAT_ALL : A68_REPEAT_OFF;   /* the pad of files before 1.4: 0, off */
 	saved_r = p->r;
 	saved_shown = p->shown;
 	have_saved = 1;

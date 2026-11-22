@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0
  *
- * tools/icy_test.c - PiPlay's radio parser (mac/piplay/icy.c) on the host: `make -C mac check`.
+ * tools/icy_test.c - PiPlay's radio parser (play/core/icy.c, mac/piplay/icy.c until 22 November 2026) on the host: `make -C mac check`.
  *
  * Streams are made up here the way Icecast and Shoutcast send them (an HTTP or ICY status line,
  * headers, audio with a metadata block after every metaint bytes, sometimes in HTTP/1.1 chunks) and
@@ -11,7 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../mac/piplay/icy.h"
+#include "../play/core/include/icy.h"
 
 static unsigned char out[1 << 20];
 static unsigned long out_n;

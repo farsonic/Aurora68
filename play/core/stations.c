@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0
  *
- * mac/piplay/stations.c - Aurora68 Play's station list: the built-in list, the file taken apart into
+ * play/core/stations.c - Aurora68 Play's station list: the built-in list, the file taken apart into
  * stations and groups (the Radio menu's submenus), and the built-in stations a user's file lacks.
  *
  * Backstory (21 November 2026, docs/08 item 87). The Radio menu began (item 83) as one flat list of
@@ -90,6 +90,7 @@ const char stations_builtin[] =
 	"181.fm The Beatles = http://listen.181fm.com/181-beatles_128k.mp3\r"
 	"181.fm Classic Hits = http://listen.181fm.com/181-greatoldies_128k.mp3\r";
 const long stations_builtin_len = sizeof stations_builtin - 1;
+const char *stations_default_text(long *len) { *len = stations_builtin_len; return stations_builtin; }
 
 #define NO_GROUP (-2)                    /* a heading the list does not have */
 

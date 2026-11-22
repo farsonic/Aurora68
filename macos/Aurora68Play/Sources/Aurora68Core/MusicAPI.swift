@@ -2,30 +2,43 @@
 //
 // MusicAPI.swift - the music server's HTTP interface, for the macOS Aurora68 Play.
 //
-// Backstory (22 November 2026). What the app asks of the server (tools/music-server/README.md):
-//   GET  /api/catalog            the artists and albums
-//   GET  /api/tracks?album=ID    an album's (or ?artist=ID an artist's) tracks, with titles, lengths, files
-//   GET  /file/PATH              a file as it is, with Range: AVFoundation plays it and seeks in it
-//   GET  /art?dir=FOLDER         an album's cover picture
-//   GET  /api/now                what the Live channel plays (the SE listens to it)
-//   POST /api/live               change what Live plays (JSON; the header X-Aurora: 1, which a web page
-//                                from elsewhere cannot send, so no other site can change it)
-//   GET  /live                   the Live channel itself, to listen to here
-// Everything is plain HTTP on the home network; the base URL is the server's address as numbers, with
-// IPv6 in brackets (Address.swift), chosen by the owner's preference.
+// Backstory (22 November 2026). The app first asked the server for JSON (/api/catalog, /api/tracks, /api/now,
+// POST /api/live, /api/devices...). The same evening the two Plays became one code base (docs/08 item 107), and
+// with it one wire format: the /mac/ text the SE's Aurora68 Play reads, which the shared core takes apart
+// (play/core/proto.c) and whose requests it writes. Two parameters make it this Play's: enc=utf8 (UTF-8 both
+// ways; the SE's is Mac Roman) and full=1 (the longer records: an album's folder, a track's path, a device's
+// whole state). What this file asks (tools/music-server/README.md):
+//   GET /mac/info                   the name, the version, the counts, the generation, how often to announce
+//   GET /mac/artists, /mac/albums   every artist and album, page after page (500 at a time, the server's most)
+//   GET /mac/tracks?album=ID        an album's (or ?artist=ID an artist's) tracks, with the files' paths
+//   GET /mac/now                    what the Live channel plays (the SE listens to it)
+//   GET /mac/command?to=ID&...      "play this there": on another player, or on "live" (its queue too)
+//   GET /mac/radio, /mac/devices    the radio stations; every player
+//   GET /mac/announce, /mac/state, /mac/commands   this Mac as a player (DeviceLink, the core's devices.c)
+// and, not text: GET /file/PATH (a file as it is, with Range, for AVFoundation), GET /art?dir=FOLDER (a cover
+// picture), GET /live (the Live channel to listen to here). Everything is plain HTTP on the home network; the
+// base URL is the server's address as numbers, with IPv6 in brackets (Address.swift), chosen by the owner's
+// preference. Requests that change something carry the header X-Aurora: 1 (a web page elsewhere cannot send
+// it without asking first); it is sent with every request, as the SE does.
 import Foundation
+import PlayCore
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
 
 public enum MusicAPIError: Error, LocalizedError, Equatable {
     case status(Int, String)
-    case notJSON
+    case notText
+    case olderServer
 
     public var errorDescription: String? {
         switch self {
         case .status(let code, let text): return text.isEmpty ? "The server answered \(code)." : text
-        case .notJSON: return "The server's answer was not understood."
+        case .notText: return "The server's answer was not understood."
+        case .olderServer:
+            // a music server from before this app's text interface (22 November 2026): say what to do
+            return "This music server is an older version, without the library this app uses. "
+                + "Update it: docker compose pull music, then docker compose up -d --force-recreate music."
         }
     }
 }
@@ -33,6 +46,8 @@ public enum MusicAPIError: Error, LocalizedError, Equatable {
 public final class MusicAPI {
     public let base: URL
     let session: URLSession
+    /// the most records a page of the server's holds (MAC_PAGE_MAX)
+    public static let page = 500
 
     public init(base: URL, session: URLSession = .shared) {
         self.base = base
@@ -47,71 +62,6 @@ public final class MusicAPI {
         return URLSession(configuration: c)
     }
 
-    public func url(_ path: String, query: [(String, String)] = []) -> URL {
-        var s = base.absoluteString
-        while s.hasSuffix("/") { s.removeLast() }
-        s += path
-        if !query.isEmpty {
-            s += "?" + query.map { "\($0.0)=\(Address.encodeQuery($0.1))" }.joined(separator: "&")
-        }
-        return URL(string: s)!
-    }
-
-    public func fileURL(_ path: String) -> URL { url("/file/" + Address.encodePath(path)) }
-    public func artURL(folder: String) -> URL { url("/art", query: [("dir", folder)]) }
-    public var liveURL: URL { url("/live") }
-    public var panelURL: URL { url("/") }
-
-    func get<T: Decodable>(_ type: T.Type, _ url: URL) async throws -> T {
-        var req = URLRequest(url: url)
-        req.setValue("application/json", forHTTPHeaderField: "Accept")
-        let (data, resp) = try await session.data(for: req)
-        try MusicAPI.check(resp, data)
-        do { return try JSONDecoder().decode(T.self, from: data) } catch { throw MusicAPIError.notJSON }
-    }
-
-    static func check(_ resp: URLResponse, _ data: Data) throws {
-        guard let h = resp as? HTTPURLResponse else { return }
-        guard (200..<300).contains(h.statusCode) else {
-            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            throw MusicAPIError.status(h.statusCode, (obj?["error"] as? String) ?? "")
-        }
-    }
-
-    public func catalog() async throws -> Catalog {
-        do {
-            return try await get(Catalog.self, url("/api/catalog"))
-        } catch MusicAPIError.status(404, _) {
-            // a music server from before this app (22 November 2026) has no /api/catalog: say what to do
-            throw MusicAPIError.status(404, "This music server is an older version, without the library this app uses. "
-                + "Update it: docker compose pull music, then docker compose up -d --force-recreate music.")
-        }
-    }
-
-    public func tracks(album: String) async throws -> [Track] {
-        try await get(TrackList.self, url("/api/tracks", query: [("album", album)])).tracks
-    }
-
-    public func tracks(artist: String) async throws -> [Track] {
-        try await get(TrackList.self, url("/api/tracks", query: [("artist", artist)])).tracks
-    }
-
-    public func now() async throws -> LiveNow { try await get(LiveNow.self, url("/api/now")) }
-
-    /// one change to the Live channel: ["action": "play", "what": "f:FOLDER", "shuffle": 1] and so on
-    @discardableResult
-    public func live(_ body: [String: Any]) async throws -> LiveNow {
-        var req = URLRequest(url: url("/api/live"))
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue("1", forHTTPHeaderField: "X-Aurora")
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, resp) = try await session.data(for: req)
-        try MusicAPI.check(resp, data)
-        do { return try JSONDecoder().decode(LiveNow.self, from: data) } catch { throw MusicAPIError.notJSON }
-    }
-
-    // ---- devices, radio and the library's generation (Devices.swift)
     /// a session for the long poll: the server holds the request up to 20 seconds
     public static func waiting() -> URLSession {
         let c = URLSessionConfiguration.ephemeral
@@ -120,53 +70,141 @@ public final class MusicAPI {
         return URLSession(configuration: c)
     }
 
-    func post<T: Decodable>(_ type: T.Type, _ path: String, _ body: Any) async throws -> T {
-        var req = URLRequest(url: url(path))
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    /// a path (already escaped, as the core writes them) on the server
+    public func url(path: String) -> URL {
+        var s = base.absoluteString
+        while s.hasSuffix("/") { s.removeLast() }
+        return URL(string: s + path)!
+    }
+
+    public func url(_ path: String, query: [(String, String)] = []) -> URL {
+        var p = path
+        if !query.isEmpty {
+            p += "?" + query.map { "\($0.0)=\(Address.encodeQuery($0.1))" }.joined(separator: "&")
+        }
+        return url(path: p)
+    }
+
+    public func fileURL(_ path: String) -> URL { url("/file/" + Address.encodePath(path)) }
+    public func artURL(folder: String) -> URL { url("/art", query: [("dir", folder)]) }
+    public var liveURL: URL { url("/live") }
+    public var panelURL: URL { url("/") }
+
+    /// one of the server's text answers: its status and its bytes
+    public func text(_ path: String) async throws -> (status: Int, body: Data) {
+        var req = URLRequest(url: url(path: path))
         req.setValue("1", forHTTPHeaderField: "X-Aurora")
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        req.setValue("text/plain", forHTTPHeaderField: "Accept")
         let (data, resp) = try await session.data(for: req)
-        try MusicAPI.check(resp, data)
-        do { return try JSONDecoder().decode(T.self, from: data) } catch { throw MusicAPIError.notJSON }
+        return ((resp as? HTTPURLResponse)?.statusCode ?? 200, data)
     }
 
-    public func info() async throws -> ServerInfo { try await get(ServerInfo.self, url("/api/info")) }
-
-    public func radio() async throws -> RadioList { try await get(RadioList.self, url("/api/radio")) }
-
-    public func devices() async throws -> [Device] { try await get(DeviceList.self, url("/api/devices")).devices }
-
-    public func announce(id: String, name: String, version: String) async throws -> AnnounceReply {
-        try await post(AnnounceReply.self, "/api/devices/announce", ["id": id, "name": name, "kind": "macos", "version": version])
+    /// the same, refused unless it is 200 (the server's words in the error)
+    func ok(_ path: String) async throws -> Data {
+        let (status, body) = try await text(path)
+        guard status == 200 else { throw MusicAPIError.status(status, Records(body).errorText) }
+        return body
     }
 
-    public func postState(id: String, _ state: DeviceState) async throws {
-        let body: [String: Any] = ["playing": state.playing, "title": state.title, "artist": state.artist, "album": state.album,
-                                   "folder": state.folder, "position": state.position, "length": state.length,
-                                   "volume": state.volume]
-        _ = try await post(OK.self, "/api/devices/\(Address.encodePath(id))/state", body)
+    /// every page of a list, from the first
+    func pages(_ make: (Int) -> String) async throws -> [Data] {
+        var out: [Data] = []
+        var from = 0
+        while true {
+            let body = try await ok(make(from))
+            out.append(body)
+            guard let next = Records(body).head()?.next, next > from, out.count < 1000 else { break }
+            from = next
+        }
+        return out
     }
 
-    /// a command for another player (or "live"): ["action": "play", "what": "f:FOLDER"] and so on
-    public func command(_ device: String, _ body: [String: Any]) async throws {
-        _ = try await post(OK.self, "/api/devices/\(Address.encodePath(device))/command", body)
+    public func catalog() async throws -> Catalog {
+        let info: Data
+        do {
+            info = try await ok(request { a68_path_info($0, $1, $2) })
+        } catch MusicAPIError.status(404, _) {
+            throw MusicAPIError.olderServer
+        }
+        let artists = try await pages { from in request { a68_path_artists($0, from, MusicAPI.page, $1, $2) } }
+        let albums = try await pages { from in request { a68_path_albums($0, nil, from, MusicAPI.page, $1, $2) } }
+        return try Catalog.make(info: info, artists: artists, albums: albums)
     }
 
-    /// this player's commands, waiting up to `wait` seconds for one (use a session from waiting())
-    public func commands(id: String, wait: Int = 20) async throws -> [DeviceCommand] {
-        var req = URLRequest(url: url("/api/devices/\(Address.encodePath(id))/commands", query: [("wait", String(wait))]))
-        req.setValue("1", forHTTPHeaderField: "X-Aurora")
-        let (data, resp) = try await session.data(for: req)
-        try MusicAPI.check(resp, data)
-        do { return try JSONDecoder().decode(CommandList.self, from: data).commands } catch { throw MusicAPIError.notJSON }
+    public func tracks(album: String) async throws -> [Track] {
+        try await tracks { from in request { a68_path_tracks($0, album, nil, from, MusicAPI.page, $1, $2) } }
     }
 
-    struct OK: Decodable {}
+    public func tracks(artist: String) async throws -> [Track] {
+        try await tracks { from in request { a68_path_tracks($0, nil, artist, from, MusicAPI.page, $1, $2) } }
+    }
+
+    func tracks(_ make: (Int) -> String) async throws -> [Track] {
+        var out: [Track] = []
+        for page in try await pages(make) { out += try Track.page(page).tracks }
+        return out
+    }
+
+    public func now() async throws -> LiveNow {
+        guard let n = LiveNow.parse(try await ok(request { a68_path_now($0, $1, $2) })) else { throw MusicAPIError.notText }
+        return n
+    }
+
+    /// one change to the Live channel, then what it plays now
+    @discardableResult
+    public func live(_ c: Command) async throws -> LiveNow {
+        try await command("live", c)
+        return try await now()
+    }
+
+    public func info() async throws -> ServerInfo {
+        guard let i = ServerInfo.parse(try await ok(request { a68_path_info($0, $1, $2) })) else { throw MusicAPIError.notText }
+        return i
+    }
+
+    /// the internet radio stations every Aurora68 Play offers; a server without them: the classic Play's own list
+    public func radio() async throws -> RadioList {
+        let (status, body) = try await text(request { a68_path_radio($0, $1, $2) })
+        if status == 404 { return RadioList.builtIn }
+        guard status == 200 else { throw MusicAPIError.status(status, Records(body).errorText) }
+        return RadioList.parse(body)
+    }
+
+    public func devices() async throws -> [Device] {
+        Device.list(try await ok(request { a68_path_devices($0, $1, $2) }))
+    }
+
+    /// a command for another player (or "live"): refused in the server's words
+    public func command(_ device: String, _ c: Command) async throws {
+        _ = try await ok(c.path(to: device))
+    }
+
+    /// this player's commands (the path from DeviceSession, with its wait; use a session from waiting())
+    public func commands(path: String) async throws -> (status: Int, commands: [DeviceCommand]) {
+        let (status, body) = try await text(path)
+        return (status, status == 200 ? DeviceCommand.list(body) : [])
+    }
 }
 
-/// what the Live channel is told to play: a whole folder (an album), or one file
-public enum LiveWhat {
-    public static func folder(_ folder: String) -> String { "f:" + folder }
-    public static func track(_ path: String) -> String { "t:" + path }
+/// a station's address that is a playlist (.pls, .m3u: AVFoundation plays streams, not playlists): its first
+/// stream, as the classic Play takes it (play/core/icy.c's icy_playlist_url)
+public enum Playlist {
+    /// does the address look like a playlist's? (.m3u8 is HLS, which AVFoundation plays itself)
+    public static func isPlaylist(_ url: URL) -> Bool {
+        let e = url.pathExtension.lowercased()
+        return e == "pls" || e == "m3u"
+    }
+
+    /// the first http:// stream in a playlist's text; nil if none
+    public static func firstStream(_ data: Data) -> URL? {
+        var out = [CChar](repeating: 0, count: 1024)
+        var https: Int32 = 0
+        let found = data.withUnsafeBytes { raw -> Int32 in
+            guard let p = raw.bindMemory(to: UInt8.self).baseAddress else { return 0 }
+            return out.withUnsafeMutableBufferPointer { b in
+                icy_playlist_url(p, UInt32(clamping: min(raw.count, Int(ICY_PLAYLIST))), b.baseAddress!, Int32(b.count), &https)
+            }
+        }
+        return found != 0 ? URL(string: String(cString: out)) : nil
+    }
 }

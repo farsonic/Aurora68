@@ -49,6 +49,7 @@
 #include "toolbox.h"
 #include "psmb.h"
 #include "icy.h"
+#include "address.h"
 #include "radio.h"
 #define __MACTCP__ 1                             /* MacTCP's calls and results are named below, not in IPP6.h */
 #include "IPP6.h"
@@ -328,55 +329,17 @@ static void copy(char *d, const char *s, int max)
 	while (s[i] && i < max - 1) { d[i] = s[i]; i++; }
 	d[i] = 0;
 }
-/* "http://host[:port][/path]" (the "http://" may be left out) into host, port and path */
+/* "http://host[:port][/path]" (the "http://" may be left out) into host, port and path: play/core/address.c,
+   which reads a station's address the same way for both Plays (its words when it cannot) */
 static const char *parse_url(const char *u)
 {
-	int i = 0;
-	unsigned long p = 80;
-	while (*u == ' ') u++;
-	if (prefix(u, "https://")) return "Aurora68 Play plays plain http:// streams only: a Macintosh cannot do the encryption of https.";
-	if (prefix(u, "http://")) u += 7;
-	else if (prefix(u, "icy://")) u += 6;
-	else { const char *c = u; while (*c && *c != '/' && *c != ':') c++; if (c[0] == ':' && c[1] == '/') return "Aurora68 Play plays http:// addresses only."; }
-	host6 = 0;
-	if (*u == '[') {                             /* an IPv6 address (RFC 3986's IP-literal) */
-		for (u++; *u && *u != ']' && i < (int)sizeof host - 1; ) host[i++] = *u++;
-		if (*u++ != ']') return "That address has an IPv6 address without its closing bracket.";
-		host6 = 1;
-	} else
-		while (*u && *u != '/' && *u != ':' && i < (int)sizeof host - 1) host[i++] = *u++;
-	host[i] = 0;
-	if (!i || (*u && *u != '/' && *u != ':')) return "That address has no station's name in it.";
-	if (*u == ':') {
-		u++;
-		if (*u < '0' || *u > '9') return "The port number in that address is not a number.";
-		p = 0;
-		while (*u >= '0' && *u <= '9') p = p * 10 + (unsigned long)(*u++ - '0');
-		if (!p || p > 65535) return "The port number in that address is not a port.";
-	}
+	unsigned p = 80;
+	const char *e = a68_parse_url(u, host, sizeof host, &p, path, sizeof path, &host6);
 	port = (unsigned short)p;
-	if (*u != '/') copy(path, "/", sizeof path);
-	else copy(path, u, sizeof path);
-	for (i = 0; path[i]; i++)
-		if (path[i] == ' ') return "There is a space in that address.";
-	return 0;
+	return e;
 }
 /* a dotted address ("192.168.68.1") as a number; 0 if the host is a name */
-static int dotted(const char *h, unsigned long *a)
-{
-	unsigned long v = 0, part;
-	int n;
-	for (n = 0; n < 4; n++) {
-		if (*h < '0' || *h > '9') return 0;
-		for (part = 0; *h >= '0' && *h <= '9'; h++) part = part * 10 + (unsigned long)(*h - '0');
-		if (part > 255) return 0;
-		v = v << 8 | part;
-		if (n < 3 && *h++ != '.') return 0;
-	}
-	if (*h) return 0;
-	*a = v;
-	return 1;
-}
+static int dotted(const char *h, unsigned long *a) { return a68_ipv4_value(h, a); }
 static char *put_addr(char *p, unsigned long a)
 {
 	int i;
@@ -558,7 +521,7 @@ static void send_request(void)
 	p = put_str(p, path);
 	p = put_str(p, http11 ? " HTTP/1.1\r\nHost: " : " HTTP/1.0\r\nHost: ");
 	p = put_host(p);
-	p = put_str(p, "\r\nUser-Agent: Aurora68-Play/1.1 (Macintosh)\r\nAccept: */*\r\nIcy-MetaData: 1\r\nConnection: close\r\n\r\n");
+	p = put_str(p, "\r\nUser-Agent: Aurora68-Play/1.4 (Macintosh)\r\nAccept: */*\r\nIcy-MetaData: 1\r\nConnection: close\r\n\r\n");
 	wds.len = (unsigned short)(p - request); wds.ptr = request; wds.end = 0;
 	pb_setup(pb_ctl, TCPSend);
 	pb_ctl[32] = 30; pb_ctl[33] = 1; pb_ctl[34] = 0xC0;
