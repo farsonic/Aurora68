@@ -5001,6 +5001,87 @@ static void psmac_emit_mmu_call(struct TranslatorContext *ctx, uint8_t an, int16
 }
 #endif
 
+#ifdef PSMAC
+#include "psmac_fpu.h"
+/* The exact FPU (mac.fpu=exact, docs/17-exact-fpu.md): the instruction becomes a call to psmac_fpu_exec,
+   which decodes it from the 68k's memory and does it in extended precision with SoftFloat
+   (psmac/psmac_fpu.c). Every AArch64 register is saved on the stack around the call as
+   psmac_emit_mmu_call does; the save area is the register file the C side reads and writes (the 68k's PC
+   in x18, D0-D7 in x19-x26, A0-A7 in x13-x17 and x27-x29), and the SR goes in w1. The call returns 0, or
+   an exception for the 68k to take, (format << 12) | vector, which is taken here at run time the way
+   EMIT_Exception takes one known at translation, with the instruction's address as a format 2 frame's
+   (FTRAPcc's) address field. An instruction that only computes goes on in the block, the PC advanced
+   here; a branch (FBcc, FDBcc, FTRAPcc) sets the PC in C and ends the block. Written 22 November 2026. */
+static uint32_t EMIT_FPU_exact(struct TranslatorContext *ctx)
+{
+    extern void M68K_Exception();
+    uint16_t op = cache_read_16(ICACHE, (uintptr_t)&ctx->tc_M68kCodePtr[0]);
+    uint16_t w1 = cache_read_16(ICACHE, (uintptr_t)&ctx->tc_M68kCodePtr[1]);
+    uint16_t w2 = cache_read_16(ICACHE, (uintptr_t)&ctx->tc_M68kCodePtr[2]);
+    uint32_t insn = (uint32_t)(uintptr_t)ctx->tc_M68kCodePtr;
+    int ends;
+    int words = psmac_fpu_length(op, w1, w2, &ends);
+    union { uint64_t u64; uint16_t u16[4]; } u;
+    u.u64 = (uintptr_t)psmac_fpu_exec;
+
+    EMIT_FlushPC(ctx);
+    uint8_t sr = RA_ModifyCC(ctx);                /* loaded before any branch below, written back at the exits */
+    uint8_t ret = RA_AllocARMRegister(ctx);
+
+    EMIT(ctx, stp64_preindex(31, 0, 1, -256));
+    for (int i = 2; i < 30; i += 2)
+        EMIT(ctx, stp64(31, i, i + 1, i * 8));
+    EMIT(ctx,
+        str64_offset(31, 30, 240),
+        mov_reg(1, sr),
+        add64_immed(0, 31, 0),                    /* x0 = sp: the saved registers */
+        mov64_immed_u16(2, u.u16[3], 0),
+        movk64_immed_u16(2, u.u16[2], 1),
+        movk64_immed_u16(2, u.u16[1], 2),
+        movk64_immed_u16(2, u.u16[0], 3),
+        blr(2),
+        str64_offset(31, 0, ret * 8)              /* the result lands in ret when the registers come back */
+    );
+    for (int i = 2; i < 30; i += 2)
+        EMIT(ctx, ldp64(31, i, i + 1, i * 8));
+    EMIT(ctx,
+        ldr64_offset(31, 30, 240),
+        ldp64_postindex(31, 0, 1, 256)
+    );
+
+    uint32_t *skip = ctx->tc_CodePtr++;
+    uint32_t val = (uintptr_t)M68K_Exception;
+    EMIT(ctx,
+        stp64_preindex(31, sr, ret, -16),         /* w0 = SR, w1 = type and format, whichever registers held them */
+        ldp64_postindex(31, 0, 1, 16)
+    );
+    EMIT_LoadImmediate(ctx, 2, insn);
+    EMIT(ctx,
+        stp64_preindex(31, 2, 30, -16),
+        mov_immed_u16(2, val & 0xffff, 0),
+        movk_immed_u16(2, val >> 16, 1),
+        orr64_immed(2, 2, 25, 25, 1),
+        blr(2),
+        mov_reg(sr, 0),
+        ldr64_offset(31, 30, 8),
+        add64_immed(31, 31, 16)
+    );
+    *skip = cbz(ret, ctx->tc_CodePtr - skip);
+    RA_FreeARMRegister(ctx, ret);
+
+    if (ends || !words) {
+        ctx->tc_M68kCodePtr += words ? words : 1;
+        EMIT(ctx, INSN_TO_LE(0xffffffff));
+    } else {
+        /* the exception path leaves the block here; the instruction's normal path goes on */
+        EMIT(ctx, (uint32_t)(uintptr_t)skip, 1, 0, INSN_TO_LE(0xfffffffe));
+        ctx->tc_M68kCodePtr += words;
+        EMIT_AdvancePC(ctx, 2 * words);
+    }
+    return 1;
+}
+#endif
+
 uint32_t EMIT_lineF(struct TranslatorContext *ctx)
 {
     uint32_t insn_consumed = 1;
@@ -5010,6 +5091,10 @@ uint32_t EMIT_lineF(struct TranslatorContext *ctx)
     /* Check destination coprocessor - if it is FPU go to separate function */
     if (globals.fpu_disable == false && (opcode & 0x0e00) == 0x0200)
     {
+#ifdef PSMAC
+        if (psmac_fpu_exact)
+            return EMIT_FPU_exact(ctx);
+#endif
         return EMIT_FPU(ctx);
     }
 #ifdef PSMAC

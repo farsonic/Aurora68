@@ -1427,6 +1427,7 @@ static void rescreen_keep(uint8_t *top, uint32_t len, uint8_t rid, uint8_t slot,
 void psmac_setup_memory(void *rom, uint32_t rom_sz)
 {
     psmac_read_options();
+    { extern void psmac_fpu_init(void); psmac_fpu_init(); }          /* mac.fpu: exact or double (psmac_fpu.c) */
     /* the card's config.txt and aurora68-display.txt, before the screen's size is decided: PiDisplay's
        rotation turns it, and in the testbed mac.hdmisim=1 makes the firmware's buffer the mode they set */
     { extern void psmac_hdmi_early(const void *, uint32_t); psmac_hdmi_early(rom, rom_sz); }
@@ -1733,7 +1734,9 @@ void ps_pulse_reset(void) { struct psmac_reply r; xfer(PSMAC_OP_RESET_ACK, 0, 0,
 void ps_send_reset(void)
 {
     extern void psmac_card_reset(void), psmac_startup_reset(void), psmac_se_after_reset(void), psmac_hdmi_bus_reset(void);
+    extern void psmac_fpu_reset(void);
     psmac_card_reset();
+    psmac_fpu_reset();                     /* the exact FPU's registers and its null state (psmac_fpu.c) */
     psmac_hdmi_bus_reset();                /* PiDisplay: the Pi's restart, or a new rotation for the Slot Manager to read (psmac_hdmi.c) */
     psmac_startup_reset();                 /* the startup disk's view of parameter RAM (psmac_mbox.c) */
     ps_pulse_reset();

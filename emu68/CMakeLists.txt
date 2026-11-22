@@ -315,6 +315,8 @@ if (${VARIANT} IN_LIST SUPPORTED_VARIANTS)
                     src/psmac/psmac_video.c
                     src/psmac/psmac_videocard.c
                     src/psmac/psmac_sane.c
+                    src/psmac/psmac_fpu.c
+                    src/psmac/psmac_fpu_math.c
                     src/psmac/psmac_gpio.c
                     src/psmac/psmac_board_se.c
                     src/psmac/psmac_board_solo.c
@@ -453,6 +455,25 @@ add_dependencies(Emu68.elf ppc_rom)
 add_subdirectory(external)
 
 target_link_libraries(Emu68.elf libdeflate_static)
+
+if(${VARIANT} STREQUAL "psmac")
+    # The exact FPU (docs/17-exact-fpu.md): Berkeley SoftFloat 3e (src/psmac/third_party/softfloat, README.md
+    # there) and the FPU's own two files. They run on core 0, whose floating-point and SIMD registers hold
+    # the 68k's state (the double-precision FPU's FP0-FP7, the JIT's context in v19-v26): integer code only,
+    # -mgeneral-regs-only. SoftFloat is compiled as its author wrote it, with three of its warnings quieted
+    # (unused labels, case fall-through, a signed comparison), not edited.
+    include(src/psmac/third_party/softfloat/files.cmake)
+    set(SOFTFLOAT_INCLUDES
+        ${CMAKE_SOURCE_DIR}/src/psmac/third_party/softfloat
+        ${CMAKE_SOURCE_DIR}/src/psmac/third_party/softfloat/include
+        ${CMAKE_SOURCE_DIR}/src/psmac/third_party/softfloat/68881)
+    add_library(softfloat STATIC ${SOFTFLOAT_FILES})
+    target_include_directories(softfloat PRIVATE ${SOFTFLOAT_INCLUDES})
+    target_compile_options(softfloat PRIVATE -mgeneral-regs-only -Wno-unused-label -Wno-implicit-fallthrough -Wno-sign-compare)
+    set_source_files_properties(src/psmac/psmac_fpu.c src/psmac/psmac_fpu_math.c PROPERTIES
+        COMPILE_FLAGS "-mgeneral-regs-only" INCLUDE_DIRECTORIES "${SOFTFLOAT_INCLUDES}")
+    target_link_libraries(Emu68.elf softfloat)
+endif()
 target_include_directories(Emu68.elf PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/external/capstone/include)
 target_include_directories(Emu68.elf PRIVATE ${CMAKE_BINARY_DIR}/include)
 target_compile_definitions(Emu68.elf PRIVATE 
