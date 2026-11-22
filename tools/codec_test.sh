@@ -5,7 +5,7 @@
 # makes test files with ffmpeg (tones and noise, never music: the project's rule), decodes each with ffmpeg as the
 # reference and with media.c and the card's decoders, and compares. Skipped when ffmpeg is not installed.
 #     sh tools/codec_test.sh [BUILD_DIR]          (make -C mac check runs it with mac/build)
-# Written on 22 November 2026 (docs/08 item 103).
+# Written on 22 November 2026 (docs/08 item 105).
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
 top=$(dirname "$here")
@@ -46,10 +46,12 @@ fail=0
 for f in t16.flac t24.flac t24m.flac t16fast.flac t16.m4a t24.m4a tm.m4a; do
 	ref "$D/$f" "$D/$f.s16"
 	"$D/codec_test" "$D/$f" "$D/$f.s16" exact || fail=1
+	rm -f "$D/$f.s16"                                # 2 MB each: not kept
 done
 for f in t.ogg tm.ogg; do
 	ref "$D/$f" "$D/$f.s16"
 	"$D/codec_test" "$D/$f" "$D/$f.s16" lossy || fail=1
+	rm -f "$D/$f.s16"
 done
 "$D/codec_test" "$D/t16.flac" - tags "Test Tone" Aurora68 || fail=1
 "$D/codec_test" "$D/t16fast.flac" - tags "$(printf 'Caf\216 Tone')" Aurora68 || fail=1

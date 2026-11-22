@@ -6,7 +6,7 @@
  * which the announce answer carries: a new one means new albums, and the Library's lists are fetched again.
  * The server's side is tools/music-server (README, "Devices"). No Toolbox calls and no allocation: the
  * requests go out through library.c's one connection, and tools/devices_test.c runs this on the host; the
- * same code can later go into the macOS Aurora68 Play. Written on 22 November 2026 (docs/08 item 103).
+ * same code can later go into the macOS Aurora68 Play. Written on 22 November 2026 (docs/08 item 105).
  */
 #ifndef PIPLAY_DEVICES_H
 #define PIPLAY_DEVICES_H

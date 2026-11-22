@@ -3,7 +3,7 @@
  * psmac_ogg.c — Ogg Vorbis for the stream channel (psmac_codec.h): stb_vorbis (third_party/stb_vorbis,
  * public domain or MIT, unmodified; its README.md says which commit) compiled once here, and the glue.
  *
- * Written on 22 November 2026 (docs/08 item 103). stb_vorbis's pushdata interface takes whatever bytes it
+ * Written on 22 November 2026 (docs/08 item 105). stb_vorbis's pushdata interface takes whatever bytes it
  * is given and says how many it used, so it suits a stream that arrives in pieces: the bytes go from the
  * Pi's buffer into a window of this file's own, the decoder takes whole packets from its front, and a
  * packet's samples (up to 4096 frames) are given out across as many slices as the caller has room for.

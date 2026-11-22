@@ -34,7 +34,7 @@ void lib_play_pause(void), lib_stop(void), lib_skip(int dir);
 const char *lib_status(char *buf);
 void lib_seek(unsigned long secs);     /* the library's track from secs */
 
-/* the device (devices.c, docs/08 item 103): the id kept in the preferences, the Mac's name; and what a
+/* the device (devices.c, docs/08 item 105): the id kept in the preferences, the Mac's name; and what a
    library track plays now (1 if one does) */
 void lib_device(const char *id, const char *name);
 int lib_now(char *tid, unsigned long *pos, unsigned long *len);

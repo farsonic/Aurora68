@@ -8,7 +8,7 @@
  *                                       announces, reports a state, then polls for commands for SECONDS and
  *                                       prints each command and its tracks (tools/devices_test.sh sends one)
  *
- * Written on 22 November 2026 (docs/08 item 103).
+ * Written on 22 November 2026 (docs/08 item 105).
  */
 #include <stdio.h>
 #include <stdlib.h>

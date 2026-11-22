@@ -781,6 +781,57 @@ remote control's semihosting channel, the output recorded with `mac.audiodump=`)
   underrun can begin with up to a second of 128 kbit/s still undecoded. Nothing is lost, but the buffer could be drained to the last
   frame; for later.
 
+### FLAC, Ogg Vorbis and Apple Lossless; seeking; a device of the music server (Aurora68 Play 1.3, 22 November 2026)
+The owner's music is mostly FLAC and .m4a, and Aurora68 Play 1.2 played MP3, AIFF and WAV; they also asked for
+new albums to show without a restart and for the players to know of each other (docs/08 item 105 is the
+record). What Aurora68 Play 1.3 adds:
+
+- **The files.** File > Open... lists every file and Aurora68 Play reads each file's first bytes to tell what it
+  is, so a file copied from a modern computer, which arrives as type `????`, plays as well as one with its
+  Finder type (the bundle now has `FLAC`, `OggS` and `M4A ` documents with icons of their own, and `****`
+  for the rest). FLAC (16 or 24 bits, any rate the card plays, an ID3v2 tag in front allowed), Ogg Vorbis,
+  and Apple Lossless in .m4a. The title and artist come from FLAC's and Ogg's Vorbis comments ("TITLE=",
+  "ARTIST=") and the .m4a's `ilst` ("©nam", "©ART"), in UTF-8, turned into Mac Roman (an e acute stays one).
+  Refused in words: AAC in .m4a ("the music server converts it: play it from the Library"; no AAC decoder
+  suits the card: the good free ones are GPL or LGPL and large, and AAC needs a patent licence in some
+  places), Opus, FLAC in Ogg, and an MP4 file without sound; a file whose contents say nothing is judged by
+  its name (`.wma`, `.opus`, `.aac`...).
+- **The card decodes** (`emu68/src/psmac/psmac_codec.h`): FLAC with dr_flac 0.13.4 and Ogg Vorbis with
+  stb_vorbis 1.25 (both vendored unmodified, public domain or MIT, under `third_party/`), Apple Lossless with
+  a decoder written for the project (`psmac_alac.c`): Apple's own (Apache-2.0) cannot share a binary with
+  the GPL-2.0-only Alice68 modules. The Mac sends what each wants (`mac/piplay/media.c`): FLAC's STREAMINFO
+  alone and then the frames (a cover picture in the metadata can be megabytes); Ogg's first pages up to the
+  first audio page; for .m4a the decoder's configuration and then each packet with its length, taken from
+  the MP4 sample tables with the File Manager's random access (iTunes puts them at the end of the file, where
+  a stream could not look). The stream block is version 2 (formats 3 to 5 and `start_ms`); on a card with an
+  older kernel Aurora68 Play says the card's software is too old for these files.
+- **Seeking** in the Mac's own files: a click on the progress line plays from there. FLAC goes to the last
+  SEEKTABLE point before the time when the file has one, else to the byte in proportion; Ogg to the next page
+  after the byte in proportion; .m4a to the packet; MP3 and PCM to the byte in proportion (a whole PCM
+  frame). The card starts at the next whole FLAC frame or Ogg page and finds the real time from the stream
+  (the frame's number, the page's granule position), so the position shown is right even where the guess
+  was not (seen: a guess of 4.0 s landed at 4.39 s, and 4.39 s is shown).
+- **New albums without a restart.** The library's generation comes with each announce answer (below) and
+  in `/mac/info`'s sixth field; when it moves, the list in view is fetched again and the selected row
+  selected again.
+- **A device of the music server** (`mac/piplay/devices.c`; the server's side is `tools/music-server`'s
+  README, "Devices"). Once a server is known Aurora68 Play announces itself every 20 seconds
+  (`/mac/announce`, with an id made once and kept in its preferences and the Mac's name from Sharing
+  Setup), reports what it plays when that changes (`/mac/state`: a library track by its id, a station by
+  its title, a file by its tags) and waits for commands (`/mac/commands`, the server holding the request
+  for up to 15 seconds: MacTCP's receive gives up after 20). The web panel's Devices list (or another player)
+  then sends it play, add, next (after the playing song), pause, resume, skip, previous, seek, volume, stop,
+  or an internet station; tracks play through the server's `/t/ID` as the Library's do, one after the other
+  without a gap. All of it goes through the Library's one connection, one request at a time: the waiting
+  request is given up when the Library window is clicked or needs a list, but only while no byte of its
+  answer has come (a command the server sent in the same instant would be lost; it answers at once when one
+  is queued, so the window is milliseconds wide), and the lists come first. A command with more tracks than fit in the
+  answer buffer (48 KB, some 600) keeps the first ones; the queue holds 250.
+
+Not done: a "Play On" submenu to send music from the SE to another player. The server's commands name music
+by folder paths (`f:`, `t:FOLDER/SONG`), which the classic Play's track ids do not give, and a 512 by 342
+menu of devices is of little use while the panel has one; the SE is a player others send to.
+
 ## The WiFi in the testbed: a radio that exists only in software
 QEMU's raspi3b has no WiFi chip (no SDIO function, no firmware to load), so the real driver in
 `alice_net.c` can only report "off" there, and until 16 November the WiFi unit, Aurora68 Wi-Fi and the

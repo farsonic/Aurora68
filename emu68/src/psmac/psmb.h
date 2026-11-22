@@ -337,7 +337,7 @@ struct psmb_dispinfo {
 #define PSMB_STR_E_NOAUDIO   2u              /* no MPEG audio frame in the first 256 KB */
 #define PSMB_STR_E_NOMEM     3u              /* no memory for the Pi's buffer */
 #define PSMB_STR_E_DECODE    5u              /* FLAC, Ogg or ALAC data the decoder could not read (version 2) */
-/* version 2 (22 November 2026, docs/08 item 103): FLAC, Ogg Vorbis and ALAC (formats 3-5), start_ms (where the
+/* version 2 (22 November 2026, docs/08 item 105): FLAC, Ogg Vorbis and ALAC (formats 3-5), start_ms (where the
    bytes start in the file's time: a seek), and pos_ms counts from start_ms. A version-1 card answers formats
    3-5 with PSMB_STR_E_FORMAT, so the Mac checks the version first and says the card's software is too old. */
 #define PSMB_STR_VERSION     2u

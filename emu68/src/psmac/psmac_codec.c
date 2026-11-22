@@ -3,7 +3,7 @@
  * psmac_codec.c — which decoder a stream of the stream channel gets (psmac_codec.h). The decoders are
  * psmac_flac.c (dr_flac), psmac_ogg.c (stb_vorbis) and psmac_alac.c (this project's own); MPEG audio and
  * PCM stay in psmac_audio.c, as they were. No kernel calls here or in the three: tools/codec_test.c
- * builds them on the host and checks their output against ffmpeg's (docs/08 item 103).
+ * builds them on the host and checks their output against ffmpeg's (docs/08 item 105).
  */
 #include "psmac_codec.h"
 #include "psmb.h"

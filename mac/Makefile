@@ -240,11 +240,11 @@ $(B)/pp/library.o: piplay/library.c $(PP_H)
 	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -I../emu68/src/psmac -c -o $@ $<
 $(B)/pp/fetch.o: piplay/fetch.c $(PP_H) piplay/IPP6.h
 	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -I../emu68/src/psmac -c -o $@ $<
-# FLAC, Ogg Vorbis and Apple Lossless files (22 November 2026, docs/08 item 103): what a file is, its tags, the bytes
+# FLAC, Ogg Vorbis and Apple Lossless files (22 November 2026, docs/08 item 105): what a file is, its tags, the bytes
 # for the card's decoders and seeking (media.c, also built for the host by `make check`: tools/codec_test.sh)
 $(B)/pp/media.o: piplay/media.c piplay/media.h piplay/icy.h
 	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -c -o $@ $<
-# the music server's devices (docs/08 item 103): announce, state, commands, the library's generation (devices.c, also
+# the music server's devices (docs/08 item 105): announce, state, commands, the library's generation (devices.c, also
 # built for the host by `make check`: tools/devices_test.c)
 $(B)/pp/devices.o: piplay/devices.c piplay/devices.h
 	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -c -o $@ $<

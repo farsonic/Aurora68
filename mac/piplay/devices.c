@@ -2,7 +2,7 @@
  *
  * mac/piplay/devices.c - Aurora68 Play as one of the music server's devices: announce, state, commands.
  *
- * Backstory (22 November 2026, docs/08 item 103). The owner asked that the players know of each other, so
+ * Backstory (22 November 2026, docs/08 item 105). The owner asked that the players know of each other, so
  * that one can send music to another; the music server (tools/music-server, branch play-devices) keeps the
  * list, and every player tells it that it is there, what it plays, and asks for commands. No player has to
  * accept a connection, which suits a Macintosh SE behind MacTCP: the classic Play makes the same short GET

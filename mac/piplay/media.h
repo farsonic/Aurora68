@@ -5,7 +5,7 @@
  * beginning or from a time to seek to. No Toolbox calls and no allocation: the file is read through the
  * caller's function, so tools/codec_test.c runs the same code on the host against the card's decoders,
  * and the code can be shared with the macOS Aurora68 Play later. Written on 22 November 2026 (docs/08
- * item 103).
+ * item 105).
  */
 #ifndef PIPLAY_MEDIA_H
 #define PIPLAY_MEDIA_H

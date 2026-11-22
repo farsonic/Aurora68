@@ -3,7 +3,7 @@
  * mac/piplay/media.c - FLAC, Ogg Vorbis and Apple Lossless (.m4a) files for Aurora68 Play: what a file
  * is, its title and artist, and the bytes the sound card's decoders want, from the start or from a seek.
  *
- * Backstory (22 November 2026, docs/08 item 103). The owner's music is mostly FLAC and .m4a; Aurora68 Play
+ * Backstory (22 November 2026, docs/08 item 105). The owner's music is mostly FLAC and .m4a; Aurora68 Play
  * played MP3, AIFF and WAV. The card decodes (emu68/src/psmac/psmac_codec.h says what it wants of each
  * format); the Mac's part is to know the file, send the card what it needs and nothing more, and seek:
  *

@@ -2,7 +2,7 @@
  *
  * psmac_alac.c — Apple Lossless (ALAC) for the stream channel (psmac_codec.h), written for this project.
  *
- * Why not Apple's own decoder (22 November 2026, docs/08 item 103). Apple published its ALAC encoder and
+ * Why not Apple's own decoder (22 November 2026, docs/08 item 105). Apple published its ALAC encoder and
  * decoder in 2011 under the Apache License 2.0, and the plan was to vendor its decoder. The kernel binary
  * also holds the Alice68 modules (src/alice/), which are GPL-2.0-only, and the Free Software Foundation
  * holds Apache-2.0 incompatible with version 2 of the GPL: a kernel with both could not be passed on. So

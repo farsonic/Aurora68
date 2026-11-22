@@ -362,7 +362,7 @@ static mp3dec_t mp3d;
 static int16_t mp3_pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
 static int16_t spcm[STR_PCM][2];
 static uint32_t spcm_head, spcm_tail;
-/* FLAC, Ogg Vorbis and ALAC (22 November 2026, docs/08 item 103): psmac_codec.h's decoders, their memory from
+/* FLAC, Ogg Vorbis and ALAC (22 November 2026, docs/08 item 105): psmac_codec.h's decoders, their memory from
    the kernel's TLSF (which has a lock, so core 1 may allocate while core 0's JIT does) */
 static struct pcodec codec;
 static int16_t codec_pcm[2 * 1152];

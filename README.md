@@ -90,7 +90,7 @@ the card; "Disks and disk images: what works" (below) says which disks the Mac c
 
 The Macintosh side needs no installation: the Slot Manager loads the Pi's drivers from the
 declaration ROM. The `Mac` folder holds the programs in the folder **Aurora68**, as MacBinary
-files and on an HFS image (Aurora68-Utilities.img): **Aurora68 Play** (MP3s and internet radio:
+files and on an HFS image (Aurora68-Utilities.img): **Aurora68 Play** (MP3, FLAC, Ogg Vorbis and Apple Lossless files, seeking in them, the music server's library and its commands from other players, and internet radio:
 forty stations in submenus, plus your own; over MacTCP, or over Riptide's `.IPP6` with IPv6 stations
 reached directly) with its Music folder; **Display** (Aurora68 Display, Screens, Colour, Depth); **Network**
 (Aurora68 Network, Wi-Fi, Bluetooth, Ping); **System** (Aurora68 Slots, Log, Status); and
@@ -291,7 +291,7 @@ screen, booted from the SE's SCSI disk, with PiDisk mounted beside it (docs/08 i
 | Directory | Contents |
 |---|---|
 | `emu68/` | the Emu68 fork (vendored; its own history is the branch `emu68-psmac`): the kernel. `src/psmac/` is the Macintosh host layer (bus bridge, 68030 MMU shim, mailbox window); `src/alice/` are the Alice68 service modules (network, Bluetooth, status, USB) with their Macintosh glue |
-| `mac/` | the Macintosh side in 68k assembly: the `.PiDisk` block driver, the `.ENET`-interface Ethernet driver, the `.PiInput` keyboard-and-mouse driver, the `.Display_Video_PiStorm` second-display driver, the Aurora68 Disk, Machine and Sound extensions, the Aurora68 Network, Ping, Screens and Colour test applications, the Aurora68 Wi-Fi, Bluetooth and Status applications, and in C (with the kit in `mac/c`) Aurora68 Log, Slots, Depth, Display, the Wi-Fi & Bluetooth menus, Screen Setup and Aurora68 Play (MP3, AIFF and WAV on the sound card, and internet radio over MacTCP or Riptide's `.IPP6`); their sources keep the old names (`mac/piplay/`, `pislots.c`...), a Makefile (`make check` compares the drivers' structure offsets with the kernel's header) |
+| `mac/` | the Macintosh side in 68k assembly: the `.PiDisk` block driver, the `.ENET`-interface Ethernet driver, the `.PiInput` keyboard-and-mouse driver, the `.Display_Video_PiStorm` second-display driver, the Aurora68 Disk, Machine and Sound extensions, the Aurora68 Network, Ping, Screens and Colour test applications, the Aurora68 Wi-Fi, Bluetooth and Status applications, and in C (with the kit in `mac/c`) Aurora68 Log, Slots, Depth, Display, the Wi-Fi & Bluetooth menus, Screen Setup and Aurora68 Play (MP3, FLAC, Ogg Vorbis, Apple Lossless, AIFF and WAV on the sound card, the music server's library and devices, and internet radio over MacTCP or Riptide's `.IPP6`); their sources keep the old names (`mac/piplay/`, `pislots.c`...), a Makefile (`make check` compares the drivers' structure offsets with the kernel's header) |
 | `tools/` | ROM patching, the initramfs container builder (`mkcontainer.py`: ROM, declaration ROM and firmware in one cpio for the Pi), the full-stack testbed launcher, the host network peer, debugging helpers |
 | `tools/mac/` | resource fork, MacBinary, application, extension and declaration ROM builders (pure Python) |
 | `rom/` | ROM patch descriptions and the patch tool's Makefile (ROM images themselves are not in the repository) |
@@ -317,7 +317,12 @@ are MPL-2.0. Apple ROM images and disk images are not distributed.
 Third-party code compiled into the kernel beyond Emu68 and Alice68: **minimp3** by lieff
 (https://github.com/lieff/minimp3), the MPEG audio decoder behind Aurora68 Play, dedicated to the public domain
 under CC0 1.0 and vendored unmodified in `emu68/src/psmac/third_party/minimp3/` with its licence text
-and a note of the commit it was taken from.
+and a note of the commit it was taken from; **dr_flac** by David Reid (https://github.com/mackron/dr_libs,
+release 0.13.4, public domain or MIT No Attribution) and **stb_vorbis** by Sean Barrett and contributors
+(https://github.com/nothings/stb, version 1.25, MIT or public domain), Aurora68 Play's FLAC and Ogg Vorbis
+decoders, vendored unmodified beside it in the same way. Apple Lossless is decoded by the project's own
+`psmac_alac.c` (MPL-2.0): Apple's Apache-2.0 decoder cannot be combined with the GPL-2.0-only Alice68
+modules in one kernel.
 
 Aurora68 Play's Radio menu lists the public MP3 streams of **SomaFM** (https://somafm.com/), listener-supported,
 commercial-free internet radio from San Francisco; if you listen, consider supporting them

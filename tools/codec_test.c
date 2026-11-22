@@ -15,7 +15,7 @@
  * exact: every sample the same as ffmpeg's (FLAC and ALAC are lossless; 24-bit cut to 16 the same way);
  * lossy: within 0.2 % of full scale after the best alignment within 4096 frames (two Vorbis decoders differ
  * in their floating point and in how much of the first packet they keep). Written on 22 November 2026
- * (docs/08 item 103).
+ * (docs/08 item 105).
  */
 #include <stdio.h>
 #include <stdlib.h>

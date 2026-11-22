@@ -3,7 +3,7 @@
  * psmac_codec.h — the stream channel's decoders for FLAC, Ogg Vorbis and Apple Lossless (ALAC), behind
  * one small interface that psmac_audio.c calls on core 1 and tools/codec_test.c calls on the host.
  *
- * Backstory (22 November 2026, docs/08 item 103). Aurora68 Play played MP3 (minimp3), AIFF and WAV on the
+ * Backstory (22 November 2026, docs/08 item 105). Aurora68 Play played MP3 (minimp3), AIFF and WAV on the
  * sound card's stream channel; the owner's music is mostly FLAC and .m4a, and they asked for those. The
  * Macintosh hands the card bytes through the stream ring (psmb.h) and the card decodes them, as it does
  * MP3. What the Mac sends, per format (Aurora68 Play's half is mac/piplay/media.c):

@@ -144,7 +144,7 @@ static unsigned long pcm_rate, pcm_ch, pcm_bits, pcm_flags;
 static char title[100], artist[100], what[40];       /* C strings, Mac Roman */
 static unsigned char *iobuf;
 #define IOBUF 32768
-/* FLAC, Ogg Vorbis and Apple Lossless (Aurora68 Play 1.3, 22 November 2026, docs/08 item 103): media.c knows the
+/* FLAC, Ogg Vorbis and Apple Lossless (Aurora68 Play 1.3, 22 November 2026, docs/08 item 105): media.c knows the
    file, its tags and what to send the card; len_ms is the length as the Mac knows it (the card's, for MP3 and
    PCM, as it was when the file played from its start, so a seek does not lose a Xing header's count) */
 static struct media med;
@@ -293,6 +293,7 @@ static int identify(void)
 	if (read_at(0, iobuf, IOBUF, &got) || got < 12) { err_text = "The file is too short to be a sound."; return 0; }
 	const unsigned char *b = iobuf;
 	title[0] = artist[0] = 0;
+	len_ms = 0;                                  /* the last file's length is not this one's */
 	if (b[0] == 'F' && b[1] == 'O' && b[2] == 'R' && b[3] == 'M' && b[8] == 'A' && b[9] == 'I' && b[10] == 'F' && (b[11] == 'F' || b[11] == 'C')) {
 		int aifc = b[11] == 'C', have_comm = 0;
 		unsigned long p = 12, ssnd = 0, ssnd_len = 0, frames = 0;

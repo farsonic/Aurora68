@@ -3,7 +3,7 @@
  * psmac_flac.c — FLAC for the stream channel (psmac_codec.h): dr_flac (third_party/dr_flac, public domain or
  * MIT-0, unmodified; its README.md says which release) compiled once here, and the glue that feeds it.
  *
- * Written on 22 November 2026 (docs/08 item 103). dr_flac pulls its bytes through a read callback, and
+ * Written on 22 November 2026 (docs/08 item 105). dr_flac pulls its bytes through a read callback, and
  * a callback cannot wait for the Mac: a short read means the end of the file to it. So a frame is decoded
  * only when the Pi's buffer holds more than the largest frame can take (STREAMINFO's maximum frame size,
  * or the size of a block of samples stored raw when the encoder left that out) and the decoder's own

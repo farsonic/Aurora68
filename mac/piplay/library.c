@@ -116,7 +116,7 @@ static int want_queue;                           /* a queue to fetch: an album o
 static char q_album[9], q_artist[9], q_start[9];
 static char thumb_ids[16][9];
 static int thumb_rows[16], nthumb;
-/* the device (Aurora68 Play 1.3, docs/08 item 103): devices.c says what to ask the server and when; its requests
+/* the device (Aurora68 Play 1.3, docs/08 item 105): devices.c says what to ask the server and when; its requests
    take the same connection as the lists, the long poll for commands only when nothing else waits, and it is
    given up (before any byte of its answer has come) when the user asks the Library for something */
 static struct dv dev;
@@ -303,7 +303,7 @@ static void got_info(void)
 	set_title();
 	dv_set_generation(&dev, lp_num(f[5]));          /* the library's generation (servers of 22 November 2026 on) */
 	dev.gen_changed = 0;
-	if (dev_ready && !dev.on) dv_start(&dev, secs_now());
+	if (dev_ready) dv_start(&dev, secs_now());     /* this server (perhaps another one): announce now */
 	char t[120], *p = put_str(t, "the server is \"");
 	p = put_str(p, srv_name); p = put_str(p, "\": "); p = put_str(p, f[2]); p = put_str(p, " artists, ");
 	p = put_str(p, f[3]); p = put_str(p, " albums, "); p = put_str(p, f[4]); p = put_str(p, " tracks");
