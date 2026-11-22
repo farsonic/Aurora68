@@ -676,6 +676,7 @@ void psmac_service_core(void)
             svc_phase = 0;
             if (__m68k_state) {
                 struct M68KState *m = __m68k_state;
+                static int jit_steady;
                 kprintf("[PSMAC]   D0-7 %08x %08x %08x %08x %08x %08x %08x %08x\n", BE32(m->D[0].u32), BE32(m->D[1].u32), BE32(m->D[2].u32), BE32(m->D[3].u32), BE32(m->D[4].u32), BE32(m->D[5].u32), BE32(m->D[6].u32), BE32(m->D[7].u32));
                 kprintf("[PSMAC]   A0-7 %08x %08x %08x %08x %08x %08x %08x %08x ISP %08x\n", BE32(m->A[0].u32), BE32(m->A[1].u32), BE32(m->A[2].u32), BE32(m->A[3].u32), BE32(m->A[4].u32), BE32(m->A[5].u32), BE32(m->A[6].u32), BE32(m->A[7].u32), BE32(m->ISP.u32));
                 {   /* the JIT's own counters (22 November 2026, Photoshop's slow start): instructions run and
@@ -686,6 +687,7 @@ void psmac_service_core(void)
                     kprintf("[PSMAC]   JIT: %u M instructions in 5 s (%u MIPS), %u blocks translated, %u in the cache, %u of %u KB free\n",
                             (uint32_t)((insn - insn_last) / 1000000u), (uint32_t)((insn - insn_last) / 5000000u), miss - miss_last,
                             m->JIT_UNIT_COUNT, m->JIT_CACHE_FREE >> 10, m->JIT_CACHE_TOTAL >> 10);
+                    jit_steady = miss - miss_last < 50 && insn - insn_last > 50000000u;   /* running, not loading */
                     insn_last = insn; miss_last = miss;
                 }
                 uint32_t sp = BE32(m->A[7].u32); int valid; uint32_t ph = psmac_mmu_l2p(sp, &valid);
@@ -699,7 +701,9 @@ void psmac_service_core(void)
                    16 bytes before to 32 after, so the loop can be read from the log without the program */
                 static uint32_t code_pc_last;
                 uint32_t pcn = BE32((uint32_t)(uintptr_t)m->PC);
-                if (pcn < 0x40000000u && pcn - code_pc_last + 256u < 512u) {
+                /* also when the program is in a steady state (busy, translating next to nothing) with the PC
+                   outside the ROM: Photoshop's PC moved between its own code and SANE's beat after beat */
+                if (pcn < 0x40000000u && (pcn - code_pc_last + 256u < 512u || jit_steady)) {
                     uint32_t at = (pcn & ~1u) - 16u; int ok; uint32_t cph = psmac_mmu_l2p(at, &ok);
                     if (ok && cph + 48 <= ram_size) {
                         const uint16_t *w = (const uint16_t *)(KERNEL_ALIAS + ram_phys + cph);
