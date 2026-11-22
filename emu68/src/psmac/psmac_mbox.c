@@ -576,6 +576,15 @@ static int run_cmd(int idx, uint16_t type, volatile uint8_t *c, uint32_t req)   
             status = psmac_hdmi_cmd(cmd, a0, a1, a2, &result, &out, &n);
             if (!status && out) { if (n > len) n = len; if (mac_copy(buf, NULL, out, n, 1)) status = PSMB_E_BADADDR; else xfer = n; }
         }
+        else if (cmd == PSMB_INFO_SANE) {                                         /* A68 Machine (psmac_sane.c) */
+            extern int psmac_sane_get(uint32_t, const uint8_t **, uint32_t *);
+            const uint8_t *p; uint32_t n;
+            status = psmac_sane_get(a0, &p, &n);
+            if (!status) {
+                result = n;
+                if (len) { if (len > n) len = n; if (mac_copy(buf, NULL, p, len, 1)) status = PSMB_E_BADADDR; else xfer = len; }
+            }
+        }
         else status = PSMB_E_BADCMD;
         break;
     case PSMB_SVC_BLOCK: {

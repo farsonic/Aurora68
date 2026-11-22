@@ -3973,3 +3973,70 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      `Extensions (Disabled)` in the base images, so images made from now on have neither. On an existing
      card image: start with Shift held (Extensions Off), then drag `Iomega Driver` out of the Extensions
      folder. The kernel keeps its answer to command $06 for older images on the Pi's own disk path.
+
+101. **Photoshop never finished starting: the IIci ROM's SANE rounds extended to double (22 November).** On the
+   owner's SE, Photoshop showed its splash screen and went no further. The kernel's heartbeat ran at a steady
+   72 MIPS with nothing new to translate, the PC moving between Photoshop's code and $40870ACC, and the loop
+   counters in D4, D5 and D7 stood still for minutes.
+   - *What the loop was:* $40870ACC is in the IIci ROM's PACK 4 (FP68K, the SANE arithmetic package). The
+     heartbeat's "code at" bytes decoded to a refinement step, then `_FP68K` FOSUB in extended precision (the
+     new value minus the old), then a comparison of the difference with a tolerance. The loop waits for an
+     extended-precision result to settle.
+   - *Why it never settles:* the IIci's SANE is the version for a 68881/68882. It does its arithmetic with FPU
+     instructions on extended operands. Emu68's FPU keeps the 96-bit extended format as a 64-bit double
+     (`Load96bit` in `M68k_LINEF.c`): 53 bits of mantissa where SANE promises 64. A loop whose test was written
+     for 64 bits can wait for ever on 53. The testbed shows the loss in one line: (1 + 2^-60) - 1 is 0 with the
+     IIci's SANE, and 2^-60 on any real Macintosh.
+   - *The fix: the SE ROM's SANE.* The SE's own ROM carries the other SANE: PACK 4 (FP68K, 4,544 bytes) and
+     PACK 5 (Elems68K, 4,198 bytes) for a 68000 with no FPU. They do extended arithmetic exactly with integer
+     instructions. They are Apple's, so nothing of them is in the repository. The kernel reads them from the
+     SE's ROM chips over the wire at $400000 on the SE board, or from an SE ROM image named by `mac.serom=PATH`
+     in the testbeds and on a Pi alone (`emu68/src/psmac/psmac_sane.c`). It finds them through the ROM's
+     resource map, the way `tools/romres.py` does, and checks each package's 'PACK' header and number. The
+     mailbox's INFO service hands them out (`PSMB_INFO_SANE`, 13, in `psmb.h`).
+   - *On the Mac:* A68 Machine (`mac/pimach.s`) asks for both packages at startup. It copies each into a locked
+     system-heap handle and stores the handle in AppPacks ($0AC8 for PACK 4, $0ACC for PACK 5), where the ROM's
+     package dispatcher ($40826206 for `_Pack4`) looks. That alone was not enough: in the testbed the `_FP68K`
+     and `_Elems68K` traps pointed straight into the ROM's packages, not through the dispatcher. So A68 Machine
+     also moves any trap that points into the old package (within 16 KB of it) to the new one, and leaves a
+     trap alone if something else has patched it. `mac.sane=rom` leaves the IIci ROM's SANE in place.
+   - *Tested in the solo testbed* (System 7.1, 64 MB, `mac.serom=` the SE ROM image). A68 Machine measures
+     SANE before and after and logs it:
+     ```
+     [MAC] A68 Machine: SANE, the IIci ROM's: (1 + 2^-60) - 1 = 0 (64-bit), square root of 2 settled in 6 steps, 349905 additions a second
+     [PSMAC] SANE: from .../MacSE_B2E362A8.rom (checksum b2e362a8): PACK 4 (FP68K) 4544 bytes, PACK 5 (Elems68K) 4198 bytes, for A68 Machine to install
+     [MAC] A68 Machine: SANE PACK 4 from the SE ROM installed: 4544 bytes at 0007D7E0 (the ROM's was at 40870AC0), trap at 0007D7E0
+     [MAC] A68 Machine: SANE PACK 5 from the SE ROM installed: 4198 bytes at 00080968 (the ROM's was at 40871BE0), trap at 00080968
+     [MAC] A68 Machine: SANE, the SE ROM's: (1 + 2^-60) - 1 = 2^-60 (exact), square root of 2 settled in 6 steps, 11709 additions a second
+     [BOOT] t=47.505s Mac: the Finder is running (CurApName)
+     ```
+     The Newton iteration for the square root of 2 (x = (x + 2/x) / 2 until FOCMP finds no change) settled in
+     6 steps both times. That is why the trouble is rare: most loops settle at 53 bits too, and only one whose
+     test needs the last bits waits for ever. With `mac.sane=rom` the kernel logs "SANE: the IIci ROM's
+     (mac.sane=rom)", A68 Machine "the IIci ROM's kept (Pi status -7)", and the Finder came up at 54.9 s.
+   - *FP-heavy programs still work.* Through the remote control (`mac.remotefile=`), with the SE ROM's SANE
+     installed: Excel 2.2 computed =SQRT(2), =SQRT(2)*SQRT(2)-2 (4.4409E-16, the double answer Excel keeps),
+     =(1+2^-50)-1 (8.8818E-16), =EXP(1), =SIN(1), =100/7 and =LN(10) correctly, and Speedometer 3.23's Benchmark
+     Mix ran to "The tests are done!" with no crash in the log.
+   - *The price is speed.* Software SANE does the arithmetic in integer instructions, and in the testbed it
+     is 20 to 60 times slower per addition than the FPU version: 11,709 and 26,685 additions a second against
+     349,905 to 742,350 in four runs (QEMU's timing varies from run to run). Speedometer 3.23's Benchmark Mix,
+     whose floating-point tests call SANE, shows the same in programs (ratings against a Mac Classic):
+
+     | Test | IIci ROM's SANE (`mac.sane=rom`) | SE ROM's SANE |
+     |---|---|---|
+     | KWhetstones | 1,666.7 a second (228.3) | 61.9 a second (8.5) |
+     | Fast Fourier | 0.950 s (206.0) | 25.650 s (7.6) |
+     | F.P. Matrix | 0.650 s (166.3) | 14.333 s (7.5) |
+     | Dhrystones, Towers, Sieve ... | integer, not affected | integer, not affected |
+
+     Exact SANE leaves a SANE-bound program at about eight times a Classic; the FPU version runs it about 200
+     times a Classic but rounds every extended result to a double. The trade is the owner's to choose:
+     `mac.sane=rom` brings the fast version back. Speedometer's own FPU tests use FPU instructions directly and
+     are not affected either way.
+   - *The limit:* this fixes programs that call SANE (`_FP68K`, `_Elems68K`). Programs compiled for the FPU
+     (code built for a 68881 with THINK C or MPW, or a program's "FPU version") execute FPU instructions
+     directly. They still get 64-bit doubles from Emu68's FPU, because extended precision would need a change in
+     the JIT's FPU itself.
+   - *Not checked yet, needs the owner's SE:* the wire read of the real SE ROM (about 9 KB in some 5,000 bus
+     reads at the Mac's first request), and Photoshop itself, which is not on the test image.

@@ -314,6 +314,7 @@ if (${VARIANT} IN_LIST SUPPORTED_VARIANTS)
                     src/psmac/psmac_plmpeg.c
                     src/psmac/psmac_video.c
                     src/psmac/psmac_videocard.c
+                    src/psmac/psmac_sane.c
                     src/psmac/psmac_gpio.c
                     src/psmac/psmac_board_se.c
                     src/psmac/psmac_board_solo.c
