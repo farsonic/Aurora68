@@ -3596,6 +3596,7 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
        `408 Request Timeout`, "the upload stopped arriving: 268992 of 537984 bytes in, nothing more for
        20 s; the partial file was deleted". Riptide in Extensions was unchanged (537,566 bytes of
        resources before and after), no Riptide.part was left, and the next jobs ran at once.
+
 97. **FAT32 and exFAT on the Mac: disk images on sticks, and an HFS view of a stick or a card folder (21
    November, issue #20).** The owner wants sticks formatted by Windows, Linux or a modern Mac, and a folder
    on the SD card, usable on the SE as ordinary disks with nothing installed on the Mac. No file system is
@@ -3663,7 +3664,17 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      identical; SimpleText and Aurora68 Slots launched from the card's folder and running
      (`docs/img/system71-exchange-slots.png`). The floppy image on the exFAT stick mounted writable, a file
      pushed into it, and on the host the image inside the stick holds it ("written on the Mac").
-     The stick's own file view failed in that run (the counters above); the run with the fix is below.
+     The stick's own file view failed in that run (the counters above). With the fix, the next run: "[USB]
+     disk 0: ready as the HFS volume "USB STICK": 10002 files ... 2582 KB of memory; made in 241 ms (238
+     reads)", a PiDisk unit of its own beside the floppy image; through the Agent the stick's root (Aurora68
+     Slots APPL/PISL, Grüße.txt, Many with 10000 entries, f10000.txt there), Grüße.txt's text, and Aurora68
+     Slots pulled back with its resource fork and type identical to mac/build's. The Finder built a desktop
+     database for the locked stick in memory ("Rebuilding the desktop file" for about a minute with 10,000
+     files, then quiet). In the Finder: "Mac Exchange" opens with the lock in the window's corner and "zero
+     K available", the icons placed by the Finder (`docs/img/system71-exchange-window.png`); its
+     International folder shows the converted names (`docs/img/system71-exchange-names.png`). Put Away of
+     USB STICK: "ejected by the Mac; 1 more of its volumes are on the Mac: not yet safe to unplug"; of Stick
+     Floppy: "ejected by the Mac (2085 blocks read, 2 written): safe to unplug", both icons gone.
    - *Not verified:* real hardware (a stick formatted on a modern Mac, the SE); System 6.0.8 (the view is
      plain HFS, which System 6 reads, but no run was made); the Finder's handling of a view of many thousand
      files in its windows at the SE's speed. Stage 3 (writes back to FAT/exFAT) is not done; its plan is in

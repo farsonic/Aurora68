@@ -923,19 +923,23 @@ none, is used two ways at once (docs/08 item 97):
   At most 32,000 files and folders, and 2 GB (System 7.1's largest HFS volume): with more data than that,
   the largest files are left out and the log says how many.
 
-Making it takes a moment after the stick is plugged in: about a second for a few hundred files, a few
-seconds for ten thousand (core 1 does it between its other work). The log says when it is ready:
+Making it takes a moment after the stick is plugged in (core 1 does it between its other work; in the
+testbed a quarter of a second for ten thousand files, longer from a real stick). The first time the Finder
+sees it, it builds a desktop database in memory ("Rebuilding the desktop file", a minute for ten thousand
+files in the testbed), as for a CD-ROM. The log says when it is ready (the testbed's stick, with 10,000 files in one folder):
 ```
-[USB] disk 0: exFAT in a GPT partition at block 43008, 27088 clusters of 4 KB, label "USB STICK"
+[USB] disk 0: a GPT partition table, first partition EFI system (FAT), second Microsoft basic data (FAT, exFAT or NTFS)
+[USB] disk 0: exFAT in a GPT partition at block 43008, 27088 clusters of 4 KB
 [USB] disk 0: disk image Floppy.image (1 MB, 1 piece) holds the HFS volume "Stick Floppy": offered to the Mac, writable
 [USB] disk 0: its files are being read, to be shown to the Mac as a locked HFS volume
-[USB] disk 0: ready as the HFS volume "USB STICK": 10002 files, 1 folders, 1 of them with Mac information from AppleDouble files; ...
+[USB] disk 0: ready as the HFS volume "USB STICK": 10002 files, 1 folders, 1 of them with Mac information from AppleDouble files; 12834 blocks (6 MB), allocation blocks of 512 bytes; locked; 2582 KB of memory; made in 241 ms (238 reads)
 ```
 Eject each of the stick's disks (drag to the Trash); "safe to unplug" comes when the last one is out.
 `mac.usbview=off` shows only the disk images; `mac.usbdisk=all` offers the whole stick raw, as before.
 
 **The exchange folder on the SD card.** A folder named **Mac Exchange** in the card's root appears on
-the desktop the same way, as a locked disk of that name. Copy files into it on any computer (with their
+the desktop the same way, as a locked disk of that name (`docs/img/system71-exchange-window.png`; the
+names of its International folder: `docs/img/system71-exchange-names.png`). Copy files into it on any computer (with their
 `._` files from a modern Mac) and start the Pi. `mac.exchange=NAME` uses another folder, `mac.exchange=off`
 none. It takes one of PiDisk's four units, which the card's disk images, the exchange folder and the
 sticks' disks share.
