@@ -22,7 +22,8 @@ cover and the time, the queue (jump to or remove a song), Previous, Pause and Ne
 Shuffle rest, who is listening, and a "Listen here" button that plays it in the browser.
 
 Tune the SE to Live once (it is the second station in the stations file, or Radio > Open URL... with
-the address the panel shows) and choose what it plays from your phone. Changes are heard within about
+`http://NAS:8423/live`; the server's bare address `http://NAS:8423/` works too, because a player that does
+not ask for a web page is sent on to Live) and choose what it plays from your phone. Changes are heard within about
 two seconds. While nothing is queued, or the channel is paused, it sends silence so the Mac stays
 tuned; while nobody listens it holds its place, so a queue set before the Mac tunes in starts from its
 first song. Song titles reach Aurora68 Play's window as with any station.

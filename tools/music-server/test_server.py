@@ -225,8 +225,12 @@ def main():
         check(st == 404 and b'root:' not in body, f'refused: {p}')
 
     # the control panel and the live channel
-    st, _, body = get(base, '/')
-    check(st == 200 and b'Test Music' in body and b'/api/live' in body, 'the control panel page')
+    st, _, body = get(base, '/', {'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8'})
+    check(st == 200 and b'Test Music' in body and b'/api/live' in body, 'the control panel page, for a browser')
+    first = raw('127.0.0.1', port, '/', seconds=0.5)          # as Aurora68 Play asks: Accept: */*
+    check(first.startswith(b'HTTP/1.0 302') and b'Location: /live' in first, 'a player asking for "/" is sent to /live')
+    out = subprocess.run([pc, 'icy', os.path.join(tmp, 'redir.mp3')], input=first, capture_output=True).stdout.decode('mac_roman')
+    check('status 302' in out, f'which Aurora68 Play reads as a redirection it follows ({out.splitlines()[-1] if out else ""})')
     st, hd, body = get(base, '/art?dir=Gamma%20-%20Converted')
     check(st == 200 and body[:2] == b'\xff\xd8', 'a folder\'s cover.jpg')
     st, hd, body = get(base, '/art?dir=Shelf/Zed%20-%20One')

@@ -1077,6 +1077,14 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer):
             path = urllib.parse.unquote(u.path)
             try:
                 if path == '/':
+                    if 'text/html' not in (self.headers.get('Accept') or ''):
+                        # a player, not a browser (Aurora68 Play asks for */*): the server's bare address
+                        # plays the Live channel, so typing just http://NAS:8423/ into a player works
+                        self.send_response(302)
+                        self.send_header('Location', '/live')
+                        self.send_header('Content-Length', '0')
+                        self.end_headers()
+                        return
                     return self.send(200, 'text/html; charset=utf-8', PANEL.replace('__NAME__', html.escape(name)).encode())
                 if path == '/live':
                     return self.live_stream()
