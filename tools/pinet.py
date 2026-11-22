@@ -26,7 +26,10 @@ replies to .rx. Two modes:
                             ports of the peer is relayed to the host addresses (the Mac's file
                             clients, Lagoon, reach servers on the host: Samba, Netatalk), in
                             order, within the Mac's receive window; the testbed loses nothing,
-                            so nothing is sent again.
+                            so nothing is sent again. Over IPv6 too (to fd68::1).
+                            PINET_UDP="8070=127.0.0.1:18470": UDP to that port, sent to the peer,
+                            a broadcast or a multicast group, goes to the host address and its
+                            answers come back from the peer (Aurora68 Play's music server probe).
                             PINET_MDNS_RELAY=127.0.0.1:PORT: the Mac's mDNS queries (224.0.0.251:5353)
                             go to that responder on the host (Lagoon's tests/servers/mdns/
                             responder.py --addr 192.168.68.1) and its answers come back to the Mac
@@ -296,6 +299,10 @@ def peer(frame):
         # PINET_INTERNET=1: the peer is a router to everywhere, and answers an ICMP echo to any
         # address (the testbed's way to see which interface a default route sends a ping out of)
         internet = os.environ.get('PINET_INTERNET') == '1' and proto == 1 and dip[0] not in (127, 224, 255)
+        if proto == 17 and UDP_FWD and len(frame) >= 14 + ihl + 8:
+            sport_, dport_, ulen_ = struct.unpack('>HHH', frame[14 + ihl:14 + ihl + 6])
+            if dport_ in UDP_FWD:
+                return udp_relay(src, sip, sport_, dport_, frame[14 + ihl + 8:14 + ihl + ulen_])
         if dip != PEER_IP and dip != b'\xff\xff\xff\xff' and not internet: return 'IP not for us'
         payload = frame[14 + ihl:]
         if proto == 1 and payload[0] == 8:                   # ICMP echo
@@ -394,6 +401,41 @@ def rseg(mac, ip, me6, sport, dport, seq, ack, flags, data=b''):
         tcp_seg6(mac, me6, ip, sport, dport, seq, ack, flags, data)
     else:
         tcp_seg(mac, ip, sport, dport, seq, ack, flags, data)
+
+# UDP relay (PINET_UDP="8070=127.0.0.1:18470", 22 November 2026): the Mac's datagrams to that port, sent to the
+# peer, to a broadcast address or to a multicast group (Aurora68 Play's probe for the music server, docs/08
+# item 99), go to a host socket; what comes back is sent to the Mac from the peer's address
+UDP_FWD = {}
+for item in filter(None, os.environ.get('PINET_UDP', '').split(',')):
+    port, dest = item.split('=')
+    h, hp = dest.rsplit(':', 1)
+    UDP_FWD[int(port)] = (h, int(hp))
+udp_relays = []             # (host socket, Mac's MAC, Mac's address, its port, our port, until)
+def udp_relay(src, sip, sport, dport, data):
+    import socket as _s
+    hs = _s.socket(_s.AF_INET, _s.SOCK_DGRAM)
+    hs.setblocking(False)
+    hs.sendto(data, UDP_FWD[dport])
+    udp_relays.append((hs, src, sip, sport, dport, time.monotonic() + 5))
+    return f'UDP to port {dport} relayed to {UDP_FWD[dport][0]}:{UDP_FWD[dport][1]}'
+def udp_due():
+    for r in list(udp_relays):
+        hs, src, sip, sport, dport, until = r
+        try:
+            while True:
+                d = hs.recv(2048)
+                udp = struct.pack('>HHHH', dport, sport, 8 + len(d), 0) + d
+                ip = bytearray(struct.pack('>BBHHHBBH', 0x45, 0, 20 + len(udp), 0, 0, 64, 17, 0) + PEER_IP + sip)
+                ip[10:12] = struct.pack('>H', csum(bytes(ip)))
+                send(src + PEER_MAC + b'\x08\x00' + bytes(ip) + udp)
+                print(f'pinet: a UDP answer of {len(d)} bytes from the host to the Mac\'s port {sport}', flush=True)
+        except BlockingIOError:
+            pass
+        except OSError:
+            until = 0
+        if time.monotonic() > until:
+            hs.close()
+            udp_relays.remove(r)
 
 # TCP relay (PINET_FORWARD): one host socket per connection from the Mac
 FORWARD = {}
@@ -668,7 +710,7 @@ def peer6(frame, src):
         sport, dport, seq, ack, off, flags = struct.unpack('>HHIIBB', pl[:14])
         win = struct.unpack('>H', pl[14:16])[0]
         data = pl[(off >> 4) * 4:]
-        if dport == 80:
+        if dport == 80 or dport in FORWARD:              # PINET_FORWARD's ports over IPv6 too (22 November 2026)
             return relay_tcp(frame, src, src6, pl, sport, dport, seq, ack, flags, data, win, me6=dst6)
         if not flags & 0x04:
             tcp_seg6(src, dst6, src6, dport, sport, 0, seq + 1, 0x14)
@@ -867,6 +909,7 @@ while True:
         mdns_due()
         aep_due()
         relay_due()
+        udp_due()
         kernel_due()
     if tap is not None:
         try:

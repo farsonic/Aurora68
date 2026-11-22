@@ -69,6 +69,7 @@ short mac_FindFolder(short vRefNum, long type, int create, short *vref, long *di
 
 struct radio_ui radio;
 struct stations *slist;
+int net_prefer = 6;
 
 /* ---- MacTCP (the MacTCP Programmer's Guide, 1993) --------------------------------------------- */
 enum { TCPCreate = 30, TCPActiveOpen = 32, TCPSend = 34, TCPRcv = 37, TCPAbort = 39, TCPRelease = 42 };
@@ -122,7 +123,7 @@ static short driver_open(const unsigned char *name)
 /* the network: Riptide's .IPP6 when Gestalt says it is there (docs/IPP6.md in Riptide, section 2: ask
    Gestalt first, as an OpenDriver of a name that is not installed searches the resource files), else
    MacTCP's .IPP with Apple's DNR for names, as every MacTCP program does */
-static int net_open(void)
+int net_open(void)
 {
 	long version = 0;
 	char t[80];
@@ -147,6 +148,12 @@ static int net_open(void)
 	}
 	return 1;
 }
+/* the driver and the resolver for the library's own connection (fetch.c) */
+short net_ipp(void) { return ipp; }
+int net_is_v6(void) { return v6; }
+static int open_resolver(void);
+static void **dnr_h;
+void **net_dnr(void) { return open_resolver() ? dnr_h : 0; }
 
 /* ---- the receive chain: at interrupt time ------------------------------------------------------ */
 static struct icy *icy;
@@ -216,7 +223,6 @@ void c_rcv_done(void)
 struct hostInfo { long rtnCode; char cname[255]; char pad; unsigned long addr[4]; };
 _Static_assert(__builtin_offsetof(struct hostInfo, addr) == 260, "hostInfo");
 enum { OPENRESOLVER = 1, CLOSERESOLVER = 2, STRTOADDR = 3 };
-static void **dnr_h;
 static struct { struct hostInfo hi; volatile long done; int busy; } look[2];
 static int lk;                                 /* the lookup the connection waits for */
 
@@ -491,6 +497,11 @@ static void failed(const char *say, long code)
 	else logs(say, 0, 0);
 	teardown();
 	if (connected_once) {                        /* it played: connect again after 1, 2, 4 ... 30 s */
+		if (radio.finite && radio.resume) {      /* a track: from where its audio stopped, not its start */
+			unsigned long rate = (radio.br ? radio.br : 128) * 125;
+			radio.resume(radio.url, sizeof radio.url, icy->audio_bytes / rate);
+			icy_init(icy);                       /* so that a failed attempt adds nothing */
+		}
 		last_problem = say;
 		lost = 1;
 		radio.retry_at = LM_TICKS + backoff * 60;
@@ -576,13 +587,15 @@ static void connect_start6(void)
 		return;
 	}
 	rpb.csCode = ip6Resolve;
-	rpb.csParam.resolve.flags = kIP6OrderIPv6First;
+	/* the owner's choice (Connect By): which family first; Riptide alternates the two in its answer, so the
+	   other family's address comes next when the first does not connect (open_start's 8 s each) */
+	rpb.csParam.resolve.flags = net_prefer == 4 ? kIP6OrderIPv4First : kIP6OrderIPv6First;
 	rpb.csParam.resolve.results = addrs;
 	rpb.csParam.resolve.maxResults = MAX_ADDRS;
 	rpb.csParam.resolve.timeout = 0;             /* the driver's 10 seconds */
 	resolving = 1;
 	mac_PBControlAsync(&rpb);
-	logs("looking up ", host, " (IPv6 first, then IPv4)");
+	logs("looking up ", host, net_prefer == 4 ? " (IPv4 first, then IPv6)" : " (IPv6 first, then IPv4)");
 	set_state(RS_RESOLVE);
 }
 static void connect_start(void)
@@ -685,6 +698,30 @@ static void playlist_done(void)
 	failed(https ? "The playlist names only secure (https) streams, and Aurora68 Play plays plain http:// streams only."
 	             : "The playlist names no stream Aurora68 Play can play.", 0);
 }
+static unsigned long titles_seen;               /* (radio_poll's, below) */
+/* a library track's stream has ended where the track does: the next track's stream follows in the
+   same card stream, or the card plays out what it holds */
+static void track_done(void)
+{
+	char u[200];
+	unsigned long held = ps->buffered + (ps->head - ps->tail);
+	unsigned long rate = (radio.br ? radio.br : 128) * 125;
+	unsigned long at = ps->pos_ms + held / (rate / 100) * 10;
+	logn("the track's stream is in, ", (long)icy->audio_bytes, " bytes");
+	teardown();
+	if (radio.next && radio.next(u, sizeof u, at)) {
+		copy(radio.url, u, sizeof radio.url);
+		copy(cur_url, u, sizeof cur_url);
+		redirects = 0; http11 = 0; playlist_hop = 0; lost = 0;
+		titles_seen = title_count;
+		set_state(RS_RESOLVE);
+		connect_start();
+		return;
+	}
+	ps->eof = 1;                                 /* the last: the card ends when its buffer is played */
+	if (radio.prebuffering) { radio.prebuffering = 0; if (!radio.paused) pi_command(PSMB_STR_C_RESUME); }
+	set_state(RS_DRAIN);
+}
 /* the receive chain has stopped: why, and what next */
 static void chain_ended(void)
 {
@@ -692,6 +729,7 @@ static void chain_ended(void)
 	if (playlist_hop) { playlist_done(); return; }
 	if (bad_answer) { failed("The station's answer is not HTTP: is that the address of a stream?", 0); return; }
 	if (radio.st != RS_PLAYING) { failed("The station did not answer.", r); return; }
+	if (radio.finite && (r == connectionClosing || !r)) { track_done(); return; }
 	{
 		char t[120], *p = t;
 		p = put_str(p, r == connectionClosing ? "the station closed the connection" :
@@ -764,7 +802,19 @@ void radio_poll(void)
 				open_start();
 				return;
 			}
-			failed("The station did not answer.", IO_RESULT(pb_ctl));
+			{   /* the step, the address and port, and the stack's number, in the words for the user */
+				static char say[200];
+				short e = IO_RESULT(pb_ctl);
+				char *q = put_str(say, "Aurora68 Play could not connect to ");
+				if (v6) q = put_addr6(q, &addrs[ai]);
+				else q = put_num(put_str(put_addr(q, addr), ":"), port);
+				q = put_str(q, v6 ? " (Riptide error -" : " (MacTCP error -");
+				q = put_num(q, (unsigned long)-e);
+				q = put_str(q, e == openFailed ? ": no answer, or refused)." : e == -23033 /* ipDestDeadErr */ ? ": the network cannot reach it)." :
+				               e == ip6NoSourceErr ? ": this Macintosh has no address of that family to send from)." : ").");
+				*q = 0;
+				failed(say, e);
+			}
 			return;
 		}
 		{
@@ -795,6 +845,13 @@ void radio_poll(void)
 		return;
 	case RS_RETRY:
 		if ((long)(now - radio.retry_at) >= 0) { redirects = 0; playlist_hop = 0; copy(cur_url, radio.url, sizeof cur_url); connect_start(); }
+		return;
+	case RS_DRAIN:
+		if (ps->state == PSMB_STR_S_PLAYING || ps->state == PSMB_STR_S_PAUSED) return;
+		logs("the last track has played", 0, 0);
+		radio.ended = 1;
+		radio.prebuffering = radio.paused = 0;
+		set_state(RS_OFF);
 		return;
 	}
 	/* RS_HEADERS and RS_PLAYING: the receive chain is running */
@@ -864,11 +921,16 @@ void radio_init(void)
 	icy = mac_newptr(sizeof *icy);
 	slist = mac_newptr(sizeof *slist);
 }
-int radio_play(const char *name, const char *url)
+static int play(const char *name, const char *url, int finite);
+int radio_play(const char *name, const char *url) { return play(name, url, 0); }
+int radio_play_track(const char *name, const char *url) { return play(name, url, 1); }
+static int play(const char *name, const char *url, int finite)
 {
 	const char *e;
 	radio_stop();
 	radio.error = 0;
+	radio.finite = finite;
+	radio.ended = 0;
 	if (!tcp_buf || !rbuf || !icy || !slist) { radio.error = "There is not enough memory for the radio: give Aurora68 Play more in the Finder's Get Info."; return 0; }
 	copy(radio.station, name, sizeof radio.station);
 	copy(radio.url, url, sizeof radio.url);
@@ -897,6 +959,7 @@ void radio_stop(void)
 	char t[120], *p;
 	if (radio.st == RS_OFF) return;
 	teardown();
+	ps->eof = 0;
 	if (look[lk].busy && !look[lk].done) logs("a name lookup is still out: its answer will be ignored", 0, 0);
 	if (ps->state != PSMB_STR_S_IDLE) pi_command(PSMB_STR_C_STOP);
 	p = put_str(t, "stopped; ");
@@ -928,6 +991,7 @@ const char *radio_status(char *b)
 	case RS_RESOLVE: p = put_str(p, "Looking up"); break;
 	case RS_OPEN: p = put_str(p, "Connecting"); break;
 	case RS_SEND: case RS_HEADERS: p = put_str(p, "Asking"); break;
+	case RS_DRAIN: p = put_str(p, radio.paused ? "Paused" : "Playing"); break;
 	case RS_RETRY: {
 		long s = ((long)(radio.retry_at - LM_TICKS) + 59) / 60;
 		p = put_num(put_str(p, "Retrying in "), (unsigned long)(s < 0 ? 0 : s));

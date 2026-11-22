@@ -50,11 +50,20 @@
  * station list makes a submenu of the Radio menu, or of a submenu (stations.c reads the file; the menus
  * are hierarchical ones, built in fill_menu). The built-in list is SomaFM, Listener-supported and By
  * country (nine countries); Radio > Add Default Stations adds those a user's own file lacks, at its end.
+ *
+ * The Library (Aurora68 Play 1.2, 22 November 2026, docs/08 item 99): the music server's artists, albums
+ * and tracks (tools/music-server) in a window of its own (library.c), the queue played through the radio's
+ * connection, Now Playing with the album's cover in this window. The Library menu has its commands; Connect
+ * By > IPv6 First or IPv4 First chooses the family tried first when a name has both, for the radio and the
+ * library alike, the other one tried when it fails. The program asks for 512 KB now (lists, covers, the
+ * queue), colour windows where Color QuickDraw is so that a cover keeps its colours on a colour screen.
  */
 #include "toolbox.h"
 #include "psmb.h"
 #include "icy.h"
 #include "radio.h"
+#include "library.h"
+#include "fetch.h"
 
 /* piplay/fs.s */
 short mac_PBRead(ParamBlock *pb), mac_PBGetEOF(ParamBlock *pb), mac_PBHOpen(ParamBlock *pb), mac_PBHCreate(ParamBlock *pb),
@@ -396,7 +405,7 @@ static void stop_stream(void)
 {
 	if (ps && ps->state != PSMB_STR_S_IDLE) pi_command(PSMB_STR_C_STOP);
 }
-static void say_error(const char *text);
+void say_error(const char *text);
 static void redraw_all(void);
 static void close_window(void), resized(void);
 /* from the start of the open file */
@@ -442,9 +451,12 @@ static void close_file(void)
 }
 
 /* ---- the window -------------------------------------------------------------------------------- */
-static void *win, *play_btn, *stop_btn, *vol_bar;
-static void *m_apple, *m_file, *m_edit, *m_ctl, *m_radio;
-enum { M_APPLE = 128, M_FILE, M_EDIT, M_CTL, M_RADIO };
+static void *win, *play_btn, *stop_btn, *vol_bar, *prev_btn, *next_btn;
+static void *m_apple, *m_file, *m_edit, *m_ctl, *m_radio, *m_lib, *m_net;
+enum { M_APPLE = 128, M_FILE, M_EDIT, M_CTL, M_RADIO, M_LIB, M_NET = 139 };
+/* the Library menu; Connect By (a submenu of the Library and Radio menus): the family tried first */
+enum { LB_SHOW = 1, LB_CONNECT, LB_FIND, LB_S1, LB_PLAY, LB_SHUFFLE, LB_S2, LB_PREV, LB_NEXT, LB_S3, LB_LIVE, LB_RELOAD, LB_S4, LB_NET };
+enum { NET_V6 = 1, NET_V4 };
 /* the Radio menu's submenus, one per group of the station list (stations.h): group g's menu ID is M_SUB + g.
    Inside Macintosh V (the Menu Manager): a submenu is inserted with InsertMenu(menu, -1), its parent item
    has the command character $1B and the submenu's ID as its mark, and an application's submenus take IDs
@@ -452,7 +464,7 @@ enum { M_APPLE = 128, M_FILE, M_EDIT, M_CTL, M_RADIO };
 #define M_SUB 140
 static void *m_sub[MAX_GROUPS];                      /* the submenus in the menu list now, 0 for none */
 static int showing_radio;                            /* the window is the radio's (a station chosen) */
-static int radio_url_item, radio_add_item;           /* Open URL... and Add Default Stations in the Radio menu */
+static int radio_url_item, radio_add_item, radio_net_item;   /* Open URL..., Add Default Stations, Connect By in the Radio menu */
 enum { F_OPEN = 1, F_CLOSE, F_QUIT = 4 };
 enum { C_PLAY = 1, C_STOP, C_LOUDER = 4, C_SOFTER };      /* Volume Up, Volume Down */
 static int quit, fg = 1, shown;
@@ -470,11 +482,22 @@ static void layout(void)
 	bar_r.right = W - 10;
 	short by = H - 30, sl = W - 24 - 110;
 	if (sl < 220) sl = 220;
-	MoveControl(play_btn, 10, by);
-	MoveControl(stop_btn, 90, by);
+	if (lib_active()) {                         /* the library's track: Previous and Next beside them */
+		SizeControl(play_btn, 60, 20); SizeControl(stop_btn, 50, 20);
+		MoveControl(play_btn, 10, by);
+		MoveControl(stop_btn, 76, by);
+		MoveControl(prev_btn, 132, by);
+		MoveControl(next_btn, 168, by);
+		ShowControl(prev_btn); ShowControl(next_btn);
+	} else {
+		HideControl(prev_btn); HideControl(next_btn);
+		SizeControl(play_btn, 70, 20); SizeControl(stop_btn, 70, 20);
+		MoveControl(play_btn, 10, by);
+		MoveControl(stop_btn, 90, by);
+	}
 	MoveControl(vol_bar, sl, by + 2);
 	SizeControl(vol_bar, W - 24 - sl, 16);
-	vol_label_h = sl - 48;
+	vol_label_h = lib_active() && sl < 260 ? -1 : sl - 48;   /* no room for the word beside Next */
 }
 
 static void draw_clipped(const char *s, int max_w)
@@ -504,6 +527,7 @@ static void radio_progress(void);
 static void draw_progress(void)
 {
 	char t[60], *p = t;
+	if (lib_active()) { lib_draw_progress(win, W, H); return; }
 	if (showing_radio) { radio_progress(); return; }
 	unsigned long pos = ps ? ps->pos_ms : 0, len = ps ? ps->length_ms : 0;
 	if (state == S_NONE || state == S_STOPPED) pos = 0;
@@ -536,6 +560,7 @@ static void radio_texts(void);
 static void draw_texts(void)
 {
 	char t[200];
+	if (lib_active()) { lib_draw_now(win, W, H); return; }
 	if (showing_radio) { radio_texts(); return; }
 	SetPort(win);
 	Rect r = { 0, 0, 42, W };
@@ -632,8 +657,7 @@ static void redraw_all(void)
 	draw_progress();
 	DrawControls(win);
 	TextFont(3); TextSize(9);
-	MoveTo(vol_label_h, H - 16);
-	DrawText("Volume", 0, 6);
+	if (vol_label_h >= 0) { MoveTo(vol_label_h, H - 16); DrawText("Volume", 0, 6); }
 	grow_icon();
 }
 static void set_status(const char *s)
@@ -642,16 +666,17 @@ static void set_status(const char *s)
 	draw_progress();
 }
 /* what Play/Pause and Stop do now: a file, or the radio (which pauses into the card's buffer) */
-static int playing_now(void) { return showing_radio ? radio.st != RS_OFF && !radio.paused : state == S_PLAYING; }
-static int can_stop_now(void) { return showing_radio ? radio.st != RS_OFF : state == S_PLAYING || state == S_PAUSED; }
+static int playing_now(void) { return lib_active() ? lib_playing() : showing_radio ? radio.st != RS_OFF && !radio.paused : state == S_PLAYING; }
+static int can_stop_now(void) { return lib_active() ? lib_can_stop() : showing_radio ? radio.st != RS_OFF : state == S_PLAYING || state == S_PAUSED; }
 static void fix_buttons(void)
 {
 	static int said = -1;                       /* the button's title, set only when it changes (it redraws) */
 	if (playing_now() != said) { said = playing_now(); SetCTitle(play_btn, pstr(pbuf, said ? "Pause" : "Play")); }
-	int can_play = file_open || showing_radio, can_stop = can_stop_now();
+	int can_play = file_open || showing_radio || lib_active(), can_stop = can_stop_now();
 	if (!fg) return;
 	HiliteControl(play_btn, can_play ? 0 : 255);
 	HiliteControl(stop_btn, can_stop ? 0 : 255);
+	if (lib_active()) { HiliteControl(prev_btn, lib_can_skip(-1) ? 0 : 255); HiliteControl(next_btn, lib_can_skip(1) ? 0 : 255); }
 }
 static void enable(void *m, int item, int on)
 {
@@ -676,24 +701,32 @@ static void fix_menus(void)
 	for (i = 1; i <= 6; i++) enable(m_edit, i, da && i != 2);
 	enable(m_file, F_CLOSE, shown);
 	SetItem(m_ctl, C_PLAY, pstr(pbuf, playing_now() ? "Pause" : "Play"));
-	enable(m_ctl, C_PLAY, shown && (file_open || showing_radio));
+	enable(m_ctl, C_PLAY, shown && (file_open || showing_radio || lib_active()));
 	enable(m_ctl, C_STOP, can_stop_now());
 	check_stations(m_radio, ST_TOP);             /* the station that plays, checked wherever it is */
 	for (i = 0; i < MAX_GROUPS; i++)
 		if (m_sub[i]) check_stations(m_sub[i], i);
 	enable(m_ctl, C_LOUDER, vol < 100);
 	enable(m_ctl, C_SOFTER, vol > 0);
+	enable(m_lib, LB_FIND, lib_have_server());
+	enable(m_lib, LB_PLAY, lib_can_play_all());
+	CheckItem(m_lib, LB_SHUFFLE, lib_shuffle());
+	enable(m_lib, LB_PREV, lib_can_skip(-1));
+	enable(m_lib, LB_NEXT, lib_can_skip(1));
+	enable(m_lib, LB_LIVE, lib_have_server());
+	CheckItem(m_net, NET_V6, net_prefer != 4);
+	CheckItem(m_net, NET_V4, net_prefer == 4);
 }
 
 /* ---- a small window that says something, with an OK button (no resources: the program has
    none but its code, like the other Pi programs) ----------------------------------------------- */
-static Rect screen_rect(void)
+Rect screen_rect(void)
 {
 	char *a5;
 	__asm__("move.l %%a5,%0" : "=r"(a5));
 	return *(Rect *)(*(char **)a5 - 116);        /* QuickDraw's screenBits.bounds, below thePort */
 }
-static void message_box(const char *text, int lines_h)
+void message_box(const char *text, int lines_h)
 {
 	Rect s = screen_rect();
 	short w = 340, h = (short)(lines_h + 52), left = (short)((s.right - s.left - w) / 2), top = (short)((s.bottom - s.top - h) / 3 + 10);
@@ -705,7 +738,7 @@ static void message_box(const char *text, int lines_h)
 	EventRecord ev;
 	int done = 0;
 	while (!done) {
-		if (!WaitNextEvent(everyEvent, &ev, 10, 0)) { if (file_open && state == S_PLAYING) feed(); radio_poll(); continue; }
+		if (!WaitNextEvent(everyEvent, &ev, 10, 0)) { if (file_open && state == S_PLAYING) feed(); radio_poll(); lib_poll(); continue; }
 		if (ev.what == updateEvt && (void *)ev.message == d) {
 			BeginUpdate(d);
 			SetPort(d);
@@ -721,6 +754,7 @@ static void message_box(const char *text, int lines_h)
 			EndUpdate(d);
 		} else if (ev.what == updateEvt) {
 			if ((void *)ev.message == win) { BeginUpdate(win); redraw_all(); EndUpdate(win); }
+			else if ((void *)ev.message == lib_window()) { BeginUpdate((void *)ev.message); lib_update(); EndUpdate((void *)ev.message); }
 		} else if (ev.what == keyDown && ((ev.message & 0xFF) == 0x0D || (ev.message & 0xFF) == 0x03 || (ev.message & 0xFF) == 0x1B)) done = 1;
 		else if (ev.what == mouseDown) {
 			Point p = ev.where;
@@ -734,7 +768,7 @@ static void message_box(const char *text, int lines_h)
 	DisposeWindow(d);
 	SetPort(win);
 }
-static void say_error(const char *text)
+void say_error(const char *text)
 {
 	char t[200];
 	put_str(put_str(t, "error: "), text)[0] = 0;
@@ -744,11 +778,12 @@ static void say_error(const char *text)
 }
 static void about(void)
 {
-	message_box("Aurora68 Play 1.1 for the Aurora68 card.\r"
-	            "Plays MP3 files, AIFF and WAV files that are not compressed, and internet radio: plain "
-	            "http:// MP3 streams through MacTCP. The Pi decodes them (minimp3, public domain) and plays "
-	            "them on HDMI or its headphone socket, mixed with the Macintosh's own sound.\r"
-	            "The Radio menu holds SomaFM (somafm.com), other listener-supported radio and stations of nine countries. MPL-2.0.", 172);
+	message_box("Aurora68 Play 1.2 for the Aurora68 card.\r"
+	            "Plays MP3 files, AIFF and WAV files that are not compressed, internet radio (plain http:// MP3 "
+	            "streams through MacTCP or Riptide), and the music on an Aurora68 music server: Library > Show Library. "
+	            "The Pi decodes them (minimp3, public domain) and plays them on HDMI or its headphone socket, "
+	            "mixed with the Macintosh's own sound.\r"
+	            "The Radio menu holds SomaFM (somafm.com), other listener-supported radio and stations of nine countries. MPL-2.0.", 186);
 }
 
 /* ---- opening a file ------------------------------------------------------------------------------ */
@@ -782,6 +817,7 @@ static void leave_radio(void)
 }
 static void open_path(short vref, long dirid, const unsigned char *name)
 {
+	if (lib_active()) { lib_leave(); layout(); }
 	leave_radio();
 	close_file();
 	if (!shown) { ShowWindow(win); SelectWindow(win); shown = 1; }
@@ -816,9 +852,31 @@ static void open_path(short vref, long dirid, const unsigned char *name)
 }
 
 /* ---- the buttons, the slider, the keys ------------------------------------------------------- */
-static void start_station(const char *name, const char *url);
+void start_station(const char *name, const char *url);
+/* the library takes the player (library.c, as a track starts); and asks for it to be drawn again */
+void player_lib_mode(void)
+{
+	if (!lib_active()) { close_file(); showing_radio = 0; }
+	title[0] = artist[0] = 0; kind = K_NONE; status_text = "";
+	if (!shown) { ShowWindow(win); shown = 1; }
+	SetPort(win);
+	layout();
+	InvalRect(PORT_RECT(win));
+}
+void player_refresh(void)
+{
+	void *port;
+	if (!win || !shown) return;
+	GetPort(&port);
+	SetPort(win);
+	fix_buttons();
+	draw_texts();
+	draw_progress();
+	SetPort(port);
+}
 static void play_pause(void)
 {
+	if (lib_active()) { lib_play_pause(); fix_buttons(); return; }
 	if (showing_radio) {
 		if (radio.st == RS_OFF) start_station(radio.station, radio.url);
 		else radio_pause(!radio.paused);
@@ -834,6 +892,7 @@ static void play_pause(void)
 }
 static void stop(void)
 {
+	if (lib_active()) { lib_stop(); fix_buttons(); return; }
 	if (showing_radio) { radio_stop(); fix_buttons(); draw_progress(); return; }
 	if (state != S_PLAYING && state != S_PAUSED) return;
 	stop_stream();
@@ -852,6 +911,7 @@ static void change_volume(int v)
 }
 void c_ctl_action(void *ctl, int part)
 {
+	if (lib_ctl_action(ctl, part)) return;
 	if (ctl != vol_bar) return;
 	switch (part) {
 	case inUpButton: change_volume(vol - 5); break;
@@ -867,7 +927,7 @@ static void content_click(EventRecord *ev)
 	SetPort(win);
 	GlobalToLocal(&p);
 	int part = FindControl(pt_long(p), win, &ctl);
-	if (!ctl) return;
+	if (!ctl) { if (lib_active()) lib_bar_click(p, W); return; }
 	if (ctl == vol_bar) {
 		if (part == inThumb) { TrackControl(ctl, pt_long(p), 0); change_volume(GetCtlValue(vol_bar)); }
 		else TrackControl(ctl, pt_long(p), (void *)pas_ctl_action);
@@ -876,10 +936,12 @@ static void content_click(EventRecord *ev)
 	if (!TrackControl(ctl, pt_long(p), 0)) return;
 	if (ctl == play_btn) play_pause();
 	else if (ctl == stop_btn) stop();
+	else if (ctl == prev_btn) { lib_skip(-1); fix_buttons(); }
+	else if (ctl == next_btn) { lib_skip(1); fix_buttons(); }
 }
 
 /* ---- the radio: a station chosen, an address asked for ------------------------------------------ */
-static void start_station(const char *name, const char *url)
+void start_station(const char *name, const char *url)
 {
 	char n[48], u[200];
 	int i;
@@ -887,10 +949,12 @@ static void start_station(const char *name, const char *url)
 	n[i] = 0;
 	for (i = 0; url[i] && i < 199; i++) u[i] = url[i];
 	u[i] = 0;
+	if (lib_active()) lib_leave();
 	close_file();
 	title[0] = artist[0] = 0; kind = K_NONE; status_text = "";
 	if (!shown) { ShowWindow(win); SelectWindow(win); shown = 1; }
 	showing_radio = 1;
+	layout();
 	SetPort(win);
 	InvalRect(PORT_RECT(win));
 	set_volume();
@@ -934,6 +998,10 @@ static void build_radio_menu(void)
 	radio_url_item = CountMItems(m_radio);
 	AppendMenu(m_radio, pstr(pbuf, "Add Default Stations"));
 	radio_add_item = CountMItems(m_radio);
+	AppendMenu(m_radio, pstr(pbuf, "Connect By"));
+	radio_net_item = CountMItems(m_radio);
+	SetItemCmd(m_radio, radio_net_item, 0x1B);   /* the Connect By submenu */
+	SetItemMark(m_radio, radio_net_item, M_NET);
 }
 /* Radio > Add Default Stations: the built-in stations the user's file lacks, added at its end */
 static void add_defaults(void)
@@ -967,9 +1035,29 @@ static void TEToScrap_(void)
 	PutScrap(LM_TESCRPLEN, TYPE('T', 'E', 'X', 'T'), *LM_TESCRPH);
 	mac_HUnlock(LM_TESCRPH);
 }
-/* "Open URL...": a small window with a text field, Open (the default) and Cancel; 1 if out has an address */
+/* a small window with a prompt, a text field and a hint, OK (named for what it does) and Cancel: "Open URL...",
+   Library > Connect to Server..., Find...; 1 for OK (out may be empty), 0 for Cancel */
 static char last_url[200] = "http://";
+static const char *ask_prompt, *ask_hint, *ask_ok;
+static int ask_box(const char *initial, char *out, int max);
+int ask_text(const char *prompt, const char *hint, const char *initial, char *out, int max)
+{
+	ask_prompt = prompt; ask_hint = hint; ask_ok = "OK";
+	return ask_box(initial, out, max);
+}
 static int ask_url(char *out, int max)
+{
+	int k, n = 0;
+	ask_prompt = "Play the MP3 stream at this address:";
+	ask_hint = "A plain http:// stream (Shoutcast, Icecast), or a .pls or .m3u playlist.";
+	ask_ok = "Open";
+	if (!ask_box(last_url, out, max)) return 0;
+	for (k = 0; out[k]; k++)
+		if (out[k] > ' ') out[n++] = out[k];     /* no spaces: a pasted address may have some */
+	out[n] = 0;
+	return n > 0;
+}
+static int ask_box(const char *initial, char *out, int max)
 {
 	Rect s = screen_rect();
 	short w = 380, h = 136, left = (short)((s.right - s.left - w) / 2), top = (short)((s.bottom - s.top - h) / 3 + 10);
@@ -981,10 +1069,10 @@ static int ask_url(char *out, int max)
 	Rect car = { (short)(h - 30), (short)(w - 162), (short)(h - 10), (short)(w - 96) };
 	Rect fr = { 34, 18, 72, (short)(w - 18) }, vr = fr;
 	InsetRect(&vr, 4, 3);
-	void *ok = NewControl(d, &okr, pstr(pbuf, "Open"), 1, 0, 0, 1, pushButProc, 0);
+	void *ok = NewControl(d, &okr, pstr(pbuf, ask_ok), 1, 0, 0, 1, pushButProc, 0);
 	NewControl(d, &car, pstr(pbuf, "Cancel"), 1, 0, 0, 1, pushButProc, 0);   /* any button but Open cancels */
 	TERec **te = (TERec **)TENew(&vr, &vr);
-	TESetText(last_url, (long)strlen(last_url), te);
+	TESetText(initial, (long)strlen(initial), te);
 	TESetSelect(0, 32767, te);
 	TEActivate(te);
 	void **ibeam = (void **)GetCursor(1);       /* iBeamCursor */
@@ -1000,6 +1088,7 @@ static int ask_url(char *out, int max)
 			TEIdle(te);
 			if (file_open && state == S_PLAYING) feed();
 			radio_poll();
+			lib_poll();
 			continue;
 		}
 		SetPort(d);
@@ -1007,10 +1096,10 @@ static int ask_url(char *out, int max)
 			BeginUpdate(d);
 			TextFont(0); TextSize(12);
 			MoveTo(18, 24);
-			DrawText("Play the MP3 stream at this address:", 0, 36);
+			DrawText(ask_prompt, 0, (int)strlen(ask_prompt));
 			TextFont(3); TextSize(9);
 			MoveTo(18, 86);
-			DrawText("A plain http:// stream (Shoutcast, Icecast), or a .pls or .m3u playlist.", 0, 72);
+			DrawText(ask_hint, 0, (int)strlen(ask_hint));
 			Rect f = fr;
 			FrameRect(&f);
 			TEUpdate(&fr, te);
@@ -1057,14 +1146,15 @@ static int ask_url(char *out, int max)
 		const char *t = *(*te)->hText;
 		int k, len = (*te)->teLength;
 		for (k = 0; k < len && n < max - 1; k++)
-			if (t[k] > ' ') out[n++] = t[k];     /* no spaces or line ends: a pasted address may have some */
+			if (t[k] >= ' ' && (n || t[k] != ' ')) out[n++] = t[k];   /* no line ends, no spaces in front */
+		while (n && out[n - 1] == ' ') n--;
 	}
 	out[n] = 0;
 	TEDispose(te);
 	DisposeWindow(d);
 	InitCursor();
 	SetPort(win);
-	return n > 0;
+	return done == 1;
 }
 static void open_url(void)
 {
@@ -1099,8 +1189,17 @@ static void setup_menus(void)
 	m_ctl = NewMenu(M_CTL, pstr(pbuf, "Controls"));
 	AppendMenu(m_ctl, pstr(pbuf, "Play/P;Stop/.;(-;Volume Up/];Volume Down/["));
 	InsertMenu(m_ctl, 0);
+	m_lib = NewMenu(M_LIB, pstr(pbuf, "Library"));
+	AppendMenu(m_lib, pstr(pbuf, "Show Library/L;Connect to Server\xC9;Find\xC9/F;(-;Play All;Shuffle;(-;Previous Track;Next Track;(-;"
+	                        "Listen Live;Reload/R;(-;Connect By"));
+	SetItemCmd(m_lib, LB_NET, 0x1B);
+	SetItemMark(m_lib, LB_NET, M_NET);
+	InsertMenu(m_lib, 0);
 	m_radio = NewMenu(M_RADIO, pstr(pbuf, "Radio"));     /* its items come from the station list */
 	InsertMenu(m_radio, 0);
+	m_net = NewMenu(M_NET, pstr(pbuf, "Connect By"));
+	AppendMenu(m_net, pstr(pbuf, "IPv6 First;IPv4 First"));
+	InsertMenu(m_net, -1);
 	DrawMenuBar();
 }
 /* a station chosen in the Radio menu (group ST_TOP) or one of its submenus */
@@ -1129,9 +1228,27 @@ static void do_menu(long mr)
 		else if (item == C_STOP) stop();
 		else if (item == C_LOUDER) change_volume(vol + 10);
 		else if (item == C_SOFTER) change_volume(vol - 10);
+	} else if (id == M_LIB) {
+		switch (item) {
+		case LB_SHOW: lib_show(); break;
+		case LB_CONNECT: lib_connect(); break;
+		case LB_FIND: lib_find(); break;
+		case LB_PLAY: lib_play_all(); break;
+		case LB_SHUFFLE: lib_toggle_shuffle(); break;
+		case LB_PREV: lib_skip(-1); break;
+		case LB_NEXT: lib_skip(1); break;
+		case LB_LIVE: lib_live(); break;
+		case LB_RELOAD: lib_reload(); break;
+		}
+		SetPort(win);
+		fix_buttons();
+	} else if (id == M_NET) {
+		net_prefer = item == NET_V4 ? 4 : 6;
+		pi_log(net_prefer == 4 ? "connections: IPv4 first, then IPv6" : "connections: IPv6 first, then IPv4");
 	} else if (id == M_RADIO) {
 		if (item == radio_url_item) open_url();
 		else if (item == radio_add_item) add_defaults();
+		else if (item == radio_net_item) { }
 		else choose_station(ST_TOP, item);
 	} else if (id >= M_SUB && id < M_SUB + MAX_GROUPS) {
 		choose_station(id - M_SUB, item);
@@ -1158,7 +1275,8 @@ static void close_window(void)
 /* "PiPlay Prefs" in the Preferences folder (System 7) or the System Folder (System 6): the window's
    place and size and the volume, a few bytes in the data fork */
 #define PREF_MAGIC TYPE('P', 'I', 'P', 'Y')
-struct prefs { unsigned long magic; short version; Rect r; short vol; short pad; };
+struct prefs { unsigned long magic; short version; Rect r; short vol; short pad;
+                struct lib_prefs lib; short net; short pad2; };     /* version 2 (22 November 2026): the library's part */
 static const unsigned char pref_name[] = "\x13" "Aurora68 Play Prefs";
 static const unsigned char pref_old_name[] = "\x0C" "PiPlay Prefs";    /* the program's name until 21 November 2026 */
 int pref_place(short *vref, long *dirid)
@@ -1196,9 +1314,14 @@ static int load_prefs(struct prefs *p)
 		pi_log("the preferences of PiPlay, its old name, read");
 	}
 	pb.u.io.ioBuffer = p; pb.u.io.ioReqCount = sizeof *p; pb.u.io.ioPosMode = fsFromStart; pb.u.io.ioPosOffset = 0;
+	pb.u.io.ioActCount = 0;
+	memset(p, 0, sizeof *p);
 	short e = mac_PBRead(&pb);
 	mac_PBClose(&pb);
-	return !e && pb.u.io.ioActCount == sizeof *p && p->magic == PREF_MAGIC && p->version == 1;
+	if (e && e != eofErr) return 0;
+	if (p->magic != PREF_MAGIC) return 0;
+	if (p->version == 1 && pb.u.io.ioActCount >= 16) { memset(&p->lib, 0, sizeof p->lib); p->net = 6; return 1; }   /* Aurora68 Play 1.1's */
+	return p->version == 2 && pb.u.io.ioActCount == sizeof *p;
 }
 static void save_prefs(void)
 {
@@ -1208,7 +1331,10 @@ static void save_prefs(void)
 	Point tl = { 0, 0 };
 	SetPort(win);
 	LocalToGlobal(&tl);
-	p.magic = PREF_MAGIC; p.version = 1; p.vol = (short)vol; p.pad = 0;
+	memset(&p, 0, sizeof p);
+	p.magic = PREF_MAGIC; p.version = 2; p.vol = (short)vol; p.pad = 0;
+	lib_get_prefs(&p.lib);
+	p.net = (short)net_prefer;
 	p.r.top = tl.v; p.r.left = tl.h; p.r.bottom = (short)(tl.v + H); p.r.right = (short)(tl.h + W);
 	pref_place(&vref, &dirid);
 	pref_pb(&pb, vref, dirid);
@@ -1278,26 +1404,36 @@ static void mouse_down(EventRecord *ev)
 		break;
 	case inSysWindow: SystemClick(ev, w); break;
 	case inDrag: DragWindow(w, pt_long(ev->where), RGN_BBOX(LM_GRAYRGN)); break;
-	case inGoAway: if (w == win && TrackGoAway(w, pt_long(ev->where))) close_window(); break;
+	case inGoAway:
+		if (w == win && TrackGoAway(w, pt_long(ev->where))) close_window();
+		else if (w == lib_window() && TrackGoAway(w, pt_long(ev->where))) lib_close();
+		break;
 	case inGrow:
-		if (w == win) {
+		if (w == win || w == lib_window()) {
 			Rect lim = { WIN_H, WIN_W, 4000, 4000 };     /* top, left: the smallest height and width */
+			if (w != win) { lim.top = 200; lim.left = 360; }
 			long sz = GrowWindow(w, pt_long(ev->where), &lim);
-			if (sz) { SizeWindow(w, (short)(sz & 0xFFFF), (short)(sz >> 16), 1); resized(); }
+			if (sz) {
+				SizeWindow(w, (short)(sz & 0xFFFF), (short)(sz >> 16), 1);
+				if (w == win) resized();
+				else { SetPort(w); lib_resized(); InvalRect(PORT_RECT(w)); }
+			}
 		}
 		break;
 	case inZoomIn:
 	case inZoomOut:
-		if (w == win && TrackBox(w, pt_long(ev->where), part)) {
-			SetPort(win);
-			EraseRect(PORT_RECT(win));
+		if ((w == win || w == lib_window()) && TrackBox(w, pt_long(ev->where), part)) {
+			SetPort(w);
+			EraseRect(PORT_RECT(w));
 			ZoomWindow(w, part, 0);
-			resized();
+			if (w == win) resized();
+			else { lib_resized(); InvalRect(PORT_RECT(w)); }
 		}
 		break;
 	case inContent:
 		if (w != FrontWindow()) SelectWindow(w);
 		else if (w == win) content_click(ev);
+		else if (w == lib_window()) lib_click(ev);
 		break;
 	}
 }
@@ -1311,6 +1447,9 @@ static void key_down(EventRecord *ev)
 		else SysBeep(1);                       /* a key PiPlay has no command for */
 		return;
 	}
+	if (FrontWindow() == lib_window() && lib_window()) { lib_key(ev); fix_buttons(); return; }
+	if (c == 0x1C && lib_active()) { lib_skip(-1); fix_buttons(); return; }   /* left and right arrows: the queue */
+	if (c == 0x1D && lib_active()) { lib_skip(1); fix_buttons(); return; }
 	if (c == ' ' && FrontWindow() == win) play_pause();
 	else if (c == 0x1B) stop();                 /* Esc */
 	else if (c == 0x1E) change_volume(vol + 5); /* up arrow */
@@ -1350,6 +1489,13 @@ static void watch(void)
 {
 	static unsigned long last_tick, last_state = 99, last_rate;
 	if (!ps) return;
+	if (lib_active()) {                         /* the library watches its own track; the buttons follow it */
+		static int was = -1;
+		static unsigned long t;
+		int now = playing_now() << 1 | can_stop_now();
+		if (now != was || LM_TICKS - t >= 30) { was = now; t = LM_TICKS; if (shown) { fix_buttons(); draw_progress(); } }
+		return;
+	}
 	if (showing_radio) { if (shown) watch_radio(); return; }
 	unsigned long pst = ps->state;
 	if (state == S_PLAYING && pst == PSMB_STR_S_ENDED) {
@@ -1390,17 +1536,22 @@ int main(void)
 	if (snd->magic != PSMB_SND_MAGIC) win_base = 0;
 	ring = win_base ? win_base + PSMB_OFF_STRRING : 0;
 	iobuf = mac_newptr(IOBUF);
+	int colour = !(*(volatile unsigned short *)0x28E & 0x4000);   /* ROM85: bit 14 clear, Color QuickDraw is there */
+	lib_init(colour);
 
 	Rect s = screen_rect();
 	short left = (short)((s.right - s.left - WIN_W) / 2), top = 50;
 	Rect b = { top, left, (short)(top + WIN_H), (short)(left + WIN_W) };
 	struct prefs pr;
-	if (load_prefs(&pr)) {
+	int have_prefs = load_prefs(&pr);
+	if (have_prefs) {
 		if (pr.vol >= 0 && pr.vol <= 100) vol = pr.vol;
+		net_prefer = pr.net == 4 ? 4 : 6;
 		if (on_screen(&pr.r)) b = pr.r;
 		else pi_log("the remembered window place is on no screen now: the window goes on the main screen");
 	}
-	win = NewWindow(0, &b, pstr(pbuf, "Aurora68 Play"), 0, zoomDocProc, (void *)-1, 1, 0);
+	win = colour ? (void *)NewCWindow(0, &b, pstr(pbuf, "Aurora68 Play"), 0, zoomDocProc, (void *)-1, 1, 0)
+	             : (void *)NewWindow(0, &b, pstr(pbuf, "Aurora68 Play"), 0, zoomDocProc, (void *)-1, 1, 0);
 	{   /* the zoom box's standard state: as wide as the main screen allows, a little taller */
 		Rect *std = (Rect *)((char *)**(void ***)((char *)win + 130) + 8);
 		std->top = 40; std->left = 8; std->bottom = 40 + 140;
@@ -1413,6 +1564,9 @@ int main(void)
 	play_btn = NewControl(win, &r1, pstr(pbuf, "Play"), 1, 0, 0, 1, pushButProc, 0);
 	stop_btn = NewControl(win, &r2, pstr(pbuf, "Stop"), 1, 0, 0, 1, pushButProc, 0);
 	vol_bar = NewControl(win, &r3, pstr(pbuf, ""), 1, vol, 0, 100, scrollBarProc, 0);
+	Rect r4 = { 76, 132, 96, 162 }, r5 = { 76, 168, 96, 198 };
+	prev_btn = NewControl(win, &r4, pstr(pbuf, "<<"), 0, 0, 0, 1, pushButProc, 0);
+	next_btn = NewControl(win, &r5, pstr(pbuf, ">>"), 0, 0, 0, 1, pushButProc, 0);
 	layout();
 	fix_buttons();
 
@@ -1441,23 +1595,30 @@ int main(void)
 	radio_init();
 	stations_load();
 	build_radio_menu();
+	if (have_prefs) lib_set_prefs(&pr.lib);       /* the server, the shuffle; the Library window again if it was open */
 	finder_files();
 	EventRecord ev;
 	while (!quit) {
 		int more = file_open && state == S_PLAYING && sent < data_len && PSMB_STR_SIZE - (ps->head - ps->tail) >= 4096;
-		long sleep = more ? 0 : state == S_PLAYING || radio.st != RS_OFF ? 6 : 30;
+		long sleep = more || (fetch.st != FS_IDLE && fetch.st != FS_DONE && fetch.st != FS_FAILED) ? 0 :
+		             state == S_PLAYING || radio.st != RS_OFF || disc.st == D_WAIT ? 6 : 30;
 		if (WaitNextEvent(everyEvent, &ev, sleep, 0)) {
 			switch (ev.what) {
 			case mouseDown: mouse_down(&ev); break;
 			case keyDown: case autoKey: key_down(&ev); break;
 			case updateEvt:
 				if ((void *)ev.message == win) { BeginUpdate(win); redraw_all(); EndUpdate(win); }
+				else if (lib_window() && (void *)ev.message == lib_window()) { BeginUpdate((void *)ev.message); lib_update(); EndUpdate((void *)ev.message); }
 				break;
-			case activateEvt: if ((void *)ev.message == win) activate(ev.modifiers & activeFlag); break;
+			case activateEvt:
+				if ((void *)ev.message == win) activate(ev.modifiers & activeFlag);
+				else if (lib_window() && (void *)ev.message == lib_window()) lib_activate(ev.modifiers & activeFlag);
+				break;
 			case osEvt:
 				if (((unsigned long)ev.message >> 24) == suspendResumeMessage) {
 					fg = ev.message & resumeFlag;
 					activate(fg);
+					if (lib_window()) lib_activate(fg && FrontWindow() == lib_window());
 					if (fg && stations_check()) build_radio_menu();   /* back from TeachText, perhaps */
 				}
 				break;
@@ -1476,8 +1637,11 @@ int main(void)
 			while (feed() == 2 && LM_TICKS - t0 < 2) { }
 		}
 		radio_poll();
+		lib_poll();
 		watch();
 	}
+	discover_stop();
+	fetch_cancel();
 	radio_quit();
 	close_file();
 	save_prefs();

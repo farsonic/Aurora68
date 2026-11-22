@@ -7,7 +7,7 @@
 #define PIPLAY_RADIO_H
 #include "stations.h"
 
-enum { RS_OFF, RS_RESOLVE, RS_OPEN, RS_SEND, RS_HEADERS, RS_PLAYING, RS_RETRY };
+enum { RS_OFF, RS_RESOLVE, RS_OPEN, RS_SEND, RS_HEADERS, RS_PLAYING, RS_RETRY, RS_DRAIN };
 
 struct radio_ui {
 	int st;                          /* RS_*: RS_OFF when no station plays */
@@ -24,6 +24,15 @@ struct radio_ui {
 	unsigned long retry_at;          /* Ticks of the next attempt (RS_RETRY) */
 	const char *error;               /* a failure to tell the user; the window clears it after showing it */
 	unsigned long seq;               /* bumped whenever something above changes */
+	/* a track of the music server's library (radio_play_track, 22 November 2026, docs/08 item 99): a stream
+	   with an end. When it ends, next() is asked for the next track's address: the card plays on and the
+	   next stream follows the last one's audio in its buffer (boundary_ms: ps->pos_ms where the next one
+	   will start). When there is none, the card plays out what it holds (RS_DRAIN) and ended is set.
+	   A connection lost on the way is made again from where its audio stopped: resume() rewrites the
+	   address for the seconds that came. */
+	int finite, ended;
+	int (*next)(char *url, int max, unsigned long boundary_ms);
+	void (*resume)(char *url, int max, unsigned long secs);
 };
 extern struct radio_ui radio;
 
@@ -32,6 +41,7 @@ extern struct stations *slist;         /* the station list (stations.h), from th
 void radio_init(void);
 /* plays the station at url (name for the window); 0 with radio.error set if it cannot even start */
 int radio_play(const char *name, const char *url);
+int radio_play_track(const char *name, const char *url);   /* the same, as a library track (finite above) */
 void radio_stop(void);                 /* closes the connection, stops the card */
 void radio_pause(int on);
 void radio_poll(void);                 /* from the event loop, as often as it can */
@@ -45,6 +55,10 @@ int stations_check(void);
 /* Radio > Add Default Stations: the built-in stations the file lacks added at its end (stations.c says which
    count as there) and the list read again; how many, 0 if it has them all, -1 if the file could not be written */
 int stations_add_defaults(void);
+
+/* the family tried first when a name has both (Library or Radio > Connect By, kept in the preferences):
+   6 IPv6, 4 IPv4; the other is tried when the first fails. For the radio and the library alike. */
+extern int net_prefer;
 
 /* from piplay.c */
 void pi_log(const char *text);

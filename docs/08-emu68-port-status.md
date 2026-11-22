@@ -3796,7 +3796,6 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      plain HFS, which System 6 reads, but no run was made); the Finder's handling of a view of many thousand
      files in its windows at the SE's speed. Stage 3 (writes back to FAT/exFAT) is not done; its plan is in
      issue #20.
-
 98. **The video card: MPEG-1 decoded on core 1, drawn into the Mac's own screens (22 November, issue #23).**
    The owner asked for YouTube on the Mac, "elegant", through a card that exists only in the Pi and that
    Alice68 could share; then, the same evening, that it play on the SE's own screen as well as on HDMI ("yes,
@@ -3871,6 +3870,61 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      the Linux build only, with made-up colour tables). Not done: the Mac's program (issue #24), a clipping
      region finer than "visible", and a scaler better than nearest pixel (the helper sends the size asked for,
      so it is rarely used).
+
+99. **Aurora68 Play's Library: the music server's artists, albums and covers, and a queue (22 November).** The
+   owner put about 120 albums (M4A, "Artist - Album" folders, a cover.jpg in each) behind the music server
+   on a NAS and asked for Aurora68 Play to become "more like a Spotify type app": artists, album art, play
+   any track, while the radio stays as it was.
+   - *The division of work.* The server (`tools/music-server`) does what a 68k should not: it reads tags and
+     lengths (ffprobe, per album when it is first listed, kept), converts M4A to MP3, and makes each cover a
+     bitmap of the size and depth asked for: Atkinson's dithering for one bit, the System's 'clut' 8 for
+     eight (Floyd-Steinberg onto the 6x6x6 cube and the grey ramp). Its answers to the Mac are text a C loop
+     splits (`/mac/...`: Mac Roman, Return-ended records, tab-separated fields, pages of 200), not JSON;
+     `mac/piplay/libparse.c` reads them and `tools/libparse_test.c` checks it on the host (15 checks, one of
+     which found the Mac side reading a cover's row length from the wrong field before it ever ran).
+   - *The Mac.* A second HTTP client (`fetch.c`) for lists and covers, one request at a time, every step from
+     the event loop, beside the radio's connection; the window, the views, the queue and Now Playing in
+     `library.c`. A track is a radio stream with an end (`radio_play_track`): when its connection closes,
+     radio.c asks for the next track's address and connects again without stopping the card, so an album
+     plays without gaps; where the next track begins is the card's position plus what it holds at that
+     moment, and the display moves on when `pos_ms` gets there. A connection lost in a track is made again
+     from the second its audio stopped (`/t/ID?start=S`). 512 KB partition (was 256), colour windows where
+     Color QuickDraw is so that an 8-bit cover keeps its colours.
+   - *Finding the server.* A UDP probe to port 8070. In the testbed Riptide's MacTCP interface refused both
+     the limited broadcast and the network's broadcast (error -23033: its UDP streams are not marked for
+     broadcast, unlike Apple's MacTCP, which sends them), so the probe also goes to the multicast group
+     239.255.68.70, which the server joins; that one went through. (A Riptide change, SO_BROADCAST on
+     MacTCP UDP streams, would let the broadcast through too; not made here.) The answer carries the
+     server's IPv4 and IPv6 addresses; Play takes the family **Connect By** names and keeps the other: with
+     the server reporting an unreachable `fd68::99`, the open failed (-23033) and Play went on to the IPv4
+     address by itself. For IPv4 it uses the address the answer came from (the server's own idea of its
+     address can be a container's).
+   - *IPv6 first or IPv4 first* (the owner's requirement): one preference for the radio and the library,
+     in the Library and Radio menus (Connect By), kept in the preferences file (now version 2, which also
+     keeps the server, Shuffle and the Library window; a version 1 file is still read). Radio passes it to
+     .IPP6's lookup as the order (Riptide alternates the families in a long answer, so the other family comes
+     next on a failure); the library's client does the same and tries a name's next address when one does
+     not connect.
+   - *The owner's IPv6 Live report* (Open URL with `http://[a global IPv6 address]:8423/live` showed as the
+     name only the address's first group with its bracket,
+     "Stopped", no sound). In the testbed the same URL shape (`http://[fd68::1]:8423/live`) connected to
+     the right address and port over IPv6 and the name showed whole, also with the owner's exact address;
+     the bracketed name has been handled since 21 November (stations.c and Open URL alike), and the released
+     0.12 Play has that code, so the cut name was not reproduced. The connection in the testbed failed only
+     because pinet relayed PINET_FORWARD's ports over IPv4 alone (now over IPv6 too), after which the
+     library's tracks streamed over IPv6. A failed connection now says, in its alert, the address and port
+     tried and the stack's number in words ("could not connect to [2001:db8::20]:8423 (Riptide error -23065:
+     this Macintosh has no address of that family to send from)"), which is what the owner's case needs to
+     tell a Mac without a global IPv6 address from a server that refused.
+   - *Testbed* (solo board, 512x342, Riptide, the server on the host through pinet's new `PINET_UDP` relay
+     and `PINET_FORWARD` over IPv6): found by the probe; artists, an artist's albums with covers, an album's
+     tracks under its cover; an album played track to track with the display moving on at each boundary,
+     the queue ending ("the last track has played"); Find; the Connect By submenu; quit and start again with
+     the server, the preference and the window remembered; Live over IPv4. Screenshots in the scratchpad of
+     that session. The music server's test checks the `/mac/` interface (75 checks in all).
+   - *Not verified:* the real SE and its WiFi; a colour screen (the 8-bit covers' palette indices are
+     checked on the server, not seen drawn); Apple's MacTCP (the testbed image has Riptide); System 6; a
+     library of the owner's size on the Mac (its pages are 200 rows, the owner's 79 artists one page).
 
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)

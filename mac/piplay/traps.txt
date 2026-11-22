@@ -31,3 +31,11 @@ A84F - SetItemCmd(void *menu:l, int item:w, int cmd:c)
 A944 - SetItemMark(void *menu:l, int item:w, int mark:c)
 A936 - DeleteMenu(int id:w)
 A932 - DisposeMenu(void *menu:l)
+# the Library window (library.c, 22 November 2026): covers drawn with CopyBits, from a BitMap on a black and
+# white screen or an 8-bit PixMap in the System's colours ('clut' 8) on a colour one; the selected row inverted;
+# colour windows where Color QuickDraw is (the IIci ROM has it), so that a cover keeps its colours
+A8EC - CopyBits(const void *src:l, const void *dst:l, const Rect *sr:l, const Rect *dr:l, int mode:w, void *mask:l)
+A8A4 - InvertRect(const Rect *r:l)
+AA45 l NewCWindow(void *storage:l, const Rect *bounds:l, const unsigned char *title:l, int visible:b, int procID:w, void *behind:l, int goAway:b, long refCon:l)
+AA18 l GetCTable(int id:w)
+AA27 l GetMaxDevice(const Rect *r:l)

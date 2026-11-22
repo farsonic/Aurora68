@@ -18,6 +18,8 @@ COPY aurora68_music_server.py /app/aurora68_music_server.py
 # IPv6 and IPv4), MUSIC_MAX_LISTENERS (16), MUSIC_BITRATE (192: what other formats become); the music at /music
 ENV MUSIC_DIR=/music MUSIC_PORT=8000 PYTHONUNBUFFERED=1
 EXPOSE 8000
+# Aurora68 Play's probe for the server (UDP, broadcast and the group 239.255.68.70): needs host networking
+EXPOSE 8070/udp
 # any user that can read the music: nobody by default, the owner's PUID:PGID from docker-compose.yml
 USER 65534:65534
 HEALTHCHECK --interval=60s --timeout=5s \

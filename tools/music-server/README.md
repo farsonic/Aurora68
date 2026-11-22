@@ -113,6 +113,38 @@ python3 aurora68_music_server.py /path/to/music --name "NAS Music"
 Folder and song names are converted to the Mac's character set; anything it lacks becomes a question
 mark.
 
+## Aurora68 Play's Library
+Aurora68 Play 1.2 browses the server itself: **Library > Show Library** (Command-L) lists the artists, an
+artist's albums with their covers, an album's tracks under its cover, and plays a track, an album or an
+artist with a queue (Previous, Next, Shuffle), the cover and the track in its player window. It finds the
+server by itself: a UDP probe to port **8070**, sent as a broadcast and to the multicast group
+**239.255.68.70** (Riptide's MacTCP interface sends the second where it refuses the first). The answer
+carries the server's IPv4 and IPv6 addresses, and Play takes the one its **Connect By** preference names
+(IPv6 First or IPv4 First, in the Library and Radio menus), the other if that fails. With host networking
+(the compose file's way) the probe reaches the container; behind Docker's bridge network, or on another
+subnet, choose **Library > Connect to Server...** and type the address, such as `192.168.1.20:8423`.
+`MUSIC_DISCOVERY_PORT` moves the UDP port (0: no probe answered).
+
+The Library's own requests are made for a 68k program written in C: text in Mac Roman, one record a
+line ended by a Return, fields separated by tabs, a first line `A68M 1 KIND TOTAL FROM COUNT`, and
+`?from=N&count=M` for a page of a long list (Play keeps a page, never the whole library). Covers come
+as bitmaps dithered here, so the Mac only copies bits to the screen:
+
+| | |
+|---|---|
+| `/mac/info` | the name, the version, how many artists, albums and tracks |
+| `/mac/artists` | id, name, albums, tracks: sorted as record shops file them ("The Cure" under C) |
+| `/mac/albums?artist=ID` | id, title, artist, tracks, seconds (no artist: every album) |
+| `/mac/tracks?album=ID` or `?artist=ID` | id, number, title, artist, seconds, album id (an album's first listing reads its tags and lengths with ffprobe, then keeps them) |
+| `/mac/search?q=WORDS` | artists (`A`), albums (`L`) and tracks (`T`) whose names hold every word (the words in Mac Roman) |
+| `/mac/art?album=ID&w=64&h=64&depth=1` | the cover: `A68ART 1 W H DEPTH ROWBYTES`, then the rows. Depth 1: Bill Atkinson's dithering, 1 black. Depth 8: indices into the Mac's standard 256-colour palette ('clut' 8) |
+| `/mac/arts?albums=ID,ID,...&w=32&h=32` | covers for a list of albums: `A68ARTS 1 N W H DEPTH ROWBYTES`, then for each a byte (1 a cover, 0 none) and its rows |
+| `/t/ID?start=S` | one track as MP3 (an MP3 as it is, anything else converted), from S seconds, ending where the track does |
+
+An album is a folder that holds songs itself; its artist is the part before " - " of a folder named
+"Artist - Album", else the folder it is in. A cover is `cover.jpg`, `folder.jpg`, `front.jpg` and the
+like beside the songs, else the picture inside the first song.
+
 ## Addresses
 | | |
 |---|---|
@@ -128,6 +160,7 @@ mark.
 | `/playlist.m3u?dir=FOLDER` | an M3U of a folder's files |
 | `/stations.txt` | the library as an Aurora68 Play stations file; `?host=ADDRESS` for the address written in it |
 | `/api/list?dir=FOLDER` | JSON: the folder's station, folders and files |
+| `/mac/...`, `/t/ID` | Aurora68 Play's Library (above) |
 
 ## Settings
 | Option | Environment | |
