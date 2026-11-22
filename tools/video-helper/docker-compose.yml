@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: MPL-2.0
+# docker compose up -d   (from tools/video-helper)
+services:
+  aurora68-video:
+    build: .
+    restart: unless-stopped
+    # host networking (Linux) so the Mac's discovery broadcast reaches the helper; on Docker Desktop
+    # (Mac, Windows) remove this line, uncomment "ports" and give the Mac the computer's address by hand
+    network_mode: host
+    # ports:
+    #   - "8069:8069/tcp"
+    #   - "8069:8069/udp"
+    environment:
+      AURORA68_VIDEO_NAME: "docker"       # the name Aurora68 Video shows
+      # AURORA68_VIDEO_TOKEN: "SECRET"    # optional: the Mac must then be given the same token

@@ -4,6 +4,12 @@
 exists only in the Pi, and portable to Alice68 (the Amiga side of the same Emu68 family). This is the
 design; GitHub issues #22 to #26 are its pieces.
 
+The first version of this document (the same day, commit 45ae177) had the helper dial in to the kernel's
+remote-control port. The owner turned that down: the remote control is for debugging, it may not be
+switched on, and it probably should not be on a machine in everyday use. So video now goes the way
+internet radio already goes in Aurora68 Play: the Mac's own program fetches it over the Mac's own TCP/IP,
+and the card only decodes. Nothing in the video path touches the remote control, its token or its port.
+
 ## Why the work is split this way
 YouTube needs TLS, JavaScript that YouTube changes to unlock its streams, and video in H.264, VP9 or AV1.
 The kernel runs on the bare Pi: it has no operating system, so no TLS library worth the name, no
@@ -15,68 +21,109 @@ second in plain C), with a small public decoder (pl_mpeg, MIT licence, one C fil
 
 - **The helper** (a computer on the same network: the owner's Mac, a Docker container, any Linux box)
   does everything modern: search, the YouTube-specific unlocking (yt-dlp, kept up to date there), and
-  conversion to MPEG-1 video with MP2 audio at the size the Mac will show (ffmpeg).
-- **The video card** (in the Pi) receives that stream, decodes it on a spare core, scales it, and puts
-  the picture where the Mac's window is, and the sound into the existing sound card.
-- **The Mac** asks for things and shows a window. It never touches a byte of video.
+  conversion to MPEG-1 video with MP2 audio at the size the Mac will show (ffmpeg). It is a small web
+  server.
+- **The Mac's program, Aurora68 Video,** finds the helper, asks it for searches and streams over plain
+  HTTP through MacTCP or Riptide, and copies the stream's bytes into the card. It never decodes anything.
+- **The video card** (in the Pi) decodes the bytes it is given on a spare core, scales the picture into
+  the Mac's window, and sends the sound to the existing sound card.
 
-## The helper dials in
-The helper opens a connection to the Pi's remote-control port (port 8068, or 80 on the wired port,
-with the remote control's token, docs/13) and keeps it open: `GET /video/attach`. The kernel writes one
-line of JSON down it for each thing the Mac asks for, and the helper answers on new connections:
+## The helper: a small web server
+`tools/video-helper/aurora68_video_helper.py`, Python 3 with only the standard library, calling the
+programs `yt-dlp` and `ffmpeg`. Port 8069, TCP for HTTP and UDP for discovery. (It is next to the
+remote control's 8068 only in numbering: the two share nothing, and run on different machines.)
 
-| The kernel asks (a line on the attach connection) | The helper answers |
+| Request | Answer |
 |---|---|
-| `{"op":"search","q":"...","id":N}` | `POST /video/results?id=N`: JSON, up to 30 entries (title, channel, length, id) |
-| `{"op":"play","video":"...","w":W,"h":H,"start":S,"id":N}` | `POST /video/stream?id=N`: the MPEG program stream (MPEG-1 video, MP2 audio), as long as it lasts, flow-controlled by TCP |
-| `{"op":"stop","id":N}` | closes that stream |
+| `GET /info` | `{"name", "version", "mode": "youtube" or "files"}` |
+| `GET /search?q=TEXT` | `{"results": [{"video", "title", "channel", "seconds"}, ...]}`, up to 30, or `{"error": "..."}` in words |
+| `GET /play?video=ID&w=W&h=H&start=S` | an MPEG program stream: MPEG-1 video at W x H (fitted and padded black, 25 frames a second, no B-frames), MP2 at 44.1 kHz stereo, 128 kbit/s. No Content-Length: it ends when the video does, and the Mac closing the connection stops it (the helper kills its ffmpeg) |
 
-So the kernel needs no outgoing connection and no TCP client: its HTTP server (psmac_remote.c) and its
-receive flow control (docs/08 item 89) are all it uses. The Mac needs no network at all for video:
-without Riptide or MacTCP it still plays. The only setting is on the helper: the Pi's address and
-token, the same two `aurora68.py` uses. Pause and seek are the kernel's own (it stops reading the
-stream; a seek is a new `play` with `start`).
+- **HTTP/1.0, one request per connection,** which is what the Mac's code already does for radio
+  (`mac/piplay/radio.c`): the same request writer and header reader serve.
+- **Flow control is TCP's.** While the Mac is paused, or the card's ring is full, the Mac stops reading,
+  the helper's write blocks, and ffmpeg waits. No protocol of our own for pause.
+- **Seek** is a new `/play` with `start` in seconds. Pause and resume are the Mac's own (stop reading,
+  read again).
+- **Discovery:** a UDP datagram `AURORA68-VIDEO?` sent to port 8069 (the Mac broadcasts it) is answered
+  with the `/info` JSON plus `"port"`, so the owner types no address. If discovery cannot work (a Docker
+  container on a bridge network, another subnet) the program takes an address typed in.
+- **A token, if wanted:** `--token SECRET` makes the helper refuse (403) any request without the header
+  `X-Aurora-Token: SECRET`. Off by default: on a home network the helper shows public videos to anyone
+  who could watch them anyway. It is the helper's own setting, nothing to do with the Pi's.
+- **Safety:** a video ID must be letters, digits, `-` and `_`, and goes to yt-dlp as one argument, never
+  through a shell; search text likewise. In file mode (`--file a.mp4 --file b.mkv`) only the files named
+  on the command line can be played, by index (`file:0`), never by path.
+- **Sizes:** at most 1280x720, even numbers; the bit rate follows the size (about 0.09 bit per pixel per
+  frame, 300 to 2,500 kbit/s): 320x240 is about 430 kbit/s of video, 512x342 about 970.
 
-`/video/attach` is refused without the token, and only one helper is attached at a time (a second
-replaces the first). A video ID or search text goes to the helper as text and is never run as anything.
+Running it on a Mac (Homebrew), in Docker, and updating yt-dlp: `tools/video-helper/README.md`.
+
+## On the Mac: Aurora68 Video
+A small program, like Aurora68 Play in shape and in code:
+
+- **Finding the helper:** a UDP broadcast at start-up through the same UDP calls Aurora68 Play's mDNS
+  uses; the first answer is used and its name shown; File > Helper... takes an address (and token) by
+  hand, kept in the program's preferences.
+- **Search:** a search box and a list of results (title, channel, length).
+- **Play:** a window with Play, Pause, a position slider (a seek is a new `/play`), a size menu (it asks
+  the helper for that size), and, with an HDMI screen, full screen there.
+- **The stream:** a TCP connection to the helper, read in the program's idle time and on its own
+  asynchronous completion routine, as radio is; each block read is handed to the card's ring. The
+  program tells the card where its window's content is (global coordinates), whether it is covered, and
+  when it moves, resizes or closes.
+- **Without a helper:** the window says how to start one, in two lines.
+- The Mac's Human Interface Guidelines (1992); fits 512x342; System 7, and System 6 if practical.
+
+The network work is the Mac's: MacTCP or Riptide, Ethernet or WiFi, IPv4 or IPv6 (through `.IPP6` where
+present, as Aurora68 Play does). The kernel's remote control can be off.
+
+**The rate this needs.** 320x240 is about 560 kbit/s with its sound, 70 KB a second; Aurora68 Play
+already carries 320 kbit/s MP3 radio this way. Larger sizes are for the HDMI screen and want measuring
+through MacTCP on the real machine before they are offered by default (issue #24's testing).
 
 ## The card
 A virtual NuBus card in slot $B with its own declaration ROM (board name "Aurora68 Video") and its own
 window, so it does not crowd slot $9:
 
-- **A command block:** the Mac's requests (search, play with a rectangle, pause, resume, seek, stop,
-  volume) and the card's answers (state, position, length, frames shown and dropped, the helper attached
-  or not, the last error in words).
-- **A results area:** the search results as records the Mac lists.
+- **A stream ring** the Mac writes into (the same producer/consumer pair of offsets as the sound card's
+  ring, docs/08 item 74, the other way round): the Mac adds bytes and advances the write offset, the card
+  decodes and advances the read offset. A full ring is what pauses the Mac's reading, and through TCP the
+  helper.
+- **A command block:** the Mac's requests (start a stream with a rectangle and a screen, pause, resume,
+  flush for a seek, stop, volume, window moved or covered) and the card's answers (state, position in
+  the stream, frames shown and dropped, the last error in words).
 - **Where the picture goes**, chosen per play:
-  - *the HDMI screen*: straight into the frame buffer, inside the rectangle the Mac gives (its window's
-    content in global coordinates); the Mac draws nothing there and tells the card when the window moves,
-    resizes or is covered. Full colour at the screen's depth.
+  - *the HDMI screen*: straight into the frame buffer, inside the rectangle the Mac gives; the Mac draws
+    nothing there. Full colour at the screen's depth.
   - *the SE's own screen*: the kernel dithers each frame to one bit (ordered dithering) into the same
     rectangle of the SE's screen buffer, at the rate the SE can show (about 15 frames a second at
     320x240).
-- **The sound** goes into the sound card's ring (docs/08 item 74), so the SE's speaker and HDMI both
-  play it.
+- **The sound** goes into the sound card's ring, so the SE's speaker and HDMI both play it; the MPEG
+  stream's time stamps pace the pictures against it.
 
-The kernel side is in the shared Emu68 tree: the stream intake, the decoder, the scaler and ditherer,
-the audio path and the command block format are one C module (`psmac_video.c`), with the NuBus card as
-a thin layer. An Alice68 build keeps the module and puts a Zorro (autoconfig) card or an Amiga library in
-place of the NuBus layer: the helper and the protocol are the same.
+The card does no networking: everything it decodes was put in its ring by the Mac. That keeps it
+independent of the Pi's network and of the remote control, and it means anything that can fill the ring
+can use it: a QuickTime component reading an MPEG file from disk (issue #25) is the same card with a
+different producer.
 
-## On the Mac
-- **Aurora68 Video**, a small program: a search box, a list of results, a window that plays. Play,
-  pause, a position slider, a size menu (it asks the helper for that size), full screen on the HDMI
-  screen. It only writes requests to the card and draws its frame and controls.
-- **A QuickTime component** later (docs/15, issue #13): MPEG-1 files and streams in MoviePlayer and any
-  QuickTime program, through the same card.
+The kernel side is in the shared Emu68 tree: the ring and command block format, the demultiplexer, the
+decoder, the scaler and ditherer and the audio path are one C module (`psmac_video.c`), with the NuBus
+card as a thin layer. An Alice68 build keeps the module and puts a Zorro (autoconfig) card or an Amiga
+library in place of the NuBus layer; the helper and its HTTP interface are the same, and the Amiga's own
+TCP/IP (bsdsocket.library) fetches the stream as the Mac's does.
 
 ## Testing without YouTube
-The helper has a file mode: `aurora68-video-helper --file movie.mp4` serves one local file as "search
-results" and converts it the same way. ffmpeg makes test videos (`testsrc`, a tone), so the whole chain
-is tested in the QEMU testbed (helper on the host, through pinet) before any YouTube is involved.
+The helper has a file mode: `--file movie.mp4` serves local files as "search results" and converts them
+the same way. ffmpeg makes test videos (`testsrc`, a tone), so the whole chain is tested in the QEMU
+testbed (helper on the host, reached through pinet as the radio stations are) before any YouTube is
+involved. `tools/video-helper/test_helper.py` tests the helper on its own: discovery, `/info`, `/search`,
+`/play` checked with ffprobe (MPEG-1 at the size asked for, MP2 at 44.1 kHz stereo), a stopped play
+leaving no ffmpeg behind, refusals, the token.
 
 ## Pieces (GitHub issues)
-1. The helper: Python service and Docker image (issue #22).
+1. The helper: Python service and Docker image (issue #22). Done 22 November 2026 (file mode tested
+   here; a real YouTube search and play is the owner's to try, not the build environment's).
 2. The card and the decoder in the kernel (issue #23).
 3. Aurora68 Video, the Mac program (issue #24).
 4. The QuickTime component (issue #25, with #13).
