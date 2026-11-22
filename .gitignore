@@ -41,7 +41,8 @@ mac/build/pidepth.elf
 # the exact FPU's host test and its testbed INIT (tools/fpu_test.sh, make -C mac fputest): not released
 mac/build/fpu/
 mac/build/fputest.*
-mac/build/Aurora68-FPUTest.bin
+mac/build/fputest-speed.*
+mac/build/Aurora68-FPUTest*.bin
 mac/build/wifimenu.elf
 mac/build/wifimenu_traps.txt
 mac/build/wm/

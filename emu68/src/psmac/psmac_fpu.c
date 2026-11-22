@@ -90,10 +90,11 @@ static void WR32(uint32_t a, uint32_t v) { *(volatile uint32_t *)(uintptr_t)a = 
 #define AE_DZ   0x10u
 #define AE_INEX 0x08u
 
-/* results that need an exception taken: (format << 12) | vector */
-#define V_PRIV   8u
-#define V_LINEF  11u
-#define V_TRAPCC (0x2000u | 7u)
+/* results that need an exception taken: (format << 12) | the vector's offset in the table (vector * 4),
+   the JIT's own convention (M68k.h: VECTOR_LINE_F is 0x02c) */
+#define V_PRIV   (8u * 4)
+#define V_LINEF  (11u * 4)
+#define V_TRAPCC (0x2000u | 7u * 4)
 
 static uint8_t prec_of_fpcr(void)
 {
@@ -362,13 +363,13 @@ static uint32_t trap_vector(void)
 {
     uint32_t en = (psmac_fpu.fpcr & psmac_fpu.fpsr) & 0xff00u;
     if (!en) return 0;
-    if (en & EX_BSUN) return 48;
-    if (en & EX_SNAN) return 54;
-    if (en & EX_OPERR) return 52;
-    if (en & EX_OVFL) return 53;
-    if (en & EX_UNFL) return 51;
-    if (en & EX_DZ) return 50;
-    return 49;                                    /* INEX1, INEX2 */
+    if (en & EX_BSUN) return 48 * 4;
+    if (en & EX_SNAN) return 54 * 4;
+    if (en & EX_OPERR) return 52 * 4;
+    if (en & EX_OVFL) return 53 * 4;
+    if (en & EX_UNFL) return 51 * 4;
+    if (en & EX_DZ) return 50 * 4;
+    return 49 * 4;                                /* INEX1, INEX2 */
 }
 
 /* ------------------------------------------------------------------ FMOD and FREM */
@@ -741,7 +742,7 @@ static bool cond(int p, uint32_t *bsun_trap)
     *bsun_trap = 0;
     if ((p & 0x10) && nan) {
         psmac_fpu.fpsr |= EX_BSUN | AE_IOP;
-        if (psmac_fpu.fpcr & EX_BSUN) *bsun_trap = 48;
+        if (psmac_fpu.fpcr & EX_BSUN) *bsun_trap = 48 * 4;
     }
     switch (p & 0x0f) {
     case 0x0: return false;                       /* F, SF */
@@ -861,6 +862,13 @@ static uint32_t general(struct ctx *c, uint16_t op, uint16_t cmd)
     return trap_vector();
 }
 
+/* an instruction that cannot be carried out: the exception is the instruction's own, its PC the instruction's */
+static uint32_t fault(uint64_t *regs, uint32_t pc, uint32_t v)
+{
+    regs[PSMAC_FPU_X_PC] = pc;
+    return v;
+}
+
 uint32_t psmac_fpu_exec(uint64_t *regs, uint32_t sr)
 {
     struct ctx c = { .r = regs, .pc = (uint32_t)regs[PSMAC_FPU_X_PC], .sr = sr, .bad = false };
@@ -872,14 +880,14 @@ uint32_t psmac_fpu_exec(uint64_t *regs, uint32_t sr)
 
     if (!len) return V_LINEF;
     c.ext = c.pc + 2;
+    regs[PSMAC_FPU_X_PC] = next;                  /* the JIT's PC is this from here on (EMIT_FPU_exact) */
 
     switch (type) {
     case 0:
         c.ext += 2;
         psmac_fpu.null = 0;
         v = general(&c, op, w1);
-        if (v == V_LINEF) return v;
-        if (v) regs[PSMAC_FPU_X_PC] = next;
+        if (v == V_LINEF) return fault(regs, c.pc, v);
         return v;
 
     case 1: {                                     /* FScc, FDBcc, FTRAPcc */
@@ -887,7 +895,7 @@ uint32_t psmac_fpu_exec(uint64_t *regs, uint32_t sr)
         c.ext += 2;
         psmac_fpu.null = 0;
         psmac_fpu.fpiar = c.pc;
-        if (p & 0x20) return V_LINEF;
+        if (p & 0x20) return fault(regs, c.pc, V_LINEF);
         if (mode == 1) {                          /* FDBcc Dn, label */
             int16_t disp = (int16_t)RD16(c.pc + 4);
             uint32_t target = c.pc + 4 + (uint32_t)(int32_t)disp;
@@ -906,17 +914,16 @@ uint32_t psmac_fpu_exec(uint64_t *regs, uint32_t sr)
         }
         struct ea e;                              /* FScc <ea> */
         bool t = cond(p, &v);
-        if (!ea_get(&c, mode, reg, 1, &e) || e.kind == EA_IMM || e.kind == EA_A) return V_LINEF;
+        if (!ea_get(&c, mode, reg, 1, &e) || e.kind == EA_IMM || e.kind == EA_A) return fault(regs, c.pc, V_LINEF);
         if (e.kind == EA_D) setDn(&c, reg, (Dn(&c, reg) & 0xffffff00u) | (t ? 0xff : 0));
         else WR8(e.addr, t ? 0xff : 0);
-        if (v) regs[PSMAC_FPU_X_PC] = next;
         return v;
     }
 
     case 2: case 3: {                             /* FBcc.W, FBcc.L (FNOP is FBF.W with no displacement) */
         int32_t disp = type == 2 ? (int16_t)w1 : (int32_t)((uint32_t)w1 << 16 | w2);
         psmac_fpu.null = 0;
-        if (op & 0x20) return V_LINEF;
+        if (op & 0x20) return fault(regs, c.pc, V_LINEF);
         if (op != 0xf280 || w1) psmac_fpu.fpiar = c.pc;
         bool t = cond(op & 0x3f, &v);
         regs[PSMAC_FPU_X_PC] = t && !v ? c.pc + 2 + (uint32_t)disp : next;
@@ -925,12 +932,12 @@ uint32_t psmac_fpu_exec(uint64_t *regs, uint32_t sr)
 
     case 4: {                                     /* FSAVE */
         struct ea e;
-        if (!(sr & 0x2000)) return V_PRIV;
-        if (mode == 0 || mode == 1 || mode == 3 || (mode == 7 && reg >= 2)) return V_LINEF;
+        if (!(sr & 0x2000)) return fault(regs, c.pc, V_PRIV);
+        if (mode == 0 || mode == 1 || mode == 3 || (mode == 7 && reg >= 2)) return fault(regs, c.pc, V_LINEF);
         /* a null frame after reset or FRESTORE of one; else a 68882's idle frame (version $1F, 56 bytes):
            the ROM's Gestalt 'fpu ' does fnop; fsave -(sp) and reads $1F38 as a 68882 (docs/08 item 46) */
         int size = psmac_fpu.null ? 4 : 4 + 0x38;
-        if (!ea_get(&c, mode, reg, size, &e)) return V_LINEF;
+        if (!ea_get(&c, mode, reg, size, &e)) return fault(regs, c.pc, V_LINEF);
         if (psmac_fpu.null) WR32(e.addr, 0);
         else {
             WR32(e.addr, 0x1f380000u);
@@ -941,13 +948,13 @@ uint32_t psmac_fpu_exec(uint64_t *regs, uint32_t sr)
     }
 
     case 5: {                                     /* FRESTORE */
-        if (!(sr & 0x2000)) return V_PRIV;
-        if (mode == 0 || mode == 1 || mode == 4 || (mode == 7 && reg == 4)) return V_LINEF;
+        if (!(sr & 0x2000)) return fault(regs, c.pc, V_PRIV);
+        if (mode == 0 || mode == 1 || mode == 4 || (mode == 7 && reg == 4)) return fault(regs, c.pc, V_LINEF);
         uint32_t addr, f;
         if (mode == 3) addr = An(&c, reg);
         else {
             struct ea e;
-            if (!ea_get(&c, mode, reg, 4, &e)) return V_LINEF;
+            if (!ea_get(&c, mode, reg, 4, &e)) return fault(regs, c.pc, V_LINEF);
             addr = e.addr;
         }
         f = RD32(addr);
@@ -962,7 +969,7 @@ uint32_t psmac_fpu_exec(uint64_t *regs, uint32_t sr)
         return 0;
     }
     }
-    return V_LINEF;
+    return fault(regs, c.pc, V_LINEF);
 }
 
 #ifndef PSMAC_FPU_HOST

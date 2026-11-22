@@ -17,6 +17,13 @@
 	.text
 	.globl	init_start
 	.equ	Ticks,	0x016A
+	.ifdef	SPEEDONLY
+	.equ	NARITH,	1000000			| ten times the loops: Emu68's doubles finish the short ones within a tick
+	.equ	NSIN,	200000
+	.else
+	.equ	NARITH,	100000
+	.equ	NSIN,	20000
+	.endif
 
 	.macro	expect name, se, hi, lo		| FP0 against an extended value (68881 memory format)
 	fmove.x	%fp0,(%a3)
@@ -44,12 +51,14 @@ init_start:
 	moveq	#0,%d7
 	fmove.l	#0,%fpcr
 	fmove.l	#0,%fpsr
+	.ifndef	SPEEDONLY		| make fputest-speed: the timing alone, for mac.fpu=double, which the checks upset
 
 	| (1 + 2^-60) - 1: 2^-60 exactly (doubles give 0), and no flags
 	fmove.x	c_tiny(%pc),%fp0
 	fsub.x	c_one(%pc),%fp0
+	fmove.l	%fpsr,%d5
 	expect	n_tiny, 0x3FC3, 0x80000000, 0
-	fmove.l	%fpsr,%d0
+	move.l	%d5,%d0
 	expect_l n_tinyfl, 0
 
 	| 1/3 in the four rounding modes and three precisions
@@ -96,8 +105,9 @@ init_start:
 	fmove.l	#0,%fpsr
 	fmove.x	c_zero(%pc),%fp0
 	fdiv.x	c_zero(%pc),%fp0
+	fmove.l	%fpsr,%d5			| before the FMOVE out of expect, which sets the exception byte afresh
 	expect	n_nan, 0x7FFF, 0xFFFFFFFF, 0xFFFFFFFF
-	fmove.l	%fpsr,%d0
+	move.l	%d5,%d0
 	expect_l n_nanfl, 0x01002080
 
 	| the memory format's exponent 0: 2^-16383 with the integer bit, times 1.5
@@ -187,6 +197,7 @@ init_start:
 	clr.b	(%a1)
 	lea	msg(%pc),%a1
 	bsr	do_log
+	.endif
 
 	| speed: register arithmetic, memory operands, a transcendental, a mixed loop
 	lea	msg(%pc),%a1
@@ -196,7 +207,7 @@ init_start:
 	fmove.x	c_onehalf(%pc),%fp1
 	fmove.x	c_twothirds(%pc),%fp2
 	move.l	Ticks,%d4
-	move.l	#100000,%d3
+	move.l	#NARITH,%d3
 5:	fadd.x	%fp1,%fp0
 	fmul.x	%fp2,%fp0
 	subq.l	#1,%d3
@@ -208,7 +219,7 @@ init_start:
 	bsr	puts
 	lea	c_onehalf(%pc),%a2
 	move.l	Ticks,%d4
-	move.l	#100000,%d3
+	move.l	#NARITH,%d3
 6:	fadd.x	(%a2),%fp0
 	fmul.d	c_dhalf(%pc),%fp0
 	subq.l	#1,%d3
@@ -219,9 +230,10 @@ init_start:
 	lea	t_mem(%pc),%a0
 	bsr	puts
 	move.l	Ticks,%d4
-	move.w	#19999,%d3
+	move.l	#NSIN,%d3
 7:	fsin.x	%fp1,%fp0
-	dbf	%d3,7b
+	subq.l	#1,%d3
+	bne.s	7b
 	move.l	Ticks,%d0
 	sub.l	%d4,%d0
 	bsr	putdec
@@ -385,9 +397,16 @@ n_trap:	.asciz	"operr-trap"
 t_head:	.asciz	"FPU test: "
 t_passed: .asciz " passed, "
 t_failed: .asciz " failed "
+	.ifdef	SPEEDONLY
+t_speed: .asciz	"FPU test speed: 2000000 FADD and FMUL (registers) in "
+t_regs:	.asciz	" ticks, 2000000 (memory, .X and .D) in "
+t_mem:	.asciz	" ticks, 200000 FSIN in "
+	.else
 t_speed: .asciz	"FPU test speed: 200000 FADD and FMUL (registers) in "
 t_regs:	.asciz	" ticks, 200000 (memory, .X and .D) in "
 t_mem:	.asciz	" ticks, 20000 FSIN in "
+	.endif
+
 t_sin:	.asciz	" ticks"
 	.even
 fails:	.space	400

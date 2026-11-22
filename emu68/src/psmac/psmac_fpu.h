@@ -36,8 +36,8 @@ extern struct psmac_fpu_state psmac_fpu;
 extern int psmac_fpu_exact;         /* mac.fpu=exact (1, the default) or double (0) */
 
 /* Carry out the FPU instruction at regs[PSMAC_FPU_X_PC]. Returns 0, or an exception for the JIT to take:
-   (format << 12) | vector, with regs[PSMAC_FPU_X_PC] the PC to stack. For an instruction that
-   psmac_fpu_length says goes on in the block, the PC is left alone unless an exception is returned. */
+   (format << 12) | the vector's offset (vector * 4, as M68K_Exception takes it). regs[PSMAC_FPU_X_PC] is left at the next instruction, a branch's target, or the
+   PC to stack with the exception (the instruction's own for F-line and privilege violations). */
 uint32_t psmac_fpu_exec(uint64_t *regs, uint32_t sr);
 
 /* The instruction's length in 16-bit words from its first three words (0: not an instruction this

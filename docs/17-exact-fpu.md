@@ -46,12 +46,14 @@ With `mac.fpu=exact`, `EMIT_lineF` hands every coprocessor-1 instruction to `EMI
    bus address faults to the same handler as theirs), writes back any address register an (An)+ or
    -(An) changed, and does the arithmetic;
 4. the registers loaded again, the call's result in a register of the allocator's;
-5. if that result is not zero, the exception it names taken there and then: (format << 12) | vector in
+5. if that result is not zero, the exception it names taken there and then: (format << 12) | the vector's offset (vector times 4, `M68K_Exception`'s convention) in
    w1, the SR in w0, the instruction's address pushed as a format 2 frame's address field (FTRAPcc's),
    `M68K_Exception` called, the block left through a local exit, as `EMIT_TRAPcc` leaves it;
-6. otherwise, for an instruction that only computes, the PC advanced by its length (known at
-   translation from its first three words, `psmac_fpu_length`) and the block goes on; for FBcc, FDBcc
-   and FTRAPcc the C side has set the PC and the block ends.
+6. otherwise, for an instruction that only computes, the block goes on; for FBcc, FDBcc and FTRAPcc
+   it ends. Either way the C side has already left x18 at the next instruction (whose address it knows
+   from `psmac_fpu_length`, as the translator does), a branch's target or the exception's PC, so the
+   JIT emits no `EMIT_AdvancePC` after the call: a pending PC offset at that point would be flushed into
+   the exception path's exit only and lost on the normal path (22 November 2026).
 
 So there are no FPU registers in the AArch64's NEON file any more: the state is a C structure
 (`psmac_fpu`: eight `extFloat80_t`, FPCR, FPSR, FPIAR, and whether the FPU is in its null state).

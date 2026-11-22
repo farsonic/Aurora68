@@ -115,6 +115,14 @@ static void load(void)
     const char *opt = psmac_option("mac.sane"), *path = psmac_option("mac.serom"), *src, *why;
     state = -1;
     if (opt && opt[0] == 'r') { kprintf("[PSMAC] SANE: the IIci ROM's (mac.sane=rom)\n"); return; }
+    /* With the exact FPU (mac.fpu=exact, psmac_fpu.c, docs/17) the IIci ROM's SANE computes on a 68882 that
+       keeps extended precision, so it is exact as well as fast: it is the default then, and mac.sane=se
+       asks for the SE ROM's packages all the same (22 November 2026, issue #27). */
+    extern int psmac_fpu_exact;
+    if (!(opt && opt[0] == 's') && psmac_fpu_exact) {
+        kprintf("[PSMAC] SANE: the IIci ROM's, on the exact FPU (mac.sane=se for the SE ROM's)\n");
+        return;
+    }
     if (path) {
         int32_t got = -1;
         if (psmac_sh_available()) {

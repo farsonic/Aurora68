@@ -5008,10 +5008,11 @@ static void psmac_emit_mmu_call(struct TranslatorContext *ctx, uint8_t an, int16
    (psmac/psmac_fpu.c). Every AArch64 register is saved on the stack around the call as
    psmac_emit_mmu_call does; the save area is the register file the C side reads and writes (the 68k's PC
    in x18, D0-D7 in x19-x26, A0-A7 in x13-x17 and x27-x29), and the SR goes in w1. The call returns 0, or
-   an exception for the 68k to take, (format << 12) | vector, which is taken here at run time the way
+   an exception for the 68k to take, (format << 12) | vector offset, which is taken here at run time the way
    EMIT_Exception takes one known at translation, with the instruction's address as a format 2 frame's
-   (FTRAPcc's) address field. An instruction that only computes goes on in the block, the PC advanced
-   here; a branch (FBcc, FDBcc, FTRAPcc) sets the PC in C and ends the block. Written 22 November 2026. */
+   (FTRAPcc's) address field. The C side leaves x18 at the next instruction (or a branch's target, or
+   the exception's PC), so the JIT's pending PC offset stays zero; an instruction that only computes goes
+   on in the block, a branch (FBcc, FDBcc, FTRAPcc) ends it. Written 22 November 2026. */
 static uint32_t EMIT_FPU_exact(struct TranslatorContext *ctx)
 {
     extern void M68K_Exception();
@@ -5073,10 +5074,11 @@ static uint32_t EMIT_FPU_exact(struct TranslatorContext *ctx)
         ctx->tc_M68kCodePtr += words ? words : 1;
         EMIT(ctx, INSN_TO_LE(0xffffffff));
     } else {
-        /* the exception path leaves the block here; the instruction's normal path goes on */
+        /* the exception path leaves the block here; the instruction's normal path goes on. x18 is already the
+           next instruction's address (the C side moved it) and _pc_rel is 0, as the local exit needs: an
+           EMIT_AdvancePC here would be flushed into the exit path only, and lost on this one */
         EMIT(ctx, (uint32_t)(uintptr_t)skip, 1, 0, INSN_TO_LE(0xfffffffe));
         ctx->tc_M68kCodePtr += words;
-        EMIT_AdvancePC(ctx, 2 * words);
     }
     return 1;
 }

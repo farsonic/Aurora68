@@ -56,9 +56,12 @@ static uint32_t run(const uint16_t *w, int n, uint32_t *pc_after)
     int ends;
     int len = psmac_fpu_length(w[0], w[1], n > 2 ? w[2] : 0, &ends);
     uint32_t v = psmac_fpu_exec(regs, SUPER);
-    if (!ends && !v) regs[PSMAC_FPU_X_PC] = CODE + 2 * (uint32_t)len;   /* the JIT advances the PC itself */
     if (pc_after) *pc_after = (uint32_t)regs[PSMAC_FPU_X_PC];
     if (len != n && !v) { printf("length %d for %d words (%04x %04x)\n", len, n, w[0], w[1]); failures++; }
+    if (!ends && !v && regs[PSMAC_FPU_X_PC] != CODE + 2 * (uint32_t)len) {
+        printf("PC %08x after %04x %04x, not the next instruction\n", (uint32_t)regs[PSMAC_FPU_X_PC], w[0], w[1]);
+        failures++;
+    }
     return v;
 }
 
@@ -353,7 +356,7 @@ static void test_movem(void)
     psmac_fpu_exec(regs, SUPER);
     CHECK(psmac_fpu.fpcr == 0 && psmac_fpu.null && psmac_fpu.fp[0].se == 0x7fff, "frestore null resets");
     regs[PSMAC_FPU_X_PC] = CODE;
-    CHECK(psmac_fpu_exec(regs, 0) == 8, "fsave in user mode: privilege violation");
+    CHECK(psmac_fpu_exec(regs, 0) == 8 * 4, "fsave in user mode: privilege violation");
 }
 
 /* ------------------------------------------------------------------ conditions and branches */
@@ -383,7 +386,7 @@ static void test_conditions(void)
     run(bgts, 2, &pc);
     CHECK(psmac_fpu.fpsr & 0x8000, "BSUN on a signalling predicate");
     psmac_fpu.fpcr = 0x8000;
-    CHECK(run(bgts, 2, &pc) == 48, "BSUN enabled takes vector 48");
+    CHECK(run(bgts, 2, &pc) == 48 * 4, "BSUN enabled takes vector 48");
     psmac_fpu.fpcr = 0;
     /* fdbne d3: counts while not equal */
     run2(0xf200, 0x0438);                         /* not equal */
@@ -398,10 +401,10 @@ static void test_conditions(void)
     run2(0xf244, 0x000e);                         /* fsne d4 */
     CHECK((getD(4) & 0xff) == 0xff, "fsne");
     uint16_t trap[2] = { 0xf27c, 0x000f };         /* ftrapt */
-    CHECK(run(trap, 2, &pc) == (0x2000 | 7) && pc == CODE + 4, "ftrapt: format 2 vector 7");
+    CHECK(run(trap, 2, &pc) == (0x2000 | 7 * 4) && pc == CODE + 4, "ftrapt: format 2 vector 7");
     uint16_t trapf[2] = { 0xf27c, 0x0000 };
     CHECK(run(trapf, 2, &pc) == 0 && pc == CODE + 4, "ftrapf");
-    CHECK(run2(0xf200, 0x0005) == 11, "an undefined opmode is an F-line exception");
+    CHECK(run2(0xf200, 0x0005) == 11 * 4, "an undefined opmode is an F-line exception");
 }
 
 /* ------------------------------------------------------------------ conversions */
