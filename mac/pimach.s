@@ -125,6 +125,7 @@ do_log:
 	.equ	_FP68K,		0xA9EB
 	.equ	Ticks,		0x016A
 	.equ	AppPacks,	0x0AB8
+	.equ	HWCfgFlags,	0x0B22
 	.equ	INFO_SANE,	13
 	.equ	FOADD,		0x0000		| SANE operations, extended operands (Apple Numerics Manual)
 	.equ	FOSUB,		0x0002
@@ -148,9 +149,33 @@ do_log:
 
 sane_setup:
 	movem.l	%d0-%d7/%a0-%a4,-(%sp)
+	| what Gestalt says of the FPU, for the log: "A68 Machine: Gestalt fpu N" (0 none, 1 a 68881,
+	| 2 a 68882, 3 a 68040's; mac.fpu=none gives 0)
+	move.l	#0x66707520,%d0			| 'fpu '
+	.short	_Gestalt			| D0 = selector -> A0 = response, D0 = error
+	move.l	%a0,%d3
+	lea	msg(%pc),%a1
+	lea	t_fpu(%pc),%a0
+	tst.w	%d0
+	beq.s	1f
+	lea	t_fpuerr(%pc),%a0		| "... fpu: error -N"
+	move.w	%d0,%d3
+	neg.w	%d3
+	ext.l	%d3
+1:	bsr	puts
+	move.l	%d3,%d0
+	bsr	putdec
+	clr.b	(%a1)
+	lea	msg(%pc),%a1
+	bsr	do_log
+2:
+	| with no FPU (mac.fpu=none: HWCfgFlags' hwCbFPU, bit 12, clear, as Gestalt 'fpu ' reads it) the IIci
+	| ROM's SANE is FPU code and its first instruction would end in system error 90: not tested then
+	btst	#4,HWCfgFlags			| bit 12 of the word is bit 4 of its first byte
+	beq.s	1f
 	lea	t_rom(%pc),%a2
 	bsr	sane_report			| the IIci ROM's SANE, as it is
-	moveq	#4,%d3
+1:	moveq	#4,%d3
 	bsr	install_pack
 	tst.l	%d0
 	bne.s	9f
@@ -417,6 +442,8 @@ v_y:	.space	10
 v_x:	.space	10
 v_old:	.space	10
 v_t:	.space	10
+t_fpu:	.asciz	"A68 Machine: Gestalt fpu "
+t_fpuerr: .asciz	"A68 Machine: Gestalt fpu: error -"
 t_rom:	.asciz	"the IIci ROM's"
 t_se:	.asciz	"the SE ROM's"
 t_sane:	.asciz	"A68 Machine: SANE, "

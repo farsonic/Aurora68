@@ -4101,3 +4101,59 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    - *Not verified here (no Mac with a screen, no SE on this network):* the app on a real Mac (a click on the
      position bar; Play on another Mac and on the SE; a radio station on This Mac; a new album appearing; the
      icon in the Dock and Finder), and the classic Play's side of the devices.
+
+103. **`mac.fpu=none`: a Mac with no FPU, as the SE is (22 November, issue #28).** Emu68 executes FPU
+   instructions, and keeps the 68881's 96-bit extended format as a 64-bit double. Item 101 replaced the IIci
+   ROM's FPU SANE with the SE ROM's software SANE, but a program built for the FPU (a 68881 build from THINK C
+   or MPW, an application's "FPU version") still finds an FPU and runs its own FPU code at double precision.
+   A real SE has no FPU: such programs take their software paths there. `mac.fpu=none` gives the Mac the same.
+   - *The JIT already had it.* Upstream Emu68 has a `disable-fpu` property (`globals.fpu_disable`, read from
+     the device tree in `aarch64/start.c`). With it, `EMIT_lineF` (`M68k_LINEF.c`) sends every coprocessor-1
+     instruction (`(opcode & 0x0e00) == 0x0200`, FSAVE and FRESTORE included) to the line-F exception, vector
+     11, as a 68000 or a 68LC040 would. The other F-line forms are not affected: the MMU shim's PMOVE/PFLUSH
+     forms are coprocessor 0, MOVE16 and the cache instructions coprocessor 3 and 2. The new option only sets
+     that flag (`psmac_read_options` in `psmac_bus.c`; `mac.fpu=on` sets it back).
+   - *The first run did not reach the Finder.* With the flag set, the kernel's heartbeat showed HWCfgFlags
+     ($0B22) still at $FC00, its bit 12 (hwCbFPU) set. System 7.1 then executed an FPU instruction at $0001C128
+     during startup, and the Mac did not reach the Finder in 190 seconds. The IIci ROM's power-on FPU test
+     ($408456FC, `fmove.l d0,fp0` at $40845704) trapped as expected, but that test only decides pass or fail.
+   - *Where HWCfgFlags comes from.* The IIci ROM does not probe for the FPU to set HWCfgFlags. At $40800612 it
+     loads UnivInfoPtr ($0DD8) and copies two words from the ProductInfo record it points to:
+     `move.w 16(a0),$B22`. `mac.peek=dd8,4` showed UnivInfoPtr at $408036C0, so the flags come from ROM offset
+     $36D0, where the word is $DC00 (bit 13 is set later during startup, hence $FC00 at run time). Gestalt's `'fpu '`
+     function ($40816600) tests bit 12 first (`btst #4,$B22`) and answers 0 when it is clear; only when it is
+     set does it run FSAVE and read the frame's first word ($1F18/$3F18 a 68881, $1F38/$3F38 a 68882).
+   - *The fix: clear hwCbFPU in the ROM's record.* `psmac_fpu_rom_fixup` (`psmac_board_se.c`) runs at ROM load
+     beside the SE's chime and SCSI fixups. With `mac.fpu=none` it checks the record's first 18 bytes against
+     the IIci's, changes $DC00 to $CC00, and subtracts $1000 from the checksum word at offset 0 so that the
+     ROM's start-up checksum test still passes. If the bytes do not match, it changes nothing and logs a
+     warning. Only this one record is changed: the ROM's other ProductInfo records are for other models.
+   - *Expected traps are not crashes.* The crash recorder treated vector 11 as a crash. With `mac.fpu=none`,
+     `M68k_ExceptionEntry.c` now counts a coprocessor-1 opcode at the faulting PC instead of recording it, and
+     the heartbeat reports the count and the last PC ("FPU (none): N FPU instructions took the line-F
+     exception so far"). Other line-F opcodes are still recorded.
+   - *SANE.* The IIci ROM's SANE is FPU code. With no FPU, `psmac_sane.c` ignores `mac.sane=rom` and says so,
+     and warns if no SE ROM is at hand: then the first SANE call ends in system error 90 ("no FPU"). The second
+     run showed one more problem: A68 Machine measures the IIci ROM's SANE before it installs the SE ROM's
+     (item 101), and that first FOADD at $40870AD4 (`fmove.l fpsr,d5` in PACK 4) ended in system error 90.
+     `mac/pimach.s` now skips that measurement when hwCbFPU is clear. It also logs Gestalt's answer:
+     "A68 Machine: Gestalt fpu N".
+   - *Tested.* Solo testbed, System 7.1, 64 MB, `mac.serom=` the SE ROM image, `mac.fpu=none`, two runs:
+     ```
+     [PSMAC] FPU: none (mac.fpu=none): FPU instructions take the line-F exception, as on a 68000 Mac; Gestalt reports no FPU
+     [PSMAC] FPU: the ROM's ProductInfo HWCfgFlags $DC00 -> $CC00 (hwCbFPU clear: no FPU for Gestalt; checksum word now 36ac8157)
+     [PSMAC]   the Mac's HWCfgFlags $ec00: no FPU found at start-up (mac.fpu=none)
+     [PSMAC]   FPU (none): 1 FPU instructions took the line-F exception so far, the last at PC 40845704
+     [MAC] A68 Machine: Gestalt fpu 0
+     [MAC] A68 Machine: SANE, the SE ROM's: (1 + 2^-60) - 1 = 2^-60 (exact), square root of 2 settled in 6 steps, 25554 additions a second
+     [BOOT] t=48.821s Mac: the Finder is running (CurApName)
+     ```
+     The only FPU instruction executed during startup was the ROM's own power-on test. There were no crash
+     records. On the MAME SE board (`macse_ps`, 16 MB, the same disk as a CHD, no `mac.serom=`), the kernel read
+     PACK 4 and 5 from the SE's own ROM over the wire. SANE gave 2^-60, again with one trap, and the Finder was
+     running at 529 s (the SE board runs at the real machine's bus speed). With the FPU left on (no
+     `mac.fpu=`), nothing changed: "FPU: present", HWCfgFlags $FC00, "Gestalt fpu 2", the IIci ROM's SANE 0
+     (64-bit) and then the SE ROM's 2^-60, the Finder at 56 to 59 s, no crash records.
+   - *Not yet tried:* Speedometer's FPU line and an FPU-only program (which should say it needs an FPU) with
+     `mac.fpu=none`, and the owner's SE. The default stays `on` until issue #27's exact FPU decides the SE
+     board's default.

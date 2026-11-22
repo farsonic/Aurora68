@@ -11,6 +11,8 @@
 #include <A64.h>
 #include <M68k.h>
 #include <support.h>
+#include <stdbool.h>
+#include <globals.h>
 
 #ifdef PSMAC
 struct psmac_crash_args { uint32_t vec, pc, sr, ea, fault, usp, isp, regs[16]; };   /* psmac/psmac_crash.c */
@@ -41,6 +43,14 @@ uint32_t M68K_Exception(uint32_t M68k_SR, uint32_t type_and_format, uint32_t, ui
         int record;
         if (vec == 0x28)
             record = ((*(volatile uint16_t *)(uintptr_t)(M68k_PC & ~1u)) & ~0x0400) == 0xA9C9;
+        else if (vec == 0x2c && globals.fpu_disable &&
+                 ((*(volatile uint16_t *)(uintptr_t)(M68k_PC & ~1u)) & 0x0e00) == 0x0200) {
+            /* mac.fpu=none: an FPU instruction (coprocessor 1) on a Mac without one is the probe of the ROM,
+               of Gestalt's callers or of a program looking for an FPU, not a crash: counted, not recorded */
+            extern volatile uint32_t psmac_fpu_traps, psmac_fpu_trap_pc;
+            psmac_fpu_traps++; psmac_fpu_trap_pc = M68k_PC;
+            record = 0;
+        }
         else
             record = !(vec >= 0x64 && vec <= 0x7c) && !(vec >= 0x80 && vec <= 0xbc) && vec < 0x100;
         if (unlikely(record)) {
