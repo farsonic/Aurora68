@@ -1,6 +1,6 @@
 /*
  * psmac_bus.c — Macintosh host memory map + bus bridge transport for the Emu68 fork.
- * Copyright (c) 2026 PiStorm-SE project. MPL-2.0.
+ * Copyright (c) 2026 Aurora68 project. MPL-2.0.
  *
  * The 68k address space is served as follows (IIci donor ROM, 32-bit physical map):
  *   0x00000000..RAM      Pi RAM (bank A). The first PSMAC_FB_SIZE bytes are mapped read-only so that
@@ -820,6 +820,7 @@ void psmac_service_core(void)
             next_poll = cnt_now() + period;
         }
         psmac_se_service();                       /* the SE's screen, a few rows at a time */
+        { extern void psmac_plus_service(void); psmac_plus_service(); }   /* the Plus's keyboard and mouse (psmac_board_plus.c) */
         psmac_bridge_flush();                     /* the testbed's gathered posted writes, now that there is nothing else to do */
         __asm__ volatile("yield");
     }
