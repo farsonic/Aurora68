@@ -21,6 +21,8 @@
  * driver does to move four bytes at once, becomes four byte reads here; the wire (GPIO or
  * bridge) splits ordinary longs itself.
  */
+#include <stdbool.h>
+#include "globals.h"
 #include <stdint.h>
 #include "support.h"
 #include "M68k.h"
@@ -1350,6 +1352,30 @@ void psmac_se_rom_fixup(uint8_t *rom, uint32_t len)
    answers late is missed at every ID. On the SE board with its real bus it is Apple's 250 ms again
    (mac.sescsiwait=MS for another value; an empty bus answered here, mac.sescsi=empty, keeps 10 ms).
    The bytes are checked first ("move.w #10,$62(a4)" at $40809554) and the checksum word follows. */
+/* mac.fpu=none (issue #28): the IIci ROM does not probe for its FPU. At $40800612 it copies HWCfgFlags
+   ($B22) from the ProductInfo record UnivInfoPtr ($DD8) points to (measured: $408036C0, the IIci's), word
+   +$10 = $DC00, whose bit 12 is hwCbFPU; Gestalt 'fpu ' (ROM $40816600) answers from that bit, and System 7
+   then runs FPU code that would only take the line-F exception. Clear the bit there when there is no FPU,
+   checked against the record's bytes first, with the ROM checksum word kept right (the start-up test
+   compares it). The other ProductInfo records are not for this box and are left alone. */
+void psmac_fpu_rom_fixup(uint8_t *rom, uint32_t len)
+{
+    static const uint8_t want[] = { 0xff, 0xff, 0xfd, 0xcc, 0x00, 0x00, 0x02, 0xaa, 0x00, 0x00, 0x02, 0xc2,
+                                    0x00, 0x00, 0x03, 0x02, 0xdc, 0x00 };
+    if (!globals.fpu_disable || len < 0x80000) return;
+    for (unsigned i = 0; i < sizeof want; i++)
+        if (rom[0x36c0 + i] != want[i]) {
+            kprintf("[PSMAC] FPU: WARNING: mac.fpu=none, but the ROM's ProductInfo record at $36C0 is not the IIci's as known: "
+                    "HWCfgFlags keeps hwCbFPU and Gestalt will report an FPU that traps\n");
+            return;
+        }
+    rom[0x36d0] = 0xcc;   /* $DC00 -> $CC00: hwCbFPU (bit 12) clear */
+    uint32_t sum = (uint32_t)rom[0] << 24 | (uint32_t)rom[1] << 16 | (uint32_t)rom[2] << 8 | rom[3];
+    sum -= 0x1000u;
+    rom[0] = sum >> 24; rom[1] = sum >> 16; rom[2] = sum >> 8; rom[3] = sum;
+    kprintf("[PSMAC] FPU: the ROM's ProductInfo HWCfgFlags $DC00 -> $CC00 (hwCbFPU clear: no FPU for Gestalt; checksum word now %08x)\n", sum);
+}
+
 void psmac_se_scsi_fixup(uint8_t *rom, uint32_t len)
 {
     static const uint8_t want[] = { 0x39, 0x7c, 0x00, 0x0a, 0x00, 0x62 };
