@@ -3806,6 +3806,10 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      and on those boards the screen check reads nothing back, it rewrites one row a tick from the Pi's copy
      ("rows rewritten blind"; mac.screencheck=on for the read-back, off for neither). Neither can be seen
      in the testbed (MAME's SCC and RAM have no such timing); the tester's next log will say.
+   - *The VIAs (22 November, from the owner).* Both pre-SE machines in the field have original Rockwell R6522
+     VIAs, NMOS with TTL input levels, which take the PiStorm's 3.3 V as high: docs/18's concern about a WDC
+     W65C22S (inputs at 0.8 VDD) does not apply to them. That leaves the CPLD's early read sampling against
+     the boards' PAL (or reproduction GAL) /DTACK timing, and the SCC's recovery time, as the leads.
 
 97. **FAT32 and exFAT on the Mac: disk images on sticks, and an HFS view of a stick or a card folder (21
    November, issue #20).** The owner wants sticks formatted by Windows, Linux or a modern Mac, and a folder
@@ -4469,6 +4473,63 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      from an uninitialised sound buffer is for the owner to listen for). And the limit the design names: a kernel that
      dies before it has read the card cannot rescue itself, and as far as we know a Pi 3's firmware has no fallback
      kernel of its own; a microSD extension cable led out of the case is the physical way back.
+
+107. **Aurora68 Play: one code base for the classic and the macOS Play (22 November).** The owner asked for "a common
+     code base between the two". The classic Play (`mac/piplay`, C for the 68000) and the macOS one
+     (`macos/Aurora68Play`, SwiftUI) had been written the same day against one design of the server's interface, but
+     each had its own copy of every rule: the classic Play's `icy.c`, `stations.c`, `devices.c`, `libparse.c` and
+     what `library.c`, `radio.c` and `fetch.c` knew; the macOS Play's Address, TrackName, PlayQueue, Devices and
+     Models in Swift, reading the server's JSON.
+   - *The layout.* A new top-level `play/core` (README there) holds everything that is not interface, in C that both
+     compilers take: `text.c`, `names.c`, `address.c`, `proto.c` (the server's protocol: every request's path and
+     every answer taken apart), `catalog.c` (a page of a list as the Library window's rows), `queue.c`, and
+     `devices.c`, `icy.c`, `stations.c` moved from `mac/piplay` with their history. `media.c` stays with the classic
+     Play: only it reads music files itself. A SwiftPM target must lie inside its package's folder and the classic
+     Makefile reaches the core from `mac/`, so `Package.swift` moved to the repository's top with targets that name
+     their folders (`PlayCore` is `play/core`, its `include/` the module's headers, `PlayCore.h` the umbrella);
+     `make-app.sh` builds with `--package-path ../..`, the workflow runs `swift test` at the top and now also for
+     pushes touching `play/` or `Package.swift` (it had no branch filter, so the branch `play-core` ran it).
+   - *One wire format.* The text API, because a 68000 reads it with a loop and a modern Mac as easily. What the macOS
+     app showed that `/mac/` did not carry: an album's folder (its cover is `/art?dir=`, and `f:FOLDER` plays it on
+     Live or a player), a track's path (the app plays the original file through `/file/`), the devices' whole state,
+     the path and album of a command's tracks, the Live channel, a way to send a command. The server gained
+     `full=1` (those records), `enc=utf8` (UTF-8 both ways; a name with a character Mac Roman lacks would otherwise
+     arrive as "?"), `/mac/now` and `/mac/command` (to a player, or to `live` with its queue's own actions). Without
+     the two parameters every answer is byte for byte what it was, so the classic Play's requests did not change.
+     Paths and folders are exempt from the 120-character cut of `/mac/` fields (a folder of 160 characters arrives
+     whole: tested). The JSON stays for the web panel.
+   - *What the C keeps to.* No header and no C library call (the kit has five functions); no allocation, no shared
+     state; answers split in place (so the core decides no field lengths, and the macOS app's long UTF-8 paths cost a
+     68000 nothing); 32-bit masking where arithmetic wraps; no floating point (positions in thousandths). Two
+     things found on the way: `dv_make_id` and the shuffle's generator, written for a 32-bit `long`, would have made
+     other ids and orders on a 64-bit Mac (masked now; checked by running the core's units as a 68020 program
+     under qemu-m68k, big-endian, beside the host); and a C function and a struct of the same name (`a68_head`) are
+     legal C but collide when Swift imports them, so the reader became `a68_read_head`.
+   - *The classic Play on the core* (1.4): the Library keeps its window, views, covers and network timing; its
+     pages, queue, commands, addresses and the probe's answer are the core's. Gains: Library > Repeat (the macOS
+     queue's rule; the gapless stream goes round to the first song), Previous on the first song restarting it,
+     and a fix: the second and later songs of a gapless run, when their connection was lost and made again,
+     resumed from a start offset left over from the song before (it was reset only when the card caught up).
+     An address typed without a port now means 8000, the server's default (it was 8423, the owner's port). Size:
+     at `-O2` the Play came out 5 KB larger (the request builders' helpers were inlined into each); with the core at
+     `-Os`, a section per function and `--gc-sections`, CODE 1 is 168588 bytes against 168772 before (5772
+     relocations against 5511), with Repeat added.
+   - *The macOS Play on the core* (1.2): Aurora68Core became thin wrappers (`Core.swift` lends the core an answer in
+     memory that stays put and turns its fields into Strings). Gains: a station whose address is a `.pls` or `.m3u`
+     plays its first stream (the classic Play's `icy_playlist_url`); a server without radio stations offers the
+     built-in list (the classic Play's own, read by `stations_parse`); after the probe the address the answer came
+     from is tried first; songs added to a queue that has played to its end are the ones that play (it restarted
+     the old queue). The library filter still folds case and accents with Foundation, the one rule left in Swift.
+     The zipped app is 2,282,365 bytes against 2,304,093.
+   - *Tested:* see docs/09, "The shared core": the host tests in `make -C mac check` (136 unit checks, 24 on the real
+     server's answers, the 136 again as a 68020 program; icy, stations and devices as before), the server's test (141
+     checks), XCTest on GitHub's runner (19 tests; runs 45070804702 and 45071242421), and the classic Play in the
+     testbed: file, Library, gapless queue, Repeat round the end, Next round the end, every device command (pause by
+     `/mac/command`), a station by Open URL, a new album refreshing the list, discovery with the sender first, the
+     preference kept.
+   - *Not verified:* the macOS app on a real Mac against a live server (the owner: the library, Play on Live and on
+     the SE, a radio station, a playlist station, a new album appearing); the classic Play on the SE; Find and covers
+     (the testbed library has none).
 108. **The bus check: `mac.buscheck=1`, one page of numbers on the compact Mac's own screen (22 November).** The
    tester's 512Ke of item 96, on a socketed PiStorm, drew its screen right but for rare single wrong words, while
    everything it read looked wrong: the screen check found words that differed in 6,011 of 6,605 rows (29 of 32 on

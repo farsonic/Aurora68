@@ -65,6 +65,13 @@ mac/build/edid_test
 mac/build/icy_test
 mac/build/stations_test
 mac/build/libparse_test
+# the shared core's tests (tools/play_core_test.c, its fixtures from the music server, the 68020 build) and the macOS Play's Swift package (Package.swift at the top since 22 November 2026)
+mac/build/play_core/
+mac/build/play_core_test
+mac/build/play_core_test.m68k
+/.build/
+/.swiftpm/
+macos/Aurora68Play/.build/
 mac/build/cmdline_test
 mac/build/devices_test
 mac/build/codec/

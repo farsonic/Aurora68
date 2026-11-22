@@ -5,39 +5,45 @@
 // Backstory (22 November 2026). The owner asked, of the macOS Aurora68 Play: that it notice new albums
 // without a restart; that Live offer stations to start, not an empty page; that "other devices running
 // Aurora Player ... broadcast they are online for redirection"; and that a click on the song's position
-// jump there. The music server gained (tools/music-server/README.md, "Devices"):
-//   GET  /api/info                        the library's generation, bumped when a rescan finds a change
-//   GET  /api/radio                       the internet radio stations every player offers
-//   POST /api/devices/announce            "I am here" (every 20 seconds); the answer carries the generation
-//   POST /api/devices/ID/state            what this player plays
-//   GET  /api/devices                     every player, online or not, and the Live channel as "live"
-//   POST /api/devices/ID/command          "play this there"
-//   GET  /api/devices/ID/commands?wait=20 this player's commands, waiting up to 20 seconds for one
-// These are those answers, and the rules that are only logic (an id kept in the preferences, a change of
-// generation, a command as what the player does, a click on the scrubber as a time), tested with XCTest.
+// jump there. The music server gained players as devices (tools/music-server/README.md, "Devices"):
+// announce, state, the list, a command to a player, its commands by long poll, the radio stations, the
+// library's generation.
+//
+// Since the shared core (docs/08 item 107) both Plays speak the server's /mac/ text, and the rules are the
+// core's: play/core/devices.c decides when to announce and when what plays is news (DeviceSession here),
+// play/core/proto.c reads the devices, the commands and the stations and writes a command's request
+// (Command), the id is made and checked by the core, and a click on the position bar becomes a time there.
+// What stays Swift is what SwiftUI shows: these values, the symbol for a kind of player, the radio groups.
 import Foundation
+import PlayCore
 
-/// GET /api/info
-public struct ServerInfo: Decodable, Equatable {
+/// /mac/info: the server's name, its version, the library's counts and generation
+public struct ServerInfo: Equatable {
     public let name: String
     public let version: String
     public let library: Int
     public let every: Int?
+    public let artists: Int
+    public let albums: Int
+    public let tracks: Int
 
-    public init(name: String, version: String, library: Int, every: Int? = nil) {
+    public init(name: String, version: String, library: Int, every: Int? = nil, artists: Int = 0, albums: Int = 0, tracks: Int = 0) {
         self.name = name; self.version = version; self.library = library; self.every = every
+        self.artists = artists; self.albums = albums; self.tracks = tracks
+    }
+
+    public static func parse(_ data: Data) -> ServerInfo? {
+        let r = Records(data)
+        guard let h = r.head(), h.kind == "info" else { return nil }
+        var i = a68_info()
+        guard a68_info_of(&r.rec, &i) != 0 else { return nil }
+        return ServerInfo(name: text(i.name), version: text(i.version), library: Int(i.generation),
+                          every: i.every > 0 ? Int(i.every) : nil, artists: Int(i.artists), albums: Int(i.albums), tracks: Int(i.tracks))
     }
 }
 
-/// POST /api/devices/announce's answer
-public struct AnnounceReply: Decodable, Equatable {
-    public let ok: Bool
-    public let every: Int
-    public let library: Int?
-}
-
-/// GET /api/radio: one station
-public struct RadioStation: Decodable, Hashable, Identifiable {
+/// /mac/radio: one station
+public struct RadioStation: Hashable, Identifiable {
     public let group: String
     public let name: String
     public let url: String
@@ -48,10 +54,53 @@ public struct RadioStation: Decodable, Hashable, Identifiable {
     }
 }
 
-public struct RadioList: Decodable {
+public struct RadioList: Equatable {
     public let stations: [RadioStation]
 
     public init(stations: [RadioStation]) { self.stations = stations }
+
+    /// the server's list (/mac/radio: group, name, url a line)
+    public static func parse(_ data: Data) -> RadioList {
+        let r = Records(data)
+        var s = a68_radio()
+        var out: [RadioStation] = []
+        while a68_next_radio(&r.rec, &s) != 0 {
+            out.append(RadioStation(group: text(s.group), name: text(s.name), url: text(s.url)))
+        }
+        return RadioList(stations: out)
+    }
+
+    /// the classic Play's built-in list itself (play/core/stations.c, read by its own parser): for a server from
+    /// before /mac/radio, so every Play still offers the same stations
+    public static var builtIn: RadioList {
+        var len = 0
+        guard let t = stations_default_text(&len) else { return RadioList(stations: []) }
+        let l = UnsafeMutablePointer<stations>.allocate(capacity: 1)
+        defer { l.deallocate() }
+        stations_parse(l, t, len)
+        let mac = { (p: UnsafePointer<CChar>) -> String in
+            String(bytes: UnsafeRawBufferPointer(start: p, count: strlen(p)), encoding: .macOSRoman) ?? ""
+        }
+        var groups: [String] = []
+        withUnsafeBytes(of: &l.pointee.group) { raw in
+            let g = raw.baseAddress!.assumingMemoryBound(to: sgroup.self)     // a C array of structs: a tuple of them
+            for i in 0..<Int(l.pointee.ngroups) {
+                var name = withUnsafeBytes(of: g[i].name) { mac($0.baseAddress!.assumingMemoryBound(to: CChar.self)) }
+                if g[i].parent >= 0 { name = groups[Int(g[i].parent)] + "/" + name }
+                groups.append(name)
+            }
+        }
+        var out: [RadioStation] = []
+        withUnsafeBytes(of: &l.pointee.station) { raw in
+            let st = raw.baseAddress!.assumingMemoryBound(to: station.self)
+            for i in 0..<Int(l.pointee.nstations) {
+                let name = withUnsafeBytes(of: st[i].name) { mac($0.baseAddress!.assumingMemoryBound(to: CChar.self)) }
+                let url = withUnsafeBytes(of: st[i].url) { mac($0.baseAddress!.assumingMemoryBound(to: CChar.self)) }
+                out.append(RadioStation(group: st[i].group >= 0 ? groups[Int(st[i].group)] : "", name: name, url: url))
+            }
+        }
+        return RadioList(stations: out)
+    }
 
     /// the stations by group, in the order the server gives them, each with its index (what "r:N" names)
     public var groups: [RadioGroup] {
@@ -80,8 +129,8 @@ public struct RadioGroup: Identifiable, Equatable {
     public var id: String { group + "\u{1}\(stations.first?.index ?? 0)" }
 }
 
-/// what a player plays, as it posts it and as the list shows it
-public struct DeviceState: Codable, Equatable {
+/// what a player plays, as it reports it and as the list shows it
+public struct DeviceState: Equatable {
     public var playing: Bool
     public var title: String
     public var artist: String
@@ -90,39 +139,26 @@ public struct DeviceState: Codable, Equatable {
     public var position: Double
     public var length: Double
     public var volume: Int
-    public var at: Double?                 // the server's clock when it was posted (seconds since 1970)
+    public var at: Double?                 // the server's clock when it was reported (seconds since 1970)
+    public var track: String               // a library track's id: the server names it from its catalogue
 
     public init(playing: Bool = false, title: String = "", artist: String = "", album: String = "", folder: String = "",
-                position: Double = 0, length: Double = 0, volume: Int = 100, at: Double? = nil) {
+                position: Double = 0, length: Double = 0, volume: Int = 100, at: Double? = nil, track: String = "") {
         self.playing = playing; self.title = title; self.artist = artist; self.album = album; self.folder = folder
-        self.position = position; self.length = length; self.volume = volume; self.at = at
+        self.position = position; self.length = length; self.volume = volume; self.at = at; self.track = track
     }
 
-    enum CodingKeys: String, CodingKey { case playing, title, artist, album, folder, position, length, volume, at }
-
-    public init(from d: Decoder) throws {
-        let c = try d.container(keyedBy: CodingKeys.self)
-        playing = try c.decodeIfPresent(Bool.self, forKey: .playing) ?? false
-        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
-        artist = try c.decodeIfPresent(String.self, forKey: .artist) ?? ""
-        album = try c.decodeIfPresent(String.self, forKey: .album) ?? ""
-        folder = try c.decodeIfPresent(String.self, forKey: .folder) ?? ""
-        position = try c.decodeIfPresent(Double.self, forKey: .position) ?? 0
-        length = try c.decodeIfPresent(Double.self, forKey: .length) ?? 0
-        volume = try c.decodeIfPresent(Int.self, forKey: .volume) ?? 100
-        at = try c.decodeIfPresent(Double.self, forKey: .at)
-    }
-
-    /// where the song is now: the posted position, moved on by the time since, while it plays
+    /// where the song is now: the reported position, moved on by the time since, while it plays (the core's rule)
     public func estimatedPosition(at now: Double) -> Double {
-        guard playing, let at else { return position }
-        let p = position + max(0, now - at)
-        return length > 0 ? min(p, length) : p
+        guard let at, now.isFinite, at.isFinite, at > 0 else { return position }
+        let ms = a68_estimate_ms(UInt(max(0, position) * 1000), UInt(max(0, length) * 1000), playing ? 1 : 0,
+                                 UInt(at), UInt(max(0, now)))
+        return Double(ms) / 1000
     }
 }
 
-/// GET /api/devices: one player (or the Live channel)
-public struct Device: Decodable, Identifiable, Equatable {
+/// /mac/devices?full=1: one player (or the Live channel)
+public struct Device: Identifiable, Equatable {
     public let id: String
     public let name: String
     public let kind: String
@@ -131,23 +167,25 @@ public struct Device: Decodable, Identifiable, Equatable {
     public let state: DeviceState
     public let isLive: Bool
 
-    enum CodingKeys: String, CodingKey { case id, name, kind, online, lastSeen = "last_seen", state, isLive = "is_live" }
-
     public init(id: String, name: String, kind: String, online: Bool, lastSeen: Int = 0, state: DeviceState = DeviceState(),
                 isLive: Bool = false) {
         self.id = id; self.name = name; self.kind = kind; self.online = online; self.lastSeen = lastSeen
         self.state = state; self.isLive = isLive
     }
 
-    public init(from d: Decoder) throws {
-        let c = try d.container(keyedBy: CodingKeys.self)
-        id = try c.decode(String.self, forKey: .id)
-        name = try c.decodeIfPresent(String.self, forKey: .name) ?? id
-        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? ""
-        online = try c.decodeIfPresent(Bool.self, forKey: .online) ?? false
-        lastSeen = try c.decodeIfPresent(Int.self, forKey: .lastSeen) ?? 0
-        state = try c.decodeIfPresent(DeviceState.self, forKey: .state) ?? DeviceState()
-        isLive = try c.decodeIfPresent(Bool.self, forKey: .isLive) ?? false
+    public static func list(_ data: Data) -> [Device] {
+        let r = Records(data)
+        var d = a68_device()
+        var out: [Device] = []
+        while a68_next_device(&r.rec, &d) != 0 {
+            let st = DeviceState(playing: d.playing != 0, title: text(d.title), artist: text(d.artist), album: text(d.album),
+                                 folder: text(d.folder), position: Double(d.position_ms) / 1000, length: Double(d.length_ms) / 1000,
+                                 volume: Int(d.volume), at: d.at > 0 ? Double(d.at) : nil)
+            let name = text(d.name)
+            out.append(Device(id: text(d.id), name: name.isEmpty ? text(d.id) : name, kind: text(d.kind), online: d.online != 0,
+                              lastSeen: Int(d.last_seen), state: st, isLive: d.is_live != 0 || text(d.kind) == "live"))
+        }
+        return out
     }
 
     /// the SF Symbol for its kind
@@ -161,13 +199,9 @@ public struct Device: Decodable, Identifiable, Equatable {
     }
 }
 
-public struct DeviceList: Decodable {
-    public let devices: [Device]
-}
-
-/// a command for this player (GET /api/devices/ID/commands)
-public struct DeviceCommand: Decodable, Equatable {
-    public struct Song: Decodable, Equatable {
+/// a command for this player (/mac/commands?full=1: a command line, then its tracks and its station)
+public struct DeviceCommand: Equatable {
+    public struct Song: Equatable {
         public let path: String
         public let tid: String
         public let title: String
@@ -187,7 +221,7 @@ public struct DeviceCommand: Decodable, Equatable {
                          seconds: seconds, path: path, album: "", albumTitle: album, folder: folder)
         }
     }
-    public struct Radio: Decodable, Equatable {
+    public struct Radio: Equatable {
         public let name: String
         public let url: String
     }
@@ -200,47 +234,65 @@ public struct DeviceCommand: Decodable, Equatable {
     public let volume: Int?
     public let shuffle: Int?
 
-    enum CodingKeys: String, CodingKey { case id, action, tracks, radio, position, volume, shuffle }
-
     public init(id: Int, action: String, tracks: [Song] = [], radio: Radio? = nil, position: Double? = nil,
                 volume: Int? = nil, shuffle: Int? = nil) {
         self.id = id; self.action = action; self.tracks = tracks; self.radio = radio
         self.position = position; self.volume = volume; self.shuffle = shuffle
     }
 
-    public init(from d: Decoder) throws {
-        let c = try d.container(keyedBy: CodingKeys.self)
-        id = try c.decode(Int.self, forKey: .id)
-        action = try c.decode(String.self, forKey: .action)
-        tracks = try c.decodeIfPresent([Song].self, forKey: .tracks) ?? []
-        radio = try c.decodeIfPresent(Radio.self, forKey: .radio)
-        position = try c.decodeIfPresent(Double.self, forKey: .position)
-        volume = try c.decodeIfPresent(Int.self, forKey: .volume)
-        shuffle = try c.decodeIfPresent(Int.self, forKey: .shuffle)
+    /// the commands of an answer, each with the tracks and the station after its line
+    public static func list(_ data: Data) -> [DeviceCommand] {
+        let r = Records(data)
+        var c = a68_cmd()
+        var out: [DeviceCommand] = []
+        var cur: (id: Int, action: String, position: Double?, volume: Int?, shuffle: Int?)?
+        var songs: [Song] = []
+        var radio: Radio?
+        func finish() {
+            if let x = cur {
+                out.append(DeviceCommand(id: x.id, action: x.action, tracks: songs, radio: radio, position: x.position,
+                                         volume: x.volume, shuffle: x.shuffle))
+            }
+            songs = []; radio = nil; cur = nil
+        }
+        while a68_next_cmd(&r.rec, &c) != 0 {
+            switch UInt8(truncatingIfNeeded: c.kind) {
+            case UInt8(ascii: "C"):
+                finish()
+                let act = text(c.action)
+                cur = (Int(c.n), act, act == "seek" || c.position > 0 ? Double(c.position) : nil,
+                       c.volume >= 0 ? Int(c.volume) : nil, c.shuffle != 0 ? 1 : nil)
+            case UInt8(ascii: "T"):
+                songs.append(Song(path: text(c.path), tid: text(c.tid), title: text(c.title), artist: text(c.artist),
+                                  album: text(c.album), seconds: Int(c.secs)))
+            case UInt8(ascii: "R"):
+                radio = Radio(name: text(c.name), url: text(c.url))
+            default:
+                break
+            }
+        }
+        finish()
+        return out
     }
 
     /// what the player does for it (the server has already shuffled a list it was asked to shuffle)
     public var playerAction: PlayerAction? {
-        switch action {
-        case "play":
+        switch Int(a68_action(action)) {
+        case Int(A68_ACT_PLAY):
             if let r = radio, let u = URL(string: r.url) { return .radio(name: r.name, url: u) }
             return tracks.isEmpty ? nil : .play(tracks.map(\.track), from: position ?? 0)
-        case "add": return tracks.isEmpty ? nil : .add(tracks.map(\.track))
-        case "next": return tracks.isEmpty ? nil : .playNext(tracks.map(\.track))
-        case "pause": return .pause
-        case "resume": return .resume
-        case "skip": return .skip
-        case "previous": return .previous
-        case "seek": return position.map { .seek($0) }
-        case "volume": return volume.map { .volume(Double(max(0, min(100, $0))) / 100) }
-        case "stop": return .stop
+        case Int(A68_ACT_ADD): return tracks.isEmpty ? nil : .add(tracks.map(\.track))
+        case Int(A68_ACT_NEXT): return tracks.isEmpty ? nil : .playNext(tracks.map(\.track))
+        case Int(A68_ACT_PAUSE): return .pause
+        case Int(A68_ACT_RESUME): return .resume
+        case Int(A68_ACT_SKIP): return .skip
+        case Int(A68_ACT_PREVIOUS): return .previous
+        case Int(A68_ACT_SEEK): return position.map { .seek($0) }
+        case Int(A68_ACT_VOLUME): return volume.map { .volume(Double(max(0, min(100, $0))) / 100) }
+        case Int(A68_ACT_STOP): return .stop
         default: return nil
         }
     }
-}
-
-public struct CommandList: Decodable {
-    public let commands: [DeviceCommand]
 }
 
 public enum PlayerAction: Equatable {
@@ -253,40 +305,77 @@ public enum PlayerAction: Equatable {
     case volume(Double)                    // 0...1
 }
 
-/// this Mac as a device: an id kept in the preferences, made once
-public enum DeviceIdentity {
-    public static func isValid(_ id: String) -> Bool {
-        !id.isEmpty && id.count <= 64 && id != "live" &&
-            id.unicodeScalars.allSatisfy { CharacterSet.alphanumerics.contains($0) && $0.isASCII || $0 == "-" || $0 == "_" }
+/// a command sent to another player, or to "live" (/mac/command): the core writes its request
+public struct Command: Equatable {
+    public enum Action: String {
+        case play, add, next, pause, resume, skip, previous, seek, volume, stop
+        case jump, remove, clear, shuffle, `repeat`            // the Live channel's queue
+    }
+    public var action: Action
+    public var what: String?
+    public var shuffle: Bool
+    public var position: Double?
+    public var volume: Int?
+    public var index: Int?
+    public var on: Bool?
+
+    public init(_ action: Action, what: String? = nil, shuffle: Bool = false, position: Double? = nil, volume: Int? = nil,
+                index: Int? = nil, on: Bool? = nil) {
+        self.action = action; self.what = what; self.shuffle = shuffle; self.position = position; self.volume = volume
+        self.index = index; self.on = on
     }
 
-    /// the kept id when it is a good one, else a new one ("mac-" and 12 hexadecimal digits)
-    public static func id(kept: String?, make: () -> UUID = { UUID() }) -> String {
-        if let kept, isValid(kept) { return kept }
-        let hex = make().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-        return "mac-" + hex.prefix(12)
+    /// its request to the device `to`
+    public func path(to device: String) -> String {
+        let ms = position.map { $0.isFinite ? Int(max(0, $0) * 1000) : 0 } ?? -1
+        let act = a68_action(action.rawValue)
+        let vol = Int32(clamping: volume ?? -1), at = index ?? -1, onOff: Int32 = on.map { $0 ? 1 : 0 } ?? -1
+        let mix: Int32 = shuffle ? 1 : 0
+        return request { c, out, size in
+            guard let what else { return a68_path_command(c, device, act, nil, mix, ms, vol, at, onOff, out, size) }
+            return what.withCString { w in a68_path_command(c, device, act, w, mix, ms, vol, at, onOff, out, size) }
+        }
     }
 }
 
-/// the library's generation: a change after the first one seen means "refresh the lists"
+/// this Mac as a device: an id kept in the preferences, made once
+public enum DeviceIdentity {
+    public static func isValid(_ id: String) -> Bool { dv_valid_id(id) != 0 }
+
+    /// the kept id when it is a good one, else a new one ("mac-" and 12 letters and digits, the core's
+    /// dv_make_id, seeded from a UUID's bytes)
+    public static func id(kept: String?, make: () -> UUID = { UUID() }) -> String {
+        if let kept, isValid(kept) { return kept }
+        let u = make().uuid
+        let a = UInt(u.0) << 24 | UInt(u.1) << 16 | UInt(u.2) << 8 | UInt(u.3)
+        let b = UInt(u.4) << 24 | UInt(u.5) << 16 | UInt(u.6) << 8 | UInt(u.7)
+        return built(20) { out, _ in dv_make_id(out, a ^ UInt(u.8) << 8 ^ UInt(u.9), b ^ UInt(u.10) << 16 ^ UInt(u.15)); return 1 } ?? "mac-000000000000"
+    }
+}
+
+/// the library's generation: a change after the first one seen means "refresh the lists" (the core's a68_gen)
 public struct GenerationWatch: Equatable {
-    public private(set) var seen: Int?
+    private var w = a68_gen()
 
     public init() {}
 
+    public var seen: Int? { w.seen > 0 ? Int(w.seen) : nil }
+
+    public static func == (a: GenerationWatch, b: GenerationWatch) -> Bool { a.w.seen == b.w.seen }
+
     /// true when g differs from the generation seen before (never for the first)
     public mutating func changed(_ g: Int?) -> Bool {
-        guard let g else { return false }
-        defer { seen = g }
-        return seen != nil && seen != g
+        guard let g, g > 0 else { return false }
+        return a68_gen_changed(&w, UInt(g)) != 0
     }
 }
 
-/// a click or drag on the position bar as a time in the song
+/// a click or drag on the position bar as a time in the song (the core's a68_bar_time, in thousandths)
 public enum Scrub {
     public static func time(x: Double, width: Double, duration: Double) -> Double {
-        guard width > 0, duration > 0, x.isFinite else { return 0 }
-        return min(max(x / width, 0), 1) * duration
+        guard width > 0, duration > 0, x.isFinite, width.isFinite, duration.isFinite else { return 0 }
+        let ms = a68_bar_time(Int(min(max(x, -1), width + 1) * 1000), Int(width * 1000), UInt(duration * 1000))
+        return Double(ms) / 1000
     }
 
     /// the place of a time on the bar, 0...1
@@ -296,8 +385,74 @@ public enum Scrub {
     }
 }
 
-/// what "what" the server takes names: everything, a folder, a song, a radio station
-public extension LiveWhat {
-    static var everything: String { "f:" }
-    static func radio(_ index: Int) -> String { "r:\(index)" }
+/// this Mac as one of the server's devices: play/core/devices.c's rules (when to announce, when what plays is
+/// news, what to do with an answer) over the paths it writes. DeviceLink makes the requests, all from the main
+/// actor, so the core's struct is only ever touched by one at a time.
+public final class DeviceSession {
+    private let d: UnsafeMutablePointer<dv>
+    private let start = Date()
+
+    public init(id: String, name: String, version: String) {
+        d = .allocate(capacity: 1)
+        dv_init(d, id, name, version, "macos")
+        d.pointee.client = client                // UTF-8, the whole state
+        d.pointee.wait = 20                      // URLSession waits longer than MacTCP: the server's longest hold
+        d.pointee.refresh = 5                    // what plays, every five seconds while it plays (for the others' bars)
+    }
+
+    deinit { d.deallocate() }
+
+    /// the caller's clock: whole seconds since this session began
+    public var now: UInt { UInt(max(0, Date().timeIntervalSince(start))) }
+
+    public func begin() { dv_start(d, now) }
+    public func end() { dv_stop(d) }
+
+    public var announced: Bool { d.pointee.announced != 0 }
+    public var every: Int { Int(d.pointee.every) }
+    public var generation: Int? { d.pointee.gen > 0 ? Int(d.pointee.gen) : nil }
+    /// the generation moved since it was last asked (read once)
+    public func takeGenerationChange() -> Bool {
+        defer { d.pointee.gen_changed = 0 }
+        return d.pointee.gen_changed != 0
+    }
+
+    public enum Request: Int32 { case announce = 1, state = 2, commands = 3 }
+
+    public func path(_ what: Request) -> String {
+        built(1024) { dv_path(d, what.rawValue, $0, $1) } ?? "/"
+    }
+
+    /// a request's answer: status 0 when there was none; true if it was taken
+    @discardableResult
+    public func answer(_ what: Request, status: Int, body: Data?) -> Bool {
+        let n = now
+        guard let body else { return dv_answer(d, what.rawValue, Int32(clamping: status), nil, 0, n) != 0 }
+        let r = Records(body)
+        return dv_answer(d, what.rawValue, Int32(clamping: status), r.buf, r.count, n) != 0
+    }
+
+    /// what plays now; true if it is news (a report is due)
+    @discardableResult
+    public func setState(_ s: DeviceState) -> Bool {
+        var st = dv_state()
+        st.playing = s.playing ? 1 : 0
+        st.pos = UInt(max(0, s.position.isFinite ? s.position : 0))
+        st.len = UInt(max(0, s.length.isFinite ? s.length : 0))
+        st.vol = Int32(max(0, min(100, s.volume)))
+        setText(&st.tid, s.track)
+        setText(&st.title, s.title)
+        setText(&st.artist, s.artist)
+        let n = now
+        dv_set_state(d, &st, n)
+        return dv_state_due(d, n) != 0
+    }
+}
+
+/// what "what" the server takes names: everything, a folder, a song, a radio station (the core writes them)
+public enum LiveWhat {
+    public static func folder(_ folder: String) -> String { built(folder.utf8.count + 8) { a68_what_folder(folder, $0, $1) } ?? "f:" }
+    public static func track(_ path: String) -> String { built(path.utf8.count + 8) { a68_what_track(path, $0, $1) } ?? "t:" }
+    public static var everything: String { folder("") }
+    public static func radio(_ index: Int) -> String { built(24) { a68_what_radio(UInt(max(0, index)), $0, $1) } ?? "r:0" }
 }

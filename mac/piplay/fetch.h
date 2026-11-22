@@ -6,6 +6,7 @@
  */
 #ifndef PIPLAY_FETCH_H
 #define PIPLAY_FETCH_H
+#include "address.h"
 
 enum { FS_IDLE, FS_RESOLVE, FS_OPEN, FS_SEND, FS_RECV, FS_DONE, FS_FAILED };
 
@@ -31,10 +32,11 @@ void fetch_forget_host(void);          /* the next fetch looks the name up again
 long fetch_received(void);             /* bytes of the answer received so far (FS_RECV), else 0 */
 
 /* the network probe (UDP, port 8070): "AURORA68-MUSIC?" broadcast and sent to the group 239.255.68.70;
-   the first answer gives the server's name and TCP port, the address it answered from (host), and the
-   addresses it has (v4, v6: either may be empty) for the one the Connect By preference names */
+   the first answer (d, read by play/core/address.c) gives the server's name and TCP port and the addresses
+   it has (either may be empty); host is the address it answered from. a68_disc_hosts puts them in the order
+   the Connect By preference names */
 enum { D_IDLE, D_WAIT, D_FOUND, D_NONE };
-struct discovery { int st; char host[40]; char name[48]; unsigned short port; char v4[16]; char v6[46]; };
+struct discovery { int st; char host[40]; struct a68_disc d; };
 extern struct discovery disc;
 int discover_start(void);              /* 0 if MacTCP's UDP cannot be had */
 void discover_poll(void);

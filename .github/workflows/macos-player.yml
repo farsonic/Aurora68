@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: MPL-2.0
 # Aurora68 Play for macOS (macos/Aurora68Play): its tests, then "Aurora68 Play.app" (Apple silicon and
-# Intel, ad-hoc signed), zipped as the artifact Aurora68-Play-macOS of the run.
+# Intel, ad-hoc signed), zipped as the artifact Aurora68-Play-macOS of the run. Since 22 November 2026 the Swift
+# package is the repository's top folder (Package.swift) and builds the C core it shares with the classic Play
+# (play/core), so a change there runs this too. Every branch: no branch filter (a push of play-core runs it).
 name: macos player
 on:
   push:
-    paths: ['macos/**', 'tools/mac/mkicons.py', '.github/workflows/macos-player.yml']
+    paths: ['macos/**', 'play/**', 'Package.swift', 'tools/mac/mkicons.py', '.github/workflows/macos-player.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -15,8 +17,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Versions
         run: swift --version && xcodebuild -version
-      - name: Test
-        working-directory: macos/Aurora68Play
+      - name: Test (the core's Swift wrappers and its C, through XCTest)
         run: swift test
       - name: Icon tools (numpy and Pillow, in a virtual environment)
         run: python3 -m venv "$RUNNER_TEMP/icon" && "$RUNNER_TEMP/icon/bin/pip" install --quiet numpy pillow

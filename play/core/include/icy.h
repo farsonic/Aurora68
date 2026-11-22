@@ -1,15 +1,17 @@
 /* SPDX-License-Identifier: MPL-2.0
  *
- * mac/piplay/icy.h - the answer of an internet radio station, taken apart: the HTTP or ICY status line
+ * play/core/include/icy.h - the answer of an internet radio station, taken apart: the HTTP or ICY status line
  * and headers, the body undone from HTTP/1.1's chunks if the server sent it so, the ICY metadata
  * blocks taken out of the audio, and the station's "now playing" (StreamTitle) in Mac Roman.
  *
  * Portable C with no Toolbox calls, so the same file runs in PiPlay on the Mac (fed from MacTCP's
  * TCPRcv completion routine, at interrupt time: no allocation, no traps) and in a host test
- * (tools/icy_test.c, `make -C mac check`). Written on 21 November 2026 (docs/08 item 83).
+ * (tools/icy_test.c, `make -C mac check`). Written on 21 November 2026 (docs/08 item 83); in Aurora68 Play's
+ * shared core (play/core) since 22 November 2026 (item 107), where the macOS Play uses icy_playlist_url for
+ * a station whose address is a .pls or .m3u playlist (AVFoundation plays streams, not playlists).
  */
-#ifndef PIPLAY_ICY_H
-#define PIPLAY_ICY_H
+#ifndef A68_ICY_H
+#define A68_ICY_H
 
 enum { ICY_STATUS, ICY_HEADERS, ICY_BODY, ICY_DONE };          /* struct icy's state */
 enum { ICY_K_AUDIO = 1, ICY_K_PLAYLIST, ICY_K_OTHER };         /* what the body is, from Content-Type */

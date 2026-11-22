@@ -4,7 +4,9 @@
 #                   their icons come from tools/mac/mkicons.py)
 #   The declaration ROM (build/psmac.declrom) carries the .PiDisk, .Network_EtherNet_PiStorm and .PiInput drivers,
 #   and PiDisk's boot record (pidisk_boot.s), which lets an image on the card be the startup disk.
-#   make check     compares the struct offsets in enet.s with emu68/src/alice/alice_net.h; host tests (USB frames, EDID, PiPlay's radio parser and station list,
+#   make check     compares the struct offsets in enet.s with emu68/src/alice/alice_net.h; host tests (USB frames, EDID, Aurora68 Play's
+#                  shared core in play/core: its radio parser, station list, devices and every other part, on the host, on the real
+#                  music server's answers and, where qemu-m68k is installed, as a 68020 big-endian program; the card's codecs;
 #                  the kernel's FAT/exFAT reader and its HFS view: tools/fatfs_test.sh, tools/hfsview_test.sh;
 #                  Aurora68 Recovery's cmdline.txt word editor: tools/cmdline_test.sh; the bus check's verdicts
 #                  against a simulated board with faults: tools/buscheck_test.c)
@@ -14,6 +16,11 @@ OBJCOPY = m68k-linux-gnu-objcopy
 PY      = python3
 B       = build
 ICONS   = ../tools/mac/mkicons.py
+# Aurora68 Play's core, shared with the macOS Play (play/core/README.md, 22 November 2026): portable C both Plays compile
+CORE     = ../play/core
+CORE_SRC = $(wildcard $(CORE)/*.c)
+CORE_H   = $(wildcard $(CORE)/include/*.h)
+SANITIZE ?= -fsanitize=address,undefined
 
 all: $(B)/psmac-se.declrom $(B)/Aurora68-Machine.bin $(B)/Aurora68-Disk.bin $(B)/Aurora68-Network.bin $(B)/Aurora68-WiFi.bin $(B)/Aurora68-Bluetooth.bin $(B)/Aurora68-Status.bin $(B)/Aurora68-Ping.bin $(B)/Aurora68-Screens.bin $(B)/Aurora68-Colour.bin $(B)/Aurora68-Log.bin $(B)/Aurora68-Depth.bin $(B)/Aurora68-WiFi-Bluetooth.bin $(B)/Aurora68-ScreenSetup.bin $(B)/Aurora68-Display.bin $(B)/Aurora68-Sound.bin $(B)/Aurora68-Slots.bin $(B)/Aurora68-Play.bin $(B)/Aurora68-Agent.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes declrom-wifi-sizes declrom-se-sizes
 
@@ -158,14 +165,15 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	$(B)/edid_test > $(B)/edid_test.log && tail -1 $(B)/edid_test.log
 	cc -std=c99 -O1 -Wall -Wextra -Werror -I ../emu68/src/psmac -o $(B)/buscheck_test ../tools/buscheck_test.c ../emu68/src/psmac/psmac_buscheck_core.c
 	$(B)/buscheck_test > $(B)/buscheck_test.log && tail -1 $(B)/buscheck_test.log
-	cc -std=c99 -Wall -Wextra -Werror -o $(B)/icy_test ../tools/icy_test.c piplay/icy.c
+	cc -std=c99 -Wall -Wextra -Werror -I $(CORE)/include -o $(B)/icy_test ../tools/icy_test.c $(CORE)/icy.c
 	$(B)/icy_test
-	cc -std=c99 -Wall -Wextra -Werror -o $(B)/stations_test ../tools/stations_test.c piplay/stations.c
-	cc -std=c99 -Wall -Wextra -Werror -o $(B)/libparse_test ../tools/libparse_test.c piplay/libparse.c
+	cc -std=c99 -Wall -Wextra -Werror -I $(CORE)/include -o $(B)/stations_test ../tools/stations_test.c $(CORE)/stations.c
 	$(B)/stations_test
-	$(B)/libparse_test
-	cc -std=c99 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -o $(B)/devices_test ../tools/devices_test.c piplay/devices.c
+	cc -std=c99 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -I $(CORE)/include -o $(B)/devices_test ../tools/devices_test.c $(CORE_SRC)
 	$(B)/devices_test
+	cc -std=c99 -Wall -Wextra -Werror -g $(SANITIZE) -I $(CORE)/include -o $(B)/play_core_test ../tools/play_core_test.c $(CORE_SRC)
+	$(PY) ../tools/play_core_fixtures.py $(abspath $(B))/play_core $(abspath $(B))/play_core_test
+	sh ../tools/play_core_m68k.sh $(abspath $(B))
 	sh ../tools/codec_test.sh $(abspath $(B))
 	sh ../tools/fatfs_test.sh
 	sh ../tools/hfsview_test.sh
@@ -238,46 +246,43 @@ $(B)/pp/libc.o: c/libc.c c/toolbox.h $(B)/pp/toolbox_gen.h
 $(B)/pp/net.o: piplay/net.s
 	@mkdir -p $(B)/pp
 	$(AS) -o $@ $<
-PP_H = c/toolbox.h $(B)/pp/toolbox_gen.h ../emu68/src/psmac/psmb.h piplay/icy.h piplay/radio.h piplay/stations.h \
-       piplay/library.h piplay/fetch.h piplay/libparse.h piplay/media.h piplay/devices.h
+PP_CFLAGS = $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -I$(CORE)/include
+PP_H = c/toolbox.h $(B)/pp/toolbox_gen.h ../emu68/src/psmac/psmb.h piplay/radio.h piplay/library.h piplay/fetch.h piplay/media.h $(CORE_H)
 $(B)/pp/piplay.o: piplay/piplay.c $(PP_H)
-	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -I../emu68/src/psmac -c -o $@ $<
-# the internet radio: Riptide's .IPP6 (IPP6.h, its interface header) or MacTCP and the resolver (radio.c), the stations' answers taken apart (icy.c, also
-# built for the host by `make check`: tools/icy_test.c)
+	$(CC) $(PP_CFLAGS) -I../emu68/src/psmac -c -o $@ $<
+# the internet radio: Riptide's .IPP6 (IPP6.h, its interface header) or MacTCP and the resolver (radio.c); the stations' answers
+# are taken apart by the core's icy.c
 $(B)/pp/radio.o: piplay/radio.c $(PP_H) piplay/IPP6.h
-	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -I../emu68/src/psmac -c -o $@ $<
-$(B)/pp/icy.o: piplay/icy.c piplay/icy.h
-	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -c -o $@ $<
-# the station list: the built-in one, the file's groups (the Radio menu's submenus), the defaults a file
-# lacks; also built for the host by `make check` (tools/stations_test.c)
-$(B)/pp/stations.o: piplay/stations.c piplay/stations.h
-	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -c -o $@ $<
-# the Library (22 November 2026, docs/08 item 98): the window, the queue and Now Playing (library.c), the second
-# connection for lists and covers and the UDP probe (fetch.c), the server's answers taken apart (libparse.c, also
-# built for the host by `make check`: tools/libparse_test.c)
+	$(CC) $(PP_CFLAGS) -I../emu68/src/psmac -c -o $@ $<
+# the Library (22 November 2026, docs/08 item 99): the window and Now Playing (library.c), the second connection for lists
+# and covers and the UDP probe (fetch.c); its model (the pages, the queue, the server's answers) is the core's
 $(B)/pp/library.o: piplay/library.c $(PP_H)
-	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -I../emu68/src/psmac -c -o $@ $<
+	$(CC) $(PP_CFLAGS) -I../emu68/src/psmac -c -o $@ $<
 $(B)/pp/fetch.o: piplay/fetch.c $(PP_H) piplay/IPP6.h
-	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -I../emu68/src/psmac -c -o $@ $<
+	$(CC) $(PP_CFLAGS) -I../emu68/src/psmac -c -o $@ $<
 # FLAC, Ogg Vorbis and Apple Lossless files (22 November 2026, docs/08 item 105): what a file is, its tags, the bytes
-# for the card's decoders and seeking (media.c, also built for the host by `make check`: tools/codec_test.sh)
-$(B)/pp/media.o: piplay/media.c piplay/media.h piplay/icy.h
-	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -c -o $@ $<
-# the music server's devices (docs/08 item 105): announce, state, commands, the library's generation (devices.c, also
-# built for the host by `make check`: tools/devices_test.c)
-$(B)/pp/devices.o: piplay/devices.c piplay/devices.h
-	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -c -o $@ $<
-$(B)/pp/libparse.o: piplay/libparse.c piplay/libparse.h
-	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -c -o $@ $<
-PP_OBJ = $(B)/crt0.o $(B)/pp/toolbox_glue.o $(B)/pp/libc.o $(B)/pp/fs.o $(B)/pp/net.o $(B)/pp/piplay.o $(B)/pp/radio.o $(B)/pp/icy.o $(B)/pp/stations.o \
-         $(B)/pp/library.o $(B)/pp/fetch.o $(B)/pp/libparse.o $(B)/pp/media.o $(B)/pp/devices.o
+# for the card's decoders and seeking (media.c, also built for the host by `make check`: tools/codec_test.sh). The
+# classic Play's alone: the macOS Play leaves files to AVFoundation
+$(B)/pp/media.o: piplay/media.c piplay/media.h $(CORE)/include/icy.h
+	$(CC) $(PP_CFLAGS) -c -o $@ $<
+# the shared core (play/core, docs/08 item 107): text, track names, addresses and discovery, the server's protocol,
+# the catalogue's pages, the queue, the devices, ICY and the stations; the same files the macOS Play compiles. Each
+# function in a section of its own and the link keeps only those called (--gc-sections: the parts only the macOS Play
+# uses cost the SE nothing), and -Os: at -O2 the request builders' small helpers were copied into each of them, and the
+# Play came out 5 KB larger than before the core; at -Os it is 184 bytes smaller (22 November 2026, docs/08 item 107)
+PP_CORE = $(patsubst $(CORE)/%.c,$(B)/pp/core/%.o,$(CORE_SRC))
+$(B)/pp/core/%.o: $(CORE)/%.c $(CORE_H)
+	@mkdir -p $(B)/pp/core
+	$(CC) $(PP_CFLAGS) -Os -ffunction-sections -fdata-sections -c -o $@ $<
+PP_OBJ = $(B)/crt0.o $(B)/pp/toolbox_glue.o $(B)/pp/libc.o $(B)/pp/fs.o $(B)/pp/net.o $(B)/pp/piplay.o $(B)/pp/radio.o \
+         $(B)/pp/library.o $(B)/pp/fetch.o $(B)/pp/media.o $(PP_CORE)
 $(B)/piplay.elf: $(PP_OBJ) c/app.ld
-	$(LD) -T c/app.ld --emit-relocs --no-warn-rwx-segments -z noexecstack -o $@ $(PP_OBJ) $(LIBGCC)
+	$(LD) -T c/app.ld --emit-relocs --gc-sections --no-warn-rwx-segments -z noexecstack -o $@ $(PP_OBJ) $(LIBGCC)
 # the Finder's resources (signature, bundle, file references for the application, its MP3, AIFF and WAV
 # documents, its preferences and '****', icons: tools/mac/mkicons.py): files dropped on its icon reach it
 # as the application's files (AppParmHandle)
 $(B)/Aurora68-Play.bin: $(B)/piplay.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py $(ICONS)
-	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Play" --creator PIPY --size 512 --icons play --version 1.3 -o $@
+	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Play" --creator PIPY --size 512 --icons play --version 1.4 -o $@
 
 # ---- the WiFi menu: an INIT in C (mac/wifimenu, tools/mac/elf2init.py) ----
 $(B)/wifimenu_traps.txt: c/traps.txt wifimenu/traps.txt

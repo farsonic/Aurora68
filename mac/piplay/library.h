@@ -46,12 +46,14 @@ void lib_find(void);
 void lib_play_all(void);
 int lib_can_play_all(void);
 void lib_toggle_shuffle(void);
+void lib_toggle_repeat(void);           /* Library > Repeat (1.4): the queue round again */
+int lib_repeat(void);
 int lib_shuffle(void);
 void lib_live(void);
 void lib_reload(void);
 
 /* the preferences file's part */
-struct lib_prefs { char host[64]; unsigned short port; short shuffle; Rect r; short shown; short pad; };
+struct lib_prefs { char host[64]; unsigned short port; short shuffle; Rect r; short shown; short repeat; };   /* repeat: was a pad before 1.4 */
 void lib_get_prefs(struct lib_prefs *p);
 void lib_set_prefs(const struct lib_prefs *p);
 

@@ -548,7 +548,7 @@ static void *win, *play_btn, *stop_btn, *vol_bar, *prev_btn, *next_btn;
 static void *m_apple, *m_file, *m_edit, *m_ctl, *m_radio, *m_lib, *m_net;
 enum { M_APPLE = 128, M_FILE, M_EDIT, M_CTL, M_RADIO, M_LIB, M_NET = 139 };
 /* the Library menu; Connect By (a submenu of the Library and Radio menus): the family tried first */
-enum { LB_SHOW = 1, LB_CONNECT, LB_FIND, LB_S1, LB_PLAY, LB_SHUFFLE, LB_S2, LB_PREV, LB_NEXT, LB_S3, LB_LIVE, LB_RELOAD, LB_S4, LB_NET };
+enum { LB_SHOW = 1, LB_CONNECT, LB_FIND, LB_S1, LB_PLAY, LB_SHUFFLE, LB_REPEAT, LB_S2, LB_PREV, LB_NEXT, LB_S3, LB_LIVE, LB_RELOAD, LB_S4, LB_NET };
 enum { NET_V6 = 1, NET_V4 };
 /* the Radio menu's submenus, one per group of the station list (stations.h): group g's menu ID is M_SUB + g.
    Inside Macintosh V (the Menu Manager): a submenu is inserted with InsertMenu(menu, -1), its parent item
@@ -804,6 +804,7 @@ static void fix_menus(void)
 	enable(m_lib, LB_FIND, lib_have_server());
 	enable(m_lib, LB_PLAY, lib_can_play_all());
 	CheckItem(m_lib, LB_SHUFFLE, lib_shuffle());
+	CheckItem(m_lib, LB_REPEAT, lib_repeat());
 	enable(m_lib, LB_PREV, lib_can_skip(-1));
 	enable(m_lib, LB_NEXT, lib_can_skip(1));
 	enable(m_lib, LB_LIVE, lib_have_server());
@@ -871,7 +872,7 @@ void say_error(const char *text)
 }
 static void about(void)
 {
-	message_box("Aurora68 Play 1.3 for the Aurora68 card.\r"
+	message_box("Aurora68 Play 1.4 for the Aurora68 card.\r"
 	            "Plays MP3, FLAC, Ogg Vorbis and Apple Lossless (.m4a) files, AIFF and WAV files that are not compressed, "
 	            "internet radio (plain http:// MP3 streams through MacTCP or Riptide), and the music on an Aurora68 music "
 	            "server: Library > Show Library. The Pi decodes them (minimp3, dr_flac and stb_vorbis, public domain; "
@@ -1339,7 +1340,7 @@ static void setup_menus(void)
 	AppendMenu(m_ctl, pstr(pbuf, "Play/P;Stop/.;(-;Volume Up/];Volume Down/["));
 	InsertMenu(m_ctl, 0);
 	m_lib = NewMenu(M_LIB, pstr(pbuf, "Library"));
-	AppendMenu(m_lib, pstr(pbuf, "Show Library/L;Connect to Server\xC9;Find\xC9/F;(-;Play All;Shuffle;(-;Previous Track;Next Track;(-;"
+	AppendMenu(m_lib, pstr(pbuf, "Show Library/L;Connect to Server\xC9;Find\xC9/F;(-;Play All;Shuffle;Repeat;(-;Previous Track;Next Track;(-;"
 	                        "Listen Live;Reload/R;(-;Connect By"));
 	SetItemCmd(m_lib, LB_NET, 0x1B);
 	SetItemMark(m_lib, LB_NET, M_NET);
@@ -1384,6 +1385,7 @@ static void do_menu(long mr)
 		case LB_FIND: lib_find(); break;
 		case LB_PLAY: lib_play_all(); break;
 		case LB_SHUFFLE: lib_toggle_shuffle(); break;
+		case LB_REPEAT: lib_toggle_repeat(); break;
 		case LB_PREV: lib_skip(-1); break;
 		case LB_NEXT: lib_skip(1); break;
 		case LB_LIVE: lib_live(); break;

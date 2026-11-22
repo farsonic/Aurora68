@@ -1,13 +1,15 @@
 /* SPDX-License-Identifier: MPL-2.0
  *
- * mac/piplay/stations.h - Aurora68 Play's station list ("Aurora68 Play Stations", a TeachText file):
+ * play/core/include/stations.h - Aurora68 Play's station list ("Aurora68 Play Stations", a TeachText file):
  * the built-in list, the file's lines taken apart into stations and the groups of the Radio menu's
  * submenus, and the stations of the built-in list that a user's file lacks (Radio > Add Default
  * Stations).
  *
  * Portable C with no Toolbox calls, like icy.c: the same file runs in Aurora68 Play (radio.c reads and
  * writes the file, piplay.c builds the menus) and in a host test (tools/stations_test.c, `make -C mac
- * check`). Written on 21 November 2026 (docs/08 item 87).
+ * check`). Written on 21 November 2026 (docs/08 item 87); in the shared core (play/core) since 22 November
+ * 2026 (item 107): the music server's /api/radio and /mac/radio are this list (test_server.py checks the two
+ * agree), and the macOS Play falls back on stations_builtin when a server is too old to have them.
  *
  * The file, one line at a time (Return, line feed or both end a line; spaces around anything are
  * ignored):
@@ -23,8 +25,8 @@
  * adds to the group it named the first time. Items come in the order the file first names them; a group
  * with no station in it, or in a submenu of it, is left out of the menus.
  */
-#ifndef PIPLAY_STATIONS_H
-#define PIPLAY_STATIONS_H
+#ifndef A68_STATIONS_H
+#define A68_STATIONS_H
 
 #define MAX_STATIONS 128                 /* the built-in list has 40; each station takes 250 bytes */
 #define MAX_GROUPS   48                  /* submenu IDs 140 to 187: an application's submenus must be 1 to 235 */
@@ -43,6 +45,9 @@ struct stations {
 
 extern const char stations_builtin[];    /* the list written at the first start (Mac Roman, Return-ended lines) */
 extern const long stations_builtin_len;
+/* the same, through a function: Swift does not import an array of unknown size (the macOS Play's fallback
+   for a server without /mac/radio) */
+const char *stations_default_text(long *len);
 
 /* the file's text into l (everything in it replaced) */
 void stations_parse(struct stations *l, const char *text, long n);

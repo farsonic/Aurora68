@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0
  *
- * mac/piplay/icy.c - an internet radio station's answer, taken apart (icy.h says what and why).
+ * play/core/icy.c - an internet radio station's answer, taken apart (icy.h says what and why).
  *
  * The protocol is Shoutcast's and Icecast's, as their clients have used it since Winamp: the client
  * asks with "Icy-MetaData: 1", and the server answers with "icy-metaint: N" among its headers and then

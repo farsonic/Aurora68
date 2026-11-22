@@ -622,7 +622,7 @@ not NPO Radio 2 again under Netherlands); its own stations stay where they were.
 were added; if the file cannot be written (open in an editor that keeps it open for writing, a locked
 disk) it says so and adds nothing.
 
-How it is made: `mac/piplay/stations.c` (portable C, also run on the host by `make -C mac check` through
+How it is made: `mac/piplay/stations.c` (`play/core/stations.c` since 22 November 2026, below, "The shared core") (portable C, also run on the host by `make -C mac check` through
 `tools/stations_test.c`) holds the built-in list (Mac Roman: the Ö of Ö1 is $85) and takes the file apart
 into stations, groups and their order; `radio.c` reads and writes the file; `piplay.c`'s `fill_menu` builds a
 menu per group with NewMenu, puts it into the menu list with `InsertMenu(menu, -1)` (the hierarchical
@@ -643,7 +643,7 @@ name resolver the way Apple's DNR glue does (the Control Panels folder for a `'c
 `'ztcp'`, then the System Folder and the Control Panels folder for `'mtcp'`; the first file whose
 resource fork holds `'dnrp'` 1, which is "Riptide DNR" with Riptide and "MacTCP DNR" with Apple's MacTCP).
 It sends `GET /path HTTP/1.0` with `Host:`, `User-Agent: Aurora68-Play/1.1 (Macintosh)` and
-`Icy-MetaData: 1`. `mac/piplay/icy.c` takes the answer apart: an `HTTP/1.x` or `ICY 200 OK` status line,
+`Icy-MetaData: 1`. `mac/piplay/icy.c` (now `play/core/icy.c`) takes the answer apart: an `HTTP/1.x` or `ICY 200 OK` status line,
 the headers in any case (`icy-metaint`, `icy-name`, `icy-br`, `Content-Type`, `Location`,
 `Transfer-Encoding`), redirections (301, 302, 303, 307, 308; three at most; to plain http only), a
 playlist's first stream, HTTP/1.1's chunks (a server or proxy that answers 426 "Upgrade Required" is
@@ -814,7 +814,7 @@ record). What Aurora68 Play 1.3 adds:
 - **New albums without a restart.** The library's generation comes with each announce answer (below) and
   in `/mac/info`'s sixth field; when it moves, the list in view is fetched again and the selected row
   selected again.
-- **A device of the music server** (`mac/piplay/devices.c`; the server's side is `tools/music-server`'s
+- **A device of the music server** (`mac/piplay/devices.c`, now `play/core/devices.c`; the server's side is `tools/music-server`'s
   README, "Devices"). Once a server is known Aurora68 Play announces itself every 20 seconds
   (`/mac/announce`, with an id made once and kept in its preferences and the Mac's name from Sharing
   Setup), reports what it plays when that changes (`/mac/state`: a library track by its id, a station by
@@ -851,6 +851,69 @@ through pinet, test files made by ffmpeg: tones, never music):
 Not done: a "Play On" submenu to send music from the SE to another player. The server's commands name music
 by folder paths (`f:`, `t:FOLDER/SONG`), which the classic Play's track ids do not give, and a 512 by 342
 menu of devices is of little use while the panel has one; the SE is a player others send to.
+
+### The shared core: one code base for both Aurora68 Plays (22 November 2026)
+The owner asked for "a common code base between the two": the classic Aurora68 Play on the SE (`mac/piplay`, C
+for the 68000) and the macOS one (`macos/Aurora68Play`, SwiftUI). Until then each had its own copy of the same
+ideas: the classic Play's `icy.c`, `stations.c`, `devices.c` and `libparse.c` and what `library.c`, `radio.c` and
+`fetch.c` knew; the macOS Play's `Address.swift`, `TrackName.swift`, `PlayQueue.swift`, `Devices.swift`,
+`Models.swift`. Now everything that is not interface is one portable C core, **`play/core`** (its README has the
+table of parts), compiled by both: the classic Play's `mac/Makefile` with `m68k-linux-gnu-gcc` and the kit's
+flags, the macOS Play as its Swift package's C target `PlayCore`, the host tests with cc (docs/08 item 107 is the
+record).
+
+- **What is in the core:** `text.c` (bounded text, numbers with thousandths, times, %XX), `names.c` (a song's
+  number and title from its file's name), `address.c` (typed addresses, a station's URL, IPv6 in brackets, hosts
+  in the order Connect By names, the probe's answer), `proto.c` (every request's path and every answer of the
+  server's taken apart), `catalog.c` (a page of a list as the Library window's rows), `queue.c` (the play queue,
+  with the stream sent ahead), `devices.c`, `icy.c`, `stations.c`. What each Play keeps: the classic Play its
+  windows and menus, MacTCP and Riptide's `.IPP6`, the card's stream channel and `media.c` (only it reads music
+  files itself); the macOS Play SwiftUI, AVFoundation, URLSession, the probe's sockets and the library filter's
+  folding of accents.
+- **One wire format, the server's `/mac/` text.** The macOS Play used the server's JSON; it now asks for the same
+  text as the SE with two parameters the SE does not send: `enc=utf8` (UTF-8 both ways; without it Mac Roman) and
+  `full=1` (an album's folder and artist id, a track's path, album and folder, a device's whole state, a command's
+  tracks with their paths). Two requests were added for it: `/mac/now` (the Live channel) and `/mac/command`
+  (play this on a player or on Live, and Live's queue: jump, remove, clear, shuffle, repeat). The JSON is still
+  served, unchanged, for the web panel. tools/music-server/README.md has the interface.
+- **The rules the core keeps:** no header and no C library call (the kit has `memcpy`, `memset`, `memmove`,
+  `memcmp`, `strlen` and nothing else); no allocation and no shared state (the caller's struct and buffers);
+  answers taken apart in place (fields are pointers into the answer, so a long path costs a 68000 nothing it does
+  not copy); arithmetic that wraps masked to 32 bits, so the shuffle and the device's id are the same on the SE
+  and on a Mac; no floating point (positions in thousandths). The classic Play compiles it at `-Os` with a section
+  per function and `--gc-sections`.
+- **What changed for the user.** Classic Play 1.4: **Library > Repeat** (the queue from its first song again when
+  it ends, gaplessly; kept in the preferences, in the byte that was padding); Previous on the first song starts it
+  again (it beeped); a stream of the second or later song of a gapless run that is lost and made again resumes
+  where its audio stopped (the place it started from was not reset between songs); an address typed without a
+  port means the server's own, 8000 (it was 8423, the owner's server's). macOS Play 1.2: a station whose address
+  is a `.pls` or `.m3u` plays its first stream; a server without radio stations still offers the built-in list;
+  after the probe the address the answer came from is tried before the one the server names for itself; songs
+  added after the queue has played to its end are the ones that play (it started the old queue again).
+
+**Tested** (22 November 2026). On the host (`make -C mac check`): `tools/play_core_test.c`, 136 checks of every
+part on answers written as the server writes them, and 24 more on the real server's answers, which
+`tools/play_core_fixtures.py` fetches from `tools/music-server` on a library of ffmpeg-made tones, both ways (Mac
+Roman with the short records, UTF-8 with the full ones; the artists in pages of two give the same list as in one
+page; a track's file name tidied by the core agrees with its tag); the same 136 as a 68020 program, big-endian with
+32-bit longs, compiled by the classic Play's compiler and run under qemu-m68k (`tools/play_core_m68k.sh`: a seed
+gives the same id and the same shuffle as on the host); the older tests of the parts that moved (icy 92, stations
+3934, devices 33 checks) and the server's own test (141 checks, 14 of them new: UTF-8, the full records, a folder
+of 160 characters whole, `/mac/now`, `/mac/command` to Live and to a player). On GitHub's macOS runner: the XCTest
+suite, 19 tests of the Swift wrappers and of the core's reading of the server's text (runs 45070804702 and
+45071242421, both green), and the app built for Apple silicon and Intel. In the testbed (solo board, System 7.1
+with Riptide, the server on the host through pinet): a FLAC file played as before; the Library listed the artist,
+its album and its tracks; a track played and the next followed gaplessly; Library > Repeat on, and after the last
+song the first came next in the stream; Next on the last went round to the first; from the server, play the
+library, pause and resume (by `/mac/command`, the macOS Play's request), skip, seek to 12 s (`/t/ID?start=12`),
+volume 50 (reported back) and stop; Radio > Open URL with the server's Live channel; an album copied in,
+"the library changed: its lists again", two artists listed; Connect to Server with the field emptied: the probe
+(multicast, Riptide refusing the broadcasts as before), "found the music server at 192.168.68.1", the address the
+answer came from tried first; Quit kept Repeat in "Aurora68 Play Prefs".
+
+Not verified: the macOS app on a real Mac (only built and unit-tested on the runner: the catalogue by pages, Play on
+Live and on another player, a playlist station, the long poll against a live server); the classic Play on the SE;
+Find and covers in the testbed (the test library has none), a library of the owner's size through the paging.
 
 ## The WiFi in the testbed: a radio that exists only in software
 QEMU's raspi3b has no WiFi chip (no SDIO function, no firmware to load), so the real driver in

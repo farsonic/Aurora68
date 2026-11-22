@@ -5,7 +5,7 @@ name: music server
 on:
   push:
     branches: [main]
-    paths: ['tools/music-server/**', 'mac/piplay/icy.*', 'mac/piplay/stations.*', '.github/workflows/music-server.yml']
+    paths: ['tools/music-server/**', 'play/core/**', '.github/workflows/music-server.yml']
   workflow_dispatch:
 permissions:
   contents: read

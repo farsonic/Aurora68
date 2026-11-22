@@ -7,9 +7,9 @@ variable bit rate (with its Xing frame) and 22.05 kHz mono, ID3v2.3 and 2.4 titl
 a name with accents, a file that is not MP3 at all, and two symbolic links that lead out of the folder.
 Then it starts the server on a free port and checks:
 
-  - the stations file, through Aurora68 Play's own parser (mac/piplay/stations.c, built on the host
+  - the stations file, through Aurora68 Play's own parser (play/core/stations.c, built on the host
     into play_check): Mac Roman, the groups, every address short enough and answering;
-  - a station with ICY titles, through Aurora68 Play's own ICY parser (mac/piplay/icy.c) in pieces of
+  - a station with ICY titles, through Aurora68 Play's own ICY parser (play/core/icy.c) in pieces of
     random sizes: the titles in order, and the audio decoding with ffmpeg without a single error, as
     long as the files together;
   - pacing: the first second brings the burst, not the whole station;
@@ -17,7 +17,9 @@ Then it starts the server on a free port and checks:
   - refusals: paths out of the folder, the links that lead out, a folder that is not there;
   - Aurora68 Play's Library (/mac/, 22 November 2026): artists, albums and tracks in Mac Roman text, pages, search,
     covers dithered to one bit or the Mac's 256 colours, a page of thumbnails, one track from its start or from a
-    second, and the UDP probe's answer;
+    second, and the UDP probe's answer; the same in UTF-8 with the longer records the macOS Play asks for
+    (enc=utf8&full=1: folders, paths, the devices' whole state), the Live channel in text (/mac/now) and changed
+    by /mac/command (22 November 2026, one wire format for both Plays: docs/08 item 107);
   - IPv6 (::1) where this computer has it; where it has not, that the server says so and serves IPv4.
 
     python3 tools/music-server/test_server.py
@@ -38,6 +40,9 @@ def check(ok, what):
 
 def ffmpeg(*a):
     subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y'] + list(a), check=True)
+
+
+LONG_FOLDER = 'Beta/Talk/Deeper/' + ' '.join(['A very long folder name for a test of the fields that are not cut short'] * 2)
 
 
 def make_library(d):
@@ -74,6 +79,7 @@ def make_library(d):
                          ('05. Epsilon - Song (Live).m4a', 'Epsilon'), ('06. Epsilon - Other.m4a', 'Epsilon')]:
         ffmpeg('-f', 'lavfi', '-i', 'sine=frequency=520:duration=2', '-c:a', 'aac', '-b:a', '96k',
                '-metadata', f'artist={artist}', '-metadata', 'title=Song', f'{e}/{name}')
+    tone(f'{d}/{LONG_FOLDER}/01 Long.mp3', 1, 770, cbr, {'title': 'Long', 'artist': 'Long'})   # a folder of more than 120 characters
     open(f'{d}/Beta/Talk/broken.mp3', 'wb').write(os.urandom(5000))                       # not MP3 at all
     os.makedirs(f'{d}/Empty folder', exist_ok=True)
     os.symlink('/etc/passwd', f'{d}/Beta/evil.mp3')
@@ -120,9 +126,9 @@ def post(base, path, obj, aurora=True):
 
 
 def stations_c():
-    """the classic Play's built-in stations (mac/piplay/stations.c's C string, Mac Roman) as text"""
+    """the classic Play's built-in stations (play/core/stations.c's C string, Mac Roman) as text"""
     import re
-    src = open(os.path.join(ROOT, 'mac/piplay/stations.c'), encoding='latin-1').read()
+    src = open(os.path.join(ROOT, 'play/core/stations.c'), encoding='latin-1').read()
     a = src.index('const char stations_builtin[] =')
     out = bytearray()
     for t in re.findall(r'"((?:[^"\\]|\\.)*)"', src[a:src.index('const long stations_builtin_len', a)]):
@@ -150,7 +156,7 @@ def devices_check(tmp):
     sys.path.insert(0, HERE)
     import aurora68_music_server as m
     check(m.parse_stations(m.RADIO_BUILTIN) == m.parse_stations(stations_c()) and len(m.parse_stations(m.RADIO_BUILTIN)) >= 40,
-          'the server\'s radio list is the classic Play\'s built-in one (mac/piplay/stations.c)')
+          'the server\'s radio list is the classic Play\'s built-in one (play/core/stations.c)')
     lib = os.path.join(tmp, 'music-devices')
     os.makedirs(lib)
     shutil.copytree(os.path.join(tmp, 'music', 'Alpha Band', 'First Album'), os.path.join(lib, 'Alpha - First'))
@@ -279,6 +285,13 @@ def devices_check(tmp):
         rows = [r.split(b'\t') for r in body.split(b'\r') if r]
         check(code == 200 and rows[0][:4] == [b'live', b'Dev Music Live', b'live', b'1'] and
               [b'se1', b'Caf\x8e SE', b'classic', b'1', title.encode(), b'Alpha Band'] in rows, f'/mac/devices ({rows})')
+        code, _, body = get(base, '/mac/devices?enc=utf8&full=1')
+        rows = [r.split(b'\t') for r in body.split(b'\r') if r]
+        se_row = next(r for r in rows if r[0] == b'se1')
+        check(len(se_row) == 17 and se_row[1] == 'Café SE'.encode() and se_row[6] == b'1' and se_row[7] == b'10.0' and
+              se_row[9] == b'80' and se_row[10] == b'First' and se_row[11] == b'Alpha - First' and int(se_row[12]) > 0 and
+              rows[0][14] == b'1' and rows[0][0] == b'live',
+              f'/mac/devices?full=1: the whole state, as /api/devices has it ({se_row})')
         post(base, '/api/devices/se1/command', {'action': 'play', 'what': 'f:' + alpha['folder']})
         post(base, '/api/devices/se1/command', {'action': 'play', 'what': 'r:' + str(next(i for i, x in enumerate(st) if x['name'] == 'Ö1'))})
         code, _, body = get(base, '/mac/commands?id=se1&wait=5', A)
@@ -289,6 +302,13 @@ def devices_check(tmp):
         t0 = time.monotonic()
         code, _, body = get(base, '/mac/commands?id=se1&wait=1', A)
         check(code == 200 and body == b'' and time.monotonic() - t0 > 0.8, 'and an empty answer when the wait is over')
+        code, _, body = get(base, '/mac/command?to=se1&action=play&what=' + urllib.parse.quote('f:' + alpha['folder']) +
+                            '&shuffle=1&enc=utf8', A)
+        code2, _, body2 = get(base, '/mac/commands?id=se1&wait=0&enc=utf8&full=1', A)
+        rows = [r.split(b'\t') for r in body2.split(b'\r') if r]
+        check(code == 200 and body.startswith(b'ok\t') and rows[0][1] == b'play' and rows[0][4] == b'1' and
+              sorted(r[5] for r in rows[1:]) == [b'Alpha - First/01 Opening.mp3', b'Alpha - First/02 Second.mp3'] and
+              rows[1][6] == b'First', f'/mac/command to a player, and its commands with full=1: shuffled, paths and album ({rows})')
 
         # offline: not heard from for the TTL (3 s here, 60 normally)
         for _ in range(4):                         # se1 keeps asking for commands: that counts as being heard from
@@ -312,8 +332,8 @@ def main():
     lib = os.path.join(tmp, 'music')
     make_library(lib)
     pc = os.path.join(tmp, 'play_check')
-    subprocess.run(['cc', '-std=c99', '-O1', '-o', pc, os.path.join(HERE, 'play_check.c'),
-                    os.path.join(ROOT, 'mac/piplay/icy.c'), os.path.join(ROOT, 'mac/piplay/stations.c')], check=True)
+    subprocess.run(['cc', '-std=c99', '-O1', '-I', os.path.join(ROOT, 'play/core/include'), '-o', pc, os.path.join(HERE, 'play_check.c'),
+                    os.path.join(ROOT, 'play/core/icy.c'), os.path.join(ROOT, 'play/core/stations.c')], check=True)
 
     s = socket.socket(); s.bind(('127.0.0.1', 0)); port = s.getsockname()[1]; s.close()
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(('127.0.0.1', 0)); dport = s.getsockname()[1]; s.close()
@@ -529,7 +549,7 @@ def main():
     m6 = re.search(rb'Live = http://(\[[0-9a-f:]+\]|[0-9.]+):\d+/live', v6)
     check(m6 is not None, f'?prefer=ipv6: its IPv6 address, or IPv4 where it has none ({m6.group(1).decode() if m6 else "?"})')
 
-    # Aurora68 Play's Library: /mac/ answers, as mac/piplay/libparse.c reads them
+    # Aurora68 Play's Library: /mac/ answers, as the core's proto.c reads them (play/core; mac/piplay/libparse.c before)
     def mac(path):
         st, _, body = get(base, path)
         lines = body.split(b'\r')
@@ -592,6 +612,49 @@ def main():
         f = []
     check(len(f) == 6 and f[:4] == [b'AURORA68-MUSIC', b'1', b'Test Music', str(port).encode()],
           f'the probe\'s answer: the name, the port, and the IPv4 and IPv6 addresses ({f})')
+
+    # the same interface for the macOS Play (22 November 2026): UTF-8 (enc=utf8), the longer records (full=1)
+    def mac8(path):
+        st, h, body = get(base, path, {'X-Aurora': '1'})
+        lines = body.split(b'\r')
+        return st, h, [[x.decode('utf-8') for x in l.split(b'\t')] for l in lines if l], body
+    st, h, rows, body = mac8('/mac/albums?artist=' + byname['Alpha Band'][0] + '&enc=utf8&full=1')
+    cafe = [r for r in rows[1:] if r[1] == 'Café Sessions']
+    check(st == 200 and 'utf-8' in h.get('Content-Type', '') and 'Café Sessions'.encode() in body and cafe and
+          cafe[0][5] == byname['Alpha Band'][0] and cafe[0][6] == 'Alpha Band/Café Sessions',
+          f'enc=utf8&full=1: an album in UTF-8, with its artist\'s id and its folder ({cafe})')
+    st, _, rows, _ = mac8(f'/mac/tracks?album={gid}&enc=utf8&full=1')
+    check([(r[6], r[7], r[8]) for r in rows[1:]][:1] == [('Gamma - Converted/01. Gamma - Closing Time.m4a', 'Converted', 'Gamma - Converted')],
+          f'full=1: a track\'s path (for /file/), its album\'s title and folder ({rows[1:2]})')
+    check(len(mac('/mac/tracks?album=' + gid)[2][0]) == 6, 'without full=1 a track has its six fields, as the classic Play reads them')
+    st, _, rows, _ = mac8('/mac/info?enc=utf8&full=1')
+    check(rows[1][6] == '20' and len(mac('/mac/info')[2][0]) == 6, f'full=1: /mac/info says how often to announce ({rows[1]})')
+    st, _, rows, _ = mac8('/mac/search?q=cr%C3%A8me&enc=utf8')
+    check(any(r[0] == 'T' and r[2].startswith('Crème') for r in rows[1:]), 'enc=utf8: the words of a search read as UTF-8')
+    st, _, rows, _ = mac8('/mac/albums?count=500&enc=utf8&full=1')
+    lr = [r for r in rows[1:] if r[6].startswith('Beta/Talk/Deeper/A very')]
+    check(lr and lr[0][6] == LONG_FOLDER and len(lr[0][6]) > 120,
+          f'a folder longer than 120 characters comes whole ({len(lr[0][6]) if lr else 0} characters)')
+    st, _, rows, _ = mac8('/mac/now?enc=utf8')
+    check(st == 200 and rows[0][:3] == ['A68M', '1', 'now'] and rows[1][0] == 'N' and rows[1][1] == 'Test Music',
+          f'/mac/now: the Live channel in lines ({rows[:2]})')
+    check(get(base, '/mac/command?to=live&action=play&what=f%3AGamma%20-%20Converted')[0] == 403,
+          '/mac/command without X-Aurora is refused')
+    st, _, rows, _ = mac8('/mac/command?to=live&action=play&what=f%3AGamma%20-%20Converted&enc=utf8')
+    st2, _, now, _ = mac8('/mac/now?enc=utf8')
+    q = [r[1] for r in now if r[0] == 'Q']
+    check(st == 200 and rows[0][0] == 'ok' and q[0] == 'Gamma - Converted/01. Gamma - Closing Time.m4a' and len(q) == 3,
+          f'/mac/command to live: play an album; /mac/now has its queue ({q})')
+    mac8('/mac/command?to=live&action=repeat&on=1&enc=utf8')
+    mac8('/mac/command?to=live&action=remove&index=2&enc=utf8')
+    st2, _, now, _ = mac8('/mac/now?enc=utf8')
+    check(now[1][4] == '1' and len([r for r in now if r[0] == 'Q']) == 2, 'the Live queue\'s own actions: repeat on, remove')
+    st, _, rows, _ = mac8('/mac/command?to=live&action=seek&position=3&enc=utf8')
+    check(st == 400 and 'seek' in rows[0][0], f'Live does not seek: refused in words ({rows})')
+    st, _, rows, _ = mac8('/mac/command?to=nobody&action=pause')
+    check(st == 404 and rows[0][0] == 'no such device', 'a command to a device that is not there')
+    mac8('/mac/command?to=live&action=clear')
+    mac8('/mac/command?to=live&action=repeat&on=0')
 
     # getting albums: an indexer and SABnzbd, both stand-ins here; the keys must stay on the server
     check(json.loads(get(base, '/api/get/status')[2])['enabled'] is False, 'finding albums is off without keys')
