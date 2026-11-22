@@ -30,7 +30,8 @@ public enum Address {
 
     public static func isIPv6(_ host: String) -> Bool {
         let h = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-        return h.contains(":") && h.allSatisfy { $0.isHexDigit || $0 == ":" || $0 == "." || $0 == "%" }
+        let addr = h.split(separator: "%", maxSplits: 1).first.map(String.init) ?? h   // a zone ("%en0") is any text
+        return addr.contains(":") && addr.allSatisfy { $0.isHexDigit || $0 == ":" || $0 == "." }
     }
 
     public static func isIPv4(_ host: String) -> Bool {
