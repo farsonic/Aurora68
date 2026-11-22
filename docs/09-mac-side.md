@@ -529,6 +529,25 @@ Aurora68 carries no recording of theirs: Aurora68 Play's list holds only the add
    **Your own music as stations:** `tools/music-server` (a Docker container for a NAS, or one Python file)
    serves a folder of MP3s as stations, one per folder, over IPv4 and IPv6, and writes a stations file for
    the Radio menu (`http://NAS:8000/stations.txt`); its README says how (22 November 2026).
+   **The Library (Aurora68 Play 1.2, 22 November 2026, docs/08 item 99).** The same server's music as a
+   library, in a window of its own: **Library > Show Library** (Command-L). It finds the server by itself
+   (a UDP probe) or takes an address (**Library > Connect to Server...**, such as `192.168.1.20:8423`, or
+   empty to look again), and shows "Library — the server's name". The views, one at a time with **Back**
+   (or Delete, or the left arrow): **Artists**; an artist's **albums**, each with its cover; an album's
+   **tracks** under its cover, with their lengths. Double-click (or Return, or the right arrow) opens a row;
+   on a track it plays the album from that track, gaplessly, the next track's stream following the last
+   one's into the card. **Play** plays the album, or all of an artist's albums; **Shuffle** shuffles what is
+   queued. Typing selects by name ("c" finds The Cure: a "The " in front is left out, as record shops file
+   them). **Find...** (Command-F) searches artists, albums and tracks. The bar along the window's bottom
+   and the player window both show what plays: its cover, the track, the artist and album, the time; in
+   the player window, **<<** and **>>** (or the left and right arrows) are Previous and Next, and a click
+   on the progress line moves in the track. Covers are dithered to one bit on the SE's screen (Bill
+   Atkinson's dithering, done by the server) and come in the Mac's 256 colours on a colour screen.
+   **Listen Live** tunes to the server's Live channel (what its web control panel plays) as a station.
+   **Connect By > IPv6 First / IPv4 First** (Library and Radio menus) chooses the family tried first when
+   a server's or a station's name has both, the other tried when it fails; it is kept in "Aurora68 Play
+   Prefs" with the server, Shuffle and the Library window's place. The window starts at 500 by 292 on the
+   SE's screen, 540 by 360 on larger ones, and takes any size from 360 by 200.
 5. **Your own stations:** the list is the text file "Aurora68 Play Stations" in the Preferences folder (System
    6: the System Folder), written at Aurora68 Play's first start from the built-in list. Open it with TeachText
    or SimpleText (double-click it), add a line `Name = http://host[:port]/path` for each station (a line holding only an
