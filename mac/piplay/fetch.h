@@ -16,6 +16,8 @@ struct fetch {
 	long len;
 	const char *error;               /* FS_FAILED: why, in words for the user */
 	int ipv;                         /* 4 or 6: the family of the last connection */
+	int cut_ok;                      /* set after fetch_start: an answer longer than the buffer is cut, not failed */
+	int cut;                         /* FS_DONE: it was cut */
 };
 extern struct fetch fetch;
 
@@ -26,6 +28,7 @@ int fetch_start(const char *host, unsigned short port, const char *path);
 void fetch_poll(void);                 /* from the event loop */
 void fetch_cancel(void);
 void fetch_forget_host(void);          /* the next fetch looks the name up again (another server chosen) */
+long fetch_received(void);             /* bytes of the answer received so far (FS_RECV), else 0 */
 
 /* the network probe (UDP, port 8070): "AURORA68-MUSIC?" broadcast and sent to the group 239.255.68.70;
    the first answer gives the server's name and TCP port, the address it answered from (host), and the

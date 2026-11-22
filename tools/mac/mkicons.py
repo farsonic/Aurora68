@@ -838,7 +838,7 @@ def g_doc(kind):
                     c.hline(x0, x1 - 1, yy, INK_K)
                     c.fill(x0 + at, yy - 1, x0 + at + 1, yy + 1, (1, col))
             return
-        label = {'MPG3': 'MP3', 'AIFF': 'AIFF', 'WAVE': 'WAV'}[kind]
+        label = {'MPG3': 'MP3', 'AIFF': 'AIFF', 'WAVE': 'WAV', 'FLAC': 'FLAC', 'OggS': 'OGG', 'M4A ': 'M4A'}[kind]
         if n == 32:
             if kind == 'MPG3':
                 c.stamp(x0 + 5, y0 + 1, PLAY16, L(VIOLET))
@@ -862,7 +862,8 @@ def g_doc(kind):
 # ---- the programs: their glyphs, kinds, documents -------------------------------------------------------
 # key: (Finder name, kind 'app' or 'ext', glyph, [documents: (file type, icon key)])
 PROGRAMS = {
-    'play':      ('Aurora68 Play', 'app', g_play, [('MPG3', 'doc-MPG3'), ('AIFF', 'doc-AIFF'), ('WAVE', 'doc-WAVE'), ('pref', 'doc-pref')]),
+    'play':      ('Aurora68 Play', 'app', g_play, [('MPG3', 'doc-MPG3'), ('AIFF', 'doc-AIFF'), ('WAVE', 'doc-WAVE'), ('FLAC', 'doc-FLAC'),
+                  ('OggS', 'doc-OggS'), ('M4A ', 'doc-M4A '), ('pref', 'doc-pref')]),
     'display':   ('Aurora68 Display', 'app', g_display, [('pref', 'doc-pref')]),
     'slots':     ('Aurora68 Slots', 'app', g_slots, [('pref', 'doc-pref')]),
     'log':       ('Aurora68 Log', 'app', g_log, []),
@@ -882,7 +883,7 @@ PROGRAMS = {
     'agent':     ('Aurora68 Agent', 'ext', g_agent, []),
     'common':    ('Aurora68 extension', 'ext', g_common, []),
 }
-DOCS = {'doc-MPG3': 'MPG3', 'doc-AIFF': 'AIFF', 'doc-WAVE': 'WAVE', 'doc-pref': 'pref'}
+DOCS = {'doc-MPG3': 'MPG3', 'doc-AIFF': 'AIFF', 'doc-WAVE': 'WAVE', 'doc-FLAC': 'FLAC', 'doc-OggS': 'OggS', 'doc-M4A ': 'M4A ', 'doc-pref': 'pref'}
 # the extensions whose creator, 'PSMC', they share: the common icon in the bundle, their own as a custom icon
 SHARED_CREATOR = {'disk', 'machine', 'sound'}
 

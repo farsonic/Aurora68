@@ -146,6 +146,9 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	cc -std=c99 -Wall -Wextra -Werror -o $(B)/libparse_test ../tools/libparse_test.c piplay/libparse.c
 	$(B)/stations_test
 	$(B)/libparse_test
+	cc -std=c99 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -o $(B)/devices_test ../tools/devices_test.c piplay/devices.c
+	$(B)/devices_test
+	sh ../tools/codec_test.sh $(abspath $(B))
 	sh ../tools/fatfs_test.sh
 	sh ../tools/hfsview_test.sh
 
@@ -217,7 +220,7 @@ $(B)/pp/net.o: piplay/net.s
 	@mkdir -p $(B)/pp
 	$(AS) -o $@ $<
 PP_H = c/toolbox.h $(B)/pp/toolbox_gen.h ../emu68/src/psmac/psmb.h piplay/icy.h piplay/radio.h piplay/stations.h \
-       piplay/library.h piplay/fetch.h piplay/libparse.h
+       piplay/library.h piplay/fetch.h piplay/libparse.h piplay/media.h piplay/devices.h
 $(B)/pp/piplay.o: piplay/piplay.c $(PP_H)
 	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -I../emu68/src/psmac -c -o $@ $<
 # the internet radio: Riptide's .IPP6 (IPP6.h, its interface header) or MacTCP and the resolver (radio.c), the stations' answers taken apart (icy.c, also
@@ -237,17 +240,25 @@ $(B)/pp/library.o: piplay/library.c $(PP_H)
 	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -I../emu68/src/psmac -c -o $@ $<
 $(B)/pp/fetch.o: piplay/fetch.c $(PP_H) piplay/IPP6.h
 	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -I../emu68/src/psmac -c -o $@ $<
+# FLAC, Ogg Vorbis and Apple Lossless files (22 November 2026, docs/08 item 103): what a file is, its tags, the bytes
+# for the card's decoders and seeking (media.c, also built for the host by `make check`: tools/codec_test.sh)
+$(B)/pp/media.o: piplay/media.c piplay/media.h piplay/icy.h
+	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -c -o $@ $<
+# the music server's devices (docs/08 item 103): announce, state, commands, the library's generation (devices.c, also
+# built for the host by `make check`: tools/devices_test.c)
+$(B)/pp/devices.o: piplay/devices.c piplay/devices.h
+	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -c -o $@ $<
 $(B)/pp/libparse.o: piplay/libparse.c piplay/libparse.h
 	$(CC) $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -c -o $@ $<
 PP_OBJ = $(B)/crt0.o $(B)/pp/toolbox_glue.o $(B)/pp/libc.o $(B)/pp/fs.o $(B)/pp/net.o $(B)/pp/piplay.o $(B)/pp/radio.o $(B)/pp/icy.o $(B)/pp/stations.o \
-         $(B)/pp/library.o $(B)/pp/fetch.o $(B)/pp/libparse.o
+         $(B)/pp/library.o $(B)/pp/fetch.o $(B)/pp/libparse.o $(B)/pp/media.o $(B)/pp/devices.o
 $(B)/piplay.elf: $(PP_OBJ) c/app.ld
 	$(LD) -T c/app.ld --emit-relocs --no-warn-rwx-segments -z noexecstack -o $@ $(PP_OBJ) $(LIBGCC)
 # the Finder's resources (signature, bundle, file references for the application, its MP3, AIFF and WAV
 # documents, its preferences and '****', icons: tools/mac/mkicons.py): files dropped on its icon reach it
 # as the application's files (AppParmHandle)
 $(B)/Aurora68-Play.bin: $(B)/piplay.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py $(ICONS)
-	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Play" --creator PIPY --size 512 --icons play --version 1.2 -o $@
+	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Play" --creator PIPY --size 512 --icons play --version 1.3 -o $@
 
 # ---- the WiFi menu: an INIT in C (mac/wifimenu, tools/mac/elf2init.py) ----
 $(B)/wifimenu_traps.txt: c/traps.txt wifimenu/traps.txt

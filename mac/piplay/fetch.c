@@ -54,7 +54,7 @@ static long got;
 static unsigned char pb_ctl[PB_SIZE], pb_rcv[PB_SIZE], pb_end[PB_SIZE];
 static unsigned long stream, t_state;
 static int rcv_out;
-static char req[420];
+static char req[640];                          /* a device's state with a station's title and artist, %XX-escaped */
 static struct { unsigned short len; char *ptr; unsigned short end; } wds;
 
 /* the server's address, kept */
@@ -143,6 +143,7 @@ void fetch_cancel(void)
 	fetch.st = FS_IDLE;
 }
 void fetch_forget_host(void) { c_have = 0; c_host[0] = 0; }
+long fetch_received(void) { return fetch.st == FS_RECV ? got : 0; }
 
 static void open_start(void)
 {
@@ -222,7 +223,9 @@ int fetch_start(const char *host, unsigned short port, const char *path)
 	p = put_str(p, host);
 	if (has_colon(host)) *p++ = ']';
 	*p++ = ':'; p = put_num(p, port);
-	p = put_str(p, "\r\nUser-Agent: Aurora68-Play/1.2 (Macintosh)\r\nConnection: close\r\n\r\n");
+	/* X-Aurora: the server wants it on a device's requests (a web page elsewhere cannot send it unasked), and it
+	   does no harm on the others */
+	p = put_str(p, "\r\nUser-Agent: Aurora68-Play/1.3 (Macintosh)\r\nX-Aurora: 1\r\nConnection: close\r\n\r\n");
 	wds.len = (unsigned short)(p - req); wds.ptr = req; wds.end = 0;
 	got = 0;
 	resolve_start();
@@ -316,7 +319,19 @@ void fetch_poll(void)
 			}
 			if (r) { fail(r == commandTimeout ? "The music server stopped answering." : "The connection to the music server failed.", r); return; }
 			long n = *(unsigned short *)(pb_rcv + 40);
-			if (got + n > BODY_MAX) { fail("The music server's answer is too long for Aurora68 Play.", 0); return; }
+			if (got + n > BODY_MAX) {
+				if (fetch.cut_ok) {                   /* the first BODY_MAX bytes will do (a command's long track list) */
+					n = BODY_MAX - got;
+					memcpy(buf + got, rbuf, (unsigned long)n);
+					got += n;
+					teardown();
+					answer_in();
+					fetch.cut = 1;
+					return;
+				}
+				fail("The music server's answer is too long for Aurora68 Play.", 0);
+				return;
+			}
 			memcpy(buf + got, rbuf, (unsigned long)n);
 			got += n;
 			t_state = now;

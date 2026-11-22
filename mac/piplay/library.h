@@ -7,6 +7,7 @@
 #ifndef PIPLAY_LIBRARY_H
 #define PIPLAY_LIBRARY_H
 #include "toolbox.h"
+struct dv_state;
 
 void lib_init(int colour);             /* colour: Color QuickDraw is there */
 void *lib_window(void);                /* the Library window, 0 before it is first shown */
@@ -31,6 +32,12 @@ int lib_bar_click(Point local, short W);   /* 1 if it was the progress line: a s
 int lib_playing(void), lib_can_stop(void), lib_can_skip(int dir);
 void lib_play_pause(void), lib_stop(void), lib_skip(int dir);
 const char *lib_status(char *buf);
+void lib_seek(unsigned long secs);     /* the library's track from secs */
+
+/* the device (devices.c, docs/08 item 103): the id kept in the preferences, the Mac's name; and what a
+   library track plays now (1 if one does) */
+void lib_device(const char *id, const char *name);
+int lib_now(char *tid, unsigned long *pos, unsigned long *len);
 
 /* menus */
 int lib_have_server(void);
@@ -56,4 +63,10 @@ void start_station(const char *name, const char *url);
 void player_lib_mode(void);            /* the player window shows the library's track */
 void player_refresh(void);             /* its texts, buttons and progress line again */
 Rect screen_rect(void);
+/* the player, for a device's commands and its state (piplay.c) */
+void player_pause(int pause);          /* 1 pause, 0 resume: whatever plays */
+void player_stop(void);
+void player_seek(unsigned long secs);
+void player_volume(int v);             /* 0-100 */
+void player_dev_state(struct dv_state *s);
 #endif

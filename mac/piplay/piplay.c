@@ -64,6 +64,8 @@
 #include "radio.h"
 #include "library.h"
 #include "fetch.h"
+#include "media.h"
+#include "devices.h"
 
 /* piplay/fs.s */
 short mac_PBRead(ParamBlock *pb), mac_PBGetEOF(ParamBlock *pb), mac_PBHOpen(ParamBlock *pb), mac_PBHCreate(ParamBlock *pb),
@@ -131,7 +133,7 @@ static char *put_khz(char *p, unsigned long hz)
 }
 
 /* ---- the file ---------------------------------------------------------------------------------- */
-enum { K_NONE, K_MP3, K_AIFF, K_WAV };
+enum { K_NONE, K_MP3, K_AIFF, K_WAV, K_FLAC, K_OGG, K_ALAC };   /* FLAC on: media.c's, decoded by the card (version 2) */
 static ParamBlock fpb;
 static int file_open;
 static unsigned char fname[64];
@@ -142,6 +144,13 @@ static unsigned long pcm_rate, pcm_ch, pcm_bits, pcm_flags;
 static char title[100], artist[100], what[40];       /* C strings, Mac Roman */
 static unsigned char *iobuf;
 #define IOBUF 32768
+/* FLAC, Ogg Vorbis and Apple Lossless (Aurora68 Play 1.3, 22 November 2026, docs/08 item 103): media.c knows the
+   file, its tags and what to send the card; len_ms is the length as the Mac knows it (the card's, for MP3 and
+   PCM, as it was when the file played from its start, so a seek does not lose a Xing header's count) */
+static struct media med;
+static struct mf_stream mst;
+static unsigned long len_ms;
+static int is_media(void) { return kind >= K_FLAC; }
 
 static short read_at(unsigned long off, void *buf, long n, long *got)
 {
@@ -152,6 +161,13 @@ static short read_at(unsigned long off, void *buf, long n, long *got)
 	if (e == eofErr && *got > 0) e = 0;
 	return e;
 }
+static long mf_read(void *u, unsigned long off, void *buf, long n)
+{
+	long got = 0;
+	(void)u;
+	return read_at(off, buf, n, &got) ? -1 : got;
+}
+static struct mf_io mio = { mf_read, 0, 0 };
 static unsigned long be32(const unsigned char *b) { return (unsigned long)b[0] << 24 | (unsigned long)b[1] << 16 | (unsigned long)b[2] << 8 | b[3]; }
 static unsigned long le32(const unsigned char *b) { return (unsigned long)b[3] << 24 | (unsigned long)b[2] << 16 | (unsigned long)b[1] << 8 | b[0]; }
 static unsigned be16(const unsigned char *b) { return (unsigned)b[0] << 8 | b[1]; }
@@ -247,6 +263,26 @@ static unsigned long ext_rate(const unsigned char *e)
 
 static const char *err_text;          /* why a file cannot be played */
 static char err_buf[160];
+/* a file whose bytes say nothing Aurora68 Play knows: its name's extension, if it says more (modern files
+   come from other computers as type '????', so the name is often all there is), else the list */
+static int ext_is(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
+static const char *unknown_kind(void)
+{
+	char ext[8];
+	int i = fname[0], n = 0;
+	while (i > 0 && fname[i] != '.' && fname[0] - i < 6) i--;
+	if (i > 0 && fname[i] == '.')
+		for (i++; i <= fname[0] && n < 7; i++) ext[n++] = (char)(fname[i] >= 'A' && fname[i] <= 'Z' ? fname[i] + 32 : fname[i]);
+	ext[n] = 0;
+	if (ext_is(ext, "aac") || ext_is(ext, "m4a") || ext_is(ext, "m4b") || ext_is(ext, "mp4"))
+		return "This file is AAC or another MP4 sound the sound card cannot decode. The music server converts it: play it from the Library.";
+	if (ext_is(ext, "opus")) return "Aurora68 Play plays Ogg Vorbis but not Opus; the music server converts Opus files.";
+	if (ext_is(ext, "wma")) return "Aurora68 Play does not play Windows Media Audio; the music server converts it.";
+	if (ext_is(ext, "flac") || ext_is(ext, "ogg") || ext_is(ext, "oga") || ext_is(ext, "mp3"))
+		return "The file's name says it is a sound Aurora68 Play plays, but its contents are damaged or are something else.";
+	return "Aurora68 Play does not know this kind of file. It plays MP3, FLAC, Ogg Vorbis and Apple Lossless (.m4a) files, "
+	       "and AIFF and WAV files that are not compressed.";
+}
 /* what the file is; data_start, data_len and the PCM layout for the card */
 static int identify(void)
 {
@@ -326,6 +362,19 @@ static int identify(void)
 		put_str(what, "WAV")[0] = 0;
 		return 1;
 	}
+	/* FLAC (with or without an ID3v2 tag before it), Ogg, MP4: media.c */
+	mio.size = (unsigned long)eof;
+	if (mf_identify(&med, &mio, b, got)) {
+		kind = med.kind == MF_FLAC ? K_FLAC : med.kind == MF_OGG ? K_OGG : K_ALAC;
+		memcpy(title, med.title, sizeof title);
+		memcpy(artist, med.artist, sizeof artist);
+		pcm_rate = med.rate; pcm_ch = med.channels; pcm_bits = med.bits; pcm_flags = 0;
+		len_ms = med.length_ms;
+		data_start = 0; data_len = (unsigned long)eof;
+		put_str(what, mf_name(&med))[0] = 0;
+		return 1;
+	}
+	if (med.kind != MF_NONE) { err_text = mf_why(&med); return 0; }
 	/* MPEG audio: an ID3v2 tag, or a frame (with zeros or junk before it, within the first 16 KB) */
 	unsigned long skip = id3v2(b, got);
 	if (skip) {
@@ -333,7 +382,7 @@ static int identify(void)
 	} else {
 		long i;
 		for (i = 0; i + 4 <= got && !mpeg_at(b, got, i); i++) { }
-		if (i + 4 > got) { err_text = "Aurora68 Play does not know this kind of file. It plays MP3 files, and AIFF and WAV files that are not compressed."; return 0; }
+		if (i + 4 > got) { err_text = unknown_kind(); return 0; }
 		skip = (unsigned long)i;
 	}
 	data_start = skip;
@@ -375,8 +424,30 @@ static void set_volume(void)
 }
 /* one piece of the file into the ring: 2 if it wrote some, 1 if more remains but the ring is full
    (the Pi's buffer is), 0 at the end */
+static void ring_put(const unsigned char *b, long got)
+{
+	unsigned long h = ps->head;
+	for (long k = 0; k < got; ) {
+		unsigned long off = (h + (unsigned long)k) % PSMB_STR_SIZE, c = (unsigned long)(got - k);
+		if (c > PSMB_STR_SIZE - off) c = PSMB_STR_SIZE - off;
+		memcpy((void *)(ring + off), b + k, c);
+		k += (long)c;
+	}
+	ps->head = h + (unsigned long)got;
+}
+static int more_to_send(void) { return file_open && (is_media() ? mst.phase != 3 : sent < data_len); }
 static int feed(void)
 {
+	if (file_open && is_media()) {             /* media.c's stream: STREAMINFO or the configuration, headers, audio */
+		if (mst.phase == 3) return 0;
+		unsigned long room = PSMB_STR_SIZE - (ps->head - ps->tail);
+		if (room < 4096) return 1;
+		long got = mf_next(&med, &mst, &mio, iobuf, room < IOBUF ? (long)room : IOBUF);
+		if (got < 0) { pi_log("a read failed"); mst.phase = 3; got = 0; }
+		ring_put(iobuf, got);
+		if (mst.phase == 3) { ps->eof = 1; return 0; }
+		return 2;
+	}
 	if (!file_open || sent >= data_len) return 0;
 	unsigned long room = PSMB_STR_SIZE - (ps->head - ps->tail);
 	if (room < 4096 && room < data_len - sent) return 1;
@@ -389,15 +460,8 @@ static int feed(void)
 		pi_log(t);
 		data_len = sent;                       /* the end, then */
 	}
-	unsigned long h = ps->head;
-	for (long k = 0; k < got; ) {
-		unsigned long off = (h + (unsigned long)k) % PSMB_STR_SIZE, c = (unsigned long)(got - k);
-		if (c > PSMB_STR_SIZE - off) c = PSMB_STR_SIZE - off;
-		memcpy((void *)(ring + off), iobuf + k, c);
-		k += (long)c;
-	}
-	sent += (unsigned long)got;
-	ps->head = h + (unsigned long)got;
+	ring_put(iobuf, got > 0 ? got : 0);
+	if (got > 0) sent += (unsigned long)got;
 	if (sent >= data_len) ps->eof = 1;
 	return sent < data_len ? 2 : 0;
 }
@@ -408,13 +472,40 @@ static void stop_stream(void)
 void say_error(const char *text);
 static void redraw_all(void);
 static void close_window(void), resized(void);
-/* from the start of the open file */
-static void start(void)
+/* the open file from ms into it (0: its start). FLAC, Ogg and ALAC: media.c finds the place (a seek point, a page,
+   a packet); MP3 and PCM: the byte in proportion, a whole PCM frame. start_ms tells the card the time of the first
+   byte, and its pos_ms counts from there (card version 2; a version-1 card counts from 0) */
+static void start_at(unsigned long ms)
 {
+	unsigned long start_ms = 0;
 	if (!file_open) return;
 	stop_stream();
+	if (is_media() && ps->version < PSMB_STR_VERSION) {
+		say_error("The sound card's software is too old for FLAC, Ogg and Apple Lossless files. "
+		          "Copy the new kernel8.img of this release to the Pi's card.");
+		state = S_STOPPED;
+		return;
+	}
 	ps->eof = 0;
-	ps->format = kind == K_MP3 ? PSMB_STR_MPEG : PSMB_STR_PCM;
+	if (is_media()) {
+		if (!mf_seek(&med, &mst, &mio, ms, &start_ms) && (!ms || !mf_seek(&med, &mst, &mio, 0, &start_ms))) {
+			say_error("The file could not be read.");
+			state = S_STOPPED;
+			return;
+		}
+		ps->format = kind == K_FLAC ? PSMB_STR_FLAC : kind == K_OGG ? PSMB_STR_OGG : PSMB_STR_ALAC;
+	} else {
+		ps->format = kind == K_MP3 ? PSMB_STR_MPEG : PSMB_STR_PCM;
+		sent = 0;
+		if (ms && len_ms && ms < len_ms) {
+			unsigned long fb = pcm_ch * (pcm_bits / 8);
+			if (kind == K_MP3) sent = (unsigned long)((unsigned long long)data_len * ms / len_ms);
+			else if (fb) sent = (unsigned long)((unsigned long long)ms * pcm_rate / 1000) * fb;
+			if (sent >= data_len) sent = 0;
+			else start_ms = ms;
+		}
+	}
+	ps->start_ms = start_ms;
 	ps->pcm_rate = pcm_rate; ps->pcm_channels = pcm_ch; ps->pcm_bits = pcm_bits; ps->pcm_flags = pcm_flags;
 	ps->data_bytes = data_len;
 	{   /* what is playing, for the Pi's log (and the block a radio stream will use) */
@@ -427,7 +518,6 @@ static void start(void)
 		ps->title_seq = ps->title_seq + 1;
 	}
 	set_volume();
-	sent = 0;
 	feed();
 	if (!pi_command(PSMB_STR_C_START)) { say_error("The sound card does not answer. Restart the Macintosh, or the Pi."); return; }
 	state = S_PLAYING;
@@ -439,9 +529,11 @@ static void start(void)
 	p = put_str(p, ", ");
 	p = put_num(p, data_len);
 	p = put_str(p, " bytes");
+	if (start_ms) { p = put_str(p, ", from "); p = put_time(p, start_ms); }
 	*p = 0;
 	pi_log(t);
 }
+static void start(void) { start_at(0); }
 static void close_file(void)
 {
 	stop_stream();
@@ -518,7 +610,7 @@ static void info_line(char *t)
 			p = put_str(p, ", "); p = put_khz(p, ps->rate);
 			p = put_str(p, ps->channels == 1 ? " mono" : " stereo");
 			if (kind == K_MP3 && ps->bitrate) { p = put_str(p, ", "); p = put_num(p, ps->bitrate); p = put_str(p, " kbit/s"); }
-			else if (kind != K_MP3) { p = put_str(p, ", "); p = put_num(p, pcm_bits); p = put_str(p, "-bit"); }
+			else if (kind != K_MP3 && kind != K_OGG) { p = put_str(p, ", "); p = put_num(p, pcm_bits); p = put_str(p, "-bit"); }
 		}
 	}
 	*p = 0;
@@ -529,7 +621,7 @@ static void draw_progress(void)
 	char t[60], *p = t;
 	if (lib_active()) { lib_draw_progress(win, W, H); return; }
 	if (showing_radio) { radio_progress(); return; }
-	unsigned long pos = ps ? ps->pos_ms : 0, len = ps ? ps->length_ms : 0;
+	unsigned long pos = ps ? ps->pos_ms : 0, len = len_ms ? len_ms : ps ? ps->length_ms : 0;
 	if (state == S_NONE || state == S_STOPPED) pos = 0;
 	if (state == S_ENDED && len) pos = len;
 	SetPort(win);
@@ -778,12 +870,12 @@ void say_error(const char *text)
 }
 static void about(void)
 {
-	message_box("Aurora68 Play 1.2 for the Aurora68 card.\r"
-	            "Plays MP3 files, AIFF and WAV files that are not compressed, internet radio (plain http:// MP3 "
-	            "streams through MacTCP or Riptide), and the music on an Aurora68 music server: Library > Show Library. "
-	            "The Pi decodes them (minimp3, public domain) and plays them on HDMI or its headphone socket, "
-	            "mixed with the Macintosh's own sound.\r"
-	            "The Radio menu holds SomaFM (somafm.com), other listener-supported radio and stations of nine countries. MPL-2.0.", 186);
+	message_box("Aurora68 Play 1.3 for the Aurora68 card.\r"
+	            "Plays MP3, FLAC, Ogg Vorbis and Apple Lossless (.m4a) files, AIFF and WAV files that are not compressed, "
+	            "internet radio (plain http:// MP3 streams through MacTCP or Riptide), and the music on an Aurora68 music "
+	            "server: Library > Show Library. The Pi decodes them (minimp3, dr_flac and stb_vorbis, public domain; "
+	            "Apple Lossless its own) and plays them on HDMI or its headphone socket, mixed with the Macintosh's own sound.\r"
+	            "The Radio menu holds SomaFM (somafm.com), other listener-supported radio and stations of nine countries. MPL-2.0.", 212);
 }
 
 /* ---- opening a file ------------------------------------------------------------------------------ */
@@ -920,6 +1012,23 @@ void c_ctl_action(void *ctl, int part)
 	case inPageDown: change_volume(vol + 20); break;
 	}
 }
+/* a click on the progress line: play from there (a file of the Mac's own; the library's tracks seek on the server) */
+static void bar_click(Point p)
+{
+	unsigned long len = len_ms ? len_ms : ps ? ps->length_ms : 0, ms;
+	if (!file_open || showing_radio || !len || state == S_NONE) return;
+	if (p.v < bar_r.top - 4 || p.v > bar_r.bottom + 4 || p.h < bar_r.left || p.h > bar_r.right) return;
+	ms = (unsigned long)((unsigned long long)(p.h - bar_r.left) * len / (unsigned long)(bar_r.right - bar_r.left));
+	{
+		char t[40];
+		put_time(put_str(t, "seek to "), ms)[0] = 0;
+		pi_log(t);
+	}
+	start_at(ms);
+	if (state == S_PLAYING) set_status("Playing");
+	fix_buttons();
+	draw_progress();
+}
 static void content_click(EventRecord *ev)
 {
 	Point p = ev->where;
@@ -927,7 +1036,7 @@ static void content_click(EventRecord *ev)
 	SetPort(win);
 	GlobalToLocal(&p);
 	int part = FindControl(pt_long(p), win, &ctl);
-	if (!ctl) { if (lib_active()) lib_bar_click(p, W); return; }
+	if (!ctl) { if (lib_active()) lib_bar_click(p, W); else bar_click(p); return; }
 	if (ctl == vol_bar) {
 		if (part == inThumb) { TrackControl(ctl, pt_long(p), 0); change_volume(GetCtlValue(vol_bar)); }
 		else TrackControl(ctl, pt_long(p), (void *)pas_ctl_action);
@@ -938,6 +1047,45 @@ static void content_click(EventRecord *ev)
 	else if (ctl == stop_btn) stop();
 	else if (ctl == prev_btn) { lib_skip(-1); fix_buttons(); }
 	else if (ctl == next_btn) { lib_skip(1); fix_buttons(); }
+}
+
+/* ---- the device's commands and state (library.c's run_commands, devices.c) ------------------------------- */
+static void cpyn(char *d, const char *s, int max) { int i = 0; while (s[i] && i < max - 1) { d[i] = s[i]; i++; } d[i] = 0; }
+void player_pause(int pause)
+{
+	if (lib_active()) { if (pause == lib_playing()) lib_play_pause(); }
+	else if (showing_radio) { if (radio.st != RS_OFF && radio.paused != pause) radio_pause(pause); }
+	else if (pause && state == S_PLAYING) play_pause();
+	else if (!pause && state == S_PAUSED) play_pause();
+	fix_buttons();
+	draw_progress();
+}
+void player_stop(void) { stop(); }
+void player_seek(unsigned long secs)
+{
+	if (lib_active()) lib_seek(secs);
+	else if (file_open && !showing_radio && (state == S_PLAYING || state == S_PAUSED)) { start_at(secs * 1000); fix_buttons(); draw_progress(); }
+}
+void player_volume(int v) { change_volume(v); }
+void player_dev_state(struct dv_state *s)
+{
+	memset(s, 0, sizeof *s);
+	s->vol = vol;
+	if (lib_active()) {
+		s->playing = lib_now(s->tid, &s->pos, &s->len) && lib_playing();
+	} else if (showing_radio) {
+		s->playing = radio.st != RS_OFF && !radio.paused;
+		cpyn(s->title, radio.title[0] ? radio.title : radio.station, sizeof s->title);    /* now playing, and the station */
+		cpyn(s->artist, radio.title[0] ? radio.station : "", sizeof s->artist);
+	} else if (file_open) {
+		unsigned long len = len_ms ? len_ms : ps ? ps->length_ms : 0;
+		s->playing = state == S_PLAYING;
+		s->pos = state == S_PLAYING || state == S_PAUSED ? (ps ? ps->pos_ms / 1000 : 0) : 0;
+		s->len = len / 1000;
+		if (title[0]) cpyn(s->title, title, sizeof s->title);
+		else { int n = fname[0] < (int)sizeof s->title - 1 ? fname[0] : (int)sizeof s->title - 1; memcpy(s->title, fname + 1, (unsigned long)n); s->title[n] = 0; }
+		cpyn(s->artist, artist, sizeof s->artist);
+	}
 }
 
 /* ---- the radio: a station chosen, an address asked for ------------------------------------------ */
@@ -1272,11 +1420,14 @@ static void close_window(void)
 	shown = 0;
 	pi_log("window closed (File > Open... brings it back)");
 }
+static char dev_id[20];                      /* the device's id (devices.c), made once and kept in the preferences */
 /* "PiPlay Prefs" in the Preferences folder (System 7) or the System Folder (System 6): the window's
    place and size and the volume, a few bytes in the data fork */
 #define PREF_MAGIC TYPE('P', 'I', 'P', 'Y')
 struct prefs { unsigned long magic; short version; Rect r; short vol; short pad;
-                struct lib_prefs lib; short net; short pad2; };     /* version 2 (22 November 2026): the library's part */
+                struct lib_prefs lib; short net; short pad2;        /* version 2 (22 November 2026): the library's part */
+                char dev_id[20]; };                                 /* version 3 (Aurora68 Play 1.3): the device's id */
+#define PREFS_V2_SIZE ((long)(sizeof(struct prefs) - 20))
 static const unsigned char pref_name[] = "\x13" "Aurora68 Play Prefs";
 static const unsigned char pref_old_name[] = "\x0C" "PiPlay Prefs";    /* the program's name until 21 November 2026 */
 int pref_place(short *vref, long *dirid)
@@ -1321,7 +1472,8 @@ static int load_prefs(struct prefs *p)
 	if (e && e != eofErr) return 0;
 	if (p->magic != PREF_MAGIC) return 0;
 	if (p->version == 1 && pb.u.io.ioActCount >= 16) { memset(&p->lib, 0, sizeof p->lib); p->net = 6; return 1; }   /* Aurora68 Play 1.1's */
-	return p->version == 2 && pb.u.io.ioActCount == sizeof *p;
+	if (p->version == 2 && pb.u.io.ioActCount == PREFS_V2_SIZE) { memset(p->dev_id, 0, sizeof p->dev_id); return 1; }
+	return p->version == 3 && pb.u.io.ioActCount == sizeof *p;
 }
 static void save_prefs(void)
 {
@@ -1332,7 +1484,8 @@ static void save_prefs(void)
 	SetPort(win);
 	LocalToGlobal(&tl);
 	memset(&p, 0, sizeof p);
-	p.magic = PREF_MAGIC; p.version = 2; p.vol = (short)vol; p.pad = 0;
+	p.magic = PREF_MAGIC; p.version = 3; p.vol = (short)vol; p.pad = 0;
+	memcpy(p.dev_id, dev_id, sizeof p.dev_id);
 	lib_get_prefs(&p.lib);
 	p.net = (short)net_prefer;
 	p.r.top = tl.v; p.r.left = tl.h; p.r.bottom = (short)(tl.v + H); p.r.right = (short)(tl.h + W);
@@ -1514,11 +1667,14 @@ static void watch(void)
 		fix_buttons();
 		say_error(ps->error == PSMB_STR_E_NOAUDIO ? "There is no MP3 sound in this file, or it is damaged." :
 		          ps->error == PSMB_STR_E_NOMEM ? "The Pi has no memory left for the sound." :
+		          ps->error == PSMB_STR_E_DECODE ? "The sound card could not decode this file: it is damaged, or of a kind its decoder does not take." :
 		                                          "The sound card cannot play this kind of sound.");
 		status_text = "";
 	}
 	last_state = pst;
 	if (ps->rate != last_rate) { last_rate = ps->rate; draw_texts(); }       /* the format is known now */
+	/* MP3 and PCM: the length as the card found it from the file's start (a Xing header's count), kept for seeks */
+	if (!is_media() && file_open && state == S_PLAYING && !ps->start_ms && ps->length_ms) len_ms = ps->length_ms;
 	if (LM_TICKS - last_tick >= 15) {           /* the progress line, when what it says has changed */
 		static unsigned long shown = 0xFFFFFFFF;
 		unsigned long key = (ps->pos_ms / 1000) ^ ps->length_ms << 12 ^ (unsigned long)state << 28 ^ (unsigned long)status_text;
@@ -1595,11 +1751,23 @@ int main(void)
 	radio_init();
 	stations_load();
 	build_radio_menu();
+	{   /* the device: the id from the preferences, or a new one; the name the Mac goes by on the network (Sharing
+	       Setup's 'STR ' -16413), else the owner's (-16096, the Chooser's), else its kind */
+		char name[64];
+		unsigned char **h = (unsigned char **)GetResource(TYPE('S', 'T', 'R', ' '), -16413);
+		if (!h || !*h || !(*h)[0]) h = (unsigned char **)GetResource(TYPE('S', 'T', 'R', ' '), -16096);
+		if (h && *h && (*h)[0]) { int n = (*h)[0] < 63 ? (*h)[0] : 63; memcpy(name, *h + 1, (unsigned long)n); name[n] = 0; }
+		else put_str(name, "Macintosh")[0] = 0;
+		if (have_prefs && pr.dev_id[0] == 'm') memcpy(dev_id, pr.dev_id, sizeof dev_id);
+		else             /* Time (the clock's seconds), Ticks and Mouse (low memory): different from Mac to Mac */
+			dv_make_id(dev_id, *(volatile unsigned long *)0x20C ^ LM_TICKS, *(volatile unsigned long *)0x830 ^ (unsigned long)name[0] << 8);
+		lib_device(dev_id, name);
+	}
 	if (have_prefs) lib_set_prefs(&pr.lib);       /* the server, the shuffle; the Library window again if it was open */
 	finder_files();
 	EventRecord ev;
 	while (!quit) {
-		int more = file_open && state == S_PLAYING && sent < data_len && PSMB_STR_SIZE - (ps->head - ps->tail) >= 4096;
+		int more = state == S_PLAYING && more_to_send() && PSMB_STR_SIZE - (ps->head - ps->tail) >= 4096;
 		long sleep = more || (fetch.st != FS_IDLE && fetch.st != FS_DONE && fetch.st != FS_FAILED) ? 0 :
 		             state == S_PLAYING || radio.st != RS_OFF || disc.st == D_WAIT ? 6 : 30;
 		if (WaitNextEvent(everyEvent, &ev, sleep, 0)) {

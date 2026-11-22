@@ -475,6 +475,7 @@ static void card_start(void)
 	if (ps->state != PSMB_STR_S_IDLE) pi_command(PSMB_STR_C_STOP);
 	ps->eof = 0;
 	ps->format = PSMB_STR_MPEG;
+	ps->start_ms = 0;
 	ps->pcm_rate = ps->pcm_channels = ps->pcm_bits = ps->pcm_flags = 0;
 	ps->data_bytes = 0;                          /* open-ended: no length, no end */
 	pi_command(PSMB_STR_C_START);

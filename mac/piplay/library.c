@@ -36,6 +36,7 @@
 #include "radio.h"
 #include "fetch.h"
 #include "libparse.h"
+#include "devices.h"
 #include "library.h"
 
 extern volatile struct psmb_stream *ps;
@@ -108,14 +109,26 @@ static int saved_shown, have_saved;
 #define R_ALBUM 36
 
 /* ---- jobs for the network, one at a time ---------------------------------------------------------- */
-enum { J_NONE, J_INFO, J_LIST, J_QUEUE, J_NOWART, J_VIEWART, J_THUMBS, J_BARART };
+enum { J_NONE, J_INFO, J_LIST, J_QUEUE, J_NOWART, J_VIEWART, J_THUMBS, J_BARART, J_DEV };
 static int job;                                  /* the one the fetch is for */
 static int want_info, want_list;
 static int want_queue;                           /* a queue to fetch: an album or an artist's tracks */
 static char q_album[9], q_artist[9], q_start[9];
 static char thumb_ids[16][9];
 static int thumb_rows[16], nthumb;
+/* the device (Aurora68 Play 1.3, docs/08 item 103): devices.c says what to ask the server and when; its requests
+   take the same connection as the lists, the long poll for commands only when nothing else waits, and it is
+   given up (before any byte of its answer has come) when the user asks the Library for something */
+static struct dv dev;
+static int dev_what;                             /* the device request J_DEV is for */
+static int dev_ready;                            /* lib_device: an id and a name */
+static int user_waiting;                         /* a click or a key in the Library since the last job */
+static char keep_sel[9];                         /* a refresh: the row to select again */
+static unsigned long secs_now(void) { return LM_TICKS / 60; }
 
+static void run_commands(const char *b, long n);
+static unsigned long pos_s(void);
+static void lib_refresh(void);
 static void copy(char *d, const char *s, int max) { int i = 0; while (s[i] && i < max - 1) { d[i] = s[i]; i++; } d[i] = 0; }
 static int same_id(const char *a, const char *b) { int i; for (i = 0; i < 8; i++) if (a[i] != b[i]) return 0; return a[0] != 0; }
 static int strchr_(const char *s, int c) { while (*s) if (*s++ == c) return 1; return 0; }
@@ -280,6 +293,7 @@ static void got_info(void)
 	struct lp l;
 	char line[200], *f[6];
 	if (!lp_begin(&l, fetch.body, fetch.len) || lp_next(&l, line, sizeof line, f, 6) < 1) {
+		dv_stop(&dev);
 		fail_text("That address answers, but not as Aurora68's music server.");
 		want_list = 0;
 		return;
@@ -287,6 +301,9 @@ static void got_info(void)
 	copy(srv_name, f[0], sizeof srv_name);
 	srv_known = 1;
 	set_title();
+	dv_set_generation(&dev, lp_num(f[5]));          /* the library's generation (servers of 22 November 2026 on) */
+	dev.gen_changed = 0;
+	if (dev_ready && !dev.on) dv_start(&dev, secs_now());
 	char t[120], *p = put_str(t, "the server is \"");
 	p = put_str(p, srv_name); p = put_str(p, "\": "); p = put_str(p, f[2]); p = put_str(p, " artists, ");
 	p = put_str(p, f[3]); p = put_str(p, " albums, "); p = put_str(p, f[4]); p = put_str(p, " tracks");
@@ -330,6 +347,11 @@ static void got_list(void)
 		if (r->id[0]) nrows++;
 	}
 	problem = nrows || total ? 0 : CUR->kind == V_SEARCH ? "Nothing in the library matches." : "There is nothing here.";
+	if (keep_sel[0]) {                           /* a refresh: the same row selected, wherever it is now */
+		for (k = 0; k < nrows; k++)
+			if (same_id(rows[k].id, keep_sel)) { CUR->sel = k + has_prev(); break; }
+		keep_sel[0] = 0;
+	}
 	if (CUR->sel >= nlines()) CUR->sel = 0;
 	if (lw) { SetPort(lw); fix_scroll(); InvalRect(PORT_RECT(lw)); }
 }
@@ -501,6 +523,106 @@ static void got_queue(void)
 	play_at(at, 0);
 }
 
+/* ---- the device's commands (devices.c reads them; this carries them out) ----------------------------------- */
+static void add_track(int at, const struct dv_item *c)
+{
+	struct qitem *q;
+	if (qn >= MAX_Q) return;
+	if (at < 0 || at > qn) at = qn;
+	memmove(&queue[at + 1], &queue[at], sizeof queue[0] * (unsigned long)(qn - at));
+	q = &queue[at];
+	memset(q, 0, sizeof *q);
+	copy(q->id, c->tid, 9);                      /* no album id in a command's tracks: no cover for them */
+	copy(q->title, c->title, sizeof q->title);
+	copy(q->artist, c->artist, sizeof q->artist);
+	q->secs = c->secs;
+	qn++;
+}
+struct pending { int act; long pos; int vol, first, n, radio; char rname[48], rurl[200]; };
+static void finish_command(struct pending *c)
+{
+	switch (c->act) {
+	case DA_PLAY:
+		if (c->radio) { lib_leave(); start_station(c->rname, c->rurl); break; }
+		if (c->n) { album_title[0] = 0; play_at(0, (unsigned long)c->pos); }
+		break;
+	case DA_ADD: case DA_NEXT:                   /* into the queue; playing it if nothing plays */
+		if (c->n && (!mode || lstate != L_PLAYING)) play_at(c->first, 0);
+		else player_refresh();
+		break;
+	case DA_PAUSE: player_pause(1); break;
+	case DA_RESUME: player_pause(0); break;
+	case DA_STOP: player_stop(); break;
+	case DA_SKIP: if (mode) lib_skip(1); break;
+	case DA_PREVIOUS: if (mode) lib_skip(-1); break;
+	case DA_SEEK: player_seek((unsigned long)c->pos); break;
+	case DA_VOLUME: if (c->vol >= 0) player_volume(c->vol); break;
+	}
+	if (lw) { SetPort(lw); InvalRect(PORT_RECT(lw)); }
+}
+static void run_commands(const char *b, long n)
+{
+	static const char *const said[] = { "?", "play", "add", "next", "pause", "resume", "skip", "previous", "seek", "volume", "stop" };
+	struct dv_iter it;
+	struct dv_item c;
+	struct pending pc;
+	int more;
+	memset(&pc, 0, sizeof pc);
+	dv_iter_init(&it, b, n);
+	do {
+		more = dv_next_item(&it, &c);
+		if (!more || c.kind == 'C') {
+			if (pc.act) finish_command(&pc);
+			memset(&pc, 0, sizeof pc);
+			if (!more) break;
+			pc.act = dv_action(c.action); pc.pos = c.position; pc.vol = c.volume;
+			logs("a command from the server: ", said[pc.act]);
+			continue;
+		}
+		if (c.kind == 'T' && (pc.act == DA_PLAY || pc.act == DA_ADD || pc.act == DA_NEXT)) {
+			int at;
+			if (pc.act == DA_PLAY && !pc.n) { lib_leave(); qn = 0; }   /* the queue replaced (once its first track is here) */
+			/* "next": after what is being received (the stream may already be on the track after the one heard) */
+			at = pc.act == DA_NEXT && mode ? qfeed + 1 + pc.n : pc.act == DA_PLAY ? pc.n : qn;
+			if (!pc.n) pc.first = at > qn ? qn : at;
+			add_track(at, &c);
+			pc.n++;
+		} else if (c.kind == 'R') { copy(pc.rname, c.name, sizeof pc.rname); copy(pc.rurl, c.url, sizeof pc.rurl); pc.radio = 1; }
+	} while (more);
+}
+/* the library's generation moved: the list in view again, its selected row kept */
+static void lib_refresh(void)
+{
+	int r;
+	if (!lw || !srv_known) return;
+	r = line_row(CUR->sel);
+	keep_sel[0] = 0;
+	if (r >= 0 && r < nrows) copy(keep_sel, rows[r].id, 9);
+	view_changed();
+}
+/* the device's part of the player: an id kept in the preferences and the Mac's name */
+void lib_device(const char *id, const char *name)
+{
+	dv_init(&dev, id, name, "1.3");
+	dev_ready = id[0] != 0;
+	if (dev_ready && srv_known) dv_start(&dev, secs_now());
+}
+/* what a library track is, for the device's state: 1 if one plays (or is paused) */
+int lib_now(char *tid, unsigned long *pos, unsigned long *len)
+{
+	if (!mode || lstate != L_PLAYING || qcur < 0 || qcur >= qn) return 0;
+	copy(tid, queue[qcur].id, 9);
+	*pos = pos_s();
+	*len = queue[qcur].secs;
+	return 1;
+}
+void lib_seek(unsigned long s)
+{
+	if (!mode || qcur < 0 || qcur >= qn) return;
+	if (queue[qcur].secs && s >= queue[qcur].secs) s = queue[qcur].secs - 1;
+	play_at(qcur, s);
+}
+
 /* ---- the network, from the event loop ------------------------------------------------------------- */
 static void start_job(int j, const char *path)
 {
@@ -538,6 +660,15 @@ static void next_job(void)
 		return;
 	}
 	if (!srv_known) return;
+	{   /* the device's announce and state: short, before the covers */
+		int w = dv_want(&dev, secs_now());
+		if (w == DV_ANNOUNCE || w == DV_STATE) {
+			dv_path(&dev, w, path, sizeof path);
+			dev_what = w;
+			start_job(J_DEV, path);
+			return;
+		}
+	}
 	if (want_queue) {
 		want_queue = 0;
 		p = put_str(path, "/mac/tracks?count=250&");
@@ -587,7 +718,13 @@ static void next_job(void)
 				thumb_state[i] = 1;
 			}
 		*p = 0;
-		if (nthumb) start_job(J_THUMBS, path);
+		if (nthumb) { start_job(J_THUMBS, path); return; }
+	}
+	if (dv_want(&dev, secs_now()) == DV_COMMANDS) {   /* nothing else to do: wait for a command */
+		dv_path(&dev, DV_COMMANDS, path, sizeof path);
+		dev_what = DV_COMMANDS;
+		start_job(J_DEV, path);
+		if (job == J_DEV) fetch.cut_ok = 1;          /* a long list of tracks: the first ones are enough */
 	}
 }
 static void draw_bar(void);
@@ -619,6 +756,28 @@ void lib_poll(void)
 		}
 	}
 	fetch_poll();
+	/* a command's long poll gives way to what the user asked for, if nothing of its answer has come */
+	if (job == J_DEV && dev_what == DV_COMMANDS && (want_info || want_list || want_queue || user_waiting) &&
+	    fetch.st != FS_DONE && fetch.st != FS_FAILED && !fetch_received()) {
+		fetch_cancel();
+		job = J_NONE;
+		fetch.st = FS_IDLE;
+	}
+	user_waiting = 0;
+	if (dev.gen_changed) {                       /* new albums (or fewer): the list again, the same row selected */
+		dev.gen_changed = 0;
+		logs("the library changed: its lists again", 0);
+		lib_refresh();
+	}
+	if (dev.on) {                                /* what plays, for the server (devices.c decides when it is news) */
+		static unsigned long last;
+		if (LM_TICKS - last >= 60) {
+			struct dv_state st;
+			last = LM_TICKS;
+			player_dev_state(&st);
+			dv_set_state(&dev, &st, secs_now());
+		}
+	}
 	if (job && (fetch.st == FS_DONE || fetch.st == FS_FAILED)) {
 		int j = job;
 		job = J_NONE;
@@ -638,6 +797,7 @@ void lib_poll(void)
 			else if (j == J_BARART) bar_art.state = 3;
 			else if (j == J_VIEWART) view_art.state = 3;
 			else if (j == J_THUMBS) { int i; for (i = 0; i < nthumb; i++) thumb_state[thumb_rows[i]] = 3; }
+			else if (j == J_DEV) dv_answer(&dev, dev_what, 0, 0, 0, secs_now());
 		} else {
 			switch (j) {
 			case J_INFO: got_info(); if (lw) { SetPort(lw); InvalRect(PORT_RECT(lw)); } break;
@@ -647,6 +807,10 @@ void lib_poll(void)
 			case J_VIEWART: got_art(&view_art); if (lw) { SetPort(lw); draw_album_head(); } break;
 			case J_BARART: got_art(&bar_art); if (lw) { SetPort(lw); draw_bar(); } break;
 			case J_THUMBS: got_thumbs(); if (lw) { SetPort(lw); draw_list(); } break;
+			case J_DEV:
+				if (dv_answer(&dev, dev_what, fetch.status, fetch.body, fetch.len, secs_now()) && dev_what == DV_COMMANDS && fetch.len)
+					run_commands(fetch.body, fetch.len);
+				break;
 			}
 		}
 		fetch.st = FS_IDLE;
@@ -1036,6 +1200,7 @@ int lib_ctl_action(void *ctl, int part)
 }
 void lib_click(EventRecord *ev)
 {
+	user_waiting = 1;
 	static unsigned long last_t;
 	static int last_li = -1;
 	Point p = ev->where;
@@ -1070,6 +1235,7 @@ void lib_click(EventRecord *ev)
 }
 void lib_key(EventRecord *ev)
 {
+	user_waiting = 1;
 	static char typed[16];
 	static int ntyped;
 	static unsigned long typed_t;
