@@ -526,6 +526,9 @@ Aurora68 carries no recording of theirs: Aurora68 Play's list holds only the add
 4. **Radio > Open URL… (Command-U)** plays an address of your own: `http://host[:port]/path`, the
    `http://` may be left out; a `.pls` or `.m3u` playlist's address works too (its first `http://` stream
    is taken). Command-V pastes into the field.
+   **Your own music as stations:** `tools/music-server` (a Docker container for a NAS, or one Python file)
+   serves a folder of MP3s as stations, one per folder, over IPv4 and IPv6, and writes a stations file for
+   the Radio menu (`http://NAS:8000/stations.txt`); its README says how (22 November 2026).
 5. **Your own stations:** the list is the text file "Aurora68 Play Stations" in the Preferences folder (System
    6: the System Folder), written at Aurora68 Play's first start from the built-in list. Open it with TeachText
    or SimpleText (double-click it), add a line `Name = http://host[:port]/path` for each station (a line holding only an

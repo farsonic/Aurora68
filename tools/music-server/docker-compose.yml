@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: MPL-2.0
+# The Aurora68 music server on a NAS: set the music folder (and PUID/PGID, a user that can read it), then
+#   docker compose up -d
+# Synology Container Manager, QNAP Container Station, Unraid, TrueNAS and Portainer take this file as a
+# "project" or "stack" as it is.
+services:
+  aurora68-music:
+    image: ghcr.io/farsonic/aurora68-music-server:latest   # built by GitHub; or comment out and build here:
+    # build: .
+    container_name: aurora68-music
+    restart: unless-stopped
+    network_mode: host               # the NAS's own IPv4 and IPv6 addresses, port 8000
+    user: "${PUID:-1000}:${PGID:-1000}"   # Synology: often 1026:100 (id USERNAME in an SSH session says)
+    volumes:
+      - /volume1/music:/music:ro     # your MP3 folder (Synology: /volume1/...; QNAP: /share/...; Unraid: /mnt/user/...)
+    environment:
+      MUSIC_NAME: "NAS Music"        # the name in Aurora68 Play's Radio menu and on the web page
+      MUSIC_PORT: "8000"

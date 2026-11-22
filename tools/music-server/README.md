@@ -1,0 +1,103 @@
+# The Aurora68 music server
+
+A folder of MP3s, organised in folders however you like, served as internet radio stations over IPv4
+and IPv6. Every folder is a station: its MP3s and those of the folders inside it, one after another,
+with each song's title, at the rate they play. Aurora68 Play on the SE plays them like any station
+(Radio menu, or Radio > Open URL...), and so do VLC, Apple Music/iTunes (File > Open Stream), foobar2000,
+a Squeezebox or a browser. A browser at `http://NAS:8000/` gets a page listing the folders, with each
+folder's station, its files and an M3U playlist.
+
+One Python file, standard library only. It only reads the music folder, and it serves nothing outside
+it, symbolic links included. It has no passwords: keep it on your home network and don't forward its
+port from the internet.
+
+## On a NAS (Docker)
+`docker-compose.yml` in this folder is a complete "project" (Synology Container Manager), "application"
+(QNAP Container Station) or "stack" (Portainer, Unraid, TrueNAS). Change two things in it:
+
+- **the music folder**, the left half of `/volume1/music:/music:ro`: Synology `/volume1/...`, QNAP
+  `/share/...`, Unraid `/mnt/user/...`;
+- **`PUID`/`PGID`**, a user and group that can read that folder. On Synology `id YOURUSER` in an SSH
+  session says them (often `1026:100`); set them in the project's environment or write the numbers into
+  `user:`.
+
+Then start it (`docker compose up -d` from an SSH session, or the NAS's Create/Deploy button). It pulls
+`ghcr.io/farsonic/aurora68-music-server`, which GitHub builds for Intel/AMD, 64-bit ARM and 32-bit ARM
+NAS boxes from this folder whenever it changes. To build it on the NAS instead, comment out `image:` and
+uncomment `build: .` with this folder copied there.
+
+It uses **host networking**: the container answers on the NAS's own addresses, IPv4 and IPv6, on port
+8000. Docker's usual bridge network has no IPv6 unless the Docker daemon is set up for it, so host
+networking is the simple way to get both. If port 8000 is taken, set `MUSIC_PORT`.
+
+`docker logs aurora68-music` shows what it is doing: the library scan, and each listener and song.
+
+Without Docker, on any computer with Python 3 (tested with 3.12 and 3.13):
+```bash
+python3 aurora68_music_server.py /path/to/music --name "NAS Music"
+```
+
+## Listening on the SE
+- **One station:** Radio > Open URL... (Cmd-U) and type the address from the web page, e.g.
+  `http://192.168.1.20:8000/s/1a2b3c4d`. Each folder's page shows its station's address.
+- **The whole library in the Radio menu:** fetch `http://NAS:8000/stations.txt` and put it on the Mac as
+  "Aurora68 Play Stations" in the Preferences folder (System 6: the System Folder), or add its lines to
+  the one that is there. It makes a submenu named after the library, with "Everything, shuffled", each
+  top-level folder as a station, and a submenu for each top-level folder with "All of ..., shuffled"
+  and each folder inside it. Deeper folders play inside their parents' stations. It stays within
+  Aurora68 Play's limits (128 stations and 48 submenus, 40 of the stations its own), and says so in a
+  note if your library has more folders than that.
+- If the Mac cannot look up the NAS's name (a `.local` name, say), ask for the file with the address the
+  Mac should use: `http://NAS:8000/stations.txt?host=192.168.1.20` (an IPv6 address works too:
+  `?host=fd00::20`).
+
+Folder and song names are converted to the Mac's character set; anything it lacks becomes a question
+mark.
+
+## Addresses
+| | |
+|---|---|
+| `/` and `/browse/FOLDER/` | the web page |
+| `/s/ID` | a folder's station by its short name (the stations file uses these: Aurora68 Play's addresses are at most 160 bytes) |
+| `/radio/FOLDER/` | the same station by the folder's path; `/radio/` is the whole library |
+| `?shuffle=1`, `?loop=0` | on a station: random order; one pass, then the stream ends (stations loop by default) |
+| `/file/FOLDER/NAME.mp3` | one file as it is, with Range for players that seek |
+| `/playlist.m3u?dir=FOLDER` | an M3U of a folder's files |
+| `/stations.txt` | the library as an Aurora68 Play stations file; `?host=ADDRESS` for the address written in it |
+| `/api/list?dir=FOLDER` | JSON: the folder's station, folders and files |
+
+## Settings
+| Option | Environment | |
+|---|---|---|
+| folder | `MUSIC_DIR` | the music (`/music` in the container) |
+| `--port N` | `MUSIC_PORT` | 8000 |
+| `--name NAME` | `MUSIC_NAME` | the library's name in Aurora68 Play's menu and on the page ("Music") |
+| `--bind ADDR` | `MUSIC_BIND` | `::` (the default) is every address, IPv6 and IPv4 on one socket; `0.0.0.0` IPv4 only; or one address |
+| `--max-listeners N` | `MUSIC_MAX_LISTENERS` | 16 at once |
+
+New music is found by itself: the folder is scanned again when a request comes and the last scan is
+more than 30 seconds old.
+
+## How a station is sent
+Each file's MP3 frames are found and sent as they are (no conversion, so no quality is lost and the NAS
+does almost no work). The ID3 tags at the front, the ID3v1 and APE tags at the end and the encoder's
+Xing/Info frame are left out, because inside a stream they are noise to a decoder. Files at any bit rate
+or sample rate, constant or variable, follow each other: Aurora68 Play's decoder takes each frame's rate
+from the frame. The first six seconds go at once, so a player's buffer fills quickly; after that frames
+go at the rate they play, timed by the frames' own headers. Song titles go as Icecast-style metadata
+every 16,000 bytes to players that ask for them, from the ID3 tag ("Artist - Title") or the file's name.
+A file that holds no MP3 audio is passed over, once, with a line in the log.
+
+## Test
+```bash
+python3 tools/music-server/test_server.py
+```
+It needs ffmpeg and a C compiler. It makes a small library (folders in folders, 44.1 and 48 kHz, VBR,
+22 kHz mono, ID3v2.3 and 2.4, accented names, a broken file, links that lead out of the folder) and checks
+the server against Aurora68 Play's own parsers, built on the host (`play_check.c`, with `mac/piplay/icy.c`
+and `stations.c`). It checks the stations file and its limits, the titles in order and in Mac Roman, and
+that the audio decodes without an error at its full length. It also checks the pacing, Range, M3U, JSON,
+the page, that every path out of the folder is refused, and IPv6 over `::1` where the computer has it
+(where it has not, as in the build environment this was written in, it checks that the server says so and
+serves IPv4).
+GitHub runs it before each image build.
