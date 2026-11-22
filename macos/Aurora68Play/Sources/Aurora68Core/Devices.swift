@@ -26,10 +26,13 @@ public struct ServerInfo: Equatable {
     public let artists: Int
     public let albums: Int
     public let tracks: Int
+    public let videos: Int
+    public let capabilities: [String]    // what the server does with videos: hls, remux, transcode, mpeg1
 
-    public init(name: String, version: String, library: Int, every: Int? = nil, artists: Int = 0, albums: Int = 0, tracks: Int = 0) {
+    public init(name: String, version: String, library: Int, every: Int? = nil, artists: Int = 0, albums: Int = 0, tracks: Int = 0,
+                videos: Int = 0, capabilities: [String] = []) {
         self.name = name; self.version = version; self.library = library; self.every = every
-        self.artists = artists; self.albums = albums; self.tracks = tracks
+        self.artists = artists; self.albums = albums; self.tracks = tracks; self.videos = videos; self.capabilities = capabilities
     }
 
     public static func parse(_ data: Data) -> ServerInfo? {
@@ -37,8 +40,10 @@ public struct ServerInfo: Equatable {
         guard let h = r.head(), h.kind == "info" else { return nil }
         var i = a68_info()
         guard a68_info_of(&r.rec, &i) != 0 else { return nil }
+        let caps = text(i.caps).split(separator: ",").map(String.init)
         return ServerInfo(name: text(i.name), version: text(i.version), library: Int(i.generation),
-                          every: i.every > 0 ? Int(i.every) : nil, artists: Int(i.artists), albums: Int(i.albums), tracks: Int(i.tracks))
+                          every: i.every > 0 ? Int(i.every) : nil, artists: Int(i.artists), albums: Int(i.albums), tracks: Int(i.tracks),
+                          videos: Int(i.videos), capabilities: caps)
     }
 }
 
@@ -166,11 +171,12 @@ public struct Device: Identifiable, Equatable {
     public let lastSeen: Int
     public let state: DeviceState
     public let isLive: Bool
+    public let showsVideo: Bool          // a music video sent there is seen (the macOS Play); else only heard (the SE)
 
     public init(id: String, name: String, kind: String, online: Bool, lastSeen: Int = 0, state: DeviceState = DeviceState(),
-                isLive: Bool = false) {
+                isLive: Bool = false, showsVideo: Bool = false) {
         self.id = id; self.name = name; self.kind = kind; self.online = online; self.lastSeen = lastSeen
-        self.state = state; self.isLive = isLive
+        self.state = state; self.isLive = isLive; self.showsVideo = showsVideo
     }
 
     public static func list(_ data: Data) -> [Device] {
@@ -183,7 +189,8 @@ public struct Device: Identifiable, Equatable {
                                  volume: Int(d.volume), at: d.at > 0 ? Double(d.at) : nil)
             let name = text(d.name)
             out.append(Device(id: text(d.id), name: name.isEmpty ? text(d.id) : name, kind: text(d.kind), online: d.online != 0,
-                              lastSeen: Int(d.last_seen), state: st, isLive: d.is_live != 0 || text(d.kind) == "live"))
+                              lastSeen: Int(d.last_seen), state: st, isLive: d.is_live != 0 || text(d.kind) == "live",
+                              showsVideo: d.video != 0))
         }
         return out
     }
@@ -208,9 +215,11 @@ public struct DeviceCommand: Equatable {
         public let artist: String
         public let album: String
         public let seconds: Int
+        public let video: VideoInfo?     // a music video (a V line)
 
-        public init(path: String, tid: String, title: String, artist: String, album: String, seconds: Int) {
+        public init(path: String, tid: String, title: String, artist: String, album: String, seconds: Int, video: VideoInfo? = nil) {
             self.path = path; self.tid = tid; self.title = title; self.artist = artist; self.album = album; self.seconds = seconds
+            self.video = video
         }
 
         /// the song as the player's queue holds it (an album id is not needed: the cover comes by folder)
@@ -218,7 +227,7 @@ public struct DeviceCommand: Equatable {
             let folder = path.split(separator: "/").dropLast().joined(separator: "/")
             let name = TrackName.parse(TrackName.stem(of: path), artist: artist)
             return Track(id: tid, number: name.number, title: title.isEmpty ? name.title : title, artist: artist,
-                         seconds: seconds, path: path, album: "", albumTitle: album, folder: folder)
+                         seconds: seconds, path: path, album: "", albumTitle: album, folder: folder, video: video)
         }
     }
     public struct Radio: Equatable {
@@ -265,6 +274,10 @@ public struct DeviceCommand: Equatable {
             case UInt8(ascii: "T"):
                 songs.append(Song(path: text(c.path), tid: text(c.tid), title: text(c.title), artist: text(c.artist),
                                   album: text(c.album), seconds: Int(c.secs)))
+            case UInt8(ascii: "V"):                       // a music video (22 November 2026): it plays as one here
+                songs.append(Song(path: text(c.path), tid: text(c.tid), title: text(c.title), artist: text(c.artist),
+                                  album: text(c.album), seconds: Int(c.secs),
+                                  video: VideoInfo(how: VideoHow(text(c.how)), width: Int(c.width), height: Int(c.height))))
             case UInt8(ascii: "R"):
                 radio = Radio(name: text(c.name), url: text(c.url))
             default:
@@ -395,7 +408,8 @@ public final class DeviceSession {
     public init(id: String, name: String, version: String) {
         d = .allocate(capacity: 1)
         dv_init(d, id, name, version, "macos")
-        d.pointee.client = client                // UTF-8, the whole state
+        d.pointee.client = client                // UTF-8, the whole state, videos
+        d.pointee.video = 1                      // it shows music videos (the announce says so)
         d.pointee.wait = 20                      // URLSession waits longer than MacTCP: the server's longest hold
         d.pointee.refresh = 5                    // what plays, every five seconds while it plays (for the others' bars)
     }
@@ -455,4 +469,5 @@ public enum LiveWhat {
     public static func track(_ path: String) -> String { built(path.utf8.count + 8) { a68_what_track(path, $0, $1) } ?? "t:" }
     public static var everything: String { folder("") }
     public static func radio(_ index: Int) -> String { built(24) { a68_what_radio(UInt(max(0, index)), $0, $1) } ?? "r:0" }
+    public static func video(_ id: String) -> String { built(id.utf8.count + 8) { a68_what_video(id, $0, $1) } ?? "v:" }
 }

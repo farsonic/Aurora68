@@ -12,6 +12,8 @@ import Aurora68Core
 
 struct ContentView: View {
     @EnvironmentObject var model: AppModel
+    @EnvironmentObject var player: Player
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(spacing: 0) {
@@ -28,6 +30,9 @@ struct ContentView: View {
             ToolbarItem(placement: .primaryAction) { OutputPicker() }
         }
         .navigationTitle(model.serverName.isEmpty ? "Aurora68 Play" : model.serverName)
+        .onChange(of: player.current?.id) { _ in               // a video begins: its window opens
+            if player.currentIsVideo { openWindow(id: "video") }
+        }
     }
 }
 
@@ -155,7 +160,7 @@ struct ArtistsGrid: View {
                 ForEach(model.filteredArtists) { artist in
                     NavigationLink(value: artist) {
                         Tile(cover: model.coverURL(model.index?.coverAlbum(of: artist)), title: artist.name,
-                             subtitle: artist.albums.count == 1 ? "1 album" : "\(artist.albums.count) albums")
+                             subtitle: artistSummary(artist))
                     }
                     .buttonStyle(.plain)
                     .contextMenu {
@@ -170,10 +175,19 @@ struct ArtistsGrid: View {
     }
 }
 
+/// "3 albums", "2 albums, 1 video", "4 videos"
+func artistSummary(_ a: Artist) -> String {
+    var parts: [String] = []
+    if !a.albums.isEmpty || a.videos == 0 { parts.append(a.albums.count == 1 ? "1 album" : "\(a.albums.count) albums") }
+    if a.videos > 0 { parts.append(a.videos == 1 ? "1 video" : "\(a.videos) videos") }
+    return parts.joined(separator: ", ")
+}
+
 struct AlbumsGrid: View {
     @EnvironmentObject var model: AppModel
     let albums: [Album]
     var showArtist = false
+    var videos: [Track] = []                           // an artist's music videos, after its albums
 
     var body: some View {
         ScrollView {
@@ -192,6 +206,7 @@ struct AlbumsGrid: View {
                 }
             }
             .padding(24)
+            if !videos.isEmpty { VideoGrid(videos: videos).padding([.horizontal, .bottom], 24) }
         }
         .navigationTitle("Albums")
     }
@@ -200,6 +215,7 @@ struct AlbumsGrid: View {
 struct ArtistView: View {
     @EnvironmentObject var model: AppModel
     let artist: Artist
+    @State private var videos: [Track] = []
 
     var body: some View {
         let artist = model.current(self.artist)            // its albums as they are now (new ones appear)
@@ -207,7 +223,7 @@ struct ArtistView: View {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading) {
                     Text(artist.name).font(.largeTitle.bold())
-                    Text(artist.albums.count == 1 ? "1 album" : "\(artist.albums.count) albums").foregroundStyle(.secondary)
+                    Text(artistSummary(artist)).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button { model.play(artist: artist) } label: { Label("Play", systemImage: "play.fill") }
@@ -215,9 +231,10 @@ struct ArtistView: View {
                 Button { model.play(artist: artist, shuffled: true) } label: { Label("Shuffle", systemImage: "shuffle") }
             }
             .padding([.horizontal, .top], 24)
-            AlbumsGrid(albums: model.albums(of: artist))
+            AlbumsGrid(albums: model.albums(of: artist), videos: videos)
         }
         .navigationTitle(artist.name)
+        .task(id: "\(artist.id) \(model.generation)") { videos = await model.videos(artist: model.current(self.artist)) }
     }
 }
 
@@ -226,6 +243,7 @@ struct AlbumView: View {
     @EnvironmentObject var player: Player
     let album: Album
     @State private var tracks: [Track] = []
+    @State private var videos: [Track] = []
     @State private var loading = true
 
     var body: some View {
@@ -267,6 +285,7 @@ struct AlbumView: View {
                             Divider().opacity(0.4)
                         }
                     }
+                    if !videos.isEmpty { VideoGrid(videos: videos) }
                 }
             }
             .padding(24)
@@ -274,7 +293,9 @@ struct AlbumView: View {
         .navigationTitle(album.title)
         .task(id: "\(album.id) \(model.generation)") {     // again when the library changed
             loading = tracks.isEmpty
-            tracks = await model.tracks(album: album)
+            let m = await model.media(album: album)
+            tracks = m.tracks
+            videos = m.videos
             loading = false
         }
     }

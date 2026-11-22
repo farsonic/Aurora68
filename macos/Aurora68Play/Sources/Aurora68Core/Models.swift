@@ -10,6 +10,12 @@
 // types are made from its records. The whole catalogue is every artist (/mac/artists) and every album
 // (/mac/albums), page after page as the server sends them (a68_next_from), with full=1 for each album's
 // folder (its cover is /art?dir=FOLDER, and "f:FOLDER" plays it on Live or another player).
+//
+// Music videos (22 November 2026, docs/08 item 109). The owner's library holds music videos beside the albums; the
+// server lists them after an album's (or an artist's) tracks as "V" records when asked with videos=1, which this Play
+// always asks. A video is a Track here with `video` set (how the server sends it, its size), so the queue, the player
+// and the commands from other players take songs and videos alike: a video in the queue plays as a video (the
+// server's /video/ID, or its HLS), then the queue goes on.
 import Foundation
 import PlayCore
 
@@ -48,7 +54,7 @@ public struct Catalog: Equatable {
             var a = a68_artist()
             while a68_next_artist(&r.rec, &a) != 0 {
                 let id = text(a.id)
-                people.append(Artist(id: id, name: text(a.name), albums: byArtist[id] ?? []))
+                people.append(Artist(id: id, name: text(a.name), albums: byArtist[id] ?? [], videos: Int(a.videos)))
             }
         }
         return Catalog(name: i.name, version: i.version, artists: people, albums: list)
@@ -59,9 +65,10 @@ public struct Artist: Identifiable, Hashable {
     public let id: String
     public let name: String
     public let albums: [String]          // album ids, in title order
+    public let videos: Int               // its music videos (an artist may have videos and no album)
 
-    public init(id: String, name: String, albums: [String]) {
-        self.id = id; self.name = name; self.albums = albums
+    public init(id: String, name: String, albums: [String], videos: Int = 0) {
+        self.id = id; self.name = name; self.albums = albums; self.videos = videos
     }
 }
 
@@ -79,6 +86,38 @@ public struct Album: Identifiable, Hashable {
     }
 }
 
+/// how the server sends a music video: the file as it is (Range), remuxed or transcoded (as HLS for AVFoundation)
+public enum VideoHow: String, Hashable {
+    case direct, remux, transcode, unknown
+
+    public init(_ s: String) { self = VideoHow(rawValue: s) ?? .unknown }
+
+    var core: Int32 {
+        switch self {
+        case .direct: return Int32(A68_HOW_DIRECT)
+        case .remux: return Int32(A68_HOW_REMUX)
+        case .transcode: return Int32(A68_HOW_TRANSCODE)
+        case .unknown: return Int32(A68_HOW_UNKNOWN)
+        }
+    }
+}
+
+/// what makes a Track a music video
+public struct VideoInfo: Hashable {
+    public let how: VideoHow
+    public let width: Int
+    public let height: Int
+
+    public init(how: VideoHow, width: Int = 0, height: Int = 0) {
+        self.how = how; self.width = width; self.height = height
+    }
+
+    /// the address on the server a Mac's player opens (the core's a68_path_video): the file, or HLS
+    public func path(id: String) -> String {
+        built(256) { a68_path_video(id, how.core, $0, $1) } ?? "/video/" + id
+    }
+}
+
 /// /mac/tracks?album=ID or ?artist=ID, full=1
 public struct Track: Identifiable, Hashable {
     public let id: String
@@ -90,25 +129,57 @@ public struct Track: Identifiable, Hashable {
     public let album: String
     public let albumTitle: String
     public let folder: String
+    public let video: VideoInfo?         // a music video (nil: a song)
 
     public init(id: String, number: Int, title: String, artist: String, seconds: Int, path: String,
-                album: String, albumTitle: String, folder: String) {
+                album: String, albumTitle: String, folder: String, video: VideoInfo? = nil) {
         self.id = id; self.number = number; self.title = title; self.artist = artist; self.seconds = seconds
-        self.path = path; self.album = album; self.albumTitle = albumTitle; self.folder = folder
+        self.path = path; self.album = album; self.albumTitle = albumTitle; self.folder = folder; self.video = video
     }
 
-    /// a page of tracks; the next page's start, if there is one
-    public static func page(_ data: Data) throws -> (tracks: [Track], next: Int?) {
+    public var isVideo: Bool { video != nil }
+
+    /// what the server's "what" names it by: t:PATH for a song, v:ID for a video
+    public var what: String { isVideo ? LiveWhat.video(id) : LiveWhat.track(path) }
+
+    /// a page of tracks, and the videos after them (videos=1); the next page's start, if there is one
+    public static func page(_ data: Data) throws -> (tracks: [Track], next: Int?, videos: [Track]) {
         let r = Records(data)
         guard let head = r.head() else { throw MusicAPIError.notText }
-        var out: [Track] = []
+        var out: [Track] = [], videos: [Track] = []
         var t = a68_track()
-        while a68_next_track(&r.rec, &t) != 0 {
+        var v = a68_video()
+        while true {
+            let k = a68_next_item(&r.rec, &t, &v)
+            if k == 0 { break }
+            if k == Int32(UInt8(ascii: "V")) {
+                videos.append(Track.fromVideo(v))
+                continue
+            }
             guard t.full != 0 else { throw MusicAPIError.olderServer }
             out.append(Track(id: text(t.id), number: Int(t.number), title: text(t.title), artist: text(t.artist),
                              seconds: Int(t.secs), path: text(t.path), album: text(t.album), albumTitle: text(t.album_title),
                              folder: text(t.folder)))
         }
+        return (out, head.next, videos)
+    }
+
+    /// a "V" record as a Track that is a video; its number from its file's name, as a song's is
+    static func fromVideo(_ v: a68_video) -> Track {
+        let path = text(v.path), artist = text(v.artist)
+        let number = path.isEmpty ? 0 : TrackName.parse(TrackName.stem(of: path), artist: artist).number
+        return Track(id: text(v.id), number: number, title: text(v.title), artist: artist, seconds: Int(v.secs), path: path,
+                     album: text(v.album), albumTitle: text(v.album_title), folder: text(v.folder),
+                     video: VideoInfo(how: VideoHow(text(v.how)), width: Int(v.width), height: Int(v.height)))
+    }
+
+    /// /mac/videos: a page of videos alone
+    public static func videoPage(_ data: Data) throws -> (videos: [Track], next: Int?) {
+        let r = Records(data)
+        guard let head = r.head() else { throw MusicAPIError.notText }
+        var out: [Track] = []
+        var v = a68_video()
+        while a68_next_video(&r.rec, &v) != 0 { out.append(Track.fromVideo(v)) }
         return (out, head.next)
     }
 }

@@ -17,6 +17,10 @@
 //
 // One code base with the SE's Play (the same evening, docs/08 item 107): what is sent to Live or another player
 // is a Command, whose request the shared C core writes, and the catalogue comes as the server's text (MusicAPI).
+//
+// Music videos (22 November 2026, docs/08 item 109): an album's come with its tracks, an artist's from /mac/videos;
+// a video plays wherever "Play on" says, as songs do (Track.what names it v:ID): here as a video, on another Mac as a
+// video, on the SE and on Live as its sound.
 import AppKit
 import Foundation
 import Aurora68Core
@@ -68,6 +72,7 @@ final class AppModel: ObservableObject {
     let live: LiveController
     let devices: DeviceLink
     private var trackCache: [String: [Track]] = [:]
+    private var videoCache: [String: [Track]] = [:]             // an album's videos (its id), an artist's ("a:" and its id)
     private var started = false
     private var watch = GenerationWatch()
     private var volumeSend: Task<Void, Never>?
@@ -139,6 +144,7 @@ final class AppModel: ObservableObject {
                 self.api = api
                 index = LibraryIndex(catalog)
                 trackCache = [:]
+                videoCache = [:]
                 watch = GenerationWatch()
                 radio = nil
                 player.api = api
@@ -165,6 +171,7 @@ final class AppModel: ObservableObject {
             if let c = try? await api.catalog() {
                 index = LibraryIndex(c)
                 trackCache = [:]
+                videoCache = [:]
                 generation += 1
             }
         }
@@ -181,11 +188,28 @@ final class AppModel: ObservableObject {
 
     // ---- the library
     func tracks(album: Album) async -> [Track] {
-        if let t = trackCache[album.id] { return t }
-        guard let api, let t = try? await api.tracks(album: album.id) else { return [] }
-        trackCache[album.id] = t
-        return t
+        await media(album: album).tracks
     }
+
+    /// an album's songs and its music videos (one answer of the server's)
+    func media(album: Album) async -> (tracks: [Track], videos: [Track]) {
+        if let t = trackCache[album.id] { return (t, videoCache[album.id] ?? []) }
+        guard let api, let m = try? await api.media(album: album.id) else { return ([], []) }
+        trackCache[album.id] = m.tracks
+        videoCache[album.id] = m.videos
+        return m
+    }
+
+    /// an artist's music videos: those in its albums and those beside them
+    func videos(artist: Artist) async -> [Track] {
+        let key = "a:" + artist.id
+        if let v = videoCache[key] { return v }
+        guard let api, artist.videos > 0, let v = try? await api.videos(artist: artist.id) else { return [] }
+        videoCache[key] = v
+        return v
+    }
+
+    func posterURL(_ video: Track) -> URL? { api?.posterURL(video.id) }
 
     func tracks(artist: Artist) async -> [Track] {
         guard let index else { return [] }
@@ -277,8 +301,8 @@ final class AppModel: ObservableObject {
         case .live: Task { await live.play(tracks: tracks, from: start) }
         case .device(let id):
             guard tracks.indices.contains(start) else { return }
-            var commands = [Command(.play, what: LiveWhat.track(tracks[start].path))]
-            for t in tracks[(start + 1)...] { commands.append(Command(.add, what: LiveWhat.track(t.path))) }
+            var commands = [Command(.play, what: tracks[start].what)]
+            for t in tracks[(start + 1)...] { commands.append(Command(.add, what: t.what)) }
             toDevice(id, commands)
         case .thisMac: player.play(tracks, from: start)
         }
@@ -287,7 +311,7 @@ final class AppModel: ObservableObject {
     func playNext(_ tracks: [Track]) {
         switch output {
         case .live: Task { await live.playNext(tracks) }
-        case .device(let id): toDevice(id, tracks.reversed().map { Command(.next, what: LiveWhat.track($0.path)) })
+        case .device(let id): toDevice(id, tracks.reversed().map { Command(.next, what: $0.what) })
         case .thisMac: player.playNext(tracks)
         }
     }
@@ -295,7 +319,7 @@ final class AppModel: ObservableObject {
     func add(_ tracks: [Track]) {
         switch output {
         case .live: Task { await live.add(tracks) }
-        case .device(let id): toDevice(id, tracks.map { Command(.add, what: LiveWhat.track($0.path)) })
+        case .device(let id): toDevice(id, tracks.map { Command(.add, what: $0.what) })
         case .thisMac: player.add(tracks)
         }
     }

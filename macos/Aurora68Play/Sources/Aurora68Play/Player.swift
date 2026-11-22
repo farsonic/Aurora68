@@ -18,6 +18,12 @@
 // drag; and seek(to:) here seeks exactly (zero tolerance, which AVFoundation otherwise widens to the
 // nearest convenient point, seconds away in a long MP3), waits for an item that is not ready yet, and
 // keeps the periodic clock from showing the old place until the seek has finished.
+//
+// Music videos (22 November 2026, docs/08 item 109). A video is a Track with `video` set, and plays from the same
+// AVQueuePlayer: its item is the server's /video/ID (the file as it is) or /video/ID/index.m3u8 (HLS, for one the
+// server remuxes or transcodes: AVFoundation plays no progressive stream without a length), and VideoWindow
+// (VideoViews.swift) shows the player's picture. So a video in the queue plays as a video, and the songs after it
+// follow it as they follow each other; Now Playing says it is a video and shows its poster.
 import AppKit
 import AVFoundation
 import Combine
@@ -42,12 +48,16 @@ final class Player: ObservableObject {
 
     var api: MusicAPI?
     var current: Track? { listeningLive ? nil : queue.current }
+    /// what plays is a music video: the video window shows it
+    var currentIsVideo: Bool { current?.isVideo ?? false }
+    /// the player itself, for the video window's AVPlayerView
+    var avPlayer: AVPlayer { av }
 
     private let av = AVQueuePlayer()
     private var tracks: [ObjectIdentifier: Track] = [:]        // AVPlayerItem -> its song
     private var timeObserver: Any?
     private var bag = Set<AnyCancellable>()
-    private var artwork: (folder: String, image: NSImage)?
+    private var artwork: (key: String, image: NSImage)?
     private var seeking = false                                  // a seek under way: the clock waits for it
     private var pendingSeek: Double?                             // asked for before the item was ready
     private var streamURL: URL?
@@ -218,7 +228,7 @@ final class Player: ObservableObject {
     // ---- AVFoundation's queue: the playing item and the next
     private func item(for t: Track) -> AVPlayerItem? {
         guard let api else { return nil }
-        let it = AVPlayerItem(url: api.fileURL(t.path))
+        let it = AVPlayerItem(url: api.playURL(t))          // a song's file, or a video (the file or its HLS)
         tracks[ObjectIdentifier(it)] = t
         return it
     }
@@ -301,11 +311,14 @@ final class Player: ObservableObject {
             info[MPMediaItemPropertyAlbumTitle] = t.albumTitle
             info[MPMediaItemPropertyPlaybackDuration] = duration
             info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsed
-            if let art = artwork, art.folder == t.folder {
+            info[MPNowPlayingInfoPropertyMediaType] = t.isVideo ? MPNowPlayingInfoMediaType.video.rawValue
+                                                                : MPNowPlayingInfoMediaType.audio.rawValue
+            let key = t.isVideo ? "video:" + t.id : t.folder         // a video's poster, else the album's cover
+            if let art = artwork, art.key == key {
                 let image = art.image
                 info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
-            } else {
-                loadArtwork(folder: t.folder)
+            } else if let api {
+                loadArtwork(key: key, url: t.isVideo ? api.posterURL(t.id) : api.artURL(folder: t.folder))
             }
         } else {
             center.nowPlayingInfo = nil
@@ -317,15 +330,13 @@ final class Player: ObservableObject {
         center.playbackState = isPlaying ? .playing : .paused
     }
 
-    private func loadArtwork(folder: String) {
-        guard let api else { return }
-        let url = api.artURL(folder: folder)
+    private func loadArtwork(key: String, url: URL) {
         Task { [weak self] in
             guard let result = try? await URLSession.shared.data(from: url) else { return }
             let (data, resp) = result
             guard (resp as? HTTPURLResponse)?.statusCode == 200, let image = NSImage(data: data) else { return }
             await MainActor.run {
-                self?.artwork = (folder, image)
+                self?.artwork = (key, image)
                 self?.updateNowPlaying()
             }
         }

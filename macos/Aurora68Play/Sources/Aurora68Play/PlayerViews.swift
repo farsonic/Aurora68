@@ -85,6 +85,7 @@ struct Scrubber: View {
 struct PlayerBar: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var player: Player
+    @Environment(\.openWindow) private var openWindow
     @EnvironmentObject var live: LiveController
     @EnvironmentObject var devices: DeviceLink
     @State private var scrub: Double?
@@ -104,6 +105,11 @@ struct PlayerBar: View {
             .frame(maxWidth: 520)
             Spacer(minLength: 8)
             HStack(spacing: 8) {
+                if !isLive && !isRemote && player.currentIsVideo {
+                    Button { openWindow(id: "video") } label: { Image(systemName: "film") }
+                        .buttonStyle(.borderless)
+                        .help("Show the video")
+                }
                 if isLive {
                     Button { player.listeningLive ? player.stopListeningLive() : player.listenLive() } label: {
                         Image(systemName: player.listeningLive ? "headphones.circle.fill" : "headphones")
@@ -152,6 +158,7 @@ struct PlayerBar: View {
     private var coverURL: URL? {
         if isLive { return live.now?.current.flatMap { model.coverURL(folder: $0.folder) } }
         if isRemote { return remote.flatMap { $0.folder.isEmpty ? nil : model.coverURL(folder: $0.folder) } }
+        if let t = player.current, t.isVideo { return model.posterURL(t) }
         return player.current.flatMap { model.coverURL(folder: $0.folder) }
     }
 

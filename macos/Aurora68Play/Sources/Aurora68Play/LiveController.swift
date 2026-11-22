@@ -74,16 +74,16 @@ final class LiveController: ObservableObject {
     /// songs from a list: the chosen one plays now, the ones after it follow
     func play(tracks: [Track], from start: Int) async {
         guard tracks.indices.contains(start) else { return }
-        await act(Command(.play, what: LiveWhat.track(tracks[start].path)))
-        for t in tracks[(start + 1)...] { await act(Command(.add, what: LiveWhat.track(t.path))) }
+        await act(Command(.play, what: tracks[start].what))        // a video: Live plays its sound
+        for t in tracks[(start + 1)...] { await act(Command(.add, what: t.what)) }
     }
 
     func playNext(_ tracks: [Track]) async {
-        for t in tracks.reversed() { await act(Command(.next, what: LiveWhat.track(t.path))) }
+        for t in tracks.reversed() { await act(Command(.next, what: t.what)) }
     }
 
     func add(_ tracks: [Track]) async {
-        for t in tracks { await act(Command(.add, what: LiveWhat.track(t.path))) }
+        for t in tracks { await act(Command(.add, what: t.what)) }
     }
 
     func togglePlay() async {

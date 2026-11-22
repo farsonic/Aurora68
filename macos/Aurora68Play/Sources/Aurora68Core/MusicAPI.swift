@@ -10,7 +10,8 @@
 // whole state). What this file asks (tools/music-server/README.md):
 //   GET /mac/info                   the name, the version, the counts, the generation, how often to announce
 //   GET /mac/artists, /mac/albums   every artist and album, page after page (500 at a time, the server's most)
-//   GET /mac/tracks?album=ID        an album's (or ?artist=ID an artist's) tracks, with the files' paths
+//   GET /mac/tracks?album=ID        an album's (or ?artist=ID an artist's) tracks, with the files' paths, then its
+//                                   music videos (videos=1, 22 November 2026); /mac/videos?artist=ID an artist's videos
 //   GET /mac/now                    what the Live channel plays (the SE listens to it)
 //   GET /mac/command?to=ID&...      "play this there": on another player, or on "live" (its queue too)
 //   GET /mac/radio, /mac/devices    the radio stations; every player
@@ -86,6 +87,13 @@ public final class MusicAPI {
     }
 
     public func fileURL(_ path: String) -> URL { url("/file/" + Address.encodePath(path)) }
+    /// what a Track plays from: a song's file as it is, a video's /video/ID (or its HLS, the core's choice)
+    public func playURL(_ t: Track) -> URL {
+        guard let v = t.video else { return fileURL(t.path) }
+        return url(path: v.path(id: t.id))
+    }
+    /// a video's poster (a JPEG of the picture a tenth of the way in)
+    public func posterURL(_ id: String) -> URL { url(path: built(256) { a68_path_vthumb(id, $0, $1) } ?? "/vthumb/" + id) }
     public func artURL(folder: String) -> URL { url("/art", query: [("dir", folder)]) }
     public var liveURL: URL { url("/live") }
     public var panelURL: URL { url("/") }
@@ -140,8 +148,30 @@ public final class MusicAPI {
     }
 
     func tracks(_ make: (Int) -> String) async throws -> [Track] {
+        try await media(make).tracks
+    }
+
+    /// an album's songs and its music videos, in one list from the server (the videos after the songs)
+    public func media(album: String) async throws -> (tracks: [Track], videos: [Track]) {
+        try await media { from in request { a68_path_tracks($0, album, nil, from, MusicAPI.page, $1, $2) } }
+    }
+
+    func media(_ make: (Int) -> String) async throws -> (tracks: [Track], videos: [Track]) {
+        var tracks: [Track] = [], videos: [Track] = []
+        for page in try await pages(make) {
+            let p = try Track.page(page)
+            tracks += p.tracks
+            videos += p.videos
+        }
+        return (tracks, videos)
+    }
+
+    /// an artist's music videos (those in its albums and those beside them)
+    public func videos(artist: String) async throws -> [Track] {
         var out: [Track] = []
-        for page in try await pages(make) { out += try Track.page(page).tracks }
+        for page in try await pages({ from in request { a68_path_videos($0, artist, nil, from, MusicAPI.page, $1, $2) } }) {
+            out += try Track.videoPage(page).videos
+        }
         return out
     }
 
