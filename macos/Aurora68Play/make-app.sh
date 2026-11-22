@@ -6,7 +6,8 @@
 #     ./make-app.sh                 build/Aurora68 Play.app (Apple silicon and Intel), ad-hoc signed
 #
 # Written on 22 November 2026 with the macOS app. Needs Xcode's command line tools (swift, lipo,
-# iconutil, codesign) and python3 (the icon, from tools/mac/mkicons.py). GitHub's macOS runner does this
+# iconutil, codesign) and python3 with numpy and Pillow for the painted icon (PYTHON=, make-icon.py; without
+# them the pixel-art icon from tools/mac/mkicons.py). GitHub's macOS runner does this
 # for every change (.github/workflows/macos-player.yml). The app is signed ad hoc, not by a developer
 # account: the first time, macOS asks for it to be allowed (README.md, "Opening it the first time").
 # Nothing is deleted: an earlier build is moved aside.
@@ -25,7 +26,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 lipo -create -output "$APP/Contents/MacOS/Aurora68Play" \
     .build/arm64-apple-macosx/release/Aurora68Play .build/x86_64-apple-macosx/release/Aurora68Play
 
-python3 make-icon.py "$OUT/AppIcon.iconset"
+"${PYTHON:-python3}" make-icon.py "$OUT/AppIcon.iconset"
 iconutil -c icns -o "$APP/Contents/Resources/AppIcon.icns" "$OUT/AppIcon.iconset"
 
 cat > "$APP/Contents/Info.plist" <<PLIST

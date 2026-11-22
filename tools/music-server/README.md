@@ -19,7 +19,10 @@ filter box), and **Live**, a channel of your own. Choose an album, an artist, a 
 (Play, Shuffle, Add to queue, Play next) and that is what plays on `http://NAS:8423/live`, for every
 listener at the same moment, like a radio station you control. The panel shows Now Playing with the
 cover and the time, the queue (jump to or remove a song), Previous, Pause and Next, Repeat and
-Shuffle rest, who is listening, and a "Listen here" button that plays it in the browser.
+Shuffle rest, who is listening, and a "Listen here" button that plays it in the browser. **Play on**
+(at the top) sends the library's buttons and the transport to another player instead: any Aurora68 Play
+that is online, a Mac or the SE (Devices, below); the **Devices** list shows each with what it plays, and
+**Radio** lists the internet radio stations to play on one.
 
 Tune the SE to Live once (it is the second station in the stations file, or Radio > Open URL... with
 `http://NAS:8423/live`; the server's bare address `http://NAS:8423/` works too, because a player that does
@@ -172,6 +175,81 @@ An album is a folder that holds songs itself; its artist is the part before " - 
 "Artist - Album", else the folder it is in. A cover is `cover.jpg`, `folder.jpg`, `front.jpg` and the
 like beside the songs, else the picture inside the first song.
 
+## Devices: every Aurora68 Play, and "play this there"
+Since 22 November 2026 every Aurora68 Play (the macOS app on any Mac, the classic Play on the SE) tells
+the server it is there, what it plays, and takes commands, like Spotify Connect: from the web panel's
+**Play on** menu, or from another Play, an album, a station or a radio station can be sent to any player
+that is online. The Live channel is listed as the device `live`. No player has to accept connections:
+each fetches its commands by a long poll (the server holds the request up to 20 seconds and answers as
+soon as a command comes), so a Mac behind its own firewall and a classic Mac with MacTCP work alike.
+This section is the interface both Plays were written against; change it here first.
+
+JSON for the web panel and the macOS Play; text for the classic Play, as the rest of `/mac/` is (Mac
+Roman, lines ended by a Return, fields separated by tabs; no `A68M` first line). Everything that changes
+something (announce, state, command, fetching commands) needs the header `X-Aurora: 1`; the lists do not.
+
+| Request | Answer |
+|---|---|
+| `POST /api/devices/announce` `{"id", "name", "kind": "macos"\|"classic"\|"browser", "version"}` | `{"ok": true, "every": 20, "library": G}`. Send it every `every` seconds: a device not heard from for 60 is offline. The id: 1 to 64 letters, digits, `-` and `_`, made once and kept in the player's preferences (not `live`); the name: the Mac's own |
+| `GET /mac/announce?id=ID&name=NAME&kind=classic&v=1.3` | `ok`, `20`, `G` (three lines); the name in Mac Roman, `%XX` for each byte |
+| `POST /api/devices/ID/state` `{"playing", "title", "artist", "album", "folder", "position", "length", "volume": 0-100}` | `{"ok": true}`; on every change and with each announce (the macOS Play also every 5 seconds while playing). 404 before the first announce |
+| `GET /mac/state?id=ID&p=1&pos=SECONDS&len=SECONDS&vol=N&t=TRACKID` | `ok`; the title, artist, album and length come from the catalogue by the track's id (`/mac/tracks`); `&title=...&artist=...` name a radio station instead |
+| `GET /api/devices` | `{"devices": [{"id", "name", "kind", "version", "online", "last_seen", "state": {..., "at"}, "is_live"}, ...]}`: `live` first (its now-playing as its state, `listeners` how many), then the players by name, offline ones too (until 64 are known) |
+| `GET /mac/devices` | one line a device: `id`, `name`, `kind`, `online` (1 or 0), `title`, `artist` |
+| `POST /api/devices/ID/command` `{"action", "what", "shuffle": 1, "position", "volume"}` | `{"ok": true, "id": N}`, or `{"error"}` in words: 400 (not understood, nothing to play), 404 (no such device), 409 (not online). For `live` it is the Live channel's own action (`stop` empties its queue; `seek`, `volume` and radio are refused) and the answer carries `"live"`, what `/api/now` says |
+| `GET /api/devices/ID/commands?wait=20` | `{"commands": [...]}`, waiting up to `wait` seconds (20 at most) for one; an empty list when the wait is over. Asking counts as being heard from |
+| `GET /mac/commands?id=ID&wait=20` | for each command a line `N`, `action`, `position`, `volume`, then a line `T`, `tid`, `title`, `artist`, `seconds` for each of its tracks and `R`, `name`, `url` for a radio station; an empty answer when the wait is over |
+
+Actions, as `/api/live`'s: `play` (replace what plays), `add` (at the end), `next` (after the playing
+song) take `what`: `s:ID` (a station: folder or artist), `f:FOLDER` (`f:` alone is the whole library),
+`t:FOLDER/SONG.flac`, or `r:N` (internet radio station N of `/api/radio`, with `play` only); `"shuffle": 1`
+shuffles the songs. `pause`, `resume`, `skip` (the next song), `previous`, `stop`, `seek` with `position`
+(seconds) and `volume` with `volume` (0 to 100) need nothing else. The server turns `what` into the songs
+themselves, so the device gets them ready to play:
+
+```json
+{"id": 7, "action": "play", "shuffle": 1,
+ "tracks": [{"path": "Gamma - Converted/01. Gamma - Closing Time.m4a", "tid": "k3c9d0qa",
+             "title": "Closing Time", "artist": "Gamma", "album": "Converted", "seconds": 273}],
+ "radio": {"name": "Groove Salad", "url": "http://ice2.somafm.com/groovesalad-128-mp3"},
+ "position": 0, "volume": 80}
+```
+
+`tracks` (only for play, add and next; at most 2,000, a whole library shuffled is cut there; the first 40
+with their tags and lengths read) or `radio` (a radio station: `tracks` is empty), `position` and `volume`
+only where they were given. A modern player plays `/file/PATH` (the original file, with Range); the
+classic Play plays `/t/TID` (MP3, converted where needed) or the radio station's address. Commands wait
+for their device (32 at most; the oldest are dropped) until it asks.
+
+```bash
+curl -X POST -H 'X-Aurora: 1' -d '{"action":"play","what":"r:0"}' http://NAS:8423/api/devices/mac-0123456789ab/command
+```
+
+## Internet radio for every player
+`GET /api/radio` gives `{"stations": [{"group", "name", "url"}, ...]}` and `GET /mac/radio` the same as
+lines `group`, `name`, `url`: the classic Aurora68 Play's own list (`mac/piplay/stations.c`: SomaFM, the
+listener-supported stations, stations by country; groups like `By country/Austria` are submenus), so
+every player offers the same stations; the test checks that the server's copy and the classic Play's
+agree. Your own stations come after them: put a stations file in the music folder, named
+`Aurora68 Play Stations` (the classic Play's own file will do, Mac Roman or UTF-8) or `radio.txt`, or
+name it with `MUSIC_RADIO=PATH`; it is read again when it changes. Its format is the classic Play's:
+
+```
+[Home]
+Kitchen = http://192.168.1.20:8000/kitchen.mp3
+```
+
+The Live channel plays the library only: a radio station plays on a player.
+
+## New albums without a restart
+The folder is scanned again when a request comes and the last scan is more than 30 seconds old
+(`MUSIC_RESCAN`); a scan that finds anything changed (a folder or a file added, renamed or removed)
+adds one to the library's **generation**. `GET /api/info` gives it, with the name, the version and the
+counts: `{"name", "version", "library": G, "artists", "albums", "tracks", "every": 20}`; the announce
+answer carries it too (and `/mac/info`'s sixth field). Players remember it and fetch their lists again
+when it changes: the macOS Play does within 20 seconds of a scan, so an album copied in shows up within
+about a minute, without restarting anything.
+
 ## Addresses
 | | |
 |---|---|
@@ -189,6 +267,9 @@ like beside the songs, else the picture inside the first song.
 | `/stations.txt` | the library as an Aurora68 Play stations file; `?host=ADDRESS` for the address written in it |
 | `/api/list?dir=FOLDER` | JSON: the folder's station, folders and files |
 | `/mac/...`, `/t/ID` | Aurora68 Play's Library (above) |
+| `/api/info` | the library's generation and counts (above) |
+| `/api/devices`, `/api/devices/...`, `/mac/announce`, `/mac/state`, `/mac/devices`, `/mac/commands` | the players (Devices, above) |
+| `/api/radio`, `/mac/radio` | the internet radio stations (above) |
 
 ## Settings
 | Option | Environment | |
@@ -204,9 +285,12 @@ like beside the songs, else the picture inside the first song.
 | | `MUSIC_COPIES` | `hide` (the default): copies of one track in an album folder (the same number and title, sizes within 2%, as a download made twice leaves) are listed once, the best kept (FLAC, M4A, MP3, then the larger); `show` lists every file |
 | `--bitrate N` | `MUSIC_BITRATE` | kbit/s of the MP3 other formats become: 192 (128 is plenty for the SE's speaker; up to 320) |
 | `--ffmpeg PATH` | `MUSIC_FFMPEG` | ffmpeg, found on the PATH; `""` plays MP3s only |
+| | `MUSIC_RESCAN` | seconds a scan of the folder is trusted: 30 |
+| | `MUSIC_RADIO` | your own stations file (else `Aurora68 Play Stations` or `radio.txt` in the music folder) |
+| | `MUSIC_DEVICE_TTL` | seconds after which a player not heard from is offline: 60 |
 
 New music is found by itself: the folder is scanned again when a request comes and the last scan is
-more than 30 seconds old.
+more than 30 seconds old, and players are told (New albums without a restart, above).
 
 ## How a station is sent
 An MP3's frames are found and sent as they are (no conversion, so no quality is lost and the NAS does
@@ -232,5 +316,10 @@ and `stations.c`). It checks the stations file and its limits, the titles in ord
 that the audio decodes without an error at its full length. It also checks the pacing, Range, M3U, JSON,
 the page, that every path out of the folder is refused, and IPv6 over `::1` where the computer has it
 (where it has not, as in the build environment this was written in, it checks that the server says so and
-serves IPv4).
+serves IPv4). On a server of its own (a rescan every second, players offline after three seconds) it
+checks the devices: announce, state and the list in JSON and in the classic Play's text, commands queued
+and fetched by the long poll (at once, and when one comes during the wait), radio stations by index, the
+Live channel as a device, refusals, a player going offline and coming back; the radio list against
+`mac/piplay/stations.c` and a stations file of your own; and the library's generation going up when an
+album is copied in, with the catalogue listing it, and not otherwise.
 GitHub runs it before each image build.

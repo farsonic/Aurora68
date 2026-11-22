@@ -4046,3 +4046,58 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      (64-bit), 895293 additions a second" to "= 2^-60 (exact), 159717 additions a second" (5.6 times
      slower on the hardware, not the testbed's 25). **Photoshop, which had sat under the stopwatch for
      minutes, opened.**
+
+102. **Aurora68 Play on a modern Mac: other players, stations, new albums, seeking, an icon (22 November).** The
+     owner's list, after a day with the macOS Aurora68 Play: "Photorealistic Icon for MacOS (modern); Needs to
+     detect when new albums are added without restart; Pressing Live shows nothing... should there not be a list
+     of stations; Perhaps other devices running Aurora Player need to broadcast they are online for redirection;
+     I can't jump to a position in the song on the MacOS version (works on classic Mac)". (Their last item, FLAC
+     and the like on the classic Play, is the classic Play's own work, against the same server interface.)
+   - *Players as devices (the music server).* Every Aurora68 Play now announces itself every 20 seconds
+     (`POST /api/devices/announce`; the classic Play `GET /mac/announce`), posts what it plays, and fetches
+     commands by a long poll: the server holds `GET /api/devices/ID/commands?wait=20` until a command comes or
+     20 seconds pass, so no player needs an open port (a Mac with its firewall on, MacTCP on the SE). A player
+     not heard from for 60 seconds is offline. `GET /api/devices` lists them, the Live channel first as the
+     device `live`; `POST /api/devices/ID/command` sends one "play this": the server turns `s:`, `f:`, `t:` or
+     `r:N` into the tracks themselves (path for `/file/`, id for `/t/`, title, artist, album, length) or a radio
+     station's address, so a player plays what it gets without asking again. The classic Play has the same in
+     text (`/mac/state`, `/mac/devices`, `/mac/commands`). The interface is `tools/music-server/README.md`,
+     "Devices"; both Plays were written against one shared design, so neither waits on the other.
+   - *Stations.* `GET /api/radio` (and `/mac/radio`) hands every player the classic Play's built-in radio list
+     (`mac/piplay/stations.c`), checked by the test against the C source so the two cannot drift apart, plus a
+     stations file of the owner's own in the music folder. The macOS Play's Live page (now "Live and Radio")
+     starts with stations: everything shuffled (on This Mac the server's own `/radio/?shuffle=1` stream), each
+     artist shuffled, and the radio stations grouped as the classic Play's Radio menu, each playable on This
+     Mac, on Live (the library only: Live plays no radio) or on another player.
+   - *New albums.* The library scan already ran again when a request came 30 seconds after the last; nothing
+     told the app. The scan now keeps a signature of the folders and files, and a scan that finds a change adds
+     one to the library's generation (`/api/info`, the announce answer, `/mac/info`'s sixth field). The app
+     watches it and fetches the catalogue again when it changes; the navigation keeps artists and albums by
+     value and the views look them up again by id, so an open artist shows its new album where it is. A scan
+     that finds nothing new no longer logs the library summary every 30 seconds.
+   - *Seeking.* The position bar was a SwiftUI `Slider` that seeked in `onEditingChanged(false)`. On macOS a
+     click on a slider's bar moves its value without that call coming, so the click left the knob "held" at the
+     place clicked (the app showed the new time) and never seeked; only a drag that ended on the knob did. The bar
+     is now a scrubber of the app's own (a `DragGesture` with no minimum distance: a click is a drag of length
+     zero, and both end in a seek). The seek itself is exact (zero tolerance: AVFoundation otherwise picks a
+     convenient point, seconds away in a long MP3), waits for an item that is not ready yet instead of being
+     lost, and holds the clock until it finishes. The server now names `/file/`'s Content-Type itself for `.m4a`,
+     `.flac` and the rest: a NAS's slim Linux image may have no `/etc/mime.types`, and AVFoundation decides by
+     it whether it can play a file. The Range answers were already what AVFoundation asks for (206 with
+     Content-Range for `bytes=0-1`, HEAD, Accept-Ranges).
+   - *The icon.* `macos/Aurora68Play/make-icon.py` paints it with numpy and Pillow, nothing taken from anyone
+     else's artwork: Apple's icon grid (an 824-pixel superellipse on 1024, a soft shadow), the aurora (curtains
+     bright at their wavy lower edge, green turning violet above, with rays), stars, dark hills, and a black
+     vinyl record in front (3.2-pixel grooves, four gaps between songs, the two glossy wedges tinted by the
+     aurora, a specular, a rim, a soft shadow, an aurora-green label). Every size is made from the 1024-pixel
+     picture; the record and its label still read at 16 pixels. The macOS workflow installs numpy and Pillow in a
+     virtual environment and keeps a preview (artifact Aurora68-Play-icon).
+   - *Tested:* the server test (now 127 checks, all passing) adds the devices on a server of its own with a
+     one-second rescan and a three-second time to go offline (`MUSIC_RESCAN`, `MUSIC_DEVICE_TTL`): announce,
+     state and the list in JSON and in text, commands fetched at once and during a wait, radio by index, `live`,
+     refusals, offline and back; the radio list against stations.c; the generation with a new album. The macOS
+     app's core tests add the devices' JSON, commands as player actions, the radio groups, the kept id, the
+     generation watch, and the scrubber's arithmetic; GitHub's macOS runner builds and tests it.
+   - *Not verified here (no Mac with a screen, no SE on this network):* the app on a real Mac (a click on the
+     position bar; Play on another Mac and on the SE; a radio station on This Mac; a new album appearing; the
+     icon in the Dock and Finder), and the classic Play's side of the devices.
