@@ -335,7 +335,8 @@ static void psmac_read_options(void)
     if ((tok = find_token(args, "mac.fpu="))) {
         tok += 8;
         if (strncmp(tok, "none", 4) == 0 || strncmp(tok, "off", 3) == 0) globals.fpu_disable = true;
-        else if (strncmp(tok, "on", 2) == 0 || strncmp(tok, "double", 6) == 0) globals.fpu_disable = false;
+        else if (strncmp(tok, "on", 2) == 0 || strncmp(tok, "double", 6) == 0 || strncmp(tok, "exact", 5) == 0)
+            globals.fpu_disable = false;    /* which FPU (exact, the default, or double): psmac_fpu_init, issue #27 */
     }
     if ((tok = find_token(args, "mac.ram="))) { tok += 8; uint32_t mb = 0; while (*tok >= '0' && *tok <= '9') mb = mb * 10 + (*tok++ - '0'); globals.psmac_ram_mb = mb; }
     if ((tok = find_token(args, "mac.bridge="))) {        /* find_token matches up to the '=': compare the value ourselves */
@@ -351,9 +352,8 @@ static void psmac_read_options(void)
     if (psmac_board_solo) { use_gpio = 0; use_semihost = 0; transport_none = 1; psmac_solo_init(); }
     static char shown[1024];                             /* the WiFi password and the like as *** */
     psmac_redact(args, shown, sizeof shown);
-    { static int fpu_said; if (!fpu_said) { fpu_said = 1;
-        kprintf(globals.fpu_disable ? "[PSMAC] FPU: none (mac.fpu=none): FPU instructions take the line-F exception, as on a 68000 Mac; Gestalt reports no FPU\n"
-                                    : "[PSMAC] FPU: present (a 68882 to the Mac; Emu68 computes in 64-bit doubles; mac.fpu=none for none)\n"); } }
+    { static int fpu_said; if (!fpu_said && globals.fpu_disable) { fpu_said = 1;   /* a present FPU: psmac_fpu_init says which (exact or double) */
+        kprintf("[PSMAC] FPU: none (mac.fpu=none): FPU instructions take the line-F exception, as on a 68000 Mac; Gestalt reports no FPU\n"); } }
     kprintf("[PSMAC] options: ram=%d MiB bridge=%s (bootargs: %s)\n", globals.psmac_ram_mb, transport_none ? "none (solo)" : use_gpio ? "gpio (classic PiStorm)" : use_semihost ? "semihost" : "uart", shown);
 }
 
@@ -1464,6 +1464,7 @@ static void rescreen_keep(uint8_t *top, uint32_t len, uint8_t rid, uint8_t slot,
 void psmac_setup_memory(void *rom, uint32_t rom_sz)
 {
     psmac_read_options();
+    { extern void psmac_fpu_init(void); psmac_fpu_init(); }          /* mac.fpu: exact or double (psmac_fpu.c) */
     /* the card's config.txt and aurora68-display.txt, before the screen's size is decided: PiDisplay's
        rotation turns it, and in the testbed mac.hdmisim=1 makes the firmware's buffer the mode they set */
     { extern void psmac_hdmi_early(const void *, uint32_t); psmac_hdmi_early(rom, rom_sz); }
@@ -1771,7 +1772,9 @@ void ps_pulse_reset(void) { struct psmac_reply r; xfer(PSMAC_OP_RESET_ACK, 0, 0,
 void ps_send_reset(void)
 {
     extern void psmac_card_reset(void), psmac_startup_reset(void), psmac_se_after_reset(void), psmac_hdmi_bus_reset(void);
+    extern void psmac_fpu_reset(void);
     psmac_card_reset();
+    psmac_fpu_reset();                     /* the exact FPU's registers and its null state (psmac_fpu.c) */
     psmac_hdmi_bus_reset();                /* PiDisplay: the Pi's restart, or a new rotation for the Slot Manager to read (psmac_hdmi.c) */
     psmac_startup_reset();                 /* the startup disk's view of parameter RAM (psmac_mbox.c) */
     ps_pulse_reset();

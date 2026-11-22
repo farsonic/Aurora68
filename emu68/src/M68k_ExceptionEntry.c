@@ -52,7 +52,10 @@ uint32_t M68K_Exception(uint32_t M68k_SR, uint32_t type_and_format, uint32_t, ui
             record = 0;
         }
         else
-            record = !(vec >= 0x64 && vec <= 0x7c) && !(vec >= 0x80 && vec <= 0xbc) && vec < 0x100;
+            /* not the autovectors, not the TRAP #n instructions, and not the FPU's exceptions (vectors 48-54, $C0-$D8):
+               those are taken only when a program has enabled them in the FPCR, with its own handler, as the exact
+               FPU's test INIT does (22 November 2026, issue #27) */
+            record = !(vec >= 0x64 && vec <= 0x7c) && !(vec >= 0x80 && vec <= 0xbc) && !(vec >= 0xc0 && vec <= 0xd8) && vec < 0x100;
         if (unlikely(record)) {
             /* The 68k's registers live in fixed ARM registers (M68k.h, REG_D0...), which this file
                is compiled to leave alone; the recorder is ordinary C, so the call saves every

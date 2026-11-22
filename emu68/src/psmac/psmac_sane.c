@@ -119,6 +119,14 @@ static void load_packs(void)
     int no_fpu = globals.fpu_disable;   /* mac.fpu=none: the IIci ROM's SANE is FPU code and would stop at its first FPU instruction */
     if (opt && opt[0] == 'r' && !no_fpu) { kprintf("[PSMAC] SANE: the IIci ROM's (mac.sane=rom)\n"); return; }
     if (opt && opt[0] == 'r') kprintf("[PSMAC] SANE: mac.sane=rom needs the FPU and mac.fpu=none has none: the SE ROM's SANE instead\n");
+    /* With the exact FPU (mac.fpu=exact, psmac_fpu.c, docs/17) the IIci ROM's SANE computes on a 68882 that
+       keeps extended precision, so it is exact as well as fast: it is the default then, and mac.sane=se
+       asks for the SE ROM's packages all the same (22 November 2026, issue #27). */
+    extern int psmac_fpu_exact;
+    if (!no_fpu && psmac_fpu_exact && !(opt && opt[0] == 's')) {
+        kprintf("[PSMAC] SANE: the IIci ROM's, on the exact FPU (mac.sane=se for the SE ROM's)\n");
+        return;
+    }
     if (path) {
         int32_t got = -1;
         if (psmac_sh_available()) {

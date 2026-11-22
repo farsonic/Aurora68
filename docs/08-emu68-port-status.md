@@ -4204,6 +4204,56 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    - *Not yet tried:* Speedometer's FPU line and an FPU-only program (which should say it needs an FPU) with
      `mac.fpu=none`, and the owner's SE. The default stays `on` until issue #27's exact FPU decides the SE
      board's default.
+
+104. **The exact FPU: `mac.fpu=exact`, a 68882 in extended precision, now the default (22 November, issue
+   #27).** Item 101 found the IIci ROM's SANE rounding extended results to double, because Emu68 keeps the
+   68881's 80-bit registers as 64-bit doubles; item 103 offered no FPU at all. This item gives the Mac an FPU
+   that computes as the real one does. The design is docs/17: Berkeley SoftFloat 3e (vendored, BSD-3, with
+   a 68881 specialization) does the arithmetic in C, the 68881's rules (FPCR precisions and rounding, FPSR
+   flags, exceptions, FSAVE frames, packed decimal) sit on top in `psmac/psmac_fpu.c`, and the JIT
+   (`EMIT_FPU_exact` in `M68k_LINEF.c`) translates every coprocessor-1 instruction into a call to it.
+   - *Who moves the PC.* The first version advanced the 68k's PC in the JIT after the call
+     (`EMIT_AdvancePC`), as Emu68's own FPU code does. But the call's exception path leaves the block through a
+     local exit, and the JIT's pending PC offset is flushed into the exit it meets first: there it was the
+     exception path's, and the normal path lost it. Now the C side sets x18 itself, to the next instruction
+     (its length is `psmac_fpu_length`'s, the same function the translator uses), a branch's target, or the
+     PC an exception stacks, and the JIT emits no advance after the call. `tools/fpu_test.c` checks the PC
+     the C side leaves after every instruction that goes on in the block.
+   - *Vectors.* The C side returned vector numbers; `M68K_Exception` takes the vector's offset (vector times 4,
+     `VECTOR_LINE_F` is $02C). It returns offsets now, (format << 12) | offset.
+   - *SANE.* On the exact FPU the IIci ROM's SANE gives the exact answer, so `psmac_sane.c` keeps it by
+     default and logs "SANE: the IIci ROM's, on the exact FPU"; `mac.sane=se` still installs the SE ROM's
+     packages. With `mac.fpu=double` the SE ROM's SANE is installed as before; with `mac.fpu=none` it always is.
+   - *Merging item 103.* `mac.fpu=` now takes `exact` (the default; `on` means the same), `double` and `none`.
+     The banner "FPU: present (... 64-bit doubles)" from item 103 was no longer true and is gone:
+     `psmac_bus.c` announces `none`, `psmac_fpu_init` announces `exact` or `double`. The crash recorder no
+     longer records the FPU's exceptions (vectors 48 to 54): they are taken only when a program has enabled
+     them in the FPCR with a handler of its own (the test INIT's OPERR check was the first crash record).
+   - *The test INIT on a Mac without an FPU.* "Aurora68 FPU Test" loads before A68 Machine, and with
+     `mac.fpu=none` its first FPU instruction ended in system error 90 at startup. It now tests HWCfgFlags'
+     hwCbFPU (`btst #4,$B22`, as Gestalt does) and logs "no FPU" instead.
+   - *Tested.* Host: `tools/fpu_test.sh`, 20,273 checks, 0 failed (docs/17 "Testing" has the parts). Solo
+     testbed, System 7.1, 64 MB, `mac.serom=` the SE ROM image, the merged kernel:
+     ```
+     (no mac.fpu)  [PSMAC] FPU: exact, a 68882 in extended precision (mac.fpu=exact)
+                   [MAC] FPU test: 24 passed, 0 failed
+                   [MAC] A68 Machine: SANE, the IIci ROM's: (1 + 2^-60) - 1 = 2^-60 (exact), ... 247902 additions a sec
+                   [PSMAC] SANE: the IIci ROM's, on the exact FPU (mac.sane=se for the SE ROM's)
+                   [BOOT] t=42.621s Mac: the Finder is running (CurApName)          no crash records
+     mac.fpu=none  [MAC] FPU test: no FPU (HWCfgFlags hwCbFPU clear), nothing tested
+                   [MAC] A68 Machine: SANE, the SE ROM's: (1 + 2^-60) - 1 = 2^-60 (exact), ... 22323 additions a second
+                   [BOOT] t=44.048s Mac: the Finder is running (CurApName)          no crash records
+     mac.fpu=double (the speed-only INIT) the IIci ROM's SANE 0 (64-bit), then the SE ROM's 2^-60,
+                   the Finder at 43 s, no crash records
+     ```
+     `mac.fpu=exact mac.sane=se` installed the SE ROM's packages (2^-60) and reached the Finder. Speedometer
+     3.23 (before the merge, the same FPU code) reported an MC68882 and ran its FPU Benchmarks to the end:
+     3529 KWhetstones, matrix multiply 0.650 s, FFT 0.283 s, average 8.48 against a Mac II. Speeds against
+     `double` are in docs/17: in QEMU the exact FPU is about 20 to 70 times slower per instruction, and the
+     IIci ROM's SANE on it still several times faster than the SE ROM's software SANE.
+   - *Not yet tried:* the MAME SE board and the owner's SE (a real Pi's speed for the exact FPU); Photoshop
+     and other FPU builds of programs on the exact FPU; the full test INIT with `mac.fpu=double`, which ends in
+     an F-line crash at $81000040 (Emu68's own FPU, not changed here: the speed-only INIT exists for that).
 105. **The classic Aurora68 Play 1.3: FLAC, Ogg Vorbis and Apple Lossless, seeking, new albums, a device (22 November).**
      The owner's last item of item 102's list: "Legacy version needs to support FLAC etc not just MP3", with the
      classic Play's share of the rest (new albums without a restart, players that know of each other).
