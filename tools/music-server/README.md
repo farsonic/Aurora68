@@ -44,7 +44,11 @@ python3 aurora68_music_server.py /path/to/music --name "NAS Music"
   "Aurora68 Play Stations" in the Preferences folder (System 6: the System Folder), or add its lines to
   the one that is there. It makes a submenu named after the library, with "Everything, shuffled", each
   top-level folder as a station, and a submenu for each top-level folder with "All of ..., shuffled"
-  and each folder inside it. Deeper folders play inside their parents' stations. It stays within
+  and each folder inside it. Deeper folders play inside their parents' stations. A folder of albums
+  named "Artist - Album" side by side is offered by artist instead: one station per artist playing all
+  their albums, filed as record shops do ("The Cure" under C). A list longer than a menu on the SE's
+  screen (18 items) is cut into alphabetical submenus ("#–C", "D–H", ...). A library that is one folder
+  ("Albums") is shown as its contents. Each album still has its own station on the web page. It stays within
   Aurora68 Play's limits (128 stations and 48 submenus, 40 of the stations its own), and says so in a
   note if your library has more folders than that.
 - If the Mac cannot look up the NAS's name (a `.local` name, say), ask for the file with the address the

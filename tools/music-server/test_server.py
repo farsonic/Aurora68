@@ -50,6 +50,8 @@ def make_library(d):
     tone(f'{d}/Alpha Band/Café Sessions/01 Crème.mp3', 5, 660, vbr, {'title': 'Crème brûlée', 'artist': 'Alpha Band'})
     tone(f'{d}/Beta/Talk/Deeper/01 Voice.mp3', 2, 330, mono, {})                          # no tag: its name
     tone(f'{d}/Loose track.mp3', 1, 880, cbr, {'title': "It's loose", 'artist': 'Nobody'})
+    for album in ['Zed - One', 'Zed - Two', 'The Apes - First', 'Moss - A', 'Moss - B', 'Kite - K']:   # by artist
+        tone(f'{d}/Shelf/{album}/01 Song.mp3', 1, 500, cbr, {'title': album, 'artist': album.split(' - ')[0]})
     open(f'{d}/Beta/Talk/broken.mp3', 'wb').write(os.urandom(5000))                       # not MP3 at all
     os.makedirs(f'{d}/Empty folder', exist_ok=True)
     os.symlink('/etc/passwd', f'{d}/Beta/evil.mp3')
@@ -114,9 +116,21 @@ def main():
     names = [n for n, _, _ in stations]
     check(names[:3] == ['Everything, shuffled', 'Alpha Band', 'Beta'] and 'Loose track' not in names,
           f'Aurora68 Play reads the top stations ({names[:4]})')
-    check(len(groups) == 3 and 'All of Alpha Band, shuffled' in names and 'Café Sessions' in names and 'Talk' in names,
-          f'and the submenus: Test Music, its Alpha Band and Beta ({len(groups)} groups, {len(stations)} stations)')
+    check(len(groups) == 4 and 'All of Alpha Band, shuffled' in names and 'Café Sessions' in names and 'Talk' in names,
+          f'and the submenus: Test Music, its Alpha Band, Beta and Shelf ({len(groups)} groups, {len(stations)} stations)')
     check('Empty folder' not in names, 'a folder without music is no station')
+    shelf = [n for n, _, g in stations if g == str(len(groups) - 1)]
+    check(shelf == ['All of Shelf, shuffled', 'The Apes', 'Kite', 'Moss', 'Zed'],
+          f'"Artist - Album" folders become artists, "The" filed under its next word ({shelf})')
+    zed = [u for n, u, _ in stations if n == 'Zed'][0][len(base):]
+    out = subprocess.run([pc, 'icy', os.path.join(tmp, 'zed.mp3')], input=raw('127.0.0.1', port, zed + '?loop=0'),
+                         capture_output=True).stdout.decode('mac_roman')
+    check('status 200 kind 1 metaint 16000 name Zed ' in out, f'an artist has a station ({out.splitlines()[-1] if out else ""})')
+    pcm = subprocess.run(['ffmpeg', '-v', 'error', '-i', os.path.join(tmp, 'zed.mp3'), '-f', 's16le', '-ac', '1', '-ar', '8000', '-'],
+                         capture_output=True).stdout
+    check(1.8 < len(pcm) / 16000 < 2.3, f'playing both their albums, a second each ({len(pcm) / 16000:.2f} s)')
+    j = json.loads(get(base, '/api/list?dir=Shelf')[2])
+    check([a['name'] for a in j.get('artists', [])] == ['The Apes', 'Kite', 'Moss', 'Zed'], 'the JSON listing names the artists')
     for h, want in [('192.168.1.20', f'http://192.168.1.20:{port}/s/'), ('fd00::20', f'http://[fd00::20]:{port}/s/'),
                     ('bad host/x', base + '/s/')]:
         b2 = get(base, '/stations.txt?host=' + urllib.parse.quote(h))[2]

@@ -42,8 +42,10 @@ VERSION = '1'
 METAINT = 16000                 # bytes of audio between song titles, as most Icecast servers send
 BURST = 6.0                     # seconds of audio sent at once when a listener connects
 RESCAN = 30.0                   # seconds a scan of the folder is trusted before it is made again
-PLAY_MAX_STATIONS = 80          # Aurora68 Play holds 128 stations and 48 submenus (mac/piplay/stations.h),
+PLAY_MAX_STATIONS = 88          # Aurora68 Play holds 128 stations and 48 submenus (mac/piplay/stations.h),
 PLAY_MAX_GROUPS = 40            # 40 of the stations its own; the stations file stays within the rest
+MENU_ROWS = 18                  # a menu on the SE's 342 lines: the menu bar and 18 items of 16 lines
+ARTIST_MIN = 6                  # a folder of at least this many "Artist - Album" folders is grouped by artist
 
 
 def log(*a):
@@ -173,14 +175,32 @@ def short_id(rel):
     return hashlib.sha1(rel.encode('utf-8', 'surrogateescape')).hexdigest()[:8]
 
 
+def sort_key(name):
+    """artists in the order record shops file them: "The Cure" under C"""
+    n = name.casefold()
+    return n[4:] if n.startswith('the ') and len(n) > 4 else n
+
+
+def artist_of(folder):
+    """"Weezer" of "Weezer - Pinkerton (Explicit)", or None"""
+    a, sep, rest = folder.partition(' - ')
+    return a.strip() if sep and a.strip() and rest.strip() else None
+
+
 class Library:
-    """the folder: its MP3s by folder, scanned again when the last scan is RESCAN seconds old"""
+    """the folder: its MP3s by folder, scanned again when the last scan is RESCAN seconds old.
+
+    A station is a folder (its relative name, '' for the whole library) or an artist: (folder, name).
+    Many music libraries keep their albums side by side as "Artist - Album" folders; a folder of at
+    least ARTIST_MIN folders of which two in three are named so is also offered by artist, each artist
+    one station playing all their albums."""
     def __init__(self, root):
         self.root = os.path.realpath(root)
         self.lock = threading.Lock()
         self.when = 0.0
         self.dirs = {}               # relative folder ('' for the root) -> (folders in it, MP3s in it), sorted
-        self.ids = {}                # short ID -> relative folder
+        self.ids = {}                # short ID -> a station: a relative folder, or (folder, artist)
+        self.artists = {}            # relative folder -> {artist: [its folders inside it]}, for those offered so
 
     def scan(self):
         with self.lock:
@@ -201,9 +221,29 @@ class Library:
             keep = {r for r in dirs if has_music(r)}
             self.dirs = {r: ([s for s in v[0] if (f'{r}/{s}' if r else s) in keep], v[1]) for r, v in dirs.items() if r in keep}
             self.ids = {k: r for k, r in ids.items() if r in keep}
+            self.artists = {}
+            for r, (sub, _) in self.dirs.items():
+                named = [(artist_of(f), f) for f in sub]
+                if len(sub) >= ARTIST_MIN and 3 * sum(1 for a, _ in named if a) >= 2 * len(sub):
+                    by = {}
+                    for a, f in named:
+                        by.setdefault(a or f, []).append(f)
+                    self.artists[r] = dict(sorted(by.items(), key=lambda kv: sort_key(kv[0])))
+                    for a in by:
+                        self.ids[short_id(r + '\0' + a)] = (r, a)
             self.when = time.monotonic()
             n = sum(len(v[1]) for v in self.dirs.values())
             log(f'library: {n} MP3s in {len(self.dirs)} folders under {self.root}')
+
+    def station_id(self, key):
+        return short_id(key[0] + '\0' + key[1]) if isinstance(key, tuple) else short_id(key)
+
+    def items(self, rel):
+        """what a folder offers as stations: its artists if it is grouped so, else its folders, as
+        (name, station) pairs"""
+        if rel in self.artists:
+            return [(a, (rel, a)) for a in self.artists[rel]]
+        return [(f, f'{rel}/{f}' if rel else f) for f in self.dirs.get(rel, ([], []))[0]]
 
     def real(self, rel):
         """the path of a relative name inside the folder, or None if it is not inside it"""
@@ -216,7 +256,11 @@ class Library:
         return rel if rel in self.dirs else None
 
     def tracks(self, rel):
-        """every MP3 in the folder and the folders inside it, in order"""
+        """every MP3 in the folder and the folders inside it, in order; an artist's: all their albums"""
+        if isinstance(rel, tuple):
+            folder, artist = rel
+            return [t for f in self.artists.get(folder, {}).get(artist, [])
+                    for t in self.tracks(f'{folder}/{f}' if folder else f)]
         sub, mp3s = self.dirs.get(rel, ([], []))
         out = [f'{rel}/{m}' if rel else m for m in mp3s]
         for s in sub:
@@ -302,41 +346,89 @@ def stream_station(lib, rel, wfile, meta, shuffle, loop, who):
 
 
 # ---- the stations file for Aurora68 Play ---------------------------------------------------------
-def mac_roman(s, n=60):
-    s = ' '.join(s.split())[:n].lstrip('#') or '?'      # a line that starts with # is a note
+def mac_roman(s, n=60, line_start=True):
+    s = ' '.join(s.split())[:n]
+    if line_start:
+        s = s.lstrip('#') or '?'                         # a line that starts with # is a note
     return s.encode('mac_roman', 'replace').replace(b'=', b'-').replace(b'[', b'(').replace(b']', b')')
 
 
+def initial(name):
+    """the letter a name is filed under, or '#' for one that starts with a digit or a sign"""
+    c = next((c for c in sort_key(name).upper() if c.isalnum()), '#')
+    return c if c.isalpha() else '#'
+
+
+def menus(items):
+    """a list cut into menus of at most MENU_ROWS, at letter boundaries where it can be: [(label, items)].
+    A letter with more names than a menu holds is cut by its first two letters ("Sa-Sm")."""
+    groups = []                                   # (letter, items), in order
+    for it in items:
+        k = initial(it[0])
+        if groups and groups[-1][0] == k:
+            groups[-1][1].append(it)
+        else:
+            groups.append((k, [it]))
+    pieces = []                                   # (first label, last label, items)
+    for k, its in groups:
+        if len(its) <= MENU_ROWS:
+            pieces.append((k, k, its))
+            continue
+        for i in range(0, len(its), MENU_ROWS):
+            part = its[i:i + MENU_ROWS]
+            two = lambda n: (sort_key(n)[:2].title() if k != '#' else '#')
+            pieces.append((two(part[0][0]), two(part[-1][0]), part))
+    out = []
+    for first, last, its in pieces:
+        if out and len(out[-1][2]) + len(its) <= MENU_ROWS and len(first) == 1 and len(out[-1][1]) == 1:
+            out[-1] = (out[-1][0], last, out[-1][2] + its)
+        else:
+            out.append((first, last, list(its)))
+    return [(f if f == l else f'{f}\u2013{l}', its) for f, l, its in out]
+
+
 def stations_file(lib, base, name):
-    """an "Aurora68 Play Stations" file: the whole library, each top-level folder, and each folder
-    inside those, as far as Aurora68 Play's limits go; deeper folders play inside their parents"""
+    """an "Aurora68 Play Stations" file. A submenu named after the library holds "Everything,
+    shuffled" and the top-level folders; each top-level folder has a submenu of its folders (or its
+    artists); a list longer than a menu on the SE's screen is cut into alphabetical submenus ("A-F").
+    Deeper folders play inside their parents' stations. Within Aurora68 Play's limits, with a note
+    where the library holds more than that."""
     lib.scan()
+    top = mac_roman(name, 24)
     lines = [b'# Aurora68 Play Stations from ' + mac_roman(name) + b' (' + base.encode('ascii', 'replace') + b')',
              b'# Each folder is a station; its MP3s, and those of the folders inside it, play one after another.',
              b'# Put this file in the Preferences folder as "Aurora68 Play Stations", or add its lines to yours.',
-             b'[' + mac_roman(name, 30) + b']']
-    url = lambda rel, shuffle: f'{base}/s/{short_id(rel)}' + ('?shuffle=1' if shuffle else '')
-    lines.append(b'Everything, shuffled = ' + url('', True).encode())
+             b'[' + top + b']']
+    url = lambda key, shuffle: f'{base}/s/{lib.station_id(key)}' + ('?shuffle=1' if shuffle else '')
+    entry = lambda label, key, shuffle=False: mac_roman(label) + b' = ' + url(key, shuffle).encode()
+    lines.append(entry('Everything, shuffled', '', True))
     stations, groups = 1, 1
-    top = lib.dirs[''][0] if '' in lib.dirs else []
-    for t in top[:PLAY_MAX_STATIONS - 1]:
-        lines.append(mac_roman(t) + b' = ' + url(t, False).encode())
-        stations += 1
-    if len(top) > PLAY_MAX_STATIONS - 1:
-        lines.append(b'# (more folders than Aurora68 Play\'s menus hold: the rest play in "Everything")')
-    for t in top:
-        sub = lib.dirs.get(t, ([], []))[0]
-        if not sub:
-            continue
-        if stations + len(sub) + 1 > PLAY_MAX_STATIONS or groups + 1 > PLAY_MAX_GROUPS:
-            lines.append(b'# (more folders than Aurora68 Play\'s menus hold: the rest play inside the stations above)')
+    root, here = lib.items(''), ''
+    while len(root) == 1 and isinstance(root[0][1], str) and not lib.dirs[here][1]:
+        here = root[0][1]                         # one folder holding everything ("Albums"): its contents
+        root = lib.items(here)
+    if len(root) <= MENU_ROWS - 1:
+        for n, key in root:
+            lines.append(entry(n, key))
+        stations += len(root)
+        sections = [(n, [(f'All of {n}, shuffled', key, True)] + [(m, k, False) for m, k in lib.items(key)])
+                    for n, key in root if isinstance(key, str) and lib.items(key)]
+    else:
+        sections = [(None, [(n, k, False) for n, k in root])]
+    for heading, items in sections:
+        cut = menus([it for it in items if not it[2]])
+        shuffled = [it for it in items if it[2]]
+        if stations + len(items) > PLAY_MAX_STATIONS or groups + len(cut) > PLAY_MAX_GROUPS:
+            lines.append(b"# (more folders than Aurora68 Play's menus hold: the rest play inside the stations above)")
             break
-        lines.append(b'[' + mac_roman(name, 30) + b'/' + mac_roman(t, 30) + b']')
-        lines.append(b'All of ' + mac_roman(t) + b', shuffled = ' + url(t, True).encode())
-        for s in sub:
-            lines.append(mac_roman(s) + b' = ' + url(f'{t}/{s}', False).encode())
-        stations += len(sub) + 1
-        groups += 1
+        for i, (rng, its) in enumerate(cut):
+            label = mac_roman(heading, 20) if heading else b''
+            if len(cut) > 1:
+                label = (label + b' ' if label else b'') + mac_roman(rng, line_start=False)
+            lines.append(b'[' + top + b'/' + label + b']')
+            lines += [entry(n, k, sh) for n, k, sh in (shuffled if i == 0 else []) + its]
+        stations += len(items)
+        groups += len(cut)
     lines.append(b'[]')
     return b'\r'.join(lines) + b'\r'
 
@@ -415,8 +507,11 @@ def make_handler(lib, name, max_listeners):
                     if rel is None:
                         return self.fail(404, 'no such folder')
                     sub, mp3s = lib.dirs[rel]
-                    return self.send(200, 'application/json', json.dumps({
-                        'folder': rel, 'station': f'/s/{short_id(rel)}', 'folders': sub, 'files': mp3s}).encode())
+                    out = {'folder': rel, 'station': f'/s/{short_id(rel)}', 'folders': sub, 'files': mp3s}
+                    if rel in lib.artists:
+                        out['artists'] = [{'name': a, 'station': f'/s/{lib.station_id((rel, a))}', 'folders': f}
+                                          for a, f in lib.artists[rel].items()]
+                    return self.send(200, 'application/json', json.dumps(out).encode())
                 return self.fail(404, 'not here: try /')
             except (BrokenPipeError, ConnectionResetError):
                 pass
@@ -426,7 +521,9 @@ def make_handler(lib, name, max_listeners):
                 return self.fail(404, 'no such folder')
             if not listeners.acquire(blocking=False):
                 return self.fail(503, f'{max_listeners} listeners already')
-            who, title = self.who(), (rel.split('/')[-1] if rel else name)
+            who = self.who()
+            title = rel[1] if isinstance(rel, tuple) else (rel.split('/')[-1] if rel else name)
+            what = f'{rel[1]} (all their albums)' if isinstance(rel, tuple) else (rel or 'everything')
             meta = self.headers.get('Icy-MetaData') == '1'
             try:
                 self.send_response(200)
@@ -434,17 +531,17 @@ def make_handler(lib, name, max_listeners):
                 self.send_header('Cache-Control', 'no-cache, no-store')
                 self.send_header('Connection', 'close')
                 self.send_header('icy-name', title)
-                self.send_header('icy-description', f'{name}: {rel or "everything"}')
+                self.send_header('icy-description', f'{name}: {what}')
                 if meta:
                     self.send_header('icy-metaint', str(METAINT))
                 self.end_headers()
                 if self.command == 'HEAD':
                     return
-                log(f'{who}: listening to {rel or "everything"}{" shuffled" if q.get("shuffle") == "1" else ""}')
+                log(f'{who}: listening to {what}{" shuffled" if q.get("shuffle") == "1" else ""}')
                 stream_station(lib, rel, self.wfile, meta, q.get('shuffle') == '1', q.get('loop', '1') != '0', who)
-                log(f'{who}: {rel or "everything"} ended')
+                log(f'{who}: {what} ended')
             except (BrokenPipeError, ConnectionResetError, OSError):
-                log(f'{who}: left {rel or "everything"}')
+                log(f'{who}: left {what}')
             finally:
                 listeners.release()
 
@@ -507,6 +604,11 @@ def make_handler(lib, name, max_listeners):
                 acc = f'{acc}/{c}' if acc else c
                 parts.append(f'<a href="{link(acc)}">{esc(c)}</a>')
             body = ''
+            if rel in lib.artists:
+                body += '<h2>Artists</h2><ul>' + ''.join(
+                    f'<li><a href="/s/{lib.station_id((rel, a))}">&#9654; {esc(a)}</a> '
+                    f'<span class="s">{len(f)} album{"s" if len(f) > 1 else ""}</span></li>'
+                    for a, f in lib.artists[rel].items()) + '</ul>'
             if sub:
                 body += '<h2>Folders</h2><ul>' + ''.join(
                     f'<li><a href="{link(f"{rel}/{s}" if rel else s)}">{esc(s)}</a> '
