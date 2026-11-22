@@ -1735,7 +1735,7 @@ function devs(){const sel=$('target'),on_=D.filter(d=>d.online);
   return `<div class="row dev${d.id==T?' sel':''}" ${d.online?on('choose('+J(d.id)+')'):''} title="${d.online?'Play on '+esc(d.name):'Not heard from for a minute'}">`+
   `<span class="dot${d.online?' on':''}"></span><span class="t">${esc(d.is_live?'Live ('+d.listeners+' listening)':d.name)}<br><span class="small">${esc(np)}${s.playing||!d.online?'':s.title?' (paused)':''}</span></span>`+
   `<span class="small">${esc(d.kind)}</span></div>`}).join('')}
-function show(){const d=D.find(x=>x.id==T);if(T=='live'||!d)return live_np();const s=d.state||{};
+function show(){const d=D.find(x=>x.id==T);document.querySelector('#np .tog').style.display=T=='live'||!d?'':'none';if(T=='live'||!d)return live_np();const s=d.state||{};
  $('nph').textContent=d.name+': now playing';$('npt').textContent=s.title||'Nothing playing';$('nps').textContent=s.artist?(s.artist+(s.album?' - '+s.album:'')):(s.album||'');
  $('npart').style.backgroundImage=s.folder?art(s.folder):'none';$('npbar').style.width=s.length?Math.min(100,100*s.position/s.length)+'%':'0';
  $('npe').textContent=s.title?mmss(s.position):'';$('npl').textContent=s.length?mmss(s.length):'';$('pp').innerHTML=s.playing?'&#9208;':'&#9654;'}
