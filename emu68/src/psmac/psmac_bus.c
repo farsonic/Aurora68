@@ -678,6 +678,16 @@ void psmac_service_core(void)
                 struct M68KState *m = __m68k_state;
                 kprintf("[PSMAC]   D0-7 %08x %08x %08x %08x %08x %08x %08x %08x\n", BE32(m->D[0].u32), BE32(m->D[1].u32), BE32(m->D[2].u32), BE32(m->D[3].u32), BE32(m->D[4].u32), BE32(m->D[5].u32), BE32(m->D[6].u32), BE32(m->D[7].u32));
                 kprintf("[PSMAC]   A0-7 %08x %08x %08x %08x %08x %08x %08x %08x ISP %08x\n", BE32(m->A[0].u32), BE32(m->A[1].u32), BE32(m->A[2].u32), BE32(m->A[3].u32), BE32(m->A[4].u32), BE32(m->A[5].u32), BE32(m->A[6].u32), BE32(m->A[7].u32), BE32(m->ISP.u32));
+                {   /* the JIT's own counters (22 November 2026, Photoshop's slow start): instructions run and
+                       blocks translated in the last 5 s; many translations a second is a cache thrashing,
+                       few instructions with no translations is slow code (the FPU's, say) */
+                    static uint64_t insn_last; static uint32_t miss_last;
+                    uint64_t insn = m->INSN_COUNT; uint32_t miss = m->JIT_CACHE_MISS;
+                    kprintf("[PSMAC]   JIT: %u M instructions in 5 s (%u MIPS), %u blocks translated, %u in the cache, %u of %u KB free\n",
+                            (uint32_t)((insn - insn_last) / 1000000u), (uint32_t)((insn - insn_last) / 5000000u), miss - miss_last,
+                            m->JIT_UNIT_COUNT, m->JIT_CACHE_FREE >> 10, m->JIT_CACHE_TOTAL >> 10);
+                    insn_last = insn; miss_last = miss;
+                }
                 uint32_t sp = BE32(m->A[7].u32); int valid; uint32_t ph = psmac_mmu_l2p(sp, &valid);
                 if (valid && ph + 32 <= ram_size) {
                     const uint32_t *st = (const uint32_t *)(KERNEL_ALIAS + ram_phys + ph);
