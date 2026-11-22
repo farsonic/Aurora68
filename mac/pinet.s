@@ -1,4 +1,4 @@
-| pinet.s — "PiNet": Mac application that exercises the PiStorm-SE mailbox from the Mac side.
+| pinet.s — "PiNet": Mac application that exercises the Aurora68 mailbox from the Mac side.
 | GNU as MIT syntax, 68020, packaged by tools/mac/mkapp.py. MPL-2.0.
 |
 | It opens a window and reports: the mailbox header (firmware, Mac RAM), the block devices, the
@@ -501,7 +501,7 @@ wtitle:	.byte	16			| the window's title: the program's name (since 21 November 2
 	.ascii	"Aurora68 Network"
 	.even
 s_title:  .byte 36
-	.ascii "PiStorm-SE mailbox and .ENET test   "
+	.ascii "Aurora68 mailbox and .ENET test     "
 	.even
 s_nopi:	  .byte 32
 	.ascii "No PiStorm mailbox at slot $9.  "

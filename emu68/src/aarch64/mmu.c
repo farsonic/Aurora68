@@ -42,7 +42,7 @@ static const uintptr_t PHYS_VIRT_OFFSET = 0xffffff9000000000;
 
 /* Number of 4K pages in the MMU pool */
 #ifdef PSMAC
-#define MMU_POOL_SIZE 8192   /* PiStorm-SE: the 24-bit Mac map replicates 16 MiB 256 times */
+#define MMU_POOL_SIZE 8192   /* Aurora68: the 24-bit Mac map replicates 16 MiB 256 times */
 #else
 #define MMU_POOL_SIZE 2048
 #endif
@@ -541,7 +541,7 @@ uintptr_t mmu_virt2phys(uintptr_t addr)
 
 struct MemoryBlock *sys_memory;
 
-/* PiStorm-SE: where the last memory block will end once mmu_init has taken the MMU pool, the JIT
+/* Aurora68: where the last memory block will end once mmu_init has taken the MMU pool, the JIT
    caches and the VideoCore/CMA/unicam reservations from its top: the same arithmetic as below, with
    nothing changed. start.c uses it before mmu_init to put a large initramfs just below the kernel's
    final home (the kernel's own KERNEL_RSRVD_PAGES come off this value too). */
@@ -910,7 +910,7 @@ void mmu_unmap(uintptr_t virt, uintptr_t length)
 
 #ifdef PSMAC
 /*
-    PiStorm-SE: the 68k address space is the first 4 GiB of user space, i.e. user L1 entries 0..3
+    Aurora68: the 68k address space is the first 4 GiB of user space, i.e. user L1 entries 0..3
     (plus their aliases, see l1_slots). The Mac MMU shim keeps one ARM subtree per 68030 table
     configuration and swaps them in here instead of rebuilding thousands of mappings on every
     SwapMMUMode. A subtree that is not installed is never touched by mmu_map/mmu_unmap.

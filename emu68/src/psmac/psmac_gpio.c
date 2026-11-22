@@ -1,6 +1,6 @@
 /*
  * psmac_gpio.c — the classic PiStorm's GPIO protocol, as Aurora68's transport to the Macintosh.
- * Copyright (c) 2026 PiStorm-SE project. MPL-2.0.
+ * Copyright (c) 2026 Aurora68 project. MPL-2.0.
  * The bus cycle sequences are those of Emu68's ps_classic_protocol.c (MIT; Claude Schwarz 2020,
  * reorganised by Niklas Ekström 2021), which this file keeps word for word where it matters.
  *

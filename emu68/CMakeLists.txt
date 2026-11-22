@@ -299,7 +299,7 @@ if (${VARIANT} IN_LIST SUPPORTED_VARIANTS)
         if(${TARGET} STREQUAL "raspi64")
             add_compile_definitions(PISTORM_ANY_MODEL)
             if(${VARIANT} STREQUAL "psmac")
-                # PiStorm-SE: Macintosh host layer; PISTORM selects the 2-core IPL path and the pointer-based bus API
+                # Aurora68: Macintosh host layer; PISTORM selects the 2-core IPL path and the pointer-based bus API
                 add_compile_definitions(PISTORM PSMAC)
                 include_directories(src/psmac)
                 list(APPEND BASE_FILES
@@ -321,6 +321,7 @@ if (${VARIANT} IN_LIST SUPPORTED_VARIANTS)
                     src/psmac/psmac_sane.c
                     src/psmac/psmac_gpio.c
                     src/psmac/psmac_board_se.c
+                    src/psmac/psmac_board_plus.c
                     src/psmac/psmac_board_solo.c
                     src/psmac/psmac_card.c
                     src/psmac/psmac_boot.c

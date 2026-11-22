@@ -177,7 +177,9 @@ Setting up the SD card (a Pi 3B in an SE)
      the log), so an unpatched container works too. Copy aurora68.cpio to the card. The two declaration ROMs: the kernel takes
      the one whose name ends in the screen size in use, 512x342 on the SE board.
   6. Check cmdline.txt: one line, "enable_cache debug mac.board=se bt=off mac.console=hdmi".
-     mac.board=se tells the kernel it is in a Macintosh SE and not in the testbed's IIci.
+     mac.board=se tells the kernel it is in a Macintosh SE and not in the testbed's IIci. In a
+     Macintosh Plus, 512Ke, 512K or 128K write mac.board=plus, 512ke, 512k or 128k instead (not
+     yet tried on a real machine: "The Plus, 512Ke, 512K and 128K", below).
      mac.console=hdmi keeps the kernel's log on the HDMI screen for the whole run, the same text
      as the serial line, so a bench without a serial cable still sees everything; take it out
      to have HDMI show the Macintosh's picture instead (the log then shows until the
@@ -287,6 +289,34 @@ and the creator PIPY (aurora68-layout.py does it for the Music folder) open with
 decodes the MP3 and plays it with the Mac's own sound; the log says "[AUDIO] stream: MPEG-1 layer III,
 44100 Hz stereo, ..." and "[MAC] A68 Play: ...". Every Aurora68 program's lines in the log start
 "[MAC] A68 " and its short name: A68 Play, A68 Display, A68 Slots, A68 Sound, A68 Screen Setup...
+
+The Plus, 512Ke, 512K and 128K (in the next release; testbed only so far)
+-------------------------------------------------------------------------
+The kernel has boards for the other compact Macs. All four reach System 7.1's Finder in the
+project's testbed (MAME's Plus, 512Ke and 128K/512K logic boards with the Pi's bridge); none has
+been run on a real machine. Set the card up as for the SE, with one difference in cmdline.txt:
+  Macintosh Plus     mac.board=plus      SCSI as on the SE: its disk or a BlueSCSI
+  Macintosh 512Ke    mac.board=512ke     no SCSI: the System from a disk image in the card's root
+  Macintosh 512K     mac.board=512k      no SCSI, and the 20-byte clock chip (below)
+  Macintosh 128K     mac.board=128k      the same as the 512K
+  - The 68000 on these logic boards is usually soldered in. The PiStorm needs a 64-pin socket in
+    its place (or a clip-on adapter); fitting one is work on the board for someone who has done
+    it before. Look at yours before you start.
+  - The keyboard and mouse are the machine's own (not ADB on any of these): the kernel presents
+    them to the IIci ROM as ADB devices. USB and Bluetooth keyboards and mice work as on the SE.
+  - Memory is the Pi's, as on the SE. With System 7.1 give the Mac 32 MB or more (the default
+    is up to 128 MB): at 8 MB in 24-bit mode QuickTime crashes at start-up.
+  - Parameter RAM: the 128K's and 512K's clock chip holds 20 bytes and not the rest the IIci ROM
+    wants, so all of it is kept in pram.bin on the card. A first start from blank or untrusted
+    parameter RAM (a Plus at its first start with Aurora68) still starts from the card's image.
+  - SANE: exact SANE comes from the machine's own ROM where it holds PACK 4 and 5 (the log says
+    "[PSMAC] SANE: ..."). The 128K's and 512K's ROM has none: there the IIci ROM's SANE stays,
+    unless mac.serom=FILE names an SE ROM image you have put on the card yourself.
+  - The floppy drives of these machines have not been tried yet.
+  - mac.fpu=none gives the Mac no FPU, as these machines really have none: programs then use
+    their own non-FPU code, exact but slower.
+  - What to send back: the serial log (or the HDMI log, mac.console=hdmi) of the first boot, and
+    a photo of the screen, through an issue on GitHub (issue #21 is the Plus's).
 
 A Pi on the bench, no SE yet
 ----------------------------

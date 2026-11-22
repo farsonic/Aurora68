@@ -26,7 +26,7 @@ and their folders"); the table gives each one's name before that once, the sourc
 | Aurora68 Log (until 21 November 2026 PiLog) | `mac/pilog.c` | `Aurora68-Log.bin` (application) | The Pi kernel's log in a window that moves, resizes, zooms and scrolls (`docs/img/system71-pilog.png`). The kernel copies its log into a 64 KiB ring at window + 0x60000 (`psmb.h`, struct psmb_log) from boot; Aurora68 Log costs one memory read a quarter-second. Check boxes filter by part: Kernel, Mac, WiFi, Bluetooth, Network, Card; Option-click shows one part alone (`docs/img/system71-pilog-wifi.png`). Since 19 November a second row: **Filter:** shows only lines containing the text, in any case, together with the check boxes (several words must all match, `-word` hides lines with it; typing anywhere in the window goes to the field, the view is redone a fifth of a second after the last key; Esc or the field's small close box empties it) and says how many lines show, "5 of 688 lines" for WIFI in the testbed (`docs/img/system71-pilog-filter.png`); **Clear** (Edit > Clear Log, Command-K) empties the view without touching the kernel's ring, which other readers and the serial copy use: Aurora68 Log remembers where the ring stood and shows only what came after; Edit > Show Earlier Lines brings the rest back (`docs/img/system71-pilog-clear.png`); **Follow** (View > Follow New Lines, Command-T), checked at the start, keeps the view at the newest line; scrolling up unchecks it, scrolling back to the bottom or End checks it again (`docs/img/system71-pilog-follow.png`). Text can be selected and copied, and pasted into the filter. Since 20 November the log can be handed on as text instead of a photograph: **File > Save Log…** (⌘S) puts the lines shown (the parts, the filter, from Clear's mark, under a first line saying which) into a TeachText document (TEXT, 'ttxt') named "Aurora68 Log 2026-11-19 14.05"; with Option held (⌘⌥S) the whole ring. TeachText opens 32 KB at most, a whole ring is 64 KB: copy it to a modern machine (Lagoon's share) and read it there. **Save to Card** (the button at the right of the second row, or File > Save Log to SD Card) asks the kernel (`PSMB_INFO_SAVELOG`, progress through `PSMB_INFO_LOGSTATE`) to write the whole ring to `aurora68.log` in the SD card's root, overwritten each time; the kernel also does it by itself after a `[CRASH]` record (docs/08 item 55). Secrets never show: the values of `wifi.psk` and of any option named psk, pass, key or secret, the password in `mac.wifisim=` and the link key in `bt.dev=` become `***` in the window, the Scrap, a saved file and `aurora68.log` (the kernel echoes its bootargs) (`docs/img/system71-pilog-save.png`, `docs/img/system71-pilog-card.png`). Menus File, Edit (Undo to Clear in the standard order for desk accessories, then Select All, Filter Lines Command-F, Clear Log, Show Earlier Lines) and View; items that cannot be used are dimmed (`docs/img/system71-pilog-menu.png`). The 496-pixel window fits the SE's screen. In C, built with the kit in `mac/c` (`mac/c/README.md`); the image starts it from Startup Items. |
 | Aurora68 Play (until 21 November 2026 PiPlay) | `mac/piplay/piplay.c` | `Aurora68-Play.bin` (application) | MP3, AIFF and WAV files on the sound card, decoded on the Pi (below, "Aurora68 Play"): File > Open… (Standard File, every file shown; the kind is found from the content, so a file from a PC with no type plays), Play/Pause and Stop, the title and artist from the ID3 tag, the time played and the length, a volume slider. Hands the file's bytes to the card's stream channel (`psmb.h` struct psmb_stream); the Pi's core 1 decodes with minimp3 and mixes with the Mac's own sound. In C, with the kit in `mac/c`. Since 21 November 2026. |
 | Aurora68 Screens (until 21 November 2026 PiScreens) | `mac/piscreens.s` | `Aurora68-Screens.bin` (application) | QuickDraw's GDevice list: each screen's rectangle, flags, depth, frame buffer base, row bytes and driver, then MMU32Bit. Written for the second display's bring-up (docs/10): it is how the Pi's screen was found created but not activated. |
-| Aurora68 Slots (until 21 November 2026 PiSlots) | `mac/pislots/pislots.c` | `Aurora68-Slots.bin` (application) | The NuBus cards the Slot Manager knows about, in plain words (System 7.1 has no Apple System Profiler): for the logic board's own declaration ROM (slot 0) and each slot $9-$E, whether a card is there and started, its name, board ID, maker, revision, part number and date as far as its declaration ROM gives them, and its start-up code's answer; then each function (sResource): id, name, kind in words (display, network, processor, disk, input...) with the four numbers, its driver, whether the driver is open and its reference number (from the unit table), and for a screen its size and depth. A resizable, zoomable window with two scroll bars that comes back where it was left; File > Save As… (a TeachText document), Edit > Copy, File > Look Again (⌘R), About Aurora68 Slots…. A summary also goes to the Pi's log (`[MAC] A68 Slots: slot 9 "PiStorm-SE", ...`). On a Mac without a Slot Manager it says so. In C (`mac/c` kit), 68020, System 6.0.8 and 7; below, "Aurora68 Slots" (`docs/img/system71-pislots-se.png`). |
+| Aurora68 Slots (until 21 November 2026 PiSlots) | `mac/pislots/pislots.c` | `Aurora68-Slots.bin` (application) | The NuBus cards the Slot Manager knows about, in plain words (System 7.1 has no Apple System Profiler): for the logic board's own declaration ROM (slot 0) and each slot $9-$E, whether a card is there and started, its name, board ID, maker, revision, part number and date as far as its declaration ROM gives them, and its start-up code's answer; then each function (sResource): id, name, kind in words (display, network, processor, disk, input...) with the four numbers, its driver, whether the driver is open and its reference number (from the unit table), and for a screen its size and depth. A resizable, zoomable window with two scroll bars that comes back where it was left; File > Save As… (a TeachText document), Edit > Copy, File > Look Again (⌘R), About Aurora68 Slots…. A summary also goes to the Pi's log (`[MAC] A68 Slots: slot 9 "Aurora68", ...`). On a Mac without a Slot Manager it says so. In C (`mac/c` kit), 68020, System 6.0.8 and 7; below, "Aurora68 Slots" (`docs/img/system71-pislots-se.png`). |
 | Aurora68 Colour (until 21 November 2026 PiColor) | `mac/picolor.s` | `Aurora68-Colour.bin` (application) | Colour on the Pi's screen: a colour window placed on the second display paints twelve hues at full and half strength, the primaries and a sixteen-step grey ramp with RGBForeColor and PaintRect (`docs/img/system71-two-screens.png`, both screens side by side). |
 | Aurora68 Network (until 21 November 2026 PiNet) | `mac/pinet.s` | `Aurora68-Network.bin` (application) | Test application: shows the mailbox header, PiDisk 0, finds the Ethernet card through `SGetTypeSRsrc`, opens `.ENET` with `OpenSlot`, prints the address from EGetInfo, sends an ARP request for 192.168.68.1 and waits for the reply through ERead. Pair with `tools/pinet.py` on the host. |
 
@@ -1141,7 +1141,7 @@ Aurora68 Log show what the Mac saw (the kernel takes 127 characters of a line, s
 ```
 [MAC] A68 Slots: slot 9: PiDisk open, Network_EtherNet_PiStorm closed, PiInput open, Network_WiFi_PiStorm closed
 [MAC] A68 Slots: slot 9, more: Display_Video_PiStorm open
-[MAC] A68 Slots: slot 9 "PiStorm-SE"; empty: $A $B $C $D $E
+[MAC] A68 Slots: slot 9 "Aurora68"; empty: $A $B $C $D $E
 ```
 
 **On the SE board** (MAME's `macse_ps`, 32 MiB, the System 7.1 image as the startup disk,
@@ -1165,9 +1165,9 @@ The logic board (slot 0, the built-in declaration ROM)
       driver:  none
 
 Slot 9: a card
-  Card:        PiStorm-SE
+  Card:        Aurora68
   Board ID:    $5053 'PS'
-  Made by:     PiStorm-SE project
+  Made by:     Aurora68 project
   Revision:    0.1
   Part number: PSMAC
   Start-up:    no start-up code of its own
@@ -1195,9 +1195,9 @@ Slot 9: a card
       screen:  512 x 342, 1 bit (black and white), the main screen
 
 Slot $A: a card
-  Card:        PiStorm-SE HDMI
+  Card:        Aurora68 HDMI
   Board ID:    $5048 'PH'
-  Made by:     PiStorm-SE project
+  Made by:     Aurora68 project
   Revision:    0.1
   Part number: PSMAC-HDMI
   Start-up:    no start-up code of its own

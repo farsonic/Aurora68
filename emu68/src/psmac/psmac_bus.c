@@ -1,6 +1,6 @@
 /*
  * psmac_bus.c — Macintosh host memory map + bus bridge transport for the Emu68 fork.
- * Copyright (c) 2026 PiStorm-SE project. MPL-2.0.
+ * Copyright (c) 2026 Aurora68 project. MPL-2.0.
  *
  * The 68k address space is served as follows (IIci donor ROM, 32-bit physical map):
  *   0x00000000..RAM      Pi RAM (bank A). The first PSMAC_FB_SIZE bytes are mapped read-only so that
@@ -325,6 +325,18 @@ static void psmac_read_options(void)
     if ((tok = find_token(args, "mac.inputwifi="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_wifi(uint32_t); psmac_alice_input_wifi(n); }
     if ((tok = find_token(args, "mac.buswait="))) buswait_on = tok[12] == '1';   /* the 68k's waits for the wire, at each heartbeat (bw_report) */
     if ((tok = find_token(args, "mac.scsitrace="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); scsi_trace_left = n; }
+    /* mac.fpu=none (22 November 2026, issue #28): no FPU for the Mac. Upstream Emu68's disable-fpu
+       (globals.fpu_disable) already sends every coprocessor-1 instruction to the line-F exception
+       (M68k_LINEF.c, EMIT_lineF) instead of the FPU. The IIci ROM does not probe for one: it copies
+       HWCfgFlags from its ProductInfo record, so psmac_fpu_rom_fixup (psmac_board_se.c) clears hwCbFPU
+       there, and Gestalt's 'fpu ' (ROM $40816600, which tests that bit before its FSAVE) answers 0.
+       A 68000 Mac (the SE, later the Plus) has none, and programs with an FPU build would otherwise
+       run their 68881 code at Emu68's 64-bit precision (issue #27). */
+    if ((tok = find_token(args, "mac.fpu="))) {
+        tok += 8;
+        if (strncmp(tok, "none", 4) == 0 || strncmp(tok, "off", 3) == 0) globals.fpu_disable = true;
+        else if (strncmp(tok, "on", 2) == 0 || strncmp(tok, "double", 6) == 0) globals.fpu_disable = false;
+    }
     if ((tok = find_token(args, "mac.ram="))) { tok += 8; uint32_t mb = 0; while (*tok >= '0' && *tok <= '9') mb = mb * 10 + (*tok++ - '0'); globals.psmac_ram_mb = mb; }
     if ((tok = find_token(args, "mac.bridge="))) {        /* find_token matches up to the '=': compare the value ourselves */
         tok += 11;
@@ -339,6 +351,9 @@ static void psmac_read_options(void)
     if (psmac_board_solo) { use_gpio = 0; use_semihost = 0; transport_none = 1; psmac_solo_init(); }
     static char shown[1024];                             /* the WiFi password and the like as *** */
     psmac_redact(args, shown, sizeof shown);
+    { static int fpu_said; if (!fpu_said) { fpu_said = 1;
+        kprintf(globals.fpu_disable ? "[PSMAC] FPU: none (mac.fpu=none): FPU instructions take the line-F exception, as on a 68000 Mac; Gestalt reports no FPU\n"
+                                    : "[PSMAC] FPU: present (a 68882 to the Mac; Emu68 computes in 64-bit doubles; mac.fpu=none for none)\n"); } }
     kprintf("[PSMAC] options: ram=%d MiB bridge=%s (bootargs: %s)\n", globals.psmac_ram_mb, transport_none ? "none (solo)" : use_gpio ? "gpio (classic PiStorm)" : use_semihost ? "semihost" : "uart", shown);
 }
 
@@ -714,6 +729,27 @@ void psmac_service_core(void)
                 }
                 code_pc_last = pcn;
             }
+            {   /* what the Mac believes of its FPU: HWCfgFlags ($B22) bit 12 (hwCbFPU), copied by the ROM from
+                   its ProductInfo record, which Gestalt's 'fpu ' tests before anything else; said when it changes */
+                static int hw_said = -1; int okh; uint32_t hph = psmac_mmu_l2p(0xb22, &okh);
+                if (okh && hph + 2 <= ram_size) {
+                    uint16_t hw = BE16(*(const uint16_t *)(KERNEL_ALIAS + ram_phys + hph));
+                    if (hw && (int)hw != hw_said) {
+                        kprintf("[PSMAC]   the Mac's HWCfgFlags $%04x: %s (mac.fpu=%s)\n", hw,
+                                hw & 0x1000 ? "an FPU found at start-up" : "no FPU found at start-up",
+                                globals.fpu_disable ? "none" : "on");
+                        hw_said = hw;
+                    }
+                }
+            }
+            if (globals.fpu_disable) {   /* mac.fpu=none: FPU instructions the Mac tried (line-F, not recorded as crashes) */
+                extern volatile uint32_t psmac_fpu_traps, psmac_fpu_trap_pc;
+                static uint32_t fpu_traps_said;
+                if (psmac_fpu_traps != fpu_traps_said) {
+                    kprintf("[PSMAC]   FPU (none): %u FPU instructions took the line-F exception so far, the last at PC %08x\n", psmac_fpu_traps, psmac_fpu_trap_pc);
+                    fpu_traps_said = psmac_fpu_traps;
+                }
+            }
             { extern void psmac_slot_irq_report(void); psmac_slot_irq_report(); }
             {   /* the interrupt watch (psmac.h), counted by the 68k's core in ProcessIRQ: a level taken
                    again at once, or nested, is a level the JIT saw after its source had gone */
@@ -784,6 +820,7 @@ void psmac_service_core(void)
             next_poll = cnt_now() + period;
         }
         psmac_se_service();                       /* the SE's screen, a few rows at a time */
+        { extern void psmac_plus_service(void); psmac_plus_service(); }   /* the Plus's keyboard and mouse (psmac_board_plus.c) */
         psmac_bridge_flush();                     /* the testbed's gathered posted writes, now that there is nothing else to do */
         __asm__ volatile("yield");
     }
@@ -1586,6 +1623,7 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
         }
         { extern void psmac_se_rom_fixup(uint8_t *, uint32_t); psmac_se_rom_fixup(romk, n); }   /* the SE with its speaker: the full startup chime */
         { extern void psmac_se_scsi_fixup(uint8_t *, uint32_t); psmac_se_scsi_fixup(romk, n); } /* the SE's own SCSI bus: Apple's selection timeout */
+        { extern void psmac_fpu_rom_fixup(uint8_t *, uint32_t); psmac_fpu_rom_fixup(romk, n); } /* mac.fpu=none: hwCbFPU clear in ProductInfo */
         for (uint32_t o = n; o < PSMAC_ROM_SIZE; o += n) {
             memcpy(romk + o, rom, (o + n <= PSMAC_ROM_SIZE) ? n : PSMAC_ROM_SIZE - o);
         }

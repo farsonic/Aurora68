@@ -4,7 +4,7 @@
  *
  * History. Alice68 is the user's Raspberry Pi 4 Amiga kernel: Emu68 plus a virtual AGA chipset,
  * with the Pi's WiFi, Ethernet, Bluetooth and USB driven on a spare ARM core and handed to the
- * 68k through "boards" in shared memory. PiStorm-SE ("Aurora68", the Macintosh variant of the same
+ * 68k through "boards" in shared memory. Aurora68 (the Macintosh variant of the same
  * kernel) reuses those modules as they are: the hardware does not care which 68k OS consumes the
  * frames. What differs is the plumbing, and this header plus alice_psmac.c carry all of it:
  *   - the Pi peripherals are reached through a kernel-space mapping (Alice68 maps them at

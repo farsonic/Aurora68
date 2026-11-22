@@ -7,12 +7,14 @@ LOGDIR=${LOGDIR:-/tmp/psmac-logs}; mkdir -p "$LOGDIR"
 export PSMAC_BRIDGE_FIFO=/tmp/psmac.req:/tmp/psmac.rep
 rm -f /tmp/psmac.req /tmp/psmac.rep
 rm -rf mame/snapFS
-MACHINE=${MACHINE:-maciici_ps}                       # macse_ps: the Macintosh SE board (pass mac.board=se to the kernel)
-# MAME_EXTRA: more MAME arguments, e.g. "-flop1 floppy.img" or "-printer null_modem -bitb socket.127.0.0.1:6809"
-# (the SE's modem port, SCC channel A, is MAME's "printer" slot: docs/08 item 93)
+MACHINE=${MACHINE:-maciici_ps}                       # macse_ps: the Macintosh SE board (pass mac.board=se to the kernel); macplus_ps: the Plus (mac.board=plus)
+# MAME_EXTRA: more MAME options (macplus_ps: "-kbd usp" plugs in the Plus keyboard, which wants mame/roms/mackbd_m0110a.zip)
+# (the SE's modem port, SCC channel A, is MAME's "printer" slot: docs/08 item 93; e.g. "-printer null_modem -bitb socket.127.0.0.1:6809")
+# HD=none: no SCSI hard disk (the 128K/512K/512Ke have no SCSI; the System then comes from the card's image)
+HD=${HD:-images/chd/hd20.chd}; HDARG="-hard1 $HD"; [ "$HD" = none ] && HDARG=
 reference/mame/mamepsmac $MACHINE -rompath mame/roms -cfg_directory mame/cfgFS -nvram_directory mame/nvramFS \
-  -video none -sound none -nothrottle -frameskip 8 -hard1 ${HD:-images/chd/hd20.chd} -snapshot_directory mame/snapFS $MAME_EXTRA \
-  -verbose -seconds_to_run $((SECS+20)) -autoboot_script ${MAME_SCRIPT:-mame/shots.lua} -skip_gameinfo > "$LOGDIR/mame.log" 2>&1 &
+  -video none -sound none -nothrottle -frameskip 8 $HDARG -snapshot_directory mame/snapFS \
+  -verbose -seconds_to_run $((SECS+20)) -autoboot_script ${MAME_SCRIPT:-mame/shots.lua} -skip_gameinfo $MAME_EXTRA > "$LOGDIR/mame.log" 2>&1 &
 MP=$!
 for i in $(seq 1 60); do [ -p /tmp/psmac.req ] && break; sleep 0.5; done
 timeout "$SECS" tools/run-psmac-qemu.sh "$@" > "$LOGDIR/emu68.log" 2>&1

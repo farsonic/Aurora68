@@ -75,6 +75,8 @@ static void fill(struct crash_rec *c, uint32_t vec, uint32_t pc, uint32_t sr, co
 /* the JIT core, from M68K_Exception (M68k_ExceptionEntry.c), which has already chosen the
    exceptions worth recording: the unexpected ones and _SysError. vec is the vector offset. */
 struct psmac_crash_args { uint32_t vec, pc, sr, ea, fault, usp, isp, regs[16]; };
+volatile uint32_t psmac_fpu_traps, psmac_fpu_trap_pc;   /* mac.fpu=none: FPU instructions trapped (M68k_ExceptionEntry.c) */
+
 void psmac_crash_exception(const struct psmac_crash_args *a)
 {
     if (a->vec == 0x28) {                   /* _SysError */

@@ -77,3 +77,13 @@ mac/build/hfsview/
 macos/Aurora68Play/.build/
 macos/Aurora68Play/build/
 macos/Aurora68Play/.swiftpm/
+
+# local copies at the top of the tree: ROMs, disk images, the M0110A keyboard's ROM set, MAME's
+# per-run directories when started from here, and the testbed runs' logs and screenshots
+/*.rom
+/*.image
+/*.hda
+/*.zip
+/cfg/
+/nvram/
+/runs/

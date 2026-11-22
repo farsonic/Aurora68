@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Build the PiStorm-SE slot-$9 declaration ROM.
+"""Build the Aurora68 slot-$9 declaration ROM.
 
     mkdeclrom.py --pidisk mac/build/pidisk.bin.raw [--enet mac/build/enet.bin.raw] -o psmac.declrom
 
 sResources (ids ascending):
-    1    board:  type {catBoard 1, 0, 0, 0}, name "PiStorm-SE", BoardId (32) word 0x5053 ('PS'), VendorInfo
+    1    board:  type {catBoard 1, 0, 0, 0}, name "Aurora68", BoardId (32) word 0x5053 ('PS'), VendorInfo
     0x80 block:  type {0x7050 'pP' (vendor category), 1, 1, 1}, name "PiDisk", sRsrcDrvrDir {sMacOS68020 -> DRVR},
                  flags omitted => opened at start, once the System file is open (the ROM at 0x40802240), Open adds
                  the drives; with --boot also sRsrcBootRec (6), an sExec block (mac/pidisk_boot.s) that opens the
@@ -25,7 +25,7 @@ sResources (ids ascending):
 --se with --video2: the SE board's two cards (docs/10, "Two screens on the SE"), in one file. Slot 9's ROM
     as above with 0x84 the SE's own 512 x 342 screen, mode 128 (one bit) only, its frame the first 32 KiB
     of the window's top 512 KiB; before it, slot $A's ROM, the HDMI screen's card: board sResource 1
-    ("PiStorm-SE HDMI", BoardId 0x5048) and 0x80, type {3, 1, 1, drHw 0x5048 'PH'}, name
+    ("Aurora68 HDMI", BoardId 0x5048) and 0x80, type {3, 1, 1, drHw 0x5048 'PH'}, name
     "Display_Video_PiHDMI", every mode at the size --res gives, its indexed modes in the window's other
     480 KiB where they fit, the rest in the big region (vpBaseOffsets reach from slot $A's dCtlDevBase,
     $FAA80000, into slot 9's space). The kernel serves slot $A's ROM on the SE board with mac.hdmi=screen.
@@ -47,10 +47,10 @@ def drvr_name(img):
 rom = DeclROM(byte_lanes=0x0F)
 board = rom.sresource(1)
 board.type(1, 0, 0, 0)
-board.name('PiStorm-SE')
+board.name('Aurora68')
 board.word(32, 0x5053)                          # BoardId
 vendor = type(board)(0)                         # VendorInfo sub-list
-vendor.cstring(1, 'PiStorm-SE project')         # VendorId
+vendor.cstring(1, 'Aurora68 project')         # VendorId
 vendor.cstring(3, '0.1')                        # RevLevel
 vendor.cstring(4, 'PSMAC')                      # PartNum
 board.sublist(36, vendor)
@@ -173,10 +173,10 @@ if a.se:
     rom2 = DeclROM(byte_lanes=0x0F)
     b2 = rom2.sresource(1)
     b2.type(1, 0, 0, 0)
-    b2.name('PiStorm-SE HDMI')
+    b2.name('Aurora68 HDMI')
     b2.word(32, 0x5048)                         # BoardId 'PH'
     v2 = type(b2)(0)
-    v2.cstring(1, 'PiStorm-SE project'); v2.cstring(3, '0.1'); v2.cstring(4, 'PSMAC-HDMI')
+    v2.cstring(1, 'Aurora68 project'); v2.cstring(3, '0.1'); v2.cstring(4, 'PSMAC-HDMI')
     b2.sublist(36, v2)
     add_video(rom2, 0x80, video, 0x5048, 1, W, H, WIN + SE_FRAME, WIN_SIZE - SE_FRAME, devbase=0xFAA80000)
 elif a.video:

@@ -1,4 +1,4 @@
-| enet.s — ".Network_EtherNet_PiStorm": the Macintosh Ethernet driver of PiStorm-SE (Aurora68).
+| enet.s — ".Network_EtherNet_PiStorm": the Macintosh Ethernet driver of Aurora68.
 | 68k, GNU as MIT syntax, 68020. MPL-2.0.
 |
 | Backstory. Classic Mac OS networking (MacTCP, EtherTalk, Open Transport's ENET link) talks to

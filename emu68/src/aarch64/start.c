@@ -916,7 +916,7 @@ void boot(void *dtree)
             }
             else
             {
-                /* PiStorm-SE: a container with a Macintosh disk image inside is far bigger than the
+                /* Aurora68: a container with a Macintosh disk image inside is far bigger than the
                    early pool (the first 100 MB one died silently in the copy above, 17 November 2026).
                    It goes just below the kernel's final home at the top of RAM, and that memory is
                    taken out of the free list once the memory blocks exist (below). */
@@ -992,7 +992,7 @@ void boot(void *dtree)
             libdeflate_free_decompressor(decomp);
         }
     }
-#if defined(PISTORM) && !defined(PSMAC)   /* PiStorm-SE: no FPGA firmware upload in the Mac testbed */
+#if defined(PISTORM) && !defined(PSMAC)   /* Aurora68: no FPGA firmware upload in the Mac testbed */
     else
     {
         #include "firmware_ps16.bin.gz.h"
@@ -1467,7 +1467,7 @@ void boot(void *dtree)
 
 #else
 #ifdef PSMAC
-    /* PiStorm-SE: Macintosh memory map, ROM from initramfs */
+    /* Aurora68: Macintosh memory map, ROM from initramfs */
     (void)rom_copy;
     psmac_setup_memory(initramfs_loc, (uint32_t)initramfs_size);
 #else
