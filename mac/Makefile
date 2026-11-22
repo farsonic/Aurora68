@@ -34,6 +34,15 @@ $(B)/Aurora68-Machine.bin: $(B)/pimach.bin.raw ../tools/mac/mkinit.py ../tools/m
 $(B)/Aurora68-Sound.bin: $(B)/pisound.bin.raw ../tools/mac/mkinit.py ../tools/mac/rsrc.py $(ICONS)
 	$(PY) ../tools/mac/mkinit.py --init $(B)/pisound.bin.raw --name "Aurora68 Sound" --icons sound -o $@
 
+# the exact FPU's check from the 68k's side, for the testbed (issue #27; not in the release): make fputest
+.PHONY: fputest
+fputest: $(B)/Aurora68-FPUTest.bin
+$(B)/fputest.o: fputest.s
+	@mkdir -p $(B)
+	$(AS) -m68881 -o $@ $<
+$(B)/Aurora68-FPUTest.bin: $(B)/fputest.bin.raw ../tools/mac/mkinit.py ../tools/mac/rsrc.py $(ICONS)
+	$(PY) ../tools/mac/mkinit.py --init $(B)/fputest.bin.raw --name "Aurora68 FPU Test" --icons machine -o $@
+
 # the same extension answering another machine type (for experiments): make pimach-variant MACH=11
 pimach-variant: pimach.s
 	@mkdir -p $(B)
