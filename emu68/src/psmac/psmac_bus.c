@@ -683,6 +683,22 @@ void psmac_service_core(void)
                     const uint32_t *st = (const uint32_t *)(KERNEL_ALIAS + ram_phys + ph);
                     kprintf("[PSMAC]   stack: %08x %08x %08x %08x %08x %08x %08x %08x\n", st[0], st[1], st[2], st[3], st[4], st[5], st[6], st[7]);
                 }
+                /* A program busy in its own code (22 November 2026: MacWrite and Photoshop on the owner's
+                   SE under the stopwatch, the PC in the application's partition beat after beat): when
+                   the PC is within 256 bytes of the last beat's and below the ROM, the code around it,
+                   16 bytes before to 32 after, so the loop can be read from the log without the program */
+                static uint32_t code_pc_last;
+                uint32_t pcn = BE32((uint32_t)(uintptr_t)m->PC);
+                if (pcn < 0x40000000u && pcn - code_pc_last + 256u < 512u) {
+                    uint32_t at = (pcn & ~1u) - 16u; int ok; uint32_t cph = psmac_mmu_l2p(at, &ok);
+                    if (ok && cph + 48 <= ram_size) {
+                        const uint16_t *w = (const uint16_t *)(KERNEL_ALIAS + ram_phys + cph);
+                        kprintf("[PSMAC]   code at %08x:", at);
+                        for (int k = 0; k < 24; k++) kprintf(" %04x", BE16(w[k]));
+                        kprintf("\n");
+                    }
+                }
+                code_pc_last = pcn;
             }
             { extern void psmac_slot_irq_report(void); psmac_slot_irq_report(); }
             {   /* the interrupt watch (psmac.h), counted by the 68k's core in ProcessIRQ: a level taken
