@@ -78,7 +78,15 @@ public final class MusicAPI {
         }
     }
 
-    public func catalog() async throws -> Catalog { try await get(Catalog.self, url("/api/catalog")) }
+    public func catalog() async throws -> Catalog {
+        do {
+            return try await get(Catalog.self, url("/api/catalog"))
+        } catch MusicAPIError.status(404, _) {
+            // a music server from before this app (22 November 2026) has no /api/catalog: say what to do
+            throw MusicAPIError.status(404, "This music server is an older version, without the library this app uses. "
+                + "Update it: docker compose pull music, then docker compose up -d --force-recreate music.")
+        }
+    }
 
     public func tracks(album: String) async throws -> [Track] {
         try await get(TrackList.self, url("/api/tracks", query: [("album", album)])).tracks
