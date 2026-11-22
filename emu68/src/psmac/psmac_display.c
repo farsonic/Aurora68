@@ -600,8 +600,12 @@ void psmac_display_poll(void)
         d->vbl_count++;
         if ((d->flags & PSMB_DISP_ENABLED) && d->vbl_enable) { d->vbl_pending = 1; __asm__ volatile("dmb ish" ::: "memory"); }
     }
-    if (!(++tick_div & 1)) return;                                 /* a new frame every other tick: 30 a second */
+    /* the compact Mac's own screen at every tick, 60 a second (22 November 2026): at 30, the rate the HDMI
+       conversion keeps, the pointer on the SE's and the Plus's glass moved at half the display's rate, and
+       a Plus tester called the mouse sluggish. Comparing 342 rows of 64 bytes is a few microseconds; only
+       rows that changed go out on the wire */
     if (psmac_board_se && !psmac_board_solo) se_frame();
+    if (!(++tick_div & 1)) return;                                 /* a new HDMI frame every other tick: 30 a second */
     if ((vd->flags & PSMB_DISP_ENABLED) && !con_keep) {
         con_off = 1;
         /* if the last one is done, a thirtieth of a second has gone by since it began, and core 3 has

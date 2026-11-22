@@ -3774,7 +3774,18 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      movement with 5 or 20% of reads corrupted; moving with 5% corrupted, 98% of the distance (90% without
      the debounce). The old decoder in the same simulation was 205 steps out after 3,500 a second there and
      back. The heartbeat now counts each line's changes (X1, X2, Y1, Y2), jumps and one-poll glitches, which
-     says on the next log whether the Y line itself is noisy. Not yet tried on the Plus.
+     says on the next log whether the Y line itself is noisy. On the tester's machine (a 512Ke, run as
+     mac.board=plus, which works because its 512 KB repeats through the Plus's address range): "miles
+     better". Its next log: X1 4,782 and X2 4,768 changes, Y1 107,004 and Y2 5,566, and 211,218 one-poll
+     glitches filtered: the Y1 line itself is noisy (the mouse's vertical encoder or its wire), and the
+     decoder now cancels it.
+   - *Still a little sluggish, and a faint whine (the same tester).* The compact Mac's screen was compared
+     and sent at 30 frames a second, the HDMI conversion's rate, so the pointer on the glass moved at half
+     the display's: now 60 (psmac_display.c; the SE testbed: 300 frames compared in 5 s, was 150). The
+     speaker's buffer was left between sounds holding the last sound's 370 samples (or the board's RAM at
+     power-on), played 60 times a second behind a switch that may not silence it all: it is now filled
+     with one level when a sound ends and before the first ("buffer silenced" in the heartbeat; twice in
+     the SE testbed, at the start and after the chime).
 
 97. **FAT32 and exFAT on the Mac: disk images on sticks, and an HFS view of a stick or a card folder (21
    November, issue #20).** The owner wants sticks formatted by Windows, Linux or a modern Mac, and a folder

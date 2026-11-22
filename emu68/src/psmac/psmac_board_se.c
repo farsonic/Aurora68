@@ -1000,7 +1000,7 @@ static struct {
     uint8_t hold;
     uint32_t flush_seen, wt_seen, phase[4];
     uint8_t w_ora, w_ddra, w_orb, w_ddrb;        /* the VIA's registers as last written on the wire (service core) */
-    uint32_t edges, own_clears, halves, late, held, starts, underruns, played, half_us_max;
+    uint32_t edges, own_clears, halves, late, held, starts, underruns, played, half_us_max, quiets;
 } snd = { .half = -1 };
 
 /* the next sample, at the SE's rate */
@@ -1098,11 +1098,27 @@ static uint32_t snd_beam(uint64_t now)
     uint64_t lines = (now - snd.edge_t) * SND_WORDS / snd.period;
     return (uint32_t)((SND_VBL_WORD + lines) % SND_WORDS);
 }
+/* Silence left in the buffer (22 November 2026). Between sounds the speaker is switched off (PB7) and the
+   buffer was left as it was: the last 370 samples of the last sound, or whatever the board's RAM held at
+   power-on, which the SE and the Plus go on playing 60 times a second. A tester's Plus had "a tiny high
+   pitched whine" from the speaker: a fragment repeated at the frame rate is a tone, and what the sound
+   switch lets through of it is heard. So the whole buffer gets one level when a sound ends (the last
+   sample's, so nothing steps) and once before the first sound (the middle, $80): a constant level is no
+   sound whatever the switch lets through. 370 bytes, the Mac's own requests served between them. */
+static void snd_quiet(uint8_t level)
+{
+    uint32_t dst = snd_base();
+    for (uint32_t i = 0; i < SND_WORDS; i++) {
+        psmac_wire_write(dst + 2 * i, 1, level, 1);
+        psmac_serve_waiting();
+    }
+    snd.hold = level; snd.quiets++;
+}
 static void snd_service(void)
 {
     if (snd_off) return;
     uint64_t now = asc_now(), hz = asc_hz();
-    if (!snd.period) snd.period = hz * 704u * 370u / 15667200u;   /* the SE's frame: 704 dots by 370 lines at 15.6672 MHz, 60.15 Hz */
+    if (!snd.period) { snd.period = hz * 704u * 370u / 15667200u; snd_quiet(0x80); }   /* the SE's frame: 704 dots by 370 lines at 15.6672 MHz, 60.15 Hz; the buffer silent from the start */
     if (snd.flush_seen != snd_flush) { snd.flush_seen = snd_flush; for (int ch = 0; ch < 2; ch++) snd_tail[ch] = __atomic_load_n(&snd_head[ch], __ATOMIC_ACQUIRE); }
     int sounding = snd_fifo_level(0) > 0 || snd_fifo_level(1) > 0 || snd_wavetable_on() || psmac_audio_spk_level() > 0;
     if (sounding) snd.last_t = now;
@@ -1140,7 +1156,7 @@ static void snd_service(void)
     }
     /* on once both halves hold fresh samples; off a quarter second after the last one */
     snd.on = snd.fresh >= 2 && snd.vol && now - snd.last_t < hz / 4;
-    if (now - snd.last_t >= hz / 4) snd.active = 0;
+    if (now - snd.last_t >= hz / 4) { snd.active = 0; snd_apply(); snd_quiet(snd.hold); return; }
     snd_apply();
 }
 
@@ -1425,9 +1441,9 @@ void psmac_se_report(void)
     }
     if (!snd_off && (snd.starts || snd_dropped))
         kprintf("[PSMAC:SE]   sound: %u starts, %u samples played, %u halves written (%u late, %u held for the next VBL), %u underruns, %u dropped | speaker %s, volume %d, ASC mode %u | "
-                "VBL %u edges (%u cleared here), frame %u us, a half written in %u us at most\n",
+                "VBL %u edges (%u cleared here), frame %u us, a half written in %u us at most | buffer silenced %u times\n",
                 snd.starts, snd.played, snd.halves, snd.late, snd.held, snd.underruns, snd_dropped, snd.on ? "on" : "off", snd.vol, asc_regs[0x801],
-                snd.edges, snd.own_clears, (uint32_t)(snd.period * 1000000u / asc_hz()), snd.half_us_max);
+                snd.edges, snd.own_clears, (uint32_t)(snd.period * 1000000u / asc_hz()), snd.half_us_max, snd.quiets);
 }
 
 /* The IIci ROM's startup chime is the ASC's wavetable for 30000 steps of 14 VIA reads; the project's
