@@ -86,6 +86,8 @@ static uint32_t b_rd(void *c, uint32_t a, int size) { (void)c; return psmac_wire
 static void b_wr(void *c, uint32_t a, int size, uint32_t v) { (void)c; psmac_wire_write(a, size, v, 0); }
 static uint64_t b_ticks(void *c) { (void)c; return cnt(); }
 static uint32_t b_faults(void *c) { (void)c; return psmac_gpio_timeouts(); }
+void psmac_gpio_scc_unspaced(int on);
+static void b_unspaced(void *c, int on) { (void)c; psmac_gpio_scc_unspaced(on); }
 
 /* ---- the compact Mac's screen: 512 x 342, one bit a pixel, 1 is black ---- */
 static uint8_t page[342 * 64];
@@ -140,7 +142,7 @@ int psmac_buscheck_run(void (*report)(const char *line, void *arg), void *arg)
         if (psmac_gpio_cpld(&id, &uc)) bc_fmt(cpld, sizeof cpld, "%08X %s", uc, psmac_cpld_name(uc));
         else bc_fmt(cpld, sizeof cpld, "usercode not read (mac.jtag=off)");
     } else bc_fmt(cpld, sizeof cpld, "none (the testbed's bridge)");
-    struct bc_bus bus = { 0, b_rd, b_wr, b_ticks, frq(), psmac_bus_uses_gpio() ? b_faults : 0, 0 };
+    struct bc_bus bus = { 0, b_rd, b_wr, b_ticks, frq(), psmac_bus_uses_gpio() ? b_faults : 0, 0, psmac_bus_uses_gpio() ? b_unspaced : 0 };
     uint32_t ram = psmac_se_ram_bytes();
     struct bc_config cfg = { ram, board_name(), psmac_se_ram_from_option() ? "mac.seram" : psmac_board_orig ? "the board" : "assumed: mac.seram=",
                              link, version, psmac_board_plus, ++bc_runs, 0x1d872b41u + bc_runs,
@@ -164,6 +166,12 @@ int psmac_buscheck_run(void (*report)(const char *line, void *arg), void *arg)
         if (k) { l[k] = 0; kprintf("[BUSCHECK] %s\n", l); }
     }
     uint32_t len = 0; while (text[len]) len++;
+    {   /* the card's writer keeps a small file in its first cluster: on a card with clusters under 4 KB (a small
+           FAT16 one) the details are cut at a line's end */
+        extern uint32_t psmac_card_cluster_bytes(void);
+        uint32_t cl = psmac_card_cluster_bytes();
+        if (cl && len > cl) { len = cl; while (len && text[len - 1] != '\n') len--; }
+    }
     int st = psmac_card_files_state() == 1 ? -2 : psmac_card_put_file("buscheck.txt", text, len);
     kprintf("[BUSCHECK] verdict: %s | %s\n", bc_headline(&cfg, &res), st == 0 ? "buscheck.txt queued for the card" : st == -1 ? "no writable card: buscheck.txt not saved" : "buscheck.txt not saved this run (the card is busy)");
     return res.verdict;

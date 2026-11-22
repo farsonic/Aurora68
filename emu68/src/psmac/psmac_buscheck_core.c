@@ -336,8 +336,8 @@ static void addr_test(struct st *s)
     for (int n = 1; n <= 23 && (1u << n) < R; n++) top = n;
     A->top = top;
     /* votes per line: [n][v][w] a stuck line; explained[n]: named by a join or a follow */
-    uint16_t stuck[24][2][3]; uint8_t explained[24], confused[24], tested[24];
-    for (int n = 0; n < 24; n++) { explained[n] = confused[n] = tested[n] = 0; for (int v = 0; v < 2; v++) for (int w = 0; w < 3; w++) stuck[n][v][w] = 0; }
+    uint16_t stuck[24][2][3]; uint8_t explained[24], confused[24], tested[24]; uint32_t and1[24], or0[24]; uint16_t excl[24][2];
+    for (int n = 0; n < 24; n++) { explained[n] = confused[n] = tested[n] = 0; and1[n] = 0xffffffffu; or0[n] = 0; excl[n][0] = excl[n][1] = 0; for (int v = 0; v < 2; v++) for (int w = 0; w < 3; w++) stuck[n][v][w] = 0; }
     for (int n = 1; n <= top; n++) {
         for (int m = n + 1; m <= top; m++) {
             uint32_t base;
@@ -373,6 +373,10 @@ static void addr_test(struct st *s)
                 if (match[M_M0][w]) stuck[m][0][w]++;
                 if (match[M_M1][w]) stuck[m][1][w]++;
             }
+            /* the bases behind each "stuck at v, reads and writes" vote: a line that follows another reads as
+               that line's value in each base, so it seems stuck at 0 in some pairs and at 1 in others */
+            if (!match[M_NFM][1] && match[M_N0][1] != match[M_N1][1]) { if (match[M_N0][1]) { or0[n] |= base; excl[n][0]++; } else { and1[n] &= base; excl[n][1]++; } }
+            if (!match[M_MFN][1] && match[M_M0][1] != match[M_M1][1]) { if (match[M_M0][1]) { or0[m] |= base; excl[m][0]++; } else { and1[m] &= base; excl[m][1]++; } }
         }
         idle(s);
     }
@@ -382,7 +386,17 @@ static void addr_test(struct st *s)
         if (explained[n]) continue;
         int bv = -1, bw = 0; uint32_t best = 0;
         for (int v = 0; v < 2; v++) for (int w = 0; w < 3; w++) if (stuck[n][v][w] > best) { best = stuck[n][v][w]; bv = v; bw = w; }
-        if (bv >= 0) {
+        if (bv >= 0 && excl[n][0] && excl[n][1]) {
+            /* "stuck" at both levels: not stuck, following a line that was 1 in every base of the 1 votes
+               and 0 in every base of the 0 votes; a neighbour first (a bridge joins neighbouring pins) */
+            uint32_t cand = and1[n] & ~or0[n] & ~(1u << n) & (((1u << (top + 1)) - 1u) & ~1u);
+            int fm = 0;
+            if (n < top && (cand >> (n + 1) & 1)) fm = n + 1;
+            else if (n > 1 && (cand >> (n - 1) & 1)) fm = n - 1;
+            else if (cand && !(cand & (cand - 1))) fm = __builtin_ctz(cand);
+            add_find(A, BC_A_FOLLOWS, n, fm, 0, 1);
+            others++;
+        } else if (bv >= 0) {
             add_find(A, BC_A_STUCK, n, 0, bv, bw);
             if (bv == 0 && bw == 1) { if (!first_stuck) first_stuck = n; n_stuck0b++; } else others++;
         } else if (confused[n] >= 2 && confused[n] * 2 >= tested[n]) { add_find(A, BC_A_CONFUSED, n, 0, 0, 0); others++; }   /* a line wrong in half its pairs or more; a pair or two that no model fits is a third line's doing or a stray read */
@@ -419,6 +433,7 @@ static void scc_wait(struct st *s, uint32_t ns)
     uint64_t t = scc_last + s->bus->hz * ns / 1000000000u;
     while (now(s) < t) ;
 }
+static void unspaced(struct st *s, int on) { if (s->bus->scc_unspaced) s->bus->scc_unspaced(s->bus->ctx, on); }
 static uint8_t scc_rd(struct st *s, uint32_t a, uint32_t gap_ns) { scc_wait(s, gap_ns); uint8_t v = (uint8_t)rd(s, a, 1); scc_last = now(s); return v; }
 static void scc_wr(struct st *s, uint32_t a, uint8_t v, uint32_t gap_ns) { scc_wait(s, gap_ns); wr(s, a, 1, v); scc_last = now(s); }
 
@@ -490,7 +505,9 @@ static void chips_test(struct st *s)
     for (int k = 0; k < 2; k++) {
         uint32_t gap = k ? 0 : SCC_GAP_NS; uint8_t l2 = 0;
         C->rr2[k].want = 0xa5;
+        if (k) unspaced(s, 1);
         for (int i = 0; i < 256; i++) { scc_wr(s, SCC_WB + 2, 2, gap); reg_see(&C->rr2[k], scc_rd(s, SCC_RB + 2, gap), &l2, i == 0); }
+        if (k) { unspaced(s, 0); scc_wait(s, SCC_GAP_NS); }
     }
     scc_wr(s, SCC_WB + 2, 2, SCC_GAP_NS); scc_wr(s, SCC_WB + 2, 0, SCC_GAP_NS);
     idle(s);
@@ -499,6 +516,7 @@ static void chips_test(struct st *s)
        recovery time (H2 in docs/18). The mouse should be still. */
     static const uint32_t gaps[BC_SGAPS] = { 0, 500, 1000, 2000, 3000, 5000 };
     C->sp_pairs = N;
+    unspaced(s, 1);
     for (int g = 0; g < BC_SGAPS; g++) {
         C->sp_ns[g] = gaps[g];
         for (int o = 0; o < 2; o++) {
@@ -513,6 +531,8 @@ static void chips_test(struct st *s)
         }
         idle(s);
     }
+    scc_wait(s, SCC_GAP_NS);
+    unspaced(s, 0);
 }
 
 /* ---- the board's ROM (docs/18 M6) -------------------------------------------------------------------- */
@@ -587,6 +607,9 @@ static void video_test(struct st *s)
     uint64_t d1 = tb - ta, d2 = tc - tb, blank = d1 < d2 ? d1 : d2, frame = d1 + d2;
     V->ok = 1; V->blank_edge = d1 < d2;
     V->frame_us = ticks_us(s->r, frame); V->blank_us = ticks_us(s->r, blank);
+    /* a compact Mac's frame is 16.6 ms and its blank 1.3: edges far from that are the VIA's reads going wrong (CA1's flag read
+       as set when it is not), and blank against display would mean nothing */
+    if (V->frame_us < 5000u || V->frame_us > 100000u || V->blank_us * 4u > V->frame_us) { V->ok = 2; wr(s, VIA(12), 1, V_PCR); return; }
     uint32_t rt = median(&s->r->t[BC_RAM_RW]); if (!rt) rt = 1;
     uint64_t k = blank * 6 / 10 / rt;                     /* reads that fit in 60% of the blank */
     V->burst = k < 8 ? 8 : k > 256 ? 256 : (uint32_t)k;
@@ -698,7 +721,7 @@ static void analyse(struct bc_results *r)
     struct bc_retry *T = &r->retry;
     T->verdict = !T->one_wrong ? BC_CLEAN : (T->three_wrong * 10u <= T->one_wrong || T->two_wrong * 10u <= T->one_wrong) ? BC_INFO : BC_FAIL;
     struct bc_video *V = &r->video;
-    V->verdict = !V->ok ? BC_SKIP : (V->blank_wrong + V->disp_wrong) ? BC_INFO : BC_CLEAN;
+    V->verdict = V->ok != 1 ? BC_SKIP : (V->blank_wrong + V->disp_wrong) ? BC_INFO : BC_CLEAN;
     struct bc_space *S = &r->space;
     S->verdict = (S->wrong[0] + S->wrong[1] + S->wrong[2]) ? BC_INFO : BC_CLEAN;
     r->verdict = worst(worst(d->verdict, A->verdict), worst(C->via_verdict, C->scc_verdict));
@@ -817,10 +840,11 @@ static void det_add(struct txt *t, const char *s)
     t->det[t->len < t->cap ? t->len : t->cap - 1] = 0;
 }
 /* a screen line (also the first part of the detail text) */
+int bc_clipped; char bc_clipped_text[160];                                     /* screen lines cut at the right margin (the host test wants none) */
 static void line(struct txt *t, const char *fmt, ...)
 {
     char b[160]; va_list ap; va_start(ap, fmt); vfmt(b, sizeof b, fmt, ap); va_end(ap);
-    if (t->n < BC_ROWS) { int i = 0; for (; i < BC_COLS && b[i]; i++) t->lines[t->n][i] = b[i]; t->lines[t->n][i] = 0; t->n++; }
+    if (t->n < BC_ROWS) { int i = 0; for (; i < BC_COLS && b[i]; i++) t->lines[t->n][i] = b[i]; t->lines[t->n][i] = 0; t->n++; if (b[i]) { bc_clipped++; bc_fmt(bc_clipped_text, sizeof bc_clipped_text, "%s", b); } }
     det_add(t, b);
 }
 /* a detail line only (the log and the card) */
@@ -837,9 +861,10 @@ static const char *vname(int v)
 /* a test's line: the text, then the verdict at the right margin */
 static void tline(struct txt *t, int v, const char *fmt, ...)
 {
-    char b[BC_COLS + 1]; va_list ap; va_start(ap, fmt); vfmt(b, sizeof b, fmt, ap); va_end(ap);
+    char b[160]; va_list ap; va_start(ap, fmt); vfmt(b, sizeof b, fmt, ap); va_end(ap);
     char o[BC_COLS + 1]; int i = 0;
     for (; b[i] && i < BC_COLS - 7; i++) o[i] = b[i];
+    if (b[i]) { bc_clipped++; bc_fmt(bc_clipped_text, sizeof bc_clipped_text, "%s", b); }
     for (; i < BC_COLS - 6; i++) o[i] = ' ';
     const char *n = vname(v); int k = 0;
     for (; n[k] && i < BC_COLS; k++) o[i++] = n[k];
@@ -855,6 +880,7 @@ static void cell3(char *o, uint32_t v)
     else if (v < 1000000) bc_fmt(o, 4, ".%uM", v / 100000);
     else bc_fmt(o, 4, "%2uM", v / 1000000 > 99 ? 99 : v / 1000000);
 }
+static void kn(char *o, uint32_t v) { if (v < 10000) bc_fmt(o, 8, "%u", v); else bc_fmt(o, 8, "%uk", v / 1000); }   /* a count in five characters at most */
 static void us1(char *o, uint32_t ns)            /* microseconds in four characters at most: "1.2", "44.4", "6427", "15ms" */
 {
     if (ns < 100000u) bc_fmt(o, 12, "%u.%u", ns / 1000, ns % 1000 / 100);
@@ -897,6 +923,16 @@ static void summary(const struct bc_config *cfg, const struct bc_results *r, cha
             else if (bit_follows(d, b, c)) { SAY("D%d follows D%d: a short (socket pins %d, %d). ", b, c, dpin(b), dpin(c)); lines_named++; named |= 1u << b; }
         }
     said |= lines_named;
+    /* with a data line named, the words read wrong because of it explain the retries, the spacing, the blank,
+       the word writes and the chips' upper byte as well: those are said only if errors remain on other lines */
+    int explained = 0;
+    if (lines_named) {
+        uint32_t rest = 0, all = 0;
+        for (int b = 0; b < 16; b++) { all += bit_err(d, b); if (!(named >> b & 1)) rest += bit_err(d, b); }
+        uint32_t vrest = 0; for (int b = 0; b < 8; b++) if (!(named >> (b + 8) & 1)) vrest += C->via_bit_wrong[b];
+        explained = rest * 100u <= all && !vrest;
+        if (explained) SAY("Everything else that read wrong follows from %s. ", lines_named > 1 ? "those lines" : "that line");
+    }
     /* address lines */
     for (int i = 0; i < A->nfind; i++) {
         const struct bc_afind *f = &A->find[i];
@@ -907,9 +943,11 @@ static void summary(const struct bc_config *cfg, const struct bc_results *r, cha
         } else if (f->kind == BC_A_JOINED)
             SAY("A%u and A%u are joined (a %u wins) when %s: look for a bridge between socket pins %d and %d. ", f->n, f->m, f->v, modename(f->mode), apin(f->n), apin(f->m));
         else if (f->kind == BC_A_FOLLOWS)
-            SAY("A%u follows A%u when %s: a short between them or at the latch (socket pins %d, %d). ", f->n, f->m, modename(f->mode), apin(f->n), apin(f->m));
+            { if (f->m) SAY("A%u follows A%u when %s: a short between them or at the latch (socket pins %d, %d). ", f->n, f->m, modename(f->mode), apin(f->n), apin(f->m));
+              else SAY("A%u follows another line when %s (it reads as 0 at some addresses and 1 at others): a short to a neighbour (socket pin %d). ", f->n, modename(f->mode), apin(f->n)); }
         else if (f->kind == BC_A_STUCK)
-            SAY("A%u is stuck at %u when %s%s (socket pin %d). ", f->n, f->v, modename(f->mode), f->mode == 1 ? ", or follows another line" : "", apin(f->n));
+            { if (f->mode == 1) SAY("A%u does not reach the RAM as both 0 and 1, reading and writing: stuck, not connected, or following another line (from the Pi's side the three look the same; docs/08 item 68) (socket pin %d). ", f->n, apin(f->n));
+              else SAY("A%u is stuck at %u when %s (socket pin %d). ", f->n, f->v, modename(f->mode), apin(f->n)); }
         else
             SAY("A%u gives results no single fault explains. ", f->n);
         said = 1;
@@ -947,14 +985,14 @@ static void summary(const struct bc_config *cfg, const struct bc_results *r, cha
             }
         }
         said = 1;
-    } else if (d->verdict == BC_FAIL && d->wrong) {
+    } else if (d->verdict == BC_FAIL && d->wrong && !explained) {
         SAY("Other reads fail as well (%u wrong words in %u). ", d->wrong, d->words);
     }
     if (A->verdict == BC_UNSURE) { SAY("The address lines could not be judged: %u of %u pairs had no clear answer. ", A->undecided, A->pairs); said = 1; }
     if (d->bw_wrong && d->bw) { SAY("%u of %u byte writes did not land as written. ", d->bw_wrong, d->bw); said = 1; }
     /* retries, spacing, video: only when there is something to cure */
     const struct bc_retry *T = &r->retry;
-    if (T->one_wrong >= 3) {
+    if (T->one_wrong >= 3 && !explained) {
         uint32_t p1 = ppm(T->one_wrong, T->values), p2 = ppm(T->two_wrong, T->values), p3 = ppm(T->three_wrong, T->values), best = p2 < p3 ? p2 : p3;
         char q1[12], q2[12], q3[12];
         rate(q1, T->one_wrong, T->values); rate(q2, T->two_wrong, T->values); rate(q3, T->three_wrong, T->values);
@@ -964,7 +1002,7 @@ static void summary(const struct bc_config *cfg, const struct bc_results *r, cha
         said = 1;
     }
     const struct bc_space *S = &r->space;
-    if (S->wrong[0] >= 10) {
+    if (S->wrong[0] >= 10 && !explained) {
         uint32_t p0 = ppm(S->wrong[0], S->reads[0]), pg = ppm(S->wrong[BC_GAPS - 1], S->reads[BC_GAPS - 1]);
         char q0[12], qg[12];
         rate(q0, S->wrong[0], S->reads[0]); rate(qg, S->wrong[BC_GAPS - 1], S->reads[BC_GAPS - 1]);
@@ -972,7 +1010,7 @@ static void summary(const struct bc_config *cfg, const struct bc_results *r, cha
         else SAY("Spacing reads %u us apart does not help (%s against %s back to back). ", S->gap_us[BC_GAPS - 1], qg, q0);
     }
     const struct bc_video *V = &r->video;
-    if (V->ok && V->disp_wrong + V->blank_wrong >= 20) {
+    if (V->ok == 1 && V->disp_wrong + V->blank_wrong >= 20 && !explained) {
         uint32_t pd = ppm(V->disp_wrong, V->disp_reads), pb = ppm(V->blank_wrong, V->blank_reads);
         char qd[12], qb[12];
         rate(qd, V->disp_wrong, V->disp_reads); rate(qb, V->blank_wrong, V->blank_reads);
@@ -980,11 +1018,11 @@ static void summary(const struct bc_config *cfg, const struct bc_results *r, cha
         else SAY("The blank does not help (%s in it, %s while the video runs): not the video's memory cycles. ", qb, qd);
     }
     /* what the wrong words were: the video's or the sound's fetch */
-    if (d->wrong >= 20) {
+    if (d->wrong >= 20 && !explained) {
         if (d->eq_screen * 100u >= d->wrong * EARLY_PCT) SAY("%u%% of the wrong words were the screen's mark: the video's fetch was still on the RAM's bus. ", d->eq_screen * 100u / d->wrong);
         if (d->eq_sound * 100u >= d->wrong * EARLY_PCT) SAY("%u%% of the wrong words were the sound buffer's mark: the sound fetch's data. ", d->eq_sound * 100u / d->wrong);
     }
-    if (d->ww_wrong && d->ww) { SAY("%u of %u word writes read back wrong even by the commonest of fifteen reads: the memory holds them wrong (a write fault). ", d->ww_wrong, d->ww); said = 1; }
+    if (d->ww_wrong && d->ww && !explained) { SAY("%u of %u word writes read back wrong even by the commonest of fifteen reads: the memory holds them wrong (a write fault). ", d->ww_wrong, d->ww); said = 1; }
     /* the ROM against the RAM: no interleave there */
     const struct bc_rom *M = &r->rom;
     if (M->verdict != BC_SKIP && d->verdict == BC_FAIL && !lines_named) {
@@ -1004,7 +1042,7 @@ static void summary(const struct bc_config *cfg, const struct bc_results *r, cha
         if (C->rr2[1].wrong && !C->rr2[0].wrong) { SAY("RR2 reads back wrong back to back (%u of %u) and right 3 us apart. ", C->rr2[1].wrong, C->rr2[1].reads); said = 1; }
     }
     /* the chips */
-    if (C->via_verdict == BC_FAIL || C->scc_verdict == BC_FAIL) {
+    if ((C->via_verdict == BC_FAIL || C->scc_verdict == BC_FAIL) && !explained) {
         if (d->verdict == BC_CLEAN) SAY("RAM reads are clean but the chips' are not:");
         else SAY("The chips' reads are wrong too:");
         if (C->via_verdict == BC_FAIL) { uint32_t w = 0, n2 = 0; for (int k = 0; k < 7; k++) { w += C->via[k].wrong; n2 += C->via[k].reads; } SAY(" the VIA's registers %u of %u%s", w, n2, C->scc_verdict == BC_FAIL ? ";" : ""); }
@@ -1013,7 +1051,7 @@ static void summary(const struct bc_config *cfg, const struct bc_results *r, cha
         said = 1;
     }
     if (r->timeouts) { SAY("%u bus cycles timed out (the CPLD never finished them). ", r->timeouts); said = 1; }
-    if (reads_bad && !A->nfind) SAY("This screen was written by the Pi: if it reads cleanly, writes work and only reads fail. ");
+    if (reads_bad && !A->nfind && !lines_named) SAY("This screen was written by the Pi: if it reads cleanly, writes work and only reads fail. ");
     if (!said) {
         if (r->verdict == BC_CLEAN) SAY("All clean: %u reads of RAM, the VIA and the SCC, no errors. The bus is good. ", reads + C->pb_reads + C->pa_reads + C->rr0[0].reads + C->rr0[1].reads);
         else SAY("A few stray errors (%u in %u reads): within what a noisy bus gives; mac.buscheck=loop runs it again and again. ", d->wrong + d->bhi_wrong + d->blo_wrong, reads);
@@ -1050,18 +1088,22 @@ int bc_report(const struct bc_config *cfg, const struct bc_results *r, char line
     line(&t, "%u.%u s, %u bus cycles, %u timeouts", ticks_us(r, r->ticks) / 1000000u, ticks_us(r, r->ticks) / 100000u % 10u, r->cycles, r->timeouts);
     line(&t, "----------------------------------------------------------------");
     tline(&t, d->verdict, "1 RAM DATA  %ux%u addr: %u/%u word reads wrong", d->patterns, d->addrs, d->wrong, d->words);
-    line(&t, "  bytes: hi %u/%u lo %u/%u wrong; byte writes %u/%u", d->bhi_wrong, d->bhi, d->blo_wrong, d->blo, d->bw_wrong, d->bw);
+    line(&t, "  bytes hi %u/%u lo %u/%u, writes b %u/%u w %u/%u", d->bhi_wrong, d->bhi, d->blo_wrong, d->blo, d->bw_wrong, d->bw, d->ww_wrong, d->ww);
     line(&t, "  2nd read of a wrong word: same %u, right %u, other %u", d->repeat, d->transient, d->other);
-    line(&t, "  wrong=addr %u =hireg %u =prev %u =FFFF %u =0000 %u =scr %u =snd %u", d->eq_addr, d->eq_hireg, d->eq_prev, d->eq_ffff, d->eq_0000, d->eq_screen, d->eq_sound);
-    line(&t, "  1 word x%u: %u%s values, %u right%s; word writes %u/%u wrong", d->one_reads, d->one_distinct > 15 ? 16 : d->one_distinct, d->one_distinct > 15 ? "+" : "",
-         d->one_right, d->one_commonest_right ? "" : " (not the commonest)", d->ww_wrong, d->ww);
+    {
+        char k1[8], k2[8], k3[8], k4[8], k5[8], k6[8], k7[8];
+        kn(k1, d->eq_addr); kn(k2, d->eq_hireg); kn(k3, d->eq_prev); kn(k4, d->eq_ffff); kn(k5, d->eq_0000); kn(k6, d->eq_screen); kn(k7, d->eq_sound);
+        line(&t, "  wrong were: adr %s hi %s prev %s FFFF %s 0 %s scr %s snd %s", k1, k2, k3, k4, k5, k6, k7);
+    }
+    line(&t, "  one word read %ux: %u%s values, %u right%s", d->one_reads, d->one_distinct > 15 ? 16 : d->one_distinct, d->one_distinct > 15 ? "+" : "",
+         d->one_right, d->one_commonest_right ? "" : ", not the commonest");
     {
         char f[64]; uint32_t k = 0; f[0] = 0;
         for (int i = 0; i < A->nfind && k < 40; i++) {
             const struct bc_afind *x = &A->find[i];
             if (x->kind == BC_A_SIZE) k += (uint32_t)bc_fmt(f + k, sizeof f - k, "repeats at A%u ", x->n);
             else if (x->kind == BC_A_JOINED) k += (uint32_t)bc_fmt(f + k, sizeof f - k, "A%u&A%u ", x->n, x->m);
-            else if (x->kind == BC_A_FOLLOWS) k += (uint32_t)bc_fmt(f + k, sizeof f - k, "A%u=A%u ", x->n, x->m);
+            else if (x->kind == BC_A_FOLLOWS) k += (uint32_t)(x->m ? bc_fmt(f + k, sizeof f - k, "A%u=A%u ", x->n, x->m) : bc_fmt(f + k, sizeof f - k, "A%u=A? ", x->n));
             else if (x->kind == BC_A_STUCK) k += (uint32_t)bc_fmt(f + k, sizeof f - k, "A%u=%u ", x->n, x->v);
             else k += (uint32_t)bc_fmt(f + k, sizeof f - k, "A%u? ", x->n);
         }
@@ -1072,9 +1114,9 @@ int bc_report(const struct bc_config *cfg, const struct bc_results *r, char line
           C->via[4].wrong, C->via[5].wrong, C->via[6].wrong);
     {
         char ph[24];
-        if (C->phase_reads) bc_fmt(ph, sizeof ph, "phase D0 %u (%u/%u)", C->phase_d0 * 2 >= C->phase_reads, C->phase_d0, C->phase_reads);
-        else bc_fmt(ph, sizeof ph, "no phase rd");
-        line(&t, "  out wrong PB %u PA %u /%u, IFR pairs %u/%u, %s", C->pb_out_wrong, C->pa_out_wrong, C->pb_reads, C->ifr_differ, C->ifr_pairs, ph);
+        if (C->phase_reads) bc_fmt(ph, sizeof ph, "D0 %u (%u/%u)", C->phase_d0 * 2 >= C->phase_reads, C->phase_d0, C->phase_reads);
+        else bc_fmt(ph, sizeof ph, "no phase");
+        line(&t, "  outs bad PB %u PA %u /%u  IFR 2x %u/%u  %s", C->pb_out_wrong, C->pa_out_wrong, C->pb_reads, C->ifr_differ, C->ifr_pairs, ph);
     }
     tline(&t, C->in_verdict, "  inputs: PB3 %u PB4 %u PB5 %u PB6 %u%s PA7 %u changes", C->pb_changes[3], C->pb_changes[4], C->pb_changes[5], C->pb_changes[6], cfg->plus ? "(H4)" : "", C->pa_changes[7]);
     tline(&t, C->scc_verdict, "  SCC RR0 values B %u A %u, jumps %u %u, pins %u %u", C->rr0[0].nval, C->rr0[1].nval, C->rr0_stable_changes[0], C->rr0_stable_changes[1],
@@ -1088,7 +1130,7 @@ int bc_report(const struct bc_config *cfg, const struct bc_results *r, char line
     {
         const struct bc_rom *M = &r->rom;
         if (M->verdict == BC_SKIP) tline(&t, BC_SKIP, "  ROM none");
-        else tline(&t, M->verdict, "  ROM %u reads %u odd; sum %08X %s %u KB", M->reads, M->disagree, M->sum, M->sum_ok ? "= checksum," : "<> checksum,", M->sum_kb);
+        else tline(&t, M->verdict, "  ROM %u reads %u odd, %u KB sum %s", M->reads, M->disagree, M->sum_kb, M->sum_ok ? "= checksum" : "<> checksum");
     }
     line(&t, "4 TIMING us   min  med  max     n |         min  med  max");
     {
@@ -1111,8 +1153,9 @@ int bc_report(const struct bc_config *cfg, const struct bc_results *r, char line
     {
         const struct bc_video *V = &r->video;
         char q1[12], q2[12];
-        if (V->ok) tline(&t, V->verdict, "6 VIDEO wrong: blank %s display %s of %u, %u.%u ms", rate(q1, V->blank_wrong, V->blank_reads), rate(q2, V->disp_wrong, V->disp_reads),
+        if (V->ok == 1) tline(&t, V->verdict, "6 VIDEO wrong: blank %s display %s of %u, %u.%u ms", rate(q1, V->blank_wrong, V->blank_reads), rate(q2, V->disp_wrong, V->disp_reads),
                          V->disp_reads, V->frame_us / 1000, V->frame_us / 100 % 10);
+        else if (V->ok == 2) tline(&t, BC_SKIP, "6 VIDEO CA1 edges implausible (frame %u us, blank %u)", V->frame_us, V->blank_us);
         else tline(&t, BC_SKIP, "6 VIDEO no vertical blanking seen on VIA CA1");
     }
     {
@@ -1196,9 +1239,9 @@ int bc_report(const struct bc_config *cfg, const struct bc_results *r, char line
         det(&t, "retry: %u values; one read %u wrong; pairs %u wrong (%u reads, %u never agreed); three %u wrong (%u no majority)",
             T->values, T->one_wrong, T->two_wrong, T->two_reads, T->two_unresolved, T->three_wrong, T->three_nomajority);
         const struct bc_video *V = &r->video;
-        if (V->ok) det(&t, "video: frame %u us, blank %u us (from CA1's %s edge), %u frames, bursts of %u reads, %u overran",
+        if (V->ok == 1) det(&t, "video: frame %u us, blank %u us (from CA1's %s edge), %u frames, bursts of %u reads, %u overran",
                        V->frame_us, V->blank_us, V->blank_edge ? "rising" : "falling", V->frames, V->burst, V->overran);
-        if (V->ok) {
+        if (V->ok == 1) {
             char vb[200]; uint32_t qv = (uint32_t)bc_fmt(vb, sizeof vb, "frame by eighths from the blank, wrong/reads:");
             for (int k = 0; k < 8; k++) qv += (uint32_t)bc_fmt(vb + qv, sizeof vb - qv, " %u/%u", V->bin_wrong[k], V->bin_reads[k]);
             det(&t, "%s", vb);

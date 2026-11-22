@@ -26,6 +26,7 @@ struct board {
     /* faults */
     int stuck_bit, stuck_val;                       /* a data line on reads, -1 none */
     int alias_n, alias_m;                           /* reads: An follows Am (m 0: An stuck at 0) */
+    int alias_rw;                                   /* ... on writes as well (the user's A14-A15 bridge, docs/08 item 68) */
     uint32_t rand_pm;                               /* reads corrupted per mille */
     int rand_rom;                                   /* ... the ROM's too (a sampling point too early for everything) */
     int rand_display_only;                          /* only while the video reads the RAM */
@@ -94,6 +95,7 @@ static void wr(void *ctx, uint32_t a, int size, uint32_t v)
     struct board *b = ctx;
     tick(b, 16);
     if (a < 0x400000u) {
+        if (b->alias_rw && b->alias_n) { uint32_t bit = b->alias_m ? (a >> b->alias_m & 1) : 0; a = (a & ~(1u << b->alias_n)) | bit << b->alias_n; }
         a %= b->real;
         if (size == 1) b->ram[a] = (uint8_t)v;
         else { b->ram[a & ~1u] = (uint8_t)(v >> 8); b->ram[a | 1u] = (uint8_t)v; }
@@ -127,15 +129,18 @@ static struct board *mk(uint32_t size)
 static int fails;
 static void run(const char *name, struct board *b, int plus, const char *expect1, const char *expect2, const char *never)
 {
-    struct bc_bus bus = { b, rd, wr, ticks, 16000000u, NULL, NULL };
+    struct bc_bus bus = { b, rd, wr, ticks, 16000000u, NULL, NULL, NULL };
     struct bc_config cfg = { b->size, "Macintosh 512Ke", "the board", "host simulation", "test", plus, 1, 0x1234, 128, b->size - 0x5900, b->size - 0x300, plus, 2000, "usercode 00185866 (test)" };
     static struct bc_results r;
     static char lines[BC_ROWS][BC_COLS + 1]; static char det[4096];
     bc_run(&bus, &cfg, &r);
+    extern int bc_clipped; bc_clipped = 0;
     int n = bc_report(&cfg, &r, lines, det, sizeof det);
+    extern char bc_clipped_text[];
     const char *sum = bc_summary(&cfg, &r);
     int ok = strstr(sum, expect1) != NULL && (!expect2 || strstr(sum, expect2) != NULL) && (!never || !strstr(sum, never));
     for (int i = 0; i < n; i++) if (strlen(lines[i]) > BC_COLS) ok = 0;
+    if (bc_clipped) { ok = 0; printf("  %d screen lines cut at the right margin (%s)\n", bc_clipped, bc_clipped_text); }   /* every number must be readable on the photograph */
     printf("%-28s %s  %s\n", name, ok ? "ok  " : "FAIL", bc_headline(&cfg, &r));
     if (!ok || getenv("BC_SHOW")) { for (int i = 0; i < n; i++) printf("  |%s\n", lines[i]); if (!ok) printf("  (wanted \"%s\"%s%s%s%s; got: %s)\n", expect1, expect2 ? " and " : "", expect2 ? expect2 : "", never ? ", never " : "", never ? never : "", sum); }
     fails += !ok;
@@ -151,6 +156,7 @@ int main(void)
     b = mk(512 << 10); b->stuck_bit = 11; b->stuck_val = 0; run("D11 stuck at 0", b, 1, "D11 always reads 0", "pin 58", "timing");
     b = mk(512 << 10); b->stuck_bit = 3; b->stuck_val = 1; run("D3 stuck at 1", b, 1, "D3 always reads 1", NULL, "A1 ");
     b = mk(512 << 10); b->alias_n = 14; b->alias_m = 15; run("A14 follows A15 (reads)", b, 1, "A14 follows A15 when reading", NULL, "Reads of RAM fail");
+    b = mk(4 << 20); b->alias_n = 14; b->alias_m = 15; b->alias_rw = 1; run("A14 follows A15 (both)", b, 0, "A14 does not reach the RAM as both 0 and 1", "following another line", "Reads of RAM fail");
     b = mk(512 << 10); b->alias_n = 9; run("A9 stuck at 0 (reads)", b, 1, "A9 is stuck at 0 when reading", NULL, "Reads of RAM fail");
     b = mk(4 << 20); b->real = 512 << 10; run("512K board taken for 4 MB", b, 0, "repeats every 512 KB", "not the 4096 KB", "Reads of RAM fail");
     b = mk(512 << 10); b->rand_pm = 500; run("random 50%", b, 1, "mostly at random", "timing problem", "stuck");

@@ -373,9 +373,13 @@ static uint32_t read8(uint32_t address)
    through here, on the service core), waits until 3 us have passed since the last one. */
 extern int psmac_board_plus;
 static uint64_t scc_last;
+/* the bus check (psmac_buscheck_core.c, docs/18 M8 and M9) measures what closer spacing does, and turns the
+   wait off for those reads alone */
+static int scc_unspaced;
+void psmac_gpio_scc_unspaced(int on) { scc_unspaced = on; }
 static inline void scc_gap(uint32_t address)
 {
-    if (!psmac_board_plus || address < 0x800000 || address >= 0xc00000) return;
+    if (scc_unspaced || !psmac_board_plus || address < 0x800000 || address >= 0xc00000) return;
     uint64_t frq, now; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(frq));
     uint64_t gap = frq * 3 / 1000000 + 1;
     do { __asm__ volatile("isb; mrs %0, CNTVCT_EL0" : "=r"(now)); } while (now - scc_last < gap);

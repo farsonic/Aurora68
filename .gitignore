@@ -69,6 +69,8 @@ mac/build/cmdline_test
 mac/build/devices_test
 mac/build/codec/
 mac/build/edid_test.log
+mac/build/buscheck_test
+mac/build/buscheck_test.log
 mac/build/edid-sample.bin
 # the Aurora68 Agent's (mac/piagent)
 mac/build/ag/

@@ -1655,6 +1655,7 @@ int psmac_card_put_file(const char *name, const char *text, uint32_t len)
 }
 int psmac_card_files_state(void) { return sf_result; }              /* 0 none, 1 being written, 2 written, 3 failed */
 int psmac_card_writable(void) { return sd.state == 1 && !sd.ro; }
+uint32_t psmac_card_cluster_bytes(void) { return sd.state == 1 ? fs.spc * 512u : 0; }   /* a small file's limit (psmac_buscheck.c), 0 while the card is not mounted */
 /* nothing waits to go onto the card: no small file, no change of a disk image, no sector being
    programmed, no log or pairings (the Pi is about to restart, psmac_hdmi.c) */
 int psmac_card_idle(void)

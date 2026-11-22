@@ -39,6 +39,8 @@ struct bc_bus {
     uint64_t hz;
     uint32_t (*faults)(void *ctx);
     void (*idle)(void *ctx);        /* between tests (may be NULL) */
+    void (*scc_unspaced)(void *ctx, int on);   /* the transport's own wait between SCC accesses off (1) and on again (0), for the
+                                                  spacing tests (the Plus-era boards' 3 us, psmac_gpio.c); may be NULL */
 };
 
 struct bc_config {
