@@ -52,11 +52,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 VERSION = '3'
 METAINT = 16000                 # bytes of audio between song titles, as most Icecast servers send
 BURST = 6.0                     # seconds of audio sent at once when a listener connects
-RESCAN = 30.0                   # seconds a scan of the folder is trusted before it is made again
+RESCAN = float(os.environ.get('MUSIC_RESCAN', 30))   # seconds a scan of the folder is trusted before it is made again
 PLAY_MAX_STATIONS = 88          # Aurora68 Play holds 128 stations and 48 submenus (mac/piplay/stations.h),
 PLAY_MAX_GROUPS = 40            # 40 of the stations its own; the stations file stays within the rest
 MENU_ROWS = 18                  # a menu on the SE's 342 lines: the menu bar and 18 items of 16 lines
 ARTIST_MIN = 6                  # a folder of at least this many "Artist - Album" folders is grouped by artist
+# /file/'s Content-Type: named here, not left to mimetypes, which on a NAS's minimal Linux may know no .m4a or
+# .flac (AVFoundation, the macOS Play's player, decides by it whether it can play and seek a file)
+AUDIO_TYPES = {'.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.aac': 'audio/aac', '.alac': 'audio/mp4', '.flac': 'audio/flac',
+               '.ogg': 'audio/ogg', '.oga': 'audio/ogg', '.opus': 'audio/ogg', '.wav': 'audio/wav', '.aif': 'audio/aiff',
+               '.aiff': 'audio/aiff', '.mp2': 'audio/mpeg'}
 CONVERTED = ('.flac', '.m4a', '.aac', '.alac', '.ogg', '.oga', '.opus', '.wav', '.aif', '.aiff', '.wma', '.ape', '.wv', '.mp2')
 
 
@@ -267,6 +272,8 @@ class Library:
         self.ffprobe = shutil.which('ffprobe') if ffmpeg else None
         self.lock = threading.Lock()
         self.when = 0.0
+        self.generation = 0          # bumped by each scan that finds the library changed: players refresh their lists
+        self.signature = None
         self.dirs = {}               # relative folder ('' for the root) -> (folders in it, songs in it), sorted
         self.ids = {}                # short ID -> a station: a relative folder, or (folder, artist)
         self.artists = {}            # relative folder -> {artist: [its folders inside it]}, for those offered so
@@ -314,6 +321,10 @@ class Library:
                     for a in by:
                         self.ids[short_id(r + '\0' + a)] = (r, a)
             self.when = time.monotonic()
+            sig = hashlib.sha1(repr(sorted(self.dirs.items())).encode('utf-8', 'surrogateescape')).digest()
+            if sig == self.signature:
+                return                                 # nothing changed: nothing to say again every RESCAN seconds
+            self.signature, self.generation = sig, self.generation + 1
             n = sum(len(v[1]) for v in self.dirs.values())
             kinds = {}
             for v in self.dirs.values():
@@ -321,7 +332,8 @@ class Library:
                     e = os.path.splitext(f)[1].lower().lstrip('.').upper()
                     kinds[e] = kinds.get(e, 0) + 1
             what = ', '.join(f'{c} {k}' for k, c in sorted(kinds.items(), key=lambda kv: -kv[1])) or 'no music'
-            log(f'library: {n} songs ({what}) in {len(self.dirs) - 1} folders under {self.root}')
+            log(f'library: {n} songs ({what}) in {len(self.dirs) - 1} folders under {self.root}' +
+                (f' (changed: generation {self.generation})' if self.generation > 1 else ''))
             for e in errors[:5]:                       # what could not be read: permissions, usually
                 log(f'library: cannot read {e.filename}: {e.strerror} (the server runs as user {os.getuid()}:{os.getgid()})')
             if len(errors) > 5:
@@ -1410,6 +1422,236 @@ def music_discovery(port, name, tcp_port):
             s.sendto(answer.encode('mac_roman', 'replace'), peer)
 
 
+# ---- internet radio for every player: the classic Aurora68 Play's own list, and the owner's -------------
+# 22 November 2026. The macOS Aurora68 Play's Live page offered nothing to start (the owner: "Pressing Live
+# shows nothing... should there not be a list of stations"). The classic Play has carried a list of internet
+# radio stations since its Radio menu (mac/piplay/stations.c); the server hands the same list to every
+# player at /api/radio (and /mac/radio), so the stations are the same everywhere. RADIO_BUILTIN is that
+# list's stations, in the stations file's own format; test_server.py reads stations.c and checks that
+# the two agree, so a station added there and not here fails the test. The owner's own stations: a
+# stations file in the music folder ("Aurora68 Play Stations" or radio.txt, or MUSIC_RADIO=PATH), the
+# classic Play's own file copied there will do; its stations come after the built-in ones.
+RADIO_BUILTIN = '''\
+[SomaFM]
+Groove Salad = http://ice2.somafm.com/groovesalad-128-mp3
+Drone Zone = http://ice2.somafm.com/dronezone-128-mp3
+Secret Agent = http://ice2.somafm.com/secretagent-128-mp3
+Lush = http://ice2.somafm.com/lush-128-mp3
+Space Station Soma = http://ice2.somafm.com/spacestation-128-mp3
+Indie Pop Rocks! = http://ice2.somafm.com/indiepop-128-mp3
+Beat Blender = http://ice2.somafm.com/beatblender-128-mp3
+Deep Space One = http://ice2.somafm.com/deepspaceone-128-mp3
+DEF CON Radio = http://ice2.somafm.com/defcon-128-mp3
+Left Coast 70s = http://ice2.somafm.com/seventies-128-mp3
+Underground 80s = http://ice2.somafm.com/u80s-128-mp3
+Sonic Universe = http://ice2.somafm.com/sonicuniverse-128-mp3
+[Listener-supported]
+Radio Paradise Main = http://stream.radioparadise.com/mp3-192
+Radio Paradise Mellow = http://stream.radioparadise.com/mellow-192
+Radio Paradise Rock = http://stream.radioparadise.com/rock-192
+Radio Paradise Global = http://stream.radioparadise.com/global-192
+KEXP Seattle = http://kexp-mp3-128.streamguys1.com/kexp128.mp3
+WFMU Freeform = http://stream0.wfmu.org/freeform-128k.mp3
+WWOZ New Orleans = http://wwoz-sc.streamguys1.com/wwoz-hi.mp3
+Radio Swiss Jazz = http://stream.srg-ssr.ch/m/rsj/mp3_128
+Radio Swiss Classic = http://stream.srg-ssr.ch/m/rsc_de/mp3_128
+Radio Swiss Pop = http://stream.srg-ssr.ch/m/rsp/mp3_128
+[By country/Netherlands]
+NPO Radio 2 = http://icecast.omroep.nl/radio2-bb-mp3
+NPO 3FM = http://icecast.omroep.nl/3fm-bb-mp3
+NPO Klassiek = http://icecast.omroep.nl/radio4-bb-mp3
+[By country/Switzerland]
+Radio Swiss Jazz = http://stream.srg-ssr.ch/m/rsj/mp3_128
+Radio Swiss Classic = http://stream.srg-ssr.ch/m/rsc_de/mp3_128
+Radio Swiss Pop = http://stream.srg-ssr.ch/m/rsp/mp3_128
+[By country/Austria]
+Ö1 = http://ors-sn05.ors-shoutcast.at/oe1-q2a
+[By country/United Kingdom]
+Classic FM = http://media-ice.musicradio.com/ClassicFMMP3
+BBC World Service = http://stream.live.vc.bbcmedia.co.uk/bbc_world_service
+[By country/France]
+Radio Nova = http://novazz.ice.infomaniak.ch/novazz-128.mp3
+[By country/Germany]
+90s90s Pop = http://streams.90s90s.de/pop/mp3-128/
+[By country/Greece]
+ERT Kosmos = http://radiostreaming.ert.gr/ert-kosmos
+[By country/New Zealand]
+RNZ Concert = http://radionz-ice.streamguys.com/concert.mp3
+[By country/United States]
+KEXP Seattle = http://kexp-mp3-128.streamguys1.com/kexp128.mp3
+WFMU Freeform = http://stream0.wfmu.org/freeform-128k.mp3
+WWOZ New Orleans = http://wwoz-sc.streamguys1.com/wwoz-hi.mp3
+181.fm The Beatles = http://listen.181fm.com/181-beatles_128k.mp3
+181.fm Classic Hits = http://listen.181fm.com/181-greatoldies_128k.mp3
+'''
+RADIO_FILES = ('Aurora68 Play Stations', 'radio.txt')    # in the music folder: the owner's own stations
+
+
+def parse_stations(text):
+    """the stations of a stations file, as the classic Play reads one (stations.c): [Group] or [Group/Sub]
+    starts a group, [] ends it, "Name = http://..." is a station, # and ; lines are notes"""
+    out, group = [], ''
+    for line in text.replace('\r\n', '\n').replace('\r', '\n').split('\n'):
+        line = line.strip()
+        if not line or line[0] in '#;':
+            continue
+        if line.startswith('[') and line.endswith(']'):
+            group = '/'.join(p.strip() for p in line[1:-1].split('/') if p.strip())
+            continue
+        n, eq, u = line.partition('=')
+        n, u = n.strip(), u.strip()
+        if eq and n and u.lower().startswith(('http://', 'https://')):
+            out.append({'group': group, 'name': n[:63], 'url': u[:255]})
+    return out
+
+
+class Radio:
+    """the stations every player offers: RADIO_BUILTIN, then the owner's file's (read again when it changes)"""
+    def __init__(self, root):
+        self.root = root
+        self.builtin = parse_stations(RADIO_BUILTIN)
+        self.seen, self.extra = None, []
+
+    def path(self):
+        if os.environ.get('MUSIC_RADIO'):
+            return os.environ['MUSIC_RADIO']
+        for f in RADIO_FILES:
+            p = os.path.join(self.root, f)
+            if os.path.isfile(p):
+                return p
+        return None
+
+    def stations(self):
+        p = self.path()
+        try:
+            key = (p, os.stat(p).st_mtime) if p else None
+        except OSError:
+            key = None
+        if key != self.seen:
+            self.seen, self.extra = key, []
+            if key:
+                try:
+                    raw = open(p, 'rb').read(256 * 1024)
+                    try:
+                        text = raw.decode('utf-8')
+                    except UnicodeDecodeError:
+                        text = raw.decode('mac_roman')      # the classic Play's own file
+                    self.extra = [s for s in parse_stations(text) if s not in self.builtin]
+                    log(f'radio: {len(self.extra)} stations of your own from {p}')
+                except OSError as e:
+                    log(f'radio: cannot read {p}: {e.strerror}')
+        return self.builtin + self.extra
+
+
+# ---- players as devices: who is online, what each plays, and commands sent to them ---------------------
+# 22 November 2026. The owner: "Perhaps other devices running Aurora Player need to broadcast they are
+# online for redirection". Every Aurora68 Play (macOS and classic) announces itself here every
+# DEVICE_EVERY seconds; one not heard for DEVICE_TTL seconds is offline. Any controller (the web panel,
+# another player) lists them and sends one a command ("play this album there"); the device fetches its
+# commands by a long poll (it waits here up to 20 seconds for one), so no player has to accept
+# connections: a Mac behind its own firewall, or a classic Mac with MacTCP, works the same. The Live
+# channel is listed as the device "live". The interface is the README's "Devices"; the shared design
+# that the macOS and the classic Play were written against says the same.
+DEVICE_EVERY = 20
+DEVICE_TTL = float(os.environ.get('MUSIC_DEVICE_TTL', 60))   # shorter in test_server.py
+DEVICE_ID = re.compile(r'[A-Za-z0-9_-]{1,64}')
+DEVICE_KINDS = ('macos', 'classic', 'browser')
+DEVICE_ACTIONS = ('play', 'add', 'next', 'pause', 'resume', 'skip', 'previous', 'seek', 'volume', 'stop')
+DEVICE_MAX = 64                 # devices remembered; the longest silent is forgotten first
+DEVICE_QUEUE = 32               # commands waiting for one device; the oldest are dropped
+DEVICE_TRACKS = 2000            # tracks in one command (the whole library shuffled, on a big one, is cut)
+DEVICE_PROBE = 40               # a command of up to this many tracks has their tags and lengths read
+
+
+def clean_text(s, n=200):
+    return ' '.join(str(s if s is not None else '').split())[:n]
+
+
+class Devices:
+    def __init__(self, ttl=None):
+        self.ttl = DEVICE_TTL if ttl is None else ttl
+        self.lock = threading.Condition()
+        self.known = {}              # id -> {'id', 'name', 'kind', 'version', 'seen', 'when', 'state', 'queue', 'n'}
+
+    def online(self, d):
+        return time.monotonic() - d['seen'] < self.ttl
+
+    def announce(self, did, name, kind, version, who=''):
+        """a device says it is there; an error in words, or None"""
+        if not isinstance(did, str) or not DEVICE_ID.fullmatch(did) or did == 'live':
+            return 'id: 1 to 64 letters, digits, - and _ (and not "live")'
+        if kind not in DEVICE_KINDS:
+            return 'kind: ' + ', '.join(DEVICE_KINDS)
+        name = clean_text(name, 64) or did
+        with self.lock:
+            d = self.known.get(did)
+            back = d is None or not self.online(d)
+            if d is None:
+                if len(self.known) >= DEVICE_MAX:
+                    del self.known[min(self.known, key=lambda k: self.known[k]['seen'])]
+                d = self.known[did] = {'id': did, 'state': {}, 'queue': [], 'n': 0}
+            d.update(name=name, kind=kind, version=clean_text(version, 16), seen=time.monotonic(), when=time.time())
+        if back:
+            log(f'devices: {name} ({kind}{", " + who if who else ""}) is online')
+        return None
+
+    def set_state(self, did, st):
+        with self.lock:
+            d = self.known.get(did)
+            if d is None:
+                return 'announce first'
+            out = {'playing': bool(st.get('playing'))}
+            for k in ('title', 'artist', 'album', 'folder'):
+                out[k] = clean_text(st.get(k))
+            for k in ('position', 'length'):
+                try:
+                    out[k] = round(max(0.0, float(st.get(k) or 0)), 1)
+                except (TypeError, ValueError):
+                    out[k] = 0.0
+            try:
+                out['volume'] = max(0, min(100, int(st.get('volume', 100))))
+            except (TypeError, ValueError):
+                out['volume'] = 100
+            out['at'] = int(time.time())
+            d['state'] = out
+            d['seen'], d['when'] = time.monotonic(), time.time()
+        return None
+
+    def listing(self):
+        with self.lock:
+            return [{'id': d['id'], 'name': d['name'], 'kind': d['kind'], 'version': d['version'],
+                     'online': self.online(d), 'last_seen': int(d['when']), 'state': dict(d['state']), 'is_live': False}
+                    for d in sorted(self.known.values(), key=lambda d: d['name'].casefold())]
+
+    def send(self, did, cmd):
+        """queue a command for a device: (its number, None) or (None, an error in words)"""
+        with self.lock:
+            d = self.known.get(did)
+            if d is None:
+                return None, 'no such device'
+            if not self.online(d):
+                return None, f'{d["name"]} is not online'
+            d['n'] += 1
+            d['queue'] = d['queue'][-(DEVICE_QUEUE - 1):] + [dict(cmd, id=d['n'])]
+            self.lock.notify_all()
+            return d['n'], None
+
+    def take(self, did, wait):
+        """the commands waiting for a device, waiting up to `wait` seconds for one; (list, None) or (None, error).
+        Asking counts as being heard from"""
+        end = time.monotonic() + max(0.0, min(float(wait), 20.0))
+        with self.lock:
+            while True:
+                d = self.known.get(did)
+                if d is None:
+                    return None, 'announce first'
+                d['seen'], d['when'] = time.monotonic(), time.time()
+                if d['queue'] or time.monotonic() >= end:
+                    out, d['queue'] = d['queue'], []
+                    return out, None
+                self.lock.wait(end - time.monotonic())
+
+
 # ---- the web server ------------------------------------------------------------------------------
 # The control panel ("/"): the library as cover pictures (artists, albums, songs), the live channel's
 # Now Playing, queue and listeners. Plain HTML and a little JavaScript, no outside files, so it works
@@ -1421,7 +1663,8 @@ PANEL = r'''<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta nam
 @media (prefers-color-scheme:dark){:root{--bg:#161616;--card:#202020;--ink:#eee;--mute:#999;--line:#333;--accent:#6fbf8f}}
 *{box-sizing:border-box}body{margin:0;font:15px/1.45 system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--ink)}
 header{display:flex;gap:1em;align-items:center;padding:.8em 1.2em;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:2}
-header h1{font-size:1.1em;margin:0;flex:1}header input{flex:0 1 18em;padding:.45em .7em;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)}
+header h1{font-size:1.1em;margin:0;flex:1}header select{padding:.4em .5em;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit;max-width:14em}
+.dev{cursor:pointer}.dev.sel .t{color:var(--accent);font-weight:600}.dot{width:.55em;height:.55em;border-radius:50%;background:var(--mute);flex:none}.dot.on{background:#3a3}header input{flex:0 1 18em;padding:.45em .7em;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)}
 main{display:grid;grid-template-columns:minmax(0,1fr) 22em;gap:1.2em;padding:1.2em;max-width:80em;margin:auto}
 @media (max-width:52em){main{grid-template-columns:1fr}aside{order:-1}}
 section,aside>div{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:1em}
@@ -1448,21 +1691,23 @@ button.i{border:0;background:none;padding:.2em .4em;color:var(--mute)}button.i:h
 .small{color:var(--mute);font-size:.85em}code{font-size:.85em;word-break:break-all}
 #msg{position:fixed;bottom:1em;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:.5em 1em;border-radius:8px;opacity:0;transition:opacity .3s}
 </style></head><body>
-<header><h1>&#9835; __NAME__</h1><button id="getbtn" style="display:none" onclick="showGet()">&#10515; Get albums</button>
+<header><h1>&#9835; __NAME__</h1><label class="small" for="target">Play on</label><select id="target" onchange="choose(this.value)"><option value="live">Live</option></select>
+<button onclick="showRadio()" title="Internet radio stations, for a player">&#128251; Radio</button><button id="getbtn" style="display:none" onclick="showGet()">&#10515; Get albums</button>
 <input id="q" type="search" placeholder="Filter artists and albums"></header>
 <main>
 <section><div class="crumbs" id="crumbs"></div><div id="acts" class="acts"></div><div id="view"></div></section>
 <aside>
-<div id="np"><h2>Live: now playing</h2><div class="art" id="npart"></div><div class="t" id="npt">Nothing queued</div>
+<div id="np"><h2 id="nph">Live: now playing</h2><div class="art" id="npart"></div><div class="t" id="npt">Nothing queued</div>
 <div class="s" id="nps">Choose an album, an artist or a song</div><div class="bar"><i id="npbar"></i></div>
 <div class="times"><span id="npe">0:00</span><span id="npl"></span></div>
 <div class="ctl"><button class="i" title="Previous" onclick="act('previous')">&#9198;</button>
-<button class="p" id="pp" title="Play or pause" onclick="act(S.paused?'resume':'pause')">&#9208;</button>
+<button class="p" id="pp" title="Play or pause" onclick="pp()">&#9208;</button>
 <button class="i" title="Next" onclick="act('skip')">&#9197;</button></div>
 <div class="ctl tog"><button id="rep" onclick="act('repeat')" title="Play the queue again when it ends">Repeat</button>
 <button onclick="act('shuffle')" title="Shuffle what is still to come">Shuffle rest</button>
 <button onclick="act('clear')" title="Empty the queue">Clear</button></div></div>
-<div><h2>Queue</h2><div id="queue" class="small">Empty</div></div>
+<div><h2>Devices</h2><div id="devs" class="small">Only Live: an Aurora68 Play on a Mac shows up here when it runs</div></div>
+<div><h2>Live queue</h2><div id="queue" class="small">Empty</div></div>
 <div id="dl" style="display:none"><h2>Downloads</h2><div id="dlist" class="small">Nothing yet</div></div>
 <div><h2>Listening</h2><div id="who" class="small">Nobody yet</div>
 <p class="small">On the Mac: Radio &gt; Open URL&hellip; and one of these, or the Live station in the
@@ -1475,8 +1720,34 @@ const $=id=>document.getElementById(id), esc=s=>String(s).replace(/[&<>"]/g,c=>(
 const enc=p=>p.split('/').map(encodeURIComponent).join('/'), art=d=>`url('/art?dir=${encodeURIComponent(d)}')`;
 const mmss=s=>{s=Math.max(0,Math.round(s||0));return Math.floor(s/60)+':'+String(s%60).padStart(2,'0')};
 function toast(t){const m=$('msg');m.textContent=t;m.style.opacity=1;clearTimeout(m.h);m.h=setTimeout(()=>m.style.opacity=0,1800)}
-async function act(action,o={}){const r=await fetch('/api/live',{method:'POST',headers:{'Content-Type':'application/json','X-Aurora':'1'},body:JSON.stringify({action,...o})});
- const j=await r.json();if(j.error)toast(j.error);else if(o.toast)toast(o.toast);poll()}
+// what the library's buttons and the transport play on: Live (the shared channel) or a player (the README's "Devices")
+let T='live', D=[];
+const TO=['play','add','next','pause','resume','skip','previous','seek','volume','stop'];
+async function act(action,o={}){const dev=T!='live'&&TO.includes(action);
+ const r=await fetch(dev?'/api/devices/'+encodeURIComponent(T)+'/command':'/api/live',{method:'POST',headers:{'Content-Type':'application/json','X-Aurora':'1'},body:JSON.stringify({action,...o})});
+ const j=await r.json();if(j.error)toast(j.error);else if(o.toast)toast(o.toast+(dev?' on '+dname(T):''));poll()}
+const dname=id=>(D.find(d=>d.id==id)||{name:id}).name;
+function choose(id){T=id;$('target').value=id;show();devs()}
+function devs(){const sel=$('target'),on_=D.filter(d=>d.online);
+ if(!on_.some(d=>d.id==T))T='live';
+ sel.innerHTML=on_.map(d=>`<option value="${esc(d.id)}">${esc(d.is_live?'Live':d.name)}</option>`).join('');sel.value=T;
+ $('devs').innerHTML=D.map(d=>{const s=d.state||{},np=s.title?(s.artist?s.artist+' - ':'')+s.title:(d.online?'Not playing':'Offline');
+  return `<div class="row dev${d.id==T?' sel':''}" ${d.online?on('choose('+J(d.id)+')'):''} title="${d.online?'Play on '+esc(d.name):'Not heard from for a minute'}">`+
+  `<span class="dot${d.online?' on':''}"></span><span class="t">${esc(d.is_live?'Live ('+d.listeners+' listening)':d.name)}<br><span class="small">${esc(np)}${s.playing||!d.online?'':s.title?' (paused)':''}</span></span>`+
+  `<span class="small">${esc(d.kind)}</span></div>`}).join('')}
+function show(){const d=D.find(x=>x.id==T);if(T=='live'||!d)return live_np();const s=d.state||{};
+ $('nph').textContent=d.name+': now playing';$('npt').textContent=s.title||'Nothing playing';$('nps').textContent=s.artist?(s.artist+(s.album?' - '+s.album:'')):(s.album||'');
+ $('npart').style.backgroundImage=s.folder?art(s.folder):'none';$('npbar').style.width=s.length?Math.min(100,100*s.position/s.length)+'%':'0';
+ $('npe').textContent=s.title?mmss(s.position):'';$('npl').textContent=s.length?mmss(s.length):'';$('pp').innerHTML=s.playing?'&#9208;':'&#9654;'}
+function pp(){if(T=='live')return act(S.paused?'resume':'pause');const d=D.find(x=>x.id==T);act(d&&d.state&&d.state.playing?'pause':'resume')}
+let R=[];
+async function showRadio(){window.artist=null;$('crumbs').innerHTML=`<a ${on("open_('')")}>Library</a> / Radio`;$('acts').innerHTML='';
+ R=(await (await fetch('/api/radio')).json()).stations;let h='',g=null;
+ R.forEach((s,i)=>{if(s.group!=g){g=s.group;h+=`<h2 style="margin-top:1em">${esc(g||'Stations')}</h2>`}
+  h+=`<div class="row"><span class="t">${esc(s.name)}</span><span class="small">${esc(s.url.replace(/^https?:\/\//,'').split('/')[0])}</span>`+
+  `<button class="i" title="Play on the chosen player" ${on('radio('+i+')')}>&#9654;</button></div>`});
+ $('view').innerHTML='<p class="small">Internet radio plays on a player (choose one in Play on): the Live channel plays the library.</p>'+h}
+function radio(i){if(T=='live'){toast('Choose a player in Play on: Live plays the library');return}act('play',{what:'r:'+i,toast:'Playing '+R[i].name})}
 const on=js=>`onclick="${esc(js)}"`, J=JSON.stringify;     // every handler escaped once, here
 const join=(d,x)=>d?d+'/'+x:x;
 async function open_(p){path=p;window.artist=null;const r=await fetch('/api/list?dir='+encodeURIComponent(p));listing=await r.json();render()}
@@ -1521,13 +1792,15 @@ async function dl(){if(!G.enabled)return;try{const j=await (await fetch('/api/ge
  $('dlist').innerHTML=rows.join('')||'Nothing yet'}catch(e){}}
 let G={};fetch('/api/get/status').then(r=>r.json()).then(g=>{G=g;if(g.enabled){$('getbtn').style.display='';$('dl').style.display='';dl();setInterval(dl,5000)}});
 $('q').oninput=()=>{if(listing)render()};
-async function poll(){try{const j=await (await fetch('/api/now')).json();S=j;
+async function poll(){try{D=(await (await fetch('/api/devices')).json()).devices;devs();const j=await (await fetch('/api/now')).json();S=j;show();
+ $('rep').classList.toggle('on',j.repeat);
+ $('queue').innerHTML=j.queue.length?j.queue.map((q,i)=>`<div class="row${i==j.pos?' cur':''}"><span class="n">${i+1}</span><span class="t" title="${esc(q.path)}">${esc(q.title)}</span><button class="i" title="Play this" onclick="act('jump',{index:${i}})">&#9654;</button><button class="i" title="Remove" onclick="act('remove',{index:${i}})">&#10005;</button></div>`).join(''):'Empty';
+ $('who').innerHTML=j.listeners.length?j.listeners.map(l=>esc(l.who)).join('<br>'):'Nobody yet: the queue waits for a listener';}catch(e){}}
+function live_np(){const j=S;if(!j.queue)return;$('nph').textContent='Live: now playing';
  const c=j.current;$('npt').textContent=c?c.title:'Nothing queued';$('nps').textContent=c?(c.folder.split('/').pop()||''):'Choose an album, an artist or a song';
  $('npart').style.backgroundImage=c?art(c.folder):'none';$('npbar').style.width=c&&c.length?Math.min(100,100*c.elapsed/c.length)+'%':'0';
  $('npe').textContent=c?mmss(c.elapsed):'';$('npl').textContent=c&&c.length?mmss(c.length):'';
- $('pp').innerHTML=j.paused||!c?'&#9654;':'&#9208;';$('rep').classList.toggle('on',j.repeat);
- $('queue').innerHTML=j.queue.length?j.queue.map((q,i)=>`<div class="row${i==j.pos?' cur':''}"><span class="n">${i+1}</span><span class="t" title="${esc(q.path)}">${esc(q.title)}</span><button class="i" title="Play this" onclick="act('jump',{index:${i}})">&#9654;</button><button class="i" title="Remove" onclick="act('remove',{index:${i}})">&#10005;</button></div>`).join(''):'Empty';
- $('who').innerHTML=j.listeners.length?j.listeners.map(l=>esc(l.who)).join('<br>'):'Nobody yet: the queue waits for a listener';}catch(e){}}
+ $('pp').innerHTML=j.paused||!c?'&#9654;':'&#9208;'}
 function here(){const a=$('aud');if(a.paused){a.src='/live?t='+Date.now();a.play();$('here').textContent='⏹ Stop listening'}else{a.pause();a.removeAttribute('src');a.load();$('here').innerHTML='&#127911; Listen here'}}
 fetch('/api/addresses').then(r=>r.json()).then(a=>{$('liveurl').innerHTML=a.urls.map(u=>
  `<div><code>${esc(u.url)}/live</code> <span class="small">(${esc(u.family)})</span> <a href="/stations.txt${u.family=='ipv6'||u.family=='ipv4'?'?prefer='+u.family:''}">stations file</a></div>`).join('')});open_('');poll();setInterval(poll,2000);
@@ -1548,7 +1821,88 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
     getter = getter or Getter()
     listeners = threading.BoundedSemaphore(max_listeners)
     cat, covers = Catalogue(lib, name), Covers(lib)
+    radio, devices = Radio(lib.root), Devices()
     globals_prefer = prefer
+
+    def live_device():
+        """the Live channel as a device in the list: its now-playing as a device's state"""
+        n = live.now()
+        c = n['current'] or {}
+        artist, _, title = c.get('title', '').partition(' - ') if ' - ' in c.get('title', '') else ('', '', c.get('title', ''))
+        return {'id': 'live', 'name': f'{name} Live', 'kind': 'live', 'version': VERSION, 'online': True,
+                'last_seen': int(time.time()), 'is_live': True, 'listeners': len(n['listeners']),
+                'state': {'playing': n['playing'], 'title': title, 'artist': artist,
+                          'album': (c.get('folder') or '').split('/')[-1], 'folder': c.get('folder', ''),
+                          'position': c.get('elapsed', 0.0), 'length': c.get('length', 0.0), 'volume': 100}}
+
+    def track_entry(rel, probe):
+        """a song of a command, as a device needs it: its path (for /file/), its id (for /t/), its names"""
+        tid = short_id('\x02' + rel)
+        if tid in cat.tracks:
+            n, title, artist, secs = cat.track_info(tid, probe)
+            album = cat.albums[cat.tracks[tid][0]]['title']
+        else:
+            title, artist, album, secs = os.path.splitext(rel.split('/')[-1])[0], '', '', 0
+        return {'path': rel, 'tid': tid, 'title': title, 'artist': artist, 'album': album, 'seconds': secs}
+
+    def device_command(did, a):
+        """POST /api/devices/<id>/command: (answer, HTTP status)"""
+        action = a.get('action', '')
+        if action not in DEVICE_ACTIONS:
+            return {'error': f'no such action: {action}'}, 400
+        what = str(a.get('what') or '')
+        if did == 'live':                              # the Live channel: what /api/live does
+            if what.startswith('r:') or action in ('seek', 'volume'):
+                return {'error': 'the Live channel plays the library; it cannot play radio, seek or change volume'}, 400
+            err = live.act({'action': 'clear'} if action == 'stop' else
+                           {k: v for k, v in a.items() if k in ('action', 'what', 'shuffle')})
+            return ({'error': err}, 400) if err else ({'ok': True, 'live': live.now()}, 200)
+        cmd = {'action': action}
+        if action in ('play', 'add', 'next'):
+            if what.startswith('r:'):
+                st = radio.stations()
+                try:
+                    i = int(what[2:])
+                except ValueError:
+                    i = -1
+                if not 0 <= i < len(st) or action != 'play':
+                    return {'error': 'no such radio station' if action == 'play' else 'a radio station can only be played'}, 400
+                cmd.update(tracks=[], radio={'name': st[i]['name'], 'url': st[i]['url']})
+            else:
+                cat.fresh()
+                songs = live.resolve(what)
+                if not songs:
+                    return {'error': 'nothing to play there'}, 400
+                if a.get('shuffle'):
+                    random.shuffle(songs)
+                    cmd['shuffle'] = 1
+                songs = songs[:DEVICE_TRACKS]
+                cmd['tracks'] = [track_entry(r, len(songs) <= DEVICE_PROBE) for r in songs]
+        if action == 'seek' or 'position' in a:
+            try:
+                cmd['position'] = max(0.0, float(a.get('position')))
+            except (TypeError, ValueError):
+                return {'error': 'seek: a position in seconds'}, 400
+        if action == 'volume' or 'volume' in a:
+            try:
+                cmd['volume'] = max(0, min(100, int(a.get('volume'))))
+            except (TypeError, ValueError):
+                return {'error': 'volume: 0 to 100'}, 400
+        n, err = devices.send(did, cmd)
+        if err:
+            return {'error': err}, (404 if err == 'no such device' else 409)
+        log(f'devices: {action} {what} to {did}'.replace('  ', ' '))
+        return {'ok': True, 'id': n}, 200
+
+    def mac_command_lines(cmds):
+        """the classic Play's commands: "N action position volume", then T and R lines"""
+        rows = []
+        for c in cmds:
+            rows.append((c['id'], c['action'], int(c.get('position', 0)), c.get('volume', '')))
+            rows += [('T', t['tid'], t['title'], t['artist'], t['seconds']) for t in c.get('tracks', [])]
+            if c.get('radio'):
+                rows.append(('R', c['radio']['name'], c['radio']['url']))
+        return rows
 
     class Handler(BaseHTTPRequestHandler):
         server_version = f'aurora68-music-server/{VERSION}'
@@ -1599,6 +1953,9 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
 
         def fail(self, code, text):
             self.send(code, 'text/plain; charset=utf-8', (text + '\n').encode())
+
+        def json(self, code, obj):
+            self.send(code, 'application/json', json.dumps(obj).encode(), [('Cache-Control', 'no-store')])
 
         def do_HEAD(self):
             self.do_GET()
@@ -1710,6 +2067,24 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
                     if q.get('album'):
                         out.sort(key=lambda r: (r['number'] or 999, r['title'].casefold()))
                     return self.send(200, 'application/json', json.dumps({'tracks': out}).encode())
+                if path == '/api/info':                       # what players poll: "library" changes with the folder
+                    cat.fresh()
+                    return self.json(200, {'name': name, 'version': VERSION, 'library': lib.generation,
+                                           'artists': len(cat.artists), 'albums': len(cat.albums), 'tracks': len(cat.tracks),
+                                           'every': DEVICE_EVERY})
+                if path == '/api/radio':
+                    return self.json(200, {'stations': radio.stations()})
+                if path == '/api/devices':
+                    return self.json(200, {'devices': [live_device()] + devices.listing()})
+                if path.startswith('/api/devices/') and path.endswith('/commands'):
+                    if self.headers.get('X-Aurora') != '1':
+                        return self.json(403, {'error': 'the header X-Aurora: 1 is needed'})
+                    try:
+                        wait = float(q.get('wait', 0))
+                    except ValueError:
+                        wait = 0
+                    got, err = devices.take(path[len('/api/devices/'):-len('/commands')], wait)
+                    return self.json(404, {'error': err}) if err else self.json(200, {'commands': got})
                 if path.startswith('/mac/'):
                     return self.mac(path[5:], q)
                 if path.startswith('/t/'):
@@ -1724,10 +2099,34 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
             X-Aurora: 1 is required, which a web page elsewhere cannot send without asking first (CORS), so
             no other site can change what plays"""
             where = urllib.parse.urlsplit(self.path).path
-            if where not in ('/api/live', '/api/get/grab'):
-                return self.fail(404, 'POST /api/live or /api/get/grab')
+            dev = where.startswith('/api/devices/')
+            if where not in ('/api/live', '/api/get/grab') and not dev:
+                return self.fail(404, 'POST /api/live, /api/get/grab or /api/devices/...')
             if self.headers.get('X-Aurora') != '1':
                 return self.send(403, 'application/json', b'{"error": "the header X-Aurora: 1 is needed"}')
+            if dev:                                       # announce, state, command (the README's "Devices")
+                try:
+                    n = int(self.headers.get('Content-Length') or 0)
+                    a = json.loads(self.rfile.read(min(n, 65536)) or b'{}')
+                    if not isinstance(a, dict):
+                        raise ValueError('a JSON object, please')
+                except (ValueError, TypeError) as e:
+                    return self.json(400, {'error': f'not understood: {e}'})
+                rest = where[len('/api/devices/'):]
+                if rest == 'announce':
+                    err = devices.announce(a.get('id'), a.get('name'), a.get('kind'), a.get('version', ''), self.who())
+                    if err:
+                        return self.json(400, {'error': err})
+                    lib.scan()
+                    return self.json(200, {'ok': True, 'every': DEVICE_EVERY, 'library': lib.generation})
+                did, _, verb = rest.partition('/')
+                if verb == 'state':
+                    err = devices.set_state(did, a)
+                    return self.json(404, {'error': err}) if err else self.json(200, {'ok': True})
+                if verb == 'command':
+                    out, code = device_command(did, a)
+                    return self.json(code, out)
+                return self.json(404, {'error': 'POST /api/devices/announce, /api/devices/ID/state or /api/devices/ID/command'})
             if where == '/api/get/grab':                  # {"id": a search result's}: to SABnzbd
                 if not getter.enabled():
                     return self.send(404, 'application/json', b'{"error": "finding albums is not set up"}')
@@ -1791,7 +2190,10 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
         def mac(self, what, q):
             cat.fresh()
             if what == 'info':
-                return self.mac_send(200, mac_answer('info', 1, 0, [(name, VERSION, len(cat.artists), len(cat.albums), len(cat.tracks))]))
+                return self.mac_send(200, mac_answer('info', 1, 0, [(name, VERSION, len(cat.artists), len(cat.albums), len(cat.tracks),
+                                                                      lib.generation)]))
+            if what in ('announce', 'state', 'devices', 'commands', 'radio'):
+                return self.mac_device(what)
             if what == 'artists':
                 rows = [(i, cat.artists[i]['name'], len(cat.artists[i]['albums']),
                          sum(len(cat.albums[a]['tracks']) for a in cat.artists[i]['albums'])) for i in cat.artist_order]
@@ -1863,7 +2265,49 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
                     got = covers.get(i, a, w, h, depth) if a else None
                     body += (b'\1' + got[1]) if got else (b'\0' + bytes(rb * h))
                 return self.send(200, 'application/octet-stream', bytes(body))
-            return self.mac_error(404, 'info, artists, albums, tracks, search, art, arts')
+            return self.mac_error(404, 'info, artists, albums, tracks, search, art, arts, announce, state, devices, commands, radio')
+
+        def mac_device(self, what):
+            """the classic Play's side of "Devices": plain lines (Mac Roman, CR ends, tab fields), no A68M head"""
+            mq = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(self.path).query, encoding='mac_roman'))
+            lines = lambda rows: ''.join('\t'.join(mac_field(f, 255) for f in r) + '\r' for r in rows).encode('mac_roman', 'replace')
+            if what == 'radio':
+                return self.mac_send(200, lines((s['group'], s['name'], s['url']) for s in radio.stations()))
+            if what == 'devices':
+                rows = [(d['id'], d['name'], d['kind'], int(d['online']), d['state'].get('title', ''), d['state'].get('artist', ''))
+                        for d in [live_device()] + devices.listing()]
+                return self.mac_send(200, lines(rows))
+            if self.headers.get('X-Aurora') != '1':
+                return self.mac_send(403, b'the header X-Aurora: 1 is needed\r')
+            did = mq.get('id', '')
+            if what == 'announce':
+                err = devices.announce(did, mq.get('name'), mq.get('kind', 'classic'), mq.get('v', ''), self.who())
+                if err:
+                    return self.mac_send(400, lines([(err,)]))
+                lib.scan()
+                return self.mac_send(200, lines([('ok',), (DEVICE_EVERY,), (lib.generation,)]))
+            if what == 'state':
+                st = {'playing': mq.get('p') == '1', 'position': mq.get('pos'), 'length': mq.get('len'),
+                      'volume': mq.get('vol', 100), 'title': mq.get('title', ''), 'artist': mq.get('artist', '')}
+                tid = mq.get('t', '')
+                if tid in cat.tracks:                  # a library track: its names from the catalogue
+                    n, title, artist, secs = cat.track_info(tid, probe=False)
+                    al = cat.albums[cat.tracks[tid][0]]
+                    st.update(title=title, artist=artist, album=al['title'], folder=al['rel'])
+                    try:
+                        st['length'] = float(st['length'] or 0) or secs
+                    except ValueError:
+                        st['length'] = secs
+                err = devices.set_state(did, st)
+                return self.mac_send(404 if err else 200, lines([(err or 'ok',)]))
+            try:
+                wait = float(mq.get('wait', 0))
+            except ValueError:
+                wait = 0
+            got, err = devices.take(did, wait)
+            if err:
+                return self.mac_send(404, lines([(err,)]))
+            return self.mac_send(200, lines(mac_command_lines(got)))
 
         def track(self, tid, q):
             cat.fresh()
@@ -1947,7 +2391,8 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
                     return
                 end = min(end, size - 1)
             self.send_response(206 if rng else 200)
-            self.send_header('Content-Type', mimetypes.guess_type(p)[0] or 'application/octet-stream')
+            self.send_header('Content-Type', AUDIO_TYPES.get(os.path.splitext(p)[1].lower()) or mimetypes.guess_type(p)[0]
+                             or 'application/octet-stream')
             self.send_header('Accept-Ranges', 'bytes')
             self.send_header('Content-Length', str(end - start + 1))
             if rng:
