@@ -3951,3 +3951,25 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
   drivers to port: GENET, WiFi over SDIO, Bluetooth HCI, VL805 xHCI. The port plan (service code on
   core 3, boards carved inside the slot window, firmware from the initramfs container, interrupts
   as a virtual slot-9 interrupt) is recorded in docs/07.
+
+100. **"This is not a Macintosh disk" on the BlueSCSI: Iomega's driver, twice over (22 November).** The
+   owner's SE could not use its BlueSCSI disks: the Mac offered to initialize them ("This is not a Macintosh
+   disk: Do you want to initialize it?"), with Iomega's Zip disk as the alert's icon.
+   - *The icon was the clue:* a driver shows its own icon only for drives it has taken. Two Iomega drivers
+     came down from the first test image, which was made from a Zip disk. One is in the partition map
+     (Iomega_DiskInfo, Iomega's Zip 4.2 driver patched by `tools/iomega_patch.py` to take any disk,
+     Iomega_backup): it drives the Pi's own disk path (`psmac_board_solo.c` answers Iomega's vendor command
+     $06 as a Zip drive does) but cannot drive a BlueSCSI. The other is the **Iomega Driver extension**
+     (INIT, 1995) in the image's `System Folder:Extensions`: it loads at every startup, scans the SCSI bus
+     and takes drives over, so any System with it in place claimed the BlueSCSI's disks whatever their own
+     driver was.
+   - *The owner's BlueSCSI card was clean:* its three disks all carry Apple_Driver43
+     (`tools/mac/swap_driver.py --show`). The extension came from the card image the SE started from.
+   - *In the testbed* (`macse_ps`, the SE's 5380 as MAME emulates it, the current kernel), the System 7.1
+     volume behind Apple_Driver43 on SCSI ID 0 started to the Finder: the kernel's SCSI path is not at
+     fault, and MAME's disk was the startup disk already driven by Apple's driver.
+   - *Fixed:* `tools/mac/swap_driver.py` moves an image's volume behind a donor disk's Apple_Driver43 (the
+     owner's own disk: Apple's driver is not in the repository); the Iomega Driver extension is moved to
+     `Extensions (Disabled)` in the base images, so images made from now on have neither. On an existing
+     card image: start with Shift held (Extensions Off), then drag `Iomega Driver` out of the Extensions
+     folder. The kernel keeps its answer to command $06 for older images on the Pi's own disk path.
