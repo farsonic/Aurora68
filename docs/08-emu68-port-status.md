@@ -4469,3 +4469,142 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      from an uninitialised sound buffer is for the owner to listen for). And the limit the design names: a kernel that
      dies before it has read the card cannot rescue itself, and as far as we know a Pi 3's firmware has no fallback
      kernel of its own; a microSD extension cable led out of the case is the physical way back.
+108. **The bus check: `mac.buscheck=1`, one page of numbers on the compact Mac's own screen (22 November).** The
+   tester's 512Ke of item 96, on a socketed PiStorm, drew its screen right but for rare single wrong words, while
+   everything it read looked wrong: the screen check found words that differed in 6,011 of 6,605 rows (29 of 32 on
+   average), the mouse's Y1 line changed forty times as often as Y2, the keyboard and the button gave tens of
+   thousands of phantom events. A read sampled too early fits; so does a bad joint in the new socket, a data line,
+   the RAM, or the chips, and one log could not tell them apart, nor say whether a software retry would cure it. So
+   that every tester's machine gives the same comparable numbers in one photograph, the kernel can now stop before
+   the 68k starts and measure the bus itself.
+   - *What runs* (`psmac_buscheck.c`, the kernel's half; `psmac_buscheck_core.c` and `.h`, the tests and their
+     reading in portable C). `mac.buscheck=1` on `mac.board=se`, `plus`, `512ke`, `512k` or `128k` over the
+     PiStorm's GPIO: the service core runs it in `psmac_se_start`, after the protocol is up and the overlay is
+     cleared and instead of the address-line test of item 68, and core 0 never releases the 68k
+     (`psmac_se_wait_ready` decides it from the options alone, so it holds even if the service core is late).
+     `loop` runs it again and again until power-off; `force` (or `force,loop`) runs it over the testbed's bridge,
+     which it otherwise refuses ("its cycles are MAME's"), as it refuses the solo board (no logic board). For the
+     recovery mode of item 106, `psmac_buscheck_run(report, arg)` is the whole check for any caller that owns the
+     transport with the 68k stopped; `report` gets each line of the page (with a callback the HDMI page is left to
+     the caller). The tests, all in board RAM below the top 64 KB (only the screen and sound buffers there are the
+     hardware's; the Mac's memory is the Pi's), on the VIA's port bits that are outputs on every board, and on the
+     SCC's baud-rate constant and interrupt vector, which do nothing while nothing runs:
+     1. *RAM data lines*: walking ones and zeros, `$0000 $FFFF $AAAA $5555`, four random patterns, at 256
+        addresses; the same word everywhere written to all and read back, a random word read back at once (so that
+        an address fault cannot change what is read). Each word read three times and as two bytes. Per data bit,
+        the reads that expected 0 and 1 and how many read the other; for every pair of bits the same split by the
+        other bit, which tells a line that follows another or two joined from a stuck one; whether the second read
+        of a wrong word repeats it (systematic), is right (transient) or is another wrong word; what the wrong
+        words were: the address's low half or the address-high register (the Pi's last words on the lines: a read
+        taken before the board drove them), the word before, `$FFFF`, `$0000`, or the marks written into every
+        word of the screen (`$C3A5`) and the sound buffer (`$96E1`) while the tests run (the video's or the sound's
+        fetch still on the RAM's bus); byte writes and word writes judged by a majority of five and of fifteen
+        reads; one word read 1,000 times.
+     2. *RAM address lines*: item 68's pairwise test over the whole RAM, run first. Each of the four words is
+        found by seven reads, each counted only if it is one of the four test words or the cleared `$0000` give or
+        take one bit (`$9999 $AAAA $BBBB $CCCC`: four bits apart at least, so a stuck data line does not hide them,
+        and a random error or an early read is no vote). Each pair's result is matched against models (either line
+        stuck at 0 or 1, one following the other, the two joined with a 0 or a 1 winning) with the fault on reads,
+        on writes, or on both; the lines are named from the votes, a line that "repeats" from one up to the top is
+        RAM smaller than assumed ("the board has 512 KB, not the 4096 KB assumed"), and the data tests' addresses
+        are then chosen around what was found.
+     3. *The chips*: DDRA, DDRB, T1's latches, ACR, PCR and IER written and read back 10,000 times each (500 in the
+        testbed), wrong bits by position; the IFR read twice in a row; port B's and port A's output bits against
+        what was written and their input bits' changes (PB6 is H4 on the Plus-era boards and moves); the phase read
+        at `$F00000` (D0, docs/18 section 2) on those boards, a read only; SCC RR0 of both channels 512 times with
+        the pointer used up first; WR12/WR13 of channel B read back as RR12/RR13; WR2 read back as channel A's RR2,
+        3 us apart and back to back; RR0 of A then B and B then A at 0, 0.5, 1, 2, 3 and 5 us between the two
+        reads, counting the second read's changes. Every other SCC access is 3 us from the last (the kernel's own
+        rule on the Plus-era boards since the same evening, item 96, `psmac_gpio.c`), whose wait the check turns
+        off for the deliberately closer reads (`psmac_gpio_scc_unspaced`).
+     4. *Timing*: each access's duration by kind (RAM word and byte reads and writes, VIA, SCC): min, median (of
+        255 kept as an even sample) and max, and the transport's timeouts.
+     5. *Retries*: 2,048 random words, each read once, then in pairs until two agree (four pairs at most), then
+        three times by majority: what each would leave wrong.
+     6. *Video*: CA1's rising and falling edges timed to find which begins the blank; then sixteen frames of reads
+        in the blank and the same number a third of the way into the picture, and every other frame reads through
+        the whole frame counted by eighths. Edges that make no compact Mac's frame (5 to 100 ms, a blank under a
+        quarter of it) skip the test: the VIA's reads are then in doubt themselves.
+     7. *Spacing*: 1,024 reads back to back, 5 us and 50 us apart.
+     8. *The board's ROM* at `$400000`: 512 words read four times each, and the whole ROM (64, 128 or 256 KB by
+        board) summed against the checksum in its first long. It answers at once with no video interleave, so
+        clean ROM reads beside bad RAM reads put the fault in the RAM's cycles, and bad ROM reads too in where the
+        PiStorm samples (docs/18 M6).
+   - *The verdicts* (thresholds beside their constants in `psmac_buscheck_core.c`): no errors CLEAN; up to 10
+     wrong in a million, and at least two allowed, STRAY; more FAIL. A data bit wrong in 95% of the reads that
+     expected the other level and right in 95% of the rest, with 64 reads of each behind it, is stuck ("D11 always
+     reads 0: a stuck data line (socket pin 58, the Pi's GPIO 19)"); the pair counts name a line that follows
+     another or two joined the same way; 90% of the bit errors on three lines or fewer, not stuck, is "an
+     intermittent line (a socket joint, a contact), not timing". Otherwise errors over the bits are a read
+     problem: "mostly at random" when under 25% of the wrong words are repeated by the next read ("a timing problem,
+     not a broken line"), "the same way each time" over 75%, "partly at random" between; a quarter of them being
+     the Pi's last words adds "the data was read before the board drove it", a quarter being the screen's mark "the
+     video's fetch". Errors three times as frequent while the video reads the RAM as in the blank: contention;
+     reads 50 us apart three times better: "a cycle started too soon after the last"; SCC second reads that change
+     at least ten times back to back and a third as often by some spacing: the SCC's recovery time (H2). A retry
+     helps when the better of two-agree and three-voting leaves a tenth of one read's errors and at most 0.1%;
+     "helps but does not cure" at a third. A named data line explains everything else, and the page says so instead
+     of listing its consequences. Address findings while one word in a hundred reads wrong are marked uncertain; a
+     tenth of the pairs without a clear answer makes the address test UNSURE. A line that reads and writes wrong
+     is "stuck, not connected, or following another line": from the Pi's side, as item 68 found, the three leave
+     the memory in the same two halves.
+   - *The page.* 64 characters by 42 lines in Emu68's Topaz 8 by 8, drawn by the Pi into the board's main screen
+     buffer (`psmac_se_fb_base`, VIA PA6 set for the main buffer, the speaker's PB7 off) and drawn again every ten
+     seconds; on HDMI the same lines in the console's cells, after which the console holds (`psmac_console_page`)
+     while the log goes on to the serial line, PiLog's ring and the card; the screen's lines and the details (per
+     bit, per register, the pairs, the SCC table, the frame's eighths, mean durations) to the log as `[BUSCHECK]`
+     and to `buscheck.txt` in the card's root (at most 4 KB, one cluster; a smaller cluster cuts the details: the
+     card writer's small files grew from 1.5 to 4 KB for it). The first lines carry the kernel's git hash and build
+     time, the board and RAM size and where the size came from, the link (Pi 3 or 4 timings, the CPLD's clock from
+     PLLC), and the CPLD's usercode.
+   - *The CPLD's usercode* (docs/18 K2). Which PiStorm firmware a tester has decides when a read is sampled (the
+     stock image of today, `00185866`, about 128 ns before a 68000 would; the pre-2021 original, `0018736F`, in S7),
+     and nothing said which. Emu68's `cpld.c` reads it through libxsvf, not linked in psmac; `psmac_gpio.c` now
+     loads IDCODE (0x006) and USERCODE (0x007) by hand on GPIO 24-27 as the protocol comes up, leaves the TAP in
+     Test-Logic-Reset and GPFSEL2 as it was, and logs `[PSMAC:GPIO] CPLD JTAG: IDCODE ..., usercode ...: name`
+     with Emu68's table of names (`mac.jtag=off` leaves the pins alone). Never run on a CPLD yet.
+   - *mac.busfault=* (testbed only, ignored over the GPIO): faults on the wire's reads alone, in `psmac_wire_read`:
+     `dN`, `dNh` (data line N reads 0 or 1), `aN` (address line N reads as 0, RAM only), `aN,M` (N follows M),
+     `rand:P` (P reads in a thousand with random bits flipped), joined with `+`. `mac.selinefault=` (item 68) stays
+     the fault on reads and writes.
+   - *Host test* (`tools/buscheck_test.c`, in `make -C mac check`): the core against a simulated board (RAM, ROM
+     with its checksum, a VIA keeping its registers with CA1 in a 60 Hz blank, an SCC with its pointer) under
+     twenty-one conditions; each summary must say the right thing and not the wrong one, and no line of the page may
+     be cut at the right margin: clean at 128 KB, 512 KB and 4 MB; D11 stuck at 0, D3 at 1; A14 following A15 on
+     reads and on both; A9 stuck on reads; a 512K board taken for 4 MB; random errors at 50% and 2% (a retry
+     helps); early sampling; errors only while the video reads; only back to back; an intermittent D6; the chips
+     alone; RAM bad and ROM clean; RAM and ROM both bad; wrong words that are the video's; RAM, ROM and chips all
+     noisy at once; an SCC that needs 2 us.
+   - *In the testbed* (MAME's `macse_ps`, `macplus_ps`, `mac512ke_ps` with `mac.buscheck=force`; screenshots by
+     MAME's snapshots and of HDMI through QEMU's monitor):
+     - *Clean*: the SE at 4 MB (A1-A21, 210 pairs), 13 to 14 s and some 260,000 bus cycles over the bridge, whose
+       median cycle is 44 us; the Plus at 4 MB, 10 s, the phase read D0 0, PB6 (H4) changing; the 512Ke at 512 KB
+       (A1-A18, 153 pairs), 10 to 11 s. All three: "All clean: 54272 reads of RAM, the VIA and the SCC, no errors.
+       The bus is good." MAME's VBL came out at a 16.45 ms frame and a 1,227 us blank begun by CA1's rising edge (28
+       lines of 370: the real figure). The ROM sums never match their checksum in the testbed, whose bridged machines
+       carry no ROM image (an INFO line). `buscheck.txt`: 4,095 bytes written and read back on a 64 MB FAT16 card
+       image with 4 KB clusters; with 2 KB clusters the card writer refused it ("-10: longer than a cluster"), which is
+       why the text is now cut to the card's cluster at a line's end. `mac.buscheck=force,loop` on the 512Ke: seven
+       runs in 110 s, the page renewed each time. Without `force`: "not run, this is the testbed's bridge, not a
+       PiStorm: its cycles are MAME's (mac.buscheck=force runs it anyway); booting as usual".
+     - *With faults*: `mac.busfault=d11` gave "D11 always reads 0: a stuck data line (socket pin 58, the Pi's GPIO
+       19). Everything else that read wrong follows from that line." (before that last sentence existed the page went
+       on to list the retries, the chips and the word writes that the line had spoiled); `d3h` on the 512Ke "D3 always
+       reads 1"; `a14,15` "A14 follows A15 when reading: a short between them or at the latch (socket pins 42, 43)";
+       `a9` "A9 is stuck at 0 when reading (socket pin 37)"; `mac.selinefault=14,15` (reads and writes) "A14 does not
+       reach the RAM as both 0 and 1, reading and writing: stuck, not connected, or following another line"; `rand:20`
+       "Reads of RAM fail on 16 of 16 bits, 1.9% of words, mostly at random (a second read repeats the wrong word 0%
+       of the time): a timing problem, not a broken line. A retry would help: one read 2.4% wrong, two that agree 0,
+       three voting 0.1%", the ROM's reads failing too (40 of 2048) and the chips' (the fault is on every read);
+       `rand:300` on the 512Ke, the nearest to the tester's numbers, 30.1% of words, "a retry would help but not cure
+       it" (31.3%, 3.5%, 15.1%), the address lines all decided in spite of it; `rand:500` 49.9%, the address test
+       UNSURE with 51 of 210 pairs undecided.
+     - *Learnt on the way*: random errors on the VIA's reads make CA1's flag seem to come and go (a "frame" of
+       0.3 ms), hence the plausibility check before the video test; and with a line wrong on reads and writes alike
+       both "stuck at 0" and "stuck at 1" fit every pair, so the page no longer names a level for it. The first
+       version of the address test elected garbage words by majority; it now counts only reads that are one of the
+       test words, which also keeps a read taken early (the address on the lines) from voting.
+   - *Not verified:* everything on hardware: the page on a real compact Mac's screen, the JTAG read on a real CPLD,
+     the timings over the GPIO (the testbed's bridge takes some 44 us a cycle, a PiStorm about one), the VBL edges
+     and the SCC spacing on real chips, `buscheck.txt` on a real card. The tester's 512Ke is the first machine it
+     is for: READ-ME-FIRST's "If your Mac misbehaves: the bus check" says what to do and what to photograph.

@@ -1118,7 +1118,11 @@ int bc_report(const struct bc_config *cfg, const struct bc_results *r, char line
         else bc_fmt(ph, sizeof ph, "no phase");
         line(&t, "  outs bad PB %u PA %u /%u  IFR 2x %u/%u  %s", C->pb_out_wrong, C->pa_out_wrong, C->pb_reads, C->ifr_differ, C->ifr_pairs, ph);
     }
-    tline(&t, C->in_verdict, "  inputs: PB3 %u PB4 %u PB5 %u PB6 %u%s PA7 %u changes", C->pb_changes[3], C->pb_changes[4], C->pb_changes[5], C->pb_changes[6], cfg->plus ? "(H4)" : "", C->pa_changes[7]);
+    {
+        char k3[8], k4[8], k5[8], k6[8], k7[8];
+        kn(k3, C->pb_changes[3]); kn(k4, C->pb_changes[4]); kn(k5, C->pb_changes[5]); kn(k6, C->pb_changes[6]); kn(k7, C->pa_changes[7]);
+        tline(&t, C->in_verdict, "  in changes PB3 %s PB4 %s PB5 %s PB6%s %s PA7 %s", k3, k4, k5, cfg->plus ? "/H4" : "", k6, k7);
+    }
     tline(&t, C->scc_verdict, "  SCC RR0 values B %u A %u, jumps %u %u, pins %u %u", C->rr0[0].nval, C->rr0[1].nval, C->rr0_stable_changes[0], C->rr0_stable_changes[1],
           C->rr0_line_changes[0], C->rr0_line_changes[1]);
     line(&t, "  SCC RR12 %u RR13 %u /%u, RR2 3us %u b2b %u /%u wrong", C->rr12.wrong, C->rr13.wrong, C->rr12.reads, C->rr2[0].wrong, C->rr2[1].wrong, C->rr2[0].reads);
@@ -1155,7 +1159,7 @@ int bc_report(const struct bc_config *cfg, const struct bc_results *r, char line
         char q1[12], q2[12];
         if (V->ok == 1) tline(&t, V->verdict, "6 VIDEO wrong: blank %s display %s of %u, %u.%u ms", rate(q1, V->blank_wrong, V->blank_reads), rate(q2, V->disp_wrong, V->disp_reads),
                          V->disp_reads, V->frame_us / 1000, V->frame_us / 100 % 10);
-        else if (V->ok == 2) tline(&t, BC_SKIP, "6 VIDEO CA1 edges implausible (frame %u us, blank %u)", V->frame_us, V->blank_us);
+        else if (V->ok == 2) tline(&t, BC_SKIP, "6 VIDEO CA1 implausible: frame %u us, blank %u", V->frame_us, V->blank_us);
         else tline(&t, BC_SKIP, "6 VIDEO no vertical blanking seen on VIA CA1");
     }
     {

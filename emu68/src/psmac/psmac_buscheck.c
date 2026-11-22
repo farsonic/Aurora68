@@ -171,6 +171,7 @@ int psmac_buscheck_run(void (*report)(const char *line, void *arg), void *arg)
         extern uint32_t psmac_card_cluster_bytes(void);
         uint32_t cl = psmac_card_cluster_bytes();
         if (cl && len > cl) { len = cl; while (len && text[len - 1] != '\n') len--; }
+        else if (len >= sizeof text - 2) { while (len && text[len - 1] != '\n') len--; }   /* the report filled the buffer: no half line */
     }
     int st = psmac_card_files_state() == 1 ? -2 : psmac_card_put_file("buscheck.txt", text, len);
     kprintf("[BUSCHECK] verdict: %s | %s\n", bc_headline(&cfg, &res), st == 0 ? "buscheck.txt queued for the card" : st == -1 ? "no writable card: buscheck.txt not saved" : "buscheck.txt not saved this run (the card is busy)");

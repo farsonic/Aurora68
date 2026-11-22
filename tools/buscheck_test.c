@@ -169,6 +169,7 @@ int main(void)
     b = mk(512 << 10); b->rand_pm = 100; run("RAM only, ROM clean", b, 1, "ROM reads clean", "RAM's cycles", "ROM reads fail");
     b = mk(512 << 10); b->rand_pm = 100; b->rand_rom = 1; run("RAM and ROM: sampling", b, 1, "ROM reads fail too", "too early", "ROM reads clean");
     b = mk(512 << 10); b->rand_pm = 200; b->screen_data = 1; run("video fetch's data", b, 1, "screen's mark", NULL, NULL);
+    b = mk(512 << 10); b->rand_pm = 300; b->rand_rom = 1; b->chip_pm = 300; run("everything noisy (a 512Ke?)", b, 1, "timing problem", "chips' reads are wrong too", "stuck");
     b = mk(512 << 10); b->scc_close = 1; run("SCC needs spacing", b, 1, "SCC reads soon after another", "calm from", "Reads of RAM");
     printf("%s\n", fails ? "bus check test: FAILED" : "bus check test: all verdicts as expected");
     return fails != 0;
