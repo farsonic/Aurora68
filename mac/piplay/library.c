@@ -291,7 +291,7 @@ static void got_info(void)
 	struct a68_head h;
 	struct a68_info inf;
 	a68_rec_init(&r, fetch.body, fetch.len);
-	if (!a68_head(&r, &h) || !a68_info_of(&r, &inf)) {
+	if (!a68_read_head(&r, &h) || !a68_info_of(&r, &inf)) {
 		dv_stop(&dev);
 		fail_text("That address answers, but not as Aurora68's music server.");
 		want_list = 0;
@@ -470,7 +470,7 @@ static void got_queue(void)
 	struct a68_track t;
 	int at = 0, n = 0;
 	a68_rec_init(&r, fetch.body, fetch.len);
-	if (fetch.status != 200 || !a68_head(&r, &h)) { say_error("The music server could not give those tracks."); return; }
+	if (fetch.status != 200 || !a68_read_head(&r, &h)) { say_error("The music server could not give those tracks."); return; }
 	while (n < MAX_Q && qitems && a68_next_track(&r, &t)) {
 		if (q_start[0] && same_id(t.id, q_start)) at = n;
 		fill_item(&qitems[n++], t.id, t.album, t.title, t.artist, t.secs);

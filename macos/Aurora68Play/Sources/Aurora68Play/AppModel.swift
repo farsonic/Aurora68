@@ -14,6 +14,9 @@
 // and says it in every announce answer (or /api/info, every 20 seconds, on a server without devices);
 // when it changes the catalogue is fetched again. What is open stays open: the navigation path holds
 // artists and albums by value and the views look them up again by id.
+//
+// One code base with the SE's Play (the same evening, docs/08 item 107): what is sent to Live or another player
+// is a Command, whose request the shared C core writes, and the catalogue comes as the server's text (MusicAPI).
 import AppKit
 import Foundation
 import Aurora68Core
@@ -242,16 +245,16 @@ final class AppModel: ObservableObject {
         return s
     }
 
-    private func toDevice(_ id: String, _ bodies: [[String: Any]]) {
+    private func toDevice(_ id: String, _ commands: [Command]) {
         Task {
-            message = await devices.send(id, bodies)
+            message = await devices.send(id, commands)
         }
     }
 
     func play(album: Album, shuffled: Bool = false) {
         switch output {
         case .live: Task { await live.play(album: album, shuffled: shuffled) }
-        case .device(let id): toDevice(id, [["action": "play", "what": LiveWhat.folder(album.folder), "shuffle": shuffled ? 1 : 0]])
+        case .device(let id): toDevice(id, [Command(.play, what: LiveWhat.folder(album.folder), shuffle: shuffled)])
         case .thisMac: Task { player.play(await tracks(album: album), shuffled: shuffled) }
         }
     }
@@ -262,10 +265,9 @@ final class AppModel: ObservableObject {
         case .live: Task { await live.play(albums: albums, shuffled: shuffled) }
         case .device(let id):
             guard let first = albums.first else { return }
-            let s = shuffled ? 1 : 0
-            var bodies: [[String: Any]] = [["action": "play", "what": LiveWhat.folder(first.folder), "shuffle": s]]
-            for a in albums.dropFirst() { bodies.append(["action": "add", "what": LiveWhat.folder(a.folder), "shuffle": s]) }
-            toDevice(id, bodies)
+            var commands = [Command(.play, what: LiveWhat.folder(first.folder), shuffle: shuffled)]
+            for a in albums.dropFirst() { commands.append(Command(.add, what: LiveWhat.folder(a.folder), shuffle: shuffled)) }
+            toDevice(id, commands)
         case .thisMac: Task { player.play(await tracks(artist: current(artist)), shuffled: shuffled) }
         }
     }
@@ -275,9 +277,9 @@ final class AppModel: ObservableObject {
         case .live: Task { await live.play(tracks: tracks, from: start) }
         case .device(let id):
             guard tracks.indices.contains(start) else { return }
-            var bodies: [[String: Any]] = [["action": "play", "what": LiveWhat.track(tracks[start].path)]]
-            for t in tracks[(start + 1)...] { bodies.append(["action": "add", "what": LiveWhat.track(t.path)]) }
-            toDevice(id, bodies)
+            var commands = [Command(.play, what: LiveWhat.track(tracks[start].path))]
+            for t in tracks[(start + 1)...] { commands.append(Command(.add, what: LiveWhat.track(t.path))) }
+            toDevice(id, commands)
         case .thisMac: player.play(tracks, from: start)
         }
     }
@@ -285,7 +287,7 @@ final class AppModel: ObservableObject {
     func playNext(_ tracks: [Track]) {
         switch output {
         case .live: Task { await live.playNext(tracks) }
-        case .device(let id): toDevice(id, tracks.reversed().map { t -> [String: Any] in ["action": "next", "what": LiveWhat.track(t.path)] })
+        case .device(let id): toDevice(id, tracks.reversed().map { Command(.next, what: LiveWhat.track($0.path)) })
         case .thisMac: player.playNext(tracks)
         }
     }
@@ -293,7 +295,7 @@ final class AppModel: ObservableObject {
     func add(_ tracks: [Track]) {
         switch output {
         case .live: Task { await live.add(tracks) }
-        case .device(let id): toDevice(id, tracks.map { t -> [String: Any] in ["action": "add", "what": LiveWhat.track(t.path)] })
+        case .device(let id): toDevice(id, tracks.map { Command(.add, what: LiveWhat.track($0.path)) })
         case .thisMac: player.add(tracks)
         }
     }
@@ -301,7 +303,7 @@ final class AppModel: ObservableObject {
     func add(album: Album) {
         switch output {
         case .live: Task { await live.add(album: album) }
-        case .device(let id): toDevice(id, [["action": "add", "what": LiveWhat.folder(album.folder)]])
+        case .device(let id): toDevice(id, [Command(.add, what: LiveWhat.folder(album.folder))])
         case .thisMac: Task { player.add(await tracks(album: album)) }
         }
     }
@@ -309,8 +311,8 @@ final class AppModel: ObservableObject {
     // ---- stations (the Live page): everything shuffled, an artist, an internet radio station
     func playEverything(on o: Output? = nil) {
         switch o ?? output {
-        case .live: Task { await live.act(["action": "play", "what": LiveWhat.everything, "shuffle": 1]) }
-        case .device(let id): toDevice(id, [["action": "play", "what": LiveWhat.everything, "shuffle": 1]])
+        case .live: Task { await live.act(Command(.play, what: LiveWhat.everything, shuffle: true)) }
+        case .device(let id): toDevice(id, [Command(.play, what: LiveWhat.everything, shuffle: true)])
         case .thisMac:                     // the server's own station of the whole library, shuffled, as a stream
             guard let api else { return }
             player.playStream(title: "Everything, shuffled", url: api.url("/radio/", query: [("shuffle", "1")]))
@@ -328,7 +330,7 @@ final class AppModel: ObservableObject {
         guard let st = radio?.stations, st.indices.contains(index) else { return }
         switch o ?? output {
         case .live: message = "Live plays the library; choose This Mac or another player for internet radio."
-        case .device(let id): toDevice(id, [["action": "play", "what": LiveWhat.radio(index)]])
+        case .device(let id): toDevice(id, [Command(.play, what: LiveWhat.radio(index))])
         case .thisMac:
             guard let url = URL(string: st[index].url) else { return }
             player.playStream(title: st[index].name, url: url)
@@ -339,7 +341,7 @@ final class AppModel: ObservableObject {
     func togglePlay() {
         switch output {
         case .live where !player.listeningLive: Task { await live.togglePlay() }
-        case .device(let id): toDevice(id, [["action": (remoteState?.playing ?? false) ? "pause" : "resume"]])
+        case .device(let id): toDevice(id, [Command((remoteState?.playing ?? false) ? .pause : .resume)])
         default: player.togglePlay()
         }
     }
@@ -347,7 +349,7 @@ final class AppModel: ObservableObject {
     func next() {
         switch output {
         case .live: Task { await live.skip() }
-        case .device(let id): toDevice(id, [["action": "skip"]])
+        case .device(let id): toDevice(id, [Command(.skip)])
         case .thisMac: player.skip()
         }
     }
@@ -355,7 +357,7 @@ final class AppModel: ObservableObject {
     func previous() {
         switch output {
         case .live: Task { await live.previous() }
-        case .device(let id): toDevice(id, [["action": "previous"]])
+        case .device(let id): toDevice(id, [Command(.previous)])
         case .thisMac: player.previous()
         }
     }
@@ -365,7 +367,7 @@ final class AppModel: ObservableObject {
         case .live: break                                      // the Live channel cannot seek
         case .device(let id):
             heldPosition = (id, seconds, Date().addingTimeInterval(4))   // shown until the player says where it is
-            toDevice(id, [["action": "seek", "position": seconds]])
+            toDevice(id, [Command(.seek, position: seconds)])
         case .thisMac: player.seek(to: seconds)
         }
     }
@@ -377,7 +379,7 @@ final class AppModel: ObservableObject {
         volumeSend = Task {
             try? await Task.sleep(nanoseconds: 250_000_000)
             if Task.isCancelled { return }
-            message = await devices.send(id, [["action": "volume", "volume": Int((v * 100).rounded())]])
+            message = await devices.send(id, [Command(.volume, volume: Int((v * 100).rounded()))])
         }
     }
 
@@ -408,7 +410,7 @@ final class AppModel: ObservableObject {
         }
         guard let t = player.current else { return DeviceState(volume: vol) }
         return DeviceState(playing: player.isPlaying, title: t.title, artist: t.artist, album: t.albumTitle, folder: t.folder,
-                           position: player.elapsed, length: player.duration, volume: vol)
+                           position: player.elapsed, length: player.duration, volume: vol, track: t.id)
     }
 
     /// Cmd-F: the search field in the toolbar

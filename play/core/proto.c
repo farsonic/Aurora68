@@ -47,7 +47,7 @@ int a68_rec_next(struct a68_rec *r, char **f, int maxf)
 	return nf;
 }
 
-int a68_head(struct a68_rec *r, struct a68_head *h)
+int a68_read_head(struct a68_rec *r, struct a68_head *h)
 {
 	char *f[6];
 	h->kind[0] = 0;
@@ -219,7 +219,7 @@ const char *a68_error_text(char *body, long len)
 	char *f[1];
 	a68_rec_init(&r, body, len);
 	if (len >= 5 && body[0] == 'A' && body[1] == '6' && body[2] == '8' && body[3] == 'M') {
-		if (!a68_head(&r, &h)) return "";
+		if (!a68_read_head(&r, &h)) return "";
 	}
 	return a68_rec_next(&r, f, 1) >= 1 ? f[0] : "";
 }

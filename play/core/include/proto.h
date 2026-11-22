@@ -34,7 +34,7 @@ int a68_rec_next(struct a68_rec *r, char **f, int maxf);
 
 /* a list's first line: 1 if it is the server's ("A68M", version 1), its kind, total, from and count */
 struct a68_head { char kind[12]; long total, from, count; };
-int a68_head(struct a68_rec *r, struct a68_head *h);
+int a68_read_head(struct a68_rec *r, struct a68_head *h);
 /* the next page's "from" after this one, -1 if this was the last */
 long a68_next_from(const struct a68_head *h);
 

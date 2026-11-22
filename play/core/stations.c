@@ -90,6 +90,7 @@ const char stations_builtin[] =
 	"181.fm The Beatles = http://listen.181fm.com/181-beatles_128k.mp3\r"
 	"181.fm Classic Hits = http://listen.181fm.com/181-greatoldies_128k.mp3\r";
 const long stations_builtin_len = sizeof stations_builtin - 1;
+const char *stations_default_text(long *len) { *len = stations_builtin_len; return stations_builtin; }
 
 #define NO_GROUP (-2)                    /* a heading the list does not have */
 

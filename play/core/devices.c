@@ -88,6 +88,10 @@ int dv_want(struct dv *d, unsigned long now)
 	if ((long)(now - d->next_poll) >= 0) return DV_COMMANDS;
 	return DV_NONE;
 }
+int dv_state_due(const struct dv *d, unsigned long now)
+{
+	return d->on && d->announced && d->state_dirty && (long)(now - d->state_at) >= 0;
+}
 /* the encoding the client asked for, at the end of a path */
 static char *tail(const struct dv *d, char *p, char *end)
 {

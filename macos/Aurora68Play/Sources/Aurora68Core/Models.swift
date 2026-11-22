@@ -1,16 +1,20 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// Models.swift - the music server's library and Live channel, as the macOS Aurora68 Play reads them.
+// Models.swift - the music server's library and Live channel, as the macOS Aurora68 Play holds them.
 //
 // Backstory (22 November 2026). The music server (tools/music-server) began as stations for the SE's
 // Aurora68 Play and grew a control panel, a Live channel and a library interface; the owner then asked
-// for "a modern MacOS version of the Player app". A modern Mac reads JSON without effort, so the server
-// gained /api/catalog (every artist and album at once) and /api/tracks (an album's or artist's tracks
-// with their titles, lengths and files); these types are those answers, and /api/now's.
+// for "a modern MacOS version of the Player app". The app first read the server's JSON (/api/catalog,
+// /api/tracks, /api/now). The same evening the two Plays became one code base (docs/08 item 107) with one
+// wire format, the /mac/ text the SE reads: the core (play/core/proto.c) takes the answers apart and these
+// types are made from its records. The whole catalogue is every artist (/mac/artists) and every album
+// (/mac/albums), page after page as the server sends them (a68_next_from), with full=1 for each album's
+// folder (its cover is /art?dir=FOLDER, and "f:FOLDER" plays it on Live or another player).
 import Foundation
+import PlayCore
 
-/// GET /api/catalog: the whole library
-public struct Catalog: Decodable, Equatable {
+/// the whole library
+public struct Catalog: Equatable {
     public let name: String
     public let version: String
     public let artists: [Artist]
@@ -19,9 +23,39 @@ public struct Catalog: Decodable, Equatable {
     public init(name: String, version: String, artists: [Artist], albums: [Album]) {
         self.name = name; self.version = version; self.artists = artists; self.albums = albums
     }
+
+    /// the catalogue from the answers: /mac/info, the pages of /mac/artists and of /mac/albums (all of them); an
+    /// artist's albums are those that name its id, in the order the server sorts them (by title)
+    public static func make(info: Data, artists: [Data], albums: [Data]) throws -> Catalog {
+        guard let i = ServerInfo.parse(info) else { throw MusicAPIError.notText }
+        var list: [Album] = []
+        for page in albums {
+            let r = Records(page)
+            guard r.head() != nil else { throw MusicAPIError.notText }
+            var a = a68_album()
+            while a68_next_album(&r.rec, &a) != 0 {
+                guard a.full != 0 else { throw MusicAPIError.olderServer }
+                list.append(Album(id: text(a.id), title: text(a.title), artist: text(a.artist), artistID: text(a.artist_id),
+                                  folder: text(a.folder), tracks: Int(a.tracks)))
+            }
+        }
+        var byArtist: [String: [String]] = [:]
+        for al in list { byArtist[al.artistID, default: []].append(al.id) }
+        var people: [Artist] = []
+        for page in artists {
+            let r = Records(page)
+            guard r.head() != nil else { throw MusicAPIError.notText }
+            var a = a68_artist()
+            while a68_next_artist(&r.rec, &a) != 0 {
+                let id = text(a.id)
+                people.append(Artist(id: id, name: text(a.name), albums: byArtist[id] ?? []))
+            }
+        }
+        return Catalog(name: i.name, version: i.version, artists: people, albums: list)
+    }
 }
 
-public struct Artist: Decodable, Identifiable, Hashable {
+public struct Artist: Identifiable, Hashable {
     public let id: String
     public let name: String
     public let albums: [String]          // album ids, in title order
@@ -31,7 +65,7 @@ public struct Artist: Decodable, Identifiable, Hashable {
     }
 }
 
-public struct Album: Decodable, Identifiable, Hashable {
+public struct Album: Identifiable, Hashable {
     public let id: String
     public let title: String
     public let artist: String
@@ -39,16 +73,14 @@ public struct Album: Decodable, Identifiable, Hashable {
     public let folder: String            // its folder in the library: /art?dir=FOLDER is its cover
     public let tracks: Int
 
-    enum CodingKeys: String, CodingKey { case id, title, artist, artistID = "artist_id", folder, tracks }
-
     public init(id: String, title: String, artist: String, artistID: String, folder: String, tracks: Int) {
         self.id = id; self.title = title; self.artist = artist; self.artistID = artistID
         self.folder = folder; self.tracks = tracks
     }
 }
 
-/// GET /api/tracks?album=ID or ?artist=ID
-public struct Track: Decodable, Identifiable, Hashable {
+/// /mac/tracks?album=ID or ?artist=ID, full=1
+public struct Track: Identifiable, Hashable {
     public let id: String
     public let number: Int
     public let title: String
@@ -59,35 +91,42 @@ public struct Track: Decodable, Identifiable, Hashable {
     public let albumTitle: String
     public let folder: String
 
-    enum CodingKeys: String, CodingKey {
-        case id, number, title, artist, seconds, path, album, albumTitle = "album_title", folder
-    }
-
     public init(id: String, number: Int, title: String, artist: String, seconds: Int, path: String,
                 album: String, albumTitle: String, folder: String) {
         self.id = id; self.number = number; self.title = title; self.artist = artist; self.seconds = seconds
         self.path = path; self.album = album; self.albumTitle = albumTitle; self.folder = folder
     }
+
+    /// a page of tracks; the next page's start, if there is one
+    public static func page(_ data: Data) throws -> (tracks: [Track], next: Int?) {
+        let r = Records(data)
+        guard let head = r.head() else { throw MusicAPIError.notText }
+        var out: [Track] = []
+        var t = a68_track()
+        while a68_next_track(&r.rec, &t) != 0 {
+            guard t.full != 0 else { throw MusicAPIError.olderServer }
+            out.append(Track(id: text(t.id), number: Int(t.number), title: text(t.title), artist: text(t.artist),
+                             seconds: Int(t.secs), path: text(t.path), album: text(t.album), albumTitle: text(t.album_title),
+                             folder: text(t.folder)))
+        }
+        return (out, head.next)
+    }
 }
 
-public struct TrackList: Decodable {
-    public let tracks: [Track]
-}
-
-/// GET /api/now: what the Live channel plays (what is heard, not what was sent ahead)
-public struct LiveNow: Decodable, Equatable {
-    public struct Current: Decodable, Equatable {
+/// /mac/now: what the Live channel plays (what is heard, not what was sent ahead)
+public struct LiveNow: Equatable {
+    public struct Current: Equatable {
         public let path: String
         public let folder: String
         public let title: String
         public let elapsed: Double
         public let length: Double
     }
-    public struct Item: Decodable, Equatable {
+    public struct Item: Equatable {
         public let path: String
         public let title: String
     }
-    public struct Listener: Decodable, Equatable {
+    public struct Listener: Equatable {
         public let who: String
         public let since: Int
     }
@@ -100,9 +139,37 @@ public struct LiveNow: Decodable, Equatable {
     public let current: Current?
     public let queue: [Item]
     public let listeners: [Listener]
+
+    public static func parse(_ data: Data) -> LiveNow? {
+        let r = Records(data)
+        guard let h = r.head(), h.kind == "now" else { return nil }
+        var name = "", playing = false, paused = false, rep = false, pos = 0, changes = 0
+        var current: Current?
+        var queue: [Item] = [], listeners: [Listener] = []
+        var o = a68_now()
+        while a68_next_now(&r.rec, &o) != 0 {
+            switch UInt8(truncatingIfNeeded: o.kind) {
+            case UInt8(ascii: "N"):
+                name = text(o.name); playing = o.playing != 0; paused = o.paused != 0; rep = o.`repeat` != 0
+                pos = Int(o.pos); changes = Int(o.changes)
+            case UInt8(ascii: "C"):
+                current = Current(path: text(o.path), folder: text(o.folder), title: text(o.title),
+                                  elapsed: Double(o.elapsed_ms) / 1000, length: Double(o.length_ms) / 1000)
+            case UInt8(ascii: "Q"):
+                queue.append(Item(path: text(o.path), title: text(o.title)))
+            case UInt8(ascii: "L"):
+                listeners.append(Listener(who: text(o.who), since: Int(o.since)))
+            default:
+                break
+            }
+        }
+        return LiveNow(name: name, playing: playing, paused: paused, repeat: rep, pos: pos, changes: changes,
+                       current: current, queue: queue, listeners: listeners)
+    }
 }
 
-/// The catalogue indexed for the views: albums by id, an artist's albums, filtering by words
+/// The catalogue indexed for the views: albums by id, an artist's albums, filtering by words. The filter folds
+/// case and accents with Foundation's Unicode tables, which the C core has not: text at this Play's edge
 public struct LibraryIndex {
     public let catalog: Catalog
     public let albumsByID: [String: Album]

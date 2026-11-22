@@ -11,20 +11,25 @@
 # for every change (.github/workflows/macos-player.yml). The app is signed ad hoc, not by a developer
 # account: the first time, macOS asks for it to be allowed (README.md, "Opening it the first time").
 # Nothing is deleted: an earlier build is moved aside.
+#
+# Since 22 November 2026 (docs/08 item 107) the Swift package is the repository's top folder (Package.swift there),
+# because the app shares its C core with the classic Play (play/core) and a SwiftPM target must lie inside its
+# package: this script builds from there (--package-path), its products in .build at the top, as `swift test` there.
 set -eu
 cd "$(dirname "$0")"
-VERSION="${VERSION:-1.0}"
+ROOT=../..
+VERSION="${VERSION:-1.2}"
 BUILD="${BUILD:-1}"
 OUT=build
 APP="$OUT/Aurora68 Play.app"
 
-swift build -c release --arch arm64
-swift build -c release --arch x86_64
+swift build --package-path "$ROOT" -c release --arch arm64
+swift build --package-path "$ROOT" -c release --arch x86_64
 mkdir -p "$OUT"
 if [ -e "$APP" ]; then mv "$APP" "$OUT/Aurora68 Play.$(date +%Y%m%d%H%M%S).old.app"; fi
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 lipo -create -output "$APP/Contents/MacOS/Aurora68Play" \
-    .build/arm64-apple-macosx/release/Aurora68Play .build/x86_64-apple-macosx/release/Aurora68Play
+    "$ROOT/.build/arm64-apple-macosx/release/Aurora68Play" "$ROOT/.build/x86_64-apple-macosx/release/Aurora68Play"
 
 "${PYTHON:-python3}" make-icon.py "$OUT/AppIcon.iconset"
 iconutil -c icns -o "$APP/Contents/Resources/AppIcon.icns" "$OUT/AppIcon.iconset"

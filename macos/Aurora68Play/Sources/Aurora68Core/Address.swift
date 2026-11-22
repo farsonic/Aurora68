@@ -11,108 +11,92 @@
 // the same way. An IPv6 address in a URL goes in brackets (RFC 3986), and a file's path is
 // percent-encoded segment by segment, ASCII letters and digits only left as they are, so names with
 // accents, spaces, apostrophes or "#" reach the server exactly.
+//
+// Since the same evening (docs/08 item 107) the rules are the shared core's (play/core/address.c), the same
+// the classic Play on the SE uses: these are thin wrappers. One rule changed in the move: after a probe, the
+// address the answer came from is tried before the IPv4 address the server names for itself (which, inside a
+// container, may be the container's), as the classic Play did.
 import Foundation
+import PlayCore
 
 public enum IPFamily: String, Codable, CaseIterable, Identifiable {
     case ipv6, ipv4
     public var id: String { rawValue }
     public var label: String { self == .ipv6 ? "IPv6 first" : "IPv4 first" }
     public var other: IPFamily { self == .ipv6 ? .ipv4 : .ipv6 }
+    var core: Int32 { self == .ipv6 ? Int32(A68_IPV6) : Int32(A68_IPV4) }
 }
 
 public enum Address {
     /// the music server's port when none is typed (the server's own default)
-    public static let defaultPort = 8000
+    public static let defaultPort = Int(A68_DEFAULT_PORT)
     /// the UDP port and multicast group the server answers "AURORA68-MUSIC?" on
-    public static let discoveryPort: UInt16 = 8070
-    public static let discoveryGroup = "239.255.68.70"
-    public static let probe = "AURORA68-MUSIC?"
+    public static let discoveryPort = UInt16(A68_DISCOVERY_PORT)
+    public static let discoveryGroup = A68_DISCOVERY_GROUP_TEXT
+    public static let probe = A68_PROBE
 
-    public static func isIPv6(_ host: String) -> Bool {
-        let h = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-        let addr = h.split(separator: "%", maxSplits: 1).first.map(String.init) ?? h   // a zone ("%en0") is any text
-        return addr.contains(":") && addr.allSatisfy { $0.isHexDigit || $0 == ":" || $0 == "." }
-    }
-
-    public static func isIPv4(_ host: String) -> Bool {
-        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
-        return parts.count == 4 && parts.allSatisfy { p in
-            !p.isEmpty && p.count <= 3 && p.allSatisfy(\.isNumber) && (Int(p) ?? 999) <= 255
-        }
-    }
-
+    public static func isIPv6(_ host: String) -> Bool { a68_is_ipv6(host) != 0 }
+    public static func isIPv4(_ host: String) -> Bool { a68_is_ipv4(host) != 0 }
     public static func isNumeric(_ host: String) -> Bool { isIPv4(host) || isIPv6(host) }
 
     public static func family(of host: String) -> IPFamily? {
-        isIPv6(host) ? .ipv6 : isIPv4(host) ? .ipv4 : nil
+        switch Int(a68_family(host)) {
+        case Int(A68_IPV6): return .ipv6
+        case Int(A68_IPV4): return .ipv4
+        default: return nil
+        }
     }
 
     /// a host as it goes into a URL: IPv6 in brackets (a zone's "%" written "%25")
     public static func urlHost(_ host: String) -> String {
-        let h = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-        if isIPv6(h) { return "[" + h.replacingOccurrences(of: "%", with: "%25") + "]" }
-        return h
+        let size = host.utf8.count * 3 + 8
+        var buf = [CChar](repeating: 0, count: size)
+        buf.withUnsafeMutableBufferPointer { b in
+            let end = a68_put_url_host(b.baseAddress!, b.baseAddress! + (size - 1), host)
+            end?.pointee = 0
+        }
+        return String(cString: buf)
     }
 
     public static func baseURL(host: String, port: Int) -> URL? {
-        URL(string: "http://\(urlHost(host)):\(port)")
+        builtLength(host.utf8.count * 3 + 32) { a68_url($0, $1, host, UInt32(clamping: port), nil) }.flatMap { URL(string: $0) }
     }
 
     /// what the owner typed, as (host, port): "192.168.1.20:8423", "[fd00::20]:8423", "fd00::20",
     /// "nas.local", "http://nas.local:8423/live" (scheme and path dropped); nil if it is no address
     public static func parse(_ typed: String, defaultPort: Int = Address.defaultPort) -> (host: String, port: Int)? {
-        var s = typed.trimmingCharacters(in: .whitespacesAndNewlines)
-        for scheme in ["http://", "https://"] where s.lowercased().hasPrefix(scheme) {
-            s = String(s.dropFirst(scheme.count))
+        var host = [CChar](repeating: 0, count: Int(A68_HOST_MAX))
+        var port: UInt32 = 0
+        let ok = host.withUnsafeMutableBufferPointer { b in
+            a68_parse_address(typed, UInt32(clamping: defaultPort), b.baseAddress!, b.count, &port)
         }
-        var host = "", rest = Substring("")
-        if s.hasPrefix("[") {
-            guard let close = s.firstIndex(of: "]") else { return nil }
-            host = String(s[s.index(after: s.startIndex)..<close])
-            rest = s[s.index(after: close)...]
-        } else if s.filter({ $0 == ":" }).count > 1 && !s.contains("/") {
-            host = s                                   // a bare IPv6 address: no port can follow
-        } else {
-            let end = s.firstIndex(of: "/") ?? s.endIndex
-            let hp = s[..<end]
-            if let colon = hp.firstIndex(of: ":") {
-                host = String(hp[..<colon]); rest = hp[colon...]
-            } else {
-                host = String(hp)
-            }
-        }
-        var port = defaultPort
-        if rest.hasPrefix(":") {
-            let digits = rest.dropFirst().prefix(while: \.isNumber)
-            guard let p = Int(digits), (1...65535).contains(p) else { return nil }
-            port = p
-        }
-        guard !host.isEmpty, !host.contains(" ") else { return nil }
-        return (host, port)
+        return ok != 0 ? (String(cString: host), Int(port)) : nil
     }
 
-    /// candidates ordered by the preference: the preferred family's addresses, then the other's
+    /// candidates ordered by the preference: the preferred family's addresses, then the other's, then names
     public static func ordered(_ hosts: [String], prefer: IPFamily) -> [String] {
-        var seen = Set<String>()
-        let unique = hosts.filter { !$0.isEmpty && seen.insert($0).inserted }
-        let first = unique.filter { family(of: $0) == prefer }
-        let second = unique.filter { family(of: $0) == prefer.other }
-        let names = unique.filter { family(of: $0) == nil }
-        return first + second + names
+        guard !hosts.isEmpty else { return [] }
+        let copies = hosts.map { strdup($0) }
+        defer { copies.forEach { free($0) } }
+        let pointers: [UnsafePointer<CChar>?] = copies.map { $0.map { UnsafePointer($0) } }
+        var order = [Int32](repeating: 0, count: hosts.count)
+        let n = a68_order(pointers, Int32(hosts.count), prefer.core, &order)
+        return order[0..<Int(n)].map { hosts[Int($0)] }
     }
-
-    private static let unreserved = CharacterSet(charactersIn:
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 
     /// a library path for a URL: each segment percent-encoded as UTF-8, the slashes kept
-    public static func encodePath(_ path: String) -> String {
-        path.split(separator: "/", omittingEmptySubsequences: false)
-            .map { String($0).addingPercentEncoding(withAllowedCharacters: unreserved) ?? "" }
-            .joined(separator: "/")
-    }
+    public static func encodePath(_ path: String) -> String { escaped(path, keepSlash: true) }
 
-    public static func encodeQuery(_ value: String) -> String {
-        value.addingPercentEncoding(withAllowedCharacters: unreserved) ?? ""
+    public static func encodeQuery(_ value: String) -> String { escaped(value, keepSlash: false) }
+
+    static func escaped(_ s: String, keepSlash: Bool) -> String {
+        let size = s.utf8.count * 3 + 1
+        var buf = [CChar](repeating: 0, count: size)
+        buf.withUnsafeMutableBufferPointer { b in
+            let end = a68_put_escaped(b.baseAddress!, b.baseAddress! + (size - 1), s, keepSlash ? 1 : 0)
+            end?.pointee = 0
+        }
+        return String(cString: buf)
     }
 }
 
@@ -123,7 +107,7 @@ public struct DiscoveryReply: Equatable, Hashable, Identifiable {
     public let port: Int
     public let ipv4: String?
     public let ipv6: String?
-    public var sender: String?                 // where the answer came from, if the addresses are missing
+    public var sender: String?                 // where the answer came from
     public var id: String { "\(name)|\(port)|\(ipv4 ?? "")|\(ipv6 ?? "")" }
 
     public init(name: String, port: Int, ipv4: String?, ipv6: String?, sender: String? = nil) {
@@ -131,17 +115,31 @@ public struct DiscoveryReply: Equatable, Hashable, Identifiable {
     }
 
     public static func parse(_ data: Data, sender: String? = nil) -> DiscoveryReply? {
-        guard let text = String(data: data, encoding: .macOSRoman) else { return nil }
-        let f = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            .split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
-        guard f.count >= 4, f[0] == "AURORA68-MUSIC", let port = Int(f[3]), (1...65535).contains(port) else { return nil }
-        let v4 = f.count > 4 && Address.isIPv4(f[4]) ? f[4] : nil
-        let v6 = f.count > 5 && Address.isIPv6(f[5]) ? f[5] : nil
-        return DiscoveryReply(name: f[2], port: port, ipv4: v4, ipv6: v6, sender: sender)
+        var r = a68_disc()
+        let ok = data.withUnsafeBytes { raw in
+            a68_disc_parse(raw.bindMemory(to: UInt8.self).baseAddress, raw.count, &r)
+        }
+        guard ok != 0 else { return nil }
+        let name = withUnsafeBytes(of: r.name) { raw in
+            String(bytes: raw.prefix(while: { $0 != 0 }), encoding: .macOSRoman) ?? ""
+        }
+        let v4 = text(tuple: r.v4), v6 = text(tuple: r.v6)
+        return DiscoveryReply(name: name, port: Int(r.port), ipv4: v4.isEmpty ? nil : v4, ipv6: v6.isEmpty ? nil : v6, sender: sender)
     }
 
-    /// the hosts to try, the preferred family first, the sender's address last
+    /// the hosts to try, best first (play/core/address.c's a68_disc_hosts): the preferred family first; for IPv4
+    /// the address the answer came from before the one the server names
     public func hosts(prefer: IPFamily) -> [String] {
-        Address.ordered([ipv4, ipv6, sender].compactMap { $0 }, prefer: prefer)
+        var r = a68_disc()
+        setText(&r.v4, ipv4 ?? "")
+        setText(&r.v6, ipv6 ?? "")
+        r.port = UInt32(clamping: port)
+        return withUnsafeMutablePointer(to: &r) { rp in      // the answers point into r and the sender: read while both live
+            (sender ?? "").withCString { s in
+                var out = [UnsafePointer<CChar>?](repeating: nil, count: 3)
+                let n = a68_disc_hosts(rp, s, prefer.core, 1, &out)
+                return out[0..<Int(n)].map { text($0) }
+            }
+        }
     }
 }

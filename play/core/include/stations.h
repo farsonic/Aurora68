@@ -45,6 +45,9 @@ struct stations {
 
 extern const char stations_builtin[];    /* the list written at the first start (Mac Roman, Return-ended lines) */
 extern const long stations_builtin_len;
+/* the same, through a function: Swift does not import an array of unknown size (the macOS Play's fallback
+   for a server without /mac/radio) */
+const char *stations_default_text(long *len);
 
 /* the file's text into l (everything in it replaced) */
 void stations_parse(struct stations *l, const char *text, long n);

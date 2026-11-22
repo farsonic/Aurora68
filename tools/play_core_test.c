@@ -257,7 +257,7 @@ static void proto_units(void)
 	         "64fc4a6e\tBj\x9Ark-like\t1\r"
 	         "8c107591\t\t1\t4", &n);
 	a68_rec_init(&r, b, n);
-	check(a68_head(&r, &h), "the first line is the server's");
+	check(a68_read_head(&r, &h), "the first line is the server's");
 	check(!strcmp(h.kind, "artists") && h.total == 79 && h.from == 2 && h.count == 3 && a68_next_from(&h) == 5, "kind, total, from, count; the next page");
 	k = a68_rec_next(&r, f, 4);
 	check(k == 4 && !strcmp(f[0], "009d7bdd") && !strcmp(f[1], "Alpha Band") && a68_num(f[2]) == 2 && a68_num(f[3]) == 5, "a record's fields");
@@ -268,7 +268,7 @@ static void proto_units(void)
 	check(a68_rec_next(&r, f, 4) == -1, "then no more");
 	b = dup_("A68M\t1\ttracks\t1\t0\t1\n" "aaaaaaaa\t1\tA very long title that is longer than any line a 68000 would copy it into, by far\tX\t200\tbbbbbbbb\n", &n);
 	a68_rec_init(&r, b, n);
-	check(a68_head(&r, &h), "line feeds are taken as Returns");
+	check(a68_read_head(&r, &h), "line feeds are taken as Returns");
 	{
 		struct a68_track t;
 		check(a68_next_track(&r, &t) && !strcmp(t.id, "aaaaaaaa") && strlen(t.title) > 80 && t.secs == 200 && !strcmp(t.album, "bbbbbbbb") &&
@@ -277,10 +277,10 @@ static void proto_units(void)
 	}
 	b = dup_("HTTP/1.0 404", &n);
 	a68_rec_init(&r, b, n);
-	check(!a68_head(&r, &h), "an answer that is not the server's");
+	check(!a68_read_head(&r, &h), "an answer that is not the server's");
 	b = dup_("A68M\t2\tinfo\t1\t0\t1\r", &n);
 	a68_rec_init(&r, b, n);
-	check(!a68_head(&r, &h), "a later version is not read as this one");
+	check(!a68_read_head(&r, &h), "a later version is not read as this one");
 	{
 		static const char art[] = "A68ART\t1\t64\t64\t1\t8\r\xff\x00";
 		long v[5], at;
@@ -296,7 +296,7 @@ static void proto_units(void)
 	         "a1\tCaf\xC3\xA9 Sessions\tAlpha Band\t1\t5\tb1\tAlpha Band/Caf\xC3\xA9 Sessions\r"
 	         "a2\tOne\tZed\t1\t1\r", &n);
 	a68_rec_init(&r, b, n);
-	a68_head(&r, &h);
+	a68_read_head(&r, &h);
 	{
 		struct a68_album a;
 		check(a68_next_album(&r, &a) && a.full && !strcmp(a.artist_id, "b1") && !strcmp(a.folder, "Alpha Band/Caf\xC3\xA9 Sessions") && a.secs == 5,
@@ -346,7 +346,7 @@ static void proto_units(void)
 	{
 		struct a68_now o;
 		int q = 0;
-		check(a68_head(&r, &h) && !strcmp(h.kind, "now") && h.total == 2, "Live: its head");
+		check(a68_read_head(&r, &h) && !strcmp(h.kind, "now") && h.total == 2, "Live: its head");
 		check(a68_next_now(&r, &o) && o.kind == 'N' && o.playing && !o.paused && o.repeat && o.changes == 12 && o.listeners == 1, "Live: playing, repeat");
 		check(a68_next_now(&r, &o) && o.kind == 'C' && o.elapsed_ms == 3500 && o.length_ms == 180000 && !strcmp(o.folder, "A"), "the song heard");
 		while (a68_next_now(&r, &o) && o.kind == 'Q') q++;
@@ -477,14 +477,14 @@ static void fixtures(const char *dir)
 	a68_rec_init(&r, b, n);
 	{
 		struct a68_info i;
-		check(a68_head(&r, &h) && !strcmp(h.kind, "info") && a68_info_of(&r, &i) && !strcmp(i.name, "Core Test") && i.tracks >= 10 &&
+		check(a68_read_head(&r, &h) && !strcmp(h.kind, "info") && a68_info_of(&r, &i) && !strcmp(i.name, "Core Test") && i.tracks >= 10 &&
 		      i.generation >= 1 && i.every == 20, "server: /mac/info, with how often to announce (full)");
 	}
 	b = load(dir, "info.mr", &n);
 	a68_rec_init(&r, b, n);
 	{
 		struct a68_info i;
-		check(a68_head(&r, &h) && a68_info_of(&r, &i) && i.every == 0, "server: /mac/info as the classic Play reads it: as before");
+		check(a68_read_head(&r, &h) && a68_info_of(&r, &i) && i.every == 0, "server: /mac/info as the classic Play reads it: as before");
 	}
 	/* artists: the whole list, and the same in pages of two */
 	{
@@ -493,7 +493,7 @@ static void fixtures(const char *dir)
 		b = load(dir, "artists.u8", &n);
 		a68_rec_init(&r, b, n);
 		struct a68_artist a;
-		check(a68_head(&r, &h) && !strcmp(h.kind, "artists") && h.total >= 5, "server: /mac/artists");
+		check(a68_read_head(&r, &h) && !strcmp(h.kind, "artists") && h.total >= 5, "server: /mac/artists");
 		while (a68_next_artist(&r, &a) && na < 64) snprintf(names[na++], 80, "%s", a.name);
 		int apes = -1, kite = -1;
 		for (int i = 0; i < na; i++) { if (!strcmp(names[i], "The Apes")) apes = i; if (!strcmp(names[i], "Kite")) kite = i; }
@@ -504,7 +504,7 @@ static void fixtures(const char *dir)
 			b = load(dir, fn, &n);
 			if (!n) { fails--; break; }
 			a68_rec_init(&r, b, n);
-			if (!a68_head(&r, &h)) break;
+			if (!a68_read_head(&r, &h)) break;
 			while (a68_next_artist(&r, &a)) { same &= np < na && !strcmp(names[np], a.name); np++; }
 			if (a68_next_from(&h) < 0) break;
 		}
@@ -517,7 +517,7 @@ static void fixtures(const char *dir)
 		int cafe = 0, all_full = 1, k = 0;
 		b = load(dir, "albums.u8", &n);
 		a68_rec_init(&r, b, n);
-		check(a68_head(&r, &h) && !strcmp(h.kind, "albums"), "server: /mac/albums, every album");
+		check(a68_read_head(&r, &h) && !strcmp(h.kind, "albums"), "server: /mac/albums, every album");
 		while (a68_next_album(&r, &a)) {
 			k++;
 			all_full &= a.full && a.folder[0] && a.artist_id[0];
@@ -527,7 +527,7 @@ static void fixtures(const char *dir)
 		b = load(dir, "albums-alpha.mr", &n);
 		a68_rec_init(&r, b, n);
 		cafe = 0;
-		a68_head(&r, &h);
+		a68_read_head(&r, &h);
 		while (a68_next_album(&r, &a)) if (!strcmp(a.title, "Caf\x8E Sessions") && !a.full) cafe = 1;
 		check(cafe, "server: an artist's albums in Mac Roman, short records, as the classic Play has them");
 	}
@@ -537,7 +537,7 @@ static void fixtures(const char *dir)
 		int k = 0, ok = 1;
 		b = load(dir, "tracks.u8", &n);
 		a68_rec_init(&r, b, n);
-		check(a68_head(&r, &h) && !strcmp(h.kind, "tracks") && h.total == 3, "server: /mac/tracks of an album");
+		check(a68_read_head(&r, &h) && !strcmp(h.kind, "tracks") && h.total == 3, "server: /mac/tracks of an album");
 		while (a68_next_track(&r, &t)) {
 			char stem[200], title[200];
 			unsigned long num;
@@ -619,7 +619,7 @@ static void fixtures(const char *dir)
 		int q = 0, nline = 0;
 		b = load(dir, "now.u8", &n);
 		a68_rec_init(&r, b, n);
-		check(a68_head(&r, &h) && !strcmp(h.kind, "now") && h.total == 3, "server: /mac/now: the Live channel's queue of three");
+		check(a68_read_head(&r, &h) && !strcmp(h.kind, "now") && h.total == 3, "server: /mac/now: the Live channel's queue of three");
 		while (a68_next_now(&r, &o)) { if (o.kind == 'N' && o.repeat) nline = 1; if (o.kind == 'Q') q++; }
 		check(nline && q == 3, "server: Live, repeat on (set by /mac/command), the queue's songs");
 	}

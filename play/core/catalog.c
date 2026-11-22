@@ -38,7 +38,7 @@ int a68_list_load(struct a68_list *l, char *body, long len)
 	struct a68_head h;
 	a68_rec_init(&r, body, len);
 	l->n = 0;
-	if (!a68_head(&r, &h)) return 0;
+	if (!a68_read_head(&r, &h)) return 0;
 	l->total = h.total;
 	l->from = h.from;
 	while (l->n < l->max) {

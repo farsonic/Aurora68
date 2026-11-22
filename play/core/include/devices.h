@@ -59,6 +59,9 @@ int dv_path(const struct dv *d, int what, char *out, long max);
 int dv_answer(struct dv *d, int what, int status, char *body, long len, unsigned long now);
 /* what plays now: a change of track, of playing, a seek or a new title makes a state report due */
 void dv_set_state(struct dv *d, const struct dv_state *s, unsigned long now);
+/* is a state report due now? (for a Play that announces and polls on connections of their own, as the macOS
+   Play does, and asks dv_want only about the state) */
+int dv_state_due(const struct dv *d, unsigned long now);
 /* the library's generation from elsewhere (/mac/info's sixth field) */
 void dv_set_generation(struct dv *d, unsigned long gen);
 
