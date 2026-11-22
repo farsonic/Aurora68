@@ -1236,10 +1236,30 @@ static uint64_t verify_next;
    wrong and its writes do not, so the check rewrote right words and added 2,000 reads a second to a bus
    whose reads were already in doubt. Past 64 rows with more than a quarter of them differing, it stops. */
 static int verify_on = 1;
+/* mac.screencheck=blind, the default on the 128K/512K/512Ke/Plus (docs/18, recommendation K3): their
+   reads of the board's RAM are not to be trusted with the PiStorm's current CPLD firmware, so the row is
+   written again from the Pi's copy without reading it first: a stray word lasts at most a pass of the
+   screen (5.7 s), and no reads are added to the bus. "on" is the read-back check, "off" neither. */
+static int verify_blind = -1;                    /* -1: the board decides */
+static uint32_t blind_rows;
 static void se_verify_row(void)
 {
     uint64_t now = asc_now();
-    if (!verify_on || !shadow_valid || now < verify_next) return;
+    if (verify_blind < 0) verify_blind = psmac_board_plus ? 1 : 0;
+    if (verify_on && verify_blind && shadow_valid && now >= verify_next) {
+        verify_next = now + asc_hz() / 60;
+        uint32_t y = verify_row; verify_row = (verify_row + 1) % SE_ROWS;
+        if (dirty[y >> 5] & (1u << (y & 31))) return;
+        const uint16_t *src = (const uint16_t *)(shadow + y * SE_ROWBYTES);
+        uint32_t dst = psmac_se_fb_base() + y * SE_ROWBYTES;
+        for (int i = 0; i < SE_ROWBYTES / 2; i++) {
+            psmac_wire_write(dst + 2 * i, 2, src[i], 1);
+            psmac_serve_waiting();
+        }
+        blind_rows++;
+        return;
+    }
+    if (!verify_on || verify_blind || !shadow_valid || now < verify_next) return;
     if (verify_rows >= 64 && verify_rows_bad * 4 > verify_rows) {
         verify_on = 0;
         kprintf("[PSMAC:SE] screen check stopped: %u of %u rows read back differently (%u words): the board's memory reads back "
@@ -1469,7 +1489,12 @@ void psmac_se_options(const char *args)
         else if (n >= 1 && n <= 21) se_fault_or = 1u << n;
     }
     if ((tok = find_token(args, "mac.sescsi=")) && !psmac_board_orig) { tok += 11; scsi_mode = tok[0] == 'r' ? 1 : tok[0] == 'e' ? 2 : 0; }
-    if ((tok = find_token(args, "mac.screencheck="))) verify_on = tok[16] != 'o' || tok[17] != 'f';
+    if ((tok = find_token(args, "mac.screencheck="))) {
+        tok += 16;
+        if (tok[0] == 'o' && tok[1] == 'f') verify_on = 0;
+        else if (tok[0] == 'b') verify_blind = 1;
+        else if (tok[0] == 'o' && tok[1] == 'n') verify_blind = 0;
+    }
     if ((tok = find_token(args, "mac.sescsiwait="))) {
         int v = 0;
         for (tok += 15; *tok >= '0' && *tok <= '9'; tok++) v = v * 10 + (*tok - '0');
@@ -1488,8 +1513,8 @@ void psmac_se_report(void)
 {
     if (psmac_board_solo) { psmac_solo_report(); return; }
     if (!psmac_board_se) return;
-    kprintf("[PSMAC:SE] rows sent %u%s, rows checked %u (%u with %u words wrong, written again%s), frames compared %u, local reads %u writes %u, RBV IFR %02x IER %02x SIER %02x | clock chip: %s, %u bytes read (%u of them $FF from the chip), %u written\n",
-            rows_sent, se_lines_bad ? " (an address line failed its test at the start)" : "", verify_rows, verify_rows_bad, verify_words_bad, verify_on ? "" : "; check stopped: reads in doubt", frames_marked, local_reads, local_writes, rbv_ifr, rbv_ier, rbv_regs[0x12],
+    kprintf("[PSMAC:SE] rows sent %u%s, rows checked %u (%u with %u words wrong, written again%s), rows rewritten blind %u, frames compared %u, local reads %u writes %u, RBV IFR %02x IER %02x SIER %02x | clock chip: %s, %u bytes read (%u of them $FF from the chip), %u written\n",
+            rows_sent, se_lines_bad ? " (an address line failed its test at the start)" : "", verify_rows, verify_rows_bad, verify_words_bad, verify_on ? "" : "; check stopped: reads in doubt", blind_rows, frames_marked, local_reads, local_writes, rbv_ifr, rbv_ier, rbv_regs[0x12],
             xp.serve ? "not answering, the board layer answers" : "answering", xp.reads, xp.reads_ff, xp.writes);
     if (scsi_empty) kprintf("[PSMAC:SE]   SCSI: the empty bus answered here, %u selections (none answered)\n", se5380.selections);
     if (psmac_board_plus) {

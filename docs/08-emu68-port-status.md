@@ -3795,6 +3795,17 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      are now spread from half to one and a half periods (mac.plusjitter=0 for fixed), and mac.plusmouse=0
      tells whether they are the source. The same log: Y1 2,300 changes in 5 s with the mouse nearly still,
      Y2 none: the tester's mouse's Y1 line chatters by itself.
+   - *The bus explained, in part (docs/18, the same evening).* The research found that the PiStorm's current
+     CPLD firmware takes read data about one 68000 clock early (since an Amiga speed-up of June 2021), which
+     the SE's BBU hides by delaying /DTACK and the Plus-era PALs do not; that the Z8530 wants 2.2 us between
+     accesses on these boards, which only the later glue chips enforce; and that the tester's board is very
+     likely a reproduction 512Ke with modern PLDs. So the earlier reading of "Y1 chatters by itself" was
+     probably wrong: the kernel read channel A's RR0 and then channel B's one bus cycle apart, and Y1 was
+     the one read second. Two kernel changes follow its recommendations K1 and K3: every SCC access on the
+     128K/512K/512Ke/Plus waits until 3 us after the last (psmac_gpio.c, the Mac's and the kernel's alike);
+     and on those boards the screen check reads nothing back, it rewrites one row a tick from the Pi's copy
+     ("rows rewritten blind"; mac.screencheck=on for the read-back, off for neither). Neither can be seen
+     in the testbed (MAME's SCC and RAM have no such timing); the tester's next log will say.
 
 97. **FAT32 and exFAT on the Mac: disk images on sticks, and an HFS view of a stick or a card folder (21
    November, issue #20).** The owner wants sticks formatted by Windows, Linux or a modern Mac, and a folder
