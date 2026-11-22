@@ -3795,6 +3795,17 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      are now spread from half to one and a half periods (mac.plusjitter=0 for fixed), and mac.plusmouse=0
      tells whether they are the source. The same log: Y1 2,300 changes in 5 s with the mouse nearly still,
      Y2 none: the tester's mouse's Y1 line chatters by itself.
+   - *The bus explained, in part (docs/18, the same evening).* The research found that the PiStorm's current
+     CPLD firmware takes read data about one 68000 clock early (since an Amiga speed-up of June 2021), which
+     the SE's BBU hides by delaying /DTACK and the Plus-era PALs do not; that the Z8530 wants 2.2 us between
+     accesses on these boards, which only the later glue chips enforce; and that the tester's board is very
+     likely a reproduction 512Ke with modern PLDs. So the earlier reading of "Y1 chatters by itself" was
+     probably wrong: the kernel read channel A's RR0 and then channel B's one bus cycle apart, and Y1 was
+     the one read second. Two kernel changes follow its recommendations K1 and K3: every SCC access on the
+     128K/512K/512Ke/Plus waits until 3 us after the last (psmac_gpio.c, the Mac's and the kernel's alike);
+     and on those boards the screen check reads nothing back, it rewrites one row a tick from the Pi's copy
+     ("rows rewritten blind"; mac.screencheck=on for the read-back, off for neither). Neither can be seen
+     in the testbed (MAME's SCC and RAM have no such timing); the tester's next log will say.
 
 97. **FAT32 and exFAT on the Mac: disk images on sticks, and an HFS view of a stick or a card folder (21
    November, issue #20).** The owner wants sticks formatted by Windows, Linux or a modern Mac, and a folder
@@ -4337,3 +4348,124 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    - *Not verified:* the owner's SE (core 1's load on a real Pi 3, a BlueSCSI disk's speed for lossless files at
      some 100 KB/s), files from the owner's own library (24-bit FLAC at 96 kHz, iTunes ALAC with the sample tables at
      the end, long Vorbis comments), and commands sent from the macOS Play or the panel to a real SE.
+
+106. **Aurora68 Recovery: the Pi's SD card over the network when the Mac will not start (22 November).** In the SE,
+     the Plus and the 512K the Pi sits in the 68000 socket under the logic board, and its microSD card cannot be
+     reached without opening the case. A kernel8.img that does not start the Mac, a typing mistake in cmdline.txt or
+     a disk image the Mac cannot boot from meant exactly that. The owner approved a design in which the kernel is its
+     own way back: a start in which the 68k is never released, no Mac code runs, and the Pi serves its card over the
+     network, says on the Mac's own screen and on HDMI where to find it, and takes a keyboard for what it needs to get
+     onto a network. The same evening the owner added the WiFi settings and the common options as forms, a way in
+     when the WiFi settings are wrong or absent, and a keyboard menu on the recovery screen.
+   - *Getting in* (`emu68/src/psmac/psmac_recovery.c`, core 0 before the 68k would start; README "Recovery"):
+     the boot counter (`boot.txt` in the card's root: starts in a row that did not reach the Finder, incremented
+     before the 68k starts, back to 00 when CurApName says Finder; at `mac.bootcount=` (3) the next start is a
+     recovery start); the programmer's interrupt switch held as the 68k would be released (the raw level's bit 2 on
+     the wire, held 50 ms: SE, Plus, 512K); Esc held for a second on a USB keyboard in the kernel's first twenty
+     seconds (the keyboard is not up before the 68k starts, so the kernel writes `recovery.txt` and restarts the Pi);
+     `recovery.txt` in the root (taken away on entry; its line is shown as the reason), which the remote control's
+     `POST /restart?how=recovery` (`aurora68.py restart recovery`) and the recovery page's own "restart into
+     recovery" write; and `mac.recovery=1` in cmdline.txt, which "restart normally" takes out again. The counter is
+     made once with one cluster and a text of fixed length, so later starts write one data sector and never a
+     directory sector or the FAT: a power cut during that write can spoil the number (read as 0) and nothing else. A
+     start the Pi was switched off in before the Finder counts as a failed one: there is no telling it from a start
+     that hung and was switched off, and three in a row cost one press of "restart normally". A restart from the
+     Finder never counts, since the counter counts the Pi's starts and the Finder was reached before it.
+     `mac.bootcount=off` for a Mac that starts something other than the Finder.
+   - *In recovery* the 68k is never released (core 0 waits for good); the card's disk images are not loaded, nothing
+     of the Mac's is written, and `aurora68.log` stays as the last start left it, for the page to show. The network is
+     `psmac_ip.c`'s, started by the recovery whether or not `remote=on` (the remote itself stays off: there is no Mac
+     to drive): the wired port or a USB Ethernet adapter by DHCP, and when no DHCP server answers within about
+     twelve seconds an address from 169.254/16 made from the MAC address (DHCP goes on asking every 15 s), so a laptop
+     on a direct cable finds `http://aurora68.local/` by mDNS; on the WiFi (`wifi.ssid/psk/country`) an IPv4 address
+     of its own with the radio's MAC address, nothing being shared with a Mac. The screen (HDMI through the VideoCore
+     buffer, the console kept off it; on the SE, Plus and 512K boards the compact Mac's 512 by 342 one-bit screen
+     through `psmac_se_mark`, the same row sender the Mac's own picture uses): "Aurora68 Recovery", the reason, the
+     address and the `.local` name, a four-digit PIN in large digits, the wired and WiFi states, the card, the upload
+     in progress or the last action, the rollback note, and the keyboard menu.
+   - *Security.* Every request but the page needs the PIN (`X-Aurora-Pin`; a new one from the BCM2835's random
+     generator at every recovery start); after ten wrong ones a new PIN and a minute of 429s, the screen showing
+     "----" meanwhile. Requests from outside the local network are refused by the remote control's own rule
+     (`psmac_remote_private_source`). The PIN is drawn on the screens only; the log says "PIN shown on screen", and
+     `mac.recoverypin=` (the testbed's fixed PIN: scripts cannot read a screen) is hidden in the log like a password.
+     The WiFi password and the remote's token never leave the card: cmdline.txt and cmdline.bak are served with them
+     as `***`, the forms show "set" or "not set", and a line saved with `***` keeps the stored value.
+   - *The card's root as a file manager sees it* (`psmac_card.c`, its last part). Until now the kernel only rewrote
+     files of its own in place. Recovery lists, reads, writes (any size: a cluster at a time, CMD25 multi-sector
+     writes with a fall-back to single sectors on the first failure), renames and deletes, with long names read and
+     written, and is written so that a power cut at any moment leaves a card the firmware boots: a new file's entry is
+     written empty first, then its data and its chain (each cluster marked the end before the one in front is joined
+     to it), and only then its first cluster and size; a file's content is replaced by changing its own short
+     entry's first cluster and size, one sector write, so `kernel8.img` is never absent for an instant. Where the two
+     entries of a swap lie in different sectors there is a moment when both start with the same cluster; the next
+     recovery start finds such a temporary name (`kernel8.new`, `aurora68.up`, `aurora68.tmp`, `kernel8.old` sharing
+     kernel8.img's chain) and removes its entry without freeing the clusters, and no delete ever frees a chain another
+     name starts with. An unfinished upload's temporary is deleted. The cost of the window is at worst a chain of lost
+     clusters, never a broken file.
+   - *Kernels.* An uploaded `kernel8.img` goes to `kernel8.new`, is read back from the card and checked: gzip header,
+     deflate stream, CRC32 and length by libdeflate (already in the kernel), nothing after the stream, then the ARM64
+     image header's `ARM\x64` at offset 56 and the texts `[BOOT] Build ID` (every Emu68) and `[PSMAC]` (every Aurora68).
+     Only then: the old `kernel8.old` deleted, `kernel8.new` renamed `kernel8.old` in place (one write), and
+     `kernel8.img` and `kernel8.old` swapped (one or two writes). Rollback is the same swap, after checking
+     `kernel8.old` the same way (`force=1` skips the check); when the counter brought recovery and `kernel8.old`
+     exists, the page puts "Roll back the kernel" first. Every other upload is read back and compared by CRC32, and
+     the client compares the CRC32 the kernel answers with its own.
+   - *The page* (`GET /`, 11 KB of HTML and JavaScript, for a phone as much as a laptop) and the API under `/r/`:
+     state, files (get, rename, delete, upload with progress), WiFi (a scan of the visible networks, a test join that
+     reports success and the address got, and only then a save of `wifi.ssid/psk/country`; a failed test joins the
+     old settings again; `XX` refused, the placeholder the kernel ignores), the common options as a form with a line
+     from README's table each (the resulting line shown before it is saved), cmdline.txt and config.txt as text (one
+     line for cmdline.txt; `.bak` kept for both), the last start's `aurora68.log` and this start's log, and the
+     restarts. Options are edited as words (`psmac_cmdline.c`, plain C99 tested on the host by
+     `tools/cmdline_test.sh`, 29 checks, run by `make -C mac check`): only the word asked about changes, every other
+     byte of the line stays (spacing, order, options nobody here knows), a quoted value stays one word, a value with
+     a space is quoted, duplicates after the first go. `aurora68.py recovery --pin N ls|put|get|rm|mv|cmdline|config|
+     opt|wifi|log|rollback|reboot|state` is the command line for the same API.
+   - *The keyboard menu.* A USB keyboard on the Pi (and the Plus's and 512K's own keyboards, which this kernel reads
+     itself and whose ADB codes are mapped to the menu) opens a menu on the recovery screen with Return: a scan list
+     to choose a network from, the password (stars on the screen), the country, `mac.fpu`, `mac.boot` and
+     `mac.console`, Save (only what changed, with cmdline.bak), restart normally, restart into recovery. The SE's own
+     ADB keyboard is read by the Mac's ROM, which does not run in recovery: on the SE it takes a USB keyboard.
+   - *Tested* (QEMU solo board unless said; a 128 MB FAT32 card image with an MBR and 1 KB clusters, `CARD=` with
+     `mac.cardearly=1`; pinet on the wired port and a second pinet behind `mac.wifisim=`):
+     `mac.recovery=1`: the page, 401 without the PIN, ten wrong PINs giving a new PIN and a minute of 429s with
+     "----" on the screen. A 6,000,000-byte random file uploaded in 25 s (about 235 KB/s under QEMU; CMD25 never failed)
+     and downloaded in 12 s, SHA-256 the same; renamed to a long name with spaces, deleted; deleting kernel8.img refused.
+     Kernels: a gzip with one byte changed refused (CRC/deflate), 2 MB of random bytes refused (no `ARM\x64`), the
+     kernel with its `[PSMAC]` texts changed refused, the good one installed in 6.9 s with the previous one as
+     kernel8.old (MD5s compared), rolled back and forward. cmdline.txt: two lines refused, one line written with the
+     line before in cmdline.bak, the password shown and downloaded as `***` and kept on a save; options previewed,
+     `mac.board=amiga` refused, saved with the unknown words kept. recovery.txt put on the card by hand: "asked for:
+     put there by hand", the file gone afterwards; "restart into recovery" from the page: the next start "asked for
+     from the recovery page". The counter: three starts from a blank disk image (the floppy with the question mark)
+     wrote 01, 02, 03; the fourth was recovery, "the last 3 starts did not reach the Finder", with the rollback offered;
+     "restart normally" from it, System 7.1's Finder at t=43.7 s, boot.txt 00 (the first try showed the Finder hook
+     compared with the number read, not the number written, and left 01: fixed). Esc held 1.5 s on QEMU's USB keyboard
+     after the USB start: recovery.txt, a watchdog restart, then recovery "Esc held on a USB keyboard during the start".
+     The WiFi: a scan of the simulated radio's four networks on the page and in the menu, a test with a wrong password
+     failing ("the password was not accepted") and the old settings joined again, the right one joining, a save with
+     XX refused and with GB written; recovery on the WiFi alone (no wired port): DHCP from the WiFi's pinet, the page
+     in headless Chrome at phone width through it. The keyboard menu on QEMU's USB keyboard: the scan list, "Free
+     Hotspot" chosen, an empty password (an open network), DE, `mac.fpu` double, Save: `wifi.ssid="Free Hotspot"`,
+     `wifi.psk` taken out, `wifi.country=DE`, `mac.fpu=double`, the rest of the line as it was. The link-local address
+     was seen once by accident: after a watchdog restart pinet stopped answering DHCP (its ring files and a reset kernel
+     disagree, a testbed matter), and the kernel took 169.254.19.143 after twelve seconds; it was not reached over HTTP.
+     MAME's SE (`macse_ps`, `mac.board=se`, `mac.switchsim=1`, MAME having no programmer's switch to press): recovery
+     "the programmer's interrupt switch was held at power-on", the page on the SE's own screen (MAME's snapshot) and the
+     state over HTTP saying `switch`, the counter put back to 00. After all of it `fsck.fat -n` found the card clean.
+   - *Not done:* the access point. With no WiFi settings or wrong ones, recovery was to start a network
+     "Aurora68-Recovery" of its own. Alice68's WiFi code drives the FullMAC firmware as a station only (`WLC_SET_INFRA
+     1`, `WLC_SET_AP 0` in `alice_net.c`); the firmware of the 43430 and 43455 does run an access point (Linux's brcmfmac
+     uses it: `WLC_SET_AP 1`, the `bss` iovar, WPA2-PSK with the firmware as authenticator), but it needs a second
+     bring-up path in that code, a DHCP server in `psmac_ip.c` and frames for several stations, and the testbed's
+     simulated radio has no access point at all, so nothing of it could be tried here. The wired port, USB Ethernet with
+     its link-local fall-back and the keyboard menu cover the same need meanwhile; the access point is left for a
+     change of its own, to be tried on a real Pi. Nor was a Mac-side "restart into recovery" program written (the
+     remote and the page do it).
+   - *Not verified:* real hardware: the real interrupt switch, a real SD card's CMD25 writes and their speed, real
+     WiFi joins and scans, a USB Ethernet adapter's link-local case, the Plus's and 512K's keyboards in the menu (the
+     testbed has no M0110A keyboard ROM, `mackbd_m0110a.zip`), the SE's video and speaker with the 68k never started
+     (the screen buffer is shown by the SE's video as soon as RAM is at 0, as in every start; whether the speaker hums
+     from an uninitialised sound buffer is for the owner to listen for). And the limit the design names: a kernel that
+     dies before it has read the card cannot rescue itself, and as far as we know a Pi 3's firmware has no fallback
+     kernel of its own; a microSD extension cable led out of the case is the physical way back.

@@ -364,9 +364,36 @@ static uint32_t read8(uint32_t address)
     return (address & 1) ? v & 0xff : (v >> 8) & 0xff;      /* even: upper byte (UDS); odd: lower (LDS) */
 }
 
+/* The SCC's recovery time on the 128K, 512K, 512Ke and Plus (22 November 2026, docs/18). The Z8530 needs
+   time between accesses; Apple's Guide to the Macintosh Family Hardware (2nd ed., p. 364) gives 2.2 us for
+   these machines and says that on later ones "the GLU or BBU delays the acknowledge signal", which is why the
+   SE never needed this. A tester's 512Ke read the mouse's Y1 line wrong tens of thousands of times: the
+   kernel read channel A's RR0 and then channel B's one bus cycle apart, and Y1 is the one read second.
+   So on those boards every access to the SCC ($800000-$BFFFFF), the Mac's and the kernel's alike (all go
+   through here, on the service core), waits until 3 us have passed since the last one. */
+extern int psmac_board_plus;
+static uint64_t scc_last;
+static inline void scc_gap(uint32_t address)
+{
+    if (!psmac_board_plus || address < 0x800000 || address >= 0xc00000) return;
+    uint64_t frq, now; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(frq));
+    uint64_t gap = frq * 3 / 1000000 + 1;
+    do { __asm__ volatile("isb; mrs %0, CNTVCT_EL0" : "=r"(now)); } while (now - scc_last < gap);
+}
+static inline void scc_done(uint32_t address)
+{
+    if (!psmac_board_plus || address < 0x800000 || address >= 0xc00000) return;
+    __asm__ volatile("isb; mrs %0, CNTVCT_EL0" : "=r"(scc_last));
+}
 uint32_t psmac_gpio_read(uint32_t address, int size)
 {
     address &= 0xffffff;
+    if (psmac_board_plus && address >= 0x800000 && address < 0xc00000) {
+        scc_gap(address);
+        uint32_t v = size == 1 ? read8(address) : read16(address & ~1u);
+        scc_done(address);
+        return v;
+    }
     switch (size) {
     case 1: return read8(address);
     case 2: if (address & 1) return (read8(address) << 8) | read8(address + 1);
@@ -379,6 +406,12 @@ uint32_t psmac_gpio_read(uint32_t address, int size)
 void psmac_gpio_write(uint32_t address, int size, uint32_t data)
 {
     address &= 0xffffff;
+    if (psmac_board_plus && address >= 0x800000 && address < 0xc00000) {
+        scc_gap(address);
+        if (size == 1) write8(address, data); else write16(address & ~1u, data);
+        scc_done(address);
+        return;
+    }
     switch (size) {
     case 1: write8(address, data); break;
     case 2: if (address & 1) { write8(address, data >> 8); write8(address + 1, data); } else write16(address, data); break;

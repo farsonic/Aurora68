@@ -194,7 +194,7 @@ on the Mac, "Files and applications", below),
 | `GET /windows` | the Mac's windows, front to back, as JSON ("Windows", below) |
 | `GET /screenshot?window=ID\|title=TEXT\|screen=N\|rect=l,t,r,b[&content=1][&scale=2]` | a PNG of one window, one screen or a rectangle of the desktop, composed from the screens it is on; `scale` here doubles ("Windows", below) |
 | `GET /state` | JSON (below) |
-| `POST /restart[?how=mac\|nmi\|pi]` | restart the Mac (default), the programmer's interrupt, or reboot the Pi |
+| `POST /restart[?how=mac\|nmi\|pi\|recovery]` | restart the Mac (default), the programmer's interrupt, reboot the Pi, or reboot it into Aurora68 Recovery (recovery.txt, docs/08 item 106) |
 | `GET /files/list`, `/files/info`, `/files/data`, `PUT /files/data`, `POST /files/mkdir`, `/files/delete`, `/files/rename`, `GET /apps`, `POST /apps/open`, `/apps/quit` | files and programs on the Mac, through the Aurora68 Agent ("Files and applications", below) |
 
 Events: `{"type": "move", "x": X, "y": Y}`; `"down"` and `"up"` (x, y optional); `"click"` with
@@ -368,6 +368,15 @@ board, over HTTP from the host through pinet; `docs/img/se-window-across-screens
   fall back to WindowList); titles outside ASCII on a real Mac (the Mac Roman table was checked against
   Python's on the host). The mouse pointer is part of the picture where it is over the window, because
   QuickDraw draws it into the frame buffer.
+
+## Aurora68 Recovery shares the transport (22 November 2026)
+
+A recovery start (docs/08 item 106, `psmac_recovery.c`) uses this stack for a page of its own: with
+`psmac_recovery_on()` the `remote_tcp_*` calls go to `recovery_tcp_*`, `psmac_ip_init_recovery()` starts the stack
+whatever `remote=` says (on the WiFi with an address of its own, and a link-local address when no DHCP server
+answers), and the remote stays off, since there is no Mac to drive. The local-network rule is the one above
+(`psmac_remote_private_source`). The remote has one new request: `POST /restart?how=recovery`
+(`aurora68.py restart recovery`) writes `recovery.txt` on the card and restarts the Pi, which then starts in recovery.
 
 ## Files and applications (21 November 2026)
 

@@ -357,8 +357,21 @@ void psmac_console_page(const char (*lines)[65], int n)
         }
     }
 }
+/* Aurora68 Recovery (psmac_recovery.c) draws its own page into the VideoCore buffer: the log stays off it */
+static int con_rec;
+void psmac_display_recovery(void) { con_rec = 1; }
+int psmac_display_vc(uint8_t **fb, uint32_t *pitch_out, uint32_t *w, uint32_t *h, int *bpp, int *swap)
+{
+    uint8_t *f = con_fb();
+    uint32_t p = vc_pitch ? vc_pitch : pitch;
+    if (!f || !p) return -1;
+    *fb = f; *pitch_out = p; *w = vc_w ? vc_w : fb_width; *h = vc_h ? vc_h : fb_height;
+    *bpp = vc_bpp == 32 && vcfb ? 32 : 16; *swap = vc_swap;
+    return 0;
+}
 void psmac_console_putc(uint8_t c)
 {
+    if (con_rec) return;
     if (con_held) return;                                     /* the bus check's page (above) */
     if (con_off && !con_keep) return;
     uint8_t *fb = con_fb();

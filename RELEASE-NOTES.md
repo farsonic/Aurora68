@@ -27,6 +27,15 @@ Since 0.13 (docs/08 items 96 and 103):
   How to run it and what to photograph: READ-ME-FIRST, "If your Mac misbehaves: the bus check".
 - **The CPLD's firmware in the log**: its JTAG usercode is read as the PiStorm's protocol comes up and named
   (`[PSMAC:GPIO] CPLD JTAG: ...`; `mac.jtag=off` to skip). docs/18 explains why it matters on the Plus-era boards.
+- **Aurora68 Recovery** (docs/08 item 106, README "Recovery"): when the Mac does not reach the Finder three
+  starts in a row, when the programmer's interrupt switch (or Esc on a USB keyboard) is held at power-on, when
+  `recovery.txt` is on the card (`aurora68.py restart recovery`) or with `mac.recovery=1`, the Pi starts without
+  the Mac and serves its SD card: a page for a phone or laptop (the PIN shown on the Mac's screen; files, uploads
+  of any size, the WiFi settings with a scan and a test join, the options, cmdline.txt and config.txt, the last
+  log, the restarts) and `aurora68.py recovery`. A new kernel8.img is checked before it replaces the old one, which
+  is kept as kernel8.old for "Roll back". With no network, a USB keyboard on the Pi sets the WiFi and a few options
+  from a menu on the screen. Tested in the testbeds only; it cannot help a kernel that stops before it reads the
+  card (keep a microSD extension cable in mind for that).
 
 ## 0.13 — BlueSCSI disks, exact floating point, Aurora68 Play's Library (22 November 2026)
 
