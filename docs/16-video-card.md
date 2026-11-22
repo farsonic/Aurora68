@@ -99,6 +99,8 @@ window, so it does not crowd slot $9:
   - *the SE's own screen*: the kernel dithers each frame to one bit (ordered dithering) into the same
     rectangle of the SE's screen buffer, at the rate the SE can show (about 15 frames a second at
     320x240).
+  Both are wanted (the owner, 22 November 2026): the SE's 512x342 one-bit screen will look rough, but it
+  is the proof of concept, needs no HDMI screen, and comes first; the colour screen follows.
 - **The sound** goes into the sound card's ring, so the SE's speaker and HDMI both play it; the MPEG
   stream's time stamps pace the pictures against it.
 
