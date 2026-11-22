@@ -1213,6 +1213,40 @@ static void se_first_rows_check(uint32_t y)
                  y, bad, base, base + 2 * first, want[first], got);
 }
 
+/* The rows checked as well as sent (22 November 2026). A tester's 512Ke showed single words of the desktop
+   wrong on its glass, short dotted marks that went when the pointer passed over them (the row sent
+   again): the Pi's copy was right and the board's memory held a word that was not. So while no row is
+   waiting, one row a tick (60 a second, the screen every 5.7 s) is read back from the board and any word
+   that differs from the copy is written again; the first few are logged with the address, the word
+   written and the word read, to tell an address line (the neighbouring row's pattern) from a data line. */
+static uint32_t verify_row, verify_rows, verify_words_bad, verify_rows_bad, verify_logged;
+static uint64_t verify_next;
+static void se_verify_row(void)
+{
+    uint64_t now = asc_now();
+    if (!shadow_valid || now < verify_next) return;
+    verify_next = now + asc_hz() / 60;
+    uint32_t y = verify_row; verify_row = (verify_row + 1) % SE_ROWS;
+    if (dirty[y >> 5] & (1u << (y & 31))) return;           /* a send is coming anyway */
+    const uint16_t *want = (const uint16_t *)(shadow + y * SE_ROWBYTES);
+    uint32_t base = psmac_se_fb_base() + y * SE_ROWBYTES, bad = 0;
+    for (int i = 0; i < SE_ROWBYTES / 2; i++) {
+        uint16_t w = want[i];
+        uint32_t r = psmac_wire_read(base + 2 * i, 2) & 0xffff;
+        psmac_serve_waiting();
+        if (r == w || (dirty[y >> 5] & (1u << (y & 31)))) continue;   /* changed meanwhile: the send will cover it */
+        bad++;
+        if (verify_logged < 12) {
+            verify_logged++;
+            kprintf("[PSMAC:SE] screen check: row %u word %d at $%06x held $%04x, $%04x was sent (xor $%04x)\n",
+                    y, i, base + 2 * i, r, w, r ^ w);
+        }
+        psmac_wire_write(base + 2 * i, 2, w, 1);
+    }
+    verify_rows++;
+    if (bad) { verify_rows_bad++; verify_words_bad += bad; }
+}
+
 /* the service core: a few rows per call, so the Mac's own accesses are never far behind */
 void psmac_se_service(void)
 {
@@ -1225,7 +1259,7 @@ void psmac_se_service(void)
             uint32_t bits = dirty[w];
             if (bits) { int b = __builtin_ctz(bits); __atomic_fetch_and(&dirty[w], ~(1u << b), __ATOMIC_ACQUIRE); y = w * 32 + b; }
         }
-        if (y < 0) return;
+        if (y < 0) { if (!n) se_verify_row(); return; }
         const uint16_t *src = (const uint16_t *)(shadow + y * SE_ROWBYTES);
         uint32_t dst = psmac_se_fb_base() + y * SE_ROWBYTES;
         for (int i = 0; i < SE_ROWBYTES / 2; i++) {
@@ -1431,8 +1465,8 @@ void psmac_se_report(void)
 {
     if (psmac_board_solo) { psmac_solo_report(); return; }
     if (!psmac_board_se) return;
-    kprintf("[PSMAC:SE] rows sent %u%s, frames compared %u, local reads %u writes %u, RBV IFR %02x IER %02x SIER %02x | clock chip: %s, %u bytes read (%u of them $FF from the chip), %u written\n",
-            rows_sent, se_lines_bad ? " (an address line failed its test at the start)" : "", frames_marked, local_reads, local_writes, rbv_ifr, rbv_ier, rbv_regs[0x12],
+    kprintf("[PSMAC:SE] rows sent %u%s, rows checked %u (%u with %u words wrong, written again), frames compared %u, local reads %u writes %u, RBV IFR %02x IER %02x SIER %02x | clock chip: %s, %u bytes read (%u of them $FF from the chip), %u written\n",
+            rows_sent, se_lines_bad ? " (an address line failed its test at the start)" : "", verify_rows, verify_rows_bad, verify_words_bad, frames_marked, local_reads, local_writes, rbv_ifr, rbv_ier, rbv_regs[0x12],
             xp.serve ? "not answering, the board layer answers" : "answering", xp.reads, xp.reads_ff, xp.writes);
     if (scsi_empty) kprintf("[PSMAC:SE]   SCSI: the empty bus answered here, %u selections (none answered)\n", se5380.selections);
     if (psmac_board_plus) {

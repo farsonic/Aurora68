@@ -348,6 +348,7 @@ void psmac_plus_scc_read(uint32_t ch)
 static uint32_t mouse_hz = 8000;            /* mac.plusmouse=: polls a second (3 reads each), 0 = off; the debounce
                                                needs two polls per transition, so a brisk mouse (2,000 a second) wants 8,000 */
 static int mouse_debounce = 1;              /* mac.plusdebounce=0: a line's level as read, not confirmed */
+static int mouse_jitter = 1;                /* mac.plusjitter=0: polls at exactly mac.plusmouse= a second */
 static struct {
     int init; uint8_t qx, qy; int button;   /* qx: (X1 as RR0 reads it) << 1 | X2; qy the same for Y (accepted) */
     uint8_t rx, ry;                         /* the last poll's reading, for the debounce */
@@ -355,6 +356,7 @@ static struct {
     uint64_t next;
     uint32_t polls, skipped, edges_x, edges_y, jumps, clicks, glitches;
     uint32_t line[4];                       /* accepted changes of X1, X2, Y1, Y2 */
+    uint32_t lcg;                           /* the poll timing's jitter (mouse_poll) */
 } ms;
 /* Reading VIA port B clears CB1's flag, which the keyboard's turn-round waits for (KB_EDGE below): while it
    waits, the mouse leaves port B alone (both run on the service core, one after the other) */
@@ -395,7 +397,15 @@ static uint8_t settle(uint8_t raw, uint8_t *prev, uint8_t cur)
 static void mouse_poll(uint64_t now)
 {
     if (!mouse_hz || now < ms.next || kb_edge_watch) return;
-    ms.next = now + cnt_frq() / mouse_hz;
+    /* each wait between polls from half to one and a half periods, not one exactly (22 November 2026):
+       the tester's 512Ke had a faint steady whine from its speaker, and bus reads at a fixed 8 kHz (2 kHz
+       before) are a tone that can couple into the amplifier; spread, they are at most a hiss.
+       mac.plusjitter=0 keeps the fixed period, to compare */
+    {
+        uint64_t per = cnt_frq() / mouse_hz;
+        if (mouse_jitter) { ms.lcg = ms.lcg * 1664525u + 1013904223u; per = per / 2 + (per * (ms.lcg >> 16)) / 65536u; }
+        ms.next = now + per;
+    }
     if (__atomic_load_n(&scc_pending, __ATOMIC_ACQUIRE)) { ms.skipped++; return; }
     ms.polls++;
     uint8_t x1 = (psmac_wire_read(PLUS_SCC_A_RD, 1) >> 3) & 1, y1 = (psmac_wire_read(PLUS_SCC_B_RD, 1) >> 3) & 1;
@@ -652,6 +662,7 @@ void psmac_plus_options(const char *args)
         tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); adb_trace_left = n;
     }
     if ((tok = find_token(args, "mac.plusdebounce="))) mouse_debounce = tok[17] != '0';
+    if ((tok = find_token(args, "mac.plusjitter="))) mouse_jitter = tok[15] != '0';
     if ((tok = find_token(args, "mac.plusmouse="))) {
         tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); mouse_hz = n > 20000 ? 20000 : n;
     }
@@ -667,7 +678,7 @@ void psmac_plus_report(void)
     kprintf("[PSMAC:PLUS] ADB: state %d, %u commands (%u talk, %u answered, %u listen, %u reset/flush), %u autopolls, %u SRQs, last %02x | keyboard at %d, mouse at %d | SR interrupts %u, IFR.SR %d IER.SR %d, ACR %02x\n",
             adb.state, adb.cmds, adb.talks, adb.answered, adb.listens, adb.resets, adb.autopolls, adb.srqs, adb.last_cmd, kbd.addr, mouse.addr,
             pv.sr_irqs, pv.ifr_sr, pv.ier_sr, pv.acr);
-    kprintf("[PSMAC:PLUS]   Plus keyboard: %s, %u bytes (%u keys, %u none), %u answer timeouts, %u turns without the last edge, last %02x | Plus mouse: %u Hz, %u polls (%u skipped for the SCC pointer), %u x and %u y transitions (lines X1 %u X2 %u Y1 %u Y2 %u), %u jumps, %u one-poll glitches%s, %u clicks, button %s | WR15 DCD enables cleared %u\n",
+    kprintf("[PSMAC:PLUS]   Plus keyboard: %s, %u bytes (%u keys, %u none), %u answer timeouts, %u turns without the last edge, last %02x | Plus mouse: %u Hz, %u polls (%u skipped for the SCC pointer), %u x and %u y transitions (lines X1 %u X2 %u Y1 %u Y2 %u), %u jumps, %u one-poll glitches%s, %u clicks%s, button %s | WR15 DCD enables cleared %u\n",
             !kbd_on ? "off (mac.pluskbd=off)" : kb.present ? "answering" : "not answering", kb.bytes, kb.keys, kb.nulls, kb.timeouts, kb.edge_missed, kb.last,
-            mouse_hz, ms.polls, ms.skipped, ms.edges_x, ms.edges_y, ms.line[0], ms.line[1], ms.line[2], ms.line[3], ms.jumps, ms.glitches, mouse_debounce ? " filtered" : " (not filtered)", ms.clicks, ms.button ? "down" : "up", scc_dcd_ie_cleared);
+            mouse_hz, ms.polls, ms.skipped, ms.edges_x, ms.edges_y, ms.line[0], ms.line[1], ms.line[2], ms.line[3], ms.jumps, ms.glitches, mouse_debounce ? " filtered" : " (not filtered)", ms.clicks, mouse_jitter ? ", polls jittered" : ", polls at a fixed rate", ms.button ? "down" : "up", scc_dcd_ie_cleared);
 }

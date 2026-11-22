@@ -3786,6 +3786,15 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      power-on), played 60 times a second behind a switch that may not silence it all: it is now filled
      with one level when a sound ends and before the first ("buffer silenced" in the heartbeat; twice in
      the SE testbed, at the start and after the chime).
+   - *Stray words on the 512Ke's screen, and the whine again.* With the screen at 60 frames a second the
+     tester saw short dotted marks in the desktop pattern, single words, gone when the pointer passed over
+     them: the Pi's copy right, the board's memory not. While no row is waiting, one row a tick is now read
+     back and any word that differs written again (the screen every 5.7 s); the first twelve are logged
+     with the word sent and the word found, to tell an address line from a data line. The whine stayed
+     with the buffer silenced, so it is not the buffer: the mouse's polls, bus reads at a fixed 8 kHz,
+     are now spread from half to one and a half periods (mac.plusjitter=0 for fixed), and mac.plusmouse=0
+     tells whether they are the source. The same log: Y1 2,300 changes in 5 s with the mouse nearly still,
+     Y2 none: the tester's mouse's Y1 line chatters by itself.
 
 97. **FAT32 and exFAT on the Mac: disk images on sticks, and an HFS view of a stick or a card folder (21
    November, issue #20).** The owner wants sticks formatted by Windows, Linux or a modern Mac, and a folder
