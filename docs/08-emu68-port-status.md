@@ -4040,3 +4040,9 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      the JIT's FPU itself.
    - *Not checked yet, needs the owner's SE:* the wire read of the real SE ROM (about 9 KB in some 5,000 bus
      reads at the Mac's first request), and Photoshop itself, which is not on the test image.
+   - *On the owner's SE (22 November 2026, evening):* the kernel read both packages from the SE's own ROM
+     chips over the wire ("from the SE's own ROM (checksum b2e362a8): PACK 4 (FP68K) 4544 bytes, PACK 5
+     (Elems68K) 4198 bytes"), A68 Machine installed them, and its test changed from "(1 + 2^-60) - 1 = 0
+     (64-bit), 895293 additions a second" to "= 2^-60 (exact), 159717 additions a second" (5.6 times
+     slower on the hardware, not the testbed's 25). **Photoshop, which had sat under the stopwatch for
+     minutes, opened.**
