@@ -1,0 +1,128 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><title>Aurora68 Recovery</title><style>
+:root{--bg:#f3f4f7;--card:#fff;--fg:#14171f;--mut:#667085;--line:#e4e7ec;--acc:#3b5bdb;--acc2:#e8edff;--warn:#fff4d6;--warnb:#f0c14b;--bad:#d92d20;--ok:#12805c;--sh:0 1px 2px #1018280f,0 1px 3px #1018281a}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1218;--card:#181c25;--fg:#e8eaf0;--mut:#98a2b3;--line:#2a3040;--acc:#7c9cff;--acc2:#222a44;--warn:#2d2614;--warnb:#a88320;--sh:none}}
+*{box-sizing:border-box}body{margin:0;font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--fg)}
+header{background:linear-gradient(135deg,#1b2440,#34407a);color:#fff;padding:14px 18px 0}
+.top{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.ttl{flex:1 1 220px;min-width:0}.logo{width:30px;height:30px;border-radius:8px;background:conic-gradient(from 200deg,#56e39f,#5b8cff,#c86bfa,#56e39f)}
+h1{font-size:18px;margin:0;font-weight:650;letter-spacing:.2px}.why{font-size:13px;opacity:.85;margin:2px 0 0}
+.state{font-size:12px;background:#ffffff1f;padding:4px 10px;border-radius:99px;white-space:nowrap}
+nav{display:flex;gap:4px;overflow-x:auto;margin-top:12px;scrollbar-width:none}nav::-webkit-scrollbar{display:none}
+nav button{background:none;border:0;color:#ffffffb3;font:inherit;font-size:14px;padding:9px 14px;border-radius:10px 10px 0 0;cursor:pointer;white-space:nowrap}
+nav button.on{background:var(--bg);color:var(--fg);font-weight:600}
+main{max-width:860px;margin:0 auto;padding:16px}.tab{display:none}.tab.on{display:block}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:var(--sh);padding:16px;margin-bottom:14px}
+h2{font-size:15px;margin:0 0 10px;font-weight:650}.mut{color:var(--mut);font-size:13px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}.kv{background:var(--bg);border-radius:10px;padding:10px 12px}
+.kv b{display:block;font-size:12px;color:var(--mut);font-weight:500}.kv span{font-size:14px;word-break:break-word}
+button.b{font:inherit;font-size:14px;border:1px solid var(--line);background:var(--card);color:var(--fg);padding:8px 14px;border-radius:10px;cursor:pointer}
+button.b:hover{border-color:var(--acc)}button.p{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}button.d{color:var(--bad)}
+button.s{padding:4px 10px;font-size:13px}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+input,select,textarea{font:inherit;font-size:14px;color:var(--fg);background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 10px;width:100%}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--acc2);border-color:var(--acc)}textarea{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;min-height:9em}
+label{display:block;margin:10px 0 0;font-size:13px;color:var(--mut)}label>input,label>select{margin-top:4px}
+table{width:100%;border-collapse:collapse}td,th{padding:9px 6px;border-bottom:1px solid var(--line);text-align:left;font-size:14px}th{font-size:12px;color:var(--mut);font-weight:500}
+.fl{list-style:none;margin:6px 0 0;padding:0}.fl li{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}.fl li:last-child{border:0}.fl .nm{flex:1;min-width:0;word-break:break-all}.fl .sz{color:var(--mut);font-size:13px;white-space:nowrap}.fl .ac{display:flex;gap:6px}@media(max-width:560px){.fl li{flex-wrap:wrap}.fl .nm{flex:1 1 60%}.fl .ac{flex-basis:100%}}
+.warn{background:var(--warn);border:1px solid var(--warnb)}.bar{height:8px;background:var(--bg);border-radius:99px;overflow:hidden;margin-top:10px}.bar i{display:block;height:100%;width:0;background:var(--acc);transition:width .2s}
+pre{white-space:pre-wrap;font:12px/1.45 ui-monospace,Menlo,Consolas,monospace;background:var(--bg);border-radius:10px;padding:12px;max-height:60vh;overflow:auto;margin:10px 0 0}
+#opts{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(340px,100%),1fr));column-gap:24px}.opt{border-bottom:1px solid var(--line);padding:10px 0}.opt code{font-weight:600;font-size:13px}.opt p{margin:2px 0 6px;color:var(--mut);font-size:13px}
+#gate{position:fixed;inset:0;background:#0b0f1acc;backdrop-filter:blur(6px);display:none;align-items:center;justify-content:center;padding:20px;z-index:5}
+#gate .card{max-width:340px;width:100%;text-align:center}#pin{font-size:30px;letter-spacing:.4em;text-align:center;font-weight:600;margin:12px 0}
+#toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:#1b2440;color:#fff;padding:10px 16px;border-radius:12px;font-size:14px;opacity:0;transition:opacity .25s;pointer-events:none;max-width:90vw;z-index:6}
+#toast.on{opacity:1}#toast.bad{background:var(--bad)}.pill{display:inline-block;font-size:12px;padding:2px 8px;border-radius:99px;background:var(--acc2);color:var(--acc)}
+</style></head><body>
+<header><div class="top"><div class="logo"></div><div class="ttl"><h1>Aurora68 Recovery</h1><div class="why" id="why">Connecting</div></div><div class="state" id="hstate">...</div></div>
+<nav id="nav"><button data-t="ov" class="on">Overview</button><button data-t="fi">Files</button><button data-t="wi">WiFi</button><button data-t="op">Options</button><button data-t="tx">Text files</button><button data-t="lo">Log</button></nav></header>
+<main>
+<section class="tab on" id="ov">
+<div class="card warn" id="rb" style="display:none"><h2>The last starts did not reach the Finder</h2><p class="mut">The kernel before the current one is on the card as kernel8.old.</p>
+<button class="b p" onclick="act('/r/rollback','Roll back to kernel8.old?')">Roll back the kernel</button></div>
+<div class="card"><h2>State</h2><div class="grid" id="st"></div><div id="notes" class="mut" style="margin-top:10px"></div></div>
+<div class="card"><h2>Restart</h2><p class="mut">The Mac stays off while recovery runs. Restart normally to start it again.</p><div class="row">
+<button class="b p" onclick="act('/r/reboot?how=normal','Restart the Pi normally (the Mac starts)?')">Restart normally</button>
+<button class="b" onclick="act('/r/reboot?how=recovery','Restart into recovery?')">Restart into recovery</button>
+<button class="b" onclick="lock()">Change PIN</button></div></div></section>
+<section class="tab" id="fi">
+<div class="card"><h2>Upload</h2><p class="mut">kernel8.img is checked before it replaces the old one (kept as kernel8.old). Every upload is read back from the card and compared.</p>
+<label>File<input type="file" id="up" onchange="el('upname').value=this.files[0]?this.files[0].name:''"></label>
+<label>Save on the card as<input type="text" id="upname" placeholder="the file's own name"></label>
+<div class="row" style="margin-top:12px"><button class="b p" onclick="upload()">Upload</button><span class="mut" id="upst"></span></div><div class="bar"><i id="upbar"></i></div></div>
+<div class="card"><h2>Files on the SD card</h2><div class="mut" id="card"></div><ul class="fl" id="files"></ul></div></section>
+<section class="tab" id="wi"><div class="card"><h2>WiFi</h2><div class="mut" id="wset"></div>
+<div class="row" style="margin-top:10px"><button class="b" onclick="wscan()">Scan for networks</button></div>
+<label>Network<select id="wlist" onchange="if(this.value)el('wssid').value=this.value"></select></label>
+<label>Name (SSID)<input type="text" id="wssid"></label><label>Password<input type="password" id="wpsk" placeholder="empty: keep the stored one"></label>
+<label>Country (two letters)<input type="text" id="wcc" maxlength="2" placeholder="GB" style="max-width:7em"></label>
+<div class="row" style="margin-top:14px"><button class="b" onclick="wifi('test')">Test join now</button><button class="b p" onclick="wifi('save')">Save to cmdline.txt</button><span class="mut" id="wst"></span></div></div></section>
+<section class="tab" id="op"><div class="card"><h2>Options</h2><p class="mut">Changes only the options you edit; every other word in cmdline.txt is kept. The line before is kept as cmdline.bak.</p><div id="opts"></div>
+<div class="row" style="margin-top:12px"><button class="b" onclick="opts(1)">Preview the new line</button><button class="b p" onclick="opts(0)">Save</button></div><pre id="optline"></pre></div></section>
+<section class="tab" id="tx"><div class="card"><h2>cmdline.txt and config.txt</h2>
+<div class="row"><select id="tname" onchange="loadtext()" style="max-width:14em"><option>cmdline.txt</option><option>config.txt</option></select><button class="b" onclick="loadtext()">Reload</button></div>
+<textarea id="text" style="margin-top:10px"></textarea><p class="mut">Secrets show as ***; saving *** keeps them as they are. The old file is kept as .bak.</p><button class="b p" onclick="savetext()">Save</button></div></section>
+<section class="tab" id="lo"><div class="card"><h2>Logs</h2><div class="row"><button class="b" onclick="log(0)">Last start (aurora68.log)</button><button class="b" onclick="log(1)">This recovery start</button></div><pre id="log">Choose a log.</pre></div></section>
+</main>
+<div id="gate"><div class="card"><div class="logo" style="margin:0 auto"></div><h2 style="margin-top:12px">Enter the PIN</h2><p class="mut">The four digits on the Mac's screen (or on HDMI).</p>
+<input id="pin" inputmode="numeric" maxlength="4" autocomplete="off" onkeydown="if(event.key=='Enter')savepin()"><button class="b p" style="width:100%" onclick="savepin()">Continue</button></div></div>
+<div id="toast"></div>
+<script>
+var P=sessionStorage.getItem('pin')||'',T=null,loaded={};
+function el(i){return document.getElementById(i)}
+function toast(t,bad){var x=el('toast');x.textContent=t;x.className='on'+(bad?' bad':'');clearTimeout(T);T=setTimeout(function(){x.className=''},3200)}
+function msg(t){if(t)toast(t,1)}
+function lock(){el('gate').style.display='flex';el('pin').value='';el('pin').focus()}
+function savepin(){P=el('pin').value.trim();sessionStorage.setItem('pin',P);el('gate').style.display='none';refresh()}
+function api(m,u,b,raw){var o={method:m,headers:{'X-Aurora-Pin':P}};if(b!==undefined)o.body=b;return fetch(u,o).then(function(r){
+ if(r.status==401){toast('PIN wrong or missing',1);lock();throw 0}if(r.status==429){toast('Too many wrong PINs: wait a minute and use the new one',1);lock();throw 0}
+ if(raw)return r;return r.json().then(function(x){if(!r.ok){toast(x.error||('error '+r.status),1);throw 0}return x})})}
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return'&#'+c.charCodeAt(0)+';'})}
+function kb(n){return n<1024?n+' B':n<1048576?(n/1024).toFixed(1)+' KB':(n/1048576).toFixed(1)+' MB'}
+function act(u,q){if(q&&!confirm(q))return;api('POST',u).then(function(x){toast(x.note||'Done');refresh()},function(){})}
+function show(t){[].forEach.call(document.querySelectorAll('nav button'),function(b){b.className=b.dataset.t==t?'on':''});
+ [].forEach.call(document.querySelectorAll('.tab'),function(s){s.className='tab'+(s.id==t?' on':'')});
+ if(t=='fi')files();if(t=='wi')wifiget();if(t=='op')opts(-1);if(t=='tx'&&!loaded.tx){loaded.tx=1;loadtext()}location.hash=t}
+el('nav').onclick=function(e){if(e.target.dataset.t)show(e.target.dataset.t)};
+function kv(k,v){return'<div class="kv"><b>'+k+'</b><span>'+v+'</span></div>'}
+function refresh(){api('GET','/r/state').then(function(s){el('why').textContent=s.why;el('rb').style.display=s.rollback_offered?'':'none';var n=s.network;
+ el('hstate').textContent=(n.ip||n.phase)+(n.name?'  ·  '+n.name:'');
+ el('st').innerHTML=kv('Network',esc(n.link)+' '+esc(n.ip)+' <span class="pill">'+esc(n.phase)+'</span>')+kv('WiFi',n.wifi?esc(n.wifi.state)+' '+esc(n.wifi.ssid):'off')+
+  kv('Card',esc(s.card))+kv('Upload',esc(s.upload.state)+(s.upload.total?' '+esc(s.upload.name)+' '+kb(s.upload.received)+' of '+kb(s.upload.total):''))+kv('Last action',esc(s.last));
+ el('notes').innerHTML=(s.cmdline_recovery?'cmdline.txt has <b>mac.recovery=1</b>: "Restart normally" takes it out. ':'')+(s.config_kernel?'config.txt starts <b>'+esc(s.config_kernel)+'</b>, not kernel8.img.':'');
+ var t=(location.hash||'#ov').slice(1);show(el(t)?t:'ov')},function(){})}
+function files(){api('GET','/r/files').then(function(x){el('card').textContent=x.card+(x.free_kb!==undefined?', '+kb(x.free_kb*1024)+' free':'');
+ var h='';x.files.forEach(function(f){if(f.folder){h+='<li><span class="nm">'+esc(f.name)+'/</span></li>';return}
+ var a=esc(f.name).replace(/&#39;/g,"\\'");h+='<li><span class="nm">'+esc(f.name)+'</span><span class="sz">'+kb(f.size)+'</span><span class="ac"><button class="b s" onclick="dl(\''+a+'\')">Get</button><button class="b s" onclick="mv(\''+a+'\')">Rename</button>'+
+ (f.name.toLowerCase()=='kernel8.img'?'':'<button class="b s d" onclick="rm(\''+a+'\')">Delete</button>')+'</span></li>'});el('files').innerHTML=h},function(){})}
+function dl(n){api('GET','/r/file?name='+encodeURIComponent(n),undefined,1).then(function(r){return r.blob()}).then(function(b){var a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=n;document.body.appendChild(a);a.click();a.remove()})}
+function rm(n){act('/r/rm?name='+encodeURIComponent(n),'Delete '+n+'?')}
+function mv(n){var t=prompt('New name for '+n,n);if(t&&t!=n)act('/r/mv?from='+encodeURIComponent(n)+'&to='+encodeURIComponent(t))}
+function upload(){var f=el('up').files[0];if(!f){toast('Choose a file first',1);return}var n=el('upname').value.trim()||f.name;var x=new XMLHttpRequest();
+ x.open('PUT','/r/file?name='+encodeURIComponent(n));x.setRequestHeader('X-Aurora-Pin',P);
+ x.upload.onprogress=function(e){el('upst').textContent=kb(e.loaded)+' of '+kb(e.total);el('upbar').style.width=(100*e.loaded/e.total)+'%'};
+ x.onload=function(){var j={};try{j=JSON.parse(x.responseText)}catch(e){}if(x.status==200){el('upst').textContent='Done: '+n+' '+kb(j.size)+', CRC32 '+j.crc32+(j.check?' ('+j.check+')':'');toast('Uploaded '+n)}
+  else{el('upst').textContent='Refused: '+(j.error||x.status);toast('Refused: '+(j.error||x.status),1)}el('upbar').style.width='0';files();refresh()};
+ x.onerror=function(){el('upst').textContent='The connection broke';toast('The connection broke',1)};el('upst').textContent='Sending...';x.send(f)}
+function wifiget(){api('GET','/r/wifi').then(function(w){var s=w.settings;el('wset').textContent='cmdline.txt: '+(s.ssid||'(no network)')+', password '+s.psk+', country '+(s.country||'(default)')+
+ (w.radio?'. Radio: '+w.radio.state+' '+w.radio.message:'. No WiFi radio')+(w.note?'. Test: '+w.note:'');if(!el('wssid').value)el('wssid').value=s.ssid;if(!el('wcc').value)el('wcc').value=s.country;
+ var h='<option value="">(choose from the scan)</option>';w.scan.forEach(function(n){h+='<option value="'+esc(n.ssid)+'">'+esc(n.ssid)+'  '+n.rssi+' dBm  '+n.security+'</option>'});el('wlist').innerHTML=h},function(){})}
+function wscan(){api('POST','/r/wifi/scan').then(function(){toast('Scanning...');setTimeout(wifiget,3000)},function(){})}
+function wifi(w){var b='ssid='+encodeURIComponent(el('wssid').value)+'&psk='+encodeURIComponent(el('wpsk').value)+'&country='+encodeURIComponent(el('wcc').value.toUpperCase());
+ if(w=='save'&&el('wst').textContent.indexOf('joined')<0&&!confirm('The new settings have not joined in a test. Save them anyway?'))return;
+ api('POST','/r/wifi/'+w,b).then(function(){el('wst').textContent=w=='test'?'Testing...':'Saved';if(w=='test')wpoll(0);else toast('Saved to cmdline.txt')},function(){})}
+function wpoll(i){api('GET','/r/wifi').then(function(w){if(w.test=='running'&&i<30)setTimeout(function(){wpoll(i+1)},1500);else el('wst').textContent=w.note||w.test||'No answer';wifiget()},function(){})}
+var O=[['mac.board',['','se','plus','512ke','512k','128k','solo'],'the logic board the Pi sits in (solo: no Mac, the bench)'],['mac.fpu',['','exact','double','none'],'exact: a 68882 in extended precision (the default); none: no FPU, as a real SE'],
+['mac.sane',['','rom','se'],'which SANE: the IIci ROM\'s or the SE ROM\'s software one'],['mac.boot',['','auto','image','scsi'],'the startup disk: auto, the card\'s image first, or SCSI as PRAM says'],
+['mac.ram','','Macintosh memory in MB (default up to 128)'],['mac.console',['','hdmi'],'hdmi: keep the kernel\'s log on HDMI for the whole run'],['mac.sesound',['','off'],'off: leave the SE\'s speaker alone'],
+['mac.screen','','the HDMI screen\'s size, WxH'],['mac.seram',['','1','2','2.5','4'],'the SE\'s own memory in MB (its screen and sound buffers are at its top)'],['mac.plusmouse','','the Plus mouse\'s polls a second (0: off)'],['mac.plusdebounce','','0: no debounce of the Plus mouse'],
+['mac.plusjitter','','0: the Plus mouse\'s polls at a fixed rate'],['mac.screencheck',['','on','blind','off'],'the compact Mac\'s screen: on, read back and repaired; blind, rewritten without reading (Plus-era default); off'],['bt.pair','','1: pair the first keyboard or mouse found (or a name)'],
+['eth',['','usb','off'],'usb: a USB Ethernet adapter as the wired card; off: none'],['remote',['','on','off'],'the remote control (docs/13)'],['remote.token','pw','the remote\'s token, 8 characters or more (write only)']];
+var OV={};function opts(dry){if(dry<0){api('GET','/r/options').then(function(x){OV=x.values;var h='';O.forEach(function(o){var v=OV[o[0]];if(v==null)v='';h+='<div class="opt"><code>'+o[0]+'</code><p>'+esc(o[2])+'</p>';
+ if(o[1]=='pw')h+='<input type="password" id="o_'+o[0]+'" placeholder="'+(v?'(set: type to change)':'(not set)')+'">';else if(o[1])h+='<select id="o_'+o[0]+'">'+o[1].map(function(c){return'<option'+(c==v?' selected':'')+' value="'+c+'">'+(c||'(not given)')+'</option>'}).join('')+'</select>';
+ else h+='<input type="text" id="o_'+o[0]+'" value="'+esc(v)+'">';h+='</div>'});el('opts').innerHTML=h;el('optline').textContent=x.line},function(){});return}
+ var e=[];O.forEach(function(o){var f=el('o_'+o[0]),v=f.value,old=OV[o[0]]==null?'':OV[o[0]];if(o[1]=='pw'){if(v)e.push(o[0]+'='+v);return}if(v!=old)e.push(v?o[0]+'='+v:'-'+o[0])});
+ api('POST','/r/options'+(dry?'?dry=1':''),e.join('\n')).then(function(x){el('optline').textContent=(dry?'The new line would be:\n':'Saved (the line before is in cmdline.bak):\n')+x.line;if(!dry){toast('Options saved');opts(-1)}},function(){})}
+function loadtext(){var n=el('tname').value;api('GET','/r/text?name='+n,undefined,1).then(function(r){return r.text()}).then(function(t){el('text').value=t})}
+function savetext(){var n=el('tname').value;if(!confirm('Write '+n+'?'))return;api('PUT','/r/text?name='+n,el('text').value).then(function(x){toast('Saved '+x.saved+', the old one as '+x.backup);refresh()},function(){})}
+function log(now){el('log').textContent='Loading...';api('GET','/r/log'+(now?'?now=1':''),undefined,1).then(function(r){return r.text()}).then(function(t){el('log').textContent=t||'(empty)'})}
+if(location.hash.indexOf('#pin=')==0){P=location.hash.slice(5);sessionStorage.setItem('pin',P);history.replaceState(null,'',location.pathname)}
+if(P)refresh();else lock();
+</script></body></html>
