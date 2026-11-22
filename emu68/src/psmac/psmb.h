@@ -575,6 +575,10 @@ struct psmb_cmd {
 #define PSMB_INFO_DISPCONFIRM 11    /* arg0: PSMB_DC_* (the keep-or-revert question after a new mode) */
 #define PSMB_INFO_DISPRESTART 12    /* the whole Pi restarts (its watchdog) at the 68k's next RESET, once the card is written:
                                        PiDisplay then restarts the Mac through the Shutdown Manager */
+#define PSMB_INFO_SANE       13     /* arg0 = 4 or 5: the SE ROM's software SANE package, PACK 4 (FP68K) or PACK 5 (Elems68K),
+                                       read from the SE's ROM or an image (psmac_sane.c, docs/08 item 101): result = its size;
+                                       with buf/len, its bytes copied there (xfer); PSMB_E_NODATA when there is none or
+                                       mac.sane=rom keeps the IIci ROM's FPU SANE */
 #define PSMB_DC_REVERT       0      /* aurora68-display.bak back in place, then the Pi restarts */
 #define PSMB_DC_KEEP         1      /* the confirm mark taken out of aurora68-display.txt */
 #define PSMB_DC_ASKING       2      /* the question is on the screen now: the kernel reverts by itself if no answer follows */
