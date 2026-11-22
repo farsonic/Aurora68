@@ -1,5 +1,5 @@
 /*
- * psmb.h — PiStorm-SE mailbox ABI between the Macintosh (68k) and the Pi service core. MPL-2.0.
+ * psmb.h — Aurora68 mailbox ABI between the Macintosh (68k) and the Pi service core. MPL-2.0.
  *
  * The Pi appears to the Mac as a NuBus card in slot $9. The bottom 1 MiB of the slot's
  * 16 MiB slot space is ordinary shared RAM ("the window"), reachable at 0xF9000000 in 32-bit
@@ -501,7 +501,15 @@ struct psmb_header {
     uint32_t mac_ram_mb;      /* Mac RAM configured (mac.ram) */
     uint32_t uptime_ms;       /* updated by the service core every heartbeat */
     char     fw_version[32];  /* Emu68 psmac build string */
+    uint32_t board;           /* offset 56: the logic board the Pi sits in, PSMB_BOARD_* (22 November 2026; 0 before) */
 };
+#define PSMB_BOARD_IICI      0  /* the testbed's IIci motherboard (MAME maciici_ps) */
+#define PSMB_BOARD_SOLO      1  /* no Macintosh: mac.board=solo */
+#define PSMB_BOARD_SE        2  /* the Macintosh SE: mac.board=se */
+#define PSMB_BOARD_PLUS      3  /* the Macintosh Plus: mac.board=plus (Aurora68 Machine answers Gestalt 'mach' with gestaltMacPlus) */
+#define PSMB_BOARD_128K      4  /* the Macintosh 128K: mac.board=128k (gestaltClassic) */
+#define PSMB_BOARD_512K      5  /* the Macintosh 512K: mac.board=512k (gestaltClassic) */
+#define PSMB_BOARD_512KE     6  /* the Macintosh 512Ke: mac.board=512ke (gestaltMac512KE) */
 #define PSMB_FEAT_BLOCK      (1u << 0)
 #define PSMB_FEAT_NET        (1u << 1)
 #define PSMB_FEAT_RTC        (1u << 2)

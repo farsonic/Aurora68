@@ -1,6 +1,6 @@
 /*
  * psmac_board_se.c — the Macintosh SE's logic board behind the Macintosh IIci ROM.
- * Copyright (c) 2026 PiStorm-SE project. MPL-2.0.
+ * Copyright (c) 2026 Aurora68 project. MPL-2.0.
  *
  * The ROM on the Pi is a IIci's and talks to a IIci: a VIA at 0x50F00000, an SCC at 0x50F04000,
  * an NCR 5380 at 0x50F10000 with its pseudo-DMA windows, a SWIM, an ASC, a VDAC, the RBV with
@@ -28,14 +28,22 @@
 #include "psmb.h"
 #include "psmac_pram_default.h"
 
-int psmac_board_se;                         /* mac.board=se (also set by mac.board=solo, psmac_board_solo.c) */
+int psmac_board_se;                         /* mac.board=se (also set by mac.board=solo, psmac_board_solo.c, and mac.board=plus) */
 extern int psmac_board_solo;
+/* mac.board=plus (psmac_board_plus.c): the Plus's differences, hooked in below where they apply */
+extern int psmac_board_plus;
+extern int psmac_board_orig;                /* psmac_board_plus.c: 0 the Plus, 1 the 128K, 2 the 512K, 3 the 512Ke (mac.board=128k/512k/512ke) */
+int psmac_plus_via_write(uint32_t reg, uint32_t *data); int psmac_plus_via_local(uint32_t reg, uint32_t *val);
+uint32_t psmac_plus_via_read(uint32_t reg, uint32_t r); void psmac_plus_tick(void); int psmac_plus_irq(void);
+void psmac_plus_reset(void); void psmac_plus_options(const char *); void psmac_plus_report(void);
+uint32_t psmac_plus_scc_write(uint32_t ch, uint32_t data); void psmac_plus_scc_written(void); void psmac_plus_scc_read(uint32_t ch);
+#define PB6 (psmac_board_plus ? 0u : 0x40u)   /* VIA port B bit 6: driven high on the SE (its SCSI interrupt enable), an input on the Plus (H4) */
 int psmac_solo_access(uint32_t addr, int size, int write, uint32_t data, uint32_t *val);
 unsigned psmac_se_ipl(unsigned raw);
 static inline void level_lock(void), level_unlock(void); static void store_level(unsigned raw);   /* the level the JIT sees (psmac_se_set_level, below) */
 static unsigned se_wire_ipl;                /* the SE's level as the last cycle on the wire brought it */
 unsigned psmac_solo_ipl(void); void psmac_solo_level_now(void); void psmac_solo_service(void); void psmac_solo_options(const char *); void psmac_solo_report(void);
-static uint32_t se_ram_kb = 4096;           /* mac.seram=N: the SE's own memory, 1, 2, 2.5 or 4 MB (its screen and sound buffers sit at the top) */
+static uint32_t se_ram_kb = 4096;           /* mac.seram=N: the SE's own memory, 1, 2, 2.5 or 4 MB (its screen and sound buffers sit at the top); 128 or 512 KB on mac.board=128k/512k/512ke */
 static uint32_t se_ram_size(void) { return se_ram_kb << 10; }
 /* mac.selinefault= (testbed, docs/08 item 68): an address-line fault on the wire to the SE's RAM (below
    $400000), so the address-line test below can be tried. N: line N stuck high; N,M: line N joined to
@@ -237,7 +245,7 @@ static void asc_write(uint32_t off, uint8_t data)
 static uint32_t via_data(uint32_t reg, uint32_t data)
 {
     switch (reg) {
-    case 0: case 2: return data | 0x40;                /* ORB / DDRB */
+    case 0: case 2: return data | PB6;                 /* ORB / DDRB (not on the Plus: H4 is an input there) */
     case 1: case 3: case 15: return data | 0x40;       /* ORA / DDRA / ORA without handshake */
     default: return data;
     }
@@ -270,6 +278,7 @@ static uint32_t via_read_fix(uint32_t reg, uint32_t r)
     if (reg == 1 || reg == 15) {
         r = (r & 0xb8) | 0x47;
         if (!(via_ddra & 0x10)) r = (r & ~0x10u) | (se_pa4_sim ? 0x10u : 0);
+        else if (psmac_board_plus) r = (r & ~0x10u) | (via_ora & 0x10);   /* the Plus's overlay: the ROM's latch, the wire's is always 0 */
         if (!snd_off) r = (r & ~0x08u) | (via_ddra & via_ora & 0x08);   /* PA3: the ROM's latch as an output, 0 as an input (MAME's SE reads $81) */
         return r;
     }
@@ -549,7 +558,7 @@ static uint32_t xp_read(uint32_t r)
 static void rtc_send(uint8_t b)
 {
     for (int k = 7; k >= 0; k--) {
-        uint8_t o = 0x40 | ((b >> k) & 1);           /* enable low, clock low, the bit (PB6 high as via_data drives it) */
+        uint8_t o = (uint8_t)(PB6 | ((b >> k) & 1)); /* enable low, clock low, the bit (PB6 high on the SE as via_data drives it) */
         psmac_wire_write(SE_ORB, 1, o, 0);
         psmac_wire_write(SE_ORB, 1, o | 0x02, 0);     /* clock high: the chip takes the bit */
     }
@@ -557,25 +566,37 @@ static void rtc_send(uint8_t b)
 static uint8_t rtc_recv(void)
 {
     uint8_t v = 0;
-    psmac_wire_write(SE_DDRB, 1, 0x46, 0);           /* the data line an input */
+    psmac_wire_write(SE_DDRB, 1, PB6 | 0x06, 0);     /* the data line an input */
     for (int k = 7; k >= 0; k--) {
-        psmac_wire_write(SE_ORB, 1, 0x40, 0);
-        psmac_wire_write(SE_ORB, 1, 0x42, 0);
+        psmac_wire_write(SE_ORB, 1, PB6, 0);
+        psmac_wire_write(SE_ORB, 1, PB6 | 0x02, 0);
         uint32_t r = psmac_wire_read(SE_ORB, 1);
         if (xp.sim_dead) r |= 1;
         v = (uint8_t)(v << 1 | (r & 1));
     }
-    psmac_wire_write(SE_DDRB, 1, 0x47, 0);
-    psmac_wire_write(SE_ORB, 1, 0x46, 0);             /* enable high: the transaction is over */
+    psmac_wire_write(SE_DDRB, 1, PB6 | 0x07, 0);
+    psmac_wire_write(SE_ORB, 1, PB6 | 0x06, 0);       /* enable high: the transaction is over */
     return v;
 }
 static void rtc_probe(void)
 {
     if (xp.probed) return;
     xp.probed = 1;
+    if (psmac_board_orig == 1 || psmac_board_orig == 2) {
+        /* The 128K and 512K have the clock chip of 20 bytes (343-0040): no extended parameter RAM, which
+           the IIci ROM keeps its addressing mode ($8A), slot records and startup device in. So the
+           stand-in answers for all of it, the clock too, from pram.bin on the card, exactly as for a
+           chip that does not answer; the old chip is not asked anything. */
+        for (int i = 0; i < 256; i++) xp.pram[i] = psmac_pram_default[i];
+        xp_set_secs(XP_SECS_START);
+        xp.serve = 1;
+        kprintf("[PSMAC:SE] clock chip: the Macintosh %s's (20 bytes of parameter RAM, none extended): the board layer answers in its place, "
+                "parameter RAM and clock from pram.bin on the card\n", psmac_board_orig == 1 ? "128K" : "512K");
+        return;
+    }
     uint8_t ddrb = psmac_wire_read(SE_DDRB, 1) & 0xff, sig[4], sec[4];
-    psmac_wire_write(SE_ORB, 1, 0x46, 0);             /* enable high, clock high, before the lines become outputs */
-    psmac_wire_write(SE_DDRB, 1, 0x47, 0);
+    psmac_wire_write(SE_ORB, 1, PB6 | 0x06, 0);       /* enable high, clock high, before the lines become outputs */
+    psmac_wire_write(SE_DDRB, 1, PB6 | 0x07, 0);
     for (int i = 0; i < 4; i++) { int a = 0x0c + i; rtc_send(0xb8 | (a >> 5)); rtc_send((a & 0x1f) << 2); sig[i] = rtc_recv(); }
     for (int i = 0; i < 4; i++) { rtc_send(0x81 | (i << 2)); sec[i] = rtc_recv(); }
     psmac_wire_write(SE_DDRB, 1, ddrb, 0);
@@ -707,6 +728,27 @@ static void scsi_probe(void)
     se5380.odr = se5380.icr = se5380.mr = se5380.tcr = 0; se5380.aip = se5380.irq = 0;
 }
 
+/* The Plus's pseudo-DMA (22 November 2026, psmac_board_plus.c): the SE's BBU holds DTACK on the DMA
+   window until the 5380 raises DRQ, so a byte is moved per bus cycle and the glue does the waiting;
+   the Plus has no such glue, and an access to the window without DRQ is a plain register access
+   (MAME's mac128.cpp and macplus_ps). So before each byte the bus and status register (5) is read
+   until DRQ (bit 6) is up: one or two cycles more per byte. It gives up when the phase no longer
+   matches (bit 3: the target has moved on, a status or message phase) or after 100,000 reads; the
+   byte is then $FF on a read and not written. */
+static uint32_t plus_drq_bytes, plus_drq_waits, plus_drq_timeouts;
+static int plus_wait_drq(void)
+{
+    plus_drq_bytes++;
+    for (uint32_t i = 0; i < 100000u; i++) {
+        uint32_t bsr = psmac_wire_read(SE_SCSI_RD + (5 << 4), 1);
+        if (bsr & 0x40) return 1;
+        if (!(bsr & 0x08)) break;
+        if (i) plus_drq_waits++;
+    }
+    plus_drq_timeouts++;
+    return 0;
+}
+
 /* ---- translation ----------------------------------------------------------------------------
    One IIci-side access of the given size, read or written. Returns 1 when answered (locally or
    on the SE's bus), with the read value in *val. The caller handles addresses this file declines. */
@@ -729,12 +771,26 @@ int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t 
             else if (reg == 2) { xp.ddr0 = data & 1; via_ddrb = (uint8_t)data; }
             else if (reg == 3) via_ddra = (uint8_t)data;
             else if (reg == 14) { if (data & 0x80) via_ier |= data & 0x7f; else via_ier &= ~(data & 0x7f); }
-            trace("VIA", 1, addr, se, size, via_data(reg, data & 0xff));
-            psmac_wire_write(se, 1, via_data(reg, data & 0xff), posted);
+            uint32_t wd = via_data(reg, data & 0xff);
+            if (psmac_board_plus) {                  /* the shift register and ADB's lines are answered here (psmac_board_plus.c) */
+                level_lock(); int local = psmac_plus_via_write(reg, &wd); store_level(se_wire_ipl); level_unlock();
+                if (local) { trace("VIA", 1, addr, se, size, data & 0xff); local_writes++; return 1; }
+            }
+            trace("VIA", 1, addr, se, size, wd);
+            psmac_wire_write(se, 1, wd, posted);
             return 1;
+        }
+        if (psmac_board_plus) {
+            uint32_t v = 0;
+            level_lock(); int local = psmac_plus_via_local(reg, &v); if (local) store_level(se_wire_ipl); level_unlock();
+            if (local) { trace("VIA", 0, addr, se, size, v); local_reads++; *val = size == 1 ? v : size == 2 ? v << 8 | v : v << 24 | v << 16 | v << 8 | v; return 1; }
         }
         r = via_read_fix(reg, psmac_wire_read(se, 1) & 0xff);
         if (reg == 0) r = xp_read(r);
+        if (psmac_board_plus) {
+            if (reg == 3) r = via_ddra;              /* the ROM's own: the wire's has PA4 out and PA7 in whatever it wrote */
+            level_lock(); r = psmac_plus_via_read(reg, r); store_level(se_wire_ipl); level_unlock();
+        }
         trace("VIA", 0, addr, se, size, r);
         *val = size == 1 ? r : size == 2 ? r << 8 | r : r << 24 | r << 16 | r << 8 | r;
         return 1;
@@ -743,8 +799,14 @@ int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t 
         /* SCC: B control, A control, B data, A data at +0, +2, +4, +6 on the IIci; the SE reads
            them at $9FFFF8 (upper byte) and writes them at $BFFFF9 (lower byte) */
         uint32_t ch = off & 6;
-        if (write) { trace("SCC", 1, addr, 0xBFFFF9u + ch, size, data & 0xff); psmac_wire_write(0xBFFFF9u + ch, 1, data & 0xff, posted); return 1; }
+        if (write) {
+            if (psmac_board_plus) data = psmac_plus_scc_write(ch, data & 0xff);   /* the register pointer followed, WR15's DCD enable kept off (the Plus's mouse) */
+            trace("SCC", 1, addr, 0xBFFFF9u + ch, size, data & 0xff); psmac_wire_write(0xBFFFF9u + ch, 1, data & 0xff, posted);
+            if (psmac_board_plus) psmac_plus_scc_written();
+            return 1;
+        }
         r = psmac_wire_read(0x9FFFF8u + ch, 1) & 0xff;
+        if (psmac_board_plus) psmac_plus_scc_read(ch);
         trace("SCC", 0, addr, 0x9FFFF8u + ch, size, r);
         *val = size == 1 ? r : r << 8 | r;
         return 1;
@@ -768,10 +830,20 @@ int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t 
         /* pseudo-DMA, plain (0x12000) or with the DRQ handshake (0x6000): the SE has one window
            and its glue does the waiting. A byte per bus cycle; longs and words are several. */
         if (scsi_empty) { if (!write) *val = size == 1 ? 0xffu : size == 2 ? 0xffffu : 0xffffffffu; return 1; }
-        if (write) { trace("SCSI", 1, addr, SE_SCSI_PDMA_WR, size, data); for (int i = 0; i < size; i++) psmac_wire_write(SE_SCSI_PDMA_WR, 1, (data >> (8 * (size - 1 - i))) & 0xff, 0); return 1; }
+        if (write) {
+            trace("SCSI", 1, addr, SE_SCSI_PDMA_WR, size, data);
+            for (int i = 0; i < size; i++) {
+                if (psmac_board_plus && !plus_wait_drq()) continue;
+                psmac_wire_write(SE_SCSI_PDMA_WR, 1, (data >> (8 * (size - 1 - i))) & 0xff, 0);
+            }
+            return 1;
+        }
         { static int first = 1; if (first) { first = 0; psmac_boot_mark("SCSI: first pseudo-DMA read: the first block from the SE's disk"); } }
         r = 0;
-        for (int i = 0; i < size; i++) r = r << 8 | (psmac_wire_read(SE_SCSI_PDMA_RD, 1) & 0xff);
+        for (int i = 0; i < size; i++) {
+            if (psmac_board_plus && !plus_wait_drq()) { r = r << 8 | 0xff; continue; }
+            r = r << 8 | (psmac_wire_read(SE_SCSI_PDMA_RD, 1) & 0xff);
+        }
         trace("SCSI", 0, addr, SE_SCSI_PDMA_RD, size, r);
         *val = r;
         return 1;
@@ -825,6 +897,9 @@ static void store_level(unsigned raw)        /* the caller holds the lock */
 {
     if (__m68k_state) __m68k_state->INTF.IPL = psmac_se_ipl(raw);
 }
+/* the Plus's keyboard and mouse on the service core (psmac_board_plus.c) take the same lock */
+void psmac_se_plus_lock(void) { level_lock(); }
+void psmac_se_plus_unlock(void) { store_level(se_wire_ipl); level_unlock(); }
 /* The programmer's interrupt switch (21 November 2026, docs/08 item 92). On the SE it pulls /IPL2 alone,
    raw level 4 (Guide to the Macintosh Family Hardware, table 3-2); on the IIci it is the NMI, level 7.
    Until an outside review pointed it out the mapper below dropped the bit, so pressing the switch on a
@@ -847,7 +922,7 @@ static void interrupt_switch(unsigned raw)
 void psmac_se_set_level(unsigned raw)         /* psmac_bus.c, after each cycle on the wire and each poll */
 {
     interrupt_switch(raw);
-    level_lock(); se_wire_ipl = raw; store_level(raw); level_unlock();
+    level_lock(); se_wire_ipl = raw; psmac_plus_tick(); store_level(raw); level_unlock();
 }
 
 /* The interrupt level the SE drives, read as the IIci ROM expects it: the SE's level 1 is the VIA
@@ -861,6 +936,7 @@ unsigned psmac_se_ipl(unsigned raw)
     if (raw & 2) ipl = 4;
     else if (raw & 1) ipl = 1;
     if (psmac_se_rbv_irq() && ipl < 2) ipl = 2;
+    if (psmac_plus_irq() && ipl < 1) ipl = 1;    /* the Plus: the ADB transceiver's shift-register interrupt, the VIA's level */
     return ipl;
 }
 
@@ -1215,15 +1291,26 @@ static void se_ram_lines(void)
    never did, and nothing put RAM back at 0 after the ROM's RESET. The screen showed all the same,
    so the overlay evidently does not hide the kernel's writes to the screen buffer.) */
 static volatile int se_ready;
+/* RAM back at 0: the SE's BBU on an access to the ROM's space, the Plus's VIA port A bit 4 = 0 (with
+   PA6 = 1, the main screen, and PA3 = 1, the main sound buffer, as the Plus's own ROM leaves them) */
+static void se_overlay_off(void)
+{
+    if (!psmac_board_plus) { psmac_wire_read(0x400000u, 2); return; }
+    psmac_wire_write(SE_VIA + 15 * 0x200, 1, 0x48, 0);
+    psmac_wire_write(SE_VIA + 3 * 0x200, 1, 0x58, 0);
+}
 void psmac_se_start(void)
 {
     if (!psmac_board_se || psmac_board_solo) { se_ready = 1; return; }
-    psmac_wire_read(0x400000u, 2);
+    se_overlay_off();
     se_ram_lines();
     shadow_valid = 0;
     for (uint32_t w = 0; w < (SE_ROWS + 31) / 32; w++) dirty[w] = 0;
-    kprintf("[PSMAC:SE] board layer up: SE memory %u%s MB, screen buffer at $%06x, VIA $EFE1FE, SCC $9FFFF8/$BFFFF9, SCSI $5FF000, IWM $DFE1FF; RBV, ASC, VDAC answered here\n",
-            se_ram_kb >> 10, se_ram_kb & 512 ? ".5" : "", psmac_se_fb_base());
+    static const char *const orig_name[] = { "Macintosh Plus", "Macintosh 128K", "Macintosh 512K", "Macintosh 512Ke" };
+    kprintf("[PSMAC:SE] board layer up: %s memory %u KB, screen buffer at $%06x, VIA $EFE1FE, SCC $9FFFF8/$BFFFF9, %s, IWM $DFE1FF; RBV, ASC, VDAC answered here%s\n",
+            psmac_board_plus ? orig_name[psmac_board_orig & 3] : "SE", se_ram_kb, psmac_se_fb_base(),
+            psmac_board_orig ? "no SCSI (the 5380 answered here as an empty bus)" : "SCSI $5FF000",
+            psmac_board_plus ? "; ADB answered here (the Plus keyboard and mouse as its keyboard and mouse), overlay on VIA PA4, PB3-PB6 and PA7 never driven" : "");
     if (snd_off) kprintf("[PSMAC:SE] sound: mac.sesound=off, the ASC's samples are not played (the SE's speaker stays as the ROM leaves it)\n");
     else kprintf("[PSMAC:SE] sound: the ASC's samples go to the SE's speaker through its sound buffer at $%06x, 370 a frame, written in halves after the SE's own VBL; "
                  "volume on VIA PA0-2, PB7 low only while a sound plays (mac.sesound=off to leave the speaker alone)\n", snd_base());
@@ -1238,7 +1325,8 @@ void psmac_se_after_reset(void)
 {
     if (!psmac_board_se || psmac_board_solo) return;
     via_ddra = via_ddrb = via_ora = via_orb = via_ier = 0;
-    psmac_wire_read(0x400000u, 2);
+    if (psmac_board_plus) { level_lock(); psmac_plus_reset(); store_level(se_wire_ipl); level_unlock(); }
+    se_overlay_off();
     if (scsi_mode == 0) scsi_probe();             /* the reset line has reset the 5380 too: a dozen cycles to look again */
     se5380.odr = se5380.icr = se5380.mr = se5380.tcr = 0; se5380.aip = se5380.irq = 0;
 }
@@ -1255,8 +1343,22 @@ void psmac_se_options(const char *args)
 {
     extern const char *find_token(const char *, const char *);
     const char *tok;
-    if ((tok = find_token(args, "mac.board="))) { tok += 10; if (tok[0] == 's' && tok[1] == 'e') psmac_board_se = 1; }
+    if ((tok = find_token(args, "mac.board="))) {
+        tok += 10;
+        if (tok[0] == 's' && tok[1] == 'e') psmac_board_se = 1;
+        else if (tok[0] == 'p' && tok[1] == 'l' && tok[2] == 'u' && tok[3] == 's') { psmac_board_se = 1; psmac_board_plus = 1; }
+        else if ((tok[0] == '1' && tok[1] == '2' && tok[2] == '8' && (tok[3] == 'k' || tok[3] == 'K')) ||
+                 (tok[0] == '5' && tok[1] == '1' && tok[2] == '2' && (tok[3] == 'k' || tok[3] == 'K'))) {
+            /* the original Macintosh: the Plus's board layer without SCSI, with its own RAM (the screen
+               and sound buffers at the top of 128K or 512K) and, but on the 512Ke, the old clock chip */
+            psmac_board_se = 1; psmac_board_plus = 1;
+            psmac_board_orig = tok[0] == '1' ? 1 : (tok[4] == 'e' || tok[4] == 'E') ? 3 : 2;
+            se_ram_kb = tok[0] == '1' ? 128 : 512;
+            scsi_mode = 2;                          /* no 5380: answered here as an empty bus, the wire never touched there */
+        }
+    }
     psmac_solo_options(args);
+    psmac_plus_options(args);
     if ((tok = find_token(args, "mac.setrace="))) {
         tok += 12; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); se_trace_left = n;
         if (*tok == ',') { tok++; for (int i = 0; i < 4 && *tok && *tok != ' '; i++, tok++) se_trace_dev[i] = (*tok >= 'a' && *tok <= 'z') ? *tok - 32 : *tok; }
@@ -1271,7 +1373,7 @@ void psmac_se_options(const char *args)
         if (n >= 1 && n <= 21 && m >= 1 && m <= 21 && m != n) { se_fault_n = n; se_fault_m = m; }
         else if (n >= 1 && n <= 21) se_fault_or = 1u << n;
     }
-    if ((tok = find_token(args, "mac.sescsi="))) { tok += 11; scsi_mode = tok[0] == 'r' ? 1 : tok[0] == 'e' ? 2 : 0; }
+    if ((tok = find_token(args, "mac.sescsi=")) && !psmac_board_orig) { tok += 11; scsi_mode = tok[0] == 'r' ? 1 : tok[0] == 'e' ? 2 : 0; }
     if ((tok = find_token(args, "mac.sefloat="))) { tok += 12; scsi_float_sim = tok[0] == '1'; }   /* the testbed: the 5380 read as on an unterminated bus */
     if ((tok = find_token(args, "mac.seram="))) {   /* 1, 2, 2.5 or 4: the SE's address arithmetic takes the top of what is fitted */
         tok += 10; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0');
@@ -1289,6 +1391,10 @@ void psmac_se_report(void)
             rows_sent, se_lines_bad ? " (an address line failed its test at the start)" : "", frames_marked, local_reads, local_writes, rbv_ifr, rbv_ier, rbv_regs[0x12],
             xp.serve ? "not answering, the board layer answers" : "answering", xp.reads, xp.reads_ff, xp.writes);
     if (scsi_empty) kprintf("[PSMAC:SE]   SCSI: the empty bus answered here, %u selections (none answered)\n", se5380.selections);
+    if (psmac_board_plus) {
+        psmac_plus_report();
+        if (plus_drq_waits || plus_drq_timeouts) kprintf("[PSMAC:PLUS]   SCSI pseudo-DMA: %u bytes waited for DRQ (%u polls beyond the first), %u gave up\n", plus_drq_bytes, plus_drq_waits, plus_drq_timeouts);
+    }
     if (!snd_off && (snd.starts || snd_dropped))
         kprintf("[PSMAC:SE]   sound: %u starts, %u samples played, %u halves written (%u late, %u held for the next VBL), %u underruns, %u dropped | speaker %s, volume %d, ASC mode %u | "
                 "VBL %u edges (%u cleared here), frame %u us, a half written in %u us at most\n",

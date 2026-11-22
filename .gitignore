@@ -67,3 +67,12 @@ mac/build/piagent.elf
 
 # local working copies made for parallel work (git worktrees), never part of the repository
 .claude/worktrees/
+# local copies at the top of the tree: ROMs, disk images, the M0110A keyboard's ROM set, MAME's
+# per-run directories when started from here, and the testbed runs' logs and screenshots
+/*.rom
+/*.image
+/*.hda
+/*.zip
+/cfg/
+/nvram/
+/runs/

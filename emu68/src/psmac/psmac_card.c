@@ -1163,8 +1163,9 @@ int psmac_card_need(const void *p, uint32_t len)
                 int mine = card_lock_core3;
                 if (!mine) { spinlock_acquire(&card_lock); card_lock_core3 = 1; }
                 flush_finish();                             /* PiDisk's block service comes between passes */
-                if (ld.active && !(ld.img == i && ld.chunk == c)) while (ld.active) load_step();   /* the chunk in hand first */
-                if (!chunk_in(m, c)) { if (!ld.active) { ld.active = 1; ld.img = i; ld.chunk = c; ld.done = 0; } while (ld.active) load_step(); }
+                extern void psmac_mbox_blk_progress(void);   /* PiDisk waits on while this moves (psmac_mbox.c) */
+                if (ld.active && !(ld.img == i && ld.chunk == c)) while (ld.active) { psmac_mbox_blk_progress(); load_step(); }   /* the chunk in hand first */
+                if (!chunk_in(m, c)) { if (!ld.active) { ld.active = 1; ld.img = i; ld.chunk = c; ld.done = 0; } while (ld.active) { psmac_mbox_blk_progress(); load_step(); } }
                 if (!mine) { card_lock_core3 = 0; spinlock_release(&card_lock); }
                 if (chunk_failed(m, c)) bad = 1;
                 continue;

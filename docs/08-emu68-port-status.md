@@ -3597,6 +3597,53 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
        20 s; the partial file was deleted". Riptide in Extensions was unchanged (537,566 bytes of
        resources before and after), no Riptide.part was left, and the next jobs ran at once.
 
+96. **The Macintosh Plus, 128K, 512K and 512Ke; a first start from blank parameter RAM; a slow card; the
+   SCSI ID the testbeds use (22 November).** The owner asked for the Plus as a board beside the SE, and
+   then the original Macintosh. Neither owner nor project has one: everything here is the MAME
+   testbed's, and the owner's testers will try the hardware.
+   - *The testbed machines* (`reference/mame-psmac.patch`, `src/mame/apple/macplus_ps.cpp`):
+     `macplus_ps` (the Plus's logic board, its 5380 with pseudo-DMA, the M0110A keyboard with `-kbd usp`,
+     which wants `mame/roms/mackbd_m0110a.zip`), `mac512ke_ps` (the Plus without the 5380, 512K) and
+     `mac512k_ps` (the 128K/512K board: the 20-byte clock chip, 400K drives, `-ramsize 128K` for the
+     128K). None of them needs a ROM dump, the bridged CPU never running the board's own ROM; `macse_ps`
+     now fills its ROM region the same way (it had asked for `macse.rom`, which this build machine never
+     had, and would not start). `tools/run-fullstack.sh` takes `HD=none` for a machine without SCSI and
+     `MAME_EXTRA=` for more options (a half-done edit had left `HD=` ignored for a few hours).
+   - *The kernel* (`mac.board=plus`, `128k`, `512k`, `512ke`; `psmac_board_plus.c` beside
+     `psmac_board_se.c`, whose SE layer they share): the overlay through VIA PA4, DDRB bits 3-6 left as
+     inputs, a software ADB transceiver in place of the SE's ADB chip with the Plus's own keyboard and
+     mouse (and USB and Bluetooth input) as ADB devices, SCSI pseudo-DMA by polling DRQ, the board's own
+     RAM size for the screen and sound buffers. On the 128K and 512K, whose chip has no extended parameter
+     RAM, the clock-chip stand-in answers for all of it from `pram.bin` on the card. Aurora68 Machine sets
+     Gestalt: About This Macintosh reads "Macintosh Plus", "Macintosh 512Ke", and plain "Macintosh" on the
+     128K and 512K (System 7.1's name for type 1; the owner chose to leave it so). All four reached the
+     Finder under System 7.1: the 128K/512K/512Ke at 128 MiB from the card's image (they have no SCSI),
+     the Plus at 32 MiB from its SCSI disk; 8 MiB in 24-bit mode crashes QuickTime on every board with the test
+     image, so 32 MiB or more for tests.
+   - *A first start from blank parameter RAM.* The first 512Ke boot stopped at the question-mark disk
+     without opening PiDisk. A trace of $78-$7B showed why: the IIci ROM, finding no valid parameter RAM
+     (a Plus's or a blank chip's), writes zeros to the four bytes, then ff ff ff df (SCSI ID 0, its
+     default startup device), and reads them back; the view of item 67 kept every write the Mac made, so
+     the Mac read the SCSI default and the card's boot record never ran. The view now gives a written byte
+     back only to a read of that byte that comes next, with no other access to $78-$7B between (the ROM's
+     parameter RAM test, 0x40841DA2, writes one byte and reads it at once); every other read is given
+     slot 9. Verified from an all-zero `rtc` file: the card's image to the Finder, "Macintosh 512Ke".
+     A real Plus or SE meets this at its first start with Aurora68.
+   - *A slow card.* The first run after a power cut (the host's page cache cold) ended in "PiDisk: prime
+     error -036" and the question-mark disk: one semihosting read of the image took 0.7 s, longer than
+     PiDisk's spin on the done word, and only USB commands moved the progress word the driver then waits
+     on. The BLOCK service now moves it before each step that may wait (a semihosting chunk, each card
+     chunk `psmac_card_need` loads). Verified with `mac.cardslow=10000` and a 256 MB FAT16 card image
+     (`CARD=`): the Finder, with mailbox calls of up to 3.7 s; the same kernel without the bump, prime
+     error -036.
+   - *The SCSI ID.* MAME puts these Macs' disk at SCSI ID 6. With the card's image published and the
+     parameter RAM naming no disk, `mac.boot=auto` asks for ID 0 first; the Start Manager waits for it
+     (0x40801460, about 15 s), then takes the first startup disk in the drive queue, the card's, whose
+     drive is queued before the SCSI drivers load. So on the SE and the Plus a disk at ID 6 lost to the
+     image; moved to ID 0 (`MAME_EXTRA='-scsibus:6 cdrom -scsibus:0 harddisk -hard ...'`) the SE started
+     from SCSI and mounted the image after it. This is the order item 67 wrote down; whether a disk at
+     another ID should come before the card is the owner's to decide.
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,
