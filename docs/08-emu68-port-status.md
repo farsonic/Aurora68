@@ -3806,6 +3806,10 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      and on those boards the screen check reads nothing back, it rewrites one row a tick from the Pi's copy
      ("rows rewritten blind"; mac.screencheck=on for the read-back, off for neither). Neither can be seen
      in the testbed (MAME's SCC and RAM have no such timing); the tester's next log will say.
+   - *The VIAs (22 November, from the owner).* Both pre-SE machines in the field have original Rockwell R6522
+     VIAs, NMOS with TTL input levels, which take the PiStorm's 3.3 V as high: docs/18's concern about a WDC
+     W65C22S (inputs at 0.8 VDD) does not apply to them. That leaves the CPLD's early read sampling against
+     the boards' PAL (or reproduction GAL) /DTACK timing, and the SCC's recovery time, as the leads.
 
 97. **FAT32 and exFAT on the Mac: disk images on sticks, and an HFS view of a stick or a card folder (21
    November, issue #20).** The owner wants sticks formatted by Windows, Linux or a modern Mac, and a folder
