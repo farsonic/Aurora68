@@ -174,6 +174,7 @@ like beside the songs, else the picture inside the first song.
 | | `MUSIC_IPV6_ADDRESS`, `MUSIC_IPV4_ADDRESS` | that address by hand |
 | `--bind ADDR` | `MUSIC_BIND` | one address to listen on only |
 | `--max-listeners N` | `MUSIC_MAX_LISTENERS` | 16 at once |
+| | `MUSIC_COPIES` | `hide` (the default): copies of one track in an album folder (the same number and title, sizes within 2%, as a download made twice leaves) are listed once, the best kept (FLAC, M4A, MP3, then the larger); `show` lists every file |
 | `--bitrate N` | `MUSIC_BITRATE` | kbit/s of the MP3 other formats become: 192 (128 is plenty for the SE's speaker; up to 320) |
 | `--ffmpeg PATH` | `MUSIC_FFMPEG` | ffmpeg, found on the PATH; `""` plays MP3s only |
 

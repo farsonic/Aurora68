@@ -66,6 +66,14 @@ def make_library(d):
            '-metadata', 'artist=Gamma', f'{g}/02. Gamma - Lossless.m4a')
     ffmpeg('-f', 'lavfi', '-i', 'sine=frequency=400:duration=2', '-c:a', 'flac', '-metadata', 'TITLE=Flac Song',
            '-metadata', 'ARTIST=Gamma', f'{g}/03. Gamma - Flac Song.flac')
+    # copies of one track, as the owner's Daft Punk album has (the artists' separator differs, the tags too)
+    e = f'{d}/Epsilon - Copies'
+    os.makedirs(e, exist_ok=True)
+    for name, artist in [('05. Epsilon, Guest - Song (feat. Guest).m4a', 'Epsilon, Guest'),
+                         ('05. Epsilon; Guest - Song (feat. Guest).m4a', 'Epsilon; Guest'),
+                         ('05. Epsilon - Song (Live).m4a', 'Epsilon'), ('06. Epsilon - Other.m4a', 'Epsilon')]:
+        ffmpeg('-f', 'lavfi', '-i', 'sine=frequency=520:duration=2', '-c:a', 'aac', '-b:a', '96k',
+               '-metadata', f'artist={artist}', '-metadata', 'title=Song', f'{e}/{name}')
     open(f'{d}/Beta/Talk/broken.mp3', 'wb').write(os.urandom(5000))                       # not MP3 at all
     os.makedirs(f'{d}/Empty folder', exist_ok=True)
     os.symlink('/etc/passwd', f'{d}/Beta/evil.mp3')
@@ -227,6 +235,11 @@ def main():
               '/browse/../', '/api/list?dir=..']:
         st, _, body = get(base, p)
         check(st == 404 and b'root:' not in body, f'refused: {p}')
+
+    # copies of one track are listed once; a live version, another title, stays
+    files = json.loads(get(base, '/api/list?dir=Epsilon%20-%20Copies')[2])['files']
+    check(len(files) == 3 and sum('feat. Guest' in f for f in files) == 1 and any('(Live)' in f for f in files),
+          f'copies of one track are listed once, other versions stay ({files})')
 
     # the control panel and the live channel
     st, _, body = get(base, '/', {'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8'})
@@ -390,7 +403,7 @@ def main():
     st2 = get(f'http://127.0.0.1:{port2}', '/api/list?dir=Gamma%20-%20Converted')[0]   # no music there now
     srv2.terminate(); srv2.wait(10)
     log2 = srv2.stdout.read()
-    check('passed over 2 M4A, 1 FLAC files' in log2 and st2 == 404,
+    check('passed over 6 M4A, 1 FLAC files' in log2 and st2 == 404,
           'without ffmpeg: MP3s only, and the log says what was passed over')
 
     # IPv6

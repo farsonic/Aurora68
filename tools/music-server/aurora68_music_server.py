@@ -208,6 +208,45 @@ def sort_key(name):
     return n[4:] if n.startswith('the ') and len(n) > 4 else n
 
 
+DUP_NUMBER = __import__('re').compile(r'^\s*(\d{1,3}(?:-\d{1,3})?)[\s.\-_]+')
+QUALITY = {'.flac': 0, '.wav': 1, '.aif': 1, '.aiff': 1, '.m4a': 2, '.alac': 2, '.ogg': 3, '.opus': 3, '.mp3': 4}
+
+
+def without_copies(folder, songs):
+    """a folder's songs with copies of one track left out: (kept, left out).
+
+    22 November 2026: the owner's Daft Punk album holds seven tracks twice, downloaded eleven days apart,
+    "05. Daft Punk, Julian Casablancas - Instant Crush (...).m4a" and "05. Daft Punk; Julian Casablancas
+    - Instant Crush (...).m4a": the artists written with a different separator, the files 103 bytes apart
+    (their tags). Files are copies when their track number and title (after " - ", case and spacing
+    aside) agree and their sizes are within 2%: a live version or a remix has a title of its own. Of the
+    copies the best kind is kept (FLAC, then M4A, then MP3), then the larger. The files are not touched."""
+    groups = {}
+    for f in songs:
+        stem = os.path.splitext(f)[0]
+        m = DUP_NUMBER.match(stem)
+        if not m:
+            continue
+        title = stem[m.end():].split(' - ', 1)[-1]
+        groups.setdefault((m.group(1).lstrip('0'), ' '.join(title.casefold().split())), []).append(f)
+    out = set()
+    for same in groups.values():
+        if len(same) < 2:
+            continue
+        sizes = {}
+        for f in same:
+            try:
+                sizes[f] = os.path.getsize(os.path.join(folder, f))
+            except OSError:
+                sizes[f] = 0
+        same.sort(key=lambda f: (QUALITY.get(os.path.splitext(f)[1].lower(), 5), -sizes[f], f))
+        best = same[0]
+        for f in same[1:]:
+            if sizes[best] and abs(sizes[f] - sizes[best]) <= 0.02 * sizes[best]:
+                out.add(f)
+    return [f for f in songs if f not in out], sorted(out)
+
+
 def artist_of(folder):
     """"Weezer" of "Weezer - Pinkerton (Explicit)", or None"""
     a, sep, rest = folder.partition(' - ')
@@ -224,6 +263,7 @@ class Library:
     def __init__(self, root, ffmpeg=None):
         self.root = os.path.realpath(root)
         self.ffmpeg = ffmpeg             # converts the formats in CONVERTED; None: MP3s only
+        self.copies = os.environ.get('MUSIC_COPIES', 'hide') != 'show'   # leave out copies of one track
         self.ffprobe = shutil.which('ffprobe') if ffmpeg else None
         self.lock = threading.Lock()
         self.when = 0.0
@@ -235,7 +275,7 @@ class Library:
         with self.lock:
             if time.monotonic() - self.when < RESCAN:
                 return
-            dirs, ids, errors, passed = {}, {}, [], {}
+            dirs, ids, errors, passed, hidden = {}, {}, [], {}, []
             for top, subdirs, files in os.walk(self.root, onerror=errors.append, followlinks=False):
                 rel = os.path.relpath(top, self.root)
                 rel = '' if rel == '.' else rel.replace(os.sep, '/')
@@ -249,6 +289,10 @@ class Library:
                         songs.append(f)
                     elif ext in CONVERTED:
                         passed[ext] = passed.get(ext, 0) + 1
+                if self.copies and len(songs) > 1:
+                    songs, gone = without_copies(top, songs)
+                    if gone:
+                        hidden.append((rel, gone))
                 dirs[rel] = (list(subdirs), sorted(songs, key=str.casefold))
                 ids[short_id(rel)] = rel
             # folders with no MP3 anywhere inside them are no stations
@@ -282,6 +326,11 @@ class Library:
                 log(f'library: cannot read {e.filename}: {e.strerror} (the server runs as user {os.getuid()}:{os.getgid()})')
             if len(errors) > 5:
                 log(f'library: ... and {len(errors) - 5} more that cannot be read')
+            if hidden:
+                n_gone = sum(len(g) for _, g in hidden)
+                log(f'library: {n_gone} {"copy" if n_gone == 1 else "copies"} of tracks left out (the same number, title '
+                    f'and size) in {len(hidden)} folder{"" if len(hidden) == 1 else "s"}, e.g. "{hidden[0][0]}/{hidden[0][1][0]}"; '
+                    f'MUSIC_COPIES=show keeps them')
             if passed:
                 log('library: passed over ' + ', '.join(f'{c} {e[1:].upper()}' for e, c in sorted(passed.items(), key=lambda kv: (-kv[1], kv[0]))) +
                     ' files: ffmpeg is not installed here to convert them (the Docker image has it)')
