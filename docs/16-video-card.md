@@ -83,26 +83,35 @@ already carries 320 kbit/s MP3 radio this way. Larger sizes are for the HDMI scr
 through MacTCP on the real machine before they are offered by default (issue #24's testing).
 
 ## The card
-A virtual NuBus card in slot $B with its own declaration ROM (board name "Aurora68 Video") and its own
-window, so it does not crowd slot $9:
+A virtual NuBus card in slot $C with its own declaration ROM (board name "Aurora68 Video") and its own
+window, so it does not crowd slot $9. (Slot $B, this document's first choice, is where the IIci's
+built-in video answers, $FBB08000, so the ROM does not map its space one to one; $C, $D and $E are the
+IIci's real NuBus slots and empty here. Built 22 November 2026: docs/08 item 98.) The window and its
+layout are `emu68/src/psmac/psmac_video.h`, which the Mac's program follows:
 
-- **A stream ring** the Mac writes into (the same producer/consumer pair of offsets as the sound card's
-  ring, docs/08 item 74, the other way round): the Mac adds bytes and advances the write offset, the card
-  decodes and advances the read offset. A full ring is what pauses the Mac's reading, and through TCP the
-  helper.
-- **A command block:** the Mac's requests (start a stream with a rectangle and a screen, pause, resume,
-  flush for a seek, stop, volume, window moved or covered) and the card's answers (state, position in
-  the stream, frames shown and dropped, the last error in words).
-- **Where the picture goes**, chosen per play:
-  - *the HDMI screen*: straight into the frame buffer, inside the rectangle the Mac gives; the Mac draws
-    nothing there. Full colour at the screen's depth.
-  - *the SE's own screen*: the kernel dithers each frame to one bit (ordered dithering) into the same
-    rectangle of the SE's screen buffer, at the rate the SE can show (about 15 frames a second at
-    320x240).
-  Both are wanted (the owner, 22 November 2026): the SE's 512x342 one-bit screen will look rough, but it
-  is the proof of concept, needs no HDMI screen, and comes first; the colour screen follows.
-- **The sound** goes into the sound card's ring, so the SE's speaker and HDMI both play it; the MPEG
-  stream's time stamps pace the pictures against it.
+- **Finding it:** the Slot Manager's sResource of type {$7050, 3, 1, $4156 'AV'}, name "Aurora68_Video",
+  no driver. The window is the slot's first megabyte: $FC000000 in 32-bit mode, $C00000 in 24-bit mode.
+- **A stream ring** of 512 KiB the Mac writes into (the same producer/consumer pair of counters as the
+  sound card's stream channel): the Mac adds bytes and advances `head`, the card decodes and advances
+  `tail`. A full ring is what pauses the Mac's reading, and through TCP the helper.
+- **A command block:** the Mac's requests (start, pause, resume, stop; a seek is stop, the new stream's
+  bytes, start), its picture's place (screen, rectangle in that screen's pixels, visible, under a
+  sequence number) and volume; the card's answers (state, the stream's size and rate, position, pictures
+  decoded, shown and not drawn, times dry, decode and draw times, its share of the core, and the last
+  error in words).
+- **Where the picture goes:** into the Mac's own frame buffer of the screen chosen, inside the rectangle,
+  at whatever depth that screen is in. The screens' own machinery carries it on from there, so a
+  screenshot of the Mac shows it and the Mac stays in charge of what covers what (its program says "not
+  visible" while the window is covered or dragged):
+  - *the SE's own screen* (screen 0 on the SE board): one bit, each picture dithered by an ordered
+    (Bayer) threshold; the rows that changed go to the SE as all its screen rows do. Both screens are
+    wanted (the owner, 22 November 2026): the SE's 512x342 one-bit screen will look rough, but it is the
+    proof of concept, needs no HDMI screen, and came first.
+  - *the HDMI screen* (screen 1 on the SE board, screen 0 on the solo board): millions and thousands of
+    colours directly, 256, 16 and 4 colours through the Mac's own colour table with an ordered dither.
+- **The sound** goes to the sound mixer beside the Mac's own (HDMI or the jack; the SE's speaker with
+  `mac.sestream=on`, as for Aurora68 Play), and the pictures are timed against the sound actually played;
+  without sound, against the Pi's timer.
 
 The card does no networking: everything it decodes was put in its ring by the Mac. That keeps it
 independent of the Pi's network and of the remote control, and it means anything that can fill the ring
@@ -119,14 +128,16 @@ TCP/IP (bsdsocket.library) fetches the stream as the Mac's does.
 The helper has a file mode: `--file movie.mp4` serves local files as "search results" and converts them
 the same way. ffmpeg makes test videos (`testsrc`, a tone), so the whole chain is tested in the QEMU
 testbed (helper on the host, reached through pinet as the radio stations are) before any YouTube is
-involved. `tools/video-helper/test_helper.py` tests the helper on its own: discovery, `/info`, `/search`,
+involved; until the Mac's program exists, `mac.videotest=` feeds a host file into the card's ring instead.
+`tools/video-helper/test_helper.py` tests the helper on its own: discovery, `/info`, `/search`,
 `/play` checked with ffprobe (MPEG-1 at the size asked for, MP2 at 44.1 kHz stereo), a stopped play
 leaving no ffmpeg behind, refusals, the token.
 
 ## Pieces (GitHub issues)
 1. The helper: Python service and Docker image (issue #22). Done 22 November 2026 (file mode tested
    here; a real YouTube search and play is the owner's to try, not the build environment's).
-2. The card and the decoder in the kernel (issue #23).
+2. The card and the decoder in the kernel (issue #23). Built 22 November 2026 and tested in both
+   testbeds with a test feeder (`mac.videotest=`, docs/08 item 98); the Pi's own speed is still to measure.
 3. Aurora68 Video, the Mac program (issue #24).
 4. The QuickTime component (issue #25, with #13).
 5. Alice68: the same module behind an Amiga card or library (issue #26).

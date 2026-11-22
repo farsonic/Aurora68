@@ -112,6 +112,11 @@ void psmac_mmu_set_fb(uintptr_t f, uint32_t size) { slot_fb_phys = f; slot_fb_si
    board, and mac.hdmi=mirror or log, where slot $A stays empty for the Slot Manager) */
 static uintptr_t slot2_rom_phys;
 void psmac_mmu_set_slot2(uintptr_t d) { slot2_rom_phys = d; }
+/* slot $C, the video card (psmb.h, psmac_videocard.c): its 1 MiB window twice (32-bit and 24-bit
+   form) and its ROM page; 0 with mac.video=off */
+static uintptr_t vid_win_phys, vid_rom_phys;
+#define VID_WIN_SIZE 0x100000u                /* psmac_video.h: A68V_WIN_SIZE */
+void psmac_mmu_set_video(uintptr_t w, uintptr_t r) { vid_win_phys = w; vid_rom_phys = r; }
 static inline uintptr_t pi_phys(uint32_t p)
 {
     p = norm_phys(p);
@@ -124,6 +129,9 @@ static inline uintptr_t pi_phys(uint32_t p)
     if (slot_win_phys && p >= PSMB_WIN_PHYS + 0x900000u && p < PSMB_WIN_PHYS + 0x900000u + PSMB_WIN_SIZE) return slot_win_phys + (p - PSMB_WIN_PHYS - 0x900000u);
     if (slot_declrom_phys && p >= PSMB_DECLROM_PHYS && p < PSMB_DECLROM_PHYS + PSMB_DECLROM_SIZE) return slot_declrom_phys + (p - PSMB_DECLROM_PHYS);
     if (slot2_rom_phys && p >= PSMB_DECLROM2_PHYS && p < PSMB_DECLROM2_PHYS + PSMB_DECLROM2_SIZE) return slot2_rom_phys + (p - PSMB_DECLROM2_PHYS);
+    if (vid_win_phys && p >= PSMB_VID_WIN_PHYS && p < PSMB_VID_WIN_PHYS + VID_WIN_SIZE) return vid_win_phys + (p - PSMB_VID_WIN_PHYS);
+    if (vid_win_phys && p >= PSMB_VID_WIN24_PHYS && p < PSMB_VID_WIN24_PHYS + VID_WIN_SIZE) return vid_win_phys + (p - PSMB_VID_WIN24_PHYS);
+    if (vid_rom_phys && p >= PSMB_VID_ROM_PHYS && p < PSMB_VID_ROM_PHYS + PSMB_VID_ROM_SIZE) return vid_rom_phys + (p - PSMB_VID_ROM_PHYS);
     /* the second display's big frame buffer, in the slot's super slot space ($90000000): the ROM's
        32-bit tables map $40000000-$FBAFFFFF one to one, so logical and physical agree there */
     if (slot_fb_phys && p >= PSMB_FB_BIG_PHYS && p < PSMB_FB_BIG_PHYS + slot_fb_size) return slot_fb_phys + (p - PSMB_FB_BIG_PHYS);
@@ -135,7 +143,8 @@ static inline int ro_phys(uint32_t p)
 {
     return (p < PSMAC_FB_SIZE) || (p >= 0x40000000u && p < 0x50000000u) || (psmac_watch_traps && p == WATCH_PHYS_PAGE) ||
            (p >= PSMB_DECLROM_PHYS && p < PSMB_DECLROM_PHYS + PSMB_DECLROM_SIZE) ||
-           (slot2_rom_phys && p >= PSMB_DECLROM2_PHYS && p < PSMB_DECLROM2_PHYS + PSMB_DECLROM2_SIZE);
+           (slot2_rom_phys && p >= PSMB_DECLROM2_PHYS && p < PSMB_DECLROM2_PHYS + PSMB_DECLROM2_SIZE) ||
+           (vid_rom_phys && p >= PSMB_VID_ROM_PHYS && p < PSMB_VID_ROM_PHYS + PSMB_VID_ROM_SIZE);
 }
 
 /* ---- per-set bookkeeping of what we mapped ---- */
@@ -224,6 +233,11 @@ static void build_identity(void)
     if (slot2_rom_phys)
         for (uint32_t p = 0; p < PSMB_DECLROM2_SIZE; p += 4096) l2p[(PSMB_DECLROM2_PHYS + p) >> 12] = (PSMB_DECLROM2_PHYS + p) | L2P_VALID | L2P_WP;
     for (uint32_t p = 0; p < slot_fb_size; p += 4096) l2p[(PSMB_FB_BIG_PHYS + p) >> 12] = (PSMB_FB_BIG_PHYS + p) | L2P_VALID;   /* the big frame buffer */
+    if (vid_win_phys) {                                                                                   /* the video card, slot $C */
+        for (uint32_t p = 0; p < VID_WIN_SIZE; p += 4096) l2p[(PSMB_VID_WIN_PHYS + p) >> 12] = (PSMB_VID_WIN_PHYS + p) | L2P_VALID;
+        for (uint32_t p = 0; p < VID_WIN_SIZE; p += 4096) l2p[(PSMB_VID_WIN24_PHYS + p) >> 12] = (PSMB_VID_WIN24_PHYS + p) | L2P_VALID;
+        for (uint32_t p = 0; p < PSMB_VID_ROM_SIZE; p += 4096) l2p[(PSMB_VID_ROM_PHYS + p) >> 12] = (PSMB_VID_ROM_PHYS + p) | L2P_VALID | L2P_WP;
+    }
 }
 
 /* ---- 68030 table walk ---- */

@@ -659,6 +659,24 @@ int psmac_display_irq(void)
     return 0;
 }
 
+/* screen i's pixels for the video card (psmac_videocard.c, docs/16): the frame buffer of the mode in use
+   in the kernel's view, its size, pitch and depth, and its colour table as the Mac wrote it (the card
+   makes its own match of it, so nothing here is shared with core 3's conversion); 0 if the screen is not
+   on or its mode's frame is not where it fits */
+int psmac_display_surface(int i, uint8_t **pix, uint32_t *w, uint32_t *h, uint32_t *rb, uint32_t *depth,
+                          const volatile uint32_t **clut, uint32_t *clut_seq, int *gray)
+{
+    if (!vcs || i < 0 || i >= nscr) return 0;
+    volatile struct psmb_display *d = scr[i].disp;
+    uint32_t dep = d->depth, rows = d->rowbytes, ht = d->height;
+    int mi = mode_index(dep);
+    if (!(d->flags & PSMB_DISP_ENABLED) || mi < 0 || !d->mode_base[mi] || rows * ht > mode_limit(&scr[i], mi)) return 0;
+    *pix = (uint8_t *)mode_frame(&scr[i], mi);
+    *w = d->width; *h = ht; *rb = rows; *depth = dep;
+    *clut = d->clut; *clut_seq = d->clut_seq; *gray = (d->flags & PSMB_DISP_GRAY) != 0;
+    return 1;
+}
+
 /* screen i as the Mac uses it, for the remote (psmac_remote.c): its size, depth and the 68k address
    of its pixels in the current mode, which is the baseAddr of its GDevice's pixel map; 0 if there
    is no such screen or its driver is not open */

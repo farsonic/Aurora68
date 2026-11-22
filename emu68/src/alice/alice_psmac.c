@@ -408,6 +408,7 @@ void psmac_slot_irq_report(void)
 {
     { extern void psmac_display_report(void); psmac_display_report(); }
     { extern void psmac_audio_report(void); psmac_audio_report(); }
+    { extern void psmac_video_report(void); psmac_video_report(); }
     { extern void psmac_usb_report(void); psmac_usb_report(); }
     { extern void psmac_usbnet_report(void); psmac_usbnet_report(); }
     psmac_loop_report();
@@ -778,6 +779,7 @@ void psmac_card_reset(void)
     psmac_display_bus_reset();
     { extern void psmac_remote_mac_reset(void); psmac_remote_mac_reset(); }   /* the remote's input queue and records (psmac_remote.c) */
     { extern void psmac_audio_mac_reset(void); psmac_audio_mac_reset(); }     /* PiPlay's stream stops (psmac_audio.c) */
+    { extern void psmac_video_reset(void); psmac_video_reset(); }             /* and the video card's (psmac_video.c) */
     __asm__ volatile("dmb ish" ::: "memory");
     kprintf("[PSMAC] 68k RESET: the card's interrupt sources are off until their drivers open\n");
 }

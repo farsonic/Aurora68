@@ -162,6 +162,18 @@ static inline uint32_t psmb_rowbytes(uint32_t w, uint32_t depth) { return ((w * 
    The block lies in the window's first megabyte, so a 24-bit system reaches it too ($911000). Frames
    are left then right, each a big-endian signed 16-bit word, exactly what the Sound Manager's 'twos'
    format holds. head and tail count frames for ever; head - tail is what is queued. */
+/* ---- the video card, slot $C (22 November 2026, docs/16-video-card.md, psmac_videocard.c) -----------
+   A card of its own, not part of slot 9's window: its block and ring (psmac_video.h) are 1 MiB of Pi RAM
+   carved beside the big frame buffer, at the start of slot $C's space and again where a 24-bit Mac
+   reaches the slot ($C00000, which NuBus geometry puts at $FCC00000, as $900000 is $F9900000), and its
+   declaration ROM (psmac_video_declrom.h) is the slot's top 16 KiB. Slot $C because the IIci's built-in
+   video uses slot $B's space ($FBB08000); $C, $D and $E are the IIci's real NuBus slots, empty here. */
+#define PSMB_VID_SLOT        0xCu
+#define PSMB_VID_WIN_PHYS    0xFC000000u
+#define PSMB_VID_WIN24_PHYS  0xFCC00000u
+#define PSMB_VID_ROM_PHYS    0xFCFFC000u
+#define PSMB_VID_ROM_SIZE    0x4000u
+
 #define PSMB_OFF_SOUND       0x11000         /* struct psmb_sound */
 #define PSMB_OFF_SNDRING     0x12000         /* the ring: PSMB_SND_FRAMES frames of 4 bytes */
 #define PSMB_SND_FRAMES      8192u           /* 32 KiB, 186 ms at 44.1 kHz */

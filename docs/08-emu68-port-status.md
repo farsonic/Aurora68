@@ -3797,6 +3797,81 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      files in its windows at the SE's speed. Stage 3 (writes back to FAT/exFAT) is not done; its plan is in
      issue #20.
 
+98. **The video card: MPEG-1 decoded on core 1, drawn into the Mac's own screens (22 November, issue #23).**
+   The owner asked for YouTube on the Mac, "elegant", through a card that exists only in the Pi and that
+   Alice68 could share; then, the same evening, that it play on the SE's own screen as well as on HDMI ("yes,
+   it is going to look crap, but good proof of concept"), and that nothing in it lean on the remote control,
+   which is for debugging. docs/16 is the design: a helper on the owner's network converts any video to an
+   MPEG program stream (MPEG-1 video, MP2 sound, issue #22, done); the Mac's program fetches it over the Mac's
+   own TCP/IP and copies the bytes into the card (issue #24, not yet written); the card only decodes.
+   - *The decoder:* pl_mpeg (phoboslab, MIT, one header, vendored unmodified in `third_party/pl_mpeg`, compiled
+     once in `psmac_plmpeg.c` with `PLM_NO_STDIO` and the TLSF heap). It reads its bit stream a byte at a
+     time, so the big-endian kernel needs nothing special; it keeps times as doubles and its MP2 synthesis in
+     floats, which core 1 may use (no JIT there, as for minimp3, item 82). It needs the next picture's start
+     code before it decodes a picture, so a stream that runs dry mid-picture costs nothing but a wait.
+   - *The core* (`psmac_video.c`, `psmac_video.h`, nothing NuBus in either): a 4 KiB block and a 512 KiB byte
+     ring, the Mac writing head and the card tail, as the sound card's stream channel does (and with its rule
+     that a new head is used only once it has stood for 50 us). Commands start, pause, resume and stop; a seek
+     is stop, the new stream's bytes, start. The geometry (screen, rectangle, visible) is read under a
+     sequence number. One slice per call from core 1's loop beside the mixer (`psmac_usb.c`): a picture
+     decoded, a block of sound, or a picture drawn. The clock is the sound when the stream has some and the Pi
+     an output: the stream time of the first sample given to the mixer plus the frames the mixer has played
+     from the card's queue (`psmac_audio.c`, source 5, its own resampler, a pause stops taking from it). With
+     no sound, or no output (QEMU has no HDMI audio), the Pi's timer, held while paused or dry. A picture is
+     drawn even when late unless it is more than two frames late and the last was drawn under 80 ms ago:
+     without B-frames every picture is the next one's reference, so only drawing can be skipped.
+   - *Drawing* goes into the screen's own frame buffer, at its depth, scaled to the rectangle (nearest pixel):
+     1 bit by an 8 x 8 Bayer threshold on the luminance; 2, 4 and 8 bits through a 32,768-entry table of the
+     nearest entry of the screen's colour table with an ordered dither added (made again when the Mac changes
+     the table: 67 ms for 256 colours under user-mode QEMU); 16 and 32 bits direct. The screens' own paths
+     then carry it: the SE's changed rows over the wire (item 68), the HDMI screen to the VideoCore at 30 Hz.
+     So the Mac's screenshots show the video too, and a window over it is the Mac's business (its program
+     says "not visible"); the Aurora68 Log window, repainting as the log scrolled, overwrote the picture in
+     the first runs, which is what it should do.
+   - *The card* (`psmac_videocard.c`): slot $C, not the $B of docs/16's first draft. The IIci's built-in video
+     answers in slot $B's space (its frame buffer is at $FBB08000, docs/10), so the ROM's tables do not map
+     that space one to one; $C, $D and $E are the IIci's real NuBus slots, empty in the SE and in MAME. 1 MiB
+     of Pi RAM after the big frame buffer is the window, mapped at $FC000000 and at $FCC00000 (where 24-bit
+     mode reaches the slot); 16 KiB after it is the declaration ROM at the slot's top: 188 bytes, board
+     "Aurora68 Video" (BoardId 'AV') and one sResource {$7050, 3, 1, 'AV'} "Aurora68_Video" with no driver,
+     MinorBaseOS 0, MinorLength 1 MiB, compiled into the kernel from `tools/mac/mkvideodeclrom.py` (`make -C
+     mac video-declrom`), so the card is there whichever declaration ROM slot 9 gets. Aurora68 Slots, in the
+     solo board's start-up items, listed `slot 9 "PiStorm-SE", slot $C "Aurora68 Video"; empty: $A $B $D $E`.
+     `mac.video=off` leaves slot $C empty and carves nothing.
+   - *Testing before the Mac's program:* `mac.videotest=PATH,LEFT,TOP,WIDTH,HEIGHT,SCREEN[,DELAY[,PAUSE_AT[,SEEK_AT]]]`
+     feeds a host file through semihosting into the ring as the program will (32 KiB at a time while there is
+     room, eof at the end), with a two-second pause and a seek back to the start on demand. The test movies
+     are ffmpeg's `testsrc` and a 440 Hz tone converted with the helper's own `ffmpeg_args` (320 x 240, 512 x
+     342, 640 x 480; 25 frames a second, MP2 128 kbit/s). Before any QEMU run the core was built for Linux
+     with stand-ins for the kernel (a fake screen at each depth, a mixer that plays in real time) and run
+     under qemu-aarch64: 250 of 250 pictures shown in 9.98 s; with the sound clock and a 3 s pause, 13.00 s.
+   - *Testbed, solo board* (QEMU, the Mac's 640 x 480 screen at 1 bit): 320 x 240 at 160,120, 250 decoded, 250
+     shown, none dropped, never dry; decoding 1.1-1.5 ms a picture (at most 4.6), drawing 0.9-1.1 ms, 5-10 % of
+     core 1; the pause (two seconds at 4 s) and the seek (stop at 6 s, the file again, start) both went
+     through (stream 2 played to its end). 640 x 480 over the whole screen: decoding 7.5 ms (at most 13.3),
+     drawing 4.3 ms, 30 % of core 1, 150 of 150 shown. Picture: `solo-board-1bit.png` (scratch, not
+     committed: a screenshot of the Mac, from Apple's software).
+   - *Testbed, SE board* (MAME's SE through the bridge, System 7.1 from the card image, the Finder at 100 s):
+     320 x 240 at 96,51 of the SE's own screen at 220 s: 250 of 250 shown, decoding 1.1 ms, drawing 0.8 ms, 8 %
+     of core 1; MAME's own screenshots show the dithered pattern and its counter moving on the SE's screen.
+     The audio dump (`mac.audiodump=`) holds the 440 Hz tone from 220 to 224 s, nothing during the pause, and
+     again from 226 to 232 s: ten seconds of sound in step with the pictures. The SE's screen rows went at
+     about 1,600 a second over the testbed's bridge (6 to 7 pictures of 240 rows a second, so MAME shows two
+     pictures torn into one now and then); the GPIO's ten milliseconds a screen (item 68) is ample for 15. The
+     whole SE screen (512 x 342): 150 of 150 shown, decoding 3.8 ms, drawing 2.9 ms; about 1,450 rows a second
+     reached MAME. With the HDMI screen (psmac-se.declrom, slot $A at 640 x 480, the Mac in millions): 250 of
+     250 shown on screen 1 in colour, decoding 1.4 ms, drawing 5.7-6.8 ms (the colour conversion is the cost),
+     22 % of core 1; the VideoCore screenshot shows the colour bars and the moving counter inside the
+     desktop's pattern. Core 3's service loop turned 213,000-229,000 times in five seconds before, during and
+     after the play: the card's work stays on core 1.
+   - *Not verified on hardware:* the Pi 3's own decode time (QEMU's TCG is no measure of an A53: these numbers
+     say only that the work fits and how it divides); the HDMI sound of a video (the testbed's output is the
+     dump); the SE's speaker, which plays the video's sound only with `mac.sestream=on`, as it plays PiPlay's
+     stream (item 82's beep hang is not understood yet); colour depths 2, 4 and 8 on a real screen (tested on
+     the Linux build only, with made-up colour tables). Not done: the Mac's program (issue #24), a clipping
+     region finer than "visible", and a scaler better than nearest pixel (the helper sends the size asked for,
+     so it is rarely used).
+
 ## Mailbox and Mac-side software (later the same day)
 - The Pi is a **NuBus card in slot $9**: 1 MiB shared window at 0xF9000000 (0x900000 in 24-bit mode)
   and a 64 KiB declaration ROM at 0xF9FF0000, served from Pi RAM (`emu68/src/psmac/psmb.h`,
