@@ -875,7 +875,10 @@ def own_addresses():
                             dev.startswith(('docker', 'br-', 'veth', 'virbr')):
                         continue                       # temporary, deprecated, tentative, or a container's
                     addr = socket.inet_ntop(socket.AF_INET6, bytes.fromhex(a))
-                    stable.append((not addr.startswith(('fc', 'fd')), addr))
+                    # unique local first, then global; the documentation range 2001:db8::/32 last: a
+                    # router may advertise it on a home network, but not every device takes it up
+                    rank = 0 if addr.startswith(('fc', 'fd')) else 2 if addr.startswith('2001:db8:') else 1
+                    stable.append((rank, addr))
         except (OSError, ValueError):
             pass
         if stable:
@@ -1029,6 +1032,11 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer):
         def preferred(self, prefer=None):
             """the address to hand out: by preference (MUSIC_PREFER, or ?prefer= on the request), else as asked"""
             prefer = prefer if prefer in ('ipv4', 'ipv6', 'asked') else globals_prefer
+            host = (self.headers.get('Host') or '').rsplit(':', 1)[0] if not (self.headers.get('Host') or '').endswith(']') \
+                else self.headers.get('Host')
+            loopback = host.startswith(('127.', '[::1]', '[::ffff:127.'))
+            if not loopback and ((prefer == 'ipv6' and host.startswith('[')) or (prefer == 'ipv4' and host[:1].isdigit())):
+                return self.base()                     # asked by an address of that kind: it reaches this computer
             if prefer != 'asked':
                 have = own_addresses()
                 other = 'ipv4' if prefer == 'ipv6' else 'ipv6'
@@ -1079,6 +1087,9 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer):
                     order = ['ipv6', 'ipv4'] if prefer == 'ipv6' else ['ipv4', 'ipv6'] if prefer == 'ipv4' else []
                     urls = [{'family': f, 'url': address_url(have[f], port)} for f in order if f in have] or \
                            [{'family': 'as asked', 'url': self.base()}]
+                    asked = self.base()                    # the address this browser used works: list it first
+                    if order and '[' in asked and 'ipv6' in have and asked != address_url(have['ipv6'], port):
+                        urls.insert(0 if prefer == 'ipv6' else 1, {'family': 'ipv6', 'url': asked})
                     return self.send(200, 'application/json', json.dumps({'prefer': prefer, 'urls': urls,
                                                                           'listen': self.server.listen}).encode())
                 if path == '/art':

@@ -48,8 +48,10 @@ The server answers on both (`MUSIC_LISTEN=both`, the default; `ipv4` or `ipv6` f
 address it hands the Mac, in the stations file and on the panel, is `MUSIC_PREFER`:
 
 - `asked` (the default): the address the browser or the Mac used to reach it;
-- `ipv6`: this computer's IPv6 address (a stable one: not a temporary "privacy" address, and a unique
-  local `fd..` address before a global one), or its IPv4 address if it has no IPv6;
+- `ipv6`: the IPv6 address the request came to, if it came by one (it is known to reach the server);
+  else this computer's IPv6 address (a stable one: not a temporary "privacy" address; a unique local
+  `fd..` address first, then a global one, the documentation range `2001:db8::/32` last), or its IPv4
+  address if it has no IPv6;
 - `ipv4`: its IPv4 address, or IPv6 if it has no IPv4.
 
 The address is written as numbers, so the Mac needs no name lookup. The log's second line lists the
