@@ -511,11 +511,11 @@ Notes:
     If the chip is not found the Mac's wired card refuses to open and the WiFi carries on;
     eth=off in cmdline.txt hides the wired card altogether.
 
-Aurora68 Recovery: when the Mac will not start (new in the next release)
+Aurora68 Setup and Recovery: when the Mac will not start (new in the next release)
 ------------------------------------------------------------------------
 Inside the SE the Pi's card cannot be reached without opening the Mac. A recovery start is the way
 around that: the 68k is not started, no Mac code runs, and the Pi offers its own SD card on the
-network. The SE's screen (and HDMI) then says "Aurora68 Recovery", why, the address to open, and a
+network. The SE's screen (and HDMI) then says "Aurora68 Setup and Recovery", why, the address to open, and a
 four-digit PIN.
 
 Getting in, any of these:

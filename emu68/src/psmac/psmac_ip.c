@@ -72,7 +72,7 @@ static struct {
     uint32_t sent;                          /* frames the driver took from the queue (tx counts those queued) */
     uint32_t arp_asks, arp_answers, pings, syns, resets;   /* for the heartbeat's line (psmac_ip_report) */
     uint32_t next_check;
-    int ll_ok, ll;                          /* a link-local address when DHCP does not answer (Aurora68 Recovery); in use */
+    int ll_ok, ll;                          /* a link-local address when DHCP does not answer (Aurora68 Setup and Recovery); in use */
     char name[32];
 } I = { .unit = -1 };
 
@@ -164,7 +164,7 @@ static int hexv(char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c 
 
 static void ip_init(const char *default_name);
 void psmac_ip_init(void) { ip_init("aurora68-pi"); }
-/* Aurora68 Recovery (psmac_recovery.c, docs/08 item 106): no Mac runs, so on the WiFi the kernel takes the
+/* Aurora68 Setup and Recovery (psmac_recovery.c, docs/08 item 106): no Mac runs, so on the WiFi the kernel takes the
    radio's address and asks for an IPv4 address of its own (nothing to share), and a link with no DHCP
    server (a laptop on a direct cable) gets a link-local address after about ten seconds */
 void psmac_ip_init_recovery(const char *name)

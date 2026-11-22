@@ -254,7 +254,7 @@ static int semihost_init(void)
     transport_up = 1;
     return sh_req >= 0 && sh_rep >= 0;
 }
-/* the Mac's memory through the kernel's alias: Aurora68 Recovery's buffers, since no Mac uses it then */
+/* the Mac's memory through the kernel's alias: Aurora68 Setup and Recovery's buffers, since no Mac uses it then */
 uint8_t *psmac_mac_ram_ptr(void) { return (uint8_t *)(KERNEL_ALIAS + ram_phys); }
 void psmac_select_transport(int semihost_mode) { use_semihost = semihost_mode; if (semihost_mode) use_gpio = 0; }
 
@@ -1758,7 +1758,7 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
             }
             psmac_display_layout(se_card, two); }
     }
-    { extern void psmac_recovery_phase1(void); psmac_recovery_phase1(); }   /* Aurora68 Recovery: asked for, or three starts without the Finder? */
+    { extern void psmac_recovery_phase1(void); psmac_recovery_phase1(); }   /* Aurora68 Setup and Recovery: asked for, or three starts without the Finder? */
     psmac_mbox_init(win_phys, ram_phys, ram_size);
     { extern void psmac_videocard_init(void); if (vid_size) psmac_videocard_init(); }   /* its ROM and block, once the screens are known */
     if (slot2_rom) {   /* the window exists (and was cleared) now: slot $A's ROM into its top 16 KiB, right-aligned */

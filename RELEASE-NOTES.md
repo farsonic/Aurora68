@@ -52,7 +52,7 @@ Since 0.13 (docs/08 items 96 and 103):
     window (AVKit, full screen), in the queue with the songs, and on other players (the SE gets the sound).
   - **Aurora68 Play 1.5 (classic):** videos in the Library marked "Video:", playing their sound like a track; an
     artist with videos alone opens on them. The picture on the SE waits for the video card's program (docs/16).
-- **Aurora68 Recovery** (docs/08 item 106, README "Recovery"): when the Mac does not reach the Finder three
+- **Aurora68 Setup and Recovery** (docs/08 item 106, README "Setup and Recovery"): when the Mac does not reach the Finder three
   starts in a row, when the programmer's interrupt switch (or Esc on a USB keyboard) is held at power-on, when
   `recovery.txt` is on the card (`aurora68.py restart recovery`) or with `mac.recovery=1`, the Pi starts without
   the Mac and serves its SD card: a page for a phone or laptop (the PIN shown on the Mac's screen; files, uploads

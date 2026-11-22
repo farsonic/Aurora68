@@ -1284,7 +1284,7 @@ static void control(struct hconn *h, const char *how)
         __atomic_store_n(&__m68k_state->INTF.ARM_err, 1, __ATOMIC_RELEASE);
         respond(h, 200, "OK", "application/json", "{\"restart\": \"nmi\"}\n");
     } else if (starts(how, "recovery")) {
-        /* Aurora68 Recovery at the next start (docs/08 item 106): recovery.txt on the card, then the Pi restarts */
+        /* Aurora68 Setup and Recovery at the next start (docs/08 item 106): recovery.txt on the card, then the Pi restarts */
         if (psmac_recovery_ask("asked for through the remote control (POST /restart?how=recovery)")) { respond_json_error(h, 503, "Service Unavailable", "no writable SD card for recovery.txt"); return; }
         respond(h, 200, "OK", "application/json", "{\"restart\": \"recovery\"}\n");
     } else if (starts(how, "pi")) {
@@ -1310,7 +1310,7 @@ static const char *query(const char *q, const char *key, char *out, unsigned max
     }
     return 0;
 }
-int psmac_remote_private_source(const uint8_t *ip)              /* Aurora68 Recovery keeps the same rule (psmac_recovery.c) */
+int psmac_remote_private_source(const uint8_t *ip)              /* Aurora68 Setup and Recovery keeps the same rule (psmac_recovery.c) */
 {
     return ip[0] == 10 || (ip[0] == 172 && (ip[1] & 0xf0) == 16) || (ip[0] == 192 && ip[1] == 168) || (ip[0] == 169 && ip[1] == 254) || ip[0] == 127;
 }
@@ -1514,7 +1514,7 @@ static uint32_t produce(int c, uint8_t *buf, uint32_t room, int *finished)
 
 /* ---- the TCP side (psmac_ip.c) ---- */
 static void conn_reset(int c) { struct hconn *h = &hc[c]; if (h->kind == R_FILES) psmac_files_gone(c); if (P.active && P.conn == c) P.active = 0; if (wtext_conn == c) wtext_conn = -1; h->used = 0; h->req_len = 0; h->handled = 0; h->kind = R_NONE; h->out_len = h->out_pos = 0; h->done = 0; }
-/* In a recovery start psmac_ip.c's one application is Aurora68 Recovery's page (psmac_recovery.c): the
+/* In a recovery start psmac_ip.c's one application is Aurora68 Setup and Recovery's page (psmac_recovery.c): the
    calls go there, and nothing of the remote runs */
 int remote_tcp_accept(int c, uint16_t port, const uint8_t peer[4])
 {
