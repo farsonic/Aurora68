@@ -125,7 +125,7 @@ def main():
     stations = [l[8:].split('|') for l in parsed.splitlines() if l.startswith('station ')]
     groups = [l for l in parsed.splitlines() if l.startswith('group ')]
     names = [n for n, _, _ in stations]
-    check(names[:3] == ['Everything, shuffled', 'Alpha Band', 'Beta'] and 'Loose track' not in names,
+    check(names[:4] == ['Everything, shuffled', 'Test Music Live', 'Alpha Band', 'Beta'] and 'Loose track' not in names,
           f'Aurora68 Play reads the top stations ({names[:4]})')
     check(len(groups) == 4 and 'Gamma - Converted' in names and 'All of Alpha Band, shuffled' in names and 'Café Sessions' in names and 'Talk' in names,
           f'and the submenus: Test Music, its Alpha Band, Beta and Shelf ({len(groups)} groups, {len(stations)} stations)')
@@ -146,7 +146,7 @@ def main():
                     ('bad host/x', base + '/s/')]:
         b2 = get(base, '/stations.txt?host=' + urllib.parse.quote(h))[2]
         check(f'= {want}'.encode() in b2, f'?host={h}: addresses {want}...')
-    check(all(len(u) < 160 and u.startswith(base + '/s/') for _, u, _ in stations), 'every address is short (/s/ID)')
+    check(all(len(u) < 160 and (u.startswith(base + '/s/') or u == base + '/live') for _, u, _ in stations), 'every address is short (/s/ID, /live)')
     check(all(raw('127.0.0.1', port, u[len(base):], seconds=0.5).startswith(b'HTTP/1.0 200') for _, u, _ in stations),
           'and every one answers as a station')
 
@@ -223,6 +223,74 @@ def main():
               '/browse/../', '/api/list?dir=..']:
         st, _, body = get(base, p)
         check(st == 404 and b'root:' not in body, f'refused: {p}')
+
+    # the control panel and the live channel
+    st, _, body = get(base, '/')
+    check(st == 200 and b'Test Music' in body and b'/api/live' in body, 'the control panel page')
+    st, hd, body = get(base, '/art?dir=Gamma%20-%20Converted')
+    check(st == 200 and body[:2] == b'\xff\xd8', 'a folder\'s cover.jpg')
+    st, hd, body = get(base, '/art?dir=Shelf/Zed%20-%20One')
+    check(st == 404, 'no picture where there is none')
+    def live(action, **kw):
+        req = urllib.request.Request(base + '/api/live', data=json.dumps(dict(action=action, **kw)).encode(),
+                                     headers={'Content-Type': 'application/json', 'X-Aurora': '1'})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return json.loads(e.read())
+    req = urllib.request.Request(base + '/api/live', data=b'{"action":"skip"}')
+    try:
+        urllib.request.urlopen(req, timeout=5); refused = False
+    except urllib.error.HTTPError as e:
+        refused = e.code == 403
+    check(refused, 'a change without the X-Aurora header is refused (another web site cannot send it)')
+    gid = [u for n, u, _ in stations if n == 'Gamma - Converted'][0].split('/s/')[1]
+    j = live('play', what='s:' + gid)
+    check([q['title'] for q in j.get('queue', [])] == ['01. Gamma - Closing Time', '02. Gamma - Lossless', '03. Gamma - Flac Song'],
+          f'play an album: the queue ({[q["title"] for q in j.get("queue", [])]})')
+    j = live('add', what='t:Loose track.mp3')
+    check(len(j['queue']) == 4 and j['queue'][3]['path'] == 'Loose track.mp3', 'add a song to the end')
+    j = live('next', what='t:Alpha Band/First Album/02 Second.mp3')
+    check(j['queue'][1]['path'] == 'Alpha Band/First Album/02 Second.mp3', 'play a song next')
+    check(live('play', what='t:../../etc/passwd').get('error') and live('bogus').get('error'), 'nonsense is refused in words')
+    j = json.loads(get(base, '/api/now')[2])
+    check(j['queue'][0]['path'].endswith('Closing Time.m4a') and not j['listeners'], 'it waits for a listener, holding its place')
+    # tune in: the album from its start, titles as it goes; then skip and pause
+    import threading
+    got = {}
+    def tune():
+        got['raw'] = raw('127.0.0.1', port, '/live', seconds=10.5)
+    th = threading.Thread(target=tune); th.start()
+    time.sleep(2)
+    j = json.loads(get(base, '/api/now')[2])
+    check(len(j['listeners']) == 1 and j['current'] and j['current']['title'] == 'Gamma - Closing Time' and j['current']['length'] > 2.5,
+          f'a listener tunes in: the queue plays from its start ({j["current"]})')
+    live('skip'); time.sleep(2.6)       # what was sent ahead (LIVE_LEAD, 2 s) is heard first
+    j = json.loads(get(base, '/api/now')[2])
+    check(j['pos'] == 1 and j['current']['title'] == 'Alpha Band - Second Song', f'skip ({j["current"]["title"]})')
+    time.sleep(1.5); live('pause'); th.join(); time.sleep(1.5)
+    out = subprocess.run([pc, 'icy', os.path.join(tmp, 'live.mp3')], input=got['raw'], capture_output=True).stdout.decode('mac_roman')
+    titles = [l[6:] for l in out.splitlines() if l.startswith('title ')]
+    check('Gamma - Closing Time' in titles and 'Alpha Band - Second Song' in titles and titles[-1] == 'Test Music: paused',
+          f'Aurora68 Play hears it: the titles as they came ({titles})')
+    dec = subprocess.run(['ffmpeg', '-v', 'error', '-i', os.path.join(tmp, 'live.mp3'), '-f', 'null', '-'], capture_output=True, text=True)
+    check(dec.returncode == 0 and not dec.stderr.strip(), f'songs and silence decode cleanly ({dec.stderr.strip()[:120]!r})')
+    j = json.loads(get(base, '/api/now')[2])
+    check(not j['listeners'] and j['paused'], 'the listener left; the channel is paused')
+    live('clear')
+
+    # which address the Mac is given: as asked, or this computer's IPv4 or IPv6 address by preference
+    import re
+    a = json.loads(get(base, '/api/addresses')[2])
+    check(a['prefer'] == 'asked' and a['urls'][0]['url'] == base, f'by default the address as asked ({a["urls"]})')
+    v4 = get(base, '/stations.txt?prefer=ipv4')[2]
+    m = re.search(rb'Live = http://(\[[0-9a-f:]+\]|[0-9.]+):(\d+)/live', v4)
+    check(m and m.group(2) == str(port).encode() and m.group(1) != b'127.0.0.1',
+          f'?prefer=ipv4: the stations file names this computer by address ({m.group(0).decode() if m else v4[:200]})')
+    v6 = get(base, '/stations.txt?prefer=ipv6')[2]
+    m6 = re.search(rb'Live = http://(\[[0-9a-f:]+\]|[0-9.]+):\d+/live', v6)
+    check(m6 is not None, f'?prefer=ipv6: its IPv6 address, or IPv4 where it has none ({m6.group(1).decode() if m6 else "?"})')
 
     # without ffmpeg: MP3s only, and the scan says what it passed over
     s2 = socket.socket(); s2.bind(('127.0.0.1', 0)); port2 = s2.getsockname()[1]; s2.close()

@@ -13,6 +13,53 @@ One Python file, standard library only, plus ffmpeg for the formats that are not
 it, symbolic links included. It has no passwords: keep it on your home network and don't forward its
 port from the internet.
 
+## The control panel and the Live channel
+`http://NAS:8423/` is a control panel: the library as cover pictures (artists, albums, songs, with a
+filter box), and **Live**, a channel of your own. Choose an album, an artist, a folder or single songs
+(Play, Shuffle, Add to queue, Play next) and that is what plays on `http://NAS:8423/live`, for every
+listener at the same moment, like a radio station you control. The panel shows Now Playing with the
+cover and the time, the queue (jump to or remove a song), Previous, Pause and Next, Repeat and
+Shuffle rest, who is listening, and a "Listen here" button that plays it in the browser.
+
+Tune the SE to Live once (it is the second station in the stations file, or Radio > Open URL... with
+the address the panel shows) and choose what it plays from your phone. Changes are heard within about
+two seconds. While nothing is queued, or the channel is paused, it sends silence so the Mac stays
+tuned; while nobody listens it holds its place, so a queue set before the Mac tunes in starts from its
+first song. Song titles reach Aurora68 Play's window as with any station.
+
+Anything on your network can drive it too: `POST /api/live` with JSON and the header `X-Aurora: 1`
+(which a web page from elsewhere cannot send without asking, so no other site can change what plays):
+
+| `action` | |
+|---|---|
+| `play`, `add`, `next` with `what` | replace the queue / add at the end / insert after the playing song; `what` is `s:ID` (a station: folder or artist, the ID from `/s/ID`), `f:FOLDER` or `t:FOLDER/SONG.m4a`; `"shuffle": 1` shuffles them |
+| `skip`, `previous`, `pause`, `resume` | as on a player (`previous` restarts a song more than three seconds in) |
+| `jump`, `remove` with `index` | play or take out the queue's song at that place (0 is the first) |
+| `clear`, `shuffle`, `repeat` (`"on": true/false`) | empty the queue; shuffle the songs still to come; play the queue again when it ends |
+
+`GET /api/now` says what is heard (the song, its time and length, the queue, the listeners).
+
+```bash
+curl -X POST -H 'X-Aurora: 1' -d '{"action":"skip"}' http://NAS:8423/api/live
+```
+
+## IPv6 and IPv4
+The server answers on both (`MUSIC_LISTEN=both`, the default; `ipv4` or `ipv6` for one only). Which
+address it hands the Mac, in the stations file and on the panel, is `MUSIC_PREFER`:
+
+- `asked` (the default): the address the browser or the Mac used to reach it;
+- `ipv6`: this computer's IPv6 address (a stable one: not a temporary "privacy" address, and a unique
+  local `fd..` address before a global one), or its IPv4 address if it has no IPv6;
+- `ipv4`: its IPv4 address, or IPv6 if it has no IPv4.
+
+The address is written as numbers, so the Mac needs no name lookup. The log's second line lists the
+addresses found; `MUSIC_IPV6_ADDRESS` and `MUSIC_IPV4_ADDRESS` choose one by hand. A single stations
+file can be asked for either way: `/stations.txt?prefer=ipv6` or `?prefer=ipv4` (the panel links both).
+
+With Docker, IPv6 needs nothing more than host networking (`network_mode: host`, as in
+`docker-compose.yml`): the container answers on the computer's own addresses. Docker's bridge networks
+have no IPv6 unless the Docker daemon is set up for it.
+
 ## On a NAS (Docker)
 `docker-compose.yml` in this folder is a complete "project" (Synology Container Manager), "application"
 (QNAP Container Station) or "stack" (Portainer, Unraid, TrueNAS). Change two things in it:
@@ -66,7 +113,11 @@ mark.
 ## Addresses
 | | |
 |---|---|
-| `/` and `/browse/FOLDER/` | the web page |
+| `/` | the control panel |
+| `/live` | the Live channel: what the panel plays |
+| `/api/now`, `/api/live`, `/api/addresses` | what Live plays; changing it (POST, above); the addresses handed out |
+| `/art?dir=FOLDER` | a folder's cover picture (`cover.jpg`, `folder.jpg`, ... or the one inside its first song) |
+| `/browse/FOLDER/` | a plain page of a folder |
 | `/s/ID` | a folder's station by its short name (the stations file uses these: Aurora68 Play's addresses are at most 160 bytes) |
 | `/radio/FOLDER/` | the same station by the folder's path; `/radio/` is the whole library |
 | `?shuffle=1`, `?loop=0` | on a station: random order; one pass, then the stream ends (stations loop by default) |
@@ -81,7 +132,10 @@ mark.
 | folder | `MUSIC_DIR` | the music (`/music` in the container) |
 | `--port N` | `MUSIC_PORT` | 8000 |
 | `--name NAME` | `MUSIC_NAME` | the library's name in Aurora68 Play's menu and on the page ("Music") |
-| `--bind ADDR` | `MUSIC_BIND` | `::` (the default) is every address, IPv6 and IPv4 on one socket; `0.0.0.0` IPv4 only; or one address |
+| `--listen both\|ipv4\|ipv6` | `MUSIC_LISTEN` | answer on IPv6 and IPv4 (the default), or one of them only |
+| `--prefer asked\|ipv6\|ipv4` | `MUSIC_PREFER` | the address handed to the Mac (above) |
+| | `MUSIC_IPV6_ADDRESS`, `MUSIC_IPV4_ADDRESS` | that address by hand |
+| `--bind ADDR` | `MUSIC_BIND` | one address to listen on only |
 | `--max-listeners N` | `MUSIC_MAX_LISTENERS` | 16 at once |
 | `--bitrate N` | `MUSIC_BITRATE` | kbit/s of the MP3 other formats become: 192 (128 is plenty for the SE's speaker; up to 320) |
 | `--ffmpeg PATH` | `MUSIC_FFMPEG` | ffmpeg, found on the PATH; `""` plays MP3s only |

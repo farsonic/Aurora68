@@ -9,7 +9,11 @@ station: its MP3s, and those of the folders inside it, one after another as one 
 way a radio station sends them. Anything that plays internet radio plays these too (VLC, iTunes/Music,
 a browser, foobar2000, a Squeezebox), and a browser gets a page listing the folders.
 
-    GET /                         a web page: the folders, each with its station and its files
+    GET /                         the control panel: the library as cover pictures, and the live channel's
+                                  Now Playing, queue and listeners
+    GET /live                     the live channel: one stream every listener hears, playing what the panel
+                                  chose (POST /api/live; GET /api/now says what plays)
+    GET /browse/PATH/             a plain web page of a folder: its folders, station and files
     GET /radio/PATH/              the station for folder PATH ("/radio/" is the whole library), as
                                   audio/mpeg; ?shuffle=1 plays it in random order; ?loop=0 ends it after
                                   one pass. Song titles as ICY metadata when the player asks for them
@@ -45,7 +49,7 @@ import argparse, hashlib, html, json, mimetypes, os, random, shutil, signal, soc
     time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '2'
+VERSION = '3'
 METAINT = 16000                 # bytes of audio between song titles, as most Icecast servers send
 BURST = 6.0                     # seconds of audio sent at once when a listener connects
 RESCAN = 30.0                   # seconds a scan of the folder is trusted before it is made again
@@ -447,6 +451,307 @@ def stream_station(lib, rel, wfile, meta, shuffle, loop, who, kbps):
         tracks = lib.tracks(rel) or tracks          # a pass ends: anything added since joins in
 
 
+# ---- the live channel: one stream, chosen from the control panel -----------------------------------
+# 22 November 2026: the owner asked for the server to be "more of a control panel", choosing what plays.
+# So besides its stations the server has one channel every listener hears at the same moment, like a
+# radio station of one's own: GET /live. What it plays is a queue set from the web page (or from anything
+# that can POST /api/live): an album, an artist, a folder or single songs, with pause, skip, previous,
+# shuffle and repeat. The SE tunes to it once, in Aurora68 Play's Radio menu, and is then controlled
+# from a phone or another computer.
+#
+# It keeps LIVE_LEAD seconds ahead of the clock (a station keeps BURST), so a change made on the panel
+# is heard within a few seconds; while nothing is queued or it is paused it sends silence, so listeners
+# stay connected. While nobody listens it holds its place: a queue started before the Mac tunes in is
+# heard from its start.
+LIVE_LEAD = 2.0
+SILENT_FRAME = b'\xff\xfb\x90\x44' + bytes(413)    # MPEG-1 layer III, 128 kbit/s, 44.1 kHz, joint stereo, all
+SILENT_SECS = 1152 / 44100                         # side information and main data zero: 26 ms of silence
+
+
+class Listener:
+    def __init__(self, who):
+        self.who, self.since, self.cond = who, time.time(), threading.Condition()
+        self.chunks, self.secs, self.gone = [], 0.0, False
+
+    def push(self, data, secs, title):
+        with self.cond:
+            self.chunks.append((data, secs, title))
+            self.secs += secs
+            self.cond.notify()
+
+    def pop(self, timeout=5.0):
+        with self.cond:
+            if not self.chunks:
+                self.cond.wait(timeout)
+            if not self.chunks:
+                return None
+            data, secs, title = self.chunks.pop(0)
+            self.secs -= secs
+            return data, title
+
+
+class Live:
+    def __init__(self, lib, name, kbps):
+        self.lib, self.name, self.kbps = lib, name, kbps
+        self.lock = threading.Condition()
+        self.queue, self.pos = [], 0          # songs (relative paths) and the one playing (or about to)
+        self.paused = self.repeat = False
+        self.source = None                    # the playing song's chunks, a generator
+        self.title, self.done, self.length = '', 0.0, 0.0   # its title, seconds sent of it, its length
+        self.listeners = []
+        self.recent = []                      # the last LIVE_LEAD seconds sent: what a new listener gets first
+        self.titles = {}                      # songs' titles, looked up once
+        self.changes = 0                      # bumped at each change, for the panel
+        self.t0 = None                        # when the stream's clock started (None while nobody listens)
+        self.marks = []                       # (seconds into the stream, pos, song, title, its start, length):
+        self.started = 0.0                    # where each song begins, so the panel shows what is heard,
+        threading.Thread(target=self.run, daemon=True).start()   # LIVE_LEAD behind what is sent
+
+    # -- what the panel sees and does
+    def song_name(self, rel):
+        if rel not in self.titles:
+            path = self.lib.real(rel)
+            self.titles[rel] = (song_title(path) if rel.lower().endswith('.mp3') else tag_title(self.lib.ffprobe, path)) \
+                if path else rel
+        return self.titles[rel]
+
+    def heard(self):
+        """(pos, song, title, seconds into it, length) of what listeners hear now; song None for silence"""
+        if self.t0 is not None and self.marks:
+            at = time.monotonic() - self.t0
+            m = self.marks[0]
+            for mark in self.marks:
+                if mark[0] <= at:
+                    m = mark
+            return m[1], m[2], m[3], max(0.0, at - m[4]), m[5]
+        cur = self.queue[self.pos] if self.pos < len(self.queue) else None
+        return self.pos, cur, self.song_name(cur) if cur else '', 0.0, 0.0
+
+    def now(self):
+        with self.lock:
+            pos, cur, title, elapsed, length = self.heard()
+            return {'name': self.name, 'playing': bool(cur) and not self.paused, 'paused': self.paused,
+                    'repeat': self.repeat, 'pos': pos, 'changes': self.changes,
+                    'current': {'path': cur, 'folder': cur.rsplit('/', 1)[0] if cur and '/' in cur else '',
+                                'title': title, 'elapsed': round(min(elapsed, length or elapsed), 1),
+                                'length': round(length, 1)} if cur else None,
+                    'queue': [{'path': r, 'title': os.path.splitext(r.rsplit('/', 1)[-1])[0]} for r in self.queue],
+                    'listeners': [{'who': l.who, 'since': int(l.since)} for l in self.listeners]}
+
+    def resolve(self, what):
+        """songs named by the panel: s:ID (a station: folder or artist), f:FOLDER, t:SONG"""
+        kind, _, arg = what.partition(':')
+        if kind == 's':
+            self.lib.scan()
+            key = self.lib.ids.get(arg)
+            return self.lib.tracks(key) if key is not None else []
+        if kind == 'f':
+            rel = self.lib.folder(arg)
+            return self.lib.tracks(rel) if rel is not None else []
+        if kind == 't':
+            p = self.lib.real(arg)
+            return [arg.strip('/')] if p and os.path.isfile(p) and self.lib.playable(p) else []
+        return []
+
+    def act(self, a):
+        """one change from the panel; an error in words, or None"""
+        action = a.get('action', '')
+        songs = self.resolve(a.get('what', '')) if a.get('what') else []
+        if action in ('play', 'add', 'next') and not songs:
+            return 'nothing to play there'
+        with self.lock:
+            hpos, hsong, _, helapsed, _ = self.heard()
+            if hsong is not None and hsong == (self.queue[hpos] if hpos < len(self.queue) else None):
+                self.pos = hpos if self.pos != hpos and action in ('skip', 'previous') else self.pos
+            if action in ('play', 'add', 'next') and a.get('shuffle'):
+                random.shuffle(songs)
+            if action == 'play':
+                self.queue, self.pos, self.paused = songs, 0, False
+                self.drop_source()
+            elif action == 'add':
+                self.queue += songs
+            elif action == 'next':
+                at = min((hpos if hsong else self.pos) + 1, len(self.queue))
+                self.queue[at:at] = songs
+                if self.pos >= at:                         # what was sent ahead is no longer next
+                    self.pos = at
+                    self.drop_source()
+            elif action == 'skip':
+                self.pos = min(self.pos + 1, len(self.queue))
+                self.drop_source()
+            elif action == 'previous':
+                if helapsed < 3 and self.pos > 0:
+                    self.pos -= 1
+                self.drop_source()
+            elif action == 'jump':
+                i = int(a.get('index', -1))
+                if not 0 <= i < len(self.queue):
+                    return 'no such place in the queue'
+                self.pos, self.paused = i, False
+                self.drop_source()
+            elif action == 'remove':
+                i = int(a.get('index', -1))
+                if not 0 <= i < len(self.queue):
+                    return 'no such place in the queue'
+                del self.queue[i]
+                if i < self.pos:
+                    self.pos -= 1
+                elif i == self.pos:
+                    self.drop_source()
+            elif action == 'clear':
+                self.queue, self.pos = [], 0
+                self.drop_source()
+            elif action == 'shuffle':                      # the songs after the playing one
+                rest = self.queue[self.pos + 1:]
+                random.shuffle(rest)
+                self.queue[self.pos + 1:] = rest
+            elif action == 'pause':
+                self.paused = True
+            elif action == 'resume':
+                self.paused = False
+            elif action == 'repeat':
+                self.repeat = bool(a.get('on', not self.repeat))
+            else:
+                return f'no such action: {action}'
+            self.changes += 1
+            self.lock.notify_all()
+        log(f'live: {action} {a.get("what", "")}'.rstrip())
+        return None
+
+    # -- the stream
+    def drop_source(self):
+        if self.source:
+            self.source.close()
+        self.source, self.title, self.done, self.length = None, '', 0.0, 0.0
+
+    def join(self, who):
+        l = Listener(who)
+        with self.lock:
+            for c in self.recent:
+                l.push(*c)
+            self.listeners.append(l)
+            self.changes += 1
+            self.lock.notify_all()
+        log(f'live: {who} tuned in')
+        return l
+
+    def leave(self, l):
+        with self.lock:
+            if l in self.listeners:
+                self.listeners.remove(l)
+            self.changes += 1
+        log(f'live: {l.who} left')
+
+    def next_chunk(self):
+        """(bytes, seconds, title): the next half second of the playing song, or of silence"""
+        silence = (SILENT_FRAME * 19, SILENT_SECS * 19)
+        for _ in range(len(self.queue) + 1):
+            if self.paused:
+                return silence + (f'{self.name}: paused',)
+            if self.pos >= len(self.queue):
+                if self.repeat and self.queue:
+                    self.pos = 0
+                else:
+                    return silence + (f'{self.name}: nothing queued',)
+            if self.source is None:
+                rel = self.queue[self.pos]
+                path = self.lib.real(rel)
+                if not path:
+                    self.pos += 1
+                    continue
+                self.source = mp3_chunks(open(path, 'rb').read()) if rel.lower().endswith('.mp3') \
+                    else converted_chunks(self.lib.ffmpeg, path, self.kbps)
+                self.title, self.done = self.song_name(rel), 0.0
+                self.length = probe_length(self.lib.ffprobe, path)
+                log(f'live: {self.title}')
+            try:
+                data, secs = next(self.source)
+                self.done += secs
+                return data, secs, self.title
+            except (StopIteration, OSError):
+                self.drop_source()
+                self.pos += 1
+                self.changes += 1
+        return silence + (self.name,)
+
+    def run(self):
+        t0, due = None, 0.0
+        while True:
+            with self.lock:
+                while not self.listeners:
+                    t0 = self.t0 = None                    # nobody listens: hold the place
+                    self.lock.wait()
+                if t0 is None:
+                    t0, due = time.monotonic(), 0.0
+                    self.t0, self.marks = t0, []
+                try:
+                    data, secs, title = self.next_chunk()
+                except Exception as e:                     # a song that cannot be read: pass it
+                    log(f'live: {e}')
+                    self.drop_source()
+                    self.pos += 1
+                    continue
+                song = self.queue[self.pos] if self.source is not None and self.pos < len(self.queue) else None
+                if not self.marks or self.marks[-1][1:4] != (self.pos, song, title):
+                    self.marks.append((due, self.pos, song, title, due, self.length))
+                    self.marks = [m for m in self.marks if m[0] > due - 60] or self.marks[-1:]
+                self.recent.append((data, secs, title))
+                while sum(c[1] for c in self.recent) > LIVE_LEAD + 0.5:
+                    self.recent.pop(0)
+                for l in list(self.listeners):
+                    if l.secs > 60:                        # a listener a minute behind is not listening
+                        l.gone = True
+                        self.listeners.remove(l)
+                    else:
+                        l.push(data, secs, title)
+            due += secs
+            ahead = due - (time.monotonic() - t0) - LIVE_LEAD
+            if ahead > 0:
+                time.sleep(ahead)
+
+
+def probe_length(ffprobe, path):
+    if not ffprobe:
+        return 0.0
+    try:
+        out = subprocess.run([ffprobe, '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', path],
+                             capture_output=True, text=True, timeout=20)
+        return float(out.stdout.strip() or 0)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return 0.0
+
+
+EMBEDDED = {}                       # folder -> its first song's own picture (JPEG bytes, or b'' for none)
+
+
+def cover(lib, rel):
+    """a folder's cover picture as (bytes, type): cover, folder or front .jpg/.png, else any picture in it,
+    else the picture inside its first song (M4A, FLAC and MP3 carry one), looked for once"""
+    path = lib.real(rel)
+    if not path or not os.path.isdir(path):
+        return None
+    names = sorted(f for f in os.listdir(path) if not f.startswith('.'))
+    pics = [f for f in names if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+    pics.sort(key=lambda f: (os.path.splitext(f)[0].lower() not in ('cover', 'folder', 'front', 'album'), f))
+    if pics:
+        with open(os.path.join(path, pics[0]), 'rb') as f:
+            return f.read(), mimetypes.guess_type(pics[0])[0] or 'image/jpeg'
+    if path not in EMBEDDED and lib.ffmpeg:
+        song = next((f for f in names if lib.playable(f)), None)
+        pic = b''
+        if song:
+            try:
+                pic = subprocess.run([lib.ffmpeg, '-nostdin', '-v', 'error', '-i', os.path.join(path, song), '-an',
+                                      '-frames:v', '1', '-c:v', 'mjpeg', '-f', 'image2pipe', 'pipe:1'],
+                                     capture_output=True, timeout=20).stdout
+            except (OSError, subprocess.SubprocessError):
+                pass
+        if len(EMBEDDED) > 2000:
+            EMBEDDED.clear()
+        EMBEDDED[path] = pic
+    return (EMBEDDED[path], 'image/jpeg') if EMBEDDED.get(path) else None
+
+
 # ---- the stations file for Aurora68 Play ---------------------------------------------------------
 def mac_roman(s, n=60, line_start=True):
     s = ' '.join(s.split())[:n]
@@ -504,7 +809,8 @@ def stations_file(lib, base, name):
     url = lambda key, shuffle: f'{base}/s/{lib.station_id(key)}' + ('?shuffle=1' if shuffle else '')
     entry = lambda label, key, shuffle=False: mac_roman(label) + b' = ' + url(key, shuffle).encode()
     lines.append(entry('Everything, shuffled', '', True))
-    stations, groups = 1, 1
+    lines.append(mac_roman(f'{name} Live') + b' = ' + f'{base}/live'.encode())   # what the control panel plays
+    stations, groups = 2, 1
     root, here = lib.items(''), ''
     while len(root) == 1 and isinstance(root[0][1], str) and not lib.dirs[here][1]:
         here = root[0][1]                         # one folder holding everything ("Albums"): its contents
@@ -535,7 +841,167 @@ def stations_file(lib, base, name):
     return b'\r'.join(lines) + b'\r'
 
 
+# ---- the server's own addresses: which to hand out, IPv6 or IPv4 ------------------------------------
+# The owner wants IPv6 to work and to choose which of the two the Mac is given (22 November 2026). The
+# server listens on both (MUSIC_LISTEN); the stations file and the control panel give the Mac an address,
+# and MUSIC_PREFER says which: "ipv6", "ipv4", or "asked" (the one the browser or Mac used, the default).
+# A name such as home-docker.local is no help to a Mac whose name service cannot look it up, so a
+# preference writes the address itself. IPv6: a stable one (not a temporary "privacy" address, which
+# changes every day or so), a unique local one (fd..., the same whatever the provider does) before a
+# global one; MUSIC_IPV6_ADDRESS and MUSIC_IPV4_ADDRESS name one by hand.
+def own_addresses():
+    """{'ipv4': '192.168.1.20', 'ipv6': 'fd00::20'} as far as this computer has them"""
+    out = {}
+    v4 = os.environ.get('MUSIC_IPV4_ADDRESS', '').strip()
+    if not v4:
+        try:
+            u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            u.connect(('192.0.2.1', 9))                # a documentation address: nothing is sent
+            v4 = u.getsockname()[0]
+            u.close()
+        except OSError:
+            v4 = ''
+    if v4 and not v4.startswith('127.'):
+        out['ipv4'] = v4
+    v6 = os.environ.get('MUSIC_IPV6_ADDRESS', '').strip().strip('[]')
+    if not v6:
+        stable = []
+        try:
+            with open('/proc/net/if_inet6') as f:     # Linux: address, index, prefix, scope, flags, device
+                for line in f:
+                    a, _, _, scope, flags, dev = line.split()[:6]
+                    fl = int(flags, 16)
+                    if scope != '00' or fl & (0x01 | 0x20 | 0x40) or dev == 'lo' or \
+                            dev.startswith(('docker', 'br-', 'veth', 'virbr')):
+                        continue                       # temporary, deprecated, tentative, or a container's
+                    addr = socket.inet_ntop(socket.AF_INET6, bytes.fromhex(a))
+                    stable.append((not addr.startswith(('fc', 'fd')), addr))
+        except (OSError, ValueError):
+            pass
+        if stable:
+            v6 = sorted(stable)[0][1]
+        elif socket.has_ipv6:
+            try:
+                u = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+                u.connect(('2001:db8::1', 9))
+                v6 = u.getsockname()[0]
+                u.close()
+            except OSError:
+                v6 = ''
+    if v6 and not v6.startswith('fe80') and v6 != '::1':
+        out['ipv6'] = v6
+    return out
+
+
+def address_url(addr, port):
+    return f'http://[{addr}]:{port}' if ':' in addr else f'http://{addr}:{port}'
+
+
 # ---- the web server ------------------------------------------------------------------------------
+# The control panel ("/"): the library as cover pictures (artists, albums, songs), the live channel's
+# Now Playing, queue and listeners. Plain HTML and a little JavaScript, no outside files, so it works
+# with no internet; it polls /api/now every two seconds.
+PANEL = r'''<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>__NAME__</title>
+<style>
+:root{--bg:#f6f5f2;--card:#fff;--ink:#1d1d1f;--mute:#6e6e73;--line:#e3e1dc;--accent:#2f6f4f}
+@media (prefers-color-scheme:dark){:root{--bg:#161616;--card:#202020;--ink:#eee;--mute:#999;--line:#333;--accent:#6fbf8f}}
+*{box-sizing:border-box}body{margin:0;font:15px/1.45 system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--ink)}
+header{display:flex;gap:1em;align-items:center;padding:.8em 1.2em;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:2}
+header h1{font-size:1.1em;margin:0;flex:1}header input{flex:0 1 18em;padding:.45em .7em;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)}
+main{display:grid;grid-template-columns:minmax(0,1fr) 22em;gap:1.2em;padding:1.2em;max-width:80em;margin:auto}
+@media (max-width:52em){main{grid-template-columns:1fr}aside{order:-1}}
+section,aside>div{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:1em}
+aside{display:flex;flex-direction:column;gap:1.2em}
+h2{font-size:.8em;text-transform:uppercase;letter-spacing:.06em;color:var(--mute);margin:0 0 .6em}
+.crumbs{margin-bottom:.8em;color:var(--mute)}.crumbs a{color:var(--accent);cursor:pointer}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(9em,1fr));gap:.9em}
+.tile{cursor:pointer;border-radius:10px;padding:.4em;transition:background .15s}.tile:hover{background:var(--bg)}
+.tile .art{aspect-ratio:1;border-radius:8px;background:var(--line) center/cover;display:flex;align-items:center;justify-content:center;font-size:2em;color:var(--mute)}
+.tile .t{font-weight:600;margin-top:.35em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tile .s{color:var(--mute);font-size:.85em}
+.row{display:flex;align-items:center;gap:.6em;padding:.35em .2em;border-bottom:1px solid var(--line)}.row:last-child{border:0}
+.row .n{color:var(--mute);width:1.8em;text-align:right;font-variant-numeric:tabular-nums}.row .t{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row.cur .t{color:var(--accent);font-weight:600}
+button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:8px;padding:.3em .7em;cursor:pointer}
+button:hover{border-color:var(--accent)}button.p{background:var(--accent);border-color:var(--accent);color:#fff}
+button.i{border:0;background:none;padding:.2em .4em;color:var(--mute)}button.i:hover{color:var(--accent)}
+.acts{display:flex;gap:.5em;flex-wrap:wrap;margin:.2em 0 1em}
+#np .art{width:100%;aspect-ratio:1;border-radius:10px;background:var(--line) center/cover;margin-bottom:.8em}
+#np .t{font-weight:700;font-size:1.1em}#np .s{color:var(--mute)}
+.bar{height:5px;background:var(--line);border-radius:3px;margin:.7em 0 .2em;overflow:hidden}.bar i{display:block;height:100%;background:var(--accent);width:0}
+.times{display:flex;justify-content:space-between;color:var(--mute);font-size:.8em;font-variant-numeric:tabular-nums}
+.ctl{display:flex;justify-content:center;gap:.6em;margin:.8em 0 .4em}.ctl button{font-size:1.15em;min-width:2.6em}
+.tog button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.small{color:var(--mute);font-size:.85em}code{font-size:.85em;word-break:break-all}
+#msg{position:fixed;bottom:1em;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:.5em 1em;border-radius:8px;opacity:0;transition:opacity .3s}
+</style></head><body>
+<header><h1>&#9835; __NAME__</h1><input id="q" type="search" placeholder="Filter artists and albums"></header>
+<main>
+<section><div class="crumbs" id="crumbs"></div><div id="acts" class="acts"></div><div id="view"></div></section>
+<aside>
+<div id="np"><h2>Live: now playing</h2><div class="art" id="npart"></div><div class="t" id="npt">Nothing queued</div>
+<div class="s" id="nps">Choose an album, an artist or a song</div><div class="bar"><i id="npbar"></i></div>
+<div class="times"><span id="npe">0:00</span><span id="npl"></span></div>
+<div class="ctl"><button class="i" title="Previous" onclick="act('previous')">&#9198;</button>
+<button class="p" id="pp" title="Play or pause" onclick="act(S.paused?'resume':'pause')">&#9208;</button>
+<button class="i" title="Next" onclick="act('skip')">&#9197;</button></div>
+<div class="ctl tog"><button id="rep" onclick="act('repeat')" title="Play the queue again when it ends">Repeat</button>
+<button onclick="act('shuffle')" title="Shuffle what is still to come">Shuffle rest</button>
+<button onclick="act('clear')" title="Empty the queue">Clear</button></div></div>
+<div><h2>Queue</h2><div id="queue" class="small">Empty</div></div>
+<div><h2>Listening</h2><div id="who" class="small">Nobody yet</div>
+<p class="small">On the Mac: Radio &gt; Open URL&hellip; and one of these, or the Live station in the
+stations file:</p><div id="liveurl" class="small"></div><button id="here" onclick="here()">&#127911; Listen here</button>
+<audio id="aud" preload="none"></audio></div>
+</aside></main><div id="msg"></div>
+<script>
+let S={}, path='', listing=null;
+const $=id=>document.getElementById(id), esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const enc=p=>p.split('/').map(encodeURIComponent).join('/'), art=d=>`url('/art?dir=${encodeURIComponent(d)}')`;
+const mmss=s=>{s=Math.max(0,Math.round(s||0));return Math.floor(s/60)+':'+String(s%60).padStart(2,'0')};
+function toast(t){const m=$('msg');m.textContent=t;m.style.opacity=1;clearTimeout(m.h);m.h=setTimeout(()=>m.style.opacity=0,1800)}
+async function act(action,o={}){const r=await fetch('/api/live',{method:'POST',headers:{'Content-Type':'application/json','X-Aurora':'1'},body:JSON.stringify({action,...o})});
+ const j=await r.json();if(j.error)toast(j.error);else if(o.toast)toast(o.toast);poll()}
+const on=js=>`onclick="${esc(js)}"`, J=JSON.stringify;     // every handler escaped once, here
+const join=(d,x)=>d?d+'/'+x:x;
+async function open_(p){path=p;window.artist=null;const r=await fetch('/api/list?dir='+encodeURIComponent(p));listing=await r.json();render()}
+function crumbs(){let h=`<a ${on("open_('')")}>Library</a>`,acc='';
+ for(const c of path?path.split('/'):[]){acc=join(acc,c);h+=` / <a ${on('open_('+J(acc)+')')}>${esc(c)}</a>`}$('crumbs').innerHTML=h}
+function tile(title,sub,dir,js){return `<div class="tile" ${on(js)}><div class="art" style="background-image:${art(dir)}"></div>`+
+ `<div class="t" title="${esc(title)}">${esc(title)}</div><div class="s">${esc(sub)}</div></div>`}
+function buttons(what,label){return `<button class="p" ${on('act("play",{what:'+J(what)+'})')}>&#9654; ${esc(label)}</button>`+
+ `<button ${on('act("play",{what:'+J(what)+',shuffle:1})')}>Shuffle</button>`+
+ `<button ${on('act("add",{what:'+J(what)+',toast:"Added to the queue"})')}>Add to queue</button>`}
+function render(){crumbs();const L=listing,f=$('q').value.toLowerCase(),here=path,A=window.artist&&L.artists&&L.artists.find(x=>x.name==window.artist);
+ $('acts').innerHTML=A?buttons('s:'+A.station.slice(3),'Play '+A.name)+`<button ${on('window.artist=null;render()')}>All artists</button>`
+   :buttons('s:'+L.station.slice(3),here?'Play this':'Play everything');
+ let h='';
+ if(A)h+='<div class="grid">'+A.folders.map(x=>tile(x.startsWith(A.name+' - ')?x.slice(A.name.length+3):x,'',join(here,x),'open_('+J(join(here,x))+')')).join('')+'</div>';
+ else if(L.artists)h+='<div class="grid">'+L.artists.filter(a=>a.name.toLowerCase().includes(f)||a.folders.some(x=>x.toLowerCase().includes(f)))
+   .map(a=>tile(a.name,a.folders.length+' album'+(a.folders.length>1?'s':''),join(here,a.folders[0]),'showArtist('+J(a.name)+')')).join('')+'</div>';
+ else if(L.folders.length)h+='<div class="grid">'+L.folders.filter(x=>x.toLowerCase().includes(f)).map(x=>tile(x,'',join(here,x),'open_('+J(join(here,x))+')')).join('')+'</div>';
+ if(L.files.length&&!A)h+=(h?'<h2 style="margin-top:1.2em">Songs</h2>':'')+L.files.map((x,i)=>{const t='t:'+join(here,x);
+   return `<div class="row"><span class="n">${i+1}</span><span class="t">${esc(x.replace(/\.[^.]+$/,''))}</span>`+
+   `<button class="i" title="Play now" ${on('act("play",{what:'+J(t)+'})')}>&#9654;</button>`+
+   `<button class="i" title="Play next" ${on('act("next",{what:'+J(t)+',toast:"Plays next"})')}>&#8618;</button>`+
+   `<button class="i" title="Add to queue" ${on('act("add",{what:'+J(t)+',toast:"Added"})')}>+</button></div>`}).join('');
+ $('view').innerHTML=h||'<p class="small">Nothing here.</p>'}
+function showArtist(n){window.artist=n;render()}
+$('q').oninput=()=>{if(listing)render()};
+async function poll(){try{const j=await (await fetch('/api/now')).json();S=j;
+ const c=j.current;$('npt').textContent=c?c.title:'Nothing queued';$('nps').textContent=c?(c.folder.split('/').pop()||''):'Choose an album, an artist or a song';
+ $('npart').style.backgroundImage=c?art(c.folder):'none';$('npbar').style.width=c&&c.length?Math.min(100,100*c.elapsed/c.length)+'%':'0';
+ $('npe').textContent=c?mmss(c.elapsed):'';$('npl').textContent=c&&c.length?mmss(c.length):'';
+ $('pp').innerHTML=j.paused||!c?'&#9654;':'&#9208;';$('rep').classList.toggle('on',j.repeat);
+ $('queue').innerHTML=j.queue.length?j.queue.map((q,i)=>`<div class="row${i==j.pos?' cur':''}"><span class="n">${i+1}</span><span class="t" title="${esc(q.path)}">${esc(q.title)}</span><button class="i" title="Play this" onclick="act('jump',{index:${i}})">&#9654;</button><button class="i" title="Remove" onclick="act('remove',{index:${i}})">&#10005;</button></div>`).join(''):'Empty';
+ $('who').innerHTML=j.listeners.length?j.listeners.map(l=>esc(l.who)).join('<br>'):'Nobody yet: the queue waits for a listener';}catch(e){}}
+function here(){const a=$('aud');if(a.paused){a.src='/live?t='+Date.now();a.play();$('here').textContent='⏹ Stop listening'}else{a.pause();a.removeAttribute('src');a.load();$('here').innerHTML='&#127911; Listen here'}}
+fetch('/api/addresses').then(r=>r.json()).then(a=>{$('liveurl').innerHTML=a.urls.map(u=>
+ `<div><code>${esc(u.url)}/live</code> <span class="small">(${esc(u.family)})</span> <a href="/stations.txt${u.family=='ipv6'||u.family=='ipv4'?'?prefer='+u.family:''}">stations file</a></div>`).join('')});open_('');poll();setInterval(poll,2000);
+</script></body></html>
+'''
+
+
 PAGE = """<!DOCTYPE html><html><head><meta charset="utf-8"><title>{title}</title>
 <style>body{{font:15px/1.5 system-ui,sans-serif;max-width:52em;margin:2em auto;padding:0 1em}}
 a{{text-decoration:none}} li{{margin:.15em 0}} .s{{color:#666;font-size:90%}}</style></head><body>
@@ -545,8 +1011,9 @@ a{{text-decoration:none}} li{{margin:.15em 0}} .s{{color:#666;font-size:90%}}</s
 <p class="s">Aurora68 music server {version}. Station address for any internet radio player: <code>{full}</code></p></body></html>"""
 
 
-def make_handler(lib, name, max_listeners, kbps):
+def make_handler(lib, name, max_listeners, kbps, live, prefer):
     listeners = threading.BoundedSemaphore(max_listeners)
+    globals_prefer = prefer
 
     class Handler(BaseHTTPRequestHandler):
         server_version = f'aurora68-music-server/{VERSION}'
@@ -558,6 +1025,17 @@ def make_handler(lib, name, max_listeners, kbps):
         def who(self):
             a = self.client_address[0]
             return a[7:] if a.startswith('::ffff:') else a          # an IPv4 listener on the IPv6 socket
+
+        def preferred(self, prefer=None):
+            """the address to hand out: by preference (MUSIC_PREFER, or ?prefer= on the request), else as asked"""
+            prefer = prefer if prefer in ('ipv4', 'ipv6', 'asked') else globals_prefer
+            if prefer != 'asked':
+                have = own_addresses()
+                other = 'ipv4' if prefer == 'ipv6' else 'ipv6'
+                addr = have.get(prefer) or have.get(other)
+                if addr:
+                    return address_url(addr, self.server.server_address[1])
+            return self.base()
 
         def base(self, host=None):
             """the server's address as the client wrote it (Host), or an address asked for without a port
@@ -590,8 +1068,26 @@ def make_handler(lib, name, max_listeners, kbps):
             q = dict(urllib.parse.parse_qsl(u.query))
             path = urllib.parse.unquote(u.path)
             try:
-                if path == '/' or path.startswith('/browse/'):
-                    return self.page(path[len('/browse/'):] if path != '/' else '')
+                if path == '/':
+                    return self.send(200, 'text/html; charset=utf-8', PANEL.replace('__NAME__', html.escape(name)).encode())
+                if path == '/live':
+                    return self.live_stream()
+                if path == '/api/now':
+                    return self.send(200, 'application/json', json.dumps(live.now()).encode(), [('Cache-Control', 'no-store')])
+                if path == '/api/addresses':                  # for the panel: where the Mac tunes in
+                    have, port = own_addresses(), self.server.server_address[1]
+                    order = ['ipv6', 'ipv4'] if prefer == 'ipv6' else ['ipv4', 'ipv6'] if prefer == 'ipv4' else []
+                    urls = [{'family': f, 'url': address_url(have[f], port)} for f in order if f in have] or \
+                           [{'family': 'as asked', 'url': self.base()}]
+                    return self.send(200, 'application/json', json.dumps({'prefer': prefer, 'urls': urls,
+                                                                          'listen': self.server.listen}).encode())
+                if path == '/art':
+                    pic = cover(lib, q.get('dir', ''))
+                    if not pic:
+                        return self.fail(404, 'no picture')
+                    return self.send(200, pic[1], pic[0], [('Cache-Control', 'max-age=3600')])
+                if path.startswith('/browse/'):
+                    return self.page(path[len('/browse/'):])
                 if path.startswith('/radio/'):
                     return self.station(lib.folder(path[len('/radio/'):]), q)
                 if path.startswith('/s/'):
@@ -600,7 +1096,7 @@ def make_handler(lib, name, max_listeners, kbps):
                 if path.startswith('/file/'):
                     return self.file(path[len('/file/'):])
                 if path == '/stations.txt':
-                    return self.send(200, 'text/plain; charset=macintosh', stations_file(lib, self.base(q.get('host')), name),
+                    return self.send(200, 'text/plain; charset=macintosh', stations_file(lib, self.base(q['host']) if q.get('host') else self.preferred(q.get('prefer')), name),
                                      [('Content-Disposition', 'inline; filename="Aurora68 Play Stations"')])
                 if path == '/playlist.m3u':
                     return self.m3u(lib.folder(q.get('dir', '')))
@@ -617,6 +1113,56 @@ def make_handler(lib, name, max_listeners, kbps):
                 return self.fail(404, 'not here: try /')
             except (BrokenPipeError, ConnectionResetError):
                 pass
+
+        def do_POST(self):
+            """POST /api/live, JSON: {"action": play|add|next|skip|previous|jump|remove|clear|shuffle|pause|
+            resume|repeat, "what": "s:ID"|"f:FOLDER"|"t:SONG", "shuffle": 1, "index": N, "on": true}. The header
+            X-Aurora: 1 is required, which a web page elsewhere cannot send without asking first (CORS), so
+            no other site can change what plays"""
+            if urllib.parse.urlsplit(self.path).path != '/api/live':
+                return self.fail(404, 'POST /api/live')
+            if self.headers.get('X-Aurora') != '1':
+                return self.send(403, 'application/json', b'{"error": "the header X-Aurora: 1 is needed"}')
+            try:
+                n = int(self.headers.get('Content-Length') or 0)
+                a = json.loads(self.rfile.read(min(n, 65536)) or b'{}')
+                err = live.act(a) if isinstance(a, dict) else 'a JSON object, please'
+            except (ValueError, TypeError) as e:
+                err = f'not understood: {e}'
+            body = json.dumps({'error': err} if err else live.now()).encode()
+            self.send(400 if err else 200, 'application/json', body)
+
+        def live_stream(self):
+            if not listeners.acquire(blocking=False):
+                return self.fail(503, f'{max_listeners} listeners already')
+            meta = self.headers.get('Icy-MetaData') == '1'
+            who = self.who()
+            l = None
+            try:
+                self.send_response(200)
+                self.send_header('Content-Type', 'audio/mpeg')
+                self.send_header('Cache-Control', 'no-cache, no-store')
+                self.send_header('Connection', 'close')
+                self.send_header('icy-name', f'{name} Live')
+                self.send_header('icy-description', f'{name}: what the control panel plays')
+                if meta:
+                    self.send_header('icy-metaint', str(METAINT))
+                self.end_headers()
+                if self.command == 'HEAD':
+                    return
+                out = IcyWriter(self.wfile, meta)
+                l = live.join(who)
+                while not l.gone:
+                    got = l.pop()
+                    if got:
+                        out.title = got[1]
+                        out.write(got[0])
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            finally:
+                if l:
+                    live.leave(l)
+                listeners.release()
 
         def station(self, rel, q):
             if rel is None:
@@ -732,38 +1278,52 @@ class DualStackServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
+    v6only = None
+
     def server_bind(self):
-        if self.address_family == socket.AF_INET6:
+        if self.address_family == socket.AF_INET6 and self.v6only is not None:
             try:
-                self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+                self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1 if self.v6only else 0)
             except OSError:
                 pass
         super().server_bind()
 
 
-def serve(bind, port, handler):
-    """the listening socket: "::" is every address, IPv6 and IPv4 on one socket, falling back to IPv4
-    alone on a computer without IPv6; any other address is taken as it is"""
-    def server(family, addr):
-        cls = type('Server', (DualStackServer,), {'address_family': family})
-        return cls((addr, port), handler)
-    if bind in ('', '::'):
+def serve(bind, port, handler, listen='both'):
+    """the listening socket. listen "both" (the default): IPv6 and IPv4 on one socket, falling back to
+    IPv4 alone on a computer without IPv6; "ipv4" or "ipv6": only that one. --bind ADDR: that address."""
+    def server(family, addr, v6only=None):
+        cls = type('Server', (DualStackServer,), {'address_family': family, 'v6only': v6only})
+        srv = cls((addr, port), handler)
+        return srv
+    if bind not in ('', '::'):
+        fam = socket.AF_INET6 if ':' in bind else socket.AF_INET
+        srv, how = server(fam, bind, True if fam == socket.AF_INET6 else None), 'IPv6' if fam == socket.AF_INET6 else 'IPv4'
+    elif listen == 'ipv4':
+        srv, how = server(socket.AF_INET, '0.0.0.0'), 'IPv4 only'
+    elif listen == 'ipv6':
+        srv, how = server(socket.AF_INET6, '::', True), 'IPv6 only'
+    else:
         try:
-            return server(socket.AF_INET6, '::'), 'IPv6 and IPv4'
+            srv, how = server(socket.AF_INET6, '::', False), 'IPv6 and IPv4'
         except OSError as e:
             log(f'no IPv6 here ({e.strerror}): IPv4 only')
-            return server(socket.AF_INET, '0.0.0.0'), 'IPv4'
-    if ':' in bind:
-        return server(socket.AF_INET6, bind), 'IPv6'
-    return server(socket.AF_INET, bind), 'IPv4'
+            srv, how = server(socket.AF_INET, '0.0.0.0'), 'IPv4'
+    srv.listen = how
+    return srv, how
 
 
 def main():
     ap = argparse.ArgumentParser(description='A folder of MP3s as internet radio stations (IPv4 and IPv6)')
     ap.add_argument('music', nargs='?', default=os.environ.get('MUSIC_DIR', '/music'), help='the music folder (/music)')
     ap.add_argument('--port', type=int, default=int(os.environ.get('MUSIC_PORT', '8000')), help='TCP port (8000)')
+    ap.add_argument('--listen', choices=['both', 'ipv4', 'ipv6'], default=os.environ.get('MUSIC_LISTEN', 'both'),
+                    help='answer on IPv6 and IPv4 (both, the default), or on one of them only')
+    ap.add_argument('--prefer', choices=['asked', 'ipv6', 'ipv4'], default=os.environ.get('MUSIC_PREFER', 'asked'),
+                    help='the address handed to the Mac in the stations file and on the panel: as the request '
+                         'came (asked, the default), or this computer\'s IPv6 or IPv4 address (the other if it has none)')
     ap.add_argument('--bind', default=os.environ.get('MUSIC_BIND', '::'),
-                    help='address to listen on: "::" is every address, IPv6 and IPv4 (the default); 0.0.0.0 IPv4 only')
+                    help='one address to listen on only (the default "::" means every address, as --listen says)')
     ap.add_argument('--name', default=os.environ.get('MUSIC_NAME', 'Music'), help='the library\'s name in menus and pages')
     ap.add_argument('--max-listeners', type=int, default=int(os.environ.get('MUSIC_MAX_LISTENERS', '16')))
     ap.add_argument('--bitrate', type=int, default=int(os.environ.get('MUSIC_BITRATE', '192')),
@@ -777,7 +1337,11 @@ def main():
         sys.exit('--bitrate: one of 64, 80, 96, 112, 128, 160, 192, 224, 256, 320')
     lib = Library(a.music, a.ffmpeg or None)
     lib.scan()
-    srv, how = serve(a.bind, a.port, make_handler(lib, a.name, a.max_listeners, a.bitrate))
+    srv, how = serve(a.bind, a.port, make_handler(lib, a.name, a.max_listeners, a.bitrate, Live(lib, a.name, a.bitrate),
+                                                  a.prefer), a.listen)
+    have = own_addresses()
+    log('addresses: ' + (', '.join(f'{f} {address_url(v, a.port)}' for f, v in sorted(have.items(), reverse=True)) or 'none found')
+        + f'; handing out {a.prefer if a.prefer != "asked" else "the address each request used"}')
     signal.signal(signal.SIGTERM, lambda *x: sys.exit(0))
     log(f'aurora68 music server {VERSION} "{a.name}" on port {a.port} ({how}): {lib.root}; '
         + (f'other formats converted to MP3 at {a.bitrate} kbit/s' if lib.ffmpeg else 'MP3s only (no ffmpeg)'))

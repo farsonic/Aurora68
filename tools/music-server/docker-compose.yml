@@ -16,3 +16,5 @@ services:
     environment:
       MUSIC_NAME: "NAS Music"        # the name in Aurora68 Play's Radio menu and on the web page
       MUSIC_PORT: "8000"
+      MUSIC_PREFER: "asked"          # the address given to the Mac: asked, ipv6 or ipv4
+      MUSIC_LISTEN: "both"           # answer on IPv6 and IPv4, or ipv4 / ipv6 only
