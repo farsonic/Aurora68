@@ -126,6 +126,12 @@ $(B)/psmac_wifi.declrom: $(B)/pidisk.bin.raw $(B)/pidisk_boot.bin.raw $(B)/enet_
 	$(PY) ../tools/mac/mkdeclrom.py --pidisk $(B)/pidisk.bin.raw --boot $(B)/pidisk_boot.bin.raw --wifi $(B)/enet_wifi.bin.raw --input $(B)/piinput.bin.raw -o $@
 
 # compare the struct offsets in enet.s with the header the kernel compiles (tools/mac/an_offsets.c)
+# the video card's declaration ROM (docs/16-video-card.md) is compiled into the kernel rather than served
+# from a file: this regenerates its header after a change to tools/mac/mkvideodeclrom.py
+video-declrom: ../tools/mac/mkvideodeclrom.py ../tools/mac/declrom.py
+	$(PY) ../tools/mac/mkvideodeclrom.py -o ../emu68/src/psmac/psmac_video_declrom.h
+.PHONY: video-declrom
+
 check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alice/alice_net.h
 	@mkdir -p $(B)
 	cc -I ../emu68/src/alice -o $(B)/an_offsets ../tools/mac/an_offsets.c

@@ -84,6 +84,7 @@ static inline uint64_t hz(void)  { uint64_t v; __asm__ volatile("mrs %0, CNTFRQ_
 /* A wait of the USB code. On core 1 (the start, and every later enumeration) the sound output is fed
    meanwhile (psmac_audio.c): an enumeration holds core 1 for a second, and most of it is in here. */
 extern int psmac_audio_poll(void);
+extern int psmac_video_poll(void);
 static inline int on_core1(void) { uint64_t m; __asm__ volatile("mrs %0, MPIDR_EL1" : "=r"(m)); return (m & 3) == 1; }
 static void delay_us(void *ctx, unsigned us)
 {
@@ -402,7 +403,8 @@ void __attribute__((noreturn)) psmac_usb_core1(void)  /* core 1, after psmac_usb
         while (!(why = __atomic_load_n(&enum_why, __ATOMIC_ACQUIRE))) {
             if (psmac_usbdisk_core1())          /* a USB stick's work for the Mac (psmac_usbdisk.c) */
                 continue;
-            if (!psmac_audio_poll())
+            int a = psmac_audio_poll();
+            if (!psmac_video_poll() && !a)      /* the video card's decoder (psmac_video.c) between the sound's turns */
                 __asm__ volatile("wfe");
         }
         psmac_audio_pause();

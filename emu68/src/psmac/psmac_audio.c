@@ -56,6 +56,7 @@
 #include "psmac.h"
 #include "psmb.h"
 #include "psmac_audio_fir.h"
+#include "psmac_video.h"                       /* source 5's calls, below */
 #include "third_party/minimp3/minimp3.h"              /* the declarations; psmac_mp3.c compiles the decoder */
 
 extern const char *psmac_option(const char *key);                /* psmac_bus.c */
@@ -106,6 +107,7 @@ static int vc_tag(uint32_t tag, uint32_t *val)
 #define ASC_RATE   22257u
 #define CARD_RATE  44100u
 
+static volatile int started;               /* core 1's output is running (psmac_audio_start) */
 /* ---- options ---------------------------------------------------------------------------------- */
 enum { OUT_OFF, OUT_HDMI, OUT_JACK, OUT_FILE };
 static int opt_read, out_want = OUT_HDMI, out_kind = OUT_OFF, card_on = 1;
@@ -677,6 +679,54 @@ static void str_poll(void)
     str->underruns = st.underruns;
     str->bitrate = st.mpeg_frames ? (uint32_t)(st.kbps_sum / st.mpeg_frames) : 0;
 }
+/* ---- source 5: the video card's sound (psmac_video.c, docs/16, 22 November 2026) -----------------
+   The video card decodes its stream's MP2 on this same core and hands the samples over here, 16-bit
+   stereo at the stream's rate (44.1 kHz from the helper), through a resampler of their own beside the
+   other four. The card's clock is the number of frames played from this queue (psmac_video.c, "Timing"),
+   so a pause stops taking from it rather than fading. Everything runs on core 1: no atomics. */
+#define VID_PCM 32768u                        /* 0.74 s at 44.1 kHz; the card keeps 0.4 s ahead */
+static int16_t vpcm[VID_PCM][2];
+static uint32_t vpcm_head, vpcm_tail, vid_underruns;
+static struct rs vid_rs;
+static int vid_on, vid_paused;
+static uint32_t vid_vol = 0x01000100u;
+static uint64_t vid_played;
+int psmac_audio_video_open(uint32_t rate)
+{
+    options();
+    if (!__atomic_load_n(&started, __ATOMIC_ACQUIRE) || out_kind == OUT_OFF || rate < 8000 || rate > 48000) return 0;
+    vpcm_head = vpcm_tail = 0; vid_played = 0; vid_paused = 0; vid_underruns = 0;
+    for (uint32_t i = 0; i < sizeof vid_rs; i++) ((uint8_t *)&vid_rs)[i] = 0;
+    vid_rs.idle = FIR_TAPS; vid_rs.step = ratio(rate, out_rate);
+    vid_on = 1;
+    return 1;
+}
+uint32_t psmac_audio_video_room(void) { return VID_PCM - (vpcm_head - vpcm_tail); }
+uint32_t psmac_audio_video_queued(void) { return vid_on ? vpcm_head - vpcm_tail : 0; }
+void psmac_audio_video_push(const int16_t *lr, uint32_t frames)
+{
+    for (uint32_t i = 0; i < frames && vpcm_head - vpcm_tail < VID_PCM; i++) {
+        int16_t *f = vpcm[vpcm_head % VID_PCM];
+        f[0] = lr[2 * i]; f[1] = lr[2 * i + 1];
+        vpcm_head++;
+    }
+}
+uint64_t psmac_audio_video_played(void) { return vid_played; }
+void psmac_audio_video_pause(int on) { vid_paused = on; }
+void psmac_audio_video_volume(uint32_t lr) { vid_vol = lr; }
+void psmac_audio_video_close(void) { vid_on = 0; vpcm_head = vpcm_tail = 0; }
+static void vid_next(int32_t *l, int32_t *rt)
+{
+    *l = *rt = 0;
+    if (!vid_on || vid_paused) return;
+    if (vpcm_head == vpcm_tail) { if (vid_played) vid_underruns++; return; }
+    const int16_t *f = vpcm[vpcm_tail % VID_PCM];
+    vpcm_tail++;
+    vid_played++;
+    *l = (int32_t)f[0] * (int32_t)(vid_vol >> 16) / 256;
+    *rt = (int32_t)f[1] * (int32_t)(vid_vol & 0xffff) / 256;
+}
+
 /* psmac_bus.c's 68k RESET (through psmac_card_reset, another core): the stream stops at core 1's next poll */
 void psmac_audio_mac_reset(void) { __atomic_store_n(&str_reset_req, 1, __ATOMIC_RELEASE); }
 
@@ -703,12 +753,13 @@ static void mix_frame(int16_t *lo, int16_t *ro)
     if (card) { rs_step(&card_rs, card_next, &x, &y); l += x; r += y; sl += x; sr += y; }
     if (card_took) card_recent = 0; else if (card_recent < 2 * FIR_TAPS) card_recent++;
     if (str) { rs_step(&str_rs, str_next, &x, &y); l += x; r += y; if (str_spk) { sl += x; sr += y; } }
+    if (vid_on) { rs_step(&vid_rs, vid_next, &x, &y); l += x; r += y; if (str_spk) { sl += x; sr += y; } }   /* the video card's sound */
     /* The stream reaches the SE's speaker only with mac.sestream=on: in MAME's SE (21 November 2026,
        docs/08 item 82) a System beep while a stream fed the speaker left the Mac hung in the beep, the
        beep's sound going round in the card's ring; the same beep with the speaker kept for the card
        alone, or with mac.sesound=off, ended as it should. Not understood yet; the music plays on HDMI
        or the jack either way. */
-    if (psmac_board_se && !psmac_board_solo && (card_recent < 2 * FIR_TAPS || (str_spk && st.playing && st.gain))) spk_feed(sl, sr);
+    if (psmac_board_se && !psmac_board_solo && (card_recent < 2 * FIR_TAPS || (str_spk && st.playing && st.gain) || (str_spk && vid_on && !vid_paused))) spk_feed(sl, sr);
     if (test_secs && test_n < test_secs * ASC_RATE + FIR_TAPS) { rs_step(&test_rs, test_next, &x, &y); l += x; r += y; }
     if (l > 32767) { l = 32767; clips++; } else if (l < -32768) { l = -32768; clips++; }
     if (r > 32767) { r = 32767; clips++; } else if (r < -32768) { r = -32768; clips++; }
@@ -958,7 +1009,6 @@ static void silence_all(void)                      /* before core 1 goes away fo
 }
 
 /* ---- core 1 --------------------------------------------------------------------------------------- */
-static volatile int started;
 void psmac_audio_start(uint8_t *win)
 {
     options();

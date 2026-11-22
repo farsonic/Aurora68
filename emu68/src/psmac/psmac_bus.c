@@ -1437,7 +1437,9 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
                     (uint32_t)w, (uint32_t)h, fb_big_size >> 20, need > PSMB_FB_BIG_MAX ? "; at most 32 MiB, the deepest modes are left out" : "");
         }
     }
-    const uintptr_t extra = PSMB_WIN_SIZE + PSMB_DECLROM_SIZE + fb_big_size;    /* slot $9 mailbox window + declaration ROM + the big frame buffer */
+    extern uint32_t psmac_videocard_size(void);                                  /* the video card, slot $C (psmac_videocard.c): 0 with mac.video=off */
+    const uintptr_t vid_size = psmac_videocard_size();
+    const uintptr_t extra = PSMB_WIN_SIZE + PSMB_DECLROM_SIZE + fb_big_size + vid_size;    /* slot $9 mailbox window + declaration ROM + the big frame buffer + the video card */
     uint32_t mb = globals.psmac_ram_mb;
     uintptr_t avail = sys_memory[0].mb_Base + sys_memory[0].mb_Size - base;
     int image_inside = container_has_image((const uint8_t *)rom, rom_sz);
@@ -1562,6 +1564,7 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
     /* identity mapping (MMU disabled) and the 68030 MMU shadowing machinery */
     psmac_mmu_set_slot(win_phys, declrom_phys);
     psmac_mmu_set_fb(fb_big_phys, fb_big_size);
+    { extern void psmac_videocard_map(uintptr_t); if (vid_size) psmac_videocard_map(fb_big_phys + fb_big_size); }   /* slot $C, after the big frame buffer */
     {   /* slot $A, the HDMI screen's card, on the SE board with mac.hdmi=screen (psmb.h, "two screens"):
            mapped before the identity map is made; its ROM is put in place below, if the file has one,
            else those 16 KiB stay zero and the Slot Manager finds no card there */
@@ -1627,6 +1630,7 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
             psmac_display_layout(se_card, two); }
     }
     psmac_mbox_init(win_phys, ram_phys, ram_size);
+    { extern void psmac_videocard_init(void); if (vid_size) psmac_videocard_init(); }   /* its ROM and block, once the screens are known */
     if (slot2_rom) {   /* the window exists (and was cleared) now: slot $A's ROM into its top 16 KiB, right-aligned */
         uint8_t *w2 = (uint8_t *)(KERNEL_ALIAS + win_phys + PSMB_OFF_DECLROM2);
         memcpy(w2 + PSMB_DECLROM2_SIZE - slot2_len, slot2_rom, slot2_len);
