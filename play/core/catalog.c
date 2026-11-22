@@ -23,6 +23,7 @@ int a68_list_path(const struct a68_client *c, int kind, const char *id, const ch
 	case A68_V_ARTISTS: return a68_path_artists(c, from, A68_PAGE, out, max);
 	case A68_V_ALBUMS: return a68_path_albums(c, id, from, A68_PAGE, out, max);
 	case A68_V_TRACKS: return a68_path_tracks(c, id, 0, from, A68_PAGE, out, max);
+	case A68_V_ARTIST: return a68_path_tracks(c, 0, id, from, A68_PAGE, out, max);
 	default: return a68_path_search(c, words, from, A68_PAGE, out, max);
 	}
 }
@@ -55,7 +56,7 @@ int a68_list_load(struct a68_list *l, char *body, long len)
 			w->kind = 'L'; a68_copy(w->id, a.id, sizeof w->id); a68_copy(w->text, a.title, sizeof w->text);
 			a68_copy(w->sub, a.artist, sizeof w->sub);
 			w->count = (unsigned short)a.tracks; w->secs = a.secs;
-		} else if (l->kind == A68_V_TRACKS) {
+		} else if (l->kind == A68_V_TRACKS || l->kind == A68_V_ARTIST) {
 			struct a68_track t;
 			struct a68_video v;
 			int k = a68_next_item(&r, &t, &v);

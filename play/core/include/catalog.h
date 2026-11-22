@@ -16,7 +16,8 @@
 #define A68_CATALOG_H
 #include "proto.h"
 
-enum { A68_V_ARTISTS, A68_V_ALBUMS, A68_V_TRACKS, A68_V_SEARCH };   /* what a list holds */
+enum { A68_V_ARTISTS, A68_V_ALBUMS, A68_V_TRACKS, A68_V_SEARCH,     /* what a list holds */
+       A68_V_ARTIST };       /* an artist's tracks and videos (/mac/tracks?artist=ID): one with videos and no album */
 #define A68_PAGE 200                     /* rows asked for at once: the server's page */
 
 struct a68_row {                         /* one row of a list */

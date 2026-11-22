@@ -525,6 +525,10 @@ static void video_units(void)
 		check(a68_list_load(&l, b, n) && l.rows[0].videos == 2 && !l.rows[0].count, "an artist's row counts its videos");
 		check(a68_list_path(&cl, A68_V_TRACKS, "a1", 0, 0, p, sizeof p) && !strcmp(p, "/mac/tracks?album=a1&count=200&videos=1"),
 		      "the view's request asks for videos");
+		a68_list_init(&l, rows, 8, A68_V_ARTIST);
+		b = dup_("A68M\t1\ttracks\t1\t0\t1\rV\tv1\tWebm Clip\tDelta\t3\t\t160\t120\r", &n);
+		check(a68_list_path(&cl, A68_V_ARTIST, "7758d620", 0, 0, p, sizeof p) && !strcmp(p, "/mac/tracks?artist=7758d620&count=200&videos=1") &&
+		      a68_list_load(&l, b, n) && l.n == 1 && l.rows[0].kind == 'V', "an artist with videos alone: its tracks and videos");
 	}
 	b = dup_("1\tplay\t0\t\r"
 	         "V\t7dadadb6\tLive Clip\tGamma\t3\r"

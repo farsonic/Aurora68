@@ -225,7 +225,7 @@ int fetch_start(const char *host, unsigned short port, const char *path)
 	*p++ = ':'; p = put_num(p, port);
 	/* X-Aurora: the server wants it on a device's requests (a web page elsewhere cannot send it unasked), and it
 	   does no harm on the others */
-	p = put_str(p, "\r\nUser-Agent: Aurora68-Play/1.4 (Macintosh)\r\nX-Aurora: 1\r\nConnection: close\r\n\r\n");
+	p = put_str(p, "\r\nUser-Agent: Aurora68-Play/1.5 (Macintosh)\r\nX-Aurora: 1\r\nConnection: close\r\n\r\n");
 	wds.len = (unsigned short)(p - req); wds.ptr = req; wds.end = 0;
 	got = 0;
 	resolve_start();
