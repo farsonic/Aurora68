@@ -84,7 +84,9 @@ What is in the zip
                                             to the SD card, passwords hidden), Aurora68 Status
                            Extensions (to install)/  Aurora68 Disk, Aurora68 Machine, Aurora68
                                             Screen Setup, Aurora68 Sound, Aurora68 Wi-Fi &
-                                            Bluetooth, and a Read Me
+                                            Bluetooth, and a Read Me. In 0.13 replace
+                                            Aurora68 Machine: it installs the exact SANE
+                                            the Pi reads from the SE's ROM (Photoshop)
                          Until 21 November 2026 the programs were PiPlay, PiDisplay, PiSlots,
                          PiLog, PiStatus, PiNet, PiWiFi, PiBlue, PiPing, PiColor, PiScreens and
                          PiDepth, the extensions PiDisk, PiMach, PiScrn, Sound PiStorm and
@@ -192,7 +194,7 @@ Setting up the SD card (a Pi 3B in an SE)
   8. HDMI to a monitor if you have one (it shows the same 512 by 342 picture as the SE's screen
      in this build), the serial cable to GPIO 14 (TXD) and 15 (RXD), ground to 6. Power the SE.
 
-Disks: what the Mac can use (0.12)
+Disks: what the Mac can use (0.13)
 ----------------------------------
 Every disk is HFS ("Mac OS Standard") as far as the Mac is concerned; System 6 and 7 read nothing else.
   - The SE's own SCSI bus (its internal disk, a BlueSCSI, SCSI2SD, ZuluSCSI): a disk with an Apple
@@ -210,6 +212,11 @@ Every disk is HFS ("Mac OS Standard") as far as the Mac is concerned; System 6 a
     itself mounts as it is. Up to 2 GB and 32,000 files per view; writing to a FAT/exFAT stick's own
     files is not done yet. Eject: Put Away, then wait for "safe to unplug" in Aurora68 Log.
   - A folder "Mac Exchange" in the card's root: its files as a locked disk, put there from any computer.
+  - A BlueSCSI or other disk on the SE's own SCSI bus: found again in 0.13 (Apple's 250 ms selection
+    timeout). A disk image made from an Aurora68 card image may carry Iomega's Zip driver and the Iomega
+    Driver extension: the Mac then says "This is not a Macintosh disk" with Iomega's icon. Move "Iomega
+    Driver" out of the Extensions folder (start with Shift held); tools/mac/swap_driver.py (in the
+    repository) gives an image Apple's SCSI driver from one of your own disks.
   - The SE's floppy drive: 0.12 selects the internal drive (it did not before); not yet verified on a
     real SE.
 Tested Systems: 7.1 (also 7.1.2) and 6.0.8. More than 8 MB needs 32-bit addressing (System 7's Memory

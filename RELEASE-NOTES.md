@@ -1,5 +1,39 @@
 # Aurora68 release notes
 
+## 0.13 — BlueSCSI disks, exact floating point, Aurora68 Play's Library (22 November 2026)
+
+Since 0.12, in short (docs/08 items 98-101 have the detail):
+
+- **BlueSCSI and other SCSI disks on the SE's own bus are found again.** The ROM patch had cut the SCSI
+  Manager's selection timeout to 10 ms for the Pi alone; on the real SE a target answering a little later was
+  missed at every ID (thousands of selections, no data). The kernel now puts Apple's 250 ms back on the SE's
+  bus (`mac.sescsiwait=MS` for another value). Verified on the owner's SE with a BlueSCSI.
+- **"This is not a Macintosh disk" with Iomega's icon** came from the Iomega Driver extension in disk images
+  that descend from the project's first test image (made from a Zip disk); it takes over every SCSI disk it
+  finds. Move `Iomega Driver` out of `System Folder:Extensions` (start with Shift held, then drag it out).
+  Images made from now on have neither it nor Iomega's partition driver; `tools/mac/swap_driver.py` gives
+  an existing image Apple's SCSI driver from one of your own disks (docs/08 item 100).
+- **Exact floating point (SANE).** Photoshop sat under the stopwatch for minutes: Emu68's FPU computes in
+  64-bit doubles and the IIci ROM's SANE uses the FPU, so a refinement loop that expects 80-bit extended
+  precision never converged. The kernel now reads the software SANE (PACK 4 and PACK 5) from the SE's own ROM
+  chips and the **Aurora68 Machine** extension installs it: `(1 + 2^-60) - 1` is `2^-60`, as on a real Mac,
+  and Photoshop opens. **Install the new Aurora68 Machine extension** (it is in `Mac/`). SANE-heavy work is
+  about 5-6 times slower than the FPU version on the SE; `mac.sane=rom` keeps the old one. On a Pi without
+  an SE, `mac.serom=FILE` names an SE ROM file to take it from. Programs that use the FPU directly still get
+  64-bit doubles (exact FPU emulation is issue #27).
+- **Aurora68 Play 1.2: the Library.** Artists, albums with covers, tracks and a gapless queue from the
+  Aurora68 music server (`tools/music-server`, a Docker image for a NAS: a folder of music as radio stations
+  and a library, FLAC/M4A converted on the fly, a web control panel and a shared Live channel), with Connect
+  By IPv6 First / IPv4 First. A native macOS version is in `macos/Aurora68Play` (built by GitHub).
+- **The video card** (slot $C): MPEG-1 decoded on a spare core into the Mac's own screens, the SE's
+  dithered or HDMI in colour, with its sound; the Mac program to feed it is still to come (issue #24).
+- **Diagnostics**: when a program stays busy in its own code the log shows the instructions around its PC
+  (`code at ...`), and every heartbeat shows the JIT's instructions and translations per 5 s. That is how
+  MacWrite 5's hang was read: it is not 32-bit clean (it walks the heap the 24-bit way); run it with 32-bit
+  addressing off and `mac.ram=8`, or see issue #29.
+
+Not yet verified on the hardware: the video card, the floppy drive and the serial ports (issues #9, #10).
+
 ## 0.12 — the Agent, FAT/exFAT sticks, safer bus and disks (22 November 2026)
 
 0.11 was a test kernel only. Since 0.10, in short (the entries below have the detail):
