@@ -1555,6 +1555,7 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
                 memcpy(romk, rom, n);
         }
         { extern void psmac_se_rom_fixup(uint8_t *, uint32_t); psmac_se_rom_fixup(romk, n); }   /* the SE with its speaker: the full startup chime */
+        { extern void psmac_se_scsi_fixup(uint8_t *, uint32_t); psmac_se_scsi_fixup(romk, n); } /* the SE's own SCSI bus: Apple's selection timeout */
         for (uint32_t o = n; o < PSMAC_ROM_SIZE; o += n) {
             memcpy(romk + o, rom, (o + n <= PSMAC_ROM_SIZE) ? n : PSMAC_ROM_SIZE - o);
         }

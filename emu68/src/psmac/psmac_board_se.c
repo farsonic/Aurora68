@@ -642,6 +642,7 @@ static void rtc_probe(void)
    progress and always lost (bits 6 and 5), which sends the ROM round the retry at $408076FA that has
    no timeout: MAME's bus is clean, and this is the likeliest way a floating one gives the hang. */
 static int scsi_mode = 0;                       /* mac.sescsi: 0 auto, 1 real, 2 empty */
+static int scsi_wait_ms = 250;                  /* mac.sescsiwait: the SCSI Manager's selection timeout on the SE's bus */
 static int scsi_empty, scsi_float_sim, scsi_probed;
 static struct { uint8_t odr, icr, mr, tcr; int aip, irq; uint32_t selections; } se5380;
 static uint32_t scsi_float_fix(uint32_t reg, uint32_t r)
@@ -1291,6 +1292,11 @@ void psmac_se_options(const char *args)
         else if (n >= 1 && n <= 21) se_fault_or = 1u << n;
     }
     if ((tok = find_token(args, "mac.sescsi="))) { tok += 11; scsi_mode = tok[0] == 'r' ? 1 : tok[0] == 'e' ? 2 : 0; }
+    if ((tok = find_token(args, "mac.sescsiwait="))) {
+        int v = 0;
+        for (tok += 15; *tok >= '0' && *tok <= '9'; tok++) v = v * 10 + (*tok - '0');
+        if (v >= 1 && v <= 1000) scsi_wait_ms = v;
+    }
     if ((tok = find_token(args, "mac.sefloat="))) { tok += 12; scsi_float_sim = tok[0] == '1'; }   /* the testbed: the 5380 read as on an unterminated bus */
     if ((tok = find_token(args, "mac.seram="))) {   /* 1, 2, 2.5 or 4: the SE's address arithmetic takes the top of what is fitted */
         tok += 10; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0');
@@ -1333,4 +1339,26 @@ void psmac_se_rom_fixup(uint8_t *rom, uint32_t len)
     sum += 0x7530u - 0x0001u;
     rom[0] = sum >> 24; rom[1] = sum >> 16; rom[2] = sum >> 8; rom[3] = sum;
     kprintf("[PSMAC:SE] sound: the startup chime's full length given back to the ROM (30000 steps; checksum word now %08x)\n", sum);
+}
+
+/* The SCSI Manager's selection timeout on the SE's own bus (22 November 2026, docs/08 item 101). The
+   project's ROM patch (docs/08 item 50) cut it from Apple's 250 ms to 10 ms, so that every empty ID
+   cost less at each scan; the testbed's 5380 answers a selection at once and never noticed. The owner's
+   SE then saw none of its BlueSCSI's three disks: about 35,000 accesses to the 5380 in the scan and not
+   one data transfer, the same after a warm restart (so not the BlueSCSI still starting). The timeout is
+   counted in TimeSCSIDB loops of bus reads, which on the real SE are not the 68000's, and a target that
+   answers late is missed at every ID. On the SE board with its real bus it is Apple's 250 ms again
+   (mac.sescsiwait=MS for another value; an empty bus answered here, mac.sescsi=empty, keeps 10 ms).
+   The bytes are checked first ("move.w #10,$62(a4)" at $40809554) and the checksum word follows. */
+void psmac_se_scsi_fixup(uint8_t *rom, uint32_t len)
+{
+    static const uint8_t want[] = { 0x39, 0x7c, 0x00, 0x0a, 0x00, 0x62 };
+    if (!psmac_board_se || psmac_board_solo || scsi_mode == 2 || len < 0x80000) return;
+    for (unsigned i = 0; i < sizeof want; i++) if (rom[0x9554 + i] != want[i]) return;
+    rom[0x9556] = (uint8_t)(scsi_wait_ms >> 8); rom[0x9557] = (uint8_t)scsi_wait_ms;
+    uint32_t sum = (uint32_t)rom[0] << 24 | (uint32_t)rom[1] << 16 | (uint32_t)rom[2] << 8 | rom[3];
+    sum += (uint32_t)scsi_wait_ms - 10u;
+    rom[0] = sum >> 24; rom[1] = sum >> 16; rom[2] = sum >> 8; rom[3] = sum;
+    kprintf("[PSMAC:SE] SCSI: selection timeout %d ms for the SE's own bus (the ROM patch's 10 ms is for the Pi alone; mac.sescsiwait=MS; checksum word now %08x)\n",
+            scsi_wait_ms, sum);
 }
