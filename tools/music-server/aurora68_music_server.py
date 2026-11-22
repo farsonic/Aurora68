@@ -2358,50 +2358,67 @@ class Devices:
 # with no internet; it polls /api/now every two seconds.
 PANEL = r'''<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>__NAME__</title>
-<style>
-:root{--bg:#f6f5f2;--card:#fff;--ink:#1d1d1f;--mute:#6e6e73;--line:#e3e1dc;--accent:#2f6f4f}
-@media (prefers-color-scheme:dark){:root{--bg:#161616;--card:#202020;--ink:#eee;--mute:#999;--line:#333;--accent:#6fbf8f}}
-*{box-sizing:border-box}body{margin:0;font:15px/1.45 system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--ink)}
-header{display:flex;gap:1em;align-items:center;padding:.8em 1.2em;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:2}
-header h1{font-size:1.1em;margin:0;flex:1}header select{padding:.4em .5em;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit;max-width:14em}
-.dev{cursor:pointer}.dev.sel .t{color:var(--accent);font-weight:600}.dot{width:.55em;height:.55em;border-radius:50%;background:var(--mute);flex:none}.dot.on{background:#3a3}header input{flex:0 1 18em;padding:.45em .7em;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)}
-main{display:grid;grid-template-columns:minmax(0,1fr) 22em;gap:1.2em;padding:1.2em;max-width:80em;margin:auto}
-@media (max-width:52em){main{grid-template-columns:1fr}aside{order:-1}}
-section,aside>div{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:1em}
-aside{display:flex;flex-direction:column;gap:1.2em}
-h2{font-size:.8em;text-transform:uppercase;letter-spacing:.06em;color:var(--mute);margin:0 0 .6em}
-.crumbs{margin-bottom:.8em;color:var(--mute)}.crumbs a{color:var(--accent);cursor:pointer}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(9em,1fr));gap:.9em}
-.tile{cursor:pointer;border-radius:10px;padding:.4em;transition:background .15s}.tile:hover{background:var(--bg)}
-.tile .art{aspect-ratio:1;border-radius:8px;background:var(--line) center/cover;display:flex;align-items:center;justify-content:center;font-size:2em;color:var(--mute)}
-.tile .t{font-weight:600;margin-top:.35em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tile .s{color:var(--mute);font-size:.85em}
-.row{display:flex;align-items:center;gap:.6em;padding:.35em .2em;border-bottom:1px solid var(--line)}.row:last-child{border:0}
-.row .n{color:var(--mute);width:1.8em;text-align:right;font-variant-numeric:tabular-nums}.row .t{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.row.cur .t{color:var(--accent);font-weight:600}
-button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:8px;padding:.3em .7em;cursor:pointer}
-button:hover{border-color:var(--accent)}button.p{background:var(--accent);border-color:var(--accent);color:#fff}
-button.i{border:0;background:none;padding:.2em .4em;color:var(--mute)}button.i:hover{color:var(--accent)}
-.acts{display:flex;gap:.5em;flex-wrap:wrap;margin:.2em 0 1em}
-#np .art{width:100%;aspect-ratio:1;border-radius:10px;background:var(--line) center/cover;margin-bottom:.8em}
-#np .t{font-weight:700;font-size:1.1em}#np .s{color:var(--mute)}
-.bar{height:5px;background:var(--line);border-radius:3px;margin:.7em 0 .2em;overflow:hidden}.bar i{display:block;height:100%;background:var(--accent);width:0}
-.times{display:flex;justify-content:space-between;color:var(--mute);font-size:.8em;font-variant-numeric:tabular-nums}
-.ctl{display:flex;justify-content:center;gap:.6em;margin:.8em 0 .4em}.ctl button{font-size:1.15em;min-width:2.6em}
-.tog button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
-.small{color:var(--mute);font-size:.85em}code{font-size:.85em;word-break:break-all}
-.tile .art.vid{aspect-ratio:16/9;color:#fff;text-shadow:0 1px 4px #000}
-#vbox{position:fixed;inset:0;background:#000b;display:flex;align-items:center;justify-content:center;z-index:5}
-#vbox>div{background:var(--card);border-radius:12px;padding:1em;width:min(60em,94vw)}#vbox video{width:100%;max-height:70vh;background:#000;border-radius:8px}
-.vh{display:flex;justify-content:space-between;align-items:center;margin-bottom:.5em}
-#msg{position:fixed;bottom:1em;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:.5em 1em;border-radius:8px;opacity:0;transition:opacity .3s}
+<meta name="color-scheme" content="light"><link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' aria-hidden='true'%3E%3Cdefs%3E%3CclipPath id='lc'%3E%3Crect x='1.25' y='1.25' width='29.5' height='29.5' rx='7'/%3E%3C/clipPath%3E%3ClinearGradient id='ls' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='0' stop-color='%23060a22'/%3E%3Cstop offset='.7' stop-color='%2316225a'/%3E%3Cstop offset='1' stop-color='%2322306e'/%3E%3C/linearGradient%3E%3ClinearGradient id='la' x1='0' y1='0' x2='1' y2='0'%3E%3Cstop offset='.08' stop-color='%2361bb46'/%3E%3Cstop offset='.28' stop-color='%23fdb827'/%3E%3Cstop offset='.44' stop-color='%23f5821f'/%3E%3Cstop offset='.6' stop-color='%23e03a3e'/%3E%3Cstop offset='.77' stop-color='%23963d97'/%3E%3Cstop offset='.94' stop-color='%23009ddc'/%3E%3C/linearGradient%3E%3ClinearGradient id='lf' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='.18' stop-color='%23fff'/%3E%3Cstop offset='.45' stop-color='%23fff' stop-opacity='.8'/%3E%3Cstop offset='.8' stop-color='%23fff' stop-opacity='0'/%3E%3C/linearGradient%3E%3Cmask id='lm'%3E%3Crect width='32' height='32' fill='url(%23lf)'/%3E%3C/mask%3E%3Cpattern id='lr' width='1.8' height='32' patternUnits='userSpaceOnUse'%3E%3Crect x='.5' width='.7' height='32' fill='%23060a22' fill-opacity='.35'/%3E%3C/pattern%3E%3Cfilter id='lb' x='-10%' y='-10%' width='120%' height='120%'%3E%3CfeGaussianBlur stdDeviation='.35'/%3E%3C/filter%3E%3C/defs%3E%3Cg clip-path='url(%23lc)'%3E%3Crect width='32' height='32' fill='url(%23ls)'/%3E%3Cg fill='%23fff'%3E%3Ccircle cx='7' cy='4.2' r='.4'/%3E%3Ccircle cx='16' cy='3.2' r='.3'/%3E%3Ccircle cx='26.5' cy='4' r='.38'/%3E%3Ccircle cx='22.5' cy='21' r='.28'/%3E%3Ccircle cx='5' cy='19' r='.3'/%3E%3C/g%3E%3Cg mask='url(%23lm)' filter='url(%23lb)'%3E%3Cpath d='M-2 10 C3 6 8 9.5 13 8 S22 4 27 6.5 S32 9 34 8 V27 H-2Z' fill='url(%23la)'/%3E%3Cpath d='M-2 10 C3 6 8 9.5 13 8 S22 4 27 6.5 S32 9 34 8 V27 H-2Z' fill='url(%23lr)'/%3E%3C/g%3E%3Cpath d='M-2 10 C3 6 8 9.5 13 8 S22 4 27 6.5 S32 9 34 8' fill='none' stroke='%23fff' stroke-opacity='.55' stroke-width='.7' filter='url(%23lb)'/%3E%3Cpath d='M-2 26 C5 23.5 10 26.5 16 24.5 S27 23 34 25.5 V34 H-2Z' fill='%2305081a'/%3E%3C/g%3E%3Crect x='1.25' y='1.25' width='29.5' height='29.5' rx='7' fill='none' stroke='%23000' stroke-width='1.2'/%3E%3C/svg%3E"><style>
+/* 22 November 2026: the look of tools/recovery/page.html, the Setup and Recovery page (the owner: "an 80s Apple style
+   and colour" for the project's web pages): the Macintosh of 1984-89, black on white over the grey desktop pattern,
+   windows with pinstriped title bars and a close box, a hard drop shadow, rounded buttons with the default ring,
+   alert-box toasts, Chicago and Monaco where the computer has them (nothing is fetched from the network), and the
+   six colours of the period under the top bar and one for each window. The logo and the favicon are
+   docs/img/aurora68-logo.svg, the same as that page's. */
+:root{--g:#61bb46;--y:#fdb827;--o:#f5821f;--r:#e03a3e;--p:#963d97;--b:#009ddc;--ui:Chicago,ChicagoFLF,Charcoal,"Geneva",-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;--mono:Monaco,"Andale Mono",Menlo,Consolas,monospace}
+*{box-sizing:border-box}html{background:#fff repeating-conic-gradient(#000 0 25%,#fff 0 50%) 0 0/2px 2px}
+body{margin:0;font:14px/1.45 var(--ui);color:#000;min-height:100vh}
+header{background:#fff;border-bottom:2px solid #000;position:sticky;top:0;z-index:3}
+.top{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:6px 12px}
+.logo{width:28px;height:28px;flex:none;display:block}
+header h1{font-size:15px;margin:0;font-weight:700;flex:1 1 160px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rainbow{height:6px;background:linear-gradient(90deg,var(--g) 0 16.67%,var(--y) 0 33.33%,var(--o) 0 50%,var(--r) 0 66.67%,var(--p) 0 83.33%,var(--b) 0)}
+header select,header input,#gq{font:13px var(--ui);color:#000;background:#fff;border:1px solid #000;border-radius:0;padding:4px 7px}
+header select{max-width:14em}header input{flex:1 1 14em;min-width:9em}input:focus,select:focus{outline:none;box-shadow:inset 0 0 0 1px #000}
+main{display:grid;grid-template-columns:minmax(0,1fr) 22em;gap:18px;padding:18px 14px 40px;max-width:80em;margin:auto}
+@media (max-width:52em){main{grid-template-columns:1fr}aside{order:-1}#np .art{width:55%;margin:0 auto .8em}}
+aside{display:flex;flex-direction:column;gap:18px}
+.card{background:#fff;border:1px solid #000;box-shadow:2px 2px 0 #000;padding:0 14px 14px;min-width:0}
+.card h2{font-size:13px;margin:0 -14px 12px;padding:2px 0;text-align:center;border-bottom:1px solid #000;position:relative;font-weight:700;
+ background:repeating-linear-gradient(#fff 0 1px,#000 1px 2px) 0 3px/100% calc(100% - 6px) no-repeat}
+.card h2::before{content:"";position:absolute;left:8px;top:50%;width:11px;height:11px;margin-top:-6px;background:#fff;border:1px solid #000;box-shadow:0 0 0 2px #fff}
+.card h2 span{background:#fff;padding:0 8px;font-weight:700}
+.card h2 span::before{content:"";display:inline-block;width:9px;height:9px;border:1px solid #000;margin-right:6px;vertical-align:-1px;background:var(--c,#fff)}
+h3{font-size:13px;margin:1.2em 0 .6em;text-decoration:underline;font-weight:700}
+.crumbs{margin-bottom:.8em}.crumbs a{cursor:pointer;text-decoration:underline}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(8.5em,1fr));gap:12px}
+.tile{cursor:pointer;padding:4px;border:1px solid transparent;border-radius:6px}.tile:hover{border-color:#000}.tile:active{background:#000;color:#fff}
+.tile .art{aspect-ratio:1;border:1px solid #000;background:#fff center/cover;display:flex;align-items:center;justify-content:center;font-size:2em}
+.tile .t{font-weight:700;margin-top:.35em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tile .s{font-size:12px}
+.tile .art.vid{aspect-ratio:16/9;color:#fff;text-shadow:0 0 3px #000}
+.row{display:flex;align-items:center;gap:.6em;padding:.35em .2em;border-bottom:1px dotted #000}.row:last-child{border:0}
+.row .n{width:1.8em;text-align:right;font:12px var(--mono)}.row .t{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row.cur .t,.dev.sel .t{font-weight:700;text-decoration:underline}
+.dev{cursor:pointer}.dot{width:9px;height:9px;border:1px solid #000;flex:none;background:#fff}.dot.on{background:var(--g)}
+button{font:inherit;font-size:13px;color:#000;background:#fff;border:1px solid #000;border-radius:9px;padding:3px 12px;cursor:pointer;min-height:24px}
+button:active{background:#000;color:#fff}button.p{box-shadow:0 0 0 1px #fff,0 0 0 4px #000;margin:4px 6px 4px 4px;font-weight:700}
+button.i{border:0;background:none;padding:2px 6px;min-height:0;border-radius:4px}button.i:active{background:#000;color:#fff}
+.acts{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:.2em 0 1em}
+#np .art{width:100%;aspect-ratio:1;border:1px solid #000;background:#fff center/cover;margin-bottom:.8em}
+#np .t{font-weight:700;font-size:15px}
+.bar{height:12px;border:1px solid #000;margin:.7em 0 .2em;background:#fff}.bar i{display:block;height:100%;width:0;background:repeating-linear-gradient(90deg,#000 0 2px,#fff 2px 4px)}
+.times{display:flex;justify-content:space-between;font:12px var(--mono)}
+.ctl{display:flex;justify-content:center;align-items:center;gap:8px;margin:.8em 0 .4em;flex-wrap:wrap}.ctl button.i{font-size:18px}
+.tog button.on{background:#000;color:#fff}
+.small{font-size:12px}code{font:12px var(--mono);word-break:break-all}a{color:#000}
+#msg{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);background:#fff;color:#000;padding:14px 18px;border:1px solid #000;outline:3px double #000;
+ outline-offset:3px;font-size:13px;max-width:88vw;z-index:6;box-shadow:4px 4px 0 #000;opacity:0;pointer-events:none;transition:opacity .2s}
+#vbox{position:fixed;inset:0;background:#fff repeating-conic-gradient(#000 0 25%,#fff 0 50%) 0 0/2px 2px;display:flex;align-items:center;justify-content:center;padding:14px;z-index:5}
+#vbox>.card{width:min(60em,96vw)}#vbox video{width:100%;max-height:70vh;background:#000;border:1px solid #000;display:block}
+.vh{display:flex;justify-content:space-between;align-items:center;margin-bottom:.5em;gap:8px}
 </style></head><body>
-<header><h1>&#9835; __NAME__</h1><label class="small" for="target">Play on</label><select id="target" onchange="choose(this.value)"><option value="live">Live</option></select>
-<button onclick="showRadio()" title="Internet radio stations, for a player">&#128251; Radio</button><button id="vidbtn" style="display:none" onclick="showVideos()" title="The library's music videos">&#127916; Videos</button><button id="getbtn" style="display:none" onclick="showGet()">&#10515; Get albums</button>
-<input id="q" type="search" placeholder="Filter artists and albums"></header>
+<header><div class="top"><svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><defs><clipPath id="lc"><rect x="1.25" y="1.25" width="29.5" height="29.5" rx="7"/></clipPath><linearGradient id="ls" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#060a22"/><stop offset=".7" stop-color="#16225a"/><stop offset="1" stop-color="#22306e"/></linearGradient><linearGradient id="la" x1="0" y1="0" x2="1" y2="0"><stop offset=".08" stop-color="#61bb46"/><stop offset=".28" stop-color="#fdb827"/><stop offset=".44" stop-color="#f5821f"/><stop offset=".6" stop-color="#e03a3e"/><stop offset=".77" stop-color="#963d97"/><stop offset=".94" stop-color="#009ddc"/></linearGradient><linearGradient id="lf" x1="0" y1="0" x2="0" y2="1"><stop offset=".18" stop-color="#fff"/><stop offset=".45" stop-color="#fff" stop-opacity=".8"/><stop offset=".8" stop-color="#fff" stop-opacity="0"/></linearGradient><mask id="lm"><rect width="32" height="32" fill="url(#lf)"/></mask><pattern id="lr" width="1.8" height="32" patternUnits="userSpaceOnUse"><rect x=".5" width=".7" height="32" fill="#060a22" fill-opacity=".35"/></pattern><filter id="lb" x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation=".35"/></filter></defs><g clip-path="url(#lc)"><rect width="32" height="32" fill="url(#ls)"/><g fill="#fff"><circle cx="7" cy="4.2" r=".4"/><circle cx="16" cy="3.2" r=".3"/><circle cx="26.5" cy="4" r=".38"/><circle cx="22.5" cy="21" r=".28"/><circle cx="5" cy="19" r=".3"/></g><g mask="url(#lm)" filter="url(#lb)"><path d="M-2 10 C3 6 8 9.5 13 8 S22 4 27 6.5 S32 9 34 8 V27 H-2Z" fill="url(#la)"/><path d="M-2 10 C3 6 8 9.5 13 8 S22 4 27 6.5 S32 9 34 8 V27 H-2Z" fill="url(#lr)"/></g><path d="M-2 10 C3 6 8 9.5 13 8 S22 4 27 6.5 S32 9 34 8" fill="none" stroke="#fff" stroke-opacity=".55" stroke-width=".7" filter="url(#lb)"/><path d="M-2 26 C5 23.5 10 26.5 16 24.5 S27 23 34 25.5 V34 H-2Z" fill="#05081a"/></g><rect x="1.25" y="1.25" width="29.5" height="29.5" rx="7" fill="none" stroke="#000" stroke-width="1.2"/></svg><h1>__NAME__</h1><label class="small" for="target">Play on</label><select id="target" onchange="choose(this.value)"><option value="live">Live</option></select>
+<button onclick="showRadio()" title="Internet radio stations, for a player">Radio</button><button id="vidbtn" style="display:none" onclick="showVideos()" title="The library's music videos">Videos</button><button id="getbtn" style="display:none" onclick="showGet()">Get albums</button>
+<input id="q" type="search" placeholder="Filter artists and albums"></div><div class="rainbow"></div></header>
 <main>
-<section><div class="crumbs" id="crumbs"></div><div id="acts" class="acts"></div><div id="view"></div></section>
+<section class="card" style="--c:var(--g)"><h2><span>Library</span></h2><div class="crumbs" id="crumbs"></div><div id="acts" class="acts"></div><div id="view"></div></section>
 <aside>
-<div id="np"><h2 id="nph">Live: now playing</h2><div class="art" id="npart"></div><div class="t" id="npt">Nothing queued</div>
+<div id="np" class="card" style="--c:var(--y)"><h2><span id="nph">Live: now playing</span></h2><div class="art" id="npart"></div><div class="t" id="npt">Nothing queued</div>
 <div class="s" id="nps">Choose an album, an artist or a song</div><div class="bar"><i id="npbar"></i></div>
 <div class="times"><span id="npe">0:00</span><span id="npl"></span></div>
 <div class="ctl"><button class="i" title="Previous" onclick="act('previous')">&#9198;</button>
@@ -2410,16 +2427,17 @@ button.i{border:0;background:none;padding:.2em .4em;color:var(--mute)}button.i:h
 <div class="ctl tog"><button id="rep" onclick="act('repeat')" title="Play the queue again when it ends">Repeat</button>
 <button onclick="act('shuffle')" title="Shuffle what is still to come">Shuffle rest</button>
 <button onclick="act('clear')" title="Empty the queue">Clear</button></div></div>
-<div><h2>Devices</h2><div id="devs" class="small">Only Live: an Aurora68 Play on a Mac shows up here when it runs</div></div>
-<div><h2>Live queue</h2><div id="queue" class="small">Empty</div></div>
-<div id="dl" style="display:none"><h2>Downloads</h2><div id="dlist" class="small">Nothing yet</div></div>
-<div><h2>Listening</h2><div id="who" class="small">Nobody yet</div>
+<div class="card" style="--c:var(--o)"><h2><span>Devices</span></h2><div id="devs" class="small">Only Live: an Aurora68 Play on a Mac shows up here when it runs</div></div>
+<div class="card" style="--c:var(--r)"><h2><span>Live queue</span></h2><div id="queue" class="small">Empty</div></div>
+<div id="dl" class="card" style="display:none;--c:var(--p)"><h2><span>Downloads</span></h2><div id="dlist" class="small">Nothing yet</div></div>
+<div class="card" style="--c:var(--b)"><h2><span>Listening</span></h2><div id="who" class="small">Nobody yet</div>
 <p class="small">On the Mac: Radio &gt; Open URL&hellip; and one of these, or the Live station in the
-stations file:</p><div id="liveurl" class="small"></div><button id="here" onclick="here()">&#127911; Listen here</button>
+stations file:</p><div id="liveurl" class="small"></div><button id="here" onclick="here()">Listen here</button>
 <audio id="aud" preload="none"></audio></div>
 </aside></main><div id="msg"></div>
-<div id="vbox" style="display:none" onclick="if(event.target==this)closeV()"><div><div class="vh"><b id="vt"></b><button class="i" title="Close" onclick="closeV()">&#10005;</button></div>
-<video id="vid" controls playsinline></video><div class="acts" id="von" style="margin-top:.6em"></div><div class="small" id="vwhy"></div></div></div>
+<div id="vbox" style="display:none" onclick="if(event.target==this)closeV()"><div class="card" style="--c:var(--p)"><h2><span id="vt">Video</span></h2>
+<div class="vh"><span class="small" id="vwhy"></span><button title="Close" onclick="closeV()">Close</button></div>
+<video id="vid" controls playsinline></video><div class="acts" id="von" style="margin:.8em 0 0"></div></div></div>
 <script>
 let S={}, path='', listing=null;
 const $=id=>document.getElementById(id), esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -2449,7 +2467,7 @@ function pp(){if(T=='live')return act(S.paused?'resume':'pause');const d=D.find(
 let R=[];
 async function showRadio(){window.artist=null;$('crumbs').innerHTML=`<a ${on("open_('')")}>Library</a> / Radio`;$('acts').innerHTML='';
  R=(await (await fetch('/api/radio')).json()).stations;let h='',g=null;
- R.forEach((s,i)=>{if(s.group!=g){g=s.group;h+=`<h2 style="margin-top:1em">${esc(g||'Stations')}</h2>`}
+ R.forEach((s,i)=>{if(s.group!=g){g=s.group;h+=`<h3>${esc(g||'Stations')}</h3>`}
   h+=`<div class="row"><span class="t">${esc(s.name)}</span><span class="small">${esc(s.url.replace(/^https?:\/\//,'').split('/')[0])}</span>`+
   `<button class="i" title="Play on the chosen player" ${on('radio('+i+')')}>&#9654;</button></div>`});
  $('view').innerHTML='<p class="small">Internet radio plays on a player (choose one in Play on): the Live channel plays the library.</p>'+h}
@@ -2472,7 +2490,7 @@ function render(){crumbs();const L=listing,f=$('q').value.toLowerCase(),here=pat
  else if(L.artists)h+='<div class="grid">'+L.artists.filter(a=>a.name.toLowerCase().includes(f)||a.folders.some(x=>x.toLowerCase().includes(f)))
    .map(a=>tile(a.name,a.folders.length+' album'+(a.folders.length>1?'s':''),join(here,a.folders[0]),'showArtist('+J(a.name)+')')).join('')+'</div>';
  else if(L.folders.length)h+='<div class="grid">'+L.folders.filter(x=>x.toLowerCase().includes(f)).map(x=>tile(x,'',join(here,x),'open_('+J(join(here,x))+')')).join('')+'</div>';
- if(L.files.length&&!A)h+=(h?'<h2 style="margin-top:1.2em">Songs</h2>':'')+L.files.map((x,i)=>{const t='t:'+join(here,x);
+ if(L.files.length&&!A)h+=(h?'<h3>Songs</h3>':'')+L.files.map((x,i)=>{const t='t:'+join(here,x);
    return `<div class="row"><span class="n">${i+1}</span><span class="t">${esc(x.replace(/\.[^.]+$/,''))}</span>`+
    `<button class="i" title="Play now" ${on('act("play",{what:'+J(t)+'})')}>&#9654;</button>`+
    `<button class="i" title="Play next" ${on('act("next",{what:'+J(t)+',toast:"Plays next"})')}>&#8618;</button>`+
@@ -2485,7 +2503,7 @@ function showArtist(n){window.artist=n;render()}
 let V={};
 function vtile(v){V[v.id]=v;return `<div class="tile" ${on('watch('+J(v.id)+')')}><div class="art vid" style="background-image:url('${v.poster}')">&#9654;</div>`+
  `<div class="t" title="${esc(v.title)}">${esc(v.title)}</div><div class="s">${esc(v.artist)} &middot; ${mmss(v.seconds)}</div></div>`}
-const vgrid=vs=>vs&&vs.length?'<h2 style="margin-top:1.2em">Videos</h2><div class="grid">'+vs.map(vtile).join('')+'</div>':'';
+const vgrid=vs=>vs&&vs.length?'<h3>Videos</h3><div class="grid">'+vs.map(vtile).join('')+'</div>':'';
 function watch(id){const v=V[id],el=$('vid');$('vt').textContent=v.artist+' - '+v.title;
  const there=T=='live'?`<button ${on('act("play",{what:'+J('v:'+id)+',toast:"Its sound plays on Live"})')}>&#9654; Its sound on Live</button>`
   :`<button class="p" ${on('closeV();act("play",{what:'+J('v:'+id)+',toast:"Playing"})')}>&#9654; Play on ${esc(dname(T))}</button>`;
@@ -2525,7 +2543,7 @@ function live_np(){const j=S;if(!j.queue)return;$('nph').textContent='Live: now 
  $('npart').style.backgroundImage=c?art(c.folder):'none';$('npbar').style.width=c&&c.length?Math.min(100,100*c.elapsed/c.length)+'%':'0';
  $('npe').textContent=c?mmss(c.elapsed):'';$('npl').textContent=c&&c.length?mmss(c.length):'';
  $('pp').innerHTML=j.paused||!c?'&#9654;':'&#9208;'}
-function here(){const a=$('aud');if(a.paused){a.src='/live?t='+Date.now();a.play();$('here').textContent='⏹ Stop listening'}else{a.pause();a.removeAttribute('src');a.load();$('here').innerHTML='&#127911; Listen here'}}
+function here(){const a=$('aud');if(a.paused){a.src='/live?t='+Date.now();a.play();$('here').textContent='Stop listening'}else{a.pause();a.removeAttribute('src');a.load();$('here').textContent='Listen here'}}
 fetch('/api/addresses').then(r=>r.json()).then(a=>{$('liveurl').innerHTML=a.urls.map(u=>
  `<div><code>${esc(u.url)}/live</code> <span class="small">(${esc(u.family)})</span> <a href="/stations.txt${u.family=='ipv6'||u.family=='ipv4'?'?prefer='+u.family:''}">stations file</a></div>`).join('')});open_('');poll();setInterval(poll,2000);
 </script></body></html>
