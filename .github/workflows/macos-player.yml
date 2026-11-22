@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: MPL-2.0
+# Aurora68 Play for macOS (macos/Aurora68Play): its tests, then "Aurora68 Play.app" (Apple silicon and
+# Intel, ad-hoc signed), zipped as the artifact Aurora68-Play-macOS of the run.
+name: macos player
+on:
+  push:
+    paths: ['macos/**', 'tools/mac/mkicons.py', '.github/workflows/macos-player.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Versions
+        run: swift --version && xcodebuild -version
+      - name: Test
+        working-directory: macos/Aurora68Play
+        run: swift test
+      - name: Build the app
+        working-directory: macos/Aurora68Play
+        run: BUILD=${{ github.run_number }} ./make-app.sh
+      - name: Zip
+        working-directory: macos/Aurora68Play/build
+        run: ditto -c -k --sequesterRsrc --keepParent "Aurora68 Play.app" Aurora68-Play-macOS.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Aurora68-Play-macOS
+          path: macos/Aurora68Play/build/Aurora68-Play-macOS.zip
+          if-no-files-found: error

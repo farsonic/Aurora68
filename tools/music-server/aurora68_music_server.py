@@ -1476,6 +1476,36 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer):
                         out['artists'] = [{'name': a, 'station': f'/s/{lib.station_id((rel, a))}', 'folders': f}
                                           for a, f in lib.artists[rel].items()]
                     return self.send(200, 'application/json', json.dumps(out).encode())
+                if path == '/api/catalog':                    # the macOS Aurora68 Play's library, in one answer
+                    cat.fresh()
+                    return self.send(200, 'application/json', json.dumps({
+                        'name': name, 'version': VERSION,
+                        'artists': [{'id': i, 'name': cat.artists[i]['name'], 'albums': cat.artists[i]['albums']}
+                                    for i in cat.artist_order],
+                        'albums': [{'id': i, 'title': a['title'], 'artist': a['artist'], 'artist_id': a['aid'],
+                                    'folder': a['rel'], 'tracks': len(a['tracks'])}
+                                   for i, a in sorted(cat.albums.items(), key=lambda kv: (sort_key(kv[1]['artist']),
+                                                                                          kv[1]['title'].casefold()))]
+                    }).encode(), [('Cache-Control', 'no-store')])
+                if path == '/api/tracks':                     # an album's (or artist's) tracks: titles, lengths, files
+                    cat.fresh()
+                    if q.get('album') in cat.albums:
+                        tids, probe = cat.albums[q['album']]['tracks'], True
+                    elif q.get('artist') in cat.artists:
+                        tids = [t for al in cat.artists[q['artist']]['albums'] for t in cat.albums[al]['tracks']]
+                        probe = True
+                    else:
+                        return self.send(404, 'application/json', b'{"error": "tracks?album=ID or tracks?artist=ID"}')
+                    out = []
+                    for t in tids:
+                        n, title, artist, secs = cat.track_info(t, probe)
+                        al, rel = cat.tracks[t]
+                        out.append({'id': t, 'number': n, 'title': title, 'artist': artist, 'seconds': secs,
+                                    'path': rel, 'album': al, 'album_title': cat.albums[al]['title'],
+                                    'folder': cat.albums[al]['rel']})
+                    if q.get('album'):
+                        out.sort(key=lambda r: (r['number'] or 999, r['title'].casefold()))
+                    return self.send(200, 'application/json', json.dumps({'tracks': out}).encode())
                 if path.startswith('/mac/'):
                     return self.mac(path[5:], q)
                 if path.startswith('/t/'):

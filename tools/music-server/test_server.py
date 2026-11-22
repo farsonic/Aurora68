@@ -288,6 +288,24 @@ def main():
     check(not j['listeners'] and j['paused'], 'the listener left; the channel is paused')
     live('clear')
 
+    # the macOS app's JSON: the whole catalogue at once, then an album's tracks with their files
+    c = json.loads(get(base, '/api/catalog')[2])
+    names = [a['name'] for a in c['artists']]
+    zed = next((a for a in c['artists'] if a['name'] == 'Zed'), None)
+    check(c['name'] == 'Test Music' and 'Zed' in names and 'Gamma' in names and zed and len(zed['albums']) == 2,
+          f'/api/catalog: artists with their albums ({names})')
+    gam = next(a for a in c['albums'] if a['artist'] == 'Gamma')
+    check(gam['folder'] == 'Gamma - Converted' and gam['tracks'] == 3 and gam['title'] == 'Converted',
+          f'and albums: title, artist, folder, track count ({gam})')
+    tr = json.loads(get(base, '/api/tracks?album=' + gam['id'])[2])['tracks']
+    check([t['title'] for t in tr] == ['Closing Time', 'Lossless', 'Flac Song'] and tr[0]['seconds'] == 3 and
+          tr[0]['path'] == 'Gamma - Converted/01. Gamma - Closing Time.m4a',
+          f'/api/tracks: in order, titles and lengths from the tags, the file to play ({[(t["title"], t["seconds"]) for t in tr]})')
+    st, hd, body = get(base, '/file/' + urllib.parse.quote(tr[0]['path']), {'Range': 'bytes=0-7'})
+    check(st == 206 and body[4:8] == b'ftyp', 'and /file/ gives that file as it is, with Range (what AVPlayer asks for)')
+    zt = json.loads(get(base, '/api/tracks?artist=' + zed['id'])[2])['tracks']
+    check(len(zt) == 2 and get(base, '/api/tracks?album=nothing')[0] == 404, 'an artist\'s tracks; a wrong id is refused')
+
     # which address the Mac is given: as asked, or this computer's IPv4 or IPv6 address by preference
     import re
     a = json.loads(get(base, '/api/addresses')[2])

@@ -151,6 +151,7 @@ like beside the songs, else the picture inside the first song.
 | `/` | the control panel |
 | `/live` | the Live channel: what the panel plays |
 | `/api/now`, `/api/live`, `/api/addresses` | what Live plays; changing it (POST, above); the addresses handed out |
+| `/api/catalog`, `/api/tracks?album=ID` (or `?artist=ID`) | JSON for the macOS Aurora68 Play (`macos/Aurora68Play`): every artist and album; an album's tracks with titles, lengths and the files to play through `/file/` |
 | `/art?dir=FOLDER` | a folder's cover picture (`cover.jpg`, `folder.jpg`, ... or the one inside its first song) |
 | `/browse/FOLDER/` | a plain page of a folder |
 | `/s/ID` | a folder's station by its short name (the stations file uses these: Aurora68 Play's addresses are at most 160 bytes) |
