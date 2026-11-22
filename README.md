@@ -1,7 +1,7 @@
 # Aurora68
 
-An Emu68-based accelerator and expansion for the Macintosh SE: a Raspberry Pi in the 68000
-socket presents a 68040, runs Apple's Macintosh IIci ROM, keeps the SE's own screen, keyboard,
+An Emu68-based accelerator and expansion for the Macintosh SE (and, in the testbed so far, the
+Macintosh Plus, 512Ke, 512K and 128K): a Raspberry Pi in the 68000 socket presents a 68040, runs Apple's Macintosh IIci ROM, keeps the SE's own screen, keyboard,
 mouse, floppy and SCSI chip working, and adds memory, disk images from the SD card, Ethernet,
 WiFi and Bluetooth through a NuBus card that exists only in software.
 
@@ -18,6 +18,29 @@ speaker, a second screen and stereo sound on HDMI, Ethernet and WiFi, USB and Bl
 mice, USB sticks, and a remote control. What has been checked on the hardware and what only in the
 emulator is listed in `RELEASE-NOTES.md`; the day-by-day record is `docs/08`. The steps below set up
 the card; "Disks and disk images: what works" (below) says which disks the Mac can use.
+
+**The Plus, 512Ke, 512K and 128K (after 0.13, not in a release yet).** The same kernel has boards for
+the other compact Macs: `mac.board=plus`, `512ke`, `512k` or `128k` in `cmdline.txt` in place of
+`mac.board=se`; everything else on the card is as for the SE. All four reach System 7.1's Finder in
+the testbed (docs/08 item 96); none has been tried on a real machine yet. What differs from the SE:
+- **Keyboard and mouse:** the Plus's own (and the 128K's and 512K's) are not ADB; the kernel turns
+  them into ADB devices for the IIci ROM, beside USB and Bluetooth ones.
+- **Disks:** the Plus has SCSI (a BlueSCSI works as on the SE). The 512Ke, 512K and 128K have none:
+  their System comes from a disk image in the card's root, as on an SE with no SCSI disk (below).
+  Their floppy drives (400K on the 128K and 512K) have not been tried yet.
+- **Memory:** the Pi's, as on the SE (the machine's own 128 or 512 KB is used for its screen and
+  sound buffers only). Give the Mac 32 MiB or more with System 7.1: at 8 MiB in 24-bit mode QuickTime
+  crashes at start-up on every board.
+- **Parameter RAM:** the 128K and 512K's clock chip has 20 bytes and none of the extended parameter
+  RAM the IIci ROM wants: the kernel keeps all of it in `pram.bin` on the card (as `mac.sepram` does
+  for an SE whose chip does not answer). A Mac whose parameter RAM is blank or not trusted (a Plus's,
+  at its first start with Aurora68) still starts from the card's image.
+- **SANE:** exact SANE reads PACK 4 and 5 from the machine's own ROM where it holds them (the log says
+  `[PSMAC] SANE: ...`); the 64 KB ROM of the 128K and 512K has none, so there the IIci ROM's SANE
+  stays (64-bit doubles) unless `mac.serom=` names an SE ROM image on the card.
+- **Fitting the PiStorm:** on these boards the 68000 is usually soldered in, not socketed: fitting a
+  socket (or a clip-on adapter) is the owner's job and the board's risk. Check the board first.
+- `mac.fpu=none` makes the Mac FPU-less, as all of these machines really are (docs/08 item 103).
 
 1. Take a microSD card with a **FAT32** first partition.
 2. Copy the **Raspberry Pi firmware** onto it, from the card's root folder (the device tree
@@ -175,7 +198,7 @@ One line, options separated by spaces, no comments:
 | `mac.edidtest=sample`, `mac.hdmisim=1`, `mac.cardearly=1` | testbed only: a made-up 27-inch 2560x1440 monitor's EDID (or `mac.edidtest=FILE`, an EDID file through semihosting), since QEMU has no monitor; the firmware's frame buffer made at the mode config.txt and `aurora68-display.txt` set, as the firmware does on a Pi; the card read before the 68k starts after a boot from a bare ROM |
 | `mac.hdmi=screen` | on `mac.board=se`, what HDMI is: `screen` (the default) a second screen of its own beside the SE's, any size and depth, with an `aurora68-se-WxH.declrom` in the container and Aurora68 Screen Setup in the Extensions folder to arrange the two at the first boot (docs/10, "Two screens on the SE"); `mirror` the SE's picture (what HDMI showed until now); `log` the kernel's log for the whole run (the same as `mac.console=hdmi`). Without an `-se-` declaration ROM HDMI mirrors the SE |
 | `mac.console=hdmi` | keep the kernel's log on the HDMI screen for the whole run (the same text as the serial line); without it the log shows until the Macintosh's video driver takes the screen. On the SE board the Mac then has one screen, the SE's |
-| `mac.board=se` | the logic board the Pi sits in: `se` (the Macintosh SE: its chips behind the IIci ROM's addresses, docs/12), `solo` (no Macintosh: the kernel answers every chip and boots a disk image from the container, docs/12) or the default, the testbed's IIci |
+| `mac.board=se` | the logic board the Pi sits in: `se` (the Macintosh SE: its chips behind the IIci ROM's addresses, docs/12), `plus` (the Macintosh Plus: the same layer, with the overlay on VIA PA4, its non-ADB keyboard and mouse as ADB devices, SCSI pseudo-DMA by polling DRQ), `512ke`, `512k` and `128k` (the Plus without SCSI; the 512K and 128K with their 20-byte clock chip, parameter RAM in `pram.bin`), docs/08 item 96 (testbed only so far), `solo` (no Macintosh: the kernel answers every chip and boots a disk image from the container, docs/12) or the default, the testbed's IIci |
 | `aurora68-wifi.declrom` (a file, not an option) | the declaration ROM with the screen, PiDisk, input and the WiFi network card but no wired Ethernet: MacTCP and Riptide take the first network card they find, so this was the one for a Pi whose wired Ethernet is not driven (every Pi 3, the Zero 2 W, the bench). The kernel drives the Pi 3B's and 3B+'s wired ports now (both cards on the Mac), and leaves the wired card out of any declaration ROM by itself on a board with no wired port (3A+, Zero 2 W) or with `eth=off`, so the ordinary ones work everywhere. `aurora68-wifi-WxH.declrom` is the WiFi-only one for a larger screen. Put only one declaration ROM of a size in the container: with both `aurora68-1920x1080` and `aurora68-wifi-1920x1080` the kernel takes whichever comes last |
 | `bt=off` | leave the Bluetooth chip off. Without it the kernel starts Bluetooth: on a Pi 3 the log then moves from the PL011 to the mini UART on the same header pins |
 | `bt.pair=1` | pair with the first keyboard or mouse a scan finds in pairing mode, and look again every 20 s until one is connected (`bt.pair=NAME` takes only a device whose name contains NAME). The log then prints the `bt.dev=` word that makes the pairing permanent |
@@ -229,7 +252,8 @@ entry", is the firmware's part). docs/08 item 50 has the measurements.
   little faster, without the rainbow square that shows the firmware found its files) and, in the
   SE with HDMI at 640 by 480 or none, `gpu_mem=16` with `start_cd.elf` and `fixup_cd.dat` on the
   card (the cut-down firmware; without them the Pi does not start).
-- **cmdline.txt for the SE:** `enable_cache mac.board=se` and the `wifi.`/`bt.` words you use. For
+- **cmdline.txt for the SE:** `enable_cache mac.board=se` and the `wifi.`/`bt.` words you use
+  (`mac.board=plus`, `512ke`, `512k` or `128k` for the other compact Macs, above). For
   the bench: `enable_cache mac.board=solo mac.screen=WxH` with the declaration ROM of that size.
 - **The serial port:** the kernel no longer waits for a serial port that does not send. On a Pi 3
   with Bluetooth on the PL011 that wait was 15 seconds of the firmware's rainbow screen.
@@ -286,7 +310,9 @@ console. The SE's own keyboard and
 mouse work regardless. The kernel's **board layer** (`mac.board=se`) already runs the IIci ROM
 against a Macintosh SE's logic board in the testbed, MAME's `macse` with the bridge CPU:
 `docs/img/system71-finder-on-macse.png` is System 7.1's Finder on the SE's own 512 by 342
-screen, booted from the SE's SCSI disk, with PiDisk mounted beside it (docs/08 item 28).
+screen, booted from the SE's SCSI disk, with PiDisk mounted beside it (docs/08 item 28). The same
+layer serves the Plus, 512Ke, 512K and 128K (`mac.board=plus|512ke|512k|128k`), against MAME's
+`macplus_ps`, `mac512ke_ps` and `mac512k_ps` (docs/08 item 96).
 
 ## Layout
 | Directory | Contents |

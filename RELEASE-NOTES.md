@@ -1,5 +1,24 @@
 # Aurora68 release notes
 
+## Next release (on main, not released yet)
+
+Since 0.13 (docs/08 items 96 and 103):
+
+- **The Macintosh Plus, 512Ke, 512K and 128K.** `mac.board=plus`, `512ke`, `512k` or `128k` in `cmdline.txt`.
+  The Plus's overlay, its non-ADB keyboard and mouse (presented to the IIci ROM as ADB devices), SCSI on the
+  Plus by pseudo-DMA, no SCSI on the others (their System from a disk image on the card), and the 128K's and
+  512K's 20-byte clock chip with the rest of parameter RAM in `pram.bin`. All four reach System 7.1's Finder in
+  the testbed; **none has been tried on a real machine.** The 68000 on these boards is usually soldered in.
+  Setting up: README "The Plus, 512Ke, 512K and 128K", READ-ME-FIRST the same.
+- **A first start from blank parameter RAM** (any board, the SE included) now starts from the card's image: the
+  IIci ROM writes its default startup disk while it checks parameter RAM, and the kernel no longer takes that
+  for the Mac's choice.
+- **A slow card or host file** no longer ends in "PiDisk: prime error -036": the disk service tells PiDisk it
+  is still working while it waits.
+- **`mac.fpu=none`**: no FPU for the Mac, as on a real SE or Plus (issue #28). Programs take their own non-FPU
+  code, and SANE stays exact. Default unchanged (an FPU present).
+- The last "PiStorm-SE" names (declaration ROM card names, banners, file headers) are now Aurora68.
+
 ## 0.13 — BlueSCSI disks, exact floating point, Aurora68 Play's Library (22 November 2026)
 
 Since 0.12, in short (docs/08 items 98-101 have the detail):
