@@ -1,4 +1,4 @@
-| pidisk.s — ".PiDisk" block device driver for the PiStorm-SE mailbox (68k, GNU as MIT syntax). MPL-2.0.
+| pidisk.s — ".PiDisk" block device driver for the Aurora68 mailbox (68k, GNU as MIT syntax). MPL-2.0.
 |
 | One DRVR serves every block device the Pi publishes in the slot-$9 window (psmb.h): Open adds a
 | drive queue entry per device, Prime reads/writes 512-byte blocks through the BLOCK service's

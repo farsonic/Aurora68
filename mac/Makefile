@@ -1,4 +1,4 @@
-# Mac-side pieces for PiStorm-SE: 68k assembly (GNU binutils for m68k) packaged with tools/mac/*.py.
+# Mac-side pieces for Aurora68: 68k assembly (GNU binutils for m68k) packaged with tools/mac/*.py.
 #   make            builds the drivers, the declaration ROMs, the extensions and the applications (build/Aurora68-*.bin:
 #                   the programs are "Aurora68 Play", "Aurora68 Display"... since 21 November 2026, PiPlay, PiDisplay... before;
 #                   their icons come from tools/mac/mkicons.py)

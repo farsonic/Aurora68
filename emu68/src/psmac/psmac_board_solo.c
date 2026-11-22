@@ -1,6 +1,6 @@
 /*
  * psmac_board_solo.c — no Macintosh at all: the kernel is the logic board.
- * Copyright (c) 2026 PiStorm-SE project. MPL-2.0.
+ * Copyright (c) 2026 Aurora68 project. MPL-2.0.
  *
  * A Pi on the bench with an HDMI monitor and a disk image in its container boots System 7 from
  * that image and shows it on the second screen, with no SE behind it. The IIci ROM still thinks

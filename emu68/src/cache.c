@@ -15,7 +15,7 @@
 #include "M68k.h"
 #include <stdint.h>
 
-/* PiStorm-SE: the Macintosh ROM/OS flushes its 68030 caches through CACR CI/CD, which this model
+/* Aurora68: the Macintosh ROM/OS flushes its 68030 caches through CACR CI/CD, which this model
    does not see, so code loaded from disk would be translated from stale lines. The Mac has no
    use for the cache timing model: every access goes straight to memory. */
 #ifdef PSMAC

@@ -77,7 +77,7 @@
 #endif
 
 #ifdef PSMAC
-#define KERNEL_SYS_PAGES        32   /* PiStorm-SE: per-map-set page tables need ~4 MiB each */
+#define KERNEL_SYS_PAGES        32   /* Aurora68: per-map-set page tables need ~4 MiB each */
 #else
 #define KERNEL_SYS_PAGES        16
 #endif

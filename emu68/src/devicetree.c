@@ -400,7 +400,7 @@ void dt_dump_node(of_node_t *n, int level)
     for (p = n->on_properties; p; p = p->op_next)
     {
 #ifdef PSMAC
-        /* PiStorm-SE: the boot arguments hold the WiFi password; the dump shows them as the log does */
+        /* Aurora68: the boot arguments hold the WiFi password; the dump shows them as the log does */
         if (!_dt_strcmp(p->op_name, "bootargs") && p->op_length) {
             extern void psmac_redact(const char *in, char *out, uint32_t cap);
             static char shown[1024];
