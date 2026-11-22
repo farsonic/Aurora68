@@ -1,67 +1,81 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="light dark"><title>Aurora68 Setup and Recovery</title><style>
-:root{--bg:#f3f4f7;--card:#fff;--fg:#14171f;--mut:#667085;--line:#e4e7ec;--acc:#3b5bdb;--acc2:#e8edff;--warn:#fff4d6;--warnb:#f0c14b;--bad:#d92d20;--ok:#12805c;--sh:0 1px 2px #1018280f,0 1px 3px #1018281a}
-@media(prefers-color-scheme:dark){:root{--bg:#0f1218;--card:#181c25;--fg:#e8eaf0;--mut:#98a2b3;--line:#2a3040;--acc:#7c9cff;--acc2:#222a44;--warn:#2d2614;--warnb:#a88320;--sh:none}}
-*{box-sizing:border-box}body{margin:0;font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--fg)}
-header{background:linear-gradient(135deg,#1b2440,#34407a);color:#fff;padding:14px 18px 0}
-.top{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.ttl{flex:1 1 220px;min-width:0}.logo{width:30px;height:30px;border-radius:8px;background:conic-gradient(from 200deg,#56e39f,#5b8cff,#c86bfa,#56e39f)}
-h1{font-size:18px;margin:0;font-weight:650;letter-spacing:.2px}.why{font-size:13px;opacity:.85;margin:2px 0 0}
-.state{font-size:12px;background:#ffffff1f;padding:4px 10px;border-radius:99px;white-space:nowrap}
-nav{display:flex;gap:4px;overflow-x:auto;margin-top:12px;scrollbar-width:none}nav::-webkit-scrollbar{display:none}
-nav button{background:none;border:0;color:#ffffffb3;font:inherit;font-size:14px;padding:9px 14px;border-radius:10px 10px 0 0;cursor:pointer;white-space:nowrap}
-nav button.on{background:var(--bg);color:var(--fg);font-weight:600}
-main{max-width:860px;margin:0 auto;padding:16px}.tab{display:none}.tab.on{display:block}
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:var(--sh);padding:16px;margin-bottom:14px}
-h2{font-size:15px;margin:0 0 10px;font-weight:650}.mut{color:var(--mut);font-size:13px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}.kv{background:var(--bg);border-radius:10px;padding:10px 12px}
-.kv b{display:block;font-size:12px;color:var(--mut);font-weight:500}.kv span{font-size:14px;word-break:break-word}
-button.b{font:inherit;font-size:14px;border:1px solid var(--line);background:var(--card);color:var(--fg);padding:8px 14px;border-radius:10px;cursor:pointer}
-button.b:hover{border-color:var(--acc)}button.p{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}button.d{color:var(--bad)}
-button.s{padding:4px 10px;font-size:13px}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-input,select,textarea{font:inherit;font-size:14px;color:var(--fg);background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 10px;width:100%}
-input:focus,select:focus,textarea:focus{outline:2px solid var(--acc2);border-color:var(--acc)}textarea{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;min-height:9em}
-label{display:block;margin:10px 0 0;font-size:13px;color:var(--mut)}label>input,label>select{margin-top:4px}
-table{width:100%;border-collapse:collapse}td,th{padding:9px 6px;border-bottom:1px solid var(--line);text-align:left;font-size:14px}th{font-size:12px;color:var(--mut);font-weight:500}
-.fl{list-style:none;margin:6px 0 0;padding:0}.fl li{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}.fl li:last-child{border:0}.fl .nm{flex:1;min-width:0;word-break:break-all}.fl .sz{color:var(--mut);font-size:13px;white-space:nowrap}.fl .ac{display:flex;gap:6px}@media(max-width:560px){.fl li{flex-wrap:wrap}.fl .nm{flex:1 1 60%}.fl .ac{flex-basis:100%}}
-.warn{background:var(--warn);border:1px solid var(--warnb)}.bar{height:8px;background:var(--bg);border-radius:99px;overflow:hidden;margin-top:10px}.bar i{display:block;height:100%;width:0;background:var(--acc);transition:width .2s}
-pre{white-space:pre-wrap;font:12px/1.45 ui-monospace,Menlo,Consolas,monospace;background:var(--bg);border-radius:10px;padding:12px;max-height:60vh;overflow:auto;margin:10px 0 0}
-#opts{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(340px,100%),1fr));column-gap:24px}.opt{border-bottom:1px solid var(--line);padding:10px 0}.opt code{font-weight:600;font-size:13px}.opt p{margin:2px 0 6px;color:var(--mut);font-size:13px}
-#gate{position:fixed;inset:0;background:#0b0f1acc;backdrop-filter:blur(6px);display:none;align-items:center;justify-content:center;padding:20px;z-index:5}
-#gate .card{max-width:340px;width:100%;text-align:center}#pin{font-size:30px;letter-spacing:.4em;text-align:center;font-weight:600;margin:12px 0}
-#toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:#1b2440;color:#fff;padding:10px 16px;border-radius:12px;font-size:14px;opacity:0;transition:opacity .25s;pointer-events:none;max-width:90vw;z-index:6}
-#toast.on{opacity:1}#toast.bad{background:var(--bad)}.pill{display:inline-block;font-size:12px;padding:2px 8px;border-radius:99px;background:var(--acc2);color:var(--acc)}
+<meta name="color-scheme" content="light"><title>Aurora68 Setup and Recovery</title><link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' aria-hidden='true'%3E%3Cdefs%3E%3CclipPath id='lc'%3E%3Crect x='1.5' y='1.5' width='29' height='29' rx='7'/%3E%3C/clipPath%3E%3C/defs%3E%3Cg clip-path='url(%23lc)'%3E%3Crect width='32' height='32' fill='%23fff'/%3E%3Cpath d='M-2 9 Q8 3 16 8 T34 6 V12 Q24 15 16 12 T-2 14Z' fill='%2361bb46'/%3E%3Cpath d='M-2 14 Q8 10 16 12 T34 12 V16 Q24 19 16 16 T-2 18Z' fill='%23fdb827'/%3E%3Cpath d='M-2 18 Q8 14 16 16 T34 16 V20 Q24 23 16 20 T-2 22Z' fill='%23f5821f'/%3E%3Cpath d='M-2 22 Q8 18 16 20 T34 20 V24 Q24 27 16 24 T-2 26Z' fill='%23e03a3e'/%3E%3Cpath d='M-2 26 Q8 22 16 24 T34 24 V28 Q24 31 16 28 T-2 30Z' fill='%23963d97'/%3E%3Cpath d='M-2 30 Q8 26 16 28 T34 28 V34 H-2Z' fill='%23009ddc'/%3E%3C/g%3E%3Crect x='1.5' y='1.5' width='29' height='29' rx='7' fill='none' stroke='%23000' stroke-width='2'/%3E%3C/svg%3E"><style>
+/* 22 November 2026: the Macintosh of 1984-89 (the owner: "an 80s Apple style and colour"): black on white, the grey desktop
+   pattern, pinstriped title bars, rounded buttons with the default ring, and the six colours of the period as accents
+   (one for each tab). Chicago and Monaco are used where the computer has them; nothing is fetched from the network. */
+:root{--g:#61bb46;--y:#fdb827;--o:#f5821f;--r:#e03a3e;--p:#963d97;--b:#009ddc;--ui:Chicago,ChicagoFLF,Charcoal,"Geneva",-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;--mono:Monaco,"Andale Mono",Menlo,Consolas,monospace}
+*{box-sizing:border-box}html{background:#fff repeating-conic-gradient(#000 0 25%,#fff 0 50%) 0 0/2px 2px}
+body{margin:0;font:14px/1.45 var(--ui);color:#000;min-height:100vh}
+header{background:#fff;border-bottom:2px solid #000;position:sticky;top:0;z-index:3}
+.top{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:6px 12px}.ttl{flex:1 1 220px;min-width:0}
+.logo{width:28px;height:28px;flex:none;display:block}
+h1{font-size:15px;margin:0;font-weight:700}.why{font-size:12px;margin:0}
+.state{font:12px var(--mono);border:1px solid #000;border-radius:6px;padding:2px 8px;white-space:nowrap}
+.rainbow{height:6px;background:linear-gradient(90deg,var(--g) 0 16.67%,var(--y) 0 33.33%,var(--o) 0 50%,var(--r) 0 66.67%,var(--p) 0 83.33%,var(--b) 0)}
+nav{display:flex;gap:2px;overflow-x:auto;padding:8px 10px 0;scrollbar-width:none;background:#fff;border-top:1px solid #000}nav::-webkit-scrollbar{display:none}
+nav button{font:inherit;font-size:13px;color:#000;background:#fff;border:1px solid #000;border-bottom:0;border-radius:8px 8px 0 0;padding:5px 12px 6px;cursor:pointer;white-space:nowrap;position:relative;top:1px}
+nav button::before{content:"";display:inline-block;width:9px;height:9px;border:1px solid #000;margin-right:6px;vertical-align:-1px;background:var(--c)}
+nav button.on{font-weight:700;padding-bottom:7px;z-index:2}nav button.on::after{content:"";position:absolute;left:0;right:0;top:-1px;height:4px;background:var(--c);border-radius:8px 8px 0 0;border:1px solid #000;border-bottom:0}
+main{max-width:860px;margin:0 auto;padding:18px 14px 40px}.tab{display:none}.tab.on{display:block}
+.card{background:#fff;border:1px solid #000;box-shadow:2px 2px 0 #000;margin-bottom:18px;padding:0 14px 14px}
+.card h2{font-size:13px;margin:0 -14px 12px;padding:2px 0;text-align:center;border-bottom:1px solid #000;position:relative;
+ background:repeating-linear-gradient(#fff 0 1px,#000 1px 2px) 0 3px/100% calc(100% - 6px) no-repeat}
+.card h2::before{content:"";position:absolute;left:8px;top:50%;width:11px;height:11px;margin-top:-6px;background:#fff;border:1px solid #000;box-shadow:0 0 0 2px #fff}
+.card h2 span,.card h2{font-weight:700}.card h2 span{background:#fff;padding:0 8px}
+.mut{font-size:12px;color:#000}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px}
+.kv{border:1px solid #000;border-radius:6px;padding:6px 9px}.kv b{display:block;font-size:11px;font-weight:400;text-decoration:underline}.kv span{font-size:13px;word-break:break-word}
+button.b{font:inherit;font-size:13px;color:#000;background:#fff;border:1px solid #000;border-radius:9px;padding:4px 14px;cursor:pointer;min-height:26px}
+button.b:active{background:#000;color:#fff}button.p{box-shadow:0 0 0 1px #fff,0 0 0 4px #000;margin:4px 6px 4px 4px;font-weight:700}button.d{border-style:dashed}
+button.s{padding:2px 10px;font-size:12px;min-height:22px}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+input,select,textarea{font:13px var(--ui);color:#000;background:#fff;border:1px solid #000;border-radius:0;padding:5px 7px;width:100%}
+input:focus,select:focus,textarea:focus{outline:none;box-shadow:inset 0 0 0 1px #000}textarea{font:12px/1.4 var(--mono);min-height:10em}
+label{display:block;margin:10px 0 0;font-size:12px}label>input,label>select{margin-top:3px}
+.warn{border-width:2px;box-shadow:3px 3px 0 #000}.warn h2{background:none;border-bottom:2px solid var(--o)}.warn h2::before{display:none}
+.bar{height:12px;border:1px solid #000;margin-top:10px;background:#fff}.bar i{display:block;height:100%;width:0;background:repeating-linear-gradient(90deg,#000 0 2px,#fff 2px 4px);transition:width .2s}
+pre{white-space:pre-wrap;font:12px/1.4 var(--mono);border:1px solid #000;padding:8px;max-height:60vh;overflow:auto;margin:10px 0 0;background:#fff}
+.fl{list-style:none;margin:4px 0 0;padding:0}.fl li{display:flex;align-items:center;gap:10px;padding:7px 2px;border-bottom:1px dotted #000}.fl li:last-child{border:0}
+.fl .nm{flex:1;min-width:0;word-break:break-all;font:13px var(--mono)}.fl .sz{font-size:12px;white-space:nowrap}.fl .ac{display:flex;gap:6px}
+@media(max-width:560px){.fl li{flex-wrap:wrap}.fl .nm{flex:1 1 60%}.fl .ac{flex-basis:100%}}
+#opts{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(340px,100%),1fr));column-gap:22px}.opt{border-bottom:1px dotted #000;padding:9px 0}
+.opt code{font:700 12px var(--mono)}.opt p{margin:2px 0 5px;font-size:12px}#hidden{font-size:12px;margin:6px 0 0;font-style:italic}
+#gate{position:fixed;inset:0;background:#fff repeating-conic-gradient(#000 0 25%,#fff 0 50%) 0 0/2px 2px;display:none;align-items:center;justify-content:center;padding:20px;z-index:5}
+#gate .card{max-width:330px;width:100%;text-align:center}#gate .logo{width:56px;height:56px;margin:4px auto 0}
+#pin{font:700 28px var(--mono);letter-spacing:.4em;text-align:center;margin:10px 0 14px}
+#toast{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);background:#fff;color:#000;padding:14px 18px;border:1px solid #000;outline:3px double #000;outline-offset:3px;font-size:13px;display:none;max-width:88vw;z-index:6;box-shadow:4px 4px 0 #000}
+#toast.on{display:block}#toast.bad{border-color:var(--r);outline-color:var(--r)}
+.pill{display:inline-block;font:11px var(--mono);border:1px solid #000;border-radius:5px;padding:0 5px}
 </style></head><body>
-<header><div class="top"><div class="logo"></div><div class="ttl"><h1>Aurora68 Setup and Recovery</h1><div class="why" id="why">Connecting</div></div><div class="state" id="hstate">...</div></div>
-<nav id="nav"><button data-t="ov" class="on">Overview</button><button data-t="fi">Files</button><button data-t="wi">WiFi</button><button data-t="op">Options</button><button data-t="tx">Text files</button><button data-t="lo">Log</button></nav></header>
+<header><div class="top"><svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><defs><clipPath id="lc"><rect x="1.5" y="1.5" width="29" height="29" rx="7"/></clipPath></defs><g clip-path="url(#lc)"><rect width="32" height="32" fill="#fff"/><path d="M-2 9 Q8 3 16 8 T34 6 V12 Q24 15 16 12 T-2 14Z" fill="#61bb46"/><path d="M-2 14 Q8 10 16 12 T34 12 V16 Q24 19 16 16 T-2 18Z" fill="#fdb827"/><path d="M-2 18 Q8 14 16 16 T34 16 V20 Q24 23 16 20 T-2 22Z" fill="#f5821f"/><path d="M-2 22 Q8 18 16 20 T34 20 V24 Q24 27 16 24 T-2 26Z" fill="#e03a3e"/><path d="M-2 26 Q8 22 16 24 T34 24 V28 Q24 31 16 28 T-2 30Z" fill="#963d97"/><path d="M-2 30 Q8 26 16 28 T34 28 V34 H-2Z" fill="#009ddc"/></g><rect x="1.5" y="1.5" width="29" height="29" rx="7" fill="none" stroke="#000" stroke-width="2"/></svg><div class="ttl"><h1>Aurora68 Setup and Recovery</h1><div class="why" id="why">Connecting</div></div><div class="state" id="hstate">...</div></div>
+<div class="rainbow"></div><nav id="nav"><button style="--c:var(--g)" data-t="ov" class="on">Overview</button><button style="--c:var(--y)" data-t="fi">Files</button><button style="--c:var(--o)" data-t="wi">WiFi</button><button style="--c:var(--r)" data-t="op">Options</button><button style="--c:var(--p)" data-t="tx">Text files</button><button style="--c:var(--b)" data-t="lo">Log</button></nav></header>
 <main>
 <section class="tab on" id="ov">
-<div class="card warn" id="rb" style="display:none"><h2>The last starts did not reach the Finder</h2><p class="mut">The kernel before the current one is on the card as kernel8.old.</p>
+<div class="card warn" id="rb" style="display:none"><h2><span>The last starts did not reach the Finder</span></h2><p class="mut">The kernel before the current one is on the card as kernel8.old.</p>
 <button class="b p" onclick="act('/r/rollback','Roll back to kernel8.old?')">Roll back the kernel</button></div>
-<div class="card"><h2>State</h2><div class="grid" id="st"></div><div id="notes" class="mut" style="margin-top:10px"></div></div>
-<div class="card"><h2>Restart</h2><p class="mut">The Mac stays off while recovery runs. Restart normally to start it again.</p><div class="row">
+<div class="card"><h2><span>State</span></h2><div class="grid" id="st"></div><div id="notes" class="mut" style="margin-top:10px"></div></div>
+<div class="card"><h2><span>Restart</span></h2><p class="mut">The Mac stays off while recovery runs. Restart normally to start it again.</p><div class="row">
 <button class="b p" onclick="act('/r/reboot?how=normal','Restart the Pi normally (the Mac starts)?')">Restart normally</button>
 <button class="b" onclick="act('/r/reboot?how=recovery','Restart into recovery?')">Restart into recovery</button>
 <button class="b" onclick="lock()">Change PIN</button></div></div></section>
 <section class="tab" id="fi">
-<div class="card"><h2>Upload</h2><p class="mut">kernel8.img is checked before it replaces the old one (kept as kernel8.old). Every upload is read back from the card and compared.</p>
+<div class="card"><h2><span>Upload</span></h2><p class="mut">kernel8.img is checked before it replaces the old one (kept as kernel8.old). Every upload is read back from the card and compared.</p>
 <label>File<input type="file" id="up" onchange="el('upname').value=this.files[0]?this.files[0].name:''"></label>
 <label>Save on the card as<input type="text" id="upname" placeholder="the file's own name"></label>
 <div class="row" style="margin-top:12px"><button class="b p" onclick="upload()">Upload</button><span class="mut" id="upst"></span></div><div class="bar"><i id="upbar"></i></div></div>
-<div class="card"><h2>Files on the SD card</h2><div class="mut" id="card"></div><ul class="fl" id="files"></ul></div></section>
-<section class="tab" id="wi"><div class="card"><h2>WiFi</h2><div class="mut" id="wset"></div>
+<div class="card"><h2><span>Files on the SD card</span></h2><div class="mut" id="card"></div><ul class="fl" id="files"></ul></div></section>
+<section class="tab" id="wi"><div class="card"><h2><span>WiFi</span></h2><div class="mut" id="wset"></div>
 <div class="row" style="margin-top:10px"><button class="b" onclick="wscan()">Scan for networks</button></div>
 <label>Network<select id="wlist" onchange="if(this.value)el('wssid').value=this.value"></select></label>
 <label>Name (SSID)<input type="text" id="wssid"></label><label>Password<input type="password" id="wpsk" placeholder="empty: keep the stored one"></label>
 <label>Country (two letters)<input type="text" id="wcc" maxlength="2" placeholder="GB" style="max-width:7em"></label>
 <div class="row" style="margin-top:14px"><button class="b" onclick="wifi('test')">Test join now</button><button class="b p" onclick="wifi('save')">Save to cmdline.txt</button><span class="mut" id="wst"></span></div></div></section>
-<section class="tab" id="op"><div class="card"><h2>Options</h2><p class="mut">Changes only the options you edit; every other word in cmdline.txt is kept. The line before is kept as cmdline.bak.</p><div id="opts"></div>
+<section class="tab" id="op"><div class="card"><h2><span>Options</span></h2><p class="mut">Changes only the options you edit; every other word in cmdline.txt is kept. The line before is kept as cmdline.bak.</p><div id="opts"></div><p id="hidden"></p>
 <div class="row" style="margin-top:12px"><button class="b" onclick="opts(1)">Preview the new line</button><button class="b p" onclick="opts(0)">Save</button></div><pre id="optline"></pre></div></section>
-<section class="tab" id="tx"><div class="card"><h2>cmdline.txt and config.txt</h2>
+<section class="tab" id="tx"><div class="card"><h2><span>cmdline.txt and config.txt</span></h2>
 <div class="row"><select id="tname" onchange="loadtext()" style="max-width:14em"><option>cmdline.txt</option><option>config.txt</option></select><button class="b" onclick="loadtext()">Reload</button></div>
 <textarea id="text" style="margin-top:10px"></textarea><p class="mut">Secrets show as ***; saving *** keeps them as they are. The old file is kept as .bak.</p><button class="b p" onclick="savetext()">Save</button></div></section>
-<section class="tab" id="lo"><div class="card"><h2>Logs</h2><div class="row"><button class="b" onclick="log(0)">Last start (aurora68.log)</button><button class="b" onclick="log(1)">This recovery start</button></div><pre id="log">Choose a log.</pre></div></section>
+<section class="tab" id="lo"><div class="card"><h2><span>Logs</span></h2><div class="row"><button class="b" onclick="log(0)">Last start (aurora68.log)</button><button class="b" onclick="log(1)">This recovery start</button></div><pre id="log">Choose a log.</pre></div></section>
 </main>
-<div id="gate"><div class="card"><div class="logo" style="margin:0 auto"></div><h2 style="margin-top:12px">Enter the PIN</h2><p class="mut">The four digits on the Mac's screen (or on HDMI).</p>
+<div id="gate"><div class="card"><h2><span>Setup and Recovery</span></h2><svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><defs><clipPath id="lc"><rect x="1.5" y="1.5" width="29" height="29" rx="7"/></clipPath></defs><g clip-path="url(#lc)"><rect width="32" height="32" fill="#fff"/><path d="M-2 9 Q8 3 16 8 T34 6 V12 Q24 15 16 12 T-2 14Z" fill="#61bb46"/><path d="M-2 14 Q8 10 16 12 T34 12 V16 Q24 19 16 16 T-2 18Z" fill="#fdb827"/><path d="M-2 18 Q8 14 16 16 T34 16 V20 Q24 23 16 20 T-2 22Z" fill="#f5821f"/><path d="M-2 22 Q8 18 16 20 T34 20 V24 Q24 27 16 24 T-2 26Z" fill="#e03a3e"/><path d="M-2 26 Q8 22 16 24 T34 24 V28 Q24 31 16 28 T-2 30Z" fill="#963d97"/><path d="M-2 30 Q8 26 16 28 T34 28 V34 H-2Z" fill="#009ddc"/></g><rect x="1.5" y="1.5" width="29" height="29" rx="7" fill="none" stroke="#000" stroke-width="2"/></svg><p style="margin:8px 0 0"><b>Enter the PIN</b></p><p class="mut">The four digits on the Mac's screen (or on HDMI).</p>
 <input id="pin" inputmode="numeric" maxlength="4" autocomplete="off" onkeydown="if(event.key=='Enter')savepin()"><button class="b p" style="width:100%" onclick="savepin()">Continue</button></div></div>
 <div id="toast"></div>
 <script>
@@ -79,7 +93,7 @@ function kb(n){return n<1024?n+' B':n<1048576?(n/1024).toFixed(1)+' KB':(n/10485
 function act(u,q){if(q&&!confirm(q))return;api('POST',u).then(function(x){toast(x.note||'Done');refresh()},function(){})}
 function show(t){[].forEach.call(document.querySelectorAll('nav button'),function(b){b.className=b.dataset.t==t?'on':''});
  [].forEach.call(document.querySelectorAll('.tab'),function(s){s.className='tab'+(s.id==t?' on':'')});
- if(t=='fi')files();if(t=='wi')wifiget();if(t=='op')opts(-1);if(t=='tx'&&!loaded.tx){loaded.tx=1;loadtext()}location.hash=t}
+ if(t=='fi')files();if(t=='wi')wifiget();if(t=='op')opts(-1);if(t=='tx'&&!loaded.tx){loaded.tx=1;loadtext()}history.replaceState(null,'','#'+t);window.scrollTo(0,0)}
 el('nav').onclick=function(e){if(e.target.dataset.t)show(e.target.dataset.t)};
 function kv(k,v){return'<div class="kv"><b>'+k+'</b><span>'+v+'</span></div>'}
 function refresh(){api('GET','/r/state').then(function(s){el('why').textContent=s.why;el('rb').style.display=s.rollback_offered?'':'none';var n=s.network;
@@ -115,9 +129,15 @@ var O=[['mac.board',['','se','plus','512ke','512k','128k','solo'],'the logic boa
 ['mac.screen','','the HDMI screen\'s size, WxH'],['mac.seram',['','1','2','2.5','4'],'the SE\'s own memory in MB (its screen and sound buffers are at its top)'],['mac.plusmouse','','the Plus mouse\'s polls a second (0: off)'],['mac.plusdebounce','','0: no debounce of the Plus mouse'],
 ['mac.plusjitter','','0: the Plus mouse\'s polls at a fixed rate'],['mac.screencheck',['','on','blind','off'],'the compact Mac\'s screen: on, read back and repaired; blind, rewritten without reading (Plus-era default); off'],['bt.pair','','1: pair the first keyboard or mouse found (or a name)'],
 ['eth',['','usb','off'],'usb: a USB Ethernet adapter as the wired card; off: none'],['remote',['','on','off'],'the remote control (docs/13)'],['remote.token','pw','the remote\'s token, 8 characters or more (write only)']];
-var OV={};function opts(dry){if(dry<0){api('GET','/r/options').then(function(x){OV=x.values;var h='';O.forEach(function(o){var v=OV[o[0]];if(v==null)v='';h+='<div class="opt"><code>'+o[0]+'</code><p>'+esc(o[2])+'</p>';
+// options that only some boards use (22 November 2026): hidden, with their values kept, when the chosen board cannot use them
+var OB={'mac.seram':'se plus','mac.boot':'se plus','mac.sesound':'se plus 512ke 512k 128k','mac.screencheck':'se plus 512ke 512k 128k',
+ 'mac.plusmouse':'plus 512ke 512k 128k','mac.plusdebounce':'plus 512ke 512k 128k','mac.plusjitter':'plus 512ke 512k 128k'};
+function boardfilter(){var f=el('o_mac.board');if(!f)return;var bd=f.value,n=0;O.forEach(function(o){var d=el('d_'+o[0]),w=OB[o[0]];if(!d)return;
+ var on=!bd||!w||w.split(' ').indexOf(bd)>=0;d.style.display=on?'':'none';if(!on)n++});
+ el('hidden').textContent=n?n+' option'+(n>1?'s':'')+' hidden: not used on '+(bd=='solo'?'the bench (no Mac)':'this board')+'; their values are kept.':''}
+var OV={};function opts(dry){if(dry<0){api('GET','/r/options').then(function(x){OV=x.values;var h='';O.forEach(function(o){var v=OV[o[0]];if(v==null)v='';h+='<div class="opt" id="d_'+o[0]+'"><code>'+o[0]+'</code><p>'+esc(o[2])+'</p>';
  if(o[1]=='pw')h+='<input type="password" id="o_'+o[0]+'" placeholder="'+(v?'(set: type to change)':'(not set)')+'">';else if(o[1])h+='<select id="o_'+o[0]+'">'+o[1].map(function(c){return'<option'+(c==v?' selected':'')+' value="'+c+'">'+(c||'(not given)')+'</option>'}).join('')+'</select>';
- else h+='<input type="text" id="o_'+o[0]+'" value="'+esc(v)+'">';h+='</div>'});el('opts').innerHTML=h;el('optline').textContent=x.line},function(){});return}
+ else h+='<input type="text" id="o_'+o[0]+'" value="'+esc(v)+'">';h+='</div>'});el('opts').innerHTML=h;el('optline').textContent=x.line;el('o_mac.board').onchange=boardfilter;boardfilter()},function(){});return}
  var e=[];O.forEach(function(o){var f=el('o_'+o[0]),v=f.value,old=OV[o[0]]==null?'':OV[o[0]];if(o[1]=='pw'){if(v)e.push(o[0]+'='+v);return}if(v!=old)e.push(v?o[0]+'='+v:'-'+o[0])});
  api('POST','/r/options'+(dry?'?dry=1':''),e.join('\n')).then(function(x){el('optline').textContent=(dry?'The new line would be:\n':'Saved (the line before is in cmdline.bak):\n')+x.line;if(!dry){toast('Options saved');opts(-1)}},function(){})}
 function loadtext(){var n=el('tname').value;api('GET','/r/text?name='+n,undefined,1).then(function(r){return r.text()}).then(function(t){el('text').value=t})}
