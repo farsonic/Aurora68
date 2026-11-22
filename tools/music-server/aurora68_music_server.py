@@ -45,7 +45,7 @@ served: every path is resolved and must stay inside the folder, symbolic links i
     python3 aurora68_music_server.py /path/to/music
     python3 aurora68_music_server.py /music --port 8000 --name "NAS Music"
 """
-import argparse, hashlib, html, json, mimetypes, os, random, re, shutil, signal, socket, subprocess, sys, threading, \
+import argparse, hashlib, html, json, mimetypes, urllib.error, urllib.request, os, random, re, shutil, signal, socket, subprocess, sys, threading, \
     time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -891,6 +891,121 @@ def stations_file(lib, base, name):
     return b'\r'.join(lines) + b'\r'
 
 
+# ---- getting albums: a Newznab indexer (NZBGeek) and SABnzbd -----------------------------------------
+# 22 November 2026: the owner asked to find albums with NZBGeek's search and hand them to SABnzbd, which
+# already runs beside this server. The panel searches (GET /api/get/search), the server asks the indexer
+# (the Newznab API that NZBGeek and others speak, audio categories) and keeps each result's download link
+# itself: the link carries the indexer's key, so the browser sees only a short id. POST /api/get/grab
+# gives the link to SABnzbd (mode=addurl, in its "music" category); GET /api/get/queue shows SABnzbd's
+# queue and recent history for that category. SABnzbd files a finished album where its category says (the
+# owner points it at the Albums folder) and the library finds it at its next scan.
+#
+# Off unless both keys are set: GET_INDEXER_KEY (and GET_INDEXER_URL, NZBGeek's by default) and
+# GET_SAB_URL with GET_SAB_KEY. The keys come from the environment (docker-compose's .env), are never
+# logged or sent to a browser, and are cut out of any error text.
+class Getter:
+    def __init__(self):
+        e = os.environ.get
+        self.indexer = e('GET_INDEXER_URL', 'https://api.nzbgeek.info').rstrip('/')
+        self.ikey = e('GET_INDEXER_KEY', '').strip()
+        self.sab = e('GET_SAB_URL', '').rstrip('/')
+        self.skey = e('GET_SAB_KEY', '').strip()
+        self.category = e('GET_SAB_CATEGORY', 'music').strip() or 'music'
+        self.cats = e('GET_INDEXER_CATS', '3000')       # Newznab's audio: 3010 MP3, 3040 lossless ...
+        self.results = {}                               # short id -> (title, link), the last searches'
+        self.lock = threading.Lock()
+
+    def enabled(self):
+        return bool(self.ikey and self.sab and self.skey)
+
+    def status(self):
+        return {'enabled': self.enabled(), 'indexer': urllib.parse.urlsplit(self.indexer).hostname or '',
+                'sab': bool(self.sab and self.skey), 'category': self.category}
+
+    def clean(self, text):
+        for k in (self.ikey, self.skey):
+            if k:
+                text = text.replace(k, '…')
+        return text
+
+    def fetch(self, url, timeout=25):
+        req = urllib.request.Request(url, headers={'User-Agent': f'aurora68-music-server/{VERSION}'})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.read(4 << 20)
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(self.clean(f'{urllib.parse.urlsplit(url).hostname} answered {e.code} {e.reason}'))
+        except (urllib.error.URLError, OSError) as e:
+            raise RuntimeError(self.clean(f'{urllib.parse.urlsplit(url).hostname}: {getattr(e, "reason", e)}'))
+
+    def search(self, q):
+        """[{id, title, size, age_days, grabs, category}] from the indexer, newest first"""
+        import xml.etree.ElementTree as ET
+        url = f'{self.indexer}/api?' + urllib.parse.urlencode({'t': 'search', 'q': q, 'cat': self.cats, 'limit': '100',
+                                                               'extended': '1', 'apikey': self.ikey})
+        raw = self.fetch(url)
+        try:
+            root = ET.fromstring(raw)
+        except ET.ParseError:
+            raise RuntimeError('the indexer\'s answer was not understood')
+        if root.tag == 'error':
+            raise RuntimeError(self.clean('the indexer: ' + (root.get('description') or root.get('code') or 'error')))
+        ns = '{http://www.newznab.com/DTD/2010/feeds/attributes/}attr'
+        out = []
+        for item in root.iter('item'):
+            title = (item.findtext('title') or '').strip()
+            enc = item.find('enclosure')
+            link = (enc.get('url') if enc is not None else None) or (item.findtext('link') or '').strip()
+            if not title or not link.startswith(('http://', 'https://')):
+                continue
+            attrs = {a.get('name'): a.get('value') for a in item.iter(ns)}
+            size = int(attrs.get('size') or (enc.get('length') if enc is not None else 0) or 0)
+            age = 0
+            try:
+                from email.utils import parsedate_to_datetime
+                age = max(0, int((time.time() - parsedate_to_datetime(item.findtext('pubDate')).timestamp()) // 86400))
+            except (TypeError, ValueError):
+                pass
+            rid = hashlib.sha1(link.encode()).hexdigest()[:10]
+            out.append({'id': rid, 'title': title, 'size': size, 'age_days': age,
+                        'grabs': int(attrs.get('grabs') or 0), 'category': attrs.get('category', '')})
+            with self.lock:
+                self.results[rid] = (title, link)
+        with self.lock:
+            while len(self.results) > 2000:
+                self.results.pop(next(iter(self.results)))
+        return out
+
+    def sab_api(self, **args):
+        url = f'{self.sab}/api?' + urllib.parse.urlencode({**args, 'apikey': self.skey, 'output': 'json'})
+        try:
+            return json.loads(self.fetch(url) or b'{}')
+        except ValueError:
+            raise RuntimeError('SABnzbd\'s answer was not understood')
+
+    def grab(self, rid):
+        with self.lock:
+            got = self.results.get(rid)
+        if not got:
+            return 'that result is no longer known: search again'
+        title, link = got
+        r = self.sab_api(mode='addurl', name=link, cat=self.category, nzbname=title)
+        if not r.get('status'):
+            return self.clean('SABnzbd refused it: ' + str(r.get('error') or r))
+        log(f'get: sent "{title}" to SABnzbd ({self.category})')
+        return None
+
+    def queue(self):
+        q = self.sab_api(mode='queue').get('queue', {})
+        h = self.sab_api(mode='history', limit='15', category=self.category).get('history', {})
+        items = [{'name': s.get('filename', ''), 'status': s.get('status', ''), 'percent': int(float(s.get('percentage') or 0)),
+                  'left': s.get('timeleft', ''), 'size': s.get('size', '')}
+                 for s in q.get('slots', []) if (s.get('cat') or '') == self.category]
+        done = [{'name': s.get('name', ''), 'status': s.get('status', ''), 'size': s.get('size', ''),
+                 'message': self.clean(s.get('fail_message') or '')} for s in h.get('slots', [])]
+        return {'downloading': items, 'recent': done, 'speed': q.get('speed', ''), 'paused': bool(q.get('paused'))}
+
+
 # ---- the server's own addresses: which to hand out, IPv6 or IPv4 ------------------------------------
 # The owner wants IPv6 to work and to choose which of the two the Mac is given (22 November 2026). The
 # server listens on both (MUSIC_LISTEN); the stations file and the control panel give the Mac an address,
@@ -1333,7 +1448,8 @@ button.i{border:0;background:none;padding:.2em .4em;color:var(--mute)}button.i:h
 .small{color:var(--mute);font-size:.85em}code{font-size:.85em;word-break:break-all}
 #msg{position:fixed;bottom:1em;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:.5em 1em;border-radius:8px;opacity:0;transition:opacity .3s}
 </style></head><body>
-<header><h1>&#9835; __NAME__</h1><input id="q" type="search" placeholder="Filter artists and albums"></header>
+<header><h1>&#9835; __NAME__</h1><button id="getbtn" style="display:none" onclick="showGet()">&#10515; Get albums</button>
+<input id="q" type="search" placeholder="Filter artists and albums"></header>
 <main>
 <section><div class="crumbs" id="crumbs"></div><div id="acts" class="acts"></div><div id="view"></div></section>
 <aside>
@@ -1347,6 +1463,7 @@ button.i{border:0;background:none;padding:.2em .4em;color:var(--mute)}button.i:h
 <button onclick="act('shuffle')" title="Shuffle what is still to come">Shuffle rest</button>
 <button onclick="act('clear')" title="Empty the queue">Clear</button></div></div>
 <div><h2>Queue</h2><div id="queue" class="small">Empty</div></div>
+<div id="dl" style="display:none"><h2>Downloads</h2><div id="dlist" class="small">Nothing yet</div></div>
 <div><h2>Listening</h2><div id="who" class="small">Nobody yet</div>
 <p class="small">On the Mac: Radio &gt; Open URL&hellip; and one of these, or the Live station in the
 stations file:</p><div id="liveurl" class="small"></div><button id="here" onclick="here()">&#127911; Listen here</button>
@@ -1385,6 +1502,24 @@ function render(){crumbs();const L=listing,f=$('q').value.toLowerCase(),here=pat
    `<button class="i" title="Add to queue" ${on('act("add",{what:'+J(t)+',toast:"Added"})')}>+</button></div>`}).join('');
  $('view').innerHTML=h||'<p class="small">Nothing here.</p>'}
 function showArtist(n){window.artist=n;render()}
+// getting albums: the indexer's search and SABnzbd (only when the server has both set up)
+const H={'X-Aurora':'1'}, mb=b=>b>=1e9?(b/1e9).toFixed(1)+' GB':Math.round(b/1e6)+' MB';
+function showGet(){window.artist=null;$('crumbs').innerHTML=`<a ${on("open_('')")}>Library</a> / Get albums`;$('acts').innerHTML='';
+ $('view').innerHTML=`<form onsubmit="find();return false" class="acts"><input id="gq" type="search" placeholder="An artist or an album" style="flex:1;padding:.45em .7em;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)">`+
+ `<button class="p">Search ${esc(G.indexer||'the indexer')}</button></form><div id="gres" class="small">Results come from your indexer; Download sends one to SABnzbd, which files it in your albums.</div>`;$('gq').focus()}
+async function find(){const t=$('gq').value.trim();if(t.length<2)return;$('gres').textContent='Searching…';
+ const j=await (await fetch('/api/get/search?q='+encodeURIComponent(t),{headers:H})).json();
+ if(j.error){$('gres').textContent=j.error;return}
+ $('gres').innerHTML=j.results.length?j.results.map(r=>`<div class="row"><span class="t" title="${esc(r.title)}">${esc(r.title)}</span>`+
+  `<span class="small">${mb(r.size)} &middot; ${r.age_days} d${r.grabs?' &middot; '+r.grabs+' grabs':''}</span>`+
+  `<button ${on('grab('+J(r.id)+','+J(r.title)+')')}>Download</button></div>`).join(''):'Nothing found.'}
+async function grab(id,title){const j=await (await fetch('/api/get/grab',{method:'POST',headers:{...H,'Content-Type':'application/json'},body:J({id})})).json();
+ toast(j.error||('Sent to SABnzbd: '+title));dl()}
+async function dl(){if(!G.enabled)return;try{const j=await (await fetch('/api/get/queue',{headers:H})).json();if(j.error){$('dlist').textContent=j.error;return}
+ const rows=j.downloading.map(d=>`<div class="row"><span class="t" title="${esc(d.name)}">${esc(d.name)}</span><span class="small">${d.percent}% ${esc(d.left)}</span></div>`)
+  .concat(j.recent.slice(0,6).map(d=>`<div class="row"><span class="t" title="${esc(d.name)}">${esc(d.name)}</span><span class="small">${esc(d.status)}${d.message?': '+esc(d.message):''}</span></div>`));
+ $('dlist').innerHTML=rows.join('')||'Nothing yet'}catch(e){}}
+let G={};fetch('/api/get/status').then(r=>r.json()).then(g=>{G=g;if(g.enabled){$('getbtn').style.display='';$('dl').style.display='';dl();setInterval(dl,5000)}});
 $('q').oninput=()=>{if(listing)render()};
 async function poll(){try{const j=await (await fetch('/api/now')).json();S=j;
  const c=j.current;$('npt').textContent=c?c.title:'Nothing queued';$('nps').textContent=c?(c.folder.split('/').pop()||''):'Choose an album, an artist or a song';
@@ -1409,7 +1544,8 @@ a{{text-decoration:none}} li{{margin:.15em 0}} .s{{color:#666;font-size:90%}}</s
 <p class="s">Aurora68 music server {version}. Station address for any internet radio player: <code>{full}</code></p></body></html>"""
 
 
-def make_handler(lib, name, max_listeners, kbps, live, prefer):
+def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
+    getter = getter or Getter()
     listeners = threading.BoundedSemaphore(max_listeners)
     cat, covers = Catalogue(lib, name), Covers(lib)
     globals_prefer = prefer
@@ -1486,6 +1622,25 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer):
                     return self.live_stream()
                 if path == '/api/now':
                     return self.send(200, 'application/json', json.dumps(live.now()).encode(), [('Cache-Control', 'no-store')])
+                if path == '/api/get/status':
+                    return self.send(200, 'application/json', json.dumps(getter.status()).encode())
+                if path in ('/api/get/search', '/api/get/queue'):
+                    if self.headers.get('X-Aurora') != '1':   # another web site may not spend the indexer's searches
+                        return self.send(403, 'application/json', b'{"error": "the header X-Aurora: 1 is needed"}')
+                    if not getter.enabled():
+                        return self.send(404, 'application/json', b'{"error": "finding albums is not set up: GET_INDEXER_KEY, GET_SAB_URL and GET_SAB_KEY"}')
+                    try:
+                        if path == '/api/get/queue':
+                            out = getter.queue()
+                        else:
+                            text = q.get('q', '').strip()[:200]
+                            if len(text) < 2:
+                                return self.send(400, 'application/json', b'{"error": "type an artist or an album"}')
+                            log(f'{self.who()}: find albums {text!r}')
+                            out = {'results': getter.search(text)}
+                    except RuntimeError as e:
+                        return self.send(502, 'application/json', json.dumps({'error': str(e)}).encode())
+                    return self.send(200, 'application/json', json.dumps(out).encode(), [('Cache-Control', 'no-store')])
                 if path == '/api/addresses':                  # for the panel: where the Mac tunes in
                     have, port = own_addresses(), self.server.server_address[1]
                     order = ['ipv6', 'ipv4'] if prefer == 'ipv6' else ['ipv4', 'ipv6'] if prefer == 'ipv4' else []
@@ -1568,10 +1723,23 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer):
             resume|repeat, "what": "s:ID"|"f:FOLDER"|"t:SONG", "shuffle": 1, "index": N, "on": true}. The header
             X-Aurora: 1 is required, which a web page elsewhere cannot send without asking first (CORS), so
             no other site can change what plays"""
-            if urllib.parse.urlsplit(self.path).path != '/api/live':
-                return self.fail(404, 'POST /api/live')
+            where = urllib.parse.urlsplit(self.path).path
+            if where not in ('/api/live', '/api/get/grab'):
+                return self.fail(404, 'POST /api/live or /api/get/grab')
             if self.headers.get('X-Aurora') != '1':
                 return self.send(403, 'application/json', b'{"error": "the header X-Aurora: 1 is needed"}')
+            if where == '/api/get/grab':                  # {"id": a search result's}: to SABnzbd
+                if not getter.enabled():
+                    return self.send(404, 'application/json', b'{"error": "finding albums is not set up"}')
+                try:
+                    n = int(self.headers.get('Content-Length') or 0)
+                    a = json.loads(self.rfile.read(min(n, 4096)) or b'{}')
+                    err = getter.grab(str(a.get('id', ''))) if isinstance(a, dict) else 'a JSON object, please'
+                except (ValueError, TypeError) as e:
+                    err = f'not understood: {e}'
+                except RuntimeError as e:
+                    err = str(e)
+                return self.send(400 if err else 200, 'application/json', json.dumps({'error': err} if err else {'sent': True}).encode())
             try:
                 n = int(self.headers.get('Content-Length') or 0)
                 a = json.loads(self.rfile.read(min(n, 65536)) or b'{}')
@@ -1905,8 +2073,12 @@ def main():
         sys.exit('--bitrate: one of 64, 80, 96, 112, 128, 160, 192, 224, 256, 320')
     lib = Library(a.music, a.ffmpeg or None)
     lib.scan()
+    getter = Getter()
     srv, how = serve(a.bind, a.port, make_handler(lib, a.name, a.max_listeners, a.bitrate, Live(lib, a.name, a.bitrate),
-                                                  a.prefer), a.listen)
+                                                  a.prefer, getter), a.listen)
+    gs = getter.status()
+    log('finding albums: ' + (f'on, {gs["indexer"]} and SABnzbd (category {gs["category"]})' if gs['enabled'] else
+                              'off (GET_INDEXER_KEY, GET_SAB_URL and GET_SAB_KEY turn it on)'))
     have = own_addresses()
     if a.discovery:
         threading.Thread(target=music_discovery, args=(a.discovery, a.name, a.port), daemon=True).start()

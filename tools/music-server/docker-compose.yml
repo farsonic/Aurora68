@@ -18,3 +18,7 @@ services:
       MUSIC_PORT: "8000"
       MUSIC_PREFER: "asked"          # the address given to the Mac: asked, ipv6 or ipv4
       MUSIC_LISTEN: "both"           # answer on IPv6 and IPv4, or ipv4 / ipv6 only
+      # Get albums (README): the keys in .env, never here
+      # GET_INDEXER_KEY: "${NZBGEEK_API_KEY}"
+      # GET_SAB_URL: "http://192.168.1.20:7777"
+      # GET_SAB_KEY: "${SABNZBD_API_KEY}"

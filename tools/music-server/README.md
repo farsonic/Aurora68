@@ -44,6 +44,33 @@ Anything on your network can drive it too: `POST /api/live` with JSON and the he
 curl -X POST -H 'X-Aurora: 1' -d '{"action":"skip"}' http://NAS:8423/api/live
 ```
 
+## Getting albums: an indexer and SABnzbd
+With an indexer that speaks the Newznab API (NZBGeek, by default) and SABnzbd, the panel gets a
+**Get albums** button: search for an artist or an album, see each result's size, age and grabs, and
+**Download** sends it to SABnzbd in its `music` category; a **Downloads** box shows SABnzbd's progress and
+recent history for that category. Point SABnzbd's `music` category at your albums folder (SABnzbd's own
+Config > Categories; its container must see that folder) and a finished album joins the library at the
+next scan, within half a minute.
+
+Set in docker-compose's `.env` (never in the compose file itself, and never in the repository):
+
+| Variable | |
+|---|---|
+| `GET_INDEXER_KEY` | the indexer's API key (NZBGeek: My Account > API) |
+| `GET_INDEXER_URL` | the indexer's address, `https://api.nzbgeek.info` by default |
+| `GET_SAB_URL` | SABnzbd's address as this server reaches it, e.g. `http://192.168.1.20:7777` |
+| `GET_SAB_KEY` | SABnzbd's API key (Config > General) |
+| `GET_SAB_CATEGORY` | `music` by default |
+| `GET_INDEXER_CATS` | Newznab categories to search, `3000` (audio: MP3, lossless ...) by default |
+
+The keys stay on the server: it makes every call itself, a result's download link (which carries the
+indexer's key) never reaches the browser (only a short id does), and neither key appears in the log or
+in an error. Searching and downloading need the header `X-Aurora: 1`, so no other web site can spend
+your indexer's searches. Off unless all three of `GET_INDEXER_KEY`, `GET_SAB_URL` and `GET_SAB_KEY` are set.
+
+[Lidarr](https://lidarr.audio) does this and more (watching artists for new albums, upgrades, renaming
+and tagging on import); its imports land in the music folder like anything else.
+
 ## IPv6 and IPv4
 The server answers on both (`MUSIC_LISTEN=both`, the default; `ipv4` or `ipv6` for one only). Which
 address it hands the Mac, in the stations file and on the panel, is `MUSIC_PREFER`:

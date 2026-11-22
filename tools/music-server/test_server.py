@@ -395,6 +395,72 @@ def main():
     check(len(f) == 6 and f[:4] == [b'AURORA68-MUSIC', b'1', b'Test Music', str(port).encode()],
           f'the probe\'s answer: the name, the port, and the IPv4 and IPv6 addresses ({f})')
 
+    # getting albums: an indexer and SABnzbd, both stand-ins here; the keys must stay on the server
+    check(json.loads(get(base, '/api/get/status')[2])['enabled'] is False, 'finding albums is off without keys')
+    from http.server import BaseHTTPRequestHandler as BH, ThreadingHTTPServer as TS
+    import threading as th2
+    seen = {'sab': []}
+    RSS = """<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">
+<channel><item><title>Zed - One (2001) [FLAC]</title><pubDate>Mon, 03 Nov 2026 10:00:00 +0000</pubDate>
+<enclosure url="http://indexer.example/getnzb/abc.nzb&amp;i=1&amp;r=sekritkey123" length="345000000" type="application/x-nzb"/>
+<newznab:attr name="category" value="3040"/><newznab:attr name="size" value="345000000"/><newznab:attr name="grabs" value="17"/></item>
+<item><title>Zed - One (2001) MP3 320</title><pubDate>Sat, 01 Nov 2026 10:00:00 +0000</pubDate>
+<link>http://indexer.example/getnzb/def.nzb&amp;r=sekritkey123</link><newznab:attr name="size" value="120000000"/></item></channel></rss>"""
+    class Fake(BH):
+        def log_message(self, *a):
+            pass
+        def do_GET(self):
+            qq = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(self.path).query))
+            if 't' in qq:                                    # the indexer
+                body = (b'<error code="100" description="Incorrect user credentials (sekritkey123)"/>' if qq.get('q') == 'badkey'
+                        else RSS.encode()) if qq.get('apikey') == 'sekritkey123' else b'<error code="100"/>'
+                ctype = 'application/xml'
+            else:                                            # SABnzbd
+                assert qq.get('apikey') == 'sabkey456' and qq.get('output') == 'json'
+                seen['sab'].append(qq)
+                body = json.dumps({'addurl': {'status': True, 'nzo_ids': ['SABnzbd_nzo_1']},
+                                   'queue': {'queue': {'speed': '4.2 M', 'slots': [{'filename': 'Zed - One (2001) [FLAC]', 'status': 'Downloading',
+                                                                                    'percentage': '42', 'timeleft': '0:01:10', 'cat': 'music'},
+                                                                                   {'filename': 'Some Film', 'cat': 'movies', 'percentage': '5'}]}},
+                                   'history': {'history': {'slots': [{'name': 'Older - Album', 'status': 'Completed', 'category': 'music'}]}}}
+                                  [qq.get('mode')]).encode()
+                ctype = 'application/json'
+            self.send_response(200); self.send_header('Content-Type', ctype); self.send_header('Content-Length', str(len(body)))
+            self.end_headers(); self.wfile.write(body)
+    fk = TS(('127.0.0.1', 0), Fake); fk.daemon_threads = True
+    th2.Thread(target=fk.serve_forever, daemon=True).start()
+    fport = fk.server_address[1]
+    s3 = socket.socket(); s3.bind(('127.0.0.1', 0)); port3 = s3.getsockname()[1]; s3.close()
+    env = dict(os.environ, GET_INDEXER_URL=f'http://127.0.0.1:{fport}', GET_INDEXER_KEY='sekritkey123',
+               GET_SAB_URL=f'http://127.0.0.1:{fport}', GET_SAB_KEY='sabkey456')
+    srv3 = subprocess.Popen([sys.executable, os.path.join(HERE, 'aurora68_music_server.py'), lib, '--port', str(port3),
+                             '--bind', '0.0.0.0'], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    time.sleep(1.5)
+    b3 = f'http://127.0.0.1:{port3}'
+    check(json.loads(get(b3, '/api/get/status')[2]).get('enabled') is True, 'with the keys set, finding albums is on')
+    check(get(b3, '/api/get/search?q=zed')[0] == 403, 'a search without the X-Aurora header is refused')
+    st, _, body = get(b3, '/api/get/search?q=zed%20one', {'X-Aurora': '1'})
+    res = json.loads(body).get('results', [])
+    check(st == 200 and [r['title'] for r in res] == ['Zed - One (2001) [FLAC]', 'Zed - One (2001) MP3 320'] and res[0]['grabs'] == 17
+          and res[0]['size'] == 345000000, f'the indexer\'s results ({[(r["title"], r["size"]) for r in res]})')
+    check(b'sekritkey' not in body and b'getnzb' not in body, 'the results carry no key and no download link')
+    st, _, body = get(b3, '/api/get/search?q=badkey', {'X-Aurora': '1'})
+    check(st == 502 and b'Incorrect user credentials' in body and b'sekritkey' not in body, f'an indexer\'s error, in words, its key cut out ({body[:120]})')
+    req = urllib.request.Request(b3 + '/api/get/grab', data=json.dumps({'id': res[0]['id']}).encode(),
+                                 headers={'X-Aurora': '1', 'Content-Type': 'application/json'})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        sent = json.loads(r.read())
+    add = [x for x in seen['sab'] if x.get('mode') == 'addurl']
+    check(sent.get('sent') and add and add[0]['name'].endswith('r=sekritkey123') and add[0]['cat'] == 'music'
+          and add[0]['nzbname'] == 'Zed - One (2001) [FLAC]', 'Download hands the link to SABnzbd, category music')
+    qj = json.loads(get(b3, '/api/get/queue', {'X-Aurora': '1'})[2])
+    check([d['name'] for d in qj['downloading']] == ['Zed - One (2001) [FLAC]'] and qj['downloading'][0]['percent'] == 42
+          and qj['recent'][0]['name'] == 'Older - Album', 'Downloads: SABnzbd\'s music queue and history, nothing else')
+    srv3.terminate(); srv3.wait(10)
+    log3 = srv3.stdout.read()
+    check('finding albums: on, 127.0.0.1' in log3 and 'sekritkey' not in log3 and 'sabkey' not in log3, 'the log names it, never the keys')
+    fk.shutdown()
+
     # without ffmpeg: MP3s only, and the scan says what it passed over
     s2 = socket.socket(); s2.bind(('127.0.0.1', 0)); port2 = s2.getsockname()[1]; s2.close()
     srv2 = subprocess.Popen([sys.executable, os.path.join(HERE, 'aurora68_music_server.py'), lib, '--port', str(port2),
