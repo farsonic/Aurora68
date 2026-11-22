@@ -20,6 +20,11 @@ Then it starts the server on a free port and checks:
     second, and the UDP probe's answer; the same in UTF-8 with the longer records the macOS Play asks for
     (enc=utf8&full=1: folders, paths, the devices' whole state), the Live channel in text (/mac/now) and changed
     by /mac/command (22 November 2026, one wire format for both Plays: docs/08 item 107);
+  - music videos (22 November 2026, videos_check): found beside the albums, probed once (the cache folder), attached
+    to their album or artist, a copy left out; the file with Range, a remux (its picture's bytes unchanged) as
+    fragmented MP4 and as HLS, a transcode, refused when off and beyond the limit, posters, soundtracks, the video
+    card's MPEG-1 (/vmpeg/), the JSON and the /mac/ text with videos=1 in both forms, every /mac/ answer without it
+    byte for byte a server's without videos, and videos sent to a Mac, to the SE (its sound) and to Live;
   - IPv6 (::1) where this computer has it; where it has not, that the server says so and serves IPv4.
 
     python3 tools/music-server/test_server.py
@@ -325,6 +330,326 @@ def devices_check(tmp):
     out = srv.stdout.read()
     check('devices: Study iMac (macos, 127.0.0.1) is online' in out and '(changed: generation' in out,
           'the log says who came online and that the library changed')
+
+
+def start_server(lib, name, env_extra):
+    s = socket.socket(); s.bind(('127.0.0.1', 0)); port = s.getsockname()[1]; s.close()
+    env = dict(os.environ, **env_extra)
+    srv = subprocess.Popen([sys.executable, os.path.join(HERE, 'aurora68_music_server.py'), lib, '--port', str(port),
+                            '--name', name, '--discovery', '0', '--bind', '0.0.0.0'], stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, text=True, env=env)
+    for _ in range(100):
+        try:
+            socket.create_connection(('127.0.0.1', port), timeout=0.2).close()
+            break
+        except OSError:
+            time.sleep(0.1)
+    return srv, port
+
+
+def make_videos(tmp):
+    """music videos as the owner keeps them (22 November 2026), each a few seconds of ffmpeg's test picture and a
+    tone at 160 x 120 (tens of kilobytes; never committed): an MP4 of H.264 and AAC in an album's folder (plays as it
+    is) and its copy as QuickTime (left out), an MKV of H.264 and AAC in another album (remuxed), a WebM of VP9 and
+    Opus in an artist's "Videos" folder with no album (transcoded), and a file named .mp4 that holds no picture"""
+    import shutil
+    lib = os.path.join(tmp, 'music-videos')
+    shutil.copytree(os.path.join(tmp, 'music', 'Alpha Band', 'First Album'), os.path.join(lib, 'Alpha Band', 'First Album'))
+    shutil.copytree(os.path.join(tmp, 'music', 'Gamma - Converted'), os.path.join(lib, 'Gamma - Converted'))
+    os.makedirs(os.path.join(lib, 'Delta', 'Videos'))
+    pic = ['-f', 'lavfi', '-i', 'testsrc=size=160x120:rate=25:duration=3']
+    h264 = ['-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-g', '25']
+    first = os.path.join(lib, 'Alpha Band', 'First Album', 'Opening (Café Video).mp4')
+    ffmpeg(*pic, '-f', 'lavfi', '-i', 'sine=frequency=500:duration=3', *h264, '-c:a', 'aac', '-b:a', '64k', '-shortest', first)
+    ffmpeg('-i', first, '-c', 'copy', first[:-4] + '.mov')                       # the same video twice: one is listed
+    ffmpeg(*pic, '-f', 'lavfi', '-i', 'sine=frequency=600:duration=3', *h264, '-c:a', 'aac', '-b:a', '64k', '-shortest',
+           os.path.join(lib, 'Gamma - Converted', '02. Gamma - Live Clip.mkv'))
+    ffmpeg(*pic, '-f', 'lavfi', '-i', 'sine=frequency=700:duration=3', '-c:v', 'libvpx-vp9', '-b:v', '100k', '-deadline', 'realtime',
+           '-c:a', 'libopus', '-b:a', '48k', '-shortest', os.path.join(lib, 'Delta', 'Videos', 'Delta - Webm Clip.webm'))
+    ffmpeg('-f', 'lavfi', '-i', 'sine=frequency=300:duration=1', '-c:a', 'aac', os.path.join(lib, 'Delta', 'Videos', 'Not a video.mp4'))
+    return lib
+
+
+def probe(url_or_path, what='stream=codec_name,width,height,sample_rate,channels:format=format_name,duration'):
+    out = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', what, '-of', 'json', url_or_path], capture_output=True, text=True)
+    try:
+        return json.loads(out.stdout or '{}')
+    except ValueError:
+        return {}
+
+
+def pcm_seconds(path):
+    pcm = subprocess.run(['ffmpeg', '-v', 'error', '-i', path, '-f', 's16le', '-ac', '1', '-ar', '8000', '-'], capture_output=True).stdout
+    return len(pcm) / 16000
+
+
+def no_ffmpeg_left(lib):
+    for _ in range(20):
+        if subprocess.run(['pgrep', '-f', f'ffmpeg.*{lib}'], capture_output=True).stdout == b'':
+            return True
+        time.sleep(0.25)
+    return False
+
+
+def videos_check(tmp, pc):
+    """22 November 2026: music videos. Their scan, facts and attachment, the three ways they are sent (the file with
+    Range; remuxed, as fragmented MP4 and as HLS; transcoded), a transcode refused when off and when the limit is
+    reached, posters, soundtracks, the video card's MPEG-1, the JSON and /mac/ text in both forms, the classic answers
+    unchanged without videos=1 (byte for byte against a server with VIDEOS=off), and videos sent to devices"""
+    lib = make_videos(tmp)
+    cache = os.path.join(tmp, 'cache-videos')
+    srv, port = start_server(lib, 'Video Music', {'MUSIC_CACHE': cache, 'VIDEO_TRANSCODES': '1', 'MUSIC_RESCAN': '1'})
+    off, port_off = start_server(lib, 'Video Music', {'MUSIC_CACHE': os.path.join(tmp, 'cache-off'), 'VIDEOS': 'off'})
+    no_tc, port_tc = start_server(lib, 'Video Music', {'MUSIC_CACHE': os.path.join(tmp, 'cache-tc'), 'VIDEO_TRANSCODE': 'off'})
+    base, b_off, b_tc = f'http://127.0.0.1:{port}', f'http://127.0.0.1:{port_off}', f'http://127.0.0.1:{port_tc}'
+    A = {'X-Aurora': '1'}
+    try:
+        # the scan: three videos (the QuickTime copy left out, the .mp4 without a picture passed over), counted
+        info = json.loads(get(base, '/api/info')[2])
+        check(info['videos'] == 3 and info['tracks'] == 5 and set(info['capabilities']) >= {'videos', 'remux', 'hls', 'transcode', 'mpeg1'},
+              f'/api/info: three videos and what the server can do ({info})')
+        check(json.loads(get(b_off, '/api/info')[2])['videos'] == 0, 'VIDEOS=off: no videos')
+        vs = {v['title']: v for v in json.loads(get(base, '/api/videos')[2])['videos']}
+        mp4, mkv, webm = vs.get('Opening (Café Video)', {}), vs.get('Live Clip', {}), vs.get('Webm Clip', {})
+        check(sorted(vs) == ['Live Clip', 'Opening (Café Video)', 'Webm Clip'] and mp4.get('path', '').endswith('.mp4'),
+              f'the copy (the same title, sizes within 2%) is listed once, the MP4 kept; no picture, no video ({sorted(vs)})')
+        check(mp4['seconds'] == 3 and mp4['width'] == 160 and mp4['height'] == 120 and mp4['vcodec'] == 'h264' and
+              mp4['acodec'] == 'aac' and mp4['how'] == 'direct' and mkv['how'] == 'remux' and webm['how'] == 'transcode' and
+              webm['vcodec'] == 'vp9' and webm['acodec'] == 'opus', f'length, size and codecs from ffprobe, and how each plays '
+              f'({[(v["title"], v["how"], v["why"]) for v in vs.values()]})')
+        check(mp4['artist'] == 'Alpha Band' and mp4['album_title'] == 'First Album' and mkv['artist'] == 'Gamma' and
+              mkv['album_title'] == 'Converted' and mkv['number'] == 2 and webm['artist'] == 'Delta' and webm['album'] == '',
+              'in an album\'s folder a video is the album\'s; in an artist\'s "Videos" folder the artist\'s; names tidied as tracks\'')
+        check(os.path.isfile(os.path.join(cache, 'videos.json')) and len(json.load(open(os.path.join(cache, 'videos.json')))) == 4,
+              'ffprobe\'s answers kept in the cache folder (videos.json), the file without a picture among them')
+        time.sleep(1.2)
+        check(json.loads(get(base, '/api/info')[2])['library'] == info['library'], 'a rescan with nothing new: the same generation')
+
+        # the file as it is, with Range
+        st, hd, body = get(base, mp4['video'], {'Range': 'bytes=0-1'})
+        size = os.path.getsize(os.path.join(lib, mp4['path']))
+        check(st == 206 and len(body) == 2 and hd.get('Content-Range') == f'bytes 0-1/{size}' and hd.get('Content-Type') == 'video/mp4',
+              f'/video/ID, an MP4 of H.264 and AAC: the file, with Range ({st} {hd.get("Content-Range")})')
+        st, hd, body = get(base, mp4['video'], {'Range': f'bytes={size - 100}-'})
+        check(st == 206 and len(body) == 100, 'and its end, as AVFoundation asks for it')
+        check(get(base, '/file/' + urllib.parse.quote(mp4['path']))[0] == 200 and get(base, '/video/00000000')[0] == 404,
+              '/file/ gives a video as it is; a video that is not there: 404')
+
+        # remuxed: fragmented MP4, the picture copied; and HLS
+        out = os.path.join(tmp, 'remux.mp4')
+        st, hd, body = get(base, mkv['video'])
+        open(out, 'wb').write(body)
+        j = probe(out)
+        codecs = [x.get('codec_name') for x in j.get('streams', [])]
+        dec = subprocess.run(['ffmpeg', '-v', 'error', '-i', out, '-f', 'null', '-'], capture_output=True, text=True)
+        check(st == 200 and hd.get('Content-Type') == 'video/mp4' and 'mp4' in j.get('format', {}).get('format_name', '') and
+              codecs == ['h264', 'aac'] and dec.returncode == 0 and not dec.stderr.strip() and 2.8 < float(j['format']['duration']) < 3.3,
+              f'/video/ID, an MKV: remuxed into MP4 that ffprobe reads and ffmpeg decodes cleanly ({codecs}, {dec.stderr.strip()[:80]!r})')
+        h = subprocess.run(['ffmpeg', '-v', 'error', '-i', out, '-map', '0:v', '-c', 'copy', '-f', 'h264', '-'], capture_output=True).stdout
+        h0 = subprocess.run(['ffmpeg', '-v', 'error', '-i', os.path.join(lib, mkv['path']), '-map', '0:v', '-c', 'copy', '-f', 'h264', '-'],
+                            capture_output=True).stdout
+        check(h and h == h0, 'the picture was copied, not encoded again: the same H.264 bytes')
+        st, hd, pl = get(base, mkv['hls'])
+        j = probe(base + mkv['hls'])
+        check(st == 200 and 'mpegurl' in hd.get('Content-Type', '') and b'#EXT-X-START:TIME-OFFSET=0' in pl and b'#EXT-X-MAP:URI="init.mp4"' in pl
+              and [x.get('codec_name') for x in j.get('streams', [])] == ['h264', 'aac'],
+              f'/video/ID/index.m3u8: HLS of fragmented MP4 from the start, which ffprobe plays ({pl[:60]!r})')
+        hls_dir = [d for d in os.listdir(os.path.join(cache, 'hls')) if d.startswith(mkv['id'])]
+        check(hls_dir and b'#EXT-X-ENDLIST' in get(base, mkv['hls'])[2] and get(base, f'/video/{mkv["id"]}/../../etc/passwd')[0] == 404,
+              'the conversion kept in the cache, finished; a segment name that is not one: refused')
+        check(get(base, mp4['video'] + '/index.m3u8')[0] == 404, 'a video that plays as it is has no HLS')
+
+        # transcoded: VP9 and Opus become H.264 and AAC
+        out = os.path.join(tmp, 'transcode.mp4')
+        st, hd, body = get(base, webm['video'])
+        open(out, 'wb').write(body)
+        j = probe(out)
+        check(st == 200 and [x.get('codec_name') for x in j.get('streams', [])] == ['h264', 'aac'] and j['streams'][0]['width'] == 160,
+              f'/video/ID, a WebM of VP9 and Opus: transcoded to H.264 and AAC ({[x.get("codec_name") for x in j.get("streams", [])]})')
+        j = probe(base + webm['hls'])
+        check([x.get('codec_name') for x in j.get('streams', [])] == ['h264', 'aac'], 'and as HLS')
+        check(no_ffmpeg_left(lib) and json.loads(get(base, '/api/info')[2])['transcoding'] == 0, 'no ffmpeg left, no transcode counted')
+
+        # refused: transcoding off, and the limit (VIDEO_TRANSCODES=1) reached
+        st, _, body = get(b_tc, webm['video'])
+        tcv = {v['title']: v for v in json.loads(get(b_tc, '/api/videos')[2])['videos']}
+        check(st == 415 and b'VIDEO_TRANSCODE=off' in body and get(b_tc, webm['hls'])[0] == 415 and
+              get(b_tc, f'/vmpeg/{webm["id"]}')[0] == 415 and not tcv['Webm Clip']['playable'] and tcv['Live Clip']['playable'],
+              f'VIDEO_TRANSCODE=off: a transcode refused in words, the video card\'s MPEG-1 too; a remux still plays ({body[:80]!r})')
+        check(get(b_tc, mkv['video'])[0] == 200, 'and the remux plays there')
+        # the limit: a long video (a minute of a 64 x 48 picture) held open by a client that reads no more
+        longlib = os.path.join(tmp, 'music-long')
+        os.makedirs(longlib)
+        ffmpeg('-f', 'lavfi', '-i', 'testsrc=size=64x48:rate=25:duration=60', '-c:v', 'libvpx-vp9', '-b:v', '20k', '-deadline', 'realtime',
+               os.path.join(longlib, 'Long - Clip.webm'))
+        lsrv, lport = start_server(longlib, 'Long', {'MUSIC_CACHE': os.path.join(tmp, 'cache-long'), 'VIDEO_TRANSCODES': '1'})
+        try:
+            lb = f'http://127.0.0.1:{lport}'
+            lv = json.loads(get(lb, '/api/videos')[2])['videos'][0]
+            s = socket.create_connection(('127.0.0.1', lport))
+            s.sendall(f'GET /vmpeg/{lv["id"]}?w=1280&h=720 HTTP/1.0\r\nHost: x\r\n\r\n'.encode())
+            s.recv(100)
+            time.sleep(1)
+            st, _, body = get(lb, lv['video'])
+            busy = json.loads(get(lb, '/api/info')[2])['transcoding']
+            check(st == 503 and b'VIDEO_TRANSCODES=1' in body and busy == 1,
+                  f'with one transcode running (the video card\'s), a second is refused (503, {body[:60]!r})')
+            s.close()
+            check(no_ffmpeg_left(longlib), 'a stream stopped by its client leaves no ffmpeg behind')
+            time.sleep(0.3)
+            check(json.loads(get(lb, '/api/info')[2])['transcoding'] == 0, 'and its turn is free again')
+        finally:
+            lsrv.terminate()
+            lsrv.wait(10)
+        llog = lsrv.stdout.read()
+        check('refused, 1 transcode running already' in llog, 'the log says why it was refused')
+
+        # the video card's MPEG-1 (docs/16), as the video helper makes it
+        for (w, h), want in (((320, 240), (320, 240)), ((513, 343), (512, 342)), ((4000, 3000), (1280, 720))):
+            out = os.path.join(tmp, 'card.mpg')
+            st, hd, body = get(base, f'/vmpeg/{webm["id"]}?w={w}&h={h}')
+            open(out, 'wb').write(body)
+            j = probe(out)
+            sv = [x for x in j.get('streams', []) if x.get('codec_name') == 'mpeg1video']
+            sa = [x for x in j.get('streams', []) if x.get('codec_name') == 'mp2']
+            check(st == 200 and hd.get('Content-Type') == 'video/mpeg' and 'Content-Length' not in hd and 'mpeg' in j.get('format', {}).get('format_name', '')
+                  and sv and (sv[0]['width'], sv[0]['height']) == want and sa and sa[0]['sample_rate'] == '44100' and sa[0]['channels'] == 2,
+                  f'/vmpeg/ID?w={w}&h={h}: an MPEG program stream, MPEG-1 at {want[0]}x{want[1]}, MP2 at 44.1 kHz stereo, no length')
+        fr = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v', '-show_entries', 'frame=pict_type', '-of', 'csv=p=0', out],
+                            capture_output=True, text=True).stdout.split()
+        check(fr and 'B' not in fr, f'no B-frames ({"".join(fr)[:30]})')
+        raw('127.0.0.1', port, f'/vmpeg/{mp4["id"]}?w=320&h=240', seconds=0.5)
+        check(no_ffmpeg_left(lib), 'an MPEG-1 stream stopped by its client leaves no ffmpeg behind')
+
+        # the poster and the soundtrack
+        st, hd, pic = get(base, webm['poster'])
+        check(st == 200 and pic[:2] == b'\xff\xd8' and hd.get('Content-Type') == 'image/jpeg' and
+              len(os.listdir(os.path.join(cache, 'thumbs'))) == 1, '/vthumb/ID: a JPEG poster, kept in the cache')
+        check(get(base, webm['poster'])[2] == pic, 'asked again: the same picture, from the cache')
+        for start, want in ((0, 3.0), (2, 1.0)):
+            ans = raw('127.0.0.1', port, mkv['audio'] + (f'?start={start}' if start else ''))
+            tone = os.path.join(tmp, 'vaudio.mp3')
+            out = subprocess.run([pc, 'icy', tone], input=ans, capture_output=True).stdout.decode('mac_roman')
+            secs = pcm_seconds(tone)
+            check('status 200 kind 1' in out and abs(secs - want) < 0.4,
+                  f'/vaudio/ID{"?start=" + str(start) if start else ""}: the soundtrack as MP3, as Aurora68 Play reads a track ({secs:.2f} s)')
+        kept = os.listdir(os.path.join(cache, 'vaudio'))
+        check(len(kept) == 1 and kept[0].endswith('-192.mp3'), f'the soundtrack converted once and kept ({kept})')
+        ans = raw('127.0.0.1', port, f'/t/{mkv["id"]}')
+        open(os.path.join(tmp, 'vaudio2.mp3'), 'wb').write(ans.split(b'\r\n\r\n', 1)[1])
+        check(ans.startswith(b'HTTP/1.0 200') and abs(pcm_seconds(os.path.join(tmp, 'vaudio2.mp3')) - 3) < 0.4,
+              '/t/ with a video\'s id: its sound (an older Play given a video as a track)')
+
+        # the JSON
+        cat = json.loads(get(base, '/api/catalog')[2])
+        delta = next((a for a in cat['artists'] if a['name'] == 'Delta'), {})
+        gal = next(a for a in cat['albums'] if a['title'] == 'Converted')
+        check(delta.get('videos') == 1 and delta.get('albums') == [] and gal['videos'] == 1,
+              '/api/catalog: an artist with only videos, and each album\'s videos counted')
+        tr = json.loads(get(base, '/api/tracks?album=' + gal['id'])[2])
+        check(len(tr['tracks']) == 3 and [v['title'] for v in tr['videos']] == ['Live Clip'], '/api/tracks: the album\'s videos after its tracks')
+        check([v['title'] for v in json.loads(get(base, '/api/videos?artist=' + delta['id'])[2])['videos']] == ['Webm Clip'] and
+              json.loads(get(base, '/api/tracks?artist=' + delta['id'])[2])['videos'][0]['title'] == 'Webm Clip',
+              '/api/videos?artist=, and /api/tracks for an artist with videos alone')
+        top = json.loads(get(base, '/api/list?dir=')[2])
+        alb = json.loads(get(base, '/api/list?dir=' + urllib.parse.quote('Alpha Band/First Album'))[2])
+        check([v['title'] for v in top.get('videos', [])] == ['Webm Clip'] and [v['title'] for v in alb.get('videos', [])] == ['Opening (Café Video)'],
+              '/api/list: a folder\'s videos (a folder of videos alone shown in its parent), for the panel')
+        page = get(base, '/', {'Accept': 'text/html'})[2]
+        check(b'showVideos' in page and b'<video id="vid"' in page and b"application/vnd.apple.mpegurl" in page,
+              'the control panel has videos: posters, a player in the page, Play on')
+
+        # /mac/: the classic Play's form (Mac Roman) and the macOS Play's (UTF-8, full=1), with videos=1
+        def rows(b, path, h=None):
+            body = get(b, path, h)[2]
+            return body, [l.split(b'\t') for l in body.split(b'\r') if l]
+        _, r = rows(base, '/mac/info?videos=1')
+        check(r[1][6:] == [b'20', b'3', b'videos,remux,hls,transcode,mpeg1'], f'/mac/info?videos=1: every, the videos, what it can do ({r[1]})')
+        _, r = rows(base, '/mac/artists?videos=1')
+        d = next((x for x in r[1:] if x[1] == b'Delta'), [])
+        check(r[0][3] == b'3' and d[2:] == [b'0', b'0', b'1'] and all(len(x) == 5 for x in r[1:]),
+              f'/mac/artists?videos=1: a fifth field, and Delta with videos alone ({d})')
+        aid = next(x[0] for x in r[1:] if x[1] == b'Alpha Band').decode()
+        alpha_al = next(a['id'] for a in cat['albums'] if a['title'] == 'First Album')
+        body, r = rows(base, f'/mac/tracks?album={alpha_al}&videos=1')
+        check(r[0][3:] == [b'3', b'0', b'3'] and r[3] == [b'V', mp4['id'].encode(), b'Opening (Caf\x8e Video)', b'Alpha Band', b'3',
+                                                           alpha_al.encode(), b'160', b'120'],
+              f'/mac/tracks?videos=1: the tracks, then V, id, title (Mac Roman), artist, seconds, album, width, height ({r[3]})')
+        body, r = rows(base, f'/mac/tracks?album={alpha_al}&videos=1&enc=utf8&full=1')
+        check(r[3][:3] == [b'V', mp4['id'].encode(), 'Opening (Café Video)'.encode()] and
+              r[3][8:] == [mp4['path'].encode(), b'First Album', b'Alpha Band/First Album', b'direct'],
+              f'and with enc=utf8&full=1: UTF-8, its path, album, folder, how it plays ({r[3][8:]})')
+        _, r = rows(base, f'/mac/tracks?album={alpha_al}&videos=1&from=2&count=1')
+        check(r[0][3:] == [b'3', b'2', b'1'] and r[1][0] == b'V', 'pages run through the tracks, then the videos')
+        _, r = rows(base, f'/mac/tracks?artist={delta["id"]}&videos=1')
+        check(r[0][3] == b'1' and r[1][0] == b'V' and get(base, f'/mac/tracks?artist={delta["id"]}')[0] == 404,
+              'an artist with videos alone: its videos (without videos=1 there is no such artist)')
+        _, r = rows(base, f'/mac/videos?artist={aid}&full=1&enc=utf8')
+        check(r[0][2] == b'videos' and r[0][3] == b'1' and r[1][1] == mp4['id'].encode() and r[1][11] == b'direct', f'/mac/videos ({r})')
+        _, r = rows(base, '/mac/search?q=clip&videos=1')
+        check([x[0] for x in r[1:]] == [b'V', b'V'] and get(base, '/mac/search?q=clip')[2].count(b'\r') == 1,
+              'a search with videos=1 finds videos; without it, none')
+
+        # the classic answers are what they were without videos=1: byte for byte those of a server without videos
+        for b in (base, b_off):                     # the same tracks' lengths read on both (an album's first listing reads them)
+            for al in (alpha_al, gal['id']):
+                get(b, '/mac/tracks?album=' + al)
+        same = True
+        for p in ['/mac/info', '/mac/info?enc=utf8&full=1', '/mac/artists', '/mac/artists?enc=utf8&full=1', '/mac/albums',
+                  f'/mac/albums?artist={aid}&enc=utf8&full=1', f'/mac/tracks?album={alpha_al}', f'/mac/tracks?album={gal["id"]}&enc=utf8&full=1',
+                  f'/mac/tracks?artist={aid}', '/mac/search?q=a', '/mac/search?q=clip&enc=utf8', '/mac/devices', '/mac/devices?full=1',
+                  '/mac/now', '/mac/radio']:
+            a, b = get(base, p)[2], get(b_off, p)[2]
+            if a != b:
+                same = False
+                print('   differs:', p, a[:200], b[:200])
+        check(same, 'without videos=1 every /mac/ answer is byte for byte what a server without videos sends')
+
+        # devices: a Mac that shows videos, a classic Play that plays their sound
+        check(post(base, '/api/devices/announce', {'id': 'mac1', 'name': 'iMac', 'kind': 'macos', 'version': '1.3', 'video': True})[0] == 200,
+              'the macOS Play announces that it shows videos')
+        st, _, body = get(base, '/mac/announce?id=se1&name=SE&kind=classic&v=1.5', A)
+        code, j = post(base, '/api/devices/mac1/command', {'action': 'play', 'what': 'v:' + mkv['id']})
+        c = json.loads(get(base, '/api/devices/mac1/commands?wait=0', A)[2])['commands']
+        t = c[0]['tracks'][0] if c and c[0].get('tracks') else {}
+        check(code == 200 and 'audio_only' not in j and t.get('video') is True and t.get('how') == 'remux' and t.get('tid') == mkv['id'] and
+              t.get('path') == mkv['path'] and t.get('width') == 160, f'v:ID to the Mac: a track that is a video, how it plays, its size ({t})')
+        code, j = post(base, '/api/devices/se1/command', {'action': 'play', 'what': 'v:' + mkv['id']})
+        check(code == 200 and j.get('audio_only') is True, 'to the classic Play, which shows none: sent, and said to be its sound only')
+        post(base, '/api/devices/se1/command', {'action': 'add', 'what': 'v:' + mp4['id']})
+        _, r = rows(base, '/mac/commands?id=se1&wait=0&videos=1', A)
+        check(r[0][:2] == [b'1', b'play'] and r[1] == [b'V', mkv['id'].encode(), b'Live Clip', b'Gamma', b'3'] and r[3][0] == b'V',
+              f'/mac/commands?videos=1: a V line, id, title, artist, seconds ({r})')
+        post(base, '/api/devices/se1/command', {'action': 'play', 'what': 'v:' + mkv['id']})
+        _, r = rows(base, '/mac/commands?id=se1&wait=0', A)
+        check(r[1] == [b'T', mkv['id'].encode(), b'Live Clip', b'Gamma', b'3'], 'without videos=1: a T line, whose id /t/ plays as the sound')
+        post(base, '/api/devices/mac1/command', {'action': 'next', 'what': 'v:' + mp4['id']})
+        _, r = rows(base, '/mac/commands?id=mac1&wait=0&videos=1&full=1&enc=utf8', A)
+        check(r[1][0] == b'V' and r[1][5:] == [mp4['path'].encode(), b'First Album', b'direct', b'160', b'120'],
+              f'with full=1: path, album, how, width, height ({r[1]})')
+        check(post(base, '/api/devices/mac1/command', {'action': 'play', 'what': 'v:nothing0'})[0] == 400, 'a video that is not there: refused')
+        get(base, f'/mac/state?id=se1&p=1&pos=1&len=0&vol=80&t={mkv["id"]}', A)
+        devs = {d['id']: d for d in json.loads(get(base, '/api/devices')[2])['devices']}
+        check(devs['mac1']['video'] and not devs['se1']['video'] and devs['se1']['state']['title'] == 'Live Clip' and
+              devs['se1']['state']['video'] and devs['se1']['state']['length'] == 3,
+              '/api/devices: who shows videos; the SE playing a video\'s sound, named from the catalogue')
+        _, r = rows(base, '/mac/devices?videos=1')
+        byid = {x[0]: x for x in r}
+        check(len(byid[b'mac1']) == 18 and byid[b'mac1'][17] == b'1' and byid[b'se1'][17] == b'0' and byid[b'live'][17] == b'0',
+              '/mac/devices?videos=1: the full record and an 18th field, whether the device shows videos')
+        code, j = post(base, '/api/devices/live/command', {'action': 'play', 'what': 'v:' + mkv['id']})
+        check(code == 200 and [q['path'] for q in j['live']['queue']] == [mkv['path']], 'v:ID on Live: its sound joins the Live queue')
+        post(base, '/api/devices/live/command', {'action': 'stop'})
+    finally:
+        for p in (srv, off, no_tc):
+            p.terminate()
+            p.wait(10)
+    log = srv.stdout.read()
+    want = ['and 3 music videos (1 as they are, 1 remuxed, 1 transcoded)', '1 video file passed over', 'HLS ready',
+            'copy of tracks left out']
+    check(all(w in log for w in want), f'the log: the videos found, how they play, the copy, the HLS ({[w for w in want if w not in log]})')
+    check('VIDEO_TRANSCODE=off' in no_tc.stdout.read(), 'and the server with transcoding off says why it refused')
+    check(no_ffmpeg_left(lib), 'no ffmpeg left when the servers stop')
 
 
 def main():
@@ -724,6 +1049,7 @@ def main():
 
     # without ffmpeg: MP3s only, and the scan says what it passed over
     devices_check(tmp)
+    videos_check(tmp, pc)
 
     s2 = socket.socket(); s2.bind(('127.0.0.1', 0)); port2 = s2.getsockname()[1]; s2.close()
     srv2 = subprocess.Popen([sys.executable, os.path.join(HERE, 'aurora68_music_server.py'), lib, '--port', str(port2),

@@ -97,6 +97,7 @@ static char *tail(const struct dv *d, char *p, char *end)
 {
 	if (d->client.utf8) p = a68_put(p, end, "&enc=utf8");
 	if (d->client.full) p = a68_put(p, end, "&full=1");
+	if (d->client.videos) p = a68_put(p, end, "&videos=1");   /* a command's videos as V lines */
 	return p;
 }
 int dv_path(const struct dv *d, int what, char *out, long max)
@@ -107,6 +108,7 @@ int dv_path(const struct dv *d, int what, char *out, long max)
 		p = a68_put(p, end, "&name="); p = a68_put_escaped(p, end - 24, d->name, 0);
 		p = a68_put(p, end, "&kind="); p = a68_put_escaped(p, end, d->kind, 0);
 		p = a68_put(p, end, "&v="); p = a68_put_escaped(p, end, d->version, 0);
+		if (d->video) p = a68_put(p, end, "&video=1");    /* it shows music videos (the macOS Play) */
 	} else if (what == DV_STATE) {
 		const struct dv_state *s = &d->st;
 		p = a68_put(p, end, "/mac/state?id="); p = a68_put_escaped(p, end, d->id, 0);

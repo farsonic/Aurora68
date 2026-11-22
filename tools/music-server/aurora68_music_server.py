@@ -25,6 +25,10 @@ a browser, foobar2000, a Squeezebox), and a browser gets a page listing the fold
                                   writes that address into it instead of the one the request used
     GET /playlist.m3u?dir=PATH    an M3U of the folder's files, for players that want a playlist
     GET /api/list?dir=PATH        JSON: the folder's folders and files
+    GET /video/ID                 a music video (22 November 2026): the file with Range when a Mac plays it as it is,
+                                  else remuxed (or, last, transcoded) to fragmented MP4 as it is sent;
+                                  /video/ID/index.m3u8 the same as HLS; /vthumb/ID its poster; /vaudio/ID its
+                                  sound as MP3; /vmpeg/ID MPEG-1 for the video card. Below, "music videos"
 
 How a station is sent. Each file's MP3 frames are found (its ID3v2 tag at the front, ID3v1 or APE tags
 at the end and the Xing/Info header frame are left out: inside a stream they are noise to a decoder),
@@ -45,11 +49,11 @@ served: every path is resolved and must stay inside the folder, symbolic links i
     python3 aurora68_music_server.py /path/to/music
     python3 aurora68_music_server.py /music --port 8000 --name "NAS Music"
 """
-import argparse, hashlib, html, json, mimetypes, urllib.error, urllib.request, os, random, re, shutil, signal, socket, subprocess, sys, threading, \
-    time, urllib.parse
+import argparse, hashlib, html, json, mimetypes, urllib.error, urllib.request, os, random, re, shutil, signal, socket, subprocess, sys, tempfile, \
+    threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '3'
+VERSION = '4'                   # 4: music videos (22 November 2026)
 METAINT = 16000                 # bytes of audio between song titles, as most Icecast servers send
 BURST = 6.0                     # seconds of audio sent at once when a listener connects
 RESCAN = float(os.environ.get('MUSIC_RESCAN', 30))   # seconds a scan of the folder is trusted before it is made again
@@ -217,7 +221,7 @@ DUP_NUMBER = __import__('re').compile(r'^\s*(\d{1,3}(?:-\d{1,3})?)[\s.\-_]+')
 QUALITY = {'.flac': 0, '.wav': 1, '.aif': 1, '.aiff': 1, '.m4a': 2, '.alac': 2, '.ogg': 3, '.opus': 3, '.mp3': 4}
 
 
-def without_copies(folder, songs):
+def without_copies(folder, songs, quality=QUALITY, numbered=True):
     """a folder's songs with copies of one track left out: (kept, left out).
 
     22 November 2026: the owner's Daft Punk album holds seven tracks twice, downloaded eleven days apart,
@@ -225,15 +229,19 @@ def without_copies(folder, songs):
     - Instant Crush (...).m4a": the artists written with a different separator, the files 103 bytes apart
     (their tags). Files are copies when their track number and title (after " - ", case and spacing
     aside) agree and their sizes are within 2%: a live version or a remix has a title of its own. Of the
-    copies the best kind is kept (FLAC, then M4A, then MP3), then the larger. The files are not touched."""
+    copies the best kind is kept (FLAC, then M4A, then MP3), then the larger. The files are not touched.
+
+    Music videos (the same day) go through the same rule with their own order of kinds (those that play as they
+    are first) and numbered=False: a video's name rarely has a number ("Artist - Title (Official Video).mp4"), so
+    one without a number is compared by its title alone, still within 2% in size."""
     groups = {}
     for f in songs:
         stem = os.path.splitext(f)[0]
         m = DUP_NUMBER.match(stem)
-        if not m:
+        if not m and numbered:
             continue
-        title = stem[m.end():].split(' - ', 1)[-1]
-        groups.setdefault((m.group(1).lstrip('0'), ' '.join(title.casefold().split())), []).append(f)
+        title = stem[m.end():].split(' - ', 1)[-1] if m else stem.split(' - ', 1)[-1]
+        groups.setdefault((m.group(1).lstrip('0') if m else '', ' '.join(title.casefold().split())), []).append(f)
     out = set()
     for same in groups.values():
         if len(same) < 2:
@@ -244,7 +252,7 @@ def without_copies(folder, songs):
                 sizes[f] = os.path.getsize(os.path.join(folder, f))
             except OSError:
                 sizes[f] = 0
-        same.sort(key=lambda f: (QUALITY.get(os.path.splitext(f)[1].lower(), 5), -sizes[f], f))
+        same.sort(key=lambda f: (quality.get(os.path.splitext(f)[1].lower(), 5), -sizes[f], f))
         best = same[0]
         for f in same[1:]:
             if sizes[best] and abs(sizes[f] - sizes[best]) <= 0.02 * sizes[best]:
@@ -256,6 +264,270 @@ def artist_of(folder):
     """"Weezer" of "Weezer - Pinkerton (Explicit)", or None"""
     a, sep, rest = folder.partition(' - ')
     return a.strip() if sep and a.strip() and rest.strip() else None
+
+
+# ---- music videos: what they are, how each plays, and the folder where the server keeps what it makes -----------
+# 22 November 2026. The owner's library also holds music videos, in the same folders as the albums ("Artist - Album/
+# Song (Official Video).mp4") and in artist folders. The scan finds them beside the songs; the catalogue attaches each
+# to its artist, and to its album when it sits in an album's folder (or in a "Videos" folder inside one). They are
+# served the cheapest way that plays on a Mac:
+#   direct     the file as it is, with Range: MP4, M4V or QuickTime holding H.264 or HEVC with AAC, ALAC or MP3
+#              sound, which AVFoundation (the macOS Play, Safari, QuickTime Player) plays from a file;
+#   remux      the same streams copied into fragmented MP4 as they are sent, no picture re-encoded: an MKV or TS of
+#              H.264, or sound the Mac lacks (AC-3, DTS, Opus beside H.264) converted to AAC on the way (sound is
+#              cheap; the picture is what a NAS cannot afford to encode);
+#   transcode  H.264 and AAC made anew, the last resort (VP9, AV1, MPEG-2, 10-bit H.264), at most VIDEO_TRANSCODES at
+#              once and off altogether with VIDEO_TRANSCODE=off.
+# A remuxed or transcoded stream has no length in advance, and AVFoundation will not play a progressive file whose
+# server cannot answer a byte range (its error -11850, "server not correctly configured"), so those two are also
+# offered as HLS (/video/ID/index.m3u8: fragmented-MP4 segments written to the cache as ffmpeg makes them), which
+# AVFoundation plays as it grows; browsers other than Safari take the plain fragmented MP4 stream.
+VIDEO_TYPES = {'.mp4': 'video/mp4', '.m4v': 'video/mp4', '.mov': 'video/quicktime', '.mkv': 'video/x-matroska',
+               '.webm': 'video/webm', '.avi': 'video/x-msvideo', '.mpg': 'video/mpeg', '.mpeg': 'video/mpeg',
+               '.ts': 'video/mp2t'}
+VIDEO_AS_IS = ('.mp4', '.m4v', '.mov')       # containers AVFoundation plays from a file
+VIDEO_CODECS = ('h264', 'hevc')              # pictures every Mac decodes (HEVC since macOS 10.13)
+VIDEO_AUDIO = ('aac', 'alac', 'mp3')         # sound AVFoundation plays inside MP4 and QuickTime
+VIDEO_PIX = ('yuv420p', 'yuvj420p')          # H.264 at 8 bits 4:2:0: Apple's decoders refuse "High 10" and 4:2:2
+VIDEO_FOLDERS = ('videos', 'video', 'music videos', 'clips')   # such a folder inside an album or artist folder is part of it
+VIDEO_QUALITY = {'.mp4': 0, '.m4v': 0, '.mov': 1, '.mkv': 2, '.webm': 3, '.ts': 4}   # of two copies, the one kept
+VIDEO_PRESETS = ('ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium')
+
+
+def env_int(name, default, lo, hi):
+    try:
+        return max(lo, min(hi, int(os.environ.get(name, default))))
+    except ValueError:
+        return default
+
+
+VIDEOS = os.environ.get('VIDEOS', 'on').lower() != 'off'                  # off: no videos found, listed or served
+VIDEO_TRANSCODE = os.environ.get('VIDEO_TRANSCODE', 'on').lower() != 'off'
+VIDEO_TRANSCODES = env_int('VIDEO_TRANSCODES', 1, 1, 16)   # at once: a NAS's CPU encodes one 1080p H.264 at about its speed
+VIDEO_BITRATE = env_int('VIDEO_BITRATE', 4000, 300, 40000)  # kbit/s ceiling of a transcode's picture: 1080p H.264, good
+VIDEO_MAX_HEIGHT = env_int('VIDEO_MAX_HEIGHT', 1080, 144, 4320)   # a transcode taller than this is scaled down
+VIDEO_PRESET = os.environ.get('VIDEO_PRESET', 'veryfast') if os.environ.get('VIDEO_PRESET', 'veryfast') in VIDEO_PRESETS \
+    else 'veryfast'                                          # x264's speed: veryfast is what a NAS keeps up with
+VIDEO_CACHE_MB = env_int('VIDEO_CACHE_MB', 2048, 16, 10 ** 7)   # posters, soundtracks and HLS segments kept, at most
+VIDEO_IDLE = 60                 # seconds an HLS conversion runs with nobody fetching its segments before it is stopped
+VIDEO_HLS_SECONDS = 4           # an HLS segment: short, so the first plays soon after a conversion starts
+CACHE_DIR = os.environ.get('MUSIC_CACHE') or os.path.join(tempfile.gettempdir(), 'aurora68-music-cache')
+# The Aurora68 Video Decoder card (docs/16): MPEG-1 program streams as tools/video-helper's /play makes them, so the
+# classic Mac's player can show a library video through the card. The same limits: what a Pi 3 core decodes
+MPEG_MAX_W, MPEG_MAX_H = 1280, 720
+
+
+class Cache:
+    """the server's own folder (MUSIC_CACHE) for what it makes once and keeps: ffprobe's answers about the videos
+    (videos.json), posters (thumbs/), soundtracks as MP3 (vaudio/) and HLS conversions (hls/). The music folder
+    stays read-only. Without a folder it can write, everything is made each time it is asked for, and said once"""
+    def __init__(self, root):
+        self.root, self.ok, self.lock = root, False, threading.Lock()
+        try:
+            for sub in ('thumbs', 'vaudio', 'hls'):
+                os.makedirs(os.path.join(root, sub), exist_ok=True)
+            t = os.path.join(root, '.write-test')
+            open(t, 'wb').close()
+            os.remove(t)
+            self.ok = True
+        except OSError as e:
+            log(f'cache: cannot write {root} ({e.strerror}): video posters and soundtracks are made each time')
+
+    def path(self, *parts):
+        return os.path.join(self.root, *parts)
+
+    def used(self, path):
+        try:
+            os.utime(path)
+        except OSError:
+            pass
+
+    @staticmethod
+    def drop(path):
+        """a cached file, or a conversion's folder of segments: its files one by one, then the folder"""
+        try:
+            if os.path.isdir(path):
+                for f in os.listdir(path):
+                    os.remove(os.path.join(path, f))
+                os.rmdir(path)
+            else:
+                os.remove(path)
+        except OSError:
+            pass
+
+    def trim(self, busy=()):
+        """posters, soundtracks and finished conversions within VIDEO_CACHE_MB: the least recently used go first"""
+        if not self.ok:
+            return
+        with self.lock:
+            items = []
+            for sub in ('thumbs', 'vaudio', 'hls'):
+                try:
+                    names = os.listdir(self.path(sub))
+                except OSError:
+                    continue
+                for n in names:
+                    p = self.path(sub, n)
+                    if p in busy or n.endswith('.part'):
+                        continue
+                    try:
+                        if os.path.isdir(p):
+                            files = [os.path.join(p, f) for f in os.listdir(p)]
+                            size = sum(os.path.getsize(f) for f in files)
+                            when = os.path.getmtime(os.path.join(p, 'index.m3u8')) if os.path.exists(os.path.join(p, 'index.m3u8')) \
+                                else os.path.getmtime(p)
+                        else:
+                            size, when = os.path.getsize(p), os.path.getmtime(p)
+                    except OSError:
+                        continue
+                    items.append((when, size, p))
+            total, cap = sum(i[1] for i in items), VIDEO_CACHE_MB << 20
+            for when, size, p in sorted(items):
+                if total <= cap:
+                    break
+                self.drop(p)
+                total -= size
+
+
+class VideoProbe:
+    """what ffprobe says of each video (length, size, codecs), kept by path, modification time and size in the cache
+    folder's videos.json: the NAS is slow and a library's videos are probed once, not at every scan or restart"""
+    def __init__(self, cache, ffprobe):
+        self.ffprobe, self.file, self.known, self.dirty = ffprobe, cache.path('videos.json') if cache.ok else None, {}, False
+        try:
+            with open(self.file, encoding='utf-8') as f:
+                self.known = {k: v for k, v in json.load(f).items() if isinstance(v, list) and len(v) == 3}
+        except (OSError, ValueError, TypeError):
+            pass
+
+    def get(self, path):
+        """the video's facts, {} when there is no ffprobe to ask, None when it holds no picture"""
+        if not self.ffprobe:
+            return {}
+        try:
+            st = os.stat(path)
+        except OSError:
+            return None
+        k = self.known.get(path)
+        if k and k[0] == st.st_mtime and k[1] == st.st_size:
+            return k[2]
+        info = self.probe(path)
+        self.known[path], self.dirty = [st.st_mtime, st.st_size, info], True
+        return info
+
+    def probe(self, path):
+        try:
+            out = subprocess.run([self.ffprobe, '-v', 'error', '-show_entries',
+                                  'format=duration,format_name:stream=codec_type,codec_name,codec_tag_string,width,height,'
+                                  'pix_fmt,channels:stream_disposition=attached_pic', '-of', 'json', path],
+                                 capture_output=True, text=True, timeout=60)
+            j = json.loads(out.stdout or '{}')
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return None
+        streams = j.get('streams') or []
+        v = next((s for s in streams if s.get('codec_type') == 'video' and not (s.get('disposition') or {}).get('attached_pic')), None)
+        a = next((s for s in streams if s.get('codec_type') == 'audio'), None)
+        if not v:
+            return None                              # a cover picture alone, or no picture at all: not a video
+        try:
+            secs = float((j.get('format') or {}).get('duration') or 0)
+        except ValueError:
+            secs = 0.0
+        return {'secs': round(secs, 2), 'w': int(v.get('width') or 0), 'h': int(v.get('height') or 0),
+                'vcodec': v.get('codec_name', ''), 'vtag': v.get('codec_tag_string', ''), 'pix': v.get('pix_fmt', ''),
+                'acodec': a.get('codec_name', '') if a else '', 'format': (j.get('format') or {}).get('format_name', '')}
+
+    def save(self, keep):
+        """forget videos no longer there, and write the file if anything changed"""
+        gone = [p for p in self.known if p not in keep]
+        for p in gone:
+            del self.known[p]
+        if not self.file or not (self.dirty or gone):
+            return
+        try:
+            with open(self.file + '.part', 'w', encoding='utf-8') as f:
+                json.dump(self.known, f)
+            os.replace(self.file + '.part', self.file)
+            self.dirty = False
+        except OSError:
+            pass
+
+
+CODEC_NAMES = {'h264': 'H.264', 'hevc': 'HEVC', 'vp9': 'VP9', 'vp8': 'VP8', 'av1': 'AV1', 'mpeg2video': 'MPEG-2',
+               'mpeg4': 'MPEG-4 Part 2', 'aac': 'AAC', 'alac': 'ALAC', 'mp3': 'MP3', 'ac3': 'AC-3', 'eac3': 'E-AC-3',
+               'dts': 'DTS', 'opus': 'Opus', 'vorbis': 'Vorbis', 'flac': 'FLAC'}
+
+
+def codec_name(c):
+    return CODEC_NAMES.get(c, c.upper())
+
+
+def video_how(ext, info):
+    """how a video plays: ('direct' | 'remux' | 'transcode', the reason in words); (None, why) when it cannot be told"""
+    if not info:                                     # no ffprobe (no ffmpeg): trust the container, offer only those
+        return ('direct', 'not probed: an MP4 or QuickTime file goes as it is') if ext in VIDEO_AS_IS else \
+            (None, 'without ffmpeg only MP4 and QuickTime files are offered')
+    v, a, pix = info.get('vcodec', ''), info.get('acodec', ''), info.get('pix', '')
+    if v not in VIDEO_CODECS:
+        return 'transcode', f'{codec_name(v) if v else "its"} picture plays on no Mac as it is'
+    if v == 'h264' and pix and pix not in VIDEO_PIX:
+        return 'transcode', f'H.264 in {pix} (not 8-bit 4:2:0) plays on no Mac as it is'
+    sound_ok = not a or a in VIDEO_AUDIO
+    retag = v == 'hevc' and info.get('vtag') != 'hvc1'
+    if ext in VIDEO_AS_IS and sound_ok and not retag:
+        return 'direct', f'{ext[1:].upper()} with {codec_name(v)}{" and " + codec_name(a) if a else ""} plays as it is'
+    why = []
+    if ext not in VIDEO_AS_IS:
+        why.append(f'{ext[1:].upper()} into MP4, {codec_name(v)} copied')
+    if not sound_ok:
+        why.append(f'{codec_name(a)} sound converted to AAC')
+    if retag:
+        why.append('HEVC labelled hvc1 for Apple')
+    return 'remux', '; '.join(why)
+
+
+def video_codec_args(v, how):
+    """ffmpeg's stream arguments for a remux or a transcode (v: the catalogue's video)"""
+    sound = ['-c:a', 'copy'] if v['acodec'] in VIDEO_AUDIO else ['-c:a', 'aac', '-b:a', '192k', '-ac', '2']
+    if how == 'remux':
+        return ['-map', '0:v:0', '-map', '0:a:0?', '-c:v', 'copy'] + (['-tag:v', 'hvc1'] if v['vcodec'] == 'hevc' else []) + sound
+    return ['-map', '0:v:0', '-map', '0:a:0?', '-c:v', 'libx264', '-preset', VIDEO_PRESET, '-crf', '21',
+            '-maxrate', f'{VIDEO_BITRATE}k', '-bufsize', f'{2 * VIDEO_BITRATE}k', '-pix_fmt', 'yuv420p',
+            '-vf', f"scale=-2:'trunc(min({VIDEO_MAX_HEIGHT},ih)/2)*2'",
+            '-force_key_frames', f'expr:gte(t,n_forced*{VIDEO_HLS_SECONDS // 2})',   # a fragment every 2 s, a segment every 4
+            '-c:a', 'aac', '-b:a', '192k', '-ac', '2']
+
+
+def mpeg_size(v, top, default):
+    """a size for the video card's MPEG-1 (the helper's even()): a number, 64 to top, even"""
+    try:
+        v = int(v)
+    except (TypeError, ValueError):
+        v = default
+    v = max(64, min(v, top))
+    return v - v % 2
+
+
+def mpeg1_args(w, h):
+    """tools/video-helper's ffmpeg_args, kept identical: MPEG-1 video fitted into w x h (its shape kept, padded black),
+    25 frames a second, no B-frames (each frame shown as it is decoded), MP2 sound at 44.1 kHz stereo, 128 kbit/s, an
+    MPEG program stream; about 0.09 bit per pixel per frame, 300 to 2,500 kbit/s"""
+    rate = max(300, min(2500, w * h * 25 // 450))
+    vf = (f'scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,'
+          f'fps=25,format=yuv420p')
+    return ['-vf', vf, '-c:v', 'mpeg1video', '-b:v', f'{rate}k', '-maxrate', f'{rate * 2}k', '-bufsize', f'{rate}k',
+            '-bf', '0', '-g', '25', '-c:a', 'mp2', '-b:a', '128k', '-ar', '44100', '-ac', '2',
+            '-f', 'mpeg', '-muxdelay', '0.5', 'pipe:1']
+
+
+def tidy_title(stem, artist):
+    """a track's (or a video's) number and title from its file's name: "01. Artist - Title" is 1, "Title" when the
+    artist is the album's (the rule of play/core/names.c, which the core's tests check against this one)"""
+    m = MAC_TRACK_NO.match(stem)
+    number, title = (int(m.group(1)), m.group(2)) if m else (0, stem)
+    if artist and title.casefold().startswith(artist.casefold() + ' - '):
+        title = title[len(artist) + 3:]
+    return number, title
 
 
 class Library:
@@ -277,29 +549,41 @@ class Library:
         self.dirs = {}               # relative folder ('' for the root) -> (folders in it, songs in it), sorted
         self.ids = {}                # short ID -> a station: a relative folder, or (folder, artist)
         self.artists = {}            # relative folder -> {artist: [its folders inside it]}, for those offered so
+        self.videos = {}             # relative folder -> its music videos' file names, sorted (folders with music or not)
+        self.vinfo = {}              # a video's relative path -> what ffprobe says of it ({} without ffprobe)
+        self.cache = Cache(CACHE_DIR)
+        self.vprobe = VideoProbe(self.cache, self.ffprobe)
 
     def scan(self):
         with self.lock:
             if time.monotonic() - self.when < RESCAN:
                 return
-            dirs, ids, errors, passed, hidden = {}, {}, [], {}, []
+            dirs, ids, errors, passed, hidden, videos = {}, {}, [], {}, [], {}
             for top, subdirs, files in os.walk(self.root, onerror=errors.append, followlinks=False):
                 rel = os.path.relpath(top, self.root)
                 rel = '' if rel == '.' else rel.replace(os.sep, '/')
                 subdirs[:] = sorted((d for d in subdirs if not d.startswith('.')), key=str.casefold)
-                songs = []
+                songs, vids = [], []
                 for f in files:
                     ext = os.path.splitext(f)[1].lower()
                     if f.startswith('.'):
                         continue
                     if self.playable(f):
                         songs.append(f)
+                    elif ext in VIDEO_TYPES and VIDEOS:
+                        vids.append(f)
                     elif ext in CONVERTED:
                         passed[ext] = passed.get(ext, 0) + 1
                 if self.copies and len(songs) > 1:
                     songs, gone = without_copies(top, songs)
                     if gone:
                         hidden.append((rel, gone))
+                if self.copies and len(vids) > 1:
+                    vids, gone = without_copies(top, vids, VIDEO_QUALITY, numbered=False)
+                    if gone:
+                        hidden.append((rel, gone))
+                if vids:
+                    videos[rel] = sorted(vids, key=str.casefold)
                 dirs[rel] = (list(subdirs), sorted(songs, key=str.casefold))
                 ids[short_id(rel)] = rel
             # folders with no MP3 anywhere inside them are no stations
@@ -320,8 +604,10 @@ class Library:
                     self.artists[r] = dict(sorted(by.items(), key=lambda kv: sort_key(kv[0])))
                     for a in by:
                         self.ids[short_id(r + '\0' + a)] = (r, a)
+            vstat = self.find_videos(videos)
             self.when = time.monotonic()
-            sig = hashlib.sha1(repr(sorted(self.dirs.items())).encode('utf-8', 'surrogateescape')).digest()
+            sig = hashlib.sha1((repr(sorted(self.dirs.items())) + (repr(sorted(self.videos.items())) if self.videos else ''))
+                               .encode('utf-8', 'surrogateescape')).digest()
             if sig == self.signature:
                 return                                 # nothing changed: nothing to say again every RESCAN seconds
             self.signature, self.generation = sig, self.generation + 1
@@ -332,7 +618,9 @@ class Library:
                     e = os.path.splitext(f)[1].lower().lstrip('.').upper()
                     kinds[e] = kinds.get(e, 0) + 1
             what = ', '.join(f'{c} {k}' for k, c in sorted(kinds.items(), key=lambda kv: -kv[1])) or 'no music'
+            nv = sum(len(v) for v in self.videos.values())
             log(f'library: {n} songs ({what}) in {len(self.dirs) - 1} folders under {self.root}' +
+                (f', and {nv} music video{"" if nv == 1 else "s"} ({vstat})' if nv else '') +
                 (f' (changed: generation {self.generation})' if self.generation > 1 else ''))
             for e in errors[:5]:                       # what could not be read: permissions, usually
                 log(f'library: cannot read {e.filename}: {e.strerror} (the server runs as user {os.getuid()}:{os.getgid()})')
@@ -348,6 +636,43 @@ class Library:
                     ' files: ffmpeg is not installed here to convert them (the Docker image has it)')
             if not n and not errors and not passed:
                 log('library: no music files found: is the right folder mounted at ' + self.root + '?')
+
+    def find_videos(self, found):
+        """the scan's videos: those inside the folder (a link out of it is no video of ours), probed (the cache
+        answers for those seen before), those ffprobe finds no picture in passed over; a summary of how they play"""
+        videos, vinfo, how, bad, seen = {}, {}, {}, [], set()
+        for rel, files in found.items():
+            keep = []
+            for f in files:
+                r = f'{rel}/{f}' if rel else f
+                p = self.real(r)
+                if not p or not os.path.isfile(p):
+                    continue
+                info = self.vprobe.get(p)
+                seen.add(p)                        # kept in the cache even when no video: not probed again at each scan
+                ok = video_how(os.path.splitext(f)[1].lower(), info)[0] if info is not None else None
+                if not ok:
+                    bad.append(r)
+                    continue
+                keep.append(f)
+                vinfo[r] = info
+                how[ok] = how.get(ok, 0) + 1
+            if keep:
+                videos[rel] = keep
+        self.vprobe.save(seen)
+        new_bad = [r for r in bad if r not in getattr(self, 'vbad', ())]
+        self.vbad = set(bad)
+        if new_bad:
+            log(f'library: {len(new_bad)} video file{"" if len(new_bad) == 1 else "s"} passed over (no picture in it, or '
+                f'{"no ffmpeg to play it" if not self.ffmpeg else "ffprobe could not read it"}), e.g. "{new_bad[0]}"')
+        self.videos, self.vinfo = videos, vinfo
+        names = {'direct': 'as they are', 'remux': 'remuxed', 'transcode': 'transcoded'}
+        return ', '.join(f'{c} {names[k]}' for k, c in sorted(how.items(), key=lambda kv: list(names).index(kv[0])))
+
+    def video_path(self, rel):
+        """a video of the library by its relative path: its real path, or None"""
+        folder, _, f = rel.rpartition('/')
+        return self.real(rel) if f in self.videos.get(folder, ()) else None
 
     def playable(self, name):
         ext = os.path.splitext(name)[1].lower()
@@ -565,6 +890,7 @@ class Live:
         self.titles = {}                      # songs' titles, looked up once
         self.changes = 0                      # bumped at each change, for the panel
         self.t0 = None                        # when the stream's clock started (None while nobody listens)
+        self.video_rel = None                 # a video's id -> its relative path (the catalogue's, set by the handler)
         self.marks = []                       # (seconds into the stream, pos, song, title, its start, length):
         self.started = 0.0                    # where each song begins, so the panel shows what is heard,
         threading.Thread(target=self.run, daemon=True).start()   # LIVE_LEAD behind what is sent
@@ -613,6 +939,9 @@ class Live:
         if kind == 't':
             p = self.lib.real(arg)
             return [arg.strip('/')] if p and os.path.isfile(p) and self.lib.playable(p) else []
+        if kind == 'v' and self.video_rel:                 # a music video: Live plays its sound
+            rel = self.video_rel(arg)
+            return [rel] if rel else []
         return []
 
     def act(self, a):
@@ -1140,6 +1469,9 @@ class Catalogue:
         self.made = None
         self.artists, self.albums, self.tracks = {}, {}, {}
         self.artist_order = []
+        self.videos = {}                     # id -> a music video (Catalogue.add_videos says what it holds)
+        self.album_videos, self.artist_videos = {}, {}    # album id / artist id -> its videos' ids, in order
+        self.video_artists = {}              # artist id -> name, for every artist with a video (some have no album)
         self.probed = {}                     # a file's path -> (mtime, size, number, title, artist, seconds)
 
     def fresh(self):
@@ -1147,7 +1479,7 @@ class Catalogue:
         with self.lock:
             if self.made == self.lib.when:
                 return
-            artists, albums, tracks = {}, {}, {}
+            artists, albums, tracks, parents = {}, {}, {}, {}
             for rel, (sub, songs) in self.lib.dirs.items():
                 if not songs:
                     continue
@@ -1158,6 +1490,7 @@ class Catalogue:
                     artist, title = a, folder.partition(' - ')[2].strip()
                 elif parent:
                     artist, title = parent, folder
+                    parents[rel.rsplit('/', 1)[0]] = artist        # an artist's folder, its albums inside: for videos
                 else:
                     artist, title = folder, folder
                 aid = short_id('\x01' + artist.casefold())
@@ -1174,17 +1507,91 @@ class Catalogue:
                 v['albums'].sort(key=lambda i: albums[i]['title'].casefold())
             self.artists, self.albums, self.tracks = artists, albums, tracks
             self.artist_order = sorted(artists, key=lambda i: sort_key(artists[i]['name']))
+            self.add_videos(parents)
             self.made = self.lib.when
+
+    def add_videos(self, parents):
+        """the scan's videos in the catalogue (22 November 2026). A video's home is the folder it is in, or the album or
+        artist folder holding its "Videos" folder. In an album's folder (one with songs) it is that album's, by that
+        album's artist; in an artist's folder (one whose albums are folders inside it), or a folder inside that, it is
+        that artist's; else its folder's name is the artist ("Artist - Videos" gives "Artist"); at the top of the
+        library the file's own name ("Artist - Title.mp4"), else the library's name. Its title is its file's name
+        tidied as a track's is"""
+        videos, by_album, by_artist, names = {}, {}, {}, {}
+        for rel, files in self.lib.videos.items():
+            home = rel
+            if home and home.split('/')[-1].casefold() in VIDEO_FOLDERS:
+                home = home.rsplit('/', 1)[0] if '/' in home else ''
+            al = short_id(home) if short_id(home) in self.albums and self.albums[short_id(home)]['rel'] == home else ''
+            up = home.rsplit('/', 1)[0] if '/' in home else ''
+            for f in files:
+                r = f'{rel}/{f}' if rel else f
+                stem, ext = os.path.splitext(f)
+                if al:
+                    artist = self.albums[al]['artist']
+                elif home in parents:
+                    artist = parents[home]
+                elif home and up in parents:
+                    artist = parents[up]
+                elif home:
+                    name = home.split('/')[-1]
+                    artist = artist_of(name) or name
+                else:
+                    m = MAC_TRACK_NO.match(stem)
+                    artist = artist_of(m.group(2) if m else stem) or self.name
+                number, title = tidy_title(stem, artist)
+                info = self.lib.vinfo.get(r) or {}
+                how, why = video_how(ext.lower(), info)
+                vid, aid = short_id('\x03' + r), short_id('\x01' + artist.casefold())
+                videos[vid] = {'rel': r, 'folder': rel, 'home': home, 'title': title, 'number': number, 'artist': artist,
+                               'aid': aid, 'album': al, 'secs': int(info.get('secs', 0) + 0.5), 'w': info.get('w', 0),
+                               'h': info.get('h', 0), 'vcodec': info.get('vcodec', ''), 'acodec': info.get('acodec', ''),
+                               'ext': ext.lower(), 'how': how, 'why': why}
+                by_artist.setdefault(aid, []).append(vid)
+                if al:
+                    by_album.setdefault(al, []).append(vid)
+                names.setdefault(aid, artist)
+        order = lambda v: (self.albums[videos[v]['album']]['title'].casefold() if videos[v]['album'] else '\uffff',
+                           videos[v]['number'] or 999, videos[v]['title'].casefold())
+        for d in (by_album, by_artist):
+            for k in d:
+                d[k].sort(key=order)
+        self.videos, self.album_videos, self.artist_videos, self.video_artists = videos, by_album, by_artist, names
+
+    def artists_with_videos(self):
+        """every artist, those with only videos too, in the record shop's order: (id, name, albums, tracks, videos)"""
+        ids = list(self.artists) + [a for a in self.video_artists if a not in self.artists]
+        rows = []
+        for i in sorted(ids, key=lambda i: sort_key(self.artists[i]['name'] if i in self.artists else self.video_artists[i])):
+            a = self.artists.get(i)
+            rows.append((i, a['name'] if a else self.video_artists[i], len(a['albums']) if a else 0,
+                         sum(len(self.albums[x]['tracks']) for x in a['albums']) if a else 0, len(self.artist_videos.get(i, []))))
+        return rows
+
+    def video_row(self, vid, full=False):
+        """a video in /mac/ answers: V, id, title, artist, seconds, album (its id, or empty), width, height; with full=1
+        also its path (for /file/), the album's title, its folder and how it plays (direct, remux, transcode)"""
+        v = self.videos[vid]
+        row = ('V', vid, v['title'], v['artist'], v['secs'], v['album'], v['w'], v['h'])
+        if full:
+            row += (Wide(v['rel']), self.albums[v['album']]['title'] if v['album'] else '', Wide(v['folder']), v['how'] or '')
+        return row
+
+    def video_json(self, vid):
+        v = self.videos[vid]
+        playable = v['how'] != 'transcode' or VIDEO_TRANSCODE
+        return {'id': vid, 'title': v['title'], 'artist': v['artist'], 'artist_id': v['aid'], 'album': v['album'],
+                'album_title': self.albums[v['album']]['title'] if v['album'] else '', 'folder': v['folder'], 'path': v['rel'],
+                'number': v['number'], 'seconds': v['secs'], 'width': v['w'], 'height': v['h'], 'vcodec': v['vcodec'],
+                'acodec': v['acodec'], 'how': v['how'], 'why': v['why'] if playable else v['why'] + '; transcoding is off here',
+                'playable': playable, 'video': f'/video/{vid}', 'hls': f'/video/{vid}/index.m3u8' if v['how'] != 'direct' else '',
+                'poster': f'/vthumb/{vid}', 'audio': f'/vaudio/{vid}'}
 
     def track_info(self, tid, probe=True):
         """(number, title, artist, seconds) of a track: from its name, and its tags and length once probed"""
         al, rel = self.tracks[tid]
         album = self.albums[al]
-        stem = os.path.splitext(rel.split('/')[-1])[0]
-        m = MAC_TRACK_NO.match(stem)
-        number, title = (int(m.group(1)), m.group(2)) if m else (0, stem)
-        if title.casefold().startswith(album['artist'].casefold() + ' - '):
-            title = title[len(album['artist']) + 3:]
+        number, title = tidy_title(os.path.splitext(rel.split('/')[-1])[0], album['artist'])
         path = self.lib.real(rel)
         try:
             st = os.stat(path)
@@ -1377,14 +1784,17 @@ class Covers:
         return dither1(out.stdout[:need], w, h) if depth == 1 else dither8(out.stdout[:need], w, h)
 
 
-def stream_track(lib, rel, wfile, meta, start, kbps, title):
-    """one track from start seconds, at the rate it plays after a first burst, then the end"""
+def stream_track(lib, rel, wfile, meta, start, kbps, title, source=None):
+    """one track from start seconds, at the rate it plays after a first burst, then the end; source: chunks made
+    elsewhere (a video's soundtrack)"""
     path = lib.real(rel)
     if not path:
         return
     out = IcyWriter(wfile, meta)
     out.title = title
-    if rel.lower().endswith('.mp3'):
+    if source is not None:
+        pass
+    elif rel.lower().endswith('.mp3'):
         with open(path, 'rb') as f:
             b = f.read()
 
@@ -1409,6 +1819,271 @@ def stream_track(lib, rel, wfile, meta, start, kbps, title):
                 time.sleep(ahead)
     finally:
         source.close()
+
+
+class VideoWork:
+    """the ffmpeg work behind the videos (22 November 2026): HLS conversions in the cache folder, the count of
+    transcodes running, posters and soundtracks made once and kept. A remux costs a NAS little (its streams are
+    copied), a transcode a whole core or more, so only transcodes are counted against VIDEO_TRANSCODES (the video
+    card's MPEG-1 is one too); an HLS conversion nobody has fetched from for VIDEO_IDLE seconds is stopped"""
+    SEGMENT = re.compile(r'(init\.mp4|seg\d{5}\.m4s)')
+
+    def __init__(self, lib):
+        self.lib, self.cache = lib, lib.cache
+        self.lock = threading.Lock()
+        self.busy = 0                     # transcodes running
+        self.jobs = {}                    # video id -> {'dir', 'proc', 'seen', 'how', 'killed'}
+        self.posters = {}                 # without a cache folder: the posters in memory
+        threading.Thread(target=self.reaper, daemon=True).start()
+
+    def take(self, how, what='this video'):
+        """a transcode's turn: None, or (HTTP status, why not); a remux or a file sent as it is needs none"""
+        if how != 'transcode':
+            return None
+        if not VIDEO_TRANSCODE:
+            return 415, f'{what} needs transcoding, which is off on this server (VIDEO_TRANSCODE=off)'
+        with self.lock:
+            if self.busy >= VIDEO_TRANSCODES:
+                return 503, f'{self.busy} transcode{"" if self.busy == 1 else "s"} running already (VIDEO_TRANSCODES={VIDEO_TRANSCODES})'
+            self.busy += 1
+        return None
+
+    def give(self, how):
+        if how == 'transcode':
+            with self.lock:
+                self.busy -= 1
+
+    def running(self):
+        with self.lock:
+            return self.busy
+
+    def key(self, v, path):
+        """what a cached thing was made from: the file as it is now, and the settings that shape it"""
+        try:
+            st = os.stat(path)
+            stamp = (st.st_mtime, st.st_size)
+        except OSError:
+            stamp = (0, 0)
+        return hashlib.sha1(repr((v['rel'], stamp, v['how'], VIDEO_BITRATE, VIDEO_MAX_HEIGHT, VIDEO_PRESET))
+                            .encode('utf-8', 'surrogateescape')).hexdigest()[:10]
+
+    # -- HLS: /video/ID/index.m3u8 and its segments
+    def hls(self, vid, v, path):
+        """the folder of the video's HLS conversion, started if need be: (folder, None) or (None, (status, why))"""
+        d = self.cache.path('hls', f'{vid}-{self.key(v, path)}')
+        with self.lock:
+            job = self.jobs.get(vid)
+            if job and job['dir'] == d:
+                job['seen'] = time.monotonic()
+                return d, None
+        if self.complete(d):
+            self.cache.used(os.path.join(d, 'index.m3u8'))
+            return d, None
+        if not self.cache.ok:
+            return None, (503, 'HLS needs a folder to write its segments in (MUSIC_CACHE), and this server has none it can write')
+        refused = self.take(v['how'])
+        if refused:
+            return None, refused
+        with self.lock:
+            old = self.jobs.get(vid)
+            if old and old['dir'] == d:                   # another request started it meanwhile
+                self.busy -= v['how'] == 'transcode'
+                old['seen'] = time.monotonic()
+                return d, None
+            if old:                                       # a conversion of the file as it was before it changed
+                old['killed'] = True
+                old['proc'].kill()
+            if os.path.isdir(d):
+                Cache.drop(d)                             # a conversion that never finished (a restart, a stop)
+            os.makedirs(d, exist_ok=True)
+            cmd = [self.lib.ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error', '-i', path] + video_codec_args(v, v['how']) + [
+                '-f', 'hls', '-hls_time', str(VIDEO_HLS_SECONDS), '-hls_playlist_type', 'event', '-hls_list_size', '0',
+                '-hls_segment_type', 'fmp4', '-hls_fmp4_init_filename', 'init.mp4',
+                '-hls_segment_filename', os.path.join(d, 'seg%05d.m4s'), '-hls_flags', 'temp_file+independent_segments',
+                os.path.join(d, 'index.m3u8')]
+            try:
+                p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            except OSError as e:
+                self.busy -= v['how'] == 'transcode'
+                return None, (500, f'ffmpeg: {e.strerror}')
+            self.jobs[vid] = job = {'dir': d, 'proc': p, 'seen': time.monotonic(), 'how': v['how'], 'killed': False}
+        log(f'video: {v["artist"]} - {v["title"]}: HLS, {v["how"]} ({v["why"]})')
+        threading.Thread(target=self.finish, args=(vid, job, v), daemon=True).start()
+        return d, None
+
+    @staticmethod
+    def complete(d):
+        try:
+            with open(os.path.join(d, 'index.m3u8'), encoding='utf-8') as f:
+                return '#EXT-X-ENDLIST' in f.read()
+        except OSError:
+            return False
+
+    def finish(self, vid, job, v):
+        err = job['proc'].communicate()[1] or b''
+        self.give(job['how'])
+        with self.lock:
+            if self.jobs.get(vid) is job:
+                del self.jobs[vid]
+        if job['killed'] or job['proc'].returncode:
+            if not job['killed']:
+                log(f'video: {v["title"]}: ffmpeg failed: ' + (err.decode('utf-8', 'replace').strip().splitlines() or ['?'])[-1][:200])
+            Cache.drop(job['dir'])                        # half a conversion is of no use to anyone
+        else:
+            log(f'video: {v["title"]}: HLS ready')
+            with self.lock:
+                busy = {j['dir'] for j in self.jobs.values()}
+            self.cache.trim(busy)
+
+    def reaper(self):
+        while True:
+            time.sleep(5)
+            with self.lock:
+                idle = [j for j in self.jobs.values() if time.monotonic() - j['seen'] > VIDEO_IDLE and j['proc'].poll() is None]
+            for j in idle:
+                j['killed'] = True
+                j['proc'].kill()
+
+    def stop_all(self):
+        with self.lock:
+            jobs = list(self.jobs.values())
+        for j in jobs:
+            j['killed'] = True
+            j['proc'].kill()
+
+    def playlist(self, vid, d):
+        """the playlist once ffmpeg has written it (a transcode's first segment can take seconds), starting at the
+        beginning: AVFoundation would start a growing ("event") playlist near its end"""
+        end = time.monotonic() + 45
+        while time.monotonic() < end:
+            try:
+                with open(os.path.join(d, 'index.m3u8'), encoding='utf-8') as f:
+                    text = f.read()
+                if '#EXTINF' in text:
+                    break
+            except OSError:
+                pass
+            with self.lock:
+                job = self.jobs.get(vid)
+                if job:
+                    job['seen'] = time.monotonic()
+            if not job:
+                return None
+            time.sleep(0.25)
+        else:
+            return None
+        if '#EXT-X-START' not in text:
+            text = text.replace('#EXTM3U\n', '#EXTM3U\n#EXT-X-START:TIME-OFFSET=0,PRECISE=YES\n', 1)
+        return text.encode()
+
+    def segment(self, vid, d, name):
+        """a segment's bytes, waiting a little for one the player asked for before ffmpeg wrote it"""
+        if not self.SEGMENT.fullmatch(name):
+            return None
+        p = os.path.join(d, name)
+        end = time.monotonic() + 20
+        while not os.path.isfile(p):
+            with self.lock:
+                job = self.jobs.get(vid)
+                if job:
+                    job['seen'] = time.monotonic()
+            if not job or time.monotonic() > end:
+                return None
+            time.sleep(0.25)
+        with self.lock:
+            if vid in self.jobs:
+                self.jobs[vid]['seen'] = time.monotonic()
+        try:
+            with open(p, 'rb') as f:
+                return f.read()
+        except OSError:
+            return None
+
+    # -- the poster and the soundtrack
+    def poster(self, vid, v, path):
+        """a JPEG of the picture at a tenth of the video (past its titles), 480 pixels wide at most; kept"""
+        key = f'{vid}-{self.key(v, path)}'
+        f = self.cache.path('thumbs', key + '.jpg')
+        if self.cache.ok and os.path.isfile(f):
+            self.cache.used(f)
+            with open(f, 'rb') as fh:
+                return fh.read()
+        if key in self.posters:
+            return self.posters[key]
+        pic = b''
+        for at in (v['secs'] * 0.1, 0):
+            try:
+                pic = subprocess.run([self.lib.ffmpeg, '-nostdin', '-v', 'error', '-ss', f'{at:.2f}', '-i', path, '-map', '0:v:0',
+                                      '-frames:v', '1', '-vf', "scale='min(480,iw)':-2", '-q:v', '4', '-c:v', 'mjpeg',
+                                      '-f', 'image2pipe', 'pipe:1'], capture_output=True, timeout=60).stdout
+            except (OSError, subprocess.SubprocessError):
+                pic = b''
+            if pic[:2] == b'\xff\xd8':
+                break
+        if pic[:2] != b'\xff\xd8':
+            return None
+        if self.cache.ok:
+            try:
+                with open(f + '.part', 'wb') as fh:
+                    fh.write(pic)
+                os.replace(f + '.part', f)
+            except OSError:
+                pass
+        else:
+            if len(self.posters) > 500:
+                self.posters.clear()
+            self.posters[key] = pic
+        return pic
+
+    def soundtrack(self, vid, v, path, start, kbps):
+        """the video's sound as MP3 at the library's bitrate, half a second at a time from start seconds: from the
+        cache once it has been converted whole, else converted as it is sent (and kept, when sent from the start)"""
+        f = self.cache.path('vaudio', f'{vid}-{self.key(v, path)}-{kbps}.mp3')
+        if self.cache.ok and os.path.isfile(f):
+            self.cache.used(f)
+            with open(f, 'rb') as fh:
+                b = fh.read()
+
+            def from_start(b):                         # frame by frame to the start, then half a second at a time
+                chunk, secs, gone = [], 0.0, 0.0
+                for off, n, d in frames(b):
+                    if gone + d <= start:
+                        gone += d
+                        continue
+                    chunk.append(b[off:off + n])
+                    secs += d
+                    if secs >= 0.5:
+                        yield b''.join(chunk), secs
+                        chunk, secs = [], 0.0
+                if chunk:
+                    yield b''.join(chunk), secs
+            return from_start(b)
+        src = converted_chunks(self.lib.ffmpeg, path, kbps, start)
+        if start or not self.cache.ok:
+            return src
+        return self.keep(src, f)
+
+    def keep(self, chunks, final):
+        part = f'{final}.{threading.get_ident()}.part'
+        try:
+            out = open(part, 'wb')
+        except OSError:
+            yield from chunks
+            return
+        whole = False
+        try:
+            for data, secs in chunks:
+                out.write(data)
+                yield data, secs
+            whole = True
+        finally:
+            chunks.close()
+            out.close()
+            if whole and os.path.getsize(part):
+                os.replace(part, final)
+                self.cache.trim()
+            else:
+                Cache.drop(part)
 
 
 def music_discovery(port, name, tcp_port):
@@ -1592,8 +2267,9 @@ class Devices:
     def online(self, d):
         return time.monotonic() - d['seen'] < self.ttl
 
-    def announce(self, did, name, kind, version, who=''):
-        """a device says it is there; an error in words, or None"""
+    def announce(self, did, name, kind, version, who='', video=None):
+        """a device says it is there, and whether it shows videos (video=True: the macOS Play, a browser; False or
+        not said: sound only, as the classic Play is until the video card's program exists); an error in words, or None"""
         if not isinstance(did, str) or not DEVICE_ID.fullmatch(did) or did == 'live':
             return 'id: 1 to 64 letters, digits, - and _ (and not "live")'
         if kind not in DEVICE_KINDS:
@@ -1606,7 +2282,8 @@ class Devices:
                 if len(self.known) >= DEVICE_MAX:
                     del self.known[min(self.known, key=lambda k: self.known[k]['seen'])]
                 d = self.known[did] = {'id': did, 'state': {}, 'queue': [], 'n': 0}
-            d.update(name=name, kind=kind, version=clean_text(version, 16), seen=time.monotonic(), when=time.time())
+            d.update(name=name, kind=kind, version=clean_text(version, 16), seen=time.monotonic(), when=time.time(),
+                     video=bool(video))
         if back:
             log(f'devices: {name} ({kind}{", " + who if who else ""}) is online')
         return None
@@ -1629,6 +2306,8 @@ class Devices:
             except (TypeError, ValueError):
                 out['volume'] = 100
             out['at'] = int(time.time())
+            if st.get('video'):                    # what plays is a music video (its sound, on a player without a screen)
+                out['video'] = True
             d['state'] = out
             d['seen'], d['when'] = time.monotonic(), time.time()
         return None
@@ -1636,8 +2315,13 @@ class Devices:
     def listing(self):
         with self.lock:
             return [{'id': d['id'], 'name': d['name'], 'kind': d['kind'], 'version': d['version'],
-                     'online': self.online(d), 'last_seen': int(d['when']), 'state': dict(d['state']), 'is_live': False}
+                     'online': self.online(d), 'last_seen': int(d['when']), 'state': dict(d['state']), 'is_live': False,
+                     'video': d.get('video', False)}
                     for d in sorted(self.known.values(), key=lambda d: d['name'].casefold())]
+
+    def shows_video(self, did):
+        with self.lock:
+            return bool(self.known.get(did, {}).get('video'))
 
     def send(self, did, cmd):
         """queue a command for a device: (its number, None) or (None, an error in words)"""
@@ -1705,10 +2389,14 @@ button.i{border:0;background:none;padding:.2em .4em;color:var(--mute)}button.i:h
 .ctl{display:flex;justify-content:center;gap:.6em;margin:.8em 0 .4em}.ctl button{font-size:1.15em;min-width:2.6em}
 .tog button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
 .small{color:var(--mute);font-size:.85em}code{font-size:.85em;word-break:break-all}
+.tile .art.vid{aspect-ratio:16/9;color:#fff;text-shadow:0 1px 4px #000}
+#vbox{position:fixed;inset:0;background:#000b;display:flex;align-items:center;justify-content:center;z-index:5}
+#vbox>div{background:var(--card);border-radius:12px;padding:1em;width:min(60em,94vw)}#vbox video{width:100%;max-height:70vh;background:#000;border-radius:8px}
+.vh{display:flex;justify-content:space-between;align-items:center;margin-bottom:.5em}
 #msg{position:fixed;bottom:1em;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:.5em 1em;border-radius:8px;opacity:0;transition:opacity .3s}
 </style></head><body>
 <header><h1>&#9835; __NAME__</h1><label class="small" for="target">Play on</label><select id="target" onchange="choose(this.value)"><option value="live">Live</option></select>
-<button onclick="showRadio()" title="Internet radio stations, for a player">&#128251; Radio</button><button id="getbtn" style="display:none" onclick="showGet()">&#10515; Get albums</button>
+<button onclick="showRadio()" title="Internet radio stations, for a player">&#128251; Radio</button><button id="vidbtn" style="display:none" onclick="showVideos()" title="The library's music videos">&#127916; Videos</button><button id="getbtn" style="display:none" onclick="showGet()">&#10515; Get albums</button>
 <input id="q" type="search" placeholder="Filter artists and albums"></header>
 <main>
 <section><div class="crumbs" id="crumbs"></div><div id="acts" class="acts"></div><div id="view"></div></section>
@@ -1730,6 +2418,8 @@ button.i{border:0;background:none;padding:.2em .4em;color:var(--mute)}button.i:h
 stations file:</p><div id="liveurl" class="small"></div><button id="here" onclick="here()">&#127911; Listen here</button>
 <audio id="aud" preload="none"></audio></div>
 </aside></main><div id="msg"></div>
+<div id="vbox" style="display:none" onclick="if(event.target==this)closeV()"><div><div class="vh"><b id="vt"></b><button class="i" title="Close" onclick="closeV()">&#10005;</button></div>
+<video id="vid" controls playsinline></video><div class="acts" id="von" style="margin-top:.6em"></div><div class="small" id="vwhy"></div></div></div>
 <script>
 let S={}, path='', listing=null;
 const $=id=>document.getElementById(id), esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -1787,8 +2477,25 @@ function render(){crumbs();const L=listing,f=$('q').value.toLowerCase(),here=pat
    `<button class="i" title="Play now" ${on('act("play",{what:'+J(t)+'})')}>&#9654;</button>`+
    `<button class="i" title="Play next" ${on('act("next",{what:'+J(t)+',toast:"Plays next"})')}>&#8618;</button>`+
    `<button class="i" title="Add to queue" ${on('act("add",{what:'+J(t)+',toast:"Added"})')}>+</button></div>`}).join('');
+ h+=vgrid(A?A.videos:L.videos);
  $('view').innerHTML=h||'<p class="small">Nothing here.</p>'}
 function showArtist(n){window.artist=n;render()}
+// music videos (22 November 2026): posters, played here in the page (the file as it is, HLS in Safari, else a fragmented
+// MP4 made as it is sent), or sent to the chosen player (a Mac shows it; the SE plays its sound; Live plays its sound)
+let V={};
+function vtile(v){V[v.id]=v;return `<div class="tile" ${on('watch('+J(v.id)+')')}><div class="art vid" style="background-image:url('${v.poster}')">&#9654;</div>`+
+ `<div class="t" title="${esc(v.title)}">${esc(v.title)}</div><div class="s">${esc(v.artist)} &middot; ${mmss(v.seconds)}</div></div>`}
+const vgrid=vs=>vs&&vs.length?'<h2 style="margin-top:1.2em">Videos</h2><div class="grid">'+vs.map(vtile).join('')+'</div>':'';
+function watch(id){const v=V[id],el=$('vid');$('vt').textContent=v.artist+' - '+v.title;
+ const there=T=='live'?`<button ${on('act("play",{what:'+J('v:'+id)+',toast:"Its sound plays on Live"})')}>&#9654; Its sound on Live</button>`
+  :`<button class="p" ${on('closeV();act("play",{what:'+J('v:'+id)+',toast:"Playing"})')}>&#9654; Play on ${esc(dname(T))}</button>`;
+ $('von').innerHTML=there+`<button ${on('act("add",{what:'+J('v:'+id)+',toast:"Added to the queue"})')}>Add to queue</button>`;
+ $('vwhy').textContent=v.playable?(v.how=='direct'?'':v.how+': '+v.why):v.why;$('vbox').style.display='flex';
+ if(!v.playable){el.removeAttribute('src');return}
+ el.src=v.how=='direct'?v.video:(v.hls&&el.canPlayType('application/vnd.apple.mpegurl')?v.hls:v.video);el.play().catch(()=>{})}
+function closeV(){const el=$('vid');el.pause();el.removeAttribute('src');el.load();$('vbox').style.display='none'}
+async function showVideos(){window.artist=null;$('crumbs').innerHTML=`<a ${on("open_('')")}>Library</a> / Videos`;$('acts').innerHTML='';
+ const vs=(await (await fetch('/api/videos')).json()).videos;$('view').innerHTML=vs.length?'<div class="grid">'+vs.map(vtile).join('')+'</div>':'<p class="small">No videos.</p>'}
 // getting albums: the indexer's search and SABnzbd (only when the server has both set up)
 const H={'X-Aurora':'1'}, mb=b=>b>=1e9?(b/1e9).toFixed(1)+' GB':Math.round(b/1e6)+' MB';
 function showGet(){window.artist=null;$('crumbs').innerHTML=`<a ${on("open_('')")}>Library</a> / Get albums`;$('acts').innerHTML='';
@@ -1806,6 +2513,7 @@ async function dl(){if(!G.enabled)return;try{const j=await (await fetch('/api/ge
  const rows=j.downloading.map(d=>`<div class="row"><span class="t" title="${esc(d.name)}">${esc(d.name)}</span><span class="small">${d.percent}% ${esc(d.left)}</span></div>`)
   .concat(j.recent.slice(0,6).map(d=>`<div class="row"><span class="t" title="${esc(d.name)}">${esc(d.name)}</span><span class="small">${esc(d.status)}${d.message?': '+esc(d.message):''}</span></div>`));
  $('dlist').innerHTML=rows.join('')||'Nothing yet'}catch(e){}}
+fetch('/api/info').then(r=>r.json()).then(i=>{if(i.videos)$('vidbtn').style.display=''});
 let G={};fetch('/api/get/status').then(r=>r.json()).then(g=>{G=g;if(g.enabled){$('getbtn').style.display='';$('dl').style.display='';dl();setInterval(dl,5000)}});
 $('q').oninput=()=>{if(listing)render()};
 async function poll(){try{D=(await (await fetch('/api/devices')).json()).devices;devs();const j=await (await fetch('/api/now')).json();S=j;show();
@@ -1838,7 +2546,21 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
     listeners = threading.BoundedSemaphore(max_listeners)
     cat, covers = Catalogue(lib, name), Covers(lib)
     radio, devices = Radio(lib.root), Devices()
+    vw = VideoWork(lib)
     globals_prefer = prefer
+
+    def capabilities():
+        """what this server does with videos, for players to choose by: hls (the conversions a Mac plays), remux,
+        transcode, mpeg1 (the video card's streams, /vmpeg/)"""
+        c = ['videos'] if VIDEOS else []
+        if VIDEOS and lib.ffmpeg:
+            c += ['remux'] + (['hls'] if lib.cache.ok else []) + (['transcode', 'mpeg1'] if VIDEO_TRANSCODE else [])
+        return c
+
+    def video_rel(vid):
+        cat.fresh()
+        return cat.videos[vid]['rel'] if vid in cat.videos else None
+    live.video_rel = video_rel
 
     def live_device():
         """the Live channel as a device in the list: its now-playing as a device's state"""
@@ -1860,6 +2582,14 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
         else:
             title, artist, album, secs = os.path.splitext(rel.split('/')[-1])[0], '', '', 0
         return {'path': rel, 'tid': tid, 'title': title, 'artist': artist, 'album': album, 'seconds': secs}
+
+    def video_entry(vid):
+        """a music video in a command: a track that says it is one (a player without a screen plays /t/ID or
+        /vaudio/ID, its sound), with how it plays and its size"""
+        v = cat.videos[vid]
+        return {'path': v['rel'], 'tid': vid, 'title': v['title'], 'artist': v['artist'],
+                'album': cat.albums[v['album']]['title'] if v['album'] else '', 'seconds': v['secs'], 'video': True,
+                'how': v['how'], 'width': v['w'], 'height': v['h']}
 
     def device_command(did, a):
         """POST /api/devices/<id>/command: (answer, HTTP status)"""
@@ -1884,6 +2614,11 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
                 if not 0 <= i < len(st) or action != 'play':
                     return {'error': 'no such radio station' if action == 'play' else 'a radio station can only be played'}, 400
                 cmd.update(tracks=[], radio={'name': st[i]['name'], 'url': st[i]['url']})
+            elif what.startswith('v:'):                # a music video: on a Mac it shows, on the SE its sound plays
+                cat.fresh()
+                if what[2:] not in cat.videos:
+                    return {'error': 'no such video'}, 400
+                cmd['tracks'] = [video_entry(what[2:])]
             else:
                 cat.fresh()
                 songs = live.resolve(what)
@@ -1908,15 +2643,22 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
         if err:
             return {'error': err}, (404 if err == 'no such device' else 409)
         log(f'devices: {action} {what} to {did}'.replace('  ', ' '))
+        if what.startswith('v:') and not devices.shows_video(did):
+            return {'ok': True, 'id': n, 'audio_only': True}, 200   # the device plays the video's sound
         return {'ok': True, 'id': n}, 200
 
-    def mac_command_lines(cmds, full=False):
+    def mac_command_lines(cmds, full=False, videos=False):
         """the classic Play's commands: "N action position volume", then T and R lines; with full=1 (the macOS
-        Play) the command line also says whether the server shuffled, and each T line the song's path and album"""
+        Play) the command line also says whether the server shuffled, and each T line the song's path and album.
+        A music video is a V line (id, title, artist, seconds; full=1 also path, album, how it plays, width and
+        height) for a Play that asked with videos=1, else a T line, its id being one /t/ answers with its sound"""
         rows = []
         for c in cmds:
             rows.append((c['id'], c['action'], int(c.get('position', 0)), c.get('volume', '')) + ((c.get('shuffle', 0),) if full else ()))
-            rows += [('T', t['tid'], t['title'], t['artist'], t['seconds']) + ((Wide(t['path']), t['album']) if full else ())
+            rows += [(('V', t['tid'], t['title'], t['artist'], t['seconds']) +
+                      ((Wide(t['path']), t['album'], t['how'] or '', t['width'], t['height']) if full else ()))
+                     if t.get('video') and videos else
+                     ('T', t['tid'], t['title'], t['artist'], t['seconds']) + ((Wide(t['path']), t['album']) if full else ())
                      for t in c.get('tracks', [])]
             if c.get('radio'):
                 rows.append(('R', c['radio']['name'], Wide(c['radio']['url'])))
@@ -2065,15 +2807,23 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
                     if rel in lib.artists:
                         out['artists'] = [{'name': a, 'station': f'/s/{lib.station_id((rel, a))}', 'folders': f}
                                           for a, f in lib.artists[rel].items()]
+                    cat.fresh()
+                    if cat.videos:                             # the videos at home here (a folder of videos only: its parent's)
+                        shown = lambda h: h if h in lib.dirs or not h else shown(h.rsplit('/', 1)[0] if '/' in h else '')
+                        out['videos'] = [cat.video_json(v) for v in sorted(cat.videos, key=lambda v: (cat.videos[v]['number'] or 999,
+                                         cat.videos[v]['title'].casefold())) if shown(cat.videos[v]['home']) == rel]
+                        for a in out.get('artists', []):
+                            a['videos'] = [cat.video_json(v) for v in cat.artist_videos.get(short_id('\x01' + a['name'].casefold()), [])]
                     return self.send(200, 'application/json', json.dumps(out).encode())
                 if path == '/api/catalog':                    # the macOS Aurora68 Play's library, in one answer
                     cat.fresh()
                     return self.send(200, 'application/json', json.dumps({
                         'name': name, 'version': VERSION,
-                        'artists': [{'id': i, 'name': cat.artists[i]['name'], 'albums': cat.artists[i]['albums']}
-                                    for i in cat.artist_order],
+                        'artists': [{'id': i, 'name': n, 'albums': cat.artists[i]['albums'] if i in cat.artists else [],
+                                     'videos': nv} for i, n, _, _, nv in cat.artists_with_videos()
+                                    if i in cat.artists or nv],
                         'albums': [{'id': i, 'title': a['title'], 'artist': a['artist'], 'artist_id': a['aid'],
-                                    'folder': a['rel'], 'tracks': len(a['tracks'])}
+                                    'folder': a['rel'], 'tracks': len(a['tracks']), 'videos': len(cat.album_videos.get(i, []))}
                                    for i, a in sorted(cat.albums.items(), key=lambda kv: (sort_key(kv[1]['artist']),
                                                                                           kv[1]['title'].casefold()))]
                     }).encode(), [('Cache-Control', 'no-store')])
@@ -2084,6 +2834,8 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
                     elif q.get('artist') in cat.artists:
                         tids = [t for al in cat.artists[q['artist']]['albums'] for t in cat.albums[al]['tracks']]
                         probe = True
+                    elif q.get('artist') in cat.video_artists:     # an artist with videos and no album
+                        tids, probe = [], False
                     else:
                         return self.send(404, 'application/json', b'{"error": "tracks?album=ID or tracks?artist=ID"}')
                     out = []
@@ -2095,12 +2847,33 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
                                     'folder': cat.albums[al]['rel']})
                     if q.get('album'):
                         out.sort(key=lambda r: (r['number'] or 999, r['title'].casefold()))
-                    return self.send(200, 'application/json', json.dumps({'tracks': out}).encode())
+                    vids = cat.album_videos.get(q['album'], []) if q.get('album') in cat.albums else cat.artist_videos.get(q['artist'], [])
+                    return self.send(200, 'application/json', json.dumps({'tracks': out,
+                                                                          'videos': [cat.video_json(v) for v in vids]}).encode())
                 if path == '/api/info':                       # what players poll: "library" changes with the folder
                     cat.fresh()
                     return self.json(200, {'name': name, 'version': VERSION, 'library': lib.generation,
                                            'artists': len(cat.artists), 'albums': len(cat.albums), 'tracks': len(cat.tracks),
-                                           'every': DEVICE_EVERY})
+                                           'videos': len(cat.videos), 'every': DEVICE_EVERY, 'capabilities': capabilities(),
+                                           'transcoding': vw.running()})
+                if path == '/api/videos':                     # music videos: an artist's, an album's, or every one
+                    cat.fresh()
+                    if q.get('album'):
+                        vids = cat.album_videos.get(q['album'], [])
+                    elif q.get('artist'):
+                        vids = cat.artist_videos.get(q['artist'], [])
+                    else:
+                        vids = sorted(cat.videos, key=lambda v: (sort_key(cat.videos[v]['artist']), cat.videos[v]['title'].casefold()))
+                    return self.json(200, {'videos': [cat.video_json(v) for v in vids]})
+                if path.startswith('/video/'):
+                    vid, _, rest = path[len('/video/'):].partition('/')
+                    return self.video(vid, rest, q)
+                if path.startswith('/vthumb/'):
+                    return self.vthumb(path[len('/vthumb/'):].strip('/'))
+                if path.startswith('/vaudio/'):
+                    return self.vaudio(path[len('/vaudio/'):].strip('/'), q)
+                if path.startswith('/vmpeg/'):
+                    return self.vmpeg(path[len('/vmpeg/'):].strip('/'), q)
                 if path == '/api/radio':
                     return self.json(200, {'stations': radio.stations()})
                 if path == '/api/devices':
@@ -2143,7 +2916,8 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
                     return self.json(400, {'error': f'not understood: {e}'})
                 rest = where[len('/api/devices/'):]
                 if rest == 'announce':
-                    err = devices.announce(a.get('id'), a.get('name'), a.get('kind'), a.get('version', ''), self.who())
+                    err = devices.announce(a.get('id'), a.get('name'), a.get('kind'), a.get('version', ''), self.who(),
+                                           a.get('video') in (True, 1, '1'))
                     if err:
                         return self.json(400, {'error': err})
                     lib.scan()
@@ -2230,17 +3004,29 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
         def mac(self, what, q):
             cat.fresh()
             enc, full = self.mac_enc(), q.get('full') == '1'
-            if what == 'info':
+            vids = q.get('videos') == '1'             # 22 November 2026: music videos, for a Play that knows them
+            if what == 'info':                       # videos=1: also every, how many videos, and what the server can do
                 return self.mac_send(200, mac_answer('info', 1, 0, [(name, VERSION, len(cat.artists), len(cat.albums), len(cat.tracks),
-                                                                      lib.generation) + ((DEVICE_EVERY,) if full else ())], enc))
+                                                                      lib.generation) + ((DEVICE_EVERY,) if full or vids else ()) +
+                                                                     ((len(cat.videos), ','.join(capabilities())) if vids else ())], enc))
             if what in ('announce', 'state', 'devices', 'commands', 'radio', 'command'):
                 return self.mac_device(what)
+            if what == 'videos':                     # an artist's or an album's videos, or every one: V records
+                if q.get('album'):
+                    ids = cat.album_videos.get(q['album'], [])
+                elif q.get('artist'):
+                    ids = cat.artist_videos.get(q['artist'], [])
+                else:
+                    ids = sorted(cat.videos, key=lambda v: (sort_key(cat.videos[v]['artist']), cat.videos[v]['title'].casefold()))
+                part, start = page_of(ids, q)
+                return self.mac_send(200, mac_answer('videos', len(ids), start, [cat.video_row(v, full) for v in part], enc))
             if what == 'now':
                 total, rows = mac_now_rows()
                 return self.mac_send(200, mac_answer('now', total, 0, rows, enc))
             if what == 'artists':
                 rows = [(i, cat.artists[i]['name'], len(cat.artists[i]['albums']),
-                         sum(len(cat.albums[a]['tracks']) for a in cat.artists[i]['albums'])) for i in cat.artist_order]
+                         sum(len(cat.albums[a]['tracks']) for a in cat.artists[i]['albums'])) for i in cat.artist_order] if not vids \
+                    else [r for r in cat.artists_with_videos() if r[0] in cat.artists or r[4]]   # a fifth field: videos
                 part, start = page_of(rows, q)
                 return self.mac_send(200, mac_answer('artists', len(rows), start, part, enc))
             if what == 'albums':
@@ -2259,11 +3045,19 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
                     tids, probe = a['tracks'], True
                 elif q.get('artist'):
                     ar = cat.artists.get(q['artist'])
-                    if not ar:
+                    if not ar and not (vids and q['artist'] in cat.video_artists):
                         return self.mac_error(404, 'There is no such artist in the library now.')
-                    tids, probe = [t for al in ar['albums'] for t in cat.albums[al]['tracks']], False
+                    tids, probe = [t for al in ar['albums'] for t in cat.albums[al]['tracks']] if ar else [], False
                 else:
                     return self.mac_error(400, 'tracks?album=ID or tracks?artist=ID')
+                if vids:                             # the tracks, then the album's (or the artist's) videos: V records
+                    vl = cat.album_videos.get(q['album'], []) if q.get('album') else cat.artist_videos.get(q['artist'], [])
+                    part, start = page_of([('T', t) for t in tids] + [('V', v) for v in vl], q)
+                    rows = cat.track_rows([t for k, t in part if k == 'T'], probe, full)
+                    if probe:
+                        rows.sort(key=lambda r: (r[1] or 999, r[2].casefold()) if any(x[1] for x in rows) else 0)
+                    rows += [cat.video_row(v, full) for k, v in part if k == 'V']
+                    return self.mac_send(200, mac_answer('tracks', len(tids) + len(vl), start, rows, enc))
                 part, start = page_of(tids, q)
                 rows = cat.track_rows(part, probe, full)
                 if probe:
@@ -2277,8 +3071,15 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
                 hit = lambda text: all(w in text.casefold() for w in words)
                 rows = [('A', i, cat.artists[i]['name'], f'{len(cat.artists[i]["albums"])} albums')
                         for i in cat.artist_order if hit(cat.artists[i]['name'])]
+                if vids:                             # artists with videos only, then (after the albums) videos, as tracks are
+                    rows += [('A', i, n, '0 albums') for i, n in sorted(cat.video_artists.items(), key=lambda kv: sort_key(kv[1]))
+                             if i not in cat.artists and hit(n)]
                 rows += [('L', i, a['title'], a['artist']) for i, a in sorted(cat.albums.items(), key=lambda kv: kv[1]['title'].casefold())
                          if hit(a['title'] + ' ' + a['artist'])]
+                if vids:
+                    rows += [('V', i, v['title'], v['artist'], v['album'], v['secs'])
+                             for i, v in sorted(cat.videos.items(), key=lambda kv: kv[1]['title'].casefold())
+                             if hit(v['title'] + ' ' + v['artist'])][:100]
                 for t in cat.tracks:
                     if len(rows) >= 300:
                         break
@@ -2316,6 +3117,7 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
             """the classic Play's side of "Devices": plain lines (Mac Roman, CR ends, tab fields), no A68M head"""
             mq, enc = self.mac_q(), self.mac_enc()
             full = mq.get('full') == '1'
+            vids = mq.get('videos') == '1'
             lines = lambda rows: ''.join(mac_line(r, 255) + '\r' for r in rows).encode(enc, 'replace')
             if what == 'radio':
                 return self.mac_send(200, lines((s['group'], s['name'], Wide(s['url'])) for s in radio.stations()))
@@ -2324,10 +3126,12 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
                 for d in [live_device()] + devices.listing():
                     st = d['state']
                     row = (d['id'], d['name'], d['kind'], int(d['online']), st.get('title', ''), st.get('artist', ''))
-                    if full:                     # the rest of the state, as /api/devices has it (the macOS Play's "Play on")
+                    if full or vids:                 # videos=1: the full record and an 18th field, whether it shows videos                     # the rest of the state, as /api/devices has it (the macOS Play's "Play on")
                         row += (int(bool(st.get('playing'))), st.get('position', 0), st.get('length', 0), st.get('volume', 100),
                                 st.get('album', ''), Wide(st.get('folder', '')), st.get('at', 0), d.get('last_seen', 0),
                                 int(bool(d.get('is_live'))), d.get('version', ''), d.get('listeners', 0))
+                    if vids:
+                        row += (int(bool(d.get('video'))),)
                     rows.append(row)
                 return self.mac_send(200, lines(rows))
             if self.headers.get('X-Aurora') != '1':
@@ -2346,7 +3150,8 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
                 return self.mac_send(code, lines([(out['error'],)] if 'error' in out else [('ok', out.get('id', 0))]))
             did = mq.get('id', '')
             if what == 'announce':
-                err = devices.announce(did, mq.get('name'), mq.get('kind', 'classic'), mq.get('v', ''), self.who())
+                err = devices.announce(did, mq.get('name'), mq.get('kind', 'classic'), mq.get('v', ''), self.who(),
+                                       mq.get('video') == '1')
                 if err:
                     return self.mac_send(400, lines([(err,)]))
                 lib.scan()
@@ -2355,6 +3160,14 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
                 st = {'playing': mq.get('p') == '1', 'position': mq.get('pos'), 'length': mq.get('len'),
                       'volume': mq.get('vol', 100), 'title': mq.get('title', ''), 'artist': mq.get('artist', '')}
                 tid = mq.get('t', '')
+                if tid in cat.videos:                  # a music video (its sound, on the SE): its names from the catalogue
+                    v = cat.videos[tid]
+                    st.update(title=v['title'], artist=v['artist'], album=cat.albums[v['album']]['title'] if v['album'] else '',
+                              folder=v['folder'], video=True)
+                    try:
+                        st['length'] = float(st['length'] or 0) or v['secs']
+                    except ValueError:
+                        st['length'] = v['secs']
                 if tid in cat.tracks:                  # a library track: its names from the catalogue
                     n, title, artist, secs = cat.track_info(tid, probe=False)
                     al = cat.albums[cat.tracks[tid][0]]
@@ -2372,10 +3185,12 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
             got, err = devices.take(did, wait)
             if err:
                 return self.mac_send(404, lines([(err,)]))
-            return self.mac_send(200, lines(mac_command_lines(got, full)))
+            return self.mac_send(200, lines(mac_command_lines(got, full, vids)))
 
         def track(self, tid, q):
             cat.fresh()
+            if tid not in cat.tracks and tid in cat.videos:
+                return self.vaudio(tid, q)             # a video's id where a track's goes: its sound (an older Play)
             if tid not in cat.tracks:
                 return self.fail(404, 'no such track')
             if not listeners.acquire(blocking=False):
@@ -2438,8 +3253,13 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
 
         def file(self, rel):
             p = lib.real(rel)
-            if not p or not os.path.isfile(p) or not lib.playable(p):
+            video = p and lib.video_path(rel.strip('/')) == p
+            if not p or not os.path.isfile(p) or not (lib.playable(p) or video):
                 return self.fail(404, 'no such file')
+            self.send_file(p, VIDEO_TYPES.get(os.path.splitext(p)[1].lower()) if video else None)
+
+        def send_file(self, p, ctype=None):
+            """a file as it is, with Range (206, Content-Range), as AVFoundation and browsers ask for it"""
             size = os.path.getsize(p)
             start, end = 0, size - 1
             rng = self.headers.get('Range', '')
@@ -2456,7 +3276,7 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
                     return
                 end = min(end, size - 1)
             self.send_response(206 if rng else 200)
-            self.send_header('Content-Type', AUDIO_TYPES.get(os.path.splitext(p)[1].lower()) or mimetypes.guess_type(p)[0]
+            self.send_header('Content-Type', ctype or AUDIO_TYPES.get(os.path.splitext(p)[1].lower()) or mimetypes.guess_type(p)[0]
                              or 'application/octet-stream')
             self.send_header('Accept-Ranges', 'bytes')
             self.send_header('Content-Length', str(end - start + 1))
@@ -2474,6 +3294,150 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
                         break
                     self.wfile.write(b)
                     left -= len(b)
+
+        # ---- music videos (22 November 2026): /video/, /vthumb/, /vaudio/, /vmpeg/
+        def the_video(self, vid):
+            """(the catalogue's video, its real path), or None after a 404 has been sent"""
+            cat.fresh()
+            v = cat.videos.get(vid)
+            p = lib.video_path(v['rel']) if v else None
+            if not p:
+                self.fail(404, 'no such video')
+                return None
+            return v, p
+
+        def video(self, vid, rest, q):
+            """/video/ID: the file as it is when a Mac plays it so (Range), else a fragmented MP4 made as it is sent
+            (?start=S to begin later); /video/ID/index.m3u8 and its segments: the same as HLS, for AVFoundation"""
+            got = self.the_video(vid)
+            if not got:
+                return
+            v, p = got
+            who = self.who()
+            if rest:
+                if v['how'] == 'direct' and rest == 'index.m3u8':
+                    return self.fail(404, 'this video plays as it is: /video/' + vid)
+                if not lib.ffmpeg:
+                    return self.fail(404, 'no ffmpeg here')
+                d, refused = vw.hls(vid, v, p)
+                if refused:
+                    log(f'{who}: video {v["title"]} refused: {refused[1]}')
+                    return self.fail(*refused)
+                if rest == 'index.m3u8':
+                    body = vw.playlist(vid, d)
+                    if body is None:
+                        return self.fail(500, 'the conversion did not start: the log says why')
+                    return self.send(200, 'application/vnd.apple.mpegurl', body, [('Cache-Control', 'no-cache')])
+                body = vw.segment(vid, d, rest)
+                if body is None:
+                    return self.fail(404, 'no such segment')
+                return self.send(200, 'video/mp4' if rest.endswith('.mp4') else 'video/iso.segment', body,
+                                 [('Cache-Control', 'max-age=3600')])
+            if v['how'] == 'direct':
+                return self.send_file(p, 'video/quicktime' if v['ext'] == '.mov' else 'video/mp4')
+            if not lib.ffmpeg:
+                return self.fail(404, 'no ffmpeg here')
+            try:
+                start = max(0.0, float(q.get('start', 0)))
+            except ValueError:
+                start = 0.0
+            cmd = [lib.ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error'] + (['-ss', f'{start:.3f}'] if start else []) + \
+                ['-i', p] + video_codec_args(v, v['how']) + ['-movflags', 'frag_keyframe+empty_moov+default_base_moof', '-f', 'mp4', 'pipe:1']
+            self.pipe(v, cmd, 'video/mp4', v['how'], f'video {v["artist"]} - {v["title"]}, {v["how"]} ({v["why"]})')
+
+        def pipe(self, v, cmd, ctype, how, what):
+            """an ffmpeg's output as the answer, no length (it ends when ffmpeg does); the client leaving stops it"""
+            refused = None if self.command == 'HEAD' else vw.take(how)
+            if refused:
+                log(f'{self.who()}: {what}: refused, {refused[1]}')
+                return self.fail(*refused)
+            ff = None
+            try:
+                self.send_response(200)
+                self.send_header('Content-Type', ctype)
+                self.send_header('Cache-Control', 'no-cache, no-store')
+                self.send_header('Connection', 'close')
+                self.send_header('X-Aurora-Seconds', str(v['secs']))
+                self.end_headers()
+                if self.command == 'HEAD':
+                    return
+                ff = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                log(f'{self.who()}: {what}')
+                while True:
+                    b = ff.stdout.read(65536)
+                    if not b:
+                        break
+                    self.wfile.write(b)               # TCP holds it back while the player waits; ffmpeg waits with it
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                log(f'{self.who()}: left the {what.split(",")[0]}')
+            finally:
+                if ff:
+                    ff.kill()
+                    ff.wait()
+                if self.command != 'HEAD':
+                    vw.give(how)
+
+        def vthumb(self, vid):
+            got = self.the_video(vid)
+            if not got:
+                return
+            pic = vw.poster(vid, *got) if lib.ffmpeg else None
+            if not pic:
+                return self.fail(404, 'no poster for this video')
+            return self.send(200, 'image/jpeg', pic, [('Cache-Control', 'max-age=86400')])
+
+        def vaudio(self, vid, q):
+            """a video's sound as an MP3 with an end, like /t/ID (the classic Play plays it so), from ?start=S"""
+            got = self.the_video(vid)
+            if not got:
+                return
+            v, p = got
+            if not lib.ffmpeg:
+                return self.fail(404, 'no ffmpeg here to take the sound out of a video')
+            if not v['acodec'] and lib.ffprobe:
+                return self.fail(404, 'this video has no sound')
+            if not listeners.acquire(blocking=False):
+                return self.fail(503, f'{max_listeners} listeners already')
+            try:
+                start = max(0, int(float(q.get('start', 0))))
+            except ValueError:
+                start = 0
+            title = f'{v["artist"]} - {v["title"]}'
+            meta = self.headers.get('Icy-MetaData') == '1'
+            try:
+                self.send_response(200)
+                self.send_header('Content-Type', 'audio/mpeg')
+                self.send_header('Cache-Control', 'no-cache, no-store')
+                self.send_header('Connection', 'close')
+                self.send_header('icy-name', mac_field(title, 60))
+                self.send_header('X-Aurora-Seconds', str(v['secs']))
+                if meta:
+                    self.send_header('icy-metaint', str(METAINT))
+                self.end_headers()
+                if self.command == 'HEAD':
+                    return
+                log(f'{self.who()}: the sound of the video {title}' + (f' from {start} s' if start else ''))
+                stream_track(lib, v['rel'], self.wfile, meta, start, kbps, title, vw.soundtrack(vid, v, p, start, kbps))
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                log(f'{self.who()}: left the video {title}')
+            finally:
+                listeners.release()
+
+        def vmpeg(self, vid, q):
+            """/vmpeg/ID?w=W&h=H&start=S: the video as an MPEG-1 program stream for the Aurora68 Video Decoder card
+            (docs/16), made exactly as tools/video-helper's /play makes it; always a transcode"""
+            got = self.the_video(vid)
+            if not got:
+                return
+            v, p = got
+            if not lib.ffmpeg:
+                return self.fail(404, 'no ffmpeg here')
+            w, h = mpeg_size(q.get('w'), MPEG_MAX_W, 320), mpeg_size(q.get('h'), MPEG_MAX_H, 240)
+            start = int(q['start']) if q.get('start', '').isdigit() else 0
+            cmd = [lib.ffmpeg, '-hide_banner', '-loglevel', 'error', '-nostdin'] + (['-ss', str(start)] if start else []) + \
+                ['-i', p] + mpeg1_args(w, h)
+            self.pipe(v, cmd, 'video/mpeg', 'transcode', f'video {v["artist"]} - {v["title"]} as MPEG-1 at {w}x{h}' +
+                      (f' from {start} s' if start else ''))
 
         def m3u(self, rel):
             if rel is None:

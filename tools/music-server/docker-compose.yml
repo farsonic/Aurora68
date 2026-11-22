@@ -13,11 +13,18 @@ services:
     user: "${PUID:-1000}:${PGID:-1000}"   # Synology: often 1026:100 (id USERNAME in an SSH session says)
     volumes:
       - /volume1/music:/music:ro     # your MP3 folder (Synology: /volume1/...; QNAP: /share/...; Unraid: /mnt/user/...)
+      # music videos: what the server makes once (posters, soundtracks, HLS) kept across image updates, in a folder
+      # PUID can write (with MUSIC_CACHE below; without it the container's /tmp, emptied by each update)
+      # - /volume1/docker/aurora68-cache:/cache
     environment:
       MUSIC_NAME: "NAS Music"        # the name in Aurora68 Play's Radio menu and on the web page
       MUSIC_PORT: "8000"
       MUSIC_PREFER: "asked"          # the address given to the Mac: asked, ipv6 or ipv4
       MUSIC_LISTEN: "both"           # answer on IPv6 and IPv4, or ipv4 / ipv6 only
+      # MUSIC_CACHE: "/cache"          # with the volume above
+      # VIDEO_TRANSCODE: "off"         # refuse videos that need encoding again (VP9, AV1...): for a slow NAS
+      # VIDEO_TRANSCODES: "1"          # transcodes at once (each takes a core or more)
+      # VIDEO_BITRATE: "4000"          # kbit/s at most for a transcode's picture; VIDEO_MAX_HEIGHT: "1080"
       # Get albums (README): the keys in .env, never here
       # GET_INDEXER_KEY: "${NZBGEEK_API_KEY}"
       # GET_SAB_URL: "http://192.168.1.20:7777"

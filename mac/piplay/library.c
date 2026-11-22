@@ -52,7 +52,7 @@
 
 extern volatile struct psmb_stream *ps;
 static unsigned char pb[256];
-static const struct a68_client cl = { 0, 0 };    /* Mac Roman, the short records: what the classic Play always asked */
+static const struct a68_client cl = { 0, 0, 0 };    /* Mac Roman, the short records: what the classic Play always asked */
 
 /* ---- what the library holds now: a page of the view's list (play/core/catalog.c) -------------------------- */
 enum { V_ARTISTS = A68_V_ARTISTS, V_ALBUMS = A68_V_ALBUMS, V_TRACKS = A68_V_TRACKS, V_SEARCH = A68_V_SEARCH };

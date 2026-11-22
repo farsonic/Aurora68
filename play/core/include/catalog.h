@@ -8,7 +8,9 @@
  * the owner's library is not); the macOS Play keeps every artist and album, which it reads page after page
  * with a68_next_from (proto.h) and the same record readers. A row's texts have fixed sizes, the classic Play's,
  * because a page is an array; the macOS Play reads the records themselves and has no such limits. Written on
- * 22 November 2026 (docs/08 item 107) from the classic Play's library.c.
+ * 22 November 2026 (docs/08 item 107) from the classic Play's library.c. Music videos the same day (item 109): with
+ * the client's videos=1 an album's or an artist's tracks are followed by its videos, rows of kind 'V', and a search
+ * finds them too; an artist's row counts its videos.
  */
 #ifndef A68_CATALOG_H
 #define A68_CATALOG_H
@@ -18,8 +20,9 @@ enum { A68_V_ARTISTS, A68_V_ALBUMS, A68_V_TRACKS, A68_V_SEARCH };   /* what a li
 #define A68_PAGE 200                     /* rows asked for at once: the server's page */
 
 struct a68_row {                         /* one row of a list */
-	char id[9], album[9], kind;          /* kind: 'A' artist, 'L' album, 'T' track */
+	char id[9], album[9], kind;          /* kind: 'A' artist, 'L' album, 'T' track, 'V' music video */
 	unsigned short num, count;           /* a track's number; an artist's albums, an album's tracks */
+	unsigned short videos;               /* an artist's videos (videos=1) */
 	unsigned long secs;
 	char text[48], sub[40];              /* the name, title; the artist (an album, a track) */
 };
@@ -38,10 +41,12 @@ int a68_list_path(const struct a68_client *c, int kind, const char *id, const ch
 int a68_list_load(struct a68_list *l, char *body, long len);
 /* the row with that id, -1 if none */
 int a68_list_find(const struct a68_list *l, const char *id);
+/* how many rows are music videos (they come after an album's tracks) */
+int a68_list_videos(const struct a68_list *l);
 /* the first row whose name starts with what was typed (n bytes, lower case; a "The " in front of a name is left
    out unless what was typed starts "th"), -1 if none */
 int a68_list_typed(const struct a68_list *l, const char *typed, int n);
-/* the seconds of every row: an album's length */
+/* the seconds of every track row (not the videos): an album's length */
 unsigned long a68_list_secs(const struct a68_list *l);
 
 /* the lines a window shows: "Previous page..." if the page is not the first, the rows, "Next page..." if more

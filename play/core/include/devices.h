@@ -31,6 +31,7 @@ struct dv {
 	char name[64];            /* the Mac's name, in the client's encoding */
 	char version[8];
 	char kind[8];             /* "classic" or "macos" */
+	int video;                /* it shows music videos: the announce says so (the classic Play: their sound only, 0) */
 	struct a68_client client; /* Mac Roman (the classic Play) or UTF-8 (the macOS one) */
 	int wait;                 /* seconds a commands request may be held (DV_WAIT; URLSession waits longer: 20) */
 	unsigned long refresh;    /* seconds between reports while playing even without a change (0: none) */
