@@ -72,6 +72,7 @@ static struct {
     uint32_t sent;                          /* frames the driver took from the queue (tx counts those queued) */
     uint32_t arp_asks, arp_answers, pings, syns, resets;   /* for the heartbeat's line (psmac_ip_report) */
     uint32_t next_check;
+    int ll_ok, ll;                          /* a link-local address when DHCP does not answer (Aurora68 Recovery); in use */
     char name[32];
 } I = { .unit = -1 };
 
@@ -161,7 +162,18 @@ static int parse_ip(const char *s, uint8_t out[4], const char **end)
 }
 static int hexv(char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1; }
 
-void psmac_ip_init(void)
+static void ip_init(const char *default_name);
+void psmac_ip_init(void) { ip_init("aurora68-pi"); }
+/* Aurora68 Recovery (psmac_recovery.c, docs/08 item 106): no Mac runs, so on the WiFi the kernel takes the
+   radio's address and asks for an IPv4 address of its own (nothing to share), and a link with no DHCP
+   server (a laptop on a direct cable) gets a link-local address after about ten seconds */
+void psmac_ip_init_recovery(const char *name)
+{
+    ip_init(name);
+    I.wifi_shared = 0;
+    I.ll_ok = 1;
+}
+static void ip_init(const char *default_name)
 {
     const char *o;
     I.want_link = -1;
@@ -198,7 +210,7 @@ void psmac_ip_init(void)
         if (I.own_hw_set) I.own_hw[0] &= 0xfe;               /* unicast */
     }
     const char *nm = psmac_option("remote.name");
-    if (!nm) nm = "aurora68-pi";
+    if (!nm) nm = default_name;
     unsigned n = 0;
     for (; nm[n] && n < sizeof I.name - 1; n++) I.name[n] = nm[n];
     I.name[n] = 0;
@@ -409,6 +421,7 @@ static void dhcp_in(const uint8_t *p, uint32_t n)
         D.state = D_REQUEST; D.tries = 0; D.next_ms = now_ms();
     } else if (type == 5 && (D.state == D_REQUEST || D.state == D_BOUND)) {   /* ACK */
         int fresh = D.state == D_REQUEST || !eq(I.ip, p + 16, 4);
+        I.ll = 0;
         cpy(I.ip, p + 16, 4); cpy(I.mask, mask, 4); cpy(I.gw, router, 4);
         D.state = D_BOUND; D.lease_s = lease < 60 ? 60 : lease; D.t_bound = now_ms(); D.tries = 0;
         D.next_ms = D.t_bound + D.lease_s * 500u;           /* renew at half the lease */
@@ -431,7 +444,18 @@ static void dhcp_poll(void)
         if (D.state == D_REQUEST && D.tries >= 4) { D.state = D_DISCOVER; D.tries = 0; }
         dhcp_send(D.state == D_DISCOVER ? 1 : 3);
         D.tries++;
-        D.next_ms = t + (D.tries < 3 ? 2000u : 4000u);
+        D.next_ms = t + (D.tries < 3 ? 2000u : I.ll ? 15000u : 4000u);
+        /* no DHCP server after five tries (about twelve seconds): an address from 169.254/16 (RFC 3927), made
+           from the MAC address so it is the same at every start, while DHCP goes on asking more slowly. A
+           laptop on a direct cable gives itself one too, and finds the kernel by mDNS (NAME.local). The
+           address is not probed first: on a cable with one laptop there is nobody to collide with */
+        if (I.ll_ok && !I.ll && D.state == D_DISCOVER && D.tries == 5 && eq(I.ip, zero4, 4)) {
+            I.ll = 1;
+            I.ip[0] = 169; I.ip[1] = 254; I.ip[2] = (uint8_t)(1 + (I.hw[4] ^ I.hw[2]) % 254); I.ip[3] = (uint8_t)(1 + (I.hw[5] ^ I.hw[3]) % 254);
+            I.mask[0] = 255; I.mask[1] = 255; I.mask[2] = 0; I.mask[3] = 0;
+            for (int i = 0; i < 4; i++) I.gw[i] = 0;
+            bound("link-local: no DHCP server answered; DHCP still asked every 15 s");
+        }
         /* the WiFi, nobody answering after half a minute: the Mac's address, if it has one */
         if (I.shared == 1 && D.state == D_DISCOVER && D.tries == 8 && I.mac_ip[0][0]) go_shared("no DHCP answer for the kernel on the WiFi");
         return;
@@ -767,6 +791,7 @@ static void use_link(int u)
     for (int c = 0; c < IPK_CONNS; c++) if (tcbs[c].state != T_FREE) tcb_free(c, "the link changed");
     txq_tail = txq_head; rxq_tail = rxq_head;
     for (int i = 0; i < 4; i++) I.ip[i] = I.mask[i] = I.gw[i] = 0;
+    I.ll = 0;
     D.state = D_OFF;
     I.unit = u;
     if (u < 0) { kprintf("[REMOTE] no network link: waiting for one\n"); return; }
@@ -828,7 +853,7 @@ void psmac_ip_info(struct ipk_info *o)
     cpy(o->mac_ip[0], I.mac_ip[0], 4); cpy(o->mac_ip[1], I.mac_ip[1], 4);
     o->lease_s = D.state == D_BOUND ? D.lease_s : 0;
     o->rx = I.rx; o->tx = I.tx; o->rx_dropped = I.rx_dropped; o->tx_dropped = I.tx_dropped; o->conns = conns_total;
-    o->phase = I.unit < 0 ? "no link" : I.shared == 2 ? "shared" : I.have_static ? "static" : D.state == D_BOUND ? "bound" : "DHCP";
+    o->phase = I.unit < 0 ? "no link" : I.shared == 2 ? "shared" : I.have_static ? "static" : D.state == D_BOUND ? "bound" : I.ll ? "link-local" : "DHCP";
 }
 
 /* one line for the kernel's heartbeat (psmac_bus.c): the remote control's address and what came and

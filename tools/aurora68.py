@@ -46,6 +46,14 @@ applications"). Paths are the Mac's: "Mac HD:Folder:File", and ":Folder:File" on
   aurora68.py apps [--json]                      the programs that run (System 6: the one in front)
   aurora68.py quit NAME | quit --creator ttxt    ask a program to quit (System 7)
 
+Aurora68 Recovery (docs/08 item 106): a start in which the Mac stays off and the Pi serves its SD card; the PIN
+is the one on the Mac's screen (--pin or $AURORA68_PIN; --url defaults to http://aurora68.local).
+  aurora68.py recovery --pin N state | ls | put FILE [NAME] | get NAME [OUT] | rm NAME | mv A B
+  aurora68.py recovery --pin N cmdline [TEXT|@FILE] | config [TEXT|@FILE] | opt [KEY=VALUE|-KEY|+WORD ...] [--dry]
+  aurora68.py recovery --pin N wifi [show|scan|test|save] [--ssid S --psk P --country GB]
+  aurora68.py recovery --pin N log [--now] | rollback [--force] | reboot [normal|recovery]
+  aurora68.py restart recovery                   (the remote control) the Pi restarts into recovery
+
 Where: --url (default $AURORA68_URL, else http://aurora68-pi.local), --token (default
 $AURORA68_TOKEN). In the QEMU testbed, --semihost BASE talks to the kernel through the files of
 mac.remotefile=BASE instead of the network.
@@ -362,6 +370,166 @@ def png_size(data):
     return struct.unpack('>II', data[16:24]) if data[:8] == b'\x89PNG\r\n\x1a\n' else (0, 0)
 
 
+# ---- Aurora68 Recovery (docs/08 item 106) -------------------------------------------------------------
+# A recovery start of the kernel serves the Pi's SD card instead of the Mac: `aurora68.py recovery --pin N ...`.
+# Every request carries the PIN the Mac's screen shows (X-Aurora-Pin); no token, and the remote need not be on.
+class Recovery:
+    def __init__(self, url, pin):
+        self.url = (url or os.environ.get('AURORA68_RECOVERY_URL') or 'http://aurora68.local').rstrip('/')
+        self.pin = pin or os.environ.get('AURORA68_PIN') or ''
+        if not self.pin:
+            raise RuntimeError('the PIN shown on the Mac\'s screen is needed: --pin NNNN (or $AURORA68_PIN)')
+        u = urllib.parse.urlsplit(self.url)
+        self.host, self.port = u.hostname, u.port or 80
+
+    def conn(self, timeout=60):
+        import http.client
+        return http.client.HTTPConnection(self.host, self.port, timeout=timeout)
+
+    def call(self, method, path, body=None, raw=False, timeout=60):
+        c = self.conn(timeout)
+        c.request(method, path, body=body, headers={'X-Aurora-Pin': self.pin})
+        r = c.getresponse()
+        data = r.read()
+        c.close()
+        if r.status != 200:
+            try:
+                msg = json.loads(data).get('error', data.decode(errors='replace'))
+            except ValueError:
+                msg = data.decode(errors='replace')
+            raise RuntimeError(f'{method} {path}: {r.status} {msg}')
+        return data if raw else json.loads(data)
+
+    def put_file(self, local, name, progress=True):
+        """the file streamed to the card; the kernel reads it back and answers with its CRC32"""
+        import zlib
+        size = os.path.getsize(local)
+        c = self.conn(600)
+        c.putrequest('PUT', '/r/file?name=' + urllib.parse.quote(name))
+        c.putheader('X-Aurora-Pin', self.pin); c.putheader('Content-Length', str(size)); c.endheaders()
+        crc, sent, t0 = 0, 0, time.time()
+        with open(local, 'rb') as f:
+            while True:
+                b = f.read(65536)
+                if not b:
+                    break
+                c.send(b); crc = zlib.crc32(b, crc); sent += len(b)
+                if progress and sys.stderr.isatty():
+                    sys.stderr.write(f'\r{human(sent)} of {human(size)}'); sys.stderr.flush()
+        if progress and sys.stderr.isatty():
+            sys.stderr.write('\n')
+        r = c.getresponse(); data = r.read(); c.close()
+        try:
+            j = json.loads(data)
+        except ValueError:
+            j = {'error': data.decode(errors='replace')}
+        if r.status != 200:
+            raise RuntimeError(f'{name}: {r.status} {j.get("error")}')
+        j['local_crc32'] = f'{crc & 0xffffffff:08x}'
+        j['seconds'] = round(time.time() - t0, 1)
+        if j.get('crc32') != j['local_crc32']:
+            raise RuntimeError(f'{name}: the card holds CRC32 {j.get("crc32")}, the file here is {j["local_crc32"]}')
+        return j
+
+
+def recovery_main(a):
+    r = Recovery(a.url, a.pin)
+    c = a.rcmd
+    if c == 'state':
+        print(json.dumps(r.call('GET', '/r/state'), indent=2))
+    elif c == 'ls':
+        x = r.call('GET', '/r/files')
+        for f in x['files']:
+            print(f'{human(f["size"]) if not f["folder"] else "folder":>10}  {f["name"]}{"/" if f["folder"] else ""}')
+        print(f'{x["count"]} entries; {x.get("card", "")}' + (f', {human(x["free_kb"] * 1024)} free' if 'free_kb' in x else ''))
+    elif c == 'put':
+        j = r.put_file(a.file, a.name or os.path.basename(a.file))
+        print(f'{j["name"]}: {human(j["size"])} in {j["seconds"]} s, CRC32 {j["crc32"]} read back from the card and the same as here'
+              + (f'; {j["check"]}' if j.get('check') else '') + ('; the old kernel kept as kernel8.old' if j.get('installed') else '')
+              + (f'; the old one kept as {j["backup"]}' if j.get('backup') else ''))
+    elif c == 'get':
+        data = r.call('GET', '/r/file?name=' + urllib.parse.quote(a.name), raw=True, timeout=600)
+        out = a.out or a.name
+        open(out + '.part', 'wb').write(data); os.replace(out + '.part', out)
+        print(f'{out}: {human(len(data))}')
+    elif c == 'rm':
+        r.call('POST', '/r/rm?name=' + urllib.parse.quote(a.name)); print(f'{a.name} deleted')
+    elif c == 'mv':
+        r.call('POST', '/r/mv?from=' + urllib.parse.quote(a.src) + '&to=' + urllib.parse.quote(a.dst)); print(f'{a.src} is now {a.dst}')
+    elif c in ('cmdline', 'config'):
+        name = c + '.txt'
+        if a.text is None:
+            sys.stdout.write(r.call('GET', '/r/text?name=' + name, raw=True).decode('latin-1'))
+        else:
+            text = open(a.text[1:]).read() if a.text.startswith('@') else a.text
+            if c == 'cmdline' and not text.endswith('\n'):
+                text += '\n'
+            j = r.call('PUT', '/r/text?name=' + name, body=text.encode('latin-1'))
+            print(f'{name} written ({j["size"]} bytes), the one before kept as {j["backup"]}')
+    elif c == 'opt':
+        a.dry = '--dry' in a.edits
+        a.edits = [e for e in a.edits if e != '--dry']
+        edits = '\n'.join(a.edits)
+        j = r.call('POST', '/r/options' + ('?dry=1' if a.dry or not a.edits else ''), body=edits.encode('latin-1')) if a.edits else r.call('GET', '/r/options')
+        if not a.edits:
+            for k, v in j['values'].items():
+                if v is not None:
+                    print(f'{k} = {v}')
+        print(('would be: ' if a.dry else 'saved: ' if a.edits else 'line: ') + j['line'].rstrip())
+    elif c == 'wifi':
+        w = a.action or 'show'
+        if w == 'show':
+            j = r.call('GET', '/r/wifi'); s = j['settings']
+            print(f'cmdline.txt: {s["ssid"] or "(no network)"}, password {s["psk"]}, country {s["country"] or "(default)"}')
+            if j.get('radio'):
+                print(f'radio: {j["radio"]["state"]} {j["radio"]["message"]}')
+            for n in j['scan']:
+                print(f'  {n["ssid"]:32} {n["rssi"]:4} dBm  ch {n["channel"]:3}  {n["security"]}')
+            if j.get('note'):
+                print('test: ' + j['note'])
+        elif w == 'scan':
+            r.call('POST', '/r/wifi/scan'); time.sleep(4); a.action = 'show'; recovery_main(a)
+        else:
+            body = urllib.parse.urlencode({'ssid': a.ssid or '', 'psk': a.psk or '', 'country': a.country or ''})
+            r.call('POST', '/r/wifi/' + w, body=body.encode())
+            if w == 'test':
+                for _ in range(30):
+                    time.sleep(1.5)
+                    j = r.call('GET', '/r/wifi')
+                    if j['test'] != 'running':
+                        break
+                print('test: ' + (j.get('note') or 'no answer'))
+            else:
+                print('saved to cmdline.txt (the line before in cmdline.bak)')
+    elif c == 'log':
+        sys.stdout.write(r.call('GET', '/r/log' + ('?now=1' if a.now else ''), raw=True).decode('latin-1'))
+    elif c == 'rollback':
+        print(r.call('POST', '/r/rollback' + ('?force=1' if a.force else '')).get('note'))
+    elif c == 'reboot':
+        j = r.call('POST', '/r/reboot?how=' + a.how); print(f'restarting: {a.how}' + (f' ({j["note"]})' if j.get('note') else ''))
+
+
+def add_recovery(sub):
+    p = sub.add_parser('recovery', help='Aurora68 Recovery: the Pi\'s SD card when the Mac will not start (docs/08 item 106)')
+    p.add_argument('--url', help='default $AURORA68_RECOVERY_URL, else http://aurora68.local')
+    p.add_argument('--pin', help='the four digits on the Mac\'s screen (default $AURORA68_PIN)')
+    rs = p.add_subparsers(dest='rcmd', required=True, metavar='ACTION')
+    rs.add_parser('state', help='the recovery start: why, network, card, upload')
+    rs.add_parser('ls', help='the files in the card\'s root')
+    q = rs.add_parser('put', help='a file onto the card (kernel8.img is checked first)'); q.add_argument('file'); q.add_argument('name', nargs='?')
+    q = rs.add_parser('get', help='a file from the card'); q.add_argument('name'); q.add_argument('out', nargs='?')
+    q = rs.add_parser('rm', help='delete a file (never kernel8.img)'); q.add_argument('name')
+    q = rs.add_parser('mv', help='rename a file'); q.add_argument('src'); q.add_argument('dst')
+    q = rs.add_parser('cmdline', help='cmdline.txt: shown, or written (TEXT, or @FILE); one line; .bak kept'); q.add_argument('text', nargs='?')
+    q = rs.add_parser('config', help='config.txt: shown, or written (TEXT, or @FILE); .bak kept'); q.add_argument('text', nargs='?')
+    rs.add_parser('opt', help='options: shown, or [--dry] KEY=VALUE / -KEY / +WORD edits (every other word kept)')
+    q = rs.add_parser('wifi', help='the WiFi: show, scan, test or save (--ssid --psk --country)'); q.add_argument('action', nargs='?', choices=('show', 'scan', 'test', 'save'))
+    q.add_argument('--ssid'); q.add_argument('--psk'); q.add_argument('--country')
+    q = rs.add_parser('log', help='the last start\'s aurora68.log (--now: this recovery start\'s)'); q.add_argument('--now', action='store_true')
+    q = rs.add_parser('rollback', help='kernel8.old back as kernel8.img'); q.add_argument('--force', action='store_true')
+    q = rs.add_parser('reboot', help='restart the Pi: normal or recovery'); q.add_argument('how', nargs='?', default='normal', choices=('normal', 'recovery'))
+
+
 def main():
     ap = argparse.ArgumentParser(description='The Pi\'s remote control of the Mac (docs/13).')
     ap.add_argument('--url'); ap.add_argument('--token'); ap.add_argument('--semihost', metavar='BASE')
@@ -383,7 +551,7 @@ def main():
     p = sub.add_parser('type', help='type text on the Mac\'s keyboard'); p.add_argument('text')
     p = sub.add_parser('key', help='one key, with --mods'); p.add_argument('key'); p.add_argument('--mods', default='')
     p = sub.add_parser('log', help='the kernel\'s log'); p.add_argument('--since', type=int); p.add_argument('--tags'); p.add_argument('--follow', action='store_true'); p.add_argument('--records', action='store_true')
-    p = sub.add_parser('restart', help='restart the Mac (or nmi, pi)'); p.add_argument('how', nargs='?', default='mac', choices=('mac', 'nmi', 'pi'))
+    p = sub.add_parser('restart', help='restart the Mac (or nmi, pi; recovery: the Pi restarts into Aurora68 Recovery)'); p.add_argument('how', nargs='?', default='mac', choices=('mac', 'nmi', 'pi', 'recovery'))
     p = sub.add_parser('input', help='raw input events as JSON'); p.add_argument('json')
     p = sub.add_parser('ls', help='a folder on the Mac (no PATH: its disks)'); p.add_argument('path', nargs='?', default=''); p.add_argument('--json', action='store_true')
     p = sub.add_parser('info', help='one file or folder on the Mac'); p.add_argument('path'); p.add_argument('--json', action='store_true')
@@ -401,7 +569,15 @@ def main():
     p = sub.add_parser('open', help='launch an application or open a document on the Mac'); p.add_argument('path')
     p = sub.add_parser('apps', help='the programs that run on the Mac'); p.add_argument('--json', action='store_true')
     p = sub.add_parser('quit', help='ask a program on the Mac to quit (System 7)'); p.add_argument('name', nargs='?'); p.add_argument('--creator')
-    a = ap.parse_args()
+    add_recovery(sub)
+    argv, edits = sys.argv[1:], []
+    if 'recovery' in argv and 'opt' in argv[argv.index('recovery'):]:   # the edits may begin with '-' (-KEY): taken before argparse
+        i = argv.index('opt', argv.index('recovery'))
+        argv, edits = argv[:i + 1], argv[i + 1:]
+    a = ap.parse_args(argv)
+    a.edits = edits
+    if a.cmd == 'recovery':
+        return recovery_main(a)
     r = Remote(a.url, a.token, a.semihost)
     on = {} if a.display is None else {'display': a.display}       # a point of that screen, not of the desktop
     if a.cmd == 'state':

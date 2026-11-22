@@ -491,6 +491,63 @@ Notes:
     If the chip is not found the Mac's wired card refuses to open and the WiFi carries on;
     eth=off in cmdline.txt hides the wired card altogether.
 
+Aurora68 Recovery: when the Mac will not start (new in the next release)
+------------------------------------------------------------------------
+Inside the SE the Pi's card cannot be reached without opening the Mac. A recovery start is the way
+around that: the 68k is not started, no Mac code runs, and the Pi offers its own SD card on the
+network. The SE's screen (and HDMI) then says "Aurora68 Recovery", why, the address to open, and a
+four-digit PIN.
+
+Getting in, any of these:
+  - The Mac did not reach the Finder in three starts in a row: the fourth start is a recovery start
+    by itself. (The count is in boot.txt on the card. Switching the Mac off before the Finder counts
+    as a failed start too; a Restart from the Finder does not. mac.bootcount=off switches it off.)
+  - Hold the programmer's interrupt switch (the rear button of the two on the SE's left side) while
+    you switch the Mac on, and keep holding it for a few seconds.
+  - Hold Esc on a USB keyboard on the Pi during the first seconds: the Pi restarts into recovery.
+  - Put a file named recovery.txt on the card (it is removed when recovery starts), or, from a
+    running Mac with the remote control on: python3 aurora68.py restart recovery
+  - mac.recovery=1 in cmdline.txt.
+
+Connecting:
+  - With the Pi's wired port or a USB Ethernet adapter (eth=usb) on your network: open the address
+    the screen shows, or http://aurora68.local/ . A laptop on a direct cable works too: the Pi takes
+    an address of its own after about ten seconds, and http://aurora68.local/ finds it.
+  - On WiFi, with the wifi.ssid= / wifi.psk= / wifi.country= options already in cmdline.txt.
+  - No network at all, or the WiFi settings wrong: plug a USB keyboard into the Pi and press Return.
+    A menu on the screen scans for networks, takes the password and country (your own two letters,
+    not XX), sets mac.fpu, mac.boot and mac.console, saves them into cmdline.txt (the line before is
+    kept in cmdline.bak) and restarts. On a Plus or 512K the Mac's own keyboard works; on the SE it
+    does not (the Mac's ROM reads the SE's keyboard, and it is not running).
+
+The page (a phone is fine) asks for the PIN on the screen once. Then:
+  - Files: every file in the card's root, with Get, Rename and Delete; Upload for any file of any
+    size (a disk image, a declaration ROM, a kernel). Every upload is read back from the card and
+    compared. kernel8.img is never deleted.
+  - A new kernel8.img is checked before it is used (its gzip data and checksum, the ARM64 header,
+    that it is an Aurora68 kernel) and only then replaces the old one, which stays as kernel8.old.
+    "Roll back the kernel" puts kernel8.old back; when the Finder was not reached three times and a
+    kernel8.old is there, the page offers it at the top.
+  - WiFi: Scan, choose a network, type the password and country, "Test join now" (it says whether
+    it joined), then "Save to cmdline.txt".
+  - Options: the usual cmdline.txt options as a form; the new line is shown before it is saved, and
+    every other word of the line stays as it was. cmdline.txt and config.txt can also be edited as
+    text; the old one is kept as cmdline.bak / config.bak. cmdline.txt must stay one line.
+  - Log: the last start's aurora68.log (on the SE it is saved every 30 seconds) and this recovery
+    start's log.
+  - "Restart normally" (it also takes mac.recovery=1 out of cmdline.txt) and "Restart into recovery".
+From a computer: python3 aurora68.py recovery --url http://aurora68.local --pin 1234 ls
+(also put FILE, get NAME, rm NAME, mv A B, cmdline, opt, wifi, log, rollback, reboot normal).
+
+Safety: every request needs the PIN, which is new at every recovery start; after ten wrong ones the
+PIN changes and the Pi does not answer for a minute. Only the local network is answered. The WiFi
+password is never shown back (it reads "set"), and the PIN is never written to the log.
+
+What it cannot do: a kernel8.img that stops before it reads the card cannot get you into recovery,
+and the Pi 3's firmware has no fallback kernel of its own that we know of. Keep a known good
+kernel8.img, and consider a microSD extension cable led out of the case. This has been tested in
+the project's emulators only; your first real test of it is welcome.
+
 What to expect, and what the log says
 -------------------------------------
 On the serial line, within a second: Emu68's banner, then "[PSMAC] options: ... bridge=gpio

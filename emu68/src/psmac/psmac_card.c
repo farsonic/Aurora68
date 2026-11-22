@@ -55,10 +55,12 @@
 #include "psmb.h"
 #include "psmac_fatfs.h"
 #include "psmac_hfsview.h"
+#include "psmac_recovery.h"
 
 extern const char *psmac_option(const char *key);
 extern int alice_pi_is_2711(void);
 extern spinlock_t psmac_gpfsel_lock;
+void sprintf(char *buf, const char *format, ...);        /* support.c */
 
 #define PERI     PSMAC_PERIPH_HI
 #define GPIO     (PERI + 0x200000u)
@@ -617,7 +619,7 @@ static int secret_name(const char *s, uint32_t n)
 {
     uint32_t b = n;
     while (b && s[b - 1] != '.') b--;                  /* the last part of a dotted name */
-    static const char *const names[] = { "psk", "pass", "passwd", "password", "passphrase", "passkey", "key", "secret", "token" };
+    static const char *const names[] = { "psk", "pass", "passwd", "password", "passphrase", "passkey", "key", "secret", "token", "recoverypin" };
     for (unsigned i = 0; i < sizeof names / sizeof names[0]; i++) {
         uint32_t m = 0, j;
         while (names[i][m]) m++;
@@ -666,7 +668,7 @@ void psmac_redact(const char *in, char *out, uint32_t cap)
 /* psmac_mbox.c (PiLog) and psmac_crash.c: 0 asked, -1 no writable card */
 int psmac_card_save_log(int after_crash)
 {
-    if (sd.state < 0 || sd.ro) return -1;
+    if (sd.state < 0 || sd.ro || psmac_recovery_on()) return -1;   /* in recovery aurora68.log is the last start's, kept */
     logf_req = after_crash ? 2 : 1;
     __atomic_store_n(&logf_state, 1, __ATOMIC_RELEASE);
     return 0;
@@ -1100,6 +1102,7 @@ static uint8_t lbuf[LSLICE * 512] __attribute__((aligned(16)));
 /* one slice of the current chunk; 0 when there is nothing left to load */
 static int load_step(void)
 {
+    if (psmac_recovery_on()) return 0;                 /* recovery entered after the images were found (the switch) */
     if (!ld.active && !load_pick()) return 0;
     struct img *m = &imgs[ld.img];
     uint32_t first = ld.chunk * (LCHUNK / 512u) + ld.done, secs = (m->len + 511u) / 512u;
@@ -1450,6 +1453,7 @@ void psmac_card_poll(void)
    core 3 began, and card_start takes its results rather than resetting the card a second time */
 static int early_done, early_init_rc, early_mount_rc;
 static volatile int sf_pending; static void sfile_step(void);     /* small files of the kernel's own (below) */
+static int boot_jobs(void);                                       /* boot.txt and recovery.txt (Aurora68 Recovery, at the end) */
 static void card_poll_locked(void)
 {
     if (sd.state == 0 || early_done == 1) {
@@ -1463,6 +1467,8 @@ static void card_poll_locked(void)
     }
     if (sd.state != 1) return;
     if (fl.busy) { flush_poll(); return; }             /* a sector is being programmed: nothing else touches the card */
+    if (boot_jobs()) return;
+    if (psmac_recovery_on()) return;                   /* a recovery start: the card is the recovery's alone (psmac_recovery.c) */
     if (__atomic_load_n(&pair_dirty, __ATOMIC_ACQUIRE) && !sd.ro) { pair_dirty = 0; pairings_write(); return; }
     if (__atomic_load_n(&opt_state, __ATOMIC_ACQUIRE) == 1 && !sd.ro) { cmdline_apply(); return; }
     { extern int psmac_solo_pram_take(uint8_t out[260]), psmac_se_pram_take(uint8_t out[260]); static uint8_t p[260];
@@ -1508,6 +1514,14 @@ static void card_start(void)
       if (logsave_s && !sd.ro) kprintf("[CARD] the log goes into aurora68.log every %u s (mac.logsave=%u; 0 stops it)\n", logsave_s, logsave_s); }
     pairings_load();
     pram_load();
+    if (psmac_recovery_on()) {
+        /* Aurora68 Recovery: no disk image loaded, nothing of the Mac's written, and aurora68.log left as
+           the last start wrote it, since the recovery page shows it */
+        logsave_s = 0;
+        fl.img = -1;
+        kprintf("[CARD] a recovery start: no disk images loaded, aurora68.log kept as the last start left it\n");
+        return;
+    }
     container_check();
     image_scan();
     exchange_start();
@@ -1760,4 +1774,761 @@ void psmac_card_report(void)
         if (imgs[i].loaded && imgs[i].nloaded < imgs[i].nload) kprintf(", %u%% read from the card", imgs[i].nloaded * 100u / imgs[i].nload);
     }
     kprintf("\n");
+}
+
+/* ==== Aurora68 Recovery: the card's root as a file manager sees it (22 November 2026) ============
+   The recovery start (psmac_recovery.c, docs/08 item 106) lists, reads, writes, renames and deletes any
+   file in the card's root, of any size: a new kernel8.img, a disk image of a hundred megabytes, a
+   declaration ROM, cmdline.txt. Everything above this point only ever rewrote files of its own in place;
+   this part makes and removes directory entries and cluster chains, so it is written around one rule:
+   a power cut at any moment leaves a card the firmware still boots. That comes down to the order of
+   the writes, each of which is one 512-byte sector (an SD card programs a sector whole or not at all, as
+   far as a file system can rely on anything):
+   - a new file's directory entry is written first, empty (size 0, no cluster); its data, then its chain
+     in the FAT (each cluster marked the end of the chain before the one in front is joined to it), and
+     only then is its entry given the first cluster and the size. Cut before that, it is an empty file and
+     a few clusters marked used that nothing owns: space lost, nothing broken.
+   - a file's content is replaced by changing its own short entry's first cluster and size, one sector
+     write. The name never goes away, so kernel8.img is on the card at every instant. Where that change
+     and its partner's (the temporary file, or kernel8.old) are in two sectors, there is a moment between
+     the two writes when both names start with the same cluster: psmac_card_rec_repair, at the next
+     recovery start, finds such a pair among the temporary names and takes the temporary's entry away
+     without touching its clusters; and a delete never frees a chain that another name starts with.
+   FAT16 and FAT32 (the root's fixed area or its chain, which grows by a cluster when full); long names
+   read and written (VFAT), a name that fits 8.3 written as 8.3 with the lower-case bits Windows uses.
+   Every function here runs on core 3 (the recovery's service loop) or on core 0 before core 3 starts,
+   and takes the card lock for its whole length. */
+static uint8_t rsec[512] __attribute__((aligned(16)));         /* the directory walk's sector */
+static uint8_t dsec[512] __attribute__((aligned(16)));         /* a directory sector being changed */
+static uint8_t fwbuf[512] __attribute__((aligned(16)));        /* the FAT sector being changed (write-back) */
+static uint32_t fw_lba = 0xffffffffu; static int fw_dirty;
+static uint32_t alloc_hint;
+static int multi_bad;                                          /* CMD25 failed once: single-sector writes from then on */
+static char rec_err[120];
+const char *psmac_card_rec_error(void) { return rec_err; }
+static void rerr(const char *s) { unsigned i = 0; for (; s[i] && i < sizeof rec_err - 1; i++) rec_err[i] = s[i]; rec_err[i] = 0; }
+/* In a normal start the kernel's other writers (clus_alloc, fat_set) change the FAT between these
+   operations, so the FAT sector kept here is read again each time; in recovery nothing else writes */
+static void rec_lock(void)
+{
+    spinlock_acquire(&card_lock); card_lock_core3 = 1; flush_finish();
+    if (!fw_dirty && !psmac_recovery_on()) fw_lba = 0xffffffffu;
+}
+static void rec_unlock(void) { card_lock_core3 = 0; spinlock_release(&card_lock); }
+
+/* n sectors in one command (CMD25, then CMD12 and the card's programming waited for): an upload's
+   cluster. Written after the Linux driver's sequence, as sd_read_multi was; tried under QEMU only, so
+   the first failure switches to sd_write per sector for the rest of the start, and says so. */
+static int sd_write_multi(uint32_t lba, const uint8_t *buf, uint32_t n)
+{
+    if (sd.state != 1 || sd.ro) return -1;
+    w(SDHBCT, 512); w(SDHBLC, n);
+    if (sd_cmd(25, sd.ccs ? lba : lba * 512u, CMD_WRITE, 0)) return -2;
+    const uint32_t *p = (const uint32_t *)buf;
+    int err = 0;
+    for (uint32_t i = 0; i < n * 128u && !err; i++) {
+        uint64_t t = cnt();
+        while (EDM_FILL(r(SDEDM)) >= 15) if (cnt() - t > frq() / 10) { err = -3; break; }
+        if (!err) *(volatile uint32_t *)(uintptr_t)(SDH + SDDATA) = p[i];
+    }
+    if (!err && fsm_wait(500000)) err = -4;                           /* the last block's CRC answered */
+    if (sd_cmd(12, 0, CMD_BUSY, 0) && !err) err = -5;
+    uint32_t t0 = ms();
+    while (!err) { int s = sd_status(); if (s == 4) break; if (s < 0 || ms() - t0 > 2000) err = -6; }
+    if (!err && (r(SDHSTS) & HSTS_ERRORS)) err = -7;
+    if (err) { uint32_t h = r(SDHSTS); sd.last_hsts = h; w(SDHSTS, h & HSTS_CLEAR); sd.errors++; return err; }
+    sd.writes += n;
+    return 0;
+}
+static int sd_write_run(uint32_t lba, const uint8_t *buf, uint32_t n)
+{
+    if (n > 1 && !multi_bad) {
+        int e = sd_write_multi(lba, buf, n);
+        if (!e) return 0;
+        multi_bad = 1;
+        kprintf("[CARD] a multi-sector write failed (%d, status %x): one sector at a time from now on\n", e, sd.last_hsts);
+    }
+    for (uint32_t i = 0; i < n; i++) if (sd_write(lba + i, buf + 512u * i)) return -1;
+    return 0;
+}
+
+/* the FAT through one sector of write-back: every copy of the FAT written when it is flushed */
+static int fw_flush(void)
+{
+    if (!fw_dirty) return 0;
+    for (uint32_t i = 0; i < fs.nfats; i++) if (sd_write(fw_lba + i * fs.fatsz, fwbuf)) { rerr("a FAT write failed"); return -1; }
+    fw_dirty = 0; fsec_lba = 0xffffffffu;
+    return 0;
+}
+static int fw_load(uint32_t lba)
+{
+    if (fw_lba == lba) return 0;
+    if (fw_flush()) return -1;
+    if (sd_read(lba, fwbuf)) { fw_lba = 0xffffffffu; rerr("a FAT read failed"); return -1; }
+    fw_lba = lba;
+    return 0;
+}
+static uint32_t fw_get(uint32_t c)
+{
+    uint32_t off = c * (fs.fat32 ? 4u : 2u);
+    if (fw_load(fs.fat_lba + off / 512u)) return 0x0fffffffu;
+    return fs.fat32 ? le32(fwbuf + off % 512u) & 0x0fffffffu : le16(fwbuf + off % 512u);
+}
+static int fw_set(uint32_t c, uint32_t v)
+{
+    uint32_t off = c * (fs.fat32 ? 4u : 2u);
+    if (fw_load(fs.fat_lba + off / 512u)) return -1;
+    if (fs.fat32) put32(fwbuf + off % 512u, (le32(fwbuf + off % 512u) & 0xf0000000u) | (v & 0x0fffffffu));
+    else put16(fwbuf + off % 512u, v);
+    fw_dirty = 1;
+    return 0;
+}
+static int rec_eoc(uint32_t v) { return v < 2 || (fs.fat32 ? v >= 0x0ffffff7u : v >= 0xfff7u); }
+static uint32_t eoc_mark(void) { return fs.fat32 ? 0x0fffffffu : 0xffffu; }
+/* FAT32's FSInfo: the free count and the next-free hint, kept roughly right (both are only hints) */
+static void fsinfo_adjust(int32_t delta, uint32_t hint)
+{
+    if (!fs.fsinfo || sd_read(fs.fsinfo, dsec) || le32(dsec) != 0x41615252u || le32(dsec + 484) != 0x61417272u) return;
+    uint32_t fc = le32(dsec + 488);
+    if (fc != 0xffffffffu) put32(dsec + 488, (uint32_t)((int32_t)fc + delta));
+    if (hint >= 2) put32(dsec + 492, hint);
+    sd_write(fs.fsinfo, dsec);
+}
+/* a free cluster at or after the hint, taken (end of chain); 0 when the card is full */
+static uint32_t rec_alloc(void)
+{
+    if (alloc_hint < 2) {
+        alloc_hint = 2;
+        if (fs.fsinfo && !sd_read(fs.fsinfo, dsec) && le32(dsec) == 0x41615252u) { uint32_t h = le32(dsec + 492); if (h >= 2 && h < fs.clusters + 2) alloc_hint = h; }
+    }
+    for (uint32_t n = 0; n < fs.clusters; n++) {
+        uint32_t c = 2 + (alloc_hint - 2 + n) % fs.clusters;
+        uint32_t v = fw_get(c);
+        if (fw_lba == 0xffffffffu) return 0;
+        if (v == 0) { if (fw_set(c, eoc_mark())) return 0; alloc_hint = c + 1; return c; }
+    }
+    rerr("the card is full");
+    return 0;
+}
+
+/* ---- the root, entry by entry ---- */
+typedef int (*rec_cb)(void *ctx, struct rec_ent *e);
+static const uint8_t lfn_at[13] = { 1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30 };
+/* "KERNEL8.IMG" (case 0), or with the lower-case bits Windows sets (kernel8.img) */
+static void short_shown(const uint8_t *e, char *out, int with_case)
+{
+    unsigned n = 0;
+    for (int k = 0; k < 8 && e[k] != ' '; k++) { char c = (char)(k == 0 && e[0] == 0x05 ? 0xe5 : e[k]); out[n++] = with_case && (e[12] & 0x08) && c >= 'A' && c <= 'Z' ? (char)(c + 32) : c; }
+    if (e[8] != ' ') { out[n++] = '.'; for (int k = 8; k < 11 && e[k] != ' '; k++) { char c = (char)e[k]; out[n++] = with_case && (e[12] & 0x10) && c >= 'A' && c <= 'Z' ? (char)(c + 32) : c; } }
+    out[n] = 0;
+}
+static int rec_walk(rec_cb cb, void *ctx)
+{
+    static struct rec_ent e;
+    static char lfn[264];
+    int lfn_ok = 0; unsigned lfn_n = 0, lfn_expect = 0; uint8_t lfn_sum = 0;
+    uint32_t c = fs.fat32 ? fs.root_clus : 0, si = 0;
+    for (uint32_t guard = 0; guard < 1u << 20; guard++) {
+        uint32_t lba;
+        if (!fs.fat32) { if (si >= fs.rootsecs) return 0; lba = fs.root_lba + si++; }
+        else {
+            if (si == fs.spc) { c = fw_get(c); si = 0; }
+            if (rec_eoc(c)) return 0;
+            lba = clus_lba(c) + si++;
+        }
+        if (sd_read(lba, rsec)) { rerr("the root directory could not be read"); return -1; }
+        for (int i = 0; i < 16; i++) {
+            const uint8_t *d = rsec + 32 * i;
+            if (d[0] == 0) return 0;
+            if (d[0] == 0xe5) { lfn_ok = 0; continue; }
+            if (d[11] == 0x0f) {
+                unsigned seq = d[0] & 0x1f;
+                if (d[0] & 0x40) { lfn_ok = seq >= 1 && seq <= REC_LFN_MAX; lfn_expect = seq; lfn_n = 0; lfn_sum = d[13]; for (unsigned k = 0; k < sizeof lfn; k++) lfn[k] = 0; }
+                else if (!lfn_ok || d[13] != lfn_sum || seq != lfn_expect - lfn_n) lfn_ok = 0;
+                if (lfn_ok && seq >= 1) {
+                    for (unsigned k = 0; k < 13; k++) {
+                        unsigned ch = le16(d + lfn_at[k]), at = (seq - 1) * 13 + k;
+                        if (at < sizeof lfn - 1) lfn[at] = (char)(ch == 0xffff || ch == 0 ? 0 : ch < 128 ? ch : '?');
+                    }
+                    e.lfn_lba[lfn_n] = lba; e.lfn_off[lfn_n] = (uint16_t)(32 * i); lfn_n++;
+                }
+                continue;
+            }
+            if (d[11] & 0x08) { lfn_ok = 0; continue; }            /* the volume label */
+            uint8_t sum = 0; for (int k = 0; k < 11; k++) sum = (uint8_t)(((sum & 1) << 7) + (sum >> 1) + d[k]);
+            int use_lfn = lfn_ok && lfn_n == lfn_expect && sum == lfn_sum && lfn[0];
+            short_shown(d, e.sname, 0);
+            char tmp[13];
+            const char *nm = lfn;
+            if (!use_lfn) { short_shown(d, tmp, 1); nm = tmp; }
+            unsigned k = 0; for (; nm[k] && k < REC_NAME_MAX - 1; k++) e.name[k] = nm[k];
+            e.name[k] = 0; e.cut = nm[k] != 0;
+            e.size = le32(d + 28); e.clus = (fs.fat32 ? (uint32_t)le16(d + 20) << 16 : 0) | le16(d + 26);
+            e.attr = d[11]; e.nlfn = (uint8_t)(use_lfn ? lfn_n : 0); e.lba = lba; e.off = 32u * (uint32_t)i;
+            lfn_ok = 0;
+            int rr = cb(ctx, &e);
+            if (rr) return rr;
+        }
+    }
+    return 0;
+}
+int psmac_card_rec_ready(void)
+{
+    if (sd.state == 0 || !__atomic_load_n(&scan_done, __ATOMIC_ACQUIRE)) return 0;
+    if (sd.state != 1 || !fs.ok) return -1;
+    return sd.ro ? -2 : 1;
+}
+const char *psmac_card_rec_what(void)
+{
+    static char b[64];
+    if (sd.state != 1) return "no card";
+    sprintf(b, "%s, FAT%d, %u KB clusters", sd.ccs ? "SDHC/SDXC" : "SDSC", fs.fat32 ? 32 : 16, fs.spc / 2);
+    return b;
+}
+uint32_t psmac_card_rec_cluster(void) { return fs.spc * 512u; }
+static int readable(void) { int k = psmac_card_rec_ready(); return k == 1 || k == -2; }
+struct rec_list_ctx { int (*cb)(void *, const struct rec_ent *); void *ctx; };
+static int rec_list_cb(void *vc, struct rec_ent *e) { struct rec_list_ctx *x = vc; return x->cb(x->ctx, e); }
+int psmac_card_rec_list(int (*cb)(void *ctx, const struct rec_ent *e), void *ctx)
+{
+    if (!readable()) { rerr("no card"); return -1; }
+    struct rec_list_ctx x = { cb, ctx };
+    rec_lock(); int rr = rec_walk(rec_list_cb, &x); rec_unlock();
+    return rr < 0 ? -1 : 0;
+}
+struct rec_find_ctx { const char *name; struct rec_ent *out; uint32_t not_lba, not_off, clus; };
+static int rec_find_cb(void *vc, struct rec_ent *e)
+{
+    struct rec_find_ctx *x = vc;
+    if (x->name) { if (!name_eq(e->name, x->name) && !name_eq(e->sname, x->name)) return 0; }
+    else if (e->clus != x->clus || (e->lba == x->not_lba && e->off == x->not_off)) return 0;   /* another name for this chain */
+    if (x->out) *x->out = *e;
+    return 1;
+}
+static int rec_find_locked(const char *name, struct rec_ent *e)
+{
+    struct rec_find_ctx x = { name, e, 0, 0, 0 };
+    return rec_walk(rec_find_cb, &x) == 1 ? 0 : -1;
+}
+int psmac_card_rec_find(const char *name, struct rec_ent *e)
+{
+    if (!readable()) return -1;
+    rec_lock(); int rr = rec_find_locked(name, e); rec_unlock();
+    return rr;
+}
+static int chain_shared(const struct rec_ent *e)               /* another root entry starts with e's first cluster */
+{
+    if (e->clus < 2) return 0;
+    struct rec_find_ctx x = { 0, 0, e->lba, e->off, e->clus };
+    return rec_walk(rec_find_cb, &x) == 1;
+}
+int psmac_card_rec_free_kb(uint32_t *kb)
+{
+    if (!readable()) return -1;
+    uint32_t free_c = 0xffffffffu;
+    rec_lock();
+    if (fs.fsinfo && !sd_read(fs.fsinfo, dsec) && le32(dsec) == 0x41615252u) free_c = le32(dsec + 488);
+    if (free_c == 0xffffffffu || free_c > fs.clusters) {            /* FAT16, or a count nobody keeps: counted */
+        free_c = 0;
+        for (uint32_t c = 2; c < fs.clusters + 2; c++) { uint32_t v = fw_get(c); if (fw_lba == 0xffffffffu) break; if (!v) free_c++; }
+    }
+    rec_unlock();
+    *kb = free_c * (fs.spc / 2);
+    return 0;
+}
+
+/* ---- reading ---- */
+static uint8_t rdbuf[64 * 512] __attribute__((aligned(16)));
+void psmac_card_rec_read_open(const struct rec_ent *e, struct rec_rd *rd) { rd->clus = e->clus; rd->size = e->size; rd->pos = 0; }
+int32_t psmac_card_rec_read(struct rec_rd *rd, uint8_t *buf, uint32_t max)
+{
+    if (rd->pos >= rd->size) return 0;
+    uint32_t cb = fs.spc * 512u, in = rd->pos % cb;
+    if (rec_eoc(rd->clus)) { rerr("the file's chain ends before its size"); return -1; }
+    uint32_t want = rd->size - rd->pos; if (want > max) want = max;
+    if (want > cb - in) want = cb - in;
+    uint32_t skip = in % 512u;
+    if (skip + want > sizeof rdbuf) want = (uint32_t)sizeof rdbuf - skip;
+    uint32_t s0 = in / 512u, s1 = (in + want + 511u) / 512u;
+    rec_lock();
+    int e = -1;
+    for (int t = 0; t < 3 && e; t++) e = sd_read_multi(clus_lba(rd->clus) + s0, rdbuf, s1 - s0);
+    if (!e) memcpy(buf, rdbuf + skip, want);
+    if (!e && in + want == cb) rd->clus = fw_get(rd->clus);
+    rec_unlock();
+    if (e) { rerr("a card read failed"); return -1; }
+    rd->pos += want;
+    return (int32_t)want;
+}
+int psmac_card_rec_get(const char *name, uint8_t *buf, uint32_t max)
+{
+    struct rec_ent e; struct rec_rd rd;
+    if (psmac_card_rec_find(name, &e)) return -1;
+    if (e.size > max || (e.attr & 0x10)) return -2;
+    psmac_card_rec_read_open(&e, &rd);
+    uint32_t got = 0;
+    while (got < e.size) { int32_t k = psmac_card_rec_read(&rd, buf + got, e.size - got); if (k <= 0) return -1; got += (uint32_t)k; }
+    return (int)got;
+}
+
+/* ---- names ---- */
+static int sfn_char(char c) { return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '!' || c == '#' || c == '$' || c == '%' || c == '&' || c == '(' || c == ')' || c == '@' || c == '^' || c == '{' || c == '}' || c == '~' || c == '\''; }
+static char upc(char c) { return c >= 'a' && c <= 'z' ? (char)(c - 32) : c; }
+/* the name as an 8.3 entry, if it is one: its 11 bytes and the case bits; 0 if it needs a long name */
+static int as_83(const char *n, uint8_t sn[11], uint8_t *nt)
+{
+    unsigned l = 0, dot = 0, dots = 0;
+    while (n[l]) { if (n[l] == '.') { dot = l; dots++; } l++; }
+    if (!l || dots > 1 || (dots && (dot == 0 || dot > 8 || l - dot - 1 > 3 || l - dot - 1 == 0)) || (!dots && l > 8)) return 0;
+    unsigned be = dots ? dot : l;
+    int lo[2] = { 0, 0 }, hi[2] = { 0, 0 };
+    for (int k = 0; k < 11; k++) sn[k] = ' ';
+    for (unsigned i = 0; i < l; i++) {
+        if (i == be) continue;
+        char c = n[i]; int part = i > be;
+        if (c >= 'a' && c <= 'z') lo[part] = 1; else if (c >= 'A' && c <= 'Z') hi[part] = 1;
+        if (!sfn_char(upc(c))) return 0;
+        sn[part ? 8 + (i - be - 1) : i] = (uint8_t)upc(c);
+    }
+    if ((lo[0] && hi[0]) || (lo[1] && hi[1])) return 0;
+    *nt = (uint8_t)((lo[0] ? 0x08 : 0) | (lo[1] ? 0x10 : 0));
+    return 1;
+}
+static int name_ok(const char *n)
+{
+    unsigned l = 0;
+    for (; n[l]; l++) {
+        unsigned char c = (unsigned char)n[l];
+        if (c < 32 || c > 126 || c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|') return 0;
+    }
+    return l > 0 && l < REC_NAME_MAX && n[0] != ' ' && n[l - 1] != ' ' && n[l - 1] != '.' && !(l <= 2 && n[0] == '.' && (l == 1 || n[1] == '.'));
+}
+struct sn_ctx { const uint8_t *sn; };
+static int sn_cb(void *vc, struct rec_ent *e)
+{
+    struct sn_ctx *x = vc; char want[13];
+    short_shown(x->sn, want, 0);
+    return name_eq(e->sname, want);
+}
+static int short_taken(const uint8_t sn[11]) { uint8_t t[13]; for (int k = 0; k < 11; k++) t[k] = sn[k]; t[11] = t[12] = 0; struct sn_ctx x = { t }; return rec_walk(sn_cb, &x) == 1; }
+/* a free run of k entries in one root sector, near's sector first; the FAT32 root grows by a cluster when there is none */
+struct run_find { uint32_t want, near, lba, off; int found; };
+static int run_in(uint32_t lba, struct run_find *x)
+{
+    if (sd_read(lba, dsec)) return -1;
+    uint32_t run = 0;
+    for (int i = 0; i < 16; i++) {
+        uint8_t c = dsec[32 * i];
+        if (c == 0 || c == 0xe5) { if (++run == x->want) { x->lba = lba; x->off = 32u * (uint32_t)(i + 1 - (int)x->want); x->found = 1; return 1; } }
+        else run = 0;
+    }
+    return 0;
+}
+static int root_run(struct run_find *x)
+{
+    x->found = 0;
+    if (x->near && run_in(x->near, x) == 1) return 0;
+    uint32_t c = fs.fat32 ? fs.root_clus : 0, last = c;
+    if (!fs.fat32) { for (uint32_t i = 0; i < fs.rootsecs; i++) if (run_in(fs.root_lba + i, x) == 1) return 0; rerr("the root directory is full (FAT16 has a fixed number of entries)"); return -1; }
+    for (uint32_t g = 0; !rec_eoc(c) && g < 65536; g++) {
+        for (uint32_t i = 0; i < fs.spc; i++) if (run_in(clus_lba(c) + i, x) == 1) return 0;
+        last = c; c = fw_get(c);
+    }
+    uint32_t n = rec_alloc();                                     /* a new cluster of empty entries on the root's chain */
+    if (!n) return -1;
+    for (uint32_t j = 0; j < 512; j++) dsec[j] = 0;
+    for (uint32_t i = 0; i < fs.spc; i++) if (sd_write(clus_lba(n) + i, dsec)) { rerr("a write failed"); return -1; }
+    if (fw_set(last, n) || fw_flush()) return -1;
+    fsinfo_adjust(-1, n + 1);
+    kprintf("[CARD] the root directory grew by a cluster\n");
+    x->lba = clus_lba(n); x->off = 0; x->found = 1;
+    return 0;
+}
+/* the entries of a name (its long-name pieces, then the short one) written into a free run, with the
+   first cluster, size and attributes given: 0, and where the short entry went */
+static int entries_write(const char *name, uint32_t clus, uint32_t size, uint8_t attr, uint32_t near, uint32_t *lba, uint32_t *off)
+{
+    uint8_t sn[11], nt = 0;
+    int is83 = as_83(name, sn, &nt);
+    if (is83 && short_taken(sn)) { rerr("that name is taken"); return -1; }
+    uint32_t n = 0; while (name[n]) n++;
+    uint32_t pieces = 0;
+    if (!is83) {
+        uint32_t dot = n; while (dot && name[dot - 1] != '.') dot--;
+        for (int k = 0; k < 11; k++) sn[k] = ' ';
+        int k = 0;
+        for (uint32_t i = 0; i < (dot ? dot - 1 : n) && k < 6; i++) { char c = upc(name[i]); if (sfn_char(c)) sn[k++] = (uint8_t)c; }
+        if (!k) sn[k++] = '_';
+        for (uint32_t i = dot, j = 8; dot && i < n && j < 11; i++) { char c = upc(name[i]); if (sfn_char(c)) sn[j++] = (uint8_t)c; }
+        int num = 1;
+        for (; num < 10; num++) { sn[k] = '~'; sn[k + 1] = (uint8_t)('0' + num); if (!short_taken(sn)) break; }
+        if (num >= 10) { rerr("too many names alike for a short name"); return -1; }
+        pieces = (n + 12) / 13;
+    }
+    struct run_find x = { pieces + 1, near, 0, 0, 0 };
+    if (root_run(&x)) return -1;
+    if (sd_read(x.lba, dsec)) { rerr("a directory read failed"); return -1; }
+    uint8_t sum = 0; for (int k = 0; k < 11; k++) sum = (uint8_t)(((sum & 1) << 7) + (sum >> 1) + sn[k]);
+    for (uint32_t p = 0; p < pieces; p++) {
+        uint32_t seq = pieces - p;
+        uint8_t *e = dsec + x.off + 32 * p;
+        for (int i = 0; i < 32; i++) e[i] = 0;
+        e[0] = (uint8_t)(seq | (p == 0 ? 0x40 : 0)); e[11] = 0x0f; e[13] = sum;
+        for (int i = 0; i < 13; i++) { uint32_t ci = (seq - 1) * 13 + (uint32_t)i, ch = ci < n ? (uint8_t)name[ci] : ci == n ? 0 : 0xffff; put16(e + lfn_at[i], ch); }
+    }
+    uint8_t *e = dsec + x.off + 32 * pieces;
+    for (int i = 0; i < 32; i++) e[i] = 0;
+    for (int i = 0; i < 11; i++) e[i] = sn[i];
+    e[11] = attr; e[12] = nt;
+    uint32_t date = (uint32_t)((2026 - 1980) << 9 | 11 << 5 | 22);
+    put16(e + 16, date); put16(e + 18, date); put16(e + 24, date);
+    put16(e + 20, clus >> 16); put16(e + 26, clus & 0xffff); put32(e + 28, size);
+    if (sd_write(x.lba, dsec)) { rerr("a directory write failed"); return -1; }
+    *lba = x.lba; *off = x.off + 32 * pieces;
+    return 0;
+}
+/* a name's entries marked deleted, sector by sector (its long-name pieces may be in the sector before) */
+static int entries_remove(const struct rec_ent *e)
+{
+    uint32_t lbas[REC_LFN_MAX + 1], offs[REC_LFN_MAX + 1]; unsigned n = 0;
+    for (unsigned i = 0; i < e->nlfn; i++) { lbas[n] = e->lfn_lba[i]; offs[n] = e->lfn_off[i]; n++; }
+    lbas[n] = e->lba; offs[n] = e->off; n++;
+    for (unsigned i = 0; i < n; i++) {
+        if (!lbas[i]) continue;
+        uint32_t l = lbas[i];
+        if (sd_read(l, dsec)) { rerr("a directory read failed"); return -1; }
+        for (unsigned j = i; j < n; j++) if (lbas[j] == l) { dsec[offs[j]] = 0xe5; lbas[j] = 0; }
+        if (sd_write(l, dsec)) { rerr("a directory write failed"); return -1; }
+    }
+    return 0;
+}
+/* the short entry at lba/off given a first cluster and a size, and (a rename in place) new name bytes */
+static int entry_point(uint32_t lba, uint32_t off, uint32_t clus, uint32_t size, const uint8_t *sn, uint8_t nt)
+{
+    if (sd_read(lba, dsec)) { rerr("a directory read failed"); return -1; }
+    uint8_t *e = dsec + off;
+    put16(e + 20, clus >> 16); put16(e + 26, clus & 0xffff); put32(e + 28, size);
+    if (sn) { for (int i = 0; i < 11; i++) e[i] = sn[i]; e[12] = nt; }
+    if (sd_write(lba, dsec)) { rerr("a directory write failed"); return -1; }
+    return 0;
+}
+static uint32_t chain_free(uint32_t c)
+{
+    uint32_t n = 0;
+    while (!rec_eoc(c) && n < fs.clusters) { uint32_t nx = fw_get(c); if (fw_lba == 0xffffffffu) break; fw_set(c, 0); n++; c = nx; }
+    fw_flush();
+    if (n) fsinfo_adjust((int32_t)n, 0);
+    return n;
+}
+static int is_kernel(const char *n) { return name_eq(n, "kernel8.img"); }
+
+/* ---- writing ---- */
+int psmac_card_rec_create(const char *name, const char *near, struct rec_wr *wr)
+{
+    wr->open = 0;
+    if (psmac_card_rec_ready() != 1) { rerr(sd.ro ? "the card is read only (mac.card=ro)" : "no card"); return -1; }
+    if (!name_ok(name)) { rerr("not a name for a file in the card's root"); return -1; }
+    struct rec_ent ne, old;
+    rec_lock();
+    int rr = -1;
+    uint32_t nl = 0;
+    if (!rec_find_locked(name, &old)) rerr("a file of that name is there already");
+    else {
+        if (near && !rec_find_locked(near, &ne)) nl = ne.lba;
+        if (!entries_write(name, 0, 0, 0x20, nl, &wr->lba, &wr->off)) rr = 0;
+    }
+    rec_unlock();
+    if (rr) return -1;
+    wr->buf = tlsf_malloc(tlsf, fs.spc * 512u);
+    if (!wr->buf) { struct rec_ent e; if (!psmac_card_rec_find(name, &e)) { rec_lock(); entries_remove(&e); rec_unlock(); } rerr("no memory for a cluster"); return -1; }
+    wr->first = wr->last = 0; wr->size = 0; wr->nclus = 0; wr->fill = 0; wr->open = 1;
+    return 0;
+}
+static int wr_cluster(struct rec_wr *wr)
+{
+    uint32_t c = rec_alloc();
+    if (!c) return -1;
+    if (wr->last && fw_set(wr->last, c)) return -1;                   /* the new one is the end; then joined on */
+    if (!wr->first) wr->first = c;
+    wr->last = c; wr->nclus++;
+    uint32_t secs = (wr->fill + 511u) / 512u;
+    for (uint32_t j = wr->fill; j < secs * 512u; j++) wr->buf[j] = 0;
+    if (sd_write_run(clus_lba(c), wr->buf, secs)) { rerr("a write to the card failed"); return -1; }
+    wr->fill = 0;
+    return 0;
+}
+int psmac_card_rec_write(struct rec_wr *wr, const uint8_t *d, uint32_t n)
+{
+    if (!wr->open) return -1;
+    uint32_t cb = fs.spc * 512u;
+    int rr = 0;
+    while (n && !rr) {
+        uint32_t k = cb - wr->fill; if (k > n) k = n;
+        memcpy(wr->buf + wr->fill, d, k);
+        wr->fill += k; wr->size += k; d += k; n -= k;
+        if (wr->fill == cb) { rec_lock(); rr = wr_cluster(wr); rec_unlock(); }
+    }
+    return rr;
+}
+int psmac_card_rec_close(struct rec_wr *wr)
+{
+    if (!wr->open) return -1;
+    rec_lock();
+    int rr = 0;
+    if (wr->fill) rr = wr_cluster(wr);
+    if (!rr) rr = fw_flush();
+    if (!rr) rr = entry_point(wr->lba, wr->off, wr->first, wr->size, 0, 0);
+    if (!rr && wr->nclus) fsinfo_adjust(-(int32_t)wr->nclus, alloc_hint);
+    rec_unlock();
+    tlsf_free(tlsf, wr->buf); wr->buf = 0; wr->open = 0;
+    return rr;
+}
+void psmac_card_rec_abandon(struct rec_wr *wr)
+{
+    if (!wr->open) return;
+    rec_lock();
+    fw_flush();
+    if (wr->first) chain_free(wr->first);
+    if (!sd_read(wr->lba, dsec)) {                                  /* its entries: the short one and the pieces before it */
+        uint32_t off = wr->off;
+        dsec[off] = 0xe5;
+        while (off >= 32 && dsec[off - 32 + 11] == 0x0f && dsec[off - 32] != 0xe5) { off -= 32; int last = dsec[off] & 0x40; dsec[off] = 0xe5; if (last) break; }
+        sd_write(wr->lba, dsec);
+    }
+    rec_unlock();
+    tlsf_free(tlsf, wr->buf); wr->buf = 0; wr->open = 0;
+}
+
+/* ---- delete, rename, replace, swap ---- */
+static int rec_delete_locked(const char *name, int refuse_kernel)
+{
+    struct rec_ent e;
+    if (rec_find_locked(name, &e)) { rerr("no such file"); return -1; }
+    if (e.attr & 0x10) { rerr("a folder: only files are deleted here"); return -1; }
+    if (refuse_kernel && is_kernel(e.name)) { rerr("kernel8.img is never deleted: the Pi would not start"); return -1; }
+    int shared = chain_shared(&e);
+    if (entries_remove(&e)) return -1;
+    if (!shared && e.clus >= 2) chain_free(e.clus);
+    else if (shared) kprintf("[CARD] %s: its clusters are another name's too, so they stay\n", e.name);
+    return 0;
+}
+int psmac_card_rec_delete(const char *name)
+{
+    if (psmac_card_rec_ready() != 1) { rerr("no writable card"); return -1; }
+    rec_lock(); int rr = rec_delete_locked(name, 1); rec_unlock();
+    return rr;
+}
+int psmac_card_rec_rename(const char *from, const char *to)
+{
+    if (psmac_card_rec_ready() != 1) { rerr("no writable card"); return -1; }
+    if (!name_ok(to)) { rerr("not a name for a file in the card's root"); return -1; }
+    if (is_kernel(from) || is_kernel(to)) { rerr("kernel8.img is not renamed here: upload a kernel (it is checked) or roll back"); return -1; }
+    struct rec_ent e, t;
+    rec_lock();
+    int rr = -1;
+    uint8_t sn[11], nt;
+    if (rec_find_locked(from, &e)) rerr("no such file");
+    else if (!rec_find_locked(to, &t) && !(t.lba == e.lba && t.off == e.off)) rerr("a file of that name is there already");
+    else if (!e.nlfn && as_83(to, sn, &nt) && (!short_taken(sn) || name_eq(e.sname, to))) rr = entry_point(e.lba, e.off, e.clus, e.size, sn, nt);   /* in place: one write */
+    else {
+        uint32_t l, o;
+        if (!entries_write(to, e.clus, e.size, e.attr, e.lba, &l, &o)) rr = entries_remove(&e);
+    }
+    rec_unlock();
+    return rr;
+}
+/* the two files' first clusters and sizes change places: one sector write when their short entries share
+   a sector, else two, a's first (between the two both start with b's chain, which repair sorts out) */
+static int swap_locked(struct rec_ent *a, struct rec_ent *b)
+{
+    if (a->lba == b->lba) {
+        if (sd_read(a->lba, dsec)) { rerr("a directory read failed"); return -1; }
+        uint8_t *x = dsec + a->off, *y = dsec + b->off;
+        put16(x + 20, b->clus >> 16); put16(x + 26, b->clus & 0xffff); put32(x + 28, b->size);
+        put16(y + 20, a->clus >> 16); put16(y + 26, a->clus & 0xffff); put32(y + 28, a->size);
+        if (sd_write(a->lba, dsec)) { rerr("a directory write failed"); return -1; }
+        return 0;
+    }
+    if (entry_point(a->lba, a->off, b->clus, b->size, 0, 0)) return -1;
+    return entry_point(b->lba, b->off, a->clus, a->size, 0, 0);
+}
+int psmac_card_rec_swap(const char *an, const char *bn)
+{
+    if (psmac_card_rec_ready() != 1) { rerr("no writable card"); return -1; }
+    struct rec_ent a, b;
+    rec_lock();
+    int rr = -1;
+    if (rec_find_locked(an, &a) || rec_find_locked(bn, &b)) rerr("no such file");
+    else rr = swap_locked(&a, &b);
+    rec_unlock();
+    return rr;
+}
+/* target's content becomes temp's: an existing target's short entry is pointed at temp's chain (its name
+   never goes away), then temp's entries go and the old chain is freed; a new target is temp renamed */
+int psmac_card_rec_replace(const char *target, const char *temp)
+{
+    if (psmac_card_rec_ready() != 1) { rerr("no writable card"); return -1; }
+    struct rec_ent t, u;
+    rec_lock();
+    int rr = -1;
+    if (rec_find_locked(temp, &u)) rerr("the uploaded file has gone");
+    else if (rec_find_locked(target, &t)) {
+        uint8_t sn[11], nt;
+        if (!u.nlfn && as_83(target, sn, &nt) && !short_taken(sn)) rr = entry_point(u.lba, u.off, u.clus, u.size, sn, nt);
+        else { uint32_t l, o; if (!entries_write(target, u.clus, u.size, 0x20, u.lba, &l, &o)) rr = entries_remove(&u); }
+    } else if (t.attr & 0x10) rerr("that name is a folder");
+    else {
+        uint32_t old = t.clus;
+        rr = swap_locked(&t, &u);                                   /* target -> the new chain, temp -> the old one */
+        if (!rr && !rec_find_locked(temp, &u)) { rr = entries_remove(&u); if (!rr && old >= 2) chain_free(old); }
+    }
+    rec_unlock();
+    return rr;
+}
+int psmac_card_rec_put(const char *name, const uint8_t *d, uint32_t n)
+{
+    struct rec_wr wr;
+    static const char tmp[] = "aurora68.tmp";
+    struct rec_ent e;
+    if (!psmac_card_rec_find(tmp, &e)) psmac_card_rec_delete(tmp);
+    if (psmac_card_rec_create(tmp, name, &wr)) return -1;
+    if (psmac_card_rec_write(&wr, d, n) || psmac_card_rec_close(&wr)) { psmac_card_rec_abandon(&wr); return -1; }
+    return psmac_card_rec_replace(name, tmp);
+}
+/* What an interrupted upload or swap leaves, put right at a recovery start: a temporary name that starts
+   with another name's first cluster is a swap cut between its two writes (its entries go, the clusters are
+   the other name's); a temporary on its own is an upload that did not finish (deleted, clusters freed).
+   kernel8.old sharing kernel8.img's chain is a rollback cut the same way. */
+void psmac_card_rec_repair(void)
+{
+    static const char *const temps[] = { "kernel8.new", "aurora68.up", "aurora68.tmp", "kernel8.old" };
+    if (psmac_card_rec_ready() != 1) return;
+    rec_lock();
+    for (unsigned i = 0; i < sizeof temps / sizeof temps[0]; i++) {
+        struct rec_ent e;
+        if (rec_find_locked(temps[i], &e)) continue;
+        if (chain_shared(&e)) { entries_remove(&e); kprintf("[RECOVERY] %s shared its first cluster with another file (a swap cut short): its name taken away, the data kept\n", e.name); }
+        else if (i < 3) { rec_delete_locked(temps[i], 0); kprintf("[RECOVERY] %s, left by an upload that did not finish, deleted\n", e.name); }
+    }
+    rec_unlock();
+}
+
+/* ---- the boot counter and the request file ---------------------------------------------------
+   boot.txt in the card's root holds the number of starts in a row that have not reached the Finder
+   (psmac_recovery.c decides on it). It is made once, with one cluster and a text of fixed length, and from
+   then on only its first data sector is written: no directory sector and no FAT, so a power cut in the
+   middle of the write can damage at most the number itself, which then reads as 0. recovery.txt is the
+   request "start in recovery next time": made by the kernel when a running system asks (its one line says
+   who asked), or put there by hand; taken away when recovery starts. */
+#define BOOT_TEXT_LEN 160u
+static struct rec_ent boot_ent; static int boot_have;
+static volatile int boot_reset_pending;
+static void boot_text(int n, uint8_t *out)
+{
+    static const char head[] = "Aurora68 boot counter: ";
+    static const char tail[] = "\nStarts in a row that did not reach the Finder; Aurora68 Recovery starts at mac.bootcount (3). 00 once the Finder runs.\n";
+    unsigned o = 0;
+    for (unsigned i = 0; head[i]; i++) out[o++] = (uint8_t)head[i];
+    if (n < 0) n = 0;
+    if (n > 99) n = 99;
+    out[o++] = (uint8_t)('0' + n / 10); out[o++] = (uint8_t)('0' + n % 10);
+    for (unsigned i = 0; tail[i] && o < BOOT_TEXT_LEN; i++) out[o++] = (uint8_t)tail[i];
+    while (o < BOOT_TEXT_LEN) out[o++] = ' ';
+    out[BOOT_TEXT_LEN - 1] = '\n';
+}
+static int boot_card_ok(void) { return sd.state == 1 && fs.ok && !sd.ro; }
+int psmac_card_boot_read(int *count, char *flag, uint32_t flagmax, int *flag_len)
+{
+    *count = -1; *flag_len = -1;
+    if (sd.state != 1 || !fs.ok) return -1;
+    rec_lock();
+    boot_have = !rec_find_locked("boot.txt", &boot_ent) && boot_ent.clus >= 2 && boot_ent.size;
+    if (boot_have && !sd_read(clus_lba(boot_ent.clus), dsec)) {
+        /* the number after the first ':' ("Aurora68 boot counter: 02"), or a file that is just a number */
+        int n = -1;
+        unsigned i = 0, lim = boot_ent.size < 511 ? boot_ent.size : 511;
+        while (i < lim && dsec[i] != ':') i++;
+        if (i >= lim) i = 0;
+        while (i < lim && !(dsec[i] >= '0' && dsec[i] <= '9')) i++;
+        if (i < lim) { n = 0; while (i < lim && dsec[i] >= '0' && dsec[i] <= '9' && n < 1000) n = n * 10 + (dsec[i++] - '0'); }
+        *count = n < 0 ? 0 : n;
+    }
+    struct rec_ent f;
+    if (!rec_find_locked("recovery.txt", &f)) {
+        uint32_t n = 0;
+        if (f.clus >= 2 && f.size && !sd_read(clus_lba(f.clus), dsec))
+            for (; n < f.size && n < 512 && n + 1 < flagmax && dsec[n] != '\n' && dsec[n] != '\r'; n++) flag[n] = (char)(dsec[n] >= 32 && dsec[n] < 127 ? dsec[n] : '?');
+        if (flagmax) flag[n] = 0;
+        *flag_len = (int)n;
+    }
+    rec_unlock();
+    return 0;
+}
+static void boot_write_locked(int count)
+{
+    uint8_t t[BOOT_TEXT_LEN];
+    boot_text(count, t);
+    if (!boot_have || boot_ent.size != BOOT_TEXT_LEN) {            /* made, or remade at its fixed length */
+        if (boot_have) rec_delete_locked("boot.txt", 0);
+        uint32_t c = rec_alloc(), l, o;
+        if (!c || fw_flush()) return;
+        for (uint32_t j = 0; j < 512; j++) dsec[j] = j < BOOT_TEXT_LEN ? t[j] : 0;
+        if (sd_write(clus_lba(c), dsec)) return;
+        if (entries_write("boot.txt", c, BOOT_TEXT_LEN, 0x20, 0, &l, &o)) return;
+        fsinfo_adjust(-1, alloc_hint);
+        boot_have = !rec_find_locked("boot.txt", &boot_ent);
+        return;
+    }
+    for (uint32_t j = 0; j < 512; j++) dsec[j] = j < BOOT_TEXT_LEN ? t[j] : 0;
+    sd_write(clus_lba(boot_ent.clus), dsec);
+}
+void psmac_card_boot_write(int count)
+{
+    if (!boot_card_ok()) return;
+    rec_lock(); boot_write_locked(count); rec_unlock();
+}
+void psmac_card_boot_flag_drop(void)
+{
+    if (!boot_card_ok()) return;
+    rec_lock(); rec_delete_locked("recovery.txt", 0); rec_unlock();
+}
+void psmac_card_boot_reset_later(void) { __atomic_store_n(&boot_reset_pending, 1, __ATOMIC_RELEASE); }
+static char ask_text[160]; static volatile int ask_state;          /* 0 none, 1 pending, 2 written, 3 failed */
+int psmac_card_ask_recovery(const char *why)
+{
+    if (!boot_card_ok()) return -1;
+    unsigned i = 0; for (; why[i] && i < sizeof ask_text - 2; i++) ask_text[i] = why[i];
+    ask_text[i++] = '\n'; ask_text[i] = 0;
+    __atomic_store_n(&ask_state, 1, __ATOMIC_RELEASE);
+    return 0;
+}
+int psmac_card_ask_state(void) { return ask_state; }
+/* core 3's card turn, in either mode: the jobs above (1 when one was done) */
+static int boot_jobs(void)
+{
+    if (__atomic_load_n(&boot_reset_pending, __ATOMIC_ACQUIRE) && boot_card_ok()) {
+        boot_reset_pending = 0;
+        if (!boot_have) boot_have = !rec_find_locked("boot.txt", &boot_ent) && boot_ent.clus >= 2 && boot_ent.size;
+        boot_write_locked(0);
+        fw_flush();
+        kprintf("[CARD] boot.txt: 00 (the Finder was reached, or recovery started)\n");
+        return 1;
+    }
+    if (__atomic_load_n(&ask_state, __ATOMIC_ACQUIRE) == 1) {
+        int ok = 0;
+        if (boot_card_ok()) {
+            uint32_t n = 0; while (ask_text[n]) n++;
+            struct rec_ent f;
+            if (!rec_find_locked("recovery.txt", &f)) rec_delete_locked("recovery.txt", 0);
+            uint32_t c = rec_alloc(), l, o;
+            if (c && !fw_flush()) {
+                for (uint32_t j = 0; j < 512; j++) dsec[j] = j < n ? (uint8_t)ask_text[j] : 0;
+                if (!sd_write(clus_lba(c), dsec) && !entries_write("recovery.txt", c, n, 0x20, 0, &l, &o)) { ok = 1; fsinfo_adjust(-1, alloc_hint); }
+            }
+        }
+        kprintf("[CARD] recovery.txt %s\n", ok ? "written: the next start is Aurora68 Recovery" : "could not be written");
+        __atomic_store_n(&ask_state, ok ? 2 : 3, __ATOMIC_RELEASE);
+        return 1;
+    }
+    return 0;
 }
