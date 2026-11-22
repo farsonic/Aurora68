@@ -15,6 +15,9 @@ Then it starts the server on a free port and checks:
   - pacing: the first second brings the burst, not the whole station;
   - a file with Range, the M3U, the JSON listing, the web page;
   - refusals: paths out of the folder, the links that lead out, a folder that is not there;
+  - Aurora68 Play's Library (/mac/, 22 November 2026): artists, albums and tracks in Mac Roman text, pages, search,
+    covers dithered to one bit or the Mac's 256 colours, a page of thumbnails, one track from its start or from a
+    second, and the UDP probe's answer;
   - IPv6 (::1) where this computer has it; where it has not, that the server says so and serves IPv4.
 
     python3 tools/music-server/test_server.py
@@ -107,8 +110,9 @@ def main():
                     os.path.join(ROOT, 'mac/piplay/icy.c'), os.path.join(ROOT, 'mac/piplay/stations.c')], check=True)
 
     s = socket.socket(); s.bind(('127.0.0.1', 0)); port = s.getsockname()[1]; s.close()
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(('127.0.0.1', 0)); dport = s.getsockname()[1]; s.close()
     srv = subprocess.Popen([sys.executable, os.path.join(HERE, 'aurora68_music_server.py'), lib, '--port', str(port),
-                            '--name', 'Test Music'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                            '--name', 'Test Music', '--discovery', str(dport)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     for _ in range(50):
         try:
             socket.create_connection(('127.0.0.1', port), timeout=0.2).close()
@@ -295,6 +299,70 @@ def main():
     v6 = get(base, '/stations.txt?prefer=ipv6')[2]
     m6 = re.search(rb'Live = http://(\[[0-9a-f:]+\]|[0-9.]+):\d+/live', v6)
     check(m6 is not None, f'?prefer=ipv6: its IPv6 address, or IPv4 where it has none ({m6.group(1).decode() if m6 else "?"})')
+
+    # Aurora68 Play's Library: /mac/ answers, as mac/piplay/libparse.c reads them
+    def mac(path):
+        st, _, body = get(base, path)
+        lines = body.split(b'\r')
+        head = lines[0].split(b'\t')
+        rows = [[f.decode('mac_roman') for f in l.split(b'\t')] for l in lines[1:] if l]
+        return st, head, rows, body
+    st, head, rows, _ = mac('/mac/info')
+    check(st == 200 and head[:3] == [b'A68M', b'1', b'info'] and rows[0][0] == 'Test Music' and int(rows[0][4]) > 10,
+          f'/mac/info: the name and the counts ({rows[:1]})')
+    st, head, artists, body = mac('/mac/artists')
+    names = [r[1] for r in artists]
+    byname = {r[1]: r for r in artists}
+    check(head[2] == b'artists' and int(head[3]) == len(artists) and names.index('The Apes') < names.index('Kite') < names.index('Moss'),
+          f'/mac/artists: every artist, "The Apes" filed under A ({names})')
+    check(byname.get('Zed', [0, 0, 0])[2] == '2' and byname.get('Alpha Band', [0, 0, 0])[2] == '2' and 'Gamma' in byname,
+          'artists from "Artist - Album" folders, and from the folder albums are in')
+    st, head, part, _ = mac('/mac/artists?from=2&count=3')
+    check(head[4:6] == [b'2', b'3'] and [r[1] for r in part] == names[2:5], 'a page: from 2, three of them')
+    st, head, albums, body = mac('/mac/albums?artist=' + byname['Alpha Band'][0])
+    check(sorted(r[1] for r in albums) == ['Café Sessions', 'First Album'] and b'Caf\x8e Sessions' in body,
+          f'an artist\'s albums, in Mac Roman ({[r[1] for r in albums]})')
+    st, head, galbums, _ = mac('/mac/albums?artist=' + byname['Gamma'][0])
+    gid = galbums[0][0]
+    st, head, tracks, _ = mac('/mac/tracks?album=' + gid)
+    check([(r[1], r[2], r[4]) for r in tracks] == [('1', 'Closing Time', '3'), ('2', 'Lossless', '2'), ('3', 'Flac Song', '2')]
+          and all(r[5] == gid for r in tracks), f'an album\'s tracks: number, title from the tag, length ({[r[1:5] for r in tracks]})')
+    st, head, found, _ = mac('/mac/search?q=cr%8Fme')                  # "crème", as the Mac sends it: Mac Roman bytes
+    check(any(r[0] == 'T' and r[2].startswith('Crème') for r in found),        # a search reads names, not tags: no file is opened
+          f'a search in Mac Roman finds the track ({found[:2]})')
+    st, head, found, _ = mac('/mac/search?q=zed')
+    check([r[0] for r in found][:3] == ['A', 'L', 'L'], 'a search: the artist first, then the albums')
+    st, head, err, _ = mac('/mac/tracks?album=00000000')
+    check(st == 404 and head[2] == b'error' and err and 'no such album' in err[0][0], 'an album that is not there: an error, in words')
+    st, _, art = get(base, f'/mac/art?album={gid}&w=64&h=64&depth=1')
+    hl = art.index(b'\r') + 1
+    check(st == 200 and art[:hl] == b'A68ART\t1\t64\t64\t1\t8\r' and len(art) - hl == 8 * 64,
+          f'a cover at one bit: 64 x 64, 8 bytes a row ({art[:hl]!r}, {len(art) - hl} bytes)')
+    st, _, art8 = get(base, f'/mac/art?album={gid}&w=64&h=64&depth=8')
+    bits = art8[art8.index(b'\r') + 1:]
+    check(st == 200 and len(bits) == 64 * 64 and max(set(bits), key=bits.count) == 35,
+          f'at eight bits: the red cover is the System palette\'s red, index 35 ({max(set(bits), key=bits.count)})')
+    zid = mac('/mac/albums?artist=' + byname['Zed'][0])[2][0][0]
+    check(get(base, f'/mac/art?album={zid}')[0] == 404, 'an album without a picture: 404')
+    st, _, page = get(base, f'/mac/arts?albums={gid},{zid}&w=32&h=32')
+    hl = page.index(b'\r') + 1
+    check(page[:hl] == b'A68ARTS\t1\t2\t32\t32\t1\t4\r' and len(page) - hl == 2 * 129 and page[hl] == 1 and page[hl + 129] == 0,
+          'a page of thumbnails: a byte for each saying whether it has one')
+    tone = os.path.join(tmp, 'track.mp3')
+    for start, want in ((0, 3.0), (2, 1.0)):
+        answer = raw('127.0.0.1', port, f'/t/{tracks[0][0]}' + (f'?start={start}' if start else ''))
+        out = subprocess.run([pc, 'icy', tone], input=answer, capture_output=True).stdout.decode('mac_roman')
+        pcm = subprocess.run(['ffmpeg', '-v', 'error', '-i', tone, '-f', 's16le', '-ac', '1', '-ar', '8000', '-'], capture_output=True).stdout
+        check('status 200 kind 1' in out and abs(len(pcm) / 16000 - want) < 0.4,
+              f'one track from {start} s: an MP3 stream with an end, {len(pcm) / 16000:.2f} s of {want:.0f} ({out.splitlines()[-1] if out else ""})')
+    u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); u.settimeout(5)
+    u.sendto(b'AURORA68-MUSIC?', ('127.0.0.1', dport))
+    try:
+        f = u.recvfrom(512)[0].rstrip(b'\r').split(b'\t')
+    except socket.timeout:
+        f = []
+    check(len(f) == 6 and f[:4] == [b'AURORA68-MUSIC', b'1', b'Test Music', str(port).encode()],
+          f'the probe\'s answer: the name, the port, and the IPv4 and IPv6 addresses ({f})')
 
     # without ffmpeg: MP3s only, and the scan says what it passed over
     s2 = socket.socket(); s2.bind(('127.0.0.1', 0)); port2 = s2.getsockname()[1]; s2.close()

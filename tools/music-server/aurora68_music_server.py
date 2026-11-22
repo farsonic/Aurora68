@@ -45,7 +45,7 @@ served: every path is resolved and must stay inside the folder, symbolic links i
     python3 aurora68_music_server.py /path/to/music
     python3 aurora68_music_server.py /music --port 8000 --name "NAS Music"
 """
-import argparse, hashlib, html, json, mimetypes, os, random, shutil, signal, socket, subprocess, sys, threading, \
+import argparse, hashlib, html, json, mimetypes, os, random, re, shutil, signal, socket, subprocess, sys, threading, \
     time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -363,9 +363,10 @@ def mp3_chunks(b):
         yield b''.join(chunk), secs
 
 
-def converted_chunks(ffmpeg, path, kbps):
+def converted_chunks(ffmpeg, path, kbps, start=0):
     """another format through ffmpeg into MP3, framed as it comes, half a second at a time"""
-    p = subprocess.Popen([ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error', '-i', path, '-map', '0:a:0',
+    p = subprocess.Popen([ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error'] + (['-ss', str(start)] if start else []) +
+                         ['-i', path, '-map', '0:a:0',
                           '-c:a', 'libmp3lame', '-b:a', f'{kbps}k', '-ar', '44100', '-ac', '2',
                           '-write_xing', '0', '-id3v2_version', '0', '-f', 'mp3', 'pipe:1'],
                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -900,6 +901,351 @@ def address_url(addr, port):
     return f'http://[{addr}]:{port}' if ':' in addr else f'http://{addr}:{port}'
 
 
+# ---- the library for Aurora68 Play's Library window (/mac/...) -------------------------------------
+# 22 November 2026 (docs/08 item 99). Aurora68 Play browses the library as artists, their albums and the
+# albums' tracks, plays a track, an album or an artist with a queue, and shows the album's cover. Its
+# answers are made for a 68k program written in C with no library: text, not JSON; Mac Roman; one record a
+# line, ended by a Return; fields separated by tabs; a first line that says what follows:
+#     A68M <tab> 1 <tab> KIND <tab> TOTAL <tab> FROM <tab> COUNT
+# then COUNT records, records FROM to FROM + COUNT - 1 of TOTAL (?from=N&count=M pages a long list; the
+# program keeps a page, not the library). Covers come as ready-made bitmaps, dithered here: a 68k has no
+# JPEG decoder worth the wait, and an SE's screen has one bit a pixel.
+MAC_DISCOVERY = 8070            # UDP: "AURORA68-MUSIC?" is answered with the server's name and TCP port
+MAC_PAGE = 200                  # records in an answer when the program does not say
+MAC_PAGE_MAX = 500
+MAC_ART_MIN, MAC_ART_MAX = 8, 128       # a cover's side in pixels
+MAC_COVERS = ('cover', 'folder', 'front', 'albumart', 'album')   # picture files that are an album's cover
+MAC_TRACK_NO = re.compile(r'^\s*(\d{1,3})\s*[.\-_)]?\s+(.*)$')     # "01. Artist - Title", "01 Title", "1-Title"
+
+
+def mac_field(s, n=120):
+    """a field of a /mac/ record: one line, no tabs, at most n characters"""
+    return ' '.join(str(s).replace('\t', ' ').split())[:n]
+
+
+def mac_answer(kind, total, start, rows):
+    head = f'A68M\t1\t{kind}\t{total}\t{start}\t{len(rows)}'
+    text = '\r'.join([head] + ['\t'.join(mac_field(f) for f in r) for r in rows]) + '\r'
+    return text.encode('mac_roman', 'replace')
+
+
+def page_of(items, q):
+    try:
+        start = max(0, int(q.get('from', 0)))
+        count = max(1, min(MAC_PAGE_MAX, int(q.get('count', MAC_PAGE))))
+    except ValueError:
+        start, count = 0, MAC_PAGE
+    return items[start:start + count], start
+
+
+class Catalogue:
+    """the library as artists, albums and tracks, made again whenever the folder's scan is new.
+
+    An album is a folder that holds songs itself. Its artist: the part before " - " of a folder named
+    "Artist - Album" (most libraries' way, the owner's among them); else the folder it is in; an album at
+    the top with neither is its own artist. A track's number and title come from its file's name
+    ("01. Artist - Title.m4a") at once, and from its tags with its length when its album is first listed
+    (ffprobe, a few hundredths of a second a file, kept): a library of thousands of files is not read
+    through at the start."""
+    def __init__(self, lib, name):
+        self.lib, self.name = lib, name
+        self.lock = threading.Lock()
+        self.made = None
+        self.artists, self.albums, self.tracks = {}, {}, {}
+        self.artist_order = []
+        self.probed = {}                     # a file's path -> (mtime, size, number, title, artist, seconds)
+
+    def fresh(self):
+        self.lib.scan()
+        with self.lock:
+            if self.made == self.lib.when:
+                return
+            artists, albums, tracks = {}, {}, {}
+            for rel, (sub, songs) in self.lib.dirs.items():
+                if not songs:
+                    continue
+                folder = rel.split('/')[-1] if rel else self.name
+                parent = rel.rsplit('/', 1)[0].split('/')[-1] if '/' in rel else ''
+                a = artist_of(folder)
+                if a:
+                    artist, title = a, folder.partition(' - ')[2].strip()
+                elif parent:
+                    artist, title = parent, folder
+                else:
+                    artist, title = folder, folder
+                aid = short_id('\x01' + artist.casefold())
+                al = short_id(rel)
+                artists.setdefault(aid, {'name': artist, 'albums': []})['albums'].append(al)
+                ts = []
+                for s in songs:
+                    t = f'{rel}/{s}' if rel else s
+                    tid = short_id('\x02' + t)
+                    tracks[tid] = (al, t)
+                    ts.append(tid)
+                albums[al] = {'rel': rel, 'title': title, 'artist': artist, 'aid': aid, 'tracks': ts}
+            for v in artists.values():
+                v['albums'].sort(key=lambda i: albums[i]['title'].casefold())
+            self.artists, self.albums, self.tracks = artists, albums, tracks
+            self.artist_order = sorted(artists, key=lambda i: sort_key(artists[i]['name']))
+            self.made = self.lib.when
+
+    def track_info(self, tid, probe=True):
+        """(number, title, artist, seconds) of a track: from its name, and its tags and length once probed"""
+        al, rel = self.tracks[tid]
+        album = self.albums[al]
+        stem = os.path.splitext(rel.split('/')[-1])[0]
+        m = MAC_TRACK_NO.match(stem)
+        number, title = (int(m.group(1)), m.group(2)) if m else (0, stem)
+        if title.casefold().startswith(album['artist'].casefold() + ' - '):
+            title = title[len(album['artist']) + 3:]
+        path = self.lib.real(rel)
+        try:
+            st = os.stat(path)
+        except (OSError, TypeError):
+            return number, title, album['artist'], 0
+        key = (st.st_mtime, st.st_size)
+        got = self.probed.get(path)
+        if (not got or got[:2] != key) and probe:
+            got = key + self.probe(path)
+            self.probed[path] = got
+        if got and got[:2] == key:
+            n, t, a, s = got[2:]
+            return n or number, t or title, a or album['artist'], s
+        return number, title, album['artist'], 0
+
+    def probe(self, path):
+        """(number, title, artist, seconds) from the file's tags and length; zeros and blanks for what it lacks"""
+        ffprobe = self.lib.ffprobe or shutil.which('ffprobe')
+        if ffprobe:
+            try:
+                out = subprocess.run([ffprobe, '-v', 'error', '-show_entries', 'format=duration:format_tags', '-of', 'json', path],
+                                     capture_output=True, text=True, timeout=20)
+                f = json.loads(out.stdout or '{}').get('format', {})
+                tags = {k.lower(): v for k, v in (f.get('tags') or {}).items()}
+                m = re.match(r'\d+', tags.get('track', ''))
+                return (int(m.group(0)) if m else 0, tags.get('title', '').strip(), tags.get('artist', '').strip(),
+                        int(float(f.get('duration') or 0) + 0.5))
+            except (OSError, ValueError, subprocess.SubprocessError):
+                pass
+        if path.lower().endswith('.mp3'):                      # no ffprobe: the frames give the length
+            try:
+                with open(path, 'rb') as fh:
+                    secs = sum(d for _, _, d in frames(fh.read()))
+            except OSError:
+                secs = 0
+            t = song_title(path)
+            artist, _, title = t.partition(' - ') if ' - ' in t else ('', '', t)
+            return 0, title, artist, int(secs + 0.5)
+        return 0, '', '', 0
+
+    def album_rows(self, ids):
+        rows = []
+        for al in ids:
+            a = self.albums[al]
+            secs = sum(self.track_info(t, probe=False)[3] for t in a['tracks'])
+            rows.append((al, a['title'], a['artist'], len(a['tracks']), secs))
+        return rows
+
+    def track_rows(self, tids, probe=True):
+        rows = []
+        for t in tids:
+            n, title, artist, secs = self.track_info(t, probe)
+            rows.append((t, n, title, artist, secs, self.tracks[t][0]))
+        return rows
+
+
+# ---- album covers as bitmaps: Atkinson's dithering for one bit, the Mac's own palette for eight ----------
+def mac_palette():
+    """the colours of the Macintosh's standard 8-bit palette ('clut' 8, the System's): the 6 x 6 x 6 cube
+    of $FF, $CC ... $00 (blue changing fastest, white first), ramps of ten reds, greens, blues and greys
+    ($EE, $DD, $BB, $AA, $88, $77, $55, $44, $22, $11), and black last"""
+    lv = [255, 204, 153, 102, 51, 0]
+    pal = [(r, g, b) for r in lv for g in lv for b in lv][:215]     # the cube without its black
+    ramp = [0xEE, 0xDD, 0xBB, 0xAA, 0x88, 0x77, 0x55, 0x44, 0x22, 0x11]
+    pal += [(v, 0, 0) for v in ramp] + [(0, v, 0) for v in ramp] + [(0, 0, v) for v in ramp] + [(v, v, v) for v in ramp]
+    return pal + [(0, 0, 0)]
+
+
+PALETTE = mac_palette()
+GREYS = [(i, PALETTE[i][0]) for i in range(245, 256)] + [(0, 255)]   # the grey ramp, black and white
+
+
+def nearest(r, g, b):
+    """the palette's colour nearest (r, g, b): the cube's, or a grey of the ramp for a colour without hue"""
+    lv = [min(5, max(0, (255 - c + 25) // 51)) for c in (r, g, b)]  # 0 is $FF, 5 is $00
+    i = lv[0] * 36 + lv[1] * 6 + lv[2]
+    i = 255 if i == 215 else i
+    if max(r, g, b) - min(r, g, b) < 24:
+        y = (r + g + b) // 3
+        j = min(GREYS, key=lambda e: abs(e[1] - y))[0]
+        pr, pg, pb = PALETTE[i]
+        if abs(PALETTE[j][0] - y) * 3 <= abs(pr - r) + abs(pg - g) + abs(pb - b):
+            i = j
+    return i
+
+
+def dither1(gray, w, h):
+    """one bit a pixel, 1 black, rows of an even number of bytes: Bill Atkinson's dithering (MacPaint's,
+    HyperCard's), which passes on three quarters of the error and so keeps light and dark areas clean"""
+    px = [float(v) for v in gray]
+    rb = ((w + 15) // 16) * 2
+    out = bytearray(rb * h)
+    for y in range(h):
+        for x in range(w):
+            i = y * w + x
+            old = px[i]
+            new = 0.0 if old < 128 else 255.0
+            if new == 0.0:
+                out[y * rb + x // 8] |= 0x80 >> (x % 8)
+            e = (old - new) / 8
+            for dx, dy in ((1, 0), (2, 0), (-1, 1), (0, 1), (1, 1), (0, 2)):
+                xx, yy = x + dx, y + dy
+                if 0 <= xx < w and yy < h:
+                    px[yy * w + xx] += e
+    return rb, bytes(out)
+
+
+def dither8(rgb, w, h):
+    """indices into the Mac's 8-bit palette, Floyd and Steinberg's error diffusion; rows of an even length"""
+    px = [[float(rgb[(y * w + x) * 3 + c]) for c in range(3)] for y in range(h) for x in range(w)]
+    rb = w + (w & 1)
+    out = bytearray(rb * h)
+    for y in range(h):
+        for x in range(w):
+            p = px[y * w + x]
+            r, g, b = (min(255, max(0, int(v + 0.5))) for v in p)
+            i = nearest(r, g, b)
+            out[y * rb + x] = i
+            q = PALETTE[i]
+            err = (r - q[0], g - q[1], b - q[2])
+            for dx, dy, f in ((1, 0, 7), (-1, 1, 3), (0, 1, 5), (1, 1, 1)):
+                xx, yy = x + dx, y + dy
+                if 0 <= xx < w and yy < h:
+                    t = px[yy * w + xx]
+                    for c in range(3):
+                        t[c] += err[c] * f / 16
+    return rb, bytes(out)
+
+
+class Covers:
+    """an album's cover as a bitmap at a size and depth, made once and kept"""
+    def __init__(self, lib):
+        self.lib = lib
+        self.kept = {}
+        self.lock = threading.Lock()
+
+    def source(self, album):
+        """the cover's picture: a file beside the songs (cover.jpg, folder.png ...), else the picture inside
+        the first song (M4A and FLAC from download services carry it); its path"""
+        folder = self.lib.real(album['rel'])
+        try:
+            names = sorted(os.listdir(folder), key=str.casefold)
+        except (OSError, TypeError):
+            return None
+        pics = [n for n in names if os.path.splitext(n)[1].lower() in ('.jpg', '.jpeg', '.png', '.gif', '.bmp')]
+        for want in MAC_COVERS:
+            for n in pics:
+                if os.path.splitext(n)[0].lower().startswith(want):
+                    return os.path.join(folder, n)
+        if len(pics) == 1:
+            return os.path.join(folder, pics[0])
+        songs = self.lib.dirs.get(album['rel'], ([], []))[1]
+        return os.path.join(folder, songs[0]) if songs else None
+
+    def get(self, album_id, album, w, h, depth):
+        key = (album_id, w, h, depth)
+        with self.lock:
+            if key in self.kept:
+                return self.kept[key]
+        got = self.make(album, w, h, depth)
+        with self.lock:
+            if len(self.kept) > 2000:
+                self.kept.clear()
+            self.kept[key] = got
+        return got
+
+    def make(self, album, w, h, depth):
+        """(rowBytes, bits) or None"""
+        if not self.lib.ffmpeg:
+            return None
+        src = self.source(album)
+        if not src:
+            return None
+        vf = (f'scale={w}:{h}:force_original_aspect_ratio=decrease:flags=area,'
+              f'pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=white')
+        fmt = 'gray' if depth == 1 else 'rgb24'
+        try:
+            out = subprocess.run([self.lib.ffmpeg, '-nostdin', '-v', 'error', '-i', src, '-map', '0:v:0', '-frames:v', '1',
+                                  '-vf', vf, '-f', 'rawvideo', '-pix_fmt', fmt, 'pipe:1'], capture_output=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        need = w * h * (1 if depth == 1 else 3)
+        if out.returncode or len(out.stdout) < need:
+            return None
+        return dither1(out.stdout[:need], w, h) if depth == 1 else dither8(out.stdout[:need], w, h)
+
+
+def stream_track(lib, rel, wfile, meta, start, kbps, title):
+    """one track from start seconds, at the rate it plays after a first burst, then the end"""
+    path = lib.real(rel)
+    if not path:
+        return
+    out = IcyWriter(wfile, meta)
+    out.title = title
+    if rel.lower().endswith('.mp3'):
+        with open(path, 'rb') as f:
+            b = f.read()
+
+        def skip(chunks):
+            gone = 0.0
+            for data, secs in chunks:
+                if gone + secs <= start:
+                    gone += secs
+                    continue
+                yield data, secs
+        source = skip(mp3_chunks(b)) if start else mp3_chunks(b)
+    else:
+        source = converted_chunks(lib.ffmpeg, path, kbps, start)
+    t0 = time.monotonic() - BURST
+    due = 0.0
+    try:
+        for data, secs in source:
+            out.write(data)
+            due += secs
+            ahead = due - (time.monotonic() - t0)
+            if ahead > 0:
+                time.sleep(ahead)
+    finally:
+        source.close()
+
+
+def music_discovery(port, name, tcp_port):
+    """answer "AURORA68-MUSIC?" on a UDP port: how Aurora68 Play finds the server. The probe comes as a broadcast
+    (Apple's MacTCP sends one) or to the group 239.255.68.70 (Riptide's MacTCP interface sends that where it refuses
+    a broadcast). The answer: "AURORA68-MUSIC <tab> 1 <tab> NAME <tab> PORT <tab> IPV4 <tab> IPV6", the server's own
+    addresses as numbers (either may be empty), so that Play takes the family its preference names."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.bind(('', port))
+    except OSError as e:
+        log(f'no discovery on UDP port {port} ({e.strerror}): Aurora68 Play needs the address typed in')
+        return
+    try:
+        s.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, socket.inet_aton('239.255.68.70') + socket.inet_aton('0.0.0.0'))
+    except OSError:
+        pass                                           # no multicast here: broadcasts still answered
+    while True:
+        try:
+            data, peer = s.recvfrom(512)
+        except OSError:
+            continue
+        if data.strip() == b'AURORA68-MUSIC?':
+            have = own_addresses()
+            answer = f'AURORA68-MUSIC\t1\t{mac_field(name, 40)}\t{tcp_port}\t{have.get("ipv4", "")}\t{have.get("ipv6", "")}\r'
+            s.sendto(answer.encode('mac_roman', 'replace'), peer)
+
+
 # ---- the web server ------------------------------------------------------------------------------
 # The control panel ("/"): the library as cover pictures (artists, albums, songs), the live channel's
 # Now Playing, queue and listeners. Plain HTML and a little JavaScript, no outside files, so it works
@@ -1016,6 +1362,7 @@ a{{text-decoration:none}} li{{margin:.15em 0}} .s{{color:#666;font-size:90%}}</s
 
 def make_handler(lib, name, max_listeners, kbps, live, prefer):
     listeners = threading.BoundedSemaphore(max_listeners)
+    cat, covers = Catalogue(lib, name), Covers(lib)
     globals_prefer = prefer
 
     class Handler(BaseHTTPRequestHandler):
@@ -1129,6 +1476,10 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer):
                         out['artists'] = [{'name': a, 'station': f'/s/{lib.station_id((rel, a))}', 'folders': f}
                                           for a, f in lib.artists[rel].items()]
                     return self.send(200, 'application/json', json.dumps(out).encode())
+                if path.startswith('/mac/'):
+                    return self.mac(path[5:], q)
+                if path.startswith('/t/'):
+                    return self.track(path[3:].strip('/'), q)
                 return self.fail(404, 'not here: try /')
             except (BrokenPipeError, ConnectionResetError):
                 pass
@@ -1181,6 +1532,123 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer):
             finally:
                 if l:
                     live.leave(l)
+                listeners.release()
+
+        # ---- Aurora68 Play's Library (the catalogue above): /mac/..., and /t/ID for one track ----
+        def mac_send(self, code, body):
+            self.send(code, 'text/plain; charset=macintosh', body)
+
+        def mac_error(self, code, text):
+            self.mac_send(code, mac_answer('error', 1, 0, [(text,)]))
+
+        def mac(self, what, q):
+            cat.fresh()
+            if what == 'info':
+                return self.mac_send(200, mac_answer('info', 1, 0, [(name, VERSION, len(cat.artists), len(cat.albums), len(cat.tracks))]))
+            if what == 'artists':
+                rows = [(i, cat.artists[i]['name'], len(cat.artists[i]['albums']),
+                         sum(len(cat.albums[a]['tracks']) for a in cat.artists[i]['albums'])) for i in cat.artist_order]
+                part, start = page_of(rows, q)
+                return self.mac_send(200, mac_answer('artists', len(rows), start, part))
+            if what == 'albums':
+                aid = q.get('artist', '')
+                if aid and aid not in cat.artists:
+                    return self.mac_error(404, 'There is no such artist in the library now.')
+                ids = cat.artists[aid]['albums'] if aid else sorted(cat.albums, key=lambda i: (sort_key(cat.albums[i]['artist']),
+                                                                                              cat.albums[i]['title'].casefold()))
+                part, start = page_of(ids, q)
+                return self.mac_send(200, mac_answer('albums', len(ids), start, cat.album_rows(part)))
+            if what == 'tracks':
+                if q.get('album'):
+                    a = cat.albums.get(q['album'])
+                    if not a:
+                        return self.mac_error(404, 'There is no such album in the library now.')
+                    tids, probe = a['tracks'], True
+                elif q.get('artist'):
+                    ar = cat.artists.get(q['artist'])
+                    if not ar:
+                        return self.mac_error(404, 'There is no such artist in the library now.')
+                    tids, probe = [t for al in ar['albums'] for t in cat.albums[al]['tracks']], False
+                else:
+                    return self.mac_error(400, 'tracks?album=ID or tracks?artist=ID')
+                part, start = page_of(tids, q)
+                rows = cat.track_rows(part, probe)
+                if probe:
+                    rows.sort(key=lambda r: (r[1] or 999, r[2].casefold()) if any(x[1] for x in rows) else 0)
+                return self.mac_send(200, mac_answer('tracks', len(tids), start, rows))
+            if what == 'search':                  # the Mac sends its words in Mac Roman, %XX for each byte
+                mq = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(self.path).query, encoding='mac_roman'))
+                words = mq.get('q', '').casefold().split()
+                if not words:
+                    return self.mac_send(200, mac_answer('search', 0, 0, []))
+                hit = lambda text: all(w in text.casefold() for w in words)
+                rows = [('A', i, cat.artists[i]['name'], f'{len(cat.artists[i]["albums"])} albums')
+                        for i in cat.artist_order if hit(cat.artists[i]['name'])]
+                rows += [('L', i, a['title'], a['artist']) for i, a in sorted(cat.albums.items(), key=lambda kv: kv[1]['title'].casefold())
+                         if hit(a['title'] + ' ' + a['artist'])]
+                for t in cat.tracks:
+                    if len(rows) >= 300:
+                        break
+                    n, title, artist, secs = cat.track_info(t, probe=False)
+                    if hit(title + ' ' + artist):
+                        rows.append(('T', t, title, artist, cat.tracks[t][0], secs))
+                part, start = page_of(rows, q)
+                return self.mac_send(200, mac_answer('search', len(rows), start, part))
+            if what in ('art', 'arts'):
+                try:
+                    w = max(MAC_ART_MIN, min(MAC_ART_MAX, int(q.get('w', 64))))
+                    h = max(MAC_ART_MIN, min(MAC_ART_MAX, int(q.get('h', w))))
+                    depth = 8 if q.get('depth') == '8' else 1
+                except ValueError:
+                    return self.mac_error(400, 'w, h: numbers')
+                rb = ((w + 15) // 16) * 2 if depth == 1 else w + (w & 1)
+                if what == 'art':
+                    a = cat.albums.get(q.get('album', ''))
+                    got = covers.get(q['album'], a, w, h, depth) if a else None
+                    if not got:
+                        return self.mac_error(404, 'This album has no cover picture.')
+                    return self.send(200, 'application/octet-stream',
+                                     f'A68ART\t1\t{w}\t{h}\t{depth}\t{rb}\r'.encode() + got[1])
+                ids = [i for i in q.get('albums', '').split(',') if i][:64]
+                body = bytearray(f'A68ARTS\t1\t{len(ids)}\t{w}\t{h}\t{depth}\t{rb}\r'.encode())
+                for i in ids:                    # each: a byte (1 a cover, 0 none), then rb * h bytes
+                    a = cat.albums.get(i)
+                    got = covers.get(i, a, w, h, depth) if a else None
+                    body += (b'\1' + got[1]) if got else (b'\0' + bytes(rb * h))
+                return self.send(200, 'application/octet-stream', bytes(body))
+            return self.mac_error(404, 'info, artists, albums, tracks, search, art, arts')
+
+        def track(self, tid, q):
+            cat.fresh()
+            if tid not in cat.tracks:
+                return self.fail(404, 'no such track')
+            if not listeners.acquire(blocking=False):
+                return self.fail(503, f'{max_listeners} listeners already')
+            al, rel = cat.tracks[tid]
+            n, title, artist, secs = cat.track_info(tid)
+            try:
+                start = max(0, int(q.get('start', 0)))
+            except ValueError:
+                start = 0
+            meta = self.headers.get('Icy-MetaData') == '1'
+            who = self.who()
+            try:
+                self.send_response(200)
+                self.send_header('Content-Type', 'audio/mpeg')
+                self.send_header('Cache-Control', 'no-cache, no-store')
+                self.send_header('Connection', 'close')
+                self.send_header('icy-name', mac_field(f'{artist} - {title}', 60))
+                self.send_header('X-Aurora-Seconds', str(secs))
+                if meta:
+                    self.send_header('icy-metaint', str(METAINT))
+                self.end_headers()
+                if self.command == 'HEAD':
+                    return
+                log(f'{who}: track {artist} - {title}' + (f' from {start} s' if start else ''))
+                stream_track(lib, rel, self.wfile, meta, start, kbps, f'{artist} - {title}')
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                log(f'{who}: left the track {title}')
+            finally:
                 listeners.release()
 
         def station(self, rel, q):
@@ -1349,6 +1817,8 @@ def main():
                     help='kbit/s of the MP3 that FLAC, M4A and other formats are converted to (192)')
     ap.add_argument('--ffmpeg', default=os.environ.get('MUSIC_FFMPEG', shutil.which('ffmpeg') or ''),
                     help='ffmpeg, to play formats other than MP3 ("" for MP3s only)')
+    ap.add_argument('--discovery', type=int, default=int(os.environ.get('MUSIC_DISCOVERY_PORT', str(MAC_DISCOVERY))),
+                    help=f'UDP port on which Aurora68 Play finds the server ({MAC_DISCOVERY}; 0: none)')
     a = ap.parse_args()
     if not os.path.isdir(a.music):
         sys.exit(f'no such folder: {a.music}')
@@ -1359,6 +1829,8 @@ def main():
     srv, how = serve(a.bind, a.port, make_handler(lib, a.name, a.max_listeners, a.bitrate, Live(lib, a.name, a.bitrate),
                                                   a.prefer), a.listen)
     have = own_addresses()
+    if a.discovery:
+        threading.Thread(target=music_discovery, args=(a.discovery, a.name, a.port), daemon=True).start()
     log('addresses: ' + (', '.join(f'{f} {address_url(v, a.port)}' for f, v in sorted(have.items(), reverse=True)) or 'none found')
         + f'; handing out {a.prefer if a.prefer != "asked" else "the address each request used"}')
     signal.signal(signal.SIGTERM, lambda *x: sys.exit(0))
