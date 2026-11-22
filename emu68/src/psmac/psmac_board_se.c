@@ -1230,10 +1230,23 @@ static void se_first_rows_check(uint32_t y)
    written and the word read, to tell an address line (the neighbouring row's pattern) from a data line. */
 static uint32_t verify_row, verify_rows, verify_words_bad, verify_rows_bad, verify_logged;
 static uint64_t verify_next;
+/* mac.screencheck=off: never; on (the default): until the read-backs show the reads, not the screen, are
+   wrong. The tester's 512Ke, the same day: 6,011 of 6,605 rows read back with words that differ, 29 of 32
+   on average, while its screen showed only a few stray dots: its reads of the board's memory come back
+   wrong and its writes do not, so the check rewrote right words and added 2,000 reads a second to a bus
+   whose reads were already in doubt. Past 64 rows with more than a quarter of them differing, it stops. */
+static int verify_on = 1;
 static void se_verify_row(void)
 {
     uint64_t now = asc_now();
-    if (!shadow_valid || now < verify_next) return;
+    if (!verify_on || !shadow_valid || now < verify_next) return;
+    if (verify_rows >= 64 && verify_rows_bad * 4 > verify_rows) {
+        verify_on = 0;
+        kprintf("[PSMAC:SE] screen check stopped: %u of %u rows read back differently (%u words): the board's memory reads back "
+                "wrong while the screen shows what was written, so reads over the wire are in doubt here, not the screen "
+                "(the VIA's and the SCC's reads may be too: the mouse and keyboard lines)\n", verify_rows_bad, verify_rows, verify_words_bad);
+        return;
+    }
     verify_next = now + asc_hz() / 60;
     uint32_t y = verify_row; verify_row = (verify_row + 1) % SE_ROWS;
     if (dirty[y >> 5] & (1u << (y & 31))) return;           /* a send is coming anyway */
@@ -1456,6 +1469,7 @@ void psmac_se_options(const char *args)
         else if (n >= 1 && n <= 21) se_fault_or = 1u << n;
     }
     if ((tok = find_token(args, "mac.sescsi=")) && !psmac_board_orig) { tok += 11; scsi_mode = tok[0] == 'r' ? 1 : tok[0] == 'e' ? 2 : 0; }
+    if ((tok = find_token(args, "mac.screencheck="))) verify_on = tok[16] != 'o' || tok[17] != 'f';
     if ((tok = find_token(args, "mac.sescsiwait="))) {
         int v = 0;
         for (tok += 15; *tok >= '0' && *tok <= '9'; tok++) v = v * 10 + (*tok - '0');
@@ -1474,8 +1488,8 @@ void psmac_se_report(void)
 {
     if (psmac_board_solo) { psmac_solo_report(); return; }
     if (!psmac_board_se) return;
-    kprintf("[PSMAC:SE] rows sent %u%s, rows checked %u (%u with %u words wrong, written again), frames compared %u, local reads %u writes %u, RBV IFR %02x IER %02x SIER %02x | clock chip: %s, %u bytes read (%u of them $FF from the chip), %u written\n",
-            rows_sent, se_lines_bad ? " (an address line failed its test at the start)" : "", verify_rows, verify_rows_bad, verify_words_bad, frames_marked, local_reads, local_writes, rbv_ifr, rbv_ier, rbv_regs[0x12],
+    kprintf("[PSMAC:SE] rows sent %u%s, rows checked %u (%u with %u words wrong, written again%s), frames compared %u, local reads %u writes %u, RBV IFR %02x IER %02x SIER %02x | clock chip: %s, %u bytes read (%u of them $FF from the chip), %u written\n",
+            rows_sent, se_lines_bad ? " (an address line failed its test at the start)" : "", verify_rows, verify_rows_bad, verify_words_bad, verify_on ? "" : "; check stopped: reads in doubt", frames_marked, local_reads, local_writes, rbv_ifr, rbv_ier, rbv_regs[0x12],
             xp.serve ? "not answering, the board layer answers" : "answering", xp.reads, xp.reads_ff, xp.writes);
     if (scsi_empty) kprintf("[PSMAC:SE]   SCSI: the empty bus answered here, %u selections (none answered)\n", se5380.selections);
     if (psmac_board_plus) {
