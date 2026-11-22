@@ -325,6 +325,8 @@ if (${VARIANT} IN_LIST SUPPORTED_VARIANTS)
                     src/psmac/psmac_board_se.c
                     src/psmac/psmac_board_plus.c
                     src/psmac/psmac_board_solo.c
+                    src/psmac/psmac_buscheck.c
+                    src/psmac/psmac_buscheck_core.c
                     src/psmac/psmac_card.c
                     src/psmac/psmac_boot.c
                     src/psmac/psmac_crash.c

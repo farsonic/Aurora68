@@ -258,6 +258,8 @@ void psmac_select_transport(int semihost_mode) { use_semihost = semihost_mode; i
 
 /* Options come from /chosen bootargs (this Emu68 branch does not parse the cmdline itself). */
 static int opts_read;
+static void busfault_options(const char *v);       /* mac.busfault= (psmac_wire_read, below) */
+static struct { int on, dbit, dval, an, am; uint32_t pm, lcg, applied; } bf = { 0, -1, 0, 0, 0, 0, 0x2545f491u, 0 };
 static void psmac_read_options(void)
 {
     if (opts_read) return;
@@ -350,6 +352,12 @@ static void psmac_read_options(void)
         if (*tok == '1') { sh_swap = 0; int64_t fd = sh_open(":tt", 0); if (fd < 0) { sh_swap = 1; fd = sh_open(":tt", 0); } sh_files = fd >= 0; kprintf("[PSMAC] semihosting files %s (byte-swap %d)\n", sh_files ? "on" : "FAILED", sh_swap); }
     }
     if (psmac_board_solo) { use_gpio = 0; use_semihost = 0; transport_none = 1; psmac_solo_init(); }
+    if ((tok = find_token(args, "mac.busfault="))) {      /* the testbed's faults on reads (below, psmac_wire_read): never over the GPIO */
+        busfault_options(tok + 13);
+        kprintf("[PSMAC] mac.busfault: %s (data line %d%s, address line %d%s%d, %u per thousand reads randomised)\n",
+                !bf.on ? "nothing understood" : "faults on the wire's reads, in the testbed only", bf.dbit, bf.dbit < 0 ? "" : bf.dval ? " reads 1" : " reads 0",
+                bf.an, bf.am ? " follows " : " reads 0, ", bf.am, bf.pm);
+    }
     static char shown[1024];                             /* the WiFi password and the like as *** */
     psmac_redact(args, shown, sizeof shown);
     { static int fpu_said; if (!fpu_said && globals.fpu_disable) { fpu_said = 1;   /* a present FPU: psmac_fpu_init says which (exact or double) */
@@ -819,8 +827,12 @@ void psmac_service_core(void)
             bridge_xfer(PSMAC_OP_POLL, 0, 0, 0, 0, NULL);
             next_poll = cnt_now() + period;
         }
-        psmac_se_service();                       /* the SE's screen, a few rows at a time */
-        { extern void psmac_plus_service(void); psmac_plus_service(); }   /* the Plus's keyboard and mouse (psmac_board_plus.c) */
+        { extern int psmac_buscheck_holding(void); extern void psmac_buscheck_service(void);
+          if (psmac_buscheck_holding()) psmac_buscheck_service();   /* mac.buscheck: the board is the check's, the Mac never starts (psmac_buscheck.c) */
+          else {
+              psmac_se_service();                   /* the SE's screen, a few rows at a time */
+              { extern void psmac_plus_service(void); psmac_plus_service(); }   /* the Plus's keyboard and mouse (psmac_board_plus.c) */
+          } }
         psmac_bridge_flush();                     /* the testbed's gathered posted writes, now that there is nothing else to do */
         __asm__ volatile("yield");
     }
@@ -899,13 +911,58 @@ void psmac_io_write(uint32_t addr, int size, uint32_t data, int posted)
    layer's address-line test can be tried in the testbed. */
 uint32_t psmac_se_wire_addr(uint32_t addr);
 static inline uint32_t wire_addr(uint32_t addr) { return psmac_se_wire_addr(addr); }
+/* mac.busfault= (the testbed only, 22 November 2026, docs/08 item 108): faults on the wire's reads, and on
+   reads alone, so that the bus check's verdicts (psmac_buscheck_core.c) can be seen to change as they
+   should: a tester's 512Ke wrote its screen right and read it back wrong. Terms joined by '+':
+   dN (data line N reads 0), dNh (reads 1), aN (address line N reads as 0, below $400000: the RAM),
+   aN,M (line N follows line M on reads), rand:P (P reads in a thousand come back with random bits
+   flipped). mac.selinefault= (psmac_board_se.c) is the older one, on reads and writes alike. */
+static void busfault_options(const char *v)
+{
+    bf.on = 0; bf.dbit = -1; bf.an = bf.am = 0; bf.pm = 0;
+    while (*v && *v != ' ') {
+        if (v[0] == 'd' && v[1] >= '0' && v[1] <= '9') {
+            int n = 0; v++; while (*v >= '0' && *v <= '9') n = n * 10 + (*v++ - '0');
+            if (n < 16) { bf.dbit = n; bf.dval = *v == 'h'; bf.on = 1; }
+            if (*v == 'h') v++;
+        } else if (v[0] == 'a' && v[1] >= '0' && v[1] <= '9') {
+            int n = 0, m = 0; v++; while (*v >= '0' && *v <= '9') n = n * 10 + (*v++ - '0');
+            if (*v == ',') { v++; while (*v >= '0' && *v <= '9') m = m * 10 + (*v++ - '0'); }
+            if (n >= 1 && n <= 21 && m <= 21 && m != n) { bf.an = n; bf.am = m; bf.on = 1; }
+        } else if (strncmp(v, "rand:", 5) == 0) {
+            uint32_t p = 0; v += 5; while (*v >= '0' && *v <= '9') p = p * 10 + (uint32_t)(*v++ - '0');
+            if (p && p <= 1000) { bf.pm = p; bf.on = 1; }
+        } else v++;
+        if (*v == '+') v++;
+    }
+}
+static uint32_t busfault_word(uint32_t v, uint32_t mask)
+{
+    if (bf.pm) {
+        bf.lcg = bf.lcg * 1103515245u + 12345u;
+        if ((bf.lcg >> 8) % 1000u < bf.pm) { bf.lcg = bf.lcg * 1103515245u + 12345u; uint32_t x = (bf.lcg >> 8) & mask; v ^= x ? x : 1u; bf.applied++; }
+    }
+    return v;
+}
+static uint32_t busfault_data(uint32_t addr, int size, uint32_t v)
+{
+    if (size == 4) return busfault_data(addr, 2, v >> 16) << 16 | busfault_data(addr + 2, 2, v & 0xffff);
+    int bit = bf.dbit;
+    if (size == 1) bit = (addr & 1) ? (bit < 8 ? bit : -1) : (bit >= 8 ? bit - 8 : -1);   /* even: D8-D15, odd: D0-D7 */
+    if (bit >= 0) v = bf.dval ? v | 1u << bit : v & ~(1u << bit);
+    return busfault_word(v, size == 1 ? 0xffu : 0xffffu);
+}
 uint32_t psmac_wire_read(uint32_t addr, int size)
 {
     struct psmac_reply r;
     addr = wire_addr(addr);
+    int fault = bf.on && !use_gpio;
+    if (fault && bf.an && addr < 0x400000u) addr = (addr & ~(1u << bf.an)) | (bf.am ? (addr >> bf.am & 1u) << bf.an : 0);
     if (service_running && on_service_core()) bridge_xfer(PSMAC_OP_READ, size, 0, addr, 0, &r); else xfer(PSMAC_OP_READ, size, 0, addr, 0, &r);
+    if (fault) r.data = busfault_data(addr, size, r.data);
     return r.data;
 }
+int psmac_bus_uses_gpio(void) { return use_gpio && !transport_none; }   /* the classic PiStorm's GPIO, not the testbed's bridge (psmac_buscheck.c) */
 void psmac_wire_write(uint32_t addr, int size, uint32_t data, int posted)
 {
     addr = wire_addr(addr);

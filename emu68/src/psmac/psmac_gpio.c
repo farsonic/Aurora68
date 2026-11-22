@@ -178,6 +178,82 @@ static void setup_gpclk(void)
     gpio[PIN_CLK / 10] |= LE32(4 << ((PIN_CLK % 10) * 3));      /* GPIO 4: alternate function 0, GPCLK0 */
 }
 
+/* The CPLD's JTAG IDCODE and USERCODE (22 November 2026, docs/18 K2 and docs/08 item 108): which firmware the
+   PiStorm carries decides when it samples the data of a read (the stock image of today, usercode 00185866,
+   latches about 128 ns before a 68000 would; the pre-June-2021 original, 0018736F, in S7), and nothing said
+   which one a tester has. Emu68's cpld.c reads it through libxsvf, which the psmac build does not link; the
+   two instructions it needs are read here by hand, on the JTAG pins the classic PiStorm wires to GPIO 24
+   (TMS), 25 (TDO), 26 (TCK) and 27 (TDI), as cpld.c names them. Only IDCODE and USERCODE are loaded, both
+   of which leave the device's logic running; the TAP is put back in Test-Logic-Reset after. GPIO 24-27
+   are outside the bus protocol's lines (0-23), and GPFSEL2's other fields (GPIO 20-23, the data lines'
+   top four, and 28-29) are kept as they are and the register restored afterwards: the protocol rewrites
+   it at every cycle anyway (inp/outp). The service core calls this between bus cycles, never during one.
+   MAX II (EPM240/EPM570) and MAX V: a 10-bit instruction register, IDCODE 0x006, USERCODE 0x007. */
+static uint32_t cpld_id, cpld_uc; static int cpld_read;
+int psmac_gpio_cpld(uint32_t *id, uint32_t *uc) { *id = cpld_id; *uc = cpld_uc; return cpld_read; }
+#define JT_TMS 24
+#define JT_TDO 25
+#define JT_TCK 26
+#define JT_TDI 27
+static void jt_wait(void) { usleep(2); }
+static int jt_clock(int tms, int tdi)               /* one TCK: TDO sampled while TCK is low, the TAP moves on the rising edge */
+{
+    gpio[tms ? 7 : 10] = LE32(1u << JT_TMS);
+    gpio[tdi ? 7 : 10] = LE32(1u << JT_TDI);
+    gpio[10] = LE32(1u << JT_TCK);
+    jt_wait();
+    int tdo = (LE32(gpio[13]) >> JT_TDO) & 1;
+    gpio[7] = LE32(1u << JT_TCK);
+    jt_wait();
+    return tdo;
+}
+static uint32_t jt_shift_dr32(void)                 /* from Run-Test/Idle: Select-DR, Capture-DR, Shift-DR x32, Exit1, Update, Idle */
+{
+    jt_clock(1, 0); jt_clock(0, 0); jt_clock(0, 0);
+    uint32_t v = 0;
+    for (int i = 0; i < 32; i++) v |= (uint32_t)jt_clock(i == 31, 0) << i;
+    jt_clock(1, 0); jt_clock(0, 0);
+    return v;
+}
+static void jt_shift_ir(uint32_t ir)                /* from Run-Test/Idle: Select-DR, Select-IR, Capture-IR, Shift-IR x10, Exit1, Update, Idle */
+{
+    jt_clock(1, 0); jt_clock(1, 0); jt_clock(0, 0); jt_clock(0, 0);
+    for (int i = 0; i < 10; i++) jt_clock(i == 9, (int)(ir >> i) & 1);
+    jt_clock(1, 0); jt_clock(0, 0);
+}
+int psmac_gpio_jtag(uint32_t *idcode, uint32_t *usercode)
+{
+    if (!gpio_ready) return -1;
+    uint32_t sel2 = LE32(gpio[2]), keep = sel2 & ~(0xfffu << 12);   /* GPIO 24-27: function fields at bits 12-23 */
+    gpio[2] = LE32(keep | (1u << 12) | (0u << 15) | (1u << 18) | (1u << 21));   /* TMS, TCK, TDI outputs, TDO an input */
+    for (int i = 0; i < 6; i++) jt_clock(1, 0);     /* Test-Logic-Reset from anywhere */
+    jt_clock(0, 0);                                 /* Run-Test/Idle */
+    jt_shift_ir(0x006); *idcode = jt_shift_dr32();
+    jt_shift_ir(0x007); *usercode = jt_shift_dr32();
+    for (int i = 0; i < 6; i++) jt_clock(1, 0);     /* Test-Logic-Reset: the device's own logic as before */
+    gpio[2] = LE32(sel2);
+    return 0;
+}
+/* the usercodes Emu68's cpld.c knows, with what docs/18 section 4 found of the ones that matter here */
+const char *psmac_cpld_name(uint32_t uc)
+{
+    static const struct { uint32_t code; const char *name; } t[] = {
+        { 0x00185866, "EPM240_experimental (stock, samples early)" },
+        { 0x0018569E, "EPM240_bitstream (June 2021)" },
+        { 0x0018736F, "EPM240_original (pre-2021, samples in S7)" },
+        { 0x00186C9D, "EPM240_long_hold" }, { 0x00187FC6, "EPM240_longer_hold" }, { 0x00187C10, "EPM240_long_data" },
+        { 0x00189844, "EPM240_PiStormX_basic" }, { 0x0018A0B9, "EPM240_PiStormX_skip_s5s6" },
+        { 0x00336118, "EPM570 bitstream" }, { 0x003354F0, "EPM570 bitstream_experimental" }, { 0x00337130, "EPM570 bitstream_long_data" },
+        { 0x00336000, "EPM570 bitstream_long_hold" }, { 0x00338451, "EPM570 bitstream_longer_hold" }, { 0x0033700A, "EPM570 bitstream_original" },
+        { 0x00187AFD, "MAX V 5M240Z maxv_bitstream" },
+    };
+    for (unsigned i = 0; i < sizeof t / sizeof t[0]; i++) if (t[i].code == uc) return t[i].name;
+    if (uc == 0xffffffffu || uc == 0) return "no answer on the JTAG pins";
+    return "not a usercode Emu68 knows";
+}
+
+/* the CPLD's clock as set up, for the bus check's report (psmac_buscheck.c): PLLC_PER in MHz (0 unread), the divider, the board's timings */
+void psmac_gpio_clock(uint32_t *src_mhz, uint32_t *div, int *is_pi4) { *src_mhz = gpclk_src_mhz; *div = gpclk_div; *is_pi4 = pi4; }
 int psmac_gpio_active(void) { return gpio_ready; }     /* the PiStorm transport owns GPIO 0-27 (psmac_bus.c's console asks) */
 int psmac_gpio_reset_asserted(void) { return gpio_ready && (LE32(gpio[13]) & (1 << PIN_RESET)) == 0; }
 
@@ -233,6 +309,17 @@ void psmac_gpio_init(void)
         kprintf("[PSMAC:GPIO] CPLD clock on GPIO 4: PLLC unreadable, divider %u as usual (200 MHz from a %u MHz PLLC)\n", gpclk_div, pi4 ? 1000 : 1200);
     kprintf("[PSMAC:GPIO] classic PiStorm protocol up (%s timings, status %04x, RESET %s)\n",
             pi4 ? "Pi 4" : "Pi 3", status_read(), psmac_gpio_reset_asserted() ? "asserted" : "free");
+    /* which firmware the CPLD carries (above, psmac_gpio_jtag), once, before the 68k's first cycle;
+       mac.jtag=off leaves the JTAG pins alone */
+    extern const char *psmac_option(const char *key);
+    const char *jo = psmac_option("mac.jtag");
+    if (!jo || jo[0] != 'o' || jo[1] != 'f') {
+        if (psmac_gpio_jtag(&cpld_id, &cpld_uc) == 0) {
+            cpld_read = 1;
+            kprintf("[PSMAC:GPIO] CPLD JTAG: IDCODE %08x%s, usercode %08x: %s\n", cpld_id,
+                    (cpld_id & 0x0fffffffu) == 0x020a10ddu ? " (EPM240)" : (cpld_id & 0x0fffffffu) == 0x020a20ddu ? " (EPM570)" : "", cpld_uc, psmac_cpld_name(cpld_uc));
+        }
+    }
 }
 
 /* ---- the 68000 bus cycles. Address high register: bits 0-7 are A16-A23, bit 8 is "byte",

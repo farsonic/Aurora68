@@ -1523,10 +1523,10 @@ static void card_start(void)
    entries: the pieces of the name (13 UTF-16 characters each, the last first, the 0x40 bit on it), each
    carrying the checksum of the short name, then the short entry itself (AURORA~1.TXT, the first number
    no other file has), all in one directory sector, which is written in one go. A file is at most its
-   first cluster (the texts are under 1 KB, clusters 4 KB or more on any card the firmware boots), so
+   first cluster (the texts are under 1 KB, buscheck.txt under 4 KB, clusters 4 KB or more on any card the firmware boots), so
    nothing but the directory and that one cluster is ever written; the text is read back. Jobs are
    queued from any core (psmac_card_put_file) and done one per pass of core 3, in order. */
-struct sfjob { char name[32]; char text[1536]; uint32_t len; };
+struct sfjob { char name[32]; char text[4096]; uint32_t len; };   /* 4 KB: the bus check's buscheck.txt (psmac_buscheck.c), one cluster of any card the firmware boots */
 static struct sfjob sf_q[3]; static volatile int sf_head, sf_n; static volatile int sf_result;   /* 0 none, 1 busy, 2 done, 3 failed */
 static uint8_t lfn_sum(const uint8_t *sn) { uint8_t c = 0; for (int i = 0; i < 11; i++) c = (uint8_t)(((c & 1) << 7) + (c >> 1) + sn[i]); return c; }
 struct run_ctx { uint32_t want, lba, off; };

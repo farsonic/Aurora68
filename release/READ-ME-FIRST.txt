@@ -318,6 +318,26 @@ been run on a real machine. Set the card up as for the SE, with one difference i
   - What to send back: the serial log (or the HDMI log, mac.console=hdmi) of the first boot, and
     a photo of the screen, through an issue on GitHub (issue #21 is the Plus's).
 
+If your Mac misbehaves: the bus check (in the next release)
+------------------------------------------------------------
+A screen with stray dots, a mouse that moves by itself, phantom keys, a Mac that will not start:
+before anything else, let the kernel measure the bus between the Pi and the logic board. It takes
+a few seconds and gives everyone the same numbers to compare.
+  1. Add to the one line of cmdline.txt, beside your mac.board=:   mac.buscheck=1
+  2. Power on with the mouse still and nothing pressed. The Mac does not start in this boot: after
+     a few seconds of a grey striped screen, the Mac's own screen (and HDMI, if connected) shows
+     one page headed AURORA68 BUS CHECK.
+  3. Photograph the whole page, sharp enough to read the numbers. The last lines under SUMMARY say
+     in plain words what was found ("all clean", "D11 always reads 0: a stuck data line", "reads of
+     RAM fail ... mostly at random: a timing problem", ...).
+  4. Power off. The same text is in buscheck.txt in the card's root (with more detail): send it and
+     the photo with your issue on GitHub. Take mac.buscheck=1 out of cmdline.txt to use the Mac.
+  - Do it three or more times from cold (power off for ten seconds between): the Plus-era boards
+    can come up in a different phase each time, and the "phase read D0" line says which.
+  - mac.buscheck=loop measures again and again until you power off: useful while you press on the
+    PiStorm or warm the board, to see whether the numbers move.
+  - The page's CPLD line names the PiStorm's firmware (its JTAG usercode): say it in your issue.
+
 A Pi on the bench, no SE yet
 ----------------------------
 That is a useful first test. Power the Pi from USB with HDMI connected. The firmware's rainbow

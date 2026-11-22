@@ -320,8 +320,46 @@ static void con_cell(uint8_t *fb, uint32_t pitch_, int bpp32, uint32_t cx, uint3
                                                                    first real Pi the glyphs arrived a cache line at a time */
     }
 }
+/* The bus check's report on HDMI (psmac_buscheck.c, 22 November 2026): the screen cleared and the report's
+   lines drawn from the top, in the console's 8 by 16 cells when they fit and 8 by 8 when not (QEMU's
+   640 by 480 has 30 rows of 16), and the console holds from then on, so that the heartbeat does not
+   write over it: the log still goes to the serial line, PiLog's ring and the card. A second page
+   replaces the first (mac.buscheck=loop). */
+static volatile int con_held;
+void psmac_console_page(const char (*lines)[65], int n)
+{
+    uint8_t *fb = con_fb();
+    uint32_t p = vc_pitch ? vc_pitch : pitch, w = vc_w ? vc_w : fb_width, h = vc_h ? vc_h : fb_height;
+    if (!fb || !p || !w || !h) return;
+    int bpp32 = vc_bpp == 32 && vcfb;
+    uint32_t bpp = bpp32 ? 4 : 2, ch = h / 16 >= (uint32_t)n + 1 ? 16 : 8, x0 = w / 8 > 64 ? (w / 8 - 64) / 2 : 0;
+    con_held = 1;
+    for (uint32_t y = 0; y < h; y++) {
+        uint8_t *row = fb + y * p;
+        for (uint32_t x = 0; x < w * bpp; x++) row[x] = 0;
+        arm_flush_cache((intptr_t)row, w * bpp);
+    }
+    for (int r = 0; r < n && (uint32_t)(r + 1) * ch <= h; r++) {
+        int ended = 0;
+        for (uint32_t col = 0; col < 64 && (x0 + col + 1) * 8 <= w; col++) {
+            uint8_t c = ended ? 0 : (uint8_t)lines[r][col];
+            if (!c) { ended = 1; continue; }
+            const uint8_t *data = &topaz8_chardata[(topaz8_charloc[(c >= 32 && c < 128) ? c - 32 : 0] >> 16) >> 3];
+            for (uint32_t y = 0; y < ch; y++) {
+                uint8_t *row = fb + (r * ch + y) * p + (x0 + col) * 8 * bpp;
+                uint8_t bits = c > 32 ? data[(ch == 16 ? y / 2 : y) * modulo] : 0;
+                for (uint32_t x = 0; x < 8; x++) {
+                    int on = bits & (0x80 >> x);
+                    if (bpp32) ((uint32_t *)row)[x] = on ? LE32(0x00e0e0e0u) : 0; else ((uint16_t *)row)[x] = on ? LE16(0xe71c) : 0;
+                }
+                arm_flush_cache((intptr_t)row, 8 * bpp);
+            }
+        }
+    }
+}
 void psmac_console_putc(uint8_t c)
 {
+    if (con_held) return;                                     /* the bus check's page (above) */
     if (con_off && !con_keep) return;
     uint8_t *fb = con_fb();
     uint32_t p = vc_pitch ? vc_pitch : pitch;

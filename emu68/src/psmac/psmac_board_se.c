@@ -41,12 +41,16 @@ void psmac_plus_reset(void); void psmac_plus_options(const char *); void psmac_p
 uint32_t psmac_plus_scc_write(uint32_t ch, uint32_t data); void psmac_plus_scc_written(void); void psmac_plus_scc_read(uint32_t ch);
 #define PB6 (psmac_board_plus ? 0u : 0x40u)   /* VIA port B bit 6: driven high on the SE (its SCSI interrupt enable), an input on the Plus (H4) */
 int psmac_solo_access(uint32_t addr, int size, int write, uint32_t data, uint32_t *val);
+int psmac_buscheck_wanted(void), psmac_buscheck_boot(void), psmac_buscheck_will_hold(void);   /* mac.buscheck= (psmac_buscheck.c) */
 unsigned psmac_se_ipl(unsigned raw);
 static inline void level_lock(void), level_unlock(void); static void store_level(unsigned raw);   /* the level the JIT sees (psmac_se_set_level, below) */
 static unsigned se_wire_ipl;                /* the SE's level as the last cycle on the wire brought it */
 unsigned psmac_solo_ipl(void); void psmac_solo_level_now(void); void psmac_solo_service(void); void psmac_solo_options(const char *); void psmac_solo_report(void);
 static uint32_t se_ram_kb = 4096;           /* mac.seram=N: the SE's own memory, 1, 2, 2.5 or 4 MB (its screen and sound buffers sit at the top); 128 or 512 KB on mac.board=128k/512k/512ke */
 static uint32_t se_ram_size(void) { return se_ram_kb << 10; }
+static int se_ram_opt;                      /* the size came from mac.seram= */
+uint32_t psmac_se_ram_bytes(void) { return se_ram_size(); }          /* for the bus check (psmac_buscheck.c) */
+int psmac_se_ram_from_option(void) { return se_ram_opt; }
 /* mac.selinefault= (testbed, docs/08 item 68): an address-line fault on the wire to the SE's RAM (below
    $400000), so the address-line test below can be tried. N: line N stuck high; N,M: line N joined to
    M, M winning (the user's PiStorm had A14 and A15 bridged); N&M: the two joined, a 0 on either
@@ -1387,8 +1391,14 @@ static void se_overlay_off(void)
 }
 void psmac_se_start(void)
 {
-    if (!psmac_board_se || psmac_board_solo) { se_ready = 1; return; }
+    if (!psmac_board_se || psmac_board_solo) {
+        if (psmac_buscheck_wanted()) psmac_buscheck_boot();   /* says why it does not run here */
+        se_ready = 1; return;
+    }
     se_overlay_off();
+    /* mac.buscheck=1 (22 November 2026, docs/08 item 108): the bus measured and reported instead of a
+       boot; it holds the board from here on and psmac_se_wait_ready keeps the 68k from starting */
+    if (psmac_buscheck_wanted() && psmac_buscheck_boot()) { se_ready = 1; return; }
     se_ram_lines();
     shadow_valid = 0;
     for (uint32_t w = 0; w < (SE_ROWS + 31) / 32; w++) dirty[w] = 0;
@@ -1421,6 +1431,13 @@ void psmac_se_after_reset(void)
 void psmac_se_wait_ready(void)
 {
     if (!psmac_board_se || psmac_board_solo) return;
+    /* the bus check holds the board for the rest of this boot: the 68k never starts (it would take the
+       wire, and the report on the Mac's screen is the point). Decided from the options, so it holds
+       even if the service core has not reached its check yet. */
+    if (psmac_buscheck_will_hold()) {
+        kprintf("[PSMAC:SE] mac.buscheck: the 68k is not started in this boot (power off when the report is read)\n");
+        for (;;) __asm__ volatile("wfe");
+    }
     uint64_t t0 = asc_now(), hz = asc_hz();
     while (!se_ready && asc_now() - t0 < hz) __asm__ volatile("yield");
 }
@@ -1470,7 +1487,7 @@ void psmac_se_options(const char *args)
     if ((tok = find_token(args, "mac.seram="))) {   /* 1, 2, 2.5 or 4: the SE's address arithmetic takes the top of what is fitted */
         tok += 10; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0');
         uint32_t kb = n << 10; if (tok[0] == '.' && tok[1] == '5') kb += 512;
-        if (kb == 1024 || kb == 2048 || kb == 2560 || kb == 4096) se_ram_kb = kb;
+        if (kb == 1024 || kb == 2048 || kb == 2560 || kb == 4096) { se_ram_kb = kb; se_ram_opt = 1; }
     }
     if ((tok = find_token(args, "mac.sesound="))) { tok += 12; snd_off = tok[0] == 'o' && tok[1] == 'f'; }
 }

@@ -18,6 +18,15 @@ Since 0.13 (docs/08 items 96 and 103):
 - **`mac.fpu=none`**: no FPU for the Mac, as on a real SE or Plus (issue #28). Programs take their own non-FPU
   code, and SANE stays exact. Default unchanged (an FPU present).
 - The last "PiStorm-SE" names (declaration ROM card names, banners, file headers) are now Aurora68.
+- **The bus check: `mac.buscheck=1`** on the SE, Plus, 512Ke, 512K and 128K (docs/08 item 108). Instead of
+  starting the Mac the kernel measures the bus between the Pi and the logic board (RAM data and address lines,
+  byte and word accesses, the board's ROM, the VIA's and the SCC's registers and the SCC's spacing, timing,
+  retries, vertical blanking against the video's reads, reads back to back against spaced) and shows one page
+  of numbers with a verdict in plain words on the Mac's own screen and on HDMI, in the log and in
+  `buscheck.txt` on the card, so that every tester's machine can be compared. `mac.buscheck=loop` repeats it.
+  How to run it and what to photograph: READ-ME-FIRST, "If your Mac misbehaves: the bus check".
+- **The CPLD's firmware in the log**: its JTAG usercode is read as the PiStorm's protocol comes up and named
+  (`[PSMAC:GPIO] CPLD JTAG: ...`; `mac.jtag=off` to skip). docs/18 explains why it matters on the Plus-era boards.
 
 ## 0.13 — BlueSCSI disks, exact floating point, Aurora68 Play's Library (22 November 2026)
 

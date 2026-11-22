@@ -5,7 +5,8 @@
 #   The declaration ROM (build/psmac.declrom) carries the .PiDisk, .Network_EtherNet_PiStorm and .PiInput drivers,
 #   and PiDisk's boot record (pidisk_boot.s), which lets an image on the card be the startup disk.
 #   make check     compares the struct offsets in enet.s with emu68/src/alice/alice_net.h; host tests (USB frames, EDID, PiPlay's radio parser and station list,
-#                  the kernel's FAT/exFAT reader and its HFS view: tools/fatfs_test.sh, tools/hfsview_test.sh)
+#                  the kernel's FAT/exFAT reader and its HFS view: tools/fatfs_test.sh, tools/hfsview_test.sh; the bus check's
+#                  verdicts against a simulated board with faults: tools/buscheck_test.c)
 #   make install IMG=path/to/volume.img [PART=n]   the extensions into the System Folder of an HFS image, the programs into its Aurora68 folder
 AS      = m68k-linux-gnu-as -m68020
 OBJCOPY = m68k-linux-gnu-objcopy
@@ -154,6 +155,8 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	$(B)/usbnet_frame_test
 	cc -std=c99 -Wall -Wextra -Werror -I ../emu68/src/psmac -o $(B)/edid_test ../tools/edid_test.c ../emu68/src/psmac/psmac_edid.c
 	$(B)/edid_test > $(B)/edid_test.log && tail -1 $(B)/edid_test.log
+	cc -std=c99 -O1 -Wall -Wextra -Werror -I ../emu68/src/psmac -o $(B)/buscheck_test ../tools/buscheck_test.c ../emu68/src/psmac/psmac_buscheck_core.c
+	$(B)/buscheck_test > $(B)/buscheck_test.log && tail -1 $(B)/buscheck_test.log
 	cc -std=c99 -Wall -Wextra -Werror -o $(B)/icy_test ../tools/icy_test.c piplay/icy.c
 	$(B)/icy_test
 	cc -std=c99 -Wall -Wextra -Werror -o $(B)/stations_test ../tools/stations_test.c piplay/stations.c
