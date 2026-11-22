@@ -10,12 +10,14 @@ WiFi and Bluetooth through a NuBus card that exists only in software.
 Start with `docs/00-overview.md`: it tells the story of the project and points to the working
 documents for each part. The day-by-day record of what was found and fixed is `docs/08`.
 
-## Quick start (release 0.1)
+## Quick start (release 0.12)
 
-Release 0.1 is the testbed build packaged for the SD card: everything in it runs under
-emulation, and the PiStorm GPIO transport that connects the kernel to a real SE motherboard is
-the next piece of work, so on hardware this build boots the Pi and waits (see
-`RELEASE-NOTES.md`). The card layout is final, and 0.2 will be a drop-in `kernel8.img`.
+Release 0.12 runs on a real Macintosh SE: System 7.1 and System 6.0.8 start from the SE's own SCSI
+disk (or a BlueSCSI) or from a disk image on the SD card, with the SE's screen, keyboard, mouse and
+speaker, a second screen and stereo sound on HDMI, Ethernet and WiFi, USB and Bluetooth keyboards and
+mice, USB sticks, and a remote control. What has been checked on the hardware and what only in the
+emulator is listed in `RELEASE-NOTES.md`; the day-by-day record is `docs/08`. The steps below set up
+the card; "Disks and disk images: what works" (below) says which disks the Mac can use.
 
 1. Take a microSD card with a **FAT32** first partition.
 2. Copy the **Raspberry Pi firmware** onto it, from the card's root folder (the device tree
@@ -98,6 +100,32 @@ PiPlay, PiDisplay, PiSlots and so on (docs/09 has the table). Aurora68 Slots lis
 the Mac sees (the Pi's card in slot 9, the SE's HDMI screen in slot $A, real cards on a IIci or
 SE/30): each card's maker and what its functions are and do.
 
+### Disks and disk images: what works
+The Macintosh sees disks in five ways. Every one of them is HFS ("Mac OS Standard") as far as the Mac
+is concerned: System 6 and 7 read nothing else.
+
+| Where | What works | Notes |
+|---|---|---|
+| **The SE's own SCSI bus**: its internal disk, a BlueSCSI, SCSI2SD or ZuluSCSI | A disk with an **Apple partition map and a driver partition** (Apple's `Apple_Driver43` from HD SC Setup, or another formatter's driver) and an HFS volume. It can be the startup disk. | For a BlueSCSI, image files named `HDxy_512.hda` (x the SCSI ID, y the LUN). A bare HFS image with no driver does not mount on SCSI. Nothing on the bus at all, or no terminator, is fine: the kernel notices (`mac.sescsi=auto`, docs/08 item 70). |
+| **Disk images on the SD card**: files in the card's root ending in `.img`, `.hda`, `.image`, `.hfv` or `.dsk`, 1 MB or more, up to four (or the ones `mac.image=` names) | **Bare HFS** (`hformat`, Basilisk II and Mini vMac disks) **or Apple-partitioned** (the first `Apple_HFS` partition is used). They appear as disks (PiDisk volumes); one holding a System can be the startup disk (`mac.boot=`, below). | Read into the Pi's memory, so the size is limited by the memory the Pi has left after the Mac's: a few hundred MB on a 1 GB Pi, about 100 MB on a 512 MB one (the log says when one does not fit). What the Mac writes goes back into the file. Keep them out of the container: the firmware reads the container before anything starts. |
+| **USB sticks** in the Pi's sockets, plugged in any time | A stick formatted **FAT32 or exFAT** on a modern Mac or a PC: its files appear as a **locked** disk; Mac files keep their resource forks, type and creator from the `._` files macOS writes (new in 0.12, docs/09 "USB flash drives"). HFS disk images in such a stick's root mount as disks of their own, writable. A stick holding **HFS** itself mounts writable as it is. | Up to 2 GB and 32,000 files per view. Writing from the Mac to a FAT/exFAT stick's own files is not done yet (issue #20). Eject with Put Away, then wait for "safe to unplug" in Aurora68 Log. |
+| **The "Mac Exchange" folder** on the SD card | Its files as a locked disk, the same way as a FAT/exFAT stick (new in 0.12). | Put files there from any computer. `mac.exchange=off` turns it off, `mac.exchange=NAME` uses another folder. |
+| **The SE's floppy drive** | The SE's own 800K drive, reached through the IWM; a floppy with a System is the startup disk, as on any Mac. | 0.12 selects the internal drive (before, the kernel left it unselected: docs/08 item 93). Not yet verified on a real SE; Aurora68 IO Test and docs/12 have the steps (issue #9). |
+
+**System versions.** Tested: **System 7.1** (also 7.1.2 from the owner's BlueSCSI) and **System 6.0.8**.
+Others are untested. More than 8 MB of memory needs 32-bit addressing (System 7: Memory control panel,
+On); System 6 is 24-bit and sees 8 MB at most.
+
+**What does not work:** HFS Plus ("Mac OS Extended") and APFS disks (System 7 cannot read them; use FAT32 or
+exFAT to move files between a modern Mac and the SE); Disk Copy 4.2 floppy images (they carry an 84-byte
+header: convert them to a raw image first); compressed or packaged images (`.dmg`, `.sit`, `.toast`); CD-ROM
+images (issue #15).
+
+**The startup disk.** A floppy with a System is taken first, as on any Mac. Then, with `mac.boot=auto` (the
+default), the SCSI disk the parameter RAM names (the Startup Disk control panel), then a disk image on the
+card, then the other SCSI disks: the card's image starts the Mac when the usual startup disk is not there.
+`mac.boot=image` puts the card's image first; `mac.boot=scsi` leaves the parameter RAM's choice alone.
+
 ### config.txt
 ```ini
 [all]
@@ -154,6 +182,8 @@ One line, options separated by spaces, no comments:
 | `mac.image=NAME` | the disk images on the card, files of their own beside the container: by default every file in the card's root ending in `.hda`, `.img`, `.image`, `.hfv` or `.dsk` (not `kernel*.img`), in the order they were copied there, up to four; `mac.image=A.hda,B.img` names them, `mac.image=off` takes none. Used only when the container has no disk image (below, "Booting fast") |
 | `mac.boot=auto` | the startup disk when a disk image on the card (`mac.image=`) holds a System: `auto` (the default) the SCSI disk the parameter RAM names (ID 0 unless the Startup Disk control panel chose another) first, then the card's image, then the other SCSI disks, so the image starts the Mac when there is no SCSI disk with a System, as in an SE with nothing attached; `image` the card's image first, the SCSI disks after it; `scsi` the parameter RAM as it is, so the image starts the Mac only if Startup Disk chose it. A floppy with a System is always taken first. The image must be bootable as a disk would be (a System Folder the Mac has started from, with its boot blocks; an Apple-partitioned `.hda` is served as its HFS partition). The kernel's log says which (`startup disk: ...`, `[MAC] PiDisk boot: ...`). docs/08 item 67 |
 | `mac.usbdisk=on` | USB flash drives plugged into the Pi: `on` (the default) a stick holding HFS (bare, or an Apple-partitioned one's HFS partition) appears on the Mac's desktop while the Mac runs and ejects from the Finder; sticks formatted FAT, exFAT or HFS Plus are left on the Pi and the log says what they hold; `all` offers every stick (the Finder will offer to initialize one it cannot read: how to make an HFS stick on the Mac); `off` leaves sticks alone. Needs the new declaration ROM in the container. docs/09 "USB flash drives", docs/08 item 75 |
+| `mac.usbview=off` | for a FAT32 or exFAT stick, offer only the HFS disk images in its root, not its own files as a locked disk (new in 0.12) |
+| `mac.exchange=NAME` / `mac.exchange=off` | the folder in the SD card's root shown as a locked disk: `Mac Exchange` by default (new in 0.12) |
 | `mac.sescsi=auto` | on `mac.board=se`, the SE's SCSI bus: `auto` (the default) looks at the bus before the Mac starts and, when nothing on it terminates it (BSY or SEL read asserted, as with no internal disk and nothing on the external port), answers the SCSI chip as an empty bus so the Mac does not wait for ever and starts from a disk image on the card; `real` always uses the SE's chip; `empty` never does. The log says which (`[PSMAC:SE] SCSI: ...`). docs/08 item 70 |
 | `mac.sesound=off` | on `mac.board=se`, leave the SE's speaker alone. By default what the Mac plays (the startup chime, alert sounds, everything the Sound Manager plays) comes out of the SE's own speaker: the kernel writes the samples into the SE's sound buffer, 370 a frame, after the SE's own vertical blanking, sets the volume from the Sound control panel and switches the speaker off between sounds. With `off` the samples are thrown away as before and the startup chime is cut short again. docs/08 item 71 |
 | `mac.audio=hdmi` | where the Pi plays the Mac's sound: `hdmi` (the default) the HDMI monitor's loudspeakers, in stereo; `jack` the 3.5 mm socket of a Pi 3B, 3B+ or 3A+; `off` nowhere (the SE's own speaker still plays on `mac.board=se`). The Mac's ASC (alert sounds, the startup chime, every program that plays through the Sound Manager) and the sound card below are mixed on the Pi's core 1 and resampled to the output's rate. HDMI needs the firmware to drive the monitor as HDMI, not DVI: `hdmi_drive=2` in config.txt. The log says what it found (`[AUDIO] ...`). docs/08 item 74 |

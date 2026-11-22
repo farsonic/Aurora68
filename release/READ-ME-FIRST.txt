@@ -192,6 +192,34 @@ Setting up the SD card (a Pi 3B in an SE)
   8. HDMI to a monitor if you have one (it shows the same 512 by 342 picture as the SE's screen
      in this build), the serial cable to GPIO 14 (TXD) and 15 (RXD), ground to 6. Power the SE.
 
+Disks: what the Mac can use (0.12)
+----------------------------------
+Every disk is HFS ("Mac OS Standard") as far as the Mac is concerned; System 6 and 7 read nothing else.
+  - The SE's own SCSI bus (its internal disk, a BlueSCSI, SCSI2SD, ZuluSCSI): a disk with an Apple
+    partition map, a driver partition (Apple's Apple_Driver43 from HD SC Setup, or another formatter's)
+    and an HFS volume. It can be the startup disk. On a BlueSCSI the image files are named HDxy_512.hda
+    (x the SCSI ID, y the LUN). A bare HFS image with no driver does not mount on SCSI.
+  - Disk images on the SD card: files in the card's root ending in .img, .hda, .image, .hfv or .dsk,
+    1 MB or more, up to four (or those named by mac.image=). Bare HFS images (hformat, Basilisk II, Mini
+    vMac) and Apple-partitioned ones (the first Apple_HFS partition is used) both work. They are read
+    into the Pi's memory: a few hundred MB on a 1 GB Pi, about 100 MB on a 512 MB one. What the Mac
+    writes is saved back into the file. One holding a System can be the startup disk (mac.boot=).
+  - USB sticks: formatted FAT32 or exFAT on a modern Mac or a PC, their files appear as a locked disk,
+    Mac files intact (macOS keeps resource forks, type and creator in "._" files beside them); HFS disk
+    images in the stick's root mount as disks of their own and can be written to. A stick that is HFS
+    itself mounts as it is. Up to 2 GB and 32,000 files per view; writing to a FAT/exFAT stick's own
+    files is not done yet. Eject: Put Away, then wait for "safe to unplug" in Aurora68 Log.
+  - A folder "Mac Exchange" in the card's root: its files as a locked disk, put there from any computer.
+  - The SE's floppy drive: 0.12 selects the internal drive (it did not before); not yet verified on a
+    real SE.
+Tested Systems: 7.1 (also 7.1.2) and 6.0.8. More than 8 MB needs 32-bit addressing (System 7's Memory
+control panel); System 6 sees 8 MB at most.
+Does not work: HFS Plus or APFS disks, Disk Copy 4.2 floppy images (an 84-byte header: convert them to
+a raw image), .dmg, .sit, .toast and CD-ROM images.
+The startup disk: a floppy with a System first; then with mac.boot=auto (the default) the SCSI disk the
+Startup Disk control panel names, then a disk image on the card, then the other SCSI disks.
+mac.boot=image puts the card's image first.
+
 Two screens: the SE's and HDMI
 ------------------------------
 Once the SE's own screen shows the Finder, HDMI can be a second screen beside it (any size up to

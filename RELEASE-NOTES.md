@@ -1,6 +1,36 @@
 # Aurora68 release notes
 
-## Unreleased
+## 0.12 — the Agent, FAT/exFAT sticks, safer bus and disks (22 November 2026)
+
+0.11 was a test kernel only. Since 0.10, in short (the entries below have the detail):
+
+- **USB sticks and an SD-card folder in FAT32 or exFAT** (what modern Macs and PCs write) appear on the
+  Mac's desktop as locked disks, with Mac files' resource forks, type and creator taken from the `._` files
+  macOS writes; HFS disk images on such a stick mount as disks of their own, writable. Writing to a
+  FAT/exFAT stick's own files is not done yet (issue #20). "Disks and disk images: what works" in the README
+  says which disks the Mac can use.
+- **The Aurora68 Agent**: files and programs on the Mac from another computer (`aurora68.py ls`, `pull`,
+  `push`, `mkdir`, `rm`, `mv`, `open`, `apps`, `quit`, and the MCP server). A push that stops arriving ends
+  after 20 s with an error, and `push --force` replaces a file only once the new one is complete (docs/08
+  item 95).
+- **Fixes from an outside code review** (docs/08 item 92): an unfinished cycle on the SE's bus is a bus error,
+  not good data, and the timeout is longer than the SE's own; a failed SD-card read reaches the Mac as an I/O
+  error and is retried; a USB stick that fails to flush is not ejected; PFLUSH is honoured; the programmer's
+  interrupt switch gives an NMI.
+- **Aurora68 Play**: forty stations in submenus, IPv6 through Riptide's `.IPP6`, and a fallback to IPv4 when a
+  station's IPv6 does not answer (with Riptide 7b3c3b1 or later).
+- **The remote control**: the Mac's windows listed and photographed (`--front` brings one forward), and on
+  WiFi it shares the Mac's address on port 8068.
+- **The SE's internal floppy drive**: the kernel now selects it (the IIci ROM left the SE's drive-select
+  line floating, so the internal drive was most likely never seen on a real SE), and the speaker and screen
+  updates no longer hold up the floppy driver's cycles (docs/08 item 93). Aurora68 IO Test (`make -C mac
+  iotest`) checks the floppy and the modem port on the real SE; docs/12 has the steps.
+
+Not yet verified on the hardware: the FAT/exFAT views, the floppy drive and the serial ports (issues #9 and
+#10; MAME's SE could read floppy sectors but not mount the disk, nor pass serial data at the right speed),
+the interrupt switch, USB eject after a failed flush.
+
+### In detail
 
 - **The SE's internal floppy drive is selected.** The IIci ROM's floppy driver leaves VIA port A bit 4
   undriven, and on the SE that bit chooses between the two internal drives: left floating it chose the
