@@ -3,7 +3,7 @@
 The music server's player on a modern Mac (macOS 13 Ventura or later, Apple silicon or Intel). It is
 the companion of the Mac SE's Aurora68 Play: the same library (`tools/music-server`), shown the way a
 music app is shown today, and a "Play on" choice that sends the music to the SE through the server's
-Live channel.
+Live channel, or to any other Aurora68 Play on the network.
 
 - **Library:** artists and albums as a grid of covers, an artist's albums, an album with its cover
   and songs (number, title, length). The search field in the toolbar (Command-F) filters artists and
@@ -11,14 +11,25 @@ Live channel.
 - **Playing on this Mac:** the original files, as they are on the server: MP3, AAC and Apple
   Lossless (M4A) and FLAC, played by AVFoundation with real seeking and no gap between songs. Play,
   Shuffle, Add to Queue, Play Next (right-click a song or an album); Previous and Next, a position bar
-  you can drag, volume, shuffle and repeat (all, one) in the bar along the bottom.
+  (click to jump, or drag), volume, shuffle and repeat (all, one) in the bar along the bottom.
+- **New albums without a restart:** the server counts its library's changes; the app hears the count
+  every 20 seconds and fetches the artists and albums again when it changes, keeping what is open.
 - **Now Playing:** the song and its cover in Control Center; the keyboard's media keys work. The space
   bar plays and pauses, Command-Left and Command-Right are Previous and Next.
 - **Play on Live (Mac SE):** the toolbar's "Play on" menu (or Option-Command-2). Play, the queue and
   the buttons then control the server's Live channel, which every listener hears at once: the SE's
   Aurora68 Play tuned to it (Library > Listen Live). The bar shows what Live plays, and how many
-  listen. "Listen here" (the headphones) plays Live on this Mac as well. The Live view in the sidebar
-  shows Live's queue (play or remove a song) and its listeners.
+  listen. "Listen here" (the headphones) plays Live on this Mac as well.
+- **Stations (Live and Radio, in the sidebar):** stations to start, on whatever "Play on" names, or
+  anywhere else from a station's menu: Everything, shuffled; each artist (all their albums, shuffled);
+  and the internet radio stations every Aurora68 Play offers (SomaFM, Radio Paradise, KEXP, stations by
+  country, and your own: tools/music-server/README.md, "Internet radio"). Below them, Live's queue (play
+  or remove a song) and its listeners, and the players on the network.
+- **Other players ("Play on" another Mac, or the SE):** every Aurora68 Play tells the server it is there,
+  this one included (by the Mac's computer name, System Settings > General > Sharing). "Play on" lists
+  every one that is online; choose one and Play, the queue and the bar's buttons (pause, next, previous,
+  seek, volume) go to it, and the bar shows what it plays. The same from the other side: another Mac, or
+  the server's web panel, can play music on this one.
 - **Finding the server:** on start it asks the network (the server answers the probe
   `AURORA68-MUSIC?` on UDP port 8070, broadcast or to the group 239.255.68.70) and connects to the
   first that answers. Or type its address in Settings (Command-,): `192.168.1.20:8423`,
@@ -54,22 +65,34 @@ cd macos/Aurora68Play && ./make-app.sh
 
 ## How it is made
 - `Package.swift`: two targets. **Aurora68Core** is only logic, tested by `Tests/Aurora68CoreTests`:
-  `Models.swift` (the server's JSON: `/api/catalog`, `/api/tracks`, `/api/now`), `Address.swift`
+  `Models.swift` (the server's JSON: `/api/catalog`, `/api/tracks`, `/api/now`), `Devices.swift` (the
+  players, their commands as what the player does, the radio list, the library's generation, the id kept
+  in the preferences, a click on the position bar as a time), `Address.swift`
   (addresses as typed, URLs with IPv6 in brackets, percent-encoded paths, the discovery answer, the
   preference), `TrackName.swift` (number and title from "01. Artist - Title.m4a"), `PlayQueue.swift`
   (the queue's rules), `MusicAPI.swift` (the HTTP calls). **Aurora68Play** is the app: `App.swift`
   (the app, menus, keys), `AppModel.swift` (connecting, the library, routing to This Mac or Live),
   `Player.swift` (AVQueuePlayer with the playing song and the next; Now Playing and media keys),
-  `LiveController.swift` (the Live channel), `Network.swift` (the discovery probe and name lookup,
-  BSD sockets), `LibraryViews.swift` and `PlayerViews.swift` (SwiftUI).
+  `LiveController.swift` (the Live channel), `DeviceLink.swift` (this Mac as a player: the announce,
+  its state, the commands by long poll; the list of the others), `Network.swift` (the discovery probe and
+  name lookup, BSD sockets), `LibraryViews.swift` and `PlayerViews.swift` (SwiftUI; the position bar is
+  `Scrubber`: SwiftUI's Slider on macOS does not report the end of a click on its bar, which is why a
+  click never seeked before 22 November 2026).
 - What it asks of the server: `GET /api/catalog`, `GET /api/tracks?album=ID`, `GET /file/PATH`
   (with Range), `GET /art?dir=FOLDER`, `GET /api/now`, `POST /api/live` (header `X-Aurora: 1`),
-  `GET /live` (tools/music-server/README.md).
-- `make-app.sh` builds for arm64 and x86_64, joins them with `lipo`, makes the icon (`make-icon.py`:
-  the SE's Aurora68 Play icon from `tools/mac/mkicons.py`, scaled by whole pixels), writes Info.plist
+  `GET /live`, and since 22 November 2026 `GET /api/info`, `GET /api/radio`, `POST /api/devices/announce`,
+  `POST /api/devices/ID/state`, `GET /api/devices`, `POST /api/devices/ID/command` and
+  `GET /api/devices/ID/commands?wait=20` (tools/music-server/README.md, "Devices"). With a server from
+  before that, the library, Live and playing here work as before, without the other players or radio.
+- `make-app.sh` builds for arm64 and x86_64, joins them with `lipo`, makes the icon (`make-icon.py`,
+  painted with numpy and Pillow: Apple's rounded-square grid, an aurora over a night sky with stars and
+  hills, a black vinyl record with its grooves, glossy wedges and an aurora-green label; every size from
+  the 1024-pixel picture; `python3 make-icon.py --preview icon.png` shows it at 1024, 256, 64, 32 and 16;
+  without numpy and Pillow, the SE's pixel-art icon from `tools/mac/mkicons.py`), writes Info.plist
   (bundle `org.aurora68.play`; plain HTTP to the home network allowed; the Local Network question's
   text), and signs ad hoc.
-- `.github/workflows/macos-player.yml` runs `swift test` and `make-app.sh` on GitHub's macOS runner and
-  keeps the zipped app as the run's artifact.
+- `.github/workflows/macos-player.yml` runs `swift test` and `make-app.sh` on GitHub's macOS runner (with
+  numpy and Pillow in a virtual environment for the icon) and keeps the zipped app as the run's artifact,
+  and the icon's preview as **Aurora68-Play-icon**.
 
 Written on 22 November 2026. MPL-2.0, like the rest of the Macintosh side.
