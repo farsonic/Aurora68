@@ -258,6 +258,40 @@ static void L(int attr, const char *fmt, ...)
     if (attr == 2 && nlines < SROWS) { line[nlines][0] = 0; lattr[nlines] = 3; nlines++; }   /* a large line takes two */
 }
 static const uint8_t *glyph(uint8_t c) { return &topaz8_chardata[(topaz8_charloc[(c >= 32 && c < 128) ? c - 32 : 0] >> 16) >> 3]; }
+/* The lines wrapped to a screen's width (22 November 2026): the page is written at 80 columns, the compact
+   Mac's screen has 64, and its longer lines (the reason, the card, the last action) ran off the right edge.
+   A normal line breaks at the last space that fits, and its continuation is indented two columns; the
+   title and the large PIN line are kept as they are (the PIN fits; the title is cut). */
+#define VROWS 40
+static char vline[VROWS][SCOLS + 1]; static uint8_t vattr[VROWS];
+static int layout(unsigned cols)
+{
+    int nv = 0;
+    if (cols > SCOLS) cols = SCOLS;
+    for (int r = 0; r < nlines && nv < VROWS; r++) {
+        const char *t = line[r]; unsigned n = slen(t), at = 0, indent = 0;
+        if (lattr[r] != 0 || n <= cols) {
+            unsigned k = 0; for (; k < n && k < SCOLS; k++) vline[nv][k] = t[k];
+            vline[nv][k] = 0; vattr[nv++] = lattr[r];
+            continue;
+        }
+        while (at < n && nv < VROWS) {
+            unsigned room = cols - indent, take = n - at;
+            if (take > room) {
+                take = room;
+                for (unsigned k = room; k > room / 2; k--) if (t[at + k] == ' ') { take = k; break; }
+            }
+            unsigned o = 0;
+            for (unsigned k = 0; k < indent; k++) vline[nv][o++] = ' ';
+            for (unsigned k = 0; k < take; k++) vline[nv][o++] = t[at + k];
+            vline[nv][o] = 0; vattr[nv++] = 0;
+            at += take;
+            while (at < n && t[at] == ' ') at++;
+            indent = 2;
+        }
+    }
+    return nv;
+}
 /* one text cell: 8 x 16 pixels at (x, y), or 16 x 32 with big */
 static void cell_vc(uint8_t *fb, uint32_t pitch, int bpp, int swap, uint32_t x, uint32_t y, uint8_t c, uint32_t fg, uint32_t bg, int big)
 {
@@ -284,10 +318,11 @@ static void draw_vc(void)
     if (psmac_display_vc(&fb, &pitch, &w, &h, &bpp, &swap)) return;
     uint32_t cols = w / 8, rows = h / 16;
     if (cols > SCOLS) cols = SCOLS;
-    for (uint32_t r = 0; r < rows && r < SROWS; r++) {
-        int a = r < (uint32_t)nlines ? lattr[r] : 0;
+    int nv = layout(cols);
+    for (uint32_t r = 0; r < rows && r < VROWS; r++) {
+        int a = r < (uint32_t)nv ? vattr[r] : 0;
         if (a == 3) continue;                                     /* the lower half of a large line */
-        const char *t = r < (uint32_t)nlines ? line[r] : "";
+        const char *t = r < (uint32_t)nv ? vline[r] : "";
         uint32_t fg = a == 1 ? 0x101030u : 0xe0e0e0u, bg = a == 1 ? 0x80c0ffu : 0x101830u;
         if (a == 2) { fg = 0xffe060u; }
         unsigned n = slen(t);
@@ -302,10 +337,11 @@ static void draw_se(void)
 {
     if (!psmac_board_se || psmac_board_solo) return;
     for (unsigned i = 0; i < sizeof se_fb; i++) se_fb[i] = 0;
-    for (int r = 0; r < 21 && r < nlines; r++) {
-        int a = lattr[r];
+    int nv = layout(64);
+    for (int r = 0; r < 21 && r < nv; r++) {
+        int a = vattr[r];
         if (a == 3) continue;
-        const char *t = line[r]; unsigned n = slen(t);
+        const char *t = vline[r]; unsigned n = slen(t);
         int s = a == 2 ? 2 : 1;
         for (unsigned cx = 0; cx * (unsigned)s < 64; cx++) {
             const uint8_t *data = glyph(cx < n ? (uint8_t)t[cx] : ' ');
