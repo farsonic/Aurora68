@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only
  *
- * alice_psmac.c — the Macintosh (PiStorm-SE / Aurora68) platform layer under the Alice68 modules.
+ * alice_psmac.c — the Macintosh (Aurora68) platform layer under the Alice68 modules.
  *
  * Backstory. The Alice68 kernel runs its hardware services (alice_net.c: WiFi and Gigabit Ethernet;
  * bt/: Bluetooth; xhci/: USB) on one ARM core, talking to AmigaOS through shared-memory boards.

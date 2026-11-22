@@ -732,7 +732,7 @@ uint32_t EMIT_DBcc(struct TranslatorContext *ctx, uint16_t opcode)
         // For busy loops (of the form l dbf dN,l) in chip mem add extra delay that is
         // at least 10 7MHz clocks (For old school replayer routines)
 #ifdef PSMAC
-        /* PiStorm-SE: a dbf that branches to itself is a delay loop, and on the Macintosh they are
+        /* Aurora68: a dbf that branches to itself is a delay loop, and on the Macintosh they are
            timed: the ROM waits on hardware with them and System 7.1's speed probe measures four of
            them (TimeDBRA iterations each) with the Time Manager and divides by the result. The JIT
            runs such a loop in a few ARM instructions per turn, and in the testbed the measured

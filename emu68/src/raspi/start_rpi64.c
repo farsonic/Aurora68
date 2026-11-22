@@ -33,7 +33,7 @@
 #ifdef PISTORM_ANY_MODEL
 #include "ps_protocol.h"
 #endif
-/* PiStorm-SE: the Pi peripherals live inside the 68k's 4 GiB address space (0xF2000000..); the Mac
+/* Aurora68: the Pi peripherals live inside the 68k's 4 GiB address space (0xF2000000..); the Mac
    ROM treats that as NuBus slot space and probes it, so do not let 68k (EL0) code reach them.
    Faulting accesses are forwarded to the bridge like any other non-local address. */
 #ifdef PSMAC
@@ -633,7 +633,7 @@ static void map_pcie_mmio_window(uint32_t *start_map)
 void platform_init()
 {
 #ifdef PSMAC
-    /* PiStorm-SE: the Pi peripheral window must not collide with addresses the Mac uses. The Mac
+    /* Aurora68: the Pi peripheral window must not collide with addresses the Mac uses. The Mac
        probes 0xF2000000.. (NuBus slot 2), Emu68's default. 0x3F000000 is the top of the IIci's
        1 GiB RAM space: beyond any installable RAM, never mapped by the ROM's tables, and it is the
        Pi 3's physical peripheral address anyway (the user table only spans 4 GiB). */
@@ -717,7 +717,7 @@ void platform_post_init()
 
 #ifdef PSMAC
     ps_setup_protocol();
-    kprintf("[BOOT] PiStorm-SE: Macintosh host layer active\n");
+    kprintf("[BOOT] Aurora68: Macintosh host layer active\n");
     globals.block_c0 = false;
     if (0)
     {

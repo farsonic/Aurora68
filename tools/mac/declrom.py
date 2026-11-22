@@ -12,7 +12,7 @@ the IIci ROM's built-in declaration ROM, tools/declrom.py).
 Usage from Python:
     rom = DeclROM()
     board = rom.sresource(1)                      # board sResource (id 1)
-    board.type(1, 0, 0, 0); board.name('PiStorm-SE'); board.long(32, 0x1234)   # BoardId
+    board.type(1, 0, 0, 0); board.name('Aurora68'); board.long(32, 0x1234)   # BoardId
     func = rom.sresource(0x80); ...
     open('psmac.declrom', 'wb').write(rom.build())
 """
@@ -99,5 +99,5 @@ class DeclROM:
 if __name__ == '__main__':
     import sys
     rom = DeclROM()
-    b = rom.sresource(1); b.type(1, 0, 0, 0); b.name('PiStorm-SE test'); b.block(32, struct.pack('>H', 0x5053))
+    b = rom.sresource(1); b.type(1, 0, 0, 0); b.name('Aurora68 test'); b.block(32, struct.pack('>H', 0x5053))
     sys.stdout.buffer.write(rom.build())

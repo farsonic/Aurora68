@@ -1,5 +1,5 @@
 /*
- * psmac_mmu.c — 68030 MMU shadowing for the Macintosh IIci ROM on Emu68 (PiStorm-SE fork). MPL-2.0.
+ * psmac_mmu.c — 68030 MMU shadowing for the Macintosh IIci ROM on Emu68 (Aurora68 fork). MPL-2.0.
  *
  * Emu68 has no 68k MMU. The IIci ROM programs the 68030 MMU with two static table trees (24-bit and
  * 32-bit mode) and switches between them with PMOVE CRP/TC (SwapMMUMode), hundreds of times during a

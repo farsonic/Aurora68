@@ -1,4 +1,4 @@
-# Aurora68 — PiStorm-SE
+# Aurora68
 
 An Emu68-based accelerator and expansion for the Macintosh SE: a Raspberry Pi in the 68000
 socket presents a 68040, runs Apple's Macintosh IIci ROM, keeps the SE's own screen, keyboard,

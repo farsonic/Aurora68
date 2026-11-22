@@ -423,7 +423,7 @@ s_dot:	   .byte 1
 s_minus:   .byte 1
 	.ascii "-"
 	.even
-payload:   .ascii "PiStorm-SE Aurora68 ping payload"	| 32 bytes
+payload:   .ascii "Aurora68 ping payload: 32 bytes."	| 32 bytes
 	.even
 pb:	.space 64
 tmp:	.space 64
