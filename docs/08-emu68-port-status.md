@@ -4204,3 +4204,51 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    - *Not yet tried:* Speedometer's FPU line and an FPU-only program (which should say it needs an FPU) with
      `mac.fpu=none`, and the owner's SE. The default stays `on` until issue #27's exact FPU decides the SE
      board's default.
+105. **The classic Aurora68 Play 1.3: FLAC, Ogg Vorbis and Apple Lossless, seeking, new albums, a device (22 November).**
+     The owner's last item of item 102's list: "Legacy version needs to support FLAC etc not just MP3", with the
+     classic Play's share of the rest (new albums without a restart, players that know of each other).
+   - *Decoding on the card.* The stream channel's block is version 2 (`psmb.h`): formats 3 to 5 (FLAC, Ogg Vorbis,
+     ALAC) and `start_ms`, the file's time at the first byte the Mac sends. Core 1 decodes them beside minimp3, behind
+     one interface free of kernel calls (`psmac_codec.h`): dr_flac 0.13.4 and stb_vorbis 1.25, both vendored
+     unmodified (public domain or MIT-0/MIT; licences and READMEs under `third_party/`), and Apple Lossless by a
+     decoder written here (`psmac_alac.c`). The plan was Apple's own decoder; it is Apache-2.0, which the FSF holds
+     incompatible with GPL version 2, and the kernel also holds the GPL-2.0-only Alice68 modules, so it could not be
+     passed on in one binary. dr_flac pulls its bytes through a callback that cannot wait, so a frame is decoded only
+     when the Pi's buffer holds more than a frame can take; stb_vorbis is fed through its pushdata interface from a
+     window that grows until the three headers fit (a cover picture in the comments can be large) and allocates from
+     one buffer, so no malloc and no alloca on core 1's stack; its setup's sin, cos, exp, log, pow and floor are the
+     kernel's musl ones. AAC is refused: the free decoders are GPL/LGPL and large, and the music server converts.
+   - *The Mac's half* (`mac/piplay/media.c`, portable C like libparse.c): a file is known by its contents, so files
+     arriving from modern machines as `????` play; it sends FLAC's STREAMINFO alone and then the frames, Ogg's first
+     pages up to the first audio page, and for .m4a the decoder's 24-byte configuration and each packet with its length,
+     taken from the MP4 sample tables (often at the file's end) with the File Manager. Tags from Vorbis comments and the
+     MP4 `ilst`, UTF-8 into Mac Roman. Seeking by a click on the progress line: FLAC's SEEKTABLE or a guess in proportion,
+     the next Ogg page, the ALAC packet, MP3 and PCM in proportion; the card finds the real place itself (a FLAC frame's
+     number, an Ogg page's granule position) and counts on from there.
+   - *Library and devices* (`mac/piplay/devices.c`, portable C). Announce every 20 seconds (`/mac/announce`, an id kept in
+     the preferences, now version 3), state on a change, commands by a 15-second long poll (MacTCP's receive gives up at
+     20), all on the Library's one connection: the long poll gives way to the user's lists before any byte of its answer
+     has come. Commands are carried out by library.c and the player (play, add, next, pause, resume, skip, previous,
+     seek, volume, stop, radio); `X-Aurora: 1` on every request. The generation from the announce answer and `/mac/info`
+     refreshes the list in view and keeps its selected row. Not done: a "Play On" submenu (the server names music by
+     folder paths, which the classic Play's track ids do not give).
+   - *Tested on the host:* `make -C mac check` adds tools/codec_test.sh (ffmpeg-made tones and noise: FLAC 16 and 24 bit,
+     mono and stereo, a fast-encoded one, ALAC 16 and 24 bit and mono, Ogg Vorbis stereo and mono, decoded by media.c
+     and the card's decoders in random-sized pieces): FLAC and ALAC identical to ffmpeg's decoding sample for sample,
+     Vorbis within one LSB, the same after a seek to a third with the card's position right; tags (an e acute in UTF-8);
+     AAC and Opus refused. tools/devices_test.c: 33 checks of the URLs, the answers and the state machine, and, given
+     a server, the same code against it (announce, state, three commands with tracks, volume and a station, all
+     received from the server of branch play-devices). Under ASan and UBSan: clean but for a signed shift in
+     stb_vorbis's own CRC code, left as it is.
+   - *Tested in the testbed* (solo board, System 7.1 with Riptide, the music server on the host through pinet): FLAC,
+     Ogg (of type `????`, through File > Open), 24-bit ALAC and MP3 played to the end with no underrun, 6 to 37 per
+     mille of core 1 under QEMU; a seek to 0:20 of a 40 s FLAC, the card starting at 20.062 s; the server listing the
+     Play as a classic device and following its state; play `f:` (three tracks without a gap), pause, resume, skip,
+     seek 12 s, volume 50 and stop from the server; a new album copied in, listed at the next announce with the
+     selection kept (docs/09, "FLAC, Ogg Vorbis and Apple Lossless...", and `docs/img/system71-play13-*.png`). Two
+     things on the way: pinet's ring files left from an aborted run made the second run's network silent (pinet
+     started reading at the old offset); remove `BASE.rx`/`BASE.tx` before a new run. And the remote control's
+     semihosting files must exist before the boot (the kernel opens them once).
+   - *Not verified:* the owner's SE (core 1's load on a real Pi 3, a BlueSCSI disk's speed for lossless files at
+     some 100 KB/s), files from the owner's own library (24-bit FLAC at 96 kHz, iTunes ALAC with the sample tables at
+     the end, long Vorbis comments), and commands sent from the macOS Play or the panel to a real SE.

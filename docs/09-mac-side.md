@@ -828,6 +828,26 @@ record). What Aurora68 Play 1.3 adds:
   is queued, so the window is milliseconds wide), and the lists come first. A command with more tracks than fit in the
   answer buffer (48 KB, some 600) keeps the first ones; the queue holds 250.
 
+**Seen in the testbed** (22 November 2026; the solo board under QEMU, System 7.1 with Riptide, Aurora68 Play driven
+through the remote control's semihosting channel, the music server of `tools/music-server` on the host reached
+through pinet, test files made by ffmpeg: tones, never music):
+- "LR check.flac" (16-bit, 44.1 kHz) opened from the Finder: played to the end, 7.5 s, no underrun, the decoder
+  at most 10 ms a slice and 6 per mille of core 1 under QEMU. "LR check.ogg", of type `????`, chosen in File >
+  Open...: known by its contents, played to the end (37 per mille). "LR check.m4a", Apple Lossless at 24 bits
+  and 48 kHz: played to the end with its title and artist (`docs/img/system71-play13-alac.png`), 18 per mille.
+  MP3 as before (the LR check, and Ode to Joy with its LAME tag, paused and resumed).
+- "Tone.flac" (40 s), a click in the middle of the progress line: "seek to 0:20", the card "starts at 20.062 s
+  (the Mac asked for 20.000)", the window counted on from there and played to 0:40
+  (`docs/img/system71-play13-seek.png`).
+- The device: the server listed it ("Macintosh", the image's Sharing Setup having no name; classic, 1.3, online)
+  with "LR check ALAC" playing. From the server's command interface: play `f:` (the three tracks of the test
+  library, one after the other through `/t/ID` without a gap, the server's state following the track), pause,
+  resume, skip, seek to 12 s (`/t/ID?start=12`), volume 50 (the state said 50), stop; each in the log as "a
+  command from the server", within a second or two.
+- A new album copied into the music folder while the Library window was open: at the next announce Aurora68
+  Play logged "the library changed: its lists again" and listed "Second Artist" with "Test Artist" still
+  selected (`docs/img/system71-play13-library-refresh.png`).
+
 Not done: a "Play On" submenu to send music from the SE to another player. The server's commands name music
 by folder paths (`f:`, `t:FOLDER/SONG`), which the classic Play's track ids do not give, and a 512 by 342
 menu of devices is of little use while the panel has one; the SE is a player others send to.
