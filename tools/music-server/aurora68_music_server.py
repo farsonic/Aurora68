@@ -1094,15 +1094,26 @@ MAC_COVERS = ('cover', 'folder', 'front', 'albumart', 'album')   # picture files
 MAC_TRACK_NO = re.compile(r'^\s*(\d{1,3})\s*[.\-_)]?\s+(.*)$')     # "01. Artist - Title", "01 Title", "1-Title"
 
 
+MAC_WIDE = 2000                 # a path or a folder (full=1): longer than a name may be, never cut short at 120
+
+
 def mac_field(s, n=120):
     """a field of a /mac/ record: one line, no tabs, at most n characters"""
     return ' '.join(str(s).replace('\t', ' ').split())[:n]
 
 
-def mac_answer(kind, total, start, rows):
+class Wide(str):
+    """a field that is a path, a folder or an address: kept whole (up to MAC_WIDE), as /file/ and f: need it"""
+
+
+def mac_line(r, n=120):
+    return '\t'.join(mac_field(f, MAC_WIDE if isinstance(f, Wide) else n) for f in r)
+
+
+def mac_answer(kind, total, start, rows, enc='mac_roman'):
     head = f'A68M\t1\t{kind}\t{total}\t{start}\t{len(rows)}'
-    text = '\r'.join([head] + ['\t'.join(mac_field(f) for f in r) for r in rows]) + '\r'
-    return text.encode('mac_roman', 'replace')
+    text = '\r'.join([head] + [mac_line(r) for r in rows]) + '\r'
+    return text.encode(enc, 'replace')
 
 
 def page_of(items, q):
@@ -1214,19 +1225,24 @@ class Catalogue:
             return 0, title, artist, int(secs + 0.5)
         return 0, '', '', 0
 
-    def album_rows(self, ids):
+    def album_rows(self, ids, full=False):
+        """id, title, artist, tracks, seconds; with full=1 (the macOS Play) also the artist's id and the folder"""
         rows = []
         for al in ids:
             a = self.albums[al]
             secs = sum(self.track_info(t, probe=False)[3] for t in a['tracks'])
-            rows.append((al, a['title'], a['artist'], len(a['tracks']), secs))
+            rows.append((al, a['title'], a['artist'], len(a['tracks']), secs) + ((a['aid'], Wide(a['rel'])) if full else ()))
         return rows
 
-    def track_rows(self, tids, probe=True):
+    def track_rows(self, tids, probe=True, full=False):
+        """id, number, title, artist, seconds, album; with full=1 also the path (for /file/), the album's title
+        and its folder"""
         rows = []
         for t in tids:
             n, title, artist, secs = self.track_info(t, probe)
-            rows.append((t, n, title, artist, secs, self.tracks[t][0]))
+            al, rel = self.tracks[t]
+            rows.append((t, n, title, artist, secs, al) +
+                        ((Wide(rel), self.albums[al]['title'], Wide(self.albums[al]['rel'])) if full else ()))
         return rows
 
 
@@ -1894,15 +1910,28 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
         log(f'devices: {action} {what} to {did}'.replace('  ', ' '))
         return {'ok': True, 'id': n}, 200
 
-    def mac_command_lines(cmds):
-        """the classic Play's commands: "N action position volume", then T and R lines"""
+    def mac_command_lines(cmds, full=False):
+        """the classic Play's commands: "N action position volume", then T and R lines; with full=1 (the macOS
+        Play) the command line also says whether the server shuffled, and each T line the song's path and album"""
         rows = []
         for c in cmds:
-            rows.append((c['id'], c['action'], int(c.get('position', 0)), c.get('volume', '')))
-            rows += [('T', t['tid'], t['title'], t['artist'], t['seconds']) for t in c.get('tracks', [])]
+            rows.append((c['id'], c['action'], int(c.get('position', 0)), c.get('volume', '')) + ((c.get('shuffle', 0),) if full else ()))
+            rows += [('T', t['tid'], t['title'], t['artist'], t['seconds']) + ((Wide(t['path']), t['album']) if full else ())
+                     for t in c.get('tracks', [])]
             if c.get('radio'):
-                rows.append(('R', c['radio']['name'], c['radio']['url']))
+                rows.append(('R', c['radio']['name'], Wide(c['radio']['url'])))
         return rows
+
+    def mac_now_rows():
+        """/mac/now: what the Live channel plays, as /api/now says it, in lines (22 November 2026, the macOS Play)"""
+        n = live.now()
+        rows = [('N', n['name'], int(n['playing']), int(n['paused']), int(n['repeat']), n['pos'], n['changes'], len(n['listeners']))]
+        c = n['current']
+        if c:
+            rows.append(('C', Wide(c['path']), Wide(c['folder']), c['title'], f'{c["elapsed"]:.1f}', f'{c["length"]:.1f}'))
+        rows += [('Q', Wide(i['path']), i['title']) for i in n['queue']]
+        rows += [('L', l['who'], l['since']) for l in n['listeners']]
+        return len(n['queue']), rows
 
     class Handler(BaseHTTPRequestHandler):
         server_version = f'aurora68-music-server/{VERSION}'
@@ -2181,24 +2210,39 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
                 listeners.release()
 
         # ---- Aurora68 Play's Library (the catalogue above): /mac/..., and /t/ID for one track ----
+        # enc=utf8 (the macOS Play, 22 November 2026): the answer in UTF-8, and the query's words read as UTF-8;
+        # else Mac Roman both ways, as the classic Play wants. full=1: the longer records the macOS Play needs
+        # (paths, folders, the devices' whole state); without it every answer is what it was before.
+        def mac_q(self):
+            raw_q = urllib.parse.urlsplit(self.path).query
+            enc = 'utf-8' if 'enc=utf8' in raw_q.split('&') else 'mac_roman'
+            return dict(urllib.parse.parse_qsl(raw_q, encoding=enc))
+
+        def mac_enc(self):
+            return 'utf-8' if 'enc=utf8' in urllib.parse.urlsplit(self.path).query.split('&') else 'mac_roman'
+
         def mac_send(self, code, body):
-            self.send(code, 'text/plain; charset=macintosh', body)
+            self.send(code, 'text/plain; charset=' + ('utf-8' if self.mac_enc() == 'utf-8' else 'macintosh'), body)
 
         def mac_error(self, code, text):
-            self.mac_send(code, mac_answer('error', 1, 0, [(text,)]))
+            self.mac_send(code, mac_answer('error', 1, 0, [(text,)], self.mac_enc()))
 
         def mac(self, what, q):
             cat.fresh()
+            enc, full = self.mac_enc(), q.get('full') == '1'
             if what == 'info':
                 return self.mac_send(200, mac_answer('info', 1, 0, [(name, VERSION, len(cat.artists), len(cat.albums), len(cat.tracks),
-                                                                      lib.generation)]))
-            if what in ('announce', 'state', 'devices', 'commands', 'radio'):
+                                                                      lib.generation) + ((DEVICE_EVERY,) if full else ())], enc))
+            if what in ('announce', 'state', 'devices', 'commands', 'radio', 'command'):
                 return self.mac_device(what)
+            if what == 'now':
+                total, rows = mac_now_rows()
+                return self.mac_send(200, mac_answer('now', total, 0, rows, enc))
             if what == 'artists':
                 rows = [(i, cat.artists[i]['name'], len(cat.artists[i]['albums']),
                          sum(len(cat.albums[a]['tracks']) for a in cat.artists[i]['albums'])) for i in cat.artist_order]
                 part, start = page_of(rows, q)
-                return self.mac_send(200, mac_answer('artists', len(rows), start, part))
+                return self.mac_send(200, mac_answer('artists', len(rows), start, part, enc))
             if what == 'albums':
                 aid = q.get('artist', '')
                 if aid and aid not in cat.artists:
@@ -2206,7 +2250,7 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
                 ids = cat.artists[aid]['albums'] if aid else sorted(cat.albums, key=lambda i: (sort_key(cat.albums[i]['artist']),
                                                                                               cat.albums[i]['title'].casefold()))
                 part, start = page_of(ids, q)
-                return self.mac_send(200, mac_answer('albums', len(ids), start, cat.album_rows(part)))
+                return self.mac_send(200, mac_answer('albums', len(ids), start, cat.album_rows(part, full), enc))
             if what == 'tracks':
                 if q.get('album'):
                     a = cat.albums.get(q['album'])
@@ -2221,15 +2265,15 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
                 else:
                     return self.mac_error(400, 'tracks?album=ID or tracks?artist=ID')
                 part, start = page_of(tids, q)
-                rows = cat.track_rows(part, probe)
+                rows = cat.track_rows(part, probe, full)
                 if probe:
                     rows.sort(key=lambda r: (r[1] or 999, r[2].casefold()) if any(x[1] for x in rows) else 0)
-                return self.mac_send(200, mac_answer('tracks', len(tids), start, rows))
-            if what == 'search':                  # the Mac sends its words in Mac Roman, %XX for each byte
-                mq = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(self.path).query, encoding='mac_roman'))
+                return self.mac_send(200, mac_answer('tracks', len(tids), start, rows, enc))
+            if what == 'search':                  # the Mac sends its words in Mac Roman, %XX for each byte (enc=utf8: UTF-8)
+                mq = self.mac_q()
                 words = mq.get('q', '').casefold().split()
                 if not words:
-                    return self.mac_send(200, mac_answer('search', 0, 0, []))
+                    return self.mac_send(200, mac_answer('search', 0, 0, [], enc))
                 hit = lambda text: all(w in text.casefold() for w in words)
                 rows = [('A', i, cat.artists[i]['name'], f'{len(cat.artists[i]["albums"])} albums')
                         for i in cat.artist_order if hit(cat.artists[i]['name'])]
@@ -2242,7 +2286,7 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
                     if hit(title + ' ' + artist):
                         rows.append(('T', t, title, artist, cat.tracks[t][0], secs))
                 part, start = page_of(rows, q)
-                return self.mac_send(200, mac_answer('search', len(rows), start, part))
+                return self.mac_send(200, mac_answer('search', len(rows), start, part, enc))
             if what in ('art', 'arts'):
                 try:
                     w = max(MAC_ART_MIN, min(MAC_ART_MAX, int(q.get('w', 64))))
@@ -2265,20 +2309,41 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
                     got = covers.get(i, a, w, h, depth) if a else None
                     body += (b'\1' + got[1]) if got else (b'\0' + bytes(rb * h))
                 return self.send(200, 'application/octet-stream', bytes(body))
-            return self.mac_error(404, 'info, artists, albums, tracks, search, art, arts, announce, state, devices, commands, radio')
+            return self.mac_error(404, 'info, artists, albums, tracks, search, art, arts, now, announce, state, devices, commands, '
+                                       'command, radio')
 
         def mac_device(self, what):
             """the classic Play's side of "Devices": plain lines (Mac Roman, CR ends, tab fields), no A68M head"""
-            mq = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(self.path).query, encoding='mac_roman'))
-            lines = lambda rows: ''.join('\t'.join(mac_field(f, 255) for f in r) + '\r' for r in rows).encode('mac_roman', 'replace')
+            mq, enc = self.mac_q(), self.mac_enc()
+            full = mq.get('full') == '1'
+            lines = lambda rows: ''.join(mac_line(r, 255) + '\r' for r in rows).encode(enc, 'replace')
             if what == 'radio':
-                return self.mac_send(200, lines((s['group'], s['name'], s['url']) for s in radio.stations()))
+                return self.mac_send(200, lines((s['group'], s['name'], Wide(s['url'])) for s in radio.stations()))
             if what == 'devices':
-                rows = [(d['id'], d['name'], d['kind'], int(d['online']), d['state'].get('title', ''), d['state'].get('artist', ''))
-                        for d in [live_device()] + devices.listing()]
+                rows = []
+                for d in [live_device()] + devices.listing():
+                    st = d['state']
+                    row = (d['id'], d['name'], d['kind'], int(d['online']), st.get('title', ''), st.get('artist', ''))
+                    if full:                     # the rest of the state, as /api/devices has it (the macOS Play's "Play on")
+                        row += (int(bool(st.get('playing'))), st.get('position', 0), st.get('length', 0), st.get('volume', 100),
+                                st.get('album', ''), Wide(st.get('folder', '')), st.get('at', 0), d.get('last_seen', 0),
+                                int(bool(d.get('is_live'))), d.get('version', ''), d.get('listeners', 0))
+                    rows.append(row)
                 return self.mac_send(200, lines(rows))
             if self.headers.get('X-Aurora') != '1':
                 return self.mac_send(403, b'the header X-Aurora: 1 is needed\r')
+            if what == 'command':                # "play this there": POST /api/devices/ID/command's, and /api/live's for "live"
+                did = mq.get('to', '')
+                a = {k: mq[k] for k in ('action', 'what', 'shuffle', 'position', 'volume', 'index', 'on') if mq.get(k, '') != ''}
+                if 'shuffle' in a:
+                    a['shuffle'] = a['shuffle'] == '1'
+                if 'on' in a:
+                    a['on'] = a['on'] == '1'
+                if did == 'live' and a.get('action') not in DEVICE_ACTIONS:   # the Live queue's own: jump, remove, clear ...
+                    err = live.act(a)
+                    return self.mac_send(400 if err else 200, lines([(err or 'ok',)]))
+                out, code = device_command(did, a)
+                return self.mac_send(code, lines([(out['error'],)] if 'error' in out else [('ok', out.get('id', 0))]))
             did = mq.get('id', '')
             if what == 'announce':
                 err = devices.announce(did, mq.get('name'), mq.get('kind', 'classic'), mq.get('v', ''), self.who())
@@ -2307,7 +2372,7 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
             got, err = devices.take(did, wait)
             if err:
                 return self.mac_send(404, lines([(err,)]))
-            return self.mac_send(200, lines(mac_command_lines(got)))
+            return self.mac_send(200, lines(mac_command_lines(got, full)))
 
         def track(self, tid, q):
             cat.fresh()

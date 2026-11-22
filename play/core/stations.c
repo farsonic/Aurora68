@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0
  *
- * mac/piplay/stations.c - Aurora68 Play's station list: the built-in list, the file taken apart into
+ * play/core/stations.c - Aurora68 Play's station list: the built-in list, the file taken apart into
  * stations and groups (the Radio menu's submenus), and the built-in stations a user's file lacks.
  *
  * Backstory (21 November 2026, docs/08 item 87). The Radio menu began (item 83) as one flat list of

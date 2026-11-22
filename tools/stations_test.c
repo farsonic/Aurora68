@@ -1,13 +1,13 @@
 /* SPDX-License-Identifier: MPL-2.0
  *
- * tools/stations_test.c - Aurora68 Play's station list (mac/piplay/stations.c) on the host: `make -C mac
+ * tools/stations_test.c - Aurora68 Play's station list (play/core/stations.c) on the host: `make -C mac
  * check`. The built-in list, a flat file of the first kind (before 21 November 2026), headings and their
  * odd cases, and Radio > Add Default Stations: what it adds to a flat file, to its own result (nothing)
  * and to a file the user changed. Written on 21 November 2026 (docs/08 item 87).
  */
 #include <stdio.h>
 #include <string.h>
-#include "../mac/piplay/stations.h"
+#include "../play/core/include/stations.h"
 
 static int fails, checks;
 static void check(int ok, const char *what)

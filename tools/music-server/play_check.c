@@ -2,10 +2,10 @@
  *
  * tools/music-server/play_check.c - Aurora68 Play's own parsers on the host, for test_server.py.
  *
- *     play_check icy AUDIO_OUT < response      the ICY parser (mac/piplay/icy.c), fed the server's raw
+ *     play_check icy AUDIO_OUT < response      the ICY parser (play/core/icy.c), fed the server's raw
  *                                              answer in pieces of random sizes as TCPRcv hands them over;
  *                                              the audio to AUDIO_OUT, one line per new song title
- *     play_check stations < file               the stations parser (mac/piplay/stations.c): one line per
+ *     play_check stations < file               the stations parser (play/core/stations.c): one line per
  *                                              group and station as Aurora68 Play's Radio menu will hold them
  *
  * Written on 22 November 2026, with the music server.
@@ -13,8 +13,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../../mac/piplay/icy.h"
-#include "../../mac/piplay/stations.h"
+#include "../../play/core/include/icy.h"
+#include "../../play/core/include/stations.h"
 
 static FILE *audio;
 static void sink(const unsigned char *p, unsigned long n) { fwrite(p, 1, n, audio); }

@@ -225,7 +225,7 @@ int fetch_start(const char *host, unsigned short port, const char *path)
 	*p++ = ':'; p = put_num(p, port);
 	/* X-Aurora: the server wants it on a device's requests (a web page elsewhere cannot send it unasked), and it
 	   does no harm on the others */
-	p = put_str(p, "\r\nUser-Agent: Aurora68-Play/1.3 (Macintosh)\r\nX-Aurora: 1\r\nConnection: close\r\n\r\n");
+	p = put_str(p, "\r\nUser-Agent: Aurora68-Play/1.4 (Macintosh)\r\nX-Aurora: 1\r\nConnection: close\r\n\r\n");
 	wds.len = (unsigned short)(p - req); wds.ptr = req; wds.end = 0;
 	got = 0;
 	resolve_start();
@@ -347,7 +347,7 @@ static short udp_ref;
 static unsigned long udp_stream, d_until;
 static unsigned char *udp_buf;
 static unsigned char pb_u[PB_SIZE], pb_ur[PB_SIZE];
-static const char probe[] = "AURORA68-MUSIC?";
+static const char probe[] = A68_PROBE;
 static struct { unsigned short len; const char *ptr; unsigned short end; } uwds;
 
 static void u_setup(unsigned char *pb, short cs)
@@ -361,7 +361,7 @@ static void u_send(unsigned long to)
 {
 	u_setup(pb_u, UDPWrite);
 	*(unsigned long *)(pb_u + 34) = to;             /* remoteHost */
-	*(unsigned short *)(pb_u + 38) = 8070;          /* remotePort */
+	*(unsigned short *)(pb_u + 38) = A68_DISCOVERY_PORT;   /* remotePort */
 	*(void **)(pb_u + 40) = &uwds;                  /* wdsPtr */
 	pb_u[44] = 1;                                   /* checkSum */
 	short e = mac_PBControl(pb_u);
@@ -404,7 +404,7 @@ int discover_start(void)
 		unsigned long me = *(unsigned long *)(pb_u + 28), mask = *(unsigned long *)(pb_u + 32);
 		if (me && mask && mask != 0xFFFFFFFFul) u_send(me | ~mask);
 	}
-	u_send(0xEFFF4446ul);                           /* 239.255.68.70 */
+	u_send(A68_DISCOVERY_GROUP);                    /* 239.255.68.70 */
 	u_read();
 	d_until = LM_TICKS + 4 * 60;
 	disc.st = D_WAIT;
@@ -419,25 +419,8 @@ void discover_poll(void)
 		unsigned char *d = *(unsigned char **)(pb_ur + 40);
 		unsigned short n = *(unsigned short *)(pb_ur + 44);
 		unsigned long from = *(unsigned long *)(pb_ur + 34);
-		static const char head[] = "AURORA68-MUSIC\t1\t";
-		int ok = n > sizeof head && !memcmp(d, head, sizeof head - 1);
-		if (ok) {
-			unsigned short i = sizeof head - 1, k = 0, port = 0;
-			while (i < n && d[i] != '\t' && k < sizeof disc.name - 1) disc.name[k++] = (char)d[i++];
-			disc.name[k] = 0;
-			while (i < n && d[i] != '\t') i++;
-			for (i++; i < n && d[i] >= '0' && d[i] <= '9'; i++) port = (unsigned short)(port * 10 + (d[i] - '0'));
-			for (k = 0, i++; i < n && d[i] != '\t' && d[i] != '\r' && k < sizeof disc.v4 - 1; ) disc.v4[k++] = (char)d[i++];
-			disc.v4[k] = 0;
-			for (k = 0, i++; i < n && d[i] != '\t' && d[i] != '\r' && k < sizeof disc.v6 - 1; ) disc.v6[k++] = (char)d[i++];
-			disc.v6[k] = 0;
-			char *p = disc.host;
-			int j;
-			for (j = 24; j >= 0; j -= 8) { p = put_num(p, from >> j & 255); if (j) *p++ = '.'; }
-			*p = 0;
-			disc.port = port;
-			ok = port != 0;
-		}
+		int ok = a68_disc_parse(d, n, &disc.d);      /* play/core/address.c: the name, the port, the addresses */
+		if (ok) *a68_put_ipv4(disc.host, disc.host + sizeof disc.host - 1, from) = 0;
 		u_setup(pb_u, UDPBfrReturn);
 		*(unsigned char **)(pb_u + 40) = d;
 		mac_PBControl(pb_u);
