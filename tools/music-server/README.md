@@ -1,13 +1,15 @@
 # The Aurora68 music server
 
-A folder of MP3s, organised in folders however you like, served as internet radio stations over IPv4
-and IPv6. Every folder is a station: its MP3s and those of the folders inside it, one after another,
+A folder of music, organised in folders however you like, served as internet radio stations over IPv4
+and IPv6. MP3s are sent as they are; FLAC, M4A (AAC and ALAC), Ogg, Opus, WAV and AIFF are converted to
+MP3 as they are sent (ffmpeg, which the Docker image has; 192 kbit/s by default). Every folder is a
+station: its songs and those of the folders inside it, one after another,
 with each song's title, at the rate they play. Aurora68 Play on the SE plays them like any station
 (Radio menu, or Radio > Open URL...), and so do VLC, Apple Music/iTunes (File > Open Stream), foobar2000,
 a Squeezebox or a browser. A browser at `http://NAS:8000/` gets a page listing the folders, with each
 folder's station, its files and an M3U playlist.
 
-One Python file, standard library only. It only reads the music folder, and it serves nothing outside
+One Python file, standard library only, plus ffmpeg for the formats that are not MP3. It only reads the music folder, and it serves nothing outside
 it, symbolic links included. It has no passwords: keep it on your home network and don't forward its
 port from the internet.
 
@@ -30,7 +32,10 @@ It uses **host networking**: the container answers on the NAS's own addresses, I
 8000. Docker's usual bridge network has no IPv6 unless the Docker daemon is set up for it, so host
 networking is the simple way to get both. If port 8000 is taken, set `MUSIC_PORT`.
 
-`docker logs aurora68-music` shows what it is doing: the library scan, and each listener and song.
+`docker logs aurora68-music` shows what it is doing: the library scan (how many songs of each format,
+and any folder it cannot read, with the user it runs as), and each listener and song. "0 songs" with a
+"cannot read" line means `PUID`/`PGID` cannot read the music; with no such line, the wrong folder is
+mounted.
 
 Without Docker, on any computer with Python 3 (tested with 3.12 and 3.13):
 ```bash
@@ -78,13 +83,17 @@ mark.
 | `--name NAME` | `MUSIC_NAME` | the library's name in Aurora68 Play's menu and on the page ("Music") |
 | `--bind ADDR` | `MUSIC_BIND` | `::` (the default) is every address, IPv6 and IPv4 on one socket; `0.0.0.0` IPv4 only; or one address |
 | `--max-listeners N` | `MUSIC_MAX_LISTENERS` | 16 at once |
+| `--bitrate N` | `MUSIC_BITRATE` | kbit/s of the MP3 other formats become: 192 (128 is plenty for the SE's speaker; up to 320) |
+| `--ffmpeg PATH` | `MUSIC_FFMPEG` | ffmpeg, found on the PATH; `""` plays MP3s only |
 
 New music is found by itself: the folder is scanned again when a request comes and the last scan is
 more than 30 seconds old.
 
 ## How a station is sent
-Each file's MP3 frames are found and sent as they are (no conversion, so no quality is lost and the NAS
-does almost no work). The ID3 tags at the front, the ID3v1 and APE tags at the end and the encoder's
+An MP3's frames are found and sent as they are (no conversion, so no quality is lost and the NAS does
+almost no work). Any other format goes through ffmpeg into MP3 at 44.1 kHz stereo as it is sent (its
+cover picture left out), a few per cent of one core per listener; when the listener leaves, that ffmpeg
+stops. The ID3 tags at the front, the ID3v1 and APE tags at the end and the encoder's
 Xing/Info frame are left out, because inside a stream they are noise to a decoder. Files at any bit rate
 or sample rate, constant or variable, follow each other: Aurora68 Play's decoder takes each frame's rate
 from the frame. The first six seconds go at once, so a player's buffer fills quickly; after that frames
@@ -97,7 +106,8 @@ A file that holds no MP3 audio is passed over, once, with a line in the log.
 python3 tools/music-server/test_server.py
 ```
 It needs ffmpeg and a C compiler. It makes a small library (folders in folders, 44.1 and 48 kHz, VBR,
-22 kHz mono, ID3v2.3 and 2.4, accented names, a broken file, links that lead out of the folder) and checks
+22 kHz mono, ID3v2.3 and 2.4, M4A with AAC and a cover picture, ALAC, FLAC, "Artist - Album" folders,
+accented names, a broken file, links that lead out of the folder) and checks
 the server against Aurora68 Play's own parsers, built on the host (`play_check.c`, with `mac/piplay/icy.c`
 and `stations.c`). It checks the stations file and its limits, the titles in order and in Mac Roman, and
 that the audio decodes without an error at its full length. It also checks the pacing, Range, M3U, JSON,

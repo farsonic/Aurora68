@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
-"""aurora68_music_server.py - a folder of MP3s as internet radio stations, over IPv4 and IPv6.
+"""aurora68_music_server.py - a folder of music as internet radio stations, over IPv4 and IPv6.
 
 22 November 2026. The owner has a folder of MP3s, organised in folders (artist, album, or however they
 like), on a NAS, and Aurora68 Play already plays internet radio: plain-http MP3 streams with Shoutcast
@@ -29,16 +29,23 @@ fills quickly. The frames' own headers give their length in time, so files at an
 rate, constant or variable, follow each other. Aurora68 Play's decoder (minimp3, on the sound card)
 takes each frame's rate from the frame.
 
-Standard library only; the folder is only read. Nothing outside it is served: every path is resolved
-and must stay inside the folder, symbolic links included.
+Other formats. The owner's first library turned out not to be MP3 (22 November 2026: the server found
+nothing in it), as libraries from today's download services usually are not: FLAC, M4A (AAC or ALAC),
+Ogg, Opus, WAV, AIFF. Where ffmpeg is installed (the Docker image has it) those files are converted to
+MP3 as they are sent, at MUSIC_BITRATE kbit/s (192), 44.1 kHz stereo: a few per cent of one core per
+listener. Without ffmpeg only MP3s are offered, and the scan says how many other files it passed over.
+
+Python's standard library only (and ffmpeg, if there); the folder is only read. Nothing outside it is
+served: every path is resolved and must stay inside the folder, symbolic links included.
 
     python3 aurora68_music_server.py /path/to/music
     python3 aurora68_music_server.py /music --port 8000 --name "NAS Music"
 """
-import argparse, hashlib, html, json, os, random, signal, socket, sys, threading, time, urllib.parse
+import argparse, hashlib, html, json, mimetypes, os, random, shutil, signal, socket, subprocess, sys, threading, \
+    time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '1'
+VERSION = '2'
 METAINT = 16000                 # bytes of audio between song titles, as most Icecast servers send
 BURST = 6.0                     # seconds of audio sent at once when a listener connects
 RESCAN = 30.0                   # seconds a scan of the folder is trusted before it is made again
@@ -46,6 +53,7 @@ PLAY_MAX_STATIONS = 88          # Aurora68 Play holds 128 stations and 48 submen
 PLAY_MAX_GROUPS = 40            # 40 of the stations its own; the stations file stays within the rest
 MENU_ROWS = 18                  # a menu on the SE's 342 lines: the menu bar and 18 items of 16 lines
 ARTIST_MIN = 6                  # a folder of at least this many "Artist - Album" folders is grouped by artist
+CONVERTED = ('.flac', '.m4a', '.aac', '.alac', '.ogg', '.oga', '.opus', '.wav', '.aif', '.aiff', '.wma', '.ape', '.wv', '.mp2')
 
 
 def log(*a):
@@ -170,6 +178,21 @@ def song_title(path):
     return f'{artist} - {name}' if artist and title else name
 
 
+def tag_title(ffprobe, path):
+    """"Artist - Title" of a file in another format, from its tags (ffprobe), or its name"""
+    name = os.path.splitext(os.path.basename(path))[0]
+    if not ffprobe:
+        return name
+    try:
+        out = subprocess.run([ffprobe, '-v', 'error', '-show_entries', 'format_tags', '-of', 'json', path],
+                             capture_output=True, text=True, timeout=20)
+        tags = {k.lower(): v for k, v in (json.loads(out.stdout or '{}').get('format', {}).get('tags') or {}).items()}
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return name
+    title, artist = tags.get('title', '').strip(), tags.get('artist', '').strip()
+    return f'{artist} - {title}' if artist and title else (title or name)
+
+
 # ---- the library -------------------------------------------------------------------------------
 def short_id(rel):
     return hashlib.sha1(rel.encode('utf-8', 'surrogateescape')).hexdigest()[:8]
@@ -194,11 +217,13 @@ class Library:
     Many music libraries keep their albums side by side as "Artist - Album" folders; a folder of at
     least ARTIST_MIN folders of which two in three are named so is also offered by artist, each artist
     one station playing all their albums."""
-    def __init__(self, root):
+    def __init__(self, root, ffmpeg=None):
         self.root = os.path.realpath(root)
+        self.ffmpeg = ffmpeg             # converts the formats in CONVERTED; None: MP3s only
+        self.ffprobe = shutil.which('ffprobe') if ffmpeg else None
         self.lock = threading.Lock()
         self.when = 0.0
-        self.dirs = {}               # relative folder ('' for the root) -> (folders in it, MP3s in it), sorted
+        self.dirs = {}               # relative folder ('' for the root) -> (folders in it, songs in it), sorted
         self.ids = {}                # short ID -> a station: a relative folder, or (folder, artist)
         self.artists = {}            # relative folder -> {artist: [its folders inside it]}, for those offered so
 
@@ -206,19 +231,28 @@ class Library:
         with self.lock:
             if time.monotonic() - self.when < RESCAN:
                 return
-            dirs, ids = {}, {}
-            for top, subdirs, files in os.walk(self.root, followlinks=False):
+            dirs, ids, errors, passed = {}, {}, [], {}
+            for top, subdirs, files in os.walk(self.root, onerror=errors.append, followlinks=False):
                 rel = os.path.relpath(top, self.root)
                 rel = '' if rel == '.' else rel.replace(os.sep, '/')
                 subdirs[:] = sorted((d for d in subdirs if not d.startswith('.')), key=str.casefold)
-                mp3s = sorted((f for f in files if f.lower().endswith('.mp3') and not f.startswith('.')), key=str.casefold)
-                dirs[rel] = (list(subdirs), mp3s)
+                songs = []
+                for f in files:
+                    ext = os.path.splitext(f)[1].lower()
+                    if f.startswith('.'):
+                        continue
+                    if self.playable(f):
+                        songs.append(f)
+                    elif ext in CONVERTED:
+                        passed[ext] = passed.get(ext, 0) + 1
+                dirs[rel] = (list(subdirs), sorted(songs, key=str.casefold))
                 ids[short_id(rel)] = rel
             # folders with no MP3 anywhere inside them are no stations
             def has_music(rel):
                 sub, mp3s = dirs[rel]
                 return bool(mp3s) or any(has_music(f'{rel}/{s}' if rel else s) for s in sub if (f'{rel}/{s}' if rel else s) in dirs)
-            keep = {r for r in dirs if has_music(r)}
+            keep = {r for r in dirs if has_music(r)} | {''}
+            dirs.setdefault('', ([], []))
             self.dirs = {r: ([s for s in v[0] if (f'{r}/{s}' if r else s) in keep], v[1]) for r, v in dirs.items() if r in keep}
             self.ids = {k: r for k, r in ids.items() if r in keep}
             self.artists = {}
@@ -233,7 +267,26 @@ class Library:
                         self.ids[short_id(r + '\0' + a)] = (r, a)
             self.when = time.monotonic()
             n = sum(len(v[1]) for v in self.dirs.values())
-            log(f'library: {n} MP3s in {len(self.dirs)} folders under {self.root}')
+            kinds = {}
+            for v in self.dirs.values():
+                for f in v[1]:
+                    e = os.path.splitext(f)[1].lower().lstrip('.').upper()
+                    kinds[e] = kinds.get(e, 0) + 1
+            what = ', '.join(f'{c} {k}' for k, c in sorted(kinds.items(), key=lambda kv: -kv[1])) or 'no music'
+            log(f'library: {n} songs ({what}) in {len(self.dirs) - 1} folders under {self.root}')
+            for e in errors[:5]:                       # what could not be read: permissions, usually
+                log(f'library: cannot read {e.filename}: {e.strerror} (the server runs as user {os.getuid()}:{os.getgid()})')
+            if len(errors) > 5:
+                log(f'library: ... and {len(errors) - 5} more that cannot be read')
+            if passed:
+                log('library: passed over ' + ', '.join(f'{c} {e[1:].upper()}' for e, c in sorted(passed.items(), key=lambda kv: (-kv[1], kv[0]))) +
+                    ' files: ffmpeg is not installed here to convert them (the Docker image has it)')
+            if not n and not errors and not passed:
+                log('library: no music files found: is the right folder mounted at ' + self.root + '?')
+
+    def playable(self, name):
+        ext = os.path.splitext(name)[1].lower()
+        return ext == '.mp3' or (self.ffmpeg is not None and ext in CONVERTED)
 
     def station_id(self, key):
         return short_id(key[0] + '\0' + key[1]) if isinstance(key, tuple) else short_id(key)
@@ -256,13 +309,13 @@ class Library:
         return rel if rel in self.dirs else None
 
     def tracks(self, rel):
-        """every MP3 in the folder and the folders inside it, in order; an artist's: all their albums"""
+        """every song in the folder and the folders inside it, in order; an artist's: all their albums"""
         if isinstance(rel, tuple):
             folder, artist = rel
             return [t for f in self.artists.get(folder, {}).get(artist, [])
                     for t in self.tracks(f'{folder}/{f}' if folder else f)]
-        sub, mp3s = self.dirs.get(rel, ([], []))
-        out = [f'{rel}/{m}' if rel else m for m in mp3s]
+        sub, songs = self.dirs.get(rel, ([], []))
+        out = [f'{rel}/{m}' if rel else m for m in songs]
         for s in sub:
             out += self.tracks(f'{rel}/{s}' if rel else s)
         return out
@@ -293,7 +346,55 @@ class IcyWriter:
                     self.sent_title = self.title
 
 
-def stream_station(lib, rel, wfile, meta, shuffle, loop, who):
+def mp3_chunks(b):
+    """an MP3 file's frames, half a second at a time: (bytes, seconds)"""
+    chunk, secs = [], 0.0
+    for off, n, d in frames(b):
+        chunk.append(b[off:off + n])
+        secs += d
+        if secs >= 0.5:
+            yield b''.join(chunk), secs
+            chunk, secs = [], 0.0
+    if chunk:
+        yield b''.join(chunk), secs
+
+
+def converted_chunks(ffmpeg, path, kbps):
+    """another format through ffmpeg into MP3, framed as it comes, half a second at a time"""
+    p = subprocess.Popen([ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error', '-i', path, '-map', '0:a:0',
+                          '-c:a', 'libmp3lame', '-b:a', f'{kbps}k', '-ar', '44100', '-ac', '2',
+                          '-write_xing', '0', '-id3v2_version', '0', '-f', 'mp3', 'pipe:1'],
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    buf, chunk, secs = bytearray(), [], 0.0
+    try:
+        while True:
+            more = p.stdout.read(32768)
+            buf += more
+            i = 0
+            while i + 4 <= len(buf):
+                h = frame_header(buf, i)
+                if not h:
+                    i += 1                     # not at a frame: resynchronise
+                    continue
+                if i + h[0] > len(buf):
+                    break                      # the rest of this frame has not come yet
+                chunk.append(bytes(buf[i:i + h[0]]))
+                secs += h[1] / h[2]
+                i += h[0]
+                if secs >= 0.5:
+                    yield b''.join(chunk), secs
+                    chunk, secs = [], 0.0
+            del buf[:i]
+            if not more:
+                break
+        if chunk:
+            yield b''.join(chunk), secs
+    finally:
+        p.kill()
+        p.wait()
+
+
+def stream_station(lib, rel, wfile, meta, shuffle, loop, who, kbps):
     tracks = lib.tracks(rel)
     if not tracks:
         return
@@ -312,34 +413,35 @@ def stream_station(lib, rel, wfile, meta, shuffle, loop, who):
             if not path:
                 bad.add(t)
                 continue
+            if t.lower().endswith('.mp3'):
+                try:
+                    with open(path, 'rb') as f:
+                        source = mp3_chunks(f.read())
+                except OSError as e:
+                    log(f'{who}: cannot read {t}: {e.strerror}')
+                    bad.add(t)
+                    continue
+                title = song_title(path)
+            else:
+                source = converted_chunks(lib.ffmpeg, path, kbps)
+                title = tag_title(lib.ffprobe, path)
+            sent = 0.0
             try:
-                with open(path, 'rb') as f:
-                    b = f.read()
-            except OSError as e:
-                log(f'{who}: cannot read {t}: {e}')
-                bad.add(t)
-                continue
-            fr = frames(b)
-            if not fr:
-                log(f'{who}: no MP3 audio in {t}, passed over')
-                bad.add(t)
-                continue
-            out.title = song_title(path)
-            log(f'{who}: {out.title}')
-            chunk, chunk_s = [], 0.0
-            for off, n, secs in fr:
-                chunk.append(b[off:off + n])
-                chunk_s += secs
-                if chunk_s >= 0.5:        # half a second at a time
-                    out.write(b''.join(chunk))
-                    due += chunk_s
-                    chunk, chunk_s = [], 0.0
+                for data, secs in source:
+                    if not sent:
+                        out.title = title
+                        log(f'{who}: {title}')
+                    out.write(data)
+                    sent += secs
+                    due += secs
                     ahead = due - (time.monotonic() - t0)
                     if ahead > 0:
                         time.sleep(ahead)
-            if chunk:
-                out.write(b''.join(chunk))
-                due += chunk_s
+            finally:
+                source.close()            # a converting ffmpeg stops when the listener leaves
+            if not sent:
+                log(f'{who}: no audio in {t}, passed over')
+                bad.add(t)
         if not loop:
             return
         tracks = lib.tracks(rel) or tracks          # a pass ends: anything added since joins in
@@ -443,7 +545,7 @@ a{{text-decoration:none}} li{{margin:.15em 0}} .s{{color:#666;font-size:90%}}</s
 <p class="s">Aurora68 music server {version}. Station address for any internet radio player: <code>{full}</code></p></body></html>"""
 
 
-def make_handler(lib, name, max_listeners):
+def make_handler(lib, name, max_listeners, kbps):
     listeners = threading.BoundedSemaphore(max_listeners)
 
     class Handler(BaseHTTPRequestHandler):
@@ -538,7 +640,7 @@ def make_handler(lib, name, max_listeners):
                 if self.command == 'HEAD':
                     return
                 log(f'{who}: listening to {what}{" shuffled" if q.get("shuffle") == "1" else ""}')
-                stream_station(lib, rel, self.wfile, meta, q.get('shuffle') == '1', q.get('loop', '1') != '0', who)
+                stream_station(lib, rel, self.wfile, meta, q.get('shuffle') == '1', q.get('loop', '1') != '0', who, kbps)
                 log(f'{who}: {what} ended')
             except (BrokenPipeError, ConnectionResetError, OSError):
                 log(f'{who}: left {what}')
@@ -547,7 +649,7 @@ def make_handler(lib, name, max_listeners):
 
         def file(self, rel):
             p = lib.real(rel)
-            if not p or not os.path.isfile(p) or not p.lower().endswith('.mp3'):
+            if not p or not os.path.isfile(p) or not lib.playable(p):
                 return self.fail(404, 'no such file')
             size = os.path.getsize(p)
             start, end = 0, size - 1
@@ -565,7 +667,7 @@ def make_handler(lib, name, max_listeners):
                     return
                 end = min(end, size - 1)
             self.send_response(206 if rng else 200)
-            self.send_header('Content-Type', 'audio/mpeg')
+            self.send_header('Content-Type', mimetypes.guess_type(p)[0] or 'application/octet-stream')
             self.send_header('Accept-Ranges', 'bytes')
             self.send_header('Content-Length', str(end - start + 1))
             if rng:
@@ -658,20 +760,27 @@ def serve(bind, port, handler):
 
 def main():
     ap = argparse.ArgumentParser(description='A folder of MP3s as internet radio stations (IPv4 and IPv6)')
-    ap.add_argument('music', nargs='?', default=os.environ.get('MUSIC_DIR', '/music'), help='the folder of MP3s (/music)')
+    ap.add_argument('music', nargs='?', default=os.environ.get('MUSIC_DIR', '/music'), help='the music folder (/music)')
     ap.add_argument('--port', type=int, default=int(os.environ.get('MUSIC_PORT', '8000')), help='TCP port (8000)')
     ap.add_argument('--bind', default=os.environ.get('MUSIC_BIND', '::'),
                     help='address to listen on: "::" is every address, IPv6 and IPv4 (the default); 0.0.0.0 IPv4 only')
     ap.add_argument('--name', default=os.environ.get('MUSIC_NAME', 'Music'), help='the library\'s name in menus and pages')
     ap.add_argument('--max-listeners', type=int, default=int(os.environ.get('MUSIC_MAX_LISTENERS', '16')))
+    ap.add_argument('--bitrate', type=int, default=int(os.environ.get('MUSIC_BITRATE', '192')),
+                    help='kbit/s of the MP3 that FLAC, M4A and other formats are converted to (192)')
+    ap.add_argument('--ffmpeg', default=os.environ.get('MUSIC_FFMPEG', shutil.which('ffmpeg') or ''),
+                    help='ffmpeg, to play formats other than MP3 ("" for MP3s only)')
     a = ap.parse_args()
     if not os.path.isdir(a.music):
         sys.exit(f'no such folder: {a.music}')
-    lib = Library(a.music)
+    if a.bitrate not in (64, 80, 96, 112, 128, 160, 192, 224, 256, 320):
+        sys.exit('--bitrate: one of 64, 80, 96, 112, 128, 160, 192, 224, 256, 320')
+    lib = Library(a.music, a.ffmpeg or None)
     lib.scan()
-    srv, how = serve(a.bind, a.port, make_handler(lib, a.name, a.max_listeners))
+    srv, how = serve(a.bind, a.port, make_handler(lib, a.name, a.max_listeners, a.bitrate))
     signal.signal(signal.SIGTERM, lambda *x: sys.exit(0))
-    log(f'aurora68 music server {VERSION} "{a.name}" on port {a.port} ({how}): {lib.root}')
+    log(f'aurora68 music server {VERSION} "{a.name}" on port {a.port} ({how}): {lib.root}; '
+        + (f'other formats converted to MP3 at {a.bitrate} kbit/s' if lib.ffmpeg else 'MP3s only (no ffmpeg)'))
     srv.serve_forever()
 
 

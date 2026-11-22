@@ -52,6 +52,17 @@ def make_library(d):
     tone(f'{d}/Loose track.mp3', 1, 880, cbr, {'title': "It's loose", 'artist': 'Nobody'})
     for album in ['Zed - One', 'Zed - Two', 'The Apes - First', 'Moss - A', 'Moss - B', 'Kite - K']:   # by artist
         tone(f'{d}/Shelf/{album}/01 Song.mp3', 1, 500, cbr, {'title': album, 'artist': album.split(' - ')[0]})
+    # what download services give today: M4A (AAC with its cover picture, and ALAC), FLAC with Vorbis tags
+    g = f'{d}/Gamma - Converted'
+    os.makedirs(g, exist_ok=True)
+    ffmpeg('-f', 'lavfi', '-i', 'color=red:s=64x64', '-frames:v', '1', f'{g}/cover.jpg')
+    ffmpeg('-f', 'lavfi', '-i', 'sine=frequency=300:duration=3', '-i', f'{g}/cover.jpg', '-map', '0', '-map', '1',
+           '-c:a', 'aac', '-b:a', '128k', '-c:v', 'mjpeg', '-disposition:v', 'attached_pic',
+           '-metadata', 'title=Closing Time', '-metadata', 'artist=Gamma', f'{g}/01. Gamma - Closing Time.m4a')
+    ffmpeg('-f', 'lavfi', '-i', 'sine=frequency=350:duration=2', '-c:a', 'alac', '-metadata', 'title=Lossless',
+           '-metadata', 'artist=Gamma', f'{g}/02. Gamma - Lossless.m4a')
+    ffmpeg('-f', 'lavfi', '-i', 'sine=frequency=400:duration=2', '-c:a', 'flac', '-metadata', 'TITLE=Flac Song',
+           '-metadata', 'ARTIST=Gamma', f'{g}/03. Gamma - Flac Song.flac')
     open(f'{d}/Beta/Talk/broken.mp3', 'wb').write(os.urandom(5000))                       # not MP3 at all
     os.makedirs(f'{d}/Empty folder', exist_ok=True)
     os.symlink('/etc/passwd', f'{d}/Beta/evil.mp3')
@@ -116,7 +127,7 @@ def main():
     names = [n for n, _, _ in stations]
     check(names[:3] == ['Everything, shuffled', 'Alpha Band', 'Beta'] and 'Loose track' not in names,
           f'Aurora68 Play reads the top stations ({names[:4]})')
-    check(len(groups) == 4 and 'All of Alpha Band, shuffled' in names and 'Café Sessions' in names and 'Talk' in names,
+    check(len(groups) == 4 and 'Gamma - Converted' in names and 'All of Alpha Band, shuffled' in names and 'Café Sessions' in names and 'Talk' in names,
           f'and the submenus: Test Music, its Alpha Band, Beta and Shelf ({len(groups)} groups, {len(stations)} stations)')
     check('Empty folder' not in names, 'a folder without music is no station')
     shelf = [n for n, _, g in stations if g == str(len(groups) - 1)]
@@ -162,6 +173,23 @@ def main():
     check(8.7 < secs < 9.3, f'nine seconds of audio: three files, the Xing frame and the tags left out ({secs:.2f} s; ffprobe {dur})')
     check(2.0 < took < 4.5, f'nine seconds of audio take about three: six at once, then as they play ({took:.1f} s)')
 
+    # other formats, converted to MP3 as they are sent: AAC with a cover picture, ALAC, FLAC
+    gamma = [u for n, u, _ in stations if n == 'Gamma - Converted'][0][len(base):]
+    answer = raw('127.0.0.1', port, gamma + '?loop=0')
+    out = subprocess.run([pc, 'icy', audio], input=answer, capture_output=True).stdout.decode('mac_roman')
+    titles = [l[6:] for l in out.splitlines() if l.startswith('title ')]
+    check(titles == ['Gamma - Closing Time', 'Gamma - Lossless', 'Gamma - Flac Song'],
+          f'M4A (AAC and ALAC) and FLAC play, titles from their tags ({titles})')
+    dec = subprocess.run(['ffmpeg', '-v', 'error', '-i', audio, '-f', 'null', '-'], capture_output=True, text=True)
+    pcm = subprocess.run(['ffmpeg', '-v', 'error', '-i', audio, '-f', 's16le', '-ac', '1', '-ar', '8000', '-'],
+                         capture_output=True).stdout
+    check(dec.returncode == 0 and not dec.stderr.strip() and 6.7 < len(pcm) / 16000 < 7.4,
+          f'converted to MP3 that decodes cleanly, all seven seconds ({len(pcm) / 16000:.2f} s) {dec.stderr.strip()[:100]!r}')
+    st, hd, body = get(base, '/file/Gamma%20-%20Converted/03.%20Gamma%20-%20Flac%20Song.flac')
+    check(st == 200 and body[:4] == b'fLaC' and 'flac' in hd.get('Content-Type', ''), 'a FLAC file as it is, for browsers')
+    check(subprocess.run(['pgrep', '-f', f'ffmpeg.*{tmp}'], capture_output=True).stdout == b'',
+          'no converting ffmpeg left running')
+
     # pacing: everything, looping: the first second brings about the burst (6 s), not more
     answer = raw('127.0.0.1', port, '/radio/?shuffle=1', seconds=2.5)
     subprocess.run([pc, 'icy', audio], input=answer, capture_output=True)
@@ -183,12 +211,29 @@ def main():
     st, hd, _ = get(base, '/radio/Beta/Talk?loop=0')
     check(st == 200, 'a station with a broken file plays the rest')
 
+    # a listener who leaves in the middle of a converted song: its ffmpeg goes with them
+    raw('127.0.0.1', port, gamma, seconds=0.5)
+    time.sleep(1.5)
+    check(subprocess.run(['pgrep', '-f', f'ffmpeg.*{tmp}'], capture_output=True).stdout == b'',
+          'a listener leaving stops the conversion')
+
     # refusals
     for p in ['/file/../../../etc/passwd', '/file/%2e%2e/%2e%2e/etc/passwd', '/file/Beta/evil.mp3',
               '/file/Beta/outside/passwd', '/radio/../', '/radio/Beta/outside/', '/radio/Nowhere/', '/s/00000000',
               '/browse/../', '/api/list?dir=..']:
         st, _, body = get(base, p)
         check(st == 404 and b'root:' not in body, f'refused: {p}')
+
+    # without ffmpeg: MP3s only, and the scan says what it passed over
+    s2 = socket.socket(); s2.bind(('127.0.0.1', 0)); port2 = s2.getsockname()[1]; s2.close()
+    srv2 = subprocess.Popen([sys.executable, os.path.join(HERE, 'aurora68_music_server.py'), lib, '--port', str(port2),
+                             '--bind', '0.0.0.0', '--ffmpeg', ''], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    time.sleep(1.5)
+    st2 = get(f'http://127.0.0.1:{port2}', '/api/list?dir=Gamma%20-%20Converted')[0]   # no music there now
+    srv2.terminate(); srv2.wait(10)
+    log2 = srv2.stdout.read()
+    check('passed over 2 M4A, 1 FLAC files' in log2 and st2 == 404,
+          'without ffmpeg: MP3s only, and the log says what was passed over')
 
     # IPv6
     if socket.has_ipv6:
