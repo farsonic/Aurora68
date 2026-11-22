@@ -171,6 +171,17 @@ as bitmaps dithered here, so the Mac only copies bits to the screen:
 | `/mac/arts?albums=ID,ID,...&w=32&h=32` | covers for a list of albums: `A68ARTS 1 N W H DEPTH ROWBYTES`, then for each a byte (1 a cover, 0 none) and its rows |
 | `/t/ID?start=S` | one track as MP3 (an MP3 as it is, anything else converted), from S seconds, ending where the track does |
 
+**The same interface for the macOS Play** (22 November 2026: both Plays share one C core, `play/core`, and one
+wire format, this one; docs/08 item 107). Two parameters, on any `/mac/` request, which the classic Play does
+not send, so its answers are unchanged:
+
+| | |
+|---|---|
+| `enc=utf8` | the answer in UTF-8 (`Content-Type: text/plain; charset=utf-8`) and the request's words (`q=`, `name=`, `title=`, `what=`) read as UTF-8; without it Mac Roman both ways |
+| `full=1` | the longer records: `/mac/info` adds `every` (seconds between announces); `/mac/albums` adds the artist's id and the album's folder; `/mac/tracks` adds the path (for `/file/`), the album's title and its folder; `/mac/devices` adds `playing`, `position`, `length`, `volume`, `album`, `folder`, `at`, `last_seen`, `is_live`, `version`, `listeners` (what `/api/devices` has); `/mac/commands` adds `shuffle` to a command's line and the path and album to each `T` line. Paths, folders and addresses are never cut short (other fields stop at 120 characters) |
+| `/mac/now` | the Live channel, as `/api/now`: `A68M 1 now QUEUE 0 COUNT`, then `N` name, playing, paused, repeat, pos, changes, listeners; `C` path, folder, title, elapsed, length (the song heard, if any); a `Q` path, title for each queued song; an `L` who, since for each listener |
+| `/mac/command?to=ID&action=A` | "play this there", as `POST /api/devices/ID/command`, with `what`, `shuffle=1`, `position` (seconds, a fraction allowed), `volume`; to `live` also the Live queue's own actions (`jump` and `remove` with `index`, `clear`, `shuffle`, `repeat` with `on=1` or `0`). Needs `X-Aurora: 1`. Answers `ok` and the command's number, or the refusal in words (400, 404, 409) |
+
 An album is a folder that holds songs itself; its artist is the part before " - " of a folder named
 "Artist - Album", else the folder it is in. A cover is `cover.jpg`, `folder.jpg`, `front.jpg` and the
 like beside the songs, else the picture inside the first song.
@@ -184,8 +195,9 @@ each fetches its commands by a long poll (the server holds the request up to 20 
 soon as a command comes), so a Mac behind its own firewall and a classic Mac with MacTCP work alike.
 This section is the interface both Plays were written against; change it here first.
 
-JSON for the web panel and the macOS Play; text for the classic Play, as the rest of `/mac/` is (Mac
-Roman, lines ended by a Return, fields separated by tabs; no `A68M` first line). Everything that changes
+JSON for the web panel; text for both Plays, as the rest of `/mac/` is (Mac Roman, or UTF-8 with `enc=utf8`;
+lines ended by a Return, fields separated by tabs; no `A68M` first line). The macOS Play used the JSON until 22
+November 2026 and the text since (`enc=utf8&full=1`, above); the JSON is unchanged. Everything that changes
 something (announce, state, command, fetching commands) needs the header `X-Aurora: 1`; the lists do not.
 
 | Request | Answer |
@@ -227,7 +239,7 @@ curl -X POST -H 'X-Aurora: 1' -d '{"action":"play","what":"r:0"}' http://NAS:842
 
 ## Internet radio for every player
 `GET /api/radio` gives `{"stations": [{"group", "name", "url"}, ...]}` and `GET /mac/radio` the same as
-lines `group`, `name`, `url`: the classic Aurora68 Play's own list (`mac/piplay/stations.c`: SomaFM, the
+lines `group`, `name`, `url`: the classic Aurora68 Play's own list (`play/core/stations.c`: SomaFM, the
 listener-supported stations, stations by country; groups like `By country/Austria` are submenus), so
 every player offers the same stations; the test checks that the server's copy and the classic Play's
 agree. Your own stations come after them: put a stations file in the music folder, named
@@ -311,7 +323,7 @@ python3 tools/music-server/test_server.py
 It needs ffmpeg and a C compiler. It makes a small library (folders in folders, 44.1 and 48 kHz, VBR,
 22 kHz mono, ID3v2.3 and 2.4, M4A with AAC and a cover picture, ALAC, FLAC, "Artist - Album" folders,
 accented names, a broken file, links that lead out of the folder) and checks
-the server against Aurora68 Play's own parsers, built on the host (`play_check.c`, with `mac/piplay/icy.c`
+the server against Aurora68 Play's own parsers, built on the host (`play_check.c`, with `play/core/icy.c`
 and `stations.c`). It checks the stations file and its limits, the titles in order and in Mac Roman, and
 that the audio decodes without an error at its full length. It also checks the pacing, Range, M3U, JSON,
 the page, that every path out of the folder is refused, and IPv6 over `::1` where the computer has it
@@ -320,6 +332,9 @@ serves IPv4). On a server of its own (a rescan every second, players offline aft
 checks the devices: announce, state and the list in JSON and in the classic Play's text, commands queued
 and fetched by the long poll (at once, and when one comes during the wait), radio stations by index, the
 Live channel as a device, refusals, a player going offline and coming back; the radio list against
-`mac/piplay/stations.c` and a stations file of your own; and the library's generation going up when an
-album is copied in, with the catalogue listing it, and not otherwise.
+`play/core/stations.c` and a stations file of your own; and the library's generation going up when an
+album is copied in, with the catalogue listing it, and not otherwise; and the macOS Play's side of `/mac/`
+(UTF-8, the full records, a folder longer than 120 characters whole, `/mac/now`, `/mac/command` to Live and to a
+player, its refusals). The shared core's own test (`tools/play_core_fixtures.py`, in `make -C mac check`) starts
+this server too and reads its answers with the core both Plays use.
 GitHub runs it before each image build.

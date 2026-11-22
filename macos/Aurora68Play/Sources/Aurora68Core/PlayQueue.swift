@@ -79,7 +79,7 @@ public struct PlayQueue<Item: Equatable>: Equatable {
         pool = new
         handles = (0..<Int32(new.count)).map { $0 } + [0]
         n = 0; cur = -1; feed = -1
-        _ = run { a68q_set($0, Int32(new.count), Int32(clamping: start)) }
+        run { a68q_set($0, Int32(new.count), Int32(clamping: start)) }
     }
 
     /// after the playing item (or at the front of a queue that plays nothing)
@@ -94,7 +94,7 @@ public struct PlayQueue<Item: Equatable>: Equatable {
 
     /// take an item out; the one playing moves on to its follower (nil if it was the last)
     public mutating func remove(at i: Int) {
-        _ = run { a68q_remove($0, Int32(clamping: i)) }
+        run { a68q_remove($0, Int32(clamping: i)) }
     }
 
     public mutating func jump(to i: Int) -> Item? {
@@ -132,7 +132,7 @@ public struct PlayQueue<Item: Equatable>: Equatable {
     /// shuffle what is still to come; the playing item stays where it is
     public mutating func shuffleUpcoming<G: RandomNumberGenerator>(using g: inout G) {
         let seed = UInt(truncatingIfNeeded: g.next())
-        _ = run { a68q_shuffle_upcoming($0, seed) }
+        run { a68q_shuffle_upcoming($0, seed) }
     }
 
     public mutating func shuffleUpcoming() {

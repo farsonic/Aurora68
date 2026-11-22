@@ -622,7 +622,7 @@ not NPO Radio 2 again under Netherlands); its own stations stay where they were.
 were added; if the file cannot be written (open in an editor that keeps it open for writing, a locked
 disk) it says so and adds nothing.
 
-How it is made: `mac/piplay/stations.c` (portable C, also run on the host by `make -C mac check` through
+How it is made: `mac/piplay/stations.c` (`play/core/stations.c` since 22 November 2026, below, "The shared core") (portable C, also run on the host by `make -C mac check` through
 `tools/stations_test.c`) holds the built-in list (Mac Roman: the Ö of Ö1 is $85) and takes the file apart
 into stations, groups and their order; `radio.c` reads and writes the file; `piplay.c`'s `fill_menu` builds a
 menu per group with NewMenu, puts it into the menu list with `InsertMenu(menu, -1)` (the hierarchical
@@ -643,7 +643,7 @@ name resolver the way Apple's DNR glue does (the Control Panels folder for a `'c
 `'ztcp'`, then the System Folder and the Control Panels folder for `'mtcp'`; the first file whose
 resource fork holds `'dnrp'` 1, which is "Riptide DNR" with Riptide and "MacTCP DNR" with Apple's MacTCP).
 It sends `GET /path HTTP/1.0` with `Host:`, `User-Agent: Aurora68-Play/1.1 (Macintosh)` and
-`Icy-MetaData: 1`. `mac/piplay/icy.c` takes the answer apart: an `HTTP/1.x` or `ICY 200 OK` status line,
+`Icy-MetaData: 1`. `mac/piplay/icy.c` (now `play/core/icy.c`) takes the answer apart: an `HTTP/1.x` or `ICY 200 OK` status line,
 the headers in any case (`icy-metaint`, `icy-name`, `icy-br`, `Content-Type`, `Location`,
 `Transfer-Encoding`), redirections (301, 302, 303, 307, 308; three at most; to plain http only), a
 playlist's first stream, HTTP/1.1's chunks (a server or proxy that answers 426 "Upgrade Required" is
@@ -814,7 +814,7 @@ record). What Aurora68 Play 1.3 adds:
 - **New albums without a restart.** The library's generation comes with each announce answer (below) and
   in `/mac/info`'s sixth field; when it moves, the list in view is fetched again and the selected row
   selected again.
-- **A device of the music server** (`mac/piplay/devices.c`; the server's side is `tools/music-server`'s
+- **A device of the music server** (`mac/piplay/devices.c`, now `play/core/devices.c`; the server's side is `tools/music-server`'s
   README, "Devices"). Once a server is known Aurora68 Play announces itself every 20 seconds
   (`/mac/announce`, with an id made once and kept in its preferences and the Mac's name from Sharing
   Setup), reports what it plays when that changes (`/mac/state`: a library track by its id, a station by

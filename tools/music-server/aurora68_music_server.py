@@ -53,7 +53,7 @@ VERSION = '3'
 METAINT = 16000                 # bytes of audio between song titles, as most Icecast servers send
 BURST = 6.0                     # seconds of audio sent at once when a listener connects
 RESCAN = float(os.environ.get('MUSIC_RESCAN', 30))   # seconds a scan of the folder is trusted before it is made again
-PLAY_MAX_STATIONS = 88          # Aurora68 Play holds 128 stations and 48 submenus (mac/piplay/stations.h),
+PLAY_MAX_STATIONS = 88          # Aurora68 Play holds 128 stations and 48 submenus (play/core/include/stations.h),
 PLAY_MAX_GROUPS = 40            # 40 of the stations its own; the stations file stays within the rest
 MENU_ROWS = 18                  # a menu on the SE's 342 lines: the menu bar and 18 items of 16 lines
 ARTIST_MIN = 6                  # a folder of at least this many "Artist - Album" folders is grouped by artist
@@ -1441,7 +1441,7 @@ def music_discovery(port, name, tcp_port):
 # ---- internet radio for every player: the classic Aurora68 Play's own list, and the owner's -------------
 # 22 November 2026. The macOS Aurora68 Play's Live page offered nothing to start (the owner: "Pressing Live
 # shows nothing... should there not be a list of stations"). The classic Play has carried a list of internet
-# radio stations since its Radio menu (mac/piplay/stations.c); the server hands the same list to every
+# radio stations since its Radio menu (play/core/stations.c); the server hands the same list to every
 # player at /api/radio (and /mac/radio), so the stations are the same everywhere. RADIO_BUILTIN is that
 # list's stations, in the stations file's own format; test_server.py reads stations.c and checks that
 # the two agree, so a station added there and not here fails the test. The owner's own stations: a

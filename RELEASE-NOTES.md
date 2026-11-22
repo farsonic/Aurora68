@@ -18,6 +18,20 @@ Since 0.13 (docs/08 items 96 and 103):
 - **`mac.fpu=none`**: no FPU for the Mac, as on a real SE or Plus (issue #28). Programs take their own non-FPU
   code, and SANE stays exact. Default unchanged (an FPU present).
 - The last "PiStorm-SE" names (declaration ROM card names, banners, file headers) are now Aurora68.
+- **Aurora68 Play: one code base for both Plays** (22 November 2026, docs/08 item 107). Everything that is not
+  interface is one portable C core, `play/core`, compiled by the classic Play (for the 68000) and by the macOS
+  Play (as its Swift package's C target): the music server's protocol, the catalogue, the queue, addresses and
+  discovery, the devices, ICY, the stations. Both speak the server's `/mac/` text (the macOS Play with
+  `enc=utf8&full=1`). **Update the music server** (`docker compose pull music`, then `up -d`): the new macOS
+  Play needs its new `/mac/` records and says so with an older one; the classic Play works with either.
+  - **Aurora68 Play 1.4 (classic):** Library > Repeat (the queue round again, gaplessly; kept in the
+    preferences); Previous on the first song starts it again; a stream lost and made again on the second song
+    of a gapless run resumes at the right place; an address typed without a port means the server's own, 8000
+    (it was 8423). Copy `Mac/Aurora68/Aurora68 Play/Aurora68-Play.bin` over the old one. 184 bytes smaller.
+  - **Aurora68 Play for macOS 1.2:** a radio station that is a `.pls` or `.m3u` playlist plays; a server without
+    radio stations still offers the built-in ones; after a probe the address the answer came from is tried
+    first; songs added after the queue has ended are the ones that play. `Package.swift` is now at the
+    repository's top (`swift test` there; `make-app.sh` as before).
 
 ## 0.13 — BlueSCSI disks, exact floating point, Aurora68 Play's Library (22 November 2026)
 
