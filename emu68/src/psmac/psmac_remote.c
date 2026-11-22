@@ -50,6 +50,7 @@
 #include "psmac_ip.h"
 #include "psmac_windows.h"
 #include "psmac_files.h"
+#include "psmac_recovery.h"
 
 const char *psmac_option(const char *key);                                  /* psmac_bus.c */
 uint32_t psmac_mac_rd32(uint32_t logical, int *ok);                         /* psmac_bus.c */
@@ -1282,11 +1283,15 @@ static void control(struct hconn *h, const char *how)
         kprintf("[REMOTE] NMI (the programmer's switch) asked for\n");
         __atomic_store_n(&__m68k_state->INTF.ARM_err, 1, __ATOMIC_RELEASE);
         respond(h, 200, "OK", "application/json", "{\"restart\": \"nmi\"}\n");
+    } else if (starts(how, "recovery")) {
+        /* Aurora68 Recovery at the next start (docs/08 item 106): recovery.txt on the card, then the Pi restarts */
+        if (psmac_recovery_ask("asked for through the remote control (POST /restart?how=recovery)")) { respond_json_error(h, 503, "Service Unavailable", "no writable SD card for recovery.txt"); return; }
+        respond(h, 200, "OK", "application/json", "{\"restart\": \"recovery\"}\n");
     } else if (starts(how, "pi")) {
         kprintf("[REMOTE] the whole Pi restarts (watchdog) in a second and a half, once this answer is out\n");
         respond(h, 200, "OK", "application/json", "{\"restart\": \"pi\"}\n");
         pi_reset_at = now_ms() + 1500;                          /* the poll pulls the watchdog: QEMU's resets at once */
-    } else respond_json_error(h, 400, "Bad Request", "how is mac, nmi or pi");
+    } else respond_json_error(h, 400, "Bad Request", "how is mac, nmi, pi or recovery");
 }
 
 /* ---- the request ---- */
@@ -1305,7 +1310,7 @@ static const char *query(const char *q, const char *key, char *out, unsigned max
     }
     return 0;
 }
-static int private_source(const uint8_t *ip)
+int psmac_remote_private_source(const uint8_t *ip)              /* Aurora68 Recovery keeps the same rule (psmac_recovery.c) */
 {
     return ip[0] == 10 || (ip[0] == 172 && (ip[1] & 0xf0) == 16) || (ip[0] == 192 && ip[1] == 168) || (ip[0] == 169 && ip[1] == 254) || ip[0] == 127;
 }
@@ -1355,7 +1360,7 @@ static void handle(int c)
     if (*q) *q++ = 0;
     const char *method = r;
     int get = !__builtin_strcmp(method, "GET"), post = !__builtin_strcmp(method, "POST");
-    if (!h->local && !any_source && !private_source(h->peer)) {
+    if (!h->local && !any_source && !psmac_remote_private_source(h->peer)) {
         refused++;
         respond_json_error(h, 403, "Forbidden", "only the local network (remote.any=1 allows every address)");
         return;
@@ -1509,8 +1514,11 @@ static uint32_t produce(int c, uint8_t *buf, uint32_t room, int *finished)
 
 /* ---- the TCP side (psmac_ip.c) ---- */
 static void conn_reset(int c) { struct hconn *h = &hc[c]; if (h->kind == R_FILES) psmac_files_gone(c); if (P.active && P.conn == c) P.active = 0; if (wtext_conn == c) wtext_conn = -1; h->used = 0; h->req_len = 0; h->handled = 0; h->kind = R_NONE; h->out_len = h->out_pos = 0; h->done = 0; }
+/* In a recovery start psmac_ip.c's one application is Aurora68 Recovery's page (psmac_recovery.c): the
+   calls go there, and nothing of the remote runs */
 int remote_tcp_accept(int c, uint16_t port, const uint8_t peer[4])
 {
+    if (psmac_recovery_on()) return recovery_tcp_accept(c, port, peer);
     (void)port;
     conn_reset(c);
     hc[c].used = 1; hc[c].local = 0;
@@ -1519,6 +1527,7 @@ int remote_tcp_accept(int c, uint16_t port, const uint8_t peer[4])
 }
 void remote_tcp_recv(int c, const uint8_t *data, uint32_t len)
 {
+    if (psmac_recovery_on()) { recovery_tcp_recv(c, data, len); return; }
     struct hconn *h = &hc[c];
     if (h->handled) {                                              /* one request per connection */
         if (h->kind == R_FILES) psmac_files_body(c, data, len);    /* an upload's body */
@@ -1533,6 +1542,7 @@ void remote_tcp_recv(int c, const uint8_t *data, uint32_t len)
    collected has its buffer's room; an upload what the file job can take; anything else is dropped. */
 uint32_t remote_tcp_room(int c)
 {
+    if (psmac_recovery_on()) return recovery_tcp_room(c);
     struct hconn *h = &hc[c];
     if (!h->handled) return REQ_MAX - h->req_len;
     if (h->kind == R_FILES) return psmac_files_room(c);
@@ -1540,12 +1550,13 @@ uint32_t remote_tcp_room(int c)
 }
 uint32_t remote_tcp_produce(int c, uint8_t *buf, uint32_t room)
 {
+    if (psmac_recovery_on()) return recovery_tcp_produce(c, buf, room);
     int fin;
     uint32_t n = produce(c, buf, room, &fin);
     if (fin) ipk_tcp_close(c);
     return n;
 }
-void remote_tcp_closed(int c) { conn_reset(c); }
+void remote_tcp_closed(int c) { if (psmac_recovery_on()) recovery_tcp_closed(c); else conn_reset(c); }
 
 /* ---- the testbed's channel: mac.remotefile=BASE through semihosting ---- */
 static int64_t sh_in = -1, sh_out = -1; static uint64_t sh_off;
@@ -1612,6 +1623,7 @@ void psmac_remote_init(uint8_t *window)
     }
     o = psmac_option("remote");
     if (!o || !(starts(o, "on") || o[0] == '1')) return;        /* off: nothing of it runs */
+    if (psmac_recovery_on()) { kprintf("[REMOTE] a recovery start: the remote control stays off (there is no Mac to drive)\n"); return; }
     o = psmac_option("remote.token");
     if (o) { unsigned n = 0; for (; o[n] && n < sizeof token - 1; n++) token[n] = o[n]; token[n] = 0; token_len = n; }
     if (token_len < 8) {

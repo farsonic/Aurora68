@@ -31,6 +31,7 @@ int  psmac_ip_hwaddr(int unit, uint8_t out[6]); /* the kernel's own MAC address 
 
 /* ---- for the service loop ---- */
 void psmac_ip_init(void);
+void psmac_ip_init_recovery(const char *name);    /* Aurora68 Recovery: the WiFi's own address, link-local without DHCP */
 void psmac_ip_poll(void);
 int  psmac_ip_busy(void);                        /* frames or connections to see to: poll every turn */
 

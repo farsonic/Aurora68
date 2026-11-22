@@ -155,7 +155,10 @@ static volatile int finder_seen;
 void psmac_boot_curapname(const uint8_t *s)
 {
     if (finder_seen || s[0] != 6) return;
-    if (s[1] == 'F' && s[2] == 'i' && s[3] == 'n' && s[4] == 'd' && s[5] == 'e' && s[6] == 'r') { finder_seen = 1; psmac_boot_mark("Mac: the Finder is running (CurApName)"); }
+    if (s[1] == 'F' && s[2] == 'i' && s[3] == 'n' && s[4] == 'd' && s[5] == 'e' && s[6] == 'r') {
+        finder_seen = 1; psmac_boot_mark("Mac: the Finder is running (CurApName)");
+        { extern void psmac_recovery_finder(void); psmac_recovery_finder(); }   /* the boot counter back to 0 (psmac_recovery.c) */
+    }
 }
 /* the boot is over: the Finder has run, or three minutes have passed (a Mac that starts some other
    shell); the solo board's parameter RAM is saved only after it (psmac_board_solo.c) */

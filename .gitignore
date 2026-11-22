@@ -72,6 +72,7 @@ mac/build/play_core_test.m68k
 /.build/
 /.swiftpm/
 macos/Aurora68Play/.build/
+mac/build/cmdline_test
 mac/build/devices_test
 mac/build/codec/
 mac/build/edid_test.log

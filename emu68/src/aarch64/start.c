@@ -1966,6 +1966,12 @@ __asm__ volatile(
     /* Start M68k now */
 #ifdef PSMAC
     { extern void psmac_se_wait_ready(void); psmac_se_wait_ready(); }   /* the SE board's clock chip probe (psmac_board_se.c) */
+    {   /* Aurora68 Recovery (psmac_recovery.c, docs/08 item 106): the programmer's switch is read now; a
+           recovery start never releases the 68k, and this core waits for good */
+        extern void psmac_recovery_phase2(void); extern int psmac_recovery_on(void); extern void psmac_recovery_park(void);
+        psmac_recovery_phase2();
+        if (psmac_recovery_on()) psmac_recovery_park();
+    }
     psmac_boot_mark("68k released: the ROM's first instruction");
 #endif
 #ifndef PISTORM_ANY_MODEL

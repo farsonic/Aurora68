@@ -329,6 +329,8 @@ if (${VARIANT} IN_LIST SUPPORTED_VARIANTS)
                     src/psmac/psmac_boot.c
                     src/psmac/psmac_crash.c
                     src/psmac/psmac_power.c
+                    src/psmac/psmac_recovery.c
+                    src/psmac/psmac_cmdline.c
                     src/alice/alice_psmac.c
                     src/alice/alice_net.c
                     src/alice/alice_status.c

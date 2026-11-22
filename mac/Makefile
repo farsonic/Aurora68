@@ -7,7 +7,8 @@
 #   make check     compares the struct offsets in enet.s with emu68/src/alice/alice_net.h; host tests (USB frames, EDID, Aurora68 Play's
 #                  shared core in play/core: its radio parser, station list, devices and every other part, on the host, on the real
 #                  music server's answers and, where qemu-m68k is installed, as a 68020 big-endian program; the card's codecs;
-#                  the kernel's FAT/exFAT reader and its HFS view: tools/fatfs_test.sh, tools/hfsview_test.sh)
+#                  the kernel's FAT/exFAT reader and its HFS view: tools/fatfs_test.sh, tools/hfsview_test.sh;
+#                  Aurora68 Recovery's cmdline.txt word editor: tools/cmdline_test.sh)
 #   make install IMG=path/to/volume.img [PART=n]   the extensions into the System Folder of an HFS image, the programs into its Aurora68 folder
 AS      = m68k-linux-gnu-as -m68020
 OBJCOPY = m68k-linux-gnu-objcopy
@@ -173,6 +174,7 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	sh ../tools/codec_test.sh $(abspath $(B))
 	sh ../tools/fatfs_test.sh
 	sh ../tools/hfsview_test.sh
+	sh ../tools/cmdline_test.sh $(abspath $(B))
 
 disasm: $(B)/pidisk.o
 	m68k-linux-gnu-objdump -d $(B)/pidisk.o | head -200
