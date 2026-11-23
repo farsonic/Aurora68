@@ -40,11 +40,15 @@ mac_PBStatus:
 	ext.l	%d0
 	rts
 
-| the receive call's completion routine: radio.c's c_rcv_done(), every register kept
+| the receive call's completion routine: radio.c's c_rcv_done(pb), every register kept. The block is MacTCP's argument
+| (on the stack, a C function's: 60 bytes of registers and the return address above it); c_rcv_done passes over a block
+| that is no longer the chain's (1.8.1: one left to the driver, come back late)
 	.globl	mac_rcv_completion
 mac_rcv_completion:
 	movem.l	%d0-%d7/%a0-%a6,-(%sp)
+	move.l	64(%sp),-(%sp)
 	bsr.l	c_rcv_done
+	addq.l	#4,%sp
 	movem.l	(%sp)+,%d0-%d7/%a0-%a6
 	rts
 

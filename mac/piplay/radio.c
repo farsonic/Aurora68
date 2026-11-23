@@ -73,6 +73,7 @@ extern volatile unsigned char *ring;
 /* piplay/net.s and fs.s */
 short mac_PBControl(void *pb), mac_PBControlAsync(void *pb);
 void mac_rcv_completion(void);
+void c_rcv_done(void *done_pb);
 long mac_dnr_call(void *code, long sel, long a, long b, long c, long d);
 long mac_Gestalt(long selector, long *response);
 void mac_dnr_result(void);
@@ -101,15 +102,17 @@ enum { TCPCreate = 30, TCPActiveOpen = 32, TCPSend = 34, TCPRcv = 37, TCPAbort =
                                                   video's stream on 23 November 2026, carried no more in the testbed) */
 #define RBUF      8192u                        /* one TCPRcv: half a second of 128 kbit/s */
 #define RCV_TIMEOUT 10                         /* seconds without a byte: the station is gone */
-#define PB_SIZE   132                          /* MacTCP's TCPiopb is 104 bytes, .IPP6's TCP6iopb 130 */
+#define PB_SIZE   NET_PB_SIZE                  /* MacTCP's TCPiopb is 104 bytes, .IPP6's TCP6iopb 130 */
 
 static short ipp;                              /* the driver's reference number: .IPP6's or .IPP's */
 static int v6;                                 /* 1: Riptide's .IPP6 (IPv6 and IPv4, names by the driver); 0: .IPP */
 static unsigned long stream;                   /* the TCP stream (StreamPtr), 0 when there is none */
 static unsigned char *tcp_buf, *rbuf;
-static unsigned char pb_ctl[PB_SIZE];          /* open and send: asynchronous, looked at by the event loop */
-static unsigned char pb_end[PB_SIZE];          /* create, abort, release: synchronous */
-static unsigned char pb_rcv[PB_SIZE];          /* the receive chain's, owned by its completion routine */
+/* the parameter blocks, from the heap (1.8.1): one the driver does not give back in time is left to it (net_leave) and a new
+   one takes its place, so that a block the driver still has is never written again */
+static unsigned char *pb_ctl;                  /* open and send: asynchronous, looked at by the event loop */
+static unsigned char *pb_end;                  /* create, abort, release: asynchronous, waited for (net_call) */
+static unsigned char *pb_rcv;                  /* the receive chain's, owned by its completion routine */
 #define IO_RESULT(pb) (*(volatile short *)((pb) + 16))
 
 static void pb_setup(unsigned char *pb, short cs)
@@ -171,6 +174,111 @@ static int open_resolver(void);
 static void **dnr_h;
 void **net_dnr(void) { return open_resolver() ? dnr_h : 0; }
 
+/* ---- calls that could wait (1.8.1, docs/08 item 127) --------------------------------------------- */
+/* The owner's SE froze after minutes of video: the pointer moved, nothing else did. The kernel's heartbeat had the 68k
+   in the ROM's wait for a synchronous call's ioResult, beat after beat, the block the library's pb_end (fetch.c's
+   teardown: its TCPAbort). Riptide had left that call in the Device Manager's queue (Riptide's drvr.S, fixed on its
+   branch play-hang the same day), but whatever a driver does, a program that waits for it for ever freezes the Mac. So
+   no call to the network driver is synchronous any more: each is made asynchronously and waited for a few seconds at
+   most (net_call), the receive chain kept going meanwhile (radio_keep); one that does not come back is logged and its
+   block left to the driver (net_leave): a new block takes its place, the old one, and the buffers the driver may
+   still write into, are kept until it gives them back, and a stream left so is released then. */
+#define LEFT_MAX 8
+#define LEFT_BLK 5
+struct net_left {
+	int used, releasing, from_create;
+	short ref, cs;                             /* the driver and the release call (TCPRelease, UDPRelease), 0: none */
+	unsigned long stream, t;
+	int n;
+	void *blk[LEFT_BLK];
+	unsigned char is_pb[LEFT_BLK];
+};
+static struct net_left left[LEFT_MAX];
+static int pb_busy(const void *pb) { return *(volatile const short *)((const char *)pb + 16) > 0; }
+short net_call(void *pb, int secs, const char *what, const char *then)
+{
+	unsigned long t0 = LM_TICKS;
+	*(void **)((char *)pb + 12) = 0;           /* ioCompletion: none, the block is looked at */
+	mac_PBControlAsync(pb);
+	while (pb_busy(pb)) {
+		if (LM_TICKS - t0 >= (unsigned long)secs * 60) {
+			char t[160], *q = put_str(put_str(t, "net: "), what);
+			q = put_num(put_str(q, " did not complete in "), (unsigned long)secs);
+			put_str(put_str(q, " s: "), then ? then : "its block left to the driver")[0] = 0;
+			pi_log(t);
+			return 1;
+		}
+		radio_keep();                            /* the stream's receive chain, if it waits for room */
+	}
+	return *(volatile short *)((char *)pb + 16);
+}
+struct net_left *net_leave(short ref, short release_cs, unsigned long stream, int from_create)
+{
+	int i;
+	for (i = 0; i < LEFT_MAX; i++)
+		if (!left[i].used) {
+			memset(&left[i], 0, sizeof left[i]);
+			left[i].used = 1;
+			left[i].ref = ref; left[i].cs = release_cs; left[i].stream = stream; left[i].from_create = from_create;
+			left[i].t = LM_TICKS;
+			return &left[i];
+		}
+	pi_log("net: too many blocks left to the driver: this one is forgotten");
+	return 0;
+}
+/* *pp (a pointer to a block of size bytes) handed over to l, and a new cleared block put in its place (0 if there
+   is no memory: the caller's next use says so) */
+void net_leave_block(struct net_left *l, void *pp, unsigned long size, int is_pb)
+{
+	void **p = pp;
+	if (!*p) return;
+	if (l && l->n < LEFT_BLK) { l->blk[l->n] = *p; l->is_pb[l->n] = (unsigned char)is_pb; l->n++; }
+	*p = mac_newptr((long)size);
+}
+/* a parameter block of ours, cleared: a new one if there is none or the driver still has it */
+void *net_fresh(void *pp, const char *what)
+{
+	void **p = pp;
+	if (*p && pb_busy(*p)) {
+		char t[100];
+		put_str(put_str(put_str(t, "net: the block for "), what), " is still the driver's: a new one")[0] = 0;
+		pi_log(t);
+		net_leave_block(net_leave(0, 0, 0, 0), p, PB_SIZE, 1);
+	}
+	if (!*p) *p = mac_newptr(PB_SIZE);
+	else memset(*p, 0, PB_SIZE);
+	return *p;
+}
+/* from the event loop: what was left, given back once the driver has finished with it */
+void net_leave_poll(void)
+{
+	int i, k;
+	for (i = 0; i < LEFT_MAX; i++) {
+		struct net_left *l = &left[i];
+		if (!l->used) continue;
+		for (k = 0; k < l->n; k++) if (l->is_pb[k] && pb_busy(l->blk[k])) break;
+		if (k < l->n) continue;                  /* the driver has one still */
+		if (l->releasing) { l->releasing = 0; l->cs = 0; }
+		if (l->from_create) {                    /* a create that came back late: the stream it made */
+			l->from_create = 0;
+			if (l->n && l->is_pb[0] && !*(short *)((char *)l->blk[0] + 16)) l->stream = *(unsigned long *)((char *)l->blk[0] + 28);
+			else l->cs = 0;
+		}
+		if (l->cs && l->stream && l->n && l->is_pb[0]) {   /* the stream released now, in the first block */
+			unsigned char *pb = l->blk[0];
+			memset(pb, 0, PB_SIZE);
+			*(short *)(pb + 24) = l->ref; *(short *)(pb + 26) = l->cs; *(unsigned long *)(pb + 28) = l->stream;
+			l->releasing = 1;
+			mac_PBControlAsync(pb);
+			pi_log("net: a stream left to the driver is released now");
+			continue;
+		}
+		for (k = 0; k < l->n; k++) mac_DisposPtr(l->blk[k]);
+		if (LM_TICKS - l->t > 60) pi_log("net: the blocks left to the driver are back");
+		l->used = 0;
+	}
+}
+
 /* ---- the receive chain: at interrupt time ------------------------------------------------------ */
 static struct icy *icy;
 static volatile int rcv_busy;                  /* a TCPRcv is with MacTCP */
@@ -179,9 +287,33 @@ static volatile short rcv_result;              /* why the chain ended: MacTCP's 
 static volatile int rcv_stop;                  /* teardown: no more receives */
 static volatile int hdr_seen, bad_answer;
 static volatile unsigned long title_count, rcv_calls, last_rx;
+static volatile unsigned long rcv_t;           /* when the receive out was made (1.8.1: one the driver never answers) */
 static volatile int in_done, done_again;
 
-static unsigned long ring_room(void) { return radio.video ? vc_room() : PSMB_STR_SIZE - (ps->head - ps->tail); }
+/* A video's intake bounded (1.8.1, docs/08 item 127). Since the card keeps 8 MiB in the Pi (docs/08 item 125) the ring
+   always had room, so a video's stream came at whatever the network carried until 8 MiB were held: 4.7 MB/s on the
+   owner's WiFi for a 320x212 video of 40 KB/s, ffmpeg on the server running ahead of the picture, Riptide's socket
+   buffers at 256 KB ("memory pressure") and its deferred task running at every frame. Both freezes on the owner's SE
+   came in such a burst. Now the chain takes a rest (as for a full ring: rcv_wait_room, radio_poll starts it again)
+   once the card holds more than PACE_HIGH_MS of the stream while it plays, until it holds less than PACE_LOW_MS: the
+   intake then follows the video's own rate, and 20 seconds stay in hand for the network's gaps. Never while the card
+   buffers (it waits for its own figure, mac.vprefill=), never with an older card (no buffer_ms) */
+#define PACE_HIGH_MS 20000ul
+#define PACE_LOW_MS  10000ul
+static volatile int paced;
+static volatile unsigned long paces;           /* times the intake rested: in the chain's words */
+static unsigned long ring_room(void)
+{
+	if (radio.video) {
+		unsigned long pct, ms;
+		if (vc_buffer(&pct, &ms) && vc_state() != A68V_S_BUFFERING) {
+			if (!paced && ms > PACE_HIGH_MS) { paced = 1; paces++; }
+			else if (paced && ms < PACE_LOW_MS) paced = 0;
+		} else paced = 0;
+		return paced ? 0 : vc_room();
+	}
+	return PSMB_STR_SIZE - (ps->head - ps->tail);
+}
 /* the audio into the card's ring (room for it was looked at before the receive was made); a video's stream into the
    video decoder card's */
 static void to_ring(const unsigned char *p, unsigned long n)
@@ -204,6 +336,7 @@ static void rcv_issue(void)
 	*(unsigned char **)(pb_rcv + 36) = rbuf;     /* rcvBuff */
 	*(unsigned short *)(pb_rcv + 40) = RBUF;     /* rcvBuffLen: in, the room; out, what came */
 	rcv_busy = 1;
+	rcv_t = LM_TICKS;
 	rcv_calls++;
 	mac_PBControlAsync(pb_rcv);
 }
@@ -217,9 +350,11 @@ static void rcv_issue(void)
    test and set happen with interrupts off, and a call that finds the receive still in progress does nothing (counted:
    stale_calls, logged by radio_poll) */
 static volatile unsigned long stale_calls;
-void c_rcv_done(void)
+void c_rcv_done(void *done_pb)
 {
-	short sr0 = ints_off();
+	short sr0;
+	if (done_pb != pb_rcv) return;               /* a block left to the driver (1.8.1), come back late: not ours any more */
+	sr0 = ints_off();
 	if (in_done) { done_again = 1; ints_on(sr0); return; }
 	in_done = 1;
 	ints_on(sr0);
@@ -338,7 +473,7 @@ static unsigned long addr;                     /* .IPP: the station's IPv4 addre
 #define MAX_ADDRS 8
 static IP6Address addrs[MAX_ADDRS];
 static int naddr, ai, resolving;
-static IP6iopb rpb;
+static IP6iopb *rpb;                    /* 1.8.1: a block from the heap, replaced when the driver keeps one (net_leave) */
 static int redirects, http11, connected_once, playlist_hop;
 static int busy_retries;                       /* a video's 503s asked again (on_headers) */
 static unsigned long backoff, t_state, conn_audio;
@@ -384,20 +519,33 @@ static char *put_host(char *p)
 	if (port != 80) { *p++ = ':'; p = put_num(p, port); }
 	return p;
 }
-/* one of .IPP6's addresses: "192.168.68.1" for an IPv4-mapped one, "[fd68::80]" for IPv6 (the text from
-   ip6AddrToStr, which may be called synchronously anywhere); put_addr6 adds the port */
+/* one of .IPP6's addresses: "192.168.68.1" for an IPv4-mapped one, "[fd68::80]" for IPv6 (RFC 5952: the longest run of
+   two or more zero groups as "::", hexadecimal in small letters); put_addr6 adds the port. Written here in 1.8.1: it was
+   ip6AddrToStr, a synchronous call with its block on the stack, which a driver that queues the call keeps for ever */
 static char *put_ip6(char *p, const IP6Address *a)
 {
+	static const char hex[] = "0123456789abcdef";
+	int g[8], i, best = -1, blen = 0;
 	if (IP6_IS_V4(a)) return put_addr(p, IP6_GET_V4(a));
-	IP6iopb b;
-	char text[64];
-	memset(&b, 0, sizeof b);
-	b.ioCRefNum = ipp; b.csCode = ip6AddrToStr;
-	b.csParam.resolve.hostName = text; b.csParam.resolve.hostNameLen = sizeof text;
-	b.csParam.resolve.addr = *a;
-	if (mac_PBControl(&b)) put_str(text, "an IPv6 address")[0] = 0;
+	for (i = 0; i < 8; i++) g[i] = a->addr[2 * i] << 8 | a->addr[2 * i + 1];
+	for (i = 0; i < 8; ) {
+		int j = i;
+		while (j < 8 && !g[j]) j++;
+		if (j - i > blen && j - i >= 2) { best = i; blen = j - i; }
+		i = j > i ? j : i + 1;
+	}
 	*p++ = '[';
-	p = put_str(p, text);
+	for (i = 0; i < 8; i++) {
+		if (i == best) { *p++ = ':'; *p++ = ':'; i += blen - 1; continue; }
+		if (i && i != best + blen) *p++ = ':';
+		{
+			int v = g[i], sh, any = 0;
+			for (sh = 12; sh >= 0; sh -= 4) {
+				int d = v >> sh & 15;
+				if (d || any || !sh) { *p++ = hex[d]; any = 1; }
+			}
+		}
+	}
 	*p++ = ']';
 	return p;
 }
@@ -427,20 +575,36 @@ static void logn(const char *a, long n, const char *b)
 
 /* ---- the connection's life --------------------------------------------------------------------- */
 static void set_state(int s) { radio.st = s; t_state = LM_TICKS; radio.seq++; }
-static int busy(const unsigned char *pb) { return IO_RESULT(pb) > 0; }
+static int busy(const unsigned char *pb) { return pb && IO_RESULT(pb) > 0; }
 /* everything given back: the receive and any open or send finished (TCPAbort makes them end), the
-   stream released. Waits three seconds at most for each, with the event loop's work suspended. */
+   stream released. Waits five seconds at most for each call (net_call), three for the receive and the open or send to
+   end; what the driver has not given back by then is left to it (net_leave, 1.8.1) and new blocks and buffers are taken */
+static IP6iopb *pb_cancel;
 static void cancel_lookup(void)
 {
-	if (resolving && rpb.ioResult > 0) {         /* withdrawn: it completes with ip6CancelledErr first */
-		IP6iopb c;
-		memset(&c, 0, sizeof c);
-		c.ioCRefNum = ipp; c.csCode = ip6ResolveCancel;
-		c.csParam.cancel.target = &rpb;
-		mac_PBControl(&c);
+	if (resolving && rpb && rpb->ioResult > 0) {   /* withdrawn: it completes with ip6CancelledErr first */
+		IP6iopb *c = net_fresh(&pb_cancel, "ip6ResolveCancel");
+		if (c) {
+			c->ioCRefNum = ipp; c->csCode = ip6ResolveCancel;
+			c->csParam.cancel.target = rpb;
+			if (net_call(c, 5, "ip6ResolveCancel", "the lookup left to Riptide") == 1)
+				net_leave_block(net_leave(0, 0, 0, 0), &pb_cancel, PB_SIZE, 1);
+		}
 		logs("the name lookup withdrawn", 0, 0);
 	}
+	if (rpb && rpb->ioResult > 0)               /* still out: the driver keeps it, a new one for the next lookup */
+		net_leave_block(net_leave(0, 0, 0, 0), &rpb, PB_SIZE, 1);
 	resolving = 0;
+}
+/* the stream and what the driver may still hold of it left to the driver (1.8.1): released later if need be */
+static void leave_stream(short release_cs)
+{
+	struct net_left *l = net_leave(ipp, release_cs, stream, 0);
+	net_leave_block(l, &pb_end, PB_SIZE, 1);
+	if (busy(pb_ctl)) net_leave_block(l, &pb_ctl, PB_SIZE, 1);
+	if (busy(pb_rcv)) net_leave_block(l, &pb_rcv, PB_SIZE, 1);
+	net_leave_block(l, &tcp_buf, TCP_BUF, 0);
+	net_leave_block(l, &rbuf, RBUF, 0);
 }
 static void teardown(void)
 {
@@ -449,11 +613,22 @@ static void teardown(void)
 	rcv_stop = 1;
 	if (stream) {
 		pb_setup(pb_end, TCPAbort);
-		mac_PBControl(pb_end);
-		for (t0 = LM_TICKS; (rcv_busy || busy(pb_ctl)) && LM_TICKS - t0 < 180; ) { }
-		pb_setup(pb_end, TCPRelease);
-		short e = mac_PBControl(pb_end);
-		if (e) logn("TCPRelease said ", e, "");
+		if (net_call(pb_end, 5, "TCPAbort", "the stream left to the driver") == 1) leave_stream(TCPRelease);
+		else {
+			for (t0 = LM_TICKS; (rcv_busy || busy(pb_ctl)) && LM_TICKS - t0 < 180; ) { }
+			pb_setup(pb_end, TCPRelease);
+			short e = net_call(pb_end, 5, "TCPRelease", "the stream left to the driver");
+			if (e == 1) leave_stream(0);
+			else {
+				if (e) logn("TCPRelease said ", e, "");
+				if (busy(pb_ctl) || busy(pb_rcv)) {   /* released, yet a call is still out: its block and buffer stay its */
+					struct net_left *l = net_leave(0, 0, 0, 0);
+					if (busy(pb_ctl)) net_leave_block(l, &pb_ctl, PB_SIZE, 1);
+					if (busy(pb_rcv)) { net_leave_block(l, &pb_rcv, PB_SIZE, 1); net_leave_block(l, &rbuf, RBUF, 0); }
+					pi_log("radio: a call was still out after TCPRelease: its block left to the driver");
+				}
+			}
+		}
 		stream = 0;
 	}
 	rcv_busy = rcv_wait_room = 0;
@@ -528,11 +703,19 @@ static void failed(const char *say, long code)
 static void open_start(void)
 {
 	char t[100];
+	if (!pb_ctl || !pb_end || !pb_rcv || !tcp_buf || !rbuf) { failed("There is not enough memory for the radio: give Aurora68 Play more in the Finder's Get Info.", 0); return; }
 	if (!stream) {
 		pb_setup(pb_end, TCPCreate);
 		*(unsigned char **)(pb_end + 32) = tcp_buf;      /* rcvBuff */
 		*(unsigned long *)(pb_end + 36) = TCP_BUF;       /* rcvBuffLen; notifyProc and userDataPtr 0 */
-		short e = mac_PBControl(pb_end);
+		short e = net_call(pb_end, 5, "TCPCreate", "the stream it makes left to the driver");
+		if (e == 1) {                            /* the stream it makes, if it does, is released once it comes back */
+			struct net_left *l = net_leave(ipp, TCPRelease, 0, 1);
+			net_leave_block(l, &pb_end, PB_SIZE, 1);
+			net_leave_block(l, &tcp_buf, TCP_BUF, 0);
+			failed("The network driver did not answer in 5 seconds (TCPCreate).", 0);
+			return;
+		}
 		if (e) { failed("MacTCP could not make a connection (TCPCreate).", e); return; }
 		stream = *(unsigned long *)(pb_end + 28);
 	}
@@ -567,7 +750,7 @@ static void send_request(void)
 	p = put_str(p, path);
 	p = put_str(p, http11 ? " HTTP/1.1\r\nHost: " : " HTTP/1.0\r\nHost: ");
 	p = put_host(p);
-	p = put_str(p, "\r\nUser-Agent: Aurora68-Play/1.8 (Macintosh)\r\nAccept: */*\r\nIcy-MetaData: 1\r\nConnection: close\r\n\r\n");
+	p = put_str(p, "\r\nUser-Agent: Aurora68-Play/1.8.1 (Macintosh)\r\nAccept: */*\r\nIcy-MetaData: 1\r\nConnection: close\r\n\r\n");
 	wds.len = (unsigned short)(p - request); wds.ptr = request; wds.end = 0;
 	pb_setup(pb_ctl, TCPSend);
 	pb_ctl[32] = 30; pb_ctl[33] = 1; pb_ctl[34] = 0xC0;
@@ -582,30 +765,31 @@ static void send_request(void)
 static void connect_start6(void)
 {
 	unsigned long a4;
-	memset(&rpb, 0, sizeof rpb);
-	rpb.ioCRefNum = ipp;
-	rpb.csParam.resolve.hostName = host;
-	rpb.csParam.resolve.port = port;
+	if (!net_fresh((void **)&rpb, "the lookup")) { failed("There is not enough memory for the radio: give Aurora68 Play more in the Finder's Get Info.", 0); return; }
+	rpb->ioCRefNum = ipp;
+	rpb->csParam.resolve.hostName = host;
+	rpb->csParam.resolve.port = port;
 	naddr = ai = 0;
 	if (host6 && net_v4only) { failed("That is an IPv6 address, and Connect By says IPv4 Only.", 0); return; }
 	if (host6 || dotted(host, &a4)) {
-		rpb.csCode = ip6StrToAddr;
-		short r = mac_PBControl(&rpb);
+		rpb->csCode = ip6StrToAddr;
+		short r = net_call(rpb, 5, "ip6StrToAddr", "its block left to Riptide");
+		if (r == 1) { net_leave_block(net_leave(0, 0, 0, 0), &rpb, PB_SIZE, 1); failed("Riptide did not answer in 5 seconds.", 0); return; }
 		if (r) { failed("That is not an IP address Aurora68 Play understands.", r); return; }
-		addrs[0] = rpb.csParam.resolve.addr;
+		addrs[0] = rpb->csParam.resolve.addr;
 		naddr = 1;
 		open_start();
 		return;
 	}
-	rpb.csCode = ip6Resolve;
+	rpb->csCode = ip6Resolve;
 	/* the owner's choice (Connect By): which family first; Riptide alternates the two in its answer, so the
 	   other family's address comes next when the first does not connect (open_start's 8 s each) */
-	rpb.csParam.resolve.flags = net_prefer == 4 ? kIP6OrderIPv4First : kIP6OrderIPv6First;
-	rpb.csParam.resolve.results = addrs;
-	rpb.csParam.resolve.maxResults = MAX_ADDRS;
-	rpb.csParam.resolve.timeout = 0;             /* the driver's 10 seconds */
+	rpb->csParam.resolve.flags = net_prefer == 4 ? kIP6OrderIPv4First : kIP6OrderIPv6First;
+	rpb->csParam.resolve.results = addrs;
+	rpb->csParam.resolve.maxResults = MAX_ADDRS;
+	rpb->csParam.resolve.timeout = 0;             /* the driver's 10 seconds */
 	resolving = 1;
-	mac_PBControlAsync(&rpb);
+	mac_PBControlAsync(rpb);
 	logs("looking up ", host, net_v4only ? " (IPv4 only)" : net_prefer == 4 ? " (IPv4 first, then IPv6)" : " (IPv6 first, then IPv4)");
 	set_state(RS_RESOLVE);
 }
@@ -782,24 +966,34 @@ static int in_underrun;
 void radio_poll(void)
 {
 	unsigned long now = LM_TICKS;
+	net_leave_poll();                            /* blocks left to the driver, given back (1.8.1) */
+	{
+		static int was_paced;
+		if (paced != was_paced) {
+			was_paced = paced;
+			if (paces <= 3 || paces % 50 == 0)
+				logn(paced ? "the card holds 20 s of the video: the intake rests until it holds 10 s (rest " : "the intake goes on (rest ",
+				     (long)paces, ")");
+		}
+	}
 	if (radio.st == RS_OFF) return;
 	switch (radio.st) {
 	case RS_RESOLVE:
 		if (v6) {
-			if (rpb.ioResult > 0) {
+			if (rpb->ioResult > 0) {
 				if (now - t_state > 40 * 60) { logs(host, ": no answer from .IPP6 in 40 s", 0); teardown(); failed("The name could not be found: is the network up?", 0); }
 				return;
 			}
-			short r = rpb.ioResult;
+			short r = rpb->ioResult;
 			resolving = 0;
-			if (r || !rpb.csParam.resolve.count) {
+			if (r || !rpb->csParam.resolve.count) {
 				logs(host, r == authNameErr ? ": the name servers know no such name" : r == noAnsErr ? ": no address, or no name server answered" :
 				           r == noNameServer ? ": Riptide knows no name server" : ": the lookup failed", 0);
 				failed(r == noNameServer ? "Riptide knows no name server: give it one in RiptidePrefs, or use the station's number address."
 				                         : "The name could not be found: is the network up?", r);
 				return;
 			}
-			naddr = rpb.csParam.resolve.count;
+			naddr = rpb->csParam.resolve.count;
 			if (net_v4only) {                    /* Connect By > IPv4 Only (1.8) */
 				int k, m = 0;
 				for (k = 0; k < naddr; k++) if (IP6_IS_V4(&addrs[k])) addrs[m++] = addrs[k];
@@ -832,7 +1026,11 @@ void radio_poll(void)
 		} else if (now - t_state > 40 * 60) { logs(host, ": no answer from the resolver in 40 s", 0); failed("The name could not be found: is the network up?", 0); }
 		return;
 	case RS_OPEN:
-		if (busy(pb_ctl)) return;
+		if (busy(pb_ctl)) {                      /* 1.8.1: an open the driver never answers (its timeout is 30 s, 8 with another
+			                                       address to try): a Riptide that lost the call (docs/08 item 127) */
+			if (now - t_state > 45 * 60) failed("The network driver did not answer the connection in 45 seconds.", 0);
+			return;
+		}
 		if (IO_RESULT(pb_ctl)) {
 			if (v6 && ai + 1 < naddr) {          /* the next address (an unanswered IPv6 one: ipDestDeadErr in ~3 s) */
 				char t[100];
@@ -877,7 +1075,7 @@ void radio_poll(void)
 		send_request();
 		return;
 	case RS_SEND:
-		if (busy(pb_ctl)) return;
+		if (busy(pb_ctl)) { if (now - t_state > 45 * 60) failed("The network driver did not take Aurora68 Play's request in 45 seconds.", 0); return; }
 		if (IO_RESULT(pb_ctl)) { failed("The station did not take Aurora68 Play's request.", IO_RESULT(pb_ctl)); return; }
 		icy_init(icy);
 		hdr_seen = bad_answer = 0;
@@ -900,12 +1098,24 @@ void radio_poll(void)
 		return;
 	}
 	/* RS_HEADERS and RS_PLAYING: the receive chain is running */
+	if (rcv_busy && IO_RESULT(pb_rcv) > 0 && (long)(LM_TICKS - rcv_t) > (RCV_TIMEOUT + 20) * 60) {   /* rcv_t is set at interrupt
+		                                         time: against Ticks now, signed (against `now` it could be later than it) */
+		/* 1.8.1: a receive the driver never answers, past its own timeout of 10 s by 20 more: a Riptide that lost the call
+		   (docs/08 item 127; a video stood still). The connection is made again from where the stream was (teardown
+		   leaves the block to the driver) */
+		logs("a receive did not come back in 30 s: the connection made again", 0, 0);
+		rcv_result = commandTimeout;
+		rcv_busy = 0;
+		if (radio.st == RS_PLAYING) failed("nothing came for thirty seconds", 0);
+		else failed("The station did not answer.", 0);
+		return;
+	}
 	if (rcv_busy && IO_RESULT(pb_rcv) <= 0 && now - last_rx > 60 && now - t_state > 60) {
 		/* a completion routine that was never called (it should not happen): take the call as done */
 		short sr = ints_off();
 		int was = in_done;
 		ints_on(sr);
-		if (!was && rcv_busy && IO_RESULT(pb_rcv) <= 0) { logs("a receive completed without its completion routine", 0, 0); c_rcv_done(); }
+		if (!was && rcv_busy && IO_RESULT(pb_rcv) <= 0) { logs("a receive completed without its completion routine", 0, 0); c_rcv_done(pb_rcv); }
 	}
 	{
 		static unsigned long said_stale;
@@ -981,6 +1191,10 @@ void radio_init(void)
 {
 	tcp_buf = mac_newptr(TCP_BUF);
 	rbuf = mac_newptr(RBUF);
+	pb_ctl = mac_newptr(PB_SIZE);
+	pb_end = mac_newptr(PB_SIZE);
+	pb_rcv = mac_newptr(PB_SIZE);
+	rpb = mac_newptr(PB_SIZE);
 	icy = mac_newptr(sizeof *icy);
 	slist = mac_newptr(sizeof *slist);
 }
@@ -997,7 +1211,7 @@ static int play(const char *name, const char *url, int finite)
 	busy_retries = 0;
 	radio.finite = finite != 0;
 	radio.ended = 0;
-	if (!tcp_buf || !rbuf || !icy || !slist) { radio.error = "There is not enough memory for the radio: give Aurora68 Play more in the Finder's Get Info."; return 0; }
+	if (!tcp_buf || !rbuf || !pb_ctl || !pb_end || !pb_rcv || !icy || !slist) { radio.error = "There is not enough memory for the radio: give Aurora68 Play more in the Finder's Get Info."; return 0; }
 	copy(radio.station, name, sizeof radio.station);
 	copy(radio.url, url, sizeof radio.url);
 	radio.name[0] = radio.title[0] = 0;
@@ -1232,7 +1446,8 @@ void radio_chain_words(char *t)
 {
 	char *p = put_str(t, radio.st == RS_OFF ? "stream off" : radio.video ? "video stream" : "stream");
 	if (radio.st != RS_OFF) {
-		p = put_str(p, rcv_busy ? ", a receive out" : rcv_wait_room ? ", waiting for room" : ", no receive");
+		p = put_str(p, rcv_busy ? ", a receive out" : rcv_wait_room ? (paced ? ", resting (20 s held)" : ", waiting for room") : ", no receive");
+		if (paces) { p = put_str(p, ", rested "); p = put_num(p, paces); p = put_str(p, " times"); }
 		p = put_str(p, ", "); p = put_num(p, ring_room() >> 10); p = put_str(p, " KB free in the ring, last bytes ");
 		p = put_num(p, (LM_TICKS - last_rx) / 60); p = put_str(p, " s ago, receives "); p = put_num(p, rcv_calls);
 	}

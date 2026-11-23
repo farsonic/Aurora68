@@ -4,7 +4,7 @@
 #                   their icons come from tools/mac/mkicons.py)
 #   The declaration ROM (build/psmac.declrom) carries the .PiDisk, .Network_EtherNet_PiStorm and .PiInput drivers,
 #   and PiDisk's boot record (pidisk_boot.s), which lets an image on the card be the startup disk.
-#   make check     compares the struct offsets in enet.s with emu68/src/alice/alice_net.h; host tests (USB frames, EDID, Aurora68 Play's
+#   make check     compares the struct offsets in enet.s with emu68/src/alice/alice_net.h; host tests (USB frames, the USB host channel's halt bits and keyboard watch, EDID, Aurora68 Play's
 #                  shared core in play/core: its radio parser, station list, devices and every other part, on the host, on the real
 #                  music server's answers and, where qemu-m68k is installed, as a 68020 big-endian program; the card's codecs;
 #                  the kernel's FAT/exFAT reader and its HFS view: tools/fatfs_test.sh, tools/hfsview_test.sh;
@@ -12,7 +12,8 @@
 #                  debug start and report bundle's scrubbing, and the page's header: tools/diag_test.sh; its access point's DHCP server, DNS
 #                  answerer and the firmware's SoftAP sequence: tools/apnet_test.sh; the bus check's verdicts
 #                  against a simulated board with faults: tools/buscheck_test.c; MPEG-1 in QuickTime, the import's indexer
-#                  and the card's MPEG-1 and MP2 decoders against FFmpeg: tools/mpg1_test.sh)
+#                  and the card's MPEG-1 and MP2 decoders against FFmpeg: tools/mpg1_test.sh; the HDMI splash drawn at every
+#                  screen size, and its logo's header against docs/img/aurora68-logo.svg: tools/splash_test.sh)
 #   make install IMG=path/to/volume.img [PART=n]   the extensions into the System Folder of an HFS image, the programs into its Aurora68 folder
 AS      = m68k-linux-gnu-as -m68020
 OBJCOPY = m68k-linux-gnu-objcopy
@@ -165,6 +166,8 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	$(PY) ../tools/mac/check_offsets.py enet.s $(B)/an_offsets
 	cc -std=c99 -Wall -I ../emu68/src/psmac -o $(B)/usbnet_frame_test ../tools/usbnet_frame_test.c ../emu68/src/psmac/usbnet_frame.c
 	$(B)/usbnet_frame_test
+	cc -std=c99 -Wall -Wextra -Werror -I ../emu68/src/psmac -o $(B)/usb_hcint_test ../tools/usb_hcint_test.c ../emu68/src/psmac/usb_hcint.c
+	$(B)/usb_hcint_test
 	cc -std=c99 -Wall -Wextra -Werror -I ../emu68/src/psmac -o $(B)/edid_test ../tools/edid_test.c ../emu68/src/psmac/psmac_edid.c
 	$(B)/edid_test > $(B)/edid_test.log && tail -1 $(B)/edid_test.log
 	cc -std=c99 -O1 -Wall -Wextra -Werror -I ../emu68/src/psmac -o $(B)/buscheck_test ../tools/buscheck_test.c ../emu68/src/psmac/psmac_buscheck_core.c
@@ -187,6 +190,7 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	sh ../tools/vcodec_test.sh $(abspath $(B))
 	sh ../tools/mpg1_test.sh $(abspath $(B))
 	sh ../tools/vbuf_test.sh $(abspath $(B))
+	sh ../tools/splash_test.sh $(abspath $(B))
 
 disasm: $(B)/pidisk.o
 	m68k-linux-gnu-objdump -d $(B)/pidisk.o | head -200
@@ -295,7 +299,7 @@ $(B)/piplay.elf: $(PP_OBJ) c/app.ld
 # documents, its preferences and '****', icons: tools/mac/mkicons.py): files dropped on its icon reach it
 # as the application's files (AppParmHandle)
 $(B)/Aurora68-Play.bin: $(B)/piplay.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py $(ICONS)
-	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Play" --creator PIPY --size 640 --icons play --version 1.8 -o $@
+	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Play" --creator PIPY --size 640 --icons play --version 1.8.1 -o $@
 
 # ---- the WiFi menu: an INIT in C (mac/wifimenu, tools/mac/elf2init.py) ----
 $(B)/wifimenu_traps.txt: c/traps.txt wifimenu/traps.txt

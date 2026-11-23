@@ -58,7 +58,8 @@ const struct pdg_opt pdg_opts[] = {
 
     /* ---- Display ---- */
     { "mac.screen", PDG_G_DISPLAY, 0, A, "#x#", "1024x768", "The HDMI screen's size in pixels; needed only to differ from the firmware's HDMI mode." },
-    { "mac.console", PDG_G_DISPLAY, PDG_F_ONCE, A, "hdmi", 0, "hdmi: the kernel's log on HDMI for the whole run, not only until the Mac's screen comes up." },
+    { "mac.console", PDG_G_DISPLAY, PDG_F_ONCE, A, "splash|boot|hdmi", 0,
+      "What the HDMI screen shows before the Mac's picture: splash, the Aurora68 logo and what the Pi is doing (the default); boot, the kernel's log until the Mac's screen comes up; hdmi, the log for the whole run." },
     { "mac.hdmi", PDG_G_DISPLAY, 0, C, "screen|mirror|log", 0,
       "What HDMI is beside the compact Mac's screen: a second screen of its own (screen, the default), the Mac's picture (mirror), or the log." },
     { "mac.vcdepth", PDG_G_DISPLAY, 0, C, "16|32", 0, "32: ask the firmware for a 32-bit HDMI frame buffer for the second screen (16 keeps the firmware's own)." },
@@ -132,6 +133,7 @@ const struct pdg_opt pdg_opts[] = {
     { "mac.synclog", PDG_G_DEBUG, PDG_F_ONCE, A, "1", 0, "1: every log character sent to the serial line before going on (slower, but nothing is lost if the Pi stops)." },
     { "mac.vframelog", PDG_G_DEBUG, PDG_F_ONCE, A, "1|0", 0, "1: the video decoder card logs every picture it decodes." },
     { "mac.scsitrace", PDG_G_DEBUG, PDG_F_ONCE, PDG_SE | PDG_PLUS | PDG_IICI, "#", "200", "The first N accesses to the SCSI chip in the log." },
+    { "usb.trace", PDG_G_DEBUG, PDG_F_ONCE, A, "1|2", 0, "1: every failed USB transfer in full (the channel's bits per split, its registers); 2: also the keyboard's toggle set again every 10 s, a test." },
     { "mac.solotrace", PDG_G_DEBUG, PDG_F_ONCE, PDG_SOLO, "#", "200", "The solo board's first N SCSI and ADB commands in the log." },
     { "mac.setrace", PDG_G_DEBUG, PDG_F_ONCE, C, "#|#,*", "200,VIA", "The first N accesses to the compact Mac's chips in the log (N,VIA or N,SCC: of one chip)." },
     { "mac.plustrace", PDG_G_DEBUG, PDG_F_ONCE, PF, "#", "200", "The first N ADB commands of the Plus's keyboard and mouse layer in the log." },

@@ -853,7 +853,7 @@ int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t 
             }
             return 1;
         }
-        { static int first = 1; if (first) { first = 0; psmac_boot_mark("SCSI: first pseudo-DMA read: the first block from the SE's disk"); } }
+        { static int first = 1; if (first) { first = 0; psmac_boot_mark("SCSI: first pseudo-DMA read: the first block from the SE's disk"); psmac_splash_status("Starting from the SCSI disk..."); } }
         r = 0;
         for (int i = 0; i < size; i++) {
             if (psmac_board_plus && !plus_wait_drq()) { r = r << 8 | 0xff; continue; }

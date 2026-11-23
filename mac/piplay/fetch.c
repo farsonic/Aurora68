@@ -53,13 +53,13 @@ enum { UDPCreate = 20, UDPRead = 21, UDPBfrReturn = 22, UDPWrite = 23, UDPReleas
 #define TCP_BUF  8192u                 /* the connection's receive buffer (MacTCP wants 4 KB at least) */
 #define RBUF     4096u                 /* one TCPRcv */
 #define BODY_MAX 49152L                /* the longest answer: a page of 200 records, or 64 thumbnails */
-#define PB_SIZE  132
+#define PB_SIZE  NET_PB_SIZE
 #define IO_RESULT(pb) (*(volatile short *)((pb) + 16))
 
 static unsigned char *tcp_buf, *rbuf;
 static char *buf;                      /* the whole answer, headers and body */
 static long got;
-static unsigned char pb_ctl[PB_SIZE], pb_rcv[PB_SIZE], pb_end[PB_SIZE];
+static unsigned char *pb_ctl, *pb_rcv, *pb_end;   /* from the heap (1.8.1): one the driver keeps is left to it (net_leave) */
 static unsigned long stream, t_state;
 static int rcv_out;
 static char req[640];                          /* a device's state with a station's title and artist, %XX-escaped */
@@ -71,7 +71,7 @@ static unsigned short c_port;
 static int c_have;                     /* 1: c_addr6 / c_addr4 hold the host's address */
 static IP6Address c_addr6;
 static unsigned long c_addr4;
-static IP6iopb rpb;                    /* .IPP6's lookup, asynchronous */
+static IP6iopb *rpb, *pb_cancel;       /* .IPP6's lookup, asynchronous, and its withdrawal */
 static IP6Address r_addrs[4];
 static int r_n, r_i;                   /* the addresses the name has, and the one being tried */
 static struct { long rtnCode; char cname[255]; char pad; unsigned long addr[4]; } hi;   /* MacTCP's hostInfo */
@@ -117,22 +117,52 @@ void fetch_init(void)
 	tcp_buf = mac_newptr(TCP_BUF);
 	rbuf = mac_newptr(RBUF);
 	buf = mac_newptr(BODY_MAX + 1);
+	pb_ctl = mac_newptr(PB_SIZE);
+	pb_rcv = mac_newptr(PB_SIZE);
+	pb_end = mac_newptr(PB_SIZE);
+	rpb = mac_newptr(PB_SIZE);
 }
+static int busy(const unsigned char *pb) { return pb && IO_RESULT(pb) > 0; }
+/* the stream and what the driver may still hold of it left to the driver (1.8.1): released later if need be */
+static void leave_stream(short release_cs)
+{
+	struct net_left *l = net_leave(net_ipp(), release_cs, stream, 0);
+	net_leave_block(l, &pb_end, PB_SIZE, 1);
+	if (busy(pb_ctl)) net_leave_block(l, &pb_ctl, PB_SIZE, 1);
+	if (busy(pb_rcv)) net_leave_block(l, &pb_rcv, PB_SIZE, 1);
+	net_leave_block(l, &tcp_buf, TCP_BUF, 0);
+	net_leave_block(l, &rbuf, RBUF, 0);
+}
+/* The end of every fetch, and the call that froze the owner's SE twice on 23 November 2026: its TCPAbort, synchronous,
+   never came back (Riptide had left it in the Device Manager's queue: its drvr.S, fixed the same day). Now each call is
+   waited for five seconds at most (net_call, radio.c) with the radio's receive chain kept going, and what the driver
+   does not give back is left to it with the stream; the next fetch takes new blocks and buffers (1.8.1) */
 static void teardown(void)
 {
 	unsigned long t0;
-	if (net_is_v6() && fetch.st == FS_RESOLVE && rpb.ioResult > 0) {   /* a lookup withdrawn */
-		IP6iopb c;
-		memset(&c, 0, sizeof c);
-		c.ioCRefNum = net_ipp(); c.csCode = ip6ResolveCancel; c.csParam.cancel.target = &rpb;
-		mac_PBControl(&c);
+	if (net_is_v6() && rpb && rpb->ioResult > 0) {   /* a lookup withdrawn */
+		IP6iopb *c = net_fresh(&pb_cancel, "ip6ResolveCancel");
+		if (c) {
+			c->ioCRefNum = net_ipp(); c->csCode = ip6ResolveCancel; c->csParam.cancel.target = rpb;
+			if (net_call(c, 5, "library: ip6ResolveCancel", "the lookup left to Riptide") == 1)
+				net_leave_block(net_leave(0, 0, 0, 0), &pb_cancel, PB_SIZE, 1);
+		}
+		if (rpb->ioResult > 0) net_leave_block(net_leave(0, 0, 0, 0), &rpb, PB_SIZE, 1);
 	}
 	if (stream) {
 		pb_setup(pb_end, TCPAbort);
-		mac_PBControl(pb_end);
-		for (t0 = LM_TICKS; (IO_RESULT(pb_ctl) > 0 || (rcv_out && IO_RESULT(pb_rcv) > 0)) && LM_TICKS - t0 < 180; ) { }
-		pb_setup(pb_end, TCPRelease);
-		mac_PBControl(pb_end);
+		if (net_call(pb_end, 5, "library: TCPAbort", "the stream left to the driver") == 1) leave_stream(TCPRelease);
+		else {
+			for (t0 = LM_TICKS; (busy(pb_ctl) || (rcv_out && busy(pb_rcv))) && LM_TICKS - t0 < 180; ) radio_keep();
+			pb_setup(pb_end, TCPRelease);
+			if (net_call(pb_end, 5, "library: TCPRelease", "the stream left to the driver") == 1) leave_stream(0);
+			else if (busy(pb_ctl) || busy(pb_rcv)) {   /* released, yet a call is still out: its block and buffer stay its */
+				struct net_left *l = net_leave(0, 0, 0, 0);
+				if (busy(pb_ctl)) net_leave_block(l, &pb_ctl, PB_SIZE, 1);
+				if (busy(pb_rcv)) { net_leave_block(l, &pb_rcv, PB_SIZE, 1); net_leave_block(l, &rbuf, RBUF, 0); }
+				logs("a call was still out after TCPRelease: its block left to the driver", 0);
+			}
+		}
 		stream = 0;
 	}
 	rcv_out = 0;
@@ -155,11 +185,19 @@ long fetch_received(void) { return fetch.st == FS_RECV ? got : 0; }
 
 static void open_start(void)
 {
+	if (!pb_ctl || !pb_rcv || !pb_end || !tcp_buf || !rbuf) { fail("There is not enough memory for the library.", 0); return; }
 	if (!stream) {
 		pb_setup(pb_end, TCPCreate);
 		*(unsigned char **)(pb_end + 32) = tcp_buf;
 		*(unsigned long *)(pb_end + 36) = TCP_BUF;
-		short e = mac_PBControl(pb_end);
+		short e = net_call(pb_end, 5, "library: TCPCreate", "the stream it makes left to the driver");
+		if (e == 1) {                            /* the stream it makes, if it does, is released once it comes back */
+			struct net_left *l = net_leave(net_ipp(), TCPRelease, 0, 1);
+			net_leave_block(l, &pb_end, PB_SIZE, 1);
+			net_leave_block(l, &tcp_buf, TCP_BUF, 0);
+			fail("The network driver did not answer in 5 seconds.", 0);
+			return;
+		}
 		if (e) { fail("MacTCP could not make a connection for the library.", e); return; }
 		stream = *(unsigned long *)(pb_end + 28);
 	}
@@ -185,25 +223,26 @@ static void resolve_start(void)
 	if (c_have) { open_start(); return; }
 	if (net_v4only && has_colon(c_host)) { fail("That is an IPv6 address, and Connect By says IPv4 Only.", 0); fetch.unreachable = 1; return; }
 	if (net_is_v6()) {
-		memset(&rpb, 0, sizeof rpb);
-		rpb.ioCRefNum = net_ipp();
-		rpb.csParam.resolve.hostName = c_host;
-		rpb.csParam.resolve.port = c_port;
+		if (!net_fresh(&rpb, "the library's lookup")) { fail("There is not enough memory for the library.", 0); return; }
+		rpb->ioCRefNum = net_ipp();
+		rpb->csParam.resolve.hostName = c_host;
+		rpb->csParam.resolve.port = c_port;
 		if (dotted(c_host, &a4) || has_colon(c_host)) {
-			rpb.csCode = ip6StrToAddr;
-			short r = mac_PBControl(&rpb);
+			rpb->csCode = ip6StrToAddr;
+			short r = net_call(rpb, 5, "library: ip6StrToAddr", "its block left to Riptide");
+			if (r == 1) { net_leave_block(net_leave(0, 0, 0, 0), &rpb, PB_SIZE, 1); fail("Riptide did not answer in 5 seconds.", 0); return; }
 			if (r) { fail("That is not a server address Aurora68 Play understands.", r); return; }
-			c_addr6 = rpb.csParam.resolve.addr;
+			c_addr6 = rpb->csParam.resolve.addr;
 			c_have = 1;
 			r_n = r_i = 0;
 			open_start();
 			return;
 		}
-		rpb.csCode = ip6Resolve;
-		rpb.csParam.resolve.flags = net_prefer == 4 ? kIP6OrderIPv4First : kIP6OrderIPv6First;   /* Connect By */
-		rpb.csParam.resolve.results = r_addrs;
-		rpb.csParam.resolve.maxResults = 4;
-		mac_PBControlAsync(&rpb);
+		rpb->csCode = ip6Resolve;
+		rpb->csParam.resolve.flags = net_prefer == 4 ? kIP6OrderIPv4First : kIP6OrderIPv6First;   /* Connect By */
+		rpb->csParam.resolve.results = r_addrs;
+		rpb->csParam.resolve.maxResults = 4;
+		mac_PBControlAsync(rpb);
 	} else {
 		if (has_colon(c_host)) { fail("An IPv6 address needs Riptide's .IPP6, which this Macintosh does not have.", 0); return; }
 		if (dotted(c_host, &c_addr4)) { c_have = 1; open_start(); return; }
@@ -237,7 +276,7 @@ int fetch_start(const char *host, unsigned short port, const char *path)
 	*p++ = ':'; p = put_num(p, port);
 	/* X-Aurora: the server wants it on a device's requests (a web page elsewhere cannot send it unasked), and it
 	   does no harm on the others */
-	p = put_str(p, "\r\nUser-Agent: Aurora68-Play/1.8 (Macintosh)\r\nX-Aurora: 1\r\nConnection: close\r\n\r\n");
+	p = put_str(p, "\r\nUser-Agent: Aurora68-Play/1.8.1 (Macintosh)\r\nX-Aurora: 1\r\nConnection: close\r\n\r\n");
 	wds.len = (unsigned short)(p - req); wds.ptr = req; wds.end = 0;
 	got = 0;
 	resolve_start();
@@ -271,12 +310,14 @@ static void answer_in(void)
 void fetch_poll(void)
 {
 	unsigned long now = LM_TICKS;
+	net_leave_poll();
 	switch (fetch.st) {
 	case FS_RESOLVE:
 		if (net_is_v6()) {
-			if (rpb.ioResult > 0) { if (now - t_state > 30 * 60) { fail("The server's name could not be found: is the network up?", 0); fetch.unreachable = 1; } return; }
-			if (rpb.ioResult || !rpb.csParam.resolve.count) { fail("The server's name could not be found: is the network up?", rpb.ioResult); fetch.unreachable = 1; return; }
-			r_n = rpb.csParam.resolve.count; r_i = 0;
+			if (!rpb) { fail("There is not enough memory for the library.", 0); return; }
+			if (rpb->ioResult > 0) { if (now - t_state > 30 * 60) { fail("The server's name could not be found: is the network up?", 0); fetch.unreachable = 1; } return; }
+			if (rpb->ioResult || !rpb->csParam.resolve.count) { fail("The server's name could not be found: is the network up?", rpb->ioResult); fetch.unreachable = 1; return; }
+			r_n = rpb->csParam.resolve.count; r_i = 0;
 			if (net_v4only) {                         /* Connect By > IPv4 Only (1.8): the name's IPv4 addresses alone */
 				int k, m = 0;
 				for (k = 0; k < r_n; k++) if (IP6_IS_V4(&r_addrs[k])) r_addrs[m++] = r_addrs[k];
@@ -294,7 +335,10 @@ void fetch_poll(void)
 		open_start();
 		return;
 	case FS_OPEN:
-		if (IO_RESULT(pb_ctl) > 0) return;
+		if (IO_RESULT(pb_ctl) > 0) {               /* 1.8.1: an open the driver never answers (its own timeout is 15 s at most) */
+			if (now - t_state > 30 * 60) { fail("The network driver did not answer the connection in 30 seconds.", 0); fetch.unreachable = 1; }
+			return;
+		}
 		if (IO_RESULT(pb_ctl)) {
 			if (r_i + 1 < r_n) {                      /* the name's next address: the other family, usually */
 				char t[60];
@@ -319,7 +363,7 @@ void fetch_poll(void)
 		t_state = now;
 		return;
 	case FS_SEND:
-		if (IO_RESULT(pb_ctl) > 0) return;
+		if (IO_RESULT(pb_ctl) > 0) { if (now - t_state > 30 * 60) fail("The network driver did not take the request in 30 seconds.", 0); return; }
 		if (IO_RESULT(pb_ctl)) { fail("The music server did not take the request.", IO_RESULT(pb_ctl)); return; }
 		rcv_issue();
 		fetch.st = FS_RECV;
@@ -366,7 +410,7 @@ void fetch_poll(void)
 static short udp_ref;
 static unsigned long udp_stream, d_until;
 static unsigned char *udp_buf;
-static unsigned char pb_u[PB_SIZE], pb_ur[PB_SIZE];
+static unsigned char *pb_u, *pb_ur;              /* from the heap (1.8.1), as the TCP blocks */
 static const char probe[] = A68_PROBE;
 static struct { unsigned short len; const char *ptr; unsigned short end; } uwds;
 
@@ -377,14 +421,22 @@ static void u_setup(unsigned char *pb, short cs)
 	*(short *)(pb + 26) = cs;
 	*(unsigned long *)(pb + 28) = udp_stream;
 }
+/* a UDP call waited for (1.8.1): its result, or 1 with its block left to the driver and a new one in pb_u */
+static short u_call(const char *what)
+{
+	short e = net_call(pb_u, 5, what, "its block left to the driver");
+	if (e == 1) net_leave_block(net_leave(0, 0, 0, 0), &pb_u, PB_SIZE, 1);
+	return e;
+}
 static void u_send(unsigned long to)
 {
+	if (!pb_u) return;
 	u_setup(pb_u, UDPWrite);
 	*(unsigned long *)(pb_u + 34) = to;             /* remoteHost */
 	*(unsigned short *)(pb_u + 38) = A68_DISCOVERY_PORT;   /* remotePort */
 	*(void **)(pb_u + 40) = &uwds;                  /* wdsPtr */
 	pb_u[44] = 1;                                   /* checkSum */
-	short e = mac_PBControl(pb_u);
+	short e = u_call("library: UDPWrite");
 	char t[60], *p = put_str(t, "probe sent to ");
 	int i;
 	for (i = 24; i >= 0; i -= 8) { p = put_num(p, to >> i & 255); if (i) *p++ = '.'; }
@@ -406,6 +458,8 @@ int discover_start(void)
 	discover_stop();
 	memset(&disc, 0, sizeof disc);
 	if (!udp_buf && !(udp_buf = mac_newptr(4096))) return 0;
+	if (!pb_u) pb_u = mac_newptr(PB_SIZE);
+	if (!net_fresh(&pb_ur, "the probe's read") || !pb_u) return 0;
 	if (!udp_ref) {
 		memset(&pb, 0, sizeof pb);
 		pb.ioNamePtr = (const unsigned char *)"\x04.IPP";
@@ -415,14 +469,22 @@ int discover_start(void)
 	u_setup(pb_u, UDPCreate);
 	*(unsigned char **)(pb_u + 32) = udp_buf;
 	*(unsigned long *)(pb_u + 36) = 4096;
-	short e = mac_PBControl(pb_u);
+	short e = net_call(pb_u, 5, "library: UDPCreate", "the stream it makes left to the driver");
+	if (e == 1) {                                   /* released once it comes back */
+		struct net_left *l = net_leave(udp_ref, UDPRelease, 0, 1);
+		net_leave_block(l, &pb_u, PB_SIZE, 1);
+		net_leave_block(l, &udp_buf, 4096, 0);
+		return 0;
+	}
 	if (e) { logs("UDPCreate failed", 0); return 0; }
 	udp_stream = *(unsigned long *)(pb_u + 28);
 	uwds.len = sizeof probe - 1; uwds.ptr = probe; uwds.end = 0;
 	u_send(0xFFFFFFFFul);
-	memset(pb_u, 0, PB_SIZE);                       /* the network's own broadcast address */
-	*(short *)(pb_u + 24) = udp_ref; *(short *)(pb_u + 26) = ipctlGetAddr;
-	if (!mac_PBControl(pb_u)) {
+	if (pb_u) {                                     /* the network's own broadcast address */
+		memset(pb_u, 0, PB_SIZE);
+		*(short *)(pb_u + 24) = udp_ref; *(short *)(pb_u + 26) = ipctlGetAddr;
+	}
+	if (pb_u && !u_call("library: ipctlGetAddr")) {
 		unsigned long me = *(unsigned long *)(pb_u + 28), mask = *(unsigned long *)(pb_u + 32);
 		if (me && mask && mask != 0xFFFFFFFFul) u_send(me | ~mask);
 	}
@@ -468,9 +530,11 @@ void discover_poll(void)
 		unsigned long from = *(unsigned long *)(pb_ur + 34);
 		struct a68_disc a;
 		if (a68_disc_parse(d, n, &a)) d_keep(&a, from);   /* play/core/address.c: the name, the port, the addresses */
-		u_setup(pb_u, UDPBfrReturn);
-		*(unsigned char **)(pb_u + 40) = d;
-		mac_PBControl(pb_u);
+		if (pb_u) {
+			u_setup(pb_u, UDPBfrReturn);
+			*(unsigned char **)(pb_u + 40) = d;
+			u_call("library: UDPBfrReturn");
+		}
 	}
 	if ((long)(LM_TICKS - d_until) >= 0) {
 		int n = disc.n;
@@ -486,10 +550,23 @@ void discover_stop(void)
 {
 	unsigned long t0;
 	if (!udp_stream) return;
-	for (t0 = LM_TICKS; u_out && IO_RESULT(pb_ur) > 0 && LM_TICKS - t0 < 90; ) { }   /* a read out ends within its second */
+	for (t0 = LM_TICKS; u_out && IO_RESULT(pb_ur) > 0 && LM_TICKS - t0 < 90; ) radio_keep();   /* a read out ends within its second */
 	u_out = 0;
-	u_setup(pb_u, UDPRelease);
-	mac_PBControl(pb_u);
+	if (!pb_u) pb_u = mac_newptr(PB_SIZE);
+	if (pb_u) {
+		u_setup(pb_u, UDPRelease);
+		if (net_call(pb_u, 5, "library: UDPRelease", "the stream left to the driver") == 1) {
+			struct net_left *l = net_leave(0, 0, 0, 0);
+			net_leave_block(l, &pb_u, PB_SIZE, 1);
+			if (IO_RESULT(pb_ur) > 0) net_leave_block(l, &pb_ur, PB_SIZE, 1);
+			net_leave_block(l, &udp_buf, 4096, 0);
+		}
+	}
+	if (pb_ur && IO_RESULT(pb_ur) > 0) {            /* a read still out: its block and the buffer it hands out stay the driver's */
+		struct net_left *l = net_leave(0, 0, 0, 0);
+		net_leave_block(l, &pb_ur, PB_SIZE, 1);
+		net_leave_block(l, &udp_buf, 4096, 0);
+	}
 	udp_stream = 0;
 	if (disc.st == D_WAIT) disc.st = D_IDLE;
 }

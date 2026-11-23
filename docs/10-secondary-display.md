@@ -645,6 +645,30 @@ and 2560 x 1440 are offered (`edid_standard_modes`), judged by the clock alone, 
 nothing new was decided: "Any size" above says it is needed only to differ from the firmware's mode, so when
 cmdline.txt has one it follows the new size (and is taken out for Automatic), and when it has none none is added.
 
+## Before the Mac's picture: the splash (23 November 2026)
+From 17 November the VideoCore buffer showed the kernel's log until the Mac's video driver switched the display on
+(the HDMI console, `psmac_display.c`): Emu68's own logo first, then the log's lines from the bottom row, wrapping.
+It was the bench's window into a Pi with no serial cable; once the machine worked the owner called it noise and asked
+for "a subtle splash screen on the HDMI monitor that has the Aurora logo and version" (docs/08 item 128). Now, by
+default (`mac.console=splash`), the same span shows the Aurora68 logo on #0E0F12, the name in Topaz at twice the
+size of the rest, the kernel's version string, a status line a tenth of the height from the bottom and, above it,
+an amber line for what must be seen (`docs/img/hdmi-splash.png`). The layout is `psmac_splash.c`'s: the logo a
+fifth of the screen's height (96 pixels at 640 by 480, 216 at 1080p, at most 256), scaled from the 192 by 192
+picture `tools/mklogo.py` draws from `docs/img/aurora68-logo.svg` (a C header, checked by `make -C mac check`);
+text in whole multiples of Topaz's pixels, one per 540 lines of screen.
+
+When it is drawn: by `display_logo` (start_rpi64.c) into the firmware's 16-bit buffer in place of Emu68's logo; by
+`psmac_display_init` again after the buffer is remade at the screen's size and depth; and from then on by the service
+core (`psmac_display_poll`) alone, whenever a status or alert line changes, until the Mac's display flag is set, when
+the picture conversion takes the buffer as before. A Restart clears that flag (`psmac_display_bus_reset`), so the
+splash comes back ("Restarting the Macintosh...") until the driver opens again; with no declaration ROM the flag never
+comes and the splash stays all the run. Setup and Recovery's screens and the bus check's report keep the buffer to
+themselves as they did with the log. The splash is drawn upright: a PiDisplay rotation turns the Mac's picture only.
+
+What the log does is unchanged except where it is drawn: `mac.console=boot` gives the old behaviour (Emu68's logo,
+then the log until the picture), `mac.console=hdmi` (and `mac.hdmi=log` on the SE board) the log for the whole run,
+and F12 on a USB keyboard changes between the splash and the log while the splash is what HDMI shows.
+
 ## The edge jump: from one screen to the other anywhere along the side (23 November 2026)
 **What the owner asked.** The owner's SE has its own 512 by 342 screen at (-512,0)-(0,342), left of the
 HDMI screen at (0,0)-(2560,1440), tops aligned in Monitors. "I have the small Mac screen and the large HDMI.

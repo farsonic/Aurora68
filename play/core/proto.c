@@ -502,14 +502,10 @@ static unsigned vm_even(unsigned long v, unsigned top)
 	if (v < 64) v = 64;
 	return (unsigned)(v - v % 2);
 }
-void a68_vmpeg_size(unsigned long vw, unsigned long vh, unsigned sw, unsigned sh, unsigned room_w, unsigned room_h,
-                    unsigned *w, unsigned *h)
+/* the video's shape (vw x vh; 0 x 0: 4:3) fitted into bw x bh, made what the server takes */
+static void vm_fit(unsigned long vw, unsigned long vh, unsigned long bw, unsigned long bh, unsigned *w, unsigned *h)
 {
-	unsigned long bw = sw <= 640 ? 320 : sw < 1280 ? 512 : 640, bh = sw <= 640 ? 240 : sw < 1280 ? 384 : 480;
 	unsigned long fw, fh;
-	(void)sh;
-	if (room_w && bw > room_w) bw = room_w;
-	if (room_h && bh > room_h) bh = room_h;
 	if (bw > 1280) bw = 1280;
 	if (bh > 720) bh = 720;
 	if (!vw || !vh) { vw = 4; vh = 3; }
@@ -519,6 +515,27 @@ void a68_vmpeg_size(unsigned long vw, unsigned long vh, unsigned sw, unsigned sh
 	*w = vm_even(fw, 1280);
 	*h = vm_even(fh, 720);
 }
+void a68_vmpeg_size(unsigned long vw, unsigned long vh, unsigned sw, unsigned sh, unsigned room_w, unsigned room_h,
+                    unsigned *w, unsigned *h)
+{
+	unsigned long bw = sw <= 640 ? 320 : sw < 1280 ? 512 : 640, bh = sw <= 640 ? 240 : sw < 1280 ? 384 : 480;
+	(void)sh;
+	if (room_w && bw > room_w) bw = room_w;
+	if (room_h && bh > room_h) bh = room_h;
+	vm_fit(vw, vh, bw, bh, w, h);
+}
+void a68_vmpeg_hdmi(unsigned long vw, unsigned long vh, unsigned pic_w, unsigned pic_h, unsigned quality,
+                    unsigned *w, unsigned *h)
+{
+	unsigned long bw = quality ? quality : pic_w, bh = quality ? A68_VMPEG_HDMI_MAX_H : pic_h;
+	if (bw > A68_VMPEG_HDMI_MAX_W) bw = A68_VMPEG_HDMI_MAX_W;
+	if (bh > A68_VMPEG_HDMI_MAX_H) bh = A68_VMPEG_HDMI_MAX_H;
+	if (bw < A68_VMPEG_HDMI_MIN_W) bw = A68_VMPEG_HDMI_MIN_W;
+	if (!bh) bh = A68_VMPEG_HDMI_MAX_H;
+	vm_fit(vw, vh, bw, bh, w, h);
+	if (*w < A68_VMPEG_HDMI_MIN_W) vm_fit(vw, vh, A68_VMPEG_HDMI_MIN_W, A68_VMPEG_HDMI_MAX_H, w, h);   /* a small window: 320 wide */
+}
+int a68_vmpeg_bigger(unsigned cur_w, unsigned want_w) { return cur_w && (unsigned long)want_w * 2 >= (unsigned long)cur_w * 3; }
 int a68_path_vthumb(const char *vid, char *out, long max) { return video_path("/vthumb/", vid, 0, out, max); }
 int a68_path_video(const char *vid, int how, char *out, long max)
 {

@@ -5723,6 +5723,248 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      PixMap is that screen's, its gdRect's corner); the box is drawn again once the pointer has left it. Not yet seen
      on the SE (the emulator was busy); the owner's next run is the test.
 
+127. **The owner's two lock-ups in a video: a TCPAbort Riptide never saw; Aurora68 Play 1.8.1 (23 November).** Twice on
+   the real SE (Play 1.8, Riptide over WiFi, a video through the card on the HDMI screen, Octavo open), after minutes of
+   video the Mac froze: the pointer moved, windows could not be moved or brought forward, the keyboard did nothing. The
+   heartbeats, 17 and 13 in a row, all said the same: PC 4080bb8c, SR 2010, the JIT at 169 MIPS, interrupts of levels 1
+   and 2 still taken, Aurora68 Play in front. In the IIci ROM 4080bb8c is `movew %a0@(16),%d0; bgts 4080bb8c`, the
+   Device Manager's wait for a synchronous call's ioResult to stop being positive. Before each, Riptide had logged
+   "tcp: memory pressure, 256 KB in socket buffers" (the second time seven times, as a new video's stream, the second
+   of a queue, began), and the video sat at "buffering, 1 KB waiting".
+   - *Which call, from the registers.* A0 was 07f1aa3c the first time and 07ed68c4 the second, beside Play's globals.
+     Play's image is linked at 0 with its globals in it, so a static at offset X sits at the load address plus X; of
+     Play's parameter blocks (`nm mac/build/piplay.elf`; the committed binary differs from a rebuild only in its
+     header) one gives a load address that explains the other registers too, both times: fetch.c's `pb_end`
+     (0x2c29c), with A4 at 0xf08 (`memset`) and A3 at 0xc2b2 (`net_ipp`), the registers fetch.c's `teardown()` keeps
+     them in, A2 (saved by the trap dispatcher) at 0x1024 (`mac_PBControl`), and the stack's other block `pb_end +
+     0x84`, `pb_rcv` (A1 after memset). So the Library connection's `teardown()`, TCPAbort or TCPRelease; the D1 the
+     dispatcher saved (0x100, then 0) rules out the TCPRelease, before which D1 holds Ticks: the TCPAbort. That
+     teardown ends every list, cover, state report and command poll of the Library, several a second while a video
+     plays with the device on.
+   - *Reproduced in the testbed* (solo board, System 7.1, Riptide of mac-port fed1a6d, Play 1.8, the music server on
+     the host, a queue of two 4-minute videos). With the card's buffer at its 8 MB the testbed's intake (about 150
+     KB/s through pinet, the film 50 KB/s) never filled it in four minutes and nothing locked up; Riptide logged
+     "memory pressure, 171 KB" 27 times as on the SE. With `mac.vbuffer=1` (1 MB, so that the card's ring fills and
+     the receive chain stops for room, as the SE's did once its 8 MB were full: "8756 KB waiting (46.0 s, 100%)" in
+     the owner's log) the freeze came twice in two tries, after 112 and 57 s of video: "library: The music server
+     stopped answering." and then PC 4080bb8c beat after beat with D3-D7 00000008 00000961 00000001 00000003
+     00000000 and a stack of the same shape as the owner's. main's new heartbeat line did not show at first: it read
+     the PC's two words with `mac_rd32`, which reads RAM only, and the loop is in the ROM; with `psmac_mac_rd32`
+     (fixed here) it said `the Mac waits for a driver: .IPP6 (ioRefNum -56) csCode 39, trap a004, ioResult 1,
+     ioCompletion 00000000`: TCPAbort, synchronous, on .IPP6.
+   - *Why Riptide never completed it.* Riptide's TCPAbort cannot wait: it is answered in the stack's next round. So the
+     stack never had it. Riptide's .IPP and .IPP6 are concurrent drivers (its drvr.S): a call that must wait is put on
+     the stack's own list and taken off the Device Manager's queue (`_Dequeue`), and drvrActive is cleared. The IIci
+     ROM's Device Manager (4080b5f6) puts every call on the driver's queue and, if drvrActive was clear, sets it and
+     calls the driver for the queue's *head*; while it is set a call is only queued, and IODone, when the driver
+     finishes one, takes the next off the head. drvrActive is set with interrupts on, and the stack's deferred task
+     runs at the end of any interrupt that comes while a program is at level 0, which a program in `_Control` is; that
+     task calls the completion routine of Play's receive chain, which makes the next TCPRcv. So a call can come while
+     the driver is taking another. Two faults then lost it. Riptide linked the call it was taking into its own list
+     through its qLink, which was still the Device Manager's link to the call behind, so that call was cut off the
+     queue, and the `_Dequeue` that followed left the queue empty; and the path never looked at the queue again, as
+     IODone would have. The call behind was never handed to the driver nor completed: a TCPRcv of the chain (the
+     video stood still at "1 KB waiting") or of the Library (40 s later "stopped answering", which brought the
+     teardown), or, the next time, the teardown's TCPAbort itself, for which Play then waited for ever. Made by hand in
+     Riptide's IPP6 test program (drvrActive set with interrupts off, an ip6GetInfo, queued only, drvrActive cleared,
+     a second ip6GetInfo, which the Device Manager hands the driver as the head, the first): with fed1a6d the second
+     never completed (`DBG after q2: head 00000000 tail 00000000 ... res2 1`, a scratch variant printing the DCE's
+     queue). The burst at the network's full rate (4.7 MB/s on the owner's WiFi since item 125's buffer) made it
+     likely: the deferred task ran at every frame, so the window between the Device Manager's `bset` and the driver's
+     `_Dequeue` was hit far more often. "Memory pressure" is the burst's mark (socket buffers full of a stream read
+     faster than the card plays it), not a cause: nothing in Riptide waits on socket memory (tcp_mem.c only stops
+     buffers growing and, above mem_high, drops segments for the sender to send again).
+   - *Riptide's fix*, on its branch `play-hang` from mac-port: the Control entries (ipp.c, ipp6.c) take a call that
+     waits off the Device Manager's queue themselves (`ipp_dm_dequeue`, interrupts off) before its qLink is used, and
+     the path for a call that waits (drvr.S) looks at the queue with interrupts off: a call there is taken as IODone
+     takes it, the driver staying active, through the entry its ioTrap names. The IPP6 test has the case ("a call
+     queued while the driver was busy completes", "... and so does the call behind it"): 95 passed and 2 failed
+     with the fix, 94 and 3 without (the two others fail in this testbed either way: a scope name and riptide.conf
+     host lines it does not have); Riptide's host suite 42 passed, 0 failed, 18 skipped.
+   - *Tested after the fixes* (the same testbed): Play 1.8 with the fixed Riptide and the 1 MB buffer played the first
+     video to its end (240 s, the ring full throughout) and a minute of the second (it had frozen in both tries before). Play 1.8.1 with the fixed Riptide and the card's 8 MB, the
+     Library's traffic and the scratch program that makes the old driver lose the next call: the first video to its
+     end and the second begun, no call left, the intake resting at 20 s held and going on at 10 ("rest 1" ... "rest 3"), the first video's
+     whole stream 15,730 KB in 241 s (533 kbit/s, its own rate) where Play 1.8 had pulled 7.4 MB in the first 50 s.
+     Play 1.8.1 with the old Riptide and the scratch program: no freeze; its first version's receive chain stood still
+     on a lost receive, so a receive that has not come back 30 s past its own timeout (and an open or a send after 30
+     or 45 s) now ends the connection, which is made again from where it was (seen: the receive's block and buffer left
+     to the driver, the video again from 182 s; the five-second wait of a lost synchronous call did not come up, the
+     lost calls were receives); that watchdog's first version fired on
+     every rest (the time of the last byte, from before the rest) and then on a receive made at interrupt time after
+     the event loop had read Ticks (unsigned, so "later" was "long ago"): it now counts from the receive's own start,
+     against Ticks read then, signed. The HDMI sizing is tested on the host only (the solo board has no slot $A
+     screen); on the SE's screen the stream is today's 320 x 240.
+   - *Play 1.8.1* (docs/09 "Aurora68 Play 1.8.1"): no synchronous call to a network driver at all. Each is made
+     asynchronously and waited for five seconds at most, the receive chain kept going meanwhile (`net_call`); one not
+     back is logged and its block, and the buffers the driver may still write into, left to the driver and replaced
+     (`net_leave`), given back once the driver is done with them, a stream left so released then. An open, a send or a
+     receive that never comes back (past the driver's own timeouts) ends the connection instead of standing still
+     for ever. The video's intake rests while the card holds more than 20 seconds and goes on below 10. And, the owner's
+     wish of the same day, a stream sized for the video window when it is on the HDMI screen, up to 960 x 540, with
+     Controls > Video Quality.
+
+
+128. **A splash on HDMI instead of the log (23 November).** The owner: "we need a subtle splash screen on the HDMI
+   monitor that has the Aurora logo and version and not show the logs unless specifically called for (it's just noise
+   now)". Since 17 November the HDMI console drew the kernel's log from power-on until the Mac's video driver took
+   the screen (Emu68's logo first), the bench's only window into a Pi with no serial cable.
+   - *What HDMI shows now* (`psmac_splash.c`, new, portable C; `psmac_display.c`, "the splash"): a background of
+     #0E0F12, the Aurora68 logo a little above the middle at a fifth of the screen's height (96 to 256 pixels), the name
+     in Emu68's Topaz at twice the size of the rest, the kernel's version string (`Emu68 1.1.0-beta.2 (date)
+     git:hash`, the log's first line, so a photograph names its build), a quiet status line a tenth of the height
+     from the bottom and an amber alert line above it. Status: "Starting...", "Loading the disk image NAME...",
+     "Starting the Macintosh..." (68k released), "The Macintosh is testing its ROM/memory..." (psmac_boot.c's
+     spans), "Starting from the disk image on the SD card..." / "from the SCSI disk..." / "from the disk..." (the
+     first PiDisk, SE pseudo-DMA or solo SCSI read), "The Macintosh is starting up..." (its first log line), "Loading
+     the extensions..." (the first INIT), "The Macintosh is running" (the Finder), "Waiting for the Wi-Fi..." and
+     "Connected to the Wi-Fi network" (alice_net.c's states through `frf_post_wifi`), "Restarting the Macintosh..."
+     (a 68k RESET after the display was on). Alerts: no Macintosh ROM, no declaration ROM, a declaration ROM without
+     PiDisk's boot record, under-voltage, the WiFi failing to join (cleared when it connects), a System error (the
+     `_SysError` record of psmac_crash.c, not "Welcome" or the disk-switch dialog). Setup and Recovery's reason to start
+     is on its own screens, which still take HDMI from the splash as they took it from the log.
+   - *When:* `display_logo` (start_rpi64.c) draws it into the firmware's 16-bit buffer instead of Emu68's logo,
+     `psmac_display_init` again after remaking the buffer, then the service core alone (`psmac_display_poll`, 60 times a
+     second it checks whether a line changed: only the two lines' rows are redrawn) until the Mac's display flag is
+     set. A setter called before the service loop runs draws its line itself. A Restart clears the flag
+     (`psmac_display_bus_reset`), so the splash comes back until the driver opens; with no declaration ROM it stays.
+   - *The log when asked:* `mac.console=boot` is the old default (Emu68's logo, then the log until the Mac's screen),
+     `mac.console=hdmi` (and `mac.hdmi=log`) the log for the whole run, `mac.console=splash` or nothing the splash. The
+     mode is read from the boot arguments in `display_logo` (`psmac_splash_boot`) and again by `psmac_read_options`
+     (`psmac_console_mode`), since a one-shot debug start can add `mac.console=` in between; going from the splash to
+     the log clears the screen. F12 on a USB keyboard (`psmac_splash_key`, before the key reaches the Mac) changes
+     between the splash and the log while HDMI is not the Mac's. The serial line, the log ring, the remote's `/log` and
+     the card's aurora68.log are unchanged. The options table (`psmac_diag.c`) has `splash|boot|hdmi`; Setup and
+     Recovery's keyboard menu takes its values from the table (it offered "off" and "hdmi"), the default written as no
+     word.
+   - *The logo* (`tools/mklogo.py`, new): the SVG drawn in pure Python rather than the sizes PNG decoded (that one is
+     drawn on a checkerboard with no alpha): the purple square clipped to the rounded rectangle, the six circles blurred
+     as SVG 1.1 says a renderer may (three box blurs of d = floor(s * 3 * sqrt(2 pi) / 4 + 0.5), the even-d rule
+     included) in linear light, the white band blurred inside its filter region, the stripes covered exactly along x,
+     the gradient mask, the black outline; blended over the background into 192 x 192 R,G,B bytes,
+     `psmac_splash_logo.h` (387 KB of text, 110,592 bytes in the kernel). `--check` (in `make -C mac check`, with one
+     unit of tolerance for another libm's rounding) remakes it and compares, and fails if the SVG's numbers moved; the
+     kernel scales it with an area average (smaller) or bilinear (larger) in 16.16 fixed point, so the service core
+     never touches the FPU.
+   - *Tested.* Host: `tools/splash_test.sh` (in `make -C mac check`) draws the splash at 640x480 to 2560x1440, 480x640,
+     512x342 and 64x64 into 16- and 32-bit buffers with a guard band: corners the background, the logo in the middle,
+     nothing written past a row or the buffer, the 16-bit picture the 32-bit one rounded, a line redraw that touches only
+     the bottom rows and an empty alert that clears its line (86 checks). QEMU, solo board, kernel 3783aca plus this
+     change: the default at 640 x 480 (`docs/img/hdmi-splash-640x480.png`, the ROM's checksum test) until PiVideo
+     opened 14 s in, then the Mac's picture as before; 1920 x 1080 without a declaration ROM (`docs/img/hdmi-splash.png`:
+     the amber line, the splash for the whole run); `mac.console=boot` (the log, then the Mac's picture);
+     `mac.console=hdmi` (the log after 30 s); F12 through QEMU's USB keyboard (the log, and back to the splash); a
+     recovery start (`mac.recovery=1`: Setup and Recovery's screen over it, unchanged) and its keyboard menu cycling
+     `mac.console` splash, boot, hdmi, splash. Not tried: the SE board in MAME (its kept 16-bit buffer and the
+     512 x 342 mirror case are in the host test), a real HDMI monitor, a PiDisplay rotation (the splash is drawn
+     upright; the monitor may be on its side).
+   - *For testers:* the release's `cmdline.txt` still carries `mac.console=hdmi` (the log for the whole run, one screen
+     on the SE); take it out, or write `mac.console=boot`, to see the splash or the old start.
+
+130. **The USB keyboard that sent nothing until it was re-plugged; the host channel's bits in the log (23
+   November).** The owner's Pi 3B (the SE's PiStorm, the LAN9514 hub) has long needed the USB keyboard unplugged and
+   plugged in again after power-on (item 41 put it down to a device not ready at the boot's enumeration and added
+   retries). This time the heartbeat said more: `kb 1 (ok 0 nak 598565 err 1)` for long stretches, so the keyboard
+   *was* found and configured and polled about a hundred times a second, one poll had failed, and every poll since
+   had been answered NAK; after a re-plug, `kb 1 (ok 49 ...)`. Nothing in the log said what the failed poll was.
+   - *Reading the code against known-good hosts.* The polls are Alice68's (`frf_usb_native_hid.c`, interrupt IN
+     through the hub's transaction translator: start split, complete split, again on NYET), over the glue's DMA
+     transport (`psmac_usb.c`, `dma_packet`). Read for comparison, none of their code used: Linux's dwc2 host
+     (`drivers/usb/dwc2/hcd_intr.c`) and Circle (`lib/usb/dwhcidevice.cpp`, `dwhciframeschedper.cpp`,
+     `usbhiddevice.cpp`, `usbkeyboard.cpp`). Three differences:
+     - *The order the halt bits were read in.* `dma_packet` took STALL, then NAK, then the errors, and XFERCOMPL
+       last. Linux takes XFERCOMPL first, whatever else is set beside it, then STALL, then the transaction, babble,
+       frame-overrun and toggle errors, NYET and NAK last ("Must handle xacterr before nak or ack. Could get a
+       xacterr at the same time as either of these"). With NAK first, a halt that carried a NAK bit beside an error
+       was a NAK: no fault counted, nothing done, polled again; and one beside a completed report dropped the report
+       with the host's data toggle left where it was while the keyboard's had moved on. That is a path that ends in
+       "one failure, then only NAKs", though whether the owner's controller sets the bits that way only its log can
+       say.
+     - *What happens after a failed poll.* Nothing did: Alice68 keeps the toggle, polls on, and a device whose polls
+       all fail for two seconds is enumerated again (item 41), but a stream of NAKs is never "failing". A failure in
+       the middle of a split transaction is exactly where the two toggles can part: the translator may have taken the
+       keyboard's report and acknowledged it, so the keyboard moved to the next toggle, while the host saw the
+       failure. Standard toggles mend themselves after one lost report; a keyboard or a translator that does not is
+       the one the owner has.
+     - *The keyboard's set-up.* Alice68 sends SET_CONFIGURATION and SET_PROTOCOL(boot). Linux's usbhid also sends
+       SET_IDLE(0) to a boot keyboard; Circle sets the LEDs ("setting the LED status forces some keyboard adapters to
+       work").
+     Also checked, and the same as the hosts above: the toggle starts at DATA0 after SET_CONFIGURATION (the
+     endpoint record is zeroed at every enumeration), the interrupt endpoint's interval is the descriptor's, the
+     channel's ODDFRM is set for the next (micro)frame, NAK is not counted as a failure. The split timing (a complete
+     split 125 us after the start split, up to eight more on NYET) is looser than Circle's (the start split never in
+     microframe 6, the complete split two microframes on, at most three) but it is the timing that works after a
+     re-plug, so it was left alone.
+   - *What changed* (all in the glue, `psmac_usb.c`, and a new portable `usb_hcint.c`; Alice68's files are untouched):
+     - `dma_packet` reads the bits in Linux's order (`uhc_classify`). The FIFO transport (`usb=pio`) is Alice68's and
+       keeps its own order.
+     - After every enumeration the keyboard gets SET_IDLE(0) and SET_REPORT with its LEDs off, by its own route (an
+       8-byte endpoint 0, which every device takes; a refusal is logged and harmless). A new line says where the
+       keyboard is and what it took: `[USB] keyboard at address 3, interface 0, endpoint 1 IN, every 10 ms, full speed
+       through the hub's translator: SET_IDLE taken, LEDs taken`.
+     - The keyboard's watch (`usb_hcint.c`, `ukw_*`): after a failed poll of a kind that can leave the toggles apart
+       (a STALL, a transaction, babble or toggle error, NYET to the last complete split, a timeout; not a frame
+       overrun, which never reached the bus), CLEAR_FEATURE(ENDPOINT_HALT) goes to the keyboard's interrupt endpoint,
+       which sets its toggle to DATA0 halted or not (USB 2.0, 9.4.5), and the host's goes to DATA0 with it; at most
+       once a second. The mouse gets the same. And a keyboard that has sent no report at all in 20 seconds since its
+       set-up, after at least one failed poll, has the bus enumerated once more, which is what the re-plug did: once,
+       until a real plug or unplug (an untouched keyboard that never failed is left alone, however long it sends
+       nothing).
+     - The log. Every failed transfer (a NAK is not a failure) gets one line naming the channel's bits, the first
+       eight after each enumeration: `[USB] the keyboard's poll failed: transaction error (rc -6), HCINT CHHLTD
+       XACTERR; address 3 endpoint 1 IN, full speed through the hub's translator (hub 1 port 2), DATA0`. The
+       thirty-second heartbeat adds, when there were any, the keyboard's failed polls by kind, the last one's bits and
+       the toggle resets: `[USB]   keyboard's failed polls: transaction error 1, the last HCINT CHHLTD XACTERR;
+       toggle set again 1 time (0 refused); no report since its set-up`. With `usb.trace=1` every failed transfer is
+       logged in full: the bits after the start split and after each complete split, HCTSIZ (bytes and packets left,
+       the PID), HCCHAR, HCSPLT and the frame number, and the keyboard's first twenty NAKed polls after a set-up and one
+       in ten thousand after that, so the owner's log shows what a NAK really carried. `usb.trace=2` also resets the
+       keyboard's toggle every ten seconds, to try that path where nothing fails (the testbed). Setup and Recovery
+       lists the option under Debug.
+   - *Tested.* `tools/usb_hcint_test.c` (in `make -C mac check`, 62 checks): the bit order (a NAK beside XFERCOMPL is
+     a completed transfer, beside XACTERR an error; STALL before the errors), the names, which outcomes ask for a
+     toggle reset, and the watch (the owner's case: one failure, a reset at once, a second one not before a second
+     has passed, one enumeration at 20 s and no second; none for a keyboard that never failed or has sent a report;
+     a plug allows one more; the millisecond counter's wrap). QEMU (the solo board, System 7.1): with QEMU's hub, `usb-kbd`, `usb-mouse` and an
+     HFS `usb-storage` stick, and `usb.trace=2`: `[USB] keyboard at address 2, interface 0, endpoint 1 IN, every 10
+     ms, full speed: SET_IDLE taken, LEDs taken`; the sampled NAKs read `HCINT CHHLTD NAK`; the toggle reset every ten
+     seconds went out each time and QEMU's HID model refused it (it STALLs CLEAR_FEATURE(ENDPOINT_HALT), which it does
+     not implement; a real keyboard must take it), the host's toggle went to DATA0 all the same, and the keys typed
+     after twenty of those resets reached the Finder (Command-N made a new folder; 16 reports), the monitor's
+     `mouse_move 20 12` eight times moved the pointer by exactly (160, 96) as in item 40, and the stick mounted as
+     USBSTICK on the desktop. With the keyboard alone and no option: only the set-up line and the heartbeats, no
+     failed transfer, 18 reports, the typed name in the Finder. What QEMU cannot show: a failed poll (its DWC2 model
+     never fails one), so the resync after a real failure and the rescue enumeration ran only in the host test.
+   - *Only the owner's Pi can say* whether this cures it: QEMU's DWC2 model has no transaction translator, no
+     split transactions and no data toggles to lose. What to look for after a power-on with the keyboard plugged in:
+     the `[USB] keyboard at address ...` line (SET_IDLE and the LEDs taken or refused); any `[USB] the keyboard's
+     poll failed: ...` line, which names the bits; then either `its data toggle set again` and reports (`ok` growing
+     in the heartbeat when keys are pressed), or 20 seconds later `the keyboard has sent no report in 20 s since its
+     set-up ... enumerating again`, and whether the keyboard works after that. If it still does not, a start with
+     `usb.trace=1` (Setup and Recovery, Diagnostics, for one start) logs the failing poll's every split and the bits
+     the NAKs carry.
+   - *USB flash drives (paused by the owner the same day).* The owner's SanDisk "3.2 Gen1" (0781:55b1, 128 GB, high
+     speed behind the LAN9514) enumerates and is configured, but its first command block (the 31-byte bulk OUT for
+     INQUIRY) fails every time, also after the bulk-only reset recovery. The work on it is paused; only the log was
+     changed, so that the next try says why: the reset recovery's line now carries the bits and registers of the
+     command's failed transfer (`[USB] disk 0: the command block did not go (the transfer's HCINT CHHLTD XACTERR,
+     HCTSIZ ..., HCCHAR ...): reset recovery ...`; "no transfer failed" when the stick answered but not with a CSW),
+     and `usb.trace=1` logs every failed transfer of a stick. A separate commit, which can be left out. Findings from reading `psmac_usbdisk.c`'s
+     `xfer` against Linux and Circle, for when the work resumes (not changed):
+     - A halted channel without XFERCOMPL is a failure at once, except STALL: no retry. Linux and Circle retry a bulk
+       transaction error up to three times, and Linux resets the error count when the halt also shows NYET, NAK or
+       ACK after a PING ("XactErr with NYET/NAK/ACK", the OUT NAK enhancement of DWC2 cores from 2.71a; the BCM2837's
+       is 2.80a). A high-speed stick that answers its first OUT with NAK or NYET and then PING is the likeliest
+       difference from the control transfers, which work (a SETUP is never NAKed).
+     - A retry has to restart from what was taken: bytes and packets left from HCTSIZ, the toggle from HCTSIZ's PID,
+       and for a high-speed OUT the DOPNG bit (HCTSIZ bit 31) so that the channel PINGs first.
+     - Checked and not the cause by reading: the CBW buffer is 64-byte aligned and cleaned before the transfer; the
+       endpoint numbers and the 512-byte packet size come from the descriptor (the CLEAR_FEATUREs on them are
+       taken); the toggles are DATA0 after SET_CONFIGURATION and after each CLEAR_FEATURE; a high-speed device behind
+       the high-speed hub gets no split; the non-periodic TX FIFO (256 words) holds a 512-byte packet.
+     - Also to do then: the 128 GB exFAT stick's view (item 97 stage 2), which the owner wants for moving files
+       between the Mac and other machines, and what the Mac is told about a stick that carries no disk image.
+
 131. **The edge jump: the pointer to the other screen anywhere along the side (23 November).** The owner, with the SE's
    own screen at (-512,0)-(0,342) beside the 2560 by 1440 HDMI screen: "When I move the mouse to the small screen I need
    to precisely match its position in Monitors. Can we just have it so moving to the side where the screen is moves the
