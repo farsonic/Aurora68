@@ -63,7 +63,10 @@ static uint32_t secs(void) { return (uint32_t)(now_t() / hz_t()); }
 static struct psmb_dispinfo di __attribute__((aligned(16)));
 static uint8_t edid[128 * 8];
 static int nblocks;
-static char cfg_text[4096], disp_text[1536], bak_text[1536], new_text[1536];
+/* config.txt whole: the release's own is 5.3 KB, and until 22 November 2026 this was 4 KB, so on a card with it
+   psmac_card_read_file refused the file as too long and Aurora68 Display said "config.txt was not read" (found by
+   Setup and Recovery's Display tab in the testbed, docs/08 item 111). 16 KB, as recovery's own reads of it. */
+static char cfg_text[16384], disp_text[1536], bak_text[1536], new_text[1536];
 static int32_t cfg_len = -1, disp_len = -1, bak_len = -1;
 static int rotation, rotation_next, confirm_mark;
 static int early_ok;                         /* the card was looked at before the 68k started */
@@ -218,6 +221,10 @@ static void fill_dynamic(void)
     di.confirm_secs = di.confirm_state == PSMB_CS_ASKING && ask_deadline > now ? ask_deadline - now : 0;
 }
 static const char default_text[] = "# aurora68-display.txt: no HDMI mode chosen in Aurora68 Display yet; config.txt's own lines apply.\n";
+/* Aurora68 Setup and Recovery's Display tab (psmac_recovery.c, docs/08 item 111): the same answer as the Mac's
+   PSMB_INFO_DISPINFO, read on core 3, and the text that stands for "no file yet" in a .bak */
+const struct psmb_dispinfo *psmac_hdmi_info(void) { fill_dynamic(); return &di; }
+const char *psmac_hdmi_default_text(void) { return default_text; }
 static int queue(const char *name, const char *text, uint32_t n)
 {
     int r = psmac_card_put_file(name, text, n);
@@ -331,6 +338,11 @@ void psmac_hdmi_poll(void)
             if (was == 3) { restart_due = 1; due_at = secs(); }
         }
     }
+    /* A recovery start (psmac_recovery.c): the 68k never runs, so nothing on the Mac can ask whether to keep a new
+       mode, and the countdown below would put the .bak back and restart the Pi under the recovery page. The mark
+       stays in the file for the next normal start, which asks. */
+    extern int psmac_recovery_on(void);
+    if (psmac_recovery_on()) return;
     uint32_t now = secs();
     if (di.confirm_state == PSMB_CS_ASKING && now >= ask_deadline && !op) {
         kprintf("[PSMAC:EDID] no answer from the Mac: the old mode comes back\n");

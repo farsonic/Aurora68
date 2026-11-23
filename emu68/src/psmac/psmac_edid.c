@@ -292,6 +292,7 @@ static void judge(struct psmb_dispinfo *di)
     for (int i = 0; i < di->nmodes; i++) if (di->mode[i].flags & PSMB_DM_PREFERRED) { nw = di->mode[i].width; nh = di->mode[i].height; break; }
     if (!nw && di->nmodes) { nw = di->mode[0].width; nh = di->mode[0].height; }
     if (!pw || !ph || pw * 10 < ph || ph * 10 < pw) { pw = nw; ph = nh; }     /* a projector says 0, some TVs say nonsense */
+    if (!(di->flags & PSMB_DI_EDID)) pw = ph = nw = nh = 0;      /* the standard list (no monitor): no panel to judge the shape by */
     for (int i = 0; i < di->nmodes; i++) {
         struct psmb_dispmode *m = &di->mode[i];
         uint32_t hz = (m->refresh + 50) / 100;
@@ -399,7 +400,7 @@ int edid_parse(const uint8_t *b, int n, uint32_t pi_khz, struct psmb_dispinfo *d
 }
 
 /* ---- config.txt and aurora68-display.txt ---- */
-struct hdmicfg { int group, mode, have_cvt, have_tim, from_file; uint32_t cvt[3], tim_rate, tim_w, tim_h; char text[64]; };
+struct hdmicfg { int group, mode, have_cvt, have_tim, from_file, auto_group; uint32_t cvt[3], tim_rate, tim_w, tim_h; char text[64]; };
 static int key_is(const char *s, uint32_t n, const char *k)
 {
     uint32_t m = slen(k), i = 0;
@@ -453,7 +454,7 @@ static void one_line(const char *s, uint32_t n, struct hdmicfg *c, int in_file, 
     if (e >= n) return;
     const char *v = s + e + 1; uint32_t vn = n - e - 1, x[17];
     int hdmi = 0;
-    if (key_is(s, e, "hdmi_group")) { if (numbers(v, vn, x, 1)) c->group = (int)x[0]; hdmi = 1; }
+    if (key_is(s, e, "hdmi_group")) { if (numbers(v, vn, x, 1)) { c->group = (int)x[0]; c->auto_group = !x[0]; } hdmi = 1; }   /* 0: from the EDID */
     else if (key_is(s, e, "hdmi_mode")) { if (numbers(v, vn, x, 1)) c->mode = (int)x[0]; hdmi = 1; }
     else if (key_is(s, e, "hdmi_cvt")) { if (numbers(v, vn, x, 3) >= 3) { c->have_cvt = 1; c->cvt[0] = x[0]; c->cvt[1] = x[1]; c->cvt[2] = x[2]; } hdmi = 1; }
     else if (key_is(s, e, "hdmi_timings")) { if (numbers(v, vn, x, 17) >= 14) { c->have_tim = 1; c->tim_w = x[0]; c->tim_h = x[5]; c->tim_rate = x[13]; } hdmi = 1; }
@@ -493,7 +494,11 @@ int edid_current(struct psmb_dispinfo *di, const struct edid_file *f, int *confi
         for (unsigned i = 0; i < sizeof dmts / sizeof dmts[0]; i++) if (dmts[i].id == c.mode) hz = dmts[i].hz;
         for (unsigned i = 0; i < sizeof dmts_rb / sizeof dmts_rb[0]; i++) if (dmts_rb[i].id == c.mode) hz = dmts_rb[i].hz;
     }
-    if (c.group || c.mode) {
+    if (c.auto_group && !c.group) {
+        /* hdmi_group=0: the firmware's own choice from the monitor's EDID (Setup and Recovery's "Automatic") */
+        put(&b, "hdmi_group=0: the firmware's choice from the EDID");
+        di->cur_source = (uint16_t)(c.from_file ? PSMB_SRC_FILE : PSMB_SRC_CONFIG);
+    } else if (c.group || c.mode) {
         put(&b, "hdmi_group="); putu(&b, (uint32_t)c.group); put(&b, " hdmi_mode="); putu(&b, (uint32_t)c.mode);
         if (c.group == 2 && c.mode == 87 && c.have_cvt) { put(&b, " hdmi_cvt="); putu(&b, c.cvt[0]); put(&b, " "); putu(&b, c.cvt[1]); put(&b, " "); putu(&b, c.cvt[2]); }
         else if (c.group == 2 && c.mode == 87 && c.have_tim) { put(&b, " hdmi_timings="); putu(&b, c.tim_w); put(&b, " ... "); putu(&b, c.tim_h); put(&b, " ..."); }
@@ -585,15 +590,20 @@ static void put_dtd_timings(struct buf *b, const uint8_t *d, int code)
     put(b, " "); putu(b, khz * 1000); put(b, " "); putu(b, (uint32_t)code); put(b, "\n");
 }
 
+static void put_header(struct buf *b)
+{
+    put(b, "# aurora68-display.txt: the HDMI mode chosen in Aurora68 Display or in Setup and Recovery,\n"
+           "# written by the Aurora68 kernel. config.txt reads it through the line\n"
+           "# \"include aurora68-display.txt\", at the end of config.txt (an hdmi_ line after it would\n"
+           "# win). The previous file is aurora68-display.bak.\n");
+}
 uint32_t edid_display_text(const struct psmb_dispinfo *di, int mi, int alt, int rotation, int confirm, char *out, uint32_t cap)
 {
     struct buf b = { out, 0, cap };
     const struct psmb_dispmode *m = &di->mode[mi];
     uint32_t hz = alt ? m->alt_refresh : m->refresh, khz = alt ? m->alt_pixclk : m->pixclk;
     out[0] = 0;
-    put(&b, "# aurora68-display.txt: the HDMI mode chosen in Aurora68 Display, written by the Aurora68 kernel.\n"
-            "# config.txt reads it through the line \"include aurora68-display.txt\", at the end of\n"
-            "# config.txt (an hdmi_ line after it would win). The previous file is aurora68-display.bak.\n");
+    put_header(&b);
     put(&b, "# "); put(&b, di->name[0] ? di->name : "the monitor"); if (di->maker[0]) { put(&b, " ("); put(&b, di->maker); put(&b, ")"); }
     put(&b, ": "); putu(&b, m->width); put(&b, "x"); putu(&b, m->height); put(&b, " at "); puthz(&b, hz); put(&b, " Hz, ");
     putu(&b, khz / 1000); put(&b, "."); { uint32_t f = khz % 1000 / 10; if (f < 10) put(&b, "0"); putu(&b, f); }
@@ -645,12 +655,147 @@ uint32_t edid_display_rotate(const char *in, uint32_t n, int rotation, char *out
 const char *edid_source_name(uint16_t s)
 {
     switch (s >> 8) {
+    case PSMB_DS_LIST: return "standard mode";
     case PSMB_DS_DETAILED: return "detailed timing";
     case PSMB_DS_ESTABLISHED: return "established timing";
     case PSMB_DS_STANDARD: return "standard timing";
     case PSMB_DS_CEA: return "CEA video code";
     }
     return "?";
+}
+
+/* ---- Aurora68 Setup and Recovery's Display tab (22 November 2026, docs/08 item 111) -----------------
+   The recovery page chooses the HDMI mode as Aurora68 Display does, with the Mac switched off. What it
+   needs besides the above: a list to choose from when there is no EDID (no monitor, or QEMU without
+   mac.edidtest), a mode found by its size and refresh as a person or a script types it, the file for
+   "Automatic" (the firmware's own choice), and config.txt with its include line added or moved to the
+   end, which Aurora68 Display can only ask the user to do on another computer. */
+
+/* the same rule as Aurora68 Display's list (mac/pidisplay/pidisplay.c, selectable): the Pi 3 can send it,
+   at its own refresh or its reduced-blanking alternative's, and the Mac can have it as a screen */
+int edid_mode_choosable(const struct psmb_dispmode *m)
+{
+    return (m->flags & (PSMB_DM_USABLE | PSMB_DM_ALT)) && !(m->flags & (PSMB_DM_MACSIZE | PSMB_DM_INTERLACED));
+}
+
+/* No EDID: the modes the file can name without one. Every 60 Hz mode of the DMT table above (the
+   firmware's group 2 numbers) and 2560 x 1440 at 60 Hz with CVT reduced blanking (241.5 MHz: too fast,
+   30 Hz fits, as on the owner's UP2716D), judged against the Pi 3's clock alone: with no panel there is no
+   shape to judge by, no native size and no suggestion. */
+int edid_standard_modes(struct psmb_dispinfo *di, uint32_t pi_khz)
+{
+    pi_limit = pi_khz ? pi_khz : EDID_PI3_PIXCLK_KHZ;
+    di->pi_pixclk = pi_limit;
+    di->nmodes = 0; di->suggested = 0xffff; di->reason[0] = 0;
+    di->flags &= ~PSMB_DI_EDID;
+    for (unsigned i = 0; i < sizeof dmts / sizeof dmts[0]; i++)
+        if (dmts[i].hz == 6000) add_mode(di, dmts[i].w, dmts[i].h, 6000, dmts[i].khz, (uint16_t)(PSMB_DS_LIST << 8 | dmts[i].id), 0, 0, 0, 0, 0);
+    add_mode(di, 2560, 1440, 6000, edid_cvt_khz(2560, 1440, 60, 1), (uint16_t)(PSMB_DS_LIST << 8), 0, 0, 0, 0, 0);
+    judge(di);
+    sort_modes(di);
+    return di->nmodes;
+}
+
+/* the entry for "WxH" (hz 0: its highest refresh the Pi can send) or "WxH@hz", hz in whole hertz as the
+   list shows it (the alternative's refresh for a mode too fast at its own): the index, *alt 1 for the
+   alternative; -1 when no mode of that size and refresh can be chosen */
+int edid_find_mode(const struct psmb_dispinfo *di, uint32_t w, uint32_t h, uint32_t hz, int *alt)
+{
+    for (int i = 0; i < di->nmodes; i++) {
+        const struct psmb_dispmode *m = &di->mode[i];
+        if (m->width != w || m->height != h || !edid_mode_choosable(m)) continue;
+        int a = !(m->flags & PSMB_DM_USABLE);
+        uint32_t r = a ? m->alt_refresh : m->refresh;
+        if (hz && (r + 50) / 100 != hz) continue;
+        *alt = a;
+        return i;
+    }
+    return -1;
+}
+
+/* "Automatic": no mode of the kernel's, hdmi_group=0, which the firmware's documentation (the legacy
+   config.txt options, hdmi_group) names "auto-detect from EDID"; written into the file rather than left out
+   of it, so that it wins over an hdmi_group config.txt sets before the include line. The confirm mark has
+   no size ("confirm=auto": what the firmware takes is known only after the restart). */
+uint32_t edid_display_auto(const struct psmb_dispinfo *di, int rotation, int confirm, char *out, uint32_t cap)
+{
+    struct buf b = { out, 0, cap };
+    out[0] = 0;
+    put_header(&b);
+    put(&b, "# Automatic: the Pi's firmware chooses the mode from the monitor's EDID (its preferred mode,\n"
+            "# if it can send it); config.txt's max_framebuffer_ lines, if any, still apply.\n");
+    if (di && (di->flags & PSMB_DI_EDID)) {
+        put(&b, "# "); put(&b, di->name[0] ? di->name : "the monitor"); if (di->maker[0]) { put(&b, " ("); put(&b, di->maker); put(&b, ")"); }
+        for (int i = 0; i < di->nmodes; i++)
+            if (di->mode[i].flags & PSMB_DM_PREFERRED) {
+                put(&b, ": its preferred mode "); putu(&b, di->mode[i].width); put(&b, "x"); putu(&b, di->mode[i].height);
+                put(&b, " at "); puthz(&b, di->mode[i].refresh); put(&b, " Hz");
+                break;
+            }
+        put(&b, "\n");
+    }
+    put(&b, "hdmi_group=0\n");
+    if (di && (di->flags & PSMB_DI_EDID)) put(&b, di->conn & PSMB_CN_HDMI ? "hdmi_drive=2\n" : "hdmi_drive=1\n");
+    put(&b, "#aurora68 rotate="); putu(&b, (uint32_t)rotation); put(&b, "\n");
+    if (confirm) put(&b, "#aurora68 confirm=auto\n");
+    return b.n;
+}
+
+/* a line "include aurora68-display.txt" (the firmware's spelling: the name in either case) */
+static int include_line(const char *s, uint32_t n)
+{
+    while (n && is_space(*s)) { s++; n--; }
+    while (n && is_space(s[n - 1])) n--;
+    const char *k = "include"; uint32_t i = 0;
+    while (i < 7 && i < n && s[i] == k[i]) i++;
+    if (i != 7 || i >= n || !is_space(s[i])) return 0;
+    while (i < n && is_space(s[i])) i++;
+    const char *want = "aurora68-display.txt"; uint32_t m = 0;
+    while (i + m < n && want[m] && (s[i + m] == want[m] || s[i + m] == want[m] - 32)) m++;
+    return !want[m] && i + m == n;
+}
+static int line_is(const char *s, uint32_t n, const char *w)
+{
+    while (n && is_space(*s)) { s++; n--; }
+    while (n && is_space(s[n - 1])) n--;
+    uint32_t i = 0; while (w[i] && i < n && s[i] == w[i]) i++;
+    return !w[i] && i == n;
+}
+static int section_all(const char *s, uint32_t n)
+{
+    while (n && is_space(*s)) { s++; n--; }
+    while (n && is_space(s[n - 1])) n--;
+    if (n != 5 || s[0] != '[' || s[4] != ']') return 0;
+    return (s[1] | 32) == 'a' && (s[2] | 32) == 'l' && (s[3] | 32) == 'l';
+}
+#define INCLUDE_NOTE "# the HDMI mode of Aurora68 Display and Setup and Recovery: keep this line the last"
+
+/* config.txt with its include line at the end, where the firmware's "the last value wins" makes the file's
+   mode the one used: a line already there elsewhere is taken out (an hdmi_ line after it made it lose,
+   PSMB_CF_OVERRIDE), and when the text has [sections] and the last is not [all], "[all]" goes before it, so
+   that it is read on every Pi. Every other byte stays. The length, or 0 when it does not fit in cap. */
+uint32_t edid_config_include(const char *in, uint32_t n, char *out, uint32_t cap)
+{
+    uint32_t o = 0, i = 0;
+    int sections = 0, last_all = 0;
+    while (i < n) {
+        uint32_t s = i; while (i < n && in[i] != '\n') i++;
+        uint32_t l = i - s;
+        int nl = i < n;
+        i++;
+        if (include_line(in + s, l) || line_is(in + s, l, INCLUDE_NOTE)) continue;
+        uint32_t k = 0; while (k < l && is_space(in[s + k])) k++;
+        if (k < l && in[s + k] == '[') { sections = 1; last_all = section_all(in + s, l); }
+        if (o + l + 2 > cap) return 0;
+        for (uint32_t j = 0; j < l; j++) out[o++] = in[s + j];
+        if (nl || l) out[o++] = '\n';
+    }
+    static const char tail[] = INCLUDE_NOTE "\ninclude aurora68-display.txt\n";
+    if (o + 6 + sizeof tail > cap) return 0;
+    if (sections && !last_all) { const char *a = "[all]\n"; while (*a) out[o++] = *a++; }
+    for (uint32_t j = 0; tail[j]; j++) out[o++] = tail[j];
+    out[o] = 0;
+    return o;
 }
 
 /* ---- the sample ----------------------------------------------------------------------------------
