@@ -552,6 +552,33 @@ static void video_units(void)
 		b = dup_("A68M\t1\ttracks\t1\t0\t1\rV\tv1\tWebm Clip\tDelta\t3\t\t160\t120\r", &n);
 		check(a68_list_path(&cl, A68_V_ARTIST, "7758d620", 0, 0, p, sizeof p) && !strcmp(p, "/mac/tracks?artist=7758d620&count=200&videos=1") &&
 		      a68_list_load(&l, b, n) && l.n == 1 && l.rows[0].kind == 'V', "an artist with videos alone: its tracks and videos");
+		/* the classic Play 1.7 (23 November 2026): a track's video and an album's count in the rows, two views of videos alone */
+		{
+			static const struct a68_client lk = { 0, 1, 1 };
+			a68_list_init(&l, rows, 8, A68_V_TRACKS);
+			b = dup_("A68M\t1\ttracks\t4\t0\t4\r"
+			         "t1\t1\tOne\tX\t60\ta1\tX/A/01.flac\tA\tX/A\tv1\r"
+			         "t2\t2\tTwo\tX\t70\ta1\tX/A/02.flac\tA\tX/A\t\r"
+			         "t3\t3\tOld\tX\t70\ta1\tX/A/03.flac\tA\tX/A\r"
+			         "V\tv1\tOne (Official Video)\tX\t200\ta1\t640\t360\tX/A/One.mp4\tA\tX/A\tdirect\r", &n);
+			check(a68_list_path(&lk, A68_V_TRACKS, "a1", 0, 0, p, sizeof p) && !strcmp(p, "/mac/tracks?album=a1&count=200&full=1&videos=1") &&
+			      a68_list_load(&l, b, n) && l.n == 4 && !strcmp(rows[0].video, "v1") && !rows[1].video[0] && !rows[2].video[0] &&
+			      rows[3].kind == 'V' && !rows[3].video[0] && a68_list_find(&l, rows[0].video) == 3 && rows[3].vw == 640,
+			      "the classic Play's links: a song's video in its row (present, empty, absent), found among the album's videos");
+			a68_list_init(&l, rows, 8, A68_V_ALBUMS);
+			b = dup_("A68M\t1\talbums\t3\t0\t3\ra1\tOne\tX\t3\t200\tb1\tX/One\t2\ra2\tTwo\tX\t4\t300\tb1\tX/Two\t0\r"
+			         "a3\tOld\tX\t4\t300\r", &n);
+			check(a68_list_load(&l, b, n) && l.n == 3 && rows[0].videos == 2 && !rows[1].videos && !rows[2].videos && rows[2].count == 4,
+			      "an album's row counts its videos (full=1&videos=1); a short record none");
+			a68_list_init(&l, rows, 8, A68_V_VIDEOS);
+			b = dup_("A68M\t1\tvideos\t2\t0\t2\rV\tv1\tOne\tAlpha\t200\ta1\t640\t360\rV\tv2\tTwo\tBeta\t100\t\t0\t0\r", &n);
+			check(a68_list_path(&lk, A68_V_VIDEOS, 0, 0, 0, p, sizeof p) && !strcmp(p, "/mac/videos?count=200&full=1&videos=1") &&
+			      a68_list_load(&l, b, n) && l.n == 2 && rows[0].kind == 'V' && rows[1].kind == 'V' && !strcmp(rows[1].sub, "Beta") &&
+			      !rows[1].album[0] && rows[0].vh == 360 && a68_list_videos(&l) == 2,
+			      "every video of the library as rows");
+			check(a68_list_path(&lk, A68_V_ARTVIDEOS, "b1", 0, 200, p, sizeof p) &&
+			      !strcmp(p, "/mac/videos?artist=b1&count=200&from=200&full=1&videos=1"), "an artist's videos, the second page");
+		}
 	}
 	b = dup_("1\tplay\t0\t\r"
 	         "V\t7dadadb6\tLive Clip\tGamma\t3\r"
@@ -896,6 +923,32 @@ static void fixtures(const char *dir)
 			a68_list_init(&l, rows, A68_PAGE, A68_V_SEARCH);
 			check(a68_list_load(&l, b, n) && l.n == 1 && rows[0].kind == 'V' && !strcmp(rows[0].text, "Live at Home") && rows[0].secs == 2,
 			      "server: a search finds a video");
+		}
+		/* the classic Play 1.7's requests: Mac Roman with full=1&videos=1 */
+		{
+			static struct a68_row rows[A68_PAGE];
+			struct a68_list l;
+			int ct = -1, cv = -1, linked = 0;
+			b = load(dir, "tracks-lv.mr", &n);
+			a68_list_init(&l, rows, A68_PAGE, A68_V_TRACKS);
+			check(a68_list_load(&l, b, n) && l.n == 5, "server: the classic Play's album page with full=1&videos=1");
+			for (k = 0; k < l.n; k++) {
+				if (rows[k].kind == 'T' && !strcmp(rows[k].text, "Closing Time")) ct = k;
+				else if (rows[k].kind == 'T' && rows[k].video[0]) linked++;
+				if (rows[k].kind == 'V' && !strcmp(rows[k].text, "Closing Time (Video)")) cv = k;
+			}
+			check(ct >= 0 && cv >= 0 && a68_list_find(&l, rows[ct].video) == cv && !linked,
+			      "server: in Mac Roman too, Closing Time's row names its video, which is among the album's rows");
+			b = load(dir, "albums-lv.mr", &n);
+			a68_list_init(&l, rows, A68_PAGE, A68_V_ALBUMS);
+			check(a68_list_load(&l, b, n) && l.n >= 1 && rows[0].videos == 2, "server: the album's row counts its two videos");
+			b = load(dir, "videos-all.mr", &n);
+			a68_list_init(&l, rows, A68_PAGE, A68_V_VIDEOS);
+			check(a68_list_load(&l, b, n) && l.n >= 2 && l.n == l.total && a68_list_videos(&l) == l.n, "server: every video of the library");
+			b = load(dir, "videos-gamma.mr", &n);
+			a68_list_init(&l, rows, A68_PAGE, A68_V_ARTVIDEOS);
+			check(a68_list_load(&l, b, n) && l.n == 2 && !strcmp(rows[0].sub, "Gamma") && !strcmp(rows[1].sub, "Gamma"),
+			      "server: an artist's videos");
 		}
 		b = load(dir, "commands-v.u8", &n);
 		a68_rec_init(&r, b, n);

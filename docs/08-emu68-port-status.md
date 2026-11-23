@@ -5253,3 +5253,78 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      asks for the PIN, signs the device in, goes to `/?signin=2` (the sheet checks again: Done) and shows only a short
      "Connected" card ("press Done, then open http://192.168.4.1/ in your browser"), never the setup tabs. A browser opened
      at `http://192.168.4.1/` gets the whole page as before.
+   - *Third try:* the owner wanted Done to open the page in the browser without the PIN again. Done is the system's
+     button and runs no page code, and the sheet's and the browser's storage are separate. So the Connected card's main
+     button opens `http://192.168.4.1/#pin=NNNN` in a new window (the sheet hands such links to the browser on a Mac),
+     which the page reads into its own storage and drops from the address; then Done closes the sheet. Typing the
+     address by hand still asks for the PIN: trusting a device by its address alone would open the setup to anyone on
+     an open access point who borrows that address.
+
+120. **The classic Aurora68 Play 1.7: parity with the macOS Play 1.5, and the music server found by itself (23
+   November).** The owner: "lets get the classic mac version up to parity. Also have it automatically discover server
+   hosts". docs/09 "Aurora68 Play: classic and macOS" has the table: every feature of the macOS Play 1.5's README, and
+   for each whether the classic Play had it, has it now or leaves it out, and why.
+   - *What it had.* More than its menus suggested: the library, covers, Find and typing to select, a gapless queue,
+     Shuffle and Repeat, seeking, Listen Live, the radio, new albums without a restart, a device that others send to and
+     that shows videos (1.6), Connect By, and the server's own order of an album's tracks (it never sorted them, so
+     item 115's fix reached it unchanged).
+   - *Finding the server.* `discover_start` and `discover_poll` (fetch.c) existed, but the probe ran only when the
+     Library window was shown with no server remembered, and stopped at the first answer. Now it runs at the start when
+     no server is remembered (the window shown or not), and when the remembered one does not answer (after the other
+     addresses its last answer named); the address stays in the preferences meanwhile. Every answer within a second of
+     the first is kept, each server (the address it answered from and its port) once; the one chosen before is taken
+     by its name (kept in the preferences' new tail, so a new address does not matter), or the only one; with several
+     and none chosen, the Library window names them and Library > Servers lists them. The old `discover_stop` waited
+     for an outstanding two-second read with the event loop held (up to four seconds); the read now times out after a
+     second and the stream is released only when no read is out.
+   - *Links, in Mac Roman.* The links of item 115 come only with `full=1&videos=1`. The core reads every record by its
+     fields, and `full=1` changes nothing else of the classic Play's reading but the length of the records (paths and
+     folders), so the classic Play now asks an artist's albums and an album's tracks with both, still in Mac Roman: a
+     row keeps the song's video (`a68_row.video`, new) and the album's count (`a68_row.videos`, now set for albums too).
+     An older server answers `full=1` with its longer records without the fields, read as no links; a server older than
+     `full=1` passes over the parameter. A list that no longer fits the 48 KB answer buffer with the paths (a box set
+     of some 200 songs) is asked again without them (`fetch.too_long`). The other requests (artists, a search, the
+     device's) are as before. Two views of videos alone joined the core: `A68_V_VIDEOS` (`/mac/videos`, every video, the
+     server's order by artist) and `A68_V_ARTVIDEOS` (an artist's).
+   - *Play Videos Instead of Songs* replaces a song by its video when the queue is made (`row_item`, `to_video`), from
+     the list's own `V` rows (an album lists its songs' videos, item 115) or, for a queue fetched for an artist or for
+     Play Next and Add to Queue, from the `V` records of that answer; one for one, so the place chosen is the place
+     played. Only with the card and a server that makes MPEG-1: otherwise the songs play.
+   - *The video window's sizes.* The card scales a picture to the rectangle it is given (nearest pixel), so a larger
+     window costs the network nothing: Normal Size, Double Size, Fill Screen (Command-1, 2, 3) and the zoom box
+     (window kind 12, no grow box) toggling Normal and Fill Screen, the size kept for the next video.
+   - *The menus on the SE's screen.* The Library menu would have had 22 lines (352 pixels of 342): Previous and Next
+     went to the Controls menu, Connect to Server... into the new Servers submenu; it has 19 (304 pixels).
+   - *The preferences' tail.* An older Play reads `sizeof` its record and checks the count it got, so the record could
+     not grow; the tail (the server's name, Play Videos Instead of Songs, the window's size, marked `PL17`) follows the
+     1.3 record in the same version-3 file: 1.6 reads the file as before, and 1.7 reads a 1.6 file without a tail.
+   - *Left out, with reasons in the table:* "Play on" another player (the SE is the one others send to), posters (a
+     picture fetched over MacTCP for each, little to see at 32 pixels and one bit), filtering at each keystroke, Live's
+     queue and listeners, Control Center and media keys.
+   - *Tests.* `make -C mac check`: play_core_test 221 checks on the host (9 new: a song's video in its row present, empty
+     and absent, an album's count, every video and an artist's as rows and their requests, and on the real server's
+     answers in Mac Roman with `full=1&videos=1`: "Closing Time" names its video, which is among the album's rows) and 179
+     as a 68020 program (175 before); the server's test unchanged and green (219); GitHub's runner: the macOS Play built and its XCTest
+     green with the changed core (run 45128624449), the server's workflow too (45128624433). In the testbed (the solo
+     board, System 7.1 with Riptide, a copy of the test14 image, the k46 kernel; two servers on the host, "Test Library"
+     and "Second Server", their TCP ports forwarded by pinet and the probe relayed to both: `PINET_UDP` now takes several
+     destinations, `8070=127.0.0.1:18570+127.0.0.1:18571`): the four discovery cases of docs/09 (no preferences with one
+     server and with two, Search Again with two, a remembered server stopped), the links, Play Video, Play Videos Instead
+     of Songs, Videos, Up Next, Play Next, Add to Queue, Repeat One, the three sizes and the zoom box on 640 x 480 and on
+     512 x 342 (`mac.screen=512x342` with `psmac-512x342.declrom`; the 512 x 342 declaration ROM alone left the solo
+     board's screen at 640 x 480), and the server from before item 115. Riptide refused both broadcasts (error -23033) and
+     the multicast probe was answered, as in item 107. Screenshots: `docs/img/system71-play17-two-servers.png`,
+     `system71-512x342-play17-film-marks.png`, `-servers.png`, `-fill-screen.png`; the rest stay in the scratchpad.
+   - *Found in the testbed and fixed:* a song put in with Play Next or Add to Queue after the last song's stream had come
+     whole was never played (radio.c asks for the next stream only while one is coming; at the queue's end lib_poll moved
+     on only into a video): what follows now starts as a stream of its own. The Library window took a place kept from a
+     640 x 480 screen on the 512 x 342 one by its left end alone (1.2's rule; the player window's checks both ends): it
+     now checks both ends and the height. The card drew the video over Standard File's dialog (1.6): File > Open... holds
+     the picture now (not tried).
+   - *Seen once, not explained:* in the first session the Mac stopped 4 seconds into the second video of a queue, with no
+     interrupt taken any more, the 68k in the ROM's level-2 handler ($40806EAA) and in system-heap code at $9AC98 (the
+     network's interrupt path), and the kernel logging "slot-9 interrupt not serviced in 500 ms: network board flag
+     cleared". The Play's code had not changed there; after a restart nine more video streams, five of them following a
+     video, ran without it. Worth watching for on the SE.
+   - *Not verified:* the SE (and MAME's SE board); Apple's MacTCP, which sends the broadcasts; servers on two machines; the
+     fallback without the links for a very long album; the Standard File hold.

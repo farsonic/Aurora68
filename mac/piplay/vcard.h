@@ -33,6 +33,12 @@ int vc_window_shown(void);
 void *vc_window(void);                 /* 0 before the first video */
 void vc_update(void);                  /* its update event */
 void vc_window_show(void);             /* Controls > Show Video */
+/* the window's size (1.7, docs/08 item 120): the picture as the server sends it, twice that, or as large as the screen it
+   is on allows (its shape kept; the card scales it, nearest pixel). Controls > Normal Size, Double Size, Fill Screen
+   (Command-1, 2, 3) and the window's zoom box (Normal and Fill Screen); kept in the preferences */
+enum { VC_NORMAL, VC_DOUBLE, VC_FILL };
+void vc_set_zoom(int z);
+int vc_zoom(void);
 /* the size to ask the server for, from the screen the window goes on (the one the player window is on) */
 void vc_size_for(void *near_win, unsigned long vw, unsigned long vh, unsigned *w, unsigned *h);
 /* hidden from the card while a menu is down, a window is dragged or a dialog is up (counted) */

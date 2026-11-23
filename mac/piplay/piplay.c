@@ -64,6 +64,14 @@
  * a click in it to play or pause, its close box to hide the picture while the sound goes on, Controls > Show
  * Video to bring it back), holds the card's drawing while a menu is down, a window is dragged or sized or a
  * dialog is up, and gives it Play's volume. Without the card a video plays its sound, as in 1.5.
+ *
+ * Parity with the macOS Play (Aurora68 Play 1.7, 23 November 2026, docs/08 item 120; the table is docs/09 "Aurora68 Play:
+ * classic and macOS"). The menus took what came: the Library menu Videos, Up Next, Play Video (Command-M), Play Next, Add
+ * to Queue, Repeat One and a Servers submenu (the servers the probe found, Search Again, Connect to Server...; library.c
+ * finds the server by itself at the start); the Controls menu Previous and Next (from the Library menu, which had grown
+ * past the SE's 342 lines), Normal Size, Double Size and Fill Screen for the video window (Command-1, 2, 3, and its zoom
+ * box) and Play Videos Instead of Songs. The preferences file has a tail for the server's name, Play Videos Instead of
+ * Songs and the video window's size, after the 1.3 record, so that an older Play still reads the file it knows.
  */
 #include "toolbox.h"
 #include "psmb.h"
@@ -554,10 +562,12 @@ static void close_file(void)
 
 /* ---- the window -------------------------------------------------------------------------------- */
 static void *win, *play_btn, *stop_btn, *vol_bar, *prev_btn, *next_btn;
-static void *m_apple, *m_file, *m_edit, *m_ctl, *m_radio, *m_lib, *m_net;
-enum { M_APPLE = 128, M_FILE, M_EDIT, M_CTL, M_RADIO, M_LIB, M_NET = 139 };
-/* the Library menu; Connect By (a submenu of the Library and Radio menus): the family tried first */
-enum { LB_SHOW = 1, LB_CONNECT, LB_FIND, LB_S1, LB_PLAY, LB_SHUFFLE, LB_REPEAT, LB_S2, LB_PREV, LB_NEXT, LB_S3, LB_LIVE, LB_RELOAD, LB_S4, LB_NET };
+static void *m_apple, *m_file, *m_edit, *m_ctl, *m_radio, *m_lib, *m_net, *m_srv;
+enum { M_APPLE = 128, M_FILE, M_EDIT, M_CTL, M_RADIO, M_LIB, M_SRV = 138, M_NET = 139 };
+/* the Library menu (1.7: nineteen lines, 304 pixels below the menu bar of the SE's 342); Servers and Connect By are
+   submenus (Connect By also of the Radio menu): the servers found, and the family tried first */
+enum { LB_SHOW = 1, LB_VIDEOS, LB_UPNEXT, LB_FIND, LB_S1, LB_PLAY, LB_PLAYV, LB_NEXTQ, LB_ADDQ, LB_S2, LB_SHUFFLE, LB_REPEAT,
+       LB_REPEAT1, LB_S3, LB_LIVE, LB_RELOAD, LB_S4, LB_SERVERS, LB_NET };
 enum { NET_V6 = 1, NET_V4 };
 /* the Radio menu's submenus, one per group of the station list (stations.h): group g's menu ID is M_SUB + g.
    Inside Macintosh V (the Menu Manager): a submenu is inserted with InsertMenu(menu, -1), its parent item
@@ -568,7 +578,8 @@ static void *m_sub[MAX_GROUPS];                      /* the submenus in the menu
 static int showing_radio;                            /* the window is the radio's (a station chosen) */
 static int radio_url_item, radio_add_item, radio_net_item;   /* Open URL..., Add Default Stations, Connect By in the Radio menu */
 enum { F_OPEN = 1, F_CLOSE, F_QUIT = 4 };
-enum { C_PLAY = 1, C_STOP, C_LOUDER = 4, C_SOFTER, C_SHOWV = 7 };   /* Volume Up, Volume Down; Show Video (1.6) */
+enum { C_PLAY = 1, C_STOP, C_PREV = 4, C_NEXT, C_LOUDER = 7, C_SOFTER, C_SHOWV = 10,   /* Show Video (1.6) */
+       C_NORMAL, C_DOUBLE, C_FILL, C_INSTEAD = 15 };                                     /* 1.7 */
 static int quit, fg = 1, shown;
 static const char *status_text = "";
 #define WIN_W 340                                    /* the first and the smallest size */
@@ -796,6 +807,30 @@ static void check_stations(void *menu, int group)
 		if (it[k] >= 0)                          /* not a submenu's item: its mark is the submenu's ID */
 			CheckItem(menu, k + 1, showing_radio && radio.st != RS_OFF && !strcmp_(slist->station[it[k]].url, radio.url));
 }
+/* Library > Servers (1.7): the servers the probe found (the one in use checked), then Search Again and Connect to
+   Server...; made again when what library.c knows changes. The names go in with SetItem, as the stations' do */
+static int srv_items;                                /* the servers' lines in it now (1 for the line that says none) */
+static void build_servers_menu(void)
+{
+	static int built = -1, built_finding = -1;
+	char t[120];
+	int i, n = lib_servers(), cur;
+	if (built == lib_servers_gen() && built_finding == lib_finding()) return;
+	built = lib_servers_gen(); built_finding = lib_finding();
+	for (i = CountMItems(m_srv); i > 0; i--) DelMenuItem(m_srv, i);
+	for (i = 0; i < n; i++) {
+		AppendMenu(m_srv, pstr(pbuf, "x"));
+		SetItem(m_srv, i + 1, pstr(pbuf, lib_server_text(i, t, &cur)));
+		CheckItem(m_srv, i + 1, cur);
+	}
+	srv_items = n;
+	if (!n) {
+		AppendMenu(m_srv, pstr(pbuf, lib_finding() ? "(Looking for Servers\xC9" : "(No Server Found"));
+		srv_items = 1;
+	}
+	AppendMenu(m_srv, pstr(pbuf, "(-;Search Again;Connect to Server\xC9"));
+	enable(m_srv, srv_items + 2, !lib_finding());
+}
 /* dim what cannot be done now; Play says Pause while a sound plays */
 static void fix_menus(void)
 {
@@ -811,13 +846,22 @@ static void fix_menus(void)
 	enable(m_ctl, C_LOUDER, vol < 100);
 	enable(m_ctl, C_SOFTER, vol > 0);
 	enable(m_ctl, C_SHOWV, vc_window() && !vc_window_shown());
+	enable(m_ctl, C_PREV, lib_can_skip(-1));
+	enable(m_ctl, C_NEXT, lib_can_skip(1));
+	for (i = C_NORMAL; i <= C_FILL; i++) { enable(m_ctl, i, vc_present()); CheckItem(m_ctl, i, vc_zoom() == i - C_NORMAL); }
+	enable(m_ctl, C_INSTEAD, vc_present());
+	CheckItem(m_ctl, C_INSTEAD, lib_instead());
+	enable(m_lib, LB_VIDEOS, lib_have_server());
 	enable(m_lib, LB_FIND, lib_have_server());
 	enable(m_lib, LB_PLAY, lib_can_play_all());
+	enable(m_lib, LB_PLAYV, lib_can_play_video());
+	enable(m_lib, LB_NEXTQ, lib_can_add());
+	enable(m_lib, LB_ADDQ, lib_can_add());
 	CheckItem(m_lib, LB_SHUFFLE, lib_shuffle());
-	CheckItem(m_lib, LB_REPEAT, lib_repeat());
-	enable(m_lib, LB_PREV, lib_can_skip(-1));
-	enable(m_lib, LB_NEXT, lib_can_skip(1));
+	CheckItem(m_lib, LB_REPEAT, lib_repeat() == LIB_REPEAT_ALL);
+	CheckItem(m_lib, LB_REPEAT1, lib_repeat() == LIB_REPEAT_ONE);
 	enable(m_lib, LB_LIVE, lib_have_server());
+	build_servers_menu();
 	CheckItem(m_net, NET_V6, net_prefer != 4);
 	CheckItem(m_net, NET_V4, net_prefer == 4);
 }
@@ -885,12 +929,13 @@ void say_error(const char *text)
 }
 static void about(void)
 {
-	message_box("Aurora68 Play 1.5 for the Aurora68 card.\r"
+	message_box("Aurora68 Play 1.7 for the Aurora68 card.\r"
 	            "Plays MP3, FLAC, Ogg Vorbis and Apple Lossless (.m4a) files, AIFF and WAV files that are not compressed, "
-	            "internet radio (plain http:// MP3 streams through MacTCP or Riptide), and the music on an Aurora68 music "
-	            "server: Library > Show Library. The Pi decodes them (minimp3, dr_flac and stb_vorbis, public domain; "
-	            "Apple Lossless its own) and plays them on HDMI or its headphone socket, mixed with the Macintosh's own sound.\r"
-	            "The Radio menu holds SomaFM (somafm.com), other listener-supported radio and stations of nine countries. MPL-2.0.", 212);
+	            "internet radio (plain http:// MP3 streams through MacTCP or Riptide), and the music and music videos of an "
+	            "Aurora68 music server, which it finds on the network by itself: Library > Show Library. The Pi decodes them "
+	            "(minimp3, dr_flac and stb_vorbis, public domain; Apple Lossless its own) and plays them on HDMI or its "
+	            "headphone socket, mixed with the Macintosh's own sound; videos need the Aurora68 Video Decoder card.\r"
+	            "The Radio menu holds SomaFM (somafm.com), other listener-supported radio and stations of nine countries. MPL-2.0.", 228);
 }
 
 /* ---- opening a file ------------------------------------------------------------------------------ */
@@ -907,7 +952,9 @@ static void open_file(void)
 	SFReply rep;
 	Rect sr = screen_rect();                    /* the dialog (348 by 200) centred, a third of the way down */
 	Point where = { (short)(sr.top + (sr.bottom - sr.top - 200) / 3), (short)(sr.left + (sr.right - sr.left - 348) / 2) };
+	vc_hold(1);                                 /* 1.7: Standard File's dialog too: the card drew the video over it in 1.6 */
 	SFGetFile(pt_long(where), pstr(pbuf, ""), 0, -1, 0, 0, &rep, 2);
+	vc_hold(0);
 	SetPort(win);
 	if (!rep.good) return;
 	open_path(rep.vRefNum, 0, rep.fName);
@@ -1354,14 +1401,19 @@ static void setup_menus(void)
 	AppendMenu(m_edit, pstr(pbuf, "Undo/Z;(-;Cut/X;Copy/C;Paste/V;Clear"));
 	InsertMenu(m_edit, 0);
 	m_ctl = NewMenu(M_CTL, pstr(pbuf, "Controls"));
-	AppendMenu(m_ctl, pstr(pbuf, "Play/P;Stop/.;(-;Volume Up/];Volume Down/[;(-;Show Video"));
+	AppendMenu(m_ctl, pstr(pbuf, "Play/P;Stop/.;(-;Previous Track;Next Track;(-;Volume Up/];Volume Down/[;(-;Show Video;"
+	                        "Normal Size/1;Double Size/2;Fill Screen/3;(-;Play Videos Instead of Songs"));
 	InsertMenu(m_ctl, 0);
 	m_lib = NewMenu(M_LIB, pstr(pbuf, "Library"));
-	AppendMenu(m_lib, pstr(pbuf, "Show Library/L;Connect to Server\xC9;Find\xC9/F;(-;Play All;Shuffle;Repeat;(-;Previous Track;Next Track;(-;"
-	                        "Listen Live;Reload/R;(-;Connect By"));
+	AppendMenu(m_lib, pstr(pbuf, "Show Library/L;Videos;Up Next;Find\xC9/F;(-;Play All;Play Video/M;Play Next;Add to Queue;(-;"
+	                        "Shuffle;Repeat;Repeat One;(-;Listen Live;Reload/R;(-;Servers;Connect By"));
+	SetItemCmd(m_lib, LB_SERVERS, 0x1B);
+	SetItemMark(m_lib, LB_SERVERS, M_SRV);
 	SetItemCmd(m_lib, LB_NET, 0x1B);
 	SetItemMark(m_lib, LB_NET, M_NET);
 	InsertMenu(m_lib, 0);
+	m_srv = NewMenu(M_SRV, pstr(pbuf, "Servers"));      /* its items: build_servers_menu */
+	InsertMenu(m_srv, -1);
 	m_radio = NewMenu(M_RADIO, pstr(pbuf, "Radio"));     /* its items come from the station list */
 	InsertMenu(m_radio, 0);
 	m_net = NewMenu(M_NET, pstr(pbuf, "Connect By"));
@@ -1396,19 +1448,32 @@ static void do_menu(long mr)
 		else if (item == C_LOUDER) change_volume(vol + 10);
 		else if (item == C_SOFTER) change_volume(vol - 10);
 		else if (item == C_SHOWV) vc_window_show();
+		else if (item == C_PREV) { lib_skip(-1); fix_buttons(); }
+		else if (item == C_NEXT) { lib_skip(1); fix_buttons(); }
+		else if (item >= C_NORMAL && item <= C_FILL) vc_set_zoom(item - C_NORMAL);
+		else if (item == C_INSTEAD) lib_toggle_instead();
 	} else if (id == M_LIB) {
 		switch (item) {
 		case LB_SHOW: lib_show(); break;
-		case LB_CONNECT: lib_connect(); break;
+		case LB_VIDEOS: lib_videos(); break;
+		case LB_UPNEXT: lib_up_next(); break;
 		case LB_FIND: lib_find(); break;
 		case LB_PLAY: lib_play_all(); break;
+		case LB_PLAYV: lib_play_video(); break;
+		case LB_NEXTQ: lib_add(1); break;
+		case LB_ADDQ: lib_add(0); break;
 		case LB_SHUFFLE: lib_toggle_shuffle(); break;
-		case LB_REPEAT: lib_toggle_repeat(); break;
-		case LB_PREV: lib_skip(-1); break;
-		case LB_NEXT: lib_skip(1); break;
+		case LB_REPEAT: lib_toggle_repeat(LIB_REPEAT_ALL); break;
+		case LB_REPEAT1: lib_toggle_repeat(LIB_REPEAT_ONE); break;
 		case LB_LIVE: lib_live(); break;
 		case LB_RELOAD: lib_reload(); break;
 		}
+		SetPort(win);
+		fix_buttons();
+	} else if (id == M_SRV) {
+		if (item >= 1 && item <= srv_items) { if (lib_servers()) lib_choose_server(item - 1); }
+		else if (item == srv_items + 2) lib_search_again();
+		else if (item == srv_items + 3) lib_connect();
 		SetPort(win);
 		fix_buttons();
 	} else if (id == M_NET) {
@@ -1447,8 +1512,13 @@ static char dev_id[20];                      /* the device's id (devices.c), mad
 #define PREF_MAGIC TYPE('P', 'I', 'P', 'Y')
 struct prefs { unsigned long magic; short version; Rect r; short vol; short pad;
                 struct lib_prefs lib; short net; short pad2;        /* version 2 (22 November 2026): the library's part */
-                char dev_id[20]; };                                 /* version 3 (Aurora68 Play 1.3): the device's id */
-#define PREFS_V2_SIZE ((long)(sizeof(struct prefs) - 20))
+                char dev_id[20];                                    /* version 3 (Aurora68 Play 1.3): the device's id */
+                /* the tail (1.7): still version 3, so that an older Play, which reads as much as it knows and checks that
+                   length, still reads the file; this Play takes the tail when the file is this long and it is marked */
+                unsigned long ext_magic; struct lib_prefs_ext ext; short vzoom; short pad3; };
+#define PREFS_V3_SIZE ((long)__builtin_offsetof(struct prefs, ext_magic))
+#define PREFS_V2_SIZE (PREFS_V3_SIZE - 20)
+#define PREF_EXT_MAGIC TYPE('P', 'L', '1', '7')
 static const unsigned char pref_name[] = "\x13" "Aurora68 Play Prefs";
 static const unsigned char pref_old_name[] = "\x0C" "PiPlay Prefs";    /* the program's name until 21 November 2026 */
 int pref_place(short *vref, long *dirid)
@@ -1493,8 +1563,11 @@ static int load_prefs(struct prefs *p)
 	if (e && e != eofErr) return 0;
 	if (p->magic != PREF_MAGIC) return 0;
 	if (p->version == 1 && pb.u.io.ioActCount >= 16) { memset(&p->lib, 0, sizeof p->lib); p->net = 6; return 1; }   /* Aurora68 Play 1.1's */
-	if (p->version == 2 && pb.u.io.ioActCount == PREFS_V2_SIZE) { memset(p->dev_id, 0, sizeof p->dev_id); return 1; }
-	return p->version == 3 && pb.u.io.ioActCount == sizeof *p;
+	if (p->version == 2 && pb.u.io.ioActCount == PREFS_V2_SIZE) { memset(p->dev_id, 0, sizeof p->dev_id); p->ext_magic = 0; return 1; }
+	if (p->version != 3) return 0;
+	if (pb.u.io.ioActCount == sizeof *p && p->ext_magic == PREF_EXT_MAGIC) return 1;
+	p->ext_magic = 0;                           /* written by 1.3 to 1.6: no tail */
+	return pb.u.io.ioActCount >= PREFS_V3_SIZE;
 }
 static void save_prefs(void)
 {
@@ -1508,6 +1581,9 @@ static void save_prefs(void)
 	p.magic = PREF_MAGIC; p.version = 3; p.vol = (short)vol; p.pad = 0;
 	memcpy(p.dev_id, dev_id, sizeof p.dev_id);
 	lib_get_prefs(&p.lib);
+	p.ext_magic = PREF_EXT_MAGIC;
+	lib_get_ext(&p.ext);
+	p.vzoom = (short)vc_zoom();
 	p.net = (short)net_prefer;
 	p.r.top = tl.v; p.r.left = tl.h; p.r.bottom = (short)(tl.v + H); p.r.right = (short)(tl.h + W);
 	pref_place(&vref, &dirid);
@@ -1604,7 +1680,9 @@ static void mouse_down(EventRecord *ev)
 		break;
 	case inZoomIn:
 	case inZoomOut:
-		if ((w == win || w == lib_window()) && TrackBox(w, pt_long(ev->where), part)) {
+		if (w && w == vc_window()) {             /* the video: Normal Size and Fill Screen (1.7) */
+			if (TrackBox(w, pt_long(ev->where), part)) vc_set_zoom(vc_zoom() == VC_NORMAL ? VC_FILL : VC_NORMAL);
+		} else if ((w == win || w == lib_window()) && TrackBox(w, pt_long(ev->where), part)) {
 			SetPort(w);
 			EraseRect(PORT_RECT(w));
 			ZoomWindow(w, part, 0);
@@ -1795,7 +1873,12 @@ int main(void)
 			dv_make_id(dev_id, *(volatile unsigned long *)0x20C ^ LM_TICKS, *(volatile unsigned long *)0x830 ^ (unsigned long)name[0] << 8);
 		lib_device(dev_id, name);
 	}
+	if (have_prefs && pr.ext_magic == PREF_EXT_MAGIC) {   /* 1.7's tail: the server's name, videos instead, the window's size */
+		lib_set_ext(&pr.ext);
+		vc_set_zoom(pr.vzoom);
+	}
 	if (have_prefs) lib_set_prefs(&pr.lib);       /* the server, the shuffle; the Library window again if it was open */
+	lib_start();                                  /* no server remembered: look for one now (1.7) */
 	finder_files();
 	EventRecord ev;
 	while (!quit) {
