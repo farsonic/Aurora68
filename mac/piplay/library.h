@@ -61,6 +61,7 @@ int lib_can_add(void);
 void lib_add(int next);                /* Library > Play Next (1) and Add to Queue (0): the selected row */
 int lib_instead(void);
 void lib_toggle_instead(void);         /* Controls > Play Videos Instead of Songs */
+void lib_quality_changed(void);        /* Controls > Video Quality (1.8.1): the video asked again if its size changes */
 void lib_start(void);                  /* after the preferences: the probe if no server is remembered */
 int lib_finding(void);
 int lib_servers_gen(void);             /* changes when Library > Servers should be made again */

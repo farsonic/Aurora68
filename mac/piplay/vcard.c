@@ -555,6 +555,27 @@ void vc_strip(const char *t)
 }
 void vc_hold(int on) { holds += on ? 1 : -1; if (holds < 0) holds = 0; tell_place(0); }
 
+/* The stream's size on the HDMI screen (1.8.1, docs/08 item 127). Until 1.8 the size came from the screen the player
+   window was on (a68_vmpeg_size): the owner's 720p video came at 320 x 212 because the player window was on the SE's
+   screen, and the card then scaled it up into a large video window on the 2560 x 1440 HDMI screen. Now, when the video
+   window is on the HDMI screen (slot $A's GDevice), the stream fits the window's picture (Video Quality > Automatic) or
+   the width chosen, 960 x 540 at most (a68_vmpeg_hdmi); library.c asks again for a larger one when the window grows.
+   The window's sizes (Normal, Double, the size box) stay those of the size it was opened at; the card scales the
+   stream into it. On the SE's screen nothing changes: 0 here, and the size by today's rule */
+static int quality;                                    /* 0: Automatic; else the width chosen */
+void vc_set_quality(int q) { quality = q == 320 || q == 480 || q == 640 || q == 960 ? q : 0; }
+int vc_quality(void) { return quality; }
+int vc_hdmi_size(unsigned long vidw, unsigned long vidh, unsigned *w, unsigned *h)
+{
+	Rect s, c;
+	int main;
+	if (!vw || !shown || holds) return 0;              /* not while it is dragged or sized */
+	c = pic_g();
+	{ Point tl = { c.top, c.left }; if (screen_of(tl, &s, &main) != A68V_SCREEN_HDMI) return 0; }
+	a68_vmpeg_hdmi(vidw, vidh, (unsigned)(c.right - c.left), (unsigned)(c.bottom - c.top), (unsigned)quality, w, h);
+	return 1;
+}
+
 /* The card is told the picture's place and, since 1.8 (docs/08 item 124), the window's visible region: the card reads
    that region at every picture and draws only where the window shows. 1.6 and 1.7 told the card "not visible" whenever
    a window was in front of the video's (a corner covered hid the whole picture) and whenever another program was in

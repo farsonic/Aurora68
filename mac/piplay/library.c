@@ -674,6 +674,8 @@ static void got_thumbs(void)
 /* ---- playing ------------------------------------------------------------------------------------------ */
 /* a track's stream: http://HOST:PORT/t/ID?start=S (an IPv6 address in brackets); a video's sound /vaudio/ID?start=S */
 static unsigned vm_w, vm_h;                      /* the size the video in the card's window is asked at */
+static int restreaming;                          /* 1.8.1: play_at asks again at vm_w x vm_h (the window grew on HDMI) */
+static unsigned long restream_t;                 /* when it last did */
 static int shows_video(const struct qitem *q) { return q && q->video && vc_present() && srv_mpeg1; }
 static void track_url(char *u, long max, int i, unsigned long start)
 {
@@ -760,6 +762,17 @@ static void play_at(int i, unsigned long start)
 				if (named(q->artist)) { w = put_str(w, q->artist); w = put_str(w, " \xD1 "); }
 				copy(w, q->title, (int)(sizeof wt - (unsigned long)(w - wt)));
 				vc_window_open(wt, vm_w, vm_h, player_window());
+			}
+		}
+		if (!restreaming) {                      /* 1.8.1: on the HDMI screen, the size the window wants */
+			unsigned w, h;
+			if (vc_hdmi_size(q->vw, q->vh, &w, &h) && (w != vm_w || h != vm_h)) {
+				char t[90], *p2 = put_str(t, "video: the window is on the HDMI screen: the stream at ");
+				p2 = put_num(p2, w); *p2++ = 'x'; p2 = put_num(p2, h);
+				p2 = put_str(p2, vc_quality() ? " (Video Quality)" : " (Automatic)");
+				*p2 = 0;
+				logs(t, 0);
+				vm_w = w; vm_h = h;
 			}
 		}
 	} else vc_window_dispose();
@@ -989,7 +1002,7 @@ static void lib_refresh(void)
 /* the device's part of the player: an id kept in the preferences and the Mac's name */
 void lib_device(const char *id, const char *name)
 {
-	dv_init(&dev, id, name, "1.8", "classic");
+	dv_init(&dev, id, name, "1.8.1", "classic");
 	dev.client = cl;                             /* videos=1: a video sent here comes as a V line */
 	dev.video = vc_present() && srv_mpeg1;       /* 1.6: with the video decoder card it shows them (the announce's video=1) */
 	dev_ready = id[0] != 0;
@@ -1100,6 +1113,49 @@ static void next_job(void)
 static void draw_bar(void);
 static void draw_list(void);
 static void draw_album_head(void);
+static unsigned long pos_s(void);
+/* A larger stream when the video window has grown on the HDMI screen (1.8.1): its size box, Double Size, Fill Screen,
+   or moved there from the SE's screen, so that it wants a stream at least half as wide again as the one it has
+   (a68_vmpeg_bigger); the same size wanted a second apart (not in the middle of a drag), four seconds at least since
+   the last time; the stream asked again from the picture shown, as a seek does: the window stays, the sound starts
+   again there. Smaller or a little larger: the card scales what it has. Video Quality chosen in the menu: asked again
+   at once if it changes the size (lib_quality_changed) */
+static int quality_changed;
+void lib_quality_changed(void) { quality_changed = 1; }
+static void restream_check(void)
+{
+	static unsigned long last;
+	static unsigned want_w;
+	struct qitem *q = qat(Q.cur);
+	unsigned w, h;
+	if (LM_TICKS - last < 60 && !quality_changed) return;
+	last = LM_TICKS;
+	if (!mode || lstate != L_PLAYING || !shows_video(q) || !radio.video || radio.st != RS_PLAYING) { want_w = 0; quality_changed = 0; return; }
+	if (!vc_hdmi_size(q->vw, q->vh, &w, &h)) { want_w = 0; return; }
+	if (quality_changed) {
+		quality_changed = 0;
+		if (w == vm_w) return;
+	} else {
+		if (!a68_vmpeg_bigger(vm_w, w)) { want_w = 0; return; }
+		if (w != want_w) { want_w = w; return; }  /* the same a second from now: not while it is dragged */
+		if (LM_TICKS - restream_t < 4 * 60) return;
+	}
+	want_w = 0;
+	restream_t = LM_TICKS;
+	{
+		char t[120], *p = put_str(t, "video: the stream asked again at ");
+		unsigned long at = pos_s();
+		p = put_num(p, w); *p++ = 'x'; p = put_num(p, h);
+		p = put_str(p, " in place of "); p = put_num(p, vm_w); *p++ = 'x'; p = put_num(p, vm_h);
+		p = put_str(p, ", from "); p = put_num(p, at); p = put_str(p, " s");
+		*p = 0;
+		logs(t, 0);
+		vm_w = w; vm_h = h;
+		restreaming = 1;
+		play_at(Q.cur, at);
+		restreaming = 0;
+	}
+}
 void lib_poll(void)
 {
 	static unsigned long last_draw;
@@ -1111,6 +1167,7 @@ void lib_poll(void)
 		if (disc.st == D_FOUND || disc.st == D_NONE) probe_done();
 	}
 	fetch_poll();
+	restream_check();
 	/* a command's long poll gives way to what the user asked for, if nothing of its answer has come */
 	if (job == J_DEV && dev_what == DV_COMMANDS && (want_info || want_list || want_queue || user_waiting) &&
 	    fetch.st != FS_DONE && fetch.st != FS_FAILED && !fetch_received()) {
