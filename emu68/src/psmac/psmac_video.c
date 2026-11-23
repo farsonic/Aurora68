@@ -631,6 +631,63 @@ static void draw_area(const plm_frame_t *f, const struct pv_surface *ps, int32_t
         }
     }
 }
+/* The Mac's mouse pointer over the picture (23 November 2026, the owner's SE on HDMI: "mouse has vanished and screen is
+   a bit corrupted"). The Mac draws its pointer into the frame buffer itself and keeps what was under it; the card
+   drawing a picture over it erased the pointer, and when the pointer moved on the Mac put back an old piece of
+   picture. So the card leaves a box around the pointer alone: CURSOR_BOX pixels each side of the Mouse point ($830,
+   global), which covers any hot spot of a 16 x 16 pointer and a beat of movement. The box is found in the screen's
+   own pixels through the device list ($8A8): the GDevice whose PixMap's baseAddr is this screen's, minus its gdRect's
+   top left. 0 if the pointer is not on this screen (or the Mac's memory can't be read now). */
+#define CURSOR_BOX 24
+extern int psmac_display_info(int i, uint32_t *w, uint32_t *h, uint32_t *depth, uint32_t *base);
+static int cursor_box(int32_t out[4])
+{
+    int ok;
+    uint32_t w, h, d, base, v;
+    if (!psmac_display_info((int)g.screen, &w, &h, &d, &base)) return 0;
+    if (!rd16(0x830, &v)) return 0;
+    int32_t mv = (int16_t)v;
+    if (!rd16(0x832, &v)) return 0;
+    int32_t mh = (int16_t)v;
+    uint32_t gdh = psmac_video_rd32(0x8A8, &ok);
+    for (int n = 0; ok && gdh && n < 8; n++) {
+        if (gdh & 1) return 0;
+        uint32_t gd = psmac_video_rd32(gdh & ~3u, &ok);
+        if (!ok || !gd || (gdh & 2)) return 0;               /* master pointers are longs at long addresses here */
+        uint32_t pmh, pm, ba, t, l, nx;
+        if (!rd16(gd + 22, &t) || !rd16(gd + 24, &l)) return 0;
+        pmh = t << 16 | l;
+        if (!pmh || (pmh & 3)) return 0;
+        pm = psmac_video_rd32(pmh, &ok);
+        if (!ok || !pm || (pm & 3)) return 0;
+        ba = psmac_video_rd32(pm, &ok);
+        if (!ok) return 0;
+        if (!rd16(gd + 34, &t) || !rd16(gd + 36, &l)) return 0;
+        if (ba == base) {
+            int32_t y = mv - (int16_t)t, x = mh - (int16_t)l;
+            if (y < -CURSOR_BOX || x < -CURSOR_BOX || y >= (int32_t)h + CURSOR_BOX || x >= (int32_t)w + CURSOR_BOX) return 0;
+            out[0] = y - CURSOR_BOX; out[1] = x - CURSOR_BOX; out[2] = y + CURSOR_BOX; out[3] = x + CURSOR_BOX;
+            return 1;
+        }
+        if (!rd16(gd + 30, &t) || !rd16(gd + 32, &l)) return 0;
+        nx = t << 16 | l;
+        gdh = nx;
+    }
+    return 0;
+}
+/* draw_area for a rectangle with the pointer's box (t, l, b, r) taken out: up to four pieces */
+static void draw_around(const plm_frame_t *f, const struct pv_surface *s, int32_t x0, int32_t y0, int32_t rw, int32_t rh,
+                        int32_t cx0, int32_t cy0, int32_t cx1, int32_t cy1, const int32_t *cb)
+{
+    if (!cb || cb[2] <= cy0 || cb[0] >= cy1 || cb[3] <= cx0 || cb[1] >= cx1) { draw_area(f, s, x0, y0, rw, rh, cx0, cy0, cx1, cy1); return; }
+    int32_t t = cb[0] > cy0 ? cb[0] : cy0, b = cb[2] < cy1 ? cb[2] : cy1;
+    int32_t l = cb[1] > cx0 ? cb[1] : cx0, r = cb[3] < cx1 ? cb[3] : cx1;
+    if (t > cy0) draw_area(f, s, x0, y0, rw, rh, cx0, cy0, cx1, t);            /* above */
+    if (b < cy1) draw_area(f, s, x0, y0, rw, rh, cx0, b, cx1, cy1);            /* below */
+    if (l > cx0) draw_area(f, s, x0, y0, rw, rh, cx0, t, l, b);                /* left of it */
+    if (r < cx1) draw_area(f, s, x0, y0, rw, rh, r, t, cx1, b);                /* right of it */
+}
+
 static void draw(const plm_frame_t *f)
 {
     struct pv_surface s;
@@ -650,14 +707,16 @@ static void draw(const plm_frame_t *f)
     }
     if (s.depth >= 2 && s.depth <= 8 && (s.clut_seq != ctab_seq || s.depth != ctab_depth || s.gray != ctab_gray || !ctab))
         if (!make_ctab(&s)) return;
-    if (!g.rgn) draw_area(f, &s, x0, y0, rw, rh, cx0, cy0, cx1, cy1);
+    int32_t cbox[4];
+    const int32_t *cb = cursor_box(cbox) ? cbox : 0;     /* the Mac's pointer: left alone */
+    if (!g.rgn) draw_around(f, &s, x0, y0, rw, rh, cx0, cy0, cx1, cy1, cb);
     else {                                    /* only the parts of the window that show (its visRgn, read now) */
         int32_t rr[MAX_PARTS][4];
         int n = vis_parts(rr, x0, y0, cx0, cy0, cx1, cy1);
         if (n < 0) { rgn_skips++; return; }   /* the region could not be read (moving in the Mac's heap): not this picture */
         rgn_parts = (uint32_t)n;
         for (int k = 0; k < n; k++)
-            draw_area(f, &s, x0, y0, rw, rh, rr[k][1], rr[k][0], rr[k][3], rr[k][2]);
+            draw_around(f, &s, x0, y0, rw, rh, rr[k][1], rr[k][0], rr[k][3], rr[k][2], cb);
     }
     DMB();
 }

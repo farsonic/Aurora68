@@ -5715,3 +5715,10 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    with a lasting IPv6 address (item 124 and the Riptide change) all hold on hardware. Still open from the same
    sessions: the lock-ups after minutes of video and while scrolling the Videos list (no log yet; Play 1.8 logs any
    event-loop pass of 3 s or more).
+   - *The pointer over the picture (same day).* The owner, after a long video on HDMI: "mouse has vanished and screen
+     is a bit corrupted" (the Mac still running). The card drew every picture straight over the Mac's pointer, which
+     the Mac draws into the frame buffer itself and saves what it covers; the pointer vanished over the picture and,
+     moving on, left old pieces of picture behind. psmac_video.c now leaves a box 24 pixels each side of the Mouse
+     point ($830) alone when it is on the picture's screen (found through the device list $8A8: the GDevice whose
+     PixMap is that screen's, its gdRect's corner); the box is drawn again once the pointer has left it. Not yet seen
+     on the SE (the emulator was busy); the owner's next run is the test.
