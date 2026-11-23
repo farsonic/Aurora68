@@ -59,7 +59,7 @@
  * starts it as cmdline.txt says. The firmware's side (alice_net.c, wifi/fmac_ap.c) could only be tried against
  * the testbed's simulated radio; every refusal of a real chip is named on the screen.
  *
- * Diagnostics (23 November 2026, docs/08 item 120; the owner: "do we have all the debug options in there for Mac,
+ * Diagnostics (23 November 2026, docs/08 item 121; the owner: "do we have all the debug options in there for Mac,
  * Mac Plus etc. Can we trigger a debug run directly in there for this and other platforms? With a report in the
  * Web GUI?"). The Options tab offers every option a user or tester sets, grouped and filtered by the board, from
  * psmac_diag.c's table (which is also the validator). The Diagnostics tab runs, while no Mac runs: the bus check on
@@ -152,7 +152,7 @@ static uint32_t ap_t0, ap_seq;
 static const uint8_t ap_ip[4] = { 192, 168, 4, 1 };
 static int ap_active(void) { return ap_state == AP_WAITING || ap_state == AP_STARTING || ap_state == AP_UP; }
 
-/* Diagnostics (docs/08 item 120, below): who has the screens, and the one-shot debug start this start took */
+/* Diagnostics (docs/08 item 121, below): who has the screens, and the one-shot debug start this start took */
 #define BC_PAGE_ROWS 46
 static int diag_screen;                       /* 0 the recovery page; 1 a bus check runs (the compact Mac's screen is the check's); 2 its report on both screens */
 static void diag_screen_poll(void), diag_lines(void);
@@ -589,7 +589,7 @@ static int cl_set(uint32_t *n, const char *key, const char *value)
     cl_new[k] = 0; *n = (uint32_t)k;
     return 0;
 }
-/* the options the page knows, their values and the boards that use them: psmac_diag.c's table (docs/08 item 120) */
+/* the options the page knows, their values and the boards that use them: psmac_diag.c's table (docs/08 item 121) */
 static int country_ok(const char *c, char *why_, unsigned whymax)
 {
     if (!c[0]) return 1;
@@ -1155,7 +1155,7 @@ static void ans_state(struct rconn *h)
         bprintf(&b, ", \"security\": \"%s\", \"channel\": %d, \"address\": \"192.168.4.1\", \"clients\": %d, \"how\": ", ap_state != AP_UP ? "" : ap_open ? "open (the PIN guards the page)" : "WPA2", ap_channel, psmac_ip_ap_clients());
         bjson(&b, ap_how); bput(&b, ", \"error\": "); bjson(&b, ap_err); bput(&b, "}");
     } else bput(&b, ",\n \"ap\": null");
-    bput(&b, ",\n \"once\": "); j_once(&b);                  /* the one-shot debug start (docs/08 item 120) */
+    bput(&b, ",\n \"once\": "); j_once(&b);                  /* the one-shot debug start (docs/08 item 121) */
     bprintf(&b, ", \"diag\": {\"buscheck\": \"%s\", \"screen\": \"%s\"}", psmac_buscheck_request_state() == 2 || psmac_buscheck_request_state() == 1 ? "running" : psmac_buscheck_request_state() == 3 ? "done" : "idle",
             diag_screen == 2 ? "report" : diag_screen == 1 ? "check" : "recovery");
     bput(&b, "}\n");
@@ -1694,7 +1694,7 @@ static void ans_display_post(struct rconn *h, int c, char *body, uint32_t n)
 
 
 /* ============================================================================== Diagnostics
-   23 November 2026 (docs/08 item 120). Run now, with no Mac running: the bus check on the compact Macs (on the
+   23 November 2026 (docs/08 item 121). Run now, with no Mac running: the bus check on the compact Macs (on the
    service core, which owns the transport: psmac_buscheck_request, its lines read here as they come), the card's
    read test (here), the CPLD's JTAG usercode read again (the service core). Run on the next start: debug-once.txt
    (psmac_recovery_once_early). The reports on the card, and one bundle of everything for a tester to send. */
@@ -1769,7 +1769,8 @@ void psmac_recovery_once_early(const void *initramfs, uint32_t len)
     once_taken = 1;
     scpy(once_used, t, sizeof once_used);
     for (char *q = once_used; *q; q++) if (*q == '\n') *q = ' ';
-    kprintf("[DEBUG] a one-shot debug start (debug-once.txt, now debug-once.old): %u option%s added to the boot arguments: %s%s%s. The next start is as cmdline.txt says (docs/08 item 120)\n",
+    for (unsigned q = slen(once_used); q && (once_used[q - 1] == ' ' || once_used[q - 1] == '\r'); q--) once_used[q - 1] = 0;
+    kprintf("[DEBUG] a one-shot debug start (debug-once.txt, now debug-once.old): %u option%s added to the boot arguments: %s%s%s. The next start is as cmdline.txt says (docs/08 item 121)\n",
             merged, merged == 1 ? "" : "s", once_used, skipped ? "; left out: " : "", skipped ? why_ : "");
 }
 /* the card's debug-once.txt (armed) or debug-once.old (the last one used) as one line: its length, or -1 */
@@ -2148,7 +2149,7 @@ static void ans_bundle(struct rconn *h, int c)
     if (!take_big(c)) { json_err(h, 503, "busy: try again"); return; }
     struct bun b = { bun_raw, 0, BUN_MAX };
     char sha[8]; { const char *g = GIT_SHA; int i = 0; for (; i < 7 && g[i]; i++) sha[i] = g[i]; sha[i] = 0; }
-    bnf(&b, "Aurora68 report bundle, made by Setup and Recovery (docs/08 item 120). Passwords, tokens and the PIN are shown as (hidden).\n");
+    bnf(&b, "Aurora68 report bundle, made by Setup and Recovery (docs/08 item 121). Passwords, tokens and the PIN are shown as (hidden).\n");
     bnf(&b, "Made %u s after this start (the Pi has no clock).\n", (now_ms() - start_ms) / 1000u);
     bnf(&b, "\n=== The machine\n");
     bnf(&b, "Board: %s (mac.board=%s)\n", board_title(), board_model());

@@ -24,7 +24,7 @@
  * psmac_buscheck_run() is the whole check for any caller that owns the transport (the service core)
  * with the 68k stopped: the recovery mode can call it with a callback for each line of the report.
  *
- * Setup and Recovery's Diagnostics tab (23 November 2026, docs/08 item 120) runs it that way: the page asks core 3
+ * Setup and Recovery's Diagnostics tab (23 November 2026, docs/08 item 121) runs it that way: the page asks core 3
  * (psmac_buscheck_request), the service core, which owns the transport, runs the check at its next turn
  * (psmac_buscheck_request_poll) and puts each test's name and then each line of the report where core 3 reads them
  * for the page (psmac_buscheck_request_line), as they come. In a recovery start mac.buscheck=1 does not hold the
@@ -211,7 +211,7 @@ int psmac_buscheck_boot(void)
 {
     parse();
     if (!bc_mode) return 0;
-    if (psmac_recovery_on()) { kprintf("[BUSCHECK] mac.buscheck: not run at the start of Setup and Recovery; its Diagnostics tab runs it (docs/08 item 120)\n"); return 0; }
+    if (psmac_recovery_on()) { kprintf("[BUSCHECK] mac.buscheck: not run at the start of Setup and Recovery; its Diagnostics tab runs it (docs/08 item 121)\n"); return 0; }
     const char *why = refusal();
     if (why) { kprintf("[BUSCHECK] mac.buscheck: not run, %s; booting as usual\n", why); return 0; }
     bc_holding = 1;
@@ -233,7 +233,7 @@ void psmac_buscheck_service(void)
     draw((const char (*)[BC_COLS + 1])lines, BC_ROWS);
 }
 
-/* ---- Setup and Recovery's Diagnostics tab (docs/08 item 120) ----
+/* ---- Setup and Recovery's Diagnostics tab (docs/08 item 121) ----
    Core 3 asks; the service core runs the check (or reads the CPLD's JTAG registers) at its next turn and appends
    each test's name, then each line of the report, to rq_line; core 3 reads rq_n with acquire and the lines below it.
    One request at a time; a finished one stays readable until the next. */

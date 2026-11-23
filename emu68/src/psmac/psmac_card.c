@@ -2471,7 +2471,7 @@ int psmac_card_boot_read(int *count, char *flag, uint32_t flagmax, int *flag_len
     rec_unlock();
     return 0;
 }
-/* The one-shot debug start (23 November 2026, docs/08 item 120): core 0, before the boot arguments are read, with
+/* The one-shot debug start (23 November 2026, docs/08 item 121): core 0, before the boot arguments are read, with
    the card mounted by its first look (psmac_card_early). debug-once.txt's one line into buf (at most max - 1 bytes):
    its length, or -1 when there is none (or no card). With take, the file is renamed debug-once.old at once (the old
    .old goes first), so that it happens once: a start that then hangs is followed by a normal one, counted by the

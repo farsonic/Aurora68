@@ -4,7 +4,7 @@
 
 Since 0.13 (docs/08 items 96 and 103):
 
-- **Setup and Recovery: every option, and a Diagnostics tab with a report bundle** (docs/08 item 120, 23 November
+- **Setup and Recovery: every option, and a Diagnostics tab with a report bundle** (docs/08 item 121, 23 November
   2026). The Options tab now offers every option of README's table a user or a tester may set (about seventy for a
   compact Mac), each with a line of plain English and its values, grouped (Machine, Display, Sound, Storage,
   Network, Video card, Debug) and shown only where the chosen board uses it; the kernel checks each value against

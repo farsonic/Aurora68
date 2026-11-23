@@ -43,7 +43,7 @@ int pdg_choices(const struct pdg_opt *o);                              /* 1 when
 /* v is one of o's values: 1, or 0 with a reason in why ("mac.fpu: fast is not one of exact|on|double|none") */
 int pdg_value_ok(const struct pdg_opt *o, const char *v, char *why, uint32_t whymax);
 
-/* A one-shot debug start (debug-once.txt, docs/08 item 120): one line of key=value words, each an option marked
+/* A one-shot debug start (debug-once.txt, docs/08 item 121): one line of key=value words, each an option marked
    PDG_F_ONCE with one of its values. 0, or -1 and why */
 int pdg_once_check(const char *text, uint32_t n, char *why, uint32_t whymax);
 /* args (an bytes, the boot arguments) with once's valid words set in it (each replaces the word of the same key,

@@ -42,7 +42,7 @@ struct bc_bus {
     void (*scc_unspaced)(void *ctx, int on);   /* the transport's own wait between SCC accesses off (1) and on again (0), for the
                                                   spacing tests (the Plus-era boards' 3 us, psmac_gpio.c); may be NULL */
     void (*stage)(void *ctx, int step, int steps, const char *what);   /* before each test, for a report that grows as the check
-                                                  runs (Setup and Recovery's Diagnostics tab, docs/08 item 120); may be NULL */
+                                                  runs (Setup and Recovery's Diagnostics tab, docs/08 item 121); may be NULL */
 };
 
 struct bc_config {

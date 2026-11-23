@@ -363,7 +363,7 @@ from a terminal: `aurora68.py recovery --url http://aurora68.local --pin 1234 ls
 rm NAME | mv A B | cmdline [TEXT] | opt mac.fpu=none -bt.pair | wifi scan | wifi test --ssid S --psk P --country GB |
 log | rollback | reboot [normal|recovery]`.
 
-**Options and Diagnostics** (since 23 November 2026, docs/08 item 120). The **Options** tab lists every option of the
+**Options and Diagnostics** (since 23 November 2026, docs/08 item 121). The **Options** tab lists every option of the
 table above that a user or a tester may set, with a line of plain English and its values (a menu where it takes
 words, a field with an example where it takes a number or a name), in groups: Machine, Display, Sound, Storage,
 Network, Video card, Debug. Choose the board first (`mac.board`): options another board uses are hidden (their
