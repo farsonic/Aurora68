@@ -656,6 +656,39 @@ def videos_check(tmp, pc):
     check(no_ffmpeg_left(lib), 'no ffmpeg left when the servers stop')
 
 
+def downloads_check(tmp):
+    """23 November 2026: the owner's downloader keeps every music video in one folder under a grouping folder
+    ("Albums/videos/The Warning - Bite My Tongue [555225235].mp4", a catalogue number at the end): the artist is the
+    one the name gives, not the folder's ("Albums" was the artist of them all), the number is no part of the title,
+    two downloads of one video differing only in that number are copies, and the video links to its song"""
+    import shutil
+    lib = os.path.join(tmp, 'music-downloads')
+    alb = os.path.join(lib, 'Albums', 'The Warning', 'ERROR')
+    os.makedirs(alb, exist_ok=True)
+    for n, t in ((1, 'Bite My Tongue'), (2, 'Bloodsport')):
+        ffmpeg('-f', 'lavfi', '-i', f'sine=frequency={400 + 40 * n}:duration=1', '-c:a', 'flac', '-metadata', f'TITLE={t}',
+               '-metadata', 'ARTIST=The Warning', '-metadata', f'TRACKNUMBER={n}', os.path.join(alb, f'{t}.flac'))
+    clip = os.path.join(tmp, 'downloads-clip.mp4')
+    ffmpeg('-f', 'lavfi', '-i', 'testsrc=size=160x120:rate=25:duration=2', '-f', 'lavfi', '-i', 'sine=frequency=500:duration=2',
+           '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '64k', '-shortest', clip)
+    vdir = os.path.join(lib, 'Albums', 'videos')
+    os.makedirs(os.path.join(vdir, 'tmp6h7s6jdd'), exist_ok=True)      # a downloader's unfinished work: no video
+    for name in ('The Warning - Bite My Tongue [555225235].mp4', 'The Warning - Bite My Tongue [557934293].mp4',
+                 'The Warning - Bloodsport [555218055].mp4', 'Someone Else - A Clip [466236520].mp4'):
+        shutil.copy(clip, os.path.join(vdir, name))
+    srv, port = start_server(lib, 'Downloads', {'MUSIC_CACHE': os.path.join(tmp, 'cache-downloads')})
+    base = f'http://127.0.0.1:{port}'
+    try:
+        vs = json.loads(get(base, '/api/videos')[2])['videos']
+        got = sorted((v['artist'], v['title'], len(v['tracks'])) for v in vs)
+        check(got == [('Someone Else', 'A Clip', 0), ('The Warning', 'Bite My Tongue', 1), ('The Warning', 'Bloodsport', 1)],
+              f'"Albums/videos/Artist - Title [number].mp4": the artist from the name, the number left out, one of two '
+              f'downloads of a video kept, each linked to its song ({got})')
+    finally:
+        srv.terminate()
+        srv.wait(10)
+
+
 def links_check(tmp):
     """23 November 2026: an album's songs in track order when the files are named by title alone (the owner's "Discovery",
     listed by title by the macOS Play), across pages and by disc; and music videos linked to songs (README "Videos linked
@@ -1166,6 +1199,7 @@ def main():
     devices_check(tmp)
     videos_check(tmp, pc)
     links_check(tmp)
+    downloads_check(tmp)
 
     s2 = socket.socket(); s2.bind(('127.0.0.1', 0)); port2 = s2.getsockname()[1]; s2.close()
     srv2 = subprocess.Popen([sys.executable, os.path.join(HERE, 'aurora68_music_server.py'), lib, '--port', str(port2),

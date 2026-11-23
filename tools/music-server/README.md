@@ -255,10 +255,12 @@ folder. Nothing has to be moved or renamed. Each video is attached:
 - in a folder named `Videos`, `Video`, `Music Videos` or `Clips` inside an album's or an artist's folder: as if it
   were in that folder;
 - in an artist's folder (one whose albums are folders inside it), or a folder inside that: to that artist;
-- in any other folder: to the artist its name gives ("Artist - Videos" gives "Artist", else the folder's name);
+- in any other folder (such as `Albums/videos`, where a downloader puts every video): to the artist the file's own name
+  gives ("Artist - Title.mp4"), else the folder's ("Artist - Videos" gives "Artist"), else the folder's name;
 - at the top of the library: to the artist its own name gives ("Artist - Title.mp4"), else the library's name.
 
-A video's title is its file's name tidied as a track's is ("03. Artist - Title (Official Video).mp4" is
+A downloader's catalogue number at the end of a name ("Title [555225235].mp4", or a video site's 11-character id) is
+left out, so two downloads of one video are copies and the title matches its song. A video's title is its file's name tidied as a track's is ("03. Artist - Title (Official Video).mp4" is
 "Title (Official Video)", number 3). Its length, picture size and codecs come from ffprobe, asked once per file and
 kept in the cache folder (`videos.json`, by path, modification time and size), so a rescan of a slow NAS costs
 nothing and a restart probes nothing it has seen; a file ffprobe finds no picture in is passed over with a line in

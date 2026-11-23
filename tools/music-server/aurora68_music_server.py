@@ -237,6 +237,8 @@ def without_copies(folder, songs, quality=QUALITY, numbered=True):
     groups = {}
     for f in songs:
         stem = os.path.splitext(f)[0]
+        if not numbered:
+            stem = video_stem(stem)          # a downloader's id at the end is no part of the title (video_stem)
         m = DUP_NUMBER.match(stem)
         if not m and numbered:
             continue
@@ -520,6 +522,17 @@ def mpeg1_args(w, h, rate=None):
     return ['-vf', vf, '-c:v', 'mpeg1video', '-b:v', f'{rate}k', '-maxrate', f'{rate * 2}k', '-bufsize', f'{rate}k',
             '-bf', '0', '-g', '25', '-c:a', 'mp2', '-b:a', '128k', '-ar', '44100', '-ac', '2',
             '-f', 'mpeg', '-muxdelay', '0.5', 'pipe:1']
+
+
+# a downloader's catalogue number at the end of a file's name (23 November 2026, the owner's videos: "The Warning -
+# Bite My Tongue [555225235].mp4", a streaming service's id; a video site's 11-character id is written the same way):
+# not part of the title, and with it the title matched no song
+DOWNLOAD_ID = re.compile(r'\s*[\[(](?:\d{5,}|(?=[A-Za-z0-9_-]*[0-9_-])[A-Za-z0-9_-]{11})[\])]\s*$')
+
+
+def video_stem(stem):
+    """a video file's name without a downloader's id at its end ("Bite My Tongue [555225235]" is "Bite My Tongue")"""
+    return DOWNLOAD_ID.sub('', stem) or stem
 
 
 def tidy_title(stem, artist):
@@ -1630,6 +1643,9 @@ class Catalogue:
             for f in files:
                 r = f'{rel}/{f}' if rel else f
                 stem, ext = os.path.splitext(f)
+                stem = video_stem(stem)
+                m = MAC_TRACK_NO.match(stem)
+                named = artist_of(m.group(2) if m else stem)       # "Artist - Title.mp4": the artist its name gives
                 if al:
                     artist = self.albums[al]['artist']
                 elif home in parents:
@@ -1637,11 +1653,13 @@ class Catalogue:
                 elif home and up in parents:
                     artist = parents[up]
                 elif home:
+                    # a folder that is no album's and no artist's ("Albums/videos", where a downloader puts every video):
+                    # the file's own "Artist - " first (23 November 2026: the folder's name made "Albums" the artist of
+                    # them all), else the folder's ("Artist - Videos" gives "Artist"), else the folder's name
                     name = home.split('/')[-1]
-                    artist = artist_of(name) or name
+                    artist = named or artist_of(name) or name
                 else:
-                    m = MAC_TRACK_NO.match(stem)
-                    artist = artist_of(m.group(2) if m else stem) or self.name
+                    artist = named or self.name
                 number, title = tidy_title(stem, artist)
                 info = self.lib.vinfo.get(r) or {}
                 how, why = video_how(ext.lower(), info)

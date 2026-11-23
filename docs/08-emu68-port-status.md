@@ -5080,3 +5080,16 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      opened in Aurora68 Video through the Agent: with the previous kernel the same message as on the SE; with the
      fix, "stream 1: MPEG-1 512x342 at 25.00 frames a second" and "played to the end, 9.9 s: 250 pictures decoded,
      250 shown, 0 not drawn, 0 times dry".
+
+117. **The owner's music videos: "Albums/videos", catalogue numbers (23 November).** The owner's downloader keeps every
+   video in one folder beside the artist folders, `Albums/videos/The Warning - Bite My Tongue [555225235].mp4`, some
+   twice under two numbers. The macOS Play 1.4 listed them under one artist and linked none to its song. Copied on the
+   host (the same layout, tones and FFmpeg's test picture): the folder `Albums/videos` is no album's and no artist's, so
+   the rule of item 109 made its name's folder ("Albums") the artist of every video; and the number stayed in the title
+   ("Bite My Tongue [555225235]"), which matched no song and made two downloads of one video two videos.
+   - *Fix* (aurora68_music_server.py): `video_stem()` leaves out a catalogue number at the end of a video's name (five or
+     more digits in brackets, or an 11-character id with a digit, '_' or '-': "(Live)", "[HD]", "(2019)" and
+     "(Instrumental)" stay); in a folder that is no album's or artist's the file's own "Artist - " comes before the
+     folder's name; copies of a video are compared without the number.
+   - *Test:* `downloads_check` in test_server.py (the owner's layout with an unfinished `tmp...` folder): the artist from
+     the name, the number gone, one of the two downloads kept, each linked to its song; 219 checks, 0 failed.
