@@ -73,6 +73,9 @@ mac/build/play_core_test
 mac/build/vd/
 mac/build/vdec.elf
 mac/build/vcodec/
+mac/build/av/
+mac/build/a68player.elf
+mac/build/a68player_traps.txt
 mac/build/play_core_test.m68k
 /.build/
 /.swiftpm/

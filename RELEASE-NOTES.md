@@ -13,6 +13,10 @@ Since 0.13 (docs/08 items 96 and 103):
   (the owner's 2.5.1). Measured in the testbed only: at one bit QuickTime's own decompressors are as fast; Cinepak at
   256 colours is 1.7 times faster through the card. Programs can use the card without QuickTime through the
   driver: `docs/video-decoder-api.md`. Not yet tried on the SE.
+- **Aurora68 Video: MPEG-1 films on the card** (docs/08 item 112). A new program in the Aurora68 folder: File >
+  Open... or double-click an MPEG-1 film (.mpg, MP2 sound) and the card plays it in the window, the SE's screen
+  included; pause, seek with the position bar, double size, volume, and the switch for QuickTime decoding on the
+  card. Nothing but the Mac and the Pi. (MoviePlayer does not open .mpg files yet: designed, not built.)
 
 - **The Macintosh Plus, 512Ke, 512K and 128K.** `mac.board=plus`, `512ke`, `512k` or `128k` in `cmdline.txt`.
   The Plus's overlay, its non-ADB keyboard and mouse (presented to the IIci ROM as ADB devices), SCSI on the

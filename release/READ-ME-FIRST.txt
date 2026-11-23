@@ -296,8 +296,13 @@ when a movie starts on the card, and when it is closed how many pictures came an
 took. mac.vdecode=off in cmdline.txt switches the card off for comparison: QuickTime's own
 decompressors then play the movie (the log says so). Please send the two lines from each, with
 and without, for a Cinepak movie on the SE's screen and, if you have one, on HDMI at 256
-colours and at thousands: they are the measurements the testbed cannot make. MPEG-1 files and
-Aurora68 Video, the card's own player, come next.
+colours and at thousands: they are the measurements the testbed cannot make.
+
+MPEG-1 films (.mpg with MP2 sound) play on the same card in Aurora68 Video (Mac/Aurora68/Aurora68
+Video): File > Open..., or double-click a file of type MPEG. Space plays and pauses, a click in the
+bar seeks, Movie > Double Size doubles the picture. Its Card menu switches QuickTime decoding on the
+card on and off without restarting. To make such a film on another computer: ffmpeg -i in.mp4
+-vf scale=320:240 -c:v mpeg1video -b:v 800k -c:a mp2 -b:a 128k -ar 44100 -f mpeg out.mpg
 
 MP3 files: copy the folder Aurora68 Play (Mac/Aurora68/) onto the Mac and the MP3s anywhere on its
 disks (a USB stick or the Lagoon share will do; files from a PC need no Mac type). Open one with File >

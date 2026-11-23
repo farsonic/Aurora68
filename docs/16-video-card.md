@@ -236,6 +236,56 @@ decompression (codecCanAsync: the 68k goes on with the movie while the Pi decode
 supports it for hardware decompressors), and a choice per format and depth of whether to hand a movie to
 the card, made from these measurements.
 
+## MPEG-1 from the Mac's own disks (23 November 2026, issue #25)
+- **Aurora68 Video** (`mac/a68player/video.c`, C with the kit): the card's own player. File > Open... (or a
+  double-click on an MPEG file in the Finder: its bundle takes types 'MPEG' and 'MPG ') reads an MPEG-1
+  program stream from disk straight into the card's ring (a PBRead whose buffer is the ring, so the 68k
+  copies nothing) in the event loop's idle time, 32 KB at a time while there is room; the driver starts,
+  pauses, resumes and stops the stream and places the picture. The picture is the card's: the window's
+  content rectangle in its screen's pixels, "not visible" while the window is behind, dragged or under a
+  menu; the kernel now draws the last picture again when the place changes while the stream is paused or
+  dry (`psmac_video.c`), so a paused film follows its window. Play/Pause, a position bar (a click seeks),
+  the time and the length, Normal and Double Size, three volumes, and Card > Decode QuickTime Movies on the
+  Card (the driver's Control 101, ticked from its Status 100). Without the card the window says so in two
+  lines.
+- **Seeking without an index:** stop, the film's first 2 KB pack (its system header and the video's sequence
+  header, which encoders write once, at the start), then the file from the 2 KB pack boundary nearest the
+  click, start. The first try without the header pack ended in "no MPEG-1 video found at the start of the
+  stream". The pictures until the next key frame are decoded from a reference that is not theirs (under a
+  second of blocks at FFmpeg's 25-frame groups). The length comes from the first pack's mux_rate when it is
+  believable (8 KB to 2 MB a second; FFmpeg wrote 55 MB a second for a test pattern's film) and otherwise from
+  the bytes the decoder has used against its position after three seconds.
+- **Tested** (solo board, System 7.1; a 12-second FFmpeg film, MPEG-1 320 x 240 at 25 frames and MP2,
+  `-bf 0 -g 25`, the helper's parameters): opened through Standard File and from the Finder; played to the end
+  (300 of 300 pictures shown, never dry, 0.8-1.0 ms to decode and 0.7-0.8 to draw a picture under QEMU, 1.3 to
+  4.7 per cent of core 1); paused, the window dragged (the card told "hidden" during the drag) and the last
+  picture redrawn at the new place; a click in the middle of the bar played the second half (150 pictures,
+  5.9 s); the Card menu's tick followed the driver's switch. Screenshots in the scratchpad: `video-playing.png`,
+  `video-after-seek.png`, `video-paused-moved-menu.png`. The film's sound was not heard: the testbed has no
+  sound output, and the card then times the pictures by the Pi's clock.
+- **QuickTime and MPEG-1 (MoviePlayer opening a .mpg):** designed, not built. A movie import component
+  ('eat ', subtype 'MPEG') would index the program stream at import (pack by pack: each video picture's
+  start, type and size; each MP2 frame) and make a movie of two tracks: video whose samples are the coded
+  pictures, of a compression type of the card's ('mpg1'), with I-pictures marked as sync samples, decoded by a
+  fifth 'imdc' component through a frame session of the card around pl_mpeg's video decoder; and sound whose
+  samples are MP2 frames, played through a sound decompressor ('sdec') for MP2 that hands frames to the card
+  and gets PCM back. What does not fit QuickTime 2.5: it has one time per sample, no separate decoding and
+  display order (that came with QuickTime 6), so a film with B-pictures is decoded in coded order and shown
+  one picture late, which a decoder that holds one picture back can hide but not undo on a seek; and the
+  sound decompressor is a component of the Sound Manager 3.1 interface, a second piece of work as large as
+  the import. Until those exist, an MPEG file opens in Aurora68 Video from the Finder, and MoviePlayer opens
+  everything else through the card's decompressors.
+
+### Follow-up: Aurora68 Play's music videos (23 November 2026)
+The music server now serves a music video as an MPEG-1 program stream at `/vmpeg/ID` (docs/08 item 109), and the
+classic Play says it shows no video until the card's program can. The interface for it is the card's driver,
+not Aurora68 Video's window: Play opens ".A68Video", takes the window's address from Status 100, pours the
+`/vmpeg` stream into the ring as it pours radio into the sound card (its receive chain writing at head, or
+Control 111), and drives Control 110 (start, pause, resume, stop), 112 (the picture's place: a rectangle of its
+own window, or of the HDMI screen for full screen), 113 (volume) and 114 (end). Nothing in Aurora68 Video needs
+to change for that; if Play would rather hand the film over, Aurora68 Video could take a URL in an 'odoc' of a
+small text document, which is not built.
+
 ## Modern formats: a study (22 November 2026)
 The owner's third item: H.264 video ('avc1') and AAC sound ('mp4a') in .mp4 and .mov files from a camera or
 a phone. QuickTime 2.5 reads the MPEG-4 file format's atoms as a QuickTime movie (they are the same
@@ -285,7 +335,8 @@ file play in MoviePlayer like any other. The question is what decodes them on th
    will tackle YouTube later"); its local player is part of issue #25's work.
 4. The QuickTime components (issue #25, with #13). Issue #13's decompressors built 22 November 2026: the
    card's driver in its ROM, Cinepak, Apple Video, Animation and Graphics on the Pi ("The in-box card").
-   MPEG-1 from local files (issue #25) next.
+   MPEG-1 from local files (issue #25): Aurora68 Video plays them on the card, 23 November 2026; the QuickTime
+   import ('eat ' and an MP2 sound decompressor) designed, not built ("MPEG-1 from the Mac's own disks").
 5. Alice68: the same module behind an Amiga card or library (issue #26).
 6. Modern formats (H.264, AAC): studied 22 November 2026 ("Modern formats: a study"), not built.
 7. The programming interface: `docs/video-decoder-api.md` (22 November 2026).

@@ -1,0 +1,4 @@
+# Aurora68 Video's Toolbox calls beyond mac/c/traps.txt (the build puts the two lists together).
+# Standard File (Pack3, selector 2: SFGetFile); numTypes -1 shows every file
+A9EA - SFGetFile(long where:l, const unsigned char *prompt:l, void *filter:l, int numTypes:w, void *types:l, void *hook:l, void *reply:l, int selector:w)
+A8A2 - PaintRect(const Rect *r:l)
