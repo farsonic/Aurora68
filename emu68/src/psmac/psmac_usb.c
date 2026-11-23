@@ -352,7 +352,8 @@ static void say_transfer(const struct frf_dwc2_packet *p, int rc, enum uhc_outco
     char b[96];
     int tt = p->hub_address && root_speed == 0;
     uhc_bits(bits, b, sizeof b);
-    kprintf("[USB] %s failed: %s (rc %d), HCINT %s; address %u endpoint %u %s, %s speed%s", what_of(p), uhc_outcome_name(o), rc, b,
+    kprintf("[USB] %s %s: %s (rc %d), HCINT %s; address %u endpoint %u %s, %s speed%s", what_of(p), o == UHO_NAK ? "had no data" : "failed",
+            uhc_outcome_name(o), rc, b,
             p->address, p->endpoint, p->in ? "IN" : "OUT", p->low_speed ? "low" : root_speed == 0 && !p->hub_address ? "high" : "full",
             tt ? " through the hub's translator" : "");
     if (tt)

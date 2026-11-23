@@ -5722,3 +5722,107 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      point ($830) alone when it is on the picture's screen (found through the device list $8A8: the GDevice whose
      PixMap is that screen's, its gdRect's corner); the box is drawn again once the pointer has left it. Not yet seen
      on the SE (the emulator was busy); the owner's next run is the test.
+
+130. **The USB keyboard that sent nothing until it was re-plugged; the host channel's bits in the log (23
+   November).** The owner's Pi 3B (the SE's PiStorm, the LAN9514 hub) has long needed the USB keyboard unplugged and
+   plugged in again after power-on (item 41 put it down to a device not ready at the boot's enumeration and added
+   retries). This time the heartbeat said more: `kb 1 (ok 0 nak 598565 err 1)` for long stretches, so the keyboard
+   *was* found and configured and polled about a hundred times a second, one poll had failed, and every poll since
+   had been answered NAK; after a re-plug, `kb 1 (ok 49 ...)`. Nothing in the log said what the failed poll was.
+   - *Reading the code against known-good hosts.* The polls are Alice68's (`frf_usb_native_hid.c`, interrupt IN
+     through the hub's transaction translator: start split, complete split, again on NYET), over the glue's DMA
+     transport (`psmac_usb.c`, `dma_packet`). Read for comparison, none of their code used: Linux's dwc2 host
+     (`drivers/usb/dwc2/hcd_intr.c`) and Circle (`lib/usb/dwhcidevice.cpp`, `dwhciframeschedper.cpp`,
+     `usbhiddevice.cpp`, `usbkeyboard.cpp`). Three differences:
+     - *The order the halt bits were read in.* `dma_packet` took STALL, then NAK, then the errors, and XFERCOMPL
+       last. Linux takes XFERCOMPL first, whatever else is set beside it, then STALL, then the transaction, babble,
+       frame-overrun and toggle errors, NYET and NAK last ("Must handle xacterr before nak or ack. Could get a
+       xacterr at the same time as either of these"). With NAK first, a halt that carried a NAK bit beside an error
+       was a NAK: no fault counted, nothing done, polled again; and one beside a completed report dropped the report
+       with the host's data toggle left where it was while the keyboard's had moved on. That is a path that ends in
+       "one failure, then only NAKs", though whether the owner's controller sets the bits that way only its log can
+       say.
+     - *What happens after a failed poll.* Nothing did: Alice68 keeps the toggle, polls on, and a device whose polls
+       all fail for two seconds is enumerated again (item 41), but a stream of NAKs is never "failing". A failure in
+       the middle of a split transaction is exactly where the two toggles can part: the translator may have taken the
+       keyboard's report and acknowledged it, so the keyboard moved to the next toggle, while the host saw the
+       failure. Standard toggles mend themselves after one lost report; a keyboard or a translator that does not is
+       the one the owner has.
+     - *The keyboard's set-up.* Alice68 sends SET_CONFIGURATION and SET_PROTOCOL(boot). Linux's usbhid also sends
+       SET_IDLE(0) to a boot keyboard; Circle sets the LEDs ("setting the LED status forces some keyboard adapters to
+       work").
+     Also checked, and the same as the hosts above: the toggle starts at DATA0 after SET_CONFIGURATION (the
+     endpoint record is zeroed at every enumeration), the interrupt endpoint's interval is the descriptor's, the
+     channel's ODDFRM is set for the next (micro)frame, NAK is not counted as a failure. The split timing (a complete
+     split 125 us after the start split, up to eight more on NYET) is looser than Circle's (the start split never in
+     microframe 6, the complete split two microframes on, at most three) but it is the timing that works after a
+     re-plug, so it was left alone.
+   - *What changed* (all in the glue, `psmac_usb.c`, and a new portable `usb_hcint.c`; Alice68's files are untouched):
+     - `dma_packet` reads the bits in Linux's order (`uhc_classify`). The FIFO transport (`usb=pio`) is Alice68's and
+       keeps its own order.
+     - After every enumeration the keyboard gets SET_IDLE(0) and SET_REPORT with its LEDs off, by its own route (an
+       8-byte endpoint 0, which every device takes; a refusal is logged and harmless). A new line says where the
+       keyboard is and what it took: `[USB] keyboard at address 3, interface 0, endpoint 1 IN, every 10 ms, full speed
+       through the hub's translator: SET_IDLE taken, LEDs taken`.
+     - The keyboard's watch (`usb_hcint.c`, `ukw_*`): after a failed poll of a kind that can leave the toggles apart
+       (a STALL, a transaction, babble or toggle error, NYET to the last complete split, a timeout; not a frame
+       overrun, which never reached the bus), CLEAR_FEATURE(ENDPOINT_HALT) goes to the keyboard's interrupt endpoint,
+       which sets its toggle to DATA0 halted or not (USB 2.0, 9.4.5), and the host's goes to DATA0 with it; at most
+       once a second. The mouse gets the same. And a keyboard that has sent no report at all in 20 seconds since its
+       set-up, after at least one failed poll, has the bus enumerated once more, which is what the re-plug did: once,
+       until a real plug or unplug (an untouched keyboard that never failed is left alone, however long it sends
+       nothing).
+     - The log. Every failed transfer (a NAK is not a failure) gets one line naming the channel's bits, the first
+       eight after each enumeration: `[USB] the keyboard's poll failed: transaction error (rc -6), HCINT CHHLTD
+       XACTERR; address 3 endpoint 1 IN, full speed through the hub's translator (hub 1 port 2), DATA0`. The
+       thirty-second heartbeat adds, when there were any, the keyboard's failed polls by kind, the last one's bits and
+       the toggle resets: `[USB]   keyboard's failed polls: transaction error 1, the last HCINT CHHLTD XACTERR;
+       toggle set again 1 time (0 refused); no report since its set-up`. With `usb.trace=1` every failed transfer is
+       logged in full: the bits after the start split and after each complete split, HCTSIZ (bytes and packets left,
+       the PID), HCCHAR, HCSPLT and the frame number, and the keyboard's first twenty NAKed polls after a set-up and one
+       in ten thousand after that, so the owner's log shows what a NAK really carried. `usb.trace=2` also resets the
+       keyboard's toggle every ten seconds, to try that path where nothing fails (the testbed). Setup and Recovery
+       lists the option under Debug.
+   - *Tested.* `tools/usb_hcint_test.c` (in `make -C mac check`, 62 checks): the bit order (a NAK beside XFERCOMPL is
+     a completed transfer, beside XACTERR an error; STALL before the errors), the names, which outcomes ask for a
+     toggle reset, and the watch (the owner's case: one failure, a reset at once, a second one not before a second
+     has passed, one enumeration at 20 s and no second; none for a keyboard that never failed or has sent a report;
+     a plug allows one more; the millisecond counter's wrap). QEMU (the solo board, System 7.1): with QEMU's hub, `usb-kbd`, `usb-mouse` and an
+     HFS `usb-storage` stick, and `usb.trace=2`: `[USB] keyboard at address 2, interface 0, endpoint 1 IN, every 10
+     ms, full speed: SET_IDLE taken, LEDs taken`; the sampled NAKs read `HCINT CHHLTD NAK`; the toggle reset every ten
+     seconds went out each time and QEMU's HID model refused it (it STALLs CLEAR_FEATURE(ENDPOINT_HALT), which it does
+     not implement; a real keyboard must take it), the host's toggle went to DATA0 all the same, and the keys typed
+     after twenty of those resets reached the Finder (Command-N made a new folder; 16 reports), the monitor's
+     `mouse_move 20 12` eight times moved the pointer by exactly (160, 96) as in item 40, and the stick mounted as
+     USBSTICK on the desktop. With the keyboard alone and no option: only the set-up line and the heartbeats, no
+     failed transfer, 18 reports, the typed name in the Finder. What QEMU cannot show: a failed poll (its DWC2 model
+     never fails one), so the resync after a real failure and the rescue enumeration ran only in the host test.
+   - *Only the owner's Pi can say* whether this cures it: QEMU's DWC2 model has no transaction translator, no
+     split transactions and no data toggles to lose. What to look for after a power-on with the keyboard plugged in:
+     the `[USB] keyboard at address ...` line (SET_IDLE and the LEDs taken or refused); any `[USB] the keyboard's
+     poll failed: ...` line, which names the bits; then either `its data toggle set again` and reports (`ok` growing
+     in the heartbeat when keys are pressed), or 20 seconds later `the keyboard has sent no report in 20 s since its
+     set-up ... enumerating again`, and whether the keyboard works after that. If it still does not, a start with
+     `usb.trace=1` (Setup and Recovery, Diagnostics, for one start) logs the failing poll's every split and the bits
+     the NAKs carry.
+   - *USB flash drives (paused by the owner the same day).* The owner's SanDisk "3.2 Gen1" (0781:55b1, 128 GB, high
+     speed behind the LAN9514) enumerates and is configured, but its first command block (the 31-byte bulk OUT for
+     INQUIRY) fails every time, also after the bulk-only reset recovery. The work on it is paused; only the log was
+     changed, so that the next try says why: the reset recovery's line now carries the bits and registers of the
+     command's failed transfer (`[USB] disk 0: the command block did not go (the transfer's HCINT CHHLTD XACTERR,
+     HCTSIZ ..., HCCHAR ...): reset recovery ...`; "no transfer failed" when the stick answered but not with a CSW),
+     and `usb.trace=1` logs every failed transfer of a stick. A separate commit, which can be left out. Findings from reading `psmac_usbdisk.c`'s
+     `xfer` against Linux and Circle, for when the work resumes (not changed):
+     - A halted channel without XFERCOMPL is a failure at once, except STALL: no retry. Linux and Circle retry a bulk
+       transaction error up to three times, and Linux resets the error count when the halt also shows NYET, NAK or
+       ACK after a PING ("XactErr with NYET/NAK/ACK", the OUT NAK enhancement of DWC2 cores from 2.71a; the BCM2837's
+       is 2.80a). A high-speed stick that answers its first OUT with NAK or NYET and then PING is the likeliest
+       difference from the control transfers, which work (a SETUP is never NAKed).
+     - A retry has to restart from what was taken: bytes and packets left from HCTSIZ, the toggle from HCTSIZ's PID,
+       and for a high-speed OUT the DOPNG bit (HCTSIZ bit 31) so that the channel PINGs first.
+     - Checked and not the cause by reading: the CBW buffer is 64-byte aligned and cleaned before the transfer; the
+       endpoint numbers and the 512-byte packet size come from the descriptor (the CLEAR_FEATUREs on them are
+       taken); the toggles are DATA0 after SET_CONFIGURATION and after each CLEAR_FEATURE; a high-speed device behind
+       the high-speed hub gets no split; the non-periodic TX FIFO (256 words) holds a 512-byte packet.
+     - Also to do then: the 128 GB exFAT stick's view (item 97 stage 2), which the owner wants for moving files
+       between the Mac and other machines, and what the Mac is told about a stick that carries no disk image.
