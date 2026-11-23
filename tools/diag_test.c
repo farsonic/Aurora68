@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0
  *
  * diag_test.c - Setup and Recovery's options table, its validator, the one-shot debug start's merge and the
- * report bundle's scrubbing (emu68/src/psmac/psmac_diag.c, docs/08 item 121), on the host. Run by
+ * report bundle's scrubbing (emu68/src/psmac/psmac_diag.c, docs/08 item 122), on the host. Run by
  * tools/diag_test.sh from `make -C mac check`.
  *
  * Every option: each of its plain values accepted (in any case), its example accepted, nonsense refused, at

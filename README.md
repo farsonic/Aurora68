@@ -363,7 +363,7 @@ from a terminal: `aurora68.py recovery --url http://aurora68.local --pin 1234 ls
 rm NAME | mv A B | cmdline [TEXT] | opt mac.fpu=none -bt.pair | wifi scan | wifi test --ssid S --psk P --country GB |
 log | rollback | reboot [normal|recovery]`.
 
-**Options and Diagnostics** (since 23 November 2026, docs/08 item 121). The **Options** tab lists every option of the
+**Options and Diagnostics** (since 23 November 2026, docs/08 item 122). The **Options** tab lists every option of the
 table above that a user or a tester may set, with a line of plain English and its values (a menu where it takes
 words, a field with an example where it takes a number or a name), in groups: Machine, Display, Sound, Storage,
 Network, Video card, Debug. Choose the board first (`mac.board`): options another board uses are hidden (their
@@ -398,6 +398,8 @@ names what is wrong ("mac.fpu: fast is not one of exact|on|double|none"). The **
 The API for scripts: `GET /r/diag[?from=N]` (the bus check's lines from N as they come), `POST /r/diag/run?test=buscheck|card|jtag`,
 `POST /r/diag/screen`, `POST /r/diag/once` (a line of options; `?cancel=1` takes it away), `GET /r/reports`,
 `GET /r/bundle`; `GET /r/options` carries the table itself (`defs`, `groups`).
+
+![The Diagnostics tab after a bus check over the testbed's bridge (MAME's SE)](docs/img/recovery-diag-page.png)
 
 **The Display tab** (since 22 November 2026, docs/08 item 111) chooses the HDMI monitor's resolution as Aurora68
 Display does on the Mac, for a monitor that shows nothing or a Mac that does not start. It shows what the monitor

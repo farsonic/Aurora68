@@ -2,7 +2,7 @@
  *
  * psmac_diag.c - Setup and Recovery's options and diagnostics, in portable C.
  *
- * Backstory (23 November 2026, docs/08 item 121). The owner asked: "do we have all the debug options in there for
+ * Backstory (23 November 2026, docs/08 item 122). The owner asked: "do we have all the debug options in there for
  * Mac, Mac Plus etc. Can we trigger a debug run directly in there for this and other platforms? With a report in
  * the Web GUI?" The recovery page's Options tab knew sixteen options, as a list in the page's script with a second
  * list of allowed values in psmac_recovery.c, and a third list (the page's OB map) of the boards that use some of

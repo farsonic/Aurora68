@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: MPL-2.0
 # diag_test.sh [BUILD_DIR] - Setup and Recovery's options table and validator, the one-shot debug start's
-# words and the report bundle's scrubbing (emu68/src/psmac/psmac_diag.c, docs/08 item 121) on the host; then
+# words and the report bundle's scrubbing (emu68/src/psmac/psmac_diag.c, docs/08 item 122) on the host; then
 # the page and its header: tools/recovery/mkpage.py must make exactly the psmac_recovery_page.h in the tree.
 # Run by `make -C mac check`.
 set -e

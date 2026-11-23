@@ -746,7 +746,7 @@ void bc_run(const struct bc_bus *bus, const struct bc_config *cfg, struct bc_res
        addresses are chosen around what it found, so that they measure the data lines alone: a line stuck
        at v gets v in every address, a line following another the other's value, two joined lines the
        winning value, and RAM that repeats is used below where it repeats. */
-    stage(&s, 1, "the address lines, over the whole RAM (and how much RAM answers)");
+    stage(&s, 1, "the address lines and how much RAM answers");
     addr_test(&s);
     uint32_t R = cfg->ram_size, force1 = 0, force0 = 0, same_n[24], same_m[24], nsame = 0;
     s.lo = 0x1000; s.hi = R >= 0x20000u ? R - TOP_KEEP : R / 2;

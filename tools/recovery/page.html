@@ -59,7 +59,7 @@ span.pw{display:flex;gap:8px;align-items:center}span.pw input{flex:1;min-width:0
 .ml .gone{text-decoration:line-through}.pill.k{background:#000;color:#fff}
 input[type=checkbox]{width:auto;margin:0 6px 0 0;vertical-align:-2px;accent-color:#000}.chk{display:flex;align-items:center;margin:10px 0 0;font-size:12px}
 .og{grid-column:1/-1;font-weight:700;font-size:13px;margin:16px 0 0;padding-bottom:2px;border-bottom:2px solid #000}.og:first-child{margin-top:4px}
-/* The Diagnostics tab (docs/08 item 121): its swatch is the bus check's page, black on white in fine stripes; a report's
+/* The Diagnostics tab (docs/08 item 122): its swatch is the bus check's page, black on white in fine stripes; a report's
    verdict sits in a box with the six colours above it, as the Display tab's suggestion does. */
 .verd{font-weight:700;font-size:15px}.ml li.dim .b{display:none}.chk2{display:flex;align-items:flex-start;gap:8px;padding:7px 0;border-bottom:1px dotted #000}
 .chk2 input[type=checkbox]{margin-top:3px}.chk2 .ov{flex:1;min-width:0}.chk2 code{font:700 12px var(--mono)}.chk2 p{margin:1px 0 4px;font-size:12px}.chk2 select,.chk2 input[type=text]{max-width:16em}
@@ -186,7 +186,7 @@ function wifi(w){var b=wbody();
  if(w=='save'&&el('wst').textContent.indexOf('joined')<0&&!confirm('The new settings have not joined in a test. Save them anyway?'))return;
  api('POST','/r/wifi/'+w,b).then(function(){el('wst').textContent=w=='test'?'Testing...':'Saved';if(w=='test')wpoll(0);else toast('Saved to cmdline.txt')},function(){})}
 function wpoll(i){api('GET','/r/wifi').then(function(w){if(w.test=='running'&&i<30)setTimeout(function(){wpoll(i+1)},1500);else el('wst').textContent=w.note||w.test||'No answer';wifiget()},function(){})}
-// the Options tab (docs/08 item 121): the kernel's table of options (GET /r/options: defs, groups), each with the boards that
+// the Options tab (docs/08 item 122): the kernel's table of options (GET /r/options: defs, groups), each with the boards that
 // use it; the board chosen hides the others' options (their values are kept)
 var DEF=null,OG=[],OV={};
 function optfield(o,v){var id='o_'+o.key;
@@ -204,7 +204,7 @@ function opts(dry){if(dry<0){api('GET','/r/options').then(function(x){DEF=x.defs
  el('opts').innerHTML=h;el('optline').textContent=x.line;el('o_mac.board').onchange=boardfilter;boardfilter()},function(){});return}
  var e=[];DEF.forEach(function(o){var f=el('o_'+o.key);if(!f||o.wifitab)return;var v=f.value.trim(),old=OV[o.key]==null?'':OV[o.key];if(o.secret){if(v)e.push(o.key+'='+v);return}if(v!=old)e.push(v?o.key+'='+v:'-'+o.key)});
  api('POST','/r/options'+(dry?'?dry=1':''),e.join('\n')).then(function(x){el('optline').textContent=(dry?'The new line would be:\n':'Saved (the line before is in cmdline.bak):\n')+x.line;if(!dry){toast('Options saved');opts(-1)}},function(){})}
-// the Diagnostics tab (docs/08 item 121): GET /r/diag (the bus check's lines from ?from=N as they come), POST /r/diag/run?test=,
+// the Diagnostics tab (docs/08 item 122): GET /r/diag (the bus check's lines from ?from=N as they come), POST /r/diag/run?test=,
 // /r/diag/screen, /r/diag/once; GET /r/reports, /r/bundle
 var G=null,GL=[],GT=null;
 function dgstop(){if(GT){clearTimeout(GT);GT=null}}
@@ -217,7 +217,7 @@ function dgrender(first){var g=G,b=g.buscheck,c=g.cardtest,j=g.jtag,h='';
  var busy=b.state=='asked'||b.state=='running';
  h+=dgrow('Bus check',b.refusal?'Not here: '+esc(b.refusal)+'.'+(b.force_runs?' <button class="b s" onclick="dgrun(\'buscheck\',1)">Run over the bridge (testbed)</button>':''):
   'The bus between the Pi and the logic board: the RAM\'s address and data lines (and how much RAM answers), the VIA and the SCC, the ROM, every access\'s time, what a retry would cure, reads during the picture. A few seconds on a PiStorm; the report shows here, on the Mac\'s own screen and on HDMI.'+(busy?' <span class="pill k">running</span>':''),
-  b.refusal?'':'<button class="b s p" onclick="dgrun(\'buscheck\',0)"'+(busy?' disabled':'')+'>Run</button>',!!b.refusal);
+  b.refusal?'':'<button class="b s p" onclick="dgrun(\'buscheck\',0)"'+(busy?' disabled':'')+'>Run</button>',!!b.refusal&&!b.force_runs);
  h+=dgrow('Card read test','Reads the largest file on the card (16 MB at most) as the disk images are read, and gives the speed and any read error'+(c.state=='running'?': '+kb(c.got)+' of '+kb(c.total)+' of '+esc(c.file):'')+'.'+(c.state=='done'?' <b>'+esc(c.verdict)+'.</b>':''),
   '<button class="b s" onclick="dgrun(\'card\')"'+(c.state=='running'?' disabled':'')+'>Run</button>');
  var jt=j.at_start?'Read at this start: '+esc(j.at_start.usercode)+', '+esc(j.at_start.name)+'.':'';if(j.again=='read')jt+=' Read again: <b>'+esc(j.usercode)+'</b>, '+esc(j.name)+'.';else if(j.again=='failed')jt+=' Read again: the read failed.';
