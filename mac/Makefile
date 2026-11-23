@@ -219,7 +219,7 @@ $(B)/toolbox_glue.o: $(B)/toolbox_glue.s
 	$(AS) -o $@ $<
 $(B)/libc.o: c/libc.c c/toolbox.h $(B)/toolbox_gen.h
 	$(CC) $(CFLAGS) -c -o $@ $<
-$(B)/pilog.o: pilog.c c/toolbox.h $(B)/toolbox_gen.h
+$(B)/pilog.o: pilog.c c/screens.h c/toolbox.h $(B)/toolbox_gen.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 $(B)/pilog.elf: $(C_KIT) $(B)/pilog.o c/app.ld
 	$(LD) -T c/app.ld --emit-relocs --no-warn-rwx-segments -z noexecstack -o $@ $(C_KIT) $(B)/pilog.o $(LIBGCC)
@@ -267,7 +267,7 @@ $(B)/pp/net.o: piplay/net.s
 	@mkdir -p $(B)/pp
 	$(AS) -o $@ $<
 PP_CFLAGS = $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -I$(CORE)/include
-PP_H = c/toolbox.h $(B)/pp/toolbox_gen.h ../emu68/src/psmac/psmb.h piplay/radio.h piplay/library.h piplay/fetch.h piplay/media.h piplay/vcard.h $(CORE_H)
+PP_H = c/toolbox.h c/screens.h $(B)/pp/toolbox_gen.h ../emu68/src/psmac/psmb.h piplay/radio.h piplay/library.h piplay/fetch.h piplay/media.h piplay/vcard.h $(CORE_H)
 $(B)/pp/piplay.o: piplay/piplay.c $(PP_H)
 	$(CC) $(PP_CFLAGS) -I../emu68/src/psmac -c -o $@ $<
 # the internet radio: Riptide's .IPP6 (IPP6.h, its interface header) or MacTCP and the resolver (radio.c); the stations' answers
@@ -397,7 +397,7 @@ $(B)/av/fs.o: piplay/fs.s
 	$(AS) -o $@ $<
 $(B)/av/libc.o: c/libc.c c/toolbox.h $(B)/av/toolbox_gen.h
 	$(CC) $(subst -I$(B),-I$(B)/av,$(CFLAGS)) -c -o $@ $<
-$(B)/av/video.o: a68player/video.c c/toolbox.h $(B)/av/toolbox_gen.h ../emu68/src/psmac/psmac_video.h
+$(B)/av/video.o: a68player/video.c c/screens.h c/toolbox.h $(B)/av/toolbox_gen.h ../emu68/src/psmac/psmac_video.h
 	$(CC) $(subst -I$(B),-I$(B)/av,$(CFLAGS)) -I../emu68/src/psmac -c -o $@ $<
 AV_OBJ = $(B)/crt0.o $(B)/av/toolbox_glue.o $(B)/av/libc.o $(B)/av/glue.o $(B)/av/fs.o $(B)/av/video.o
 $(B)/a68player.elf: $(AV_OBJ) c/app.ld
@@ -421,7 +421,7 @@ $(B)/apc/glue.o: a68player/glue.s
 	$(AS) -o $@ $<
 $(B)/apc/libc.o: c/libc.c c/toolbox.h $(B)/apc/toolbox_gen.h
 	$(CC) $(subst -I$(B),-I$(B)/apc,$(CFLAGS)) -c -o $@ $<
-$(B)/apc/pc.o: a68pc/pc.c c/toolbox.h $(B)/apc/toolbox_gen.h ../emu68/src/psmac/psmac_pc.h
+$(B)/apc/pc.o: a68pc/pc.c c/screens.h c/toolbox.h $(B)/apc/toolbox_gen.h ../emu68/src/psmac/psmac_pc.h
 	$(CC) $(subst -I$(B),-I$(B)/apc,$(CFLAGS)) -I../emu68/src/psmac -c -o $@ $<
 APC_OBJ = $(B)/crt0.o $(B)/apc/toolbox_glue.o $(B)/apc/libc.o $(B)/apc/glue.o $(B)/apc/pc.o
 $(B)/a68pc.elf: $(APC_OBJ) c/app.ld
@@ -468,7 +468,7 @@ $(B)/st/toolbox_glue.s $(B)/st/toolbox_gen.h: $(B)/pistatus_traps.txt ../tools/m
 	$(PY) ../tools/mac/mktraps.py $< -s $(B)/st/toolbox_glue.s -H $(B)/st/toolbox_gen.h
 $(B)/st/toolbox_glue.o: $(B)/st/toolbox_glue.s
 	$(AS) -o $@ $<
-$(B)/st/status.o: pistatus/status.c pistatus/model.h c/toolbox.h $(B)/st/toolbox_gen.h
+$(B)/st/status.o: pistatus/status.c pistatus/model.h c/screens.h c/toolbox.h $(B)/st/toolbox_gen.h
 	$(CC) $(ST_CFLAGS) -c -o $@ $<
 $(B)/st/model.o: pistatus/model.c pistatus/model.h
 	@mkdir -p $(B)/st
@@ -489,7 +489,7 @@ $(B)/sl/toolbox_glue.s $(B)/sl/toolbox_gen.h: $(B)/pislots_traps.txt ../tools/ma
 	$(PY) ../tools/mac/mktraps.py $< -s $(B)/sl/toolbox_glue.s -H $(B)/sl/toolbox_gen.h
 $(B)/sl/toolbox_glue.o: $(B)/sl/toolbox_glue.s
 	$(AS) -o $@ $<
-$(B)/sl/pislots.o: pislots/pislots.c c/toolbox.h $(B)/sl/toolbox_gen.h
+$(B)/sl/pislots.o: pislots/pislots.c c/screens.h c/toolbox.h $(B)/sl/toolbox_gen.h
 	$(CC) $(subst -I$(B),-I$(B)/sl,$(CFLAGS)) -c -o $@ $<
 $(B)/sl/libc.o: c/libc.c c/toolbox.h $(B)/sl/toolbox_gen.h
 	$(CC) $(subst -I$(B),-I$(B)/sl,$(CFLAGS)) -c -o $@ $<
@@ -517,7 +517,7 @@ $(B)/pd/libc.o: c/libc.c c/toolbox.h $(B)/pd/toolbox_gen.h
 	$(CC) $(PD_CFLAGS) -c -o $@ $<
 $(B)/pd/pdcommon.o: pidisplay/pdcommon.c pidisplay/pdcommon.h c/toolbox.h $(B)/pd/toolbox_gen.h ../emu68/src/psmac/psmb.h
 	$(CC) $(PD_CFLAGS) -c -o $@ $<
-$(B)/pd/pidisplay.o: pidisplay/pidisplay.c pidisplay/pdcommon.h c/toolbox.h $(B)/pd/toolbox_gen.h ../emu68/src/psmac/psmb.h
+$(B)/pd/pidisplay.o: pidisplay/pidisplay.c pidisplay/pdcommon.h c/screens.h c/toolbox.h $(B)/pd/toolbox_gen.h ../emu68/src/psmac/psmb.h
 	$(CC) $(PD_CFLAGS) -c -o $@ $<
 PD_OBJS = $(B)/crt0.o $(B)/pd/toolbox_glue.o $(B)/pd/libc.o $(B)/pd/glue.o $(B)/pd/dlgglue.o $(B)/pd/pdcommon.o $(B)/pd/pidisplay.o
 $(B)/pidisplay.elf: $(PD_OBJS) c/app.ld

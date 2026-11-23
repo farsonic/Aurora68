@@ -385,7 +385,7 @@ s_title:   .byte 34
 s_ipp:	   .byte 4
 	.ascii ".IPP"
 	.even
-s_noipp:   .byte 44
+s_noipp:   .byte 45
 	.ascii "MacTCP (.IPP) could not be opened: installed?"
 	.even
 s_open:	   .byte 12

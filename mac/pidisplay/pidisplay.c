@@ -35,6 +35,7 @@
  * kit in mac/c (mac/c/README.md). Strings in English, in the code, as in the project's other programs.
  */
 #include "pdcommon.h"
+#include "screens.h"
 
 /* ---- glue.s ---- */
 long mac_gestalt(long selector, long *answer);
@@ -1080,7 +1081,10 @@ int main(void)
 	   (the SE's 512 x 342 fits it) */
 	Rect b = { 42, 6, 334, 506 };
 	prefs_io(0);
-	if (pf.magic == PREFS_MAGIC && pf.version == 1 && place_ok(&pf.place)) b = pf.place;
+	if (pf.magic == PREFS_MAGIC && pf.version == 1 && place_ok(&pf.place)) {
+		b = pf.place;
+		scr_fit(&b);       /* all of it on the screen it is mostly on, the grow and zoom boxes in reach (23 November 2026) */
+	}
 	win = NewWindow(0, &b, pstr(pbuf, "Aurora68 Display"), 1, zoomDocProc, (void *)-1, 1, 0);
 	SetPort(win);
 	Rect z = { 0, 0, 10, 10 };

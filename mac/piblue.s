@@ -79,6 +79,11 @@
 	.equ	BTK_KEYBOARD,	1
 	.equ	BTK_MOUSE,	2
 	.equ	LINEH,		12
+| the window fits the SE's 512 x 342 screen (23 November 2026; it was 320 high and its bottom 18 lines
+| below the SE's): the lists stop above the status line, which is above the keys' line
+	.equ	LIST_END,	244		| the last baseline a list line may take
+	.equ	STATUS_Y,	260
+	.equ	HELP_Y,		288
 
 app_start:
 	lea	-4(%a5),%a0
@@ -338,7 +343,9 @@ redraw:
 	moveq	#MAXKEYS,%d3
 7:	lea	B_KEYS(%a3),%a2
 	moveq	#0,%d4
-71:	move.w	#8,V_X(%a6)
+71:	cmp.w	#LIST_END,V_Y(%a6)
+	bhi	9f			| no room for more above the status line
+	move.w	#8,V_X(%a6)
 	move.l	%d4,%d0
 	bsr	say_dec
 	move.w	#8+3*6,V_X(%a6)
@@ -369,7 +376,9 @@ redraw:
 	moveq	#MAXFOUND,%d3
 10:	lea	B_FOUND(%a3),%a2
 	moveq	#0,%d4
-101:	move.w	#8,V_X(%a6)
+101:	cmp.w	#LIST_END,V_Y(%a6)
+	bhi	redraw_help
+	move.w	#8,V_X(%a6)
 	move.l	%d4,%d0
 	bsr	say_dec
 	move.w	#8+3*6,V_X(%a6)
@@ -390,7 +399,7 @@ redraw:
 11:	lea	s_nofound(%pc),%a0
 	bsr	say
 redraw_help:
-	move.w	#300,V_Y(%a6)
+	move.w	#HELP_Y,V_Y(%a6)
 	move.w	#8,V_X(%a6)
 	lea	s_help(%pc),%a0
 	bsr	say
@@ -419,7 +428,7 @@ say_kind:
 status_line:
 	movem.l	%d0/%a0-%a1,-(%sp)
 	move.l	%a0,%a1
-	move.w	#278,V_Y(%a6)
+	move.w	#STATUS_Y,V_Y(%a6)
 	move.w	#8,V_X(%a6)
 	pea	erase_status(%pc)
 	.short	_EraseRect
@@ -586,8 +595,8 @@ nib:	add.b	#'0',%d1
 	.equ	V_HASH,		4
 	.equ	V_RESULT,	8
 vars:	.space	16
-wrect:	.short	40, 30, 360, 500
-erase_status: .short 268, 4, 292, 468
+wrect:	.short	40, 20, 336, 492		| top, left, bottom, right: 472 x 296, inside 512 x 342
+erase_status: .short STATUS_Y-10, 4, STATUS_Y+14, 468
 wtitle:	.byte	18			| the window's title: the program's name (since 21 November 2026)
 	.ascii	"Aurora68 Bluetooth"
 	.even

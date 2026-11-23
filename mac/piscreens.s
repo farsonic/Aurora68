@@ -7,6 +7,9 @@
 | whether the system then draws on it depends on what ended up in this list: a screen that is not
 | active, or whose base address was taken in 24-bit mode and kept after the switch to 32-bit, is
 | exactly what this program shows and nothing else would. Lines: one per device, then MMU32Bit.
+| Since 23 November 2026 each device takes two lines (its place, flags and depth; then its base, row
+| bytes and driver) and the window is 496 wide: one line had been 600 pixels with the HDMI screen's
+| numbers, past the right edge of the SE's 512 x 342 screen.
 
 	.text
 	.globl	app_start
@@ -83,6 +86,8 @@ app_start:
 	bsr	say
 	lea	s_head(%pc),%a0
 	bsr	say
+	lea	s_head2(%pc),%a0
+	bsr	say
 	clr.l	-(%sp)
 	.short	_GetMainDevice
 	move.l	(%sp)+,%d6		| the main screen's handle
@@ -125,6 +130,8 @@ next_dev:
 	moveq	#0,%d0
 	move.w	pmPixelSize(%a2),%d0
 	bsr	say_dec
+	bsr	crlf			| the rest on a line of its own, indented: one line was 600 pixels
+	add.w	#3*6,V_X(%a6)		| wide with the HDMI screen's numbers, the SE's screen is 512
 	lea	s_base(%pc),%a0
 	bsr	say_prefix
 	move.l	pmBaseAddr(%a2),%d0
@@ -317,15 +324,18 @@ say_hex:				| d0 = value, d1 = digits - 1
 	.equ	V_Y,		0
 	.equ	V_X,		2
 vars:	.space	8
-wrect:	.short	40, 20, 300, 620
+wrect:	.short	40, 8, 300, 504		| top, left, bottom, right: inside the SE's 512 x 342 (23 November 2026)
 wtitle:	.byte	16			| the window's title: the program's name (since 21 November 2026)
 	.ascii	"Aurora68 Screens"
 	.even
 s_title: .byte 44
 	.ascii	"QuickDraw's screens (the GDevice list), now:"
 	.even
-s_head:  .byte 46
-	.ascii	"#  top left bottom right  flags depth base..."
+s_head:  .byte 37
+	.ascii	"#  top left bottom right  flags depth"
+	.even
+s_head2: .byte 35
+	.ascii	"   base, rb (row bytes), ref (main)"
 	.even
 s_sep:   .byte 1
 	.ascii	":"
