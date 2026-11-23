@@ -6141,3 +6141,42 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      the CD put in from the Disks menu; at 512 x 342 after the kernel was started again with the same card image, the file
      read back and the CD read at D:; `mtype` on the host found the file inside the card image's `freedos.img`. Pictures:
      `docs/img/pc-card-qemu-*-2.png`.
+
+134. **Every program on the SE's own screen: 512 by 342, one bit (23 November).** The owner uses the SE's built-in
+   screen as well as the 2560 by 1440 HDMI screen, and the SE's can be the main or the only one (no HDMI attached):
+   every Aurora68 program must be usable there. docs/09 "Every program on the SE's own screen" has the table of
+   programs and windows, before and after, with the pictures (`docs/img/se512-*.png`).
+   - *The runs.* The solo board in QEMU at 512 x 342 (`mac.screen=512x342`, `psmac-512x342.declrom`), one bit, System
+     7.1, the programs installed by `aurora68-layout.py`; each program opened through the Agent (`aurora68.py open`),
+     its windows read from `/windows` (their structure rectangles, global), its About box from the Apple menu, its
+     dialogs by their keys, a picture of the screen each time. Once with main's programs, once with the changed ones.
+     Kept places: a 1024 x 768 run of the changed image, each window dragged to (300, 42) and grown to the screen's
+     corner, the programs quit (their preferences written), the preferences copied into the other image, then both at
+     512 x 342. Play needs a sound output to stay open: `mac.audiodump=/dev/null`.
+   - *Found.* Bluetooth's window 320 high at 40, its bottom at 362; Screens 600 wide; Colour put at (660, 40), off the
+     only screen, and waiting for a click nobody could make; with the HDMI screen main it went on the SE's screen at
+     600 x 400. Play's About text ran under its OK button (228 pixels given). Video's About and "not an MPEG-1 film"
+     lines past its window's edge, and without the card a 420-pixel line in a 320-pixel window. Places kept from a
+     larger screen were taken back when 40 pixels of the title bar showed: Slots and Display at (42, 300)-(758, 1018),
+     Status's compact view to 535, their grow and zoom boxes out of reach. Video's film window and the PC window sized
+     by the desktop's bounding box, which with the HDMI screen beside the SE's is 3072 x 1440. Wrong Pascal-string
+     length bytes in the assembly programs: Wi-Fi's scan heading cut at "Secu", Ping's "installed?" without its "?",
+     Colour's last word one letter short, Network's "Pi: fw = " a byte too long. Network, Ping, Wi-Fi, Log, Status,
+     Display (its alerts and "Keep this resolution?"), Play's player, Library and Open URL, Video's window and the PC's
+     already fitted.
+   - *Changed.* `mac/c/screens.h` (new, header only: the screens, the one a window is mostly on, its room below the
+     menu bar and a title bar, `scr_fit`); Slots, Status, Display, Play and its Library fit a kept place to its screen;
+     Video and the PC size by their own screen and move to lie on it; Log and Play zoom on their own screen; Play's
+     message boxes measure their text (`text_lines`, TextBox's word wrap) and widen where 340 pixels would be too tall;
+     Video's status line ends at the window's edge with an ellipsis, shorter About and error lines, the no-card text on
+     three lines; Bluetooth 472 x 296, its lists stopped above the status line, as Wi-Fi's; Screens 496 wide, two lines a
+     screen; Colour on a second screen only where it has room (640 x 460), else on the main screen as large as fits,
+     the picture scaled, and a line in one bit saying the colours show as black or white (on the way: its 16-grey row
+     had fallen through into the new placement code, found in the first picture with the grey row missing). The Wi-Fi
+     and Bluetooth menus' icons, which at 512 pixels sit where a long menu bar ends, are the menu-bar clock's branch's.
+   - *Rebuilt:* Bluetooth, Colour, Display, Log, Network, PC, Ping (with `PEER=192.168.0.1`, as the release's), Play,
+     Screens, Slots, Status, Video, Wi-Fi. `make -C mac check` passes.
+   - *Not verified:* two screens at once (the solo board has one): the HDMI screen main with a window moved to the SE's,
+     Colour's choice of screen, the zoom boxes on the second screen, are read from the code, not run; the SE board in
+     MAME; Play's dialogs that need a server or a station; Video with a film; RiptidePrefs, Lagoon and Octavo were not
+     installed in the image and not looked at.
