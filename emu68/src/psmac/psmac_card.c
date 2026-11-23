@@ -2576,3 +2576,53 @@ static int boot_jobs(void)
     }
     return 0;
 }
+
+#ifdef PSMAC_PC
+/* ==== the PC card's files (psmac_pc.c, docs/19-pc-card.md; a kernel built with -DPSMAC_PC=ON) ======================
+   23 November 2026. The PC's firmware, its VGA BIOS and its disk image are files in the card's root, which the PC's
+   core (core 2 on the solo board, core 1 elsewhere) reads while core 3 goes on with its own work: a file's clusters
+   are listed once (the FAT read under the card's lock, as the recovery functions above do), then any part of it is
+   read with the cluster's sectors in one command, also under the lock, a cluster at most at a time. Read only: what
+   the PC writes stays in its memory (psmac_pc.c's overlay) until writing back is built and tested. */
+#define PCF_MAX 4
+static struct { uint32_t size, n, *clus; } pcf[PCF_MAX];
+static int npcf;
+/* the file's handle, -1 when it is not there, -2 while the card has not been looked at yet (try again) */
+int psmac_card_pc_open(const char *name, uint32_t *size)
+{
+    struct rec_ent e;
+    int k = psmac_card_rec_ready();
+    if (k == 0) return -2;
+    if ((k != 1 && k != -2) || npcf >= PCF_MAX || psmac_card_rec_find(name, &e) || (e.attr & 0x10) || e.clus < 2 || !e.size) return -1;
+    uint32_t cb = fs.spc * 512u, n = (e.size + cb - 1) / cb, i = 0, c = e.clus;
+    uint32_t *list = tlsf_malloc(tlsf, n * 4u);
+    if (!list) return -1;
+    rec_lock();
+    for (; i < n && !rec_eoc(c); i++) { list[i] = c; c = fw_get(c); }
+    rec_unlock();
+    if (i < n) { tlsf_free(tlsf, list); kprintf("[CARD] %s: its cluster chain ends before its size\n", name); return -1; }
+    pcf[npcf].size = e.size; pcf[npcf].n = n; pcf[npcf].clus = list;
+    *size = e.size;
+    return npcf++;
+}
+int psmac_card_pc_read(int file, uint32_t off, void *buf, uint32_t n)
+{
+    if (file < 0 || file >= npcf || off > pcf[file].size || n > pcf[file].size - off) return -1;
+    uint8_t *b = buf;
+    uint32_t cb = fs.spc * 512u;
+    while (n) {
+        uint32_t ci = off / cb, in = off % cb, s0 = in / 512u, skip = in % 512u;
+        uint32_t k = cb - in < n ? cb - in : n;
+        if (skip + k > sizeof rdbuf) k = (uint32_t)sizeof rdbuf - skip;
+        uint32_t s1 = (in + k + 511u) / 512u;
+        rec_lock();
+        int e = -1;
+        for (int t = 0; t < 3 && e; t++) e = sd_read_multi(clus_lba(pcf[file].clus[ci]) + s0, rdbuf, s1 - s0);
+        if (!e) memcpy(b, rdbuf + skip, k);
+        rec_unlock();
+        if (e) return -1;
+        b += k; off += k; n -= k;
+    }
+    return 0;
+}
+#endif

@@ -16,7 +16,11 @@ enum { PDG_SE = 1, PDG_PLUS = 2, PDG_512KE = 4, PDG_512K = 8, PDG_128K = 16, PDG
 #define PDG_COMPACT (PDG_SE | PDG_PLUSFAM)                             /* a real logic board behind the classic PiStorm */
 #define PDG_ALL     (PDG_COMPACT | PDG_SOLO | PDG_IICI)
 
+#ifdef PSMAC_PC          /* the PC card's group exists in a kernel built with it (psmac_pc.c, docs/19-pc-card.md) */
+enum { PDG_G_MACHINE, PDG_G_DISPLAY, PDG_G_SOUND, PDG_G_STORAGE, PDG_G_NETWORK, PDG_G_VIDEO, PDG_G_PC, PDG_G_DEBUG, PDG_GROUPS };
+#else
 enum { PDG_G_MACHINE, PDG_G_DISPLAY, PDG_G_SOUND, PDG_G_STORAGE, PDG_G_NETWORK, PDG_G_VIDEO, PDG_G_DEBUG, PDG_GROUPS };
+#endif
 
 #define PDG_F_SECRET  1     /* never shown: the page has a write-only field, the bundle "(hidden)" */
 #define PDG_F_WIFITAB 2     /* set on the WiFi tab (with its scan and test join), not listed on the Options tab */

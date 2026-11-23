@@ -29,7 +29,11 @@
 #define A PDG_ALL
 #define BUS (PDG_COMPACT | PDG_IICI)                  /* a bus behind the Pi: the PiStorm's GPIO or the testbed's bridge */
 
+#ifdef PSMAC_PC
+const char *const pdg_group_name[PDG_GROUPS] = { "Machine", "Display", "Sound", "Storage", "Network", "Video card", "PC card", "Debug" };
+#else
 const char *const pdg_group_name[PDG_GROUPS] = { "Machine", "Display", "Sound", "Storage", "Network", "Video card", "Debug" };
+#endif
 
 const struct pdg_opt pdg_opts[] = {
     /* ---- Machine ---- */
@@ -122,6 +126,17 @@ const struct pdg_opt pdg_opts[] = {
       "MB of the Pi's memory the card keeps behind its ring for a stream (music videos, Aurora68 Video): 8 by default, at most 32; 0 for the ring alone (512 KB)." },
     { "mac.vprefill", PDG_G_VIDEO, 0, A, "#|#,#", "3,2",
       "Seconds of a stream held before it starts, and after a comma before it goes on when the network ran it dry: 3,2 by default; 0 starts at once." },
+
+#ifdef PSMAC_PC
+    /* ---- PC card (a kernel built with -DPSMAC_PC=ON: psmac_pc.c, docs/19-pc-card.md) ---- */
+    { "pc", PDG_G_PC, 0, A, "on|off", 0,
+      "on: the Aurora68 PC Card in slot $D, a PC (Aurora86: Libreboot's firmware) in a window of the Aurora68 PC program; off by default." },
+    { "pc.ram", PDG_G_PC, 0, A, "#", "16", "The PC's memory in MB: 16 by default, 4 to 256 (the Pi's own, beside about 104 MB the PC needs besides)." },
+    { "pc.core", PDG_G_PC, 0, A, "1|2", 0, "The Pi core the PC runs on: by default 2 on the solo board, 1 (in slices beside the sound) on the SE and the Plus." },
+    { "pc.rom", PDG_G_PC, 0, A, "*", "aurora86.rom", "The PC's firmware in the card's root: Libreboot's QEMU x86 image as Aurora86 builds it (aurora86.rom by default)." },
+    { "pc.vgarom", PDG_G_PC, 0, A, "*", "aurora86-vga.bin", "The PC's VGA BIOS in the card's root (SeaVGABIOS for Bochs's VGA; aurora86-vga.bin by default)." },
+    { "pc.disk0", PDG_G_PC, 0, A, "*", "freedos.img", "A hard disk image in the card's root for the PC's first IDE disk (16 heads, 63 sectors); what the PC writes stays in memory." },
+#endif
 
     /* ---- Debug ---- */
     { "mac.buscheck", PDG_G_DEBUG, PDG_F_ONCE, C, "1|loop|force|force,loop", 0,

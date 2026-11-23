@@ -25,7 +25,7 @@ CORE_SRC = $(wildcard $(CORE)/*.c)
 CORE_H   = $(wildcard $(CORE)/include/*.h)
 SANITIZE ?= -fsanitize=address,undefined
 
-all: $(B)/psmac-se.declrom $(B)/Aurora68-Machine.bin $(B)/Aurora68-Disk.bin $(B)/Aurora68-Network.bin $(B)/Aurora68-WiFi.bin $(B)/Aurora68-Bluetooth.bin $(B)/Aurora68-Status.bin $(B)/Aurora68-Ping.bin $(B)/Aurora68-Screens.bin $(B)/Aurora68-Colour.bin $(B)/Aurora68-Log.bin $(B)/Aurora68-Depth.bin $(B)/Aurora68-WiFi-Bluetooth.bin $(B)/Aurora68-ScreenSetup.bin $(B)/Aurora68-Display.bin $(B)/Aurora68-Sound.bin $(B)/Aurora68-Slots.bin $(B)/Aurora68-Play.bin $(B)/Aurora68-Agent.bin $(B)/Aurora68-VideoDecoder.bin $(B)/Aurora68-Video.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes declrom-wifi-sizes declrom-se-sizes
+all: $(B)/psmac-se.declrom $(B)/Aurora68-Machine.bin $(B)/Aurora68-Disk.bin $(B)/Aurora68-Network.bin $(B)/Aurora68-WiFi.bin $(B)/Aurora68-Bluetooth.bin $(B)/Aurora68-Status.bin $(B)/Aurora68-Ping.bin $(B)/Aurora68-Screens.bin $(B)/Aurora68-Colour.bin $(B)/Aurora68-Log.bin $(B)/Aurora68-Depth.bin $(B)/Aurora68-WiFi-Bluetooth.bin $(B)/Aurora68-ScreenSetup.bin $(B)/Aurora68-Display.bin $(B)/Aurora68-Sound.bin $(B)/Aurora68-Slots.bin $(B)/Aurora68-Play.bin $(B)/Aurora68-Agent.bin $(B)/Aurora68-VideoDecoder.bin $(B)/Aurora68-Video.bin $(B)/Aurora68-PC.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes declrom-wifi-sizes declrom-se-sizes
 
 $(B)/%.o: %.s
 	@mkdir -p $(B)
@@ -158,6 +158,10 @@ $(B)/psmac_wifi.declrom: $(B)/pidisk.bin.raw $(B)/pidisk_boot.bin.raw $(B)/enet_
 video-declrom: $(B)/a68video.bin.raw ../tools/mac/mkvideodeclrom.py ../tools/mac/declrom.py
 	$(PY) ../tools/mac/mkvideodeclrom.py --drvr $(B)/a68video.bin.raw -o ../emu68/src/psmac/psmac_video_declrom.h
 .PHONY: video-declrom
+# the PC card's (docs/19-pc-card.md), likewise compiled into a kernel built with -DPSMAC_PC=ON: its driver .A68PC (mac/a68pc.s)
+pc-declrom: $(B)/a68pc.bin.raw ../tools/mac/mkpcdeclrom.py ../tools/mac/declrom.py
+	$(PY) ../tools/mac/mkpcdeclrom.py --drvr $(B)/a68pc.bin.raw -o ../emu68/src/psmac/psmac_pc_declrom.h
+.PHONY: pc-declrom
 
 check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alice/alice_net.h
 	@mkdir -p $(B)
@@ -187,6 +191,7 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	sh ../tools/vcodec_test.sh $(abspath $(B))
 	sh ../tools/mpg1_test.sh $(abspath $(B))
 	sh ../tools/vbuf_test.sh $(abspath $(B))
+	sh ../tools/pccard_test.sh $(abspath $(B))
 
 disasm: $(B)/pidisk.o
 	m68k-linux-gnu-objdump -d $(B)/pidisk.o | head -200
@@ -394,6 +399,29 @@ $(B)/a68player.elf: $(AV_OBJ) c/app.ld
 # the bundle (tools/mac/mkicons.py, 'video'): MPEG files ('MPEG', 'MPG ') open in it from the Finder
 $(B)/Aurora68-Video.bin: $(B)/a68player.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py $(ICONS)
 	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Video" --creator A68V --size 256 --icons video --version 1.1 -o $@
+
+# ---- Aurora68 PC: the PC on the Aurora68 PC Card (slot $D) in a window (mac/a68pc, docs/19-pc-card.md); its Toolbox
+# list is c/traps.txt and a68pc/traps.txt, its glue in build/apc/; the driver's calls from Aurora68 Video's glue.s
+$(B)/a68pc_traps.txt: c/traps.txt a68pc/traps.txt
+	@mkdir -p $(B)
+	cat c/traps.txt a68pc/traps.txt > $@
+$(B)/apc/toolbox_glue.s $(B)/apc/toolbox_gen.h: $(B)/a68pc_traps.txt ../tools/mac/mktraps.py
+	@mkdir -p $(B)/apc
+	$(PY) ../tools/mac/mktraps.py $< -s $(B)/apc/toolbox_glue.s -H $(B)/apc/toolbox_gen.h
+$(B)/apc/toolbox_glue.o: $(B)/apc/toolbox_glue.s
+	$(AS) -o $@ $<
+$(B)/apc/glue.o: a68player/glue.s
+	@mkdir -p $(B)/apc
+	$(AS) -o $@ $<
+$(B)/apc/libc.o: c/libc.c c/toolbox.h $(B)/apc/toolbox_gen.h
+	$(CC) $(subst -I$(B),-I$(B)/apc,$(CFLAGS)) -c -o $@ $<
+$(B)/apc/pc.o: a68pc/pc.c c/toolbox.h $(B)/apc/toolbox_gen.h ../emu68/src/psmac/psmac_pc.h
+	$(CC) $(subst -I$(B),-I$(B)/apc,$(CFLAGS)) -I../emu68/src/psmac -c -o $@ $<
+APC_OBJ = $(B)/crt0.o $(B)/apc/toolbox_glue.o $(B)/apc/libc.o $(B)/apc/glue.o $(B)/apc/pc.o
+$(B)/a68pc.elf: $(APC_OBJ) c/app.ld
+	$(LD) -T c/app.ld --emit-relocs --no-warn-rwx-segments -z noexecstack -o $@ $(APC_OBJ) $(LIBGCC)
+$(B)/Aurora68-PC.bin: $(B)/a68pc.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py $(ICONS)
+	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 PC" --creator A68P --size 256 --icons pc --version 1.0 -o $@
 
 # ---- PiScrn: the SE board's two screens arranged at the first boot, an INIT in C (mac/piscrn) ----
 $(B)/piscrn_traps.txt: c/traps.txt piscrn/traps.txt pidisplay/traps.txt

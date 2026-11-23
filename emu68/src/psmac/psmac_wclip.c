@@ -6,7 +6,7 @@
  * Backstory (23 November 2026). The video decoder card learnt the day before to draw only where its window shows
  * (docs/08 item 124, Aurora68 Play 1.8): it reads the window's visRgn through the Mac's memory before every
  * picture, leaves a box around the Mac's pointer alone (the Mac draws its pointer into the frame buffer and keeps
- * what was under it), and draws nothing while a menu is down. The PC card (psmac_pc.c, docs/17-pc-card.md) puts the
+ * what was under it), and draws nothing while a menu is down. The PC card (psmac_pc.c, docs/19-pc-card.md) puts the
  * PC's screen in an ordinary Mac window the same way (Aurora86's docs/DESIGN.md, "P3: the window"), so the three
  * pieces moved here from psmac_video.c (vis_parts, cursor_box) and psmac_videocard.c (the RAM reader and the menu
  * test), unchanged in what they do, and both cards call them. The history of each is beside it.

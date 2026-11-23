@@ -506,7 +506,7 @@ static int make_ctab(const struct pv_surface *s)
 }
 
 /* the window's visible region, the Mac's pointer and the menu test: psmac_wclip.c (moved there on 23 November 2026,
-   when the PC card began to draw into a window the same way, docs/17-pc-card.md) */
+   when the PC card began to draw into a window the same way, docs/19-pc-card.md) */
 #define MAX_PARTS PSMAC_WCLIP_MAX
 static int vis_parts(int32_t out[MAX_PARTS][4], int32_t x0, int32_t y0, int32_t cx0, int32_t cy0, int32_t cx1, int32_t cy1)
 {

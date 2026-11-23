@@ -367,6 +367,21 @@ if (${VARIANT} IN_LIST SUPPORTED_VARIANTS)
                     src/alice/usb/frf_usb_native_hid.c
                 )
                 include_directories(src/alice)
+                # The Aurora68 PC Card (slot $D, docs/19-pc-card.md): a PC from Aurora86's libaurora86.a, which this tree
+                # does not contain. Off by default, so that the normal kernel and CI need nothing from Aurora86:
+                #   -DPSMAC_PC=ON -DAURORA86_DIR=/path/to/aurora86 (its scripts/build-p2.sh made build/p2/aarch64be/)
+                option(PSMAC_PC "the Aurora68 PC Card, with Aurora86's libaurora86.a linked in" OFF)
+                set(AURORA86_DIR "" CACHE PATH "the Aurora86 checkout whose build/p2/aarch64be/libaurora86.a is linked (PSMAC_PC=ON)")
+                if(PSMAC_PC)
+                    set(AURORA86_LIB ${AURORA86_DIR}/build/p2/aarch64be/libaurora86.a)
+                    if(NOT EXISTS ${AURORA86_LIB} OR NOT EXISTS ${AURORA86_DIR}/src/rt/aurora86.h)
+                        message(FATAL_ERROR "PSMAC_PC=ON: no ${AURORA86_LIB} (set AURORA86_DIR to an Aurora86 checkout after its make p2)")
+                    endif()
+                    add_compile_definitions(PSMAC_PC)
+                    list(APPEND BASE_FILES src/psmac/psmac_pc.c)
+                    set_source_files_properties(src/psmac/psmac_pc.c PROPERTIES INCLUDE_DIRECTORIES ${AURORA86_DIR}/src/rt)
+                    message(STATUS "The Aurora68 PC Card: ${AURORA86_LIB}")
+                endif()
                 # Alice68's FIFO transport, unchanged, under other names: psmac_usb.c's
                 # frf_dwc2_pio_* choose between it and the DMA transport (usb=pio)
                 set_source_files_properties(src/alice/usb/frf_dwc2_pio.c PROPERTIES COMPILE_DEFINITIONS
@@ -474,6 +489,9 @@ add_dependencies(Emu68.elf ppc_rom)
 add_subdirectory(external)
 
 target_link_libraries(Emu68.elf libdeflate_static)
+if(PSMAC_PC)
+    target_link_libraries(Emu68.elf ${AURORA86_LIB})   # its only outside names are the six a86_host_* (psmac_pc.c)
+endif()
 
 if(${VARIANT} STREQUAL "psmac")
     # The exact FPU (docs/17-exact-fpu.md): Berkeley SoftFloat 3e (src/psmac/third_party/softfloat, README.md

@@ -805,6 +805,9 @@ void psmac_service_core(void)
             { extern void psmac_ip_report(void); psmac_ip_report(); }
             { extern void bt_pi_report(void); bt_pi_report(); }
             { extern void psmac_card_report(void); psmac_card_report(); }
+#ifdef PSMAC_PC
+            { extern void psmac_pc_report(void); psmac_pc_report(); }
+#endif
             { int ok1, ok2, ok3; uint32_t t1 = mac_rd32(0xd00, &ok1), t2 = mac_rd32(0xb24, &ok2), t3 = mac_rd32(0xcea, &ok3);
               if (ok1 && ok2 && ok3) kprintf("[PSMAC]   timing globals: TimeDBRA %04x TimeSCCDB %04x TimeSCSIDB %04x TimeVIADB %04x\n", t1 >> 16, t1 & 0xffff, t2 >> 16, t3 >> 16); }
             if (peek_len) {                    /* mac.peek=: the long at $1B40 (KCHRPtr) and the bytes asked for */
@@ -866,6 +869,9 @@ void psmac_service_core(void)
               { extern void psmac_plus_service(void); psmac_plus_service(); }   /* the Plus's keyboard and mouse (psmac_board_plus.c) */
           } }
         psmac_bridge_flush();                     /* the testbed's gathered posted writes, now that there is nothing else to do */
+#ifdef PSMAC_PC
+        { extern int psmac_pc_poll(int core); psmac_pc_poll(2); }   /* the PC card's slice, where it runs on this core (psmac_pc.c) */
+#endif
         __asm__ volatile("yield");
     }
 }
@@ -1599,7 +1605,13 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
     }
     extern uint32_t psmac_videocard_size(void);                                  /* the video card, slot $C (psmac_videocard.c): 0 with mac.video=off */
     const uintptr_t vid_size = psmac_videocard_size();
-    const uintptr_t extra = PSMB_WIN_SIZE + PSMB_DECLROM_SIZE + fb_big_size + vid_size;    /* slot $9 mailbox window + declaration ROM + the big frame buffer + the video card */
+#ifdef PSMAC_PC
+    extern uint32_t psmac_pccard_size(void);                                     /* the PC card, slot $D (psmac_pc.c): its window and the PC's memory; 0 with pc=off */
+    const uintptr_t pc_size = psmac_pccard_size();
+#else
+    const uintptr_t pc_size = 0;
+#endif
+    const uintptr_t extra = PSMB_WIN_SIZE + PSMB_DECLROM_SIZE + fb_big_size + vid_size + pc_size;    /* slot $9 mailbox window + declaration ROM + the big frame buffer + the video card (+ the PC card) */
     uint32_t mb = globals.psmac_ram_mb;
     uintptr_t avail = sys_memory[0].mb_Base + sys_memory[0].mb_Size - base;
     int image_inside = container_has_image((const uint8_t *)rom, rom_sz);
@@ -1727,6 +1739,9 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
     psmac_mmu_set_slot(win_phys, declrom_phys);
     psmac_mmu_set_fb(fb_big_phys, fb_big_size);
     { extern void psmac_videocard_map(uintptr_t); if (vid_size) psmac_videocard_map(fb_big_phys + fb_big_size); }   /* slot $C, after the big frame buffer */
+#ifdef PSMAC_PC
+    { extern void psmac_pccard_map(uintptr_t); if (pc_size) psmac_pccard_map(fb_big_phys + fb_big_size + vid_size); }   /* slot $D, after slot $C's */
+#endif
     {   /* slot $A, the HDMI screen's card, on the SE board with mac.hdmi=screen (psmb.h, "two screens"):
            mapped before the identity map is made; its ROM is put in place below, if the file has one,
            else those 16 KiB stay zero and the Slot Manager finds no card there */
@@ -1794,6 +1809,9 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
     { extern void psmac_recovery_phase1(void); psmac_recovery_phase1(); }   /* Aurora68 Setup and Recovery: asked for, or three starts without the Finder? */
     psmac_mbox_init(win_phys, ram_phys, ram_size);
     { extern void psmac_videocard_init(void); if (vid_size) psmac_videocard_init(); }   /* its ROM and block, once the screens are known */
+#ifdef PSMAC_PC
+    { extern void psmac_pccard_init(void); if (pc_size) psmac_pccard_init(); }         /* the PC card's, likewise */
+#endif
     if (slot2_rom) {   /* the window exists (and was cleared) now: slot $A's ROM into its top 16 KiB, right-aligned */
         uint8_t *w2 = (uint8_t *)(KERNEL_ALIAS + win_phys + PSMB_OFF_DECLROM2);
         memcpy(w2 + PSMB_DECLROM2_SIZE - slot2_len, slot2_rom, slot2_len);

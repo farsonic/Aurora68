@@ -1734,6 +1734,26 @@ Folder.
 *Not verified:* real NuBus cards (on a IIci or SE/30: other vendors' declaration ROMs, a card whose start
 failed), a real SE, System 6 on the SE board, the Balloon Help that is not there.
 
+## Aurora68 PC: the PC card's PC in a window (23 November 2026)
+In `Aurora68:Aurora68 PC` (`mac/a68pc/pc.c`, C with the `mac/c` kit; the card's driver `.A68PC` is `mac/a68pc.s`, in
+its declaration ROM). It needs a kernel built with the PC card (`-DPSMAC_PC=ON`) and `pc=on`; without the card its
+window says so in two lines. The window shows the PC (Aurora86: Bochs with Libreboot's firmware) on the Aurora68 PC
+Card in slot $D: the card draws the PC's screen into the Mac's frame buffer itself, only where the window shows, and
+the program draws nothing in it but the grow box. Text is black on white in a 6 x 12 font on the SE's screen (80 x 25
+in 480 x 300, which fits with the menu bar and the window's title), 6 x 13 on a taller one-bit screen, the PC's own font
+and colours on a deeper one; graphics are scaled to the window and dithered (View > Actual Size: 1:1).
+- **PC**: Power On, Power Off, Reset, Send Control-Alt-Delete, Pause. The program powers the PC on when it starts.
+- **Disks**: the images the card has, attached ones checked (`pc.disk0=` chooses one; attaching from the menu comes
+  later).
+- **View**: Scaled to the Window, Actual Size, Large Text (8 x 16), White on Black (the PC's own sense).
+- **Keyboard**: Capture Keyboard and Mouse (Control-Option-Command-P). A click in the window captures too; the same key,
+  a Command-click or another window in front gives the keyboard and mouse back to the Mac. The title says which
+  ("Aurora68 PC: keyboard and mouse to the PC").
+The zoom box sizes the window to the PC's picture (the card's natural size); the grow box resizes it, and graphics
+follow. Key releases reach the program because it adds keyUpMask to SysEvtMask while it runs; the mouse's movement is
+read from the window's middle with the pointer hidden. docs/19-pc-card.md has the card, the block and the options;
+docs/08 item 132 the history.
+
 ## MacTCP
 MacTCP is Apple's TCP/IP of 1989-1996: the `.IPP` driver and a control panel, later folded into
 Open Transport. It is not in the repository (Apple's), and the user's images do not carry it; the
