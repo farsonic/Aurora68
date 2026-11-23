@@ -125,3 +125,11 @@ mac/build/pistatus_traps.txt
 mac/build/st/
 # the PC card test's run files (tools/pccard_test.sh)
 mac/build/pccard/
+# intermediates of Aurora68 PC's build (mac/a68pc), and the tests built on request (make -C mac FontWidth, DisposeTest)
+mac/build/a68pc.elf
+mac/build/a68pc_traps.txt
+mac/build/apc/
+mac/build/FontWidth.bin
+mac/build/fontwidth.bin.raw
+mac/build/DisposeTest.bin
+mac/build/disptest.bin.raw
