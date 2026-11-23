@@ -14,8 +14,8 @@
 #include "psmac_vcodec.h"
 
 extern const struct vc_codec vc_cinepak, vc_rpza, vc_qtrle, vc_smc;
-static const struct vc_codec *const codecs[] = { &vc_cinepak, &vc_rpza, &vc_qtrle, &vc_smc };
-const uint32_t vc_fourccs[] = { VC_CVID, VC_RPZA, VC_RLE, VC_SMC, 0 };
+static const struct vc_codec *const codecs[] = { &vc_cinepak, &vc_rpza, &vc_qtrle, &vc_smc, &vc_mpg1 };
+const uint32_t vc_fourccs[] = { VC_CVID, VC_RPZA, VC_RLE, VC_SMC, VC_MPG1, VC_MP2, 0 };
 
 const struct vc_codec *vc_find(uint32_t fourcc)
 {

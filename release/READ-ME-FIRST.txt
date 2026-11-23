@@ -304,6 +304,14 @@ bar seeks, Movie > Double Size doubles the picture. Its Card menu switches Quick
 card on and off without restarting. To make such a film on another computer: ffmpeg -i in.mp4
 -vf scale=320:240 -c:v mpeg1video -b:v 800k -c:a mp2 -b:a 128k -ar 44100 -f mpeg out.mpg
 
+The same films also open in MoviePlayer (and any QuickTime program) with the Aurora68 Video
+Decoder extension installed: File > Open..., choose the film, click "Convert" (it opens the film
+where it is; nothing is copied). The first opening takes a few seconds more while the card decodes
+the sound into the Preferences folder ("Aurora68 Video Sounds"; delete it to make room). What to
+try on the SE: open a film, play it, click in the middle of the slider (the picture there should
+be right at once), play it again with Movie > Play All Frames, and note in Aurora68 Log the lines
+"A68 Video Decoder: MPEG-1 ..." and how smoothly it played with its sound.
+
 Music videos in Aurora68 Play (1.6): with the video decoder card above, a video in the music server's
 library (a "Video:" row after an album's songs, or one sent from the server's web page) plays in a window
 of its own on the SE's screen, or in colour on HDMI if Aurora68 Play's window is there. Click in the

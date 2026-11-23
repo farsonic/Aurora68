@@ -16,6 +16,8 @@
 #include <time.h>
 #include "psmac_vcodec.h"
 
+void *tlsf;                                     /* psmac_plmpeg.c's allocator, the C library's here (tools/mpg1_host/tlsf.h) */
+
 static unsigned char *slurp(const char *path, long *n)
 {
     FILE *f = fopen(path, "rb");

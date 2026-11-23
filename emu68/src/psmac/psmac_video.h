@@ -119,6 +119,9 @@ _Static_assert(__builtin_offsetof(struct a68v_block, cmd_seq) == 0x80, "a68v_blo
 #define A68V_OP_DECODE    2u                 /* session, src, src_len, and where to draw it (unless A68V_FF_NODRAW) */
 #define A68V_OP_CLOSE     3u                 /* session */
 #define A68V_OP_DRAW      4u                 /* session: its last picture drawn again where the request says */
+#define A68V_OP_SOUND     5u                 /* an 'MP2 ' session: src, src_len of MP2 in; PCM out at dst_base, room dst_rowbytes
+                                                (answers: width the PCM bytes written, height 1 if more waits, depth the rate,
+                                                dst_w the channels; 23 November 2026, the QuickTime import's sound track) */
 
 #define A68V_FF_NODRAW    1u                 /* decode only: the picture is kept, nothing is drawn (a frame QuickTime skips) */
 #define A68V_FF_NODITHER  2u                 /* indexed destinations: the nearest colour, no ordered dither */
@@ -133,6 +136,7 @@ _Static_assert(__builtin_offsetof(struct a68v_block, cmd_seq) == 0x80, "a68v_blo
 #define A68V_FE_ADDR      7u                 /* an address the card cannot reach (memory not there, or paged out) */
 #define A68V_FE_OFF       8u                 /* frame decoding is switched off (mac.vdecode=off, or the driver's switch) */
 #define A68V_FE_OP        9u                 /* no such operation */
+#define A68V_CODEC_MP2    0x4D503220u        /* 'MP2 ': OPEN makes a sound session (op 5), not a picture one */
 
 struct a68v_fhdr {                           /* the card's, but for enabled */
     uint32_t magic, version;                 /* A68V_FMAGIC, A68V_FVERSION, written last */

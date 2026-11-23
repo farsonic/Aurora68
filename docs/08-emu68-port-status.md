@@ -4882,6 +4882,58 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      speaker with `mac.sestream=on`), the SE board and HDMI with Aurora68 Video, a film larger than the window's
      screen, System 6.
 
+113. **MPEG-1 films in MoviePlayer: the Aurora68 Video Decoder's movie import (23 November, issue #25).** Issue #25's
+     first wish, an MPEG-1 file played in MoviePlayer through the card, which item 112 left designed and not built.
+     Built in the extension of item 110: a movie import ('eat ', for the file types 'MPEG' and 'MPG ',
+     `mac/vdec/import.c`) that makes a QuickTime movie of the file without copying it, a fifth decompressor ('mpg1')
+     around a new kind of session of the card's frame decoder (pl_mpeg's video decoder one picture at a time,
+     `psmac_plmpeg.c`), and the MP2 sound decoded by the card once, at import, into PCM (a sound session, op 5).
+     The indexer that reads the file (`mac/vdec/mpgindex.c`) is portable C that the 68k and the host test share.
+     docs/16 "MPEG-1 in QuickTime" is the description; what follows is how it went.
+   - *Opening.* The import is marked canMovieImportInPlace. From the Finder, MoviePlayer 2.5 refused a film it was
+     handed ("Couldn't open the file because the file is not a movie file") without calling the import. Through
+     File > Open... the films were listed with a "Convert" button; Convert called the import twice (Standard File's
+     preview, then the opening), and both times the import said paramErr: it had refused calls without
+     movieImportCreateTrack, and QuickTime's in-place import sets no flag at all. Refusing only
+     movieImportMustUseTrack, Convert opened the film in place, in a window with its name, nothing saved.
+   - *Playing.* The first press of Play left the movie on its first two pictures, QuickTime asking for samples 1
+     and 2 again and again (192 PreDecompress calls in a minute); the sound track was one chunk of 1.4 MB. With the
+     PCM in half-second blocks, four bytes apart, so that each is a chunk of its own, the movie played at once. The
+     window then went white at the end: the sound track was 26 ms longer than the pictures (MP2's last frame); it is
+     now cut to their length.
+   - *Jumps.* A click in the middle of the controller showed a picture whose digit looked like an 8: the test
+     pattern's 0 and 4 laid over each other. The card's new log (`mac.vframelog=1`, a line a picture) showed why:
+     QuickTime 2.5 handed the decompressor sample 104, a P and a B, and nothing before it, so the B was decoded
+     against the references of picture 22. QuickTime does not decode from the preceding sync sample when it
+     jumps, nor when it drops frames while playing; it passes the sample's own number as frameNumber (1, 2, 3...).
+     So the import puts its index into the ImageDescription (an atom 'mpgx': the film's FSSpec and size, every
+     picture's start and type), and the decompressor, given a sample that is neither the next one nor a sync
+     sample, reads the samples from the sync sample before it from the film (the B-pictures alone left out) and has
+     the card decode them undrawn first. The same click then showed picture 103, which matched FFmpeg's in 99.7 per
+     cent of the pixels, better than its neighbours. Without an index (more than 32,768 pictures, or a saved
+     reference movie whose film moved) jumps show what the card makes of the sample alone.
+   - *B-pictures.* The samples are in display order; the first B after a reference carries the reference's bytes
+     in front of its own, and the reference's own sample comes when it is shown, which the card recognises by a
+     hash of its bytes and shows without decoding (lower case in the frame log: "p"). The design's other way, a
+     decoder holding a picture back, would have shown everything a frame late.
+   - *Without the card.* `mac.vdecode=off` and `mac.video=off` both tested: the film opens, its video track disabled,
+     a text track (QuickTime's handle data handler) saying what is missing, white on black.
+   - *Tested* (solo board, System 7.1, QuickTime 2.5.1, MoviePlayer 2.5 at one bit; FFmpeg films of eight seconds,
+     320 x 240, 25 frames a second without and with B-pictures, 29.97 with B-pictures, MP2 at 128 kbit/s): all
+     pictures through the card with Play All Frames (200, 200, 240), frames 5 (a B), 21, 103 and 199 compared with
+     FFmpeg's decoding dithered as the card dithers (99.7 per cent of the pixels; each its own frame best); in real
+     time QuickTime fell back to key frames (the testbed's 68k runs at about 20 MIPS) and the sound reached the
+     card (`mac.audiodump=`: the 440 Hz tone, with the testbed's underruns). The import took 2 to 2.6 s for 440 KB
+     under QEMU, 9 to 12 s with the sound decoded and written. Host test `tools/mpg1_test.sh` in `make -C mac
+     check`: four films, every picture against FFmpeg (52 dB or better), seeks, jumps with the catch-up, redraws,
+     the sound (59 dB with a constant gain allowed: pl_mpeg's synthesis is 0.2 to 0.7 dB quieter than FFmpeg's).
+   - *Elsewhere:* `tools/mac/mktraps.py` learned selector-dispatched traps (`AAAA/0188`), for the Movie Toolbox,
+     Alias, Folder and FSSpec calls of `mac/vdec/traps.txt`; their numbers come from QuickTime 2.5's interfaces
+     (Universal Interfaces 2.1.4, read, not copied). `tools/mac/aurora68-layout.py install --films` puts films into
+     Aurora68 Video's "Films" folder, typed 'MPEG'; `aurora68.py push` types .mpg files the same way.
+   - *Not verified:* speed and the sound on the SE (the testbed's 68k is about a twentieth of a Pi's, and it has no
+     sound output), colour screens and HDMI, MPEG-1 from encoders other than FFmpeg, long films, System 6.
+
 114. **The classic Aurora68 Play 1.6: music videos on the video decoder card; the owed test of 1.5 (23 November).**
      Item 109 left the classic Play playing a video's sound and the test of that in the testbed undone; item 112 made
      the card's MPEG-1 stream channel a program's to use, and docs/16 ("Follow-up") said how Play could use it.

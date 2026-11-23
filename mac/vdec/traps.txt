@@ -1,0 +1,29 @@
+# The Toolbox calls of the Aurora68 Video Decoder's MPEG-1 import (mac/vdec/import.c), turned into C-callable
+# glue by tools/mac/mktraps.py (build/vd/toolbox_glue.s, toolbox_gen.h). TRAP/SELECTOR loads the selector
+# into D0 before the trap. Trap words and selectors from QuickTime 2.5's interfaces (Universal Interfaces
+# 2.1.4: Movies.h, Aliases.h, Folders.h, Files.h); register-based calls (the File and Memory Managers'
+# parameter blocks) are in entry.s. Written on 23 November 2026 (docs/08 item 113).
+#
+# the Movie Toolbox (_QuickTimeDispatch)
+AAAA/0188 p NewMovieTrack(long movie:l, long width:l, long height:l, int volume:w)
+AAAA/018E p NewTrackMedia(void *track:l, long mediaType:l, long timeScale:l, void *dataRef:l, long dataRefType:l)
+AAAA/01F7 w AddMediaSampleReferences(void *media:l, void *desc:l, long n:l, void *refs:l, long *sampleTime:l)
+AAAA/007D w AddMediaSampleReference(void *media:l, long offset:l, long size:l, long duration:l, void *desc:l, long n:l, int flags:w, long *sampleTime:l)
+AAAA/007C w AddMediaSample(void *media:l, void *data:l, long inOffset:l, long size:l, long duration:l, void *desc:l, long n:l, int flags:w, long *sampleTime:l)
+AAAA/0183 w InsertMediaIntoTrack(void *track:l, long trackStart:l, long mediaTime:l, long mediaDuration:l, long rate:l)
+AAAA/006A l GetMediaDuration(void *media:l)
+AAAA/004B l GetTrackDuration(void *track:l)
+AAAA/0072 w BeginMediaEdits(void *media:l)
+AAAA/0073 w EndMediaEdits(void *media:l)
+AAAA/0051 - SetTrackLayer(void *track:l, int layer:w)
+AAAA/0046 - SetTrackEnabled(void *track:l, int on:b)
+AAAA/0003 w GetMoviesError()
+# the Alias and Folder Managers (_AliasDispatch)
+A823/0008 w NewAliasMinimal(const void *spec:l, void **alias:l)
+A823/0000 w FindFolder(int vRefNum:w, long folderType:l, int create:b, short *foundVRefNum:l, long *foundDirID:l)
+# the File Manager's FSSpec calls (_HighLevelFSDispatch); permission is a SignedByte, pushed as a BOOLEAN is
+AA52/0001 w FSMakeFSSpec(int vRefNum:w, long dirID:l, const unsigned char *name:l, void *spec:l)
+AA52/0002 w FSpOpenDF(const void *spec:l, int permission:b, short *refNum:l)
+AA52/0004 w FSpCreate(const void *spec:l, long creator:l, long fileType:l, int script:w)
+AA52/0005 w FSpDirCreate(const void *spec:l, int script:w, long *dirID:l)
+AA52/0006 w FSpDelete(const void *spec:l)
