@@ -7,7 +7,8 @@
 // Mac, and can send it to the SE through the server's Live channel. SwiftUI, macOS 13 or later.
 // Keys: space plays and pauses (unless a text field is being typed in), Command-Left and -Right are
 // Previous and Next, Command-F the search field; the keyboard's media keys work through the system's
-// Now Playing (Player.swift).
+// Now Playing (Player.swift). A second window, Video (VideoViews.swift), shows a music video while one plays
+// (22 November 2026): it opens by itself when a video starts, and from the player bar's film button.
 import AppKit
 import SwiftUI
 import Aurora68Core
@@ -52,6 +53,13 @@ struct Aurora68PlayApp: App {
                 }
         }
         .commands { PlayCommands(model: model) }
+
+        Window("Video", id: "video") {
+            VideoWindow()
+                .environmentObject(model)
+                .environmentObject(model.player)
+        }
+        .defaultSize(width: 960, height: 540)
 
         Settings {
             SettingsView().environmentObject(model).environmentObject(model.devices)

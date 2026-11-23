@@ -12,7 +12,8 @@ Live channel after commands, and the UDP probe's answer. Then, given the test pr
 `play_core_test OUTDIR`, which reads them with the core (tools/play_core_test.c). Without ffmpeg it says so
 and does nothing (exit 0), as tools/codec_test.sh does. `make -C mac check` runs it.
 
-Written on 22 November 2026 (docs/08 item 107).
+Written on 22 November 2026 (docs/08 item 107). Music videos the same day (item 109): two videos of ffmpeg's test
+picture in the Gamma album (an MP4 that plays as it is, an MKV that is remuxed), and the answers with videos=1.
 """
 import os, shutil, socket, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
 
@@ -42,6 +43,15 @@ def make_library(d):
     tone(f'{g}/03. Gamma - Flac Song.flac', 2, 400, {'TITLE': 'Flac Song', 'ARTIST': 'Gamma'}, ['-c:a', 'flac'])
 
 
+def make_videos(d):
+    """two music videos in an album's folder: tens of kilobytes each, made here and never committed"""
+    g = f'{d}/Gamma - Converted'
+    pic = ['-f', 'lavfi', '-i', 'testsrc=size=160x120:rate=25:duration=2', '-f', 'lavfi', '-i', 'sine=frequency=500:duration=2',
+           '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '64k', '-shortest']
+    ffmpeg(*pic, f'{g}/04. Gamma - Closing Time (Video).mp4')
+    ffmpeg(*pic, f'{g}/05. Gamma - Live at Home.mkv')
+
+
 def free_port(kind=socket.SOCK_STREAM):
     s = socket.socket(socket.AF_INET, kind)
     s.bind(('127.0.0.1', 0))
@@ -65,10 +75,13 @@ def main():
         os.makedirs(lib)
         make_library(lib)
         open(done, 'w').close()
+    if not os.path.exists(os.path.join(out, 'music.videos.made')):    # a library made before the videos: they join it
+        make_videos(lib)
+        open(os.path.join(out, 'music.videos.made'), 'w').close()
     port, dport = free_port(), free_port(socket.SOCK_DGRAM)
     srv = subprocess.Popen([sys.executable, SERVER, lib, '--port', str(port), '--bind', '127.0.0.1', '--name', 'Core Test',
                             '--discovery', str(dport)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                           env=dict(os.environ, MUSIC_RESCAN='1'))
+                           env=dict(os.environ, MUSIC_RESCAN='1', MUSIC_CACHE=os.path.join(out, 'cache')))
     base = f'http://127.0.0.1:{port}'
     for _ in range(100):
         try:
@@ -128,6 +141,21 @@ def main():
         get('/mac/command?to=live&action=repeat&on=1&' + U)
         get('/mac/command?to=live&action=play&what=r%3A0&' + U, 'command-refused.u8')
         get('/mac/now?' + U, 'now.u8')
+        # music videos (videos=1): info, an album's tracks and videos both ways, an artist's videos, a video sent to a
+        # player that shows them, the devices with the 18th field, a search
+        V = U + '&videos=1'
+        get('/mac/info?' + V, 'info-v.u8')
+        get(f'/mac/tracks?album={galbum}&' + V, 'tracks-v.u8')
+        get(f'/mac/tracks?album={galbum}&count=200&videos=1', 'tracks-v.mr')
+        get(f'/mac/videos?artist={gamma}&' + V, 'videos.u8')
+        get('/mac/artists?videos=1', 'artists-v.mr')
+        get('/mac/search?q=home&videos=1', 'search-v.mr')
+        vids = [l.split(b'\t') for l in get(f'/mac/videos?artist={gamma}').split(b'\r')[1:] if l]
+        get(f'/mac/announce?id={me}&name={name}&kind=macos&v=1.3&video=1&' + V)
+        for v in vids:
+            get(f'/mac/command?to={me}&action=add&what=v%3A{v[1].decode()}&' + V)
+        get(f'/mac/commands?id={me}&wait=0&' + V, 'commands-v.u8')
+        get('/mac/devices?' + V, 'devices-v.u8')
         u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         u.settimeout(5)
         u.sendto(b'AURORA68-MUSIC?', ('127.0.0.1', dport))

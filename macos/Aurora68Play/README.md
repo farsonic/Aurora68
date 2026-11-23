@@ -12,6 +12,15 @@ Live channel, or to any other Aurora68 Play on the network.
   Lossless (M4A) and FLAC, played by AVFoundation with real seeking and no gap between songs. Play,
   Shuffle, Add to Queue, Play Next (right-click a song or an album); Previous and Next, a position bar
   (click to jump, or drag), volume, shuffle and repeat (all, one) in the bar along the bottom.
+- **Music videos** (1.3, 22 November 2026): the videos the server finds beside the albums appear after an album's
+  songs and after an artist's albums (an artist with videos alone too), each as its poster, title and length. A
+  click plays one (the ones after it follow); right-click for Play Next and Add to Queue, so videos and songs share
+  the queue: a video plays as a video, then the queue goes on. The **Video** window (it opens by itself when a video
+  starts; the film button in the bar brings it back) shows it with AVKit's controls and full screen; closing it
+  leaves the sound playing. The server sends a video AVFoundation plays as it is (MP4 or QuickTime of H.264 or HEVC)
+  as the file, with real seeking; the others as HLS, remuxed (the picture copied) or, last, transcoded
+  (tools/music-server/README.md, "Music videos"). Now Playing says it is a video and shows its poster. Play on
+  another Mac shows the video there; on the SE or on Live its sound plays.
 - **New albums without a restart:** the server counts its library's changes; the app hears the count
   every 20 seconds and fetches the artists and albums again when it changes, keeping what is open.
 - **Now Playing:** the song and its cover in Control Center; the keyboard's media keys work. The space
@@ -90,6 +99,19 @@ folding of case and accents (Foundation's Unicode tables).
   stations still offers the built-in ones; the device's id, when one is made, is the core's (`mac-` and twelve
   letters and digits; a kept one stays). An artist's name is taken off a file name's front in ASCII letters of
   either case (the core has no Unicode tables), where it used to match "É" with "é" too.
+
+## Music videos: how they are made (22 November 2026)
+The app asks every `/mac/` list with `videos=1` (the core's client; an older server passes over the parameter and
+sends none): an album's tracks come with its videos as `V` records, which `Track.page` reads with the core's
+`a68_next_item` into Tracks whose `video` is set (how the server sends it, its size), and an artist's come from
+`/mac/videos?artist=ID`. Being Tracks, they go through the queue, the Player and the commands unchanged: the
+Player's `AVQueuePlayer` plays a video's item from `MusicAPI.playURL`, which is the core's `a68_path_video` (the
+file at `/video/ID` for one the server sends as it is, `/video/ID/index.m3u8` otherwise, because AVFoundation plays
+no progressive stream whose server cannot answer a byte range, and a remux has no length in advance), and
+`VideoWindow` (`VideoViews.swift`) puts an `AVPlayerView` over the same player. `Track.what` names a video `v:ID`
+for Live and other players. The device announces `video=1` and asks its commands with `videos=1`, so a video sent
+from elsewhere arrives as a `V` line and plays as a video. XCTest: `VideoTests` (the records, the URLs, the
+commands, a device that shows videos), and the paths of the older tests with `&videos=1`.
 
 ## How it is made
 - `Package.swift` (at the repository's top): **PlayCore** is the shared C core (`play/core`). **Aurora68Core**

@@ -361,7 +361,7 @@ static void proto_units(void)
 	}
 	/* the requests: the classic Play's as they were (no enc, no full), the macOS Play's with both */
 	{
-		struct a68_client cl = { 0, 0 }, mac = { 1, 1 };
+		struct a68_client cl = { 0, 0, 0 }, mac = { 1, 1, 0 };
 		char p[400];
 		check(a68_path_info(&cl, p, sizeof p) && !strcmp(p, "/mac/info"), "info");
 		check(a68_path_artists(&cl, 0, 200, p, sizeof p) && !strcmp(p, "/mac/artists?count=200"), "artists");
@@ -445,6 +445,131 @@ static void devices_units(void)
 		dv_make_id(a, 0xDEADBEEFul, 12345);
 		dv_make_id(c, 0xDEADBEEFul, 12345);
 		check(!strcmp(a, c) && dv_valid_id(a) && !strcmp(a, "mac-h3l4n7gl9elu"), "an id: the same on a 68000 and on a Mac of today");
+	}
+}
+
+/* music videos (22 November 2026, docs/08 item 109): the V records, as the server writes them with videos=1 */
+static void video_units(void)
+{
+	struct a68_rec r;
+	struct a68_head h;
+	char *b, p[400];
+	long n;
+	struct a68_client cl = { 0, 0, 1 }, mac = { 1, 1, 1 };
+	b = dup_("A68M\t1\tinfo\t1\t0\t1\rMusic\t4\t2\t2\t2\t1\t20\t3\tvideos,remux,hls,transcode,mpeg1\r", &n);
+	a68_rec_init(&r, b, n);
+	{
+		struct a68_info i;
+		check(a68_read_head(&r, &h) && a68_info_of(&r, &i) && i.every == 20 && i.videos == 3 && !strcmp(i.caps, "videos,remux,hls,transcode,mpeg1"),
+		      "info with videos=1: every, the videos, what the server can do");
+	}
+	b = dup_("A68M\t1\tinfo\t1\t0\t1\rMusic\t3\t2\t2\t2\t1\r", &n);
+	a68_rec_init(&r, b, n);
+	{
+		struct a68_info i;
+		check(a68_read_head(&r, &h) && a68_info_of(&r, &i) && !i.videos && !i.caps[0], "an older server's info: no videos, no capabilities");
+	}
+	b = dup_("A68M\t1\tartists\t3\t0\t3\r009d7bdd\tAlpha Band\t1\t2\t1\r7758d620\tDelta\t0\t0\t1\rc20f6218\tGamma\t1\t3\r", &n);
+	a68_rec_init(&r, b, n);
+	{
+		struct a68_artist a;
+		a68_read_head(&r, &h);
+		check(a68_next_artist(&r, &a) && a.videos == 1 && a68_next_artist(&r, &a) && !a.albums && a.videos == 1 &&
+		      a68_next_artist(&r, &a) && !a.videos, "artists with their videos, one with videos alone");
+	}
+	b = dup_("A68M\t1\ttracks\t3\t0\t3\r"
+	         "4d2e3b6a\t1\tClosing Time\tGamma\t2\ta58b55f9\tGamma - Converted/01. Gamma - Closing Time.m4a\tConverted\tGamma - Converted\r"
+	         "5d2e3b6a\t2\tLossless\tGamma\t2\ta58b55f9\r"
+	         "V\t7dadadb6\tLossless Live\tGamma\t3\ta58b55f9\t1920\t1080\tGamma - Converted/02. Gamma - Lossless Live.mkv\tConverted\tGamma - Converted\tremux\r", &n);
+	a68_rec_init(&r, b, n);
+	{
+		struct a68_track t;
+		struct a68_video v;
+		int k, nt = 0, nv = 0;
+		a68_read_head(&r, &h);
+		while ((k = a68_next_item(&r, &t, &v)))
+			if (k == 'T') nt++;
+			else nv++;
+		check(nt == 2 && nv == 1 && !strcmp(v.id, "7dadadb6") && v.full && v.width == 1920 && v.height == 1080 && v.secs == 3 &&
+		      !strcmp(v.path, "Gamma - Converted/02. Gamma - Lossless Live.mkv") && a68_video_how(v.how) == A68_HOW_REMUX &&
+		      !strcmp(v.album, "a58b55f9") && !strcmp(v.album_title, "Converted"), "an album's tracks, then its video with its path and how it plays");
+	}
+#define TWO "A68M\t1\ttracks\t2\t0\t2\r4d2e3b6a\t1\tClosing Time\tGamma\t2\ta58b55f9\rV\tb29434fe\tOpening (Caf\x8E Video)\tAlpha Band\t3\tcb436a6a\t160\t120\r"
+	b = dup_(TWO, &n);
+	a68_rec_init(&r, b, n);
+	{
+		struct a68_track t;
+		struct a68_video v;
+		a68_read_head(&r, &h);
+		check(a68_next_track(&r, &t) && !a68_next_track(&r, &t), "the tracks' reader passes over a video");
+		b = dup_(TWO, &n);                      /* the first reading took it apart */
+		a68_rec_init(&r, b, n);
+		a68_read_head(&r, &h);
+		check(a68_next_video(&r, &v) && !v.full && !v.path[0] && !strcmp(v.title, "Opening (Caf\x8E Video)") && v.width == 160 &&
+		      a68_video_how(v.how) == A68_HOW_UNKNOWN && !a68_next_video(&r, &v), "and the videos' reader over the tracks; a short record");
+	}
+	{
+		static struct a68_row rows[8];
+		struct a68_list l;
+		a68_list_init(&l, rows, 8, A68_V_TRACKS);
+		b = dup_("A68M\t1\ttracks\t3\t0\t3\rt1\t1\tOne\tX\t60\ta1\rt2\t2\tTwo\tX\t70\ta1\rV\tv1\tThe Video\tX\t200\ta1\t640\t360\r", &n);
+		check(a68_list_load(&l, b, n) && l.n == 3 && l.rows[2].kind == 'V' && !strcmp(l.rows[2].id, "v1") && l.rows[2].secs == 200 &&
+		      !strcmp(l.rows[2].text, "The Video") && a68_list_secs(&l) == 130 && a68_list_videos(&l) == 1,
+		      "the catalogue: a video's row after the tracks, not counted in the album's length");
+		a68_list_init(&l, rows, 8, A68_V_SEARCH);
+		b = dup_("A68M\t1\tsearch\t2\t0\t2\rL\tl1\tOne\tZed\rV\tv1\tLive Clip\tZed\tl1\t185\r", &n);
+		check(a68_list_load(&l, b, n) && l.n == 2 && l.rows[1].kind == 'V' && l.rows[1].secs == 185 && !strcmp(l.rows[1].album, "l1"),
+		      "a search's video");
+		a68_list_init(&l, rows, 8, A68_V_ARTISTS);
+		b = dup_("A68M\t1\tartists\t1\t0\t1\r7758d620\tDelta\t0\t0\t2\r", &n);
+		check(a68_list_load(&l, b, n) && l.rows[0].videos == 2 && !l.rows[0].count, "an artist's row counts its videos");
+		check(a68_list_path(&cl, A68_V_TRACKS, "a1", 0, 0, p, sizeof p) && !strcmp(p, "/mac/tracks?album=a1&count=200&videos=1"),
+		      "the view's request asks for videos");
+		a68_list_init(&l, rows, 8, A68_V_ARTIST);
+		b = dup_("A68M\t1\ttracks\t1\t0\t1\rV\tv1\tWebm Clip\tDelta\t3\t\t160\t120\r", &n);
+		check(a68_list_path(&cl, A68_V_ARTIST, "7758d620", 0, 0, p, sizeof p) && !strcmp(p, "/mac/tracks?artist=7758d620&count=200&videos=1") &&
+		      a68_list_load(&l, b, n) && l.n == 1 && l.rows[0].kind == 'V', "an artist with videos alone: its tracks and videos");
+	}
+	b = dup_("1\tplay\t0\t\r"
+	         "V\t7dadadb6\tLive Clip\tGamma\t3\r"
+	         "2\tadd\t0\t\t0\r"
+	         "V\tb29434fe\tOpening\tAlpha Band\t3\tAlpha Band/First Album/Opening.mp4\tFirst Album\tdirect\t1280\t720\r"
+	         "T\t4d2e3b6a\tClosing Time\tGamma\t2\r", &n);
+	a68_rec_init(&r, b, n);
+	{
+		struct a68_cmd c;
+		check(a68_next_cmd(&r, &c) && c.kind == 'C' && a68_next_cmd(&r, &c) && c.kind == 'V' && !strcmp(c.tid, "7dadadb6") && c.secs == 3 &&
+		      !c.path[0] && !c.how[0], "a command's video");
+		check(a68_next_cmd(&r, &c) && a68_next_cmd(&r, &c) && c.kind == 'V' && !strcmp(c.path, "Alpha Band/First Album/Opening.mp4") &&
+		      a68_video_how(c.how) == A68_HOW_DIRECT && c.width == 1280 && c.height == 720, "with full=1: its path, how it plays, its size");
+		check(a68_next_cmd(&r, &c) && c.kind == 'T' && !c.how[0] && !c.width && !a68_next_cmd(&r, &c), "a track after it");
+	}
+	b = dup_("mac1\tiMac\tmacos\t1\t\t\t0\t0\t0\t100\t\t\t0\t1795000000\t0\t1.3\t0\t1\rse1\tSE\tclassic\t1\tLive Clip\tGamma\t1\t1.0\t3.0\t80\tConverted\tGamma - Converted\t1795000000\t1795000000\t0\t1.5\t0\t0\r", &n);
+	a68_rec_init(&r, b, n);
+	{
+		struct a68_device d;
+		check(a68_next_device(&r, &d) && d.video && a68_next_device(&r, &d) && !d.video && d.full, "devices: who shows videos (the 18th field)");
+	}
+	check(a68_path_videos(&mac, "009d7bdd", 0, 0, 0, p, sizeof p) && !strcmp(p, "/mac/videos?artist=009d7bdd&enc=utf8&full=1&videos=1"),
+	      "an artist's videos");
+	check(a68_path_vaudio("7dadadb6", 12, p, sizeof p) && !strcmp(p, "/vaudio/7dadadb6?start=12") &&
+	      a68_path_vaudio("7dadadb6", 0, p, sizeof p) && !strcmp(p, "/vaudio/7dadadb6"), "a video's sound, from 12 s and from its start");
+	check(a68_path_video("b29434fe", A68_HOW_DIRECT, p, sizeof p) && !strcmp(p, "/video/b29434fe") &&
+	      a68_path_video("7dadadb6", A68_HOW_REMUX, p, sizeof p) && !strcmp(p, "/video/7dadadb6/index.m3u8") &&
+	      a68_path_vthumb("7dadadb6", p, sizeof p) && !strcmp(p, "/vthumb/7dadadb6"), "a video for a Mac: the file, or HLS; its poster");
+	check(a68_what_video("7dadadb6", p, sizeof p) && !strcmp(p, "v:7dadadb6"), "what: a video");
+	check(a68_path_command(&cl, "se1", A68_ACT_PLAY, "v:7dadadb6", 0, -1, -1, -1, -1, p, sizeof p) &&
+	      !strcmp(p, "/mac/command?to=se1&action=play&what=v%3A7dadadb6&videos=1"), "play a video there");
+	{
+		struct dv d;
+		dv_init(&d, "mac-0123456789ab", "Mac", "1.3", "macos");
+		d.client.utf8 = 1; d.client.full = 1; d.client.videos = 1; d.video = 1; d.wait = 20;
+		dv_start(&d, 0);
+		dv_path(&d, DV_ANNOUNCE, p, sizeof p);
+		check(!strcmp(p, "/mac/announce?id=mac-0123456789ab&name=Mac&kind=macos&v=1.3&video=1&enc=utf8&full=1&videos=1"),
+		      "a Play that shows videos says so");
+		dv_path(&d, DV_COMMANDS, p, sizeof p);
+		check(!strcmp(p, "/mac/commands?id=mac-0123456789ab&wait=20&enc=utf8&full=1&videos=1"), "and asks for its commands' videos");
 	}
 }
 
@@ -636,6 +761,84 @@ static void fixtures(const char *dir)
 	check(!strncmp(a68_error_text(b, n), "ok", 2), "server: /mac/command answered ok");
 	b = load(dir, "command-refused.u8", &n);
 	check(strstr(a68_error_text(b, n), "radio") != 0, "server: /mac/command refused in words (radio on Live)");
+	/* music videos (videos=1, 22 November 2026): the album's two after its tracks, both ways; names tidied alike */
+	{
+		struct a68_info i;
+		struct a68_track t;
+		struct a68_video v;
+		struct a68_cmd c;
+		struct a68_device d;
+		int k, nt = 0, nv = 0, ok = 1, how = 0;
+		b = load(dir, "info-v.u8", &n);
+		a68_rec_init(&r, b, n);
+		check(a68_read_head(&r, &h) && a68_info_of(&r, &i) && i.videos == 2 && i.every == 20 && strstr(i.caps, "hls"),
+		      "server: /mac/info?videos=1, two videos and what the server can do");
+		b = load(dir, "tracks-v.u8", &n);
+		a68_rec_init(&r, b, n);
+		check(a68_read_head(&r, &h) && h.total == 5, "server: an album's tracks and videos, five in all");
+		while ((k = a68_next_item(&r, &t, &v))) {
+			if (k == 'T') { nt++; ok &= !nv; continue; }
+			{
+				char stem[200], title[200];
+				unsigned long num;
+				nv++;
+				a68_stem(v.path, stem, sizeof stem);
+				num = a68_track_name(stem, "Gamma", title, sizeof title);
+				ok &= v.full && v.width == 160 && v.height == 120 && v.secs == 2 && !strcmp(v.folder, "Gamma - Converted") &&
+				      !strcmp(v.album_title, "Converted") && !strcmp(title, v.title) && num >= 4;
+				how |= 1 << a68_video_how(v.how);
+			}
+		}
+		check(nt == 3 && nv == 2 && ok && how == ((1 << A68_HOW_DIRECT) | (1 << A68_HOW_REMUX)),
+		      "server: the videos after the tracks, full, as the core tidies their names; one direct, one remuxed");
+		b = load(dir, "tracks-v.mr", &n);
+		{
+			static struct a68_row rows[A68_PAGE];
+			struct a68_list l;
+			a68_list_init(&l, rows, A68_PAGE, A68_V_TRACKS);
+			check(a68_list_load(&l, b, n) && l.n == 5 && rows[3].kind == 'V' && rows[4].kind == 'V' && a68_list_videos(&l) == 2 &&
+			      a68_list_secs(&l) == 7 && !strcmp(rows[3].text, "Closing Time (Video)"),
+			      "server: the classic Play's page with videos=1: the tracks, then the videos as rows");
+		}
+		b = load(dir, "videos.u8", &n);
+		a68_rec_init(&r, b, n);
+		k = 0;
+		if (a68_read_head(&r, &h) && !strcmp(h.kind, "videos"))
+			while (a68_next_video(&r, &v)) k++;
+		check(k == 2 && h.total == 2, "server: /mac/videos, an artist's");
+		b = load(dir, "artists-v.mr", &n);
+		{
+			static struct a68_row rows[A68_PAGE];
+			struct a68_list l;
+			int g = -1;
+			a68_list_init(&l, rows, A68_PAGE, A68_V_ARTISTS);
+			check(a68_list_load(&l, b, n), "server: artists with videos=1");
+			for (k = 0; k < l.n; k++) if (!strcmp(rows[k].text, "Gamma")) g = k;
+			check(g >= 0 && rows[g].videos == 2, "server: Gamma's two videos counted");
+		}
+		b = load(dir, "search-v.mr", &n);
+		{
+			static struct a68_row rows[A68_PAGE];
+			struct a68_list l;
+			a68_list_init(&l, rows, A68_PAGE, A68_V_SEARCH);
+			check(a68_list_load(&l, b, n) && l.n == 1 && rows[0].kind == 'V' && !strcmp(rows[0].text, "Live at Home") && rows[0].secs == 2,
+			      "server: a search finds a video");
+		}
+		b = load(dir, "commands-v.u8", &n);
+		a68_rec_init(&r, b, n);
+		nv = 0; ok = 1;
+		while (a68_next_cmd(&r, &c)) {
+			if (c.kind == 'V') { nv++; ok &= c.path[0] && c.width == 160 && a68_video_how(c.how) != A68_HOW_UNKNOWN; }
+			if (c.kind == 'T') ok = 0;
+		}
+		check(nv == 2 && ok, "server: two videos sent to a player that shows them, as V lines with how they play");
+		b = load(dir, "devices-v.u8", &n);
+		a68_rec_init(&r, b, n);
+		k = 0;
+		while (a68_next_device(&r, &d))
+			if (!strcmp(d.id, "mac-fixture0001") && d.video && d.full) k = 1;
+		check(k, "server: the player says it shows videos, in the devices' 18th field");
+	}
 }
 
 #endif
@@ -649,6 +852,7 @@ int main(int argc, char **argv)
 	proto_units();
 	catalog_units();
 	devices_units();
+	video_units();
 #ifndef A68_FREESTANDING
 	if (argc > 1) fixtures(argv[1]);
 #endif

@@ -11,11 +11,14 @@ LABEL org.opencontainers.image.title="Aurora68 music server" \
       org.opencontainers.image.description="A folder of MP3s as internet radio stations, IPv4 and IPv6" \
       org.opencontainers.image.source="https://github.com/farsonic/Aurora68" \
       org.opencontainers.image.licenses="MPL-2.0"
-# ffmpeg converts FLAC, M4A (AAC and ALAC), Ogg, Opus, WAV and AIFF to MP3 as they are sent
+# ffmpeg converts FLAC, M4A (AAC and ALAC), Ogg, Opus, WAV and AIFF to MP3 as they are sent; for music videos (22 November
+# 2026) Alpine's package also brings ffprobe (their lengths and codecs), x264 and AAC (remux and transcode, HLS), MPEG-1
+# and MP2 (the video card's streams); the workflow checks the image has them
 RUN apk add --no-cache ffmpeg
 COPY aurora68_music_server.py /app/aurora68_music_server.py
 # settings: MUSIC_NAME (the library's name, "Music"), MUSIC_PORT (8000), MUSIC_BIND ("::", every address,
 # IPv6 and IPv4), MUSIC_MAX_LISTENERS (16), MUSIC_BITRATE (192: what other formats become); the music at /music
+# MUSIC_CACHE: where posters, soundtracks and HLS conversions are kept (the container's /tmp unless a volume is given)
 ENV MUSIC_DIR=/music MUSIC_PORT=8000 PYTHONUNBUFFERED=1
 EXPOSE 8000
 # Aurora68 Play's probe for the server (UDP, broadcast and the group 239.255.68.70): needs host networking

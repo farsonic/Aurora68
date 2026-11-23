@@ -301,11 +301,11 @@ final class DeviceTests: XCTestCase {
 
     func testCommandsAsRequests() {
         XCTAssertEqual(Command(.play, what: LiveWhat.folder("Caf\u{e9} Sessions"), shuffle: true).path(to: "live"),
-                       "/mac/command?to=live&action=play&what=f%3ACaf%C3%A9%20Sessions&shuffle=1&enc=utf8&full=1")
-        XCTAssertEqual(Command(.seek, position: 42.5).path(to: "mac-1"), "/mac/command?to=mac-1&action=seek&position=42.500&enc=utf8&full=1")
-        XCTAssertEqual(Command(.volume, volume: 150).path(to: "se1"), "/mac/command?to=se1&action=volume&volume=100&enc=utf8&full=1")
-        XCTAssertEqual(Command(.jump, index: 0).path(to: "live"), "/mac/command?to=live&action=jump&index=0&enc=utf8&full=1")
-        XCTAssertEqual(Command(.`repeat`, on: false).path(to: "live"), "/mac/command?to=live&action=repeat&on=0&enc=utf8&full=1")
+                       "/mac/command?to=live&action=play&what=f%3ACaf%C3%A9%20Sessions&shuffle=1&enc=utf8&full=1&videos=1")
+        XCTAssertEqual(Command(.seek, position: 42.5).path(to: "mac-1"), "/mac/command?to=mac-1&action=seek&position=42.500&enc=utf8&full=1&videos=1")
+        XCTAssertEqual(Command(.volume, volume: 150).path(to: "se1"), "/mac/command?to=se1&action=volume&volume=100&enc=utf8&full=1&videos=1")
+        XCTAssertEqual(Command(.jump, index: 0).path(to: "live"), "/mac/command?to=live&action=jump&index=0&enc=utf8&full=1&videos=1")
+        XCTAssertEqual(Command(.`repeat`, on: false).path(to: "live"), "/mac/command?to=live&action=repeat&on=0&enc=utf8&full=1&videos=1")
     }
 
     func testRadio() {
@@ -377,7 +377,7 @@ final class DeviceTests: XCTestCase {
     func testDeviceSession() {
         let s = DeviceSession(id: "mac-0123456789ab", name: "Caf\u{e9} Mac", version: "1.2")
         s.begin()
-        XCTAssertEqual(s.path(.announce), "/mac/announce?id=mac-0123456789ab&name=Caf%C3%A9%20Mac&kind=macos&v=1.2&enc=utf8&full=1")
+        XCTAssertEqual(s.path(.announce), "/mac/announce?id=mac-0123456789ab&name=Caf%C3%A9%20Mac&kind=macos&v=1.2&video=1&enc=utf8&full=1&videos=1")
         XCTAssertFalse(s.announced)
         XCTAssertTrue(s.answer(.announce, status: 200, body: Data("ok\r20\r7\r".utf8)))
         XCTAssertTrue(s.announced)
@@ -385,9 +385,9 @@ final class DeviceTests: XCTestCase {
         XCTAssertEqual(s.generation, 7)
         XCTAssertFalse(s.takeGenerationChange())                       // the first generation known
         XCTAssertTrue(s.setState(DeviceState(playing: true, title: "Closing Time", position: 3, length: 273, volume: 80, track: "t1")))
-        XCTAssertEqual(s.path(.state), "/mac/state?id=mac-0123456789ab&p=1&pos=3&len=273&vol=80&t=t1&enc=utf8&full=1")
+        XCTAssertEqual(s.path(.state), "/mac/state?id=mac-0123456789ab&p=1&pos=3&len=273&vol=80&t=t1&enc=utf8&full=1&videos=1")
         XCTAssertTrue(s.answer(.state, status: 200, body: Data("ok\r".utf8)))
-        XCTAssertEqual(s.path(.commands), "/mac/commands?id=mac-0123456789ab&wait=20&enc=utf8&full=1")
+        XCTAssertEqual(s.path(.commands), "/mac/commands?id=mac-0123456789ab&wait=20&enc=utf8&full=1&videos=1")
         s.answer(.announce, status: 200, body: Data("ok\r20\r8\r".utf8))
         XCTAssertTrue(s.takeGenerationChange())                        // new albums
         XCTAssertFalse(s.takeGenerationChange())
@@ -398,5 +398,62 @@ final class DeviceTests: XCTestCase {
         r.answer(.announce, status: 200, body: Data("ok\r20\r1\r".utf8))
         XCTAssertTrue(r.setState(DeviceState(title: "A station \u{2014} with a long name that does not fit into the hundred bytes the core keeps for a title, cut at a character")))
         XCTAssertTrue(r.path(.state).contains("&title="))
+    }
+}
+
+/// music videos (22 November 2026, docs/08 item 109): the server's V records with videos=1, as this Play reads them
+final class VideoTests: XCTestCase {
+    func testAlbumPageWithVideos() throws {
+        let tr = answer(["A68M\t1\ttracks\t2\t0\t2",
+                         "t1\t1\tClosing Time\tGamma\t2\ta1\tGamma - Converted/01. Gamma - Closing Time.m4a\tConverted\tGamma - Converted",
+                         "V\tv1\tLive Clip\tGamma\t185\ta1\t1920\t1080\tGamma - Converted/02. Gamma - Live Clip.mkv\tConverted\tGamma - Converted\tremux"])
+        let p = try Track.page(tr)
+        XCTAssertEqual(p.tracks.map(\.id), ["t1"])
+        XCTAssertFalse(p.tracks[0].isVideo)
+        let v = try XCTUnwrap(p.videos.first)
+        XCTAssertEqual(v.video, VideoInfo(how: .remux, width: 1920, height: 1080))
+        XCTAssertEqual(v.number, 2)
+        XCTAssertEqual(v.seconds, 185)
+        XCTAssertEqual(v.albumTitle, "Converted")
+        XCTAssertEqual(v.what, "v:v1")
+        XCTAssertEqual(p.tracks[0].what, "t:Gamma - Converted/01. Gamma - Closing Time.m4a")
+        let api = MusicAPI(base: URL(string: "http://192.168.1.20:8423")!)
+        XCTAssertEqual(api.playURL(v).absoluteString, "http://192.168.1.20:8423/video/v1/index.m3u8")   // HLS: AVFoundation's way
+        let direct = Track(id: "v2", number: 0, title: "Opening", artist: "Alpha", seconds: 3, path: "Alpha/Opening.mp4", album: "",
+                           albumTitle: "", folder: "Alpha", video: VideoInfo(how: .direct, width: 160, height: 120))
+        XCTAssertEqual(api.playURL(direct).absoluteString, "http://192.168.1.20:8423/video/v2")         // the file, with Range
+        XCTAssertTrue(api.playURL(p.tracks[0]).absoluteString.hasPrefix("http://192.168.1.20:8423/file/Gamma%20-%20Converted/"))
+        XCTAssertEqual(api.posterURL("v1").absoluteString, "http://192.168.1.20:8423/vthumb/v1")
+        let vp = try Track.videoPage(answer(["A68M\t1\tvideos\t1\t0\t1",
+                                             "V\tv3\tWebm Clip\tDelta\t3\t\t160\t120\tDelta/Videos/Delta - Webm Clip.webm\t\tDelta/Videos\ttranscode"]))
+        XCTAssertEqual(vp.videos.first?.video?.how, .transcode)
+        XCTAssertEqual(vp.videos.first?.album, "")
+        XCTAssertNil(vp.next)
+        XCTAssertEqual(VideoHow("something new"), .unknown)
+    }
+
+    func testInfoArtistsDevicesCommands() throws {
+        let info = answer(["A68M\t1\tinfo\t1\t0\t1", "Home Music\t4\t2\t1\t3\t9\t20\t3\tvideos,remux,hls,transcode,mpeg1"])
+        let i = try XCTUnwrap(ServerInfo.parse(info))
+        XCTAssertEqual(i.videos, 3)
+        XCTAssertEqual(i.capabilities, ["videos", "remux", "hls", "transcode", "mpeg1"])
+        let artists = answer(["A68M\t1\tartists\t2\t0\t2", "a1\tGamma\t1\t3\t1", "a2\tDelta\t0\t0\t1"])
+        let albums = answer(["A68M\t1\talbums\t1\t0\t1", "l1\tConverted\tGamma\t3\t7\ta1\tGamma - Converted"])
+        let c = try Catalog.make(info: info, artists: [artists], albums: [albums])
+        XCTAssertEqual(c.artists.map(\.videos), [1, 1])
+        XCTAssertEqual(c.artists[1].albums, [])                       // an artist with videos alone
+        let devs = Device.list(answer(["mac1\tiMac\tmacos\t1\t\t\t0\t0\t0\t100\t\t\t0\t1795000000\t0\t1.3\t0\t1",
+                                       "se1\tSE\tclassic\t1\tLive Clip\tGamma\t1\t1.0\t3.0\t80\tConverted\tGamma - Converted\t0\t0\t0\t1.5\t0\t0"]))
+        XCTAssertEqual(devs.map(\.showsVideo), [true, false])
+        let cmds = DeviceCommand.list(answer(["1\tplay\t0\t\t0",
+                                              "V\tv1\tLive Clip\tGamma\t185\tGamma - Converted/02. Gamma - Live Clip.mkv\tConverted\tremux\t1920\t1080",
+                                              "T\tt1\tClosing Time\tGamma\t2\tGamma - Converted/01. Gamma - Closing Time.m4a\tConverted"]))
+        guard case .play(let list, let from)? = cmds.first?.playerAction else { return XCTFail("a play command") }
+        XCTAssertEqual(from, 0)
+        XCTAssertEqual(list.map(\.isVideo), [true, false])            // the video plays as a video, then the song
+        XCTAssertEqual(list[0].video?.how, .remux)
+        XCTAssertEqual(list[0].folder, "Gamma - Converted")
+        XCTAssertEqual(Command(.play, what: LiveWhat.video("v1")).path(to: "se1"),
+                       "/mac/command?to=se1&action=play&what=v%3Av1&enc=utf8&full=1&videos=1")
     }
 }

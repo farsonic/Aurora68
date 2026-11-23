@@ -45,6 +45,15 @@ classic Play does not send, so its answers are what they were:
   command's tracks, how often to announce. Paths and folders are never cut short (the 120 characters a name may
   have do not apply to them).
 
+- `videos=1` (22 November 2026, docs/08 item 109): music videos. An album's or an artist's tracks are followed by its
+  videos as `V` records (`a68_next_item` tells them from tracks, `a68_next_video` reads them alone, `a68_next_track`
+  passes over them), artists count theirs, a search finds them, `/mac/info` adds the count and what the server can do
+  with them, a device says whether it shows them (`a68_device.video`; `dv.video` makes a Play's announce say so), and
+  a command's videos are `V` lines. The catalogue's rows have kind `'V'` (not counted in an album's length), and
+  `A68_V_ARTIST` is an artist's tracks and videos, for an artist with videos and no album. `a68_path_vaudio` (the
+  sound as MP3, what the classic Play plays), `a68_path_video` (the file, or HLS, what a Mac's player opens),
+  `a68_path_vthumb`, `a68_path_videos` and `a68_what_video` (`v:ID`) write the requests.
+
 The macOS Play used the server's JSON (`/api/...`) before; the JSON is still served, for the web panel and
 anything else, and nothing of it changed.
 
@@ -78,4 +87,5 @@ anything else, and nothing of it changed.
   `tools/devices_test.c`, `tools/music-server/play_check.c` in the server's own test). The macOS Play's XCTest
   suite (`macos/Aurora68Play/Tests`) checks its Swift wrappers over the core.
 
-Written on 22 November 2026.
+Written on 22 November 2026; music videos added the same day (158 unit checks and 34 on the server's answers since,
+158 as a 68020 program).

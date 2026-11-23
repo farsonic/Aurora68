@@ -23,6 +23,7 @@ int a68_list_path(const struct a68_client *c, int kind, const char *id, const ch
 	case A68_V_ARTISTS: return a68_path_artists(c, from, A68_PAGE, out, max);
 	case A68_V_ALBUMS: return a68_path_albums(c, id, from, A68_PAGE, out, max);
 	case A68_V_TRACKS: return a68_path_tracks(c, id, 0, from, A68_PAGE, out, max);
+	case A68_V_ARTIST: return a68_path_tracks(c, 0, id, from, A68_PAGE, out, max);
 	default: return a68_path_search(c, words, from, A68_PAGE, out, max);
 	}
 }
@@ -48,19 +49,27 @@ int a68_list_load(struct a68_list *l, char *body, long len)
 			struct a68_artist a;
 			if (!a68_next_artist(&r, &a)) break;
 			w->kind = 'A'; a68_copy(w->id, a.id, sizeof w->id); a68_copy(w->text, a.name, sizeof w->text);
-			w->count = (unsigned short)a.albums;
+			w->count = (unsigned short)a.albums; w->videos = (unsigned short)a.videos;
 		} else if (l->kind == A68_V_ALBUMS) {
 			struct a68_album a;
 			if (!a68_next_album(&r, &a)) break;
 			w->kind = 'L'; a68_copy(w->id, a.id, sizeof w->id); a68_copy(w->text, a.title, sizeof w->text);
 			a68_copy(w->sub, a.artist, sizeof w->sub);
 			w->count = (unsigned short)a.tracks; w->secs = a.secs;
-		} else if (l->kind == A68_V_TRACKS) {
+		} else if (l->kind == A68_V_TRACKS || l->kind == A68_V_ARTIST) {
 			struct a68_track t;
-			if (!a68_next_track(&r, &t)) break;
-			w->kind = 'T'; a68_copy(w->id, t.id, sizeof w->id); w->num = (unsigned short)t.number;
-			a68_copy(w->text, t.title, sizeof w->text); a68_copy(w->sub, t.artist, sizeof w->sub);
-			w->secs = t.secs; a68_copy(w->album, t.album, sizeof w->album);
+			struct a68_video v;
+			int k = a68_next_item(&r, &t, &v);
+			if (!k) break;
+			if (k == 'V') {                  /* a music video after the tracks: its title, artist, length */
+				w->kind = 'V'; a68_copy(w->id, v.id, sizeof w->id);
+				a68_copy(w->text, v.title, sizeof w->text); a68_copy(w->sub, v.artist, sizeof w->sub);
+				w->secs = v.secs; a68_copy(w->album, v.album, sizeof w->album);
+			} else {
+				w->kind = 'T'; a68_copy(w->id, t.id, sizeof w->id); w->num = (unsigned short)t.number;
+				a68_copy(w->text, t.title, sizeof w->text); a68_copy(w->sub, t.artist, sizeof w->sub);
+				w->secs = t.secs; a68_copy(w->album, t.album, sizeof w->album);
+			}
 		} else {
 			struct a68_hit t;
 			if (!a68_next_hit(&r, &t)) break;
@@ -94,8 +103,16 @@ unsigned long a68_list_secs(const struct a68_list *l)
 {
 	unsigned long s = 0;
 	int i;
-	for (i = 0; i < l->n; i++) s += l->rows[i].secs;
+	for (i = 0; i < l->n; i++)
+		if (l->rows[i].kind != 'V') s += l->rows[i].secs;
 	return s;
+}
+int a68_list_videos(const struct a68_list *l)
+{
+	int i, n = 0;
+	for (i = 0; i < l->n; i++)
+		if (l->rows[i].kind == 'V') n++;
+	return n;
 }
 int a68_list_has_prev(const struct a68_list *l) { return l->from > 0; }
 int a68_list_has_next(const struct a68_list *l) { return l->from + l->n < l->total; }

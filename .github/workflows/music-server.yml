@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: MPL-2.0
 # The music server (tools/music-server): its test, then its Docker image for amd64, arm64 and 32-bit ARM
-# NAS boxes, published as ghcr.io/farsonic/aurora68-music-server (latest, and the commit).
+# NAS boxes, published as ghcr.io/farsonic/aurora68-music-server (latest, and the commit). Since 22 November 2026 (music
+# videos) the test and an image build run on every branch that touches these paths; the image is published from main only.
 name: music server
 on:
   push:
-    branches: [main]
     paths: ['tools/music-server/**', 'play/core/**', '.github/workflows/music-server.yml']
   workflow_dispatch:
 permissions:
@@ -17,6 +17,10 @@ jobs:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: python3 tools/music-server/test_server.py
+      - name: The image's ffmpeg (ffprobe, x264, AAC, MPEG-1 and MP2 for the videos)
+        run: |
+          docker build -t music-check tools/music-server
+          docker run --rm --entrypoint sh music-check -c 'ffprobe -version | head -1 && for e in libx264 aac mpeg1video mp2 libmp3lame; do ffmpeg -hide_banner -encoders | grep -q " $e " || { echo "no $e encoder"; exit 1; }; echo "$e: yes"; done'
   image:
     needs: test
     runs-on: ubuntu-latest
@@ -25,6 +29,7 @@ jobs:
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
+        if: github.ref == 'refs/heads/main'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -33,7 +38,7 @@ jobs:
         with:
           context: tools/music-server
           platforms: linux/amd64,linux/arm64,linux/arm/v7
-          push: true
+          push: ${{ github.ref == 'refs/heads/main' }}
           tags: |
             ghcr.io/farsonic/aurora68-music-server:latest
             ghcr.io/farsonic/aurora68-music-server:${{ github.sha }}

@@ -101,11 +101,14 @@ public struct Page: Equatable {
     public let next: Int?
 }
 
-/// what the macOS Play asks the server for: UTF-8, and the longer records (paths, folders, whole states)
+/// what the macOS Play asks the server for: UTF-8, the longer records (paths, folders, whole states), and music
+/// videos (22 November 2026: an album's and an artist's after their tracks, a command's as V lines; an older server
+/// passes over the parameter and sends none)
 let client: a68_client = {
     var c = a68_client()
     c.utf8 = 1
     c.full = 1
+    c.videos = 1
     return c
 }()
 

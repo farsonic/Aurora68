@@ -4673,3 +4673,72 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      the timings over the GPIO (the testbed's bridge takes some 44 us a cycle, a PiStorm about one), the VBL edges
      and the SCC spacing on real chips, `buscheck.txt` on a real card. The tester's 512Ke is the first machine it
      is for: READ-ME-FIRST's "If your Mac misbehaves: the bus check" says what to do and what to photograph.
+109. **Music videos in the music server and both Aurora68 Plays (22 November).** The owner's library on the NAS also
+     holds music videos, in the same folders as the albums, and they asked for them in the server and in both Plays.
+   - *The server* (`tools/music-server`, README "Music videos"). The scan finds `.mp4 .m4v .mov .mkv .webm .avi .mpg
+     .mpeg .ts` files beside the songs, kept apart from the folders' songs (a folder of videos alone is no station,
+     and the stations file did not change). The catalogue attaches each to its album when it sits in an album's
+     folder or in a `Videos` folder inside one, to its artist in an artist's folder (one whose albums are folders
+     inside it), else by its folder's or its own name; its title is its file's name tidied as a track's is, by the
+     Python mirror of `play/core/names.c` the tracks already used (now one function, `tidy_title`). ffprobe says
+     each video's length, size and codecs once, kept in the new cache folder (`MUSIC_CACHE`, `videos.json` by path,
+     time and size): the NAS is slow, a rescan every 30 seconds must cost nothing, and a restart probes nothing it has
+     seen (files without a picture are kept there too, or they would be probed at every scan: the test caught that).
+     The copy rule applies with the videos' own order of kinds and without a track number. Videos count in the
+     generation and `/api/info`.
+   - *Three ways to send one*, chosen per file: the file as it is when AVFoundation plays it from a file (MP4, M4V,
+     QuickTime; H.264 at 8 bits 4:2:0 or HEVC tagged `hvc1`; AAC, ALAC or MP3); else remuxed into fragmented MP4 with
+     the picture copied (an MKV or TS of H.264; AC-3, DTS or Opus sound converted to AAC on the way, since sound is
+     cheap and the picture is not; HEVC retagged `hvc1`, which QuickTime insists on); else transcoded to H.264 and AAC
+     (VP9, AV1, MPEG-2, 10-bit H.264), at most `VIDEO_TRANSCODES` at once (1) and refused with `VIDEO_TRANSCODE=off`,
+     the reason logged and answered in words. AVFoundation will not play a progressive file whose server cannot answer
+     a byte range (error -11850), and a stream made as it is sent has no length, so the remuxed and transcoded are
+     also HLS: `/video/ID/index.m3u8`, four-second fragmented-MP4 segments written to the cache as ffmpeg makes them,
+     the playlist served with `EXT-X-START` at 0 (a growing "event" playlist otherwise starts near its end), a
+     finished one kept for next time, one nobody fetches from for a minute stopped. Posters (`/vthumb/ID`, a frame a
+     tenth of the way in), the sound alone (`/vaudio/ID`, an MP3 stream with an end exactly as `/t/ID`, converted once
+     and kept; `/t/` takes a video's id too), and, at the coordinator's request for the video card's driver being
+     written beside this, `/vmpeg/ID?w=&h=&start=`: an MPEG program stream with the video helper's own ffmpeg
+     arguments and size rules (MPEG-1 fitted and padded black, 25 frames a second, no B-frames, MP2 at 44.1 kHz
+     stereo, 128 kbit/s, at most 1280 x 720, even sizes), counted as a transcode, `mpeg1` in the capabilities. No
+     Play uses it yet.
+   - *The interface.* JSON: `/api/videos`, videos in `/api/tracks`, `/api/catalog`, `/api/list`, `/api/info`. The
+     players' text gained a third parameter, `videos=1`: `V` records after an album's or an artist's tracks (id,
+     title, artist, seconds, album, width, height; with `full=1` path, album title, folder, how it is sent),
+     `/mac/videos`, a fifth field for artists (and artists with videos alone), `V` hits, `/mac/info`'s count and
+     capabilities, the devices' 18th field (shows video), `V` lines in commands. Without it every `/mac/` answer is byte
+     for byte what it was: the test compares fifteen of them, both encodings, with a server started with `VIDEOS=off`.
+     Devices say whether they show video (`video=1` on the announce); `v:ID` plays a video anywhere (to one without a
+     screen the answer adds `audio_only`, and Live queues its sound).
+   - *The panel* lists a folder's videos with posters and plays them in the page (the file, HLS in Safari, the
+     fragmented MP4 elsewhere) or on the chosen player. The coordinator then passed on the owner's request for the
+     project's web pages to look like the Macintosh of the 1980s, as the Setup and Recovery page already did
+     (`tools/recovery/page.html`): the panel took that page's CSS (the desktop pattern, pinstriped title bars with
+     close boxes, hard shadows, the default button's ring, alert-box messages, Chicago and Monaco with fallbacks, the
+     six-colour stripe and a colour for each window) and the Aurora68 logo (`docs/img/aurora68-logo.svg`) inline and
+     as the favicon, its requests and functions unchanged. Rendered with Playwright's headless Chromium at 390 and
+     1100 pixels wide (the library, an album with its video, the video's window): on a phone the windows stack, Now
+     Playing first, its cover at half the width.
+   - *The core* (`play/core`): `a68_client.videos`, `a68_video` and `a68_next_video`, `a68_next_item` (a track or a
+     video; `a68_next_track` passes over `V`), `V` hits and command lines, the info's count and capabilities, the
+     artist's count, the device's flag, `dv.video` for the announce, rows of kind `V` (not counted in an album's
+     length), `A68_V_ARTIST` (an artist with videos alone), and the paths `/mac/videos`, `/vaudio/ID`, `/vthumb/ID`,
+     `/video/ID` (the file for one sent as it is, else HLS), `v:ID`.
+   - *The macOS Play 1.3*: a video is a `Track` with `video` set, so the queue, the commands and the player take it as
+     they take songs; the `AVQueuePlayer` plays its item from the core's address, and a Video window (AVKit's
+     `AVPlayerView` over the same player: its controls, full screen) opens when one starts. Videos follow an album's
+     songs and an artist's albums as posters; Now Playing says video and shows the poster; Live and other players get
+     `v:ID`. It announces that it shows video.
+   - *The classic Play 1.5* asks with `videos=1`: a video is a row marked "Video:", without a number, after the
+     album's tracks; playing it plays `/vaudio/ID` as a track plays `/t/ID`; an album's Play stays its songs; an artist
+     with videos and no album opens on them; a video sent from elsewhere comes as a `V` line and plays the same way.
+     It announces no video. The picture on the SE is the next step: the kernel's video card (docs/16, issue #24's
+     Aurora68 Video program) will take `/vmpeg/ID` once its program exists.
+   - *Tested.* The server test: 203 checks, all passing (62 new: four ffmpeg-made videos of a few seconds at 160 x 120 and a .mp4 without a picture in a temporary folder; the scan, the copy, the facts and their cache, Range, the remux checked by ffprobe and by its H.264 bytes being the original's, its HLS, the transcode, refusals with transcoding off and beyond the limit, no ffmpeg left, posters, soundtracks through the classic Play's parser, `/vmpeg/` at three sizes with no B-frames, the JSON, the text both ways, the byte-for-byte comparison, devices). The core: `tools/play_core_test.c` 158 unit checks (22 new) and 34 on the real server's answers (10 new: `tools/play_core_fixtures.py` adds two videos to its library; the core tidies their file names as the server does), the 158 again as a 68020 program under qemu-m68k; `devices_test` 33 as before. XCTest on GitHub's macOS runner: 21 tests (2 new, `VideoTests`; the older paths now end in `&videos=1`), runs 45084364767 and 45085274385, and the app built. The
+     music-server workflow now runs its test and an image build on every branch that touches it (publishing from main
+     only) and checks the Alpine image's ffmpeg has ffprobe, x264, AAC, MPEG-1, MP2 and LAME: runs 45084364758 and 45085274273, both green (ffprobe 8.1.3 in the image). The classic
+     Play in the testbed: not run in this session. The emulator lock was held by another session from 23:39 to 01:09, and when it came free the build machine's disk was full (1.7 MB left; the scratch copy of the test image had to be deleted) and another QEMU was already running, so no run was started. The classic Play 1.5 builds cleanly (CODE 1 170152 bytes), and its new paths go through the core that the host and 68020 tests check against the real server's answers. The session is ready to run: a copy of b-play.image with the new Play installed, the server on a library with an MP4, an MKV and a WebM video, and a script that opens an album with a video, plays the video's sound, opens an artist that has only videos, and sends a video to the SE from the server.
+   - *Not verified:* the macOS app on a real Mac (the Video window, full screen, HLS of a remux and of a transcode in
+     AVFoundation, a video in the queue followed by a song, Now Playing's poster), the panel's video in Safari and on
+     a phone, the owner's own videos (their containers and codecs, a NAS's speed at remuxing and transcoding), the
+     Alpine image on the NAS, and the classic Play on the SE.

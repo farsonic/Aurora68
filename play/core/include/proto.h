@@ -18,12 +18,18 @@
  * into it, so a record needs no copy and has no length the core decides (a path may be long); the body must
  * be writable, with one more byte after its end (a NUL goes there), and the fields last as long as it does.
  * Missing fields are empty strings, never null.
+ *
+ * Music videos (22 November 2026, docs/08 item 109): a third parameter, videos=1, which the classic Play 1.4 and the
+ * macOS Play 1.2 do not send, so their answers stay what they were. With it an album's or an artist's tracks are
+ * followed by its videos as "V" records, an artist has a fifth field (its videos, and an artist with videos alone is
+ * listed), a search finds videos, /mac/info adds every, the videos and what the server can do, a device says whether
+ * it shows videos, and a command's videos come as "V" lines. /mac/videos lists them alone.
  */
 #ifndef A68_PROTO_H
 #define A68_PROTO_H
 
 /* what a Play asks for: its text encoding and whether it wants the longer records */
-struct a68_client { int utf8; int full; };
+struct a68_client { int utf8; int full; int videos; };
 
 /* ---- records --------------------------------------------------------------------------------------------- */
 struct a68_rec { char *b; long n, at; };
@@ -38,16 +44,22 @@ int a68_read_head(struct a68_rec *r, struct a68_head *h);
 /* the next page's "from" after this one, -1 if this was the last */
 long a68_next_from(const struct a68_head *h);
 
-/* /mac/info: name, version, artists, albums, tracks, generation (servers of 22 November 2026 on), every (full=1) */
-struct a68_info { const char *name, *version; unsigned long artists, albums, tracks, generation, every; };
-/* /mac/artists: id, name, albums, tracks */
-struct a68_artist { const char *id, *name; unsigned long albums, tracks; };
+/* /mac/info: name, version, artists, albums, tracks, generation (servers of 22 November 2026 on), every (full=1 or
+   videos=1); videos=1 also the videos and what the server does with them ("videos,remux,hls,transcode,mpeg1") */
+struct a68_info { const char *name, *version; unsigned long artists, albums, tracks, generation, every, videos; const char *caps; };
+/* /mac/artists: id, name, albums, tracks; videos=1 also videos */
+struct a68_artist { const char *id, *name; unsigned long albums, tracks, videos; };
 /* /mac/albums: id, title, artist, tracks, seconds; full=1: artist_id, folder (empty from an older server) */
 struct a68_album { const char *id, *title, *artist; unsigned long tracks, secs; const char *artist_id, *folder; int full; };
 /* /mac/tracks: id, number, title, artist, seconds, album; full=1: path, album_title, folder */
 struct a68_track { const char *id; unsigned long number; const char *title, *artist; unsigned long secs; const char *album;
                    const char *path, *album_title, *folder; int full; };
-/* /mac/search: kind ('A' artist, 'L' album, 'T' track), id, text, sub; a track also album and seconds */
+/* a music video (videos=1): "V", id, title, artist, seconds, album (its id, or empty), width, height; full=1 also path
+   (for /file/), album_title, folder and how the server sends it ("direct", "remux", "transcode") */
+struct a68_video { const char *id, *title, *artist; unsigned long secs; const char *album; unsigned long width, height;
+                   const char *path, *album_title, *folder, *how; int full; };
+/* /mac/search: kind ('A' artist, 'L' album, 'T' track, 'V' video), id, text, sub; a track or a video also album and
+   seconds */
 struct a68_hit { char kind; const char *id, *text, *sub, *album; unsigned long secs; };
 /* /mac/radio: group ("By country/Austria": a submenu inside a submenu), name, url */
 struct a68_radio { const char *group, *name, *url; };
@@ -57,14 +69,17 @@ struct a68_device {
 	const char *id, *name, *kind; int online; const char *title, *artist;
 	int full, playing; unsigned long position_ms, length_ms; int volume; const char *album, *folder;
 	unsigned long at, last_seen; int is_live; const char *version; unsigned long listeners;
+	int video;                /* videos=1: it shows videos (the macOS Play); 0: their sound only (the classic Play) */
 };
 /* /mac/commands: 'C' a command (n, action, position, volume: -1 when not given, shuffle), then its 'T' tracks
-   (tid, title, artist, seconds; full=1: path, album) and an 'R' radio station (name, url) */
+   (tid, title, artist, seconds; full=1: path, album), 'V' videos with videos=1 (the same, and full=1 how, width,
+   height) and an 'R' radio station (name, url) */
 struct a68_cmd {
 	int kind;
 	long n, position; int volume, shuffle; const char *action;
 	const char *tid, *title, *artist; unsigned long secs; const char *path, *album;
 	const char *name, *url;
+	const char *how; unsigned long width, height;
 };
 /* /mac/now, the Live channel: 'N' (name, playing, paused, repeat, pos, changes, listeners), 'C' the song heard
    (path, folder, title, elapsed and length in ms), 'Q' each queued song (path, title), 'L' each listener (who,
@@ -78,7 +93,10 @@ struct a68_now {
 int a68_info_of(struct a68_rec *r, struct a68_info *o);       /* 1 if there was one */
 int a68_next_artist(struct a68_rec *r, struct a68_artist *o);  /* 1 while there are records with an id */
 int a68_next_album(struct a68_rec *r, struct a68_album *o);
-int a68_next_track(struct a68_rec *r, struct a68_track *o);
+int a68_next_track(struct a68_rec *r, struct a68_track *o);    /* passes over "V" records */
+int a68_next_video(struct a68_rec *r, struct a68_video *o);    /* passes over everything but "V" records */
+/* a tracks answer with videos=1: 'T' (into t), 'V' (into v), 0 at the end */
+int a68_next_item(struct a68_rec *r, struct a68_track *t, struct a68_video *v);
 int a68_next_hit(struct a68_rec *r, struct a68_hit *o);
 int a68_next_radio(struct a68_rec *r, struct a68_radio *o);
 int a68_next_device(struct a68_rec *r, struct a68_device *o);
@@ -95,6 +113,10 @@ enum { A68_ACT_UNKNOWN, A68_ACT_PLAY, A68_ACT_ADD, A68_ACT_NEXT, A68_ACT_PAUSE, 
        A68_ACT_JUMP, A68_ACT_REMOVE, A68_ACT_CLEAR, A68_ACT_SHUFFLE, A68_ACT_REPEAT };
 int a68_action(const char *name);
 const char *a68_action_name(int act);
+
+/* how a video is sent (a68_video.how) */
+enum { A68_HOW_UNKNOWN, A68_HOW_DIRECT, A68_HOW_REMUX, A68_HOW_TRANSCODE };
+int a68_video_how(const char *how);
 
 /* a cover: "A68ART 1 W H DEPTH ROWBYTES" (or "A68ARTS 1 N W H DEPTH ROWBYTES"), then the bits: its numbers into
    v (nv of them) and where the bits start; 1 if it is one */
@@ -119,10 +141,19 @@ int a68_path_command(const struct a68_client *c, const char *to, int action, con
                      long position, int volume, long index, int on, char *out, long max);
 /* one track as MP3 from start seconds, as the classic Play plays it: /t/ID?start=S */
 int a68_path_stream(const char *tid, unsigned long start, char *out, long max);
+/* music videos: an artist's or an album's (both empty: every one), /mac/videos */
+int a68_path_videos(const struct a68_client *c, const char *artist, const char *album, long from, long count, char *out, long max);
+/* a video's sound as MP3 from start seconds (/vaudio/ID?start=S: what the classic Play plays), its poster (/vthumb/ID),
+   and the address a Mac's player opens: /video/ID for one sent as it is (the file, with Range), else
+   /video/ID/index.m3u8 (HLS: AVFoundation plays no stream without a length) */
+int a68_path_vaudio(const char *vid, unsigned long start, char *out, long max);
+int a68_path_vthumb(const char *vid, char *out, long max);
+int a68_path_video(const char *vid, int how, char *out, long max);
 /* the server's "what": f:FOLDER (an album; "" the whole library), t:PATH (a song), r:N (radio station N) */
 int a68_what_folder(const char *folder, char *out, long max);
 int a68_what_track(const char *path, char *out, long max);
 int a68_what_radio(unsigned long n, char *out, long max);
+int a68_what_video(const char *vid, char *out, long max);      /* v:ID, a music video */
 
 /* ---- the library's generation: a change means new albums (or fewer), so the lists are fetched again ----- */
 struct a68_gen { unsigned long seen; };
