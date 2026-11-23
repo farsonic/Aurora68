@@ -32,6 +32,9 @@ int  psmac_ip_hwaddr(int unit, uint8_t out[6]); /* the kernel's own MAC address 
 /* ---- for the service loop ---- */
 void psmac_ip_init(void);
 void psmac_ip_init_recovery(const char *name);    /* Aurora68 Setup and Recovery: the WiFi's own address, link-local without DHCP */
+void psmac_ip_ap(const uint8_t ip[4]);            /* Setup and Recovery's access point: ip/24 on the WiFi, DHCP and DNS for its guests */
+void psmac_ip_ap_off(void);                       /* ... and back, when it did not start */
+int  psmac_ip_ap_clients(void);                   /* the access point's guests with a lease */
 void psmac_ip_poll(void);
 int  psmac_ip_busy(void);                        /* frames or connections to see to: poll every turn */
 

@@ -32,6 +32,8 @@
 #include "alice_net.h"
 #include "alice_psmac.h"
 #include "../psmac/psmac_ip.h"
+#include "wifi/fmac.h"
+#include "wifi/fmac_ap.h"
 
 /* ---- time ---------------------------------------------------------------------------------- */
 static inline uint64_t ticks(void) { uint64_t v; __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(v)); return v; }
@@ -505,6 +507,120 @@ static void wsim_join(volatile struct an_unit *u, uint32_t seq)
     u->rssi = n->rssi; u->channel = n->channel; u->security = n->security; u->speed_mbps = 72;
     wsim_later(2000, AN_ST_CONNECTED, "connected (simulated radio: frames through mac.wifinet)", seq, 0);
 }
+/* The access point (23 November 2026, docs/08 item 118): AN_CMD_AP. The simulated radio is given the very
+   sequence the real driver sends (wifi/fmac_ap.c) and checks each step against a small model of what the
+   firmware takes: the role and infrastructure mode only while down, the key only while up as an access
+   point, the SSID last, with the key there when WPA2 is asked for. It answers with the Broadcom error
+   numbers the firmware would (BCME_NOTUP -4, NOTDOWN -5, NOTAP -6, BADARG -2, UNSUPPORTED -23), so the
+   recovery screen's message for a refusal can be seen here. mac.wifisimap= changes the model:
+   "refuse:NAME" refuses that step (NAME as the log names it: WLC_SET_AP, chanspec, WLC_SET_WSEC_PMK ...),
+   "noidauth" is a firmware without the WPA2 authenticator (the network is then open). Once up, the frames
+   of mac.wifinet are the guests': tools/pinet.py with PINET_APCLIENT=1 is a phone that joined. */
+static int wsim_ap;
+static char wsim_ap_msg[96];
+struct wsim_fw { int up, ap, infra, pmk, wpa2; const char *refuse; unsigned refuse_len; };
+static int32_t wsim_ap_step(void *ctx, const struct fm_ap_step *st)
+{
+    struct wsim_fw *f = ctx;
+    char nm[40]; fm_ap_step_name(st, nm, sizeof nm);
+    const char *bare = nm[0] == '"' ? nm + 1 : nm;
+    unsigned bl = 0; while (bare[bl] && bare[bl] != '"') bl++;
+    if (f->refuse && f->refuse_len == bl) { unsigned k = 0; while (k < bl && bare[k] == f->refuse[k]) k++; if (k == bl) return -23; }
+    switch (st->kind) {
+    case FMS_CMD_INT:
+        if (st->cmd == WLC_DOWN) { f->up = 0; return 0; }
+        if (st->cmd == WLC_UP) { f->up = 1; return 0; }
+        if (st->cmd == WLC_SET_INFRA) { if (f->up) return -5; f->infra = (int)st->val; return 0; }
+        if (st->cmd == WLC_SET_AP) { if (f->up) return -5; f->ap = (int)st->val; return 0; }
+        if (st->cmd == WLC_SET_CHANNEL) return st->val >= 1 && st->val <= 13 ? 0 : -2;
+        return 0;
+    case FMS_IOV_INT:
+        if (bl == 8 && bare[0] == 'c' && bare[1] == 'h') return (st->val & 0xff) >= 1 && (st->val & 0xff) <= 13 ? 0 : -2;   /* chanspec */
+        if (bl == 8 && bare[0] == 'w' && bare[1] == 'p') { f->wpa2 = st->val == WPA2_AUTH_PSK; return 0; }                 /* wpa_auth */
+        return 0;
+    case FMS_CMD_DATA:
+        if (st->cmd == WLC_SET_WSEC_PMK) {
+            if (!f->up) return -4;
+            if (!f->ap) return -6;
+            unsigned kl = (unsigned)st->data[0] | (unsigned)st->data[1] << 8, fl = (unsigned)st->data[2] | (unsigned)st->data[3] << 8;
+            if (!((kl == 32 && fl == 0) || (kl >= 8 && kl <= 63 && fl == 1))) return -2;
+            f->pmk = 1; return 0;
+        }
+        if (st->cmd == WLC_SET_SSID) {
+            if (!f->up) return -4;
+            if (!f->ap || f->infra != 1) return -6;
+            if (!st->data[0] || st->data[0] > 32 || (f->wpa2 && !f->pmk)) return -2;
+            return 0;
+        }
+        return 0;
+    default:
+        return 0;
+    }
+}
+static void wsim_ap_log(void *ctx, const struct fm_ap_step *st, int32_t e, int skipped)
+{
+    (void)ctx;
+    if (skipped) return;
+    char nm[40]; fm_ap_step_name(st, nm, sizeof nm);
+    int num = st->kind == FMS_CMD_INT || st->kind == FMS_IOV_INT;
+    if (!e) kprintf("[WIFI-SIM] access point: %s %u%s ok (%s)\n", nm, num ? st->val : st->len, num ? "" : " bytes", st->what);
+    else kprintf("[WIFI-SIM] access point: %s %u%s REFUSED, error %d (%s)\n", nm, num ? st->val : st->len, num ? "" : " bytes", e, st->what);
+}
+static void wsim_ap_start(volatile struct an_unit *u, uint32_t seq)
+{
+    volatile struct an_ap *a = (volatile struct an_ap *)u->arg;
+    char ssid[33], pass[64], cc[3];
+    unsigned i = 0, pl = 0;
+    for (; i < 32 && a->ssid[i]; i++) ssid[i] = a->ssid[i];
+    ssid[i] = 0;
+    for (; pl < 63 && a->pass[pl]; pl++) pass[pl] = a->pass[pl];
+    pass[pl] = 0;
+    cc[0] = a->country[0]; cc[1] = a->country[1]; cc[2] = 0;
+    unsigned channel = a->channel, flags = a->flags;
+    for (i = 0; i < sizeof u->arg; i++) u->arg[i] = 0;
+    if (!ssid[0] || channel < 1 || channel > 13 || (pl && pl < 8)) { wsim_finish(u, seq, -2); return; }
+    const char *model = psmac_option("mac.wifisimap");
+    int idauth = !(model && model[0] == 'n');
+    int wpa2 = pass[0] && (idauth || (flags & AN_AP_WPA2_ANYWAY));
+    kprintf("[WIFI-SIM] access point %s asked for on channel %u: the simulated firmware %s \"idauth\": %s\n", ssid, channel, idauth ? "lists" : "does not list", wpa2 ? "WPA2-PSK" : "open");
+    uint8_t pmk[32];
+    if (wpa2) fm_wpa_pmk(pass, pl, ssid, (unsigned)__builtin_strlen(ssid), pmk, 0);
+    struct fm_ap_cfg c = { ssid, channel, 0, wpa2 ? pmk : 0, wpa2 ? pass : 0, cc[0] ? cc : 0 };
+    static struct fm_ap_step steps[FM_AP_STEPS_MAX];
+    unsigned n = fm_ap_steps(steps, FM_AP_STEPS_MAX, &c);
+    struct wsim_fw fw = { 1, 0, 1, 0, 0, 0, 0 };
+    if (model && model[0] == 'r' && model[6] == ':') { fw.refuse = model + 7; while (fw.refuse[fw.refuse_len] && fw.refuse[fw.refuse_len] != ' ' && fw.refuse[fw.refuse_len] != ',') fw.refuse_len++; }
+    char why[64];
+    int32_t e = n ? fm_ap_run(steps, n, wsim_ap_step, wsim_ap_log, &fw, why, sizeof why) : -2;
+    for (i = 0; i < sizeof steps; i++) ((uint8_t *)steps)[i] = 0;
+    for (i = 0; i < 32; i++) pmk[i] = 0;
+    for (i = 0; i < sizeof pass; i++) pass[i] = 0;
+    wsim_state(u, AN_ST_JOINING, "starting the access point (simulated radio)");
+    u->link = 0; wsim_want = 0;
+    unsigned k = 0;
+    const char *t;
+    if (e) {
+        for (t = "the WiFi chip refused AP mode: "; *t; ) wsim_ap_msg[k++] = *t++;
+        for (t = n ? why : "its name or channel"; *t && k < 94; ) wsim_ap_msg[k++] = *t++;
+        wsim_ap_msg[k] = 0;
+        wsim_ap = 0;
+        wsim_later(800, AN_ST_FAILED, wsim_ap_msg, seq, -5);
+        return;
+    }
+    for (t = "access point "; *t; ) wsim_ap_msg[k++] = *t++;
+    for (t = ssid; *t && k < 60; ) wsim_ap_msg[k++] = *t++;
+    for (t = " up: channel "; *t; ) wsim_ap_msg[k++] = *t++;
+    if (channel >= 10) wsim_ap_msg[k++] = '1';
+    wsim_ap_msg[k++] = (char)('0' + channel % 10);
+    for (t = wpa2 ? ", WPA2 (simulated radio)" : ", open (simulated radio)"; *t && k < 94; ) wsim_ap_msg[k++] = *t++;
+    wsim_ap_msg[k] = 0;
+    for (i = 0; ssid[i]; i++) u->ssid[i] = ssid[i];
+    u->ssid[i] = 0;
+    for (i = 0; i < 6; i++) u->bssid[i] = wsim_mac[i];
+    u->channel = channel; u->security = wpa2 ? SEC_WPA2 : SEC_OPEN; u->rssi = 0; u->speed_mbps = 72;
+    wsim_ap = 1;
+    wsim_later(1500, AN_ST_CONNECTED, wsim_ap_msg, seq, 0);
+}
 static const char *wsim_script_ssid(void) { return wsim_nets[0].ssid; }
 static const char *wsim_script_pass(void) { return wsim_nets[0].pass; }
 /* ---- testbed Bluetooth: a simulated host (mac.btsim=1) ------------------------------------------
@@ -653,7 +769,7 @@ int psmac_wifi_testbed_poll(volatile struct an_unit *u)
     if (wsim_due && (int64_t)(in_now() - wsim_due) >= 0) {
         wsim_due = 0;
         uint32_t st = wsim_next_state;
-        if (st == AN_ST_SCANNING) { wsim_scan_fill(u); st = u->link ? AN_ST_CONNECTED : AN_ST_IDLE; wsim_next_msg = u->link ? "connected" : "idle: 4 networks found"; }
+        if (st == AN_ST_SCANNING) { wsim_scan_fill(u); st = u->link ? AN_ST_CONNECTED : AN_ST_IDLE; wsim_next_msg = u->link ? (wsim_ap ? wsim_ap_msg : "connected") : "idle: 4 networks found"; }
         if (st == AN_ST_CONNECTED) u->link = 1;
         wsim_state(u, st, wsim_next_msg);
         if (wsim_pending_seq) wsim_finish(u, wsim_pending_seq, wsim_next_result);
@@ -686,10 +802,11 @@ int psmac_wifi_testbed_poll(volatile struct an_unit *u)
             }
             if (!wsim_join_ssid[0]) { wsim_finish(u, seq, -2); break; }
             u->admin_off = 0;
+            wsim_ap = 0;
             if (u->state == AN_ST_OFF) { wsim_want = 1; wsim_state(u, AN_ST_STARTING, "starting"); wsim_later(1200, AN_ST_IDLE, "idle", seq, 0); break; }
             wsim_join(u, seq);
             break; }
-        case AN_CMD_DISCONNECT: u->link = 0; wsim_want = 0; wsim_state(u, u->state == AN_ST_OFF ? AN_ST_OFF : AN_ST_IDLE, "disconnected"); wsim_finish(u, seq, 0); break;
+        case AN_CMD_DISCONNECT: u->link = 0; wsim_want = 0; wsim_ap = 0; wsim_state(u, u->state == AN_ST_OFF ? AN_ST_OFF : AN_ST_IDLE, "disconnected"); wsim_finish(u, seq, 0); break;
         case AN_CMD_RXON: wsim_rx_on = 1; u->rx_on = 1; wsim_finish(u, seq, 0); break;
         case AN_CMD_RXOFF: wsim_rx_on = 0; u->rx_on = 0; wsim_finish(u, seq, 0); break;
         case AN_CMD_FILTER: { uint32_t f = arg32(u, 0); wsim_promisc = !!(f & AN_FILT_PROMISC); wsim_allmulti = !!(f & AN_FILT_ALLMULTI); wsim_finish(u, seq, 0); break; }
@@ -699,6 +816,7 @@ int psmac_wifi_testbed_poll(volatile struct an_unit *u)
             for (int i = 0; i < 6; i++) u->mac[i] = wsim_mac[i];
             wsim_finish(u, seq, 0); break; }
         case AN_CMD_WIFICFG: case AN_CMD_ETHCFG: wsim_finish(u, seq, 0); break;
+        case AN_CMD_AP: u->admin_off = 0; wsim_ap_start(u, seq); break;
         default: wsim_finish(u, seq, -3);
         }
     }

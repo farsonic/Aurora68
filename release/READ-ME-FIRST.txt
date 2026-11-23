@@ -577,6 +577,27 @@ Connecting:
     not XX), sets mac.fpu, mac.boot and mac.console, saves them into cmdline.txt (the line before is
     kept in cmdline.bak) and restarts. On a Plus or 512K the Mac's own keyboard works; on the SE it
     does not (the Mac's ROM reads the SE's keyboard, and it is not running).
+  - No network at all and only a phone: the Pi's own WiFi network (the access point, new on 23
+    November 2026). With the recovery screen up, hold the programmer's interrupt button (the rear
+    one) for two seconds. If you are still holding it from switching on, let go first, then press
+    and hold again; the screen says "Keep holding the interrupt button" while you do. The screen
+    then shows:
+        On a phone or laptop, join the WiFi network
+        Aurora68-4946                    (yours ends in four characters of your Pi's own)
+        with the password (WPA2)
+        k7m3qp9xtr                       (a new one at every start)
+        then open  http://192.168.4.1/  and give the PIN
+        PIN 1234
+    Join that network on the phone. The phone usually offers the page by itself ("Sign in to
+    network"); if not, open http://192.168.4.1/ in its browser. On the page's WiFi tab type your home
+    network's name, password and country and choose "Save and restart to join this network". The
+    Pi restarts and joins it; the access point is gone.
+    To leave the access point without saving: "Restart normally" on the page, or press the
+    programmer's reset button (the front one): the Pi restarts. The access point is never kept.
+    If the screen says "no password: this WiFi firmware cannot do WPA2 as an access point", the
+    network is open; the PIN still guards the page. If it says "the WiFi chip refused AP mode: ...",
+    please send that line and the log (Log tab, or aurora68.log on the card): the access point has
+    not been tried on a real Pi yet. A USB keyboard's menu has "Start an access point" too.
 
 The page (a phone is fine) asks for the PIN on the screen once. Then:
   - Files: every file in the card's root, with Get, Rename and Delete; Upload for any file of any
@@ -604,7 +625,8 @@ The page (a phone is fine) asks for the PIN on the screen once. Then:
     "Restart normally": at that start Aurora68 Screen Setup asks on the SE's own screen whether to
     keep the new resolution, and puts the old one back if nobody answers. With no monitor
     connected the usual resolutions are offered instead.
-  - "Restart normally" (it also takes mac.recovery=1 out of cmdline.txt) and "Restart into recovery".
+  - "Restart normally" (it also takes mac.recovery=1 and recovery.ap out of cmdline.txt) and "Restart
+    into recovery".
 From a computer: python3 aurora68.py recovery --url http://aurora68.local --pin 1234 ls
 (also put FILE, get NAME, rm NAME, mv A B, cmdline, opt, wifi, log, rollback, reboot normal,
 display, display use 2560x1440@30 --add-include, display use auto).

@@ -4,6 +4,17 @@
 
 Since 0.13 (docs/08 items 96 and 103):
 
+- **Setup and Recovery as an access point: setting up with only a phone** (docs/08 item 118, 23 November 2026).
+  On the recovery screen, the programmer's interrupt button held for two seconds makes the Pi's WiFi a network of
+  its own, "Aurora68-XXXX", with a password made at each start and shown on the SE's screen and on HDMI with the
+  address (`http://192.168.4.1/`) and the PIN. A phone that joins gets an address from the Pi and usually offers
+  the page as a sign-in page by itself (every name it looks up leads to the Pi); the page is the usual one, and its
+  WiFi tab saves the home network and restarts to join it. Never the default and never kept: Restart on the page or
+  the programmer's reset button leave it. Also in the keyboard menu, and `recovery.ap=on` for the bench
+  (`recovery.apsec=`, `recovery.apchannel=`). WPA2 when the WiFi firmware can be the authenticator, otherwise an
+  open network guarded by the PIN, as the screen says; a step the chip refuses is named on the screen and the Pi
+  carries on with the cable or the saved WiFi. Tried against the testbed's simulated radio and a simulated phone
+  only: the first try on a real Pi will tell how its firmware takes it (the log names every step's answer).
 - **Music videos linked to songs; Aurora68 Play 1.4 for macOS** (docs/08 item 115, 23 November 2026). The music
   server now knows which song a video is of: the same artist and the same title once "(Official Video)", "[HD]",
   "(Lyric Video)", "feat. ..." and the like are left aside ("Live", "Remix", "Radio Edit" kept), from the files'

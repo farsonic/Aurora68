@@ -239,7 +239,11 @@ One line, options separated by spaces, no comments:
 | `mac.vcswap=1` | swap red and blue on the second screen, should a board's firmware disagree with the kernel about the pixel byte order (the firmware is asked; this overrides its answer) |
 | `mac.recovery=1` | start in Aurora68 Setup and Recovery: the 68k is not started, the Pi serves its SD card on the network (README "Setup and Recovery", docs/08 item 106). "Restart normally" on the recovery page takes the option out again |
 | `mac.bootcount=3` | the starts in a row without the Finder after which the next start is a recovery start (counted in `boot.txt` in the card's root); `off` for none, for a Mac whose startup program is not the Finder |
-| `mac.switchsim=1`, `mac.recoverypin=NNNN` | testbed only: the programmer's interrupt switch held at power-on (MAME's SE has none to press), and a fixed recovery PIN for scripts (never use it on a real card) |
+| `recovery.ap=on` | start in Setup and Recovery as an access point at once: the Pi's WiFi becomes a network of its own for a phone (README "Setup and Recovery", docs/08 item 118). For the bench; the usual way is the programmer's interrupt button on the recovery screen. "Restart normally" takes the option out again. Default off |
+| `recovery.apsec=wpa2`, `recovery.apsec=open` | the access point's security: `open` for an open network (the PIN still guards the page), `wpa2` for WPA2 even when the WiFi firmware does not say it can be the authenticator (`idauth`). Default: WPA2 when the firmware can, else open |
+| `recovery.apchannel=6` | the access point's channel, 1 to 13 (6 is allowed in every country) |
+| `mac.switchsim=1`, `mac.recoverypin=NNNN` | testbed only: the programmer's interrupt switch held at power-on (MAME's SE has none to press), and a fixed recovery PIN for scripts (never use it on a real card). `mac.switchsim=ap`: held for a second, let go, held again 12 to 14.5 s later, the access point's gesture on any board |
+| `mac.resetsim=S`, `mac.wifisimap=refuse:NAME`, `mac.wifisimap=noidauth`, `mac.recoveryscreen=1` | testbed only (docs/08 item 118): the programmer's reset button pressed S seconds into a recovery start; the simulated radio (`mac.wifisim=`) refusing one step of the access point's firmware sequence (as the log names it: `WLC_SET_AP`, `chanspec`, `WLC_SET_WSEC_PMK` ...) or lacking the WPA2 authenticator; `GET /r/screen.pbm` (with the PIN) photographs the compact Mac's recovery screen on any board |
 | `remote=on remote.token=TOKEN` | the remote control (docs/13): the Mac's screen, mouse, keyboard, the kernel's log and a restart over HTTP from the local network, for a browser (`http://aurora68-pi.local/`) or an agent (`tools/aurora68-mcp.py`, an MCP server for Claude Code and Claude Desktop; `tools/aurora68.py`, a command line). On the wired port the kernel gets an address of its own by DHCP (its own MAC address); on the WiFi it takes port 8068 on the Mac's address (`http://MAC-ADDRESS:8068/`). Off by default; the token (8 characters or more) is required. `remote.name=`, `remote.ip=A.B.C.D/24,ROUTER`, `remote.link=wired\|wifi`, `remote.wifi=own`, `remote.any=1`: docs/13 |
 
 ### Booting fast
@@ -306,6 +310,30 @@ with the `wifi.ssid/psk/country` options. Without any of those, a USB keyboard o
 recovery screen with Return: choose a network from a scan, type its password and country, set `mac.fpu`,
 `mac.boot` and `mac.console`, save, restart (the Plus's and 512K's own keyboards work too; the SE's own keyboard
 does not, as the Mac's ROM reads it).
+
+**The access point: setting up with nothing but a phone** (since 23 November 2026, docs/08 item 118). With no
+cable and no WiFi the Pi knows (a first setup, a home network that changed), the Pi can be a WiFi network of its
+own. It is never the default and never starts by itself: on the recovery screen, **hold the programmer's
+interrupt button for two seconds** (if you held it to get into recovery, let go first; the screen says "Keep
+holding the interrupt button" while you do). The screens then show the network's name, `Aurora68-` and four
+characters of the Pi's WiFi address (for example `Aurora68-4946`), a password made at random for this start,
+`http://192.168.4.1/` and the PIN. Join that network with a phone or a laptop; a phone usually offers the page by
+itself as a sign-in page (every name it looks up leads to the Pi), or open `http://192.168.4.1/`. The page is the
+same as on any network, all its tabs; on **WiFi** put in your home network and choose **Save and restart to join
+this network** (a test join is not offered there: the radio has one network at a time, and it is the one you are
+on). The Pi hands out addresses from 192.168.4.10 to .25. A USB keyboard's recovery menu has "Start an access
+point" too, and `recovery.ap=on` in cmdline.txt starts a recovery start straight in it (for the bench; "Restart
+normally" takes it out). **To leave**: Restart on the page, or press the programmer's **reset button**, which
+restarts the Pi from the recovery screen; the access point is never kept, and the next start is as cmdline.txt
+says. WPA2 needs the WiFi firmware to be the network's authenticator (it says so with `idauth` in its features);
+without that the network is open, the screens say so, and the PIN still guards every request. If the chip refuses
+a step, the screens and the log name it ("the WiFi chip refused AP mode: WLC_SET_AP error -23") and the Pi goes
+back to the cable or the saved WiFi. **Tried in the testbed only** (a simulated radio and a simulated phone): how
+a real Pi 3's firmware takes the access point sequence, WPA2 on it, the reset button's line and a real phone's
+sign-in page are for the first test on the SE; the log's `[WIFI] access point:` lines say what the chip answered to
+each step.
+
+![The access point's screen, on the compact Mac's 512 x 342 screen (the testbed's photograph)](docs/img/recovery-ap-se.png)
 
 The page (`http://ADDRESS/`, a phone will do) asks for the PIN shown on the screen once, then lists the card's
 files with Get, Rename and Delete, uploads any file of any size (each read back from the card and compared), changes

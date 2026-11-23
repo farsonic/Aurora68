@@ -46,6 +46,19 @@
  * does (with the include line config.txt needs), so that a monitor which shows nothing can be put right without
  * the Mac.
  *
+ * The access point (23 November 2026, docs/08 item 118; the owner: "is there a way we can trigger the Pi going into
+ * an AP mode so we can connect to it for initial setup or later rescue ... This would not be the default but would
+ * need to use the programmer's buttons"). On the recovery screen, the programmer's interrupt button held for two
+ * seconds (after it has been let go: the press that brought recovery on does not count) makes the Pi's WiFi an
+ * access point of its own, "Aurora68-XXXX" (XXXX from the radio's MAC address), WPA2 with a password made at
+ * each start and shown on the screens (open when the firmware cannot be the authenticator: the PIN still guards
+ * the page), 192.168.4.1/24 with a DHCP server and every DNS name answered with that address (psmac_ip.c,
+ * psmac_apnet.c), the page at http://192.168.4.1/ as on any network. The keyboard menu has it too, and
+ * recovery.ap=on in cmdline.txt starts a recovery start in it (the bench's way). It is never kept: "Restart
+ * normally" takes recovery.ap out again, and the reset button, which restarts the Pi from the recovery screen,
+ * starts it as cmdline.txt says. The firmware's side (alice_net.c, wifi/fmac_ap.c) could only be tried against
+ * the testbed's simulated radio; every refusal of a real chip is named on the screen.
+ *
  * Everything runs on core 3 inside the service loop, a bounded step per turn; core 0 decides (phase 1 and
  * 2) and then waits for good.
  */
@@ -66,6 +79,8 @@ const char *psmac_option(const char *key);
 extern int psmac_board_se, psmac_board_solo, psmac_board_plus;
 extern volatile uint8_t *alice_net_board(void);
 int psmac_se_switch_held(void);
+int psmac_gpio_reset_asserted(void);
+void fm_sha1(const uint8_t *p, unsigned n, uint8_t out[20]);    /* alice/wifi/fmac.c */
 int psmac_remote_private_source(const uint8_t *ip);
 uint8_t *psmac_mac_ram_ptr(void);
 uint32_t psmac_log_copy(uint8_t *out, uint32_t max);
@@ -114,6 +129,14 @@ static int why, boot_count = -1, boot_limit = 3;
 static char why_text[160];
 int psmac_recovery_on(void) { return __atomic_load_n(&rec_on, __ATOMIC_ACQUIRE); }
 
+/* the access point (docs/08 item 118): its state; the work is below ("the access point") */
+enum { AP_OFF, AP_WAITING, AP_STARTING, AP_UP, AP_FAILED };
+static int ap_state, ap_open, ap_channel = 6, ap_flags;
+static char ap_how[96], ap_ssid[36], ap_pass[16], ap_err[100], ap_asked[96];
+static uint32_t ap_t0, ap_seq;
+static const uint8_t ap_ip[4] = { 192, 168, 4, 1 };
+static int ap_active(void) { return ap_state == AP_WAITING || ap_state == AP_STARTING || ap_state == AP_UP; }
+
 static void enter(int w, const char *text)
 {
     why = w;
@@ -133,11 +156,15 @@ void psmac_recovery_phase1(void)
     if (o) { if (o[0] == 'o') boot_limit = 0; else { int v = 0; while (*o >= '0' && *o <= '9') v = v * 10 + (*o++ - '0'); boot_limit = v; } }
     o = psmac_option("mac.recovery");
     int want_opt = o && o[0] == '1';
+    o = psmac_option("recovery.ap");                             /* the bench's way to the access point (docs/08 item 118) */
+    int want_ap = o && ((o[0] == 'o' && o[1] == 'n') || o[0] == '1');
+    if (want_ap) scpy(ap_asked, "recovery.ap=on in cmdline.txt", sizeof ap_asked);
     char flag[120]; int flag_len = -1, count = -1;
     int card = psmac_card_boot_read(&count, flag, sizeof flag, &flag_len) == 0;
     if (!card) kprintf("[RECOVERY] the card was not read before the 68k starts (a bare-ROM testbed run: mac.cardearly=1): no boot counter, no recovery.txt\n");
     boot_count = count;
     if (want_opt) enter(WHY_OPTION, "mac.recovery=1 in cmdline.txt");
+    else if (want_ap) enter(WHY_OPTION, "recovery.ap=on in cmdline.txt (an access point for a phone)");
     else if (flag_len >= 0) {
         char t[160]; struct sb b = { t, 0, sizeof t };
         if (flag_len > 0) bprintf(&b, "asked for: %s", flag); else bput(&b, "recovery.txt on the card");
@@ -250,13 +277,13 @@ static int pin_ok(const char *got, unsigned n)
 /* ================================================================================ the screens */
 #define SCOLS 80
 #define SROWS 30
-static char line[SROWS][SCOLS + 1]; static uint8_t lattr[SROWS]; static int nlines;   /* attr 1 title, 2 large */
+static char line[SROWS][2 * SCOLS + 1]; static uint8_t lattr[SROWS]; static int nlines;   /* attr 1 title, 2 large; up to two screen lines of 80 (layout wraps them) */
 static int scr_dirty = 1; static uint32_t scr_last;
 static uint8_t se_fb[342 * 64] __attribute__((aligned(16)));
 static void L(int attr, const char *fmt, ...)
 {
     if (nlines >= SROWS) return;
-    struct sb b = { line[nlines], 0, SCOLS + 1 };
+    struct sb b = { line[nlines], 0, 2 * SCOLS + 1 };
     va_list ap; va_start(ap, fmt); vkprintf_pc(sb_putc, &b, fmt, ap); va_end(ap);
     line[nlines][b.n] = 0;
     lattr[nlines] = (uint8_t)attr;
@@ -338,10 +365,11 @@ static void draw_vc(void)
         }
     }
 }
-/* the compact Mac's own screen: 512 x 342, one bit, 1 is black; 64 columns, 21 rows of 16 */
-static void draw_se(void)
+/* the compact Mac's own screen: 512 x 342, one bit, 1 is black; 64 columns, 21 rows of 16. se_render draws it into
+   se_fb on any board (GET /r/screen.pbm with mac.recoveryscreen=1 photographs it in the testbed, docs/08 item 118) */
+static int screen_shot_ok(void) { const char *o = psmac_option("mac.recoveryscreen"); return o && o[0] == '1'; }
+static void se_render(void)
 {
-    if (!psmac_board_se || psmac_board_solo) return;
     for (unsigned i = 0; i < sizeof se_fb; i++) se_fb[i] = 0;
     int nv = layout(64);
     for (int r = 0; r < 21 && r < nv; r++) {
@@ -369,6 +397,11 @@ static void draw_se(void)
         }
     }
     for (int y = 21 * 16; y < 342; y++) for (int k = 0; k < 64; k++) se_fb[y * 64 + k] = 0;
+}
+static void draw_se(void)
+{
+    if (!psmac_board_se || psmac_board_solo) return;
+    se_render();
     psmac_se_mark(se_fb, 512, 342, 64, 1);
 }
 
@@ -419,12 +452,44 @@ static char m_buf[68]; static unsigned m_len;
 static char m_msg[64];
 static void menu_lines(void);
 
+/* the programmer's switch on this board (the SE, Plus, 512K; the testbed's mac.switchsim=) */
+static int switch_board(void) { return (psmac_board_se && !psmac_board_solo) || psmac_option("mac.switchsim") != 0; }
+static int sw_armed; static uint32_t sw_free_since, sw_held_since;
+/* The access point's screen: what to join, the password, where to go, the PIN, how to leave. Short lines: the
+   compact Mac's screen has 64 columns and 21 rows, and each large line takes two */
+static void ap_lines(void)
+{
+    const char *pinshown = pin_locked_until && (int32_t)(now_ms() - pin_locked_until) < 0 ? "----" : pin;
+    L(1, " Aurora68 Setup and Recovery: access point");
+    if (ap_state != AP_UP) {
+        L(0, "Starting the access point%s%s ...", ap_ssid[0] ? " " : "", ap_ssid);
+        L(0, "Asked for: %s", ap_how);
+        L(0, "");
+        L(2, "PIN %s", pinshown);
+    } else {
+        L(0, "On a phone or laptop, join the WiFi network");
+        L(2, "%s", ap_ssid);
+        if (!ap_open) { L(0, "with the password (WPA2)"); L(2, "%s", ap_pass); }
+        else L(0, "(no password: %s; the PIN guards the page)", ap_pass[0] ? "this WiFi firmware cannot do WPA2 as an access point" : "recovery.apsec=open");
+        L(0, "then open  http://192.168.4.1/  and give the PIN");
+        L(2, "PIN %s", pinshown);
+        int c = psmac_ip_ap_clients();
+        L(0, "Devices with an address: %d", c);
+    }
+    if (pin_changes) L(0, "%u x 10 wrong PINs: a new PIN each time", pin_changes);
+    if (U.state == UP_RECV && U.total) L(0, "Now:   %s %u of %u KB (%u%%)", U.target, U.got >> 10, U.total >> 10, (uint32_t)((uint64_t)U.got * 100u / U.total));
+    else if (U.state == UP_VERIFY) L(0, "Now:   %s: reading it back and checking", U.target);
+    else L(0, "Last:  %s", last_action[0] ? last_action : "nothing yet");
+    L(0, "To leave: Restart on the page, or press the reset button.");
+}
 static void build_page(void)
 {
     nlines = 0;
     struct ipk_info ii; psmac_ip_info(&ii);
+    if (ap_active()) { ap_lines(); menu_lines(); return; }
     L(1, " Aurora68 Setup and Recovery");
     L(0, "Why: %s", why_text);
+    if (ap_state == AP_FAILED) L(0, "The access point did not start: %s", ap_err);
     L(0, "The 68k was not started: no Mac code runs. Restart from the page.");
     if (ii.unit >= 0 && ii.ip[0])
         L(0, "Open  http://%d.%d.%d.%d/   or  http://%s.local/", ii.ip[0], ii.ip[1], ii.ip[2], ii.ip[3], psmac_ip_name());
@@ -446,6 +511,11 @@ static void build_page(void)
     else L(0, "Last:  %s", last_action[0] ? last_action : "nothing yet");
     if (why == WHY_COUNTER && have_old) L(0, "kernel8.old is on the card: the page offers Roll back");
     if (cfg_kernel[0]) L(0, "Note: config.txt starts %s, not kernel8.img", cfg_kernel);
+    if (switch_board()) {
+        uint32_t held = now_ms() - sw_held_since;
+        if (sw_armed && sw_held_since) L(0, "Keep holding the interrupt button: the access point starts in %u s", held >= 2000u ? 0u : (2000u - held + 999u) / 1000u);
+        else L(0, "Hold the interrupt button 2 s: a WiFi network of the Pi's own for a phone");
+    }
     menu_lines();
 }
 static void screen_poll(void)
@@ -500,7 +570,7 @@ static const struct known known_opts[] = {
     { "mac.screen", "WxH" }, { "mac.seram", "1|2|2.5|4" }, { "mac.plusmouse", "#" }, { "mac.plusdebounce", "#" }, { "mac.plusjitter", "#" },
     { "mac.screencheck", "on|blind|off" }, { "bt.pair", "" }, { "eth", "usb|off" }, { "remote", "on|off" }, { "remote.token", "" },
     { "wifi.ssid", "" }, { "wifi.psk", "" }, { "wifi.country", "" }, { "mac.recovery", "1" }, { "mac.bootcount", "#|off" },
-    { "wifi", "off" }, { "bt", "off" },
+    { "wifi", "off" }, { "bt", "off" }, { "recovery.ap", "on|off" }, { "recovery.apsec", "wpa2|open" }, { "recovery.apchannel", "#" },
 };
 static const struct known *known_find(const char *k) { for (unsigned i = 0; i < sizeof known_opts / sizeof known_opts[0]; i++) if (ieq(known_opts[i].key, k)) return &known_opts[i]; return 0; }
 static int value_ok(const struct known *kn, const char *v, char *why_, unsigned whymax)
@@ -595,6 +665,159 @@ static void wifi_test_poll2(void)                               /* joined, waiti
         bprintf(&b, "joined %s: address %d.%d.%d.%d", wifi_test_ssid, ii.ip[0], ii.ip[1], ii.ip[2], ii.ip[3]);
         did("WiFi test: %s", wifi_note);
     } else if (now_ms() - wifi_test_t0 > 40000) { wifi_test = 0; did("WiFi test: joined %s, but no address came", wifi_test_ssid); }
+}
+
+/* ========================================================================== the access point
+   23 November 2026, docs/08 item 118. Asked for by the interrupt button held two seconds on this screen
+   (switch_poll), the keyboard menu, or recovery.ap=on; the WiFi driver does the firmware's part (AN_CMD_AP,
+   alice_net.c and wifi/fmac_ap.c, or the testbed's simulated radio), the IP stack the address and the guests'
+   DHCP and DNS (psmac_ip_ap). The password: ten characters from 31 that cannot be misread on a one-bit
+   screen (no 0/o, 1/l/i), from the BCM2835's random generator, about 50 bits: for a network that lives
+   for one start, beside a PIN. It is drawn on the screens only, never logged and never served. */
+static void ap_fail(const char *fmt, ...)
+{
+    struct sb b = { ap_err, 0, sizeof ap_err };
+    va_list ap; va_start(ap, fmt); vkprintf_pc(sb_putc, &b, fmt, ap); va_end(ap);
+    ap_err[b.n] = 0;
+    ap_state = AP_FAILED;
+    for (unsigned i = 0; i < sizeof ap_pass; i++) ap_pass[i] = 0;
+    did("access point: %s", ap_err);
+    psmac_ip_ap_off();                                           /* back to the wired port or the saved WiFi */
+    char s_[40] = "", p_[70] = "", c_[4] = "";
+    if (cl_read() == 0) { pcl_get(cl_old, (uint32_t)cl_len, "wifi.ssid", s_, sizeof s_); pcl_get(cl_old, (uint32_t)cl_len, "wifi.psk", p_, sizeof p_); pcl_get(cl_old, (uint32_t)cl_len, "wifi.country", c_, sizeof c_); }
+    if (!s_[0]) {                                                /* none in cmdline.txt: this start's own options */
+        const char *ks[3] = { "wifi.ssid", "wifi.psk", "wifi.country" }; char *vs[3] = { s_, p_, c_ }; unsigned caps[3] = { sizeof s_, sizeof p_, sizeof c_ };
+        for (int k = 0; k < 3; k++) { const char *v = psmac_option(ks[k]); unsigned i = 0; for (; v && v[i] && v[i] != ' ' && i + 1 < caps[k]; i++) vs[k][i] = v[i]; vs[k][i] = 0; }
+    }
+    if (s_[0] && unit(0) && unit(0)->kind) wifi_join(s_, p_, c_);
+    for (unsigned i = 0; i < sizeof p_; i++) p_[i] = 0;
+}
+static void ap_request(const char *how)
+{
+    if (ap_active() || !rec_on) return;
+    const char *o = psmac_option("recovery.apsec");
+    int open_ = o && o[0] == 'o';
+    ap_flags = o && o[0] == 'w' ? AN_AP_WPA2_ANYWAY : 0;
+    ap_channel = 6;                                              /* allowed in every country */
+    if ((o = psmac_option("recovery.apchannel"))) { int v = 0; while (*o >= '0' && *o <= '9') v = v * 10 + (*o++ - '0'); if (v >= 1 && v <= 13) ap_channel = v; }
+    for (unsigned i = 0; i < sizeof ap_pass; i++) ap_pass[i] = 0;
+    if (!open_) {
+        /* sixteen words of the generator (and the counters it is mixed with) through SHA-1, so that no pattern of
+           a counter shows even where the generator is slow to give words (QEMU's) */
+        static const char abc[] = "abcdefghjkmnpqrstuvwxyz23456789";
+        uint8_t pool[64 + 8], d[20];
+        for (int round = 0, i = 0; i < 10; round++) {
+            for (int k = 0; k < 16; k++) { uint32_t r = rng_word(); pool[4 * k] = (uint8_t)r; pool[4 * k + 1] = (uint8_t)(r >> 8); pool[4 * k + 2] = (uint8_t)(r >> 16); pool[4 * k + 3] = (uint8_t)(r >> 24); }
+            uint64_t tk = now_ticks(); for (int k = 0; k < 8; k++) pool[64 + k] = (uint8_t)(tk >> (8 * k) ^ (uint64_t)round);
+            fm_sha1(pool, sizeof pool, d);
+            for (int k = 0; k < 20 && i < 10; k++) if (d[k] < 248) ap_pass[i++] = abc[d[k] % 31];
+        }
+        for (unsigned k = 0; k < sizeof pool; k++) pool[k] = 0;
+        for (unsigned k = 0; k < sizeof d; k++) d[k] = 0;
+    }
+    scpy(ap_how, how, sizeof ap_how);
+    ap_ssid[0] = 0; ap_err[0] = 0;
+    ap_state = AP_WAITING; ap_t0 = now_ms();
+    wifi_test = 0; join_waiting = 0;
+    psmac_ip_ap(ap_ip);
+    did("access point asked for: %s", how);
+}
+static void ap_poll(void)
+{
+    if (!ap_active()) return;
+    volatile struct an_unit *u = unit(0);
+    uint32_t t = now_ms() - ap_t0;
+    char m[100]; unsigned k = 0;
+    if (u) for (; k < 95 && u->msg[k]; k++) m[k] = u->msg[k];
+    m[k] = 0;
+    if (ap_state == AP_WAITING) {
+        if (!u || !u->kind) { if (t > 5000) ap_fail("this Pi's WiFi is off (wifi=off in cmdline.txt) or not there"); return; }
+        int known = (u->mac[0] | u->mac[1] | u->mac[2] | u->mac[3] | u->mac[4] | u->mac[5]) != 0;
+        if (!known || u->state == AN_ST_OFF || u->state == AN_ST_STARTING || u->state == AN_ST_NOFW) {
+            if (t > 45000) ap_fail("the WiFi chip did not start (%s)", m[0] ? m : st_name(u->state));
+            return;
+        }
+        struct sb b = { ap_ssid, 0, sizeof ap_ssid };
+        bprintf(&b, "Aurora68-%02X%02X", u->mac[4], u->mac[5]);
+        struct an_ap a;
+        for (unsigned i = 0; i < sizeof a; i++) ((uint8_t *)&a)[i] = 0;
+        scpy(a.ssid, ap_ssid, sizeof a.ssid); scpy(a.pass, ap_pass, sizeof a.pass);
+        if (cl_read() == 0) { char c_[8] = ""; pcl_get(cl_old, (uint32_t)cl_len, "wifi.country", c_, sizeof c_); if (country_ok(c_, m, sizeof m)) scpy(a.country, c_, sizeof a.country); }
+        a.channel = (unsigned)ap_channel; a.flags = (unsigned)ap_flags;
+        int r = wifi_cmd(AN_CMD_AP, &a, sizeof a);
+        for (unsigned i = 0; i < sizeof a; i++) ((volatile uint8_t *)&a)[i] = 0;
+        if (r == -2) { if (t > 45000) ap_fail("the WiFi radio stayed busy with another command"); return; }
+        if (r) { ap_fail("there is no WiFi radio"); return; }
+        ap_seq = u->cmd_seq; ap_state = AP_STARTING; ap_t0 = now_ms();
+        kprintf("[RECOVERY] access point %s: asked of the WiFi driver (channel %d, %s)\n", ap_ssid, ap_channel,
+                ap_pass[0] ? (ap_flags ? "WPA2 even without idauth: recovery.apsec=wpa2" : "WPA2 if the firmware can be the authenticator") : "open: recovery.apsec=open");
+        scr_dirty = 1;
+        return;
+    }
+    char ss[36]; unsigned q = 0; for (; q < 32 && u->ssid[q]; q++) ss[q] = u->ssid[q];
+    ss[q] = 0;
+    int ours = !__builtin_strcmp(ss, ap_ssid);
+    if (ap_state == AP_STARTING) {
+        if (u->cmd_done == ap_seq && u->cmd_result == -2) { ap_fail("the WiFi driver refused the access point's settings"); return; }
+        if (u->state == AN_ST_CONNECTED && u->link && ours) {
+            ap_state = AP_UP; ap_open = !(u->security & 0x08);
+            did("access point %s is up: channel %d, %s", ap_ssid, ap_channel, ap_open ? "open" : "WPA2");
+            if (ap_open && ap_pass[0]) kprintf("[RECOVERY] the access point is open: the firmware cannot be its WPA2 authenticator (the PIN guards the page; the screen says so)\n");
+            return;
+        }
+        if (u->state == AN_ST_FAILED && u->cmd_done == ap_seq) { ap_fail("%s", m[0] ? m : "the WiFi chip failed"); return; }
+        if (t > 40000) ap_fail("no answer from the WiFi chip within 40 s (%s)", m[0] ? m : st_name(u->state));
+        return;
+    }
+    /* up: a scan pauses it; a chip that was lost is started again by the driver, access point and all */
+    if (u->state == AN_ST_SCANNING) return;
+    if (u->state != AN_ST_CONNECTED || !u->link || !ours) { ap_state = AP_STARTING; ap_t0 = now_ms(); did("the access point went down (%s): the WiFi driver starts it again", m[0] ? m : st_name(u->state)); return; }
+    static int clients = -1;
+    int c = psmac_ip_ap_clients();
+    if (c != clients) { clients = c; scr_dirty = 1; }
+}
+/* The programmer's interrupt button on the recovery screen: let go for a second (the press that brought recovery
+   on, or a finger still on it, does not count), then held two seconds without a break. A glitch on the wire is
+   milliseconds; nobody holds the button that long by accident, and on this screen it has no other meaning. */
+static void switch_poll(void)
+{
+    if (!switch_board() || ap_active()) { sw_held_since = 0; return; }
+    uint32_t t = now_ms();
+    if (!psmac_se_switch_held()) {
+        if (sw_held_since) { sw_held_since = 0; scr_dirty = 1; }
+        if (!sw_free_since) sw_free_since = t ? t : 1;
+        if (!sw_armed && t - sw_free_since >= 1000) { sw_armed = 1; kprintf("[RECOVERY] the interrupt button is free: holding it two seconds now starts the access point\n"); }
+        return;
+    }
+    sw_free_since = 0;
+    if (!sw_armed) return;
+    if (!sw_held_since) { sw_held_since = t ? t : 1; scr_dirty = 1; kprintf("[RECOVERY] the interrupt button is held\n"); return; }
+    static uint32_t last_draw;
+    if (t - last_draw >= 250) { last_draw = t; scr_dirty = 1; }
+    if (t - sw_held_since >= 2000) { sw_held_since = 0; sw_armed = 0; ap_request("the interrupt button held two seconds on the recovery screen"); }
+}
+/* The programmer's reset button: on the SE the PiStorm sees the 68000's reset line (psmac_gpio.c). With no Mac
+   running here it restarts the Pi, which starts as cmdline.txt says: the access point is not kept. Armed once
+   the line has been free for three seconds (the Mac's own power-on reset is long over by then), taken when held
+   a tenth of a second. mac.resetsim=S is the testbed's press, S seconds into the recovery start. */
+static void reset_button_poll(void)
+{
+    static uint32_t t_start, free_since, held_since; static int armed, done;
+    uint32_t t = now_ms();
+    if (!t_start) t_start = t ? t : 1;
+    if (done) return;
+    int down;
+    const char *o = psmac_option("mac.resetsim");
+    if (o) { uint32_t sec = 0; while (*o >= '0' && *o <= '9') sec = sec * 10 + (uint32_t)(*o++ - '0'); down = t - t_start >= sec * 1000u && t - t_start < sec * 1000u + 500u; }
+    else down = psmac_board_se && !psmac_board_solo && psmac_gpio_reset_asserted();
+    if (!down) { held_since = 0; if (!free_since) free_since = t ? t : 1; if (!armed && t - free_since >= 3000) armed = 1; return; }
+    free_since = 0;
+    if (!armed) return;
+    if (!held_since) { held_since = t ? t : 1; return; }
+    if (t - held_since < 100) return;
+    done = 1;
+    did("the reset button: the Pi restarts%s", ap_active() ? " (the access point is not kept)" : "");
+    pi_restart_in(300);
 }
 
 /* ============================================================================ checking a kernel */
@@ -802,7 +1025,7 @@ static char big[65536]; static int big_conn = -1;
 extern const char recovery_page[];
 static void out_head(struct rconn *h, int code, const char *ctype, int64_t len, const char *extra)
 {
-    const char *txt = code == 200 ? "OK" : code == 400 ? "Bad Request" : code == 401 ? "Unauthorized" : code == 403 ? "Forbidden" : code == 404 ? "Not Found" :
+    const char *txt = code == 200 ? "OK" : code == 302 ? "Found" : code == 400 ? "Bad Request" : code == 401 ? "Unauthorized" : code == 403 ? "Forbidden" : code == 404 ? "Not Found" :
                       code == 409 ? "Conflict" : code == 411 ? "Length Required" : code == 413 ? "Request Entity Too Large" : code == 422 ? "Unprocessable Entity" :
                       code == 429 ? "Too Many Requests" : code == 503 ? "Service Unavailable" : code == 507 ? "Insufficient Storage" : "Error";
     struct sb b = { h->out, 0, sizeof h->out };
@@ -886,7 +1109,22 @@ static void ans_files(struct rconn *h, int c)
     bput(&b, "}\n");
     respond_src(h, "application/json", big, b.n);
 }
-static int cmdline_has_recovery(void) { char v[8]; return cl_read() == 0 && pcl_get(cl_old, (uint32_t)cl_len, "mac.recovery", v, sizeof v) == 1 && v[0] == '1'; }
+static int cmdline_has_recovery(void)
+{
+    char v[8];
+    if (cl_read()) return 0;
+    return (pcl_get(cl_old, (uint32_t)cl_len, "mac.recovery", v, sizeof v) == 1 && v[0] == '1') || pcl_get(cl_old, (uint32_t)cl_len, "recovery.ap", v, sizeof v) == 1;
+}
+/* "restart normally": mac.recovery=1 and recovery.ap= out of cmdline.txt (after cmdline_has_recovery read it). 0, or -1 */
+static int cl_drop_recovery(void)
+{
+    char w2[200];
+    uint32_t nn = (uint32_t)cl_len;
+    for (uint32_t i = 0; i < nn; i++) cl_new[i] = cl_old[i];
+    cl_new[nn] = 0;
+    if (cl_set(&nn, "mac.recovery", 0) || cl_set(&nn, "recovery.ap", 0)) return -1;
+    return cl_write(nn, w2, sizeof w2);
+}
 static void ans_state(struct rconn *h)
 {
     static char j[4096]; struct sb b = { j, 0, sizeof j };
@@ -907,6 +1145,14 @@ static void ans_state(struct rconn *h)
     bprintf(&b, ", \"kernel8_old\": %s, \"rollback_offered\": %s, \"cmdline_recovery\": %s", have_old ? "true" : "false", why == WHY_COUNTER && have_old ? "true" : "false", cmdline_has_recovery() ? "true" : "false");
     bput(&b, ", \"config_kernel\": "); bjson(&b, cfg_kernel);
     bprintf(&b, ", \"wifi_test\": %s, \"wifi_note\": ", wifi_test ? "\"running\"" : wifi_test_ok ? "\"joined\"" : "\"\""); bjson(&b, wifi_note);
+    if (ap_state != AP_OFF) {                                    /* the access point (its password is on the screens only) */
+        static const char *const as[] = { "off", "waiting for the WiFi chip", "starting", "up", "failed" };
+        bput(&b, ",\n \"ap\": {\"state\": "); bjson(&b, ap_state == AP_UP ? "up" : ap_state == AP_FAILED ? "failed" : "starting");
+        bput(&b, ", \"detail\": "); bjson(&b, as[ap_state]);
+        bput(&b, ", \"ssid\": "); bjson(&b, ap_ssid);
+        bprintf(&b, ", \"security\": \"%s\", \"channel\": %d, \"address\": \"192.168.4.1\", \"clients\": %d, \"how\": ", ap_state != AP_UP ? "" : ap_open ? "open (the PIN guards the page)" : "WPA2", ap_channel, psmac_ip_ap_clients());
+        bjson(&b, ap_how); bput(&b, ", \"error\": "); bjson(&b, ap_err); bput(&b, "}");
+    } else bput(&b, ",\n \"ap\": null");
     bput(&b, "}\n");
     respond(h, 200, "application/json", j);
 }
@@ -1069,6 +1315,7 @@ static void ans_wifi(struct rconn *h, const char *sub, char *body, uint32_t n)
         if (!__builtin_strcmp(s, ssid)) pcl_get(cl_old, (uint32_t)cl_len, "wifi.psk", psk, sizeof psk);
     }
     if (starts(sub, "test")) {
+        if (ap_active()) { json_err(h, 409, "the radio is the access point you are on: a test join would end it. Save the network and restart to join it"); return; }
         if (wifi_join(ssid, psk, country)) { json_err(h, 503, "the radio is busy: try again"); return; }
         wifi_test = 1; wifi_test_ok = 0; wifi_test_t0 = now_ms(); scpy(wifi_test_ssid, ssid, sizeof wifi_test_ssid); wifi_note[0] = 0;
         did("WiFi test: joining %s", ssid);
@@ -1098,14 +1345,13 @@ static void ans_reboot(struct rconn *h, const char *how)
         respond(h, 200, "application/json", "{\"restart\": \"recovery\"}\n");
     } else {
         int took = 0;
-        if (cmdline_has_recovery()) {                            /* "normally" means without mac.recovery=1 */
-            uint32_t nn = (uint32_t)cl_len;
-            for (uint32_t i = 0; i < nn; i++) cl_new[i] = cl_old[i];
-            if (cl_set(&nn, "mac.recovery", 0) || cl_write(nn, why_, sizeof why_)) { json_err(h, 500, "mac.recovery=1 could not be taken out of cmdline.txt"); return; }
+        (void)why_;
+        if (cmdline_has_recovery()) {                            /* "normally" means without mac.recovery=1 and recovery.ap= */
+            if (cl_drop_recovery()) { json_err(h, 500, "mac.recovery=1 / recovery.ap could not be taken out of cmdline.txt"); return; }
             took = 1;
         }
-        did("restart normally asked for%s", took ? ": mac.recovery=1 taken out of cmdline.txt (cmdline.bak keeps the line)" : "");
-        respond(h, 200, "application/json", took ? "{\"restart\": \"normal\", \"note\": \"mac.recovery=1 was taken out of cmdline.txt\"}\n" : "{\"restart\": \"normal\"}\n");
+        did("restart normally asked for%s", took ? ": mac.recovery=1 / recovery.ap taken out of cmdline.txt (cmdline.bak keeps the line)" : "");
+        respond(h, 200, "application/json", took ? "{\"restart\": \"normal\", \"note\": \"mac.recovery=1 / recovery.ap was taken out of cmdline.txt\"}\n" : "{\"restart\": \"normal\"}\n");
     }
     pi_restart_in(1500);
 }
@@ -1442,6 +1688,13 @@ static void handle(int c)
     int get = !__builtin_strcmp(r, "GET"), post = !__builtin_strcmp(r, "POST"), put = !__builtin_strcmp(r, "PUT");
     if (!psmac_remote_private_source(h->peer)) { json_err(h, 403, "only the local network"); return; }
     if (get && (!__builtin_strcmp(path, "/") || !__builtin_strcmp(path, "/index.html"))) { respond_src(h, "text/html; charset=utf-8", recovery_page, slen(recovery_page)); return; }
+    /* the access point's guests: a phone checks a network by fetching a known page (generate_204, hotspot-detect.html);
+       every name leads here (psmac_apnet.c), and the answer sends it to the page, which it offers as a sign-in */
+    if (get && ap_active() && !starts(path, "/r/")) {
+        out_head(h, 302, "text/html", 0, "Location: http://192.168.4.1/\r\n");
+        h->kind = RK_OUT;
+        return;
+    }
     if (!starts(path, "/r/")) { json_err(h, 404, "the page is /, the API /r/..."); return; }
     if (pin_locked_until && (int32_t)(now_ms() - pin_locked_until) < 0) { json_err(h, 429, "ten wrong PINs: a new PIN is on the screen; requests are refused for a minute"); return; }
     if (!pn || !pin_ok(pn, pl)) {
@@ -1507,6 +1760,14 @@ static void handle(int c)
     if (post && !__builtin_strcmp(path, "rollback")) { ans_rollback(h, query(q, "force", v, sizeof v) && v[0] == '1'); return; }
     if (get && !__builtin_strcmp(path, "log")) { ans_log(h, c, query(q, "now", v, sizeof v) && v[0] == '1'); return; }
     if (get && !__builtin_strcmp(path, "display")) { ans_display_get(h, c); return; }
+    if (get && !__builtin_strcmp(path, "screen.pbm") && screen_shot_ok()) {       /* the testbed's photograph of the compact Mac's screen */
+        static char pbm[16 + sizeof se_fb];
+        se_render();
+        struct sb b = { pbm, 0, sizeof pbm }; bput(&b, "P4\n512 342\n");
+        uint32_t n = b.n; memcpy(pbm + n, se_fb, sizeof se_fb);
+        respond_src(h, "image/x-portable-bitmap", pbm, n + (uint32_t)sizeof se_fb);
+        return;
+    }
     if (post && !__builtin_strcmp(path, "display")) { ans_display_post(h, c, body, clen); return; }
     json_err(h, 404, "GET /r/state, /r/files, /r/file, /r/text, /r/options, /r/wifi, /r/log, /r/display; PUT /r/file, /r/text; POST /r/rm, /r/mv, /r/options, /r/wifi/..., /r/display, /r/reboot, /r/rollback");
 }
@@ -1592,7 +1853,7 @@ void recovery_tcp_closed(int c)
    read by the Mac's ROM, which does not run here) chooses a network from a scan, types its password and
    country, sets three options and saves them into cmdline.txt, or restarts. Up and Down choose, Return
    changes, Esc goes back. The password is shown as stars and never logged. */
-#define MI_N 10
+#define MI_N 11
 static void menu_load(void)
 {
     char v[72];
@@ -1676,7 +1937,8 @@ static void menu_lines(void)
         case 6: bprintf(&b, "mac.console: %s", m_console); break;
         case 7: bprintf(&b, "Save to cmdline.txt%s", m_changed ? " (changed)" : ""); break;
         case 8: bput(&b, "Restart normally"); break;
-        default: bput(&b, "Restart into recovery"); break;
+        case 9: bput(&b, "Restart into recovery"); break;
+        default: bput(&b, ap_active() ? "Access point: running" : "Start an access point (a WiFi network for a phone)"); break;
         }
         items[i] = it[i];
     }
@@ -1756,8 +2018,9 @@ static void menu_key(uint32_t u, uint32_t mods)
     case 5: cycle(m_boot, sizeof m_boot, boots, 3); break;
     case 6: cycle(m_console, sizeof m_console, cons, 2); break;
     case 7: menu_save(); break;
-    case 8: if (cmdline_has_recovery()) { uint32_t nn = (uint32_t)cl_len; char w2[100]; for (uint32_t i = 0; i < nn; i++) cl_new[i] = cl_old[i]; if (!cl_set(&nn, "mac.recovery", 0)) cl_write(nn, w2, sizeof w2); }
+    case 8: if (cmdline_has_recovery()) cl_drop_recovery();
             scpy(m_msg, "restarting ...", sizeof m_msg); did("restart normally, from the keyboard menu"); pi_restart_in(1000); break;
+    case 10: if (ap_active()) scpy(m_msg, "the access point is already running", sizeof m_msg); else { ap_request("the keyboard menu"); menu_on = 0; } break;
     default: { static const char t[] = "asked for from the keyboard menu\n"; psmac_card_rec_put("recovery.txt", (const uint8_t *)t, sizeof t - 1);
             scpy(m_msg, "restarting into recovery ...", sizeof m_msg); did("restart into recovery, from the keyboard menu"); pi_restart_in(1000); break; }
     }
@@ -1767,7 +2030,7 @@ int psmac_recovery_key(uint32_t usage, int down, uint32_t mods)
     if (!rec_on) {
         /* a normal start: Esc held a second within the first twenty seconds asks for recovery (the poll) */
         if (usage == 0x29) {
-            if (down == 1 && start_ms && now_ms() - start_ms < ESC_WINDOW_MS) esc_down_at = now_ms() | 1;
+            if (down == 1 && start_ms && now_ms() - start_ms < ESC_WINDOW_MS) { uint32_t t_ = now_ms(); esc_down_at = t_ ? t_ : 1; }
             else if (!down) esc_down_at = 0;
         }
         return 0;
@@ -1828,7 +2091,9 @@ void psmac_recovery_poll(void)
         new_pin();
         psmac_ip_init_recovery("aurora68");
         kprintf("[RECOVERY] the page: http://%s.local/ (and the address the screen shows); PIN shown on screen\n", psmac_ip_name());
+        if (switch_board()) kprintf("[RECOVERY] the programmer's interrupt button held two seconds on this screen starts an access point (docs/08 item 118)\n");
         scr_dirty = 1;
+        if (ap_asked[0]) ap_request(ap_asked);
     }
     if (!card_seen && psmac_card_rec_ready() != 0) { card_seen = 1; card_first_look(); }
     /* the stack every turn while it has work, else once a millisecond (QEMU emulates every timer read) */
@@ -1842,6 +2107,9 @@ void psmac_recovery_poll(void)
     up_pump();
     wifi_poll();
     wifi_test_poll2();
+    switch_poll();
+    ap_poll();
+    reset_button_poll();
     screen_poll();
     reset_poll();
 }

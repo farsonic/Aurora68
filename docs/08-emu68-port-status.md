@@ -4465,7 +4465,7 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      simulated radio has no access point at all, so nothing of it could be tried here. The wired port, USB Ethernet with
      its link-local fall-back and the keyboard menu cover the same need meanwhile; the access point is left for a
      change of its own, to be tried on a real Pi. Nor was a Mac-side "restart into recovery" program written (the
-     remote and the page do it).
+     remote and the page do it). (The access point came on 23 November, reached with the interrupt button: item 118.)
    - *Not verified:* real hardware: the real interrupt switch, a real SD card's CMD25 writes and their speed, real
      WiFi joins and scans, a USB Ethernet adapter's link-local case, the Plus's and 512K's keyboards in the menu (the
      testbed has no M0110A keyboard ROM, `mackbd_m0110a.zip`), the SE's video and speaker with the 68k never started
@@ -5093,3 +5093,145 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      folder's name; copies of a video are compared without the number.
    - *Test:* `downloads_check` in test_server.py (the owner's layout with an unfinished `tmp...` folder): the artist from
      the name, the number gone, one of the two downloads kept, each linked to its song; 219 checks, 0 failed.
+118. **Setup and Recovery as an access point: set up with nothing but a phone (23 November).** The owner: "for the
+   early startup option, is there a way we can trigger the Pi going into an AP mode so we can connect to it for initial
+   setup or later rescue. Have it broadcast its own SSID which we can connect to with instructions on the screen", and
+   "This would not be the default but would need to use the programmer's buttons." Item 106 had left the access point
+   out: Alice68's WiFi code drives the firmware as a station only, the IP stack had no DHCP server, and the testbed's
+   simulated radio had no access point to try anything against.
+   - *The gesture.* On the recovery screen, **the interrupt button held for two seconds**, after it has been seen let
+     go for a second. Recovery already reads the button: phase 2 looks at the wire's level (bit 2) as the 68k would
+     be released, and the service loop's poll keeps that level fresh while no Mac runs, so the recovery screen can
+     read it too (`switch_poll`, psmac_recovery.c). The alternatives were weighed: "the button pressed twice to
+     enter" would have to be timed at power-on, before any screen is up to say what is happening; a single press on
+     the recovery screen is one glitch on /IPL2 away from happening by itself. Two seconds held is far longer than a
+     glitch (milliseconds) or the press that gives a running Mac its NMI, it means nothing else on this screen, the
+     screen counts it down ("Keep holding the interrupt button: the access point starts in 1 s"), and because the
+     button must first be let go, a finger still on it from switching on (the switch's own way into recovery) does
+     not start it. The recovery screen says it on the boards that have the button: "Hold the interrupt button 2 s: a
+     WiFi network of the Pi's own for a phone". The same is in the keyboard menu (an eleventh item, "Start an access
+     point"), and `recovery.ap=on` in cmdline.txt makes a recovery start that goes straight to it, for the bench.
+     Nothing starts it otherwise: not the boot counter, not a missing WiFi setting. The kernel's log line for the
+     button says "pressed (Setup and Recovery: no Mac runs ...)" in recovery instead of "an NMI for the Mac".
+   - *The firmware's part* (`alice_net.c`, under `#ifdef PSMAC`; `src/alice/wifi/fmac_ap.c` and `.h`, new, Aurora68's
+     own and GPL-2.0-only like the code around it). A command for unit 0, `AN_CMD_AP` (13) with `struct an_ap` (name,
+     passphrase, country, channel, flags), added to alice_net.h without moving an offset (`make -C mac check`). The
+     firmware's SoftAP is set up in the order of Linux brcmfmac's `brcmf_cfg80211_start_ap` for one interface with
+     the firmware as authenticator, read from cfg80211.c and written here from that reading, built as a list of steps
+     (`fm_ap_steps`) that the driver sends, the testbed's radio checks and the host test reads: the event mask with an
+     access point's events (a station associated, left); `sup_wpa` 0, `mpc` 0 (minimum power consumption would switch
+     the radio off with no association of its own), `apsta` 0; `WLC_DOWN`; the country; `WLC_SET_BCNPRD` 100,
+     `WLC_SET_DTIMPRD` 2; `WLC_SET_INFRA` 1; `WLC_SET_AP` 1; `chanspec` (0x1006 for channel 6 in the 802.11ac encoding,
+     0x2b06 in the older 802.11n one, chosen by `WLC_GET_VERSION` as Linux does); `WLC_UP`; for WPA2
+     `WLC_SET_WSEC_PMK` with the 32-byte key (PBKDF2 of the passphrase and the SSID, `key_len` 32, `flags` 0, as
+     `brcmf_set_pmk`), `auth` 0, `wsec` AES, `wpa_auth` WPA2_AUTH_PSK, `mfp` 0; for an open network `wsec` 0 and
+     `wpa_auth` 0; `WLC_SET_SSID` with join parameters that hold only the SSID; `closednet` 0. Two fall-backs Linux does
+     not need but a firmware nobody here has seen might: `WLC_SET_CHANNEL` with the plain number when `chanspec` is
+     refused, and the key as a passphrase (`flags` 1) when the binary key is. Every step is logged (`[WIFI] access
+     point: WLC_SET_AP 1 ok (the access point role)`; the key's bytes never). Refusals of the event mask, `sup_wpa`, `mpc`, `apsta`,
+     the country, the beacon and DTIM periods, `auth`, `mfp` and `closednet` are logged and passed over, as Linux
+     passes over most of them; the first refusal of any other step stops the sequence and becomes the unit's message,
+     which the recovery screen shows: "the WiFi chip refused AP mode: WLC_SET_AP error -23" (an answer that never came
+     reads "no answer from the chip"). After `WLC_SET_SSID` the driver waits up to three seconds for `E_LINK` or
+     `E_SET_SSID`'s status and logs which came, or that neither did; the first sixty events of an access point are
+     logged in full (type, status, reason, flags; no addresses: they are the guests'), so the first try on a real chip
+     shows what it sends. Then the unit is "connected" with the access point's own name, channel and security and the
+     link up, and associations and departures change its message ("1 device joined"). `JOIN` and `DISCONNECT` end the
+     access point (down, `WLC_SET_AP` 0, infrastructure, up); a chip that is lost and started again (the driver's five
+     retries) starts the access point again.
+   - *WPA2 or open.* With WPA2 the 4-way handshake runs in the firmware (Linux offers its access point offload,
+     `NL80211_EXT_FEATURE_4WAY_HANDSHAKE_AP_PSK`, only with `BRCMF_FEAT_FWAUTH`, which it reads as `idauth` in the
+     firmware's `cap` list). The driver reads the same list, already logged at every start ("firmware features: ..."):
+     with `idauth`, WPA2-PSK with AES; without it, an open network, said on the screen ("no password: this WiFi
+     firmware cannot do WPA2 as an access point; the PIN guards the page") and in the log, and every request but the
+     page still needs the PIN. Doing the handshake in the kernel instead (an authenticator of its own: the PTK, the
+     MIC, AES key wrap for the group key, the keys installed with `wsec_key`) was considered and left for a change of
+     its own, if a real Pi 3's firmware turns out to lack `idauth`. `recovery.apsec=open` asks for an open network,
+     `recovery.apsec=wpa2` for WPA2 even without `idauth` (an experiment: phones would associate and wait for a
+     handshake that never comes). The password is ten characters from the 31 that cannot be misread on a one-bit
+     screen (no 0/o, 1/l/i), taken from SHA-1 of sixteen words of the BCM2835's random generator and the counters it
+     is mixed with (about 50 bits, for a network that lives for one start, beside the PIN); it is drawn on the
+     screens only, never logged, never served by the page or the state.
+   - *The network* (`psmac_ip.c`; `psmac_apnet.c` and `.h`, new, portable C). `psmac_ip_ap` gives the WiFi the fixed
+     address 192.168.4.1/24, uses the WiFi alone (the page is served on the access point; a cable in the wired port
+     is left alone meanwhile), runs no DHCP client, and serves the guests: a DHCP server with sixteen leases,
+     192.168.4.10 to .25, ten minutes, keyed by the hardware address (a phone that comes back gets its address
+     again), the Pi as router and DNS server, a NAK at once for a request of another network's address (a phone last
+     on a home network asks for that first), RELEASE, DECLINE and INFORM; and a DNS answerer that gives every name's A
+     record as 192.168.4.1 for ten seconds and answers AAAA and the rest with no records, from the address the query
+     was sent to (a phone set to its own DNS server sends it here through the "router"). Phones check a new network
+     by fetching a known page (`generate_204`, `hotspot-detect.html`); with every name leading to the Pi that fetch
+     reaches the recovery page's server, which answers any GET outside `/r/` with a 302 to `http://192.168.4.1/`, the
+     captive portal that phones then offer as "Sign in to network". Replies still go back to the Ethernet address the
+     request came from, so nothing changed for ARP. The heartbeat's `[REMOTE]` lines gain the access point's counts.
+     When the access point does not start, `psmac_ip_ap_off` puts the links back and the saved WiFi (cmdline.txt's,
+     or this start's options) is joined again, so a refusal costs nothing but the attempt.
+   - *The screens.* A page of its own for the access point, written for 64 columns and 21 rows: "On a phone or
+     laptop, join the WiFi network", the name in large letters, "with the password (WPA2)", the password in large
+     letters, "then open http://192.168.4.1/ and give the PIN", the PIN, the devices with an address, the last action,
+     "To leave: Restart on the page, or press the reset button." The name is `Aurora68-` and the radio's MAC address'
+     last two bytes in hex (the testbed's simulated radio, a locally administered address, gives `Aurora68-4946`).
+     While it starts: "Starting the access point ...", how it was asked for and the PIN; when it failed, the normal
+     recovery page with "The access point did not start: <the chip's refusal>". The screen's lines were cut at 80
+     characters before the 64-column wrap of item 106 ever saw them, which cut the end off a long refusal; they now
+     hold two screen lines' worth.
+   - *The page* (tools/recovery/page.html, psmac_recovery_page.h made by mkpage.py). The state has an `ap` block
+     (state, name, security, channel, address, the guests with a lease, how it was asked for, the error; never the
+     password); the Overview shows it as a card; the WiFi tab, while the access point runs, hides "Test join now" (a
+     test join would end the network the phone is on; the API answers it with 409) and offers **Save and restart to
+     join this network**, which saves the settings and restarts normally. "Restart normally" takes `recovery.ap` out
+     of cmdline.txt as it does `mac.recovery=1`.
+   - *Leaving.* Restart on the page, or the programmer's **reset button**: on the SE the PiStorm sees the 68000's
+     reset line (`psmac_gpio_reset_asserted`), which until now nothing used in a running start; in a recovery start a
+     press (the line low for a tenth of a second, armed once it has been free for three seconds, long after the
+     Mac's own power-on reset) restarts the Pi by the watchdog. The access point is never kept: nothing of it is
+     written to the card, and the next start is as cmdline.txt says.
+   - *A bug found on the way.* Timestamps kept as `t | 1`, so that 0 could mean "none", are one more than `t` when `t`
+     is even, and `now - x` in the same millisecond is then 4294967295: the first gesture test armed the button at
+     once and took the power-on hold of the testbed's switch for the gesture, the very case the arming is there to
+     refuse. They are `t ? t : 1` now, and so is item 106's Esc watch, which had the same flaw: an Esc whose poll came
+     in the millisecond it was pressed would have counted as held for a second.
+   - *Tested on the host* (`tools/apnet_test.sh`, run by `make -C mac check`: 66 checks): DHCP DISCOVER, OFFER (to the
+     client's own hardware address, or broadcast when it asks), REQUEST and ACK, the same address for a client that
+     comes back, a second client, a REQUEST naming another server (no answer, the offer freed), another network's
+     address and another client's (NAK, broadcast), INIT-REBOOT into a free address after the Pi restarted, renewal
+     to the client's own address, RELEASE, INFORM, sixteen leases and no seventeenth, an unused offer free again after
+     a minute, malformed messages ignored; DNS A (one record, id kept, authoritative, TTL 10), AAAA (none), ANY,
+     answers, two questions, a compressed name and a cut query refused; the WPA key against IEEE 802.11i's test vector
+     ("password", "IEEE"); the WPA2 and the open sequences step by step against Linux's order with the values that
+     matter (WLC_SET_AP 1, chanspec 0x1006 or 0x2b06, wsec AES, wpa_auth 0x80, the PMK's 132 bytes, WLC_SET_SSID's 52
+     with a zero BSSID); a refused WLC_SET_AP stopping with "WLC_SET_AP error -23", a refused chanspec falling back to
+     WLC_SET_CHANNEL, a refused binary key to the passphrase, a refused mpc passed over; `idauth` as a whole word only.
+   - *Tested in the testbed* (QEMU solo board, a 128 MB FAT32 card image, the simulated radio extended for
+     `AN_CMD_AP`: it runs the very step list against a model of the firmware, the role and infrastructure only while
+     down, the key only while up as an access point, the SSID last and with the key when WPA2 is asked for, answering
+     with Broadcom's error numbers; `tools/pinet.py` with `PINET_APCLIENT=1` as a phone that joined: DHCP client, DNS
+     queries, then the page through `PINET_KERNEL`). `mac.recovery=1 mac.switchsim=ap` (the testbed's switch: held at
+     power-on, let go, held again 12 s later) with the radio joined to its network: the screen's hint, "Keep holding
+     the interrupt button: the access point starts in 1 s" at the hold, the access point two seconds later, all
+     nineteen steps accepted, up 1.5 s later; the phone was offered and given 192.168.4.10 with router and DNS
+     192.168.4.1 and a 600 s lease; `connectivitycheck.gstatic.com` and `aurora68.local` answered 192.168.4.1,
+     `captive.apple.com` AAAA no records; the page over the access point byte for byte tools/recovery/page.html
+     (39,849 bytes); `/generate_204` and `/hotspot-detect.html` 302 to `http://192.168.4.1/`; 401 without the PIN; a
+     test join 409; a scan in access point mode listed the four networks and the access point stayed up; a save wrote
+     `wifi.ssid` and `wifi.psk` beside the line's other words with cmdline.bak; "restart normally" restarted the Pi by
+     the watchdog. `recovery.ap=on mac.wifisimap=noidauth`: an open network, said on both screens. `recovery.ap=on
+     mac.wifisimap=refuse:WLC_SET_AP`: "the WiFi chip refused AP mode: WLC_SET_AP error -23" on the screens, the links
+     back, the radio joined its network again and DHCP gave the kernel its usual address there. The keyboard menu on
+     QEMU's USB keyboard (Return, Up to the last item, Return) started it; `mac.resetsim=40`, the testbed's reset
+     button, restarted the Pi ("the reset button: the Pi restarts (the access point is not kept)"). The page's script
+     was run under Node against a stub of the page and the state recorded in the first run: the Overview's card, the
+     WiFi tab's buttons in and out of access point mode, save then restart in that order. Headless Chrome would not
+     start in this environment (no GPU, no D-Bus), so the page itself was not photographed. Screenshots, from the
+     testbed: `docs/img/recovery-ap-se.png` (the compact Mac's screen, photographed through `/r/screen.pbm` with the
+     testbed's `mac.recoveryscreen=1`), `recovery-ap-hdmi.png`, `recovery-ap-hold-hdmi.png` (the countdown),
+     `recovery-ap-open-se.png`, `recovery-ap-refused-se.png`.
+   - *Not verified until the owner tries a real Pi.* Everything the firmware does: whether the Pi 3B's BCM43430
+     firmware takes this sequence (each step's answer is in the log), which of `E_LINK` and `E_SET_SSID` it sends,
+     whether its `cap` list has `idauth`, and so whether the network is WPA2 or open; whether a phone joins it and
+     finishes WPA2's handshake; the channel's encoding (`WLC_GET_VERSION`'s value is logged); a real phone's sign-in
+     page (Android, iOS) and its DNS behaviour; the interrupt button's level on the recovery screen with the SE's real
+     wire (the service loop's poll is what keeps it fresh; the testbed's switch is simulated); the reset button's line
+     reaching the Pi in a recovery start (if it does not, power off and on: the access point is not kept either way).
+     If the screen says "the WiFi chip refused AP mode: <step> error <n>", that line and the `[WIFI] access point:`
+     lines of the log are what is needed to fix it.
