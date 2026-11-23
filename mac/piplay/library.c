@@ -45,6 +45,16 @@
  * card (docs/16) and its program will show it through /vmpeg/ID. The device says it shows no video (its announce
  * carries no video=1), and a video sent to it from another player comes as a V line and plays the same way. An
  * artist with videos and no album opens on its videos (catalog.c's A68_V_ARTIST).
+ *
+ * Music videos shown (Aurora68 Play 1.6, 23 November 2026, docs/08 item 114). With the Aurora68 Video Decoder card
+ * in the Mac (vcard.c finds its driver), a video plays as itself: /vmpeg/ID?w=&h=&start= (play/core/proto.c's
+ * path, a size of the video's own shape for the screen the player window is on: a68_vmpeg_size), its MPEG-1 stream
+ * into the card through the radio's connection (radio_play_video), its picture in a video window. The queue goes
+ * on when a video has played (the card says "ended"), but never gaplessly: a video is a card stream of its own, so
+ * the song or video after it, or a video after a song, starts as a new stream once the one before has played out.
+ * A seek is a new /vmpeg request with start=S (the card stopped, a new stream started). The device says it shows
+ * video (dv.video, the announce's video=1), so the server sends v:ID to it as a video rather than its sound.
+ * Without the card everything is as in 1.5.
  */
 #include "toolbox.h"
 #include "psmb.h"
@@ -57,6 +67,7 @@
 #include "queue.h"
 #include "devices.h"
 #include "library.h"
+#include "vcard.h"
 
 extern volatile struct psmb_stream *ps;
 static unsigned char pb[256];
@@ -90,6 +101,7 @@ static struct art view_art, now_art, bar_art;
 static char srv_host[64], srv_name[48] = "Library";
 static unsigned short srv_port = A68_DEFAULT_PORT;
 static int srv_known;                            /* /mac/info answered */
+static int srv_mpeg1;                            /* it makes MPEG-1 for the video card (/vmpeg/, "mpeg1" in its capabilities) */
 static int finding;                              /* the UDP probe is out */
 static char alt_host[2][64];                     /* the server's other addresses (discovery): tried in turn if this one fails */
 static int nalt;
@@ -97,7 +109,9 @@ static const char *problem;                      /* the list area says this inst
 static char problem_buf[160];
 
 /* ---- the queue (play/core/queue.c): the songs, the one heard (Q.cur), the one whose stream is sent (Q.feed) ---- */
-struct qitem { char id[9], album[9]; unsigned long secs; char title[48], artist[40]; char video; };   /* video: its sound, /vaudio/ */
+struct qitem { char id[9], album[9]; unsigned long secs; char title[48], artist[40]; char video; unsigned short vw, vh; };
+/* video: a music video, shown on the video decoder card (/vmpeg/, its picture vw x vh, 0 when not known) or without
+   the card its sound (/vaudio/) */
 #define MAX_Q 250
 static struct qitem *qitems;
 static struct a68_queue Q;
@@ -309,6 +323,17 @@ static void got_info(void)
 	}
 	copy(srv_name, inf.name, sizeof srv_name);
 	srv_known = 1;
+	{   /* "mpeg1" among what the server can do (servers of 22 November 2026 on): its /vmpeg/ for the video card. Without
+	       it a video plays its sound, as in 1.5, and the device does not say it shows video */
+		const char *c = inf.caps ? inf.caps : "";
+		int k;
+		srv_mpeg1 = 0;
+		for (; *c; c++) {
+			for (k = 0; "mpeg1"[k] && c[k] == "mpeg1"[k]; k++) { }
+			if (!"mpeg1"[k] && (c[k] == ',' || !c[k]) && (c == inf.caps || c[-1] == ',')) srv_mpeg1 = 1;
+		}
+		dev.video = vc_present() && srv_mpeg1;
+	}
 	set_title();
 	dv_set_generation(&dev, inf.generation);       /* the library's generation (servers of 22 November 2026 on) */
 	dev.gen_changed = 0;
@@ -368,11 +393,14 @@ static void got_thumbs(void)
 
 /* ---- playing ------------------------------------------------------------------------------------------ */
 /* a track's stream: http://HOST:PORT/t/ID?start=S (an IPv6 address in brackets); a video's sound /vaudio/ID?start=S */
+static unsigned vm_w, vm_h;                      /* the size the video in the card's window is asked at */
+static int shows_video(const struct qitem *q) { return q && q->video && vc_present() && srv_mpeg1; }
 static void track_url(char *u, long max, int i, unsigned long start)
 {
-	char path[40];
+	char path[60];
 	struct qitem *q = qat(i);
-	if (q && q->video) a68_path_vaudio(q->id, start, path, sizeof path);
+	if (shows_video(q)) a68_path_vmpeg(q->id, vm_w, vm_h, a68_vmpeg_rate(vm_w, vm_h), start, path, sizeof path);
+	else if (q && q->video) a68_path_vaudio(q->id, start, path, sizeof path);
 	else a68_path_stream(q ? q->id : "", start, path, sizeof path);
 	a68_url(u, max, srv_host, srv_port, path);
 }
@@ -390,7 +418,10 @@ static unsigned long feed_start;                 /* the seconds into Q.feed its 
 static int next_url(char *url, int max, unsigned long at)
 {
 	int f;
-	if (!mode || (f = a68q_feed_next(&Q)) < 0) return 0;
+	if (!mode) return 0;
+	f = a68q_follow(&Q, Q.feed);
+	if (f >= 0 && shows_video(qat(f))) { logs("next: a video, once this song has played", 0); return 0; }   /* lib_poll starts it */
+	if ((f = a68q_feed_next(&Q)) < 0) return 0;
 	feed_start = 0;                              /* the new stream from its start (a lost one resumes from here) */
 	track_url(url, max, f, 0);
 	if (nb < 8) { bounds[nb].at = at; bounds[nb].idx = f; nb++; }
@@ -400,6 +431,7 @@ static int next_url(char *url, int max, unsigned long at)
 static void resume_url(char *url, int max, unsigned long secs)
 {
 	feed_start += secs;
+	if (shows_video(qat(Q.feed))) offset_s = feed_start;   /* a video's new stream counts from there */
 	track_url(url, max, Q.feed, feed_start);
 }
 static void play_at(int i, unsigned long start)
@@ -415,12 +447,22 @@ static void play_at(int i, unsigned long start)
 	offset_s = feed_start = start;
 	radio.next = next_url;
 	radio.resume = resume_url;
-	track_url(u, sizeof u, i, start);
 	p = put_str(name, q->artist);
 	p = put_str(p, " - ");
 	copy(p, q->title, (int)(sizeof name - (unsigned long)(p - name)));
+	if (shows_video(q)) {
+		/* the picture at a size of the video's shape for the screen the player window is on; the same video again (a
+		   seek, Previous on it) keeps its window where it is */
+		static char shown_id[9];
+		if (!same_id(shown_id, q->id) || !vc_window()) {
+			vc_size_for(player_window(), q->vw, q->vh, &vm_w, &vm_h);
+			copy(shown_id, q->id, 9);
+			vc_window_open(q->title, vm_w, vm_h, player_window());
+		}
+	} else vc_window_dispose();
+	track_url(u, sizeof u, i, start);
 	want_now_art();
-	if (!radio_play_track(name, u)) {
+	if (!(shows_video(q) ? radio_play_video(name, u) : radio_play_track(name, u))) {
 		const char *e = radio.error;
 		radio.error = 0;
 		lstate = L_STOPPED;
@@ -457,6 +499,7 @@ static void queue_from_rows(int s)
 		if (rows[i].kind != want) continue;
 		if (i == s) at = n;
 		fill_item(&qitems[n], rows[i].id, rows[i].album, rows[i].text, rows[i].sub, rows[i].secs);
+		qitems[n].vw = rows[i].vw; qitems[n].vh = rows[i].vh;
 		qitems[n++].video = want == 'V';
 	}
 	if (!n || !qitems) return;
@@ -550,7 +593,8 @@ static void run_commands(char *b, long n)
 			at = pc.act == A68_ACT_NEXT && mode ? a68q_next_place(&Q) + pc.n : pc.act == A68_ACT_PLAY ? pc.n : Q.n;
 			if (!pc.n) pc.first = at > Q.n ? Q.n : at;
 			fill_item(&item, c.tid, "", c.title, c.artist, c.secs);   /* no album id in a command's tracks: no cover for them */
-			item.video = c.kind == 'V';              /* a music video: its sound (this Mac shows no video yet) */
+			item.video = c.kind == 'V';              /* a music video: shown with the card, else its sound */
+			item.vw = (unsigned short)(c.width & 0xFFFF); item.vh = (unsigned short)(c.height & 0xFFFF);   /* full=1 only: 0, 4:3 */
 			if (a68q_insert(&Q, at, &item) >= 0) pc.n++;
 		} else if (c.kind == 'R') { copy(pc.rname, c.name, sizeof pc.rname); copy(pc.rurl, c.url, sizeof pc.rurl); pc.radio = 1; }
 	} while (more);
@@ -568,8 +612,9 @@ static void lib_refresh(void)
 /* the device's part of the player: an id kept in the preferences and the Mac's name */
 void lib_device(const char *id, const char *name)
 {
-	dv_init(&dev, id, name, "1.5", "classic");
-	dev.client = cl;                             /* videos=1: a video sent here comes as a V line (dev.video stays 0) */
+	dv_init(&dev, id, name, "1.6", "classic");
+	dev.client = cl;                             /* videos=1: a video sent here comes as a V line */
+	dev.video = vc_present() && srv_mpeg1;       /* 1.6: with the video decoder card it shows them (the announce's video=1) */
 	dev_ready = id[0] != 0;
 	if (dev_ready && srv_known) dv_start(&dev, secs_now());
 }
@@ -779,7 +824,16 @@ void lib_poll(void)
 			if (lw) { SetPort(lw); draw_bar(); if (CUR->kind == V_TRACKS) draw_list(); }
 		}
 		if (radio.ended && lstate == L_PLAYING) {
+			/* a video has played, or a song before a video (next_url sends no stream into or out of a video): what
+			   follows starts as a stream of its own */
+			int f = a68q_follow(&Q, Q.feed);
 			radio.ended = 0;
+			if (f >= 0 && (shows_video(qat(Q.feed)) || shows_video(qat(f)))) {
+				logs("next after the video's stream: ", qat(f)->title);
+				play_at(f, 0);
+				return;
+			}
+			vc_window_dispose();
 			lstate = L_ENDED;
 			logs("the queue has played", 0);
 			player_refresh();
@@ -956,6 +1010,10 @@ static void draw_album_head(void)
 static unsigned long pos_s(void)
 {
 	if (!mode || !ps || lstate == L_STOPPED) return 0;
+	if (radio.video) {                           /* the card's picture: the server's streams start at 0.5 s (-muxdelay) */
+		unsigned long v = vc_pos_ms();
+		return offset_s + (v > 500 ? v - 500 : 0) / 1000;
+	}
 	unsigned long at = ps->pos_ms > base_ms ? ps->pos_ms - base_ms : 0;
 	return offset_s + at / 1000;
 }
@@ -1124,6 +1182,7 @@ static void open_line(int li)
 		else if (qitems) {                       /* from a search: that video alone */
 			fill_item(&qitems[0], r->id, r->album, r->text, r->sub, r->secs);
 			qitems[0].video = 1;
+			qitems[0].vw = r->vw; qitems[0].vh = r->vh;
 			a68q_set(&Q, 1, 0);
 			album_title[0] = 0;
 			play_at(0, 0);
@@ -1235,6 +1294,7 @@ void lib_leave(void)
 	mode = 0;
 	lstate = L_STOPPED;
 	radio.next = 0; radio.resume = 0;
+	vc_window_dispose();
 	if (lw) { SetPort(lw); draw_bar(); draw_list(); }
 }
 void lib_play_pause(void)
@@ -1251,6 +1311,7 @@ void lib_stop(void)
 	radio_stop();
 	lstate = L_STOPPED;
 	nb = 0;
+	vc_window_dispose();
 	logs("stopped", 0);
 	player_refresh();
 	if (lw) { SetPort(lw); draw_bar(); draw_list(); }
@@ -1301,10 +1362,13 @@ void lib_draw_now(void *win, short W, short H)
 	clip_text(t, W - 94);
 	p = t;
 	if (q) {
-		p = put_str(p, "Track "); p = put_num(p, (unsigned long)Q.cur + 1); p = put_str(p, " of "); p = put_num(p, (unsigned long)Q.n);
+		p = put_str(p, q->video ? "Video " : "Track "); p = put_num(p, (unsigned long)Q.cur + 1); p = put_str(p, " of "); p = put_num(p, (unsigned long)Q.n);
 		p = put_str(p, shuffle ? ", shuffled" : "");
 		p = put_str(p, Q.repeat != A68_REPEAT_OFF ? ", repeated" : "");
-		if (ps && ps->rate && lstate == L_PLAYING) { p = put_str(p, " \xD1 MP3 "); p = put_num(p, ps->bitrate ? ps->bitrate : radio.br); p = put_str(p, " kbit/s"); }
+		if (radio.video && lstate == L_PLAYING) {   /* the picture the card shows */
+			p = put_str(p, " \xD1 MPEG-1 "); p = put_num(p, vm_w); *p++ = 'x'; p = put_num(p, vm_h);
+		} else if (q->video && lstate == L_PLAYING) p = put_str(p, " \xD1 its sound");
+		else if (ps && ps->rate && lstate == L_PLAYING) { p = put_str(p, " \xD1 MP3 "); p = put_num(p, ps->bitrate ? ps->bitrate : radio.br); p = put_str(p, " kbit/s"); }
 		if (radio.ipv) p = put_str(p, radio.ipv == 6 ? ", IPv6" : ", IPv4");
 	}
 	*p = 0;

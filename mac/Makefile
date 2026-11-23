@@ -249,7 +249,7 @@ $(B)/pp/net.o: piplay/net.s
 	@mkdir -p $(B)/pp
 	$(AS) -o $@ $<
 PP_CFLAGS = $(subst -I$(B),-I$(B)/pp,$(CFLAGS)) -I$(CORE)/include
-PP_H = c/toolbox.h $(B)/pp/toolbox_gen.h ../emu68/src/psmac/psmb.h piplay/radio.h piplay/library.h piplay/fetch.h piplay/media.h $(CORE_H)
+PP_H = c/toolbox.h $(B)/pp/toolbox_gen.h ../emu68/src/psmac/psmb.h piplay/radio.h piplay/library.h piplay/fetch.h piplay/media.h piplay/vcard.h $(CORE_H)
 $(B)/pp/piplay.o: piplay/piplay.c $(PP_H)
 	$(CC) $(PP_CFLAGS) -I../emu68/src/psmac -c -o $@ $<
 # the internet radio: Riptide's .IPP6 (IPP6.h, its interface header) or MacTCP and the resolver (radio.c); the stations' answers
@@ -276,15 +276,19 @@ PP_CORE = $(patsubst $(CORE)/%.c,$(B)/pp/core/%.o,$(CORE_SRC))
 $(B)/pp/core/%.o: $(CORE)/%.c $(CORE_H)
 	@mkdir -p $(B)/pp/core
 	$(CC) $(PP_CFLAGS) -Os -ffunction-sections -fdata-sections -c -o $@ $<
+# music videos on the Aurora68 Video Decoder card (23 November 2026, docs/08 item 114): its driver, its ring for the
+# receive chain, the video window; the card's block from the kernel's psmac_video.h
+$(B)/pp/vcard.o: piplay/vcard.c piplay/vcard.h $(PP_H) ../emu68/src/psmac/psmac_video.h
+	$(CC) $(PP_CFLAGS) -I../emu68/src/psmac -c -o $@ $<
 PP_OBJ = $(B)/crt0.o $(B)/pp/toolbox_glue.o $(B)/pp/libc.o $(B)/pp/fs.o $(B)/pp/net.o $(B)/pp/piplay.o $(B)/pp/radio.o \
-         $(B)/pp/library.o $(B)/pp/fetch.o $(B)/pp/media.o $(PP_CORE)
+         $(B)/pp/library.o $(B)/pp/fetch.o $(B)/pp/media.o $(B)/pp/vcard.o $(PP_CORE)
 $(B)/piplay.elf: $(PP_OBJ) c/app.ld
 	$(LD) -T c/app.ld --emit-relocs --gc-sections --no-warn-rwx-segments -z noexecstack -o $@ $(PP_OBJ) $(LIBGCC)
 # the Finder's resources (signature, bundle, file references for the application, its MP3, AIFF and WAV
 # documents, its preferences and '****', icons: tools/mac/mkicons.py): files dropped on its icon reach it
 # as the application's files (AppParmHandle)
 $(B)/Aurora68-Play.bin: $(B)/piplay.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py $(ICONS)
-	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Play" --creator PIPY --size 512 --icons play --version 1.5 -o $@
+	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Play" --creator PIPY --size 512 --icons play --version 1.6 -o $@
 
 # ---- the WiFi menu: an INIT in C (mac/wifimenu, tools/mac/elf2init.py) ----
 $(B)/wifimenu_traps.txt: c/traps.txt wifimenu/traps.txt

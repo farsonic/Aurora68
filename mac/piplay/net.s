@@ -32,6 +32,13 @@ mac_PBControlAsync:
 	.short	0xA404			| _Control,async
 	ext.l	%d0
 	rts
+| short mac_PBStatus(void *pb): the video decoder card's driver's Status 100 (vcard.c, 23 November 2026)
+	.globl	mac_PBStatus
+mac_PBStatus:
+	move.l	4(%sp),%a0
+	.short	0xA005			| _Status
+	ext.l	%d0
+	rts
 
 | the receive call's completion routine: radio.c's c_rcv_done(), every register kept
 	.globl	mac_rcv_completion

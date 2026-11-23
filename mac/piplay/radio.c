@@ -43,6 +43,17 @@
  * so that code is shared. The window's "IPv4"/"IPv6" is then the family of the address connected to.
  * Without .IPP6 (Apple's MacTCP, an older Riptide) everything goes through .IPP and the DNR as before.
  *
+ * Music videos on the video decoder card (Aurora68 Play 1.6, 23 November 2026, docs/08 item 114). A video is a
+ * stream with an end, as a track is, but its bytes are an MPEG-1 program stream (the music server's /vmpeg/ID,
+ * "video/mpeg") and go into the Aurora68 Video Decoder card's ring (vcard.c) instead of the sound card's: the same
+ * connection, the same receive chain at interrupt time, with ring_room and to_ring asking radio.video which ring.
+ * The card is started when the answer's headers have come (its own buffer of 64 KB is the prebuffering); at the
+ * end the card is told so and the stream drains (RS_DRAIN until the card says "ended"), and the library plays
+ * what follows: a video is never sent gaplessly after a song or another video, since each is a stream of its own
+ * for its card. A connection lost on the way stops the card and asks again from the picture shown (resume()
+ * with its seconds). The server makes one MPEG-1 stream at a time (VIDEO_TRANSCODES): a 503 while the last
+ * one's ffmpeg is still being stopped (a seek, the next video) is asked again after a second, four times.
+ *
  * The station list "Aurora68 Play Stations" is read and written here; what is in it (the built-in list,
  * the groups of the Radio menu's submenus, the defaults a user's file lacks) is stations.c's (item 87).
  */
@@ -51,6 +62,8 @@
 #include "icy.h"
 #include "address.h"
 #include "radio.h"
+#include "vcard.h"
+#include "psmac_video.h"
 #define __MACTCP__ 1                             /* MacTCP's calls and results are named below, not in IPP6.h */
 #include "IPP6.h"
 
@@ -83,7 +96,8 @@ enum { TCPCreate = 30, TCPActiveOpen = 32, TCPSend = 34, TCPRcv = 37, TCPAbort =
 #define noNameServer          (-23044)         /* none configured (MacTCP's control panel, "More...") */
 #define authNameErr           (-23045)
 #define noAnsErr              (-23046)
-#define TCP_BUF   32768u                       /* the stream's receive buffer: MacTCP wants 4 KB at least */
+#define TCP_BUF   32768u                       /* the stream's receive buffer: MacTCP wants 4 KB at least (64 KB, tried for the
+                                                  video's stream on 23 November 2026, carried no more in the testbed) */
 #define RBUF      8192u                        /* one TCPRcv: half a second of 128 kbit/s */
 #define RCV_TIMEOUT 10                         /* seconds without a byte: the station is gone */
 #define PB_SIZE   132                          /* MacTCP's TCPiopb is 104 bytes, .IPP6's TCP6iopb 130 */
@@ -166,11 +180,13 @@ static volatile int hdr_seen, bad_answer;
 static volatile unsigned long title_count, rcv_calls, last_rx;
 static volatile int in_done, done_again;
 
-static unsigned long ring_room(void) { return PSMB_STR_SIZE - (ps->head - ps->tail); }
-/* the audio into the card's ring (room for it was looked at before the receive was made) */
+static unsigned long ring_room(void) { return radio.video ? vc_room() : PSMB_STR_SIZE - (ps->head - ps->tail); }
+/* the audio into the card's ring (room for it was looked at before the receive was made); a video's stream into the
+   video decoder card's */
 static void to_ring(const unsigned char *p, unsigned long n)
 {
 	unsigned long h = ps->head;
+	if (radio.video) { vc_write(p, n); return; }
 	while (n) {
 		unsigned long off = h % PSMB_STR_SIZE, c = PSMB_STR_SIZE - off;
 		if (c > n) c = n;
@@ -312,6 +328,7 @@ static IP6Address addrs[MAX_ADDRS];
 static int naddr, ai, resolving;
 static IP6iopb rpb;
 static int redirects, http11, connected_once, playlist_hop;
+static int busy_retries;                       /* a video's 503s asked again (on_headers) */
 static unsigned long backoff, t_state, conn_audio;
 static const char *last_problem;
 
@@ -436,6 +453,11 @@ static void teardown(void)
 static void card_start(void)
 {
 	if (ps->state != PSMB_STR_S_IDLE) pi_command(PSMB_STR_C_STOP);
+	if (radio.video) {                           /* the video decoder card: started when the answer has come */
+		vc_begin();
+		radio.prebuffering = 0;
+		return;
+	}
 	ps->eof = 0;
 	ps->format = PSMB_STR_MPEG;
 	ps->start_ms = 0;
@@ -461,7 +483,11 @@ static void failed(const char *say, long code)
 	else logs(say, 0, 0);
 	teardown();
 	if (connected_once) {                        /* it played: connect again after 1, 2, 4 ... 30 s */
-		if (radio.finite && radio.resume) {      /* a track: from where its audio stopped, not its start */
+		if (radio.video && radio.resume) {       /* a video: from the picture shown, in a new stream of the card's */
+			radio.resume(radio.url, sizeof radio.url, vc_pos_ms() / 1000);
+			vc_begin();
+			icy_init(icy);
+		} else if (radio.finite && radio.resume) {   /* a track: from where its audio stopped, not its start */
 			unsigned long rate = (radio.br ? radio.br : 128) * 125;
 			radio.resume(radio.url, sizeof radio.url, icy->audio_bytes / rate);
 			icy_init(icy);                       /* so that a failed attempt adds nothing */
@@ -477,6 +503,7 @@ static void failed(const char *say, long code)
 	radio.error = say;
 	radio.prebuffering = 0;
 	if (ps->state != PSMB_STR_S_IDLE) pi_command(PSMB_STR_C_STOP);
+	if (radio.video) vc_stop();
 	set_state(RS_OFF);
 }
 static void open_start(void)
@@ -610,13 +637,22 @@ static void on_headers(void)
 	if (s->chunked) p = put_str(p, ", chunked");
 	*p = 0;
 	logs(t, 0, 0);
-	if (s->status >= 200 && s->status < 300 && s->kind == ICY_K_AUDIO) {
+	if (s->status >= 200 && s->status < 300 && (radio.video ? s->kind == ICY_K_VIDEO : s->kind == ICY_K_AUDIO)) {
 		if (s->name[0]) { copy(radio.name, s->name, sizeof radio.name); logs("the station says it is \"", s->name, "\""); }
 		if (s->br) radio.br = s->br;
 		conn_audio = 0;
 		if (!connected_once) { connected_once = 1; backoff = 1; }
 		if (lost) { lost = 0; radio.reconnects++; logn("reconnected: reconnect ", (long)radio.reconnects, ""); }
+		if (radio.video) { vc_go(); busy_retries = 0; logs("the video's stream has come: the card started", 0, 0); }
 		set_state(RS_PLAYING);
+		return;
+	}
+	if (radio.video && s->status == 503 && busy_retries < 4) {   /* the server's last MPEG-1 stream still stopping */
+		busy_retries++;
+		logn("the server makes another video now (503): asking again in a second, try ", (long)busy_retries, "");
+		teardown();
+		radio.retry_at = LM_TICKS + 60;
+		set_state(RS_RETRY);
 		return;
 	}
 	if (s->status >= 200 && s->status < 300 && s->kind == ICY_K_PLAYLIST) { playlist_hop = 1; return; }   /* its text, then */
@@ -634,6 +670,14 @@ static void on_headers(void)
 		return;
 	}
 	static char say[160];
+	if (radio.video) {                           /* the music server's words for a video it cannot send */
+		p = put_num(put_str(say, "The music server could not send the video ("), (unsigned long)s->status);
+		*p++ = ' ';
+		put_str(put_str(p, s->status >= 200 && s->status < 300 ? s->ctype : s->reason), ").")[0] = 0;
+		connected_once = 0;
+		failed(say, 0);
+		return;
+	}
 	if (s->status >= 200 && s->status < 300) {
 		if (prefix(s->ctype, "audio/aac") || prefix(s->ctype, "audio/mp4") || prefix(s->ctype, "audio/x-aac"))
 			put_str(put_str(put_str(say, "This station sends AAC ("), s->ctype), "), and Aurora68 Play plays MP3 streams only.")[0] = 0;
@@ -673,6 +717,12 @@ static void track_done(void)
 	unsigned long at = ps->pos_ms + held / (rate / 100) * 10;
 	logn("the track's stream is in, ", (long)icy->audio_bytes, " bytes");
 	teardown();
+	if (radio.video) {                           /* the card plays out what it holds; the library starts what follows */
+		vc_end();
+		vc_report("the stream is in");
+		set_state(RS_DRAIN);
+		return;
+	}
 	if (radio.next && radio.next(u, sizeof u, at)) {
 		copy(radio.url, u, sizeof radio.url);
 		copy(cur_url, u, sizeof cur_url);
@@ -811,7 +861,11 @@ void radio_poll(void)
 		if ((long)(now - radio.retry_at) >= 0) { redirects = 0; playlist_hop = 0; copy(cur_url, radio.url, sizeof cur_url); connect_start(); }
 		return;
 	case RS_DRAIN:
-		if (ps->state == PSMB_STR_S_PLAYING || ps->state == PSMB_STR_S_PAUSED) return;
+		if (radio.video) {
+			int vs = vc_state();
+			if (vs == A68V_S_PLAYING || vs == A68V_S_PAUSED || vs == A68V_S_BUFFERING) return;
+			vc_report(vs == A68V_S_ENDED ? "played to the end" : "ended");
+		} else if (ps->state == PSMB_STR_S_PLAYING || ps->state == PSMB_STR_S_PAUSED) return;
 		logs("the last track has played", 0, 0);
 		radio.ended = 1;
 		radio.prebuffering = radio.paused = 0;
@@ -852,6 +906,20 @@ void radio_poll(void)
 		}
 	}
 	if (icy->audio_bytes - conn_audio > 65536 && backoff > 1) backoff = 1;   /* this connection works: start over */
+	if (radio.video) {                           /* the card's buffering is its own; what is watched here is an error */
+		if (vc_state() == A68V_S_ERROR) {
+			static char say[200];
+			char m[100];
+			copy(m, vc_message(), sizeof m);         /* the card's words: 127 characters at most, cut here */
+			put_str(put_str(put_str(say, "The video decoder card could not play the video: "), m), ".")[0] = 0;
+			vc_report("the card stopped");
+			teardown();
+			vc_stop();
+			radio.error = say;
+			set_state(RS_OFF);
+		}
+		return;
+	}
 	if (ps->bitrate && ps->bitrate != radio.br) { radio.br = ps->bitrate; radio.seq++; }
 	rate_bytes = (radio.br ? radio.br : 128) * 125;                         /* kbit/s in bytes a second */
 	{
@@ -888,12 +956,15 @@ void radio_init(void)
 static int play(const char *name, const char *url, int finite);
 int radio_play(const char *name, const char *url) { return play(name, url, 0); }
 int radio_play_track(const char *name, const char *url) { return play(name, url, 1); }
+int radio_play_video(const char *name, const char *url) { return play(name, url, 2); }
 static int play(const char *name, const char *url, int finite)
 {
 	const char *e;
 	radio_stop();
 	radio.error = 0;
-	radio.finite = finite;
+	radio.video = finite == 2 && vc_present();
+	busy_retries = 0;
+	radio.finite = finite != 0;
 	radio.ended = 0;
 	if (!tcp_buf || !rbuf || !icy || !slist) { radio.error = "There is not enough memory for the radio: give Aurora68 Play more in the Finder's Get Info."; return 0; }
 	copy(radio.station, name, sizeof radio.station);
@@ -908,7 +979,7 @@ static int play(const char *name, const char *url, int finite)
 	logs(name, ", ", url);
 	logs(v6 ? "via .IPP6 (Riptide: IPv6 and IPv4 addresses, names by the driver)" : "via .IPP (MacTCP's interface: IPv4, names through the DNR)", 0, 0);
 	card_start();
-	card_title(name);
+	if (!radio.video) card_title(name);
 	connected_once = 0; backoff = 1; redirects = 0; http11 = 0; playlist_hop = 0; lost = 0;
 	titles_seen = title_count;
 	last_under = ps->underruns; in_underrun = 0;
@@ -926,6 +997,7 @@ void radio_stop(void)
 	ps->eof = 0;
 	if (look[lk].busy && !look[lk].done) logs("a name lookup is still out: its answer will be ignored", 0, 0);
 	if (ps->state != PSMB_STR_S_IDLE) pi_command(PSMB_STR_C_STOP);
+	if (radio.video) vc_stop();
 	p = put_str(t, "stopped; ");
 	p = put_num(p, icy ? icy->audio_bytes : 0); p = put_str(p, " bytes on the last connection, ");
 	p = put_num(p, radio.reconnects); p = put_str(p, " reconnects, ");
@@ -938,7 +1010,8 @@ void radio_stop(void)
 void radio_pause(int on)
 {
 	radio.paused = on;
-	if (!radio.prebuffering) pi_command(on ? PSMB_STR_C_PAUSE : PSMB_STR_C_RESUME);
+	if (radio.video) vc_pause(on);
+	else if (!radio.prebuffering) pi_command(on ? PSMB_STR_C_PAUSE : PSMB_STR_C_RESUME);
 	logs(on ? "paused (the station goes on into the card's buffer)" : "resumed", 0, 0);
 	radio.seq++;
 }
@@ -964,6 +1037,7 @@ const char *radio_status(char *b)
 	}
 	default:
 		if (radio.paused) p = put_str(p, "Paused");
+		else if (radio.video && vc_state() != A68V_S_PLAYING) p = put_str(p, "Buffering");
 		else if (radio.prebuffering) {
 			unsigned long pc = radio.held_ms / 30;          /* of three seconds */
 			p = put_str(put_num(put_str(p, "Buffering "), pc > 99 ? 99 : pc), "%");

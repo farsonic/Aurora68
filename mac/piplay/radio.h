@@ -31,6 +31,7 @@ struct radio_ui {
 	   A connection lost on the way is made again from where its audio stopped: resume() rewrites the
 	   address for the seconds that came. */
 	int finite, ended;
+	int video;                       /* a music video on the video decoder card (radio_play_video, vcard.c): no next() */
 	int (*next)(char *url, int max, unsigned long boundary_ms);
 	void (*resume)(char *url, int max, unsigned long secs);
 };
@@ -42,6 +43,8 @@ void radio_init(void);
 /* plays the station at url (name for the window); 0 with radio.error set if it cannot even start */
 int radio_play(const char *name, const char *url);
 int radio_play_track(const char *name, const char *url);   /* the same, as a library track (finite above) */
+/* a music video's MPEG-1 stream (/vmpeg/ID) into the video decoder card; without the card, as a track */
+int radio_play_video(const char *name, const char *url);
 void radio_stop(void);                 /* closes the connection, stops the card */
 void radio_pause(int on);
 void radio_poll(void);                 /* from the event loop, as often as it can */

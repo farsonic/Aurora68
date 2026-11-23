@@ -64,6 +64,7 @@ int ask_text(const char *prompt, const char *hint, const char *initial, char *ou
 void start_station(const char *name, const char *url);
 void player_lib_mode(void);            /* the player window shows the library's track */
 void player_refresh(void);             /* its texts, buttons and progress line again */
+void *player_window(void);             /* the player window (the video window opens on its screen) */
 Rect screen_rect(void);
 /* the player, for a device's commands and its state (piplay.c) */
 void player_pause(int pause);          /* 1 pause, 0 resume: whatever plays */

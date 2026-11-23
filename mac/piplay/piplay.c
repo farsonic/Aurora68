@@ -57,6 +57,13 @@
  * By > IPv6 First or IPv4 First chooses the family tried first when a name has both, for the radio and the
  * library alike, the other one tried when it fails. The program asks for 512 KB now (lists, covers, the
  * queue), colour windows where Color QuickDraw is so that a cover keeps its colours on a colour screen.
+ *
+ * Music videos on the video decoder card (Aurora68 Play 1.6, 23 November 2026, docs/08 item 114): with the
+ * Aurora68 Video Decoder card a library video plays in a window of its own (vcard.c), its MPEG-1 stream from the
+ * server through the radio's connection into the card. This file passes the video window its events (its update,
+ * a click in it to play or pause, its close box to hide the picture while the sound goes on, Controls > Show
+ * Video to bring it back), holds the card's drawing while a menu is down, a window is dragged or sized or a
+ * dialog is up, and gives it Play's volume. Without the card a video plays its sound, as in 1.5.
  */
 #include "toolbox.h"
 #include "psmb.h"
@@ -66,6 +73,7 @@
 #include "fetch.h"
 #include "media.h"
 #include "devices.h"
+#include "vcard.h"
 
 /* piplay/fs.s */
 short mac_PBRead(ParamBlock *pb), mac_PBGetEOF(ParamBlock *pb), mac_PBHOpen(ParamBlock *pb), mac_PBHCreate(ParamBlock *pb),
@@ -422,6 +430,7 @@ static void set_volume(void)
 	unsigned long panel = *(volatile unsigned char *)0x260 & 7;     /* SdVolume: the Sound control panel's level, 0-7 */
 	unsigned long v = (unsigned long)vol * 256 / 100 * (panel ? panel : 7) / 7;
 	if (ps) ps->volume = v << 16 | v;
+	vc_volume((int)(vol * (panel ? panel : 7) / 7));   /* a video's sound, on the video decoder card */
 }
 /* one piece of the file into the ring: 2 if it wrote some, 1 if more remains but the ring is full
    (the Pi's buffer is), 0 at the end */
@@ -559,7 +568,7 @@ static void *m_sub[MAX_GROUPS];                      /* the submenus in the menu
 static int showing_radio;                            /* the window is the radio's (a station chosen) */
 static int radio_url_item, radio_add_item, radio_net_item;   /* Open URL..., Add Default Stations, Connect By in the Radio menu */
 enum { F_OPEN = 1, F_CLOSE, F_QUIT = 4 };
-enum { C_PLAY = 1, C_STOP, C_LOUDER = 4, C_SOFTER };      /* Volume Up, Volume Down */
+enum { C_PLAY = 1, C_STOP, C_LOUDER = 4, C_SOFTER, C_SHOWV = 7 };   /* Volume Up, Volume Down; Show Video (1.6) */
 static int quit, fg = 1, shown;
 static const char *status_text = "";
 #define WIN_W 340                                    /* the first and the smallest size */
@@ -801,6 +810,7 @@ static void fix_menus(void)
 		if (m_sub[i]) check_stations(m_sub[i], i);
 	enable(m_ctl, C_LOUDER, vol < 100);
 	enable(m_ctl, C_SOFTER, vol > 0);
+	enable(m_ctl, C_SHOWV, vc_window() && !vc_window_shown());
 	enable(m_lib, LB_FIND, lib_have_server());
 	enable(m_lib, LB_PLAY, lib_can_play_all());
 	CheckItem(m_lib, LB_SHUFFLE, lib_shuffle());
@@ -826,6 +836,7 @@ void message_box(const char *text, int lines_h)
 	short w = 340, h = (short)(lines_h + 52), left = (short)((s.right - s.left - w) / 2), top = (short)((s.bottom - s.top - h) / 3 + 10);
 	Rect b = { top, left, (short)(top + h), (short)(left + w) };
 	void *d = NewWindow(0, &b, pstr(pbuf, ""), 1, 1 /* dBoxProc */, (void *)-1, 0, 0);
+	vc_hold(1);                                 /* the video's picture not drawn over the dialog */
 	SetPort(d);
 	Rect okr = { (short)(h - 30), (short)(w - 80), (short)(h - 10), (short)(w - 16) };
 	void *ok = NewControl(d, &okr, pstr(pbuf, "OK"), 1, 0, 0, 1, pushButProc, 0);
@@ -849,6 +860,7 @@ void message_box(const char *text, int lines_h)
 		} else if (ev.what == updateEvt) {
 			if ((void *)ev.message == win) { BeginUpdate(win); redraw_all(); EndUpdate(win); }
 			else if ((void *)ev.message == lib_window()) { BeginUpdate((void *)ev.message); lib_update(); EndUpdate((void *)ev.message); }
+			else if (vc_window() && (void *)ev.message == vc_window()) { BeginUpdate((void *)ev.message); vc_update(); EndUpdate((void *)ev.message); }
 		} else if (ev.what == keyDown && ((ev.message & 0xFF) == 0x0D || (ev.message & 0xFF) == 0x03 || (ev.message & 0xFF) == 0x1B)) done = 1;
 		else if (ev.what == mouseDown) {
 			Point p = ev.where;
@@ -860,6 +872,7 @@ void message_box(const char *text, int lines_h)
 		}
 	}
 	DisposeWindow(d);
+	vc_hold(0);
 	SetPort(win);
 }
 void say_error(const char *text)
@@ -957,6 +970,7 @@ void player_lib_mode(void)
 	layout();
 	InvalRect(PORT_RECT(win));
 }
+void *player_window(void) { return shown ? win : 0; }
 void player_refresh(void)
 {
 	void *port;
@@ -1213,6 +1227,7 @@ static int ask_box(const char *initial, char *out, int max)
 	short w = 380, h = 136, left = (short)((s.right - s.left - w) / 2), top = (short)((s.bottom - s.top - h) / 3 + 10);
 	Rect b = { top, left, (short)(top + h), (short)(left + w) };
 	void *d = NewWindow(0, &b, pstr(pbuf, ""), 1, 1 /* dBoxProc */, (void *)-1, 0, 0);
+	vc_hold(1);
 	SetPort(d);
 	TextFont(3); TextSize(9);                   /* the field in Geneva 9: long addresses fit */
 	Rect okr = { (short)(h - 30), (short)(w - 82), (short)(h - 10), (short)(w - 16) };
@@ -1262,6 +1277,7 @@ static int ask_box(const char *initial, char *out, int max)
 			EndUpdate(d);
 		} else if (ev.what == updateEvt) {
 			if ((void *)ev.message == win) { BeginUpdate(win); redraw_all(); EndUpdate(win); }
+			else if (vc_window() && (void *)ev.message == vc_window()) { BeginUpdate((void *)ev.message); vc_update(); EndUpdate((void *)ev.message); }
 		} else if (ev.what == keyDown || ev.what == autoKey) {
 			int c = (int)(ev.message & charCodeMask);
 			if (ev.modifiers & cmdKey) {
@@ -1302,6 +1318,7 @@ static int ask_box(const char *initial, char *out, int max)
 	out[n] = 0;
 	TEDispose(te);
 	DisposeWindow(d);
+	vc_hold(0);
 	InitCursor();
 	SetPort(win);
 	return done == 1;
@@ -1337,7 +1354,7 @@ static void setup_menus(void)
 	AppendMenu(m_edit, pstr(pbuf, "Undo/Z;(-;Cut/X;Copy/C;Paste/V;Clear"));
 	InsertMenu(m_edit, 0);
 	m_ctl = NewMenu(M_CTL, pstr(pbuf, "Controls"));
-	AppendMenu(m_ctl, pstr(pbuf, "Play/P;Stop/.;(-;Volume Up/];Volume Down/["));
+	AppendMenu(m_ctl, pstr(pbuf, "Play/P;Stop/.;(-;Volume Up/];Volume Down/[;(-;Show Video"));
 	InsertMenu(m_ctl, 0);
 	m_lib = NewMenu(M_LIB, pstr(pbuf, "Library"));
 	AppendMenu(m_lib, pstr(pbuf, "Show Library/L;Connect to Server\xC9;Find\xC9/F;(-;Play All;Shuffle;Repeat;(-;Previous Track;Next Track;(-;"
@@ -1378,6 +1395,7 @@ static void do_menu(long mr)
 		else if (item == C_STOP) stop();
 		else if (item == C_LOUDER) change_volume(vol + 10);
 		else if (item == C_SOFTER) change_volume(vol - 10);
+		else if (item == C_SHOWV) vc_window_show();
 	} else if (id == M_LIB) {
 		switch (item) {
 		case LB_SHOW: lib_show(); break;
@@ -1556,19 +1574,27 @@ static void mouse_down(EventRecord *ev)
 	case inMenuBar:
 		if (stations_check()) build_radio_menu();   /* "PiPlay Stations" changed (TeachText) */
 		fix_menus();
-		do_menu(MenuSelect(pt_long(ev->where)));
+		vc_hold(1);                             /* a menu down: the video's picture not drawn over it */
+		{ long mr = MenuSelect(pt_long(ev->where)); vc_hold(0); do_menu(mr); }
 		break;
 	case inSysWindow: SystemClick(ev, w); break;
-	case inDrag: DragWindow(w, pt_long(ev->where), RGN_BBOX(LM_GRAYRGN)); break;
+	case inDrag:                                /* the outline is drawn over the screen: no picture meanwhile */
+		vc_hold(1);
+		DragWindow(w, pt_long(ev->where), RGN_BBOX(LM_GRAYRGN));
+		vc_hold(0);
+		break;
 	case inGoAway:
 		if (w == win && TrackGoAway(w, pt_long(ev->where))) close_window();
 		else if (w == lib_window() && TrackGoAway(w, pt_long(ev->where))) lib_close();
+		else if (w && w == vc_window() && TrackGoAway(w, pt_long(ev->where))) vc_window_hide();
 		break;
 	case inGrow:
 		if (w == win || w == lib_window()) {
 			Rect lim = { WIN_H, WIN_W, 4000, 4000 };     /* top, left: the smallest height and width */
 			if (w != win) { lim.top = 200; lim.left = 360; }
+			vc_hold(1);
 			long sz = GrowWindow(w, pt_long(ev->where), &lim);
+			vc_hold(0);
 			if (sz) {
 				SizeWindow(w, (short)(sz & 0xFFFF), (short)(sz >> 16), 1);
 				if (w == win) resized();
@@ -1590,6 +1616,7 @@ static void mouse_down(EventRecord *ev)
 		if (w != FrontWindow()) SelectWindow(w);
 		else if (w == win) content_click(ev);
 		else if (w == lib_window()) lib_click(ev);
+		else if (w && w == vc_window()) { play_pause(); fix_buttons(); }   /* a click in the picture: play or pause */
 		break;
 	}
 }
@@ -1606,7 +1633,7 @@ static void key_down(EventRecord *ev)
 	if (FrontWindow() == lib_window() && lib_window()) { lib_key(ev); fix_buttons(); return; }
 	if (c == 0x1C && lib_active()) { lib_skip(-1); fix_buttons(); return; }   /* left and right arrows: the queue */
 	if (c == 0x1D && lib_active()) { lib_skip(1); fix_buttons(); return; }
-	if (c == ' ' && FrontWindow() == win) play_pause();
+	if (c == ' ' && (FrontWindow() == win || (vc_window() && FrontWindow() == vc_window()))) play_pause();
 	else if (c == 0x1B) stop();                 /* Esc */
 	else if (c == 0x1E) change_volume(vol + 5); /* up arrow */
 	else if (c == 0x1F) change_volume(vol - 5); /* down arrow */
@@ -1752,6 +1779,8 @@ int main(void)
 	}
 
 	radio_init();
+	vc_init();                                  /* the Aurora68 Video Decoder card: videos shown (1.6), else their sound */
+	set_volume();
 	stations_load();
 	build_radio_menu();
 	{   /* the device: the id from the preferences, or a new one; the name the Mac goes by on the network (Sharing
@@ -1780,6 +1809,7 @@ int main(void)
 			case updateEvt:
 				if ((void *)ev.message == win) { BeginUpdate(win); redraw_all(); EndUpdate(win); }
 				else if (lib_window() && (void *)ev.message == lib_window()) { BeginUpdate((void *)ev.message); lib_update(); EndUpdate((void *)ev.message); }
+				else if (vc_window() && (void *)ev.message == vc_window()) { BeginUpdate((void *)ev.message); vc_update(); EndUpdate((void *)ev.message); }
 				break;
 			case activateEvt:
 				if ((void *)ev.message == win) activate(ev.modifiers & activeFlag);
@@ -1809,6 +1839,7 @@ int main(void)
 		}
 		radio_poll();
 		lib_poll();
+		vc_poll(fg);                            /* the video's place and whether it may be drawn */
 		watch();
 	}
 	discover_stop();
