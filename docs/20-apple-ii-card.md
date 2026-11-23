@@ -208,7 +208,9 @@ rule does nothing. The heartbeat's `[GUEST]` line says what each guest had.
   and the block's number found in it afterwards); the Disks menu's attach into HD1, a cold start booting it, the eject;
   a change of model to the II+ and back refused for the IIc ("No ROM for the Apple //c"); no ROM at all refused with the
   reason; the speaker's samples (the test ROM's beep). With `AURORA86_DIR` too, both cards through the scheduler, each in
-  front in turn, `guest.floor=1` and 0 (the PC starting FreeDOS 1.4).
+  front in turn, `guest.floor=1` and 0 (the PC starting FreeDOS 1.4's installer, which mostly waits: the PC was
+  idle most of the time and the Apple kept 992-1000 per mille of its own speed in all four; the rule with a PC that never
+  idles is what `tools/guest_test.c` checks).
   ![boot, 512 x 342](img/a2-card-host-boot-se.png) ![hires 1:1](img/a2-card-host-hires-se.png)
   ![80 columns](img/a2-card-host-80col-se.png) ![hires on 32 bits, x 2](img/a2-card-host-hires-32.png)
 - **In QEMU**, the solo board with System 7.1 (the Apple II kernel with the PC card too, `a2=on pc=on`, the files through
@@ -229,6 +231,10 @@ rule does nothing. The heartbeat's `[GUEST]` line says what each guest had.
   the window grown.
   ![Disks menu, 512 x 342](img/a2-card-qemu-disks-se.png) ![block boot, written back](img/a2-card-qemu-block-se.png)
   ![scaled](img/a2-card-qemu-scaled-se.png)
+  A second run at 512 x 342 with both programs, after the menu fix below: the Apple's window brought in front of the PC's,
+  hires at 1:1 with View > Actual Size (1:1) enabled and checked, View > White on Black, Aurora68 PC's Keyboard item
+  enabled. ![hires 1:1, 512 x 342](img/a2-card-qemu-hires-se.png) ![View menu](img/a2-card-qemu-view-se.png)
+  ![White on Black](img/a2-card-qemu-applesense-se.png) ![Aurora68 PC's Keyboard menu](img/a2-card-qemu-pc-keyboard-se.png)
 - **Found in QEMU**: AppendMenu takes "(" anywhere in an item's words as "disabled", so "Actual Size (1:1)" and the
   Keyboard menu's item came up dimmed; Aurora68 PC had the same with "Large Text (8 x 16)" and "Capture Keyboard and Mouse
   (Control-Option-Command-P)" since its first version. Both programs give such items their words through SetItem now.

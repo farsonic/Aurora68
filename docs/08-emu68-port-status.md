@@ -6257,7 +6257,8 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      Restart Cold from the menu and the hires picture at 1:1; at 512 x 342 the Disks menu putting `test.hdv` into HD1,
      Shift-Control-Command-Delete restarting cold, the Apple's boot block writing its block and the card writing it back
      into the host's file 2 s later ("A65W" found there), the pointer's box redrawn when it moved, View > Scaled with the
-     window grown. The Apple kept its own speed (1000 per mille) beside the PC once both had started. Pictures:
+     window grown; a second 512 x 342 run with both programs: hires at 1:1 behind the fixed View menu, White on Black,
+     Aurora68 PC's Keyboard item enabled. The Apple kept its own speed (1000 per mille) beside the PC once both had started. Pictures:
      `docs/img/a2-card-*.png`. The normal kernel: built from main and from this branch with the same `SOURCE_DATE_EPOCH`
      in the same place, the same `Emu68.img` byte for byte.
    - *Not verified:* the SE board, the IIci testbed, real hardware, the SD card path, the owner's Apple ROMs, the speaker
