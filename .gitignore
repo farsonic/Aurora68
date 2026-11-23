@@ -123,3 +123,5 @@ mac/build/pistatus_test
 mac/build/pistatus_test.m68k
 mac/build/pistatus_traps.txt
 mac/build/st/
+# the PC card test's run files (tools/pccard_test.sh)
+mac/build/pccard/
