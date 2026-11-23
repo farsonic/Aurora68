@@ -30,6 +30,8 @@
  *                                      the body as the data fork, or a MacBinary file (forks, type, creator,
  *                                      flags and dates from it); P ending in ':' a folder (the MacBinary name)
  *   POST /files/mkdir?path=P[&parents=1]   POST /files/delete?path=P   POST /files/rename?path=P&to=Q
+ *   GET  /files/progress               the transfer under way, or the last one (answered beside a job, never busy;
+ *                                      23 November 2026, psmac_files_progress_json)
  *   GET  /apps                         the programs that run, JSON
  *   POST /apps/open?path=P             an application launched (or brought to the front), a document opened
  *   POST /apps/quit?name=N|creator=C   a 'quit' Apple event (System 7)
@@ -51,6 +53,8 @@ _Static_assert(sizeof(struct psmb_agent_entry) == 80 && sizeof(struct psmb_agent
 static inline uint64_t now_ticks(void) { uint64_t v; __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(v)); return v; }
 static inline uint64_t tick_hz(void) { uint64_t v; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(v)); return v; }
 static uint32_t now_ms(void) { return (uint32_t)(now_ticks() / (tick_hz() / 1000u)); }
+static uint64_t us_since(uint64_t t) { return t ? (now_ticks() - t) * 1000000u / tick_hz() : 0; }
+const char *psmac_option(const char *key);                                  /* psmac_bus.c */
 static unsigned slen(const char *s) { unsigned n = 0; while (s[n]) n++; return n; }
 static int eq(const char *a, const char *b) { return !__builtin_strcmp(a, b); }
 static void cpy(void *d, const volatile void *s, uint32_t n) { uint8_t *a = d; const volatile uint8_t *b = s; while (n--) *a++ = *b++; }
@@ -80,6 +84,17 @@ static const char *const kind_name[] = { "", "list", "info", "pull", "push", "mk
 #define FRONT_CONN 1000                          /* the job of psmac_files_front: the remote's own, no connection */
 enum { S_WAIT_AGENT, S_GO, S_STREAM, S_HEAD, S_CREATE, S_BODY, S_SETINFO, S_REPLACE_DEL, S_REPLACE_REN, S_CLEAN, S_DONE };
 #define OUT_SZ   (2 * PSMB_AGENT_BUF + 8192)     /* a chunk being sent, the next one, and headers */
+/* An upload's body: 64 KiB, so that the next chunk comes in while the Mac writes the last, and so that the
+   job never needs the last few bytes of the window it offered. Until 23 November 2026 this was one chunk
+   (24 KiB), and a chunk was written only once it was whole. A Mac or BSD sender (the owner's MacBook) sends
+   full segments only, and holds back a remainder shorter than a segment and shorter than half the largest
+   window it has seen (silly-window avoidance) until its persist timer fires, five seconds at the least: 24,576
+   bytes are 16 segments of 1460 and 1216 bytes, so every chunk waited five seconds for its last 1216 bytes
+   (222,208 bytes in 71 s on the owner's SE, 4.8 KB/s in the testbed with pinet's BSD sender; docs/08 item 123).
+   Now a chunk goes to the Mac as soon as 24 KiB are in, which leaves 40 KiB of window open, and anything in
+   hand goes after T_PARTIAL without new bytes. */
+#define JIN_SZ   (2 * PSMB_AGENT_BUF + 16384)
+#define T_PARTIAL 150u                           /* ms without new bytes: what is in hand is written, a chunk or not */
 #define ONE_JSON 1200                            /* the most one entry's JSON takes */
 #define T_AGENT  3000u                           /* how long a job waits for an agent that is not there (yet) */
 #define T_REQ    20000u                          /* how long one request may take: longer than a menu is usually held */
@@ -104,11 +119,21 @@ static struct {
     uint32_t out_len, out_pos;
     uint32_t t0, bytes;
     uint32_t reqs, agent_ms;                     /* requests answered, and the time the agent took over them */
+    /* where the time goes (23 November 2026, docs/08 item 123): per request, from posting to the agent's
+       taken_seq (the Mac had not come round yet) and from there to its answer (the File Manager's work);
+       for a transfer the time spent waiting for the network: an upload with less than a chunk in hand, a
+       download whose answer buffer is full */
+    uint64_t post_t, taken_t, net_t;
+    uint64_t queue_us, work_us, net_us;
+    uint32_t sent;                               /* answer bytes handed to the connection */
     int err_code; char err[200];
 } J;
 /* the job's buffers: the body coming in, the records of the last answer, the answer going out */
-static uint8_t jin[PSMB_AGENT_BUF], jraw[PSMB_AGENT_BUF], jout[OUT_SZ];
-static char last[640];
+static uint8_t jin[JIN_SZ], jraw[PSMB_AGENT_BUF], jout[OUT_SZ];
+static int trace;                                /* mac.filestrace=1: a log line per request of a transfer */
+/* the last job's progress, kept once it has ended, for /files/progress */
+static struct { int kind; char upath[400]; uint32_t done, total, ms; int ok; } lastp;
+static char last[800];
 static int front_res;                            /* psmac_files_front: 0 waiting, 1 done, 2 it was in front, -1 failed */
 static uint8_t front_prev[32];                           /* the last job's outcome, for /state */
 static uint32_t jobs, jobs_failed;
@@ -213,14 +238,29 @@ static const char *http_text(int code)
     case 504: return "Gateway Timeout"; case 507: return "Insufficient Storage"; default: return "Internal Server Error";
     }
 }
+/* the bytes of the forks a transfer moves (J.bytes counts them as the Mac writes or reads them) */
+static uint32_t fork_total(void)
+{
+    if (J.kind == J_PULL && !J.macbinary) return J.len[J.fork > 1 ? 1 : J.fork];
+    return J.kind == J_PUSH || J.kind == J_PULL ? J.len[0] + J.len[1] : 0;
+}
 static void finish_log(int ok)
 {
     jobs++;
     if (!ok) jobs_failed++;
     uint32_t ms = now_ms() - J.t0;
-    if (ok) sprintf(last, "%s %s: done, %u bytes in %u ms (%u requests to the agent, %u ms of it waiting for its answers)", kind_name[J.kind], J.upath, J.bytes, ms, J.reqs, J.agent_ms);
+    if (ok && (J.kind == J_PUSH || J.kind == J_PULL)) {
+        if (J.net_t) { J.net_us += us_since(J.net_t); J.net_t = 0; }
+        sprintf(last, "%s %s: done, %u bytes in %u ms, %u KB/s (%u requests to the agent: %u ms waiting for the Mac to come round, "
+                      "%u ms of its work; %u ms waiting for the network)", kind_name[J.kind], J.upath, J.bytes, ms,
+                (uint32_t)((uint64_t)J.bytes * 1000u / 1024u / (ms ? ms : 1)), J.reqs, (uint32_t)(J.queue_us / 1000u),
+                (uint32_t)(J.work_us / 1000u), (uint32_t)(J.net_us / 1000u));
+    }
+    else if (ok) sprintf(last, "%s %s: done, %u bytes in %u ms (%u requests to the agent, %u ms of it waiting for its answers)", kind_name[J.kind], J.upath, J.bytes, ms, J.reqs, J.agent_ms);
     else sprintf(last, "%s %s: %s", kind_name[J.kind], J.upath, J.err);
     kprintf("[FILES] %s\n", last);
+    lastp.kind = J.kind; __builtin_memcpy(lastp.upath, J.upath, sizeof lastp.upath);
+    lastp.done = J.bytes; lastp.total = fork_total(); lastp.ms = ms; lastp.ok = ok;
 }
 /* the job's answer is an error: as JSON while nothing has been sent, else the connection is cut short
    (the client sees fewer bytes than Content-Length said; /state's "last" says why) */
@@ -275,6 +315,7 @@ static void post(uint32_t op, uint32_t timeout_ms)
     J.seq = a->req_seq + 1; J.op = op;
     a->req_seq = J.seq;
     J.posted = 1; J.deadline = now_ms() + timeout_ms; J.waited_from = now_ms();
+    J.post_t = now_ticks(); J.taken_t = 0;
 }
 static void post_io(uint32_t op, int fork, uint32_t offset, uint32_t length)
 {
@@ -438,7 +479,9 @@ static void step(void)
             }
             uint32_t n = J.len[J.fork] - J.pos;
             if (n > PSMB_AGENT_BUF) n = PSMB_AGENT_BUF;
-            if (out_free() < n + 128) return;
+            if (out_free() < n + 128) { if (!J.net_t) J.net_t = now_ticks(); return; }   /* the network's turn */
+            if (J.net_t) { J.net_us += us_since(J.net_t); J.net_t = 0; }
+            if (trace) kprintf("[FILES]   read %s %u+%u (%u waiting to be sent)\n", J.fork ? "rsrc" : "data", J.pos, n, J.out_len - J.out_pos);
             post_io(PSMB_AG_READ, J.fork, J.pos, n);
             return;
         }
@@ -486,9 +529,15 @@ static void step(void)
                 uint32_t n = J.len[J.fork] - J.pos;
                 if (n > PSMB_AGENT_BUF) n = PSMB_AGENT_BUF;
                 if (J.in_len < n) {                        /* a whole chunk, or the rest of the fork */
-                    if (J.clen >= 0 && J.body_got >= (uint32_t)J.clen) fail(400, "the body ended before the file did");
-                    break;
+                    if (J.clen >= 0 && J.body_got >= (uint32_t)J.clen) { fail(400, "the body ended before the file did"); break; }
+                    if (!J.in_len || now_ms() - J.last_rx < T_PARTIAL) {   /* the network's turn */
+                        if (!J.net_t) J.net_t = now_ticks();
+                        break;
+                    }
+                    n = J.in_len;                          /* nothing more for a while: what is here (above, JIN_SZ) */
                 }
+                if (J.net_t) { J.net_us += us_since(J.net_t); J.net_t = 0; }
+                if (trace) kprintf("[FILES]   write %s %u+%u (%u in hand, %u of %d received)\n", J.fork ? "rsrc" : "data", J.pos, n, J.in_len, J.body_got, (int)J.clen);
                 cpy_to(agbuf, jin, n);
                 __builtin_memmove(jin, jin + n, J.in_len - n); J.in_len -= n;
                 post_io(PSMB_AG_WRITE, J.fork, J.pos, n);
@@ -515,6 +564,13 @@ static void reply(void)
     uint32_t res = a->result;
     J.posted = 0;
     J.reqs++; J.agent_ms += now_ms() - J.waited_from;
+    {   /* the request's time: until the agent took it (its taken_seq; an older agent has none: all of it its work), then its work */
+        uint64_t all = us_since(J.post_t), q = J.taken_t ? (J.taken_t - J.post_t) * 1000000u / tick_hz() : 0;
+        if (q > all) q = all;
+        J.queue_us += q; J.work_us += all - q;
+        if (trace && (J.kind == J_PUSH || J.kind == J_PULL))
+            kprintf("[FILES]   op %u answered: %u us until the Mac took it, %u us of its work\n", J.op, (uint32_t)q, (uint32_t)(all - q));
+    }
     if (J.state == S_CLEAN) {                              /* the partial file is gone (or could not go): now the error */
         if (st) { unsigned n = slen(J.err); sprintf(J.err + n, "; the partial file could not be deleted (%d)", (int)st); }
         else { unsigned n = slen(J.err); sprintf(J.err + n, "; the partial file was deleted"); }
@@ -651,6 +707,7 @@ void psmac_files_poll(void)
         return;
     }
     if (J.posted) {
+        if (!J.taken_t && ag->taken_seq == J.seq) J.taken_t = now_ticks();
         if (ag->done_seq == J.seq) {
             if (J.kind == J_FRONT) {                       /* the remote's request: its answer kept for psmac_files_front_result */
                 mb();
@@ -853,7 +910,7 @@ uint32_t psmac_files_produce(int conn, uint8_t *buf, uint32_t room, int *finishe
     uint32_t n = J.out_len - J.out_pos;
     if (n > room) n = room;
     __builtin_memcpy(buf, jout + J.out_pos, n);
-    J.out_pos += n;
+    J.out_pos += n; J.sent += n;
     if (J.out_pos == J.out_len) J.out_pos = J.out_len = 0;
     if (J.done && J.out_pos >= J.out_len) {
         *finished = 1;
@@ -867,7 +924,7 @@ uint32_t psmac_files_room(int conn)
     if (J.kind != J_PUSH || J.conn != conn) return 65535;    /* not ours (any more): whatever comes is dropped */
     if (J.discard) return 65535;
     if (J.clen >= 0 && J.body_got >= (uint32_t)J.clen) return 0;
-    uint32_t room = PSMB_AGENT_BUF - J.in_len;
+    uint32_t room = JIN_SZ - J.in_len;
     if (J.clen >= 0 && room > (uint32_t)J.clen - J.body_got) room = (uint32_t)J.clen - J.body_got;
     return room;
 }
@@ -878,7 +935,7 @@ void psmac_files_body(int conn, const uint8_t *data, uint32_t len)
     J.body_got += len;
     if (len) J.last_rx = now_ms();
     if (J.discard) return;
-    if (len > PSMB_AGENT_BUF - J.in_len) len = PSMB_AGENT_BUF - J.in_len;   /* the transport keeps to the room given */
+    if (len > JIN_SZ - J.in_len) len = JIN_SZ - J.in_len;   /* the transport keeps to the room given */
     __builtin_memcpy(jin + J.in_len, data, len);
     J.in_len += len;
 }
@@ -913,6 +970,36 @@ void psmac_files_init(uint8_t *window)
     mb();
     ag->kmagic = PSMB_AGENT_KMAGIC;
     J.conn = -1;
+    const char *o = psmac_option("mac.filestrace");
+    trace = o && o[0] == '1';
+}
+
+/* GET /files/progress (23 November 2026): the transfer under way, asked on a second connection while the first
+   carries the file, so the client shows the bytes the Mac has written or read rather than the bytes its socket
+   took. done and total count the forks' bytes (a MacBinary header and padding are not in them); received is an
+   upload's body as it came in, sent a download's answer as it went out. Once the job has ended, the last one,
+   with active false. */
+void psmac_files_progress_json(char *o, unsigned max)
+{
+    (void)max;
+    static const char *const phase[] = { "waiting for the agent", "asking", "sending", "starting", "creating the file", "writing",
+                                         "setting its information", "replacing the old file", "replacing the old file", "cleaning up", "done" };
+    if (J.kind != J_NONE && J.kind != J_FRONT) {
+        uint32_t ms = now_ms() - J.t0;
+        int xfer = J.kind == J_PUSH || J.kind == J_PULL;
+        const char *ph = J.state >= 0 && J.state <= S_DONE ? phase[J.state] : "";
+        if (J.kind == J_PULL && J.state == S_STREAM) ph = "reading";
+        sprintf(o, "{\"active\": true, \"job\": \"%s\", \"path\": \"%s\", \"phase\": \"%s\", \"fork\": \"%s\", \"done\": %u, \"total\": %u, "
+                   "\"received\": %u, \"length\": %d, \"sent\": %u, \"ms\": %u, \"requests\": %u, \"mac_ms\": %u, \"network_ms\": %u}\n",
+                kind_name[J.kind], J.upath, ph, !xfer ? "" : J.fork == 1 ? "rsrc" : J.fork == 0 ? "data" : "", J.bytes, fork_total(),
+                J.body_got, J.kind == J_PUSH ? (int)J.clen : -1, J.sent, ms, J.reqs, (uint32_t)((J.queue_us + J.work_us) / 1000u),
+                (uint32_t)((J.net_us + us_since(J.net_t)) / 1000u));
+        return;
+    }
+    char l[1000];
+    psmac_macroman_utf8((const uint8_t *)last, slen(last), l, sizeof l, 1);
+    sprintf(o, "{\"active\": false, \"job\": \"%s\", \"path\": \"%s\", \"done\": %u, \"total\": %u, \"ms\": %u, \"ok\": %s, \"last\": \"%s\"}\n",
+            kind_name[lastp.kind], lastp.upath, lastp.done, lastp.total, lastp.ms, lastp.ok ? "true" : "false", l);
 }
 
 void psmac_files_state_json(char *o, unsigned max)
@@ -928,10 +1015,10 @@ void psmac_files_state_json(char *o, unsigned max)
     char ver[16];
     if (sv & 15) sprintf(ver, "%u.%u.%u", (sv >> 8) & 15, (sv >> 4) & 15, sv & 15); else sprintf(ver, "%u.%u", (sv >> 8) & 15, (sv >> 4) & 15);
     sprintf(o, "{\"installed\": %s, \"alive\": %s, \"version\": %u, \"system\": \"%s\", \"startup\": \"%s\", \"process_manager\": %s, \"multifinder\": %s, "
-               "\"served\": %u, \"repeats\": %u, \"wakes\": %u, \"job\": \"%s\", \"jobs\": %u, \"failed\": %u, \"last\": \"%s\"}",
+               "\"served\": %u, \"chained\": %u, \"repeats\": %u, \"wakes\": %u, \"job\": \"%s\", \"jobs\": %u, \"failed\": %u, \"last\": \"%s\"}",
             agent_installed() ? "true" : "false", agent_alive() ? "true" : "false", agent_installed() ? ag->version : 0,
             agent_installed() ? ver : "",
             agent_installed() ? st : "", agent_installed() && (f & PSMB_AGX_PROCMGR) ? "true" : "false",
             agent_installed() && (f & PSMB_AGX_MULTIFINDER) ? "true" : "false",
-            ag->served, ag->repeats, ag->wakes, kind_name[J.kind], jobs, jobs_failed, l);
+            ag->served, ag->chained, ag->repeats, ag->wakes, kind_name[J.kind], jobs, jobs_failed, l);
 }

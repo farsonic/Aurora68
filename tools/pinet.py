@@ -47,6 +47,9 @@ replies to .rx. Two modes:
                             HTTP server there: a connection to 127.0.0.1:PORT becomes a TCP connection
                             from the peer to the kernel's address on port 80 (PINET_KERNEL_TO=8068
                             for the other port; PINET_KERNEL_IP=A.B.C.D for a static address).
+                            PINET_KERNEL_BSD=PORT: a second such port whose connections send as
+                            macOS does (full segments, silly-window avoidance, a 5 s persist timer;
+                            =1 makes every connection send that way), docs/08 item 123.
                             PINET_APCLIENT=1 (docs/08 item 118): the peer is a phone that joined the
                             kernel's own access point (Setup and Recovery with mac.wifisim=): it serves
                             no DHCP, it asks the kernel's DHCP server for an address (DISCOVER every two
@@ -852,15 +855,28 @@ def ping6_due():
 # port 80, through the file bridge, beside the Mac's own traffic. The testbed loses nothing, but the
 # kernel's receive queue is small, so the window is kept to what it advertises and a second without
 # an acknowledgement sends again from the oldest byte.
+# PINET_KERNEL_BSD=1 (23 November 2026): the sender behaves as macOS's (BSD's) does, which the owner's
+# MacBook is: segments of the full 1460 bytes, a shorter one only for the end of the data with nothing
+# unacknowledged (Nagle) or when it is at least half the largest window seen (the sender's silly-window
+# avoidance, RFC 1122 4.2.3.4), and otherwise the persist timer, five seconds at the least (BSD's
+# TCPTV_PERSMIN), before the bytes the window allows go anyway. The plain sender fills every window to
+# the byte at once, which hid a five-second stall per chunk of an upload (docs/08 item 123).
+# PINET_KERNEL_BSD=PORT (a number other than 1): a second listener on 127.0.0.1:PORT whose connections send
+# that way, beside the plain ones on PINET_KERNEL, so one boot measures both.
+_kb = os.environ.get('PINET_KERNEL_BSD', '')
+KBSD_ALL = _kb == '1'
+KBSD_PORT = int(_kb) if _kb.isdigit() and int(_kb) > 1 else 0
 kernel = {'mac': None, 'ip': bytes(int(x) for x in os.environ['PINET_KERNEL_IP'].split('.')) if os.environ.get('PINET_KERNEL_IP') else bytes([192, 168, NET, 3])}
 KERNEL_PORT = int(os.environ.get('PINET_KERNEL', '0'))
 KERNEL_TO = int(os.environ.get('PINET_KERNEL_TO', '80'))
 kclients = {}
-klisten = None
-if KERNEL_PORT:
-    klisten = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    klisten.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    klisten.bind(('127.0.0.1', KERNEL_PORT)); klisten.listen(8); klisten.setblocking(False)
+klisten = []
+for _port, _bsd in ((KERNEL_PORT, KBSD_ALL), (KBSD_PORT if KERNEL_PORT else 0, True)):
+    if _port:
+        _l = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        _l.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        _l.bind(('127.0.0.1', _port)); _l.listen(8); _l.setblocking(False)
+        klisten.append((_l, _bsd))
 kport_next = 41000
 def kseg(k, flags, data=b'', seq=None):
     opts = struct.pack('>BBH', 2, 4, 1460) if flags & 0x02 else b''
@@ -908,9 +924,9 @@ def kernel_in(frame, t):
     return None
 def kernel_due():
     global kport_next
-    if klisten is not None:
+    for kl, bsd in klisten:
         try:
-            hs, _ = klisten.accept()
+            hs, _ = kl.accept()
             if kernel['mac'] is None:
                 hs.close(); print('peer: a host connection for the kernel, but it has no address yet', flush=True)
             else:
@@ -918,11 +934,11 @@ def kernel_due():
                 kport_next = 41000 + (kport_next - 41000 + 1) % 20000
                 k = {'sock': hs, 'lport': kport_next, 'state': 'syn', 'iss': 0x50490000 + kport_next * 7919, 'rcv': 0,
                      'win': 0, 'out': b'', 'sent': b'', 'fin_out': False, 'fin_sent': False, 'fin_in': False, 'got': 0,
-                     'tries': 1, 'moved': time.time(), 'opened': time.time()}
+                     'tries': 1, 'moved': time.time(), 'opened': time.time(), 'bsd': bsd}
                 k['snd'] = k['una'] = k['iss']
                 kclients[kport_next] = k
                 kseg(k, 0x02, seq=k['iss'])
-                print(f"peer -> kernel TCP {kport_next}: SYN to {'.'.join(map(str, kernel['ip']))}:{KERNEL_TO}", flush=True)
+                print(f"peer -> kernel TCP {kport_next}: SYN to {'.'.join(map(str, kernel['ip']))}:{KERNEL_TO}{' (a BSD sender)' if bsd else ''}", flush=True)
         except BlockingIOError:
             pass
     now = time.time()
@@ -944,9 +960,29 @@ def kernel_due():
                 k['fin_out'] = True
         if k['snd'] != k['una'] and now - k['moved'] > 1.0:            # go back to the oldest byte
             k['fin_sent'] = False; k['out'] = k['sent'] + k['out']; k['sent'] = b''; k['snd'] = k['una']; k['moved'] = now
-        room = max(0, k['win'] - ((k['snd'] - k['una']) & 0xffffffff))
+        inflight = (k['snd'] - k['una']) & 0xffffffff
+        room = max(0, k['win'] - inflight)
         burst = 4
-        while k['out'] and room > 0 and burst:
+        if k['bsd']:
+            k['maxwin'] = max(k.get('maxwin', 0), k['win'])
+            sent_any = False
+            while k['out'] and room > 0 and burst:
+                n = min(1460, room, len(k['out']))
+                if n < 1460 and not (n == len(k['out']) and inflight == 0) and n < k['maxwin'] // 2:
+                    break                                               # silly-window avoidance: wait
+                kseg(k, 0x18, k['out'][:n]); k['sent'] += k['out'][:n]; k['snd'] += n; k['out'] = k['out'][n:]
+                room -= n; inflight += n; burst -= 1; sent_any = True
+            if sent_any or not k['out'] or inflight:
+                k['persist'] = None
+            elif k.get('persist') is None:                              # BSD's minimum; it backs off from there
+                k['persist'] = now + 5.0
+            elif now >= k['persist']:                                   # the persist timer: what the window allows, or a byte
+                n = max(1, min(room, len(k['out'])))
+                print(f"peer: kernel TCP {port}: persist timer (5 s) with a window of {k['win']}, "
+                      f"{len(k['out'])} bytes waiting: {n} sent", flush=True)
+                kseg(k, 0x18, k['out'][:n]); k['sent'] += k['out'][:n]; k['snd'] += n; k['out'] = k['out'][n:]
+                k['persist'] = None
+        while not k['bsd'] and k['out'] and room > 0 and burst:
             n = min(1400, room, len(k['out']))
             kseg(k, 0x18, k['out'][:n]); k['sent'] += k['out'][:n]; k['snd'] += n; k['out'] = k['out'][n:]; room -= n; burst -= 1
         if k['fin_out'] and not k['out'] and not k['fin_sent']:

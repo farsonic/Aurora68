@@ -93,7 +93,9 @@ static struct {
 } D;
 
 /* ---- receive queue: the drivers' copies, worked through by the poll ---- */
-#define RXQ 16
+/* 64 frames (23 November 2026; 16 before): a 64 KiB receive window is 45 segments, which a sender may send
+   back to back, and a WiFi turn can hand over several at once */
+#define RXQ 64
 static struct { uint16_t len; uint8_t unit; uint8_t data[FRAME_MAX]; } rxq[RXQ];
 static uint32_t rxq_head, rxq_tail;
 /* ---- transmit queue: the kernel's frames, taken by the driver of its unit ---- */
@@ -605,8 +607,11 @@ static void mdns_in(const uint8_t *f, const uint8_t *ip, const uint8_t *u, uint3
 /* The receive window: what the application can take now (remote_tcp_room), at most RCV_WIN. Until 21
    November 2026 it was always 8 KiB and everything that came was handed over; an upload to the Mac's
    disk (psmac_files.c) goes only as fast as the Mac writes it, so the window now closes while the file
-   job's buffer is full and opens again (a window update) when the Mac has taken a chunk. */
-#define RCV_WIN 24576u
+   job's buffer is full and opens again (a window update) when the Mac has taken a chunk. On 23 November
+   it grew from 24 KiB to the most a window without scaling says, with the file job's buffer (64 KiB,
+   psmac_files.c): a window of exactly one chunk left the last 1216 bytes of every chunk to a BSD sender's
+   persist timer, five seconds each (docs/08 item 123). */
+#define RCV_WIN 65535u
 enum { T_FREE, T_SYN_RCVD, T_ESTAB, T_CLOSING };
 struct tcb {
     int state;

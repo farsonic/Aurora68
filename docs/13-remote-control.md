@@ -435,6 +435,7 @@ installed under System 7.1, the Process Manager, startup volume Mac HD`.
 | `GET /files/info?path=P` | one entry, with `path` |
 | `GET /files/data?path=P[&fork=rsrc][&macbinary=1]` | the data fork (or the resource fork) as it is, or with `macbinary=1` a MacBinary II file (both forks, type, creator, Finder flags, dates; the header's CRC). `Content-Length` is known from the start; `X-Aurora-Name`, `-Type`, `-Creator` (%-encoded bytes), `-Flags`, `-Data-Length`, `-Rsrc-Length`, `-Created`, `-Modified`, `-Format` |
 | `PUT /files/data?path=P[&macbinary=1][&type=TEXT&creator=ttxt][&force=1][&mkdir=1]` | the body (with `Content-Length`) as the file: MacBinary sets the forks, type, creator, Finder flags and dates, a raw body is the data fork with `type`/`creator` (`????` otherwise). A path ending in `:` is a folder and the MacBinary file's own name is used. An existing file is refused (409) unless `force=1`, which empties both its forks first; missing folders on the way are made only with `mkdir=1`. A new file that does not arrive whole is deleted again |
+| `GET /files/progress` | the transfer under way (23 November 2026), asked on a connection of its own beside the one carrying the file: `{"active": true, "job": "push", "path", "phase" ("writing", "reading", "creating the file", "replacing the old file" ...), "fork" ("data", "rsrc"), "done", "total" (the forks' bytes the Mac has written or read, of all of them: a MacBinary header and padding are not counted), "received" (an upload's body as it has come in), "length" (its Content-Length), "sent" (a download's answer as it has gone out), "ms", "requests", "mac_ms", "network_ms"}`; between jobs the last one, `{"active": false, ..., "ok", "last"}`. Never busy, even while a job holds the agent. A kernel before 23 November answers 404 |
 | `POST /files/mkdir?path=P[&parents=1]` | a folder (with `parents`, the missing ones above it too, and no error if it is there) |
 | `POST /files/delete?path=P` | a file, or a folder that is empty (409 otherwise): never more than one item |
 | `POST /files/rename?path=P&to=Q` | a new name, another folder on the same volume, or both; an existing folder as `to` moves the item into it |
@@ -454,8 +455,11 @@ disk operation) or the program in front takes no events". When the agent is not 
 Mac: put it into the System Folder (System 6) or System Folder:Extensions (System 7) and restart". An error in
 the middle of a download, after the headers have gone, can only cut the connection short: the client sees
 fewer bytes than `Content-Length`, and `/state`'s `agent.last` says why. `/state` has an `agent` member:
-`installed`, `alive`, `version`, `system`, `startup`, `process_manager`, `multifinder`, `served`, `repeats`,
-`wakes`, the job under way, counts, and the last job's outcome.
+`installed`, `alive`, `version`, `system`, `startup`, `process_manager`, `multifinder`, `served`, `chained`,
+`repeats`, `wakes`, the job under way, counts, and the last job's outcome; for a transfer, where its time went:
+`push :raw300: done, 307200 bytes in 457 ms, 656 KB/s (17 requests to the agent: 162 ms waiting for the Mac to come
+round, 292 ms of its work; 0 ms waiting for the network)`. The wait for the Mac ends at the agent's `taken_seq`
+(agent version 2; an older agent's whole time counts as its work); `mac.filestrace=1` logs every chunk.
 
 **Streaming.** Nothing waits on core 3. A download asks the agent for the next 24 KiB as soon as the last
 chunk has been copied out of the window and the answer's buffer (56 KiB) has room, so the Mac reads the next
@@ -465,6 +469,14 @@ everything was handed over), so a large file waits in the sender's socket; a win
 as the job has taken a chunk (the first test of an upload whose last part was 324 bytes stalled until the
 30 s idle timeout: the update waited for two segments' worth of room). The semihosting channel streams
 uploads the same way.
+The upload's buffer is 64 KiB and the window up to 65,535 bytes (23 November 2026; one chunk, 24 KiB, before),
+and a chunk goes to the Mac as soon as 24 KiB are in, with what is in hand written anyway after 150 ms without
+new bytes. With the window exactly one chunk wide, a Mac (BSD) sender, which sends only full 1460-byte segments
+and keeps back a remainder shorter than a segment and than half the largest window it has seen, held the last
+1216 bytes of every chunk until its persist timer fired, five seconds at the least: the owner's 222,208-byte
+push took 71 s from a MacBook (3.1 KB/s), and 45 s in the testbed once pinet could send that way
+(`PINET_KERNEL_BSD`, below); 0.4 s now (docs/08 item 123). The receive queue holds 64 frames (16 before), for
+a window's 45 segments back to back.
 
 **The command line** (`tools/aurora68.py`, standard library; `-h` lists every command with a line each):
 
@@ -491,6 +503,20 @@ once it is whole. Like the other commands, when `AURORA68_URL` has no port and p
 two seconds, the tools try 8068 (the port the kernel keeps when it shares the Mac's address on the WiFi) and
 say on stderr which answered.
 
+*Progress* (23 November 2026). `push` and `pull` (and `recovery put` and `get`) show how far a transfer has
+got on stderr: on a terminal one line redrawn in place, elsewhere (a log, a script) a plain line every five
+seconds, and nothing with `-q`/`--quiet`. The numbers are the Mac's: a push polls `/files/progress` on a second
+connection and shows the bytes written on the Mac, with the fork of a MacBinary file and what the Pi has
+received; a pull counts the bytes as they arrive, each of them read on the Mac already. For example
+```
+push Two Forks  [rsrc]  1.5 MB of 2.4 MB  61%  written on the Mac  921.9 KB/s  0:01 left  (the Pi has 1.5 MB)
+pull raw3m  1.5 MB of 2.9 MB  51%  received  172.0 KB/s  0:08 left
+```
+A kernel from before has no `/files/progress`: the line then counts the bytes sent (which run ahead of the Mac
+by what the sockets and the Pi hold) and, once they are all sent, "waiting for the Mac" with the time. Through
+`--semihost` (one request at a time) a push shows nothing until it ends. `recovery put` shows the bytes on the
+card from `/r/state` and "reading it back" while the kernel checks them.
+
 **The MCP server** (`tools/aurora68-mcp.py`) has `list_files` (a folder, or the disks), `read_file` (the data
 fork as text, Mac Roman and CR turned into UTF-8 and newlines, or base64; at most `max_bytes`), `write_file`
 (text or base64 as the data fork, TEXT/ttxt by default; `overwrite` and `make_folders` as `--force` and
@@ -503,9 +529,13 @@ deleted or opened. It changes no system setting and runs no code it is sent (a p
 when it is opened). The remote's other rules hold: off unless `remote=on`, the token on every request, the
 local network only. Without the remote on, the agent waits and does nothing.
 
-**Limits.** One job at a time. Speed is the Mac's: in the testbed (QEMU's solo board, the disk an image
-behind the emulated SCSI) about 140 KB/s either way, every chunk spending its time in the File Manager and
-the emulated SCSI; real hardware has not been measured. Document opening and `quit` need System 7; under
+**Limits.** One job at a time. Speed is the Mac's: in the testbed (QEMU's solo board) the owner's 217 KB
+MacBinary file goes in 0.3-0.4 s to a card volume (`mac.disk0=`, 550-750 KB/s; 3 MB at 0.9-1.1 MB/s) and comes
+back in 0.1-0.2 s (1-3 MB/s); to and from the startup disk behind the emulated SCSI about 100-170 KB/s, nearly
+all of it the File Manager and the emulated SCSI (docs/08 item 123 has the table); real hardware has not been
+measured since the fix: over WiFi the network's own rate will show in the log line's "waiting for the network".
+pinet's `PINET_KERNEL_BSD=PORT` opens a second port whose connections send as macOS does (full segments, the
+silly-window rule, a 5 s persist timer), so the testbed meets what the owner's MacBook does. Document opening and `quit` need System 7; under
 System 6 the agent cannot see other programs (MultiFinder's are not enumerated). A document's application is
 the first 'APPL' of its creator the catalog search finds (the Finder would ask its desktop database: on the
 testbed's disk that knew none of the applications, and after the agent had asked it the Finder fell into a

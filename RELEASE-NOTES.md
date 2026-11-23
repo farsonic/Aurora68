@@ -30,6 +30,18 @@ Since 0.13 (docs/08 items 96 and 103):
   token and the PIN "(hidden)", for a tester to send. In a recovery start `mac.buscheck=1` no longer holds the board:
   the tab runs it. Tried on the testbed's solo board and MAME's SE and Plus (the bus check forced over the bridge);
   the bus check over a real PiStorm, the JTAG read again and a real card's speed are for the first test on hardware.
+- **Pushing files from a Mac is a hundred times faster, and push and pull show their progress** (docs/08 item 123,
+  docs/13 "Files and applications", 23 November 2026). An upload from a Mac stopped for five seconds at every 24 KB:
+  the kernel offered exactly one chunk of window, and macOS's TCP holds back the last 1,216 bytes of such a window
+  until its persist timer fires (222 KB in 71 s on the SE). The kernel now takes 64 KB and hands each chunk to the
+  Mac as soon as it is in; in the testbed the same file went from 45 s to 0.4 s (to the card's disk) and 2.3 s (to
+  the emulated SCSI disk). `aurora68.py push` and `pull` (and `recovery put`/`get`) show a live line on a terminal,
+  `push raw3m  1.6 MB of 2.9 MB  56%  written on the Mac  155.0 KB/s  0:08 left`, a line every
+  five seconds in a log, nothing with `-q`; a push shows the bytes the Mac has written, from the kernel's new
+  `GET /files/progress`. The new client works with older kernels (it shows the bytes sent, then waits), older
+  clients with the new kernel, and the new kernel with the older agent. Update the kernel; the agent (version 2)
+  only adds timings to the log line.
+
 - **Setup and Recovery as an access point: setting up with only a phone** (docs/08 item 118, 23 November 2026).
   On the recovery screen, the programmer's interrupt button held for two seconds makes the Pi's WiFi a network of
   its own, "Aurora68-XXXX", with a password made at each start and shown on the SE's screen and on HDMI with the

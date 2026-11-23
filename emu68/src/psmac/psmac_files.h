@@ -27,5 +27,6 @@ void psmac_files_gone(int conn);                 /* the connection closed or was
 int  psmac_files_front(const uint8_t *name, unsigned len);
 int  psmac_files_front_result(uint8_t *prev, unsigned max);
 void psmac_files_state_json(char *out, unsigned max);   /* the "agent" member of /state (1600 bytes are enough) */
+void psmac_files_progress_json(char *out, unsigned max); /* GET /files/progress: the transfer under way, or the last (1600 bytes) */
 
 #endif

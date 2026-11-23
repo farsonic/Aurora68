@@ -5483,6 +5483,73 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      card's first look is the same one the declaration ROMs use, so it should be there); the compact Mac's screen
      showing the report on real hardware (as `mac.buscheck=1`'s page, written the same way).
 
+123. **Pushes five seconds a chunk from a Mac; progress on the command line (23 November).** The owner, on the SE over
+   WiFi: `push --force Aurora68-Play.bin "Mac Volume:Aurora68:Aurora68 Play:Aurora68 Play"` answered `222208 bytes
+   (MacBinary: APPL/PIPY, data 0, resources 222001) in 71.11 s, 3.1 KB/s`, and "we need more feedback on progress
+   when pushing or downloading files. its also super slow". The testbed had measured 140 KB/s (item 94).
+   - *Measured first.* The kernel's job line already gave the agent's share: in the testbed the same push was 14
+     requests and 0.4 s of the Mac's time on a card volume. The difference had to be the network, and the one thing
+     the testbed's sender did not do as the owner's does was TCP: pinet's bridge to the kernel filled every window to
+     the byte. pinet got a second sender that behaves as macOS's (BSD's): full 1460-byte segments only, a remainder
+     shorter than a segment and than half the largest window seen kept back (the sender's silly-window avoidance, RFC
+     1122 4.2.3.4), and the persist timer, at least five seconds (BSD's TCPTV_PERSMIN), before it goes anyway
+     (`PINET_KERNEL_BSD=PORT`: a second listener beside `PINET_KERNEL`, so one boot measures both). With it the
+     owner's file took 45.6 s to the SCSI disk and 45.2 s to the card volume (4.8 KB/s), a 300 KB file timed out
+     after 60 s, and pinet logged the persist timer nine times for the file, eight of them "with a window of 1216".
+   - *The cause.* The upload's buffer in psmac_files.c was one chunk, 24 KiB, the window it advertised at most that,
+     and a chunk went to the Mac only once whole. 24,576 bytes are 16 segments of 1460 and 1,216 bytes: the sender
+     sent the 16, held the 1,216 for five seconds, and the kernel waited for exactly those bytes. Ten chunks, nine
+     waits: 45 s, and over the owner's WiFi with its round trips and the timer's backoff, 71 s. Downloads never had
+     it (the kernel sends, and sends whatever the window allows).
+   - *Fixed* (`psmac_files.c`, `psmac_ip.c`): the upload's buffer is 64 KiB, the receive window up to 65,535 bytes
+     (the most without window scaling), and a chunk is posted to the agent as soon as 24 KiB are in, so the window
+     never closes on bytes the job is waiting for; whatever is in hand is written anyway after 150 ms without new
+     bytes (a safety net: a write needs no particular length). The receive queue holds 64 frames instead of 16, for
+     a window's 45 segments sent back to back.
+   - *Numbers* (QEMU solo board, System 7.1, the agent in Extensions; push and pull of the owner's 222,208-byte
+     MacBinary file; "card" a 20 MB HFS image as `mac.disk0=`, "SCSI" the startup disk behind the emulated SCSI;
+     seconds end to end at the client, including its `info` before a push):
+
+     | | before | after |
+     |---|---|---|
+     | push, BSD sender, card | 45.23 s (4.8 KB/s) | 0.40 s (541 KB/s) |
+     | push, BSD sender, SCSI | 45.61 s (4.8 KB/s) | 2.33 s (93 KB/s) |
+     | push 300 KB raw, BSD sender, card / SCSI | timed out at 60 s | 0.45 s / 2.47 s |
+     | push, plain sender, card / SCSI | 0.41 s / 4.50 s | 0.31 s / 1.73 s |
+     | pull, card / SCSI (either sender) | 0.10-0.18 s / 1.25-5.09 s | 0.17 s / 1.36-1.39 s |
+     | 3,000,000 bytes, BSD sender, card: push / pull | (not tried) | 2.53 s / 1.34 s (1.1-2.1 MB/s) |
+     | 2.5 MB MacBinary with both forks, BSD sender: card push / pull; SCSI push / pull | (not tried) | 2.32 s / 1.31 s; 18.2 s / 17.6 s |
+
+     The two-fork file came back identical but for the header's dates (the test file had none, the Mac set them)
+     and its CRC, and bytes 16-127 of the resource fork (item 94).
+
+     Through the semihosting channel nothing changed (it never had the window): 1.9 s to SCSI, 0.35-0.5 s to the card.
+     What is left is the Mac's: the job line now splits it, e.g. `push PiVol:raw300: done, 307200 bytes in 457 ms,
+     656 KB/s (17 requests to the agent: 162 ms waiting for the Mac to come round, 292 ms of its work; 0 ms waiting
+     for the network)`; on the SCSI disk each 24 KiB write is about 110 ms of the agent's work under QEMU, on the card
+     about 17 ms. Recovery uploads (the same TCP) were tried before and after with both senders: 1 MB in 4.3-5.9 s
+     before, 5.0 s after, never stalled (the card writer drains its ring steadily).
+   - *Where the time goes, from now on.* The agent writes the request's number into a new field, `taken_seq`, when it
+     begins one (agent version 2; `chained` counts requests served back to back in one GetNextEvent); the kernel
+     times each request from posting to that and from that to the answer, and a transfer's waits for the network
+     (an upload with less than a chunk in hand, a download whose answer buffer is full). `mac.filestrace=1` logs
+     every chunk. Unchanged layout of the block: the two fields were padding.
+   - *Progress.* `GET /files/progress` answers on its own connection while a job holds the agent: the job, its phase,
+     the fork, the forks' bytes written or read on the Mac of their total, what the Pi has received or sent, and the
+     times; between jobs the last one. aurora68.py's `push` polls it every 0.4 s and shows a line on stderr, redrawn
+     on a terminal (`push raw3m  1.6 MB of 2.9 MB  56%  written on the Mac  155.0 KB/s  0:08 left  (the Pi has 1.7
+     MB)`), a line every five seconds elsewhere, nothing with `-q`; `pull` counts the bytes as they come (each read on
+     the Mac already; the fork from the MacBinary header's lengths); `recovery put` polls `/r/state`'s written bytes
+     and `get` streams. The remote's web page has no file transfers; Setup and Recovery's page had its progress bar.
+   - *Compatibility, tried:* the new client with the old kernel (404 from `/files/progress`: the bytes sent, then
+     "waiting for the Mac" with the time; the old kernel's stall still there with the BSD sender, as expected); the new
+     kernel with the old agent (version 1: everything works, the wait for the Mac counted as its work); the old client
+     with the new kernel (the bench above ran both). The mouse moved during a 3 MB push to the SCSI disk (two `move`s
+     answered in 70 ms, the pointer where it was sent in both screenshots, Aurora68 Log scrolling meanwhile).
+   - *Not verified:* the owner's SE and WiFi. The testbed's BSD sender reproduces the five-second stall, which explains
+     45 of the 71 seconds by itself; the WiFi's round trips and losses will now show as "waiting for the network" in
+     the job line, and `mac.filestrace=1` would show them chunk by chunk.
+
 125. **Music videos: a buffer in the Pi behind the video card's ring, buffering by time, rebuffering (23 November).** The
      owner, after the first music videos on the real SE over WiFi (the classic Play 1.7 streaming the music server's
      `/vmpeg` through the card, the picture on HDMI): "might need a bit more buffering also". The videos stuttered and
