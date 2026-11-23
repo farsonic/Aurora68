@@ -244,6 +244,23 @@ One line, options separated by spaces, no comments:
 | `recovery.apchannel=6` | the access point's channel, 1 to 13 (6 is allowed in every country) |
 | `mac.switchsim=1`, `mac.recoverypin=NNNN` | testbed only: the programmer's interrupt switch held at power-on (MAME's SE has none to press), and a fixed recovery PIN for scripts (never use it on a real card). `mac.switchsim=ap`: held for a second, let go, held again 12 to 14.5 s later, the access point's gesture on any board |
 | `mac.resetsim=S`, `mac.wifisimap=refuse:NAME`, `mac.wifisimap=noidauth`, `mac.recoveryscreen=1` | testbed only (docs/08 item 118): the programmer's reset button pressed S seconds into a recovery start; the simulated radio (`mac.wifisim=`) refusing one step of the access point's firmware sequence (as the log names it: `WLC_SET_AP`, `chanspec`, `WLC_SET_WSEC_PMK` ...) or lacking the WPA2 authenticator; `GET /r/screen.pbm` (with the PIN) photographs the compact Mac's recovery screen on any board |
+| `mac.logsave=30` | seconds between saves of the kernel's log into `aurora68.log` in the card's root (overwritten in place, never growing): 30 by default on the compact Macs (`mac.board=se`, `plus`, `512ke`, `512k`, `128k`), 0 (never) on the others, which save it after a crash record or from Aurora68 Log. A Setup and Recovery start never writes it (the page shows the last start's) |
+| `mac.seram=4` | on the compact Macs, the logic board's own memory in MB, where its screen and sound buffers are (at its top): `1`, `2`, `2.5` or `4`. Default: what the board has (the 128K's 128 KB, the 512K's and 512Ke's 512 KB), else 4 |
+| `mac.screencheck=on` | the compact Mac's screen as the kernel writes it: `on` read back and repaired, `blind` written again every few seconds without reading (the default on the Plus-era boards, whose reads were in doubt, docs/08 item 96), `off` written once |
+| `mac.plusmouse=N`, `mac.plusdebounce=0`, `mac.plusjitter=0`, `mac.pluskbd=off` | the Plus's (and 128K's, 512K's, 512Ke's) own mouse and keyboard, which the kernel reads itself: the mouse's lines read N times a second (0 turns it off), taken without debouncing, read at a fixed rate; `mac.pluskbd=off` leaves the keyboard unread (USB and Bluetooth keyboards only). docs/08 item 96 |
+| `mac.sestream=on` | on the compact Macs, Aurora68 Play's music on the Mac's own speaker too (off by default: in MAME's SE a beep during music hung the Mac while the stream fed the speaker, docs/09) |
+| `mac.sescsiwait=250` | on `mac.board=se`, the SCSI Manager's selection timeout in milliseconds, 1 to 1000 (default 250) |
+| `mac.altcmd=1` | a USB or Bluetooth PC keyboard's Alt and Windows keys swapped, so that the key beside the space bar is Command |
+| `usb=off`, `usb=pio` | the Pi's USB: `off` leaves it alone (no USB keyboard, mouse, stick or Ethernet adapter); `pio` moves data without DMA, for a device that misbehaves |
+| `wifi.sdclock=HZ` | the WiFi chip's SDIO clock, for a chip that misbehaves at the default |
+| `remote.mac=XX:XX:XX:XX:XX:XX` | the remote control's own Ethernet address on the wired port (default: made from the Pi's) |
+| `mac.cardrom=off` | the declaration ROMs in the card's root are not offered, only the container's |
+| `mac.scsitrace=N`, `mac.setrace=N[,DEV]`, `mac.plustrace=N`, `mac.pluskeylog=N`, `mac.bustrace=N`, `mac.buswait=1` | debugging, in the log: the first N accesses to the SCSI chip; the first N accesses to the compact Mac's chips (`,VIA` or `,SCC` for one of them); the first N ADB commands of the Plus's keyboard and mouse layer; the first N bytes from the Plus's own keyboard; the first N bus cycles to the logic board (400 in the testbed by default); how long the 68k waited for the bus, at each heartbeat. Setup and Recovery's Diagnostics tab arms them for one start |
+| `mac.peek=ADDR[,LEN]`, `mac.pcwatch=ADDR`, `mac.pctrail=S`, `mac.dbg=LO,HI`, `mac.dbfslow=N` | debugging: Mac memory at hex ADDR (LEN bytes, 64 by default, 512 at most) dumped at each heartbeat; the 68k's recent PCs logged when its PC first reaches ADDR's page, or S seconds after the start; the JIT's translation of the blocks between two hex addresses; device reads per turn of a self-timing DBF loop (1 by default, 0 to 8) |
+| `mac.plusdcd=keep`, `mac.pram8a=keep` | debugging: the SCC's DCD interrupts as the Mac sets them (by default off on the Plus-era boards: the mouse is on DCD); parameter RAM byte $8A as the Mac writes it (by default the kernel keeps 32-bit addressing on above 8 MB) |
+| `mac.inputtest=S`, `mac.inputabout=S`, `mac.inputclick=S,X,Y...`, `mac.inputdrag=S`, `mac.inputright=S`, `mac.inputwifi=S` | testbed only: scripted mouse and keyboard S seconds after the start (QEMU has no real input), docs/09 |
+| `mac.declrom=PATH`, `mac.disk0=PATH`, `mac.disk1=PATH`, `mac.net=BASE`, `mac.wifinet=BASE`, `mac.remotefile=BASE` | testbed only: the declaration ROM and the PiDisk images as host files through semihosting; the wired port's and the simulated WiFi's frames as host files for `tools/pinet.py`; the remote control's requests through semihosting without the network |
+| `mac.cardfail=early`, `mac.cardfail=all`, `mac.cardfail=N`, `mac.cardtest=1`, `mac.rtcsim=dead`, `mac.btsim=1`, `mac.mboxstress=S`, `mac.netdown=S1[,S2]`, `mac.vcslow=US` | testbed only: a card that does not answer (at the first look, or always) or whose block N fails once; a test write of `pairings.txt`; the SE's clock chip as one that never answers; a simulated Bluetooth keyboard; the firmware's mailbox asked every millisecond for S seconds (docs/08 item 79); the bridge's cable pulled at S1 s and put back at S2; the VideoCore's answers delayed |
 | `remote=on remote.token=TOKEN` | the remote control (docs/13): the Mac's screen, mouse, keyboard, the kernel's log and a restart over HTTP from the local network, for a browser (`http://aurora68-pi.local/`) or an agent (`tools/aurora68-mcp.py`, an MCP server for Claude Code and Claude Desktop; `tools/aurora68.py`, a command line). On the wired port the kernel gets an address of its own by DHCP (its own MAC address); on the WiFi it takes port 8068 on the Mac's address (`http://MAC-ADDRESS:8068/`). Off by default; the token (8 characters or more) is required. `remote.name=`, `remote.ip=A.B.C.D/24,ROUTER`, `remote.link=wired\|wifi`, `remote.wifi=own`, `remote.any=1`: docs/13 |
 
 ### Booting fast
@@ -337,13 +354,52 @@ each step.
 
 The page (`http://ADDRESS/`, a phone will do) asks for the PIN shown on the screen once, then lists the card's
 files with Get, Rename and Delete, uploads any file of any size (each read back from the card and compared), changes
-the WiFi settings (a scan, a test join, then save), the common options as a form, cmdline.txt and config.txt as
-text (a `.bak` kept of each), shows the last start's `aurora68.log`, and restarts normally or into recovery.
+the WiFi settings (a scan, a test join, then save), every option of the table above as a form (grouped, and only
+the ones the chosen board uses: below), cmdline.txt and config.txt as text (a `.bak` kept of each), shows the last
+start's `aurora68.log`, runs the diagnostics (below), and restarts normally or into recovery.
 **A new kernel8.img is checked before it is used** (its gzip data and checksum, the ARM64 header, that it is an
 Aurora68 kernel); the one it replaces stays on the card as `kernel8.old`, and "Roll back" puts it back. The same
 from a terminal: `aurora68.py recovery --url http://aurora68.local --pin 1234 ls | put kernel8.img | get NAME |
 rm NAME | mv A B | cmdline [TEXT] | opt mac.fpu=none -bt.pair | wifi scan | wifi test --ssid S --psk P --country GB |
 log | rollback | reboot [normal|recovery]`.
+
+**Options and Diagnostics** (since 23 November 2026, docs/08 item 122). The **Options** tab lists every option of the
+table above that a user or a tester may set, with a line of plain English and its values (a menu where it takes
+words, a field with an example where it takes a number or a name), in groups: Machine, Display, Sound, Storage,
+Network, Video card, Debug. Choose the board first (`mac.board`): options another board uses are hidden (their
+values are kept), so the SE shows its SCSI and speaker options and the bus check, the Plus, 128K, 512K and 512Ke
+their mouse and keyboard options and the bus check, the solo board neither. The testbed's own options ("testbed
+only" above) are not offered. The kernel checks every value against the same table, and a line the page saves
+names what is wrong ("mac.fpu: fast is not one of exact|on|double|none"). The **Diagnostics** tab:
+- **Run now**, while no Mac runs: the **bus check** of `mac.buscheck=1` (on the SE, Plus, 512Ke, 512K and 128K
+  over the PiStorm; the page shows each test as it starts and then the report with its verdict, and the same page
+  of numbers is on the Mac's own screen and on HDMI until "Give the screens back" or any key; `buscheck.txt` is
+  written to the card; on the solo board it says why it does not run); the **card read test** (the largest file on
+  the card read as the disk images are, 16 MB at most: the speed, the slowest read, read errors and a verdict, in
+  `cardcheck.txt`); the **CPLD's usercode** read again (which PiStorm firmware it carries). The HDMI monitor's
+  description is on the Display tab.
+- **Run on the next start**: tick debug options (full logging to the card with `mac.logsave`, `mac.synclog`, the
+  sound test `mac.audiotest`, the screen read-back `mac.screencheck=on`, the bus check before the Mac starts
+  `mac.buscheck=1`, the SCSI, chip, ADB and bus traces, the video decoder's log `mac.vframelog`, memory dumps ...,
+  only those the board uses) and **Arm**, or **Arm and restart normally**. They go into `debug-once.txt` in the
+  card's root; the next start adds them to cmdline.txt's options before anything reads them and at once renames the
+  file `debug-once.old`, so they are used **once**, whatever that start does: the start after it is as cmdline.txt
+  says, and the boot counter counts a start that hangs as always. The Overview says when one is armed, with Cancel.
+  A start that is itself a recovery start leaves it armed for the next normal one.
+- **Reports**: every report on the card (`buscheck.txt`, `cardcheck.txt`, `aurora68.log`, `debug-once.old`, other
+  `.log` files) with its size and its verdict line, View and Get. The Pi has no clock, so the kernel's own files
+  carry no time.
+- **Report bundle**: one text file, `aurora68-report.txt`, with the machine's summary (board, kernel build, CPLD
+  usercode, memory, the card, why this is a recovery start, the options in effect and cmdline.txt, options set that
+  the board does not use), this start's diagnostics, every report and both logs: the one to send with an issue.
+  **WiFi passwords, the remote's token, Bluetooth keys, the access point's password and the PIN are replaced by
+  "(hidden)"** wherever they appear.
+
+The API for scripts: `GET /r/diag[?from=N]` (the bus check's lines from N as they come), `POST /r/diag/run?test=buscheck|card|jtag`,
+`POST /r/diag/screen`, `POST /r/diag/once` (a line of options; `?cancel=1` takes it away), `GET /r/reports`,
+`GET /r/bundle`; `GET /r/options` carries the table itself (`defs`, `groups`).
+
+![The Diagnostics tab after a bus check over the testbed's bridge (MAME's SE)](docs/img/recovery-diag-page.png)
 
 **The Display tab** (since 22 November 2026, docs/08 item 111) chooses the HDMI monitor's resolution as Aurora68
 Display does on the Mac, for a monitor that shows nothing or a Mac that does not start. It shows what the monitor

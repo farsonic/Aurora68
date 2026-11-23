@@ -4,6 +4,20 @@
 
 Since 0.13 (docs/08 items 96 and 103):
 
+- **Setup and Recovery: every option, and a Diagnostics tab with a report bundle** (docs/08 item 122, 23 November
+  2026). The Options tab now offers every option of README's table a user or a tester may set (about seventy for a
+  compact Mac), each with a line of plain English and its values, grouped (Machine, Display, Sound, Storage,
+  Network, Video card, Debug) and shown only where the chosen board uses it; the kernel checks each value against
+  the same table. The new **Diagnostics** tab runs the **bus check** without editing cmdline.txt (SE, Plus, 512Ke,
+  512K, 128K: the report grows on the page as the tests run, and shows on the Mac's own screen and HDMI as with
+  `mac.buscheck=1`), a **card read test** (speed and read errors) and a fresh read of the **CPLD's usercode**;
+  **arms a one-shot debug start** (debug options such as full logging to the card, the sound test, traces, the bus
+  check before the Mac starts, used by the next start only: `debug-once.txt`, renamed `debug-once.old` as that start
+  begins, shown on the Overview with Cancel); lists the **reports** on the card with their verdicts; and downloads
+  one **report bundle** (`aurora68-report.txt`: the machine's summary, the reports, both logs) with every password,
+  token and the PIN "(hidden)", for a tester to send. In a recovery start `mac.buscheck=1` no longer holds the board:
+  the tab runs it. Tried on the testbed's solo board and MAME's SE and Plus (the bus check forced over the bridge);
+  the bus check over a real PiStorm, the JTAG read again and a real card's speed are for the first test on hardware.
 - **Setup and Recovery as an access point: setting up with only a phone** (docs/08 item 118, 23 November 2026).
   On the recovery screen, the programmer's interrupt button held for two seconds makes the Pi's WiFi a network of
   its own, "Aurora68-XXXX", with a password made at each start and shown on the SE's screen and on HDMI with the

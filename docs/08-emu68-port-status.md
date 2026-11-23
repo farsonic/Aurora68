@@ -5339,3 +5339,146 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      song of that title, else the library's name; "_ - " is taken off the title.
    - *Test:* `downloads_check` with `Albums/_/A Tagged Clip.mp4` (artist tag) and `Albums/_/Bloodsport (Live) [...].mp4`
      (The Warning's, by the song): 219 checks, 0 failed.
+
+122. **Setup and Recovery: every option, a Diagnostics tab, one-shot debug starts and a report bundle (23 November).**
+   The owner: "do we have all the debug options in there for Mac, Mac Plus etc. Can we trigger a debug run directly in
+   there for this and other platforms? With a report in the Web GUI?" The Options tab knew sixteen options: a list in
+   the page's script, a second list of allowed values in psmac_recovery.c, and a third (the page's OB map) of the boards
+   that use seven of them. The kernel reads more than a hundred (`psmac_option`, `find_token` and `psmac_bootarg_val`
+   across src/psmac and src/alice), and the bus check of item 108 could only be had by editing cmdline.txt.
+   - *One table* (`psmac_diag.c` and `.h`, new, portable C99): every option a user or a tester sets, 86 of them, each
+     with its group (Machine, Display, Sound, Storage, Network, Video card, Debug), the boards that use it (se, plus,
+     512ke, 512k, 128k, solo, and the testbed's IIci when no mac.board is given), its values and a line of plain
+     English. Values are alternatives of words or small patterns (`#` digits, `%` hex digits, `*` any text, the rest
+     literal: `#x#` a screen size, `%,#|%` mac.peek's address and length, `#|#,*` mac.setrace's count and chip), so the
+     validator (`pdg_value_ok`) accepts exactly what the page shows, and its refusal names them ("mac.fpu: fast is not
+     one of exact|on|double|none"). The page no longer carries a list: `GET /r/options` sends the table (`defs`,
+     `groups`) with the line's values and the options set that the board does not use, and the page draws the groups
+     from it, a menu where an option takes words, a field with an example where it takes a number or a name, a write-only
+     field for the secrets; choosing the board hides the options it does not use, as the OB map did, now for all of
+     them. Per board on the Options tab (the WiFi tab's three left out): the SE 71 (Machine 11, Display 8, Sound 6,
+     Storage 10, Network 18, Video card 2, Debug 16), the Plus 76 (15, 8, 6, 8, 18, 2, 19), the 512Ke, 512K and 128K 73
+     each (14, 8, 6, 7, 18, 2, 18), the solo board 59 (11, 5, 4, 8, 18, 2, 11), the IIci 58. The SE has its SCSI options
+     and the speaker's, the Plus family its mouse, keyboard and ADB options, all five the bus check, the JTAG switch and
+     the screen check; the solo board has its own traces and neither. The testbed's options (mac.remotefile, mac.wifisim,
+     mac.switchsim, mac.hdmisim, mac.resetsim, mac.recoverypin, mac.recoveryscreen, mac.edidtest, mac.cardearly,
+     mac.busfault and the rest: README's table marks each "testbed only", and the rows the table lacked were added) are
+     not offered; an edit that names one is written as it is, like any word the page does not know.
+   - *Run now* (the Diagnostics tab, between Options and Display; its swatch the bus check's black-and-white page).
+     The **bus check** (item 108) runs on the service core, which owns the transport: core 3 asks
+     (`psmac_buscheck_request`), the service core's loop runs `psmac_buscheck_run` at its next turn, and each test's
+     name (a new `stage` callback in `struct bc_bus`, called by `bc_run` before each of its seven tests) and then each
+     line of the report go into a list core 3 reads with acquire, so `GET /r/diag?from=N` gives the page the lines after
+     N as they come. The check draws its page on the compact Mac's screen as before; recovery stops drawing there from
+     the check's start, then marks the same page (`psmac_buscheck_render`, the check's drawing into a caller's buffer)
+     through `psmac_se_mark`, so the row sender and the check agree, and puts the lines on HDMI with
+     `psmac_console_page` and a last line with the PIN. The report holds both screens, drawn again every ten seconds,
+     until "Give the screens back to Setup and Recovery" (`POST /r/diag/screen`) or any key. Recovery writes
+     `buscheck.txt` itself (`psmac_card_rec_put`, the whole text): in a recovery start the card writer's queue of small
+     files is never served, and `psmac_card_put_file` would have left `psmac_card_idle` false, holding every restart for
+     ten seconds. Where it does not run, the check's own refusal is the answer (422) and the row says it: the solo board
+     "has no Macintosh logic board behind the Pi", the bridge "is the testbed's bridge, not a PiStorm", with a "Run over
+     the bridge (testbed)" button (`force=1`) that only the bridge ever shows. In a recovery start `mac.buscheck=1` no
+     longer holds the board at the start (`psmac_buscheck_boot` says the tab runs it), and `psmac_buscheck_will_hold`
+     is false in recovery. The RAM size probe is the check's own address test ("the board has 512 KB, not the 4096 KB
+     assumed"). The **card read test** runs here on core 3, a 32 KB read per turn of the largest file on the card (16 MB
+     at most), timing only the reads: speed, the first and the slowest read, read errors and a verdict (GOOD from 4 MB/s,
+     SLOW from 1 MB/s with the time a 20 MB disk image takes to load, VERY SLOW below, FAIL on a read error), written to
+     `cardcheck.txt`. The **CPLD's usercode** is shown as read at the start (item 108's JTAG read) and read again on the
+     service core (`psmac_gpio_jtag`, the same routine, between its turns), only over the PiStorm's GPIO and not with
+     `mac.jtag=off`. The EDID stays on the Display tab, linked from the list.
+   - *Run on the next start: a one-shot debug start.* The tab ticks debug options (those marked `PDG_F_ONCE`, for the
+     board: mac.logsave, mac.synclog, mac.audiotest, mac.screencheck, mac.console, mac.buscheck, mac.vframelog, the
+     SCSI, chip, ADB, keyboard and bus traces, mac.buswait, mac.peek, mac.pcwatch, mac.pctrail, mac.watchtraps; ten on
+     the solo board, fifteen on the SE, seventeen on the Plus) and writes them as one line to `debug-once.txt` in the
+     card's root (`POST /r/diag/once`, checked by `pdg_once_check`: key=value words of those options only). At the next
+     start `psmac_recovery_once_early`, the first thing `psmac_setup_memory` does, before `psmac_read_options` and any
+     other reader of the boot arguments, mounts the card (`psmac_card_early`, the container's or `mac.cardearly`'s rule),
+     reads the file, renames it `debug-once.old` at once (`psmac_card_once_take`, core 0, the recovery's own rename under
+     the card's lock) and merges its words into the device tree's `bootargs` (`pdg_once_merge`: a key already there is
+     replaced in place, a new one goes at the end, so every `psmac_option` and `find_token` sees it; words that do not
+     check are left out and named). So it happens once whatever that start does: a start that hangs is followed by a
+     normal one, which the boot counter counts as before. A start that is going to be a recovery start (mac.recovery=1,
+     recovery.ap, recovery.txt, the counter at its limit) leaves the file armed; one that becomes recovery only at the
+     programmer's switch (phase 2, after the arguments were read) has it renamed back by `card_first_look`. A card that
+     cannot be written (`mac.card=ro`) does not use it, since it could not be taken away. The Overview shows an armed one
+     with its words, **Restart normally to run it** and **Cancel it** (`?cancel=1` deletes the file); the recovery screen
+     says so in a line; the tab also shows what this start used and the last one (`debug-once.old`).
+   - *Reports.* `GET /r/reports` lists `buscheck.txt`, `cardcheck.txt`, `aurora68.log`, `debug-once.old` and any other
+     `.log` in the root with its size and a verdict line taken from it: the bus check's SUMMARY bar's word and the
+     summary's first sentence, the card test's Verdict line, a log's first line and its count of `[CRASH]` lines. View
+     shows it in the page, Get downloads it. The Pi has no clock and the kernel writes a fixed date, so the time is shown
+     only for files a computer wrote (`rec_ent` gained the entry's write date and time); "this start" marks a report
+     the tab wrote now. The list is made in two steps, the root's walk first and the reads after it: the first version
+     read each report from inside the walk's callback, which holds the card's lock, and core 3 hung on its own lock
+     (the testbed's first run: the service loop's watch said "no turn for 42 s: it is in recovery").
+   - *The report bundle* (`GET /r/bundle`, `aurora68-report.txt`): the machine (board and model, the kernel's git hash
+     and build time, the CPLD's usercode or why there is none, the bus, the Mac's memory and the logic board's own, the
+     card, why this is a recovery start and the boot counter, the network, the one-shot debug start armed and last used,
+     the boot arguments in effect, cmdline.txt, and the options set there that the board does not use), this start's bus
+     check and card test, `buscheck.txt`, `cardcheck.txt`, the last start's `aurora68.log` and this start's log, made in a
+     256 KB buffer and then scrubbed (`pdg_scrub`) into a second: the value of every key whose last dotted part is psk,
+     pass, password, passphrase, key, secret, token or pin (`mac.recoverypin`), the password part of `mac.wifisim` and
+     the key part of `bt.dev`, become "(hidden)", and so does every literal occurrence of the secrets this start knows
+     (the WiFi password and the remote's token from the boot arguments and cmdline.txt, the simulated radio's password,
+     the access point's password), wherever a log repeats one. The PIN, four digits, is hidden where a key names it and
+     nowhere else, since four digits occur in any log.
+   - *Host test* (`tools/diag_test.c` and `diag_test.sh`, in `make -C mac check`: 4,344 checks): every option's every
+     word accepted in either case and its example accepted, nonsense refused, a group, boards and text, no key twice,
+     thirty-two testbed options absent; the patterns (sizes, hex, mac.setrace, remote.ip, remote.mac, a name with a
+     space but no quote, the channel 1 to 13); the boards each option must and must not show on; the one-shot words
+     (allowed; a non-debug option, a bare word, a bad value, two lines, nothing, a secret refused); the merge (replaced
+     in place with the spacing kept, new ones at the end, a bad word skipped and named, the last of a key winning, too
+     small an output refused, into empty arguments); the scrub (each kind of secret in its place, literal copies,
+     quoted values, the PIN only after its key, the rest untouched, the buffer's end). `mkpage.py --check` now fails
+     the check when psmac_recovery_page.h is not what page.html makes.
+   - *Tested in the testbed.* QEMU's solo board (a 128 MB FAT32 card image with 1 KB clusters, `CARD=` and
+     `mac.cardearly=1`, pinet on the wired port, `mac.recovery=1`, `mac.recoverypin=` for the scripts; the card's
+     cmdline.txt and the kernel's own arguments carrying a made-up `wifi.psk=PASSWORD` and `remote.token=YOURTOKEN`, and
+     an `aurora68.log` on the card with two `[CRASH]` lines and the password written into a line of its own): the page
+     over HTTP byte for byte page.html; `GET /r/options` with 86 definitions in seven groups; `mac.fpu=fast`,
+     `mac.board=amiga`, `mac.screen=1024`, `mac.buscheck=2`, `recovery.apchannel=14`, `mac.peek=zz` refused (422, each
+     naming its values) and `mac.fpu=none`, `mac.screen=1024x768`, `mac.buscheck=force,loop`, `mac.peek=910,32`,
+     `mac.setrace=200,VIA`, `mac.seram=2.5` and a remote.ip taken; for each of se, plus, 512ke, 512k, 128k and solo a
+     dry run with `mac.plustrace`, `mac.sescsi` and `mac.solotrace` in the line gave the board back and named the ones
+     it does not use (the SE: plustrace and solotrace; the Plus family: sescsi and solotrace; solo: sescsi and plustrace);
+     a save with `mac.screencheck=on mac.logsave=10` kept every other word (`wifi.psk` and `remote.token` shown as `***`).
+     The Diagnostics tab on the solo board: the bus check refused (422) with "the solo board has no Macintosh logic board
+     behind the Pi: there is no bus to check", the JTAG read with "there is no CPLD to read"; the card test read
+     kernel8.img's 1,550 KB at 314 to 421 KB/s in three runs (VERY SLOW, as QEMU's emulated controller and a file on the
+     host make it; the note says so) and wrote `cardcheck.txt`; one-shot words refused (`mac.fpu=none`, `mac.logsave=soon`,
+     a bare `mac.synclog`, `wifi.psk=x`) and `mac.logsave=5 mac.synclog=1 mac.solotrace=20 mac.audiotest=2` armed, the
+     state saying so and the recovery screen with its line; the reports with their verdicts ("saved after a crash record;
+     2 [CRASH] lines", the card test's); the bundle (18 KB, `Content-Disposition: attachment`) with no `PASSWORD`, no
+     `YOURTOKEN` and the PIN's key hidden: the boot arguments' and cmdline.txt's secrets and the log's literal copy all
+     "(hidden)". "Restart normally" then restarted the Pi by the watchdog into recovery again (QEMU keeps its
+     `mac.recovery=1`), and that start said "debug-once.txt is on the card: kept for the next normal start". The next run
+     without `mac.recovery` (the same card): "a one-shot debug start (debug-once.txt, now debug-once.old): 4 options
+     added to the boot arguments", then "the log goes into aurora68.log every 5 s (mac.logsave=5)" from the card writer,
+     which read the merged arguments. The run after it, a recovery start again: no `[DEBUG]` line, nothing armed, the last
+     one listed from debug-once.old, the boot arguments in the bundle without `mac.logsave=5`, and among the reports the
+     58 KB `aurora68.log` the one-shot start had saved ("saved on its own (mac.logsave); no crash record"), whole in the
+     71 KB bundle with no secret. `fsck.fat -n` found the card clean afterwards. MAME's SE (`macse_ps`, `mac.board=se`,
+     the same card, `mac.recovery=1`): the bus check refused without force ("this is the testbed's bridge, not a PiStorm")
+     and the JTAG read too; with `force=1` the page's polls showed "Test 1 of 7" to "Test 7 of 7" over 19 s and then the
+     49 lines of the report, CLEAN ("All clean: 54272 reads of RAM, the VIA and the SCC, no errors. The bus is good"),
+     265,095 bus cycles over the bridge; the SE's own screen (MAME's snapshot) showed the bus check's page while the
+     report held it, `buscheck.txt` (4,095 bytes) was written and listed with its verdict, the bundle had it and no
+     secret, and "Give the screens back" brought the recovery screen with the line "Bus check: CLEAN All clean ...".
+     MAME's Plus (`macplus_ps`, `mac.board=plus`, no SCSI disk): the same, "Macintosh Plus RAM 4096 KB", 201,304 bus
+     cycles in 12.4 s, CLEAN, `buscheck.txt` written and in the bundle; the first test's line now fits the 64 columns (on
+     the SE run it was cut, "... (and how much": the stage's words were shortened).
+     The page's script under Node against a stub with the answers recorded in these runs: the Overview's armed card, the
+     Options tab's groups, the board filter for every board (the counts above, the bus check on the five compact boards
+     only, the Plus family's traces, the SE's SCSI, the solo board's trace), the Diagnostics list, the report area, the
+     one-shot list for the board, the reports, and "Arm and restart normally" posting the words and then the restart.
+     Headless Chrome did start this time (with D-Bus errors it survives), against a small stub server with the SE run's
+     answers: `docs/img/recovery-options-page.png` and `docs/img/recovery-diag-page.png` (the address changed to the
+     documents' 192.168.1.20); `docs/img/recovery-diag-buscheck-se.png` is the SE's screen with the report (MAME).
+   - *Not verified until a real compact Mac:* the bus check over a real PiStorm's GPIO from the tab (the same
+     `psmac_buscheck_run` as `mac.buscheck=1`, now on the service core between its turns of the recovery start, which on
+     the SE also polls the interrupt button: the poll is paused for the check's seconds); the JTAG read again on a real
+     CPLD (the same routine as at the start, but with the protocol long up); a real card's read speed (the thresholds
+     are a guess at what makes a disk image load slowly); the one-shot merge on a Pi that boots from a container (the
+     card's first look is the same one the declaration ROMs use, so it should be there); the compact Mac's screen
+     showing the report on real hardware (as `mac.buscheck=1`'s page, written the same way).
