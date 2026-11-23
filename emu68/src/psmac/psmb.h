@@ -173,6 +173,14 @@ static inline uint32_t psmb_rowbytes(uint32_t w, uint32_t depth) { return ((w * 
 #define PSMB_VID_WIN24_PHYS  0xFCC00000u
 #define PSMB_VID_ROM_PHYS    0xFCFFC000u
 #define PSMB_VID_ROM_SIZE    0x4000u
+/* slot $D, the PC card (psmac_pc.c, docs/19-pc-card.md; only in a kernel built with -DPSMAC_PC=ON): its 1 MiB
+   window at the start of the slot's space and again where a 24-bit Mac reaches the slot ($D00000), its
+   declaration ROM at the slot's top, as slot $C's */
+#define PSMB_PC_SLOT         0xDu
+#define PSMB_PC_WIN_PHYS     0xFD000000u
+#define PSMB_PC_WIN24_PHYS   0xFDD00000u
+#define PSMB_PC_ROM_PHYS     0xFDFFC000u
+#define PSMB_PC_ROM_SIZE     0x4000u
 
 #define PSMB_OFF_SOUND       0x11000         /* struct psmb_sound */
 #define PSMB_OFF_SNDRING     0x12000         /* the ring: PSMB_SND_FRAMES frames of 4 bytes */

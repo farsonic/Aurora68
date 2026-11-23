@@ -4,6 +4,17 @@
 
 Since 0.13 (docs/08 items 96 and 103):
 
+- **The Aurora68 PC Card: a PC in a window on the Mac's desktop** (docs/19-pc-card.md, docs/08 item 132, 23 November
+  2026; not in the release kernel yet). A NuBus card in slot $D that exists only in the Pi: a PC (Aurora86: Bochs, a
+  Pentium II, with Libreboot's firmware) runs on a Pi core, and the new program **Aurora68 PC** shows it in an ordinary
+  window that moves, resizes and overlaps like any other; the card draws the PC's screen into the Mac's own screen
+  where the window shows, black on white on the SE (80 x 25 text in a 6 x 12 font, 480 x 300, so it fits the SE's
+  screen with the menu bar), in the PC's colours on HDMI. A click in the window or Control-Option-Command-P gives the PC
+  the keyboard and mouse; the PC menu powers it on and off, resets it and sends Control-Alt-Delete. It needs a kernel
+  built with `-DPSMAC_PC=ON` (Aurora86's library linked in), `pc=on`, and Aurora86's firmware files on the card
+  (`aurora86.rom`, `aurora86-vga.bin`; `pc.disk0=` a disk image). The normal kernel is unchanged. Tested with the card's
+  own code on the host (Libreboot's banner, FreeDOS 1.4 to its prompt and `ver` typed through the card) and in the
+  testbed's QEMU; the owner's Pi is the real test.
 - **Aurora68 Status 2.0: the Pi's temperature, clock and speed as gauges on the Mac** (docs/08 item 129, docs/09
   "Aurora68 Status 2.0", 23 November 2026). A Pi that overheats during a long video has its clock capped by the
   firmware, and the 68k slows to a fraction of its speed; until now only the kernel's log said so. Aurora68 Status

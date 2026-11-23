@@ -49,6 +49,7 @@ EXT_FOLDER = 'Extensions (to install)'
 APPS = [
     ('Aurora68-Play.bin', 'Aurora68 Play', 'Aurora68 Play'),
     ('Aurora68-Video.bin', 'Aurora68 Video', 'Aurora68 Video'),
+    ('Aurora68-PC.bin', 'Aurora68 PC', 'Aurora68 PC'),
     ('Aurora68-Display.bin', 'Display', 'Aurora68 Display'),
     ('Aurora68-Screens.bin', 'Display', 'Aurora68 Screens'),
     ('Aurora68-Colour.bin', 'Display', 'Aurora68 Colour'),

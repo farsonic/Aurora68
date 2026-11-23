@@ -643,6 +643,9 @@ void __attribute__((noreturn)) psmac_usb_core1(void)  /* core 1, after psmac_usb
             if (psmac_usbdisk_core1())          /* a USB stick's work for the Mac (psmac_usbdisk.c) */
                 continue;
             int a = psmac_audio_poll();
+#ifdef PSMAC_PC
+            { extern int psmac_pc_poll(int core); if (psmac_pc_poll(1)) a = 1; }   /* the PC card's slice, where it runs on this core (psmac_pc.c) */
+#endif
             if (!psmac_video_poll() && !a) {    /* the video card's decoder (psmac_video.c) between the sound's turns */
                 uint64_t w0 = now();
                 __asm__ volatile("wfe");

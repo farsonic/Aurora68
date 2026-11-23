@@ -573,6 +573,34 @@ def g_video(n):
     """Aurora68 Video (23 November 2026): the display's glyph in the play button's violet, a film on the screen"""
     return art(DISPLAY32 if n == 32 else DISPLAY16, L(VIOLET, GOLD))
 
+# Aurora68 PC (23 November 2026, docs/19-pc-card.md): a PC's screen with its prompt, "C:\>" and the cursor
+PC32 = ["###################",
+        "#.................#",
+        "#.ooooooooooooooo.#",
+        "#.o+o+o+o+ooooooo.#",
+        "#.o+oooo+o+oooooo.#",
+        "#.o+oo+o+oo+ooooo.#",
+        "#.o+oooo+o+oooooo.#",
+        "#.o+o+o+o+oo+++oo.#",
+        "#.ooooooooooooooo.#",
+        "#.ooooooooooooooo.#",
+        "#.ooooooooooooooo.#",
+        "#.................#",
+        "###################",
+        "........###........",
+        "....###########...."]
+PC16 = ["#########",
+        "#+o++ooo#",
+        "#+oo+ooo#",
+        "#++o+o++#",
+        "#########",
+        "...###...",
+        ".#######."]
+
+def g_pc(n):
+    """Aurora68 PC: the display's glyph, dark, with a prompt in green"""
+    return art(PC32 if n == 32 else PC16, L(NAVY, GREEN))
+
 def g_slots(n):
     return art(SLOTS32 if n == 32 else SLOTS16, L(BOARD, GOLD))
 
@@ -870,6 +898,7 @@ PROGRAMS = {
                   ('OggS', 'doc-OggS'), ('M4A ', 'doc-M4A '), ('pref', 'doc-pref')]),
     'display':   ('Aurora68 Display', 'app', g_display, [('pref', 'doc-pref')]),
     'video':     ('Aurora68 Video', 'app', g_video, [('MPEG', 'doc-MPEG'), ('MPG ', 'doc-MPG ')]),
+    'pc':        ('Aurora68 PC', 'app', g_pc, []),
     'slots':     ('Aurora68 Slots', 'app', g_slots, [('pref', 'doc-pref')]),
     'log':       ('Aurora68 Log', 'app', g_log, []),
     'status':    ('Aurora68 Status', 'app', g_status, []),

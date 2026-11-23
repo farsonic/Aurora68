@@ -237,39 +237,7 @@ int psmac_video_surface(uint32_t screen, struct pv_surface *s)
     s->clut_seq = seq; s->gray = gray;
     return 1;
 }
-/* the Mac's memory for the card's region and menu checks (23 November 2026, docs/08 item 124): RAM alone, at its own
-   address (the ROM maps the Mac's RAM one to one, in 24-bit and 32-bit mode), aligned, inside the RAM, read from the
-   card's core. Not through the 68k's MMU tables (psmac_mac_rd32, which the crash record uses): their table can be
-   rebuilt by the 68k's core while it is read here, and a first version that went through them stopped the kernel
-   during a start-up in the testbed */
-uint8_t *psmac_mac_ram_ptr(void);
-uint32_t psmac_video_rd32(uint32_t addr, int *ok)
-{
-    uint32_t size = psmac_ram_size();
-    if ((addr & 3) || size < 8 || addr > size - 4) { *ok = 0; return 0; }
-    *ok = 1;
-    return *(volatile const uint32_t *)(psmac_mac_ram_ptr() + addr);
-}
-/* a menu down, whichever program's (23 November 2026, docs/08 item 124). The menu bar's definition procedure keeps the
-   bits under each menu it draws in a handle at MBSaveLoc ($B5C, Inside Macintosh V, "The Menu Manager"), whose first
-   word, lastMBSave, is the offset of the last menu's record there: 0 when no menu is drawn, not 0 while one is (seen
-   in the testbed under System 7.1: $1C with the Finder's Apple menu held down, 0 before and after). TheMenu ($A26),
-   which a first version looked at, stays 0 while MenuSelect tracks: the Menu Manager sets it only for the title left
-   highlighted after a choice. Both are looked at; the master pointer is masked to 24 bits in 24-bit mode (MMU32Bit,
-   $CB2, 0) */
-int psmac_video_menu_down(void)
-{
-    int ok, ok2, ok3;
-    uint32_t v = psmac_video_rd32(0xA24, &ok), m32 = psmac_video_rd32(0xCB0, &ok2);
-    if (ok && (v & 0xFFFFu)) return 1;
-    uint32_t h = psmac_video_rd32(0xB5C, &ok);
-    if (!ok || !h) return 0;
-    uint32_t mp = psmac_video_rd32(h & ~3u, &ok);
-    if (!ok || !mp) return 0;
-    if (!ok2 || !((m32 >> 8) & 0xFFu)) mp &= 0x00FFFFFFu;
-    uint32_t w = psmac_video_rd32(mp & ~3u, &ok3);
-    return ok3 && (mp & 2 ? w & 0xFFFFu : w >> 16) != 0;
-}
+/* the Mac's memory and its menu bar, read for the window's region and the menu test: psmac_wclip.c (23 November 2026) */
 void psmac_videocard_init(void)
 {
     uint8_t *rom = (uint8_t *)(KERNEL_ALIAS + card_phys + A68V_WIN_SIZE);

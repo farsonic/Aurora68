@@ -15,7 +15,7 @@ mkdir -p "$T"
 if ! command -v ffmpeg >/dev/null 2>&1; then echo "vbuf_test: no ffmpeg, skipped"; exit 0; fi
 SRC=../emu68/src/psmac
 cc -std=c99 -O1 -g -Wall -Wextra -Werror ${SANITIZE:--fsanitize=address,undefined} -DPSMAC_VIDEO_HOST -I../tools/vbuf_host \
-   -I../tools/mpg1_host -I$SRC -o "$T/vbuf_test" ../tools/vbuf_test.c $SRC/psmac_video.c $SRC/psmac_plmpeg.c \
+   -I../tools/mpg1_host -I$SRC -o "$T/vbuf_test" ../tools/vbuf_test.c $SRC/psmac_video.c $SRC/psmac_wclip.c $SRC/psmac_plmpeg.c \
    $SRC/psmac_vcodec.c $SRC/psmac_cinepak.c $SRC/psmac_rpza.c $SRC/psmac_qtrle.c $SRC/psmac_smc.c
 ffmpeg -v error -y -f lavfi -i "testsrc2=size=320x240:rate=25:duration=20" -f lavfi -i "sine=frequency=440:sample_rate=44100:duration=20" \
     -vf fps=25,format=yuv420p -c:v mpeg1video -b:v 1200k -maxrate 2400k -bufsize 1200k -bf 0 -g 25 \
