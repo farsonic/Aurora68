@@ -6218,3 +6218,47 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      dropping out one by one, a press two pixels left of the clock reaching the Finder's Special menu, the Wi-Fi and
      Bluetooth menus from their new places; the old extension moved aside. Pictures: `docs/img/menu-extras-*.png`.
      *Not verified:* the NTP line (no Riptide in the test image), System 7.5, other regions' resources, the SE itself.
+
+136. **The Aurora68 Apple II Card: an Apple II in a window, and the guest scheduler (23 November).** The owner's answers
+   for Aurora65 (the Apple II project beside this one): the 8-bit machines first, 1:1 on the SE's screen, the front
+   window's machine first when the PC and the Apple share a core, ROM dumps of the owner's own machines. docs/20-apple-ii-card.md
+   has the whole card; Aurora65's docs/STATUS.md item 19 the Apple's side.
+   - *The card* (`psmac_a2.c`, only with `-DPSMAC_A2=ON -DAURORA65_DIR=...`, `a2=on`): slot $E (free in every branch),
+     its window at `$FE000000`/`$FEE00000`, a declaration ROM carrying `.A68A2` (`mac/a68apple.s`: `.A68PC`'s code, the
+     block laid out as the PC card's), a 16 MiB pool of the Pi's RAM after the PC card's. The ROM from the card by
+     model, identified by the chips' CRC-32s of Aurora65's `romcheck.py`, its SHA-256 logged, refused in words when
+     missing. Disk images through `a65_io` with the PC card's sector overlay and write-back schedule (2 s, 10 s, at once
+     at power off, reset, eject, a change of model); `psmac_card_pc_write` now writes an image's short last sector whole.
+     The picture: 280 x 192 at 1:1 on one bit (hires as a monochrome monitor shows it, lores dithered), 80 columns from
+     the cells at 6 x 8, scaled as a choice, 560 x 384 or a whole multiple on deeper screens. The speaker into
+     `psmac_audio.c` as a sixth source.
+   - *The guest scheduler* (`psmac_guest.c`): the two call sites of `psmac_pc_poll` call `psmac_guest_poll(core)`; the PC
+     card split into service, ready and slice with nothing else changed (`tools/pccard_test.sh` passes as before); the
+     front window's guest first, the background floor `guest.floor=` (1 by default, 0 the owner's words taken strictly:
+     not chosen yet). Aurora68 PC 1.1 sets its block's new `front` word.
+   - *The program* Aurora68 Apple II (`mac/a68apple/apple.c`): menus Apple II (power, reset, restart cold, pause, the five
+     models), Disks, View, Keyboard; keys to the Apple while its window is in front, Command Open-Apple, Option
+     Solid-Apple, Control-Command-Delete the Apple's Control-Reset (Shift: cold), capture for Command-keys and the mouse
+     as the joystick.
+   - *Found on the way.* (1) AppendMenu takes "(" anywhere in an item's words as "disabled": "Actual Size (1:1)" and
+     "Capture Keyboard and Joystick (Control-Option-Command-A)" came up dimmed in the testbed, and so had Aurora68 PC's
+     "Large Text (8 x 16)" and "Capture Keyboard and Mouse (Control-Option-Command-P)" since item 132 (its Keyboard item
+     could never be chosen; the key combination worked). Such items get their words through SetItem now, in both
+     programs. (2) Aurora65's test ROM had its `stop` entry two bytes off ($F815, documented $F813), so a test disk's
+     last `jmp $F813` went back to scanning the slots: fixed there.
+   - *Tested.* `tools/guest_test.c` (the rule, turn by turn, `guest.floor` 0, 1 and 4) and `tools/a2card_test.sh` (the
+     card's own file with Aurora65's host library: boot and typing at 512 x 342, every pixel of a hires picture at 1:1,
+     80 columns, 32-bit colour at x 2, the II+, a block written back into its file, the Disks commands, a change of
+     model, no ROM refused; with Aurora86's too, both cards through the scheduler), both in `make -C mac check`. In QEMU
+     (solo board, System 7.1, Aurora68 Apple II and Aurora68 PC in Startup Items, the files through semihosting): at 640 x
+     480 both cards running on core 2, the Apple's window brought to the front over the PC's and back (the `[GUEST]` line
+     following: "Apple II on core 2 (front)", then "PC on core 2 (front)"), each card clipped to its own window's visible
+     region, `hello A2` typed into the Apple, the Disks menu ejecting test.dsk and putting hires.dsk into drive 1,
+     Restart Cold from the menu and the hires picture at 1:1; at 512 x 342 the Disks menu putting `test.hdv` into HD1,
+     Shift-Control-Command-Delete restarting cold, the Apple's boot block writing its block and the card writing it back
+     into the host's file 2 s later ("A65W" found there), the pointer's box redrawn when it moved, View > Scaled with the
+     window grown. The Apple kept its own speed (1000 per mille) beside the PC once both had started. Pictures:
+     `docs/img/a2-card-*.png`. The normal kernel: built from main and from this branch with the same `SOURCE_DATE_EPOCH`
+     in the same place, the same `Emu68.img` byte for byte.
+   - *Not verified:* the SE board, the IIci testbed, real hardware, the SD card path, the owner's Apple ROMs, the speaker
+     heard (its samples are counted on the host only), the Disk II writing (our test disks only read), the IIgs.

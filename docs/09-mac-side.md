@@ -1846,6 +1846,25 @@ The zoom box sizes the window to the PC's picture (the card's natural size); the
 follow. Key releases reach the program because it adds keyUpMask to SysEvtMask while it runs; the mouse's movement is
 read from the window's middle with the pointer hidden. docs/19-pc-card.md has the card, the block and the options;
 docs/08 item 132 the history.
+Since 1.1 (23 November 2026) the window's activate events set the card's front word for the guest scheduler, which gives
+the front window's machine (the PC or the Apple II card's) its shared Pi core first (docs/20-apple-ii-card.md).
+
+## Aurora68 Apple II: the Apple II card's Apple in a window (23 November 2026)
+In `Aurora68:Aurora68 Apple II` (`mac/a68apple/apple.c`, C with the `mac/c` kit; the card's driver `.A68A2` is
+`mac/a68apple.s`, in its declaration ROM). It needs a kernel built with the Apple II card (`-DPSMAC_A2=ON`) and `a2=on`;
+without the card its window says so. The window shows an 8-bit Apple II (Aurora65: the II, II+, IIe, enhanced IIe, IIc)
+on the Aurora68 Apple II Card in slot $E, drawn by the card where the window shows: on the SE's screen 1:1, 280 x 192 for
+40 columns, lores and hires (one Apple pixel one Mac pixel; hires as a monochrome monitor shows it), 80 columns from the
+text cells at 6 x 8 (480 x 192); on a colour screen 560 x 384 or a whole multiple of it.
+- **Apple II**: Power On, Power Off, Reset (Control-Command-Delete in the window), Restart Cold, Pause; the five models,
+  the running one checked (each from its own ROM, a dump of the owner's own machine on the card).
+- **Disks**: Look on the Card Again, then the card's images (5.25" and block), each with the unit it is in, checked;
+  choosing one puts it into the first free unit of its kind or takes it out.
+- **View**: Actual Size (1:1), Scaled to the Window, White on Black (the Apple's own sense), Hires in Colour.
+- **Keyboard**: Capture Keyboard and Joystick (Control-Option-Command-A). Keys go to the Apple whenever its window is in
+  front (Command is Open-Apple, Option Solid-Apple); captured, Command-keys go there too and the mouse is the joystick.
+docs/20-apple-ii-card.md has the card, the block, the ROMs, the disks, the scheduler and the options; docs/08 item 136 the
+history.
 
 ## Aurora68 Status 2.0: the Pi's heat and speed as gauges (23 November 2026)
 
@@ -1998,6 +2017,7 @@ place and size read from the remote's `/windows`. What did not fit was changed; 
 | Aurora68 Play | player (343 x 127), "no sound" box, Open URL, Library (503 x 313), Open and the zoom box fit; the About box's text ran under its OK button (228 pixels given for about 260; `se512-play-about-before.png`) | message boxes take the height their text needs, wider where 340 pixels would be too tall, never larger than the screen below the menu bar (the About box 420 x 280, `se512-play-about-after.png`) |
 | Aurora68 Video | window 320 x 270 and Open fit; the About line and "not an MPEG-1 film" ran past the window's right edge (`se512-video-about-before.png`); without the card, a 420-pixel line in the 320-pixel window | shorter lines, cut with an ellipsis where still too long (`se512-video-about-after.png`); the no-card text on three lines; the film's size by its own screen |
 | Aurora68 PC | fits (484 x 300 without the card); About box fits | sized by its own screen; zoomed and grown windows moved to lie on it |
+| Aurora68 Apple II (23 November, after this table) | 284 x 192 at 1:1 (484 x 192 for 80 columns); About box fits | written with `scr_fit` from the start |
 | Aurora68 Depth, Disk, Machine, Sound, Screen Setup, Agent, Video Decoder | no windows (Screen Setup's "Keep this resolution?" is Display's box) | |
 | Wi-Fi and Bluetooth menus (the extension) | not changed here: the menu-bar clock's branch places the icons after the program's last menu and hides them when there is no room | |
 

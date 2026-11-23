@@ -4,6 +4,20 @@
 
 Since 0.14:
 
+- **The Aurora68 Apple II Card: an Apple II in a window on the Mac's desktop** (docs/20-apple-ii-card.md, docs/08 item
+  136, 23 November 2026; not in the release kernel yet). A NuBus card in slot $E that exists only in the Pi: an 8-bit Apple
+  II (Aurora65: the II, II+, IIe, enhanced IIe and IIc) runs on a Pi core, and the new program **Aurora68 Apple II** shows it
+  in an ordinary window, 1:1 on the SE's screen (280 x 192 for 40 columns and hires, each Apple pixel one Mac pixel; 80
+  columns at 480 x 192) or scaled, in colour on HDMI. Keys typed in the window go to the Apple (Command is Open-Apple,
+  Option Solid-Apple, Control-Command-Delete is Control-Reset); the Apple II menu powers it on and off, resets it and
+  chooses the model; the Disks menu puts 5.25" and block images from the card into its drives, and **what the Apple writes
+  is saved into the image on the SD card** (as the PC card does). It needs a kernel built with `-DPSMAC_A2=ON` (Aurora65's
+  library linked in), `a2=on` and **a dump of your own Apple's ROM** on the card (`apple2e-enhanced.rom` ...: Aurora68 has
+  no Apple ROM, and says so if none is there). With the PC card in the same kernel the two share their Pi core, **the
+  front window's machine first** (`guest.floor=1` by default leaves one turn in eight to the other; `guest.floor=0` gives it
+  only what is left: the owner's choice). Aurora68 PC 1.1 says when its window is in front. The normal kernel is unchanged.
+  Tested with the card's own code on the host (Aurora65's test ROM and disks, every pixel of a hires picture checked, a
+  block written by the Apple found in its file) and in the testbed's QEMU; the owner's Pi and ROMs are the real test.
 - **A clock in the menu bar, and the menu bar's extras out of the way of the program's menus** (docs/09 "Aurora68 Menu
   Extras", docs/08 item 135, 23 November 2026). The extension that drew the Wi-Fi and Bluetooth icons is now
   **Aurora68 Menu Extras** and has a clock beside them, as macOS has: the time ("Mon 5:47 PM"), or a small clock face;
