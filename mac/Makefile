@@ -9,7 +9,8 @@
 #                  music server's answers and, where qemu-m68k is installed, as a 68020 big-endian program; the card's codecs;
 #                  the kernel's FAT/exFAT reader and its HFS view: tools/fatfs_test.sh, tools/hfsview_test.sh;
 #                  Aurora68 Recovery's cmdline.txt word editor: tools/cmdline_test.sh; the bus check's verdicts
-#                  against a simulated board with faults: tools/buscheck_test.c)
+#                  against a simulated board with faults: tools/buscheck_test.c; MPEG-1 in QuickTime, the import's indexer
+#                  and the card's MPEG-1 and MP2 decoders against FFmpeg: tools/mpg1_test.sh)
 #   make install IMG=path/to/volume.img [PART=n]   the extensions into the System Folder of an HFS image, the programs into its Aurora68 folder
 AS      = m68k-linux-gnu-as -m68020
 OBJCOPY = m68k-linux-gnu-objcopy
@@ -180,6 +181,7 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	sh ../tools/hfsview_test.sh
 	sh ../tools/cmdline_test.sh $(abspath $(B))
 	sh ../tools/vcodec_test.sh $(abspath $(B))
+	sh ../tools/mpg1_test.sh $(abspath $(B))
 
 disasm: $(B)/pidisk.o
 	m68k-linux-gnu-objdump -d $(B)/pidisk.o | head -200
@@ -329,18 +331,31 @@ $(B)/piagent.elf: $(B)/ag/entry.o $(B)/ag/agent.o $(B)/ag/libc.o wifimenu/init.l
 $(B)/Aurora68-Agent.bin: $(B)/piagent.elf ../tools/mac/elf2init.py ../tools/mac/macelf.py ../tools/mac/rsrc.py $(ICONS)
 	$(PY) ../tools/mac/elf2init.py $< --name "Aurora68 Agent" --creator PIAG --icons agent --sysz 65536 -o $@
 
-# ---- the Aurora68 Video Decoder's QuickTime components (mac/vdec, docs/08 item 110): Cinepak, Apple Video,
-# Animation and Graphics handed to the card's driver (.A68Video, mac/a68video.s, in the card's own ROM) for a Pi
-# core to decode. A 'thng' file QuickTime registers from the Extensions folder (tools/mac/elf2thng.py); its own
-# glue in vdec/entry.s, no toolbox traps from the kit, the card's request layout from the kernel's psmac_video.h
+# ---- the Aurora68 Video Decoder's QuickTime components (mac/vdec, docs/08 items 110 and 113): Cinepak, Apple
+# Video, Animation, Graphics and MPEG-1 handed to the card's driver (.A68Video, mac/a68video.s, in the card's own
+# ROM) for a Pi core to decode, and the MPEG-1 movie import ('eat ', vdec/import.c with the indexer vdec/mpgindex.c,
+# which `make check` also runs on the host: tools/mpg1_test.sh). A 'thng' file QuickTime registers from the
+# Extensions folder (tools/mac/elf2thng.py); its register-based glue in vdec/entry.s, the import's Toolbox calls by
+# selector from vdec/traps.txt (tools/mac/mktraps.py), the card's request layout from the kernel's psmac_video.h
+VD_H = vdec/vdec.h ../emu68/src/psmac/psmac_video.h
 $(B)/vd/entry.o: vdec/entry.s
 	@mkdir -p $(B)/vd
 	$(AS) -o $@ $<
-$(B)/vd/vdec.o: vdec/vdec.c ../emu68/src/psmac/psmac_video.h
+$(B)/vd/toolbox_glue.s $(B)/vd/toolbox_gen.h: vdec/traps.txt ../tools/mac/mktraps.py
 	@mkdir -p $(B)/vd
-	$(CC) $(CFLAGS) -Os -c -o $@ $<
-$(B)/vdec.elf: $(B)/vd/entry.o $(B)/vd/vdec.o wifimenu/init.ld
-	$(LD) -T wifimenu/init.ld --emit-relocs --gc-sections --no-warn-rwx-segments -z noexecstack -o $@ $(B)/vd/entry.o $(B)/vd/vdec.o $(LIBGCC)
+	$(PY) ../tools/mac/mktraps.py $< -s $(B)/vd/toolbox_glue.s -H $(B)/vd/toolbox_gen.h
+$(B)/vd/toolbox_glue.o: $(B)/vd/toolbox_glue.s
+	$(AS) -o $@ $<
+$(B)/vd/vdec.o: vdec/vdec.c vdec/mpgindex.h $(B)/vd/toolbox_gen.h $(VD_H)
+	$(CC) $(subst -I$(B),-I$(B)/vd,$(CFLAGS)) -Os -c -o $@ $<
+$(B)/vd/import.o: vdec/import.c vdec/mpgindex.h $(B)/vd/toolbox_gen.h $(VD_H)
+	$(CC) $(subst -I$(B),-I$(B)/vd,$(CFLAGS)) -Os -c -o $@ $<
+$(B)/vd/mpgindex.o: vdec/mpgindex.c vdec/mpgindex.h
+	@mkdir -p $(B)/vd
+	$(CC) $(CFLAGS) -O2 -c -o $@ $<
+VD_OBJ = $(B)/vd/entry.o $(B)/vd/vdec.o $(B)/vd/import.o $(B)/vd/mpgindex.o $(B)/vd/toolbox_glue.o
+$(B)/vdec.elf: $(VD_OBJ) wifimenu/init.ld
+	$(LD) -T wifimenu/init.ld --emit-relocs --gc-sections --no-warn-rwx-segments -z noexecstack -o $@ $(VD_OBJ) $(LIBGCC)
 $(B)/Aurora68-VideoDecoder.bin: $(B)/vdec.elf ../tools/mac/elf2thng.py ../tools/mac/macelf.py ../tools/mac/rsrc.py
 	$(PY) ../tools/mac/elf2thng.py $< --name "Aurora68 Video Decoder" -o $@
 

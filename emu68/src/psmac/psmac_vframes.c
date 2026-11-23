@@ -26,6 +26,13 @@
  * drawn in one or two milliseconds of a Pi core, where the 68k's own decoder would take tens.
  *
  * Nothing here is NuBus either: psmac_videocard.c gives the window, as for the stream.
+ *
+ * MPEG-1 (23 November 2026, docs/08 item 113, GitHub issue #25). The import component of the "Aurora68 Video
+ * Decoder" extension makes QuickTime movies of MPEG-1 files; their pictures come here as format 'mpg1'
+ * (pl_mpeg's video decoder, psmac_plmpeg.c), a session per movie, which keeps the sequence header (from the
+ * ImageDescription) and the two reference pictures. Their MP2 sound is decoded here too, once, while the
+ * import makes the movie: a session of 'MP2 ' takes the sound's bytes and gives 16-bit PCM back into the
+ * Mac's memory (A68V_OP_SOUND), which the import writes to a file for the movie's sound track.
  */
 #include <stdint.h>
 #include "support.h"
@@ -50,7 +57,9 @@ static volatile uint32_t reset_req;
 
 struct sess {
     int used;
-    const struct vc_codec *c;
+    const struct vc_codec *c;                 /* 0 for a sound session */
+    void *snd;                                /* a sound session's MP2 decoder (vc_mp2_open) */
+    uint32_t snd_in, snd_out;                 /* its bytes in and out, for the log */
     void *state;
     struct vc_picture pic;
     uint8_t *data; uint32_t data_cap;         /* the compressed picture, copied out of the Mac's memory */
@@ -69,6 +78,7 @@ struct sess {
 static struct sess sess[A68V_MAX_SESSIONS];
 static struct { uint64_t t0, dec, draw; uint32_t ndec, ndraw; } st;
 static uint64_t last_req;                     /* when the Mac last asked: core 1 keeps looking while a movie plays */
+static int framelog;                          /* mac.vframelog=1: a line for every picture decoded */
 #define KEEP_LOOKING_MS 250u                  /* this long after a request core 1 does not sleep (wfe) between looks */
 static uint8_t desc_buf[DESC_MAX];
 static uint8_t row_buf[ROW_MAX];
@@ -81,6 +91,8 @@ static const uint8_t bayer[8][8] = {
 
 static void sess_free(struct sess *s)
 {
+    if (s->state && s->c && s->c->close) s->c->close(s->state);
+    if (s->snd) vc_mp2_close(s->snd);
     if (s->state) tlsf_free(tlsf, s->state);
     if (s->pic.rgb) tlsf_free(tlsf, s->pic.rgb);
     if (s->pic.idx) tlsf_free(tlsf, s->pic.idx);
@@ -90,8 +102,22 @@ static void sess_free(struct sess *s)
     for (uint32_t i = 0; i < sizeof *s; i++) p[i] = 0;
 }
 
+static uint32_t op_open_sound(volatile struct a68v_freq *r)
+{
+    uint32_t i;
+    for (i = 0; i < A68V_MAX_SESSIONS && sess[i].used; i++) { }
+    if (i == A68V_MAX_SESSIONS) return A68V_FE_SESSION;
+    struct sess *s = &sess[i];
+    if (!(s->snd = vc_mp2_open())) { sess_free(s); return A68V_FE_MEM; }
+    s->used = 1;
+    r->session = i + 1;
+    hdr->sessions = hdr->sessions + 1;
+    kprintf("[VIDEO] frames: session %u, MP2 sound to 16-bit PCM\n", i + 1);
+    return A68V_FE_OK;
+}
 static uint32_t op_open(volatile struct a68v_freq *r)
 {
+    if (r->codec == A68V_CODEC_MP2) return op_open_sound(r);
     const struct vc_codec *c = vc_find(r->codec);
     uint32_t i;
     if (!c) return A68V_FE_CODEC;
@@ -111,8 +137,15 @@ static uint32_t op_open(volatile struct a68v_freq *r)
     if (s->state) { uint8_t *p = s->state; for (uint32_t k = 0; k < c->state_size; k++) p[k] = 0; }
     uint32_t dl = r->desc_len > DESC_MAX ? DESC_MAX : r->desc_len;
     if (r->desc && dl >= 86 && !psmac_mac_copy(r->desc, desc_buf, dl, 0)) vc_palette_from_desc(&s->pic, desc_buf, dl);
-    else vc_palette_from_desc(&s->pic, desc_buf, 0);
-    if (c->open(s->state, &s->pic) != VC_OK) { sess_free(s); return A68V_FE_DEPTH; }
+    else { vc_palette_from_desc(&s->pic, desc_buf, 0); dl = 0; }
+    s->pic.desc = desc_buf; s->pic.desc_len = dl;
+    int e = c->open(s->state, &s->pic);
+    s->pic.desc = 0; s->pic.desc_len = 0;
+    if (e != VC_OK) {
+        s->used = 1;                          /* so that sess_free gives the format its close */
+        sess_free(s);
+        return e == VC_E_SIZE ? A68V_FE_SIZE : e == VC_E_DATA ? A68V_FE_DATA : A68V_FE_DEPTH;
+    }
     s->used = 1;
     r->session = i + 1;
     hdr->sessions = hdr->sessions + 1;
@@ -253,10 +286,39 @@ static uint32_t draw(struct sess *s, volatile struct a68v_freq *r, int32_t lx0, 
     return A68V_FE_OK;
 }
 
+/* MP2 in, PCM out (A68V_OP_SOUND): what the Mac gives is appended to the session's, every whole frame decoded,
+   as much PCM written back as there is room for; height says whether more is waiting */
+#define SND_ROOM (256u << 10)
+static uint8_t *snd_buf;
+static uint32_t op_sound(volatile struct a68v_freq *r)
+{
+    struct sess *s = session_of(r);
+    if (!s || !s->snd) return A68V_FE_SESSION;
+    uint32_t n = r->src_len, room = r->dst_rowbytes, more = 0, rate = 0;
+    if (n > A68V_MAX_DATA) return A68V_FE_SIZE;
+    if (room > SND_ROOM) room = SND_ROOM;
+    if (!snd_buf && !(snd_buf = tlsf_malloc(tlsf, SND_ROOM))) return A68V_FE_MEM;
+    if (n > s->data_cap) {
+        uint32_t cap = (n + 0xFFFFu) & ~0xFFFFu;
+        if (s->data) tlsf_free(tlsf, s->data);
+        s->data_cap = 0;
+        if (!(s->data = tlsf_malloc(tlsf, cap))) return A68V_FE_MEM;
+        s->data_cap = cap;
+    }
+    uint64_t t0 = now();
+    if (n && psmac_mac_copy(r->src, s->data, n, 0)) return A68V_FE_ADDR;
+    uint32_t w = vc_mp2_decode(s->snd, s->data, n, snd_buf, room, &more, &rate);
+    if (w && psmac_mac_copy(r->dst_base, snd_buf, w, 1)) return A68V_FE_ADDR;
+    r->width = w; r->height = more; r->depth = rate; r->dst_w = 2;
+    r->decode_us = us_of(now() - t0); r->draw_us = 0;
+    s->snd_in += n; s->snd_out += w;
+    return A68V_FE_OK;
+}
+
 static uint32_t op_decode(volatile struct a68v_freq *r)
 {
     struct sess *s = session_of(r);
-    if (!s) return A68V_FE_SESSION;
+    if (!s || !s->c) return A68V_FE_SESSION;
     uint32_t n = r->src_len, res = A68V_FE_OK;
     if (n > A68V_MAX_DATA) return A68V_FE_SIZE;
     if (n > s->data_cap) {
@@ -269,7 +331,11 @@ static uint32_t op_decode(volatile struct a68v_freq *r)
     uint64_t t0 = now();
     if (n && psmac_mac_copy(r->src, s->data, n, 0)) return A68V_FE_ADDR;
     vc_untouched(&s->pic);
+    s->pic.note[0] = 0;
     if (s->c->decode(s->state, &s->pic, s->data, n) != VC_OK) { res = A68V_FE_DATA; s->errors++; }
+    if (framelog)
+        kprintf("[VIDEO] frames: session %u picture %u: %u bytes, %s%s%s\n", r->session, r->frame, n, s->pic.note[0] ? s->pic.note : "decoded",
+                (r->flags & A68V_FF_NODRAW) ? ", not drawn" : "", res ? ", damaged" : "");
     uint64_t t1 = now();
     s->frames++;
     hdr->frames = hdr->frames + 1;
@@ -331,17 +397,21 @@ int psmac_vframes_poll(void)
         else switch (r->op) {
         case A68V_OP_OPEN: res = op_open(r); break;
         case A68V_OP_DECODE: res = op_decode(r); break;
+        case A68V_OP_SOUND: res = op_sound(r); break;
         case A68V_OP_DRAW: {
             struct sess *s = session_of(r);
-            res = s ? draw(s, r, INT32_MIN, INT32_MIN, INT32_MAX, INT32_MAX) : A68V_FE_SESSION;
+            res = s && s->c ? draw(s, r, INT32_MIN, INT32_MIN, INT32_MAX, INT32_MAX) : A68V_FE_SESSION;
             if (s) s->last_ok = 0;
             break;
         }
         case A68V_OP_CLOSE: {
             struct sess *s = session_of(r);
             if (!s) { res = A68V_FE_SESSION; break; }
-            kprintf("[VIDEO] frames: session %u closed after %u pictures (%u damaged): %u drawn whole, %u only where they changed, %u changed nothing\n",
-                    r->session, s->frames, s->errors, s->full, s->partial, s->skipped);
+            if (s->snd)
+                kprintf("[VIDEO] frames: session %u closed: %u bytes of MP2 decoded into %u bytes of PCM\n", r->session, s->snd_in, s->snd_out);
+            else
+                kprintf("[VIDEO] frames: session %u closed after %u pictures (%u damaged): %u drawn whole, %u only where they changed, %u changed nothing\n",
+                        r->session, s->frames, s->errors, s->full, s->partial, s->skipped);
             sess_free(s);
             hdr->sessions = hdr->sessions ? hdr->sessions - 1 : 0;
             res = A68V_FE_OK;
@@ -383,10 +453,12 @@ void psmac_vframes_init(uint8_t *win)
     for (uint32_t i = 0; vc_fourccs[i] && i < 15; i++) hdr->codecs[i] = vc_fourccs[i];
     const char *o = psmac_option("mac.vdecode");
     hdr->enabled = !(o && o[0] == 'o' && o[1] == 'f');
+    o = psmac_option("mac.vframelog");
+    framelog = o && o[0] == '1';
     st.t0 = now();
     __asm__ volatile("dmb ish" ::: "memory");
     hdr->version = A68V_FVERSION; hdr->magic = A68V_FMAGIC;
-    kprintf("[VIDEO] frames: Cinepak, Apple Video, Animation and Graphics decoded for QuickTime%s\n",
+    kprintf("[VIDEO] frames: Cinepak, Apple Video, Animation, Graphics and MPEG-1 decoded for QuickTime%s\n",
             hdr->enabled ? "" : " (switched off: mac.vdecode=off)");
 }
 

@@ -89,4 +89,4 @@ static int rl_decode(void *state, struct vc_picture *pic, const uint8_t *d, uint
     return VC_OK;
 }
 
-const struct vc_codec vc_qtrle = { VC_RLE, "Animation", 0, 0, rl_open, rl_decode };
+const struct vc_codec vc_qtrle = { VC_RLE, "Animation", 0, 0, rl_open, rl_decode, 0 };

@@ -191,3 +191,82 @@ mm_strip:
 	.short	0xA055			| _StripAddress
 	move.l	%d0,%a0			| GCC reads a pointer result from A0 (mac/c/README.md)
 	rts
+
+| ---- for the MPEG-1 import (import.c, 23 November 2026): the File Manager's parameter-block calls and the
+| Memory Manager's handles, register-based like the ones above (the OS traps keep D1-D2/A1 themselves)
+| short fm_read(void *pb), fm_write, fm_close, fm_geteof, fm_seteof: synchronous, the result in D0
+	.globl	fm_read
+fm_read:
+	move.l	4(%sp),%a0
+	.short	0xA002			| _Read
+	ext.l	%d0
+	rts
+	.globl	fm_write
+fm_write:
+	move.l	4(%sp),%a0
+	.short	0xA003			| _Write
+	ext.l	%d0
+	rts
+	.globl	fm_close
+fm_close:
+	move.l	4(%sp),%a0
+	.short	0xA001			| _Close
+	ext.l	%d0
+	rts
+	.globl	fm_geteof
+fm_geteof:
+	move.l	4(%sp),%a0
+	.short	0xA011			| _GetEOF
+	ext.l	%d0
+	rts
+	.globl	fm_seteof
+fm_seteof:
+	move.l	4(%sp),%a0
+	.short	0xA012			| _SetEOF
+	ext.l	%d0
+	rts
+| short fm_getcatinfo(void *pb): PBGetCatInfoSync (_HFSDispatch, selector 9)
+	.globl	fm_getcatinfo
+fm_getcatinfo:
+	move.l	4(%sp),%a0
+	moveq	#9,%d0
+	.short	0xA260			| _HFSDispatch
+	ext.l	%d0
+	rts
+| void *mm_newptr(long size): NewPtr in the current heap, not cleared
+	.globl	mm_newptr
+mm_newptr:
+	move.l	4(%sp),%d0
+	.short	0xA11E			| _NewPtr
+	move.l	%a0,%d0
+	rts
+| void *mm_newhandle(long size)
+	.globl	mm_newhandle
+mm_newhandle:
+	move.l	4(%sp),%d0
+	.short	0xA122			| _NewHandle
+	move.l	%a0,%d0
+	rts
+	.globl	mm_disposehandle
+mm_disposehandle:
+	move.l	4(%sp),%a0
+	.short	0xA023			| _DisposHandle
+	rts
+| short mm_sethandlesize(void *h, long size)
+	.globl	mm_sethandlesize
+mm_sethandlesize:
+	move.l	4(%sp),%a0
+	move.l	8(%sp),%d0
+	.short	0xA024			| _SetHandleSize
+	ext.l	%d0
+	rts
+	.globl	mm_hlock
+mm_hlock:
+	move.l	4(%sp),%a0
+	.short	0xA029			| _HLock
+	rts
+	.globl	mm_hunlock
+mm_hunlock:
+	move.l	4(%sp),%a0
+	.short	0xA02A			| _HUnlock
+	rts

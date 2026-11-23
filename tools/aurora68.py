@@ -339,7 +339,8 @@ def macbinary_info(head, size):
 
 # the type and creator of a file sent as it is, by its extension (Aurora68 Play's creator is PIPY)
 TYPES = {'.txt': ('TEXT', 'ttxt'), '.text': ('TEXT', 'ttxt'), '.mp3': ('MPG3', 'PIPY'), '.aif': ('AIFF', 'PIPY'),
-         '.aiff': ('AIFF', 'PIPY'), '.wav': ('WAVE', 'PIPY')}
+         '.aiff': ('AIFF', 'PIPY'), '.wav': ('WAVE', 'PIPY'),
+         '.mpg': ('MPEG', 'A68V'), '.mpeg': ('MPEG', 'A68V'), '.m1v': ('MPEG', 'A68V')}   # MPEG-1 films: Aurora68 Video, MoviePlayer
 
 
 def mac_name(local):

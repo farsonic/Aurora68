@@ -274,7 +274,8 @@ the card, made from these measurements.
   one picture late, which a decoder that holds one picture back can hide but not undo on a seek; and the
   sound decompressor is a component of the Sound Manager 3.1 interface, a second piece of work as large as
   the import. Until those exist, an MPEG file opens in Aurora68 Video from the Finder, and MoviePlayer opens
-  everything else through the card's decompressors.
+  everything else through the card's decompressors. (Built the same day, with the B-pictures and the sound done
+  differently: "MPEG-1 in QuickTime" below.)
 
 ### Follow-up: Aurora68 Play's music videos (23 November 2026)
 The music server now serves a music video as an MPEG-1 program stream at `/vmpeg/ID` (docs/08 item 109), and the
@@ -285,6 +286,101 @@ Control 111), and drives Control 110 (start, pause, resume, stop), 112 (the pict
 own window, or of the HDMI screen for full screen), 113 (volume) and 114 (end). Nothing in Aurora68 Video needs
 to change for that; if Play would rather hand the film over, Aurora68 Video could take a URL in an 'odoc' of a
 small text document, which is not built.
+
+## MPEG-1 in QuickTime: MoviePlayer opens .mpg files (23 November 2026, issue #25)
+The design of the section before ("QuickTime and MPEG-1"), built, with the changes QuickTime 2.5 asked for: the
+B-pictures are put in display order by the import rather than held back by the decoder, the sound is decoded by
+the card once, when the film is opened, rather than by a sound decompressor at play time, and the decompressor
+catches the card up after a jump, which QuickTime 2.5 does not do. docs/08 item 113 is the record of how it went.
+
+- **The movie import** (`mac/vdec/import.c`, two 'eat ' components of the Aurora68 Video Decoder extension, for
+  the file types 'MPEG' and 'MPG ', flags canMovieImportFiles, canMovieImportValidateFile and
+  canMovieImportInPlace). QuickTime asks it to make a movie of a file; it reads the file once, 32 KB at a time,
+  through the indexer (`mac/vdec/mpgindex.c`: the program stream taken apart packet by packet, the video's start
+  codes found, every picture's start and type), and makes the tracks without copying the film: the video
+  track's samples are references into the file itself (an alias to it is the media's data reference). Each
+  picture is one sample, one frame long at the film's rate (the media's time scale 2500 with samples of 100 at
+  25 frames a second, 30000 with samples of 1001 at 29.97), of the card's type 'mpg1', the sequence header in the
+  ImageDescription (an extension atom, 'mpgh'); the I-pictures' samples are the sync samples. In a program stream
+  a sample's range starts in the middle of a packet and has packet headers and sound inside it: the card takes
+  them out (it finds the packet's end by the first system start code, 00 00 01 and a code from B9 up, which the
+  video itself never contains).
+- **How MoviePlayer 2.5 opens it.** File > Open... lists the MPEG films beside the movies, with a "Convert"
+  button where "Open" would be; Convert opens the film in place, in a window with the film's name, with no
+  question where to save anything (QuickTime calls the import with none of its flags set, not with
+  movieImportCreateTrack, which the first version refused). The film can then be saved as a small movie that
+  refers to it (File > Save As..., "Save normally": 4 KB for an eight-second film) or self-contained. A double-click
+  in the Finder does not reach the import: given to MoviePlayer (creator 'TVOD') a film is refused with
+  "Couldn't open the file because the file is not a movie file", MoviePlayer's own check; the films keep Aurora68
+  Video's creator, and a double-click plays them there. Standard File's preview makes a movie of each film
+  selected, so the first selection of a new film is where its sound is decoded.
+- **B-pictures.** QuickTime 2.5 has one order for samples, the order they are shown in. MPEG-1 sends each
+  reference picture (I or P) before the B-pictures shown before it. The import makes the samples in display order
+  and lets the first B-picture after a reference carry the reference's bytes in front of its own (one range of the
+  file: they are next to each other there); the reference's own sample comes later, when it is shown. The card's
+  'mpg1' session decodes a reference unless it is the one it decoded last (it knows it by a hash of its bytes)
+  and shows the last picture of each sample. The other way, the decoder holding one picture back as the design
+  first said, would have shown every picture one frame late and could not be put right after a jump.
+- **Jumps.** QuickTime 2.5 does not decode from the preceding key frame when it goes to a time: a click in the
+  controller handed the decompressor the sample at that time and nothing else (the card's log with
+  `mac.vframelog=1`: one picture, a P and a B, decoded against the references of the frame left about 80 pictures
+  earlier, and the test pattern's digit came out looking like an 8, a 0 and a 4 laid over each other), and when it is late
+  while playing it skips samples the same way. The 'mpg1' decompressor therefore catches the card up itself.
+  QuickTime's frameNumber is the sample's number (seen in the same log: 1, 2, 3... while playing, 104 after a
+  click near the middle), so the decompressor knows which sample it is given; the import puts its index into the
+  ImageDescription (a second atom, 'mpgx': where the film is, its size, every picture's start and type, 4 bytes a
+  picture, up to 32,768 pictures), and when the sample is neither the next one nor a sync sample, the
+  decompressor reads from the film the samples from the sync sample before it, leaves out the B-pictures alone,
+  and has the card decode them undrawn first (`mi_catchup`; the same arithmetic the host test checks). After
+  that the click near the middle showed picture 103, matching FFmpeg's 103 in 99.7 per cent of the pixels.
+- **The fifth decompressor**, 'mpg1' (`mac/vdec/vdec.c`), works as the other four: a session per movie, every
+  picture handed through the driver, drawn by the card at the destination's depth. On the Pi
+  (`psmac_plmpeg.c`) the session is pl_mpeg's video decoder used one picture at a time below its own stream
+  reader: the sequence header decoded once, each picture with plm_video_decode_picture.
+- **The sound** becomes 16-bit stereo PCM at the film's own rate, decoded by the card while the import reads the
+  file (a sound session of the frame decoder, `A68V_OP_SOUND`), written to a file in the Preferences folder's
+  "Aurora68 Video Sounds" ("film.mpg sound"), to which the sound track refers. The file is used again the next
+  time the same film is opened (its header names the film's size, date, folder and name), and the folder keeps
+  eight others. The PCM lies in blocks of half a second, four bytes apart, so that each is a chunk of its own:
+  the first version made the whole sound one chunk, and the first press of Play then left the movie on its first
+  two pictures, QuickTime asking for them again and again; with half-second chunks it played at once. The sound
+  track is no longer than the pictures (MP2's last frame runs on by up to 26 ms; a sound track that outlasted the
+  video left the window white at the end). Why not a sound decompressor for MP2: QuickTime 2.5's sound media
+  takes uncompressed sound or a format of a fixed compression ratio (the Sound Manager's CompressionInfo: so many
+  bytes a packet, always), whose bytes lie one after another in a file. MP2 at 44.1 kHz has frames of 417 and 418
+  bytes, and in a program stream they are spread between the video's packets, so neither the film's own bytes
+  nor an 'sdec' could have served; a copy of the sound in another file was needed either way, and once copied,
+  PCM needs nothing at play time. The cost is disk space, 10 MB a minute, and the first opening's decoding.
+- **Without the card** (no card, `mac.video=off`, or the card's decoding off: `mac.vdecode=off`, Aurora68 Video's
+  Card menu) the import still opens the film, with the video track disabled and a text track in its place, white
+  on black: "This MPEG-1 film needs the Aurora68 Video Decoder card: QuickTime has no MPEG-1 decoder on a 68k
+  Macintosh." or, with the card there and its decoding off, how to switch it on. No sound track is made: the card
+  decodes the sound too.
+- **Tested** (solo board under QEMU, System 7.1, QuickTime 2.5.1, MoviePlayer 2.5 at one bit; FFmpeg's test
+  pattern with a sine tone, 320 x 240, MPEG-1 at 600 kbit/s and MP2 at 128 kbit/s, eight seconds: 25 frames a
+  second without B-pictures, 25 with two B-pictures in groups of 12, 29.97 with B-pictures in groups of 15).
+  Each opened through File > Open... ("Convert"); with Movie > Play All Frames every picture went through the card
+  (200, 200 and 240), the last one shown at the end; pictures compared with FFmpeg's decoding, dithered as the
+  card dithers: frame 5 (a B-picture), 21, 103 (after a seek) and 199 agreed in 99.7 per cent of their pixels and
+  each matched its own frame better than its neighbours. Played in real time, QuickTime dropped to the key frames
+  and the decompressor caught up where it landed between them (the testbed's 68k runs at about 20 MIPS under
+  QEMU, a twentieth of a Pi's), and the sound reached the card: with `mac.audiodump=` the dump held the film's
+  440 Hz tone, with gaps where the testbed's 68k fell behind (the kernel counted 1,771 underruns of the sound card's ring). Saved as a
+  reference movie (before the sound's chunks were made smaller), its sample tables were what the import made
+  (200 samples of 100 at 2500 a second, 17 sync samples, one every 12). Without the card and with its decoding off, the text track said so. The import took 2 to
+  2.6 s for a film of 440 KB under QEMU, 9 to 12 s the first time (with the sound's decoding and 1.4 MB written).
+  Screenshots in the scratchpad: `mpeg-standard-file.png`, `mpeg-opened-1bit.png`, `mpeg-playing-allframes.png`,
+  `mpeg-after-seek.png`, `mpeg-end.png`, `mpeg-no-card.png`, `mpeg-vdecode-off.png`.
+- **On the host** (`make -C mac check`, `tools/mpg1_test.sh`): FFmpeg's films (with and without B-pictures, 25
+  and 29.97, a bare video stream) indexed by the same `mpgindex.c` in 32 KB pieces, every sample decoded by the
+  card's code in display order and compared with FFmpeg's decoding (at least 52 dB on every picture: the inverse
+  DCTs differ by a step here and there); from every sync sample with the old session and a new one; QuickTime's
+  jumps to every sample with the catch-up; each sample twice (a redraw); the sound against FFmpeg's (59 dB once a
+  constant gain is allowed for: pl_mpeg's synthesis is 0.2 to 0.7 dB quieter).
+- **Not verified:** speed on a Pi (the testbed's 68k is far slower than an Emu68 68k on the SE), the sound heard
+  (the testbed has no output), colour screens and the SE board with these films, MPEG-1 from other encoders of the
+  period (only FFmpeg's), films longer than a few minutes, and System 6 (the import needs the Alias and Folder
+  Managers of System 7).
 
 ## Modern formats: a study (22 November 2026)
 The owner's third item: H.264 video ('avc1') and AAC sound ('mp4a') in .mp4 and .mov files from a camera or
@@ -335,8 +431,9 @@ file play in MoviePlayer like any other. The question is what decodes them on th
    will tackle YouTube later"); its local player is part of issue #25's work.
 4. The QuickTime components (issue #25, with #13). Issue #13's decompressors built 22 November 2026: the
    card's driver in its ROM, Cinepak, Apple Video, Animation and Graphics on the Pi ("The in-box card").
-   MPEG-1 from local files (issue #25): Aurora68 Video plays them on the card, 23 November 2026; the QuickTime
-   import ('eat ' and an MP2 sound decompressor) designed, not built ("MPEG-1 from the Mac's own disks").
+   MPEG-1 from local files (issue #25): Aurora68 Video plays them on the card, 23 November 2026; and the same day
+   MoviePlayer and every QuickTime program open them, through the extension's MPEG-1 import, a fifth decompressor
+   ('mpg1') and the sound decoded by the card into PCM at import ("MPEG-1 in QuickTime").
 5. Alice68: the same module behind an Amiga card or library (issue #26).
 6. Modern formats (H.264, AAC): studied 22 November 2026 ("Modern formats: a study"), not built.
 7. The programming interface: `docs/video-decoder-api.md` (22 November 2026).
