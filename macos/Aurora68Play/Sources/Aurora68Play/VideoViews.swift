@@ -40,6 +40,35 @@ struct VideoWindow: View {
     }
 }
 
+/// the playing video filling the main window's right side (1.5, 23 November 2026: the owner, "expand/shrink the video by
+/// pressing the icon in the bottom left"): the player bar's picture switches between this and the library; a video's
+/// start expands it, a song shrinks it. The same AVPlayer as the Video window's, so both may show it at once.
+struct ExpandedVideo: View {
+    @EnvironmentObject var model: AppModel
+    @EnvironmentObject var player: Player
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black
+            PlayerPicture(player: player.avPlayer)
+            HStack(spacing: 6) {
+                Button { openWindow(id: "video"); model.videoExpanded = false } label: { Image(systemName: "macwindow.on.rectangle") }
+                    .help("Show the video in a window of its own")
+                Button { model.videoExpanded = false } label: { Image(systemName: "arrow.down.right.and.arrow.up.left") }
+                    .help("Shrink the video back into the bar")
+                    .keyboardShortcut(.escape, modifiers: [])
+            }
+            .buttonStyle(.borderless)
+            .padding(6)
+            .background(.black.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+            .foregroundStyle(.white)
+            .padding(10)
+        }
+        .navigationTitle(player.current.map { "\($0.artist) \u{2014} \($0.title)" } ?? "Video")
+    }
+}
+
 /// AVKit's player view over the app's player: floating controls, a full-screen button, the picture fitted
 struct PlayerPicture: NSViewRepresentable {
     let player: AVPlayer

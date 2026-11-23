@@ -71,6 +71,7 @@ final class AppModel: ObservableObject {
     @Published var message: String?                         // a refusal from the server, shown in the bar
     @Published var section: Section? = .artists
     @Published var search = ""
+    @Published var videoExpanded = false                  // the playing video fills the window (the player bar's picture, 1.5)
     @Published var output: Output = Output(key: UserDefaults.standard.string(forKey: "output") ?? "") {
         didSet { UserDefaults.standard.set(output.key, forKey: "output") }
     }

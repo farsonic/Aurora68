@@ -24,7 +24,9 @@ struct ContentView: View {
             NavigationSplitView {
                 Sidebar()
             } detail: {
-                if model.isConnected { DetailRoot() } else { ConnectView() }
+                if model.videoExpanded && player.currentIsVideo && model.output == .thisMac {
+                    ExpandedVideo()
+                } else if model.isConnected { DetailRoot() } else { ConnectView() }
             }
             Divider()
             PlayerBar()
@@ -34,8 +36,8 @@ struct ContentView: View {
             ToolbarItem(placement: .primaryAction) { OutputPicker() }
         }
         .navigationTitle(model.serverName.isEmpty ? "Aurora68 Play" : model.serverName)
-        .onChange(of: player.current?.id) { _ in               // a video begins: its window opens
-            if player.currentIsVideo { openWindow(id: "video") }
+        .onChange(of: player.current?.id) { _ in               // a video begins: it fills the window (1.5); a song shrinks it
+            model.videoExpanded = player.currentIsVideo
         }
     }
 }

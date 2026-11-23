@@ -18,7 +18,7 @@
 set -eu
 cd "$(dirname "$0")"
 ROOT=../..
-VERSION="${VERSION:-1.4}"
+VERSION="${VERSION:-1.5}"
 BUILD="${BUILD:-1}"
 OUT=build
 APP="$OUT/Aurora68 Play.app"

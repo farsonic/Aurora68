@@ -12,6 +12,9 @@ Live channel, or to any other Aurora68 Play on the network.
   Lossless (M4A) and FLAC, played by AVFoundation with real seeking and no gap between songs. Play,
   Shuffle, Add to Queue, Play Next (right-click a song or an album); Previous and Next, a position bar
   (click to jump, or drag), volume, shuffle and repeat (all, one) in the bar along the bottom.
+- **The video in the window** (1.5, 23 November 2026): a video that starts fills the right side of the main window; the
+  picture at the bottom left of the player bar shrinks it back into the bar and expands it again (Escape shrinks it
+  too). The button beside it opens the video in a window of its own, as before.
 - **Music videos** (1.3, 22 November 2026): the videos the server finds beside the albums appear after an album's
   songs and after an artist's albums (an artist with videos alone too), each as its poster, title and length. A
   click plays one (the ones after it follow); right-click for Play Next and Add to Queue, so videos and songs share

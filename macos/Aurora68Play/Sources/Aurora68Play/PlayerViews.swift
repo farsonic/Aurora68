@@ -141,7 +141,21 @@ struct PlayerBar: View {
     // ---- left: the song
     @ViewBuilder private var nowPlaying: some View {
         HStack(spacing: 10) {
-            Cover(url: coverURL, corner: 5).frame(width: 48, height: 48)
+            if canExpand {                                     // a video playing here: its picture expands and shrinks it
+                Button { model.videoExpanded.toggle() } label: {
+                    Cover(url: coverURL, corner: 5)
+                        .overlay(alignment: .bottomTrailing) {
+                            Image(systemName: model.videoExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                                .font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
+                                .padding(3).background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 3)).padding(2)
+                        }
+                }
+                .buttonStyle(.plain)
+                .frame(width: 48, height: 48)
+                .help(model.videoExpanded ? "Shrink the video back into the bar" : "Expand the video to fill the window")
+            } else {
+                Cover(url: coverURL, corner: 5).frame(width: 48, height: 48)
+            }
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.callout.weight(.semibold)).lineLimit(1)
                 Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -158,6 +172,8 @@ struct PlayerBar: View {
             }
         }
     }
+
+    private var canExpand: Bool { !isLive && !isRemote && player.currentIsVideo }
 
     private var coverURL: URL? {
         if isLive { return live.now?.current.flatMap { model.coverURL(folder: $0.folder) } }
