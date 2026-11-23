@@ -5329,6 +5329,17 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    - *Not verified:* the SE (and MAME's SE board); Apple's MacTCP, which sends the broadcasts; servers on two machines; the
      fallback without the links for a very long album; the Standard File hold.
 
+121. **Videos whose folder names nobody (23 November).** On the SE, the classic Play 1.7's Videos list showed a group with
+   no artist: The Warning's and Daft Punk's videos under "_", as the macOS Play had shown earlier ("_ — Bite My
+   Tongue"). A downloader writes "_" where it has no artist or album, as a folder (`Albums/_/Kerosene.mp4`) or in front
+   of a name (`_ - Kerosene.mp4`), and the server took that for the artist.
+   - *Fix* (aurora68_music_server.py): `no_name()` (no letter or digit, or "Unknown Artist") marks such a folder or
+     "Artist - " as nobody's. Such a video's artist is then the file's own artist tag (ffprobe now reads the format's
+     artist and title tags with the rest; the cache's older entries are probed once more), else the one artist who has a
+     song of that title, else the library's name; "_ - " is taken off the title.
+   - *Test:* `downloads_check` with `Albums/_/A Tagged Clip.mp4` (artist tag) and `Albums/_/Bloodsport (Live) [...].mp4`
+     (The Warning's, by the song): 219 checks, 0 failed.
+
 122. **Setup and Recovery: every option, a Diagnostics tab, one-shot debug starts and a report bundle (23 November).**
    The owner: "do we have all the debug options in there for Mac, Mac Plus etc. Can we trigger a debug run directly in
    there for this and other platforms? With a report in the Web GUI?" The Options tab knew sixteen options: a list in

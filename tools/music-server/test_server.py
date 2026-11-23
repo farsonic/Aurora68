@@ -676,14 +676,20 @@ def downloads_check(tmp):
     for name in ('The Warning - Bite My Tongue [555225235].mp4', 'The Warning - Bite My Tongue [557934293].mp4',
                  'The Warning - Bloodsport [555218055].mp4', 'Someone Else - A Clip [466236520].mp4'):
         shutil.copy(clip, os.path.join(vdir, name))
+    nobody = os.path.join(lib, 'Albums', '_')      # a downloader's folder for videos without an album: "_" names nobody
+    os.makedirs(nobody, exist_ok=True)
+    ffmpeg('-i', clip, '-c', 'copy', '-metadata', 'artist=Tagged Band', os.path.join(nobody, 'A Tagged Clip.mp4'))
+    shutil.copy(clip, os.path.join(nobody, 'Bloodsport (Live) [555218099].mp4'))
     srv, port = start_server(lib, 'Downloads', {'MUSIC_CACHE': os.path.join(tmp, 'cache-downloads')})
     base = f'http://127.0.0.1:{port}'
     try:
         vs = json.loads(get(base, '/api/videos')[2])['videos']
         got = sorted((v['artist'], v['title'], len(v['tracks'])) for v in vs)
-        check(got == [('Someone Else', 'A Clip', 0), ('The Warning', 'Bite My Tongue', 1), ('The Warning', 'Bloodsport', 1)],
+        check(got == [('Someone Else', 'A Clip', 0), ('Tagged Band', 'A Tagged Clip', 0), ('The Warning', 'Bite My Tongue', 1),
+                      ('The Warning', 'Bloodsport', 1), ('The Warning', 'Bloodsport (Live)', 1)],
               f'"Albums/videos/Artist - Title [number].mp4": the artist from the name, the number left out, one of two '
-              f'downloads of a video kept, each linked to its song ({got})')
+              f'downloads of a video kept, each linked to its song; in a folder "_" the file\'s artist tag, else the artist '
+              f'whose song has the title ({got})')
     finally:
         srv.terminate()
         srv.wait(10)

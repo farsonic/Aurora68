@@ -411,7 +411,7 @@ class VideoProbe:
         except OSError:
             return None
         k = self.known.get(path)
-        if k and k[0] == st.st_mtime and k[1] == st.st_size:
+        if k and k[0] == st.st_mtime and k[1] == st.st_size and (k[2] is None or 'tagged' in k[2]):
             return k[2]
         info = self.probe(path)
         self.known[path], self.dirty = [st.st_mtime, st.st_size, info], True
@@ -420,8 +420,8 @@ class VideoProbe:
     def probe(self, path):
         try:
             out = subprocess.run([self.ffprobe, '-v', 'error', '-show_entries',
-                                  'format=duration,format_name:stream=codec_type,codec_name,codec_tag_string,width,height,'
-                                  'pix_fmt,channels:stream_disposition=attached_pic', '-of', 'json', path],
+                                  'format=duration,format_name:format_tags=artist,title:stream=codec_type,codec_name,'
+                                  'codec_tag_string,width,height,pix_fmt,channels:stream_disposition=attached_pic', '-of', 'json', path],
                                  capture_output=True, text=True, timeout=60)
             j = json.loads(out.stdout or '{}')
         except (OSError, ValueError, subprocess.SubprocessError):
@@ -435,9 +435,11 @@ class VideoProbe:
             secs = float((j.get('format') or {}).get('duration') or 0)
         except ValueError:
             secs = 0.0
+        tags = {k.lower(): str(x).strip() for k, x in ((j.get('format') or {}).get('tags') or {}).items()}
         return {'secs': round(secs, 2), 'w': int(v.get('width') or 0), 'h': int(v.get('height') or 0),
                 'vcodec': v.get('codec_name', ''), 'vtag': v.get('codec_tag_string', ''), 'pix': v.get('pix_fmt', ''),
-                'acodec': a.get('codec_name', '') if a else '', 'format': (j.get('format') or {}).get('format_name', '')}
+                'acodec': a.get('codec_name', '') if a else '', 'format': (j.get('format') or {}).get('format_name', ''),
+                'tagged': 1, 'tag_artist': tags.get('artist', '')[:120], 'tag_title': tags.get('title', '')[:200]}
 
     def save(self, keep):
         """forget videos no longer there, and write the file if anything changed"""
@@ -533,6 +535,12 @@ DOWNLOAD_ID = re.compile(r'\s*[\[(](?:\d{5,}|(?=[A-Za-z0-9_-]*[0-9_-])[A-Za-z0-9
 def video_stem(stem):
     """a video file's name without a downloader's id at its end ("Bite My Tongue [555225235]" is "Bite My Tongue")"""
     return DOWNLOAD_ID.sub('', stem) or stem
+
+
+def no_name(s):
+    """a folder or tag that names nobody: no letter or digit in it ("_", "-"), or an "unknown" placeholder"""
+    t = s.strip().casefold()
+    return not any(c.isalnum() for c in t) or t in ('unknown', 'unknown artist', '[unknown]', 'artist')
 
 
 def tidy_title(stem, artist):
@@ -1626,6 +1634,18 @@ class Catalogue:
             self.add_videos(parents)
             self.made = self.lib.when
 
+    def guess_artist(self, stem, rel, song_by_title):
+        """the artist of a video whose folder and name say nothing (23 November 2026: the owner's downloader put some in a
+        folder named "_"): the file's own artist tag; else the one artist who has a song of that title; else the
+        library's name"""
+        info = self.lib.vinfo.get(rel) or {}
+        a = (info.get('tag_artist') or '').strip()
+        if a and not no_name(a):
+            return a
+        m = MAC_TRACK_NO.match(stem)
+        who = song_by_title.get(link_title(m.group(2) if m else stem)[1], set())
+        return next(iter(who)) if len(who) == 1 else self.name
+
     def add_videos(self, parents):
         """the scan's videos in the catalogue (22 November 2026). A video's home is the folder it is in, or the album or
         artist folder holding its "Videos" folder. In an album's folder (one with songs) it is that album's, by that
@@ -1634,6 +1654,13 @@ class Catalogue:
         library the file's own name ("Artist - Title.mp4"), else the library's name. Its title is its file's name
         tidied as a track's is"""
         videos, by_album, by_artist, names = {}, {}, {}, {}
+        song_by_title = {}                   # a song's plain title -> the artists who have it (for a video naming nobody)
+        for aid0 in self.artist_order:
+            for al0 in self.artists[aid0]['albums']:
+                a0 = self.albums[al0]
+                for t0 in a0['tracks']:
+                    st0 = tidy_title(os.path.splitext(self.tracks[t0][1].split('/')[-1])[0], a0['artist'])[1]
+                    song_by_title.setdefault(link_title(st0)[1], set()).add(a0['artist'])
         for rel, files in self.lib.videos.items():
             home = rel
             if home and home.split('/')[-1].casefold() in VIDEO_FOLDERS:
@@ -1646,6 +1673,9 @@ class Catalogue:
                 stem = video_stem(stem)
                 m = MAC_TRACK_NO.match(stem)
                 named = artist_of(m.group(2) if m else stem)       # "Artist - Title.mp4": the artist its name gives
+                if named and no_name(named):                        # "_ - Title.mp4": a downloader's "nobody"
+                    stem = (m.group(2) if m else stem).split(' - ', 1)[1]
+                    named = None
                 if al:
                     artist = self.albums[al]['artist']
                 elif home in parents:
@@ -1655,11 +1685,12 @@ class Catalogue:
                 elif home:
                     # a folder that is no album's and no artist's ("Albums/videos", where a downloader puts every video):
                     # the file's own "Artist - " first (23 November 2026: the folder's name made "Albums" the artist of
-                    # them all), else the folder's ("Artist - Videos" gives "Artist"), else the folder's name
+                    # them all), else the folder's ("Artist - Videos" gives "Artist"), else the folder's name unless it
+                    # names nobody ("_", a downloader's folder for a video without an album), else who the video says
                     name = home.split('/')[-1]
-                    artist = named or artist_of(name) or name
+                    artist = named or artist_of(name) or (name if not no_name(name) else '') or self.guess_artist(stem, r, song_by_title)
                 else:
-                    artist = named or self.name
+                    artist = named or self.guess_artist(stem, r, song_by_title)
                 number, title = tidy_title(stem, artist)
                 info = self.lib.vinfo.get(r) or {}
                 how, why = video_how(ext.lower(), info)
