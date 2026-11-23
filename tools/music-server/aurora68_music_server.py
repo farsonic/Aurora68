@@ -50,7 +50,7 @@ served: every path is resolved and must stay inside the folder, symbolic links i
     python3 aurora68_music_server.py /music --port 8000 --name "NAS Music"
 """
 import argparse, hashlib, html, json, mimetypes, urllib.error, urllib.request, os, random, re, shutil, signal, socket, subprocess, sys, tempfile, \
-    threading, time, urllib.parse
+    threading, time, unicodedata, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 VERSION = '4'                   # 4: music videos (22 November 2026)
@@ -1456,6 +1456,106 @@ def page_of(items, q):
     return items[start:start + count], start
 
 
+# ---- music videos linked to songs (23 November 2026) ----------------------------------------------------------------
+# The owner, with the macOS Play's videos on its screen: "we need this in the artist page or something to make it easy to
+# see videos - or even link them to a song to alternate". A video belongs to a song when the two have the same artist
+# and the same title once the words a video's name carries and a song's lacks are taken away: "Daft Punk - One More Time
+# (Official Video).mp4" in the artist's folder is the video of "One More Time" on the album. Both titles come from the
+# files' names (tidy_title: the track number and an "Artist - " in front gone), never from tags: the links are made
+# with the catalogue at each scan, the same whatever has been probed, and cost no ffprobe.
+#   the title   Unicode NFKC and casefolded; what is in brackets, and what follows " - ", is a tag, left out when it
+#               only says what kind of file this is (LINK_NOISE: official video, music video, lyric video, visualizer,
+#               audio, HD, 4K, remastered 2011, explicit...) or who is featured (feat., ft., featuring, with; also
+#               outside brackets), kept when it says which version it is (Live, Remix, Edit, Acoustic: anything else);
+#               punctuation counts as a space.
+#   the artist  the one the video is attached to (its album's, its artist folder's), or the one in front of its title
+#               ("Daft Punk - Around the World.mp4" among anybody's videos); compared by its first name, so "Daft Punk,
+#               Julian Casablancas" is Daft Punk ("The" in front, punctuation and case aside).
+# Three tries; the first that finds a song wins: the whole titles ("One More Time (Live)" is "one more time live" on
+# both sides), then the video's plain title against a song's whole one (a Live video with no Live song is the song's),
+# then plain against plain ("One More Time (Radio Edit)" only when nothing better was found). A video may be of several
+# songs (the same song on two albums or editions): it is linked to all of them; a song links to one video, its best
+# (the earliest try, then a video of its own album, then of its artist, then the first by path).
+LINK_WORD = (r'(?:official|officiel|oficial|hd|hq|uhd|[248]k|\d{3,4}p|music|lyrics?|promo|video|videoclip|clip|visuali[sz]er|'
+             r'audio|explicit|clean|mv|m/v|remaster|remastered|digital|digitally|version|\d{4})')
+LINK_NOISE = re.compile(rf'{LINK_WORD}(?:\s+{LINK_WORD})*|(?:feat|ft|featuring|with)\b.*')
+LINK_FEAT = re.compile(r'\s(?:feat\.?|ft\.?|featuring)\s.*$')
+LINK_BRACKETS = re.compile(r'[(\[{]([^)\]}]*)[)\]}]')
+LINK_ARTIST_SPLIT = re.compile(r'\s*(?:,|;|&|\+|/|\bfeat\b\.?|\bft\b\.?|\bfeaturing\b|\bwith\b|\band\b|\bx\b|\bvs\b\.?)\s*')
+
+
+def link_words(s):
+    """letters and digits only, one space between words"""
+    return ' '.join(re.sub(r'[\W_]+', ' ', s).split())
+
+
+def link_fold(s):
+    s = unicodedata.normalize('NFKC', s).casefold()
+    return s.translate({0x2018: "'", 0x2019: "'", 0x201C: '"', 0x201D: '"', 0x2010: '-', 0x2013: '-', 0x2014: '-'})
+
+
+def link_artist(a):
+    """an artist's key: its first name, "The" in front left out ("Daft Punk, Julian Casablancas" is "daft punk")"""
+    a = link_fold(a).strip()
+    if a.startswith('the '):
+        a = a[4:]
+    return link_words(LINK_ARTIST_SPLIT.split(a, 1)[0]) or link_words(a)
+
+
+def link_title(t):
+    """(whole, plain) keys of a title: the tags that name a version kept in the first, every tag left out of the second"""
+    tags = []
+    t = LINK_BRACKETS.sub(lambda m: tags.append(m.group(1)) or ' ', link_fold(t))
+    head, *rest = t.split(' - ')
+    head = LINK_FEAT.sub('', head)
+    keep = [x for x in tags + rest if link_words(x) and not LINK_NOISE.fullmatch(' '.join(x.replace('.', ' ').split()))]
+    return link_words(' '.join([head] + keep)), link_words(head)
+
+
+def link_names(title, artist):
+    """the (artist, whole, plain) keys a song or a video goes by: its title under its artist, and when the title is
+    "Someone - Title" either the artist's own title (Someone is the artist: "Daft Punk, Julian Casablancas - Instant
+    Crush" on a Daft Punk album) or Someone's as well (a compilation, a folder of anybody's videos)"""
+    a = link_artist(artist)
+    out = [(a,) + link_title(title)]
+    if ' - ' in title:
+        p, r = title.split(' - ', 1)
+        pa, rest = link_artist(p), link_title(r)
+        if pa and rest[1]:
+            out = [(a,) + rest] if pa == a else out + [(pa,) + rest]
+    return [k for k in out if k[0] and k[2]]
+
+
+def video_links(songs, videos):
+    """the videos' songs. songs: {tid: (title, artist, album id, artist id)} in the catalogue's order; videos: {vid:
+    (title, artist, album id, artist id, path)}; both titles from the files' names. -> ({vid: [its tids, in the
+    songs' order]}, {tid: its best vid})"""
+    whole, plain = {}, {}
+    for t, (title, artist, al, aid) in songs.items():
+        for a, w, p in link_names(title, artist):
+            whole.setdefault((a, w), []).append(t)
+            plain.setdefault((a, p), []).append(t)
+    order = {t: i for i, t in enumerate(songs)}
+    tracks, best = {}, {}
+    for v in sorted(videos, key=lambda v: videos[v][4]):
+        title, artist, al, aid, rel = videos[v]
+        keys = link_names(title, artist)
+        found, tier = set(), 0
+        for tier, (d, i) in enumerate(((whole, 1), (whole, 2), (plain, 2)), 1):
+            for k in keys:
+                found.update(d.get((k[0], k[i]), ()))
+            if found:
+                break
+        if not found:
+            continue
+        tracks[v] = sorted(found, key=order.get)
+        for t in tracks[v]:
+            rank = (tier, 0 if al and al == songs[t][2] else 1 if aid == songs[t][3] else 2, rel)
+            if t not in best or rank < best[t][0]:
+                best[t] = (rank, v)
+    return tracks, {t: v for t, (_, v) in best.items()}
+
+
 class Catalogue:
     """the library as artists, albums and tracks, made again whenever the folder's scan is new.
 
@@ -1474,7 +1574,8 @@ class Catalogue:
         self.videos = {}                     # id -> a music video (Catalogue.add_videos says what it holds)
         self.album_videos, self.artist_videos = {}, {}    # album id / artist id -> its videos' ids, in order
         self.video_artists = {}              # artist id -> name, for every artist with a video (some have no album)
-        self.probed = {}                     # a file's path -> (mtime, size, number, title, artist, seconds)
+        self.video_tracks, self.track_video = {}, {}      # a video's songs (their ids), a song's video (video_links)
+        self.probed = {}                     # a file's path -> (mtime, size, number, title, artist, seconds, disc)
 
     def fresh(self):
         self.lib.scan()
@@ -1553,12 +1654,35 @@ class Catalogue:
                 if al:
                     by_album.setdefault(al, []).append(vid)
                 names.setdefault(aid, artist)
-        order = lambda v: (self.albums[videos[v]['album']]['title'].casefold() if videos[v]['album'] else '\uffff',
-                           videos[v]['number'] or 999, videos[v]['title'].casefold())
-        for d in (by_album, by_artist):
-            for k in d:
-                d[k].sort(key=order)
+        # the songs each video is of (23 November 2026, video_links): an album lists the videos of its songs as well as
+        # those in its folder, an artist those of its songs as well as those attached to it, each once
+        songs = {}
+        for aid in self.artist_order:
+            for al in self.artists[aid]['albums']:
+                a = self.albums[al]
+                for t in a['tracks']:
+                    songs[t] = (tidy_title(os.path.splitext(self.tracks[t][1].split('/')[-1])[0], a['artist'])[1], a['artist'], al, aid)
+        linked, best = video_links(songs, {v: (x['title'], x['artist'], x['album'], x['aid'], x['rel']) for v, x in videos.items()})
+        place = {}                           # a linked video's place among an album's videos: where its first song is
+        for v, ts in linked.items():
+            for t in ts:
+                al, aid = songs[t][2], songs[t][3]
+                if v not in by_album.get(al, ()):
+                    by_album.setdefault(al, []).append(v)
+                if v not in by_artist.get(aid, ()):
+                    by_artist.setdefault(aid, []).append(v)
+                place.setdefault((al, v), tidy_title(os.path.splitext(self.tracks[t][1].split('/')[-1])[0], songs[t][1]))
+        def order(v, al=None):              # in an album: by its song's place; in an artist's list: by album, then so
+            x = videos[v]
+            home = al or x['album'] or (songs[linked[v][0]][2] if v in linked else '')
+            n, title = place.get((home, v), (x['number'], x['title']))
+            return ('' if al else self.albums[home]['title'].casefold() if home else '\uffff', n or 999, title.casefold(), x['rel'])
+        for al in by_album:
+            by_album[al].sort(key=lambda v: order(v, al))
+        for k in by_artist:
+            by_artist[k].sort(key=order)
         self.videos, self.album_videos, self.artist_videos, self.video_artists = videos, by_album, by_artist, names
+        self.video_tracks, self.track_video = linked, best
 
     def artists_with_videos(self):
         """every artist, those with only videos too, in the record shop's order: (id, name, albums, tracks, videos)"""
@@ -1587,10 +1711,14 @@ class Catalogue:
                 'number': v['number'], 'seconds': v['secs'], 'width': v['w'], 'height': v['h'], 'vcodec': v['vcodec'],
                 'acodec': v['acodec'], 'how': v['how'], 'why': v['why'] if playable else v['why'] + '; transcoding is off here',
                 'playable': playable, 'video': f'/video/{vid}', 'hls': f'/video/{vid}/index.m3u8' if v['how'] != 'direct' else '',
-                'poster': f'/vthumb/{vid}', 'audio': f'/vaudio/{vid}'}
+                'poster': f'/vthumb/{vid}', 'audio': f'/vaudio/{vid}', 'tracks': list(self.video_tracks.get(vid, ()))}
 
     def track_info(self, tid, probe=True):
         """(number, title, artist, seconds) of a track: from its name, and its tags and length once probed"""
+        return self.track_facts(tid, probe)[:4]
+
+    def track_facts(self, tid, probe=True):
+        """(number, title, artist, seconds, disc) of a track; its disc 0 when its tags do not say (or not probed)"""
         al, rel = self.tracks[tid]
         album = self.albums[al]
         number, title = tidy_title(os.path.splitext(rel.split('/')[-1])[0], album['artist'])
@@ -1598,19 +1726,49 @@ class Catalogue:
         try:
             st = os.stat(path)
         except (OSError, TypeError):
-            return number, title, album['artist'], 0
+            return number, title, album['artist'], 0, 0
         key = (st.st_mtime, st.st_size)
         got = self.probed.get(path)
         if (not got or got[:2] != key) and probe:
             got = key + self.probe(path)
             self.probed[path] = got
         if got and got[:2] == key:
-            n, t, a, s = got[2:]
-            return n or number, t or title, a or album['artist'], s
-        return number, title, album['artist'], 0
+            n, t, a, s, d = got[2:]
+            return n or number, t or title, a or album['artist'], s, d
+        return number, title, album['artist'], 0, 0
+
+    def album_video_list(self, al, tids=None):
+        """an album's videos as its lists show them: those of its songs where the songs are (tids: the album's tracks in
+        order, Catalogue.ordered; the names' order gives no place to an album of files named by title), then its own
+        others as the scan put them"""
+        vl = self.album_videos.get(al, [])
+        if not vl:
+            return vl
+        at = {t: i for i, t in enumerate(tids if tids is not None else self.ordered(self.albums[al]['tracks']))}
+        first = lambda v: min((at[t] for t in self.video_tracks.get(v, ()) if t in at), default=None)
+        return sorted(vl, key=lambda v: (0, first(v)) if first(v) is not None else (1, vl.index(v)))
+
+    def ordered(self, tids, probe=True):
+        """tracks in their albums' order (23 November 2026). The owner's "Discovery" came from a downloader that names
+        files by title alone ("Aerodynamic.flac": the number is only in the tags), and the macOS Play listed it by
+        title. The sort of a page's rows by number (`rows.sort(key=... if any(x[1] for x in rows) else 0)`) looked at
+        `rows` while it was being sorted, and to Python a list being sorted is empty: the key was always 0, nothing
+        moved, and the files' order (by name) stood, unnoticed while names began with their numbers. Now each album's
+        tracks are put in disc and track order before any paging (a sort of one page put each page in order but not
+        the album), from their names and, with probe (an album's own list), their tags; an album none of whose tracks
+        has a number keeps its files' order. The albums stay in the order given."""
+        groups, out = {}, []
+        for t in tids:
+            groups.setdefault(self.tracks[t][0], []).append(t)
+        for ts in groups.values():
+            facts = {t: self.track_facts(t, probe) for t in ts}
+            if any(f[0] for f in facts.values()):
+                ts = sorted(ts, key=lambda t: (facts[t][4] or 1, facts[t][0] or 999, facts[t][1].casefold()))
+            out += ts
+        return out
 
     def probe(self, path):
-        """(number, title, artist, seconds) from the file's tags and length; zeros and blanks for what it lacks"""
+        """(number, title, artist, seconds, disc) from the file's tags and length; zeros and blanks for what it lacks"""
         ffprobe = self.lib.ffprobe or shutil.which('ffprobe')
         if ffprobe:
             try:
@@ -1618,9 +1776,10 @@ class Catalogue:
                                      capture_output=True, text=True, timeout=20)
                 f = json.loads(out.stdout or '{}').get('format', {})
                 tags = {k.lower(): v for k, v in (f.get('tags') or {}).items()}
-                m = re.match(r'\d+', tags.get('track', ''))
-                return (int(m.group(0)) if m else 0, tags.get('title', '').strip(), tags.get('artist', '').strip(),
-                        int(float(f.get('duration') or 0) + 0.5))
+                m = re.match(r'\s*(\d+)', tags.get('track', '') or tags.get('tracknumber', ''))
+                d = re.match(r'\s*(\d+)', tags.get('disc', '') or tags.get('discnumber', ''))   # "1/2": the first of two
+                return (int(m.group(1)) if m else 0, tags.get('title', '').strip(), tags.get('artist', '').strip(),
+                        int(float(f.get('duration') or 0) + 0.5), int(d.group(1)) if d else 0)
             except (OSError, ValueError, subprocess.SubprocessError):
                 pass
         if path.lower().endswith('.mp3'):                      # no ffprobe: the frames give the length
@@ -1631,27 +1790,31 @@ class Catalogue:
                 secs = 0
             t = song_title(path)
             artist, _, title = t.partition(' - ') if ' - ' in t else ('', '', t)
-            return 0, title, artist, int(secs + 0.5)
-        return 0, '', '', 0
+            return 0, title, artist, int(secs + 0.5), 0
+        return 0, '', '', 0, 0
 
-    def album_rows(self, ids, full=False):
-        """id, title, artist, tracks, seconds; with full=1 (the macOS Play) also the artist's id and the folder"""
+    def album_rows(self, ids, full=False, videos=False):
+        """id, title, artist, tracks, seconds; with full=1 (the macOS Play) also the artist's id and the folder, and with
+        full=1&videos=1 (23 November 2026) how many videos the album lists (its own and its songs')"""
         rows = []
         for al in ids:
             a = self.albums[al]
             secs = sum(self.track_info(t, probe=False)[3] for t in a['tracks'])
-            rows.append((al, a['title'], a['artist'], len(a['tracks']), secs) + ((a['aid'], Wide(a['rel'])) if full else ()))
+            rows.append((al, a['title'], a['artist'], len(a['tracks']), secs) + ((a['aid'], Wide(a['rel'])) if full else ()) +
+                        ((len(self.album_videos.get(al, ())),) if full and videos else ()))
         return rows
 
-    def track_rows(self, tids, probe=True, full=False):
+    def track_rows(self, tids, probe=True, full=False, videos=False):
         """id, number, title, artist, seconds, album; with full=1 also the path (for /file/), the album's title
-        and its folder"""
+        and its folder; with full=1&videos=1 (the macOS Play, 23 November 2026) also the id of the song's video (empty
+        when it has none). The classic Play sends neither, and its records are what they were"""
         rows = []
         for t in tids:
             n, title, artist, secs = self.track_info(t, probe)
             al, rel = self.tracks[t]
             rows.append((t, n, title, artist, secs, al) +
-                        ((Wide(rel), self.albums[al]['title'], Wide(self.albums[al]['rel'])) if full else ()))
+                        ((Wide(rel), self.albums[al]['title'], Wide(self.albums[al]['rel'])) if full else ()) +
+                        ((self.track_video.get(t, ''),) if full and videos else ()))
         return rows
 
 
@@ -2492,8 +2655,10 @@ function render(){crumbs();const L=listing,f=$('q').value.toLowerCase(),here=pat
  else if(L.artists)h+='<div class="grid">'+L.artists.filter(a=>a.name.toLowerCase().includes(f)||a.folders.some(x=>x.toLowerCase().includes(f)))
    .map(a=>tile(a.name,a.folders.length+' album'+(a.folders.length>1?'s':''),join(here,a.folders[0]),'showArtist('+J(a.name)+')')).join('')+'</div>';
  else if(L.folders.length)h+='<div class="grid">'+L.folders.filter(x=>x.toLowerCase().includes(f)).map(x=>tile(x,'',join(here,x),'open_('+J(join(here,x))+')')).join('')+'</div>';
- if(L.files.length&&!A)h+=(h?'<h3>Songs</h3>':'')+L.files.map((x,i)=>{const t='t:'+join(here,x);
+ const FV=L.file_videos||{};      // a song's music video (23 November 2026): the film mark plays it, as its poster does
+ if(L.files.length&&!A)h+=(h?'<h3>Songs</h3>':'')+L.files.map((x,i)=>{const t='t:'+join(here,x),fv=FV[x];if(fv)V[fv.id]=fv;
    return `<div class="row"><span class="n">${i+1}</span><span class="t">${esc(x.replace(/\.[^.]+$/,''))}</span>`+
+   (fv?`<button class="i film" title="Its video: ${esc(fv.title)}" ${on('watch('+J(fv.id)+')')}>&#127902;</button>`:'')+
    `<button class="i" title="Play now" ${on('act("play",{what:'+J(t)+'})')}>&#9654;</button>`+
    `<button class="i" title="Play next" ${on('act("next",{what:'+J(t)+',toast:"Plays next"})')}>&#8618;</button>`+
    `<button class="i" title="Add to queue" ${on('act("add",{what:'+J(t)+',toast:"Added"})')}>+</button></div>`}).join('');
@@ -2834,6 +2999,9 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
                                          cat.videos[v]['title'].casefold())) if shown(cat.videos[v]['home']) == rel]
                         for a in out.get('artists', []):
                             a['videos'] = [cat.video_json(v) for v in cat.artist_videos.get(short_id('\x01' + a['name'].casefold()), [])]
+                        # the songs here that have a video (23 November 2026): the panel marks them, and plays the video
+                        out['file_videos'] = {f: cat.video_json(cat.track_video[t]) for f in mp3s
+                                              for t in [short_id('\x02' + (f'{rel}/{f}' if rel else f))] if t in cat.track_video}
                     return self.send(200, 'application/json', json.dumps(out).encode())
                 if path == '/api/catalog':                    # the macOS Aurora68 Play's library, in one answer
                     cat.fresh()
@@ -2859,15 +3027,16 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
                     else:
                         return self.send(404, 'application/json', b'{"error": "tracks?album=ID or tracks?artist=ID"}')
                     out = []
+                    tids = cat.ordered(tids, probe)             # each album in disc and track order (Catalogue.ordered)
                     for t in tids:
                         n, title, artist, secs = cat.track_info(t, probe)
                         al, rel = cat.tracks[t]
                         out.append({'id': t, 'number': n, 'title': title, 'artist': artist, 'seconds': secs,
                                     'path': rel, 'album': al, 'album_title': cat.albums[al]['title'],
                                     'folder': cat.albums[al]['rel']})
-                    if q.get('album'):
-                        out.sort(key=lambda r: (r['number'] or 999, r['title'].casefold()))
-                    vids = cat.album_videos.get(q['album'], []) if q.get('album') in cat.albums else cat.artist_videos.get(q['artist'], [])
+                        if t in cat.track_video:                # its music video (23 November 2026)
+                            out[-1]['video'] = cat.track_video[t]
+                    vids = cat.album_video_list(q['album'], tids) if q.get('album') in cat.albums else cat.artist_videos.get(q['artist'], [])
                     return self.send(200, 'application/json', json.dumps({'tracks': out,
                                                                           'videos': [cat.video_json(v) for v in vids]}).encode())
                 if path == '/api/info':                       # what players poll: "library" changes with the folder
@@ -2879,7 +3048,7 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
                 if path == '/api/videos':                     # music videos: an artist's, an album's, or every one
                     cat.fresh()
                     if q.get('album'):
-                        vids = cat.album_videos.get(q['album'], [])
+                        vids = cat.album_video_list(q['album']) if q['album'] in cat.albums else []
                     elif q.get('artist'):
                         vids = cat.artist_videos.get(q['artist'], [])
                     else:
@@ -3033,7 +3202,7 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
                 return self.mac_device(what)
             if what == 'videos':                     # an artist's or an album's videos, or every one: V records
                 if q.get('album'):
-                    ids = cat.album_videos.get(q['album'], [])
+                    ids = cat.album_video_list(q['album']) if q['album'] in cat.albums else []
                 elif q.get('artist'):
                     ids = cat.artist_videos.get(q['artist'], [])
                 else:
@@ -3056,7 +3225,7 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
                 ids = cat.artists[aid]['albums'] if aid else sorted(cat.albums, key=lambda i: (sort_key(cat.albums[i]['artist']),
                                                                                               cat.albums[i]['title'].casefold()))
                 part, start = page_of(ids, q)
-                return self.mac_send(200, mac_answer('albums', len(ids), start, cat.album_rows(part, full), enc))
+                return self.mac_send(200, mac_answer('albums', len(ids), start, cat.album_rows(part, full, vids), enc))
             if what == 'tracks':
                 if q.get('album'):
                     a = cat.albums.get(q['album'])
@@ -3070,18 +3239,15 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
                     tids, probe = [t for al in ar['albums'] for t in cat.albums[al]['tracks']] if ar else [], False
                 else:
                     return self.mac_error(400, 'tracks?album=ID or tracks?artist=ID')
+                tids = cat.ordered(tids, probe)     # in disc and track order before the pages (Catalogue.ordered)
                 if vids:                             # the tracks, then the album's (or the artist's) videos: V records
-                    vl = cat.album_videos.get(q['album'], []) if q.get('album') else cat.artist_videos.get(q['artist'], [])
+                    vl = cat.album_video_list(q['album'], tids) if q.get('album') else cat.artist_videos.get(q['artist'], [])
                     part, start = page_of([('T', t) for t in tids] + [('V', v) for v in vl], q)
-                    rows = cat.track_rows([t for k, t in part if k == 'T'], probe, full)
-                    if probe:
-                        rows.sort(key=lambda r: (r[1] or 999, r[2].casefold()) if any(x[1] for x in rows) else 0)
+                    rows = cat.track_rows([t for k, t in part if k == 'T'], probe, full, vids)
                     rows += [cat.video_row(v, full) for k, v in part if k == 'V']
                     return self.mac_send(200, mac_answer('tracks', len(tids) + len(vl), start, rows, enc))
                 part, start = page_of(tids, q)
                 rows = cat.track_rows(part, probe, full)
-                if probe:
-                    rows.sort(key=lambda r: (r[1] or 999, r[2].casefold()) if any(x[1] for x in rows) else 0)
                 return self.mac_send(200, mac_answer('tracks', len(tids), start, rows, enc))
             if what == 'search':                  # the Mac sends its words in Mac Roman, %XX for each byte (enc=utf8: UTF-8)
                 mq = self.mac_q()

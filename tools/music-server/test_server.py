@@ -656,6 +656,117 @@ def videos_check(tmp, pc):
     check(no_ffmpeg_left(lib), 'no ffmpeg left when the servers stop')
 
 
+def links_check(tmp):
+    """23 November 2026: an album's songs in track order when the files are named by title alone (the owner's "Discovery",
+    listed by title by the macOS Play), across pages and by disc; and music videos linked to songs (README "Videos linked
+    to songs"): by artist and title, the tags a video's name carries left out, a Live video to the Live song, a video of
+    one song on two albums, an album's list with its songs' videos from the artist's folder, each once. Its own library
+    of tones and ffmpeg's test picture, a few seconds each, never committed"""
+    import shutil
+    sys.path.insert(0, HERE)
+    import aurora68_music_server as m
+    lt = m.link_title
+    check(lt('One More Time (Official Video)') == ('one more time', 'one more time') and
+          lt('Harder, Better, Faster, Stronger (Official Music Video) [HD]') == ('harder better faster stronger',) * 2 and
+          lt('Song [4K] (Lyric Video)') == ('song', 'song') and lt('Song (feat. Guest) - Remastered 2011') == ('song', 'song') and
+          lt('Get Lucky feat. Pharrell Williams - Radio Edit') == ('get lucky radio edit', 'get lucky') and
+          lt('Song (Live)') == ('song live', 'song') and lt('Y (Acoustic Version)') == ('y acoustic version', 'y') and
+          lt('Don’t Stop (Visualiser)') == lt("Don't stop") and lt('ＯＮＥ') == ('one', 'one'),
+          'a title\'s keys: casefolded, NFKC, the file\'s tags left out (official video, HD, lyric video, feat., remastered), '
+          'a version\'s kept (Live, Radio Edit, Acoustic)')
+    check(m.link_names('Daft Punk, Julian Casablancas - Instant Crush', 'Daft Punk') == [('daft punk', 'instant crush', 'instant crush')] and
+          ('daft punk', 'around the world', 'around the world') in m.link_names('Daft Punk - Around the World', 'Various') and
+          m.link_artist('The Beatles') == 'beatles', 'an "Artist - " in front: the artist\'s own title, or another artist\'s')
+    lib = os.path.join(tmp, 'music-links')
+    dp = os.path.join(lib, 'Daft Punk')
+
+    def song(path, n, title, disc=None):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        ffmpeg('-f', 'lavfi', '-i', f'sine=frequency={300 + 20 * n}:duration=1', '-c:a', 'flac', '-metadata', f'TITLE={title}',
+               '-metadata', 'ARTIST=Daft Punk', '-metadata', f'TRACKNUMBER={n}', *(['-metadata', f'DISCNUMBER={disc}'] if disc else []), path)
+    disc = [(1, 'One More Time'), (2, 'Aerodynamic'), (3, 'Digital Love'), (4, 'Harder, Better, Faster, Stronger'),
+            (5, 'Crescendolls'), (6, 'Face to Face')]
+    for n, t in disc:                                # named by title alone, as the owner's downloader names them
+        song(f'{dp}/Discovery/{t}.flac', n, t)
+    song(f'{dp}/Discovery (Deluxe)/One More Time (Radio Edit).flac', 1, 'One More Time (Radio Edit)')
+    song(f'{dp}/Discovery (Deluxe)/Aerodynamic.flac', 2, 'Aerodynamic')
+    song(f'{dp}/Alive 2007/One More Time (Live).flac', 1, 'One More Time (Live)')
+    for name, n, d in (('A Song', 1, '2/2'), ('B Song', 2, '1/2'), ('C Song', 1, '1/2')):   # two discs in one folder
+        song(f'{lib}/Zeta - Double/{name}.flac', n, name, d)
+    clip = os.path.join(tmp, 'links-clip.mp4')
+    ffmpeg('-f', 'lavfi', '-i', 'testsrc=size=160x120:rate=25:duration=2', '-f', 'lavfi', '-i', 'sine=frequency=500:duration=2',
+           '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '64k', '-shortest', clip)
+    vids = {'official': f'{dp}/One More Time (Official Video).mp4', 'live': f'{dp}/Daft Punk - One More Time (Live).mp4',
+            'hbfs': f'{dp}/Videos/Daft Punk - Harder, Better, Faster, Stronger (Official Music Video) [HD].mp4',
+            'aero': f'{dp}/Videos/Aerodynamic (Visualizer).mp4', 'other': f'{lib}/Other Band - One More Time.mp4'}
+    for k, p in vids.items():
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        shutil.copy(clip, p)
+    srv, port = start_server(lib, 'Links', {'MUSIC_CACHE': os.path.join(tmp, 'cache-links')})
+    base = f'http://127.0.0.1:{port}'
+    try:
+        cat = json.loads(get(base, '/api/catalog')[2])
+        al = {a['title']: a for a in cat['albums']}
+        dpa = next(a for a in cat['artists'] if a['name'] == 'Daft Punk')
+        vs = {v['path']: v for v in json.loads(get(base, '/api/videos')[2])['videos']}
+        vid = {k: vs[os.path.relpath(p, lib)]['id'] for k, p in vids.items()}
+        byid = {v['id']: v for v in vs.values()}
+
+        def rows(path):
+            body = get(base, path)[2]
+            return [x.split(b'\t') for x in body.split(b'\r') if x]
+        # the order: by track number across two pages, as the macOS Play asks (and the classic Play, and the JSON)
+        d = al['Discovery']['id']
+        want = [t for _, t in disc]
+        page1 = rows(f'/mac/tracks?album={d}&enc=utf8&full=1&videos=1&count=4')
+        page2 = rows(f'/mac/tracks?album={d}&enc=utf8&full=1&videos=1&from=4&count=10')
+        t_rows = [r for r in page1[1:] + page2[1:] if r[0] != b'V']
+        check([r[2].decode() for r in t_rows] == want and [int(r[1]) for r in t_rows] == list(range(1, 7)),
+              f'files named by title, numbers in the tags: the album in track order across pages ({[r[2].decode() for r in t_rows]})')
+        classic = rows(f'/mac/tracks?album={d}&count=4')[1:] + rows(f'/mac/tracks?album={d}&from=4')[1:]
+        check([r[2].decode('mac_roman') for r in classic] == want and all(len(r) == 6 for r in classic),
+              'and as the classic Play asks (Mac Roman, short records): the same order, six fields')
+        js = json.loads(get(base, f'/api/tracks?album={d}')[2])
+        check([t['title'] for t in js['tracks']] == want, '/api/tracks: the same order')
+        z = rows(f'/mac/tracks?album={al["Double"]["id"]}&enc=utf8&full=1')
+        check([r[2] for r in z[1:]] == [b'C Song', b'B Song', b'A Song'], f'two discs in one folder: disc, then track ({[r[2] for r in z[1:]]})')
+
+        # the links: T records with full=1&videos=1 end with the song's video; V records list the album's and its songs'
+        tv = {r[2].decode(): r for r in t_rows}
+        check(all(len(r) == 10 for r in t_rows) and tv['One More Time'][9] == vid['official'].encode() and
+              tv['Aerodynamic'][9] == vid['aero'].encode() and tv['Harder, Better, Faster, Stronger'][9] == vid['hbfs'].encode() and
+              tv['Digital Love'][9] == b'', 'full=1&videos=1: a tenth field, the song\'s video (official video, visualizer, '
+              '[HD] left out), empty for a song without one')
+        v_rows = [r[1].decode() for r in page1[1:] + page2[1:] if r[0] == b'V']
+        check(v_rows == [vid['official'], vid['aero'], vid['hbfs']] and page2[0][3] == b'9',
+              f'the album lists the videos of its songs from the artist\'s folder, in its songs\' order, once ({v_rows})')
+        check(byid[vid['live']]['tracks'] == [t['id'] for t in json.loads(get(base, f'/api/tracks?album={al["Alive 2007"]["id"]}')[2])['tracks']]
+              and byid[vid['official']]['tracks'] == [js['tracks'][0]['id']],
+              'a Live video is the Live song\'s; the official video the studio song\'s, not the Radio Edit\'s (nothing better only)')
+        deluxe = json.loads(get(base, f'/api/tracks?album={al["Discovery (Deluxe)"]["id"]}')[2])
+        aero = [t['id'] for t in js['tracks'] + deluxe['tracks'] if t['title'] == 'Aerodynamic']
+        check(byid[vid['aero']]['tracks'] == [aero[1], aero[0]] or sorted(byid[vid['aero']]['tracks']) == sorted(aero),
+              'one video of a song on two albums: linked to both')
+        check(js['tracks'][0].get('video') == vid['official'] and 'video' not in js['tracks'][2] and
+              [v['id'] for v in js['videos']] == v_rows and byid[vid['other']]['tracks'] == [],
+              '/api/tracks: "video" on a song that has one; another artist\'s video of the same title is not linked')
+        arts = rows(f'/mac/videos?artist={dpa["id"]}&enc=utf8&full=1')
+        ids = [r[1].decode() for r in arts[1:]]
+        check(sorted(ids) == sorted(vid[k] for k in ('official', 'live', 'hbfs', 'aero')) and len(set(ids)) == len(ids) and dpa['videos'] == 4,
+              f'the artist\'s videos: those attached to it, each once ({len(ids)})')
+        alb = rows(f'/mac/albums?artist={dpa["id"]}&enc=utf8&full=1&videos=1')
+        counts = {r[1].decode(): r[7] for r in alb[1:]}
+        check(counts == {'Alive 2007': b'1', 'Discovery': b'3', 'Discovery (Deluxe)': b'1'} and
+              all(len(r) == 7 for r in rows(f'/mac/albums?artist={dpa["id"]}&enc=utf8&full=1')[1:]),
+              f'/mac/albums with full=1&videos=1: an eighth field, the album\'s videos; without videos=1 seven ({counts})')
+        lst = json.loads(get(base, '/api/list?dir=' + urllib.parse.quote('Daft Punk/Discovery'))[2])
+        check(sorted(lst.get('file_videos', {})) == ['Aerodynamic.flac', 'Harder, Better, Faster, Stronger.flac', 'One More Time.flac'],
+              '/api/list: the songs with a video, for the panel\'s film mark')
+    finally:
+        srv.terminate()
+        srv.wait(10)
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix='a68-music-test-')
     lib = os.path.join(tmp, 'music')
@@ -1054,6 +1165,7 @@ def main():
     # without ffmpeg: MP3s only, and the scan says what it passed over
     devices_check(tmp)
     videos_check(tmp, pc)
+    links_check(tmp)
 
     s2 = socket.socket(); s2.bind(('127.0.0.1', 0)); port2 = s2.getsockname()[1]; s2.close()
     srv2 = subprocess.Popen([sys.executable, os.path.join(HERE, 'aurora68_music_server.py'), lib, '--port', str(port2),

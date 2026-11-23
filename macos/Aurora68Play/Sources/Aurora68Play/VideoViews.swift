@@ -10,6 +10,10 @@
 // Video window shows that player's picture in AVKit's AVPlayerView: its own play, pause and position controls, and
 // full screen (the green button, or the view's own). The window opens by itself when a video begins (ContentView)
 // and from the player bar's film button; closing it leaves the sound playing, as a TV in another room would.
+//
+// 1.4 (23 November 2026, docs/08 item 115): an artist's videos as a row near the top of its page (VideoRow, See All
+// opening VideoListView), and the sidebar's Videos page (AllVideosView: every video, grouped by artist, filtered by
+// the search field). An album's videos now include those of its songs that sit in the artist's folder.
 import AVKit
 import SwiftUI
 import Aurora68Core
@@ -61,23 +65,115 @@ struct VideoGrid: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var player: Player
     let videos: [Track]
+    var heading: String? = "Videos"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Videos").font(.title2.bold())
+            if let heading { Text(heading).font(.title2.bold()) }
             LazyVGrid(columns: videoColumns, alignment: .leading, spacing: 20) {
                 ForEach(Array(videos.enumerated()), id: \.element.id) { i, v in
                     VideoTile(video: v, poster: model.posterURL(v), playing: player.current?.id == v.id && model.output == .thisMac)
                         .onTapGesture { model.play(videos, from: i) }
-                        .contextMenu {
-                            Button("Play") { model.play(videos, from: i) }
-                            Button("Play Next") { model.playNext([v]) }
-                            Button("Add to Queue") { model.add([v]) }
-                        }
+                        .contextMenu { VideoMenu(model: model, videos: videos, index: i) }
                 }
             }
         }
         .padding(.top, 8)
+    }
+}
+
+/// a video poster's menu (the model handed over: a menu is not sure to see the window's environment)
+struct VideoMenu: View {
+    let model: AppModel
+    let videos: [Track]
+    let index: Int
+
+    var body: some View {
+        Button("Play") { model.play(videos, from: index) }
+        Button("Play Next") { model.playNext([videos[index]]) }
+        Button("Add to Queue") { model.add([videos[index]]) }
+    }
+}
+
+/// a page of videos (an artist's See All): the value a NavigationLink opens
+struct VideoList: Hashable {
+    let title: String
+    let videos: [Track]
+}
+
+struct VideoListView: View {
+    let list: VideoList
+
+    var body: some View {
+        ScrollView {
+            VideoGrid(videos: list.videos, heading: nil).padding(24)
+        }
+        .navigationTitle(list.title)
+    }
+}
+
+/// an artist's videos as one row of posters that scrolls sideways (23 November 2026: near the top of its page, where the
+/// owner looks first), with See All for the whole grid
+struct VideoRow: View {
+    @EnvironmentObject var model: AppModel
+    @EnvironmentObject var player: Player
+    let videos: [Track]
+    let all: VideoList
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Videos").font(.title2.bold())
+                Text("\(videos.count)").foregroundStyle(.secondary)
+                Spacer()
+                NavigationLink(value: all) { Text("See All") }
+                    .buttonStyle(.link)
+            }
+            .padding(.horizontal, 24)
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: 18) {
+                    ForEach(Array(videos.enumerated()), id: \.element.id) { i, v in
+                        VideoTile(video: v, poster: model.posterURL(v), playing: player.current?.id == v.id && model.output == .thisMac)
+                            .frame(width: 220)
+                            .onTapGesture { model.play(videos, from: i) }
+                            .contextMenu { VideoMenu(model: model, videos: videos, index: i) }
+                    }
+                }
+                .padding(.horizontal, 24)
+                .padding(.vertical, 4)
+            }
+        }
+    }
+}
+
+/// the sidebar's Videos: every music video of the library, by artist; the search field filters it
+struct AllVideosView: View {
+    @EnvironmentObject var model: AppModel
+    @State private var videos: [Track] = []
+    @State private var loading = true
+
+    var body: some View {
+        let shelf = VideoShelf(videos, matching: model.search)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 28) {
+                if loading {
+                    ProgressView().frame(maxWidth: .infinity)
+                } else if shelf.groups.isEmpty {
+                    Text(videos.isEmpty ? "There are no music videos in the library." : "No video matches \u{201C}\(model.search)\u{201D}.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(shelf.groups) { g in
+                    VideoGrid(videos: g.videos, heading: g.artist)
+                }
+            }
+            .padding(24)
+        }
+        .navigationTitle("Videos")
+        .task(id: model.generation) {                     // again when the library changed
+            loading = videos.isEmpty
+            videos = await model.everyVideo()
+            loading = false
+        }
     }
 }
 

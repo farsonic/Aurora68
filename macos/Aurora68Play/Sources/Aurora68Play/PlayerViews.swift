@@ -89,6 +89,7 @@ struct PlayerBar: View {
     @EnvironmentObject var live: LiveController
     @EnvironmentObject var devices: DeviceLink
     @State private var scrub: Double?
+    @AppStorage(Prefs.videosInstead) private var videosInstead = false
 
     private var isLive: Bool { model.output == .live }
     private var remote: DeviceState? { model.remoteState }
@@ -150,6 +151,9 @@ struct PlayerBar: View {
                 } else if isRemote {
                     Label("On \(model.label(model.output))", systemImage: model.symbol(model.output))
                         .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                } else if player.currentIsVideo {
+                    Label(videosInstead ? "Music video (videos instead of songs)" : "Music video", systemImage: "film")
+                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
         }
@@ -181,7 +185,7 @@ struct PlayerBar: View {
         }
         if player.listeningLive { return "Internet radio" }
         guard let t = player.current else { return player.error ?? "" }
-        return "\(t.artist) \u{2014} \(t.albumTitle)"
+        return t.albumTitle.isEmpty ? t.artist : "\(t.artist) \u{2014} \(t.albumTitle)"
     }
 
     private var liveListeners: String {
@@ -470,6 +474,7 @@ struct LiveView: View {
 struct SettingsView: View {
     @EnvironmentObject var model: AppModel
     @State private var typed = ""
+    @AppStorage(Prefs.videosInstead) private var videosInstead = false
 
     var body: some View {
         Form {
@@ -501,6 +506,11 @@ struct SettingsView: View {
                     ForEach(IPFamily.allCases) { Text($0.label).tag($0) }
                 }
                 Text("When the server has both an IPv6 and an IPv4 address, the preferred one is tried first, then the other.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Music videos") {
+                Toggle("Play Videos Instead of Songs", isOn: $videosInstead)
+                Text("An album, an artist or a song played here or on another Mac plays each song\u{2019}s music video in its place where it has one (a film mark in the song\u{2019}s row). Live plays the songs.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("This Mac as a player") {

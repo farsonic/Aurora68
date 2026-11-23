@@ -7,6 +7,10 @@
 // an album with its cover and songs; a search field in the toolbar filters artists and albums as one
 // types. Covers come from the server's /art (the folder's cover.jpg, or the picture inside its first
 // song) through URLSession's cache, so a grid of a hundred albums is fetched once.
+//
+// 1.4 (23 November 2026, docs/08 item 115): music videos easier to find. The sidebar has Videos (every video, by
+// artist); an artist's page shows its videos as a row of posters under its name (See All: the whole grid); artists and
+// albums with videos have a small film mark; a song with a video has a film button and "Play Video" in its menu.
 import SwiftUI
 import Aurora68Core
 
@@ -25,7 +29,7 @@ struct ContentView: View {
             Divider()
             PlayerBar()
         }
-        .searchable(text: $model.search, placement: .toolbar, prompt: "Artists and albums")
+        .searchable(text: $model.search, placement: .toolbar, prompt: "Artists, albums and videos")
         .toolbar {
             ToolbarItem(placement: .primaryAction) { OutputPicker() }
         }
@@ -44,6 +48,7 @@ struct Sidebar: View {
             Section("Library") {
                 Label("Artists", systemImage: "music.mic").tag(AppModel.Section.artists)
                 Label("Albums", systemImage: "square.stack").tag(AppModel.Section.albums)
+                Label("Videos", systemImage: "film").tag(AppModel.Section.videos)
             }
             Section("Stations") {
                 Label("Live and Radio", systemImage: "dot.radiowaves.left.and.right").tag(AppModel.Section.live)
@@ -103,11 +108,13 @@ struct DetailRoot: View {
                 switch model.section ?? .artists {
                 case .artists: ArtistsGrid()
                 case .albums: AlbumsGrid(albums: model.filteredAlbums, showArtist: true)
+                case .videos: AllVideosView()
                 case .live: LiveView()
                 }
             }
             .navigationDestination(for: Artist.self) { ArtistView(artist: $0) }
             .navigationDestination(for: Album.self) { AlbumView(album: $0) }
+            .navigationDestination(for: VideoList.self) { VideoListView(list: $0) }
         }
         .onChange(of: model.section) { _ in path = NavigationPath() }
     }
@@ -138,12 +145,17 @@ struct Tile: View {
     let cover: URL?
     let title: String
     let subtitle: String
+    var film = false                                   // it has music videos: a small film mark after the subtitle
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Cover(url: cover).shadow(color: .black.opacity(0.15), radius: 4, y: 2)
             Text(title).font(.headline).lineLimit(1)
-            Text(subtitle).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+            HStack(spacing: 4) {
+                Text(subtitle).lineLimit(1)
+                if film { Image(systemName: "film").imageScale(.small).help("Has music videos") }
+            }
+            .font(.subheadline).foregroundStyle(.secondary)
         }
         .contentShape(Rectangle())
     }
@@ -160,7 +172,7 @@ struct ArtistsGrid: View {
                 ForEach(model.filteredArtists) { artist in
                     NavigationLink(value: artist) {
                         Tile(cover: model.coverURL(model.index?.coverAlbum(of: artist)), title: artist.name,
-                             subtitle: artistSummary(artist))
+                             subtitle: artistSummary(artist), film: artist.videos > 0)
                     }
                     .buttonStyle(.plain)
                     .contextMenu {
@@ -183,35 +195,46 @@ func artistSummary(_ a: Artist) -> String {
     return parts.joined(separator: ", ")
 }
 
-struct AlbumsGrid: View {
+/// albums as covers (the Albums page, an artist's page)
+struct AlbumTiles: View {
     @EnvironmentObject var model: AppModel
     let albums: [Album]
     var showArtist = false
-    var videos: [Track] = []                           // an artist's music videos, after its albums
+
+    var body: some View {
+        LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 24) {
+            ForEach(albums) { album in
+                NavigationLink(value: album) {
+                    Tile(cover: model.coverURL(album), title: album.title,
+                         subtitle: showArtist ? album.artist : (album.tracks == 1 ? "1 song" : "\(album.tracks) songs"),
+                         film: album.videos > 0)
+                }
+                .buttonStyle(.plain)
+                .contextMenu {
+                    Button("Play") { model.play(album: album) }
+                    Button("Shuffle") { model.play(album: album, shuffled: true) }
+                    Button("Add to Queue") { model.add(album: album) }
+                }
+            }
+        }
+    }
+}
+
+struct AlbumsGrid: View {
+    let albums: [Album]
+    var showArtist = false
 
     var body: some View {
         ScrollView {
-            LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 24) {
-                ForEach(albums) { album in
-                    NavigationLink(value: album) {
-                        Tile(cover: model.coverURL(album), title: album.title,
-                             subtitle: showArtist ? album.artist : (album.tracks == 1 ? "1 song" : "\(album.tracks) songs"))
-                    }
-                    .buttonStyle(.plain)
-                    .contextMenu {
-                        Button("Play") { model.play(album: album) }
-                        Button("Shuffle") { model.play(album: album, shuffled: true) }
-                        Button("Add to Queue") { model.add(album: album) }
-                    }
-                }
-            }
-            .padding(24)
-            if !videos.isEmpty { VideoGrid(videos: videos).padding([.horizontal, .bottom], 24) }
+            AlbumTiles(albums: albums, showArtist: showArtist).padding(24)
         }
         .navigationTitle("Albums")
     }
 }
 
+/// An artist: its name and buttons, then (23 November 2026, the owner: "we need this in the artist page or something to
+/// make it easy to see videos") its music videos as a row of posters near the top, with See All for the whole grid,
+/// then its albums
 struct ArtistView: View {
     @EnvironmentObject var model: AppModel
     let artist: Artist
@@ -219,19 +242,28 @@ struct ArtistView: View {
 
     var body: some View {
         let artist = model.current(self.artist)            // its albums as they are now (new ones appear)
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading) {
-                    Text(artist.name).font(.largeTitle.bold())
-                    Text(artistSummary(artist)).foregroundStyle(.secondary)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading) {
+                        Text(artist.name).font(.largeTitle.bold())
+                        Text(artistSummary(artist)).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button { model.play(artist: artist) } label: { Label("Play", systemImage: "play.fill") }
+                        .buttonStyle(.borderedProminent)
+                    Button { model.play(artist: artist, shuffled: true) } label: { Label("Shuffle", systemImage: "shuffle") }
                 }
-                Spacer()
-                Button { model.play(artist: artist) } label: { Label("Play", systemImage: "play.fill") }
-                    .buttonStyle(.borderedProminent)
-                Button { model.play(artist: artist, shuffled: true) } label: { Label("Shuffle", systemImage: "shuffle") }
+                .padding([.horizontal, .top], 24)
+                if !videos.isEmpty {
+                    VideoRow(videos: videos, all: VideoList(title: "\(artist.name) \u{2014} Videos", videos: videos))
+                        .padding(.top, 20)
+                }
+                if !artist.albums.isEmpty {
+                    if !videos.isEmpty { Text("Albums").font(.title2.bold()).padding([.horizontal, .top], 24) }
+                    AlbumTiles(albums: model.albums(of: artist)).padding(24)
+                }
             }
-            .padding([.horizontal, .top], 24)
-            AlbumsGrid(albums: model.albums(of: artist), videos: videos)
         }
         .navigationTitle(artist.name)
         .task(id: "\(artist.id) \(model.generation)") { videos = await model.videos(artist: model.current(self.artist)) }
@@ -274,11 +306,13 @@ struct AlbumView: View {
                 } else {
                     VStack(spacing: 0) {
                         ForEach(Array(tracks.enumerated()), id: \.element.id) { i, t in
-                            TrackRow(track: t, position: i + 1, playing: player.current?.id == t.id && model.output == .thisMac,
-                                     differentArtist: t.artist != album.artist)
+                            let hasVideo = model.video(of: t) != nil
+                            TrackRow(track: t, position: i + 1, playing: playing(t), differentArtist: t.artist != album.artist,
+                                     hasVideo: hasVideo, onVideo: { model.playVideo(of: t, among: videos) })
                                 .onTapGesture(count: 2) { model.play(tracks, from: i) }
                                 .contextMenu {
                                     Button("Play") { model.play(tracks, from: i) }
+                                    if hasVideo { Button("Play Video") { model.playVideo(of: t, among: videos) } }
                                     Button("Play Next") { model.playNext([t]) }
                                     Button("Add to Queue") { model.add([t]) }
                                 }
@@ -300,6 +334,12 @@ struct AlbumView: View {
         }
     }
 
+    /// the song plays here: itself, or its video in its place
+    private func playing(_ t: Track) -> Bool {
+        guard model.output == .thisMac, let c = player.current else { return false }
+        return c.id == t.id || (c.isVideo && c.id == t.linkedVideo)
+    }
+
     private var summary: String {
         let total = tracks.reduce(0) { $0 + $1.seconds }
         let n = tracks.isEmpty ? album.tracks : tracks.count
@@ -307,11 +347,15 @@ struct AlbumView: View {
     }
 }
 
+/// a song in an album's list; one with a music video has a film button (23 November 2026) that plays the video, while a
+/// double click on the row still plays the song
 struct TrackRow: View {
     let track: Track
     let position: Int
     let playing: Bool
     let differentArtist: Bool
+    var hasVideo = false
+    var onVideo: () -> Void = {}
     @State private var hover = false
 
     var body: some View {
@@ -327,6 +371,12 @@ struct TrackRow: View {
                 if differentArtist { Text(track.artist).font(.caption).foregroundStyle(.secondary) }
             }
             Spacer()
+            if hasVideo {
+                Button(action: onVideo) { Image(systemName: "film") }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(hover ? Color.accentColor : Color.secondary)
+                    .help("Play its video")
+            }
             Text(track.seconds > 0 ? TrackName.time(Double(track.seconds)) : "")
                 .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
         }

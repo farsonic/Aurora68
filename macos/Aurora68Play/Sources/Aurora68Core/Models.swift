@@ -42,7 +42,7 @@ public struct Catalog: Equatable {
             while a68_next_album(&r.rec, &a) != 0 {
                 guard a.full != 0 else { throw MusicAPIError.olderServer }
                 list.append(Album(id: text(a.id), title: text(a.title), artist: text(a.artist), artistID: text(a.artist_id),
-                                  folder: text(a.folder), tracks: Int(a.tracks)))
+                                  folder: text(a.folder), tracks: Int(a.tracks), videos: Int(a.videos)))
             }
         }
         var byArtist: [String: [String]] = [:]
@@ -79,10 +79,11 @@ public struct Album: Identifiable, Hashable {
     public let artistID: String
     public let folder: String            // its folder in the library: /art?dir=FOLDER is its cover
     public let tracks: Int
+    public let videos: Int               // the music videos it lists, its own and its songs' (0 from an older server)
 
-    public init(id: String, title: String, artist: String, artistID: String, folder: String, tracks: Int) {
+    public init(id: String, title: String, artist: String, artistID: String, folder: String, tracks: Int, videos: Int = 0) {
         self.id = id; self.title = title; self.artist = artist; self.artistID = artistID
-        self.folder = folder; self.tracks = tracks
+        self.folder = folder; self.tracks = tracks; self.videos = videos
     }
 }
 
@@ -130,14 +131,18 @@ public struct Track: Identifiable, Hashable {
     public let albumTitle: String
     public let folder: String
     public let video: VideoInfo?         // a music video (nil: a song)
+    public let linkedVideo: String?      // a song's music video, its id (the server links them by artist and title)
 
     public init(id: String, number: Int, title: String, artist: String, seconds: Int, path: String,
-                album: String, albumTitle: String, folder: String, video: VideoInfo? = nil) {
+                album: String, albumTitle: String, folder: String, video: VideoInfo? = nil, linkedVideo: String? = nil) {
         self.id = id; self.number = number; self.title = title; self.artist = artist; self.seconds = seconds
         self.path = path; self.album = album; self.albumTitle = albumTitle; self.folder = folder; self.video = video
+        self.linkedVideo = linkedVideo
     }
 
     public var isVideo: Bool { video != nil }
+    /// a song that has a music video
+    public var hasVideo: Bool { !isVideo && linkedVideo != nil }
 
     /// what the server's "what" names it by: t:PATH for a song, v:ID for a video
     public var what: String { isVideo ? LiveWhat.video(id) : LiveWhat.track(path) }
@@ -157,9 +162,10 @@ public struct Track: Identifiable, Hashable {
                 continue
             }
             guard t.full != 0 else { throw MusicAPIError.olderServer }
+            let linked = text(t.video)                     // empty: no video (or a server before 23 November 2026)
             out.append(Track(id: text(t.id), number: Int(t.number), title: text(t.title), artist: text(t.artist),
                              seconds: Int(t.secs), path: text(t.path), album: text(t.album), albumTitle: text(t.album_title),
-                             folder: text(t.folder)))
+                             folder: text(t.folder), linkedVideo: linked.isEmpty ? nil : linked))
         }
         return (out, head.next, videos)
     }
@@ -182,6 +188,60 @@ public struct Track: Identifiable, Hashable {
         while a68_next_video(&r.rec, &v) != 0 { out.append(Track.fromVideo(v)) }
         return (out, head.next)
     }
+}
+
+/// Videos linked to songs (23 November 2026, docs/08 item 115). The server links a music video to the songs it is of
+/// (tools/music-server/README.md, "Videos linked to songs") and says so in each song's record (Track.linkedVideo); an
+/// album's videos include those of its songs. The owner asked to "link them to a song to alternate": with "Play Videos
+/// Instead of Songs" on, a list played here becomes each song's video where it has one, the song where it has none.
+public enum VideoLinks {
+    /// videos by their ids, for finding a song's (the first of each id wins)
+    public static func index(_ videos: [Track]) -> [String: Track] {
+        var out: [String: Track] = [:]
+        for v in videos where v.isVideo && out[v.id] == nil { out[v.id] = v }
+        return out
+    }
+
+    /// the video of a song, if it has one and it is among the videos known
+    public static func video(of song: Track, in videos: [String: Track]) -> Track? {
+        guard song.hasVideo, let id = song.linkedVideo else { return nil }
+        return videos[id]
+    }
+
+    /// the list with each song that has a video known replaced by it, one for one (so a place in the list stays the
+    /// same place); videos and songs without one stay as they are
+    public static func alternate(_ list: [Track], videos: [String: Track]) -> [Track] {
+        list.map { video(of: $0, in: videos) ?? $0 }
+    }
+}
+
+/// every music video of the library (/mac/videos, which the server sorts by artist), grouped by artist for the
+/// Videos page; filtered as the artists and albums are (every word, case and accents ignored)
+public struct VideoShelf: Equatable {
+    public struct Group: Equatable, Identifiable {
+        public let artist: String
+        public let videos: [Track]
+        public var id: String { artist }
+    }
+    public let groups: [Group]
+
+    public init(_ videos: [Track], matching text: String = "") {
+        let words = LibraryIndex.words(text)
+        var groups: [Group] = []
+        var seen = Set<String>()
+        for v in videos where !seen.contains(v.id) {
+            seen.insert(v.id)
+            if !words.isEmpty && !LibraryIndex.matches(v.title + " " + v.artist + " " + v.albumTitle, words) { continue }
+            if let last = groups.last, LibraryIndex.fold(last.artist) == LibraryIndex.fold(v.artist) {
+                groups[groups.count - 1] = Group(artist: last.artist, videos: last.videos + [v])
+            } else {
+                groups.append(Group(artist: v.artist, videos: [v]))
+            }
+        }
+        self.groups = groups
+    }
+
+    public var count: Int { groups.reduce(0) { $0 + $1.videos.count } }
 }
 
 /// /mac/now: what the Live channel plays (what is heard, not what was sent ahead)

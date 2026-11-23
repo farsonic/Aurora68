@@ -432,6 +432,74 @@ final class VideoTests: XCTestCase {
         XCTAssertEqual(VideoHow("something new"), .unknown)
     }
 
+    /// videos linked to songs (23 November 2026): a song's record ends with its video's id (full=1&videos=1), an older
+    /// server's does not; an album's with how many videos it lists
+    func testSongsVideoField() throws {
+        let tr = answer(["A68M\t1\ttracks\t5\t0\t5",
+                         "t1\t1\tOne More Time\tDaft Punk\t320\ta1\tDaft Punk/Discovery/One More Time.flac\tDiscovery\tDaft Punk/Discovery\tv1",
+                         "t2\t2\tAerodynamic\tDaft Punk\t212\ta1\tDaft Punk/Discovery/Aerodynamic.flac\tDiscovery\tDaft Punk/Discovery\t",
+                         "t3\t3\tDigital Love\tDaft Punk\t301\ta1\tDaft Punk/Discovery/Digital Love.flac\tDiscovery\tDaft Punk/Discovery",
+                         "V\tv1\tOne More Time (Official Video)\tDaft Punk\t324\t\t1920\t1080\tDaft Punk/One More Time (Official Video).mp4\t\tDaft Punk\tdirect",
+                         "V\tv9\tSomething Else\tDaft Punk\t200\t\t1280\t720\tDaft Punk/Something Else.mp4\t\tDaft Punk\tdirect"])
+        let p = try Track.page(tr)
+        XCTAssertEqual(p.tracks.map(\.linkedVideo), ["v1", nil, nil])     // present, empty, absent (an older server)
+        XCTAssertEqual(p.tracks.map(\.hasVideo), [true, false, false])
+        XCTAssertEqual(p.tracks.map(\.number), [1, 2, 3])
+        XCTAssertEqual(p.videos.map(\.id), ["v1", "v9"])
+        XCTAssertFalse(p.videos[0].hasVideo)                              // a video is not a song with one
+        let albums = answer(["A68M\t1\talbums\t2\t0\t2", "a1\tDiscovery\tDaft Punk\t14\t3660\tb1\tDaft Punk/Discovery\t3",
+                             "a2\tHomework\tDaft Punk\t16\t4400\tb1\tDaft Punk/Homework"])
+        let info = answer(["A68M\t1\tinfo\t1\t0\t1", "Home Music\t4\t1\t2\t30\t7\t20\t3\tvideos"])
+        let artists = answer(["A68M\t1\tartists\t1\t0\t1", "b1\tDaft Punk\t2\t30\t3"])
+        let c = try Catalog.make(info: info, artists: [artists], albums: [albums])
+        XCTAssertEqual(c.albums.map(\.videos), [3, 0])
+    }
+
+    /// "Play Videos Instead of Songs": each song with a video known becomes it, one for one; the rest stay
+    func testVideosInsteadOfSongs() throws {
+        func song(_ id: String, _ video: String?) -> Track {
+            Track(id: id, number: 0, title: id, artist: "Daft Punk", seconds: 1, path: "Daft Punk/Discovery/\(id).flac", album: "a1",
+                  albumTitle: "Discovery", folder: "Daft Punk/Discovery", linkedVideo: video)
+        }
+        func video(_ id: String) -> Track {
+            Track(id: id, number: 0, title: id, artist: "Daft Punk", seconds: 1, path: "Daft Punk/\(id).mp4", album: "", albumTitle: "",
+                  folder: "Daft Punk", video: VideoInfo(how: .direct))
+        }
+        let songs = [song("t1", "v1"), song("t2", nil), song("t3", "v3"), song("t4", "gone")]
+        let known = VideoLinks.index([video("v1"), video("v3"), video("v1"), song("t9", nil)])
+        XCTAssertEqual(Set(known.keys), ["v1", "v3"])                    // videos only, each once
+        let list = VideoLinks.alternate(songs, videos: known)
+        XCTAssertEqual(list.map(\.id), ["v1", "t2", "v3", "t4"])          // a video not listed: the song stays
+        XCTAssertEqual(list.map(\.isVideo), [true, false, true, false])
+        XCTAssertEqual(list.count, songs.count)                           // the place clicked is the place played
+        XCTAssertEqual(VideoLinks.alternate(list, videos: known), list)   // videos stay videos
+        XCTAssertEqual(VideoLinks.video(of: songs[0], in: known)?.id, "v1")
+        XCTAssertNil(VideoLinks.video(of: songs[1], in: known))
+        var q = PlayQueue<Track>()
+        q.replace(with: list, start: 2)
+        XCTAssertEqual(q.current?.id, "v3")
+        XCTAssertEqual(q.peekNext()?.id, "t4")
+        XCTAssertEqual(list.map(\.what), ["v:v1", "t:Daft Punk/Discovery/t2.flac", "v:v3", "t:Daft Punk/Discovery/t4.flac"])
+    }
+
+    /// the Videos page: every video by artist, filtered as artists and albums are
+    func testVideoShelf() {
+        func v(_ id: String, _ title: String, _ artist: String, _ album: String = "") -> Track {
+            Track(id: id, number: 0, title: title, artist: artist, seconds: 1, path: "\(artist)/\(title).mp4", album: "",
+                  albumTitle: album, folder: artist, video: VideoInfo(how: .direct))
+        }
+        let all = [v("1", "Around the World", "Daft Punk"), v("2", "One More Time", "Daft Punk", "Discovery"),
+                   v("2", "One More Time", "Daft Punk", "Discovery"), v("3", "Caf\u{E9} Song", "Delta"), v("4", "Other", "delta")]
+        let s = VideoShelf(all)
+        XCTAssertEqual(s.groups.map(\.artist), ["Daft Punk", "Delta"])
+        XCTAssertEqual(s.groups.map { $0.videos.map(\.id) }, [["1", "2"], ["3", "4"]])   // the same video once
+        XCTAssertEqual(s.count, 4)
+        XCTAssertEqual(VideoShelf(all, matching: "cafe").groups.map { $0.videos.map(\.id) }, [["3"]])   // accents aside
+        XCTAssertEqual(VideoShelf(all, matching: "discovery").count, 1)                                  // its album's title
+        XCTAssertEqual(VideoShelf(all, matching: "daft world").groups.first?.videos.map(\.id), ["1"])
+        XCTAssertTrue(VideoShelf(all, matching: "nothing such").groups.isEmpty)
+    }
+
     func testInfoArtistsDevicesCommands() throws {
         let info = answer(["A68M\t1\tinfo\t1\t0\t1", "Home Music\t4\t2\t1\t3\t9\t20\t3\tvideos,remux,hls,transcode,mpeg1"])
         let i = try XCTUnwrap(ServerInfo.parse(info))

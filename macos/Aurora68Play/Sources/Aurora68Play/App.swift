@@ -8,7 +8,8 @@
 // Keys: space plays and pauses (unless a text field is being typed in), Command-Left and -Right are
 // Previous and Next, Command-F the search field; the keyboard's media keys work through the system's
 // Now Playing (Player.swift). A second window, Video (VideoViews.swift), shows a music video while one plays
-// (22 November 2026): it opens by itself when a video starts, and from the player bar's film button.
+// (22 November 2026): it opens by itself when a video starts, and from the player bar's film button. Controls >
+// Play Videos Instead of Songs (1.4, 23 November 2026) is the same setting as in Settings.
 import AppKit
 import SwiftUI
 import Aurora68Core
@@ -69,12 +70,15 @@ struct Aurora68PlayApp: App {
 
 struct PlayCommands: Commands {
     let model: AppModel
+    @AppStorage(Prefs.videosInstead) var videosInstead = false    // shared with Settings (1.4, 23 November 2026)
 
     var body: some Commands {
         CommandMenu("Controls") {
             Button("Play/Pause") { model.togglePlay() }
             Button("Next") { model.next() }.keyboardShortcut(.rightArrow, modifiers: .command)
             Button("Previous") { model.previous() }.keyboardShortcut(.leftArrow, modifiers: .command)
+            Divider()
+            Toggle("Play Videos Instead of Songs", isOn: $videosInstead)
             Divider()
             Button("Play on This Mac") { model.output = .thisMac }.keyboardShortcut("1", modifiers: [.command, .option])
             Button("Play on Live (Mac SE)") { model.output = .live }.keyboardShortcut("2", modifiers: [.command, .option])

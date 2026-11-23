@@ -24,6 +24,11 @@
  * followed by its videos as "V" records, an artist has a fifth field (its videos, and an artist with videos alone is
  * listed), a search finds videos, /mac/info adds every, the videos and what the server can do, a device says whether
  * it shows videos, and a command's videos come as "V" lines. /mac/videos lists them alone.
+ *
+ * Videos linked to songs (23 November 2026): with full=1 and videos=1 both (the macOS Play's; the classic Play sends
+ * neither) a track's record ends with the id of its music video and an album's with how many videos it lists. Both
+ * fields are last, so a reader that does not know them passes over them, and a record without them (an older server)
+ * reads as none.
  */
 #ifndef A68_PROTO_H
 #define A68_PROTO_H
@@ -49,11 +54,15 @@ long a68_next_from(const struct a68_head *h);
 struct a68_info { const char *name, *version; unsigned long artists, albums, tracks, generation, every, videos; const char *caps; };
 /* /mac/artists: id, name, albums, tracks; videos=1 also videos */
 struct a68_artist { const char *id, *name; unsigned long albums, tracks, videos; };
-/* /mac/albums: id, title, artist, tracks, seconds; full=1: artist_id, folder (empty from an older server) */
-struct a68_album { const char *id, *title, *artist; unsigned long tracks, secs; const char *artist_id, *folder; int full; };
-/* /mac/tracks: id, number, title, artist, seconds, album; full=1: path, album_title, folder */
+/* /mac/albums: id, title, artist, tracks, seconds; full=1: artist_id, folder (empty from an older server); full=1 and
+   videos=1 (servers of 23 November 2026 on): the videos the album lists, its own and its songs' (0 from older ones) */
+struct a68_album { const char *id, *title, *artist; unsigned long tracks, secs; const char *artist_id, *folder; int full;
+                   unsigned long videos; };
+/* /mac/tracks: id, number, title, artist, seconds, album; full=1: path, album_title, folder; full=1 and videos=1
+   (servers of 23 November 2026 on): video, the id of the song's music video ("" when it has none, or from an older
+   server, whose record ends at folder) */
 struct a68_track { const char *id; unsigned long number; const char *title, *artist; unsigned long secs; const char *album;
-                   const char *path, *album_title, *folder; int full; };
+                   const char *path, *album_title, *folder; int full; const char *video; };
 /* a music video (videos=1): "V", id, title, artist, seconds, album (its id, or empty), width, height; full=1 also path
    (for /file/), album_title, folder and how the server sends it ("direct", "remux", "transcode") */
 struct a68_video { const char *id, *title, *artist; unsigned long secs; const char *album; unsigned long width, height;

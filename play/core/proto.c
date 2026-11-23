@@ -95,12 +95,13 @@ int a68_next_artist(struct a68_rec *r, struct a68_artist *o)
 }
 int a68_next_album(struct a68_rec *r, struct a68_album *o)
 {
-	char *f[7];
+	char *f[8];
 	int n;
-	while ((n = a68_rec_next(r, f, 7)) >= 0) {
+	while ((n = a68_rec_next(r, f, 8)) >= 0) {
 		if (!f[0][0]) continue;
 		o->id = f[0]; o->title = f[1]; o->artist = f[2]; o->tracks = a68_num(f[3]); o->secs = a68_num(f[4]);
 		o->artist_id = f[5]; o->folder = f[6]; o->full = n >= 7;
+		o->videos = a68_num(f[7]);           /* full=1&videos=1, 23 November 2026; 0 when not there */
 		return 1;
 	}
 	return 0;
@@ -109,6 +110,7 @@ static void track_of(char **f, int n, struct a68_track *o)
 {
 	o->id = f[0]; o->number = a68_num(f[1]); o->title = f[2]; o->artist = f[3]; o->secs = a68_num(f[4]);
 	o->album = f[5]; o->path = f[6]; o->album_title = f[7]; o->folder = f[8]; o->full = n >= 9;
+	o->video = f[9];                         /* the song's music video (full=1&videos=1, 23 November 2026); "" if none */
 }
 static void video_of(char **f, int n, struct a68_video *o)
 {

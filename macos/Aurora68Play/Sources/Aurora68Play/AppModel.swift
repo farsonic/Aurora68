@@ -21,16 +21,27 @@
 // Music videos (22 November 2026, docs/08 item 109): an album's come with its tracks, an artist's from /mac/videos;
 // a video plays wherever "Play on" says, as songs do (Track.what names it v:ID): here as a video, on another Mac as a
 // video, on the SE and on Live as its sound.
+//
+// Videos linked to songs (23 November 2026, docs/08 item 115): the server says which song each video is of. A song with
+// a video has a film button (its video plays, the album's videos after it, as a poster's click does); "Play Videos
+// Instead of Songs" (Settings, and the Controls menu; kept in UserDefaults as "videosInstead") makes every list played
+// here or on another Mac take each song's video in its place. Live is left as it is: the SE hears it, and a video's
+// sound is the song again. The videos of what has been opened are kept by id (videoIndex) to find a song's.
 import AppKit
 import Foundation
 import Aurora68Core
+
+/// the settings' keys in UserDefaults, which @AppStorage in the views and the menus share with the model
+enum Prefs {
+    static let videosInstead = "videosInstead"          // "Play Videos Instead of Songs"
+}
 
 @MainActor
 final class AppModel: ObservableObject {
     enum Status: Equatable {
         case idle, searching, connecting(String), connected, failed(String)
     }
-    enum Section: Hashable { case artists, albums, live }
+    enum Section: Hashable { case artists, albums, videos, live }
     enum Output: Hashable {
         case thisMac, live, device(String)
 
@@ -73,6 +84,7 @@ final class AppModel: ObservableObject {
     let devices: DeviceLink
     private var trackCache: [String: [Track]] = [:]
     private var videoCache: [String: [Track]] = [:]             // an album's videos (its id), an artist's ("a:" and its id)
+    private var videoIndex: [String: Track] = [:]               // every video seen so far, by id: a song's is found here
     private var started = false
     private var watch = GenerationWatch()
     private var volumeSend: Task<Void, Never>?
@@ -145,6 +157,7 @@ final class AppModel: ObservableObject {
                 index = LibraryIndex(catalog)
                 trackCache = [:]
                 videoCache = [:]
+                videoIndex = [:]
                 watch = GenerationWatch()
                 radio = nil
                 player.api = api
@@ -172,6 +185,7 @@ final class AppModel: ObservableObject {
                 index = LibraryIndex(c)
                 trackCache = [:]
                 videoCache = [:]
+                videoIndex = [:]
                 generation += 1
             }
         }
@@ -197,16 +211,61 @@ final class AppModel: ObservableObject {
         guard let api, let m = try? await api.media(album: album.id) else { return ([], []) }
         trackCache[album.id] = m.tracks
         videoCache[album.id] = m.videos
+        remember(m.videos)
         return m
     }
 
-    /// an artist's music videos: those in its albums and those beside them
+    /// an artist's music videos: those in its albums, those beside them, those of its songs
     func videos(artist: Artist) async -> [Track] {
         let key = "a:" + artist.id
         if let v = videoCache[key] { return v }
         guard let api, artist.videos > 0, let v = try? await api.videos(artist: artist.id) else { return [] }
         videoCache[key] = v
+        remember(v)
         return v
+    }
+
+    /// every video of the library, sorted by artist (the Videos page)
+    func everyVideo() async -> [Track] {
+        if let v = videoCache["*"] { return v }
+        guard let api, let v = try? await api.allVideos() else { return [] }
+        videoCache["*"] = v
+        remember(v)
+        return v
+    }
+
+    private func remember(_ videos: [Track]) {
+        for (id, v) in VideoLinks.index(videos) where videoIndex[id] == nil { videoIndex[id] = v }
+    }
+
+    /// a song's music video, when the server linked one and it has been listed (its album's videos list it)
+    func video(of song: Track) -> Track? { VideoLinks.video(of: song, in: videoIndex) }
+
+    /// the film button of a song: its video plays as a video, the list's videos after it (a poster's click does the same)
+    func playVideo(of song: Track, among videos: [Track]) {
+        guard let v = video(of: song) else { return }
+        if let i = videos.firstIndex(where: { $0.id == v.id }) { play(videos, from: i) } else { play([v], from: 0) }
+    }
+
+    // ---- "Play Videos Instead of Songs": each song's video in its place, here and on another Mac (not on Live, which the
+    // SE hears: a video's sound is the song again)
+    var videosInstead: Bool { UserDefaults.standard.bool(forKey: Prefs.videosInstead) }
+
+    private func alternate(_ list: [Track], on o: Output? = nil) -> [Track] {
+        guard videosInstead, (o ?? output) != .live else { return list }
+        return VideoLinks.alternate(list, videos: videoIndex)
+    }
+
+    /// a whole list, shuffled or not, as its tracks (with videos in place of songs)
+    private func playList(_ list: [Track], shuffled: Bool, on o: Output) {
+        switch o {
+        case .live: Task { await live.play(tracks: shuffled ? list.shuffled() : list, from: 0) }
+        case .device(let id):
+            let l = shuffled ? list.shuffled() : list
+            guard let first = l.first else { return }
+            toDevice(id, [Command(.play, what: first.what)] + l.dropFirst().map { Command(.add, what: $0.what) })
+        case .thisMac: player.play(list, shuffled: shuffled)
+        }
     }
 
     func posterURL(_ video: Track) -> URL? { api?.posterURL(video.id) }
@@ -276,6 +335,14 @@ final class AppModel: ObservableObject {
     }
 
     func play(album: Album, shuffled: Bool = false) {
+        if videosInstead && output != .live && album.videos > 0 {     // the album's songs, each as its video where it has one
+            let o = output
+            Task {
+                let songs = await tracks(album: album)                 // its videos are known once its list is
+                playList(alternate(songs, on: o), shuffled: shuffled, on: o)
+            }
+            return
+        }
         switch output {
         case .live: Task { await live.play(album: album, shuffled: shuffled) }
         case .device(let id): toDevice(id, [Command(.play, what: LiveWhat.folder(album.folder), shuffle: shuffled)])
@@ -285,7 +352,16 @@ final class AppModel: ObservableObject {
 
     func play(artist: Artist, shuffled: Bool = false, on o: Output? = nil) {
         let albums = albums(of: current(artist))
-        switch o ?? output {
+        let place = o ?? output
+        if videosInstead && place != .live && current(artist).videos > 0 {
+            let a = current(artist)
+            Task {
+                let songs = await tracks(artist: a)
+                playList(alternate(songs, on: place), shuffled: shuffled, on: place)
+            }
+            return
+        }
+        switch place {
         case .live: Task { await live.play(albums: albums, shuffled: shuffled) }
         case .device(let id):
             guard let first = albums.first else { return }
@@ -296,7 +372,8 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func play(_ tracks: [Track], from start: Int) {
+    func play(_ songs: [Track], from start: Int) {
+        let tracks = alternate(songs)                      // one for one: the place clicked is still the place played
         switch output {
         case .live: Task { await live.play(tracks: tracks, from: start) }
         case .device(let id):
@@ -308,7 +385,8 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func playNext(_ tracks: [Track]) {
+    func playNext(_ songs: [Track]) {
+        let tracks = alternate(songs)
         switch output {
         case .live: Task { await live.playNext(tracks) }
         case .device(let id): toDevice(id, tracks.reversed().map { Command(.next, what: $0.what) })
@@ -316,7 +394,8 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func add(_ tracks: [Track]) {
+    func add(_ songs: [Track]) {
+        let tracks = alternate(songs)
         switch output {
         case .live: Task { await live.add(tracks) }
         case .device(let id): toDevice(id, tracks.map { Command(.add, what: $0.what) })
@@ -325,6 +404,13 @@ final class AppModel: ObservableObject {
     }
 
     func add(album: Album) {
+        if videosInstead && output != .live && album.videos > 0 {
+            Task {
+                let songs = await tracks(album: album)
+                add(songs)
+            }
+            return
+        }
         switch output {
         case .live: Task { await live.add(album: album) }
         case .device(let id): toDevice(id, [Command(.add, what: LiveWhat.folder(album.folder))])

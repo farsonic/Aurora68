@@ -494,6 +494,28 @@ static void video_units(void)
 		      !strcmp(v.path, "Gamma - Converted/02. Gamma - Lossless Live.mkv") && a68_video_how(v.how) == A68_HOW_REMUX &&
 		      !strcmp(v.album, "a58b55f9") && !strcmp(v.album_title, "Converted"), "an album's tracks, then its video with its path and how it plays");
 	}
+	/* videos linked to songs (23 November 2026): a tenth field with full=1&videos=1, absent from an older server */
+	b = dup_("A68M\t1\ttracks\t3\t0\t3\r"
+	         "4d2e3b6a\t1\tClosing Time\tGamma\t2\ta58b55f9\tG/01.m4a\tConverted\tG\t7dadadb6\r"
+	         "5d2e3b6a\t2\tLossless\tGamma\t2\ta58b55f9\tG/02.m4a\tConverted\tG\t\r"
+	         "6d2e3b6a\t3\tOlder\tGamma\t2\ta58b55f9\tG/03.m4a\tConverted\tG\r", &n);
+	a68_rec_init(&r, b, n);
+	{
+		struct a68_track t;
+		a68_read_head(&r, &h);
+		check(a68_next_track(&r, &t) && t.full && !strcmp(t.video, "7dadadb6") && !strcmp(t.folder, "G"), "a track's video: the tenth field");
+		check(a68_next_track(&r, &t) && t.full && !t.video[0], "an empty tenth field: no video");
+		check(a68_next_track(&r, &t) && t.full && !t.video[0] && !strcmp(t.folder, "G"), "an older server's record: no video, the rest as before");
+	}
+	b = dup_("A68M\t1\talbums\t2\t0\t2\ra1\tDiscovery\tDaft Punk\t14\t3660\tb1\tDaft Punk/Discovery\t3\r"
+	         "a2\tHomework\tDaft Punk\t16\t4400\tb1\tDaft Punk/Homework\r", &n);
+	a68_rec_init(&r, b, n);
+	{
+		struct a68_album a;
+		a68_read_head(&r, &h);
+		check(a68_next_album(&r, &a) && a.full && a.videos == 3 && !strcmp(a.folder, "Daft Punk/Discovery") &&
+		      a68_next_album(&r, &a) && a.full && !a.videos, "an album's videos: the eighth field, 0 without it");
+	}
 #define TWO "A68M\t1\ttracks\t2\t0\t2\r4d2e3b6a\t1\tClosing Time\tGamma\t2\ta58b55f9\rV\tb29434fe\tOpening (Caf\x8E Video)\tAlpha Band\t3\tcb436a6a\t160\t120\r"
 	b = dup_(TWO, &n);
 	a68_rec_init(&r, b, n);
@@ -799,7 +821,8 @@ static void fixtures(const char *dir)
 		struct a68_video v;
 		struct a68_cmd c;
 		struct a68_device d;
-		int k, nt = 0, nv = 0, ok = 1, how = 0;
+		int k, nt = 0, nv = 0, ok = 1, how = 0, linked = 0;
+		const char *closing = 0, *closing_video = 0;
 		b = load(dir, "info-v.u8", &n);
 		a68_rec_init(&r, b, n);
 		check(a68_read_head(&r, &h) && a68_info_of(&r, &i) && i.videos == 2 && i.every == 20 && strstr(i.caps, "hls"),
@@ -808,7 +831,13 @@ static void fixtures(const char *dir)
 		a68_rec_init(&r, b, n);
 		check(a68_read_head(&r, &h) && h.total == 5, "server: an album's tracks and videos, five in all");
 		while ((k = a68_next_item(&r, &t, &v))) {
-			if (k == 'T') { nt++; ok &= !nv; continue; }
+			if (k == 'T') {
+				nt++; ok &= !nv;
+				if (!strcmp(t.title, "Closing Time")) closing = t.video;
+				else linked += t.video[0] != 0;
+				continue;
+			}
+			if (!strcmp(v.title, "Closing Time (Video)")) closing_video = v.id;
 			{
 				char stem[200], title[200];
 				unsigned long num;
@@ -822,6 +851,19 @@ static void fixtures(const char *dir)
 		}
 		check(nt == 3 && nv == 2 && ok && how == ((1 << A68_HOW_DIRECT) | (1 << A68_HOW_REMUX)),
 		      "server: the videos after the tracks, full, as the core tidies their names; one direct, one remuxed");
+		check(closing && closing_video && !strcmp(closing, closing_video) && !linked,
+		      "server: full=1&videos=1: Closing Time's record names its video, \"Closing Time (Video)\"; the other songs none");
+		b = load(dir, "tracks.u8", &n);
+		a68_rec_init(&r, b, n);
+		a68_read_head(&r, &h);
+		check(a68_next_track(&r, &t) && t.full && !t.video[0], "server: full=1 without videos=1: no video field, read as none");
+		b = load(dir, "albums-v.u8", &n);
+		a68_rec_init(&r, b, n);
+		{
+			struct a68_album a;
+			check(a68_read_head(&r, &h) && a68_next_album(&r, &a) && a.full && a.videos == 2 && !strcmp(a.title, "Converted"),
+			      "server: an album's videos counted (full=1&videos=1), the linked one once");
+		}
 		b = load(dir, "tracks-v.mr", &n);
 		{
 			static struct a68_row rows[A68_PAGE];

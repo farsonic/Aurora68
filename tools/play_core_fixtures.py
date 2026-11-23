@@ -13,7 +13,9 @@ Live channel after commands, and the UDP probe's answer. Then, given the test pr
 and does nothing (exit 0), as tools/codec_test.sh does. `make -C mac check` runs it.
 
 Written on 22 November 2026 (docs/08 item 107). Music videos the same day (item 109): two videos of ffmpeg's test
-picture in the Gamma album (an MP4 that plays as it is, an MKV that is remuxed), and the answers with videos=1.
+picture in the Gamma album (an MP4 that plays as it is, an MKV that is remuxed), and the answers with videos=1. Videos
+linked to songs (23 November 2026): "Closing Time (Video)" is the song Closing Time's, which the full records with
+videos=1 say (the track's video, the album's count of videos).
 """
 import os, shutil, socket, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
 
@@ -148,6 +150,7 @@ def main():
         get(f'/mac/tracks?album={galbum}&' + V, 'tracks-v.u8')
         get(f'/mac/tracks?album={galbum}&count=200&videos=1', 'tracks-v.mr')
         get(f'/mac/videos?artist={gamma}&' + V, 'videos.u8')
+        get(f'/mac/albums?artist={gamma}&' + V, 'albums-v.u8')          # 23 November 2026: an album's videos counted
         get('/mac/artists?videos=1', 'artists-v.mr')
         get('/mac/search?q=home&videos=1', 'search-v.mr')
         vids = [l.split(b'\t') for l in get(f'/mac/videos?artist={gamma}').split(b'\r')[1:] if l]

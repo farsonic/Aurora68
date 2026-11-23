@@ -166,10 +166,19 @@ public final class MusicAPI {
         return (tracks, videos)
     }
 
-    /// an artist's music videos (those in its albums and those beside them)
+    /// an artist's music videos (those in its albums, those beside them, and since 23 November 2026 those of its songs)
     public func videos(artist: String) async throws -> [Track] {
         var out: [Track] = []
         for page in try await pages({ from in request { a68_path_videos($0, artist, nil, from, MusicAPI.page, $1, $2) } }) {
+            out += try Track.videoPage(page).videos
+        }
+        return out
+    }
+
+    /// every music video of the library, sorted by artist (the Videos page, 23 November 2026)
+    public func allVideos() async throws -> [Track] {
+        var out: [Track] = []
+        for page in try await pages({ from in request { a68_path_videos($0, nil, nil, from, MusicAPI.page, $1, $2) } }) {
             out += try Track.videoPage(page).videos
         }
         return out
