@@ -197,6 +197,7 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	sh ../tools/mpg1_test.sh $(abspath $(B))
 	sh ../tools/vbuf_test.sh $(abspath $(B))
 	sh ../tools/pccard_test.sh $(abspath $(B))
+	sh ../tools/bt_test.sh $(abspath $(B))
 	sh ../tools/splash_test.sh $(abspath $(B))
 
 disasm: $(B)/pidisk.o

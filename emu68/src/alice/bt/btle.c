@@ -7,7 +7,12 @@
  *   Link:  LE Create Connection - to one device when the user pairs it, or to
  *          the controller's filter accept list (every bonded LE device; the
  *          resolving list holds their IRKs) so a bonded keyboard or mouse that
- *          advertises is connected by the controller itself.
+ *          advertises is connected by the controller itself. A controller
+ *          without the resolving list (Bluetooth 4.1: the Pi 3B's BCM43438)
+ *          never matches a device that advertises with a resolvable private
+ *          address against its identity address in the accept list; there the
+ *          host scans itself and resolves each address with the IRKs (below,
+ *          "bonded devices with private addresses").
  *   SMP:   legacy pairing as initiator: Just Works, or Passkey Entry where we
  *          display a number and the keyboard types it. c1 and s1 are worked out
  *          with the controller's LE Encrypt (AES-128), one block at a time, so
@@ -53,6 +58,69 @@ enum { G_IDLE, G_MTU, G_SVC, G_CHR, G_DESC, G_REFS, G_MAP, G_CCCD, G_UP, G_FAIL 
 #define U_MAP       0x2a4b
 #define U_CCCD      0x2902
 #define U_REPREF    0x2908
+
+/* ---- AES-128 (FIPS-197), for resolvable private addresses ------------------------------
+   The address resolution (Core Vol 3 Part H 2.2.2, ah) is one AES block per IRK and address. SMP's blocks go
+   to the controller's LE Encrypt as a state machine of their own; this one is done here, in a few microseconds,
+   so that an advertisement is answered while the device is still advertising (a directed one lasts 1.28 s). */
+static const uint8_t aes_sbox[256] = {
+    0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
+    0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
+    0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15,
+    0x04, 0xc7, 0x23, 0xc3, 0x18, 0x96, 0x05, 0x9a, 0x07, 0x12, 0x80, 0xe2, 0xeb, 0x27, 0xb2, 0x75,
+    0x09, 0x83, 0x2c, 0x1a, 0x1b, 0x6e, 0x5a, 0xa0, 0x52, 0x3b, 0xd6, 0xb3, 0x29, 0xe3, 0x2f, 0x84,
+    0x53, 0xd1, 0x00, 0xed, 0x20, 0xfc, 0xb1, 0x5b, 0x6a, 0xcb, 0xbe, 0x39, 0x4a, 0x4c, 0x58, 0xcf,
+    0xd0, 0xef, 0xaa, 0xfb, 0x43, 0x4d, 0x33, 0x85, 0x45, 0xf9, 0x02, 0x7f, 0x50, 0x3c, 0x9f, 0xa8,
+    0x51, 0xa3, 0x40, 0x8f, 0x92, 0x9d, 0x38, 0xf5, 0xbc, 0xb6, 0xda, 0x21, 0x10, 0xff, 0xf3, 0xd2,
+    0xcd, 0x0c, 0x13, 0xec, 0x5f, 0x97, 0x44, 0x17, 0xc4, 0xa7, 0x7e, 0x3d, 0x64, 0x5d, 0x19, 0x73,
+    0x60, 0x81, 0x4f, 0xdc, 0x22, 0x2a, 0x90, 0x88, 0x46, 0xee, 0xb8, 0x14, 0xde, 0x5e, 0x0b, 0xdb,
+    0xe0, 0x32, 0x3a, 0x0a, 0x49, 0x06, 0x24, 0x5c, 0xc2, 0xd3, 0xac, 0x62, 0x91, 0x95, 0xe4, 0x79,
+    0xe7, 0xc8, 0x37, 0x6d, 0x8d, 0xd5, 0x4e, 0xa9, 0x6c, 0x56, 0xf4, 0xea, 0x65, 0x7a, 0xae, 0x08,
+    0xba, 0x78, 0x25, 0x2e, 0x1c, 0xa6, 0xb4, 0xc6, 0xe8, 0xdd, 0x74, 0x1f, 0x4b, 0xbd, 0x8b, 0x8a,
+    0x70, 0x3e, 0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e,
+    0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
+    0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16,
+};
+static uint8_t aes_x2(uint8_t v) { return (uint8_t)(v << 1 ^ (v & 0x80 ? 0x1b : 0)); }
+void bt_aes128(const uint8_t key[16], const uint8_t in[16], uint8_t out[16])
+{
+    uint8_t rk[16], st[16], rcon = 1;
+    mcpy(rk, key, 16);
+    for (int i = 0; i < 16; i++) st[i] = in[i] ^ rk[i];
+    for (int round = 1; round <= 10; round++) {
+        /* the next round key */
+        uint8_t t0 = aes_sbox[rk[13]] ^ rcon, t1 = aes_sbox[rk[14]], t2 = aes_sbox[rk[15]], t3 = aes_sbox[rk[12]];
+        rcon = aes_x2(rcon);
+        rk[0] ^= t0; rk[1] ^= t1; rk[2] ^= t2; rk[3] ^= t3;
+        for (int i = 4; i < 16; i++) rk[i] ^= rk[i - 4];
+        /* SubBytes and ShiftRows (state column by column: byte r + 4c is row r, column c) */
+        uint8_t t[16];
+        for (int c = 0; c < 4; c++) for (int r = 0; r < 4; r++) t[r + 4 * c] = aes_sbox[st[r + 4 * ((c + r) & 3)]];
+        /* MixColumns, but not in the last round */
+        if (round < 10) for (int c = 0; c < 4; c++) {
+            uint8_t a0 = t[4 * c], a1 = t[4 * c + 1], a2 = t[4 * c + 2], a3 = t[4 * c + 3], all = a0 ^ a1 ^ a2 ^ a3;
+            t[4 * c]     ^= all ^ aes_x2(a0 ^ a1);
+            t[4 * c + 1] ^= all ^ aes_x2(a1 ^ a2);
+            t[4 * c + 2] ^= all ^ aes_x2(a2 ^ a3);
+            t[4 * c + 3] ^= all ^ aes_x2(a3 ^ a0);
+        }
+        for (int i = 0; i < 16; i++) st[i] = t[i] ^ rk[i];
+    }
+    mcpy(out, st, 16);
+}
+/* ah (Core Vol 3 Part H 2.2.2): hash = e(IRK, padding || prand) mod 2^24. The address as HCI gives it, least
+   significant octet first: hash in octets 0-2, prand in 3-5, whose top two bits are 01 for a resolvable one. The
+   IRK as SMP gives it, also least significant first; AES takes both the other way round. */
+int bt_rpa_match(const uint8_t irk[16], const uint8_t a[6])
+{
+    if ((a[5] & 0xc0) != 0x40) return 0;
+    uint8_t k[16], m[16], e[16];
+    for (int i = 0; i < 16; i++) k[i] = irk[15 - i];
+    mset(m, 0, 16);
+    m[13] = a[5]; m[14] = a[4]; m[15] = a[3];
+    bt_aes128(k, m, e);
+    return e[15] == a[0] && e[14] == a[1] && e[13] == a[2];
+}
 
 static void smp_send(struct bt_host *h, struct bt_conn *c, const uint8_t *d, unsigned n) { l2_send(h, c, CID_SMP, d, n); }
 static void att_send(struct bt_host *h, struct bt_conn *c, const uint8_t *d, unsigned n) { l2_send(h, c, CID_ATT, d, n); }
@@ -123,6 +191,60 @@ static void le_connect_direct(struct bt_host *h, const uint8_t a[6], uint8_t typ
     h->le_init = 1;
     h->le_init_until = now(h) + 15000;
 }
+/* ---- bonded devices with private addresses, on a controller without the resolving list -----------------
+   (23 November 2026; the open issue "Bluetooth mouse stopped reconnecting on the Pi 3B".) A device that gave its
+   IRK at pairing advertises afterwards with a resolvable private address, a new one every so often. The accept
+   list holds its identity address, so only a controller that resolves addresses itself (the resolving list, LL
+   Privacy, Bluetooth 4.2) connects it; the 3B's BCM43438 is a 4.1 controller, answers the resolving list's
+   commands with "unknown command", and the accept list then waits for an address that never comes. There the host
+   does what the controller cannot: a passive scan of its own while a bonded device is away, each connectable
+   advertisement's address compared with the identity addresses and resolved with every IRK (bt_rpa_match), and a
+   connection to the device at the address it used. The link is then the stored key's (le_conn_complete). */
+static int le_irk_waiting(struct bt_host *h)        /* a bonded LE device with an IRK, not connected now */
+{
+    for (int i = 0; i < h->nkeys; i++) if ((h->keys[i].flags & BTK_LE) && h->keys[i].has_irk && !conn_by_addr(h, h->keys[i].addr)) return 1;
+    return 0;
+}
+static void bg_start(struct bt_host *h)
+{
+    uint8_t p[7];
+    p[0] = 0; put16(p + 1, 0x0060); put16(p + 3, 0x0030); p[5] = 0; p[6] = 0;   /* passive, 60 ms / 30 ms, as Linux's background scan */
+    cmd(h, C_LE_SCAN_PARAM, p, 7);
+    p[0] = 1; p[1] = 1;                                                       /* on, duplicates filtered (each start of it sees each address once) */
+    cmd(h, C_LE_SCAN_ENABLE, p, 2);
+    h->bg_scan = 1;
+}
+static void bg_stop(struct bt_host *h)
+{
+    if (!h->bg_scan) return;
+    uint8_t p[2] = { 0, 0 };
+    cmd(h, C_LE_SCAN_ENABLE, p, 2);
+    h->bg_scan = 0;
+}
+static void le_create(struct bt_host *h, int policy, uint8_t type, const uint8_t a[6]);
+/* an advertisement while the host's own scan runs: a bonded device's? Then it is connected at that address */
+static int le_bg_adv(struct bt_host *h, uint8_t evt, uint8_t atype, const uint8_t a[6])
+{
+    if (!h->bg_scan || h->scanning || h->pairing || h->le_init || h->le_cancelling) return 0;
+    if (evt != 0x00 && evt != 0x01) return 0;                                 /* ADV_IND and ADV_DIRECT_IND are connectable */
+    int ki = -1;
+    for (int i = 0; i < h->nkeys && ki < 0; i++) {
+        struct bt_key *k = &h->keys[i];
+        if (!(k->flags & BTK_LE) || conn_by_addr(h, k->addr)) continue;
+        if (!mcmp(k->addr, a, 6) && (atype & 1) == k->addr_type) ki = i;
+        else if (k->has_irk && (atype & 1) && bt_rpa_match(k->irk, a)) ki = i;
+    }
+    if (ki < 0) return 0;
+    bg_stop(h);
+    h->rpa_key = ki; mcpy(h->rpa_addr, a, 6);
+    if (mcmp(h->keys[ki].addr, a, 6)) lg(h, "%a advertises as %a (resolved with its IRK): connecting", h->keys[ki].addr, a);
+    else lg(h, "%a advertises: connecting", a);
+    le_create(h, 0, atype & 1, a);
+    h->le_init = 3;
+    h->le_init_until = now(h) + 4000;
+    return 1;
+}
+
 /* the accept list (and resolving list) from the bonded LE devices */
 static void le_lists_write(struct bt_host *h)
 {
@@ -803,7 +925,7 @@ static void le_conn_complete(struct bt_host *h, const uint8_t *p, unsigned len, 
     if (st) {
         lg(h, "LE connection failed (%u)", st);
         if (was == 1 && h->pairing) { h->pairing = 0; say(h, "could not connect - is it in pairing mode?"); }
-        h->le_init_until = now(h) + 5000;
+        h->le_init_until = now(h) + (was == 3 ? 300 : 5000);
         return;
     }
     struct bt_conn *c = 0;
@@ -824,6 +946,13 @@ static void le_conn_complete(struct bt_host *h, const uint8_t *p, unsigned len, 
     c->pairing = h->pairing && !mcmp(h->pair_addr, a, 6);
     lg(h, "%a: LE link up (handle %x, address type %u)", c->addr, hd, ptype);
     struct bt_key *k = key_of(h, a);
+    for (int i = 0; !k && ptype == 1 && i < h->nkeys; i++)  /* a private address the host resolved (le_bg_adv) */
+        if ((h->keys[i].flags & BTK_LE) && h->keys[i].has_irk && bt_rpa_match(h->keys[i].irk, a)) {
+            k = &h->keys[i];
+            mcpy(c->addr, k->addr, 6);
+            c->l.addr_type = k->addr_type;
+            lg(h, "%a: that is %a", a, k->addr);
+        }
     if (k && (k->flags & BTK_LE) && !c->pairing) { c->l.rekey = 1; le_start_enc(h, c, k->rand, k->ediv, k->key); }
     else if (c->pairing) smp_start(h, c);
     else { lg(h, "%a: not paired - disconnecting", a); le_disconnect(h, c, 0x13); }
@@ -840,7 +969,8 @@ static void le_meta(struct bt_host *h, const uint8_t *p, unsigned len)
         for (unsigned r = 0; r < m && i + 10 <= len; r++) {
             unsigned dl = p[i + 8];
             if (i + 10 + dl > len) break;
-            le_found(h, p + i + 2, p[i + 1], p + i + 9, dl, (int8_t)p[i + 9 + dl]);
+            if (!le_bg_adv(h, p[i], p[i + 1], p + i + 2) && (h->scanning || h->le_scanning))
+                le_found(h, p + i + 2, p[i + 1], p + i + 9, dl, (int8_t)p[i + 9 + dl]);
             i += 10 + dl;
         }
         return;
@@ -859,6 +989,12 @@ static void le_meta(struct bt_host *h, const uint8_t *p, unsigned len)
         return;
     }
 }
+static void le_no_resolv(struct bt_host *h, uint16_t op, uint8_t st)
+{
+    if (h->no_resolv) return;
+    h->no_resolv = 1;
+    lg(h, "the controller has no resolving list (LE command %x: status %u): bonded LE devices with private addresses are found by the host's own scan", op, st);
+}
 /* Command Complete for LE commands outside the start-up */
 static void le_cc(struct bt_host *h, uint16_t op, const uint8_t *ret, unsigned n)
 {
@@ -872,12 +1008,14 @@ static void le_cc(struct bt_host *h, uint16_t op, const uint8_t *ret, unsigned n
         return;
     }
     if (op == C_LE_CREATE_CANCEL && n && ret[0]) { h->le_cancelling = 0; return; }   /* nothing to cancel: it had just connected */
+    if ((op == C_LE_RES_ENABLE || op == C_LE_RES_CLEAR || op == C_LE_RES_ADD) && n && ret[0]) { le_no_resolv(h, op, ret[0]); return; }
     if ((op >> 10) == 8 && op != h->pending_op && n && ret[0])
         lg(h, "LE command %x: status %u", op, ret[0]);
 }
 /* Command Status failures of LE commands */
 static void le_cstatus(struct bt_host *h, uint16_t op, uint8_t st)
 {
+    if (op == C_LE_RES_ENABLE || op == C_LE_RES_CLEAR || op == C_LE_RES_ADD) { le_no_resolv(h, op, st); return; }
     if (op == C_LE_CREATE) {
         int was = h->le_init;
         h->le_init = 0;
@@ -916,10 +1054,21 @@ static void le_poll(struct bt_host *h)
         uint8_t s = c->l.smp;
         if (s != SM_IDLE && s != SM_DONE && s != SM_FAILED && due(h, c->l.smp_until)) smp_fail(h, c, 0x08, "pairing timed out");
     }
-    if (h->le_init == 2 && (h->le_lists_dirty || h->scanning || h->pairing || !le_keys_waiting(h))) le_cancel(h);
+    if (h->le_init == 3 && due(h, h->le_init_until)) {   /* the device the host's scan found did not answer */
+        lg(h, "LE connect to %a: no answer", h->rpa_addr);
+        le_cancel(h);
+        h->le_init_until = now(h) + 300;
+    }
+    int own_scan = h->no_resolv && le_irk_waiting(h);    /* the accept list cannot find them: the host's scan instead */
+    if (h->le_init == 2 && (h->le_lists_dirty || h->scanning || h->pairing || !le_keys_waiting(h) || own_scan)) le_cancel(h);
+    if (h->bg_scan && (h->scanning || h->pairing || !le_keys_waiting(h) || !own_scan)) bg_stop(h);
     if (h->le_init || h->le_cancelling || h->scanning || h->pairing || !due(h, h->le_init_until)) return;
     if (!le_keys_waiting(h)) return;
     if (h->le_lists_dirty) le_lists_write(h);
+    if (own_scan) {
+        if (!h->bg_scan) { bg_start(h); if (!h->bg_said) { h->bg_said = 1; lg(h, "scanning for bonded LE devices that advertise with private addresses"); } }
+        return;
+    }
     le_create(h, 1, 0, 0);                           /* the controller connects whichever bonded device advertises */
     h->le_init = 2;
 }

@@ -74,6 +74,8 @@ void bt_addr_str(const uint8_t a[6], char o[18])
 #define C_LOCAL_NAME     OP(3, 0x13)
 #define C_READ_NAME      OP(3, 0x14)
 #define C_PAGE_TIMEOUT   OP(3, 0x18)
+#define C_PAGE_SCAN_ACT  OP(3, 0x1c)
+#define C_PAGE_SCAN_TYPE OP(3, 0x47)
 #define C_SCAN_ENABLE    OP(3, 0x1a)
 #define C_CLASS          OP(3, 0x24)
 #define C_INQUIRY_MODE   OP(3, 0x45)
@@ -100,6 +102,7 @@ void bt_addr_str(const uint8_t a[6], char o[18])
 #define C_BUFFER_SIZE    OP(4, 0x05)
 #define C_BDADDR         OP(4, 0x09)
 #define C_BCM_MINIDRIVER 0xfc2e
+#define C_BCM_BAUD       0xfc18                  /* Update UART Baud Rate (Linux btbcm_set_baudrate) */
 #define C_BCM_LAUNCH     0xfc4e
 
 static void cmd_flush(struct bt_host *h)
@@ -204,7 +207,7 @@ static void set_connected(struct bt_host *h, const uint8_t a[6], int on)
 }
 
 /* ---- the start-up --------------------------------------------------------------- */
-enum { S_RESET, S_MINIDRIVER, S_MINI_WAIT, S_PATCH, S_LAUNCH_WAIT, S_RESET2, S_SETUP, S_DONE, S_RESET_PAUSE, S_RESET2_PAUSE, S_ROM_VER, S_ROM_NAME };
+enum { S_RESET, S_MINIDRIVER, S_MINI_WAIT, S_PATCH, S_LAUNCH_WAIT, S_RESET2, S_SETUP, S_DONE, S_RESET_PAUSE, S_RESET2_PAUSE, S_ROM_VER, S_ROM_NAME, S_BAUD };
 #define RESET_PAUSE  100                    /* ms after a reset's answer before the next command (Linux btbcm_reset) */
 #define RESET2_TRIES 5                      /* resets after the launch before giving up */
 static const uint8_t ev_mask[8] = { 0xff, 0xff, 0xfb, 0xff, 0x07, 0xf8, 0xbf, 0x3d };   /* as Linux for 2.1+: SSP events in */
@@ -243,7 +246,12 @@ static void setup_next(struct bt_host *h)
     case 10: p[0] = 1; p[1] = 0; sync_cmd(h, C_LE_HOST, p, 2); break;            /* LE on: LE keyboards and mice too */
     case 11: sync_cmd(h, C_LE_BUFSIZE, 0, 0); break;
     case 12: mset(p, 0, 8); p[0] = 0x1f; sync_cmd(h, C_LE_EVMASK, p, 8); break;   /* connections, adverts, updates, features, LTK requests */
-    case 13: p[0] = 0x02; sync_cmd(h, C_SCAN_ENABLE, p, 1); break;               /* page scan: paired devices reconnect */
+    /* "Fast connectable", as Linux's: a page scan every 160 ms (the default is every 1.28 s) and interlaced, so a
+       paired keyboard that wakes and calls is answered in a tenth of a second rather than up to a second and a half,
+       which is what decides whether a key held at power-on reaches the Mac's start (23 November 2026, docs/08) */
+    case 13: put16(p, 0x0100); put16(p + 2, 0x0012); sync_cmd(h, C_PAGE_SCAN_ACT, p, 4); break;   /* 160 ms, 11.25 ms */
+    case 14: p[0] = 1; sync_cmd(h, C_PAGE_SCAN_TYPE, p, 1); break;                /* interlaced */
+    case 15: p[0] = 0x02; sync_cmd(h, C_SCAN_ENABLE, p, 1); break;               /* page scan: paired devices reconnect */
     default:
         h->pending_op = 0;
         h->state = BT_READY;
@@ -260,7 +268,7 @@ static void patch_next(struct bt_host *h)
         h->step = S_LAUNCH_WAIT;
         h->wait_until = now(h) + 250;
         h->pending_op = 0;
-        lg(h, "firmware: %u records sent, starting it", h->fwrec);
+        lg(h, "firmware: %u records sent in %u ms at %u baud, starting it", h->fwrec, now(h) - h->fw_t0, h->fast == 1 ? h->io->fw_baud : 115200u);
         return;
     }
     const uint8_t *r = h->fw + h->fwpos;
@@ -282,6 +290,19 @@ static int fw_check(struct bt_host *h)
 }
 static void after_rom(struct bt_host *h)
 {
+    /* The download at a higher speed (23 November 2026): at 115200 baud the 3B's BCM43430A1.hcd, about 37 KB, took
+       some 3.3 s of every start, before any keyboard could connect. Linux (hci_bcm, and hciattach's bcm43xx as
+       Raspberry Pi OS runs it, at 921600 on the 3B) sends it at the line's working speed: the vendor's Update UART
+       Baud Rate, answered at the old speed, then the host's UART follows. The chip answers each record with a short
+       Command Complete, so no flow control is needed for it. Launch_RAM restarts the chip at 115200, and the host
+       goes back with it (S_LAUNCH_WAIT). Refused: the download goes on at 115200. */
+    if (h->fw && h->io->fw_baud && h->io->set_baud && !h->fast) {
+        uint8_t p[6] = { 0, 0, (uint8_t)h->io->fw_baud, (uint8_t)(h->io->fw_baud >> 8), (uint8_t)(h->io->fw_baud >> 16), (uint8_t)(h->io->fw_baud >> 24) };
+        h->step = S_BAUD;
+        sync_cmd(h, C_BCM_BAUD, p, 6);
+        h->wait_until = now(h) + 1000;
+        return;
+    }
     h->step = S_MINIDRIVER;
     sync_cmd(h, C_BCM_MINIDRIVER, 0, 0);
 }
@@ -304,6 +325,12 @@ static void startup_answer(struct bt_host *h, uint16_t op, const uint8_t *ret, u
         after_rom(h);
         return;
     }
+    case S_BAUD:
+        if (st) lg(h, "the chip kept 115200 baud for its firmware (status %u)", st);
+        else { h->io->set_baud(h->io->ctx, h->io->fw_baud); h->fast = 1; lg(h, "firmware download at %u baud", h->io->fw_baud); }
+        h->step = S_MINIDRIVER;
+        sync_cmd(h, C_BCM_MINIDRIVER, 0, 0);
+        return;
     case S_RESET:
         if (st) { fail(h, "the chip refused a reset"); return; }
         h->step = S_RESET_PAUSE;                 /* the chip is still resetting: a command now can be lost */
@@ -939,6 +966,13 @@ void bt_rx(struct bt_host *h, const uint8_t *p, unsigned n)
 void bt_poll(struct bt_host *h)
 {
     if (h->state == BT_FAILED || h->state == BT_OFF) return;
+    if (h->pending_op && due(h, h->wait_until) && h->state == BT_FW && h->step == S_BAUD) {
+        lg(h, "no answer to the change of speed: the firmware goes at 115200");
+        h->pending_op = 0; h->credits = 1;
+        h->step = S_MINIDRIVER;
+        sync_cmd(h, C_BCM_MINIDRIVER, 0, 0);
+        return;
+    }
     if (h->pending_op && due(h, h->wait_until) && h->state == BT_FW && (h->step == S_ROM_VER || h->step == S_ROM_NAME)) {
         lg(h, "no answer to %x from the chip's ROM (going on)", h->pending_op);
         h->pending_op = 0; h->credits = 1;
@@ -982,8 +1016,11 @@ void bt_poll(struct bt_host *h)
         return;
     }
     if (h->state == BT_FW && !h->pending_op) {
-        if (h->step == S_MINI_WAIT && due(h, h->wait_until)) { h->step = S_PATCH; h->fwpos = 0; h->fwrec = 0; say(h, "loading its firmware"); lg(h, "firmware: %u bytes", h->fwlen); patch_next(h); }
-        else if (h->step == S_LAUNCH_WAIT && due(h, h->wait_until)) { h->step = S_RESET2; h->tries = 1; h->credits = 1; sync_cmd(h, C_RESET, 0, 0); }
+        if (h->step == S_MINI_WAIT && due(h, h->wait_until)) { h->step = S_PATCH; h->fwpos = 0; h->fwrec = 0; h->fw_t0 = now(h); say(h, "loading its firmware"); lg(h, "firmware: %u bytes", h->fwlen); patch_next(h); }
+        else if (h->step == S_LAUNCH_WAIT && due(h, h->wait_until)) {
+            if (h->fast == 1) { h->io->set_baud(h->io->ctx, 115200); h->fast = 2; }   /* Launch_RAM: the chip restarts at 115200 */
+            h->step = S_RESET2; h->tries = 1; h->credits = 1; sync_cmd(h, C_RESET, 0, 0);
+        }
         else if (h->step == S_RESET_PAUSE && due(h, h->wait_until)) {
             if (h->fw) { h->step = S_ROM_VER; sync_cmd(h, C_LOCAL_VERSION, 0, 0); h->wait_until = now(h) + 1000; }
             else { h->state = BT_INIT; h->step = 0; setup_next(h); }
@@ -1014,6 +1051,7 @@ int bt_scan(struct bt_host *h)
     h->heard_other = 0; h->heard_logged = 0;
     h->scan_ir = h->scan_eir = h->scan_le = 0;
     le_cancel(h);                                       /* no scanning while the controller is connecting */
+    bg_stop(h);                                         /* the host's own LE scan for bonded devices: its parameters are not these */
     uint8_t p[7] = { 0x33, 0x8b, 0x9e, 0x08, 0x00 };   /* GIAC, 10.24 s, no limit */
     cmd(h, C_INQUIRY, p, 5);
     p[0] = 1; put16(p + 1, 0x0060); put16(p + 3, 0x0030); p[5] = 0; p[6] = 0;   /* active (scan responses carry names), 60 ms / 30 ms */
@@ -1043,6 +1081,7 @@ int bt_pair(struct bt_host *h, const uint8_t a[6])
         return 0;
     }
     le_scan_stop(h);
+    bg_stop(h);
     struct bt_conn *c = conn_by_addr(h, a);
     mcpy(h->pair_addr, a, 6);
     h->pairing = 1;

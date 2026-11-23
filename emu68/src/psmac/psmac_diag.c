@@ -110,6 +110,7 @@ const struct pdg_opt pdg_opts[] = {
     { "bt", PDG_G_NETWORK, 0, A, "off|on", 0, "off: the Bluetooth chip left off." },
     { "bt.pair", PDG_G_NETWORK, 0, A, "*", "1", "1: pair the first keyboard or mouse in pairing mode; a NAME: only a device whose name holds it." },
     { "bt.dev", PDG_G_NETWORK, PDG_F_SECRET, A, "*", 0, "A paired device, as the log printed it after bt.pair (its key stays secret)." },
+    { "bt.fwbaud", PDG_G_NETWORK, 0, A, "#", "921600", "The speed the Bluetooth chip's firmware is sent at (921600 by default; 115200 the old, slower way)." },
     { "remote", PDG_G_NETWORK, 0, A, "on|off", 0, "on: the remote control (the Mac's screen, mouse, keyboard and log over HTTP, docs/13)." },
     { "remote.token", PDG_G_NETWORK, PDG_F_SECRET, A, "*", 0, "The remote control's token, 8 characters or more." },
     { "remote.name", PDG_G_NETWORK, 0, A, "*", "aurora68-pi", "The remote control's .local name." },

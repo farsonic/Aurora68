@@ -123,9 +123,10 @@ static void in_repeat_poll(void)
 }
 
 /* a USB boot-protocol keyboard report (modifiers, reserved, 6 usages): diff against the last one */
+static uint8_t kb_last[8];                       /* the keys held now (in_attach_poll gives them to .PiInput when it opens) */
 void frf_native_usb_keyboard_boot_report(const uint8_t report[8])
 {
-    static uint8_t last[8];
+    uint8_t *last = kb_last;
     for (int i = 2; i < 8; i++) {                    /* released: in last, not in report */
         if (!last[i]) continue;
         int still = 0; for (int j = 2; j < 8; j++) if (report[j] == last[i]) still = 1;
@@ -142,8 +143,35 @@ void frf_native_usb_keyboard_boot_report(const uint8_t report[8])
 void frf_native_usb_keyboard_force_release(void) { static const uint8_t none[8]; frf_native_usb_keyboard_boot_report(none); }
 int  frf_native_usb_reboot_requested(void) { return 0; }
 int  frf_native_usb_amiga_reset_requested(void) { return 0; }
-void aga_virtual_mouse_update(int dx, int dy, unsigned buttons) { if (dx || dy || buttons != 0xffffffffu) in_put(ALICE_IN_MOUSE, dx, dy, (int32_t)buttons); }
-void pt_mouse_extra(int wheel, int pan, unsigned buttons) { (void)buttons; if (wheel || pan) in_put(ALICE_IN_WHEEL, wheel, pan, 0); }
+/* a mouse (USB, Bluetooth, the testbed's scripts): in Setup and Recovery it moves through the keyboard menu (psmac_recovery_mouse) */
+extern int psmac_recovery_mouse(int dx, int dy, unsigned buttons, int wheel);
+void aga_virtual_mouse_update(int dx, int dy, unsigned buttons)
+{
+    if (psmac_recovery_mouse(dx, dy, buttons, 0)) return;
+    if (dx || dy || buttons != 0xffffffffu) in_put(ALICE_IN_MOUSE, dx, dy, (int32_t)buttons);
+}
+void pt_mouse_extra(int wheel, int pan, unsigned buttons) { (void)buttons; if (wheel && psmac_recovery_mouse(0, 0, 0xffffffffu, wheel)) return; if (wheel || pan) in_put(ALICE_IN_WHEEL, wheel, pan, 0); }
+
+/* The keys held when .PiInput opens (23 November 2026, docs/08 item 136). The driver starts from an empty ring
+   (piinput.s: "start from now: drop what happened before boot"), so a key that went down before it opened was never
+   seen: a keyboard only reports changes, and a Shift held from power-on for "Extensions off" (or the Option or
+   Command keys of the other startup combinations) had already been reported. When the ring's attached word comes
+   on, the modifiers and every key held are put into it again, as if pressed then; the driver sets KeyMap from them,
+   which is what the System's checks read. */
+static void in_attach_poll(void)
+{
+    static int was;
+    int now_ = inr && inr->attached;
+    if (now_ && !was) {
+        extern void psmac_boot_mark(const char *fmt, ...);
+        int n = 0;
+        if (kb_last[0]) in_put(ALICE_IN_KEY, 0, 0, kb_last[0]);
+        for (int i = 2; i < 8; i++) if (kb_last[i]) { in_put(ALICE_IN_KEY, kb_last[i], 1, kb_last[0]); n++; }
+        if (n || kb_last[0]) psmac_boot_mark(".PiInput opened: keyboards and mice reach the Mac; %d key(s) and modifiers %02x held, given to it again", n, kb_last[0]);
+        else psmac_boot_mark(".PiInput opened: keyboards and mice reach the Mac");
+    }
+    was = now_;
+}
 volatile uint8_t frf_usb_boot_ready, frf_usb_mouse_seen, frf_usb_mouse_buttons, frf_usb_failed;
 uintptr_t frf_dma_phys;                              /* xHCI DMA pool: not carved yet (USB is Pi 4 only) */
 
@@ -660,7 +688,17 @@ static const char *wsim_script_pass(void) { return wsim_nets[0].pass; }
    delays: one paired mouse already connected; a scan that takes two seconds and finds a keyboard,
    a mouse and a pair of headphones; pairing (the keyboard shows a passkey, 123456, for four
    seconds first, as the real host shows one to type); connect; forget. Nothing reaches the input
-   ring: there is no device. */
+   ring: there is no device.
+   Since 23 November 2026 (docs/08 item 136, Bluetooth in Setup and Recovery) the simulated host also keeps its
+   pairings where the real one does: every change goes to psmac_card_save_pairings as bt_pi.c's bt.dev= lines (so
+   pairings.txt is written, and in Setup and Recovery through the recovery's own file layer), and a start reads
+   pairings.txt back: a simulated device found there is paired again and "reconnects" a second later. And
+   mac.btsimkeys=SECONDS:TOKENS is a paired keyboard and mouse typing and moving, injected where bt_pi.c's HID
+   reports go (frf_native_usb_keyboard_boot_report, aga_virtual_mouse_update), SECONDS after the simulated host is up,
+   one token every quarter of a second: a letter or digit, ret esc up down left right bs tab space, shift / noshift
+   (Shift held from then on, or let go), mdown mup (the mouse 120 counts down or up), click rclick, wN (N tenths of a
+   second's pause). Keys wait until the simulated keyboard is connected (pair "Magic Keyboard" first, or have it in
+   pairings.txt), mouse tokens until a mouse is. */
 extern volatile uint8_t *alice_net_board(void);
 static int bsim_on = -1, bsim_phase;
 static uint64_t bsim_due;
@@ -688,6 +726,86 @@ static void bsim_add(volatile struct an_bt *b, const char *name, const uint8_t *
     k->type = 4; k->flags = flags; bsim_name(k->name, name);
     b->nkeys++; b->keys_gen++;
 }
+/* the simulated pairings as bt_pi.c writes them (keys_save): "# NAME" and "bt.dev=ADDR:KEY:KIND", the address most
+   significant octet first */
+extern void psmac_card_save_pairings(const char *text, uint32_t len);
+extern const char *psmac_card_pairings(int *state);
+static void bsim_save(volatile struct an_bt *b)
+{
+    static char t[1024]; unsigned n = 0; static const char hx[] = "0123456789abcdef";
+    static const char head[] = "# Bluetooth pairings, written by the Aurora68 kernel (the testbed's simulated host)\n";
+    for (unsigned i = 0; head[i]; i++) t[n++] = head[i];
+    for (unsigned k = 0; k < b->nkeys && n < sizeof t - 120; k++) {
+        t[n++] = '#'; t[n++] = ' '; for (int i = 0; i < 39 && b->keys[k].name[i]; i++) t[n++] = b->keys[k].name[i];
+        t[n++] = '\n';
+        for (const char *q = "bt.dev="; *q; q++) t[n++] = *q;
+        for (int i = 5; i >= 0; i--) { t[n++] = hx[b->keys[k].addr[i] >> 4]; t[n++] = hx[b->keys[k].addr[i] & 15]; }
+        t[n++] = ':';
+        for (int i = 0; i < 16; i++) { t[n++] = hx[b->keys[k].key[i] >> 4]; t[n++] = hx[b->keys[k].key[i] & 15]; }
+        t[n++] = ':'; t[n++] = hx[(b->keys[k].flags & AN_BTK_KEYBOARD ? 1 : 0) | (b->keys[k].flags & AN_BTK_MOUSE ? 2 : 0)];
+        t[n++] = '\n';
+    }
+    psmac_card_save_pairings(t, n);
+    kprintf("[BT-SIM] pairings handed to the card: %u device(s)\n", b->nkeys);
+}
+static int bsim_hex(char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1; }
+static uint64_t bsim_reconnect_at;
+/* pairings.txt as the card had it at this start: the simulated devices named there are paired again */
+static void bsim_load(volatile struct an_bt *b, const char *t)
+{
+    for (const char *p = t; p && *p; p++) {
+        if ((p != t && p[-1] != '\n') || p[0] != 'b' || p[1] != 't' || p[2] != '.' || p[3] != 'd' || p[4] != 'e' || p[5] != 'v' || p[6] != '=') continue;
+        uint8_t a[6]; int ok = 1;
+        for (int i = 0; i < 6 && ok; i++) { int h = bsim_hex(p[7 + 2 * i]), l = bsim_hex(p[8 + 2 * i]); if (h < 0 || l < 0) ok = 0; else a[5 - i] = (uint8_t)(h << 4 | l); }
+        if (!ok) continue;
+        for (int k = 0; k < 3; k++) {
+            int same = 1; for (int i = 0; i < 6; i++) if (bsim_near[k].addr[i] != a[i]) same = 0;
+            if (same && bsim_near[k].flags) { bsim_add(b, bsim_near[k].name, a, bsim_near[k].flags); kprintf("[BT-SIM] %s paired (pairings.txt): it reconnects in a second\n", bsim_near[k].name); bsim_reconnect_at = in_now() + in_hz(); }
+        }
+    }
+}
+/* mac.btsimkeys=SECONDS:TOKENS (above) */
+static const char *bks; static uint64_t bks_next; static int bks_shift, bks_phase; static uint8_t bks_usage; static unsigned bks_button;
+static int bsim_connected(volatile struct an_bt *b, uint32_t kind)
+{
+    for (unsigned k = 0; k < b->nkeys; k++) if ((b->keys[k].flags & AN_BTK_CONNECTED) && (b->keys[k].flags & kind)) return 1;
+    return 0;
+}
+static void bsim_keys_poll(volatile struct an_bt *b, uint64_t now)
+{
+    if (!bks || !*bks || now < bks_next) return;
+    if (bks_phase == 1) {                                       /* the key or button let go */
+        uint8_t r[8] = { (uint8_t)(bks_shift ? 0x02 : 0) };
+        if (bks_usage) frf_native_usb_keyboard_boot_report(r);
+        if (bks_button) aga_virtual_mouse_update(0, 0, 0);
+        bks_usage = 0; bks_button = 0; bks_phase = 0;
+        bks_next = now + in_hz() * 170 / 1000;
+        return;
+    }
+    char tok[16]; unsigned n = 0;
+    while (bks[n] && bks[n] != ',' && n < sizeof tok - 1) { tok[n] = bks[n]; n++; }
+    tok[n] = 0;
+    int mouse = tok[0] == 'm' || !__builtin_strcmp(tok, "click") || !__builtin_strcmp(tok, "rclick");
+    if (tok[0] && !(tok[0] == 'w' && tok[1] >= '0' && tok[1] <= '9') && !bsim_connected(b, mouse ? AN_BTK_MOUSE : AN_BTK_KEYBOARD)) { bks_next = now + in_hz() / 4; return; }
+    bks += n; if (*bks == ',') bks++;
+    static const struct { const char *w; uint8_t u; } named[] = {
+        { "ret", 0x28 }, { "esc", 0x29 }, { "bs", 0x2a }, { "tab", 0x2b }, { "space", 0x2c }, { "right", 0x4f }, { "left", 0x50 }, { "down", 0x51 }, { "up", 0x52 } };
+    uint8_t u = 0;
+    if (n == 1 && tok[0] >= 'a' && tok[0] <= 'z') u = (uint8_t)(0x04 + tok[0] - 'a');
+    else if (n == 1 && tok[0] >= '1' && tok[0] <= '9') u = (uint8_t)(0x1e + tok[0] - '1');
+    else if (n == 1 && tok[0] == '0') u = 0x27;
+    for (unsigned i = 0; !u && i < sizeof named / sizeof named[0]; i++) if (!__builtin_strcmp(tok, named[i].w)) u = named[i].u;
+    bks_next = now + in_hz() * 80 / 1000;
+    if (u) { uint8_t r[8] = { (uint8_t)(bks_shift ? 0x02 : 0), 0, u }; frf_native_usb_keyboard_boot_report(r); bks_usage = u; bks_phase = 1; kprintf("[BT-SIM] key %s\n", tok); return; }
+    if (!__builtin_strcmp(tok, "shift") || !__builtin_strcmp(tok, "noshift")) {
+        bks_shift = tok[0] == 's'; uint8_t r[8] = { (uint8_t)(bks_shift ? 0x02 : 0) }; frf_native_usb_keyboard_boot_report(r);
+        kprintf("[BT-SIM] Shift %s\n", bks_shift ? "held" : "let go"); bks_next = now + in_hz() / 4; return;
+    }
+    if (!__builtin_strcmp(tok, "mdown") || !__builtin_strcmp(tok, "mup")) { aga_virtual_mouse_update(0, tok[1] == 'd' ? 120 : -120, 0); kprintf("[BT-SIM] mouse %s\n", tok + 1); bks_next = now + in_hz() / 4; return; }
+    if (!__builtin_strcmp(tok, "click") || !__builtin_strcmp(tok, "rclick")) { bks_button = tok[0] == 'r' ? 2 : 1; aga_virtual_mouse_update(0, 0, bks_button); bks_phase = 1; kprintf("[BT-SIM] %s\n", tok); return; }
+    if (tok[0] == 'w') { uint32_t v = 0; for (const char *q = tok + 1; *q >= '0' && *q <= '9'; q++) v = v * 10 + (uint32_t)(*q - '0'); bks_next = now + in_hz() * v / 10; return; }
+    kprintf("[BT-SIM] mac.btsimkeys: \"%s\" is not a token\n", tok);
+}
 int psmac_bt_testbed_poll(void)
 {
     if (bsim_on < 0) { const char *o = psmac_option("mac.btsim"); bsim_on = o && o[0] == '1'; }
@@ -697,14 +815,32 @@ int psmac_bt_testbed_poll(void)
     volatile struct an_bt *b = (volatile struct an_bt *)(nb + AN_OFF_BT);
     uint64_t now = in_now();
     if (bsim_phase == 0) {
+        int st = -1; const char *pt = psmac_card_pairings(&st);
+        static uint64_t wait0; if (!wait0) wait0 = now;
+        if (st == 0 && now - wait0 < in_hz() * 10) return 1;        /* the card's pairings first, as bt_pi.c waits for them */
         for (unsigned i = 0; i < sizeof *b; i++) ((volatile uint8_t *)b)[i] = 0;
         static const uint8_t own[6] = { 0x02, 0x50, 0x53, 0x42, 0x54, 0x01 }, mouse[6] = { 0x41, 0x52, 0x63, 0x74, 0x85, 0x96 };
         for (int i = 0; i < 6; i++) b->bdaddr[i] = own[i];
         bsim_add(b, "Logitech M337", mouse, AN_BTK_MOUSE | AN_BTK_CONNECTED);
+        if (st == 1 && pt) bsim_load(b, pt);
         b->state = AN_BT_READY; bsim_msg(b, "ready (simulated)");
         bsim_phase = 1;
-        kprintf("[BT-SIM] testbed Bluetooth: a simulated host, one paired mouse\n");
+        kprintf("[BT-SIM] testbed Bluetooth: a simulated host, %u paired\n", b->nkeys);
+        { extern void psmac_boot_mark(const char *fmt, ...); psmac_boot_mark("Bluetooth (simulated): ready, %u paired", b->nkeys); }
+        const char *o = psmac_option("mac.btsimkeys");
+        if (o) { uint32_t v = 0; while (*o >= '0' && *o <= '9') v = v * 10 + (uint32_t)(*o++ - '0'); if (*o == ':') o++; bks = o; bks_next = now + in_hz() * v; kprintf("[BT-SIM] mac.btsimkeys: from %u s after the start of the simulated host\n", v); }
     }
+    if (bsim_reconnect_at && now >= bsim_reconnect_at) {
+        bsim_reconnect_at = 0;
+        for (unsigned k = 0; k < b->nkeys; k++) if (!(b->keys[k].flags & AN_BTK_CONNECTED)) {
+            char nm[40]; int i = 0; for (; i < 39 && b->keys[k].name[i]; i++) nm[i] = b->keys[k].name[i];
+            nm[i] = 0;
+            b->keys[k].flags |= AN_BTK_CONNECTED; kprintf("[BT-SIM] %s connected\n", nm);
+            extern void psmac_boot_mark(const char *fmt, ...); psmac_boot_mark("Bluetooth (simulated): a paired device connected");
+        }
+        bsim_msg(b, "connected");
+    }
+    bsim_keys_poll(b, now);
     /* a new command */
     if (!bsim_pending && b->cmd_seq != b->cmd_done) {
         bsim_pending = b->cmd_seq; bsim_cmd = b->cmd;
@@ -743,6 +879,7 @@ int psmac_bt_testbed_poll(void)
             for (unsigned j = 0; j < b->nfound; j++) { int same = 1; for (int i = 0; i < 6; i++) if (b->found[j].addr[i] != bsim_addr[i]) same = 0; if (!same) { if (n != j) for (unsigned i = 0; i < sizeof b->found[0]; i++) ((volatile uint8_t *)&b->found[n])[i] = ((volatile uint8_t *)&b->found[j])[i]; n++; } }
             b->nfound = n;
             bsim_msg(b, "paired and connected");
+            bsim_save(b);
             break; }
         case AN_BT_CMD_CONNECT: {
             int k = bsim_key(b, bsim_addr);
@@ -754,6 +891,7 @@ int psmac_bt_testbed_poll(void)
             if (k < 0) { r = -1; break; }
             for (unsigned j = (unsigned)k; j + 1 < b->nkeys; j++) for (unsigned i = 0; i < sizeof b->keys[0]; i++) ((volatile uint8_t *)&b->keys[j])[i] = ((volatile uint8_t *)&b->keys[j + 1])[i];
             b->nkeys--; b->keys_gen++; bsim_msg(b, "forgotten");
+            bsim_save(b);
             break; }
         default: r = -1; break;
         }
@@ -1066,6 +1204,7 @@ void __attribute__((noreturn)) psmac_alice_core(void)
         { extern void psmac_usb_poll(void); psmac_usb_poll(); }          /* USB keyboard and mouse (psmac_usb.c) */
         t1 = in_now(); LOOP_T(3, t1 - t0); t0 = t1;
         LOOP_AT("input");
+        in_attach_poll();
         in_repeat_poll();
         in_testbed_poll();
         LOOP_AT("echo timings");
