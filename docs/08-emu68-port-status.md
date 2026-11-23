@@ -6180,3 +6180,296 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      Colour's choice of screen, the zoom boxes on the second screen, are read from the code, not run; the SE board in
      MAME; Play's dialogs that need a server or a station; Video with a film; RiptidePrefs, Lagoon and Octavo were not
      installed in the image and not looked at.
+
+135. **A clock in the menu bar, and the extras placed by the program's menus (23 November).** The owner: "a clock
+   extension next to wifi that shows time and lets me adjust how it is shown, similar to what macOS has". docs/09
+   "Aurora68 Menu Extras" has the whole of it.
+   - *One extension.* The clock went into the WiFi and Bluetooth menus' INIT (`mac/wifimenu/clock.c`), not beside it:
+     two INITs patching `_DrawMenuBar` to draw at the same place would fight. Renamed **Aurora68 Menu Extras**
+     (`Aurora68-MenuExtras.bin`, creator `PSWM` kept). It sorts before "Aurora68 Wi-Fi & Bluetooth", so at start it
+     moves any other `PSWM` INIT in Extensions or the System Folder into "Extensions (Disabled)" before the Start
+     Manager reaches it; `aurora68-layout.py install` also takes the old name out.
+   - *The clock.* The time in the system font, or a 15-pixel analog face; the options of macOS's Clock (the date, the
+     day of the week, AM/PM, the 24-hour clock, seconds, flashing separators); the region's formats from 'itl0'
+     (timeCycle, hrLeadingZ, timeSep, mornStr/eveStr, dateOrder) and names from 'itl1' (cut to abbrLen); the menu's
+     first line from IUDateString's long date. Drawn in srcCopy text mode (each glyph's box painted, nothing erased
+     first: no flicker), once a minute or once a second, never while a menu is down (MBSaveLoc's lastMBSave, as in
+     item 124). Choices in "Aurora68 Menu Extras Prefs" (Preferences folder, 8 bytes). Date & Time... sends the
+     Finder `'FNDR' 'sope'` from the Finder's own GetNextEvent after bringing it to the front: System 7.1's Finder
+     ignores `'aevt' 'odoc'` (item 90), and a program that takes no Apple events cannot send one.
+   - *Riptide's NTP.* Riptide's `.IPP` copies its status table to a caller in one private Control call (RTMAC_PORT,
+     RTCMD_TABLES "42": `struct rt_ctl_status`'s ntp_state and ntp_ago_s), so the menu shows "Last NTP sync: 5
+     minutes ago" when the `.IPP` in the unit table is open and answers RTMAC_PING. Nothing in Riptide was changed.
+   - *Placement.* The extras stood at fixed distances from the bar's right end; at 512 pixels a program's last menus
+     ran under them and the filter took their presses. `bar.c` now reads the menu list at every `_DrawMenuBar`: the
+     system menus' left edge (negative IDs) on the right, the program's last title's right edge (its left, its width,
+     the gap the menu bar leaves after a title, measured between the program's titles) on the left; the clock, Wi-Fi
+     and Bluetooth go right to left from the system menus, seven pixels either side, and drop out in the order
+     Bluetooth, Wi-Fi, the clock's long form (the time alone stays), the clock. What is not drawn takes no press.
+   - *Two bugs of the drawing found on the way.* After a PopUpMenuSelect the Menu Manager left the Window Manager
+     port's clipping narrowed: the clock's highlight was never taken off and nothing it drew afterwards showed. The
+     extras now open WMgrPort's clipping over the bar while they draw (`wm_begin`, `wm_end`) and put the old one back.
+     And TextFace's Style is passed in a word's low byte, not as a BOOLEAN in the high byte: the first clock came out
+     outlined and italic from whatever byte was there. A debug log line ran past an 80-byte buffer on the stack at the
+     first start ("bad F-line instruction" at PC $6C656429, "led)" from "Extensions (Disabled)").
+   - *Tested* in QEMU (solo board, System 7.1, the remote's testbed channel): at 640 x 480 every clock style, the menu,
+     Date & Time opened in the Finder, its Time Formats' 24 hours followed at the next start, choices kept across
+     restarts, the clock still while a menu was held down; at 512 x 342 the Finder and Aurora68 Play with the extras
+     dropping out one by one, a press two pixels left of the clock reaching the Finder's Special menu, the Wi-Fi and
+     Bluetooth menus from their new places; the old extension moved aside. Pictures: `docs/img/menu-extras-*.png`.
+     *Not verified:* the NTP line (no Riptide in the test image), System 7.5, other regions' resources, the SE itself.
+
+136. **Bluetooth keyboards and mice in Setup and Recovery, and as early as possible in every start (23 November).** The
+   owner: "Can we add Bluetooth connectivity into the early startup also for mouse and keyboards." Early startup is
+   Setup and Recovery (items 106, 118, 122): until now a USB keyboard and the page were its only ways in.
+   - *What was there already.* The Bluetooth host (src/alice/bt: bt_pi.c, bthost.c, btle.c) runs in core 3's service
+     loop in every start, recovery included: nothing in recovery stopped it. The chip's firmware comes from the
+     container before core 3 starts, its power line (BT_ON, the firmware's GPIO expander) is apart from the WiFi's
+     (WL_ON), and the mailbox they share is already retried while the other holds it, so there is no order between the
+     two radios to keep; the access point's `WLC_DOWN`/`WLC_UP` touch only the WiFi half. And a Bluetooth keyboard's
+     reports already went where a USB keyboard's go (frf_native_usb_keyboard_boot_report, in_key, psmac_recovery_key):
+     into the keyboard menu. What was missing: any sign of Bluetooth on the screens or the page, a way to pair with no
+     Mac running (pairing lived in the Mac's Bluetooth menu and `bt.pair=`), and the card: in recovery psmac_card.c's
+     own writes stop (the card is the recovery's file layer's), so a pairing made there would never have reached
+     `pairings.txt`, and the pending write kept psmac_card_idle false, so every restart from the page waited its full
+     ten seconds.
+   - *In recovery* (psmac_recovery.c, "Bluetooth"). The network board's Bluetooth block (alice_net.h struct an_bt) is
+     what the Mac's Bluetooth menu reads and commands; with no Mac this file is its client, through the same four
+     commands (scan, pair, connect, forget; cmd_seq and cmd_done). The screens have a line (ready, the devices
+     connected by name and kind, or looking, or pairing) and, while a keyboard pairs, its passkey in large digits (on
+     the access point's screen too). The page has a **Bluetooth** tab: the state, Look for devices, the found devices
+     with Pair, the paired ones with Connect and Forget, the passkey in a box; Overview has a Bluetooth line. The API:
+     `GET /r/bt`, `POST /r/bt/scan`, `POST /r/bt/pair|connect|forget?addr=AA:BB:CC:DD:EE:FF` (409 while Bluetooth is
+     off, starting or busy with the command before; 404 for a device that is not paired). `aurora68.py recovery bt
+     [show|scan|pair ADDR|connect ADDR|forget ADDR]` waits for the scan, prints the passkey while a keyboard pairs and
+     the result. The keyboard menu has a twelfth item, "Bluetooth keyboards and mice": Look for devices, each device
+     found (Return pairs), each paired one (Return connects, Backspace twice forgets). A pairing goes to `pairings.txt`
+     through the recovery's file layer (`psmac_card_pairings_take`, then `psmac_card_rec_put`: a temporary, read back,
+     and the swap), between uploads and card tests, in the format bt_pi.c writes, so the next start reconnects it. The
+     report bundle has a Bluetooth part: the state, each paired device's name, kind, LE or not, connected or not, the
+     last two bytes of its address; no keys (pairings.txt is not in the bundle; the log's `bt.dev=` words are scrubbed
+     as before).
+   - *A mouse.* No pointer is drawn (the screens are text, and the SE's 512 x 342 one-bit one has 21 rows): a mouse
+     moves through the menu instead, `psmac_recovery_mouse` in front of the input ring: about half a centimetre up or
+     down (120 counts) or a notch of the wheel is Up or Down, the button Return, the right button Esc. With it alone the
+     menu's restarts, the access point, the Bluetooth list (pairing a keyboard) and the bus check's "any key" work; a
+     WiFi password needs a keyboard.
+   - *Early in a normal start: what decides when a key reaches the Mac.* Three things, in order.
+     1. *.PiInput dropped every key held before it opened, and opens too late anyway.* The driver starts from an
+        empty ring (piinput.s, "start from now: drop what happened before boot"), and a keyboard reports only changes:
+        a Shift held from power-on for "Extensions off", or the Option or Command keys of the other startup
+        combinations, had been reported before the driver existed and was never seen, from a Bluetooth or a USB
+        keyboard alike. Now when the ring's attached word comes on (in_attach_poll, alice_psmac.c) the modifiers and
+        every key held are put in again as if pressed then. That alone was not enough (the test below): the System
+        decides "Extensions off" before .PiInput opens. What it reads is KeyMap, sixteen bytes of the Mac's low memory
+        at $174 (code k at byte k >> 3, bit k & 7, item 39), and the Mac's RAM is the Pi's: so from the Mac's first
+        driver Open (its low memory set up, the RAM test long over) until .PiInput opens, the kernel keeps the keys
+        held on the Pi's keyboards set in KeyMap every hundredth of a second (in_keymap_poll: the modifiers by the HID
+        byte, with `mac.altcmd=`, the keys by the ADB code table the recovery menu uses), and takes its own bits out
+        again when they are let go, the ROM's own ADB keyboard's left alone. Only in the Mac's first start after
+        power-on: a restart from the Finder runs the ROM's tests again over that memory.
+     2. *The firmware's download.* bthost sent the .hcd at 115200 baud: the 3B's BCM43430A1.hcd is about 37 KB,
+        some 3.3 s of every start before any device could connect. Linux sends it at the line's working speed
+        (hci_bcm; Raspberry Pi OS's hciattach at 921600 "noflow" on the 3B): the vendor's Update UART Baud Rate
+        (0xFC18), answered at the old speed, the PL011 following, the records at the new speed (each answered by a
+        seven-byte Command Complete, so no flow control is needed), and back to 115200 with the chip after
+        Launch_RAM. bthost now does the same at 921600 (`bt.fwbaud=`; 115200 or 0 the old way): about 0.45 s. A chip
+        that refuses the speed gets the download at 115200; one that fails during it is powered off and tried once
+        more at 115200 before the chip's own firmware is the last resort, as before.
+     3. *The page scan.* A paired Classic keyboard that wakes calls the Pi; the controller looked for such calls
+        11.25 ms in every 1.28 s, the default. Now every 160 ms and interlaced (Linux's "fast connectable"), so the
+        call is answered in a tenth of a second rather than up to a second and a half.
+     By the code, on the Pi: Bluetooth's part starts when core 3's loop begins (the card's pairings are read in its
+     first pass); BT_ON low, then high, 270 ms; the chip's reset and ROM questions, some 0.2 s; the firmware, 3.3 s at
+     115200 and now about 0.45 s; Launch_RAM's 250 ms and the reset's 100 ms; the set-up, sixteen commands. So the host
+     is ready about 1.3 s after core 3 starts instead of about 4.2 s, a paired keyboard that is awake (a key pressed)
+     is connected some 0.1 to 0.5 s after it calls, and an LE mouse as soon as it advertises. The Mac's first driver
+     opens seconds later still (after the ROM's tests and the boot blocks), which is when KeyMap starts to be kept.
+     The log says when: `[BOOT] t=...` lines (from power-on, psmac_boot.c) for "Bluetooth: the chip is powered, its
+     start-up begins", "Bluetooth: ready, N paired", "Bluetooth: NAME connected (keyboard|mouse[, LE])", "Bluetooth:
+     the first key from a Bluetooth keyboard", "the first report from a Bluetooth mouse" and ".PiInput opened:
+     keyboards and mice reach the Mac; N key(s) and modifiers MM held, given to it again"; and `[BT] firmware: N
+     records sent in M ms at B baud`.
+   - *The open issue "Bluetooth mouse stopped reconnecting on the Pi 3B".* Without the Pi there is no log of it, so
+     this is the cause the code shows, and it fits "the 3B": a bonded LE device that gave its IRK at pairing
+     advertises afterwards with a resolvable private address, a new one every few minutes. btle.c put its identity
+     address in the controller's accept list and its IRK in the resolving list and waited for the controller to
+     connect it. Resolving lists (LL Privacy) are Bluetooth 4.2; the 3B's BCM43438 is a 4.1 controller and answers
+     those commands "unknown command" (status 1), which btle.c logged and otherwise ignored, and its accept list then
+     waits for an address the mouse never uses again. A mouse that reconnected while it still had the address it
+     paired with stops doing so once it changes it, or after it sleeps. Now a refusal of the resolving list's
+     commands marks the controller (`no_resolv`), and while such a device is away the host runs a passive LE scan of
+     its own (a 30 ms window every 60 ms, as Linux's background scan), resolves each connectable advertisement's address with every
+     IRK (ah, Core Vol 3 Part H 2.2.2, with an AES-128 of its own in btle.c, a few microseconds, so a directed
+     advertisement's 1.28 s are not lost to the controller's LE Encrypt queue) and connects the device at the address
+     it used; the link is then recognised as the bonded device's (its identity address) and encrypted with its stored
+     key, where before a link from an unknown address was dropped as "not paired". A 3B+ or Pi 4 (4.2 and later) keeps
+     the accept list. Other reconnect paths looked at: Classic devices call the Pi themselves (page scan, faster now);
+     link keys are kept and offered as before; a device that has forgotten the Pi fails authentication and must be
+     paired again (the log says so).
+   - *Tested* on the host: `tools/bt_test.c` (run by `make -C mac check`, 29 checks) runs bthost.c and btle.c against a
+     scripted controller: AES-128 against FIPS-197 C.1, ah against the specification's D.7 example (IRK ec0234a3...,
+     prand 708194, hash 0dfbaa, the same as openssl's AES), a wrong hash and a static address not taken; a 4.1
+     controller: the missing resolving list noticed, the passive scan on, an address that does not resolve left alone,
+     ADV_DIRECT_IND from the private address answered with LE Create Connection to it, the link taken as the bonded
+     mouse's and encrypted with its Rand, EDIV and LTK, the scan again after a supervision timeout, a connection not
+     answered in 4 s cancelled; a 4.2 controller: the accept list as before; the firmware: Update UART Baud Rate
+     921600 before the minidriver, the line at 921600 and back to 115200 after Launch_RAM, a refusal keeping 115200;
+     page scan 160 ms / 11.25 ms, interlaced, set before scanning is switched on.
+     In QEMU (the solo board, a FAT16 card image, `mac.btsim=1`, the simulated Bluetooth host, extended for this: it
+     keeps its pairings in pairings.txt and reads them back, and `mac.btsimkeys=S:TOKENS` types and moves where
+     bt_pi.c's HID reports go): a recovery start (recovery.txt on the card) with the simulated mouse paired: `GET /r/bt`
+     and `aurora68.py recovery bt show` listed it; `bt scan` waited and listed the keyboard, the mouse and the
+     headphones; `POST /r/bt/pair` for the keyboard put passkey 123456 into `/r/bt` and onto both screens in large
+     digits (`docs/img/recovery-bt-passkey-se.png`, the compact Mac's screen as `/r/screen.pbm` photographs it), then
+     "paired and connected" and "pairings.txt written, 2 devices"; the file read back with its `bt.dev=` lines (the
+     page serves pairings.txt with the keys as `***`, as cmdline.txt's password); pairing the headphones refused by the
+     host; 404 to connect a device not paired, 400 to a bad address, 401 without the PIN. Then the simulated keyboard
+     (now connected; `mac.btsimkeys=` waits for it) opened the keyboard menu, went down to "Bluetooth keyboards and
+     mice", opened it and started a scan ("Bluetooth: look for devices" from the menu), Esc twice; then the simulated
+     mouse alone: a click opened the menu, eleven moves down reached the Bluetooth item, a click opened it, a click
+     scanned, the right button twice closed it (the screens photographed between: the menu's selection follows the
+     mouse). `bt forget` of the mouse from the command line, and pairings.txt with one device. The bundle's Bluetooth
+     part (names, kinds, "..:22:11", no keys; a search of the whole bundle for the simulated key's bytes found none).
+     "Restart normally": the watchdog restart, a normal start, "[CARD] pairings.txt: 156 bytes", the simulated host
+     "Magic Keyboard paired (pairings.txt): it reconnects in a second" and `[BOOT] t=41.494s Bluetooth (simulated): a
+     paired device connected`, one second after its host was up (t=40.494 s; QEMU's t counts from QEMU's start, and
+     this second start began at 40.076 s). The Bluetooth tab in headless Chrome at phone width, with the testbed's
+     answers (`docs/img/recovery-bt-page.png`).
+     *Shift held from power-on* (the second start's card, `mac.btsimkeys=0:shift`: the simulated keyboard reconnected
+     from pairings.txt at t=1.4 s and held Shift). First without the KeyMap part: the replay worked (".PiInput opened
+     ... modifiers 02 held, given to it again" at t=27.0 s) but System 7.1 had already decided: "Welcome to Macintosh"
+     without "Extensions off", PiDisk INIT ran at t=28.5 s. .PiInput opens only some 1.5 s before the first INIT, after
+     the System has looked. Hence the KeyMap part (in_keymap_poll, alice_psmac.c): from the Mac's first driver Open
+     (t=13.9 s here, "keys held on the Pi's keyboards put into the Mac's KeyMap") until .PiInput opened (t=29.4 s), and
+     then: **"Welcome to Macintosh. Extensions off."** (`docs/img/bt-shift-extensions-off.png`), no INIT's log line at
+     all, the Finder at t=31.0 s without its Startup Items. The testbed's timings: the Mac's first driver Open about
+     13.5 s after kernel entry, .PiInput about 27-29 s, the Finder about 31 s (QEMU on four host cores; the Pi is faster).
+     `make -C mac check` passes.
+   - *Not verified here (the owner's Pi):* a real chip taking 921600 for its firmware (Linux does exactly this on the
+     3B, and a failure falls back by itself); real pairing and its passkey; the scan of a real 4.1 controller and a
+     real mouse's private address (the log's "the controller has no resolving list" and "advertises as ... (resolved
+     with its IRK): connecting" lines are the ones to look for); the reconnect times on the SE. What to send: the
+     `[BOOT] t=` lines above and the `[BT]` lines of a start with the keyboard and mouse switched on before the Pi.
+     Command-Option-P-R is the ROM's own check, made early and on its ADB keyboard; whether the IIci ROM also sees it
+     in KeyMap, where the kernel and .PiInput put the Pi's keys, was not tried (the testbed showed Shift). On the solo
+     and SE boards the parameter RAM is `pram.bin` on the card (item 51), and deleting it on Setup and
+     Recovery's Files tab is the sure way to the same result. The Option key's combinations are read from KeyMap as
+     Shift is, so they should work the same way; not tried either.
+
+137. **The Aurora68 Apple II Card: an Apple II in a window, and the guest scheduler (23 November).** The owner's answers
+   for Aurora65 (the Apple II project beside this one): the 8-bit machines first, 1:1 on the SE's screen, the front
+   window's machine first when the PC and the Apple share a core, ROM dumps of the owner's own machines. docs/20-apple-ii-card.md
+   has the whole card; Aurora65's docs/STATUS.md item 19 the Apple's side.
+   - *The card* (`psmac_a2.c`, only with `-DPSMAC_A2=ON -DAURORA65_DIR=...`, `a2=on`): slot $E (free in every branch),
+     its window at `$FE000000`/`$FEE00000`, a declaration ROM carrying `.A68A2` (`mac/a68apple.s`: `.A68PC`'s code, the
+     block laid out as the PC card's), a 16 MiB pool of the Pi's RAM after the PC card's. The ROM from the card by
+     model, identified by the chips' CRC-32s of Aurora65's `romcheck.py`, its SHA-256 logged, refused in words when
+     missing. Disk images through `a65_io` with the PC card's sector overlay and write-back schedule (2 s, 10 s, at once
+     at power off, reset, eject, a change of model); `psmac_card_pc_write` now writes an image's short last sector whole.
+     The picture: 280 x 192 at 1:1 on one bit (hires as a monochrome monitor shows it, lores dithered), 80 columns from
+     the cells at 6 x 8, scaled as a choice, 560 x 384 or a whole multiple on deeper screens. The speaker into
+     `psmac_audio.c` as a sixth source.
+   - *The guest scheduler* (`psmac_guest.c`): the two call sites of `psmac_pc_poll` call `psmac_guest_poll(core)`; the PC
+     card split into service, ready and slice with nothing else changed (`tools/pccard_test.sh` passes as before); the
+     front window's guest first, the background floor `guest.floor=` (1 by default, 0 the owner's words taken strictly:
+     not chosen yet). Aurora68 PC 1.1 sets its block's new `front` word.
+   - *The program* Aurora68 Apple II (`mac/a68apple/apple.c`): menus Apple II (power, reset, restart cold, pause, the five
+     models), Disks, View, Keyboard; keys to the Apple while its window is in front, Command Open-Apple, Option
+     Solid-Apple, Control-Command-Delete the Apple's Control-Reset (Shift: cold), capture for Command-keys and the mouse
+     as the joystick.
+   - *Found on the way.* (1) AppendMenu takes "(" anywhere in an item's words as "disabled": "Actual Size (1:1)" and
+     "Capture Keyboard and Joystick (Control-Option-Command-A)" came up dimmed in the testbed, and so had Aurora68 PC's
+     "Large Text (8 x 16)" and "Capture Keyboard and Mouse (Control-Option-Command-P)" since item 132 (its Keyboard item
+     could never be chosen; the key combination worked). Such items get their words through SetItem now, in both
+     programs. (2) Aurora65's test ROM had its `stop` entry two bytes off ($F815, documented $F813), so a test disk's
+     last `jmp $F813` went back to scanning the slots: fixed there.
+   - *Tested.* `tools/guest_test.c` (the rule, turn by turn, `guest.floor` 0, 1 and 4) and `tools/a2card_test.sh` (the
+     card's own file with Aurora65's host library: boot and typing at 512 x 342, every pixel of a hires picture at 1:1,
+     80 columns, 32-bit colour at x 2, the II+, a block written back into its file, the Disks commands, a change of
+     model, no ROM refused; with Aurora86's too, both cards through the scheduler), both in `make -C mac check`. In QEMU
+     (solo board, System 7.1, Aurora68 Apple II and Aurora68 PC in Startup Items, the files through semihosting): at 640 x
+     480 both cards running on core 2, the Apple's window brought to the front over the PC's and back (the `[GUEST]` line
+     following: "Apple II on core 2 (front)", then "PC on core 2 (front)"), each card clipped to its own window's visible
+     region, `hello A2` typed into the Apple, the Disks menu ejecting test.dsk and putting hires.dsk into drive 1,
+     Restart Cold from the menu and the hires picture at 1:1; at 512 x 342 the Disks menu putting `test.hdv` into HD1,
+     Shift-Control-Command-Delete restarting cold, the Apple's boot block writing its block and the card writing it back
+     into the host's file 2 s later ("A65W" found there), the pointer's box redrawn when it moved, View > Scaled with the
+     window grown; a second 512 x 342 run with both programs: hires at 1:1 behind the fixed View menu, White on Black,
+     Aurora68 PC's Keyboard item enabled. The Apple kept its own speed (1000 per mille) beside the PC once both had started. Pictures:
+     `docs/img/a2-card-*.png`. The normal kernel: built from main and from this branch with the same `SOURCE_DATE_EPOCH`
+     in the same place, the same `Emu68.img` byte for byte.
+   - *Not verified:* the SE board, the IIci testbed, real hardware, the SD card path, the owner's Apple ROMs, the speaker
+     heard (its samples are counted on the host only), the Disk II writing (our test disks only read), the IIgs.
+
+138. **The PC card on the owner's SE: drawing after its program quit, the two screens, the mouse, the sound, the missing
+   disk; the Apple II card's window the same way (23 November).** The first PC kernel on the owner's real SE (`pc=on
+   pc.disk0=freedos.img`, the SE's own 512 x 342 screen main at 0,0, the 2560 x 1440 HDMI screen to its right) showed five
+   things. docs/19-pc-card.md "The owner's SE" has each in full; docs/20 "When the program goes" the Apple II card's.
+   - *The PC's screen on the desktop, over and under the Finder's windows, after Aurora68 PC had quit.* Cause, read in the
+     code: the program's main loop ended with `capture(0)` and told the card nothing; the card went on drawing at the last
+     place through `vis_rgn`, the handle of a window whose heap had gone, freed memory read as a region, and the heartbeat
+     counted pictures. Now both sides. The program (Aurora68 PC 1.2) says `prog = A68P_PROG_LIVE`, adds 1 to `alive` at every
+     turn of its event loop and its boxes' loops, and before it quits says `A68P_PROG_GONE`, takes the region back and sends
+     `A68P_C_NOWINDOW` (the driver waits for the card's answer); a patch on `ExitToShell` says GONE on any other way out and
+     puts the trap back. The card draws only while `alive` moves (a second standing still: nothing), only with a region
+     once a program says LIVE, only through a region `psmac_wclip_rgn_ok` reads as live (master pointer, the block's tag
+     and relative handle and size, the zone's `bkLim`, `rgnSize`, the box inside the window, the last $7FFF), and lets go
+     of every key and button. The video decoder card refuses dead regions too (its programs stop the film when they quit
+     normally; a crash left it a handle into freed memory, drawn through whenever the pointer moved over a paused film).
+   - *The two screens.* The mapping was right in both arrangements (`tools/pcplace_test.c`, new, no Aurora86 needed: the
+     program's own lines, now `mac/a68pc/place.h`, against a pretend Mac memory, the SE's screen main with HDMI to its
+     right, raised, HDMI main with the SE's either side, 32-bit and 24-bit, 61 checks). Changed: the window's screen is
+     the one holding most of it (it was the one under the content's top left: a window mostly on HDMI whose left edge lay on
+     the SE was drawn on the SE alone, a strip of the first letters of its lines at the SE's right edge, which may be the
+     strip the owner saw), and the pointer's box masks master pointers in 24-bit mode (the test failed four checks with
+     the old code: no box at all in 24-bit mode).
+   - *The mouse selecting icons.* No path from the card or the program into the Mac's input was found (the card's input
+     goes only to the PC; `.PiInput` reads only the service core's USB and Bluetooth ring; the program writes only MTemp,
+     RawMouse and CrsrNew while captured, and capture ends on quit, deactivate, suspend, a menu, a drag, any click outside
+     the content). Not reproduced. Fixed what was found: the card let go of the PC's keys but not its mouse buttons; now
+     both, on `A68P_IN_RELEASE`, on the window going and on the loop stopping. The PC's text drawn at 30 pictures a second
+     over the Finder's icons on a one-bit screen would itself look like icons selected as the pointer moves.
+   - *HDMI noise after the chime.* On the SE board the PC runs on core 1 with the HDMI sound's DMA ring (48 ms); core 2 is
+     the SE's bus loop (a slice there would hold every 68k bus cycle), core 3 the service loop. So the PC (and the Apple II
+     card: both are guests of `psmac_guest.c`, merged the same day) stays on core 1 and the sound goes first:
+     `psmac_guest_yield` before each guest's service and after its slice, and inside the PC's long work at most once a
+     millisecond (in `a86_host_ns`, which Bochs calls several times a millisecond; between disk pieces, write-back runs, 16
+     rows of drawing; the firmware 8 KiB at a time); silence in the ring (`psmac_audio_pause`) before the two steps that
+     cannot yield (the disks' cluster lists, the build). The heartbeat's audio line now has "core 1's longest wait N ms, M
+     over 32 ms". In QEMU (`pc.core=1` on the solo board, `mac.audiodump=/dev/null`): while the PC runs, 3 to 29 ms (no
+     measurement of the kernel before this change: the line is new);
+     while the firmware loads from QEMU's SD card, which reads about 300 KB/s, 36 to 88 ms (a 64 KiB read in one piece had
+     made 200 to 360 ms); a real card reads 8 KiB in well under a millisecond.
+   - *"No bootable device".* The lookup was not the cause as far as can be read and run: `psmac_card_pc_open` matches a
+     root file's long or 8.3 name in any case, and in QEMU a FAT32 card image with `freedos.img` in its root (put there
+     by mtools, which writes it as an 8.3 entry with the lower-case flags, as Setup and Recovery's `put` leaves it after
+     renaming `aurora68.up` in place) was found ("freedos.img: 32768 KB, a hard disk") and booted FreeDOS's installer.
+     Setup and Recovery's own upload could not be run in this testbed run (its network found no USB Ethernet in QEMU).
+     Now the reason is said: the disks block's `note`, which Aurora68 PC shows in a box over its window once, a heartbeat
+     line `[PC]   disks: ...`, and the log; a missing file is listed with the root's image files. Found on the way: option
+     values ended only at a space, so a `cmdline.txt` with Windows line ends would hand over `freedos.img\r` as the last
+     word; `psmac_option` and `pc_owns` now end a value at any white space or control character.
+   - *The Apple II card* (merged from main during this work) had the same weakness where Aurora68 Apple II is ended
+     without quitting normally; the same cure on both sides (Aurora68 Apple II 1.1, `A68A_C_NOWINDOW`, `prog`/`alive`,
+     `nodraw`, live regions only, `place.h`).
+   - *Tested.* `make -C mac check` with and without `AURORA86_DIR`. `tools/pccard_test.sh` (with Aurora86): the program's
+     protocol with a region in a pretend Mac memory: the loop stopping, the heap going, the region's block freed, the
+     program quitting: 0 pixels drawn on either screen in the 1.5 s after each; a program again: drawn in the window only;
+     two screens (the SE's 512 x 342 one-bit screen 0 and a 1024 x 768 8-bit screen 1): the window on HDMI drawn there in
+     its place only (72,496 pixels inside, none outside or on the SE's screen), and on the SE's screen the other way round.
+     The same runs against main's `psmac_pc.c`: the stopped loop's window went on being drawn (41 pixels in 1.5 s).
+     `tools/a2card_test.sh` (with Aurora65, and the two guests with Aurora86): the same five steps for the Apple, passing.
+     QEMU, the solo board, System 7.1, the PC kernel, `pc.core=1`, the files on a 128 MB FAT32 card image, Aurora68 PC in
+     Startup Items, the remote control through semihosting: FreeDOS's installer in the window; Command-Q: the desktop
+     clean where the window was ("Aurora68 PC's window is gone (it quits): nothing drawn"), picture
+     `docs/img/pc-card-qemu-quit.png`; opened again from the Agent: "a window again: drawn"; Force Quit: during its dialog
+     the loop stood still and nothing was drawn ("has not turned for 1000 ms"), and after Force Quit "says its window is
+     gone" (the ExitToShell patch), the desktop clean. Started again with `pc.disk0=nosuch.img pc.cd=freedos.img`: the box
+     over the window at the program's start, "No hard disk: pc.disk0=nosuch.img is neither a host file (the testbed) nor in
+     the SD card's root (image files there: freedos.img). No CD: pc.cd=freedos.img is not a CD image (.iso).", the PC's
+     picture drawn around it (`docs/img/pc-card-qemu-disk-note.png`).
+   - *Not verified:* the SE board and real hardware (the owner's SE is next), the HDMI sound heard (QEMU has no DMA ring:
+     only the waits are measured), Setup and Recovery's own upload in QEMU, a crash that the system survives (Force Quit
+     was), 24-bit mode and System 6 in QEMU (the host test covers the 24-bit block headers and the pointer's box), the
+     Apple II program in QEMU (its host test only), the video decoder card's region check in QEMU.

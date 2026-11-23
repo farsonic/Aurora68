@@ -54,6 +54,8 @@ is the one on the Mac's screen (--pin or $AURORA68_PIN; --url defaults to http:/
   aurora68.py recovery --pin N cmdline [TEXT|@FILE] | config [TEXT|@FILE] | opt [KEY=VALUE|-KEY|+WORD ...] [--dry]
   aurora68.py recovery --pin N wifi [show|scan|test|save] [--ssid S --psk P --country GB]
   aurora68.py recovery --pin N log [--now] | rollback [--force] | reboot [normal|recovery]
+  aurora68.py recovery --pin N bt [show|scan|pair ADDR|connect ADDR|forget ADDR]   Bluetooth keyboards and mice
+                                                 (pairings.txt keeps them for the next start; docs/08 item 136)
   aurora68.py recovery --pin N display [show] [--json]   the HDMI monitor (EDID), its modes judged, the suggestion
   aurora68.py recovery --pin N display use WxH[@Hz]|auto [--rotate N] [--no-confirm] [--add-include] [--keep-screen]
                                                  aurora68-display.txt written (.bak kept); restart normally applies it
@@ -764,6 +766,56 @@ def recovery_main(a):
         j = r.call('POST', '/r/reboot?how=' + a.how); print(f'restarting: {a.how}' + (f' ({j["note"]})' if j.get('note') else ''))
     elif c == 'display':
         display_main(r, a)
+    elif c == 'bt':
+        bt_main(r, a)
+
+
+def bt_show(j):
+    """GET /r/bt as text: the state, the passkey while a keyboard pairs, the paired and the found devices"""
+    print(f'Bluetooth: {j.get("detail", j["state"])}' + (f': {j["message"]}' if j.get('message') else '')
+          + (f'; this Pi {j["address"]}' if j.get('address') else '') + ('; pairings.txt on the card' if j.get('pairings_txt') else ''))
+    if j.get('passkey'):
+        print(f'  type this passkey on the keyboard, then Return: {j["passkey"]}')
+    for d in j.get('paired', []):
+        print(f'  paired  {d["address"]}  {d["name"] or "(no name)":32} {d["kind"]}{", LE" if d["le"] else ""}' + (', connected' if d['connected'] else ''))
+    for d in j.get('found', []):
+        print(f'  found   {d["address"]}  {d["name"] or "(no name)":32} {d["kind"]}{", LE" if d["le"] else ""}, {d["rssi"]} dBm')
+
+
+def bt_main(r, a):
+    """recovery bt: the four commands of the Mac's Bluetooth menu, through Setup and Recovery (POST /r/bt/...)"""
+    w = a.action or 'show'
+    if w == 'show':
+        bt_show(r.call('GET', '/r/bt'))
+        return
+    if w == 'scan':
+        print(r.call('POST', '/r/bt/scan').get('note', 'looking'))
+        for _ in range(30):                                     # about ten seconds of inquiry, then the names
+            time.sleep(1)
+            j = r.call('GET', '/r/bt')
+            if not j['scanning'] and not j['busy']:
+                break
+        bt_show(j)
+        return
+    if not a.addr:
+        raise RuntimeError(f'bt {w} ADDR (AA:BB:CC:DD:EE:FF, as bt show lists it)')
+    j = r.call('POST', f'/r/bt/{w}?addr=' + urllib.parse.quote(a.addr))
+    if j.get('note'):
+        print(j['note'])
+    if w != 'pair':
+        time.sleep(1)
+        bt_show(r.call('GET', '/r/bt'))
+        return
+    said = None                                                 # pairing: the passkey, then the result
+    for _ in range(60):
+        time.sleep(1)
+        j = r.call('GET', '/r/bt')
+        if j.get('passkey') and j['passkey'] != said:
+            said = j['passkey']
+            print(f'type this passkey on the keyboard, then Return: {said}')
+        if not j['pairing'] and not j['busy'] and not j.get('passkey'):
+            break
+    bt_show(j)
 
 
 def hz_text(x):
@@ -866,6 +918,8 @@ def add_recovery(sub):
     q = rs.add_parser('log', help='the last start\'s aurora68.log (--now: this recovery start\'s)'); q.add_argument('--now', action='store_true')
     q = rs.add_parser('rollback', help='kernel8.old back as kernel8.img'); q.add_argument('--force', action='store_true')
     q = rs.add_parser('reboot', help='restart the Pi: normal or recovery'); q.add_argument('how', nargs='?', default='normal', choices=('normal', 'recovery'))
+    q = rs.add_parser('bt', help='Bluetooth keyboards and mice: show, scan, pair ADDR, connect ADDR, forget ADDR (docs/08 item 136)')
+    q.add_argument('action', nargs='?', choices=('show', 'scan', 'pair', 'connect', 'forget')); q.add_argument('addr', nargs='?', help='AA:BB:CC:DD:EE:FF')
     q = rs.add_parser('display', help='the HDMI monitor: show, use WxH[@Hz]|auto, rotate N, include (docs/08 item 111)')
     q.add_argument('action', nargs='?', choices=('show', 'use', 'rotate', 'include')); q.add_argument('arg', nargs='?', help='WxH[@Hz] or auto; for rotate 0/90/180/270')
     q.add_argument('--rotate', type=int, choices=(0, 90, 180, 270), help='turn the picture (default: as the file has it)')

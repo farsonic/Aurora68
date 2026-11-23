@@ -3,7 +3,7 @@ Aurora68 test disk, @DATE@
 System 7.1 with every program built so far: Aurora68 @AURORA68@, Riptide @RIPTIDE@, Lagoon @LAGOON@, Octavo (Quill) @QUILL@. The programs that can write to the Pi's kernel log do so: open Aurora68 Log (it also starts at boot) to read it.
 
 System Folder
-- Extensions: Aurora68 Disk, Aurora68 Machine, Aurora68 Screen Setup, Aurora68 Sound, Aurora68 Wi-Fi & Bluetooth (the two menu-bar menus), Riptide (TCP/IP), Lagoon EtherTalk (AppleTalk over Ethernet).
+- Extensions: Aurora68 Disk, Aurora68 Machine, Aurora68 Screen Setup, Aurora68 Sound, Aurora68 Menu Extras (the clock, Wi-Fi and Bluetooth in the menu bar), Riptide (TCP/IP), Lagoon EtherTalk (AppleTalk over Ethernet).
 - Riptide DNR (names for MacTCP programs). MacTCP is in "Control Panels (disabled)".
 - Startup Items: Aurora68 Log.
 

@@ -142,9 +142,13 @@ void psmac_boot_pc(uint32_t pc)
 }
 
 /* the first log line the Mac side sends (psmac_mbox.c): a driver's Open, then the INITs */
+static int mac_first_line;
+int psmac_boot_mac_talking(void) { return mac_first_line; }    /* the Mac's first driver has opened: its low memory is set up (alice_psmac.c's KeyMap) */
 void psmac_boot_mac_line(const char *text)
 {
-    static int first, init;
+    static int init;
+    int first = mac_first_line;
+    mac_first_line = 1;
     if (!first) { first = 1; psmac_boot_mark("Mac: first log line: %s", text); psmac_splash_status("The Macintosh is starting up..."); }
     if (!init) {
         for (const char *p = text; *p; p++)

@@ -46,7 +46,7 @@ The window's block (`psmac_pc.h`, `struct a68p_block`; Aurora86's DESIGN planned
 | Offset | Who writes | What |
 |---|---|---|
 | $0000 | card | `magic` 'A68P', `version`, `done_seq`, `state` (off, starting, running, paused, stopped, failed), `error`, `mips_x10`, `load`, the instruction count, `core`, `ram_mb`, the screen's change count and the last one drawn, `draw_us`, `mode`, `nat_w`/`nat_h` (the natural size), `focus_ack`, `in_tail`, `draws`, `idle_pm` |
-| $0080 | Mac | `cmd_seq`, `cmd`, `arg0`, `arg1`; the place: `screen`, `top`, `left`, `bottom`, `right`, `visible`, `geom_seq`; `clip_tag`, `vis_rgn`, `vis_flags` (the window's visRgn, tagged with the geom_seq it goes with, as Play's); `scale`, `scroll_x`, `scroll_y`, `options`; `focus`; `in_head`; `prog` and `alive` ($D0, $D4: the program says it runs and counts its event loop's turns, "When the program quits" below) |
+| $0080 | Mac | `cmd_seq`, `cmd`, `arg0`, `arg1`; the place: `screen`, `top`, `left`, `bottom`, `right`, `visible`, `geom_seq`; `clip_tag`, `vis_rgn`, `vis_flags` (the window's visRgn, tagged with the geom_seq it goes with, as Play's); `scale`, `scroll_x`, `scroll_y`, `options`; `focus`; `in_head`; `front` ($D0, the guest scheduler's word); `prog` and `alive` ($D4, $D8: the program says it runs and counts its event loop's turns, "The owner's SE" below) |
 | $0100 | card | `message`, in words |
 | $0400 | Mac | the input ring: 64 events of 16 bytes (key down and up as Mac virtual key codes, mouse movement and buttons, a Bochs key code, "let everything go") |
 | $1000 | card | the text cells (character, attribute), up to 132 x 60 |
@@ -246,7 +246,7 @@ The second round (the same day, docs/08 item 133):
 ## The owner's SE: the program quits, two screens, the mouse, the sound, the missing disk (23 November 2026)
 
 The first time the card ran on the owner's SE (the PC kernel, `pc=on pc.disk0=freedos.img`; the SE's own 512 x 342 screen
-the main one at 0,0, the 2560 x 1440 HDMI screen to its right) five things went wrong. docs/08 item 136 is the record.
+the main one at 0,0, the 2560 x 1440 HDMI screen to its right) five things went wrong. docs/08 item 138 is the record.
 
 - **Drawing after the program had quit.** The PC's screen (SeaBIOS's text) came out on the desktop, over and under the
   Finder's windows, on both screens, while `aurora68.py windows` listed only the Finder's: Aurora68 PC had quit, and the
@@ -291,10 +291,16 @@ the main one at 0,0, the 2560 x 1440 HDMI screen to its right) five things went 
 - **Noise on HDMI after the chime.** On the SE board the PC runs on core 1 (core 2 is the SE's bus, which cannot wait,
   and core 3 the service loop, 86 per cent busy on the owner's SE), and core 1 also refills the HDMI sound's DMA ring: six
   8 ms blocks, 48 ms, played again and again when not refilled. The PC's start read its 12 MiB firmware a megabyte a turn
-  from the SD card, and its build, slices, disk reads and drawing could hold core 1 longer than the ring lasts. Now
-  everything long the PC does on core 1 gives the sound its turn every millisecond (`pc_yield`: in `a86_host_ns`, which
-  Bochs calls several times a millisecond, between disk pieces, write-back runs and 16 rows of drawing), and the firmware
-  is read 64 KiB a turn there. The solo board's PC stays on core 2 (its light service core). The heartbeat's audio line
+  from the SD card, and its build, slices, disk reads and drawing could hold core 1 longer than the ring lasts. The PC
+  (and the Apple II card, merged the same day: both are guests of `psmac_guest.c`) cannot leave core 1 on the SE board:
+  core 2 there is the loop that serves every one of the 68k's bus cycles to the SE's chips and the SE speaker's deadlines,
+  and a slice on it would hold the Mac; core 3 is the service loop. So the sound goes first: the guest scheduler gives
+  it its turn before each guest's service and after its slice, and the guests call `psmac_guest_yield` inside their long
+  work, at most once a millisecond, on core 1 only: the PC in `a86_host_ns` (which Bochs calls several times a
+  millisecond), between disk pieces, write-back runs and 16 rows of drawing; the firmware is read 8 KiB at a time, 64
+  KiB a turn; before the two steps that cannot yield (opening the disks, which lists each image's clusters; the PC's
+  build) the ring is filled with silence (`psmac_audio_pause`, as a USB enumeration does), so a long step is a moment
+  of silence, not old sound. The solo board's guests stay on core 2 (its light service core). The heartbeat's audio line
   now says core 1's longest wait between two refills and how many waits were over 32 ms, also in QEMU.
 - **"No bootable device".** The heartbeat's "disks 0 reads" meant `pc.disk0=` had not been attached, and only the log's
   scrolled-out start said why. The lookup was not the cause as far as can be read: `psmac_card_pc_open` finds a root file by
@@ -305,6 +311,8 @@ the main one at 0,0, the 2560 x 1440 HDMI screen to its right) five things went 
   `[PC]` line, and in the log. One cause found on the way: option values ended only at a space, so a `cmdline.txt` with
   Windows line ends would have handed the kernel `freedos.img\r` for the last word; `psmac_option` (and the card's
   `pc_owns`) now end a value at any white space or control character.
+
+![after Command-Q: the desktop clean](img/pc-card-qemu-quit.png) ![why the disks are missing](img/pc-card-qemu-disk-note.png)
 
 ## Options
 
@@ -320,7 +328,7 @@ the main one at 0,0, the 2560 x 1440 HDMI screen to its right) five things went 
 | `pc.img1=PATH` ... `pc.img8=PATH` | testbed only: more images in the Disks menu (semihosting cannot list a host directory) |
 | `pc.testwin=S,L,T,R,B` | testbed only: the window's place set by the kernel (no program needed), the whole rectangle drawn |
 | `pc.textlog=1` | testbed only: every changed line of the PC's text screen into the log, `[PC] \| text` |
-| `pc.yield=off` | testbed only: core 1 as it was before 23 November 2026 (no turns for the sound inside the PC's work, the firmware a megabyte a turn), to compare |
+| `pc.yield=off`, `guest.yield=off` | testbed only: core 1 as it was before 23 November 2026 (no turns for the sound inside the PC's work, the firmware a megabyte a turn; `guest.yield=off` for the scheduler's and both guests'), to compare |
 
 ## What the owner copies to the SD card
 

@@ -123,6 +123,12 @@ static uintptr_t pc_win_phys, pc_rom_phys;
 #define PC_WIN_SIZE 0x100000u                 /* psmac_pc.h: A68P_WIN_SIZE */
 void psmac_mmu_set_pc(uintptr_t w, uintptr_t r) { pc_win_phys = w; pc_rom_phys = r; }
 #endif
+#ifdef PSMAC_A2
+/* slot $E, the Apple II card (psmac_a2.c, 23 November 2026): the same three pieces again; 0 with a2=off */
+static uintptr_t a2_win_phys, a2_rom_phys;
+#define A2_WIN_SIZE 0x100000u                 /* psmac_a2.h: A68A_WIN_SIZE */
+void psmac_mmu_set_a2(uintptr_t w, uintptr_t r) { a2_win_phys = w; a2_rom_phys = r; }
+#endif
 /* the card's window as Pi memory, for a 68k physical address in either of its forms, and how many bytes of it
    are left from there; 0 outside it. The mailbox's disk and USB services use it (psmac_mbox.c mac_page): Aurora68
    Video reads a film from disk straight into the card's ring (23 November 2026, the SE: without this every such
@@ -157,6 +163,11 @@ static inline uintptr_t pi_phys(uint32_t p)
     if (pc_win_phys && p >= PSMB_PC_WIN24_PHYS && p < PSMB_PC_WIN24_PHYS + PC_WIN_SIZE) return pc_win_phys + (p - PSMB_PC_WIN24_PHYS);
     if (pc_rom_phys && p >= PSMB_PC_ROM_PHYS && p < PSMB_PC_ROM_PHYS + PSMB_PC_ROM_SIZE) return pc_rom_phys + (p - PSMB_PC_ROM_PHYS);
 #endif
+#ifdef PSMAC_A2
+    if (a2_win_phys && p >= PSMB_A2_WIN_PHYS && p < PSMB_A2_WIN_PHYS + A2_WIN_SIZE) return a2_win_phys + (p - PSMB_A2_WIN_PHYS);
+    if (a2_win_phys && p >= PSMB_A2_WIN24_PHYS && p < PSMB_A2_WIN24_PHYS + A2_WIN_SIZE) return a2_win_phys + (p - PSMB_A2_WIN24_PHYS);
+    if (a2_rom_phys && p >= PSMB_A2_ROM_PHYS && p < PSMB_A2_ROM_PHYS + PSMB_A2_ROM_SIZE) return a2_rom_phys + (p - PSMB_A2_ROM_PHYS);
+#endif
     /* the second display's big frame buffer, in the slot's super slot space ($90000000): the ROM's
        32-bit tables map $40000000-$FBAFFFFF one to one, so logical and physical agree there */
     if (slot_fb_phys && p >= PSMB_FB_BIG_PHYS && p < PSMB_FB_BIG_PHYS + slot_fb_size) return slot_fb_phys + (p - PSMB_FB_BIG_PHYS);
@@ -172,6 +183,9 @@ static inline int ro_phys(uint32_t p)
            (vid_rom_phys && p >= PSMB_VID_ROM_PHYS && p < PSMB_VID_ROM_PHYS + PSMB_VID_ROM_SIZE)
 #ifdef PSMAC_PC
            || (pc_rom_phys && p >= PSMB_PC_ROM_PHYS && p < PSMB_PC_ROM_PHYS + PSMB_PC_ROM_SIZE)
+#endif
+#ifdef PSMAC_A2
+           || (a2_rom_phys && p >= PSMB_A2_ROM_PHYS && p < PSMB_A2_ROM_PHYS + PSMB_A2_ROM_SIZE)
 #endif
            ;
 }
@@ -272,6 +286,13 @@ static void build_identity(void)
         for (uint32_t p = 0; p < PC_WIN_SIZE; p += 4096) l2p[(PSMB_PC_WIN_PHYS + p) >> 12] = (PSMB_PC_WIN_PHYS + p) | L2P_VALID;
         for (uint32_t p = 0; p < PC_WIN_SIZE; p += 4096) l2p[(PSMB_PC_WIN24_PHYS + p) >> 12] = (PSMB_PC_WIN24_PHYS + p) | L2P_VALID;
         for (uint32_t p = 0; p < PSMB_PC_ROM_SIZE; p += 4096) l2p[(PSMB_PC_ROM_PHYS + p) >> 12] = (PSMB_PC_ROM_PHYS + p) | L2P_VALID | L2P_WP;
+    }
+#endif
+#ifdef PSMAC_A2
+    if (a2_win_phys) {                                                                                    /* the Apple II card, slot $E */
+        for (uint32_t p = 0; p < A2_WIN_SIZE; p += 4096) l2p[(PSMB_A2_WIN_PHYS + p) >> 12] = (PSMB_A2_WIN_PHYS + p) | L2P_VALID;
+        for (uint32_t p = 0; p < A2_WIN_SIZE; p += 4096) l2p[(PSMB_A2_WIN24_PHYS + p) >> 12] = (PSMB_A2_WIN24_PHYS + p) | L2P_VALID;
+        for (uint32_t p = 0; p < PSMB_A2_ROM_SIZE; p += 4096) l2p[(PSMB_A2_ROM_PHYS + p) >> 12] = (PSMB_A2_ROM_PHYS + p) | L2P_VALID | L2P_WP;
     }
 #endif
 }

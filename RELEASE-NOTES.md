@@ -2,8 +2,86 @@
 
 ## Next release (on main, not released yet)
 
+Since 0.14:
+
+- **Bluetooth keyboards and mice in Setup and Recovery, and startup keys from them** (README "Setup and Recovery",
+  docs/08 item 136, 23 November 2026). Setup and Recovery shows Bluetooth's state, the devices connected and a
+  keyboard's passkey on the screens, and pairs, connects and forgets from a new Bluetooth tab on the page, from the
+  keyboard menu or with `aurora68.py recovery bt`; pairings go into `pairings.txt` for the next start. A paired
+  keyboard works the recovery menu as a USB keyboard does; a mouse moves through it. In every start the keys held on
+  the Pi's keyboards reach the Mac before its own input driver opens, so **Shift held from power-on gives
+  "Extensions off"** with a Bluetooth or USB keyboard (tried in the testbed). Bluetooth is ready about three seconds
+  sooner (the chip's firmware is sent at 921600 baud, `bt.fwbaud=`), a waking keyboard is answered sooner (a faster
+  page scan), and an LE mouse with a private address reconnects on the Pi 3B, whose Bluetooth 4.1 chip cannot resolve
+  such addresses itself (the open issue "Bluetooth mouse stopped reconnecting on the Pi 3B"; to be confirmed on the
+  Pi). Only a simulated Bluetooth host could be tried here: real pairing and reconnect times are for the owner's Pi.
+
+- **The Aurora68 Apple II Card: an Apple II in a window on the Mac's desktop** (docs/20-apple-ii-card.md, docs/08 item
+  137, 23 November 2026; not in the release kernel yet). A NuBus card in slot $E that exists only in the Pi: an 8-bit Apple
+  II (Aurora65: the II, II+, IIe, enhanced IIe and IIc) runs on a Pi core, and the new program **Aurora68 Apple II** shows it
+  in an ordinary window, 1:1 on the SE's screen (280 x 192 for 40 columns and hires, each Apple pixel one Mac pixel; 80
+  columns at 480 x 192) or scaled, in colour on HDMI. Keys typed in the window go to the Apple (Command is Open-Apple,
+  Option Solid-Apple, Control-Command-Delete is Control-Reset); the Apple II menu powers it on and off, resets it and
+  chooses the model; the Disks menu puts 5.25" and block images from the card into its drives, and **what the Apple writes
+  is saved into the image on the SD card** (as the PC card does). It needs a kernel built with `-DPSMAC_A2=ON` (Aurora65's
+  library linked in), `a2=on` and **a dump of your own Apple's ROM** on the card (`apple2e-enhanced.rom` ...: Aurora68 has
+  no Apple ROM, and says so if none is there). With the PC card in the same kernel the two share their Pi core, **the
+  front window's machine first** (`guest.floor=1` by default leaves one turn in eight to the other; `guest.floor=0` gives it
+  only what is left: the owner's choice). Aurora68 PC 1.1 says when its window is in front. The normal kernel is unchanged.
+  Tested with the card's own code on the host (Aurora65's test ROM and disks, every pixel of a hires picture checked, a
+  block written by the Apple found in its file) and in the testbed's QEMU; the owner's Pi and ROMs are the real test.
+- **A clock in the menu bar, and the menu bar's extras out of the way of the program's menus** (docs/09 "Aurora68 Menu
+  Extras", docs/08 item 135, 23 November 2026). The extension that drew the Wi-Fi and Bluetooth icons is now
+  **Aurora68 Menu Extras** and has a clock beside them, as macOS has: the time ("Mon 5:47 PM"), or a small clock face;
+  a press on it shows the full date and the options of macOS's Clock (View as Digital or Analog, Show the Date, Show
+  the Day of the Week, Show AM/PM, Use a 24-Hour Clock, Show Seconds, Flash the Time Separators) and Date & Time…,
+  which opens the Date & Time control panel (General Controls on a System 7.1 without it). The region's formats and
+  names come from the Mac's international resources; the choices are kept in "Aurora68 Menu Extras Prefs" in the
+  Preferences folder. With Riptide as the TCP/IP and its NTP on, the menu also says when the clock was last checked.
+  The clock, Wi-Fi and Bluetooth are now placed from the Help menu leftwards only where the program's own menus leave
+  room: on the SE's 512 pixels a program with a long menu bar (Aurora68 Play) no longer runs under them, presses on its
+  last menus reach it, and when there is no room Bluetooth goes first, then Wi-Fi, then the clock's day and date.
+  Install it in place of **Aurora68 Wi-Fi & Bluetooth**; if the old one is still there, Menu Extras moves it into
+  "Extensions (Disabled)" by itself at the next start.
+
+## 0.14 — Setup with a phone, music videos, gauges, every program on the SE's screen (24 November 2026)
+
+Since 0.13, in short (the entries below and docs/08 items 96-134 have the detail):
+
+- **Setup and Recovery** grew up: an access point started from the programmer's interrupt button for setting up
+  with only a phone, every option as a form, a Diagnostics tab with a report bundle, the HDMI monitor's modes.
+- **Aurora68 Play 1.8.1**: the Library, radio and music videos at parity with the macOS Play, the server found by
+  itself, windows that resize, IPv6 first, videos in the background and buffered, and no more lock-ups in a
+  network call. **Aurora68 Video** and the **Video Decoder** extension: MPEG-1 films on the video card, in
+  MoviePlayer and every QuickTime program.
+- **Aurora68 Status 2.0**: the Pi's temperature, clock, throttling and core loads as gauges on the Mac.
+- **Every Aurora68 program fits the SE's own 512 x 342 screen**, and windows remembered from a large HDMI screen
+  are brought back onto the screen they open on.
+- **The pointer crosses to the other screen anywhere along the side**, a quiet splash on HDMI instead of the log,
+  the USB keyboard that needed re-plugging, pushes from a Mac a hundred times faster.
+- **The Macintosh Plus, 512Ke, 512K and 128K** boards, `mac.fpu=none`, the bus check.
+- **Not in this release's kernel:** the Aurora68 PC Card (below) is built only with `-DPSMAC_PC=ON` and is still
+  being fixed on the real SE; the Aurora68 PC program is in the release but shows "(no card)" with this kernel.
+- **Riptide for the Mac** (the MacTCP replacement on Riptide's `mac-port` branch) is a separate download with this
+  release: a call made while its driver was busy is no longer lost (the cause of Play's freezes), NTP can set the
+  Mac's clock, RiptidePrefs saves with Save / Apply / Cancel and restarts the network without restarting the Mac,
+  and every program's name lookups go through Riptide's own resolver (EDNS, DNS over TCP, the negative cache), with
+  Happy Eyeballs for IPv6 programs; QoS bands and VLANs work on the Mac.
+- **Octavo** (Quill for the classic Mac, Quill's `mac-port` branch) is a separate download too: it opens documents
+  from any folder and disk, draws text in the Mac's own fonts as MacWrite does, and fits the SE's screen.
+
 Since 0.13 (docs/08 items 96 and 103):
 
+- **Every Aurora68 program on the SE's own screen** (docs/08 item 134, docs/09 "Every program on the SE's own
+  screen", 23 November 2026). Aurora68 Bluetooth ran below the SE's 342 lines, Aurora68 Screens past its right
+  edge, and Aurora68 Colour opened off the only screen altogether; now every window, dialog and About box fits
+  512 x 342 with the menu bar. A window whose place was kept from the 2560-wide HDMI screen (Slots, Status, Display,
+  Play's player and Library) is moved and cut to fit the screen it opens on, and Video and PC size their windows by
+  their own screen rather than the whole desktop. Checked in the testbed at 512 x 342 with the SE's screen as the
+  only one; two screens at once are the owner's to try.
+- **`aurora68.py` is quick from a Mac again** (23 November 2026). Each 80 KB font of a push took 20 s from a
+  MacBook while the Mac's agent reported 49 ms: macOS looked up `aurora68-pi.local` for IPv4 and IPv6 at every
+  connection and waited for the unanswered IPv6 question each time. The name is now looked up once per run.
 - **The Aurora68 PC Card: a PC in a window on the Mac's desktop** (docs/19-pc-card.md, docs/08 item 132, 23 November
   2026; not in the release kernel yet). A NuBus card in slot $D that exists only in the Pi: a PC (Aurora86: Bochs, a
   Pentium II, with Libreboot's firmware) runs on a Pi core, and the new program **Aurora68 PC** shows it in an ordinary

@@ -27,7 +27,12 @@
  * screen with the menu bar. The card leaves the grow box's
  * corner alone (A68P_O_GROWBOX) so that the box can be drawn. Human Interface Guidelines (1992); System 6 and 7.
  *
- * Alive and gone (23 November 2026, the owner's SE: after this program had quit, the card went on drawing the PC's
+ * 1.1 (23 November 2026, docs/20-apple-ii-card.md): the window's activate events and the program's suspend and resume
+ * set the block's front word, and the kernel's guest scheduler (psmac_guest.c) gives the front window's machine, the
+ * PC's or the Apple II card's, its shared Pi core first; View > Large Text and Keyboard > Capture, dimmed until then by the
+ * "(" in their words (AppendMenu's metacharacter), can be chosen.
+ *
+ * 1.2, alive and gone (23 November 2026, the owner's SE: after this program had quit, the card went on drawing the PC's
  * screen at the window's last place through the visRgn handle it had been given, freed memory by then, over and under
  * the Finder's windows on both screens). The program now says it runs (prog = A68P_PROG_LIVE) and adds 1 to alive at
  * every turn of its event loop and of its boxes' loops, and the card draws only while alive moves; before it quits it
@@ -138,6 +143,8 @@ static void ets_patch(void)
 	ets_old = o;
 	__asm__ volatile("lea a68pc_ets_patch,%%a0\n\tmove.w #0xA9F4,%%d0\n\t.short 0xA647" ::: "d0", "d1", "d2", "a0", "a1", "memory");
 }
+/* the window in front or not: the guest scheduler's word (psmac_guest.c) */
+static void set_front(int on) { if (drv) blk->front = (unsigned long)on; }
 
 /* ---- the window's place ---------------------------------------------------------------------------- */
 static int hidden_by_us, captured, scale1, bigtext, pcsense, quit;
@@ -375,7 +382,7 @@ static void about(void)
 	Rect b = { 90, 56, 200, 456 };
 	void *w = (void *)NewWindow(0, &b, pstr(pbuf, ""), 1, 1 /* dBoxProc */, (void *)-1, 0, 0);
 	SetPort(w);
-	MoveTo(16, 24); DrawString(pstr(pbuf, "Aurora68 PC 1.0"));
+	MoveTo(16, 24); DrawString(pstr(pbuf, "Aurora68 PC 1.2"));
 	MoveTo(16, 44); DrawString(pstr(pbuf, "A PC (Aurora86: Bochs and Libreboot) on the Aurora68"));
 	MoveTo(16, 60); DrawString(pstr(pbuf, "PC Card, in a window. Control-Option-Command-P moves"));
 	MoveTo(16, 76); DrawString(pstr(pbuf, "the keyboard and mouse between the Mac and the PC."));
@@ -487,10 +494,14 @@ int main(void)
 	AppendMenu(m_disks, pstr(pbuf, "Look on the Card Again;(-"));
 	InsertMenu(m_disks, 0);
 	m_view = NewMenu(M_VIEW, pstr(pbuf, "View"));
-	AppendMenu(m_view, pstr(pbuf, "Scaled to the Window;Actual Size;(-;Large Text (8 x 16);White on Black"));
+	/* "(" anywhere in AppendMenu's text disables the item: these two came up dimmed until 1.1 (seen in the testbed beside
+	   Aurora68 Apple II, 23 November 2026); SetItem takes their words as they are */
+	AppendMenu(m_view, pstr(pbuf, "Scaled to the Window;Actual Size;(-;Large Text;White on Black"));
+	SetItem(m_view, 4, pstr(pbuf, "Large Text (8 x 16)"));
 	InsertMenu(m_view, 0);
 	m_keys = NewMenu(M_KEYS, pstr(pbuf, "Keyboard"));
-	AppendMenu(m_keys, pstr(pbuf, "Capture Keyboard and Mouse (Control-Option-Command-P)"));
+	AppendMenu(m_keys, pstr(pbuf, "Capture Keyboard and Mouse"));
+	SetItem(m_keys, 1, pstr(pbuf, "Capture Keyboard and Mouse (Control-Option-Command-P)"));
 	InsertMenu(m_keys, 0);
 	DrawMenuBar();
 
@@ -504,6 +515,7 @@ int main(void)
 	LM_SYSEVTMASK = (short)(mask_was | keyUpMask);
 	title();
 	if (drv && (blk->state == A68P_S_OFF || blk->state == A68P_S_STOPPED)) command(A68P_C_POWER_ON, 0, 0);
+	set_front(1);
 	tell_place(1);
 
 	EventRecord ev;
@@ -531,11 +543,13 @@ int main(void)
 			if ((void *)ev.message == win) { BeginUpdate(win); draw_window(); EndUpdate(win); tell_place(1); command(A68P_C_REDRAW, 0, 0); }
 			break;
 		case activateEvt:
+			if ((void *)ev.message == win) set_front((ev.modifiers & activeFlag) != 0);
 			if (!(ev.modifiers & activeFlag)) capture(0);   /* the window to the back: the keyboard and mouse back to the Mac */
 			DrawGrowIcon(win);
 			tell_place(1);
 			break;
 		case osEvt:
+			if (((unsigned long)ev.message >> 24) == suspendResumeMessage) set_front((ev.message & resumeFlag) && FrontWindow() == win);
 			if (((unsigned long)ev.message >> 24) == suspendResumeMessage && !(ev.message & resumeFlag)) capture(0);
 			tell_place(1);
 			break;
@@ -556,6 +570,7 @@ int main(void)
 		}
 	}
 	capture(0);                                         /* the keyboard and mouse back to the Mac, the PC's let go */
+	set_front(0);
 	if (drv) { gone(); command(A68P_C_NOWINDOW, 0, 0); }   /* the card stops drawing before this heap is freed */
 	LM_SYSEVTMASK = mask_was;
 	return 0;

@@ -779,6 +779,47 @@ static void vid_next(int32_t *l, int32_t *rt)
     *rt = (int32_t)f[1] * (int32_t)(vid_vol & 0xffff) / 256;
 }
 
+#ifdef PSMAC_A2
+/* ---- source 6: the guests' sound (psmac_a2.c: the Apple II's speaker, 23 November 2026) ----------------------
+   Mono 16-bit samples at the guest's rate (44.1 kHz), made by the guest on its own core (core 2 on the solo board,
+   core 1 elsewhere: then this same core) and handed over through a ring with one writer and one reader: the writer
+   moves head, this core tail, both with release stores, so the ring needs no lock across the cores. Through a
+   resampler of its own beside the other five; both channels. Only in a kernel with the Apple II card. */
+#define GST_PCM 16384u                        /* 0.37 s at 44.1 kHz: the Apple's slices are 20 ms at most */
+static int16_t gpcm[GST_PCM];
+static uint32_t gst_head, gst_tail, gst_underruns;
+static struct rs gst_rs;
+static int gst_on;
+int psmac_audio_guest_open(uint32_t rate)
+{
+    options();
+    if (__atomic_load_n(&gst_on, __ATOMIC_ACQUIRE)) return 1;
+    if (!__atomic_load_n(&started, __ATOMIC_ACQUIRE) || out_kind == OUT_OFF || rate < 8000 || rate > 48000) return 0;
+    for (uint32_t i = 0; i < sizeof gst_rs; i++) ((uint8_t *)&gst_rs)[i] = 0;
+    gst_rs.idle = FIR_TAPS; gst_rs.step = ratio(rate, out_rate);
+    __atomic_store_n(&gst_on, 1, __ATOMIC_RELEASE);
+    return 1;
+}
+uint32_t psmac_audio_guest_room(void)
+{
+    if (!__atomic_load_n(&gst_on, __ATOMIC_ACQUIRE)) return 0;
+    return GST_PCM - (__atomic_load_n(&gst_head, __ATOMIC_RELAXED) - __atomic_load_n(&gst_tail, __ATOMIC_ACQUIRE));
+}
+void psmac_audio_guest_push(const int16_t *s, uint32_t n)
+{
+    uint32_t h = __atomic_load_n(&gst_head, __ATOMIC_RELAXED), t = __atomic_load_n(&gst_tail, __ATOMIC_ACQUIRE);
+    for (uint32_t i = 0; i < n && h - t < GST_PCM; i++) gpcm[h++ % GST_PCM] = s[i];
+    __atomic_store_n(&gst_head, h, __ATOMIC_RELEASE);
+}
+static void gst_next(int32_t *l, int32_t *rt)
+{
+    uint32_t t = __atomic_load_n(&gst_tail, __ATOMIC_RELAXED), h = __atomic_load_n(&gst_head, __ATOMIC_ACQUIRE);
+    if (t == h) { *l = *rt = 0; gst_underruns++; return; }
+    *l = *rt = gpcm[t % GST_PCM];
+    __atomic_store_n(&gst_tail, t + 1, __ATOMIC_RELEASE);
+}
+#endif
+
 /* psmac_bus.c's 68k RESET (through psmac_card_reset, another core): the stream stops at core 1's next poll */
 void psmac_audio_mac_reset(void) { __atomic_store_n(&str_reset_req, 1, __ATOMIC_RELEASE); }
 
@@ -806,6 +847,9 @@ static void mix_frame(int16_t *lo, int16_t *ro)
     if (card_took) card_recent = 0; else if (card_recent < 2 * FIR_TAPS) card_recent++;
     if (str) { rs_step(&str_rs, str_next, &x, &y); l += x; r += y; if (str_spk) { sl += x; sr += y; } }
     if (vid_on) { rs_step(&vid_rs, vid_next, &x, &y); l += x; r += y; if (str_spk) { sl += x; sr += y; } }   /* the video card's sound */
+#ifdef PSMAC_A2
+    if (gst_on) { rs_step(&gst_rs, gst_next, &x, &y); l += x; r += y; }    /* the Apple II's speaker (not the SE's own speaker yet) */
+#endif
     /* The stream reaches the SE's speaker only with mac.sestream=on: in MAME's SE (21 November 2026,
        docs/08 item 82) a System beep while a stream fed the speaker left the Mac hung in the beep, the
        beep's sound going round in the card's ring; the same beep with the speaker kept for the card

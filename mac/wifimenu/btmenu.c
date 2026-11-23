@@ -50,7 +50,6 @@ static const char *const rune[12] = {
 };
 static unsigned short bt_icons[2][12];             /* 0 faint (off), 1 solid (ready) */
 static struct { void *base; short rowBytes; Rect bounds; } bbm;
-static Rect bt_r, bt_hit;
 int bt_shown = -1;
 
 void bt_make_icons(void)
@@ -64,14 +63,9 @@ void bt_make_icons(void)
 	}
 }
 int bt_picture(void) { return rd32(BT + B_STATE) == BT_READY; }
-void bt_draw(void *wm, short mbh)
+/* the icon at bt_r (bar.c places it), the Window Manager's port set */
+void bt_draw(void *wm)
 {
-	bt_r.right = icon_r.left - 14;
-	bt_r.left = bt_r.right - 9;
-	bt_r.top = (short)((mbh - 12) / 2);
-	bt_r.bottom = bt_r.top + 12;
-	bt_hit = bt_r;
-	bt_hit.left -= 6; bt_hit.right += 6; bt_hit.top = 0; bt_hit.bottom = mbh;
 	bt_shown = bt_picture();
 	bbm.base = bt_icons[bt_shown];
 	bbm.rowBytes = 2;
@@ -172,8 +166,7 @@ static unsigned long paired_rec[6], found_rec[12];
 
 int bt_menuselect(long pt)
 {
-	short v = (short)(pt >> 16), hh = (short)pt;
-	if (bt_shown < 0 || v < bt_hit.top || v >= bt_hit.bottom || hh < bt_hit.left || hh >= bt_hit.right)
+	if (bt_shown < 0 || !on_extra(&bt_hit, pt))
 		return 0;
 	unsigned long st = rd32(BT + B_STATE);
 	int ready = st == BT_READY, scanning = rd32(BT + B_SCANNING) != 0;
@@ -245,14 +238,14 @@ int bt_menuselect(long pt)
 	InsertMenu(m, -1);
 	InsertMenu(fm, -1);
 	InitCursor();
-	InvertRect(&bt_r);
+	{ void *save; wm_begin(&save); InvertRect(&bt_r); wm_end(save); }
 	long r = PopUpMenuSelect(m, LM_MBARHEIGHT + 2, bt_r.left - 4, 1);
 	DeleteMenu(FORGET_MENU);
 	DeleteMenu(BT_MENU);
 	DisposeMenu(fm);
 	DisposeMenu(m);
 	bt_shown = -1;
-	{ void *save, *wm; GetPort(&save); GetWMgrPort(&wm); SetPort(wm); bt_draw(wm, LM_MBARHEIGHT); SetPort(save); }
+	draw_extras(0);
 	int id = (int)(r >> 16), item = (short)(r & 0xFFFF);
 	if (!item) return 1;
 	if (id == FORGET_MENU && item <= npaired) {

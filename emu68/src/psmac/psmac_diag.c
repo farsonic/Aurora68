@@ -29,8 +29,12 @@
 #define A PDG_ALL
 #define BUS (PDG_COMPACT | PDG_IICI)                  /* a bus behind the Pi: the PiStorm's GPIO or the testbed's bridge */
 
-#ifdef PSMAC_PC
+#if defined(PSMAC_PC) && defined(PSMAC_A2)
+const char *const pdg_group_name[PDG_GROUPS] = { "Machine", "Display", "Sound", "Storage", "Network", "Video card", "PC card", "Apple II card", "Debug" };
+#elif defined(PSMAC_PC)
 const char *const pdg_group_name[PDG_GROUPS] = { "Machine", "Display", "Sound", "Storage", "Network", "Video card", "PC card", "Debug" };
+#elif defined(PSMAC_A2)
+const char *const pdg_group_name[PDG_GROUPS] = { "Machine", "Display", "Sound", "Storage", "Network", "Video card", "Apple II card", "Debug" };
 #else
 const char *const pdg_group_name[PDG_GROUPS] = { "Machine", "Display", "Sound", "Storage", "Network", "Video card", "Debug" };
 #endif
@@ -110,6 +114,7 @@ const struct pdg_opt pdg_opts[] = {
     { "bt", PDG_G_NETWORK, 0, A, "off|on", 0, "off: the Bluetooth chip left off." },
     { "bt.pair", PDG_G_NETWORK, 0, A, "*", "1", "1: pair the first keyboard or mouse in pairing mode; a NAME: only a device whose name holds it." },
     { "bt.dev", PDG_G_NETWORK, PDG_F_SECRET, A, "*", 0, "A paired device, as the log printed it after bt.pair (its key stays secret)." },
+    { "bt.fwbaud", PDG_G_NETWORK, 0, A, "#", "921600", "The speed the Bluetooth chip's firmware is sent at (921600 by default; 115200 the old, slower way)." },
     { "remote", PDG_G_NETWORK, 0, A, "on|off", 0, "on: the remote control (the Mac's screen, mouse, keyboard and log over HTTP, docs/13)." },
     { "remote.token", PDG_G_NETWORK, PDG_F_SECRET, A, "*", 0, "The remote control's token, 8 characters or more." },
     { "remote.name", PDG_G_NETWORK, 0, A, "*", "aurora68-pi", "The remote control's .local name." },
@@ -139,6 +144,19 @@ const struct pdg_opt pdg_opts[] = {
     { "pc.rom", PDG_G_PC, 0, A, "*", "aurora86.rom", "The PC's firmware in the card's root: Libreboot's QEMU x86 image as Aurora86 builds it (aurora86.rom by default)." },
     { "pc.vgarom", PDG_G_PC, 0, A, "*", "aurora86-vga.bin", "The PC's VGA BIOS in the card's root (SeaVGABIOS for Bochs's VGA; aurora86-vga.bin by default)." },
     { "pc.disk0", PDG_G_PC, 0, A, "*", "freedos.img", "A hard disk image in the card's root for the PC's first IDE disk (16 heads, 63 sectors); what the PC writes stays in memory." },
+#endif
+#ifdef PSMAC_A2
+    /* ---- Apple II card (a kernel built with -DPSMAC_A2=ON: psmac_a2.c, docs/20-apple-ii-card.md) ---- */
+    { "a2", PDG_G_A2, 0, A, "on|off", 0,
+      "on: the Aurora68 Apple II Card in slot $E, an 8-bit Apple II (Aurora65) in a window of the Aurora68 Apple II program; off by default." },
+    { "a2.model", PDG_G_A2, 0, A, "iie-enhanced|iie|iiplus|ii|iic", 0, "The Apple: by default the one whose ROM is on the card, the enhanced IIe first." },
+    { "a2.rom", PDG_G_A2, 0, A, "*", "apple2e-enhanced.rom", "Your own dump of the model's ROM in the card's root (apple2e-enhanced.rom, apple2e.rom, apple2plus.rom, apple2.rom, apple2c.rom by default)." },
+    { "a2.p5", PDG_G_A2, 0, A, "*", "disk2-p5.rom", "Your own dump of the Disk II controller's boot PROM (256 bytes), needed to start 5.25\" disks with an Apple ROM." },
+    { "a2.d1", PDG_G_A2, 0, A, "*", "dos33.dsk", "A 5.25\" image (.dsk .do .po .nib .woz .2mg) in drive 1 of the Disk II in slot 6; a2.d2= drive 2; a2.d1ro=on keeps its file as it is." },
+    { "a2.hd1", PDG_G_A2, 0, A, "*", "prodos.po", "A block image (.po .hdv .2mg) in the first unit of the block card in slot 7; a2.hd2= its second, a2.hd3= and a2.hd4= slot 5's." },
+    { "a2.core", PDG_G_A2, 0, A, "1|2", 0, "The Pi core the Apple runs on: by default the PC card's (2 on the solo board, 1 on the SE and the Plus)." },
+    { "guest.floor", PDG_G_A2, 0, A, "0|1|2|3|4", "1",
+      "Eighths of the turns a busy front window's machine (PC or Apple) leaves to the other when they share a core: 1 by default; 0 gives the background machine only what is left." },
 #endif
 
     /* ---- Debug ---- */

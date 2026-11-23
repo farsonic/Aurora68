@@ -830,6 +830,12 @@ void psmac_service_core(void)
 #ifdef PSMAC_PC
             { extern void psmac_pc_report(void); psmac_pc_report(); }
 #endif
+#ifdef PSMAC_A2
+            { extern void psmac_a2_report(void); psmac_a2_report(); }
+#endif
+#if defined(PSMAC_PC) || defined(PSMAC_A2)
+            { extern void psmac_guest_report(void); psmac_guest_report(); }
+#endif
             { int ok1, ok2, ok3; uint32_t t1 = mac_rd32(0xd00, &ok1), t2 = mac_rd32(0xb24, &ok2), t3 = mac_rd32(0xcea, &ok3);
               if (ok1 && ok2 && ok3) kprintf("[PSMAC]   timing globals: TimeDBRA %04x TimeSCCDB %04x TimeSCSIDB %04x TimeVIADB %04x\n", t1 >> 16, t1 & 0xffff, t2 >> 16, t3 >> 16); }
             if (peek_len) {                    /* mac.peek=: the long at $1B40 (KCHRPtr) and the bytes asked for */
@@ -892,8 +898,8 @@ void psmac_service_core(void)
               { extern void psmac_plus_service(void); psmac_plus_service(); }   /* the Plus's keyboard and mouse (psmac_board_plus.c) */
           } }
         psmac_bridge_flush();                     /* the testbed's gathered posted writes, now that there is nothing else to do */
-#ifdef PSMAC_PC
-        { extern int psmac_pc_poll(int core); psmac_pc_poll(2); }   /* the PC card's slice, where it runs on this core (psmac_pc.c) */
+#if defined(PSMAC_PC) || defined(PSMAC_A2)
+        { extern int psmac_guest_poll(int core); psmac_guest_poll(2); }   /* the guests' turn (the PC card, the Apple II card), where they run on this core (psmac_guest.c) */
 #endif
         __asm__ volatile("yield");
     }
@@ -1636,7 +1642,13 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
 #else
     const uintptr_t pc_size = 0;
 #endif
-    const uintptr_t extra = PSMB_WIN_SIZE + PSMB_DECLROM_SIZE + fb_big_size + vid_size + pc_size;    /* slot $9 mailbox window + declaration ROM + the big frame buffer + the video card (+ the PC card) */
+#ifdef PSMAC_A2
+    extern uint32_t psmac_a2card_size(void);                                     /* the Apple II card, slot $E (psmac_a2.c): its window and pool; 0 with a2=off */
+    const uintptr_t a2_size = psmac_a2card_size();
+#else
+    const uintptr_t a2_size = 0;
+#endif
+    const uintptr_t extra = PSMB_WIN_SIZE + PSMB_DECLROM_SIZE + fb_big_size + vid_size + pc_size + a2_size;    /* slot $9 mailbox window + declaration ROM + the big frame buffer + the video card (+ the PC card, + the Apple II card) */
     uint32_t mb = globals.psmac_ram_mb;
     uintptr_t avail = sys_memory[0].mb_Base + sys_memory[0].mb_Size - base;
     int image_inside = container_has_image((const uint8_t *)rom, rom_sz);
@@ -1768,6 +1780,9 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
 #ifdef PSMAC_PC
     { extern void psmac_pccard_map(uintptr_t); if (pc_size) psmac_pccard_map(fb_big_phys + fb_big_size + vid_size); }   /* slot $D, after slot $C's */
 #endif
+#ifdef PSMAC_A2
+    { extern void psmac_a2card_map(uintptr_t); if (a2_size) psmac_a2card_map(fb_big_phys + fb_big_size + vid_size + pc_size); }   /* slot $E, after slot $D's */
+#endif
     {   /* slot $A, the HDMI screen's card, on the SE board with mac.hdmi=screen (psmb.h, "two screens"):
            mapped before the identity map is made; its ROM is put in place below, if the file has one,
            else those 16 KiB stay zero and the Slot Manager finds no card there */
@@ -1838,6 +1853,9 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
     { extern void psmac_videocard_init(void); if (vid_size) psmac_videocard_init(); }   /* its ROM and block, once the screens are known */
 #ifdef PSMAC_PC
     { extern void psmac_pccard_init(void); if (pc_size) psmac_pccard_init(); }         /* the PC card's, likewise */
+#endif
+#ifdef PSMAC_A2
+    { extern void psmac_a2card_init(void); if (a2_size) psmac_a2card_init(); }         /* the Apple II card's, likewise */
 #endif
     if (slot2_rom) {   /* the window exists (and was cleared) now: slot $A's ROM into its top 16 KiB, right-aligned */
         uint8_t *w2 = (uint8_t *)(KERNEL_ALIAS + win_phys + PSMB_OFF_DECLROM2);

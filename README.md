@@ -10,16 +10,16 @@ WiFi and Bluetooth through a NuBus card that exists only in software.
 Start with `docs/00-overview.md`: it tells the story of the project and points to the working
 documents for each part. The day-by-day record of what was found and fixed is `docs/08`.
 
-## Quick start (release 0.13)
+## Quick start (release 0.14)
 
-Release 0.13 runs on a real Macintosh SE: System 7.1 and System 6.0.8 start from the SE's own SCSI
+Release 0.14 runs on a real Macintosh SE: System 7.1 and System 6.0.8 start from the SE's own SCSI
 disk (or a BlueSCSI) or from a disk image on the SD card, with the SE's screen, keyboard, mouse and
 speaker, a second screen and stereo sound on HDMI, Ethernet and WiFi, USB and Bluetooth keyboards and
 mice, USB sticks, and a remote control. What has been checked on the hardware and what only in the
 emulator is listed in `RELEASE-NOTES.md`; the day-by-day record is `docs/08`. The steps below set up
 the card; "Disks and disk images: what works" (below) says which disks the Mac can use.
 
-**The Plus, 512Ke, 512K and 128K (after 0.13, not in a release yet).** The same kernel has boards for
+**The Plus, 512Ke, 512K and 128K (new in 0.14).** The same kernel has boards for
 the other compact Macs: `mac.board=plus`, `512ke`, `512k` or `128k` in `cmdline.txt` in place of
 `mac.board=se`; everything else on the card is as for the SE. All four reach System 7.1's Finder in
 the testbed (docs/08 item 96); none has been tried on a real machine yet. What differs from the SE:
@@ -117,7 +117,8 @@ files and on an HFS image (Aurora68-Utilities.img): **Aurora68 Play** (MP3, FLAC
 forty stations in submenus, plus your own; over MacTCP, or over Riptide's `.IPP6` with IPv6 stations
 reached directly) with its Music folder; **Display** (Aurora68 Display, Screens, Colour, Depth); **Network**
 (Aurora68 Network, Wi-Fi, Bluetooth, Ping); **System** (Aurora68 Slots, Log, Status); and
-**Extensions (to install)** (Aurora68 Disk, Machine, Screen Setup, Sound, Wi-Fi & Bluetooth), each
+**Extensions (to install)** (Aurora68 Disk, Machine, Screen Setup, Sound, Menu Extras: a clock, Wi-Fi and
+Bluetooth at the right of the menu bar, "Wi-Fi & Bluetooth" until 23 November 2026), each
 with an icon of the family (docs/img/aurora68-icons.png). Until 21 November 2026 the programs were
 PiPlay, PiDisplay, PiSlots and so on (docs/09 has the table). Aurora68 Slots lists the NuBus cards
 the Mac sees (the Pi's card in slot 9, the SE's HDMI screen in slot $A, real cards on a IIci or
@@ -219,6 +220,7 @@ One line, options separated by spaces, no comments:
 | `bt=off` | leave the Bluetooth chip off. Without it the kernel starts Bluetooth: on a Pi 3 the log then moves from the PL011 to the mini UART on the same header pins |
 | `bt.pair=1` | pair with the first keyboard or mouse a scan finds in pairing mode, and look again every 20 s until one is connected (`bt.pair=NAME` takes only a device whose name contains NAME). The log then prints the `bt.dev=` word that makes the pairing permanent |
 | `bt.dev=ADDR:KEY:KIND...` | a paired device, as the log printed it after `bt.pair=`, so it reconnects at every boot without pairing again |
+| `bt.fwbaud=921600` | the speed the Bluetooth chip's firmware is sent at: 921600 by default (since 23 November 2026, docs/08 item 136; it was 115200 and took some 3 s of every start), `115200` the old way. A download that fails at the higher speed is tried again at 115200 by itself |
 | `mac.card=off` / `mac.card=ro` | the kernel's use of the Pi's own SD card (Pi 3 family, through the sdhost controller): by default it reads and writes `pairings.txt` (Bluetooth pairings) and writes the disk image's changes back into the container on the card, and keeps the solo board's parameter RAM in `pram.bin` (AppleTalk, the Network control panel's connection, Monitors' depth, the startup disk; written a second after the Mac changes it, once the Finder is up; `mac.appletalk=` and `mac.xpram=` apply on top of it). `ro` reads pairings only, `off` leaves the card alone. cmdline.txt and config.txt are never written |
 | `mac.container=NAME` | the container's file name on the card, when it is not `aurora68.cpio` (the card writer looks for it in the root directory and writes to it only if its size and first sector match what was loaded) |
 | `mac.image=NAME` | the disk images on the card, files of their own beside the container: by default every file in the card's root ending in `.hda`, `.img`, `.image`, `.hfv` or `.dsk` (not `kernel*.img`), in the order they were copied there, up to four; `mac.image=A.hda,B.img` names them, `mac.image=off` takes none. Used only when the container has no disk image (below, "Booting fast") |
@@ -249,6 +251,13 @@ One line, options separated by spaces, no comments:
 | `pc.cd=NAME` | an ISO image in the PC's CD-ROM drive (IDE 1 master) at the start (SeaBIOS tries a CD before the hard disk). The Disks menu of Aurora68 PC changes CDs while the PC runs; it lists the options' images and the card root's `.iso`, `.vhd`, `.hdd`, `.ima`, `.flp`, `.vfd` files (Disks > Look on the Card Again). Floppy images are listed but cannot be used: Libreboot's SeaBIOS has no floppy drive |
 | `pc.img1=PATH` ... `pc.img8=PATH` | testbed only: more images in the Disks menu's list (semihosting cannot list a host directory) |
 | `pc.testwin=S,L,T,R,B` / `pc.textlog=1` | testbed only: the PC's window placed by the kernel on screen S (no program needed); every changed line of the PC's text screen in the log as `[PC] \| text` |
+| `a2=on` | only in a kernel built with `-DPSMAC_A2=ON` (Aurora65's `libaurora65.a` linked in; docs/20-apple-ii-card.md): the **Aurora68 Apple II Card** in slot $E, an 8-bit Apple II (Aurora65: II, II+, IIe, enhanced IIe, IIc) on a Pi core, shown by the **Aurora68 Apple II** program in a window on the Mac's desktop, 1:1 on the SE's screen (280 x 192 for 40 columns and hires), drawn by the card only where the window shows. Off by default. Needs **your own** ROM dump in the card's root (Aurora68 has no Apple ROM): `apple2e-enhanced.rom` and so on (below) |
+| `a2.model=` | `iie-enhanced` (the default), `iie`, `iiplus`, `ii`, `iic`; without it, the model whose ROM is on the card (the enhanced IIe's looked for first) |
+| `a2.rom=NAME`, `a2.p5=NAME` | the start model's ROM (by default `apple2e-enhanced.rom`, `apple2e.rom`, `apple2plus.rom`, `apple2.rom`, `apple2c.rom` by model; identified by its chips' CRC-32s as Aurora65's `romcheck.py` knows them, its SHA-256 logged; a missing one is refused with the reason) and the Disk II's boot PROM (`disk2-p5.rom`, needed to start 5.25" disks with an Apple ROM) |
+| `a2.d1=NAME`, `a2.d2=NAME`, `a2.hd1=NAME` ... `a2.hd4=NAME` | disk images in the card's root: 5.25" (`.dsk .do .po .nib .woz .2mg`) in the Disk II's drives 1 and 2 (slot 6), block images (`.po .hdv .2mg`) in the block cards' units (slots 7 and 5). What the Apple writes is written back into the same file in place, 2 s after its last change, 10 s at most, and at once at Apple II > Power Off, Reset, eject and a change of model; `a2.d1ro=on` (and so on) keeps an image's file as it is. The Disks menu lists the root's images too |
+| `a2.core=1` / `a2.core=2` | the Pi core the Apple runs on: the PC card's by default (2 on the solo board, 1 elsewhere) |
+| `guest.floor=N` | with the PC card and the Apple II card on one core (psmac_guest.c: the front window's machine first): eighths of the turns a busy front machine leaves to the other, 0 to 4; **1 by default** (an Apple behind a busy PC keeps its own speed); 0 is "the other gets only what is left" (the owner has not chosen yet; docs/20-apple-ii-card.md "Sharing the core") |
+| `a2.img1=PATH` ... `a2.img8=PATH`, `a2.testwin=S,L,T,R,B`, `a2.textlog=1` | testbed only: more images in the Disks menu; the window placed by the kernel; the Apple's text lines in the log as `[A2] \| text` |
 | `mac.vcdepth=32` | on `mac.board=se` with two screens: ask the firmware for a 32-bit HDMI frame buffer. By default the HDMI screen is drawn into the buffer the firmware made at power-on when it has the screen's size (16 bits a pixel on the monitor whatever the Mac's depth, millions included: the buffer known to be on the screen, docs/08 item 73); a `mac.screen=` of another size gets a new buffer either way |
 | `mac.sepram=chip` | on `mac.board=se`, when the SE's clock chip does not answer: leave it so (the IIci ROM then cannot start). By default the kernel answers in its place with parameter RAM and a clock kept in `pram.bin` in the card's root, saved a second after the Mac changes something (at most every ten seconds, and every ten minutes for the clock); the clock goes on from the last save, since the Pi has no clock of its own. A clock chip that answers is used as it is and `pram.bin` is not touched. docs/08 items 64 and 72 |
 | `mac.disks=scsi` | on the solo board every disk image is a SCSI disk. By default the first is SCSI ID 0, the startup disk, and every further one a PiDisk volume, which mounts by itself; an Apple-partitioned image is served as its first HFS partition (docs/08 item 52) |
@@ -289,7 +298,7 @@ One line, options separated by spaces, no comments:
 | `mac.plusdcd=keep`, `mac.pram8a=keep` | debugging: the SCC's DCD interrupts as the Mac sets them (by default off on the Plus-era boards: the mouse is on DCD); parameter RAM byte $8A as the Mac writes it (by default the kernel keeps 32-bit addressing on above 8 MB) |
 | `mac.inputtest=S`, `mac.inputabout=S`, `mac.inputclick=S,X,Y...`, `mac.inputdrag=S`, `mac.inputright=S`, `mac.inputedge=S`, `mac.inputwifi=S` | testbed only: scripted mouse and keyboard S seconds after the start (QEMU has no real input), docs/09 |
 | `mac.declrom=PATH`, `mac.disk0=PATH`, `mac.disk1=PATH`, `mac.net=BASE`, `mac.wifinet=BASE`, `mac.remotefile=BASE` | testbed only: the declaration ROM and the PiDisk images as host files through semihosting; the wired port's and the simulated WiFi's frames as host files for `tools/pinet.py`; the remote control's requests through semihosting without the network |
-| `mac.cardfail=early`, `mac.cardfail=all`, `mac.cardfail=N`, `mac.cardtest=1`, `mac.rtcsim=dead`, `mac.btsim=1`, `mac.mboxstress=S`, `mac.netdown=S1[,S2]`, `mac.vcslow=US` | testbed only: a card that does not answer (at the first look, or always) or whose block N fails once; a test write of `pairings.txt`; the SE's clock chip as one that never answers; a simulated Bluetooth keyboard; the firmware's mailbox asked every millisecond for S seconds (docs/08 item 79); the bridge's cable pulled at S1 s and put back at S2; the VideoCore's answers delayed |
+| `mac.cardfail=early`, `mac.cardfail=all`, `mac.cardfail=N`, `mac.cardtest=1`, `mac.rtcsim=dead`, `mac.btsim=1`, `mac.btsimkeys=S:TOKENS`, `mac.mboxstress=S`, `mac.netdown=S1[,S2]`, `mac.vcslow=US` | testbed only: a card that does not answer (at the first look, or always) or whose block N fails once; a test write of `pairings.txt`; the SE's clock chip as one that never answers; a simulated Bluetooth host (its pairings in `pairings.txt`), and its keyboard and mouse typing and moving S seconds after it is up (`ret,down,click,shift,...`: docs/08 item 136); the firmware's mailbox asked every millisecond for S seconds (docs/08 item 79); the bridge's cable pulled at S1 s and put back at S2; the VideoCore's answers delayed |
 | `remote=on remote.token=TOKEN` | the remote control (docs/13): the Mac's screen, mouse, keyboard, the kernel's log and a restart over HTTP from the local network, for a browser (`http://aurora68-pi.local/`) or an agent (`tools/aurora68-mcp.py`, an MCP server for Claude Code and Claude Desktop; `tools/aurora68.py`, a command line). On the wired port the kernel gets an address of its own by DHCP (its own MAC address); on the WiFi it takes port 8068 on the Mac's address (`http://MAC-ADDRESS:8068/`). Off by default; the token (8 characters or more) is required. `remote.name=`, `remote.ip=A.B.C.D/24,ROUTER`, `remote.link=wired\|wifi`, `remote.wifi=own`, `remote.any=1`: docs/13 |
 
 ### Booting fast
@@ -356,6 +365,21 @@ with the `wifi.ssid/psk/country` options. Without any of those, a USB keyboard o
 recovery screen with Return: choose a network from a scan, type its password and country, set `mac.fpu`,
 `mac.boot` and `mac.console`, save, restart (the Plus's and 512K's own keyboards work too; the SE's own keyboard
 does not, as the Mac's ROM reads it).
+
+**Bluetooth keyboards and mice** (since 23 November 2026, docs/08 item 136). The Pi's Bluetooth starts in Setup and
+Recovery as in any start and reconnects the devices in `pairings.txt`; a paired Bluetooth keyboard works the
+recovery screen's menu exactly as a USB keyboard does, and a mouse moves through it (no pointer is drawn: up and down
+choose, the button is Return, the right button Esc). The screens say what Bluetooth is doing and which devices are
+connected. To pair: the page's **Bluetooth** tab (Look for devices, then Pair, Connect or Forget), the keyboard
+menu's "Bluetooth keyboards and mice", or `aurora68.py recovery --pin 1234 bt scan | pair AA:BB:CC:DD:EE:FF |
+connect ADDR | forget ADDR | show`. A keyboard shows a six-digit passkey, in large digits on the Mac's screen, on HDMI
+and on the page: type it on the keyboard, then Return. Pairings go into `pairings.txt` as the Mac's own Bluetooth
+menu puts them, so the next start, normal or not, reconnects them. The report bundle has Bluetooth's state and the
+devices (addresses shortened, no keys). Keys held on a Bluetooth or USB keyboard from power-on reach the Mac in a
+normal start too: Shift for "Extensions off" works from them (the kernel keeps them in the Mac's KeyMap until its input
+driver opens). **Tried in the testbed only** (a simulated Bluetooth host: QEMU has no radio).
+
+![The passkey for a Bluetooth keyboard on the compact Mac's screen (the testbed's photograph)](docs/img/recovery-bt-passkey-se.png)
 
 **The access point: setting up with nothing but a phone** (since 23 November 2026, docs/08 item 118). With no
 cable and no WiFi the Pi knows (a first setup, a home network that changed), the Pi can be a WiFi network of its
@@ -426,7 +450,8 @@ names what is wrong ("mac.fpu: fast is not one of exact|on|double|none"). The **
 
 The API for scripts: `GET /r/diag[?from=N]` (the bus check's lines from N as they come), `POST /r/diag/run?test=buscheck|card|jtag`,
 `POST /r/diag/screen`, `POST /r/diag/once` (a line of options; `?cancel=1` takes it away), `GET /r/reports`,
-`GET /r/bundle`; `GET /r/options` carries the table itself (`defs`, `groups`).
+`GET /r/bundle`; `GET /r/options` carries the table itself (`defs`, `groups`); `GET /r/bt`, `POST /r/bt/scan`,
+`POST /r/bt/pair|connect|forget?addr=AA:BB:CC:DD:EE:FF` (Bluetooth).
 
 ![The Diagnostics tab after a bus check over the testbed's bridge (MAME's SE)](docs/img/recovery-diag-page.png)
 
@@ -499,7 +524,7 @@ layer serves the Plus, 512Ke, 512K and 128K (`mac.board=plus|512ke|512k|128k`), 
 | Directory | Contents |
 |---|---|
 | `emu68/` | the Emu68 fork (vendored; its own history is the branch `emu68-psmac`): the kernel. `src/psmac/` is the Macintosh host layer (bus bridge, 68030 MMU shim, mailbox window); `src/alice/` are the Alice68 service modules (network, Bluetooth, status, USB) with their Macintosh glue |
-| `mac/` | the Macintosh side in 68k assembly: the `.PiDisk` block driver, the `.ENET`-interface Ethernet driver, the `.PiInput` keyboard-and-mouse driver, the `.Display_Video_PiStorm` second-display driver, the Aurora68 Disk, Machine and Sound extensions, the Aurora68 Network, Ping, Screens and Colour test applications, the Aurora68 Wi-Fi, Bluetooth and Status applications, and in C (with the kit in `mac/c`) Aurora68 Log, Slots, Depth, Display, the Wi-Fi & Bluetooth menus, Screen Setup, Aurora68 Video (MPEG-1 films on the video decoder card, `mac/a68player`), the Aurora68 Video Decoder's QuickTime components and MPEG-1 movie import (`mac/vdec`; the card's driver `.A68Video` is `mac/a68video.s`, in assembly) and Aurora68 Play (MP3, FLAC, Ogg Vorbis, Apple Lossless, AIFF and WAV on the sound card, the music server's library and devices, and internet radio over MacTCP or Riptide's `.IPP6`); their sources keep the old names (`mac/piplay/`, `pislots.c`...), a Makefile (`make check` compares the drivers' structure offsets with the kernel's header) |
+| `mac/` | the Macintosh side in 68k assembly: the `.PiDisk` block driver, the `.ENET`-interface Ethernet driver, the `.PiInput` keyboard-and-mouse driver, the `.Display_Video_PiStorm` second-display driver, the Aurora68 Disk, Machine and Sound extensions, the Aurora68 Network, Ping, Screens and Colour test applications, the Aurora68 Wi-Fi, Bluetooth and Status applications, and in C (with the kit in `mac/c`) Aurora68 Log, Slots, Depth, Display, Menu Extras (the clock, Wi-Fi and Bluetooth menus, `mac/wifimenu`), Screen Setup, Aurora68 Video (MPEG-1 films on the video decoder card, `mac/a68player`), the Aurora68 Video Decoder's QuickTime components and MPEG-1 movie import (`mac/vdec`; the card's driver `.A68Video` is `mac/a68video.s`, in assembly) and Aurora68 Play (MP3, FLAC, Ogg Vorbis, Apple Lossless, AIFF and WAV on the sound card, the music server's library and devices, and internet radio over MacTCP or Riptide's `.IPP6`); their sources keep the old names (`mac/piplay/`, `pislots.c`...), a Makefile (`make check` compares the drivers' structure offsets with the kernel's header) |
 | `tools/` | ROM patching, the initramfs container builder (`mkcontainer.py`: ROM, declaration ROM and firmware in one cpio for the Pi), the full-stack testbed launcher, the host network peer, debugging helpers |
 | `tools/mac/` | resource fork, MacBinary, application, extension and declaration ROM builders (pure Python) |
 | `rom/` | ROM patch descriptions and the patch tool's Makefile (ROM images themselves are not in the repository) |

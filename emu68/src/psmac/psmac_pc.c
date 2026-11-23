@@ -55,6 +55,7 @@
 #include "psmb.h"
 #include "psmac_pc.h"
 #include "psmac_wclip.h"
+#include "psmac_guest.h"
 #include "psmac_pc_declrom.h"
 #include "psmac_pc_font.h"
 #include "aurora86.h"
@@ -80,8 +81,6 @@ extern int psmac_card_pc_writable(void);
 extern int psmac_card_pc_list(void (*cb)(void *ctx, const char *name, uint32_t size), void *ctx);
 extern int psmac_sh_write(int64_t fd, const void *buf, uint64_t len);
 extern int psmac_board_se, psmac_board_solo;
-extern int psmac_audio_poll(void);                                              /* psmac_audio.c: core 1's sound */
-extern void psmac_audio_pause(void);
 
 /* the C library's jump buffer as libaurora86's runtime keeps it (glibc's layout: 22 longs and a mask; room to spare) */
 typedef uint64_t a86_jmp_buf[48];
@@ -111,7 +110,6 @@ static inline uint32_t us_since(uint64_t t) { return (uint32_t)((now() - t) * 10
 #define BLINK_MS       266u          /* the cursor's and blinking text's half period: the VGA's 16 frames at 60 Hz */
 #define LOAD_CHUNK     (1u << 20)    /* the firmware read a megabyte per poll on core 2 (the solo board's) */
 #define LOAD_CHUNK1    (64u << 10)   /* and 64 KiB on core 1, the sound's core (pc_yield, below) */
-#define YIELD_US       1000u         /* on core 1: the sound's turn at least this often, inside the PC's slices too */
 #define TEXT_INSET     2             /* pixels of paper between the window's frame and the text's first and last columns:
                                         misc-fixed's and the VGA's glyphs use their cell's first column (C, the box
                                         lines), which touched the window's one-pixel frame and read as a cut-off letter
@@ -189,26 +187,25 @@ void psmac_pccard_map(uintptr_t phys)
    the 12 MiB firmware a megabyte per turn from the SD card, the build, a slice whose instructions took longer than the
    rate measured said (port I/O, a mode change), a whole window drawn on the 2560 x 1440 screen; the DMA meanwhile
    played its ring again, old sound, which is the noise. Now every long thing the PC does on core 1 gives the sound its
-   turn at least every YIELD_US: Bochs reads the clock (a86_host_ns) several times a millisecond while it runs, the
+   turn about once a millisecond (psmac_guest_yield): Bochs reads the clock (a86_host_ns) several times a millisecond while it runs, the
    disks' reads and write-backs and the drawing call this between pieces, and the firmware is read 64 KiB a turn. The
    audio's own code is not touched; it runs here exactly as from core 1's loop (it is never re-entered: nothing it calls
    comes back here) */
 static int chosen = -1;              /* the core it runs on, decided at the first poll */
-static uint64_t yield_t;
-static int in_yield;
-static void pc_yield(void)
-{
-    if (chosen != 1 || in_yield || opt.noyield) return;
-    uint64_t t = now();
-    if (t - yield_t < (uint64_t)YIELD_US * hz() / 1000000u) return;
-#ifndef PSMAC_PC_HOST
-    uint64_t m; __asm__ volatile("mrs %0, MPIDR_EL1" : "=r"(m));
-    if ((m & 3) != 1) return;                     /* Bochs's constructors read the clock on core 0 at the kernel's start */
+/* before a step that cannot give the sound a turn (the disks' opening, which lists each image's clusters from the FAT; the
+   PC's build, 160 ms in QEMU): the ring filled with silence, as psmac_usb.c does before a USB enumeration, so that core 1
+   away for longer than the ring's 48 ms is a moment of silence, not old sound played again. Once, at the PC's start */
+#ifdef PSMAC_PC_HOST
+static void sound_hold(void) { }
+#else
+extern void psmac_audio_pause(void);
+static void sound_hold(void) { if (chosen == 1 && !opt.noyield) psmac_audio_pause(); }
 #endif
-    in_yield = 1;
-    psmac_audio_poll();
-    in_yield = 0;
-    yield_t = now();
+static void pc_yield(void)            /* psmac_guest.c: once a millisecond at most, core 1 only (Bochs's constructors read
+                                         the clock on core 0 at the kernel's start: nothing then) */
+{
+    if (chosen != 1 || opt.noyield) return;
+    psmac_guest_yield();
 }
 
 /* ---- what libaurora86 asks of the host (aurora86.h) --------------------------------------------------- */
@@ -838,18 +835,25 @@ static void start_step(void)
             set_state(A68P_S_STARTING, 0, "Reading the PC's firmware...");
         }
         {
-            uint32_t chunk = chosen == 1 && !opt.noyield ? LOAD_CHUNK1 : LOAD_CHUNK;
-            uint32_t n = romf.size - rom_got < chunk ? romf.size - rom_got : chunk;
-            if (pf_read(&romf, rom_got, rom_mem + rom_got, n) < 0) {
-                set_state(A68P_S_FAILED, A68P_E_NOROM, "The PC's firmware could not be read.");
-                phase = P_DEAD; return;
+            /* on core 1 8 KiB at a time with the sound's turn between, 64 KiB a turn at most (QEMU's SD card took 130 ms
+               for 64 KiB in one read: the sound waited 200 ms and more) */
+            int c1 = chosen == 1 && !opt.noyield;
+            uint32_t chunk = c1 ? LOAD_CHUNK1 : LOAD_CHUNK, piece = c1 ? 8192u : chunk, done = 0;
+            while (done < chunk && rom_got < romf.size) {
+                uint32_t n = romf.size - rom_got < piece ? romf.size - rom_got : piece;
+                if (pf_read(&romf, rom_got, rom_mem + rom_got, n) < 0) {
+                    set_state(A68P_S_FAILED, A68P_E_NOROM, "The PC's firmware could not be read.");
+                    phase = P_DEAD; return;
+                }
+                rom_got += n; done += n;
+                pc_yield();
             }
-            rom_got += n;
             if (rom_got == romf.size) phase = P_VGA;
         }
         return;
     case P_VGA: {
         struct pfile f;
+        sound_hold();                             /* the disks' cluster lists below: silence rather than old sound */
         if (pf_open(&f, opt.vgarom, 0) < 0 || f.size < 1024 || f.size > (256u << 10) || !(vga_mem = a86_host_alloc(f.size)) ||
             pf_read(&f, 0, vga_mem, f.size) < 0) {
             set_state(A68P_S_FAILED, A68P_E_NOROM, "The PC's VGA BIOS (pc.vgarom=) is not on the card.");
@@ -862,6 +866,7 @@ static void start_step(void)
     }
     case P_BUILD: {
         uint64_t t0 = now();
+        sound_hold();
         a86_blob("/a86/pc.rom", rom_mem, romf.size, 0);
         a86_blob("/a86/vgabios.bin", vga_mem, vga_size, 0);
         make_bochsrc();
@@ -1451,9 +1456,16 @@ static void numbers(void)
     blk->core = (uint32_t)chosen;
 }
 
-int psmac_pc_poll(int core)
+/* The PC as a guest of its core (psmac_guest.c, 23 November 2026: the Apple II card shares the core). Until then this
+   was one function, psmac_pc_poll(core), called from the core's loop: the commands, the window's place, a step of the
+   start or else the input, a slice, the write-back, the blink, the picture. It is the same work in three parts now:
+   pc_service() every turn (everything but the slice), pc_ready() (powered, not paused, not idle until later) and
+   pc_slice() (a86_pc_run for the core's slice). The scheduler gives the PC its slice whenever it is ready and is the
+   only guest, so a kernel with the PC card alone runs it as before; with the Apple II card too, the front window's
+   machine goes first. */
+static int my_core_now(void)
 {
-    if (!ready) return 0;
+    if (!ready) return -1;
     if (chosen < 0) {
         int c = my_core(), expect = -1;
         if (__atomic_compare_exchange_n(&chosen, &expect, c, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
@@ -1465,39 +1477,16 @@ int psmac_pc_poll(int core)
             start_t = now();
         }
     }
-    if (core != chosen) return 0;
+    return chosen;
+}
+static int pc_service(void)
+{
     command();
     geometry();
     watch_program();
     if (phase >= P_ROM && phase <= P_BUILD) { start_step(); return 1; }
     if (phase != P_RUN) { numbers(); return 0; }
     input();
-    int ran = 0;
-    uint64_t t = now();
-    if (powered && !paused && t >= next_run) {
-        uint32_t slice_us = core == 2 ? SLICE_US_CORE2 : SLICE_US_CORE1;
-        uint64_t want = (uint64_t)ipus * slice_us;
-        if (want < 2000) want = 2000;
-        uint64_t ic0 = a86_pc_icount();
-        fatal_armed = 1;
-        if (a86_setjmp(fatal_env)) { fatal_armed = 0; set_state(A68P_S_FAILED, A68P_E_BOCHS, fatal_why); phase = P_DEAD; return 1; }
-        int st = a86_pc_run(want);
-        fatal_armed = 0;
-        uint64_t dt = now() - t;
-        busy_ticks += dt;
-        uint32_t idle = a86_pc_idle_us();
-        uint64_t did = a86_pc_icount() - ic0;
-        if (!idle && did > 1000) {           /* a busy slice: its rate, smoothed */
-            uint32_t us = (uint32_t)(dt * 1000000u / hz());
-            uint32_t r = us ? (uint32_t)(did / us) : ipus;
-            if (r < 1) r = 1;
-            ipus = (ipus * 7 + r + 7) / 8;
-        }
-        if (idle) { next_run = now() + (uint64_t)idle * hz() / 1000000u; idle_ticks += (uint64_t)idle * hz() / 1000000u; }
-        if (st == A86_STOPPED) { powered = 0; set_state(A68P_S_STOPPED, 0, "The PC switched itself off."); redraw_req = 1; }
-        else if (st == A86_FAILED) { set_state(A68P_S_FAILED, A68P_E_BOCHS, "The PC failed (the kernel log has Bochs's words)."); phase = P_DEAD; }
-        ran = 1;
-    }
     flush_poll(0);                        /* the disks' changes back into their files, when due */
     blink();
     const struct a86_screen *s = a86_pc_screen();
@@ -1512,7 +1501,43 @@ int psmac_pc_poll(int core)
     }
     text_log();
     numbers();
-    return ran;
+    return 0;
+}
+static int pc_ready(uint64_t t) { return phase == P_RUN && powered && !paused && t >= next_run; }
+static int pc_slice(uint32_t slice_us)
+{
+    uint64_t t = now();
+    uint64_t want = (uint64_t)ipus * slice_us;
+    if (want < 2000) want = 2000;
+    uint64_t ic0 = a86_pc_icount();
+    fatal_armed = 1;
+    if (a86_setjmp(fatal_env)) { fatal_armed = 0; set_state(A68P_S_FAILED, A68P_E_BOCHS, fatal_why); phase = P_DEAD; return 1; }
+    int st = a86_pc_run(want);
+    fatal_armed = 0;
+    uint64_t dt = now() - t;
+    busy_ticks += dt;
+    uint32_t idle = a86_pc_idle_us();
+    uint64_t did = a86_pc_icount() - ic0;
+    if (!idle && did > 1000) {           /* a busy slice: its rate, smoothed */
+        uint32_t us = (uint32_t)(dt * 1000000u / hz());
+        uint32_t r = us ? (uint32_t)(did / us) : ipus;
+        if (r < 1) r = 1;
+        ipus = (ipus * 7 + r + 7) / 8;
+    }
+    if (idle) { next_run = now() + (uint64_t)idle * hz() / 1000000u; idle_ticks += (uint64_t)idle * hz() / 1000000u; }
+    if (st == A86_STOPPED) { powered = 0; set_state(A68P_S_STOPPED, 0, "The PC switched itself off."); redraw_req = 1; }
+    else if (st == A86_FAILED) { set_state(A68P_S_FAILED, A68P_E_BOCHS, "The PC failed (the kernel log has Bochs's words)."); phase = P_DEAD; }
+    return 1;
+}
+static int pc_front(void) { return ready && blk->front == 1; }
+struct psmac_guest psmac_pc_guest = { "PC", my_core_now, pc_service, pc_ready, pc_slice, pc_front, 0, 0, 0, 0 };
+
+/* the PC as its core's only guest, as before the scheduler (tools/pccard_test.c) */
+int psmac_pc_poll(int core)
+{
+    if (my_core_now() != core) return 0;
+    if (pc_service()) return 1;
+    return pc_ready(now()) ? pc_slice(core == 2 ? SLICE_US_CORE2 : SLICE_US_CORE1) : 0;
 }
 
 void psmac_pc_report(void)
@@ -1524,9 +1549,10 @@ void psmac_pc_report(void)
     static const char *const nd[] = { "drawing", "hidden", "not drawing: the window is gone", "not drawing: the program's loop stands still",
                                       "not drawing: the region is not a live one", "not drawing: no region yet" };
     uint32_t n = blk->nodraw;
-    kprintf("[PC]   %s on core %d: %u.%u MIPS, %u per mille of the core busy, %u idle; %u pictures drawn (%u us each), %u skipped under a menu, %u for the region, %u regions refused; %s (the program %s, %u stops, %u windows gone); keys %u, mouse %u; disks %u reads %u writes (%u sectors in memory, %u to be written back)%s%s%s%s\n",
+    kprintf("[PC]   %s on core %d: %u.%u MIPS, %u per mille of the core busy, %u idle; %u pictures drawn (%u us each), %u skipped under a menu, %u for the region, %u regions refused; %s (the program %s, %u stops, %u windows gone); keys %u, mouse %u; disks %u reads %u writes (%u sectors in memory, %u to be written back)%s%s\n",
             st < 6 ? names[st] : "?", chosen, blk->mips_x10 / 10, blk->mips_x10 % 10, blk->load, blk->idle_pm, blk->draws, blk->draw_us,
             menu_skips, rgn_skips, rgn_bad, n < 6 ? nd[n] : "?", blk->prog == A68P_PROG_LIVE ? "running" : blk->prog == A68P_PROG_GONE ? "gone" : "not seen",
             blk->stalls, gone_n, keys_in, mouse_in, rd, wr, held_n, dirty_n,
-            st == A68P_S_FAILED ? ": " : "", st == A68P_S_FAILED ? (const char *)blk->message : "", note[0] ? " | " : "", note);
+            st == A68P_S_FAILED ? ": " : "", st == A68P_S_FAILED ? (const char *)blk->message : "");
+    if (note[0]) kprintf("[PC]   disks: %s\n", note);             /* a line of its own: the log's lines have a length */
 }

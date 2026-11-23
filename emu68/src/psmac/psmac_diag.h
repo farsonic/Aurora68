@@ -16,8 +16,14 @@ enum { PDG_SE = 1, PDG_PLUS = 2, PDG_512KE = 4, PDG_512K = 8, PDG_128K = 16, PDG
 #define PDG_COMPACT (PDG_SE | PDG_PLUSFAM)                             /* a real logic board behind the classic PiStorm */
 #define PDG_ALL     (PDG_COMPACT | PDG_SOLO | PDG_IICI)
 
-#ifdef PSMAC_PC          /* the PC card's group exists in a kernel built with it (psmac_pc.c, docs/19-pc-card.md) */
+/* the PC card's group exists in a kernel built with it (psmac_pc.c, docs/19-pc-card.md), the Apple II card's likewise
+   (psmac_a2.c, docs/20-apple-ii-card.md) */
+#if defined(PSMAC_PC) && defined(PSMAC_A2)
+enum { PDG_G_MACHINE, PDG_G_DISPLAY, PDG_G_SOUND, PDG_G_STORAGE, PDG_G_NETWORK, PDG_G_VIDEO, PDG_G_PC, PDG_G_A2, PDG_G_DEBUG, PDG_GROUPS };
+#elif defined(PSMAC_PC)
 enum { PDG_G_MACHINE, PDG_G_DISPLAY, PDG_G_SOUND, PDG_G_STORAGE, PDG_G_NETWORK, PDG_G_VIDEO, PDG_G_PC, PDG_G_DEBUG, PDG_GROUPS };
+#elif defined(PSMAC_A2)
+enum { PDG_G_MACHINE, PDG_G_DISPLAY, PDG_G_SOUND, PDG_G_STORAGE, PDG_G_NETWORK, PDG_G_VIDEO, PDG_G_A2, PDG_G_DEBUG, PDG_GROUPS };
 #else
 enum { PDG_G_MACHINE, PDG_G_DISPLAY, PDG_G_SOUND, PDG_G_STORAGE, PDG_G_NETWORK, PDG_G_VIDEO, PDG_G_DEBUG, PDG_GROUPS };
 #endif

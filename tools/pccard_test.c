@@ -69,8 +69,7 @@ int psmac_card_pc_writable(void) { return 0; }
 int psmac_card_pc_list(void (*cb)(void *, const char *, uint32_t), void *ctx) { (void)cb; (void)ctx; return -1; }
 int psmac_sh_write(int64_t fd, const void *buf, uint64_t len) { return fwrite(buf, 1, len, fh[fd]) == len; }
 int psmac_display_info(int i, uint32_t *w, uint32_t *h, uint32_t *d, uint32_t *b) { (void)i; (void)w; (void)h; (void)d; (void)b; return 0; }
-int psmac_audio_poll(void) { return 0; }
-void psmac_audio_pause(void) { }
+void psmac_guest_yield(void) { }
 
 /* the pretend Mac memory (PCCARD_PROG): aligned longs in the host's order, as the kernel reads the Mac's with one load */
 #define MRAM (1u << 20)

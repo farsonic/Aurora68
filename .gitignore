@@ -88,6 +88,7 @@ macos/Aurora68Play/.build/
 mac/build/cmdline_test
 mac/build/apnet_test
 mac/build/diag_test
+mac/build/bt_test
 mac/build/splash_test
 mac/build/devices_test
 mac/build/codec/
@@ -125,3 +126,15 @@ mac/build/pistatus_traps.txt
 mac/build/st/
 # the PC card test's run files (tools/pccard_test.sh)
 mac/build/pccard/
+# the window place and live-region host test (tools/pcplace_test.sh)
+mac/build/pcplace/
+mac/build/a68pc.elf
+mac/build/a68pc_traps.txt
+mac/build/apc/
+# the Apple II card's and the guest scheduler's test files (tools/a2card_test.sh, tools/guest_test.c), Aurora68 Apple II's build
+mac/build/a2card/
+mac/build/guest_test
+mac/build/guest_test.log
+mac/build/a68apple.elf
+mac/build/a68apple_traps.txt
+mac/build/aa2/
