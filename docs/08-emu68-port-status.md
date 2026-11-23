@@ -6174,7 +6174,7 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      the picture scaled, and a line in one bit saying the colours show as black or white (on the way: its 16-grey row
      had fallen through into the new placement code, found in the first picture with the grey row missing). The Wi-Fi
      and Bluetooth menus' icons, which at 512 pixels sit where a long menu bar ends, are the menu-bar clock's branch's.
-   - *Rebuilt:* Bluetooth, Colour, Display, Log, Network, PC, Ping (with `PEER=192.168.0.1`, as the release's), Play,
+   - *Rebuilt:* Bluetooth, Colour, Display, Log, Network, PC, Ping (with the release's PEER setting), Play,
      Screens, Slots, Status, Video, Wi-Fi. `make -C mac check` passes.
    - *Not verified:* two screens at once (the solo board has one): the HDMI screen main with a window moved to the SE's,
      Colour's choice of screen, the zoom boxes on the second screen, are read from the code, not run; the SE board in
