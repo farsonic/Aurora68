@@ -159,7 +159,16 @@ int psmac_wclip_cursor_box(uint32_t screen, int32_t out[4])
         if (ba == base) {
             int32_t y = mv - (int16_t)t, x = mh - (int16_t)l;
             if (y < -PSMAC_WCLIP_CURSOR || x < -PSMAC_WCLIP_CURSOR || y >= (int32_t)h + PSMAC_WCLIP_CURSOR || x >= (int32_t)w + PSMAC_WCLIP_CURSOR) return 0;
-            out[0] = y - PSMAC_WCLIP_CURSOR; out[1] = x - PSMAC_WCLIP_CURSOR; out[2] = y + PSMAC_WCLIP_CURSOR; out[3] = x + PSMAC_WCLIP_CURSOR;
+            /* Widened to the frame buffer's longwords (23 November 2026, the PC card in the testbed at 512 x 342): the Mac
+               saves and puts back what is under its pointer in whole longs of the frame buffer, 32 pixels at one bit, so
+               at one bit the part it puts back reaches up to 31 pixels beyond the 16-pixel pointer on either side. With
+               the box at 24 pixels each side, a pointer that had rested over text that changed under it put back, as it
+               moved on, two letters just right of the box from its saved copy, which nothing drew again. Rounded out to
+               32 / depth pixels the box holds every pixel the Mac may put back: 64 or 96 wide at one bit, 48 to 54 at 8 bits */
+            int32_t al = d >= 32 || !d ? 1 : (int32_t)(32 / d), x0 = x - PSMAC_WCLIP_CURSOR, x1 = x + PSMAC_WCLIP_CURSOR;
+            x0 = x0 >= 0 ? x0 / al * al : -((-x0 + al - 1) / al * al);
+            x1 = x1 >= 0 ? (x1 + al - 1) / al * al : -(-x1 / al * al);
+            out[0] = y - PSMAC_WCLIP_CURSOR; out[1] = x0; out[2] = y + PSMAC_WCLIP_CURSOR; out[3] = x1;
             return 1;
         }
         if (!rd16(gd + 30, &t) || !rd16(gd + 32, &l)) return 0;

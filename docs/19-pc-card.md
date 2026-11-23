@@ -55,8 +55,10 @@ The window's block (`psmac_pc.h`, `struct a68p_block`; Aurora86's DESIGN planned
 | $8000 | both | disks: the image list and the six places (four IDE, two floppies) |
 
 Commands: power on (the PC is built at the first), power off (it keeps its memory and stops running), reset,
-pause, resume, Control-Alt-Delete (the card presses and lets go of the three keys), redraw, attach, detach and
-rescan (the last three answer "later" for now: `pc.disk0=` chooses the disk). Options: `A68P_O_PCSENSE` (text in
+pause, resume, Control-Alt-Delete (the card presses and lets go of the three keys), redraw, attach (an image of the
+list into a drive: `arg0` the image, `arg1` the place or `A68P_PLACE_AUTO`), detach (out of its drive) and rescan (the
+list again from the SD card's root); "Disks" below says what can go where. Power off and reset first write back
+everything the disks still hold. Options: `A68P_O_PCSENSE` (text in
 the PC's own white on black on a one-bit screen), `A68P_O_THRESHOLD` (no dither), `A68P_O_BIGTEXT` (the PC's 8 x 16
 font on one bit too), `A68P_O_GROWBOX` (the window's bottom-right 15 x 15 left to the Mac's grow box).
 
@@ -85,9 +87,41 @@ window's address in the caller's addressing mode, the version, state and error, 
 - **Files.** `pc.rom=` (Libreboot's 12 MiB image), `pc.vgarom=` (SeaVGABIOS for Bochs's VGA) and `pc.disk0=` (a hard
   disk image, 16 heads and 63 sectors a track), in the SD card's root, read on the PC's core under the card's lock
   (`psmac_card_pc_open`/`_read`: a file's clusters listed once, then any part read a cluster at a time), or in the
-  testbed host files through semihosting. The firmware is read a megabyte per slice; the disk on demand, through
-  `a86_disk()`'s callbacks. What the PC writes stays in its memory (an overlay by sector, lost at power-off): the
-  image on the card is not written until writing back is built and tested.
+  testbed host files through semihosting. The firmware is read a megabyte per slice; the disks on demand, through
+  `a86_disk()`'s callbacks; what the PC writes goes back into the image files ("Disks", below).
+
+## Disks
+
+Added on 23 November 2026, the day after the card (docs/08 item 133). The PC has two hard disks on its first IDE channel
+(`pc.disk0=`, `pc.disk1=`) and a CD-ROM drive on the second (`pc.cd=`, ISO 9660 images); each is an image file in the SD
+card's root (host paths in the testbed). Images that the PC's options name are the PC's: the card no longer offers them
+to the Mac as disks too (a `freedos.img` in the root had been taken as a Mac disk image, loaded into the Mac's memory and
+shown to the Finder, which asks to initialise a disk it cannot read).
+
+- **Writing back.** What the PC writes goes into the Pi's memory first, by sector (the overlay), and from there back into
+  the same file, in place: into the file's own clusters as listed when it was opened (`psmac_card_pc_write`, a cluster's
+  sectors a command), never growing it, never touching a directory entry or a FAT sector, as the Mac's PiDisk images are
+  written. So the card's file system is the same before and after, whatever happens between. When: 2 seconds after the
+  PC's last write to that disk (DOS's writes come in bursts: a file is a few sectors of FAT, directory and data), 10
+  seconds after the oldest change not yet written at most, and all of it at once when the program powers the PC off or
+  resets it, and when an image leaves its drive. The writing happens on the PC's own core between its slices, 4 ms a turn
+  at most; sectors written leave the overlay. The log says each time: `[PC] freedos.img: 4 sectors written back to the
+  card (0 ms)`. **PC > Power Off before switching the Pi off** is how to be sure everything is on the card; the block's
+  `disk_dirty` counts what is not yet. A write that fails stops the writing back for that disk (its changes stay in
+  memory) and says so in the log and the program. `pc.disk0ro=on` (`pc.disk1ro=on`) keeps a hard disk's file as it is:
+  its changes stay in memory and are lost when the Pi stops, as before this day. A CD is read only.
+- **Changing disks.** The Disks menu of Aurora68 PC lists the options' images and the card root's `.iso`, `.vhd`, `.hdd`,
+  `.ima`, `.flp` and `.vfd` files (`.img` stays the Mac's unless an option names it; Disks > Look on the Card Again reads
+  the root again), each with its kind, checked while it is in a drive. Choosing a CD puts it into the CD-ROM drive, or
+  takes it out (Aurora86's new `a86_pc_media()`: Bochs's own runtime media change, the path and status parameters of the
+  drive and its runtime-options handlers). FreeDOS 1.4's start (UDVD2, SHSUCDX) finds the empty drive as D:, and a CD put
+  in later reads there. Hard disks stay while the PC exists, as in a real PC (the program says so). **Floppies cannot be
+  used**: Libreboot's SeaBIOS is a coreboot build, which knows only the floppy drives coreboot's CBFS lists (`etc/floppy0`,
+  SeaBIOS's `hw/floppy.c`; the CMOS's drive types are read only in QEMU builds), Libreboot's QEMU image lists none, and DOS
+  reads floppies through the BIOS: a drive configured in Bochs took the image and DOS answered "unknown command given to
+  driver". So the card configures no floppy drive and the program says why. SeaBIOS under coreboot also ignores the CMOS's
+  boot order: it tries the CD-ROM drive first ("Boot failed: Could not read from CDROM (code 0003)" when empty), then the
+  hard disk; `pc.cd=` a bootable CD starts the PC from it.
 
 ## The picture
 
@@ -96,8 +130,21 @@ SE's own on the SE board, the HDMI screen on the solo board; screen 1: the SE bo
 depth, 30 times a second at most and only the part that changed: the PC's dirty rectangle, the window's whole content
 after it moved, was resized or uncovered (the program's update event asks for a redraw), the cursor's cell at each
 blink (266 ms). It draws only inside the window's visRgn (read through the Mac's memory before each picture), never in
-the box around the Mac's pointer (redrawn once the pointer has moved on), never while any program's menu is down, and
-not while the program says the window is being dragged or resized.
+the box around the Mac's pointer, never while any program's menu is down, and not while the program says the window is
+being dragged or resized.
+
+**The pointer's box** (24 pixels each side of the Mouse point, `psmac_wclip_cursor_box`): the Mac draws its pointer into the
+frame buffer and keeps what was under it, so the card leaves the box alone while the pointer is there (not while the
+pointer is hidden: CrsrVis, $8CC, 0). Until 23 November 2026 the box went back into the one dirty rectangle at every
+picture: it was drawn once the pointer had moved on, but the dirty rectangle then spanned the pointer and whatever else
+changed (the cursor's cell at each blink: much of the window, 30 times a second), and the Mac puts back what was under
+its pointer at the VBL after the Mouse global changes, which can come after the card's picture of that place, leaving an
+old piece (or a black square) there. Now the part left out is kept with the box it was left for, and when the box moves
+or goes it is drawn at once and again 100 ms later. And the box is wider across: the Mac saves and puts back what is
+under its pointer in whole longs of the frame buffer (32 pixels at one bit), so the testbed, with text scrolling under a
+resting pointer, showed two letters left blank just right of a 48-pixel box once the pointer moved on; the box is now
+rounded out to 32 / depth pixels (64 or 96 wide at one bit). The video decoder card (`psmac_video.c`) shares the box and
+does the same for a paused, ended or starved film, whose last picture was drawn again only when its window moved.
 
 - **Text** is drawn from the cells. On a one-bit screen in a 6 x 13 font (the X Window System's misc-fixed, the
   PC's code page 437 with its box drawing), 80 x 25 in 480 x 325; but **the SE's screen is too short for that**: 342
@@ -107,7 +154,13 @@ not while the program says the window is being dragged or resized.
   luminance: whichever of its two colours is lighter is black, the darker white. So DOS's grey on black is black on
   white, and a light dialog (FreeDOS's installer, black on grey) white on black, as the pictures show; `View > White on
   Black` gives the PC's own sense. On deeper screens the PC's own font (8 or 9 x 16) in its 16 colours, through the screen's
-  colour table at 2 to 8 bits.
+  colour table at 2 to 8 bits. Two pixels of paper each side of the text (`TEXT_INSET`, in the colours of the row's first
+  and last cells; the natural width 484 for 80 columns of 6, 644 or 724 in colour): misc-fixed's glyphs, and the VGA's,
+  use their cell's first column (C, D, the box lines), which touched the window's one-pixel frame, so that the first
+  QEMU pictures read "D-ROM not configured" for "CD-ROM" and "one processing" for "Done processing" (the letters were
+  all there: the pixels show the C's left stroke one pixel from the frame line, 23 November 2026).
+  Before the PC's first picture (and when it is in no mode) the window is the PC's background as its text will be drawn:
+  white on one bit (black with White on Black), black on deeper screens; it was black on one bit too.
 - **Graphics** (VGA and Bochs VBE modes, the 32-bit picture the library keeps) are scaled to the window by the nearest
   pixel, ordered-dithered (8 x 8) on one bit, through a 4096-entry table of the screen's colours at 2 to 8 bits; `View
   > Actual Size` shows them 1:1.
@@ -116,9 +169,10 @@ not while the program says the window is being dragged or resized.
 
 `mac/a68pc/pc.c`, a C program with the `mac/c` kit, in `Aurora68:Aurora68 PC` (`tools/mac/aurora68-layout.py`). A
 document window with grow and zoom boxes, titled with the PC's state ("Aurora68 PC (off)", "... (starting)", and
-": keyboard and mouse to the PC" while captured); 480 x 300 at first, which fits the SE's screen; zoomed, the
-picture's natural size. Menus: **PC** (Power On, Power Off, Reset, Send Control-Alt-Delete, Pause), **Disks** (the
-card's image list, attached ones checked), **View** (Scaled to the Window, Actual Size, Large Text (8 x 16), White on
+": keyboard and mouse to the PC" while captured); 484 x 300 at first, which fits the SE's screen; zoomed, the
+picture's natural size. Menus: **PC** (Power On, Power Off, Reset, Send Control-Alt-Delete, Pause), **Disks** (Look on
+the Card Again, then the card's image list with each image's kind, those in a drive checked: choosing a CD puts it in or
+takes it out; when the card does not do what was chosen, a box says why in the card's words), **View** (Scaled to the Window, Actual Size, Large Text (8 x 16), White on
 Black), **Keyboard** (Capture Keyboard and Mouse (Control-Option-Command-P)). It powers the PC on when it starts if
 the PC is off.
 
@@ -162,6 +216,32 @@ period used). The card maps the ADB extended keyboard's codes onto Bochs's (`mac
 - **Not tested:** the SE board, the IIci testbed, real hardware, the SD card's file path, colour in QEMU (the host test
   covers the 8-bit drawing), graphics modes.
 
+The second round (the same day, docs/08 item 133):
+
+- **On the host** (`tools/pccard_test.sh`): the picture with the inset (484 wide); a scratch copy of FreeDOS 1.4 (the
+  download stays as it came); `echo WRITTEN BY THE PC>a68test.txt` at `C:\>`, and a second process (a kernel started
+  again) types the file; with `pc.disk0ro=on` a `del` of it is not kept; two CDs made by `tools/mkiso.py` put into the
+  CD-ROM drive in turn and read at D:; FDAPM's idle measured (above).
+- **In QEMU**, the solo board with System 7.1, **the files on an SD card image** (`run-solo.sh`'s `CARD=`: a 64 MiB image,
+  an MBR and a FAT32 partition holding `aurora86.rom`, `aurora86-vga.bin`, `freedos.img` and `dosdata.iso`; the System's
+  disk still through semihosting). At 640 x 480: the firmware read from the card (about 25 s of QEMU's time for 12 MiB),
+  the installer, DOS; a file written at `C:\>` and on the card 2 s later ("freedos.img: 4 sectors written back to the
+  card (16 ms)"); the CD put in from the Disks menu; PC > Reset and the file typed again. Then QEMU and the kernel started
+  again with the same card image at 512 x 342: the file typed back, the Disks menu, the CD read at D:; and on the host,
+  `mtype` found the file inside the card image's `freedos.img`. The text's first column clear of the frame at both sizes;
+  the window white before the first picture.
+  ![DOS, 640 x 480](img/pc-card-qemu-dos-640-2.png) ![after PC > Reset](img/pc-card-qemu-reset-640-2.png)
+  ![Disks menu, 512 x 342](img/pc-card-qemu-disks-se-2.png) ![the kernel restarted, the CD read](img/pc-card-qemu-cd-se-2.png)
+- **The pointer's box**, with a file typed so that it scrolls under the resting pointer, the pointer then moved away: with
+  the 48-pixel box two letters stayed blank just right of it ("CD.ERROR %  RORLEVEL%"); with the box rounded out to
+  the frame buffer's longs, nothing is left. While the pointer rests, its box shows what was there when it came (by design).
+  ![before: two letters left](img/pc-card-qemu-pointer-narrowbox-se.png)
+  ![resting, 512 x 342](img/pc-card-qemu-pointer-resting-se-2.png) ![moved away](img/pc-card-qemu-pointer-gone-se-2.png)
+  ![resting, 640 x 480](img/pc-card-qemu-pointer-resting-640-2.png) ![moved away](img/pc-card-qemu-pointer-gone-640-2.png)
+- **FDAPM** at `C:\>` in QEMU: 993 per mille of the core busy before `fdapm apmdos`, 93 busy and 894 idle after.
+- **Still not tested:** the SE board, the IIci testbed, real hardware (the owner's Pi is next), a CD's own start (`pc.cd=`
+  with a bootable image), `pc.disk1=`, graphics modes, colour in QEMU.
+
 ## Options
 
 | Option | What |
@@ -170,7 +250,10 @@ period used). The card maps the ADB extended keyboard's codes onto Bochs's (`mac
 | `pc.ram=MB` | the PC's memory, 16 by default (4 to 256); the card takes this plus 104 MiB of the Pi's RAM |
 | `pc.core=1\|2` | the Pi core: by default 2 on the solo board, 1 elsewhere |
 | `pc.rom=NAME`, `pc.vgarom=NAME` | the firmware and the VGA BIOS in the card's root: `aurora86.rom` and `aurora86-vga.bin` by default (host paths in the testbed) |
-| `pc.disk0=NAME` | a hard disk image in the card's root for the first IDE disk |
+| `pc.disk0=NAME`, `pc.disk1=NAME` | hard disk images in the card's root, IDE 0 master and slave; the PC's writes written back into them ("Disks") |
+| `pc.disk0ro=on`, `pc.disk1ro=on` | that disk's file kept as it is: its changes stay in the Pi's memory |
+| `pc.cd=NAME` | an ISO image in the CD-ROM drive (IDE 1 master) at the start; the Disks menu changes it |
+| `pc.img1=PATH` ... `pc.img8=PATH` | testbed only: more images in the Disks menu (semihosting cannot list a host directory) |
 | `pc.testwin=S,L,T,R,B` | testbed only: the window's place set by the kernel (no program needed), the whole rectangle drawn |
 | `pc.textlog=1` | testbed only: every changed line of the PC's text screen into the log, `[PC] \| text` |
 
@@ -180,4 +263,28 @@ From an Aurora86 checkout after `make firmware p2` (firmware never committed any
 `build/firmware/pc.rom` (the 12 MiB Libreboot image) as **`aurora86.rom`**, `build/firmware/vgabios-bochs-stdvga.bin`
 as **`aurora86-vga.bin`**, and a disk image (for instance FreeDOS 1.4's `FD14LITE.img`, which Aurora86's
 `make test-freedos` fetches) as, say, `freedos.img` with `pc.disk0=freedos.img`; a kernel built with `-DPSMAC_PC=ON`
-as `kernel8.img`; `pc=on` in `cmdline.txt`; Aurora68 PC on the Mac.
+as `kernel8.img`; `pc=on` in `cmdline.txt`; Aurora68 PC on the Mac. The PC writes into `freedos.img` from 23 November
+2026 on: keep a copy of the image elsewhere, and use PC > Power Off before switching the Pi off. CD images (`.iso`) in
+the root appear in the Disks menu.
+
+## Idle at the DOS prompt (FDAPM)
+
+FreeDOS's prompt waits for a key by asking the BIOS whether one is there, over and over, without halting: Bochs's most
+expensive kind of work (port I/O, interrupts), so the PC's core is busy all the time it shows `C:\>` (in QEMU 1-2 MIPS
+and 999 per mille busy, 23 November 2026). FreeDOS's own power manager, FDAPM, makes DOS halt in its idle calls
+(`APMDOS`: HLT when DOS or a program waits for a key), and halting is what Bochs's pacing turns into the core's rest
+("Idle", above). Measured with the card's own code on the host (`tools/pccard_test.c`, FreeDOS 1.4 at `C:\>`): 999 per
+mille of the core busy and 0 idle before, **8 busy and 990 idle** after `fdapm apmdos`. Bochs has no cheap way to see a
+keyboard-polling loop from outside (it would have to recognise the BIOS's INT 16h function 1 in a loop); FDAPM is the
+fix that real PCs of the time used too. So the owner adds it to the FreeDOS image, from inside the PC (the card writes it
+back to the card now):
+
+1. At `C:\>` type `edit fdauto.bat`.
+2. Find the line `rem FDAPM APMDOS` (FreeDOS 1.4's `FDAUTO.BAT` has it, after `call CDROM.BAT`) and delete `rem ` so that
+   it reads `FDAPM APMDOS`.
+3. Save and leave through EDIT's File menu (Option is the PC's Alt: Option-F, then Save, then Exit); then PC > Reset,
+   or type `fdapm apmdos` once by hand for now.
+
+If a program runs slower with it, `FDAPM ADV:REG` is the gentler setting (FDAPM's own advice when it loads).
+`FDCONFIG.SYS` needs nothing. In the installer's image (`FD14LITE.img`) the line comes before `SETUP.BAT` starts the
+installer, so FDAPM is loaded by then (whether the installer's menus wait in DOS's idle call was not measured).

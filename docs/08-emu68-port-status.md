@@ -6089,3 +6089,55 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    - *Not yet:* the IIci testbed with MAME, the SE board, real hardware; the SD card path (`psmac_card_pc_open/_read`) is
      written but only the semihosting path was run; graphics modes were not exercised (FreeDOS stays in text); attaching
      disks from the program, writing the overlay back, USB keyboards straight to the PC, the keyboard LEDs, HDMI full screen.
+
+133. **The PC card polished: its disks written back, CDs from the Disks menu, the text's first column, the pointer's box, FDAPM
+   (23 November).** The first slice of the card (item 132) was tested only in QEMU; before the owner tries it on the SE, five
+   things from its first pictures and its "not yet" list. docs/19-pc-card.md has the whole of each.
+   - *"D-ROM not configured".* The 640 x 480 picture of the captured PC read "D-ROM not configured" and "one processing startup
+     files". The pixels said otherwise: the C was there, its left stroke one pixel from the window's frame line, which it
+     joined (misc-fixed's glyphs, and the VGA's, use their cell's first column; the right column is the blank one). No
+     offset was wrong; the text had no margin. Now two pixels of paper each side (`TEXT_INSET`, in the colours of the row's
+     first and last cells, so the installer's grey title bar runs to the frame), the natural width 484 for 80 columns
+     (Aurora68 PC's first window too), and the dirty cells marked through `mark_cells`, which knows the inset. Before the
+     PC's first picture the window is the PC's background as its text will be drawn (white on one bit), not black.
+   - *The pointer's box.* The box the card leaves alone around the Mac's pointer went back into its one dirty rectangle at
+     every picture: drawn once the pointer had moved, but the rectangle then spanned the pointer and the cursor's blinking
+     cell (much of the window, 30 times a second). Now the part left out is kept with the box it was left for and drawn at
+     once when the box moves or goes, and again 100 ms later (the Mac puts back its saved copy at the VBL after the Mouse
+     global changes). The testbed then showed the other half: with text scrolling under the resting pointer at 512 x 342,
+     moving the pointer away left two letters blank just right of the box ("CD.ERROR %  RORLEVEL%"). The Mac saves and puts
+     back what is under its pointer in whole longs of the frame buffer, 32 pixels at one bit, so what it puts back reaches
+     up to 31 pixels beyond the 16-pixel pointer, past a box of 24 each side. `psmac_wclip_cursor_box` now rounds the box
+     out to 32 / depth pixels across (64 or 96 wide at one bit, 48 to 54 at 8 bits); the video decoder card shares it, and draws a
+     paused, ended or starved film's last picture into the box the same way once the pointer leaves (`pointer_moved`;
+     `tools/vbuf_test.sh` passes).
+   - *Writing back.* What the PC writes (the overlay, by sector) now goes back into the image file in place: into the file's
+     own clusters, listed at its open (`psmac_card_pc_write`, a cluster's sectors per command through `sd_write_run`, under
+     the card's lock as the reads are), never growing it or touching a directory entry or FAT sector; through semihosting
+     ("r+b") in the testbed. 2 s after the PC's last write to that disk, 10 s after the oldest unsaved sector at most, all of
+     it at PC > Power Off and Reset and when an image leaves its drive; 4 ms a turn at most on the PC's core; a failed
+     write stops it for that disk and says so. `pc.disk0ro=on` keeps the file as it is. The block's `disk_dirty` counts
+     what is not yet written. Found on the way: a `freedos.img` in the card's root was also taken as one of the Mac's disk
+     images (every `.img` is), loaded into the Mac's memory and offered to the Finder; images the PC's options name are no
+     longer the Mac's (`pc_owns` in `psmac_card.c`).
+   - *Disks.* Two hard disks (`pc.disk0=`, `pc.disk1=`), a CD-ROM drive on the second IDE channel (`pc.cd=`), and the
+     Disks menu: the options' images and the card root's `.iso` (and `.vhd`, `.hdd`, floppy) files, Look on the Card Again,
+     a CD put in or taken out while DOS runs through Aurora86's new `a86_pc_media()` (Bochs's runtime media change).
+     FreeDOS 1.4's start finds the empty drive (UDVD2, SHSUCDX: "CD-ROM configured as D:") and reads a CD put in later.
+     `tools/mkiso.py` makes the test's CDs (no ISO tool on the machine). Floppies do not work and are refused with the
+     reason: SeaBIOS under coreboot registers only the floppy drives coreboot's CBFS lists (`etc/floppy0`, SeaBIOS's
+     `hw/floppy.c`; CMOS drive types only in its QEMU builds), Libreboot's QEMU image lists none, and DOS reads floppies
+     through the BIOS ("unknown command given to driver" with a drive configured in Bochs and an image in it).
+   - *Idle at the prompt.* FreeDOS polls the keyboard at `C:\>` without halting: 999 per mille of the core busy. Its own
+     `FDAPM APMDOS` makes DOS halt while it waits, which Bochs's pacing turns into rest: on the host 8 busy and 990 idle; in
+     QEMU 993 busy before, 93 busy and 894 idle after. FreeDOS 1.4's `FDAUTO.BAT` has the line as `rem FDAPM APMDOS`; the
+     owner removes the `rem` from inside the PC (`edit fdauto.bat`), which the card now saves. Bochs has no cheap way to
+     see a polling loop from outside, so nothing in the card does it.
+   - *Tested.* On the host (`tools/pccard_test.sh`, in `make -C mac check` with `AURORA86_DIR`): a scratch copy of FreeDOS
+     1.4; a file made at `C:\>` read back by a second process (a restarted kernel), and not kept with `pc.disk0ro=on`; two
+     CDs put in and taken out in turn and read at D:. In QEMU (solo board, System 7.1, the files on a 64 MiB SD card image
+     through `run-solo.sh`'s `CARD=`, not semihosting: the firmware read from the card in about 25 s of QEMU's time): at
+     640 x 480 a file written at `C:\>` ("freedos.img: 4 sectors written back to the card (16 ms)"), read after PC > Reset,
+     the CD put in from the Disks menu; at 512 x 342 after the kernel was started again with the same card image, the file
+     read back and the CD read at D:; `mtype` on the host found the file inside the card image's `freedos.img`. Pictures:
+     `docs/img/pc-card-qemu-*-2.png`.

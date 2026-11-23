@@ -22,8 +22,9 @@
  * events' modifiers compared with the last ones.
  *
  * The window: a document window with a grow box and a zoom box (zoomed: the PC's picture at its natural size, which
- * the card publishes: 480 x 300 for 80 x 25 text on the SE's screen, 640 x 400 or 720 x 400 in colour, the PC's
- * resolution for graphics). It fits the SE's 512 x 342 screen with the menu bar. The card leaves the grow box's
+ * the card publishes: 484 x 300 for 80 x 25 text on the SE's screen, two pixels of paper each side of the text since
+ * 23 November 2026; 644 x 400 or 724 x 400 in colour; the PC's resolution for graphics). It fits the SE's 512 x 342
+ * screen with the menu bar. The card leaves the grow box's
  * corner alone (A68P_O_GROWBOX) so that the box can be drawn. Human Interface Guidelines (1992); System 6 and 7.
  */
 #include "toolbox.h"
@@ -160,7 +161,10 @@ static void fix_menus(void)
 	CheckItem(m_view, 4, bigtext); CheckItem(m_view, 5, pcsense);
 	CheckItem(m_keys, 1, captured);
 }
-/* the image list (the card's disks block) as the Disks menu: what is attached is checked */
+/* the image list (the card's disks block) as the Disks menu, after its first two items (Look on the Card Again and a
+   line): each image with its kind, checked while it is in a drive. Choosing a floppy or a CD puts it into its drive (A:
+   first, then B:) or ejects it; hard disks are the PC's for as long as it exists (the card says so in its message) */
+#define DISKS_FIRST 3
 static unsigned long disks_seq = ~0u;
 static int ndisks;
 static void disks_menu(void)
@@ -170,15 +174,52 @@ static void disks_menu(void)
 	if (dk->seq == disks_seq) return;
 	disks_seq = dk->seq;
 	unsigned n = dk->count < A68P_DISKS_MAX ? dk->count : A68P_DISKS_MAX, i;
-	for (i = 0; i < (unsigned)ndisks; i++) DisableItem(m_disks, (short)(i + 1));   /* the Menu Manager has no DeleteItem before System 7: items are kept */
+	for (i = 0; i < (unsigned)ndisks; i++) DisableItem(m_disks, (short)(i + DISKS_FIRST));   /* the Menu Manager has no DeleteItem before System 7: items are kept */
 	for (i = (unsigned)ndisks; i < n; i++) {
-		char t[70]; unsigned k = 0;
+		char t[90], *p; unsigned k = 0;
 		while (k < 63 && dk->d[i].name[k]) { char c = dk->d[i].name[k]; t[k++] = (c == ';' || c == '(' || c == '/' || c == '^' || c == '!' || c == '<') ? '_' : c; }
-		t[k] = 0;
-		AppendMenu(m_disks, pstr(pbuf, k ? t : "(no name)"));
+		p = k ? t + k : put(t, "no name");
+		p = put(p,dk->d[i].kind == A68P_KIND_CD ? " - CD" : dk->d[i].kind == A68P_KIND_FLOPPY ? " - floppy" : " - hard disk");
+		*p = 0;
+		AppendMenu(m_disks, pstr(pbuf, t));
 	}
 	if ((unsigned)ndisks < n) ndisks = (int)n;
-	for (i = 0; i < n; i++) { EnableItem(m_disks, (short)(i + 1)); CheckItem(m_disks, (short)(i + 1), dk->d[i].place >= 0); }
+	for (i = 0; i < n; i++) { EnableItem(m_disks, (short)(i + DISKS_FIRST)); CheckItem(m_disks, (short)(i + DISKS_FIRST), dk->d[i].place >= 0); }
+}
+/* the card's answer when it is not what was asked for (a hard disk chosen, an image that would not open), in a box like
+   the About box's, its words wrapped at 52 characters */
+static void notice(const volatile char *text)
+{
+	Rect b = { 90, 56, 200, 456 };
+	void *w = (void *)NewWindow(0, &b, pstr(pbuf, ""), 1, 1 /* dBoxProc */, (void *)-1, 0, 0);
+	SetPort(w);
+	short y = 24;
+	unsigned i = 0;
+	while (text[i] && y <= 72) {
+		char line[60]; unsigned n = 0, cut = 0;
+		while (text[i + n] && n < 52) { line[n] = text[i + n]; if (line[n] == ' ') cut = n; n++; }
+		if (text[i + n] && cut) n = cut;
+		line[n] = 0;
+		MoveTo(16, y); DrawString(pstr(pbuf, line));
+		i += n;
+		while (text[i] == ' ') i++;
+		y = (short)(y + 16);
+	}
+	MoveTo(16, 98); DrawString(pstr(pbuf, "Click to continue."));
+	EventRecord ev;
+	for (;;) if (WaitNextEvent(1 << mouseDown | 1 << keyDown, &ev, 30, 0) && (ev.what == mouseDown || ev.what == keyDown)) break;
+	DisposeWindow(w);
+	SetPort(win);
+}
+static void disk_chosen(short item)
+{
+	if (item == 1) { command(A68P_C_RESCAN, 0, 0); return; }
+	volatile struct a68p_disks *dk = (volatile struct a68p_disks *)(card + A68P_OFF_DISKS);
+	unsigned i = (unsigned)(item - DISKS_FIRST);
+	if (item < DISKS_FIRST || i >= dk->count) return;
+	unsigned long seq = dk->seq;
+	command(dk->d[i].place >= 0 ? A68P_C_DETACH : A68P_C_ATTACH, i, A68P_PLACE_AUTO);
+	if (dk->seq == seq && blk->message[0]) notice(blk->message);   /* nothing changed: the card says why */
 }
 
 /* ---- capture: keys and the mouse to the PC ----------------------------------------------------------- */
@@ -252,7 +293,7 @@ static int switch_key(EventRecord *ev)
 static void natural(short *w, short *h)
 {
 	long nw = drv ? (long)blk->nat_w : 0, nh = drv ? (long)blk->nat_h : 0;
-	if (nw < 160 || nh < 100) { nw = 480; nh = 300; }
+	if (nw < 160 || nh < 100) { nw = 484; nh = 300; }
 	Rect s = *RGN_BBOX(LM_GRAYRGN);
 	if (nw > s.right - 8 - 2) nw = s.right - 8 - 2;          /* the window's content at 8, 40: room for its frame and shadow */
 	if (nh > s.bottom - 40 - 2) nh = s.bottom - 40 - 2;       /* the SE's 342 lines: 300, 25 rows of 12 */
@@ -309,7 +350,7 @@ static void do_menu(long mi)
 		else if (item == 4) command(A68P_C_CAD, 0, 0);
 		else if (item == 5) command(blk->state == A68P_S_PAUSED ? A68P_C_RESUME : A68P_C_PAUSE, 0, 0);
 		break;
-	case M_DISKS: command(A68P_C_ATTACH, (unsigned long)(item - 1), 0); break;
+	case M_DISKS: disk_chosen(item); break;
 	case M_VIEW:
 		if (item == 1 || item == 2) scale1 = item == 2;
 		else if (item == 4) bigtext = !bigtext;
@@ -390,6 +431,7 @@ int main(void)
 	AppendMenu(m_pc, pstr(pbuf, "Power On;Power Off;Reset;Send Control-Alt-Delete;Pause"));
 	InsertMenu(m_pc, 0);
 	m_disks = NewMenu(M_DISKS, pstr(pbuf, "Disks"));
+	AppendMenu(m_disks, pstr(pbuf, "Look on the Card Again;(-"));
 	InsertMenu(m_disks, 0);
 	m_view = NewMenu(M_VIEW, pstr(pbuf, "View"));
 	AppendMenu(m_view, pstr(pbuf, "Scaled to the Window;Actual Size;(-;Large Text (8 x 16);White on Black"));

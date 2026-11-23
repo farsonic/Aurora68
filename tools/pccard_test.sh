@@ -24,8 +24,27 @@ run() { name=$1; shift
     python3 ../tools/pnm2png.py "$T/$name.pnm" "$T/$name.png"; }
 run banner-se "$ROM" "$VGA" - 512x342x1 "$T/banner-se.pnm" 90 "Libreboot 26.11rev4 Rubber Duck (SeaBIOS)" "" "No bootable device"
 if [ -f "$FD" ]; then
-    run freedos-se "$ROM" "$VGA" "$FD" 512x342x1 "$T/freedos-se.pnm" 300 "What is your preferred language" '\r' "Return to DOS" '\d\r' ':\>' 'ver\r' "FreeCom version"
-    run freedos-8bit "$ROM" "$VGA" "$FD" 800x600x8 "$T/freedos-8bit.pnm" 300 "What is your preferred language"
+    # a copy: the card writes what the PC writes back into the image (docs/19-pc-card.md "Disks"), and FreeDOS's own
+    # download stays as it came
+    cp "$FD" "$T/freedos.img"
+    run freedos-se "$ROM" "$VGA" "$T/freedos.img" 512x342x1 "$T/freedos-se.pnm" 300 "What is your preferred language" '\r' "Return to DOS" '\d\r' ':\>' 'ver\r' "FreeCom version"
+    run freedos-8bit "$ROM" "$VGA" "$T/freedos.img" 800x600x8 "$T/freedos-8bit.pnm" 300 "What is your preferred language"
+    # writing back: a file made at DOS's prompt is in the image when the PC starts again (a new process: the kernel
+    # restarted), and not with pc.disk0ro=on
+    run write-1 "$ROM" "$VGA" "$T/freedos.img" 512x342x1 "$T/write-1.pnm" 300 "What is your preferred language" '\r' "Return to DOS" '\d\r' ':\>' 'echo WRITTEN BY THE PC>a68test.txt\r' ':\>'
+    run write-2 "$ROM" "$VGA" "$T/freedos.img" 512x342x1 "$T/write-2.pnm" 300 "What is your preferred language" '\r' "Return to DOS" '\d\r' ':\>' 'type a68test.txt\r' "WRITTEN BY THE PC"
+    export PCCARD_OPTS="pc.disk0ro=on"; run write-ro-1 "$ROM" "$VGA" "$T/freedos.img" 512x342x1 "$T/write-ro-1.pnm" 300 "What is your preferred language" '\r' "Return to DOS" '\d\r' ':\>' 'del a68test.txt\r' ':\>'
+    unset PCCARD_OPTS; run write-ro-2 "$ROM" "$VGA" "$T/freedos.img" 512x342x1 "$T/write-ro-2.pnm" 300 "What is your preferred language" '\r' "Return to DOS" '\d\r' ':\>' 'type a68test.txt\r' "WRITTEN BY THE PC"
+    # a CD from the Disks menu: put into the CD-ROM drive while DOS runs (FreeDOS's UDVD2 and SHSUCDX found the empty
+    # drive at the start: D:), read, ejected; then a second one in its place
+    printf 'FROM THE FIRST CD\r\n' > "$T/a68cd.txt"; python3 ../tools/mkiso.py "$T/one.iso" ONE "$T/a68cd.txt"
+    printf 'FROM THE SECOND CD\r\n' > "$T/a68cd.txt"; python3 ../tools/mkiso.py "$T/two.iso" TWO "$T/a68cd.txt"
+    export PCCARD_OPTS="pc.img1=$T/one.iso pc.img2=$T/two.iso"
+    run cd "$ROM" "$VGA" "$T/freedos.img" 512x342x1 "$T/cd.pnm" 300 "What is your preferred language" '\r' "Return to DOS" '\d\r' \
+        ':\>' '@attach:1' ':\>' 'type d:a68cd.txt\r' "FROM THE FIRST CD" '@eject:1' ':\>' '@attach:2' ':\>' 'type d:a68cd.txt\r' "FROM THE SECOND CD"
+    unset PCCARD_OPTS
+    rm -f "$T/one.iso" "$T/two.iso" "$T/a68cd.txt"
+    rm -f "$T/freedos.img"
 else
     echo "pccard_test: no FreeDOS image in $A/build/downloads (Aurora86's make test-freedos): FreeDOS skipped"
 fi

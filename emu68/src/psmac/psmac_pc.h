@@ -54,9 +54,16 @@
 #define A68P_C_RESUME     5u
 #define A68P_C_CAD        6u                 /* Control-Alt-Delete: the card presses and lets go of the three keys */
 #define A68P_C_REDRAW     7u                 /* the whole window again (the program's update event) */
-#define A68P_C_ATTACH     8u                 /* arg0 = image (index in the list), arg1 = place (A68P_PLACE_*) */
-#define A68P_C_DETACH     9u                 /* arg1 = place */
-#define A68P_C_RESCAN     10u                /* the image list again */
+#define A68P_C_ATTACH     8u                 /* arg0 = image (index in the list), arg1 = place (A68P_PLACE_*, or
+                                                A68P_PLACE_AUTO: the image's kind's drive); floppies and CDs only */
+#define A68P_C_DETACH     9u                 /* arg1 = place, or A68P_PLACE_AUTO and arg0 = the image: ejected */
+#define A68P_C_RESCAN     10u                /* the image list again (the SD card's root) */
+#define A68P_PLACE_IDE0M  0u                 /* the places (struct a68p_disks place[]): the hard disks, pc.disk0= */
+#define A68P_PLACE_IDE0S  1u                 /* pc.disk1= */
+#define A68P_PLACE_CD     2u                 /* the CD-ROM drive (IDE 1 master), pc.cd= */
+#define A68P_PLACE_FDA    4u                 /* floppy A:, pc.fda= */
+#define A68P_PLACE_FDB    5u                 /* floppy B:, pc.fdb= */
+#define A68P_PLACE_AUTO   0xFFFFFFFFu
 
 /* state */
 #define A68P_S_OFF        0u                 /* not started (pc=on starts it with the Mac), or powered off */
@@ -125,7 +132,8 @@ struct a68p_block {
     uint32_t in_tail;                        /* input events taken */
     uint32_t draws;                          /* pictures drawn since the start */
     uint32_t idle_pm;                        /* per mille of the last second the PC was idle (halted, waiting) */
-    uint32_t pad0[8];
+    uint32_t disk_dirty;                     /* sectors the PC wrote that are not yet back in their image files */
+    uint32_t pad0[7];
     /* the Mac's half: 0x80-0xFF */
     uint32_t cmd_seq, cmd, arg0, arg1;       /* cmd and its arguments, then cmd_seq + 1 */
     uint32_t screen;                         /* A68P_SCREEN_* */

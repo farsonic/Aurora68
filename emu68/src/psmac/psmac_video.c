@@ -566,6 +566,27 @@ static void draw_area(const plm_frame_t *f, const struct pv_surface *ps, int32_t
     }
 }
 static int cursor_box(int32_t out[4]) { return psmac_wclip_cursor_box(g.screen, out); }   /* psmac_wclip.c */
+/* The pointer's box after the pointer has left it (23 November 2026, with the PC card, docs/19-pc-card.md). While a film
+   plays, the next picture draws the box the pointer left; a paused, ended or starved film's last picture was drawn
+   again only when its window moved, so a pointer that rested over the picture and moved on left the Mac's own copy of
+   what had been under it, an older picture (or the window's white), until then. Now the part left undrawn is kept
+   (under, in the screen's pixels, with the box it was left for) and drawn from the last picture when the pointer has
+   moved, and once more UNDER_AGAIN_MS later: the Mac puts back what was under its pointer at the VBL after the Mouse
+   global ($830) changes, which can come after the card's drawing of the same place */
+#define UNDER_AGAIN_MS 100u
+struct under { int on; int32_t t, l, b, r; };
+static struct under under, again;
+static int32_t under_box[4];
+static uint64_t again_t, under_look_t;
+static void under_add(struct under *u, int32_t t, int32_t l, int32_t b, int32_t r)
+{
+    if (t >= b || l >= r) return;
+    if (!u->on) { u->on = 1; u->t = t; u->l = l; u->b = b; u->r = r; return; }
+    if (t < u->t) u->t = t;
+    if (l < u->l) u->l = l;
+    if (b > u->b) u->b = b;
+    if (r > u->r) u->r = r;
+}
 /* draw_area for a rectangle with the pointer's box (t, l, b, r) taken out: up to four pieces */
 static void draw_around(const plm_frame_t *f, const struct pv_surface *s, int32_t x0, int32_t y0, int32_t rw, int32_t rh,
                         int32_t cx0, int32_t cy0, int32_t cx1, int32_t cy1, const int32_t *cb)
@@ -577,9 +598,11 @@ static void draw_around(const plm_frame_t *f, const struct pv_surface *s, int32_
     if (b < cy1) draw_area(f, s, x0, y0, rw, rh, cx0, b, cx1, cy1);            /* below */
     if (l > cx0) draw_area(f, s, x0, y0, rw, rh, cx0, t, l, b);                /* left of it */
     if (r < cx1) draw_area(f, s, x0, y0, rw, rh, r, t, cx1, b);                /* right of it */
+    under_add(&under, t, l, b, r);                                             /* drawn once the pointer has moved on */
 }
 
-static void draw(const plm_frame_t *f)
+/* the picture into its window; clip (top, left, bottom, right on the screen), when given, limits it to that part */
+static void draw_clip(const plm_frame_t *f, const int32_t *clip)
 {
     struct pv_surface s;
     if (!g.visible || !psmac_video_surface(g.screen, &s)) return;
@@ -590,6 +613,12 @@ static void draw(const plm_frame_t *f)
     /* the part of the rectangle on the screen */
     int32_t cx0 = x0 < 0 ? 0 : x0, cy0 = y0 < 0 ? 0 : y0;
     int32_t cx1 = x1 > (int32_t)s.width ? (int32_t)s.width : x1, cy1 = y1 > (int32_t)s.height ? (int32_t)s.height : y1;
+    if (clip) {                               /* only that part: the pointer's old box */
+        if (cx0 < clip[1]) cx0 = clip[1];
+        if (cy0 < clip[0]) cy0 = clip[0];
+        if (cx1 > clip[3]) cx1 = clip[3];
+        if (cy1 > clip[2]) cy1 = clip[2];
+    } else under.on = 0;                      /* a whole picture: the box it leaves out is kept again below */
     if (cx0 >= cx1 || cy0 >= cy1) return;
     uint32_t fw = f->width;
     if (xmap_w != (uint32_t)rw || xmap_fw != fw) {
@@ -610,6 +639,32 @@ static void draw(const plm_frame_t *f)
             draw_around(f, &s, x0, y0, rw, rh, rr[k][1], rr[k][0], rr[k][3], rr[k][2], cb);
     }
     DMB();
+    if (under.on && cb) for (int k = 0; k < 4; k++) under_box[k] = cb[k];
+}
+static void draw(const plm_frame_t *f) { draw_clip(f, 0); }
+
+/* the last picture where the pointer was, once it has moved (see under, above): only while no new picture is coming */
+static void pointer_moved(void)
+{
+    if (!under.on && !again.on) return;
+    uint64_t t = now();
+    if (t - under_look_t < hz() / 100u) return;          /* the Mac's memory looked at every 10 ms at most */
+    under_look_t = t;
+    if (!(g.visible && v.on && v.have_last && (v.paused || v.stalled || v.ended_v))) { under.on = again.on = 0; return; }   /* playing: the next picture */
+    int32_t cbox[4], u[4];
+    const int32_t *cb = cursor_box(cbox) ? cbox : 0;
+    if (under.on && (!cb || cb[0] != under_box[0] || cb[1] != under_box[1] || cb[2] != under_box[2] || cb[3] != under_box[3])) {
+        u[0] = under.t; u[1] = under.l; u[2] = under.b; u[3] = under.r;
+        under_add(&again, u[0], u[1], u[2], u[3]);
+        again_t = t + (uint64_t)UNDER_AGAIN_MS * hz() / 1000u;
+        under.on = 0;
+        draw_clip(&v.last, u);                           /* leaves out the pointer's new box, kept in under again */
+    }
+    if (again.on && t >= again_t) {
+        u[0] = again.t; u[1] = again.l; u[2] = again.b; u[3] = again.r;
+        again.on = 0;
+        draw_clip(&v.last, u);
+    }
 }
 
 static void geometry(void)
@@ -798,6 +853,7 @@ int psmac_video_poll(void)
     psmac_video_test_poll(blk, ring);
     command();
     geometry();
+    pointer_moved();
     if (v.sound && blk->volume) psmac_audio_video_volume(blk->volume);
     int did = 0;
     if (v.on) {

@@ -10,7 +10,7 @@
 
 #define PSMAC_WCLIP_MAX    16                /* the most rectangles a window's visible region is drawn as */
 #define PSMAC_WCLIP_24BIT  1u                /* the program runs in 24-bit mode: a master pointer's high byte is flags */
-#define PSMAC_WCLIP_CURSOR 24                /* pixels left alone each side of the Mouse point */
+#define PSMAC_WCLIP_CURSOR 24                /* pixels left alone each side of the Mouse point (rounded out to the frame buffer's longwords across) */
 
 /* a long of the Mac's RAM at its own address (aligned), *ok 0 outside the RAM */
 uint32_t psmac_wclip_rd32(uint32_t addr, int *ok);
