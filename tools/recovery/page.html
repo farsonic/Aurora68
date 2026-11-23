@@ -43,6 +43,7 @@ pre{white-space:pre-wrap;font:12px/1.4 var(--mono);border:1px solid #000;padding
 .opt code{font:700 12px var(--mono)}.opt p{margin:2px 0 5px;font-size:12px}#hidden{font-size:12px;margin:6px 0 0;font-style:italic}
 #gate{position:fixed;inset:0;background:#fff repeating-conic-gradient(#000 0 25%,#fff 0 50%) 0 0/2px 2px;display:none;align-items:center;justify-content:center;padding:20px;z-index:5}
 #gate .card{max-width:330px;width:100%;text-align:center}#gate .logo{width:56px;height:56px;margin:4px auto 0}
+span.pw{display:flex;gap:8px;align-items:center}span.pw input{flex:1;min-width:0}span.pw button{flex:none}
 #pin{font:700 28px var(--mono);letter-spacing:.4em;text-align:center;margin:10px 0 14px}
 #toast{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);background:#fff;color:#000;padding:14px 18px;border:1px solid #000;outline:3px double #000;outline-offset:3px;font-size:13px;display:none;max-width:88vw;z-index:6;box-shadow:4px 4px 0 #000}
 #toast.on{display:block}#toast.bad{border-color:var(--r);outline-color:var(--r)}
@@ -80,7 +81,7 @@ input[type=checkbox]{width:auto;margin:0 6px 0 0;vertical-align:-2px;accent-colo
 <section class="tab" id="wi"><div class="card"><h2><span>WiFi</span></h2><div class="mut" id="wset"></div>
 <div class="row" style="margin-top:10px"><button class="b" onclick="wscan()">Scan for networks</button></div>
 <label>Network<select id="wlist" onchange="if(this.value)el('wssid').value=this.value"></select></label>
-<label>Name (SSID)<input type="text" id="wssid"></label><label>Password<input type="password" id="wpsk" placeholder="empty: keep the stored one"></label>
+<label>Name (SSID)<input type="text" id="wssid"></label><label>Password<span class="pw"><input type="password" id="wpsk" placeholder="empty: keep the stored one" autocomplete="off"><button type="button" class="b s" onclick="pwshow(this)">Show</button></span></label>
 <label>Country (two letters)<input type="text" id="wcc" maxlength="2" placeholder="GB" style="max-width:7em"></label>
 <p class="mut" id="wapn" style="display:none">You are on the Pi's own access point, and the radio has only one network at a time: a test join would end it. Save your network, then restart: the Pi joins it at the next start. If the password was wrong, the Mac's screen says so; hold the interrupt button on the recovery screen again to come back here.</p>
 <div class="row" style="margin-top:14px"><button class="b" id="wtest" onclick="wifi('test')">Test join now</button><button class="b p" id="wsave" onclick="wifi('save')">Save to cmdline.txt</button><button class="b p" id="wsj" style="display:none" onclick="wsavejoin()">Save and restart to join this network</button><span class="mut" id="wst"></span></div></div></section>
@@ -130,6 +131,8 @@ function show(t){[].forEach.call(document.querySelectorAll('nav button'),functio
  [].forEach.call(document.querySelectorAll('.tab'),function(s){s.className='tab'+(s.id==t?' on':'')});
  if(t=='fi')files();if(t=='wi')wifiget();if(t=='op')opts(-1);if(t=='dp')dget();if(t=='tx'&&!loaded.tx){loaded.tx=1;loadtext()}var nb=document.querySelector('nav button.on');if(nb&&nb.scrollIntoView)nb.scrollIntoView({block:'nearest',inline:'nearest'});history.replaceState(null,'','#'+t);window.scrollTo(0,0)}
 el('nav').onclick=function(e){if(e.target.dataset.t)show(e.target.dataset.t)};
+/* Show / Hide beside a password field: what is typed here (a stored password never comes back from the Pi) */
+function pwshow(b){var i=b.previousSibling;i.type=i.type=='password'?'text':'password';b.textContent=i.type=='password'?'Show':'Hide';i.focus()}
 function kv(k,v){return'<div class="kv"><b>'+k+'</b><span>'+v+'</span></div>'}
 function refresh(){api('GET','/r/state').then(function(s){el('why').textContent=s.why;el('rb').style.display=s.rollback_offered?'':'none';var n=s.network;
  el('hstate').textContent=(n.ip||n.phase)+(n.name?'  ·  '+n.name:'');
@@ -179,7 +182,7 @@ function boardfilter(){var f=el('o_mac.board');if(!f)return;var bd=f.value,n=0;O
  var on=!bd||!w||w.split(' ').indexOf(bd)>=0;d.style.display=on?'':'none';if(!on)n++});
  el('hidden').textContent=n?n+' option'+(n>1?'s':'')+' hidden: not used on '+(bd=='solo'?'the bench (no Mac)':'this board')+'; their values are kept.':''}
 var OV={};function opts(dry){if(dry<0){api('GET','/r/options').then(function(x){OV=x.values;var h='';O.forEach(function(o){var v=OV[o[0]];if(v==null)v='';h+='<div class="opt" id="d_'+o[0]+'"><code>'+o[0]+'</code><p>'+esc(o[2])+'</p>';
- if(o[1]=='pw')h+='<input type="password" id="o_'+o[0]+'" placeholder="'+(v?'(set: type to change)':'(not set)')+'">';else if(o[1])h+='<select id="o_'+o[0]+'">'+o[1].map(function(c){return'<option'+(c==v?' selected':'')+' value="'+c+'">'+(c||'(not given)')+'</option>'}).join('')+'</select>';
+ if(o[1]=='pw')h+='<span class="pw"><input type="password" id="o_'+o[0]+'" autocomplete="off" placeholder="'+(v?'(set: type to change)':'(not set)')+'"><button type="button" class="b s" onclick="pwshow(this)">Show</button></span>';else if(o[1])h+='<select id="o_'+o[0]+'">'+o[1].map(function(c){return'<option'+(c==v?' selected':'')+' value="'+c+'">'+(c||'(not given)')+'</option>'}).join('')+'</select>';
  else h+='<input type="text" id="o_'+o[0]+'" value="'+esc(v)+'">';h+='</div>'});el('opts').innerHTML=h;el('optline').textContent=x.line;el('o_mac.board').onchange=boardfilter;boardfilter()},function(){});return}
  var e=[];O.forEach(function(o){var f=el('o_'+o[0]),v=f.value,old=OV[o[0]]==null?'':OV[o[0]];if(o[1]=='pw'){if(v)e.push(o[0]+'='+v);return}if(v!=old)e.push(v?o[0]+'='+v:'-'+o[0])});
  api('POST','/r/options'+(dry?'?dry=1':''),e.join('\n')).then(function(x){el('optline').textContent=(dry?'The new line would be:\n':'Saved (the line before is in cmdline.bak):\n')+x.line;if(!dry){toast('Options saved');opts(-1)}},function(){})}
