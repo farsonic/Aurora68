@@ -645,6 +645,105 @@ and 2560 x 1440 are offered (`edid_standard_modes`), judged by the clock alone, 
 nothing new was decided: "Any size" above says it is needed only to differ from the firmware's mode, so when
 cmdline.txt has one it follows the new size (and is taken out for Automatic), and when it has none none is added.
 
+## Before the Mac's picture: the splash (23 November 2026)
+From 17 November the VideoCore buffer showed the kernel's log until the Mac's video driver switched the display on
+(the HDMI console, `psmac_display.c`): Emu68's own logo first, then the log's lines from the bottom row, wrapping.
+It was the bench's window into a Pi with no serial cable; once the machine worked the owner called it noise and asked
+for "a subtle splash screen on the HDMI monitor that has the Aurora logo and version" (docs/08 item 128). Now, by
+default (`mac.console=splash`), the same span shows the Aurora68 logo on #0E0F12, the name in Topaz at twice the
+size of the rest, the kernel's version string, a status line a tenth of the height from the bottom and, above it,
+an amber line for what must be seen (`docs/img/hdmi-splash.png`). The layout is `psmac_splash.c`'s: the logo a
+fifth of the screen's height (96 pixels at 640 by 480, 216 at 1080p, at most 256), scaled from the 192 by 192
+picture `tools/mklogo.py` draws from `docs/img/aurora68-logo.svg` (a C header, checked by `make -C mac check`);
+text in whole multiples of Topaz's pixels, one per 540 lines of screen.
+
+When it is drawn: by `display_logo` (start_rpi64.c) into the firmware's 16-bit buffer in place of Emu68's logo; by
+`psmac_display_init` again after the buffer is remade at the screen's size and depth; and from then on by the service
+core (`psmac_display_poll`) alone, whenever a status or alert line changes, until the Mac's display flag is set, when
+the picture conversion takes the buffer as before. A Restart clears that flag (`psmac_display_bus_reset`), so the
+splash comes back ("Restarting the Macintosh...") until the driver opens again; with no declaration ROM the flag never
+comes and the splash stays all the run. Setup and Recovery's screens and the bus check's report keep the buffer to
+themselves as they did with the log. The splash is drawn upright: a PiDisplay rotation turns the Mac's picture only.
+
+What the log does is unchanged except where it is drawn: `mac.console=boot` gives the old behaviour (Emu68's logo,
+then the log until the picture), `mac.console=hdmi` (and `mac.hdmi=log` on the SE board) the log for the whole run,
+and F12 on a USB keyboard changes between the splash and the log while the splash is what HDMI shows.
+
+## The edge jump: from one screen to the other anywhere along the side (23 November 2026)
+**What the owner asked.** The owner's SE has its own 512 by 342 screen at (-512,0)-(0,342), left of the
+HDMI screen at (0,0)-(2560,1440), tops aligned in Monitors. "I have the small Mac screen and the large HDMI.
+When I move the mouse to the small screen I need to precisely match its position in Monitors. Can we just have
+it so moving to the side where the screen is moves the mouse regardless." The ROM moves the cursor between
+screens only where they touch: here the top 342 rows of the HDMI screen's left edge, under a quarter of its
+height. Below them that edge is a wall, and the way back lands at the same height, so the SE's screen was
+reached only by aiming at that strip.
+
+**What it does now.** Pushing the pointer against a side of a screen where another screen lies in the
+Monitors arrangement (left, right, above or below, whether or not the two touch at that height) takes it
+onto that screen at the same proportion along the edge: HDMI's left edge at y 1000 of 1440 is the SE's right
+edge at 238 of 342, and the SE's right edge at y 100 is HDMI's left edge at 421. The rule is the same where the
+screens do touch (the ROM makes that crossing and the point is then moved along the edge), so the whole edge
+maps one way and the same way back, and how fast the mouse moves does not change where it lands. It lands 4
+pixels inside the other screen's facing edge, and after a jump through a wall none follows for a sixth of a
+second, so an overshooting hand or a jittering mouse does not throw it straight back. With three or more
+screens the nearest one on that side is taken. Points the remote control places (`"display": N`, docs/13) and
+points a program puts on another screen away from the edge are left where they were put. `mac.edgejump=off`
+(Setup and Recovery's Options, Display) gives the ROM's behaviour back.
+
+**Where it lives, and why there.** Every movement of the pointer passes through one routine: the ROM's cursor
+task (IIci ROM $4082DF94), which the vertical-blank handler of the cursor's screen calls through the low-memory
+vector JCrsrTask ($8EE, the call at $4080A33E). The ADB Manager's mouse handler, which serves the SE's own mouse
+on the SE board, only adds its movement to MTemp ($828) and sets CrsrNew ($8CE) to CrsrCouple ($8CF)
+($4080AB26); .PiInput puts USB and Bluetooth mice and the remote control's moves into MTemp and RawMouse
+($82C) the same way. The task then moves RawMouse by the difference (accelerated), pins it to CrsrPin ($834,
+the cursor's screen's rectangle) and, for a point past an edge, looks through the device list ($8A8) for an
+active screen that holds it ($4082E14A): found, it sets CrsrDevice ($89C), CrsrPin and the cursor's depth for
+that screen and moves there; not found, it pins the point at the edge pixel. So the jump is a cursor task in
+front of the ROM's, in .PiInput (`crsr_hook`, mac/piinput.s), which is on every board from the boot screen on,
+under System 6 and 7, with or without the Agent or Screen Setup. It looks twice. Before the ROM's task: MTemp
+past an edge of the cursor's screen and on no screen is a push against a wall; if a screen lies on that side,
+MTemp and RawMouse become the proportional point on it with CrsrNew = CrsrCouple, the documented way of setting
+the mouse position, and the ROM's task, running next, moves the cursor there as for any crossing. After it: if
+the ROM's task moved the cursor onto another screen beside the old one, within 64 pixels of the edge it came
+over, the point is moved along that edge to the same proportion and the task run once more, so the cursor is
+drawn there in the same tick. Nothing is done while CrsrBusy ($8CD) is set or the cursor is uncoupled, when
+CrsrPin is not the cursor's screen (a program pinned the cursor to a rectangle of its own), or with one screen;
+the screens are read from the device list every time, so a new Monitors arrangement or HDMI size applies at once.
+The hook goes in from .PiInput's VBL task a second after the driver opens, and that task looks again every
+quarter second: a vector replaced later without a call to ours gets ours in front again, and an inner call of
+ours (when ours ends up in front of one that calls it) goes on to the task ours called before. The kernel's
+part is the option: bit 0 of the input ring's `options` word (offset 28, `ALICE_IN_OPT_NOEDGE`, alice_psmac.h,
+the long that was padding), read by the hook every time.
+
+**What the testbed showed** (MAME `macse_ps`, 32 MiB, System 7.1 on the SE's SCSI disk with Aurora68 Screen
+Setup, HDMI 1024 by 768: the SE's screen at (0,0)-(512,342), main, and HDMI at (512,0)-(1536,768), tops aligned, as
+Screen Setup arranges them: the owner's arrangement, with the SE's screen main rather than HDMI). `mac.inputedge=SECONDS` (alice_psmac.c) is a scripted
+USB mouse that walks to (0,100) on the SE's screen, right across the shared edge, down the HDMI screen to y 725, left
+against its edge below the SE's screen, and back right; `mac.peek=828,200` showed MTemp, RawMouse, Mouse and CrsrPin
+at each heartbeat. Four runs:
+- the first boot found `"PiInput: edge jump in front of the cursor task at 4082DF94"` (the ROM's task, so nothing
+  had patched it before), then Aurora68 Screen Setup's restart; in the second boot, from the Startup screen on, the
+  three crossings were `+0520,+0100 -> +0520,+0225` (across the touching part at y 100: the ROM's crossing, moved
+  to 100 x 768 / 342 = 224.6), `+0500,+0725 -> +0507,+0323` (the wall: HDMI's left edge at 725, onto the SE's
+  screen at x 507, four pixels inside its last column, and y 725 x 342 / 768 = 322.9) and `+0527,+0323 -> +0527,+0725` (back:
+  the same rows again); Mouse and CrsrPin agreed at each step (the SE's (0,0,342,512) while the pointer was there,
+  HDMI's (0,512,768,1536) after);
+- the same once more from a cold start, then the remote control's absolute moves (`aurora68.py --semihost input
+  '{"type":"move","x":505,"y":100,"display":0}'`, then HDMI's (5,100), then the SE's (500,300)): each landed
+  exactly where it was put ((505,100), (517,100), (500,300)), none moved along the edge;
+- with the Finder running (it came at 345 s; the script at 530 s) the same three jumps, the hook still the one in
+  front (one "in front of" line in the whole run: nothing in System 7.1 took the vector away), the pointer on HDMI at (8,225) of
+  its own after the first (`docs/img/se-edge-jump-hdmi-across.png`, tools/vcshot.py) and on the SE's screen at its
+  bottom right after the wall, with Aurora68 Log showing the jump's line (`docs/img/se-edge-jump-se-screen.png`,
+  MAME's snapshot);
+- `mac.edgejump=off`: the pointer crossed at y 100 to (520,100) as the ROM has it, went down to (520,600), stopped at
+  HDMI's left edge, (512,600), however long it was pushed, and went back right; no jump was logged.
+
+Not seen yet: the SE's own ADB mouse (MAME's SE has no mouse to move in these runs, so every push here was
+.PiInput's; the ADB handler's path through MTemp and the ROM's acceleration is read from the ROM, not watched),
+the owner's 2560 by 1440 arrangement with the HDMI screen main, System 6, and how it feels in the hand: the
+dead time and the inset are guesses until then.
+
 ## Colour (17 November, 01:30)
 Aurora68 Colour (`mac/picolor.s`) opens a colour window on the Pi's screen and paints twelve hues at full
 and half strength, the primaries and a sixteen-step grey ramp with RGBForeColor and PaintRect.

@@ -254,6 +254,7 @@ void psmac_crash_poll(void)
     if (blocks >= CRASH_BLOCKS_MAX) return;
     blocks++;
     sprintf(what, "System error %d (%s) called at PC %08x", id, syserr_name(id), syserr.pc);
+    { extern void psmac_splash_alert(int, const char *, ...); psmac_splash_alert(0, "The Mac stopped: system error %d (%s)", id, syserr_name(id)); }
     print_header(what, blocks);
     kprintf("[CRASH] the call is in %s; %s\n", region(syserr.pc), before_valid ? "the exception recorded before it came first"
             : "no unexpected exception came before it (the System or the program asked for the dialog)");

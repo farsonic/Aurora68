@@ -665,7 +665,7 @@ static int run_cmd(int idx, uint16_t type, volatile uint8_t *c, uint32_t req)   
             if (!status && cmd != PSMB_BLK_EJECT) xfer = a2 * 512;
             break;
         }
-        if (cmd == PSMB_BLK_READ)       { static int first = 1; if (first) { first = 0; psmac_boot_mark("PiDisk: first block read (device %u, block %u)", a0, a1); }
+        if (cmd == PSMB_BLK_READ)       { static int first = 1; if (first) { first = 0; psmac_boot_mark("PiDisk: first block read (device %u, block %u)", a0, a1); psmac_splash_status("Starting from the disk image on the SD card..."); }
                                           blk_cmd_busy = c; status = blk_xfer(0, b, a1, a2, buf); blk_cmd_busy = NULL; if (!status) { xfer = a2 * 512; extern uint32_t psmac_icache_epoch; psmac_icache_epoch++; } }
         else if (cmd == PSMB_BLK_WRITE) { blk_cmd_busy = c; status = blk_xfer(1, b, a1, a2, buf); blk_cmd_busy = NULL; if (!status) xfer = a2 * 512; }
         else if (cmd == PSMB_BLK_FLUSH || cmd == PSMB_BLK_EJECT) status = 0;

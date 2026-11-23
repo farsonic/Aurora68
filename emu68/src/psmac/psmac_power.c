@@ -113,7 +113,8 @@ void psmac_power_poll(void)
     fails = 0;
     uint32_t v = o[0] & 0x000f000fu;
     if (!have || v != bits) report(bits, v, !have);
-    if (!uv_marked && (v & 0x00010001u)) { uv_marked = 1; psmac_boot_mark("power: under-voltage seen (GET_THROTTLED 0x%x)", v); }
+    if (!uv_marked && (v & 0x00010001u)) { uv_marked = 1; psmac_boot_mark("power: under-voltage seen (GET_THROTTLED 0x%x)", v);
+                                                 psmac_splash_alert(0, "Under-voltage: the Pi's power supply or its cable is too weak"); }
     bits = v; have = 1;
 }
 

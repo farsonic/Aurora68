@@ -15,6 +15,17 @@ Since 0.13 (docs/08 items 96 and 103):
   (`aurora86.rom`, `aurora86-vga.bin`; `pc.disk0=` a disk image). The normal kernel is unchanged. Tested with the card's
   own code on the host (Libreboot's banner, FreeDOS 1.4 to its prompt and `ver` typed through the card) and in the
   testbed's QEMU; the owner's Pi is the real test.
+- **The pointer goes to the other screen anywhere along the side** (docs/08 item 131, docs/10 "The edge jump", 23
+  November 2026). With the SE's own screen beside the HDMI one, the pointer used to cross only where the two
+  screens touch in Monitors' arrangement (for a 512 by 342 screen beside a 1440-line one, the top quarter of the
+  edge); elsewhere the edge was a wall. Now pushing the pointer against a side of a screen where another screen
+  lies takes it onto that screen at the same proportion along the edge (HDMI's left edge two thirds of the way down
+  is the SE screen's right edge two thirds of the way down), and the same way back, for every mouse: the SE's own,
+  USB and Bluetooth ones and the remote control's. `mac.edgejump=off` (Setup and Recovery's Options, Display) keeps
+  the old behaviour. It lives in the input driver, which comes with the declaration ROM: take the new
+  `aurora68-se-WxH.declrom` (in the container or on the card) as well as the kernel. Tested in MAME's SE with a 1024 by 768 HDMI screen
+  under System 7.1; the owner's SE with its own mouse is the real test.
+
 - **Aurora68 Play 1.8.1: no more lock-ups in a network call; videos sized for the HDMI screen** (docs/08 item 127,
   docs/09 "Aurora68 Play 1.8.1", 23 November 2026). The owner's SE froze twice after minutes of video, the pointer
   moving and nothing else: Play waited for ever in a synchronous call (its library connection's TCPAbort) that Riptide
@@ -27,6 +38,27 @@ Since 0.13 (docs/08 items 96 and 103):
   keeps 320). Riptide's half (a call made while its driver was taking another was lost) is fixed on Riptide's branch
   `play-hang`; update both. The kernel's heartbeat now names the driver and call a Mac stuck in a synchronous
   Device Manager call waits for.
+
+- **The USB keyboard that had to be re-plugged after power-on** (docs/08 item 130, 23 November 2026). On the owner's
+  Pi 3B the keyboard was found but sent nothing (one failed poll, then only "no data") until it was unplugged and
+  plugged in again. The kernel now reads the USB controller's answer to each poll in the order Linux does (an error
+  or a completed report is no longer taken for "no data" when both are flagged), tells the keyboard what Linux and
+  other hosts tell it after it is found (report only on change, LEDs off), sets the keyboard's data toggle again
+  after a failed poll, and, if the keyboard has still sent nothing 20 seconds after it was set up, starts the bus
+  again once, as a re-plug would. Every failed USB transfer now gets a log line naming what the controller said, and
+  `usb.trace=1` (Setup and Recovery, Options, Debug) logs them in full, for the owner's next log if the keyboard
+  still needs a re-plug. Not testable without the Pi: QEMU has no hub translator; there the keyboard and mouse work
+  as before. The USB flash drive that never answered is paused; only its log lines say more now.
+- **A quiet splash on the HDMI monitor instead of the log** (docs/08 item 128, 23 November 2026). Until the Mac's
+  picture comes up, HDMI shows the Aurora68 logo, the name and the kernel's version on a dark screen, with one line
+  near the bottom that follows the start ("Loading the disk image ...", "Starting the Macintosh...", "Waiting for
+  the Wi-Fi...") and an amber line for what must be seen (no ROM or declaration ROM in the container, under-voltage,
+  the WiFi not joining, a system error). The log is drawn there only when asked: `mac.console=boot` until the Mac's
+  screen (as before), `mac.console=hdmi` for the whole run, or F12 on a USB keyboard while the splash is up. The
+  serial line, Aurora68 Log, `aurora68.py log` and Setup and Recovery's Log tab are unchanged; the keyboard menu
+  and the Options tab offer the three values. Note for testers: the shipped `cmdline.txt` still has
+  `mac.console=hdmi` (the log on HDMI for the whole run, one screen on the SE); take it out to see the splash.
+
 - **Music videos buffer much more: no more stutter when the network slows for a moment** (docs/08 item 125, docs/16
   "Buffering", 23 November 2026). The video decoder card now empties its 512 KB ring at once into a buffer of its
   own in the Pi's memory, 8 MB by default (one to two minutes of a music video at the classic Play's rates), so the

@@ -28,7 +28,9 @@
 | driver adds the movement to RawMouse and MTemp (clipped to the rectangle around every active
 | screen), sets CrsrNew, and posts mouseDown/mouseUp when the button bits change, mirroring
 | MBState so that _Button and _StillDown answer correctly. A second or third button is reported as Option-click
-| and Command-click, which is what Apple's own multi-button drivers of the day did.
+| and Command-click, which is what Apple's own multi-button drivers of the day did. Since 23 November
+| 2026 the driver also stands in front of the ROM's cursor task, so that a pointer pushed against the
+| side of a screen where another screen lies goes onto it, from any mouse ("the edge jump", below).
 |
 | What is not done here. Scroll wheels (ALICE_IN_WHEEL) are dropped: System 6 and 7 have no notion
 | of them. Key repeat is left to the Mac: the Event Manager generates autoKey events from the
@@ -62,6 +64,8 @@
 	.equ	IN_WHEEL,	3
 	.equ	IN_MOUSEABS,	4		| the remote control (docs/13): a = x, b = y, c = buttons or -1
 	.equ	IN_MACKEY,	5		| the remote control: a = Mac virtual key code, b = down/up, c = HID modifiers
+	.equ	IN_OPTIONS,	28		| long: the kernel's input options (alice_psmac.h ALICE_IN_OPT_*)
+	.equ	IN_OPT_NOEDGE,	0		| bit: mac.edgejump=off, the cursor does not jump between screens' edges
 
 | ---- Mac OS low memory and traps (Inside Macintosh, MPW SysEqu.a) ----
 	.equ	MMU32Bit,	0x0CB2
@@ -72,6 +76,10 @@
 	.equ	CrsrCouple,	0x08CF		| byte: cursor coupled to the mouse
 	.equ	CrsrPin,	0x0834		| Rect: cursor limits
 	.equ	DeviceList,	0x08A8		| Handle: the first GDevice (Color QuickDraw's screens)
+	.equ	CrsrDevice,	0x089C		| Handle: the GDevice the cursor is on
+	.equ	CrsrBusy,	0x08CD		| byte: the cursor is being changed (the ROM's cursor task leaves it alone)
+	.equ	Mouse,		0x0830		| Point: the processed mouse position
+	.equ	JCrsrTask,	0x08EE		| the cursor task, called at the cursor's screen's vertical blank
 	.equ	KeyMap,		0x0174		| 16 bytes: keys down, one bit per virtual code
 	.equ	KeyLast,	0x0184		| word: last key code
 	.equ	KeyTime,	0x0186		| long: when it went down
@@ -115,7 +123,19 @@
 	.equ	G_INTS,		G_SIQ+16	| long: slot interrupts taken (for the log)
 	.equ	G_SIQ2,		G_INTS+4	| a second queue element: the catch-all handler (below)
 	.equ	G_KCHR,		G_SIQ2+16	| long: the keyboard layout (KCHR data), 0 = built-in table
-	.equ	G_SIZE,		G_KCHR+4
+	| the edge jump (crsr_hook, below)
+	.equ	G_OLDCRSR,	G_KCHR+4	| long: the cursor task ours calls (the ROM's)
+	.equ	G_PREVCRSR,	G_OLDCRSR+4	| long: the one before that, should someone have replaced ours (crsr_watch)
+	.equ	G_HOOKN,	G_PREVCRSR+4	| long: times ours ran
+	.equ	G_HOOKSEEN,	G_HOOKN+4	| long: G_HOOKN at the VBL task's last look
+	.equ	G_UNTIL,	G_HOOKSEEN+4	| long: Ticks until which no further jump is made (the dead time)
+	.equ	G_DEVBEFORE,	G_UNTIL+4	| long: CrsrDevice before the ROM's task ran
+	.equ	G_JUMPS,	G_DEVBEFORE+4	| long: jumps made, for the log
+	.equ	G_ABS,		G_JUMPS+4	| byte: the last movement was the remote control's absolute one
+	.equ	G_INHOOK,	G_ABS+1		| byte: inside crsr_hook
+	.equ	G_DO,		G_INHOOK+1	| byte: look for a crossing the ROM made, after its task
+	.equ	G_PAD,		G_DO+1
+	.equ	G_SIZE,		G_PAD+1
 	.equ	_SIntInstall,	0xA075		| its own OS trap (Inside Macintosh V): A0 = SlotIntQElement, D0.w = slot
 	.equ	sIQType,	6
 	.equ	PI_SLOT,	9
@@ -311,7 +331,9 @@ d_open:
 	.short	_SIntInstall
 	move.l	G_RING(%a2),%a0
 	move.l	#1,IN_ATTACHED(%a0)	| only now: from this write on, ring events raise the card's interrupt
-2:	| The VBL task as well: every tick until the first slot interrupt arrives, then every 15
+2:	lea	hook_globals(%pc),%a0	| for the cursor task's edge jump, which crsr_watch puts in
+	move.l	%a2,(%a0)
+	| The VBL task as well: every tick until the first slot interrupt arrives, then every 15
 	| ticks as a safety net (a System 6 install without working slot interrupts still works,
 	| at keyboard-and-mouse speed).
 	move.l	%a2,G_SELF(%a2)
@@ -372,6 +394,7 @@ slot_catchall:
 input_vbl:
 	movem.l	%d0-%d7/%a0-%a4,-(%sp)
 	move.l	14(%a0),%a2		| globals
+	bsr	crsr_watch		| the edge jump's hook on the cursor task: in, and still in
 	move.w	#15,%d0
 	tst.l	G_INTS(%a2)
 	bne.s	1f			| interrupts work: the line is level-triggered and stays up while the
@@ -433,6 +456,570 @@ clip_desk:
 10:	movem.l	(%sp)+,%d0-%d1/%d4-%d7/%a0
 	rts
 
+| ==== the edge jump (23 November 2026) ====
+| The owner's SE has its own 512 by 342 screen to the left of a 2560 by 1440 HDMI one, tops aligned in
+| Monitors. The ROM moves the cursor from one screen to another only where they touch: across the top
+| 342 rows of the HDMI screen's left edge; below them that edge is a wall, and coming back the cursor
+| lands at the same height, so the small screen is reached only by aiming at a strip a quarter of the
+| big one's height. The owner asked that "moving to the side where the screen is moves the mouse
+| regardless". So the whole edge of a screen that has a neighbour on that side (in the Monitors
+| arrangement, whether or not the two touch at that height) leads onto the neighbour, at the same
+| proportion along the edge: HDMI's left edge at y 1000 of 1440 is the SE screen's right edge at 238
+| of 342, and the SE's right edge at 100 is HDMI's left edge at 421. Where the screens touch the ROM
+| still makes the crossing, and the point is then moved to the same proportion, so the mapping is the
+| same everywhere along the edge and both ways round. The point lands EDGE_INSET pixels inside the
+| neighbour's facing edge, and after a jump none through a wall follows for EDGE_DEAD ticks, so a
+| hand that overshoots or a mouse that jitters does not throw the cursor straight back.
+|
+| Where. The one routine every pointer movement passes through is the ROM's cursor task (the IIci ROM
+| at $4082DF94, reached through the low-memory vector JCrsrTask, $8EE, from the vertical-blank handler
+| of the screen the cursor is on, $4080A33E). The ADB Manager's mouse handler (the SE's own mouse) adds
+| its movement to MTemp and sets CrsrNew = CrsrCouple ($4080AB26); this driver sets MTemp and RawMouse
+| for USB and Bluetooth mice and the remote control. The task then moves RawMouse by the (accelerated)
+| difference, pins it to CrsrPin (the cursor's screen's rectangle) and, for a point outside it, looks
+| for another active screen that holds the point ($4082E14A): found, the cursor moves there (CrsrDevice,
+| CrsrPin and the cursor's depth change with it); not found, the point is pinned at the edge pixel.
+| So crsr_hook goes in front of it and looks twice:
+| - before (edge_wall): MTemp beyond the cursor's screen's edge, on no screen at all, means the cursor
+|   is being pushed against a wall. If a screen lies on that side, the point becomes the proportional
+|   one on it, in MTemp and RawMouse, with CrsrNew = CrsrCouple: the documented way of setting the
+|   mouse position (Technical Note "Mouse Movement"), and the ROM's task, which runs next, finds the
+|   point on that screen and moves the cursor there as for any crossing;
+| - after (edge_crossed): the ROM's task moved the cursor onto another screen by itself, near the edge
+|   it came over: the point is moved along that edge to the proportional place and the task run once
+|   more, so the cursor is drawn there in the same tick.
+| A point the remote control chose (IN_MOUSEABS, "display": N) is left where it was put, and so is a
+| point another program put far from the edge it would have crossed (EDGE_NEAR). Nothing happens while
+| CrsrBusy is set or the cursor is uncoupled (CrsrCouple 0), when CrsrPin is not the cursor's screen
+| (a program has pinned the cursor to a rectangle of its own), with one screen, or with mac.edgejump=off
+| (the input ring's option bit, read every time). The screens are read from QuickDraw's device list
+| each time, so a new arrangement in Monitors or another HDMI size applies at once.
+|
+| Staying in. The hook goes in from the VBL task (crsr_watch), not from Open, and the VBL task looks
+| again every quarter second: should something replace the vector later (an extension, a system
+| patch) without calling ours, ours goes in front again. If that something saved ours and calls it,
+| ours keeps running and nothing changes; and if ours goes in front of one that calls ours, the inner
+| call (G_INHOOK) goes on to the task ours called before, so nothing runs twice or for ever.
+	.equ	EDGE_INSET,	4		| pixels inside the neighbour's facing edge where a jump lands
+	.equ	EDGE_DEAD,	10		| ticks after a jump through a wall before the next
+	.equ	EDGE_NEAR,	64		| a crossing the ROM made is remapped only this close to the edge
+
+hook_globals:	.long	0			| our globals, for the cursor task (written once, at Open)
+
+| crsr_watch: a2 = globals, from the VBL task. JCrsrTask not ours, and ours not called since the last
+| look: ours goes in front of whatever is there.
+crsr_watch:
+	movem.l	%d0-%d1/%a0-%a1,-(%sp)
+	move.l	JCrsrTask,%d0
+	beq.s	9f			| no cursor task (yet)
+	lea	crsr_hook(%pc),%a0
+	cmp.l	%a0,%d0
+	beq.s	8f			| ours is in front
+	move.l	G_HOOKN(%a2),%d1
+	cmp.l	G_HOOKSEEN(%a2),%d1
+	bne.s	8f			| ours still runs: one in front of ours calls it
+	move.l	G_OLDCRSR(%a2),G_PREVCRSR(%a2)
+	move.l	%d0,G_OLDCRSR(%a2)
+	move.l	%a0,JCrsrTask
+	lea	ht_addr(%pc),%a0
+	moveq	#7,%d1
+	bsr	put_hex
+	lea	hook_text(%pc),%a1
+	bsr	do_log			| "PiInput: edge jump in front of the cursor task at AAAAAAAA"
+8:	move.l	G_HOOKN(%a2),G_HOOKSEEN(%a2)
+9:	movem.l	(%sp)+,%d0-%d1/%a0-%a1
+	rts
+
+| crsr_hook: the cursor task, in front of the ROM's. Every register is kept (the ROM's task may
+| change D0-D3/A0/A1/A3, and its caller allows for that). The long under the registers is room for
+| a return address: the way on when ours is called from inside itself (crsr_watch).
+crsr_hook:
+	subq.l	#4,%sp
+	movem.l	%d0-%d7/%a0-%a4,-(%sp)	| 52 bytes
+	move.l	hook_globals(%pc),%a2
+	tst.b	G_INHOOK(%a2)
+	bne	crsr_reentered
+	st	G_INHOOK(%a2)
+	addq.l	#1,G_HOOKN(%a2)
+	sf	G_DO(%a2)
+	move.b	G_ABS(%a2),%d7
+	tst.b	CrsrNew
+	beq.s	2f			| nothing moved
+	sf	G_ABS(%a2)
+	tst.b	%d7
+	bne.s	2f			| the remote control's point: where it was put
+	move.l	G_RING(%a2),%a0
+	btst	#IN_OPT_NOEDGE,IN_OPTIONS+3(%a0)
+	bne.s	2f			| mac.edgejump=off
+	tst.b	CrsrBusy
+	bne.s	2f
+	tst.b	CrsrCouple
+	beq.s	2f
+	move.l	CrsrDevice,G_DEVBEFORE(%a2)
+	beq.s	2f
+	st	G_DO(%a2)
+	bsr	edge_wall
+2:	move.l	G_OLDCRSR(%a2),%d0
+	beq.s	3f
+	move.l	%d0,%a0
+	jsr	(%a0)			| the ROM's cursor task: pin, cross where screens touch, draw
+	move.l	hook_globals(%pc),%a2
+	tst.b	G_DO(%a2)
+	beq.s	3f
+	bsr	edge_crossed
+3:	sf	G_INHOOK(%a2)
+	movem.l	(%sp)+,%d0-%d7/%a0-%a4
+	addq.l	#4,%sp
+	rts
+crsr_reentered:
+	move.l	G_PREVCRSR(%a2),52(%sp)
+	beq.s	1f
+	movem.l	(%sp)+,%d0-%d7/%a0-%a4
+	rts				| into the task that was there before the one in front of ours
+1:	movem.l	(%sp)+,%d0-%d7/%a0-%a4
+	addq.l	#4,%sp
+	rts
+
+| edge_wall: a2 = globals. MTemp beyond an edge of the cursor's screen and on no screen: onto the
+| neighbour on that side, if there is one, at the same proportion along the edge.
+edge_wall:
+	move.l	Ticks,%d0
+	sub.l	G_UNTIL(%a2),%d0
+	bmi	9f			| within the dead time of the last jump
+	bsr	cur_rect		| a3 = the cursor's screen's rectangle
+	beq	9f
+	move.w	MTemp,%d3		| v
+	move.w	MTemp+2,%d2		| h
+	move.l	%a3,%a0
+	bsr	pt_in
+	bne	9f			| still on its screen
+	bsr	pt_on_screen
+	bne	9f			| on another screen: the ROM crosses there (edge_crossed follows)
+	moveq	#0,%d4			| the sides in turn: 0 left, 1 right, 2 top, 3 bottom
+1:	bsr	beyond
+	beq.s	2f
+	bsr	neighbour		| a1 = the neighbour's rectangle
+	bne.s	3f
+2:	addq.w	#1,%d4
+	cmp.w	#4,%d4
+	blo.s	1b
+	bra.s	9f
+3:	move.w	%d2,%d6			| from, for the log
+	move.w	%d3,%d7
+	bsr	edge_target		| d2, d3 = the point on the neighbour
+	move.w	%d3,MTemp
+	move.w	%d2,MTemp+2
+	move.w	%d3,RawMouse
+	move.w	%d2,RawMouse+2
+	move.b	CrsrCouple,CrsrNew
+	bsr	edge_dead
+	sf	G_DO(%a2)		| the ROM's task moves it there: nothing to look at after
+	bsr	jump_log
+9:	rts
+
+| edge_crossed: a2 = globals, after the ROM's task. It moved the cursor onto another screen: if that
+| screen lies beside the old one and the point is near the edge it came over, the same proportion along it.
+edge_crossed:
+	move.l	CrsrDevice,%d0
+	beq	9f
+	cmp.l	G_DEVBEFORE(%a2),%d0
+	beq	9f			| the cursor stayed on its screen
+	move.l	%d0,%a1
+	move.l	(%a1),%a1
+	lea	34(%a1),%a1		| N: the screen it is on now
+	move.l	G_DEVBEFORE(%a2),%a3
+	move.l	(%a3),%a3
+	lea	34(%a3),%a3		| C: the one it was on
+	move.w	RawMouse,%d3
+	move.w	RawMouse+2,%d2
+	moveq	#0,%d4			| left: N.right <= C.left, the two side by side
+	move.w	6(%a1),%d0
+	cmp.w	2(%a3),%d0
+	bgt.s	1f
+	bsr	overlap_v
+	beq.s	1f
+	move.w	6(%a1),%d0
+	sub.w	%d2,%d0			| how far in from N's right edge
+	bra.s	5f
+1:	moveq	#1,%d4			| right: N.left >= C.right
+	move.w	2(%a1),%d0
+	cmp.w	6(%a3),%d0
+	blt.s	2f
+	bsr	overlap_v
+	beq.s	2f
+	move.w	%d2,%d0
+	sub.w	2(%a1),%d0
+	addq.w	#1,%d0
+	bra.s	5f
+2:	moveq	#2,%d4			| top: N.bottom <= C.top, one above the other
+	move.w	4(%a1),%d0
+	cmp.w	(%a3),%d0
+	bgt.s	3f
+	bsr	overlap_h
+	beq.s	3f
+	move.w	4(%a1),%d0
+	sub.w	%d3,%d0
+	bra.s	5f
+3:	moveq	#3,%d4			| bottom: N.top >= C.bottom
+	move.w	(%a1),%d0
+	cmp.w	4(%a3),%d0
+	blt	9f
+	bsr	overlap_h
+	beq	9f
+	move.w	%d3,%d0
+	sub.w	(%a1),%d0
+	addq.w	#1,%d0
+5:	cmp.w	#EDGE_NEAR,%d0
+	bhi	9f			| far from the edge (or not in): a point someone chose, not a crossing
+	move.w	%d2,%d6
+	move.w	%d3,%d7
+	bsr	edge_target
+	| across the edge, keep it as far in as the ROM put it when that is further than the inset
+	cmp.w	#1,%d4
+	beq.s	11f
+	bhi.s	12f
+	cmp.w	%d2,%d6			| left: the smaller h
+	bge.s	20f
+	move.w	%d6,%d2
+	bra.s	20f
+11:	cmp.w	%d2,%d6			| right: the larger h
+	ble.s	20f
+	move.w	%d6,%d2
+	bra.s	20f
+12:	cmp.w	#3,%d4
+	beq.s	13f
+	cmp.w	%d3,%d7			| top: the smaller v
+	bge.s	20f
+	move.w	%d7,%d3
+	bra.s	20f
+13:	cmp.w	%d3,%d7			| bottom: the larger v
+	ble.s	20f
+	move.w	%d7,%d3
+20:	cmp.w	%d2,%d6
+	bne.s	21f
+	cmp.w	%d3,%d7
+	beq.s	9f			| already there
+21:	move.w	%d3,MTemp
+	move.w	%d2,MTemp+2
+	move.w	%d3,RawMouse
+	move.w	%d2,RawMouse+2
+	move.b	CrsrCouple,CrsrNew
+	bsr	edge_dead
+	bsr	jump_log
+	move.l	G_OLDCRSR(%a2),%a0
+	jsr	(%a0)			| moved and drawn there now, not a tick later
+	move.l	hook_globals(%pc),%a2
+9:	rts
+
+| edge_dead: no jump through a wall for the next EDGE_DEAD ticks
+edge_dead:
+	move.l	Ticks,%d0
+	add.l	#EDGE_DEAD,%d0
+	move.l	%d0,G_UNTIL(%a2)
+	rts
+
+| cur_rect: -> a3 = the cursor's screen's gdRect (top, left, bottom, right), Z clear; Z set when
+| there is no cursor screen or CrsrPin is not its rectangle (a program has the cursor pinned)
+cur_rect:
+	move.l	CrsrDevice,%d0
+	beq.s	9f
+	move.l	%d0,%a3
+	move.l	(%a3),%a3
+	lea	34(%a3),%a3
+	move.l	CrsrPin,%d0
+	cmp.l	(%a3),%d0
+	bne.s	8f
+	move.l	CrsrPin+4,%d0
+	cmp.l	4(%a3),%d0
+	bne.s	8f
+	moveq	#1,%d0
+	rts
+8:	moveq	#0,%d0
+9:	rts
+
+| pt_in: d2 = h, d3 = v, a0 = a rectangle -> Z clear (d0 1) if the point is in it
+pt_in:
+	cmp.w	(%a0),%d3
+	blt.s	8f
+	cmp.w	4(%a0),%d3
+	bge.s	8f
+	cmp.w	2(%a0),%d2
+	blt.s	8f
+	cmp.w	6(%a0),%d2
+	bge.s	8f
+	moveq	#1,%d0
+	rts
+8:	moveq	#0,%d0
+	rts
+
+| pt_on_screen: d2 = h, d3 = v -> Z clear if an active screen holds the point
+pt_on_screen:
+	movem.l	%d1/%d5/%a0/%a4,-(%sp)
+	moveq	#0,%d0
+	move.l	DeviceList,%d1
+	moveq	#7,%d5			| eight screens at most
+1:	tst.l	%d1
+	beq.s	9f
+	move.l	%d1,%a4
+	move.l	(%a4),%a4
+	btst	#7,20(%a4)		| screenActive
+	beq.s	2f
+	lea	34(%a4),%a0
+	bsr	pt_in
+	bne.s	9f
+2:	move.l	30(%a4),%d1		| gdNextGD
+	dbf	%d5,1b
+	moveq	#0,%d0
+9:	movem.l	(%sp)+,%d1/%d5/%a0/%a4
+	tst.l	%d0
+	rts
+
+| beyond: d4 = side, a3 = the cursor's screen, d2 = h, d3 = v -> Z clear if the point is past that edge
+beyond:
+	moveq	#0,%d0
+	cmp.w	#1,%d4
+	beq.s	1f
+	bhi.s	2f
+	cmp.w	2(%a3),%d2		| left of the left edge
+	bge.s	9f
+	bra.s	8f
+1:	cmp.w	6(%a3),%d2		| right of the right edge
+	blt.s	9f
+	bra.s	8f
+2:	cmp.w	#3,%d4
+	beq.s	3f
+	cmp.w	(%a3),%d3		| above the top
+	bge.s	9f
+	bra.s	8f
+3:	cmp.w	4(%a3),%d3		| below the bottom
+	blt.s	9f
+8:	moveq	#1,%d0
+9:	tst.l	%d0
+	rts
+
+| neighbour: d4 = side, a3 = the cursor's screen -> a1 = the rectangle of the active screen on that
+| side (all of it past that edge), Z clear; 0 and Z set if none. Of several, the nearest: the gap
+| between the two edges plus the gap across (0 where they overlap along the edge).
+neighbour:
+	movem.l	%d1-%d7/%a0/%a4,-(%sp)
+	suba.l	%a1,%a1
+	move.l	#0x7FFFFFFF,%d7		| the best so far
+	move.l	DeviceList,%d6
+	moveq	#7,%d5
+1:	tst.l	%d6
+	beq	8f
+	move.l	%d6,%a4
+	move.l	(%a4),%a4
+	btst	#7,20(%a4)
+	beq	7f
+	lea	34(%a4),%a0
+	cmp.l	%a0,%a3
+	beq	7f			| the cursor's own screen
+	cmp.w	#1,%d4
+	beq.s	11f
+	bhi.s	12f
+	move.w	2(%a3),%d0		| left: C.left - N.right
+	sub.w	6(%a0),%d0
+	bra.s	20f
+11:	move.w	2(%a0),%d0		| right: N.left - C.right
+	sub.w	6(%a3),%d0
+20:	move.w	(%a0),%d1		| across: N.top - C.bottom, C.top - N.bottom
+	sub.w	4(%a3),%d1
+	move.w	(%a3),%d2
+	sub.w	4(%a0),%d2
+	bra.s	30f
+12:	cmp.w	#3,%d4
+	beq.s	13f
+	move.w	(%a3),%d0		| top: C.top - N.bottom
+	sub.w	4(%a0),%d0
+	bra.s	21f
+13:	move.w	(%a0),%d0		| bottom: N.top - C.bottom
+	sub.w	4(%a3),%d0
+21:	move.w	2(%a0),%d1		| across: N.left - C.right, C.left - N.right
+	sub.w	6(%a3),%d1
+	move.w	2(%a3),%d2
+	sub.w	6(%a0),%d2
+30:	tst.w	%d0
+	bmi.s	7f			| not wholly on that side
+	cmp.w	%d2,%d1
+	bge.s	31f
+	move.w	%d2,%d1			| the larger of the two
+31:	tst.w	%d1
+	bpl.s	32f
+	moveq	#0,%d1			| they overlap across
+32:	ext.l	%d0
+	ext.l	%d1
+	add.l	%d1,%d0
+	cmp.l	%d7,%d0
+	bge.s	7f
+	move.l	%d0,%d7
+	move.l	%a0,%a1
+7:	move.l	30(%a4),%d6
+	dbf	%d5,1b
+8:	movem.l	(%sp)+,%d1-%d7/%a0/%a4
+	move.l	%a1,%d0
+	rts
+
+| overlap_v / overlap_h: a1, a3 = two rectangles -> Z clear if they share rows / columns
+overlap_v:
+	move.w	(%a1),%d0
+	cmp.w	4(%a3),%d0
+	bge.s	8f
+	move.w	4(%a1),%d0
+	cmp.w	(%a3),%d0
+	ble.s	8f
+	moveq	#1,%d0
+	rts
+overlap_h:
+	move.w	2(%a1),%d0
+	cmp.w	6(%a3),%d0
+	bge.s	8f
+	move.w	6(%a1),%d0
+	cmp.w	2(%a3),%d0
+	ble.s	8f
+	moveq	#1,%d0
+	rts
+8:	moveq	#0,%d0
+	rts
+
+| edge_target: d4 = side, a3 = the screen left, a1 = the one arrived at, d2 = h, d3 = v -> d2, d3:
+| along the edge at the same proportion, across it EDGE_INSET pixels inside the facing edge
+edge_target:
+	movem.l	%d0-%d1/%d5-%d7,-(%sp)
+	cmp.w	#2,%d4
+	bhs.s	5f
+	move.w	%d3,%d0			| left or right: v in proportion
+	move.w	(%a3),%d1
+	move.w	4(%a3),%d5
+	move.w	(%a1),%d6
+	move.w	4(%a1),%d7
+	bsr	proportion
+	move.w	%d0,%d3
+	tst.w	%d4
+	bne.s	1f
+	move.w	6(%a1),%d2		| left: h inside the right edge
+	subq.w	#1+EDGE_INSET,%d2
+	cmp.w	2(%a1),%d2
+	bge.s	9f
+	move.w	2(%a1),%d2
+	bra.s	9f
+1:	move.w	2(%a1),%d2		| right: inside the left edge
+	addq.w	#EDGE_INSET,%d2
+	cmp.w	6(%a1),%d2
+	blt.s	9f
+	move.w	6(%a1),%d2
+	subq.w	#1,%d2
+	bra.s	9f
+5:	move.w	%d2,%d0			| top or bottom: h in proportion
+	move.w	2(%a3),%d1
+	move.w	6(%a3),%d5
+	move.w	2(%a1),%d6
+	move.w	6(%a1),%d7
+	bsr	proportion
+	move.w	%d0,%d2
+	cmp.w	#2,%d4
+	bne.s	6f
+	move.w	4(%a1),%d3		| top: v inside the bottom edge
+	subq.w	#1+EDGE_INSET,%d3
+	cmp.w	(%a1),%d3
+	bge.s	9f
+	move.w	(%a1),%d3
+	bra.s	9f
+6:	move.w	(%a1),%d3		| bottom: inside the top edge
+	addq.w	#EDGE_INSET,%d3
+	cmp.w	4(%a1),%d3
+	blt.s	9f
+	move.w	4(%a1),%d3
+	subq.w	#1,%d3
+9:	movem.l	(%sp)+,%d0-%d1/%d5-%d7
+	rts
+
+| proportion: d0.w = a coordinate along [d1, d5) -> d0.w at the same fraction of [d6, d7), rounded
+proportion:
+	movem.l	%d1-%d2/%d5,-(%sp)
+	cmp.w	%d1,%d0
+	bge.s	1f
+	move.w	%d1,%d0
+1:	cmp.w	%d5,%d0
+	blt.s	2f
+	move.w	%d5,%d0
+	subq.w	#1,%d0
+2:	sub.w	%d1,%d0			| the offset along the first
+	sub.w	%d1,%d5			| its length
+	ble.s	8f
+	move.w	%d7,%d2
+	sub.w	%d6,%d2			| the second's length
+	muls.w	%d2,%d0
+	move.w	%d5,%d2
+	lsr.w	#1,%d2
+	ext.l	%d2
+	add.l	%d2,%d0
+	divs.w	%d5,%d0
+	add.w	%d6,%d0
+	cmp.w	%d7,%d0
+	blt.s	9f
+	move.w	%d7,%d0
+	subq.w	#1,%d0
+	bra.s	9f
+8:	move.w	%d6,%d0
+9:	movem.l	(%sp)+,%d1-%d2/%d5
+	rts
+
+| jump_log: d6 = h, d7 = v before, d2 = h, d3 = v after: the first jumps into the Pi's log
+jump_log:
+	movem.l	%d0-%d1/%a0-%a1,-(%sp)
+	addq.l	#1,G_JUMPS(%a2)
+	cmp.l	#24,G_JUMPS(%a2)
+	bhi.s	9f
+	move.w	%d6,%d0
+	lea	jt_fh(%pc),%a0
+	bsr	put_dec
+	move.w	%d7,%d0
+	lea	jt_fv(%pc),%a0
+	bsr	put_dec
+	move.w	%d2,%d0
+	lea	jt_th(%pc),%a0
+	bsr	put_dec
+	move.w	%d3,%d0
+	lea	jt_tv(%pc),%a0
+	bsr	put_dec
+	lea	jump_text(%pc),%a1
+	bsr	do_log			| "PiInput: edge jump -0003,+1000 -> -0005,+0238"
+9:	movem.l	(%sp)+,%d0-%d1/%a0-%a1
+	rts
+
+| put_dec: d0.w signed -> five characters at a0: the sign, then four digits
+put_dec:
+	movem.l	%d0-%d1/%a0,-(%sp)
+	move.b	#'+',(%a0)
+	tst.w	%d0
+	bpl.s	1f
+	neg.w	%d0
+	move.b	#'-',(%a0)
+1:	and.l	#0xFFFF,%d0
+	lea	5(%a0),%a0
+	moveq	#3,%d1
+2:	divu.w	#10,%d0
+	swap	%d0
+	add.b	#'0',%d0
+	move.b	%d0,-(%a0)
+	clr.w	%d0
+	swap	%d0
+	dbf	%d1,2b
+	movem.l	(%sp)+,%d0-%d1/%a0
+	rts
+
+hook_text:	.ascii	"PiInput: edge jump in front of the cursor task at "
+ht_addr:	.ascii	"AAAAAAAA"
+	.byte	0
+jump_text:	.ascii	"PiInput: edge jump "
+jt_fh:		.ascii	"+0000,"
+jt_fv:		.ascii	"+0000 -> "
+jt_th:		.ascii	"+0000,"
+jt_tv:		.ascii	"+0000"
+	.byte	0
+	.even
+
 | ---- drain: a2 = globals -> d0 = events taken (at most 32 per call: leave time for others) ----
 drain:
 	movem.l	%d1-%d7/%a0-%a1/%a3-%a4,-(%sp)
@@ -471,6 +1058,7 @@ ev_mackey:
 
 | --- the remote control's mouse: a = x, b = y (global), c = buttons ---
 ev_mouseabs:
+	st	G_ABS(%a2)		| a point the remote chose: the cursor task's edge jump leaves it alone
 	move.l	EV_A(%a4),%d2
 	move.l	EV_B(%a4),%d3
 	bra	mouse_clip
@@ -541,6 +1129,7 @@ ev_mouse:
 1:	tst.l	%d0
 	beq.s	mouse_buttons
 2:	| RawMouse.h += dx, RawMouse.v += dy, clipped to the desktop; MTemp follows; CrsrNew set
+	sf	G_ABS(%a2)		| a movement: the edge jump may take it
 	move.w	RawMouse+2,%d2		| h
 	add.w	%d0,%d2
 	move.w	RawMouse,%d3		| v

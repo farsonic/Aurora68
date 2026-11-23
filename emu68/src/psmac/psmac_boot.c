@@ -112,10 +112,10 @@ void psmac_boot_console(void)
 struct span { uint64_t first, last; int state; };     /* state 0 not seen, 1 inside, 2 reported */
 static struct span cksum, ramtest;
 
-static void span_sample(struct span *s, int inside, uint64_t now, const char *start, const char *end)
+static void span_sample(struct span *s, int inside, uint64_t now, const char *start, const char *end, const char *splash)
 {
     if (inside) {
-        if (s->state == 0) { s->state = 1; s->first = now; psmac_boot_mark("%s", start); }
+        if (s->state == 0) { s->state = 1; s->first = now; psmac_boot_mark("%s", start); if (splash) psmac_splash_status("%s", splash); }
         if (s->state == 1) s->last = now;
         return;
     }
@@ -123,6 +123,7 @@ static void span_sample(struct span *s, int inside, uint64_t now, const char *st
        leaves its routine between memory chunks) */
     if (s->state == 1 && (now - s->last) * 5 > gt_frq()) {
         s->state = 2;
+        if (splash) psmac_splash_status("Starting the Macintosh...");   /* the HDMI splash: the test is over */
         char text[88]; struct sbuf b = { text, 0, sizeof text };
         kprintf_pc(sb_putc, &b, "%s (%u ms; the last PC sample inside it)", end, (uint32_t)((s->last - s->first) * 1000u / gt_frq()));
         text[b.n] = 0;
@@ -134,18 +135,20 @@ static void span_sample(struct span *s, int inside, uint64_t now, const char *st
 void psmac_boot_pc(uint32_t pc)
 {
     uint64_t now = gt_now();
-    span_sample(&cksum, pc >= ROM_CKSUM_LO && pc < ROM_CKSUM_HI, now, "68k: ROM checksum test running ($40844690)", "68k: ROM checksum test done");
-    span_sample(&ramtest, pc >= ROM_RAMT_LO && pc < ROM_RAMT_HI, now, "68k: RAM test running ($408446BC)", "68k: RAM test done");
+    span_sample(&cksum, pc >= ROM_CKSUM_LO && pc < ROM_CKSUM_HI, now, "68k: ROM checksum test running ($40844690)", "68k: ROM checksum test done",
+                "The Macintosh is testing its ROM...");
+    span_sample(&ramtest, pc >= ROM_RAMT_LO && pc < ROM_RAMT_HI, now, "68k: RAM test running ($408446BC)", "68k: RAM test done",
+                "The Macintosh is testing its memory...");
 }
 
 /* the first log line the Mac side sends (psmac_mbox.c): a driver's Open, then the INITs */
 void psmac_boot_mac_line(const char *text)
 {
     static int first, init;
-    if (!first) { first = 1; psmac_boot_mark("Mac: first log line: %s", text); }
+    if (!first) { first = 1; psmac_boot_mark("Mac: first log line: %s", text); psmac_splash_status("The Macintosh is starting up..."); }
     if (!init) {
         for (const char *p = text; *p; p++)
-            if (p[0] == 'I' && p[1] == 'N' && p[2] == 'I' && p[3] == 'T') { init = 1; psmac_boot_mark("Mac: first INIT's log line: %s", text); break; }
+            if (p[0] == 'I' && p[1] == 'N' && p[2] == 'I' && p[3] == 'T') { init = 1; psmac_boot_mark("Mac: first INIT's log line: %s", text); psmac_splash_status("Loading the extensions..."); break; }
     }
 }
 
@@ -157,6 +160,7 @@ void psmac_boot_curapname(const uint8_t *s)
     if (finder_seen || s[0] != 6) return;
     if (s[1] == 'F' && s[2] == 'i' && s[3] == 'n' && s[4] == 'd' && s[5] == 'e' && s[6] == 'r') {
         finder_seen = 1; psmac_boot_mark("Mac: the Finder is running (CurApName)");
+        psmac_splash_status("The Macintosh is running");
         { extern void psmac_recovery_finder(void); psmac_recovery_finder(); }   /* the boot counter back to 0 (psmac_recovery.c) */
     }
 }

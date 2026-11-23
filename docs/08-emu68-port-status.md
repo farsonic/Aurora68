@@ -5803,3 +5803,193 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      for ever. The video's intake rests while the card holds more than 20 seconds and goes on below 10. And, the owner's
      wish of the same day, a stream sized for the video window when it is on the HDMI screen, up to 960 x 540, with
      Controls > Video Quality.
+
+
+128. **A splash on HDMI instead of the log (23 November).** The owner: "we need a subtle splash screen on the HDMI
+   monitor that has the Aurora logo and version and not show the logs unless specifically called for (it's just noise
+   now)". Since 17 November the HDMI console drew the kernel's log from power-on until the Mac's video driver took
+   the screen (Emu68's logo first), the bench's only window into a Pi with no serial cable.
+   - *What HDMI shows now* (`psmac_splash.c`, new, portable C; `psmac_display.c`, "the splash"): a background of
+     #0E0F12, the Aurora68 logo a little above the middle at a fifth of the screen's height (96 to 256 pixels), the name
+     in Emu68's Topaz at twice the size of the rest, the kernel's version string (`Emu68 1.1.0-beta.2 (date)
+     git:hash`, the log's first line, so a photograph names its build), a quiet status line a tenth of the height
+     from the bottom and an amber alert line above it. Status: "Starting...", "Loading the disk image NAME...",
+     "Starting the Macintosh..." (68k released), "The Macintosh is testing its ROM/memory..." (psmac_boot.c's
+     spans), "Starting from the disk image on the SD card..." / "from the SCSI disk..." / "from the disk..." (the
+     first PiDisk, SE pseudo-DMA or solo SCSI read), "The Macintosh is starting up..." (its first log line), "Loading
+     the extensions..." (the first INIT), "The Macintosh is running" (the Finder), "Waiting for the Wi-Fi..." and
+     "Connected to the Wi-Fi network" (alice_net.c's states through `frf_post_wifi`), "Restarting the Macintosh..."
+     (a 68k RESET after the display was on). Alerts: no Macintosh ROM, no declaration ROM, a declaration ROM without
+     PiDisk's boot record, under-voltage, the WiFi failing to join (cleared when it connects), a System error (the
+     `_SysError` record of psmac_crash.c, not "Welcome" or the disk-switch dialog). Setup and Recovery's reason to start
+     is on its own screens, which still take HDMI from the splash as they took it from the log.
+   - *When:* `display_logo` (start_rpi64.c) draws it into the firmware's 16-bit buffer instead of Emu68's logo,
+     `psmac_display_init` again after remaking the buffer, then the service core alone (`psmac_display_poll`, 60 times a
+     second it checks whether a line changed: only the two lines' rows are redrawn) until the Mac's display flag is
+     set. A setter called before the service loop runs draws its line itself. A Restart clears the flag
+     (`psmac_display_bus_reset`), so the splash comes back until the driver opens; with no declaration ROM it stays.
+   - *The log when asked:* `mac.console=boot` is the old default (Emu68's logo, then the log until the Mac's screen),
+     `mac.console=hdmi` (and `mac.hdmi=log`) the log for the whole run, `mac.console=splash` or nothing the splash. The
+     mode is read from the boot arguments in `display_logo` (`psmac_splash_boot`) and again by `psmac_read_options`
+     (`psmac_console_mode`), since a one-shot debug start can add `mac.console=` in between; going from the splash to
+     the log clears the screen. F12 on a USB keyboard (`psmac_splash_key`, before the key reaches the Mac) changes
+     between the splash and the log while HDMI is not the Mac's. The serial line, the log ring, the remote's `/log` and
+     the card's aurora68.log are unchanged. The options table (`psmac_diag.c`) has `splash|boot|hdmi`; Setup and
+     Recovery's keyboard menu takes its values from the table (it offered "off" and "hdmi"), the default written as no
+     word.
+   - *The logo* (`tools/mklogo.py`, new): the SVG drawn in pure Python rather than the sizes PNG decoded (that one is
+     drawn on a checkerboard with no alpha): the purple square clipped to the rounded rectangle, the six circles blurred
+     as SVG 1.1 says a renderer may (three box blurs of d = floor(s * 3 * sqrt(2 pi) / 4 + 0.5), the even-d rule
+     included) in linear light, the white band blurred inside its filter region, the stripes covered exactly along x,
+     the gradient mask, the black outline; blended over the background into 192 x 192 R,G,B bytes,
+     `psmac_splash_logo.h` (387 KB of text, 110,592 bytes in the kernel). `--check` (in `make -C mac check`, with one
+     unit of tolerance for another libm's rounding) remakes it and compares, and fails if the SVG's numbers moved; the
+     kernel scales it with an area average (smaller) or bilinear (larger) in 16.16 fixed point, so the service core
+     never touches the FPU.
+   - *Tested.* Host: `tools/splash_test.sh` (in `make -C mac check`) draws the splash at 640x480 to 2560x1440, 480x640,
+     512x342 and 64x64 into 16- and 32-bit buffers with a guard band: corners the background, the logo in the middle,
+     nothing written past a row or the buffer, the 16-bit picture the 32-bit one rounded, a line redraw that touches only
+     the bottom rows and an empty alert that clears its line (86 checks). QEMU, solo board, kernel 3783aca plus this
+     change: the default at 640 x 480 (`docs/img/hdmi-splash-640x480.png`, the ROM's checksum test) until PiVideo
+     opened 14 s in, then the Mac's picture as before; 1920 x 1080 without a declaration ROM (`docs/img/hdmi-splash.png`:
+     the amber line, the splash for the whole run); `mac.console=boot` (the log, then the Mac's picture);
+     `mac.console=hdmi` (the log after 30 s); F12 through QEMU's USB keyboard (the log, and back to the splash); a
+     recovery start (`mac.recovery=1`: Setup and Recovery's screen over it, unchanged) and its keyboard menu cycling
+     `mac.console` splash, boot, hdmi, splash. Not tried: the SE board in MAME (its kept 16-bit buffer and the
+     512 x 342 mirror case are in the host test), a real HDMI monitor, a PiDisplay rotation (the splash is drawn
+     upright; the monitor may be on its side).
+   - *For testers:* the release's `cmdline.txt` still carries `mac.console=hdmi` (the log for the whole run, one screen
+     on the SE); take it out, or write `mac.console=boot`, to see the splash or the old start.
+
+130. **The USB keyboard that sent nothing until it was re-plugged; the host channel's bits in the log (23
+   November).** The owner's Pi 3B (the SE's PiStorm, the LAN9514 hub) has long needed the USB keyboard unplugged and
+   plugged in again after power-on (item 41 put it down to a device not ready at the boot's enumeration and added
+   retries). This time the heartbeat said more: `kb 1 (ok 0 nak 598565 err 1)` for long stretches, so the keyboard
+   *was* found and configured and polled about a hundred times a second, one poll had failed, and every poll since
+   had been answered NAK; after a re-plug, `kb 1 (ok 49 ...)`. Nothing in the log said what the failed poll was.
+   - *Reading the code against known-good hosts.* The polls are Alice68's (`frf_usb_native_hid.c`, interrupt IN
+     through the hub's transaction translator: start split, complete split, again on NYET), over the glue's DMA
+     transport (`psmac_usb.c`, `dma_packet`). Read for comparison, none of their code used: Linux's dwc2 host
+     (`drivers/usb/dwc2/hcd_intr.c`) and Circle (`lib/usb/dwhcidevice.cpp`, `dwhciframeschedper.cpp`,
+     `usbhiddevice.cpp`, `usbkeyboard.cpp`). Three differences:
+     - *The order the halt bits were read in.* `dma_packet` took STALL, then NAK, then the errors, and XFERCOMPL
+       last. Linux takes XFERCOMPL first, whatever else is set beside it, then STALL, then the transaction, babble,
+       frame-overrun and toggle errors, NYET and NAK last ("Must handle xacterr before nak or ack. Could get a
+       xacterr at the same time as either of these"). With NAK first, a halt that carried a NAK bit beside an error
+       was a NAK: no fault counted, nothing done, polled again; and one beside a completed report dropped the report
+       with the host's data toggle left where it was while the keyboard's had moved on. That is a path that ends in
+       "one failure, then only NAKs", though whether the owner's controller sets the bits that way only its log can
+       say.
+     - *What happens after a failed poll.* Nothing did: Alice68 keeps the toggle, polls on, and a device whose polls
+       all fail for two seconds is enumerated again (item 41), but a stream of NAKs is never "failing". A failure in
+       the middle of a split transaction is exactly where the two toggles can part: the translator may have taken the
+       keyboard's report and acknowledged it, so the keyboard moved to the next toggle, while the host saw the
+       failure. Standard toggles mend themselves after one lost report; a keyboard or a translator that does not is
+       the one the owner has.
+     - *The keyboard's set-up.* Alice68 sends SET_CONFIGURATION and SET_PROTOCOL(boot). Linux's usbhid also sends
+       SET_IDLE(0) to a boot keyboard; Circle sets the LEDs ("setting the LED status forces some keyboard adapters to
+       work").
+     Also checked, and the same as the hosts above: the toggle starts at DATA0 after SET_CONFIGURATION (the
+     endpoint record is zeroed at every enumeration), the interrupt endpoint's interval is the descriptor's, the
+     channel's ODDFRM is set for the next (micro)frame, NAK is not counted as a failure. The split timing (a complete
+     split 125 us after the start split, up to eight more on NYET) is looser than Circle's (the start split never in
+     microframe 6, the complete split two microframes on, at most three) but it is the timing that works after a
+     re-plug, so it was left alone.
+   - *What changed* (all in the glue, `psmac_usb.c`, and a new portable `usb_hcint.c`; Alice68's files are untouched):
+     - `dma_packet` reads the bits in Linux's order (`uhc_classify`). The FIFO transport (`usb=pio`) is Alice68's and
+       keeps its own order.
+     - After every enumeration the keyboard gets SET_IDLE(0) and SET_REPORT with its LEDs off, by its own route (an
+       8-byte endpoint 0, which every device takes; a refusal is logged and harmless). A new line says where the
+       keyboard is and what it took: `[USB] keyboard at address 3, interface 0, endpoint 1 IN, every 10 ms, full speed
+       through the hub's translator: SET_IDLE taken, LEDs taken`.
+     - The keyboard's watch (`usb_hcint.c`, `ukw_*`): after a failed poll of a kind that can leave the toggles apart
+       (a STALL, a transaction, babble or toggle error, NYET to the last complete split, a timeout; not a frame
+       overrun, which never reached the bus), CLEAR_FEATURE(ENDPOINT_HALT) goes to the keyboard's interrupt endpoint,
+       which sets its toggle to DATA0 halted or not (USB 2.0, 9.4.5), and the host's goes to DATA0 with it; at most
+       once a second. The mouse gets the same. And a keyboard that has sent no report at all in 20 seconds since its
+       set-up, after at least one failed poll, has the bus enumerated once more, which is what the re-plug did: once,
+       until a real plug or unplug (an untouched keyboard that never failed is left alone, however long it sends
+       nothing).
+     - The log. Every failed transfer (a NAK is not a failure) gets one line naming the channel's bits, the first
+       eight after each enumeration: `[USB] the keyboard's poll failed: transaction error (rc -6), HCINT CHHLTD
+       XACTERR; address 3 endpoint 1 IN, full speed through the hub's translator (hub 1 port 2), DATA0`. The
+       thirty-second heartbeat adds, when there were any, the keyboard's failed polls by kind, the last one's bits and
+       the toggle resets: `[USB]   keyboard's failed polls: transaction error 1, the last HCINT CHHLTD XACTERR;
+       toggle set again 1 time (0 refused); no report since its set-up`. With `usb.trace=1` every failed transfer is
+       logged in full: the bits after the start split and after each complete split, HCTSIZ (bytes and packets left,
+       the PID), HCCHAR, HCSPLT and the frame number, and the keyboard's first twenty NAKed polls after a set-up and one
+       in ten thousand after that, so the owner's log shows what a NAK really carried. `usb.trace=2` also resets the
+       keyboard's toggle every ten seconds, to try that path where nothing fails (the testbed). Setup and Recovery
+       lists the option under Debug.
+   - *Tested.* `tools/usb_hcint_test.c` (in `make -C mac check`, 62 checks): the bit order (a NAK beside XFERCOMPL is
+     a completed transfer, beside XACTERR an error; STALL before the errors), the names, which outcomes ask for a
+     toggle reset, and the watch (the owner's case: one failure, a reset at once, a second one not before a second
+     has passed, one enumeration at 20 s and no second; none for a keyboard that never failed or has sent a report;
+     a plug allows one more; the millisecond counter's wrap). QEMU (the solo board, System 7.1): with QEMU's hub, `usb-kbd`, `usb-mouse` and an
+     HFS `usb-storage` stick, and `usb.trace=2`: `[USB] keyboard at address 2, interface 0, endpoint 1 IN, every 10
+     ms, full speed: SET_IDLE taken, LEDs taken`; the sampled NAKs read `HCINT CHHLTD NAK`; the toggle reset every ten
+     seconds went out each time and QEMU's HID model refused it (it STALLs CLEAR_FEATURE(ENDPOINT_HALT), which it does
+     not implement; a real keyboard must take it), the host's toggle went to DATA0 all the same, and the keys typed
+     after twenty of those resets reached the Finder (Command-N made a new folder; 16 reports), the monitor's
+     `mouse_move 20 12` eight times moved the pointer by exactly (160, 96) as in item 40, and the stick mounted as
+     USBSTICK on the desktop. With the keyboard alone and no option: only the set-up line and the heartbeats, no
+     failed transfer, 18 reports, the typed name in the Finder. What QEMU cannot show: a failed poll (its DWC2 model
+     never fails one), so the resync after a real failure and the rescue enumeration ran only in the host test.
+   - *Only the owner's Pi can say* whether this cures it: QEMU's DWC2 model has no transaction translator, no
+     split transactions and no data toggles to lose. What to look for after a power-on with the keyboard plugged in:
+     the `[USB] keyboard at address ...` line (SET_IDLE and the LEDs taken or refused); any `[USB] the keyboard's
+     poll failed: ...` line, which names the bits; then either `its data toggle set again` and reports (`ok` growing
+     in the heartbeat when keys are pressed), or 20 seconds later `the keyboard has sent no report in 20 s since its
+     set-up ... enumerating again`, and whether the keyboard works after that. If it still does not, a start with
+     `usb.trace=1` (Setup and Recovery, Diagnostics, for one start) logs the failing poll's every split and the bits
+     the NAKs carry.
+   - *USB flash drives (paused by the owner the same day).* The owner's SanDisk "3.2 Gen1" (0781:55b1, 128 GB, high
+     speed behind the LAN9514) enumerates and is configured, but its first command block (the 31-byte bulk OUT for
+     INQUIRY) fails every time, also after the bulk-only reset recovery. The work on it is paused; only the log was
+     changed, so that the next try says why: the reset recovery's line now carries the bits and registers of the
+     command's failed transfer (`[USB] disk 0: the command block did not go (the transfer's HCINT CHHLTD XACTERR,
+     HCTSIZ ..., HCCHAR ...): reset recovery ...`; "no transfer failed" when the stick answered but not with a CSW),
+     and `usb.trace=1` logs every failed transfer of a stick. A separate commit, which can be left out. Findings from reading `psmac_usbdisk.c`'s
+     `xfer` against Linux and Circle, for when the work resumes (not changed):
+     - A halted channel without XFERCOMPL is a failure at once, except STALL: no retry. Linux and Circle retry a bulk
+       transaction error up to three times, and Linux resets the error count when the halt also shows NYET, NAK or
+       ACK after a PING ("XactErr with NYET/NAK/ACK", the OUT NAK enhancement of DWC2 cores from 2.71a; the BCM2837's
+       is 2.80a). A high-speed stick that answers its first OUT with NAK or NYET and then PING is the likeliest
+       difference from the control transfers, which work (a SETUP is never NAKed).
+     - A retry has to restart from what was taken: bytes and packets left from HCTSIZ, the toggle from HCTSIZ's PID,
+       and for a high-speed OUT the DOPNG bit (HCTSIZ bit 31) so that the channel PINGs first.
+     - Checked and not the cause by reading: the CBW buffer is 64-byte aligned and cleaned before the transfer; the
+       endpoint numbers and the 512-byte packet size come from the descriptor (the CLEAR_FEATUREs on them are
+       taken); the toggles are DATA0 after SET_CONFIGURATION and after each CLEAR_FEATURE; a high-speed device behind
+       the high-speed hub gets no split; the non-periodic TX FIFO (256 words) holds a 512-byte packet.
+     - Also to do then: the 128 GB exFAT stick's view (item 97 stage 2), which the owner wants for moving files
+       between the Mac and other machines, and what the Mac is told about a stick that carries no disk image.
+
+131. **The edge jump: the pointer to the other screen anywhere along the side (23 November).** The owner, with the SE's
+   own screen at (-512,0)-(0,342) beside the 2560 by 1440 HDMI screen: "When I move the mouse to the small screen I need
+   to precisely match its position in Monitors. Can we just have it so moving to the side where the screen is moves the
+   mouse regardless." The ROM crosses between screens only where they touch, here the top 342 of HDMI's 1440 rows.
+   - *Where to do it.* Every source of movement ends in the ROM's cursor task (IIci ROM $4082DF94, through JCrsrTask,
+     $8EE, called by the vertical-blank handler of the cursor's screen at $4080A33E): the ADB mouse handler only adds
+     to MTemp and sets CrsrNew = CrsrCouple ($4080AB26), .PiInput sets MTemp and RawMouse for USB, Bluetooth and the
+     remote. The task moves RawMouse by the accelerated difference, pins it to CrsrPin, and on a point past an edge
+     searches the device list for a screen holding it ($4082E14A; found: CrsrDevice, CrsrPin ($4082E510) and the
+     cursor's depth change and it moves there). A VBL task of our own could not see the push: by the time it ran the
+     cursor task had usually pinned MTemp back to the edge, and the order of the two is the hardware's. So .PiInput,
+     which is on every board under System 6 and 7 from the declaration ROM, puts a cursor task in front of the ROM's:
+     before it, MTemp past an edge and on no screen, with a screen on that side, becomes the proportional point on that
+     screen (MTemp, RawMouse, CrsrNew = CrsrCouple, then the ROM's task makes the move); after it, a crossing the ROM
+     made where the screens touch is moved along the edge to the same proportion, so both ways and every height map
+     alike. Remote absolute moves (flagged by .PiInput) and points far from the edge are left alone; a 4-pixel inset
+     and a 10-tick dead time after a wall jump keep the pointer from bouncing back. The hook goes in from the VBL task
+     and is put back in front should something take the vector without calling it (a reentrancy guard keeps a chain
+     that calls ours from looping). `mac.edgejump=off` sets bit 0 of the input ring's new `options` word (the
+     long at offset 28 that was padding; alice_psmac.h `ALICE_IN_OPT_NOEDGE`), which the hook reads each time;
+     psmac_diag.c lists the option under Display. docs/10 "The edge jump" has the whole of it.
+   - *Tested* in MAME's SE (System 7.1, HDMI 1024 by 768 to the right of the SE's screen) with a new scripted mouse,
+     `mac.inputedge=SECONDS`: across the touching part at y 100 to HDMI's y 225, against HDMI's left edge at y 725
+     onto the SE's screen at (507,323), and back to y 725, before the Finder and with it; the remote's absolute moves
+     near the edge landed where they were put; `mac.edgejump=off` kept the wall. Not yet seen: the SE's own ADB mouse
+     (MAME's SE gave no mouse input here), the owner's 2560 by 1440 arrangement, System 6, and the feel of the inset
+     and dead time on hardware. The owner needs the new declaration ROM (its .PiInput) as well as the kernel; with the
+     new declaration ROM and an older kernel the jump is simply on.
