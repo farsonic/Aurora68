@@ -53,6 +53,10 @@ classic Play does not send, so its answers are what they were:
   `A68_V_ARTIST` is an artist's tracks and videos, for an artist with videos and no album. `a68_path_vaudio` (the
   sound as MP3, what the classic Play plays), `a68_path_video` (the file, or HLS, what a Mac's player opens),
   `a68_path_vthumb`, `a68_path_videos` and `a68_what_video` (`v:ID`) write the requests.
+- `full=1&videos=1` in Mac Roman (the classic Play 1.7, 23 November 2026, docs/08 item 120): the classic Play asks an
+  artist's albums and an album's tracks with both, for the links of item 115; a row keeps a song's video
+  (`a68_row.video`) and an album's count of videos (`a68_row.videos`). `A68_V_VIDEOS` (every video, `/mac/videos`) and
+  `A68_V_ARTVIDEOS` (an artist's) are views of videos alone.
 
 The macOS Play used the server's JSON (`/api/...`) before; the JSON is still served, for the web panel and
 anything else, and nothing of it changed.

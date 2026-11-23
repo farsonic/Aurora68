@@ -113,7 +113,7 @@ the testbed (docs/08 item 96); none has been tried on a real machine yet. What d
 
 The Macintosh side needs no installation: the Slot Manager loads the Pi's drivers from the
 declaration ROM. The `Mac` folder holds the programs in the folder **Aurora68**, as MacBinary
-files and on an HFS image (Aurora68-Utilities.img): **Aurora68 Play** (MP3, FLAC, Ogg Vorbis and Apple Lossless files, seeking in them, the music server's library and its commands from other players, its music videos shown by the video decoder card in a window of their own (1.6, docs/09), and internet radio:
+files and on an HFS image (Aurora68-Utilities.img): **Aurora68 Play** (MP3, FLAC, Ogg Vorbis and Apple Lossless files, seeking in them, the music server's library and its commands from other players, its music videos shown by the video decoder card in a window of their own (1.6, docs/09), and since 1.7 the server found on the network by itself, videos linked to songs, Play Videos Instead of Songs, Videos, Up Next, Play Next and Add to Queue: docs/09 "Aurora68 Play: classic and macOS"; and internet radio:
 forty stations in submenus, plus your own; over MacTCP, or over Riptide's `.IPP6` with IPv6 stations
 reached directly) with its Music folder; **Display** (Aurora68 Display, Screens, Colour, Depth); **Network**
 (Aurora68 Network, Wi-Fi, Bluetooth, Ping); **System** (Aurora68 Slots, Log, Status); and

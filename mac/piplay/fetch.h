@@ -19,6 +19,7 @@ struct fetch {
 	int ipv;                         /* 4 or 6: the family of the last connection */
 	int cut_ok;                      /* set after fetch_start: an answer longer than the buffer is cut, not failed */
 	int cut;                         /* FS_DONE: it was cut */
+	int too_long;                    /* FS_FAILED: longer than the buffer (1.7: the list is asked again without the links) */
 };
 extern struct fetch fetch;
 
@@ -32,11 +33,15 @@ void fetch_forget_host(void);          /* the next fetch looks the name up again
 long fetch_received(void);             /* bytes of the answer received so far (FS_RECV), else 0 */
 
 /* the network probe (UDP, port 8070): "AURORA68-MUSIC?" broadcast and sent to the group 239.255.68.70;
-   the first answer (d, read by play/core/address.c) gives the server's name and TCP port and the addresses
-   it has (either may be empty); host is the address it answered from. a68_disc_hosts puts them in the order
-   the Connect By preference names */
+   each answer (d, read by play/core/address.c) gives a server's name and TCP port and the addresses it has
+   (either may be empty); host is the address it answered from. a68_disc_hosts puts them in the order the
+   Connect By preference names. Every server that answers within the probe's time is kept (1.7, 23 November
+   2026): one second after the first answer, four at most without one; the same server (address and port)
+   once */
 enum { D_IDLE, D_WAIT, D_FOUND, D_NONE };
-struct discovery { int st; char host[40]; struct a68_disc d; };
+#define D_MAX 6
+struct disc_found { char host[40]; struct a68_disc d; };
+struct discovery { int st, n; struct disc_found found[D_MAX]; };
 extern struct discovery disc;
 int discover_start(void);              /* 0 if MacTCP's UDP cannot be had */
 void discover_poll(void);

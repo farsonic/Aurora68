@@ -548,7 +548,7 @@ static void send_request(void)
 	p = put_str(p, path);
 	p = put_str(p, http11 ? " HTTP/1.1\r\nHost: " : " HTTP/1.0\r\nHost: ");
 	p = put_host(p);
-	p = put_str(p, "\r\nUser-Agent: Aurora68-Play/1.5 (Macintosh)\r\nAccept: */*\r\nIcy-MetaData: 1\r\nConnection: close\r\n\r\n");
+	p = put_str(p, "\r\nUser-Agent: Aurora68-Play/1.7 (Macintosh)\r\nAccept: */*\r\nIcy-MetaData: 1\r\nConnection: close\r\n\r\n");
 	wds.len = (unsigned short)(p - request); wds.ptr = request; wds.end = 0;
 	pb_setup(pb_ctl, TCPSend);
 	pb_ctl[32] = 30; pb_ctl[33] = 1; pb_ctl[34] = 0xC0;

@@ -15,6 +15,18 @@ Since 0.13 (docs/08 items 96 and 103):
   open network guarded by the PIN, as the screen says; a step the chip refuses is named on the screen and the Pi
   carries on with the cable or the saved WiFi. Tried against the testbed's simulated radio and a simulated phone
   only: the first try on a real Pi will tell how its firmware takes it (the log names every step's answer).
+- **Aurora68 Play 1.7: the classic Play at parity with the macOS one, and the server found by itself** (docs/08 item
+  118, docs/09 "Aurora68 Play: classic and macOS", which has the table of every macOS feature and the classic Play's
+  answer). At the first start, and whenever the server it knew does not answer, the Play asks the network (the probe
+  the macOS Play sends) and connects to the server that answers; with several it takes the one chosen before (by
+  name) or lets you choose in **Library > Servers** (with Search Again and Connect to Server...). Songs with a music
+  video have a film mark, and **Library > Play Video** (Command-M) plays it; **Controls > Play Videos Instead of
+  Songs** plays each song's video in its place (with the video decoder card); **Library > Videos** lists every video
+  by artist, an artist's view starts with its videos, artists and albums with videos have the film mark; **Play
+  Next**, **Add to Queue**, **Up Next** (the queue), **Repeat One**; the video window's zoom box and **Normal Size,
+  Double Size, Fill Screen** (Command-1, 2, 3). Previous and Next moved to the Controls menu, Connect to Server... into
+  Library > Servers. Asks for 640 KB. Works with an older music server (no film marks then), and the older Play with
+  the new server.
 - **Music videos linked to songs; Aurora68 Play 1.4 for macOS** (docs/08 item 115, 23 November 2026). The music
   server now knows which song a video is of: the same artist and the same title once "(Official Video)", "[HD]",
   "(Lyric Video)", "feat. ..." and the like are left aside ("Live", "Remix", "Radio Edit" kept), from the files'
