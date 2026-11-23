@@ -135,6 +135,7 @@ const char recovery_page[] =
     "  kv('Card',esc(s.card))+kv('Upload',esc(s.upload.state)+(s.upload.total?' '+esc(s.upload.name)+' '+kb(s.upload.received)+' of '+kb(s.upload.total):''))+kv('Last action',esc(s.last));\n"
     " el('notes').innerHTML=(s.cmdline_recovery?'cmdline.txt has <b>mac.recovery=1</b> or <b>recovery.ap</b>: \"Restart normally\" takes it out. ':'')+(s.config_kernel?'config.txt starts <b>'+esc(s.config_kernel)+'</b>, not kernel8.img.':'');\n"
     " var a=AP=s.ap;el('apc').style.display=a?'':'none';\n"
+    " if(a&&a.state=='up'&&!sessionStorage.getItem('apin')){sessionStorage.setItem('apin','1');location.replace('/');return}\n"
     " if(a){el('apg').innerHTML=kv('Network',esc(a.ssid||'(starting)'))+kv('State',esc(a.detail)+(a.error?': '+esc(a.error):''))+(a.state=='up'?kv('Security',esc(a.security))+kv('Address',esc(a.address))+kv('Devices',esc(a.clients)+' with an address'):'');\n"
     "  el('apn').innerHTML=a.state=='up'?'The Pi is running a WiFi network of its own for setup ('+esc(a.how)+'). Put your home network in on the <a href=\"#wi\" onclick=\"show(\\'wi\\');return false\">WiFi</a> tab and choose <b>Save and restart to join this network</b>. The access point is never kept: the next start joins the saved network.':\n"
     "   a.state=='failed'?'The access point did not start. The Pi carries on with the wired port or the saved WiFi; the Mac\\'s screen and the log say what the WiFi chip answered.':'Starting the access point...'}\n"

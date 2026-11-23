@@ -5235,3 +5235,16 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      reaching the Pi in a recovery start (if it does not, power off and on: the access point is not kept either way).
      If the screen says "the WiFi chip refused AP mode: <step> error <n>", that line and the `[WIFI] access point:`
      lines of the log are what is needed to fix it.
+
+119. **The access point on the owner's Pi: "Done" after the PIN (23 November).** The first try on real hardware worked:
+   the Pi 3B's chip took the access point's sequence (open, as its firmware lacks `idauth`), a Mac joined
+   `Aurora68-...`, macOS opened the page in its "Join Network" sheet, and the PIN was accepted. But the sheet kept
+   its **Cancel** button, and Cancel leaves the network. A Mac, an iPhone or an Android phone calls a network signed
+   in when its own check page (`hotspot-detect.html`, `generate_204`, `connecttest.txt` ...) answers as on the internet,
+   and every check was still redirected to the page.
+   - *Fix.* A device that has given the right PIN (any `/r/` request with it, in AP mode) is remembered by its address
+     (16 at most, forgotten at restart); its checks then get the answers they expect (Apple's "Success" page, an empty
+     204, Microsoft's and Firefox's and NetworkManager's texts), others' are still sent to the page. The page reloads
+     itself once after the first state answer in AP mode (sessionStorage keeps the PIN), which makes the sheet check
+     again: its button becomes **Done**, the device stays joined and the home page (Overview) shows.
+   - *Not verified here:* the emulator was busy with another run; the owner's Mac is the test.
