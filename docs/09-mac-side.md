@@ -13,7 +13,7 @@ and their folders"); the table gives each one's name before that once, the sourc
 | Aurora68 Disk extension (until 21 November 2026 PiDisk) | `mac/pidisk_init.s` + the DRVR | `Aurora68-Disk.bin` (MacBinary, type `INIT`) | System 6/7 extension: installs the DRVR from its own resource fork (`_DrvrInstall`), opens it, mounts every drive it added (`_MountVol`). Used until the declaration ROM path loads the driver from ROM. |
 | Aurora68 Machine extension (until 21 November 2026 PiMach) | `mac/pimach.s` | `Aurora68-Machine.bin` (MacBinary, type `INIT`) | Tells the Mac it is a Macintosh SE. The IIci ROM's Gestalt Manager answers the `'mach'` selector with 11 (gestaltMacIIci), so About This Macintosh, the Finder and every program that asks see a IIci. This INIT copies a four-instruction selector function into the system heap and installs it with `_ReplaceGestalt` ($A5AD) for `'mach'`; it answers 5, gestaltMacSE. Nothing else changes: the ROM's own view of its hardware is left alone (changing the ROM's box table would change its decisions about the IIci hardware it drives), the processor still reads 68030. Goes in the System Folder (System 6) or Extensions (System 7); `docs/img/system71-about-se.png`. |
 | `.Network_EtherNet_PiStorm` | `mac/enet.s` | `enet.bin.raw` | Apple `.ENET`-interface Ethernet driver over the NET service: EAttachPH/EDetachPH, ERead (default handler: queued parameter blocks completed from a VBL task), EWrite (WDS gather, source address inserted, 60-byte padding), EGetInfo (address + 3 counters), EAddMulti/EDelMulti, ESetGeneral, ERdCancel; real protocol handlers are called with the A3/A4/D1 convention and ReadPacket/ReadRest. Receives from the slot-9 interrupt (`SIntInstall`, docs/07) with the VBL task as a safety net. |
-| `.PiInput` | `mac/piinput.s` | `piinput.bin.raw` | Keyboards and mice attached to the Pi (USB on a Pi 3, Bluetooth) become Macintosh input. A VBL task drains the input ring the service core fills (`alice_psmac.h`), translates USB HID usages into Apple virtual key codes and, through `_KeyTranslate` and the Script Manager's current KCHR, into characters, keeps `KeyMap` and the modifier bits current, moves the cursor through `RawMouse`/`MTemp`/`CrsrNew`, and posts keyDown/keyUp/autoKey and mouseDown/mouseUp. Right and middle buttons become Command- and Option-clicks. Runs from the slot-9 interrupt (`SIntInstall`) with the VBL task as a safety net. Opened at start from the declaration ROM. |
+| `.PiInput` | `mac/piinput.s` | `piinput.bin.raw` | Keyboards and mice attached to the Pi (USB on a Pi 3, Bluetooth) become Macintosh input. A VBL task drains the input ring the service core fills (`alice_psmac.h`), translates USB HID usages into Apple virtual key codes and, through `_KeyTranslate` and the Script Manager's current KCHR, into characters, keeps `KeyMap` and the modifier bits current, moves the cursor through `RawMouse`/`MTemp`/`CrsrNew`, and posts keyDown/keyUp/autoKey and mouseDown/mouseUp. Right and middle buttons become Command- and Option-clicks. Runs from the slot-9 interrupt (`SIntInstall`) with the VBL task as a safety net. Opened at start from the declaration ROM. Since 23 November 2026 it also puts a cursor task in front of the ROM's (`JCrsrTask`, $8EE) for the edge jump: a pointer pushed against the side of a screen where another screen lies goes onto it at the same proportion along the edge, for every mouse, the SE's own included (docs/10, "The edge jump"; `mac.edgejump=off`). |
 | `.Network_WiFi_PiStorm` | `mac/enet.s` assembled with `WIFI` | `enet_wifi.bin.raw` | The same driver for unit 0 of the network board, the WiFi chip, as a second network sResource (0x83) in slot 9: MacTCP and EtherTalk list two Ethernet cards and the user picks. In the testbed the unit is a simulated radio when `mac.wifisim=` is given (below); Aurora68 Wi-Fi joins a network on hardware. |
 | `.Display_Video_PiStorm` | `mac/pivideo.s` | `pivideo.bin.raw` | The second display (docs/10): Apple's video driver interface over the display block in the slot window (psmb.h). Control: cscReset, cscSetMode (modes 128-133: 1/2/4/8 bits indexed, 16/32 bits direct, at the screen size the Pi publishes), cscSetEntries and cscDirectSetEntries (the colour table), cscGrayPage, cscSetGray, cscSetInterrupt; Status: cscGetMode, cscGetEntries, cscGetPageCnt, cscGetPageBase, cscGetGray, cscGetInterrupt, cscGetDefaultMode. The frame buffer is the window's top 512 KiB ($980000 in 24-bit mode, $F9080000 in 32-bit); the Pi converts it to the VideoCore frame buffer sixty times a second and raises the slot interrupt as the card's VBL, which the driver's handler turns into `_DoVBLTask` for slot 9. Opened at boot by the Start Manager like any video card; `tools/vcshot.py` photographs the Pi's screen in the testbed. |
 | PiDisk boot record | `mac/pidisk_boot.s` | `pidisk_boot.bin.raw` | The sBootRecord (ID 6) of PiDisk's sResource, an sExec block the Slot Manager copies into the heap and runs: opens `.PiDisk` with OpenSlot (fMulti, an SEBlock naming slot 9 and sResource $80, as the ROM opens a slot driver itself), and when the Start Manager is looking for a startup disk (seBootState 0) asks the Pi which disk goes first (`PSMB_BLK_BOOT`) and returns that driver's reference number in seRefNum: how a disk image on the card becomes the startup disk (docs/08 item 67, `mac.boot=`). Logs `PiDisk boot: ...`. |
@@ -280,7 +280,10 @@ config.txt with `hdmi_group=2` and `hdmi_mode=16`):
    HDMI to its right, top-aligned) and restarts the Mac once. From the second start both screens come up.
 7. **Monitors** (control panel): drag the two monitors where they stand on the desk, move the menu bar to
    either, and choose the HDMI screen's depth (Millions needs 32-bit addressing, which the kernel switches
-   on with more than 8 MB). The **Sound** control panel's volume sets the card's volume.
+   on with more than 8 MB). The **Sound** control panel's volume sets the card's volume. The two monitors
+   need not touch along their whole edge: pushing the pointer against the side where the other screen lies
+   takes it across at the same proportion along the edge (`.PiInput`'s edge jump, 23 November 2026, docs/10
+   "The edge jump"; `mac.edgejump=off` for the ROM's way, across only where they touch).
 
 Lines in the log that say it worked: `declaration ROM: two cards, the SE's screen in slot 9 (main) and the
 HDMI screen in slot $A`, `[PSMAC:DISP] VideoCore read back: physical 1024x768, ... : as asked`, `[PSMAC:DISP]
@@ -1207,6 +1210,69 @@ as its artist):
   the card's first way of reading the Mac's memory, through the 68k's MMU tables, stopped the kernel during a start-up
   (reading a garbage handle while the tables were rebuilt): it now reads RAM directly, inside its size, aligned.
 
+### Aurora68 Play 1.8.1: no network call that waits for ever, the intake bounded, videos sized for the HDMI screen (23 November 2026)
+Two lock-ups on the owner's SE after minutes of video (Play 1.8, Riptide over WiFi, the video window on the HDMI screen):
+the pointer moved, windows and keys did nothing, the kernel's heartbeat had the 68k in the ROM's wait for a synchronous
+Device Manager call. docs/08 item 127 is the record: the call was the Library connection's TCPAbort, which Riptide had
+lost (fixed in Riptide the same day: update both).
+
+- **No synchronous network call.** Every call Play makes to `.IPP6` or `.IPP` (TCPCreate, TCPAbort, TCPRelease, the
+  probe's UDPCreate, UDPWrite, ipctlGetAddr, UDPBfrReturn and UDPRelease, ip6StrToAddr, ip6ResolveCancel) is made
+  asynchronously and waited for five seconds at most, the stream's receive chain kept going meanwhile (`net_call`,
+  radio.c). One that has not come back is logged ("net: library: TCPAbort did not complete in 5 s: the stream left to
+  the driver") and its parameter block, with the buffers the driver may still write into, is left to the driver
+  (`net_leave`): new ones take their place, the old ones are given back once the driver has finished with them, and a
+  stream left so is released then ("net: a stream left to the driver is released now"). An open or a send the driver
+  never answers ends after 45 seconds (the radio) or 30 (the Library), a receive 30 seconds past its own timeout, and
+  the stream is asked again from where it was: a lost call no longer stands a video still for ever. The parameter
+  blocks come from the heap; the receive chain's completion routine is handed its block and passes over one that is
+  no longer its own. ip6AddrToStr, which the log's addresses used, is not called any more: Play writes an IPv6
+  address itself (RFC 5952). The video card's driver, which the kernel answers at once, is still called synchronously.
+- **The video's intake rests.** Since the card keeps up to 8 MB in the Pi (docs/08 item 125) a video's stream came at
+  the network's full rate until 8 MB were held (4.7 MB/s on the owner's WiFi for a stream of 40 KB/s), with Riptide's
+  socket buffers full ("memory pressure") and its deferred task running at every frame; both lock-ups came in such a
+  burst. Now the receive chain rests while the card holds more than 20 seconds of the stream and goes on once it holds
+  less than 10 (the first three times logged: "the card holds 20 s of the video: the intake rests until it holds 10
+  s"), never while the card is buffering and never with an older card. After the first 20 seconds the intake follows
+  the film's own rate, in bursts of about 10 seconds' worth, and 10 to 20 seconds stay in hand for the network's gaps.
+- **Videos sized for the HDMI screen.** Until 1.8 a video was asked for at a size for the screen the player window was
+  on (320 x 240 on any screen up to 640 wide), so with the player on the SE's screen a 720p video came at 320 x 212
+  even in a large video window on the 2560 x 1440 HDMI screen. Now, when the video window is on the HDMI screen (slot
+  $A's), the stream fits the window's picture, in the video's shape, at most 960 x 540 (what the card decodes and
+  draws at 25 pictures a second on a Pi 3B: 640 x 426 already took about 6 ms to decode and 10 to draw) and at least
+  320 wide. When the window grows (its size box, Double Size, Fill Screen, or dragged onto the HDMI screen) so that it
+  wants a stream at least half as wide again, the stream is asked again at the larger size from the picture shown, as
+  a seek is: the window stays, the sound starts again there; the same size must be wanted a second apart (not in the
+  middle of a drag), and four seconds pass between two. Smaller, or a little larger, and the card scales what it has.
+  The window's own sizes (Normal, Double, the size box's) stay those of the size it opened at. On the SE's screen
+  nothing changes. **Controls > Video Quality** (a submenu): Automatic (the above), 320, 480, 640 or 960 wide, which
+  apply on the HDMI screen (the SE's keeps 320); a choice that changes the size asks again at once. Kept in the
+  preferences, in a third tail marked PL81 after 1.8's (1.8 and 1.7 still read their parts). The rate stays w x h /
+  192 kbit/s (960 x 540: 2,700, which the server holds at 2,500), and Now Playing says the stream's size ("MPEG-1
+  960x540"). The larger the stream, the more the intake's rest above matters.
+- The About box, the version announced to the server and the User-Agent say 1.8.1.
+
+**Tested** (23 November 2026, the solo board in QEMU, System 7.1, the music server on the host through pinet, a queue
+of two 4-minute videos sent by the server's device commands, an "add" to the queue every four seconds for the Library's
+traffic; docs/08 item 127 has the runs):
+- **The freeze, before and after.** With Riptide as on the SE (mac-port) and the card's buffer at 1 MB
+  (`mac.vbuffer=1`, so that the receive chain stops for room as the SE's did with its 8 MB full), Play 1.8 froze in both
+  tries, after 112 and 57 s of video, the heartbeat at 4080bb8c with the owner's registers and "the Mac waits for a
+  driver: .IPP6 (ioRefNum -56) csCode 39". With Riptide's fix, Play 1.8 played the first video to its end with the same
+  buffer, its ring full the whole time, and went on into the second (stopped after a minute of it). With the old Riptide and a scratch program that makes the driver lose the next call, Play 1.8 froze;
+  Play 1.8.1 did not, and when the call lost was the video's receive: "a receive did not come back in 30 s: the
+  connection made again", "a call was still out after TCPRelease: its block left to the driver", the video again from
+  182 s ("reconnected"). The five-second wait of a call that never comes back did not come up in these runs (the lost
+  calls were receives).
+- **The intake.** Play 1.8, 8 MB buffer: 7.4 MB in the first 50 s (1,194 kbit/s, two and a half times the stream's
+  rate, as fast as the testbed carries; Riptide said "memory pressure, 171 KB" 27 times in a video). Play 1.8.1: the
+  card held 20 s after about 40 s, then the intake rested and went on in turn ("rest 1", "rest 2" ...), 10 to 20 s in
+  hand, and the whole video came as 15,730 KB in 241 s, 533 kbit/s, the stream's own rate.
+- **The HDMI sizes** were tested on the host (tools/play_core_test.c: a68_vmpeg_hdmi and a68_vmpeg_bigger, nine
+  cases); the solo board has no slot $A screen, so there the video window keeps today's 320 x 240, as on the SE's
+  screen. The size box, Double Size and Fill Screen on the owner's HDMI screen, and Video Quality's choices, are for
+  the SE.
+
 ## The WiFi in the testbed: a radio that exists only in software
 QEMU's raspi3b has no WiFi chip (no SDIO function, no firmware to load), so the real driver in
 `alice_net.c` can only report "off" there, and until 16 November the WiFi unit, Aurora68 Wi-Fi and the
@@ -1842,7 +1908,10 @@ has, and pings the peer three times through MacTCP's own ICMP echo call.
   bits of `KeyMap` ($174, four longwords, bit 0 of each the lowest code) and the button from
   `MBState` ($172, $80 = up); a key event's message is ADB address << 16 | virtual code << 8 |
   character; the cursor follows `RawMouse` ($82C) and `MTemp` ($828) when `CrsrNew` ($8CE) is set,
-  clipped to `CrsrPin` ($834). The keyboard layout is the `'KCHR'` 0 resource fetched, locked
+  clipped to `CrsrPin` ($834): the ROM's cursor task (`JCrsrTask`, $8EE; IIci ROM $4082DF94) moves
+  `RawMouse` by the accelerated difference from `MTemp`, pins it, and moves the cursor onto another
+  active screen of the device list ($8A8) that holds a point past the edge, setting `CrsrDevice`
+  ($89C) and `CrsrPin` for it (docs/10, "The edge jump"). The keyboard layout is the `'KCHR'` 0 resource fetched, locked
   and address-stripped at Open (the driver opens in 24-bit mode and uses the pointer in 32-bit
   mode), read directly by the driver: the low-memory long at $1B40, which MPW's SysEqu.a calls
   `KCHRPtr`, holds the address of a code patch under 7.1 on this ROM (docs/08, item 22).

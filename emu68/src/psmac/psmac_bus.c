@@ -298,8 +298,17 @@ static void psmac_read_options(void)
         else kprintf("[PSMAC] mac.hdmi=%.8s not understood: screen, mirror or log\n", tok);
     }
     if ((tok = find_token(args, "mac.bustrace="))) { tok += 13; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); psmac_trace(n); bustrace_asked = 1; }
-    if ((tok = find_token(args, "mac.console="))) { tok += 12; if (!strncmp(tok, "hdmi", 4)) psmac_hdmi_mode = 2; }
-    { extern void psmac_console_option(int); psmac_console_option(psmac_hdmi_mode == 2); }   /* the log on HDMI for the whole run */
+    /* mac.console=splash|boot|hdmi (23 November 2026, docs/08 item 128): what HDMI shows until the Mac's screen comes
+       up. splash (the default): the Aurora68 logo, the version and a status line (psmac_splash.c); boot: the kernel's
+       log, as every start before that day; hdmi: the log for the whole run, the Mac's picture never (as mac.hdmi=log) */
+    int con_mode = 0;
+    if ((tok = find_token(args, "mac.console="))) {
+        tok += 12;
+        if (!strncmp(tok, "hdmi", 4)) psmac_hdmi_mode = 2;
+        else if (!strncmp(tok, "boot", 4)) con_mode = 1;
+        else if (strncmp(tok, "splash", 6)) kprintf("[PSMAC] mac.console=%.8s not understood: splash, boot or hdmi (the splash it is)\n", tok);
+    }
+    { extern void psmac_console_mode(int); psmac_console_mode(psmac_hdmi_mode == 2 ? 2 : con_mode); }   /* psmac_display.c, "the splash" */
     if ((tok = find_token(args, "mac.dbfslow="))) { tok += 12; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); psmac_dbf_slow = n > 8 ? 8 : n; }
     if ((tok = find_token(args, "mac.pcwatch="))) { tok += 12; uint32_t a = 0; while (1) { char c = *tok; uint32_t d; if (c >= '0' && c <= '9') d = c - '0'; else if (c >= 'a' && c <= 'f') d = c - 'a' + 10; else if (c >= 'A' && c <= 'F') d = c - 'A' + 10; else if (c == 'x' || c == 'X') { tok++; continue; } else break; a = a * 16 + d; tok++; } pcwatch = a; }
     if ((tok = find_token(args, "mac.watchtraps="))) { extern int psmac_watch_traps; psmac_watch_traps = tok[15] == '1'; }   /* report odd stores into the trap tables (psmac_mmu.c) */
@@ -325,6 +334,7 @@ static void psmac_read_options(void)
         extern void psmac_alice_input_click(uint32_t, const int *, int); psmac_alice_input_click(secs, pts, n);
     }
     if ((tok = find_token(args, "mac.inputdrag="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_drag(uint32_t); psmac_alice_input_drag(n); }
+    if ((tok = find_token(args, "mac.inputedge="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_edge(uint32_t); psmac_alice_input_edge(n); }
     if ((tok = find_token(args, "mac.inputright="))) { tok += 15; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_right(uint32_t); psmac_alice_input_right(n); }
     if ((tok = find_token(args, "mac.inputwifi="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_wifi(uint32_t); psmac_alice_input_wifi(n); }
     if ((tok = find_token(args, "mac.buswait="))) buswait_on = tok[12] == '1';   /* the 68k's waits for the wire, at each heartbeat (bw_report) */
@@ -734,7 +744,7 @@ void psmac_service_core(void)
                        loop, which waits for ioResult to leave 1): the parameter block A0 points at, and the driver
                        its ioRefNum names (UTableBase $11C: the DCE's dCtlDriver, the driver's name at +18) */
                     uint32_t pcw = BE32((uint32_t)(uintptr_t)m->PC); int ok1, ok2;
-                    uint32_t w0 = mac_rd32(pcw, &ok1), w1 = mac_rd32(pcw + 4, &ok2);
+                    uint32_t w0 = psmac_mac_rd32(pcw, &ok1), w1 = psmac_mac_rd32(pcw + 4, &ok2);   /* the loop is in the ROM: mac_rd32 reads RAM only */
                     if (ok1 && ok2 && w0 == 0x30280010u && (w1 >> 16) == 0x6efau) {
                         uint32_t pb = BE32(m->A[0].u32); int ok;
                         uint32_t trap = mac_rd32(pb + 4, &ok) & 0xffff, compl = mac_rd32(pb + 12, &ok);
@@ -1352,8 +1362,10 @@ static struct declcand *declrom_choose(uint32_t want_w, uint32_t want_h)
         } else
             kprintf("[PSMAC] declaration ROM: %s from %s taken (%s screen %ux%u%s)\n", best->name, from, want_se ? "the HDMI" : se_board ? "the SE's" : "the",
                     want_w, want_h, declrom_rank(best, se_board, want_se, want_w, want_h) == 0 ? ", the file's own size" : ": the file's screen is rewritten for it");
-        if (best->noboot)
+        if (best->noboot) {
             kprintf("[PSMAC] *** declaration ROM %s: its PiDisk has no boot record, so the Mac cannot start from a disk image (only the question mark): put a current declaration ROM on the card ***\n", best->name);
+            psmac_splash_alert(0, "Declaration ROM %s is too old to start from a disk image", best->name);
+        }
         declrom_why(best, br, se_board, want_se, want_w, want_h);
         return best;
     }
@@ -1732,6 +1744,7 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
         }
     } else {
         kprintf("[PSMAC] WARNING: no ROM in initramfs!\n");
+        psmac_splash_alert(0, "No Macintosh ROM in the container: the Mac cannot start");
     }
     /* identity mapping (MMU disabled) and the 68030 MMU shadowing machinery */
     psmac_mmu_set_slot(win_phys, declrom_phys);
@@ -1768,6 +1781,7 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
                     "[PSMAC] *** NO DECLARATION ROM: put aurora68.declrom (or the one for your screen size) ***\n"
                     "[PSMAC] *** in the container. Without it the Mac has no Pi screen, PiDisk or input.  ***\n"
                     "[PSMAC] ********************************************************************************\n");
+        if (no_declrom) psmac_splash_alert(0, "No declaration ROM in the container: no Pi screen, PiDisk or input");
         if (!wired_ethernet_works() && declrom_drop(dr + PSMB_DECLROM_SIZE, 0x81, 0x00015053u))   /* drSwApple 1, drHw 'PS' */
             kprintf("[PSMAC] declaration ROM: the wired Ethernet card ($81) left out, this Pi has no wired port (or eth=off); the WiFi is the Mac's network card\n");
         else if (wired_ethernet_works()) { extern const char *psmac_board_wired_name(void);

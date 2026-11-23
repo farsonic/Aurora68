@@ -562,8 +562,9 @@ static void close_file(void)
 
 /* ---- the window -------------------------------------------------------------------------------- */
 static void *win, *play_btn, *stop_btn, *vol_bar, *prev_btn, *next_btn;
-static void *m_apple, *m_file, *m_edit, *m_ctl, *m_radio, *m_lib, *m_net, *m_srv;
-enum { M_APPLE = 128, M_FILE, M_EDIT, M_CTL, M_RADIO, M_LIB, M_SRV = 138, M_NET = 139 };
+static void *m_apple, *m_file, *m_edit, *m_ctl, *m_radio, *m_lib, *m_net, *m_srv, *m_qual;
+enum { M_APPLE = 128, M_FILE, M_EDIT, M_CTL, M_RADIO, M_LIB, M_SRV = 138, M_NET = 139, M_QUAL = 188 };   /* M_QUAL: 1.8.1, past the
+                                                       Radio menu's submenus (140 to 187) */
 /* the Library menu (1.7: nineteen lines, 304 pixels below the menu bar of the SE's 342); Servers and Connect By are
    submenus (Connect By also of the Radio menu): the servers found, and the family tried first */
 enum { LB_SHOW = 1, LB_VIDEOS, LB_UPNEXT, LB_FIND, LB_S1, LB_PLAY, LB_PLAYV, LB_NEXTQ, LB_ADDQ, LB_S2, LB_SHUFFLE, LB_REPEAT,
@@ -579,7 +580,10 @@ static int showing_radio;                            /* the window is the radio'
 static int radio_url_item, radio_add_item, radio_net_item;   /* Open URL..., Add Default Stations, Connect By in the Radio menu */
 enum { F_OPEN = 1, F_CLOSE, F_QUIT = 4 };
 enum { C_PLAY = 1, C_STOP, C_PREV = 4, C_NEXT, C_LOUDER = 7, C_SOFTER, C_SHOWV = 10,   /* Show Video (1.6) */
-       C_NORMAL, C_DOUBLE, C_FILL, C_INSTEAD = 15 };                                     /* 1.7 */
+       C_NORMAL, C_DOUBLE, C_FILL, C_QUALITY, C_INSTEAD = 16 };                          /* 1.7; Video Quality 1.8.1 */
+/* Controls > Video Quality (1.8.1): the stream's width on the HDMI screen (the SE's screen keeps 320) */
+enum { Q_AUTO = 1, Q_320 = 3, Q_480, Q_640, Q_960 };
+static const int q_width[] = { 0, 0, 0, 320, 480, 640, 960 };
 static int quit, fg = 1, shown;
 static const char *status_text = "";
 #define WIN_W 340                                    /* the first and the smallest size */
@@ -849,6 +853,8 @@ static void fix_menus(void)
 	enable(m_ctl, C_PREV, lib_can_skip(-1));
 	enable(m_ctl, C_NEXT, lib_can_skip(1));
 	for (i = C_NORMAL; i <= C_FILL; i++) { enable(m_ctl, i, vc_present()); CheckItem(m_ctl, i, vc_zoom() == i - C_NORMAL); }
+	enable(m_ctl, C_QUALITY, vc_present());
+	for (i = Q_AUTO; i <= Q_960; i++) if (i != 2) CheckItem(m_qual, i, vc_quality() == q_width[i]);
 	enable(m_ctl, C_INSTEAD, vc_present());
 	CheckItem(m_ctl, C_INSTEAD, lib_instead());
 	enable(m_lib, LB_VIDEOS, lib_have_server());
@@ -930,7 +936,7 @@ void say_error(const char *text)
 }
 static void about(void)
 {
-	message_box("Aurora68 Play 1.8 for the Aurora68 card.\r"
+	message_box("Aurora68 Play 1.8.1 for the Aurora68 card.\r"
 	            "Plays MP3, FLAC, Ogg Vorbis and Apple Lossless (.m4a) files, AIFF and WAV files that are not compressed, "
 	            "internet radio (plain http:// MP3 streams through MacTCP or Riptide), and the music and music videos of an "
 	            "Aurora68 music server, which it finds on the network by itself: Library > Show Library. The Pi decodes them "
@@ -1403,8 +1409,13 @@ static void setup_menus(void)
 	InsertMenu(m_edit, 0);
 	m_ctl = NewMenu(M_CTL, pstr(pbuf, "Controls"));
 	AppendMenu(m_ctl, pstr(pbuf, "Play/P;Stop/.;(-;Previous Track;Next Track;(-;Volume Up/];Volume Down/[;(-;Show Video;"
-	                        "Normal Size/1;Double Size/2;Fill Screen/3;(-;Play Videos Instead of Songs"));
+	                        "Normal Size/1;Double Size/2;Fill Screen/3;Video Quality;(-;Play Videos Instead of Songs"));
+	SetItemCmd(m_ctl, C_QUALITY, 0x1B);
+	SetItemMark(m_ctl, C_QUALITY, M_QUAL);
 	InsertMenu(m_ctl, 0);
+	m_qual = NewMenu(M_QUAL, pstr(pbuf, "Video Quality"));
+	AppendMenu(m_qual, pstr(pbuf, "Automatic;(-;320 Wide;480 Wide;640 Wide;960 Wide"));
+	InsertMenu(m_qual, -1);
 	m_lib = NewMenu(M_LIB, pstr(pbuf, "Library"));
 	AppendMenu(m_lib, pstr(pbuf, "Show Library/L;Videos;Up Next;Find\xC9/F;(-;Play All;Play Video/M;Play Next;Add to Queue;(-;"
 	                        "Shuffle;Repeat;Repeat One;(-;Listen Live;Reload/R;(-;Servers;Connect By"));
@@ -1477,6 +1488,15 @@ static void do_menu(long mr)
 		else if (item == srv_items + 3) lib_connect();
 		SetPort(win);
 		fix_buttons();
+	} else if (id == M_QUAL) {
+		if (item >= Q_AUTO && item <= Q_960 && item != 2) {
+			char t[80];
+			vc_set_quality(q_width[item]);
+			if (q_width[item]) put_str(put_num(put_str(t, "video quality: "), (unsigned long)q_width[item]), " wide on the HDMI screen")[0] = 0;
+			else put_str(t, "video quality: Automatic (the video window's size, 960 x 540 at most, on the HDMI screen)")[0] = 0;
+			pi_log(t);
+			lib_quality_changed();
+		}
 	} else if (id == M_NET) {
 		net_prefer = item == NET_V6 ? 6 : 4;
 		net_v4only = item == NET_V4ONLY;
@@ -1524,9 +1544,14 @@ struct prefs { unsigned long magic; short version; Rect r; short vol; short pad;
                    windows' places for each arrangement of screens they were last used on (the desktop's bounding box, the
                    latest first). 1.7 reads its own part and checks that it got as much as it asked for, which it does */
                 unsigned long ext2_magic; short net18; short pad4; long vcustom; struct lib_prefs_addrs addrs;
-                struct place18 { Rect desk, player, lib; } places[4]; };
+                struct place18 { Rect desk, player, lib; } places[4];
+                /* the third tail (1.8.1, docs/08 item 127), marked PL81: Video Quality (0 Automatic, or a width). 1.8 reads
+                   as much as it knows and gets all it asked for, so it still takes its own tail */
+                unsigned long ext3_magic; short vquality; short pad5; };
 #define PREFS_V3_SIZE ((long)__builtin_offsetof(struct prefs, ext_magic))
 #define PREFS_V17_SIZE ((long)__builtin_offsetof(struct prefs, ext2_magic))
+#define PREFS_V18_SIZE ((long)__builtin_offsetof(struct prefs, ext3_magic))
+#define PREF_EXT3_MAGIC TYPE('P', 'L', '8', '1')
 #define PREF_EXT2_MAGIC TYPE('P', 'L', '1', '8')
 #define PREFS_V2_SIZE (PREFS_V3_SIZE - 20)
 #define PREF_EXT_MAGIC TYPE('P', 'L', '1', '7')
@@ -1578,7 +1603,10 @@ static int load_prefs(struct prefs *p)
 	if (p->version == 1 && pb.u.io.ioActCount >= 16) { memset(&p->lib, 0, sizeof p->lib); p->net = 6; return 1; }   /* Aurora68 Play 1.1's */
 	if (p->version == 2 && pb.u.io.ioActCount == PREFS_V2_SIZE) { memset(p->dev_id, 0, sizeof p->dev_id); p->ext_magic = 0; return 1; }
 	if (p->version != 3) return 0;
-	if (pb.u.io.ioActCount == sizeof *p && p->ext_magic == PREF_EXT_MAGIC && p->ext2_magic == PREF_EXT2_MAGIC) return 1;
+	if (pb.u.io.ioActCount == sizeof *p && p->ext_magic == PREF_EXT_MAGIC && p->ext2_magic == PREF_EXT2_MAGIC &&
+	    p->ext3_magic == PREF_EXT3_MAGIC) return 1;
+	p->ext3_magic = 0;
+	if (pb.u.io.ioActCount >= PREFS_V18_SIZE && p->ext_magic == PREF_EXT_MAGIC && p->ext2_magic == PREF_EXT2_MAGIC) return 1;   /* 1.8's */
 	p->ext2_magic = 0;
 	if (pb.u.io.ioActCount >= PREFS_V17_SIZE && p->ext_magic == PREF_EXT_MAGIC) return 1;   /* written by 1.7: one tail */
 	p->ext_magic = 0;                           /* written by 1.3 to 1.6: no tail */
@@ -1604,6 +1632,8 @@ static void save_prefs(void)
 	p.ext2_magic = PREF_EXT2_MAGIC;
 	p.net18 = (short)(net_v4only ? 44 : net_prefer);
 	p.vcustom = vc_custom_w();
+	p.ext3_magic = PREF_EXT3_MAGIC;
+	p.vquality = (short)vc_quality();
 	lib_get_addrs(&p.addrs);
 	{   /* this arrangement of screens first, the others kept after it (from the file as it was read at the start) */
 		Rect desk = *RGN_BBOX(LM_GRAYRGN);
@@ -1917,6 +1947,7 @@ int main(void)
 	if (have_prefs && pr.ext_magic == PREF_EXT_MAGIC) {   /* 1.7's tail: the server's name, videos instead, the window's size */
 		lib_set_ext(&pr.ext);
 		if (pr.ext2_magic == PREF_EXT2_MAGIC) vc_set_custom_w(pr.vcustom);   /* 1.8: the size box's width */
+		if (pr.ext3_magic == PREF_EXT3_MAGIC) vc_set_quality(pr.vquality);   /* 1.8.1: Video Quality */
 		vc_set_zoom(pr.vzoom);
 	}
 	if (have_prefs) lib_set_prefs(&pr.lib);       /* the server, the shuffle; the Library window again if it was open */

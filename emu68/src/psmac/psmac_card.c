@@ -1006,6 +1006,7 @@ static int image_take(const char *name, const struct cfile *f)
     __atomic_store_n(&nimg, nimg + 1, __ATOMIC_RELEASE);
     kprintf("[CARD] disk image %s, %u MB in %d piece%s: read in the background%s\n", name, f->size >> 20, m->next, m->next == 1 ? "" : "s", m->ok ? ", changes written back to it" : "");
     psmac_boot_mark("card: disk image %s found (%u MB), loading in the background", name, f->size >> 20);
+    psmac_splash_status("Loading the disk image %s...", name);         /* the HDMI splash (psmac_display.c) */
     /* the Mac's view: a SCSI disk on the solo board, a PiDisk volume on the others */
     extern void psmac_image_add(const char *, uint8_t *, uint32_t); extern int psmac_image_count(void), psmac_image_is_scsi(int);
     extern void psmac_mbox_add_disk(const char *, uint8_t *, uint32_t);

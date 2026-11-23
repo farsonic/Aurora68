@@ -174,6 +174,19 @@ unsigned a68_vmpeg_rate(unsigned w, unsigned h);
    server takes: even, at least 64, at most 1280 x 720. Into *w and *h */
 void a68_vmpeg_size(unsigned long vw, unsigned long vh, unsigned sw, unsigned sh, unsigned room_w, unsigned room_h,
                     unsigned *w, unsigned *h);
+/* the size for the HDMI screen (the classic Play 1.8.1, docs/08 item 127), by the video window rather than the screen the
+   player window is on: quality 0 (Video Quality > Automatic) fits the video's shape into the window's picture, pic_w x
+   pic_h; a width (320, 480, 640, 960) asks for that width. Never more than 960 x 540 (what the card decodes and draws
+   at 25 pictures a second on a Pi 3B: 640 x 426 took about 6 ms to decode and 10 to draw, 40% of its core), at least
+   320 wide (a portrait video: as wide as 540 high allows); even, as the server wants */
+#define A68_VMPEG_HDMI_MAX_W 960u
+#define A68_VMPEG_HDMI_MAX_H 540u
+#define A68_VMPEG_HDMI_MIN_W 320u
+void a68_vmpeg_hdmi(unsigned long vw, unsigned long vh, unsigned pic_w, unsigned pic_h, unsigned quality,
+                    unsigned *w, unsigned *h);
+/* 1 when a stream want_w wide is worth asking for in place of one cur_w wide: at least half as wide again (a window
+   made smaller, or a little larger, keeps its stream: the card scales it) */
+int a68_vmpeg_bigger(unsigned cur_w, unsigned want_w);
 /* the server's "what": f:FOLDER (an album; "" the whole library), t:PATH (a song), r:N (radio station N) */
 int a68_what_folder(const char *folder, char *out, long max);
 int a68_what_track(const char *path, char *out, long max);

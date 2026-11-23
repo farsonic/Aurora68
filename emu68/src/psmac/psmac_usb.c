@@ -40,7 +40,24 @@
  * configures them, and between enumerations core 1 runs the sticks' work for the Mac.
  *
  * Kernel options: usb=off (leave the controller alone), usb=pio (Alice68's FIFO transport),
- * mac.usbdisk=off|on|all (psmac_usbdisk.c).
+ * mac.usbdisk=off|on|all (psmac_usbdisk.c), usb.trace=1 (every failed transfer in full: the channel's
+ * interrupt bits after the start split and after each complete split, HCTSIZ, HCCHAR, HCSPLT; and a
+ * sample of the keyboard's NAKed polls), usb.trace=2 (as 1, and the keyboard's toggle set again every
+ * ten seconds, to try that path on the testbed).
+ *
+ * The keyboard that sent nothing until it was re-plugged (23 November 2026, docs/08 item 130). The
+ * owner's heartbeat said "kb 1 (ok 0 nak 598565 err 1)" for long stretches after power-on: detected,
+ * polled, one failed poll, then only NAKs. Three changes, all here (Alice68's files are untouched):
+ *   - a halted channel's bits are read in Linux's order (usb_hcint.c): until then a NAK bit beside an
+ *     error, or beside a completed transfer, made the poll a NAK, which could drop a report and leave
+ *     the host's data toggle behind the keyboard's;
+ *   - after the enumeration the keyboard is told what Linux and Circle tell it: SET_IDLE(0), and its
+ *     LEDs (SET_REPORT; Circle: "setting the LED status forces some keyboard adapters to work");
+ *   - the keyboard's watch (usb_hcint.c): after a failed poll that may have left the toggles apart,
+ *     CLEAR_FEATURE(ENDPOINT_HALT) sets the keyboard's to DATA0 and the host's with it; a keyboard that
+ *     has sent nothing since its set-up, after failures, 20 seconds on, has the bus enumerated once more.
+ * And every failed transfer (a NAK is not a failure) is logged once in one line with the channel's
+ * interrupt bits named, the first eight after each enumeration, so the next log says what happened.
  */
 #include <stdint.h>
 #include <string.h>
@@ -51,6 +68,7 @@
 #include "../alice/usb/frf_dwc2_pio.h"
 #include "../alice/usb/frf_usb_native_hid.h"
 #include "psmac_usbdisk.h"
+#include "usb_hcint.h"
 
 const char *psmac_option(const char *key);
 int alice_mbox(uint32_t tag, uint32_t a, uint32_t b, uint32_t *out);
@@ -168,6 +186,14 @@ static uint32_t run(uint32_t charval)
     return 0;
 }
 
+/* The last transfer's channel record, for the log: the bits after the start split (or the only run),
+   after each complete split, and the registers as the channel halted */
+#define REC_CS 12
+static struct rec {
+    uint32_t first, cs[REC_CS], hctsiz, hcchar, hcsplt;
+    unsigned ncs;
+} rec;
+
 static int dma_packet(struct frf_dwc2_packet *p, struct frf_dwc2_pio_stats *st)
 {
     uint32_t bus, splitval = 0, charval, size, xfer, s = 0;
@@ -179,6 +205,7 @@ static int dma_packet(struct frf_dwc2_packet *p, struct frf_dwc2_pio_stats *st)
     if (st)
         st->attempts++;
     p->received = 0;
+    rec.ncs = 0;
     if (rd(HCCHAR0) & B(31)) {
         wr(HCCHAR0, rd(HCCHAR0) | B(30) | B(31));
         if (wait_clear(HCCHAR0, B(31)))
@@ -202,6 +229,7 @@ static int dma_packet(struct frf_dwc2_packet *p, struct frf_dwc2_pio_stats *st)
     wr(HCTSIZ0, size);
     wr(HCDMA0, bus);
     s = run(charval);
+    rec.first = s;
     if (splitval && s && (s & B(5)) && !(s & B(0))) {
         /* the hub's translator took the start split: now the complete split, again on NYET */
         for (;;) {
@@ -212,44 +240,52 @@ static int dma_packet(struct frf_dwc2_packet *p, struct frf_dwc2_pio_stats *st)
             if (p->type == 3)
                 charval = (charval & ~B(29)) | (rd(0x408) & 1u ? 0 : B(29));
             s = run(charval);
-            if (s && (s & B(6)) && ++split_retries <= 8)
+            if (rec.ncs < REC_CS)
+                rec.cs[rec.ncs] = s;
+            rec.ncs++;
+            if (s && (s & B(6)) && !(s & B(0)) && ++split_retries <= 8)
                 continue;
             break;
         }
-        if (s & B(6)) {
-            if (st)
-                st->naks++;
-            return -8;
-        }
     }
+    rec.hctsiz = rd(HCTSIZ0);
+    rec.hcchar = rd(HCCHAR0);
+    rec.hcsplt = rd(HCSPLT0);
     if (st) {
         st->last_channel_interrupt = s;
         st->last_global_interrupt = rd(GINTSTS);
     }
-    if (!s) {
+    /* What the halt says, in Linux's order (usb_hcint.c): a completed transfer whatever else is set
+       beside it, then STALL, the errors, NYET, NAK. Until 23 November 2026 STALL, NAK and the errors
+       came first and XFERCOMPL last, so a halt with a NAK bit beside an error or a completed report
+       was a NAK (docs/08 item 130). */
+    switch (uhc_classify(s)) {
+    case UHO_DONE:
+        break;
+    case UHO_TIMEOUT:
         if (st)
             st->timeouts++;
         return -7;
-    }
-    if (s & B(3)) {
+    case UHO_STALL:
         if (st)
             st->stalls++;
         return -4;
-    }
-    if (s & B(4)) {
+    case UHO_NYET:
+        /* NYET to the last complete split: the translator never finished (as before) */
+        if (st)
+            st->naks++;
+        return splitval ? -8 : -5;
+    case UHO_NAK:
         if (st)
             st->naks++;
         return -5;
-    }
-    if (s & (B(2) | B(7) | B(8) | B(9) | B(10))) {
+    default:
         if (st)
             st->errors++;
         return -6;
     }
-    if (!(s & B(0)))
-        return -6;
     if (p->in) {
-        uint32_t left = rd(HCTSIZ0) & 0x7ffffu, got = xfer > left ? xfer - left : 0;
+        uint32_t left = rec.hctsiz & 0x7ffffu, got = xfer > left ? xfer - left : 0;
         if (got > p->length)
             got = p->length;
         arm_dcache_invalidate((uintptr_t)dma_buf, sizeof dma_buf);
@@ -264,6 +300,80 @@ static int dma_packet(struct frf_dwc2_packet *p, struct frf_dwc2_pio_stats *st)
     return 0;
 }
 
+/* ---- the log of failed transfers ---- */
+static struct frf_native_hid hid;
+static int trace;                               /* usb.trace= */
+static unsigned said_fail;                      /* failed transfers logged since the last enumeration */
+#define SAY_FAILS 8
+/* per keyboard and mouse: failed polls by outcome, the last one's bits, NAKs that carried other bits */
+struct ep_faults { uint32_t by[UHO_COUNT], last_bits, nak_with_other, resyncs, resync_refused; };
+static struct ep_faults kbf, msf;
+static struct ukb_watch kbw, msw;
+static uint32_t nak_traced;
+
+static uint32_t now_ms(void) { return (uint32_t)(now() / (hz() / 1000u)); }
+
+/* the outcome of a transport's return code, with the bits it saw (the FIFO transport gives no bits
+   for a timeout) */
+static enum uhc_outcome outcome_of(int rc, uint32_t bits)
+{
+    if (!rc)
+        return UHO_DONE;
+    if (rc == -5)
+        return UHO_NAK;
+    if (rc == -7)
+        return UHO_TIMEOUT;
+    if (rc == -8)
+        return UHO_NYET;
+    if (rc == -4)
+        return UHO_STALL;
+    enum uhc_outcome o = uhc_classify(bits);
+    return o == UHO_DONE || o == UHO_NAK || o == UHO_TIMEOUT ? UHO_UNKNOWN : o;
+}
+
+static int is_poll(const struct frf_dwc2_packet *p, const struct frf_native_hid_ep *e, int have)
+{
+    return have && p->type == 3 && p->in && p->address == e->device_address && p->endpoint == e->ep;
+}
+
+static const char *what_of(const struct frf_dwc2_packet *p)
+{
+    if (is_poll(p, &hid.keyboard, hid.have_keyboard))
+        return "the keyboard's poll";
+    if (is_poll(p, &hid.mouse, hid.have_mouse))
+        return "the mouse's poll";
+    if (p->type == 0)
+        return p->pid == FRF_USB_PID_SETUP ? "a control request's setup" : "a control request's data or status";
+    return p->type == 3 ? "an interrupt transfer" : p->type == 2 ? "a bulk transfer" : "a transfer";
+}
+
+static void say_transfer(const struct frf_dwc2_packet *p, int rc, enum uhc_outcome o, uint32_t bits, int full)
+{
+    char b[96];
+    int tt = p->hub_address && root_speed == 0;
+    uhc_bits(bits, b, sizeof b);
+    kprintf("[USB] %s %s: %s (rc %d), HCINT %s; address %u endpoint %u %s, %s speed%s", what_of(p), o == UHO_NAK ? "had no data" : "failed",
+            uhc_outcome_name(o), rc, b,
+            p->address, p->endpoint, p->in ? "IN" : "OUT", p->low_speed ? "low" : root_speed == 0 && !p->hub_address ? "high" : "full",
+            tt ? " through the hub's translator" : "");
+    if (tt)
+        kprintf(" (hub %u port %u)", p->hub_address, p->hub_port);
+    kprintf(", %s\n", p->pid == FRF_USB_PID_SETUP ? "SETUP" : p->pid == FRF_USB_PID_DATA1 ? "DATA1" : "DATA0");
+    if (!full || use_fifo)
+        return;
+    /* usb.trace=1: the channel's runs one by one, and its registers as it halted */
+    uhc_bits(rec.first, b, sizeof b);
+    kprintf("[USB]   %s: %s\n", tt ? "start split" : "the run", b);
+    for (unsigned k = 0; k < rec.ncs && k < REC_CS; k++) {
+        uhc_bits(rec.cs[k], b, sizeof b);
+        kprintf("[USB]   complete split %u: %s\n", k + 1, b);
+    }
+    if (rec.ncs > REC_CS)
+        kprintf("[USB]   ... %u complete splits in all\n", rec.ncs);
+    kprintf("[USB]   HCTSIZ %08x (%u bytes left, %u packets, PID %u), HCCHAR %08x, HCSPLT %08x, frame %u\n", rec.hctsiz,
+            rec.hctsiz & 0x7ffffu, (rec.hctsiz >> 19) & 0x3ffu, (rec.hctsiz >> 29) & 3u, rec.hcchar, rec.hcsplt, rd(0x408) & 0xffffu);
+}
+
 int frf_dwc2_pio_packet(const struct frf_dwc2_ops *o, struct frf_dwc2_packet *p, struct frf_dwc2_pio_stats *st)
 {
     /* A low-speed keyboard or mouse on the root port itself: a 3A+'s one USB socket, a Zero 2 W's
@@ -273,11 +383,47 @@ int frf_dwc2_pio_packet(const struct frf_dwc2_ops *o, struct frf_dwc2_packet *p,
        cannot be a hub, so with the root port at low speed every packet without a hub route is its. */
     if (p && !p->hub_address && root_speed == 2)
         p->low_speed = 1;
-    return use_fifo ? frf_dwc2_fifo_packet(o, p, st) : dma_packet(p, st);
+    struct frf_dwc2_pio_stats mine = { 0 };
+    if (!st)
+        st = &mine;
+    st->last_channel_interrupt = 0;
+    int rc = use_fifo ? frf_dwc2_fifo_packet(o, p, st) : dma_packet(p, st);
+    if (!p || rc == -1 || rc == -2 || rc == -3)
+        return rc;                              /* refused before it reached the bus */
+    uint32_t bits = st->last_channel_interrupt;
+    enum uhc_outcome oc = outcome_of(rc, bits);
+    struct ep_faults *f = 0;
+    struct ukb_watch *w = 0;
+    if (is_poll(p, &hid.keyboard, hid.have_keyboard))
+        f = &kbf, w = &kbw;
+    else if (is_poll(p, &hid.mouse, hid.have_mouse))
+        f = &msf, w = &msw;
+    if (oc == UHO_NAK) {
+        /* bits beside the NAK that are not a handshake: with the order above they make an error, so
+           this counts what the FIFO transport (which keeps Alice68's order) may still call a NAK */
+        if (f && (bits & ~(UHC_NAK | UHC_CHHLTD | UHC_ACK | UHC_NYET)))
+            f->nak_with_other++;
+        /* usb.trace: a sample of the keyboard's NAKs (the first twenty after a set-up, then one in ten thousand) */
+        if (trace && f == &kbf && (nak_traced++ < 20 || nak_traced % 10000 == 0))
+            say_transfer(p, rc, oc, bits, 1);
+        return rc;
+    }
+    if (oc == UHO_DONE)
+        return rc;
+    if (f) {
+        f->by[oc]++;
+        f->last_bits = bits;
+        ukw_fault(w, oc);
+    }
+    if (trace || said_fail < SAY_FAILS) {
+        say_transfer(p, rc, oc, bits, trace);
+        if (!trace && ++said_fail == SAY_FAILS)
+            kprintf("[USB] further failed transfers are counted, not logged, until the next enumeration (usb.trace=1 logs them all)\n");
+    }
+    return rc;
 }
 
 /* ---- bring-up, polling, plug and unplug ---- */
-static struct frf_native_hid hid;
 static int usb_on, root_connected;
 static uint64_t next_poll, next_check;
 static uint32_t enumerations;
@@ -301,6 +447,81 @@ void psmac_usbnet_bus_reset(void);
    a new disk, not the old one after a bus reset. Every port counts as changed at the start. */
 static uint32_t port_changes = ~0u;
 
+/* A control request with no data stage, or a short OUT one, to the keyboard or the mouse by its own
+   route (its address, the hub's translator, its speed). Endpoint 0's packet size is not kept by
+   Alice68's enumeration, but every device takes 8 bytes, and nothing here is longer. A NAK (the
+   translator busy, the device not ready) is tried again a few times, as Alice68's control requests are.
+   0, or the transport's code. */
+static int dev_request(const struct frf_native_hid_ep *e, const uint8_t setup[8], const uint8_t *data, uint16_t len, unsigned tries)
+{
+    uint8_t sb[8], db[8];
+    int rc = 0;
+    memcpy(sb, setup, 8);
+    if (len > sizeof db)
+        return -1;
+    if (len)
+        memcpy(db, data, len);
+    for (int stage = 0; stage < 3; stage++) {
+        struct frf_dwc2_packet p = { e->device_address, 0, 0, 0, e->low_speed, FRF_USB_PID_SETUP, 8, 8, 0, sb, e->hub_address, e->hub_port };
+        if (stage == 1) {
+            if (!len)
+                continue;
+            p.pid = FRF_USB_PID_DATA1;
+            p.length = len;
+            p.buffer = db;
+        } else if (stage == 2) {
+            p.in = 1;                           /* the status stage: IN, no data, DATA1 */
+            p.pid = FRF_USB_PID_DATA1;
+            p.length = 0;
+            p.buffer = 0;
+        }
+        for (unsigned k = 0; k < tries; k++) {
+            rc = frf_dwc2_pio_packet(&ops, &p, NULL);
+            if (rc != -5 && rc != -8)
+                break;
+            delay_us(0, 1000);
+        }
+        if (rc)
+            return rc;
+    }
+    return 0;
+}
+
+/* After the enumeration, what Linux's usbhid and Circle tell a boot keyboard and Alice68's does not:
+   SET_IDLE(0), a report only when something changed (Linux does it for every boot keyboard), and the
+   LEDs off with SET_REPORT (Circle: "setting the LED status forces some keyboard adapters to work").
+   A keyboard may refuse either; neither is needed for the reports. Core 1, while core 3 is off the bus. */
+static void kb_setup(void)
+{
+    const struct frf_native_hid_ep *e = &hid.keyboard;
+    static const uint8_t leds = 0;
+    uint8_t idle[8] = { 0x21, 0x0a, 0, 0, e->interface, 0, 0, 0 };              /* SET_IDLE(0, all reports) */
+    uint8_t rep[8] = { 0x21, 0x09, 0, 2, e->interface, 0, 1, 0 };               /* SET_REPORT(output, id 0), 1 byte */
+    int a = dev_request(e, idle, 0, 0, 12), b = dev_request(e, rep, &leds, 1, 12);
+    kprintf("[USB] keyboard at address %u, interface %u, endpoint %u IN, every %u ms, %s speed%s: SET_IDLE %s, LEDs %s\n",
+            e->device_address, e->interface, e->ep, e->interval, e->low_speed ? "low" : root_speed == 0 && !e->hub_address ? "high" : "full",
+            e->hub_address && root_speed == 0 ? " through the hub's translator" : "", a ? "refused" : "taken", b ? "refused" : "taken");
+}
+
+/* The endpoint's data toggle set again on both sides: CLEAR_FEATURE(ENDPOINT_HALT) makes the device's
+   DATA0, halted or not (USB 2.0, 9.4.5), and the host's goes to DATA0 with it. Core 3, a few
+   milliseconds; tried twice at most per stage. */
+static int ep_resync(struct frf_native_hid_ep *e, struct ep_faults *f, const char *who, const char *why)
+{
+    uint8_t cf[8] = { 0x02, 0x01, 0, 0, (uint8_t)(e->ep | 0x80u), 0, 0, 0 };
+    char b[96];
+    int rc = dev_request(e, cf, 0, 0, 2);
+    e->toggle = FRF_USB_PID_DATA0;
+    f->resyncs++;
+    if (rc)
+        f->resync_refused++;
+    uhc_bits(f->last_bits, b, sizeof b);
+    if (f->resyncs <= 5 || trace)
+        kprintf("[USB] %s: %s (last failed poll's HCINT %s): its data toggle set again, CLEAR_FEATURE(ENDPOINT_HALT) %s, the host's DATA0%s\n",
+                who, why, b, rc ? "refused" : "taken", f->resyncs == 5 && !trace ? "; further ones are counted, not logged" : "");
+    return rc;
+}
+
 static void enumerate(const char *why)
 {
     struct frf_dwc2_state s;
@@ -308,6 +529,8 @@ static void enumerate(const char *why)
     uint32_t changed = port_changes;
     port_changes = 0;
     enumerations++;
+    said_fail = 0;
+    nak_traced = 0;
     rc = frf_dwc2_port_reset(&ops, &s);
     if (rc) {
         kprintf("[USB] %s: root port rc=%d (HPRT %08x, connected %u)\n", why, rc, s.port_status, s.port_connected);
@@ -321,6 +544,14 @@ static void enumerate(const char *why)
     root_speed = (int)s.port_speed;
     rc = frf_native_hid_enumerate(&ops, &hid, (unsigned)root_speed);
     report(why, rc);
+    /* the keyboard's set-up and a fresh watch for it and the mouse (their counts start again with the
+       enumeration's); a plug or an unplug allows the keyboard one more rescue */
+    memset(&kbf, 0, sizeof kbf);
+    memset(&msf, 0, sizeof msf);
+    if (hid.have_keyboard)
+        kb_setup();
+    ukw_setup(&kbw, now_ms(), !strcmp(why, "plug or unplug") || !strcmp(why, "start"));
+    ukw_setup(&msw, now_ms(), 1);
     /* the hub saw its ports' devices arrive as their power came on: those changes are this
        enumeration's, not the next plug */
     for (unsigned k = 1; k <= hid.root_hub_ports; k++)
@@ -341,7 +572,12 @@ void psmac_usb_start(void)
         return;
     }
     use_fifo = opt && !strncmp(opt, "pio", 3);
-    for (int i = 0; i < 50; i++) {                      /* -9: the WiFi has the mailbox for a moment */
+    opt = psmac_option("usb.trace");
+    trace = opt && opt[0] >= '1' && opt[0] <= '9' ? opt[0] - '0' : 0;
+    if (trace)
+        kprintf("[USB] usb.trace=%d: every failed transfer in full%s\n", trace,
+                trace >= 2 ? "; the keyboard's toggle set again every ten seconds (a test)" : "");
+    for (int i = 0; i < 50; i++) {                     /* -9: the WiFi has the mailbox for a moment */
         rc = alice_mbox(0x00028001u, 3, 3, &state);     /* SET_POWER_STATE: USB HCD on, wait */
         if (rc != -9)
             break;
@@ -524,6 +760,34 @@ static int needs_retry(void)
 static const char *volatile asked_why;
 void psmac_usb_ask_enumeration(const char *why) { __atomic_store_n(&asked_why, why, __ATOMIC_RELEASE); }
 
+/* The keyboard's and the mouse's watch (usb_hcint.c), after each poll: a toggle to set again after a
+   failure, or, for a keyboard that has sent nothing since its set-up after failures, one more
+   enumeration. usb.trace=2 sets the keyboard's toggle again every ten seconds, to try the path. */
+static void watch(void)
+{
+    uint32_t t = now_ms();
+    static uint32_t forced;
+    if (hid.have_keyboard) {
+        int a = ukw_step(&kbw, t, hid.keyboard.success, hid.keyboard.faults);
+        if (a == UKW_RESYNC)
+            ep_resync(&hid.keyboard, &kbf, "the keyboard", "after a failed poll");
+        else if (a == UKW_ENUMERATE) {
+            char b[96];
+            uhc_bits(kbf.last_bits, b, sizeof b);
+            kprintf("[USB] the keyboard has sent no report in %u s since its set-up, after %u failed poll%s (the last: HCINT %s) and %u NAKs: "
+                    "enumerating again, as a re-plug would (once)\n", (t - kbw.t_setup) / 1000u, hid.keyboard.faults,
+                    hid.keyboard.faults == 1 ? "" : "s", b, hid.keyboard.nak);
+            enumerate_elsewhere("the keyboard sent nothing");
+            return;
+        } else if (trace >= 2 && t - forced >= 10000u) {
+            forced = t;
+            ep_resync(&hid.keyboard, &kbf, "the keyboard", "usb.trace=2, a test");
+        }
+    }
+    if (hid.have_mouse && ukw_step(&msw, t, 1, 0) == UKW_RESYNC)       /* the mouse: the toggle only */
+        ep_resync(&hid.mouse, &msf, "the mouse", "after a failed poll");
+}
+
 void psmac_usb_poll(void)
 {
     uint64_t t;
@@ -555,6 +819,7 @@ void psmac_usb_poll(void)
         next_poll = t;                          /* far behind (enumeration, a long pass): no burst */
     next_poll += hz() / 1000;
     frf_native_hid_poll(&ops, &hid);
+    watch();
 }
 
 /* for the heartbeat (every five seconds): a line every thirty */
@@ -568,6 +833,26 @@ void psmac_usb_report(void)
             use_fifo ? "FIFO" : "DMA", enumerations, enumerations == 1 ? "" : "s", hid.have_keyboard, hid.keyboard.success,
             hid.keyboard.nak, hid.keyboard.faults, hid.have_mouse, hid.mouse.success, hid.mouse.nak, hid.mouse.faults,
             hid.stats.attempts, hid.stats.timeouts);
+    /* the failed polls by what the channel said, when there were any (docs/08 item 130) */
+    const struct ep_faults *f[2] = { &kbf, &msf };
+    const char *who[2] = { "keyboard", "mouse" };
+    for (int i = 0; i < 2; i++) {
+        uint32_t any = f[i]->nak_with_other;
+        for (int o = 0; o < UHO_COUNT; o++)
+            any += f[i]->by[o];
+        if (!any)
+            continue;
+        char b[96];
+        uhc_bits(f[i]->last_bits, b, sizeof b);
+        kprintf("[USB]   %s's failed polls:", who[i]);
+        for (int o = 0; o < UHO_COUNT; o++)
+            if (f[i]->by[o])
+                kprintf(" %s %u,", uhc_outcome_name((enum uhc_outcome)o), f[i]->by[o]);
+        if (f[i]->nak_with_other)
+            kprintf(" NAK with other bits %u,", f[i]->nak_with_other);
+        kprintf(" the last HCINT %s; toggle set again %u time%s (%u refused)%s\n", b, f[i]->resyncs, f[i]->resyncs == 1 ? "" : "s",
+                f[i]->resync_refused, i == 0 && !hid.keyboard.success ? "; no report since its set-up" : "");
+    }
 }
 
 /* for psmac_usbnet.c: 0 until the bus is up, else its generation, with the root hub's port count,
