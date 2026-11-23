@@ -16,7 +16,7 @@ Since 0.13 (docs/08 items 96 and 103):
   carries on with the cable or the saved WiFi. Tried against the testbed's simulated radio and a simulated phone
   only: the first try on a real Pi will tell how its firmware takes it (the log names every step's answer).
 - **Aurora68 Play 1.7: the classic Play at parity with the macOS one, and the server found by itself** (docs/08 item
-  118, docs/09 "Aurora68 Play: classic and macOS", which has the table of every macOS feature and the classic Play's
+  120, docs/09 "Aurora68 Play: classic and macOS", which has the table of every macOS feature and the classic Play's
   answer). At the first start, and whenever the server it knew does not answer, the Play asks the network (the probe
   the macOS Play sends) and connects to the server that answers; with several it takes the one chosen before (by
   name) or lets you choose in **Library > Servers** (with Search Again and Connect to Server...). Songs with a music
