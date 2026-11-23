@@ -5483,6 +5483,114 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      card's first look is the same one the declaration ROMs use, so it should be there); the compact Mac's screen
      showing the report on real hardware (as `mac.buscheck=1`'s page, written the same way).
 
+124. **The classic Aurora68 Play 1.8: windows that resize, the artist in the titles, IPv6 first, videos in the background
+   (23 November).** The owner, from the real SE running Play 1.7 with a 2560 x 1440 HDMI screen in colour and a music
+   video playing through the card: "Resizable windows"; "Add the artist name into the window also"; "I need to be able
+   to connect to server and have it prefer its IPv6 address then its IPv4" (Now Playing had said "IPv4" after
+   discovery); "Video in the window stops playing if it isn't focused. This should work in the background. Audio keeps
+   working though"; "it also locked up when I was moving through the list of videos using the scroll bar". docs/09
+   "Aurora68 Play 1.8" says what each does now.
+   - *The video window's size box.* 1.7's window was a zoomNoGrow (kind 12). A size box inside the picture would be
+     drawn over by the card at every picture, so the window became a zoomDocProc (8) with a strip of 15 pixels below the
+     picture: the size box at its right, the time at its left (library.c hands it the text once a second), a line along
+     its top. `vc_grow` holds the card (`vc_hold`) while GrowWindow drags its outline, then takes the side dragged further
+     (each side's change against its length), makes the other follow the video's shape, 160 pixels wide at least and
+     Fill Screen at most, and snaps the window to it; the card is told the new place with the usual Control 112. The
+     width is a fourth size, `VC_CUSTOM`, used for the next video and kept in the preferences (an older Play reads that
+     zoom as Normal). The zoom box now toggles Fill Screen and the size the window had (Inside Macintosh's "user state"),
+     and the place before Fill Screen comes back with it. On the way: a new window opened at Double Size (1.7) or at the
+     size box's size went to the screen's top left corner, because its size was worked out from its contRgn, which is
+     empty until the window is shown; the content's rectangle now comes from the port.
+   - *The other windows.* The player window (1.1) and the Library window (1.2) had a size box and a zoom box already,
+     their smallest sizes (340 x 106, 360 x 200) inside the SE's screen, their contents laid out from their size. What
+     was missing was their places by screen: the preferences kept one place each, and a window used on the HDMI screen
+     came back on the SE's own screen when the HDMI screen was off (1.7's on-screen check), and then stayed there. The
+     preferences' second tail (marked PL18, after 1.7's PL17, so that 1.7 still reads the file) keeps both windows'
+     rectangles for the four latest arrangements of screens (the desktop's bounding box), the one for the arrangement at
+     the start taken, still checked as before.
+   - *The titles.* "Artist — Title" for the video window; Now Playing's second line the artist and the album, either
+     alone; the Library's strip "Artist — 0:46 of 3:49". `named()` in library.c: a name with no letter or digit (Mac
+     Roman's accented letters count) is shown as nothing there, and as "Unknown artist" at the head of a group in
+     Library > Videos and in an artist's row; the server replaces "_" where it can since item 121, and the Play no
+     longer shows the underscore when one gets through (the owner's photo: "Kerosene" over "_", and "— — 0:46 of 3:49").
+   - *IPv6 first.* Why "IPv4": the probe's answer names the server's IPv4 and IPv6 addresses and 1.7 tried them in
+     Connect By's order (IPv6 first by default), but only when the probe ran; after that the preferences kept the address
+     that had answered, and a remembered server is not probed. A server first reached at its IPv4 address (typed in
+     Connect to Server..., found while its answer named no IPv6 address, or after an IPv6 address that did not answer
+     then) stayed at IPv4 for good, and the log never said which addresses the answer named. 1.8 keeps the addresses by
+     family (`srv_v6`, `srv_v4[2]`: the one the answer came from and the one it names) in the preferences' new tail;
+     tries them in Connect By's order at every start; gives a connection five seconds while another address remains
+     (`fetch.quick`; Riptide answers an IPv6 address with no neighbour with ipDestDeadErr, -23033, sooner); moves any
+     request whose connection could not be made (a list, a queue, a cover; and a stream, through radio.c's new
+     `other_host`) to the next address and asks again; and keeps the one that answered for the session. A server
+     reached over IPv4 with IPv6 wanted and its IPv6 address unknown gets one quiet probe, and the Play moves to the
+     IPv6 address its answer names if that answers. Connect By gained IPv4 Only (a name's IPv6 addresses passed over, an
+     IPv6 address typed refused with words); changing Connect By moves to the family named first. The log names the
+     addresses the probe's answer gives ("it names IPv4 192.168.68.1, IPv6 fd68::1"), the order tried, each that fails,
+     and the one kept ("the server answers at fd68::1 (IPv6): that address is used from now on (IPv6 First)").
+   - *Riptide dropping its IPv6 address (seen in the testbed, worth looking for on the SE).* In both long testbed
+     sessions Riptide lost its fd68:: address four or five minutes after the start: its mDNS responder announced the
+     name again with the link-local address alone, no router solicitation followed, and connections to fd68::1 failed
+     with -23033 from then on (the Play moved to IPv4 by itself). There was no link change and pinet's router
+     advertisement gives the prefix a day. Riptide's lifetimes (src/core/ip6.c, `rt_ip6_seconds`) count seconds by
+     adding `now - last` of a millisecond clock (`rt_now_ms`, from `_Microseconds` on the Mac) as an unsigned number,
+     so one step backwards of that clock would add some 49 days at once and expire every address with a lifetime; that
+     is a guess at the cause, not a finding, and it belongs to Riptide. If it happens on the owner's network too, it
+     would also explain an "IPv4" in Now Playing with IPv6 configured; the Play's log now shows when the IPv6 address
+     stops answering.
+   - *Videos in the background: the card reads the window's region.* The rule since 1.6 was "visible" only with Play in
+     front and no window over any corner of the picture (the card draws rectangles; Aurora68 Video's rule was stricter:
+     only while its window was the front one). The card's block (version 3; main's buffering of item 125 made it 2) now
+     takes, in the Mac's half's padding, `clip_tag`, `vis_rgn` and `vis_flags` (psmac_video.h; docs/video-decoder-api.md):
+     the program writes its window's visRgn handle and a tag naming the geom_seq of the Control 112 it is about to make,
+     and the card, at every picture (`vis_parts` in psmac_video.c), reads the handle's master pointer and the region,
+     turns its inversion lines into rectangles (bands of the same columns merged downwards, at most 16) cut to the
+     picture and the screen, and draws only those. The Window Manager keeps the region current for every window
+     whatever program is in front, so the card follows a Finder window put over the video while Play gets no time. A
+     stale tag (another program's Control 112) means the whole rectangle as before, so the QuickTime import and older
+     programs are unchanged; a region that does not read as one (a block moving in the heap as it is read) loses that
+     picture only. The card reads the Mac's RAM directly (`psmac_video_rd32`: inside the RAM, aligned): a first version
+     went through the 68k's MMU tables as the crash record does, and the kernel stopped during a start-up while a
+     debugging line read a handle from them. Play and Aurora68 Video check the block's version and keep 1.7's rule with
+     an older kernel. The region parser was also checked on the host against hand-made regions (an L shape, a hole, a
+     rectangle, empty, garbage).
+   - *Menus.* Menus are drawn outside every window's region, and a program in the background gets no time while another
+     tracks its menu, so the card itself draws nothing while a menu is down, whichever program's: the menu bar
+     definition's saved-bits handle at MBSaveLoc ($B5C), whose first word is the offset of the last menu's record, 0
+     when none is drawn ($1C with the Finder's Apple menu held, in the testbed). The first try looked at TheMenu ($A26),
+     which stayed 0 while the menu was held: the Menu Manager sets it for the title left highlighted after a choice, not
+     while tracking. Play still holds the card while its own menu is down, its windows are dragged or sized and its
+     dialogs are up. The kernel's heartbeat line says "region parts N, M under a menu, K unread". The SIZE resource
+     already had canBackground (elf2app.py's 0x5880) and the Play polls the card's place on every pass of its event
+     loop; what had stopped the picture in the background was only the `fg` in the visibility.
+   - *Buffering.* With item 125's buffer in the Pi (block version 2 and later), Now Playing says "Buffering 45%, 1.3 s"
+     from the card's `buffer_pct` and `buffer_ms` while the card buffers.
+   - *The lock-up while scrolling: not reproduced.* With a 90-second video playing and its window partly under the
+     Library window, the Videos list's down arrow held 12 seconds, the up arrow 12, 24 clicks in the page areas, three
+     drags of the thumb and the arrow held 8 more: nothing locked up and the picture went on. Read on the way and made
+     safe: while an arrow is held the Control Manager keeps the event loop from running, and a stream that had stopped for
+     room in the card's ring stayed stopped (less likely since item 125's buffer empties the ring; the scroll bar's
+     action procedure now starts it again, `radio_keep`); the event loop's "a receive completed without its completion
+     routine" check called the completion routine with its test of `in_done` and the setting of it two steps apart, so
+     the real completion arriving between them would run the receive loop twice at once (the same bytes twice into the
+     ring, two receives on one parameter block), and a late real completion read the next receive's "in progress" as an
+     error and ended the chain with a receive outstanding: the test and set are now made with interrupts off and a call
+     for a receive still in progress does nothing (counted and logged); the scroll bar is no longer highlighted again at
+     every step while tracked. A pass of the event loop that took three seconds or more is logged with the stream's
+     state ("the event loop was away 12.2 s; video stream, a receive out, 512 KB free in the ring, last bytes 0 s ago,
+     receives 20"), so a lock-up on the SE leaves what went before it in the log; with the kernel's heartbeat (the 68k's
+     PC, the slot-9 line) that should tell where it stopped.
+   - *Tests* (the solo board, System 7.1 with Riptide, the music server on the host through pinet over IPv4 and IPv6, a
+     generated library of 46 videos by ten artists with one in `Albums/_/_/` whose artist is "_", `MUSIC_COPIES=show` so
+     that the short test clips were not taken for copies of one another): the IPv6 and fallback cases, the size box at
+     640 x 480 and 512 x 342, the background, a Finder window and the Library window over the picture, the Finder's menu
+     held over it, the titles, the places restored after a session on the other screen size, the scrolling above; docs/09
+     has the details and `docs/img/system71-play18-*.png`, `system71-512x342-play18-size-box.png` the screenshots.
+     `make -C mac check` green.
+   - *Not verified:* the SE and its HDMI screen (the region read on the SE board's screens, the menu check with the SE
+     board's ROM, colour depths); MAME's SE board; Apple's MacTCP (IPv4 only, unchanged); the lock-up itself; a real
+     network's IPv6 (unique local and global addresses, a router's advertisements).
+
 125. **Music videos: a buffer in the Pi behind the video card's ring, buffering by time, rebuffering (23 November).** The
      owner, after the first music videos on the real SE over WiFi (the classic Play 1.7 streaming the music server's
      `/vmpeg` through the card, the picture on HDMI): "might need a bit more buffering also". The videos stuttered and

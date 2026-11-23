@@ -19,6 +19,7 @@ void vc_pause(int on);
 void vc_stop(void);
 void vc_end(void);                     /* the last byte is in the ring */
 int vc_state(void);                    /* A68V_S_* (psmac_video.h); 0 without the card */
+int vc_buffer(unsigned long *pct, unsigned long *ms);   /* "Buffering N%" and the seconds held (block version 2); 0 if not told */
 unsigned long vc_pos_ms(void);         /* the stream's time of the picture on the screen */
 const char *vc_message(void);          /* the card's words for its state */
 void vc_volume(int v);                 /* 0-100, Play's volume */

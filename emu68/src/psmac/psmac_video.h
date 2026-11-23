@@ -218,11 +218,11 @@ struct pv_surface {
     int gray;                                /* the screen is set to greys: the table's colours shown as their luminance */
 };
 int psmac_video_surface(uint32_t screen, struct pv_surface *s);
-/* 1 while the computer has a menu pulled down (the Mac's TheMenu, low memory $A26, not 0): no picture is drawn then,
+/* 1 while the computer has a menu pulled down (the menu bar's saved bits, MBSaveLoc; psmac_videocard.c): no picture is drawn then,
    whichever program's menu it is (23 November 2026: a program in the background, whose window shows, gets no time
    while another program tracks its menu, so it cannot say "not visible" itself). 0 where the host cannot tell */
 int psmac_video_menu_down(void);
-/* a long of the computer's memory at a 68k address (its MMU's map), *ok 0 where there is none: the window's region */
+/* a long of the computer's RAM at its address (aligned), *ok 0 outside the RAM: the window's region, the menu bar's data */
 uint32_t psmac_video_rd32(uint32_t addr, int *ok);
 /* the sound: 44.1 kHz or another rate, 16-bit stereo, mixed with the computer's own (psmac_audio.c) */
 int      psmac_audio_video_open(uint32_t rate);         /* 1 if an output plays it; 0: no sound here */

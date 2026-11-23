@@ -1106,6 +1106,105 @@ Not verified: the SE itself (MAME's SE board was not run; the 512 x 342 screen w
 from the peer's address); a box set too long for the links (the fallback without them has not run); Standard File's
 hold.
 
+### Aurora68 Play 1.8: windows that resize, the artist in the titles, IPv6 first, videos in the background (23 November 2026)
+The owner's feedback from the real SE (Play 1.7, a 2560 x 1440 HDMI screen in colour, a music video playing through
+the card): "Resizable windows"; "Add the artist name into the window also"; "I need to be able to connect to server and
+have it prefer its IPv6 address then its IPv4"; "Video in the window stops playing if it isn't focused. This should work
+in the background. Audio keeps working though"; and "it also locked up when I was moving through the list of videos
+using the scroll bar". docs/08 item 124 is the record.
+
+- **The video window has a size box.** It sits in a strip of 15 pixels below the picture (the card would draw over a
+  size box inside the picture), with the time ("0:46 of 3:49") at its left. Dragging it shows the usual outline, the card
+  not drawing meanwhile; let go, and the window's content snaps to the picture of the video's own shape nearest to the
+  outline (by the side dragged further, for its length), 160 pixels wide at least and the screen's Fill Screen at most;
+  the card is told the new place (Control 112) and draws the next picture there (a paused one at once). That size is a
+  fourth one beside Normal, Double and Fill Screen: the next video opens at the same width, and it is kept in the
+  preferences. The zoom box toggles Fill Screen and whichever size the window had (Normal, Double or the one the size
+  box gave), and back from Fill Screen the window goes where it was. Normal Size, Double Size and Fill Screen stay in the
+  Controls menu (Command-1, 2, 3); none is checked at a size of the size box.
+- **The player window and the Library window** were resizable already (since 1.1 and 1.2: a size box and a zoom box,
+  the smallest 340 x 106 and 360 x 200, both well inside the SE's 512 x 342; the player's title, its second line and its
+  progress line widen with it, the Library's list gives the extra width to the titles and the time stays at the right).
+  New in 1.8: their places and sizes are kept for each arrangement of screens they are used on (the desktop's bounding
+  box: the SE's screen alone, the SE's with an HDMI screen beside it, at whatever HDMI size), the four latest, so a
+  window put on the HDMI screen comes back there when the HDMI screen is, and on the SE's screen when it is not; a
+  place on no screen now is still not taken (both ends of the title bar on a screen, as 1.7 checked).
+- **The artist in the titles.** The video window's title is "Artist — Title" ("The Warning — Kerosene"). Now Playing's
+  second line is the artist, then the album; the Library's Now Playing strip "Artist — 0:46 of 3:49". An artist with no
+  letter or digit ("_", a downloader's "nobody", which the server now replaces where it can, docs/08 item 121) is shown
+  as no artist there (the album alone, or the time alone), and as "Unknown artist" where a name has to stand: the head
+  of a group in Library > Videos, an artist's row.
+- **IPv6 first, with a fallback.** Why the SE said "IPv4": 1.7 kept only the address that had last answered, so a
+  server first reached at its IPv4 address (typed in Connect to Server..., or found by a probe whose answer named no
+  IPv6 address) was asked at that address for good; and the log never said which addresses the probe's answer named.
+  1.8 keeps the server's addresses by family (from the probe's answer, in the preferences), tries them in the order
+  Connect By names (IPv6 First, the default; IPv4 First; IPv4 Only, new), five seconds each while another remains (an
+  IPv6 address Riptide has no neighbour for fails in about three), and keeps the one that answered for the session:
+  the lists, the covers, the device's requests and every stream go there without waiting again. A list or a cover whose
+  connection fails moves to the other address and is asked again. A remembered server reached over IPv4 while IPv6 is
+  wanted and its IPv6 address is not known: the probe is sent once, quietly, and if the server's answer names an IPv6
+  address the Play moves to it (and back to IPv4 if it does not answer). Changing Connect By moves to the family named
+  first. Connect to Server... takes an IPv6 address with or without brackets and a port, an IPv4 address or a name
+  (Riptide's driver looks a name up, AAAA and A, in Connect By's order, and each address is tried in turn). Without
+  Riptide's .IPP6 (Apple's MacTCP) everything is IPv4, as before. The log says the addresses the probe's answer names,
+  the order they are tried in, each one that does not answer and why, and the one used from then on; Now Playing still
+  ends with the family of the stream.
+- **Videos in the background.** 1.6 and 1.7 told the card not to draw whenever another program was in front, and
+  whenever any window covered a corner of the picture. 1.8 hands the card the window's visible region (its `visRgn`,
+  which the Window Manager keeps current for every window, another program's in front or not); the card reads it at
+  every picture and draws only where the window shows (docs/video-decoder-api.md, "The window's visible region"). So
+  the picture goes on with the Finder in front, behind a window of another program, partly under the Library window.
+  It still stops while a menu of Play's is down, while a window of Play's is dragged or sized, while a dialog of Play's
+  is up (each drawn over the screen, outside any window's region), and while any program's menu is down (the card looks
+  at the menu bar's saved bits itself, MBSaveLoc: a program in the background gets no time while another tracks a menu).
+  Aurora68 Video 1.1 does the same with its film window. This needs the kernel8.img of the same release (the card's
+  block version 3); with an older one the Play keeps 1.7's rule.
+- **Buffering.** With the card's buffer in the Pi (docs/08 item 125, block version 2 and later) Now Playing says
+  "Buffering 45%, 1.3 s" while the card buffers, from the card's own figures.
+- **The lock-up while scrolling.** Not seen in the testbed (below); weak points were made safe on the way. While the
+  Library's scroll arrow is held, the Control Manager keeps the event loop from running, and a video's stream that had
+  stopped for room in the card's ring stayed stopped; the scroll bar's action procedure now starts it again. And the
+  event loop's "a receive completed without its completion routine" check, which calls the completion itself, could
+  run it a second time at once if the real one came between its test and its start, and a late real completion read the
+  next receive's "in progress" as an error: the test and set now happen with interrupts off, and a call for a receive
+  still in progress does nothing. The scroll bar also no longer draws itself again at every step while it is tracked.
+  A pass of the event loop that took three seconds or more is logged with the stream's state ("the event loop was away
+  12.4 s; video stream, waiting for room, ..."), so a lock-up on the SE leaves what went before it in Aurora68 Log and
+  the kernel's log.
+- The About box, the version announced to the server and the User-Agent say 1.8; Aurora68 Video says 1.1.
+
+**Tested** (23 November 2026, the solo board in QEMU, System 7.1 with Riptide, the music server on the host through pinet,
+over IPv4 and IPv6 (pinet's fd68::1), a test library of 46 videos by ten artists, one of them in `Albums/_/_/` with "_"
+as its artist):
+- **IPv6.** No preferences: the probe's answer logged as "it names IPv4 192.168.68.1, IPv6 fd68::1", the order "fd68::1
+  first, then 192.168.68.1", the server answering at fd68::1 and the videos' streams coming from `[fd68::1]:18523`. A
+  server naming an IPv6 address that does not answer (fd68::99, Library > Servers > Search Again): "no answer from
+  fd68::99 ...: trying 192.168.68.1", the lists and streams over IPv4 from then on. The next start with those
+  preferences tried the IPv6 address first again. In both long sessions Riptide itself dropped its fd68:: address after
+  four or five minutes (its mDNS announcement then named only the link-local address, and no router solicitation
+  followed); the library moved to IPv4 by itself, the stream that was playing reconnected (docs/08 item 124 has what
+  this may mean for the SE).
+- **The video window.** Its size box dragged at 640 x 480 (a 468 x 263 picture, `docs/img/system71-play18-size-box.png`)
+  and at 512 x 342 (`mac.screen=512x342` with the 512 x 342 declaration ROM: 294 x 165,
+  `docs/img/system71-512x342-play18-size-box.png`), the shape kept, the size kept for the next video and across a Quit.
+- **The background.** With the Finder in front the video went on (`docs/img/system71-play18-background-finder.png`: a
+  Finder window over part of it, the card drawing around it, the heartbeat saying "region parts 3"); with the Library
+  window over part of it, the parts that show (`docs/img/system71-play18-library-over-video.png`); with the Finder's
+  Apple menu held down over the picture for eight seconds, the menu left alone and the picture held (`docs/img/system71-play18-menu-over-video.png`; "192 under a menu" in the heartbeat), and going on when the menu closed.
+- **The titles.** "Long Tones — Ninety Seconds" on the video window; "Unknown artist" at the head of the "_" group in
+  Library > Videos and in the Artists list (`docs/img/system71-play18-videos-unknown-artist.png`), and that video's
+  window titled "Kerosene", the Library's strip "Kerosene" over "0:06 of 0:40".
+- **Places.** The windows put back at 640 x 480 from the arrangement kept for it after a session at 512 x 342 in between
+  (the Library window at 49,25-592,406 again, after 5,25-508,338 on the small screen; "the windows' places kept for this arrangement of screens").
+- **Scrolling.** With "Ninety Seconds" playing and its window partly under the Library window: the down arrow held 12
+  seconds, the up arrow 12, 24 clicks in the page areas, three drags of the thumb, the arrow held 8 more: nothing locked
+  up, the picture went on, and the log said "the event loop was away 12.2 s; video stream, a receive out, 512 KB free in
+  the ring, last bytes 0 s ago".
+- **Found and fixed on the way:** a new video window opened at Double Size (1.7) or at the size box's size went to the
+  screen's top left corner (the window's region is empty until it is shown, and the size was worked out from it); and
+  the card's first way of reading the Mac's memory, through the 68k's MMU tables, stopped the kernel during a start-up
+  (reading a garbage handle while the tables were rebuilt): it now reads RAM directly, inside its size, aligned.
+
 ## The WiFi in the testbed: a radio that exists only in software
 QEMU's raspi3b has no WiFi chip (no SDIO function, no firmware to load), so the real driver in
 `alice_net.c` can only report "off" there, and until 16 November the WiFi unit, Aurora68 Wi-Fi and the

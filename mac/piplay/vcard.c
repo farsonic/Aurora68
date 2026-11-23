@@ -148,6 +148,14 @@ void vc_stop(void)
 }
 void vc_end(void) { if (blk) ctl(114, 1, 0); }
 int vc_state(void) { return blk ? (int)blk->state : 0; }
+/* what the card holds (a card with its buffer in the Pi, block version 2 and later, docs/08 item 125): the N of "Buffering
+   N%" and the seconds held; 0 from an older card */
+int vc_buffer(unsigned long *pct, unsigned long *ms)
+{
+	if (!blk || blk->version < 2) return 0;
+	*pct = blk->buffer_pct; *ms = blk->buffer_ms;
+	return 1;
+}
 unsigned long vc_pos_ms(void) { return blk && started ? blk->pos_ms : 0; }
 const char *vc_message(void) { return blk ? (const char *)blk->message : ""; }
 void vc_volume(int v)
@@ -259,7 +267,20 @@ static int on_a_screen(const Rect *r)
 	Point a = { (short)(r->top + 4), (short)(r->left + 4) };
 	return PtInRgn(pt_long(a), LM_GRAYRGN);
 }
-static Rect content_g(void) { return *RGN_BBOX(*(void ***)((char *)vw + 118)); }   /* contRgn: the content, global */
+/* the content, global: from the port (a window not yet shown has an empty contRgn, and 1.7's Double Size for a new
+   window took that for a window at 0,0 and moved it to the screen's top left corner; seen in the testbed, 1.8) */
+static Rect content_g(void)
+{
+	void *port;
+	Rect c = *PORT_RECT(vw);
+	Point tl = { c.top, c.left }, br = { c.bottom, c.right };
+	GetPort(&port);
+	SetPort(vw);
+	LocalToGlobal(&tl); LocalToGlobal(&br);
+	SetPort(port);
+	c.top = tl.v; c.left = tl.h; c.bottom = br.v; c.right = br.h;
+	return c;
+}
 static Rect pic_g(void) { Rect c = content_g(); c.bottom = (short)(c.bottom - STRIP); return c; }
 static void quiet(int on);
 /* the largest picture of the video's shape on screen s, below the menu bar on the main one, with the title bar and the

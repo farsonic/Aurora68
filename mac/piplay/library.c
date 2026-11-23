@@ -1136,8 +1136,7 @@ void lib_poll(void)
 				copy(h, alt_host[0], sizeof h);
 				for (k = 1; k < nalt; k++) copy(alt_host[k - 1], alt_host[k], sizeof alt_host[0]);
 				nalt--;
-				p = put_str(put_str(put_str(t, "no answer from "), srv_host), " (");
-				p = put_str(put_str(p, fetch.error ? fetch.error : "?"), "): trying ");
+				p = put_str(put_str(put_str(t, "no answer from "), srv_host), " (the line above says why): trying ");
 				p = put_str(p, h);
 				*p = 0;
 				logs(t, 0);

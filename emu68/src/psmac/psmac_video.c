@@ -65,7 +65,7 @@
  * Since 23 November 2026 (Aurora68 Play 1.8, docs/08 item 124) a program may also hand over its window's visible
  * region (the block's vis_rgn): the card then reads the region at every picture and draws only where the window
  * shows, so a video behind another program's window, or partly under one, goes on where it can be seen; and no
- * picture is drawn while a menu is down (the Mac's TheMenu), whichever program pulled it down.
+ * picture is drawn while a menu is down (the menu bar's saved bits, MBSaveLoc), whichever program pulled it down.
  */
 #include <stdint.h>
 #include "support.h"

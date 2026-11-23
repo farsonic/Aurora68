@@ -1068,7 +1068,13 @@ const char *radio_status(char *b)
 	}
 	default:
 		if (radio.paused) p = put_str(p, "Paused");
-		else if (radio.video && vc_state() != A68V_S_PLAYING) p = put_str(p, "Buffering");
+		else if (radio.video && vc_state() != A68V_S_PLAYING) {
+			unsigned long pct, ms;              /* 1.8: the card's own figure (its buffer in the Pi, block version 2) */
+			if (vc_state() == A68V_S_BUFFERING && vc_buffer(&pct, &ms)) {
+				p = put_str(put_num(put_str(p, "Buffering "), pct > 100 ? 100 : pct), "%, ");
+				p = put_str(put_num(p, ms / 1000), "."); p = put_str(put_num(p, ms / 100 % 10), " s");
+			} else p = put_str(p, "Buffering");
+		}
 		else if (radio.prebuffering) {
 			unsigned long pc = radio.held_ms / 30;          /* of three seconds */
 			p = put_str(put_num(put_str(p, "Buffering "), pc > 99 ? 99 : pc), "%");
