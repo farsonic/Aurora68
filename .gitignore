@@ -54,6 +54,7 @@ mac/build/piplay.elf
 mac/build/piplay_traps.txt
 mac/build/pivideo2.o
 mac/build/usbnet_frame_test
+mac/build/usb_hcint_test
 mac/build/sl/
 mac/build/pislots.elf
 mac/build/pislots_traps.txt

@@ -255,6 +255,7 @@ One line, options separated by spaces, no comments:
 | `mac.sescsiwait=250` | on `mac.board=se`, the SCSI Manager's selection timeout in milliseconds, 1 to 1000 (default 250) |
 | `mac.altcmd=1` | a USB or Bluetooth PC keyboard's Alt and Windows keys swapped, so that the key beside the space bar is Command |
 | `usb=off`, `usb=pio` | the Pi's USB: `off` leaves it alone (no USB keyboard, mouse, stick or Ethernet adapter); `pio` moves data without DMA, for a device that misbehaves |
+| `usb.trace=1`, `usb.trace=2` | debugging the Pi's USB, in the log: `1` every failed transfer in full (the host channel's interrupt bits after the start split and after each complete split, HCTSIZ, HCCHAR, HCSPLT), a sample of the keyboard's NAKed polls and every failed transfer of a USB stick; `2` as 1, and the keyboard's data toggle set again every ten seconds (a test of that path). Without it the first eight failed transfers after each enumeration still get one line each naming the bits, and the heartbeat counts the keyboard's failed polls by kind. docs/08 item 130 |
 | `wifi.sdclock=HZ` | the WiFi chip's SDIO clock, for a chip that misbehaves at the default |
 | `remote.mac=XX:XX:XX:XX:XX:XX` | the remote control's own Ethernet address on the wired port (default: made from the Pi's) |
 | `mac.cardrom=off` | the declaration ROMs in the card's root are not offered, only the container's |

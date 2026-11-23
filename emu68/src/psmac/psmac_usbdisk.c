@@ -88,6 +88,7 @@
 #include "psmac_usbdisk.h"
 #include "psmac_fatfs.h"
 #include "psmac_hfsview.h"
+#include "usb_hcint.h"
 
 const char *psmac_option(const char *key);
 extern int psmac_audio_poll(void);
@@ -209,6 +210,59 @@ static uint32_t ch_run(int c, uint32_t hcchar, uint32_t hcsplt, uint32_t hctsiz,
     return 0;
 }
 
+/* The last failed transfer's channel bits and size register, for the log only (23 November 2026, docs/08
+   item 130: the owner's stick whose every command block failed said nothing more than "did not go").
+   usb.trace=1 logs each failed transfer as it happens. Nothing here changes what a transfer does. */
+static uint32_t last_hcint, last_hctsiz, last_hcchar, fail_seq, fail_said;
+static int trace = -1;
+static void note_fail(int c, uint32_t s, uint32_t hcchar)
+{
+    last_hcint = s;
+    fail_seq++;
+    last_hctsiz = rd(HCTSIZ(c));
+    last_hcchar = hcchar;
+    if (trace < 0) {
+        const char *o = psmac_option("usb.trace");
+        trace = o && o[0] >= '1' && o[0] <= '9';
+    }
+    if (trace) {
+        char b[96];
+        uhc_bits(s, b, sizeof b);
+        kprintf("[USB] disk transfer on channel %d failed: %s, HCINT %s, HCTSIZ %08x, HCCHAR %08x\n", c, uhc_outcome_name(uhc_classify(s)), b,
+                last_hctsiz, hcchar);
+    }
+}
+static const char *last_fail(void)
+{
+    static char b[160];
+    char bits[96], regs[48];
+    unsigned k = 0;
+    const char *parts[4] = { "no transfer failed: the transport answered, the protocol did not", 0, 0, 0 };
+    if (fail_seq != fail_said) {                    /* a transfer failed since the last recovery */
+        uhc_bits(last_hcint, bits, sizeof bits);
+        static const char hx[] = "0123456789abcdef";
+        const char *a = ", HCTSIZ ", *c = ", HCCHAR ";
+        unsigned r = 0;
+        for (int w = 0; w < 2; w++) {
+            uint32_t v = w ? last_hcchar : last_hctsiz;
+            for (const char *q = w ? c : a; *q; q++)
+                regs[r++] = *q;
+            for (int i = 28; i >= 0; i -= 4)
+                regs[r++] = hx[(v >> i) & 15u];
+        }
+        regs[r] = 0;
+        parts[0] = "the transfer's HCINT ";
+        parts[1] = bits;
+        parts[2] = regs;
+    }
+    fail_said = fail_seq;
+    for (int i = 0; parts[i]; i++)
+        for (const char *q = parts[i]; *q && k < sizeof b - 1; q++)
+            b[k++] = *q;
+    b[k] = 0;
+    return b;
+}
+
 static uint32_t hcchar_of(const struct dev *d, int type, int ep, int in, uint32_t mps)
 {
     return (uint32_t)d->addr << 22 | 1u << 20 | (uint32_t)type << 18 | (uint32_t)!!in << 15 | (uint32_t)ep << 11 | mps;
@@ -239,6 +293,8 @@ static int xfer_split(int c, const struct dev *d, int type, int ep, int in, uint
                     break;
             }
         }
+        if (!s || (s & HC_NYET) || (s & HC_STALL) || !(s & (HC_NAK | HC_XFERCOMPL)))
+            note_fail(c, s, hcchar);
         if (!s || (s & HC_NYET))
             return E_TIMEOUT;
         if (s & HC_STALL)
@@ -281,6 +337,8 @@ static int xfer(int c, const struct dev *d, int type, int ep, int in, uint8_t *t
         return E_ARGS;
     arm_flush_cache((uintptr_t)buf, size ? size : 4);
     uint32_t s = ch_run(c, hcchar_of(d, type, ep, in, mps), 0, size | pkts << 19 | (uint32_t)*tog << 29, bus_addr(buf), timeout_ms);
+    if (!(s & HC_XFERCOMPL))
+        note_fail(c, s, hcchar_of(d, type, ep, in, mps));
     if (!s)
         return E_TIMEOUT;
     uint32_t t = rd(HCTSIZ(c));
@@ -575,12 +633,13 @@ static void reset_recovery(struct unit *u, const char *why)
 {
     struct dev *d = &u->d;
     uint8_t s[8] = { 0x21, 0xff, 0, 0, d->itf, 0, 0, 0 };   /* Bulk-Only Mass Storage Reset */
+    char f[160];
+    memcpy(f, last_fail(), sizeof f);               /* the failure's bits, before the recovery's own transfers */
     int r = ctl(d, s, 0, 0);
     int a = clear_halt(u, 1), b = clear_halt(u, 0);
     u->resets++;
     if (u->resets <= 5)
-        kprintf("[USB] disk %d: %s: reset recovery (reset %s, endpoints %s)%s\n", (int)(u - U), why, r < 0 ? "refused" : "taken",
-                a || b ? "not cleared" : "cleared", u->resets == 5 ? "; further ones are counted, not logged" : "");
+        kprintf("[USB] disk %d: %s (%s): reset recovery (reset %s, endpoints %s)%s\n", (int)(u - U), why, f, r < 0 ? "refused" : "taken", a || b ? "not cleared" : "cleared", u->resets == 5 ? "; further ones are counted, not logged" : "");
 }
 
 /* One command: 0 GOOD, 1 CHECK CONDITION (or FAILED: the sense is then fetched by scsi()), negative:
@@ -590,6 +649,7 @@ static int bot(struct unit *u, const uint8_t *cdb, int cdblen, int in, uint8_t *
     struct dev *d = &u->d;
     uint32_t tag = ++u->tag;
     int r;
+    fail_said = fail_seq;                               /* the log names only this command's failed transfers */
     memset(cbw, 0, 31);
     put32le(cbw, 0x43425355u);                          /* 'USBC' */
     put32le(cbw + 4, tag);

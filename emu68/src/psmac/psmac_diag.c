@@ -131,6 +131,7 @@ const struct pdg_opt pdg_opts[] = {
     { "mac.synclog", PDG_G_DEBUG, PDG_F_ONCE, A, "1", 0, "1: every log character sent to the serial line before going on (slower, but nothing is lost if the Pi stops)." },
     { "mac.vframelog", PDG_G_DEBUG, PDG_F_ONCE, A, "1|0", 0, "1: the video decoder card logs every picture it decodes." },
     { "mac.scsitrace", PDG_G_DEBUG, PDG_F_ONCE, PDG_SE | PDG_PLUS | PDG_IICI, "#", "200", "The first N accesses to the SCSI chip in the log." },
+    { "usb.trace", PDG_G_DEBUG, PDG_F_ONCE, A, "1|2", 0, "1: every failed USB transfer in full (the channel's bits per split, its registers); 2: also the keyboard's toggle set again every 10 s, a test." },
     { "mac.solotrace", PDG_G_DEBUG, PDG_F_ONCE, PDG_SOLO, "#", "200", "The solo board's first N SCSI and ADB commands in the log." },
     { "mac.setrace", PDG_G_DEBUG, PDG_F_ONCE, C, "#|#,*", "200,VIA", "The first N accesses to the compact Mac's chips in the log (N,VIA or N,SCC: of one chip)." },
     { "mac.plustrace", PDG_G_DEBUG, PDG_F_ONCE, PF, "#", "200", "The first N ADB commands of the Plus's keyboard and mouse layer in the log." },
