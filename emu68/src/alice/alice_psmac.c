@@ -372,6 +372,29 @@ static void in_testbed_poll(void)
         }
         intest_next = now + in_hz() * gap_ms / 1000; return;
     }
+    if (intest_kind == 6) {                                                 /* mac.inputedge=: the edge jump between two screens (docs/10) */
+        /* For Aurora68 Screen Setup's arrangement, the SE's screen at (0,0)-(512,342) and the HDMI one to its
+           right, tops aligned: across where they touch, then down the HDMI screen and against the wall below
+           the SE's, then back. Each pause is long enough for a MAME snapshot of the SE's screen (every ten
+           seconds) and a tools/vcshot.py of the HDMI one; .PiInput logs every jump with its points. */
+        static const struct { int16_t n, dx, dy, pause_s; const char *what; } edge_script[] = {
+            { 40, -30, -20, 0, 0 },                 /* the top-left corner: (0, 0) on the SE's screen */
+            { 10, 0, 10, 0, "on the SE screen at (0,100)" },
+            { 26, 20, 0, 12, "across the SE screen's right edge at y 100" },
+            { 20, 0, 25, 12, "down the HDMI screen" },
+            { 4, -20, 0, 12, "against the HDMI screen's left edge below the SE screen" },
+            { 8, 20, 0, 12, "back across the SE screen's right edge" },
+        };
+        static int phase, k;
+        uint32_t gap_ms = 50;
+        if (phase >= (int)(sizeof edge_script / sizeof edge_script[0])) { intest_at = 0; kprintf("[PSMAC] input edge script done\n"); return; }
+        if (k < edge_script[phase].n) { aga_virtual_mouse_update(edge_script[phase].dx, edge_script[phase].dy, 0); k++; }
+        else {
+            if (edge_script[phase].what) kprintf("[PSMAC] input edge script: %s, pausing %d s\n", edge_script[phase].what, edge_script[phase].pause_s);
+            gap_ms = 1000u * (uint32_t)edge_script[phase].pause_s + 50; phase++; k = 0;
+        }
+        intest_next = now + in_hz() * gap_ms / 1000; return;
+    }
     if (intest_kind == 3) {                                                 /* mac.inputright=: walk the mouse onto the second screen */
         int s = intest_step++;
         if (s < 60) { aga_virtual_mouse_update(30, 4, 0); intest_next = now + in_hz() * 50 / 1000; }
@@ -406,6 +429,7 @@ void psmac_alice_input_click(uint32_t seconds, const int *pts, int n)
     for (int i = 0; i < click_n; i++) { click_pt[i][0] = pts[3 * i]; click_pt[i][1] = pts[3 * i + 1]; click_pt[i][2] = pts[3 * i + 2]; }
 }
 void psmac_alice_input_drag(uint32_t seconds)  { intest_at = seconds; intest_kind = 4; }   /* the cursor walks right, onto the second screen (docs/10) */
+void psmac_alice_input_edge(uint32_t seconds)  { intest_at = seconds; intest_kind = 6; }   /* the edge jump between the screens (docs/10) */
 
 void psmac_loop_report(void);
 /* heartbeat line for psmac_bus.c: the interrupt line and what holds it */
@@ -874,6 +898,11 @@ void psmac_alice_init(uint8_t *win)
     inr = (volatile struct alice_input_ring *)(win + ALICE_INPUT_WINDOW_OFF);
     for (uint32_t i = 0; i < sizeof(struct alice_input_ring) / 4; i++) ((volatile uint32_t *)inr)[i] = 0;
     inr->magic = ALICE_IN_MAGIC; inr->version = 1; inr->slots = ALICE_IN_SLOTS;
+    /* mac.edgejump=off: the cursor stops at a screen's edge where the neighbour does not touch it, as the ROM
+       has it; on, the default, .PiInput takes it onto the neighbour at the same proportion (docs/10, "The edge jump") */
+    { extern int psmac_bootarg_val(const char *key, char *out, unsigned max); char o[8];
+      if (psmac_bootarg_val("mac.edgejump", o, sizeof o) && (o[0] == '0' || ((o[0] | 32) == 'o' && (o[1] | 32) == 'f')))
+          inr->options |= ALICE_IN_OPT_NOEDGE; }
     __asm__ volatile("dmb ish" ::: "memory");
     alice_ready = 1;
 }

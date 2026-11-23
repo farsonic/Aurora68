@@ -4,6 +4,17 @@
 
 Since 0.13 (docs/08 items 96 and 103):
 
+- **The pointer goes to the other screen anywhere along the side** (docs/08 item 131, docs/10 "The edge jump", 23
+  November 2026). With the SE's own screen beside the HDMI one, the pointer used to cross only where the two
+  screens touch in Monitors' arrangement (for a 512 by 342 screen beside a 1440-line one, the top quarter of the
+  edge); elsewhere the edge was a wall. Now pushing the pointer against a side of a screen where another screen
+  lies takes it onto that screen at the same proportion along the edge (HDMI's left edge two thirds of the way down
+  is the SE screen's right edge two thirds of the way down), and the same way back, for every mouse: the SE's own,
+  USB and Bluetooth ones and the remote control's. `mac.edgejump=off` (Setup and Recovery's Options, Display) keeps
+  the old behaviour. It lives in the input driver, which comes with the declaration ROM: take the new
+  `aurora68-se-WxH.declrom` (in the container or on the card) as well as the kernel. Tested in MAME's SE with a 1024 by 768 HDMI screen
+  under System 7.1; the owner's SE with its own mouse is the real test.
+
 - **Music videos buffer much more: no more stutter when the network slows for a moment** (docs/08 item 125, docs/16
   "Buffering", 23 November 2026). The video decoder card now empties its 512 KB ring at once into a buffer of its
   own in the Pi's memory, 8 MB by default (one to two minutes of a music video at the classic Play's rates), so the

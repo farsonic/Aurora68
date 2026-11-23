@@ -65,6 +65,7 @@ const struct pdg_opt pdg_opts[] = {
     { "mac.vcswap", PDG_G_DISPLAY, 0, A, "0|1", 0, "1: red and blue swapped on the HDMI screen, should the firmware say the wrong order (0: not)." },
     { "mac.displaywait", PDG_G_DISPLAY, 0, A, "#", "300", "Seconds within which a new HDMI mode must be kept on the Mac, or the old one comes back (0: wait for ever)." },
     { "mac.hdmiclock", PDG_G_DISPLAY, 0, A, "#", "162", "The pixel clock in MHz Aurora68 Display judges the monitor's modes against (162 for a Pi 3)." },
+    { "mac.edgejump", PDG_G_DISPLAY, 0, A, "on|off", 0, "off: the pointer goes from one screen to the next only where the two touch (on, the default: anywhere along that side, at the same proportion)." },
     { "mac.screencheck", PDG_G_DISPLAY, PDG_F_ONCE, C, "on|blind|off", 0,
       "The compact Mac's screen: on, read back and repaired; blind, written again without reading (the Plus-era default); off." },
 
