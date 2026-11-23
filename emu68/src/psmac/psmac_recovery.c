@@ -1027,7 +1027,7 @@ static char big[65536]; static int big_conn = -1;
 extern const char recovery_page[];
 static void out_head(struct rconn *h, int code, const char *ctype, int64_t len, const char *extra)
 {
-    const char *txt = code == 200 ? "OK" : code == 302 ? "Found" : code == 400 ? "Bad Request" : code == 401 ? "Unauthorized" : code == 403 ? "Forbidden" : code == 404 ? "Not Found" :
+    const char *txt = code == 200 ? "OK" : code == 204 ? "No Content" : code == 302 ? "Found" : code == 400 ? "Bad Request" : code == 401 ? "Unauthorized" : code == 403 ? "Forbidden" : code == 404 ? "Not Found" :
                       code == 409 ? "Conflict" : code == 411 ? "Length Required" : code == 413 ? "Request Entity Too Large" : code == 422 ? "Unprocessable Entity" :
                       code == 429 ? "Too Many Requests" : code == 503 ? "Service Unavailable" : code == 507 ? "Insufficient Storage" : "Error";
     struct sb b = { h->out, 0, sizeof h->out };
@@ -2203,6 +2203,46 @@ static void ans_bundle(struct rconn *h, int c)
     out_head(h, 200, "text/plain; charset=iso-8859-1", out, "Content-Disposition: attachment; filename=\"aurora68-report.txt\"\r\n");
     h->src = (const char *)bun_out; h->src_len = out; h->src_pos = 0; h->kind = RK_SRC;
 }
+/* the access point's sign-in (23 November 2026, the owner's first try with a Mac: the "Join Network" sheet kept its
+   Cancel button after the PIN, and Cancel leaves the network). A phone or a Mac decides a network is signed in when
+   its own check page answers as on the internet; until then it shows the page as a sign-in, with Cancel. So once a
+   device has given the right PIN (any /r/ request with it), its checks get the answers they expect and the sheet's
+   button becomes Done; the device stays joined and the page opens in its own browser at http://192.168.4.1/. Others'
+   checks are still sent to the page. The list is the access point's guests only, forgotten at restart. */
+static uint8_t ap_in[16][4]; static unsigned ap_in_n;
+static int ap_signed_in(const uint8_t ip[4])
+{
+    for (unsigned i = 0; i < ap_in_n && i < 16; i++)
+        if (!__builtin_memcmp(ap_in[i], ip, 4)) return 1;
+    return 0;
+}
+static void ap_sign_in(const uint8_t ip[4])
+{
+    if (ap_signed_in(ip)) return;
+    __builtin_memcpy(ap_in[ap_in_n % 16], ip, 4);
+    ap_in_n++;
+    kprintf("[RECOVERY] access point: %u.%u.%u.%u signed in with the PIN: its network checks are answered as online\n", ip[0], ip[1], ip[2], ip[3]);
+}
+static int ends(const char *s, const char *t)
+{
+    unsigned a = 0, b = 0;
+    while (s[a]) a++;
+    while (t[b]) b++;
+    return a >= b && !__builtin_memcmp(s + a - b, t, b);
+}
+static int ap_probe_answer(struct rconn *h, const char *path)
+{
+    static const char apple[] = "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>";
+    static const char firefox[] = "<meta http-equiv=\"refresh\" content=\"0;url=https://support.mozilla.org/kb/captive-portal\"/>";
+    if (ends(path, "/hotspot-detect.html") || ends(path, "/success.html")) { respond_src(h, "text/html", apple, sizeof apple - 1); return 1; }
+    if (ends(path, "/generate_204") || ends(path, "/gen_204")) { out_head(h, 204, "text/plain", 0, 0); h->kind = RK_OUT; return 1; }
+    if (ends(path, "/connecttest.txt")) { respond_src(h, "text/plain", "Microsoft Connect Test", 22); return 1; }
+    if (ends(path, "/ncsi.txt")) { respond_src(h, "text/plain", "Microsoft NCSI", 14); return 1; }
+    if (ends(path, "/canonical.html")) { respond_src(h, "text/html", firefox, sizeof firefox - 1); return 1; }
+    if (ends(path, "/success.txt")) { respond_src(h, "text/plain", "success\n", 8); return 1; }
+    if (ends(path, "/check_network_status.txt")) { respond_src(h, "text/plain", "NetworkManager is online\n", 25); return 1; }
+    return 0;
+}
 
 static void handle(int c)
 {
@@ -2237,6 +2277,7 @@ static void handle(int c)
     /* the access point's guests: a phone checks a network by fetching a known page (generate_204, hotspot-detect.html);
        every name leads here (psmac_apnet.c), and the answer sends it to the page, which it offers as a sign-in */
     if (get && ap_active() && !starts(path, "/r/")) {
+        if (ap_signed_in(h->peer) && ap_probe_answer(h, path)) return;
         out_head(h, 302, "text/html", 0, "Location: http://192.168.4.1/\r\n");
         h->kind = RK_OUT;
         return;
@@ -2253,6 +2294,7 @@ static void handle(int c)
         return;
     }
     pin_wrong = 0;
+    if (ap_active()) ap_sign_in(h->peer);
     char v[REC_NAME_MAX + 8], v2[REC_NAME_MAX + 8];
     path += 3;
     if (get && !__builtin_strcmp(path, "state")) { ans_state(h); return; }
