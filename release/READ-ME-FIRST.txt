@@ -84,9 +84,9 @@ What is in the zip
                                             to the SD card, passwords hidden), Aurora68 Status
                            Extensions (to install)/  Aurora68 Disk, Aurora68 Machine, Aurora68
                                             Screen Setup, Aurora68 Sound, Aurora68 Wi-Fi &
-                                            Bluetooth, and a Read Me. In 0.13 replace
-                                            Aurora68 Machine: it installs the exact SANE
-                                            the Pi reads from the SE's ROM (Photoshop)
+                                            Bluetooth, and a Read Me. In 0.14 replace
+                                            all of them and every program: nearly
+                                            all changed since 0.13
                          Until 21 November 2026 the programs were PiPlay, PiDisplay, PiSlots,
                          PiLog, PiStatus, PiNet, PiWiFi, PiBlue, PiPing, PiColor, PiScreens and
                          PiDepth, the extensions PiDisk, PiMach, PiScrn, Sound PiStorm and

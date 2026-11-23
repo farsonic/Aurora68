@@ -10,16 +10,16 @@ WiFi and Bluetooth through a NuBus card that exists only in software.
 Start with `docs/00-overview.md`: it tells the story of the project and points to the working
 documents for each part. The day-by-day record of what was found and fixed is `docs/08`.
 
-## Quick start (release 0.13)
+## Quick start (release 0.14)
 
-Release 0.13 runs on a real Macintosh SE: System 7.1 and System 6.0.8 start from the SE's own SCSI
+Release 0.14 runs on a real Macintosh SE: System 7.1 and System 6.0.8 start from the SE's own SCSI
 disk (or a BlueSCSI) or from a disk image on the SD card, with the SE's screen, keyboard, mouse and
 speaker, a second screen and stereo sound on HDMI, Ethernet and WiFi, USB and Bluetooth keyboards and
 mice, USB sticks, and a remote control. What has been checked on the hardware and what only in the
 emulator is listed in `RELEASE-NOTES.md`; the day-by-day record is `docs/08`. The steps below set up
 the card; "Disks and disk images: what works" (below) says which disks the Mac can use.
 
-**The Plus, 512Ke, 512K and 128K (after 0.13, not in a release yet).** The same kernel has boards for
+**The Plus, 512Ke, 512K and 128K (new in 0.14).** The same kernel has boards for
 the other compact Macs: `mac.board=plus`, `512ke`, `512k` or `128k` in `cmdline.txt` in place of
 `mac.board=se`; everything else on the card is as for the SE. All four reach System 7.1's Finder in
 the testbed (docs/08 item 96); none has been tried on a real machine yet. What differs from the SE:
