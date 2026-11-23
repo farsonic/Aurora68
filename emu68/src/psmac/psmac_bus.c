@@ -725,7 +725,7 @@ void psmac_service_core(void)
                        loop, which waits for ioResult to leave 1): the parameter block A0 points at, and the driver
                        its ioRefNum names (UTableBase $11C: the DCE's dCtlDriver, the driver's name at +18) */
                     uint32_t pcw = BE32((uint32_t)(uintptr_t)m->PC); int ok1, ok2;
-                    uint32_t w0 = mac_rd32(pcw, &ok1), w1 = mac_rd32(pcw + 4, &ok2);
+                    uint32_t w0 = psmac_mac_rd32(pcw, &ok1), w1 = psmac_mac_rd32(pcw + 4, &ok2);   /* the loop is in the ROM: mac_rd32 reads RAM only */
                     if (ok1 && ok2 && w0 == 0x30280010u && (w1 >> 16) == 0x6efau) {
                         uint32_t pb = BE32(m->A[0].u32); int ok;
                         uint32_t trap = mac_rd32(pb + 4, &ok) & 0xffff, compl = mac_rd32(pb + 12, &ok);

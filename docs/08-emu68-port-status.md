@@ -5723,6 +5723,87 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      PixMap is that screen's, its gdRect's corner); the box is drawn again once the pointer has left it. Not yet seen
      on the SE (the emulator was busy); the owner's next run is the test.
 
+127. **The owner's two lock-ups in a video: a TCPAbort Riptide never saw; Aurora68 Play 1.8.1 (23 November).** Twice on
+   the real SE (Play 1.8, Riptide over WiFi, a video through the card on the HDMI screen, Octavo open), after minutes of
+   video the Mac froze: the pointer moved, windows could not be moved or brought forward, the keyboard did nothing. The
+   heartbeats, 17 and 13 in a row, all said the same: PC 4080bb8c, SR 2010, the JIT at 169 MIPS, interrupts of levels 1
+   and 2 still taken, Aurora68 Play in front. In the IIci ROM 4080bb8c is `movew %a0@(16),%d0; bgts 4080bb8c`, the
+   Device Manager's wait for a synchronous call's ioResult to stop being positive. Before each, Riptide had logged
+   "tcp: memory pressure, 256 KB in socket buffers" (the second time seven times, as a new video's stream, the second
+   of a queue, began), and the video sat at "buffering, 1 KB waiting".
+   - *Which call, from the registers.* A0 was 07f1aa3c the first time and 07ed68c4 the second, beside Play's globals.
+     Play's image is linked at 0 with its globals in it, so a static at offset X sits at the load address plus X; of
+     Play's parameter blocks (`nm mac/build/piplay.elf`; the committed binary differs from a rebuild only in its
+     header) one gives a load address that explains the other registers too, both times: fetch.c's `pb_end`
+     (0x2c29c), with A4 at 0xf08 (`memset`) and A3 at 0xc2b2 (`net_ipp`), the registers fetch.c's `teardown()` keeps
+     them in, A2 (saved by the trap dispatcher) at 0x1024 (`mac_PBControl`), and the stack's other block `pb_end +
+     0x84`, `pb_rcv` (A1 after memset). So the Library connection's `teardown()`, TCPAbort or TCPRelease; the D1 the
+     dispatcher saved (0x100, then 0) rules out the TCPRelease, before which D1 holds Ticks: the TCPAbort. That
+     teardown ends every list, cover, state report and command poll of the Library, several a second while a video
+     plays with the device on.
+   - *Reproduced in the testbed* (solo board, System 7.1, Riptide of mac-port fed1a6d, Play 1.8, the music server on
+     the host, a queue of two 4-minute videos). With the card's buffer at its 8 MB the testbed's intake (about 150
+     KB/s through pinet, the film 50 KB/s) never filled it in four minutes and nothing locked up; Riptide logged
+     "memory pressure, 171 KB" 27 times as on the SE. With `mac.vbuffer=1` (1 MB, so that the card's ring fills and
+     the receive chain stops for room, as the SE's did once its 8 MB were full: "8756 KB waiting (46.0 s, 100%)" in
+     the owner's log) the freeze came twice in two tries, after 112 and 57 s of video: "library: The music server
+     stopped answering." and then PC 4080bb8c beat after beat with D3-D7 00000008 00000961 00000001 00000003
+     00000000 and a stack of the same shape as the owner's. main's new heartbeat line did not show at first: it read
+     the PC's two words with `mac_rd32`, which reads RAM only, and the loop is in the ROM; with `psmac_mac_rd32`
+     (fixed here) it said `the Mac waits for a driver: .IPP6 (ioRefNum -56) csCode 39, trap a004, ioResult 1,
+     ioCompletion 00000000`: TCPAbort, synchronous, on .IPP6.
+   - *Why Riptide never completed it.* Riptide's TCPAbort cannot wait: it is answered in the stack's next round. So the
+     stack never had it. Riptide's .IPP and .IPP6 are concurrent drivers (its drvr.S): a call that must wait is put on
+     the stack's own list and taken off the Device Manager's queue (`_Dequeue`), and drvrActive is cleared. The IIci
+     ROM's Device Manager (4080b5f6) puts every call on the driver's queue and, if drvrActive was clear, sets it and
+     calls the driver for the queue's *head*; while it is set a call is only queued, and IODone, when the driver
+     finishes one, takes the next off the head. drvrActive is set with interrupts on, and the stack's deferred task
+     runs at the end of any interrupt that comes while a program is at level 0, which a program in `_Control` is; that
+     task calls the completion routine of Play's receive chain, which makes the next TCPRcv. So a call can come while
+     the driver is taking another. Two faults then lost it. Riptide linked the call it was taking into its own list
+     through its qLink, which was still the Device Manager's link to the call behind, so that call was cut off the
+     queue, and the `_Dequeue` that followed left the queue empty; and the path never looked at the queue again, as
+     IODone would have. The call behind was never handed to the driver nor completed: a TCPRcv of the chain (the
+     video stood still at "1 KB waiting") or of the Library (40 s later "stopped answering", which brought the
+     teardown), or, the next time, the teardown's TCPAbort itself, for which Play then waited for ever. Made by hand in
+     Riptide's IPP6 test program (drvrActive set with interrupts off, an ip6GetInfo, queued only, drvrActive cleared,
+     a second ip6GetInfo, which the Device Manager hands the driver as the head, the first): with fed1a6d the second
+     never completed (`DBG after q2: head 00000000 tail 00000000 ... res2 1`, a scratch variant printing the DCE's
+     queue). The burst at the network's full rate (4.7 MB/s on the owner's WiFi since item 125's buffer) made it
+     likely: the deferred task ran at every frame, so the window between the Device Manager's `bset` and the driver's
+     `_Dequeue` was hit far more often. "Memory pressure" is the burst's mark (socket buffers full of a stream read
+     faster than the card plays it), not a cause: nothing in Riptide waits on socket memory (tcp_mem.c only stops
+     buffers growing and, above mem_high, drops segments for the sender to send again).
+   - *Riptide's fix*, on its branch `play-hang` from mac-port: the Control entries (ipp.c, ipp6.c) take a call that
+     waits off the Device Manager's queue themselves (`ipp_dm_dequeue`, interrupts off) before its qLink is used, and
+     the path for a call that waits (drvr.S) looks at the queue with interrupts off: a call there is taken as IODone
+     takes it, the driver staying active, through the entry its ioTrap names. The IPP6 test has the case ("a call
+     queued while the driver was busy completes", "... and so does the call behind it"): 95 passed and 2 failed
+     with the fix, 94 and 3 without (the two others fail in this testbed either way: a scope name and riptide.conf
+     host lines it does not have); Riptide's host suite 42 passed, 0 failed, 18 skipped.
+   - *Tested after the fixes* (the same testbed): Play 1.8 with the fixed Riptide and the 1 MB buffer played the first
+     video to its end (240 s, the ring full throughout) and a minute of the second (it had frozen in both tries before). Play 1.8.1 with the fixed Riptide and the card's 8 MB, the
+     Library's traffic and the scratch program that makes the old driver lose the next call: the first video to its
+     end and the second begun, no call left, the intake resting at 20 s held and going on at 10 ("rest 1" ... "rest 3"), the first video's
+     whole stream 15,730 KB in 241 s (533 kbit/s, its own rate) where Play 1.8 had pulled 7.4 MB in the first 50 s.
+     Play 1.8.1 with the old Riptide and the scratch program: no freeze; its first version's receive chain stood still
+     on a lost receive, so a receive that has not come back 30 s past its own timeout (and an open or a send after 30
+     or 45 s) now ends the connection, which is made again from where it was (seen: the receive's block and buffer left
+     to the driver, the video again from 182 s; the five-second wait of a lost synchronous call did not come up, the
+     lost calls were receives); that watchdog's first version fired on
+     every rest (the time of the last byte, from before the rest) and then on a receive made at interrupt time after
+     the event loop had read Ticks (unsigned, so "later" was "long ago"): it now counts from the receive's own start,
+     against Ticks read then, signed. The HDMI sizing is tested on the host only (the solo board has no slot $A
+     screen); on the SE's screen the stream is today's 320 x 240.
+   - *Play 1.8.1* (docs/09 "Aurora68 Play 1.8.1"): no synchronous call to a network driver at all. Each is made
+     asynchronously and waited for five seconds at most, the receive chain kept going meanwhile (`net_call`); one not
+     back is logged and its block, and the buffers the driver may still write into, left to the driver and replaced
+     (`net_leave`), given back once the driver is done with them, a stream left so released then. An open, a send or a
+     receive that never comes back (past the driver's own timeouts) ends the connection instead of standing still
+     for ever. The video's intake rests while the card holds more than 20 seconds and goes on below 10. And, the owner's
+     wish of the same day, a stream sized for the video window when it is on the HDMI screen, up to 960 x 540, with
+     Controls > Video Quality.
+
 130. **The USB keyboard that sent nothing until it was re-plugged; the host channel's bits in the log (23
    November).** The owner's Pi 3B (the SE's PiStorm, the LAN9514 hub) has long needed the USB keyboard unplugged and
    plugged in again after power-on (item 41 put it down to a device not ready at the boot's enumeration and added

@@ -4,6 +4,19 @@
 
 Since 0.13 (docs/08 items 96 and 103):
 
+- **Aurora68 Play 1.8.1: no more lock-ups in a network call; videos sized for the HDMI screen** (docs/08 item 127,
+  docs/09 "Aurora68 Play 1.8.1", 23 November 2026). The owner's SE froze twice after minutes of video, the pointer
+  moving and nothing else: Play waited for ever in a synchronous call (its library connection's TCPAbort) that Riptide
+  had lost. Play now makes every call to the network driver asynchronously and waits a
+  few seconds at most, the stream kept going meanwhile; a call that does not come back is logged and left to the
+  driver with its block and buffers, and Play carries on. A video's intake now rests once the card holds 20 seconds
+  and goes on below 10, instead of pulling the whole 8 MB at the network's full speed (the burst before both freezes).
+  With the video window on the HDMI screen the stream fits the window, up to 960 x 540, and is asked again at a larger
+  size when the window grows; Controls > Video Quality chooses Automatic or 320, 480, 640 or 960 wide (the SE's screen
+  keeps 320). Riptide's half (a call made while its driver was taking another was lost) is fixed on Riptide's branch
+  `play-hang`; update both. The kernel's heartbeat now names the driver and call a Mac stuck in a synchronous
+  Device Manager call waits for.
+
 - **The USB keyboard that had to be re-plugged after power-on** (docs/08 item 130, 23 November 2026). On the owner's
   Pi 3B the keyboard was found but sent nothing (one failed poll, then only "no data") until it was unplugged and
   plugged in again. The kernel now reads the USB controller's answer to each poll in the order Linux does (an error
