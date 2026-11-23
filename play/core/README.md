@@ -87,5 +87,5 @@ anything else, and nothing of it changed.
   `tools/devices_test.c`, `tools/music-server/play_check.c` in the server's own test). The macOS Play's XCTest
   suite (`macos/Aurora68Play/Tests`) checks its Swift wrappers over the core.
 
-Written on 22 November 2026; music videos added the same day (157 unit checks and 35 on the server's answers since,
+Written on 22 November 2026; music videos added the same day (158 unit checks and 34 on the server's answers since,
 158 as a 68020 program).

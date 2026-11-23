@@ -915,6 +915,31 @@ Not verified: the macOS app on a real Mac (only built and unit-tested on the run
 Live and on another player, a playlist station, the long poll against a live server); the classic Play on the SE;
 Find and covers in the testbed (the test library has none), a library of the owner's size through the paging.
 
+### Music videos in both Aurora68 Plays (22 November 2026)
+The owner's library holds music videos beside the albums. The music server now finds them, attaches each to its
+album (when it sits in an album's folder or a `Videos` folder inside one) or its artist, and sends each the cheapest
+way a Mac plays it: the file as it is, a remux into MP4 with the picture copied, or a transcode to H.264 and AAC (the
+last limited by `VIDEO_TRANSCODES` and refused with `VIDEO_TRANSCODE=off`), with HLS for AVFoundation, posters, and
+the sound alone as MP3 (tools/music-server/README.md, "Music videos"; docs/08 item 109 is the record). Both Plays ask
+for them with a third parameter on the `/mac/` text, `videos=1`, and read the `V` records with the shared core.
+
+- **Aurora68 Play for macOS 1.3.** An album's videos follow its songs, an artist's its albums (an artist with videos
+  alone is listed), each as its poster, title and length. A click plays one; right-click for Play Next and Add to
+  Queue: videos and songs share the queue, and a video plays as a video, then the queue goes on. The Video window
+  (AVKit: its own controls, full screen) opens by itself when a video starts, and from the film button in the bar;
+  Now Playing says video and shows the poster. On Live or another player a video is `v:ID`: another Mac shows it,
+  the SE and Live play its sound.
+- **Aurora68 Play 1.5 (classic).** A video is a row marked "Video:" (no number) after the album's tracks, and in
+  Find; an artist's row counts its videos, and an artist with videos and no album opens on them. Playing a video
+  plays its sound, `/vaudio/ID`, exactly as a track plays `/t/ID` (into the card, gaplessly into what follows); an
+  album's Play is still its songs. A video sent from another player or the panel plays the same way. The Play tells
+  the server it shows no video.
+- **Next: the picture on the SE.** The kernel's video card (docs/16) decodes MPEG-1; the server already serves a
+  library video in the card's format (`/vmpeg/ID?w=&h=`, the video helper's own conversion), and the classic Play
+  will use it once the card's Macintosh program (issue #24) exists. Not done here.
+
+**Tested** (22 November 2026): the server's test, 203 checks (62 of them the videos'); the core's, 158 units on the host and as a 68020 program and 34 on the real server's answers; XCTest on GitHub's runner, 21 tests (runs 45084364767 and 45085274385); the Docker image's ffmpeg checked by the workflow; the classic Play in the testbed: not run in this session. The emulator lock was held by another session from 23:39 to 01:09, and when it came free the build machine's disk was full (1.7 MB left; the scratch copy of the test image had to be deleted) and another QEMU was already running, so no run was started. The classic Play 1.5 builds cleanly (CODE 1 170152 bytes), and its new paths go through the core that the host and 68020 tests check against the real server's answers. The session is ready to run: a copy of b-play.image with the new Play installed, the server on a library with an MP4, an MKV and a WebM video, and a script that opens an album with a video, plays the video's sound, opens an artist that has only videos, and sends a video to the SE from the server
+
 ## The WiFi in the testbed: a radio that exists only in software
 QEMU's raspi3b has no WiFi chip (no SDIO function, no firmware to load), so the real driver in
 `alice_net.c` can only report "off" there, and until 16 November the WiFi unit, Aurora68 Wi-Fi and the
