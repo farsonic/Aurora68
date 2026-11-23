@@ -55,6 +55,7 @@
 #include "psmb.h"
 #include "psmac_pc.h"
 #include "psmac_wclip.h"
+#include "psmac_guest.h"
 #include "psmac_pc_declrom.h"
 #include "psmac_pc_font.h"
 #include "aurora86.h"
@@ -1269,9 +1270,16 @@ static void numbers(void)
     blk->core = (uint32_t)chosen;
 }
 
-int psmac_pc_poll(int core)
+/* The PC as a guest of its core (psmac_guest.c, 23 November 2026: the Apple II card shares the core). Until then this
+   was one function, psmac_pc_poll(core), called from the core's loop: the commands, the window's place, a step of the
+   start or else the input, a slice, the write-back, the blink, the picture. It is the same work in three parts now:
+   pc_service() every turn (everything but the slice), pc_ready() (powered, not paused, not idle until later) and
+   pc_slice() (a86_pc_run for the core's slice). The scheduler gives the PC its slice whenever it is ready and is the
+   only guest, so a kernel with the PC card alone runs it as before; with the Apple II card too, the front window's
+   machine goes first. */
+static int my_core_now(void)
 {
-    if (!ready) return 0;
+    if (!ready) return -1;
     if (chosen < 0) {
         int c = my_core(), expect = -1;
         if (__atomic_compare_exchange_n(&chosen, &expect, c, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
@@ -1283,38 +1291,15 @@ int psmac_pc_poll(int core)
             start_t = now();
         }
     }
-    if (core != chosen) return 0;
+    return chosen;
+}
+static int pc_service(void)
+{
     command();
     geometry();
     if (phase >= P_ROM && phase <= P_BUILD) { start_step(); return 1; }
     if (phase != P_RUN) { numbers(); return 0; }
     input();
-    int ran = 0;
-    uint64_t t = now();
-    if (powered && !paused && t >= next_run) {
-        uint32_t slice_us = core == 2 ? SLICE_US_CORE2 : SLICE_US_CORE1;
-        uint64_t want = (uint64_t)ipus * slice_us;
-        if (want < 2000) want = 2000;
-        uint64_t ic0 = a86_pc_icount();
-        fatal_armed = 1;
-        if (a86_setjmp(fatal_env)) { fatal_armed = 0; set_state(A68P_S_FAILED, A68P_E_BOCHS, fatal_why); phase = P_DEAD; return 1; }
-        int st = a86_pc_run(want);
-        fatal_armed = 0;
-        uint64_t dt = now() - t;
-        busy_ticks += dt;
-        uint32_t idle = a86_pc_idle_us();
-        uint64_t did = a86_pc_icount() - ic0;
-        if (!idle && did > 1000) {           /* a busy slice: its rate, smoothed */
-            uint32_t us = (uint32_t)(dt * 1000000u / hz());
-            uint32_t r = us ? (uint32_t)(did / us) : ipus;
-            if (r < 1) r = 1;
-            ipus = (ipus * 7 + r + 7) / 8;
-        }
-        if (idle) { next_run = now() + (uint64_t)idle * hz() / 1000000u; idle_ticks += (uint64_t)idle * hz() / 1000000u; }
-        if (st == A86_STOPPED) { powered = 0; set_state(A68P_S_STOPPED, 0, "The PC switched itself off."); redraw_req = 1; }
-        else if (st == A86_FAILED) { set_state(A68P_S_FAILED, A68P_E_BOCHS, "The PC failed (the kernel log has Bochs's words)."); phase = P_DEAD; }
-        ran = 1;
-    }
     flush_poll(0);                        /* the disks' changes back into their files, when due */
     blink();
     const struct a86_screen *s = a86_pc_screen();
@@ -1329,7 +1314,43 @@ int psmac_pc_poll(int core)
     }
     text_log();
     numbers();
-    return ran;
+    return 0;
+}
+static int pc_ready(uint64_t t) { return phase == P_RUN && powered && !paused && t >= next_run; }
+static int pc_slice(uint32_t slice_us)
+{
+    uint64_t t = now();
+    uint64_t want = (uint64_t)ipus * slice_us;
+    if (want < 2000) want = 2000;
+    uint64_t ic0 = a86_pc_icount();
+    fatal_armed = 1;
+    if (a86_setjmp(fatal_env)) { fatal_armed = 0; set_state(A68P_S_FAILED, A68P_E_BOCHS, fatal_why); phase = P_DEAD; return 1; }
+    int st = a86_pc_run(want);
+    fatal_armed = 0;
+    uint64_t dt = now() - t;
+    busy_ticks += dt;
+    uint32_t idle = a86_pc_idle_us();
+    uint64_t did = a86_pc_icount() - ic0;
+    if (!idle && did > 1000) {           /* a busy slice: its rate, smoothed */
+        uint32_t us = (uint32_t)(dt * 1000000u / hz());
+        uint32_t r = us ? (uint32_t)(did / us) : ipus;
+        if (r < 1) r = 1;
+        ipus = (ipus * 7 + r + 7) / 8;
+    }
+    if (idle) { next_run = now() + (uint64_t)idle * hz() / 1000000u; idle_ticks += (uint64_t)idle * hz() / 1000000u; }
+    if (st == A86_STOPPED) { powered = 0; set_state(A68P_S_STOPPED, 0, "The PC switched itself off."); redraw_req = 1; }
+    else if (st == A86_FAILED) { set_state(A68P_S_FAILED, A68P_E_BOCHS, "The PC failed (the kernel log has Bochs's words)."); phase = P_DEAD; }
+    return 1;
+}
+static int pc_front(void) { return ready && blk->front == 1; }
+struct psmac_guest psmac_pc_guest = { "PC", my_core_now, pc_service, pc_ready, pc_slice, pc_front, 0, 0, 0, 0 };
+
+/* the PC as its core's only guest, as before the scheduler (tools/pccard_test.c) */
+int psmac_pc_poll(int core)
+{
+    if (my_core_now() != core) return 0;
+    if (pc_service()) return 1;
+    return pc_ready(now()) ? pc_slice(core == 2 ? SLICE_US_CORE2 : SLICE_US_CORE1) : 0;
 }
 
 void psmac_pc_report(void)

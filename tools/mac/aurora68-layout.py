@@ -26,6 +26,8 @@ The layout (the build products of `make -C mac`, their Finder names inside the M
                               Aurora68 Video's creator 'A68V', or --films-creator TVOD for MoviePlayer;
                               MoviePlayer and every QuickTime program open them through the Aurora68 Video
                               Decoder extension's MPEG-1 import, 23 November 2026)
+      Aurora68 PC/            Aurora68 PC (the PC card, docs/19-pc-card.md)
+      Aurora68 Apple II/      Aurora68 Apple II (the Apple II card, docs/20-apple-ii-card.md)
       Display/                Aurora68 Display, Aurora68 Screens, Aurora68 Colour, Aurora68 Depth 8
       Network/                Aurora68 Network, Aurora68 Wi-Fi, Aurora68 Bluetooth, Aurora68 Ping
       System/                 Aurora68 Slots, Aurora68 Log, Aurora68 Status
@@ -50,6 +52,7 @@ APPS = [
     ('Aurora68-Play.bin', 'Aurora68 Play', 'Aurora68 Play'),
     ('Aurora68-Video.bin', 'Aurora68 Video', 'Aurora68 Video'),
     ('Aurora68-PC.bin', 'Aurora68 PC', 'Aurora68 PC'),
+    ('Aurora68-AppleII.bin', 'Aurora68 Apple II', 'Aurora68 Apple II'),
     ('Aurora68-Display.bin', 'Display', 'Aurora68 Display'),
     ('Aurora68-Screens.bin', 'Display', 'Aurora68 Screens'),
     ('Aurora68-Colour.bin', 'Display', 'Aurora68 Colour'),

@@ -15,7 +15,9 @@
 #                  and the card's MPEG-1 and MP2 decoders against FFmpeg: tools/mpg1_test.sh; the HDMI splash drawn at every
 #                  screen size, and its logo's header against docs/img/aurora68-logo.svg: tools/splash_test.sh; Aurora68 Status's
 #                  numbers and its status-page offsets against alice_status.h, on the host and as a 68020 program:
-#                  tools/pistatus_test.c, tools/pistatus_m68k.sh)
+#                  tools/pistatus_test.c, tools/pistatus_m68k.sh; the PC card and the Apple II card with their libraries where
+#                  AURORA86_DIR / AURORA65_DIR say where: tools/pccard_test.sh, tools/a2card_test.sh; the guest scheduler's
+#                  rule: tools/guest_test.c)
 #   make install IMG=path/to/volume.img [PART=n]   the extensions into the System Folder of an HFS image, the programs into its Aurora68 folder
 AS      = m68k-linux-gnu-as -m68020
 OBJCOPY = m68k-linux-gnu-objcopy
@@ -28,7 +30,7 @@ CORE_SRC = $(wildcard $(CORE)/*.c)
 CORE_H   = $(wildcard $(CORE)/include/*.h)
 SANITIZE ?= -fsanitize=address,undefined
 
-all: $(B)/psmac-se.declrom $(B)/Aurora68-Machine.bin $(B)/Aurora68-Disk.bin $(B)/Aurora68-Network.bin $(B)/Aurora68-WiFi.bin $(B)/Aurora68-Bluetooth.bin $(B)/Aurora68-Status.bin $(B)/Aurora68-Ping.bin $(B)/Aurora68-Screens.bin $(B)/Aurora68-Colour.bin $(B)/Aurora68-Log.bin $(B)/Aurora68-Depth.bin $(B)/Aurora68-WiFi-Bluetooth.bin $(B)/Aurora68-ScreenSetup.bin $(B)/Aurora68-Display.bin $(B)/Aurora68-Sound.bin $(B)/Aurora68-Slots.bin $(B)/Aurora68-Play.bin $(B)/Aurora68-Agent.bin $(B)/Aurora68-VideoDecoder.bin $(B)/Aurora68-Video.bin $(B)/Aurora68-PC.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes declrom-wifi-sizes declrom-se-sizes
+all: $(B)/psmac-se.declrom $(B)/Aurora68-Machine.bin $(B)/Aurora68-Disk.bin $(B)/Aurora68-Network.bin $(B)/Aurora68-WiFi.bin $(B)/Aurora68-Bluetooth.bin $(B)/Aurora68-Status.bin $(B)/Aurora68-Ping.bin $(B)/Aurora68-Screens.bin $(B)/Aurora68-Colour.bin $(B)/Aurora68-Log.bin $(B)/Aurora68-Depth.bin $(B)/Aurora68-WiFi-Bluetooth.bin $(B)/Aurora68-ScreenSetup.bin $(B)/Aurora68-Display.bin $(B)/Aurora68-Sound.bin $(B)/Aurora68-Slots.bin $(B)/Aurora68-Play.bin $(B)/Aurora68-Agent.bin $(B)/Aurora68-VideoDecoder.bin $(B)/Aurora68-Video.bin $(B)/Aurora68-PC.bin $(B)/Aurora68-AppleII.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes declrom-wifi-sizes declrom-se-sizes
 
 $(B)/%.o: %.s
 	@mkdir -p $(B)
@@ -162,6 +164,10 @@ video-declrom: $(B)/a68video.bin.raw ../tools/mac/mkvideodeclrom.py ../tools/mac
 pc-declrom: $(B)/a68pc.bin.raw ../tools/mac/mkpcdeclrom.py ../tools/mac/declrom.py
 	$(PY) ../tools/mac/mkpcdeclrom.py --drvr $(B)/a68pc.bin.raw -o ../emu68/src/psmac/psmac_pc_declrom.h
 .PHONY: pc-declrom
+# the Apple II card's (docs/20-apple-ii-card.md), compiled into a kernel built with -DPSMAC_A2=ON: its driver .A68A2 (mac/a68apple.s)
+a2-declrom: $(B)/a68apple.bin.raw ../tools/mac/mka2declrom.py ../tools/mac/declrom.py
+	$(PY) ../tools/mac/mka2declrom.py --drvr $(B)/a68apple.bin.raw -o ../emu68/src/psmac/psmac_a2_declrom.h
+.PHONY: a2-declrom
 
 check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alice/alice_net.h
 	@mkdir -p $(B)
@@ -197,6 +203,9 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	sh ../tools/mpg1_test.sh $(abspath $(B))
 	sh ../tools/vbuf_test.sh $(abspath $(B))
 	sh ../tools/pccard_test.sh $(abspath $(B))
+	cc -std=gnu11 -O2 -Wall -Wextra -Werror -DPSMAC_GUEST_HOST -DPSMAC_PC -DPSMAC_A2 -I../emu68/src/psmac -I../tools/pccard_host -o $(B)/guest_test ../tools/guest_test.c ../emu68/src/psmac/psmac_guest.c
+	for f in 0 1 4; do $(B)/guest_test $$f > $(B)/guest_test.log || { cat $(B)/guest_test.log; exit 1; }; tail -1 $(B)/guest_test.log; done
+	sh ../tools/a2card_test.sh $(abspath $(B))
 	sh ../tools/splash_test.sh $(abspath $(B))
 
 disasm: $(B)/pidisk.o
@@ -427,7 +436,31 @@ APC_OBJ = $(B)/crt0.o $(B)/apc/toolbox_glue.o $(B)/apc/libc.o $(B)/apc/glue.o $(
 $(B)/a68pc.elf: $(APC_OBJ) c/app.ld
 	$(LD) -T c/app.ld --emit-relocs --no-warn-rwx-segments -z noexecstack -o $@ $(APC_OBJ) $(LIBGCC)
 $(B)/Aurora68-PC.bin: $(B)/a68pc.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py $(ICONS)
-	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 PC" --creator A68P --size 256 --icons pc --version 1.0 -o $@
+	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 PC" --creator A68P --size 256 --icons pc --version 1.1 -o $@
+
+# ---- Aurora68 Apple II: the Apple on the Aurora68 Apple II Card (slot $E) in a window (mac/a68apple,
+# docs/20-apple-ii-card.md); its Toolbox list is c/traps.txt and a68apple/traps.txt, its glue in build/aa2/; the
+# driver's calls from Aurora68 Video's glue.s, as Aurora68 PC's
+$(B)/a68apple_traps.txt: c/traps.txt a68apple/traps.txt
+	@mkdir -p $(B)
+	cat c/traps.txt a68apple/traps.txt > $@
+$(B)/aa2/toolbox_glue.s $(B)/aa2/toolbox_gen.h: $(B)/a68apple_traps.txt ../tools/mac/mktraps.py
+	@mkdir -p $(B)/aa2
+	$(PY) ../tools/mac/mktraps.py $< -s $(B)/aa2/toolbox_glue.s -H $(B)/aa2/toolbox_gen.h
+$(B)/aa2/toolbox_glue.o: $(B)/aa2/toolbox_glue.s
+	$(AS) -o $@ $<
+$(B)/aa2/glue.o: a68player/glue.s
+	@mkdir -p $(B)/aa2
+	$(AS) -o $@ $<
+$(B)/aa2/libc.o: c/libc.c c/toolbox.h $(B)/aa2/toolbox_gen.h
+	$(CC) $(subst -I$(B),-I$(B)/aa2,$(CFLAGS)) -c -o $@ $<
+$(B)/aa2/apple.o: a68apple/apple.c c/screens.h c/toolbox.h $(B)/aa2/toolbox_gen.h ../emu68/src/psmac/psmac_a2.h
+	$(CC) $(subst -I$(B),-I$(B)/aa2,$(CFLAGS)) -I../emu68/src/psmac -c -o $@ $<
+AA2_OBJ = $(B)/crt0.o $(B)/aa2/toolbox_glue.o $(B)/aa2/libc.o $(B)/aa2/glue.o $(B)/aa2/apple.o
+$(B)/a68apple.elf: $(AA2_OBJ) c/app.ld
+	$(LD) -T c/app.ld --emit-relocs --no-warn-rwx-segments -z noexecstack -o $@ $(AA2_OBJ) $(LIBGCC)
+$(B)/Aurora68-AppleII.bin: $(B)/a68apple.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py $(ICONS)
+	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Apple II" --creator A68A --size 256 --icons apple2 --version 1.0 -o $@
 
 # ---- PiScrn: the SE board's two screens arranged at the first boot, an INIT in C (mac/piscrn) ----
 $(B)/piscrn_traps.txt: c/traps.txt piscrn/traps.txt pidisplay/traps.txt

@@ -419,11 +419,31 @@ static int pc_owns(const char *s)
     return 0;
 }
 #endif
+#ifdef PSMAC_A2
+/* the Apple II card's disks likewise (a2.d1=, a2.d2=, a2.hd1= ... a2.hd4=, psmac_a2.c): a ProDOS volume named .dsk and a
+   megabyte or more would otherwise be offered to the Mac too (23 November 2026) */
+static int a2_owns(const char *s)
+{
+    static const char *const keys[] = { "a2.d1", "a2.d2", "a2.hd1", "a2.hd2", "a2.hd3", "a2.hd4" };
+    for (unsigned i = 0; i < sizeof keys / sizeof keys[0]; i++) {
+        const char *v = psmac_option(keys[i]);
+        if (!v || !v[0]) continue;
+        char t[64]; unsigned n = 0;
+        while (v[n] && v[n] != ' ' && n < sizeof t - 1) { t[n] = v[n]; n++; }
+        t[n] = 0;
+        if (name_eq(t, s)) return 1;
+    }
+    return 0;
+}
+#endif
 static int is_image_name(const char *s, uint32_t size)
 {
     if (size < (1u << 20) || (s[0] == '.' && s[1] == '_')) return 0;
 #ifdef PSMAC_PC
     if (pc_owns(s)) return 0;
+#endif
+#ifdef PSMAC_A2
+    if (a2_owns(s)) return 0;
 #endif
     if (lower(s[0]) == 'k' && lower(s[1]) == 'e' && lower(s[2]) == 'r' && lower(s[3]) == 'n' && lower(s[4]) == 'e' && lower(s[5]) == 'l') return 0;
     return ends_ci(s, ".img") || ends_ci(s, ".hda") || ends_ci(s, ".image") || ends_ci(s, ".hfv") || ends_ci(s, ".dsk");
@@ -2599,14 +2619,17 @@ static int boot_jobs(void)
     return 0;
 }
 
-#ifdef PSMAC_PC
+#if defined(PSMAC_PC) || defined(PSMAC_A2)
 /* ==== the PC card's files (psmac_pc.c, docs/19-pc-card.md; a kernel built with -DPSMAC_PC=ON) ======================
+   (and since the same day the Apple II card's, psmac_a2.c, -DPSMAC_A2=ON: its ROM, its PROM and its images, the same
+   calls)
    23 November 2026. The PC's firmware, its VGA BIOS and its disk image are files in the card's root, which the PC's
    core (core 2 on the solo board, core 1 elsewhere) reads while core 3 goes on with its own work: a file's clusters
    are listed once (the FAT read under the card's lock, as the recovery functions above do), then any part of it is
    read with the cluster's sectors in one command, also under the lock, a cluster at most at a time. Written back
    the same way since the second round (psmac_card_pc_write, below). */
-#define PCF_MAX 36                 /* the firmware, the VGA BIOS and the 32 images of the PC's list */
+#define PCF_MAX 72                 /* the firmware, the VGA BIOS and the 32 images of the PC's list; the Apple's ROMs, PROM
+                                      and 32 images */
 static struct { uint32_t size, n, *clus; } pcf[PCF_MAX];
 static int npcf;
 /* the file's handle, -1 when it is not there, -2 while the card has not been looked at yet (try again) */
@@ -2654,7 +2677,10 @@ int psmac_card_pc_read(int file, uint32_t off, void *buf, uint32_t n)
    reads above are. 0, -1 for a bad request or a write that failed, -2 when the card is not writable (mac.card=ro, none) */
 int psmac_card_pc_write(int file, uint32_t off, const void *buf, uint32_t n)
 {
-    if (file < 0 || file >= npcf || ((off | n) & 511u) || off > pcf[file].size || n > pcf[file].size - off) return -1;
+    /* the file's last sector may be short (an Apple .2mg is a 64-byte header and its blocks, a WOZ any length): written
+       whole all the same, its bytes past the end falling in the last cluster's own unused space (the Apple II card) */
+    uint32_t whole = (pcf[file < 0 || file >= npcf ? 0 : file].size + 511u) & ~511u;
+    if (file < 0 || file >= npcf || ((off | n) & 511u) || off > whole || n > whole - off) return -1;
     if (psmac_card_rec_ready() != 1) return -2;
     const uint8_t *b = buf;
     uint32_t cb = fs.spc * 512u;

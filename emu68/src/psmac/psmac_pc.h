@@ -146,13 +146,16 @@ struct a68p_block {
     uint32_t options;                        /* A68P_O_* */
     uint32_t focus;                          /* 1: the PC has the keyboard and mouse */
     uint32_t in_head;                        /* input events put in */
-    uint32_t pad1[12];
+    uint32_t front;                          /* 1: the program's window is the Mac's front window (its activate events;
+                                                psmac_guest.c gives the front window's machine the core first) */
+    uint32_t pad1[11];
     /* the card again: 0x100 */
     char     message[128];                   /* what the PC is doing, or why it stopped, in words (ASCII) */
 };
 _Static_assert(sizeof(struct a68p_block) == 0x180, "a68p_block");
 _Static_assert(__builtin_offsetof(struct a68p_block, cmd_seq) == 0x80, "a68p_block Mac half");
 _Static_assert(__builtin_offsetof(struct a68p_block, in_head) == 0xCC, "a68p_block in_head");
+_Static_assert(__builtin_offsetof(struct a68p_block, front) == 0xD0, "a68p_block front");
 _Static_assert(__builtin_offsetof(struct a68p_block, message) == A68P_OFF_MESSAGE, "a68p_block message");
 _Static_assert(sizeof(struct a68p_in) == 16, "a68p_in");
 
@@ -180,7 +183,8 @@ _Static_assert(sizeof(struct a68p_disks) <= 0x1000, "a68p_disks");
 uint32_t psmac_pccard_size(void);            /* the Pi memory the card needs (its window and the PC's own), 0 with pc=off */
 void psmac_pccard_map(uintptr_t phys);       /* that memory, carved by psmac_bus.c beside the other cards' */
 void psmac_pccard_init(void);                /* its ROM and block, once the screens are known */
-int  psmac_pc_poll(int core);                /* one slice of the PC and its drawing, from that core's loop; 1 if it ran */
+int  psmac_pc_poll(int core);                /* the PC as the only guest of that core: its service and, when ready, a slice
+                                                (tools/pccard_test.c; the kernel's loops call psmac_guest_poll) */
 void psmac_pc_report(void);                  /* the heartbeat's line */
 
 #endif

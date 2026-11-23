@@ -601,6 +601,35 @@ def g_pc(n):
     """Aurora68 PC: the display's glyph, dark, with a prompt in green"""
     return art(PC32 if n == 32 else PC16, L(NAVY, GREEN))
 
+# Aurora68 Apple II (23 November 2026, docs/20-apple-ii-card.md): a monitor with Applesoft's prompt, "]" and the
+# cursor, standing on a computer with its keyboard in the case (no maker's logo: the shape alone)
+A2_32 = ["..###############..",
+         "..#xxxxxxxxxxxxx#..",
+         "..#xooooooooooox#..",
+         "..#xo++oooooooox#..",
+         "..#xoo+oooooooox#..",
+         "..#xoo+oooooooox#..",
+         "..#xo++o+++oooox#..",
+         "..#xooooooooooox#..",
+         "..#xxxxxxxxxxxxx#..",
+         "..###############..",
+         "...................",
+         "###################",
+         "#xxxxxxxxxxxxxxxxx#",
+         "#x#x#x#x#x#x#x#x#x#",
+         "###################"]
+A2_16 = [".#######.",
+         ".#+oooo#.",
+         ".#+o++o#.",
+         ".#######.",
+         "#########",
+         "#x#x#x#x#",
+         "#########"]
+
+def g_apple2(n):
+    """Aurora68 Apple II: a monitor on a keyboard computer, the prompt in green"""
+    return art(A2_32 if n == 32 else A2_16, L(NAVY, GREEN))
+
 def g_slots(n):
     return art(SLOTS32 if n == 32 else SLOTS16, L(BOARD, GOLD))
 
@@ -899,6 +928,7 @@ PROGRAMS = {
     'display':   ('Aurora68 Display', 'app', g_display, [('pref', 'doc-pref')]),
     'video':     ('Aurora68 Video', 'app', g_video, [('MPEG', 'doc-MPEG'), ('MPG ', 'doc-MPG ')]),
     'pc':        ('Aurora68 PC', 'app', g_pc, []),
+    'apple2':    ('Aurora68 Apple II', 'app', g_apple2, []),
     'slots':     ('Aurora68 Slots', 'app', g_slots, [('pref', 'doc-pref')]),
     'log':       ('Aurora68 Log', 'app', g_log, []),
     'status':    ('Aurora68 Status', 'app', g_status, []),

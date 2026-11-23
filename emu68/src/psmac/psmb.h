@@ -181,6 +181,13 @@ static inline uint32_t psmb_rowbytes(uint32_t w, uint32_t depth) { return ((w * 
 #define PSMB_PC_WIN24_PHYS   0xFDD00000u
 #define PSMB_PC_ROM_PHYS     0xFDFFC000u
 #define PSMB_PC_ROM_SIZE     0x4000u
+/* slot $E, the Apple II card (psmac_a2.c, docs/20-apple-ii-card.md; only in a kernel built with -DPSMAC_A2=ON): the
+   same three pieces as slot $D's. $E was free in every branch (Aurora65's DESIGN, "Which slot: $E", 23 November 2026) */
+#define PSMB_A2_SLOT         0xEu
+#define PSMB_A2_WIN_PHYS     0xFE000000u
+#define PSMB_A2_WIN24_PHYS   0xFEE00000u
+#define PSMB_A2_ROM_PHYS     0xFEFFC000u
+#define PSMB_A2_ROM_SIZE     0x4000u
 
 #define PSMB_OFF_SOUND       0x11000         /* struct psmb_sound */
 #define PSMB_OFF_SNDRING     0x12000         /* the ring: PSMB_SND_FRAMES frames of 4 bytes */
