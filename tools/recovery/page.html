@@ -57,15 +57,22 @@ pre{white-space:pre-wrap;font:12px/1.4 var(--mono);border:1px solid #000;padding
 .ml li.dim,.ml .gone{color:#808080}.ml li.dim .pill,.ml .gone .pill{border-color:#808080}.ml li.sel{background:#000;color:#fff}.ml li.sel .pill{border-color:#fff}
 .ml .gone{text-decoration:line-through}.pill.k{background:#000;color:#fff}
 input[type=checkbox]{width:auto;margin:0 6px 0 0;vertical-align:-2px;accent-color:#000}.chk{display:flex;align-items:center;margin:10px 0 0;font-size:12px}
+.og{grid-column:1/-1;font-weight:700;font-size:13px;margin:16px 0 0;padding-bottom:2px;border-bottom:2px solid #000}.og:first-child{margin-top:4px}
+/* The Diagnostics tab (docs/08 item 120): its swatch is the bus check's page, black on white in fine stripes; a report's
+   verdict sits in a box with the six colours above it, as the Display tab's suggestion does. */
+.verd{font-weight:700;font-size:15px}.ml li.dim .b{display:none}.chk2{display:flex;align-items:flex-start;gap:8px;padding:7px 0;border-bottom:1px dotted #000}
+.chk2 input[type=checkbox]{margin-top:3px}.chk2 .ov{flex:1;min-width:0}.chk2 code{font:700 12px var(--mono)}.chk2 p{margin:1px 0 4px;font-size:12px}.chk2 select,.chk2 input[type=text]{max-width:16em}
 @media(max-width:560px){nav button{padding:5px 9px 6px}.ml li{flex-wrap:wrap}.ml .dt{flex:1 1 100%;order:3}.ml .sz{flex:1;min-width:0}}
 </style></head><body>
 <header><div class="top"><svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><defs><clipPath id="lc"><rect x="1.25" y="1.25" width="29.5" height="29.5" rx="7"/></clipPath><filter id="lb" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="4.2"/></filter><filter id="lr" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="1.1"/></filter><pattern id="lp" width="1.9" height="32" patternUnits="userSpaceOnUse"><rect width=".8" height="32" fill="#fff" fill-opacity=".14"/></pattern><linearGradient id="lf" x1="0" y1="0" x2="0" y2="1"><stop offset=".25" stop-color="#fff"/><stop offset=".8" stop-color="#fff" stop-opacity="0"/></linearGradient><mask id="lm"><rect width="32" height="32" fill="url(#lf)"/></mask></defs><g clip-path="url(#lc)"><rect width="32" height="32" fill="#963d97"/><g filter="url(#lb)"><circle cx="4" cy="4" r="9" fill="#61bb46"/><circle cx="20" cy="2" r="8" fill="#fdb827"/><circle cx="31" cy="12" r="8" fill="#f5821f"/><circle cx="26" cy="27" r="9" fill="#e03a3e"/><circle cx="10" cy="31" r="9" fill="#963d97"/><circle cx="1" cy="18" r="8" fill="#009ddc"/></g><g mask="url(#lm)"><path d="M-2 13 C5 7 10 12 16 9 S26 5 34 9 V15 C27 11.5 21 15.5 15 13 S5 12.5 -2 16Z" fill="#fff" fill-opacity=".5" filter="url(#lr)"/><path d="M-2 13 C5 7 10 12 16 9 S26 5 34 9 V26 H-2Z" fill="url(#lp)"/></g></g><rect x="1.25" y="1.25" width="29.5" height="29.5" rx="7" fill="none" stroke="#000" stroke-width="1.2"/></svg><div class="ttl"><h1>Aurora68 Setup and Recovery</h1><div class="why" id="why">Connecting</div></div><div class="state" id="hstate">...</div></div>
-<div class="rainbow"></div><nav id="nav"><button style="--c:var(--g)" data-t="ov" class="on">Overview</button><button style="--c:var(--y)" data-t="fi">Files</button><button style="--c:var(--o)" data-t="wi">WiFi</button><button style="--c:var(--r)" data-t="op">Options</button><button style="--c:var(--six)" data-t="dp">Display</button><button style="--c:var(--p)" data-t="tx">Text files</button><button style="--c:var(--b)" data-t="lo">Log</button></nav></header>
+<div class="rainbow"></div><nav id="nav"><button style="--c:var(--g)" data-t="ov" class="on">Overview</button><button style="--c:var(--y)" data-t="fi">Files</button><button style="--c:var(--o)" data-t="wi">WiFi</button><button style="--c:var(--r)" data-t="op">Options</button><button style="--c:repeating-linear-gradient(90deg,#000 0 1px,#fff 1px 2px)" data-t="dg">Diagnostics</button><button style="--c:var(--six)" data-t="dp">Display</button><button style="--c:var(--p)" data-t="tx">Text files</button><button style="--c:var(--b)" data-t="lo">Log</button></nav></header>
 <main>
 <section class="tab on" id="ov">
 <div class="card warn" id="apc" style="display:none"><h2><span>Access point</span></h2><div class="grid" id="apg"></div><p class="mut" id="apn" style="margin-bottom:0"></p></div>
 <div class="card warn" id="rb" style="display:none"><h2><span>The last starts did not reach the Finder</span></h2><p class="mut">The kernel before the current one is on the card as kernel8.old.</p>
 <button class="b p" onclick="act('/r/rollback','Roll back to kernel8.old?')">Roll back the kernel</button></div>
+<div class="card warn" id="oncec" style="display:none"><h2><span>A one-shot debug start is armed</span></h2><p id="oncet" style="margin:0 0 8px"></p>
+<div class="row"><button class="b p" onclick="act('/r/reboot?how=normal','Restart the Pi normally? The next start uses the debug options once.')">Restart normally to run it</button><button class="b" onclick="oncecancel()">Cancel it</button></div></div>
 <div class="card"><h2><span>State</span></h2><div class="grid" id="st"></div><div id="notes" class="mut" style="margin-top:10px"></div></div>
 <div class="card"><h2><span>Restart</span></h2><p class="mut">The Mac stays off while recovery runs. Restart normally to start it again.</p><div class="row">
 <button class="b p" onclick="act('/r/reboot?how=normal','Restart the Pi normally (the Mac starts)?')">Restart normally</button>
@@ -84,8 +91,17 @@ input[type=checkbox]{width:auto;margin:0 6px 0 0;vertical-align:-2px;accent-colo
 <label>Country (two letters)<input type="text" id="wcc" maxlength="2" placeholder="GB" style="max-width:7em"></label>
 <p class="mut" id="wapn" style="display:none">You are on the Pi's own access point, and the radio has only one network at a time: a test join would end it. Save your network, then restart: the Pi joins it at the next start. If the password was wrong, the Mac's screen says so; hold the interrupt button on the recovery screen again to come back here.</p>
 <div class="row" style="margin-top:14px"><button class="b" id="wtest" onclick="wifi('test')">Test join now</button><button class="b p" id="wsave" onclick="wifi('save')">Save to cmdline.txt</button><button class="b p" id="wsj" style="display:none" onclick="wsavejoin()">Save and restart to join this network</button><span class="mut" id="wst"></span></div></div></section>
-<section class="tab" id="op"><div class="card"><h2><span>Options</span></h2><p class="mut">Changes only the options you edit; every other word in cmdline.txt is kept. The line before is kept as cmdline.bak.</p><div id="opts"></div><p id="hidden"></p>
+<section class="tab" id="op"><div class="card"><h2><span>Options</span></h2><p class="mut">Every option you may need, grouped, for the board chosen first: options another board uses are hidden (their values are kept). Changes only the options you edit; every other word in cmdline.txt is kept, and the line before is kept as cmdline.bak. The WiFi network is set on the WiFi tab.</p><div id="opts"></div><p id="hidden"></p>
 <div class="row" style="margin-top:12px"><button class="b" onclick="opts(1)">Preview the new line</button><button class="b p" onclick="opts(0)">Save</button></div><pre id="optline"></pre></div></section>
+<section class="tab" id="dg">
+<div class="card"><h2><span>Run now</span></h2><p class="mut" id="dgb" style="margin:0"></p><ul class="ml" id="dgrun"></ul>
+<div id="dgrep" style="display:none;margin-top:12px"><div class="sug"><div class="verd" id="dgv"></div><p class="mut" id="dgh"></p><pre id="dgl" style="margin:0 0 10px"></pre>
+<div class="row"><button class="b" id="dgback" onclick="dgback()">Give the screens back to Setup and Recovery</button></div></div></div></div>
+<div class="card"><h2><span>Run on the next start</span></h2><p class="mut">A one-shot debug start: the options chosen here go into debug-once.txt on the card. The next start adds them to cmdline.txt's and at once renames the file debug-once.old, so they are used once whatever that start does; the start after it is as cmdline.txt says, and the boot counter counts as always.</p>
+<div id="dgonce"></div><p class="mut" id="oncest"></p><div class="row"><button class="b" onclick="oncearm(0)">Arm</button><button class="b p" onclick="oncearm(1)">Arm and restart normally</button><button class="b d" onclick="oncecancel()">Cancel</button></div></div>
+<div class="card"><h2><span>Reports on the card</span></h2><p class="mut" style="margin:0">The Pi has no clock: the kernel's own files carry no time, only their verdict.</p><ul class="fl" id="reps"></ul><pre id="repv" style="display:none"></pre></div>
+<div class="card"><h2><span>Report bundle</span></h2><p class="mut">One text file with the machine's summary (board, kernel, CPLD, memory, the options in effect), every report above and both logs, to send with an issue. WiFi passwords, tokens and the PIN are replaced by (hidden).</p>
+<div class="row"><button class="b p" onclick="bundle(1)">Download the bundle</button><button class="b" onclick="bundle(0)">View it here</button></div><pre id="bunv" style="display:none"></pre></div></section>
 <section class="tab" id="dp">
 <div class="card warn" id="dsaved" style="display:none"><h2><span>Saved</span></h2><p id="dsavedt" style="margin:0 0 8px"></p><pre id="dsavedf" style="margin:0 0 10px"></pre>
 <div class="row"><button class="b p" onclick="act('/r/reboot?how=normal','Restart the Pi normally (the Mac starts)?')">Restart normally</button><button class="b" onclick="el('dsaved').style.display='none'">Not now</button></div></div>
@@ -120,9 +136,9 @@ function api(m,u,b,raw){var o={method:m,headers:{'X-Aurora-Pin':P}};if(b!==undef
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return'&#'+c.charCodeAt(0)+';'})}
 function kb(n){return n<1024?n+' B':n<1048576?(n/1024).toFixed(1)+' KB':(n/1048576).toFixed(1)+' MB'}
 function act(u,q){if(q&&!confirm(q))return;api('POST',u).then(function(x){toast(x.note||'Done');refresh()},function(){})}
-function show(t){[].forEach.call(document.querySelectorAll('nav button'),function(b){b.className=b.dataset.t==t?'on':''});
+function show(t){if(t!='dg')dgstop();[].forEach.call(document.querySelectorAll('nav button'),function(b){b.className=b.dataset.t==t?'on':''});
  [].forEach.call(document.querySelectorAll('.tab'),function(s){s.className='tab'+(s.id==t?' on':'')});
- if(t=='fi')files();if(t=='wi')wifiget();if(t=='op')opts(-1);if(t=='dp')dget();if(t=='tx'&&!loaded.tx){loaded.tx=1;loadtext()}var nb=document.querySelector('nav button.on');if(nb&&nb.scrollIntoView)nb.scrollIntoView({block:'nearest',inline:'nearest'});history.replaceState(null,'','#'+t);window.scrollTo(0,0)}
+ if(t=='fi')files();if(t=='wi')wifiget();if(t=='op')opts(-1);if(t=='dp')dget();if(t=='dg')dgget(1);if(t=='tx'&&!loaded.tx){loaded.tx=1;loadtext()}var nb=document.querySelector('nav button.on');if(nb&&nb.scrollIntoView)nb.scrollIntoView({block:'nearest',inline:'nearest'});history.replaceState(null,'','#'+t);window.scrollTo(0,0)}
 el('nav').onclick=function(e){if(e.target.dataset.t)show(e.target.dataset.t)};
 function kv(k,v){return'<div class="kv"><b>'+k+'</b><span>'+v+'</span></div>'}
 function refresh(){api('GET','/r/state').then(function(s){el('why').textContent=s.why;el('rb').style.display=s.rollback_offered?'':'none';var n=s.network;
@@ -130,6 +146,7 @@ function refresh(){api('GET','/r/state').then(function(s){el('why').textContent=
  el('st').innerHTML=kv('Network',esc(n.link)+' '+esc(n.ip)+' <span class="pill">'+esc(n.phase)+'</span>')+kv('WiFi',n.wifi?esc(n.wifi.state)+' '+esc(n.wifi.ssid):'off')+
   kv('Card',esc(s.card))+kv('Upload',esc(s.upload.state)+(s.upload.total?' '+esc(s.upload.name)+' '+kb(s.upload.received)+' of '+kb(s.upload.total):''))+kv('Last action',esc(s.last));
  el('notes').innerHTML=(s.cmdline_recovery?'cmdline.txt has <b>mac.recovery=1</b> or <b>recovery.ap</b>: "Restart normally" takes it out. ':'')+(s.config_kernel?'config.txt starts <b>'+esc(s.config_kernel)+'</b>, not kernel8.img.':'');
+ var o=s.once||{};el('oncec').style.display=o.armed?'':'none';if(o.armed)el('oncet').innerHTML='The next start adds <b>'+esc(o.words)+'</b> to cmdline.txt\'s options, once (debug-once.txt). The start after it is normal again.';
  var a=AP=s.ap;el('apc').style.display=a?'':'none';
  if(a){el('apg').innerHTML=kv('Network',esc(a.ssid||'(starting)'))+kv('State',esc(a.detail)+(a.error?': '+esc(a.error):''))+(a.state=='up'?kv('Security',esc(a.security))+kv('Address',esc(a.address))+kv('Devices',esc(a.clients)+' with an address'):'');
   el('apn').innerHTML=a.state=='up'?'The Pi is running a WiFi network of its own for setup ('+esc(a.how)+'). Put your home network in on the <a href="#wi" onclick="show(\'wi\');return false">WiFi</a> tab and choose <b>Save and restart to join this network</b>. The access point is never kept: the next start joins the saved network.':
@@ -160,23 +177,66 @@ function wifi(w){var b=wbody();
  if(w=='save'&&el('wst').textContent.indexOf('joined')<0&&!confirm('The new settings have not joined in a test. Save them anyway?'))return;
  api('POST','/r/wifi/'+w,b).then(function(){el('wst').textContent=w=='test'?'Testing...':'Saved';if(w=='test')wpoll(0);else toast('Saved to cmdline.txt')},function(){})}
 function wpoll(i){api('GET','/r/wifi').then(function(w){if(w.test=='running'&&i<30)setTimeout(function(){wpoll(i+1)},1500);else el('wst').textContent=w.note||w.test||'No answer';wifiget()},function(){})}
-var O=[['mac.board',['','se','plus','512ke','512k','128k','solo'],'the logic board the Pi sits in (solo: no Mac, the bench)'],['mac.fpu',['','exact','double','none'],'exact: a 68882 in extended precision (the default); none: no FPU, as a real SE'],
-['mac.sane',['','rom','se'],'which SANE: the IIci ROM\'s or the SE ROM\'s software one'],['mac.boot',['','auto','image','scsi'],'the startup disk: auto, the card\'s image first, or SCSI as PRAM says'],
-['mac.ram','','Macintosh memory in MB (default up to 128)'],['mac.console',['','hdmi'],'hdmi: keep the kernel\'s log on HDMI for the whole run'],['mac.sesound',['','off'],'off: leave the SE\'s speaker alone'],
-['mac.screen','','the HDMI screen\'s size, WxH'],['mac.seram',['','1','2','2.5','4'],'the SE\'s own memory in MB (its screen and sound buffers are at its top)'],['mac.plusmouse','','the Plus mouse\'s polls a second (0: off)'],['mac.plusdebounce','','0: no debounce of the Plus mouse'],
-['mac.plusjitter','','0: the Plus mouse\'s polls at a fixed rate'],['mac.screencheck',['','on','blind','off'],'the compact Mac\'s screen: on, read back and repaired; blind, rewritten without reading (Plus-era default); off'],['bt.pair','','1: pair the first keyboard or mouse found (or a name)'],
-['eth',['','usb','off'],'usb: a USB Ethernet adapter as the wired card; off: none'],['remote',['','on','off'],'the remote control (docs/13)'],['remote.token','pw','the remote\'s token, 8 characters or more (write only)']];
-// options that only some boards use (22 November 2026): hidden, with their values kept, when the chosen board cannot use them
-var OB={'mac.seram':'se plus','mac.boot':'se plus','mac.sesound':'se plus 512ke 512k 128k','mac.screencheck':'se plus 512ke 512k 128k',
- 'mac.plusmouse':'plus 512ke 512k 128k','mac.plusdebounce':'plus 512ke 512k 128k','mac.plusjitter':'plus 512ke 512k 128k'};
-function boardfilter(){var f=el('o_mac.board');if(!f)return;var bd=f.value,n=0;O.forEach(function(o){var d=el('d_'+o[0]),w=OB[o[0]];if(!d)return;
- var on=!bd||!w||w.split(' ').indexOf(bd)>=0;d.style.display=on?'':'none';if(!on)n++});
- el('hidden').textContent=n?n+' option'+(n>1?'s':'')+' hidden: not used on '+(bd=='solo'?'the bench (no Mac)':'this board')+'; their values are kept.':''}
-var OV={};function opts(dry){if(dry<0){api('GET','/r/options').then(function(x){OV=x.values;var h='';O.forEach(function(o){var v=OV[o[0]];if(v==null)v='';h+='<div class="opt" id="d_'+o[0]+'"><code>'+o[0]+'</code><p>'+esc(o[2])+'</p>';
- if(o[1]=='pw')h+='<input type="password" id="o_'+o[0]+'" placeholder="'+(v?'(set: type to change)':'(not set)')+'">';else if(o[1])h+='<select id="o_'+o[0]+'">'+o[1].map(function(c){return'<option'+(c==v?' selected':'')+' value="'+c+'">'+(c||'(not given)')+'</option>'}).join('')+'</select>';
- else h+='<input type="text" id="o_'+o[0]+'" value="'+esc(v)+'">';h+='</div>'});el('opts').innerHTML=h;el('optline').textContent=x.line;el('o_mac.board').onchange=boardfilter;boardfilter()},function(){});return}
- var e=[];O.forEach(function(o){var f=el('o_'+o[0]),v=f.value,old=OV[o[0]]==null?'':OV[o[0]];if(o[1]=='pw'){if(v)e.push(o[0]+'='+v);return}if(v!=old)e.push(v?o[0]+'='+v:'-'+o[0])});
+// the Options tab (docs/08 item 120): the kernel's table of options (GET /r/options: defs, groups), each with the boards that
+// use it; the board chosen hides the others' options (their values are kept)
+var DEF=null,OG=[],OV={};
+function optfield(o,v){var id='o_'+o.key;
+ if(o.secret)return'<input type="password" id="'+id+'" placeholder="'+(v?'(set: type to change)':'(not set)')+'">';
+ if(o.menu){var vs=[''].concat(o.values.split('|'));return'<select id="'+id+'">'+vs.map(function(c){return'<option'+(c==v?' selected':'')+' value="'+esc(c)+'">'+(c||'(not given)')+'</option>'}).join('')+
+  (v&&vs.indexOf(v)<0?'<option selected value="'+esc(v)+'">'+esc(v)+' (not a value it takes)</option>':'')+'</select>'}
+ return'<input type="text" id="'+id+'" value="'+esc(v)+'" placeholder="'+esc(o.example||'')+'">'}
+function boardfilter(){var f=el('o_mac.board');if(!f||!DEF)return;var bd=f.value||'iici',n=0,sh={},un=[];
+ DEF.forEach(function(o){var d=el('d_'+o.key);if(!d)return;var on=o.boards.split(' ').indexOf(bd)>=0;d.style.display=on?'':'none';if(on)sh[o.group]=1;else{n++;if(OV[o.key]!=null)un.push(o.key)}});
+ OG.forEach(function(g,i){var x=el('g_'+i);if(x)x.style.display=sh[i]?'':'none'});
+ el('hidden').textContent=(n?n+' option'+(n>1?'s':'')+' hidden: not used on '+(bd=='solo'?'the bench (no Mac)':bd=='iici'?'the testbed\'s IIci':'this board')+'; their values are kept.':'')+(un.length?' Set but not used on it: '+un.join(', ')+'.':'')}
+function opts(dry){if(dry<0){api('GET','/r/options').then(function(x){DEF=x.defs;OG=x.groups;OV=x.values;var h='';
+ OG.forEach(function(g,gi){var hh='',any=0;DEF.forEach(function(o){if(o.group!=gi||o.wifitab)return;any=1;var v=OV[o.key];if(v==null)v='';
+  hh+='<div class="opt" id="d_'+o.key+'"><code>'+esc(o.key)+'</code><p>'+esc(o.text)+'</p>'+optfield(o,v)+'</div>'});if(any)h+='<div class="og" id="g_'+gi+'">'+esc(g)+'</div>'+hh});
+ el('opts').innerHTML=h;el('optline').textContent=x.line;el('o_mac.board').onchange=boardfilter;boardfilter()},function(){});return}
+ var e=[];DEF.forEach(function(o){var f=el('o_'+o.key);if(!f||o.wifitab)return;var v=f.value.trim(),old=OV[o.key]==null?'':OV[o.key];if(o.secret){if(v)e.push(o.key+'='+v);return}if(v!=old)e.push(v?o.key+'='+v:'-'+o.key)});
  api('POST','/r/options'+(dry?'?dry=1':''),e.join('\n')).then(function(x){el('optline').textContent=(dry?'The new line would be:\n':'Saved (the line before is in cmdline.bak):\n')+x.line;if(!dry){toast('Options saved');opts(-1)}},function(){})}
+// the Diagnostics tab (docs/08 item 120): GET /r/diag (the bus check's lines from ?from=N as they come), POST /r/diag/run?test=,
+// /r/diag/screen, /r/diag/once; GET /r/reports, /r/bundle
+var G=null,GL=[],GT=null;
+function dgstop(){if(GT){clearTimeout(GT);GT=null}}
+function dgdefs(){return DEF?Promise.resolve():api('GET','/r/options').then(function(x){DEF=x.defs;OG=x.groups;OV=x.values})}
+function dgget(first){dgstop();if(first){GL=[];el('repv').style.display='none'}api('GET','/r/diag?from='+GL.length).then(function(g){G=g;GL=GL.concat(g.buscheck.lines);dgrender(first);
+ var run=g.buscheck.state=='asked'||g.buscheck.state=='running'||g.cardtest.state=='running'||g.jtag.again=='reading';if(run)GT=setTimeout(function(){dgget(0)},700);else if(!first&&(dgget.was))reports();dgget.was=run},function(){})}
+function dgrow(t,d,btn,dim){return'<li'+(dim?' class="dim"':'')+'><span class="sz">'+t+'</span><span class="dt">'+d+'</span><span class="ac">'+btn+'</span></li>'}
+function dgrender(first){var g=G,b=g.buscheck,c=g.cardtest,j=g.jtag,h='';
+ el('dgb').textContent='This is '+g.board_name+'. The Mac is not running, so these checks have the board to themselves.';
+ var busy=b.state=='asked'||b.state=='running';
+ h+=dgrow('Bus check',b.refusal?'Not here: '+esc(b.refusal)+'.'+(b.force_runs?' <button class="b s" onclick="dgrun(\'buscheck\',1)">Run over the bridge (testbed)</button>':''):
+  'The bus between the Pi and the logic board: the RAM\'s address and data lines (and how much RAM answers), the VIA and the SCC, the ROM, every access\'s time, what a retry would cure, reads during the picture. A few seconds on a PiStorm; the report shows here, on the Mac\'s own screen and on HDMI.'+(busy?' <span class="pill k">running</span>':''),
+  b.refusal?'':'<button class="b s p" onclick="dgrun(\'buscheck\',0)"'+(busy?' disabled':'')+'>Run</button>',!!b.refusal);
+ h+=dgrow('Card read test','Reads the largest file on the card (16 MB at most) as the disk images are read, and gives the speed and any read error'+(c.state=='running'?': '+kb(c.got)+' of '+kb(c.total)+' of '+esc(c.file):'')+'.'+(c.state=='done'?' <b>'+esc(c.verdict)+'.</b>':''),
+  '<button class="b s" onclick="dgrun(\'card\')"'+(c.state=='running'?' disabled':'')+'>Run</button>');
+ var jt=j.at_start?'Read at this start: '+esc(j.at_start.usercode)+', '+esc(j.at_start.name)+'.':'';if(j.again=='read')jt+=' Read again: <b>'+esc(j.usercode)+'</b>, '+esc(j.name)+'.';else if(j.again=='failed')jt+=' Read again: the read failed.';
+ h+=dgrow('CPLD usercode',j.refusal?'Not here: '+esc(j.refusal)+'.':'Which PiStorm firmware the CPLD carries (its JTAG usercode). '+jt,j.refusal?'':'<button class="b s" onclick="dgrun(\'jtag\')">Read again</button>',!!j.refusal);
+ h+=dgrow('HDMI monitor','Its description (EDID), read at this start, and the modes the Pi can send: on the <a href="#dp" onclick="show(\'dp\');return false">Display</a> tab.','');
+ el('dgrun').innerHTML=h;
+ var r=el('dgrep');r.style.display=GL.length?'':'none';el('dgl').textContent=GL.join('\n');
+ el('dgv').textContent=b.state=='done'?'Bus check: '+b.verdict:busy?'Bus check running...':'';
+ el('dgh').textContent=b.state=='done'?b.headline+(b.file>0?' The report is in buscheck.txt.':b.file<0?' (buscheck.txt could not be written: the card is read only.)':''):'';
+ el('dgback').style.display=b.screen=='report'?'':'none';
+ dgonce(g.once,first);if(first)reports()}
+function dgrun(t,f){api('POST','/r/diag/run?test='+t+(f?'&force=1':'')).then(function(){if(t=='buscheck')GL=[];toast(t=='buscheck'?'The bus check is running':t=='card'?'Reading the card':'Reading the CPLD');dgget(0)},function(){})}
+function dgback(){api('POST','/r/diag/screen').then(function(){toast('The screens are Setup and Recovery\'s again');dgget(0)},function(){})}
+function dgonce(o,first){dgdefs().then(function(){var bd=G.board,h='',w={};(o.words||'').split(' ').forEach(function(x){var i=x.indexOf('=');if(i>0)w[x.slice(0,i)]=x.slice(i+1)});
+ if(first||!el('dgonce').innerHTML){DEF.forEach(function(d){if(!d.once||d.boards.split(' ').indexOf(bd)<0)return;var v=w[d.key]!=null?w[d.key]:d.menu?d.values.split('|')[0]:(d.example||'');
+  var f=d.menu?'<select id="u_'+d.key+'">'+d.values.split('|').map(function(c){return'<option'+(c==v?' selected':'')+'>'+esc(c)+'</option>'}).join('')+'</select>':'<input type="text" id="u_'+d.key+'" value="'+esc(v)+'" placeholder="'+esc(d.example)+'">';
+  h+='<label class="chk2"><input type="checkbox" id="k_'+d.key+'"'+(w[d.key]!=null?' checked':'')+'><span class="ov"><code>'+esc(d.key)+'</code><p>'+esc(d.text)+'</p>'+f+'</span></label>'});el('dgonce').innerHTML=h}
+ el('oncest').innerHTML=(o.armed?'Armed for the next start: <b>'+esc(o.words)+'</b>.':'Nothing armed.')+(o.used_now?' This start used: '+esc(o.used_now)+'.':'')+(o.last?' The last one used: '+esc(o.last)+' (debug-once.old).':'')})}
+function oncearm(rs){var e=[];DEF.forEach(function(d){var k=el('k_'+d.key);if(k&&k.checked)e.push(d.key+'='+el('u_'+d.key).value.trim())});if(!e.length){toast('Tick at least one option',1);return}
+ if(rs&&!confirm('Arm '+e.join(' ')+' and restart the Pi normally? It is used once.'))return;
+ api('POST','/r/diag/once',e.join(' ')).then(function(x){toast('Armed: '+x.words);if(rs)return api('POST','/r/reboot?how=normal').then(function(){toast('The Pi restarts with the debug options, once')});dgget(1);refresh()},function(){})}
+function oncecancel(){api('POST','/r/diag/once?cancel=1').then(function(x){toast(x.note);if(el('dg').className.indexOf('on')>=0)dgget(1);refresh()},function(){})}
+function reports(){api('GET','/r/reports').then(function(x){var h='';x.reports.forEach(function(f){var a=esc(f.name).replace(/&#39;/g,"\\'");
+ h+='<li><span class="nm">'+esc(f.name)+(f.this_start?' <span class="pill k">this start</span>':'')+'<br><span class="mut" style="font-family:var(--ui)">'+esc(f.what)+(f.verdict?': <b>'+esc(f.verdict)+'</b>':'')+'</span></span><span class="sz">'+kb(f.size)+(f.time?'<br>'+esc(f.time):'')+
+  '</span><span class="ac"><button class="b s" onclick="repview(\''+a+'\')">View</button><button class="b s" onclick="dl(\''+a+'\')">Get</button></span></li>'});el('reps').innerHTML=h||'<li>No reports on the card yet.</li>'},function(){})}
+function repview(n){var v=el('repv');v.style.display='';v.textContent='Loading '+n+'...';api('GET','/r/file?name='+encodeURIComponent(n),undefined,1).then(function(r){return r.text()}).then(function(t){v.textContent=t;v.scrollIntoView&&v.scrollIntoView({block:'nearest'})})}
+function bundle(d){api('GET','/r/bundle',undefined,1).then(function(r){return d?r.blob():r.text()}).then(function(x){if(!d){var v=el('bunv');v.style.display='';v.textContent=x;return}
+ var a=document.createElement('a');a.href=URL.createObjectURL(x);a.download='aurora68-report.txt';document.body.appendChild(a);a.click();a.remove();toast('aurora68-report.txt')})}
 function loadtext(){var n=el('tname').value;api('GET','/r/text?name='+n,undefined,1).then(function(r){return r.text()}).then(function(t){el('text').value=t})}
 function savetext(){var n=el('tname').value;if(!confirm('Write '+n+'?'))return;api('PUT','/r/text?name='+n,el('text').value).then(function(x){toast('Saved '+x.saved+', the old one as '+x.backup);refresh()},function(){})}
 function log(now){el('log').textContent='Loading...';api('GET','/r/log'+(now?'?now=1':''),undefined,1).then(function(r){return r.text()}).then(function(t){el('log').textContent=t||'(empty)'})}

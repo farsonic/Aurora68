@@ -829,7 +829,8 @@ void psmac_service_core(void)
             bridge_xfer(PSMAC_OP_POLL, 0, 0, 0, 0, NULL);
             next_poll = cnt_now() + period;
         }
-        { extern int psmac_buscheck_holding(void); extern void psmac_buscheck_service(void);
+        { extern int psmac_buscheck_holding(void); extern void psmac_buscheck_service(void), psmac_buscheck_request_poll(void); extern int psmac_recovery_on(void);
+          if (psmac_recovery_on()) psmac_buscheck_request_poll();   /* Setup and Recovery's Diagnostics tab: a bus check or a JTAG read asked for (docs/08 item 120) */
           if (psmac_buscheck_holding()) psmac_buscheck_service();   /* mac.buscheck: the board is the check's, the Mac never starts (psmac_buscheck.c) */
           else {
               psmac_se_service();                   /* the SE's screen, a few rows at a time */
@@ -1522,6 +1523,9 @@ static void rescreen_keep(uint8_t *top, uint32_t len, uint8_t rid, uint8_t slot,
 
 void psmac_setup_memory(void *rom, uint32_t rom_sz)
 {
+    /* a one-shot debug start (debug-once.txt, Setup and Recovery's Diagnostics tab, docs/08 item 120): its words go
+       into the boot arguments before anything reads them, and the file is renamed so that it happens once */
+    { extern void psmac_recovery_once_early(const void *, uint32_t); psmac_recovery_once_early(rom, rom_sz); }
     psmac_read_options();
     { extern void psmac_fpu_init(void); psmac_fpu_init(); }          /* mac.fpu: exact or double (psmac_fpu.c) */
     /* the card's config.txt and aurora68-display.txt, before the screen's size is decided: PiDisplay's

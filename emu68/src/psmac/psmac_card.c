@@ -1966,6 +1966,7 @@ static int rec_walk(rec_cb cb, void *ctx)
             e.name[k] = 0; e.cut = nm[k] != 0;
             e.size = le32(d + 28); e.clus = (fs.fat32 ? (uint32_t)le16(d + 20) << 16 : 0) | le16(d + 26);
             e.attr = d[11]; e.nlfn = (uint8_t)(use_lfn ? lfn_n : 0); e.lba = lba; e.off = 32u * (uint32_t)i;
+            e.wtime = le16(d + 22); e.wdate = le16(d + 24);
             lfn_ok = 0;
             int rr = cb(ctx, &e);
             if (rr) return rr;
@@ -2319,13 +2320,9 @@ int psmac_card_rec_delete(const char *name)
     rec_lock(); int rr = rec_delete_locked(name, 1); rec_unlock();
     return rr;
 }
-int psmac_card_rec_rename(const char *from, const char *to)
+static int rename_locked(const char *from, const char *to)
 {
-    if (psmac_card_rec_ready() != 1) { rerr("no writable card"); return -1; }
-    if (!name_ok(to)) { rerr("not a name for a file in the card's root"); return -1; }
-    if (is_kernel(from) || is_kernel(to)) { rerr("kernel8.img is not renamed here: upload a kernel (it is checked) or roll back"); return -1; }
     struct rec_ent e, t;
-    rec_lock();
     int rr = -1;
     uint8_t sn[11], nt;
     if (rec_find_locked(from, &e)) rerr("no such file");
@@ -2335,6 +2332,15 @@ int psmac_card_rec_rename(const char *from, const char *to)
         uint32_t l, o;
         if (!entries_write(to, e.clus, e.size, e.attr, e.lba, &l, &o)) rr = entries_remove(&e);
     }
+    return rr;
+}
+int psmac_card_rec_rename(const char *from, const char *to)
+{
+    if (psmac_card_rec_ready() != 1) { rerr("no writable card"); return -1; }
+    if (!name_ok(to)) { rerr("not a name for a file in the card's root"); return -1; }
+    if (is_kernel(from) || is_kernel(to)) { rerr("kernel8.img is not renamed here: upload a kernel (it is checked) or roll back"); return -1; }
+    rec_lock();
+    int rr = rename_locked(from, to);
     rec_unlock();
     return rr;
 }
@@ -2464,6 +2470,43 @@ int psmac_card_boot_read(int *count, char *flag, uint32_t flagmax, int *flag_len
     }
     rec_unlock();
     return 0;
+}
+/* The one-shot debug start (23 November 2026, docs/08 item 120): core 0, before the boot arguments are read, with
+   the card mounted by its first look (psmac_card_early). debug-once.txt's one line into buf (at most max - 1 bytes):
+   its length, or -1 when there is none (or no card). With take, the file is renamed debug-once.old at once (the old
+   .old goes first), so that it happens once: a start that then hangs is followed by a normal one, counted by the
+   boot counter as before. A card that cannot be written (mac.card=ro) gives -2: the start would repeat for ever. */
+int psmac_card_once_take(char *buf, uint32_t max, int take)
+{
+    if (sd.state != 1 || !fs.ok || !max) return -1;
+    struct rec_ent f, o;
+    int n = -1;
+    rec_lock();
+    if (!rec_find_locked("debug-once.txt", &f) && !(f.attr & 0x10)) {
+        n = 0;
+        if (f.clus >= 2 && f.size && !sd_read(clus_lba(f.clus), dsec))
+            for (; (uint32_t)n < f.size && n < 512 && (uint32_t)n + 1 < max; n++) buf[n] = (char)(dsec[n] >= 32 && dsec[n] < 127 ? dsec[n] : dsec[n] == '\n' || dsec[n] == '\r' ? '\n' : '?');
+        buf[n] = 0;
+        if (take && sd.ro) n = -2;
+        else if (take) {
+            if (!rec_find_locked("debug-once.old", &o)) rec_delete_locked("debug-once.old", 1);
+            if (rename_locked("debug-once.txt", "debug-once.old")) { kprintf("[CARD] debug-once.txt could not be renamed debug-once.old (%s): not used, so that it does not happen at every start\n", rec_err); n = -2; }
+        }
+    }
+    rec_unlock();
+    return n;
+}
+/* the start was a recovery start after all (the programmer's switch, phase 2): debug-once.old back as debug-once.txt,
+   for the next normal start. Core 3 */
+int psmac_card_once_rearm(void)
+{
+    if (psmac_card_rec_ready() != 1) return -1;
+    struct rec_ent f;
+    rec_lock();
+    int rr = -1;
+    if (rec_find_locked("debug-once.txt", &f)) rr = rename_locked("debug-once.old", "debug-once.txt");
+    rec_unlock();
+    return rr;
 }
 static void boot_write_locked(int count)
 {

@@ -36,6 +36,7 @@ struct rec_ent {
     uint32_t size, clus;
     uint8_t attr, nlfn, cut;                    /* FAT attributes; long-name entries; the name was longer than name[] */
     uint32_t lba, off;                          /* the short entry: sector and byte */
+    uint16_t wdate, wtime;                      /* the last write's date and time as FAT keeps them (the kernel's own files carry a fixed date: the Pi has no clock) */
     uint32_t lfn_lba[REC_LFN_MAX]; uint16_t lfn_off[REC_LFN_MAX];
 };
 struct rec_rd { uint32_t clus, size, pos; };

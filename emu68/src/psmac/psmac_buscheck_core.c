@@ -118,6 +118,7 @@ static uint32_t median(const struct bc_time *t)
     return v[n / 2];
 }
 static void idle(struct st *s) { if (s->bus->idle) s->bus->idle(s->bus->ctx); }
+static void stage(struct st *s, int step, const char *what) { if (s->bus->stage) s->bus->stage(s->bus->ctx, step, 7, what); }
 static uint64_t now(struct st *s) { return s->bus->ticks(s->bus->ctx); }
 static uint64_t us_ticks(struct st *s, uint32_t us) { return s->bus->hz * us / 1000000u; }
 static uint32_t ticks_us(const struct bc_results *r, uint64_t t) { return r->hz ? (uint32_t)(t * 1000000u / r->hz) : 0; }
@@ -745,6 +746,7 @@ void bc_run(const struct bc_bus *bus, const struct bc_config *cfg, struct bc_res
        addresses are chosen around what it found, so that they measure the data lines alone: a line stuck
        at v gets v in every address, a line following another the other's value, two joined lines the
        winning value, and RAM that repeats is used below where it repeats. */
+    stage(&s, 1, "the address lines, over the whole RAM (and how much RAM answers)");
     addr_test(&s);
     uint32_t R = cfg->ram_size, force1 = 0, force0 = 0, same_n[24], same_m[24], nsame = 0;
     s.lo = 0x1000; s.hi = R >= 0x20000u ? R - TOP_KEEP : R / 2;
@@ -768,11 +770,17 @@ void bc_run(const struct bc_bus *bus, const struct bc_config *cfg, struct bc_res
         }
         s.a[i] = a;
     }
+    stage(&s, 2, "the data lines, through the RAM");
     data_test(&s);
+    stage(&s, 3, "the VIA's and the SCC's registers");
     chips_test(&s);
+    stage(&s, 4, "the board's ROM");
     rom_test(&s);
+    stage(&s, 5, "what a retry would cure");
     retry_test(&s);
+    stage(&s, 6, "reads back to back and spaced apart");
     space_test(&s);
+    stage(&s, 7, "reads in the blank and while the video reads");
     video_test(&s);
     if (cfg->snd_base) for (uint32_t i = 0; i < 370 * 2; i += 2) wr(&s, cfg->snd_base + i, 2, 0x8000);   /* the sound buffer at the middle level */
     via_quiet(&s);
