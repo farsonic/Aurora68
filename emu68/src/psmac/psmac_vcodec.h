@@ -36,6 +36,8 @@
 #define VC_RPZA VC_FOURCC('r', 'p', 'z', 'a')
 #define VC_RLE  VC_FOURCC('r', 'l', 'e', ' ')
 #define VC_SMC  VC_FOURCC('s', 'm', 'c', ' ')
+#define VC_MPG1 VC_FOURCC('m', 'p', 'g', '1')   /* MPEG-1 video, the Aurora68 import's own type (23 November 2026) */
+#define VC_MP2  VC_FOURCC('M', 'P', '2', ' ')   /* MPEG-1 layer II sound, for the import's sound track */
 
 #define VC_MAX_W 1024u                       /* QuickTime of the period: 640 x 480 is large; the card's buffers */
 #define VC_MAX_H 768u
@@ -54,6 +56,13 @@ struct vc_picture {
        right = bottom = 0) before a picture, the decoder widens it over every block or run it writes, and the
        card then redraws only that part when the destination still holds the picture before */
     uint32_t changed_left, changed_top, changed_right, changed_bottom;
+    /* during open only: the ImageDescription as the Mac gave it (big-endian; 0 bytes if none), for a format
+       whose description carries more than a colour table ('mpg1': its sequence header) */
+    const uint8_t *desc;
+    uint32_t desc_len;
+    /* after a decode: what the decoder did, in a few characters, for the card's log with mac.vframelog=1
+       ('mpg1': the pictures of the sample, I P B, lower case when only shown again, then = and the one shown) */
+    char note[24];
 };
 static inline void vc_touch(struct vc_picture *p, uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1)
 {
@@ -77,6 +86,7 @@ struct vc_codec {
     int needs_idx;                           /* the picture's idx plane is wanted (the depth decides for rle) */
     int (*open)(void *state, struct vc_picture *p);     /* VC_OK, or VC_E_DEPTH for a depth it does not do */
     int (*decode)(void *state, struct vc_picture *p, const uint8_t *data, uint32_t len);
+    void (*close)(void *state);              /* 0, or what a format that allocates (mpg1, through pl_mpeg) frees */
 };
 
 const struct vc_codec *vc_find(uint32_t fourcc);
@@ -90,5 +100,18 @@ int vc_wants_idx(const struct vc_codec *c, uint32_t depth);
    8 bits; 33-40 the grey ramps). Returns the entries set. */
 uint32_t vc_palette_from_desc(struct vc_picture *p, const uint8_t *desc, uint32_t len);
 uint32_t vc_standard_palette(uint32_t *pal, uint32_t depth);
+
+/* MPEG-1 video ('mpg1') and MP2 sound, both through pl_mpeg (psmac_plmpeg.c, 23 November 2026, GitHub issue
+   #25). The video is a vc_codec like the others; these are the sound's own calls, for the import component's
+   sound track: a session's MP2 bytes in (any split), 16-bit big-endian stereo PCM at the stream's rate out. */
+extern const struct vc_codec vc_mpg1;
+void *vc_mp2_open(void);
+void vc_mp2_close(void *h);
+/* the n bytes at in appended to the session's, every whole frame decoded; up to room bytes of PCM written to out
+   (whole sample frames), the rest kept for the next call. *more: PCM is waiting (call again, n may be 0);
+   *rate: the stream's sample rate once known. Returns the bytes written. */
+uint32_t vc_mp2_decode(void *h, const uint8_t *in, uint32_t n, uint8_t *out, uint32_t room, uint32_t *more, uint32_t *rate);
+/* for the host test: the planes of the last picture shown (Y, then Cb and Cr at half size), 0 if none */
+int vc_mpg1_planes(void *state, const uint8_t **y, const uint8_t **cb, const uint8_t **cr, uint32_t *ystride, uint32_t *cstride);
 
 #endif

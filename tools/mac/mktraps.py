@@ -9,6 +9,11 @@ INTEGER or CHAR as a word, a BOOLEAN as a byte in the high half of a word), the 
 trap pops the arguments and leaves the result. The glue keeps D2 (GCC expects it kept, Pascal
 code may change it) and returns the result in D0 (a long or pointer in A0 too: GCC's m68k
 SVR4 ABI reads a pointer result from A0): a BOOLEAN as 0 or 1, an INTEGER sign-extended.
+
+A trap that dispatches on a selector in D0 (the Movie Toolbox's _QuickTimeDispatch, the Alias and Folder
+Managers' _AliasDispatch, the File Manager's _HighLevelFSDispatch) is written TRAP/SELECTOR, e.g.
+AAAA/0188: the glue loads the selector into D0 (all of it, as moveq would) just before the trap. Result kind p is a pointer
+(as l, typed void * in the header). Both added on 23 November 2026 for the QuickTime import (mac/vdec).
 MPL-2.0.
 """
 import argparse, re
@@ -24,17 +29,20 @@ for ln in open(a.spec):
     ln = ln.strip()
     if not ln or ln.startswith('#'):
         continue
-    m = re.match(r'([0-9A-Fa-f]{4})\s+([-lwb])\s+(\w+)\((.*)\)$', ln)
+    m = re.match(r'([0-9A-Fa-f]{4})(?:/([0-9A-Fa-f]{1,4}))?\s+([-lwbp])\s+(\w+)\((.*)\)$', ln)
     if not m:
         raise SystemExit(f"bad line: {ln}")
-    trap, res, name, args = m.groups()
+    trap, sel, res, name, args = m.groups()
+    ptr = res == 'p'
+    if ptr:
+        res = 'l'
     params = []
     if args.strip():
         for p in args.split(','):
             decl, kind = p.rsplit(':', 1)
             params.append((decl.strip(), kind.strip()))
     rt = ctype[res]
-    if res == 'l' and name in ('NewWindow', 'FrontWindow', 'NewMenu', 'NewControl', 'TENew', 'GetResource'):
+    if res == 'l' and (ptr or name in ('NewWindow', 'FrontWindow', 'NewMenu', 'NewControl', 'TENew', 'GetResource')):
         rt = 'void *'
     hdr.append(f"{rt} {name}({', '.join(d for d, _ in params) or 'void'});")
     asm += [f'\t.globl\t{name}', f'{name}:', '\tlink\t%a6,#0', '\tmove.l\t%d2,-(%sp)']
@@ -52,6 +60,8 @@ for ln in open(a.spec):
             asm.append(f'\tmove.b\t{off + 3}(%a6),-(%sp)')
         else:
             raise SystemExit(f"{name}: kind {k}")
+    if sel is not None:
+        asm.append(f'\tmove.l\t#0x{sel.upper()},%d0')         # moveq's D0, or 303C's word: both read alike
     asm.append(f'\t.short\t0x{trap.upper()}')
     if res == 'l':
         asm += ['\tmove.l\t(%sp)+,%d0', '\tmove.l\t%d0,%a0']       # GCC's m68k SVR4 ABI: pointers come back in A0

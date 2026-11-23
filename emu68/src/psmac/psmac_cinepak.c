@@ -166,4 +166,4 @@ static int cv_decode(void *state, struct vc_picture *pic, const uint8_t *d, uint
     return VC_OK;
 }
 
-const struct vc_codec vc_cinepak = { VC_CVID, "Cinepak", sizeof(struct cv_state), 0, cv_open, cv_decode };
+const struct vc_codec vc_cinepak = { VC_CVID, "Cinepak", sizeof(struct cv_state), 0, cv_open, cv_decode, 0 };

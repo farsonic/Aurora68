@@ -73,6 +73,8 @@ mac/build/play_core_test
 mac/build/vd/
 mac/build/vdec.elf
 mac/build/vcodec/
+# MPEG-1 in QuickTime's host test (tools/mpg1_test.sh: its program and FFmpeg's films, 23 November 2026)
+mac/build/mpg1/
 mac/build/av/
 mac/build/a68player.elf
 mac/build/a68player_traps.txt

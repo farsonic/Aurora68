@@ -33,30 +33,21 @@
  * Everything runs in the caller's context (MoviePlayer's, the Finder's...), with its A5 untouched; the
  * per-instance record is a pointer in the caller's heap, given to the Component Manager as the instance's
  * storage. Logged as "[MAC] A68 Video Decoder: ..." through slot 9's INFO service.
+ *
+ * MPEG-1 (23 November 2026, docs/08 item 113, GitHub issue #25). A fifth decompressor, 'mpg1', the type the
+ * extension's own movie import gives an MPEG-1 file's pictures (import.c: the file indexed, its pictures
+ * made samples that point into the file itself, in display order). It works as the other four do, with
+ * the card's 'mpg1' session around pl_mpeg's decoder; QuickTime has no decompressor of its own for it to
+ * fall back to, so without the card (or with frame decoding switched off) there is none, and the import
+ * says so in the movie itself. The same code resource serves the import: an instance knows from its
+ * component's description which of the two it is, and every call to an import instance goes to import.c.
  */
-#include "../../emu68/src/psmac/psmac_video.h"
-
-/* entry.s */
-void cm_set_storage(long ci, long storage);
-long cm_find_next(long comp, void *desc);
-long cm_open(long comp);
-short cm_get_info(long comp, void *desc);
-void cm_close(long ci);
-long cm_delegate(void *params, long ci);
-void call_completion(void *proc, int err, int flags, long refcon);
-short dm_open(void *pb), dm_control(void *pb), dm_status(void *pb);
-void *mm_newptr_clear(long size);
-void mm_disposeptr(void *p);
-long mm_handlesize(void *h);
-void *mm_strip(void *p);
-unsigned long tm_micro(void);
+#include "vdec.h"
+#include "mpgindex.h"
+#include "toolbox_gen.h"
 
 void *memset(void *d, int c, unsigned long n) { char *a = d; while (n--) *a++ = (char)c; return d; }
 void *memcpy(void *d, const void *s, unsigned long n) { char *a = d; const char *b = s; while (n--) *a++ = *b++; return d; }
-
-#define TYPE(a, b, c, d) ((long)(a) << 24 | (long)(b) << 16 | (long)(c) << 8 | (long)(d))
-#define LM_MMU32BIT (*(volatile unsigned char *)0xCB2)
-#define LM_TICKS    (*(volatile unsigned long *)0x16A)
 
 /* ---- QuickTime's records, as QuickTime 2.5 lays them out (2-byte alignment, as m68k GCC gives) -------- */
 typedef struct { short top, left, bottom, right; } Rect;
@@ -116,7 +107,6 @@ typedef struct { long type, subType, manufacturer, flags, flagsMask; } Component
 
 enum { kOpen = -1, kClose = -2, kCanDo = -3, kVersion = -4, kRegister = -5, kTarget = -6 };
 enum { kGetCodecInfo = 0, kPreDecompress = 5, kBandDecompress = 6, kBusy = 7 };
-#define badComponentSelector   0x80008002L
 #define codecUnimpErr          (-8962)
 #define codecSpoolErr          (-8966)
 #define codecInfoDoes1         (1L << 0)
@@ -144,9 +134,9 @@ typedef struct {                 /* the Device Manager's parameter block for Ope
 } CntrlParam;
 _Static_assert(__builtin_offsetof(CntrlParam, csCode) == 26 && __builtin_offsetof(CntrlParam, csParam) == 28, "CntrlParam");
 
-static short drv_err;            /* the last refusal, for the log */
+short drv_err;                   /* the last refusal, for the log */
 static short drv_ref;            /* .A68Video's reference number, once opened (kept while the code stays loaded) */
-static int drv_open(void)
+int drv_open(void)
 {
 	CntrlParam pb;
 	if (drv_ref) return 1;
@@ -156,7 +146,7 @@ static int drv_open(void)
 	drv_ref = pb.ioCRefNum;
 	return 1;
 }
-static short drv_frame(struct a68v_freq *r)
+short drv_frame(struct a68v_freq *r)
 {
 	CntrlParam pb;
 	memset(&pb, 0, sizeof pb);
@@ -164,7 +154,7 @@ static short drv_frame(struct a68v_freq *r)
 	pb.csParam[0] = (long)r;
 	return dm_control(&pb);
 }
-static int drv_enabled(void)
+int drv_enabled(void)
 {
 	CntrlParam pb;
 	memset(&pb, 0, sizeof pb);
@@ -175,8 +165,8 @@ static int drv_enabled(void)
 
 /* ---- the log (slot 9's INFO service, psmb.h) ------------------------------------------------------- */
 static unsigned char logline[220];
-static char *put(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
-static char *num(char *p, unsigned long v)
+char *put(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
+char *num(char *p, unsigned long v)
 {
 	char t[12]; int n = 0;
 	do { t[n++] = (char)('0' + v % 10); v /= 10; } while (v);
@@ -184,8 +174,8 @@ static char *num(char *p, unsigned long v)
 	return p;
 }
 static char *hex(char *p, unsigned long v) { for (int i = 28; i >= 0; i -= 4) *p++ = "0123456789ABCDEF"[v >> i & 15]; return p; }
-static char *fourcc(char *p, long t) { for (int i = 24; i >= 0; i -= 8) *p++ = (char)(t >> i); return p; }
-static void vlog(const char *text)
+char *fourcc(char *p, long t) { for (int i = 24; i >= 0; i -= 8) *p++ = (char)(t >> i); return p; }
+void vlog(const char *text)
 {
 	static const char who[] = "A68 Video Decoder: ";
 	volatile unsigned char *w = (volatile unsigned char *)(LM_MMU32BIT ? 0xF9000000ul : 0x00900000ul);
@@ -209,6 +199,7 @@ static void vlog(const char *text)
 
 /* ---- the instance ---------------------------------------------------------------------------------- */
 struct inst {
+	long type;                   /* 'imdc' (an 'eat ' instance is import.c's struct imp, which starts the same way) */
 	long self;                   /* our ComponentInstance */
 	long apple;                  /* QuickTime's own decompressor of the type, opened beside us (0: none) */
 	int delegate;                /* 1: every call goes to it */
@@ -222,6 +213,13 @@ struct inst {
 	unsigned long us_total, us_max, us_n;                   /* the time inside BandDecompress, whoever decoded: the frame time */
 	unsigned long predecompress;                      /* PreDecompress calls (QuickTime makes one when anything changes) */
 	long cond_or, flags_or;                           /* the condition and caller flags seen, together */
+	/* 'mpg1': catching the card up after QuickTime jumps (the import's index, mpgindex.h "mi_catchup") */
+	short film;                                       /* the film, open for reading; 0: no index, no catching up */
+	uint32_t *pics, npics, end;                       /* its pictures in coding order, the end of the last */
+	long last_k;                                      /* the sample the card decoded last (0-based), -1 none */
+	struct mi_sample *cu;                             /* room for one catch-up */
+	uint8_t *cbuf; long cbuf_cap;                     /* a sample read from the film */
+	unsigned long jumps, caught;
 	struct a68v_freq req;
 };
 
@@ -232,6 +230,7 @@ static const char *name_of(long t)
 	case TYPE('r', 'p', 'z', 'a'): return "Apple Video";
 	case TYPE('r', 'l', 'e', ' '): return "Animation";
 	case TYPE('s', 'm', 'c', ' '): return "Graphics";
+	case TYPE('m', 'p', 'g', '1'): return "MPEG-1";
 	}
 	return "?";
 }
@@ -244,8 +243,70 @@ static long open_apple(long t)
 	return c ? cm_open(c) : 0;
 }
 
+static void index_close(struct inst *in)
+{
+	if (in->film) { IOParam pb; memset(&pb, 0, sizeof pb); pb.ioRefNum = in->film; fm_close(&pb); }
+	if (in->pics) mm_disposeptr(in->pics);
+	if (in->cu) mm_disposeptr(in->cu);
+	if (in->cbuf) mm_disposeptr(in->cbuf);
+	in->film = 0; in->pics = 0; in->cu = 0; in->cbuf = 0; in->cbuf_cap = 0;
+}
+/* the import's index from an 'mpg1' description, and the film opened, for catching up after jumps */
+static void index_open(struct inst *in, const unsigned char *desc, long len)
+{
+	const uint8_t *spec, *pb;
+	uint32_t size, end, n;
+	short ref;
+	index_close(in);
+	in->last_k = -1;
+	if (!mi_index_find(desc, (uint32_t)len, &spec, &size, &end, &pb, &n) || !n) return;
+	FSSpec fs;
+	memcpy(&fs, spec, sizeof fs);
+	if (FSpOpenDF(&fs, 1, &ref)) { vlog("MPEG-1: the film named in the movie did not open: no catching up after jumps"); return; }
+	IOParam io; memset(&io, 0, sizeof io); io.ioRefNum = ref;
+	if (fm_geteof(&io) || (uint32_t)io.ioMisc != size) { io.ioRefNum = ref; fm_close(&io); vlog("MPEG-1: the film is not the one indexed: no catching up after jumps"); return; }
+	in->pics = mm_newptr((long)n * 4);
+	in->cu = mm_newptr((long)n * (long)sizeof(struct mi_sample) / 4 + 64 * (long)sizeof(struct mi_sample));
+	if (!in->pics || !in->cu) { in->film = ref; index_close(in); return; }
+	memcpy(in->pics, pb, n * 4);                      /* big-endian, as the 68k reads it */
+	in->film = ref; in->npics = n; in->end = end;
+}
+/* QuickTime gives sample k (its frameNumber is the sample's, 1 up); if the card does not hold the samples
+   before it, the ones it needs are read from the film and decoded without being drawn */
+static void catch_up(struct inst *in, CodecDecompressParams *p)
+{
+	long k = p->frameNumber - 1;
+	uint32_t off, size;
+	int flags;
+	if (!in->film || k < 0 || k == in->last_k || k == in->last_k + 1 || (uint32_t)k >= in->npics) return;
+	if (!mi_sample_at(in->pics, in->npics, in->end, (uint32_t)k, &off, &size, &flags) || (long)size != p->bufferSize) return;
+	if (flags & MI_SYNC) return;
+	uint32_t max = in->npics / 4 + 64;
+	uint32_t n = mi_catchup(in->pics, in->npics, in->end, (uint32_t)k, in->cu, max);
+	in->jumps++;
+	for (uint32_t i = 0; i < n; i++) {
+		struct mi_sample *s = &in->cu[i];
+		if ((long)s->size > in->cbuf_cap) {
+			if (in->cbuf) mm_disposeptr(in->cbuf);
+			in->cbuf_cap = ((long)s->size + 0xFFFF) & ~0xFFFFL;
+			if (!(in->cbuf = mm_newptr(in->cbuf_cap))) { in->cbuf_cap = 0; return; }
+		}
+		IOParam io; memset(&io, 0, sizeof io);
+		io.ioRefNum = in->film; io.ioBuffer = in->cbuf; io.ioReqCount = (long)s->size; io.ioPosMode = 1; io.ioPosOffset = (long)s->off;
+		if (fm_read(&io) || io.ioActCount != (long)s->size) return;
+		struct a68v_freq *r = &in->req;
+		memset(r, 0, sizeof *r);
+		r->op = A68V_OP_DECODE; r->session = in->session;
+		r->src = (unsigned long)in->cbuf; r->src_len = s->size;
+		r->flags = A68V_FF_NODRAW; r->frame = s->index + 1;
+		if (drv_frame(r) || (r->result && r->result != A68V_FE_DATA)) return;
+		in->caught++;
+	}
+}
+
 static void session_close(struct inst *in)
 {
+	index_close(in);
 	if (!in->session) return;
 	memset(&in->req, 0, sizeof in->req);
 	in->req.op = A68V_OP_CLOSE; in->req.session = in->session;
@@ -267,13 +328,19 @@ static void go_delegate(struct inst *in, const char *why)
 
 static long do_open(long self)
 {
+	ComponentDescription d;
+	memset(&d, 0, sizeof d);
+	short ie = cm_get_info(self, &d);
+	if (!ie && d.type == TYPE('e', 'a', 't', ' ')) {         /* the MPEG-1 import */
+		struct imp *ip;
+		return imp_open(self, &ip);
+	}
 	struct inst *in = mm_newptr_clear(sizeof *in);
 	if (!in) return -108;                    /* memFullErr */
-	ComponentDescription d;
+	in->type = TYPE('i', 'm', 'd', 'c');
 	in->self = self;
 	cm_set_storage(self, (long)in);
-	memset(&d, 0, sizeof d);
-	if (!cm_get_info(self, &d)) in->codec = d.subType;   /* which of the four we were opened as */
+	if (!ie) in->codec = d.subType;          /* which of the five we were opened as */
 	if (in->codec) in->apple = open_apple(in->codec);
 	return 0;
 }
@@ -294,11 +361,14 @@ static long do_close(struct inst *in)
 {
 	if (!in) return 0;
 	if (in->pictures) {
-		char t[200], *p = put(t, name_of(in->codec));
+		char t[260], *p = put(t, name_of(in->codec));
 		p = put(p, in->delegate ? ": QuickTime's own decompressor: " : ": the card: ");
 		p = rate(p, in);
 		p = put(p, "; a picture took "); p = num(p, in->us_n ? in->us_total / in->us_n : 0); p = put(p, " us (at most ");
 		p = num(p, in->us_max); p = put(p, ") in the decompressor");
+		if (in->jumps) {
+			p = put(p, "; "); p = num(p, in->jumps); p = put(p, " jumps caught up with "); p = num(p, in->caught); p = put(p, " samples");
+		}
 		if (in->frames) {
 			p = put(p, "; "); p = num(p, in->frames); p = put(p, " by the card ("); p = num(p, in->drawn); p = put(p, " drawn, ");
 			p = num(p, in->errors); p = put(p, " refused), on the Pi "); p = num(p, in->t_decode / in->frames); p = put(p, " us to decode and ");
@@ -330,6 +400,7 @@ static long get_info(struct inst *in, CodecInfo *ci, long subtype)
 	case TYPE('c', 'v', 'i', 'd'): ci->formatFlags = codecInfoDepth24; break;
 	case TYPE('r', 'p', 'z', 'a'): ci->formatFlags = codecInfoDepth16; break;
 	case TYPE('s', 'm', 'c', ' '): ci->formatFlags = codecInfoDepth8; break;
+	case TYPE('m', 'p', 'g', '1'): ci->formatFlags = codecInfoDepth24; break;
 	default: ci->formatFlags = codecInfoDepth8 | codecInfoDepth16 | codecInfoDepth24 | codecInfoDepth32;
 	}
 	ci->decompressionAccuracy = 128;
@@ -376,6 +447,7 @@ static long pre_decompress(struct inst *in, CodecDecompressParams *p, void *para
 		}
 		in->session = in->req.session;
 		in->w = w; in->h = h; in->depth = depth;
+		if (t == TYPE('m', 'p', 'g', '1')) index_open(in, desc, *(long *)desc);
 		char m[120], *q = put(m, name_of(t));
 		q = put(q, " "); q = num(q, (unsigned long)w); q = put(q, "x"); q = num(q, (unsigned long)h);
 		q = put(q, ": decoded by the card into a "); q = num(q, (unsigned long)dst); q = put(q, "-bit pixel map"); *q = 0;
@@ -421,6 +493,12 @@ static long band_decompress(struct inst *in, CodecDecompressParams *p, void *par
 	}
 	if (p->callerFlags & codecFlagNoScreenUpdate) r->flags |= A68V_FF_NODRAW;
 	r->frame = (unsigned long)p->frameNumber;
+	if (in->codec == TYPE('m', 'p', 'g', '1') && in->film) {
+		struct a68v_freq keep = *r;              /* catch_up uses the request block */
+		catch_up(in, p);
+		*r = keep;
+		in->last_k = p->frameNumber - 1;
+	}
 	short e = drv_frame(r);
 	if (e || (r->result && r->result != A68V_FE_DATA)) {
 		in->errors++;
@@ -447,6 +525,7 @@ long c_dispatch(unsigned char *params, struct inst *in)
 {
 	short what = *(short *)(params + 2);
 	unsigned char *a = params + 4;            /* the call's arguments, the last one first */
+	if (what != kOpen && in && in->type == TYPE('e', 'a', 't', ' ')) return imp_dispatch(params, (struct imp *)in, what);
 	switch (what) {
 	case kOpen: return do_open(*(long *)a);
 	case kClose: return do_close(in);

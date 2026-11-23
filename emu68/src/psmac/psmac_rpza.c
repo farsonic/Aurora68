@@ -105,4 +105,4 @@ static int rz_decode(void *state, struct vc_picture *pic, const uint8_t *d, uint
     return VC_OK;
 }
 
-const struct vc_codec vc_rpza = { VC_RPZA, "Apple Video", 0, 0, rz_open, rz_decode };
+const struct vc_codec vc_rpza = { VC_RPZA, "Apple Video", 0, 0, rz_open, rz_decode, 0 };

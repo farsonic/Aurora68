@@ -12,8 +12,8 @@ T="$B/vcodec"
 mkdir -p "$T"
 if ! command -v ffmpeg >/dev/null 2>&1; then echo "vcodec_test: no ffmpeg, skipped"; exit 0; fi
 SRC=../emu68/src/psmac
-cc -std=c99 -O1 -g -Wall -Wextra -Werror ${SANITIZE:--fsanitize=address,undefined} -I$SRC -o "$T/vcodec_test" ../tools/vcodec_test.c \
-   $SRC/psmac_vcodec.c $SRC/psmac_cinepak.c $SRC/psmac_rpza.c $SRC/psmac_qtrle.c $SRC/psmac_smc.c
+cc -std=c99 -O1 -g -Wall -Wextra -Werror ${SANITIZE:--fsanitize=address,undefined} -I../tools/mpg1_host -I$SRC -o "$T/vcodec_test" ../tools/vcodec_test.c \
+   $SRC/psmac_vcodec.c $SRC/psmac_cinepak.c $SRC/psmac_rpza.c $SRC/psmac_qtrle.c $SRC/psmac_smc.c $SRC/psmac_plmpeg.c
 IN="testsrc=size=160x120:rate=10:duration=3"
 MOV="color=c=navy:size=160x120:rate=10:duration=3[b];[b]drawbox=x=t*40:y=20:w=40:h=40:color=yellow:t=fill"
 fail=0

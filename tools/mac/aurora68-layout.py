@@ -7,7 +7,7 @@
     aurora68-layout.py disk IMAGE [--part N] [--build mac/build]
         the same layout onto an HFS volume that is not a startup disk (Aurora68-Utilities.img)
     aurora68-layout.py install IMAGE [--part N] [--build mac/build] [--music FILE ...]
-                       [--remove-old] [--rebuild-desktop] [--startup-log]
+                       [--films FILE ...] [--films-creator CODE] [--remove-old] [--rebuild-desktop] [--startup-log]
         onto a System 7 (or 6) startup disk: the extensions into the System Folder's Extensions
         folder (the System Folder itself on System 6), the folder "Aurora68" at the top of the disk
 
@@ -22,6 +22,10 @@ The layout (the build products of `make -C mac`, their Finder names inside the M
     Aurora68/
       Aurora68 Play/          Aurora68 Play, Music/ (MP3, AIFF and WAV files: --music puts them there,
                               typed and given Aurora68 Play's creator, so a double-click opens them)
+      Aurora68 Video/         Aurora68 Video, Films/ (MPEG-1 films: --films puts them there as type 'MPEG',
+                              Aurora68 Video's creator 'A68V', or --films-creator TVOD for MoviePlayer;
+                              MoviePlayer and every QuickTime program open them through the Aurora68 Video
+                              Decoder extension's MPEG-1 import, 23 November 2026)
       Display/                Aurora68 Display, Aurora68 Screens, Aurora68 Colour, Aurora68 Depth 8
       Network/                Aurora68 Network, Aurora68 Wi-Fi, Aurora68 Bluetooth, Aurora68 Ping
       System/                 Aurora68 Slots, Aurora68 Log, Aurora68 Status
@@ -70,6 +74,7 @@ OLD_EXTENSIONS = ['PiDisk', 'PiMach', 'PiScrn', 'Sound PiStorm', 'Wi-Fi & Blueto
 OLD_APPS = ['PiPlay', 'PiDisplay', 'PiSlots', 'PiLog', 'PiStatus', 'PiNet', 'PiWiFi', 'PiBlue', 'PiPing',
             'PiColor', 'PiScreens', 'PiDepth', 'PiDepth 8']
 MUSIC_TYPES = {'.mp3': 'MPG3', '.aif': 'AIFF', '.aiff': 'AIFF', '.aifc': 'AIFC', '.wav': 'WAVE'}
+FILM_TYPES = {'.mpg': 'MPEG', '.mpeg': 'MPEG', '.m1v': 'MPEG', '.mpv': 'MPEG'}
 
 EXT_README = """Aurora68 extensions
 
@@ -90,8 +95,10 @@ Aurora68 Agent - files and programs for the Pi's remote control: aurora68.py ls,
     apps and quit from another computer (docs/13, "Files and applications"). It does nothing
     until the remote control asks; without remote=on in cmdline.txt it only waits.
 Aurora68 Video Decoder - QuickTime's Cinepak, Apple Video, Animation and Graphics movies decoded by
-    the Pi (the video decoder card in slot $C), in MoviePlayer and every QuickTime program. Needs
-    QuickTime 2.0 or later; without the card QuickTime's own decompressors are used.
+    the Pi (the video decoder card in slot $C), in MoviePlayer and every QuickTime program, and MPEG-1
+    films (.mpg, types MPEG and MPG) opened as QuickTime movies, their pictures and MP2 sound decoded
+    by the card. Needs QuickTime 2.0 or later; without the card QuickTime's own decompressors are used,
+    and an MPEG-1 film opens with a line saying that it needs the card.
 """
 
 
@@ -183,7 +190,7 @@ def disk(build, image, part):
     print(f"{image}: the Aurora68 folder")
 
 
-def install(build, image, part, music, remove_old, rebuild_desktop, startup_log):
+def install(build, image, part, music, remove_old, rebuild_desktop, startup_log, films=None, films_creator='A68V'):
     h = HFS(image, part)
     try:
         sf = ':System Folder'
@@ -217,6 +224,16 @@ def install(build, image, part, music, remove_old, rebuild_desktop, startup_log)
             h.run('hcopy', '-r', m, dest)
             if t:
                 h.run('hattrib', '-t', t, '-c', 'PIPY', dest)
+        if films:
+            h.mkdir(f'{top}:Aurora68 Video:Films')
+        for m in films or []:
+            t = FILM_TYPES.get(os.path.splitext(m)[1].lower(), 'MPEG')
+            name = os.path.basename(m)[:31]
+            dest = f'{top}:Aurora68 Video:Films:{name}'
+            if h.exists(dest):
+                h.delete(dest)
+            h.run('hcopy', '-r', m, dest)
+            h.run('hattrib', '-t', t, '-c', films_creator, dest)
         if startup_log and h.exists(f'{sf}:Startup Items'):
             if h.exists(f'{sf}:Startup Items:Aurora68 Log'):
                 h.delete(f'{sf}:Startup Items:Aurora68 Log')
@@ -228,7 +245,8 @@ def install(build, image, part, music, remove_old, rebuild_desktop, startup_log)
                     print(f"  removed {d} (the Finder builds it again at the next start)")
     finally:
         h.close()
-    print(f"{image}: extensions in {ext[1:]}, programs in {FOLDER}" + (f", {len(music)} sound files in Music" if music else ''))
+    print(f"{image}: extensions in {ext[1:]}, programs in {FOLDER}" + (f", {len(music)} sound files in Music" if music else '') +
+          (f", {len(films)} films in Aurora68 Video:Films" if films else ''))
 
 
 if __name__ == '__main__':
@@ -239,6 +257,8 @@ if __name__ == '__main__':
     ap.add_argument('--build', default=os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'mac', 'build'))
     ap.add_argument('--part', type=int, help='the partition of a partitioned disk (hfsutils numbering)')
     ap.add_argument('--music', nargs='*', default=[], help='sound files for Aurora68 Play:Music (install)')
+    ap.add_argument('--films', nargs='*', default=[], help='MPEG-1 films for Aurora68 Video:Films (install)')
+    ap.add_argument('--films-creator', default='A68V', help="the films' creator: A68V Aurora68 Video (default), TVOD MoviePlayer")
     ap.add_argument('--remove-old', action='store_true', help='also take away the programs under their old names')
     ap.add_argument('--rebuild-desktop', action='store_true', help="delete the Finder's desktop database")
     ap.add_argument('--startup-log', action='store_true', help='Aurora68 Log into Startup Items')
@@ -248,4 +268,4 @@ if __name__ == '__main__':
     elif a.mode == 'disk':
         disk(a.build, a.target, a.part)
     else:
-        install(a.build, a.target, a.part, a.music, a.remove_old, a.rebuild_desktop, a.startup_log)
+        install(a.build, a.target, a.part, a.music, a.remove_old, a.rebuild_desktop, a.startup_log, a.films, a.films_creator)

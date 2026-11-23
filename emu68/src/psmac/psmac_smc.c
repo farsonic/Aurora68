@@ -144,4 +144,4 @@ static int sm_decode(void *state, struct vc_picture *pic, const uint8_t *d, uint
     return VC_OK;
 }
 
-const struct vc_codec vc_smc = { VC_SMC, "Graphics", sizeof(struct smc_state), 1, sm_open, sm_decode };
+const struct vc_codec vc_smc = { VC_SMC, "Graphics", sizeof(struct smc_state), 1, sm_open, sm_decode, 0 };

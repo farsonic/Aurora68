@@ -16,7 +16,14 @@ Since 0.13 (docs/08 items 96 and 103):
 - **Aurora68 Video: MPEG-1 films on the card** (docs/08 item 112). A new program in the Aurora68 folder: File >
   Open... or double-click an MPEG-1 film (.mpg, MP2 sound) and the card plays it in the window, the SE's screen
   included; pause, seek with the position bar, double size, volume, and the switch for QuickTime decoding on the
-  card. Nothing but the Mac and the Pi. (MoviePlayer does not open .mpg files yet: designed, not built.)
+  card. Nothing but the Mac and the Pi.
+- **MPEG-1 films in MoviePlayer and every QuickTime program** (docs/08 item 113, docs/16 "MPEG-1 in QuickTime").
+  The Aurora68 Video Decoder extension now opens MPEG-1 files (.mpg with MP2 sound, types MPEG and MPG) as
+  QuickTime movies: in MoviePlayer File > Open..., the film, "Convert" (which opens it where it is: nothing is
+  copied). The card decodes the pictures, B-pictures included, and decodes the sound once into a file in the
+  Preferences folder ("Aurora68 Video Sounds", 10 MB a minute of film); the slider, Play All Frames and Save As
+  work as for any movie. Without the card the film opens with a line saying it needs it. Tested in the testbed
+  only; not yet on the SE.
 
 - **The Macintosh Plus, 512Ke, 512K and 128K.** `mac.board=plus`, `512ke`, `512k` or `128k` in `cmdline.txt`.
   The Plus's overlay, its non-ADB keyboard and mouse (presented to the IIci ROM as ADB devices), SCSI on the
