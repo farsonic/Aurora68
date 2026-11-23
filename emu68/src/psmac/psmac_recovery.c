@@ -158,6 +158,7 @@ static int diag_screen;                       /* 0 the recovery page; 1 a bus ch
 static void diag_screen_poll(void), diag_lines(void);
 static const char *board_model(void);
 struct sb; static void j_once(struct sb *b);
+struct bun; static void bt_bundle(struct bun *bb);
 int psmac_buscheck_request_state(void);
 static char once_used[600]; static int once_taken;
 static int once_armed;                         /* debug-once.txt is on the card (for the screen; the page reads the card) */
@@ -476,6 +477,11 @@ static int m_psk_set, m_changed;
 static char m_buf[68]; static unsigned m_len;
 static char m_msg[64];
 static void menu_lines(void);
+static int menu_bt, bt_sel, bt_forget_armed = -1;            /* the keyboard menu's Bluetooth list (docs/08 item 136) */
+static void bt_lines(int brief);
+static volatile struct an_bt *btb(void);
+static void bt_name(const volatile char *s, char *o, unsigned cap);
+static const char *bt_state_name(uint32_t st);
 
 /* the programmer's switch on this board (the SE, Plus, 512K; the testbed's mac.switchsim=) */
 static int switch_board(void) { return (psmac_board_se && !psmac_board_solo) || psmac_option("mac.switchsim") != 0; }
@@ -501,6 +507,7 @@ static void ap_lines(void)
         int c = psmac_ip_ap_clients();
         L(0, "Devices with an address: %d", c);
     }
+    bt_lines(1);
     if (pin_changes) L(0, "%u x 10 wrong PINs: a new PIN each time", pin_changes);
     if (U.state == UP_RECV && U.total) L(0, "Now:   %s %u of %u KB (%u%%)", U.target, U.got >> 10, U.total >> 10, (uint32_t)((uint64_t)U.got * 100u / U.total));
     else if (U.state == UP_VERIFY) L(0, "Now:   %s: reading it back and checking", U.target);
@@ -528,6 +535,7 @@ static void build_page(void)
         s[k] = 0;
         L(0, "WiFi:  %s%s%s%s", st_name(wi->state), s[0] && wi->state == AN_ST_CONNECTED ? " to " : "", wi->state == AN_ST_CONNECTED ? s : "", ii.unit == 0 && ii.ip[0] ? " (in use)" : "");
     } else L(0, "WiFi:  none");
+    bt_lines(0);
     if (pin_changes) L(0, "%u x 10 wrong PINs: a new PIN each time", pin_changes);
     int ready = psmac_card_rec_ready();
     L(0, "Card:  %s%s", ready == 0 ? "being read" : ready == -1 ? "none" : psmac_card_rec_what(), ready == -2 ? " (read only)" : "");
@@ -1155,6 +1163,18 @@ static void ans_state(struct rconn *h)
         bprintf(&b, ", \"security\": \"%s\", \"channel\": %d, \"address\": \"192.168.4.1\", \"clients\": %d, \"how\": ", ap_state != AP_UP ? "" : ap_open ? "open (the PIN guards the page)" : "WPA2", ap_channel, psmac_ip_ap_clients());
         bjson(&b, ap_how); bput(&b, ", \"error\": "); bjson(&b, ap_err); bput(&b, "}");
     } else bput(&b, ",\n \"ap\": null");
+    {   /* Bluetooth (docs/08 item 136): its state and who is connected; the Bluetooth tab has the rest (GET /r/bt) */
+        volatile struct an_bt *x = btb();
+        if (x) {
+            char m[64]; bt_name(x->msg, m, sizeof m);
+            bput(&b, ",\n \"bt\": {\"state\": "); bjson(&b, bt_state_name(x->state)); bput(&b, ", \"message\": "); bjson(&b, m);
+            bprintf(&b, ", \"paired\": %u, \"passkey\": ", x->nkeys);
+            if (x->passkey_shown) bprintf(&b, "\"%06u\"", x->passkey); else bput(&b, "null");
+            bput(&b, ", \"connected\": [");
+            for (unsigned k = 0, n = 0; k < x->nkeys && k < AN_BT_KEYS; k++) if (x->keys[k].flags & AN_BTK_CONNECTED) { char nm[40]; bt_name(x->keys[k].name, nm, sizeof nm); if (n++) bput(&b, ", "); bjson(&b, nm); }
+            bput(&b, "]}");
+        } else bput(&b, ",\n \"bt\": null");
+    }
     bput(&b, ",\n \"once\": "); j_once(&b);                  /* the one-shot debug start (docs/08 item 122) */
     bprintf(&b, ", \"diag\": {\"buscheck\": \"%s\", \"screen\": \"%s\"}", psmac_buscheck_request_state() == 2 || psmac_buscheck_request_state() == 1 ? "running" : psmac_buscheck_request_state() == 3 ? "done" : "idle",
             diag_screen == 2 ? "report" : diag_screen == 1 ? "check" : "recovery");
@@ -2177,6 +2197,7 @@ static void ans_bundle(struct rconn *h, int c)
                    for (int i = 0, n = psmac_buscheck_request_count(); i < n; i++) bnf(&b, "%s\n", psmac_buscheck_request_line(i)); }
     else if (psmac_buscheck_refusal(0)) bnf(&b, "\nBus check: not for this board here: %s\n", psmac_buscheck_refusal(0));
     if (CT.state == 2) bnf(&b, "\n=== The card's read test at this start\n%s", ct_text);
+    bt_bundle(&b);
     bn_file(&b, "buscheck.txt", "the last bus check's report");
     bn_file(&b, "cardcheck.txt", "the last card read test");
     bn_file(&b, "aurora68.log", "the log the start before this one saved");
@@ -2245,6 +2266,201 @@ static int ap_probe_answer(struct rconn *h, const char *path)
     return 0;
 }
 
+/* ==================================================================================== Bluetooth
+   (23 November 2026, docs/08 item 136; the owner: "Can we add Bluetooth connectivity into the early startup also for
+   mouse and keyboards".) The Pi's Bluetooth host (src/alice/bt: bt_pi.c on the service loop, every start) runs here as
+   in any start: it powers the chip, loads its firmware and reconnects the devices in pairings.txt, and a paired
+   keyboard's reports go where a USB keyboard's go (frf_native_usb_keyboard_boot_report, in_key, psmac_recovery_key):
+   the keyboard menu. What recovery lacked was a way to see it and to pair: the board's Bluetooth block (alice_net.h
+   struct an_bt) is what the Mac's Bluetooth menu reads and commands (scan, pair, connect, forget, with cmd_seq and
+   cmd_done), and with no Mac running this file is its one client. The screens show the state, the devices connected
+   and a keyboard's passkey in large digits while it pairs; the page has a Bluetooth tab (GET /r/bt, POST
+   /r/bt/scan|pair|connect|forget?addr=); the keyboard menu has the same four. A pairing made here reaches
+   pairings.txt through this file's card layer (psmac_card_pairings_take, psmac_card_rec_put), so the next start,
+   normal or not, finds it. A mouse moves through the menu (psmac_recovery_mouse): there is no pointer to draw. */
+uint32_t psmac_card_pairings_take(char *out, uint32_t max);
+static volatile struct an_bt *btb(void)
+{
+    volatile uint8_t *nb = alice_net_board();
+    return nb ? (volatile struct an_bt *)(nb + AN_OFF_BT) : 0;
+}
+static void bt_addr_text(const volatile uint8_t *a, char o[18])
+{
+    static const char hx[] = "0123456789ABCDEF";
+    for (int i = 0; i < 6; i++) { o[i * 3] = hx[a[5 - i] >> 4]; o[i * 3 + 1] = hx[a[5 - i] & 15]; o[i * 3 + 2] = i < 5 ? ':' : 0; }
+}
+static int bt_addr_parse(const char *s, uint8_t a[6])           /* "AA:BB:CC:DD:EE:FF" (or without the colons), most significant first */
+{
+    int n = 0;
+    for (; *s && n < 12; s++) {
+        if (*s == ':' || *s == '-') continue;
+        int v = hexv(*s);
+        if (v < 0) return -1;
+        if (!(n & 1)) a[5 - n / 2] = (uint8_t)(v << 4); else a[5 - n / 2] |= (uint8_t)v;
+        n++;
+    }
+    return n == 12 && !*s ? 0 : -1;
+}
+static const char *bt_state_name(uint32_t st)
+{
+    static const char *const n[] = { "off", "waiting for its firmware", "starting", "ready", "failed" };
+    return st < 5 ? n[st] : "?";
+}
+static const char *bt_kind(uint32_t flags) { return (flags & AN_BTK_KEYBOARD) && (flags & AN_BTK_MOUSE) ? "keyboard and mouse" : flags & AN_BTK_KEYBOARD ? "keyboard" : flags & AN_BTK_MOUSE ? "mouse" : "device"; }
+static const char *bt_kind_cod(uint32_t cod)
+{
+    uint32_t m = ((cod >> 8) & 0x1f) == 5 ? (cod >> 6) & 3 : 0;
+    return m == 3 ? "keyboard and mouse" : m == 1 ? "keyboard" : m == 2 ? "mouse" : "device";
+}
+static void bt_name(const volatile char *s, char *o, unsigned cap) { unsigned i = 0; for (; i + 1 < cap && i < 39 && s[i]; i++) o[i] = (s[i] >= ' ' && s[i] < 127) ? s[i] : '?'; o[i] = 0; }
+static uint32_t bt_asked_seq; static uint32_t bt_asked_cmd; static char bt_asked_name[44];
+/* a command, as the Mac's Bluetooth menu sends one: 0 sent, -1 not ready, -2 the one before is not done */
+static int bt_cmd(uint32_t cmd, const uint8_t *a, const char *name)
+{
+    volatile struct an_bt *b = btb();
+    if (!b || b->state != AN_BT_READY) return -1;
+    if (b->cmd_seq != b->cmd_done) return -2;
+    for (int i = 0; i < 8; i++) b->cmd_addr[i] = a && i < 6 ? a[i] : 0;
+    b->cmd = cmd;
+    __asm__ volatile("dmb ish" ::: "memory");
+    b->cmd_seq = b->cmd_seq + 1;
+    bt_asked_seq = b->cmd_seq; bt_asked_cmd = cmd;
+    scpy(bt_asked_name, name ? name : "", sizeof bt_asked_name);
+    static const char *const what[] = { "", "look for devices", "pair with", "forget", "connect" };
+    did("Bluetooth: %s%s%s", what[cmd < 5 ? cmd : 0], name && name[0] ? " " : "", name ? name : "");
+    return 0;
+}
+/* every turn: pairings for the card, and the screens drawn again when what they show of Bluetooth changes */
+static void bt_poll_rec(void)
+{
+    volatile struct an_bt *b = btb();
+    if (!b) return;
+    static uint32_t sig;
+    uint32_t s = b->state * 7u + b->scanning * 11u + b->pairing * 13u + (b->passkey_shown ? b->passkey : 0) + b->nkeys * 17u + b->nfound * 19u;
+    for (unsigned k = 0; k < b->nkeys && k < AN_BT_KEYS; k++) s = s * 31u + b->keys[k].flags;
+    for (unsigned i = 0; i < sizeof b->msg && b->msg[i]; i++) s = s * 33u + (uint8_t)b->msg[i];
+    if (s != sig) { sig = s; scr_dirty = 1; }
+    if (U.state == UP_RECV || U.state == UP_VERIFY || CT.state == 1 || psmac_card_rec_ready() != 1) return;
+    static char t[4096];
+    uint32_t n = psmac_card_pairings_take(t, sizeof t);
+    if (!n) return;
+    unsigned devs = 0; for (uint32_t i = 0; i + 7 < n; i++) if ((i == 0 || t[i - 1] == '\n') && starts(t + i, "bt.dev=")) devs++;
+    if (psmac_card_rec_put("pairings.txt", (const uint8_t *)t, n)) did("Bluetooth: pairings.txt could not be written: %s", psmac_card_rec_error());
+    else did("Bluetooth: pairings.txt written, %u device%s (the next start reconnects them)", devs, devs == 1 ? "" : "s");
+}
+/* the screens' lines: the state, what is connected, a keyboard's passkey */
+static void bt_lines(int brief)
+{
+    volatile struct an_bt *b = btb();
+    if (!b) return;
+    if (b->passkey_shown) {
+        L(0, "Bluetooth keyboard: type this passkey on it, then Return");
+        L(2, "%06u", b->passkey);
+        return;
+    }
+    if (brief) return;
+    char m[64]; bt_name(b->msg, m, sizeof m);
+    if (b->state != AN_BT_READY) { L(0, "Bluetooth: %s%s%s", bt_state_name(b->state), m[0] ? ": " : "", m); return; }
+    char t[160]; struct sb s = { t, 0, sizeof t }; int conn = 0;
+    for (unsigned k = 0; k < b->nkeys && k < AN_BT_KEYS; k++) if (b->keys[k].flags & AN_BTK_CONNECTED) {
+        char nm[40]; bt_name(b->keys[k].name, nm, sizeof nm);
+        bprintf(&s, "%s%s (%s)", conn++ ? ", " : "", nm[0] ? nm : "a device", bt_kind(b->keys[k].flags));
+    }
+    if (b->scanning) L(0, "Bluetooth: looking for devices in pairing mode ...");
+    else if (b->pairing) L(0, "Bluetooth: pairing%s%s ...", bt_asked_name[0] ? " with " : "", bt_asked_name);
+    else if (conn) L(0, "Bluetooth: %s", t);
+    else L(0, "Bluetooth: ready, %u paired, none connected%s", b->nkeys, b->nkeys ? " (press a key, move the mouse)" : "");
+}
+/* GET /r/bt */
+static void ans_bt_get(struct rconn *h)
+{
+    static char j[6144]; struct sb b = { j, 0, sizeof j };
+    volatile struct an_bt *x = btb();
+    if (!x) { respond(h, 200, "application/json", "{\"state\": \"none\", \"paired\": [], \"found\": []}\n"); return; }
+    char m[64], a[18]; bt_name(x->msg, m, sizeof m); bt_addr_text(x->bdaddr, a);
+    bput(&b, "{\"state\": "); bjson(&b, x->state == AN_BT_READY ? "ready" : x->state == AN_BT_FAILED ? "failed" : x->state == AN_BT_OFF ? "off" : "starting");
+    bput(&b, ", \"detail\": "); bjson(&b, bt_state_name(x->state)); bput(&b, ", \"message\": "); bjson(&b, m);
+    bprintf(&b, ", \"address\": \"%s\", \"scanning\": %s, \"pairing\": %s, \"busy\": %s", x->state == AN_BT_READY ? a : "", x->scanning ? "true" : "false", x->pairing ? "true" : "false", x->cmd_seq != x->cmd_done ? "true" : "false");
+    if (x->passkey_shown) bprintf(&b, ", \"passkey\": \"%06u\"", x->passkey); else bput(&b, ", \"passkey\": null");
+    bprintf(&b, ", \"last\": {\"command\": \"%s\", \"done\": %s, \"result\": %d}", bt_asked_cmd == AN_BT_CMD_SCAN ? "scan" : bt_asked_cmd == AN_BT_CMD_PAIR ? "pair" : bt_asked_cmd == AN_BT_CMD_CONNECT ? "connect" : bt_asked_cmd == AN_BT_CMD_FORGET ? "forget" : "",
+            bt_asked_seq && x->cmd_done == bt_asked_seq ? "true" : "false", (int)x->cmd_result);
+    bput(&b, ",\n \"paired\": [");
+    for (unsigned k = 0; k < x->nkeys && k < AN_BT_KEYS; k++) {
+        char nm[40]; bt_name(x->keys[k].name, nm, sizeof nm); bt_addr_text(x->keys[k].addr, a);
+        bprintf(&b, "%s{\"address\": \"%s\", \"name\": ", k ? ", " : "", a); bjson(&b, nm);
+        bprintf(&b, ", \"kind\": \"%s\", \"le\": %s, \"connected\": %s}", bt_kind(x->keys[k].flags), x->keys[k].flags & AN_BTK_LE ? "true" : "false", x->keys[k].flags & AN_BTK_CONNECTED ? "true" : "false");
+    }
+    bput(&b, "],\n \"found\": [");
+    for (unsigned k = 0; k < x->nfound && k < AN_BT_FOUND; k++) {
+        char nm[40]; bt_name(x->found[k].name, nm, sizeof nm); bt_addr_text(x->found[k].addr, a);
+        bprintf(&b, "%s{\"address\": \"%s\", \"name\": ", k ? ", " : "", a); bjson(&b, nm);
+        bprintf(&b, ", \"kind\": \"%s\", \"le\": %s, \"rssi\": %d}", bt_kind_cod(x->found[k].cod & 0xffffffu), x->found[k].cod & 0x80000000u ? "true" : "false", x->found[k].rssi);
+    }
+    struct rec_ent e; int have = psmac_card_rec_ready() == 1 && !psmac_card_rec_find("pairings.txt", &e);
+    bprintf(&b, "],\n \"pairings_txt\": %s}\n", have ? "true" : "false");
+    respond(h, 200, "application/json", j);
+}
+/* POST /r/bt/scan, /r/bt/pair?addr=, /r/bt/connect?addr=, /r/bt/forget?addr= */
+static void ans_bt_post(struct rconn *h, const char *sub, const char *q)
+{
+    uint32_t cmd = !__builtin_strcmp(sub, "scan") ? AN_BT_CMD_SCAN : !__builtin_strcmp(sub, "pair") ? AN_BT_CMD_PAIR :
+                   !__builtin_strcmp(sub, "connect") ? AN_BT_CMD_CONNECT : !__builtin_strcmp(sub, "forget") ? AN_BT_CMD_FORGET : 0;
+    if (!cmd) { json_err(h, 404, "POST /r/bt/scan, /r/bt/pair?addr=, /r/bt/connect?addr=, /r/bt/forget?addr="); return; }
+    uint8_t a[6] = { 0 }; char v[40], nm[44] = "";
+    volatile struct an_bt *x = btb();
+    if (cmd != AN_BT_CMD_SCAN) {
+        if (!query(q, "addr", v, sizeof v) || bt_addr_parse(v, a)) { json_err(h, 400, "?addr=AA:BB:CC:DD:EE:FF"); return; }
+        int known = 0;
+        for (unsigned k = 0; x && k < x->nkeys && k < AN_BT_KEYS; k++) { int same = 1; for (int i = 0; i < 6; i++) if (x->keys[k].addr[i] != a[i]) same = 0; if (same) { known = 1; bt_name(x->keys[k].name, nm, sizeof nm); } }
+        for (unsigned k = 0; x && !known && k < x->nfound && k < AN_BT_FOUND; k++) { int same = 1; for (int i = 0; i < 6; i++) if (x->found[k].addr[i] != a[i]) same = 0; if (same) bt_name(x->found[k].name, nm, sizeof nm); }
+        if (cmd != AN_BT_CMD_PAIR && !known) { json_err(h, 404, "that device is not paired"); return; }
+        if (!nm[0]) scpy(nm, v, sizeof nm);
+    }
+    int r = bt_cmd(cmd, cmd == AN_BT_CMD_SCAN ? 0 : a, nm);
+    if (r == -1) { json_err(h, 409, x && x->state == AN_BT_OFF ? "Bluetooth is off (bt=off in cmdline.txt)" : "Bluetooth is not ready yet"); return; }
+    if (r == -2) { json_err(h, 409, "busy with the command before: try again in a moment"); return; }
+    respond(h, 200, "application/json", cmd == AN_BT_CMD_SCAN ? "{\"sent\": true, \"note\": \"Looking for devices for about ten seconds: put the keyboard or mouse in pairing mode\"}\n" :
+            cmd == AN_BT_CMD_PAIR ? "{\"sent\": true, \"note\": \"Pairing: a keyboard shows a passkey to type on it\"}\n" : "{\"sent\": true}\n");
+}
+/* a mouse in Setup and Recovery: no pointer is drawn; it moves through the keyboard menu. Up and down are a move of
+   about half a centimetre (or the wheel), the left button is Return, the right one Esc. 0 outside recovery */
+int psmac_recovery_mouse(int dx, int dy, unsigned buttons, int wheel)
+{
+    (void)dx;
+    if (!psmac_recovery_on()) return 0;
+    static int acc; static unsigned last_b;
+    if (wheel) { psmac_recovery_key(wheel > 0 ? 0x52 : 0x51, 1, 0); return 1; }
+    acc += dy;
+    while (acc >= 120) { acc -= 120; psmac_recovery_key(0x51, 1, 0); }
+    while (acc <= -120) { acc += 120; psmac_recovery_key(0x52, 1, 0); }
+    if (buttons != 0xffffffffu) {
+        unsigned pressed = buttons & ~last_b;
+        last_b = buttons;
+        if (pressed & 1) psmac_recovery_key(0x28, 1, 0);
+        if (pressed & 2) psmac_recovery_key(0x29, 1, 0);
+    }
+    return 1;
+}
+/* the bundle's part: the state and the devices, their addresses shortened, no keys (pairings.txt is not included) */
+static void bt_bundle(struct bun *bb)
+{
+    volatile struct an_bt *x = btb();
+    bnf(bb, "\n=== Bluetooth\n");
+    if (!x) { bnf(bb, "No Bluetooth block (the network board is not up)\n"); return; }
+    char m[64]; bt_name(x->msg, m, sizeof m);
+    bnf(bb, "State: %s%s%s\n", bt_state_name(x->state), m[0] ? ": " : "", m);
+    bnf(bb, "Paired: %u%s\n", x->nkeys, x->nkeys ? " (addresses shortened; their keys are not in this bundle)" : "");
+    for (unsigned k = 0; k < x->nkeys && k < AN_BT_KEYS; k++) {
+        char nm[40]; bt_name(x->keys[k].name, nm, sizeof nm);
+        bnf(bb, "  %s: %s%s, %s, ..:%02X:%02X\n", nm[0] ? nm : "(no name)", bt_kind(x->keys[k].flags), x->keys[k].flags & AN_BTK_LE ? " (LE)" : "",
+            x->keys[k].flags & AN_BTK_CONNECTED ? "connected" : "not connected", x->keys[k].addr[1], x->keys[k].addr[0]);
+    }
+    if (x->nfound) bnf(bb, "Found by the last scan: %u\n", x->nfound);
+    struct rec_ent e;
+    if (psmac_card_rec_ready() == 1) bnf(bb, "pairings.txt: %s\n", psmac_card_rec_find("pairings.txt", &e) ? "not on the card" : "on the card");
+    { const char *o = psmac_option("bt"); bnf(bb, "bt=%s\n", o ? o : " not given (on)"); }
+}
+
 static void handle(int c)
 {
     struct rconn *h = &rc[c];
@@ -2305,7 +2521,7 @@ static void handle(int c)
         if (get) {
             struct rec_ent e;
             if (psmac_card_rec_find(v, &e) || (e.attr & 0x10)) { json_err(h, 404, "no such file"); return; }
-            if ((ieq(e.name, "cmdline.txt") || ieq(e.name, "cmdline.bak")) && e.size < sizeof big && take_big(c)) {   /* the WiFi password stays on the card */
+            if ((ieq(e.name, "cmdline.txt") || ieq(e.name, "cmdline.bak") || ieq(e.name, "pairings.txt")) && e.size < sizeof big && take_big(c)) {   /* the WiFi password and the Bluetooth keys stay on the card */
                 static char raw[sizeof big];
                 int n = psmac_card_rec_get(e.name, (uint8_t *)raw, sizeof raw - 1);
                 if (n < 0) { big_conn = -1; json_err(h, 500, "it could not be read"); return; }
@@ -2348,6 +2564,8 @@ static void handle(int c)
     if (post && starts(path, "diag/")) { ans_diag_post(h, path + 5, q, body, clen); return; }
     if (get && !__builtin_strcmp(path, "reports")) { ans_reports(h, c); return; }
     if (get && !__builtin_strcmp(path, "bundle")) { ans_bundle(h, c); return; }
+    if (get && !__builtin_strcmp(path, "bt")) { ans_bt_get(h); return; }
+    if (post && starts(path, "bt/")) { ans_bt_post(h, path + 3, q); return; }
     if ((get && !__builtin_strcmp(path, "wifi")) || (post && starts(path, "wifi/"))) { ans_wifi(h, get ? "" : path + 5, body, clen); return; }
     if (post && !__builtin_strcmp(path, "reboot")) { ans_reboot(h, query(q, "how", v, sizeof v)); return; }
     if (post && !__builtin_strcmp(path, "rollback")) { ans_rollback(h, query(q, "force", v, sizeof v) && v[0] == '1'); return; }
@@ -2362,7 +2580,7 @@ static void handle(int c)
         return;
     }
     if (post && !__builtin_strcmp(path, "display")) { ans_display_post(h, c, body, clen); return; }
-    json_err(h, 404, "GET /r/state, /r/files, /r/file, /r/text, /r/options, /r/wifi, /r/log, /r/display, /r/diag, /r/reports, /r/bundle; PUT /r/file, /r/text; POST /r/rm, /r/mv, /r/options, /r/wifi/..., /r/display, /r/diag/..., /r/reboot, /r/rollback");
+    json_err(h, 404, "GET /r/state, /r/files, /r/file, /r/text, /r/options, /r/wifi, /r/bt, /r/log, /r/display, /r/diag, /r/reports, /r/bundle; PUT /r/file, /r/text; POST /r/rm, /r/mv, /r/options, /r/wifi/..., /r/bt/..., /r/display, /r/diag/..., /r/reboot, /r/rollback");
 }
 static uint32_t produce(int c, uint8_t *buf, uint32_t room, int *fin)
 {
@@ -2446,7 +2664,7 @@ void recovery_tcp_closed(int c)
    read by the Mac's ROM, which does not run here) chooses a network from a scan, types its password and
    country, sets three options and saves them into cmdline.txt, or restarts. Up and Down choose, Return
    changes, Esc goes back. The password is shown as stars and never logged. */
-#define MI_N 11
+#define MI_N 12
 /* mac.console's values, from the options table (psmac_diag.c): splash (the default, written as no word), boot, hdmi
    (23 November 2026, docs/08 item 128; the menu offered off and hdmi before) */
 static char cons_buf[40]; static const char *cons[4]; static int ncons;
@@ -2507,7 +2725,7 @@ static void menu_save(void)
 }
 static void menu_lines(void)
 {
-    if (!menu_on) { L(0, ""); L(0, "Keyboard: Return opens the settings menu (WiFi, options)"); return; }
+    if (!menu_on) { L(0, ""); L(0, "Return on a keyboard, or a click, opens the settings menu"); return; }
     L(0, "");
     if (menu_edit) {
         static const char *const what[] = { "", "Network name", "Password", "Country (two letters)" };
@@ -2516,6 +2734,24 @@ static void menu_lines(void)
         shown[i] = 0;
         L(0, "%s: %s_", what[menu_edit], shown);
         L(0, "Return to keep it, Esc to cancel");
+        return;
+    }
+    if (menu_bt) {
+        volatile struct an_bt *b = btb();
+        unsigned nf = b ? (b->nfound < AN_BT_FOUND ? b->nfound : AN_BT_FOUND) : 0, nk = b ? (b->nkeys < AN_BT_KEYS ? b->nkeys : AN_BT_KEYS) : 0;
+        int n = 1 + (int)nf + (int)nk;
+        if (bt_sel >= n) bt_sel = n - 1;
+        L(0, "Bluetooth (Return: look, pair, connect; Backspace twice forgets; Esc back):");
+        int first = bt_sel > 5 ? bt_sel - 5 : 0;
+        for (int i = first; i < n && i < first + 7; i++) {
+            char nm[40]; char t[80]; struct sb sb_ = { t, 0, sizeof t };
+            if (i == 0) bput(&sb_, b && b->scanning ? "Looking for devices (about ten seconds) ..." : "Look for devices (put the keyboard or mouse in pairing mode)");
+            else if (i <= (int)nf) { bt_name(b->found[i - 1].name, nm, sizeof nm); bprintf(&sb_, "Pair:    %s (%s%s)", nm[0] ? nm : "(no name)", bt_kind_cod(b->found[i - 1].cod & 0xffffffu), b->found[i - 1].cod & 0x80000000u ? ", LE" : ""); }
+            else { unsigned k = (unsigned)i - 1 - nf; bt_name(b->keys[k].name, nm, sizeof nm); bprintf(&sb_, "Paired:  %s (%s, %s)", nm[0] ? nm : "(no name)", bt_kind(b->keys[k].flags), b->keys[k].flags & AN_BTK_CONNECTED ? "connected" : "Return connects"); }
+            L(0, "%c %s", i == bt_sel ? '>' : ' ', t);
+        }
+        if (m_msg[0]) L(0, "%s", m_msg);
+        else if (b) { char m[64]; bt_name(b->msg, m, sizeof m); L(0, "Bluetooth: %s%s%s", bt_state_name(b->state), m[0] ? ", " : "", m); }
         return;
     }
     if (menu_list) {
@@ -2546,7 +2782,8 @@ static void menu_lines(void)
         case 7: bprintf(&b, "Save to cmdline.txt%s", m_changed ? " (changed)" : ""); break;
         case 8: bput(&b, "Restart normally"); break;
         case 9: bput(&b, "Restart into recovery"); break;
-        default: bput(&b, ap_active() ? "Access point: running" : "Start an access point (a WiFi network for a phone)"); break;
+        case 10: bput(&b, ap_active() ? "Access point: running" : "Start an access point (a WiFi network for a phone)"); break;
+        default: bput(&b, "Bluetooth keyboards and mice: look, pair, connect, forget"); break;
         }
         items[i] = it[i];
     }
@@ -2596,6 +2833,33 @@ static void menu_key(uint32_t u, uint32_t mods)
         if (ch && m_len < cap) m_buf[m_len++] = ch;
         return;
     }
+    if (menu_bt) {
+        volatile struct an_bt *b = btb();
+        unsigned nf = b ? (b->nfound < AN_BT_FOUND ? b->nfound : AN_BT_FOUND) : 0, nk = b ? (b->nkeys < AN_BT_KEYS ? b->nkeys : AN_BT_KEYS) : 0;
+        int n = 1 + (int)nf + (int)nk;
+        if (u == 0x29) { menu_bt = 0; menu_sel = MI_N - 1; m_msg[0] = 0; return; }
+        if (u == 0x52) { if (bt_sel > 0) bt_sel--; bt_forget_armed = -1; m_msg[0] = 0; return; }
+        if (u == 0x51) { if (bt_sel + 1 < n) bt_sel++; bt_forget_armed = -1; m_msg[0] = 0; return; }
+        if (!b) return;
+        uint8_t a[6]; char nm[40];
+        int paired = bt_sel > (int)nf;
+        unsigned k = paired ? (unsigned)bt_sel - 1 - nf : (unsigned)bt_sel - 1;
+        if (bt_sel > 0) { for (int i = 0; i < 6; i++) a[i] = paired ? b->keys[k].addr[i] : b->found[k].addr[i]; bt_name(paired ? b->keys[k].name : b->found[k].name, nm, sizeof nm); }
+        int r = 0;
+        if ((u == 0x2a || u == 0x4c) && paired) {
+            if (bt_forget_armed != bt_sel) { bt_forget_armed = bt_sel; scpy(m_msg, "Backspace again to forget it", sizeof m_msg); return; }
+            bt_forget_armed = -1; r = bt_cmd(AN_BT_CMD_FORGET, a, nm);
+            if (!r) scpy(m_msg, "forgotten (pairings.txt follows)", sizeof m_msg);
+        } else if (u == 0x28) {
+            bt_forget_armed = -1;
+            if (bt_sel == 0) { r = bt_cmd(AN_BT_CMD_SCAN, 0, 0); if (!r) scpy(m_msg, "looking: put the device in pairing mode", sizeof m_msg); }
+            else if (!paired) { r = bt_cmd(AN_BT_CMD_PAIR, a, nm); if (!r) scpy(m_msg, "pairing: a keyboard shows a passkey above", sizeof m_msg); }
+            else { r = bt_cmd(AN_BT_CMD_CONNECT, a, nm); if (!r) scpy(m_msg, "connecting: wake the device (a key, a move)", sizeof m_msg); }
+        } else return;
+        if (r == -1) scpy(m_msg, "Bluetooth is not ready", sizeof m_msg);
+        if (r == -2) scpy(m_msg, "busy with the command before: again in a moment", sizeof m_msg);
+        return;
+    }
     if (menu_list) {
         volatile struct an_unit *un = unit(0);
         int n = un ? (int)un->scan_count : 0;
@@ -2611,7 +2875,7 @@ static void menu_key(uint32_t u, uint32_t mods)
         }
         return;
     }
-    if (u == 0x29) { menu_on = 0; return; }
+    if (u == 0x29) { menu_on = 0; menu_bt = 0; return; }
     if (u == 0x52) { menu_sel = menu_sel ? menu_sel - 1 : MI_N - 1; return; }
     if (u == 0x51) { menu_sel = (menu_sel + 1) % MI_N; return; }
     if (u != 0x28) return;
@@ -2629,6 +2893,7 @@ static void menu_key(uint32_t u, uint32_t mods)
     case 8: if (cmdline_has_recovery()) cl_drop_recovery();
             scpy(m_msg, "restarting ...", sizeof m_msg); did("restart normally, from the keyboard menu"); pi_restart_in(1000); break;
     case 10: if (ap_active()) scpy(m_msg, "the access point is already running", sizeof m_msg); else { ap_request("the keyboard menu"); menu_on = 0; } break;
+    case 11: menu_bt = 1; bt_sel = 0; bt_forget_armed = -1; break;
     default: { static const char t[] = "asked for from the keyboard menu\n"; psmac_card_rec_put("recovery.txt", (const uint8_t *)t, sizeof t - 1);
             scpy(m_msg, "restarting into recovery ...", sizeof m_msg); did("restart into recovery, from the keyboard menu"); pi_restart_in(1000); break; }
     }
@@ -2721,6 +2986,7 @@ void psmac_recovery_poll(void)
     card_test_poll();
     wifi_poll();
     wifi_test_poll2();
+    bt_poll_rec();
     switch_poll();
     ap_poll();
     reset_button_poll();

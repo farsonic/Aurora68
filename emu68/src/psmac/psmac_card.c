@@ -589,6 +589,19 @@ void psmac_card_save_pairings(const char *text, uint32_t len)
     pair_new_len = len;
     __atomic_store_n(&pair_dirty, 1, __ATOMIC_RELEASE);
 }
+/* Setup and Recovery (psmac_recovery.c) has the card to itself and its own file layer: a pairing made there (docs/08
+   item 136) is written by it, through psmac_card_rec_put, instead of pairings_write's in-place sectors. The text
+   waiting (its length, 0 none); taken, so that psmac_card_idle is true again */
+uint32_t psmac_card_pairings_take(char *out, uint32_t max)
+{
+    if (!__atomic_load_n(&pair_dirty, __ATOMIC_ACQUIRE)) return 0;
+    uint32_t n = pair_new_len < max ? pair_new_len : max;
+    for (uint32_t i = 0; i < n; i++) out[i] = pair_new[i];
+    __atomic_store_n(&pair_dirty, 0, __ATOMIC_RELEASE);
+    for (uint32_t i = 0; i < n && i < sizeof pair_text - 1; i++) pair_text[i] = out[i];   /* what a later look at the card's pairings sees */
+    pair_len = n < sizeof pair_text - 1 ? n : sizeof pair_text - 1; pair_text[pair_len] = 0;
+    return n;
+}
 
 /* ==== pram.bin: the parameter RAM of the solo board and of the SE board's stand-in ============
    A real Mac keeps its parameter RAM in a chip with a battery: AppleTalk active (the Chooser), the

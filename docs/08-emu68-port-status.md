@@ -6219,7 +6219,145 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      Bluetooth menus from their new places; the old extension moved aside. Pictures: `docs/img/menu-extras-*.png`.
      *Not verified:* the NTP line (no Riptide in the test image), System 7.5, other regions' resources, the SE itself.
 
-136. **The Aurora68 Apple II Card: an Apple II in a window, and the guest scheduler (23 November).** The owner's answers
+136. **Bluetooth keyboards and mice in Setup and Recovery, and as early as possible in every start (23 November).** The
+   owner: "Can we add Bluetooth connectivity into the early startup also for mouse and keyboards." Early startup is
+   Setup and Recovery (items 106, 118, 122): until now a USB keyboard and the page were its only ways in.
+   - *What was there already.* The Bluetooth host (src/alice/bt: bt_pi.c, bthost.c, btle.c) runs in core 3's service
+     loop in every start, recovery included: nothing in recovery stopped it. The chip's firmware comes from the
+     container before core 3 starts, its power line (BT_ON, the firmware's GPIO expander) is apart from the WiFi's
+     (WL_ON), and the mailbox they share is already retried while the other holds it, so there is no order between the
+     two radios to keep; the access point's `WLC_DOWN`/`WLC_UP` touch only the WiFi half. And a Bluetooth keyboard's
+     reports already went where a USB keyboard's go (frf_native_usb_keyboard_boot_report, in_key, psmac_recovery_key):
+     into the keyboard menu. What was missing: any sign of Bluetooth on the screens or the page, a way to pair with no
+     Mac running (pairing lived in the Mac's Bluetooth menu and `bt.pair=`), and the card: in recovery psmac_card.c's
+     own writes stop (the card is the recovery's file layer's), so a pairing made there would never have reached
+     `pairings.txt`, and the pending write kept psmac_card_idle false, so every restart from the page waited its full
+     ten seconds.
+   - *In recovery* (psmac_recovery.c, "Bluetooth"). The network board's Bluetooth block (alice_net.h struct an_bt) is
+     what the Mac's Bluetooth menu reads and commands; with no Mac this file is its client, through the same four
+     commands (scan, pair, connect, forget; cmd_seq and cmd_done). The screens have a line (ready, the devices
+     connected by name and kind, or looking, or pairing) and, while a keyboard pairs, its passkey in large digits (on
+     the access point's screen too). The page has a **Bluetooth** tab: the state, Look for devices, the found devices
+     with Pair, the paired ones with Connect and Forget, the passkey in a box; Overview has a Bluetooth line. The API:
+     `GET /r/bt`, `POST /r/bt/scan`, `POST /r/bt/pair|connect|forget?addr=AA:BB:CC:DD:EE:FF` (409 while Bluetooth is
+     off, starting or busy with the command before; 404 for a device that is not paired). `aurora68.py recovery bt
+     [show|scan|pair ADDR|connect ADDR|forget ADDR]` waits for the scan, prints the passkey while a keyboard pairs and
+     the result. The keyboard menu has a twelfth item, "Bluetooth keyboards and mice": Look for devices, each device
+     found (Return pairs), each paired one (Return connects, Backspace twice forgets). A pairing goes to `pairings.txt`
+     through the recovery's file layer (`psmac_card_pairings_take`, then `psmac_card_rec_put`: a temporary, read back,
+     and the swap), between uploads and card tests, in the format bt_pi.c writes, so the next start reconnects it. The
+     report bundle has a Bluetooth part: the state, each paired device's name, kind, LE or not, connected or not, the
+     last two bytes of its address; no keys (pairings.txt is not in the bundle; the log's `bt.dev=` words are scrubbed
+     as before).
+   - *A mouse.* No pointer is drawn (the screens are text, and the SE's 512 x 342 one-bit one has 21 rows): a mouse
+     moves through the menu instead, `psmac_recovery_mouse` in front of the input ring: about half a centimetre up or
+     down (120 counts) or a notch of the wheel is Up or Down, the button Return, the right button Esc. With it alone the
+     menu's restarts, the access point, the Bluetooth list (pairing a keyboard) and the bus check's "any key" work; a
+     WiFi password needs a keyboard.
+   - *Early in a normal start: what decides when a key reaches the Mac.* Three things, in order.
+     1. *.PiInput dropped every key held before it opened, and opens too late anyway.* The driver starts from an
+        empty ring (piinput.s, "start from now: drop what happened before boot"), and a keyboard reports only changes:
+        a Shift held from power-on for "Extensions off", or the Option or Command keys of the other startup
+        combinations, had been reported before the driver existed and was never seen, from a Bluetooth or a USB
+        keyboard alike. Now when the ring's attached word comes on (in_attach_poll, alice_psmac.c) the modifiers and
+        every key held are put in again as if pressed then. That alone was not enough (the test below): the System
+        decides "Extensions off" before .PiInput opens. What it reads is KeyMap, sixteen bytes of the Mac's low memory
+        at $174 (code k at byte k >> 3, bit k & 7, item 39), and the Mac's RAM is the Pi's: so from the Mac's first
+        driver Open (its low memory set up, the RAM test long over) until .PiInput opens, the kernel keeps the keys
+        held on the Pi's keyboards set in KeyMap every hundredth of a second (in_keymap_poll: the modifiers by the HID
+        byte, with `mac.altcmd=`, the keys by the ADB code table the recovery menu uses), and takes its own bits out
+        again when they are let go, the ROM's own ADB keyboard's left alone. Only in the Mac's first start after
+        power-on: a restart from the Finder runs the ROM's tests again over that memory.
+     2. *The firmware's download.* bthost sent the .hcd at 115200 baud: the 3B's BCM43430A1.hcd is about 37 KB,
+        some 3.3 s of every start before any device could connect. Linux sends it at the line's working speed
+        (hci_bcm; Raspberry Pi OS's hciattach at 921600 "noflow" on the 3B): the vendor's Update UART Baud Rate
+        (0xFC18), answered at the old speed, the PL011 following, the records at the new speed (each answered by a
+        seven-byte Command Complete, so no flow control is needed), and back to 115200 with the chip after
+        Launch_RAM. bthost now does the same at 921600 (`bt.fwbaud=`; 115200 or 0 the old way): about 0.45 s. A chip
+        that refuses the speed gets the download at 115200; one that fails during it is powered off and tried once
+        more at 115200 before the chip's own firmware is the last resort, as before.
+     3. *The page scan.* A paired Classic keyboard that wakes calls the Pi; the controller looked for such calls
+        11.25 ms in every 1.28 s, the default. Now every 160 ms and interlaced (Linux's "fast connectable"), so the
+        call is answered in a tenth of a second rather than up to a second and a half.
+     By the code, on the Pi: Bluetooth's part starts when core 3's loop begins (the card's pairings are read in its
+     first pass); BT_ON low, then high, 270 ms; the chip's reset and ROM questions, some 0.2 s; the firmware, 3.3 s at
+     115200 and now about 0.45 s; Launch_RAM's 250 ms and the reset's 100 ms; the set-up, sixteen commands. So the host
+     is ready about 1.3 s after core 3 starts instead of about 4.2 s, a paired keyboard that is awake (a key pressed)
+     is connected some 0.1 to 0.5 s after it calls, and an LE mouse as soon as it advertises. The Mac's first driver
+     opens seconds later still (after the ROM's tests and the boot blocks), which is when KeyMap starts to be kept.
+     The log says when: `[BOOT] t=...` lines (from power-on, psmac_boot.c) for "Bluetooth: the chip is powered, its
+     start-up begins", "Bluetooth: ready, N paired", "Bluetooth: NAME connected (keyboard|mouse[, LE])", "Bluetooth:
+     the first key from a Bluetooth keyboard", "the first report from a Bluetooth mouse" and ".PiInput opened:
+     keyboards and mice reach the Mac; N key(s) and modifiers MM held, given to it again"; and `[BT] firmware: N
+     records sent in M ms at B baud`.
+   - *The open issue "Bluetooth mouse stopped reconnecting on the Pi 3B".* Without the Pi there is no log of it, so
+     this is the cause the code shows, and it fits "the 3B": a bonded LE device that gave its IRK at pairing
+     advertises afterwards with a resolvable private address, a new one every few minutes. btle.c put its identity
+     address in the controller's accept list and its IRK in the resolving list and waited for the controller to
+     connect it. Resolving lists (LL Privacy) are Bluetooth 4.2; the 3B's BCM43438 is a 4.1 controller and answers
+     those commands "unknown command" (status 1), which btle.c logged and otherwise ignored, and its accept list then
+     waits for an address the mouse never uses again. A mouse that reconnected while it still had the address it
+     paired with stops doing so once it changes it, or after it sleeps. Now a refusal of the resolving list's
+     commands marks the controller (`no_resolv`), and while such a device is away the host runs a passive LE scan of
+     its own (a 30 ms window every 60 ms, as Linux's background scan), resolves each connectable advertisement's address with every
+     IRK (ah, Core Vol 3 Part H 2.2.2, with an AES-128 of its own in btle.c, a few microseconds, so a directed
+     advertisement's 1.28 s are not lost to the controller's LE Encrypt queue) and connects the device at the address
+     it used; the link is then recognised as the bonded device's (its identity address) and encrypted with its stored
+     key, where before a link from an unknown address was dropped as "not paired". A 3B+ or Pi 4 (4.2 and later) keeps
+     the accept list. Other reconnect paths looked at: Classic devices call the Pi themselves (page scan, faster now);
+     link keys are kept and offered as before; a device that has forgotten the Pi fails authentication and must be
+     paired again (the log says so).
+   - *Tested* on the host: `tools/bt_test.c` (run by `make -C mac check`, 29 checks) runs bthost.c and btle.c against a
+     scripted controller: AES-128 against FIPS-197 C.1, ah against the specification's D.7 example (IRK ec0234a3...,
+     prand 708194, hash 0dfbaa, the same as openssl's AES), a wrong hash and a static address not taken; a 4.1
+     controller: the missing resolving list noticed, the passive scan on, an address that does not resolve left alone,
+     ADV_DIRECT_IND from the private address answered with LE Create Connection to it, the link taken as the bonded
+     mouse's and encrypted with its Rand, EDIV and LTK, the scan again after a supervision timeout, a connection not
+     answered in 4 s cancelled; a 4.2 controller: the accept list as before; the firmware: Update UART Baud Rate
+     921600 before the minidriver, the line at 921600 and back to 115200 after Launch_RAM, a refusal keeping 115200;
+     page scan 160 ms / 11.25 ms, interlaced, set before scanning is switched on.
+     In QEMU (the solo board, a FAT16 card image, `mac.btsim=1`, the simulated Bluetooth host, extended for this: it
+     keeps its pairings in pairings.txt and reads them back, and `mac.btsimkeys=S:TOKENS` types and moves where
+     bt_pi.c's HID reports go): a recovery start (recovery.txt on the card) with the simulated mouse paired: `GET /r/bt`
+     and `aurora68.py recovery bt show` listed it; `bt scan` waited and listed the keyboard, the mouse and the
+     headphones; `POST /r/bt/pair` for the keyboard put passkey 123456 into `/r/bt` and onto both screens in large
+     digits (`docs/img/recovery-bt-passkey-se.png`, the compact Mac's screen as `/r/screen.pbm` photographs it), then
+     "paired and connected" and "pairings.txt written, 2 devices"; the file read back with its `bt.dev=` lines (the
+     page serves pairings.txt with the keys as `***`, as cmdline.txt's password); pairing the headphones refused by the
+     host; 404 to connect a device not paired, 400 to a bad address, 401 without the PIN. Then the simulated keyboard
+     (now connected; `mac.btsimkeys=` waits for it) opened the keyboard menu, went down to "Bluetooth keyboards and
+     mice", opened it and started a scan ("Bluetooth: look for devices" from the menu), Esc twice; then the simulated
+     mouse alone: a click opened the menu, eleven moves down reached the Bluetooth item, a click opened it, a click
+     scanned, the right button twice closed it (the screens photographed between: the menu's selection follows the
+     mouse). `bt forget` of the mouse from the command line, and pairings.txt with one device. The bundle's Bluetooth
+     part (names, kinds, "..:22:11", no keys; a search of the whole bundle for the simulated key's bytes found none).
+     "Restart normally": the watchdog restart, a normal start, "[CARD] pairings.txt: 156 bytes", the simulated host
+     "Magic Keyboard paired (pairings.txt): it reconnects in a second" and `[BOOT] t=41.494s Bluetooth (simulated): a
+     paired device connected`, one second after its host was up (t=40.494 s; QEMU's t counts from QEMU's start, and
+     this second start began at 40.076 s). The Bluetooth tab in headless Chrome at phone width, with the testbed's
+     answers (`docs/img/recovery-bt-page.png`).
+     *Shift held from power-on* (the second start's card, `mac.btsimkeys=0:shift`: the simulated keyboard reconnected
+     from pairings.txt at t=1.4 s and held Shift). First without the KeyMap part: the replay worked (".PiInput opened
+     ... modifiers 02 held, given to it again" at t=27.0 s) but System 7.1 had already decided: "Welcome to Macintosh"
+     without "Extensions off", PiDisk INIT ran at t=28.5 s. .PiInput opens only some 1.5 s before the first INIT, after
+     the System has looked. Hence the KeyMap part (in_keymap_poll, alice_psmac.c): from the Mac's first driver Open
+     (t=13.9 s here, "keys held on the Pi's keyboards put into the Mac's KeyMap") until .PiInput opened (t=29.4 s), and
+     then: **"Welcome to Macintosh. Extensions off."** (`docs/img/bt-shift-extensions-off.png`), no INIT's log line at
+     all, the Finder at t=31.0 s without its Startup Items. The testbed's timings: the Mac's first driver Open about
+     13.5 s after kernel entry, .PiInput about 27-29 s, the Finder about 31 s (QEMU on four host cores; the Pi is faster).
+     `make -C mac check` passes.
+   - *Not verified here (the owner's Pi):* a real chip taking 921600 for its firmware (Linux does exactly this on the
+     3B, and a failure falls back by itself); real pairing and its passkey; the scan of a real 4.1 controller and a
+     real mouse's private address (the log's "the controller has no resolving list" and "advertises as ... (resolved
+     with its IRK): connecting" lines are the ones to look for); the reconnect times on the SE. What to send: the
+     `[BOOT] t=` lines above and the `[BT]` lines of a start with the keyboard and mouse switched on before the Pi.
+     Command-Option-P-R is the ROM's own check, made early and on its ADB keyboard; whether the IIci ROM also sees it
+     in KeyMap, where the kernel and .PiInput put the Pi's keys, was not tried (the testbed showed Shift). On the solo
+     and SE boards the parameter RAM is `pram.bin` on the card (item 51), and deleting it on Setup and
+     Recovery's Files tab is the sure way to the same result. The Option key's combinations are read from KeyMap as
+     Shift is, so they should work the same way; not tried either.
+
+137. **The Aurora68 Apple II Card: an Apple II in a window, and the guest scheduler (23 November).** The owner's answers
    for Aurora65 (the Apple II project beside this one): the 8-bit machines first, 1:1 on the SE's screen, the front
    window's machine first when the PC and the Apple share a core, ROM dumps of the owner's own machines. docs/20-apple-ii-card.md
    has the whole card; Aurora65's docs/STATUS.md item 19 the Apple's side.

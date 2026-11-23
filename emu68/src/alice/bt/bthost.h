@@ -55,6 +55,8 @@ struct bt_io {
     void (*mouse)(void *ctx, int dx, int dy, int wheel, unsigned buttons);
     void (*keys)(void *ctx);                                      /* the paired list changed: save it */
     void (*kick)(void *ctx, int attempt);                         /* the reset after the firmware went unanswered: unstick the line (may be 0) */
+    uint32_t fw_baud;                                             /* the .hcd sent at this speed (the vendor's Update UART Baud Rate,
+                                                                     as Linux's hci_bcm and hciattach do); 0: at 115200 */
 };
 
 struct bt_l2ch { uint16_t psm, lcid, rcid; uint8_t state, conf; };
@@ -147,6 +149,13 @@ struct bt_host {
     int le_lists_dirty;                 /* the accept/resolving lists must be written again */
     int aes_busy; uint16_t aes_handle;  /* an LE Encrypt / LE Rand of SMP's is out, for that link */
     uint8_t rmap[1024]; unsigned rmap_n; /* a Report Map being read (one link at a time) */
+    /* LE devices with a resolvable private address on a controller without the resolving list (Bluetooth 4.1, the
+       Pi 3B's BCM43438): a passive scan of the host's own, each address resolved here with the device's IRK */
+    int no_resolv;                      /* the controller refused the resolving list's commands */
+    int bg_scan, bg_said;               /* that scan is on; the log has said so */
+    int rpa_key; uint8_t rpa_addr[6];   /* the key whose device answered at rpa_addr: le_init 3 is connecting to it */
+    /* the firmware download at fw_baud: 0 not used, 1 the line is at fw_baud now, 2 used and back at 115200 */
+    int fast; uint32_t fw_t0;
 };
 
 /* fw/fwlen: the .hcd file (0: none - the controller's ROM firmware is used) */
@@ -162,6 +171,9 @@ int  bt_scan(struct bt_host *h);                                   /* ~10 s inqu
 int  bt_pair(struct bt_host *h, const uint8_t addr[6]);
 int  bt_connect(struct bt_host *h, const uint8_t addr[6]);         /* a paired device, now */
 int  bt_forget(struct bt_host *h, const uint8_t addr[6]);
+/* a resolvable private address made from this IRK (as SMP gives it, least significant octet first)? 1 yes (btle.c) */
+int  bt_rpa_match(const uint8_t irk[16], const uint8_t addr[6]);
+void bt_aes128(const uint8_t key[16], const uint8_t in[16], uint8_t out[16]);   /* FIPS-197 byte order */
 /* "AA:BB:CC:DD:EE:FF" (addr as the controller gives it: least significant byte first) */
 void bt_addr_str(const uint8_t addr[6], char out[18]);
 #endif

@@ -220,6 +220,7 @@ One line, options separated by spaces, no comments:
 | `bt=off` | leave the Bluetooth chip off. Without it the kernel starts Bluetooth: on a Pi 3 the log then moves from the PL011 to the mini UART on the same header pins |
 | `bt.pair=1` | pair with the first keyboard or mouse a scan finds in pairing mode, and look again every 20 s until one is connected (`bt.pair=NAME` takes only a device whose name contains NAME). The log then prints the `bt.dev=` word that makes the pairing permanent |
 | `bt.dev=ADDR:KEY:KIND...` | a paired device, as the log printed it after `bt.pair=`, so it reconnects at every boot without pairing again |
+| `bt.fwbaud=921600` | the speed the Bluetooth chip's firmware is sent at: 921600 by default (since 23 November 2026, docs/08 item 136; it was 115200 and took some 3 s of every start), `115200` the old way. A download that fails at the higher speed is tried again at 115200 by itself |
 | `mac.card=off` / `mac.card=ro` | the kernel's use of the Pi's own SD card (Pi 3 family, through the sdhost controller): by default it reads and writes `pairings.txt` (Bluetooth pairings) and writes the disk image's changes back into the container on the card, and keeps the solo board's parameter RAM in `pram.bin` (AppleTalk, the Network control panel's connection, Monitors' depth, the startup disk; written a second after the Mac changes it, once the Finder is up; `mac.appletalk=` and `mac.xpram=` apply on top of it). `ro` reads pairings only, `off` leaves the card alone. cmdline.txt and config.txt are never written |
 | `mac.container=NAME` | the container's file name on the card, when it is not `aurora68.cpio` (the card writer looks for it in the root directory and writes to it only if its size and first sector match what was loaded) |
 | `mac.image=NAME` | the disk images on the card, files of their own beside the container: by default every file in the card's root ending in `.hda`, `.img`, `.image`, `.hfv` or `.dsk` (not `kernel*.img`), in the order they were copied there, up to four; `mac.image=A.hda,B.img` names them, `mac.image=off` takes none. Used only when the container has no disk image (below, "Booting fast") |
@@ -297,7 +298,7 @@ One line, options separated by spaces, no comments:
 | `mac.plusdcd=keep`, `mac.pram8a=keep` | debugging: the SCC's DCD interrupts as the Mac sets them (by default off on the Plus-era boards: the mouse is on DCD); parameter RAM byte $8A as the Mac writes it (by default the kernel keeps 32-bit addressing on above 8 MB) |
 | `mac.inputtest=S`, `mac.inputabout=S`, `mac.inputclick=S,X,Y...`, `mac.inputdrag=S`, `mac.inputright=S`, `mac.inputedge=S`, `mac.inputwifi=S` | testbed only: scripted mouse and keyboard S seconds after the start (QEMU has no real input), docs/09 |
 | `mac.declrom=PATH`, `mac.disk0=PATH`, `mac.disk1=PATH`, `mac.net=BASE`, `mac.wifinet=BASE`, `mac.remotefile=BASE` | testbed only: the declaration ROM and the PiDisk images as host files through semihosting; the wired port's and the simulated WiFi's frames as host files for `tools/pinet.py`; the remote control's requests through semihosting without the network |
-| `mac.cardfail=early`, `mac.cardfail=all`, `mac.cardfail=N`, `mac.cardtest=1`, `mac.rtcsim=dead`, `mac.btsim=1`, `mac.mboxstress=S`, `mac.netdown=S1[,S2]`, `mac.vcslow=US` | testbed only: a card that does not answer (at the first look, or always) or whose block N fails once; a test write of `pairings.txt`; the SE's clock chip as one that never answers; a simulated Bluetooth keyboard; the firmware's mailbox asked every millisecond for S seconds (docs/08 item 79); the bridge's cable pulled at S1 s and put back at S2; the VideoCore's answers delayed |
+| `mac.cardfail=early`, `mac.cardfail=all`, `mac.cardfail=N`, `mac.cardtest=1`, `mac.rtcsim=dead`, `mac.btsim=1`, `mac.btsimkeys=S:TOKENS`, `mac.mboxstress=S`, `mac.netdown=S1[,S2]`, `mac.vcslow=US` | testbed only: a card that does not answer (at the first look, or always) or whose block N fails once; a test write of `pairings.txt`; the SE's clock chip as one that never answers; a simulated Bluetooth host (its pairings in `pairings.txt`), and its keyboard and mouse typing and moving S seconds after it is up (`ret,down,click,shift,...`: docs/08 item 136); the firmware's mailbox asked every millisecond for S seconds (docs/08 item 79); the bridge's cable pulled at S1 s and put back at S2; the VideoCore's answers delayed |
 | `remote=on remote.token=TOKEN` | the remote control (docs/13): the Mac's screen, mouse, keyboard, the kernel's log and a restart over HTTP from the local network, for a browser (`http://aurora68-pi.local/`) or an agent (`tools/aurora68-mcp.py`, an MCP server for Claude Code and Claude Desktop; `tools/aurora68.py`, a command line). On the wired port the kernel gets an address of its own by DHCP (its own MAC address); on the WiFi it takes port 8068 on the Mac's address (`http://MAC-ADDRESS:8068/`). Off by default; the token (8 characters or more) is required. `remote.name=`, `remote.ip=A.B.C.D/24,ROUTER`, `remote.link=wired\|wifi`, `remote.wifi=own`, `remote.any=1`: docs/13 |
 
 ### Booting fast
@@ -364,6 +365,21 @@ with the `wifi.ssid/psk/country` options. Without any of those, a USB keyboard o
 recovery screen with Return: choose a network from a scan, type its password and country, set `mac.fpu`,
 `mac.boot` and `mac.console`, save, restart (the Plus's and 512K's own keyboards work too; the SE's own keyboard
 does not, as the Mac's ROM reads it).
+
+**Bluetooth keyboards and mice** (since 23 November 2026, docs/08 item 136). The Pi's Bluetooth starts in Setup and
+Recovery as in any start and reconnects the devices in `pairings.txt`; a paired Bluetooth keyboard works the
+recovery screen's menu exactly as a USB keyboard does, and a mouse moves through it (no pointer is drawn: up and down
+choose, the button is Return, the right button Esc). The screens say what Bluetooth is doing and which devices are
+connected. To pair: the page's **Bluetooth** tab (Look for devices, then Pair, Connect or Forget), the keyboard
+menu's "Bluetooth keyboards and mice", or `aurora68.py recovery --pin 1234 bt scan | pair AA:BB:CC:DD:EE:FF |
+connect ADDR | forget ADDR | show`. A keyboard shows a six-digit passkey, in large digits on the Mac's screen, on HDMI
+and on the page: type it on the keyboard, then Return. Pairings go into `pairings.txt` as the Mac's own Bluetooth
+menu puts them, so the next start, normal or not, reconnects them. The report bundle has Bluetooth's state and the
+devices (addresses shortened, no keys). Keys held on a Bluetooth or USB keyboard from power-on reach the Mac in a
+normal start too: Shift for "Extensions off" works from them (the kernel keeps them in the Mac's KeyMap until its input
+driver opens). **Tried in the testbed only** (a simulated Bluetooth host: QEMU has no radio).
+
+![The passkey for a Bluetooth keyboard on the compact Mac's screen (the testbed's photograph)](docs/img/recovery-bt-passkey-se.png)
 
 **The access point: setting up with nothing but a phone** (since 23 November 2026, docs/08 item 118). With no
 cable and no WiFi the Pi knows (a first setup, a home network that changed), the Pi can be a WiFi network of its
@@ -434,7 +450,8 @@ names what is wrong ("mac.fpu: fast is not one of exact|on|double|none"). The **
 
 The API for scripts: `GET /r/diag[?from=N]` (the bus check's lines from N as they come), `POST /r/diag/run?test=buscheck|card|jtag`,
 `POST /r/diag/screen`, `POST /r/diag/once` (a line of options; `?cancel=1` takes it away), `GET /r/reports`,
-`GET /r/bundle`; `GET /r/options` carries the table itself (`defs`, `groups`).
+`GET /r/bundle`; `GET /r/options` carries the table itself (`defs`, `groups`); `GET /r/bt`, `POST /r/bt/scan`,
+`POST /r/bt/pair|connect|forget?addr=AA:BB:CC:DD:EE:FF` (Bluetooth).
 
 ![The Diagnostics tab after a bus check over the testbed's bridge (MAME's SE)](docs/img/recovery-diag-page.png)
 

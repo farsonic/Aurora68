@@ -1863,7 +1863,7 @@ text cells at 6 x 8 (480 x 192); on a colour screen 560 x 384 or a whole multipl
 - **View**: Actual Size (1:1), Scaled to the Window, White on Black (the Apple's own sense), Hires in Colour.
 - **Keyboard**: Capture Keyboard and Joystick (Control-Option-Command-A). Keys go to the Apple whenever its window is in
   front (Command is Open-Apple, Option Solid-Apple); captured, Command-keys go there too and the mouse is the joystick.
-docs/20-apple-ii-card.md has the card, the block, the ROMs, the disks, the scheduler and the options; docs/08 item 136 the
+docs/20-apple-ii-card.md has the card, the block, the ROMs, the disks, the scheduler and the options; docs/08 item 137 the
 history.
 
 ## Aurora68 Status 2.0: the Pi's heat and speed as gauges (23 November 2026)

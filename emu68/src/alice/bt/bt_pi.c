@@ -205,17 +205,37 @@ static void io_kick(void *c, int attempt)
     else { uart_flush(CR_ON & ~CR_CTSEN); blog("[BT] the reset again without CTS flow control"); }
 }
 static void io_log(void *c, const char *l) { (void)c; blog(l); }
-static void io_kb(void *c, const uint8_t r[8]) { (void)c; if (frf_native_usb_keyboard_boot_report) frf_native_usb_keyboard_boot_report(r); }
+#ifdef PSMAC
+/* the boot timeline (psmac_boot.c, "[BOOT] t=..." from power-on): when Bluetooth's keyboards and mice can first reach
+   the Mac, for the startup keys (Shift, Command-Option-P-R, Option) that must be down early (docs/08 item 136) */
+extern void psmac_boot_mark(const char *fmt, ...);
+static int first_key_marked, first_mouse_marked;
+#endif
+static void io_kb(void *c, const uint8_t r[8])
+{
+    (void)c;
+#ifdef PSMAC
+    if (!first_key_marked) { int any = r[0]; for (int i = 2; i < 8; i++) any |= r[i]; if (any) { first_key_marked = 1; psmac_boot_mark("Bluetooth: the first key from a Bluetooth keyboard"); } }
+#endif
+    if (frf_native_usb_keyboard_boot_report) frf_native_usb_keyboard_boot_report(r);
+}
 static void io_mouse(void *c, int dx, int dy, int w, unsigned b)
 {
     (void)c;
+#ifdef PSMAC
+    if (!first_mouse_marked) { first_mouse_marked = 1; psmac_boot_mark("Bluetooth: the first report from a Bluetooth mouse"); }
+#endif
     aga_virtual_mouse_update(dx, dy, b & 7u);
     if (pt_mouse_extra) pt_mouse_extra(w, 0, b);
 }
 static void keys_log(void);
 static void keys_save(void);
 static void io_keys(void *c) { (void)c; keys_log(); keys_save(); }
-static const struct bt_io bio = { 0, io_send, io_baud, io_ms, io_log, io_kb, io_mouse, io_keys, io_kick };
+/* the firmware at 921600 baud, as Raspberry Pi OS's hciattach sends it to the 3B's chip (bthost.c after_rom); bt.fwbaud=
+   another speed, 0 or 115200 for the old way. A download that fails at the higher speed is tried once more at 115200
+   before the chip's own firmware is the last resort (bt_pi_poll, phase 4) */
+static struct bt_io bio = { 0, io_send, io_baud, io_ms, io_log, io_kb, io_mouse, io_keys, io_kick, 921600u };
+static int slow_retried;
 
 static unsigned put_num(char *t, unsigned k, uint32_t v, int hex);
 static unsigned put_str(char *t, unsigned k, const char *s);
@@ -557,6 +577,14 @@ void bt_pi_poll(void)
         load_keys(alice_bootargs());
         if (txt && txt[0]) { int before = bh.nkeys; load_keys(txt); char t[64]; unsigned k = put_str(t, 0, "[BT] pairings.txt on the card: "); k = put_num(t, k, (uint32_t)bh.nkeys - (uint32_t)before, 0); k = put_str(t, k, " more device(s)"); t[k] = 0; blog(t); }
         pair_option();
+        {   /* bt.fwbaud=N: the firmware download's speed (0 or 115200: at the line's own speed) */
+            const char *a = alice_bootargs();
+            for (const char *q = a; *q; q++) {
+                if ((q != a && q[-1] != ' ') || q[0] != 'b' || q[1] != 't' || q[2] != '.' || q[3] != 'f' || q[4] != 'w' || q[5] != 'b' || q[6] != 'a' || q[7] != 'u' || q[8] != 'd' || q[9] != '=') continue;
+                uint32_t v = 0; for (const char *d = q + 10; *d >= '0' && *d <= '9'; d++) v = v * 10 + (uint32_t)(*d - '0');
+                bio.fw_baud = v == 115200u ? 0 : v;
+            }
+        }
     }
     switch (phase) {
     case 0:
@@ -599,6 +627,9 @@ void bt_pi_poll(void)
         while (!(rd(UART0 + U_FR) & FR_RXFE)) (void)rd(UART0 + U_DR);
         phase = 4;
         tx_h = tx_t = 0;
+#ifdef PSMAC
+        psmac_boot_mark("Bluetooth: the chip is powered, its start-up begins%s", bh.fw ? (bio.fw_baud ? " (firmware at a higher speed)" : " (firmware at 115200 baud)") : "");
+#endif
         bt_init(&bh, &bio, bh.fw, bh.fwlen);
         break;
     case 7:                                             /* BT_ON low again, for a fresh start */
@@ -618,6 +649,16 @@ void bt_pi_poll(void)
                 cts_changes++;
             }
             cts_last = c;
+        }
+        if (bh.state == BT_FAILED && bh.fw && bh.fast == 1 && !slow_retried) {   /* it failed at the higher speed: at 115200, once */
+            slow_retried = 1;
+            fail_logged = 0;
+            blog("[BT] the firmware did not go in at the higher speed: trying again at 115200 baud");
+            bio.fw_baud = 0;
+            uart_baud(115200);
+            phase = 7; phase_t = now;
+            post("starting again (the firmware at 115200)", 0);
+            break;
         }
         if (bh.state == BT_FAILED && bh.fw && !retried) {  /* the firmware file did not go in: the chip's own, once */
             retried = 1;
@@ -643,6 +684,19 @@ void bt_pi_poll(void)
         bt_poll(&bh);
         auto_pair_poll(now);
         tx_drain();
+#ifdef PSMAC
+        {   /* the boot timeline: ready, and each paired device as it connects */
+            static int ready_marked; static uint32_t was_connected;
+            if (bh.state == BT_READY && !ready_marked) { ready_marked = 1; psmac_boot_mark("Bluetooth: ready, %d paired", bh.nkeys); }
+            uint32_t conn = 0;
+            for (int i = 0; i < bh.nkeys && i < 32; i++) if (bh.keys[i].flags & BTK_CONNECTED) conn |= 1u << i;
+            for (int i = 0; i < bh.nkeys && i < 32; i++)
+                if ((conn & ~was_connected) & (1u << i))
+                    psmac_boot_mark("Bluetooth: %s connected (%s%s)", bh.keys[i].name[0] ? bh.keys[i].name : "a paired device",
+                                    bh.keys[i].flags & BTK_KEYBOARD ? "keyboard" : bh.keys[i].flags & BTK_MOUSE ? "mouse" : "HID", bh.keys[i].flags & BTK_LE ? ", LE" : "");
+            was_connected = conn;
+        }
+#endif
         int col = bh.state == BT_READY ? 1 : bh.state == BT_FAILED ? 2 : 0;
         if (bh.state == BT_FAILED && !fail_logged) {
             fail_logged = 1;

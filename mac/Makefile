@@ -206,6 +206,7 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	cc -std=gnu11 -O2 -Wall -Wextra -Werror -DPSMAC_GUEST_HOST -DPSMAC_PC -DPSMAC_A2 -I../emu68/src/psmac -I../tools/pccard_host -o $(B)/guest_test ../tools/guest_test.c ../emu68/src/psmac/psmac_guest.c
 	for f in 0 1 4; do $(B)/guest_test $$f > $(B)/guest_test.log || { cat $(B)/guest_test.log; exit 1; }; tail -1 $(B)/guest_test.log; done
 	sh ../tools/a2card_test.sh $(abspath $(B))
+	sh ../tools/bt_test.sh $(abspath $(B))
 	sh ../tools/splash_test.sh $(abspath $(B))
 
 disasm: $(B)/pidisk.o

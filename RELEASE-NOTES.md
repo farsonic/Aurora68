@@ -4,8 +4,20 @@
 
 Since 0.14:
 
+- **Bluetooth keyboards and mice in Setup and Recovery, and startup keys from them** (README "Setup and Recovery",
+  docs/08 item 136, 23 November 2026). Setup and Recovery shows Bluetooth's state, the devices connected and a
+  keyboard's passkey on the screens, and pairs, connects and forgets from a new Bluetooth tab on the page, from the
+  keyboard menu or with `aurora68.py recovery bt`; pairings go into `pairings.txt` for the next start. A paired
+  keyboard works the recovery menu as a USB keyboard does; a mouse moves through it. In every start the keys held on
+  the Pi's keyboards reach the Mac before its own input driver opens, so **Shift held from power-on gives
+  "Extensions off"** with a Bluetooth or USB keyboard (tried in the testbed). Bluetooth is ready about three seconds
+  sooner (the chip's firmware is sent at 921600 baud, `bt.fwbaud=`), a waking keyboard is answered sooner (a faster
+  page scan), and an LE mouse with a private address reconnects on the Pi 3B, whose Bluetooth 4.1 chip cannot resolve
+  such addresses itself (the open issue "Bluetooth mouse stopped reconnecting on the Pi 3B"; to be confirmed on the
+  Pi). Only a simulated Bluetooth host could be tried here: real pairing and reconnect times are for the owner's Pi.
+
 - **The Aurora68 Apple II Card: an Apple II in a window on the Mac's desktop** (docs/20-apple-ii-card.md, docs/08 item
-  136, 23 November 2026; not in the release kernel yet). A NuBus card in slot $E that exists only in the Pi: an 8-bit Apple
+  137, 23 November 2026; not in the release kernel yet). A NuBus card in slot $E that exists only in the Pi: an 8-bit Apple
   II (Aurora65: the II, II+, IIe, enhanced IIe and IIc) runs on a Pi core, and the new program **Aurora68 Apple II** shows it
   in an ordinary window, 1:1 on the SE's screen (280 x 192 for 40 columns and hires, each Apple pixel one Mac pixel; 80
   columns at 480 x 192) or scaled, in colour on HDMI. Keys typed in the window go to the Apple (Command is Open-Apple,
