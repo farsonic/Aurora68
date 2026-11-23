@@ -86,6 +86,7 @@ static void command(unsigned long c, unsigned long a0, unsigned long a1) { if (d
 
 /* ---- the window's place ---------------------------------------------------------------------------- */
 static int hidden_by_us, captured, scale1, bigtext, pcsense, quit;
+static int sized_by_user;               /* the window keeps the PC's natural size until the user resizes or zooms it */
 /* the screen a global point is on: 0 for slot 9's, 1 for slot $A's (the GDevice's driver's slot), its top left */
 static int screen_of(Point g, Point *origin)
 {
@@ -253,8 +254,8 @@ static void natural(short *w, short *h)
 	long nw = drv ? (long)blk->nat_w : 0, nh = drv ? (long)blk->nat_h : 0;
 	if (nw < 160 || nh < 100) { nw = 480; nh = 300; }
 	Rect s = *RGN_BBOX(LM_GRAYRGN);
-	if (nw > s.right - s.left - 4) nw = s.right - s.left - 4;
-	if (nh > s.bottom - s.top - 24) nh = s.bottom - s.top - 24;
+	if (nw > s.right - 8 - 2) nw = s.right - 8 - 2;          /* the window's content at 8, 40: room for its frame and shadow */
+	if (nh > s.bottom - 40 - 2) nh = s.bottom - 40 - 2;       /* the SE's 342 lines: 300, 25 rows of 12 */
 	*w = (short)nw; *h = (short)nh;
 }
 static void draw_window(void)
@@ -342,7 +343,7 @@ static void mouse_down(EventRecord *ev)
 		hidden_by_us = 1; tell_place(0);
 		long sz = GrowWindow(w, pt_long(ev->where), &lim);
 		hidden_by_us = 0;
-		if (sz) { SizeWindow(w, (short)sz, (short)(sz >> 16), 1); resized(); }
+		if (sz) { SizeWindow(w, (short)sz, (short)(sz >> 16), 1); sized_by_user = 1; resized(); }
 		else tell_place(0);
 		break;
 	}
@@ -360,6 +361,7 @@ static void mouse_down(EventRecord *ev)
 			}
 			SetPort(w); EraseRect(PORT_RECT(w));
 			ZoomWindow(w, part, 0);
+			sized_by_user = 1;
 			resized();
 		}
 		break;
@@ -442,6 +444,12 @@ int main(void)
 		}
 		if (!drv) continue;
 		if (captured) { modifiers(ev.modifiers); mouse_moved(); }
+		if (!sized_by_user && !captured) {             /* the PC's picture changed size (a mode, the font): the window follows */
+			short nw, nh;
+			Rect r = *PORT_RECT(win);
+			natural(&nw, &nh);
+			if (nw != r.right - r.left || nh != r.bottom - r.top) { SizeWindow(win, nw, nh, 1); resized(); }
+		}
 		tell_place(0);
 		title();
 	}

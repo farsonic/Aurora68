@@ -103,9 +103,10 @@ not while the program says the window is being dragged or resized.
   PC's code page 437 with its box drawing), 80 x 25 in 480 x 325; but **the SE's screen is too short for that**: 342
   lines less the menu bar (20) and a document window's title bar and frame (21) leave 301, so on a screen under 366
   lines the card uses misc-fixed's 6 x 12, 80 x 25 in 480 x 300, which fits (Aurora86's DESIGN had 6 x 13 fitting
-  "with the window's frame": it does not, by 24 lines). A cell is black on white: the lighter of its two colours is
-  the paper, so DOS's grey on black is black on white and a highlighted bar white on black (`View > White on Black`
-  for the PC's own sense). On deeper screens the PC's own font (8 or 9 x 16) in its 16 colours, through the screen's
+  "with the window's frame": it does not, by 24 lines). A cell is drawn as the negative of the PC's own picture by
+  luminance: whichever of its two colours is lighter is black, the darker white. So DOS's grey on black is black on
+  white, and a light dialog (FreeDOS's installer, black on grey) white on black, as the pictures show; `View > White on
+  Black` gives the PC's own sense. On deeper screens the PC's own font (8 or 9 x 16) in its 16 colours, through the screen's
   colour table at 2 to 8 bits.
 - **Graphics** (VGA and Bochs VBE modes, the 32-bit picture the library keeps) are scaled to the window by the nearest
   pixel, ordered-dithered (8 x 8) on one bit, through a 4096-entry table of the screen's colours at 2 to 8 bits; `View
@@ -132,6 +133,34 @@ PC repeats keys itself), the modifier keys as presses of their own from the even
 Windows key, Option as Alt, Control as Control), hides the pointer and reads the mouse's movement at each null event
 from the window's middle, putting the pointer back there (MTemp, RawMouse and CrsrNew, the trick games of the
 period used). The card maps the ADB extended keyboard's codes onto Bochs's (`mac2pc` in `psmac_pc.c`).
+
+## How it was tested (23 November 2026)
+
+- **On the host**, `tools/pccard_test.sh` (part of `make -C mac check`, skipped without `AURORA86_DIR`): `psmac_pc.c` itself
+  with Aurora86's x86-64 library, drawing into a pretend Mac screen and typing into the ring as the program does.
+  Libreboot's banner on 512 x 342 at one bit; FreeDOS 1.4 to its installer, "No - Return to DOS" chosen, `ver` typed and
+  answered; the installer on an 8-bit screen in the PC's colours.
+  ![banner](img/pc-card-host-banner-se.png) ![DOS](img/pc-card-host-dos-se.png)
+  ![installer in colour](img/pc-card-host-installer-8bit.png)
+- **In QEMU, the solo board with System 7.1** (the PC kernel, `pc=on`, the files through semihosting, Aurora68 PC in
+  Startup Items, QEMU's USB keyboard and mouse moved through its monitor), at 640 x 480 and 512 x 342, one bit: the
+  installer in the window; a click captures; the installer left and `ver` typed at `C:\>`; Control-Option-Command-P gives the
+  keyboard and mouse back; the window dragged and redrawn where it went; the program's About box over the window left
+  alone while the PC's cursor blinked behind it, and the window redrawn when it went; the window made smaller with its
+  grow box (the picture clipped to it, 1:1 for text) and zoomed back to the PC's natural size.
+  ![installer, 512 x 342](img/pc-card-qemu-installer-se.png) ![DOS, captured](img/pc-card-qemu-dos-se.png)
+  ![covered](img/pc-card-qemu-covered-se.png) ![uncovered](img/pc-card-qemu-uncovered-se.png)
+  ![resized](img/pc-card-qemu-resized-se.png) ![zoomed](img/pc-card-qemu-zoomed-se.png)
+  ![640 x 480](img/pc-card-qemu-installer-640.png) ![moved](img/pc-card-qemu-moved-640.png)
+  The zoomed picture shows the one thing left undrawn by design: the box around the Mac's pointer (here over the title
+  bar, its lower half inside the window) is drawn once the pointer moves on, as the video decoder card does.
+  The first run's picture of the captured PC (`img/pc-card-qemu-dos-captured-640.png`) shows the black square the hidden
+  pointer's box left, fixed since (no box while CrsrVis is 0).
+- **Speed** in QEMU: paced to real time (`clock: sync=both`); about 20 MIPS by the Pi's clock while the firmware and the
+  installer waited (the core mostly idle), 1-2 MIPS at FreeDOS's prompt, which polls the keyboard without halting (the
+  core busy; FDAPM's idle would let it rest). QEMU's speed is its translator's, not a Cortex-A53's.
+- **Not tested:** the SE board, the IIci testbed, real hardware, the SD card's file path, colour in QEMU (the host test
+  covers the 8-bit drawing), graphics modes.
 
 ## Options
 

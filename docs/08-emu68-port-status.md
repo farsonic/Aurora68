@@ -5993,3 +5993,55 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      (MAME's SE gave no mouse input here), the owner's 2560 by 1440 arrangement, System 6, and the feel of the inset
      and dead time on hardware. The owner needs the new declaration ROM (its .PiInput) as well as the kernel; with the
      new declaration ROM and an older kernel the jump is simply on.
+
+132. **The Aurora68 PC Card: a PC in a window on the Mac's desktop (23 November).** The owner: "Aurora86 needs to run in a
+   window on the Mac desktop." Aurora86 (a project beside this one: Bochs 3.1 with Libreboot's QEMU x86 firmware, built as
+   `libaurora86.a` with this kernel's own flags, whose only outside names are six `a86_host_*` functions) had planned the
+   card (its `docs/DESIGN.md`, "P3: the window"); this is the card as built. docs/19-pc-card.md has the whole of it.
+   - *The pieces.* `psmac_pc.c`/`.h` (the card: slot $D's window and declaration ROM with the driver `.A68PC`, the block
+     'A68P', the PC's memory, files, start, slices, drawing, input), `mac/a68pc.s` (`.A68PC`), `mac/a68pc/pc.c` (the program
+     **Aurora68 PC**), `tools/mkpcfont.py` (misc-fixed's 6 x 13 and 6 x 12, public domain, in code page 437),
+     `tools/mac/mkpcdeclrom.py`. Only with `-DPSMAC_PC=ON -DAURORA86_DIR=...`; every hook in a shared file
+     (`psmac_bus.c`, `psmac_mmu.c`, `psmac_usb.c`, `psmac_card.c`, `psmb.h`, `psmac_diag.c`) is inside `#ifdef PSMAC_PC`.
+     Checked: the kernel from the commit before the card and from the card's tree with the option off, both built outside git
+     with the same `SOURCE_DATE_EPOCH` (the version string and `__DATE__`/`__TIME__` otherwise differ, and with them, through
+     the linker's merged strings, thousands of words), are the same `Emu68.img`, byte for byte.
+   - *Shared with the video card.* The window's visRgn as rectangles, the box around the pointer and the menu-down test moved
+     out of `psmac_video.c` and `psmac_videocard.c` into `psmac_wclip.c` (a commit of its own, nothing changed in what they
+     do; `tools/vbuf_test.sh` passes as before). The PC card adds one thing of its own: no pointer box while the pointer
+     is hidden (CrsrVis, $8CC, 0), found in the first QEMU run, where the hidden pointer's box left a black square in the
+     middle of the window while the PC had the mouse.
+   - *Memory.* The PC needs some 95 MiB besides its RAM and the 12 MiB firmware; the kernel's heap is about 52 MB. So the
+     card's memory (window, ROM page, `pc.ram` + 104 MiB as a TLSF pool of its own: 120 MiB with 16 MB of PC RAM) is carved by
+     `psmac_setup_memory` beside the frame buffers and the video card's window. In QEMU: "the PC is built in 220 ms: 16 MB of
+     RAM, 104 MiB of its memory in use". Bochs's 30 C++ constructors run with the kernel's own (`start.c`'s `__init_start`
+     list) and take their few bytes from the kernel's heap.
+   - *Which core.* The design said core 2 on the solo board and the IIci testbed; the IIci testbed's core 2 carries every
+     I/O cycle over MAME's bridge, so the PC runs on core 2 on the solo board only (slices of about 2 ms between the service
+     loop's turns: the heartbeat and the VIA's time), and on core 1 elsewhere (slices of about 1 ms beside the sound output).
+   - *The SE's text is 6 x 12.* 80 x 25 in 6 x 13 is 325 lines; the SE's 342 less the menu bar and a document window's title
+     and frame leave 301. Below 366 lines the card uses 6 x 12 (480 x 300); 6 x 13 above.
+   - *The host test.* `tools/pccard_test.sh` (in `make -C mac check`, skipped without `AURORA86_DIR`) builds `psmac_pc.c`
+     itself on the host with Aurora86's x86-64 library and a page of stand-ins for the kernel, draws into a pretend 512 x 342
+     one-bit screen and an 8-bit one, and types into the ring as the program does: Libreboot's banner, FreeDOS 1.4 to its
+     installer, "No - Return to DOS", `ver` typed and answered (pictures: `docs/img/pc-card-host-*.png`).
+   - *QEMU, the solo board with System 7.1* (`pc=on`, the firmware, VGA BIOS and FreeDOS image as host files through
+     semihosting, Aurora68 PC in Startup Items, QEMU's USB keyboard and mouse driven through its monitor): the PC started
+     with the kernel, Libreboot's banner and FreeDOS's installer within seconds of the Mac's start (QEMU's clock), the
+     driver opened by the Slot Manager ("A68PC: the Aurora68 PC Card's driver is open"), the program's window showing the
+     installer at 640 x 480 and at 512 x 342 (one bit, 6 x 13 and 6 x 12), a click capturing ("Aurora68 PC: keyboard and mouse
+     to the PC"), Return, Down, Return out of the installer and `ver` typed at `C:\>` and answered, Control-Option-Command-P
+     giving them back, the window dragged by its title and redrawn at its new place, the program's About box over the window
+     left intact while the PC's cursor blinked behind it, the window redrawn when it went, made smaller with its grow box
+     and zoomed back to the PC's natural size (`docs/img/pc-card-qemu-*.png`). Moving QEMU's USB mouse through
+     `tools/qemu-mon.py` took 2.5 s a command (it waits for the monitor to fall silent), too slow to hit a 15-pixel box with
+     hundreds of small moves before the run ended: a monitor client that sends without waiting did it in seconds.
+   - *Speed.* The PC's clock is paced (`clock: sync=both`, `ips=40000000`), so it never runs faster than real time; in QEMU it
+     ran at the pace while the firmware and the installer waited (20 MIPS by the Pi's clock with `ips` at 20 M, the core
+     mostly idle: "19.9 MIPS, 44 per mille of the core busy, 926 idle"), and 1-2 MIPS with the core busy at FreeDOS's prompt,
+     whose keyboard polling (port I/O and interrupts, no HLT) is Bochs's most expensive kind of work; QEMU's translator says
+     nothing of a Cortex-A53 (Aurora86's STATUS item 16: about 9-32 MIPS estimated). The card's drawing took 50-250 us a
+     picture in QEMU.
+   - *Not yet:* the IIci testbed with MAME, the SE board, real hardware; the SD card path (`psmac_card_pc_open/_read`) is
+     written but only the semihosting path was run; graphics modes were not exercised (FreeDOS stays in text); attaching
+     disks from the program, writing the overlay back, USB keyboards straight to the PC, the keyboard LEDs, HDMI full screen.

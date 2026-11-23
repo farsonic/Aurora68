@@ -358,7 +358,7 @@ static void make_bochsrc(void)
             "vga: extension=vbe, update_freq=25, realtime=1\n"
             "pci: enabled=1, chipset=i440fx, slot1=pcivga\n"
             "plugin_ctrl: fw_cfg=1\nfw_cfg: enabled=1, acpi_tables=0\n"
-            "cpu: model=p2_klamath, ips=20000000\n"
+            "cpu: model=p2_klamath, ips=40000000\n"   /* the most the pacing lets it run: above the Pi 3B's estimated 9-32 MIPS (Aurora86 STATUS item 16) */
             "clock: sync=both, time0=utc\n"
             "com1: enabled=1, mode=null\n"
             "log: -\npanic: action=fatal\nerror: action=report\ninfo: action=ignore\ndebug: action=ignore\n"
@@ -749,8 +749,12 @@ static void draw(int force)
     dirty.x1 = dirty.x0;                                  /* taken (the pointer's box puts its part back) */
     need_full = 0;
     if (cx0 < cx1 && cy0 < cy1) {
+        /* the box around the Mac's pointer, unless the pointer is hidden (CrsrVis, $8CC, 0: Aurora68 PC hides it while
+           the PC has the mouse; the first test in the testbed left a stale square in the middle of the window) */
         int32_t cbox[4];
-        const int32_t *cb = psmac_wclip_cursor_box(g.screen, cbox) ? cbox : 0;
+        int okv;
+        uint32_t vis = psmac_wclip_rd32(0x8CC, &okv) >> 24;
+        const int32_t *cb = (!okv || vis) && psmac_wclip_cursor_box(g.screen, cbox) ? cbox : 0;
         if (!g.rgn) area_part(s, cx0, cy0, cx1, cy1, cb);
         else {
             int32_t rr[PSMAC_WCLIP_MAX][4];
