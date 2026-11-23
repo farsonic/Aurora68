@@ -5062,3 +5062,21 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      buttons, the row of posters, the toggle in the Controls menu and in Settings have been compiled, not seen; nor
      have the links been tried on the owner's library (which names its videos however its sources do: a name the
      rules above do not foresee stays unlinked, and is still listed with its artist and album as before).
+
+116. **Aurora68 Video on the real SE: "no MPEG-1 video found at the start of the stream" (23 November).** The owner's
+   first try on the SE with the test14 image: Aurora68 Video opened *Colour Bars SE.mpg* and at once said "no MPEG-1
+   video found at the start of the stream", with nothing drawn. The film on the image was byte for byte the one made
+   with FFmpeg, and pl_mpeg on the host found its headers in the first 4 KB, so the card never got the bytes.
+   - *Cause.* Aurora68 Video reads a film straight into the card's ring (a PBRead whose buffer is the ring's address,
+     item 112). On the SE the System disk is the card's image, served by the PiDisk driver, whose reads the mailbox
+     copies on the Pi side through `mac_page()` (psmac_mbox.c). That function served Mac RAM, the slot-9 window and the
+     screens, not the video card's window at $FC000000 (or its 24-bit form $FCC00000): every read into the ring failed
+     with a bad address, the program took the error for the end of the file and sent end of stream (Control 114) with
+     no byte delivered, and the card's probe saw a finished stream without headers. The solo testbed of items 112-114
+     had played films because its disk is the emulated SCSI drive (`mac.scsi0=`), whose bytes the 68k moves itself.
+   - *Fix.* `psmac_mmu_video_phys()` (psmac_mmu.c) gives the card window's Pi address for either form, and `mac_page()`
+     serves it, so disk (and USB stick) reads may land in the ring.
+   - *Test.* The solo board with the test14 image on SCSI and a 4 MB PiDisk volume (`mac.disk0=`) holding the film,
+     opened in Aurora68 Video through the Agent: with the previous kernel the same message as on the SE; with the
+     fix, "stream 1: MPEG-1 512x342 at 25.00 frames a second" and "played to the end, 9.9 s: 250 pictures decoded,
+     250 shown, 0 not drawn, 0 times dry".

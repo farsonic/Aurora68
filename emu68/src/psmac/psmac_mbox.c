@@ -54,12 +54,15 @@ static uint8_t *screen_at(uint32_t ph, uint32_t *left)
     }
     return NULL;
 }
+extern uintptr_t psmac_mmu_video_phys(uint32_t p, uint32_t *left);
 static uint8_t *mac_page(uint32_t logical)
 {
     int valid; uint32_t ph = psmac_mmu_l2p(logical, &valid), left;
     if (!valid) return NULL;
     if (ph < ram_size) return (uint8_t *)(KERNEL_ALIAS + ram_phys + ph);
     if (ph >= PSMB_WIN_PHYS && ph < PSMB_WIN_PHYS + PSMB_WIN_SIZE) return win + (ph - PSMB_WIN_PHYS);
+    uintptr_t card = psmac_mmu_video_phys(ph, &left);   /* the video decoder card's window: its ring takes disk reads */
+    if (card) return (uint8_t *)(KERNEL_ALIAS + card);
     return screen_at(ph, &left);              /* (the 24-bit alias of the window is not served) */
 }
 /* For the video decoder card (psmac_vframes.c, 22 November 2026): [logical, logical + len) of the 68k's

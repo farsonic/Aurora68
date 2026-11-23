@@ -117,6 +117,20 @@ void psmac_mmu_set_slot2(uintptr_t d) { slot2_rom_phys = d; }
 static uintptr_t vid_win_phys, vid_rom_phys;
 #define VID_WIN_SIZE 0x100000u                /* psmac_video.h: A68V_WIN_SIZE */
 void psmac_mmu_set_video(uintptr_t w, uintptr_t r) { vid_win_phys = w; vid_rom_phys = r; }
+/* the card's window as Pi memory, for a 68k physical address in either of its forms, and how many bytes of it
+   are left from there; 0 outside it. The mailbox's disk and USB services use it (psmac_mbox.c mac_page): Aurora68
+   Video reads a film from disk straight into the card's ring (23 November 2026, the SE: without this every such
+   read failed with a bad address and the program ended the stream before its first byte) */
+uintptr_t psmac_mmu_video_phys(uint32_t p, uint32_t *left)
+{
+    uint32_t off;
+    if (!vid_win_phys) return 0;
+    if (p >= PSMB_VID_WIN_PHYS && p < PSMB_VID_WIN_PHYS + VID_WIN_SIZE) off = p - PSMB_VID_WIN_PHYS;
+    else if (p >= PSMB_VID_WIN24_PHYS && p < PSMB_VID_WIN24_PHYS + VID_WIN_SIZE) off = p - PSMB_VID_WIN24_PHYS;
+    else return 0;
+    *left = VID_WIN_SIZE - off;
+    return vid_win_phys + off;
+}
 static inline uintptr_t pi_phys(uint32_t p)
 {
     p = norm_phys(p);
