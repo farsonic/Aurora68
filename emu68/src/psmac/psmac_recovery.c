@@ -41,6 +41,11 @@
  * fallback kernel of its own that we know of, so a microSD extension cable led out of the Mac is the
  * physical way back for that case (README, "Recovery").
  *
+ * The HDMI monitor (22 November 2026, docs/08 item 111): the page's Display tab shows the monitor's EDID as
+ * psmac_hdmi.c read it at this start, judged by psmac_edid.c, and writes aurora68-display.txt as Aurora68 Display
+ * does (with the include line config.txt needs), so that a monitor which shows nothing can be put right without
+ * the Mac.
+ *
  * Everything runs on core 3 inside the service loop, a bounded step per turn; core 0 decides (phase 1 and
  * 2) and then waits for good.
  */
@@ -55,6 +60,7 @@
 #include "psmac_ip.h"
 #include "psmac_cmdline.h"
 #include "psmac_recovery.h"
+#include "psmac_edid.h"
 
 const char *psmac_option(const char *key);
 extern int psmac_board_se, psmac_board_solo, psmac_board_plus;
@@ -1140,6 +1146,272 @@ static void ans_log(struct rconn *h, int c, int now)
     psmac_card_rec_read_open(&e, &h->rd); h->kind = RK_FILE;
 }
 
+/* ============================================================================== the Display tab
+   22 November 2026 (docs/08 item 111). The HDMI monitor's EDID and the mode the Pi sends it, chosen from the page
+   as Aurora68 Display chooses it on the Mac (docs/10 "Aurora68 Display"), for a Pi whose Mac does not start or
+   whose monitor shows nothing. A recovery start reads and parses the EDID like any other (psmac_display_init calls
+   psmac_hdmi_init on core 0 before core 0 parks), so the monitor's list is psmac_hdmi.c's; without an EDID (no
+   monitor, or QEMU without mac.edidtest) the standard modes psmac_edid.c knows by number are offered instead. The
+   file is written by psmac_edid.c's writer, the old one kept as aurora68-display.bak, as Aurora68 Display does; what
+   Aurora68 Display can only tell the user to do on another computer, the include line at the end of config.txt, the
+   page can do (config.bak keeping the old config.txt). The firmware reads config.txt only when the Pi starts, so the
+   choice is in force from "Restart normally". */
+const struct psmb_dispinfo *psmac_hdmi_info(void);
+const char *psmac_hdmi_default_text(void);
+static struct psmb_dispinfo std_di, file_di;
+static int std_made;
+static char d_cfg[16384], d_txt[1536], d_new[1536], d_cfgnew[16384 + 256];
+static int d_cfg_len = -1, d_txt_len = -1, d_bak_len = -1;
+/* the list to choose from: the monitor's, else the standard one (made once, and only then: psmac_edid.c keeps
+   each mode's timing for its writer in one table, the last list's) */
+static const struct psmb_dispinfo *disp_list(int *standard)
+{
+    const struct psmb_dispinfo *d = psmac_hdmi_info();
+    *standard = 0;
+    if (d->nmodes) return d;
+    if (!std_made) { std_made = 1; edid_standard_modes(&std_di, d->pi_pixclk); }
+    *standard = 1;
+    return &std_di;
+}
+/* config.txt, aurora68-display.txt and whether the .bak is there, read now; and what they set for the next start
+   (file_di: the include line, the mode's lines, the rotation, the confirm mark) */
+static int disp_read(int *rot, int *confirm)
+{
+    d_cfg_len = psmac_card_rec_get("config.txt", (uint8_t *)d_cfg, sizeof d_cfg - 1);
+    if (d_cfg_len < 0) d_cfg_len = -1; else d_cfg[d_cfg_len] = 0;
+    d_txt_len = psmac_card_rec_get("aurora68-display.txt", (uint8_t *)d_txt, sizeof d_txt - 1);
+    if (d_txt_len < 0) d_txt_len = -1; else d_txt[d_txt_len] = 0;
+    struct rec_ent e;
+    d_bak_len = psmac_card_rec_find("aurora68-display.bak", &e) ? -1 : (int)e.size;
+    for (unsigned i = 0; i < sizeof file_di; i++) ((uint8_t *)&file_di)[i] = 0;
+    struct edid_file f = { d_cfg_len >= 0 ? d_cfg : 0, d_cfg_len >= 0 ? (uint32_t)d_cfg_len : 0, d_txt_len >= 0 ? d_txt : 0, d_txt_len >= 0 ? (uint32_t)d_txt_len : 0 };
+    *rot = edid_current(&file_di, &f, confirm);
+    return 0;
+}
+static void bhz(struct sb *b, uint32_t c) { bprintf(b, "%u.%u%u", c / 100, c % 100 / 10, c % 10); }               /* centihertz as 59.95 */
+static void bmhz(struct sb *b, uint32_t k) { uint32_t f = k % 1000 / 10; bprintf(b, "%u.%u%u", k / 1000, f / 10, f % 10); }   /* kHz as 241.50 */
+static void btenth(struct sb *b, uint32_t t) { bprintf(b, "%u.%u", t / 10, t % 10); }
+static uint32_t isqrt32(uint32_t v) { uint32_t r = 0; while ((r + 1) * (r + 1) <= v) r++; return r; }
+static uint32_t refresh_of(const struct psmb_dispmode *m) { return !(m->flags & PSMB_DM_USABLE) && (m->flags & PSMB_DM_ALT) ? m->alt_refresh : m->refresh; }
+static void use_text(struct sb *b, const struct psmb_dispmode *m) { bprintf(b, "\"%ux%u@%u\"", m->width, m->height, (refresh_of(m) + 50) / 100); }
+static void j_monitor(struct sb *b, const struct psmb_dispinfo *d)
+{
+    if (!(d->flags & PSMB_DI_EDID)) { bput(b, "null"); return; }
+    bput(b, "{\"name\": "); bjson(b, d->name); bput(b, ", \"maker\": "); bjson(b, d->maker); bput(b, ", \"maker_name\": "); bjson(b, d->maker_name);
+    bprintf(b, ", \"product\": \"%x\"", d->product);
+    /* the serial number shortened: its last four characters, enough to tell two monitors apart, not to name one */
+    char sh[16] = ""; unsigned n = slen(d->serial_text);
+    if (n) { unsigned k = n > 4 ? 4 : (n + 1) / 2; struct sb s = { sh, 0, sizeof sh }; bput(&s, "..."); bput(&s, d->serial_text + n - k); }
+    else if (d->serial) scpy(sh, "(a number, not shown)", sizeof sh);
+    bput(b, ", \"serial\": "); bjson(b, sh);
+    bprintf(b, ", \"week\": %u, \"year\": %u, \"edid_version\": \"%u.%u\", \"blocks\": %u, \"checksum_ok\": %s, \"sample\": %s",
+            d->week, d->year, d->edid_version >> 8, d->edid_version & 255, d->edid_blocks, d->edid_status == PSMB_ES_CHECKSUM ? "false" : "true",
+            d->flags & PSMB_DI_SAMPLE ? "true" : "false");
+    uint32_t w = d->size_w_mm, h = d->size_h_mm, dg = isqrt32(w * w + h * h);
+    bprintf(b, ",\n  \"size_mm\": [%u, %u], \"size_in\": {\"w\": ", w, h); btenth(b, w * 100 / 254); bput(b, ", \"h\": "); btenth(b, h * 100 / 254);
+    bput(b, ", \"diagonal\": "); btenth(b, dg * 100 / 254); bput(b, "}");
+    for (int i = 0; i < d->nmodes; i++)
+        if (d->mode[i].flags & PSMB_DM_NATIVE) { bprintf(b, ", \"native\": \"%ux%u\", \"shape\": \"%u:%u\"", d->mode[i].width, d->mode[i].height, d->mode[i].aspect_w, d->mode[i].aspect_h); break; }
+    bprintf(b, ", \"connection\": \"%s\"", d->conn & PSMB_CN_HDMI ? "HDMI" : "DVI");
+    char snd[80] = ""; struct sb s = { snd, 0, sizeof snd };
+    if (!(d->conn & PSMB_CN_HDMI)) bput(&s, "none (DVI carries no sound)");
+    else if (!(d->audio_formats & 2)) bput(&s, d->conn & PSMB_CN_BASICAUDIO ? "basic HDMI sound" : "none listed");
+    else {
+        static const char *const rates[7] = { "32", "44.1", "48", "88.2", "96", "176.4", "192" };
+        bprintf(&s, "PCM, %u channel%s, ", d->lpcm_channels, d->lpcm_channels == 1 ? "" : "s");
+        int first = 1;
+        for (int i = 0; i < 7; i++) if (d->lpcm_rates & (1u << i)) { bput(&s, first ? "" : "/"); bput(&s, rates[i]); first = 0; }
+        bput(&s, " kHz");
+    }
+    bput(b, ", \"sound\": "); bjson(b, snd);
+    bput(b, ", \"max_mhz\": "); if (d->max_pixclk) bmhz(b, d->max_pixclk); else bput(b, "null");
+    if (d->min_vhz) bprintf(b, ", \"range\": \"%u-%u Hz, %u-%u kHz\"", d->min_vhz, d->max_vhz, d->min_hkhz, d->max_hkhz);
+    bput(b, "}");
+}
+static const char *verdict(const struct psmb_dispmode *m)
+{
+    if (m->flags & PSMB_DM_INTERLACED) return "interlaced";
+    if (m->flags & PSMB_DM_MACSIZE) return "mac_size";
+    if (m->flags & PSMB_DM_USABLE) return "usable";
+    return m->flags & PSMB_DM_ALT ? "alternative" : "too_fast";
+}
+static void ans_display_get(struct rconn *h, int c)
+{
+    if (!take_big(c)) { json_err(h, 503, "busy: try again"); return; }
+    int standard, frot = 0, fconf = 0;
+    const struct psmb_dispinfo *hd = psmac_hdmi_info(), *d = disp_list(&standard);
+    int ready = psmac_card_rec_ready();
+    if (ready == 1 || ready == -2) disp_read(&frot, &fconf);
+    else { d_cfg_len = d_txt_len = d_bak_len = -1; for (unsigned i = 0; i < sizeof file_di; i++) ((uint8_t *)&file_di)[i] = 0; }
+    struct sb b = { big, 0, sizeof big };
+    static const char *const es[] = { "ok", "none", "header", "checksum" };
+    bprintf(&b, "{\"edid\": %s, \"edid_status\": \"%s\", \"standard\": %s, \"pi_mhz\": ", hd->flags & PSMB_DI_EDID ? "true" : "false",
+            hd->edid_status < 4 ? es[hd->edid_status] : "?", standard ? "true" : "false");
+    bmhz(&b, d->pi_pixclk);
+    bput(&b, ",\n \"monitor\": "); j_monitor(&b, hd);
+    /* the mode in force: the firmware's frame buffer at this start, and the lines that set it as the start read them */
+    static const char *const src[] = { "the firmware's own choice", "config.txt", "aurora68-display.txt" };
+    bprintf(&b, ",\n \"now\": {\"w\": %u, \"h\": %u, \"hz\": ", hd->cur_w, hd->cur_h);
+    if (hd->cur_refresh) bhz(&b, hd->cur_refresh); else bput(&b, "null");
+    bprintf(&b, ", \"source\": \"%s\", \"text\": ", hd->cur_source < 3 ? src[hd->cur_source] : "?"); bjson(&b, hd->cur_text);
+    bprintf(&b, ", \"rotation\": %u, \"confirm_pending\": %s}", hd->rotation, hd->confirm_state == PSMB_CS_PENDING ? "true" : "false");
+    bput(&b, ",\n \"preferred\": ");
+    { int k = -1; for (int i = 0; i < d->nmodes && k < 0; i++) if (d->mode[i].flags & PSMB_DM_PREFERRED) k = i;
+      if (k < 0) bput(&b, "null"); else { bprintf(&b, "{\"w\": %u, \"h\": %u, \"hz\": ", d->mode[k].width, d->mode[k].height); bhz(&b, d->mode[k].refresh); bput(&b, "}"); } }
+    bput(&b, ",\n \"suggested\": ");
+    if (d->suggested == 0xffff || d->suggested >= d->nmodes) bput(&b, "null");
+    else {
+        const struct psmb_dispmode *m = &d->mode[d->suggested];
+        bprintf(&b, "{\"i\": %u, \"w\": %u, \"h\": %u, \"hz\": ", d->suggested, m->width, m->height); bhz(&b, refresh_of(m));
+        bprintf(&b, ", \"alt\": %s, \"use\": ", m->flags & PSMB_DM_USABLE ? "false" : "true"); use_text(&b, m);
+        bput(&b, ", \"reason\": "); bjson(&b, d->reason); bput(&b, "}");
+    }
+    bput(&b, ",\n \"modes\": [");
+    for (int i = 0; i < d->nmodes && b.n + 600 < b.cap; i++) {
+        const struct psmb_dispmode *m = &d->mode[i];
+        bprintf(&b, "%s\n  {\"i\": %d, \"w\": %u, \"h\": %u, \"hz\": ", i ? "," : "", i, m->width, m->height); bhz(&b, m->refresh);
+        bput(&b, ", \"mhz\": "); bmhz(&b, m->pixclk);
+        bprintf(&b, ", \"verdict\": \"%s\"", verdict(m));
+        if (m->flags & PSMB_DM_ALT) { bput(&b, ", \"alt_hz\": "); bhz(&b, m->alt_refresh); bput(&b, ", \"alt_mhz\": "); bmhz(&b, m->alt_pixclk); }
+        bprintf(&b, ", \"choose\": %s", edid_mode_choosable(m) ? "true" : "false");
+        if (edid_mode_choosable(m)) { bput(&b, ", \"use\": "); use_text(&b, m); }
+        bprintf(&b, ", \"aspect\": \"%u:%u\", \"source\": \"%s\", \"config\": \"hdmi_group=%u hdmi_mode=%u\"", m->aspect_w, m->aspect_h, edid_source_name(m->source), m->cfg_group, m->cfg_mode);
+        static const struct { uint16_t f; const char *k; } fl[] = { { PSMB_DM_PREFERRED, "preferred" }, { PSMB_DM_NATIVE, "native" }, { PSMB_DM_CURRENT, "current" },
+                                                                     { PSMB_DM_SUGGESTED, "suggested" }, { PSMB_DM_SHAPE, "shape" } };
+        for (unsigned k = 0; k < sizeof fl / sizeof fl[0]; k++) if (m->flags & fl[k].f) bprintf(&b, ", \"%s\": true", fl[k].k);
+        bput(&b, "}");
+    }
+    bput(&b, "],\n \"file\": {\"present\": "); bput(&b, d_txt_len >= 0 ? "true" : "false");
+    bprintf(&b, ", \"bak\": %s, \"text\": ", d_bak_len >= 0 ? "true" : "false"); bjson(&b, d_txt_len >= 0 ? d_txt : "");
+    { uint32_t fw = 0, fh = 0; struct edid_file f = { d_cfg_len >= 0 ? d_cfg : 0, d_cfg_len >= 0 ? (uint32_t)d_cfg_len : 0, d_txt_len >= 0 ? d_txt : 0, d_txt_len >= 0 ? (uint32_t)d_txt_len : 0 };
+      edid_config_size(&f, &fw, &fh);
+      bprintf(&b, ", \"next\": {\"w\": %u, \"h\": %u, \"hz\": ", fw, fh); if (file_di.cur_refresh) bhz(&b, file_di.cur_refresh); else bput(&b, "null");
+      bprintf(&b, ", \"source\": \"%s\", \"text\": ", file_di.cur_source < 3 ? src[file_di.cur_source] : "?"); bjson(&b, file_di.cur_text); bput(&b, "}"); }
+    bprintf(&b, ", \"rotation\": %d, \"confirm\": %s}", frot, fconf ? "true" : "false");
+    bprintf(&b, ",\n \"config\": {\"read\": %s, \"include\": %s, \"override\": %s}", d_cfg_len >= 0 ? "true" : "false",
+            file_di.cfg & PSMB_CF_INCLUDE ? "true" : "false", file_di.cfg & PSMB_CF_OVERRIDE ? "true" : "false");
+    char v[24] = ""; int ms = cl_read() == 0 && pcl_get(cl_old, (uint32_t)cl_len, "mac.screen", v, sizeof v) == 1;
+    bput(&b, ",\n \"cmdline\": {\"mac_screen\": "); if (ms) bjson(&b, v); else bput(&b, "null"); bput(&b, "}");
+    bprintf(&b, ", \"writable\": %s, \"board\": \"%s\"}\n", ready == 1 ? "true" : "false", psmac_board_solo ? "solo" : psmac_board_plus ? "plus" : psmac_board_se ? "se" : "iici");
+    respond_src(h, "application/json", big, b.n);
+}
+/* "2560x1440", "2560x1440@30": 0, or -1 */
+static int parse_mode(const char *s, uint32_t *w, uint32_t *h, uint32_t *hz)
+{
+    uint32_t v[3] = { 0, 0, 0 }; int k = 0;
+    for (; k < 3; k++) {
+        const char *s0 = s; while (*s >= '0' && *s <= '9') v[k] = v[k] * 10 + (uint32_t)(*s++ - '0');
+        if (s == s0 || v[k] > 100000) return -1;
+        if (!*s) break;
+        if ((k == 0 && *s != 'x' && *s != 'X') || (k == 1 && *s != '@') || k == 2) return -1;
+        s++;
+    }
+    if (k < 1) return -1;
+    *w = v[0]; *h = v[1]; *hz = v[2];
+    return 0;
+}
+static int put_checked(const char *name, const char *t, uint32_t n, char *why_, unsigned whymax)
+{
+    if (psmac_card_rec_put(name, (const uint8_t *)t, n)) { struct sb b = { why_, 0, whymax }; bprintf(&b, "%s could not be written: %s", name, psmac_card_rec_error()); return -1; }
+    static char back[sizeof d_cfgnew];
+    int k = psmac_card_rec_get(name, (uint8_t *)back, sizeof back);
+    int same = k == (int)n;
+    for (uint32_t i = 0; same && i < n; i++) same = back[i] == t[i];
+    if (!same) { struct sb b = { why_, 0, whymax }; bprintf(&b, "%s read back from the card is not what was written", name); return -1; }
+    return 0;
+}
+static void ans_display_post(struct rconn *h, int c, char *body, uint32_t n)
+{
+    char why_[200], mv[40], rv[8], iv[4], cv[4], sv[12];
+    body[n] = 0;
+    if (psmac_card_rec_ready() != 1) { json_err(h, 503, "no writable card"); return; }
+    if (!take_big(c)) { json_err(h, 503, "busy: try again"); return; }     /* the answer carries the file's text */
+    form_get(body, "mode", mv, sizeof mv); form_get(body, "rotation", rv, sizeof rv); form_get(body, "include", iv, sizeof iv);
+    form_get(body, "confirm", cv, sizeof cv); form_get(body, "screen", sv, sizeof sv);
+    int standard, frot = 0, fconf = 0;
+    const struct psmb_dispinfo *d = disp_list(&standard);
+    disp_read(&frot, &fconf);
+    int rot = frot, want_mode = mv[0] != 0, is_auto = ieq(mv, "auto"), idx = -1, alt = 0, add_inc = iv[0] == '1', confirm = cv[0] ? cv[0] == '1' : 1;
+    uint32_t w = 0, hh = 0, hz = 0;
+    if (rv[0]) {
+        int r = 0; const char *p = rv; while (*p >= '0' && *p <= '9') r = r * 10 + (*p++ - '0');
+        if (*p || (r != 0 && r != 90 && r != 180 && r != 270)) { json_err(h, 422, "rotation is 0, 90, 180 or 270"); return; }
+        rot = r;
+    }
+    if (want_mode && !is_auto) {
+        if (parse_mode(mv, &w, &hh, &hz)) { json_err(h, 400, "mode is WxH, WxH@Hz or auto"); return; }
+        idx = edid_find_mode(d, w, hh, hz, &alt);
+        if (idx < 0) {
+            struct sb b = { why_, 0, sizeof why_ };
+            bprintf(&b, "%s is not a mode the Pi 3 can send to %s (GET /r/display lists them)", mv, standard ? "a monitor (the standard list)" : "this monitor");
+            json_err(h, 422, why_); return;
+        }
+    }
+    if (!want_mode && !rv[0] && !add_inc) { json_err(h, 400, "mode=WxH[@Hz] or auto, rotation=0|90|180|270, include=1"); return; }
+    /* the firmware reads the file only through config.txt's include line, at its end; the rotation and the mark are
+       the kernel's own and are read without it */
+    int has_inc = (file_di.cfg & PSMB_CF_INCLUDE) != 0, over = (file_di.cfg & PSMB_CF_OVERRIDE) != 0;
+    if (want_mode && d_cfg_len >= 0 && (!has_inc || over) && !add_inc) {
+        json_err(h, 409, !has_inc ? "config.txt has no line \"include aurora68-display.txt\", so the firmware would not use the new mode: include=1 adds it at the end (config.bak keeps the old config.txt)"
+                                  : "config.txt sets an hdmi_ mode after its include line, which wins: include=1 moves the line to the end (config.bak keeps the old config.txt)");
+        return;
+    }
+    const char *inc = "";
+    if (add_inc) {
+        if (d_cfg_len < 0) { json_err(h, 404, "there is no config.txt on the card to add the line to"); return; }
+        if (!has_inc || over) {
+            uint32_t cn = edid_config_include(d_cfg, (uint32_t)d_cfg_len, d_cfgnew, sizeof d_cfgnew);
+            if (!cn) { json_err(h, 413, "config.txt would be too long"); return; }
+            if (d_cfg_len > 0 && put_checked("config.bak", d_cfg, (uint32_t)d_cfg_len, why_, sizeof why_)) { json_err(h, 500, why_); return; }
+            if (put_checked("config.txt", d_cfgnew, cn, why_, sizeof why_)) { json_err(h, 500, why_); return; }
+            inc = has_inc ? "moved" : "added";
+            did("config.txt: the line \"include aurora68-display.txt\" %s at its end (config.bak keeps the one before)", inc);
+        } else inc = "present";
+    }
+    uint32_t tn = 0;
+    if (want_mode || rv[0]) {
+        const char *base = d_txt_len >= 0 ? d_txt : psmac_hdmi_default_text();
+        uint32_t bn = d_txt_len >= 0 ? (uint32_t)d_txt_len : slen(base);
+        if (is_auto) tn = edid_display_auto(d, rot, confirm, d_new, sizeof d_new);
+        else if (idx >= 0) tn = edid_display_text(d, idx, alt, rot, confirm, d_new, sizeof d_new);
+        else tn = edid_display_rotate(base, bn, rot, d_new, sizeof d_new);
+        if (put_checked("aurora68-display.bak", base, bn, why_, sizeof why_) || put_checked("aurora68-display.txt", d_new, tn, why_, sizeof why_)) { json_err(h, 500, why_); return; }
+    }
+    /* mac.screen= in cmdline.txt overrides the firmware's size for the Mac's screen (docs/10 "Any size": needed only to
+       differ from the mode). Written down to the old size, it would keep the old size: it follows the new mode, or for
+       Automatic, whose size is the firmware's to choose, it is taken out. Without it nothing is added. screen=keep leaves it. */
+    char ms[80] = "";
+    if (want_mode && !ieq(sv, "keep") && cl_read() == 0) {
+        char v[24], nv[24] = ""; struct sb b = { nv, 0, sizeof nv };
+        if (!is_auto) bprintf(&b, "%ux%u", d->mode[idx].width, d->mode[idx].height);
+        if (pcl_get(cl_old, (uint32_t)cl_len, "mac.screen", v, sizeof v) == 1 && (is_auto || !ieq(v, nv))) {
+            uint32_t nn = (uint32_t)cl_len;
+            for (uint32_t i = 0; i < nn; i++) cl_new[i] = cl_old[i];
+            cl_new[nn] = 0;
+            if (cl_set(&nn, "mac.screen", is_auto ? 0 : nv) || cl_write(nn, why_, sizeof why_)) { json_err(h, 500, "the file is written, but mac.screen= could not be changed in cmdline.txt"); return; }
+            struct sb m = { ms, 0, sizeof ms };
+            if (is_auto) bprintf(&m, "mac.screen=%s taken out of cmdline.txt", v); else bprintf(&m, "mac.screen=%s in cmdline.txt (it was %s)", nv, v);
+        }
+    }
+    if (want_mode && is_auto) did("Display: Automatic (hdmi_group=0, the firmware's choice), rotation %d%s", rot, confirm ? ", to be kept on the Mac" : "");
+    else if (want_mode) did("Display: %ux%u at %u Hz%s, rotation %d: aurora68-display.txt written (the one before as .bak)", d->mode[idx].width, d->mode[idx].height,
+                            (refresh_of(&d->mode[idx]) + 50) / 100, alt ? " (reduced blanking)" : "", rot);
+    else if (rv[0]) did("Display: rotation %d kept in aurora68-display.txt", rot);
+    if (ms[0]) did("Display: %s (cmdline.bak keeps the line before)", ms);
+    struct sb b = { big, 0, sizeof big };
+    bprintf(&b, "{\"saved\": %s, \"verified\": true", tn ? "true" : "false");
+    if (tn) { bput(&b, ", \"file\": \"aurora68-display.txt\", \"backup\": \"aurora68-display.bak\", \"text\": "); bjson(&b, d_new); }
+    if (want_mode && !is_auto) { bput(&b, ", \"mode\": "); use_text(&b, &d->mode[idx]); }
+    else if (is_auto) bput(&b, ", \"mode\": \"auto\"");
+    bprintf(&b, ", \"rotation\": %d, \"confirm\": %s, \"include\": \"%s\", \"mac_screen\": ", rot, confirm && want_mode ? "true" : "false", inc); bjson(&b, ms);
+    bput(&b, ", \"note\": ");
+    bjson(&b, !tn ? "config.txt saved" : want_mode ? (confirm ? "Restart normally to use it: the firmware reads config.txt only when the Pi starts. Aurora68 Screen Setup then asks on the Mac's screen whether to keep it; without an answer the old mode comes back."
+                                                                : "Restart normally to use it: the firmware reads config.txt only when the Pi starts.")
+                                     : "The rotation is in force from the next start.");
+    bput(&b, "}\n");
+    respond_src(h, "application/json", big, b.n);
+}
+
 static void handle(int c)
 {
     struct rconn *h = &rc[c];
@@ -1234,7 +1506,9 @@ static void handle(int c)
     if (post && !__builtin_strcmp(path, "reboot")) { ans_reboot(h, query(q, "how", v, sizeof v)); return; }
     if (post && !__builtin_strcmp(path, "rollback")) { ans_rollback(h, query(q, "force", v, sizeof v) && v[0] == '1'); return; }
     if (get && !__builtin_strcmp(path, "log")) { ans_log(h, c, query(q, "now", v, sizeof v) && v[0] == '1'); return; }
-    json_err(h, 404, "GET /r/state, /r/files, /r/file, /r/text, /r/options, /r/wifi, /r/log; PUT /r/file, /r/text; POST /r/rm, /r/mv, /r/options, /r/wifi/..., /r/reboot, /r/rollback");
+    if (get && !__builtin_strcmp(path, "display")) { ans_display_get(h, c); return; }
+    if (post && !__builtin_strcmp(path, "display")) { ans_display_post(h, c, body, clen); return; }
+    json_err(h, 404, "GET /r/state, /r/files, /r/file, /r/text, /r/options, /r/wifi, /r/log, /r/display; PUT /r/file, /r/text; POST /r/rm, /r/mv, /r/options, /r/wifi/..., /r/display, /r/reboot, /r/rollback");
 }
 static uint32_t produce(int c, uint8_t *buf, uint32_t room, int *fin)
 {
@@ -1577,6 +1851,7 @@ void psmac_recovery_poll(void)
    state, the files with Get, Rename and Delete, an upload with its progress, the WiFi settings with a scan and
    a test join, the common options as a form (the line it makes shown before it is saved), the two text files,
    the logs and the restarts. Since 22 November 2026 (the owner: "tabbed for each section and modern in
-   design") it is tabbed (Overview, Files, WiFi, Options, Text files, Log), follows the system's light or dark
-   mode, and lives in tools/recovery/page.html, made into psmac_recovery_page.h by tools/recovery/mkpage.py. */
+   design") it is tabbed (Overview, Files, WiFi, Options, Text files, Log, and since docs/08 item 111 Display, the
+   HDMI monitor's mode), and lives in tools/recovery/page.html, made into psmac_recovery_page.h by
+   tools/recovery/mkpage.py. */
 #include "psmac_recovery_page.h"         /* the page itself: tools/recovery/page.html, made into C by tools/recovery/mkpage.py */

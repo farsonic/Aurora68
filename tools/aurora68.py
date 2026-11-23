@@ -52,6 +52,10 @@ is the one on the Mac's screen (--pin or $AURORA68_PIN; --url defaults to http:/
   aurora68.py recovery --pin N cmdline [TEXT|@FILE] | config [TEXT|@FILE] | opt [KEY=VALUE|-KEY|+WORD ...] [--dry]
   aurora68.py recovery --pin N wifi [show|scan|test|save] [--ssid S --psk P --country GB]
   aurora68.py recovery --pin N log [--now] | rollback [--force] | reboot [normal|recovery]
+  aurora68.py recovery --pin N display [show] [--json]   the HDMI monitor (EDID), its modes judged, the suggestion
+  aurora68.py recovery --pin N display use WxH[@Hz]|auto [--rotate N] [--no-confirm] [--add-include] [--keep-screen]
+                                                 aurora68-display.txt written (.bak kept); restart normally applies it
+  aurora68.py recovery --pin N display rotate N | include   the rotation alone; the include line into config.txt
   aurora68.py restart recovery                   (the remote control) the Pi restarts into recovery
 
 Where: --url (default $AURORA68_URL, else http://aurora68-pi.local), --token (default
@@ -507,6 +511,89 @@ def recovery_main(a):
         print(r.call('POST', '/r/rollback' + ('?force=1' if a.force else '')).get('note'))
     elif c == 'reboot':
         j = r.call('POST', '/r/reboot?how=' + a.how); print(f'restarting: {a.how}' + (f' ({j["note"]})' if j.get('note') else ''))
+    elif c == 'display':
+        display_main(r, a)
+
+
+def hz_text(x):
+    return '?' if x is None else (f'{x:.2f}' if round(x * 100) % 100 else f'{x:.0f}')
+
+
+def display_show(j):
+    """GET /r/display as text: the monitor, what is in force, the suggestion, every mode judged"""
+    m = j.get('monitor')
+    if m:
+        mm = m['size_mm']
+        print(f'monitor: {m["name"] or "(no name)"}, {m["maker_name"] or m["maker"]} ({m["maker"]}), product {m["product"]}, serial {m["serial"] or "not given"},'
+              f' made {m["year"]}{" week " + str(m["week"]) if m["week"] and m["week"] < 54 else ""}' + (' (the testbed\'s sample)' if m.get('sample') else ''))
+        print(f'         {mm[0] / 10:.1f} x {mm[1] / 10:.1f} cm, {m["size_in"]["diagonal"]}" diagonal; {m.get("native", "?")} {m.get("shape", "")};'
+              f' {m["connection"]}, sound {m["sound"]}; EDID {m["edid_version"]}, {m["blocks"]} blocks')
+    else:
+        print('monitor: no EDID (' + ('not readable' if j['edid_status'] == 'header' else 'no monitor, or the firmware gave none') + '): the standard modes')
+    n, f, cf = j['now'], j['file'], j['config']
+    print(f'in force: {n["w"]}x{n["h"]}' + (f' at {hz_text(n["hz"])} Hz' if n['hz'] else '') + f', turned {n["rotation"]}; '
+          + ('the firmware\'s own choice (no hdmi_mode)' if 'firmware' in n['source'] else f'{n["source"]}: {n["text"]}'))
+    if f['present']:
+        x = f['next']
+        print('next start: ' + (f'{x["w"]}x{x["h"]}' + (f' at {hz_text(x["hz"])} Hz' if x['hz'] else '') if x['w'] else x['text'])
+              + f', turned {f["rotation"]}' + (', to be kept on the Mac' if f['confirm'] else '') + ' (aurora68-display.txt' + (', .bak there)' if f['bak'] else ')'))
+    else:
+        print('next start: no aurora68-display.txt yet')
+    print('config.txt: ' + ('not on the card' if not cf['read'] else 'no "include aurora68-display.txt" line (display use ... --add-include adds it)' if not cf['include']
+                            else 'an hdmi_ line after the include wins (--add-include moves it)' if cf['override'] else 'includes aurora68-display.txt at its end'))
+    if j['cmdline'].get('mac_screen'):
+        print(f'cmdline.txt: mac.screen={j["cmdline"]["mac_screen"]} (it follows a new mode unless --keep-screen)')
+    s = j.get('suggested')
+    if s:
+        print(f'suggested: {s["use"]}: {s["reason"]}')
+    print(f'modes ({"standard list" if j["standard"] else "the monitor\'s"}; the Pi 3 sends up to {j["pi_mhz"]:.0f} MHz):')
+    print(f'  {"auto":18} the firmware\'s choice from the monitor' + (f' (its preferred {j["preferred"]["w"]}x{j["preferred"]["h"]})' if j.get('preferred') else ''))
+    for x in j['modes']:
+        v = x['verdict']
+        what = {'usable': f'{hz_text(x["hz"])} Hz, {x["mhz"]:.2f} MHz', 'too_fast': f'{hz_text(x["hz"])} Hz, {x["mhz"]:.2f} MHz: too fast, nothing slower fits',
+                'interlaced': 'interlaced: not for the Mac', 'mac_size': 'outside the Mac\'s sizes'}.get(v) or \
+            f'{hz_text(x["hz"])} Hz needs {x["mhz"]:.2f} MHz: too fast; {hz_text(x["alt_hz"])} Hz reduced blanking, {x["alt_mhz"]:.2f} MHz'
+        tags = [k for k in ('suggested', 'current', 'preferred', 'native', 'shape') if x.get(k)]
+        tags = ', '.join({'current': 'in force', 'native': "the panel's own", 'shape': 'stretched'}.get(t, t) for t in tags)
+        print(f'  {x.get("use", "-"):18} {x["w"]}x{x["h"]}: {what}' + (f' [{tags}]' if tags else ''))
+
+
+def display_main(r, a):
+    import urllib.parse as up
+    act = a.action or 'show'
+    if act == 'show':
+        j = r.call('GET', '/r/display')
+        print(json.dumps(j, indent=2)) if a.json else display_show(j)
+        return
+    if act == 'use':
+        if not a.arg:
+            raise RuntimeError('display use WxH[@Hz] or auto')
+        body = {'mode': a.arg, 'confirm': '0' if a.no_confirm else '1'}
+        if a.rotate is not None:
+            body['rotation'] = str(a.rotate)
+        if a.add_include:
+            body['include'] = '1'
+        if a.keep_screen:
+            body['screen'] = 'keep'
+    elif act == 'rotate':
+        body = {'rotation': a.arg or '0'}
+    else:
+        body = {'include': '1'}
+    try:
+        j = r.call('POST', '/r/display', body=up.urlencode(body).encode())
+    except RuntimeError as e:
+        if ': 409 ' in str(e):
+            raise RuntimeError(str(e).replace('include=1', '--add-include')) from None
+        raise
+    if act == 'include':
+        print(f'config.txt: the include line {j["include"]}' + (' (config.bak keeps the one before)' if j['include'] in ('added', 'moved') else ''))
+        return
+    print(f'aurora68-display.txt written and read back ({j.get("mode", "rotation")}, turned {j["rotation"]}); the one before is aurora68-display.bak')
+    if j.get('include') in ('added', 'moved'):
+        print(f'config.txt: the include line {j["include"]} (config.bak keeps the one before)')
+    if j.get('mac_screen'):
+        print(j['mac_screen'] + ' (cmdline.bak keeps the line before)')
+    print(j['note'] + ' (aurora68.py recovery reboot normal)')
 
 
 def add_recovery(sub):
@@ -528,6 +615,13 @@ def add_recovery(sub):
     q = rs.add_parser('log', help='the last start\'s aurora68.log (--now: this recovery start\'s)'); q.add_argument('--now', action='store_true')
     q = rs.add_parser('rollback', help='kernel8.old back as kernel8.img'); q.add_argument('--force', action='store_true')
     q = rs.add_parser('reboot', help='restart the Pi: normal or recovery'); q.add_argument('how', nargs='?', default='normal', choices=('normal', 'recovery'))
+    q = rs.add_parser('display', help='the HDMI monitor: show, use WxH[@Hz]|auto, rotate N, include (docs/08 item 111)')
+    q.add_argument('action', nargs='?', choices=('show', 'use', 'rotate', 'include')); q.add_argument('arg', nargs='?', help='WxH[@Hz] or auto; for rotate 0/90/180/270')
+    q.add_argument('--rotate', type=int, choices=(0, 90, 180, 270), help='turn the picture (default: as the file has it)')
+    q.add_argument('--no-confirm', action='store_true', help='no "Keep this resolution?" on the Mac at the next start')
+    q.add_argument('--add-include', action='store_true', help='put "include aurora68-display.txt" at the end of config.txt if it is not there')
+    q.add_argument('--keep-screen', action='store_true', help='leave cmdline.txt\'s mac.screen= as it is')
+    q.add_argument('--json', action='store_true', help='show: the answer as it came')
 
 
 def main():

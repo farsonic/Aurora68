@@ -4673,3 +4673,45 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      the timings over the GPIO (the testbed's bridge takes some 44 us a cycle, a PiStorm about one), the VBL edges
      and the SCC spacing on real chips, `buscheck.txt` on a real card. The tester's 512Ke is the first machine it
      is for: READ-ME-FIRST's "If your Mac misbehaves: the bus check" says what to do and what to photograph.
+
+111. **Setup and Recovery's Display tab: the HDMI monitor's mode chosen without the Mac (22 November).** Aurora68
+   Display (docs/10) needs a Mac that starts. The recovery page now has a seventh tab, Display (its colour swatch all
+   six colours: the colour screen's tab), that does the same from a phone, and `aurora68.py recovery display`.
+   - *The EDID in a recovery start.* Already read: psmac_recovery_phase1 runs in psmac_setup_memory, but
+     psmac_mbox_init and with it psmac_display_init and psmac_hdmi_init (the EDID, core 0) still run before core 0
+     parks, and the console is kept off the recovery page from phase 1 on. The testbed log of a recovery start lists
+     the sample's 17 modes as any start does. One thing did disturb recovery: psmac_hdmi_poll's 300-second "keep the
+     new mode?" clock ran on core 3 in recovery too, and would have put the .bak back and restarted the Pi under the
+     page; it now waits for the next normal start (with `mac.displaywait=30` the mark stayed pending past 60 s).
+   - *A bug found on the way:* psmac_hdmi.c read config.txt into 4 KB, the release's own config.txt is 5.3 KB, and
+     psmac_card_read_file refuses a file longer than the buffer, so on a release card Aurora68 Display said
+     "config.txt was not read" and missed the include line. Now 16 KB. Before the fix the testbed's start said
+     "config.txt not found"; after it, "in force: 1920x1080 at 60 Hz, aurora68-display.txt: hdmi_group=1 hdmi_mode=16".
+   - *API.* `GET /r/display` (PIN as always): the monitor (name, maker, product code, the serial number cut to its
+     last four characters, size in mm and inches with the diagonal, the panel's size and shape, HDMI or DVI and its
+     sound, EDID version), the mode in force from the firmware's buffer and what set it, the preferred mode, the
+     suggestion and its reason, every mode with its verdict (usable, alternative, too_fast, interlaced, mac_size),
+     refresh, clock, alternative and the `WxH@Hz` that chooses it, aurora68-display.txt as it is and what it sets
+     from the next start, config.txt's include state and cmdline.txt's mac.screen. `POST /r/display` with
+     `mode=WxH[@Hz]|auto`, `rotation=`, `include=1`, `confirm=0|1`, `screen=keep`: the file by psmac_edid.c's
+     writer, the old one as aurora68-display.bak, each read back and compared; a mode with no include line in
+     config.txt is refused (409) unless include=1, which puts the line at the end (config.bak kept); a mac.screen=
+     follows the new size (taken out for Automatic), by docs/10 "Any size"'s rule that it is needed only to differ.
+   - *psmac_edid.c* gained edid_mode_choosable (Aurora68 Display's rule), edid_find_mode, edid_display_auto
+     (`hdmi_group=0`, the firmware's documented auto-detect, with `#aurora68 confirm=auto`), edid_config_include and
+     edid_standard_modes (no EDID: every 60 Hz DMT mode and 2560x1440, judged by the clock alone); tools/edid_test.c
+     checks all of them (make -C mac check: passed).
+   - *Tested* (QEMU solo board, `mac.recovery=1 mac.edidtest=sample mac.hdmisim=1`, a 128 MB FAT32 card image with
+     the release's config.txt less its include line and `mac.screen=640x480` in cmdline.txt, pinet on the wired
+     port): GET 401 without the PIN, 200 with 5 KB of JSON; a mode without the include line 409, 2560x1440@60 422,
+     rotation 45 422; "Use the suggestion" in headless Chromium: 2560x1440 at 30 Hz written with `hdmi_cvt=2560 1440
+     30 3 0 0 1`, the include line added (config.bak 5,250 bytes), mac.screen=2560x1440 (cmdline.bak); then from
+     aurora68.py `use auto --rotate 90` (mac.screen taken out), `rotate 0`, `use 1920x1080@60` (`hdmi_group=1
+     hdmi_mode=16`), `include` (present). fsck.fat found the card clean. A new start from that card: mac.hdmisim made
+     the 1920x1080 buffer the firmware would, and the tab said so. A 64 MB FAT32 image was first taken for FAT16 by
+     the kernel (fewer than 65,525 clusters: the FAT specification's rule), which is right and only a testbed matter.
+     After "restart normally" QEMU's Pi restarted by the watchdog, but pinet did not answer DHCP again (item 106's
+     known testbed matter); the second start was therefore a fresh run.
+   - *Not verified:* the firmware's side. Whether a Pi 3's firmware takes `hdmi_group=0` and the written modes, and a
+     real monitor's EDID, need a Pi and a monitor. The recovery screen on a large HDMI mode fills only its top-left
+     640 by 640 pixels (80 columns of 8 x 16 cells, as before this change).

@@ -555,9 +555,21 @@ The page (a phone is fine) asks for the PIN on the screen once. Then:
     text; the old one is kept as cmdline.bak / config.bak. cmdline.txt must stay one line.
   - Log: the last start's aurora68.log (on the SE it is saved every 30 seconds) and this recovery
     start's log.
+  - Display: the HDMI monitor, for one that shows nothing or a Mac that does not start. What the
+    monitor says about itself (maker, model, size, its own resolution), the resolution in force,
+    a suggestion with its reason ("Use the suggestion"), and every resolution the monitor lists,
+    each marked usable, too fast for the Pi 3 with a slower one that fits (2560 x 1440 at 30 Hz),
+    or too fast (dimmed). "Automatic" lets the Pi's firmware choose the monitor's own. The picture
+    can be turned (0, 90, 180, 270 degrees). The choice goes into aurora68-display.txt (the old one
+    is kept as aurora68-display.bak); if config.txt lacks its last line "include
+    aurora68-display.txt", the page offers to add it (config.bak keeps the old config.txt). Then
+    "Restart normally": at that start Aurora68 Screen Setup asks on the SE's own screen whether to
+    keep the new resolution, and puts the old one back if nobody answers. With no monitor
+    connected the usual resolutions are offered instead.
   - "Restart normally" (it also takes mac.recovery=1 out of cmdline.txt) and "Restart into recovery".
 From a computer: python3 aurora68.py recovery --url http://aurora68.local --pin 1234 ls
-(also put FILE, get NAME, rm NAME, mv A B, cmdline, opt, wifi, log, rollback, reboot normal).
+(also put FILE, get NAME, rm NAME, mv A B, cmdline, opt, wifi, log, rollback, reboot normal,
+display, display use 2560x1440@30 --add-include, display use auto).
 
 Safety: every request needs the PIN, which is new at every recovery start; after ten wrong ones the
 PIN changes and the Pi does not answer for a minute. Only the local network is answered. The WiFi

@@ -123,6 +123,80 @@ int main(int argc, char **argv)
     CHECK(strstr(t, "hdmi_group=1\nhdmi_mode=16\n") != 0, "VIC file");
     edid_display_text(&di, w, 1, 0, 1, t, sizeof t);
     CHECK(strstr(t, "hdmi_group=2\nhdmi_mode=69\n") != 0, "1920x1200 RB by DMT 69");
+
+    /* ---- Setup and Recovery's Display tab (docs/08 item 111) ---- */
+    /* a mode by its size and refresh, as the page and aurora68.py name it */
+    int alt = -1;
+    CHECK(edid_find_mode(&di, 2560, 1440, 0, &alt) == p && alt == 1, "2560x1440: its 30 Hz alternative");
+    CHECK(edid_find_mode(&di, 2560, 1440, 30, &alt) == p && alt == 1, "2560x1440@30");
+    CHECK(edid_find_mode(&di, 2560, 1440, 60, &alt) == -1, "2560x1440@60 cannot be chosen");
+    CHECK(edid_find_mode(&di, 1920, 1080, 60, &alt) == q && alt == 0, "1920x1080@60 itself");
+    CHECK(edid_find_mode(&di, 3840, 2160, 0, &alt) == -1, "2160p: nothing fits");
+    CHECK(edid_find_mode(&di, 1600, 1200, 0, &alt) == r && alt == 0, "1600x1200: the wrong shape, still a choice");
+    CHECK(edid_find_mode(&di, 1234, 567, 0, &alt) == -1, "no such size");
+    for (int i = 0; i < di.nmodes; i++)
+        CHECK(edid_mode_choosable(&di.mode[i]) == (((di.mode[i].flags & (PSMB_DM_USABLE | PSMB_DM_ALT)) != 0) && !(di.mode[i].flags & (PSMB_DM_MACSIZE | PSMB_DM_INTERLACED))), "choosable %d", i);
+    /* "Automatic": hdmi_group=0, read back as the firmware's choice from the file */
+    tn = edid_display_auto(&di, 180, 1, t, sizeof t);
+    printf("---- aurora68-display.txt, Automatic (%u bytes)\n%s----\n", tn, t);
+    CHECK(strstr(t, "\nhdmi_group=0\n") && strstr(t, "#aurora68 rotate=180\n") && strstr(t, "#aurora68 confirm=auto\n") && strstr(t, "hdmi_drive=2\n")
+          && strstr(t, "its preferred mode 2560x1440") && !strstr(t, "hdmi_mode="), "auto text");
+    memcpy(&d2, &di, sizeof d2);
+    for (int i = 0; i < d2.nmodes; i++) d2.mode[i].flags &= ~PSMB_DM_CURRENT;
+    d2.cfg = 0; d2.confirm_w = 99;
+    struct edid_file f4 = { config, sizeof config - 1, t, tn };
+    rot = edid_current(&d2, &f4, &conf);
+    CHECK(rot == 180 && conf && d2.confirm_w == 0 && d2.cur_source == PSMB_SRC_FILE && d2.cur_refresh == 0 && !strncmp(d2.cur_text, "hdmi_group=0", 12),
+          "auto read back: rot %d conf %d source %u '%s'", rot, conf, d2.cur_source, d2.cur_text);
+    { uint32_t sw = 1, sh = 1; CHECK(!edid_config_size(&f4, &sw, &sh) && !sw && !sh, "auto: no size for mac.hdmisim"); }
+    tn = edid_display_auto(0, 0, 0, t, sizeof t);
+    CHECK(strstr(t, "\nhdmi_group=0\n") && !strstr(t, "confirm=") && !strstr(t, "hdmi_drive") && strstr(t, "#aurora68 rotate=0\n"), "auto without an EDID");
+    /* config.txt's include line, added or moved to the end */
+    static char c1[512], c2[512];
+    static const char noinc[] = "gpu_mem=64\nhdmi_group=2\n\nhdmi_mode=82";
+    uint32_t cn = edid_config_include(noinc, sizeof noinc - 1, c1, sizeof c1);
+    printf("---- config.txt with the include line (%u bytes)\n%s----\n", cn, c1);
+    CHECK(cn && !strncmp(c1, "gpu_mem=64\nhdmi_group=2\n\nhdmi_mode=82\n#", 38) && !strstr(c1, "[all]")
+          && cn > 29 && !strcmp(c1 + cn - 29, "include aurora68-display.txt\n"), "include added at the end");
+    struct edid_file f5 = { c1, cn, 0, 0 };
+    d2.cfg = 0; edid_current(&d2, &f5, &conf);
+    CHECK((d2.cfg & PSMB_CF_INCLUDE) && !(d2.cfg & PSMB_CF_OVERRIDE), "the added line is read as the include");
+    uint32_t cn2 = edid_config_include(c1, cn, c2, sizeof c2);
+    CHECK(cn2 == cn && !memcmp(c1, c2, cn), "adding it twice changes nothing");
+    cn = edid_config_include(config2, sizeof config2 - 1, c1, sizeof c1);
+    struct edid_file f6 = { c1, cn, 0, 0 };
+    d2.cfg = 0; edid_current(&d2, &f6, &conf);
+    CHECK(cn && !strncmp(c1, "hdmi_mode=82\n", 13) && (d2.cfg & PSMB_CF_INCLUDE) && !(d2.cfg & PSMB_CF_OVERRIDE), "include moved after the overriding hdmi_mode");
+    static const char sect[] = "[pi4]\nhdmi_mode:0=4\n[pi3]\nhdmi_mode=16\n";
+    cn = edid_config_include(sect, sizeof sect - 1, c1, sizeof c1);
+    CHECK(cn && strstr(c1, "hdmi_mode=16\n[all]\n# ") && strstr(c1, "\ninclude aurora68-display.txt\n"), "[all] before the line when the last section is another");
+    static const char sect2[] = "[pi3]\nhdmi_mode=16\n[ALL]\ngpu_mem=64\nINCLUDE aurora68-display.txt\n";
+    cn = edid_config_include(sect2, sizeof sect2 - 1, c1, sizeof c1);
+    /* the kernel reads "include" in lower case only (edid_current), so an upper-case line is not taken for one and stays */
+    CHECK(cn && strstr(c1, "[pi3]\nhdmi_mode=16\n[ALL]\ngpu_mem=64\nINCLUDE aurora68-display.txt\n# ") && !strstr(c1, "[all]"), "no second [all] after [ALL]");
+    CHECK(edid_config_include(sect, sizeof sect - 1, c1, 40) == 0, "too long for the buffer: 0");
+    /* no EDID: the standard list */
+    static struct psmb_dispinfo sd;
+    int sn = edid_standard_modes(&sd, 0);
+    show(&sd);
+    CHECK(sn >= 15 && sd.suggested == 0xffff && sd.pi_pixclk == EDID_PI3_PIXCLK_KHZ, "standard list: %d modes", sn);
+    int shapes = 0, natives = 0;
+    for (int i = 0; i < sd.nmodes; i++) { shapes += !!(sd.mode[i].flags & PSMB_DM_SHAPE); natives += !!(sd.mode[i].flags & PSMB_DM_NATIVE); }
+    CHECK(!shapes && !natives, "no shape and no native size without a panel");
+    int s1 = edid_find_mode(&sd, 2560, 1440, 0, &alt);
+    CHECK(s1 >= 0 && alt == 1 && sd.mode[s1].alt_refresh == 3000 && sd.mode[s1].alt_pixclk == 119000, "standard 2560x1440: 30 Hz reduced");
+    tn = edid_display_text(&sd, s1, 1, 0, 1, t, sizeof t);
+    CHECK(strstr(t, "hdmi_cvt=2560 1440 30 3 0 0 1\n") && !strstr(t, "hdmi_drive"), "standard 2560x1440 file");
+    int s2 = edid_find_mode(&sd, 1920, 1200, 60, &alt);
+    edid_display_text(&sd, s2, alt, 0, 1, t, sizeof t);
+    CHECK(s2 >= 0 && alt == 1 && strstr(t, "hdmi_group=2\nhdmi_mode=69\n"), "standard 1920x1200: DMT 69");
+    int s3 = edid_find_mode(&sd, 1920, 1080, 60, &alt);
+    edid_display_text(&sd, s3, alt, 0, 1, t, sizeof t);
+    CHECK(s3 >= 0 && alt == 0 && strstr(t, "hdmi_group=2\nhdmi_mode=82\n") && !strcmp(edid_source_name(sd.mode[s3].source), "standard mode"), "standard 1080p: DMT 82");
+    int s4 = edid_find_mode(&sd, 1024, 768, 60, &alt);
+    edid_display_text(&sd, s4, alt, 90, 1, t, sizeof t);
+    CHECK(s4 >= 0 && strstr(t, "hdmi_group=2\nhdmi_mode=16\n") && strstr(t, "#aurora68 rotate=90\n"), "standard 1024x768: DMT 16");
+    CHECK(edid_find_mode(&sd, 640, 480, 60, &alt) >= 0 && edid_find_mode(&sd, 640, 480, 75, &alt) == -1, "640x480: 60 Hz only");
     printf("%s: %d failure%s\n", fails ? "FAILED" : "edid_test passed", fails, fails == 1 ? "" : "s");
     return fails != 0;
 }

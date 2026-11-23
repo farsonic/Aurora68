@@ -315,6 +315,23 @@ from a terminal: `aurora68.py recovery --url http://aurora68.local --pin 1234 ls
 rm NAME | mv A B | cmdline [TEXT] | opt mac.fpu=none -bt.pair | wifi scan | wifi test --ssid S --psk P --country GB |
 log | rollback | reboot [normal|recovery]`.
 
+**The Display tab** (since 22 November 2026, docs/08 item 111) chooses the HDMI monitor's resolution as Aurora68
+Display does on the Mac, for a monitor that shows nothing or a Mac that does not start. It shows what the monitor
+says about itself (its EDID: maker, model, a shortened serial number, size in centimetres and inches, the panel's
+own size and shape, HDMI or DVI and its sound), the mode in force and what set it, the kernel's suggestion with
+its reason and a **Use the suggestion** button, and every mode the monitor lists, judged against the Pi 3's 162 MHz
+pixel clock: usable, too fast with a slower reduced-blanking alternative (2560 x 1440 at 30 Hz on a 1440p
+monitor), too fast with none (dimmed), or the wrong shape for the panel (stretched). **Automatic** leaves the choice
+to the firmware (`hdmi_group=0`, the monitor's preferred mode). The rotation (0, 90, 180, 270) is chosen there too.
+A choice writes `aurora68-display.txt` (the one before kept as `aurora68-display.bak`); if config.txt has no
+`include aurora68-display.txt` line at its end, the page offers to put it there (config.bak keeping the old one),
+and a `mac.screen=` in cmdline.txt follows the new size (it is taken out for Automatic). Then **Restart normally**:
+the firmware reads config.txt only when the Pi starts, and at that start Aurora68 Screen Setup asks on the Mac's
+own screen whether to keep the new mode, putting the old one back without an answer (untick "Ask on the Mac's
+screen" to skip that). Without an EDID (no monitor connected, or the firmware gave none) the standard modes are
+offered instead. From a terminal: `aurora68.py recovery --pin 1234 display` (shows it all) and `display use
+2560x1440@30 | auto [--rotate 90] [--add-include]`, `display rotate N`, `display include`.
+
 Security: every request but the page needs the PIN, a new one at each recovery start; after ten wrong PINs there
 is a new one and a minute's pause; only the local network is answered; the PIN is never written to the log, and
 the WiFi password and the remote's token are never sent back (shown as `***` or "set"). Recovery works with the

@@ -50,6 +50,17 @@ Since 0.13 (docs/08 items 96 and 103):
   is kept as kernel8.old for "Roll back". With no network, a USB keyboard on the Pi sets the WiFi and a few options
   from a menu on the screen. Tested in the testbeds only; it cannot help a kernel that stops before it reads the
   card (keep a microSD extension cable in mind for that).
+- **Setup and Recovery's Display tab** (docs/08 item 111, README "Setup and Recovery"): the HDMI monitor's EDID as
+  tiles (maker, model, a shortened serial number, size, the panel's own resolution, HDMI or DVI and its sound), the
+  mode in force, the kernel's suggestion with its reason and **Use the suggestion**, and every mode judged against
+  the Pi 3's pixel clock (usable; too fast with a reduced-blanking alternative; too fast; the wrong shape), with
+  **Automatic** (the firmware's choice) and the rotation. It writes `aurora68-display.txt` as Aurora68 Display does
+  (`.bak` kept), puts `include aurora68-display.txt` at the end of config.txt when it is missing (config.bak kept),
+  and moves a `mac.screen=` in cmdline.txt along; "Restart normally" applies it. With no EDID the standard modes
+  are offered. `aurora68.py recovery display` and `display use WxH[@Hz]|auto`. A recovery start no longer lets a
+  new mode's 300-second "keep it?" clock run out and restart the Pi under the recovery page; the question waits for
+  the next normal start. Tested in QEMU with the made-up sample monitor; the firmware's side (the monitor showing the
+  mode after the restart) needs a real Pi and monitor.
 
 ## 0.13 — BlueSCSI disks, exact floating point, Aurora68 Play's Library (22 November 2026)
 

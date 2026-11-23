@@ -233,6 +233,7 @@ struct psmb_dispmode {                       /* 32 bytes */
 #define PSMB_DS_ESTABLISHED  2u
 #define PSMB_DS_STANDARD     3u
 #define PSMB_DS_CEA          4u              /* a CEA-861 short video descriptor (low byte: the VIC) */
+#define PSMB_DS_LIST         5u              /* no EDID: Setup and Recovery's list of standard modes (low byte: the DMT number) */
 struct psmb_dispinfo {
     uint32_t magic, version, size, flags;    /* 'A68D', 1, the bytes of this struct, PSMB_DI_* */
     uint32_t edid_blocks, edid_status;       /* blocks read; PSMB_ES_* */

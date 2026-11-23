@@ -627,6 +627,24 @@ EDID (the user's monitor already runs 2560x1440 at 30 Hz from hand-written confi
 Aurora68 Display would write); whether a missing included file stops the firmware (the release ships an empty one);
 the Pi's watchdog restart with the SE attached; the turned copy's cost on a Pi 3.
 
+**A note of 22 November 2026: the same choice without the Mac.** Aurora68 Display needs a Mac that starts and a
+screen to read it on. A monitor that shows nothing after a new mode is put right by "Keep this resolution?" timing
+out, but a Mac that does not start at all, or a new monitor on a Pi whose Mac is away, had only config.txt on
+another computer. Setup and Recovery (docs/08 item 106) now has a Display tab that does what Aurora68 Display does
+from a phone (docs/08 item 111): the same EDID, read at the recovery start exactly as at any other (the 68k never
+runs, but `psmac_display_init` and so `psmac_hdmi_init` do, on core 0, before core 0 parks), the same judgement
+and suggestion, the same file through the same writer (`edid_display_text`, `.bak` kept), and the same rule for
+what can be chosen (`edid_mode_choosable`, Aurora68 Display's `selectable`). Three things are new in psmac_edid.c,
+each tested by tools/edid_test.c: **Automatic** writes `hdmi_group=0`, which the firmware's documentation names
+"auto-detect from EDID", in place of a mode, so that it wins over an `hdmi_group` config.txt sets before the include
+line (`#aurora68 confirm=auto`, without a size, since what the firmware takes is known only afterwards); **the
+include line** can be put at the end of config.txt by the page (`edid_config_include`: one already there elsewhere
+is moved, `[all]` goes before it when the last section is another, every other byte stays, config.bak keeps the
+old file), where Aurora68 Display can only ask the user to do it; and **with no EDID** the standard 60 Hz DMT modes
+and 2560 x 1440 are offered (`edid_standard_modes`), judged by the clock alone, with no suggestion. On `mac.screen=`
+nothing new was decided: "Any size" above says it is needed only to differ from the firmware's mode, so when
+cmdline.txt has one it follows the new size (and is taken out for Automatic), and when it has none none is added.
+
 ## Colour (17 November, 01:30)
 Aurora68 Colour (`mac/picolor.s`) opens a colour window on the Pi's screen and paints twelve hues at full
 and half strength, the primaries and a sixteen-step grey ramp with RGBForeColor and PaintRect.

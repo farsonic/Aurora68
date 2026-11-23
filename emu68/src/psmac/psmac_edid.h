@@ -41,6 +41,17 @@ uint32_t edid_display_text(const struct psmb_dispinfo *di, int m, int alt, int r
 uint32_t edid_display_unmark(const char *in, uint32_t n, char *out, uint32_t cap);
 /* the same file with its rotation line replaced */
 uint32_t edid_display_rotate(const char *in, uint32_t n, int rotation, char *out, uint32_t cap);
+/* Setup and Recovery's Display tab (docs/08 item 111): Aurora68 Display's rule for a mode that can be chosen */
+int edid_mode_choosable(const struct psmb_dispmode *m);
+/* no EDID: the standard modes the file can name (every 60 Hz DMT mode and 2560x1440), judged against pi_khz */
+int edid_standard_modes(struct psmb_dispinfo *di, uint32_t pi_khz);
+/* the mode of w x h at hz whole hertz (0: its highest the Pi sends) that can be chosen: its index and in *alt
+   whether that is its reduced-blanking alternative; -1 if none */
+int edid_find_mode(const struct psmb_dispinfo *di, uint32_t w, uint32_t h, uint32_t hz, int *alt);
+/* aurora68-display.txt for "Automatic" (hdmi_group=0: the firmware's choice from the EDID); di may be 0 */
+uint32_t edid_display_auto(const struct psmb_dispinfo *di, int rotation, int confirm, char *out, uint32_t cap);
+/* config.txt with "include aurora68-display.txt" at its end (added, or moved there): the length, 0 if it does not fit */
+uint32_t edid_config_include(const char *in, uint32_t n, char *out, uint32_t cap);
 /* the built-in sample: a made-up 27-inch 2560 x 1440 HDMI monitor with sound, two blocks (256 bytes) */
 int edid_sample(uint8_t out[256]);
 /* VESA CVT 1.1 pixel clock in kHz for w x h at hz, with reduced blanking (rb) or without */
