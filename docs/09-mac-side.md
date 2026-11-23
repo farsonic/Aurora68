@@ -1142,8 +1142,9 @@ using the scroll bar". docs/08 item 124 is the record.
   IPv6 address Riptide has no neighbour for fails in about three), and keeps the one that answered for the session:
   the lists, the covers, the device's requests and every stream go there without waiting again. A list or a cover whose
   connection fails moves to the other address and is asked again. A remembered server reached over IPv4 while IPv6 is
-  wanted and its IPv6 address is not known: the probe is sent once, quietly, and if the server's answer names an IPv6
-  address the Play moves to it (and back to IPv4 if it does not answer). Changing Connect By moves to the family named
+  wanted and its IPv6 address is not known, or its remembered IPv6 address did not answer: the probe is sent once,
+  quietly, and if the server's answer names another IPv6 address the Play moves to it (and back to IPv4 if it does not
+  answer). Changing Connect By moves to the family named
   first. Connect to Server... takes an IPv6 address with or without brackets and a port, an IPv4 address or a name
   (Riptide's driver looks a name up, AAAA and A, in Connect By's order, and each address is tried in turn). Without
   Riptide's .IPP6 (Apple's MacTCP) everything is IPv4, as before. The log says the addresses the probe's answer names,
@@ -1180,7 +1181,8 @@ as its artist):
   first, then 192.168.68.1", the server answering at fd68::1 and the videos' streams coming from `[fd68::1]:18523`. A
   server naming an IPv6 address that does not answer (fd68::99, Library > Servers > Search Again): "no answer from
   fd68::99 ...: trying 192.168.68.1", the lists and streams over IPv4 from then on. The next start with those
-  preferences tried the IPv6 address first again. In both long sessions Riptide itself dropped its fd68:: address after
+  preferences tried the IPv6 address first again, and with the server back at fd68::1: fd68::99 did not answer, IPv4,
+  the quiet probe ("the server also has the IPv6 address fd68::1"), and the server over IPv6 again. In both long sessions Riptide itself dropped its fd68:: address after
   four or five minutes (its mDNS announcement then named only the link-local address, and no router solicitation
   followed); the library moved to IPv4 by itself, the stream that was playing reconnected (docs/08 item 124 has what
   this may mean for the SE).

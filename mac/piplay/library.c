@@ -147,6 +147,8 @@ static int nalt;
 static char srv_v6[48], srv_v4[2][20];
 static int addr_learned;                         /* the probe answered for this server: its addresses are known */
 static int want_learn, learn_find;               /* a quiet probe for them (the remembered server answered over IPv4) */
+static char v6_bad[48];                          /* an IPv6 address of the server's that did not answer this session */
+static int relearned;                            /* the probe asked again after that, once */
 static const char *problem;                      /* the list area says this instead of rows */
 static char problem_buf[360];                    /* 1.7: the servers found, or a server that does not answer, named in it */
 
@@ -409,7 +411,8 @@ static void probe_done(void)
 			if (servers[k].d.port == srv_port && (same_text(servers[k].d.name, srv_name) || found_is_current(k))) break;
 		if (k == nservers) { logs("the probe did not hear from the server in use: its address stays ", srv_host); return; }
 		learn_addrs(&servers[k]);
-		if (srv_v6[0] && net_is_v6() && !net_v4only && net_prefer != 4 && !colon(srv_host)) {
+		if (srv_v6[0] && same_text(srv_v6, v6_bad)) logs("the server names the IPv6 address that did not answer: IPv4 for this session, ", srv_host);
+		else if (srv_v6[0] && net_is_v6() && !net_v4only && net_prefer != 4 && !colon(srv_host)) {
 			const char *c[3];
 			int n = addr_order(c);
 			logs("the server also has the IPv6 address ", srv_v6);
@@ -615,7 +618,11 @@ static void got_info(void)
 	logs(t, 0);
 	/* the one that answered is kept for the session; the ones not tried stay, for a later failure (the other family) */
 	/* reached over IPv4 with IPv6 wanted and the server's IPv6 address not known: ask the probe for it, once (1.8) */
-	if (fetch.ipv == 4 && !addr_learned && net_is_v6() && !net_v4only && net_prefer != 4) want_learn = 1;
+	if (fetch.ipv == 4 && (!addr_learned || (v6_bad[0] && !relearned)) && net_is_v6() && !net_v4only && net_prefer != 4) {
+		want_learn = 1;
+		if (v6_bad[0]) relearned = 1;            /* once a session */
+	}
+	/* (and when its IPv6 address did not answer: the server may have another now, which the probe's answer names) */
 }
 static void got_list(void)
 {
@@ -1136,6 +1143,7 @@ void lib_poll(void)
 				copy(h, alt_host[0], sizeof h);
 				for (k = 1; k < nalt; k++) copy(alt_host[k - 1], alt_host[k], sizeof alt_host[0]);
 				nalt--;
+				if (colon(srv_host)) copy(v6_bad, srv_host, sizeof v6_bad);
 				p = put_str(put_str(put_str(t, "no answer from "), srv_host), " (the line above says why): trying ");
 				p = put_str(p, h);
 				*p = 0;

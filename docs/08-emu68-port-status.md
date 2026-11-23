@@ -5523,8 +5523,9 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      (`fetch.quick`; Riptide answers an IPv6 address with no neighbour with ipDestDeadErr, -23033, sooner); moves any
      request whose connection could not be made (a list, a queue, a cover; and a stream, through radio.c's new
      `other_host`) to the next address and asks again; and keeps the one that answered for the session. A server
-     reached over IPv4 with IPv6 wanted and its IPv6 address unknown gets one quiet probe, and the Play moves to the
-     IPv6 address its answer names if that answers. Connect By gained IPv4 Only (a name's IPv6 addresses passed over, an
+     reached over IPv4 with IPv6 wanted and its IPv6 address unknown, or a remembered IPv6 address that did not answer
+     (the server may have another now), gets one quiet probe a session, and the Play moves to the IPv6 address its
+     answer names if that is not the one that failed and if it answers. Connect By gained IPv4 Only (a name's IPv6 addresses passed over, an
      IPv6 address typed refused with words); changing Connect By moves to the family named first. The log names the
      addresses the probe's answer gives ("it names IPv4 192.168.68.1, IPv6 fd68::1"), the order tried, each that fails,
      and the one kept ("the server answers at fd68::1 (IPv6): that address is used from now on (IPv6 First)").
