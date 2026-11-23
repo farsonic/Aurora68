@@ -360,6 +360,11 @@ void display_logo()
     init_display(sz, (void**)&framebuffer, &pitch);
     kprintf("[BOOT] Framebuffer @ %08x\n", framebuffer);
     fb = framebuffer;
+#ifdef PSMAC
+    /* Aurora68: its own splash instead of Emu68's logo, unless the log was asked for (mac.console=boot or hdmi):
+       psmac_display.c, "the splash" (docs/08 item 128) */
+    { extern int psmac_splash_boot(void); if (psmac_splash_boot()) return; }
+#endif
 
     struct EmuLogo *emu68logo = rle_decode(logo_emu68, logo_emu68_len);
     uint8_t *data = emu68logo->el_Data;

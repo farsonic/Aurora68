@@ -58,7 +58,8 @@ const struct pdg_opt pdg_opts[] = {
 
     /* ---- Display ---- */
     { "mac.screen", PDG_G_DISPLAY, 0, A, "#x#", "1024x768", "The HDMI screen's size in pixels; needed only to differ from the firmware's HDMI mode." },
-    { "mac.console", PDG_G_DISPLAY, PDG_F_ONCE, A, "hdmi", 0, "hdmi: the kernel's log on HDMI for the whole run, not only until the Mac's screen comes up." },
+    { "mac.console", PDG_G_DISPLAY, PDG_F_ONCE, A, "splash|boot|hdmi", 0,
+      "What the HDMI screen shows before the Mac's picture: splash, the Aurora68 logo and what the Pi is doing (the default); boot, the kernel's log until the Mac's screen comes up; hdmi, the log for the whole run." },
     { "mac.hdmi", PDG_G_DISPLAY, 0, C, "screen|mirror|log", 0,
       "What HDMI is beside the compact Mac's screen: a second screen of its own (screen, the default), the Mac's picture (mirror), or the log." },
     { "mac.vcdepth", PDG_G_DISPLAY, 0, C, "16|32", 0, "32: ask the firmware for a 32-bit HDMI frame buffer for the second screen (16 keeps the firmware's own)." },

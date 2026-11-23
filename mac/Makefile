@@ -12,7 +12,8 @@
 #                  debug start and report bundle's scrubbing, and the page's header: tools/diag_test.sh; its access point's DHCP server, DNS
 #                  answerer and the firmware's SoftAP sequence: tools/apnet_test.sh; the bus check's verdicts
 #                  against a simulated board with faults: tools/buscheck_test.c; MPEG-1 in QuickTime, the import's indexer
-#                  and the card's MPEG-1 and MP2 decoders against FFmpeg: tools/mpg1_test.sh)
+#                  and the card's MPEG-1 and MP2 decoders against FFmpeg: tools/mpg1_test.sh; the HDMI splash drawn at every
+#                  screen size, and its logo's header against docs/img/aurora68-logo.svg: tools/splash_test.sh)
 #   make install IMG=path/to/volume.img [PART=n]   the extensions into the System Folder of an HFS image, the programs into its Aurora68 folder
 AS      = m68k-linux-gnu-as -m68020
 OBJCOPY = m68k-linux-gnu-objcopy
@@ -187,6 +188,7 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	sh ../tools/vcodec_test.sh $(abspath $(B))
 	sh ../tools/mpg1_test.sh $(abspath $(B))
 	sh ../tools/vbuf_test.sh $(abspath $(B))
+	sh ../tools/splash_test.sh $(abspath $(B))
 
 disasm: $(B)/pidisk.o
 	m68k-linux-gnu-objdump -d $(B)/pidisk.o | head -200

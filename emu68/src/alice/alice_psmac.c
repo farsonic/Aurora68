@@ -46,7 +46,12 @@ static uint32_t irq_raised;
 void aga_virtual_cia_irq(uint16_t bit, int active) { (void)bit; (void)active; irq_raised++; }
 
 /* the boot splash's status strip: on the Mac build it is the console log */
-void frf_post_wifi(const char *text, int col) { if (text && *text) kprintf("[WIFI] status: %s (%d)\n", text, col); }
+void frf_post_wifi(const char *text, int col)
+{
+    if (!text || !*text) return;
+    kprintf("[WIFI] status: %s (%d)\n", text, col);
+    { extern void psmac_splash_wifi(const char *, int); psmac_splash_wifi(text, col); }   /* the HDMI splash's line (psmac_display.c) */
+}
 void frf_post_eth(const char *text, int col)  { if (text && *text) kprintf("[ETH] status: %s (%d)\n", text, col); }
 void frf_post_bt(const char *text, int col)   { if (text && *text) kprintf("[BT] status: %s (%d)\n", text, col); }
 void frf_post_usb_devices(unsigned kb, unsigned ms, unsigned gp, unsigned msc) { kprintf("[USB] devices: %u keyboards %u mice %u pads %u storage\n", kb, ms, gp, msc); }
@@ -104,6 +109,7 @@ static void in_key(uint32_t usage, int down, uint32_t mods)
     /* Aurora68 Setup and Recovery's keyboard menu takes the keys in a recovery start; in any start it watches for Esc
        held in the first seconds (psmac_recovery.c) */
     { extern int psmac_recovery_key(uint32_t, int, uint32_t); if (psmac_recovery_key(usage, down, mods)) return; }
+    { extern int psmac_splash_key(uint32_t, int); if (psmac_splash_key(usage, down)) return; }   /* F12: the log over the HDMI splash */
     in_put(ALICE_IN_KEY, (int32_t)usage, down, (int32_t)mods);
     if (!usage) return;
     if (down) { rep_usage = usage; rep_mods = mods; rep_due = in_now() + in_hz() * REP_DELAY_MS / 1000; }

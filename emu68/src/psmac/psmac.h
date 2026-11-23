@@ -85,5 +85,9 @@ void     psmac_boot_mac_line(const char *text);
 void     psmac_boot_curapname(const uint8_t *pascal_name);
 void     psmac_boot_check_args(const char *bootargs);
 void     psmac_redact(const char *in, char *out, uint32_t cap);    /* psmac_card.c: wifi.psk=*** and the like */
+/* the HDMI splash (psmac_display.c, docs/08 item 128): its status line, what the boot is doing now, and its alert
+   line, what a user must see (kind 1: the WiFi's, cleared when it connects); no effect where HDMI shows the log */
+void     psmac_splash_status(const char *fmt, ...);
+void     psmac_splash_alert(int kind, const char *fmt, ...);
 
 #endif

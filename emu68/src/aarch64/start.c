@@ -1973,6 +1973,7 @@ __asm__ volatile(
         if (psmac_recovery_on()) psmac_recovery_park();
     }
     psmac_boot_mark("68k released: the ROM's first instruction");
+    psmac_splash_status("Starting the Macintosh...");
 #endif
 #ifndef PISTORM_ANY_MODEL
     __asm__ volatile("bl MainLoop" ::: "x0", "x1", "x2", "x3",

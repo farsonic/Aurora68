@@ -5715,3 +5715,59 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    with a lasting IPv6 address (item 124 and the Riptide change) all hold on hardware. Still open from the same
    sessions: the lock-ups after minutes of video and while scrolling the Videos list (no log yet; Play 1.8 logs any
    event-loop pass of 3 s or more).
+
+128. **A splash on HDMI instead of the log (23 November).** The owner: "we need a subtle splash screen on the HDMI
+   monitor that has the Aurora logo and version and not show the logs unless specifically called for (it's just noise
+   now)". Since 17 November the HDMI console drew the kernel's log from power-on until the Mac's video driver took
+   the screen (Emu68's logo first), the bench's only window into a Pi with no serial cable.
+   - *What HDMI shows now* (`psmac_splash.c`, new, portable C; `psmac_display.c`, "the splash"): a background of
+     #0E0F12, the Aurora68 logo a little above the middle at a fifth of the screen's height (96 to 256 pixels), the name
+     in Emu68's Topaz at twice the size of the rest, the kernel's version string (`Emu68 1.1.0-beta.2 (date)
+     git:hash`, the log's first line, so a photograph names its build), a quiet status line a tenth of the height
+     from the bottom and an amber alert line above it. Status: "Starting...", "Loading the disk image NAME...",
+     "Starting the Macintosh..." (68k released), "The Macintosh is testing its ROM/memory..." (psmac_boot.c's
+     spans), "Starting from the disk image on the SD card..." / "from the SCSI disk..." / "from the disk..." (the
+     first PiDisk, SE pseudo-DMA or solo SCSI read), "The Macintosh is starting up..." (its first log line), "Loading
+     the extensions..." (the first INIT), "The Macintosh is running" (the Finder), "Waiting for the Wi-Fi..." and
+     "Connected to the Wi-Fi network" (alice_net.c's states through `frf_post_wifi`), "Restarting the Macintosh..."
+     (a 68k RESET after the display was on). Alerts: no Macintosh ROM, no declaration ROM, a declaration ROM without
+     PiDisk's boot record, under-voltage, the WiFi failing to join (cleared when it connects), a System error (the
+     `_SysError` record of psmac_crash.c, not "Welcome" or the disk-switch dialog). Setup and Recovery's reason to start
+     is on its own screens, which still take HDMI from the splash as they took it from the log.
+   - *When:* `display_logo` (start_rpi64.c) draws it into the firmware's 16-bit buffer instead of Emu68's logo,
+     `psmac_display_init` again after remaking the buffer, then the service core alone (`psmac_display_poll`, 60 times a
+     second it checks whether a line changed: only the two lines' rows are redrawn) until the Mac's display flag is
+     set. A setter called before the service loop runs draws its line itself. A Restart clears the flag
+     (`psmac_display_bus_reset`), so the splash comes back until the driver opens; with no declaration ROM it stays.
+   - *The log when asked:* `mac.console=boot` is the old default (Emu68's logo, then the log until the Mac's screen),
+     `mac.console=hdmi` (and `mac.hdmi=log`) the log for the whole run, `mac.console=splash` or nothing the splash. The
+     mode is read from the boot arguments in `display_logo` (`psmac_splash_boot`) and again by `psmac_read_options`
+     (`psmac_console_mode`), since a one-shot debug start can add `mac.console=` in between; going from the splash to
+     the log clears the screen. F12 on a USB keyboard (`psmac_splash_key`, before the key reaches the Mac) changes
+     between the splash and the log while HDMI is not the Mac's. The serial line, the log ring, the remote's `/log` and
+     the card's aurora68.log are unchanged. The options table (`psmac_diag.c`) has `splash|boot|hdmi`; Setup and
+     Recovery's keyboard menu takes its values from the table (it offered "off" and "hdmi"), the default written as no
+     word.
+   - *The logo* (`tools/mklogo.py`, new): the SVG drawn in pure Python rather than the sizes PNG decoded (that one is
+     drawn on a checkerboard with no alpha): the purple square clipped to the rounded rectangle, the six circles blurred
+     as SVG 1.1 says a renderer may (three box blurs of d = floor(s * 3 * sqrt(2 pi) / 4 + 0.5), the even-d rule
+     included) in linear light, the white band blurred inside its filter region, the stripes covered exactly along x,
+     the gradient mask, the black outline; blended over the background into 192 x 192 R,G,B bytes,
+     `psmac_splash_logo.h` (387 KB of text, 110,592 bytes in the kernel). `--check` (in `make -C mac check`, with one
+     unit of tolerance for another libm's rounding) remakes it and compares, and fails if the SVG's numbers moved; the
+     kernel scales it with an area average (smaller) or bilinear (larger) in 16.16 fixed point, so the service core
+     never touches the FPU.
+   - *Tested.* Host: `tools/splash_test.sh` (in `make -C mac check`) draws the splash at 640x480 to 2560x1440, 480x640,
+     512x342 and 64x64 into 16- and 32-bit buffers with a guard band: corners the background, the logo in the middle,
+     nothing written past a row or the buffer, the 16-bit picture the 32-bit one rounded, a line redraw that touches only
+     the bottom rows and an empty alert that clears its line (86 checks). QEMU, solo board, kernel 3783aca plus this
+     change: the default at 640 x 480 (`docs/img/hdmi-splash-640x480.png`, the ROM's checksum test) until PiVideo
+     opened 14 s in, then the Mac's picture as before; 1920 x 1080 without a declaration ROM (`docs/img/hdmi-splash.png`:
+     the amber line, the splash for the whole run); `mac.console=boot` (the log, then the Mac's picture);
+     `mac.console=hdmi` (the log after 30 s); F12 through QEMU's USB keyboard (the log, and back to the splash); a
+     recovery start (`mac.recovery=1`: Setup and Recovery's screen over it, unchanged) and its keyboard menu cycling
+     `mac.console` splash, boot, hdmi, splash. Not tried: the SE board in MAME (its kept 16-bit buffer and the
+     512 x 342 mirror case are in the host test), a real HDMI monitor, a PiDisplay rotation (the splash is drawn
+     upright; the monitor may be on its side).
+   - *For testers:* the release's `cmdline.txt` still carries `mac.console=hdmi` (the log for the whole run, one screen
+     on the SE); take it out, or write `mac.console=boot`, to see the splash or the old start.
