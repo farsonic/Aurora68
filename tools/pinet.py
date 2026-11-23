@@ -44,6 +44,12 @@ replies to .rx. Two modes:
                             HTTP server there: a connection to 127.0.0.1:PORT becomes a TCP connection
                             from the peer to the kernel's address on port 80 (PINET_KERNEL_TO=8068
                             for the other port; PINET_KERNEL_IP=A.B.C.D for a static address).
+                            PINET_APCLIENT=1 (docs/08 item 117): the peer is a phone that joined the
+                            kernel's own access point (Setup and Recovery with mac.wifisim=): it serves
+                            no DHCP, it asks the kernel's DHCP server for an address (DISCOVER every two
+                            seconds until it has one), takes it as its own, asks the kernel's DNS for a
+                            phone's captive-portal check names, and logs every answer; PINET_KERNEL then
+                            reaches the page from the leased address (PINET_KERNEL_IP=192.168.4.1).
   pinet.py <base> tap tapN  bridge frames to a Linux TAP device (needs CAP_NET_ADMIN)
 
 Usage in the testbed: tools/run-fullstack.sh 400 mac.net=/tmp/psmac-net   (and run this helper).
@@ -276,9 +282,78 @@ def atalk_respond(frame):
         return f"ATP to the server socket: control {ctl:02x}, ASP function {user[0]} (not answered yet)"
     return None
 
+# PINET_APCLIENT=1: a phone on the kernel's access point (docs/08 item 117)
+APCLIENT = os.environ.get('PINET_APCLIENT') == '1'
+apc = {'state': 'discover', 'xid': 0x50484f4e, 'next': 0.0, 'server': None, 'offer': None, 'dns': 0}
+if APCLIENT:
+    PEER_IP = bytes(4)
+def apc_dhcp(mtype, extra=b''):
+    m = bytearray(300)
+    m[0:4] = b'\x01\x01\x06\x00'; m[4:8] = struct.pack('>I', apc['xid']); m[10] = 0x80   # answer by broadcast: no address yet
+    m[28:34] = PEER_MAC; m[236:240] = b'\x63\x82\x53\x63'
+    o = bytes([53, 1, mtype]) + extra + bytes([12, 11]) + b'pinet-phone' + bytes([55, 3, 1, 3, 6, 255])
+    m[240:240 + len(o)] = o
+    udp = struct.pack('>HHHH', 68, 67, 8 + len(m), 0) + bytes(m)
+    send4(b'\xff' * 6, b'\xff\xff\xff\xff', 17, udp)
+def apc_dns(name, qtype):
+    q = struct.pack('>HHHHHH', 0x4150 + apc['dns'], 0x0100, 1, 0, 0, 0)
+    for part in name.split('.'): q += bytes([len(part)]) + part.encode()
+    q += b'\x00' + struct.pack('>HH', qtype, 1)
+    apc['dns'] += 1
+    send4(kernel['mac'], kernel['ip'], 17, struct.pack('>HHHH', 5300, 53, 8 + len(q), 0) + q)
+def apc_opts(m):
+    o, k = {}, 240
+    while k + 1 < len(m) and m[k] != 255:
+        if m[k] == 0: k += 1; continue
+        o[m[k]] = m[k + 2:k + 2 + m[k + 1]]; k += 2 + m[k + 1]
+    return o
+def apclient_in(frame):
+    global PEER_IP
+    if frame[12:14] != b'\x08\x00' or len(frame) < 42 or frame[23] != 17: return None
+    ihl = (frame[14] & 15) * 4; u = frame[14 + ihl:]
+    sport, dport = struct.unpack('>HH', u[:4]); body = u[8:]
+    ip4 = lambda b: '.'.join(map(str, b))
+    if sport == 67 and dport == 68 and len(body) >= 240 and struct.unpack('>I', body[4:8])[0] == apc['xid']:
+        o = apc_opts(body); t = o.get(53, b'\0')[0]; yi = body[16:20]
+        if t == 2 and apc['state'] == 'discover':
+            apc['offer'], apc['server'], apc['state'] = yi, o.get(54), 'request'
+            apc_dhcp(3, bytes([50, 4]) + yi + bytes([54, 4]) + o.get(54, bytes(4)))
+            return f'AP client: DHCP OFFER of {ip4(yi)} from {ip4(o.get(54, bytes(4)))}: REQUEST sent'
+        if t == 5 and apc['state'] == 'request':
+            PEER_IP = yi; apc['state'] = 'bound'
+            kernel['ip'] = o.get(54, kernel['ip']); kernel['mac'] = frame[6:12]
+            apc_dns('connectivitycheck.gstatic.com', 1); apc_dns('captive.apple.com', 28); apc_dns('aurora68.local', 1)
+            return (f'AP client: DHCP ACK: {ip4(yi)} mask {ip4(o.get(1, bytes(4)))} router {ip4(o.get(3, bytes(4)))} DNS {ip4(o.get(6, bytes(4)))} '
+                    f'lease {struct.unpack(">I", o.get(51, bytes(4)))[0]} s, from {ip4(o.get(54, bytes(4)))} at {frame[6:12].hex(":")}; three DNS queries sent')
+        if t == 6:
+            apc['state'] = 'discover'; apc['next'] = 0.0
+            return 'AP client: DHCP NAK: starting again'
+        return f'AP client: DHCP message type {t} ignored'
+    if sport == 53 and dport == 5300 and len(body) >= 12:
+        an = struct.unpack('>H', body[6:8])[0]; p = 12; name = []
+        while p < len(body) and body[p]: name.append(body[p + 1:p + 1 + body[p]].decode('ascii', 'replace')); p += 1 + body[p]
+        qtype = struct.unpack('>H', body[p + 1:p + 3])[0]
+        a = ip4(body[-4:]) if an else 'no records'
+        return f'AP client: DNS {".".join(name)} type {qtype}: rcode {body[3] & 15}, {an} answer(s): {a}'
+    return None
+def apclient_due():
+    if not APCLIENT or apc['state'] == 'bound': return
+    now = time.time()
+    if now < apc['next']: return
+    apc['next'] = now + 2.0
+    if apc['state'] == 'request': apc['state'] = 'discover'      # no ACK in two seconds: from the start
+    apc['xid'] = (apc['xid'] + 1) & 0xffffffff
+    apc_dhcp(1)
+    print('AP client: DHCP DISCOVER sent', flush=True)
+
 def peer(frame):
     global mac_ip4
     dst, src, etype = frame[0:6], frame[6:12], struct.unpack('>H', frame[12:14])[0]
+    if APCLIENT:
+        r = apclient_in(frame)
+        if r: return r
+        if etype == 0x0806 and len(frame) >= 42 and frame[28:32] == kernel['ip']: kernel['mac'] = frame[22:28]
+        if etype == 0x0800 and len(frame) >= 42 and frame[23] == 17: return 'AP client: UDP (not for the phone)'
     if etype == 0x0800 and len(frame) >= 42 and frame[23] == 17 and frame[14 + (frame[14] & 15) * 4 + 2:14 + (frame[14] & 15) * 4 + 4] == b'\x14\xe9':
         if frame[26:30] != bytes(4): mac_ip4 = frame[26:30]
         if MDNS_RELAY:
@@ -911,6 +986,7 @@ while True:
         relay_due()
         udp_due()
         kernel_due()
+        apclient_due()
     if tap is not None:
         try:
             while True:

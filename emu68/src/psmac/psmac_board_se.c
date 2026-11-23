@@ -930,17 +930,31 @@ static void interrupt_switch(unsigned raw)
     if (!held_since) held_since = now;
     if (!pressed && now - held_since >= asc_hz() / 100) {
         pressed = 1;
-        kprintf("[PSMAC:SE] the programmer's interrupt switch: an NMI for the Mac\n");
+        { extern int psmac_recovery_on(void);
+          kprintf("[PSMAC:SE] the programmer's interrupt switch: %s\n", psmac_recovery_on() ? "pressed (Setup and Recovery: no Mac runs; held two seconds it starts the access point)" : "an NMI for the Mac"); }
         if (__m68k_state) __atomic_store_n(&__m68k_state->INTF.ARM_err, 1, __ATOMIC_RELEASE);
     }
 }
-/* Aurora68 Setup and Recovery (psmac_recovery.c): the switch held as the 68k would be released. mac.switchsim=1 is the
-   testbed's switch: MAME's SE has no programmer's switch to press */
+/* Aurora68 Setup and Recovery (psmac_recovery.c): the switch held as the 68k would be released, and on the recovery
+   screen held again for the access point (docs/08 item 117). The level is the wire's last, which the service loop's
+   poll keeps fresh while no Mac runs. mac.switchsim= is the testbed's switch (MAME's SE has none to press, the solo
+   board no wire): 1 held all the time; ap held for the first second after it is first asked about, let go, and held
+   again from 12 s to 14.5 s: the recovery screen's gesture, on any board */
 int psmac_se_switch_held(void)
 {
     extern const char *psmac_option(const char *);
     const char *o = psmac_option("mac.switchsim");
     if (o && o[0] == '1') return 1;
+    if (o && o[0] == 'a' && o[1] == 'p') {
+        static uint64_t t0;
+        uint64_t now = asc_now();
+        if (!t0) t0 = now ? now : 1;
+        uint64_t ms = (now - t0) * 1000u / asc_hz();
+        int held = ms < 1000 || (ms >= 12000 && ms < 14500);
+        static int last = -1;
+        if (held != last) { last = held; kprintf("[PSMAC:SE] mac.switchsim=ap: the interrupt switch %s (%u ms)\n", held ? "held" : "let go", (uint32_t)ms); }
+        return held;
+    }
     return psmac_board_se && !psmac_board_solo && (se_wire_ipl & 4) != 0;
 }
 void psmac_se_set_level(unsigned raw)         /* psmac_bus.c, after each cycle on the wire and each poll */

@@ -155,6 +155,10 @@ struct an_fw {
                                        off - a stack attaching, new firmware or the WiFi's restart timer do not
                                        switch it on. On: WiFi starts; Ethernet starts now if a stack uses it, else
                                        when one does. AN_CMD_OFF / AN_CMD_START also set / clear admin_off. */
+#define AN_CMD_AP        13u        /* unit 0, Aurora68 only (docs/08 item 117): the radio becomes an access point of its own.
+                                       arg: struct an_ap. The state goes JOINING while the firmware is set up, then CONNECTED
+                                       (ssid, channel, security: the access point's own; link 1) or FAILED with the step the
+                                       firmware refused in msg. JOIN or DISCONNECT end it. */
 #define AN_EC_AUTONEG     0x01u     /* Ethernet: autonegotiate (else cfg_speed and AN_EC_FULL, fixed) */
 #define AN_EC_FULL        0x02u     /* fixed full duplex */
 #define AN_EC_PAUSE       0x04u     /* flow control: advertise pause and honour it */
@@ -180,6 +184,15 @@ struct an_join {
     char pass[68];                  /* passphrase (8..63) or 64 hex digits; "" for an open network */
     char country[4];                /* "GB", "" for the firmware's default */
 };                                  /* 108 bytes */
+
+struct an_ap {                      /* AN_CMD_AP */
+    char ssid[36];                  /* NUL-terminated, 1 to 32 bytes */
+    char pass[68];                  /* WPA2 passphrase (8..63); "" for an open network */
+    char country[4];                /* "GB", "" for the firmware's default */
+    unsigned int channel;           /* 1..13 */
+    unsigned int flags;             /* AN_AP_* */
+};                                  /* 116 bytes */
+#define AN_AP_WPA2_ANYWAY 1u        /* WPA2 even when the firmware does not say it can be the authenticator ("idauth") */
 
 struct an_unit {
     /* kernel -> Amiga */

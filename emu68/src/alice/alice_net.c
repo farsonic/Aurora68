@@ -33,6 +33,9 @@
 #include "alice_net.h"
 #include "wifi/bus.h"
 #include "wifi/fmac.h"
+#ifdef PSMAC
+#include "wifi/fmac_ap.h"            /* Aurora68: the firmware as an access point (docs/08 item 117) */
+#endif
 
 #define AN_KERNEL_VER 1
 
@@ -844,6 +847,14 @@ static struct {
     uint32_t restart_at;                    /* the chip is lost: start it again then (0 = no) */
     int      restarts;
     const char *lost;                       /* why it was lost, for the log */
+#ifdef PSMAC
+    /* the access point (AN_CMD_AP, Aurora68's Setup and Recovery, docs/08 item 117) */
+    int      ap_want, ap_up, ap_wpa2, ap_stations, ap_events;
+    char     ap_ssid[33], ap_pass[64];
+    unsigned ap_channel, ap_flags;
+    uint32_t iover;                         /* WLC_GET_VERSION: 1 is the older 802.11n chanspec encoding */
+    int      ev_ap_link, ev_ap_ssid;        /* E_LINK up (1) or down (-1); E_SET_SSID's status + 1 */
+#endif
 } W;
 
 static const char *const state_word[] = { "off", "starting", "ready", "scanning", "joining", "connected", "retrying", "FAILED", "no firmware" };
@@ -985,8 +996,14 @@ static void scan_add(void *ctx, const struct fm_bss *b)
         if (!mcmp(W.scan[i].bssid, b->bssid, 6)) { if (b->rssi > W.scan[i].rssi) W.scan[i] = *b; return; }
     if (W.nscan < AN_SCAN_MAX) W.scan[W.nscan++] = *b;
 }
+#ifdef PSMAC
+static void ap_event(const struct fm_event *e);
+#endif
 static void event(const struct fm_event *e)
 {
+#ifdef PSMAC
+    if (W.ap_want && e->type != E_ESCAN_RESULT) { ap_event(e); return; }   /* an access point's events are not a station's */
+#endif
     switch (e->type) {
     case E_ESCAN_RESULT:
         if (e->status == E_STATUS_PARTIAL) fm_escan_parse(e->data, e->datalen, scan_add, 0);
@@ -1325,6 +1342,9 @@ static int bringup(void)
     iov_int("bus:txglom", 0);
     uint32_t ver = 0;
     if (cmd_get_int(WLC_GET_VERSION, &ver)) { W.chip_up = 0; wstate(AN_ST_FAILED, "the firmware does not answer"); return -6; }
+#ifdef PSMAC
+    W.iover = ver;
+#endif
     iov_get("cur_etheraddr", W.mac, 6);
     memcpy(W.fmac, W.mac, 6);
     for (int i = 0; i < 6; i++) u->factory_mac[i] = W.fmac[i];
@@ -1558,6 +1578,9 @@ static void conn_tick(void)
             }
         }
     }
+#ifdef PSMAC
+    if (W.ap_want) return;                          /* an access point: no station to keep connected (scans above still finish) */
+#endif
     /* join() above takes some time (the key, several commands) and starts the
        join clock: the times below must be after it, or a join that has just begun
        looks 49 days old and is given up at once (the second test on a Pi) */
@@ -1616,6 +1639,127 @@ static void conn_tick(void)
     }
 }
 
+#ifdef PSMAC
+/* ---- the access point (Aurora68, 23 November 2026, docs/08 item 117) ------------------------------
+   Setup and Recovery can make the radio an access point of its own, for a phone to reach the recovery page
+   where there is no other network. The firmware's SoftAP is set up with the sequence wifi/fmac_ap.c builds
+   (Linux brcmfmac's order); each step is logged, and the first one the firmware refuses is named in the
+   state message ("the WiFi chip refused AP mode: WLC_SET_AP error -23"), which the recovery screen shows,
+   so that the first try on a real Pi says what to change. Nothing of this could be tried on a real chip
+   when it was written: QEMU has none. WPA2 needs the firmware to be the authenticator (the 4-way handshake
+   runs in it, as with Linux's 4WAY_HANDSHAKE_AP_PSK), which brcmfmac takes "idauth" in the "cap" list to
+   mean; without it the network is open, and the recovery page's PIN is what guards it. */
+static void wstatef(unsigned st, const char *fmt, ...)
+{
+    struct lbuf b; b.n = 0;
+    va_list ap; va_start(ap, fmt); vkprintf_pc(lb_c, &b, fmt, ap); va_end(ap);
+    b.s[b.n < 95 ? b.n : 95] = 0;
+    wstate(st, b.s);
+}
+static void ap_msg(void)
+{
+    wstatef(AN_ST_CONNECTED, "access point %s up: channel %u, %s, %d device%s joined", W.ap_ssid, W.ap_channel,
+            W.ap_wpa2 ? "WPA2" : "open", W.ap_stations, W.ap_stations == 1 ? "" : "s");
+}
+static void ap_event(const struct fm_event *e)
+{
+    switch (e->type) {
+    case E_LINK: W.ev_ap_link = (e->flags & E_FLAG_LINK) ? 1 : -1; break;
+    case E_SET_SSID: W.ev_ap_ssid = (int)e->status + 1; break;
+    case E_ASSOC_IND: case E_REASSOC_IND:
+        if (e->status == E_STATUS_SUCCESS) { W.ap_stations++; if (W.ap_up) ap_msg(); }
+        break;
+    case E_DISASSOC_IND: case E_DEAUTH_IND: case E_DEAUTH:
+        if (W.ap_stations > 0) W.ap_stations--;
+        if (W.ap_up) ap_msg();
+        break;
+    default: break;
+    }
+    /* the first events in full: what a real firmware sends as an access point is not known yet (no addresses: they are the guests') */
+    if (W.ap_events < 60) { W.ap_events++; wifi_log("access point: firmware event %u, status %u, reason %u, flags %u\n", e->type, e->status, e->reason, e->flags); }
+}
+static int32_t ap_step_send(void *ctx, const struct fm_ap_step *s)
+{
+    static uint8_t b[FMS_DATA_MAX];
+    (void)ctx;
+    switch (s->kind) {
+    case FMS_CMD_INT: return cmd_int(s->cmd, s->val);
+    case FMS_IOV_INT: return iov_int(s->name, s->val);
+    case FMS_CMD_DATA: { memcpy(b, s->data, s->len); int32_t e = ctl(s->cmd, 1, b, s->len, 0); memset(b, 0, sizeof b); return e; }
+    default: return iov_set(s->name, s->data, s->len);
+    }
+}
+static void ap_step_log(void *ctx, const struct fm_ap_step *s, int32_t e, int skipped)
+{
+    char nm[40];
+    (void)ctx;
+    if (skipped) return;
+    fm_ap_step_name(s, nm, sizeof nm);
+    int num = s->kind == FMS_CMD_INT || s->kind == FMS_IOV_INT;     /* data steps (the key) are named, never shown */
+    if (!e) wifi_log("access point: %s %u%s ok (%s)\n", nm, num ? s->val : s->len, num ? "" : " bytes", s->what);
+    else wifi_log("access point: %s %u%s REFUSED, error %d (%s)%s\n", nm, num ? s->val : s->len, num ? "" : " bytes", e, s->what,
+                  (s->flags & FMS_FATAL) ? "" : ": carrying on, as Linux does");
+}
+static int ap_start(void)
+{
+    volatile struct an_unit *u = U(0);
+    W.want = 0; W.scan_for_join = 0; W.ap_up = 0; W.ap_stations = 0; W.ev_ap_link = 0; W.ev_ap_ssid = 0; W.ap_events = 0;
+    link_set(0);
+    if (!W.chip_up) return -1;
+    int idauth = fm_caps_has(W.caps, "idauth");
+    W.ap_wpa2 = W.ap_pass[0] && (idauth || (W.ap_flags & AN_AP_WPA2_ANYWAY));
+    if (W.ap_pass[0] && !W.ap_wpa2)
+        wifi_log("access point: the firmware does not list \"idauth\" (it would be the WPA2 authenticator): the network is open, and the recovery page's PIN guards it\n");
+    else if (W.ap_wpa2 && !idauth) wifi_log("access point: WPA2 asked for although the firmware does not list \"idauth\" (recovery.apsec=wpa2): phones may not finish joining\n");
+    wstatef(AN_ST_JOINING, "starting the access point %s", W.ap_ssid);
+    uint8_t pmk[32];
+    if (W.ap_wpa2) {
+        uint32_t t0 = now_ms();
+        fm_wpa_pmk(W.ap_pass, strlen(W.ap_pass), W.ap_ssid, strlen(W.ap_ssid), pmk, wifi_relax);
+        wifi_log("access point: the WPA2 key from the password, %u ms\n", now_ms() - t0);
+    }
+    struct fm_ap_cfg c = { W.ap_ssid, W.ap_channel, W.iover == 1, W.ap_wpa2 ? pmk : 0, W.ap_wpa2 ? W.ap_pass : 0, W.country[0] ? W.country : 0 };
+    static struct fm_ap_step steps[FM_AP_STEPS_MAX];
+    unsigned n = fm_ap_steps(steps, FM_AP_STEPS_MAX, &c);
+    memset(pmk, 0, sizeof pmk);
+    if (!n) { wstatef(AN_ST_FAILED, "the access point's name or channel is not usable"); return -2; }
+    wifi_log("access point %s, channel %u (chanspec 0x%x, firmware interface version %u), %s: %u firmware commands\n", W.ap_ssid, W.ap_channel,
+             fm_chanspec_2g(W.ap_channel, W.iover == 1), W.iover, W.ap_wpa2 ? "WPA2-PSK, AES" : "open", n);
+    char why[64];
+    int32_t e = fm_ap_run(steps, n, ap_step_send, ap_step_log, 0, why, sizeof why);
+    memset(steps, 0, sizeof steps);                 /* the key's bytes go */
+    if (e) { wstatef(AN_ST_FAILED, "the WiFi chip refused AP mode: %s", why); return -5; }
+    /* the firmware says the network is up with E_LINK (Linux waits for it with "mbss"), or with E_SET_SSID's status */
+    uint32_t t0 = now_ms();
+    while (!W.ev_ap_link && !W.ev_ap_ssid && now_ms() - t0 < 3000) { poll_frames(); an_yield(); }
+    if (W.ev_ap_ssid > 1) { wstatef(AN_ST_FAILED, "the WiFi chip refused AP mode: WLC_SET_SSID's event, status %d", W.ev_ap_ssid - 1); return -6; }
+    if (W.ev_ap_link < 0) { wstatef(AN_ST_FAILED, "the WiFi chip refused AP mode: the firmware said link down at once"); return -7; }
+    wifi_log("access point: %s\n", W.ev_ap_link > 0 ? "the firmware says the network is up (E_LINK)" : W.ev_ap_ssid ? "the firmware took the SSID (E_SET_SSID, success)"
+             : "no event from the firmware within 3 s: taken as up (a real chip's first try will tell)");
+    unsigned i = 0;
+    for (; W.ap_ssid[i] && i < 35; i++) u->ssid[i] = W.ap_ssid[i];
+    u->ssid[i] = 0;
+    for (i = 0; i < 6; i++) u->bssid[i] = W.mac[i];
+    u->channel = W.ap_channel; u->security = W.ap_wpa2 ? SEC_WPA2 : SEC_OPEN; u->rssi = 0;
+    W.ap_up = 1;
+    link_set(1);
+    ap_msg();
+    return 0;
+}
+static void ap_stop(void)
+{
+    if (!W.ap_want) return;
+    W.ap_want = 0; W.ap_up = 0;
+    link_set(0);
+    if (!W.chip_up) return;
+    cmd_int(WLC_DOWN, 1);
+    cmd_int(WLC_SET_AP, 0);
+    cmd_int(WLC_SET_INFRA, 1);
+    cmd_int(WLC_UP, 1);
+    wifi_log("access point stopped: a station again\n");
+}
+#endif
+
 /* ---- the Amiga's commands ---- */
 /* the user's off switch: the chip goes off at the next turn of wifi_main's loop and stays off
    (start_req is ignored while off_req is set); what was waiting to be sent is dropped */
@@ -1656,6 +1800,9 @@ static void commands(void)
     case AN_CMD_JOIN: {
         volatile struct an_join *j = (volatile struct an_join *)u->arg;
         unsigned i;
+#ifdef PSMAC
+        ap_stop();                                  /* a station again */
+#endif
         if (j->ssid[0]) {                           /* no name: the last network again */
             for (i = 0; i < 32 && j->ssid[i]; i++) W.ssid[i] = j->ssid[i];
             W.ssid[i] = 0;
@@ -1682,6 +1829,9 @@ static void commands(void)
         if (!W.scan_busy) scan_start();
         break;
     case AN_CMD_DISCONNECT:
+#ifdef PSMAC
+        ap_stop();
+#endif
         W.want = 0;
         W.scan_for_join = 0;
         if (W.chip_up) cmd_int(WLC_DISASSOC, 0);
@@ -1740,6 +1890,30 @@ static void commands(void)
         cmd_finish(seq, 0);
         break;
     }
+#ifdef PSMAC
+    case AN_CMD_AP: {
+        volatile struct an_ap *a = (volatile struct an_ap *)u->arg;
+        unsigned i, pl;
+        for (i = 0; i < 32 && a->ssid[i]; i++) W.ap_ssid[i] = a->ssid[i];
+        W.ap_ssid[i] = 0;
+        for (pl = 0; pl < 63 && a->pass[pl]; pl++) W.ap_pass[pl] = a->pass[pl];
+        W.ap_pass[pl] = 0;
+        if (a->country[0] && a->country[1]) { W.country[0] = a->country[0]; W.country[1] = a->country[1]; W.country[2] = 0; }
+        W.ap_channel = a->channel; W.ap_flags = a->flags;
+        for (i = 0; i < sizeof u->arg; i++) u->arg[i] = 0;          /* the password does not stay on the board */
+        if (!W.ap_ssid[0] || W.ap_channel < 1 || W.ap_channel > 13 || (pl && pl < 8)) { cmd_finish(seq, -2); break; }
+        W.ap_want = 1; W.want = 0; W.scan_for_join = 0;
+        W.start_req = 1; W.off_req = 0; u->admin_off = 0;
+        if (W.chip_up) {
+            if (u->state == AN_ST_CONNECTED || u->state == AN_ST_JOINING) cmd_int(WLC_DISASSOC, 0);
+            cmd_finish(seq, ap_start());
+        } else {
+            wifi_log("access point asked for: it starts once the chip is up\n");
+            cmd_finish(seq, 0);
+        }
+        break;
+    }
+#endif
     default:
         cmd_finish(seq, -3);
         break;
@@ -1796,6 +1970,9 @@ static void wifi_thread(void)
             continue;                               /* START (or new firmware) tries again */
         }
         W.lost = 0;
+#ifdef PSMAC
+        if (W.ap_want) ap_start();                  /* asked for before the chip was up, or the chip was lost and is back */
+#endif
         while (W.chip_up && !W.off_req) {
             /* Another driver in AmigaOS (WiFiPi.device, say) resetting the same SD host
                shows as changed bus or clock settings: say so, and take the chip back. */

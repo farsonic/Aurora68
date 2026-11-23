@@ -339,12 +339,14 @@ if (${VARIANT} IN_LIST SUPPORTED_VARIANTS)
                     src/psmac/psmac_power.c
                     src/psmac/psmac_recovery.c
                     src/psmac/psmac_cmdline.c
+                    src/psmac/psmac_apnet.c
                     src/alice/alice_psmac.c
                     src/alice/alice_net.c
                     src/alice/alice_status.c
                     src/alice/wifi/sdio.c
                     src/alice/wifi/chip.c
                     src/alice/wifi/fmac.c
+                    src/alice/wifi/fmac_ap.c
                     src/alice/bt/bt_pi.c
                     src/alice/bt/bthost.c
                     src/psmac/psmac_usb.c

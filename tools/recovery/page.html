@@ -63,6 +63,7 @@ input[type=checkbox]{width:auto;margin:0 6px 0 0;vertical-align:-2px;accent-colo
 <div class="rainbow"></div><nav id="nav"><button style="--c:var(--g)" data-t="ov" class="on">Overview</button><button style="--c:var(--y)" data-t="fi">Files</button><button style="--c:var(--o)" data-t="wi">WiFi</button><button style="--c:var(--r)" data-t="op">Options</button><button style="--c:var(--six)" data-t="dp">Display</button><button style="--c:var(--p)" data-t="tx">Text files</button><button style="--c:var(--b)" data-t="lo">Log</button></nav></header>
 <main>
 <section class="tab on" id="ov">
+<div class="card warn" id="apc" style="display:none"><h2><span>Access point</span></h2><div class="grid" id="apg"></div><p class="mut" id="apn" style="margin-bottom:0"></p></div>
 <div class="card warn" id="rb" style="display:none"><h2><span>The last starts did not reach the Finder</span></h2><p class="mut">The kernel before the current one is on the card as kernel8.old.</p>
 <button class="b p" onclick="act('/r/rollback','Roll back to kernel8.old?')">Roll back the kernel</button></div>
 <div class="card"><h2><span>State</span></h2><div class="grid" id="st"></div><div id="notes" class="mut" style="margin-top:10px"></div></div>
@@ -81,7 +82,8 @@ input[type=checkbox]{width:auto;margin:0 6px 0 0;vertical-align:-2px;accent-colo
 <label>Network<select id="wlist" onchange="if(this.value)el('wssid').value=this.value"></select></label>
 <label>Name (SSID)<input type="text" id="wssid"></label><label>Password<input type="password" id="wpsk" placeholder="empty: keep the stored one"></label>
 <label>Country (two letters)<input type="text" id="wcc" maxlength="2" placeholder="GB" style="max-width:7em"></label>
-<div class="row" style="margin-top:14px"><button class="b" onclick="wifi('test')">Test join now</button><button class="b p" onclick="wifi('save')">Save to cmdline.txt</button><span class="mut" id="wst"></span></div></div></section>
+<p class="mut" id="wapn" style="display:none">You are on the Pi's own access point, and the radio has only one network at a time: a test join would end it. Save your network, then restart: the Pi joins it at the next start. If the password was wrong, the Mac's screen says so; hold the interrupt button on the recovery screen again to come back here.</p>
+<div class="row" style="margin-top:14px"><button class="b" id="wtest" onclick="wifi('test')">Test join now</button><button class="b p" id="wsave" onclick="wifi('save')">Save to cmdline.txt</button><button class="b p" id="wsj" style="display:none" onclick="wsavejoin()">Save and restart to join this network</button><span class="mut" id="wst"></span></div></div></section>
 <section class="tab" id="op"><div class="card"><h2><span>Options</span></h2><p class="mut">Changes only the options you edit; every other word in cmdline.txt is kept. The line before is kept as cmdline.bak.</p><div id="opts"></div><p id="hidden"></p>
 <div class="row" style="margin-top:12px"><button class="b" onclick="opts(1)">Preview the new line</button><button class="b p" onclick="opts(0)">Save</button></div><pre id="optline"></pre></div></section>
 <section class="tab" id="dp">
@@ -106,7 +108,7 @@ input[type=checkbox]{width:auto;margin:0 6px 0 0;vertical-align:-2px;accent-colo
 <input id="pin" inputmode="numeric" maxlength="4" autocomplete="off" onkeydown="if(event.key=='Enter')savepin()"><button class="b p" style="width:100%" onclick="savepin()">Continue</button></div></div>
 <div id="toast"></div>
 <script>
-var P=sessionStorage.getItem('pin')||'',T=null,loaded={};
+var P=sessionStorage.getItem('pin')||'',T=null,loaded={},AP=null;
 function el(i){return document.getElementById(i)}
 function toast(t,bad){var x=el('toast');x.textContent=t;x.className='on'+(bad?' bad':'');clearTimeout(T);T=setTimeout(function(){x.className=''},3200)}
 function msg(t){if(t)toast(t,1)}
@@ -127,7 +129,11 @@ function refresh(){api('GET','/r/state').then(function(s){el('why').textContent=
  el('hstate').textContent=(n.ip||n.phase)+(n.name?'  ·  '+n.name:'');
  el('st').innerHTML=kv('Network',esc(n.link)+' '+esc(n.ip)+' <span class="pill">'+esc(n.phase)+'</span>')+kv('WiFi',n.wifi?esc(n.wifi.state)+' '+esc(n.wifi.ssid):'off')+
   kv('Card',esc(s.card))+kv('Upload',esc(s.upload.state)+(s.upload.total?' '+esc(s.upload.name)+' '+kb(s.upload.received)+' of '+kb(s.upload.total):''))+kv('Last action',esc(s.last));
- el('notes').innerHTML=(s.cmdline_recovery?'cmdline.txt has <b>mac.recovery=1</b>: "Restart normally" takes it out. ':'')+(s.config_kernel?'config.txt starts <b>'+esc(s.config_kernel)+'</b>, not kernel8.img.':'');
+ el('notes').innerHTML=(s.cmdline_recovery?'cmdline.txt has <b>mac.recovery=1</b> or <b>recovery.ap</b>: "Restart normally" takes it out. ':'')+(s.config_kernel?'config.txt starts <b>'+esc(s.config_kernel)+'</b>, not kernel8.img.':'');
+ var a=AP=s.ap;el('apc').style.display=a?'':'none';
+ if(a){el('apg').innerHTML=kv('Network',esc(a.ssid||'(starting)'))+kv('State',esc(a.detail)+(a.error?': '+esc(a.error):''))+(a.state=='up'?kv('Security',esc(a.security))+kv('Address',esc(a.address))+kv('Devices',esc(a.clients)+' with an address'):'');
+  el('apn').innerHTML=a.state=='up'?'The Pi is running a WiFi network of its own for setup ('+esc(a.how)+'). Put your home network in on the <a href="#wi" onclick="show(\'wi\');return false">WiFi</a> tab and choose <b>Save and restart to join this network</b>. The access point is never kept: the next start joins the saved network.':
+   a.state=='failed'?'The access point did not start. The Pi carries on with the wired port or the saved WiFi; the Mac\'s screen and the log say what the WiFi chip answered.':'Starting the access point...'}
  var t=(location.hash||'#ov').slice(1);show(el(t)?t:'ov')},function(){})}
 function files(){api('GET','/r/files').then(function(x){el('card').textContent=x.card+(x.free_kb!==undefined?', '+kb(x.free_kb*1024)+' free':'');
  var h='';x.files.forEach(function(f){if(f.folder){h+='<li><span class="nm">'+esc(f.name)+'/</span></li>';return}
@@ -142,11 +148,15 @@ function upload(){var f=el('up').files[0];if(!f){toast('Choose a file first',1);
  x.onload=function(){var j={};try{j=JSON.parse(x.responseText)}catch(e){}if(x.status==200){el('upst').textContent='Done: '+n+' '+kb(j.size)+', CRC32 '+j.crc32+(j.check?' ('+j.check+')':'');toast('Uploaded '+n)}
   else{el('upst').textContent='Refused: '+(j.error||x.status);toast('Refused: '+(j.error||x.status),1)}el('upbar').style.width='0';files();refresh()};
  x.onerror=function(){el('upst').textContent='The connection broke';toast('The connection broke',1)};el('upst').textContent='Sending...';x.send(f)}
-function wifiget(){api('GET','/r/wifi').then(function(w){var s=w.settings;el('wset').textContent='cmdline.txt: '+(s.ssid||'(no network)')+', password '+s.psk+', country '+(s.country||'(default)')+
+function wifiget(){var ap=AP&&AP.state!='failed';el('wtest').style.display=ap?'none':'';el('wsave').style.display=ap?'none':'';el('wsj').style.display=ap?'':'none';el('wapn').style.display=ap?'':'none';
+ api('GET','/r/wifi').then(function(w){var s=w.settings;el('wset').textContent='cmdline.txt: '+(s.ssid||'(no network)')+', password '+s.psk+', country '+(s.country||'(default)')+
  (w.radio?'. Radio: '+w.radio.state+' '+w.radio.message:'. No WiFi radio')+(w.note?'. Test: '+w.note:'');if(!el('wssid').value)el('wssid').value=s.ssid;if(!el('wcc').value)el('wcc').value=s.country;
  var h='<option value="">(choose from the scan)</option>';w.scan.forEach(function(n){h+='<option value="'+esc(n.ssid)+'">'+esc(n.ssid)+'  '+n.rssi+' dBm  '+n.security+'</option>'});el('wlist').innerHTML=h},function(){})}
 function wscan(){api('POST','/r/wifi/scan').then(function(){toast('Scanning...');setTimeout(wifiget,3000)},function(){})}
-function wifi(w){var b='ssid='+encodeURIComponent(el('wssid').value)+'&psk='+encodeURIComponent(el('wpsk').value)+'&country='+encodeURIComponent(el('wcc').value.toUpperCase());
+function wbody(){return 'ssid='+encodeURIComponent(el('wssid').value)+'&psk='+encodeURIComponent(el('wpsk').value)+'&country='+encodeURIComponent(el('wcc').value.toUpperCase())}
+function wsavejoin(){var n=el('wssid').value;if(!n){toast('Type the network name first',1);return}if(!confirm('Save '+n+' and restart the Pi to join it? This access point closes.'))return;
+ api('POST','/r/wifi/save',wbody()).then(function(){return api('POST','/r/reboot?how=normal')}).then(function(){el('wst').textContent='Saved; the Pi restarts and joins '+n;toast('Saved. The Pi restarts and joins '+n)},function(){})}
+function wifi(w){var b=wbody();
  if(w=='save'&&el('wst').textContent.indexOf('joined')<0&&!confirm('The new settings have not joined in a test. Save them anyway?'))return;
  api('POST','/r/wifi/'+w,b).then(function(){el('wst').textContent=w=='test'?'Testing...':'Saved';if(w=='test')wpoll(0);else toast('Saved to cmdline.txt')},function(){})}
 function wpoll(i){api('GET','/r/wifi').then(function(w){if(w.test=='running'&&i<30)setTimeout(function(){wpoll(i+1)},1500);else el('wst').textContent=w.note||w.test||'No answer';wifiget()},function(){})}

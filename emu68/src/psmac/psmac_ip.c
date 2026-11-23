@@ -23,6 +23,11 @@
  * identifier, falling back to the Mac's IP address with one TCP port of its own if the router
  * will not tell the two apart (docs/13, "Addresses").
  *
+ * The access point (23 November 2026, docs/08 item 117): when Setup and Recovery makes the Pi's WiFi an access
+ * point of its own, the WiFi gets the fixed address 192.168.4.1/24, no DHCP client runs, and the stack serves
+ * its guests: a DHCP server and a DNS answerer (psmac_apnet.c) on ports 67 and 53. Replies still go back to
+ * the Ethernet address a request came from, so nothing new is needed for ARP.
+ *
  * Everything runs on core 3. The drivers' receive hook copies a frame into a small queue and the
  * service loop's poll does the work, so the hook costs a driver a few comparisons and a copy, and
  * the WiFi's coroutine never runs stack code. The kernel's frames wait in a queue that the drivers
@@ -33,6 +38,7 @@
 #include "psmac.h"
 #include "../alice/alice_net.h"
 #include "psmac_ip.h"
+#include "psmac_apnet.h"
 
 const char *psmac_option(const char *key);              /* psmac_bus.c */
 void sprintf(char *buf, const char *format, ...);        /* support.c */
@@ -73,8 +79,11 @@ static struct {
     uint32_t arp_asks, arp_answers, pings, syns, resets;   /* for the heartbeat's line (psmac_ip_report) */
     uint32_t next_check;
     int ll_ok, ll;                          /* a link-local address when DHCP does not answer (Aurora68 Setup and Recovery); in use */
+    int ap, relink, want_link_before;       /* the WiFi is an access point (Setup and Recovery): a fixed address, servers for its guests */
+    uint8_t ap_ip[4];
     char name[32];
 } I = { .unit = -1 };
+static struct apn AP;                       /* the access point's DHCP leases and counts (psmac_apnet.c) */
 
 /* ---- DHCP client state ---- */
 enum { D_OFF, D_DISCOVER, D_REQUEST, D_BOUND };
@@ -173,6 +182,25 @@ void psmac_ip_init_recovery(const char *name)
     I.wifi_shared = 0;
     I.ll_ok = 1;
 }
+/* the WiFi is an access point from now on: ip/24 on it alone, no DHCP client, a DHCP server for ip's .10 to .25
+   and every DNS name answered with ip (docs/08 item 117) */
+void psmac_ip_ap(const uint8_t ip[4])
+{
+    cpy(I.ap_ip, ip, 4);
+    if (!I.ap) I.want_link_before = I.want_link;
+    I.ap = 1; I.want_link = 0; I.relink = 1;
+    apn_init(&AP, ip, 10, 600);
+    kprintf("[REMOTE] access point mode: %d.%d.%d.%d/24 on the WiFi; DHCP for its guests (.10 to .25, ten-minute leases), every DNS name answered with %d.%d.%d.%d\n",
+            ip[0], ip[1], ip[2], ip[3], ip[0], ip[1], ip[2], ip[3]);
+}
+/* the access point did not start: the links as before (the wired port first, the WiFi with DHCP) */
+void psmac_ip_ap_off(void)
+{
+    if (!I.ap) return;
+    I.ap = 0; I.want_link = I.want_link_before; I.relink = 1;
+    kprintf("[REMOTE] access point mode off: the wired port or the WiFi as before\n");
+}
+int psmac_ip_ap_clients(void) { return I.ap ? apn_clients(&AP, now_ms() / 1000u) : 0; }
 static void ip_init(const char *default_name)
 {
     const char *o;
@@ -260,6 +288,7 @@ static int classify(int unit, const volatile uint8_t *f, uint32_t len, int unica
         uint16_t dport = get16(l4 + 2);
         if (dport == 68 && 14 + ihl + 8 + 8 <= len && get32(l4 + 8 + 4) == D.xid && D.state != D_OFF) return 2;   /* our DHCP answer */
         if (dport == 5353 && eq(dst, mdns_ip, 4)) return 1;  /* mDNS: the Mac may have a responder too */
+        if (I.ap && (dport == 67 || dport == 53)) return 2;  /* the access point's guests: DHCP (broadcast) and DNS (to any server) */
     }
     if (I.shared == 2) {                                     /* the Mac's address: only TCP to our port */
         if (proto == 6 && eq(dst, I.ip, 4) && !eq(I.ip, zero4, 4) && get16(l4 + 2) == REMOTE_PORT_ALT) return 2;
@@ -469,6 +498,28 @@ static void dhcp_poll(void)
     }
     dhcp_send(3);
     D.next_ms = t + D.lease_s * 250u;
+}
+
+/* ---- the access point's servers (psmac_apnet.c) ---- */
+static void dhcps_in(const uint8_t *u, uint32_t n)
+{
+    static uint8_t out[600];
+    int bc; uint8_t to_ip[4], to_hw[6];
+    if (n < 8) return;
+    uint32_t len = apn_dhcp(&AP, now_ms() / 1000u, u + 8, n - 8, out, sizeof out, &bc, to_ip, to_hw);
+    if (!len) return;
+    udp_send(bc ? bcast_hw : to_hw, I.ip, bc ? (const uint8_t *)"\xff\xff\xff\xff" : to_ip, 67, 68, out, len, 64);
+    if (out[242] == 5 && out[16])                            /* an ACK with an address: the guest is on (its name and address not logged) */
+        kprintf("[REMOTE] access point: DHCP gave %d.%d.%d.%d to a device (%d with a lease)\n", out[16], out[17], out[18], out[19], apn_clients(&AP, now_ms() / 1000u));
+    else if (out[242] == 6) kprintf("[REMOTE] access point: DHCP said no to an address of another network (the device asks again)\n");
+}
+static void dns_in(const uint8_t *f, const uint8_t *ip, const uint8_t *u, uint32_t n)
+{
+    static uint8_t out[600];
+    if (n < 8) return;
+    uint32_t len = apn_dns(&AP, u + 8, n - 8, out, sizeof out);
+    /* from the address it was sent to: a phone set to use another DNS server sends it here too, through the "router" */
+    if (len) udp_send(f + 6, ip + 16, ip + 12, 53, get16(u), out, len, 64);
 }
 
 /* ---- mDNS (RFC 6762): "NAME.local" A ---- */
@@ -770,6 +821,8 @@ static void ip_in(const uint8_t *f, uint32_t len)
         if (n < 8) break;
         if (get16(p + 2) == 68) dhcp_in(p + 8, n - 8);
         else if (get16(p + 2) == 5353) mdns_in(f, ip, p, n);
+        else if (I.ap && get16(p + 2) == 67) dhcps_in(p, n);
+        else if (I.ap && get16(p + 2) == 53) dns_in(f, ip, p, n);
         break;
     }
 }
@@ -795,6 +848,13 @@ static void use_link(int u)
     D.state = D_OFF;
     I.unit = u;
     if (u < 0) { kprintf("[REMOTE] no network link: waiting for one\n"); return; }
+    if (I.ap && u == 0) {                                    /* the access point: its own fixed address, no DHCP client */
+        volatile struct an_unit *x = unit_of(0);
+        cpy(I.hw, x->mac, 6); I.shared = 0;
+        cpy(I.ip, I.ap_ip, 4); I.mask[0] = I.mask[1] = I.mask[2] = 255; I.mask[3] = 0;
+        bound("the access point's own fixed address; a DHCP server and DNS for its guests");
+        return;
+    }
     if (u == 1) { psmac_ip_hwaddr(1, I.hw); I.shared = 0; }
     else { volatile struct an_unit *x = unit_of(0); cpy(I.hw, x->mac, 6); I.shared = I.wifi_shared ? 2 : 1; }
     kprintf("[REMOTE] on %s, MAC address %02x:%02x:%02x:%02x:%02x:%02x%s\n", link_name(u),
@@ -818,7 +878,7 @@ void psmac_ip_poll(void)
         if (I.want_link == 1) want = w ? 1 : -1;
         else if (I.want_link == 0) want = wi ? 0 : -1;
         else want = w ? 1 : wi ? 0 : -1;
-        if (want != I.unit) use_link(want);
+        if (want != I.unit || I.relink) { I.relink = 0; use_link(want); }
         if (I.shared == 2 && !eq(I.ip, I.mac_ip[0], 4)) {   /* the Mac's address moved: follow it */
             cpy(I.ip, I.mac_ip[0], 4);
             kprintf("[REMOTE] the Mac's WiFi address is now %d.%d.%d.%d: http://%d.%d.%d.%d:%u/\n", I.ip[0], I.ip[1], I.ip[2], I.ip[3], I.ip[0], I.ip[1], I.ip[2], I.ip[3], REMOTE_PORT_ALT);
@@ -853,7 +913,7 @@ void psmac_ip_info(struct ipk_info *o)
     cpy(o->mac_ip[0], I.mac_ip[0], 4); cpy(o->mac_ip[1], I.mac_ip[1], 4);
     o->lease_s = D.state == D_BOUND ? D.lease_s : 0;
     o->rx = I.rx; o->tx = I.tx; o->rx_dropped = I.rx_dropped; o->tx_dropped = I.tx_dropped; o->conns = conns_total;
-    o->phase = I.unit < 0 ? "no link" : I.shared == 2 ? "shared" : I.have_static ? "static" : D.state == D_BOUND ? "bound" : I.ll ? "link-local" : "DHCP";
+    o->phase = I.unit < 0 ? "no link" : I.ap && I.unit == 0 ? "access point" : I.shared == 2 ? "shared" : I.have_static ? "static" : D.state == D_BOUND ? "bound" : I.ll ? "link-local" : "DHCP";
 }
 
 /* one line for the kernel's heartbeat (psmac_bus.c): the remote control's address and what came and
@@ -863,10 +923,10 @@ void psmac_ip_info(struct ipk_info *o)
 void psmac_ip_report(void)
 {
     if (!psmac_ip_active) return;
-    static uint32_t last[9]; static int last_unit = -2, last_shared = -1;
-    uint32_t now[9] = { I.rx, I.tx, I.sent, I.rx_dropped + I.tx_dropped, I.arp_asks, I.pings, I.syns, I.resets, get32(I.ip) };
+    static uint32_t last[11]; static int last_unit = -2, last_shared = -1;
+    uint32_t now[11] = { I.rx, I.tx, I.sent, I.rx_dropped + I.tx_dropped, I.arp_asks, I.pings, I.syns, I.resets, get32(I.ip), AP.acks, AP.dns_queries };
     int same = I.unit == last_unit && I.shared == last_shared;
-    for (int i = 0; i < 9; i++) { if (now[i] != last[i]) same = 0; last[i] = now[i]; }
+    for (int i = 0; i < 11; i++) { if (now[i] != last[i]) same = 0; last[i] = now[i]; }
     last_unit = I.unit; last_shared = I.shared;
     if (same) return;
     if (I.unit < 0) { kprintf("[REMOTE]   no network link\n"); return; }
@@ -874,4 +934,6 @@ void psmac_ip_report(void)
             I.ip[0], I.ip[1], I.ip[2], I.ip[3], link_name(I.unit),
             I.shared == 2 ? "the Mac's MAC and IP, port 8068" : I.shared ? "the Mac's MAC, its own IP" : "its own MAC and IP",
             I.rx, I.tx, I.sent, I.rx_dropped + I.tx_dropped, I.arp_asks, I.arp_answers, I.pings, I.syns, I.resets);
+    if (I.ap) kprintf("[REMOTE]   access point: %d device%s with a lease; DHCP %u discovers, %u offers, %u acks, %u naks; DNS %u queries, %u answered with an address\n",
+                      apn_clients(&AP, now_ms() / 1000u), apn_clients(&AP, now_ms() / 1000u) == 1 ? "" : "s", AP.discovers, AP.offers, AP.acks, AP.naks, AP.dns_queries, AP.dns_answers);
 }
