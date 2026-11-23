@@ -52,5 +52,11 @@ void vc_size_for(void *near_win, unsigned long vw, unsigned long vh, unsigned *w
 /* hidden from the card while Play's menu is down, a window of Play's is dragged or sized or a dialog is up (counted);
    otherwise the card draws where the window shows (its visRgn, 1.8), in the background too */
 void vc_hold(int on);
+/* the stream's size when the video window is on the HDMI screen (1.8.1): 1 with *w x *h for a video of vidw x vidh (its
+   window's picture, or Video Quality's width; a68_vmpeg_hdmi), 0 when it is not there (or held), and the size is then
+   vc_size_for's. Video Quality: 0 Automatic, or 320, 480, 640, 960 wide (kept in the preferences) */
+int vc_hdmi_size(unsigned long vidw, unsigned long vidh, unsigned *w, unsigned *h);
+void vc_set_quality(int q);
+int vc_quality(void);
 void vc_poll(int foreground);          /* from the event loop: the window's place and visibility kept current */
 #endif

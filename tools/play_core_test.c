@@ -650,6 +650,25 @@ static void video_units(void)
 		check(w == 320 && h == 64 && !(w & 1) && !(h & 1), "a very wide video: at least 64 high");
 		a68_vmpeg_size(1921, 1081, 512, 342, 0, 0, &w, &h);
 		check(!(w & 1) && !(h & 1) && w <= 320 && h <= 240, "odd sizes come out even");
+		/* 1.8.1: the HDMI screen, by the video window */
+		a68_vmpeg_hdmi(1280, 720, 1600, 900, 0, &w, &h);
+		check(w == 960 && h == 540, "HDMI, a large window: 960 x 540 at most");
+		a68_vmpeg_hdmi(1280, 720, 640, 360, 0, &w, &h);
+		check(w == 640 && h == 360, "HDMI, Automatic: the window's picture");
+		a68_vmpeg_hdmi(1280, 720, 200, 112, 0, &w, &h);
+		check(w == 320 && h == 180, "HDMI, a small window: 320 wide at least");
+		a68_vmpeg_hdmi(1280, 720, 1600, 900, 480, &w, &h);
+		check(w == 480 && h == 270, "HDMI, Video Quality 480: 480 wide whatever the window");
+		a68_vmpeg_hdmi(1280, 720, 300, 168, 960, &w, &h);
+		check(w == 960 && h == 540, "HDMI, Video Quality 960 in a small window: 960 x 540");
+		a68_vmpeg_hdmi(640, 426, 2000, 2000, 0, &w, &h);
+		check(w == 810 && h == 540, "HDMI, a 3:2 video in a tall window: 540 high at most");
+		a68_vmpeg_hdmi(1080, 1920, 1000, 1000, 0, &w, &h);
+		check(w == 302 && h == 540 && !(w & 1), "HDMI, a portrait video: 540 high");
+		a68_vmpeg_hdmi(0, 0, 1280, 960, 0, &w, &h);
+		check(w == 720 && h == 540, "HDMI, a shape not known: 4:3");
+		check(a68_vmpeg_bigger(320, 480) && a68_vmpeg_bigger(320, 960) && !a68_vmpeg_bigger(320, 478) &&
+		      !a68_vmpeg_bigger(640, 320) && !a68_vmpeg_bigger(0, 640), "a new stream for a window half as large again, not smaller");
 	}
 }
 

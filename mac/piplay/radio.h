@@ -67,6 +67,22 @@ extern int net_prefer;
    reached at its IPv4 address alone (net_prefer is 4 with it) */
 extern int net_v4only;
 
+/* calls to the network driver that could wait (1.8.1, docs/08 item 127; radio.c): none is synchronous. net_call makes the
+   call asynchronously and waits secs seconds at most, the receive chain kept going: its result, or 1 when it has not come
+   back (logged: "what did not complete in N s: then"); the block is then still the driver's and goes to net_leave, which
+   keeps it, and the buffers the driver may still write into, until the driver gives them back (net_leave_poll, from the
+   event loop), releasing a stream left so (release_cs on ref; from_create: the stream a late TCPCreate or UDPCreate makes,
+   read from the first block). net_leave_block puts a new cleared block of size bytes in *pp (a pointer to the caller's
+   pointer; 0 if there is no memory); net_fresh gives a cleared parameter block of PB_SIZE bytes, a new one when the
+   driver still has the old */
+struct net_left;
+short net_call(void *pb, int secs, const char *what, const char *then);
+struct net_left *net_leave(short ref, short release_cs, unsigned long stream, int from_create);
+void net_leave_block(struct net_left *l, void *pp, unsigned long size, int is_pb);
+void *net_fresh(void *pp, const char *what);
+void net_leave_poll(void);
+#define NET_PB_SIZE 132                  /* MacTCP's TCPiopb is 104 bytes, .IPP6's TCP6iopb 130 */
+
 /* from piplay.c */
 void pi_log(const char *text);
 int pi_command(unsigned long c);
