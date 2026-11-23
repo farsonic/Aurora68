@@ -125,6 +125,9 @@ mac/build/pistatus_traps.txt
 mac/build/st/
 # the PC card test's run files (tools/pccard_test.sh)
 mac/build/pccard/
+mac/build/a68pc.elf
+mac/build/a68pc_traps.txt
+mac/build/apc/
 # the Apple II card's and the guest scheduler's test files (tools/a2card_test.sh, tools/guest_test.c), Aurora68 Apple II's build
 mac/build/a2card/
 mac/build/guest_test
