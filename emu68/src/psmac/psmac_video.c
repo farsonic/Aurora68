@@ -71,6 +71,7 @@
 #include "support.h"
 #include "tlsf.h"
 #include "psmac_video.h"
+#include "psmac_wclip.h"
 #define PLM_NO_STDIO                          /* as psmac_plmpeg.c compiles it: no FILE in the kernel */
 #include "third_party/pl_mpeg/pl_mpeg.h"     /* the declarations; psmac_plmpeg.c compiles the decoder */
 
@@ -504,79 +505,12 @@ static int make_ctab(const struct pv_surface *s)
     return 1;
 }
 
-/* the window's visible region as rectangles (23 November 2026, docs/08 item 124). A QuickDraw region: rgnSize, rgnBBox,
-   then (unless rgnSize is 10, a rectangle) inversion lines: a y, the x's where the region's inside changes from that
-   line down, $7FFF; the whole ends with another $7FFF. Read through the Mac's memory map at every picture (the Window
-   Manager changes it whenever a window moves, also another program's), each band of lines with the same x's a set of
-   rectangles, a band like the one above it merged into it; in the window's coordinates, the picture's rectangle at
-   0,0, moved to the screen's by x0, y0 and cut to the part on the screen. Anything that does not read as a region (a
-   block moving in the heap as it is read) is -1: that picture is not drawn */
-#define MAX_PARTS 16
-static int rd16(uint32_t a, uint32_t *v)
-{
-    int ok;
-    uint32_t w = psmac_video_rd32(a & ~3u, &ok);
-    *v = a & 2 ? w & 0xFFFFu : w >> 16;
-    return ok;
-}
+/* the window's visible region, the Mac's pointer and the menu test: psmac_wclip.c (moved there on 23 November 2026,
+   when the PC card began to draw into a window the same way, docs/17-pc-card.md) */
+#define MAX_PARTS PSMAC_WCLIP_MAX
 static int vis_parts(int32_t out[MAX_PARTS][4], int32_t x0, int32_t y0, int32_t cx0, int32_t cy0, int32_t cx1, int32_t cy1)
 {
-    int ok, n = 0, nx = 0, k;
-    uint32_t mp = psmac_video_rd32(g.rgn, &ok), size, w, a;
-    int32_t xs[32], bb[4];
-    if (!ok || !mp) return -1;
-    if (g.vflags & A68V_VF_24BIT) mp &= 0x00FFFFFFu;
-    if ((mp & 1) || !rd16(mp, &size) || size < 10 || size > 8192) return -1;
-    for (k = 0; k < 4; k++) { if (!rd16(mp + 2 + 2 * (uint32_t)k, &w)) return -1; bb[k] = (int16_t)w; }
-    if (size == 10) {                         /* a rectangle (or empty) */
-        int32_t t = bb[0] + y0, l = bb[1] + x0, b = bb[2] + y0, r = bb[3] + x0;
-        if (t < cy0) t = cy0;
-        if (l < cx0) l = cx0;
-        if (b > cy1) b = cy1;
-        if (r > cx1) r = cx1;
-        if (t >= b || l >= r) return 0;
-        out[0][0] = t; out[0][1] = l; out[0][2] = b; out[0][3] = r;
-        return 1;
-    }
-    a = mp + 10;
-    uint32_t end = mp + size;
-    if (a + 2 > end || !rd16(a, &w)) return -1;
-    a += 2;
-    while (w != 0x7FFF) {
-        int32_t y = (int16_t)w, ny;
-        for (;;) {                            /* this line's x's toggle the inside */
-            if (a + 2 > end || !rd16(a, &w)) return -1;
-            a += 2;
-            if (w == 0x7FFF) break;
-            int32_t x = (int16_t)w;
-            for (k = 0; k < nx && xs[k] < x; k++) { }
-            if (k < nx && xs[k] == x) { for (; k + 1 < nx; k++) xs[k] = xs[k + 1]; nx--; }
-            else {
-                if (nx >= 32) return -1;
-                for (int j = nx; j > k; j--) xs[j] = xs[j - 1];
-                xs[k] = x; nx++;
-            }
-        }
-        if (a + 2 > end || !rd16(a, &w)) return -1;
-        a += 2;
-        if (w == 0x7FFF) break;
-        ny = (int16_t)w;
-        if (ny <= y) return -1;               /* not a region: lines go down */
-        for (k = 0; k + 1 < nx; k += 2) {     /* the band y..ny */
-            int32_t t = y + y0, l = xs[k] + x0, b = ny + y0, r = xs[k + 1] + x0, j;
-            if (t < cy0) t = cy0;
-            if (l < cx0) l = cx0;
-            if (b > cy1) b = cy1;
-            if (r > cx1) r = cx1;
-            if (t >= b || l >= r) continue;
-            for (j = 0; j < n; j++)           /* the same columns just above: one rectangle */
-                if (out[j][2] == t && out[j][1] == l && out[j][3] == r) { out[j][2] = b; break; }
-            if (j < n) continue;
-            if (n == MAX_PARTS) return -1;    /* more pieces than this: not drawn rather than drawn over a window */
-            out[n][0] = t; out[n][1] = l; out[n][2] = b; out[n][3] = r; n++;
-        }
-    }
-    return n;
+    return psmac_wclip_parts(out, g.rgn, g.vflags & A68V_VF_24BIT ? PSMAC_WCLIP_24BIT : 0, x0, y0, cx0, cy0, cx1, cy1);
 }
 
 /* the part cx0..cx1, cy0..cy1 of the picture's rectangle (x0, y0, rw x rh, on the screen s) */
@@ -631,50 +565,7 @@ static void draw_area(const plm_frame_t *f, const struct pv_surface *ps, int32_t
         }
     }
 }
-/* The Mac's mouse pointer over the picture (23 November 2026, the owner's SE on HDMI: "mouse has vanished and screen is
-   a bit corrupted"). The Mac draws its pointer into the frame buffer itself and keeps what was under it; the card
-   drawing a picture over it erased the pointer, and when the pointer moved on the Mac put back an old piece of
-   picture. So the card leaves a box around the pointer alone: CURSOR_BOX pixels each side of the Mouse point ($830,
-   global), which covers any hot spot of a 16 x 16 pointer and a beat of movement. The box is found in the screen's
-   own pixels through the device list ($8A8): the GDevice whose PixMap's baseAddr is this screen's, minus its gdRect's
-   top left. 0 if the pointer is not on this screen (or the Mac's memory can't be read now). */
-#define CURSOR_BOX 24
-extern int psmac_display_info(int i, uint32_t *w, uint32_t *h, uint32_t *depth, uint32_t *base);
-static int cursor_box(int32_t out[4])
-{
-    int ok;
-    uint32_t w, h, d, base, v;
-    if (!psmac_display_info((int)g.screen, &w, &h, &d, &base)) return 0;
-    if (!rd16(0x830, &v)) return 0;
-    int32_t mv = (int16_t)v;
-    if (!rd16(0x832, &v)) return 0;
-    int32_t mh = (int16_t)v;
-    uint32_t gdh = psmac_video_rd32(0x8A8, &ok);
-    for (int n = 0; ok && gdh && n < 8; n++) {
-        if (gdh & 1) return 0;
-        uint32_t gd = psmac_video_rd32(gdh & ~3u, &ok);
-        if (!ok || !gd || (gdh & 2)) return 0;               /* master pointers are longs at long addresses here */
-        uint32_t pmh, pm, ba, t, l, nx;
-        if (!rd16(gd + 22, &t) || !rd16(gd + 24, &l)) return 0;
-        pmh = t << 16 | l;
-        if (!pmh || (pmh & 3)) return 0;
-        pm = psmac_video_rd32(pmh, &ok);
-        if (!ok || !pm || (pm & 3)) return 0;
-        ba = psmac_video_rd32(pm, &ok);
-        if (!ok) return 0;
-        if (!rd16(gd + 34, &t) || !rd16(gd + 36, &l)) return 0;
-        if (ba == base) {
-            int32_t y = mv - (int16_t)t, x = mh - (int16_t)l;
-            if (y < -CURSOR_BOX || x < -CURSOR_BOX || y >= (int32_t)h + CURSOR_BOX || x >= (int32_t)w + CURSOR_BOX) return 0;
-            out[0] = y - CURSOR_BOX; out[1] = x - CURSOR_BOX; out[2] = y + CURSOR_BOX; out[3] = x + CURSOR_BOX;
-            return 1;
-        }
-        if (!rd16(gd + 30, &t) || !rd16(gd + 32, &l)) return 0;
-        nx = t << 16 | l;
-        gdh = nx;
-    }
-    return 0;
-}
+static int cursor_box(int32_t out[4]) { return psmac_wclip_cursor_box(g.screen, out); }   /* psmac_wclip.c */
 /* draw_area for a rectangle with the pointer's box (t, l, b, r) taken out: up to four pieces */
 static void draw_around(const plm_frame_t *f, const struct pv_surface *s, int32_t x0, int32_t y0, int32_t rw, int32_t rh,
                         int32_t cx0, int32_t cy0, int32_t cx1, int32_t cy1, const int32_t *cb)
@@ -692,7 +583,7 @@ static void draw(const plm_frame_t *f)
 {
     struct pv_surface s;
     if (!g.visible || !psmac_video_surface(g.screen, &s)) return;
-    if (psmac_video_menu_down()) { menu_skips++; return; }   /* a menu over the screen: whichever program's */
+    if (psmac_wclip_menu_down()) { menu_skips++; return; }   /* a menu over the screen: whichever program's */
     int32_t x0 = g.l, y0 = g.t, x1 = g.r, y1 = g.b;
     int32_t rw = x1 - x0, rh = y1 - y0;
     if (rw <= 0 || rh <= 0 || rw > 4096) return;

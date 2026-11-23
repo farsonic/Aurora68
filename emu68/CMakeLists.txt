@@ -318,6 +318,7 @@ if (${VARIANT} IN_LIST SUPPORTED_VARIANTS)
                     src/psmac/psmac_plmpeg.c
                     src/psmac/psmac_video.c
                     src/psmac/psmac_videocard.c
+                    src/psmac/psmac_wclip.c
                     src/psmac/psmac_vframes.c
                     src/psmac/psmac_vcodec.c
                     src/psmac/psmac_cinepak.c

@@ -49,9 +49,10 @@ int psmac_video_surface(uint32_t s, struct pv_surface *o)
     o->clut = 0; o->clut_seq = 0; o->gray = 0;
     return 1;
 }
-/* the Mac's memory (the window's region, the menu bar's data; docs/08 item 124): none here, no menu down */
-uint32_t psmac_video_rd32(uint32_t addr, int *ok) { (void)addr; *ok = 0; return 0; }
-int psmac_video_menu_down(void) { return 0; }
+/* the Mac's memory (the window's region, the menu bar's data; docs/08 item 124), read by psmac_wclip.c: none here,
+   so no region, no pointer and no menu down */
+uint32_t psmac_ram_size(void) { return 0; }
+uint8_t *psmac_mac_ram_ptr(void) { return 0; }
 int psmac_display_info(int i, uint32_t *w, uint32_t *h, uint32_t *depth, uint32_t *base) { (void)i; (void)w; (void)h; (void)depth; (void)base; return 0; }
 
 /* the mixer: psmac_audio.c's video source, 32,768 frames of room, played at its rate unless paused */
