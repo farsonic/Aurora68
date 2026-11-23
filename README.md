@@ -239,6 +239,8 @@ One line, options separated by spaces, no comments:
 | `mac.solotrace=N` | the solo board's first N SCSI commands and ADB commands in the log |
 | `mac.bridge=gpio` | how the motherboard is reached: `gpio` (the classic PiStorm's CPLD, the default on hardware), `semihost` or `uart` (the testbed's bridge to MAME) |
 | `mac.power=off` | stop watching the Pi's power. By default the kernel reads the firmware's under-voltage and throttling bits every two seconds and logs every change (`[PSMAC] power: under-voltage now ...`): in the SE the Pi is powered through the 68000 socket (docs/12, "Power through the socket") |
+| `mac.sensors=off` | the status page (what Aurora68 Status shows, docs/09 "Aurora68 Status 2.0") does not ask the firmware for the SoC temperature and the ARM clock, which it otherwise reads once a second through the mailbox |
+| `mac.sensorsim=on` | testbed only: made-up sensors on the status page (a Pi 3B that heats from 48 to 84 °C in five minutes and cools in three, its clock capped from 1200 to 600 MHz above 80 °C), since QEMU's Pi has no thermometer; the page and the window say "simulated" |
 | `mac.vcswap=1` | swap red and blue on the second screen, should a board's firmware disagree with the kernel about the pixel byte order (the firmware is asked; this overrides its answer) |
 | `mac.recovery=1` | start in Aurora68 Setup and Recovery: the 68k is not started, the Pi serves its SD card on the network (README "Setup and Recovery", docs/08 item 106). "Restart normally" on the recovery page takes the option out again |
 | `mac.bootcount=3` | the starts in a row without the Finder after which the next start is a recovery start (counted in `boot.txt` in the card's root); `off` for none, for a Mac whose startup program is not the Finder |

@@ -5722,3 +5722,47 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      point ($830) alone when it is on the picture's screen (found through the device list $8A8: the GDevice whose
      PixMap is that screen's, its gdRect's corner); the box is drawn again once the pointer has left it. Not yet seen
      on the SE (the emulator was busy); the owner's next run is the test.
+
+129. **Aurora68 Status 2.0: the Pi's heat and speed as gauges on the Mac (23 November).** The owner's Pi 3B was being
+   frequency-capped during long videos (overheating): the 68k fell from 169 to 31 MIPS, which only the heartbeat's
+   `JIT: ... MIPS` line showed. He asked: "might be good to get this on the Mac Screen, CPU util, temp etc. Gauges in
+   a specific app window". Items 127 and 128 were taken by other work of the same day.
+   - *The page.* Alice68's status page (`alice_status.h`, slot-$9 window + 0x50000) had the temperature, the ARM
+     clock, the throttled word and the cores, filled for the Amiga's cores: on the Macintosh core 1's figure was
+     really core 3's (alice_status.c runs on the core that runs alice_net_poll, core 3 here), the names were the
+     Amiga's, and on a Pi 3 the temperature was never measured (Alice68 reads the BCM2711's AVS register, which a
+     BCM2837 does not have). The header's own rule for new fields is the end of the structure with `size` telling,
+     the version changing only if a meaning does; so the page grew from 0x1a0 to 0x200, version 1 still: the nominal
+     and measured ARM clock, the firmware's temperature limit, the 68k's instructions in the last second, the
+     kernel's heap, a summary of the video card and of the sound card and its stream (docs/09 lists them). The
+     Amiga's build fills them with 0xFFFFFFFF. `alice_psmac_status.c` is the Macintosh half: the cores' roles and
+     names, their loads (core 1 from the ticks it spends in `wfe`, counted in psmac_usb.c's loop; core 2 from the
+     ticks of the bus loop's turns that served a 68k cycle, one counter read a turn in psmac_bus.c; core 3 Alice68's
+     own figure moved to its place; core 0 never idles, so its speed instead), the 68k's rate from INSN_COUNT, the
+     heap from tlsf, the cards from their blocks (the video card's through a new `psmac_videocard_block()`), and the
+     firmware's GET_TEMPERATURE, GET_MAX_TEMPERATURE, GET_CLOCK_RATE, GET_CLOCK_RATE_MEASURED and GET_MAX_CLOCK_RATE
+     (ARM) once a second through `alice_mbox_once`: one call each under the mailbox's lock, never while the WiFi
+     holds it, a tag the firmware does not answer asked once and logged. The reading happens before `seq` goes odd,
+     so a slow answer never leaves a reader waiting. `mac.sensors=off` stops the calls; `mac.sensorsim=on`
+     (testbed) makes the sensors up (a Pi 3B heating to 84 °C and capped from 1200 to 600 MHz above 80), with a flag
+     on the page.
+   - *The window* (docs/09 "Aurora68 Status 2.0"; `mac/pistatus/status.c`, `model.c`, in C with the `mac/c` kit; the
+     assembly `mac/pistatus.s` is gone): dials for the temperature (60 and 80 °C marked), the ARM clock (the nominal
+     one marked) and the MIPS; four lights for the throttled word, now and since boot; strip charts of the three
+     over the last five minutes (a point every two seconds, more minutes when the window is larger); the cores' loads
+     with what they run; the Pi's memory, the network's rates, the cards. A compact view (232 x 50) by ⌘2 or the zoom
+     box. Colour in a colour window on a screen of four bits or more, patterns on one bit; only what changed is drawn
+     again, the charts scrolled a pixel with ScrollRect where the window is unobscured. The normal view is 488 x 292:
+     the SE's screen under its menu bar.
+   - *The remote control.* `/state` has a `pi` object with the same numbers (docs/13).
+   - *QEMU's firmware*, found on the way: QEMU 8.2's raspi3b answers GET_TEMPERATURE with 25.0 °C (limit 99) that
+     never moves, and the clock rates (700 MHz, the maximum the same), but not GET_CLOCK_RATE_MEASURED or
+     GET_THROTTLED. So the testbed shows a temperature that means nothing; the window cannot tell it from a real one.
+     Under QEMU, `wfe` returns at once, so core 1 reads about 87% busy; on a Pi it sleeps until the next event.
+   - *Tested* on the host (`tools/pistatus_test.c`, 98 checks, also as a 68020 program under qemu-m68k,
+     `tools/pistatus_m68k.sh`; both in `make -C mac check`) and in the testbed at 640 x 480 in one and eight bits and
+     at 512 x 342 in one bit, with the simulated sensors, QEMU's, and none (docs/09 has the list and the screenshots).
+     One thing looked wrong and was not: a downscaled screenshot seemed to show the MIPS needle on the wrong side at a
+     negative angle; the full-size pixels showed it right, and the 68020 test now checks the needle's arithmetic there.
+   - *Not verified:* a real Pi's sensors (the temperature moving, the measured clock, the throttled bits): the
+     owner's SE during a long video is the test, with the heartbeat's MIPS line beside the window's.

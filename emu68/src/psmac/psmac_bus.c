@@ -674,6 +674,8 @@ void psmac_check_pc(uint32_t pc)
 }
 
 static void con_start_async(void), con_drain(void);   /* the serial log's ring (below, beside con_putc) */
+/* counter ticks since boot of the bus core's turns that served a 68k bus cycle (alice_psmac_status.c) */
+volatile uint64_t psmac_bus_busy_ticks;
 void psmac_service_core(void)
 {
     psmac_read_options();
@@ -690,7 +692,14 @@ void psmac_service_core(void)
     uint64_t hb_period = cnt_frq() * 5, next_hb = cnt_now() + hb_period; uint32_t hb_last = 0;
     uint32_t pc_last = 0; int stall_dumped = 0, exc_dumped = 0;
     uint32_t scsi_reads_seen = 0; uint64_t next_epoch = 0, next_name = 0;
+    uint64_t turn_t0 = cnt_now(); int turn_served = 0;
     for (;;) {
+        {   /* this core's load for the status page (Aurora68 Status 2.0): the time of the turns that served
+               the 68k a bus cycle, one counter read a turn */
+            uint64_t tn = cnt_now();
+            if (turn_served) psmac_bus_busy_ticks += tn - turn_t0;
+            turn_t0 = tn; turn_served = 0;
+        }
         con_drain();                              /* the serial log (con_putc), first: the bus's turns below may continue */
         if (cnt_now() > next_hb) {
             svc_phase = 3;
@@ -849,6 +858,7 @@ void psmac_service_core(void)
         }
         if (__atomic_load_n(&slot.state, __ATOMIC_ACQUIRE) == SLOT_REQ) {
             serve_request();
+            turn_served = 1;
             /* the SE's speaker has deadlines, and a Mac that polls the VIA without pause (the startup
                chime does for a second) would keep the loop from ever reaching psmac_se_service below */
             if (psmac_board_se) psmac_se_sound();

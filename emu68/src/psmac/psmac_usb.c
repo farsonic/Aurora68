@@ -392,6 +392,9 @@ static void enumerate_elsewhere(const char *why)       /* core 3 */
    output's ring is looked at a thousand times a second without core 1 spinning. Before an enumeration the ring is filled with
    silence: the DMA goes on playing it while core 1 is busy, and repeats nothing stale. */
 extern void psmac_audio_pause(void);
+/* core 1's time in its wfe, in counter ticks since boot: the status page's load for core 1 is the rest
+   (alice_psmac_status.c, Aurora68 Status 2.0, 23 November 2026). One writer, a 64-bit store. */
+volatile uint64_t psmac_core1_idle_ticks;
 void __attribute__((noreturn)) psmac_usb_core1(void)  /* core 1, after psmac_usb_start, for ever */
 {
     uint64_t k;
@@ -404,8 +407,11 @@ void __attribute__((noreturn)) psmac_usb_core1(void)  /* core 1, after psmac_usb
             if (psmac_usbdisk_core1())          /* a USB stick's work for the Mac (psmac_usbdisk.c) */
                 continue;
             int a = psmac_audio_poll();
-            if (!psmac_video_poll() && !a)      /* the video card's decoder (psmac_video.c) between the sound's turns */
+            if (!psmac_video_poll() && !a) {    /* the video card's decoder (psmac_video.c) between the sound's turns */
+                uint64_t w0 = now();
                 __asm__ volatile("wfe");
+                psmac_core1_idle_ticks += now() - w0;
+            }
         }
         psmac_audio_pause();
         enumerate(why);

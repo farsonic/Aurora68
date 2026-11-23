@@ -4,6 +4,19 @@
 
 Since 0.13 (docs/08 items 96 and 103):
 
+- **Aurora68 Status 2.0: the Pi's temperature, clock and speed as gauges on the Mac** (docs/08 item 129, docs/09
+  "Aurora68 Status 2.0", 23 November 2026). A Pi that overheats during a long video has its clock capped by the
+  firmware, and the 68k slows to a fraction of its speed; until now only the kernel's log said so. Aurora68 Status
+  (Aurora68:System) is now a window of dials in the classic Mac's style: the SoC temperature with the 60 and 80 °C
+  marks, the ARM clock against its nominal one, the 68k's MIPS; lights for under-voltage, frequency capping,
+  throttling and the soft temperature limit, now and since boot; strip charts of the temperature, clock and MIPS
+  over the last minutes, so the heating and the capping show as they happen; each ARM core's load and what it
+  runs, the Pi's memory, the network's speed, the video and sound cards. A compact view (⌘2, or the zoom box)
+  keeps the temperature, clock, MIPS and one light in a small window; size, place and view are remembered. Fits
+  the SE's screen in black and white, in colour on HDMI. The kernel now reads the temperature and the clock from
+  the firmware once a second (`mac.sensors=off` stops it), and `aurora68.py state` shows the same numbers in a
+  `pi` object. Replace kernel8.img and Aurora68 Status. Tried in the testbed, whose Pi has no thermometer: the
+  temperature, the measured clock and the throttling are first seen on a real Pi.
 - **Music videos buffer much more: no more stutter when the network slows for a moment** (docs/08 item 125, docs/16
   "Buffering", 23 November 2026). The video decoder card now empties its 512 KB ring at once into a buffer of its
   own in the Pi's memory, 8 MB by default (one to two minutes of a music video at the classic Play's rates), so the

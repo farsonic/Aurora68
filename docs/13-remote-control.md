@@ -217,7 +217,7 @@ frames), `screens` (each screen of the card: `display`, `what` (se, hdmi or card
 depth and pixel base, and from QuickDraw where it is on the desktop, `left`, `top`, `right`,
 `bottom`, `active`, `main`), `power` (the firmware's GET_THROTTLED bits as `throttled`, each "now" bit and each
 "since boot" bit by name; `null` before the first reading and under QEMU, docs/12 "Power through
-the socket"), `disks`, `log_head`.
+the socket"), `pi` (since 23 November 2026, docs/09 "Aurora68 Status 2.0": the numbers of the status page the Mac's gauges show, `temperature_c`, `temperature_limit_c`, `arm_mhz`, `arm_measured_mhz`, `arm_max_mhz`, `mips_68k`, `core_load` (four percentages), `heap_free_kb`, `simulated`; null where the firmware does not say), `disks`, `log_head`.
 
 In the testbed, `mac.remotefile=BASE` serves the same requests through semihosting (BASE.in and
 BASE.out must exist when QEMU starts; `tools/aurora68.py --semihost BASE state`), and

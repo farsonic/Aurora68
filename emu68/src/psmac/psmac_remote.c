@@ -21,7 +21,7 @@
  *   GET  /screenshot  a PNG of one window (?window=ID or ?title=TEXT, &content=1), one screen (?screen=N) or a
  *                     rectangle of the desktop (?rect=l,t,r,b), composed from the screens under it; &scale=2..4
  *                     doubles each pixel (21 November 2026)
- *   GET  /state       JSON: board, screen, the application in front, Ticks, crashes, network, disks
+ *   GET  /state       JSON: board, screen, the application in front, Ticks, crashes, network, disks, the Pi (temperature, clock, 68k MIPS, core loads)
  *   POST /restart     the Mac restarts (?how=nmi: the programmer's switch; ?how=pi: the whole Pi)
  *   /files/..., /apps files and programs on the Mac, through the Aurora68 Agent (psmac_files.c, 21 November
  *                     2026): list, info, data (GET a file, PUT one), mkdir, delete, rename; open, quit
@@ -47,6 +47,7 @@
 #include "psmb.h"
 #include "../alice/alice_psmac.h"
 #include "../alice/alice_net.h"
+#include "../alice/alice_status.h"
 #include "psmac_ip.h"
 #include "psmac_windows.h"
 #include "psmac_files.h"
@@ -824,6 +825,34 @@ static void power_json(struct hconn *h)
     for (int i = 0; i < 4; i++) OUTF(h, ", \"%s_since_boot\": %s", names[i], v & (0x10000u << i) ? "true" : "false");
     out_str(h, "},\n");
 }
+/* "pi": the Pi's own numbers from the status page (alice_status.h; alice_psmac_status.c fills it once a second),
+   the ones Aurora68 Status 2.0 shows as gauges; null where the firmware does not say (QEMU has no thermometer).
+   key 0: an element of an array */
+static void pi_num(struct hconn *h, const char *key, uint32_t v, uint32_t div, int dec, const char *after)
+{
+    char k[40] = "";
+    if (key) sprintf(k, "\"%s\": ", key);
+    if (v == ALICE68_ST_UNKNOWN) OUTF(h, "%snull%s", k, after);
+    else if (dec) OUTF(h, "%s%u.%u%s", k, v / div, v / (div / 10u) % 10u, after);
+    else OUTF(h, "%s%u%s", k, (v + div / 2) / div, after);
+}
+static void pi_json(struct hconn *h)
+{
+    extern const volatile struct alice68_status *psmac_status_page(void);
+    const volatile struct alice68_status *s = psmac_status_page();
+    if (!s || s->size < 0x200) { out_str(h, "  \"pi\": null,\n"); return; }
+    out_str(h, "  \"pi\": {");
+    pi_num(h, "temperature_c", s->temp_mc, 1000u, 1, ", ");
+    pi_num(h, "temperature_limit_c", s->temp_max_mc, 1000u, 0, ", ");
+    pi_num(h, "arm_mhz", s->arm_hz, 1000000u, 0, ", ");
+    pi_num(h, "arm_measured_mhz", s->arm_measured_hz, 1000000u, 0, ", ");
+    pi_num(h, "arm_max_mhz", s->arm_max_hz, 1000000u, 0, ", ");
+    pi_num(h, "mips_68k", s->insn_rate, 1000000u, 1, ", ");
+    out_str(h, "\"core_load\": [");
+    for (int i = 0; i < 4; i++) pi_num(h, 0, s->core[i].busy, 100u, 1, i < 3 ? ", " : "], ");
+    pi_num(h, "heap_free_kb", s->heap_free, 1024u, 0, ", ");
+    OUTF(h, "\"simulated\": %s},\n", s->flags & ALICE68_STF_SIMULATED ? "true" : "false");
+}
 static void state_json(struct hconn *h)
 {
     char a[64], b[64], c[64];
@@ -858,6 +887,7 @@ static void state_json(struct hconn *h)
          requests, refused, input_events, P.busy_us_max);
     screens_json(h);
     power_json(h);
+    pi_json(h);
     out_str(h, "  \"network\": [");
     volatile uint8_t *nb = alice_net_board();
     for (int u = 0; u < 2 && nb; u++) {

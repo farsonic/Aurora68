@@ -60,6 +60,13 @@ void psmac_videocard_map(uintptr_t phys)
     card_phys = phys;
     psmac_mmu_set_video(phys, phys + A68V_WIN_SIZE);
 }
+/* the card's block, for the status page (alice_psmac_status.c): 0 while there is no card or it has not started */
+const volatile struct a68v_block *psmac_videocard_block(void)
+{
+    if (!card_phys) return 0;
+    const volatile struct a68v_block *b = (const volatile struct a68v_block *)(KERNEL_ALIAS + card_phys + A68V_OFF_BLOCK);
+    return b->magic == A68V_MAGIC ? b : 0;
+}
 
 /* ---- mac.videotest=PATH,LEFT,TOP,WIDTH,HEIGHT,SCREEN[,DELAY[,PAUSE_AT[,SEEK_AT]]] (testbed only) ----------
    An MPEG program stream from the host (semihosting) fed into the ring as the Mac's program would feed it:
