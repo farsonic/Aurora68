@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: MPL-2.0
+# Aurora68 Status 2.0's Toolbox calls beyond mac/c/traps.txt (the build puts the two lists together): the
+# dials' ovals and arcs, filled shapes with patterns for the one-bit screen, colour on colour screens, the
+# strip charts' scrolling, the About box's outline and text, GetNextEvent for a System without WaitNextEvent.
+# Trap words from Inside Macintosh (Traps.a).
+A8B0 - FrameRoundRect(const Rect *r:l, int ow:w, int oh:w)
+A89B - PenSize(int w:w, int h:w)
+A9CE - TETextBox(const void *text:l, long len:l, const Rect *box:l, int just:w)
+A970 b GetNextEvent(int mask:w, void *event:l)
+A888 - TextFace(int face:w)
+A886 w TextWidth(const void *text:l, int first:w, int count:w)
+A8B7 - FrameOval(const Rect *r:l)
+A8B8 - PaintOval(const Rect *r:l)
+A8B9 - EraseOval(const Rect *r:l)
+A8BB - FillOval(const Rect *r:l, const void *pat:l)
+A8BE - FrameArc(const Rect *r:l, int start:w, int arc:w)
+A8BF - PaintArc(const Rect *r:l, int start:w, int arc:w)
+A8C2 - FillArc(const Rect *r:l, int start:w, int arc:w, const void *pat:l)
+A8A2 - PaintRect(const Rect *r:l)
+A8A5 - FillRect(const Rect *r:l, const void *pat:l)
+A892 - Line(int dh:w, int dv:w)
+A8EF - ScrollRect(const Rect *r:l, int dh:w, int dv:w, void *rgn:l)
+A8D8 l NewRgn()
+A8D9 - DisposeRgn(void *rgn:l)
+# Color QuickDraw (only called when it is there)
+AA14 - RGBForeColor(const void *rgb:l)
+AA15 - RGBBackColor(const void *rgb:l)
+AA45 l NewCWindow(void *storage:l, const Rect *bounds:l, const unsigned char *title:l, int visible:b, int procID:w, void *behind:l, int goAway:b, long refCon:l)
+AA27 l GetMaxDevice(const Rect *r:l)

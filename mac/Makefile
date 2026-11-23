@@ -13,7 +13,9 @@
 #                  answerer and the firmware's SoftAP sequence: tools/apnet_test.sh; the bus check's verdicts
 #                  against a simulated board with faults: tools/buscheck_test.c; MPEG-1 in QuickTime, the import's indexer
 #                  and the card's MPEG-1 and MP2 decoders against FFmpeg: tools/mpg1_test.sh; the HDMI splash drawn at every
-#                  screen size, and its logo's header against docs/img/aurora68-logo.svg: tools/splash_test.sh)
+#                  screen size, and its logo's header against docs/img/aurora68-logo.svg: tools/splash_test.sh; Aurora68 Status's
+#                  numbers and its status-page offsets against alice_status.h, on the host and as a 68020 program:
+#                  tools/pistatus_test.c, tools/pistatus_m68k.sh)
 #   make install IMG=path/to/volume.img [PART=n]   the extensions into the System Folder of an HFS image, the programs into its Aurora68 folder
 AS      = m68k-linux-gnu-as -m68020
 OBJCOPY = m68k-linux-gnu-objcopy
@@ -76,9 +78,6 @@ $(B)/Aurora68-WiFi.bin: $(B)/piwifi.bin.raw ../tools/mac/mkapp.py ../tools/mac/r
 
 $(B)/Aurora68-Bluetooth.bin: $(B)/piblue.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py $(ICONS)
 	$(PY) ../tools/mac/mkapp.py --code $(B)/piblue.bin.raw --name "Aurora68 Bluetooth" --creator PIBL --icons bluetooth -o $@
-
-$(B)/Aurora68-Status.bin: $(B)/pistatus.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py $(ICONS)
-	$(PY) ../tools/mac/mkapp.py --code $(B)/pistatus.bin.raw --name "Aurora68 Status" --creator PIST --icons status -o $@
 
 $(B)/Aurora68-Screens.bin: $(B)/piscreens.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py $(ICONS)
 	$(PY) ../tools/mac/mkapp.py --code $(B)/piscreens.bin.raw --name "Aurora68 Screens" --creator PISC --icons screens -o $@
@@ -166,6 +165,9 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	$(PY) ../tools/mac/check_offsets.py enet.s $(B)/an_offsets
 	cc -std=c99 -Wall -I ../emu68/src/psmac -o $(B)/usbnet_frame_test ../tools/usbnet_frame_test.c ../emu68/src/psmac/usbnet_frame.c
 	$(B)/usbnet_frame_test
+	cc -std=c99 -Wall -Wextra -Werror -I ../emu68/src/alice -o $(B)/pistatus_test ../tools/pistatus_test.c pistatus/model.c
+	$(B)/pistatus_test
+	sh ../tools/pistatus_m68k.sh $(abspath $(B))
 	cc -std=c99 -Wall -Wextra -Werror -I ../emu68/src/psmac -o $(B)/usb_hcint_test ../tools/usb_hcint_test.c ../emu68/src/psmac/usb_hcint.c
 	$(B)/usb_hcint_test
 	cc -std=c99 -Wall -Wextra -Werror -I ../emu68/src/psmac -o $(B)/edid_test ../tools/edid_test.c ../emu68/src/psmac/psmac_edid.c
@@ -425,6 +427,30 @@ $(B)/piscrn.elf: $(B)/ps/entry.o $(B)/ps/toolbox_glue.o $(B)/ps/piscrn.o $(B)/ps
 	$(LD) -T wifimenu/init.ld --emit-relocs --gc-sections --no-warn-rwx-segments -z noexecstack -o $@ $(B)/ps/entry.o $(B)/ps/toolbox_glue.o $(B)/ps/piscrn.o $(B)/ps/pdcommon.o $(B)/ps/dlgglue.o $(B)/ps/libc.o $(LIBGCC)
 $(B)/Aurora68-ScreenSetup.bin: $(B)/piscrn.elf ../tools/mac/elf2init.py ../tools/mac/macelf.py ../tools/mac/rsrc.py $(ICONS)
 	$(PY) ../tools/mac/elf2init.py $< --name "Aurora68 Screen Setup" --creator PISR --icons setup -o $@
+
+# ---- Aurora68 Status 2.0: the Pi's temperature, clock and speed as gauges, an application in C (mac/pistatus;
+# until 23 November 2026 the text window of pistatus.s). Its Toolbox list is c/traps.txt and pistatus/traps.txt,
+# its glue in build/st/; model.c is also built for the host by `make check` (tools/pistatus_test.c) ----
+ST_CFLAGS = $(subst -I$(B),-I$(B)/st,$(CFLAGS)) -Ipistatus
+$(B)/pistatus_traps.txt: c/traps.txt pistatus/traps.txt
+	@mkdir -p $(B)
+	cat c/traps.txt pistatus/traps.txt > $@
+$(B)/st/toolbox_glue.s $(B)/st/toolbox_gen.h: $(B)/pistatus_traps.txt ../tools/mac/mktraps.py
+	@mkdir -p $(B)/st
+	$(PY) ../tools/mac/mktraps.py $< -s $(B)/st/toolbox_glue.s -H $(B)/st/toolbox_gen.h
+$(B)/st/toolbox_glue.o: $(B)/st/toolbox_glue.s
+	$(AS) -o $@ $<
+$(B)/st/status.o: pistatus/status.c pistatus/model.h c/toolbox.h $(B)/st/toolbox_gen.h
+	$(CC) $(ST_CFLAGS) -c -o $@ $<
+$(B)/st/model.o: pistatus/model.c pistatus/model.h
+	@mkdir -p $(B)/st
+	$(CC) $(ST_CFLAGS) -c -o $@ $<
+$(B)/st/libc.o: c/libc.c c/toolbox.h $(B)/st/toolbox_gen.h
+	$(CC) $(ST_CFLAGS) -c -o $@ $<
+$(B)/pistatus.elf: $(B)/crt0.o $(B)/st/toolbox_glue.o $(B)/st/libc.o $(B)/st/status.o $(B)/st/model.o c/app.ld
+	$(LD) -T c/app.ld --emit-relocs --no-warn-rwx-segments -z noexecstack -o $@ $(B)/crt0.o $(B)/st/toolbox_glue.o $(B)/st/libc.o $(B)/st/status.o $(B)/st/model.o $(LIBGCC)
+$(B)/Aurora68-Status.bin: $(B)/pistatus.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py $(ICONS)
+	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Status" --creator PIST --size 128 --icons status -o $@
 
 # ---- PiSlots: the NuBus cards the Slot Manager knows about, an application in C (mac/pislots) ----
 $(B)/pislots_traps.txt: c/traps.txt pislots/traps.txt
