@@ -168,6 +168,7 @@ unsigned psmac_gpio_ipl(void); void psmac_gpio_pulse_reset(void); uint32_t psmac
 static uint32_t peek_addr, peek_len;
 static uint32_t pctrail_at;             /* mac.pctrail=N: dump the 68k PC ring at the Nth heartbeat (a loop that is not a stall) */
 static uint32_t pcwatch;                /* mac.pcwatch=HEX: dump the ring the first time the sampled PC lands in that 256-byte page */
+uint32_t psmac_jit_check = 0;           /* mac.jitcheck=1: RAM code checked on every entry, stale code reported (M68k_Translator.c, docs/08 item 134) */
 uint32_t psmac_dbf_slow = 1;            /* mac.dbfslow=N: device reads per turn of a self-looping dbf (M68k_LINE5.c) */    /* mac.peek=: Mac memory dumped at each heartbeat (debugging) */
 static int64_t sh_req = -1, sh_rep = -1;
 static int64_t semihost(uint32_t op, void *param)
@@ -309,6 +310,7 @@ static void psmac_read_options(void)
         else if (strncmp(tok, "splash", 6)) kprintf("[PSMAC] mac.console=%.8s not understood: splash, boot or hdmi (the splash it is)\n", tok);
     }
     { extern void psmac_console_mode(int); psmac_console_mode(psmac_hdmi_mode == 2 ? 2 : con_mode); }   /* psmac_display.c, "the splash" */
+    if ((tok = find_token(args, "mac.jitcheck="))) { psmac_jit_check = tok[13] == '1'; if (psmac_jit_check) kprintf("[PSMAC] mac.jitcheck=1: every RAM block of 68k code checked on each entry (slower); code changed without a cache flush is reported\n"); }
     if ((tok = find_token(args, "mac.dbfslow="))) { tok += 12; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); psmac_dbf_slow = n > 8 ? 8 : n; }
     if ((tok = find_token(args, "mac.pcwatch="))) { tok += 12; uint32_t a = 0; while (1) { char c = *tok; uint32_t d; if (c >= '0' && c <= '9') d = c - '0'; else if (c >= 'a' && c <= 'f') d = c - 'a' + 10; else if (c >= 'A' && c <= 'F') d = c - 'A' + 10; else if (c == 'x' || c == 'X') { tok++; continue; } else break; a = a * 16 + d; tok++; } pcwatch = a; }
     if ((tok = find_token(args, "mac.watchtraps="))) { extern int psmac_watch_traps; psmac_watch_traps = tok[15] == '1'; }   /* report odd stores into the trap tables (psmac_mmu.c) */

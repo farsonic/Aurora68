@@ -92,6 +92,13 @@ DisposeTest: $(B)/DisposeTest.bin
 $(B)/DisposeTest.bin: $(B)/disptest.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py $(ICONS)
 	$(PY) ../tools/mac/mkapp.py --code $(B)/disptest.bin.raw --name DisposeTest --creator PIDT -o $@
 
+# FontWidth: Times 11 (TrueType) and 12 (bitmap) measured and drawn, logged for comparing launches
+# (docs/08 item 134). A test, not part of `all`
+.PHONY: FontWidth
+FontWidth: $(B)/FontWidth.bin
+$(B)/FontWidth.bin: $(B)/fontwidth.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py $(ICONS)
+	$(PY) ../tools/mac/mkapp.py --code $(B)/fontwidth.bin.raw --name FontWidth --creator PIFW -o $@
+
 # PiPing's peer: the address it pings (the testbed's host peer by default; make PEER=192.168.0.1 for a real gateway)
 PEER ?= 192.168.68.1
 PEER_HEX = $(shell printf '0x%02x%02x%02x%02x' $(subst ., ,$(PEER)))

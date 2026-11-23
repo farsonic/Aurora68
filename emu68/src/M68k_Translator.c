@@ -416,6 +416,25 @@ static inline uintptr_t M68K_Translate(uint16_t *M68kCodePtr, uint32_t *arm_star
             m68k_low = ctx.tc_M68kCodePtr;
         if (ctx.tc_M68kCodePtr > m68k_high)
             m68k_high = ctx.tc_M68kCodePtr;
+#ifdef PSMAC
+        /* The range the block's checksum covers (mt_M68kLow..mt_M68kHigh) grew only by where the
+           translator went next. After a branch it follows backwards (the Bcc or DBcc that closes a
+           loop, taken by default), "next" is the loop's start, so the branch's own words were left
+           out: when only they changed (a loop's condition, its counter register, its displacement)
+           the old translation passed the check after the Mac cleared its instruction cache and the
+           old loop ran on (docs/08 item 134). The range now always ends after the instructions just
+           translated. */
+        {
+            uint16_t *end = in_code;
+            for (int k = 0; k < insn_consumed; k++)
+            {
+                int words = M68K_GetINSNLength(end);
+                end += words > 0 ? words : 1;
+            }
+            if (end > m68k_high)
+                m68k_high = end;
+        }
+#endif
 
         insn_count+=insn_consumed;
         if (ctx.tc_CodePtr[-1] == INSN_TO_LE(0xfffffff0))
@@ -897,9 +916,11 @@ struct M68KTranslationUnit *M68K_VerifyUnitCRC32(struct M68KTranslationUnit *uni
            100x too slowly and System 7.1's speed probe divided by zero). ROM blocks never change;
            RAM blocks are re-checked only after the Mac has cleared its instruction cache through
            CACR (psmac_icache_epoch), which Mac OS does whenever it moves or loads code. */
-        extern uint32_t psmac_icache_epoch;
+        extern uint32_t psmac_icache_epoch, psmac_jit_check;
         extern uint32_t psmac_mmu_l2p(uint32_t logical, int *valid);
-        if (unit->mt_VerEpoch == psmac_icache_epoch) return unit;
+        /* mac.jitcheck=1 (docs/08 item 134): every RAM block is checked on every entry, so code
+           changed without the Mac clearing its instruction cache is found (and said) as well */
+        if (unit->mt_VerEpoch == psmac_icache_epoch && !psmac_jit_check) return unit;
         if (unit->mt_M68kAddress >= 0x40000000 && unit->mt_M68kAddress < 0x50000000) return unit;
         {   /* a block whose logical address lands in the ROM never changes either: in 24-bit mode
                the ROM also appears at $800000. The first version exempted $800000-$8FFFFF by
@@ -913,6 +934,16 @@ struct M68KTranslationUnit *M68K_VerifyUnitCRC32(struct M68KTranslationUnit *uni
         uint32_t crc = CalcCRC32((void *)(uintptr_t)unit->mt_M68kLow, (void*)(uintptr_t)unit->mt_M68kHigh);
 #ifdef PSMAC
         if (crc == unit->mt_CRC32) unit->mt_VerEpoch = psmac_icache_epoch;
+        else if (unit->mt_VerEpoch == psmac_icache_epoch) {
+            /* Changed since it was last checked, and the Mac has not cleared its instruction cache in
+               between: without mac.jitcheck the old translation would have run. A 68030, whose cache
+               holds 256 bytes, would almost always have run the new code. */
+            static uint32_t reports;
+            reports++;
+            if (reports <= 64 || (reports & 1023) == 0)
+                kprintf("[PSMAC:JIT] code at %08x changed without a cache flush (block %08x-%08x, %u insns); translated again [%u]\n",
+                        unit->mt_M68kAddress, unit->mt_M68kLow, unit->mt_M68kHigh, unit->mt_M68kInsnCnt, reports);
+        }
 #endif
 
         /* In case of FP or CRC mismatch, remove the unit and reclaim memory */

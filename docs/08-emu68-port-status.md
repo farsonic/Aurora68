@@ -6141,3 +6141,44 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      the CD put in from the Disks menu; at 512 x 342 after the kernel was started again with the same card image, the file
      read back and the CD read at D:; `mtype` on the host found the file inside the card image's `freedos.img`. Pictures:
      `docs/img/pc-card-qemu-*-2.png`.
+
+134. **Stale code after a new program was copied in: the loop's closing branch outside the JIT's check (23 November).**
+   Octavo (Quill's `mac-port`, `mac/qm_qdtext.c`, which since the same day draws its text with QuickDraw in the Mac's own
+   fonts) once drew Times 11, which System 7.1 draws from the TrueType outline, with the wrong letters ("tex1" for
+   "text") on the first launch after a new `Octavo.bin` had been copied in; a relaunch fixed it. QuickDraw's Times 11
+   widths also differed between launches. Suspects: a translation of the old program's code (or of the TrueType scaler's)
+   that outlived the new code's arrival, or the heap.
+   - *What could be run.* This session's machine had neither the IIci ROM nor a System 7.1 image (they live on the
+     owner's MacBook, `~/aurora68-work`, and no folder of it was shared with the session), so the Octavo case itself
+     was not run. What could be tested without them is the mechanism. Emu68 under PSMAC checks a translated RAM block
+     again (the CRC of `mt_M68kLow..mt_M68kHigh`) on its first entry after `psmac_icache_epoch` moves: when the Mac
+     clears its instruction cache through CACR (item 12), after a PiDisk or USB disk read, after a SCSI read (item 53).
+     `tools/jitrom/jitrom.s` is a stand-in ROM for the solo board (the kernel starts it as it starts the IIci's; the
+     declaration ROM brings up the mailbox it logs through): it writes small routines at $10000, runs them, changes them as
+     a loader would, clears the cache with CACR CI|CD as Mac OS does on a 68030 and runs them again.
+     `tools/jitrom.sh` builds, boots and checks it.
+   - *Found.* Of the five cases, the three that change only the branch closing a loop ran the old loop after the flush:
+     `bne.s` made `bls.s` (5 for 6), `dbf d1` made `dbf d2` (4 for 8), a `bcs.w`'s displacement (9 for 10). The range
+     the CRC covers grew only by where the translator went after each instruction (`ctx.tc_M68kCodePtr`). A backward
+     branch is followed as taken (`EMU68_DEF_BRANCH_AUTO`, M68k_LINE6.c, and DBcc in M68k_LINE5.c), so "after" the loop's
+     closing branch is the loop's start, and the branch's own words were never in the range. The routine replaced
+     whole with a flush (case 4) was right before and after.
+   - *Fixed* (`M68k_Translator.c`, PSMAC): after each instruction the range also reaches the end of the instructions
+     just translated (`M68K_GetINSNLength` over `insn_consumed`). `tools/jitrom.sh`: "3 wrong" with the previous kernel,
+     "passed" with this one.
+   - *Case 5, by design, and a way to look for it:* code replaced with no cache flush at all still runs the old
+     translation, as it would from a 68040's 4 KiB cache, but a 68030's cache holds 256 bytes, so on the IIci the new
+     code nearly always runs. Whether System 7.1 has a path that loads code into memory where other code ran without
+     clearing the cache (and without a disk read moving the epoch: a file's blocks served from the File Manager's cache
+     just after the file was written, for instance) is what the Octavo case would show. **`mac.jitcheck=1`** checks
+     every RAM block on every entry (slower: the ROM is still exempt) and logs `[PSMAC:JIT] code at ADDR changed
+     without a cache flush (block LOW-HIGH, N insns); translated again [count]` (the first 64, then every 1024th): such
+     code then runs as the 68030 would run it, and the log says where it was.
+   - *For the Octavo case,* `make -C mac FontWidth` (`mac/fontwidth.s`, a test, not in `all`): Times 11 and, as the
+     control, Times 12 (a bitmap size): the font number and RealFont, every character's CharWidth (32-126, one hex
+     digit each), TextWidth of "text" and "Hamburgefonstiv", and "text Times" drawn into an offscreen bitmap with its
+     checksum and its first sixteen rows as `#` and `.` in the log. The steps, with the owner's ROM and test image: boot
+     System 7.1 with `mac.jitcheck=1`; launch Octavo and draw Times 11; copy a different `Octavo.bin` over it (as it was
+     done); launch it again; run FontWidth after each launch; compare. A `[PSMAC:JIT]` line at the first launch after the
+     copy names the code that went stale; the same with the default kernel tells whether the closing-branch fix alone
+     was the whole story. Not done here: whether this hole was the cause of Octavo's letters is not known.

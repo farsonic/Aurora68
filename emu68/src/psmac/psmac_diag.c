@@ -163,6 +163,7 @@ const struct pdg_opt pdg_opts[] = {
     { "mac.pctrail", PDG_G_DEBUG, PDG_F_ONCE, A, "#", "60", "The 68k's recent PCs in the log N seconds after the start." },
     { "mac.watchtraps", PDG_G_DEBUG, PDG_F_ONCE, A, "1|0", 0, "1: odd writes into the OS trap tables reported (costs a trap on every write to low memory)." },
     { "mac.dbg", PDG_G_DEBUG, 0, A, "%,%", "40800000,40800100", "The JIT's translation of blocks between two hex addresses in the log." },
+    { "mac.jitcheck", PDG_G_DEBUG, 0, A, "1|0", 0, "1: every RAM block of 68k code checked on each entry (slower); code changed without a cache flush is reported and translated again." },
     { "mac.dbfslow", PDG_G_DEBUG, 0, A, "0|1|2|3|4|5|6|7|8", 0, "Device reads per turn of a self-timing DBF loop (1 by default; 0 makes such loops free)." },
     { "mac.xpram", PDG_G_DEBUG, 0, PDG_SOLO, "*", "e0:098100a8", "Extended parameter RAM preset, ADDR:HEXBYTES[,ADDR:HEXBYTES] (the solo board)." },
 };

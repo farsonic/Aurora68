@@ -173,6 +173,8 @@ with the console lock held (docs/08 item 21 explains the one time that happened)
 ## Tests
 - `make -C rom check`, `make -C mac check` (static).
 - MAME bridge end to end: `tools/bridge_e2e.py` (docs/06, "Tests").
+- The JIT's changed-code check: `tools/jitrom.sh` (a stand-in ROM on the solo board, no Apple ROM needed; QEMU
+  lock as for the testbed; `mac.jitcheck=1` as its argument tests the stale-code report too; docs/08 item 134).
 - The scripted sessions above are the integration tests; the screenshots in `docs/img/` are
   their expected results (System 6 and 7.1 to the Finder with the Pi disk mounted; Aurora68 Network's
   ARP round trip; MacTCP pinging over Ethernet and over the simulated WiFi; Aurora68 Wi-Fi's scan and join;
