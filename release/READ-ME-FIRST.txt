@@ -320,6 +320,16 @@ close box hides the picture and the sound goes on (Controls > Show Video brings 
 "A68 Play: video: played to the end ..." with the numbers the testbed cannot give: please send those lines
 (the network's rate, "under 8 KB in hand for ... ms", the pictures shown and not drawn) from the SE.
 
+Aurora68 Play 1.7 finds the music server by itself: at its first start, or when the server it knew does
+not answer, it asks the network and connects to the server that answers. With two servers it asks you to
+choose one in Library > Servers (also Search Again, and Connect to Server... for an address). A song with
+a music video has a film mark; Library > Play Video (Command-M) plays it; Controls > Play Videos Instead
+of Songs plays each song's video in its place (with the video decoder card); Library > Videos lists every
+video by artist, Library > Up Next the queue; Play Next and Add to Queue, Repeat One; the video window's
+zoom box, or Command-1, 2 and 3, make the picture Normal Size, Double Size or Fill Screen. Please say
+whether the server was found on your network, and which line of Aurora68 Log says so ("A68 Play:
+library: found the music server ...").
+
 MP3 files: copy the folder Aurora68 Play (Mac/Aurora68/) onto the Mac and the MP3s anywhere on its
 disks (a USB stick or the Lagoon share will do; files from a PC need no Mac type). Open one with File >
 Open..., or drop it on Aurora68 Play's icon; the space bar plays and pauses. Files given the type MPG3

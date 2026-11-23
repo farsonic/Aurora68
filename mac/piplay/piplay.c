@@ -952,7 +952,9 @@ static void open_file(void)
 	SFReply rep;
 	Rect sr = screen_rect();                    /* the dialog (348 by 200) centred, a third of the way down */
 	Point where = { (short)(sr.top + (sr.bottom - sr.top - 200) / 3), (short)(sr.left + (sr.right - sr.left - 348) / 2) };
+	vc_hold(1);                                 /* 1.7: Standard File's dialog too: the card drew the video over it in 1.6 */
 	SFGetFile(pt_long(where), pstr(pbuf, ""), 0, -1, 0, 0, &rep, 2);
+	vc_hold(0);
 	SetPort(win);
 	if (!rep.good) return;
 	open_path(rep.vRefNum, 0, rep.fName);

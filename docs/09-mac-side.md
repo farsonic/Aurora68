@@ -991,6 +991,121 @@ Play's receive chain: a TCP buffer twice as large carried no more); the 40-secon
 s), every picture shown, 1 to 2 ms a picture to decode under QEMU. The numbers and what was found on the way are
 docs/08 item 114; the screenshots stay in the scratchpad.
 
+### Aurora68 Play: classic and macOS (Aurora68 Play 1.7, 23 November 2026)
+The owner asked: "lets get the classic mac version up to parity. Also have it automatically discover server hosts".
+Below is every feature that a user sees in the macOS Aurora68 Play 1.5 (macos/Aurora68Play/README.md), with what the
+classic Play 1.7 does: whether it already had the feature ("had"), gained it in 1.7 ("1.7") or leaves it out on purpose
+("left out", with the reason). The reference machine is the SE: 512 x 342 pixels at one bit, a 68000-class Mac,
+MacTCP or Riptide, the card decoding. docs/08 item 118 is the record.
+
+| macOS Play 1.5 | Classic Play 1.7 |
+|---|---|
+| Library: artists, albums as a grid of covers, an album with its cover and songs | had: Artists, an artist's albums with 32-pixel covers, an album's songs under its 64-pixel cover (a list: a grid of covers would show eight on the SE's screen) |
+| The search field filters artists and albums as you type (Command-F) | had in its own form: Find... (Command-F; the server searches artists, albums, songs and videos) and typing in a list selects by name. Left out: filtering at each letter, which would be one request over MacTCP for every key |
+| The original files played by AVFoundation (MP3, AAC, Apple Lossless, FLAC), real seeking, no gap between songs | had: the server sends MP3 (`/t/ID`), the card decodes it; no gap between songs; a seek is a new request from that second |
+| Play, Shuffle | had |
+| Play Next, Add to Queue (right-click a song or an album) | 1.7: Library > Play Next and Add to Queue, for the selected song, video, album or artist; with nothing of the library playing, it plays |
+| The queue (Up Next in the bar's menu) | 1.7: Library > Up Next, the queue as a list, the one playing marked; Return or a double-click plays from there |
+| Previous, Next, the position bar (click or drag), volume | had (Previous and Next moved to the Controls menu in 1.7, the arrows as before); dragging left out: every place is a new stream |
+| Repeat (all, one) | Repeat had (1.4); 1.7: Repeat One |
+| The video in the window: the bar's picture expands it to the whole window and shrinks it back; Escape shrinks it | 1.7: Controls > Normal Size, Double Size, Fill Screen (Command-1, 2, 3) and the video window's zoom box (Normal and Fill Screen); the stream stays the size asked, the card scales it. Escape stays Stop, as in every Aurora68 Play |
+| The Video window of its own, AVKit's controls, full screen | had (1.6: the card's window, the player's controls); Fill Screen is the nearest to full screen (the menu bar stays) |
+| Videos after an album's songs and an artist's albums, each as a poster | had after an album's songs (1.5); 1.7: an artist's view begins with a line "Videos" (with their count) that opens the artist's videos. Posters left out: each is a picture to fetch over MacTCP, and at 32 pixels and one bit a frame of a video says little; the film mark stands for them |
+| Videos and songs share the queue; a video plays as a video, then the queue goes on | had (1.6) |
+| Now Playing says it is a video and shows its poster | had: "Video 2 of 3 - MPEG-1 320x180"; the album's cover stays (no poster, as above) |
+| A song with a video has a film button; Play Video in its menu | 1.7: a film mark in the song's row; Library > Play Video (Command-M) plays the selected song's video and the album's videos after it |
+| Play Videos Instead of Songs (Settings, Controls menu) | 1.7: Controls > Play Videos Instead of Songs, kept in the preferences; with the video decoder card (without it, or with a server that makes no MPEG-1, the songs play) |
+| An artist's page: its videos as a row of posters, See All | 1.7: the "Videos" line above the albums, which opens them all |
+| A film mark after the subtitle of artists and albums with videos | 1.7: the film mark beside "2 videos" in the artist's and the album's row |
+| Videos in the sidebar: every video by artist, filtered by the search field | 1.7: Library > Videos, every video grouped by artist (the artist's name once, at the head of its group); typing selects by title; Find finds videos |
+| Albums in disc and track order | had: the classic Play shows the server's order and never sorts (the server's fix of item 115) |
+| New albums without a restart | had (1.3) |
+| Now Playing in Control Center, the keyboard's media keys | left out: System 6 and 7 have neither; the player window is Now Playing |
+| Space plays and pauses; Command-Left and Command-Right are Previous and Next | had: space, and the left and right arrows (without Command: the Menu Manager of System 7 takes no arrow as a command key) |
+| Play on Live (the SE), Listen here | Listen Live had (Library > Listen Live). Sending the queue to Live left out, as below |
+| Play on another Mac or on the SE; the bar shows what the other player plays | left out: the SE is the player the others send to (it has been one since 1.3, and shows videos since 1.6); sending from it needs the songs' paths of the long records and a bar kept current by asking the server about the other player, over the one MacTCP connection that the long poll for commands already uses. The web panel and the macOS Play do the sending |
+| Stations: Everything shuffled, each artist, the internet radio stations | the radio stations had (the Radio menu, the same list as the server's); an artist shuffled had (Shuffle, then Play in an artist's view). Everything left out: a library is more than the queue's 250 songs, and Live plays Everything already |
+| Live's queue and its listeners; the players on the network | left out: the web panel shows them; the SE would have to poll for them |
+| Another player or the web panel plays music on this one | had (1.3) |
+| Finding the server: the probe at the start, the first that answers; an address typed in Settings | 1.7: the probe at the first start and whenever the remembered server does not answer, with the Library window shown or not; every server that answers within a second of the first is kept; the remembered one (by name, so a new address does not matter) or the only one is taken; with several and none remembered the Library window lists them and Library > Servers offers them. Servers > Search Again; Servers > Connect to Server... takes an address as before |
+| IPv6 first or IPv4 first, the other after four seconds | had (Connect By) |
+
+**What 1.7 does, in more words.**
+- **Finding the server.** At the start, if the preferences name no server, Aurora68 Play sends the probe at once, with or
+  without the Library window (the device announces itself as soon as one answers). The probe goes three ways as
+  before (255.255.255.255, the network's broadcast address, the group 239.255.68.70); every answer within a second of
+  the first is kept (four seconds when none comes), each server (the address it answered from and its port) once. One
+  server: it is taken. Several: the one chosen before, by its name, is taken; if none of them is, the Library window
+  says "Music servers on this network: Test Library (192.168.68.1:18523), Second Server (192.168.68.1:18524). Choose
+  one in Library > Servers." The remembered server that does not answer (after its other addresses) brings the probe
+  too: the list area says "The music server at 192.168.1.20:8423 does not answer. Looking for music servers on the
+  network..." and the server found is taken, or the words say that none answered (Reload tries the remembered one
+  again, Search Again looks again). The address stays in the preferences while it does not answer.
+- **Library > Servers** (a submenu): the servers the last probe found, as "Name (address:port)", the one in use
+  checked (listed first if the probe did not find it); Search Again; Connect to Server... (moved here from the
+  Library menu: the menu had grown past the SE's 342 lines). Choosing a server connects to it, the views start again at
+  Artists, and its name is kept in the preferences.
+- **Videos linked to songs.** An artist's albums and an album's tracks are asked for with `full=1&videos=1`, still in Mac
+  Roman: the longer records end with an album's count of videos and a song's video (the server's tenth field of item
+  115). The core reads records by their fields, so an older server's records read as "no video", and the server
+  answers the classic Play's other requests as before; the older classic Play sends neither parameter and gets what it
+  always got. An answer too long for the 48 KB buffer with the longer records (a box set of a few hundred songs) is
+  asked again without them.
+- **The video window's sizes.** Normal Size is the picture as the server sends it (320 x 240 at most on the SE's
+  screen); Double Size twice that, or Fill Screen where twice would not fit; Fill Screen the largest of the picture's
+  shape on the screen the window is on, below the menu bar (on the SE's screen a 16:9 picture is 508 x 285, a 4:3 one
+  400 x 300). The zoom box toggles Normal and Fill Screen; the size is kept in the preferences and used for the next
+  video. Back to Normal Size the window goes where it was.
+- **The menus.** Library: Show Library, Videos, Up Next, Find..., Play All, Play Video, Play Next, Add to Queue, Shuffle,
+  Repeat, Repeat One, Listen Live, Reload, Servers, Connect By (nineteen lines: 304 pixels below the SE's menu bar).
+  Controls: Play, Stop, Previous Track, Next Track, Volume Up and Down, Show Video, Normal Size, Double Size, Fill
+  Screen, Play Videos Instead of Songs.
+- **The preferences** keep, after the record of 1.3 to 1.6, a tail with the server's name, Play Videos Instead of Songs
+  and the video window's size. The file is still version 3, and an older Play reads the part it knows and leaves the
+  tail out when it writes the file again.
+- **Memory.** The program asks for 640 KB (it asked for 512): the code is 18 KB larger, and the rows and the queue's
+  items hold a song's video.
+- The About box and the version the Play announces to the server say 1.7.
+
+**Tested** (23 November 2026, the solo board in QEMU, System 7.1 with Riptide, the music server on the host through
+pinet, two test libraries shaped like the owner's: `Albums/<Artist>/<Album>/<Title>.flac` with the track numbers only in
+the tags, and `Albums/videos/Artist - Title [123456789].mp4`, tones and FFmpeg's test pictures; docs/08 item 118 has the
+details):
+- **Discovery.** No preferences, one server: at the start, before the Library window was shown, "found the music server
+  "Test Library" at 192.168.68.1:18523" and the server's answer; Riptide refused both broadcasts (error -23033, as in
+  item 107) and the multicast probe was answered. Two servers (pinet relaying the probe to both): Search Again found both
+  ("2 music servers answered"), the one in use stayed checked, choosing the other connected to it and Quit kept it
+  (`docs/img/system71-512x342-play17-servers.png`). That one stopped and the Play started again: "the server does not
+  answer", the probe, "the remembered server did not answer: taking the one found, Test Library". No preferences and two
+  servers: the Library window opened by itself naming both (`docs/img/system71-play17-two-servers.png`), one probe only;
+  choosing one from Library > Servers connected to it.
+- **Links and videos.** An album named by title: its songs in track order, the film mark on the two songs with a video,
+  "4 tracks, 2 videos" with the mark on the album's row, "1 album, 2 videos" on the artist's, the artist's view opening
+  on its "Videos" line (`docs/img/system71-512x342-play17-film-marks.png`). Play Video on "One More Time" played its video
+  (`/vmpeg/1739616b`), then the album's other video. Play Videos Instead of Songs: the album played as video, song,
+  video, song, Up Next showing that queue. Library > Videos grouped by artist, with the two downloads of one video listed
+  once (the server's doing, item 117).
+- **The video window.** Normal, Double (Fill Screen for a 320 x 240 picture on 640 x 480, where twice would not fit) and
+  Fill Screen, by the keys and the zoom box, on 640 x 480 and on 512 x 342 (`mac.screen=512x342` with the 512 x 342
+  declaration ROM: 508 x 285 for 16:9, `docs/img/system71-512x342-play17-fill-screen.png`); the size kept for the next
+  video and across a Quit.
+- **Queue.** Add to Queue, Play Next, Up Next, Repeat One (the song again, gaplessly).
+- **An older server** (the one from before item 115): no film marks, no album counts, the album in that server's own
+  (title) order, a video played; nothing failed.
+- **Found and fixed on the way:** a song put in with Play Next or Add to Queue after the last song's stream had come
+  whole was never played (the queue's end moved on only into videos); the Library window came back at a place kept from
+  a 640 x 480 screen with only its left end on the 512 x 342 one; the card drew the video over Standard File's dialog
+  (since 1.6; File > Open... now holds the picture, not tried in the testbed).
+- **Seen once, not again:** in the first session the Mac stopped 4 seconds into the second video of a queue, in the
+  network's interrupt path (the ROM's level-2 handler and system-heap code, "slot-9 interrupt not serviced in 500 ms"),
+  code 1.7 did not change; after a restart nine more video streams, with five hand-overs from a video to what
+  followed, ran without it. Not explained.
+
+Not verified: the SE itself (MAME's SE board was not run; the 512 x 342 screen was the solo board's); a real MacTCP
+(Apple's) sending the broadcast probe; two servers on two machines (the testbed's two were on one host, both answering
+from the peer's address); a box set too long for the links (the fallback without them has not run); Standard File's
+hold.
+
 ## The WiFi in the testbed: a radio that exists only in software
 QEMU's raspi3b has no WiFi chip (no SDIO function, no firmware to load), so the real driver in
 `alice_net.c` can only report "off" there, and until 16 November the WiFi unit, Aurora68 Wi-Fi and the

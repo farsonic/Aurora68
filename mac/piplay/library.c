@@ -1086,11 +1086,13 @@ void lib_poll(void)
 		}
 		if (radio.ended && lstate == L_PLAYING) {
 			/* a video has played, or a song before a video (next_url sends no stream into or out of a video): what
-			   follows starts as a stream of its own */
+			   follows starts as a stream of its own. So does a song put in after the last stream had come whole (Play
+			   Next or Add to Queue near a song's end, 1.7: seen in the testbed, where such a song was never played) */
 			int f = a68q_follow(&Q, Q.feed);
 			radio.ended = 0;
-			if (f >= 0 && (shows_video(qat(Q.feed)) || shows_video(qat(f)))) {
-				logs("next after the video's stream: ", qat(f)->title);
+			if (f >= 0) {
+				logs(shows_video(qat(Q.feed)) || shows_video(qat(f)) ? "next after the video's stream: " : "next, as a stream of its own: ",
+				     qat(f)->title);
 				play_at(f, 0);
 				return;
 			}
@@ -1242,6 +1244,7 @@ static void draw_line(int li, Rect *lr)
 		if (playing_row(i) && CUR->kind != V_TRACKS && CUR->kind != V_QUEUE) { MoveTo(x, (short)(y + 12)); DrawText("\xA5 ", 0, 2); x += 10; }
 		room = (short)(lr->right - rw - 16 - (film ? FILM_W : 0));
 		if (vids) {                              /* the videos' lists: the mark, and (every video) the artist once a group */
+			x = 18;                              /* the columns the same with the bullet or without */
 			draw_film(lw, x, (short)(y + 11));
 			x += FILM_W;
 			if (CUR->kind == V_VIDEOS) {
@@ -1265,7 +1268,7 @@ static void draw_line(int li, Rect *lr)
 			*p = 0;
 			clip_text(t, room - x);
 		} else { MoveTo(x, (short)(y + 12)); clip_text(rows[i].text, room - x); }
-		if (film) draw_film(lw, (short)(lr->right - 8 - rw - FILM_W + 2), (short)(y + 11));
+		if (film) draw_film(lw, (short)(lr->right - 8 - rw - FILM_W - 1), (short)(y + 11));
 		draw_right(right, (short)(lr->right - 8), (short)(y + 12));
 	}
 	if (li == CUR->sel && active) InvertRect(&r);
@@ -1436,8 +1439,11 @@ void lib_show(void)
 		short w = s.right - s.left >= 640 ? 540 : 500, h = s.bottom - s.top >= 480 ? 360 : 292;
 		b.top = 44; b.left = (short)((s.right - s.left - w) / 2); b.bottom = (short)(b.top + h); b.right = (short)(b.left + w);
 		if (have_saved && saved_r.right - saved_r.left >= 360 && saved_r.bottom - saved_r.top >= 200) {
-			Point a = { (short)(saved_r.top - 10), (short)(saved_r.left + 24) };
-			if (PtInRgn(pt_long(a), LM_GRAYRGN)) b = saved_r;
+			/* both ends of the title bar on a screen, and no taller than the screens (1.7: a place kept from a 640 x 480
+			   screen was taken on the SE's 512 x 342 by its left end alone, the rest of the window off the screen) */
+			Point a = { (short)(saved_r.top - 10), (short)(saved_r.left + 24) }, c = { (short)(saved_r.top - 10), (short)(saved_r.right - 24) };
+			if (PtInRgn(pt_long(a), LM_GRAYRGN) && PtInRgn(pt_long(c), LM_GRAYRGN) && saved_r.bottom <= RGN_BBOX(LM_GRAYRGN)->bottom) b = saved_r;
+			else pi_log("library: the remembered window place is on no screen now: the window goes on the main screen");
 		}
 		lw = colour ? (void *)NewCWindow(0, &b, pstr(pb, "Library"), 0, 8 /* zoomDocProc */, (void *)-1, 1, 0)
 		            : (void *)NewWindow(0, &b, pstr(pb, "Library"), 0, 8, (void *)-1, 1, 0);
