@@ -941,7 +941,55 @@ for them with a third parameter on the `/mac/` text, `videos=1`, and read the `V
   library video in the card's format (`/vmpeg/ID?w=&h=`, the video helper's own conversion), and the classic Play
   will use it once the card's Macintosh program (issue #24) exists. Not done here.
 
-**Tested** (22 November 2026): the server's test, 203 checks (62 of them the videos'); the core's, 158 units on the host and as a 68020 program and 34 on the real server's answers; XCTest on GitHub's runner, 21 tests (runs 45084364767 and 45085274385); the Docker image's ffmpeg checked by the workflow; the classic Play in the testbed: not run in this session. The emulator lock was held by another session from 23:39 to 01:09, and when it came free the build machine's disk was full (1.7 MB left; the scratch copy of the test image had to be deleted) and another QEMU was already running, so no run was started. The classic Play 1.5 builds cleanly (CODE 1 170152 bytes), and its new paths go through the core that the host and 68020 tests check against the real server's answers. The session is ready to run: a copy of b-play.image with the new Play installed, the server on a library with an MP4, an MKV and a WebM video, and a script that opens an album with a video, plays the video's sound, opens an artist that has only videos, and sends a video to the SE from the server
+**Tested** (22 November 2026): the server's test, 203 checks (62 of them the videos'); the core's, 158 units on the host and as a 68020 program and 34 on the real server's answers; XCTest on GitHub's runner, 21 tests (runs 45084364767 and 45085274385); the Docker image's ffmpeg checked by the workflow; the classic Play in the testbed: not run in this session. The emulator lock was held by another session from 23:39 to 01:09, and when it came free the build machine's disk was full (1.7 MB left; the scratch copy of the test image had to be deleted) and another QEMU was already running, so no run was started. The classic Play 1.5 builds cleanly (CODE 1 170152 bytes), and its new paths go through the core that the host and 68020 tests check against the real server's answers. The session is ready to run: a copy of b-play.image with the new Play installed, the server on a library with an MP4, an MKV and a WebM video, and a script that opens an album with a video, plays the video's sound, opens an artist that has only videos, and sends a video to the SE from the server. (Run on 23 November 2026: all four passed; docs/08 item 114.)
+
+### Music videos on the video decoder card: Aurora68 Play 1.6's video window (23 November 2026)
+The classic Play 1.5 played a music video's sound only. With the Aurora68 Video Decoder card (docs/16) in the Mac,
+Aurora68 Play 1.6 shows the video itself, in a window of its own, and the SE becomes a player the web panel and the
+macOS Play can send videos to (docs/08 item 114 is the record).
+
+- **Finding the card.** At start the Play opens the card's driver, ".A68Video", as Aurora68 Video does (an Open by
+  name, Status 100 for the card's window, the block's magic). The log says "video: the video decoder card is there
+  ... videos are shown", or that videos play their sound. Without the card everything is as in 1.5.
+- **Playing a video** (a "Video:" row, an artist's videos, a `v:ID` from the panel or another player) asks the music
+  server for `/vmpeg/ID?w=W&h=H` (MPEG-1 video and MP2 sound in an MPEG program stream) at a size of the video's own
+  shape that suits the screen the player window is on: 320 x 240 at most on the SE's 512 x 342 screen and on any
+  screen up to 640 wide (a 16:9 video is 320 x 180), 512 x 384 below 1280, 640 x 480 on a larger HDMI screen
+  (`a68_vmpeg_size` in the shared core), and at a rate the network can carry: 400 kbit/s of video at 320 x 240
+  (`a68_vmpeg_rate`, the server's `rate=`; its own rate, 2,500 kbit/s there, came too slowly in the testbed). The
+  stream comes over the same connection as songs (MacTCP, or Riptide's `.IPP6`), received at interrupt time as radio
+  and songs are, but poured into the video card's 512 KB ring; the card decodes it on a Pi core, draws every picture into the screen at its depth (dithered to one bit on the SE's own
+  screen, in colour on HDMI) and mixes its sound with the Mac's.
+- **The window** (Human Interface Guidelines, 1992): a document window with the video's title and a close box,
+  exactly the size of the picture, black until the first picture comes. It opens below the player window when the
+  screen has room (a 640 x 480 screen does), otherwise at the top of the screen, and where the last one was if that
+  is still on a screen. A click in it plays or pauses; so does the space bar while it is in front. Its close box
+  hides the picture and the sound goes on; Controls > Show Video brings it back, as does the next video. The card
+  is told not to draw while the window is covered by another window (a corner covered hides the whole picture: the
+  card draws rectangles, not regions), while it or another window is dragged or sized, while a menu is down, while a dialog is up and while
+  another program is in front; the card draws the last picture again when the window is uncovered or moved while the
+  video is paused.
+- **The controls** are the player's: Play/Pause, Stop, Previous and Next, the volume (the card's volume follows Play's
+  slider and the Sound control panel), and a click on the progress line seeks: a new `/vmpeg` request with
+  `start=S`, the card stopped and a new stream started. A seek or a volume from the server works the same way. Now
+  Playing shows the video's title, "Video N of M" and "MPEG-1 320x180".
+- **The queue goes on** when a video has played (the card says "ended"): the next song or video starts as a stream
+  of its own. A video is never sent gaplessly after a song or another video, since each is a stream of its own for
+  the card.
+- **A device that shows video.** The announce says `video=1` when the card is there and the server makes MPEG-1
+  (`mpeg1` among its capabilities; an older server's videos play their sound), so the server sends a video
+  as a video (the panel's devices list marks the SE as showing video, and the server no longer answers
+  `audio_only`).
+
+**Tested** (23 November 2026, the solo board in QEMU, System 7.1 with Riptide, the music server on the host through
+pinet, ffmpeg-made test videos of 20 and 40 seconds): a video row played in its window, dithered at one bit on a
+640 x 480 screen and in 256 colours at 512 x 384 on a 1024 x 768 one; pause, a seek from the progress line and one
+from the server, the window dragged, covered by the Library and uncovered, a menu held over it, closed and shown
+again; the end of a video followed by the album's next video, and by a song added from the server after a video it
+had sent (`v:ID`). The testbed's network carried 420-750 kbit/s of the stream (QEMU and pinet's ring files, not the
+Play's receive chain: a TCP buffer twice as large carried no more); the 40-second film at 300 kbit/s kept time (43
+s), every picture shown, 1 to 2 ms a picture to decode under QEMU. The numbers and what was found on the way are
+docs/08 item 114; the screenshots stay in the scratchpad.
 
 ## The WiFi in the testbed: a radio that exists only in software
 QEMU's raspi3b has no WiFi chip (no SDIO function, no firmware to load), so the real driver in

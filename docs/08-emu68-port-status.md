@@ -4737,7 +4737,7 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    - *Tested.* The server test: 203 checks, all passing (62 new: four ffmpeg-made videos of a few seconds at 160 x 120 and a .mp4 without a picture in a temporary folder; the scan, the copy, the facts and their cache, Range, the remux checked by ffprobe and by its H.264 bytes being the original's, its HLS, the transcode, refusals with transcoding off and beyond the limit, no ffmpeg left, posters, soundtracks through the classic Play's parser, `/vmpeg/` at three sizes with no B-frames, the JSON, the text both ways, the byte-for-byte comparison, devices). The core: `tools/play_core_test.c` 158 unit checks (22 new) and 34 on the real server's answers (10 new: `tools/play_core_fixtures.py` adds two videos to its library; the core tidies their file names as the server does), the 158 again as a 68020 program under qemu-m68k; `devices_test` 33 as before. XCTest on GitHub's macOS runner: 21 tests (2 new, `VideoTests`; the older paths now end in `&videos=1`), runs 45084364767 and 45085274385, and the app built. The
      music-server workflow now runs its test and an image build on every branch that touches it (publishing from main
      only) and checks the Alpine image's ffmpeg has ffprobe, x264, AAC, MPEG-1, MP2 and LAME: runs 45084364758 and 45085274273, both green (ffprobe 8.1.3 in the image). The classic
-     Play in the testbed: not run in this session. The emulator lock was held by another session from 23:39 to 01:09, and when it came free the build machine's disk was full (1.7 MB left; the scratch copy of the test image had to be deleted) and another QEMU was already running, so no run was started. The classic Play 1.5 builds cleanly (CODE 1 170152 bytes), and its new paths go through the core that the host and 68020 tests check against the real server's answers. The session is ready to run: a copy of b-play.image with the new Play installed, the server on a library with an MP4, an MKV and a WebM video, and a script that opens an album with a video, plays the video's sound, opens an artist that has only videos, and sends a video to the SE from the server.
+     Play in the testbed: not run in this session. The emulator lock was held by another session from 23:39 to 01:09, and when it came free the build machine's disk was full (1.7 MB left; the scratch copy of the test image had to be deleted) and another QEMU was already running, so no run was started. The classic Play 1.5 builds cleanly (CODE 1 170152 bytes), and its new paths go through the core that the host and 68020 tests check against the real server's answers. The session is ready to run: a copy of b-play.image with the new Play installed, the server on a library with an MP4, an MKV and a WebM video, and a script that opens an album with a video, plays the video's sound, opens an artist that has only videos, and sends a video to the SE from the server. (Run on 23 November 2026, item 114: all four passed.)
    - *Not verified:* the macOS app on a real Mac (the Video window, full screen, HLS of a remux and of a transcode in
      AVFoundation, a video in the queue followed by a song, Now Playing's poster), the panel's video in Safari and on
      a phone, the owner's own videos (their containers and codecs, a NAS's speed at remuxing and transcoding), the
@@ -4881,3 +4881,76 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    - *Not verified:* the film's sound (the testbed has no sound output; on the SE it goes to HDMI or the jack, or the
      speaker with `mac.sestream=on`), the SE board and HDMI with Aurora68 Video, a film larger than the window's
      screen, System 6.
+
+114. **The classic Aurora68 Play 1.6: music videos on the video decoder card; the owed test of 1.5 (23 November).**
+     Item 109 left the classic Play playing a video's sound and the test of that in the testbed undone; item 112 made
+     the card's MPEG-1 stream channel a program's to use, and docs/16 ("Follow-up") said how Play could use it.
+   - *1.5 in the testbed first* (the solo board, System 7.1 with Riptide, the music server on the host through pinet
+     on a library of ffmpeg-made test media with an MP4, a MOV, an MKV and a WebM video; the scripts item 109 left).
+     An album listed "1 Opening" and "Video: Opening (Official Video)"; Return on the video played
+     `/vaudio/b29434fe` to its end ("the track's stream is in, 48901 bytes"); the artist Delta, with videos alone,
+     opened on "Video: Webm Clip", which played its sound the same way; `play v:7dadadb6` from the server's devices
+     interface was answered `audio_only` and the SE played that video's sound, then stopped on the server's stop.
+     All four as designed; nothing to fix.
+   - *1.6.* With the card there (`mac/piplay/vcard.c` opens ".A68Video" by name, as Aurora68 Video does, and checks
+     the block) and a server that offers `mpeg1`, a video plays as itself: `/vmpeg/ID?w=&h=&rate=&start=` (built by
+     the core: `a68_path_vmpeg`; the size of the video's own shape for the screen the player window is on,
+     `a68_vmpeg_size`; the rate, `a68_vmpeg_rate`) over the radio's connection, the receive chain writing the
+     answer's body into the card's ring at interrupt time. A video window (docs/09 "Music videos on the video decoder
+     card") the size of the picture; the card told its place and whether it may draw (a window of the Play's over
+     it, a menu down, a window dragged or sized, a dialog up, another program in front, the window hidden); seeking
+     by a new request with `start=S`; the queue moving on when the card says "ended", never gaplessly into or out of
+     a video; the announce's `video=1`. icy.c learnt `video/mpeg` (ICY_K_VIDEO), a catalogue row a video's size.
+     Without the card, or with a server older than `/vmpeg/`, everything is 1.5's.
+   - *Two faults on the way.* The first start of 1.6 in the testbed ended in "bad F-line instruction" at $72652073:
+     the bytes "re s" of "videos are shown", a log line longer than its 100-byte buffer, over the return address
+     (the remote control's state said so with the exception's PC). And a corner of a picture stayed on the desktop
+     where the video window had been closed: HideWindow paints the uncovered desktop at once, with no update event,
+     and the card drew one more picture before it was told to stop; the Play now tells the card before it hides,
+     disposes or resizes the window.
+   - *The network's rate, the card's numbers* (QEMU under four host cores, pinet's ring files; each stream's numbers
+     are logged by the Play when it ends: `A68 Play: video: ...`). At the server's own rate (2,500 kbit/s of video
+     asked at 320 x 240): a 40-second 480 x 270 film as 320 x 180 (6,392 KB, 1.28 Mbit/s for that test pattern) came
+     in at 508 kbit/s on average and took 102 s; a 20-second Mandelbrot film at 320 x 240 (5,730 KB, 2.3 Mbit/s) at
+     452-459 kbit/s, 102-103 s; the card held under 8 KB for most of the time it played (9.6 of 10.1 s of a sample),
+     and still showed every picture (1000 of 1000, 500 of 500, none not drawn) and counted no time dry: with sound,
+     the sound is the card's clock, and a stream that comes too slowly stretches the sound and the pictures together
+     instead of running dry. A 64 KB TCP buffer and 16 KB receives (instead of 32 and 8) carried no more (455-555
+     kbit/s), so the limit is the testbed's network, not the Play's receive chain; they went back. Hence the
+     server's new `rate=` (150 to 2,500 kbit/s of video; without it the helper's arguments as before) and the Play's
+     400 kbit/s at 320 x 240. With it the 40-second film, asked at 320 x 180 and 300 kbit/s (450 kbit/s with its
+     sound), kept time: 28.8 s of it in about 31 s, and after a seek its last ten seconds in 11.2 s with under 8 KB in
+     hand for 0.35 s of them (437 kbit/s), 250 of 250 pictures shown; played through in a later run, in 43 s (419-429
+     kbit/s, 1000 of 1000 pictures); the busier Mandelbrot film at 320 x 240 and 400 kbit/s (570 kbit/s with its
+     sound) still came a little slowly (7.1 s of it in 10 s). On a 1024 x 768 screen the same film came at 512
+     x 288 and 768 kbit/s, more than the testbed carries again (406-458 kbit/s; 19.4 s of film in 40.5 s). Under QEMU the card decoded a 320 x 180 picture in 1.6-2.2 ms and a 320 x 240
+     one in 4.4-6.4 ms, drew it in 0.5-2.2 ms at one bit, 17-77 per mille of core 1; 512 x 384 at 256 colours, 2.6-2.8
+     ms to decode and 6.2-6.6 to draw, 112-114 per mille.
+   - *Tested in the testbed* (screenshots in the scratchpad, `pv/log2/`, `pv/log5/`, `pv/log6/` and `pv/log7/`, not committed): a video
+     row played in its window below the player window, dithered to one bit (`p2-playing.png`); pause by a click in
+     the picture (the card paused at 12.5 s with 189 KB waiting) and resume; the Library brought over it, the picture
+     not drawn over the Library (`p2-covered.png`), and back when uncovered; dragged by 50 x 40 pixels, the card's
+     rectangle following (`p2-moved.png`); a menu held down (`p2-menu.png`); paused while covered and the last
+     picture drawn again when uncovered (`p2-paused-front.png`); the end of the 40-second video and the album's
+     second video after it; `play v:ID` from the server's devices interface (the SE's record with its 18th field 1,
+     version 1.6, no `audio_only`) and an added song after it, which played when the video had ended; a seek from
+     the server (`start=5`), the next request taken by the server's one encoder without a 503; a click at three
+     quarters of the player window's progress line (`start=30`, `p5-seek.png`, Now Playing saying "Video 2 of 2 -
+     MPEG-1 320x240" once the album's second video had followed); the window resized for a video of another shape;
+     the screen at 1024 x 768 (`mac.screen=` and QEMU's VideoCore at that size), the picture 512 x 288 at one bit
+     (`p6-playing.png`) and, after Aurora68 Depth 8, 512 x 384 in 256 colours (`p6-colour.png`); the close box (the
+     picture hidden, the sound on; the next video opens the window again) and Controls > Show Video; after the fix above, the window closed three times while playing,
+     nothing of the picture left on the desktop or the Library (`p7-closed1.png` to `p7-closed3.png`), and Stop
+     taking the window away (`p7-stopped.png`).
+     `make -C mac check`: play_core_test 205 checks on the host and 171 as a 68020 program, icy_test 94; the server's
+     test 204 checks; GitHub's runner: XCTest 21 tests and the server's test (runs 45101492555 and 45101492625).
+   - *Not verified:* the SE. On the SE board in MAME, item 110 found QuickTime's clock stalled over MAME's VIA; the
+     card's stream channel has its own clock, but it was not tried there (one emulator at a time, and the lock was
+     shared with the QuickTime MPEG-1 work). On the owner's SE: the network's rate over the Pi's Ethernet or WiFi
+     (the log's "network ... kbit/s" and "under 8 KB in hand for ... ms of ... ms played" at the end of each video),
+     whether 400 kbit/s keeps time and looks acceptable dithered on the 9-inch screen, the sound through HDMI or the
+     jack, HDMI in colour with the window on that screen (larger pictures there: 512 x 384 below 1280 wide, 640 x
+     480 above), and a long video's memory (the card's ring is 512 KB; the Play holds nothing of the video itself).
+     In the testbed neither a connection lost in the middle of a video (the Play stops the card and asks again from
+     the picture shown) nor a 503 from a busy encoder (asked again after a second) happened, so those two paths have
+     not run; nor has the SE board's second screen (the window on HDMI beside the SE's own).

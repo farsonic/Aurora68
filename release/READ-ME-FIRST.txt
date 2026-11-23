@@ -304,6 +304,14 @@ bar seeks, Movie > Double Size doubles the picture. Its Card menu switches Quick
 card on and off without restarting. To make such a film on another computer: ffmpeg -i in.mp4
 -vf scale=320:240 -c:v mpeg1video -b:v 800k -c:a mp2 -b:a 128k -ar 44100 -f mpeg out.mpg
 
+Music videos in Aurora68 Play (1.6): with the video decoder card above, a video in the music server's
+library (a "Video:" row after an album's songs, or one sent from the server's web page) plays in a window
+of its own on the SE's screen, or in colour on HDMI if Aurora68 Play's window is there. Click in the
+picture or press the space bar to pause; click the progress line in Aurora68 Play's window to jump; the
+close box hides the picture and the sound goes on (Controls > Show Video brings it back). The log says
+"A68 Play: video: played to the end ..." with the numbers the testbed cannot give: please send those lines
+(the network's rate, "under 8 KB in hand for ... ms", the pictures shown and not drawn) from the SE.
+
 MP3 files: copy the folder Aurora68 Play (Mac/Aurora68/) onto the Mac and the MP3s anywhere on its
 disks (a USB stick or the Lagoon share will do; files from a PC need no Mac type). Open one with File >
 Open..., or drop it on Aurora68 Play's icon; the space bar plays and pauses. Files given the type MPG3

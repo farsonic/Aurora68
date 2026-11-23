@@ -13,6 +13,14 @@ Since 0.13 (docs/08 items 96 and 103):
   (the owner's 2.5.1). Measured in the testbed only: at one bit QuickTime's own decompressors are as fast; Cinepak at
   256 colours is 1.7 times faster through the card. Programs can use the card without QuickTime through the
   driver: `docs/video-decoder-api.md`. Not yet tried on the SE.
+- **Aurora68 Play 1.6: music videos shown on the SE** (docs/08 item 114, docs/09 "Music videos on the video decoder
+  card"). With the video decoder card (it is in every start unless `mac.video=off`), a music video from the music
+  server's library plays in a window of its own instead of only its sound: the server sends it as MPEG-1 at a size
+  for the screen (320 x 240 at most on the SE's screen, larger on a large HDMI screen), the card draws it, dithered
+  on the SE's screen, in colour on HDMI. Pause, Stop, Previous, Next, the volume and seeking on the progress line work
+  as for songs; the queue goes on after a video. The SE now tells the music server it shows video, so a video sent
+  to it from the web panel or the macOS Play is shown. Needs a music server of 22 November 2026 or later (`mpeg1` among its capabilities); with an older one a video plays its sound, as before.
+  Tested in the testbed; on the SE the network's speed decides whether a video keeps time (see the item).
 - **Aurora68 Video: MPEG-1 films on the card** (docs/08 item 112). A new program in the Aurora68 folder: File >
   Open... or double-click an MPEG-1 film (.mpg, MP2 sound) and the card plays it in the window, the SE's screen
   included; pause, seek with the position bar, double size, volume, and the switch for QuickTime decoding on the

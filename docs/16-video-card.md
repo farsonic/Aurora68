@@ -286,6 +286,28 @@ own window, or of the HDMI screen for full screen), 113 (volume) and 114 (end). 
 to change for that; if Play would rather hand the film over, Aurora68 Video could take a URL in an 'odoc' of a
 small text document, which is not built.
 
+**Built the same day: Aurora68 Play 1.6** (docs/08 item 114, docs/09 "Music videos on the video decoder card").
+It took the driver path above, unchanged, and needed nothing new of the kernel or the driver:
+- *Finding the card*: an Open of ".A68Video" by name, Status 100 for the window, the block's magic, as Aurora68
+  Video does; without it, or with a server that lacks `mpeg1`, a video plays its sound as in 1.5.
+- *The bytes*: the Play's receive chain (radio.c, MacTCP's or Riptide's TCPRcv completing at interrupt time) writes
+  each piece of the answer's body into the ring and then head, as Aurora68 Video's PBRead does; the room it waits
+  for is the card's ring's. The card is started (Control 110) when the answer's headers have come, with its place
+  (112) and volume (113) first; at the stream's end Control 114, and the queue moves on when the block's state says
+  "ended". A seek is Control 110 stop, a new `/vmpeg/ID?...&start=S`, start. A 503 (the server's one MPEG-1 encoder
+  still stopping the last stream) is asked again after a second; in the testbed the old ffmpeg had always gone.
+- *The place*: the video window's content rectangle in its screen's pixels; not visible while a window of the
+  Play's overlaps it, while a menu is down, a window is dragged or sized, a dialog is up, another program is in
+  front, or the window is hidden. One thing found: the card had to be told before the Window Manager painted what
+  a closing window uncovered, since the desktop is painted at once and by no update event, and a picture drawn in
+  between stayed on it (a corner of a picture left on the desktop in the testbed). Play now tells the card first.
+- *The size and the rate*: the server's MPEG-1 at a size of the video's own shape for the screen (320 x 240 at most
+  on 512 x 342; `a68_vmpeg_size`), and, new in the server, `rate=` kbit/s of video: the server's own 2,500 kbit/s at
+  320 x 240 is more than the testbed's MacTCP carried (450-750 kbit/s), and a stream that comes too slowly does not
+  run the card dry: its sound is the clock, and the sound and pictures stretch together (a 40-second film took 102
+  seconds, every picture shown, the card's "times dry" 0). The Play asks for `a68_vmpeg_rate`, 400 kbit/s at 320 x
+  240; with it the 40-second test film, at 320 x 180 and 300 kbit/s, played in 43 seconds in the testbed.
+
 ## Modern formats: a study (22 November 2026)
 The owner's third item: H.264 video ('avc1') and AAC sound ('mp4a') in .mp4 and .mov files from a camera or
 a phone. QuickTime 2.5 reads the MPEG-4 file format's atoms as a QuickTime movie (they are the same
