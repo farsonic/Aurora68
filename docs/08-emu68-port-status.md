@@ -5706,3 +5706,12 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      the bursts and 4 times (4.4 s) in the outage, each started after its first 64 KB; the new code with
      `mac.vbuffer=0 mac.vprefill=0` stopped 1,216 and 4,394 times, frame by frame. Paused for 8 s in the middle of a
      rebuffer, a stream rebuffered once and went on when resumed (scratch variant).
+
+126. **The owner's SE confirms Play 1.8, the card's buffering and Riptide's clock fix (23 November).** On the real SE
+   (PiStorm, WiFi, HDMI colour), with the kernel of items 124-125, Play 1.8, Aurora68 Video 1.1 and the Riptide with
+   the IPv6 seconds clock guarded against steps back: "Streaming video is working with IPv6, resizing windows, plays in
+   background, seems to buffer okay". So the video window's size box, drawing through the window's visible region with
+   another program in front (item 124), the Pi-side buffer and the start and rebuffer rules (item 125) and IPv6 First
+   with a lasting IPv6 address (item 124 and the Riptide change) all hold on hardware. Still open from the same
+   sessions: the lock-ups after minutes of video and while scrolling the Videos list (no log yet; Play 1.8 logs any
+   event-loop pass of 3 s or more).
