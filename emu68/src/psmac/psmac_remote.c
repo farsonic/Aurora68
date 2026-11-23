@@ -1441,6 +1441,11 @@ static void handle(int c)
         return;
     }
     if (post && !__builtin_strcmp(path, "/restart")) { control(h, query(q, "how", v, sizeof v)); return; }
+    if (get && !__builtin_strcmp(path, "/files/progress")) {        /* beside a transfer, on another connection (psmac_files.c) */
+        static char b[2000]; psmac_files_progress_json(b, sizeof b);
+        respond(h, 200, "OK", "application/json", b);
+        return;
+    }
     if (starts(path, "/files/") || !__builtin_strcmp(path, "/apps") || starts(path, "/apps/")) {
         int code; char msg[300];
         if (psmac_files_request(c, method, path, q, (const uint8_t *)body, have, has_clen ? (int32_t)clen : -1, &code, msg, sizeof msg)) {

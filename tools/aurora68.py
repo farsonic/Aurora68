@@ -40,6 +40,8 @@ applications"). Paths are the Mac's: "Mac HD:Folder:File", and ":Folder:File" on
                                                  .mp3 MPG3/PIPY ...); PATH ending in ':' is a folder; never overwrites
                                                  without --force, makes missing folders only with --mkdir;
                                                  --text turns UTF-8 and newlines into the Mac's (pull --text back)
+                                                 push and pull show their progress on stderr: one line redrawn on a
+                                                 terminal, a line every five seconds otherwise, nothing with -q
   aurora68.py mkdir PATH [-p] | rm PATH | mv PATH NEWPATH
                                                  rm takes a file or an empty folder, never more; mv stays on one disk
   aurora68.py open PATH                          launch an application, or open a document with its application
@@ -62,7 +64,7 @@ Where: --url (default $AURORA68_URL, else http://aurora68-pi.local), --token (de
 $AURORA68_TOKEN). In the QEMU testbed, --semihost BASE talks to the kernel through the files of
 mac.remotefile=BASE instead of the network.
 """
-import argparse, json, os, re, socket, struct, sys, time, urllib.error, urllib.parse, urllib.request
+import argparse, json, os, re, socket, struct, sys, threading, time, urllib.error, urllib.parse, urllib.request
 
 
 class Remote:
@@ -109,16 +111,20 @@ class Remote:
         except urllib.error.HTTPError as e:
             return e.code, dict(e.headers), e.read()
 
-    def stream(self, method, path, upload=None, size=0, sink=None):
+    def stream(self, method, path, upload=None, size=0, sink=None, on_sent=None, on_received=None):
         """(status, headers, bytes or None) of a request whose body is the open file upload (size bytes) and
-        whose answer, if sink is given, is written to it as it comes: a file of any size in either direction"""
+        whose answer, if sink is given, is written to it as it comes: a file of any size in either direction.
+        on_sent(n): the body's bytes as the socket takes them; on_received(n, length, headers): the answer's"""
         if self.semihost:
             status, h, data = self._semihost(method, path, upload.read() if upload else None)
             if sink and status == 200:
-                sink.write(data); return status, h, None
+                sink.write(data)
+                if on_received: on_received(len(data), len(data), {k.lower(): v for k, v in h.items()})
+                return status, h, None
             return status, h, data
         self._probe()
-        req = urllib.request.Request(self.url + path, data=upload, method=method)
+        body = _Counting(upload, on_sent) if upload is not None and on_sent else upload
+        req = urllib.request.Request(self.url + path, data=body, method=method)
         if self.token:
             req.add_header('X-Aurora-Token', self.token)
         if upload is not None:
@@ -128,11 +134,14 @@ class Remote:
             with urllib.request.urlopen(req, timeout=max(self.timeout, 60)) as r:
                 if sink is None or r.status != 200:
                     return r.status, dict(r.headers), r.read()
+                got, length, hl = 0, int(r.headers.get('Content-Length') or 0), {k.lower(): v for k, v in r.headers.items()}
+                read = getattr(r, 'read1', r.read)          # what has come, not a full 64 KiB: the progress moves smoothly
                 while True:
-                    b = r.read(65536)
+                    b = read(65536)
                     if not b:
                         break
-                    sink.write(b)
+                    sink.write(b); got += len(b)
+                    if on_received: on_received(got, length, hl)
                 return r.status, dict(r.headers), None
         except urllib.error.HTTPError as e:
             return e.code, dict(e.headers), e.read()
@@ -249,12 +258,12 @@ class Remote:
         return self._json('POST', '/restart?how=' + how)
 
     # ---- files and programs, through the Aurora68 Agent on the Mac (docs/13, "Files and applications") ----
-    def _files(self, method, path, upload=None, size=0, sink=None):
+    def _files(self, method, path, upload=None, size=0, sink=None, on_sent=None, on_received=None):
         """a /files or /apps request; one file job runs at a time, so a busy answer is tried again"""
         for attempt in range(40):
             if upload is not None:
                 upload.seek(0)
-            status, h, data = self.stream(method, path, upload, size, sink)
+            status, h, data = self.stream(method, path, upload, size, sink, on_sent, on_received)
             if status == 503 and data and b'another file job' in data:
                 time.sleep(0.5); continue
             if status != 200:
@@ -275,18 +284,82 @@ class Remote:
     def info(self, path):
         return self._fjson('GET', '/files/info?path=' + q(path))
 
-    def pull(self, path, sink, macbinary=False, rsrc=False):
-        """the file into sink; its headers (x-aurora-type ...)"""
-        h, _ = self._files('GET', '/files/data?path=' + q(path) + ('&macbinary=1' if macbinary else '') + ('&fork=rsrc' if rsrc else ''), sink=sink)
+    def progress(self):
+        """the kernel's /files/progress (the transfer under way, asked on a connection of its own): a dict; {} when
+        the kernel has none (before 23 November 2026: 404), None when it did not answer"""
+        if self.semihost:
+            return {}                                   # one request at a time on that channel
+        req = urllib.request.Request(self.url + '/files/progress')
+        if self.token:
+            req.add_header('X-Aurora-Token', self.token)
+        try:
+            with urllib.request.urlopen(req, timeout=3) as r:
+                return json.loads(r.read().decode('utf-8'))
+        except urllib.error.HTTPError as e:
+            return {} if e.code == 404 else None
+        except (OSError, ValueError):
+            return None
+
+    def pull(self, path, sink, macbinary=False, rsrc=False, progress=None):
+        """the file into sink; its headers (x-aurora-type ...). progress: a Progress, fed with the bytes as they arrive
+        (each has been read on the Mac), and for MacBinary the fork they belong to"""
+        def received(n, length, h):
+            fork = None
+            if macbinary:
+                dlen = int(h.get('x-aurora-data-length') or 0)
+                fork = 'header' if n <= 128 else 'data' if n <= 128 + ((dlen + 127) & ~127) and dlen else 'rsrc'
+            progress.update(n, length, fork=fork, what='received')
+        h, _ = self._files('GET', '/files/data?path=' + q(path) + ('&macbinary=1' if macbinary else '') + ('&fork=rsrc' if rsrc else ''),
+                           sink=sink, on_received=received if progress else None)
         return h
 
-    def push(self, f, size, path, macbinary=False, ftype=None, creator=None, force=False, mkdir=False):
+    def push(self, f, size, path, macbinary=False, ftype=None, creator=None, force=False, mkdir=False, progress=None):
+        """the file f (size bytes) to path; the kernel's answer. progress: a Progress, fed with what the Mac has written
+        (polled from /files/progress on a second connection), or with an older kernel the bytes sent"""
         args = '/files/data?path=' + q(path) + ('&macbinary=1' if macbinary else '')
         if ftype: args += '&type=' + q(ftype)
         if creator: args += '&creator=' + q(creator)
         if force: args += '&force=1'
         if mkdir: args += '&mkdir=1'
-        return json.loads(self._files('PUT', args, upload=f, size=size)[1].decode('utf-8'))
+        if progress is None:
+            return json.loads(self._files('PUT', args, upload=f, size=size)[1].decode('utf-8'))
+        # served: None until the kernel's first answer (True: it has /files/progress; False: an older kernel, or the
+        # semihosting channel, which takes one request at a time); until then, for a second, no bytes "sent" are shown:
+        # the socket takes the first tens of KB at once, which says nothing about the Mac
+        stop, mac, t0 = threading.Event(), {'seen': False, 'served': False if self.semihost else None, 'sent': 0}, time.time()
+
+        def sent(n):
+            mac['sent'] = n
+            if not mac['seen'] and (mac['served'] is False or time.time() - t0 > 1.5):
+                progress.update(n, size, what='sent')
+
+        def poll():
+            while not stop.wait(0.4):
+                if mac['served'] is not False:
+                    p = self.progress()
+                    if p == {}:                         # an older kernel: the bytes sent are all there is
+                        mac['served'] = False
+                    elif p:
+                        mac['served'] = True
+                        if p.get('active') and p.get('job') == 'push':
+                            mac['seen'] = True
+                            received = p.get('received', 0)
+                            progress.update(p.get('done', 0), p.get('total') or None, fork=p.get('fork') if macbinary else None,
+                                            what='written on the Mac',
+                                            note=f'(the Pi has {human(received)})' if received and size and received < size else '')
+                        continue
+                if mac['served'] is False and not mac['seen']:   # the bytes sent; once all are, the wait for the Mac's answer
+                    progress.update(mac['sent'], size, what='sent',
+                                    note=f'waiting for the Mac {hms(time.time() - t0)}' if size and mac['sent'] >= size else '')
+        t = threading.Thread(target=poll, daemon=True)
+        if not self.semihost:                           # one request at a time there: no progress until the end
+            t.start()
+        try:
+            return json.loads(self._files('PUT', args, upload=f, size=size, on_sent=sent)[1].decode('utf-8'))
+        finally:
+            stop.set()
+            if t.is_alive():
+                t.join(4)
 
     def mkdir(self, path, parents=False):
         return self._fjson('POST', '/files/mkdir?path=' + q(path) + ('&parents=1' if parents else ''))
@@ -356,6 +429,108 @@ def human(n):
         n /= 1024
 
 
+def hms(s):
+    s = int(s + 0.5)
+    return f'{s // 3600}:{s // 60 % 60:02d}:{s % 60:02d}' if s >= 3600 else f'{s // 60}:{s % 60:02d}'
+
+
+class Progress:
+    """A transfer's progress on stderr (23 November 2026; the owner: "we need more feedback on progress when pushing or
+    downloading files"). On a terminal one line redrawn in place, at most ten times a second: what, the fork of a
+    MacBinary file, bytes done of the total, per cent, the rate over the last few seconds and the time left. Not on a
+    terminal (a log, a script): a plain line every five seconds. quiet: nothing. `what` says whose bytes the numbers
+    are: "written on the Mac" (the kernel's /files/progress), "received", or "sent" (an older kernel: the bytes this
+    end's socket took, which run ahead of the Mac by what the Pi holds)."""
+    def __init__(self, label, total=0, quiet=False, stream=None):
+        self.label, self.total, self.quiet = label, total, quiet
+        self.stream = stream or sys.stderr
+        self.tty = not quiet and self.stream.isatty()
+        self.t0 = time.time(); self.width = 0
+        self.shown = 0.0 if self.tty else self.t0           # a log's first line after five seconds, not at 0%
+        self.done, self.fork, self.what, self.note = 0, '', '', ''
+        self.samples = [(self.t0, 0)]
+        self.lock = threading.Lock()                        # a push is fed by its upload and by the kernel's progress
+
+    def update(self, done, total=None, fork=None, what=None, note=None):
+        with self.lock:
+            if total: self.total = total
+            if fork is not None: self.fork = fork
+            if what is not None and what != self.what:      # other bytes from now on (the Mac's, not the socket's): a new rate
+                if self.what: self.samples = [(self.t0, 0)]
+                self.what = what
+            if note is not None: self.note = note
+            now = time.time()
+            if done != self.done:
+                self.samples.append((now, done))
+                while len(self.samples) > 2 and now - self.samples[1][0] > 4.0:
+                    self.samples.pop(0)
+            self.done = done
+            if self.quiet or now - self.shown < (0.1 if self.tty else 5.0):
+                return
+            self.shown = now
+            self.draw(now)
+
+    def rate(self, now):
+        (ta, da), (tb, db) = self.samples[0], self.samples[-1]
+        if tb - ta < 0.3:                                   # too short a window: since the start
+            ta, da = self.t0, 0
+        return (db - da) / max(now - ta, 1e-3) if db > da else 0.0
+
+    def line(self, now):
+        r = self.rate(now)
+        parts = [self.label]
+        if self.fork: parts.append(f'[{self.fork}]')
+        if self.total:
+            pct = 100.0 * self.done / self.total
+            parts.append(f'{human(self.done)} of {human(self.total)} {pct:3.0f}%')
+        else:
+            parts.append(human(self.done))
+        if self.what: parts.append(self.what)
+        parts.append(f'{human(r)}/s')
+        if self.total and r > 0 and self.done < self.total:
+            parts.append(f'{hms((self.total - self.done) / r)} left')
+        if self.note: parts.append(self.note)
+        return '  '.join(parts)
+
+    def draw(self, now):
+        text = self.line(now)
+        if self.tty:
+            cols = 0
+            try:
+                cols = os.get_terminal_size(self.stream.fileno()).columns
+            except (OSError, ValueError):
+                pass
+            if cols and len(text) >= cols:
+                text = text[:cols - 1]
+            self.stream.write('\r' + text + ' ' * max(0, self.width - len(text)))
+            self.width = len(text)
+        else:
+            self.stream.write(text + '\n')
+        self.stream.flush()
+
+    def finish(self):
+        with self.lock:
+            self.quiet = True                               # a late update from the poller draws nothing more
+        if self.tty and self.width:
+            self.stream.write('\r' + ' ' * self.width + '\r'); self.stream.flush()
+        self.width = 0
+
+
+class _Counting:
+    """a file object whose reads are counted (an upload's bytes as this end's socket takes them)"""
+    def __init__(self, f, cb):
+        self.f, self.cb, self.n = f, cb, 0
+
+    def read(self, n=-1):
+        b = self.f.read(n)
+        self.n += len(b); self.cb(self.n)
+        return b
+
+    def seek(self, *a):
+        self.n = 0
+        return self.f.seek(*a)
+
+
 def ls_table(r):
     es = r['entries']
     if not r.get('path'):
@@ -405,25 +580,71 @@ class Recovery:
             raise RuntimeError(f'{method} {path}: {r.status} {msg}')
         return data if raw else json.loads(data)
 
-    def put_file(self, local, name, progress=True):
-        """the file streamed to the card; the kernel reads it back and answers with its CRC32"""
+    def get_file(self, name, local, progress=None):
+        """a file of the card into local, as it comes; its length"""
+        c = self.conn(600)
+        c.request('GET', '/r/file?name=' + urllib.parse.quote(name), headers={'X-Aurora-Pin': self.pin})
+        r = c.getresponse()
+        if r.status != 200:
+            data = r.read(); c.close()
+            try:
+                msg = json.loads(data).get('error', data.decode(errors='replace'))
+            except ValueError:
+                msg = data.decode(errors='replace')
+            raise RuntimeError(f'GET /r/file: {r.status} {msg}')
+        length, got = int(r.getheader('Content-Length') or 0), 0
+        with open(local, 'wb') as f:
+            while True:
+                b = r.read1(65536) if hasattr(r, 'read1') else r.read(65536)
+                if not b:
+                    break
+                f.write(b); got += len(b)
+                if progress:
+                    progress.update(got, length, what='received')
+        c.close()
+        if length and got != length:
+            raise RuntimeError(f'{name}: {got} of {length} bytes came ({local} kept)')
+        return got
+
+    def put_file(self, local, name, progress=None):
+        """the file streamed to the card; the kernel reads it back and answers with its CRC32. progress: a Progress,
+        fed with the bytes on the card (the upload's "written" in /r/state, asked on a second connection), or the
+        bytes sent while /r/state does not say"""
         import zlib
         size = os.path.getsize(local)
         c = self.conn(600)
         c.putrequest('PUT', '/r/file?name=' + urllib.parse.quote(name))
         c.putheader('X-Aurora-Pin', self.pin); c.putheader('Content-Length', str(size)); c.endheaders()
         crc, sent, t0 = 0, 0, time.time()
-        with open(local, 'rb') as f:
-            while True:
-                b = f.read(65536)
-                if not b:
-                    break
-                c.send(b); crc = zlib.crc32(b, crc); sent += len(b)
-                if progress and sys.stderr.isatty():
-                    sys.stderr.write(f'\r{human(sent)} of {human(size)}'); sys.stderr.flush()
-        if progress and sys.stderr.isatty():
-            sys.stderr.write('\n')
-        r = c.getresponse(); data = r.read(); c.close()
+        stop, card = threading.Event(), {'seen': False}
+
+        def poll():
+            while not stop.wait(0.5):
+                try:
+                    u = self.call('GET', '/r/state', timeout=3).get('upload', {})
+                except (RuntimeError, OSError, ValueError):
+                    continue
+                if u.get('state') in ('receiving', 'checking') and u.get('total') == size:
+                    card['seen'] = True
+                    progress.update(u.get('written', 0), size, what='on the card',
+                                    note='reading it back' if u.get('state') == 'checking' else '')
+        t = threading.Thread(target=poll, daemon=True)
+        if progress:
+            t.start()
+        try:
+            with open(local, 'rb') as f:
+                while True:
+                    b = f.read(65536)
+                    if not b:
+                        break
+                    c.send(b); crc = zlib.crc32(b, crc); sent += len(b)
+                    if progress and not card['seen']:
+                        progress.update(sent, size, what='sent')
+            r = c.getresponse(); data = r.read(); c.close()
+        finally:
+            stop.set()
+            if progress:
+                t.join(4); progress.finish()
         try:
             j = json.loads(data)
         except ValueError:
@@ -448,15 +669,19 @@ def recovery_main(a):
             print(f'{human(f["size"]) if not f["folder"] else "folder":>10}  {f["name"]}{"/" if f["folder"] else ""}')
         print(f'{x["count"]} entries; {x.get("card", "")}' + (f', {human(x["free_kb"] * 1024)} free' if 'free_kb' in x else ''))
     elif c == 'put':
-        j = r.put_file(a.file, a.name or os.path.basename(a.file))
+        j = r.put_file(a.file, a.name or os.path.basename(a.file), progress=Progress('put ' + (a.name or os.path.basename(a.file)), quiet=a.quiet))
         print(f'{j["name"]}: {human(j["size"])} in {j["seconds"]} s, CRC32 {j["crc32"]} read back from the card and the same as here'
               + (f'; {j["check"]}' if j.get('check') else '') + ('; the old kernel kept as kernel8.old' if j.get('installed') else '')
               + (f'; the old one kept as {j["backup"]}' if j.get('backup') else ''))
     elif c == 'get':
-        data = r.call('GET', '/r/file?name=' + urllib.parse.quote(a.name), raw=True, timeout=600)
         out = a.out or a.name
-        open(out + '.part', 'wb').write(data); os.replace(out + '.part', out)
-        print(f'{out}: {human(len(data))}')
+        pr, t0 = Progress('get ' + a.name, quiet=a.quiet), time.time()
+        try:
+            n = r.get_file(a.name, out + '.part', pr)
+        finally:
+            pr.finish()
+        os.replace(out + '.part', out)
+        print(f'{out}: {human(n)} in {time.time() - t0:.1f} s')
     elif c == 'rm':
         r.call('POST', '/r/rm?name=' + urllib.parse.quote(a.name)); print(f'{a.name} deleted')
     elif c == 'mv':
@@ -628,6 +853,7 @@ def add_recovery(sub):
 def main():
     ap = argparse.ArgumentParser(description='The Pi\'s remote control of the Mac (docs/13).')
     ap.add_argument('--url'); ap.add_argument('--token'); ap.add_argument('--semihost', metavar='BASE')
+    ap.add_argument('-q', '--quiet', action='store_true', help='no progress display for push, pull and recovery put/get')
     ap.add_argument('--display', type=int, help='the screen: 0 the first (the SE\'s on the SE board), 1 the second (HDMI); '
                     'for input, coordinates are then that screen\'s rather than the desktop\'s')
     sub = ap.add_subparsers(dest='cmd', required=True, metavar='COMMAND')
@@ -651,9 +877,11 @@ def main():
     p = sub.add_parser('ls', help='a folder on the Mac (no PATH: its disks)'); p.add_argument('path', nargs='?', default=''); p.add_argument('--json', action='store_true')
     p = sub.add_parser('info', help='one file or folder on the Mac'); p.add_argument('path'); p.add_argument('--json', action='store_true')
     p = sub.add_parser('pull', help='a file from the Mac (--macbinary: forks and type)'); p.add_argument('path'); p.add_argument('local', nargs='?')
+    p.add_argument('-q', '--quiet', action='store_true', default=argparse.SUPPRESS, help='no progress display')
     p.add_argument('--macbinary', action='store_true'); p.add_argument('--rsrc', action='store_true', help='the resource fork instead of the data fork')
     p.add_argument('--text', action='store_true', help='Mac text to UTF-8 with newlines')
     p = sub.add_parser('push', help='a file to the Mac (MacBinary keeps its forks and type)'); p.add_argument('local'); p.add_argument('path')
+    p.add_argument('-q', '--quiet', action='store_true', default=argparse.SUPPRESS, help='no progress display')
     p.add_argument('--force', action='store_true', help='replace a file that is there'); p.add_argument('--mkdir', action='store_true', help='make missing folders')
     p.add_argument('--type'); p.add_argument('--creator'); p.add_argument('--raw', action='store_true', help='send a MacBinary file as it is, as data')
     p.add_argument('--macbinary', action='store_true', help='the file is MacBinary even if it does not look it')
@@ -729,8 +957,12 @@ def main():
             name = a.path.rstrip(':').split(':')[-1].replace('/', '-') + ('.bin' if a.macbinary else '')
             local = os.path.join(local or '.', name)
         tmp = local + '.part'
-        with open(tmp, 'wb') as f:
-            h = r.pull(a.path, f, a.macbinary, a.rsrc)
+        pr = Progress('pull ' + a.path.rstrip(':').split(':')[-1], quiet=a.quiet)
+        try:
+            with open(tmp, 'wb') as f:
+                h = r.pull(a.path, f, a.macbinary, a.rsrc, progress=pr)
+        finally:
+            pr.finish()
         got, want = os.path.getsize(tmp), int(h.get('content-length', -1))
         if want >= 0 and got != want:
             last = r.state().get('agent', {}).get('last', '')
@@ -771,14 +1003,22 @@ def main():
                                    f'push to "{target}:"')
             if mb:
                 kind = f'MacBinary: {mb["type"]}/{mb["creator"]}, data {mb["data"]}, resources {mb["rsrc"]}'
-                res = r.push(f, size, path, macbinary=True, force=a.force, mkdir=a.mkdir)
+                pr = Progress('push ' + target.split(':')[-1], size, quiet=a.quiet)
+                try:
+                    res = r.push(f, size, path, macbinary=True, force=a.force, mkdir=a.mkdir, progress=pr)
+                finally:
+                    pr.finish()
             else:
                 t, c = TYPES.get(os.path.splitext(a.local)[1].lower(), ('????', '????'))
                 t, c = a.type or t, a.creator or c
                 if path.endswith(':'):
                     path += mac_name(a.local)
                 kind = f'data fork, {t}/{c}'
-                res = r.push(f, size, path, ftype=t, creator=c, force=a.force, mkdir=a.mkdir)
+                pr = Progress('push ' + path.split(':')[-1], size, quiet=a.quiet)
+                try:
+                    res = r.push(f, size, path, ftype=t, creator=c, force=a.force, mkdir=a.mkdir, progress=pr)
+                finally:
+                    pr.finish()
         dt = time.time() - t0
         print(f'{res["path"]}: {size} bytes ({kind}) in {dt:.2f} s, {human(size / max(dt, 1e-3))}/s')
     elif a.cmd == 'mkdir':

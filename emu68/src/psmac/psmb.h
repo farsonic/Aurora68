@@ -459,7 +459,7 @@ struct psmb_agent {
     char     path2[256];                     /* +$180: RENAME's new path */
     uint32_t kpad2[64];
     /* the agent's, +$380 */
-    uint32_t magic, version;                 /* 'A68A', 1: written once the agent is installed */
+    uint32_t magic, version;                 /* 'A68A', 2 (1 before 23 November 2026): written once the agent is installed */
     uint32_t beat;                           /* +1 at each look at the block (every GetNextEvent while one is waiting, else once a tick) */
     uint32_t vbl_beat;                       /* +1 at each VBL (60 Hz): the agent is installed and interrupts run */
     uint32_t sysversion;                     /* SysVersion ($15A): 0x0710 for 7.1 */
@@ -470,7 +470,11 @@ struct psmb_agent {
     uint32_t served;                         /* requests answered since the agent started */
     uint32_t wakes;                          /* WakeUpProcess calls of the VBL task */
     uint32_t repeats;                        /* a request looked at again while it was being carried out (a launch's) */
-    uint32_t apad[3];
+    uint32_t taken_seq;                      /* = req_seq once the agent has begun the request (23 November 2026: the kernel
+                                                tells the time a request waited for the Mac from the time it took; 0 from an
+                                                older agent) */
+    uint32_t chained;                        /* requests served straight after the previous one in the same GetNextEvent */
+    uint32_t apad[1];
     char     note[64];                       /* a few words more about an error, Mac Roman ("no application for 'ttxt'") */
     char     startup[32];                    /* the startup volume's name, Mac Roman */
     uint32_t apad2[64];

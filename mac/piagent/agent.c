@@ -1050,6 +1050,7 @@ static int serve(unsigned long req)
 	short e;
 	if (req == serving) { A->repeats++; return 0; }
 	serving = req;
+	A->taken_seq = req;                                       /* the kernel's clock: the wait for the Mac ends here */
 	A->note[0] = 0;
 	A->result = 0; A->more = 0;
 	switch (A->op) {
@@ -1144,6 +1145,7 @@ int c_filter(EventRecord *ev)
 		unsigned long t1 = LM_TICKS;
 		while ((req = A->req_seq) == A->done_seq && LM_TICKS - t1 < 2) ;   /* a transfer's next chunk follows at once */
 		if (req == A->done_seq || LM_TICKS - t0 >= 5 || LM_FSBUSY) break;
+		A->chained++;
 	}
 	busy = 0;
 	if (launch_pending) launch_now();
@@ -1189,8 +1191,8 @@ int init_main(void)
 	a->sysversion = (unsigned long)sv;
 	a->features = features;
 	a->done_seq = a->req_seq;                                 /* nothing from before this start */
-	a->served = 0; a->wakes = 0; a->repeats = 0;
-	a->version = 1;
+	a->served = 0; a->wakes = 0; a->repeats = 0; a->chained = 0;
+	a->version = 2;                                           /* 2 (23 November 2026): taken_seq and chained */
 	vbl.qType = 1;                                            /* vType */
 	vbl.vblAddr = (void *)vbl_task;
 	vbl.vblCount = 1;
