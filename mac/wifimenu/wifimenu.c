@@ -16,6 +16,8 @@
  * joined with "Remember this network" ticked is written into cmdline.txt on the Pi's card once the
  * join has succeeded (wifi.ssid= and wifi.psk=, through the mailbox's PSMB_INFO_SETOPT,
  * emu68/src/psmac/psmac_card.c), so the next power-on joins it by itself. Written 18 November 2026.
+ * Since 23 November 2026 the extension is "Aurora68 Menu Extras": a clock beside the icons (clock.c), and the
+ * three placed where the program's menus leave room (bar.c) instead of at fixed places.
  */
 #include "toolbox.h"
 #include "menus.h"
@@ -52,6 +54,7 @@ void **mac_newhandle(long size);
 int get_sr(void);
 void set_sr(int sr);
 void *old_drawmenubar, *old_gne;
+void retire_old_copies(void);
 
 #define LM_MBARHEIGHT (*(volatile short *)0xBAA)
 #define LM_JGNEFILTER (*(void **volatile *)0x29A)
@@ -95,9 +98,7 @@ static void probe(const char *step)
 /* ---- the icon: 16 x 12, a dot and three arcs; level 0-3 filled, the rest dotted ---- */
 static unsigned short icons[6][12];      /* 0-3 signal, 4 off, 5 searching */
 static struct { void *base; short rowBytes; Rect bounds; } bm;
-Rect icon_r;
-static Rect hit_r;
-static int shown = -1;
+int shown = -1;
 
 static void make_icons(void)
 {
@@ -126,7 +127,7 @@ static void make_icons(void)
 }
 
 static int rssi_bars(int rssi) { return rssi >= -55 ? 3 : rssi >= -67 ? 2 : rssi >= -78 ? 1 : 0; }
-static int picture(void)
+int picture(void)
 {
 	unsigned long st = rd32(UNIT0 + U_STATE);
 	if (rd32(UNIT0 + U_ADMIN_OFF) || st == ST_OFF || st == ST_NOFW) return 4;
@@ -134,30 +135,14 @@ static int picture(void)
 	return 5;
 }
 
-void c_draw_icon(void)
+/* the icon at icon_r (bar.c places it), the Window Manager's port set */
+void wifi_draw(void *wm)
 {
-	void *save, *wm;
-	short mbh = LM_MBARHEIGHT;
-	if (mbh < 12) return;
-	GetPort(&save);
-	GetWMgrPort(&wm);
-	SetPort(wm);
-	Rect *pr = PORT_RECT(wm);
-	icon_r.right = pr->right - 76;
-	icon_r.left = icon_r.right - 16;
-	icon_r.top = (short)((mbh - 12) / 2);
-	icon_r.bottom = icon_r.top + 12;
-	hit_r = icon_r;
-	InsetRect(&hit_r, -6, 0);
-	hit_r.top = 0;
-	hit_r.bottom = mbh;
 	shown = picture();
 	bm.base = icons[shown];
 	bm.rowBytes = 2;
 	bm.bounds.top = 0; bm.bounds.left = 0; bm.bounds.bottom = 12; bm.bounds.right = 16;
 	CopyBits(&bm, (char *)wm + 2, &bm.bounds, &icon_r, 0, 0);
-	bt_draw(wm, mbh);
-	SetPort(save);
 }
 
 /* ---- the radio's command box ---- */
@@ -202,12 +187,15 @@ static void save_network(void)
 	for (unsigned i = 0; i < sizeof save_pass; i++) save_pass[i] = 0;
 }
 
-/* between events: redraw when the picture changes; save a network once it has been joined */
+/* between events: the clock moved on, a picture changed; a network to save once it has been joined */
 static unsigned long next_look;
 void c_tick(void)
 {
 	unsigned long t = LM_TICKS;
-	if (t < next_look) return;
+	if (t < next_look) {
+		if (clock_due()) draw_extras(0);
+		return;
+	}
 	next_look = t + 60;
 	if (save_pending) {
 		unsigned long st = rd32(UNIT0 + U_STATE);
@@ -215,7 +203,7 @@ void c_tick(void)
 		else if (st == ST_FAILED || st == ST_IDLE || --save_pending == 0) { save_pending = 0; for (unsigned i = 0; i < sizeof save_pass; i++) save_pass[i] = 0; }
 	}
 	PROBE("wm: tick before draw");
-	if (picture() != shown || bt_picture() != bt_shown) c_draw_icon();
+	if (clock_due() || (shown >= 0 && picture() != shown) || (bt_shown >= 0 && bt_picture() != bt_shown)) draw_extras(0);
 	PROBE("wm: tick after draw");
 }
 
@@ -399,14 +387,15 @@ static void join(const char *ssid, int is_secured)
 	for (int i = 0; i < 64; i++) pass[i] = 0;
 }
 
-static int c_menuselect(long pt)
+int c_menuselect(long pt)
 {
 #ifdef WM_DEBUG
 	slot0 = *(volatile unsigned long *)0x774;
 	dlog("wifimenu: click");
 #endif
 	short v = (short)(pt >> 16), h = (short)pt;
-	if (shown < 0 || LM_MBARHEIGHT < 12 || v < hit_r.top || v >= hit_r.bottom || h < hit_r.left || h >= hit_r.right)
+	(void)v; (void)h;
+	if (shown < 0 || LM_MBARHEIGHT < 12 || !on_extra(&hit_r, pt))
 		return 0;
 	if (rd32(0) != PSMB_MAGIC) return 0;
 	unsigned long st = rd32(UNIT0 + U_STATE);
@@ -487,7 +476,7 @@ static int c_menuselect(long pt)
 	InsertMenu(m, -1);
 	PROBE("wm: after InsertMenu");
 	InitCursor();                                    /* the arrow, whatever the program showed */
-	InvertRect(&icon_r);
+	{ void *save; wm_begin(&save); InvertRect(&icon_r); wm_end(save); }
 	/* item 1's top two rows below the bar: the frame then starts on the row under the bar's line.
 	   With one row (MBarHeight + 1) the MDEF found the frame touching the menu bar and moved the
 	   whole menu down by an item, leaving a gap of the desktop between bar and menu. */
@@ -496,7 +485,8 @@ static int c_menuselect(long pt)
 	DeleteMenu(MENU_ID);
 	PROBE("wm: after DeleteMenu");
 	DisposeMenu(m);
-	c_draw_icon();
+	shown = -1;
+	draw_extras(0);
 	PROBE("wm: after Dispose+draw");
 	int item = (short)(r & 0xFFFF);
 	if ((r >> 16) == MENU_ID && item) {
@@ -521,22 +511,51 @@ static int c_menuselect(long pt)
 	return 1;
 }
 
-/* jGNEFilter: the time, and a press on the icon */
+/* jGNEFilter: the time, and a press on one of the extras. Not while one of their own menus or dialogs is
+   up (ModalDialog and the menus' own calls come back through here). */
+static int busy;
 int c_filter(EventRecord *ev)
 {
+	if (busy) return 0;
+	busy = 1;
 	c_tick();
-	if (ev->what != mouseDown || LM_MBARHEIGHT < 12) return 0;
-	if (!c_menuselect(pt_long(ev->where)) && !bt_menuselect(pt_long(ev->where))) return 0;
-	ev->what = nullEvent;
-	return 1;
+	clock_idle();
+	int took = 0;
+	if (ev->what == mouseDown && LM_MBARHEIGHT >= 12) {
+		long pt = pt_long(ev->where);
+		took = clock_menuselect(pt) || c_menuselect(pt) || bt_menuselect(pt);
+		if (took) ev->what = nullEvent;
+	}
+	busy = 0;
+	return took;
+}
+
+/* a line in the Pi's log, through the INFO service as the drivers' log macro does */
+static char lbuf[96];
+void mlog(const char *t)
+{
+	int n = 0;
+	while (t[n] && n < 95) { lbuf[n] = t[n]; n++; }
+	int sr = get_sr();
+	set_sr(sr | 0x0700);
+	unsigned long req = rd32(INFO_CMD), k;
+	for (k = 0; rd32(INFO_CMD + 4) != req && k < 2000000; k++) ;
+	*(volatile unsigned short *)(win() + INFO_CMD + 8) = 2;
+	wr32(INFO_CMD + 28, (unsigned long)lbuf);
+	wr32(INFO_CMD + 32, (unsigned long)n);
+	wr32(INFO_CMD, req + 1);
+	for (k = 0; rd32(INFO_CMD + 4) != req + 1 && k < 4000000; k++) ;
+	set_sr(sr);
 }
 
 void init_main(void)
 {
 	if (LM_SYSVERSION < 0x0700) return;            /* PopUpMenuSelect and the rest are System 7's */
 	if (rd32(0) != PSMB_MAGIC) return;             /* not an Aurora68 Mac */
+	retire_old_copies();
 	make_icons();
 	bt_make_icons();
+	clock_init();
 	old_drawmenubar = get_tool_trap(0xA937);
 	set_tool_trap((void *)patch_drawmenubar, 0xA937);
 	old_gne = (void *)LM_JGNEFILTER;

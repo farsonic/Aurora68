@@ -30,7 +30,7 @@ The layout (the build products of `make -C mac`, their Finder names inside the M
       Network/                Aurora68 Network, Aurora68 Wi-Fi, Aurora68 Bluetooth, Aurora68 Ping
       System/                 Aurora68 Slots, Aurora68 Log, Aurora68 Status
       Extensions (to install)/  Aurora68 Disk, Aurora68 Machine, Aurora68 Screen Setup, Aurora68 Sound,
-                              Aurora68 Wi-Fi & Bluetooth, Aurora68 Agent, Read Me     (stage and disk only;
+                              Aurora68 Menu Extras, Aurora68 Agent, Read Me     (stage and disk only;
                               install puts them into the System Folder)
 
 --remove-old takes away the programs' files under their names before 21 November 2026 (PiPlay,
@@ -67,11 +67,13 @@ EXTENSIONS = [
     ('Aurora68-Machine.bin', 'Aurora68 Machine'),
     ('Aurora68-ScreenSetup.bin', 'Aurora68 Screen Setup'),
     ('Aurora68-Sound.bin', 'Aurora68 Sound'),
-    ('Aurora68-WiFi-Bluetooth.bin', 'Aurora68 Wi-Fi & Bluetooth'),
+    ('Aurora68-MenuExtras.bin', 'Aurora68 Menu Extras'),
     ('Aurora68-Agent.bin', 'Aurora68 Agent'),
     ('Aurora68-VideoDecoder.bin', 'Aurora68 Video Decoder'),
 ]
-OLD_EXTENSIONS = ['PiDisk', 'PiMach', 'PiScrn', 'Sound PiStorm', 'Wi-Fi & Bluetooth']
+# "Aurora68 Wi-Fi & Bluetooth" is Aurora68 Menu Extras before its clock (23 November 2026): two copies would both
+# draw in the menu bar (the new one also moves an older copy aside by itself at start, mac/wifimenu/clock.c)
+OLD_EXTENSIONS = ['PiDisk', 'PiMach', 'PiScrn', 'Sound PiStorm', 'Wi-Fi & Bluetooth', 'Aurora68 Wi-Fi & Bluetooth']
 OLD_APPS = ['PiPlay', 'PiDisplay', 'PiSlots', 'PiLog', 'PiStatus', 'PiNet', 'PiWiFi', 'PiBlue', 'PiPing',
             'PiColor', 'PiScreens', 'PiDepth', 'PiDepth 8']
 MUSIC_TYPES = {'.mp3': 'MPG3', '.aif': 'AIFF', '.aiff': 'AIFF', '.aifc': 'AIFC', '.wav': 'WAVE'}
@@ -82,7 +84,8 @@ EXT_README = """Aurora68 extensions
 Copy these into the System Folder (System 6) or drop them on the closed System Folder (System 7,
 which puts them into Extensions), then restart. Take out the old ones first if they are there:
 PiDisk, PiMach, PiScrn, Sound PiStorm and Wi-Fi & Bluetooth are the same extensions under their
-names before 21 November 2026.
+names before 21 November 2026, and Aurora68 Wi-Fi & Bluetooth is Aurora68 Menu Extras before its clock
+(23 November 2026; Menu Extras moves an older copy into "Extensions (Disabled)" by itself at start).
 
 Aurora68 Disk - the Pi's disk images as disks (only needed with a declaration ROM older than the
     kernel's; the card's ROM normally brings the driver).
@@ -91,7 +94,8 @@ Aurora68 Screen Setup - the SE board's two screens arranged at the first start; 
     resolution?" after Aurora68 Display has changed the HDMI mode.
 Aurora68 Sound - the Pi's sound card as the Sound Manager's output (HDMI or the headphone socket).
     Needs Sound Manager 3.0 (the "Sound Manager" extension on System 7.1, built into 7.5).
-Aurora68 Wi-Fi & Bluetooth - the Wi-Fi and Bluetooth menus in the menu bar.
+Aurora68 Menu Extras - a clock (digital or analog, with the options of macOS's), the Wi-Fi and the
+    Bluetooth menus at the right of the menu bar.
 Aurora68 Agent - files and programs for the Pi's remote control: aurora68.py ls, pull, push, open,
     apps and quit from another computer (docs/13, "Files and applications"). It does nothing
     until the remote control asks; without remote=on in cmdline.txt it only waits.

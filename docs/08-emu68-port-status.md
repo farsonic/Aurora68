@@ -6180,3 +6180,41 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      Colour's choice of screen, the zoom boxes on the second screen, are read from the code, not run; the SE board in
      MAME; Play's dialogs that need a server or a station; Video with a film; RiptidePrefs, Lagoon and Octavo were not
      installed in the image and not looked at.
+
+135. **A clock in the menu bar, and the extras placed by the program's menus (23 November).** The owner: "a clock
+   extension next to wifi that shows time and lets me adjust how it is shown, similar to what macOS has". docs/09
+   "Aurora68 Menu Extras" has the whole of it.
+   - *One extension.* The clock went into the WiFi and Bluetooth menus' INIT (`mac/wifimenu/clock.c`), not beside it:
+     two INITs patching `_DrawMenuBar` to draw at the same place would fight. Renamed **Aurora68 Menu Extras**
+     (`Aurora68-MenuExtras.bin`, creator `PSWM` kept). It sorts before "Aurora68 Wi-Fi & Bluetooth", so at start it
+     moves any other `PSWM` INIT in Extensions or the System Folder into "Extensions (Disabled)" before the Start
+     Manager reaches it; `aurora68-layout.py install` also takes the old name out.
+   - *The clock.* The time in the system font, or a 15-pixel analog face; the options of macOS's Clock (the date, the
+     day of the week, AM/PM, the 24-hour clock, seconds, flashing separators); the region's formats from 'itl0'
+     (timeCycle, hrLeadingZ, timeSep, mornStr/eveStr, dateOrder) and names from 'itl1' (cut to abbrLen); the menu's
+     first line from IUDateString's long date. Drawn in srcCopy text mode (each glyph's box painted, nothing erased
+     first: no flicker), once a minute or once a second, never while a menu is down (MBSaveLoc's lastMBSave, as in
+     item 124). Choices in "Aurora68 Menu Extras Prefs" (Preferences folder, 8 bytes). Date & Time... sends the
+     Finder `'FNDR' 'sope'` from the Finder's own GetNextEvent after bringing it to the front: System 7.1's Finder
+     ignores `'aevt' 'odoc'` (item 90), and a program that takes no Apple events cannot send one.
+   - *Riptide's NTP.* Riptide's `.IPP` copies its status table to a caller in one private Control call (RTMAC_PORT,
+     RTCMD_TABLES "42": `struct rt_ctl_status`'s ntp_state and ntp_ago_s), so the menu shows "Last NTP sync: 5
+     minutes ago" when the `.IPP` in the unit table is open and answers RTMAC_PING. Nothing in Riptide was changed.
+   - *Placement.* The extras stood at fixed distances from the bar's right end; at 512 pixels a program's last menus
+     ran under them and the filter took their presses. `bar.c` now reads the menu list at every `_DrawMenuBar`: the
+     system menus' left edge (negative IDs) on the right, the program's last title's right edge (its left, its width,
+     the gap the menu bar leaves after a title, measured between the program's titles) on the left; the clock, Wi-Fi
+     and Bluetooth go right to left from the system menus, seven pixels either side, and drop out in the order
+     Bluetooth, Wi-Fi, the clock's long form (the time alone stays), the clock. What is not drawn takes no press.
+   - *Two bugs of the drawing found on the way.* After a PopUpMenuSelect the Menu Manager left the Window Manager
+     port's clipping narrowed: the clock's highlight was never taken off and nothing it drew afterwards showed. The
+     extras now open WMgrPort's clipping over the bar while they draw (`wm_begin`, `wm_end`) and put the old one back.
+     And TextFace's Style is passed in a word's low byte, not as a BOOLEAN in the high byte: the first clock came out
+     outlined and italic from whatever byte was there. A debug log line ran past an 80-byte buffer on the stack at the
+     first start ("bad F-line instruction" at PC $6C656429, "led)" from "Extensions (Disabled)").
+   - *Tested* in QEMU (solo board, System 7.1, the remote's testbed channel): at 640 x 480 every clock style, the menu,
+     Date & Time opened in the Finder, its Time Formats' 24 hours followed at the next start, choices kept across
+     restarts, the clock still while a menu was held down; at 512 x 342 the Finder and Aurora68 Play with the extras
+     dropping out one by one, a press two pixels left of the clock reaching the Finder's Special menu, the Wi-Fi and
+     Bluetooth menus from their new places; the old extension moved aside. Pictures: `docs/img/menu-extras-*.png`.
+     *Not verified:* the NTP line (no Riptide in the test image), System 7.5, other regions' resources, the SE itself.
