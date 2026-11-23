@@ -4473,6 +4473,10 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      from an uninitialised sound buffer is for the owner to listen for). And the limit the design names: a kernel that
      dies before it has read the card cannot rescue itself, and as far as we know a Pi 3's firmware has no fallback
      kernel of its own; a microSD extension cable led out of the case is the physical way back.
+   - *Renamed (22 November 2026, the owner: "Let's call it setup and recovery, as this can do config").* The
+     page, the Mac's screen, the log and the documents now say "Aurora68 Setup and Recovery"; the page became
+     tabbed the same evening (tools/recovery/page.html). The working names stay: mac.recovery=1, recovery.txt,
+     boot.txt and `aurora68.py recovery`, so no card's settings change.
 
 107. **Aurora68 Play: one code base for the classic and the macOS Play (22 November).** The owner asked for "a common
      code base between the two". The classic Play (`mac/piplay`, C for the 68000) and the macOS one

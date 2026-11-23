@@ -475,7 +475,7 @@ static void kb_emit(uint8_t raw, uint8_t k, int up)
 {
     kb.keys++;
     { extern int psmac_recovery_on(void); extern void psmac_recovery_adb_key(uint8_t, int);
-      if (psmac_recovery_on()) { psmac_recovery_adb_key(k, up); return; } }   /* Aurora68 Recovery's keyboard menu */
+      if (psmac_recovery_on()) { psmac_recovery_adb_key(k, up); return; } }   /* Aurora68 Setup and Recovery's keyboard menu */
     psmac_se_plus_lock();
     uint8_t m = 0;
     if (k == 0x39) m = 0x20; else if (k == 0x38) m = 0x04; else if (k == 0x3a) m = 0x02; else if (k == 0x37) m = 0x01;

@@ -194,7 +194,7 @@ on the Mac, "Files and applications", below),
 | `GET /windows` | the Mac's windows, front to back, as JSON ("Windows", below) |
 | `GET /screenshot?window=ID\|title=TEXT\|screen=N\|rect=l,t,r,b[&content=1][&scale=2]` | a PNG of one window, one screen or a rectangle of the desktop, composed from the screens it is on; `scale` here doubles ("Windows", below) |
 | `GET /state` | JSON (below) |
-| `POST /restart[?how=mac\|nmi\|pi\|recovery]` | restart the Mac (default), the programmer's interrupt, reboot the Pi, or reboot it into Aurora68 Recovery (recovery.txt, docs/08 item 106) |
+| `POST /restart[?how=mac\|nmi\|pi\|recovery]` | restart the Mac (default), the programmer's interrupt, reboot the Pi, or reboot it into Aurora68 Setup and Recovery (recovery.txt, docs/08 item 106) |
 | `GET /files/list`, `/files/info`, `/files/data`, `PUT /files/data`, `POST /files/mkdir`, `/files/delete`, `/files/rename`, `GET /apps`, `POST /apps/open`, `/apps/quit` | files and programs on the Mac, through the Aurora68 Agent ("Files and applications", below) |
 
 Events: `{"type": "move", "x": X, "y": Y}`; `"down"` and `"up"` (x, y optional); `"click"` with
@@ -369,7 +369,7 @@ board, over HTTP from the host through pinet; `docs/img/se-window-across-screens
   Python's on the host). The mouse pointer is part of the picture where it is over the window, because
   QuickDraw draws it into the frame buffer.
 
-## Aurora68 Recovery shares the transport (22 November 2026)
+## Aurora68 Setup and Recovery shares the transport (22 November 2026)
 
 A recovery start (docs/08 item 106, `psmac_recovery.c`) uses this stack for a page of its own: with
 `psmac_recovery_on()` the `remote_tcp_*` calls go to `recovery_tcp_*`, `psmac_ip_init_recovery()` starts the stack

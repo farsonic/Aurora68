@@ -934,7 +934,7 @@ static void interrupt_switch(unsigned raw)
         if (__m68k_state) __atomic_store_n(&__m68k_state->INTF.ARM_err, 1, __ATOMIC_RELEASE);
     }
 }
-/* Aurora68 Recovery (psmac_recovery.c): the switch held as the 68k would be released. mac.switchsim=1 is the
+/* Aurora68 Setup and Recovery (psmac_recovery.c): the switch held as the 68k would be released. mac.switchsim=1 is the
    testbed's switch: MAME's SE has no programmer's switch to press */
 int psmac_se_switch_held(void)
 {

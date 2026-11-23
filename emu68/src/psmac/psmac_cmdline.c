@@ -2,7 +2,7 @@
  *
  * psmac_cmdline.c - cmdline.txt as words: read one option, change one, keep everything else.
  *
- * Backstory. Aurora68 Recovery (22 November 2026, docs/08 item 106) lets the owner change the Pi's options
+ * Backstory. Aurora68 Setup and Recovery (22 November 2026, docs/08 item 106) lets the owner change the Pi's options
  * from a phone or from the recovery screen's keyboard menu when the Mac will not start: the WiFi network,
  * mac.board=, mac.fpu= and the like. cmdline.txt is one line that the Pi's firmware hands to the kernel, and
  * a card whose line has been mangled may not start at all, so a change must touch exactly the word it is

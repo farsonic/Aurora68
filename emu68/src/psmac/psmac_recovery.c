@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0
  *
- * psmac_recovery.c - Aurora68 Recovery: the kernel as a small file server for its own SD card, with the
+ * psmac_recovery.c - Aurora68 Setup and Recovery: the kernel as a small file server for its own SD card, with the
  * Mac left switched off.
  *
  * Backstory (22 November 2026, docs/08 item 106). Inside an SE or a Plus the Pi sits in the 68000 socket
@@ -114,7 +114,7 @@ static void enter(int w, const char *text)
     scpy(why_text, text, sizeof why_text);
     psmac_display_recovery();                                    /* the HDMI console stays off the page from now on */
     __atomic_store_n(&rec_on, 1, __ATOMIC_RELEASE);
-    kprintf("[RECOVERY] Aurora68 Recovery: %s. The 68k is not started; the card is served on the network (docs/08 item 106)\n", why_text);
+    kprintf("[RECOVERY] Aurora68 Setup and Recovery: %s. The 68k is not started; the card is served on the network (docs/08 item 106)\n", why_text);
     psmac_boot_mark("recovery start: %s", why_text);
 }
 
@@ -258,6 +258,40 @@ static void L(int attr, const char *fmt, ...)
     if (attr == 2 && nlines < SROWS) { line[nlines][0] = 0; lattr[nlines] = 3; nlines++; }   /* a large line takes two */
 }
 static const uint8_t *glyph(uint8_t c) { return &topaz8_chardata[(topaz8_charloc[(c >= 32 && c < 128) ? c - 32 : 0] >> 16) >> 3]; }
+/* The lines wrapped to a screen's width (22 November 2026): the page is written at 80 columns, the compact
+   Mac's screen has 64, and its longer lines (the reason, the card, the last action) ran off the right edge.
+   A normal line breaks at the last space that fits, and its continuation is indented two columns; the
+   title and the large PIN line are kept as they are (the PIN fits; the title is cut). */
+#define VROWS 40
+static char vline[VROWS][SCOLS + 1]; static uint8_t vattr[VROWS];
+static int layout(unsigned cols)
+{
+    int nv = 0;
+    if (cols > SCOLS) cols = SCOLS;
+    for (int r = 0; r < nlines && nv < VROWS; r++) {
+        const char *t = line[r]; unsigned n = slen(t), at = 0, indent = 0;
+        if (lattr[r] != 0 || n <= cols) {
+            unsigned k = 0; for (; k < n && k < SCOLS; k++) vline[nv][k] = t[k];
+            vline[nv][k] = 0; vattr[nv++] = lattr[r];
+            continue;
+        }
+        while (at < n && nv < VROWS) {
+            unsigned room = cols - indent, take = n - at;
+            if (take > room) {
+                take = room;
+                for (unsigned k = room; k > room / 2; k--) if (t[at + k] == ' ') { take = k; break; }
+            }
+            unsigned o = 0;
+            for (unsigned k = 0; k < indent; k++) vline[nv][o++] = ' ';
+            for (unsigned k = 0; k < take; k++) vline[nv][o++] = t[at + k];
+            vline[nv][o] = 0; vattr[nv++] = 0;
+            at += take;
+            while (at < n && t[at] == ' ') at++;
+            indent = 2;
+        }
+    }
+    return nv;
+}
 /* one text cell: 8 x 16 pixels at (x, y), or 16 x 32 with big */
 static void cell_vc(uint8_t *fb, uint32_t pitch, int bpp, int swap, uint32_t x, uint32_t y, uint8_t c, uint32_t fg, uint32_t bg, int big)
 {
@@ -284,10 +318,11 @@ static void draw_vc(void)
     if (psmac_display_vc(&fb, &pitch, &w, &h, &bpp, &swap)) return;
     uint32_t cols = w / 8, rows = h / 16;
     if (cols > SCOLS) cols = SCOLS;
-    for (uint32_t r = 0; r < rows && r < SROWS; r++) {
-        int a = r < (uint32_t)nlines ? lattr[r] : 0;
+    int nv = layout(cols);
+    for (uint32_t r = 0; r < rows && r < VROWS; r++) {
+        int a = r < (uint32_t)nv ? vattr[r] : 0;
         if (a == 3) continue;                                     /* the lower half of a large line */
-        const char *t = r < (uint32_t)nlines ? line[r] : "";
+        const char *t = r < (uint32_t)nv ? vline[r] : "";
         uint32_t fg = a == 1 ? 0x101030u : 0xe0e0e0u, bg = a == 1 ? 0x80c0ffu : 0x101830u;
         if (a == 2) { fg = 0xffe060u; }
         unsigned n = slen(t);
@@ -302,10 +337,11 @@ static void draw_se(void)
 {
     if (!psmac_board_se || psmac_board_solo) return;
     for (unsigned i = 0; i < sizeof se_fb; i++) se_fb[i] = 0;
-    for (int r = 0; r < 21 && r < nlines; r++) {
-        int a = lattr[r];
+    int nv = layout(64);
+    for (int r = 0; r < 21 && r < nv; r++) {
+        int a = vattr[r];
         if (a == 3) continue;
-        const char *t = line[r]; unsigned n = slen(t);
+        const char *t = vline[r]; unsigned n = slen(t);
         int s = a == 2 ? 2 : 1;
         for (unsigned cx = 0; cx * (unsigned)s < 64; cx++) {
             const uint8_t *data = glyph(cx < n ? (uint8_t)t[cx] : ' ');
@@ -381,7 +417,7 @@ static void build_page(void)
 {
     nlines = 0;
     struct ipk_info ii; psmac_ip_info(&ii);
-    L(1, " Aurora68 Recovery");
+    L(1, " Aurora68 Setup and Recovery");
     L(0, "Why: %s", why_text);
     L(0, "The 68k was not started: no Mac code runs. Restart from the page.");
     if (ii.unit >= 0 && ii.ip[0])
@@ -456,7 +492,7 @@ static const struct known known_opts[] = {
     { "mac.board", "se|plus|512ke|512k|128k|solo" }, { "mac.fpu", "exact|double|none" }, { "mac.sane", "rom|se" },
     { "mac.boot", "auto|image|scsi" }, { "mac.ram", "#" }, { "mac.console", "hdmi" }, { "mac.sesound", "off|on" },
     { "mac.screen", "WxH" }, { "mac.seram", "1|2|2.5|4" }, { "mac.plusmouse", "#" }, { "mac.plusdebounce", "#" }, { "mac.plusjitter", "#" },
-    { "mac.screencheck", "on|off" }, { "bt.pair", "" }, { "eth", "usb|off" }, { "remote", "on|off" }, { "remote.token", "" },
+    { "mac.screencheck", "on|blind|off" }, { "bt.pair", "" }, { "eth", "usb|off" }, { "remote", "on|off" }, { "remote.token", "" },
     { "wifi.ssid", "" }, { "wifi.psk", "" }, { "wifi.country", "" }, { "mac.recovery", "1" }, { "mac.bootcount", "#|off" },
     { "wifi", "off" }, { "bt", "off" },
 };
@@ -764,7 +800,7 @@ static void out_head(struct rconn *h, int code, const char *ctype, int64_t len, 
                       code == 409 ? "Conflict" : code == 411 ? "Length Required" : code == 413 ? "Request Entity Too Large" : code == 422 ? "Unprocessable Entity" :
                       code == 429 ? "Too Many Requests" : code == 503 ? "Service Unavailable" : code == 507 ? "Insufficient Storage" : "Error";
     struct sb b = { h->out, 0, sizeof h->out };
-    bprintf(&b, "HTTP/1.0 %d %s\r\nServer: Aurora68 Recovery\r\nConnection: close\r\nCache-Control: no-store\r\nContent-Type: %s\r\n", code, txt, ctype);
+    bprintf(&b, "HTTP/1.0 %d %s\r\nServer: Aurora68 Setup and Recovery\r\nConnection: close\r\nCache-Control: no-store\r\nContent-Type: %s\r\n", code, txt, ctype);
     if (len >= 0) bprintf(&b, "Content-Length: %u\r\n", (uint32_t)len);
     if (extra) bput(&b, extra);
     bput(&b, "\r\n");
@@ -1537,94 +1573,10 @@ void psmac_recovery_poll(void)
 }
 
 /* ==================================================================================== the page
-   Plain HTML and a little JavaScript, about 11 KB, for a phone as much as a laptop: the PIN once (kept for the
-   tab), the state, the files with Get, Rename and Delete, an upload with its progress, the WiFi settings with
-   a scan and a test join, the common options as a form (the line it makes shown before it is saved), the
-   two text files, the logs and the restarts. */
-const char recovery_page[] =
-    "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n"
-    "<title>Aurora68 Recovery</title><style>\n"
-    "body{font:15px/1.4 -apple-system,Helvetica,Arial,sans-serif;margin:0;background:#f4f4f0;color:#111}\n"
-    "header{background:#203050;color:#fff;padding:10px 14px}h1{font-size:20px;margin:0}\n"
-    "section{background:#fff;margin:10px;padding:10px 12px;border-radius:8px;box-shadow:0 1px 2px #0002}\n"
-    "h2{font-size:16px;margin:0 0 6px}table{border-collapse:collapse;width:100%}td,th{padding:3px 4px;border-bottom:1px solid #eee;text-align:left;font-size:14px}\n"
-    "td.n{text-align:right;white-space:nowrap}button{font-size:14px;margin:2px;padding:5px 9px}textarea,input[type=text],input[type=password],select{font:14px monospace;width:100%;box-sizing:border-box}\n"
-    "textarea{height:7em}.warn{background:#fff3c0;border:1px solid #d9b000;padding:8px;border-radius:6px}.big{font-size:17px;font-weight:bold;padding:9px 14px}\n"
-    "pre{white-space:pre-wrap;font-size:12px;max-height:22em;overflow:auto;background:#f0f0f0;padding:6px}#msg{font-weight:bold}.k{color:#555;font-size:13px}\n"
-    "label{display:block;margin:4px 0}</style></head><body>\n"
-    "<header><h1>Aurora68 Recovery</h1><div id=\"why\">...</div></header>\n"
-    "<section id=\"pinbox\"><h2>PIN</h2><p class=\"k\">The four digits shown on the Mac's screen (or on HDMI).</p>\n"
-    "<input type=\"text\" id=\"pin\" inputmode=\"numeric\" maxlength=\"4\" style=\"width:6em\"> <button onclick=\"savepin()\">Use</button> <span id=\"msg\"></span></section>\n"
-    "<section id=\"rb\" style=\"display:none\" class=\"warn\"><b>The last starts did not reach the Finder.</b> The kernel before the current one is on the card as kernel8.old.<br>\n"
-    "<button class=\"big\" onclick=\"act('/r/rollback','Roll back to kernel8.old?')\">Roll back the kernel</button></section>\n"
-    "<section><h2>State</h2><div id=\"st\" class=\"k\">...</div>\n"
-    "<button class=\"big\" onclick=\"act('/r/reboot?how=normal','Restart the Pi normally (the Mac starts)?')\">Restart normally</button>\n"
-    "<button onclick=\"act('/r/reboot?how=recovery','Restart into recovery?')\">Restart into recovery</button></section>\n"
-    "<section><h2>Files on the SD card</h2><div id=\"card\" class=\"k\"></div><table id=\"files\"></table>\n"
-    "<p><input type=\"file\" id=\"up\"> as <input type=\"text\" id=\"upname\" placeholder=\"the file's own name\" style=\"width:14em\"> <button onclick=\"upload()\">Upload</button>\n"
-    "<span id=\"upst\"></span></p><p class=\"k\">kernel8.img is checked before it replaces the old one (kept as kernel8.old). Every upload is read back from the card and compared.</p></section>\n"
-    "<section><h2>WiFi</h2><div id=\"wset\" class=\"k\"></div><button onclick=\"wscan()\">Scan</button>\n"
-    "<label>Network <select id=\"wlist\" onchange=\"if(this.value)el('wssid').value=this.value\"></select></label>\n"
-    "<label>Name (SSID) <input type=\"text\" id=\"wssid\"></label><label>Password <input type=\"password\" id=\"wpsk\" placeholder=\"empty: keep the stored one\"></label>\n"
-    "<label>Country <input type=\"text\" id=\"wcc\" maxlength=\"2\" style=\"width:4em\" placeholder=\"GB\"></label>\n"
-    "<button onclick=\"wifi('test')\">Test join now</button> <button onclick=\"wifi('save')\">Save to cmdline.txt</button> <span id=\"wst\"></span></section>\n"
-    "<section><h2>Options</h2><div id=\"opts\"></div><button onclick=\"opts(1)\">Show the new line</button> <button onclick=\"opts(0)\">Save</button>\n"
-    "<pre id=\"optline\"></pre></section>\n"
-    "<section><h2>cmdline.txt and config.txt</h2><select id=\"tname\" onchange=\"loadtext()\"><option>cmdline.txt</option><option>config.txt</option></select>\n"
-    "<button onclick=\"loadtext()\">Load</button><textarea id=\"text\"></textarea><button onclick=\"savetext()\">Save (the old one is kept as .bak)</button>\n"
-    "<p class=\"k\">Secrets show as ***; saving *** keeps them as they are.</p></section>\n"
-    "<section><h2>Log</h2><button onclick=\"log(0)\">The last start's aurora68.log</button> <button onclick=\"log(1)\">This recovery start's log</button><pre id=\"log\"></pre></section>\n"
-    "<script>\n"
-    "var P=sessionStorage.getItem('pin')||'';\n"
-    "function el(i){return document.getElementById(i)}\n"
-    "function msg(t){el('msg').textContent=t}\n"
-    "function savepin(){P=el('pin').value.trim();sessionStorage.setItem('pin',P);refresh()}\n"
-    "function api(m,u,b,raw){var o={method:m,headers:{'X-Aurora-Pin':P}};if(b!==undefined)o.body=b;return fetch(u,o).then(function(r){\n"
-    " if(r.status==401){msg('PIN wrong or missing');throw 0}\n"
-    " var j=raw?r:r.json();return raw?r:j.then(function(x){if(!r.ok){msg(x.error||r.status);throw 0}return x})})}\n"
-    "function esc(s){return String(s).replace(/[&<>\"]/g,function(c){return'&#'+c.charCodeAt(0)+';'})}\n"
-    "function kb(n){return n<1024?n+' B':n<1048576?(n/1024).toFixed(1)+' KB':(n/1048576).toFixed(1)+' MB'}\n"
-    "function act(u,q){if(q&&!confirm(q))return;api('POST',u).then(function(x){msg(x.note||'done');refresh()},function(){})}\n"
-    "function refresh(){el('pin').value=P;api('GET','/r/state').then(function(s){msg('');el('why').textContent=s.why;\n"
-    " el('rb').style.display=s.rollback_offered?'':'none';var n=s.network;\n"
-    " el('st').innerHTML='Network: '+esc(n.link)+' '+esc(n.ip)+' ('+esc(n.phase)+'), '+esc(n.name)+(n.wifi?'; WiFi '+esc(n.wifi.state)+' '+esc(n.wifi.ssid):'')+'<br>Card: '+esc(s.card)+\n"
-    " '<br>Upload: '+esc(s.upload.state)+(s.upload.total?' '+esc(s.upload.name)+' '+kb(s.upload.received)+' of '+kb(s.upload.total):'')+'<br>Last: '+esc(s.last)+\n"
-    " (s.cmdline_recovery?'<br><b>cmdline.txt has mac.recovery=1</b>: \"Restart normally\" takes it out.':'')+(s.config_kernel?'<br><b>config.txt starts '+esc(s.config_kernel)+'</b>, not kernel8.img':'');\n"
-    " files();wifiget();opts(-1)},function(){})}\n"
-    "function files(){api('GET','/r/files').then(function(x){el('card').textContent=x.card+(x.free_kb!==undefined?', '+kb(x.free_kb*1024)+' free':'');\n"
-    " var h='<tr><th>Name</th><th>Size</th><th></th></tr>';x.files.forEach(function(f){if(f.folder){h+='<tr><td>'+esc(f.name)+'/</td><td></td><td></td></tr>';return}\n"
-    " var a=esc(f.name);h+='<tr><td>'+a+'</td><td class=\"n\">'+kb(f.size)+'</td><td><button onclick=\"dl(\\''+a+'\\')\">Get</button><button onclick=\"mv(\\''+a+'\\')\">Rename</button>'+\n"
-    " (f.name.toLowerCase()=='kernel8.img'?'':'<button onclick=\"rm(\\''+a+'\\')\">Delete</button>')+'</td></tr>'});el('files').innerHTML=h},function(){})}\n"
-    "function dl(n){api('GET','/r/file?name='+encodeURIComponent(n),undefined,1).then(function(r){return r.blob()}).then(function(b){var a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=n;document.body.appendChild(a);a.click();a.remove()})}\n"
-    "function rm(n){act('/r/rm?name='+encodeURIComponent(n),'Delete '+n+'?')}\n"
-    "function mv(n){var t=prompt('New name for '+n,n);if(t&&t!=n)act('/r/mv?from='+encodeURIComponent(n)+'&to='+encodeURIComponent(t))}\n"
-    "function upload(){var f=el('up').files[0];if(!f)return;var n=el('upname').value.trim()||f.name;var x=new XMLHttpRequest();\n"
-    " x.open('PUT','/r/file?name='+encodeURIComponent(n));x.setRequestHeader('X-Aurora-Pin',P);\n"
-    " x.upload.onprogress=function(e){el('upst').textContent=kb(e.loaded)+' of '+kb(e.total)};\n"
-    " x.onload=function(){var j={};try{j=JSON.parse(x.responseText)}catch(e){}el('upst').textContent=x.status==200?'done: '+n+' '+kb(j.size)+', CRC32 '+j.crc32+(j.check?' ('+j.check+')':''):'refused: '+(j.error||x.status);refresh()};\n"
-    " x.onerror=function(){el('upst').textContent='the connection broke'};el('upst').textContent='sending...';x.send(f)}\n"
-    "function wifiget(){api('GET','/r/wifi').then(function(w){var s=w.settings;el('wset').textContent='cmdline.txt: '+(s.ssid||'(no network)')+', password '+s.psk+', country '+(s.country||'(default)')+\n"
-    " (w.radio?'. Radio: '+w.radio.state+' '+w.radio.message:'. No WiFi radio')+(w.note?'. Test: '+w.note:'');if(!el('wssid').value)el('wssid').value=s.ssid;if(!el('wcc').value)el('wcc').value=s.country;\n"
-    " var h='<option value=\"\">(choose from the scan)</option>';w.scan.forEach(function(n){h+='<option value=\"'+esc(n.ssid)+'\">'+esc(n.ssid)+' '+n.rssi+' dBm '+n.security+'</option>'});el('wlist').innerHTML=h},function(){})}\n"
-    "function wscan(){api('POST','/r/wifi/scan').then(function(){setTimeout(wifiget,3000)},function(){})}\n"
-    "function wifi(w){var b='ssid='+encodeURIComponent(el('wssid').value)+'&psk='+encodeURIComponent(el('wpsk').value)+'&country='+encodeURIComponent(el('wcc').value.toUpperCase());\n"
-    " if(w=='save'&&el('wst').textContent.indexOf('joined')<0&&!confirm('The new settings have not joined in a test. Save them anyway?'))return;\n"
-    " api('POST','/r/wifi/'+w,b).then(function(){el('wst').textContent=w=='test'?'testing...':'saved';if(w=='test')wpoll(0)},function(){})}\n"
-    "function wpoll(i){api('GET','/r/wifi').then(function(w){if(w.test=='running'&&i<30)setTimeout(function(){wpoll(i+1)},1500);else el('wst').textContent=w.note||w.test||'no answer';wifiget()},function(){})}\n"
-    "var O=[['mac.board',['','se','plus','512ke','512k','128k','solo'],'the logic board the Pi sits in (solo: no Mac, the bench)'],['mac.fpu',['','exact','double','none'],'exact: a 68882 in extended precision (the default); none: no FPU, as a real SE'],\n"
-    "['mac.sane',['','rom','se'],'which SANE: the IIci ROM\\'s or the SE ROM\\'s software one'],['mac.boot',['','auto','image','scsi'],'the startup disk: auto, the card\\'s image first, or SCSI as PRAM says'],\n"
-    "['mac.ram','','Macintosh memory in MB (default up to 128)'],['mac.console',['','hdmi'],'hdmi: keep the kernel\\'s log on HDMI for the whole run'],['mac.sesound',['','off'],'off: leave the SE\\'s speaker alone'],\n"
-    "['mac.screen','','the HDMI screen\\'s size, WxH'],['mac.seram',['','1','2','2.5','4'],'the SE\\'s own memory in MB (its screen and sound buffers are at its top)'],['mac.plusmouse','','the Plus mouse\\'s polls a second (0: off)'],['mac.plusdebounce','','0: no debounce of the Plus mouse'],\n"
-    "['mac.plusjitter','','0: the Plus mouse\\'s polls at a fixed rate'],['mac.screencheck',['','on','off'],'the compact Mac\\'s screen read back and repaired (off: never)'],['bt.pair','','1: pair the first keyboard or mouse found (or a name)'],\n"
-    "['eth',['','usb','off'],'usb: a USB Ethernet adapter as the wired card; off: none'],['remote',['','on','off'],'the remote control (docs/13)'],['remote.token','pw','the remote\\'s token, 8 characters or more (write only)']];\n"
-    "var OV={};function opts(dry){if(dry<0){api('GET','/r/options').then(function(x){OV=x.values;var h='';O.forEach(function(o){var v=OV[o[0]];if(v==null)v='';h+='<label><b>'+o[0]+'</b> <span class=\"k\">'+esc(o[2])+'</span>';\n"
-    " if(o[1]=='pw')h+='<input type=\"password\" id=\"o_'+o[0]+'\" placeholder=\"'+(v?'(set: type to change)':'(not set)')+'\">';else if(o[1])h+='<select id=\"o_'+o[0]+'\">'+o[1].map(function(c){return'<option'+(c==v?' selected':'')+' value=\"'+c+'\">'+(c||'(not given)')+'</option>'}).join('')+'</select>';\n"
-    " else h+='<input type=\"text\" id=\"o_'+o[0]+'\" value=\"'+esc(v)+'\">';h+='</label>'});el('opts').innerHTML=h;el('optline').textContent=x.line},function(){});return}\n"
-    " var e=[];O.forEach(function(o){var f=el('o_'+o[0]),v=f.value,old=OV[o[0]]==null?'':OV[o[0]];if(o[1]=='pw'){if(v)e.push(o[0]+'='+v);return}if(v!=old)e.push(v?o[0]+'='+v:'-'+o[0])});\n"
-    " api('POST','/r/options'+(dry?'?dry=1':''),e.join('\\n')).then(function(x){el('optline').textContent=(dry?'The new line would be:\\n':'Saved (the line before is in cmdline.bak):\\n')+x.line;if(!dry)opts(-1)},function(){})}\n"
-    "function loadtext(){var n=el('tname').value;api('GET','/r/text?name='+n,undefined,1).then(function(r){return r.text()}).then(function(t){el('text').value=t})}\n"
-    "function savetext(){var n=el('tname').value;if(!confirm('Write '+n+'?'))return;api('PUT','/r/text?name='+n,el('text').value).then(function(x){msg('saved '+x.saved+', the old one as '+x.backup);refresh()},function(){})}\n"
-    "function log(now){api('GET','/r/log'+(now?'?now=1':''),undefined,1).then(function(r){return r.text()}).then(function(t){el('log').textContent=t})}\n"
-    "if(location.hash.indexOf('#pin=')==0){P=location.hash.slice(5);sessionStorage.setItem('pin',P);history.replaceState(null,'',location.pathname)}\n"
-    "if(P)refresh();\n"
-    "</script></body></html>\n";
+   Plain HTML and a little JavaScript, for a phone as much as a laptop: the PIN once (kept for the tab), the
+   state, the files with Get, Rename and Delete, an upload with its progress, the WiFi settings with a scan and
+   a test join, the common options as a form (the line it makes shown before it is saved), the two text files,
+   the logs and the restarts. Since 22 November 2026 (the owner: "tabbed for each section and modern in
+   design") it is tabbed (Overview, Files, WiFi, Options, Text files, Log), follows the system's light or dark
+   mode, and lives in tools/recovery/page.html, made into psmac_recovery_page.h by tools/recovery/mkpage.py. */
+#include "psmac_recovery_page.h"         /* the page itself: tools/recovery/page.html, made into C by tools/recovery/mkpage.py */

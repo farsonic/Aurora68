@@ -51,7 +51,7 @@ Since 0.13 (docs/08 items 96 and 103):
     radio stations still offers the built-in ones; after a probe the address the answer came from is tried
     first; songs added after the queue has ended are the ones that play. `Package.swift` is now at the
     repository's top (`swift test` there; `make-app.sh` as before).
-- **Aurora68 Recovery** (docs/08 item 106, README "Recovery"): when the Mac does not reach the Finder three
+- **Aurora68 Setup and Recovery** (docs/08 item 106, README "Setup and Recovery"): when the Mac does not reach the Finder three
   starts in a row, when the programmer's interrupt switch (or Esc on a USB keyboard) is held at power-on, when
   `recovery.txt` is on the card (`aurora68.py restart recovery`) or with `mac.recovery=1`, the Pi starts without
   the Mac and serves its SD card: a page for a phone or laptop (the PIN shown on the Mac's screen; files, uploads

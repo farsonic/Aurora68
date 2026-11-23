@@ -357,7 +357,7 @@ void psmac_console_page(const char (*lines)[65], int n)
         }
     }
 }
-/* Aurora68 Recovery (psmac_recovery.c) draws its own page into the VideoCore buffer: the log stays off it */
+/* Aurora68 Setup and Recovery (psmac_recovery.c) draws its own page into the VideoCore buffer: the log stays off it */
 static int con_rec;
 void psmac_display_recovery(void) { con_rec = 1; }
 int psmac_display_vc(uint8_t **fb, uint32_t *pitch_out, uint32_t *w, uint32_t *h, int *bpp, int *swap)

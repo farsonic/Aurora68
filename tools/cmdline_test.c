@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MPL-2.0
  *
- * cmdline_test.c - host tests of psmac_cmdline.c, the word editor Aurora68 Recovery changes cmdline.txt
+ * cmdline_test.c - host tests of psmac_cmdline.c, the word editor Aurora68 Setup and Recovery changes cmdline.txt
  * with (docs/08 item 106). Build and run: tools/cmdline_test.sh
  */
 #include <stdio.h>

@@ -99,7 +99,7 @@ static uint32_t rep_usage, rep_mods; static uint64_t rep_due;
 #define REP_RATE_MS  66
 static void in_key(uint32_t usage, int down, uint32_t mods)
 {
-    /* Aurora68 Recovery's keyboard menu takes the keys in a recovery start; in any start it watches for Esc
+    /* Aurora68 Setup and Recovery's keyboard menu takes the keys in a recovery start; in any start it watches for Esc
        held in the first seconds (psmac_recovery.c) */
     { extern int psmac_recovery_key(uint32_t, int, uint32_t); if (psmac_recovery_key(usage, down, mods)) return; }
     in_put(ALICE_IN_KEY, (int32_t)usage, down, (int32_t)mods);
@@ -926,7 +926,7 @@ void __attribute__((noreturn)) psmac_alice_core(void)
         LOOP_AT("remote control");
         { extern void psmac_remote_poll(void); psmac_remote_poll(); }     /* the remote control: its IP stack, HTTP and input queue (docs/13) */
         LOOP_AT("recovery");
-        { extern void psmac_recovery_poll(void); psmac_recovery_poll(); } /* Aurora68 Recovery: its page and screen, or in a normal start its few watches */
+        { extern void psmac_recovery_poll(void); psmac_recovery_poll(); } /* Aurora68 Setup and Recovery: its page and screen, or in a normal start its few watches */
         t1 = in_now(); LOOP_T(5, t1 - t0); loop_remote_sum += t1 - t0;
         LOOP_AT("the slot interrupt line");
         /* The card's interrupt line: up while a board has something the Mac has not taken (the

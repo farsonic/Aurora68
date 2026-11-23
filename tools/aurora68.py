@@ -46,7 +46,7 @@ applications"). Paths are the Mac's: "Mac HD:Folder:File", and ":Folder:File" on
   aurora68.py apps [--json]                      the programs that run (System 6: the one in front)
   aurora68.py quit NAME | quit --creator ttxt    ask a program to quit (System 7)
 
-Aurora68 Recovery (docs/08 item 106): a start in which the Mac stays off and the Pi serves its SD card; the PIN
+Aurora68 Setup and Recovery (docs/08 item 106): a start in which the Mac stays off and the Pi serves its SD card; the PIN
 is the one on the Mac's screen (--pin or $AURORA68_PIN; --url defaults to http://aurora68.local).
   aurora68.py recovery --pin N state | ls | put FILE [NAME] | get NAME [OUT] | rm NAME | mv A B
   aurora68.py recovery --pin N cmdline [TEXT|@FILE] | config [TEXT|@FILE] | opt [KEY=VALUE|-KEY|+WORD ...] [--dry]
@@ -370,7 +370,7 @@ def png_size(data):
     return struct.unpack('>II', data[16:24]) if data[:8] == b'\x89PNG\r\n\x1a\n' else (0, 0)
 
 
-# ---- Aurora68 Recovery (docs/08 item 106) -------------------------------------------------------------
+# ---- Aurora68 Setup and Recovery (docs/08 item 106) -------------------------------------------------------------
 # A recovery start of the kernel serves the Pi's SD card instead of the Mac: `aurora68.py recovery --pin N ...`.
 # Every request carries the PIN the Mac's screen shows (X-Aurora-Pin); no token, and the remote need not be on.
 class Recovery:
@@ -510,7 +510,7 @@ def recovery_main(a):
 
 
 def add_recovery(sub):
-    p = sub.add_parser('recovery', help='Aurora68 Recovery: the Pi\'s SD card when the Mac will not start (docs/08 item 106)')
+    p = sub.add_parser('recovery', help='Aurora68 Setup and Recovery: the Pi\'s SD card when the Mac will not start (docs/08 item 106)')
     p.add_argument('--url', help='default $AURORA68_RECOVERY_URL, else http://aurora68.local')
     p.add_argument('--pin', help='the four digits on the Mac\'s screen (default $AURORA68_PIN)')
     rs = p.add_subparsers(dest='rcmd', required=True, metavar='ACTION')
@@ -551,7 +551,7 @@ def main():
     p = sub.add_parser('type', help='type text on the Mac\'s keyboard'); p.add_argument('text')
     p = sub.add_parser('key', help='one key, with --mods'); p.add_argument('key'); p.add_argument('--mods', default='')
     p = sub.add_parser('log', help='the kernel\'s log'); p.add_argument('--since', type=int); p.add_argument('--tags'); p.add_argument('--follow', action='store_true'); p.add_argument('--records', action='store_true')
-    p = sub.add_parser('restart', help='restart the Mac (or nmi, pi; recovery: the Pi restarts into Aurora68 Recovery)'); p.add_argument('how', nargs='?', default='mac', choices=('mac', 'nmi', 'pi', 'recovery'))
+    p = sub.add_parser('restart', help='restart the Mac (or nmi, pi; recovery: the Pi restarts into Aurora68 Setup and Recovery)'); p.add_argument('how', nargs='?', default='mac', choices=('mac', 'nmi', 'pi', 'recovery'))
     p = sub.add_parser('input', help='raw input events as JSON'); p.add_argument('json')
     p = sub.add_parser('ls', help='a folder on the Mac (no PATH: its disks)'); p.add_argument('path', nargs='?', default=''); p.add_argument('--json', action='store_true')
     p = sub.add_parser('info', help='one file or folder on the Mac'); p.add_argument('path'); p.add_argument('--json', action='store_true')
