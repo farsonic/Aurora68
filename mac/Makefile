@@ -22,7 +22,7 @@ CORE_SRC = $(wildcard $(CORE)/*.c)
 CORE_H   = $(wildcard $(CORE)/include/*.h)
 SANITIZE ?= -fsanitize=address,undefined
 
-all: $(B)/psmac-se.declrom $(B)/Aurora68-Machine.bin $(B)/Aurora68-Disk.bin $(B)/Aurora68-Network.bin $(B)/Aurora68-WiFi.bin $(B)/Aurora68-Bluetooth.bin $(B)/Aurora68-Status.bin $(B)/Aurora68-Ping.bin $(B)/Aurora68-Screens.bin $(B)/Aurora68-Colour.bin $(B)/Aurora68-Log.bin $(B)/Aurora68-Depth.bin $(B)/Aurora68-WiFi-Bluetooth.bin $(B)/Aurora68-ScreenSetup.bin $(B)/Aurora68-Display.bin $(B)/Aurora68-Sound.bin $(B)/Aurora68-Slots.bin $(B)/Aurora68-Play.bin $(B)/Aurora68-Agent.bin $(B)/Aurora68-VideoDecoder.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes declrom-wifi-sizes declrom-se-sizes
+all: $(B)/psmac-se.declrom $(B)/Aurora68-Machine.bin $(B)/Aurora68-Disk.bin $(B)/Aurora68-Network.bin $(B)/Aurora68-WiFi.bin $(B)/Aurora68-Bluetooth.bin $(B)/Aurora68-Status.bin $(B)/Aurora68-Ping.bin $(B)/Aurora68-Screens.bin $(B)/Aurora68-Colour.bin $(B)/Aurora68-Log.bin $(B)/Aurora68-Depth.bin $(B)/Aurora68-WiFi-Bluetooth.bin $(B)/Aurora68-ScreenSetup.bin $(B)/Aurora68-Display.bin $(B)/Aurora68-Sound.bin $(B)/Aurora68-Slots.bin $(B)/Aurora68-Play.bin $(B)/Aurora68-Agent.bin $(B)/Aurora68-VideoDecoder.bin $(B)/Aurora68-Video.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes declrom-wifi-sizes declrom-se-sizes
 
 $(B)/%.o: %.s
 	@mkdir -p $(B)
@@ -343,6 +343,33 @@ $(B)/vdec.elf: $(B)/vd/entry.o $(B)/vd/vdec.o wifimenu/init.ld
 	$(LD) -T wifimenu/init.ld --emit-relocs --gc-sections --no-warn-rwx-segments -z noexecstack -o $@ $(B)/vd/entry.o $(B)/vd/vdec.o $(LIBGCC)
 $(B)/Aurora68-VideoDecoder.bin: $(B)/vdec.elf ../tools/mac/elf2thng.py ../tools/mac/macelf.py ../tools/mac/rsrc.py
 	$(PY) ../tools/mac/elf2thng.py $< --name "Aurora68 Video Decoder" -o $@
+
+# ---- Aurora68 Video: MPEG-1 films from the Mac's disks on the video decoder card (mac/a68player, docs/08 item 112);
+# its Toolbox list is c/traps.txt and a68player/traps.txt, its glue in build/av/; File Manager reads from Play's fs.s
+$(B)/a68player_traps.txt: c/traps.txt a68player/traps.txt
+	@mkdir -p $(B)
+	cat c/traps.txt a68player/traps.txt > $@
+$(B)/av/toolbox_glue.s $(B)/av/toolbox_gen.h: $(B)/a68player_traps.txt ../tools/mac/mktraps.py
+	@mkdir -p $(B)/av
+	$(PY) ../tools/mac/mktraps.py $< -s $(B)/av/toolbox_glue.s -H $(B)/av/toolbox_gen.h
+$(B)/av/toolbox_glue.o: $(B)/av/toolbox_glue.s
+	$(AS) -o $@ $<
+$(B)/av/glue.o: a68player/glue.s
+	@mkdir -p $(B)/av
+	$(AS) -o $@ $<
+$(B)/av/fs.o: piplay/fs.s
+	@mkdir -p $(B)/av
+	$(AS) -o $@ $<
+$(B)/av/libc.o: c/libc.c c/toolbox.h $(B)/av/toolbox_gen.h
+	$(CC) $(subst -I$(B),-I$(B)/av,$(CFLAGS)) -c -o $@ $<
+$(B)/av/video.o: a68player/video.c c/toolbox.h $(B)/av/toolbox_gen.h ../emu68/src/psmac/psmac_video.h
+	$(CC) $(subst -I$(B),-I$(B)/av,$(CFLAGS)) -I../emu68/src/psmac -c -o $@ $<
+AV_OBJ = $(B)/crt0.o $(B)/av/toolbox_glue.o $(B)/av/libc.o $(B)/av/glue.o $(B)/av/fs.o $(B)/av/video.o
+$(B)/a68player.elf: $(AV_OBJ) c/app.ld
+	$(LD) -T c/app.ld --emit-relocs --no-warn-rwx-segments -z noexecstack -o $@ $(AV_OBJ) $(LIBGCC)
+# the bundle (tools/mac/mkicons.py, 'video'): MPEG files ('MPEG', 'MPG ') open in it from the Finder
+$(B)/Aurora68-Video.bin: $(B)/a68player.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py $(ICONS)
+	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Video" --creator A68V --size 256 --icons video --version 1.0 -o $@
 
 # ---- PiScrn: the SE board's two screens arranged at the first boot, an INIT in C (mac/piscrn) ----
 $(B)/piscrn_traps.txt: c/traps.txt piscrn/traps.txt pidisplay/traps.txt

@@ -4856,3 +4856,28 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    - *Not verified:* the firmware's side. Whether a Pi 3's firmware takes `hdmi_group=0` and the written modes, and a
      real monitor's EDID, need a Pi and a monitor. The recovery screen on a large HDMI mode fills only its top-left
      640 by 640 pixels (80 columns of 8 x 16 cells, as before this change).
+
+112. **Aurora68 Video: MPEG-1 films from the Mac's disks on the video decoder card (23 November, issues #24 and #25).**
+     After item 110 the owner's order was MPEG-1 from local files next, the network browsing later. Aurora68 Video
+     (`mac/a68player`) is the card's player: an MPEG-1 program stream read from disk straight into the card's ring
+     (PBRead into the ring's own address, so no copying on the 68k), the stream started, paused, resumed, stopped and
+     placed through the driver ".A68Video" (item 110), its picture drawn by the card into the window's place on its
+     screen, "hidden" while the window is behind, dragged or under a menu. The kernel gained one thing: the last
+     picture drawn again when the place changes while the stream is paused or dry (`psmac_video.c`), so a paused film
+     follows its window and an uncovered one comes back without the program painting anything.
+   - *Seeking* is stop, the first 2 KB pack, the file from the nearest pack boundary, start: without the first pack
+     (its system header and the video's sequence header, written once by the encoders) the card answered "no MPEG-1
+     video found at the start of the stream". The length is the first pack's mux_rate when believable, else an
+     estimate from the decoder's progress; FFmpeg's mux_rate for a test pattern's film said 55 MB a second.
+   - *Tested on the solo board* (System 7.1, a 12-second FFmpeg film, 320 x 240 at 25 frames with MP2): Standard File
+     and the Finder (the bundle's 'MPEG' and 'MPG ' documents) opened it; 300 of 300 pictures shown, never dry; pause,
+     a drag and the redraw at the new place; a seek to the middle (150 pictures to the end); the Card menu's switch for
+     QuickTime decoding. Under QEMU 0.8-1.0 ms to decode a picture, 0.7-0.8 to draw it, 1.3-4.7 per cent of core 1.
+   - *QuickTime's own MPEG-1* (MoviePlayer opening a .mpg, issue #25's first wish): designed in docs/16 ("MPEG-1 from
+     the Mac's own disks": an 'eat ' import that indexes the stream into two tracks, a fifth 'imdc' around pl_mpeg's
+     video decoder, an MP2 'sdec'), not built: QuickTime 2.5 has no separate decoding and display order for
+     B-pictures, and the sound decompressor is a second piece as large as the import. The Finder hands MPEG files to
+     Aurora68 Video meanwhile.
+   - *Not verified:* the film's sound (the testbed has no sound output; on the SE it goes to HDMI or the jack, or the
+     speaker with `mac.sestream=on`), the SE board and HDMI with Aurora68 Video, a film larger than the window's
+     screen, System 6.

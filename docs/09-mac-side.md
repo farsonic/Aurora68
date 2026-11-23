@@ -30,6 +30,7 @@ and their folders"); the table gives each one's name before that once, the sourc
 | Aurora68 Colour (until 21 November 2026 PiColor) | `mac/picolor.s` | `Aurora68-Colour.bin` (application) | Colour on the Pi's screen: a colour window placed on the second display paints twelve hues at full and half strength, the primaries and a sixteen-step grey ramp with RGBForeColor and PaintRect (`docs/img/system71-two-screens.png`, both screens side by side). |
 | Aurora68 Network (until 21 November 2026 PiNet) | `mac/pinet.s` | `Aurora68-Network.bin` (application) | Test application: shows the mailbox header, PiDisk 0, finds the Ethernet card through `SGetTypeSRsrc`, opens `.ENET` with `OpenSlot`, prints the address from EGetInfo, sends an ARP request for 192.168.68.1 and waits for the reply through ERead. Pair with `tools/pinet.py` on the host. |
 | `.A68Video` (22 November 2026) | `mac/a68video.s` | `a68video.bin.raw`, in the kernel's `psmac_video_declrom.h` | The driver of the Aurora68 Video Decoder card in slot $C, carried in the card's own declaration ROM and opened by the Slot Manager at start-up: frame requests for QuickTime's formats, frame decoding on or off, the MPEG stream's commands, bytes, place and volume (Control 100-114); the card's address, formats, stream state and counts (Status 100-103). `docs/video-decoder-api.md` is its reference |
+| Aurora68 Video (23 November 2026) | `mac/a68player/video.c`, `glue.s` | `Aurora68-Video.bin` (application, creator `A68V`) | MPEG-1 films from the Mac's disks on the video decoder card (below, "Aurora68 Video"); its bundle opens 'MPEG' and 'MPG ' files from the Finder |
 | Aurora68 Video Decoder extension (22 November 2026) | `mac/vdec/vdec.c`, `entry.s` | `Aurora68-VideoDecoder.bin` (MacBinary, type `thng`, creator `A68v`) | QuickTime decompressors for Cinepak, Apple Video, Animation and Graphics that hand each picture to the card through `.A68Video` (below, "The Aurora68 Video Decoder in QuickTime"); QuickTime's own decompressors take over when the card is off or absent |
 
 More of them, each with a section below: **Aurora68 Display** (PiDisplay, `mac/pidisplay/`), **Aurora68 Depth**
@@ -1242,7 +1243,16 @@ were faster in the testbed; Cinepak at eight bits was 1.7 times faster through t
 card drew MoviePlayer's pictures into the SE's own screen, dithered. What to try on the SE and with HDMI:
 READ-ME-FIRST, "QuickTime movies on the video decoder card".
 
-## Aurora68 Slots: the NuBus cards (21 November 2026)
+## Aurora68 Video: MPEG-1 films on the card (23 November 2026)
+In `Aurora68:Aurora68 Video`. File > Open... an MPEG-1 program stream (.mpg: MPEG-1 video with MP2 sound, what
+the video helper and `ffmpeg -c:v mpeg1video -c:a mp2 -f mpeg` make), or double-click one in the Finder (type
+'MPEG' or 'MPG '; a file from a modern computer that arrives as '????' opens through File > Open...). The card
+decodes it into the window; the program reads the file into the card's ring and draws nothing in the picture.
+Space or the button plays and pauses, a click in the bar seeks, Movie > Double Size doubles the picture (the
+card scales it), Movie's volumes, and Card > Decode QuickTime Movies on the Card switches the QuickTime
+components between the card and QuickTime's own decompressors (docs/08 items 110 and 112; docs/16).
+
+
 The user asked how to see which NuBus cards the Mac has. On the SE the Pi presents two cards that
 exist only in software (slot 9, the Aurora68 card; slot $A, the HDMI screen), and the IIci ROM's Slot
 Manager treats them like real ones. System 7.1 has no Apple System Profiler and the project gives away

@@ -44,6 +44,7 @@ EXT_FOLDER = 'Extensions (to install)'
 # (build file, folder inside Aurora68, Finder name); the Finder name is the MacBinary's own
 APPS = [
     ('Aurora68-Play.bin', 'Aurora68 Play', 'Aurora68 Play'),
+    ('Aurora68-Video.bin', 'Aurora68 Video', 'Aurora68 Video'),
     ('Aurora68-Display.bin', 'Display', 'Aurora68 Display'),
     ('Aurora68-Screens.bin', 'Display', 'Aurora68 Screens'),
     ('Aurora68-Colour.bin', 'Display', 'Aurora68 Colour'),

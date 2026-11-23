@@ -569,6 +569,10 @@ def g_play(n):
 def g_display(n):
     return art(DISPLAY32 if n == 32 else DISPLAY16, L(BLUE, WHITE))
 
+def g_video(n):
+    """Aurora68 Video (23 November 2026): the display's glyph in the play button's violet, a film on the screen"""
+    return art(DISPLAY32 if n == 32 else DISPLAY16, L(VIOLET, GOLD))
+
 def g_slots(n):
     return art(SLOTS32 if n == 32 else SLOTS16, L(BOARD, GOLD))
 
@@ -838,9 +842,9 @@ def g_doc(kind):
                     c.hline(x0, x1 - 1, yy, INK_K)
                     c.fill(x0 + at, yy - 1, x0 + at + 1, yy + 1, (1, col))
             return
-        label = {'MPG3': 'MP3', 'AIFF': 'AIFF', 'WAVE': 'WAV', 'FLAC': 'FLAC', 'OggS': 'OGG', 'M4A ': 'M4A'}[kind]
+        label = {'MPG3': 'MP3', 'AIFF': 'AIFF', 'WAVE': 'WAV', 'FLAC': 'FLAC', 'OggS': 'OGG', 'M4A ': 'M4A', 'MPEG': 'MPG', 'MPG ': 'MPG'}[kind]
         if n == 32:
-            if kind == 'MPG3':
+            if kind in ('MPG3', 'MPEG', 'MPG '):          # MP3, and Aurora68 Video's MPEG films (23 November 2026)
                 c.stamp(x0 + 5, y0 + 1, PLAY16, L(VIOLET))
             else:
                 cx = x0
@@ -850,7 +854,7 @@ def g_doc(kind):
             w = 4 * len(label) - 1
             c.text(x0 + (x1 - x0 + 1 - w) // 2, y1 - 6, label, INK_K)
         else:                                         # too small for the letters
-            if kind == 'MPG3':
+            if kind in ('MPG3', 'MPEG', 'MPG '):
                 c.stamp(x0, y0 + 2, PLAY16, L(VIOLET))
             else:
                 for i in range(x1 - x0):
@@ -865,6 +869,7 @@ PROGRAMS = {
     'play':      ('Aurora68 Play', 'app', g_play, [('MPG3', 'doc-MPG3'), ('AIFF', 'doc-AIFF'), ('WAVE', 'doc-WAVE'), ('FLAC', 'doc-FLAC'),
                   ('OggS', 'doc-OggS'), ('M4A ', 'doc-M4A '), ('pref', 'doc-pref')]),
     'display':   ('Aurora68 Display', 'app', g_display, [('pref', 'doc-pref')]),
+    'video':     ('Aurora68 Video', 'app', g_video, [('MPEG', 'doc-MPEG'), ('MPG ', 'doc-MPG ')]),
     'slots':     ('Aurora68 Slots', 'app', g_slots, [('pref', 'doc-pref')]),
     'log':       ('Aurora68 Log', 'app', g_log, []),
     'status':    ('Aurora68 Status', 'app', g_status, []),
@@ -883,7 +888,7 @@ PROGRAMS = {
     'agent':     ('Aurora68 Agent', 'ext', g_agent, []),
     'common':    ('Aurora68 extension', 'ext', g_common, []),
 }
-DOCS = {'doc-MPG3': 'MPG3', 'doc-AIFF': 'AIFF', 'doc-WAVE': 'WAVE', 'doc-FLAC': 'FLAC', 'doc-OggS': 'OggS', 'doc-M4A ': 'M4A ', 'doc-pref': 'pref'}
+DOCS = {'doc-MPG3': 'MPG3', 'doc-AIFF': 'AIFF', 'doc-WAVE': 'WAVE', 'doc-FLAC': 'FLAC', 'doc-OggS': 'OggS', 'doc-M4A ': 'M4A ', 'doc-pref': 'pref', 'doc-MPEG': 'MPEG', 'doc-MPG ': 'MPG '}
 # the extensions whose creator, 'PSMC', they share: the common icon in the bundle, their own as a custom icon
 SHARED_CREATOR = {'disk', 'machine', 'sound'}
 
