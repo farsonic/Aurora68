@@ -186,6 +186,7 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	sh ../tools/apnet_test.sh $(abspath $(B))
 	sh ../tools/vcodec_test.sh $(abspath $(B))
 	sh ../tools/mpg1_test.sh $(abspath $(B))
+	sh ../tools/vbuf_test.sh $(abspath $(B))
 
 disasm: $(B)/pidisk.o
 	m68k-linux-gnu-objdump -d $(B)/pidisk.o | head -200

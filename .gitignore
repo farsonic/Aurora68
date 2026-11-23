@@ -75,6 +75,8 @@ mac/build/vdec.elf
 mac/build/vcodec/
 # MPEG-1 in QuickTime's host test (tools/mpg1_test.sh: its program and FFmpeg's films, 23 November 2026)
 mac/build/mpg1/
+# the video card stream channel's host test (tools/vbuf_test.sh: its program, logs and FFmpeg's film, 23 November 2026)
+mac/build/vbuf/
 mac/build/av/
 mac/build/a68player.elf
 mac/build/a68player_traps.txt
