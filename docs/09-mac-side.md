@@ -1443,6 +1443,36 @@ order of their names), moves any other INIT file of creator `PSWM` in Extensions
 logs `[MAC] Menu Extras: an older copy, "Aurora68 Wi-Fi & Bluetooth", moved to Extensions (Disabled)`. Dropping the
 new one on the System Folder beside the old one is therefore enough.
 
+**Tested** (23 November 2026) on the solo board in QEMU, System 7.1 (the test image's own Date & Time and General
+Controls), driven through the remote control's testbed channel (`mac.remotefile=`, `aurora68.py --semihost`):
+- 640 x 480, one bit, the Finder: the default clock, then the date and seconds with the 24-hour clock, the separators
+  flashing (off every other second), the analog face (`docs/img/menu-extras-clock-styles.png`, top to bottom); the
+  seconds advancing once a second with the Finder idle; the menu (`docs/img/menu-extras-clock-menu.png`), its items
+  dimmed for the analog face and AM/PM dimmed with the 24-hour clock; Date & Time... brought the Finder forward and
+  opened the Date & Time control panel (`docs/img/menu-extras-date-time.png`), whose Time Formats changed to 24 hours
+  were followed by the clock at the next start with no preferences file; the choices kept across three restarts;
+  the clock not drawn while the Finder's Special menu was held down (its seconds stood still, and moved on once it was
+  let go: `docs/img/menu-extras-menu-down.png`); the minute rolling over with the menu bar left alone.
+- 512 x 342, one bit (`mac.screen=512x342`, the 512 x 342 declaration ROM): the Finder with everything, the Finder
+  with the long clock (Bluetooth dropped), Aurora68 Play (File, Edit, Controls, Library, Radio) with the default clock
+  and the icons, Play with the long clock (both icons dropped), Play with the 12-hour clock's long form too wide (the
+  time alone, "12:04 AM"): `docs/img/menu-extras-512-bars.png`. A press two pixels left of the clock opened the
+  Finder's Special menu, one on the clock the clock's menu (`docs/img/menu-extras-512-edge.png`); the Wi-Fi and
+  Bluetooth menus from their new places, and the bar put back after them (`docs/img/menu-extras-512-wifi-bt.png`).
+- The old "Aurora68 Wi-Fi & Bluetooth" beside the new one: moved into "Extensions (Disabled)" at the first start, and
+  only the new extension's icons in the bar.
+- Found on the way: after a PopUpMenuSelect the Menu Manager left the Window Manager port's clipping narrowed, so the
+  highlight was never taken off and nothing drawn in the bar afterwards showed; the extras now open WMgrPort's
+  clipping over the menu bar while they draw and put the old one back. TextFace's style is a word's low byte, not a
+  BOOLEAN's high byte: the first clock came out outlined and italic. A log line built in an 80-byte buffer on the
+  stack ran past it at the first start ("bad F-Line instruction", the return address "led)"): 128 bytes now.
+
+*Not verified:* the NTP line (no Riptide in the test image; the calls are Riptide's documented ones), System 7.5's
+Date & Time and Finder (no 7.5 image in the testbed), a region other than the United States (the formats come from
+'itl0' and 'itl1', so a British or German System should show its own order and names), colour screens' menu bar
+colours (the clock is drawn black on white), the SE itself. A press on the extras while a program's modal alert is up
+opens nothing (seen with Aurora68 Play's "no sound" alert), as the program's own menus do not open then either.
+
 ## AppleTalk on the solo board
 `mac.appletalk=1` starts with AppleTalk active (PRAM's SPConfig), on top of whatever `pram.bin` on
 the card holds: the solo board keeps its parameter RAM there across power cycles (docs/08 item 51),

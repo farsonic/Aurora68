@@ -4,7 +4,8 @@
 | the whole image (tools/mac/elf2init.py: the code and data, then the relocation table) into a
 | pointer in the system heap, adds the copy's address to every 32-bit field the table names,
 | flushes the instruction cache and calls init_main() in the copy. init_main installs:
-|   patch_drawmenubar  _DrawMenuBar: the system's, then the WiFi icon at the right of the bar
+|   patch_drawmenubar  _DrawMenuBar: the system's, then the extras at the right of the bar (bar.c: the
+|                      clock, the WiFi and the Bluetooth icons, since 23 November 2026)
 |   gne_filter         jGNEFilter: a press on the icon pops up the WiFi menu (wifimenu.c), and
 |                      between events a look at the WiFi state, to redraw the icon and to save a
 |                      joined network (c_tick)

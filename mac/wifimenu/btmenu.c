@@ -238,7 +238,7 @@ int bt_menuselect(long pt)
 	InsertMenu(m, -1);
 	InsertMenu(fm, -1);
 	InitCursor();
-	{ void *save, *wm; GetPort(&save); GetWMgrPort(&wm); SetPort(wm); InvertRect(&bt_r); SetPort(save); }
+	{ void *save; wm_begin(&save); InvertRect(&bt_r); wm_end(save); }
 	long r = PopUpMenuSelect(m, LM_MBARHEIGHT + 2, bt_r.left - 4, 1);
 	DeleteMenu(FORGET_MENU);
 	DeleteMenu(BT_MENU);

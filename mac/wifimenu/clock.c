@@ -458,11 +458,11 @@ int clock_menuselect(long pt)
 	short mbh = LM_MBARHEIGHT;
 	Rect hl = clk_hit;
 	hl.bottom = (short)(mbh - 1);
-	{ void *save, *wm; GetPort(&save); GetWMgrPort(&wm); SetPort(wm); InvertRect(&hl); SetPort(save); }
+	{ void *save; wm_begin(&save); InvertRect(&hl); wm_end(save); }
 	long r = PopUpMenuSelect(m, mbh + 2, clk_hit.left, 1);
 	DeleteMenu(CLK_MENU);
 	DisposeMenu(m);
-	{ void *save, *wm; GetPort(&save); GetWMgrPort(&wm); SetPort(wm); EraseRect(&hl); SetPort(save); }
+	{ void *save; wm_begin(&save); EraseRect(&hl); wm_end(save); }
 	int it = (short)(r & 0xFFFF);
 	unsigned short was = cfg;
 	if ((r >> 16) == CLK_MENU && it) {

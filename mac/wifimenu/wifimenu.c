@@ -16,6 +16,8 @@
  * joined with "Remember this network" ticked is written into cmdline.txt on the Pi's card once the
  * join has succeeded (wifi.ssid= and wifi.psk=, through the mailbox's PSMB_INFO_SETOPT,
  * emu68/src/psmac/psmac_card.c), so the next power-on joins it by itself. Written 18 November 2026.
+ * Since 23 November 2026 the extension is "Aurora68 Menu Extras": a clock beside the icons (clock.c), and the
+ * three placed where the program's menus leave room (bar.c) instead of at fixed places.
  */
 #include "toolbox.h"
 #include "menus.h"
@@ -474,7 +476,7 @@ int c_menuselect(long pt)
 	InsertMenu(m, -1);
 	PROBE("wm: after InsertMenu");
 	InitCursor();                                    /* the arrow, whatever the program showed */
-	{ void *save, *wm; GetPort(&save); GetWMgrPort(&wm); SetPort(wm); InvertRect(&icon_r); SetPort(save); }
+	{ void *save; wm_begin(&save); InvertRect(&icon_r); wm_end(save); }
 	/* item 1's top two rows below the bar: the frame then starts on the row under the bar's line.
 	   With one row (MBarHeight + 1) the MDEF found the frame touching the menu bar and moved the
 	   whole menu down by an item, leaving a gap of the desktop between bar and menu. */

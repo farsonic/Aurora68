@@ -7,7 +7,7 @@
  *   - the system menus' left edge is found in the menu list (MenuList, $A1C: a header of three words, then
  *     a handle and a left edge for each menu; the Help, Keyboard and Application menus have negative IDs),
  *     and the program's last menu's right edge: its left plus its title's width plus the gap the menu bar
- *     leaves after a title, measured between the program's own titles (13 pixels on System 7.1);
+ *     leaves after a title, measured between the program's own titles (13 pixels when there is only one);
  *   - the extras are placed right to left from the system menus, as macOS places its own: the clock, the
  *     WiFi icon, the Bluetooth icon, each with seven pixels either side (the area a press is taken in);
  *   - when they do not all fit beside the program's menus the least important go first: Bluetooth, then
@@ -86,22 +86,53 @@ static void set_slot(Rect *r, Rect *hit, short right, short w, short h, short mb
 }
 static void clear(Rect *r) { r->top = r->left = r->bottom = r->right = 0; }
 
+/* The Window Manager's port, its clipping opened over the menu bar (and the old one kept): after a
+   PopUpMenuSelect the Menu Manager left WMgrPort's clipRgn narrowed to where its menu had been, and the
+   extras drawn after it, their highlight taken off, the clock's next minutes, never showed. */
+static void *saved_clip;
+void *wm_begin(void **save)
+{
+	void *wm;
+	GetPort(save);
+	GetWMgrPort(&wm);
+	SetPort(wm);
+	saved_clip = NewRgn();
+	if (saved_clip) GetClip(saved_clip);
+	Rect bar = *PORT_RECT(wm);
+	bar.top = 0; bar.bottom = LM_MBARHEIGHT;
+	ClipRect(&bar);
+	return wm;
+}
+void wm_end(void *save)
+{
+	if (saved_clip) { SetClip(saved_clip); DisposeRgn(saved_clip); saved_clip = 0; }
+	SetPort(save);
+}
+
 void draw_extras(int from_bar)
 {
 	short mbh = LM_MBARHEIGHT;
 	void *save, *wm;
 	if (mbh < 12) { clear(&icon_r); clear(&hit_r); clear(&bt_r); clear(&bt_hit); clear(&clk_r); clear(&clk_hit); placed = 0; return; }
+#ifdef WM_DEBUG
+	static int why0 = -1;
+	int why = !from_bar ? (!placed ? 1 : menu_down() ? 2 : 0) : 0;
+	if (why != why0) { mlog(why == 1 ? "Menu Extras: not placed" : why == 2 ? "Menu Extras: a menu is down" : "Menu Extras: drawing"); why0 = why; }
+#endif
 	if (!from_bar && (!placed || menu_down())) return;
-	GetPort(&save);
-	GetWMgrPort(&wm);
-	SetPort(wm);
+	wm = wm_begin(&save);
 	short font = *(short *)((char *)wm + 68), mode = *(short *)((char *)wm + 72), size = *(short *)((char *)wm + 74);
 	unsigned char face = *((unsigned char *)wm + 70);
 	TextFont(0); TextFace(0); TextSize(0); TextMode(1);
 	short app, sys;
 	measure(PORT_RECT(wm)->right, &app, &sys);
 	if (from_bar) { bar_app = app; bar_sys = sys; }
-	else if (sys != bar_sys || app > drawn_left) goto out;   /* the menus changed: wait for _DrawMenuBar */
+	else if (sys != bar_sys || app > drawn_left) {         /* the menus changed: wait for _DrawMenuBar */
+#ifdef WM_DEBUG
+		mlog("Menu Extras: the menus changed");
+#endif
+		goto out;
+	}
 	short cw[3];
 	cw[0] = 0;
 	cw[1] = (short)clock_width(1);               /* the short form first: it takes the time both are drawn at */
@@ -156,7 +187,7 @@ void draw_extras(int from_bar)
 	if (nb.left < nb.right) bt_draw(wm); else bt_shown = -1;
 out:
 	TextFont(font); TextFace(face); TextSize(size); TextMode(mode);
-	SetPort(save);
+	wm_end(save);
 }
 
 /* the patch of _DrawMenuBar (entry.s) */

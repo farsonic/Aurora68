@@ -27,6 +27,8 @@ extern Rect bt_r, bt_hit;                 /* the Bluetooth icon */
 extern Rect clk_r, clk_hit;               /* the clock */
 extern int clk_level;                     /* 2 the long form, 1 the short one, 0 not shown */
 void draw_extras(int from_bar);           /* from_bar: just after the system's _DrawMenuBar */
+void *wm_begin(void **save);              /* the Window Manager's port, set, its clipping the menu bar */
+void wm_end(void *save);
 int on_extra(const Rect *hit, long pt);
 int menu_down(void);                      /* a menu is down (anyone's): nothing is drawn in the bar */
 /* wifimenu.c */
