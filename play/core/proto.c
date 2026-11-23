@@ -477,6 +477,40 @@ int a68_path_vaudio(const char *vid, unsigned long start, char *out, long max)
 	if (start) arg_n(&b, "start", start);
 	return pb_end(&b, 0);
 }
+int a68_path_vmpeg(const char *vid, unsigned w, unsigned h, unsigned long start, char *out, long max)
+{
+	struct pb b;
+	pb_begin(&b, out, max, "/vmpeg/");
+	b.p = a68_put_escaped(b.p, b.end, vid, 0);
+	arg_n(&b, "w", w);
+	arg_n(&b, "h", h);
+	if (start) arg_n(&b, "start", start);
+	return pb_end(&b, 0);
+}
+/* the server's rule for a size (mpeg_size in aurora68_music_server.py): 64 to top, even */
+static unsigned vm_even(unsigned long v, unsigned top)
+{
+	if (v > top) v = top;
+	if (v < 64) v = 64;
+	return (unsigned)(v - v % 2);
+}
+void a68_vmpeg_size(unsigned long vw, unsigned long vh, unsigned sw, unsigned sh, unsigned room_w, unsigned room_h,
+                    unsigned *w, unsigned *h)
+{
+	unsigned long bw = sw <= 640 ? 320 : sw < 1280 ? 512 : 640, bh = sw <= 640 ? 240 : sw < 1280 ? 384 : 480;
+	unsigned long fw, fh;
+	(void)sh;
+	if (room_w && bw > room_w) bw = room_w;
+	if (room_h && bh > room_h) bh = room_h;
+	if (bw > 1280) bw = 1280;
+	if (bh > 720) bh = 720;
+	if (!vw || !vh) { vw = 4; vh = 3; }
+	vw &= 0xFFFFul; vh &= 0xFFFFul;                  /* a 32-bit product below: sizes of a video, not more */
+	if (vw * bh <= vh * bw) { fh = bh; fw = vw * bh / vh; }   /* taller than the box: its height fills it */
+	else { fw = bw; fh = vh * bw / vw; }
+	*w = vm_even(fw, 1280);
+	*h = vm_even(fh, 720);
+}
 int a68_path_vthumb(const char *vid, char *out, long max) { return video_path("/vthumb/", vid, 0, out, max); }
 int a68_path_video(const char *vid, int how, char *out, long max)
 {

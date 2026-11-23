@@ -210,6 +210,7 @@ static int kind_of(const char *t)
 		if (same(t, audio[i])) return ICY_K_AUDIO;
 	for (i = 0; lists[i]; i++)
 		if (same(t, lists[i])) return ICY_K_PLAYLIST;
+	if (same(t, "video/mpeg") || same(t, "video/mpg") || same(t, "video/x-mpeg")) return ICY_K_VIDEO;
 	return ICY_K_OTHER;
 }
 static void header_line(struct icy *s, unsigned *ev)

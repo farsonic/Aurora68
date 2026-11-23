@@ -24,6 +24,8 @@ struct a68_row {                         /* one row of a list */
 	char id[9], album[9], kind;          /* kind: 'A' artist, 'L' album, 'T' track, 'V' music video */
 	unsigned short num, count;           /* a track's number; an artist's albums, an album's tracks */
 	unsigned short videos;               /* an artist's videos (videos=1) */
+	unsigned short vw, vh;               /* a video's picture (its V record's width and height; 0 when not said): the
+	                                        classic Play 1.6 asks /vmpeg for a size of its shape (23 November 2026) */
 	unsigned long secs;
 	char text[48], sub[40];              /* the name, title; the artist (an album, a track) */
 };

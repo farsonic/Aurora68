@@ -182,6 +182,16 @@ int main(void)
 	simple("426", "HTTP/1.1 426 Upgrade Required\r\ncontent-length: 16\r\n\r\nUpgrade Required", 426, 0, 1);
 	simple("a web page", "HTTP/1.0 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<html>", 200, ICY_K_OTHER, 1);
 	simple("AAC", "HTTP/1.0 200 OK\r\nContent-Type: audio/aacp\r\n\r\n", 200, ICY_K_OTHER, 1);
+	{   /* the music server's /vmpeg/ (23 November 2026): video/mpeg, its body passed on whole for the video card */
+		struct run r;
+		unsigned long i;
+		stream_n = 0;
+		puts_("HTTP/1.0 200 OK\r\nContent-Type: video/mpeg\r\nConnection: close\r\nX-Aurora-Seconds: 40\r\n\r\n");
+		for (i = 0; i < 5000; i++) { unsigned char c = (unsigned char)(i * 7 + 1); put(&c, 1); audio[i] = c; }
+		feed_all(2, &r, 0);
+		check(S.status == 200 && S.kind == ICY_K_VIDEO && S.state == ICY_BODY, "video/mpeg: a video body");
+		check(out_n == 5000 && !memcmp(out, audio, 5000), "video/mpeg: every byte passed on");
+	}
 	simple("a playlist", "HTTP/1.0 200 OK\r\nContent-Type: audio/x-scpls\r\n\r\n[playlist]\nnumberofentries=2\n"
 	       "File1=https://ice6.example.invalid/x-128-mp3\nTitle1=x\nFile2=http://ice2.example.invalid/x-128-mp3\nLength2=-1\n", 200, ICY_K_PLAYLIST, 0);
 	{

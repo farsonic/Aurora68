@@ -14,7 +14,9 @@
 #define A68_ICY_H
 
 enum { ICY_STATUS, ICY_HEADERS, ICY_BODY, ICY_DONE };          /* struct icy's state */
-enum { ICY_K_AUDIO = 1, ICY_K_PLAYLIST, ICY_K_OTHER };         /* what the body is, from Content-Type */
+enum { ICY_K_AUDIO = 1, ICY_K_PLAYLIST, ICY_K_OTHER,          /* what the body is, from Content-Type */
+       ICY_K_VIDEO };                 /* video/mpeg: the music server's /vmpeg/ for the video card (23 November 2026),
+                                         passed on as the audio is; the radio refuses it, the classic Play's video takes it */
 #define ICY_EV_HEADERS 1u            /* icy_feed: the headers are complete (status, kind, ... are set) */
 #define ICY_EV_TITLE   2u            /* a new StreamTitle is in title (title_seq was bumped) */
 #define ICY_EV_ERROR   4u            /* the answer is not HTTP at all, or its chunks are damaged */

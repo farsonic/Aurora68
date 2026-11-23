@@ -65,6 +65,7 @@ int a68_list_load(struct a68_list *l, char *body, long len)
 				w->kind = 'V'; a68_copy(w->id, v.id, sizeof w->id);
 				a68_copy(w->text, v.title, sizeof w->text); a68_copy(w->sub, v.artist, sizeof w->sub);
 				w->secs = v.secs; a68_copy(w->album, v.album, sizeof w->album);
+				w->vw = (unsigned short)(v.width > 0xFFFF ? 0 : v.width); w->vh = (unsigned short)(v.height > 0xFFFF ? 0 : v.height);
 			} else {
 				w->kind = 'T'; a68_copy(w->id, t.id, sizeof w->id); w->num = (unsigned short)t.number;
 				a68_copy(w->text, t.title, sizeof w->text); a68_copy(w->sub, t.artist, sizeof w->sub);

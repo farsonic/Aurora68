@@ -514,6 +514,7 @@ static void video_units(void)
 		a68_list_init(&l, rows, 8, A68_V_TRACKS);
 		b = dup_("A68M\t1\ttracks\t3\t0\t3\rt1\t1\tOne\tX\t60\ta1\rt2\t2\tTwo\tX\t70\ta1\rV\tv1\tThe Video\tX\t200\ta1\t640\t360\r", &n);
 		check(a68_list_load(&l, b, n) && l.n == 3 && l.rows[2].kind == 'V' && !strcmp(l.rows[2].id, "v1") && l.rows[2].secs == 200 &&
+		      l.rows[2].vw == 640 && l.rows[2].vh == 360 && !l.rows[0].vw &&
 		      !strcmp(l.rows[2].text, "The Video") && a68_list_secs(&l) == 130 && a68_list_videos(&l) == 1,
 		      "the catalogue: a video's row after the tracks, not counted in the album's length");
 		a68_list_init(&l, rows, 8, A68_V_SEARCH);
@@ -570,6 +571,34 @@ static void video_units(void)
 		      "a Play that shows videos says so");
 		dv_path(&d, DV_COMMANDS, p, sizeof p);
 		check(!strcmp(p, "/mac/commands?id=mac-0123456789ab&wait=20&enc=utf8&full=1&videos=1"), "and asks for its commands' videos");
+	}
+	/* the classic Play 1.6 and the video decoder card (23 November 2026): /vmpeg/ID at a size for the screen */
+	check(a68_path_vmpeg("7dadadb6", 320, 240, 0, p, sizeof p) && !strcmp(p, "/vmpeg/7dadadb6?w=320&h=240") &&
+	      a68_path_vmpeg("7dadadb6", 320, 180, 95, p, sizeof p) && !strcmp(p, "/vmpeg/7dadadb6?w=320&h=180&start=95"),
+	      "the video for the card: its size, and from 95 s");
+	check(!a68_path_vmpeg("7dadadb6", 320, 240, 0, p, 20) && !p[0], "a /vmpeg path that does not fit: none");
+	{
+		unsigned w, h;
+		a68_vmpeg_size(1920, 1080, 512, 342, 0, 0, &w, &h);
+		check(w == 320 && h == 180, "the SE's screen: a 16:9 video at 320 x 180");
+		a68_vmpeg_size(640, 480, 512, 342, 0, 0, &w, &h);
+		check(w == 320 && h == 240, "a 4:3 video at 320 x 240");
+		a68_vmpeg_size(0, 0, 512, 342, 0, 0, &w, &h);
+		check(w == 320 && h == 240, "a size not known: 4:3");
+		a68_vmpeg_size(160, 120, 640, 480, 0, 0, &w, &h);
+		check(w == 320 && h == 240, "a small video at the box's size (the card scales nothing; the server does)");
+		a68_vmpeg_size(1920, 1080, 1024, 768, 0, 0, &w, &h);
+		check(w == 512 && h == 288, "a 1024 x 768 screen: 512 wide");
+		a68_vmpeg_size(1920, 1080, 1920, 1080, 0, 0, &w, &h);
+		check(w == 640 && h == 360, "HDMI at 1920 x 1080: 640 x 360");
+		a68_vmpeg_size(1080, 1920, 1920, 1080, 0, 0, &w, &h);
+		check(w == 270 && h == 480, "a portrait video: its height fills the box");
+		a68_vmpeg_size(1920, 1080, 1920, 1080, 300, 0, &w, &h);
+		check(w == 300 && h == 168, "never wider than the room: even");
+		a68_vmpeg_size(1920, 200, 512, 342, 0, 0, &w, &h);
+		check(w == 320 && h == 64 && !(w & 1) && !(h & 1), "a very wide video: at least 64 high");
+		a68_vmpeg_size(1921, 1081, 512, 342, 0, 0, &w, &h);
+		check(!(w & 1) && !(h & 1) && w <= 320 && h <= 240, "odd sizes come out even");
 	}
 }
 
