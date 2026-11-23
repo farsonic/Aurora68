@@ -518,6 +518,10 @@ def videos_check(tmp, pc):
         fr = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v', '-show_entries', 'frame=pict_type', '-of', 'csv=p=0', out],
                             capture_output=True, text=True).stdout.split()
         check(fr and 'B' not in fr, f'no B-frames ({"".join(fr)[:30]})')
+        # rate= (the classic Play 1.6's, 23 November 2026): the video's kbit/s asked for, the helper's own without it
+        big = len(get(base, f'/vmpeg/{webm["id"]}?w=1280&h=720')[2])
+        st, hd, small = get(base, f'/vmpeg/{webm["id"]}?w=1280&h=720&rate=200')
+        check(st == 200 and 0 < len(small) < big * 0.6, f'/vmpeg/ with rate=200: a smaller stream ({len(small)} bytes against {big})')
         raw('127.0.0.1', port, f'/vmpeg/{mp4["id"]}?w=320&h=240', seconds=0.5)
         check(no_ffmpeg_left(lib), 'an MPEG-1 stream stopped by its client leaves no ffmpeg behind')
 

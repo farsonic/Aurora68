@@ -477,15 +477,21 @@ int a68_path_vaudio(const char *vid, unsigned long start, char *out, long max)
 	if (start) arg_n(&b, "start", start);
 	return pb_end(&b, 0);
 }
-int a68_path_vmpeg(const char *vid, unsigned w, unsigned h, unsigned long start, char *out, long max)
+int a68_path_vmpeg(const char *vid, unsigned w, unsigned h, unsigned rate, unsigned long start, char *out, long max)
 {
 	struct pb b;
 	pb_begin(&b, out, max, "/vmpeg/");
 	b.p = a68_put_escaped(b.p, b.end, vid, 0);
 	arg_n(&b, "w", w);
 	arg_n(&b, "h", h);
+	if (rate) arg_n(&b, "rate", rate);
 	if (start) arg_n(&b, "start", start);
 	return pb_end(&b, 0);
+}
+unsigned a68_vmpeg_rate(unsigned w, unsigned h)
+{
+	unsigned long r = ((unsigned long)w * h & 0xFFFFFFFFul) / 192;
+	return (unsigned)(r < 150 ? 150 : r > 2500 ? 2500 : r);
 }
 /* the server's rule for a size (mpeg_size in aurora68_music_server.py): 64 to top, even */
 static unsigned vm_even(unsigned long v, unsigned top)

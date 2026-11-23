@@ -573,10 +573,12 @@ static void video_units(void)
 		check(!strcmp(p, "/mac/commands?id=mac-0123456789ab&wait=20&enc=utf8&full=1&videos=1"), "and asks for its commands' videos");
 	}
 	/* the classic Play 1.6 and the video decoder card (23 November 2026): /vmpeg/ID at a size for the screen */
-	check(a68_path_vmpeg("7dadadb6", 320, 240, 0, p, sizeof p) && !strcmp(p, "/vmpeg/7dadadb6?w=320&h=240") &&
-	      a68_path_vmpeg("7dadadb6", 320, 180, 95, p, sizeof p) && !strcmp(p, "/vmpeg/7dadadb6?w=320&h=180&start=95"),
-	      "the video for the card: its size, and from 95 s");
-	check(!a68_path_vmpeg("7dadadb6", 320, 240, 0, p, 20) && !p[0], "a /vmpeg path that does not fit: none");
+	check(a68_path_vmpeg("7dadadb6", 320, 240, 0, 0, p, sizeof p) && !strcmp(p, "/vmpeg/7dadadb6?w=320&h=240") &&
+	      a68_path_vmpeg("7dadadb6", 320, 180, 300, 95, p, sizeof p) && !strcmp(p, "/vmpeg/7dadadb6?w=320&h=180&rate=300&start=95"),
+	      "the video for the card: its size, its rate, and from 95 s");
+	check(!a68_path_vmpeg("7dadadb6", 320, 240, 400, 0, p, 20) && !p[0], "a /vmpeg path that does not fit: none");
+	check(a68_vmpeg_rate(320, 240) == 400 && a68_vmpeg_rate(320, 180) == 300 && a68_vmpeg_rate(640, 480) == 1600 &&
+	      a68_vmpeg_rate(64, 64) == 150 && a68_vmpeg_rate(1280, 720) == 2500, "the rate asked for: 400 kbit/s at 320 x 240, 150 to 2,500");
 	{
 		unsigned w, h;
 		a68_vmpeg_size(1920, 1080, 512, 342, 0, 0, &w, &h);

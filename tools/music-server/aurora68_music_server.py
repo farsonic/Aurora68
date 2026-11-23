@@ -508,11 +508,13 @@ def mpeg_size(v, top, default):
     return v - v % 2
 
 
-def mpeg1_args(w, h):
+def mpeg1_args(w, h, rate=None):
     """tools/video-helper's ffmpeg_args, kept identical: MPEG-1 video fitted into w x h (its shape kept, padded black),
     25 frames a second, no B-frames (each frame shown as it is decoded), MP2 sound at 44.1 kHz stereo, 128 kbit/s, an
-    MPEG program stream; about 0.09 bit per pixel per frame, 300 to 2,500 kbit/s"""
-    rate = max(300, min(2500, w * h * 25 // 450))
+    MPEG program stream; about 0.09 bit per pixel per frame, 300 to 2,500 kbit/s. rate (kbit/s of video, 150 to 2,500)
+    replaces that when a client asks for it (/vmpeg/'s rate=, 23 November 2026: the classic Play's network, docs/08
+    item 114); without it the arguments are the helper's"""
+    rate = max(150, min(2500, rate)) if rate else max(300, min(2500, w * h * 25 // 450))
     vf = (f'scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,'
           f'fps=25,format=yuv420p')
     return ['-vf', vf, '-c:v', 'mpeg1video', '-b:v', f'{rate}k', '-maxrate', f'{rate * 2}k', '-bufsize', f'{rate}k',
@@ -3452,10 +3454,11 @@ def make_handler(lib, name, max_listeners, kbps, live, prefer, getter=None):
                 return self.fail(404, 'no ffmpeg here')
             w, h = mpeg_size(q.get('w'), MPEG_MAX_W, 320), mpeg_size(q.get('h'), MPEG_MAX_H, 240)
             start = int(q['start']) if q.get('start', '').isdigit() else 0
+            rate = int(q['rate']) if q.get('rate', '').isdigit() else None     # kbit/s of video; the classic Play asks
             cmd = [lib.ffmpeg, '-hide_banner', '-loglevel', 'error', '-nostdin'] + (['-ss', str(start)] if start else []) + \
-                ['-i', p] + mpeg1_args(w, h)
+                ['-i', p] + mpeg1_args(w, h, rate)
             self.pipe(v, cmd, 'video/mpeg', 'transcode', f'video {v["artist"]} - {v["title"]} as MPEG-1 at {w}x{h}' +
-                      (f' from {start} s' if start else ''))
+                      (f', {max(150, min(2500, rate))} kbit/s' if rate else '') + (f' from {start} s' if start else ''))
 
         def m3u(self, rel):
             if rel is None:

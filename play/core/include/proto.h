@@ -150,9 +150,15 @@ int a68_path_vaudio(const char *vid, unsigned long start, char *out, long max);
 int a68_path_vthumb(const char *vid, char *out, long max);
 int a68_path_video(const char *vid, int how, char *out, long max);
 /* the video as an MPEG-1 program stream at w x h from start seconds, for the Aurora68 Video Decoder card (the
-   classic Play 1.6, 23 November 2026, docs/08 item 114): /vmpeg/ID?w=W&h=H&start=S. The server fits the picture
-   into w x h and pads it black; its sizes are even, 64 to 1280 x 720 (a68_vmpeg_size makes them so) */
-int a68_path_vmpeg(const char *vid, unsigned w, unsigned h, unsigned long start, char *out, long max);
+   classic Play 1.6, 23 November 2026, docs/08 item 114): /vmpeg/ID?w=W&h=H&rate=R&start=S. The server fits the
+   picture into w x h and pads it black; its sizes are even, 64 to 1280 x 720 (a68_vmpeg_size makes them so). rate:
+   kbit/s of video (servers of 23 November 2026 on; 0 leaves it out: the server's own, up to 2,500) */
+int a68_path_vmpeg(const char *vid, unsigned w, unsigned h, unsigned rate, unsigned long start, char *out, long max);
+/* the rate the classic Play asks for: about 0.2 bit a pixel a picture at 25 a second (w x h / 192 kbit/s: 400 at
+   320 x 240, 300 at 320 x 180, 1,600 at 640 x 480), 150 to 2,500. The server's own is some seven times that at 320 x
+   240, which the testbed's MacTCP did not carry in time (docs/08 item 114); on the SE's one-bit screen the dither
+   hides what the lower rate loses */
+unsigned a68_vmpeg_rate(unsigned w, unsigned h);
 /* the size to ask /vmpeg for: the video's shape (vw x vh; 0 x 0 when not known: 4:3) fitted into a box that suits
    a screen of sw x sh pixels (320 x 240 on the SE's 512 x 342 and on any screen up to 640 wide, 512 x 384 below
    1280, 640 x 480 from 1280 up; never more than room_w x room_h, the room the window has there), then made what the
