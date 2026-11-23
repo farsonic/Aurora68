@@ -5248,3 +5248,8 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      itself once after the first state answer in AP mode (sessionStorage keeps the PIN), which makes the sheet check
      again: its button becomes **Done**, the device stays joined and the home page (Overview) shows.
    - *Not verified here:* the emulator was busy with another run; the owner's Mac is the test.
+   - *The owner's second try:* Done came, but pressing it showed the home page in the sheet for a moment, and the setup
+     belongs in the browser. Now the checks' redirect goes to `/?signin=1`, which the page takes for the sign-in sheet: it
+     asks for the PIN, signs the device in, goes to `/?signin=2` (the sheet checks again: Done) and shows only a short
+     "Connected" card ("press Done, then open http://192.168.4.1/ in your browser"), never the setup tabs. A browser opened
+     at `http://192.168.4.1/` gets the whole page as before.

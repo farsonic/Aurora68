@@ -1733,7 +1733,7 @@ static void handle(int c)
        every name leads here (psmac_apnet.c), and the answer sends it to the page, which it offers as a sign-in */
     if (get && ap_active() && !starts(path, "/r/")) {
         if (ap_signed_in(h->peer) && ap_probe_answer(h, path)) return;
-        out_head(h, 302, "text/html", 0, "Location: http://192.168.4.1/\r\n");
+        out_head(h, 302, "text/html", 0, "Location: http://192.168.4.1/?signin=1\r\n");
         h->kind = RK_OUT;
         return;
     }
