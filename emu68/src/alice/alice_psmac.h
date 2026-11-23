@@ -52,9 +52,11 @@ struct alice_input_ring {
     uint32_t attached;                          /* Mac: 1 once .PiInput has opened and will take events */
     uint32_t head;                              /* service core: events put */
     uint32_t tail;                              /* Mac: events taken */
-    uint32_t dropped, pad;
+    uint32_t dropped;
+    uint32_t options;                           /* service core: ALICE_IN_OPT_* (offset 28; 0 before 23 November 2026) */
     struct alice_input_event ev[ALICE_IN_SLOTS];
 };
+#define ALICE_IN_OPT_NOEDGE     1u              /* mac.edgejump=off: .PiInput's cursor does not jump between screens' edges (docs/10) */
 
 void alice_net_attach(void *base);              /* alice_net.c: use this memory as the board */
 void alice_net_reset(void);                     /* alice_net.c: the 68k was reset */

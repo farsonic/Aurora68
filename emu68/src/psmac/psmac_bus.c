@@ -334,6 +334,7 @@ static void psmac_read_options(void)
         extern void psmac_alice_input_click(uint32_t, const int *, int); psmac_alice_input_click(secs, pts, n);
     }
     if ((tok = find_token(args, "mac.inputdrag="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_drag(uint32_t); psmac_alice_input_drag(n); }
+    if ((tok = find_token(args, "mac.inputedge="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_edge(uint32_t); psmac_alice_input_edge(n); }
     if ((tok = find_token(args, "mac.inputright="))) { tok += 15; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_right(uint32_t); psmac_alice_input_right(n); }
     if ((tok = find_token(args, "mac.inputwifi="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_wifi(uint32_t); psmac_alice_input_wifi(n); }
     if ((tok = find_token(args, "mac.buswait="))) buswait_on = tok[12] == '1';   /* the 68k's waits for the wire, at each heartbeat (bw_report) */

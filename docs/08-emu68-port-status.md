@@ -5964,3 +5964,32 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
        the high-speed hub gets no split; the non-periodic TX FIFO (256 words) holds a 512-byte packet.
      - Also to do then: the 128 GB exFAT stick's view (item 97 stage 2), which the owner wants for moving files
        between the Mac and other machines, and what the Mac is told about a stick that carries no disk image.
+
+131. **The edge jump: the pointer to the other screen anywhere along the side (23 November).** The owner, with the SE's
+   own screen at (-512,0)-(0,342) beside the 2560 by 1440 HDMI screen: "When I move the mouse to the small screen I need
+   to precisely match its position in Monitors. Can we just have it so moving to the side where the screen is moves the
+   mouse regardless." The ROM crosses between screens only where they touch, here the top 342 of HDMI's 1440 rows.
+   - *Where to do it.* Every source of movement ends in the ROM's cursor task (IIci ROM $4082DF94, through JCrsrTask,
+     $8EE, called by the vertical-blank handler of the cursor's screen at $4080A33E): the ADB mouse handler only adds
+     to MTemp and sets CrsrNew = CrsrCouple ($4080AB26), .PiInput sets MTemp and RawMouse for USB, Bluetooth and the
+     remote. The task moves RawMouse by the accelerated difference, pins it to CrsrPin, and on a point past an edge
+     searches the device list for a screen holding it ($4082E14A; found: CrsrDevice, CrsrPin ($4082E510) and the
+     cursor's depth change and it moves there). A VBL task of our own could not see the push: by the time it ran the
+     cursor task had usually pinned MTemp back to the edge, and the order of the two is the hardware's. So .PiInput,
+     which is on every board under System 6 and 7 from the declaration ROM, puts a cursor task in front of the ROM's:
+     before it, MTemp past an edge and on no screen, with a screen on that side, becomes the proportional point on that
+     screen (MTemp, RawMouse, CrsrNew = CrsrCouple, then the ROM's task makes the move); after it, a crossing the ROM
+     made where the screens touch is moved along the edge to the same proportion, so both ways and every height map
+     alike. Remote absolute moves (flagged by .PiInput) and points far from the edge are left alone; a 4-pixel inset
+     and a 10-tick dead time after a wall jump keep the pointer from bouncing back. The hook goes in from the VBL task
+     and is put back in front should something take the vector without calling it (a reentrancy guard keeps a chain
+     that calls ours from looping). `mac.edgejump=off` sets bit 0 of the input ring's new `options` word (the
+     long at offset 28 that was padding; alice_psmac.h `ALICE_IN_OPT_NOEDGE`), which the hook reads each time;
+     psmac_diag.c lists the option under Display. docs/10 "The edge jump" has the whole of it.
+   - *Tested* in MAME's SE (System 7.1, HDMI 1024 by 768 to the right of the SE's screen) with a new scripted mouse,
+     `mac.inputedge=SECONDS`: across the touching part at y 100 to HDMI's y 225, against HDMI's left edge at y 725
+     onto the SE's screen at (507,323), and back to y 725, before the Finder and with it; the remote's absolute moves
+     near the edge landed where they were put; `mac.edgejump=off` kept the wall. Not yet seen: the SE's own ADB mouse
+     (MAME's SE gave no mouse input here), the owner's 2560 by 1440 arrangement, System 6, and the feel of the inset
+     and dead time on hardware. The owner needs the new declaration ROM (its .PiInput) as well as the kernel; with the
+     new declaration ROM and an older kernel the jump is simply on.
