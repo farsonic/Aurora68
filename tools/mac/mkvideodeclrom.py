@@ -1,20 +1,27 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
-"""mkvideodeclrom.py - the video card's declaration ROM, as a C header for the kernel (docs/16-video-card.md).
+"""mkvideodeclrom.py - the video decoder card's declaration ROM, as a C header for the kernel (docs/16-video-card.md).
 
-    python3 tools/mac/mkvideodeclrom.py -o emu68/src/psmac/psmac_video_declrom.h   (make -C mac video-declrom)
+    python3 tools/mac/mkvideodeclrom.py --drvr mac/build/a68video.bin.raw -o emu68/src/psmac/psmac_video_declrom.h
+    (make -C mac video-declrom)
 
-The video card (22 November 2026, GitHub issue #23) has no driver: the Mac's program finds it with the Slot
-Manager and talks to its window directly, as Aurora68 Play talks to the sound card's stream channel. So its
-ROM is small and fixed, and lives in the kernel rather than in a file beside it: the card is there whenever
-the kernel is, whatever declaration ROM slot 9 gets.
+The video card (22 November 2026, GitHub issue #23) first had no driver: a program found it with the Slot
+Manager and worked its window directly, as Aurora68 Play works the sound card's stream channel. The same
+evening the owner asked for "essentially another NuBus card", usable "through traditional means" and
+named "Aurora68 Video Decoder" (docs/08 item 110): so the ROM now carries the card's driver, ".A68Video"
+(mac/a68video.s), in its sResource's driver directory, and the Slot Manager installs and opens it at
+start-up (sRsrcFlags left out: fOpenAtStart), as a real card's ROM did. The ROM stays in the kernel rather
+than in a file beside it: the card is there whenever the kernel is, whatever declaration ROM slot 9 gets.
 
 sResources:
-    1    board: type {catBoard 1, 0, 0, 0}, name "Aurora68 Video", BoardId (32) $4156 'AV', VendorInfo
+    1    board: type {catBoard 1, 0, 0, 0}, name "Aurora68 Video Decoder", BoardId (32) $4156 'AV', VendorInfo
+         (vendor "Aurora68 project", revision "2", part "A68-VDEC")
     0x80 the decoder: type {$7050 'pP' (the project's vendor category, as PiDisk's and PiInput's), 3, drSwApple 1,
-         drHw $4156 'AV'}, name "Aurora68_Video", sRsrcFlags 0 (no driver to open), sRsrcHWDevId 1,
-         MinorBaseOS 0 and MinorLength $100000: the window, the card's block and ring (psmac_video.h), at
-         $FC000000 in 32-bit mode and $C00000 in 24-bit mode ($FCC00000, the same memory: psmac_mmu.c)
+         drHw $4156 'AV'} (unchanged since issue #23, so a program that looked for it still finds it), name
+         "Aurora68_Video_Decoder" ("Aurora68_Video" until the rename), sRsrcDrvrDir with ".A68Video" for
+         sMacOS68020, sRsrcHWDevId 1, MinorBaseOS 0 and MinorLength $100000: the window, the card's block,
+         frame decoder and ring (psmac_video.h), at $FC000000 in 32-bit mode and $C00000 in 24-bit mode
+         ($FCC00000, the same memory: psmac_mmu.c)
 Slot $C, not $B: the IIci's built-in video answers in $FBB00000-$FBFFFFFF (its frame buffer is at $FBB08000,
 docs/10), so the ROM's 32-bit tables do not map slot $B's space one to one; $C, $D and $E are the IIci's
 real NuBus slots, empty in the SE and in the testbed's MAME.
@@ -25,23 +32,27 @@ from declrom import DeclROM
 
 ap = argparse.ArgumentParser()
 ap.add_argument('-o', required=True)
+ap.add_argument('--drvr', required=True, help="the card's driver, mac/a68video.s assembled (build/a68video.bin.raw)")
 a = ap.parse_args()
+drvr = open(a.drvr, 'rb').read()
+assert drvr[19:19 + drvr[18]] == b'.A68Video', "the driver's name"
 
 rom = DeclROM(byte_lanes=0x0F)
 board = rom.sresource(1)
 board.type(1, 0, 0, 0)
-board.name('Aurora68 Video')
+board.name('Aurora68 Video Decoder')
 board.word(32, 0x4156)                          # BoardId 'AV'
 vendor = type(board)(0)
 vendor.cstring(1, 'Aurora68 project')           # VendorId
-vendor.cstring(3, '1')                          # RevLevel: the block's version (A68V_VERSION)
-vendor.cstring(4, 'A68-VIDEO')                  # PartNum
+vendor.cstring(3, '2')                          # RevLevel: 1 the stream channel alone (issue #23), 2 with the driver and frame decoder
+vendor.cstring(4, 'A68-VDEC')                   # PartNum
 board.sublist(36, vendor)
 
 dec = rom.sresource(0x80)
 dec.type(0x7050, 3, 1, 0x4156)
-dec.name('Aurora68_Video')
-dec.word(7, 0)                                  # sRsrcFlags: no driver, nothing to open at start
+dec.name('Aurora68_Video_Decoder')
+drv = type(dec)(0); drv.longblock(2, drvr)      # sRsrcDrvrDir: sMacOS68020
+dec.sublist(4, drv)                             # no sRsrcFlags: fOpenAtStart, the Slot Manager opens .A68Video at start-up
 dec.word(8, 1)                                  # sRsrcHWDevId
 dec.long(10, 0x000000)                          # MinorBaseOS: the window at the start of the slot's space
 dec.long(11, 0x100000)                          # MinorLength: A68V_WIN_SIZE
@@ -52,6 +63,6 @@ if len(img) > 0x4000:
 rows = [', '.join(f'0x{b:02x}' for b in img[i:i + 16]) for i in range(0, len(img), 16)]
 with open(a.o, 'w') as f:
     f.write('/* psmac_video_declrom.h - generated by tools/mac/mkvideodeclrom.py (make -C mac video-declrom): the video\n'
-            '   card\'s declaration ROM, served at the top of slot $C (psmac_videocard.c). Do not edit. MPL-2.0. */\n')
+            '   decoder card\'s declaration ROM, served at the top of slot $C (psmac_videocard.c). Do not edit. MPL-2.0. */\n')
     f.write(f'static const uint8_t psmac_video_declrom[{len(img)}] = {{\n    ' + ',\n    '.join(rows) + '\n};\n')
-print(f"{a.o}: the video card's declaration ROM, {len(img)} bytes")
+print(f"{a.o}: the video decoder card's declaration ROM, {len(img)} bytes, its driver {len(drvr)}")

@@ -63,6 +63,7 @@ EXTENSIONS = [
     ('Aurora68-Sound.bin', 'Aurora68 Sound'),
     ('Aurora68-WiFi-Bluetooth.bin', 'Aurora68 Wi-Fi & Bluetooth'),
     ('Aurora68-Agent.bin', 'Aurora68 Agent'),
+    ('Aurora68-VideoDecoder.bin', 'Aurora68 Video Decoder'),
 ]
 OLD_EXTENSIONS = ['PiDisk', 'PiMach', 'PiScrn', 'Sound PiStorm', 'Wi-Fi & Bluetooth']
 OLD_APPS = ['PiPlay', 'PiDisplay', 'PiSlots', 'PiLog', 'PiStatus', 'PiNet', 'PiWiFi', 'PiBlue', 'PiPing',
@@ -87,6 +88,9 @@ Aurora68 Wi-Fi & Bluetooth - the Wi-Fi and Bluetooth menus in the menu bar.
 Aurora68 Agent - files and programs for the Pi's remote control: aurora68.py ls, pull, push, open,
     apps and quit from another computer (docs/13, "Files and applications"). It does nothing
     until the remote control asks; without remote=on in cmdline.txt it only waits.
+Aurora68 Video Decoder - QuickTime's Cinepak, Apple Video, Animation and Graphics movies decoded by
+    the Pi (the video decoder card in slot $C), in MoviePlayer and every QuickTime program. Needs
+    QuickTime 2.0 or later; without the card QuickTime's own decompressors are used.
 """
 
 

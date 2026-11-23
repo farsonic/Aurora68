@@ -1,0 +1,123 @@
+# The Aurora68 Video Decoder card: programming interface
+
+22 November 2026. This is the interface a Macintosh program uses to put the Aurora68 Video Decoder card
+to work, written for programmers of the period's tools as much as for this project's own (Aurora68 Video,
+the QuickTime components in the "Aurora68 Video Decoder" extension, later Aurora68 Play's music videos).
+The card's design and history are docs/16-video-card.md; the kernel's side is
+`emu68/src/psmac/psmac_video.h`, which is the authority on every offset below.
+
+## What the card is
+A NuBus card in slot $C that exists only in the Raspberry Pi (`psmac_videocard.c`). Its declaration ROM
+says:
+
+| | |
+|---|---|
+| Board sResource (1) | name "Aurora68 Video Decoder", BoardId $4156 ('AV'), vendor "Aurora68 project", revision "2", part "A68-VDEC" |
+| Functional sResource ($80) | type {category $7050, cType 3, drSW 1, drHW $4156}, name "Aurora68_Video_Decoder", driver ".A68Video" (sMacOS68020), MinorBaseOS 0, MinorLength $100000 |
+
+The Slot Manager installs and opens ".A68Video" at start-up (the sResource has no sRsrcFlags, so
+fOpenAtStart applies), as for any card that carries its driver. Aurora68 Slots lists the card. With
+`mac.video=off` on the Pi's command line the slot is empty.
+
+The card does two things:
+- **The frame decoder:** one compressed picture at a time, of a format QuickTime uses (Cinepak 'cvid',
+  Apple Video 'rpza', Animation 'rle ', Graphics 'smc '), decoded by a Pi core and drawn into a pixel map
+  of the Mac's (a screen's frame buffer or an offscreen GWorld) at that map's depth (1, 2, 4, 8, 16 or 32
+  bits), scaled by the nearest pixel when asked, clipped to a rectangle. The QuickTime components use it.
+- **The stream channel:** an MPEG-1 program stream (MPEG-1 video, MP2 sound) poured into a 512 KiB ring
+  and played into a rectangle of a screen, its sound mixed with the Mac's own; a program controls start,
+  pause, resume, stop, the picture's place and the volume.
+
+Nothing else is needed on the Mac, not even QuickTime, and nothing outside the Mac and the Pi.
+
+## Opening the driver
+```pascal
+err := OpenDriver('.A68Video', refNum);    { fails with openErr (-23) when the card does not answer }
+```
+The driver is never closed by its users (it belongs to the card). Every call below is synchronous
+(`PBControlSync`, `PBStatusSync`; `Control` and `Status` with the csParam bytes). An asynchronous call is
+carried out at once all the same.
+
+## Control calls
+The numbers start at 100, clear of the Device Manager's own (Control 1 is killCode, KillIO).
+
+
+| csCode | csParam | What |
+|---|---|---|
+| 100 | a pointer to a frame request (128 bytes, below) | carried out by the card; the request's `result` says how. ioResult is noErr, or ioErr if the card did not answer within three seconds, or all eight request slots were busy |
+| 101 | a word: 1 on, 0 off | frame decoding switched on or off. Off: every request is answered 8 ("switched off"), and the QuickTime components hand every picture to QuickTime's own decompressors. `mac.vdecode=off` on the Pi starts it off |
+| 110 | a long: 1 start, 2 pause, 3 resume, 4 stop | a stream command; returns once the card has taken it |
+| 111 | a pointer, a length (two longs) | stream bytes into the ring, as many as there is room for; the third long (csParam+8) is set to how many were taken. A full ring takes none: try again later (that is how the card paces a program reading a disk or the network) |
+| 112 | a pointer to six longs | the stream's picture: screen (0 the first: the SE's own on the SE board; 1 the HDMI screen on the SE board), top, left, bottom, right in that screen's pixels, visible (0: draw nothing, for a window that is covered or being dragged) |
+| 113 | a long | the stream's volume, left << 16 \| right, $0100 full |
+| 114 | a long: 1 | the stream's last byte is in the ring (the card plays out what it holds and its state becomes "ended") |
+
+## Status calls
+
+| csCode | csParam | What |
+|---|---|---|
+| 100 | five longs come back | the card's window address in the caller's addressing mode ($FC000000 in 32-bit mode, $C00000 in 24-bit mode), the stream block's version, the frame decoder's version, frame decoding on (1) or off (0), the ring's size |
+| 101 | a pointer to 64 bytes | the formats the frame decoder takes, as FourCCs, ending with 0 |
+| 102 | a pointer to 384 bytes | the stream block (`struct a68v_block`): state, the stream's picture size, frame rate and sound, its position in ms, pictures decoded, shown and not drawn, decode and draw times, times it ran dry, the core's load, a message in words |
+| 103 | a pointer to 64 bytes | the frame decoder's header (`struct a68v_fhdr`): pictures decoded, drawn and refused since start, sessions open, the last second's decode and draw times, the largest picture |
+
+A program that streams at a high rate may write the ring itself rather than through Control 11: the window
+address from Status 100, the ring at offset $80000, `head` at $88 (the program's), `tail` at $18 (the card's),
+room while head - tail < ring size; bytes first, then head. That is what Control 111 does.
+
+## The frame request
+Big-endian longs (the 68k's order), 128 bytes; the driver copies bytes 8 to 127 into a free slot of the
+card and back.
+
+| Offset | Field | |
+|---|---|---|
+| 0, 4 | seq, done | the driver's |
+| 8 | op | 1 open a session, 2 decode a picture, 3 close the session, 4 draw the session's last picture again |
+| 12 | session | set by open; given to the others |
+| 16 | codec | open: the format's FourCC (the ImageDescription's cType) |
+| 20, 24 | width, height | open: the picture's size (at most 1024 x 768) |
+| 28 | depth | open: the ImageDescription's depth (1-32, 33-40 grey) |
+| 32, 36 | src, src_len | decode: the compressed picture's address and length (at most 1 MiB) |
+| 40, 44 | desc, desc_len | open: the ImageDescription itself (for an indexed format's colour table), its idSize |
+| 48, 52, 56 | dst_base, dst_rowbytes, dst_depth | decode, draw: the pixel map's baseAddr, rowBytes (the flag bits masked off) and pixelSize |
+| 60, 64 | dst_x, dst_y | where the picture's top-left pixel goes, in the map's pixels counted from baseAddr (dstRect.left - bounds.left, dstRect.top - bounds.top) |
+| 68, 72 | dst_w, dst_h | its size there (the picture's own for 1:1; anything else is scaled by the nearest pixel) |
+| 76-88 | clip_left, top, right, bottom | what may be written, in the same coordinates |
+| 92, 96 | ctab, ctab_seed | depths 1 to 8: the map's ColorTable (dereferenced) and its ctSeed; 0 for the standard table of the depth |
+| 100 | flags | 1: decode only, draw nothing (a picture QuickTime skips); 2: no ordered dither at indexed depths |
+| 104 | result | 0 done; 1 not a format the card decodes; 2 not at that depth; 3 too large; 4 no memory; 5 no such session (or sixteen open); 6 the data was damaged (what could be decoded was drawn); 7 an address the card cannot reach; 8 switched off; 9 no such operation |
+| 108, 112 | decode_us, draw_us | the time the Pi took |
+| 116 | frame | the program's own number, for the Pi's log |
+
+Addresses are the 68k's logical addresses in the caller's mode. The card reads and writes the Mac's RAM and
+screens directly; memory under Virtual Memory must be held (`HoldMemory`) for the call. A session keeps what
+a format keeps from picture to picture (Cinepak's codebooks; the whole last picture, since every format here
+leaves unchanged blocks or lines out), so decode a movie's pictures in order, from a key frame.
+
+### Drawing
+At 32 and 16 bits the picture goes in as it is. At 8, 4 and 2 bits each colour is looked up in the map's
+colour table (a table of its nearest entries, made again when the seed changes); an 8-bit picture whose
+table is the map's goes in index for index, others with an 8 x 8 ordered dither. At 1 bit (the SE's own
+screen) the luminance is compared with an 8 x 8 Bayer threshold, black where it is darker.
+
+## The QuickTime components
+"Aurora68 Video Decoder" (type 'thng', in the Extensions folder) holds four 'imdc' components, manufacturer
+'A68v', subtypes 'cvid', 'rpza', 'rle ' and 'smc '. QuickTime registers them at start-up; each declines
+registration when ".A68Video" does not open. A component opens QuickTime's own decompressor of the same type
+beside itself and hands it whatever it does not do: everything when frame decoding is off; a sequence whose
+destination depth or picture the card refuses; a picture delivered in pieces through a data-loading
+procedure; every selector it does not implement. Its log lines go to the Pi's log as
+"[MAC] A68 Video Decoder: ...", one when a sequence starts on the card and one when it ends, with the rate
+the pictures came at.
+
+## A minimal client (C, MPW style)
+```c
+short ref; CntrlParam pb; struct a68v_freq r;
+OpenDriver("\p.A68Video", &ref);
+memset(&r, 0, sizeof r);
+r.op = 1; r.codec = 'cvid'; r.width = 320; r.height = 240; r.depth = 24;
+r.desc = (long)*desc; r.desc_len = (*desc)->idSize;
+pb.ioCRefNum = ref; pb.csCode = 100; *(long *)pb.csParam = (long)&r;
+PBControlSync((ParmBlkPtr)&pb);                    /* r.session is now set */
+/* each picture: r.op = 2, r.src/src_len, r.dst_* and r.clip_* from the GWorld's or screen's PixMap */
+```

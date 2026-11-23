@@ -4,6 +4,16 @@
 
 Since 0.13 (docs/08 items 96 and 103):
 
+- **QuickTime movies decoded by the Pi: the Aurora68 Video Decoder** (docs/08 item 110, docs/16). The video card in
+  slot $C is now a video decoder card of the period's kind: "Aurora68 Video Decoder" in Aurora68 Slots, its driver
+  `.A68Video` in its own declaration ROM (opened at start-up), and the "Aurora68 Video Decoder" extension, whose
+  QuickTime decompressors hand Cinepak, Apple Video, Animation and Graphics pictures to the card, which decodes and
+  draws them at the screen's depth (the SE's one bit included). Every QuickTime program uses it; QuickTime's own
+  decompressors take over when it is off (`mac.vdecode=off`) or the card is absent. Needs QuickTime 2.0 or later
+  (the owner's 2.5.1). Measured in the testbed only: at one bit QuickTime's own decompressors are as fast; Cinepak at
+  256 colours is 1.7 times faster through the card. Programs can use the card without QuickTime through the
+  driver: `docs/video-decoder-api.md`. Not yet tried on the SE.
+
 - **The Macintosh Plus, 512Ke, 512K and 128K.** `mac.board=plus`, `512ke`, `512k` or `128k` in `cmdline.txt`.
   The Plus's overlay, its non-ADB keyboard and mouse (presented to the IIci ROM as ADB devices), SCSI on the
   Plus by pseudo-DMA, no SCSI on the others (their System from a disk image on the card), and the 128K's and

@@ -22,7 +22,7 @@ CORE_SRC = $(wildcard $(CORE)/*.c)
 CORE_H   = $(wildcard $(CORE)/include/*.h)
 SANITIZE ?= -fsanitize=address,undefined
 
-all: $(B)/psmac-se.declrom $(B)/Aurora68-Machine.bin $(B)/Aurora68-Disk.bin $(B)/Aurora68-Network.bin $(B)/Aurora68-WiFi.bin $(B)/Aurora68-Bluetooth.bin $(B)/Aurora68-Status.bin $(B)/Aurora68-Ping.bin $(B)/Aurora68-Screens.bin $(B)/Aurora68-Colour.bin $(B)/Aurora68-Log.bin $(B)/Aurora68-Depth.bin $(B)/Aurora68-WiFi-Bluetooth.bin $(B)/Aurora68-ScreenSetup.bin $(B)/Aurora68-Display.bin $(B)/Aurora68-Sound.bin $(B)/Aurora68-Slots.bin $(B)/Aurora68-Play.bin $(B)/Aurora68-Agent.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes declrom-wifi-sizes declrom-se-sizes
+all: $(B)/psmac-se.declrom $(B)/Aurora68-Machine.bin $(B)/Aurora68-Disk.bin $(B)/Aurora68-Network.bin $(B)/Aurora68-WiFi.bin $(B)/Aurora68-Bluetooth.bin $(B)/Aurora68-Status.bin $(B)/Aurora68-Ping.bin $(B)/Aurora68-Screens.bin $(B)/Aurora68-Colour.bin $(B)/Aurora68-Log.bin $(B)/Aurora68-Depth.bin $(B)/Aurora68-WiFi-Bluetooth.bin $(B)/Aurora68-ScreenSetup.bin $(B)/Aurora68-Display.bin $(B)/Aurora68-Sound.bin $(B)/Aurora68-Slots.bin $(B)/Aurora68-Play.bin $(B)/Aurora68-Agent.bin $(B)/Aurora68-VideoDecoder.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes declrom-wifi-sizes declrom-se-sizes
 
 $(B)/%.o: %.s
 	@mkdir -p $(B)
@@ -151,8 +151,9 @@ $(B)/psmac_wifi.declrom: $(B)/pidisk.bin.raw $(B)/pidisk_boot.bin.raw $(B)/enet_
 # compare the struct offsets in enet.s with the header the kernel compiles (tools/mac/an_offsets.c)
 # the video card's declaration ROM (docs/16-video-card.md) is compiled into the kernel rather than served
 # from a file: this regenerates its header after a change to tools/mac/mkvideodeclrom.py
-video-declrom: ../tools/mac/mkvideodeclrom.py ../tools/mac/declrom.py
-	$(PY) ../tools/mac/mkvideodeclrom.py -o ../emu68/src/psmac/psmac_video_declrom.h
+# (22 November 2026, docs/08 item 110: it carries the card's driver, .A68Video, mac/a68video.s)
+video-declrom: $(B)/a68video.bin.raw ../tools/mac/mkvideodeclrom.py ../tools/mac/declrom.py
+	$(PY) ../tools/mac/mkvideodeclrom.py --drvr $(B)/a68video.bin.raw -o ../emu68/src/psmac/psmac_video_declrom.h
 .PHONY: video-declrom
 
 check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alice/alice_net.h
@@ -178,6 +179,7 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	sh ../tools/fatfs_test.sh
 	sh ../tools/hfsview_test.sh
 	sh ../tools/cmdline_test.sh $(abspath $(B))
+	sh ../tools/vcodec_test.sh $(abspath $(B))
 
 disasm: $(B)/pidisk.o
 	m68k-linux-gnu-objdump -d $(B)/pidisk.o | head -200
@@ -326,6 +328,21 @@ $(B)/piagent.elf: $(B)/ag/entry.o $(B)/ag/agent.o $(B)/ag/libc.o wifimenu/init.l
 	$(LD) -T wifimenu/init.ld --emit-relocs --gc-sections --no-warn-rwx-segments -z noexecstack -o $@ $(B)/ag/entry.o $(B)/ag/agent.o $(B)/ag/libc.o $(LIBGCC)
 $(B)/Aurora68-Agent.bin: $(B)/piagent.elf ../tools/mac/elf2init.py ../tools/mac/macelf.py ../tools/mac/rsrc.py $(ICONS)
 	$(PY) ../tools/mac/elf2init.py $< --name "Aurora68 Agent" --creator PIAG --icons agent --sysz 65536 -o $@
+
+# ---- the Aurora68 Video Decoder's QuickTime components (mac/vdec, docs/08 item 110): Cinepak, Apple Video,
+# Animation and Graphics handed to the card's driver (.A68Video, mac/a68video.s, in the card's own ROM) for a Pi
+# core to decode. A 'thng' file QuickTime registers from the Extensions folder (tools/mac/elf2thng.py); its own
+# glue in vdec/entry.s, no toolbox traps from the kit, the card's request layout from the kernel's psmac_video.h
+$(B)/vd/entry.o: vdec/entry.s
+	@mkdir -p $(B)/vd
+	$(AS) -o $@ $<
+$(B)/vd/vdec.o: vdec/vdec.c ../emu68/src/psmac/psmac_video.h
+	@mkdir -p $(B)/vd
+	$(CC) $(CFLAGS) -Os -c -o $@ $<
+$(B)/vdec.elf: $(B)/vd/entry.o $(B)/vd/vdec.o wifimenu/init.ld
+	$(LD) -T wifimenu/init.ld --emit-relocs --gc-sections --no-warn-rwx-segments -z noexecstack -o $@ $(B)/vd/entry.o $(B)/vd/vdec.o $(LIBGCC)
+$(B)/Aurora68-VideoDecoder.bin: $(B)/vdec.elf ../tools/mac/elf2thng.py ../tools/mac/macelf.py ../tools/mac/rsrc.py
+	$(PY) ../tools/mac/elf2thng.py $< --name "Aurora68 Video Decoder" -o $@
 
 # ---- PiScrn: the SE board's two screens arranged at the first boot, an INIT in C (mac/piscrn) ----
 $(B)/piscrn_traps.txt: c/traps.txt piscrn/traps.txt pidisplay/traps.txt
