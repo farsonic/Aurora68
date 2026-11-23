@@ -4,6 +4,18 @@
 
 Since 0.14:
 
+- **Bluetooth keyboards and mice in Setup and Recovery, and startup keys from them** (README "Setup and Recovery",
+  docs/08 item 136, 23 November 2026). Setup and Recovery shows Bluetooth's state, the devices connected and a
+  keyboard's passkey on the screens, and pairs, connects and forgets from a new Bluetooth tab on the page, from the
+  keyboard menu or with `aurora68.py recovery bt`; pairings go into `pairings.txt` for the next start. A paired
+  keyboard works the recovery menu as a USB keyboard does; a mouse moves through it. In every start the keys held on
+  the Pi's keyboards reach the Mac before its own input driver opens, so **Shift held from power-on gives
+  "Extensions off"** with a Bluetooth or USB keyboard (tried in the testbed). Bluetooth is ready about three seconds
+  sooner (the chip's firmware is sent at 921600 baud, `bt.fwbaud=`), a waking keyboard is answered sooner (a faster
+  page scan), and an LE mouse with a private address reconnects on the Pi 3B, whose Bluetooth 4.1 chip cannot resolve
+  such addresses itself (the open issue "Bluetooth mouse stopped reconnecting on the Pi 3B"; to be confirmed on the
+  Pi). Only a simulated Bluetooth host could be tried here: real pairing and reconnect times are for the owner's Pi.
+
 - **A clock in the menu bar, and the menu bar's extras out of the way of the program's menus** (docs/09 "Aurora68 Menu
   Extras", docs/08 item 135, 23 November 2026). The extension that drew the Wi-Fi and Bluetooth icons is now
   **Aurora68 Menu Extras** and has a clock beside them, as macOS has: the time ("Mon 5:47 PM"), or a small clock face;

@@ -158,9 +158,61 @@ void pt_mouse_extra(int wheel, int pan, unsigned buttons) { (void)buttons; if (w
    Command keys of the other startup combinations) had already been reported. When the ring's attached word comes
    on, the modifiers and every key held are put into it again, as if pressed then; the driver sets KeyMap from them,
    which is what the System's checks read. */
+/* And before it opens (the same day, the first test of the above: the testbed's System 7.1 decided "Extensions on"
+   with Shift held from power-on, since .PiInput opens only some 1.5 s before the first INIT, after the System has
+   looked). What the System and the ROM look at is KeyMap, sixteen bytes of the Mac's low memory at $174, one bit per
+   virtual key code (code k: byte k >> 3, bit k & 7, item 39): so from the Mac's first driver Open (its low memory is
+   set up by then, the RAM test long over) until .PiInput takes over, the keys held on the Pi's keyboards are kept set
+   in KeyMap by the kernel itself, every hundredth of a second, and taken out again when let go. Only in the Mac's first
+   start after power-on: a restart from the Finder runs the ROM's tests again over that memory. */
+static const uint8_t adb_to_hid_tab[0x36] = {
+    0x04, 0x16, 0x07, 0x09, 0x0b, 0x0a, 0x1d, 0x1b, 0x06, 0x19, 0, 0x05, 0x14, 0x1a, 0x08, 0x15,
+    0x1c, 0x17, 0x1e, 0x1f, 0x20, 0x21, 0x23, 0x22, 0x2e, 0x26, 0x24, 0x2d, 0x25, 0x27, 0x30, 0x12,
+    0x18, 0x2f, 0x0c, 0x13, 0x28, 0x0f, 0x0d, 0x34, 0x0e, 0x33, 0x31, 0x36, 0x38, 0x11, 0x10, 0x37,
+    0x2b, 0x2c, 0x35, 0x2a, 0, 0x29,
+};
+static void in_keymap_poll(void)
+{
+    static int done; static uint8_t ours[16]; static uint64_t next; static int said;
+    extern int psmac_boot_mac_talking(void);
+    extern uint8_t *psmac_mac_ram_ptr(void);
+    if (done) return;
+    if (inr && inr->attached) {                                  /* .PiInput has it now: what is held it was given (in_attach_poll) */
+        done = 1;
+        if (said) kprintf("[PSMAC] KeyMap: .PiInput has the keyboards now\n");
+        return;
+    }
+    uint64_t t = in_now();
+    if (t < next || !psmac_boot_mac_talking()) return;
+    next = t + in_hz() / 100;
+    uint8_t want[16] = { 0 };
+    uint32_t m = kb_last[0];
+    if (in_altcmd < 0) { extern const char *psmac_option(const char *); const char *o = psmac_option("mac.altcmd"); in_altcmd = o && o[0] == '1'; }
+    if (in_altcmd) m = (m & ~0xccu) | (m & 0x44u) << 1 | (m & 0x88u) >> 1;
+    if (m & 0x22) want[0x38 >> 3] |= 1u << (0x38 & 7);          /* Shift */
+    if (m & 0x11) want[0x3b >> 3] |= 1u << (0x3b & 7);          /* Control */
+    if (m & 0x44) want[0x3a >> 3] |= 1u << (0x3a & 7);          /* Alt: Option */
+    if (m & 0x88) want[0x37 >> 3] |= 1u << (0x37 & 7);          /* GUI: Command */
+    for (int i = 2; i < 8; i++) for (int k = 0; kb_last[i] && k < (int)sizeof adb_to_hid_tab; k++)
+        if (adb_to_hid_tab[k] == kb_last[i]) want[k >> 3] |= (uint8_t)(1u << (k & 7));
+    volatile uint8_t *km = psmac_mac_ram_ptr() + 0x174;
+    int any = 0;
+    for (int i = 0; i < 16; i++) {
+        uint8_t clear = ours[i] & (uint8_t)~want[i];            /* let go: our bits out again, the Mac's own left alone */
+        if (clear) km[i] = km[i] & (uint8_t)~clear;
+        if (want[i] && (km[i] & want[i]) != want[i]) km[i] = km[i] | want[i];
+        ours[i] = want[i]; any |= want[i];
+    }
+    if (any && !said) {
+        said = 1;
+        extern void psmac_boot_mark(const char *fmt, ...);
+        psmac_boot_mark("keys held on the Pi's keyboards put into the Mac's KeyMap (modifiers %02x) until .PiInput opens", kb_last[0]);
+    }
+}
 static void in_attach_poll(void)
 {
     static int was;
+    in_keymap_poll();
     int now_ = inr && inr->attached;
     if (now_ && !was) {
         extern void psmac_boot_mark(const char *fmt, ...);
@@ -765,7 +817,7 @@ static void bsim_load(volatile struct an_bt *b, const char *t)
     }
 }
 /* mac.btsimkeys=SECONDS:TOKENS (above) */
-static const char *bks; static uint64_t bks_next; static int bks_shift, bks_phase; static uint8_t bks_usage; static unsigned bks_button;
+static const char *bks; static uint64_t bks_next; static int bks_shift, bks_phase, bks_rep; static uint8_t bks_usage; static unsigned bks_button;
 static int bsim_connected(volatile struct an_bt *b, uint32_t kind)
 {
     for (unsigned k = 0; k < b->nkeys; k++) if ((b->keys[k].flags & AN_BTK_CONNECTED) && (b->keys[k].flags & kind)) return 1;
@@ -782,12 +834,19 @@ static void bsim_keys_poll(volatile struct an_bt *b, uint64_t now)
         bks_next = now + in_hz() * 170 / 1000;
         return;
     }
-    char tok[16]; unsigned n = 0;
-    while (bks[n] && bks[n] != ',' && n < sizeof tok - 1) { tok[n] = bks[n]; n++; }
+    char tok[16]; unsigned n = 0, len = 0;
+    while (bks[len] && bks[len] != ',') len++;
+    while (n < len && n < sizeof tok - 1) { tok[n] = bks[n]; n++; }
     tok[n] = 0;
+    int reps = 1;                                               /* TOKENxN: N times (the boot arguments' line is short) */
+    for (int i = (int)n - 1; i > 0; i--) {
+        if (tok[i] >= '0' && tok[i] <= '9') continue;
+        if (tok[i] == 'x' && i + 1 < (int)n) { reps = 0; for (unsigned k = (unsigned)i + 1; k < n; k++) reps = reps * 10 + (tok[k] - '0'); tok[i] = 0; n = (unsigned)i; }
+        break;
+    }
     int mouse = tok[0] == 'm' || !__builtin_strcmp(tok, "click") || !__builtin_strcmp(tok, "rclick");
     if (tok[0] && !(tok[0] == 'w' && tok[1] >= '0' && tok[1] <= '9') && !bsim_connected(b, mouse ? AN_BTK_MOUSE : AN_BTK_KEYBOARD)) { bks_next = now + in_hz() / 4; return; }
-    bks += n; if (*bks == ',') bks++;
+    if (++bks_rep >= reps) { bks_rep = 0; bks += len; if (*bks == ',') bks++; }
     static const struct { const char *w; uint8_t u; } named[] = {
         { "ret", 0x28 }, { "esc", 0x29 }, { "bs", 0x2a }, { "tab", 0x2b }, { "space", 0x2c }, { "right", 0x4f }, { "left", 0x50 }, { "down", 0x51 }, { "up", 0x52 } };
     uint8_t u = 0;

@@ -2521,7 +2521,7 @@ static void handle(int c)
         if (get) {
             struct rec_ent e;
             if (psmac_card_rec_find(v, &e) || (e.attr & 0x10)) { json_err(h, 404, "no such file"); return; }
-            if ((ieq(e.name, "cmdline.txt") || ieq(e.name, "cmdline.bak")) && e.size < sizeof big && take_big(c)) {   /* the WiFi password stays on the card */
+            if ((ieq(e.name, "cmdline.txt") || ieq(e.name, "cmdline.bak") || ieq(e.name, "pairings.txt")) && e.size < sizeof big && take_big(c)) {   /* the WiFi password and the Bluetooth keys stay on the card */
                 static char raw[sizeof big];
                 int n = psmac_card_rec_get(e.name, (uint8_t *)raw, sizeof raw - 1);
                 if (n < 0) { big_conn = -1; json_err(h, 500, "it could not be read"); return; }
@@ -2725,7 +2725,7 @@ static void menu_save(void)
 }
 static void menu_lines(void)
 {
-    if (!menu_on) { L(0, ""); L(0, "Keyboard: Return opens the settings menu (WiFi, Bluetooth, options); a mouse: click"); return; }
+    if (!menu_on) { L(0, ""); L(0, "Return on a keyboard, or a click, opens the settings menu"); return; }
     L(0, "");
     if (menu_edit) {
         static const char *const what[] = { "", "Network name", "Password", "Country (two letters)" };
