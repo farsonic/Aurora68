@@ -19,6 +19,7 @@ void vc_pause(int on);
 void vc_stop(void);
 void vc_end(void);                     /* the last byte is in the ring */
 int vc_state(void);                    /* A68V_S_* (psmac_video.h); 0 without the card */
+int vc_buffer(unsigned long *pct, unsigned long *ms);   /* "Buffering N%" and the seconds held (block version 2); 0 if not told */
 unsigned long vc_pos_ms(void);         /* the stream's time of the picture on the screen */
 const char *vc_message(void);          /* the card's words for its state */
 void vc_volume(int v);                 /* 0-100, Play's volume */
@@ -36,12 +37,20 @@ void vc_window_show(void);             /* Controls > Show Video */
 /* the window's size (1.7, docs/08 item 120): the picture as the server sends it, twice that, or as large as the screen it
    is on allows (its shape kept; the card scales it, nearest pixel). Controls > Normal Size, Double Size, Fill Screen
    (Command-1, 2, 3) and the window's zoom box (Normal and Fill Screen); kept in the preferences */
-enum { VC_NORMAL, VC_DOUBLE, VC_FILL };
+enum { VC_NORMAL, VC_DOUBLE, VC_FILL, VC_CUSTOM };   /* VC_CUSTOM (1.8): the size the size box gave (vc_custom_w) */
 void vc_set_zoom(int z);
 int vc_zoom(void);
+void vc_zoom_box(void);                /* the zoom box: Fill Screen, or back to the size it had */
+/* 1.8 (docs/08 item 124): the size box, the picture's shape kept; the width it gave, kept in the preferences */
+void vc_grow(long where);
+long vc_custom_w(void);
+void vc_set_custom_w(long w);
+void vc_activate(int on);              /* its activate event: the size box */
+void vc_strip(const char *t);          /* the words in the strip below the picture (the time) */
 /* the size to ask the server for, from the screen the window goes on (the one the player window is on) */
 void vc_size_for(void *near_win, unsigned long vw, unsigned long vh, unsigned *w, unsigned *h);
-/* hidden from the card while a menu is down, a window is dragged or a dialog is up (counted) */
+/* hidden from the card while Play's menu is down, a window of Play's is dragged or sized or a dialog is up (counted);
+   otherwise the card draws where the window shows (its visRgn, 1.8), in the background too */
 void vc_hold(int on);
 void vc_poll(int foreground);          /* from the event loop: the window's place and visibility kept current */
 #endif

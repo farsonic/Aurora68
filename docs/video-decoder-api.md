@@ -50,7 +50,7 @@ The numbers start at 100, clear of the Device Manager's own (Control 1 is killCo
 | 101 | a word: 1 on, 0 off | frame decoding switched on or off. Off: every request is answered 8 ("switched off"), and the QuickTime components hand every picture to QuickTime's own decompressors. `mac.vdecode=off` on the Pi starts it off |
 | 110 | a long: 1 start, 2 pause, 3 resume, 4 stop | a stream command; returns once the card has taken it |
 | 111 | a pointer, a length (two longs) | stream bytes into the ring, as many as there is room for; the third long (csParam+8) is set to how many were taken. A full ring takes none: try again later (that is how the card paces a program reading a disk or the network) |
-| 112 | a pointer to six longs | the stream's picture: screen (0 the first: the SE's own on the SE board; 1 the HDMI screen on the SE board), top, left, bottom, right in that screen's pixels, visible (0: draw nothing, for a window that is covered or being dragged) |
+| 112 | a pointer to six longs | the stream's picture: screen (0 the first: the SE's own on the SE board; 1 the HDMI screen on the SE board), top, left, bottom, right in that screen's pixels, visible (0: draw nothing, for a window that is covered or being dragged; or hand over the window's region, below) |
 | 113 | a long | the stream's volume, left << 16 \| right, $0100 full |
 | 114 | a long: 1 | the stream's last byte is in the ring (the card plays out what it holds and its state becomes "ended") |
 
@@ -93,6 +93,31 @@ show "Buffering..." with a figure reads them when `version` >= 2 (Status 102 cop
 | $78 | byte_rate | the stream's bytes a second as the card measured it (0 until known) |
 | $7C | buffer_target_ms | what the buffering waits for: the start's seconds, then the rebuffer's |
 | $100 | message | while buffering "buffering N%" |
+
+### The window's visible region (block version 3, 23 November 2026)
+docs/08 item 124; Aurora68 Play 1.8 and Aurora68 Video 1.1 use it.
+A program may also hand the card its window's `visRgn`, so that the picture is drawn wherever the window shows and
+nowhere else, whatever is in front of it and whichever program is the front one: the card reads the region through
+the Mac's memory map before each picture and draws only the picture's pixels inside it (the picture is still scaled
+to the whole rectangle of Control 112). Three longs of the stream block, written by the program itself just before
+its Control 112:
+
+| Offset | Field | |
+|---|---|---|
+| $B0 | clip_tag | $434C0000 + the `geom_seq` that this Control 112 will make: the `geom_seq` at $A8 plus one (the driver adds one) |
+| $B4 | vis_rgn | the window's visRgn handle (the long at offset 24 of a GrafPort or a CGrafPort); the region is in the window's coordinates, with the picture's rectangle at 0,0 |
+| $B8 | vis_flags | 1: the program runs in 24-bit mode (the master pointer's high byte is the Memory Manager's flags, and is masked off) |
+
+Any other program's Control 112 leaves the tag stale, and the whole rectangle is drawn as before, so a program that
+does not know about the region needs nothing new. A card that reads the region says so with the block's version 3
+(the long at 4); a program that finds version 1 or 2 (an older kernel8.img) should keep to "visible" alone. A region that does not read as one (a block moving in the heap as
+it is read) costs that picture; a region of more than 16 rectangles is not drawn rather than drawn over a window.
+With the region the program no longer needs to say "not visible" when a window covers part of its own: only while
+it drags or sizes a window or has a dialog of its own up (outlines and dialogs are drawn outside any window's
+region). And whether or not a program hands over its region, the card draws no picture while any program has a menu
+pulled down (the Mac's `TheMenu`, $A26, is not 0), because a program in the background gets no time while another
+tracks a menu and cannot say so itself. The heartbeat's video line says how many pictures were left out under a
+menu or for a region that could not be read, and how many parts the last region had.
 
 ## The frame request
 Big-endian longs (the 68k's order), 128 bytes; the driver copies bytes 8 to 127 into a free slot of the

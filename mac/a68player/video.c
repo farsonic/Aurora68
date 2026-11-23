@@ -20,9 +20,11 @@
  *
  * The picture: the program draws nothing in it. It tells the card the window's content rectangle in the
  * coordinates of the screen it is on (screen 0 is slot 9's, the SE's own on the SE board; screen 1 the SE
- * board's HDMI screen in slot $A), and that it is not to be drawn while the window is not in front, while
- * it is dragged and while a menu is down; the card draws every picture into that screen's frame buffer at
- * its depth, and draws the last one again when the window moves or is uncovered while paused.
+ * board's HDMI screen in slot $A), and that it is not to be drawn while it is dragged and while a menu is down
+ * (until 1.1, 23 November 2026, also while the window was not in front: now the card is handed the window's
+ * visible region and draws where the window shows, in the background too, docs/08 item 124); the card draws
+ * every picture into that screen's frame buffer at its depth, and draws the last one again when the window
+ * moves or is uncovered while paused.
  *
  * Seeking is a click on the position bar: the card is stopped, the file read from that fraction of its
  * length (on a 2 KB boundary: MPEG program streams are packs of 2 KB from the usual encoders, and the card's
@@ -165,9 +167,18 @@ static void tell_place(int force)
 	LocalToGlobal(&tl); LocalToGlobal(&br);
 	place.screen = screen_of(tl, &org);
 	place.top = tl.v - org.v; place.left = tl.h - org.h; place.bottom = br.v - org.v; place.right = br.h - org.h;
-	place.visible = !suspended && !hidden_by_us && FrontWindow() == win;
+	/* 1.1 (23 November 2026, docs/08 item 124): drawn wherever the window shows, in front or not, Aurora68 Video in front or
+	   not: the card is handed the window's visible region and reads it at every picture (Aurora68 Play 1.8's way);
+	   still not while a menu of ours is down, the window is dragged or Standard File's dialog is up (hidden_by_us), and
+	   the card itself draws nothing while any program's menu is down */
+	place.visible = !hidden_by_us && (blk->version >= 3 || (!suspended && FrontWindow() == win));   /* 1.0's rule for an older card */
 	if (!force && !memcmp(&place, &sent, sizeof place)) return;
 	sent = place;
+	if (blk->version >= 3) {
+		blk->vis_rgn = (unsigned long)*(void **)((char *)win + 24);    /* visRgn */
+		blk->vis_flags = LM_MMU32BIT ? 0 : A68V_VF_24BIT;
+		blk->clip_tag = A68V_CLIP_TAG + blk->geom_seq + 1;            /* for the geom_seq this Control 112 makes */
+	}
 	ctl(112, (long)&place, 0);
 }
 
@@ -368,7 +379,7 @@ static void do_menu(long mi)
 	short menu = (short)(mi >> 16), item = (short)mi;
 	switch (menu) {
 	case M_APPLE:
-		if (item == 1) { say("Aurora68 Video 1.0: MPEG-1 on the Aurora68 Video Decoder card"); SetPort(win); InvalRect(PORT_RECT(win)); }
+		if (item == 1) { say("Aurora68 Video 1.1: MPEG-1 on the Aurora68 Video Decoder card"); SetPort(win); InvalRect(PORT_RECT(win)); }
 		else { GetItem(m_apple, item, pbuf); OpenDeskAcc(pbuf); SetPort(win); }
 		break;
 	case M_FILE:

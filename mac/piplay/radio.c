@@ -84,6 +84,7 @@ short mac_FindFolder(short vRefNum, long type, int create, short *vref, long *di
 struct radio_ui radio;
 struct stations *slist;
 int net_prefer = 6;
+int net_v4only;
 
 /* ---- MacTCP (the MacTCP Programmer's Guide, 1993) --------------------------------------------- */
 enum { TCPCreate = 30, TCPActiveOpen = 32, TCPSend = 34, TCPRcv = 37, TCPAbort = 39, TCPRelease = 42 };
@@ -207,11 +208,22 @@ static void rcv_issue(void)
 	mac_PBControlAsync(pb_rcv);
 }
 /* MacTCP's completion of a TCPRcv (net.s keeps the registers). A receive made from here may complete
-   before PBControl returns, calling this again: the inner call only says so, the loop takes it. */
+   before PBControl returns, calling this again: the inner call only says so, the loop takes it.
+   1.8 (docs/08 item 124, the owner's lock-up while scrolling the Videos list with a video playing): radio_poll also calls
+   this from the event loop for a receive whose completion routine seems never to have come; the test of in_done and its
+   setting were two steps, so the real completion arriving between them ran the loop twice at once (the same bytes into
+   the ring twice, two receives on one parameter block); and a late real completion, after the loop had issued the next
+   receive, read that receive's "in progress" (1) as an error and ended the chain with a receive outstanding. Now the
+   test and set happen with interrupts off, and a call that finds the receive still in progress does nothing (counted:
+   stale_calls, logged by radio_poll) */
+static volatile unsigned long stale_calls;
 void c_rcv_done(void)
 {
-	if (in_done) { done_again = 1; return; }
+	short sr0 = ints_off();
+	if (in_done) { done_again = 1; ints_on(sr0); return; }
 	in_done = 1;
+	ints_on(sr0);
+	if (IO_RESULT(pb_rcv) > 0) { stale_calls++; in_done = 0; return; }   /* not finished: a stale call */
 	for (;;) {
 		short r = IO_RESULT(pb_rcv), sr;
 		done_again = 0;
@@ -477,12 +489,18 @@ static void card_title(const char *t)
 static void connect_start(void);
 /* the connection is gone or never came: try again later if this station has played, else tell the user */
 static int lost;                               /* the connection was lost and has not come back yet */
+static int conn_failed;                        /* the failure was a connection that could not be made (1.8) */
 static void failed(const char *say, long code)
 {
+	int moved = 0;
 	if (code) { char t[220]; put_str(put_str(t, say), " (error ")[0] = 0; logn(t, code, ")"); }   /* MacTCP's number too */
 	else logs(say, 0, 0);
 	teardown();
-	if (connected_once) {                        /* it played: connect again after 1, 2, 4 ... 30 s */
+	/* 1.8: a library track or video whose server does not answer at this address: the library's other address of the
+	   server (its other family) for the next try, which resume() below writes into the address */
+	if (conn_failed && radio.finite && radio.other_host) moved = radio.other_host();
+	conn_failed = 0;
+	if (connected_once || moved) {               /* it played (or another address waits): connect again after 1, 2, 4 ... 30 s */
 		if (radio.video && radio.resume) {       /* a video: from the picture shown, in a new stream of the card's */
 			radio.resume(radio.url, sizeof radio.url, vc_pos_ms() / 1000);
 			vc_begin();
@@ -494,6 +512,7 @@ static void failed(const char *say, long code)
 		}
 		last_problem = say;
 		lost = 1;
+		if (moved) backoff = 1;                  /* the other address at once */
 		radio.retry_at = LM_TICKS + backoff * 60;
 		logn("trying again in ", (long)backoff, " s");
 		backoff = backoff * 2 > 30 ? 30 : backoff * 2;
@@ -548,7 +567,7 @@ static void send_request(void)
 	p = put_str(p, path);
 	p = put_str(p, http11 ? " HTTP/1.1\r\nHost: " : " HTTP/1.0\r\nHost: ");
 	p = put_host(p);
-	p = put_str(p, "\r\nUser-Agent: Aurora68-Play/1.7 (Macintosh)\r\nAccept: */*\r\nIcy-MetaData: 1\r\nConnection: close\r\n\r\n");
+	p = put_str(p, "\r\nUser-Agent: Aurora68-Play/1.8 (Macintosh)\r\nAccept: */*\r\nIcy-MetaData: 1\r\nConnection: close\r\n\r\n");
 	wds.len = (unsigned short)(p - request); wds.ptr = request; wds.end = 0;
 	pb_setup(pb_ctl, TCPSend);
 	pb_ctl[32] = 30; pb_ctl[33] = 1; pb_ctl[34] = 0xC0;
@@ -568,6 +587,7 @@ static void connect_start6(void)
 	rpb.csParam.resolve.hostName = host;
 	rpb.csParam.resolve.port = port;
 	naddr = ai = 0;
+	if (host6 && net_v4only) { failed("That is an IPv6 address, and Connect By says IPv4 Only.", 0); return; }
 	if (host6 || dotted(host, &a4)) {
 		rpb.csCode = ip6StrToAddr;
 		short r = mac_PBControl(&rpb);
@@ -586,7 +606,7 @@ static void connect_start6(void)
 	rpb.csParam.resolve.timeout = 0;             /* the driver's 10 seconds */
 	resolving = 1;
 	mac_PBControlAsync(&rpb);
-	logs("looking up ", host, net_prefer == 4 ? " (IPv4 first, then IPv6)" : " (IPv6 first, then IPv4)");
+	logs("looking up ", host, net_v4only ? " (IPv4 only)" : net_prefer == 4 ? " (IPv4 first, then IPv6)" : " (IPv6 first, then IPv4)");
 	set_state(RS_RESOLVE);
 }
 static void connect_start(void)
@@ -780,6 +800,12 @@ void radio_poll(void)
 				return;
 			}
 			naddr = rpb.csParam.resolve.count;
+			if (net_v4only) {                    /* Connect By > IPv4 Only (1.8) */
+				int k, m = 0;
+				for (k = 0; k < naddr; k++) if (IP6_IS_V4(&addrs[k])) addrs[m++] = addrs[k];
+				naddr = m;
+				if (!naddr) { failed("The name has no IPv4 address, and Connect By says IPv4 Only.", 0); return; }
+			}
 			{
 				char t[200], *q = put_str(put_str(t, host), " is ");
 				int k;
@@ -827,6 +853,7 @@ void radio_poll(void)
 				q = put_str(q, e == openFailed ? ": no answer, or refused)." : e == -23033 /* ipDestDeadErr */ ? ": the network cannot reach it)." :
 				               e == ip6NoSourceErr ? ": this Macintosh has no address of that family to send from)." : ").");
 				*q = 0;
+				conn_failed = 1;
 				failed(say, e);
 			}
 			return;
@@ -879,6 +906,10 @@ void radio_poll(void)
 		int was = in_done;
 		ints_on(sr);
 		if (!was && rcv_busy && IO_RESULT(pb_rcv) <= 0) { logs("a receive completed without its completion routine", 0, 0); c_rcv_done(); }
+	}
+	{
+		static unsigned long said_stale;
+		if (stale_calls != said_stale) { said_stale = stale_calls; logs("a completion routine came for a receive still in progress: passed over (1.8)", 0, 0); }
 	}
 	if (hdr_seen && radio.st == RS_HEADERS && !playlist_hop) { hdr_seen = 0; on_headers(); if (radio.st != RS_PLAYING && !playlist_hop) return; }
 	if (playlist_hop && (!rcv_busy || icy->pl_len >= ICY_PLAYLIST)) { if (rcv_busy) teardown(); playlist_done(); return; }
@@ -1037,7 +1068,13 @@ const char *radio_status(char *b)
 	}
 	default:
 		if (radio.paused) p = put_str(p, "Paused");
-		else if (radio.video && vc_state() != A68V_S_PLAYING) p = put_str(p, "Buffering");
+		else if (radio.video && vc_state() != A68V_S_PLAYING) {
+			unsigned long pct, ms;              /* 1.8: the card's own figure (its buffer in the Pi, block version 2) */
+			if (vc_state() == A68V_S_BUFFERING && vc_buffer(&pct, &ms)) {
+				p = put_str(put_num(put_str(p, "Buffering "), pct > 100 ? 100 : pct), "%, ");
+				p = put_str(put_num(p, ms / 1000), "."); p = put_str(put_num(p, ms / 100 % 10), " s");
+			} else p = put_str(p, "Buffering");
+		}
 		else if (radio.prebuffering) {
 			unsigned long pc = radio.held_ms / 30;          /* of three seconds */
 			p = put_str(put_num(put_str(p, "Buffering "), pc > 99 ? 99 : pc), "%");
@@ -1188,4 +1225,24 @@ int stations_add_defaults(void)
 	pi_log(t);
 	stations_load();
 	return added;
+}
+/* the receive chain in words (1.8, docs/08 item 124): what the event loop logs when it comes back after holding off for
+   seconds (a control tracked, a menu held, a dialog), so that a lock-up on the owner's SE leaves its state in the log */
+void radio_chain_words(char *t)
+{
+	char *p = put_str(t, radio.st == RS_OFF ? "stream off" : radio.video ? "video stream" : "stream");
+	if (radio.st != RS_OFF) {
+		p = put_str(p, rcv_busy ? ", a receive out" : rcv_wait_room ? ", waiting for room" : ", no receive");
+		p = put_str(p, ", "); p = put_num(p, ring_room() >> 10); p = put_str(p, " KB free in the ring, last bytes ");
+		p = put_num(p, (LM_TICKS - last_rx) / 60); p = put_str(p, " s ago, receives "); p = put_num(p, rcv_calls);
+	}
+	*p = 0;
+}
+/* the receive chain started again if it stopped for room and the ring has some now (1.8): from a control's action
+   procedure, while the Control Manager holds the event loop (the Library's scroll bar held down), so that a video or a
+   song does not run dry meanwhile. Nothing else of radio_poll's, which may put up a dialog */
+void radio_keep(void)
+{
+	if (radio.st == RS_OFF || rcv_busy || !rcv_wait_room || rcv_stop) return;
+	if (ring_room() >= RBUF) { rcv_wait_room = 0; rcv_issue(); }
 }

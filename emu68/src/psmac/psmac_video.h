@@ -37,7 +37,8 @@
 #include <stdint.h>
 
 #define A68V_MAGIC        0x41363856u        /* 'A68V' */
-#define A68V_VERSION      2u                 /* 2: buffer_ms ... buffer_target_ms at 0x68 (23 November 2026) */
+#define A68V_VERSION      3u                 /* 2: buffer_ms ... buffer_target_ms at 0x68; 3: the window's region (vis_rgn)
+                                                and no picture under a menu (23 November 2026) */
 #define A68V_WIN_SIZE     0x00100000u        /* 1 MiB: the block, and the ring in the top half */
 #define A68V_OFF_BLOCK    0x00000u
 #define A68V_OFF_RING     0x80000u
@@ -64,6 +65,8 @@
 
 #define A68V_SCREEN_FIRST 0u                 /* the Mac's first screen: the SE's own on the SE board */
 #define A68V_SCREEN_HDMI  1u                 /* the HDMI screen (slot $A) on the SE board */
+#define A68V_CLIP_TAG     0x434C0000u        /* 'CL' << 16, plus the geom_seq vis_rgn goes with */
+#define A68V_VF_24BIT     1u
 
 struct a68v_block {
     /* the card's half: 0x00-0x7F */
@@ -100,7 +103,17 @@ struct a68v_block {
     uint32_t visible;                        /* 0: draw nothing (the window is covered, being dragged, hidden) */
     uint32_t geom_seq;                       /* + 1 after changing screen, the rectangle or visible */
     uint32_t volume;                         /* left << 16 | right, $0100 full */
-    uint32_t pad1[20];
+    /* the window's visible region (23 November 2026, Aurora68 Play 1.8, docs/08 item 124): a window partly covered by
+       another, or behind another program's windows, is drawn where it shows, no longer not at all, and the card
+       follows the Window Manager at every picture, also while the program has no time (another program in front
+       moving its windows). vis_rgn is the window's visRgn handle (a 68k address; the region in the window's own
+       coordinates, the picture's rectangle at its 0,0); the card reads the region through it before each picture
+       and draws only the picture's pixels inside it. Written by the program itself before its Control 112, with
+       clip_tag = A68V_CLIP_TAG + the geom_seq that call makes (the driver adds one): any other program's Control 112
+       leaves the tag stale, and the whole rectangle is drawn as before. vis_flags: A68V_VF_24BIT, the program runs
+       in 24-bit mode (the master pointer's high byte is the Memory Manager's flags) */
+    uint32_t clip_tag, vis_rgn, vis_flags;
+    uint32_t pad1[17];
     /* the card again: 0x100 */
     char     message[128];                   /* the last error, or what it is doing, in words (ASCII) */
 };
@@ -205,6 +218,12 @@ struct pv_surface {
     int gray;                                /* the screen is set to greys: the table's colours shown as their luminance */
 };
 int psmac_video_surface(uint32_t screen, struct pv_surface *s);
+/* 1 while the computer has a menu pulled down (the menu bar's saved bits, MBSaveLoc; psmac_videocard.c): no picture is drawn then,
+   whichever program's menu it is (23 November 2026: a program in the background, whose window shows, gets no time
+   while another program tracks its menu, so it cannot say "not visible" itself). 0 where the host cannot tell */
+int psmac_video_menu_down(void);
+/* a long of the computer's RAM at its address (aligned), *ok 0 outside the RAM: the window's region, the menu bar's data */
+uint32_t psmac_video_rd32(uint32_t addr, int *ok);
 /* the sound: 44.1 kHz or another rate, 16-bit stereo, mixed with the computer's own (psmac_audio.c) */
 int      psmac_audio_video_open(uint32_t rate);         /* 1 if an output plays it; 0: no sound here */
 uint32_t psmac_audio_video_room(void);                  /* frames that fit now */

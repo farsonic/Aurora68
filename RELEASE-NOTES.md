@@ -53,6 +53,22 @@ Since 0.13 (docs/08 items 96 and 103):
   open network guarded by the PIN, as the screen says; a step the chip refuses is named on the screen and the Pi
   carries on with the cable or the saved WiFi. Tried against the testbed's simulated radio and a simulated phone
   only: the first try on a real Pi will tell how its firmware takes it (the log names every step's answer).
+- **Aurora68 Play 1.8: windows that resize, the artist in the titles, IPv6 first, videos in the background**
+  (docs/08 item 124, docs/09 "Aurora68 Play 1.8", 23 November 2026). The video window has a size box (in a strip under
+  the picture, with the time): drag it and the picture takes the video's own shape at that size, which the next video
+  keeps; the zoom box toggles Fill Screen and that size. The player and Library windows (resizable already) remember
+  their places for each arrangement of screens, so a window used on HDMI comes back there. The video window's title is
+  "Artist — Title", Now Playing and the Library's strip name the artist, and an artist named "_" is shown as none
+  ("Unknown artist" in the Videos list). **Connect By: IPv6 First** now holds for a remembered server too: its IPv6
+  and IPv4 addresses are kept, tried in that order (five seconds each while another remains) and the one that answers
+  is used for the session; IPv4 Only is new; the log names the addresses and why one was left. **The video keeps
+  playing when another program is in front or a window covers part of it**: the card reads the window's visible region
+  itself and draws only where the window shows, and draws nothing while any program's menu is down (kernel and Play
+  together, the card's block version 3; with an older kernel the Play keeps 1.7's rule). Aurora68 Video 1.1 does the
+  same. Now Playing shows the card's "Buffering N%, S s". A lock-up reported while scrolling the Videos list with a
+  video playing was not reproduced; weak points of the stream's receive chain were made safe and the Play logs a long
+  pause of its event loop with the stream's state. In the testbed Riptide dropped its IPv6 address after a few minutes
+  (docs/08 item 124 has a guess at why); the Play then carried on over IPv4 by itself.
 - **Aurora68 Play 1.7: the classic Play at parity with the macOS one, and the server found by itself** (docs/08 item
   120, docs/09 "Aurora68 Play: classic and macOS", which has the table of every macOS feature and the classic Play's
   answer). At the first start, and whenever the server it knew does not answer, the Play asks the network (the probe
