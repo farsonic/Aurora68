@@ -118,6 +118,10 @@ const struct pdg_opt pdg_opts[] = {
     /* ---- Video card ---- */
     { "mac.video", PDG_G_VIDEO, 0, A, "off|on", 0, "off: no Aurora68 Video Decoder card in slot $C (QuickTime then decodes everything itself)." },
     { "mac.vdecode", PDG_G_VIDEO, 0, A, "off|on", 0, "off: the card's frame decoder starts switched off, for comparison with QuickTime's own." },
+    { "mac.vbuffer", PDG_G_VIDEO, 0, A, "#", "8",
+      "MB of the Pi's memory the card keeps behind its ring for a stream (music videos, Aurora68 Video): 8 by default, at most 32; 0 for the ring alone (512 KB)." },
+    { "mac.vprefill", PDG_G_VIDEO, 0, A, "#|#,#", "3,2",
+      "Seconds of a stream held before it starts, and after a comma before it goes on when the network ran it dry: 3,2 by default; 0 starts at once." },
 
     /* ---- Debug ---- */
     { "mac.buscheck", PDG_G_DEBUG, PDG_F_ONCE, C, "1|loop|force|force,loop", 0,

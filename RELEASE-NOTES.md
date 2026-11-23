@@ -4,6 +4,18 @@
 
 Since 0.13 (docs/08 items 96 and 103):
 
+- **Music videos buffer much more: no more stutter when the network slows for a moment** (docs/08 item 125, docs/16
+  "Buffering", 23 November 2026). The video decoder card now empties its 512 KB ring at once into a buffer of its
+  own in the Pi's memory, 8 MB by default (one to two minutes of a music video at the classic Play's rates), so the
+  Mac and the music server keep sending at the network's full rate while the film plays. A stream starts once 3
+  seconds of it are held (measured from the stream's own clock, so it holds at any rate) instead of after 64 KB,
+  and when the network does run it dry the picture and the sound pause together and the card buffers 2 seconds
+  before going on, instead of stuttering at every few packets. `mac.vbuffer=MB` and `mac.vprefill=START,REBUFFER`
+  set the amounts (Setup and Recovery's Options, Video card); 0 gives the card as it was. Programs may show
+  "Buffering N%" from the card's block (docs/video-decoder-api.md); Aurora68 Video and Aurora68 Play work unchanged.
+  Tested on the host against a simulated network with bursts and outages and in the testbed's QEMU; the owner's SE
+  over WiFi is the real test.
+
 - **Setup and Recovery: every option, and a Diagnostics tab with a report bundle** (docs/08 item 122, 23 November
   2026). The Options tab now offers every option of README's table a user or a tester may set (about seventy for a
   compact Mac), each with a line of plain English and its values, grouped (Machine, Display, Sound, Storage,

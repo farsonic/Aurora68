@@ -5482,3 +5482,52 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      are a guess at what makes a disk image load slowly); the one-shot merge on a Pi that boots from a container (the
      card's first look is the same one the declaration ROMs use, so it should be there); the compact Mac's screen
      showing the report on real hardware (as `mac.buscheck=1`'s page, written the same way).
+
+125. **Music videos: a buffer in the Pi behind the video card's ring, buffering by time, rebuffering (23 November).** The
+     owner, after the first music videos on the real SE over WiFi (the classic Play 1.7 streaming the music server's
+     `/vmpeg` through the card, the picture on HDMI): "might need a bit more buffering also". The videos stuttered and
+     stopped whenever the network slowed for a moment.
+   - *Why it stuttered.* The card's ring is 512 KiB: 3.5 s at 512 x 342, about 3 s at the rates Play asks for HDMI
+     (768 kbit/s of video and 128 of sound), so a network pause longer than that ran the card dry, and while the ring
+     was full the Mac stopped reading, so what the network could have carried in the meantime was never asked for. A
+     stream started after 64 KiB, under half a second at those rates. And with sound the sound is the clock: the
+     mixer played each packet's worth as it came and stopped again, the pictures with it, so a starved stream
+     stuttered frame by frame (and the card's "times dry" stayed 0, item 114's "stretches").
+   - *The design* (docs/16 "Buffering", `psmac_video.c`; the window, the ring and the commands are unchanged, so Play
+     1.6/1.7, Aurora68 Video and the QuickTime components needed nothing). A buffer in the Pi's memory behind the ring,
+     8 MB by default (`mac.vbuffer=MB`, 0 to 32; 0 is the card as it was), taken from the kernel's heap at the first
+     stream with 8 MB of the heap always left to the rest (halved until that holds, down to 1 MB) and kept. The card's
+     core (core 1, `psmac_video_poll` between the sound's turns) moves the ring's bytes into it every slice, up to 256
+     KB at a time, under the same 50 us rule for `head` and the same barriers as load_cb used, and advances `tail`;
+     load_cb now reads the buffer. So the ring is nearly always empty and the Mac's TCP keeps the network's rate until
+     8 MB are held (two minutes at the Play's 320 x 240 rate, over a minute at its HDMI rate). STOP empties both (a seek
+     is STOP and a new stream). A stream starts when it holds `mac.vprefill=`'s first number of seconds (3), all of
+     itself, or a full buffer; seconds are bytes over the stream's rate, which the card measures from the pack headers'
+     SCR as the bytes go by (a jump of more than two seconds, a seek's, left out). When the decoder starves while the
+     stream is not all in (no picture, or the sound under 100 ms in the mixer), the clock stops (the mixer paused with
+     what it holds, or the timer held) and the card buffers to the second number (2 s) before going on: one pause,
+     counted in `underruns`, its time in `rebuffer_ms`. The block is version 2: six new fields in its spare words at
+     $68 (`buffer_ms`, `buffer_pct`, `buffer_size`, `rebuffer_ms`, `byte_rate`, `buffer_target_ms`;
+     docs/video-decoder-api.md "Buffering"), `buffered` now counts the Pi's buffer too (Aurora68 Video's length
+     estimate subtracts the ring from it, so it still works), and the message while buffering is "buffering N%".
+     Each stream logs when it starts ("starts after 0.6 s with 3.1 s held (586 KB at 1581 kbit/s)"), each rebuffer
+     (the first ten), and at its end the high-water mark, the rebuffers and their time, and the measured rate.
+     Setup and Recovery's Options offer both settings (group Video card), README's table has them.
+   - *Found by the host test:* a rate from the closed SCR steps alone read low at the start of an FFmpeg stream (its
+     first pack is a few KB followed by half a second of SCR, `-muxdelay 0.5`, then 250 KB in one step): 360 kbit/s of
+     a 1,370 kbit/s film, and the stream started with less than a second held. The bytes after the last pack now count
+     with the time up to it, so the estimate can only be high (it starts at 1,581 kbit/s and settles at 1,350), and a
+     start waits longer, never shorter; before any step the card assumes 2.6 Mbit/s, the server's most. And a first
+     version counted the drain as the slice's work, so the decoder never ran while bytes were coming in.
+   - *Tested on the host* (`tools/vbuf_test.sh`, in `make -C mac check`; `psmac_video.c` itself built with
+     `PSMAC_VIDEO_HOST` against a simulated clock, network and mixer; a 20-second FFmpeg film made at test time with the
+     server's arguments at 1,200 kbit/s of video, so that the ring holds 3 s). Every scenario decodes and shows all 500
+     pictures, the same ones (one hash of what was drawn), with no gap in the sound, starting with at least 3 s held:
+     steady at twice the film's rate (no rebuffer); bursts of 1.5 s at six times its rate with 4.5 s of nothing between
+     (no rebuffer); 1.25 times its rate with 6 s of nothing from 8 s, through a 1 MB buffer so that it wraps (one
+     rebuffer, 3.3-3.4 s); the same without sound, the timer the clock (one, 3.1 s); a 3-second pause with the network
+     going on; a STOP at 5 s (ring and buffer empty, idle) and the film again from its start. The card as it was, the
+     same harness on the previous `psmac_video.c` (scratch, not committed): the sound ran out 3 times (1.2 s in all) in
+     the bursts and 4 times (4.4 s) in the outage, each started after its first 64 KB; the new code with
+     `mac.vbuffer=0 mac.vprefill=0` stopped 1,216 and 4,394 times, frame by frame. Paused for 8 s in the middle of a
+     rebuffer, a stream rebuffered once and went on when resumed (scratch variant).

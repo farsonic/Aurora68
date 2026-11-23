@@ -26,6 +26,7 @@ The card does two things:
   of the Mac's (a screen's frame buffer or an offscreen GWorld) at that map's depth (1, 2, 4, 8, 16 or 32
   bits), scaled by the nearest pixel when asked, clipped to a rectangle. The QuickTime components use it.
 - **The stream channel:** an MPEG-1 program stream (MPEG-1 video, MP2 sound) poured into a 512 KiB ring
+  (with, since 23 November 2026, a buffer of 8 MB in the Pi behind it: "Buffering" below)
   and played into a rectangle of a screen, its sound mixed with the Mac's own; a program controls start,
   pause, resume, stop, the picture's place and the volume.
 
@@ -65,6 +66,33 @@ The numbers start at 100, clear of the Device Manager's own (Control 1 is killCo
 A program that streams at a high rate may write the ring itself rather than through Control 11: the window
 address from Status 100, the ring at offset $80000, `head` at $88 (the program's), `tail` at $18 (the card's),
 room while head - tail < ring size; bytes first, then head. That is what Control 111 does.
+
+### Buffering, and "Buffering N%" (block version 2, 23 November 2026)
+Since 23 November 2026 (docs/08 item 125) the card empties the ring into a buffer of its own in the Pi's memory
+(8 MB by default, `mac.vbuffer=MB` on the Pi; 0 the ring alone) as fast as the bytes come, so the room in the ring
+is nearly always the whole ring and a program can keep reading the network at its full rate while the film plays;
+the ring fills, and holds the program back, only when that buffer is full. A stream starts once it holds
+`mac.vprefill=`'s first number of seconds (3 by default), the whole stream, or as much as fits; when the network
+runs it dry the card stops its clock (pictures and sound together) and buffers to the second number (2 seconds)
+before going on. Nothing changes for a program: the ring, its counters and the commands are as above, and a STOP
+empties both the ring and the Pi's buffer. Seconds are the stream's own (its packs' clock against the bytes held),
+so they hold for any rate.
+
+The block's version is 2, and the six longs that were spare at $68 say what the card holds; a program that wants to
+show "Buffering..." with a figure reads them when `version` >= 2 (Status 102 copies the whole block):
+
+| Offset | Field | |
+|---|---|---|
+| $1C | state | 1 (buffering) both before the start and while rebuffering; `pos_ms` tells them apart (0 before the first picture) |
+| $58 | buffered | bytes held and not yet decoded: the ring's, the Pi's buffer's and the decoder's own |
+| $60 | underruns | times the stream ran dry and the card rebuffered |
+| $68 | buffer_ms | the stream time those bytes hold, in ms (with sound, the sound waiting in the mixer too) |
+| $6C | buffer_pct | buffer_ms against buffer_target_ms, 0 to 100: the N of "Buffering N%" while state is 1 |
+| $70 | buffer_size | bytes of the Pi's buffer behind the ring (0: the ring alone); set at the first stream |
+| $74 | rebuffer_ms | time spent rebuffering this stream |
+| $78 | byte_rate | the stream's bytes a second as the card measured it (0 until known) |
+| $7C | buffer_target_ms | what the buffering waits for: the start's seconds, then the rebuffer's |
+| $100 | message | while buffering "buffering N%" |
 
 ## The frame request
 Big-endian longs (the 68k's order), 128 bytes; the driver copies bytes 8 to 127 into a free slot of the

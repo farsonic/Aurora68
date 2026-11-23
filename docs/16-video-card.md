@@ -109,7 +109,8 @@ layout are `emu68/src/psmac/psmac_video.h`, which the Mac's program follows:
   no driver. The window is the slot's first megabyte: $FC000000 in 32-bit mode, $C00000 in 24-bit mode.
 - **A stream ring** of 512 KiB the Mac writes into (the same producer/consumer pair of counters as the
   sound card's stream channel): the Mac adds bytes and advances `head`, the card decodes and advances
-  `tail`. A full ring is what pauses the Mac's reading, and through TCP the helper.
+  `tail`. A full ring is what pauses the Mac's reading, and through TCP the helper. (Since 23 November
+  2026 the card empties the ring at once into a larger buffer of its own in the Pi: "Buffering" below.)
 - **A command block:** the Mac's requests (start, pause, resume, stop; a seek is stop, the new stream's
   bytes, start), its picture's place (screen, rectangle in that screen's pixels, visible, under a
   sequence number) and volume; the card's answers (state, the stream's size and rate, position, pictures
@@ -308,6 +309,55 @@ It took the driver path above, unchanged, and needed nothing new of the kernel o
   run the card dry: its sound is the clock, and the sound and pictures stretch together (a 40-second film took 102
   seconds, every picture shown, the card's "times dry" 0). The Play asks for `a68_vmpeg_rate`, 400 kbit/s at 320 x
   240; with it the 40-second test film, at 320 x 180 and 300 kbit/s, played in 43 seconds in the testbed.
+
+### Buffering: the Pi's buffer behind the ring (23 November 2026)
+The owner's first music videos on the real SE over WiFi (the classic Play 1.7, the music server's `/vmpeg`, the
+picture on HDMI): "might need a bit more buffering also". The videos stopped and stuttered whenever the network
+slowed for a moment. Three things in the card's design allowed it. The ring is 512 KiB: about 3.5 s at 512 x 342
+and 3 s at the rates the Play asks for HDMI (768 kbit/s of video and the sound), so a network that pauses for
+longer than that runs the card dry, and while the ring is full the Mac stops reading, so what the network could
+have carried meanwhile is lost. A stream started after 64 KiB, under half a second at those rates. And with sound
+the sound is the clock: a starved stream did not stop, it stretched, the mixer playing each packet's sound as it
+came and stopping again, the pictures with it (the card's "times dry" stayed 0 while the film stuttered).
+Changed in the kernel only (`psmac_video.c`); the window, the ring and the commands the Mac sees are as they were:
+- **A buffer in the Pi behind the ring**, 8 MB by default (`mac.vbuffer=MB`, up to 32; 0 for the ring alone). Every
+  slice of the card's core (core 1, between the sound's turns) moves what the Mac has written from the ring into it,
+  up to 256 KB at a time, with the same 50 us rule for `head` and the same barriers as before, and advances `tail`;
+  pl_mpeg's load callback reads the buffer. The Mac's room in the ring is therefore nearly always the whole ring,
+  and the Play's receive chain, its TCP window and the server go on at the network's rate until the buffer is full:
+  8 MB is two minutes of a video at the Play's 320 x 240 rate and over a minute at its HDMI rate. A STOP (and a seek,
+  which is a STOP and a new stream) empties both. The buffer is taken from the kernel's heap (52 MB on the Pi 3B,
+  shared with the USB disks' catalogues, the exchange folder, the frame decoder's sessions, pl_mpeg's pictures) at
+  the first stream, halved until it fits with 8 MB of the heap left to the rest as the other large users leave it,
+  and kept for the next stream.
+- **Buffering by time.** A program stream carries its own clock: every pack header has the SCR (90 kHz), so the bytes
+  from one pack to the next against their SCRs give the stream's rate, measured as the bytes go into the buffer
+  (a step of more than two seconds, or backwards, is a seek's jump and left out). The bytes after the last pack
+  count with the time up to it, which keeps the rate from ever reading low: FFmpeg's first pack is a few KB followed
+  by half a second of SCR (its `-muxdelay`), and the closed steps alone said 360 kbit/s of a 1,370 kbit/s film and
+  started it with under a second held (found by the host test below). Bytes held over the rate is `buffer_ms`. A
+  stream starts when it holds `mac.vprefill=`'s first number of seconds (3), the whole stream, or a full buffer.
+- **Rebuffering.** When the decoder finds nothing to decode while the stream is not all in (a picture, or the sound
+  with under 100 ms left in the mixer), the card pauses the clock (the mixer paused with what it holds, or the timer
+  held), says "buffering" and waits for the second number (2 s) before going on: one pause and then smooth play.
+  `underruns` counts them and `rebuffer_ms` adds up their time.
+The block (version 2) gained six fields where it had spare words: `buffer_ms`, `buffer_pct` (against
+`buffer_target_ms`, for a "Buffering 40%"), `buffer_size`, `rebuffer_ms`, `byte_rate`, `buffer_target_ms`
+(docs/video-decoder-api.md "Buffering"). Aurora68 Video already says "Buffering" in that state; the classic Play does
+not show it yet (its source was being changed by other work the same day); both can read the percentage from the block.
+Each stream's last log line now says what the buffer did: `[VIDEO] stream N's buffer: 1663 KB (9.9 s) at most, of
+8192 KB behind the ring; started after 0.6 s with 3.1 s (586 KB) held; rebuffered 0 times, 0.0 s in all; 1350
+kbit/s`.
+
+*Tested on the host* (`tools/vbuf_test.sh`, in `make -C mac check`): `psmac_video.c` itself, built for the host
+against a simulated clock, network and mixer, fed a 20-second FFmpeg film made with the server's arguments at 1,200
+kbit/s of video (the ring holds 3 s of it). Every scenario decodes and shows all 500 pictures, the same ones (one hash
+of what was drawn), with no gap in the sound, and starts only with 3 s held: a steady network at twice the film's rate;
+bursts of 1.5 s at six times its rate with 4.5 s of nothing between (no rebuffer, against 3 runs of sound running out,
+1.2 s in all, with the card as it was); 1.25 times its rate with six seconds of nothing at 8 s, through a 1 MB buffer
+so that it wraps (one rebuffer of 3.3 s, against 4 stops of the sound, 4.4 s in all, with the card as it was, and
+4,458 frame-by-frame stops with the new code set to 0,0); the same without sound (the timer the clock); a pause of
+3 s with the network going on; a STOP at 5 s (ring and buffer empty, state idle) and the film again from its start.
 
 ## MPEG-1 in QuickTime: MoviePlayer opens .mpg files (23 November 2026, issue #25)
 The design of the section before ("QuickTime and MPEG-1"), built, with the changes QuickTime 2.5 asked for: the

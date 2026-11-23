@@ -4,7 +4,9 @@
 #ifndef MPG1_HOST_TLSF_H
 #define MPG1_HOST_TLSF_H
 #include <stdlib.h>
+#include <stdint.h>
 #define tlsf_malloc(h, s)     ((void)(h), malloc(s))
 #define tlsf_realloc(h, p, s) ((void)(h), realloc((p), (s)))
 #define tlsf_free(h, p)       ((void)(h), free(p))
+#define tlsf_get_free_size(h) ((void)(h), (uintptr_t)256 << 20)   /* psmac_video.c's check of the heap (tools/vbuf_test.c) */
 #endif
