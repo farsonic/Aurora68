@@ -125,3 +125,6 @@ mac/build/pistatus_traps.txt
 mac/build/st/
 # the PC card test's run files (tools/pccard_test.sh)
 mac/build/pccard/
+mac/build/a68pc.elf
+mac/build/a68pc_traps.txt
+mac/build/apc/

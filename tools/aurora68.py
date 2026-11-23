@@ -67,6 +67,25 @@ mac.remotefile=BASE instead of the network.
 import argparse, json, os, re, socket, struct, sys, threading, time, urllib.error, urllib.parse, urllib.request
 
 
+def resolve_once(host):
+    """The host's IPv4 address, looked up once per run (23 November 2026). On macOS a name like aurora68-pi.local
+    is looked up for both IPv4 and IPv6 at every connection, and an IPv6 question the Pi does not answer waits for
+    its timeout: a push, which opens a connection for the file and one every 0.4 s for its progress, took 20 s for
+    an 80 KB font whose transfer the Mac's agent reported as 49 ms. A literal address, or a name that does not
+    resolve to IPv4, is returned as it is."""
+    try:
+        socket.inet_aton(host)
+        return host
+    except OSError:
+        pass
+    if ':' in host:
+        return host
+    try:
+        return socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)[0][4][0]
+    except OSError:
+        return host
+
+
 class Remote:
     def __init__(self, url=None, token=None, semihost=None, timeout=30):
         self.url = (url or os.environ.get('AURORA68_URL') or 'http://aurora68-pi.local').rstrip('/')
@@ -83,6 +102,11 @@ class Remote:
             return
         self.probed = True
         u = urllib.parse.urlsplit(self.url)
+        if u.scheme == 'http' and u.hostname:
+            ip = resolve_once(u.hostname)
+            if ip != u.hostname:
+                self.url = f'http://{ip}' + (f':{u.port}' if u.port else '') + u.path.rstrip('/')
+                u = urllib.parse.urlsplit(self.url)
         if u.port or u.scheme != 'http' or not u.hostname:
             return
         for port in (80, 8068):
@@ -92,7 +116,8 @@ class Remote:
                 continue
             if port != 80:
                 self.url = f'http://{u.hostname}:{port}{u.path}'.rstrip('/')
-                print(f'aurora68.py: {u.hostname} did not answer on port 80; {self.url} did', file=sys.stderr)
+                if not os.environ.get('AURORA68_URL'):
+                    print(f'aurora68.py: port 80 did not answer; {self.url} did (set AURORA68_URL to skip this check)', file=sys.stderr)
             return
 
     def request(self, method, path, body=None, ctype='application/json'):
@@ -560,7 +585,7 @@ class Recovery:
         if not self.pin:
             raise RuntimeError('the PIN shown on the Mac\'s screen is needed: --pin NNNN (or $AURORA68_PIN)')
         u = urllib.parse.urlsplit(self.url)
-        self.host, self.port = u.hostname, u.port or 80
+        self.host, self.port = resolve_once(u.hostname) if u.hostname else u.hostname, u.port or 80
 
     def conn(self, timeout=60):
         import http.client

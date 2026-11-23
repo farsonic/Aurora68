@@ -10,16 +10,16 @@ WiFi and Bluetooth through a NuBus card that exists only in software.
 Start with `docs/00-overview.md`: it tells the story of the project and points to the working
 documents for each part. The day-by-day record of what was found and fixed is `docs/08`.
 
-## Quick start (release 0.13)
+## Quick start (release 0.14)
 
-Release 0.13 runs on a real Macintosh SE: System 7.1 and System 6.0.8 start from the SE's own SCSI
+Release 0.14 runs on a real Macintosh SE: System 7.1 and System 6.0.8 start from the SE's own SCSI
 disk (or a BlueSCSI) or from a disk image on the SD card, with the SE's screen, keyboard, mouse and
 speaker, a second screen and stereo sound on HDMI, Ethernet and WiFi, USB and Bluetooth keyboards and
 mice, USB sticks, and a remote control. What has been checked on the hardware and what only in the
 emulator is listed in `RELEASE-NOTES.md`; the day-by-day record is `docs/08`. The steps below set up
 the card; "Disks and disk images: what works" (below) says which disks the Mac can use.
 
-**The Plus, 512Ke, 512K and 128K (after 0.13, not in a release yet).** The same kernel has boards for
+**The Plus, 512Ke, 512K and 128K (new in 0.14).** The same kernel has boards for
 the other compact Macs: `mac.board=plus`, `512ke`, `512k` or `128k` in `cmdline.txt` in place of
 `mac.board=se`; everything else on the card is as for the SE. All four reach System 7.1's Finder in
 the testbed (docs/08 item 96); none has been tried on a real machine yet. What differs from the SE:
@@ -500,7 +500,7 @@ layer serves the Plus, 512Ke, 512K and 128K (`mac.board=plus|512ke|512k|128k`), 
 | Directory | Contents |
 |---|---|
 | `emu68/` | the Emu68 fork (vendored; its own history is the branch `emu68-psmac`): the kernel. `src/psmac/` is the Macintosh host layer (bus bridge, 68030 MMU shim, mailbox window); `src/alice/` are the Alice68 service modules (network, Bluetooth, status, USB) with their Macintosh glue |
-| `mac/` | the Macintosh side in 68k assembly: the `.PiDisk` block driver, the `.ENET`-interface Ethernet driver, the `.PiInput` keyboard-and-mouse driver, the `.Display_Video_PiStorm` second-display driver, the Aurora68 Disk, Machine and Sound extensions, the Aurora68 Network, Ping, Screens and Colour test applications, the Aurora68 Wi-Fi, Bluetooth and Status applications, and in C (with the kit in `mac/c`) Aurora68 Log, Slots, Depth, Display, the Wi-Fi & Bluetooth menus, Screen Setup, Aurora68 Video (MPEG-1 films on the video decoder card, `mac/a68player`), the Aurora68 Video Decoder's QuickTime components and MPEG-1 movie import (`mac/vdec`; the card's driver `.A68Video` is `mac/a68video.s`, in assembly) and Aurora68 Play (MP3, FLAC, Ogg Vorbis, Apple Lossless, AIFF and WAV on the sound card, the music server's library and devices, and internet radio over MacTCP or Riptide's `.IPP6`); their sources keep the old names (`mac/piplay/`, `pislots.c`...), a Makefile (`make check` compares the drivers' structure offsets with the kernel's header) |
+| `mac/` | the Macintosh side in 68k assembly: the `.PiDisk` block driver, the `.ENET`-interface Ethernet driver, the `.PiInput` keyboard-and-mouse driver, the `.Display_Video_PiStorm` second-display driver, the Aurora68 Disk, Machine and Sound extensions, the Aurora68 Network, Ping, Screens and Colour test applications, the Aurora68 Wi-Fi, Bluetooth and Status applications, and in C (with the kit in `mac/c`) Aurora68 Log, Slots, Depth, Display, Menu Extras (the clock, Wi-Fi and Bluetooth menus, `mac/wifimenu`), Screen Setup, Aurora68 Video (MPEG-1 films on the video decoder card, `mac/a68player`), the Aurora68 Video Decoder's QuickTime components and MPEG-1 movie import (`mac/vdec`; the card's driver `.A68Video` is `mac/a68video.s`, in assembly) and Aurora68 Play (MP3, FLAC, Ogg Vorbis, Apple Lossless, AIFF and WAV on the sound card, the music server's library and devices, and internet radio over MacTCP or Riptide's `.IPP6`); their sources keep the old names (`mac/piplay/`, `pislots.c`...), a Makefile (`make check` compares the drivers' structure offsets with the kernel's header) |
 | `tools/` | ROM patching, the initramfs container builder (`mkcontainer.py`: ROM, declaration ROM and firmware in one cpio for the Pi), the full-stack testbed launcher, the host network peer, debugging helpers |
 | `tools/mac/` | resource fork, MacBinary, application, extension and declaration ROM builders (pure Python) |
 | `rom/` | ROM patch descriptions and the patch tool's Makefile (ROM images themselves are not in the repository) |
