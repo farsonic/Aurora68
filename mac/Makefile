@@ -28,7 +28,7 @@ CORE_SRC = $(wildcard $(CORE)/*.c)
 CORE_H   = $(wildcard $(CORE)/include/*.h)
 SANITIZE ?= -fsanitize=address,undefined
 
-all: $(B)/psmac-se.declrom $(B)/Aurora68-Machine.bin $(B)/Aurora68-Disk.bin $(B)/Aurora68-Network.bin $(B)/Aurora68-WiFi.bin $(B)/Aurora68-Bluetooth.bin $(B)/Aurora68-Status.bin $(B)/Aurora68-Ping.bin $(B)/Aurora68-Screens.bin $(B)/Aurora68-Colour.bin $(B)/Aurora68-Log.bin $(B)/Aurora68-Depth.bin $(B)/Aurora68-WiFi-Bluetooth.bin $(B)/Aurora68-ScreenSetup.bin $(B)/Aurora68-Display.bin $(B)/Aurora68-Sound.bin $(B)/Aurora68-Slots.bin $(B)/Aurora68-Play.bin $(B)/Aurora68-Agent.bin $(B)/Aurora68-VideoDecoder.bin $(B)/Aurora68-Video.bin $(B)/Aurora68-PC.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes declrom-wifi-sizes declrom-se-sizes
+all: $(B)/psmac-se.declrom $(B)/Aurora68-Machine.bin $(B)/Aurora68-Disk.bin $(B)/Aurora68-Network.bin $(B)/Aurora68-WiFi.bin $(B)/Aurora68-Bluetooth.bin $(B)/Aurora68-Status.bin $(B)/Aurora68-Ping.bin $(B)/Aurora68-Screens.bin $(B)/Aurora68-Colour.bin $(B)/Aurora68-Log.bin $(B)/Aurora68-Depth.bin $(B)/Aurora68-MenuExtras.bin $(B)/Aurora68-ScreenSetup.bin $(B)/Aurora68-Display.bin $(B)/Aurora68-Sound.bin $(B)/Aurora68-Slots.bin $(B)/Aurora68-Play.bin $(B)/Aurora68-Agent.bin $(B)/Aurora68-VideoDecoder.bin $(B)/Aurora68-Video.bin $(B)/Aurora68-PC.bin $(B)/psmac.declrom $(B)/psmac_wifi.declrom $(B)/psmac_wifi_video.declrom declrom-sizes declrom-wifi-sizes declrom-se-sizes
 
 $(B)/%.o: %.s
 	@mkdir -p $(B)
@@ -309,7 +309,9 @@ $(B)/piplay.elf: $(PP_OBJ) c/app.ld
 $(B)/Aurora68-Play.bin: $(B)/piplay.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py $(ICONS)
 	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Play" --creator PIPY --size 640 --icons play --version 1.8.1 -o $@
 
-# ---- the WiFi menu: an INIT in C (mac/wifimenu, tools/mac/elf2init.py) ----
+# ---- the menu bar's extras, the clock, the WiFi and Bluetooth menus: an INIT in C (mac/wifimenu, tools/mac/elf2init.py).
+# "Aurora68 Menu Extras" since the clock came on 23 November 2026, "Aurora68 Wi-Fi & Bluetooth" before (the extension
+# moves an older copy aside at start, clock.c; aurora68-layout.py install takes it out) ----
 $(B)/wifimenu_traps.txt: c/traps.txt wifimenu/traps.txt
 	@mkdir -p $(B)
 	cat c/traps.txt wifimenu/traps.txt > $@
@@ -325,12 +327,17 @@ $(B)/wm/wifimenu.o: wifimenu/wifimenu.c wifimenu/menus.h c/toolbox.h $(B)/wm/too
 	$(CC) $(subst -I$(B),-I$(B)/wm,$(CFLAGS)) -c -o $@ $<
 $(B)/wm/btmenu.o: wifimenu/btmenu.c wifimenu/menus.h c/toolbox.h $(B)/wm/toolbox_gen.h
 	$(CC) $(subst -I$(B),-I$(B)/wm,$(CFLAGS)) -c -o $@ $<
+$(B)/wm/bar.o: wifimenu/bar.c wifimenu/menus.h c/toolbox.h $(B)/wm/toolbox_gen.h
+	$(CC) $(subst -I$(B),-I$(B)/wm,$(CFLAGS)) -c -o $@ $<
+$(B)/wm/clock.o: wifimenu/clock.c wifimenu/menus.h c/toolbox.h $(B)/wm/toolbox_gen.h
+	$(CC) $(subst -I$(B),-I$(B)/wm,$(CFLAGS)) -c -o $@ $<
 $(B)/wm/libc.o: c/libc.c c/toolbox.h $(B)/wm/toolbox_gen.h
 	$(CC) $(subst -I$(B),-I$(B)/wm,$(CFLAGS)) -c -o $@ $<
-$(B)/wifimenu.elf: $(B)/wm/entry.o $(B)/wm/toolbox_glue.o $(B)/wm/wifimenu.o $(B)/wm/btmenu.o $(B)/wm/libc.o wifimenu/init.ld
-	$(LD) -T wifimenu/init.ld --emit-relocs --gc-sections --no-warn-rwx-segments -z noexecstack -o $@ $(B)/wm/entry.o $(B)/wm/toolbox_glue.o $(B)/wm/wifimenu.o $(B)/wm/btmenu.o $(B)/wm/libc.o $(LIBGCC)
-$(B)/Aurora68-WiFi-Bluetooth.bin: $(B)/wifimenu.elf ../tools/mac/elf2init.py ../tools/mac/macelf.py ../tools/mac/rsrc.py $(ICONS)
-	$(PY) ../tools/mac/elf2init.py $< --name "Aurora68 Wi-Fi & Bluetooth" --creator PSWM --icons menus -o $@
+WM_OBJ = $(B)/wm/entry.o $(B)/wm/toolbox_glue.o $(B)/wm/wifimenu.o $(B)/wm/btmenu.o $(B)/wm/bar.o $(B)/wm/clock.o $(B)/wm/libc.o
+$(B)/wifimenu.elf: $(WM_OBJ) wifimenu/init.ld
+	$(LD) -T wifimenu/init.ld --emit-relocs --gc-sections --no-warn-rwx-segments -z noexecstack -o $@ $(WM_OBJ) $(LIBGCC)
+$(B)/Aurora68-MenuExtras.bin: $(B)/wifimenu.elf ../tools/mac/elf2init.py ../tools/mac/macelf.py ../tools/mac/rsrc.py $(ICONS)
+	$(PY) ../tools/mac/elf2init.py $< --name "Aurora68 Menu Extras" --creator PSWM --icons menus --version 2.0 -o $@
 
 # ---- the Aurora68 Agent: an INIT in C (mac/piagent), files and programs for the remote control (docs/13) ----
 # entry.s carries its own glue for the File Manager, Process Manager and Apple Event calls; c/traps.txt only

@@ -83,8 +83,11 @@ What is in the zip
                                             Save Log, or Save to Card, which writes aurora68.log
                                             to the SD card, passwords hidden), Aurora68 Status
                            Extensions (to install)/  Aurora68 Disk, Aurora68 Machine, Aurora68
-                                            Screen Setup, Aurora68 Sound, Aurora68 Wi-Fi &
-                                            Bluetooth, and a Read Me. In 0.14 replace
+                                            Screen Setup, Aurora68 Sound, Aurora68 Menu
+                                            Extras (a clock, Wi-Fi and Bluetooth in the
+                                            menu bar; it was Aurora68 Wi-Fi & Bluetooth,
+                                            which it moves aside by itself), and a Read
+                                            Me. In 0.14 replace
                                             all of them and every program: nearly
                                             all changed since 0.13
                          Until 21 November 2026 the programs were PiPlay, PiDisplay, PiSlots,
