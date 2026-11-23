@@ -5253,3 +5253,9 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      asks for the PIN, signs the device in, goes to `/?signin=2` (the sheet checks again: Done) and shows only a short
      "Connected" card ("press Done, then open http://192.168.4.1/ in your browser"), never the setup tabs. A browser opened
      at `http://192.168.4.1/` gets the whole page as before.
+   - *Third try:* the owner wanted Done to open the page in the browser without the PIN again. Done is the system's
+     button and runs no page code, and the sheet's and the browser's storage are separate. So the Connected card's main
+     button opens `http://192.168.4.1/#pin=NNNN` in a new window (the sheet hands such links to the browser on a Mac),
+     which the page reads into its own storage and drops from the address; then Done closes the sheet. Typing the
+     address by hand still asks for the PIN: trusting a device by its address alone would open the setup to anyone on
+     an open access point who borrows that address.
