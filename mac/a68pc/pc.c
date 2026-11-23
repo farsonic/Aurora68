@@ -29,6 +29,7 @@
  */
 #include "toolbox.h"
 #include "psmac_pc.h"
+#include "screens.h"
 
 short drv_open(void *pb), drv_control(void *pb), drv_status(void *pb);
 
@@ -294,9 +295,14 @@ static void natural(short *w, short *h)
 {
 	long nw = drv ? (long)blk->nat_w : 0, nh = drv ? (long)blk->nat_h : 0;
 	if (nw < 160 || nh < 100) { nw = 484; nh = 300; }
-	Rect s = *RGN_BBOX(LM_GRAYRGN);
-	if (nw > s.right - 8 - 2) nw = s.right - 8 - 2;          /* the window's content at 8, 40: room for its frame and shadow */
-	if (nh > s.bottom - 40 - 2) nh = s.bottom - 40 - 2;       /* the SE's 342 lines: 300, 25 rows of 12 */
+	/* no larger than the screen the window is on (the main one before it opens), below the menu bar and a
+	   title bar: the SE's 342 lines give 300, 25 rows of 12. Until 23 November 2026 this was the desktop's
+	   bounding box, which with the HDMI screen beside the SE's is 1440 high: the window ran off the SE */
+	Rect s[SCR_MAX], room;
+	if (win) { int m; Rect c = scr_content(win), sc = scr_of(&c, &m); room = scr_room(&sc, m); }
+	else { scr_list(s); room = scr_room(&s[0], 1); }
+	if (nw > room.right - room.left + 2) nw = room.right - room.left + 2;
+	if (nh > room.bottom - room.top + 2) nh = room.bottom - room.top + 2;
 	*w = (short)nw; *h = (short)nh;
 }
 static void draw_window(void)
@@ -310,6 +316,17 @@ static void draw_window(void)
 		MoveTo(10, 66); DrawString(pstr(pbuf, "(pc=on in cmdline.txt)."));
 	}
 	DrawGrowIcon(win);                              /* the card leaves the grow box's corner alone */
+}
+/* the window moved, if it has to be, to lie whole on the screen it is mostly on: after it took a larger
+   size where it stood, and at the start */
+static void keep_on_screen(void)
+{
+	Rect c = scr_content(win), f = c;
+	if (scr_fit(&f)) {
+		MoveWindow(win, f.left, f.top, 0);
+		if (f.right - f.left != c.right - c.left || f.bottom - f.top != c.bottom - c.top)
+			SizeWindow(win, (short)(f.right - f.left), (short)(f.bottom - f.top), 1);
+	}
 }
 static void resized(void)
 {
@@ -399,6 +416,7 @@ static void mouse_down(EventRecord *ev)
 				Rect r = *PORT_RECT(w); Point tl = { r.top, r.left };
 				SetPort(w); LocalToGlobal(&tl);
 				std->top = tl.v; std->left = tl.h; std->bottom = (short)(tl.v + nh); std->right = (short)(tl.h + nw);
+				scr_fit(std);                               /* moved up or left where it would run off its screen */
 			}
 			SetPort(w); EraseRect(PORT_RECT(w));
 			ZoomWindow(w, part, 0);
@@ -490,7 +508,7 @@ int main(void)
 			short nw, nh;
 			Rect r = *PORT_RECT(win);
 			natural(&nw, &nh);
-			if (nw != r.right - r.left || nh != r.bottom - r.top) { SizeWindow(win, nw, nh, 1); resized(); }
+			if (nw != r.right - r.left || nh != r.bottom - r.top) { SizeWindow(win, nw, nh, 1); keep_on_screen(); resized(); }
 		}
 		tell_place(0);
 		title();

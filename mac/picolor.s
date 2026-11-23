@@ -15,6 +15,13 @@
 | wherever Monitors or the 'scrn' put it (the HDMI screen right of the SE's 512 x 342 on the SE
 | board, the card's right of the IIci's built-in video in the testbed); on a Mac with one screen it
 | stays at the place above.
+|
+| Since 23 November 2026 it goes only on a second screen with room for it (640 by 460), and otherwise
+| on the main screen, below the menu bar, made smaller where the main screen is small: on the SE's
+| own 512 by 342 as its only screen (no HDMI) the window had been put at (40,660), off every screen,
+| and with the HDMI as the main screen it went on the SE's screen and ran off its bottom and right.
+| The picture is drawn for 600 by 400 and scaled to the window (each rectangle and line by W/600 and
+| H/400), so on the SE it is 504 by 298; in one bit QuickDraw shows each colour as black or white.
 
 	.text
 	.globl	app_start
@@ -97,7 +104,9 @@ paint:
 	movem.l	%d0-%d7/%a0-%a4,-(%sp)
 	bsr	black
 	move.w	#20,-(%sp)
-	move.w	#24,-(%sp)
+	move.w	#24,%d0
+	bsr	scale_y
+	move.w	%d0,-(%sp)
 	.short	_MoveTo
 	pea	s_title(%pc)
 	.short	_DrawString
@@ -148,9 +157,16 @@ paint:
 	blo.s	3b
 	bsr	black
 	move.w	#20,-(%sp)
-	move.w	#372,-(%sp)
+	move.w	#372,%d0
+	bsr	scale_y
+	move.w	%d0,-(%sp)
 	.short	_MoveTo
-	pea	s_foot(%pc)
+	lea	s_foot(%pc),%a0
+	move.w	wdepth(%pc),%d0
+	cmp.w	#1,%d0
+	bne.s	1f
+	lea	s_onebit(%pc),%a0	| a one-bit screen (the SE's) shows every colour as black or white: say so
+1:	move.l	%a0,-(%sp)
 	.short	_DrawString
 	movem.l	(%sp)+,%d0-%d7/%a0-%a4
 	rts
@@ -190,28 +206,35 @@ cell:
 	add.w	#10,%d0
 	move.w	%d0,%d1
 	add.w	#46,%d1
-	bra.s	paint_cell
+	bra	paint_cell
 cell8:
 	move.w	%d6,%d0
 	mulu	#72,%d0
 	add.w	#10,%d0
 	move.w	%d0,%d1
 	add.w	#70,%d1
-	bra.s	paint_cell
+	bra	paint_cell
 cell16:
 	move.w	%d6,%d0
 	mulu	#36,%d0
 	add.w	#10,%d0
 	move.w	%d0,%d1
 	add.w	#34,%d1
-| place_window: wrect on the first active screen that is not the main one, 20 pixels in from its
-| left and 40 down from its top. QuickDraw's screens are a list of GDevices from DeviceList ($8A8):
-| gdFlags at 20 (bit 15 screenActive, bit 11 mainScreen), gdNextGD at 30, gdRect at 34.
+	bra	paint_cell		| (it fell through into paint_cell until place_window came between)
+
+| place_window: wrect on the first active screen that is not the main one and has room for the
+| 600 x 400 picture (640 x 460), 20 pixels in from its left and 40 down from its top; with none, on
+| the main screen 40 down (below the menu bar), as large as it allows up to 600 x 400. QuickDraw's
+| screens are a list of GDevices from DeviceList ($8A8): gdFlags at 20 (bit 15 screenActive, bit 11
+| mainScreen), gdNextGD at 30, gdRect at 34. MainDevice ($8A4) is the main screen's handle. Then
+| wsize = the window's width and height, which paint_cell scales the picture to.
 place_window:
+	movem.l	%d3-%d4/%a2,-(%sp)
+	lea	wrect(%pc),%a1
 	move.l	0x8A8,%d0		| DeviceList: the first device's handle
 	moveq	#7,%d2			| eight devices at most
 1:	tst.l	%d0
-	beq.s	9f
+	beq.s	5f
 	move.l	%d0,%a0
 	move.l	(%a0),%a0		| the GDevice
 	move.w	20(%a0),%d1
@@ -219,7 +242,15 @@ place_window:
 	beq.s	2f			| not active
 	btst	#11,%d1
 	bne.s	2f			| the main screen
-	lea	wrect(%pc),%a1
+	move.w	40(%a0),%d1		| its bottom
+	sub.w	34(%a0),%d1		| less its top
+	cmp.w	#460,%d1
+	blt.s	2f			| too small (the SE's screen beside a larger main HDMI screen)
+	move.w	38(%a0),%d1		| its right
+	sub.w	36(%a0),%d1
+	cmp.w	#640,%d1
+	blt.s	2f
+	bsr	note_depth
 	move.w	34(%a0),%d1		| its top
 	add.w	#40,%d1
 	move.w	%d1,(%a1)
@@ -230,12 +261,80 @@ place_window:
 	move.w	%d1,2(%a1)
 	add.w	#600,%d1
 	move.w	%d1,6(%a1)
-	rts
+	bra.s	8f
 2:	move.l	30(%a0),%d0		| gdNextGD
 	dbf	%d2,1b
-9:	rts
+5:	move.l	0x8A4,%d0		| MainDevice
+	beq.s	8f			| (none: the place above)
+	move.l	%d0,%a0
+	move.l	(%a0),%a0
+	bsr	note_depth
+	lea	34(%a0),%a2		| its gdRect: top, left, bottom, right
+	move.w	(%a2),%d3
+	add.w	#40,%d3			| the top, below the menu bar and the title bar
+	move.w	%d3,(%a1)
+	move.w	4(%a2),%d4
+	subq.w	#4,%d4			| the room down to the bottom edge
+	sub.w	%d3,%d4
+	cmp.w	#400,%d4
+	ble.s	6f
+	move.w	#400,%d4
+6:	add.w	%d3,%d4
+	move.w	%d4,4(%a1)		| bottom
+	move.w	2(%a2),%d3
+	add.w	#4,%d3			| left: 4 in from the edge on a small screen,
+	move.w	6(%a2),%d4
+	sub.w	2(%a2),%d4
+	cmp.w	#640,%d4
+	blt.s	7f
+	add.w	#16,%d3			| 20 where the whole picture fits
+7:	move.w	%d3,2(%a1)
+	move.w	6(%a2),%d4
+	subq.w	#4,%d4
+	sub.w	%d3,%d4
+	cmp.w	#600,%d4
+	ble.s	71f
+	move.w	#600,%d4
+71:	add.w	%d3,%d4
+	move.w	%d4,6(%a1)		| right
+8:	lea	wsize(%pc),%a0
+	move.w	6(%a1),%d0
+	sub.w	2(%a1),%d0
+	move.w	%d0,(%a0)		| W
+	move.w	4(%a1),%d0
+	sub.w	(%a1),%d0
+	move.w	%d0,2(%a0)		| H
+	movem.l	(%sp)+,%d3-%d4/%a2
+	rts
 
-paint_cell:				| d0 left, d1 right, d2 top, d3 bottom
+| note_depth: a0 = the chosen screen's GDevice -> wdepth = its pixel size (gdPMap at 22, a PixMap
+| handle; pmPixelSize at 32). Keeps a0 and d0-d2.
+note_depth:
+	movem.l	%a1-%a2,-(%sp)
+	move.l	22(%a0),%a2
+	move.l	(%a2),%a2
+	lea	wdepth(%pc),%a1		| (PC-relative: the code runs wherever the Segment Loader put it)
+	move.w	32(%a2),(%a1)
+	movem.l	(%sp)+,%a1-%a2
+	rts
+
+| scale_y: d0 = a height in the 600 x 400 picture -> in the window
+scale_y:
+	lea	wsize(%pc),%a0
+	muls.w	2(%a0),%d0
+	divs.w	#400,%d0
+	rts
+
+paint_cell:				| d0 left, d1 right, d2 top, d3 bottom, in the 600 x 400 picture
+	lea	wsize(%pc),%a0		| to the window's W x H
+	muls.w	(%a0),%d0
+	divs.w	#600,%d0
+	muls.w	(%a0),%d1
+	divs.w	#600,%d1
+	muls.w	2(%a0),%d2
+	divs.w	#400,%d2
+	muls.w	2(%a0),%d3
+	divs.w	#400,%d3
 	pea	rect(%pc)
 	move.w	%d0,-(%sp)		| SetRect takes left, top, right, bottom (not a Rect's order:
 	move.w	%d2,-(%sp)		| the first version pushed top, left, bottom, right and painted
@@ -248,14 +347,19 @@ paint_cell:				| d0 left, d1 right, d2 top, d3 bottom
 
 	.even
 wrect:	.short	40, 660, 440, 1260	| on the Pi's screen: (0,640)-(480,1280) in the 'scrn'
+wsize:	.short	600, 400		| the window's width and height (place_window)
+wdepth:	.short	8			| its screen's bits per pixel (place_window)
 wtitle:	.byte	15			| the window's title: the program's name (since 21 November 2026)
 	.ascii	"Aurora68 Colour"
 	.even
 s_title: .byte 52
 	.ascii	"Twelve hues, half strength, primaries, sixteen greys"
 	.even
-s_foot:  .byte 50
+s_foot:  .byte 51
 	.ascii	"Drawn by Color QuickDraw into the Pi's frame buffer"
+	.even
+s_onebit: .byte 49
+	.ascii	"One bit here: each colour shows as black or white"
 	.even
 color:	.short	0, 0, 0
 rect:	.short	0, 0, 0, 0

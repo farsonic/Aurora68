@@ -43,6 +43,7 @@
  */
 #include "toolbox.h"
 #include "model.h"
+#include "screens.h"
 
 /* ---- low memory and small helpers ---- */
 #define LM_MBARHEIGHT (*(volatile short *)0xBAA)
@@ -1114,6 +1115,9 @@ int main(void)
 	if (normal_rect.right - normal_rect.left > MAX_W || normal_rect.bottom - normal_rect.top > MAX_H || !on_screen(&normal_rect)) default_rect(&normal_rect, 0);
 	mini_rect.right = (short)(mini_rect.left + COMPACT_W); mini_rect.bottom = (short)(mini_rect.top + COMPACT_H);
 	if (!on_screen(&mini_rect)) default_rect(&mini_rect, 1);
+	/* a kept place, all of it on the screen it is mostly on: from the HDMI screen to the SE's, the normal view
+	   could reach past the SE's right and bottom edges, its grow and zoom boxes out of reach (23 November 2026) */
+	scr_fit(&normal_rect); scr_fit(&mini_rect);
 	b = compact ? mini_rect : normal_rect;
 	pstr(pbuf, "Aurora68 Status");
 	win = has_cqd() ? (void *)NewCWindow(0, &b, pbuf, 1, zoomDocProc, (void *)-1, 1, 0)

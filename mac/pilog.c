@@ -38,6 +38,7 @@
  * scroll the log; Left and Right, Delete and Tab work in the filter field.
  */
 #include "toolbox.h"
+#include "screens.h"
 
 /* ---- the ring (psmb.h) ---- */
 #define LOG_OFF    0x60000
@@ -961,6 +962,15 @@ static void mouse_down(EventRecord *ev)
 	case inZoomIn:
 	case inZoomOut:
 		if (w == win && TrackBox(w, pt_long(ev->where), part)) {
+			/* zoomed: the whole room of the screen the window is mostly on, as the 1992 guidelines say
+			   (23 November 2026; the Window Manager's own standard state is the main screen's, so a log
+			   moved to the SE's screen beside a main HDMI screen jumped to the HDMI screen) */
+			void **wsh = *(void ***)((char *)w + 130);          /* dataHandle: the WStateData */
+			if (part == inZoomOut && wsh && *wsh) {
+				int m;
+				Rect c = scr_content(win), sc = scr_of(&c, &m);
+				*(Rect *)((char *)*wsh + 8) = scr_room(&sc, m);
+			}
 			SetPort(win);
 			EraseRect(PORT_RECT(win));
 			ZoomWindow(w, part, 0);
