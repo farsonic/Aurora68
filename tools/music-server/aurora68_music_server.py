@@ -1662,7 +1662,11 @@ class Catalogue:
                 a = self.albums[al]
                 for t in a['tracks']:
                     songs[t] = (tidy_title(os.path.splitext(self.tracks[t][1].split('/')[-1])[0], a['artist'])[1], a['artist'], al, aid)
-        linked, best = video_links(songs, {v: (x['title'], x['artist'], x['album'], x['aid'], x['rel']) for v, x in videos.items()})
+        if getattr(self, 'link_sig', None) == self.lib.signature and self.lib.signature is not None:
+            linked, best = self.video_tracks, self.track_video          # the folder as it was: the same links
+        else:
+            linked, best = video_links(songs, {v: (x['title'], x['artist'], x['album'], x['aid'], x['rel']) for v, x in videos.items()})
+            self.link_sig = self.lib.signature
         place = {}                           # a linked video's place among an album's videos: where its first song is
         for v, ts in linked.items():
             for t in ts:

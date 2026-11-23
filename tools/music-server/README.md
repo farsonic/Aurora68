@@ -174,7 +174,7 @@ as bitmaps dithered here, so the Mac only copies bits to the screen:
 | `/mac/info` | the name, the version, how many artists, albums and tracks |
 | `/mac/artists` | id, name, albums, tracks: sorted as record shops file them ("The Cure" under C) |
 | `/mac/albums?artist=ID` | id, title, artist, tracks, seconds (no artist: every album) |
-| `/mac/tracks?album=ID` or `?artist=ID` | id, number, title, artist, seconds, album id (an album's first listing reads its tags and lengths with ffprobe, then keeps them) |
+| `/mac/tracks?album=ID` or `?artist=ID` | id, number, title, artist, seconds, album id, each album in disc and track order (an album's first listing reads its tags and lengths with ffprobe, then keeps them) |
 | `/mac/search?q=WORDS` | artists (`A`), albums (`L`) and tracks (`T`) whose names hold every word (the words in Mac Roman) |
 | `/mac/art?album=ID&w=64&h=64&depth=1` | the cover: `A68ART 1 W H DEPTH ROWBYTES`, then the rows. Depth 1: Bill Atkinson's dithering, 1 black. Depth 8: indices into the Mac's standard 256-colour palette ('clut' 8) |
 | `/mac/arts?albums=ID,ID,...&w=32&h=32` | covers for a list of albums: `A68ARTS 1 N W H DEPTH ROWBYTES`, then for each a byte (1 a cover, 0 none) and its rows |
@@ -327,6 +327,48 @@ device reporting a video's id in `/mac/state` (`t=ID`) is named from the catalog
 button (shown when the library has any) lists them all, each as its poster with its title and length. A click opens
 it in a window of the page (HTML5 `<video>`: the file, HLS in Safari, else the fragmented MP4), with **Play on** the
 chosen player (Live: its sound) and **Add to queue**.
+
+### Videos linked to songs
+Since 23 November 2026 (docs/08 item 115) a video also belongs to the songs it is of, wherever it sits: "Daft Punk -
+One More Time (Official Video).mp4" in the artist's folder is the video of "One More Time" on *Discovery*. The owner
+asked for it to find videos from the songs, and to play a song's video in its place ("link them to a song to
+alternate"). A video is a song's when the two have
+
+- **the same artist**: the one the video is attached to (above), or the one in front of its title ("Daft Punk -
+  Around the World.mp4" among anybody's videos); compared by the first name only, case, "The" and punctuation aside
+  ("Daft Punk, Julian Casablancas" is Daft Punk);
+- **the same title**, both from the files' names (the track number and an "Artist - " in front gone, as for tracks),
+  Unicode NFKC and casefolded, punctuation as spaces, and the tags in brackets or after " - " left out when they only
+  say what kind of file it is: `(Official Video)`, `(Official Music Video)`, `(Music Video)`, `(Lyric Video)`,
+  `(Lyrics)`, `(Visualizer)`, `(Audio)`, `[HD]`, `[4K]`, `(1080p)`, `(Remastered 2011)`, `- 2009 Digital Remaster`,
+  `(Explicit)`, `(Clean)`, `(M/V)` and their mixtures, and the featured artists (`feat.`, `ft.`, `featuring`, `with`,
+  in brackets or not). Every other tag names a version and is kept: `(Live)`, `(Remix)`, `(Radio Edit)`, `(Acoustic
+  Version)`.
+
+Three tries, the first that finds a song wins: the whole titles (a "Live" video is the "Live" song's), then the
+video's plain title against a song's whole one (a Live video with no Live song is the studio song's), then plain
+against plain ("One More Time (Official Video)" is "One More Time (Radio Edit)"'s only when nothing better was
+found). One video may be of several songs (the same song on an album and its deluxe edition): it is linked to all of
+them; a song has one video, its best (the earliest try, then a video of its own album, then of its artist, then the
+first by path). Tags are not read for this: the links are made with the catalogue at each scan from the names alone,
+cost no ffprobe, and are the same whatever has been listed before.
+
+What changes in the answers:
+
+| | |
+|---|---|
+| `/api/tracks` | each song with a video has `"video": ID`; each video (also in `/api/videos`) has `"tracks": [IDs]`, its songs |
+| an album's videos | `/mac/tracks?album=ID&videos=1`'s `V` records, `/mac/videos?album=ID`, `/api/tracks` and `/api/videos?album=ID` list the videos of the album's songs as well as those in its folder, each once, in the order of its songs; `/api/catalog` and `/mac/albums` count them |
+| an artist's videos | those attached to it and those of its songs, each once (`/mac/artists`' fifth field counts them) |
+| `/mac/tracks` with `full=1&videos=1` | a tenth field after the folder: the song's video's id, empty when it has none. Only with both (the macOS Play 1.4 sends both; the classic Play sends neither, and its `T` records are what they were) |
+| `/mac/albums` with `full=1&videos=1` | an eighth field: the videos the album lists |
+| `/api/list` | `"file_videos"`: `{file name: video}` for the folder's songs that have one; the panel marks them with a film frame that opens the video as its poster does |
+
+An album's songs are always listed in disc and track order (23 November 2026): from the names ("01. Title") and the
+tags (track and disc numbers, read with an album's first listing), before the answer is cut into pages. Until then
+files named by title alone ("Aerodynamic.flac", as some downloaders name them) came in title order: the sort of a
+page by number asked the list being sorted whether any row had a number, and to Python a list being sorted is empty
+(docs/08 item 115).
 
 **Settings** (in docker-compose's `environment:`):
 

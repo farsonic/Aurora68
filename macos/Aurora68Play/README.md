@@ -21,6 +21,18 @@ Live channel, or to any other Aurora68 Play on the network.
   as the file, with real seeking; the others as HLS, remuxed (the picture copied) or, last, transcoded
   (tools/music-server/README.md, "Music videos"). Now Playing says it is a video and shows its poster. Play on
   another Mac shows the video there; on the SE or on Live its sound plays.
+- **Videos linked to songs** (1.4, 23 November 2026): the server knows which song a video is of (the same artist
+  and title, "(Official Video)", "[HD]" and the like aside: tools/music-server/README.md, "Videos linked to
+  songs"). A song with a video has a small film button in its row (the video plays, the album's videos after it, as
+  a poster's click does) and **Play Video** in its menu; a double click on the row still plays the song. An album
+  lists the videos of its songs, also those kept in the artist's folder. **Play Videos Instead of Songs** (Settings,
+  or the Controls menu) makes an album, an artist, a song or the queue play each song's video in its place where it
+  has one, here or on another Mac (Live keeps the songs: the SE hears it); the bar says "Music video". An
+  **artist's page** shows its videos (its own and its songs') as a row of posters under its name, scrolling
+  sideways, with **See All** for the whole grid; artists and albums with videos have a film mark after their
+  subtitle. **Videos** in the sidebar lists every video of the library by artist, and the search field filters it.
+  Albums are listed in disc and track order even when the files are named by title alone (a server fix of the same
+  day; before it the server sent such albums in title order).
 - **New albums without a restart:** the server counts its library's changes; the app hears the count
   every 20 seconds and fetches the artists and albums again when it changes, keeping what is open.
 - **Now Playing:** the song and its cover in Control Center; the keyboard's media keys work. The space
@@ -112,6 +124,19 @@ no progressive stream whose server cannot answer a byte range, and a remux has n
 for Live and other players. The device announces `video=1` and asks its commands with `videos=1`, so a video sent
 from elsewhere arrives as a `V` line and plays as a video. XCTest: `VideoTests` (the records, the URLs, the
 commands, a device that shows videos), and the paths of the older tests with `&videos=1`.
+
+## Videos linked to songs: how they are made (1.4, 23 November 2026)
+With `full=1&videos=1` the server ends each song's `T` record with the id of its video and each album's record with
+its count of videos; the core reads them (`a68_track.video`, `a68_album.videos`; an older server's records read as
+none) into `Track.linkedVideo` and `Album.videos`. An album's `V` records already include the videos of its songs,
+so the app keeps every video it has listed by id (`AppModel.videoIndex`) and finds a song's there
+(`VideoLinks.video(of:in:)`). "Play Videos Instead of Songs" is `VideoLinks.alternate`, one for one, so the place
+clicked in a list is the place played; it is applied to every list the app plays here or sends to another Mac,
+and to an album or an artist played whole (their songs are fetched and sent as tracks instead of `f:FOLDER`). The
+setting is `videosInstead` in UserDefaults (`@AppStorage` in Settings, the Controls menu and the bar). The Videos
+page is `/mac/videos` with no artist (the server sorts it by artist), grouped and filtered by `VideoShelf`. XCTest:
+`VideoTests.testSongsVideoField` (the field present, empty, absent; an album's count), `testVideosInsteadOfSongs`
+(the mapping and a queue made of it), `testVideoShelf`.
 
 ## How it is made
 - `Package.swift` (at the repository's top): **PlayCore** is the shared C core (`play/core`). **Aurora68Core**

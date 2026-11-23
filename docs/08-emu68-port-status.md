@@ -5006,3 +5006,59 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      In the testbed neither a connection lost in the middle of a video (the Play stops the card and asks again from
      the picture shown) nor a 503 from a busy encoder (asked again after a second) happened, so those two paths have
      not run; nor has the SE board's second screen (the window on HDMI beside the SE's own).
+
+115. **Music videos linked to songs; albums in track order; Aurora68 Play 1.4 for macOS (23 November).** The owner
+     tried the macOS Play 1.3 against the music server on the NAS and asked: "we need this in the artist page or
+     something to make it easy to see videos - or even link them to a song to alternate". Looking at it they also
+     found the album "Discovery" (Daft Punk) listed by title (Aerodynamic 2, Crescendolls 5, Digital Love 3, Face to
+     Face 13...) with the right numbers beside the titles, and another album the same way (9, 25, 17, 5...).
+   - *The order.* Those albums came from a downloader that names files by title alone ("Aerodynamic.flac"; the number
+     only in the tags). The macOS Play shows the tracks in the order the server sends them, so the server was at fault.
+     `/mac/tracks` sorted a page's rows with `rows.sort(key=lambda r: (r[1] or 999, ...) if any(x[1] for x in rows)
+     else 0)`: the key looks at `rows` while `rows` is being sorted, and CPython empties a list for the length of its
+     sort (any look inside it sees nothing), so `any(...)` was always false, every key 0, and the stable sort left the
+     files' order, by name. With names that begin "01." the files' order is the tracks', which is why it never showed
+     before. Two smaller faults beside it: the sort came after the paging (an album of more than one page would have
+     been in order page by page), and disc numbers were not read. `/api/tracks` sorted correctly (its key did not look
+     at the list) but by number alone. Now `Catalogue.ordered` puts each album's tracks in disc and track order (the
+     disc and track tags, read with the album's first listing as before, else the numbers in the names; an album none
+     of whose tracks has a number keeps its files' order) before any paging, for `/mac/tracks` in every form (the
+     classic Play's too) and `/api/tracks`.
+   - *Links.* A video is a song's when the two have the same artist (the video's own, from where it sits, or the one in
+     front of its title; compared by the first name, so "Daft Punk, Julian Casablancas" is Daft Punk) and the same
+     title from the files' names, NFKC, casefolded, punctuation as spaces, with the tags in brackets or after " - "
+     left out when they only say what kind of file it is (official/music/lyric video, visualizer, audio, HD, 4K,
+     1080p, remastered and a year, explicit, M/V, featured artists) and kept when they name a version (Live, Remix,
+     Radio Edit, Acoustic Version). Three tries, the first that finds anything wins: whole against whole, the video's
+     plain title against a song's whole, plain against plain; so a Live video goes to the Live song, else to the studio
+     one, and "One More Time (Official Video)" to "One More Time (Radio Edit)" only when there is no plain "One More
+     Time". A video may be of several songs (an album and its deluxe edition) and is linked to all; a song keeps one,
+     its best. Names only, never tags: the links come with the catalogue at each scan (`video_links`, kept while the
+     folder's signature is the same), cost no ffprobe, and do not change with what has been probed. Exposed: in
+     `/api/tracks` (`"video"` on a song, `"tracks"` on each video, also in `/api/videos`), as a tenth field of a
+     song's `T` record and an eighth of an album's record in `/mac/` with `full=1&videos=1` only (the macOS Play sends
+     both; the classic Play neither, so its records are byte for byte what they were, which the server's test checks
+     against a server with `VIDEOS=off`), in `/api/list` (`"file_videos"`, for the panel), and in the lists: an
+     album's videos are its own and its songs' (from the artist's folder too), in its songs' order, each once; an
+     artist's those attached to it and its songs'.
+   - *The core.* `a68_track.video` (the tenth field, "" when empty or absent) and `a68_album.videos` (the eighth, 0);
+     an older server's records read as none.
+   - *The macOS Play 1.4.* Songs with a video have a film button (the video plays, the album's videos after it, as a
+     poster's click does) and Play Video in their menu; a double click still plays the song. "Play Videos Instead of
+     Songs" (Settings and the Controls menu, `@AppStorage`) replaces each song by its video, one for one, in whatever is
+     played here or sent to another Mac (an album or artist played whole is then sent as its tracks rather than
+     `f:FOLDER`); Live keeps the songs, since the SE hears it. The bar says "Music video". An artist's page starts with
+     its videos as a row of posters that scrolls sideways, with See All for the grid; artists and album tiles with
+     videos have a film mark; Videos in the sidebar lists every video by artist (`/mac/videos`), filtered by the search
+     field. The web panel marks songs with a video (a film frame that opens it as the poster does).
+   - *Tests.* The server's test builds its own library (`links_check`): six FLACs of *Discovery* named by title with
+     their numbers in the tags, read in pages of four in both forms and as JSON; two discs in one folder; an official
+     video and a Live video in the artist's folder, an "(Official Music Video) [HD]" and a "(Visualizer)" in its
+     Videos folder, a deluxe edition and a live album, another artist's video of the same title; the keys of a dozen
+     titles; 218 checks (0 failed), here and on GitHub's runner (run 45121946040). `make -C mac check`: play_core_test 212 checks on
+     the host and 175 as a 68020 program (the new fields present, empty and absent, and the real server's answers:
+     "Closing Time (Video)" is Closing Time's). GitHub's runner: XCTest 24 tests (21 before) and the app built, run 45121946107.
+   - *Not verified:* the app's screens. Swift is compiled and tested only by the workflow, so the new pages, the film
+     buttons, the row of posters, the toggle in the Controls menu and in Settings have been compiled, not seen; nor
+     have the links been tried on the owner's library (which names its videos however its sources do: a name the
+     rules above do not foresee stays unlinked, and is still listed with its artist and album as before).

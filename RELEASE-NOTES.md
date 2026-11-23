@@ -4,6 +4,19 @@
 
 Since 0.13 (docs/08 items 96 and 103):
 
+- **Music videos linked to songs; Aurora68 Play 1.4 for macOS** (docs/08 item 115, 23 November 2026). The music
+  server now knows which song a video is of: the same artist and the same title once "(Official Video)", "[HD]",
+  "(Lyric Video)", "feat. ..." and the like are left aside ("Live", "Remix", "Radio Edit" kept), from the files'
+  names (tools/music-server/README.md, "Videos linked to songs"). An album lists the videos of its songs even when
+  they sit in the artist's folder. In the macOS Play 1.4 a song with a video has a film button and Play Video;
+  **Play Videos Instead of Songs** (Settings, Controls menu) plays each song's video in its place; an artist's page
+  starts with its videos as a row of posters (See All for all of them); **Videos** in the sidebar lists every video
+  by artist, filtered by the search field; artists and albums with videos have a film mark. The web panel marks
+  songs with a video and opens it from there. The classic Play's protocol is unchanged.
+- **Albums in track order** (the same item). An album whose files are named by title alone ("Aerodynamic.flac", the
+  number only in the tags) was listed in title order in both Plays: the server's sort by track number never ran (it
+  looked at the list while sorting it, which Python shows as empty). Albums are now in disc and track order, across
+  pages too.
 - **QuickTime movies decoded by the Pi: the Aurora68 Video Decoder** (docs/08 item 110, docs/16). The video card in
   slot $C is now a video decoder card of the period's kind: "Aurora68 Video Decoder" in Aurora68 Slots, its driver
   `.A68Video` in its own declaration ROM (opened at start-up), and the "Aurora68 Video Decoder" extension, whose
