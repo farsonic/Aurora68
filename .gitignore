@@ -88,6 +88,7 @@ macos/Aurora68Play/.build/
 mac/build/cmdline_test
 mac/build/apnet_test
 mac/build/diag_test
+mac/build/splash_test
 mac/build/devices_test
 mac/build/codec/
 mac/build/edid_test.log

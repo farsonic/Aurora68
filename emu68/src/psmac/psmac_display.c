@@ -40,9 +40,12 @@
  * kernel leaves slot $A empty (psmac_bus.c) and HDMI shows the SE's picture, or the log.
  */
 #include <stdint.h>
+#include <stdarg.h>
 #include "support.h"
 #include "psmac.h"
 #include "psmb.h"
+#include "psmac_splash.h"
+#include "version.h"
 
 extern void *framebuffer;                    /* start_rpi64.c: the VideoCore frame buffer */
 extern uint32_t pitch, fb_width, fb_height;
@@ -95,6 +98,10 @@ static void vc_report(uint32_t want_w, uint32_t want_h)
 }
 static uint64_t next_tick;
 static int con_keep;                          /* the HDMI console (below): mac.console=hdmi keeps the log on the screen */
+static volatile int con_mode;                 /* what HDMI shows until the Mac takes it (below): 0 the splash, 1 the log
+                                                 (mac.console=boot), 2 the log for the whole run (mac.console=hdmi, mac.hdmi=log) */
+static void splash_now(int what);             /* the splash drawn at once (below, "the splash") */
+static volatile int splash_whole;             /* the service core draws the whole splash again (a new buffer, a restart) */
 static int con_off;                           /* the picture has the buffer */
 static uint32_t con_x, con_y, con_cols, con_rows;
 static unsigned tick_div;
@@ -254,6 +261,7 @@ void psmac_display_init(uint8_t *win)
     /* the HDMI monitor's EDID and the mode in force, for PiDisplay (psmac_hdmi.c): the firmware's buffer as it
        was at the start is the HDMI mode */
     { extern void psmac_hdmi_init(uint32_t, uint32_t); psmac_hdmi_init(hdmi_w, hdmi_h); }
+    splash_now(PSMAC_SPLASH_ALL);                              /* the splash again, in the new buffer (when it is what HDMI shows) */
 }
 
 /* Which byte of a 32-bit pixel is red. The firmware is asked (tag 0x40006): 1 means the bytes
@@ -286,6 +294,7 @@ void psmac_display_reinit(void)
     vc_byte_order();
     if (vcfb) for (uint32_t i = 0; i < vc_pitch * vc_h; i += 8) *(uint64_t *)(vcfb + i) = 0;
     con_cols = 0; con_x = 0; con_y = 0;                        /* the console starts again in the new buffer */
+    splash_whole = 1;                                          /* and the splash, when it shows (the service core, psmac_display_poll) */
 }
 
 /* ---- the HDMI console ------------------------------------------------------------------------
@@ -296,7 +305,8 @@ void psmac_display_reinit(void)
    log there for the whole run and never shows the picture: that is the bench setting. The cursor
    wraps to the top when it reaches the bottom and clears the line ahead of it, which costs nothing
    and reads like a terminal that lost its scrollback. Written for the user's first standalone Pi,
-   17 November, 05:40 (docs/12). */
+   17 November, 05:40 (docs/12). Since 23 November it draws only when asked (mac.console=boot, mac.console=hdmi,
+   or F12 over the splash): by default HDMI shows the splash (below) instead. */
 extern const uint8_t topaz8_chardata[]; extern const uint32_t topaz8_charloc[]; extern const int modulo;
 static uint8_t *con_fb(void)
 {
@@ -369,10 +379,12 @@ int psmac_display_vc(uint8_t **fb, uint32_t *pitch_out, uint32_t *w, uint32_t *h
     *bpp = vc_bpp == 32 && vcfb ? 32 : 16; *swap = vc_swap;
     return 0;
 }
+static volatile int splash_log;                /* F12 on a USB keyboard asked for the log over the splash (psmac_splash_key) */
 void psmac_console_putc(uint8_t c)
 {
     if (con_rec) return;
     if (con_held) return;                                     /* the bus check's page (above) */
+    if (con_mode == 0 && !splash_log) return;                 /* the splash (below): the log goes to the serial line, the ring, the card */
     if (con_off && !con_keep) return;
     uint8_t *fb = con_fb();
     uint32_t p = vc_pitch ? vc_pitch : pitch;
@@ -393,7 +405,140 @@ void psmac_console_putc(uint8_t c)
     }
     con_cell(fb, p, bpp32, con_x++, con_y, c);
 }
-void psmac_console_option(int keep) { con_keep = keep; }
+
+/* ---- the splash ---------------------------------------------------------------------------------
+   23 November 2026 (docs/08 item 128). The owner: "we need a subtle splash screen on the HDMI monitor that has the
+   Aurora logo and version and not show the logs unless specifically called for (it's just noise now)". So from the
+   moment the kernel has the HDMI screen (display_logo, start_rpi64.c, which drew Emu68's logo before) until the
+   Mac's video driver turns its screen on, HDMI shows the Aurora68 logo, the name and the version (psmac_splash.c
+   draws them) with one quiet status line that follows the boot (psmac_splash_status: the card, the disk image,
+   the 68k released, the ROM's tests, the disk it starts from, the INITs, the WiFi) and an amber line above it for
+   what a user must see (psmac_splash_alert: no ROM or declaration ROM, a system error, under-voltage, the WiFi
+   failing). Where HDMI never becomes a Mac screen (no declaration ROM) the splash stays for the whole run; after a
+   Restart it comes back until the driver opens again. The log on HDMI is now asked for: mac.console=boot, as every
+   start was before this day (the log until the Mac's screen), mac.console=hdmi or mac.hdmi=log for the whole run,
+   or F12 on a USB keyboard while the splash is up (F12 again for the splash). The serial line, the log ring (Aurora68
+   Log, aurora68.py log, the remote's /log, Setup and Recovery's Log tab) and the card's aurora68.log are unchanged.
+   Who draws: display_logo and psmac_display_init on core 0 before the service loop runs, the setters until it
+   runs, and from then on only the service core (psmac_display_poll), which also converts the Mac's picture, so the
+   two never draw over each other. Setup and Recovery's pages and the bus check's report keep the screen to
+   themselves (con_rec, con_held). */
+static char splash_status_text[100], splash_alert_text[120];
+static volatile uint32_t splash_seq;          /* bumped at every new line */
+static uint32_t splash_drawn;                 /* the sequence on the screen */
+static int splash_shown;                      /* the whole splash is on the screen (not the picture, the log or a page) */
+static int splash_alert_kind;                 /* what the alert line is about: 1 the WiFi (cleared when it connects) */
+static volatile int poll_running;             /* the service core draws from now on */
+static int splash_log_seen;
+static int splash_mac_on(void) { return vcs && (vcs->disp->flags & PSMB_DISP_ENABLED); }   /* the Mac's picture has HDMI */
+static int splash_wanted(void) { return con_mode == 0 && !splash_log && !con_rec && !con_held && !splash_mac_on(); }
+static void splash_flush(uint8_t *p, uint32_t n) { arm_flush_cache((intptr_t)p, n); }
+static void splash_now(int what)
+{
+    if (!splash_wanted()) return;
+    uint8_t *fb = con_fb();
+    uint32_t p = vc_pitch ? vc_pitch : pitch, w = vc_w ? vc_w : fb_width, h = vc_h ? vc_h : fb_height;
+    if (!fb || !p || !w || !h) return;
+    struct psmac_splash_fb f = { fb, p, w, h, vc_bpp == 32 && vcfb, vc_swap, splash_flush };
+    struct psmac_splash_text t = { "Aurora68", &VERSION_STRING[6], splash_status_text, splash_alert_text };
+    uint32_t seq = __atomic_load_n(&splash_seq, __ATOMIC_ACQUIRE);
+    if (!splash_shown) what = PSMAC_SPLASH_ALL;
+    psmac_splash_paint(&f, &t, what);
+    splash_shown = 1; splash_drawn = seq;
+}
+/* the screen black, for the log (F12, or a one-shot start's mac.console=) */
+static void vc_clear(void)
+{
+    uint8_t *fb = con_fb();
+    uint32_t p = vc_pitch ? vc_pitch : pitch, h = vc_h ? vc_h : fb_height;
+    if (!fb || !p) return;
+    for (uint32_t y = 0; y < h; y++) {
+        for (uint32_t x = 0; x < p; x += 8) *(uint64_t *)(fb + y * p + x) = 0;
+        arm_flush_cache((intptr_t)(fb + y * p), p);
+    }
+    con_cols = 0;                                              /* the console starts again at the bottom */
+}
+struct splash_sb { char *s; uint32_t n, cap; };
+static void splash_putc(void *d, char c) { struct splash_sb *b = d; if (b->n + 1 < b->cap) b->s[b->n++] = c; }
+static void splash_set(char *dst, uint32_t cap, const char *fmt, va_list ap)
+{
+    char tmp[160]; struct splash_sb b = { tmp, 0, sizeof tmp };
+    vkprintf_pc(splash_putc, &b, fmt, ap);
+    tmp[b.n] = 0;
+    uint32_t i = 0;
+    for (; i + 1 < cap && tmp[i]; i++) dst[i] = tmp[i];
+    dst[i] = 0;
+    __atomic_add_fetch(&splash_seq, 1, __ATOMIC_RELEASE);
+    if (!poll_running) splash_now(PSMAC_SPLASH_LINES);         /* before the service loop: nobody else would draw it */
+}
+/* the status line: what the boot is doing now ("Starting the Macintosh...") */
+void psmac_splash_status(const char *fmt, ...)
+{
+    va_list ap; va_start(ap, fmt); splash_set(splash_status_text, sizeof splash_status_text, fmt, ap); va_end(ap);
+}
+/* the alert line: what a user must see; kind 1 is the WiFi's, which its connecting clears (psmac_splash_wifi) */
+void psmac_splash_alert(int kind, const char *fmt, ...)
+{
+    splash_alert_kind = kind;
+    va_list ap; va_start(ap, fmt); splash_set(splash_alert_text, sizeof splash_alert_text, fmt, ap); va_end(ap);
+}
+/* the WiFi's state words (alice_net.c's wstate, through frf_post_wifi in alice_psmac.c): col 1 ready or
+   connected, 2 failed, 0 on its way */
+void psmac_splash_wifi(const char *state, int col)
+{
+    if (state[0] == 'c' && state[1] == 'o') {                  /* "connected SSID" */
+        if (splash_alert_kind == 1) psmac_splash_alert(0, "%s", "");
+        psmac_splash_status("Connected to the Wi-Fi network");
+    } else if (col == 2) psmac_splash_alert(1, "The Wi-Fi could not join its network: check wifi.ssid and wifi.psk");
+    else if (col == 0 && ((state[0] == 's' && state[1] == 'c') || state[0] == 'j' || state[0] == 'r'))   /* scanning, joining, retrying */
+        psmac_splash_status("Waiting for the Wi-Fi...");
+}
+static int word_is(const char *v, const char *w) { while (*w) if (*v++ != *w++) return 0; return *v == 0; }
+/* display_logo (start_rpi64.c), on core 0 when the firmware's frame buffer is made: the splash instead of
+   Emu68's logo, unless the log was asked for. The options are read here from the boot arguments as they came;
+   psmac_console_mode below has the last word once psmac_read_options has run (a one-shot debug start may add
+   mac.console= to them in between). 1: the splash is drawn, Emu68's logo and version line are not. */
+int psmac_splash_boot(void)
+{
+    char v[16]; int m = 0;
+    if (psmac_bootarg_val("mac.console", v, sizeof v)) m = word_is(v, "hdmi") ? 2 : word_is(v, "boot") ? 1 : 0;
+    if (psmac_bootarg_val("mac.hdmi", v, sizeof v) && word_is(v, "log")) m = 2;
+    con_mode = m; con_keep = m == 2;
+    if (m) return 0;
+    psmac_splash_status("Starting...");
+    splash_now(PSMAC_SPLASH_ALL);
+    return splash_shown;
+}
+/* psmac_read_options (psmac_bus.c): 0 the splash, 1 the log until the Mac's screen, 2 the log for the whole run */
+void psmac_console_mode(int mode)
+{
+    int was = con_mode;
+    con_mode = mode; con_keep = mode == 2;
+    if (was == 0 && mode != 0 && splash_shown) { splash_shown = 0; vc_clear(); }   /* the log from here on a clean screen */
+    else if (was != 0 && mode == 0) { con_cols = 0; splash_now(PSMAC_SPLASH_ALL); }
+}
+/* the service core, every turn (psmac_display_poll): the splash drawn, its lines kept up to date, F12's log */
+static void splash_poll(void)
+{
+    poll_running = 1;
+    int lg = splash_log;
+    if (lg != splash_log_seen) {
+        splash_log_seen = lg;
+        splash_shown = 0;
+        if (lg && con_mode == 0 && !con_rec && !con_held && !splash_mac_on()) { vc_clear(); con_off = 0; }
+    }
+    if (!splash_wanted()) { if (splash_mac_on()) splash_shown = 0; return; }
+    if (splash_whole) { splash_whole = 0; splash_shown = 0; }
+    if (!splash_shown || __atomic_load_n(&splash_seq, __ATOMIC_ACQUIRE) != splash_drawn) splash_now(PSMAC_SPLASH_LINES);
+}
+/* a USB keyboard's key (alice_psmac.c's in_key), before anything else sees it: F12 while the splash or its log is
+   on HDMI changes between the two; 1 if the key was taken (it does not reach the Mac then) */
+int psmac_splash_key(uint32_t usage, int down)
+{
+    if (usage != 0x45 || con_mode != 0 || con_rec || con_held || splash_mac_on()) return 0;
+    if (down == 1) splash_log = !splash_log;
+    return 1;
+}
 
 /* one output pixel: XRGB8888 when the VideoCore buffer is 32 bits, RGB565 when it is 16 */
 static inline void put(void *row, uint32_t x, uint32_t xrgb)
@@ -644,6 +789,7 @@ void psmac_display_poll(void)
     }
     if ((int64_t)(now - next_tick) < 0) return;
     next_tick += hz / 60; if ((int64_t)(now - next_tick) > (int64_t)hz) next_tick = now + hz / 60;
+    splash_poll();                                                 /* the splash, while it is what HDMI shows (above) */
     /* each screen's VBL: its driver's handler takes it and runs its own slot's VBL queue (QuickDraw's
        cursor, SlotVInstall's tasks) with _DoVBLTask */
     for (int i = 0; i < nscr; i++) {
@@ -701,6 +847,7 @@ void psmac_display_report(void)
    restarted Mac spent the rest of its life in its level-2 interrupt (PiScrn's restart, docs/10). */
 void psmac_display_bus_reset(void)
 {
+    if (splash_mac_on()) psmac_splash_status("Restarting the Macintosh...");   /* the splash until the driver opens again */
     for (int i = 0; vcs && i < nscr; i++) { scr[i].disp->vbl_enable = 0; scr[i].disp->vbl_pending = 0; scr[i].disp->flags = 0; }
     __asm__ volatile("dmb ish" ::: "memory");
 }

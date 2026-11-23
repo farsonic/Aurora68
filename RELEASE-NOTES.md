@@ -27,6 +27,15 @@ Since 0.13 (docs/08 items 96 and 103):
   `usb.trace=1` (Setup and Recovery, Options, Debug) logs them in full, for the owner's next log if the keyboard
   still needs a re-plug. Not testable without the Pi: QEMU has no hub translator; there the keyboard and mouse work
   as before. The USB flash drive that never answered is paused; only its log lines say more now.
+- **A quiet splash on the HDMI monitor instead of the log** (docs/08 item 128, 23 November 2026). Until the Mac's
+  picture comes up, HDMI shows the Aurora68 logo, the name and the kernel's version on a dark screen, with one line
+  near the bottom that follows the start ("Loading the disk image ...", "Starting the Macintosh...", "Waiting for
+  the Wi-Fi...") and an amber line for what must be seen (no ROM or declaration ROM in the container, under-voltage,
+  the WiFi not joining, a system error). The log is drawn there only when asked: `mac.console=boot` until the Mac's
+  screen (as before), `mac.console=hdmi` for the whole run, or F12 on a USB keyboard while the splash is up. The
+  serial line, Aurora68 Log, `aurora68.py log` and Setup and Recovery's Log tab are unchanged; the keyboard menu
+  and the Options tab offer the three values. Note for testers: the shipped `cmdline.txt` still has
+  `mac.console=hdmi` (the log on HDMI for the whole run, one screen on the SE); take it out to see the splash.
 
 - **Music videos buffer much more: no more stutter when the network slows for a moment** (docs/08 item 125, docs/16
   "Buffering", 23 November 2026). The video decoder card now empties its 512 KB ring at once into a buffer of its

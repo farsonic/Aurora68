@@ -2447,11 +2447,26 @@ void recovery_tcp_closed(int c)
    country, sets three options and saves them into cmdline.txt, or restarts. Up and Down choose, Return
    changes, Esc goes back. The password is shown as stars and never logged. */
 #define MI_N 11
+/* mac.console's values, from the options table (psmac_diag.c): splash (the default, written as no word), boot, hdmi
+   (23 November 2026, docs/08 item 128; the menu offered off and hdmi before) */
+static char cons_buf[40]; static const char *cons[4]; static int ncons;
+static void cons_load(void)
+{
+    if (ncons) return;
+    const struct pdg_opt *o = pdg_find("mac.console");
+    scpy(cons_buf, o ? o->values : "splash|boot|hdmi", sizeof cons_buf);
+    for (char *p = cons_buf; *p && ncons < 4; ) {
+        cons[ncons++] = p;
+        while (*p && *p != '|') p++;
+        if (*p) *p++ = 0;
+    }
+}
 static void menu_load(void)
 {
     char v[72];
+    cons_load();
     m_ssid[0] = m_psk[0] = m_country[0] = 0; m_psk_set = 0; m_changed = 0;
-    scpy(m_fpu, "exact", sizeof m_fpu); scpy(m_boot, "auto", sizeof m_boot); scpy(m_console, "off", sizeof m_console);
+    scpy(m_fpu, "exact", sizeof m_fpu); scpy(m_boot, "auto", sizeof m_boot); scpy(m_console, cons[0], sizeof m_console);
     if (cl_read()) return;
     if (pcl_get(cl_old, (uint32_t)cl_len, "wifi.ssid", v, sizeof v) == 1) scpy(m_ssid, v, sizeof m_ssid);
     if (pcl_get(cl_old, (uint32_t)cl_len, "wifi.psk", v, sizeof v) == 1 && v[0]) m_psk_set = 1;
@@ -2482,7 +2497,7 @@ static void menu_save(void)
     if (m_country[0] && !ieq(m_country, m0_country)) e |= cl_set(&nn, "wifi.country", m_country);
     if (!ieq(m_fpu, m0_fpu)) e |= cl_set(&nn, "mac.fpu", m_fpu);
     if (!ieq(m_boot, m0_boot)) e |= cl_set(&nn, "mac.boot", m_boot);
-    if (!ieq(m_console, m0_console)) e |= cl_set(&nn, "mac.console", ieq(m_console, "hdmi") ? "hdmi" : 0);
+    if (!ieq(m_console, m0_console)) e |= cl_set(&nn, "mac.console", ieq(m_console, cons[0]) ? 0 : m_console);   /* the default: no word */
     if (e || cl_write(nn, why_, sizeof why_)) { scpy(m_msg, "not saved: the line would not be valid", sizeof m_msg); return; }
     m_changed = 0; m_psk_set = m_psk[0] ? 1 : 0;
     for (unsigned i = 0; i < sizeof m_psk; i++) m_psk[i] = 0;
@@ -2601,7 +2616,7 @@ static void menu_key(uint32_t u, uint32_t mods)
     if (u == 0x51) { menu_sel = (menu_sel + 1) % MI_N; return; }
     if (u != 0x28) return;
     m_msg[0] = 0;
-    static const char *const fpus[] = { "exact", "double", "none" }, *const boots[] = { "auto", "image", "scsi" }, *const cons[] = { "off", "hdmi" };
+    static const char *const fpus[] = { "exact", "double", "none" }, *const boots[] = { "auto", "image", "scsi" };
     switch (menu_sel) {
     case 0: if (wifi_cmd(AN_CMD_SCAN, 0, 0)) scpy(m_msg, "no WiFi radio, or it is busy", sizeof m_msg); else { menu_list = 1; menu_sel = 0; } break;
     case 1: menu_edit = 1; m_len = slen(m_ssid); for (unsigned i = 0; i < m_len; i++) m_buf[i] = m_ssid[i]; break;
@@ -2609,7 +2624,7 @@ static void menu_key(uint32_t u, uint32_t mods)
     case 3: menu_edit = 3; m_len = 0; break;
     case 4: cycle(m_fpu, sizeof m_fpu, fpus, 3); break;
     case 5: cycle(m_boot, sizeof m_boot, boots, 3); break;
-    case 6: cycle(m_console, sizeof m_console, cons, 2); break;
+    case 6: cons_load(); cycle(m_console, sizeof m_console, cons, ncons); break;
     case 7: menu_save(); break;
     case 8: if (cmdline_has_recovery()) cl_drop_recovery();
             scpy(m_msg, "restarting ...", sizeof m_msg); did("restart normally, from the keyboard menu"); pi_restart_in(1000); break;
