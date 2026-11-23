@@ -793,15 +793,17 @@ def g_sound(n):
 
 
 def g_menus(n):
-    """the menu bar with the Wi-Fi and Bluetooth menus' marks"""
+    """the menu bar with the extras' marks: Bluetooth, Wi-Fi and the clock, as they stand in the bar (Menu Extras since
+    23 November 2026; the clock face added then)"""
     def draw(c, box):
         x0, y0, x1, y1 = box
         if n == 32:
             x, y = centre(box, 19, 15)
             c.fill(x, y, x + 18, y + 2, INK_K)
-            g_wifi(32, 0.55)(c, (x, y + 4, x + 10, y + 14))
-            c.stamp(x + 12, y + 4, ["..#..", "..##.", "#.#.#", ".###.", "..#..", ".###.", "#.#.#", "..##.", "..#.."],
-                    {'#': (1, (0x00, 0x66, 0xCC))})
+            c.stamp(x, y + 6, ["..#.", "#.##", ".##.", "#.##", "..#."], {'#': (1, (0x00, 0x66, 0xCC))})
+            g_wifi(32, 0.45)(c, (x + 4, y + 5, x + 12, y + 13))
+            c.ring(x + 15.5, y + 9, 2.6, 1.0, INK_K)                       # the clock: its face and two hands
+            c.vline(x + 15, y + 7, y + 9, (1, VIOLET)); c.hline(x + 15, x + 16, y + 9, (1, VIOLET))
         else:
             x, y = centre(box, 8, 8)
             c.hline(x, x + 7, y, INK_K)
@@ -913,7 +915,7 @@ PROGRAMS = {
     'machine':   ('Aurora68 Machine', 'ext', g_machine, []),
     'setup':     ('Aurora68 Screen Setup', 'ext', g_setup, []),
     'sound':     ('Aurora68 Sound', 'ext', g_sound, []),
-    'menus':     ('Aurora68 Wi-Fi & Bluetooth', 'ext', g_menus, []),
+    'menus':     ('Aurora68 Menu Extras', 'ext', g_menus, []),
     'agent':     ('Aurora68 Agent', 'ext', g_agent, []),
     'common':    ('Aurora68 extension', 'ext', g_common, []),
 }

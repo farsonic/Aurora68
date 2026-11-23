@@ -4,6 +4,19 @@
 
 Since 0.13 (docs/08 items 96 and 103):
 
+- **A clock in the menu bar, and the menu bar's extras out of the way of the program's menus** (docs/09 "Aurora68 Menu
+  Extras", docs/08 item ITEMNO, 23 November 2026). The extension that drew the Wi-Fi and Bluetooth icons is now
+  **Aurora68 Menu Extras** and has a clock beside them, as macOS has: the time ("Mon 5:47 PM"), or a small clock face;
+  a press on it shows the full date and the options of macOS's Clock (View as Digital or Analog, Show the Date, Show
+  the Day of the Week, Show AM/PM, Use a 24-Hour Clock, Show Seconds, Flash the Time Separators) and Date & Time…,
+  which opens the Date & Time control panel (General Controls on a System 7.1 without it). The region's formats and
+  names come from the Mac's international resources; the choices are kept in "Aurora68 Menu Extras Prefs" in the
+  Preferences folder. With Riptide as the TCP/IP and its NTP on, the menu also says when the clock was last checked.
+  The clock, Wi-Fi and Bluetooth are now placed from the Help menu leftwards only where the program's own menus leave
+  room: on the SE's 512 pixels a program with a long menu bar (Aurora68 Play) no longer runs under them, presses on its
+  last menus reach it, and when there is no room Bluetooth goes first, then Wi-Fi, then the clock's day and date.
+  Install it in place of **Aurora68 Wi-Fi & Bluetooth**; if the old one is still there, Menu Extras moves it into
+  "Extensions (Disabled)" by itself at the next start.
 - **The Aurora68 PC Card: a PC in a window on the Mac's desktop** (docs/19-pc-card.md, docs/08 item 132, 23 November
   2026; not in the release kernel yet). A NuBus card in slot $D that exists only in the Pi: a PC (Aurora86: Bochs, a
   Pentium II, with Libreboot's firmware) runs on a Pi core, and the new program **Aurora68 PC** shows it in an ordinary

@@ -117,7 +117,8 @@ files and on an HFS image (Aurora68-Utilities.img): **Aurora68 Play** (MP3, FLAC
 forty stations in submenus, plus your own; over MacTCP, or over Riptide's `.IPP6` with IPv6 stations
 reached directly) with its Music folder; **Display** (Aurora68 Display, Screens, Colour, Depth); **Network**
 (Aurora68 Network, Wi-Fi, Bluetooth, Ping); **System** (Aurora68 Slots, Log, Status); and
-**Extensions (to install)** (Aurora68 Disk, Machine, Screen Setup, Sound, Wi-Fi & Bluetooth), each
+**Extensions (to install)** (Aurora68 Disk, Machine, Screen Setup, Sound, Menu Extras: a clock, Wi-Fi and
+Bluetooth at the right of the menu bar, "Wi-Fi & Bluetooth" until 23 November 2026), each
 with an icon of the family (docs/img/aurora68-icons.png). Until 21 November 2026 the programs were
 PiPlay, PiDisplay, PiSlots and so on (docs/09 has the table). Aurora68 Slots lists the NuBus cards
 the Mac sees (the Pi's card in slot 9, the SE's HDMI screen in slot $A, real cards on a IIci or

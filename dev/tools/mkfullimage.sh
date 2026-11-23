@@ -21,7 +21,7 @@
 # QUILL override the checkouts). A build that is missing stops it, except the optional ones.
 #
 # Where things go (the layout the bench's notes and docs/09 refer to):
-#   System Folder:Extensions   Aurora68 Disk, Machine, Screen Setup, Sound, Wi-Fi & Bluetooth
+#   System Folder:Extensions   Aurora68 Disk, Machine, Screen Setup, Sound, Menu Extras
 #                              (tools/mac/aurora68-layout.py install, which also takes out the
 #                              programs' files under their names before 21 November 2026), Riptide,
 #                              Lagoon EtherTalk
@@ -54,7 +54,7 @@ done
 
 A=$AURORA68/mac/build R=$RIPTIDE/build L=$LAGOON/build/$VAR Q=$QUILL
 need() { [ -f "$1" ] || die "missing $1 (dev/tools/buildall.sh)"; }
-for f in Disk Machine ScreenSetup Sound WiFi-Bluetooth Play Display Slots Log Status Network WiFi Bluetooth Ping Colour Screens Depth; do need $A/Aurora68-$f.bin; done
+for f in Disk Machine ScreenSetup Sound MenuExtras Play Display Slots Log Status Network WiFi Bluetooth Ping Colour Screens Depth; do need $A/Aurora68-$f.bin; done
 need $R/$VAR/Riptide.bin; need $R/mac/RiptideDNR.bin; need $R/mac/RiptidePrefs.bin; need $R/mac/MacTCPTest.bin
 need $L/LagoonEtherTalk.bin; need $L/Lagoon.bin
 QB=$Q/build/$VAR/Octavo.bin; need $QB

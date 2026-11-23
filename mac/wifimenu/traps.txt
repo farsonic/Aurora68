@@ -19,3 +19,12 @@ A8B0 - FrameRoundRect(const Rect *r:l, int ow:w, int oh:w)
 A89B - PenSize(int w:w, int h:w)
 A98F - SetIText(void *h:l, const unsigned char *s:l)
 A84F - SetItemCmd(void *menu:l, int item:w, int cmd:c)
+# the clock (clock.c, 23 November 2026). The International Utilities (_Pack6) take their selector as a word pushed
+# after the arguments, written here as a last argument (as SFPutFile's in mac/c/traps.txt); a DateForm is a byte,
+# pushed as a BOOLEAN is; the Folder Manager's FindFolder dispatches on D0 (TRAP/SELECTOR)
+A888 - TextFace(int face:b)
+A889 - TextMode(int mode:w)
+A886 w TextWidth(const void *buf:l, int first:w, int count:w)
+A9ED - IUDateString(long t:l, int form:b, unsigned char *s:l, int sel:w)
+A9ED p IUGetIntl(int id:w, int sel:w)
+A823/0000 w FindFolder(int vRefNum:w, long folderType:l, int create:b, short *foundVRefNum:l, long *foundDirID:l)

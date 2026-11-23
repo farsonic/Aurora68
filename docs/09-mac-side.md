@@ -35,8 +35,8 @@ and their folders"); the table gives each one's name before that once, the sourc
 
 More of them, each with a section below: **Aurora68 Display** (PiDisplay, `mac/pidisplay/`), **Aurora68 Depth**
 (PiDepth, `mac/pidepth.c`), **Aurora68 Screen Setup** (the extension PiScrn, `mac/piscrn/`), **Aurora68 Sound** (the
-extension Sound PiStorm, `mac/pisound.s`) and **Aurora68 Wi-Fi & Bluetooth** (the menus' extension, `mac/wifimenu/`,
-"Wi-Fi & Bluetooth" before).
+extension Sound PiStorm, `mac/pisound.s`) and **Aurora68 Menu Extras** (the clock, Wi-Fi and Bluetooth in the menu bar,
+`mac/wifimenu/`; "Aurora68 Wi-Fi & Bluetooth" until 23 November 2026, "Wi-Fi & Bluetooth" before that).
 
 ## The programs and their folders (21 November 2026)
 The owner asked on 21 November 2026 that every program be called "Aurora68 Xxxx", that they go into folders
@@ -61,7 +61,7 @@ the About boxes, the Apple menu's About item, Balloon Help, alerts and the log:
 | PiMach (extension) | Aurora68 Machine | `Aurora68-Machine.bin` | PSMC | `[MAC] A68 Machine:` |
 | PiScrn (extension) | Aurora68 Screen Setup | `Aurora68-ScreenSetup.bin` | PISR | `[MAC] A68 Screen Setup:` |
 | Sound PiStorm (extension) | Aurora68 Sound | `Aurora68-Sound.bin` | PSMC | `[MAC] A68 Sound:` |
-| Wi-Fi & Bluetooth (extension) | Aurora68 Wi-Fi & Bluetooth | `Aurora68-WiFi-Bluetooth.bin` | PSWM | |
+| Wi-Fi & Bluetooth (extension) | Aurora68 Wi-Fi & Bluetooth; Aurora68 Menu Extras since 23 November 2026 | `Aurora68-WiFi-Bluetooth.bin`; `Aurora68-MenuExtras.bin` since 23 November | PSWM | `[MAC] Menu Extras:` |
 | (new, 21 November 2026) | Aurora68 Agent (extension) | `Aurora68-Agent.bin` | PIAG | `[MAC] A68 Agent:` |
 
 What did not change: creator codes and file types (documents, preferences and the Finder's associations keep
@@ -89,7 +89,7 @@ Finder on a colour screen; `docs/img/se-aurora68-folders.png`: the same on the S
       Network/                  Aurora68 Network, Aurora68 Wi-Fi, Aurora68 Bluetooth, Aurora68 Ping
       System/                   Aurora68 Slots, Aurora68 Log, Aurora68 Status
       Extensions (to install)/  Aurora68 Disk, Aurora68 Machine, Aurora68 Screen Setup, Aurora68 Sound,
-                                Aurora68 Wi-Fi & Bluetooth, Aurora68 Agent, Read Me
+                                Aurora68 Menu Extras, Aurora68 Agent, Read Me
 
 `tools/mac/aurora68-layout.py` makes it: `stage DIR` as folders of MacBinary files (`tools/mkrelease.sh` uses it
 for `Mac/`), `disk IMAGE` onto an HFS volume (the Utilities image), `install IMAGE [--part N]` onto a startup
@@ -112,7 +112,7 @@ one`, and runs once more from the GetNextEvent filter (jGNEFilter) as soon as th
 is when the first program takes an event after the extensions: then the usual `A68 Sound: Sound Manager 3.0;
 the sound card ... registered and chosen as the output device`. With no Sound Manager 3.0 after twenty minutes
 it says it is too old, as before. The other extensions have no order among themselves or with Apple's that
-matters; Aurora68 Screen Setup and Aurora68 Wi-Fi & Bluetooth now run before Riptide and the Sound Manager
+matters; Aurora68 Screen Setup and Aurora68 Wi-Fi & Bluetooth (Menu Extras since 23 November) now run before Riptide and the Sound Manager
 instead of after them.
 
 **The icons** (`tools/mac/mkicons.py`, standard library; `docs/img/aurora68-icons.png` is every one at one bit
@@ -123,7 +123,7 @@ board (Slots), a page of log lines (Log), a gauge (Status), a network plug (Netw
 (Wi-Fi), the Bluetooth rune in an oval (Bluetooth), a sonar screen with an echo (Ping), a colour wheel
 (Colour), two screens (Screens), three layers stacked (Depth). Extensions are the same tile cut as a puzzle
 piece: an SD card (Disk), a compact computer (Machine), two screens with a double arrow (Screen Setup), a
-loudspeaker (Sound), the menu bar with the Wi-Fi and Bluetooth marks (Wi-Fi & Bluetooth). Documents are a page
+loudspeaker (Sound), the menu bar with the Bluetooth and Wi-Fi marks and a clock face (Menu Extras). Documents are a page
 with a turned corner, a narrow aurora and the glyph: Aurora68 Play's MP3 ("MP3" and a quaver), AIFF and WAV (a
 waveform and the kind), and the preferences of Play, Slots and Display (sliders). Each family is complete:
 ICN# (32 by 32 and its mask), ics# (16 by 16 and mask), icl4, icl8, ics4 and ics8. The one-bit icons were drawn
@@ -1382,6 +1382,66 @@ switches the radio on or off, looks again, disconnects, and forgets the network 
 Choosing a secured network asks for its password (shown as bullets; Return joins, Escape cancels). With "Remember this network" ticked, the kernel
 writes `wifi.ssid=` and `wifi.psk=` into cmdline.txt on the Pi's card once the join has worked, so
 the next power-on joins by itself. The rest of cmdline.txt is kept (docs/08 items 43 and 44).
+
+## Aurora68 Menu Extras: a clock, and room for the program's menus (23 November 2026)
+The owner asked for "a clock extension next to wifi that shows time and lets me adjust how it is shown, similar to
+what macOS has". It went into the WiFi menu's extension rather than beside it (one INIT, one `_DrawMenuBar` patch,
+one jGNEFilter: two extensions patching the same trap to draw in the same place would fight), which is now called
+**Aurora68 Menu Extras** (`Aurora68-MenuExtras.bin`, creator `PSWM` as before; `mac/wifimenu/clock.c` and
+`bar.c` beside `wifimenu.c` and `btmenu.c`).
+
+**What it shows.** At the right of the menu bar, left of the Help and Application menus, from the right as macOS
+orders its own: the clock, the Wi-Fi icon, the Bluetooth icon. The clock is the time in the system font
+("Mon 5:47 PM" by default: the day of the week and the time, 12 or 24 hours as the Mac's own setting says, the
+'itl0' resource's timeCycle that Date & Time and General Controls change), drawn again when the minute moves on (the
+second, with seconds or flashing separators shown). It is drawn in srcCopy text mode, each glyph's box painted with
+it, so nothing is erased first and nothing flickers; it is not drawn while a menu is down (anyone's: the menu bar's
+saved bits at MBSaveLoc, as the video card checks, docs/08 item 124), nor once the program's menu list has grown
+into it before its `_DrawMenuBar`.
+
+**The clock's menu** (a press on the clock), as macOS's Clock options, in the 1992 guidelines' title case:
+the full date, dimmed ("Monday, November 23, 2026": IUDateString's long date, so a British System says "Monday,
+23 November 2026"); "Last NTP sync: 5 minutes ago", dimmed, when Riptide is the Mac's TCP/IP and its NTP is on
+(below); **View as Digital** / **View as Analog** (a 15-pixel clock face with its two hands); **Show the Date**
+("Mon 23 Nov 5:47 PM", day and month in the region's order, from 'itl0' dateOrder; the names from 'itl1', cut to
+its abbreviation length), **Show the Day of the Week**, **Show AM/PM** (the region's morning and evening strings,
+dimmed with the 24-hour clock), **Use a 24-Hour Clock** (until it is chosen the Mac's own setting is followed),
+**Show Seconds**, **Flash the Time Separators** (off every other second), all dimmed for the analog face; and
+**Date & Time…** (**General Controls…** on a System 7.1 without Date & Time), which brings the Finder to the front
+and asks it to open that control panel. System 7.1's Finder takes no `'aevt' 'odoc'` (docs/08 item 90), so this is
+the Finder event the Apple menu uses, `'FNDR' 'sope'` (the Control Panels folder and the control panel), sent from
+the Finder's own GetNextEvent: a program that takes no Apple events cannot send one (noPortErr), and Aurora68 Play is
+such a program.
+
+**Settings** go into "Aurora68 Menu Extras Prefs" in the Preferences folder (FindFolder; eight bytes, type
+`pref`), written when a choice is made and read at the first menu bar, so they last across restarts.
+
+**Riptide's NTP.** Riptide's `.IPP` answers private Control calls of its own (riptide
+`src/mac/prefs/mac_ipp_private.h`): RTMAC_PING, then RTMAC_PORT with RTCMD_TABLES "42", which copies the stack's
+status table (`net.riptide.status`, `struct rt_ctl_status` in riptide `include/rt/rt_ctl.h`: ntp_state and the
+seconds since the last good sync) into the caller's buffer at once. The menu asks only when it opens, and only of a
+`.IPP` that is open (the unit table) and answers the ping, so MacTCP is never opened by it. Synced: "Last NTP sync:
+5 minutes ago"; on but not yet: "NTP: Not Synced Yet"; the last try failed: the time of the last good one and "(the
+last try failed)". RiptidePrefs' Time page says the same at more length. Riptide sets the clock only when it is a
+second or more off, so "sync" is the right word: the clock was checked then, and set if it needed it.
+
+**Where the extras go (all three, since the clock came).** Before, the Wi-Fi icon stood 76 pixels left of the bar's
+right end and the Bluetooth one 23 pixels left of that, whatever the program's menus; on the SE's 512 pixels a
+program with a long menu bar ran under them, and the filter took presses meant for its last menus. Now, at every
+`_DrawMenuBar`, `bar.c` reads the menu list (MenuList, $A1C: three words, then a handle and a left edge for each
+menu): the system menus (negative IDs: Help, Keyboard, Application) give the right limit, their leftmost edge; the
+program's last menu gives the left one, its left edge plus its title's width plus the gap the menu bar leaves after
+a title (measured between the program's own titles; 13 pixels when there is only one). Right to left from the system
+menus come the clock, Wi-Fi and Bluetooth, each with seven pixels either side, which is also the area a press is
+taken in; when they do not all fit, the least important go first: Bluetooth, then Wi-Fi, then the clock's long form
+(the time alone stays, with AM/PM if it is shown), then the clock. What is not drawn takes no presses.
+
+**The old extension.** Installing over "Aurora68 Wi-Fi & Bluetooth": `aurora68-layout.py install` takes it out
+(it is among the old names), and the new extension, which the Start Manager runs before it (extensions start in the
+order of their names), moves any other INIT file of creator `PSWM` in Extensions or the System Folder into
+"Extensions (Disabled)" (where System 7.5's Extensions Manager keeps what it turns off) before its turn comes, and
+logs `[MAC] Menu Extras: an older copy, "Aurora68 Wi-Fi & Bluetooth", moved to Extensions (Disabled)`. Dropping the
+new one on the System Folder beside the old one is therefore enough.
 
 ## AppleTalk on the solo board
 `mac.appletalk=1` starts with AppleTalk active (PRAM's SPConfig), on top of whatever `pram.bin` on

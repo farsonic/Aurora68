@@ -136,3 +136,170 @@ get_sr:	moveq	#0,%d0
 	.globl	set_sr
 set_sr:	move.w	6(%sp),%sr
 	rts
+
+| ---- for the clock (clock.c, 23 November 2026) ----
+| The File and Device Managers: a parameter block in A0, synchronous, the result in D0. OS traps keep
+| D1-D2/A1, so GCC's registers survive.
+	.macro	pbcall name, trap
+	.globl	\name
+\name:	move.l	4(%sp),%a0
+	.short	\trap
+	ext.l	%d0
+	rts
+	.endm
+	pbcall	pb_close, 0xA001
+	pbcall	pb_read, 0xA002
+	pbcall	pb_write, 0xA003
+	pbcall	pb_control, 0xA004
+	pbcall	pb_seteof, 0xA012
+	pbcall	pb_flushvol, 0xA013
+	pbcall	pb_hopen, 0xA200		| the data fork (HFS: a directory ID at 48)
+	pbcall	pb_hcreate, 0xA208
+	pbcall	pb_hdelete, 0xA209
+	pbcall	pb_hgetfinfo, 0xA20C
+	pbcall	pb_hsetfinfo, 0xA20D
+| _HFSDispatch: the selector in D0
+	.macro	hfscall name, sel
+	.globl	\name
+\name:	move.l	4(%sp),%a0
+	moveq	#\sel,%d0
+	.short	0xA260
+	ext.l	%d0
+	rts
+	.endm
+	hfscall	pb_catmove, 5
+	hfscall	pb_dircreate, 6
+	hfscall	pb_getfcbinfo, 8
+	hfscall	pb_getcatinfo, 9
+
+| void mac_secs2date(unsigned long secs, void *rec): _Secs2Date, D0 the seconds, A0 the DateTimeRec
+	.globl	mac_secs2date
+mac_secs2date:
+	move.l	%d2,-(%sp)
+	move.l	8(%sp),%d0
+	move.l	12(%sp),%a0
+	.short	0xA9C6
+	move.l	(%sp)+,%d2
+	rts
+
+| ---- the Process Manager (_OSDispatch, an OSErr result, the selector pushed last) ----
+	.macro	osd1 name, sel			| short name(void *a)
+	.globl	\name
+\name:	move.l	%d2,-(%sp)		| a Pascal trap may change D2, which GCC keeps
+	clr.w	-(%sp)
+	move.l	10(%sp),-(%sp)
+	move.w	#\sel,-(%sp)
+	.short	0xA88F
+	move.w	(%sp)+,%d0
+	ext.l	%d0
+	move.l	(%sp)+,%d2
+	rts
+	.endm
+	osd1	pm_current, 0x37		| GetCurrentProcess(VAR psn)
+	osd1	pm_next, 0x38			| GetNextProcess(VAR psn)
+	osd1	pm_setfront, 0x3B		| SetFrontProcess(psn)
+	.globl	pm_info				| short pm_info(const psn *, ProcessInfoRec *): GetProcessInformation
+pm_info:
+	move.l	%d2,-(%sp)
+	clr.w	-(%sp)
+	move.l	10(%sp),-(%sp)
+	move.l	18(%sp),-(%sp)
+	move.w	#0x3A,-(%sp)
+	.short	0xA88F
+	move.w	(%sp)+,%d0
+	ext.l	%d0
+	move.l	(%sp)+,%d2
+	rts
+
+| ---- the Apple Event Manager (_Pack8, the selector in D0) and the Alias Manager (_AliasDispatch), as in
+| mac/piagent/entry.s ----
+	.macro	pas_l name, trap, sel, n	| short name(long a1 .. an): every argument a long
+	.globl	\name
+\name:	link	%a6,#0
+	move.l	%d2,-(%sp)
+	clr.w	-(%sp)
+	.irp	k, 0, 1, 2, 3
+	.if	\k < \n
+	move.l	(8+4*\k)(%a6),-(%sp)
+	.endif
+	.endr
+	move.l	#\sel,%d0		| (the whole of D0: the Alias Manager reads a long)
+	.short	\trap
+	move.w	(%sp)+,%d0
+	ext.l	%d0
+	move.l	-4(%a6),%d2
+	unlk	%a6
+	rts
+	.endm
+	pas_l	ae_create_desc, 0xA816, 0x0825, 4	| AECreateDesc(type, dataPtr, size, VAR result)
+	pas_l	ae_put_desc, 0xA816, 0x0609, 3		| AEPutDesc(VAR list, index, desc)
+	pas_l	ae_put_param_desc, 0xA816, 0x0610, 3	| AEPutParamDesc(VAR event, keyword, desc)
+	pas_l	ae_dispose_desc, 0xA816, 0x0204, 1	| AEDisposeDesc(VAR desc)
+	pas_l	new_alias, 0xA823, 2, 3			| NewAlias(fromFile, target, VAR alias)
+	.globl	ae_create_list			| short ae_create_list(VAR list): AECreateList(nil, 0, false, list)
+ae_create_list:
+	move.l	%d2,-(%sp)
+	clr.w	-(%sp)
+	clr.l	-(%sp)
+	clr.l	-(%sp)
+	clr.w	-(%sp)			| isRecord: false
+	move.l	20(%sp),-(%sp)
+	move.w	#0x0706,%d0
+	.short	0xA816
+	move.w	(%sp)+,%d0
+	ext.l	%d0
+	move.l	(%sp)+,%d2
+	rts
+	.globl	ae_create_event			| short ae_create_event(class, id, target, VAR event): returnID -1 (made up), transaction 0
+ae_create_event:
+	link	%a6,#0
+	move.l	%d2,-(%sp)
+	clr.w	-(%sp)
+	move.l	8(%a6),-(%sp)
+	move.l	12(%a6),-(%sp)
+	move.l	16(%a6),-(%sp)
+	move.w	#-1,-(%sp)		| kAutoGenerateReturnID
+	clr.l	-(%sp)			| kAnyTransactionID
+	move.l	20(%a6),-(%sp)
+	move.w	#0x0B14,%d0
+	.short	0xA816
+	move.w	(%sp)+,%d0
+	ext.l	%d0
+	move.l	-4(%a6),%d2
+	unlk	%a6
+	rts
+	.globl	ae_send				| short ae_send(event, VAR reply, mode): normal priority, the default timeout, no procedures
+ae_send:
+	link	%a6,#0
+	move.l	%d2,-(%sp)
+	clr.w	-(%sp)
+	move.l	8(%a6),-(%sp)
+	move.l	12(%a6),-(%sp)
+	move.l	16(%a6),-(%sp)
+	clr.w	-(%sp)			| kAENormalPriority
+	move.l	#-1,-(%sp)		| kAEDefaultTimeout
+	clr.l	-(%sp)			| no idle procedure
+	clr.l	-(%sp)			| no filter
+	move.w	#0x0D17,%d0
+	.short	0xA816
+	move.w	(%sp)+,%d0
+	ext.l	%d0
+	move.l	-4(%a6),%d2
+	unlk	%a6
+	rts
+| the Memory Manager, in registers
+	.globl	mac_hlock			| void mac_hlock(void *h)
+mac_hlock:
+	move.l	4(%sp),%a0
+	.short	0xA029
+	rts
+	.globl	mac_dispose_handle		| void mac_dispose_handle(void *h)
+mac_dispose_handle:
+	move.l	4(%sp),%a0
+	.short	0xA023
+	rts
+	.globl	mac_setzone			| void mac_setzone(void *zone)
+mac_setzone:
+	move.l	4(%sp),%a0
+	.short	0xA01B
+	rts
