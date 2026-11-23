@@ -5363,6 +5363,10 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      | push, plain sender, card / SCSI | 0.41 s / 4.50 s | 0.31 s / 1.73 s |
      | pull, card / SCSI (either sender) | 0.10-0.18 s / 1.25-5.09 s | 0.17 s / 1.36-1.39 s |
      | 3,000,000 bytes, BSD sender, card: push / pull | (not tried) | 2.53 s / 1.34 s (1.1-2.1 MB/s) |
+     | 2.5 MB MacBinary with both forks, BSD sender: card push / pull; SCSI push / pull | (not tried) | 2.32 s / 1.31 s; 18.2 s / 17.6 s |
+
+     The two-fork file came back identical but for the header's dates (the test file had none, the Mac set them)
+     and its CRC, and bytes 16-127 of the resource fork (item 94).
 
      Through the semihosting channel nothing changed (it never had the window): 1.9 s to SCSI, 0.35-0.5 s to the card.
      What is left is the Mac's: the job line now splits it, e.g. `push PiVol:raw300: done, 307200 bytes in 457 ms,

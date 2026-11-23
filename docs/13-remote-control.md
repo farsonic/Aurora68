@@ -509,8 +509,8 @@ seconds, and nothing with `-q`/`--quiet`. The numbers are the Mac's: a push poll
 connection and shows the bytes written on the Mac, with the fork of a MacBinary file and what the Pi has
 received; a pull counts the bytes as they arrive, each of them read on the Mac already. For example
 ```
-push Aurora68 Play  [rsrc]  120.0 KB of 216.8 KB  55%  written on the Mac  540.2 KB/s  0:00 left  (the Pi has 168.0 KB)
-pull raw3m  1.5 MB of 2.9 MB  51%  received  171.0 KB/s  0:08 left
+push Two Forks  [rsrc]  1.5 MB of 2.4 MB  61%  written on the Mac  921.9 KB/s  0:01 left  (the Pi has 1.5 MB)
+pull raw3m  1.5 MB of 2.9 MB  51%  received  172.0 KB/s  0:08 left
 ```
 A kernel from before has no `/files/progress`: the line then counts the bytes sent (which run ahead of the Mac
 by what the sockets and the Pi hold) and, once they are all sent, "waiting for the Mac" with the time. Through
