@@ -4669,3 +4669,75 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      the timings over the GPIO (the testbed's bridge takes some 44 us a cycle, a PiStorm about one), the VBL edges
      and the SCC spacing on real chips, `buscheck.txt` on a real card. The tester's 512Ke is the first machine it
      is for: READ-ME-FIRST's "If your Mac misbehaves: the bus check" says what to do and what to photograph.
+
+110. **The video decoder card: a driver in its ROM, QuickTime's decompressors on the Pi (22-23 November, issues #13
+     and #24/#25).** Item 98's card took an MPEG stream from a program that had yet to be written (issue #24, Aurora68
+     Video, with a helper computer doing YouTube). That evening the owner turned the work round: "This video card should
+     leverage the Pi hardware and have no external dependencies. Think of it as an in-box video processing card that
+     integrates into QuickTime and is also available to other programs through traditional means on classic Macs";
+     "it's essentially another NuBus card"; "we will tackle YouTube later"; and its name, "video decoder card". Nothing
+     of issue #24's network program had been written when the new order came, so nothing of it is kept; the helper
+     (issue #22) stays as it is, an optional extra. docs/16 has the design as built ("The in-box card") and the study
+     of the modern formats; `docs/video-decoder-api.md` the programming interface.
+   - *A NuBus card of the period.* The card's declaration ROM (slot $C, `tools/mac/mkvideodeclrom.py`, compiled into
+     the kernel) now names the board "Aurora68 Video Decoder" (vendor "Aurora68 project", revision 2, part
+     "A68-VDEC") and carries its driver, ".A68Video" (`mac/a68video.s`, 68k assembly like the slot-9 drivers), in the
+     functional sResource's driver directory; with no sRsrcFlags the Slot Manager opens it at start-up, before the
+     first extension (`[MAC] A68Video: the Aurora68 Video Decoder card's driver is open ...`). The sResource's type
+     {$7050, 3, 1, 'AV'} is unchanged; its name is "Aurora68_Video_Decoder". Control 100 to 114 and Status 100 to 103
+     are the card's interface for any program (numbered from 100: Control 1 is the Device Manager's killCode).
+   - *The frame decoder* (`psmac_vframes.c`): eight request slots in the card's window from $1100; a session per
+     movie (open with the format, size, depth and the ImageDescription; decode; draw again; close), sixteen at once.
+     The decoders are portable C without kernel calls (`psmac_vcodec.h`): Cinepak, Apple Video ("Road Pizza"),
+     Animation (1 to 32 bits) and Graphics, each written from the format's public description (Tim Ferguson's
+     Cinepak notes, the MultimediaWiki pages); FFmpeg's code was not looked at. `tools/vcodec_test.sh`, now part of
+     `make -C mac check`, has FFmpeg encode nine small movies (Cinepak two ways, Apple Video two, Animation at 16, 24
+     and 32 bits, Graphics two), extracts their samples (`tools/movsamples.py`) and compares the card's decoding with
+     FFmpeg's: all nine identical byte for byte. The first Graphics comparison differed from the second picture on;
+     the format's colour caches are filled from their first entry again in each picture, which the description
+     leaves unsaid.
+   - *Drawing into any pixel map:* the request names a 68k address, row bytes, depth, place, size and clip; the
+     kernel reaches RAM page by page through the MMU shim's table and the screens by the addresses their GDevices use
+     (`psmac_mac_span`, `psmac_mac_copy`, `psmac_mbox.c`). 32 and 16 bits as they are; 8, 4 and 2 through the map's
+     own colour table (a 32,768-entry nearest-colour table per seed), an indexed picture with the same table index
+     for index, others with an 8 x 8 ordered dither; 1 bit by a Bayer threshold. Each session keeps its whole last
+     picture, and a picture drawn where the last one was redraws only the rectangle it changed (QuickTime's own
+     decompressors draw only the blocks a picture brings): 298 of 300 Cinepak pictures and 299 of 300 Apple Video
+     ones were drawn so in the testbed.
+   - *QuickTime* (`mac/vdec`, the "Aurora68 Video Decoder" extension, type 'thng', `tools/mac/elf2thng.py`): four
+     'imdc' components, manufacturer 'A68v', registered by QuickTime from the Extensions folder and chosen before its
+     own. Each declines registration where ".A68Video" does not open, and opens QuickTime's own decompressor of its
+     type beside itself to hand it whatever it does not do: everything when frame decoding is off (`mac.vdecode=off`
+     or the driver's Control 101), a destination depth or picture the card refuses, a picture loaded in pieces, any
+     selector it does not implement. The code is one resource that fixes itself up wherever the Component Manager
+     loads it (`mac/vdec/entry.s`).
+   - *Three faults on the way*, each found from the kernel's records: the GetComponentInfo glue used selector 6
+     (GetComponentListModSeed) for 5 and left the stack five arguments deep: "bad F-Line instruction" at $100 while
+     QuickTime registered the components (`[CRASH]` showed the jump to low memory from the component's code);
+     StripAddress's answer came back only in D0, where GCC reads a pointer from A0, so the ImageDescription was read
+     from a stale address and its type was 0; the driver used A1, in which the Device Manager hands over the DCE and
+     IODone wants it back: System error 14 at MoviePlayer's first picture.
+   - *Testbed, solo board* (System 7.1, QuickTime 2.5.1, MoviePlayer 2.5 driven through the remote control's
+     semihosting channel; FFmpeg's movies, 320 x 240, 60 frames a second, Movie > Play All Frames). The component
+     measures the time each picture spends in BandDecompress (Microseconds) whoever decodes it; the card's own times
+     are its log's. At 1 bit: Cinepak through the card 1,028 us a picture (the Pi: about 200 us to decode, 150 to
+     draw) against QuickTime's own 339 us; Apple Video 1,169 against 672; QuickTime's Animation 343 and Graphics
+     745. At 8 bits (Aurora68 Depth 8): Cinepak through the card 1,296 us against QuickTime's own 2,207, and 42.8
+     against 41.5 pictures a second; Apple Video 1,766 against 354; QuickTime's Animation 313. Pictures:
+     `solo-cinepak-8bit.png`, `solo-rpza-1bit.png` in the scratchpad (screenshots of the Mac, not committed).
+   - *What the numbers say.* On this machine the 68k is not a 68000: Emu68 translates QuickTime's own decompressors
+     into ARM code, and at one bit, and for the simple formats, they are as fast as the card's whole round trip. In
+     the testbed most of that trip is not decoding: of about 1 ms the Pi spends 0.35 ms; the rest is the 68k's call
+     through the Device Manager and waiting on four QEMU threads that share four host cores (core 1 now keeps looking
+     for a quarter of a second after each request instead of sleeping until an interrupt, which QEMU's wfe does; it
+     made no measurable difference here and should on a Pi, whose timer events wake a sleeping core within 0.43 ms).
+     Cinepak into a colour screen, the format and the case where QuickTime's own code works hardest, is where the
+     card wins already, by 1.7 times. Not done: asynchronous decompression (codecCanAsync, the 68k going on while the
+     Pi decodes, which would hide the round trip entirely), and a choice per format of whether to use the card.
+   - *Testbed, SE board* (MAME's SE through the bridge, the SE's own 512 x 342 screen, System 7.1 from the card's
+     image): MoviePlayer opened the Cinepak and Apple Video movies and the card drew their first pictures, dithered,
+     into the SE's screen (`se-cinepak-1bit.png`); playing advanced three pictures in a minute while the 68k turned
+     in a loop of the System's reading the VIA; with `mac.vdecode=off` QuickTime's own Cinepak did the same (the first picture, then the same loop, `se-cinepak-1bit-quicktime-own.png`), so the stall is the SE testbed's (QuickTime's clock over MAME's VIA, not followed further), not the card's.
+   - *Not verified:* the real SE and HDMI on hardware; 16 and 32 bits (only 1 and 8 were run); a window partly off
+     the screen or covered (QuickTime then gives the card its offscreen buffer, untested); the Animation and Graphics
+     formats in MoviePlayer through the card at 8 bits (the runs' automation lost those windows).

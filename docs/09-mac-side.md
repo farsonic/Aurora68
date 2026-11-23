@@ -29,6 +29,8 @@ and their folders"); the table gives each one's name before that once, the sourc
 | Aurora68 Slots (until 21 November 2026 PiSlots) | `mac/pislots/pislots.c` | `Aurora68-Slots.bin` (application) | The NuBus cards the Slot Manager knows about, in plain words (System 7.1 has no Apple System Profiler): for the logic board's own declaration ROM (slot 0) and each slot $9-$E, whether a card is there and started, its name, board ID, maker, revision, part number and date as far as its declaration ROM gives them, and its start-up code's answer; then each function (sResource): id, name, kind in words (display, network, processor, disk, input...) with the four numbers, its driver, whether the driver is open and its reference number (from the unit table), and for a screen its size and depth. A resizable, zoomable window with two scroll bars that comes back where it was left; File > Save As… (a TeachText document), Edit > Copy, File > Look Again (⌘R), About Aurora68 Slots…. A summary also goes to the Pi's log (`[MAC] A68 Slots: slot 9 "Aurora68", ...`). On a Mac without a Slot Manager it says so. In C (`mac/c` kit), 68020, System 6.0.8 and 7; below, "Aurora68 Slots" (`docs/img/system71-pislots-se.png`). |
 | Aurora68 Colour (until 21 November 2026 PiColor) | `mac/picolor.s` | `Aurora68-Colour.bin` (application) | Colour on the Pi's screen: a colour window placed on the second display paints twelve hues at full and half strength, the primaries and a sixteen-step grey ramp with RGBForeColor and PaintRect (`docs/img/system71-two-screens.png`, both screens side by side). |
 | Aurora68 Network (until 21 November 2026 PiNet) | `mac/pinet.s` | `Aurora68-Network.bin` (application) | Test application: shows the mailbox header, PiDisk 0, finds the Ethernet card through `SGetTypeSRsrc`, opens `.ENET` with `OpenSlot`, prints the address from EGetInfo, sends an ARP request for 192.168.68.1 and waits for the reply through ERead. Pair with `tools/pinet.py` on the host. |
+| `.A68Video` (22 November 2026) | `mac/a68video.s` | `a68video.bin.raw`, in the kernel's `psmac_video_declrom.h` | The driver of the Aurora68 Video Decoder card in slot $C, carried in the card's own declaration ROM and opened by the Slot Manager at start-up: frame requests for QuickTime's formats, frame decoding on or off, the MPEG stream's commands, bytes, place and volume (Control 100-114); the card's address, formats, stream state and counts (Status 100-103). `docs/video-decoder-api.md` is its reference |
+| Aurora68 Video Decoder extension (22 November 2026) | `mac/vdec/vdec.c`, `entry.s` | `Aurora68-VideoDecoder.bin` (MacBinary, type `thng`, creator `A68v`) | QuickTime decompressors for Cinepak, Apple Video, Animation and Graphics that hand each picture to the card through `.A68Video` (below, "The Aurora68 Video Decoder in QuickTime"); QuickTime's own decompressors take over when the card is off or absent |
 
 More of them, each with a section below: **Aurora68 Display** (PiDisplay, `mac/pidisplay/`), **Aurora68 Depth**
 (PiDepth, `mac/pidepth.c`), **Aurora68 Screen Setup** (the extension PiScrn, `mac/piscrn/`), **Aurora68 Sound** (the
@@ -1173,6 +1175,47 @@ python3 tools/qemu-mon.py cont
 and `stop`, `device_del u1`, `cont` to pull it out (each plug needs a new id). A stick alone on the root
 port (`-device usb-storage,bus=usb-bus.0,port=1,drive=...` at start) runs at high speed. hfsutils keeps
 its current volume in `$HOME/.hcwd`: give it a HOME of its own when another job uses hfsutils too.
+
+## The Aurora68 Video Decoder in QuickTime (22 November 2026)
+The video decoder card (slot $C, docs/16) decodes QuickTime's movie formats of the 1990s on a Pi core, for
+MoviePlayer and every other QuickTime program, with nothing outside the Mac and the Pi. Two pieces on the
+Mac (docs/08 item 110 is the record):
+
+- **The card's driver, `.A68Video`** (`mac/a68video.s`), in the card's own declaration ROM: the Slot
+  Manager installs and opens it at start-up (`[MAC] A68Video: the Aurora68 Video Decoder card's driver is
+  open`). Its Control and Status calls are the card's programming interface for any program
+  (`docs/video-decoder-api.md`); Aurora68 Slots lists the card as "Aurora68 Video Decoder".
+- **The "Aurora68 Video Decoder" extension** (`mac/vdec`, made by `tools/mac/elf2thng.py`): a file of type
+  'thng' in the Extensions folder, which QuickTime 2.0 and later registers by itself at start-up. It holds
+  four decompressor components, for Cinepak ('cvid'), Apple Video ('rpza'), Animation ('rle ') and Graphics
+  ('smc '), manufacturer 'A68v'. QuickTime picks them before its own (they are registered after its built-in
+  ones). For each movie a component opens a session on the card, then hands it every picture with the
+  destination (the window's screen, or QuickTime's offscreen buffer when the window is covered or the movie
+  is scaled); the card decodes and draws it at the destination's depth, only the part that changed. The
+  component's log lines: `[MAC] A68 Video Decoder: Cinepak 320x240: decoded by the card into a 1-bit pixel
+  map` when a movie starts, and when it is closed how many pictures came, in how long, and the time a picture
+  took inside the decompressor.
+- **Off, and without the card:** `mac.vdecode=off` on the Pi's command line (or the driver's Control 101)
+  switches frame decoding off; each component then hands everything to QuickTime's own decompressor of the
+  same type, which it opened beside itself (`... frame decoding is switched off: QuickTime's own decompressor
+  takes it`). Where `.A68Video` does not open (no card, `mac.video=off`, another kind of Mac) the components
+  decline registration and QuickTime never sees them. The same happens for a picture the card cannot take:
+  a destination depth it does not draw, a picture larger than 1024 x 768, one loaded in pieces.
+- **Installing:** `tools/mac/aurora68-layout.py install` puts it into the Extensions folder (System 6:
+  the System Folder) with the other extensions; it is in the release's "Extensions (to install)". QuickTime
+  2.5 itself is the owner's (docs/08 item 91).
+
+**Seen in the testbed** (solo board, System 7.1 with QuickTime 2.5.1 and MoviePlayer 2.5, the components
+from the Extensions folder; test movies made by FFmpeg, 320 x 240, a test pattern or moving boxes):
+QuickTime chose the card's components for every format (`... Cinepak 320x240: decoded by the card into a
+1-bit pixel map`); Cinepak and Apple Video played to the end at one bit and Cinepak at eight bits (after
+Aurora68 Depth 8), each picture drawn by the card into the window on the screen, the colour test pattern
+in the System's 256 colours; with `mac.vdecode=off` the same movies played through QuickTime's own
+decompressors, handed over by the components. The times a picture took, card against QuickTime's own, are in
+docs/16 ("Measured in the testbed"): at one bit QuickTime's own decompressors, which Emu68 runs as ARM code,
+were faster in the testbed; Cinepak at eight bits was 1.7 times faster through the card. On MAME's SE the
+card drew MoviePlayer's pictures into the SE's own screen, dithered. What to try on the SE and with HDMI:
+READ-ME-FIRST, "QuickTime movies on the video decoder card".
 
 ## Aurora68 Slots: the NuBus cards (21 November 2026)
 The user asked how to see which NuBus cards the Mac has. On the SE the Pi presents two cards that

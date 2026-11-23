@@ -13,9 +13,11 @@
  *    shim maps all three like slot 9's window (psmac_mmu.c), so the 68k reads and writes them as memory,
  *    through the JIT, with no trap. Slot $B was the first plan (docs/16 until 22 November); the IIci's
  *    built-in video lives in slot $B's space, so the ROM's tables do not map it one to one.
- *  - Its ROM: board "Aurora68 Video" and one sResource of the project's vendor category, type 3, with no
- *    driver (psmac_video_declrom.h, made by tools/mac/mkvideodeclrom.py). The Mac's program finds it with
- *    the Slot Manager and works the window directly, as Aurora68 Play works the sound card's stream.
+ *  - Its ROM: board "Aurora68 Video Decoder" (renamed from "Aurora68 Video" the same day) and one sResource of
+ *    the project's vendor category, type 3, carrying the card's driver ".A68Video" (mac/a68video.s), which the
+ *    Slot Manager opens at start-up (psmac_video_declrom.h, made by tools/mac/mkvideodeclrom.py; docs/08 item
+ *    110). Programs and the QuickTime components use the driver's calls; the window stays directly usable.
+ *  - Its frame decoder: QuickTime's pictures one at a time (psmac_vframes.c), in the same window.
  *  - Its screens: the Mac's own frame buffers as psmac_display.c keeps them. Screen 0 is slot 9's (the
  *    SE's own 512 x 342 on the SE board; the HDMI screen on the solo board), screen 1 the SE board's HDMI
  *    screen in slot $A when there is one.
@@ -192,6 +194,6 @@ void psmac_videocard_init(void)
     psmac_video_init(win, screens);
     arm_flush_cache((uintptr_t)win, 4096);
     test_options();
-    kprintf("[VIDEO] the video card in slot $%X: window $%08X (24-bit $%06X), ROM %u bytes at the slot's top; %u screen%s to draw on\n",
+    kprintf("[VIDEO] the video decoder card in slot $%X: window $%08X (24-bit $%06X), ROM %u bytes at the slot's top; %u screen%s to draw on\n",
             PSMB_VID_SLOT, PSMB_VID_WIN_PHYS, PSMB_VID_SLOT << 20, (uint32_t)sizeof psmac_video_declrom, screens, screens == 1 ? "" : "s");
 }

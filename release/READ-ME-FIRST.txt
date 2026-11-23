@@ -282,6 +282,23 @@ The Mac's sound plays on the HDMI monitor's loudspeakers in stereo (and on the S
 The log says what happened: "[AUDIO] HDMI: 48000 Hz stereo ..." and "[MAC] A68 Sound: ...". If it says
 "the transmitter sends no packets ... DVI", hdmi_drive=2 is missing or the monitor has no sound.
 
+QuickTime movies on the video decoder card
+-------------------------------------------
+The Pi has a video decoder card for the Mac (slot $C, "Aurora68 Video Decoder" in Aurora68
+Slots): it decodes QuickTime's Cinepak, Apple Video, Animation and Graphics movies on a Pi core
+and draws them into the Mac's screen, the SE's own included. To use it:
+  1. QuickTime 2.0 or later on the Mac (2.5 is the last for 68k Macs; it is Apple's, not ours).
+  2. Copy "Aurora68 Video Decoder" from Mac/Aurora68/Extensions (to install) onto the closed
+     System Folder (System 7 puts it into Extensions) and restart.
+  3. Open a movie in MoviePlayer, or in any program that plays QuickTime movies.
+The Pi's log says "A68 Video Decoder: Cinepak 320x240: decoded by the card into a 1-bit pixel map"
+when a movie starts on the card, and when it is closed how many pictures came and how long each
+took. mac.vdecode=off in cmdline.txt switches the card off for comparison: QuickTime's own
+decompressors then play the movie (the log says so). Please send the two lines from each, with
+and without, for a Cinepak movie on the SE's screen and, if you have one, on HDMI at 256
+colours and at thousands: they are the measurements the testbed cannot make. MPEG-1 files and
+Aurora68 Video, the card's own player, come next.
+
 MP3 files: copy the folder Aurora68 Play (Mac/Aurora68/) onto the Mac and the MP3s anywhere on its
 disks (a USB stick or the Lagoon share will do; files from a PC need no Mac type). Open one with File >
 Open..., or drop it on Aurora68 Play's icon; the space bar plays and pauses. Files given the type MPG3

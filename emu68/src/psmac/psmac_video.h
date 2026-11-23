@@ -99,6 +99,77 @@ struct a68v_block {
 _Static_assert(sizeof(struct a68v_block) == 0x180, "a68v_block");
 _Static_assert(__builtin_offsetof(struct a68v_block, cmd_seq) == 0x80, "a68v_block Mac half");
 
+/* ---- the frame decoder (psmac_vframes.c, 22 November 2026, GitHub issue #13, docs/08 item 110) ----------
+   The second half of the card, beside the stream: one compressed picture at a time, as QuickTime's
+   decompressor components hand them over, decoded on the Pi and drawn into a pixel map of the Mac's (a
+   screen, or a GWorld in its memory) at that map's depth. The Mac's side is the card's driver ".A68Video"
+   (its Control calls, docs/video-decoder-api.md), which copies a request into a free slot, adds one to its
+   seq and waits for done to follow; the QuickTime components and any other program call the driver.
+   A session holds what a format keeps from picture to picture (Cinepak's codebooks, the last picture for
+   the blocks a picture leaves out), so a movie opens one, decodes its pictures in order, and closes it. */
+#define A68V_OFF_FRAMES   0x01000u           /* struct a68v_fhdr */
+#define A68V_FMAGIC       0x41363846u        /* 'A68F' */
+#define A68V_FVERSION     1u
+#define A68V_OFF_FSLOTS   0x01100u           /* A68V_FSLOTS x struct a68v_freq */
+#define A68V_FSLOTS       8u
+#define A68V_MAX_SESSIONS 16u                /* movies open at once */
+#define A68V_MAX_DATA     (1u << 20)         /* the largest compressed picture taken (a 640 x 480 Animation key frame is ~900 KB) */
+
+#define A68V_OP_OPEN      1u                 /* codec, width, height, depth, desc: session is set */
+#define A68V_OP_DECODE    2u                 /* session, src, src_len, and where to draw it (unless A68V_FF_NODRAW) */
+#define A68V_OP_CLOSE     3u                 /* session */
+#define A68V_OP_DRAW      4u                 /* session: its last picture drawn again where the request says */
+
+#define A68V_FF_NODRAW    1u                 /* decode only: the picture is kept, nothing is drawn (a frame QuickTime skips) */
+#define A68V_FF_NODITHER  2u                 /* indexed destinations: the nearest colour, no ordered dither */
+
+#define A68V_FE_OK        0u
+#define A68V_FE_CODEC     1u                 /* not a format the card decodes */
+#define A68V_FE_DEPTH     2u                 /* not at that depth (the image's or the destination's) */
+#define A68V_FE_SIZE      3u                 /* larger than the card decodes (VC_MAX_W x VC_MAX_H) */
+#define A68V_FE_MEM       4u                 /* no memory for the session */
+#define A68V_FE_SESSION   5u                 /* no such session, or none free */
+#define A68V_FE_DATA      6u                 /* the picture's data is damaged (what could be decoded was) */
+#define A68V_FE_ADDR      7u                 /* an address the card cannot reach (memory not there, or paged out) */
+#define A68V_FE_OFF       8u                 /* frame decoding is switched off (mac.vdecode=off, or the driver's switch) */
+#define A68V_FE_OP        9u                 /* no such operation */
+
+struct a68v_fhdr {                           /* the card's, but for enabled */
+    uint32_t magic, version;                 /* A68V_FMAGIC, A68V_FVERSION, written last */
+    uint32_t slots, slot_off, slot_size;     /* A68V_FSLOTS, A68V_OFF_FSLOTS, sizeof(struct a68v_freq) */
+    uint32_t enabled;                        /* 1: in use; 0: requests answered A68V_FE_OFF (the driver's switch) */
+    uint32_t sessions;                       /* open now */
+    uint32_t frames, drawn, errors;          /* pictures decoded, drawn, refused, since the start */
+    uint32_t decode_us, draw_us;             /* the last second's averages */
+    uint32_t max_w, max_h;                   /* the largest picture */
+    uint32_t pad0[2];
+    uint32_t codecs[16];                     /* the formats decoded, as FourCCs, 0-terminated */
+    uint32_t pad1[32];
+};
+struct a68v_freq {                           /* 128 bytes: the Mac fills, adds one to seq; the card answers, sets done = seq */
+    uint32_t seq, done;
+    uint32_t op, session;
+    uint32_t codec, width, height, depth;    /* OPEN: the ImageDescription's cType, size and depth */
+    uint32_t src, src_len;                   /* DECODE: the compressed picture (68k logical address, bytes) */
+    uint32_t desc, desc_len;                 /* OPEN: the ImageDescription itself, for its colour table */
+    uint32_t dst_base, dst_rowbytes, dst_depth;   /* the pixel map: its baseAddr, rowBytes (flags masked off), pixelSize */
+    int32_t  dst_x, dst_y, dst_w, dst_h;     /* where the picture goes, in the map's pixels from baseAddr, and its size there */
+    int32_t  clip_left, clip_top, clip_right, clip_bottom;   /* what may be written, the same coordinates */
+    uint32_t ctab, ctab_seed;                /* depths 1-8: the map's ColorTable (dereferenced; 0: the standard one) and its seed */
+    uint32_t flags;                          /* A68V_FF_* */
+    uint32_t result;                         /* A68V_FE_* */
+    uint32_t decode_us, draw_us;             /* this request's */
+    uint32_t frame;                          /* the Mac's frame number, for the log */
+    uint32_t pad[2];
+};
+_Static_assert(sizeof(struct a68v_fhdr) == 256, "a68v_fhdr");
+_Static_assert(sizeof(struct a68v_freq) == 128, "a68v_freq");
+_Static_assert(__builtin_offsetof(struct a68v_freq, ctab) == 92, "a68v_freq ctab");
+void psmac_vframes_init(uint8_t *win);
+int  psmac_vframes_poll(void);
+void psmac_vframes_reset(void);
+void psmac_vframes_report(void);
+
 /* ---- the core (psmac_video.c), on whichever core the host gives it ---------------------------- */
 void psmac_video_init(uint8_t *win, uint32_t screens);  /* the window, in the kernel's view; how many screens */
 int  psmac_video_poll(void);                            /* one slice of work; 1 if it did something */

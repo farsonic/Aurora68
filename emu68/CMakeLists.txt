@@ -318,6 +318,12 @@ if (${VARIANT} IN_LIST SUPPORTED_VARIANTS)
                     src/psmac/psmac_plmpeg.c
                     src/psmac/psmac_video.c
                     src/psmac/psmac_videocard.c
+                    src/psmac/psmac_vframes.c
+                    src/psmac/psmac_vcodec.c
+                    src/psmac/psmac_cinepak.c
+                    src/psmac/psmac_rpza.c
+                    src/psmac/psmac_qtrle.c
+                    src/psmac/psmac_smc.c
                     src/psmac/psmac_sane.c
                     src/psmac/psmac_fpu.c
                     src/psmac/psmac_fpu_math.c

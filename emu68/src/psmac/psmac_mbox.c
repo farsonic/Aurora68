@@ -40,15 +40,47 @@ static inline uint64_t cnt_now(void) { uint64_t v; __asm__ volatile("mrs %0, CNT
 static inline uint64_t cnt_frq(void) { uint64_t v; __asm__ volatile("mrs %0, CNTFRQ_EL0":"=r"(v)); return v; }
 
 /* ---- 68k logical buffer access (page by page through the MMU shim) ---- */
+/* a screen's frame buffer, by the 68k address of its pixels (the video decoder card draws into them,
+   psmac_vframes.c): its kernel view, and how many bytes from there are the screen's */
+extern int psmac_display_info(int i, uint32_t *w, uint32_t *h, uint32_t *depth, uint32_t *base);
+extern int psmac_display_surface(int i, uint8_t **pix, uint32_t *w, uint32_t *h, uint32_t *rb, uint32_t *depth,
+                                 const volatile uint32_t **clut, uint32_t *clut_seq, int *gray);
+static uint8_t *screen_at(uint32_t ph, uint32_t *left)
+{
+    for (int i = 0; i < 2; i++) {
+        uint32_t w, h, d, base, rb, seq; uint8_t *pix; const volatile uint32_t *clut; int gray;
+        if (!psmac_display_info(i, &w, &h, &d, &base) || !psmac_display_surface(i, &pix, &w, &h, &rb, &d, &clut, &seq, &gray)) continue;
+        if (ph >= base && ph - base < rb * h) { *left = rb * h - (ph - base); return pix + (ph - base); }
+    }
+    return NULL;
+}
 static uint8_t *mac_page(uint32_t logical)
 {
-    int valid; uint32_t ph = psmac_mmu_l2p(logical, &valid);
+    int valid; uint32_t ph = psmac_mmu_l2p(logical, &valid), left;
     if (!valid) return NULL;
     if (ph < ram_size) return (uint8_t *)(KERNEL_ALIAS + ram_phys + ph);
     if (ph >= PSMB_WIN_PHYS && ph < PSMB_WIN_PHYS + PSMB_WIN_SIZE) return win + (ph - PSMB_WIN_PHYS);
-    /* the 24-bit alias of the window */
-    return NULL;
+    return screen_at(ph, &left);              /* (the 24-bit alias of the window is not served) */
 }
+/* For the video decoder card (psmac_vframes.c, 22 November 2026): [logical, logical + len) of the 68k's
+   memory as one run in the kernel's view (RAM whose pages follow one another, or a screen), else NULL; and
+   the page-by-page copy for anything else. Logical addresses, as everywhere in this file. */
+uint8_t *psmac_mac_span(uint32_t logical, uint32_t len)
+{
+    int valid; uint32_t ph = psmac_mmu_l2p(logical, &valid), left;
+    if (!valid || !len) return NULL;
+    if (ph < ram_size) {
+        if (len > ram_size - ph) return NULL;
+        for (uint32_t a = (logical & ~0xfffu) + 0x1000u; a - logical < len; a += 0x1000u) {
+            int v2; uint32_t p2 = psmac_mmu_l2p(a, &v2);
+            if (!v2 || p2 != ph + (a - logical)) return NULL;
+        }
+        return (uint8_t *)(KERNEL_ALIAS + ram_phys + ph);
+    }
+    uint8_t *s = screen_at(ph, &left);
+    return s && len <= left ? s : NULL;
+}
+int psmac_mac_copy(uint32_t logical, void *buf, uint32_t len, int to_mac);
 static int mac_copy(uint32_t logical, void *dst, const void *src, uint32_t len, int to_mac)
 {
     while (len) {
@@ -61,6 +93,7 @@ static int mac_copy(uint32_t logical, void *dst, const void *src, uint32_t len, 
     }
     return 0;
 }
+int psmac_mac_copy(uint32_t logical, void *buf, uint32_t len, int to_mac) { return mac_copy(logical, buf, buf, len, to_mac); }
 
 /* ---- block devices ---- */
 struct blkdev { int64_t fd; uint32_t blocks, first; int writable; int ram; uint8_t *rambase; char name[48];   /* first: a host file's partition, in blocks */

@@ -76,6 +76,8 @@ static struct {
     uint32_t rate, w, h;
     double fps, frame_s;
     plm_frame_t *pending;                     /* decoded, waiting for its time */
+    plm_frame_t last;                         /* the picture last drawn (its planes stay while at most one more is decoded) */
+    int have_last;
     double audio_t0, audio_next;              /* the stream time of the first sample given to the mixer; of the next */
     int audio_t0_set;
     uint64_t wall_t0, hold_t;                 /* the timer's clock: the start, and when it was held (paused, dry) */
@@ -348,6 +350,9 @@ static void geometry(void)
     __asm__ volatile("dmb ish" ::: "memory");
     if (blk->geom_seq != s1) return;          /* changing while read: next time */
     g.seq = s1; g.screen = screen; g.visible = vis; g.t = t; g.l = l; g.b = b; g.r = r;
+    /* the window moved, was uncovered or brought back while no new picture is coming (paused, ended, dry): the
+       last picture drawn again, so the program never has to paint the picture area itself (22 November 2026) */
+    if (vis && v.on && v.have_last && (v.paused || v.stalled || v.ended_v)) draw(&v.last);
 }
 
 /* ---- commands ----------------------------------------------------------------------------------- */
@@ -455,6 +460,7 @@ static int show_slice(void)
         v.dropped++; blk->frames_dropped = v.dropped;
     } else {
         draw(v.pending);
+        v.last = *v.pending; v.have_last = 1;
         uint64_t d = now() - t;
         st.draw += d; st.ndraw++;
         v.last_draw = now();
@@ -469,6 +475,7 @@ int psmac_video_poll(void)
 {
     if (!blk) return 0;
     uint64_t t0 = now();
+    int fdid = psmac_vframes_poll();          /* QuickTime's pictures first: the 68k waits for them */
     psmac_video_test_poll(blk, ring);
     command();
     geometry();
@@ -501,10 +508,10 @@ int psmac_video_poll(void)
     }
     if (did) st.busy += now() - t0;
     numbers();
-    return did;
+    return did | fdid;
 }
 
-void psmac_video_reset(void) { __atomic_store_n(&reset_req, 1, __ATOMIC_RELEASE); }
+void psmac_video_reset(void) { __atomic_store_n(&reset_req, 1, __ATOMIC_RELEASE); psmac_vframes_reset(); }
 
 void psmac_video_init(uint8_t *win, uint32_t screens)
 {
@@ -517,6 +524,7 @@ void psmac_video_init(uint8_t *win, uint32_t screens)
     blk->screens = screens; blk->volume = 0x01000100u;
     say("idle");
     st.t0 = now();
+    psmac_vframes_init(win);
     __asm__ volatile("dmb ish" ::: "memory");
     blk->version = A68V_VERSION; blk->magic = A68V_MAGIC;
 }
@@ -524,6 +532,7 @@ void psmac_video_init(uint8_t *win, uint32_t screens)
 void psmac_video_report(void)
 {
     static uint32_t last_state = ~0u, last_streams;
+    psmac_vframes_report();
     if (!blk || !v.streams) return;
     static const char *const sn[] = { "idle", "buffering", "playing", "paused", "ended", "error" };
     uint32_t s = blk->state < 6 ? blk->state : 5;
