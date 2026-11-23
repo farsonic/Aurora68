@@ -276,6 +276,16 @@ the card, made from these measurements.
   the import. Until those exist, an MPEG file opens in Aurora68 Video from the Finder, and MoviePlayer opens
   everything else through the card's decompressors.
 
+### Follow-up: Aurora68 Play's music videos (23 November 2026)
+The music server now serves a music video as an MPEG-1 program stream at `/vmpeg/ID` (docs/08 item 109), and the
+classic Play says it shows no video until the card's program can. The interface for it is the card's driver,
+not Aurora68 Video's window: Play opens ".A68Video", takes the window's address from Status 100, pours the
+`/vmpeg` stream into the ring as it pours radio into the sound card (its receive chain writing at head, or
+Control 111), and drives Control 110 (start, pause, resume, stop), 112 (the picture's place: a rectangle of its
+own window, or of the HDMI screen for full screen), 113 (volume) and 114 (end). Nothing in Aurora68 Video needs
+to change for that; if Play would rather hand the film over, Aurora68 Video could take a URL in an 'odoc' of a
+small text document, which is not built.
+
 ## Modern formats: a study (22 November 2026)
 The owner's third item: H.264 video ('avc1') and AAC sound ('mp4a') in .mp4 and .mov files from a camera or
 a phone. QuickTime 2.5 reads the MPEG-4 file format's atoms as a QuickTime movie (they are the same
