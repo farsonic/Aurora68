@@ -34,6 +34,7 @@
  */
 #include "toolbox.h"
 #include "psmac_video.h"
+#include "screens.h"
 
 short mac_PBRead(ParamBlock *pb), mac_PBGetEOF(ParamBlock *pb);
 short drv_open(void *pb), drv_control(void *pb), drv_status(void *pb), mac_SetFPos(ParamBlock *pb);
@@ -241,7 +242,7 @@ static int open_film(const unsigned char *name, short vref)
 	mac_PBRead(&pb);
 	if (pb.u.io.ioActCount != 12 || head[0] || head[1] || head[2] != 1 || (head[3] != 0xBA && head[3] != 0xB3)) {
 		close_film();
-		say("That is not an MPEG-1 film: Aurora68 Video plays MPEG program streams (.mpg).");
+		say("Not an MPEG-1 film (an MPEG program stream, .mpg).");
 		return 0;
 	}
 	memcpy(fname, name, name[0] + 1);
@@ -305,10 +306,14 @@ static void draw_bar(void)
 	TextSize(9);
 	DrawString(pstr(pbuf, t));
 	if (status[0]) {
-		Rect sr = { (short)(r.bottom - BAR_H + 21), 80, r.bottom, (short)(b.right) };
+		Rect sr = { (short)(r.bottom - BAR_H + 21), 80, r.bottom, (short)(r.right - 4) };
 		EraseRect(&sr);
 		MoveTo(80, (short)(r.bottom - 2));
-		DrawString(pstr(pbuf, status));
+		/* the line to the window's right edge, and cut with an ellipsis where it is longer: at the window's first
+		   width (320) the About line and the "not an MPEG-1 film" line ran past the edge (23 November 2026) */
+		pstr(pbuf, status);
+		while (pbuf[0] > 1 && StringWidth(pbuf) > sr.right - sr.left) { pbuf[0]--; pbuf[pbuf[0]] = (unsigned char)0xC9; }
+		DrawString(pbuf);
 	}
 	TextSize(12);
 }
@@ -318,8 +323,10 @@ static void draw_window(void)
 	SetPort(win);
 	if (!drv) {                                     /* no card: two lines, and nothing else to do */
 		EraseRect(&p);
-		MoveTo(10, 30); DrawString(pstr(pbuf, "The Aurora68 Video Decoder card does not answer."));
-		MoveTo(10, 48); DrawString(pstr(pbuf, "It is in slot $C of an Aurora68 Pi: check mac.video= in cmdline.txt."));
+		/* three short lines: the window is 320 wide at first, and one 420-pixel line ran past it (23 November 2026) */
+		MoveTo(10, 30); DrawString(pstr(pbuf, "The video decoder card does not answer."));
+		MoveTo(10, 48); DrawString(pstr(pbuf, "It is in slot $C of an Aurora68 Pi:"));
+		MoveTo(10, 66); DrawString(pstr(pbuf, "check mac.video= in cmdline.txt."));
 	} else if (!playing) {
 		PaintRect(&p);                              /* black until a film plays: the card draws over it */
 		if (!fref) {
@@ -334,12 +341,18 @@ static void fit_window(void)
 	long w = blk->video_w, h = blk->video_h;
 	if (!w || !h) { w = DEF_W; h = DEF_H; }
 	if (dbl) { w *= 2; h *= 2; }
-	Rect s = *RGN_BBOX(LM_GRAYRGN);                 /* never larger than the screens' room */
-	while (w > s.right - s.left - 20 || h + BAR_H > s.bottom - s.top - 40) { w /= 2; h /= 2; }
+	/* never larger than the room of the screen the window is on (23 November 2026: it was the desktop's
+	   bounding box, which with the HDMI screen beside the SE's let a film's window run off the SE's) */
+	int m;
+	Rect c = scr_content(win), sc = scr_of(&c, &m), u = scr_room(&sc, m);
+	while (w > 240 && (w > u.right - u.left || h + BAR_H > u.bottom - u.top)) { w /= 2; h /= 2; }
 	if (w < 240) { h = h * 240 / w; w = 240; }
+	if (h + BAR_H > u.bottom - u.top) h = u.bottom - u.top - BAR_H;
 	Rect r = *PORT_RECT(win);
 	if (r.right - r.left == w && r.bottom - r.top == h + BAR_H) return;
 	SizeWindow(win, (short)w, (short)(h + BAR_H), 1);
+	c = scr_content(win);
+	if (scr_fit(&c)) MoveWindow(win, c.left, c.top, 0);   /* the larger window moved to lie whole on its screen */
 	MoveControl(btn, 8, (short)(h + 6));
 	SetPort(win);
 	InvalRect(PORT_RECT(win));
@@ -379,7 +392,7 @@ static void do_menu(long mi)
 	short menu = (short)(mi >> 16), item = (short)mi;
 	switch (menu) {
 	case M_APPLE:
-		if (item == 1) { say("Aurora68 Video 1.1: MPEG-1 on the Aurora68 Video Decoder card"); SetPort(win); InvalRect(PORT_RECT(win)); }
+		if (item == 1) { say("Aurora68 Video 1.1, for the video decoder card"); SetPort(win); InvalRect(PORT_RECT(win)); }
 		else { GetItem(m_apple, item, pbuf); OpenDeskAcc(pbuf); SetPort(win); }
 		break;
 	case M_FILE:

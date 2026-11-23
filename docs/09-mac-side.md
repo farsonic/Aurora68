@@ -1932,6 +1932,49 @@ and sound card lines while they work (QEMU had no sound output and no video play
 (the page is then read at $950000); the grow box dragged (the window's size kept across a Quit is the same code as
 its place).
 
+
+## Every program on the SE's own screen: 512 by 342, one bit (23 November 2026)
+The owner uses the SE's built-in screen as well as the 2560 by 1440 HDMI screen: usually the HDMI screen is the main
+one, but the SE's can be the main or the only one (no HDMI attached). Every Aurora68 program was opened at 512 by 342
+in one bit with that screen as the only one (the solo board in QEMU, `mac.screen=512x342` with
+`psmac-512x342.declrom`, System 7.1; docs/08 item 134 has the runs), each window, About box and dialog, and its
+place and size read from the remote's `/windows`. What did not fit was changed; the rule for each window now:
+
+- **It opens on a screen it fits**, below the menu bar and a title bar, nothing past the right or bottom edge; a
+  dialog stays within about 500 by 320 with its frame.
+- **A remembered place is put back only where it fits.** Slots, Status, Display and Play (its player and Library
+  windows) already refused a place whose title bar no screen showed; a place kept on a large screen and shown on the
+  SE's 512 by 342 passed that test with its right end, grow box and zoom box out of reach. Now such a window is
+  moved, and cut where it is larger, to lie whole on the screen it is mostly on (`mac/c/screens.h`, `scr_fit`).
+- **A window is sized by the screen it is on**, not by the desktop's bounding box: with the HDMI screen right of the
+  SE's, that box is 3072 by 1440, and Aurora68 Video's film window and the PC window grew to the HDMI screen's height
+  while on the SE's. Both now take the room of their own screen and move to lie whole on it after they grow.
+- **The zoom box zooms on the window's own screen** (Log, Play's player and Library, the PC, as Display and Slots
+  already did): the Window Manager's own standard state is the main screen's, so a window dragged from a main HDMI
+  screen to the SE's jumped back to the HDMI screen when zoomed.
+
+| Program and window | Before (512 x 342, one bit, the only screen) | After |
+|---|---|---|
+| Aurora68 Bluetooth | 470 x 320 at (30, 40): its bottom at 362, the frame and the last 20 lines below the screen; 12 found devices ran over the status and keys lines (`se512-bluetooth-before.png`) | 472 x 296 at (20, 40), whole (`se512-bluetooth-after.png`); the lists stop above the status line |
+| Aurora68 Screens | 600 wide, right edge at 622; each screen's line cut (`se512-screens-before.png`) | 496 wide; each screen on two lines (`se512-screens-after.png`) |
+| Aurora68 Colour | put at (660, 40), off the only screen: nothing seen, and the program waited for a click (`se512-colour-before.png`) | on the main screen, 504 x 298, the picture scaled; in one bit a line says the colours show as black or white (`se512-colour-after.png`). With the HDMI screen as the main one it no longer goes on the SE's screen (600 x 400 did not fit there), only on a second screen with room |
+| Aurora68 Wi-Fi | fits (470 x 270); the scan list's heading cut ("Secu", a length byte of 50 for 54 characters); 13 or 14 networks reached the status line | heading whole; the list stops above the status line |
+| Aurora68 Network | fits (440 x 240); "Pi: fw = " drew one byte too many | fixed |
+| Aurora68 Ping | fits; "installed?" without its "?" (`se512-ping-before.png`) | fixed (`se512-ping-after.png`) |
+| Aurora68 Log | fits (496 x 286); Save Log's dialog fits; About is a line in the window | unchanged; zooms on its own screen |
+| Aurora68 Slots | fits; About box fits; a place kept from a 1024 x 768 screen came back at (42, 300)-(758, 1018) (`se512-slots-kept-place-before.png`) | the kept place moved and cut to (21, 3)-(340, 510) (`se512-slots-kept-place-after.png`) |
+| Aurora68 Status | normal view 488 x 292 and About fit; the compact view kept at (300, 42) ended at 535 (`se512-status-kept-place-before.png`) | moved to end at 510 (`se512-status-kept-place-after.png`) |
+| Aurora68 Display | fits; About alert, Save Report and "Keep this resolution?" (356 x 146) fit; a kept place as Slots' (`se512-display-kept-place-before.png`) | as Slots (`se512-display-kept-place-after.png`) |
+| Aurora68 Play | player (343 x 127), "no sound" box, Open URL, Library (503 x 313), Open and the zoom box fit; the About box's text ran under its OK button (228 pixels given for about 260; `se512-play-about-before.png`) | message boxes take the height their text needs, wider where 340 pixels would be too tall, never larger than the screen below the menu bar (the About box 420 x 280, `se512-play-about-after.png`) |
+| Aurora68 Video | window 320 x 270 and Open fit; the About line and "not an MPEG-1 film" ran past the window's right edge (`se512-video-about-before.png`); without the card, a 420-pixel line in the 320-pixel window | shorter lines, cut with an ellipsis where still too long (`se512-video-about-after.png`); the no-card text on three lines; the film's size by its own screen |
+| Aurora68 PC | fits (484 x 300 without the card); About box fits | sized by its own screen; zoomed and grown windows moved to lie on it |
+| Aurora68 Depth, Disk, Machine, Sound, Screen Setup, Agent, Video Decoder | no windows (Screen Setup's "Keep this resolution?" is Display's box) | |
+| Wi-Fi and Bluetooth menus (the extension) | not changed here: the menu-bar clock's branch places the icons after the program's last menu and hides them when there is no room | |
+
+Not seen in these runs: RiptidePrefs and Lagoon (in the Riptide repository) and Octavo; Play's dialogs that need a
+music server or a station; Aurora68 Video with a film playing; two screens at once (the solo board has one), so the
+"HDMI main, window moved to the SE's screen" cases are checked by reading the code, not by a run.
+
 ## MacTCP
 MacTCP is Apple's TCP/IP of 1989-1996: the `.IPP` driver and a control panel, later folded into
 Open Transport. It is not in the repository (Apple's), and the user's images do not carry it; the

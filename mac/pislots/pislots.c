@@ -34,6 +34,7 @@
  * the SE's 512 x 342 screen. Built with the C kit in mac/c (mac/c/README.md), 68020 code.
  */
 #include "toolbox.h"
+#include "screens.h"
 
 /* ---- the Slot Manager ---- */
 /* its parameter block (Inside Macintosh V, "The Slot Manager"; fields aligned to two bytes, as m68k
@@ -1171,6 +1172,7 @@ int main(void)
 
 	Rect b;
 	if (!load_prefs(&b) || !on_screen(&b)) default_rect(&b);
+	else scr_fit(&b);      /* a kept place: all of it on the screen it is mostly on, its grow and zoom boxes in reach */
 	win = NewWindow(0, &b, pstr(pbuf, "Aurora68 Slots"), 1, zoomDocProc, (void *)-1, 1, 0);
 	SetPort(win);
 	TextFont(4); TextSize(9);                  /* Monaco 9: the numbers line up */

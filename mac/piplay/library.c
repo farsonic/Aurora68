@@ -88,6 +88,7 @@
 #include "devices.h"
 #include "library.h"
 #include "vcard.h"
+#include "screens.h"
 
 extern volatile struct psmb_stream *ps;
 static unsigned char pb[256];
@@ -1643,7 +1644,10 @@ void lib_show(void)
 			/* both ends of the title bar on a screen, and no taller than the screens (1.7: a place kept from a 640 x 480
 			   screen was taken on the SE's 512 x 342 by its left end alone, the rest of the window off the screen) */
 			Point a = { (short)(saved_r.top - 10), (short)(saved_r.left + 24) }, c = { (short)(saved_r.top - 10), (short)(saved_r.right - 24) };
-			if (PtInRgn(pt_long(a), LM_GRAYRGN) && PtInRgn(pt_long(c), LM_GRAYRGN) && saved_r.bottom <= RGN_BBOX(LM_GRAYRGN)->bottom) b = saved_r;
+			if (PtInRgn(pt_long(a), LM_GRAYRGN) && PtInRgn(pt_long(c), LM_GRAYRGN) && saved_r.bottom <= RGN_BBOX(LM_GRAYRGN)->bottom) {
+				b = saved_r;
+				scr_fit(&b);                     /* all of it on the screen it is mostly on (23 November 2026) */
+			}
 			else pi_log("library: the remembered window place is on no screen now: the window goes on the main screen");
 		}
 		lw = colour ? (void *)NewCWindow(0, &b, pstr(pb, "Library"), 0, 8 /* zoomDocProc */, (void *)-1, 1, 0)

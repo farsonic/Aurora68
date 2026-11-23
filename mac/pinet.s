@@ -506,7 +506,7 @@ s_title:  .byte 36
 s_nopi:	  .byte 32
 	.ascii "No PiStorm mailbox at slot $9.  "
 	.even
-s_pi:	  .byte 10
+s_pi:	  .byte 9
 	.ascii "Pi: fw = "
 	.byte 32
 	.even

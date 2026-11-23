@@ -82,6 +82,7 @@
 #include "media.h"
 #include "devices.h"
 #include "vcard.h"
+#include "screens.h"
 
 /* piplay/fs.s */
 short mac_PBRead(ParamBlock *pb), mac_PBGetEOF(ParamBlock *pb), mac_PBHOpen(ParamBlock *pb), mac_PBHCreate(ParamBlock *pb),
@@ -881,14 +882,54 @@ Rect screen_rect(void)
 	__asm__("move.l %%a5,%0" : "=r"(a5));
 	return *(Rect *)(*(char **)a5 - 116);        /* QuickDraw's screenBits.bounds, below thePort */
 }
+/* the lines TextBox makes of a text in a box this wide, in the current port's font: words moved whole to the next
+   line, a word wider than the box broken, a return a line of its own */
+static int text_lines(const char *t, int width)
+{
+	int lines = 0;
+	while (*t) {
+		int brk = -1, n = 0;
+		lines++;
+		for (;;) {
+			char c = t[n];
+			if (!c || c == '\r') { brk = n; break; }
+			if (TextWidth(t, 0, n + 1) > width) { if (brk < 0) brk = n > 0 ? n : 1; break; }
+			if (c == ' ') brk = n + 1;
+			n++;
+		}
+		t += brk;
+		if (*t == '\r') t++;
+		while (*t == ' ') t++;
+	}
+	return lines;
+}
 void message_box(const char *text, int lines_h)
 {
 	Rect s = screen_rect();
 	short w = 340, h = (short)(lines_h + 52), left = (short)((s.right - s.left - w) / 2), top = (short)((s.bottom - s.top - h) / 3 + 10);
 	Rect b = { top, left, (short)(top + h), (short)(left + w) };
-	void *d = NewWindow(0, &b, pstr(pbuf, ""), 1, 1 /* dBoxProc */, (void *)-1, 0, 0);
+	void *d = NewWindow(0, &b, pstr(pbuf, ""), 0, 1 /* dBoxProc */, (void *)-1, 0, 0);
 	vc_hold(1);                                 /* the video's picture not drawn over the dialog */
 	SetPort(d);
+	/* as tall as its text needs (23 November 2026: the About box's text had been given 228 pixels, and on the SE's
+	   screen ran under the OK button), wider where a 340-pixel box would be taller than the screen, and never
+	   larger than the main screen below the menu bar */
+	TextFont(0); TextSize(12);
+	{
+		int room_h = s.bottom - s.top - 20 - 24, need = text_lines(text, w - 32) * 16 + 52;   /* the menu bar; the box's frame (8 a side) and room */
+		while (need > room_h && w < s.right - s.left - 40) {
+			w = (short)(w + 40 < s.right - s.left - 40 ? w + 40 : s.right - s.left - 40);
+			need = text_lines(text, w - 32) * 16 + 52;
+		}
+		if (need > h) h = (short)need;
+		if (h > room_h) h = (short)room_h;
+		left = (short)(s.left + (s.right - s.left - w) / 2);
+		top = (short)(s.top + 20 + (s.bottom - s.top - 20 - h) / 3);
+		if (top < s.top + 20 + 10) top = (short)(s.top + 20 + 10);   /* the frame clear of the menu bar */
+		SizeWindow(d, w, h, 0);
+		MoveWindow(d, left, top, 0);
+		ShowWindow(d);
+	}
 	Rect okr = { (short)(h - 30), (short)(w - 80), (short)(h - 10), (short)(w - 16) };
 	void *ok = NewControl(d, &okr, pstr(pbuf, "OK"), 1, 0, 0, 1, pushButProc, 0);
 	EventRecord ev;
@@ -1740,6 +1781,18 @@ static void mouse_down(EventRecord *ev)
 		if (w && w == vc_window()) {             /* the video: Normal Size and Fill Screen (1.7) */
 			if (TrackBox(w, pt_long(ev->where), part)) vc_zoom_box();   /* 1.8: Fill Screen and the size it had */
 		} else if ((w == win || w == lib_window()) && TrackBox(w, pt_long(ev->where), part)) {
+			/* zoomed out on the screen the window is on (23 November 2026): its standard state had been
+			   fixed on the main screen, so from the SE's screen beside a main HDMI screen it jumped across */
+			void **wsh = *(void ***)((char *)w + 130);
+			if (part == inZoomOut && wsh && *wsh) {
+				int m;
+				Rect c = scr_content(w), sc = scr_of(&c, &m), u = scr_room(&sc, m), *std = (Rect *)((char *)*wsh + 8);
+				if (w == win) {                      /* the player: as wide as the screen allows (660 at most), 140 high */
+					std->top = u.top; std->left = u.left;
+					std->bottom = (short)(u.top + 140 < u.bottom ? u.top + 140 : u.bottom);
+					std->right = (short)(u.right - u.left > 660 ? u.left + 660 : u.right);
+				} else *std = u;                     /* the Library: the whole screen */
+			}
 			SetPort(w);
 			EraseRect(PORT_RECT(w));
 			ZoomWindow(w, part, 0);
@@ -1882,7 +1935,12 @@ int main(void)
 					break;
 				}
 		}
-		if (on_screen(&pr.r)) b = pr.r;
+		if (on_screen(&pr.r)) {
+			b = pr.r;
+			/* and all of it on the screen it is mostly on (23 November 2026: a place kept on the HDMI screen could
+			   reach past the SE's edges once the window was moved there and the screens changed) */
+			if (scr_fit(&b)) pi_log("the remembered window place moved to fit its screen");
+		}
 		else pi_log("the remembered window place is on no screen now: the window goes on the main screen");
 	}
 	win = colour ? (void *)NewCWindow(0, &b, pstr(pbuf, "Aurora68 Play"), 0, zoomDocProc, (void *)-1, 1, 0)

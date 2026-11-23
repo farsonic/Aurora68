@@ -365,7 +365,9 @@ redraw:
 5:	bsr	board
 	lea	SCAN(%a0),%a2
 	subq.l	#1,%d3
-7:	move.w	#8,V_X(%a6)
+7:	cmp.w	#216,V_Y(%a6)		| and never into the status line (baseline 228): with a failed
+	bhi	redraw_help		| command's line, 13 or 14 networks reached it (23 November 2026)
+	move.w	#8,V_X(%a6)
 	lea	SC_SSID(%a2),%a1
 	bsr	say_cstr_nocr
 	move.w	#8+34*6,V_X(%a6)
@@ -654,7 +656,7 @@ s_addr:     .byte 9
 s_cmderr:   .byte 21
 	.ascii "Last command failed: "
 	.even
-s_scanhead: .byte 50
+s_scanhead: .byte 54
 	.ascii "Network                           Signal  Ch  Security"
 	.even
 s_nonets:   .byte 19
