@@ -183,6 +183,18 @@ int psmac_video_surface(uint32_t screen, struct pv_surface *s)
     s->clut_seq = seq; s->gray = gray;
     return 1;
 }
+/* a menu down: TheMenu ($A26, the ID of the menu whose title is highlighted, 0 when none) is not 0 while the Menu
+   Manager tracks a menu and until the program unhighlights its title (HiliteMenu(0)) after the command; the same for
+   every program (23 November 2026, docs/08 item 124). A long at $A24 (MenuFlash, TheMenu), read as the crash record
+   reads the Mac's memory */
+uint32_t psmac_mac_rd32(uint32_t logical, int *ok);
+uint32_t psmac_video_rd32(uint32_t addr, int *ok) { return psmac_mac_rd32(addr, ok); }
+int psmac_video_menu_down(void)
+{
+    int ok;
+    uint32_t v = psmac_mac_rd32(0xA24, &ok);
+    return ok && (v & 0xFFFFu) != 0;
+}
 void psmac_videocard_init(void)
 {
     uint8_t *rom = (uint8_t *)(KERNEL_ALIAS + card_phys + A68V_WIN_SIZE);

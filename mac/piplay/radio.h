@@ -34,6 +34,7 @@ struct radio_ui {
 	int video;                       /* a music video on the video decoder card (radio_play_video, vcard.c): no next() */
 	int (*next)(char *url, int max, unsigned long boundary_ms);
 	void (*resume)(char *url, int max, unsigned long secs);
+	int (*other_host)(void);         /* 1.8: a connection to the library's server failed: 1 if it moved to another address */
 };
 extern struct radio_ui radio;
 
@@ -62,10 +63,15 @@ int stations_add_defaults(void);
 /* the family tried first when a name has both (Library or Radio > Connect By, kept in the preferences):
    6 IPv6, 4 IPv4; the other is tried when the first fails. For the radio and the library alike. */
 extern int net_prefer;
+/* Connect By > IPv4 Only (1.8, docs/08 item 124): a name's IPv6 addresses are passed over, the library's server is
+   reached at its IPv4 address alone (net_prefer is 4 with it) */
+extern int net_v4only;
 
 /* from piplay.c */
 void pi_log(const char *text);
 int pi_command(unsigned long c);
+void radio_chain_words(char *t);
+void radio_keep(void);               /* the receive chain going again if it waits for room (1.8) */     /* the receive chain's state in words, 100 bytes (1.8) */
 int pref_place(short *vref, long *dirid);
 char *put_str(char *p, const char *s);
 char *put_num(char *p, unsigned long v);

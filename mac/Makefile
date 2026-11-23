@@ -292,7 +292,7 @@ $(B)/piplay.elf: $(PP_OBJ) c/app.ld
 # documents, its preferences and '****', icons: tools/mac/mkicons.py): files dropped on its icon reach it
 # as the application's files (AppParmHandle)
 $(B)/Aurora68-Play.bin: $(B)/piplay.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py $(ICONS)
-	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Play" --creator PIPY --size 640 --icons play --version 1.7 -o $@
+	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Play" --creator PIPY --size 640 --icons play --version 1.8 -o $@
 
 # ---- the WiFi menu: an INIT in C (mac/wifimenu, tools/mac/elf2init.py) ----
 $(B)/wifimenu_traps.txt: c/traps.txt wifimenu/traps.txt
@@ -390,7 +390,7 @@ $(B)/a68player.elf: $(AV_OBJ) c/app.ld
 	$(LD) -T c/app.ld --emit-relocs --no-warn-rwx-segments -z noexecstack -o $@ $(AV_OBJ) $(LIBGCC)
 # the bundle (tools/mac/mkicons.py, 'video'): MPEG files ('MPEG', 'MPG ') open in it from the Finder
 $(B)/Aurora68-Video.bin: $(B)/a68player.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py $(ICONS)
-	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Video" --creator A68V --size 256 --icons video --version 1.0 -o $@
+	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Video" --creator A68V --size 256 --icons video --version 1.1 -o $@
 
 # ---- PiScrn: the SE board's two screens arranged at the first boot, an INIT in C (mac/piscrn) ----
 $(B)/piscrn_traps.txt: c/traps.txt piscrn/traps.txt pidisplay/traps.txt

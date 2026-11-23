@@ -20,8 +20,11 @@ struct fetch {
 	int cut_ok;                      /* set after fetch_start: an answer longer than the buffer is cut, not failed */
 	int cut;                         /* FS_DONE: it was cut */
 	int too_long;                    /* FS_FAILED: longer than the buffer (1.7: the list is asked again without the links) */
+	int unreachable;                 /* FS_FAILED: no connection was made (1.8: the server's other address is tried) */
+	int quick;                       /* 1.8: another of the server's addresses remains, so a connection is given 5 s */
 };
 extern struct fetch fetch;
+extern int fetch_next_quick;             /* set before fetch_start: the next fetch's fetch.quick (1.8) */
 
 void fetch_init(void);
 /* a GET of path on host:port (host: a name, a dotted address, or an IPv6 address without brackets);

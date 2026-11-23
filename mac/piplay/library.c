@@ -137,8 +137,16 @@ static int user_find;                            /* Library > Servers > Search A
 static char want_name[48];                       /* the server chosen last (its name): taken again among those found */
 static struct disc_found servers[D_MAX];         /* what the last probe found, for Library > Servers */
 static int nservers, servers_gen;
-static char alt_host[2][64];                     /* the server's other addresses (discovery): tried in turn if this one fails */
+static char alt_host[3][64];                     /* the server's other addresses (discovery): tried in turn if this one fails */
 static int nalt;
+/* 1.8 (docs/08 item 124): the server's addresses by family, from the probe's answer and kept in the preferences, so that
+   a remembered server is reached at its IPv6 address first again (Connect By: IPv6 First) and at its IPv4 address when
+   that does not answer, and srv_host is the one that answered, for the rest of the session. The owner's SE said "IPv4"
+   with IPv6 there: 1.7 kept only the address that had answered, and a server first reached by its IPv4 address (typed,
+   or found by the probe before it named an IPv6 address) stayed IPv4 for good */
+static char srv_v6[48], srv_v4[2][20];
+static int addr_learned;                         /* the probe answered for this server: its addresses are known */
+static int want_learn, learn_find;               /* a quiet probe for them (the remembered server answered over IPv4) */
 static const char *problem;                      /* the list area says this instead of rows */
 static char problem_buf[360];                    /* 1.7: the servers found, or a server that does not answer, named in it */
 
@@ -159,6 +167,19 @@ static int lstate;
 static int shuffle;
 static int instead;                              /* Controls > Play Videos Instead of Songs (1.7) */
 static char album_title[48];                     /* the album of what is heard, for Now Playing */
+/* an artist's name as shown (1.8, docs/08 item 124): a name with no letter or digit ("_", a downloader's "nobody", which
+   the owner's videos carried as their artist) is no name: "" where something else can stand instead (Now Playing, the
+   video window's title, the Library's strip), "Unknown artist" where a name must stand (the heads of the Videos list's
+   groups, an artist's row). Mac Roman's letters above $7F (accented ones) count as letters */
+static int named(const char *a)
+{
+	for (; *a; a++) {
+		unsigned char c = (unsigned char)*a;
+		if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= 0x80 && c <= 0xD8 && c != 0xD0 && c != 0xD1)) return 1;
+	}
+	return 0;
+}
+static const char *artist_or(const char *a, const char *instead) { return named(a) ? a : instead; }
 static struct qitem *qat(int i) { return (struct qitem *)a68q_at(&Q, i); }
 
 /* ---- the window ------------------------------------------------------------------------------------ */
@@ -291,23 +312,63 @@ static void find_server(int automatic)
 		return;
 	}
 	finding = 1;
-	auto_find = automatic;
+	learn_find = automatic == 2;
+	auto_find = automatic == 1;
+	if (learn_find) { logs("asking the probe for the server's other addresses (Connect By: IPv6 First)", 0); return; }
 	if (!srv_known) set_problem(automatic && srv_host[0] ? problem_buf : "Looking for music servers on the network\xC9");
 	logs(automatic ? "looking for music servers (the probe)" : "looking for music servers again (Search Again)", 0);
 }
 static int same_text(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
-/* server k of those found: its addresses in the order to try them (play/core/address.c), the others kept in case the
-   first fails; the views start again at Artists when it is another server than the one in use */
+static int colon(const char *s) { while (*s) if (*s++ == ':') return 1; return 0; }
+static const char *connect_by(void)
+{
+	return net_v4only ? "IPv4 Only" : !net_is_v6() ? "IPv4: no .IPP6 here" : net_prefer == 4 ? "IPv4 First" : "IPv6 First";
+}
+/* the server's addresses in the order to try them (1.8): Connect By's family first; for IPv4 the address the answer
+   came from, which is known to reach this Mac, before the one the server names (which may be its container's); IPv6
+   only through Riptide's .IPP6 and not with IPv4 Only */
+static int addr_order(const char **out)
+{
+	int n = 0, i, v6ok = srv_v6[0] && !net_v4only && net_is_v6();
+	if (v6ok && net_prefer != 4) out[n++] = srv_v6;
+	for (i = 0; i < 2; i++) if (srv_v4[i][0]) out[n++] = srv_v4[i];
+	if (v6ok && net_prefer == 4) out[n++] = srv_v6;
+	return n;
+}
+/* the others after the first, as the ones to try if it does not answer; the log says the order */
+static void addr_alts(const char **c, int n, int from)
+{
+	char t[160], *p;
+	int i;
+	for (nalt = 0, i = from; i < n && nalt < 3; i++) copy(alt_host[nalt++], c[i], sizeof alt_host[0]);
+	p = put_str(put_str(t, "the server's addresses ("), connect_by());
+	p = put_str(p, "): "); p = put_str(p, c[0]);
+	for (i = 0; i < nalt; i++) { p = put_str(p, i ? ", then " : " first, then "); p = put_str(p, alt_host[i]); }
+	*p = 0;
+	logs(t, 0);
+}
+static void learn_addrs(const struct disc_found *f)
+{
+	copy(srv_v6, f->d.v6, sizeof srv_v6);
+	copy(srv_v4[0], f->host, sizeof srv_v4[0]);
+	srv_v4[1][0] = 0;
+	if (f->d.v4[0] && !same_text(f->d.v4, f->host)) copy(srv_v4[1], f->d.v4, sizeof srv_v4[1]);
+	addr_learned = 1;
+}
+/* server k of those found: its addresses in the order to try them, the others kept in case the first fails; the views
+   start again at Artists when it is another server than the one in use */
 static void connect_found(int k)
 {
 	const char *c[3];
 	struct disc_found *f = &servers[k];
-	int n = a68_disc_hosts(&f->d, f->host, net_prefer == 4 ? A68_IPV4 : A68_IPV6, net_is_v6(), c), i;
+	int n, same_srv = srv_known && same_text(f->d.name, srv_name) && f->d.port == srv_port;
 	char first[64];
+	learn_addrs(f);
+	n = addr_order(c);
 	if (!n) { set_problem("The music server's answer named no address this Mac can use."); return; }
 	copy(first, c[0], sizeof first);
-	for (nalt = 0, i = 1; i < n && nalt < 2; i++) copy(alt_host[nalt++], c[i], sizeof alt_host[0]);
-	if (!same_text(first, srv_host) || f->d.port != srv_port) {
+	addr_alts(c, n, 1);
+	if (!same_srv && (!same_text(first, srv_host) || f->d.port != srv_port)) {
 		depth = 1;
 		CUR->sel = CUR->top = 0; CUR->from = 0;
 	}
@@ -335,13 +396,30 @@ static char *put_server(char *p, int k)
 static void probe_done(void)
 {
 	int k, pick = -1;
-	int was_auto = auto_find, was_user = user_find;
-	finding = 0; auto_find = 0; user_find = 0;
+	int was_auto = auto_find, was_user = user_find, was_learn = learn_find;
+	finding = 0; auto_find = 0; user_find = 0; learn_find = 0;
 	if (disc.st == D_FOUND) {
 		nservers = disc.n;
 		memcpy(servers, disc.found, sizeof servers[0] * (unsigned long)nservers);
 	} else nservers = 0;
 	servers_gen++;
+	if (was_learn) {                             /* 1.8: the server in use, reached over IPv4: has it an IPv6 address? */
+		addr_learned = 1;                        /* asked once; Search Again asks again */
+		for (k = 0; k < nservers; k++)
+			if (servers[k].d.port == srv_port && (same_text(servers[k].d.name, srv_name) || found_is_current(k))) break;
+		if (k == nservers) { logs("the probe did not hear from the server in use: its address stays ", srv_host); return; }
+		learn_addrs(&servers[k]);
+		if (srv_v6[0] && net_is_v6() && !net_v4only && net_prefer != 4 && !colon(srv_host)) {
+			const char *c[3];
+			int n = addr_order(c);
+			logs("the server also has the IPv6 address ", srv_v6);
+			addr_alts(c, n, 1);
+			copy(srv_host, c[0], sizeof srv_host);
+			fetch_forget_host();
+			want_info = 1;                       /* asked over IPv6 now; if that does not answer, the IPv4 address again */
+		} else logs("the server names no IPv6 address: it stays at ", srv_host);
+		return;
+	}
 	if (!nservers) {
 		if (was_user && srv_known) { message_box("No music server answered on this network. The one in use stays.", 32); return; }
 		if (was_auto && srv_host[0]) {
@@ -471,6 +549,7 @@ static Rect list_rect(void)
 	return r;
 }
 static int visible(void) { Rect r = list_rect(); int n = (r.bottom - r.top) / row_h(); return n < 1 ? 1 : n; }
+static int tracking;                             /* the scroll bar's arrows or page areas held (1.8) */
 static void fix_scroll(void)
 {
 	int max = nlines() - visible();
@@ -480,7 +559,9 @@ static void fix_scroll(void)
 	if (!sbar) return;
 	SetCtlMax(sbar, max);
 	SetCtlValue(sbar, CUR->top);
-	HiliteControl(sbar, active && max ? 0 : 255);
+	/* not while the Control Manager tracks it (1.8): it has the arrow highlighted, and this unhighlighted it and drew the
+	   whole bar again at every step */
+	if (!tracking) HiliteControl(sbar, active && max ? 0 : 255);
 }
 
 /* ---- the server's answers --------------------------------------------------------------------------- */
@@ -528,6 +609,13 @@ static void got_info(void)
 	p = put_num(p, inf.albums); p = put_str(p, " albums, "); p = put_num(p, inf.tracks); p = put_str(p, " tracks");
 	*p = 0;
 	logs(t, fetch.ipv == 6 ? " (IPv6)" : " (IPv4)");
+	p = put_str(put_str(t, "the server answers at "), srv_host);
+	p = put_str(p, fetch.ipv == 6 ? " (IPv6): " : " (IPv4): "); p = put_str(p, "that address is used from now on (");
+	p = put_str(p, connect_by()); *p++ = ')'; *p = 0;
+	logs(t, 0);
+	/* the one that answered is kept for the session; the ones not tried stay, for a later failure (the other family) */
+	/* reached over IPv4 with IPv6 wanted and the server's IPv6 address not known: ask the probe for it, once (1.8) */
+	if (fetch.ipv == 4 && !addr_learned && net_is_v6() && !net_v4only && net_prefer != 4) want_learn = 1;
 }
 static void got_list(void)
 {
@@ -619,6 +707,23 @@ static void resume_url(char *url, int max, unsigned long secs)
 	if (shows_video(qat(Q.feed))) offset_s = feed_start;   /* a video's new stream counts from there */
 	track_url(url, max, Q.feed, feed_start);
 }
+/* the stream's connection to the server failed (radio.c, 1.8): the server's next address for the stream's next try, and
+   for the lists from then on */
+static int other_host(void)
+{
+	char t[140], *p;
+	int k;
+	if (!nalt) return 0;
+	p = put_str(put_str(put_str(t, "the stream could not reach "), srv_host), ": the server's other address, ");
+	copy(srv_host, alt_host[0], sizeof srv_host);
+	for (k = 1; k < nalt; k++) copy(alt_host[k - 1], alt_host[k], sizeof alt_host[0]);
+	nalt--;
+	p = put_str(p, srv_host);
+	*p = 0;
+	logs(t, 0);
+	fetch_forget_host();
+	return 1;
+}
 static void play_at(int i, unsigned long start)
 {
 	char u[200], name[60], *p;
@@ -632,8 +737,9 @@ static void play_at(int i, unsigned long start)
 	offset_s = feed_start = start;
 	radio.next = next_url;
 	radio.resume = resume_url;
-	p = put_str(name, q->artist);
-	p = put_str(p, " - ");
+	radio.other_host = other_host;
+	p = name;
+	if (named(q->artist)) { p = put_str(p, q->artist); p = put_str(p, " - "); }
 	copy(p, q->title, (int)(sizeof name - (unsigned long)(p - name)));
 	if (shows_video(q)) {
 		/* the picture at a size of the video's shape for the screen the player window is on; the same video again (a
@@ -642,7 +748,12 @@ static void play_at(int i, unsigned long start)
 		if (!same_id(shown_id, q->id) || !vc_window()) {
 			vc_size_for(player_window(), q->vw, q->vh, &vm_w, &vm_h);
 			copy(shown_id, q->id, 9);
-			vc_window_open(q->title, vm_w, vm_h, player_window());
+			{   /* its title the artist, an em dash, the title (1.8: the owner, "add the artist name into the window also") */
+				char wt[100], *w = wt;
+				if (named(q->artist)) { w = put_str(w, q->artist); w = put_str(w, " \xD1 "); }
+				copy(w, q->title, (int)(sizeof wt - (unsigned long)(w - wt)));
+				vc_window_open(wt, vm_w, vm_h, player_window());
+			}
 		}
 	} else vc_window_dispose();
 	track_url(u, sizeof u, i, start);
@@ -871,7 +982,7 @@ static void lib_refresh(void)
 /* the device's part of the player: an id kept in the preferences and the Mac's name */
 void lib_device(const char *id, const char *name)
 {
-	dv_init(&dev, id, name, "1.7", "classic");
+	dv_init(&dev, id, name, "1.8", "classic");
 	dev.client = cl;                             /* videos=1: a video sent here comes as a V line */
 	dev.video = vc_present() && srv_mpeg1;       /* 1.6: with the video decoder card it shows them (the announce's video=1) */
 	dev_ready = id[0] != 0;
@@ -898,6 +1009,7 @@ void lib_seek(unsigned long s)
 /* ---- the network, from the event loop ------------------------------------------------------------- */
 static void start_job(int j, const char *path)
 {
+	fetch_next_quick = nalt > 0;                 /* 1.8: another address to try: 5 s for this one */
 	if (fetch_start(srv_host, srv_port, path)) job = j;
 }
 static void next_job(void)
@@ -906,6 +1018,7 @@ static void next_job(void)
 	int i;
 	if (!srv_host[0] || finding) return;
 	job_links = 0;
+	if (want_learn && srv_known && !want_info) { want_learn = 0; find_server(2); return; }
 	if (want_info) { want_info = 0; a68_path_info(&cl, path, sizeof path); start_job(J_INFO, path); return; }
 	if (want_list && srv_known) {
 		struct view *v = CUR;
@@ -1017,14 +1130,28 @@ void lib_poll(void)
 		int j = job;
 		job = J_NONE;
 		if (fetch.st == FS_FAILED) {
-			if (j == J_INFO && nalt) {               /* the server's other addresses, each once */
-				char h[64];
+			if ((j == J_INFO || fetch.unreachable) && nalt) {   /* the server's other addresses, each once */
+				char h[64], t[160], *p;
 				int k;
 				copy(h, alt_host[0], sizeof h);
 				for (k = 1; k < nalt; k++) copy(alt_host[k - 1], alt_host[k], sizeof alt_host[0]);
 				nalt--;
-				logs("trying the server's other address, ", h);
-				use_server(h, srv_port);
+				p = put_str(put_str(put_str(t, "no answer from "), srv_host), " (");
+				p = put_str(put_str(p, fetch.error ? fetch.error : "?"), "): trying ");
+				p = put_str(p, h);
+				*p = 0;
+				logs(t, 0);
+				if (j == J_INFO) use_server(h, srv_port);
+				else {                               /* 1.8: a list or a cover: the same request at the other address */
+					copy(srv_host, h, sizeof srv_host);
+					fetch_forget_host();
+					if (j == J_LIST) want_list = 1;
+					else if (j == J_QUEUE) want_queue = 1;
+					else if (j == J_NOWART) now_art.state = 0;
+					else if (j == J_BARART) bar_art.state = 0;
+					else if (j == J_VIEWART) view_art.state = 0;
+					else if (j == J_THUMBS) { for (k = 0; k < nthumb; k++) thumb_state[thumb_rows[k]] = 0; }
+				}
 				fetch.st = FS_IDLE;
 				return;
 			}
@@ -1109,7 +1236,17 @@ void lib_poll(void)
 			player_refresh();
 			say_error(e);
 		}
-		if (lw && LM_TICKS - last_draw >= 30) { last_draw = LM_TICKS; SetPort(lw); draw_bar(); }
+		if (LM_TICKS - last_draw >= 30) {
+			last_draw = LM_TICKS;
+			if (lw) { SetPort(lw); draw_bar(); }
+			if (vc_window_shown() && Q.cur >= 0 && Q.cur < Q.n) {   /* the video window's strip: the time (1.8) */
+				char t[40], *p = put_time(t, pos_s());
+				if (qat(Q.cur)->secs) { p = put_str(p, " of "); p = put_time(p, qat(Q.cur)->secs); }
+				if (radio.paused) p = put_str(p, ", paused");
+				*p = 0;
+				vc_strip(t);
+			}
+		}
 	}
 }
 
@@ -1252,7 +1389,7 @@ static void draw_line(int li, Rect *lr)
 				if (i == 0 || !same_text(rows[i - 1].sub, rows[i].sub)) {
 					TextFace(1);
 					MoveTo(x, (short)(y + 12));
-					clip_text(rows[i].sub, col - 8);
+					clip_text(artist_or(rows[i].sub, "Unknown artist"), col - 8);
 					TextFace(0);
 				}
 				x += col;
@@ -1263,11 +1400,11 @@ static void draw_line(int li, Rect *lr)
 			char t[100], *p = t;
 			MoveTo(x, (short)(y + 12));
 			p = put_str(p, rows[i].kind == 'A' ? "Artist: " : rows[i].kind == 'L' ? "Album: " : rows[i].kind == 'V' ? "Video: " : "");
-			p = put_str(p, rows[i].text);
-			if (rows[i].sub[0] && rows[i].kind != 'A' && (CUR->kind == V_SEARCH || CUR->kind == V_QUEUE)) { p = put_str(p, " \xD1 "); p = put_str(p, rows[i].sub); }
+			p = put_str(p, rows[i].kind == 'A' ? artist_or(rows[i].text, "Unknown artist") : rows[i].text);
+			if (named(rows[i].sub) && rows[i].kind != 'A' && (CUR->kind == V_SEARCH || CUR->kind == V_QUEUE)) { p = put_str(p, " \xD1 "); p = put_str(p, rows[i].sub); }
 			*p = 0;
 			clip_text(t, room - x);
-		} else { MoveTo(x, (short)(y + 12)); clip_text(rows[i].text, room - x); }
+		} else { MoveTo(x, (short)(y + 12)); clip_text(rows[i].kind == 'A' ? artist_or(rows[i].text, "Unknown artist") : rows[i].text, room - x); }
 		if (film) draw_film(lw, (short)(lr->right - 8 - rw - FILM_W - 1), (short)(y + 11));
 		draw_right(right, (short)(lr->right - 8), (short)(y + 12));
 	}
@@ -1345,8 +1482,8 @@ static void draw_bar(void)
 		MoveTo(tx, (short)(LH - 24));
 		clip_text(q->title, right - tx - 6);
 		TextFace(0);
-		p = put_str(t, q->artist);
-		p = put_str(p, " \xD1 ");
+		p = t;
+		if (named(q->artist)) { p = put_str(p, q->artist); p = put_str(p, " \xD1 "); }   /* 1.8: "_" no more */
 		p = put_time(p, pos_s());
 		if (q->secs) { p = put_str(p, " of "); p = put_time(p, q->secs); }
 		if (lstate == L_ENDED) p = put_str(p, " \xD1 finished");
@@ -1547,6 +1684,7 @@ int lib_ctl_action(void *ctl, int part)
 	case inPageDown: t += v - 1; break;
 	}
 	scroll_to(t);
+	radio_keep();                                /* 1.8: the stream kept coming while the arrow is held */
 	return 1;
 }
 void lib_click(EventRecord *ev)
@@ -1562,7 +1700,7 @@ void lib_click(EventRecord *ev)
 	if (ctl) {
 		if (ctl == sbar) {
 			if (part == inThumb) { TrackControl(ctl, pt_long(p), 0); scroll_to(GetCtlValue(sbar)); }
-			else TrackControl(ctl, pt_long(p), (void *)pas_ctl_action);
+			else { tracking = 1; TrackControl(ctl, pt_long(p), (void *)pas_ctl_action); tracking = 0; fix_scroll(); }
 			return;
 		}
 		if (!TrackControl(ctl, pt_long(p), 0)) return;
@@ -1680,9 +1818,9 @@ void lib_draw_now(void *win, short W, short H)
 	clip_text(q ? q->title : "", W - 94);
 	TextFont(3); TextSize(9);
 	p = t;
-	if (q) {
-		p = put_str(p, q->artist);
-		if (album_title[0] && Q.cur >= 0) { p = put_str(p, " \xD1 "); p = put_str(p, album_title); }
+	if (q) {                                     /* the artist, the album; either alone when the other is not there (1.8) */
+		p = put_str(p, artist_or(q->artist, ""));
+		if (album_title[0] && Q.cur >= 0) { if (p > t) p = put_str(p, " \xD1 "); p = put_str(p, album_title); }
 	}
 	*p = 0;
 	MoveTo(84, 30);
@@ -1773,6 +1911,20 @@ void lib_connect(void)
 	CUR->sel = CUR->top = 0; CUR->from = 0;
 	auto_tried = 0;
 	want_name[0] = 0;                            /* the name it answers with is kept (got_info) */
+	/* 1.8: the typed address is the one known; a name is looked up by the driver (IPv6 and IPv4 addresses, in Connect
+	   By's order, each tried in turn); a typed IPv4 address with IPv6 First asks the probe for the server's IPv6 address
+	   once it has answered */
+	srv_v6[0] = srv_v4[0][0] = srv_v4[1][0] = 0;
+	addr_learned = 0;
+	if (colon(h)) copy(srv_v6, h, sizeof srv_v6);
+	else if (a68_is_ipv4(h)) copy(srv_v4[0], h, sizeof srv_v4[0]);
+	{
+		char t[120], *p = put_str(put_str(t, "connecting to the typed address "), h);
+		p = put_str(put_str(p, colon(h) ? " (IPv6" : a68_is_ipv4(h) ? " (IPv4" : " (a name: its addresses in the order of "), connect_by());
+		p = put_str(p, colon(h) || a68_is_ipv4(h) ? ")" : ")");
+		*p = 0;
+		logs(t, 0);
+	}
 	use_server(h, (unsigned short)port);
 	view_changed();
 }
@@ -1929,6 +2081,46 @@ void lib_set_ext(const struct lib_prefs_ext *e)
 {
 	copy(want_name, e->srv_name, sizeof want_name);
 	instead = e->instead != 0;
+}
+/* Connect By changed (1.8): the server's addresses in the new order; asked again at the first if that is another */
+void lib_net_changed(void)
+{
+	const char *c[3];
+	int n;
+	if (!srv_host[0]) return;
+	n = addr_order(c);
+	if (!n || same_text(c[0], srv_host)) { if (n) addr_alts(c, n, 1); return; }
+	copy(srv_host, c[0], sizeof srv_host);
+	addr_alts(c, n, 1);
+	fetch_forget_host();
+	want_info = 1;
+}
+/* the preferences' 1.8 tail: the server's addresses by family (after lib_set_prefs, which gave the one that answered
+   last): the order Connect By names again, the one that answered last among them */
+void lib_get_addrs(struct lib_prefs_addrs *a)
+{
+	memset(a, 0, sizeof *a);
+	copy(a->v6, srv_v6, sizeof a->v6);
+	copy(a->v4[0], srv_v4[0], sizeof a->v4[0]);
+	copy(a->v4[1], srv_v4[1], sizeof a->v4[1]);
+	a->learned = (short)addr_learned;
+}
+void lib_set_addrs(const struct lib_prefs_addrs *a)
+{
+	const char *c[3];
+	int n, i;
+	copy(srv_v6, a->v6, sizeof srv_v6);
+	copy(srv_v4[0], a->v4[0], sizeof srv_v4[0]);
+	copy(srv_v4[1], a->v4[1], sizeof srv_v4[1]);
+	if (!a68_is_ipv6(srv_v6)) srv_v6[0] = 0;
+	for (i = 0; i < 2; i++) if (!a68_is_ipv4(srv_v4[i])) srv_v4[i][0] = 0;
+	addr_learned = a->learned != 0;
+	if (!srv_host[0] || !net_open()) return;
+	n = addr_order(c);
+	for (i = 0; i < n && !same_text(c[i], srv_host); i++) { }
+	if (!n || i == n) { nalt = 0; return; }       /* the remembered address is none of them: it alone, as before */
+	copy(srv_host, c[0], sizeof srv_host);
+	addr_alts(c, n, 1);
 }
 
 /* ---- the preferences ----------------------------------------------------------------------------------- */

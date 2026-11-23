@@ -41,6 +41,10 @@
  * changed go over the wire (psmac_board_se.c), and the HDMI screen is converted to the VideoCore 30 times
  * a second (psmac_display.c). So a screenshot of the Mac shows the video too, and a window moved over it
  * is the Mac's business: the Mac says "not visible" and redraws.
+ * Since 23 November 2026 (Aurora68 Play 1.8, docs/08 item 124) a program may also hand over its window's visible
+ * region (the block's vis_rgn): the card then reads the region at every picture and draws only where the window
+ * shows, so a video behind another program's window, or partly under one, goes on where it can be seen; and no
+ * picture is drawn while a menu is down (the Mac's TheMenu), whichever program pulled it down.
  */
 #include <stdint.h>
 #include "support.h"
@@ -85,7 +89,9 @@ static struct {
     uint32_t fed;                             /* bytes given to pl_mpeg */
     uint32_t decoded, shown, dropped, underruns, streams;
 } v;
-static struct { uint32_t seq; uint32_t screen; int32_t t, l, b, r; uint32_t visible; } g;
+static struct { uint32_t seq; uint32_t screen; int32_t t, l, b, r; uint32_t visible; uint32_t rgn, vflags; } g;
+static uint32_t menu_skips, rgn_skips, rgn_parts;   /* pictures not drawn under a menu, or for a region that could not
+                                                       be read; the parts of the last region drawn (the heartbeat's) */
 static struct { uint64_t busy, t0, dec, dec_max, draw; uint32_t ndec, ndraw; } st;   /* the last second's numbers */
 
 static void say(const char *s)
@@ -275,25 +281,89 @@ static int make_ctab(const struct pv_surface *s)
     return 1;
 }
 
-static void draw(const plm_frame_t *f)
+/* the window's visible region as rectangles (23 November 2026, docs/08 item 124). A QuickDraw region: rgnSize, rgnBBox,
+   then (unless rgnSize is 10, a rectangle) inversion lines: a y, the x's where the region's inside changes from that
+   line down, $7FFF; the whole ends with another $7FFF. Read through the Mac's memory map at every picture (the Window
+   Manager changes it whenever a window moves, also another program's), each band of lines with the same x's a set of
+   rectangles, a band like the one above it merged into it; in the window's coordinates, the picture's rectangle at
+   0,0, moved to the screen's by x0, y0 and cut to the part on the screen. Anything that does not read as a region (a
+   block moving in the heap as it is read) is -1: that picture is not drawn */
+#define MAX_PARTS 16
+static int rd16(uint32_t a, uint32_t *v)
 {
-    struct pv_surface s;
-    if (!g.visible || !psmac_video_surface(g.screen, &s)) return;
-    int32_t x0 = g.l, y0 = g.t, x1 = g.r, y1 = g.b;
-    int32_t rw = x1 - x0, rh = y1 - y0;
-    if (rw <= 0 || rh <= 0 || rw > 4096) return;
-    /* the part of the rectangle on the screen */
-    int32_t cx0 = x0 < 0 ? 0 : x0, cy0 = y0 < 0 ? 0 : y0;
-    int32_t cx1 = x1 > (int32_t)s.width ? (int32_t)s.width : x1, cy1 = y1 > (int32_t)s.height ? (int32_t)s.height : y1;
-    if (cx0 >= cx1 || cy0 >= cy1) return;
-    uint32_t fw = f->width, fh = f->height;
-    if (xmap_w != (uint32_t)rw || xmap_fw != fw) {
-        for (int32_t x = 0; x < rw; x++) xmap[x] = (uint16_t)((uint32_t)x * fw / (uint32_t)rw);
-        xmap_w = (uint32_t)rw; xmap_fw = fw;
+    int ok;
+    uint32_t w = psmac_video_rd32(a & ~3u, &ok);
+    *v = a & 2 ? w & 0xFFFFu : w >> 16;
+    return ok;
+}
+static int vis_parts(int32_t out[MAX_PARTS][4], int32_t x0, int32_t y0, int32_t cx0, int32_t cy0, int32_t cx1, int32_t cy1)
+{
+    int ok, n = 0, nx = 0, k;
+    uint32_t mp = psmac_video_rd32(g.rgn, &ok), size, w, a;
+    int32_t xs[32], bb[4];
+    if (!ok || !mp) return -1;
+    if (g.vflags & A68V_VF_24BIT) mp &= 0x00FFFFFFu;
+    if ((mp & 1) || !rd16(mp, &size) || size < 10 || size > 8192) return -1;
+    for (k = 0; k < 4; k++) { if (!rd16(mp + 2 + 2 * (uint32_t)k, &w)) return -1; bb[k] = (int16_t)w; }
+    if (size == 10) {                         /* a rectangle (or empty) */
+        int32_t t = bb[0] + y0, l = bb[1] + x0, b = bb[2] + y0, r = bb[3] + x0;
+        if (t < cy0) t = cy0;
+        if (l < cx0) l = cx0;
+        if (b > cy1) b = cy1;
+        if (r > cx1) r = cx1;
+        if (t >= b || l >= r) return 0;
+        out[0][0] = t; out[0][1] = l; out[0][2] = b; out[0][3] = r;
+        return 1;
     }
-    if (s.depth >= 2 && s.depth <= 8 && (s.clut_seq != ctab_seq || s.depth != ctab_depth || s.gray != ctab_gray || !ctab))
-        if (!make_ctab(&s)) return;
+    a = mp + 10;
+    uint32_t end = mp + size;
+    if (a + 2 > end || !rd16(a, &w)) return -1;
+    a += 2;
+    while (w != 0x7FFF) {
+        int32_t y = (int16_t)w, ny;
+        for (;;) {                            /* this line's x's toggle the inside */
+            if (a + 2 > end || !rd16(a, &w)) return -1;
+            a += 2;
+            if (w == 0x7FFF) break;
+            int32_t x = (int16_t)w;
+            for (k = 0; k < nx && xs[k] < x; k++) { }
+            if (k < nx && xs[k] == x) { for (; k + 1 < nx; k++) xs[k] = xs[k + 1]; nx--; }
+            else {
+                if (nx >= 32) return -1;
+                for (int j = nx; j > k; j--) xs[j] = xs[j - 1];
+                xs[k] = x; nx++;
+            }
+        }
+        if (a + 2 > end || !rd16(a, &w)) return -1;
+        a += 2;
+        if (w == 0x7FFF) break;
+        ny = (int16_t)w;
+        if (ny <= y) return -1;               /* not a region: lines go down */
+        for (k = 0; k + 1 < nx; k += 2) {     /* the band y..ny */
+            int32_t t = y + y0, l = xs[k] + x0, b = ny + y0, r = xs[k + 1] + x0, j;
+            if (t < cy0) t = cy0;
+            if (l < cx0) l = cx0;
+            if (b > cy1) b = cy1;
+            if (r > cx1) r = cx1;
+            if (t >= b || l >= r) continue;
+            for (j = 0; j < n; j++)           /* the same columns just above: one rectangle */
+                if (out[j][2] == t && out[j][1] == l && out[j][3] == r) { out[j][2] = b; break; }
+            if (j < n) continue;
+            if (n == MAX_PARTS) return -1;    /* more pieces than this: not drawn rather than drawn over a window */
+            out[n][0] = t; out[n][1] = l; out[n][2] = b; out[n][3] = r; n++;
+        }
+    }
+    return n;
+}
+
+/* the part cx0..cx1, cy0..cy1 of the picture's rectangle (x0, y0, rw x rh, on the screen s) */
+static void draw_area(const plm_frame_t *f, const struct pv_surface *ps, int32_t x0, int32_t y0, int32_t rw, int32_t rh,
+                      int32_t cx0, int32_t cy0, int32_t cx1, int32_t cy1)
+{
+    struct pv_surface s = *ps;
+    uint32_t fh = f->height;
     int amp = s.depth == 8 ? 40 : s.depth == 4 ? 64 : 96;          /* the dither's reach, in 0-255 steps */
+    (void)rw;
     for (int32_t y = cy0; y < cy1; y++) {
         uint32_t sy = (uint32_t)(y - y0) * fh / (uint32_t)rh;
         const uint8_t *yr = f->y.data + sy * f->y.width;
@@ -337,6 +407,35 @@ static void draw(const plm_frame_t *f)
         }
         }
     }
+}
+static void draw(const plm_frame_t *f)
+{
+    struct pv_surface s;
+    if (!g.visible || !psmac_video_surface(g.screen, &s)) return;
+    if (psmac_video_menu_down()) { menu_skips++; return; }   /* a menu over the screen: whichever program's */
+    int32_t x0 = g.l, y0 = g.t, x1 = g.r, y1 = g.b;
+    int32_t rw = x1 - x0, rh = y1 - y0;
+    if (rw <= 0 || rh <= 0 || rw > 4096) return;
+    /* the part of the rectangle on the screen */
+    int32_t cx0 = x0 < 0 ? 0 : x0, cy0 = y0 < 0 ? 0 : y0;
+    int32_t cx1 = x1 > (int32_t)s.width ? (int32_t)s.width : x1, cy1 = y1 > (int32_t)s.height ? (int32_t)s.height : y1;
+    if (cx0 >= cx1 || cy0 >= cy1) return;
+    uint32_t fw = f->width;
+    if (xmap_w != (uint32_t)rw || xmap_fw != fw) {
+        for (int32_t x = 0; x < rw; x++) xmap[x] = (uint16_t)((uint32_t)x * fw / (uint32_t)rw);
+        xmap_w = (uint32_t)rw; xmap_fw = fw;
+    }
+    if (s.depth >= 2 && s.depth <= 8 && (s.clut_seq != ctab_seq || s.depth != ctab_depth || s.gray != ctab_gray || !ctab))
+        if (!make_ctab(&s)) return;
+    if (!g.rgn) draw_area(f, &s, x0, y0, rw, rh, cx0, cy0, cx1, cy1);
+    else {                                    /* only the parts of the window that show (its visRgn, read now) */
+        int32_t rr[MAX_PARTS][4];
+        int n = vis_parts(rr, x0, y0, cx0, cy0, cx1, cy1);
+        if (n < 0) { rgn_skips++; return; }   /* the region could not be read (moving in the Mac's heap): not this picture */
+        rgn_parts = (uint32_t)n;
+        for (int k = 0; k < n; k++)
+            draw_area(f, &s, x0, y0, rw, rh, rr[k][1], rr[k][0], rr[k][3], rr[k][2]);
+    }
     __asm__ volatile("dmb ish" ::: "memory");
 }
 
@@ -347,9 +446,12 @@ static void geometry(void)
     __asm__ volatile("dmb ish" ::: "memory");
     uint32_t screen = blk->screen, vis = blk->visible;
     int32_t t = blk->top, l = blk->left, b = blk->bottom, r = blk->right;
+    int tagged = blk->clip_tag == A68V_CLIP_TAG + s1;   /* a stale tag: another program's place, the whole rectangle */
+    uint32_t rgn = tagged ? blk->vis_rgn : 0, vflags = blk->vis_flags;
     __asm__ volatile("dmb ish" ::: "memory");
     if (blk->geom_seq != s1) return;          /* changing while read: next time */
     g.seq = s1; g.screen = screen; g.visible = vis; g.t = t; g.l = l; g.b = b; g.r = r;
+    g.rgn = rgn; g.vflags = vflags;
     /* the window moved, was uncovered or brought back while no new picture is coming (paused, ended, dry): the
        last picture drawn again, so the program never has to paint the picture area itself (22 November 2026) */
     if (vis && v.on && v.have_last && (v.paused || v.stalled || v.ended_v)) draw(&v.last);
@@ -540,8 +642,8 @@ void psmac_video_report(void)
     if (quiet && s == last_state && v.streams == last_streams) return;
     last_state = s; last_streams = v.streams;
     kprintf("[PSMAC]   video: %s, stream %u %ux%u, %u.%u s, %u decoded, %u shown, %u not drawn, %u dry; decode %u us (at most %u), draw %u us, "
-            "%u per mille of core 1; %u KB waiting, screen %u at %d,%d-%d,%d%s, sound %s\n",
+            "%u per mille of core 1; %u KB waiting, screen %u at %d,%d-%d,%d%s, %s %u, %u under a menu, %u unread, sound %s\n",
             sn[s], v.streams, blk->video_w, blk->video_h, blk->pos_ms / 1000, blk->pos_ms / 100 % 10, blk->frames_decoded,
             blk->frames_shown, blk->frames_dropped, blk->underruns, blk->decode_us, blk->decode_us_max, blk->draw_us, blk->load,
-            blk->buffered >> 10, g.screen, g.l, g.t, g.r, g.b, g.visible ? "" : " (hidden)", blk->sound ? "on" : "off");
+            blk->buffered >> 10, g.screen, g.l, g.t, g.r, g.b, g.visible ? "" : " (hidden)", g.rgn ? "region parts" : "no region", rgn_parts, menu_skips, rgn_skips, blk->sound ? "on" : "off");
 }

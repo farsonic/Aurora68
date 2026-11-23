@@ -42,6 +42,7 @@ long mac_dnr_call(void *code, long sel, long a, long b, long c, long d);
 void mac_dnr_result(void);
 
 struct fetch fetch;
+int fetch_next_quick;
 struct discovery disc;
 
 enum { TCPCreate = 30, TCPActiveOpen = 32, TCPSend = 34, TCPRcv = 37, TCPAbort = 39, TCPRelease = 42 };
@@ -163,7 +164,8 @@ static void open_start(void)
 		stream = *(unsigned long *)(pb_end + 28);
 	}
 	pb_setup(pb_ctl, TCPActiveOpen);
-	pb_ctl[32] = r_i + 1 < r_n ? 6 : 15;     /* seconds to connect: 6 while another address remains */
+	pb_ctl[32] = r_i + 1 < r_n ? 6 : fetch.quick ? 5 : 15;   /* seconds to connect: 6 while another address remains, 5
+	                                                               when the library has another of the server's (1.8) */
 	pb_ctl[33] = 1; pb_ctl[34] = 0xC0;
 	if (net_is_v6()) {
 		c_addr6.port = c_port;
@@ -181,6 +183,7 @@ static void resolve_start(void)
 {
 	unsigned long a4;
 	if (c_have) { open_start(); return; }
+	if (net_v4only && has_colon(c_host)) { fail("That is an IPv6 address, and Connect By says IPv4 Only.", 0); fetch.unreachable = 1; return; }
 	if (net_is_v6()) {
 		memset(&rpb, 0, sizeof rpb);
 		rpb.ioCRefNum = net_ipp();
@@ -220,6 +223,8 @@ int fetch_start(const char *host, unsigned short port, const char *path)
 	char *p;
 	if (fetch.st != FS_IDLE && fetch.st != FS_DONE && fetch.st != FS_FAILED) return 0;
 	memset(&fetch, 0, sizeof fetch);
+	fetch.quick = fetch_next_quick;
+	fetch_next_quick = 0;
 	if (!tcp_buf || !rbuf || !buf) { fetch.st = FS_FAILED; fetch.error = "There is not enough memory for the library."; return 1; }
 	if (!net_open()) { fetch.st = FS_FAILED; fetch.error = "MacTCP is not there: the library needs MacTCP or Riptide."; return 1; }
 	if (!same(host, c_host) || port != c_port) { copy(c_host, host, sizeof c_host); c_port = port; c_have = 0; }
@@ -232,7 +237,7 @@ int fetch_start(const char *host, unsigned short port, const char *path)
 	*p++ = ':'; p = put_num(p, port);
 	/* X-Aurora: the server wants it on a device's requests (a web page elsewhere cannot send it unasked), and it
 	   does no harm on the others */
-	p = put_str(p, "\r\nUser-Agent: Aurora68-Play/1.7 (Macintosh)\r\nX-Aurora: 1\r\nConnection: close\r\n\r\n");
+	p = put_str(p, "\r\nUser-Agent: Aurora68-Play/1.8 (Macintosh)\r\nX-Aurora: 1\r\nConnection: close\r\n\r\n");
 	wds.len = (unsigned short)(p - req); wds.ptr = req; wds.end = 0;
 	got = 0;
 	resolve_start();
@@ -269,9 +274,15 @@ void fetch_poll(void)
 	switch (fetch.st) {
 	case FS_RESOLVE:
 		if (net_is_v6()) {
-			if (rpb.ioResult > 0) { if (now - t_state > 30 * 60) fail("The server's name could not be found: is the network up?", 0); return; }
-			if (rpb.ioResult || !rpb.csParam.resolve.count) { fail("The server's name could not be found: is the network up?", rpb.ioResult); return; }
+			if (rpb.ioResult > 0) { if (now - t_state > 30 * 60) { fail("The server's name could not be found: is the network up?", 0); fetch.unreachable = 1; } return; }
+			if (rpb.ioResult || !rpb.csParam.resolve.count) { fail("The server's name could not be found: is the network up?", rpb.ioResult); fetch.unreachable = 1; return; }
 			r_n = rpb.csParam.resolve.count; r_i = 0;
+			if (net_v4only) {                         /* Connect By > IPv4 Only (1.8): the name's IPv4 addresses alone */
+				int k, m = 0;
+				for (k = 0; k < r_n; k++) if (IP6_IS_V4(&r_addrs[k])) r_addrs[m++] = r_addrs[k];
+				r_n = m;
+				if (!r_n) { fail("The server's name has no IPv4 address, and Connect By says IPv4 Only.", 0); fetch.unreachable = 1; return; }
+			}
 			c_addr6 = r_addrs[0];
 			c_have = 1;
 		} else {
@@ -295,6 +306,7 @@ void fetch_poll(void)
 			}
 			c_have = 0;                               /* the next try looks the name up again */
 			fail("The music server did not answer. Is it running, and is the address right?", IO_RESULT(pb_ctl));
+			fetch.unreachable = 1;
 			return;
 		}
 		fetch.ipv = net_is_v6() && !IP6_IS_V4((IP6Address *)(pb_ctl + 36)) ? 6 : 4;
@@ -424,7 +436,7 @@ int discover_start(void)
 static void d_keep(const struct a68_disc *a, unsigned long from)
 {
 	struct disc_found *f;
-	char t[90], *p;
+	char t[120], *p;
 	int i;
 	if (disc.n >= D_MAX) return;
 	f = &disc.found[disc.n];
@@ -435,6 +447,11 @@ static void d_keep(const struct a68_disc *a, unsigned long from)
 	disc.n++;
 	p = put_str(t, "found the music server \"");
 	p = put_str(p, a->name); p = put_str(p, "\" at "); p = put_str(p, f->host); *p++ = ':'; p = put_num(p, a->port);
+	*p = 0;
+	logs(t, 0);
+	/* the addresses it names (1.8): the owner's SE took IPv4 where IPv6 was wanted, and the log did not say why */
+	p = put_str(t, "  it names IPv4 "); p = put_str(p, a->v4[0] ? a->v4 : "(none)");
+	p = put_str(p, ", IPv6 "); p = put_str(p, a->v6[0] ? a->v6 : "(none: the server has no usable IPv6 address)");
 	*p = 0;
 	logs(t, 0);
 	if (disc.n == 1 && (long)(d_until - (LM_TICKS + 60)) > 0) d_until = LM_TICKS + 60;   /* the others: a second more */

@@ -568,7 +568,7 @@ enum { M_APPLE = 128, M_FILE, M_EDIT, M_CTL, M_RADIO, M_LIB, M_SRV = 138, M_NET 
    submenus (Connect By also of the Radio menu): the servers found, and the family tried first */
 enum { LB_SHOW = 1, LB_VIDEOS, LB_UPNEXT, LB_FIND, LB_S1, LB_PLAY, LB_PLAYV, LB_NEXTQ, LB_ADDQ, LB_S2, LB_SHUFFLE, LB_REPEAT,
        LB_REPEAT1, LB_S3, LB_LIVE, LB_RELOAD, LB_S4, LB_SERVERS, LB_NET };
-enum { NET_V6 = 1, NET_V4 };
+enum { NET_V6 = 1, NET_V4, NET_V4ONLY };            /* NET_V4ONLY: 1.8 */
 /* the Radio menu's submenus, one per group of the station list (stations.h): group g's menu ID is M_SUB + g.
    Inside Macintosh V (the Menu Manager): a submenu is inserted with InsertMenu(menu, -1), its parent item
    has the command character $1B and the submenu's ID as its mark, and an application's submenus take IDs
@@ -863,7 +863,8 @@ static void fix_menus(void)
 	enable(m_lib, LB_LIVE, lib_have_server());
 	build_servers_menu();
 	CheckItem(m_net, NET_V6, net_prefer != 4);
-	CheckItem(m_net, NET_V4, net_prefer == 4);
+	CheckItem(m_net, NET_V4, net_prefer == 4 && !net_v4only);
+	CheckItem(m_net, NET_V4ONLY, net_v4only);
 }
 
 /* ---- a small window that says something, with an OK button (no resources: the program has
@@ -929,7 +930,7 @@ void say_error(const char *text)
 }
 static void about(void)
 {
-	message_box("Aurora68 Play 1.7 for the Aurora68 card.\r"
+	message_box("Aurora68 Play 1.8 for the Aurora68 card.\r"
 	            "Plays MP3, FLAC, Ogg Vorbis and Apple Lossless (.m4a) files, AIFF and WAV files that are not compressed, "
 	            "internet radio (plain http:// MP3 streams through MacTCP or Riptide), and the music and music videos of an "
 	            "Aurora68 music server, which it finds on the network by itself: Library > Show Library. The Pi decodes them "
@@ -1417,7 +1418,7 @@ static void setup_menus(void)
 	m_radio = NewMenu(M_RADIO, pstr(pbuf, "Radio"));     /* its items come from the station list */
 	InsertMenu(m_radio, 0);
 	m_net = NewMenu(M_NET, pstr(pbuf, "Connect By"));
-	AppendMenu(m_net, pstr(pbuf, "IPv6 First;IPv4 First"));
+	AppendMenu(m_net, pstr(pbuf, "IPv6 First;IPv4 First;IPv4 Only"));
 	InsertMenu(m_net, -1);
 	DrawMenuBar();
 }
@@ -1477,8 +1478,10 @@ static void do_menu(long mr)
 		SetPort(win);
 		fix_buttons();
 	} else if (id == M_NET) {
-		net_prefer = item == NET_V4 ? 4 : 6;
-		pi_log(net_prefer == 4 ? "connections: IPv4 first, then IPv6" : "connections: IPv6 first, then IPv4");
+		net_prefer = item == NET_V6 ? 6 : 4;
+		net_v4only = item == NET_V4ONLY;
+		pi_log(net_v4only ? "connections: IPv4 only" : net_prefer == 4 ? "connections: IPv4 first, then IPv6" : "connections: IPv6 first, then IPv4");
+		lib_net_changed();                      /* 1.8: the library's server at the family named first, if it has one */
 	} else if (id == M_RADIO) {
 		if (item == radio_url_item) open_url();
 		else if (item == radio_add_item) add_defaults();
@@ -1515,8 +1518,16 @@ struct prefs { unsigned long magic; short version; Rect r; short vol; short pad;
                 char dev_id[20];                                    /* version 3 (Aurora68 Play 1.3): the device's id */
                 /* the tail (1.7): still version 3, so that an older Play, which reads as much as it knows and checks that
                    length, still reads the file; this Play takes the tail when the file is this long and it is marked */
-                unsigned long ext_magic; struct lib_prefs_ext ext; short vzoom; short pad3; };
+                unsigned long ext_magic; struct lib_prefs_ext ext; short vzoom; short pad3;
+                /* the second tail (1.8, docs/08 item 124), after 1.7's, marked PL18: Connect By's three choices, the video
+                   window's width from its size box, the server's addresses by family, and the player's and the Library's
+                   windows' places for each arrangement of screens they were last used on (the desktop's bounding box, the
+                   latest first). 1.7 reads its own part and checks that it got as much as it asked for, which it does */
+                unsigned long ext2_magic; short net18; short pad4; long vcustom; struct lib_prefs_addrs addrs;
+                struct place18 { Rect desk, player, lib; } places[4]; };
 #define PREFS_V3_SIZE ((long)__builtin_offsetof(struct prefs, ext_magic))
+#define PREFS_V17_SIZE ((long)__builtin_offsetof(struct prefs, ext2_magic))
+#define PREF_EXT2_MAGIC TYPE('P', 'L', '1', '8')
 #define PREFS_V2_SIZE (PREFS_V3_SIZE - 20)
 #define PREF_EXT_MAGIC TYPE('P', 'L', '1', '7')
 static const unsigned char pref_name[] = "\x13" "Aurora68 Play Prefs";
@@ -1542,6 +1553,8 @@ static void pref_pb(ParamBlock *pb, short vref, long dirid)
 	pb->ioNamePtr = pref_name; pb->ioVRefNum = vref;
 	pb->u.f.ioFlNum = dirid;                    /* ioDirID */
 }
+static struct place18 places_read[4];        /* the places of the file read at the start (1.8) */
+static int same_rect(const Rect *a, const Rect *b) { return a->top == b->top && a->left == b->left && a->bottom == b->bottom && a->right == b->right; }
 static int load_prefs(struct prefs *p)
 {
 	ParamBlock pb;
@@ -1565,7 +1578,9 @@ static int load_prefs(struct prefs *p)
 	if (p->version == 1 && pb.u.io.ioActCount >= 16) { memset(&p->lib, 0, sizeof p->lib); p->net = 6; return 1; }   /* Aurora68 Play 1.1's */
 	if (p->version == 2 && pb.u.io.ioActCount == PREFS_V2_SIZE) { memset(p->dev_id, 0, sizeof p->dev_id); p->ext_magic = 0; return 1; }
 	if (p->version != 3) return 0;
-	if (pb.u.io.ioActCount == sizeof *p && p->ext_magic == PREF_EXT_MAGIC) return 1;
+	if (pb.u.io.ioActCount == sizeof *p && p->ext_magic == PREF_EXT_MAGIC && p->ext2_magic == PREF_EXT2_MAGIC) return 1;
+	p->ext2_magic = 0;
+	if (pb.u.io.ioActCount >= PREFS_V17_SIZE && p->ext_magic == PREF_EXT_MAGIC) return 1;   /* written by 1.7: one tail */
 	p->ext_magic = 0;                           /* written by 1.3 to 1.6: no tail */
 	return pb.u.io.ioActCount >= PREFS_V3_SIZE;
 }
@@ -1586,6 +1601,17 @@ static void save_prefs(void)
 	p.vzoom = (short)vc_zoom();
 	p.net = (short)net_prefer;
 	p.r.top = tl.v; p.r.left = tl.h; p.r.bottom = (short)(tl.v + H); p.r.right = (short)(tl.h + W);
+	p.ext2_magic = PREF_EXT2_MAGIC;
+	p.net18 = (short)(net_v4only ? 44 : net_prefer);
+	p.vcustom = vc_custom_w();
+	lib_get_addrs(&p.addrs);
+	{   /* this arrangement of screens first, the others kept after it (from the file as it was read at the start) */
+		Rect desk = *RGN_BBOX(LM_GRAYRGN);
+		int k, m = 1;
+		p.places[0].desk = desk; p.places[0].player = p.r; p.places[0].lib = p.lib.r;
+		for (k = 0; k < 4 && m < 4; k++)
+			if (places_read[k].desk.right && !same_rect(&places_read[k].desk, &desk)) p.places[m++] = places_read[k];
+	}
 	pref_place(&vref, &dirid);
 	pref_pb(&pb, vref, dirid);
 	short e = mac_PBHCreate(&pb);
@@ -1665,7 +1691,8 @@ static void mouse_down(EventRecord *ev)
 		else if (w && w == vc_window() && TrackGoAway(w, pt_long(ev->where))) vc_window_hide();
 		break;
 	case inGrow:
-		if (w == win || w == lib_window()) {
+		if (w && w == vc_window()) vc_grow(pt_long(ev->where));   /* the video: its shape kept (1.8) */
+		else if (w == win || w == lib_window()) {
 			Rect lim = { WIN_H, WIN_W, 4000, 4000 };     /* top, left: the smallest height and width */
 			if (w != win) { lim.top = 200; lim.left = 360; }
 			vc_hold(1);
@@ -1681,7 +1708,7 @@ static void mouse_down(EventRecord *ev)
 	case inZoomIn:
 	case inZoomOut:
 		if (w && w == vc_window()) {             /* the video: Normal Size and Fill Screen (1.7) */
-			if (TrackBox(w, pt_long(ev->where), part)) vc_set_zoom(vc_zoom() == VC_NORMAL ? VC_FILL : VC_NORMAL);
+			if (TrackBox(w, pt_long(ev->where), part)) vc_zoom_box();   /* 1.8: Fill Screen and the size it had */
 		} else if ((w == win || w == lib_window()) && TrackBox(w, pt_long(ev->where), part)) {
 			SetPort(w);
 			EraseRect(PORT_RECT(w));
@@ -1811,6 +1838,20 @@ int main(void)
 	if (have_prefs) {
 		if (pr.vol >= 0 && pr.vol <= 100) vol = pr.vol;
 		net_prefer = pr.net == 4 ? 4 : 6;
+		if (pr.ext2_magic == PREF_EXT2_MAGIC) {      /* 1.8: Connect By's three choices; the places for these screens */
+			Rect desk = *RGN_BBOX(LM_GRAYRGN);
+			int k;
+			net_v4only = pr.net18 == 44;
+			if (net_v4only) net_prefer = 4;
+			memcpy(places_read, pr.places, sizeof places_read);
+			for (k = 0; k < 4; k++)
+				if (same_rect(&pr.places[k].desk, &desk)) {
+					pr.r = pr.places[k].player;
+					pr.lib.r = pr.places[k].lib;
+					pi_log("the windows' places kept for this arrangement of screens");
+					break;
+				}
+		}
 		if (on_screen(&pr.r)) b = pr.r;
 		else pi_log("the remembered window place is on no screen now: the window goes on the main screen");
 	}
@@ -1875,13 +1916,17 @@ int main(void)
 	}
 	if (have_prefs && pr.ext_magic == PREF_EXT_MAGIC) {   /* 1.7's tail: the server's name, videos instead, the window's size */
 		lib_set_ext(&pr.ext);
+		if (pr.ext2_magic == PREF_EXT2_MAGIC) vc_set_custom_w(pr.vcustom);   /* 1.8: the size box's width */
 		vc_set_zoom(pr.vzoom);
 	}
 	if (have_prefs) lib_set_prefs(&pr.lib);       /* the server, the shuffle; the Library window again if it was open */
+	if (have_prefs && pr.ext2_magic == PREF_EXT2_MAGIC) lib_set_addrs(&pr.addrs);   /* 1.8: its addresses by family */
 	lib_start();                                  /* no server remembered: look for one now (1.7) */
 	finder_files();
 	EventRecord ev;
+	unsigned long loop_t;
 	while (!quit) {
+		loop_t = LM_TICKS;
 		int more = state == S_PLAYING && more_to_send() && PSMB_STR_SIZE - (ps->head - ps->tail) >= 4096;
 		long sleep = more || (fetch.st != FS_IDLE && fetch.st != FS_DONE && fetch.st != FS_FAILED) ? 0 :
 		             state == S_PLAYING || radio.st != RS_OFF || disc.st == D_WAIT ? 6 : 30;
@@ -1897,6 +1942,7 @@ int main(void)
 			case activateEvt:
 				if ((void *)ev.message == win) activate(ev.modifiers & activeFlag);
 				else if (lib_window() && (void *)ev.message == lib_window()) lib_activate(ev.modifiers & activeFlag);
+				else if (vc_window() && (void *)ev.message == vc_window()) vc_activate(ev.modifiers & activeFlag);
 				break;
 			case osEvt:
 				if (((unsigned long)ev.message >> 24) == suspendResumeMessage) {
@@ -1924,6 +1970,17 @@ int main(void)
 		lib_poll();
 		vc_poll(fg);                            /* the video's place and whether it may be drawn */
 		watch();
+		{   /* 1.8 (docs/08 item 124): a pass of the loop that took seconds (a control tracked, a menu held, a dialog up,
+			   or other programs that gave no time): said in the log with the stream's state, so that a lock-up on the
+			   owner's SE (scrolling the Videos list with a video playing) leaves what went before it */
+			unsigned long gap = LM_TICKS - loop_t;
+			if (gap >= 180) {
+				char t[160], *p = put_str(t, "the event loop was away ");
+				p = put_num(p, gap / 60); *p++ = '.'; p = put_num(p, gap % 60 / 6); p = put_str(p, " s; ");
+				radio_chain_words(p);
+				pi_log(t);
+			}
+		}
 	}
 	discover_stop();
 	fetch_cancel();

@@ -77,6 +77,12 @@ void lib_set_prefs(const struct lib_prefs *p);
 struct lib_prefs_ext { char srv_name[48]; short instead; short pad; };
 void lib_get_ext(struct lib_prefs_ext *e);
 void lib_set_ext(const struct lib_prefs_ext *e);
+/* the preferences file's second tail (1.8): the server's addresses by family, so that a remembered server is reached at
+   the family Connect By names first, and the other when that does not answer; learned: the probe answered for it */
+struct lib_prefs_addrs { char v6[48]; char v4[2][20]; short learned; short pad; };
+void lib_get_addrs(struct lib_prefs_addrs *a);
+void lib_set_addrs(const struct lib_prefs_addrs *a);   /* after lib_set_prefs */
+void lib_net_changed(void);            /* Connect By changed: the server's address of the family named first */
 
 /* from piplay.c */
 void say_error(const char *text);
