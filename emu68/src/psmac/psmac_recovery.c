@@ -59,6 +59,18 @@
  * starts it as cmdline.txt says. The firmware's side (alice_net.c, wifi/fmac_ap.c) could only be tried against
  * the testbed's simulated radio; every refusal of a real chip is named on the screen.
  *
+ * Diagnostics (23 November 2026, docs/08 item 122; the owner: "do we have all the debug options in there for Mac,
+ * Mac Plus etc. Can we trigger a debug run directly in there for this and other platforms? With a report in the
+ * Web GUI?"). The Options tab offers every option a user or tester sets, grouped and filtered by the board, from
+ * psmac_diag.c's table (which is also the validator). The Diagnostics tab runs, while no Mac runs: the bus check on
+ * the compact Macs (psmac_buscheck.c, on the service core, which owns the transport; its lines come to the page as
+ * they are made, and the report holds the Mac's screen and HDMI until the page or a key gives them back), the card's
+ * read test (here, on core 3) and a fresh read of the CPLD's JTAG usercode. It arms a one-shot debug start:
+ * debug-once.txt in the card's root, one line of debug options that the next start merges into its boot arguments
+ * before anything reads them (psmac_recovery_once_early) and at once renames debug-once.old, so it happens once
+ * whatever that start does. And it lists the reports on the card and makes one bundle of them with the machine's
+ * summary and the logs, every secret "(hidden)" (psmac_diag.c's pdg_scrub).
+ *
  * Everything runs on core 3 inside the service loop, a bounded step per turn; core 0 decides (phase 1 and
  * 2) and then waits for good.
  */
@@ -74,6 +86,9 @@
 #include "psmac_cmdline.h"
 #include "psmac_recovery.h"
 #include "psmac_edid.h"
+#include "psmac_diag.h"
+#include "version.h"
+#include "devicetree.h"
 
 const char *psmac_option(const char *key);
 extern int psmac_board_se, psmac_board_solo, psmac_board_plus;
@@ -136,6 +151,16 @@ static char ap_how[96], ap_ssid[36], ap_pass[16], ap_err[100], ap_asked[96];
 static uint32_t ap_t0, ap_seq;
 static const uint8_t ap_ip[4] = { 192, 168, 4, 1 };
 static int ap_active(void) { return ap_state == AP_WAITING || ap_state == AP_STARTING || ap_state == AP_UP; }
+
+/* Diagnostics (docs/08 item 122, below): who has the screens, and the one-shot debug start this start took */
+#define BC_PAGE_ROWS 46
+static int diag_screen;                       /* 0 the recovery page; 1 a bus check runs (the compact Mac's screen is the check's); 2 its report on both screens */
+static void diag_screen_poll(void), diag_lines(void);
+static const char *board_model(void);
+struct sb; static void j_once(struct sb *b);
+int psmac_buscheck_request_state(void);
+static char once_used[600]; static int once_taken;
+static int once_armed;                         /* debug-once.txt is on the card (for the screen; the page reads the card) */
 
 static void enter(int w, const char *text)
 {
@@ -509,6 +534,7 @@ static void build_page(void)
     if (U.state == UP_RECV && U.total) L(0, "Now:   %s %u of %u KB (%u%%)", U.target, U.got >> 10, U.total >> 10, (uint32_t)((uint64_t)U.got * 100u / U.total));
     else if (U.state == UP_VERIFY) L(0, "Now:   %s: reading it back and checking", U.target);
     else L(0, "Last:  %s", last_action[0] ? last_action : "nothing yet");
+    diag_lines();
     if (why == WHY_COUNTER && have_old) L(0, "kernel8.old is on the card: the page offers Roll back");
     if (cfg_kernel[0]) L(0, "Note: config.txt starts %s, not kernel8.img", cfg_kernel);
     if (switch_board()) {
@@ -524,9 +550,10 @@ static void screen_poll(void)
     if (!scr_dirty && t - scr_last < 2000) return;
     if (t - scr_last < 200) return;
     scr_last = t; scr_dirty = 0;
+    diag_screen_poll();
     build_page();
-    draw_vc();
-    draw_se();
+    if (diag_screen != 2) draw_vc();              /* the bus check's report holds HDMI until the page or a key gives it back */
+    if (!diag_screen) draw_se();                  /* and the compact Mac's screen from the check's start */
 }
 
 /* =========================================================================== cmdline.txt edits */
@@ -539,7 +566,7 @@ static int cl_read(void)
     cl_old[n] = 0; cl_len = n;
     return 0;
 }
-static int is_secret(const char *k) { return ieq(k, "wifi.psk") || ieq(k, "remote.token") || ieq(k, "mac.wifisim"); }
+static int is_secret(const char *k) { const struct pdg_opt *o = pdg_find(k); return (o && (o->flags & PDG_F_SECRET)) || ieq(k, "mac.wifisim"); }
 /* the line as the browser may see it: secrets as *** */
 static void redacted(const char *in, char *out, uint32_t cap) { psmac_redact(in, out, cap); }
 /* cl_new (n bytes) onto the card, cmdline.bak keeping the line before; 0, or -1 and why */
@@ -562,32 +589,7 @@ static int cl_set(uint32_t *n, const char *key, const char *value)
     cl_new[k] = 0; *n = (uint32_t)k;
     return 0;
 }
-/* the options the page and the menu know: allowed values, "#" a number, "WxH" a size, "" any word */
-struct known { const char *key, *values; };
-static const struct known known_opts[] = {
-    { "mac.board", "se|plus|512ke|512k|128k|solo" }, { "mac.fpu", "exact|double|none" }, { "mac.sane", "rom|se" },
-    { "mac.boot", "auto|image|scsi" }, { "mac.ram", "#" }, { "mac.console", "hdmi" }, { "mac.sesound", "off|on" },
-    { "mac.screen", "WxH" }, { "mac.seram", "1|2|2.5|4" }, { "mac.plusmouse", "#" }, { "mac.plusdebounce", "#" }, { "mac.plusjitter", "#" },
-    { "mac.screencheck", "on|blind|off" }, { "bt.pair", "" }, { "eth", "usb|off" }, { "remote", "on|off" }, { "remote.token", "" },
-    { "wifi.ssid", "" }, { "wifi.psk", "" }, { "wifi.country", "" }, { "mac.recovery", "1" }, { "mac.bootcount", "#|off" },
-    { "wifi", "off" }, { "bt", "off" }, { "recovery.ap", "on|off" }, { "recovery.apsec", "wpa2|open" }, { "recovery.apchannel", "#" },
-};
-static const struct known *known_find(const char *k) { for (unsigned i = 0; i < sizeof known_opts / sizeof known_opts[0]; i++) if (ieq(known_opts[i].key, k)) return &known_opts[i]; return 0; }
-static int value_ok(const struct known *kn, const char *v, char *why_, unsigned whymax)
-{
-    if (!kn || !kn->values[0]) return 1;
-    for (const char *a = kn->values; *a; ) {
-        const char *e = a; while (*e && *e != '|') e++;
-        unsigned l = (unsigned)(e - a);
-        if (l == 1 && a[0] == '#') { const char *p = v; if (*p) { while (*p >= '0' && *p <= '9') p++; if (!*p) return 1; } }
-        else if (l == 3 && starts(a, "WxH")) { const char *p = v; int d1 = 0, d2 = 0; while (*p >= '0' && *p <= '9') { p++; d1++; } if (*p == 'x') { p++; while (*p >= '0' && *p <= '9') { p++; d2++; } } if (!*p && d1 && d2) return 1; }
-        else if (slen(v) == l) { unsigned i = 0; while (i < l && lower(v[i]) == lower(a[i])) i++; if (i == l) return 1; }
-        a = *e ? e + 1 : e;
-    }
-    struct sb b = { why_, 0, whymax };
-    bprintf(&b, "%s: %s is not one of %s", kn->key, v, kn->values);
-    return 0;
-}
+/* the options the page knows, their values and the boards that use them: psmac_diag.c's table (docs/08 item 122) */
 static int country_ok(const char *c, char *why_, unsigned whymax)
 {
     if (!c[0]) return 1;
@@ -1131,7 +1133,7 @@ static void ans_state(struct rconn *h)
     struct ipk_info ii; psmac_ip_info(&ii);
     static const char *const wn[] = { "none", "option", "request", "counter", "switch" };
     bput(&b, "{\"recovery\": true, \"reason\": "); bjson(&b, wn[why]); bput(&b, ", \"why\": "); bjson(&b, why_text);
-    bprintf(&b, ", \"board\": \"%s\", \"boot_count\": %d, \"boot_limit\": %d", psmac_board_solo ? "solo" : psmac_board_plus ? "plus" : psmac_board_se ? "se" : "iici", boot_count, boot_limit);
+    bprintf(&b, ", \"board\": \"%s\", \"board_model\": \"%s\", \"boot_count\": %d, \"boot_limit\": %d", psmac_board_solo ? "solo" : psmac_board_plus ? "plus" : psmac_board_se ? "se" : "iici", board_model(), boot_count, boot_limit);
     bprintf(&b, ",\n \"network\": {\"name\": \"%s.local\", \"link\": \"%s\", \"phase\": \"%s\", \"ip\": \"%d.%d.%d.%d\"", psmac_ip_name(), ii.unit == 1 ? "wired" : ii.unit == 0 ? "wifi" : "none", ii.phase, ii.ip[0], ii.ip[1], ii.ip[2], ii.ip[3]);
     volatile struct an_unit *w = unit(1), *wi = unit(0);
     bprintf(&b, ", \"wired\": %s", w && w->kind ? (w->link ? "\"link up\"" : "\"no link\"") : "null");
@@ -1153,6 +1155,9 @@ static void ans_state(struct rconn *h)
         bprintf(&b, ", \"security\": \"%s\", \"channel\": %d, \"address\": \"192.168.4.1\", \"clients\": %d, \"how\": ", ap_state != AP_UP ? "" : ap_open ? "open (the PIN guards the page)" : "WPA2", ap_channel, psmac_ip_ap_clients());
         bjson(&b, ap_how); bput(&b, ", \"error\": "); bjson(&b, ap_err); bput(&b, "}");
     } else bput(&b, ",\n \"ap\": null");
+    bput(&b, ",\n \"once\": "); j_once(&b);                  /* the one-shot debug start (docs/08 item 122) */
+    bprintf(&b, ", \"diag\": {\"buscheck\": \"%s\", \"screen\": \"%s\"}", psmac_buscheck_request_state() == 2 || psmac_buscheck_request_state() == 1 ? "running" : psmac_buscheck_request_state() == 3 ? "done" : "idle",
+            diag_screen == 2 ? "report" : diag_screen == 1 ? "check" : "recovery");
     bput(&b, "}\n");
     respond(h, 200, "application/json", j);
 }
@@ -1208,7 +1213,8 @@ static void ans_text_put(struct rconn *h, const char *name, const char *body, ui
     }
     json_err(h, 400, "name is cmdline.txt or config.txt");
 }
-static void ans_options(struct rconn *h, int post, int dry, char *body, uint32_t n)
+static void j_defs(struct sb *b);
+static void ans_options(struct rconn *h, int c, int post, int dry, char *body, uint32_t n)
 {
     char why_[200];
     if (cl_read()) { json_err(h, 404, "no cmdline.txt on the card"); return; }
@@ -1231,7 +1237,7 @@ static void ans_options(struct rconn *h, int post, int dry, char *body, uint32_t
                     *eq = 0;
                     const char *v = eq + 1;
                     if (!(is_secret(l) && starts(v, "***"))) {
-                        if (!value_ok(known_find(l), v, why_, sizeof why_)) { json_err(h, 422, why_); return; }
+                        if (!pdg_value_ok(pdg_find(l), v, why_, sizeof why_)) { json_err(h, 422, why_); return; }
                         if (ieq(l, "wifi.country") && !country_ok(v, why_, sizeof why_)) { json_err(h, 422, why_); return; }
                         if (ieq(l, "remote.token") && slen(v) < 8) { json_err(h, 422, "remote.token is 8 characters or more"); return; }
                         r = v[0] ? cl_set(&nn, l, v) : cl_set(&nn, l, 0);
@@ -1249,20 +1255,48 @@ static void ans_options(struct rconn *h, int post, int dry, char *body, uint32_t
             did("cmdline.txt: options changed on the page (the line before in cmdline.bak)");
         }
     }
-    static char j[8192]; struct sb b = { j, 0, sizeof j };
+    if (!take_big(c)) { json_err(h, 503, "busy: try again"); return; }
+    struct sb b = { big, 0, sizeof big };
     static char r[CL_MAX + 512];
     redacted(cl_new, r, sizeof r);
     bput(&b, "{\"line\": "); bjson(&b, r);
-    bprintf(&b, ", \"saved\": %s, \"values\": {", post && !dry ? "true" : "false");
-    for (unsigned i = 0; i < sizeof known_opts / sizeof known_opts[0]; i++) {
-        char v[96]; int k = pcl_get(cl_new, nn, known_opts[i].key, v, sizeof v);
-        bput(&b, i ? ", " : ""); bjson(&b, known_opts[i].key); bput(&b, ": ");
+    char bv[16] = ""; pcl_get(cl_new, nn, "mac.board", bv, sizeof bv);
+    int board = pdg_board(bv);
+    bprintf(&b, ", \"saved\": %s, \"board\": \"%s\", \"values\": {", post && !dry ? "true" : "false", pdg_board_word(board));
+    for (unsigned i = 0; i < pdg_nopts; i++) {
+        char v[96]; int k = pcl_get(cl_new, nn, pdg_opts[i].key, v, sizeof v);
+        bput(&b, i ? ", " : ""); bjson(&b, pdg_opts[i].key); bput(&b, ": ");
         if (!k) bput(&b, "null");
-        else if (is_secret(known_opts[i].key)) bput(&b, "\"(set)\"");
+        else if (is_secret(pdg_opts[i].key)) bput(&b, "\"(set)\"");
         else bjson(&b, k == 2 ? "(flag)" : v);
     }
-    bput(&b, "}}\n");
-    respond(h, 200, "application/json", j);
+    /* options in the line that the chosen board does not use (they are kept: a board may change back) */
+    bput(&b, "}, \"unused\": [");
+    for (unsigned i = 0, k = 0; i < pdg_nopts; i++) {
+        char v[8];
+        if (!pdg_uses(&pdg_opts[i], board) && pcl_get(cl_new, nn, pdg_opts[i].key, v, sizeof v)) { bput(&b, k++ ? ", " : ""); bjson(&b, pdg_opts[i].key); }
+    }
+    bput(&b, "],\n ");
+    j_defs(&b);
+    bput(&b, "}\n");
+    respond_src(h, "application/json", big, b.n);
+}
+/* the table itself, for the page: the groups, and each option's group, boards, flags, values, example and text */
+static void j_defs(struct sb *b)
+{
+    bput(b, "\"groups\": [");
+    for (int g = 0; g < PDG_GROUPS; g++) { bput(b, g ? ", " : ""); bjson(b, pdg_group_name[g]); }
+    bput(b, "], \"defs\": [");
+    for (unsigned i = 0; i < pdg_nopts; i++) {
+        const struct pdg_opt *o = &pdg_opts[i];
+        bput(b, i ? ",\n  " : "\n  "); bput(b, "{\"key\": "); bjson(b, o->key);
+        bprintf(b, ", \"group\": %u, \"boards\": \"", o->group);
+        for (int k = 0, first = 1; k < 7; k++) if (o->boards & (1 << k)) { bput(b, first ? "" : " "); bput(b, pdg_board_word(1 << k)); first = 0; }
+        bprintf(b, "\", \"menu\": %s, \"secret\": %s, \"wifitab\": %s, \"once\": %s, \"values\": ", pdg_choices(o) ? "true" : "false",
+                o->flags & PDG_F_SECRET ? "true" : "false", o->flags & PDG_F_WIFITAB ? "true" : "false", o->flags & PDG_F_ONCE ? "true" : "false");
+        bjson(b, o->values); bput(b, ", \"example\": "); bjson(b, o->example ? o->example : ""); bput(b, ", \"text\": "); bjson(b, o->text); bput(b, "}");
+    }
+    bput(b, "]");
 }
 static void form_get(const char *body, const char *key, char *out, unsigned max) { if (!query(body, key, out, max)) out[0] = 0; }
 static void ans_wifi(struct rconn *h, const char *sub, char *body, uint32_t n)
@@ -1658,6 +1692,518 @@ static void ans_display_post(struct rconn *h, int c, char *body, uint32_t n)
     respond_src(h, "application/json", big, b.n);
 }
 
+
+/* ============================================================================== Diagnostics
+   23 November 2026 (docs/08 item 122). Run now, with no Mac running: the bus check on the compact Macs (on the
+   service core, which owns the transport: psmac_buscheck_request, its lines read here as they come), the card's
+   read test (here), the CPLD's JTAG usercode read again (the service core). Run on the next start: debug-once.txt
+   (psmac_recovery_once_early). The reports on the card, and one bundle of everything for a tester to send. */
+int psmac_buscheck_request(int force, const char **why);
+int psmac_buscheck_request_state(void), psmac_buscheck_request_count(void), psmac_buscheck_request_verdict(void);
+const char *psmac_buscheck_request_line(int i), *psmac_buscheck_request_headline(void), *psmac_buscheck_refusal(int force);
+const char *psmac_buscheck_text(uint32_t *len);
+int psmac_buscheck_render(uint8_t *fb);
+int psmac_buscheck_lines(const char (**out)[65]);
+int psmac_buscheck_jtag_request(const char **why), psmac_buscheck_jtag_result(uint32_t *id, uint32_t *uc);
+int psmac_gpio_cpld(uint32_t *id, uint32_t *uc);
+const char *psmac_cpld_name(uint32_t uc);
+int psmac_bus_uses_gpio(void);
+uint32_t psmac_se_ram_bytes(void);
+void psmac_console_page(const char (*lines)[65], int n);
+int psmac_card_once_take(char *buf, uint32_t max, int take), psmac_card_once_rearm(void);
+int psmac_card_early(void);
+extern int psmac_board_orig;
+
+static const char *board_model(void)
+{
+    static const char *const o[] = { "plus", "128k", "512k", "512ke" };
+    return psmac_board_solo ? "solo" : psmac_board_plus ? o[psmac_board_orig & 3] : psmac_board_se ? "se" : "iici";
+}
+static const char *board_title(void)
+{
+    static const char *const o[] = { "Macintosh Plus", "Macintosh 128K", "Macintosh 512K", "Macintosh 512Ke" };
+    return psmac_board_solo ? "the solo board (no Mac: the bench)" : psmac_board_plus ? o[psmac_board_orig & 3] : psmac_board_se ? "Macintosh SE" : "the testbed's Macintosh IIci";
+}
+static const char *verdict_word(int v) { static const char *const w[] = { "SKIP", "CLEAN", "INFO", "STRAY", "UNSURE", "FAIL" }; return v >= 0 && v < 6 ? w[v] : "?"; }
+static const char *bootargs_now(void)
+{
+    of_node_t *c = dt_find_node("/chosen");
+    of_property_t *p = c ? dt_find_property(c, "bootargs") : NULL;
+    return p && p->op_value ? (const char *)p->op_value : "";
+}
+
+/* ---- the one-shot debug start, at the next start: core 0, first thing in psmac_setup_memory ---- */
+static char once_args[4096];
+void psmac_recovery_once_early(const void *initramfs, uint32_t len)
+{
+    const uint8_t *p = initramfs;
+    const char *o = psmac_option("mac.cardearly");
+    int container = len > 6 && p[0] == '0' && p[1] == '7' && p[2] == '0' && p[3] == '7' && p[4] == '0' && p[5] == '1';
+    if (!container && !(o && o[0] == '1')) return;               /* a bare-ROM testbed run has no card to look at (psmac_hdmi_early's rule) */
+    if (psmac_card_early()) return;
+    char t[600];
+    int n = psmac_card_once_take(t, sizeof t, 0);
+    if (n < 0) return;
+    /* a start that is going to be Setup and Recovery keeps it for the next normal one (phase 1's reasons; the
+       programmer's switch, phase 2, is known only later: card_first_look puts the file back then) */
+    o = psmac_option("mac.recovery"); int rec = o && o[0] == '1';
+    o = psmac_option("recovery.ap"); if (o && ((o[0] == 'o' && o[1] == 'n') || o[0] == '1')) rec = 1;
+    if (!rec) {
+        int count = -1, fl = -1, lim = 3; char flag[8];
+        if ((o = psmac_option("mac.bootcount"))) { if (o[0] == 'o') lim = 0; else { lim = 0; while (*o >= '0' && *o <= '9') lim = lim * 10 + (*o++ - '0'); } }
+        if (!psmac_card_boot_read(&count, flag, sizeof flag, &fl) && (fl >= 0 || (lim && count >= lim))) rec = 1;
+    }
+    if (rec) { kprintf("[DEBUG] debug-once.txt is on the card: kept for the next normal start (this one is Setup and Recovery)\n"); return; }
+    o = psmac_option("mac.card");
+    if (o && o[0] == 'r' && o[1] == 'o') { kprintf("[DEBUG] debug-once.txt is on the card, but mac.card=ro: not used (it could not be taken away, and would happen at every start)\n"); return; }
+    n = psmac_card_once_take(t, sizeof t, 1);
+    if (n < 0) return;                                            /* the rename failed: said in the log, not used */
+    of_node_t *c = dt_find_node("/chosen");
+    of_property_t *pp = c ? dt_find_property(c, "bootargs") : NULL;
+    if (!pp || !pp->op_value) { kprintf("[DEBUG] debug-once.txt: the firmware gave no boot arguments to add it to\n"); return; }
+    int merged = 0, skipped = 0; char why_[160];
+    const char *args = pp->op_value;
+    int k = pdg_once_merge(args, slen(args), t, (uint32_t)n, once_args, sizeof once_args, &merged, &skipped, why_, sizeof why_);
+    if (k < 0) { kprintf("[DEBUG] debug-once.txt: the boot arguments would be too long with it: not used\n"); return; }
+    pp->op_value = once_args; pp->op_length = (uint32_t)k + 1;
+    once_taken = 1;
+    scpy(once_used, t, sizeof once_used);
+    for (char *q = once_used; *q; q++) if (*q == '\n') *q = ' ';
+    for (unsigned q = slen(once_used); q && (once_used[q - 1] == ' ' || once_used[q - 1] == '\r'); q--) once_used[q - 1] = 0;
+    kprintf("[DEBUG] a one-shot debug start (debug-once.txt, now debug-once.old): %u option%s added to the boot arguments: %s%s%s. The next start is as cmdline.txt says (docs/08 item 122)\n",
+            merged, merged == 1 ? "" : "s", once_used, skipped ? "; left out: " : "", skipped ? why_ : "");
+}
+/* the card's debug-once.txt (armed) or debug-once.old (the last one used) as one line: its length, or -1 */
+static int once_file(const char *name, char *out, unsigned cap)
+{
+    int n = psmac_card_rec_get(name, (uint8_t *)out, cap - 1);
+    if (n < 0) { out[0] = 0; return -1; }
+    out[n] = 0;
+    for (int i = 0; i < n; i++) if (out[i] == '\n' || out[i] == '\r') out[i] = ' ';
+    while (n && out[n - 1] == ' ') out[--n] = 0;
+    return n;
+}
+static void j_once(struct sb *b)
+{
+    static char armed[600], last[600];
+    int a = once_file("debug-once.txt", armed, sizeof armed), l = once_file("debug-once.old", last, sizeof last);
+    once_armed = a >= 0;
+    bprintf(b, "{\"armed\": %s, \"words\": ", a >= 0 ? "true" : "false"); bjson(b, a >= 0 ? armed : "");
+    bput(b, ", \"last\": "); bjson(b, l >= 0 ? last : "");
+    bput(b, ", \"used_now\": "); bjson(b, once_used);
+    bput(b, "}");
+}
+
+/* ---- the screens while the bus check has them ---- */
+static uint32_t diag_drawn;
+static int bc_file = 0;                       /* buscheck.txt at this start: 1 written, -1 not */
+static void vc_clear(void)
+{
+    uint8_t *fb; uint32_t pitch, w, h; int bpp, swap;
+    if (psmac_display_vc(&fb, &pitch, &w, &h, &bpp, &swap)) return;
+    uint32_t rowb = w * (bpp == 32 ? 4u : 2u);
+    for (uint32_t y = 0; y < h; y++) { uint8_t *row = fb + y * pitch; for (uint32_t x = 0; x < rowb; x++) row[x] = 0; arm_flush_cache((intptr_t)row, rowb); }
+}
+static void report_show(void)
+{
+    if (psmac_board_se && !psmac_board_solo && !psmac_buscheck_render(se_fb)) psmac_se_mark(se_fb, 512, 342, 64, 1);
+    const char (*ls)[65]; int n = psmac_buscheck_lines(&ls);
+    static char page[BC_PAGE_ROWS][65];
+    int k = 0;
+    for (; k < n && k < BC_PAGE_ROWS - 2; k++) scpy(page[k], ls[k], 65);
+    scpy(page[k++], "", 65);
+    struct sb b = { page[k], 0, 65 }; bprintf(&b, "Setup and Recovery, PIN %s: Esc or the page's Back returns", pin); k++;
+    psmac_console_page((const char (*)[65])page, k);
+    diag_drawn = now_ms();
+}
+static void diag_back(void)
+{
+    if (!diag_screen) return;
+    diag_screen = 0;
+    vc_clear();
+    scr_dirty = 1;
+    did("the recovery screen is back (the bus check's report is in buscheck.txt)");
+}
+static void diag_screen_poll(void)
+{
+    static int seen = -1;
+    int n = psmac_buscheck_request_count();
+    if (diag_screen == 1 && n != seen) { seen = n; scr_dirty = 1; }
+    if (diag_screen == 1 && psmac_buscheck_request_state() == 3) {
+        diag_screen = 2;
+        report_show();
+        uint32_t len; const char *t = psmac_buscheck_text(&len);
+        bc_file = len && psmac_card_rec_ready() == 1 && !psmac_card_rec_put("buscheck.txt", (const uint8_t *)t, len) ? 1 : -1;
+        did("bus check: %s %s (%s)", verdict_word(psmac_buscheck_request_verdict()), psmac_buscheck_request_headline(), bc_file > 0 ? "buscheck.txt written" : "buscheck.txt not written: no writable card");
+    } else if (diag_screen == 2 && now_ms() - diag_drawn >= 10000) report_show();   /* again every ten seconds, as the bus check does */
+}
+
+/* ---- the card's read test (here, on core 3: the card is the recovery's) ---- */
+static struct { int state; char name[REC_NAME_MAX]; struct rec_rd rd; uint32_t total, got, errors, chunks; uint64_t ticks, worst, first; } CT;
+static char ct_text[2048], ct_verdict[200]; static int ct_file;
+static uint8_t ct_buf[32768];
+static int ct_pick(void *vc, const struct rec_ent *e)
+{
+    struct rec_ent *best = vc;
+    if (!(e->attr & 0x18) && e->size > best->size && e->clus >= 2) *best = *e;
+    return 0;
+}
+static int card_test_start(const char **why_)
+{
+    if (CT.state == 1) { *why_ = "the card test is running"; return 409; }
+    if (U.state == UP_RECV || U.state == UP_VERIFY) { *why_ = "an upload is under way: try again when it is done"; return 409; }
+    if (psmac_card_rec_ready() != 1 && psmac_card_rec_ready() != -2) { *why_ = "no card"; return 503; }
+    struct rec_ent best; best.size = 0;
+    if (psmac_card_rec_list(ct_pick, &best) || !best.size) { *why_ = "no file on the card to read"; return 404; }
+    scpy(CT.name, best.name, sizeof CT.name);
+    psmac_card_rec_read_open(&best, &CT.rd);
+    CT.total = best.size > (16u << 20) ? 16u << 20 : best.size;  /* 16 MB at most: a few seconds on a real card */
+    CT.got = CT.errors = CT.chunks = 0; CT.ticks = CT.worst = CT.first = 0;
+    CT.state = 1; ct_text[0] = 0; ct_verdict[0] = 0; ct_file = 0;
+    did("card test: reading %s (%u KB)", CT.name, CT.total >> 10);
+    return 0;
+}
+static void card_test_finish(void)
+{
+    uint64_t hz = tick_hz();
+    uint32_t ms = (uint32_t)(CT.ticks * 1000u / hz), kbs = CT.ticks ? (uint32_t)((uint64_t)CT.got * hz / CT.ticks / 1024u) : 0;
+    struct sb v = { ct_verdict, 0, sizeof ct_verdict };
+    if (CT.errors) bprintf(&v, "FAIL: the card gave a read error after %u KB: the card, its contacts or the Pi's slot", CT.got >> 10);
+    else if (kbs >= 4096) bprintf(&v, "GOOD: the card reads at %u KB/s", kbs);
+    else if (kbs >= 1024) bprintf(&v, "SLOW: the card reads at %u KB/s; a 20 MB disk image takes about %u s to load", kbs, 20480u / (kbs ? kbs : 1));
+    else bprintf(&v, "VERY SLOW: the card reads at %u KB/s; a 20 MB disk image takes about %u s to load (a card of speed class 10 or A1 is faster)", kbs, 20480u / (kbs ? kbs : 1));
+    struct sb b = { ct_text, 0, sizeof ct_text };
+    char sha[8]; { const char *g = GIT_SHA; int i = 0; for (; i < 7 && g[i]; i++) sha[i] = g[i]; sha[i] = 0; }
+    bprintf(&b, "AURORA68 CARD READ TEST  kernel %s %s %s\n", sha, __DATE__, __TIME__);
+    bprintf(&b, "Verdict: %s.\n", ct_verdict);
+    bprintf(&b, "Card: %s\n", psmac_card_rec_what());
+    bprintf(&b, "Read: %s, %u of its KB in %u.%03u s, %u reads of up to 32 KB (as Setup and Recovery reads files: the clusters in order)\n",
+            CT.name, CT.got >> 10, ms / 1000u, ms % 1000u, CT.chunks);
+    bprintf(&b, "Speed: %u KB/s; the first read %u us, the slowest %u us\n", kbs, (uint32_t)(CT.first * 1000000u / hz), (uint32_t)(CT.worst * 1000000u / hz));
+    bprintf(&b, "Read errors: %u\n", CT.errors);
+    bprintf(&b, "Board: %s; the Mac's memory %u MB\n", board_title(), psmac_ram_size() >> 20);
+    if (!psmac_bus_uses_gpio()) bput(&b, "Note: in the testbed the card is a file on the host computer and QEMU's emulated card controller sets the speed.\n");
+    CT.state = 2;
+    ct_file = psmac_card_rec_ready() == 1 && !psmac_card_rec_put("cardcheck.txt", (const uint8_t *)ct_text, b.n) ? 1 : -1;
+    did("card test: %s (%s)", ct_verdict, ct_file > 0 ? "cardcheck.txt written" : "cardcheck.txt not written: the card is read only");
+}
+static void card_test_poll(void)
+{
+    if (CT.state != 1) return;
+    uint32_t want = CT.total - CT.got; if (want > sizeof ct_buf) want = sizeof ct_buf;
+    if (!want) { card_test_finish(); return; }
+    uint64_t t0 = now_ticks();
+    int32_t k = psmac_card_rec_read(&CT.rd, ct_buf, want);
+    uint64_t dt = now_ticks() - t0;
+    if (k <= 0) { CT.errors += k < 0; card_test_finish(); return; }
+    if (!CT.chunks) CT.first = dt;
+    if (dt > CT.worst) CT.worst = dt;
+    CT.ticks += dt; CT.got += (uint32_t)k; CT.chunks++;
+    scr_dirty = (CT.chunks & 63) == 0 ? 1 : scr_dirty;
+}
+
+/* the recovery page's lines for what Diagnostics is doing */
+static void diag_lines(void)
+{
+    int st = psmac_buscheck_request_state();
+    if (diag_screen == 1 || st == 1 || st == 2) { int n = psmac_buscheck_request_count(); L(0, "Bus check: %s", n ? psmac_buscheck_request_line(n - 1) : "starting ..."); }
+    else if (st == 3) L(0, "Bus check: %s %s", verdict_word(psmac_buscheck_request_verdict()), psmac_buscheck_request_headline());
+    if (CT.state == 1) L(0, "Card test: %u of %u KB of %s read", CT.got >> 10, CT.total >> 10, CT.name);
+    if (once_armed) L(0, "A one-shot debug start is armed: the next normal start uses it, once");
+}
+/* ---- the CPLD's JTAG usercode ---- */
+static const char *jtag_refusal(void)
+{
+    if (psmac_board_solo || !psmac_board_se) return "the solo board and the IIci have no PiStorm: there is no CPLD to read";
+    if (!psmac_bus_uses_gpio()) return "this is the testbed's bridge, not a PiStorm: there is no CPLD to read";
+    const char *jo = psmac_option("mac.jtag");
+    if (jo && jo[0] == 'o' && jo[1] == 'f') return "mac.jtag=off: the JTAG pins are left alone";
+    return 0;
+}
+static int jtag_asked;
+static void j_jtag(struct sb *b)
+{
+    uint32_t id = 0, uc = 0;
+    const char *why_ = jtag_refusal();
+    bput(b, "{\"refusal\": "); if (why_) bjson(b, why_); else bput(b, "null");
+    int rd = psmac_board_se && !psmac_board_solo && psmac_bus_uses_gpio() && psmac_gpio_cpld(&id, &uc);
+    if (rd) { bprintf(b, ", \"at_start\": {\"idcode\": \"%08X\", \"usercode\": \"%08X\", \"name\": ", id, uc); bjson(b, psmac_cpld_name(uc)); bput(b, "}"); }
+    else bput(b, ", \"at_start\": null");
+    int r = jtag_asked ? psmac_buscheck_jtag_result(&id, &uc) : 0;
+    bprintf(b, ", \"again\": \"%s\"", !jtag_asked ? "" : r == 0 ? "reading" : r > 0 ? "read" : "failed");
+    if (r > 0) { bprintf(b, ", \"idcode\": \"%08X\", \"usercode\": \"%08X\", \"name\": ", id, uc); bjson(b, psmac_cpld_name(uc)); }
+    bput(b, "}");
+}
+/* the summary's CPLD line */
+static void cpld_text(struct sb *b)
+{
+    uint32_t id = 0, uc = 0;
+    if (jtag_asked && psmac_buscheck_jtag_result(&id, &uc) > 0) bprintf(b, "usercode %08X (IDCODE %08X): %s (read again from the Diagnostics tab)", uc, id, psmac_cpld_name(uc));
+    else if (psmac_board_se && !psmac_board_solo && psmac_bus_uses_gpio() && psmac_gpio_cpld(&id, &uc)) bprintf(b, "usercode %08X (IDCODE %08X): %s", uc, id, psmac_cpld_name(uc));
+    else bput(b, jtag_refusal() ? jtag_refusal() : "not read at this start");
+}
+
+/* ---- GET /r/diag ---- */
+static void ans_diag(struct rconn *h, int c, const char *from_s)
+{
+    if (!take_big(c)) { json_err(h, 503, "busy: try again"); return; }
+    struct sb b = { big, 0, sizeof big };
+    int from = 0; while (*from_s >= '0' && *from_s <= '9') from = from * 10 + (*from_s++ - '0');
+    bprintf(&b, "{\"board\": \"%s\", \"board_name\": ", board_model()); bjson(&b, board_title());
+    bprintf(&b, ", \"transport\": \"%s\"", psmac_board_solo ? "none" : psmac_bus_uses_gpio() ? "gpio" : "bridge");
+    const char *ref = psmac_buscheck_refusal(0), *ref_f = psmac_buscheck_refusal(1);
+    int st = psmac_buscheck_request_state(), n = psmac_buscheck_request_count();
+    static const char *const sn[] = { "idle", "asked", "running", "done" };
+    bput(&b, ",\n \"buscheck\": {\"refusal\": "); if (ref) bjson(&b, ref); else bput(&b, "null");
+    bprintf(&b, ", \"force_runs\": %s, \"state\": \"%s\", \"count\": %d, \"from\": %d, \"screen\": \"%s\", \"lines\": [", ref && !ref_f ? "true" : "false",
+            st >= 0 && st < 4 ? sn[st] : "?", n, from, diag_screen == 2 ? "report" : diag_screen == 1 ? "check" : "recovery");
+    for (int i = from; i < n && b.n + 200 < b.cap; i++) { bput(&b, i > from ? ",\n  " : "\n  "); bjson(&b, psmac_buscheck_request_line(i)); }
+    bput(&b, "]");
+    if (st == 3) { bprintf(&b, ", \"verdict\": \"%s\", \"headline\": ", verdict_word(psmac_buscheck_request_verdict())); bjson(&b, psmac_buscheck_request_headline()); bprintf(&b, ", \"file\": %d", bc_file); }
+    bput(&b, "},\n \"cardtest\": {\"state\": ");
+    bjson(&b, CT.state == 1 ? "running" : CT.state == 2 ? "done" : "idle");
+    bprintf(&b, ", \"file\": "); bjson(&b, CT.name); bprintf(&b, ", \"got\": %u, \"total\": %u, \"verdict\": ", CT.got, CT.total); bjson(&b, ct_verdict);
+    bput(&b, ", \"text\": "); bjson(&b, CT.state == 2 ? ct_text : ""); bprintf(&b, ", \"saved\": %d}", ct_file);
+    bput(&b, ",\n \"jtag\": "); j_jtag(&b);
+    bput(&b, ",\n \"once\": "); j_once(&b);
+    bput(&b, "}\n");
+    respond_src(h, "application/json", big, b.n);
+}
+/* ---- POST /r/diag/run?test=buscheck|card|jtag[&force=1], /r/diag/screen, /r/diag/once[?cancel=1] ---- */
+static void ans_diag_post(struct rconn *h, const char *sub, const char *q, char *body, uint32_t n)
+{
+    char v[40], why_[200];
+    if (starts(sub, "run")) {
+        if (!query(q, "test", v, sizeof v)) { json_err(h, 400, "?test=buscheck, card or jtag"); return; }
+        const char *w = 0;
+        if (ieq(v, "buscheck")) {
+            char f[4]; int force = query(q, "force", f, sizeof f) && f[0] == '1';
+            int r = psmac_buscheck_request(force, &w);
+            if (r) { json_err(h, r == -2 ? 409 : 422, w); return; }
+            diag_screen = 1; scr_dirty = 1; bc_file = 0;
+            did("bus check asked for from the Diagnostics tab%s", force ? " (force: over the testbed's bridge)" : "");
+            respond(h, 200, "application/json", "{\"started\": \"buscheck\"}\n");
+            return;
+        }
+        if (ieq(v, "card")) { int r = card_test_start(&w); if (r) { json_err(h, r, w); return; } respond(h, 200, "application/json", "{\"started\": \"card\"}\n"); return; }
+        if (ieq(v, "jtag")) {
+            if (psmac_buscheck_jtag_request(&w)) { json_err(h, 422, w); return; }
+            jtag_asked = 1; did("the CPLD's JTAG usercode read again");
+            respond(h, 200, "application/json", "{\"started\": \"jtag\"}\n");
+            return;
+        }
+        json_err(h, 400, "?test=buscheck, card or jtag");
+        return;
+    }
+    if (starts(sub, "screen")) {
+        if (diag_screen == 1) { json_err(h, 409, "the bus check is running: the screen is its own until it ends"); return; }
+        diag_back();
+        respond(h, 200, "application/json", "{\"screen\": \"recovery\"}\n");
+        return;
+    }
+    if (starts(sub, "once")) {
+        if (psmac_card_rec_ready() != 1) { json_err(h, 503, "no writable card"); return; }
+        if (query(q, "cancel", v, sizeof v) && v[0] == '1') {
+            struct rec_ent e;
+            if (psmac_card_rec_find("debug-once.txt", &e)) { respond(h, 200, "application/json", "{\"armed\": false, \"note\": \"nothing was armed\"}\n"); return; }
+            if (psmac_card_rec_delete("debug-once.txt")) { json_err(h, 500, psmac_card_rec_error()); return; }
+            did("the one-shot debug start was cancelled (debug-once.txt deleted)");
+            once_armed = 0;
+            respond(h, 200, "application/json", "{\"armed\": false, \"note\": \"cancelled: the next start is as cmdline.txt says\"}\n");
+            return;
+        }
+        body[n] = 0;
+        while (n && (body[n - 1] == '\n' || body[n - 1] == '\r' || body[n - 1] == ' ')) body[--n] = 0;
+        if (pdg_once_check(body, n, why_, sizeof why_)) { json_err(h, 422, why_); return; }
+        char line_[600]; scpy(line_, body, sizeof line_ - 1);
+        uint32_t k = slen(line_); line_[k++] = '\n'; line_[k] = 0;
+        if (psmac_card_rec_put("debug-once.txt", (const uint8_t *)line_, k)) { json_err(h, 500, psmac_card_rec_error()); return; }
+        line_[k - 1] = 0;
+        once_armed = 1;
+        did("a one-shot debug start armed: %s (debug-once.txt; the next start uses it once)", line_);
+        struct sb b = { why_, 0, sizeof why_ }; bput(&b, "{\"armed\": true, \"words\": "); bjson(&b, line_); bput(&b, "}\n");
+        respond(h, 200, "application/json", why_);
+        return;
+    }
+    json_err(h, 404, "POST /r/diag/run?test=..., /r/diag/screen, /r/diag/once");
+}
+
+/* ---- the reports on the card ---- */
+static uint8_t *bun_raw, *bun_out;                             /* the bundle's text, and the same scrubbed */
+#define BUN_MAX (256u * 1024u)
+static int bun_mem(void)
+{
+    if (!bun_raw) bun_raw = tlsf_malloc(tlsf, BUN_MAX);
+    if (!bun_out) bun_out = tlsf_malloc(tlsf, BUN_MAX);
+    return bun_raw && bun_out ? 0 : -1;
+}
+static const char *const rep_names[] = { "buscheck.txt", "cardcheck.txt", "aurora68.log", "debug-once.old" };
+static const char *const rep_what[] = { "the bus check (mac.buscheck, or this tab)", "the card's read test (this tab)", "the kernel's log, saved by the start before this one (mac.logsave, after a crash, or from Aurora68 Log)",
+                                        "the options of the last one-shot debug start" };
+static int is_report(const struct rec_ent *e)
+{
+    if (e->attr & 0x18) return 0;
+    for (unsigned i = 0; i < sizeof rep_names / sizeof rep_names[0]; i++) if (ieq(e->name, rep_names[i])) return 1;
+    unsigned n = slen(e->name);
+    return n > 4 && ieq(e->name + n - 4, ".log");
+}
+/* a report's verdict, from its text */
+static void verdict_of(const char *name, const char *t, uint32_t n, char *out, unsigned cap)
+{
+    struct sb b = { out, 0, cap }; out[0] = 0;
+    if (ieq(name, "buscheck.txt")) {
+        /* the SUMMARY bar ends in the verdict's word; the summary's first sentence follows */
+        for (uint32_t i = 0; i + 7 < n; i++) {
+            if ((i && t[i - 1] != '\n') || !starts(t + i, "SUMMARY")) continue;
+            uint32_t e = i; while (e < n && t[e] != '\n') e++;
+            uint32_t w = e; while (w > i && t[w - 1] == ' ') w--;
+            uint32_t s = w; while (s > i && t[s - 1] != ' ') s--;
+            for (uint32_t k = s; k < w; k++) sb_putc(&b, t[k]);
+            bput(&b, ": ");
+            for (uint32_t k = e + 1, sp = 0; k < n && b.n + 2 < cap; k++) {
+                char ch = t[k] == '\n' ? ' ' : t[k];
+                if (ch == ' ' && sp) continue;
+                sp = ch == ' ';
+                sb_putc(&b, ch);
+                if (ch == '.' && (k + 1 >= n || t[k + 1] == ' ' || t[k + 1] == '\n')) break;
+            }
+            return;
+        }
+        bput(&b, "(no SUMMARY line: an older or cut report)");
+        return;
+    }
+    if (ieq(name, "cardcheck.txt")) {
+        for (uint32_t i = 0; i + 9 < n; i++) if ((!i || t[i - 1] == '\n') && starts(t + i, "Verdict: ")) { for (uint32_t k = i + 9; k < n && t[k] != '\n'; k++) sb_putc(&b, t[k]); return; }
+        return;
+    }
+    if (ieq(name, "debug-once.old")) { bput(&b, "used at a start: "); for (uint32_t k = 0; k < n && t[k] != '\n' && b.n + 2 < cap; k++) sb_putc(&b, t[k]); return; }
+    /* a log: how it was saved, and its crash records */
+    uint32_t crash = 0, i = 0;
+    for (; i < n && t[i] != '\n' && b.n + 2 < cap; i++) sb_putc(&b, t[i]);
+    for (uint32_t k = 0; k + 7 < n; k++) if ((!k || t[k - 1] == '\n') && starts(t + k, "[CRASH]")) crash++;
+    if (crash) bprintf(&b, "; %u [CRASH] lines (a crash record)", crash); else bput(&b, "; no crash record");
+}
+static int kernel_date(uint16_t d, uint16_t t) { return !t && d >> 9 == 2026 - 1980 && (d >> 5 & 15) == 11 && ((d & 31) == 18 || (d & 31) == 21 || (d & 31) == 22); }
+/* the list first (the card's lock is held while it walks the root), then each report read */
+#define REP_MAX 16
+struct rep_ctx { struct rec_ent e[REP_MAX]; int n; };
+static int rep_cb(void *vc, const struct rec_ent *e)
+{
+    struct rep_ctx *x = vc;
+    if (is_report(e) && x->n < REP_MAX) x->e[x->n++] = *e;
+    return 0;
+}
+static void rep_json(struct sb *b, const struct rec_ent *e, int i)
+{
+    char vd[260] = "";
+    int k = e->size <= BUN_MAX - 1 ? psmac_card_rec_get(e->name, bun_raw, BUN_MAX - 1) : -1;
+    if (k >= 0) verdict_of(e->name, (const char *)bun_raw, (uint32_t)k, vd, sizeof vd);
+    bput(b, i ? ",\n  " : "\n  "); bput(b, "{\"name\": "); bjson(b, e->name);
+    bprintf(b, ", \"size\": %u, \"time\": ", e->size);
+    if (!e->wdate || kernel_date(e->wdate, e->wtime)) bput(b, "null");
+    else bprintf(b, "\"%04u-%02u-%02u %02u:%02u\"", 1980u + (e->wdate >> 9), e->wdate >> 5 & 15u, e->wdate & 31u, e->wtime >> 11, e->wtime >> 5 & 63u);
+    int now_ = (ieq(e->name, "buscheck.txt") && bc_file > 0) || (ieq(e->name, "cardcheck.txt") && ct_file > 0);
+    bprintf(b, ", \"this_start\": %s, \"what\": ", now_ ? "true" : "false");
+    const char *w = "a log on the card";
+    for (unsigned j = 0; j < sizeof rep_names / sizeof rep_names[0]; j++) if (ieq(e->name, rep_names[j])) w = rep_what[j];
+    bjson(b, w); bput(b, ", \"verdict\": "); bjson(b, vd); bput(b, "}");
+}
+static void ans_reports(struct rconn *h, int c)
+{
+    if (psmac_card_rec_ready() != 1 && psmac_card_rec_ready() != -2) { json_err(h, 503, "no card"); return; }
+    if (bun_mem()) { json_err(h, 503, "no memory for the reports"); return; }
+    if (!take_big(c)) { json_err(h, 503, "busy: try again"); return; }
+    struct sb b = { big, 0, sizeof big };
+    static struct rep_ctx x; x.n = 0;
+    bput(&b, "{\"reports\": [");
+    if (psmac_card_rec_list(rep_cb, &x)) { big_conn = -1; json_err(h, 503, psmac_card_rec_error()); return; }
+    for (int i = 0; i < x.n && b.n + 800 < b.cap; i++) rep_json(&b, &x.e[i], i);
+    bprintf(&b, "\n], \"count\": %d, \"clock\": false}\n", x.n);
+    respond_src(h, "application/json", big, b.n);
+}
+
+/* ---- the report bundle: one text file for a tester to send, every secret "(hidden)" ---- */
+struct bun { uint8_t *p; uint32_t n, cap; };
+static void bn_putc(void *d, char ch) { struct bun *b = d; if (b->n + 1 < b->cap) b->p[b->n++] = (uint8_t)ch; }
+static void bnf(struct bun *b, const char *fmt, ...) { va_list ap; va_start(ap, fmt); vkprintf_pc(bn_putc, b, fmt, ap); va_end(ap); }
+static void bn_file(struct bun *b, const char *name, const char *what)
+{
+    struct rec_ent e;
+    if (psmac_card_rec_find(name, &e)) { bnf(b, "\n=== %s: not on the card (%s)\n", name, what); return; }
+    bnf(b, "\n=== %s, %u bytes: %s\n", name, e.size, what);
+    uint32_t room = b->cap - b->n - 64;
+    if (e.size > room) { bnf(b, "(too long for the bundle: its last %u KB follow)\n", room >> 10); room -= 64; }
+    struct rec_rd rd; psmac_card_rec_read_open(&e, &rd);
+    uint32_t skip = e.size > room ? e.size - room : 0, at = 0;
+    static uint8_t chunk[4096];
+    for (;;) {
+        int32_t k = psmac_card_rec_read(&rd, chunk, sizeof chunk);
+        if (k <= 0) { if (k < 0) bnf(b, "\n(a read error at %u bytes)\n", at); break; }
+        for (int32_t i = 0; i < k; i++, at++) if (at >= skip) { uint8_t ch = chunk[i]; bn_putc(b, ch == '\t' || ch == '\n' || (ch >= 32 && ch < 127) ? (char)ch : '?'); }
+    }
+    if (b->n && b->p[b->n - 1] != '\n') bn_putc(b, '\n');
+}
+static void ans_bundle(struct rconn *h, int c)
+{
+    if (bun_mem()) { json_err(h, 503, "no memory for the bundle"); return; }
+    if (!take_big(c)) { json_err(h, 503, "busy: try again"); return; }
+    struct bun b = { bun_raw, 0, BUN_MAX };
+    char sha[8]; { const char *g = GIT_SHA; int i = 0; for (; i < 7 && g[i]; i++) sha[i] = g[i]; sha[i] = 0; }
+    bnf(&b, "Aurora68 report bundle, made by Setup and Recovery (docs/08 item 122). Passwords, tokens and the PIN are shown as (hidden).\n");
+    bnf(&b, "Made %u s after this start (the Pi has no clock).\n", (now_ms() - start_ms) / 1000u);
+    bnf(&b, "\n=== The machine\n");
+    bnf(&b, "Board: %s (mac.board=%s)\n", board_title(), board_model());
+    bnf(&b, "Kernel: %s, built %s %s\n", sha, __DATE__, __TIME__);
+    { char t[200]; struct sb s = { t, 0, sizeof t }; cpld_text(&s); bnf(&b, "CPLD: %s\n", t); }
+    bnf(&b, "Bus: %s\n", psmac_board_solo ? "none (the solo board)" : psmac_bus_uses_gpio() ? "the classic PiStorm's GPIO" : "the testbed's bridge to MAME");
+    bnf(&b, "Memory: the Mac's %u MB (the Pi's)", psmac_ram_size() >> 20);
+    if (psmac_board_se && !psmac_board_solo) bnf(&b, "; the logic board's own %u KB", psmac_se_ram_bytes() >> 10);
+    bnf(&b, "\nCard: %s\n", psmac_card_rec_ready() == 0 ? "being read" : psmac_card_rec_ready() == -1 ? "none" : psmac_card_rec_what());
+    bnf(&b, "This start: Setup and Recovery, because %s; boot counter %d of %d\n", why_text, boot_count, boot_limit);
+    { struct ipk_info ii; psmac_ip_info(&ii); bnf(&b, "Network: %s, %d.%d.%d.%d (%s)\n", ii.unit == 1 ? "wired" : ii.unit == 0 ? "WiFi" : "none", ii.ip[0], ii.ip[1], ii.ip[2], ii.ip[3], ii.phase); }
+    { static char a[600], l[600]; int ar = once_file("debug-once.txt", a, sizeof a), la = once_file("debug-once.old", l, sizeof l);
+      bnf(&b, "One-shot debug start: %s%s; the last one used: %s\n", ar >= 0 ? "armed: " : "none armed", ar >= 0 ? a : "", la >= 0 ? l : "(none)"); }
+    bnf(&b, "Options in effect at this start (the boot arguments):\n  %s\n", bootargs_now());
+    if (cl_read() == 0) {
+        bnf(&b, "cmdline.txt on the card now:\n  %s\n", cl_old);
+        char bv[16] = ""; pcl_get(cl_old, (uint32_t)cl_len, "mac.board", bv, sizeof bv);
+        int board = pdg_board(bv), first = 1;
+        for (unsigned i = 0; i < pdg_nopts; i++) { char v[8];
+            if (!pdg_uses(&pdg_opts[i], board) && pcl_get(cl_old, (uint32_t)cl_len, pdg_opts[i].key, v, sizeof v)) { bnf(&b, "%s%s", first ? "Set in cmdline.txt but not used on this board: " : ", ", pdg_opts[i].key); first = 0; } }
+        if (!first) bnf(&b, "\n");
+    }
+    int st = psmac_buscheck_request_state();
+    if (st == 3) { bnf(&b, "\n=== The bus check run from the Diagnostics tab at this start: %s %s\n", verdict_word(psmac_buscheck_request_verdict()), psmac_buscheck_request_headline());
+                   for (int i = 0, n = psmac_buscheck_request_count(); i < n; i++) bnf(&b, "%s\n", psmac_buscheck_request_line(i)); }
+    else if (psmac_buscheck_refusal(0)) bnf(&b, "\nBus check: not for this board here: %s\n", psmac_buscheck_refusal(0));
+    if (CT.state == 2) bnf(&b, "\n=== The card's read test at this start\n%s", ct_text);
+    bn_file(&b, "buscheck.txt", "the last bus check's report");
+    bn_file(&b, "cardcheck.txt", "the last card read test");
+    bn_file(&b, "aurora68.log", "the log the start before this one saved");
+    bnf(&b, "\n=== This start's log (Setup and Recovery)\n");
+    { uint32_t room = b.cap - b.n - 16; if (room > PSMB_LOG_SIZE) room = PSMB_LOG_SIZE;
+      uint32_t k = psmac_log_copy(b.p + b.n, room), s = 0;
+      if (k == PSMB_LOG_SIZE) { while (s < k && b.p[b.n + s] != '\n') s++; if (s < k) s++; }
+      for (uint32_t i = s; i < k; i++) { uint8_t ch = b.p[b.n + i]; b.p[b.n + i - s] = ch == '\t' || ch == '\n' || (ch >= 32 && ch < 127) ? ch : '?'; }
+      b.n += k - s; }
+    bnf(&b, "\n=== End of the bundle\n");
+    /* the secrets this start knows, hidden wherever they appear: the WiFi password and the remote's token (the boot
+       arguments' and cmdline.txt's), the simulated radio's password, the access point's password, the PIN */
+    static char sv[6][100]; const char *secrets[6]; int ns = 0;
+    const char *ks[3] = { "wifi.psk", "remote.token", "mac.wifisim" };
+    for (int i = 0; i < 3; i++) {
+        const char *o = psmac_option(ks[i]);
+        if (o && ns < 6) { const char *pw = o; if (i == 2) { while (*pw && *pw != ':') pw++; if (*pw) pw++; } scpy(sv[ns], pw, sizeof sv[ns]); secrets[ns] = sv[ns]; ns++; }
+        if (cl_len > 0 && i < 2 && ns < 6 && pcl_get(cl_old, (uint32_t)cl_len, ks[i], sv[ns], sizeof sv[ns]) == 1) { secrets[ns] = sv[ns]; ns++; }
+    }
+    if (ap_pass[0] && ns < 6) secrets[ns++] = ap_pass;
+    if (ns < 6) secrets[ns++] = pin;
+    uint32_t out = pdg_scrub((const char *)b.p, b.n, (char *)bun_out, BUN_MAX, secrets, ns);
+    for (int i = 0; i < 6; i++) for (unsigned k = 0; k < sizeof sv[i]; k++) sv[i][k] = 0;
+    did("report bundle made: %u KB, secrets hidden", out >> 10);
+    out_head(h, 200, "text/plain; charset=iso-8859-1", out, "Content-Disposition: attachment; filename=\"aurora68-report.txt\"\r\n");
+    h->src = (const char *)bun_out; h->src_len = out; h->src_pos = 0; h->kind = RK_SRC;
+}
 /* the access point's sign-in (23 November 2026, the owner's first try with a Mac: the "Join Network" sheet kept its
    Cancel button after the PIN, and Cancel leaves the network). A phone or a Mac decides a network is signed in when
    its own check page answers as on the internet; until then it shows the page as a sign-in, with Cancel. So once a
@@ -1797,7 +2343,11 @@ static void handle(int c)
     }
     if (get && !__builtin_strcmp(path, "text")) { ans_text_get(h, c, query(q, "name", v, sizeof v) ? v : ""); return; }
     if (put && !__builtin_strcmp(path, "text")) { ans_text_put(h, query(q, "name", v, sizeof v) ? v : "", body, clen); return; }
-    if ((get || post) && !__builtin_strcmp(path, "options")) { ans_options(h, post, query(q, "dry", v, sizeof v) && v[0] == '1', body, clen); return; }
+    if ((get || post) && !__builtin_strcmp(path, "options")) { ans_options(h, c, post, query(q, "dry", v, sizeof v) && v[0] == '1', body, clen); return; }
+    if (get && !__builtin_strcmp(path, "diag")) { ans_diag(h, c, query(q, "from", v, sizeof v) ? v : "0"); return; }
+    if (post && starts(path, "diag/")) { ans_diag_post(h, path + 5, q, body, clen); return; }
+    if (get && !__builtin_strcmp(path, "reports")) { ans_reports(h, c); return; }
+    if (get && !__builtin_strcmp(path, "bundle")) { ans_bundle(h, c); return; }
     if ((get && !__builtin_strcmp(path, "wifi")) || (post && starts(path, "wifi/"))) { ans_wifi(h, get ? "" : path + 5, body, clen); return; }
     if (post && !__builtin_strcmp(path, "reboot")) { ans_reboot(h, query(q, "how", v, sizeof v)); return; }
     if (post && !__builtin_strcmp(path, "rollback")) { ans_rollback(h, query(q, "force", v, sizeof v) && v[0] == '1'); return; }
@@ -1812,7 +2362,7 @@ static void handle(int c)
         return;
     }
     if (post && !__builtin_strcmp(path, "display")) { ans_display_post(h, c, body, clen); return; }
-    json_err(h, 404, "GET /r/state, /r/files, /r/file, /r/text, /r/options, /r/wifi, /r/log, /r/display; PUT /r/file, /r/text; POST /r/rm, /r/mv, /r/options, /r/wifi/..., /r/display, /r/reboot, /r/rollback");
+    json_err(h, 404, "GET /r/state, /r/files, /r/file, /r/text, /r/options, /r/wifi, /r/log, /r/display, /r/diag, /r/reports, /r/bundle; PUT /r/file, /r/text; POST /r/rm, /r/mv, /r/options, /r/wifi/..., /r/display, /r/diag/..., /r/reboot, /r/rollback");
 }
 static uint32_t produce(int c, uint8_t *buf, uint32_t room, int *fin)
 {
@@ -2078,6 +2628,7 @@ int psmac_recovery_key(uint32_t usage, int down, uint32_t mods)
         }
         return 0;
     }
+    if (down == 1 && usage && diag_screen == 2) { diag_back(); return 1; }   /* any key gives the screens back from the bus check's report */
     if (down == 1 && usage) menu_key(usage, mods);
     return 1;
 }
@@ -2116,6 +2667,10 @@ static void card_first_look(void)
         }
     }
     if (ieq(cfg_kernel, "kernel8.img")) cfg_kernel[0] = 0;
+    /* the programmer's switch made this start a recovery start after debug-once.txt was taken (phase 2 comes after
+       the boot arguments are read): it goes back for the next normal start */
+    once_armed = !psmac_card_rec_find("debug-once.txt", &e);
+    if (once_taken && !psmac_card_once_rearm()) { once_taken = 0; once_used[0] = 0; once_armed = 1; did("the one-shot debug start is kept for the next normal start (this one became Setup and Recovery)"); }
     did("the card is ready: %s, %u entries in its root%s", psmac_card_rec_what(), card_files, have_old ? ", kernel8.old there" : "");
 }
 void psmac_recovery_poll(void)
@@ -2148,6 +2703,7 @@ void psmac_recovery_poll(void)
     next_round = t + tick_hz() / 1000;
     psmac_ip_poll();
     up_pump();
+    card_test_poll();
     wifi_poll();
     wifi_test_poll2();
     switch_poll();

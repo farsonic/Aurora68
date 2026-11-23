@@ -22,7 +22,9 @@
  *     visible, then geom_seq + 1.
  *  3. cmd = A68V_C_START, then cmd_seq + 1; done_seq follows when the card has taken it.
  *  4. Keep the ring full: there is room while head - tail < ring_size. A full ring is how the card
- *     holds the Mac back, and through TCP the helper.
+ *     holds the Mac back, and through TCP the helper. Since version 2 the card empties the ring as fast as
+ *     bytes come into a buffer of its own in the Pi's memory (8 MiB by default, mac.vbuffer=), so the ring
+ *     fills only when that is full; buffered counts both, buffer_ms says how much time that is.
  *  5. At the stream's end, eof = 1. The state goes to ENDED once the last picture and sound are out.
  *  6. Pause and resume are commands. A seek is STOP (the ring is emptied: tail becomes head), then the
  *     new stream's bytes, then START.
@@ -35,7 +37,8 @@
 #include <stdint.h>
 
 #define A68V_MAGIC        0x41363856u        /* 'A68V' */
-#define A68V_VERSION      2u                 /* 2 (23 November 2026): the window's region (vis_rgn), TheMenu */
+#define A68V_VERSION      3u                 /* 2: buffer_ms ... buffer_target_ms at 0x68; 3: the window's region (vis_rgn)
+                                                and no picture under a menu (23 November 2026) */
 #define A68V_WIN_SIZE     0x00100000u        /* 1 MiB: the block, and the ring in the top half */
 #define A68V_OFF_BLOCK    0x00000u
 #define A68V_OFF_RING     0x80000u
@@ -84,7 +87,13 @@ struct a68v_block {
     uint32_t screens;                        /* how many screens it can draw on */
     uint32_t underruns;                      /* times it ran dry while playing */
     uint32_t sound;                          /* 1: its sound plays (an output exists), 0: pictures only, by the Pi's clock */
-    uint32_t pad0[6];
+    /* version 2 (23 November 2026, docs/08 item 125): the Pi's buffer behind the ring, and buffering by time */
+    uint32_t buffer_ms;                      /* the stream's time the card holds, not yet played (an estimate: bytes / byte_rate) */
+    uint32_t buffer_pct;                     /* buffer_ms against buffer_target_ms, 0-100: what "Buffering N%" shows */
+    uint32_t buffer_size;                    /* bytes of the Pi's buffer behind the ring (mac.vbuffer=); 0: the ring alone */
+    uint32_t rebuffer_ms;                    /* the time spent rebuffering this stream (underruns says how many times) */
+    uint32_t byte_rate;                      /* the stream's bytes a second, from its packs' clock (0: not known yet) */
+    uint32_t buffer_target_ms;               /* what BUFFERING waits for: the start's (mac.vprefill=), or a rebuffer's */
     /* the Mac's half: 0x80-0xFF */
     uint32_t cmd_seq, cmd;                   /* cmd, then cmd_seq + 1 */
     uint32_t head;                           /* bytes written into the ring */
@@ -110,6 +119,9 @@ struct a68v_block {
 };
 _Static_assert(sizeof(struct a68v_block) == 0x180, "a68v_block");
 _Static_assert(__builtin_offsetof(struct a68v_block, cmd_seq) == 0x80, "a68v_block Mac half");
+_Static_assert(__builtin_offsetof(struct a68v_block, buffered) == 0x58, "a68v_block buffered");
+_Static_assert(__builtin_offsetof(struct a68v_block, buffer_ms) == 0x68, "a68v_block buffer_ms");
+_Static_assert(__builtin_offsetof(struct a68v_block, buffer_target_ms) == 0x7C, "a68v_block buffer_target_ms");
 
 /* ---- the frame decoder (psmac_vframes.c, 22 November 2026, GitHub issue #13, docs/08 item 110) ----------
    The second half of the card, beside the stream: one compressed picture at a time, as QuickTime's
@@ -188,6 +200,7 @@ void psmac_vframes_report(void);
 
 /* ---- the core (psmac_video.c), on whichever core the host gives it ---------------------------- */
 void psmac_video_init(uint8_t *win, uint32_t screens);  /* the window, in the kernel's view; how many screens */
+void psmac_video_config(uint32_t buffer_bytes, uint32_t start_ms, uint32_t rebuffer_ms);   /* mac.vbuffer=, mac.vprefill= */
 int  psmac_video_poll(void);                            /* one slice of work; 1 if it did something */
 void psmac_video_reset(void);                           /* the computer was reset: stop (from any core) */
 void psmac_video_report(void);                          /* the heartbeat's line */

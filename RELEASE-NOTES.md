@@ -4,6 +4,32 @@
 
 Since 0.13 (docs/08 items 96 and 103):
 
+- **Music videos buffer much more: no more stutter when the network slows for a moment** (docs/08 item 125, docs/16
+  "Buffering", 23 November 2026). The video decoder card now empties its 512 KB ring at once into a buffer of its
+  own in the Pi's memory, 8 MB by default (one to two minutes of a music video at the classic Play's rates), so the
+  Mac and the music server keep sending at the network's full rate while the film plays. A stream starts once 3
+  seconds of it are held (measured from the stream's own clock, so it holds at any rate) instead of after 64 KB,
+  and when the network does run it dry the picture and the sound pause together and the card buffers 2 seconds
+  before going on, instead of stuttering at every few packets. `mac.vbuffer=MB` and `mac.vprefill=START,REBUFFER`
+  set the amounts (Setup and Recovery's Options, Video card); 0 gives the card as it was. Programs may show
+  "Buffering N%" from the card's block (docs/video-decoder-api.md); Aurora68 Video and Aurora68 Play work unchanged.
+  Tested on the host against a simulated network with bursts and outages and in the testbed's QEMU; the owner's SE
+  over WiFi is the real test.
+
+- **Setup and Recovery: every option, and a Diagnostics tab with a report bundle** (docs/08 item 122, 23 November
+  2026). The Options tab now offers every option of README's table a user or a tester may set (about seventy for a
+  compact Mac), each with a line of plain English and its values, grouped (Machine, Display, Sound, Storage,
+  Network, Video card, Debug) and shown only where the chosen board uses it; the kernel checks each value against
+  the same table. The new **Diagnostics** tab runs the **bus check** without editing cmdline.txt (SE, Plus, 512Ke,
+  512K, 128K: the report grows on the page as the tests run, and shows on the Mac's own screen and HDMI as with
+  `mac.buscheck=1`), a **card read test** (speed and read errors) and a fresh read of the **CPLD's usercode**;
+  **arms a one-shot debug start** (debug options such as full logging to the card, the sound test, traces, the bus
+  check before the Mac starts, used by the next start only: `debug-once.txt`, renamed `debug-once.old` as that start
+  begins, shown on the Overview with Cancel); lists the **reports** on the card with their verdicts; and downloads
+  one **report bundle** (`aurora68-report.txt`: the machine's summary, the reports, both logs) with every password,
+  token and the PIN "(hidden)", for a tester to send. In a recovery start `mac.buscheck=1` no longer holds the board:
+  the tab runs it. Tried on the testbed's solo board and MAME's SE and Plus (the bus check forced over the bridge);
+  the bus check over a real PiStorm, the JTAG read again and a real card's speed are for the first test on hardware.
 - **Setup and Recovery as an access point: setting up with only a phone** (docs/08 item 118, 23 November 2026).
   On the recovery screen, the programmer's interrupt button held for two seconds makes the Pi's WiFi a network of
   its own, "Aurora68-XXXX", with a password made at each start and shown on the SE's screen and on HDMI with the

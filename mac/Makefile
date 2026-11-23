@@ -8,7 +8,8 @@
 #                  shared core in play/core: its radio parser, station list, devices and every other part, on the host, on the real
 #                  music server's answers and, where qemu-m68k is installed, as a 68020 big-endian program; the card's codecs;
 #                  the kernel's FAT/exFAT reader and its HFS view: tools/fatfs_test.sh, tools/hfsview_test.sh;
-#                  Aurora68 Recovery's cmdline.txt word editor: tools/cmdline_test.sh; its access point's DHCP server, DNS
+#                  Aurora68 Recovery's cmdline.txt word editor: tools/cmdline_test.sh; its options table, one-shot
+#                  debug start and report bundle's scrubbing, and the page's header: tools/diag_test.sh; its access point's DHCP server, DNS
 #                  answerer and the firmware's SoftAP sequence: tools/apnet_test.sh; the bus check's verdicts
 #                  against a simulated board with faults: tools/buscheck_test.c; MPEG-1 in QuickTime, the import's indexer
 #                  and the card's MPEG-1 and MP2 decoders against FFmpeg: tools/mpg1_test.sh)
@@ -181,9 +182,11 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	sh ../tools/fatfs_test.sh
 	sh ../tools/hfsview_test.sh
 	sh ../tools/cmdline_test.sh $(abspath $(B))
+	sh ../tools/diag_test.sh $(abspath $(B))
 	sh ../tools/apnet_test.sh $(abspath $(B))
 	sh ../tools/vcodec_test.sh $(abspath $(B))
 	sh ../tools/mpg1_test.sh $(abspath $(B))
+	sh ../tools/vbuf_test.sh $(abspath $(B))
 
 disasm: $(B)/pidisk.o
 	m68k-linux-gnu-objdump -d $(B)/pidisk.o | head -200

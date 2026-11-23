@@ -397,6 +397,26 @@ a few seconds and gives everyone the same numbers to compare.
     PiStorm or warm the board, to see whether the numbers move.
   - The page's CPLD line names the PiStorm's firmware (its JTAG usercode): say it in your issue.
 
+The bus check from a phone, and one file to send (Setup and Recovery's Diagnostics tab)
+--------------------------------------------------------------------------------------
+No need to edit cmdline.txt for it. Start Setup and Recovery (hold the programmer's interrupt switch,
+the one nearer the back, while you switch on; or three starts that did not reach the Finder), open the
+address the Mac's screen shows on a phone or laptop on the same network, give the PIN, then the
+Diagnostics tab:
+  1. Run now > Bus check > Run. The page shows each test as it starts, then the report and its
+     verdict; the Mac's own screen and HDMI show the same page as with mac.buscheck=1. Photograph the
+     Mac's screen as above, then "Give the screens back to Setup and Recovery". buscheck.txt is
+     written to the card. Run it three times from cold if you can (power off ten seconds between).
+  2. Run now > Card read test > Run: the card's speed and any read error (cardcheck.txt).
+  3. Report bundle > Download the bundle: aurora68-report.txt, one text file with the board, the
+     kernel's build, the CPLD usercode, the memory, the options in effect, every report and both
+     logs. WiFi passwords, tokens and the PIN are already replaced by "(hidden)". Attach it to your
+     issue on GitHub with the photo.
+  - To catch a fault that only shows while the Mac runs: Run on the next start, tick "mac.logsave"
+    (the log saved to the card every few seconds) and whatever traces the issue asks for, then "Arm
+    and restart normally". Those options are used for that one start only. Afterwards start Setup
+    and Recovery again and download the bundle: the saved log is in it.
+
 A Pi on the bench, no SE yet
 ----------------------------
 That is a useful first test. Power the Pi from USB with HDMI connected. The firmware's rainbow

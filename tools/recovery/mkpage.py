@@ -7,6 +7,7 @@ written by hand; to make it a tabbed page in a modern style it moved into page.h
 this script makes the header the kernel includes. Run it after editing the page:
 
     python3 tools/recovery/mkpage.py
+    python3 tools/recovery/mkpage.py --check     # (make -C mac check) the header in the tree is the page's, byte for byte
 
 Standard library only. The output is one C string, split into lines of the page, with backslashes, double
 quotes and non-ASCII characters escaped (the page is UTF-8; the kernel serves the bytes as they are).
@@ -35,5 +36,11 @@ hdr = ('/* SPDX-License-Identifier: MPL-2.0\n'
        ' * psmac_recovery_page.h - Aurora68 Setup and Recovery\'s web page, made from tools/recovery/page.html by\n'
        ' * tools/recovery/mkpage.py. Do not edit: edit the page and run the script. */\n'
        'const char recovery_page[] =\n' + body + ';\n')
+if '--check' in sys.argv[1:]:
+    old = open(dst).read() if os.path.exists(dst) else ''
+    if old != hdr:
+        sys.exit(f'{dst} is not what page.html makes: run python3 tools/recovery/mkpage.py')
+    print(f'psmac_recovery_page.h is page.html, {len(data)} bytes')
+    sys.exit(0)
 open(dst, 'w').write(hdr)
 print(f'{dst}: {len(data)} bytes of page')

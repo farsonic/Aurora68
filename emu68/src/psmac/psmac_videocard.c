@@ -66,7 +66,10 @@ void psmac_videocard_map(uintptr_t phys)
    32 KiB at a time while there is room, eof at the end. It starts DELAY seconds after the kernel (0: as soon
    as the screen is on), drawing at LEFT,TOP, WIDTH x HEIGHT on SCREEN (0 or 1). PAUSE_AT: a pause of two
    seconds once the picture is that many seconds in; SEEK_AT: at that many seconds a seek back to the start
-   (STOP, the file again from its first byte, START), the way the program will seek. */
+   (STOP, the file again from its first byte, START), the way the program will seek.
+   mac.videorate=KBPS[,ON_MS,OFF_MS] (testbed only, 23 November 2026, docs/08 item 125) paces the feed like a network:
+   KBPS kilobits a second at most, and with ON_MS,OFF_MS only during ON_MS of every ON_MS + OFF_MS (a WiFi that
+   stops for a while), what the pause could have carried lost, as a slow network loses it. */
 static struct {
     int on, started, paused, seeked;
     char path[128];                          /* psmac_option gives at most 127 characters */
@@ -74,6 +77,8 @@ static struct {
     uint32_t screen, delay, pause_at, seek_at;
     int64_t fd, len, off;
     uint64_t t0, pause_t;
+    uint32_t kbps, on_ms, off_ms;            /* mac.videorate= */
+    uint64_t rate_t, rate_t0, credit;
 } tst;
 static uint32_t num(const char **p)
 {
@@ -94,6 +99,12 @@ static void test_options(void)
     tst.screen = num(&p); tst.delay = num(&p); tst.pause_at = num(&p); tst.seek_at = num(&p);
     if (!tst.w || !tst.h) { tst.w = 320; tst.h = 240; }
     tst.on = 1; tst.fd = -1; tst.t0 = now();
+    if ((v = psmac_option("mac.videorate")) && v[0] >= '0' && v[0] <= '9') {
+        p = v; tst.kbps = num(&p); tst.on_ms = num(&p); tst.off_ms = num(&p);
+        kprintf("[VIDEO] mac.videotest: fed at %u kbit/s at most", tst.kbps);
+        if (tst.on_ms && tst.off_ms) kprintf(", %u ms on and %u ms off", tst.on_ms, tst.off_ms);
+        kprintf("\n");
+    }
     kprintf("[VIDEO] mac.videotest: %s at %d,%d %dx%d on screen %u, %u s after start%s\n", tst.path, tst.x, tst.y, tst.w, tst.h,
             tst.screen, tst.delay, psmac_sh_available() ? "" : " (no semihosting: nothing will play)");
 }
@@ -110,17 +121,34 @@ static int test_open(void)
     tst.len = psmac_sh_flen(tst.fd); tst.off = 0;
     return 1;
 }
+/* mac.videorate='s pace: bytes the "network" may carry now (no limit without it) */
+static uint32_t test_credit(void)
+{
+    if (!tst.kbps) return ~0u;
+    uint64_t t = now();
+    if (!tst.rate_t) { tst.rate_t = tst.rate_t0 = t; tst.credit = 0; }
+    uint64_t dt = t - tst.rate_t;
+    tst.rate_t = t;
+    uint32_t cyc = tst.on_ms + tst.off_ms;
+    int on = !tst.on_ms || !tst.off_ms || (uint32_t)((t - tst.rate_t0) * 1000u / hz() % cyc) < tst.on_ms;
+    if (on) tst.credit += (uint64_t)tst.kbps * 125u * dt / hz();
+    if (tst.credit > 65536u) tst.credit = 65536u;      /* what a TCP window could have in flight */
+    return (uint32_t)tst.credit;
+}
 static void test_fill(volatile struct a68v_block *b, uint8_t *ring)
 {
+    uint32_t credit = test_credit();
     for (int k = 0; k < 4 && tst.off < tst.len; k++) {
         uint32_t h = b->head, room = A68V_RING_SIZE - (h - b->tail), o = h & (A68V_RING_SIZE - 1);
         uint32_t n = 32768u;
+        if (n > credit) n = credit;
         if (n > room) n = room;
         if (n > A68V_RING_SIZE - o) n = A68V_RING_SIZE - o;
         if ((int64_t)n > tst.len - tst.off) n = (uint32_t)(tst.len - tst.off);
         if (!n) return;
         if (!psmac_sh_read(tst.fd, ring + o, n)) { kprintf("[VIDEO] mac.videotest: read failed at %lld\n", (long long)tst.off); tst.off = tst.len; break; }
         tst.off += n;
+        if (tst.kbps) { credit -= n; tst.credit -= n; }
         __asm__ volatile("dmb ish" ::: "memory");
         b->head = h + n;
     }
@@ -175,6 +203,25 @@ void psmac_video_test_poll(volatile struct a68v_block *b, uint8_t *ring)
     test_fill(b, ring);
 }
 
+/* ---- mac.vbuffer=MB, mac.vprefill=START[,REBUFFER] (23 November 2026, docs/08 item 125) ---------------------
+   The Pi's buffer behind the ring (8 MB by default; 0: the ring alone, as before) and the seconds a stream holds
+   before it starts (3) and before it goes on after running dry (2; two-thirds of START when only START is given;
+   0: at once, as before). */
+static void buffer_options(void)
+{
+    uint32_t mb = 8, start = 3, re = 2;
+    const char *v = psmac_option("mac.vbuffer"), *p;
+    if (v && v[0] >= '0' && v[0] <= '9') { p = v; mb = num(&p); if (mb > 32) mb = 32; }
+    if ((v = psmac_option("mac.vprefill")) && v[0] >= '0' && v[0] <= '9') {
+        p = v; start = num(&p);
+        re = *p >= '0' && *p <= '9' ? num(&p) : start * 2 / 3;
+        if (start > 30) start = 30;
+        if (re > 30) re = 30;
+    }
+    psmac_video_config(mb << 20, start * 1000u, re * 1000u);
+    kprintf("[VIDEO] buffering: %u MB behind the ring, %u s before a stream starts, %u s after it runs dry\n", mb, start, re);
+}
+
 /* ---- the screens and the start --------------------------------------------------------------------- */
 int psmac_video_surface(uint32_t screen, struct pv_surface *s)
 {
@@ -203,6 +250,7 @@ void psmac_videocard_init(void)
     arm_flush_cache((uintptr_t)rom, PSMB_VID_ROM_SIZE);
     uint8_t *win = (uint8_t *)(KERNEL_ALIAS + card_phys);
     uint32_t screens = (uint32_t)psmac_display_count();
+    buffer_options();
     psmac_video_init(win, screens);
     arm_flush_cache((uintptr_t)win, 4096);
     test_options();

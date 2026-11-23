@@ -339,6 +339,7 @@ if (${VARIANT} IN_LIST SUPPORTED_VARIANTS)
                     src/psmac/psmac_power.c
                     src/psmac/psmac_recovery.c
                     src/psmac/psmac_cmdline.c
+                    src/psmac/psmac_diag.c
                     src/psmac/psmac_apnet.c
                     src/alice/alice_psmac.c
                     src/alice/alice_net.c

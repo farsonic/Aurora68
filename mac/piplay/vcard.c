@@ -542,7 +542,7 @@ void vc_hold(int on) { holds += on ? 1 : -1; if (holds < 0) holds = 0; tell_plac
    it changes, also while Play gets no time. Still not drawn: while the window is hidden, while Play's own menu is down
    or its window is dragged or sized or a dialog of Play's is up (the holds; the outlines and menus are drawn over the
    screen, outside any window's region), and while any program's menu is down (the card looks at TheMenu itself) */
-/* a kernel whose card is older than the region (its block's version 1): 1.7's rule, the picture drawn only with Play in
+/* a kernel whose card is older than the region (its block's version 1 or 2): 1.7's rule, the picture drawn only with Play in
    front and no window over it (covered: a visible window in front of ours, in the Window Manager's list from the
    front, whose structure meets the picture; the card draws a rectangle, so a corner covered hides the whole picture) */
 static int fg = 1;
@@ -569,12 +569,12 @@ static void tell_place(int force)
 		Point tl = { c.top, c.left };
 		place.screen = screen_of(tl, &s, &main);
 		place.top = c.top - s.top; place.left = c.left - s.left; place.bottom = c.bottom - s.top; place.right = c.right - s.left;
-		place.visible = !holds && (blk->version >= 2 || (fg && !covered(&c)));
+		place.visible = !holds && (blk->version >= 3 || (fg && !covered(&c)));
 		last_place = content_g();                      /* where the next video's window opens, if still on a screen */
 	}
 	if (!force && !memcmp(&place, &sent, sizeof place)) return;
 	sent = place;
-	if (vw && shown && blk->version >= 2) {            /* the region, for the geom_seq this Control 112 makes */
+	if (vw && shown && blk->version >= 3) {            /* the region, for the geom_seq this Control 112 makes */
 		blk->vis_rgn = (unsigned long)*(void **)((char *)vw + 24);    /* visRgn (a GrafPort's and a CGrafPort's) */
 		blk->vis_flags = LM_MMU32BIT ? 0 : A68V_VF_24BIT;
 		blk->clip_tag = A68V_CLIP_TAG + blk->geom_seq + 1;

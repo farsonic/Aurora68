@@ -171,10 +171,10 @@ static void tell_place(int force)
 	   not: the card is handed the window's visible region and reads it at every picture (Aurora68 Play 1.8's way);
 	   still not while a menu of ours is down, the window is dragged or Standard File's dialog is up (hidden_by_us), and
 	   the card itself draws nothing while any program's menu is down */
-	place.visible = !hidden_by_us && (blk->version >= 2 || (!suspended && FrontWindow() == win));   /* 1.0's rule for an older card */
+	place.visible = !hidden_by_us && (blk->version >= 3 || (!suspended && FrontWindow() == win));   /* 1.0's rule for an older card */
 	if (!force && !memcmp(&place, &sent, sizeof place)) return;
 	sent = place;
-	if (blk->version >= 2) {
+	if (blk->version >= 3) {
 		blk->vis_rgn = (unsigned long)*(void **)((char *)win + 24);    /* visRgn */
 		blk->vis_flags = LM_MMU32BIT ? 0 : A68V_VF_24BIT;
 		blk->clip_tag = A68V_CLIP_TAG + blk->geom_seq + 1;            /* for the geom_seq this Control 112 makes */

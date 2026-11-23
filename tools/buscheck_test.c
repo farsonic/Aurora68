@@ -129,7 +129,7 @@ static struct board *mk(uint32_t size)
 static int fails;
 static void run(const char *name, struct board *b, int plus, const char *expect1, const char *expect2, const char *never)
 {
-    struct bc_bus bus = { b, rd, wr, ticks, 16000000u, NULL, NULL, NULL };
+    struct bc_bus bus = { b, rd, wr, ticks, 16000000u, NULL, NULL, NULL, NULL };
     struct bc_config cfg = { b->size, "Macintosh 512Ke", "the board", "host simulation", "test", plus, 1, 0x1234, 128, b->size - 0x5900, b->size - 0x300, plus, 2000, "usercode 00185866 (test)" };
     static struct bc_results r;
     static char lines[BC_ROWS][BC_COLS + 1]; static char det[4096];
