@@ -80,6 +80,8 @@ extern int psmac_card_pc_writable(void);
 extern int psmac_card_pc_list(void (*cb)(void *ctx, const char *name, uint32_t size), void *ctx);
 extern int psmac_sh_write(int64_t fd, const void *buf, uint64_t len);
 extern int psmac_board_se, psmac_board_solo;
+extern int psmac_audio_poll(void);                                              /* psmac_audio.c: core 1's sound */
+extern void psmac_audio_pause(void);
 
 /* the C library's jump buffer as libaurora86's runtime keeps it (glibc's layout: 22 longs and a mask; room to spare) */
 typedef uint64_t a86_jmp_buf[48];
@@ -107,7 +109,9 @@ static inline uint32_t us_since(uint64_t t) { return (uint32_t)((now() - t) * 10
 #define SLICE_US_CORE1 1000u         /* on core 1: the sound output's DMA ring (48 ms) is looked at between slices */
 #define DRAW_HZ        30u
 #define BLINK_MS       266u          /* the cursor's and blinking text's half period: the VGA's 16 frames at 60 Hz */
-#define LOAD_CHUNK     (1u << 20)    /* the firmware read a megabyte per poll */
+#define LOAD_CHUNK     (1u << 20)    /* the firmware read a megabyte per poll on core 2 (the solo board's) */
+#define LOAD_CHUNK1    (64u << 10)   /* and 64 KiB on core 1, the sound's core (pc_yield, below) */
+#define YIELD_US       1000u         /* on core 1: the sound's turn at least this often, inside the PC's slices too */
 #define TEXT_INSET     2             /* pixels of paper between the window's frame and the text's first and last columns:
                                         misc-fixed's and the VGA's glyphs use their cell's first column (C, the box
                                         lines), which touched the window's one-pixel frame and read as a cut-off letter
@@ -120,6 +124,7 @@ static struct {
     int on;                          /* pc=on */
     uint32_t ram_mb, core;           /* pc.ram=, pc.core= (0: by the board) */
     char rom[128], vgarom[128], disk0[128];
+    int noyield;                     /* pc.yield=off (testbed only): core 1 as it was before 23 November 2026, to compare */
 } opt;
 static uintptr_t card_phys;
 static volatile struct a68p_block *blk;
@@ -127,7 +132,6 @@ static uint8_t *win;
 static void *pool;                   /* the PC's TLSF pool */
 static uintptr_t pool_lo, pool_hi;
 static volatile int ready;           /* psmac_pccard_init done */
-static int chosen = -1;              /* the core it runs on, decided at the first poll */
 
 /* ---- options --------------------------------------------------------------------------------------- */
 static uint32_t num(const char *v, uint32_t dflt)
@@ -142,7 +146,7 @@ static void str_opt(char *out, uint32_t max, const char *key, const char *dflt)
     const char *v = psmac_option(key);
     if (!v || !v[0]) v = dflt;
     uint32_t i = 0;
-    while (v && v[i] && v[i] != ' ' && i < max - 1) { out[i] = v[i]; i++; }
+    while (v && (unsigned char)v[i] > ' ' && i < max - 1) { out[i] = v[i]; i++; }   /* not a CR of a Windows line end */
     out[i] = 0;
 }
 static void options(void)
@@ -160,6 +164,8 @@ static void options(void)
     str_opt(opt.rom, sizeof opt.rom, "pc.rom", "aurora86.rom");
     str_opt(opt.vgarom, sizeof opt.vgarom, "pc.vgarom", "aurora86-vga.bin");
     str_opt(opt.disk0, sizeof opt.disk0, "pc.disk0", "");
+    v = psmac_option("pc.yield");
+    opt.noyield = v && v[0] == 'o' && v[1] == 'f';
 }
 static uint32_t heap_bytes(void) { return (opt.ram_mb + HEAP_FIXED_MB) << 20; }
 
@@ -172,6 +178,37 @@ void psmac_pccard_map(uintptr_t phys)
 {
     card_phys = phys;
     psmac_mmu_set_pc(phys, phys + A68P_WIN_SIZE);
+}
+
+/* ---- the sound's turn on core 1 --------------------------------------------------------------------------
+   23 November 2026, the owner's SE with the PC kernel: noise on HDMI right after the boot chime, and the heartbeat's
+   "audio: HDMI 48000 Hz ... (some filled late)". On the SE board (and the IIci testbed) the PC runs on core 1, which is
+   also the HDMI sound's (psmac_audio.c: a DMA ring of six 8 ms blocks that loops for ever, 48 ms in all, refilled by
+   psmac_audio_poll in core 1's loop): core 2 is the SE's bus there and core 3 the service loop (86 per cent busy on the
+   owner's SE), so there is no other core for it. The PC held core 1 for far longer than 48 ms at a time: its start read
+   the 12 MiB firmware a megabyte per turn from the SD card, the build, a slice whose instructions took longer than the
+   rate measured said (port I/O, a mode change), a whole window drawn on the 2560 x 1440 screen; the DMA meanwhile
+   played its ring again, old sound, which is the noise. Now every long thing the PC does on core 1 gives the sound its
+   turn at least every YIELD_US: Bochs reads the clock (a86_host_ns) several times a millisecond while it runs, the
+   disks' reads and write-backs and the drawing call this between pieces, and the firmware is read 64 KiB a turn. The
+   audio's own code is not touched; it runs here exactly as from core 1's loop (it is never re-entered: nothing it calls
+   comes back here) */
+static int chosen = -1;              /* the core it runs on, decided at the first poll */
+static uint64_t yield_t;
+static int in_yield;
+static void pc_yield(void)
+{
+    if (chosen != 1 || in_yield || opt.noyield) return;
+    uint64_t t = now();
+    if (t - yield_t < (uint64_t)YIELD_US * hz() / 1000000u) return;
+#ifndef PSMAC_PC_HOST
+    uint64_t m; __asm__ volatile("mrs %0, MPIDR_EL1" : "=r"(m));
+    if ((m & 3) != 1) return;                     /* Bochs's constructors read the clock on core 0 at the kernel's start */
+#endif
+    in_yield = 1;
+    psmac_audio_poll();
+    in_yield = 0;
+    yield_t = now();
 }
 
 /* ---- what libaurora86 asks of the host (aurora86.h) --------------------------------------------------- */
@@ -208,6 +245,7 @@ void a86_host_log(const char *text, size_t len)
 }
 uint64_t a86_host_ns(void)
 {
+    pc_yield();                                   /* the sound's turn, inside a slice too (above) */
     uint64_t v = now(), f = hz();
     return v / f * 1000000000ull + v % f * 1000000000ull / f;
 }
@@ -404,6 +442,7 @@ static int disk_rd(void *ctx, void *buf, uint64_t off, size_t n)
             while (run < n && !ov_find(m, (uint32_t)((off + run) >> 9)) && run < (64u << 10)) run += (uint32_t)(n - run < 512 ? n - run : 512);
             if (pf_read(&m->f, (uint32_t)off, b, run) < 0) return -1;
             k = run;
+            pc_yield();
         }
         b += k; off += k; n -= k;
     }
@@ -475,6 +514,7 @@ static void flush_image(struct pimg *m, uint64_t deadline)
         }
         for (uint32_t k = 0; k < n; k++) ov_drop(m, run[k]);
         m->dirty -= n; m->flushed += n;
+        pc_yield();
     }
     if (!m->dirty && m->flushed) {
         kprintf("[PC] %s: %u sector%s written back to the %s (%u ms)\n", m->name, m->flushed, m->flushed == 1 ? "" : "s",
@@ -549,17 +589,19 @@ static int img_add(const char *path, uint32_t size)
     m->size = size; m->sectors = size / 512u; m->kind = kind_of(m->name, size); m->place = -1;
     return (int)nimg++;
 }
-/* opened (for writing where it may be written), 0; or -1 */
+/* opened (for writing where it may be written), 0; or pf_open's reason (psmac_card_pc_open's codes), -20 when the PC's
+   library would not take it */
 static int img_open(struct pimg *m)
 {
     if (m->open) return 0;
-    if (pf_open(&m->f, m->path, !m->ro && m->kind != A68P_KIND_CD) < 0) return -1;
+    int r = pf_open(&m->f, m->path, !m->ro && m->kind != A68P_KIND_CD);
+    if (r < 0) return r;
     m->size = m->f.size; m->sectors = m->size / 512u;
     m->kind = kind_of(m->name, m->size);
     if (m->kind == A68P_KIND_CD || !m->f.rw) m->ro = 1;
     if (!m->registered) {
         uint64_t sz = m->kind == A68P_KIND_HD ? (uint64_t)(m->sectors / (16u * 63u)) * 16u * 63u * 512u : m->size;
-        if (a86_disk(m->a86name, sz, disk_rd, m->kind == A68P_KIND_CD ? 0 : disk_wr, m) < 0) return -1;
+        if (a86_disk(m->a86name, sz, disk_rd, m->kind == A68P_KIND_CD ? 0 : disk_wr, m) < 0) return -20;
         m->registered = 1;
     }
     m->open = 1;
@@ -595,23 +637,88 @@ static void rescan(void)
     psmac_card_pc_list(card_list_cb, 0);                /* -1, nothing added, where there is no card */
     disks_publish();
 }
+/* Why a disk the options name is not in its drive, in words (23 November 2026). The owner's SE said "Boot failed: could
+   not read the boot disk" with pc.disk0=freedos.img in cmdline.txt and the heartbeat's "disks 0 reads": the image had
+   not been attached, and only the start of the log, long scrolled away, could have said why. Now the reason goes into
+   the disks block's note, which Aurora68 PC shows in a box over its window, into the heartbeat's [PC] line, and the
+   log; a file that is not there is listed with the root's image files, so a name that differs shows. */
+static char note[sizeof ((struct a68p_disks *)0)->note];
+static uint32_t note_n;
+static void note_add(const char *t)
+{
+    while (*t && note_n < sizeof note - 1) note[note_n++] = *t++;
+    note[note_n] = 0;
+}
+static void note_publish(void)
+{
+    struct a68p_disks *dk = (struct a68p_disks *)(win + A68P_OFF_DISKS);
+    uint32_t i = 0;
+    for (; note[i] && i < sizeof dk->note - 1; i++) dk->note[i] = note[i];
+    dk->note[i] = 0;
+    DMB();
+    dk->note_seq = dk->note_seq + 1;
+}
+static int img_like(const char *n)
+{
+    return ends_ci(n, ".img") || ends_ci(n, ".ima") || ends_ci(n, ".vhd") || ends_ci(n, ".hdd") || ends_ci(n, ".hda") ||
+           ends_ci(n, ".dsk") || ends_ci(n, ".image") || ends_ci(n, ".iso") || ends_ci(n, ".flp") || ends_ci(n, ".vfd");
+}
+static uint32_t hint_n;
+static void hint_cb(void *ctx, const char *name, uint32_t size)
+{
+    (void)ctx; (void)size;
+    if (!img_like(name) || hint_n >= 4) return;
+    note_add(hint_n++ ? ", " : " (image files there: ");
+    note_add(name);
+}
+static const char *open_why(int r)
+{
+    switch (r) {
+    case -1: return psmac_sh_available() ? "is neither a host file (the testbed) nor in the SD card's root" : "is not in the SD card's root";
+    case -2: return "could not be looked for: the SD card had not been read yet";
+    case -3: return "is a folder, not an image file";
+    case -4: return "is an empty file";
+    case -5: return "is damaged on the card: its clusters end before its size (a check of the card on a computer)";
+    case -6: return "could not be opened: no memory for its cluster list";
+    case -7: return "could not be opened: too many files open";
+    case -8: return "could not be read: no SD card, or one that cannot be read";
+    case -20: return "was not taken by the PC (the kernel log says why)";
+    default: return "could not be opened";
+    }
+}
+/* one option's disk that is not attached: what and why, into the note and the log */
+static void disk_missing(const char *key, const char *v, const char *why, int listing)
+{
+    if (note_n) note_add(" ");
+    note_add(key[3] == 'c' ? "No CD: " : "No hard disk: ");
+    note_add(key); note_add("="); note_add(v); note_add(" "); note_add(why);
+    if (listing) { hint_n = 0; if (psmac_card_pc_list(hint_cb, 0) == 0 && hint_n) note_add(")"); }
+    note_add(".");
+    kprintf("[PC] %s=%s %s: not attached\n", key, v, why);
+}
 /* the options' images, at the start: their places (pc.disk0ro=on / pc.disk1ro=on: kept as they are) */
 static void disks_from_options(void)
 {
+    int named = 0;
+    note_n = 0; note[0] = 0;
     static const struct { const char *key, *ro; int32_t place; } o[] = {
         { "pc.disk0", "pc.disk0ro", P_IDE0M }, { "pc.disk1", "pc.disk1ro", P_IDE0S }, { "pc.cd", 0, P_CD } };
     char v[128];
     for (uint32_t i = 0; i < sizeof o / sizeof o[0]; i++) {
         str_opt(v, sizeof v, o[i].key, "");
         if (!v[0]) continue;
+        named++;
         int k = img_add(v, 0);
-        if (k < 0) continue;
+        if (k < 0) { disk_missing(o[i].key, v, "could not be listed: too many images", 0); continue; }
         struct pimg *m = &img[k];
         if (o[i].ro) { const char *r = psmac_option(o[i].ro); m->ro = m->ro_opt = r && r[0] == 'o' && r[1] == 'n'; }
-        if (img_open(m) < 0) { kprintf("[PC] %s=%s could not be opened: the PC starts without it\n", o[i].key, v); continue; }
+        int r = img_open(m);
+        if (r < 0) { disk_missing(o[i].key, v, open_why(r), r == -1); continue; }
         uint32_t want = o[i].place == P_CD ? A68P_KIND_CD : o[i].place >= P_FDA ? A68P_KIND_FLOPPY : A68P_KIND_HD;
         if (m->kind != want || (want == A68P_KIND_HD && m->sectors < 16u * 63u)) {
-            kprintf("[PC] %s=%s is not a %s image: not attached\n", o[i].key, v, want == A68P_KIND_CD ? "CD" : want == A68P_KIND_FLOPPY ? "floppy" : "hard disk");
+            disk_missing(o[i].key, v, want == A68P_KIND_CD ? "is not a CD image (.iso)" : m->kind == A68P_KIND_HD ?
+                         "is too small for a hard disk (504 KB at least)" : m->kind == A68P_KIND_CD ? "is a CD image: pc.cd= takes it" :
+                         "is the size of a floppy disk image, which the PC cannot use", 0);
             continue;
         }
         if (place_img[o[i].place] < 0 && m->place < 0) { place_img[o[i].place] = k; m->place = o[i].place; }
@@ -622,8 +729,14 @@ static void disks_from_options(void)
         str_opt(v, sizeof v, key, "");
         if (!v[0]) continue;
         int k = img_add(v, 0);
-        if (k >= 0 && img_open(&img[k]) < 0) kprintf("[PC] %s=%s could not be opened\n", key, v);
+        int r = k >= 0 ? img_open(&img[k]) : -7;
+        if (r < 0) kprintf("[PC] %s=%s %s\n", key, v, open_why(r));
     }
+    if (!named) {
+        note_add("The PC has no disk: cmdline.txt names none (pc.disk0=NAME for a hard disk image in the SD card's root, pc.cd=NAME for a CD).");
+        kprintf("[PC] no pc.disk0=, pc.disk1= or pc.cd= in the options: the PC starts without a disk\n");
+    }
+    note_publish();
     rescan();
 }
 static int unit_of(int32_t place) { return place == P_FDA ? 0 : place == P_FDB ? 1 : place == P_CD ? 2 : -1; }
@@ -725,7 +838,8 @@ static void start_step(void)
             set_state(A68P_S_STARTING, 0, "Reading the PC's firmware...");
         }
         {
-            uint32_t n = romf.size - rom_got < LOAD_CHUNK ? romf.size - rom_got : LOAD_CHUNK;
+            uint32_t chunk = chosen == 1 && !opt.noyield ? LOAD_CHUNK1 : LOAD_CHUNK;
+            uint32_t n = romf.size - rom_got < chunk ? romf.size - rom_got : chunk;
             if (pf_read(&romf, rom_got, rom_mem + rom_got, n) < 0) {
                 set_state(A68P_S_FAILED, A68P_E_NOROM, "The PC's firmware could not be read.");
                 phase = P_DEAD; return;
@@ -795,6 +909,7 @@ static const uint8_t mac2pc[128] = {
 };
 static uint32_t held[(A86_KEY_NBKEYS_USED + 31) / 32];
 static uint32_t keys_in, mouse_in;
+static uint32_t buttons_held;          /* the PC's mouse buttons as last given to it */
 static void key(unsigned k, int up)
 {
     if (k >= A86_KEY_NBKEYS_USED) return;
@@ -802,10 +917,15 @@ static void key(unsigned k, int up)
     a86_pc_key(k, up);
     keys_in++;
 }
+/* every key and mouse button the PC holds, let go: the keyboard and mouse back to the Mac, the program gone or stopped.
+   The buttons since 23 November 2026 (the owner's SE: after the PC had been used "the mouse kept selecting icons"; the
+   card never touches the Mac's own mouse, but a button the PC was given down stayed down in the PC) */
 static void release_all(void)
 {
+    if (!pc_built()) return;
     for (unsigned k = 0; k < A86_KEY_NBKEYS_USED; k++)
         if (held[k / 32] & (1u << (k % 32))) key(k, 1);
+    if (buttons_held) { a86_pc_mouse(0, 0, 0, 0); buttons_held = 0; }
 }
 static void input(void)
 {
@@ -825,7 +945,7 @@ static void input(void)
             if (code < 128 && mac2pc[code] != NO) key(mac2pc[code], type == A68P_IN_KEYUP);
             break;
         case A68P_IN_BXKEY: key(code, e->modifiers & 1); break;
-        case A68P_IN_MOUSE: a86_pc_mouse(e->dx, -e->dy, 0, e->buttons & 7); mouse_in++; break;   /* PS/2: y up */
+        case A68P_IN_MOUSE: a86_pc_mouse(e->dx, -e->dy, 0, e->buttons & 7); buttons_held = e->buttons & 7u; mouse_in++; break;   /* PS/2: y up */
         case A68P_IN_RELEASE: release_all(); break;
         }
     }
@@ -874,7 +994,49 @@ static void under_add(struct under *h, int32_t x0, int32_t y0, int32_t x1, int32
     if (y1 > h->y1) h->y1 = y1;
 }
 static uint32_t drawn_seq_text = ~0u, last_mode;
-static uint32_t draw_us_sum, draws_n, draws_all, menu_skips, rgn_skips;
+static uint32_t draw_us_sum, draws_n, draws_all, menu_skips, rgn_skips, rgn_bad;
+/* The program's window, alive or not (23 November 2026). On the owner's SE Aurora68 PC had quit, and the card went on
+   drawing at the window's last place through the visRgn handle it had been given: a handle in the heap of a program
+   that had gone, freed memory read as a region, so the PC's screen came out over and under the Finder's windows, on
+   both screens, and the heartbeat went on counting pictures. Now the program says it is running (prog, A68P_PROG_LIVE)
+   and adds 1 to alive at every turn of its event loop; when it quits it says A68P_PROG_GONE and sends A68P_C_NOWINDOW
+   (and its ExitToShell patch says GONE when it is ended any other way). The card draws only while alive moves (it stood
+   still A68P_ALIVE_MS: the program is not running, crashed, or the Mac is held up: nothing drawn until it moves), only
+   with a region for the place it was given, and only when that region reads as a live one (psmac_wclip_rgn_ok). Every
+   key and button the PC holds is let go when the window goes or the program stops. */
+static int nowin;                      /* A68P_C_NOWINDOW, until a running program gives a visible place again */
+static int stale;                      /* the program's alive stood still */
+static uint32_t alive_seen, prog_seen;
+static uint64_t alive_t;
+static uint32_t gone_n;
+static void watch_program(void)
+{
+    uint32_t p = blk->prog, a = blk->alive;
+    uint64_t t = now();
+    if (a != alive_seen || p != prog_seen) { alive_seen = a; prog_seen = p; alive_t = t; }   /* a program that has just said LIVE: from now */
+    int st = p == A68P_PROG_LIVE && t - alive_t >= (uint64_t)A68P_ALIVE_MS * hz() / 1000u;
+    if (st && !stale) {
+        blk->stalls = blk->stalls + 1;
+        release_all();
+        kprintf("[PC] Aurora68 PC's event loop has not turned for %u ms: nothing drawn until it does (it quit, crashed, or the Mac is busy)\n", A68P_ALIVE_MS);
+    }
+    if (!st && stale) need_full = 1;      /* running again: the whole window, wherever it is now */
+    stale = st;
+    if (p == A68P_PROG_GONE && !nowin) {
+        nowin = 1; gone_n++;
+        release_all();
+        kprintf("[PC] Aurora68 PC says its window is gone: nothing drawn\n");
+    }
+}
+/* why nothing may be drawn now, A68P_ND_* (0: draw) */
+static uint32_t nodraw(void)
+{
+    if (nowin) return A68P_ND_GONE;
+    if (stale) return A68P_ND_STALE;
+    if (!g.visible) return A68P_ND_HIDDEN;
+    if (blk->prog == A68P_PROG_LIVE && !g.rgn) return A68P_ND_NORGN;
+    return A68P_ND_DRAWS;
+}
 
 static inline uint32_t lum(uint32_t c) { return (((c >> 16) & 255) * 77 + ((c >> 8) & 255) * 151 + (c & 255) * 28) >> 8; }
 static uint32_t nearest(uint32_t c, uint32_t n)
@@ -924,6 +1086,7 @@ static void text_area(const struct a86_screen *s, int32_t x0, int32_t y0, int32_
     uint32_t cols = s->cols, rows = s->rows, chh = s->char_height ? s->char_height : 16;
     int pcsense = (g.options & A68P_O_PCSENSE) != 0;
     for (int32_t y = y0; y < y1; y++) {
+        if (!(y & 15)) pc_yield();
         uint8_t *row = sf.base + (uint32_t)y * sf.rb;
         uint32_t wy = (uint32_t)(y - g.t), r = wy / ch, line = wy % ch;
         uint32_t srcline = small_font ? line * chh / ch : line;         /* the PC's scan line, for the cursor */
@@ -967,6 +1130,7 @@ static void graphics_area(const struct a86_screen *s, int32_t x0, int32_t y0, in
     uint32_t ww = (uint32_t)(g.r - g.l), wh = (uint32_t)(g.b - g.t);
     int one = g.scale == A68P_SCALE_1, thr = (g.options & A68P_O_THRESHOLD) != 0;
     for (int32_t y = y0; y < y1; y++) {
+        if (!(y & 15)) pc_yield();
         uint8_t *row = sf.base + (uint32_t)y * sf.rb;
         uint32_t wy = (uint32_t)(y - g.t), sy = one ? wy + (uint32_t)g.sy : wy * sh / wh;
         const uint8_t *bay = bayer[y & 7];
@@ -1030,6 +1194,7 @@ static void geometry(void)
     if (blk->geom_seq != s1) return;
     g.seq = s1; g.screen = screen; g.visible = vis; g.t = t; g.l = l; g.b = b; g.r = r; g.rgn = rgn; g.vflags = vf;
     g.scale = scale; g.options = op; g.sx = sx < 0 ? 0 : sx; g.sy = sy < 0 ? 0 : sy;
+    if (nowin && vis && blk->prog == A68P_PROG_LIVE) { nowin = 0; kprintf("[PC] a window again: drawn\n"); }
     need_full = 1;
 }
 
@@ -1077,7 +1242,10 @@ static void draw(int force)
     int menu = psmac_wclip_menu_down();
     if (menu) { menu_was = 1; menu_skips++; return; }    /* any program's menu over the screen: later */
     if (menu_was) { menu_was = 0; }
-    if (!g.visible || !psmac_display_surface((int)g.screen, &sf.base, &sf.w, &sf.h, &sf.rb, &sf.depth, &sf.clut, &sf.clut_seq, &sf.gray)) return;
+    uint32_t nd = nodraw();
+    blk->nodraw = nd;
+    if (nd) { if (nd != A68P_ND_HIDDEN) need_full = 1; publish(s); return; }   /* when it may draw again: the whole window */
+    if (!psmac_display_surface((int)g.screen, &sf.base, &sf.w, &sf.h, &sf.rb, &sf.depth, &sf.clut, &sf.clut_seq, &sf.gray)) return;
     int32_t ww = g.r - g.l, wh = g.b - g.t;
     if (ww <= 0 || wh <= 0 || ww > 4096 || wh > 4096) return;
     small_font = sf.depth == 1 && !(g.options & A68P_O_BIGTEXT);
@@ -1128,7 +1296,15 @@ static void draw(int force)
         if (!g.rgn) area_part(s, cx0, cy0, cx1, cy1, cb);
         else {
             int32_t rr[PSMAC_WCLIP_MAX][4];
-            int n = psmac_wclip_parts(rr, g.rgn, g.vflags & A68P_VF_24BIT ? PSMAC_WCLIP_24BIT : 0, g.l, g.t, cx0, cy0, cx1, cy1);
+            uint32_t vf = g.vflags & A68P_VF_24BIT ? PSMAC_WCLIP_24BIT : 0;
+            if (!psmac_wclip_rgn_ok(g.rgn, vf, ww, wh)) {      /* not a live region of this window: nothing, and again later */
+                if (!rgn_bad++) kprintf("[PC] the window's region (handle $%08X) does not read as a live region: not drawn\n", g.rgn);
+                blk->nodraw = A68P_ND_RGN;
+                mark(cx0 - g.l, cy0 - g.t, cx1 - g.l, cy1 - g.t);
+                publish(s);
+                return;
+            }
+            int n = psmac_wclip_parts(rr, g.rgn, vf, g.l, g.t, cx0, cy0, cx1, cy1);
             if (n < 0) { rgn_skips++; mark(cx0 - g.l, cy0 - g.t, cx1 - g.l, cy1 - g.t); return; }   /* not readable now: again next time */
             for (int k = 0; k < n; k++) area_part(s, rr[k][1], rr[k][0], rr[k][3], rr[k][2], cb);
         }
@@ -1189,6 +1365,12 @@ static void command(void)
     case A68P_C_ATTACH: attach(blk->arg0, blk->arg1); break;
     case A68P_C_DETACH: detach(blk->arg1, blk->arg0); break;
     case A68P_C_RESCAN: rescan(); break;
+    case A68P_C_NOWINDOW:       /* the program quits: drawing stops before its window and region are freed */
+        if (!nowin) gone_n++;
+        nowin = 1; g.visible = 0; blk->nodraw = A68P_ND_GONE;
+        release_all();
+        kprintf("[PC] Aurora68 PC's window is gone (it quits): nothing drawn\n");
+        break;
     }
     fatal_armed = 0;
     DMB();
@@ -1286,6 +1468,7 @@ int psmac_pc_poll(int core)
     if (core != chosen) return 0;
     command();
     geometry();
+    watch_program();
     if (phase >= P_ROM && phase <= P_BUILD) { start_step(); return 1; }
     if (phase != P_RUN) { numbers(); return 0; }
     input();
@@ -1338,8 +1521,12 @@ void psmac_pc_report(void)
     static const char *const names[] = { "off", "starting", "running", "paused", "stopped", "failed" };
     uint32_t st = blk->state, rd = 0, wr = 0, held_n = 0, dirty_n = 0;
     for (uint32_t i = 0; i < nimg; i++) { rd += img[i].reads; wr += img[i].writes; held_n += img[i].held; dirty_n += img[i].dirty; }
-    kprintf("[PC]   %s on core %d: %u.%u MIPS, %u per mille of the core busy, %u idle; %u pictures drawn (%u us each), %u skipped under a menu, %u for the region; keys %u, mouse %u; disks %u reads %u writes (%u sectors in memory, %u to be written back)%s%s\n",
+    static const char *const nd[] = { "drawing", "hidden", "not drawing: the window is gone", "not drawing: the program's loop stands still",
+                                      "not drawing: the region is not a live one", "not drawing: no region yet" };
+    uint32_t n = blk->nodraw;
+    kprintf("[PC]   %s on core %d: %u.%u MIPS, %u per mille of the core busy, %u idle; %u pictures drawn (%u us each), %u skipped under a menu, %u for the region, %u regions refused; %s (the program %s, %u stops, %u windows gone); keys %u, mouse %u; disks %u reads %u writes (%u sectors in memory, %u to be written back)%s%s%s%s\n",
             st < 6 ? names[st] : "?", chosen, blk->mips_x10 / 10, blk->mips_x10 % 10, blk->load, blk->idle_pm, blk->draws, blk->draw_us,
-            menu_skips, rgn_skips, keys_in, mouse_in, rd, wr, held_n, dirty_n,
-            st == A68P_S_FAILED ? ": " : "", st == A68P_S_FAILED ? (const char *)blk->message : "");
+            menu_skips, rgn_skips, rgn_bad, n < 6 ? nd[n] : "?", blk->prog == A68P_PROG_LIVE ? "running" : blk->prog == A68P_PROG_GONE ? "gone" : "not seen",
+            blk->stalls, gone_n, keys_in, mouse_in, rd, wr, held_n, dirty_n,
+            st == A68P_S_FAILED ? ": " : "", st == A68P_S_FAILED ? (const char *)blk->message : "", note[0] ? " | " : "", note);
 }

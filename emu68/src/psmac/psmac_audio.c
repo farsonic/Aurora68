@@ -1102,11 +1102,27 @@ void psmac_audio_start(uint8_t *win)
     __atomic_store_n(&started, 1, __ATOMIC_RELEASE);
 }
 
+/* How long core 1 kept the sound waiting (23 November 2026, the owner's SE: noise on HDMI after the boot chime with the
+   PC kernel, the PC running on core 1): the longest time between two calls here over the heartbeat's five seconds, and
+   how many were longer than 32 ms (the ring is six 8 ms blocks: past four of them the block being filled is the one
+   before the one playing, "filled late", and past six the DMA plays old sound). The heartbeat's audio line says both, in
+   QEMU too, where mac.audiodump= has no DMA ring to be late for. */
+static uint64_t poll_last_t, poll_gap_max;
+static uint32_t poll_gaps_late;
 /* from core 1's loop, and from its waits inside a USB enumeration (psmac_usb.c's delay_us): fill
    whatever the output has played. Returns 1 if it did something. */
 int psmac_audio_poll(void)
 {
     if (!__atomic_load_n(&started, __ATOMIC_ACQUIRE) || out_kind == OUT_OFF) return 0;
+    {
+        uint64_t t = now();
+        if (poll_last_t) {
+            uint64_t d = t - poll_last_t;
+            if (d > poll_gap_max) poll_gap_max = d;
+            if (d > hz() * 32u / 1000u) poll_gaps_late++;
+        }
+        poll_last_t = t;
+    }
     if (card) card_vol = card->volume;
     str_poll();
     asc_steer();
@@ -1141,10 +1157,12 @@ void psmac_audio_pause(void) { if (out_kind == OUT_HDMI || out_kind == OUT_JACK)
 void psmac_audio_report(void)
 {
     if (!started || out_kind == OUT_OFF) return;
-    kprintf("[PSMAC]   audio: %s %u Hz, %u blocks%s | ASC %u starts, %u samples, %u wavetable, %u underruns, %u dropped | card %u frames, %u underruns, queued %d, volume %08x | %u clipped\n",
+    uint32_t gap_ms = (uint32_t)(poll_gap_max * 1000u / hz());
+    poll_gap_max = 0;
+    kprintf("[PSMAC]   audio: %s %u Hz, %u blocks%s | ASC %u starts, %u samples, %u wavetable, %u underruns, %u dropped | card %u frames, %u underruns, queued %d, volume %08x | %u clipped | core 1's longest wait %u ms, %u over 32 ms\n",
             out_kind == OUT_HDMI ? "HDMI" : out_kind == OUT_JACK ? "jack" : "file", out_rate, out_kind == OUT_FILE ? dump_blocks : blocks_filled,
             dma_ch >= 0 ? (late_fills ? " (some filled late)" : "") : "", asc.starts, asc.samples, asc.wt_samples, asc.underruns, asc_dropped,
-            card_frames, card ? card->underruns : 0, card ? (int)(card->head - card->tail) : 0, card_vol, clips);
+            card_frames, card ? card->underruns : 0, card ? (int)(card->head - card->tail) : 0, card_vol, clips, gap_ms, poll_gaps_late);
     if (str && str_used) {
         static const char *const sn[] = { "idle", "playing", "paused", "ended", "error" };
         uint32_t s = str->state < 5 ? str->state : 4;

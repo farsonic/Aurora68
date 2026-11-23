@@ -632,6 +632,10 @@ static void draw_clip(const plm_frame_t *f, const int32_t *clip)
     if (!g.rgn) draw_around(f, &s, x0, y0, rw, rh, cx0, cy0, cx1, cy1, cb);
     else {                                    /* only the parts of the window that show (its visRgn, read now) */
         int32_t rr[MAX_PARTS][4];
+        /* a live region only (23 November 2026, psmac_wclip_rgn_ok): a program that crashed or quit without STOP leaves
+           the card a handle into freed memory, and a paused or starved film's last picture is drawn again when the
+           pointer moves; the PC card drew anywhere on the owner's desktop that way */
+        if (!psmac_wclip_rgn_ok(g.rgn, g.vflags & A68V_VF_24BIT ? PSMAC_WCLIP_24BIT : 0, 0, 0)) { rgn_skips++; return; }
         int n = vis_parts(rr, x0, y0, cx0, cy0, cx1, cy1);
         if (n < 0) { rgn_skips++; return; }   /* the region could not be read (moving in the Mac's heap): not this picture */
         rgn_parts = (uint32_t)n;

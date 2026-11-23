@@ -24,6 +24,8 @@
  *  4. Input while the PC has the keyboard (focus = 1): events into the ring at in_head (the card takes them at
  *     in_tail): Mac virtual key codes down and up, mouse movement and buttons.
  *  5. Status: state, message, mips_x10, load; mode, nat_w, nat_h (the picture's natural size, for the zoom box).
+ *  6. While it runs: prog = A68P_PROG_LIVE and alive + 1 at every turn of its event loop (the card draws only while alive
+ *     moves); before it quits: prog = A68P_PROG_GONE, visible 0, the region taken back, geom_seq + 1, A68P_C_NOWINDOW.
  */
 #ifndef PSMAC_PC_H
 #define PSMAC_PC_H
@@ -58,6 +60,8 @@
                                                 A68P_PLACE_AUTO: the image's kind's drive); floppies and CDs only */
 #define A68P_C_DETACH     9u                 /* arg1 = place, or A68P_PLACE_AUTO and arg0 = the image: ejected */
 #define A68P_C_RESCAN     10u                /* the image list again (the SD card's root) */
+#define A68P_C_NOWINDOW   11u                /* the program's window is gone (it quits): nothing is drawn from now on, every key
+                                                and button the PC holds is let go; done_seq says the card has stopped drawing */
 #define A68P_PLACE_IDE0M  0u                 /* the places (struct a68p_disks place[]): the hard disks, pc.disk0= */
 #define A68P_PLACE_IDE0S  1u                 /* pc.disk1= */
 #define A68P_PLACE_CD     2u                 /* the CD-ROM drive (IDE 1 master), pc.cd= */
@@ -87,6 +91,23 @@
 #define A68P_CLIP_TAG     0x50430000u        /* 'PC' << 16, plus the geom_seq vis_rgn goes with */
 #define A68P_VF_24BIT     1u                 /* vis_flags: the program runs in 24-bit mode */
 
+/* prog, the program's word about itself (23 November 2026, the owner's SE: the card went on drawing into the window of a
+   program that had quit, through its visRgn handle, by then freed memory read as a region: anywhere on the desktop) */
+#define A68P_PROG_NONE    0u                 /* nothing said (a program before this, or pc.testwin): no heartbeat watched */
+#define A68P_PROG_LIVE    1u                 /* the program runs and adds 1 to alive at every turn of its event loop: the card
+                                                draws only while alive moves (A68P_ALIVE_MS) and only inside the region it was
+                                                handed (no region, no picture) */
+#define A68P_PROG_GONE    2u                 /* the program has quit (or crashed: its ExitToShell patch): nothing drawn until a
+                                                program says A68P_PROG_LIVE again and gives a place */
+#define A68P_ALIVE_MS     1000u              /* alive standing still this long: the program is not running, nothing drawn */
+/* nodraw: why the card draws nothing now */
+#define A68P_ND_DRAWS     0u
+#define A68P_ND_HIDDEN    1u                 /* visible 0: hidden, being dragged or resized */
+#define A68P_ND_GONE      2u                 /* the program's window is gone (A68P_PROG_GONE, A68P_C_NOWINDOW) */
+#define A68P_ND_STALE     3u                 /* the program's alive stood still: it is not running */
+#define A68P_ND_RGN       4u                 /* the region handed over does not read as a live region of that window */
+#define A68P_ND_NORGN     5u                 /* a program that runs (A68P_PROG_LIVE) but no region for this place yet */
+
 #define A68P_SCALE_FIT    0u                 /* graphics scaled to the window (text is always drawn from its cells) */
 #define A68P_SCALE_1      1u                 /* 1:1, from scroll_x, scroll_y */
 #define A68P_O_PCSENSE    1u                 /* options: text white on black as the PC draws it (default: black on white on 1 bit) */
@@ -103,7 +124,7 @@
 #define A68P_IN_KEYUP     2u
 #define A68P_IN_MOUSE     3u                 /* dx, dy: the movement (y down); buttons: bit 0 left, 1 right, 2 middle */
 #define A68P_IN_BXKEY     4u                 /* code: an A86_KEY_* (aurora86.h), modifiers bit 0: released */
-#define A68P_IN_RELEASE   5u                 /* every key the PC holds down is let go (focus went back to the Mac) */
+#define A68P_IN_RELEASE   5u                 /* every key and mouse button the PC holds down is let go (focus went back to the Mac) */
 
 struct a68p_in {                             /* 16 bytes */
     uint16_t type, code;
@@ -133,7 +154,9 @@ struct a68p_block {
     uint32_t draws;                          /* pictures drawn since the start */
     uint32_t idle_pm;                        /* per mille of the last second the PC was idle (halted, waiting) */
     uint32_t disk_dirty;                     /* sectors the PC wrote that are not yet back in their image files */
-    uint32_t pad0[7];
+    uint32_t nodraw;                         /* A68P_ND_*: why nothing is drawn now (0: the card draws) */
+    uint32_t stalls;                         /* times drawing stopped because the program's alive stood still */
+    uint32_t pad0[5];
     /* the Mac's half: 0x80-0xFF */
     uint32_t cmd_seq, cmd, arg0, arg1;       /* cmd and its arguments, then cmd_seq + 1 */
     uint32_t screen;                         /* A68P_SCREEN_* */
@@ -146,13 +169,17 @@ struct a68p_block {
     uint32_t options;                        /* A68P_O_* */
     uint32_t focus;                          /* 1: the PC has the keyboard and mouse */
     uint32_t in_head;                        /* input events put in */
-    uint32_t pad1[12];
+    uint32_t prog;                           /* A68P_PROG_* */
+    uint32_t alive;                          /* + 1 at every turn of the program's event loop (A68P_PROG_LIVE) */
+    uint32_t pad1[10];
     /* the card again: 0x100 */
     char     message[128];                   /* what the PC is doing, or why it stopped, in words (ASCII) */
 };
 _Static_assert(sizeof(struct a68p_block) == 0x180, "a68p_block");
 _Static_assert(__builtin_offsetof(struct a68p_block, cmd_seq) == 0x80, "a68p_block Mac half");
 _Static_assert(__builtin_offsetof(struct a68p_block, in_head) == 0xCC, "a68p_block in_head");
+_Static_assert(__builtin_offsetof(struct a68p_block, prog) == 0xD0 && __builtin_offsetof(struct a68p_block, alive) == 0xD4, "a68p_block prog");
+_Static_assert(__builtin_offsetof(struct a68p_block, nodraw) == 0x64, "a68p_block nodraw");
 _Static_assert(__builtin_offsetof(struct a68p_block, message) == A68P_OFF_MESSAGE, "a68p_block message");
 _Static_assert(sizeof(struct a68p_in) == 16, "a68p_in");
 
@@ -173,6 +200,10 @@ struct a68p_disks {                          /* at A68P_OFF_DISKS */
     uint32_t count, seq;
     struct a68p_disk d[A68P_DISKS_MAX];
     int32_t  place[A68P_PLACES];             /* the image attached at each place, -1 for none */
+    uint32_t note_seq;                       /* + 1 when note changes */
+    char     note[184];                      /* why a disk the options name is not in its drive (empty: none missing), in
+                                                words, for the program to show (23 November 2026: "Boot failed: could not
+                                                read the boot disk" on the owner's SE said nothing of why) */
 };
 _Static_assert(sizeof(struct a68p_disks) <= 0x1000, "a68p_disks");
 

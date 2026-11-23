@@ -196,6 +196,7 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	sh ../tools/vcodec_test.sh $(abspath $(B))
 	sh ../tools/mpg1_test.sh $(abspath $(B))
 	sh ../tools/vbuf_test.sh $(abspath $(B))
+	sh ../tools/pcplace_test.sh $(abspath $(B))/pcplace
 	sh ../tools/pccard_test.sh $(abspath $(B))
 	sh ../tools/splash_test.sh $(abspath $(B))
 
@@ -421,7 +422,7 @@ $(B)/apc/glue.o: a68player/glue.s
 	$(AS) -o $@ $<
 $(B)/apc/libc.o: c/libc.c c/toolbox.h $(B)/apc/toolbox_gen.h
 	$(CC) $(subst -I$(B),-I$(B)/apc,$(CFLAGS)) -c -o $@ $<
-$(B)/apc/pc.o: a68pc/pc.c c/screens.h c/toolbox.h $(B)/apc/toolbox_gen.h ../emu68/src/psmac/psmac_pc.h
+$(B)/apc/pc.o: a68pc/pc.c a68pc/place.h c/screens.h c/toolbox.h $(B)/apc/toolbox_gen.h ../emu68/src/psmac/psmac_pc.h
 	$(CC) $(subst -I$(B),-I$(B)/apc,$(CFLAGS)) -I../emu68/src/psmac -c -o $@ $<
 APC_OBJ = $(B)/crt0.o $(B)/apc/toolbox_glue.o $(B)/apc/libc.o $(B)/apc/glue.o $(B)/apc/pc.o
 $(B)/a68pc.elf: $(APC_OBJ) c/app.ld

@@ -22,6 +22,12 @@ int psmac_wclip_menu_down(void);
    cannot be read now (nothing should be drawn then) */
 int psmac_wclip_parts(int32_t out[PSMAC_WCLIP_MAX][4], uint32_t rgn, uint32_t flags, int32_t x0, int32_t y0,
                       int32_t cx0, int32_t cy0, int32_t cx1, int32_t cy1);
+/* 1 when rgn (a visRgn handle, flags PSMAC_WCLIP_24BIT) reads as a live region: a master pointer into the RAM, the
+   block it points to a relocatable block of the heap that handle belongs to (its header's tag and relative handle), big
+   enough for the region, which is well formed (rgnSize even and at least 10, a bounding box in order, a last $7FFF);
+   and, when w and h are given (not 0), its bounding box inside a w x h window's content at 0,0, a pixel to spare.
+   0 for anything else: a disposed handle, a heap gone with its program, a block that has moved, memory reused */
+int psmac_wclip_rgn_ok(uint32_t rgn, uint32_t flags, int32_t w, int32_t h);
 /* the box around the Mac's pointer on that screen (psmac_display.c's numbering), top, left, bottom, right;
    0 when the pointer is not on it */
 int psmac_wclip_cursor_box(uint32_t screen, int32_t out[4]);

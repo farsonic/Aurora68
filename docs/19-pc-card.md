@@ -46,7 +46,7 @@ The window's block (`psmac_pc.h`, `struct a68p_block`; Aurora86's DESIGN planned
 | Offset | Who writes | What |
 |---|---|---|
 | $0000 | card | `magic` 'A68P', `version`, `done_seq`, `state` (off, starting, running, paused, stopped, failed), `error`, `mips_x10`, `load`, the instruction count, `core`, `ram_mb`, the screen's change count and the last one drawn, `draw_us`, `mode`, `nat_w`/`nat_h` (the natural size), `focus_ack`, `in_tail`, `draws`, `idle_pm` |
-| $0080 | Mac | `cmd_seq`, `cmd`, `arg0`, `arg1`; the place: `screen`, `top`, `left`, `bottom`, `right`, `visible`, `geom_seq`; `clip_tag`, `vis_rgn`, `vis_flags` (the window's visRgn, tagged with the geom_seq it goes with, as Play's); `scale`, `scroll_x`, `scroll_y`, `options`; `focus`; `in_head` |
+| $0080 | Mac | `cmd_seq`, `cmd`, `arg0`, `arg1`; the place: `screen`, `top`, `left`, `bottom`, `right`, `visible`, `geom_seq`; `clip_tag`, `vis_rgn`, `vis_flags` (the window's visRgn, tagged with the geom_seq it goes with, as Play's); `scale`, `scroll_x`, `scroll_y`, `options`; `focus`; `in_head`; `prog` and `alive` ($D0, $D4: the program says it runs and counts its event loop's turns, "When the program quits" below) |
 | $0100 | card | `message`, in words |
 | $0400 | Mac | the input ring: 64 events of 16 bytes (key down and up as Mac virtual key codes, mouse movement and buttons, a Bochs key code, "let everything go") |
 | $1000 | card | the text cells (character, attribute), up to 132 x 60 |
@@ -57,7 +57,8 @@ The window's block (`psmac_pc.h`, `struct a68p_block`; Aurora86's DESIGN planned
 Commands: power on (the PC is built at the first), power off (it keeps its memory and stops running), reset,
 pause, resume, Control-Alt-Delete (the card presses and lets go of the three keys), redraw, attach (an image of the
 list into a drive: `arg0` the image, `arg1` the place or `A68P_PLACE_AUTO`), detach (out of its drive) and rescan (the
-list again from the SD card's root); "Disks" below says what can go where. Power off and reset first write back
+list again from the SD card's root), and since the owner's SE (23 November 2026) the window gone (`A68P_C_NOWINDOW`: the
+program quits; the card stops drawing and lets go of every key and button before it answers); "Disks" below says what can go where. Power off and reset first write back
 everything the disks still hold. Options: `A68P_O_PCSENSE` (text in
 the PC's own white on black on a one-bit screen), `A68P_O_THRESHOLD` (no dither), `A68P_O_BIGTEXT` (the PC's 8 x 16
 font on one bit too), `A68P_O_GROWBOX` (the window's bottom-right 15 x 15 left to the Mac's grow box).
@@ -242,6 +243,69 @@ The second round (the same day, docs/08 item 133):
 - **Still not tested:** the SE board, the IIci testbed, real hardware (the owner's Pi is next), a CD's own start (`pc.cd=`
   with a bootable image), `pc.disk1=`, graphics modes, colour in QEMU.
 
+## The owner's SE: the program quits, two screens, the mouse, the sound, the missing disk (23 November 2026)
+
+The first time the card ran on the owner's SE (the PC kernel, `pc=on pc.disk0=freedos.img`; the SE's own 512 x 342 screen
+the main one at 0,0, the 2560 x 1440 HDMI screen to its right) five things went wrong. docs/08 item 136 is the record.
+
+- **Drawing after the program had quit.** The PC's screen (SeaBIOS's text) came out on the desktop, over and under the
+  Finder's windows, on both screens, while `aurora68.py windows` listed only the Finder's: Aurora68 PC had quit, and the
+  heartbeat went on counting pictures. Aurora68 PC's main loop ended with `capture(0)` and told the card nothing; the card
+  went on drawing at the last place, through `vis_rgn`, the handle of a window whose heap had gone: freed memory read as a
+  region. Now both sides:
+  - *The program* says it runs (`prog = A68P_PROG_LIVE`) and adds 1 to `alive` at every turn of its event loop and of
+    its boxes' loops. Before it quits it gives the keyboard and mouse back, writes `prog = A68P_PROG_GONE`, `visible` 0,
+    `clip_tag` and `vis_rgn` 0, `geom_seq` + 1, and sends `A68P_C_NOWINDOW`, which the driver waits on: the card has
+    stopped drawing before the heap is freed. A patch on `ExitToShell` (installed at the start, `GetToolTrapAddress` /
+    `SetToolTrapAddress`, $A746 / $A647) does the same stores on any other way out that goes through the trap (a crash the
+    system survives, Force Quit), puts the trap back as it found it, and goes on into it.
+  - *The card* draws only while `alive` moves (standing still for `A68P_ALIVE_MS`, a second: the program is not running,
+    has crashed, or the Mac is held up; drawn again in full when it moves), only with a region once a program says LIVE,
+    and only through a region that reads as a live one (`psmac_wclip_rgn_ok`, shared with the video decoder card): the
+    handle's master pointer in RAM, the block it points to a relocatable block (the header's tag, 8 bytes back in a
+    24-bit zone, 12 in a 32-bit one) of the zone the handle belongs to (the relative handle; the zone's `bkLim` beyond the
+    block), big enough for the region, `rgnSize` even and 10 to 8192, its box in order and inside the window, a last
+    $7FFF. The block's `nodraw` says why nothing is drawn (hidden, gone, the loop standing still, a region refused, none
+    yet) and the heartbeat's `[PC]` line too. Every key and button the PC holds is let go when the window goes or the
+    loop stops. The video decoder card refuses a region that is not live the same way (a program that crashed or quit
+    without STOP left it a handle into freed memory, and a paused or starved film's last picture is drawn again whenever
+    the pointer moves); its programs have no heartbeat yet, so a stale heap that is still intact passes there.
+- **The two screens.** Read and tested on the host: the program's mapping (now `mac/a68pc/place.h`, which `pc.c`
+  includes) finds the screen from the GDevice list, each device's `gdRect` and its driver's slot (slot $A is HDMI), and the
+  window's content in that screen's pixels; the card draws into that screen's frame buffer at those coordinates.
+  `tools/pcplace_test.c` (in `make -C mac check`, no Aurora86 needed) runs the program's own lines against a pretend Mac
+  memory: the SE's screen main with HDMI to its right (also raised by 400), HDMI main with the SE's to its right and to its
+  left, in 32-bit and 24-bit mode; a window on either screen, across both, at HDMI's far edge. Nothing was wrong with the
+  mapping; two things changed: the screen is now the one holding most of the window (it was the one under the content's
+  top left, so a window mostly on HDMI with its left edge on the SE was drawn on the SE in a strip), and the pointer's box
+  (`psmac_wclip_cursor_box`) masks master pointers in 24-bit mode, where it never found the screen (found by the test:
+  four failures with the old code). `tools/pccard_test.sh` adds runs with a second screen (1024 x 768 at 8 bits as HDMI):
+  the window on HDMI is drawn there in its place and nowhere else, the SE's screen untouched, and the other way round.
+- **The mouse that kept selecting icons.** Nothing in the card or the program puts a mouse button into the Mac's input: the
+  card's only input path is the PC's (`a86_pc_mouse`, `a86_pc_key`), `.PiInput` takes its ring from the service core's USB
+  and Bluetooth drivers only, and the program writes only MTemp, RawMouse and CrsrNew while captured. Not reproduced.
+  Fixed on every path found: the card lets go of the PC's mouse buttons as well as its keys (`A68P_IN_RELEASE`, the window
+  gone, the loop stopped); capture ends on quit, deactivate, suspend, any click outside the content, a menu, a drag. The
+  likeliest explanation is the drawing above: the PC's text drawn over the Finder's icons at 30 pictures a second on a
+  one-bit screen looks like icons being selected and unselected as the pointer moves.
+- **Noise on HDMI after the chime.** On the SE board the PC runs on core 1 (core 2 is the SE's bus, which cannot wait,
+  and core 3 the service loop, 86 per cent busy on the owner's SE), and core 1 also refills the HDMI sound's DMA ring: six
+  8 ms blocks, 48 ms, played again and again when not refilled. The PC's start read its 12 MiB firmware a megabyte a turn
+  from the SD card, and its build, slices, disk reads and drawing could hold core 1 longer than the ring lasts. Now
+  everything long the PC does on core 1 gives the sound its turn every millisecond (`pc_yield`: in `a86_host_ns`, which
+  Bochs calls several times a millisecond, between disk pieces, write-back runs and 16 rows of drawing), and the firmware
+  is read 64 KiB a turn there. The solo board's PC stays on core 2 (its light service core). The heartbeat's audio line
+  now says core 1's longest wait between two refills and how many waits were over 32 ms, also in QEMU.
+- **"No bootable device".** The heartbeat's "disks 0 reads" meant `pc.disk0=` had not been attached, and only the log's
+  scrolled-out start said why. The lookup was not the cause as far as can be read: `psmac_card_pc_open` finds a root file by
+  its long name or its 8.3 name in any case, and a file Setup and Recovery's `put` wrote (`aurora68.up`, renamed into place)
+  is found like any other. Now the reason is said: in the disks block's `note`, which Aurora68 PC shows in a box over its
+  window once ("No hard disk: pc.disk0=freedos.img is not in the SD card's root (image files there: FD14LITE.IMG)." and
+  the like: a folder, empty, damaged clusters, no card, too small, a floppy's size, none named at all), in the heartbeat's
+  `[PC]` line, and in the log. One cause found on the way: option values ended only at a space, so a `cmdline.txt` with
+  Windows line ends would have handed the kernel `freedos.img\r` for the last word; `psmac_option` (and the card's
+  `pc_owns`) now end a value at any white space or control character.
+
 ## Options
 
 | Option | What |
@@ -256,6 +320,7 @@ The second round (the same day, docs/08 item 133):
 | `pc.img1=PATH` ... `pc.img8=PATH` | testbed only: more images in the Disks menu (semihosting cannot list a host directory) |
 | `pc.testwin=S,L,T,R,B` | testbed only: the window's place set by the kernel (no program needed), the whole rectangle drawn |
 | `pc.textlog=1` | testbed only: every changed line of the PC's text screen into the log, `[PC] \| text` |
+| `pc.yield=off` | testbed only: core 1 as it was before 23 November 2026 (no turns for the sound inside the PC's work, the firmware a megabyte a turn), to compare |
 
 ## What the owner copies to the SD card
 

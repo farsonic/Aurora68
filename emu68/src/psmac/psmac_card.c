@@ -412,7 +412,7 @@ static int pc_owns(const char *s)
         const char *v = psmac_option(keys[i]);
         if (!v || !v[0]) continue;
         char t[64]; unsigned n = 0;
-        while (v[n] && v[n] != ' ' && n < sizeof t - 1) { t[n] = v[n]; n++; }
+        while ((unsigned char)v[n] > ' ' && n < sizeof t - 1) { t[n] = v[n]; n++; }   /* a CR of a Windows line end is not the name's */
         t[n] = 0;
         if (name_eq(t, s)) return 1;
     }
@@ -2609,20 +2609,27 @@ static int boot_jobs(void)
 #define PCF_MAX 36                 /* the firmware, the VGA BIOS and the 32 images of the PC's list */
 static struct { uint32_t size, n, *clus; } pcf[PCF_MAX];
 static int npcf;
-/* the file's handle, -1 when it is not there, -2 while the card has not been looked at yet (try again) */
+/* the file's handle, or why not (psmac_pc.c says it in words, in the log and in Aurora68 PC's window since 23 November
+   2026, when the owner's pc.disk0= was not attached and nothing said why): -1 no file of that name (long or 8.3, any
+   case) in the root, -2 the card not looked at yet (try again), -3 a folder, -4 empty, -5 its clusters end before its
+   size, -6 no memory for its cluster list, -7 too many files open, -8 no card, or one that cannot be read */
 int psmac_card_pc_open(const char *name, uint32_t *size)
 {
     struct rec_ent e;
     int k = psmac_card_rec_ready();
     if (k == 0) return -2;
-    if ((k != 1 && k != -2) || npcf >= PCF_MAX || psmac_card_rec_find(name, &e) || (e.attr & 0x10) || e.clus < 2 || !e.size) return -1;
+    if (k != 1 && k != -2) return -8;
+    if (npcf >= PCF_MAX) return -7;
+    if (psmac_card_rec_find(name, &e)) return -1;
+    if (e.attr & 0x10) return -3;
+    if (e.clus < 2 || !e.size) return -4;
     uint32_t cb = fs.spc * 512u, n = (e.size + cb - 1) / cb, i = 0, c = e.clus;
     uint32_t *list = tlsf_malloc(tlsf, n * 4u);
-    if (!list) return -1;
+    if (!list) return -6;
     rec_lock();
     for (; i < n && !rec_eoc(c); i++) { list[i] = c; c = fw_get(c); }
     rec_unlock();
-    if (i < n) { tlsf_free(tlsf, list); kprintf("[CARD] %s: its cluster chain ends before its size\n", name); return -1; }
+    if (i < n) { tlsf_free(tlsf, list); kprintf("[CARD] %s: its cluster chain ends after %u of its %u clusters\n", name, i, n); return -5; }
     pcf[npcf].size = e.size; pcf[npcf].n = n; pcf[npcf].clus = list;
     *size = e.size;
     return npcf++;

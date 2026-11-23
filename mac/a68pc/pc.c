@@ -26,10 +26,21 @@
  * 23 November 2026; 644 x 400 or 724 x 400 in colour; the PC's resolution for graphics). It fits the SE's 512 x 342
  * screen with the menu bar. The card leaves the grow box's
  * corner alone (A68P_O_GROWBOX) so that the box can be drawn. Human Interface Guidelines (1992); System 6 and 7.
+ *
+ * Alive and gone (23 November 2026, the owner's SE: after this program had quit, the card went on drawing the PC's
+ * screen at the window's last place through the visRgn handle it had been given, freed memory by then, over and under
+ * the Finder's windows on both screens). The program now says it runs (prog = A68P_PROG_LIVE) and adds 1 to alive at
+ * every turn of its event loop and of its boxes' loops, and the card draws only while alive moves; before it quits it
+ * gives the keyboard and mouse back, says A68P_PROG_GONE, takes the region back and sends A68P_C_NOWINDOW, which the card
+ * answers once it has stopped drawing; and a patch on ExitToShell (the way out of a program that is ended any other way:
+ * a crash the system survives, Force Quit) says GONE too, then puts the trap back as it was and goes on into it.
+ * The place: tools/pcplace_test.c runs this program's own mapping (place.h) on the host with the SE's screen as the main
+ * one and HDMI to its right, and the other way round.
  */
 #include "toolbox.h"
 #include "psmac_pc.h"
 #include "screens.h"
+#include "place.h"
 
 short drv_open(void *pb), drv_control(void *pb), drv_status(void *pb);
 
@@ -85,41 +96,65 @@ static int card_open(void)
 	return blk->magic == A68P_MAGIC;
 }
 static void command(unsigned long c, unsigned long a0, unsigned long a1) { if (drv) ctl(100, (long)c, (long)a0, (long)a1); }
+/* alive: one more turn of an event loop (the card draws only while this moves, A68P_ALIVE_MS) */
+static void beat(void) { if (blk) blk->alive = blk->alive + 1; }
+/* the window gone: nothing for the card to draw, its region handle taken back (it is freed with this program's heap).
+   Plain stores, no driver call and no waiting: also run from the ExitToShell patch, where nothing else may be safe */
+static void gone(void)
+{
+	if (!blk) return;
+	blk->prog = A68P_PROG_GONE;
+	blk->focus = 0;
+	blk->visible = 0;
+	blk->clip_tag = 0;
+	blk->vis_rgn = 0;
+	blk->geom_seq = blk->geom_seq + 1;
+}
+/* ExitToShell, patched while the program runs: whichever way it ends, the card hears that the window is gone. The patch
+   puts the trap back as it found it (SetToolTrapAddress) and goes on into the original: under System 7 the Process
+   Manager keeps a program's patches to itself, under System 6 a patch left behind would be a jump into freed memory */
+unsigned long ets_old __attribute__((used));
+void a68pc_ets_gone(void)
+{
+	if (ets_old) {
+		unsigned long o = ets_old;
+		__asm__ volatile("move.l %0,%%a0\n\tmove.w #0xA9F4,%%d0\n\t.short 0xA647" :: "g"(o) : "d0", "d1", "d2", "a0", "a1", "memory");
+	}
+	gone();
+}
+__asm__("	.text\n"
+        "	.globl	a68pc_ets_patch\n"
+        "a68pc_ets_patch:\n"
+        "	movem.l	%d0-%d2/%a0-%a1,-(%sp)\n"
+        "	jsr	a68pc_ets_gone\n"
+        "	movem.l	(%sp)+,%d0-%d2/%a0-%a1\n"
+        "	move.l	ets_old,-(%sp)\n"
+        "	rts\n");
+static void ets_patch(void)
+{
+	unsigned long o;
+	__asm__ volatile("move.w #0xA9F4,%%d0\n\t.short 0xA746\n\tmove.l %%a0,%0" : "=g"(o) :: "d0", "d1", "d2", "a0", "a1", "memory");
+	if (!o) return;
+	ets_old = o;
+	__asm__ volatile("lea a68pc_ets_patch,%%a0\n\tmove.w #0xA9F4,%%d0\n\t.short 0xA647" ::: "d0", "d1", "d2", "a0", "a1", "memory");
+}
 
 /* ---- the window's place ---------------------------------------------------------------------------- */
 static int hidden_by_us, captured, scale1, bigtext, pcsense, quit;
 static int sized_by_user;               /* the window keeps the PC's natural size until the user resizes or zooms it */
-/* the screen a global point is on: 0 for slot 9's, 1 for slot $A's (the GDevice's driver's slot), its top left */
-static int screen_of(Point g, Point *origin)
-{
-	void **gd = *(void ***)0x8A8;                   /* DeviceList */
-	while (gd && *gd) {
-		unsigned char *d = *gd;
-		Rect *r = (Rect *)(d + 34);                    /* gdRect */
-		if (g.h >= r->left && g.h < r->right && g.v >= r->top && g.v < r->bottom) {
-			short ref = *(short *)d;                   /* gdRefNum: the screen's driver */
-			origin->h = r->left; origin->v = r->top;
-			void ***ut = *(void ****)0x11C;            /* UTableBase */
-			int slot = 9;
-			if (ref < 0 && ut && ut[~ref] && *ut[~ref]) slot = *((unsigned char *)*ut[~ref] + 40);   /* dCtlSlot */
-			return slot == 0xA ? A68P_SCREEN_HDMI : A68P_SCREEN_FIRST;
-		}
-		gd = *(void ***)(d + 30);                      /* gdNextGD */
-	}
-	origin->h = origin->v = 0;
-	return 0;
-}
 static struct { long screen, top, left, bottom, right, visible; } place, sent;
 static struct { long scale, sx, sy, options; } view, sent_view;
 static void tell_place(int force)
 {
 	if (!win || !drv) return;
 	Rect r = *PORT_RECT(win);
-	Point tl = { r.top, r.left }, br = { r.bottom, r.right }, org;
+	Point tl = { r.top, r.left }, br = { r.bottom, r.right };
 	SetPort(win);
 	LocalToGlobal(&tl); LocalToGlobal(&br);
-	place.screen = screen_of(tl, &org);
-	place.top = tl.v - org.v; place.left = tl.h - org.h; place.bottom = br.v - org.v; place.right = br.h - org.h;
+	struct pl_rect c = { tl.v, tl.h, br.v, br.h };
+	struct pl_place pp;
+	pl_place_of(&c, &pp, 0);                        /* the screen holding most of the window, in its own pixels (place.h) */
+	place.screen = pp.screen; place.top = pp.top; place.left = pp.left; place.bottom = pp.bottom; place.right = pp.right;
 	place.visible = !hidden_by_us;
 	view.scale = scale1 ? A68P_SCALE_1 : A68P_SCALE_FIT; view.sx = view.sy = 0;
 	view.options = A68P_O_GROWBOX | (bigtext ? A68P_O_BIGTEXT : 0) | (pcsense ? A68P_O_PCSENSE : 0);
@@ -208,7 +243,7 @@ static void notice(const volatile char *text)
 	}
 	MoveTo(16, 98); DrawString(pstr(pbuf, "Click to continue."));
 	EventRecord ev;
-	for (;;) if (WaitNextEvent(1 << mouseDown | 1 << keyDown, &ev, 30, 0) && (ev.what == mouseDown || ev.what == keyDown)) break;
+	for (;;) { beat(); if (WaitNextEvent(1 << mouseDown | 1 << keyDown, &ev, 30, 0) && (ev.what == mouseDown || ev.what == keyDown)) break; }
 	DisposeWindow(w);
 	SetPort(win);
 }
@@ -346,7 +381,7 @@ static void about(void)
 	MoveTo(16, 76); DrawString(pstr(pbuf, "the keyboard and mouse between the Mac and the PC."));
 	MoveTo(16, 98); DrawString(pstr(pbuf, "Click to continue."));
 	EventRecord ev;
-	for (;;) if (WaitNextEvent(1 << mouseDown | 1 << keyDown, &ev, 30, 0) && (ev.what == mouseDown || ev.what == keyDown)) break;
+	for (;;) { beat(); if (WaitNextEvent(1 << mouseDown | 1 << keyDown, &ev, 30, 0) && (ev.what == mouseDown || ev.what == keyDown)) break; }
 	DisposeWindow(w);
 	SetPort(win);
 }
@@ -459,7 +494,8 @@ int main(void)
 	InsertMenu(m_keys, 0);
 	DrawMenuBar();
 
-	if (!card_open()) drv = 0;
+	if (!card_open()) { drv = 0; blk = 0; }
+	if (drv) { blk->prog = A68P_PROG_LIVE; beat(); ets_patch(); }
 	short nw, nh;
 	natural(&nw, &nh);
 	Rect b = { 40, 8, (short)(40 + nh), (short)(8 + nw) };
@@ -471,7 +507,9 @@ int main(void)
 	tell_place(1);
 
 	EventRecord ev;
+	unsigned long note_seen = ~0u;
 	while (!quit) {
+		beat();
 		int got = WaitNextEvent(everyEvent, &ev, captured ? 0 : 10, 0);
 		if (got) switch (ev.what) {
 		case mouseDown: mouse_down(&ev); break;
@@ -512,8 +550,13 @@ int main(void)
 		}
 		tell_place(0);
 		title();
+		if (!captured) {                                /* a disk the options name and the card could not attach: why, once */
+			volatile struct a68p_disks *dk = (volatile struct a68p_disks *)(card + A68P_OFF_DISKS);
+			if (dk->note_seq != note_seen) { note_seen = dk->note_seq; if (dk->note[0]) notice(dk->note); }
+		}
 	}
-	capture(0);
+	capture(0);                                         /* the keyboard and mouse back to the Mac, the PC's let go */
+	if (drv) { gone(); command(A68P_C_NOWINDOW, 0, 0); }   /* the card stops drawing before this heap is freed */
 	LM_SYSEVTMASK = mask_was;
 	return 0;
 }

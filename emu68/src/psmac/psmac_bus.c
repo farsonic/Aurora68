@@ -233,9 +233,12 @@ const char *psmac_option(const char *key)
     const char *args = psmac_bootargs();
     size_t kl = strlen(key);
     for (const char *s = args; s && *s; s++) {
-        if ((s == args || s[-1] == ' ') && strncmp(s, key, kl) == 0 && s[kl] == '=') {
+        if ((s == args || (unsigned char)s[-1] <= ' ') && strncmp(s, key, kl) == 0 && s[kl] == '=') {
             char *out = val[slot = (slot + 1) & 7]; int n = 0;
-            for (const char *v = s + kl + 1; *v && *v != ' ' && n < 127; v++) out[n++] = *v;
+            /* a value ends at any white space or control character (23 November 2026): a cmdline.txt with Windows line
+               ends can hand the kernel a CR after its last word, and pc.disk0=freedos.img as the last word would have
+               been "freedos.img\r", a name no file has (a cause looked for when the owner's disk was not attached) */
+            for (const char *v = s + kl + 1; (unsigned char)*v > ' ' && n < 127; v++) out[n++] = *v;
             out[n] = 0; return out;
         }
     }

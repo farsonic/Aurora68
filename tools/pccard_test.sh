@@ -23,6 +23,17 @@ run() { name=$1; shift
     if "$T/pccard_test" "$@" > "$T/$name.log" 2>&1; then grep '^pccard_test' "$T/$name.log"; else grep '^pccard_test' "$T/$name.log"; echo "pccard_test: $name FAILED ($T/$name.log)"; fail=1; fi
     python3 ../tools/pnm2png.py "$T/$name.pnm" "$T/$name.png"; }
 run banner-se "$ROM" "$VGA" - 512x342x1 "$T/banner-se.pnm" 90 "Libreboot 26.11rev4 Rubber Duck (SeaBIOS)" "" "No bootable device"
+# the program's half (23 November 2026): the place and the window's visRgn as Aurora68 PC gives them; its loop stopping, its
+# heap going, it quitting: nothing drawn on either screen after each; a program again: the window drawn, nothing outside it.
+# Then two screens as on the owner's SE (its own 512 x 342 screen 0, HDMI screen 1): the window on HDMI, and on the SE's.
+export PCCARD_PROG=1
+run prog-se "$ROM" "$VGA" - 512x342x1 "$T/prog-se.pnm" 120 "Libreboot" '@stall' "Libreboot" '@live' "Libreboot" '@crash' "Libreboot" '@live' \
+    "Libreboot" '@free' "Libreboot" '@live' "Libreboot" '@quit' "Libreboot" '@live' "No bootable device"
+export PCCARD_TWO=1 PCCARD_WIN=1,88,60
+run two-hdmi "$ROM" "$VGA" - 512x342x1 "$T/two-hdmi.pnm" 90 "Libreboot" '@quit' "Libreboot" '@live' "No bootable device"
+export PCCARD_WIN=0,15,40
+run two-se "$ROM" "$VGA" - 512x342x1 "$T/two-se.pnm" 90 "Libreboot" '@stall' "Libreboot" '@live' "No bootable device"
+unset PCCARD_PROG PCCARD_TWO PCCARD_WIN
 if [ -f "$FD" ]; then
     # a copy: the card writes what the PC writes back into the image (docs/19-pc-card.md "Disks"), and FreeDOS's own
     # download stays as it came
