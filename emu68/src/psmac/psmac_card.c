@@ -401,9 +401,30 @@ static int ends_ci(const char *s, const char *suf)
     return 1;
 }
 static int image_taken(const char *name);                   /* below: already one of the Mac's disks */
+#ifdef PSMAC_PC
+/* the PC card's disks (pc.disk0= ... pc.disk3=, pc.fda=, pc.fdb=, pc.cd=, psmac_pc.c) are the PC's, not the Mac's: a
+   freedos.img in the root was taken as a Mac disk image too, loaded into the Mac's memory and offered to the Mac, whose
+   Finder asks to initialise a disk it cannot read (23 November 2026) */
+static int pc_owns(const char *s)
+{
+    static const char *const keys[] = { "pc.disk0", "pc.disk1", "pc.disk2", "pc.disk3", "pc.fda", "pc.fdb", "pc.cd" };
+    for (unsigned i = 0; i < sizeof keys / sizeof keys[0]; i++) {
+        const char *v = psmac_option(keys[i]);
+        if (!v || !v[0]) continue;
+        char t[64]; unsigned n = 0;
+        while (v[n] && v[n] != ' ' && n < sizeof t - 1) { t[n] = v[n]; n++; }
+        t[n] = 0;
+        if (name_eq(t, s)) return 1;
+    }
+    return 0;
+}
+#endif
 static int is_image_name(const char *s, uint32_t size)
 {
     if (size < (1u << 20) || (s[0] == '.' && s[1] == '_')) return 0;
+#ifdef PSMAC_PC
+    if (pc_owns(s)) return 0;
+#endif
     if (lower(s[0]) == 'k' && lower(s[1]) == 'e' && lower(s[2]) == 'r' && lower(s[3]) == 'n' && lower(s[4]) == 'e' && lower(s[5]) == 'l') return 0;
     return ends_ci(s, ".img") || ends_ci(s, ".hda") || ends_ci(s, ".image") || ends_ci(s, ".hfv") || ends_ci(s, ".dsk");
 }
@@ -2583,9 +2604,9 @@ static int boot_jobs(void)
    23 November 2026. The PC's firmware, its VGA BIOS and its disk image are files in the card's root, which the PC's
    core (core 2 on the solo board, core 1 elsewhere) reads while core 3 goes on with its own work: a file's clusters
    are listed once (the FAT read under the card's lock, as the recovery functions above do), then any part of it is
-   read with the cluster's sectors in one command, also under the lock, a cluster at most at a time. Read only: what
-   the PC writes stays in its memory (psmac_pc.c's overlay) until writing back is built and tested. */
-#define PCF_MAX 4
+   read with the cluster's sectors in one command, also under the lock, a cluster at most at a time. Written back
+   the same way since the second round (psmac_card_pc_write, below). */
+#define PCF_MAX 36                 /* the firmware, the VGA BIOS and the 32 images of the PC's list */
 static struct { uint32_t size, n, *clus; } pcf[PCF_MAX];
 static int npcf;
 /* the file's handle, -1 when it is not there, -2 while the card has not been looked at yet (try again) */
@@ -2625,5 +2646,43 @@ int psmac_card_pc_read(int file, uint32_t off, void *buf, uint32_t n)
         b += k; off += k; n -= k;
     }
     return 0;
+}
+/* Writing back (23 November 2026, docs/19-pc-card.md "Disks"): whole sectors at a sector's offset, inside the file's own
+   clusters (listed at its open), as PiDisk's images are written: the file never changes size and no directory entry or
+   FAT sector is touched, so the card's file system is the same before and after, whatever happens in between. A cluster's
+   sectors at most per command (sd_write_run: CMD25, or one at a time once that has failed), under the card's lock, as the
+   reads above are. 0, -1 for a bad request or a write that failed, -2 when the card is not writable (mac.card=ro, none) */
+int psmac_card_pc_write(int file, uint32_t off, const void *buf, uint32_t n)
+{
+    if (file < 0 || file >= npcf || ((off | n) & 511u) || off > pcf[file].size || n > pcf[file].size - off) return -1;
+    if (psmac_card_rec_ready() != 1) return -2;
+    const uint8_t *b = buf;
+    uint32_t cb = fs.spc * 512u;
+    while (n) {
+        uint32_t ci = off / cb, in = off % cb;
+        uint32_t k = cb - in < n ? cb - in : n;
+        if (k > sizeof rdbuf) k = (uint32_t)sizeof rdbuf;
+        rec_lock();
+        memcpy(rdbuf, b, k);                                       /* the controller's FIFO takes aligned words */
+        int e = sd_write_run(clus_lba(pcf[file].clus[ci]) + in / 512u, rdbuf, k / 512u);
+        rec_unlock();
+        if (e) return -1;
+        b += k; off += k; n -= k;
+    }
+    return 0;
+}
+int psmac_card_pc_writable(void) { return psmac_card_rec_ready() == 1; }
+/* the root's files (not folders) for the PC's image list, from the PC's core: -1 when the card cannot be read now */
+struct pc_list_ctx { void (*cb)(void *, const char *, uint32_t); void *ctx; };
+static int pc_list_cb(void *vc, const struct rec_ent *e)
+{
+    const struct pc_list_ctx *x = vc;
+    if (!(e->attr & 0x18) && !e->cut && e->clus >= 2) x->cb(x->ctx, e->name, e->size);
+    return 0;
+}
+int psmac_card_pc_list(void (*cb)(void *ctx, const char *name, uint32_t size), void *ctx)
+{
+    struct pc_list_ctx x = { cb, ctx };
+    return psmac_card_rec_list(pc_list_cb, &x);
 }
 #endif

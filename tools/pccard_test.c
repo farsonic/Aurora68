@@ -35,7 +35,7 @@ uintptr_t tlsf_get_total_size(void *h) { (void)h; return 0; }
 uintptr_t tlsf_get_free_size(void *h) { (void)h; return 0; }
 uint64_t pc_host_now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000u + (uint64_t)t.tv_nsec / 1000u; }
 int psmac_board_se, psmac_board_solo = 1;
-static char opts[8][200];
+static char opts[16][200];
 static int nopts;
 const char *psmac_option(const char *key)
 {
@@ -45,13 +45,17 @@ const char *psmac_option(const char *key)
 }
 void psmac_mmu_set_pc(uintptr_t w, uintptr_t r) { (void)w; (void)r; }
 static FILE *fh[8]; static int nfh;
-int64_t psmac_sh_open(const char *name, uint64_t mode) { (void)mode; FILE *f = fopen(name, "rb"); if (!f || nfh == 8) return -1; fh[nfh] = f; return nfh++; }
+int64_t psmac_sh_open(const char *name, uint64_t mode) { FILE *f = fopen(name, mode == 3 ? "r+b" : "rb"); if (!f || nfh == 8) return -1; fh[nfh] = f; return nfh++; }
 int psmac_sh_read(int64_t fd, void *buf, uint64_t len) { return fread(buf, 1, len, fh[fd]) == len; }
 int64_t psmac_sh_seek(int64_t fd, uint64_t pos) { return fseek(fh[fd], (long)pos, SEEK_SET); }
 int64_t psmac_sh_flen(int64_t fd) { long p = ftell(fh[fd]); fseek(fh[fd], 0, SEEK_END); long n = ftell(fh[fd]); fseek(fh[fd], p, SEEK_SET); return n; }
 int psmac_sh_available(void) { return 1; }
 int psmac_card_pc_open(const char *name, uint32_t *size) { (void)name; (void)size; return -1; }
 int psmac_card_pc_read(int file, uint32_t off, void *buf, uint32_t n) { (void)file; (void)off; (void)buf; (void)n; return -1; }
+int psmac_card_pc_write(int file, uint32_t off, const void *buf, uint32_t n) { (void)file; (void)off; (void)buf; (void)n; return -1; }
+int psmac_card_pc_writable(void) { return 0; }
+int psmac_card_pc_list(void (*cb)(void *, const char *, uint32_t), void *ctx) { (void)cb; (void)ctx; return -1; }
+int psmac_sh_write(int64_t fd, const void *buf, uint64_t len) { return fwrite(buf, 1, len, fh[fd]) == len; }
 uint32_t psmac_ram_size(void) { return 0; }                 /* no Mac RAM: no region, no pointer, no menu */
 uint8_t *psmac_mac_ram_ptr(void) { return 0; }
 int psmac_display_info(int i, uint32_t *w, uint32_t *h, uint32_t *d, uint32_t *b) { (void)i; (void)w; (void)h; (void)d; (void)b; return 0; }
@@ -104,6 +108,8 @@ static int vk(char c, int *shift)
     if (c == '\r') return 0x24;
     if (c == 27) return 0x35;
     if (c == 1) return 0x7D;                                    /* \d: Down */
+    if (c == '>') { *shift = 1; return 0x2F; }                  /* Shift-period */
+    if (c == ':') { *shift = 1; return 0x29; }                  /* Shift-semicolon */
     for (int i = 0; i < 0x30; i++) if (row[i] == c && c) return i;
     return -1;
 }
@@ -111,6 +117,18 @@ static const char *pending; static uint64_t next_key_t;
 static void type_step(void)
 {
     if (!pending || !*pending || pc_host_now() < next_key_t) return;
+    /* "@attach:N" / "@eject:N": the Disks menu's choice of image N (Aurora68 PC's command), instead of keys */
+    if (*pending == '@') {
+        int n = atoi(strchr(pending, ':') ? strchr(pending, ':') + 1 : "0");
+        blk->cmd = !strncmp(pending, "@attach", 7) ? A68P_C_ATTACH : A68P_C_DETACH;
+        blk->arg0 = (uint32_t)n; blk->arg1 = A68P_PLACE_AUTO;
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        blk->cmd_seq = blk->cmd_seq + 1;
+        printf("pccard_test: %s\n", pending);
+        pending += strlen(pending);
+        next_key_t = pc_host_now() + 1000000;
+        return;
+    }
     int shift, k = vk(*pending++, &shift);
     if (k < 0) return;
     if (blk->in_head - blk->in_tail > A68P_IN_SLOTS - 4) { pending--; return; }
@@ -153,14 +171,18 @@ int main(int argc, char **argv)
     for (int i = 0; i < 216; i++) clut[i] = (uint32_t)(i / 36 * 51) << 16 | (uint32_t)(i / 6 % 6 * 51) << 8 | (uint32_t)(i % 6 * 51);
     for (int i = 216; i < 256; i++) { uint32_t g = (uint32_t)(i - 216) * 255 / 39; clut[i] = g << 16 | g << 8 | g; }
     memset(scr, SD == 1 ? 0x55 : 0x80, (size_t)RB * SH);    /* a desktop pattern: what the card does not draw stays so */
-    uint32_t wx = SW >= 520 ? 16 : 15, wy = 40, ww = 480, wh = SD == 1 && SH < 366 ? 300 : 325;
-    if (SD > 1) { ww = SW >= 720 + 32 ? 720 : 640; wh = 400; }
+    uint32_t wx = SW >= 520 ? 16 : 15, wy = 40, ww = 484, wh = SD == 1 && SH < 366 ? 300 : 325;
+    if (SD > 1) { ww = SW >= 724 + 32 ? 724 : 644; wh = 400; }
     snprintf(opts[nopts++], 200, "pc=on");
     snprintf(opts[nopts++], 200, "pc.rom=%s", argv[1]);
     snprintf(opts[nopts++], 200, "pc.vgarom=%s", argv[2]);
     if (strcmp(argv[3], "-")) snprintf(opts[nopts++], 200, "pc.disk0=%s", argv[3]);
     snprintf(opts[nopts++], 200, "pc.testwin=0,%u,%u,%u,%u", wx, wy, wx + ww, wy + wh);
     snprintf(opts[nopts++], 200, "pc.textlog=1");
+    /* PCCARD_OPTS="key=value ...": more of the card's options (pc.disk0ro=on, pc.images=...) */
+    static char more[400];
+    snprintf(more, sizeof more, "%s", getenv("PCCARD_OPTS") ? getenv("PCCARD_OPTS") : "");
+    for (char *w = strtok(more, " "); w && nopts < 16; w = strtok(0, " ")) snprintf(opts[nopts++], 200, "%s", w);
     uint32_t size = psmac_pccard_size();
     void *mem = 0;
     if (posix_memalign(&mem, 1 << 16, size)) return 2;
@@ -173,7 +195,7 @@ int main(int argc, char **argv)
     while (pc_host_now() < end && blk->state != A68P_S_FAILED) {
         psmac_pc_poll(2);
         type_step();
-        if (step < argc && on_screen(argv[step])) {
+        if (step < argc && (!pending || !*pending) && pc_host_now() >= next_key_t && on_screen(argv[step])) {   /* the keys before typed */
             printf("pccard_test: \"%s\" on the screen after %.1f s\n", argv[step], (double)(pc_host_now() - t0) / 1e6);
             if (step + 1 < argc) { pending = unescape(argv[step + 1]); next_key_t = pc_host_now() + 500000; }
             step += 2;
@@ -181,6 +203,9 @@ int main(int argc, char **argv)
         if (step >= argc && (!pending || !*pending)) break;     /* every step done */
     }
     for (int k = 0; k < 40; k++) { uint64_t t = pc_host_now() + 40000; while (pc_host_now() < t) psmac_pc_poll(2); }   /* the last pictures drawn */
+    /* what the PC wrote, back in the image file before the end (the card writes back after 2 s without writes) */
+    for (uint64_t t0w = pc_host_now(), t = t0w + 20000000u; (blk->disk_dirty || pc_host_now() < t0w + 6000000u) && pc_host_now() < t; ) psmac_pc_poll(2);
+    if (blk->disk_dirty) { ok = 0; printf("pccard_test: FAIL: %u sectors were not written back\n", blk->disk_dirty); }
     if (step < argc) { ok = 0; printf("pccard_test: FAIL: \"%s\" never appeared\n", argv[step]); }
     psmac_pc_report();
     write_picture(argv[5]);

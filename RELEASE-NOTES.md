@@ -15,6 +15,14 @@ Since 0.13 (docs/08 items 96 and 103):
   (`aurora86.rom`, `aurora86-vga.bin`; `pc.disk0=` a disk image). The normal kernel is unchanged. Tested with the card's
   own code on the host (Libreboot's banner, FreeDOS 1.4 to its prompt and `ver` typed through the card) and in the
   testbed's QEMU; the owner's Pi is the real test.
+  Polished the same day (docs/08 item 133): **what the PC writes is now saved into its disk image on the SD card**, in
+  place (2 s after the PC's last write, 10 s at most, all of it at PC > Power Off and Reset; `pc.disk0ro=on` keeps the
+  image as it is); **CDs** (`.iso` images in the card's root) go in and out of the PC's CD-ROM drive from the **Disks**
+  menu while DOS runs (floppies cannot: Libreboot's firmware has no floppy drive); the text no longer touches the
+  window's frame (its first letters looked cut off); the box around the Mac's pointer is drawn again as soon as the
+  pointer leaves it, here and on the video decoder card; disk images the PC uses are no longer offered to the Mac. For a
+  PC that rests at the DOS prompt instead of keeping its Pi core busy, FreeDOS's `FDAPM APMDOS` (docs/19-pc-card.md
+  "Idle at the DOS prompt").
 - **Aurora68 Status 2.0: the Pi's temperature, clock and speed as gauges on the Mac** (docs/08 item 129, docs/09
   "Aurora68 Status 2.0", 23 November 2026). A Pi that overheats during a long video has its clock capped by the
   firmware, and the 68k slows to a fraction of its speed; until now only the kernel's log said so. Aurora68 Status
