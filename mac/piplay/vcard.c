@@ -256,7 +256,11 @@ void vc_window_open(const char *title, unsigned w, unsigned h, void *near)
 		}
 		if (left < s.left + 4) left = (short)(s.left + 4);
 		b.top = top; b.left = left; b.bottom = (short)(top + h); b.right = (short)(left + w);
-		if (last_place.bottom && on_a_screen(&last_place)) { b.top = last_place.top; b.left = last_place.left; b.bottom = (short)(b.top + h); b.right = (short)(b.left + w); }
+		if (last_place.bottom) {                       /* where the last one was, if this one fits there on a screen */
+			Rect l = { last_place.top, last_place.left, (short)(last_place.top + h - 8), (short)(last_place.left + w - 8) };
+			Rect br = { (short)(l.bottom), (short)(l.right), 0, 0 };
+			if (on_a_screen(&l) && on_a_screen(&br)) { b.top = l.top; b.left = l.left; b.bottom = (short)(b.top + h); b.right = (short)(b.left + w); }
+		}
 		colour_qd = !(*(volatile unsigned short *)0x28E & 0x4000);
 		vw = colour_qd ? (void *)NewCWindow(0, &b, t, 0, documentProc, (void *)-1, 1, 0)
 		               : (void *)NewWindow(0, &b, t, 0, documentProc, (void *)-1, 1, 0);
