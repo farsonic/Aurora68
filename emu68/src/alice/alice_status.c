@@ -149,6 +149,13 @@ void alice_status_poll(void)
     uint32_t up = (uint32_t)(now / (hz / 1000u));
     if (mbox_sensors == 2) mbox_sensors = (uint32_t)word_in(alice_bootargs(), "status.sensors=mbox");
 
+#ifdef PSMAC
+    {   /* the firmware's sensors and the counters, read before the page is opened for writing: a
+           mailbox call that waits must not leave seq odd meanwhile (alice_psmac_status.c) */
+        extern void psmac_status_measure(uint64_t now, uint64_t hz);
+        psmac_status_measure(now, hz);
+    }
+#endif
     s->seq++;                                   /* odd: being written */
     __asm__ volatile("dmb ish" ::: "memory");
     if (!s->build[0]) {
@@ -162,6 +169,8 @@ void alice_status_poll(void)
         s->usb_in_bytes = s->usb_out_bytes = ALICE68_ST_UNKNOWN;
         s->sd_read_blocks = s->sd_write_blocks = ALICE68_ST_UNKNOWN;
         s->arm_hz = s->core_uv = s->throttled = ALICE68_ST_UNKNOWN;
+        /* the fields added at 0x1a0 (23 November 2026): not measured until someone fills them */
+        for (volatile unsigned int *f = &s->arm_max_hz; f < s->reserved4; f++) *f = ALICE68_ST_UNKNOWN;
     }
     s->uptime_ms = up;
     s->interval_ms = 1000;
@@ -203,6 +212,13 @@ void alice_status_poll(void)
         n->rx_pkts = x->rx_pkts; n->tx_pkts = x->tx_pkts; n->rx_bytes = x->rx_bytes; n->tx_bytes = x->tx_bytes;
         n->rx_drop = x->rx_drop; n->tx_err = x->tx_err;
     }
+#ifdef PSMAC
+    {   /* the Macintosh's own: its cores' names and loads, the firmware's sensors, the 68k's speed, the
+           cards (alice_psmac_status.c, for Aurora68 Status 2.0) */
+        extern void psmac_status_fill(volatile struct alice68_status *s);
+        psmac_status_fill(s);
+    }
+#endif
     __asm__ volatile("dmb ish" ::: "memory");
     s->seq++;                                   /* even: done */
 }

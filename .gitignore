@@ -118,3 +118,8 @@ macos/Aurora68Play/.swiftpm/
 /cfg/
 /nvram/
 /runs/
+mac/build/pistatus.elf
+mac/build/pistatus_test
+mac/build/pistatus_test.m68k
+mac/build/pistatus_traps.txt
+mac/build/st/

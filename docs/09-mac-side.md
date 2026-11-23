@@ -21,7 +21,7 @@ and their folders"); the table gives each one's name before that once, the sourc
 | Aurora68 Agent extension (21 November 2026) | `mac/piagent/agent.c`, `entry.s` | `Aurora68-Agent.bin` (MacBinary, type `INIT`, creator `PIAG`) | Files and programs for the Pi's remote control (docs/13, "Files and applications"): lists folders, reads and writes files a 24 KiB chunk at a time through the card window, makes, deletes and renames, launches applications and opens documents, lists and quits programs, all from the GetNextEvent filter at application time. In C (the `mac/c` kit, `elf2init.py`), System 6.0.8 and 7, 24- and 32-bit; a 'sysz' resource asks System 6 for 64 KB of system heap. Does nothing until the remote asks. Goes in the System Folder (System 6) or Extensions (System 7). |
 | Aurora68 Wi-Fi (until 21 November 2026 PiWiFi) | `mac/piwifi.s` | `Aurora68-WiFi.bin` (application) | The Pi's WiFi from the Mac: shows unit 0 of the network board (state, the driver's message, network, signal, channel, address), scans and lists networks (name, signal, channel, security), joins a network (name and password typed on the status line, sent as a `struct an_join` through the command box), disconnects, switches the radio on or off. Single-letter commands in a text window, so it runs under System 6 without resources; the Macintosh counterpart of Alice68-Card. |
 | Aurora68 Bluetooth (until 21 November 2026 PiBlue) | `mac/piblue.s` | `Aurora68-Bluetooth.bin` (application) | The Pi's Bluetooth from the Mac: the host's state and message, its address, the paired devices (name, address, keyboard/mouse/device, connected), the devices found by the last scan (name, address, signal), the passkey while pairing; scan, pair with a found device, connect or forget a paired one, through the `struct an_bt` command box at board + 0x3800. |
-| Aurora68 Status (until 21 November 2026 PiStatus) | `mac/pistatus.s` | `Aurora68-Status.bin` (application) | The Pi's status page (Alice68's `alice_status.h` at window + 0x50000): build string, uptime, the four ARM cores' names and load, SoC temperature, the JIT's cache and translation counts, the network units' link and counters; redraws when the kernel's seq moves, at most every five seconds (`docs/img/system71-pistatus.png`: under System 7.1 after Aurora68 Network's ARP exchange, the Ethernet unit shows one frame each way and core 3, the service core, its load). |
+| Aurora68 Status (until 21 November 2026 PiStatus) | `mac/pistatus/status.c`, `model.c` (until 23 November 2026 `mac/pistatus.s`) | `Aurora68-Status.bin` (application) | The Pi's status page (Alice68's `alice_status.h` at window + 0x50000) as gauges since 2.0 (23 November 2026, below, "Aurora68 Status 2.0"): dials for the SoC temperature, the ARM clock against its nominal one and the 68k's MIPS; the firmware's under-voltage, frequency-capped, throttled and soft-limit lights, now and since boot; strip charts of the temperature, clock and MIPS over the last minutes; each ARM core's load and what it runs; the Pi's memory, the network's throughput, the video and sound cards. A compact view of the temperature, clock, MIPS and one light. In C (`mac/c` kit). Version 1 (assembly, text) showed the build, uptime, cores, temperature, JIT and network counters (`docs/img/system71-pistatus.png`). |
 | Aurora68 Ping (until 21 November 2026 PiPing) | `mac/piping.s` | `Aurora68-Ping.bin` (application) | MacTCP over the Pi: opens Apple's `.IPP` driver, shows the configured address and mask (ipctlGetAddr), sends three ICMP echo requests to the testbed peer (ipctlEchoICMP, completion routine) and prints the round trips in ticks. Needs MacTCP installed and pointed at the card. |
 | Aurora68 Log (until 21 November 2026 PiLog) | `mac/pilog.c` | `Aurora68-Log.bin` (application) | The Pi kernel's log in a window that moves, resizes, zooms and scrolls (`docs/img/system71-pilog.png`). The kernel copies its log into a 64 KiB ring at window + 0x60000 (`psmb.h`, struct psmb_log) from boot; Aurora68 Log costs one memory read a quarter-second. Check boxes filter by part: Kernel, Mac, WiFi, Bluetooth, Network, Card; Option-click shows one part alone (`docs/img/system71-pilog-wifi.png`). Since 19 November a second row: **Filter:** shows only lines containing the text, in any case, together with the check boxes (several words must all match, `-word` hides lines with it; typing anywhere in the window goes to the field, the view is redone a fifth of a second after the last key; Esc or the field's small close box empties it) and says how many lines show, "5 of 688 lines" for WIFI in the testbed (`docs/img/system71-pilog-filter.png`); **Clear** (Edit > Clear Log, Command-K) empties the view without touching the kernel's ring, which other readers and the serial copy use: Aurora68 Log remembers where the ring stood and shows only what came after; Edit > Show Earlier Lines brings the rest back (`docs/img/system71-pilog-clear.png`); **Follow** (View > Follow New Lines, Command-T), checked at the start, keeps the view at the newest line; scrolling up unchecks it, scrolling back to the bottom or End checks it again (`docs/img/system71-pilog-follow.png`). Text can be selected and copied, and pasted into the filter. Since 20 November the log can be handed on as text instead of a photograph: **File > Save Log…** (⌘S) puts the lines shown (the parts, the filter, from Clear's mark, under a first line saying which) into a TeachText document (TEXT, 'ttxt') named "Aurora68 Log 2026-11-19 14.05"; with Option held (⌘⌥S) the whole ring. TeachText opens 32 KB at most, a whole ring is 64 KB: copy it to a modern machine (Lagoon's share) and read it there. **Save to Card** (the button at the right of the second row, or File > Save Log to SD Card) asks the kernel (`PSMB_INFO_SAVELOG`, progress through `PSMB_INFO_LOGSTATE`) to write the whole ring to `aurora68.log` in the SD card's root, overwritten each time; the kernel also does it by itself after a `[CRASH]` record (docs/08 item 55). Secrets never show: the values of `wifi.psk` and of any option named psk, pass, key or secret, the password in `mac.wifisim=` and the link key in `bt.dev=` become `***` in the window, the Scrap, a saved file and `aurora68.log` (the kernel echoes its bootargs) (`docs/img/system71-pilog-save.png`, `docs/img/system71-pilog-card.png`). Menus File, Edit (Undo to Clear in the standard order for desk accessories, then Select All, Filter Lines Command-F, Clear Log, Show Earlier Lines) and View; items that cannot be used are dimmed (`docs/img/system71-pilog-menu.png`). The 496-pixel window fits the SE's screen. In C, built with the kit in `mac/c` (`mac/c/README.md`); the image starts it from Startup Items. |
 | Aurora68 Play (until 21 November 2026 PiPlay) | `mac/piplay/piplay.c` | `Aurora68-Play.bin` (application) | MP3, AIFF and WAV files on the sound card, decoded on the Pi (below, "Aurora68 Play"): File > Open… (Standard File, every file shown; the kind is found from the content, so a file from a PC with no type plays), Play/Pause and Stop, the title and artist from the ID3 tag, the time played and the length, a volume slider. Hands the file's bytes to the card's stream channel (`psmb.h` struct psmb_stream); the Pi's core 1 decodes with minimp3 and mixes with the Mac's own sound. In C, with the kit in `mac/c`. Since 21 November 2026. |
@@ -1756,6 +1756,121 @@ The zoom box sizes the window to the PC's picture (the card's natural size); the
 follow. Key releases reach the program because it adds keyUpMask to SysEvtMask while it runs; the mouse's movement is
 read from the window's middle with the pointer hidden. docs/19-pc-card.md has the card, the block and the options;
 docs/08 item 132 the history.
+
+## Aurora68 Status 2.0: the Pi's heat and speed as gauges (23 November 2026)
+
+**Why.** The owner's Pi 3B, in the SE's 68000 socket, played music videos for long stretches and got hot: the
+firmware capped the ARM's clock and the 68k fell from 169 to 31 MIPS (the heartbeat's `JIT: ... MIPS` line). Only
+the kernel's log showed it. He asked: "might be good to get this on the Mac Screen, CPU util, temp etc. Gauges in a
+specific app window". Aurora68 Status was a text window in assembly (`mac/pistatus.s`, PiStatus before 21
+November); 2.0 is a new program in C with the `mac/c` kit (`mac/pistatus/status.c` for the window, `model.c` for
+the numbers), under the same name, creator `PIST` and icon, in the same folder (Aurora68:System). docs/08 item 129
+is the record.
+
+**What the window shows** (`docs/img/system71-status-gauges.png` in colour at 640 x 480,
+`docs/img/system71-512x342-status-gauges.png` on a one-bit 512 x 342 screen), from the status page the kernel's core
+3 fills once a second (`alice_status.h`, below):
+
+- **Three dials** in the style of the 1984-92 Mac: a round face, a scale over 240 degrees, a needle, the value in
+  the gap at the bottom. *Temperature*, 30 to 90 °C, the band from 60 °C (the firmware's soft limit on a 3B+,
+  `temp_soft_limit`) warm and from 80 °C (where a Pi 3 caps its clock) hot: amber and red in colour, grey and black
+  on one bit. *ARM clock*, in MHz, a short thick tick at the nominal clock (the firmware's maximum); the measured
+  clock where the firmware gives it, else the one it set. *68k speed*, in MIPS, from the JIT's instruction counter
+  over the last second; the scale is 50, 100, 200, 300... above the highest seen.
+- **Power and heat**: four lights for the firmware's GET_THROTTLED bits, *now* (red, or black) and *since boot*
+  (amber, or grey): under-voltage, frequency capped, throttled, soft temperature limit, and a line in words
+  ("Normal: full speed.", "Slowed down by the firmware.", "Under-voltage: check the power.", "Normal now; slowed
+  down earlier."). The firmware's word comes from the kernel's power watch (psmac_power.c, every two seconds).
+- **Strip charts** of the temperature (the 60 and 80 °C lines dotted), the clock (the nominal clock dotted) and the
+  MIPS: a point every two seconds, five minutes across in the normal size, more when the window is made larger
+  (the history holds 17 minutes). The newest value is at the top right of each.
+- **ARM cores**: each core's load over the last second as a bar, with what it runs (from the page): 0 the 68k's JIT
+  (it never idles, so its bar is its speed against the MIPS dial's scale, "always running: 169.3 MIPS"), 1 USB,
+  the sound output and the video decoder card (the time not spent waiting in `wfe`), 2 the Mac's bus (the time of
+  the turns that served the 68k a bus cycle), 3 the services (Alice68's own figure: the loop's time beyond its
+  shortest turn).
+- **Four lines**: the Pi's memory (the kernel's heap free of its size, and the JIT's translation cache); the network
+  (each unit's link and its bytes in and out a second, from the counters the page always had); the video card
+  while it plays (its share of core 1, a picture's decoding and drawing, the seconds buffered, the late pictures,
+  the times it ran dry); the sound card (the output, whether the Mac's own sound is playing, frames short; the
+  music stream's state, its decoder's share of core 1).
+
+0xFFFFFFFF on the page is "not measured", and the window says so: the dial has no needle and reads "not measured",
+the lights are hollow and the line says "The firmware does not report it." (`docs/img/system71-status-not-measured.png`,
+the testbed with `mac.sensors=off`). QEMU 8.2's Pi answers the clock rates (700 MHz, the maximum the same) and a
+temperature that never moves (25.0 °C, limit 99), but neither the measured clock nor GET_THROTTLED; `mac.sensorsim=on`
+(testbed only) puts made-up values on the page instead, a Pi 3B heating and being capped, and the window says
+"simulated".
+
+**The compact view** (`docs/img/system71-512x342-status-compact.png`): 232 by 50 pixels, the temperature, the clock and the
+MIPS in bold with a bar each (the temperature's with the 60 and 80 °C marks), and one light with a few words
+("normal, full speed", "frequency capped now", "normal now, slowed earlier"). View > Compact View (⌘2) and Normal
+View (⌘1), or the zoom box, which switches between the two; each view keeps its own place.
+
+**The window and the menus** (the Human Interface Guidelines of 1992, as the other programs follow them): a
+document window with a close box, the zoom box and, in the normal view, a grow box (the charts take the extra
+room); its place, size and view kept in "Aurora68 Status Prefs" (type 'pref', creator 'PIST'; the Preferences
+folder on System 7, the System Folder on System 6), put back only while a screen still shows its title bar. Apple
+(About Aurora68 Status…), File (Close ⌘W, Quit ⌘Q), Edit (Undo to Clear for desk accessories; Copy puts every
+number on the Clipboard as text, the build string and uptime first), View (Normal View ⌘1, Compact View ⌘2,
+Redraw ⌘R). As in 1.0, R redraws and Q quits without Command. The normal view is 488 by 292 and fits the SE's
+screen under the menu bar. Drawn on a colour screen (four bits or more, found with GetMaxDevice on the window's
+place) in colour in a colour window; on one bit with patterns. Moved from one screen to the other, it draws for the
+new one.
+
+**Low cost on the 68k.** It looks at the page twice a second and copies it (512 bytes) only when `seq` has moved and
+is even; then only what changed is drawn again: a dial whose needle moved a degree or whose text changed, the lights
+when the word changed, the cores' bars when a load changed by a percent, a line of text when it differs, and the
+charts by one pixel to the left with ScrollRect when the window is unobscured on a one-bit screen (on a colour
+screen, and when another window covers part of it, the plot is drawn whole: 150 short lines). No offscreen GWorld.
+
+**The status page's new fields** (`emu68/src/alice/alice_status.h`, shared with the Amiga's readers). Its rule is
+that new fields go at the end and `size` says how far the page goes, the version changing only if a field's
+meaning does: so the page grew from 0x1a0 to 0x200 bytes, version 1 still. A reader looks at `size` before reading
+past 0x1a0 (`model.c` does; an older kernel's page shows the new numbers as not measured). Added: `arm_max_hz`
+(GET_MAX_CLOCK_RATE), `arm_measured_hz` (GET_CLOCK_RATE_MEASURED), `temp_max_mc` (GET_MAX_TEMPERATURE),
+`insn_rate` (68k instructions in the last second), `heap_free`, `heap_total`, the video card's `vcard_state`,
+`vcard_load`, `vcard_decode_us`, `vcard_draw_us`, `vcard_buffer_ms`, `vcard_underruns`, `vcard_shown`,
+`vcard_dropped`, the sound card's `snd_out`, `snd_playing`, `snd_underruns`, its stream's `str_state`, `str_load`,
+`str_underruns`; roles 5-7 (media, bus, service) for the Macintosh's cores and the flag `ALICE68_STF_SIMULATED`.
+The Amiga's build fills them with 0xFFFFFFFF. `alice_psmac_status.c` is the Macintosh half: the cores' names
+("68k JIT", "USB, sound, video card", "Mac bus", "services") and loads, the 68k's rate, the heap, the cards, and
+the firmware's sensors through the mailbox, read before the page is opened for writing so that a slow answer never
+leaves `seq` odd. On a Pi 3 the temperature comes from the mailbox's GET_TEMPERATURE (the BCM2711 register Alice68
+reads is not there); a tag the firmware does not answer is asked once and logged (`[PSMAC] status: the firmware does
+not give the measured ARM clock (tag 30047: not answered)`), and the first full reading is logged too. Three
+mailbox calls a second, through `alice_mbox_once`: under the mailbox's lock, never while the WiFi has it.
+`mac.sensors=off` stops them.
+
+**The remote control.** `aurora68.py state` (GET /state, docs/13) has a `pi` object with the same numbers:
+`temperature_c`, `temperature_limit_c`, `arm_mhz`, `arm_measured_mhz`, `arm_max_mhz`, `mips_68k`, `core_load`
+(four percentages, null where not measured), `heap_free_kb`, `simulated`; `null` for a value the firmware does
+not give.
+
+**Tested.** The numbers on the host (`tools/pistatus_test.c`, in `make -C mac check`): every offset of `model.h`
+against the kernel's header; a QEMU page (not measured everywhere it should be), a hot Pi 3B's (81.2 °C of 85,
+600 of 1200 MHz, 31 MIPS, frequency capped and throttled and the soft limit now, capping since boot), an older
+kernel's page of 0x1a0 bytes, pages that are not pages; the rates from two readings, the history every two
+seconds, its wrap and a Pi that restarts; the dials' angles and the scales.
+The same tests as a 68020 program under qemu-m68k, compiled as the Mac program is (`tools/pistatus_m68k.sh`, also
+in `make -C mac check`), with the needle's arithmetic at a negative angle. In the testbed (solo board, System 7.1,
+Aurora68 Status in Startup Items, driven through `mac.remotefile=` with `aurora68.py --semihost`): at 640 x 480 one
+bit and, after Aurora68 Depth 8, eight bits (`docs/img/system71-status-gauges.png`, `mac.sensorsim=on`: 69 °C on
+its way down, the soft-limit light on now, capping and throttling since boot amber, the clock chart's step from
+1200 to 600 MHz and back); at 512 x 342 one bit with `mac.screen=512x342` and the 512 x 342 declaration ROM
+(`docs/img/system71-512x342-status-gauges.png`: 83.5 °C, 600 MHz, capped and throttled now, the window exactly
+the screen's width under the menu bar); the zoom box to the compact view and back, ⌘1 and ⌘2, the View menu with
+its check mark, the About box and the window drawn again after it, ⌘Q with "Aurora68 Status Prefs" written (24
+bytes) and the window back at its place at the next start; without `mac.sensorsim` QEMU's 25.0 °C and 700 MHz with
+"The firmware does not report it." and the measured clock's tag logged as not answered; `mac.sensors=off`, not
+measured everywhere (`docs/img/system71-status-not-measured.png`). The 68k's MIPS on the page agree with the
+heartbeat's (6 to 9 under QEMU). `aurora68.py state`'s `pi` object in each case.
+*Not verified:* everything the firmware of a real Pi says (the temperature moving, the measured clock, the
+throttled bits, under-voltage), so the owner's SE during a long video is the test; the core loads on hardware (under
+QEMU `wfe` returns at once, so core 1 reads busy, 87%, and the solo board has no bus, so core 2 reads 0%); the video
+and sound card lines while they work (QEMU had no sound output and no video played); System 6; a Mac in 24-bit mode
+(the page is then read at $950000); the grow box dragged (the window's size kept across a Quit is the same code as
+its place).
 
 ## MacTCP
 MacTCP is Apple's TCP/IP of 1989-1996: the `.IPP` driver and a control panel, later folded into

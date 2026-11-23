@@ -50,6 +50,7 @@ const struct pdg_opt pdg_opts[] = {
     { "mac.bootcount", PDG_G_MACHINE, 0, A, "#|off", "3", "Starts in a row without the Finder after which the next start is Setup and Recovery; off for never." },
     { "mac.recovery", PDG_G_MACHINE, 0, A, "1", 0, "1: start in Setup and Recovery (Restart normally takes it out again)." },
     { "mac.power", PDG_G_MACHINE, 0, A, "off", 0, "off: stop watching the Pi's power (the log's under-voltage and throttling lines)." },
+    { "mac.sensors", PDG_G_MACHINE, 0, A, "off", 0, "off: the status page (Aurora68 Status's gauges) does not ask the firmware for the temperature and the ARM clock." },
     { "mac.altcmd", PDG_G_MACHINE, 0, A, "1", 0, "1: a USB or Bluetooth PC keyboard's Alt and Windows keys swapped, so the key beside the space bar is Command." },
     { "usb", PDG_G_MACHINE, 0, A, "off|pio", 0, "The Pi's USB: off leaves it alone; pio moves data without DMA, for a device that misbehaves." },
     { "mac.pluskbd", PDG_G_MACHINE, 0, PF, "off|on", 0, "off: the Plus's (128K's, 512K's) own keyboard is not read, only USB and Bluetooth ones." },
