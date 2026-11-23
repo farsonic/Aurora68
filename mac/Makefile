@@ -4,7 +4,7 @@
 #                   their icons come from tools/mac/mkicons.py)
 #   The declaration ROM (build/psmac.declrom) carries the .PiDisk, .Network_EtherNet_PiStorm and .PiInput drivers,
 #   and PiDisk's boot record (pidisk_boot.s), which lets an image on the card be the startup disk.
-#   make check     compares the struct offsets in enet.s with emu68/src/alice/alice_net.h; host tests (USB frames, EDID, Aurora68 Play's
+#   make check     compares the struct offsets in enet.s with emu68/src/alice/alice_net.h; host tests (USB frames, the USB host channel's halt bits and keyboard watch, EDID, Aurora68 Play's
 #                  shared core in play/core: its radio parser, station list, devices and every other part, on the host, on the real
 #                  music server's answers and, where qemu-m68k is installed, as a 68020 big-endian program; the card's codecs;
 #                  the kernel's FAT/exFAT reader and its HFS view: tools/fatfs_test.sh, tools/hfsview_test.sh;
@@ -165,6 +165,8 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	$(PY) ../tools/mac/check_offsets.py enet.s $(B)/an_offsets
 	cc -std=c99 -Wall -I ../emu68/src/psmac -o $(B)/usbnet_frame_test ../tools/usbnet_frame_test.c ../emu68/src/psmac/usbnet_frame.c
 	$(B)/usbnet_frame_test
+	cc -std=c99 -Wall -Wextra -Werror -I ../emu68/src/psmac -o $(B)/usb_hcint_test ../tools/usb_hcint_test.c ../emu68/src/psmac/usb_hcint.c
+	$(B)/usb_hcint_test
 	cc -std=c99 -Wall -Wextra -Werror -I ../emu68/src/psmac -o $(B)/edid_test ../tools/edid_test.c ../emu68/src/psmac/psmac_edid.c
 	$(B)/edid_test > $(B)/edid_test.log && tail -1 $(B)/edid_test.log
 	cc -std=c99 -O1 -Wall -Wextra -Werror -I ../emu68/src/psmac -o $(B)/buscheck_test ../tools/buscheck_test.c ../emu68/src/psmac/psmac_buscheck_core.c

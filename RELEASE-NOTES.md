@@ -4,6 +4,17 @@
 
 Since 0.13 (docs/08 items 96 and 103):
 
+- **The USB keyboard that had to be re-plugged after power-on** (docs/08 item 130, 23 November 2026). On the owner's
+  Pi 3B the keyboard was found but sent nothing (one failed poll, then only "no data") until it was unplugged and
+  plugged in again. The kernel now reads the USB controller's answer to each poll in the order Linux does (an error
+  or a completed report is no longer taken for "no data" when both are flagged), tells the keyboard what Linux and
+  other hosts tell it after it is found (report only on change, LEDs off), sets the keyboard's data toggle again
+  after a failed poll, and, if the keyboard has still sent nothing 20 seconds after it was set up, starts the bus
+  again once, as a re-plug would. Every failed USB transfer now gets a log line naming what the controller said, and
+  `usb.trace=1` (Setup and Recovery, Options, Debug) logs them in full, for the owner's next log if the keyboard
+  still needs a re-plug. Not testable without the Pi: QEMU has no hub translator; there the keyboard and mouse work
+  as before. The USB flash drive that never answered is paused; only its log lines say more now.
+
 - **Music videos buffer much more: no more stutter when the network slows for a moment** (docs/08 item 125, docs/16
   "Buffering", 23 November 2026). The video decoder card now empties its 512 KB ring at once into a buffer of its
   own in the Pi's memory, 8 MB by default (one to two minutes of a music video at the classic Play's rates), so the
