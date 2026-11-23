@@ -28,6 +28,14 @@
  * the place changes while the stream is paused or dry. A click in it plays or pauses; its close box hides the
  * picture and the sound goes on (Controls > Show Video brings it back). It opens on the screen the player window
  * is on, where the last video's window was if it is still on a screen.
+ *
+ * Its size (Aurora68 Play 1.7, 23 November 2026, docs/08 item 118). The macOS Play 1.5's player bar has a picture that
+ * expands the video to fill the window and shrinks it back. Here the same is the window's zoom box and Controls > Normal
+ * Size, Double Size and Fill Screen (Command-1, 2, 3, as Aurora68 Video has Normal and Double): the stream stays the size
+ * it was asked at (the network carries what it carried), and the card, which scales a picture to the rectangle it is
+ * given, draws it larger. Fill Screen is the largest of the picture's shape that fits the screen the window is on, below
+ * the menu bar on the main screen; Double Size is twice the picture, or Fill Screen where twice would not fit. Back to
+ * Normal Size the window goes where it was before.
  */
 #include "toolbox.h"
 #include "psmac_video.h"
@@ -222,7 +230,10 @@ void vc_size_for(void *near_win, unsigned long vw, unsigned long vh, unsigned *w
 /* ---- the window ------------------------------------------------------------------------------------------ */
 static void *vw;
 static int shown, colour_qd, holds;
-static unsigned cur_w, cur_h;
+static unsigned cur_w, cur_h;                          /* the picture as the server sends it */
+static int zoom;                                       /* VC_NORMAL, VC_DOUBLE, VC_FILL */
+static Point normal_tl;                                /* where the window was at Normal Size (global), before it grew */
+static int have_normal_tl;
 static Rect last_place;                                /* where the last video's window was (global), 0 if none yet */
 void *vc_window(void) { return vw; }
 int vc_window_shown(void) { return vw && shown; }
@@ -231,6 +242,56 @@ static int on_a_screen(const Rect *r)
 	Point a = { (short)(r->top + 4), (short)(r->left + 4) };
 	return PtInRgn(pt_long(a), LM_GRAYRGN);
 }
+static void quiet(int on);
+/* the window at its size for zoom: the size, and for Fill Screen the place, on the screen it is on now */
+static void apply_zoom(void)
+{
+	Rect s, c;
+	int main;
+	long rw, rh, fw, fh, W, H, left, top;
+	if (!vw || !cur_w || !cur_h) return;
+	c = *RGN_BBOX(*(void ***)((char *)vw + 118));     /* the content now, global */
+	{ Point tl = { c.top, c.left }; screen_of(tl, &s, &main); }
+	rw = s.right - s.left - 4;
+	rh = s.bottom - s.top - (main ? MBAR_H : 0) - TITLE_H - 2;
+	if ((long)cur_w * rh >= (long)cur_h * rw) { fw = rw; fh = (long)cur_h * rw / (long)cur_w; }
+	else { fh = rh; fw = (long)cur_w * rh / (long)cur_h; }
+	W = (long)cur_w; H = (long)cur_h;
+	if (zoom == VC_FILL || (zoom == VC_DOUBLE && (2 * W > fw || 2 * H > fh))) { W = fw; H = fh; }
+	else if (zoom == VC_DOUBLE) { W *= 2; H *= 2; }
+	if (W < 64) W = 64;
+	if (H < 48) H = 48;
+	left = c.left; top = c.top;
+	if (zoom == VC_FILL || W != (long)cur_w) {
+		if (!have_normal_tl && c.right - c.left == (short)cur_w) { normal_tl.v = c.top; normal_tl.h = c.left; have_normal_tl = 1; }
+		if (zoom == VC_FILL) { left = s.left + (s.right - s.left - W) / 2; top = s.top + (main ? MBAR_H : 0) + TITLE_H; }
+		if (left + W > s.right - 2) left = s.right - 2 - W;
+		if (top + H > s.bottom - 2) top = s.bottom - 2 - H;
+		if (left < s.left + 2) left = s.left + 2;
+		if (top < s.top + (main ? MBAR_H : 0) + TITLE_H) top = s.top + (main ? MBAR_H : 0) + TITLE_H;
+	} else if (have_normal_tl) {                       /* back to Normal Size: where it was */
+		Rect b = { normal_tl.v, normal_tl.h, (short)(normal_tl.v + 8), (short)(normal_tl.h + 8) };
+		if (on_a_screen(&b)) { left = normal_tl.h; top = normal_tl.v; }
+		have_normal_tl = 0;
+	}
+	quiet(1);
+	if (c.right - c.left != W || c.bottom - c.top != H) SizeWindow(vw, (short)W, (short)H, 1);
+	if (left != c.left || top != c.top) MoveWindow(vw, (short)left, (short)top, 0);
+	quiet(0);
+	SetPort(vw);
+	InvalRect(PORT_RECT(vw));
+	tell_place(1);
+}
+void vc_set_zoom(int z)
+{
+	char t[60];
+	if (z < VC_NORMAL || z > VC_FILL) z = VC_NORMAL;
+	zoom = z;
+	put_str(put_str(t, "video: the window at "), z == VC_FILL ? "Fill Screen" : z == VC_DOUBLE ? "Double Size" : "Normal Size")[0] = 0;
+	if (vw) pi_log(t);
+	apply_zoom();
+}
+int vc_zoom(void) { return zoom; }
 void vc_window_open(const char *title, unsigned w, unsigned h, void *near)
 {
 	Rect b;
@@ -262,13 +323,20 @@ void vc_window_open(const char *title, unsigned w, unsigned h, void *near)
 			if (on_a_screen(&l) && on_a_screen(&br)) { b.top = l.top; b.left = l.left; b.bottom = (short)(b.top + h); b.right = (short)(b.left + w); }
 		}
 		colour_qd = !(*(volatile unsigned short *)0x28E & 0x4000);
-		vw = colour_qd ? (void *)NewCWindow(0, &b, t, 0, documentProc, (void *)-1, 1, 0)
-		               : (void *)NewWindow(0, &b, t, 0, documentProc, (void *)-1, 1, 0);
+		/* 12: zoomNoGrow, a document window with a zoom box and no grow box (Inside Macintosh IV): Normal and Fill Screen */
+		vw = colour_qd ? (void *)NewCWindow(0, &b, t, 0, 12, (void *)-1, 1, 0)
+		               : (void *)NewWindow(0, &b, t, 0, 12, (void *)-1, 1, 0);
 		if (!vw) return;
 		cur_w = w; cur_h = h;
+		have_normal_tl = 0;
+		if (zoom != VC_NORMAL) apply_zoom();
 	} else {
 		SetWTitle(vw, t);
-		if (w != cur_w || h != cur_h) { quiet(1); SizeWindow(vw, (short)w, (short)h, 1); quiet(0); cur_w = w; cur_h = h; }
+		if (w != cur_w || h != cur_h) {
+			cur_w = w; cur_h = h;
+			if (zoom != VC_NORMAL) apply_zoom();
+			else { quiet(1); SizeWindow(vw, (short)w, (short)h, 1); quiet(0); }
+		}
 	}
 	ShowWindow(vw);
 	SelectWindow(vw);
@@ -305,6 +373,7 @@ void vc_window_dispose(void)
 	DisposeWindow(vw);
 	vw = 0;
 	shown = 0;
+	have_normal_tl = 0;
 	quiet(0);
 	tell_place(1);
 }

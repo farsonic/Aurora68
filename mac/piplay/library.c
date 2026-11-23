@@ -55,6 +55,26 @@
  * A seek is a new /vmpeg request with start=S (the card stopped, a new stream started). The device says it shows
  * video (dv.video, the announce's video=1), so the server sends v:ID to it as a video rather than its sound.
  * Without the card everything is as in 1.5.
+ *
+ * Parity with the macOS Play 1.5 (Aurora68 Play 1.7, 23 November 2026, docs/08 item 118). The owner asked for "the classic
+ * mac version up to parity" and for it to find the music servers by itself. What came here:
+ *  - Finding the server without being asked: at the first start (no server remembered) and whenever the remembered one
+ *    does not answer, the UDP probe runs at once, with the Library window shown or not; every server that answers is
+ *    kept (fetch.c), the remembered one (by name) or the only one is taken, and with several and none remembered the
+ *    list area names them and Library > Servers lists them to choose from. The choice is kept in the preferences, the
+ *    server's name with it (piplay.c's preferences tail), so a server that moved to another address is found again.
+ *  - Videos linked to songs: an album's tracks are asked for with full=1&videos=1 (still Mac Roman), whose records end
+ *    with the song's video (catalog.c's row.video) and an album's with its count of videos. A song with a video has a
+ *    film mark in its row, and Library > Play Video (Command-M) plays the selected song's video, the album's videos after
+ *    it, as the macOS Play's film button does. A list too long for the 48 KB answer with the longer records is asked
+ *    again without them (fetch.too_long), as 1.6 asked it.
+ *  - Controls > Play Videos Instead of Songs: with the video decoder card, a song that has a video is replaced by it, one
+ *    for one, in whatever is queued from a list, an album, an artist or Play Next and Add to Queue (instead_on); without
+ *    the card the songs play.
+ *  - Library > Videos: every video of the library, by artist (/mac/videos); an artist's view begins with a line "Videos"
+ *    that opens the artist's (/mac/videos?artist=ID); artists and albums with videos have the film mark.
+ *  - Library > Play Next and Add to Queue for the selected song, video, album or artist; Library > Up Next, the queue as
+ *    a list (Return plays from that place); Library > Repeat One beside Repeat (the core had it).
  */
 #include "toolbox.h"
 #include "psmb.h"
@@ -73,15 +93,23 @@ extern volatile struct psmb_stream *ps;
 static unsigned char pb[256];
 static const struct a68_client cl = { 0, 0, 1 };    /* Mac Roman, the short records (what the classic Play always asked),
                                                        and the music videos (1.5: V rows after an album's tracks) */
+/* 1.7: an artist's albums and an album's tracks (and a queue fetched with Play Videos Instead of Songs on) with the longer
+   records too, still in Mac Roman: their last fields are a song's video and an album's count of videos. The core reads
+   records by their fields, so an older server's (shorter) records read as no links */
+static const struct a68_client cl_links = { 0, 1, 1 };
+static int links_off;                            /* this view's list was too long with them: asked again without */
 
 /* ---- what the library holds now: a page of the view's list (play/core/catalog.c) -------------------------- */
 enum { V_ARTISTS = A68_V_ARTISTS, V_ALBUMS = A68_V_ALBUMS, V_TRACKS = A68_V_TRACKS, V_SEARCH = A68_V_SEARCH,
-       V_ARTIST = A68_V_ARTIST };           /* an artist with videos and no album: its videos */
+       V_ARTIST = A68_V_ARTIST,             /* an artist with videos and no album: its videos */
+       V_VIDEOS = A68_V_VIDEOS, V_ARTVIDEOS = A68_V_ARTVIDEOS,   /* every video; an artist's (1.7) */
+       V_QUEUE = 20 };                      /* Up Next: the queue itself, made here, not asked of the server */
 #define MAX_ROWS A68_PAGE
 #define PAGE     A68_PAGE
 static struct a68_row *rows;                     /* list.rows */
 static struct a68_list list;
-struct view { int kind; char id[9]; char title[48], sub[40]; char q[40]; int sel, top; long from; };
+struct view { int kind; char id[9]; char title[48], sub[40]; char q[40]; int sel, top; long from;
+              int nvid; };                       /* an artist's albums: its videos, the "Videos" line above them */
 static struct view stack[6];
 static int depth;                                /* stack[depth - 1] is shown */
 #define CUR (&stack[depth - 1])
@@ -103,13 +131,20 @@ static unsigned short srv_port = A68_DEFAULT_PORT;
 static int srv_known;                            /* /mac/info answered */
 static int srv_mpeg1;                            /* it makes MPEG-1 for the video card (/vmpeg/, "mpeg1" in its capabilities) */
 static int finding;                              /* the UDP probe is out */
+static int auto_find;                            /* it is out because the server remembered did not answer */
+static int auto_tried;                           /* that was done once for this server (until one answers) */
+static int user_find;                            /* Library > Servers > Search Again while a server is known */
+static char want_name[48];                       /* the server chosen last (its name): taken again among those found */
+static struct disc_found servers[D_MAX];         /* what the last probe found, for Library > Servers */
+static int nservers, servers_gen;
 static char alt_host[2][64];                     /* the server's other addresses (discovery): tried in turn if this one fails */
 static int nalt;
 static const char *problem;                      /* the list area says this instead of rows */
-static char problem_buf[160];
+static char problem_buf[360];                    /* 1.7: the servers found, or a server that does not answer, named in it */
 
 /* ---- the queue (play/core/queue.c): the songs, the one heard (Q.cur), the one whose stream is sent (Q.feed) ---- */
-struct qitem { char id[9], album[9]; unsigned long secs; char title[48], artist[40]; char video; unsigned short vw, vh; };
+struct qitem { char id[9], album[9]; unsigned long secs; char title[48], artist[40]; char video; unsigned short vw, vh;
+               char link[9]; };                  /* 1.7: a song's music video, when the server said */
 /* video: a music video, shown on the video decoder card (/vmpeg/, its picture vw x vh, 0 when not known) or without
    the card its sound (/vaudio/) */
 #define MAX_Q 250
@@ -122,6 +157,7 @@ static int mode;                                 /* a library track is the playe
 enum { L_STOPPED, L_PLAYING, L_ENDED };
 static int lstate;
 static int shuffle;
+static int instead;                              /* Controls > Play Videos Instead of Songs (1.7) */
 static char album_title[48];                     /* the album of what is heard, for Now Playing */
 static struct qitem *qat(int i) { return (struct qitem *)a68q_at(&Q, i); }
 
@@ -142,9 +178,13 @@ static int saved_shown, have_saved;
 /* ---- jobs for the network, one at a time ---------------------------------------------------------- */
 enum { J_NONE, J_INFO, J_LIST, J_QUEUE, J_NOWART, J_VIEWART, J_THUMBS, J_BARART, J_DEV };
 static int job;                                  /* the one the fetch is for */
+static int job_links;                            /* it asked with cl_links */
 static int want_info, want_list;
 static int want_queue;                           /* a queue to fetch: an album or an artist's tracks */
 static char q_album[9], q_artist[9], q_start[9];
+enum { Q_PLAY, Q_NEXT, Q_ADD };
+static int q_mode;                               /* what the fetched tracks do: play, Play Next, Add to Queue (1.7) */
+static int q_nolinks;                            /* the queue's answer was too long with the links */
 static char thumb_ids[16][9];
 static int thumb_rows[16], nthumb;
 /* the device (Aurora68 Play 1.3, docs/08 item 105): devices.c says what to ask the server and when; its requests
@@ -160,6 +200,10 @@ static unsigned long secs_now(void) { return LM_TICKS / 60; }
 static void run_commands(char *b, long n);
 static unsigned long pos_s(void);
 static void lib_refresh(void);
+static void queue_changed(void);
+static int instead_on(void);
+static void view_changed(void);
+static void queue_rows(void);
 static void copy(char *d, const char *s, int max) { a68_copy(d, s, max); }
 static int same_id(const char *a, const char *b) { int i; for (i = 0; i < 8; i++) if (a[i] != b[i]) return 0; return a[0] != 0; }
 static int lower(int c) { return a68_lower(c); }
@@ -193,7 +237,7 @@ void lib_init(int c)
 void *lib_window(void) { return lw; }
 int lib_have_server(void) { return srv_host[0] != 0; }
 int lib_shuffle(void) { return shuffle; }
-int lib_repeat(void) { return Q.repeat != A68_REPEAT_OFF; }
+int lib_repeat(void) { return Q.repeat; }
 
 /* a screen's depth where a rectangle of the window is: 8 or more on a colour screen asks for colour covers */
 static int depth_at(void *w, const Rect *local)
@@ -236,17 +280,146 @@ static void use_server(const char *host, unsigned short port)
 	set_problem("Asking the music server\xC9");     /* an ellipsis */
 	logs("server ", host);
 }
-static void find_server(void)
+/* the probe (fetch.c): automatic, when no server is remembered or the remembered one did not answer (the address is kept
+   meanwhile, so that Quit keeps it in the preferences); or Library > Servers > Search Again. Nothing is asked of a
+   server while it is out */
+static void find_server(int automatic)
 {
-	srv_host[0] = 0;
-	srv_known = 0;
+	if (finding) return;
 	if (!net_open() || !discover_start()) {
 		set_problem("Aurora68 Play could not look for a music server: MacTCP (or Riptide) is not there.");
 		return;
 	}
 	finding = 1;
-	set_problem("Looking for a music server on the network\xC9");
+	auto_find = automatic;
+	if (!srv_known) set_problem(automatic && srv_host[0] ? problem_buf : "Looking for music servers on the network\xC9");
+	logs(automatic ? "looking for music servers (the probe)" : "looking for music servers again (Search Again)", 0);
 }
+static int same_text(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
+/* server k of those found: its addresses in the order to try them (play/core/address.c), the others kept in case the
+   first fails; the views start again at Artists when it is another server than the one in use */
+static void connect_found(int k)
+{
+	const char *c[3];
+	struct disc_found *f = &servers[k];
+	int n = a68_disc_hosts(&f->d, f->host, net_prefer == 4 ? A68_IPV4 : A68_IPV6, net_is_v6(), c), i;
+	char first[64];
+	if (!n) { set_problem("The music server's answer named no address this Mac can use."); return; }
+	copy(first, c[0], sizeof first);
+	for (nalt = 0, i = 1; i < n && nalt < 2; i++) copy(alt_host[nalt++], c[i], sizeof alt_host[0]);
+	if (!same_text(first, srv_host) || f->d.port != srv_port) {
+		depth = 1;
+		CUR->sel = CUR->top = 0; CUR->from = 0;
+	}
+	use_server(first, (unsigned short)f->d.port);
+	copy(srv_name, f->d.name, sizeof srv_name);
+	copy(want_name, f->d.name, sizeof want_name);
+	view_changed();
+}
+/* is server k the one in use? (its address is one of those it named, and the port) */
+static int found_is_current(int k)
+{
+	const char *c[3];
+	int n = a68_disc_hosts(&servers[k].d, servers[k].host, A68_IPV4, 1, c), i;
+	if (servers[k].d.port != srv_port) return 0;
+	for (i = 0; i < n; i++) if (same_text(c[i], srv_host)) return 1;
+	return 0;
+}
+static char *put_server(char *p, int k)
+{
+	p = put_str(p, servers[k].d.name[0] ? servers[k].d.name : "Music server");
+	p = put_str(p, " ("); p = put_str(p, servers[k].host); *p++ = ':'; p = put_num(p, servers[k].d.port);
+	return put_str(p, ")");
+}
+/* the probe has ended: take the server remembered (by name), or the only one; with several, the owner chooses */
+static void probe_done(void)
+{
+	int k, pick = -1;
+	int was_auto = auto_find, was_user = user_find;
+	finding = 0; auto_find = 0; user_find = 0;
+	if (disc.st == D_FOUND) {
+		nservers = disc.n;
+		memcpy(servers, disc.found, sizeof servers[0] * (unsigned long)nservers);
+	} else nservers = 0;
+	servers_gen++;
+	if (!nservers) {
+		if (was_user && srv_known) { message_box("No music server answered on this network. The one in use stays.", 32); return; }
+		if (was_auto && srv_host[0]) {
+			char *p = put_str(problem_buf, "The music server at ");
+			p = a68_put_url_host(p, problem_buf + 80, srv_host); *p++ = ':'; p = put_num(p, srv_port);
+			p = put_str(p, " does not answer, and no other music server answered on this network. Is it running? "
+			               "Library > Servers > Search Again looks again; Reload tries this one again.");
+			*p = 0;
+			set_problem(problem_buf);
+		} else
+			set_problem("No music server answered on this network. Choose Library > Servers > Connect to Server\xC9 and type "
+			            "its address, such as 192.168.1.20:8423 (the music server's web page shows it), or Search Again.");
+		return;
+	}
+	for (k = 0; k < nservers && pick < 0; k++)
+		if (want_name[0] && same_text(servers[k].d.name, want_name)) pick = k;   /* the one chosen before */
+	if (was_user && srv_known) {                 /* asked while connected: the one in use stays unless it is the only other */
+		for (k = 0; k < nservers; k++) if (found_is_current(k)) return;
+		if (nservers > 1) { message_box("More than one music server answered: choose one in Library > Servers.", 32); return; }
+		pick = 0;
+	}
+	if (pick < 0 && nservers == 1) pick = 0;
+	if (pick >= 0) {
+		if (was_auto && srv_host[0] && !found_is_current(pick)) logs("the remembered server did not answer: taking the one found, ", servers[pick].d.name);
+		connect_found(pick);
+		return;
+	}
+	{   /* several, none chosen before: named in the list area, chosen from the menu */
+		char *p = put_str(problem_buf, "Music servers on this network: ");
+		for (k = 0; k < nservers && p < problem_buf + 100; k++) { if (k) p = put_str(p, ", "); p = put_server(p, k); }
+		p = put_str(p, ". Choose one in Library > Servers.");
+		*p = 0;
+		srv_known = 0;
+		set_problem(problem_buf);
+		lib_show();
+	}
+}
+/* Library > Servers: those found, the one in use checked (and listed first if the probe did not find it) */
+int lib_servers_gen(void) { return servers_gen + (srv_known ? 1000 : 0); }
+int lib_servers(void) { int k; for (k = 0; k < nservers; k++) if (found_is_current(k)) return nservers; return nservers + (srv_known ? 1 : 0); }
+const char *lib_server_text(int i, char *buf, int *current)
+{
+	int k, extra = srv_known;
+	char *p = buf;
+	for (k = 0; k < nservers; k++) if (found_is_current(k)) extra = 0;
+	*current = 0;
+	if (extra && i == 0) {
+		p = put_str(p, srv_name[0] ? srv_name : "Music server");
+		p = put_str(p, " ("); p = a68_put_url_host(p, buf + 70, srv_host); *p++ = ':'; p = put_num(p, srv_port); p = put_str(p, ")");
+		*current = 1;
+	} else if (i - extra >= 0 && i - extra < nservers) {
+		p = put_server(p, i - extra);
+		*current = srv_known && found_is_current(i - extra);
+	}
+	*p = 0;
+	return buf;
+}
+void lib_choose_server(int i)
+{
+	int k, extra = srv_known;
+	for (k = 0; k < nservers; k++) if (found_is_current(k)) extra = 0;
+	if (extra && i == 0) { lib_show(); return; }
+	i -= extra;
+	if (i < 0 || i >= nservers) return;
+	lib_show();
+	if (finding) { discover_stop(); finding = 0; }
+	auto_tried = 0;
+	logs("server chosen: ", servers[i].d.name);
+	connect_found(i);
+}
+void lib_search_again(void)
+{
+	lib_show();
+	if (finding) return;
+	user_find = 1;
+	find_server(0);
+}
+int lib_finding(void) { return finding; }
 
 /* ---- the list's views -------------------------------------------------------------------------------- */
 static void view_changed(void)
@@ -255,9 +428,11 @@ static void view_changed(void)
 	list.from = CUR->from;
 	memset(thumb_state, 0, sizeof thumb_state);
 	want_list = 1;
+	links_off = 0;
 	if (job == J_LIST || job == J_THUMBS || job == J_VIEWART) { fetch_cancel(); job = J_NONE; }
 	view_art.state = 0;
 	problem = 0;
+	if (CUR->kind == V_QUEUE) { want_list = 0; queue_rows(); }   /* Up Next: the queue itself */
 	if (lw) { SetPort(lw); lib_resized(); InvalRect(PORT_RECT(lw)); }
 }
 static void push_view(int kind, const char *id, const char *title, const char *sub)
@@ -278,10 +453,17 @@ static void go_back(void)
 	view_changed();
 }
 
-/* the lines of the list: a "previous page" line, the rows, a "next page" line (play/core/catalog.c) */
+/* the lines of the list: a "previous page" line, the rows, a "next page" line (play/core/catalog.c); in an artist's
+   albums with videos (1.7) a first line "Videos" before them, which opens the artist's videos */
+static int vline(void) { return CUR->kind == V_ALBUMS && CUR->nvid && !list.from && !problem; }
 static int has_prev(void) { return a68_list_has_prev(&list); }
-static int nlines(void) { return a68_list_lines(&list); }
-static int line_row(int i) { return a68_list_line_row(&list, i); }   /* -1 the previous page, -2 the next */
+static int nlines(void) { return a68_list_lines(&list) + vline(); }
+static int line_row(int i)                       /* -1 the previous page, -2 the next, -3 the artist's videos */
+{
+	if (vline()) { if (i == 0) return -3; i--; }
+	return a68_list_line_row(&list, i);
+}
+static int row_line(int r) { return a68_list_row_line(&list, r) + vline(); }
 static short row_h(void) { return CUR->kind == V_ALBUMS ? R_ALBUM : R_LINE; }
 static Rect list_rect(void)
 {
@@ -322,7 +504,10 @@ static void got_info(void)
 		return;
 	}
 	copy(srv_name, inf.name, sizeof srv_name);
+	copy(want_name, inf.name, sizeof want_name);  /* the one chosen, by name: found again if its address changes */
 	srv_known = 1;
+	auto_tried = 0;
+	servers_gen++;
 	{   /* "mpeg1" among what the server can do (servers of 22 November 2026 on): its /vmpeg/ for the video card. Without
 	       it a video plays its sound, as in 1.5, and the device does not say it shows video */
 		const char *c = inf.caps ? inf.caps : "";
@@ -358,7 +543,7 @@ static void got_list(void)
 	problem = list.n || list.total ? 0 : CUR->kind == V_SEARCH ? "Nothing in the library matches." : "There is nothing here.";
 	if (keep_sel[0]) {                           /* a refresh: the same row selected, wherever it is now */
 		k = a68_list_find(&list, keep_sel);
-		if (k >= 0) CUR->sel = a68_list_row_line(&list, k);
+		if (k >= 0) CUR->sel = row_line(k);
 		keep_sel[0] = 0;
 	}
 	if (CUR->sel >= nlines()) CUR->sel = 0;
@@ -469,6 +654,7 @@ static void play_at(int i, unsigned long start)
 		say_error(e ? e : "The track could not be played.");
 	} else lstate = L_PLAYING;
 	player_refresh();
+	queue_changed();
 	if (lw) { SetPort(lw); InvalRect(PORT_RECT(lw)); }
 }
 static unsigned long seed_now(void) { return LM_TICKS * 2654435761ul + 1; }
@@ -488,19 +674,49 @@ static void fill_item(struct qitem *q, const char *id, const char *album, const 
 	copy(q->title, title, sizeof q->title); copy(q->artist, artist, sizeof q->artist);
 	q->secs = secs;
 }
+/* Play Videos Instead of Songs (1.7): on, the video decoder card there and a server that makes MPEG-1; a song with a video
+   is then queued as its video, one for one, so that the place chosen in a list is the place played */
+static int instead_on(void) { return instead && vc_present() && srv_mpeg1; }
+int lib_instead(void) { return instead; }
+void lib_toggle_instead(void)
+{
+	instead = !instead;
+	logs(instead ? "videos instead of songs: on" : "videos instead of songs: off", vc_present() ? 0 : " (no video decoder card: the songs play)");
+}
+/* a song's item turned into its video: v is the video's row when the list has it (its title, length and shape), else
+   only its id is known */
+static void to_video(struct qitem *q, const struct a68_row *v)
+{
+	char album[9];
+	copy(album, q->album, 9);                    /* the album's cover stays */
+	if (v) { fill_item(q, v->id, v->album[0] ? v->album : album, v->text, v->sub, v->secs); q->vw = v->vw; q->vh = v->vh; }
+	else { copy(q->id, q->link, 9); q->secs = 0; q->vw = q->vh = 0; }
+	q->video = 1;
+	q->link[0] = 0;
+}
+/* a row of the list as a queue item (a song, or with instead_on its video when it has one) */
+static void row_item(struct qitem *q, int i)
+{
+	struct a68_row *r = &rows[i];
+	fill_item(q, r->id, r->album, r->text, r->sub, r->secs);
+	q->vw = r->vw; q->vh = r->vh;
+	q->video = r->kind == 'V';
+	copy(q->link, r->video, 9);
+	if (q->link[0] && instead_on()) { int k = a68_list_find(&list, q->link); to_video(q, k >= 0 ? &rows[k] : 0); }
+}
 /* the queue from the rows of a tracks view (start at row s, -1 for Play); in order from the chosen one, or the
    chosen one first and the rest shuffled. An album's tracks, without its videos; a video chosen, or an artist's
    view of videos: the videos (their sound) */
 static void queue_from_rows(int s)
 {
 	int i, n = 0, at = 0;
-	char want = CUR->kind == V_ARTIST || (s >= 0 && s < list.n && rows[s].kind == 'V') ? 'V' : 'T';
+	char want = CUR->kind == V_ARTIST || CUR->kind == V_VIDEOS || CUR->kind == V_ARTVIDEOS ||
+	            (s >= 0 && s < list.n && rows[s].kind == 'V') ? 'V' : 'T';
+	if (!qitems) return;
 	for (i = 0; i < list.n && n < MAX_Q; i++) {
 		if (rows[i].kind != want) continue;
 		if (i == s) at = n;
-		fill_item(&qitems[n], rows[i].id, rows[i].album, rows[i].text, rows[i].sub, rows[i].secs);
-		qitems[n].vw = rows[i].vw; qitems[n].vh = rows[i].vh;
-		qitems[n++].video = want == 'V';
+		row_item(&qitems[n++], i);
 	}
 	if (!n || !qitems) return;
 	a68q_set(&Q, n, 0);
@@ -514,25 +730,68 @@ static void queue_from_rows(int s)
 }
 static void ask_queue(const char *album, const char *artist, const char *start)
 {
+	q_mode = Q_PLAY;
 	copy(q_album, album ? album : "", 9);
 	copy(q_artist, artist ? artist : "", 9);
 	copy(q_start, start ? start : "", 9);
 	want_queue = 1;
 	if (job == J_THUMBS || job == J_VIEWART) { fetch_cancel(); job = J_NONE; }
 }
+/* the songs' videos of a queue's answer (V records after the tracks), for Play Videos Instead of Songs */
+#define MAX_QV 24
+static struct a68_row *qv;                       /* MAX_QV rows, made at the first need */
+static int nqv;
 static void got_queue(void)
 {
 	struct a68_rec r;
 	struct a68_head h;
 	struct a68_track t;
-	int at = 0, n = 0;
+	struct a68_video v;
+	int at = 0, n = 0, k, first = 0, place = 0, i;
+	int adding = q_mode != Q_PLAY;
 	a68_rec_init(&r, fetch.body, fetch.len);
 	if (fetch.status != 200 || !a68_read_head(&r, &h)) { say_error("The music server could not give those tracks."); return; }
-	while (n < MAX_Q && qitems && a68_next_track(&r, &t)) {
+	if (!qitems) return;
+	if (adding && !mode) a68q_clear(&Q);         /* nothing of the library plays: the queue is made of these */
+	if (adding) place = first = q_mode == Q_NEXT && mode ? a68q_next_place(&Q) : Q.n;
+	if (instead_on() && !qv) qv = mac_newptr(sizeof(struct a68_row) * MAX_QV);
+	nqv = 0;
+	while ((k = a68_next_item(&r, &t, &v))) {
+		struct qitem item;
+		if (k == 'V') {                          /* a song's video, kept to replace it */
+			if (qv && nqv < MAX_QV) {
+				struct a68_row *w = &qv[nqv++];
+				memset(w, 0, sizeof *w);
+				w->kind = 'V'; copy(w->id, v.id, 9); copy(w->text, v.title, sizeof w->text); copy(w->sub, v.artist, sizeof w->sub);
+				copy(w->album, v.album, 9); w->secs = v.secs;
+				w->vw = (unsigned short)(v.width & 0xFFFF); w->vh = (unsigned short)(v.height & 0xFFFF);
+			}
+			continue;
+		}
+		fill_item(&item, t.id, t.album, t.title, t.artist, t.secs);
+		copy(item.link, t.video, 9);
+		if (adding) { if (a68q_insert(&Q, place, &item) < 0) break; place++; n++; continue; }
+		if (n >= MAX_Q) break;
 		if (q_start[0] && same_id(t.id, q_start)) at = n;
-		fill_item(&qitems[n++], t.id, t.album, t.title, t.artist, t.secs);
+		qitems[n++] = item;
 	}
 	if (!n) return;
+	if (instead_on())                            /* each song with a video as its video, one for one */
+		for (i = adding ? first : 0; i < (adding ? first + n : n); i++) {
+			struct qitem *q = adding ? qat(i) : &qitems[i];
+			const struct a68_row *vr = 0;
+			if (!q || !q->link[0]) continue;
+			for (k = 0; k < nqv; k++) if (same_id(qv[k].id, q->link)) vr = &qv[k];
+			to_video(q, vr);
+		}
+	if (adding) {                                /* Play Next, Add to Queue: played at once if nothing plays */
+		char tt[40];
+		put_str(put_num(tt, (unsigned long)n), q_mode == Q_NEXT ? " to play next" : " added to the queue")[0] = 0;
+		logs(tt, 0);
+		if (!mode || lstate != L_PLAYING) play_at(first, 0);
+		else { player_refresh(); queue_changed(); }
+		return;
+	}
 	a68q_set(&Q, n, 0);
 	if (shuffle) {
 		to_front(at);
@@ -554,7 +813,7 @@ static void finish_command(struct pending *c)
 		break;
 	case A68_ACT_ADD: case A68_ACT_NEXT:         /* into the queue; playing it if nothing plays */
 		if (c->n && (!mode || lstate != L_PLAYING)) play_at(c->first, 0);
-		else player_refresh();
+		else { player_refresh(); queue_changed(); }
 		break;
 	case A68_ACT_PAUSE: player_pause(1); break;
 	case A68_ACT_RESUME: player_pause(0); break;
@@ -612,7 +871,7 @@ static void lib_refresh(void)
 /* the device's part of the player: an id kept in the preferences and the Mac's name */
 void lib_device(const char *id, const char *name)
 {
-	dv_init(&dev, id, name, "1.6", "classic");
+	dv_init(&dev, id, name, "1.7", "classic");
 	dev.client = cl;                             /* videos=1: a video sent here comes as a V line */
 	dev.video = vc_present() && srv_mpeg1;       /* 1.6: with the video decoder card it shows them (the announce's video=1) */
 	dev_ready = id[0] != 0;
@@ -645,12 +904,14 @@ static void next_job(void)
 {
 	char path[220];
 	int i;
-	if (!srv_host[0]) return;
+	if (!srv_host[0] || finding) return;
+	job_links = 0;
 	if (want_info) { want_info = 0; a68_path_info(&cl, path, sizeof path); start_job(J_INFO, path); return; }
 	if (want_list && srv_known) {
 		struct view *v = CUR;
 		want_list = 0;
-		a68_list_path(&cl, v->kind, v->id, v->q, v->from, path, sizeof path);
+		job_links = !links_off && (v->kind == V_ALBUMS || v->kind == V_TRACKS);   /* film marks: an album's videos, a song's */
+		a68_list_path(job_links ? &cl_links : &cl, v->kind, v->id, v->q, v->from, path, sizeof path);
 		start_job(J_LIST, path);
 		return;
 	}
@@ -666,7 +927,8 @@ static void next_job(void)
 	}
 	if (want_queue) {
 		want_queue = 0;
-		a68_path_tracks(&cl, q_album, q_artist, 0, MAX_Q, path, sizeof path);
+		job_links = instead_on() && !q_nolinks;      /* the songs' videos, to play instead */
+		a68_path_tracks(job_links ? &cl_links : &cl, q_album, q_artist, 0, MAX_Q, path, sizeof path);
 		start_job(J_QUEUE, path);
 		return;
 	}
@@ -695,7 +957,7 @@ static void next_job(void)
 		return;
 	}
 	if (CUR->kind == V_ALBUMS && lw) {           /* the covers of the albums in view, sixteen at a time */
-		int first = CUR->top - has_prev(), last = first + visible();
+		int first = CUR->top - has_prev() - vline(), last = first + visible();
 		const char *ids[16];
 		if (first < 0) first = 0;
 		nthumb = 0;
@@ -722,26 +984,11 @@ void lib_poll(void)
 {
 	static unsigned long last_draw;
 	if (finding) {
+		/* the addresses of the server taken are tried best first (play/core/address.c, connect_found): the family
+		   Connect By names first; for IPv4 the address the answer came from, which is known to reach this Mac, before
+		   the one the server names (which may be its container's); IPv6 only through Riptide's .IPP6 */
 		discover_poll();
-		if (disc.st == D_FOUND) {
-			/* the addresses to try, best first (play/core/address.c): the family Connect By names first; for IPv4 the
-			   address the answer came from, which is known to reach this Mac, before the one the server names (which
-			   may be its container's); IPv6 only through Riptide's .IPP6. The others are kept in case it fails */
-			const char *c[3];
-			int n = a68_disc_hosts(&disc.d, disc.host, net_prefer == 4 ? A68_IPV4 : A68_IPV6, net_is_v6(), c), k;
-			char first[64];
-			finding = 0;
-			if (!n) { set_problem("The music server's answer named no address this Mac can use."); return; }
-			copy(first, c[0], sizeof first);
-			for (nalt = 0, k = 1; k < n && nalt < 2; k++) copy(alt_host[nalt++], c[k], sizeof alt_host[0]);
-			use_server(first, (unsigned short)disc.d.port);
-			srv_known = 0;
-			copy(srv_name, disc.d.name, sizeof srv_name);
-		} else if (disc.st == D_NONE) {
-			finding = 0;
-			set_problem("No music server answered on this network. Choose Library > Connect to Server\xC9 and type its "
-			            "address, such as 192.168.1.20:8423 (the music server's web page shows it).");
-		}
+		if (disc.st == D_FOUND || disc.st == D_NONE) probe_done();
 	}
 	fetch_poll();
 	/* a command's long poll gives way to what the user asked for, if nothing of its answer has come */
@@ -781,7 +1028,21 @@ void lib_poll(void)
 				fetch.st = FS_IDLE;
 				return;
 			}
-			if (j == J_INFO || j == J_LIST) { fail_text(fetch.error); if (j == J_INFO) want_list = 1; }
+			if (j == J_INFO && !auto_tried) {       /* the server remembered does not answer: look for one (1.7) */
+				char *p = put_str(problem_buf, "The music server at ");
+				auto_tried = 1;
+				p = a68_put_url_host(p, problem_buf + 80, srv_host); *p++ = ':'; p = put_num(p, srv_port);
+				p = put_str(p, " does not answer. Looking for music servers on the network\xC9");
+				*p = 0;
+				logs("the server does not answer: ", fetch.error);
+				want_list = 1;
+				fetch.st = FS_IDLE;
+				find_server(1);
+				return;
+			}
+			if (j == J_LIST && job_links && fetch.too_long) { links_off = 1; want_list = 1; logs("the list again without the links (too long with them)", 0); }
+			else if (j == J_QUEUE && job_links && fetch.too_long) { q_nolinks = 1; want_queue = 1; }
+			else if (j == J_INFO || j == J_LIST) { fail_text(fetch.error); if (j == J_INFO) want_list = 1; }
 			else if (j == J_QUEUE) say_error(fetch.error);
 			else if (j == J_NOWART) now_art.state = 3;
 			else if (j == J_BARART) bar_art.state = 3;
@@ -792,7 +1053,7 @@ void lib_poll(void)
 			switch (j) {
 			case J_INFO: got_info(); if (lw) { SetPort(lw); InvalRect(PORT_RECT(lw)); } break;
 			case J_LIST: got_list(); break;
-			case J_QUEUE: got_queue(); break;
+			case J_QUEUE: got_queue(); q_nolinks = 0; break;
 			case J_NOWART: got_art(&now_art); player_refresh(); if (lw) { SetPort(lw); draw_bar(); if (CUR->kind == V_TRACKS) { view_art.state = 0; } } break;
 			case J_VIEWART: got_art(&view_art); if (lw) { SetPort(lw); draw_album_head(); } break;
 			case J_BARART: got_art(&bar_art); if (lw) { SetPort(lw); draw_bar(); } break;
@@ -821,7 +1082,7 @@ void lib_poll(void)
 			logs("now playing ", qat(Q.cur) ? qat(Q.cur)->title : "");
 			want_now_art();
 			player_refresh();
-			if (lw) { SetPort(lw); draw_bar(); if (CUR->kind == V_TRACKS) draw_list(); }
+			if (lw) { SetPort(lw); draw_bar(); if (CUR->kind == V_TRACKS || CUR->kind == V_QUEUE) draw_list(); }
 		}
 		if (radio.ended && lstate == L_PLAYING) {
 			/* a video has played, or a song before a video (next_url sends no stream into or out of a video): what
@@ -904,16 +1165,31 @@ static void row_texts(int i, char *right)
 		if (r->count || !r->videos) { p = put_num(p, r->count); p = put_str(p, r->count == 1 ? " album" : " albums"); }
 		if (r->videos) { if (r->count) p = put_str(p, ", "); p = put_num(p, r->videos); p = put_str(p, r->videos == 1 ? " video" : " videos"); }
 		break;
-	case 'L': p = put_num(p, r->count); p = put_str(p, r->count == 1 ? " track" : " tracks"); break;
+	case 'L':
+		p = put_num(p, r->count); p = put_str(p, r->count == 1 ? " track" : " tracks");
+		if (r->videos) { p = put_str(p, ", "); p = put_num(p, r->videos); p = put_str(p, r->videos == 1 ? " video" : " videos"); }
+		break;
 	case 'T': case 'V': if (r->secs) p = put_time(p, r->secs); break;
 	}
 	*p = 0;
 }
 static int playing_row(int i)
 {
+	if (CUR->kind == V_QUEUE) return mode && lstate != L_STOPPED && i == Q.cur;   /* Up Next: by its place */
 	return mode && lstate != L_STOPPED && Q.cur >= 0 && Q.cur < Q.n && (rows[i].kind == 'T' || rows[i].kind == 'V') &&
 	       same_id(rows[i].id, qat(Q.cur)->id);
 }
+/* the film mark (1.7): a song with a music video, an artist or an album with videos, the videos' lists; 11 x 8, its
+   bottom on the text's base line */
+static void draw_film(void *w, short x, short base)
+{
+	static const unsigned short film[8] = { 0xFFE0, 0xAAA0, 0xFFE0, 0x8020, 0x8020, 0xFFE0, 0xAAA0, 0xFFE0 };
+	struct { const void *base; short rb; Rect bounds; } bm = { film, 2, { 0, 0, 8, 16 } };
+	Rect src = { 0, 0, 8, 11 }, dst = { (short)(base - 8), x, base, (short)(x + 11) };
+	ForeColor(33); BackColor(30);
+	CopyBits(&bm, (char *)w + 2, &src, &dst, 1 /* srcOr */, 0);
+}
+#define FILM_W 15                                /* the mark and the space after it */
 static void draw_line(int li, Rect *lr)
 {
 	short h = row_h(), y = (short)(lr->top + (li - CUR->top) * h);
@@ -922,7 +1198,18 @@ static void draw_line(int li, Rect *lr)
 	int i = line_row(li);
 	EraseRect(&r);
 	TextFont(3); TextSize(9); TextFace(0);
-	if (i < 0) {
+	if (i == -3) {                               /* an artist's videos, above its albums */
+		char t[40], *p;
+		draw_film(lw, 18, (short)(y + 22));
+		TextFace(1);
+		MoveTo(50, (short)(y + 15));
+		DrawText("Videos", 0, 6);
+		TextFace(0);
+		p = put_num(t, (unsigned long)CUR->nvid); p = put_str(p, CUR->nvid == 1 ? " music video" : " music videos");
+		*p = 0;
+		MoveTo(50, (short)(y + 28));
+		DrawText(t, 0, (int)strlen(t));
+	} else if (i < 0) {
 		MoveTo(30, (short)(y + 12));
 		DrawText(i == -1 ? "Previous page\xC9" : "Next page\xC9", 0, i == -1 ? 14 : 10);
 	} else if (rows[i].kind == 'L' && CUR->kind == V_ALBUMS) {
@@ -935,29 +1222,50 @@ static void draw_line(int li, Rect *lr)
 		TextFace(0);
 		row_texts(i, right);
 		MoveTo(50, (short)(y + 28));
-		clip_text(right, lr->right - 60);
+		clip_text(right, lr->right - 60 - FILM_W);
+		if (rows[i].videos) draw_film(lw, (short)(50 + TextWidth(right, 0, (int)strlen(right)) + 5), (short)(y + 28));
 	} else {
 		short x = 8;
+		int film = (rows[i].kind == 'T' && rows[i].video[0]) || (rows[i].kind == 'A' && rows[i].videos);
+		int vids = CUR->kind == V_VIDEOS || CUR->kind == V_ARTVIDEOS;
 		row_texts(i, right);
-		short rw = (short)TextWidth(right, 0, (int)strlen(right));
-		if ((rows[i].kind == 'T' || rows[i].kind == 'V') && CUR->kind == V_TRACKS) {
+		short rw = (short)TextWidth(right, 0, (int)strlen(right)), room;
+		if ((rows[i].kind == 'T' || rows[i].kind == 'V') && (CUR->kind == V_TRACKS || CUR->kind == V_QUEUE)) {
 			char n[8];
-			if (rows[i].kind == 'V') n[0] = 0;  /* a video: no number, "Video:" before its title */
+			if (CUR->kind == V_QUEUE) put_num(n, (unsigned long)i + 1)[0] = 0;   /* Up Next: the place in the queue */
+			else if (rows[i].kind == 'V') n[0] = 0;  /* a video: no number, "Video:" before its title */
 			else put_num(n, rows[i].num ? rows[i].num : (unsigned long)i + 1)[0] = 0;
 			if (playing_row(i)) put_str(n, "\xA5")[0] = 0;   /* a bullet by the track that plays */
 			draw_right(n, 22, (short)(y + 12));
 			x = 30;
 		}
-		if (playing_row(i) && CUR->kind != V_TRACKS) { MoveTo(x, (short)(y + 12)); DrawText("\xA5 ", 0, 2); x += 10; }
-		MoveTo(x, (short)(y + 12));
-		if (CUR->kind == V_SEARCH || rows[i].kind == 'V') {
+		if (playing_row(i) && CUR->kind != V_TRACKS && CUR->kind != V_QUEUE) { MoveTo(x, (short)(y + 12)); DrawText("\xA5 ", 0, 2); x += 10; }
+		room = (short)(lr->right - rw - 16 - (film ? FILM_W : 0));
+		if (vids) {                              /* the videos' lists: the mark, and (every video) the artist once a group */
+			draw_film(lw, x, (short)(y + 11));
+			x += FILM_W;
+			if (CUR->kind == V_VIDEOS) {
+				short col = (short)((lr->right - x) / 3);
+				if (i == 0 || !same_text(rows[i - 1].sub, rows[i].sub)) {
+					TextFace(1);
+					MoveTo(x, (short)(y + 12));
+					clip_text(rows[i].sub, col - 8);
+					TextFace(0);
+				}
+				x += col;
+			}
+			MoveTo(x, (short)(y + 12));
+			clip_text(rows[i].text, room - x);
+		} else if (CUR->kind == V_SEARCH || CUR->kind == V_QUEUE || rows[i].kind == 'V') {
 			char t[100], *p = t;
+			MoveTo(x, (short)(y + 12));
 			p = put_str(p, rows[i].kind == 'A' ? "Artist: " : rows[i].kind == 'L' ? "Album: " : rows[i].kind == 'V' ? "Video: " : "");
 			p = put_str(p, rows[i].text);
-			if (rows[i].sub[0] && rows[i].kind != 'A' && CUR->kind == V_SEARCH) { p = put_str(p, " \xD1 "); p = put_str(p, rows[i].sub); }
+			if (rows[i].sub[0] && rows[i].kind != 'A' && (CUR->kind == V_SEARCH || CUR->kind == V_QUEUE)) { p = put_str(p, " \xD1 "); p = put_str(p, rows[i].sub); }
 			*p = 0;
-			clip_text(t, lr->right - x - rw - 16);
-		} else clip_text(rows[i].text, lr->right - x - rw - 16);
+			clip_text(t, room - x);
+		} else { MoveTo(x, (short)(y + 12)); clip_text(rows[i].text, room - x); }
+		if (film) draw_film(lw, (short)(lr->right - 8 - rw - FILM_W + 2), (short)(y + 11));
 		draw_right(right, (short)(lr->right - 8), (short)(y + 12));
 	}
 	if (li == CUR->sel && active) InvertRect(&r);
@@ -1061,7 +1369,7 @@ static void draw_head(void)
 	Rect r = { 0, 0, HEAD_H, (short)LW };
 	EraseRect(&r);
 	TextFont(0); TextSize(12); TextFace(0);
-	short x = depth > 1 ? 62 : 10, lim = (short)(LW - (play_btn && CUR->kind != V_ARTISTS && CUR->kind != V_SEARCH ? 150 : 90));
+	short x = depth > 1 ? 62 : 10, lim = (short)(LW - (play_btn && CUR->kind != V_ARTISTS && CUR->kind != V_SEARCH && CUR->kind != V_QUEUE ? 150 : 90));
 	MoveTo(x, 18);
 	clip_text(CUR->title, lim - x);
 	MoveTo(0, HEAD_H); LineTo((short)LW, HEAD_H);
@@ -1080,7 +1388,7 @@ static void place_controls(void)
 	if (depth > 1) ShowControl(back_btn); else HideControl(back_btn);
 	MoveControl(shuf_cb, (short)(LW - 142), 5);
 	MoveControl(play_btn, (short)(LW - 62), 4);
-	if (CUR->kind == V_ALBUMS || CUR->kind == V_TRACKS || CUR->kind == V_ARTIST) ShowControl(play_btn); else HideControl(play_btn);
+	if (lib_can_play_all() || (CUR->kind == V_VIDEOS || CUR->kind == V_ARTVIDEOS)) ShowControl(play_btn); else HideControl(play_btn);
 	MoveControl(sbar, (short)(LW - 15), (short)(lr.top - 1));
 	SizeControl(sbar, 16, (short)(lr.bottom - lr.top + 2));
 	MoveControl(prev_btn, (short)(LW - 146), (short)(LH - 30));
@@ -1146,7 +1454,7 @@ void lib_show(void)
 		next_btn = NewControl(lw, &r4, pstr(pb, ">>"), 1, 0, 0, 1, pushButProc, 0);
 		lib_resized();
 		set_title();
-		if (!srv_host[0] && !finding) find_server();
+		if (!srv_host[0] && !finding && !nservers) find_server(1);   /* several found and none chosen: the owner chooses */
 		else if (srv_host[0] && !srv_known && !job) { want_info = 1; want_list = 1; }
 	}
 	ShowWindow(lw);
@@ -1169,16 +1477,29 @@ static void open_line(int li)
 	if (li < 0 || li >= nlines()) return;
 	if (i == -1) { CUR->from -= PAGE; if (CUR->from < 0) CUR->from = 0; CUR->sel = CUR->top = 0; view_changed(); return; }
 	if (i == -2) { CUR->from += PAGE; CUR->sel = CUR->top = 0; view_changed(); return; }
+	if (i == -3) {                               /* the artist's videos (1.7) */
+		char t[48], *p = put_str(t, "Videos: ");
+		copy(p, CUR->title, (int)(sizeof t - 8));
+		push_view(V_ARTVIDEOS, CUR->id, t, CUR->title);
+		return;
+	}
+	if (CUR->kind == V_QUEUE) { if (i < Q.n) play_at(i, 0); return; }   /* Up Next: from that place */
 	struct a68_row *r = &rows[i];
 	switch (r->kind) {
-	case 'A': push_view(r->count || !r->videos ? V_ALBUMS : V_ARTIST, r->id, r->text, 0); break;
+	case 'A':
+		{
+			int nv = r->videos;
+			push_view(r->count || !r->videos ? V_ALBUMS : V_ARTIST, r->id, r->text, 0);
+			CUR->nvid = CUR->kind == V_ALBUMS ? nv : 0;  /* a line "Videos" above the albums */
+		}
+		break;
 	case 'L': push_view(V_TRACKS, r->id, r->text, r->sub[0] ? r->sub : CUR->title); break;
 	case 'T':
 		if (CUR->kind == V_TRACKS) queue_from_rows(i);
 		else ask_queue(r->album, 0, r->id);      /* from a search: its album, from it */
 		break;
 	case 'V':                                    /* a music video: its sound, as a track */
-		if (CUR->kind == V_TRACKS || CUR->kind == V_ARTIST) queue_from_rows(i);
+		if (CUR->kind == V_TRACKS || CUR->kind == V_ARTIST || CUR->kind == V_VIDEOS || CUR->kind == V_ARTVIDEOS) queue_from_rows(i);
 		else if (qitems) {                       /* from a search: that video alone */
 			fill_item(&qitems[0], r->id, r->album, r->text, r->sub, r->secs);
 			qitems[0].video = 1;
@@ -1279,7 +1600,7 @@ void lib_key(EventRecord *ev)
 	typed_t = ev->when;
 	if (ntyped < 15) typed[ntyped++] = (char)lower(c);
 	i = a68_list_typed(&list, typed, ntyped);
-	if (i >= 0) select_line(a68_list_row_line(&list, i));
+	if (i >= 0) select_line(row_line(i));
 }
 
 /* ---- the player window's part ------------------------------------------------------------------------- */
@@ -1299,7 +1620,7 @@ void lib_leave(void)
 }
 void lib_play_pause(void)
 {
-	if (!mode) { if (CUR->kind == V_TRACKS || CUR->kind == V_ALBUMS || CUR->kind == V_ARTIST) lib_play_all(); else if (list.n) open_line(CUR->sel); return; }
+	if (!mode) { if (lib_can_play_all()) lib_play_all(); else if (list.n) open_line(CUR->sel); return; }
 	if (lstate != L_PLAYING) { play_at(lstate == L_ENDED ? 0 : Q.cur, 0); return; }
 	radio_pause(!radio.paused);
 	player_refresh();
@@ -1432,7 +1753,7 @@ void lib_connect(void)
 	{
 		const char *s = a;
 		while (*s == ' ') s++;
-		if (!*s) { find_server(); return; }
+		if (!*s) { user_find = srv_known; find_server(0); return; }
 	}
 	/* host[:port], [ipv6]:port, ipv6 alone, a URL (play/core/address.c); no port: the server's own, 8000 */
 	char h[64];
@@ -1441,9 +1762,11 @@ void lib_connect(void)
 		say_error("That is not an address Aurora68 Play understands. Type a name or number and a port, such as 192.168.1.20:8423.");
 		return;
 	}
-	if (finding) { discover_stop(); finding = 0; }
+	if (finding) { discover_stop(); finding = 0; auto_find = user_find = 0; }
 	depth = 1;
 	CUR->sel = CUR->top = 0; CUR->from = 0;
+	auto_tried = 0;
+	want_name[0] = 0;                            /* the name it answers with is kept (got_info) */
 	use_server(h, (unsigned short)port);
 	view_changed();
 }
@@ -1461,10 +1784,14 @@ void lib_find(void)
 	copy(CUR->q, q, sizeof CUR->q);
 	view_changed();
 }
-int lib_can_play_all(void) { return lw && srv_known && (CUR->kind == V_ALBUMS || CUR->kind == V_TRACKS || CUR->kind == V_ARTIST); }
+int lib_can_play_all(void)
+{
+	return lw && srv_known && (CUR->kind == V_ALBUMS || CUR->kind == V_TRACKS || CUR->kind == V_ARTIST || CUR->kind == V_VIDEOS ||
+	                           CUR->kind == V_ARTVIDEOS);
+}
 void lib_play_all(void)
 {
-	if ((CUR->kind == V_TRACKS || CUR->kind == V_ARTIST) && list.n) queue_from_rows(-1);
+	if ((CUR->kind == V_TRACKS || CUR->kind == V_ARTIST || CUR->kind == V_VIDEOS || CUR->kind == V_ARTVIDEOS) && list.n) queue_from_rows(-1);
 	else if (CUR->kind == V_ALBUMS) ask_queue(0, CUR->id, 0);
 	else SysBeep(1);
 }
@@ -1477,12 +1804,96 @@ void lib_toggle_shuffle(void)
 	player_refresh();
 }
 /* Library > Repeat (Aurora68 Play 1.4, with the shared queue): the queue again from its first song when it ends,
-   gaplessly as from one song to the next */
-void lib_toggle_repeat(void)
+   gaplessly as from one song to the next; Repeat One (1.7): the song again (play/core/queue.c's a68q_follow) */
+void lib_toggle_repeat(int which)
 {
-	Q.repeat = Q.repeat == A68_REPEAT_OFF ? A68_REPEAT_ALL : A68_REPEAT_OFF;
-	logs(Q.repeat ? "repeat: on" : "repeat: off", 0);
+	Q.repeat = Q.repeat == which ? A68_REPEAT_OFF : which;
+	logs(Q.repeat == A68_REPEAT_ONE ? "repeat: one" : Q.repeat ? "repeat: on" : "repeat: off", 0);
 	player_refresh();
+}
+/* ---- 1.7: the videos' lists, Up Next, Play Video, Play Next and Add to Queue ---------------------------------------- */
+void lib_videos(void)
+{
+	lib_show();
+	if (!srv_host[0] || CUR->kind == V_VIDEOS) return;
+	push_view(V_VIDEOS, "", "Videos", 0);
+}
+void lib_up_next(void)
+{
+	lib_show();
+	if (CUR->kind == V_QUEUE) return;
+	push_view(V_QUEUE, "", "Up Next", 0);
+	if (mode && Q.cur >= 0) { CUR->sel = Q.cur; select_line(Q.cur); }
+}
+static int sel_row(void) { int i = lw && list.n ? line_row(CUR->sel) : -1; return i >= 0 && i < list.n ? i : -1; }
+int lib_can_play_video(void) { int i = sel_row(); return i >= 0 && srv_known && (rows[i].kind == 'V' || (rows[i].kind == 'T' && rows[i].video[0])); }
+/* the selected song's video (and the album's videos after it, as the macOS Play's film button), or the selected video;
+   without the card its sound, as a video's row plays */
+void lib_play_video(void)
+{
+	int i = sel_row(), k;
+	if (!lib_can_play_video()) { SysBeep(1); return; }
+	if (rows[i].kind == 'V') { open_line(CUR->sel); return; }
+	k = CUR->kind == V_QUEUE ? -1 : a68_list_find(&list, rows[i].video);
+	if (k >= 0 && rows[k].kind == 'V') { queue_from_rows(k); return; }
+	if (!qitems) return;
+	row_item(&qitems[0], i);
+	if (!qitems[0].video) to_video(&qitems[0], 0);
+	a68q_set(&Q, 1, 0);
+	album_title[0] = 0;
+	play_at(0, 0);
+}
+int lib_can_add(void)
+{
+	int i = sel_row();
+	if (i < 0 || !srv_known || CUR->kind == V_QUEUE) return 0;
+	return rows[i].kind == 'T' || rows[i].kind == 'V' || rows[i].kind == 'L' || (rows[i].kind == 'A' && rows[i].count);
+}
+/* Play Next (after the song being sent, so that what the card holds is not cut) or Add to Queue (at its end): a song or a
+   video at once, an album or an artist once its tracks have come (got_queue). Nothing from the library playing: the queue
+   is made of it and plays */
+void lib_add(int next)
+{
+	int i = sel_row(), at;
+	struct qitem item;
+	if (!lib_can_add()) { SysBeep(1); return; }
+	if (rows[i].kind == 'L' || rows[i].kind == 'A') {
+		ask_queue(rows[i].kind == 'L' ? rows[i].id : 0, rows[i].kind == 'A' ? rows[i].id : 0, 0);
+		q_mode = next ? Q_NEXT : Q_ADD;
+		return;
+	}
+	row_item(&item, i);
+	if (!mode) a68q_clear(&Q);
+	at = next && mode ? a68q_next_place(&Q) : Q.n;
+	if (a68q_insert(&Q, at, &item) < 0) { SysBeep(1); return; }
+	logs(next ? "to play next: " : "added to the queue: ", item.title);
+	if (!mode || lstate != L_PLAYING) { album_title[0] = 0; play_at(at, 0); }
+	else { player_refresh(); queue_changed(); }
+}
+/* Up Next's rows: the queue's items, as a list made here */
+static void queue_rows(void)
+{
+	int i, n = Q.n < list.max ? Q.n : list.max;
+	for (i = 0; i < n; i++) {
+		struct qitem *q = qat(i);
+		struct a68_row *w = &rows[i];
+		memset(w, 0, sizeof *w);
+		w->kind = q->video ? 'V' : 'T';
+		copy(w->id, q->id, 9); copy(w->album, q->album, 9); copy(w->video, q->link, 9);
+		copy(w->text, q->title, sizeof w->text); copy(w->sub, q->artist, sizeof w->sub);
+		w->secs = q->secs;
+	}
+	list.n = n; list.total = n; list.from = 0;
+	problem = n ? 0 : "Nothing is queued. Play an album, or choose Play Next or Add to Queue in the Library menu for a song.";
+}
+static void queue_changed(void)
+{
+	if (!lw || CUR->kind != V_QUEUE) return;
+	queue_rows();
+	if (CUR->sel >= nlines()) CUR->sel = nlines() ? nlines() - 1 : 0;
+	SetPort(lw);
+	fix_scroll();
+	InvalRect(PORT_RECT(lw));
 }
 void lib_live(void)
 {
@@ -1495,9 +1906,23 @@ void lib_live(void)
 }
 void lib_reload(void)
 {
-	if (!srv_host[0]) { find_server(); return; }
+	if (!srv_host[0]) { find_server(1); return; }
+	auto_tried = 0;                              /* a server that does not answer: the probe again after this try */
 	if (!srv_known) want_info = 1;
 	view_changed();
+}
+/* at the start (1.7): no server remembered, so the probe at once, the Library window shown or not */
+void lib_start(void) { if (!srv_host[0] && !finding) find_server(1); }
+void lib_get_ext(struct lib_prefs_ext *e)
+{
+	memset(e, 0, sizeof *e);
+	copy(e->srv_name, want_name, sizeof e->srv_name);
+	e->instead = (short)instead;
+}
+void lib_set_ext(const struct lib_prefs_ext *e)
+{
+	copy(want_name, e->srv_name, sizeof want_name);
+	instead = e->instead != 0;
 }
 
 /* ---- the preferences ----------------------------------------------------------------------------------- */
@@ -1520,7 +1945,7 @@ void lib_set_prefs(const struct lib_prefs *p)
 {
 	if (p->host[0]) { copy(srv_host, p->host, sizeof srv_host); srv_port = p->port ? p->port : A68_DEFAULT_PORT; want_info = 1; want_list = 1; }
 	shuffle = p->shuffle != 0;
-	Q.repeat = p->repeat == A68_REPEAT_ALL ? A68_REPEAT_ALL : A68_REPEAT_OFF;   /* the pad of files before 1.4: 0, off */
+	Q.repeat = p->repeat == A68_REPEAT_ALL || p->repeat == A68_REPEAT_ONE ? p->repeat : A68_REPEAT_OFF;   /* the pad of files before 1.4: 0, off */
 	saved_r = p->r;
 	saved_shown = p->shown;
 	have_saved = 1;

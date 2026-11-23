@@ -46,16 +46,37 @@ void lib_find(void);
 void lib_play_all(void);
 int lib_can_play_all(void);
 void lib_toggle_shuffle(void);
-void lib_toggle_repeat(void);           /* Library > Repeat (1.4): the queue round again */
-int lib_repeat(void);
+enum { LIB_REPEAT_OFF, LIB_REPEAT_ALL, LIB_REPEAT_ONE };   /* play/core/queue.h's A68_REPEAT_* */
+void lib_toggle_repeat(int which);     /* Library > Repeat (1.4): the queue round again; Repeat One (1.7): the song */
+int lib_repeat(void);                  /* LIB_REPEAT_* */
 int lib_shuffle(void);
 void lib_live(void);
 void lib_reload(void);
+/* 1.7 (docs/08 item 118): the videos, the queue, the server found by itself */
+void lib_videos(void);                 /* Library > Videos: every video, by artist */
+void lib_up_next(void);                /* Library > Up Next: the queue as a list */
+int lib_can_play_video(void);
+void lib_play_video(void);             /* Library > Play Video: the selected song's video */
+int lib_can_add(void);
+void lib_add(int next);                /* Library > Play Next (1) and Add to Queue (0): the selected row */
+int lib_instead(void);
+void lib_toggle_instead(void);         /* Controls > Play Videos Instead of Songs */
+void lib_start(void);                  /* after the preferences: the probe if no server is remembered */
+int lib_finding(void);
+int lib_servers_gen(void);             /* changes when Library > Servers should be made again */
+int lib_servers(void);                 /* its servers: those found, and the one in use */
+const char *lib_server_text(int i, char *buf, int *current);   /* "Name (address:port)"; buf: 120 bytes */
+void lib_choose_server(int i);
+void lib_search_again(void);
 
 /* the preferences file's part */
 struct lib_prefs { char host[64]; unsigned short port; short shuffle; Rect r; short shown; short repeat; };   /* repeat: was a pad before 1.4 */
 void lib_get_prefs(struct lib_prefs *p);
 void lib_set_prefs(const struct lib_prefs *p);
+/* the preferences file's tail (1.7): the server chosen, by name; Play Videos Instead of Songs */
+struct lib_prefs_ext { char srv_name[48]; short instead; short pad; };
+void lib_get_ext(struct lib_prefs_ext *e);
+void lib_set_ext(const struct lib_prefs_ext *e);
 
 /* from piplay.c */
 void say_error(const char *text);

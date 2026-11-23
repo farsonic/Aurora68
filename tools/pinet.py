@@ -30,6 +30,9 @@ replies to .rx. Two modes:
                             PINET_UDP="8070=127.0.0.1:18470": UDP to that port, sent to the peer,
                             a broadcast or a multicast group, goes to the host address and its
                             answers come back from the peer (Aurora68 Play's music server probe).
+                            "8070=127.0.0.1:18470+127.0.0.1:18471": to each of them, as a
+                            broadcast reaches every server on a network (two servers, 23 November
+                            2026).
                             PINET_MDNS_RELAY=127.0.0.1:PORT: the Mac's mDNS queries (224.0.0.251:5353)
                             go to that responder on the host (Lagoon's tests/servers/mdns/
                             responder.py --addr 192.168.68.1) and its answers come back to the Mac
@@ -405,19 +408,19 @@ def rseg(mac, ip, me6, sport, dport, seq, ack, flags, data=b''):
 # UDP relay (PINET_UDP="8070=127.0.0.1:18470", 22 November 2026): the Mac's datagrams to that port, sent to the
 # peer, to a broadcast address or to a multicast group (Aurora68 Play's probe for the music server, docs/08
 # item 99), go to a host socket; what comes back is sent to the Mac from the peer's address
-UDP_FWD = {}
+UDP_FWD = {}                # port: [(host, port), ...] ("+" between them: each gets the datagram, 23 November 2026)
 for item in filter(None, os.environ.get('PINET_UDP', '').split(',')):
-    port, dest = item.split('=')
-    h, hp = dest.rsplit(':', 1)
-    UDP_FWD[int(port)] = (h, int(hp))
+    port, dests = item.split('=')
+    UDP_FWD[int(port)] = [(d.rsplit(':', 1)[0], int(d.rsplit(':', 1)[1])) for d in dests.split('+')]
 udp_relays = []             # (host socket, Mac's MAC, Mac's address, its port, our port, until)
 def udp_relay(src, sip, sport, dport, data):
     import socket as _s
     hs = _s.socket(_s.AF_INET, _s.SOCK_DGRAM)
     hs.setblocking(False)
-    hs.sendto(data, UDP_FWD[dport])
+    for d in UDP_FWD[dport]:
+        hs.sendto(data, d)
     udp_relays.append((hs, src, sip, sport, dport, time.monotonic() + 5))
-    return f'UDP to port {dport} relayed to {UDP_FWD[dport][0]}:{UDP_FWD[dport][1]}'
+    return f'UDP to port {dport} relayed to ' + ', '.join(f'{h}:{p}' for h, p in UDP_FWD[dport])
 def udp_due():
     for r in list(udp_relays):
         hs, src, sip, sport, dport, until = r

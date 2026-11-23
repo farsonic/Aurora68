@@ -153,6 +153,12 @@ def main():
         get(f'/mac/albums?artist={gamma}&' + V, 'albums-v.u8')          # 23 November 2026: an album's videos counted
         get('/mac/artists?videos=1', 'artists-v.mr')
         get('/mac/search?q=home&videos=1', 'search-v.mr')
+        # the classic Play 1.7 (23 November 2026): an album's tracks and an artist's albums with full=1&videos=1 in Mac Roman,
+        # the links its film marks come from; every video of the library, and an artist's, as its Videos views ask
+        get(f'/mac/tracks?album={galbum}&count=200&full=1&videos=1', 'tracks-lv.mr')
+        get(f'/mac/albums?artist={gamma}&count=200&full=1&videos=1', 'albums-lv.mr')
+        get('/mac/videos?count=200&full=1&videos=1', 'videos-all.mr')
+        get(f'/mac/videos?artist={gamma}&count=200&full=1&videos=1', 'videos-gamma.mr')
         vids = [l.split(b'\t') for l in get(f'/mac/videos?artist={gamma}').split(b'\r')[1:] if l]
         get(f'/mac/announce?id={me}&name={name}&kind=macos&v=1.3&video=1&' + V)
         for v in vids:

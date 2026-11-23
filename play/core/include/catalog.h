@@ -11,23 +11,32 @@
  * 22 November 2026 (docs/08 item 107) from the classic Play's library.c. Music videos the same day (item 109): with
  * the client's videos=1 an album's or an artist's tracks are followed by its videos, rows of kind 'V', and a search
  * finds them too; an artist's row counts its videos.
+ *
+ * Videos linked to songs in the classic Play (1.7, 23 November 2026, docs/08 item 118): a track's row keeps the id of
+ * its music video (the tenth field with full=1&videos=1, which the classic Play now sends for an album's tracks), an
+ * album's row its count of videos (the eighth), and two more views list videos alone: every one in the library
+ * (/mac/videos, sorted by artist) and one artist's (/mac/videos?artist=ID).
  */
 #ifndef A68_CATALOG_H
 #define A68_CATALOG_H
 #include "proto.h"
 
 enum { A68_V_ARTISTS, A68_V_ALBUMS, A68_V_TRACKS, A68_V_SEARCH,     /* what a list holds */
-       A68_V_ARTIST };       /* an artist's tracks and videos (/mac/tracks?artist=ID): one with videos and no album */
+       A68_V_ARTIST,         /* an artist's tracks and videos (/mac/tracks?artist=ID): one with videos and no album */
+       A68_V_VIDEOS,         /* every music video of the library, by artist (/mac/videos) */
+       A68_V_ARTVIDEOS };    /* an artist's music videos (/mac/videos?artist=ID) */
 #define A68_PAGE 200                     /* rows asked for at once: the server's page */
 
 struct a68_row {                         /* one row of a list */
 	char id[9], album[9], kind;          /* kind: 'A' artist, 'L' album, 'T' track, 'V' music video */
 	unsigned short num, count;           /* a track's number; an artist's albums, an album's tracks */
-	unsigned short videos;               /* an artist's videos (videos=1) */
+	unsigned short videos;               /* an artist's videos (videos=1); an album's (full=1&videos=1) */
 	unsigned short vw, vh;               /* a video's picture (its V record's width and height; 0 when not said): the
 	                                        classic Play 1.6 asks /vmpeg for a size of its shape (23 November 2026) */
 	unsigned long secs;
 	char text[48], sub[40];              /* the name, title; the artist (an album, a track) */
+	char video[9];                       /* a track's music video (full=1&videos=1, servers of 23 November 2026 on); ""
+	                                        when it has none or the server did not say */
 };
 struct a68_list {
 	struct a68_row *rows;                /* the caller's array, max rows */

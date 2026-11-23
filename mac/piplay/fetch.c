@@ -23,6 +23,13 @@
  * broadcast, as of 22 November 2026). The server listens to all three (aurora68_music_server.py) and
  * answers "AURORA68-MUSIC <tab> 1 <tab> NAME <tab> PORT". Always through .IPP, which Riptide also
  * offers: MacTCP's UDP calls take IPv4 addresses, and a probe needs no more.
+ *
+ * Every server that answers (Aurora68 Play 1.7, 23 November 2026, docs/08 item 118). The probe kept the first
+ * answer and stopped; with two servers on a network the one heard first won, and the owner could not choose. Now
+ * the answers are gathered for a second after the first one (four seconds when none comes), each server (the
+ * address it answered from and its port) once, and library.c chooses: the one remembered, the only one, or the
+ * owner's pick from Library > Servers. The read waits a second at most, and the stream is released only when no
+ * read is out, so the probe no longer holds the event loop while a read times out.
  */
 #include "toolbox.h"
 #include "fetch.h"
@@ -225,7 +232,7 @@ int fetch_start(const char *host, unsigned short port, const char *path)
 	*p++ = ':'; p = put_num(p, port);
 	/* X-Aurora: the server wants it on a device's requests (a web page elsewhere cannot send it unasked), and it
 	   does no harm on the others */
-	p = put_str(p, "\r\nUser-Agent: Aurora68-Play/1.5 (Macintosh)\r\nX-Aurora: 1\r\nConnection: close\r\n\r\n");
+	p = put_str(p, "\r\nUser-Agent: Aurora68-Play/1.7 (Macintosh)\r\nX-Aurora: 1\r\nConnection: close\r\n\r\n");
 	wds.len = (unsigned short)(p - req); wds.ptr = req; wds.end = 0;
 	got = 0;
 	resolve_start();
@@ -330,6 +337,7 @@ void fetch_poll(void)
 					return;
 				}
 				fail("The music server's answer is too long for Aurora68 Play.", 0);
+				fetch.too_long = 1;
 				return;
 			}
 			memcpy(buf + got, rbuf, (unsigned long)n);
@@ -372,10 +380,12 @@ static void u_send(unsigned long to)
 	*p = 0;
 	logs(t, 0);
 }
+static int u_out;                                  /* a UDPRead is out */
 static void u_read(void)
 {
 	u_setup(pb_ur, UDPRead);
-	*(unsigned short *)(pb_ur + 32) = 2;            /* timeOut: seconds */
+	*(unsigned short *)(pb_ur + 32) = 1;            /* timeOut: seconds */
+	u_out = 1;
 	mac_PBControlAsync(pb_ur);
 }
 int discover_start(void)
@@ -410,35 +420,57 @@ int discover_start(void)
 	disc.st = D_WAIT;
 	return 1;
 }
+/* an answer kept, unless that server (the address it came from, its port) answered already */
+static void d_keep(const struct a68_disc *a, unsigned long from)
+{
+	struct disc_found *f;
+	char t[90], *p;
+	int i;
+	if (disc.n >= D_MAX) return;
+	f = &disc.found[disc.n];
+	*a68_put_ipv4(f->host, f->host + sizeof f->host - 1, from) = 0;
+	for (i = 0; i < disc.n; i++)
+		if (disc.found[i].d.port == a->port && same(disc.found[i].host, f->host)) return;
+	f->d = *a;
+	disc.n++;
+	p = put_str(t, "found the music server \"");
+	p = put_str(p, a->name); p = put_str(p, "\" at "); p = put_str(p, f->host); *p++ = ':'; p = put_num(p, a->port);
+	*p = 0;
+	logs(t, 0);
+	if (disc.n == 1 && (long)(d_until - (LM_TICKS + 60)) > 0) d_until = LM_TICKS + 60;   /* the others: a second more */
+}
 void discover_poll(void)
 {
 	if (disc.st != D_WAIT) return;
 	short r = IO_RESULT(pb_ur);
 	if (r > 0) return;
+	u_out = 0;
 	if (!r) {
 		unsigned char *d = *(unsigned char **)(pb_ur + 40);
 		unsigned short n = *(unsigned short *)(pb_ur + 44);
 		unsigned long from = *(unsigned long *)(pb_ur + 34);
-		int ok = a68_disc_parse(d, n, &disc.d);      /* play/core/address.c: the name, the port, the addresses */
-		if (ok) *a68_put_ipv4(disc.host, disc.host + sizeof disc.host - 1, from) = 0;
+		struct a68_disc a;
+		if (a68_disc_parse(d, n, &a)) d_keep(&a, from);   /* play/core/address.c: the name, the port, the addresses */
 		u_setup(pb_u, UDPBfrReturn);
 		*(unsigned char **)(pb_u + 40) = d;
 		mac_PBControl(pb_u);
-		if (ok) {
-			logs("found the music server at ", disc.host);
-			discover_stop();
-			disc.st = D_FOUND;
-			return;
-		}
 	}
-	if ((long)(LM_TICKS - d_until) >= 0) { logs("no music server answered the probe", 0); discover_stop(); disc.st = D_NONE; return; }
+	if ((long)(LM_TICKS - d_until) >= 0) {
+		int n = disc.n;
+		if (!n) logs("no music server answered the probe", 0);
+		else if (n > 1) { char t[40]; put_str(put_num(t, (unsigned long)n), " music servers answered")[0] = 0; logs(t, 0); }
+		discover_stop();
+		disc.st = n ? D_FOUND : D_NONE;
+		return;
+	}
 	u_read();
 }
 void discover_stop(void)
 {
 	unsigned long t0;
 	if (!udp_stream) return;
-	for (t0 = LM_TICKS; IO_RESULT(pb_ur) > 0 && LM_TICKS - t0 < 240; ) { }   /* a read out ends with its timeout */
+	for (t0 = LM_TICKS; u_out && IO_RESULT(pb_ur) > 0 && LM_TICKS - t0 < 90; ) { }   /* a read out ends within its second */
+	u_out = 0;
 	u_setup(pb_u, UDPRelease);
 	mac_PBControl(pb_u);
 	udp_stream = 0;
