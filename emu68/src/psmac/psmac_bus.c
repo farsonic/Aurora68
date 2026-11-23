@@ -720,6 +720,35 @@ void psmac_service_core(void)
                     const uint32_t *st = (const uint32_t *)(KERNEL_ALIAS + ram_phys + ph);
                     kprintf("[PSMAC]   stack: %08x %08x %08x %08x %08x %08x %08x %08x\n", st[0], st[1], st[2], st[3], st[4], st[5], st[6], st[7]);
                 }
+                {   /* A synchronous Device Manager call that never ends (23 November 2026, the owner's SE frozen in
+                       Aurora68 Play after minutes of video: PC beat after beat at the ROM's "movew a0@(16),d0; bgts"
+                       loop, which waits for ioResult to leave 1): the parameter block A0 points at, and the driver
+                       its ioRefNum names (UTableBase $11C: the DCE's dCtlDriver, the driver's name at +18) */
+                    uint32_t pcw = BE32((uint32_t)(uintptr_t)m->PC); int ok1, ok2;
+                    uint32_t w0 = mac_rd32(pcw, &ok1), w1 = mac_rd32(pcw + 4, &ok2);
+                    if (ok1 && ok2 && w0 == 0x30280010u && (w1 >> 16) == 0x6efau) {
+                        uint32_t pb = BE32(m->A[0].u32); int ok;
+                        uint32_t trap = mac_rd32(pb + 4, &ok) & 0xffff, compl = mac_rd32(pb + 12, &ok);
+                        uint32_t res = mac_rd32(pb + 16, &ok) >> 16, rc = mac_rd32(pb + 24, &ok);
+                        int16_t ref = (int16_t)(rc >> 16); uint16_t cs = (uint16_t)rc;
+                        char nm[40] = "?";
+                        uint32_t ut = mac_rd32(0x11c, &ok);
+                        if (ok && ref < 0) {
+                            uint32_t h = mac_rd32(ut + 4u * (uint32_t)(~ref), &ok), dce = ok ? mac_rd32(h, &ok) : 0;
+                            uint32_t drv = (ok && dce) ? mac_rd32(dce, &ok) : 0, fl = (ok && dce) ? mac_rd32(dce + 4, &ok) >> 16 : 0;
+                            if (ok && drv && (fl & 0x40)) drv = mac_rd32(drv, &ok);       /* dRAMBased: a handle */
+                            if (ok && drv) {
+                                uint32_t w = mac_rd32(drv + 18, &ok); unsigned n = w >> 24, i;
+                                for (i = 0; ok && i < n && i < sizeof nm - 1; i++) nm[i] = (char)(mac_rd32(drv + 19 + i, &ok) >> 24);
+                                nm[i] = 0;
+                            }
+                        }
+                        kprintf("[PSMAC]   the Mac waits for a driver: %s (ioRefNum %d) csCode %u, trap %04x, ioResult %d, ioCompletion %08x, PB %08x:",
+                                nm, ref, cs, trap, (int16_t)res, compl, pb);
+                        for (int i = 0; i < 12; i++) kprintf(" %08x", mac_rd32(pb + 28 + 4 * i, &ok));
+                        kprintf("\n");
+                    }
+                }
                 /* A program busy in its own code (22 November 2026: MacWrite and Photoshop on the owner's
                    SE under the stopwatch, the PC in the application's partition beat after beat): when
                    the PC is within 256 bytes of the last beat's and below the ROM, the code around it,
