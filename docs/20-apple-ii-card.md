@@ -48,11 +48,15 @@ command words, the window's place, the region, scale and options, focus, the inp
 | $0400 | Mac | the input ring: 64 events of 16 bytes (a key down with the Mac's character and key codes and modifiers, a key up, a modifier change, the joystick, "let everything go") |
 | $1000 | card | the text cells, 80 x 24 (the character in the low byte, inverse, flashing and MouseText in the high) |
 | $8000 | both | disks: the image list and the six units |
+| $9000 | Mac | disks from the Mac: the program's media slots, the requests' answers (below, "Disks from the Mac") |
+| $A000 | card | disks from the Mac: the request ring, each media slot's state |
+| $10000 | both | the requests' bytes: 16 of 32 KB |
 
 Commands: power on (the machine built at the first), power off (it keeps its memory; every disk written back first), reset
 (`arg0` 0 the Apple's Control-Reset, 1 a cold start), pause, resume, redraw, attach (an image of the list into a unit, or
 `A68A_UNIT_AUTO`: the first free unit of its kind), detach, rescan (the list again from the SD card's root), model (the
-machine built again as another model, from that model's ROM, its disks kept in their units).
+machine built again as another model, from that model's ROM, its disks kept in their units), Mac insert and Mac eject
+(below, "Disks from the Mac").
 
 ## How the kernel runs it
 
@@ -146,7 +150,9 @@ spare; `scr_fit` keeps it on the screen it is on); zoomed, the natural size agai
 - **Apple II**: Power On, Power Off, Reset (Control-Command-Delete), Restart Cold, Pause; the models (Apple ][, ][+, //e,
   //e Enhanced, //c), the one running checked; choosing another builds the machine again from that model's ROM, or says
   why not ("No ROM for the Apple //c ...").
-- **Disks**: Look on the Card Again, then the image list (above).
+- **Disks**: Insert Disk... (Command-I), the six units (each with what is in it, or Insert Disk...), Apple II Disks (the
+  folder's submenus), Show Apple II Disks Folder, Look for Disks Again, then the card root's images (above); see "Disks
+  from the Mac".
 - **View**: Actual Size (1:1), Scaled to the Window, White on Black, Hires in Colour.
 - **Keyboard**: Capture Keyboard and Joystick (Control-Option-Command-A).
 
@@ -207,6 +213,94 @@ SE board, the IIci testbed) the scheduler gives the HDMI sound its turn before e
 (`psmac_guest_yield`, docs/19). Tested on the host (`tools/a2card_test.sh`, run `prog-se`, `A2CARD_PROG=1`): the loop
 stopping, the heap going, the region's block freed, the program quitting: nothing drawn after each; a program again:
 the window drawn and nothing outside it.
+
+## Disks from the Mac (24 November 2026)
+
+The owner keeps folders of Apple II disk images on the Mac and the NAS, and wanted to use them in the Apple II window
+"on the Mac side": until this day the card offered only the images in the SD card's root. Now Aurora68 Apple II 1.2
+opens the Mac's own files (any volume the Mac has: the startup disk, a SCSI or BlueSCSI disk, an AppleShare volume
+through Lagoon, a floppy) and serves them to the card, which keeps the SD card's images as they were.
+
+**Getting a disk in.**
+- **Disks > Insert Disk...** (Command-I): Standard File, showing the files whose names end in `.dsk .do .po .nib .woz
+  .2mg .hdv` (in any case) or whose Mac type is one of `DSK ` `DO  ` `PO  ` `NIB ` `WOZ ` `WOZ2` `2IMG` `HDV ` (the
+  extension the library needs is then added to the name the card sees). The image goes into the first free unit of its
+  kind (a 5.25" image: drive 1, then 2; a block image: HD1 to HD4); with none free, into the first of its kind, whose
+  disk is ejected. The Disks menu's six **unit items** say what each unit holds ("Drive 1: Hello.dsk (from the Mac)",
+  "(from the Mac: reading)" while it is read in); an empty one is "Insert Disk..." into that unit (a 140K image into an
+  HD is a block device), a full one ejects.
+- **Dropped on the icon, or opened with the program**: Aurora68 Apple II is high-level-event aware (SIZE flags
+  `0x58C0`, `mac/Makefile`) and its bundle has a `'****'` file reference (`tools/mac/mkicons.py`), so the Finder lets
+  any file be dropped on it. At launch the Finder's files come in AppParmHandle (System 6) or an Open Documents event
+  (System 7), while it runs as Open Documents. One image goes into drive 1 (HD1 for a block image); several fill drive
+  1, drive 2, then (140K sector images) the HDs, block images HD1 to HD4, each into its unit whatever was there.
+- **The "Apple II Disks" folder** beside the program (found from the program's own file, CurApRefNum's FCB, as Octavo
+  finds its Fonts folder: not the default folder, which Standard File moves): its images and its folders, four levels
+  deep, as hierarchical submenus of Disks > Apple II Disks; an image chosen goes in as with Insert Disk, one in a drive
+  (checked) comes out. The folder is looked at again when the program comes to the front and with Look for Disks
+  Again. **Show Apple II Disks Folder** opens it in the Finder (an Open Documents event to the Finder; System 7), and is
+  **Make an Apple II Disks Folder** while there is none.
+
+Files are opened by volume, folder ID and name (HOpen), never by a path, so any depth works (a Pascal path stops at 255
+characters). A file is opened for writing, or read only when it is locked, on a locked volume or a read-only share:
+then the card never writes it (`A68A_MF_RO`; the Apple may write, its changes stay in the card's memory). The same
+file twice is refused ("is in a drive already").
+
+**The transport** (`psmac_a2.h`, "disks from the Mac"). The program describes a file in one of its eight media slots
+(`struct a68a_mac` at $9000: an id of its own, the size, the flags, the name the card sees) and sends `A68A_C_MACINSERT`
+(13: arg0 the slot, arg1 the unit or `A68A_UNIT_AUTO`). From then on the card asks, through a ring of 16 requests in its
+own half (`struct a68a_macc` at $A000: op, slot, id, offset, length, then seq), the bytes in the transfer area at
+$10000 (32 KB a request); the program does each with the File Manager (a read: PBRead at the offset into the request's
+32 KB of the window; a write: PBWrite from there, in place, never past the end), writes `ans_err[i]`, then
+`ans_seq[i]` = the request's seq, **in the order of the seqs**. Each media slot's state in the card's half says what the
+card holds: LOADING, IN (in its unit), CLOSING (out of the Apple, its last writes still going), REFUSED (the message
+says why), NONE (let go: the program closes the file). A session number the program writes at its start, and the card
+copies once it has cleared the ring, keeps a new run of the program from answering an old run's requests.
+- **Floppies and 800K disks** (5.25" images, and any image of `A68A_MAC_MEM_MAX` = 1.5 MB or less: a WOZ is under 1
+  MB, an 800K .2mg 819,264 bytes): read whole into the card's pool, 16 requests of 32 KB at a time, then attached over
+  that memory. What the Apple writes goes into the memory, a bit per 512 bytes marked, and back to the Mac's file as
+  write requests on the SD card's schedule: 2 s after the Apple's last change, 10 s at most, and at once at eject, Power
+  Off, Reset, Restart Cold, a change of model and the program's quitting.
+- **Hard disks** (larger images: ProDOS volumes up to 32 MB, any .hdv or .2mg the File Manager can read): read on
+  demand in pieces of 16 KB (`A68A_MAC_CHUNK`, 32 blocks) into a cache of 128 pieces (2 MiB of the pool), laid on the
+  image's own block grid (a .2mg's blocks start at its data offset, read from its header in the first piece), so the
+  library's every block is one whole block of one piece. A block not there posts its piece's request and the next
+  piece's (read ahead), and answers **A65_IO_PENDING**: the Apple waits in its block card's firmware, which asks again
+  at each poll (Aurora65 commit "The block card waits for its host", its STATUS.md item 20: the one API addition this
+  needed), and goes on once the piece is in. **The Apple stalls, the Mac does not**, and neither does the Pi's core (the
+  waiting firmware is the Apple's own time; the card's lookup at each poll is one comparison until an answer comes in).
+  What the Apple writes goes into the piece (valid and dirty bits per block, so an answer that arrives after a write
+  never covers it) and back to the file on the same schedule as a floppy's, at once when half the cache holds changes;
+  only clean pieces are ever dropped for others.
+- **Serving.** The program answers at every turn of every loop it runs: the main event loop, Standard File's dialog (a
+  dialog filter, called for null events too: SFPGetFile), its notice and About boxes, its quitting. While a disk from
+  the Mac is in, WaitNextEvent sleeps one tick at most, none for a second after a request, so it serves in the
+  background too. Writes are flushed to the file's disk (FlushFile) at the first turn without requests after them.
+  While a menu is held down or a window dragged, the program's loop does not turn and the Apple's hard disk waits.
+- **Quitting, and a program that stops answering.** At Quit (or the Finder's Quit event), the program sends
+  `A68A_C_MACEJECT` (14) for every slot: the card takes each disk out of the Apple, sends its last changes, and lets go;
+  the program answers until every file is let go (15 s at most), closes them, and clears its magic. When the program
+  goes any other way (its ExitToShell patch says `A68A_PROG_GONE`, the magic is cleared with disks in, or its loop stands
+  still for 20 s with requests out), the card takes its disks out at once: **disk removed**, the drive empty, the block
+  card's waiting read answering $28 (no device); what had not reached the Mac is lost, and the log says how many sectors.
+- **The SD card's images** are untouched by all this: the list, `a2.d1=` and so on, their write-back. A Mac's disk and
+  an SD card's can be in the units side by side; the Disks menu lists the card's below the units, as before.
+
+The log: `[A2] Big.2mg from the Mac: 32767 KB, read on demand, for HD1 (slot 7)`, `... is in HD1 (slot 7) (16 KB read
+in)`, `... is out of HD1 (slot 7): 3 sectors to write back to the Mac`, `... written back to the Mac and let go (8 ms)`,
+and in the heartbeat `[A2]   disks from the Mac: 1 (the program serves them); 70 requests answered, 0 out; 1040 KB read, 48
+KB written back; 32 reads waited for the Mac; 0 writes refused by the Mac, 0 changes lost`.
+
+**Tested on the host** (`tools/a2card_test.sh`, in `make -C mac check` with `AURORA65_DIR`): a pretend Aurora68 Apple II
+serving the ring from host files as the program serves it from the Mac's, answering every 16 ms (an event loop's turn),
+in seq order, closing a file once the card lets go of it. `mac-floppy`: Aurora65's 5.25" test disk read whole into
+drive 1 and booted ("5.25 DONE"); its 800K .2mg into HD1, its boot block writing block 1598 ("WRITE+READ OK"), ejected:
+"A65W" and 1598 found in the Mac's file. `mac-hd`: a 32 MB .2mg (65,535 blocks, Aurora65's `mkdisk.py` with its boot
+block) read on demand into HD1, its last block but one written and found in the file after the program's quit; a
+locked .hdv in HD2 never written (its checksum the same). `mac-hdread`: an 8 MB .hdv whose boot block of our own
+(`tools/a2card_hdread.s`) reads 2048 blocks in a row (64 pieces; 32 reads waited for the Mac, the read-ahead had the
+others) and checks each, then writes 96 and reads them back: about 2 s with the cold start, and all 96 in the Mac's file
+after the quit. `mac-gone`: the program gone without ejecting: the disk taken out of the Apple ("disk removed").
 
 ## How it was tested (23 November 2026)
 
@@ -288,6 +382,12 @@ appear in the Disks menu, or name them with `a2.d1=` ...); Aurora68 Apple II on 
 keep copies elsewhere, and use Apple II > Power Off before switching the Pi off.
 
 ## Not done yet
+
+- **Disks from the Mac** (24 November 2026): not run on the owner's SE, with a real AppleShare volume (Lagoon) or a
+  floppy; Finder drag and drop itself was not made in the testbed (the agent's `open`, which sends the same Open
+  Documents event, was); System 6 (AppParmHandle, no Apple events) not run. While a menu is held down or a window
+  dragged, the Apple's hard disk waits (the program's loop does not turn). A hard disk's changes not yet sent are lost
+  if the program dies (the log says how many).
 
 - **Sound** goes to the Mac's sound output as its sixth source (`psmac_audio.c`, "source 6": HDMI, the jack, or
   `mac.audiodump=`), not to the SE's own speaker yet; heard nowhere yet but in the host test's samples.

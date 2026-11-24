@@ -450,7 +450,7 @@ $(B)/Aurora68-PC.bin: $(B)/a68pc.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.p
 
 # ---- Aurora68 Apple II: the Apple on the Aurora68 Apple II Card (slot $E) in a window (mac/a68apple,
 # docs/20-apple-ii-card.md); its Toolbox list is c/traps.txt and a68apple/traps.txt, its glue in build/aa2/; the
-# driver's calls from Aurora68 Video's glue.s, as Aurora68 PC's
+# driver's calls, the File Manager's, Gestalt and the Toolbox's callbacks in a68apple/glue.s (its disks from the Mac: disks.c)
 $(B)/a68apple_traps.txt: c/traps.txt a68apple/traps.txt
 	@mkdir -p $(B)
 	cat c/traps.txt a68apple/traps.txt > $@
@@ -459,18 +459,21 @@ $(B)/aa2/toolbox_glue.s $(B)/aa2/toolbox_gen.h: $(B)/a68apple_traps.txt ../tools
 	$(PY) ../tools/mac/mktraps.py $< -s $(B)/aa2/toolbox_glue.s -H $(B)/aa2/toolbox_gen.h
 $(B)/aa2/toolbox_glue.o: $(B)/aa2/toolbox_glue.s
 	$(AS) -o $@ $<
-$(B)/aa2/glue.o: a68player/glue.s
+$(B)/aa2/glue.o: a68apple/glue.s
 	@mkdir -p $(B)/aa2
 	$(AS) -o $@ $<
 $(B)/aa2/libc.o: c/libc.c c/toolbox.h $(B)/aa2/toolbox_gen.h
 	$(CC) $(subst -I$(B),-I$(B)/aa2,$(CFLAGS)) -c -o $@ $<
-$(B)/aa2/apple.o: a68apple/apple.c a68pc/place.h c/screens.h c/toolbox.h $(B)/aa2/toolbox_gen.h ../emu68/src/psmac/psmac_a2.h
+$(B)/aa2/apple.o: a68apple/apple.c a68apple/apple.h a68pc/place.h c/screens.h c/toolbox.h $(B)/aa2/toolbox_gen.h ../emu68/src/psmac/psmac_a2.h
 	$(CC) $(subst -I$(B),-I$(B)/aa2,$(CFLAGS)) -I../emu68/src/psmac -c -o $@ $<
-AA2_OBJ = $(B)/crt0.o $(B)/aa2/toolbox_glue.o $(B)/aa2/libc.o $(B)/aa2/glue.o $(B)/aa2/apple.o
+$(B)/aa2/disks.o: a68apple/disks.c a68apple/apple.h c/toolbox.h $(B)/aa2/toolbox_gen.h ../emu68/src/psmac/psmac_a2.h
+	$(CC) $(subst -I$(B),-I$(B)/aa2,$(CFLAGS)) -I../emu68/src/psmac -c -o $@ $<
+AA2_OBJ = $(B)/crt0.o $(B)/aa2/toolbox_glue.o $(B)/aa2/libc.o $(B)/aa2/glue.o $(B)/aa2/apple.o $(B)/aa2/disks.o
 $(B)/a68apple.elf: $(AA2_OBJ) c/app.ld
 	$(LD) -T c/app.ld --emit-relocs --no-warn-rwx-segments -z noexecstack -o $@ $(AA2_OBJ) $(LIBGCC)
 $(B)/Aurora68-AppleII.bin: $(B)/a68apple.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py $(ICONS)
-	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Apple II" --creator A68A --size 256 --icons apple2 --version 1.1 -o $@
+	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Apple II" --creator A68A --size 256 --icons apple2 --version 1.2 \
+	    --size-flags 0x58C0 -o $@                  # 0x58C0: Aurora68's 0x5880 and isHighLevelEventAware (Open Documents: images dropped on it)
 
 # ---- PiScrn: the SE board's two screens arranged at the first boot, an INIT in C (mac/piscrn) ----
 $(B)/piscrn_traps.txt: c/traps.txt piscrn/traps.txt pidisplay/traps.txt

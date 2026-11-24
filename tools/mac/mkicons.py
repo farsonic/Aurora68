@@ -1010,8 +1010,8 @@ def add_family(rf, key, rid, name=None):
 
 def add_bundle(rf, key, creator, signature, ftype=b'APPL'):
     """The Finder's resources for program `key`: the signature resource (creator, ID 0), BNDL 128, an
-    FREF per kind of file and an icon family per FREF (IDs 128 on), and for Aurora68 Play a '****' FREF
-    (any file may be dropped on it). Returns the Finder flags the file needs (hasBundle, and
+    FREF per kind of file and an icon family per FREF (IDs 128 on), and for Aurora68 Play and Aurora68 Apple II a
+    '****' FREF (any file may be dropped on it). Returns the Finder flags the file needs (hasBundle, and
     hasCustomIcon for the extensions that share a creator)."""
     _, kind, _, docs = PROGRAMS[key]
     flags = 0x2000
@@ -1023,7 +1023,7 @@ def add_bundle(rf, key, creator, signature, ftype=b'APPL'):
     sig = signature.encode('mac_roman')
     rf.add(creator, 0, bytes([len(sig)]) + sig)
     frefs = [(ftype, own)] + [(t, k) for t, k in docs]
-    if key == 'play':
+    if key in ('play', 'apple2'):                # (Aurora68 Apple II: disk images dropped on it, of any type, 24 November 2026)
         frefs.append((b'****', None))
     icn, fref = [], []
     keys = []

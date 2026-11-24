@@ -1,2 +1,23 @@
 # Aurora68 Apple II's Toolbox calls beyond mac/c/traps.txt (the build puts the two lists together).
 A947 - SetItem(void *menu:l, int item:w, const unsigned char *s:l)
+# Disks from the Mac (24 November 2026, docs/20 "Disks from the Mac"): Standard File (Pack3, selector 4: SFPGetFile, with
+# a dialog filter called for every event, null events too, so that the card's requests are answered while it is open)
+A9EA - SFPGetFile(long where:l, const unsigned char *prompt:l, void *fileFilter:l, int numTypes:w, void *types:l, void *hook:l, void *reply:l, int dlgID:w, void *filter:l, int selector:w)
+# hierarchical menus: the Apple II Disks folder's submenus
+A84F - SetItemCmd(void *menu:l, int item:w, int cmd:c)
+A944 - SetItemMark(void *menu:l, int item:w, int mark:c)
+A936 - DeleteMenu(int id:w)
+A932 - DisposeMenu(void *menu:l)
+# the Apple Event Manager (Pack8, the selector in D0: Inside Macintosh, Interapplication Communication)
+A816/091F w AEInstallEventHandler(long cls:l, long id:l, void *handler:l, long refcon:l, int sys:b)
+A816/021B w AEProcessAppleEvent(const void *event:l)
+A816/0812 w AEGetParamDesc(const void *event:l, long key:l, long type:l, void *desc:l)
+A816/0407 w AECountItems(const void *list:l, long *n:l)
+A816/100A w AEGetNthPtr(const void *list:l, long i:l, long type:l, long *key:l, long *typ:l, void *data:l, long max:l, long *size:l)
+A816/0204 w AEDisposeDesc(void *desc:l)
+A816/0825 w AECreateDesc(long type:l, const void *data:l, long size:l, void *desc:l)
+A816/0706 w AECreateList(const void *factor:l, long size:l, int isRecord:b, void *list:l)
+A816/0A08 w AEPutPtr(void *list:l, long i:l, long type:l, const void *data:l, long size:l)
+A816/0610 w AEPutParamDesc(void *event:l, long key:l, const void *desc:l)
+A816/0B14 w AECreateAppleEvent(long cls:l, long id:l, const void *target:l, int returnID:w, long transaction:l, void *event:l)
+A816/0D17 w AESend(const void *event:l, void *reply:l, long mode:l, int priority:w, long timeout:l, void *idle:l, void *filter:l)

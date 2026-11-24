@@ -27,6 +27,8 @@
  *     downs (the character code and the virtual key code, with the modifiers), key ups, modifier changes, the
  *     mouse as the joystick.
  *  6. Status: state, model, message, speed, load; mode, nat_w, nat_h (the picture's natural size, for the zoom box).
+ *  7. Disks from the Mac (24 November 2026, below): the program's files described in its media slots and put in with
+ *     A68A_C_MACINSERT; the card's requests for their bytes answered from every loop the program runs.
  */
 #ifndef PSMAC_A2_H
 #define PSMAC_A2_H
@@ -204,6 +206,71 @@ struct a68a_disks {                          /* at A68A_OFF_DISKS */
     int32_t  unit[A68A_UNITS];               /* the image in each unit, -1 for none */
 };
 _Static_assert(sizeof(struct a68a_disks) <= 0x1000, "a68a_disks");
+#define A68A_DF_MAC       2u                 /* a file on the Mac, served by Aurora68 Apple II (below) */
+
+/* ---- disks from the Mac (24 November 2026; docs/20-apple-ii-card.md, "Disks from the Mac") ---------------------------
+   The owner keeps folders of Apple II disk images on the Mac and its file servers. Aurora68 Apple II offers such a file
+   (any Mac volume: the startup disk, a SCSI disk, an AppleShare volume, a floppy): it opens it, describes it in a media
+   slot of its half (struct a68a_mac) and sends A68A_C_MACINSERT. From then on the card asks for the file's bytes, and
+   sends the Apple's changes back, through a ring of requests in its own half (struct a68a_macc), the data in the
+   transfer area; the program answers each from its event loop with the File Manager, in the order of their seq.
+    - A 5.25" image, or any image of A68A_MAC_MEM_MAX or less (800K ones), is read whole into the card's memory first
+      (32 KB a request), then attached over that memory; what the Apple writes goes back to the file as write requests,
+      on the SD card's schedule (2 s after the last change, 10 s at most, at once at eject, power off, reset, a change of
+      model and the program's quitting).
+    - A larger (hard disk) image is read on demand, A68A_MAC_CHUNK at a time, into a cache of the card's: while a read
+      is out the Apple waits in its block card's firmware (Aurora65's A65_IO_PENDING), the Mac does not; its writes go
+      into the cache and back to the file as write requests on the same schedule.
+    - Request i is live while req[i].seq is not ans_seq[i]; the program does it (a read: off and len of the file into
+      the transfer area's request i; a write: from there into the file, in place), writes ans_err[i], then ans_seq[i].
+    - The program says what it holds in ms[] of the card's half: A68A_MS_NONE once the card has let go of a slot (the
+      program closes that file), so the files close only after their last writes.
+    - When the program stops answering (magic cleared, A68A_PROG_GONE, or its loop standing still A68A_MAC_DEAD_MS with
+      requests out), the card takes its disks out of the Apple at once ("disk removed": the block card answers "no
+      device", the drive is empty); what was not yet written back is lost, and the log says how much. */
+#define A68A_C_MACINSERT  13u                /* arg0 = the program's media slot (filled in first), arg1 = unit, or A68A_UNIT_AUTO */
+#define A68A_C_MACEJECT   14u                /* arg0 = a media slot, or A68A_UNIT_AUTO: every disk of the Mac's (the program quits) */
+#define A68A_OFF_MAC      0x09000u           /* struct a68a_mac: the program's */
+#define A68A_OFF_MACC     0x0A000u           /* struct a68a_macc: the card's */
+#define A68A_OFF_XFER     0x10000u           /* the transfer area: request i's bytes at A68A_OFF_XFER + i * A68A_XFER_MAX */
+#define A68A_REQS         16u
+#define A68A_XFER_MAX     0x8000u
+#define A68A_MEDIA        8u                 /* the program's media slots */
+#define A68A_MAC_MAGIC    0x4D414332u        /* 'MAC2' */
+#define A68A_MAC_MEM_MAX  (1536u << 10)      /* larger images are read on demand (a WOZ is under 1 MB, 800K .2mg 819,264) */
+#define A68A_MAC_CHUNK    0x4000u            /* 32 blocks: a hard disk image's piece read at once */
+#define A68A_MAC_DEAD_MS  20000u
+#define A68A_MF_RO        1u                 /* media flags: the file or its volume is locked: never written */
+#define A68A_R_READ       1u                 /* requests */
+#define A68A_R_WRITE      2u
+#define A68A_MS_NONE      0u                 /* the card holds nothing of this slot's file */
+#define A68A_MS_LOADING   1u                 /* being read into the card (its first bytes, for a hard disk) */
+#define A68A_MS_IN        2u                 /* in its unit */
+#define A68A_MS_CLOSING   3u                 /* out of the Apple; its last writes still going to the file */
+#define A68A_MS_REFUSED   4u                 /* not taken (message says why); the program closes it */
+struct a68a_mmedia { uint32_t id, size, flags; char name[64]; };  /* id: the program's own number, never 0 */
+struct a68a_mac {                            /* at A68A_OFF_MAC: the program writes it */
+    uint32_t magic;                          /* A68A_MAC_MAGIC while the program answers requests; 0 once it stops */
+    uint32_t session;                        /* the program's own number for this run: it answers once the card's session is it */
+    uint32_t pad[2];
+    uint32_t ans_seq[A68A_REQS];             /* the seq of request i, once done (ans_err[i] written first) */
+    int32_t  ans_err[A68A_REQS];             /* 0, or the File Manager's error */
+    struct a68a_mmedia media[A68A_MEDIA];
+};
+struct a68a_mreq { uint32_t seq, op, slot, id, off, len, pad[2]; };     /* A68A_R_*; the media slot and its id; the file's bytes */
+struct a68a_mstate { uint32_t id, state, unit, done; };                /* A68A_MS_*; the unit (A68A_UNIT_*); bytes read in */
+struct a68a_macc {                           /* at A68A_OFF_MACC: the card writes it */
+    uint32_t seq;                            /* + 1 whenever a request is posted or ms[] changes */
+    uint32_t posted;                         /* the last request's seq */
+    uint32_t session;                        /* the program's session the ring is for (the card cleared it for that run) */
+    uint32_t pad;
+    struct a68a_mreq req[A68A_REQS];         /* the fields first, then seq */
+    struct a68a_mstate ms[A68A_MEDIA];
+};
+_Static_assert(sizeof(struct a68a_mmedia) == 76 && sizeof(struct a68a_mreq) == 32 && sizeof(struct a68a_mstate) == 16, "a68a mac");
+_Static_assert(sizeof(struct a68a_mac) == 0x90 + 76 * A68A_MEDIA && sizeof(struct a68a_mac) <= 0x1000, "a68a_mac");
+_Static_assert(sizeof(struct a68a_macc) == 0x210 + 16 * A68A_MEDIA && A68A_OFF_MACC + sizeof(struct a68a_macc) <= A68A_OFF_XFER, "a68a_macc");
+_Static_assert(A68A_OFF_XFER + A68A_REQS * A68A_XFER_MAX <= A68A_OFF_ROM, "a68a transfer area");
 
 /* ---- the kernel's side (psmac_a2.c) ---- */
 uint32_t psmac_a2card_size(void);            /* the Pi memory the card needs (its window, ROM page and pool), 0 with a2=off */

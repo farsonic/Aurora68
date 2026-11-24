@@ -2,6 +2,18 @@
 
 ## Next release (on main, not released yet)
 
+- **Apple II disks from the Mac** (docs/20 "Disks from the Mac", docs/08 item NNN, 24 November 2026; the owner keeps
+  folders of Apple II images on the Mac and the NAS, and the Apple II card offered only the SD card's root). Aurora68
+  Apple II 1.2 puts images from any Mac volume (the startup disk, a SCSI disk, an AppleShare volume, a floppy) into the
+  Apple's drives: Disks > Insert Disk... (Standard File, the image files only), the Disks menu's six units (empty:
+  insert into it; full: eject), images dropped on the program's icon (drive 1, drive 2, then the HDs), and an "Apple II
+  Disks" folder beside the program, listed as submenus. Floppies and 800K disks are read into the card's memory and
+  what the Apple writes goes back into the Mac's file 2 s after its last change (at once at eject, power off, reset and
+  quit); hard disk images up to 32 MB and more are read on demand, the Apple waiting for each piece, the Mac never
+  waiting for the Apple. Quitting writes everything back first; a program that dies takes its disks out of the Apple.
+  The SD card's images work as before. Kernel (with the Apple II card) and Aurora68 Apple II; Aurora65 has a block card
+  that can wait for its host.
+
 - **Bluetooth as Raspberry Pi OS runs it, and what a pairing could break** (docs/08 item 141, docs/21, 25 November
   2026; the owner's SE: pairing the LE keyboard again stopped the WiFi, then the machine seemed locked). LE links are
   asked for at 30-50 ms as Linux does (they were 7.5-15 ms). A device's request for other parameters is checked as Linux

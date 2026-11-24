@@ -122,6 +122,8 @@ static uintptr_t pool_lo, pool_hi;
 static volatile int ready;           /* psmac_a2card_init done */
 static int chosen = -1;              /* the core it runs on, decided at the first poll */
 static a65_apple *M;                 /* the machine, once built */
+static volatile struct a68a_mac *mac;        /* the disks from the Mac: the program's half and the card's */
+static volatile struct a68a_macc *macc;
 
 static const char *const model_name[A68A_MODELS] = { "Apple ][", "Apple ][+", "Apple //e", "Apple //e (enhanced)", "Apple //c" };
 static const char *const model_key[A68A_MODELS] = { "ii", "iiplus", "iie", "iie-enhanced", "iic" };
@@ -217,6 +219,8 @@ void psmac_a2card_init(void)
     win = (uint8_t *)(KERNEL_ALIAS + card_phys);
     for (uint32_t i = 0; i < A68A_WIN_SIZE; i += 8) *(uint64_t *)(win + i) = 0;
     blk = (volatile struct a68a_block *)win;
+    mac = (volatile struct a68a_mac *)(win + A68A_OFF_MAC);
+    macc = (volatile struct a68a_macc *)(win + A68A_OFF_MACC);
     struct a68a_disks *dk = (struct a68a_disks *)(win + A68A_OFF_DISKS);
     for (uint32_t i = 0; i < A68A_UNITS; i++) dk->unit[i] = -1;
     uint8_t *heap = (uint8_t *)(KERNEL_ALIAS + card_phys + A68A_WIN_SIZE + PSMB_A2_ROM_SIZE);
@@ -397,12 +401,28 @@ struct a2img {
     uint32_t reads, writes, flushed, cursor, changes_seen;
     int pending;                      /* the Apple changed it since the last write-back */
     uint64_t first_t, last_t, flush_t0;
+    /* a disk from the Mac (psmac_a2.h, "disks from the Mac"): MAC_MEM read whole into mem, MAC_HD read on demand */
+    int mac;
+    uint32_t mslot, mid, mstate;      /* the program's media slot and id; A68A_MS_* */
+    uint8_t *mem;                     /* MAC_MEM: the file; MAC_HD: its first A68A_MAC_CHUNK (a .2mg's header) */
+    uint32_t *mdirty;                 /* MAC_MEM: a bit per 512 bytes of the file not yet sent to the Mac */
+    uint32_t ndirty;                  /* sectors (MAC_MEM) or blocks (MAC_HD) not yet sent */
+    uint32_t loaded, load_next, inflight;
+    uint32_t base, nchunks;           /* MAC_HD: where its blocks start (a .2mg's data offset); A68A_MAC_CHUNK pieces */
+    uint16_t *map;                    /* MAC_HD: piece -> cache entry + 1 */
+    uint32_t want_unit;
+    int want_flush;
+    int head_ok;                      /* MAC_HD: no write yet, so its first piece is as the file is (opening reads it there) */
 };
 static struct a2img img[A68A_DISKS_MAX];
 static uint32_t nimg;
 static int32_t unit_img[A68A_UNITS] = { -1, -1, -1, -1, -1, -1 };
 static uint32_t io_writes;
 static uint8_t runbuf[FLUSH_RUN * 512] __attribute__((aligned(16)));
+static int mac_rd(struct a2img *m, uint64_t off, void *buf, uint32_t n);          /* disks from the Mac (below) */
+static int mac_wr(struct a2img *m, uint64_t off, const void *buf, uint32_t n);
+static void mac_flush(struct a2img *m);
+static void mac_eject(int32_t k);
 
 static struct ovsec *ov_find(struct a2img *m, uint32_t lba)
 {
@@ -425,6 +445,7 @@ static int img_rd(void *ctx, uint64_t off, void *buf, uint32_t n)
     uint8_t *b = buf;
     m->reads++;
     if (!m->open || off > m->size || n > m->size - off) return -1;
+    if (m->mac) return mac_rd(m, off, buf, n);
     while (n) {
         uint32_t lba = (uint32_t)(off >> 9), in = (uint32_t)(off & 511), k = 512 - in;
         if (k > n) k = n;
@@ -446,6 +467,7 @@ static int img_wr(void *ctx, uint64_t off, const void *buf, uint32_t n)
     const uint8_t *b = buf;
     m->writes++; io_writes++;
     if (!m->open || off > m->size || n > m->size - off) return -1;
+    if (m->mac) return mac_wr(m, off, buf, n);
     if (!m->ov) {
         m->ov = a65_host_alloc(OV_BUCKETS * sizeof *m->ov);
         if (!m->ov) return -1;
@@ -473,6 +495,7 @@ static int img_wr(void *ctx, uint64_t off, const void *buf, uint32_t n)
 /* the overlay's changed sectors back into the file, in runs, until there are none or the deadline (0: none) */
 static void flush_image(struct a2img *m, uint64_t deadline)
 {
+    if (m->mac) { mac_flush(m); return; }             /* write requests to the Mac, as many as the ring takes now */
     while (m->dirty && (!deadline || now() < deadline)) {
         struct ovsec *s = 0;
         for (uint32_t k = 0; k < OV_BUCKETS && !s; k++) {
@@ -546,6 +569,7 @@ static uint32_t dirty_units(void)
 {
     uint32_t n = 0;
     for (uint32_t u = 0; u < A68A_UNITS; u++) if (unit_img[u] >= 0 && !img[unit_img[u]].ro && (img[unit_img[u]].pending || img[unit_img[u]].dirty)) n++;
+    for (uint32_t i = 0; i < nimg; i++) if (img[i].mac && (img[i].ndirty || img[i].inflight) && img[i].mstate != A68A_MS_LOADING) n++;   /* a Mac disk: until the Mac has it all */
     return n;
 }
 
@@ -599,7 +623,7 @@ static int img_add(const char *path, uint32_t size)
 }
 static int img_open(struct a2img *m)
 {
-    if (m->open) return 0;
+    if (m->open || m->mac) return 0;
     if (pf_open(&m->f, m->path, !m->ro) < 0) return -1;
     m->size = m->f.size;
     m->kind = kind_of(m->name, m->size);
@@ -618,7 +642,7 @@ static void disks_publish(void)
         while (img[i].name[k] && k < sizeof dk->d[i].name - 1) { dk->d[i].name[k] = img[i].name[k]; k++; }
         dk->d[i].name[k] = 0;
         dk->d[i].size = img[i].size; dk->d[i].kind = img[i].kind;
-        dk->d[i].flags = img[i].ro ? A68A_DF_RO : 0; dk->d[i].unit = img[i].unit;
+        dk->d[i].flags = (img[i].ro ? A68A_DF_RO : 0) | (img[i].mac ? A68A_DF_MAC : 0); dk->d[i].unit = img[i].unit;
     }
     for (uint32_t u = 0; u < A68A_UNITS; u++) dk->unit[u] = unit_img[u];
     DMB();
@@ -655,8 +679,10 @@ static int put_in(uint32_t i, uint32_t u)
 }
 static void attach(uint32_t i, uint32_t u)
 {
-    if (i >= nimg) { tell("There is no such disk image."); return; }
+    if (i >= nimg || !img[i].name[0]) { tell("There is no such disk image."); return; }
     struct a2img *m = &img[i];
+    if (m->mac && m->unit < 0) { tell("That disk is going back to the Mac: insert it again once it is out."); return; }
+    if (m->mac && u != A68A_UNIT_AUTO && (int32_t)u != m->unit) { tell("A disk from the Mac stays in its drive: eject it and insert it into the other."); return; }
     if (img_open(m) < 0) { tell("That disk image could not be opened."); return; }
     if (u == A68A_UNIT_AUTO) {
         uint32_t a = m->kind == A68A_KIND_525 ? A68A_UNIT_D1 : A68A_UNIT_HD1, b = m->kind == A68A_KIND_525 ? A68A_UNIT_D2 : A68A_UNIT_HD4;
@@ -668,6 +694,7 @@ static void attach(uint32_t i, uint32_t u)
     if (m->unit >= 0) { tell("That image is in another drive: eject it first."); return; }
     if (!M) { unit_img[u] = (int32_t)i; m->unit = (int32_t)u; disks_publish(); return; }   /* put in when the machine is built */
     int32_t old = unit_img[u];
+    if (old >= 0 && img[old].mac) { mac_eject(old); old = unit_img[u]; }   /* a Mac's disk: going back to the Mac */
     if (old >= 0) {                                   /* the one in the drive out, its changes on the card */
         flush_unit(u, 0);
         a65_apple_detach(M, u);
@@ -682,6 +709,7 @@ static void detach(uint32_t u, uint32_t i)
     if (u == A68A_UNIT_AUTO) u = i < nimg && img[i].unit >= 0 ? (uint32_t)img[i].unit : A68A_UNITS;
     if (u >= A68A_UNITS || unit_img[u] < 0) return;
     struct a2img *m = &img[unit_img[u]];
+    if (m->mac) { mac_eject(unit_img[u]); return; }
     if (M) {
         flush_unit(u, 0);
         if (a65_apple_detach(M, u) < 0) kprintf("[A2] %s: writing back at the eject failed\n", m->name);
@@ -716,6 +744,460 @@ static void disks_from_options(void)
     rescan();
 }
 
+/* ---- disks from the Mac (24 November 2026; psmac_a2.h "disks from the Mac", docs/20 "Disks from the Mac") ----------
+   The owner's folders of Apple II images live on the Mac and its file servers, not on the SD card: Aurora68 Apple II
+   opens such a file and the card asks the program for its bytes through the request ring of the window (16 requests of
+   up to 32 KB, answered from the program's event loop in the order of their seq). Two ways, by size:
+    - MAC_MEM (5.25" images, 800K ones, anything up to A68A_MAC_MEM_MAX): the whole file read into the pool first, 32 KB
+      a request, then attached over that memory; what the Apple writes goes into that memory, a bit per 512 bytes marked,
+      and back to the file as write requests on the SD card's schedule (flush_poll: 2 s after the last change, 10 s at
+      most; at once at eject, power off, reset, a change of model, the program's quitting).
+    - MAC_HD (hard disk images): read on demand, A68A_MAC_CHUNK (32 blocks) at a time, into a cache of MAC_CACHE pieces
+      in the pool, the pieces laid on the image's own block grid (a .2mg's blocks start at its data offset, so every
+      block the library reads or writes is one whole 512-byte block of a piece). A read of a block not there posts the
+      piece's request (and the next piece's, read ahead) and answers A65_IO_PENDING: the Apple waits in its block card's
+      firmware, which asks again at each poll, until the answer is in; what it writes goes into the piece (valid and
+      dirty bits per block, so an answer arriving after a write never covers it) and back to the file on the same
+      schedule. Only clean pieces are ever dropped for others.
+   When the program stops answering (it quits without ejecting, its ExitToShell patch says GONE, its loop stands still
+   A68A_MAC_DEAD_MS with requests out), the card takes its disks out of the Apple at once ("disk removed"): what had not
+   reached the Mac is lost, and the log says how much. */
+#define MAC_MEM    1
+#define MAC_HD     2
+#define MAC_CACHE  128u                  /* 2 MiB of the pool for the hard disks' pieces (128 x 16 KB) */
+#define MC_FREE    0u
+#define MC_HAVE    1u
+#define MC_WAIT    2u                    /* its read is out */
+#define MC_ERR     3u                    /* the Mac could not read it: the next read of it fails once */
+#define RK_LOAD    1u                    /* a request's purpose: a piece of a MAC_MEM file */
+#define RK_HEAD    2u                    /* a MAC_HD file's first piece (its header) */
+#define RK_CHUNK   3u                    /* a MAC_HD piece into the cache */
+#define RK_WRITE   4u
+#define MC_BLOCKS  (A68A_MAC_CHUNK / 512u)
+struct mcache { int32_t img; uint32_t chunk, state, valid, dirty, used; uint8_t *data; };
+static struct mcache *mcache;
+static uint32_t mc_clock;
+static struct { int busy; int32_t img; uint32_t kind, off, len; int32_t ce; } rq[A68A_REQS];
+static uint32_t mac_ses, mac_ses_ok;     /* the program's session the ring belongs to */
+static uint32_t mac_ses_dead;            /* a session the card gave up on (the program gone): not taken again */
+static uint32_t mac_answers, mac_waits, mac_lost, mac_wfail;
+static uint64_t mac_rd_bytes, mac_wr_bytes;
+
+static uint8_t *xfer(int i) { return win + A68A_OFF_XFER + (uint32_t)i * A68A_XFER_MAX; }
+static int mac_take(void)
+{
+    if (!mac_ses_ok) return -1;
+    for (uint32_t i = 0; i < A68A_REQS; i++) if (!rq[i].busy) return (int)i;
+    return -1;
+}
+static void mac_post(int i, uint32_t op, int32_t k, uint32_t kind, uint32_t off, uint32_t len, int32_t ce)
+{
+    struct a2img *m = &img[k];
+    volatile struct a68a_mreq *r = &macc->req[i];
+    rq[i].busy = 1; rq[i].img = k; rq[i].kind = kind; rq[i].off = off; rq[i].len = len; rq[i].ce = ce;
+    r->op = op; r->slot = m->mslot; r->id = m->mid; r->off = off; r->len = len;
+    m->inflight++;
+    DMB();
+    uint32_t seq = macc->posted + 1;
+    macc->posted = seq;
+    r->seq = seq;
+    macc->seq = macc->seq + 1;
+}
+static void ms_set(struct a2img *m, uint32_t st)
+{
+    volatile struct a68a_mstate *x = &macc->ms[m->mslot];
+    m->mstate = st;
+    x->id = m->mid; x->unit = m->want_unit; x->done = m->loaded;
+    DMB();
+    x->state = st;
+    macc->seq = macc->seq + 1;
+}
+static void ms_refuse(uint32_t slot, uint32_t id)
+{
+    volatile struct a68a_mstate *x = &macc->ms[slot];
+    x->id = id; x->unit = 0; x->done = 0;
+    DMB();
+    x->state = A68A_MS_REFUSED;
+    macc->seq = macc->seq + 1;
+}
+/* the card lets go of a Mac disk: its memory, its pieces, its requests' answers ignored; the slot's state said */
+static void mac_free(int32_t k, uint32_t st)
+{
+    struct a2img *m = &img[k];
+    if (m->unit >= 0 && unit_img[m->unit] == k) unit_img[m->unit] = -1;
+    if (mcache) for (uint32_t e = 0; e < MAC_CACHE; e++) if (mcache[e].img == k) { mcache[e].img = -1; mcache[e].state = MC_FREE; mcache[e].valid = mcache[e].dirty = 0; }
+    for (uint32_t i = 0; i < A68A_REQS; i++) if (rq[i].busy && rq[i].img == k) rq[i].img = -1;
+    a65_host_free(m->mem); a65_host_free(m->mdirty); a65_host_free(m->map);
+    ms_set(m, st);
+    memset(m, 0, sizeof *m);
+    m->unit = -1;
+    disks_publish();
+}
+static void mac_refused(int32_t k) { mac_free(k, A68A_MS_REFUSED); }
+
+/* ---- MAC_MEM: the file in the pool ---- */
+static void mem_mark(struct a2img *m, uint64_t off, uint32_t n)
+{
+    for (uint32_t s = (uint32_t)(off >> 9), e = (uint32_t)((off + n - 1) >> 9); s <= e; s++)
+        if (!(m->mdirty[s >> 5] & (1u << (s & 31)))) { m->mdirty[s >> 5] |= 1u << (s & 31); m->ndirty++; }
+}
+/* ---- MAC_HD: the cache of pieces ---- */
+static int32_t mc_alloc(int32_t k, uint32_t c)
+{
+    int32_t best = -1;
+    for (uint32_t e = 0; e < MAC_CACHE; e++) {
+        if (mcache[e].img < 0) { best = (int32_t)e; break; }
+        if (mcache[e].state == MC_HAVE && !mcache[e].dirty && (best < 0 || mcache[e].used < mcache[best].used)) best = (int32_t)e;
+    }
+    if (best < 0) return -1;
+    struct mcache *x = &mcache[best];
+    if (x->img >= 0 && img[x->img].map) img[x->img].map[x->chunk] = 0;
+    x->img = k; x->chunk = c; x->state = MC_FREE; x->valid = x->dirty = 0; x->used = ++mc_clock;
+    img[k].map[c] = (uint16_t)(best + 1);
+    return best;
+}
+/* piece c's read posted (into its entry, made if need be), when a request is free */
+static void mc_fetch(struct a2img *m, int32_t k, uint32_t c)
+{
+    if (c >= m->nchunks) return;
+    int32_t e = (int32_t)m->map[c] - 1;
+    if (e >= 0 && (mcache[e].state == MC_WAIT || mcache[e].valid == ~0u)) return;
+    int i = mac_take();
+    if (i < 0) return;
+    if (e < 0 && (e = mc_alloc(k, c)) < 0) return;
+    uint32_t off = m->base + c * A68A_MAC_CHUNK, len = m->size - off < A68A_MAC_CHUNK ? m->size - off : A68A_MAC_CHUNK;
+    mcache[e].state = MC_WAIT;
+    mac_post(i, A68A_R_READ, k, RK_CHUNK, off, len, e);
+}
+static int32_t fp_img = -1;                /* the last read that had to wait: asked again at every poll of the Apple's */
+static uint32_t fp_chunk, fp_answers;      /* firmware, it answers at once until an answer came in */
+static int mac_rd(struct a2img *m, uint64_t off, void *buf, uint32_t n)
+{
+    int32_t k = (int32_t)(m - img);
+    uint8_t *b = buf;
+    if (m->mstate != A68A_MS_IN && m->mstate != A68A_MS_LOADING) return -1;
+    if (m->mac == MAC_MEM) { memcpy(b, m->mem + off, n); return 0; }
+    if (off < m->base || (m->head_ok && off + n <= m->loaded)) {   /* the header (a65_image_open), from the first piece */
+        if (off + n > m->loaded || (!m->head_ok && off + n > m->base)) return -1;
+        memcpy(b, m->mem + off, n);
+        return 0;
+    }
+    uint64_t rel = off - m->base;
+    while (n) {
+        uint32_t c = (uint32_t)(rel / A68A_MAC_CHUNK), in = (uint32_t)(rel % A68A_MAC_CHUNK), part = A68A_MAC_CHUNK - in;
+        if (part > n) part = n;
+        if (k == fp_img && c == fp_chunk && mac_answers == fp_answers) return A65_IO_PENDING;
+        uint32_t need = 0;
+        for (uint32_t q = in >> 9; q <= (in + part - 1) >> 9; q++) need |= 1u << q;
+        int32_t e = (int32_t)m->map[c] - 1;
+        if (e >= 0 && (mcache[e].valid & need) == need) {
+            memcpy(b, mcache[e].data + in, part);
+            mcache[e].used = ++mc_clock;
+        } else if (e >= 0 && mcache[e].state == MC_ERR) {
+            mcache[e].state = mcache[e].valid ? MC_HAVE : MC_FREE;
+            if (!mcache[e].valid) { m->map[c] = 0; mcache[e].img = -1; }
+            return -1;
+        } else {
+            if (e < 0 || mcache[e].state != MC_WAIT) mac_waits++;
+            mc_fetch(m, k, c);
+            mc_fetch(m, k, c + 1);                        /* the next piece read ahead */
+            fp_img = k; fp_chunk = c; fp_answers = mac_answers;
+            return A65_IO_PENDING;
+        }
+        b += part; rel += part; n -= part;
+    }
+    return 0;
+}
+static int mac_wr(struct a2img *m, uint64_t off, const void *buf, uint32_t n)
+{
+    int32_t k = (int32_t)(m - img);
+    const uint8_t *b = buf;
+    if (m->mstate != A68A_MS_IN) return -1;
+    uint64_t t = now();
+    if (!m->pending) m->first_t = t;
+    m->pending = 1; m->last_t = t;
+    if (m->mac == MAC_MEM) {
+        memcpy(m->mem + off, b, n);
+        if (!m->ro && !m->failed) mem_mark(m, off, n);
+        return 0;
+    }
+    if (off < m->base) return -1;                       /* a hard disk's header is never written */
+    m->head_ok = 0;                                     /* the first piece may be older than the cache from now on */
+    uint64_t rel = off - m->base;
+    while (n) {
+        uint32_t c = (uint32_t)(rel / A68A_MAC_CHUNK), in = (uint32_t)(rel % A68A_MAC_CHUNK), part = A68A_MAC_CHUNK - in;
+        if (part > n) part = n;
+        int32_t e = (int32_t)m->map[c] - 1;
+        if (e < 0 && (e = mc_alloc(k, c)) >= 0) mcache[e].state = MC_HAVE;
+        if (e < 0) { kprintf("[A2] %s: every piece in the cache holds changes not yet on the Mac: a write refused\n", m->name); return -1; }
+        struct mcache *x = &mcache[e];
+        for (uint32_t q = in >> 9; q <= (in + part - 1) >> 9; q++) {
+            uint32_t lo = q << 9, hi = lo + 512, a = in > lo ? in : lo, z = in + part < hi ? in + part : hi;
+            if ((a != lo || z != hi) && !(x->valid & (1u << q))) { kprintf("[A2] %s: a part block written before it was read: refused\n", m->name); return -1; }
+            x->valid |= 1u << q;
+            if (!m->ro && !m->failed && !(x->dirty & (1u << q))) { x->dirty |= 1u << q; m->ndirty++; }
+        }
+        memcpy(x->data + in, b, part);
+        x->used = ++mc_clock;
+        b += part; rel += part; n -= part;
+    }
+    return 0;
+}
+/* what changed, as write requests: as many as the ring takes now (want_flush keeps the rest for the next turns) */
+static void mac_flush(struct a2img *m)
+{
+    int32_t k = (int32_t)(m - img);
+    m->want_flush = 1;
+    if (m->ro || m->failed) { m->ndirty = 0; m->want_flush = 0; return; }
+    if (m->mac == MAC_MEM) {
+        uint32_t nsec = (m->size + 511) >> 9;
+        for (uint32_t s = 0; s < nsec && m->ndirty; s++) {
+            if (!(m->mdirty[s >> 5] & (1u << (s & 31)))) continue;
+            int i = mac_take();
+            if (i < 0) return;
+            uint32_t r = 0;
+            while (s + r < nsec && r < A68A_XFER_MAX / 512 && (m->mdirty[(s + r) >> 5] & (1u << ((s + r) & 31)))) {
+                m->mdirty[(s + r) >> 5] &= ~(1u << ((s + r) & 31)); r++;
+            }
+            uint32_t off = s << 9, len = (r << 9) < m->size - off ? r << 9 : m->size - off;
+            memcpy(xfer(i), m->mem + off, len);
+            mac_post(i, A68A_R_WRITE, k, RK_WRITE, off, len, -1);
+            m->ndirty -= r;
+            s += r - 1;
+        }
+    } else {
+        for (uint32_t e = 0; e < MAC_CACHE && m->ndirty; e++) {
+            struct mcache *x = &mcache[e];
+            while (x->img == k && x->dirty) {
+                int i = mac_take();
+                if (i < 0) return;
+                uint32_t q = (uint32_t)__builtin_ctz(x->dirty), r = 0;
+                while (q + r < MC_BLOCKS && (x->dirty & (1u << (q + r)))) { x->dirty &= ~(1u << (q + r)); r++; }
+                uint32_t off = m->base + x->chunk * A68A_MAC_CHUNK + (q << 9), len = (r << 9) < m->size - off ? r << 9 : m->size - off;
+                memcpy(xfer(i), x->data + (q << 9), len);
+                mac_post(i, A68A_R_WRITE, k, RK_WRITE, off, len, -1);
+                m->ndirty -= r;
+            }
+        }
+    }
+    if (!m->ndirty) m->want_flush = 0;
+}
+/* read in: into its unit (the machine built), the unit's previous disk out first (done at the insert) */
+static void mac_ready(int32_t k)
+{
+    struct a2img *m = &img[k];
+    uint32_t u = m->want_unit;
+    m->mstate = A68A_MS_IN;
+    unit_img[u] = k; m->unit = (int32_t)u;            /* (the machine not built yet: put in when it is) */
+    if (M) {
+        unit_img[u] = -1; m->unit = -1;
+        if (put_in((uint32_t)k, u) < 0) { mac_refused(k); return; }
+    }
+    kprintf("[A2] %s from the Mac is in %s (%u KB read in)\n", m->name, unit_name[u], m->loaded >> 10);
+    ms_set(m, A68A_MS_IN);
+    disks_publish();
+}
+static void mac_answers_take(void)
+{
+    for (uint32_t i = 0; i < A68A_REQS; i++) {
+        if (!rq[i].busy || mac->ans_seq[i] != macc->req[i].seq) continue;
+        DMB();
+        int32_t err = mac->ans_err[i], k = rq[i].img;
+        rq[i].busy = 0; mac_answers++;
+        if (k < 0 || !img[k].mac) continue;               /* its disk went meanwhile */
+        struct a2img *m = &img[k];
+        if (m->inflight) m->inflight--;
+        uint32_t off = rq[i].off, len = rq[i].len;
+        switch (rq[i].kind) {
+        case RK_LOAD: case RK_HEAD:
+            if (err) {
+                char t[MSG_MAX], *p = t;
+                put(&p, m->name); put(&p, " could not be read from the Mac (a File Manager error): it is not put in."); *p = 0;
+                tell(t);
+                mac_refused(k);
+                continue;
+            }
+            memcpy(m->mem + off, xfer((int)i), len);
+            m->loaded += len; mac_rd_bytes += len;
+            break;
+        case RK_CHUNK: {
+            int32_t e = rq[i].ce;
+            if (e < 0 || mcache[e].img != k || mcache[e].state != MC_WAIT) break;
+            struct mcache *x = &mcache[e];
+            if (err) { x->state = MC_ERR; kprintf("[A2] %s: the Mac could not read %u bytes at %u (error %d)\n", m->name, len, off, err); break; }
+            for (uint32_t q = 0; q < MC_BLOCKS; q++)          /* blocks written meanwhile are newer than the answer */
+                if (!(x->valid & (1u << q)) && (q << 9) < len) memcpy(x->data + (q << 9), xfer((int)i) + (q << 9), (q << 9) + 512 <= len ? 512 : len - (q << 9));
+            x->valid = ~0u; x->state = MC_HAVE;
+            mac_rd_bytes += len;
+            break;
+        }
+        case RK_WRITE:
+            mac_wr_bytes += len;
+            if (err && !m->failed) {
+                m->failed = 1; mac_wfail++;
+                kprintf("[A2] %s: the Mac could not write %u bytes at %u (error %d): its changes stay in the card's memory from now on\n", m->name, len, off, err);
+                say("A disk's changes could not be written back to the Mac: they stay in the card's memory (the kernel log says which).");
+            }
+            break;
+        }
+    }
+}
+/* the ring as the program's new session finds it: nothing out, the program's earlier disks let go */
+static void mac_drop_all(const char *why)
+{
+    uint32_t n = 0, lost = 0;
+    for (uint32_t k = 0; k < nimg; k++) {
+        struct a2img *m = &img[k];
+        if (!m->mac) continue;
+        if (m->unit >= 0 && M && m->mstate == A68A_MS_IN) { m->ro = 1; a65_apple_detach(M, (uint32_t)m->unit); }
+        lost += m->ndirty; n++;
+        mac_free((int32_t)k, A68A_MS_NONE);
+    }
+    for (uint32_t i = 0; i < A68A_REQS; i++) { rq[i].busy = 0; macc->req[i].seq = 0; }
+    mac_answers++;
+    if (n) {
+        mac_lost += lost;
+        kprintf("[A2] %s: %u disk%s from the Mac taken out of the Apple (disk removed)%s\n", why, n, n == 1 ? "" : "s", lost ? ", changes not yet written back lost" : "");
+        if (lost) kprintf("[A2]   %u sectors or blocks of changes were lost\n", lost);
+        say("The disks from the Mac were taken out: Aurora68 Apple II stopped answering.");
+    }
+}
+static void mac_insert(uint32_t slot, uint32_t u)
+{
+    if (slot >= A68A_MEDIA || !mac_ses_ok) { tell("Aurora68 Apple II is not serving its disks: none put in."); return; }
+    DMB();
+    uint32_t id = mac->media[slot].id, size = mac->media[slot].size, fl = mac->media[slot].flags;
+    char name[64];
+    uint32_t n = 0;
+    while (n < sizeof name - 1 && mac->media[slot].name[n]) { name[n] = mac->media[slot].name[n]; n++; }
+    name[n] = 0;
+    for (uint32_t k = 0; k < nimg; k++) if (img[k].mac && img[k].mslot == slot) { tell("That media slot is in use."); ms_refuse(slot, id); return; }
+    if (!id || size < 1024 || !a2_ext(name)) {
+        tell("Not a disk image Aurora65 knows: .dsk .do .po .nib .woz .2mg .hdv.");
+        ms_refuse(slot, id);
+        return;
+    }
+    int32_t k = -1;
+    for (uint32_t i = 0; i < nimg; i++) if (!img[i].name[0] && !img[i].mac) { k = (int32_t)i; break; }
+    if (k < 0 && nimg < A68A_DISKS_MAX) k = (int32_t)nimg++;
+    if (k < 0) { tell("The card's list of disks is full."); ms_refuse(slot, id); return; }
+    uint32_t kind = kind_of(name, size);
+    if (u == A68A_UNIT_AUTO) {
+        uint32_t a = kind == A68A_KIND_525 ? A68A_UNIT_D1 : A68A_UNIT_HD1, b = kind == A68A_KIND_525 ? A68A_UNIT_D2 : A68A_UNIT_HD4;
+        u = a;
+        for (uint32_t q = a; q <= b; q++) if (unit_img[q] < 0) { u = q; break; }
+    }
+    if (u >= A68A_UNITS) { tell("There is no such drive."); ms_refuse(slot, id); return; }
+    struct a2img *m = &img[k];
+    memset(m, 0, sizeof *m);
+    memcpy(m->name, name, n + 1);
+    m->size = size; m->kind = kind; m->unit = -1;
+    m->mac = kind == A68A_KIND_525 || size <= A68A_MAC_MEM_MAX ? MAC_MEM : MAC_HD;
+    m->ro = m->ro_opt = (fl & A68A_MF_RO) != 0;
+    m->mslot = slot; m->mid = id; m->want_unit = u;
+    m->io.read = img_rd; m->io.write = m->ro ? 0 : img_wr; m->io.size = size; m->io.ctx = m;
+    m->open = 1;
+    int ok;
+    if (m->mac == MAC_MEM) {
+        m->mem = a65_host_alloc(size);
+        m->mdirty = a65_host_alloc(((size + 511) / 512 + 32) / 32 * 4);
+        ok = m->mem && m->mdirty;
+    } else {
+        m->mem = a65_host_alloc(A68A_MAC_CHUNK);
+        if (!mcache && (mcache = a65_host_alloc(MAC_CACHE * sizeof *mcache)) != 0) {
+            uint8_t *d = a65_host_alloc((size_t)MAC_CACHE * A68A_MAC_CHUNK);
+            if (!d) { a65_host_free(mcache); mcache = 0; }
+            else for (uint32_t e = 0; e < MAC_CACHE; e++) { mcache[e].img = -1; mcache[e].data = d + e * A68A_MAC_CHUNK; }
+        }
+        ok = m->mem && mcache;
+    }
+    if (!ok) {
+        tell("There is no room in the card's memory for that disk.");
+        a65_host_free(m->mem); a65_host_free(m->mdirty);
+        memset(m, 0, sizeof *m); m->unit = -1;
+        ms_refuse(slot, id);
+        return;
+    }
+    if (unit_img[u] >= 0) detach(u, 0);                     /* the disk in that drive out (a Mac one: going back) */
+    if (unit_img[u] >= 0) { tell("That drive could not be emptied."); mac_free(k, A68A_MS_REFUSED); return; }
+    unit_img[u] = k; m->unit = (int32_t)u;
+    ms_set(m, A68A_MS_LOADING);
+    disks_publish();
+    kprintf("[A2] %s from the Mac: %u KB, %s, for %s%s\n", m->name, size >> 10,
+            m->mac == MAC_MEM ? "read whole into the card" : "read on demand", unit_name[u], m->ro ? ", locked: never written" : "");
+}
+/* out of the Apple: its last changes to the Mac (CLOSING), then let go; a disk still being read is let go at once */
+static void mac_eject(int32_t k)
+{
+    struct a2img *m = &img[k];
+    uint32_t u = m->unit >= 0 ? (uint32_t)m->unit : m->want_unit;
+    if (m->mstate == A68A_MS_LOADING) { kprintf("[A2] %s: taken out before it was read in\n", m->name); mac_free(k, A68A_MS_NONE); return; }
+    if (m->mstate != A68A_MS_IN) return;
+    if (M && m->unit >= 0) {
+        if (a65_apple_flush(M, (int)u) < 0) kprintf("[A2] %s: the machine could not write its changes at the eject\n", m->name);
+        a65_apple_detach(M, u);
+    }
+    if (m->unit >= 0 && unit_img[m->unit] == k) unit_img[m->unit] = -1;
+    m->unit = -1;
+    ms_set(m, A68A_MS_CLOSING);
+    m->flush_t0 = now();
+    mac_flush(m);
+    kprintf("[A2] %s is out of %s: %u sectors to write back to the Mac\n", m->name, unit_name[u], m->ndirty);
+    disks_publish();
+}
+static void mac_service(void)
+{
+    if (!macc) return;
+    if (mac->magic == A68A_MAC_MAGIC && (!mac_ses_ok || mac->session != mac_ses) && mac->session != mac_ses_dead &&
+        blk->prog != A68A_PROG_GONE) {                    /* the program (again): a clean ring */
+        mac_drop_all("Aurora68 Apple II started again");
+        for (uint32_t s2 = 0; s2 < A68A_MEDIA; s2++) { macc->ms[s2].state = 0; macc->ms[s2].id = 0; macc->ms[s2].unit = 0; macc->ms[s2].done = 0; }
+        mac_ses = mac->session; mac_ses_ok = 1;
+        DMB();
+        macc->session = mac_ses;
+        kprintf("[A2] Aurora68 Apple II serves disks from the Mac (session %u)\n", mac_ses);
+    }
+    if (!mac_ses_ok) return;
+    mac_answers_take();
+    for (uint32_t k = 0; k < nimg; k++) {
+        struct a2img *m = &img[k];
+        if (!m->mac) continue;
+        if (m->mstate == A68A_MS_LOADING) {
+            uint32_t want = m->mac == MAC_MEM ? m->size : (m->size < A68A_MAC_CHUNK ? m->size : A68A_MAC_CHUNK);
+            int i;
+            while (m->load_next < want && (i = mac_take()) >= 0) {
+                uint32_t len = want - m->load_next < A68A_XFER_MAX ? want - m->load_next : A68A_XFER_MAX;
+                mac_post(i, A68A_R_READ, (int32_t)k, m->mac == MAC_MEM ? RK_LOAD : RK_HEAD, m->load_next, len, -1);
+                m->load_next += len;
+            }
+            if (m->mstate == A68A_MS_LOADING && macc->ms[m->mslot].done != m->loaded) { macc->ms[m->mslot].done = m->loaded; macc->seq = macc->seq + 1; }
+            if (m->loaded < want || m->inflight) continue;
+            if (m->mac == MAC_HD) {
+                m->base = m->mem[0] == '2' && m->mem[1] == 'I' && m->mem[2] == 'M' && m->mem[3] == 'G' ? (uint32_t)m->mem[24] | (uint32_t)m->mem[25] << 8 | (uint32_t)m->mem[26] << 16 | (uint32_t)m->mem[27] << 24 : 0;
+                if (m->base >= m->size || m->base % 64) { tell("That .2mg's header does not fit it: not put in."); mac_refused((int32_t)k); continue; }
+                m->nchunks = (m->size - m->base + A68A_MAC_CHUNK - 1) / A68A_MAC_CHUNK;
+                if (m->nchunks > 65535u || !(m->map = a65_host_alloc(m->nchunks * sizeof *m->map))) { tell("That disk is too large for the card."); mac_refused((int32_t)k); continue; }
+            }
+            m->head_ok = m->mac == MAC_HD;
+            mac_ready((int32_t)k);
+            continue;
+        }
+        if (m->want_flush) mac_flush(m);
+        if (m->mac == MAC_HD && m->ndirty > MAC_CACHE * MC_BLOCKS / 2) mac_flush(m);   /* half the cache changed: send it now */
+        if (m->mstate == A68A_MS_CLOSING && !m->ndirty && !m->inflight) {
+            kprintf("[A2] %s: written back to the Mac and let go (%u ms)\n", m->name, us_since(m->flush_t0) / 1000u);
+            mac_free((int32_t)k, A68A_MS_NONE);
+        }
+    }
+}
+static void mac_command_eject(uint32_t slot)
+{
+    for (uint32_t k = 0; k < nimg; k++)
+        if (img[k].mac && (slot == A68A_UNIT_AUTO || img[k].mslot == slot)) {
+            if (img[k].mstate == A68A_MS_IN || img[k].mstate == A68A_MS_LOADING) mac_eject((int32_t)k);
+        }
+}
+
 /* ---- the machine: its ROM read, identified, the machine built and its disks put in ---------------------------- */
 static uint8_t *rom_mem, *p5_mem;
 static uint32_t rom_len;
@@ -725,6 +1207,7 @@ static int powered, paused, halted;
 static uint32_t opts_now = ~0u;
 static void pace_reset(void);
 static int phase_start(void);
+static void mac_refused(int32_t k);
 
 static int start_model(void) { return opt.model >= 0 ? opt.model : (int)A68A_MODEL_IIEE; }
 /* the ROM for a model into rom_mem: 0, -2 while the card is not read yet, -1 (said why). With neither a2.model= nor
@@ -808,8 +1291,9 @@ static int build(int model)
     for (uint32_t u = 0; u < A68A_UNITS; u++) {
         int32_t k = unit_img[u];
         if (k < 0) continue;
+        if (img[k].mac && img[k].mstate == A68A_MS_LOADING) continue;   /* a disk from the Mac goes in once it is read */
         unit_img[u] = -1; img[k].unit = -1;
-        put_in((uint32_t)k, u);
+        if (put_in((uint32_t)k, u) < 0 && img[k].mac) mac_refused(k);
     }
     disks_publish();
     kprintf("[A2] the %s is built in %u ms, %u KiB of the card's memory in use\n", model_name[model], us_since(t0) / 1000u,
@@ -1292,6 +1776,8 @@ static void command(void)
     case A68A_C_ATTACH: attach(a0, a1); break;
     case A68A_C_DETACH: detach(a1, a0); break;
     case A68A_C_RESCAN: rescan(); break;
+    case A68A_C_MACINSERT: mac_insert(a0, a1); break;
+    case A68A_C_MACEJECT: mac_command_eject(a0); break;
     case A68A_C_MODEL:
         if (a0 < A68A_MODELS && phase == P_RUN && (int)a0 != cur_model) {
             int was = cur_model;
@@ -1403,11 +1889,28 @@ static int a2_core(void)
     }
     return chosen;
 }
+/* the program gone, or standing still with requests out: its disks out of the Apple at once */
+static void mac_watch(void)
+{
+    if (!mac_ses_ok) return;
+    int out = 0;
+    for (uint32_t i = 0; i < A68A_REQS; i++) if (rq[i].busy) out = 1;
+    const char *why = mac->magic != A68A_MAC_MAGIC ? "Aurora68 Apple II stopped serving its disks" :
+                      blk->prog == A68A_PROG_GONE ? "Aurora68 Apple II is gone" :
+                      out && blk->prog == A68A_PROG_LIVE && now() - alive_t >= ms_ticks(A68A_MAC_DEAD_MS) ? "Aurora68 Apple II has not answered for 20 s" : 0;
+    if (!why) return;
+    mac_drop_all(why);
+    mac_ses_dead = mac->magic == A68A_MAC_MAGIC ? mac_ses : 0;
+    mac_ses_ok = 0;
+    macc->session = 0;
+}
 static int a2_service(void)
 {
     command();
     geometry();
     watch_program();
+    mac_service();
+    mac_watch();
     if (phase == P_START) {
         static int listed;
         if (!listed) { listed = 1; disks_from_options(); }
@@ -1458,4 +1961,11 @@ void psmac_a2_report(void)
             blk->nodraw == A68A_ND_STALE ? "not drawing: the program's loop stands still" : blk->nodraw == A68A_ND_RGN ? "not drawing: the region is not a live one" : "not drawing: no region yet",
             blk->stalls, gone_n, keys_in, rd, wr, held_n, blk->disk_dirty, (uint32_t)(dropped_us / 1000u),
             rate_x16 / 16u, rate_x16 % 16u * 100u / 16u, slice_max_us, st == A68A_S_FAILED ? ": " : "", st == A68A_S_FAILED ? (const char *)blk->message : "");
+    uint32_t nm = 0, out = 0;
+    for (uint32_t i = 0; i < nimg; i++) if (img[i].mac) nm++;
+    for (uint32_t i = 0; i < A68A_REQS; i++) if (rq[i].busy) out++;
+    if (nm || mac_ses_ok || mac_answers)
+        kprintf("[A2]   disks from the Mac: %u (%s); %u requests answered, %u out; %u KB read, %u KB written back; %u reads waited for the Mac; %u write%s refused by the Mac, %u changes lost\n",
+                nm, mac_ses_ok ? "the program serves them" : "no program", mac_answers, out, (uint32_t)(mac_rd_bytes >> 10), (uint32_t)(mac_wr_bytes >> 10),
+                mac_waits, mac_wfail, mac_wfail == 1 ? "" : "s", mac_lost);
 }

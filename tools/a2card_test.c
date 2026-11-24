@@ -25,6 +25,13 @@
  * actions @quit (gone, A68A_C_NOWINDOW), @stall (alive stands still), @crash (the region's block freed, alive still),
  * @free (the block freed, the loop going on), each followed by a check that nothing at all is drawn, and @live (a
  * program again), followed by a check that the window is drawn and nothing outside it.
+ * Disks from the Mac (24 November 2026, A2CARD_MAC=1): a pretend Aurora68 Apple II serving the card's request ring from
+ * host files as the program serves it from the Mac's (the Mac's half of psmac_a2.h, "disks from the Mac"): it answers
+ * every A2CARD_MACLAT microseconds (16,000: an event loop's turn), in the order of the requests' seq, and closes a file
+ * once the card has let go of it. Actions @macins:PATH:UNIT (UNIT a number or -: the card's choice; PATH ending in !ro:
+ * the file locked), @maceject:SLOT, @macquit (every disk ejected, the requests answered until the card let go of all,
+ * then the program stops serving, as apple.c quits), @macdie (the program gone without ejecting: its ExitToShell patch);
+ * WAIT_TEXT "#msN=S": media slot N in state S (A68A_MS_*).
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -168,6 +175,89 @@ static int prog_on, stalled, prog_fails;
 static uint32_t pwx, pwy, pww, pwh;
 static uint64_t beat_t;
 static void poll(void);
+/* ---- the pretend Mac side of the disks from the Mac (A2CARD_MAC) ---- */
+static volatile struct a68a_mac *mach;
+static volatile struct a68a_macc *macc;
+static FILE *mfile[A68A_MEDIA];
+static int mseen[A68A_MEDIA], mac_on, mac_fails;
+static uint32_t mac_lat = 16000, mid_next = 1, mac_done, mac_rd, mac_wr, mac_turns;
+static uint64_t mac_t;
+static void mac_start(void)
+{
+    mach = (volatile struct a68a_mac *)(win + A68A_OFF_MAC);
+    macc = (volatile struct a68a_macc *)(win + A68A_OFF_MACC);
+    memset((void *)mach, 0, sizeof *mach);
+    mach->session = 0x1234;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    mach->magic = A68A_MAC_MAGIC;
+    mac_on = 1;
+    if (getenv("A2CARD_MACLAT")) mac_lat = (uint32_t)atoi(getenv("A2CARD_MACLAT"));
+}
+static void mac_serve(void)
+{
+    if (!mac_on || host_us() < mac_t) return;
+    mac_t = host_us() + mac_lat;
+    if (macc->session != mach->session) return;
+    mac_turns++;
+    for (;;) {                                         /* the live requests, in the order of their seq */
+        int best = -1;
+        for (uint32_t i = 0; i < A68A_REQS; i++) {
+            uint32_t q = macc->req[i].seq;
+            if (q && q != mach->ans_seq[i] && (best < 0 || q - macc->req[best].seq > 0x80000000u)) best = (int)i;
+        }
+        if (best < 0) break;
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        volatile struct a68a_mreq *r = &macc->req[best];
+        uint32_t sl = r->slot, len = r->len;
+        int32_t err = 0;
+        uint8_t *d = win + A68A_OFF_XFER + (uint32_t)best * A68A_XFER_MAX;
+        if (sl >= A68A_MEDIA || !mfile[sl] || mach->media[sl].id != r->id || len > A68A_XFER_MAX) err = -51;      /* rfNumErr */
+        else if (fseek(mfile[sl], (long)r->off, SEEK_SET)) err = -40;
+        else if (r->op == A68A_R_READ) { if (fread(d, 1, len, mfile[sl]) != len) err = -39; else mac_rd += len; }
+        else if (r->op == A68A_R_WRITE) { if (fwrite(d, 1, len, mfile[sl]) != len) err = -36; else { mac_wr += len; fflush(mfile[sl]); } }
+        else err = -50;
+        mach->ans_err[best] = err;
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        mach->ans_seq[best] = r->seq;
+        mac_done++;
+    }
+    for (uint32_t s = 0; s < A68A_MEDIA; s++) {       /* the files the card has let go of: closed */
+        if (!mfile[s] || macc->ms[s].id != mach->media[s].id) continue;
+        uint32_t st = macc->ms[s].state;
+        if (st != A68A_MS_NONE) mseen[s] = 1;
+        if (st == A68A_MS_REFUSED || (st == A68A_MS_NONE && mseen[s])) {
+            printf("a2card_test: the Mac closes %s (slot %u, %s)\n", (const char *)mach->media[s].name, s, st == A68A_MS_REFUSED ? "refused" : "let go");
+            fclose(mfile[s]); mfile[s] = 0; mseen[s] = 0;
+        }
+    }
+}
+static void mac_insert(const char *arg)
+{
+    char path[400];
+    snprintf(path, sizeof path, "%s", arg);
+    char *u = strrchr(path, ':');
+    uint32_t unit = A68A_UNIT_AUTO;
+    if (u) { if (u[1] != '-') unit = (uint32_t)atoi(u + 1); *u = 0; }
+    int ro = 0;
+    size_t n = strlen(path);
+    if (n > 3 && !strcmp(path + n - 3, "!ro")) { ro = 1; path[n - 3] = 0; }
+    uint32_t sl = 0;
+    while (sl < A68A_MEDIA && mfile[sl]) sl++;
+    FILE *f = sl < A68A_MEDIA ? fopen(path, ro ? "rb" : "r+b") : 0;
+    if (!f) { printf("a2card_test: FAIL: the Mac cannot open %s\n", path); mac_fails++; return; }
+    fseek(f, 0, SEEK_END);
+    volatile struct a68a_mmedia *md = &mach->media[sl];
+    md->id = mid_next++; md->size = (uint32_t)ftell(f); md->flags = ro ? A68A_MF_RO : 0;
+    const char *b = strrchr(path, '/');
+    snprintf((char *)md->name, sizeof md->name, "%s", b ? b + 1 : path);
+    mfile[sl] = f; mseen[sl] = 0;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    printf("a2card_test: the Mac offers %s (%u bytes) in slot %u\n", (const char *)md->name, md->size, sl);
+    blk->cmd = A68A_C_MACINSERT; blk->arg0 = sl; blk->arg1 = unit;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    blk->cmd_seq = blk->cmd_seq + 1;
+}
+static int mac_open_files(void) { int n = 0; for (uint32_t s = 0; s < A68A_MEDIA; s++) n += mfile[s] != 0; return n; }
 static void give_place(void)
 {
     blk->prog = A68A_PROG_LIVE;
@@ -244,6 +334,18 @@ static void type_step(void)
         else if (!strcmp(a, "scale")) { scale_now = A68A_SCALE_FIT; place(scale_now, opts_now); }
         else if (!strcmp(a, "sense")) { opts_now ^= A68A_O_APPLESENSE; place(scale_now, opts_now); }
         else if (!strncmp(a, "front:", 6)) blk->front = (uint32_t)atoi(a + 6);
+        else if (!strncmp(a, "macins:", 7)) mac_insert(a + 7);
+        else if (!strncmp(a, "maceject:", 9)) cmd(A68A_C_MACEJECT, (uint32_t)atoi(a + 9), 0);
+        else if (!strcmp(a, "macquit")) {                 /* as apple.c quits: every disk out, served until the card let go */
+            cmd(A68A_C_MACEJECT, A68A_UNIT_AUTO, 0);
+            uint64_t t0 = host_us();
+            while (mac_open_files() && host_us() - t0 < 15000000u) { poll(); mac_serve(); }
+            int n = mac_open_files();
+            printf("a2card_test: @macquit: every disk back on the Mac in %.1f s, %u requests answered (%u KB read, %u KB written): %s\n",
+                   (double)(host_us() - t0) / 1e6, mac_done, mac_rd >> 10, mac_wr >> 10, n ? "FAIL" : "closed");
+            if (n) mac_fails++;
+            mach->magic = 0; mac_on = 0;
+        } else if (!strcmp(a, "macdie")) { mac_on = 0; blk->prog = A68A_PROG_GONE; }
         else if (!strcmp(a, "quit") || !strcmp(a, "stall") || !strcmp(a, "crash") || !strcmp(a, "free") || !strcmp(a, "live")) {
             prog_step(a); pending += strlen(pending); next_key_t = host_us(); return;
         }
@@ -265,6 +367,7 @@ static int on_screen(const char *t)
         uint32_t n = v ? (uint32_t)atoi(v + 1) : 0;
         if (!strncmp(t, "#model", 6)) return blk->model == n;
         if (!strncmp(t, "#state", 6)) return blk->state == n;
+        if (!strncmp(t, "#ms", 3)) return macc && macc->ms[atoi(t + 3) % A68A_MEDIA].state == n;
         if (!strncmp(t, "#unit", 5)) {                          /* "#unitU=K": image K in unit U (-1: none) */
             const struct a68a_disks *dk = (const struct a68a_disks *)(win + A68A_OFF_DISKS);
             return dk->unit[atoi(t + 5) % A68A_UNITS] == (v ? atoi(v + 1) : -2);
@@ -300,7 +403,7 @@ static void more_opts(const char *env)
     for (char *w = strtok(buf[k], " "); w && nopts < 32; w = strtok(0, " ")) snprintf(opts[nopts++], 200, "%s", w);
     k++;
 }
-static void poll(void) { psmac_guest_poll(2); }      /* the kernel's call (psmac_guest.c), the card a guest of core 2 */
+static void poll(void) { psmac_guest_poll(2); mac_serve(); }   /* the kernel's call (psmac_guest.c), the card a guest of core 2; the pretend Mac's loop */
 
 int main(int argc, char **argv)
 {
@@ -339,6 +442,7 @@ int main(int argc, char **argv)
     win = mem; blk = (volatile struct a68a_block *)win;
     blk->focus = 1; blk->options = A68A_O_GROWBOX;
     if (prog_on) give_place();
+    if (getenv("A2CARD_MAC")) mac_start();
     uint64_t t0 = host_us();
     int ok = 1;
     if (sched) {
@@ -378,6 +482,7 @@ int main(int argc, char **argv)
     int expect_fail = getenv("A2CARD_FAIL") != 0;               /* the run expects the card to refuse (no ROM) */
     while (host_us() < end && (expect_fail || blk->state != A68A_S_FAILED)) {
         poll();
+        mac_serve();
         if (prog_on && !stalled && host_us() >= beat_t) { blk->alive = blk->alive + 1; beat_t = host_us() + 100000; }
         type_step();
         if (step < argc && (!pending || !*pending) && host_us() >= next_key_t && on_screen(argv[step])) {
@@ -390,10 +495,12 @@ int main(int argc, char **argv)
     if (blk->state == A68A_S_FAILED) printf("a2card_test: the card says: %s\n", (const char *)blk->message);
     for (int k = 0; k < 30; k++) { uint64_t t = host_us() + 40000; while (host_us() < t) poll(); }   /* the last pictures */
     /* the Apple's writes back in the image files before the end (the card writes back 2 s after the last change) */
-    for (uint64_t tw = host_us(), t = tw + 20000000u; (blk->disk_dirty || host_us() < tw + 3000000u) && host_us() < t; ) poll();
+    for (uint64_t tw = host_us(), t = tw + 20000000u; (blk->disk_dirty || host_us() < tw + 3000000u) && host_us() < t; ) { poll(); mac_serve(); }
     if (blk->disk_dirty) { ok = 0; printf("a2card_test: FAIL: %u units were not written back\n", blk->disk_dirty); }
     if (step < argc) { ok = 0; printf("a2card_test: FAIL: \"%s\" never appeared\n", argv[step]); }
-    if (prog_fails) ok = 0;
+    if (prog_fails || mac_fails) ok = 0;
+    if (mach) printf("a2card_test: the pretend Mac answered %u requests in %u turns of its loop: %u KB read, %u KB written; %d files still open\n",
+                     mac_done, mac_turns, mac_rd >> 10, mac_wr >> 10, mac_open_files());
     psmac_a2_report();
     printf("a2card_test: the speaker gave %llu samples, %llu of them loud; the window's natural size %ux%u; model %u; the card's message: %s\n",
            (unsigned long long)snd_samples, (unsigned long long)snd_loud, blk->nat_w, blk->nat_h, blk->model, (const char *)blk->message);

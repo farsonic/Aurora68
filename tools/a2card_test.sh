@@ -66,6 +66,43 @@ cp "$IMG/test.po" "$T/test.po"
 export A2CARD_OPTS="a2.rom=$ROM2E a2.img1=$T/test.po"
 # (no disk in the Disk II: its boot waits for one for ever, as a real one does)
 run disks-se 512x342x1 "$T/disks-se.pnm" 40 "BOOT SLOT 06" '@attach:0:2' "#unit2=0" '@cold' "BLOCK DONE" '@eject:2' "#unit2=-1"
+# disks from the Mac (24 November 2026): a pretend Aurora68 Apple II serving the card's ring from host files, answering
+# every 16 ms. A 5.25" image read whole into the card and booted; an 800K .2mg read whole, written by the Apple's boot
+# block and written back into the Mac's file at the eject; a 32 MB .2mg (Aurora65's mkdisk.py, our boot block) read on
+# demand, the Apple waiting in its firmware for each piece, written, and written back when the program quits; a locked
+# file never written; the program gone without ejecting: the disk taken out of the Apple
+mkdir -p "$T/mac"
+cp "$IMG/test.dsk" "$T/mac/Floppy.dsk"; cp "$IMG/test-800k.2mg" "$T/mac/Eight.2mg"; cp "$IMG/test.hdv" "$T/mac/Locked.hdv"
+python3 -I "$A/tools/mkdisk.py" po "$T/mac/Big.2mg" --blocks 65535 --boot "$A/build/gen/bootblk.bin" --2mg --name BIG > /dev/null
+s_lock=$(cksum < "$T/mac/Locked.hdv")
+# (block 65533 of Big.2mg and block 1598 of Eight.2mg hold mkdisk's pattern until the Apple writes "A65W" there)
+blk2mg() { python3 -I -c "
+import sys; d = open(sys.argv[1], 'rb').read(); o = int.from_bytes(d[24:28], 'little'); n = int(sys.argv[2]); b = d[o + n * 512:o + n * 512 + 6]
+ok = b[:4] == b'A65W' and b[4] | b[5] << 8 == n
+print('a2card_test: %s block %d in the Mac file: %r: %s' % (sys.argv[1].split('/')[-1], n, b, 'written back' if ok else 'NOT written back')); sys.exit(0 if ok else 1)" "$1" "$2"; }
+export A2CARD_OPTS="a2.rom=$ROM2E"
+A2CARD_MAC=1 run mac-floppy 512x342x1 "$T/mac-floppy.pnm" 40 "BOOT SLOT 06" "@macins:$T/mac/Floppy.dsk:-" "#ms0=2" '@cold' "5.25 DONE" \
+    "@macins:$T/mac/Eight.2mg:-" "#ms1=2" '@cold' "WRITE+READ OK" '@maceject:1' "#ms1=0"
+blk2mg "$T/mac/Eight.2mg" 1598 || fail=1
+A2CARD_MAC=1 run mac-hd 512x342x1 "$T/mac-hd.pnm" 60 "BOOT SLOT 06" "@macins:$T/mac/Big.2mg:2" "#ms0=2" '@cold' "WRITE+READ OK" \
+    "@macins:$T/mac/Locked.hdv!ro:3" "#ms1=2" '@macquit' "WRITE+READ OK"
+blk2mg "$T/mac/Big.2mg" 65533 || fail=1
+grep -q "reads waited for the Mac" "$T/mac-hd.log" && grep "disks from the Mac:" "$T/mac-hd.log" | tail -1
+[ "$(cksum < "$T/mac/Locked.hdv")" = "$s_lock" ] && echo "a2card_test: the locked file was never written" || { echo "a2card_test: the locked file CHANGED"; fail=1; }
+# an 8 MB .hdv whose boot block (tools/a2card_hdread.s) reads 2048 blocks in a row through the ring (64 pieces, each
+# waited for), then writes 96 and reads them back: the 96 found in the Mac's file afterwards
+python3 -I "$A/tools/a65asm.py" ../tools/a2card_hdread.s -o "$T/hdread.bin"
+python3 -I "$A/tools/mkdisk.py" po "$T/mac/Read.hdv" --blocks 16384 --boot "$T/hdread.bin" --name READ > /dev/null; rm -f "$T/hdread.bin"
+A2CARD_MAC=1 run mac-hdread 512x342x1 "$T/mac-hdread.pnm" 60 "BOOT SLOT 06" "@macins:$T/mac/Read.hdv:2" "#ms0=2" '@cold' "HD WRITE 96 OK" '@macquit' "HD WRITE 96 OK"
+python3 -I -c "
+import sys; d = open(sys.argv[1], 'rb').read()
+bad = [n for n in range(4096, 4192) if d[n * 512:n * 512 + 4] != b'A65X' or d[n * 512 + 4] | d[n * 512 + 5] << 8 != n]
+print('a2card_test: Read.hdv: blocks 4096-4191 in the Mac file: %s' % ('all 96 written back' if not bad else '%d NOT written back' % len(bad))); sys.exit(1 if bad else 0)" "$T/mac/Read.hdv" || fail=1
+grep "disks from the Mac:" "$T/mac-hdread.log" | tail -1
+A2CARD_MAC=1 run mac-gone 512x342x1 "$T/mac-gone.pnm" 40 "BOOT SLOT 06" "@macins:$T/mac/Big.2mg:2" "#ms0=2" '@macdie' "#unit2=-1"
+grep -q "disk removed" "$T/mac-gone.log" && echo "a2card_test: the program gone: its disk taken out of the Apple" || { echo "a2card_test: the program gone: its disk NOT taken out"; fail=1; }
+rm -f "$T/mac/Floppy.dsk" "$T/mac/Eight.2mg" "$T/mac/Locked.hdv" "$T/mac/Big.2mg" "$T/mac/Read.hdv"; rmdir "$T/mac"
+unset A2CARD_OPTS
 # the program's half (23 November 2026): the place and the window's visRgn as Aurora68 Apple II gives them; its loop
 # stopping, its heap going, the block freed, it quitting: nothing drawn after each; a program again: drawn, nothing outside
 export A2CARD_OPTS="a2.rom=$ROM2E a2.d1=$T/test.dsk"

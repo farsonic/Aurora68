@@ -25,10 +25,13 @@
  *    publishes it: 284 x 192 for 40 columns, lores and hires at 1:1 on the SE's screen, 484 x 192 for 80 columns, 560 x
  *    384 on a colour screen); View > Scaled to the Window lets it be any size. It fits the SE's 512 x 342 screen with
  *    the menu bar (mac/c/screens.h's scr_fit). The card leaves the grow box's corner alone (A68A_O_GROWBOX).
+ *  - Disks (24 November 2026, disks.c): the card's own images, and disks from the Mac: Disks > Insert Disk... (any Mac
+ *    volume), the units' items, images dropped on the program's icon, the "Apple II Disks" folder beside the program as
+ *    submenus; the card asks for their bytes and this program answers from every loop it runs (docs/20 "Disks from the
+ *    Mac"). The program is high-level-event aware for that (SIZE flags 0x58C0, the Makefile).
  * Human Interface Guidelines (1992); System 6 and 7.
  */
-#include "toolbox.h"
-#include "psmac_a2.h"
+#include "apple.h"
 #include "screens.h"
 #include "../a68pc/place.h"
 
@@ -43,9 +46,12 @@ short drv_open(void *pb), drv_control(void *pb), drv_status(void *pb);
 #define VK_DELETE     0x33
 
 enum { M_APPLE = 128, M_FILE, M_EDIT, M_A2, M_DISKS, M_VIEW, M_KEYS };
-static void *m_apple, *m_file, *m_edit, *m_a2, *m_disks, *m_view, *m_keys;
+_Static_assert(M_DISKS == M_DISKS_ID, "the Disks menu's ID, as disks.c knows it");
+static void *m_apple, *m_file, *m_edit, *m_a2, *m_view, *m_keys;
+void *m_disks;
 static void *win;
-static unsigned char pbuf[256];
+unsigned char pbuf[256];
+void disks_idle(void);
 #define A2_MODEL_FIRST 8                  /* the Apple II menu's first model item */
 
 /* ---- the card ------------------------------------------------------------------------------------- */
@@ -55,8 +61,8 @@ typedef struct {
 	long csParam[6];
 } CntrlParam;
 static short drv;
-static volatile unsigned char *card;
-static volatile struct a68a_block *blk;
+volatile unsigned char *card;
+volatile struct a68a_block *blk;
 
 static short ctl4(short code, long a, long b, long c, long d)
 {
@@ -80,12 +86,12 @@ static int card_open(void)
 	blk = (volatile struct a68a_block *)card;
 	return blk->magic == A68A_MAGIC;
 }
-static void command(unsigned long c, unsigned long a0, unsigned long a1) { if (drv) ctl(100, (long)c, (long)a0, (long)a1); }
+void command(unsigned long c, unsigned long a0, unsigned long a1) { if (drv) ctl(100, (long)c, (long)a0, (long)a1); }
 /* Alive and gone (23 November 2026; Aurora68 PC's fix, docs/19-pc-card.md "The owner's SE": the PC card drew through a quit
    program's freed visRgn handle, and this card was made after its pattern). alive + 1 at every turn of an event loop (the
    card draws only while it moves); at the end prog = A68A_PROG_GONE, the region taken back, A68A_C_NOWINDOW; and a patch
    on ExitToShell says GONE on any other way out (a crash the system survives, Force Quit), then puts the trap back */
-static void beat(void) { if (blk) blk->alive = blk->alive + 1; }
+void beat(void) { if (blk) blk->alive = blk->alive + 1; }
 static void gone(void)
 {
 	if (!blk) return;
@@ -193,43 +199,9 @@ static void fix_menus(void)
 	CheckItem(m_view, 4, applesense); CheckItem(m_view, 5, colour);
 	CheckItem(m_keys, 1, captured);
 }
-/* the image list (the card's disks block) as the Disks menu, after its first two items (Look on the Card Again and a
-   line): each image with its kind and, while it is in a drive, the drive, checked. Choosing one puts it into the first
-   free drive of its kind (a 5.25" image: drive 1, then 2; a block image: HD1 to HD4) or takes it out */
-#define DISKS_FIRST 3
-static unsigned long disks_seq = ~0u;
-static int ndisks;
-static const char *const unit_names[A68A_UNITS] = { "drive 1", "drive 2", "HD1", "HD2", "HD3", "HD4" };
-static void disk_item(unsigned i, volatile struct a68a_disks *dk, char *t)
-{
-	char *p; unsigned k = 0;
-	while (k < 50 && dk->d[i].name[k]) { char c = dk->d[i].name[k]; t[k++] = (c == ';' || c == '(' || c == '/' || c == '^' || c == '!' || c == '<') ? '_' : c; }
-	p = k ? t + k : put(t, "no name");
-	p = put(p, dk->d[i].kind == A68A_KIND_525 ? " - 5.25\"" : " - block");
-	if (dk->d[i].unit >= 0 && dk->d[i].unit < (long)A68A_UNITS) { p = put(p, ", in "); p = put(p, unit_names[dk->d[i].unit]); }
-	if (dk->d[i].flags & A68A_DF_RO) p = put(p, ", read only");
-	*p = 0;
-}
-static void disks_menu(void)
-{
-	if (!drv) return;
-	volatile struct a68a_disks *dk = (volatile struct a68a_disks *)(card + A68A_OFF_DISKS);
-	if (dk->seq == disks_seq) return;
-	disks_seq = dk->seq;
-	unsigned n = dk->count < A68A_DISKS_MAX ? dk->count : A68A_DISKS_MAX, i;
-	char t[90];
-	for (i = 0; i < (unsigned)ndisks; i++) DisableItem(m_disks, (short)(i + DISKS_FIRST));   /* no DeleteItem before System 7: kept */
-	for (i = 0; i < n; i++) {
-		disk_item(i, dk, t);
-		if (i < (unsigned)ndisks) SetItem(m_disks, (short)(i + DISKS_FIRST), pstr(pbuf, t));
-		else { AppendMenu(m_disks, pstr(pbuf, "x")); SetItem(m_disks, (short)(i + DISKS_FIRST), pstr(pbuf, t)); }   /* SetItem: the name's characters as they are */
-	}
-	if ((unsigned)ndisks < n) ndisks = (int)n;
-	for (i = 0; i < n; i++) { EnableItem(m_disks, (short)(i + DISKS_FIRST)); CheckItem(m_disks, (short)(i + DISKS_FIRST), dk->d[i].unit >= 0); }
-}
 /* the card's answer when it is not what was asked for (an image a drive refused, a model without its ROM), in a box like
    the About box's, its words wrapped at 52 characters */
-static void notice(const volatile char *text)
+void notice(const volatile char *text)
 {
 	Rect b = { 90, 56, 200, 456 };
 	void *w = (void *)NewWindow(0, &b, pstr(pbuf, ""), 1, 1 /* dBoxProc */, (void *)-1, 0, 0);
@@ -248,19 +220,9 @@ static void notice(const volatile char *text)
 	}
 	MoveTo(16, 98); DrawString(pstr(pbuf, "Click to continue."));
 	EventRecord ev;
-	for (;;) { beat(); if (WaitNextEvent(1 << mouseDown | 1 << keyDown, &ev, 30, 0) && (ev.what == mouseDown || ev.what == keyDown)) break; }
+	for (;;) { beat(); disks_serve(); if (WaitNextEvent(1 << mouseDown | 1 << keyDown, &ev, disks_sleep(30), 0) && (ev.what == mouseDown || ev.what == keyDown)) break; }
 	DisposeWindow(w);
-	SetPort(win);
-}
-static void disk_chosen(short item)
-{
-	if (item == 1) { command(A68A_C_RESCAN, 0, 0); return; }
-	volatile struct a68a_disks *dk = (volatile struct a68a_disks *)(card + A68A_OFF_DISKS);
-	unsigned i = (unsigned)(item - DISKS_FIRST);
-	if (item < DISKS_FIRST || i >= dk->count) return;
-	unsigned long seq = dk->seq;
-	command(dk->d[i].unit >= 0 ? A68A_C_DETACH : A68A_C_ATTACH, i, A68A_UNIT_AUTO);
-	if (dk->seq == seq && blk->message[0]) notice(blk->message);   /* nothing changed: the card says why */
+	if (win) SetPort(win);
 }
 static void model_chosen(unsigned m)
 {
@@ -371,15 +333,15 @@ static void about(void)
 	Rect b = { 90, 56, 200, 456 };
 	void *w = (void *)NewWindow(0, &b, pstr(pbuf, ""), 1, 1 /* dBoxProc */, (void *)-1, 0, 0);
 	SetPort(w);
-	MoveTo(16, 24); DrawString(pstr(pbuf, "Aurora68 Apple II 1.1"));
+	MoveTo(16, 24); DrawString(pstr(pbuf, "Aurora68 Apple II 1.2"));
 	MoveTo(16, 44); DrawString(pstr(pbuf, "An 8-bit Apple II (Aurora65) on the Aurora68 Apple II"));
 	MoveTo(16, 60); DrawString(pstr(pbuf, "Card, in a window. Command is Open-Apple, Option is"));
 	MoveTo(16, 76); DrawString(pstr(pbuf, "Solid-Apple; Control-Command-Delete is Control-Reset."));
 	MoveTo(16, 98); DrawString(pstr(pbuf, "Click to continue."));
 	EventRecord ev;
-	for (;;) { beat(); if (WaitNextEvent(1 << mouseDown | 1 << keyDown, &ev, 30, 0) && (ev.what == mouseDown || ev.what == keyDown)) break; }
+	for (;;) { beat(); disks_serve(); if (WaitNextEvent(1 << mouseDown | 1 << keyDown, &ev, disks_sleep(30), 0) && (ev.what == mouseDown || ev.what == keyDown)) break; }
 	DisposeWindow(w);
-	SetPort(win);
+	if (win) SetPort(win);
 }
 static void do_menu(long mi)
 {
@@ -399,7 +361,7 @@ static void do_menu(long mi)
 		else if (item == 5) command(blk->state == A68A_S_PAUSED ? A68A_C_RESUME : A68A_C_PAUSE, 0, 0);
 		else if (item >= A2_MODEL_FIRST) model_chosen((unsigned)(item - A2_MODEL_FIRST));
 		break;
-	case M_DISKS: disk_chosen(item); break;
+	default: if (disks_is_menu(menu)) disks_chosen(menu, item); break;
 	case M_VIEW:
 		if (item == 1 || item == 2) {
 			scaled = item == 2;
@@ -486,7 +448,7 @@ int main(void)
 	for (unsigned i = 0; i < A68A_MODELS; i++) { AppendMenu(m_a2, pstr(pbuf, "x")); SetItem(m_a2, (short)(A2_MODEL_FIRST + i), pstr(pbuf, model_names[i])); }
 	InsertMenu(m_a2, 0);
 	m_disks = NewMenu(M_DISKS, pstr(pbuf, "Disks"));
-	AppendMenu(m_disks, pstr(pbuf, "Look on the Card Again;(-"));
+	disks_menu_build();
 	InsertMenu(m_disks, 0);
 	m_view = NewMenu(M_VIEW, pstr(pbuf, "View"));
 	AppendMenu(m_view, pstr(pbuf, "Actual Size;Scaled to the Window;(-;White on Black;Hires in Colour"));
@@ -500,6 +462,7 @@ int main(void)
 
 	if (!card_open()) { drv = 0; blk = 0; }
 	if (drv) { blk->prog = A68A_PROG_LIVE; beat(); ets_patch(); }
+	else card = 0;
 	short nw, nh;
 	natural(&nw, &nh);
 	Rect b = { 40, 8, (short)(40 + nh), (short)(8 + nw) };
@@ -511,12 +474,14 @@ int main(void)
 	if (drv && (blk->state == A68A_S_OFF || blk->state == A68A_S_FAILED)) command(A68A_C_POWER_ON, 0, 0);
 	set_front(1);
 	tell_place(1);
+	disks_init();                                   /* the disks from the Mac: the card's session, the folder, the Finder's files */
 
 	EventRecord ev;
 	while (!quit) {
 		beat();
-		int got = WaitNextEvent(everyEvent, &ev, captured ? 1 : 6, 0);
+		int got = WaitNextEvent(everyEvent, &ev, disks_sleep(captured ? 1 : 6), 0);
 		if (got) switch (ev.what) {
+		case 23: disks_hle(&ev); break;          /* kHighLevelEvent: an Apple event (Open Documents: images dropped on the icon) */
 		case mouseDown: mouse_down(&ev); break;
 		case keyDown: case autoKey: case keyUp: {
 			if (special_key(&ev)) break;
@@ -544,10 +509,13 @@ int main(void)
 				int resumed = (ev.message & resumeFlag) != 0;
 				set_front(resumed && FrontWindow() == win);
 				if (!resumed) capture(0);
+				else disks_resume();                  /* the Apple II Disks folder looked at again (the Finder may have changed it) */
 			}
 			tell_place(1);
 			break;
 		}
+		disks_idle();
+		if (disks_quit_asked()) quit = 1;
 		if (!drv) continue;
 		if (front) modifiers(ev.modifiers);
 		if (captured) joystick();
@@ -560,6 +528,7 @@ int main(void)
 		title();
 	}
 	capture(0);
+	disks_quit();                                   /* every disk from the Mac written back to its file and let go, then closed */
 	set_front(0);
 	tell_place(1);                                  /* quit: not visible, so the card draws nothing where the window was */
 	if (drv) { gone(); command(A68A_C_NOWINDOW, 0, 0); }   /* and the window gone: the card stops before this heap is freed */
