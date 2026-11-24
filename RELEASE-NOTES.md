@@ -2,7 +2,16 @@
 
 ## Next release (on main, not released yet)
 
-Nothing yet since 0.16.
+- **Bluetooth as Raspberry Pi OS runs it, and what a pairing could break** (docs/08 item 141, docs/21, 25 November
+  2026; the owner's SE: pairing the LE keyboard again stopped the WiFi, then the machine seemed locked). LE links are
+  asked for at 30-50 ms as Linux does (they were 7.5-15 ms). A device's request for other parameters is checked as Linux
+  checks it, and floored at 15 ms where its range allows. A pairing's connection attempt and the LE side of Look for
+  Devices take a quarter of the radio, not half. The host survives bytes lost on the Pi 3B's UART, which has no flow
+  control: a command with no answer is given up after 2 s, the ACL buffers of a link that went come back, a header that
+  makes no sense is dropped, and the UART is drained during the card's writes and between the service loop's parts.
+  Before, any of these could leave Bluetooth dead with the Mac in the pairing dialog. The pairing dialog closes when
+  Bluetooth is not ready, and after two minutes in any case. The heartbeat has `[BT]   UART:` and `[BT]   LE link`
+  lines. Kernel and Aurora68 Menu Extras.
 
 ## 0.16 — Bluetooth and WiFi together on the Pi 3B (24 November 2026)
 

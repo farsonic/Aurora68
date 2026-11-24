@@ -9,7 +9,7 @@ set -e
 B=${1:-/tmp/bt_test}
 mkdir -p "$B"
 BT=../emu68/src/alice/bt
-cc -std=c99 -O1 -g -Wall -Wextra -Werror -I$BT -o "$B/bt_test" ../tools/bt_test.c $BT/bthost.c
+cc -std=c99 -O1 -g -Wall -Wextra -Werror -Wno-unused-function -I$BT -o "$B/bt_test" ../tools/bt_test.c
 "$B/bt_test"
 cc -std=c99 -O1 -g -Wall -Wextra -Werror -Wno-unused-function -I$BT -o "$B/bt_report_test" ../tools/bt_report_test.c
 "$B/bt_report_test"

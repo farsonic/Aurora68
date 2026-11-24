@@ -6689,3 +6689,97 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      and wifi working"). The owner also found that unplugging the USB keyboard ended the under-voltage warnings: the
      Pi feeds its USB ports from the 5 V it takes through the 68000 socket, so a USB keyboard (more so one with lights)
      is a load the SE's supply feels; the SE's own keyboard and mouse, on the SE's ADB, are not.
+
+141. **Bluetooth as Raspberry Pi OS runs it, and the lock-up while pairing a keyboard (24-25 November 2026).** The owner's
+   SE with 0.16: WiFi and Bluetooth had worked together (item 140). Then the owner paired the LE keyboard again from the
+   Mac's Bluetooth menu, the WiFi stopped, and the whole machine locked up (no pointer, no network). The owner's devices:
+   an LE keyboard with an IRK that also reports a pointer, and an LE mouse with a static random address. The owner asked
+   for research into how Raspberry Pi OS does it. That is `docs/21-bluetooth-on-the-pi3.md`, with sources: Raspberry
+   Pi's `rpi-6.6.y` kernel (`hci_bcm.c`, `btbcm.c`, `hci_core.c`, `hci_sync.c`, `l2cap_core.c`, brcmfmac's `btcoex.c`
+   and `cfg80211.c`), the 3B's device tree, `pi-bluetooth`'s `btuart` and `bthelper`, the NVRAM file, BlueZ's
+   `main.conf`, and the issues raspberrypi/linux#1444 and #3727, raspberrypi/firmware#1150 and RPi-Distro/firmware-nonfree#33.
+   - *What matched already:* the PL011 on GPIO 32/33 with no flow control (the 3B has no CTS/RTS: "we were short of
+     pins", #1150), the firmware at 921600 (hci_bcm sets the operating speed before the download), no Set Sleep Mode
+     (0xfc27: Linux sends it only with a host-wake GPIO, and the Pi has none), no Bluetooth-side coexistence command,
+     the NVRAM's `btc_mode=1` coexistence as the only one, page scan defaults, a host-side background scan when a
+     device has an IRK and the controller has no LL privacy.
+   - *Where ours took more of the radio, or differed riskily:* LE links were asked for at 7.5-15 ms (Linux 30-50 ms).
+     A device's Connection Parameter Update Request was taken unchecked. A direct connection (every pairing) scanned
+     30 ms in 60, and the LE side of a scan for new devices the same. There was no command timeout: Linux takes the
+     credit back after 2 s, "command tx timeout". A link that went kept its ACL buffers from the pool for good, and
+     Number Of Completed Packets for an unknown handle were counted. An H4 header after a lost byte was believed.
+   - *The WiFi stopping:* raspberrypi/linux#1444, "Bluetooth LE connection attempt disables Wifi on RPi3" (2016, open),
+     is the same thing on Raspberry Pi OS: an LE connection attempt's scan leaves the WiFi almost nothing, and Cypress's
+     advice there was shorter windows. A pairing here was a 12 s scan, a connection attempt at 50 % for up to 15 s and
+     then a link at 7.5 ms.
+   - *The lock-up, looked for* (docs/21 section 5). (1) The UART: on the 3B nothing holds the chip back, the PL011
+     keeps 16 bytes (1.4 ms at 115200), and core 3 polled it once per turn. Turns are longer than that (the testbed's
+     heartbeat: parts of 2-12 ms, some of 100 ms), and a pairing writes `pairings.txt` with up to three synchronous card
+     writes, each waiting up to a second, while the keyboard's GATT discovery talks. After a lost byte the host could
+     believe a false header, lose a Command Complete and with it every later command, or lose its ACL buffers. The
+     result is a dead Bluetooth host and a Mac waiting in the pairing dialog. (2) Locks and loops: every Bluetooth loop
+     ends on its input or a timer; `aes_busy` is never waited on; `con_lock` covers bounded writes; Bluetooth takes
+     `vc_mbox_lock` only for BT_ON and never across a yield (item 79). Nothing found stops core 3 for good. One real
+     fault: a late LE Rand answer could be taken for the next link's LE Encrypt. (3) The Mac: the pairing dialog
+     (`ModalDialog` in Menu Extras' jGNEFilter, re-entry guarded) closed only on the Pi's word. With the keyboard that
+     is also the pointer in pairing mode and no other mouse, nothing could press Cancel. Together with the WiFi off the
+     air, that looks like a locked machine. (4) Power: the heaviest moment for the Pi's 5 V. The owner saw under-voltage
+     with a USB keyboard (item 140).
+   - *Changed* (kernel: `bthost.c`, `btle.c`, `bthost.h`, `bt_pi.c`, `alice_psmac.c`, `alice_net.c`, `psmac_card.c`;
+     Mac: `mac/wifimenu/btmenu.c`, `Aurora68-MenuExtras.bin`):
+     - LE connections are asked for at 30-50 ms, latency 0 (Linux's `le_conn_min/max_interval`). The supervision
+       timeout stays 5 s (Linux 420 ms), so a link the WiFi starves for a moment is kept.
+     - A Connection Parameter Update Request is checked as Linux's `hci_check_conn_params` and refused (result 1) when
+       invalid. When accepted, its lower end is raised to 15 ms where the device's own range reaches it, since the
+       controller picks within min..max. A device that asks for 7.5 ms and nothing longer still gets 7.5 ms.
+     - The interval a link really runs with comes from LE Connection Complete and LE Connection Update Complete. The
+       heartbeat has `[BT]   LE link ..44:55: interval 15.0 ms, latency 0, timeout 5000 ms | updates asked 1, refused 0`.
+     - A direct connection and the LE side of a scan for new devices scan 30 ms every 120 ms (25 %, was 50 %; Linux
+       60/60).
+     - A command with no answer for 2 s gives its credit back and the queue goes on, as Linux does
+       (`commands unanswered` in the heartbeat).
+     - ACL packets in flight are handed back when their link goes, and its queued frames are dropped. Number Of
+       Completed Packets for an unknown handle is skipped, and the pool never exceeds the controller's count (Linux's
+       `hci_conn_del` and `hci_num_comp_pkts_evt`).
+     - The H4 receiver checks each header (an event code the controller sends; the fixed lengths of Command Status,
+       Disconnection Complete, Connection Complete, Number Of Completed Packets; an ACL packet's flags, handle and
+       length). A header that fails is dropped and its bytes searched again for a start. A UART error drops the packet
+       in hand (`bt_rx_break`).
+     - The UART is drained into a 4096-entry ring by `bt_pi_uart_pump` from between the parts of core 3's turn, at
+       every yield of the WiFi, inside the card's waits (`udelay`, the command busy wait, `fsm_wait`, the write's
+       programming wait) and in `bt_pi_poll`. Each entry keeps the PL011's error bits. The pump costs one register read
+       when nothing waits; a try-lock keeps it to one core at a time, and the ring has one reader.
+     - The heartbeat has a `[BT]   UART:` line: bytes in, errors and overruns, ring full, packets cut, headers
+       dropped, commands unanswered, ACL and LE buffers free, what is queued.
+     - SMP's crypto answers must be for the command that is out (`aes_op`).
+     - At ready the log says when the controller's address is the BCM43430A1's unconfigured placeholder (Raspberry Pi OS
+       writes one from the serial number; we leave it, so that existing pairings stay valid) and what GPIO 43 is set to
+       (ALT0/GPCLK2 in Raspberry Pi OS's device tree).
+     - The Mac's pairing dialog also closes when the Pi's Bluetooth is not ready and after two minutes.
+   - *Not changed, on purpose:* the operating speed stays 115200, not Raspberry Pi OS's 921600: a polled FIFO lasts
+     174 µs at 921600. The LE Remote Connection Parameter Request event stays masked. The controller then rejects the LL
+     procedure and the device uses L2CAP signalling, which the host handles. WiFi power save stays off unless the Mac
+     asks (Linux has it on); the owner's WiFi works this way. The BD address is not rewritten.
+   - *Tested.* `make -C mac check`. `tools/bt_test.c` now includes `bthost.c` so that it reaches the host's queue: 106
+     checks (26 new). They cover: Linux's validity rule (valid, min > max, under 7.5 ms, over 4 s, a timeout under two
+     intervals, a latency the timeout cannot cover) and the 15 ms floor; LE Create Connection at 30-50 ms, latency 0,
+     5 s; the link's interval from LE Connection Complete; an ATT request in flight taking an LE buffer; a 7.5-15 ms
+     request accepted with the same identifier and 15-15 ms asked of the controller; an invalid request refused with
+     result 1 and nothing asked; LE Connection Update Complete; event code 0x99 dropped and the event behind it read; a
+     Command Status of the wrong length dropped and the LE event inside its bytes found; a cut packet dropped at the
+     break and the next taken; an ACL header with broadcast flags dropped; a waiting frame dropped and three in flight
+     handed back when the link goes; completed packets of the gone link not counted twice; the pool never above the
+     controller's count; a lost Command Complete holding the next command, and after 2 s the queue going on; a stray
+     LE Rand answer left alone; a pairing's connection at 30 ms per 120 ms with 30-50 ms asked, and the heartbeat's
+     radio line knowing it; a scan's LE side at 30 per 120 ms. The new checks use fields the old host did not have, so
+     they were not run against it. The kernel was built with the PC and Apple II cards (`-DPSMAC_PC=ON -DPSMAC_A2=ON`)
+     and booted in QEMU on the solo board: System 7.1 to the Finder with `bt=off wifi=off`. With Bluetooth on it reached
+     "the chip does not answer (command 0c03)" as QEMU always does (no chip), with the heartbeat's new `[BT]   UART:`
+     line, and the Mac went on.
+   - *Not verified (the owner's Pi):* the real chip and keyboard. What to send after pairing the keyboard again: the
+     `[BT]   UART:` line (overruns and headers dropped show how lossy the line is; commands unanswered above 0 means the
+     host recovered from what used to stop it), the `[BT]   LE link` line (the interval the keyboard ended at), the
+     `[BT] ... asks for connection interval` and `connection interval now` lines, the `[PSMAC] power:` lines, whether the
+     WiFi survives the pairing, and whether the machine stays up. If the WiFi still drops during a pairing, `bt.scan=`
+     does not reach it (a pairing is the user's); pairing with `wifi=off`, or over Ethernet, separates the two. The
+     GPIO 43 and BD address lines say whether the firmware set the chip up as Raspberry Pi OS expects.

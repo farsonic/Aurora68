@@ -128,8 +128,12 @@ static int dialog(const char *text, const char *ok, const char *cancel, int mode
 	return hit;
 }
 
-/* the pairing dialog's filter: the passkey when the host shows one, closed when the pairing ends */
+/* the pairing dialog's filter: the passkey when the host shows one, closed when the pairing ends. Also closed when the
+   Pi's Bluetooth is no longer ready (it restarted: its pairing went with it) and after two minutes in any case: the
+   dialog runs inside the event filter, so the program in front waits while it is up, and nothing on the Pi's side
+   may keep it there (docs/21, 25 November 2026; the Pi's host ends a pairing after 30 s itself) */
 static int passkey_up;
+static unsigned long pair_until;
 int bt_pair_filter(void *dlg, EventRecord *ev, short *item)
 {
 	if (ev->what == keyDown || ev->what == autoKey) {
@@ -139,6 +143,7 @@ int bt_pair_filter(void *dlg, EventRecord *ev, short *item)
 		return 0;
 	}
 	if (!rd32(BT + B_PAIRING) && rd32(BT + B_CMD_DONE) == rd32(BT + B_CMD_SEQ)) { *item = 3; return 1; }
+	if (rd32(BT + B_STATE) != BT_READY || LM_TICKS > pair_until) { *item = 3; return 1; }
 	if (rd32(BT + B_PASSKEY_SHOWN) && !passkey_up) {
 		unsigned long pk = rd32(BT + B_PASSKEY);
 		unsigned char s[96];
@@ -269,6 +274,7 @@ int bt_menuselect(long pt)
 			add(&p, "Pairing with \xD2"); add(&p, nm); add(&p, "\xD3\xC9");
 			*p = 0;
 			passkey_up = 0;
+			pair_until = LM_TICKS + 120 * 60;
 			dialog(text, "OK", "Cancel", 2);
 		}
 		(void)i_forget;

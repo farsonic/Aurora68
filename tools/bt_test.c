@@ -21,12 +21,20 @@
  *     the host's own LE scan 30 ms per 160 ms for that minute, then 30 ms per 1.28 s, then only a 10 s sweep in every five
  *     minutes when nothing has been heard for five minutes; a link going down brings the fast minute back at most once
  *     per three minutes; the WiFi joining or its DHCP quiets every scan for 10 s, at most two thirds of the time;
- *     bt.scan=fast keeps it fast, bt.scan=off keeps the radio quiet until a Connect; the shares bt_radio_now reports.
+ *     bt.scan=fast keeps it fast, bt.scan=off keeps the radio quiet until a Connect; the shares bt_radio_now reports;
+ *   - the lock-up hunt and Raspberry Pi OS's parameters (25 November 2026, docs/21 and docs/08 item 141): LE connections
+ *     asked for at Linux's 30 to 50 ms, a direct connection's scan 30 ms per 120 ms; a device's Connection Parameter
+ *     Update Request checked as Linux does (refused when invalid) and its interval floored at 15 ms where its range
+ *     allows; the link's interval from LE Connection Complete and Update Complete; a Command Complete lost on the UART
+ *     no longer stops every later command (2 s, Linux's HCI_CMD_TIMEOUT); ACL packets in flight handed back when their
+ *     link goes and its queued ones dropped, the pool never above the controller's count; an H4 header that makes no
+ *     sense dropped and the stream searched again, a packet cut by a UART error dropped; an LE Rand answer not taken
+ *     for an LE Encrypt.
  */
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
-#include "bthost.h"
+#include "bthost.c"                 /* the host itself, so that the tests reach its queue and helpers (since 25 November 2026) */
 
 static int fails, checks;
 #define CHECK(c, ...) do { checks++; if (!(c)) { fails++; printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -40,6 +48,7 @@ static uint32_t bauds[8]; static int nbauds;
 static int verbose;
 static uint8_t res_status;                       /* what the resolving list's commands answer: 0, or 0x01 (unknown command) */
 static uint8_t baud_status;
+static int drop_answers;                         /* the next N commands get no answer at all (lost on the UART) */
 
 static void io_send(void *c, const uint8_t *p, unsigned n) { (void)c; if (nout < MAXOUT && n <= sizeof out[0].b) { memcpy(out[nout].b, p, n); out[nout].n = n; nout++; } }
 static void io_baud(void *c, uint32_t b) { (void)c; if (nbauds < 8) bauds[nbauds++] = b; }
@@ -67,6 +76,7 @@ static void answer(void)
         unsigned i = answered++;
         uint16_t op = op_of(i);
         if (!op) continue;                                  /* ACL */
+        if (drop_answers > 0) { drop_answers--; continue; }
         uint8_t r[16]; memset(r, 0, sizeof r);
         unsigned n = 1;
         switch (op) {
@@ -388,6 +398,115 @@ int main(int argc, char **argv)
         bt_init(&H, &io, 0, 0);
         run(600000);
         { struct bt_radio r; bt_radio_now(&H, &r); CHECK(r.tier == BT_TIER_FAST && r.permille == 327, "bt.scan=fast: fast after ten minutes (%u per mille)", r.permille); }
+    }
+
+    /* ---- 25 November 2026: Raspberry Pi OS's parameters, and what a lossy UART must not break (docs/21) ---- */
+    {
+        /* the validity of a device's request, as Linux's hci_check_conn_params */
+        CHECK(bt_le_params_ok(6, 12, 0, 500) && bt_le_params_ok(24, 40, 4, 200), "valid connection parameters taken");
+        CHECK(!bt_le_params_ok(12, 6, 0, 500) && !bt_le_params_ok(5, 12, 0, 500) && !bt_le_params_ok(6, 3201, 0, 3200), "min > max, min < 7.5 ms, max > 4 s refused");
+        CHECK(!bt_le_params_ok(6, 80, 0, 10) && !bt_le_params_ok(6, 40, 4, 10), "a timeout shorter than two intervals, a latency the timeout cannot cover refused");
+        CHECK(bt_le_min_floor(6, 12) == 12 && bt_le_min_floor(6, 9) == 6 && bt_le_min_floor(24, 40) == 24, "the floor of 15 ms only where the device's range reaches it");
+
+        res_status = 0;                                          /* a 4.2 controller: the accept list connects */
+        to_ready(0, 0);
+        int c = find_op(0x200d, 0);
+        CHECK(c >= 0 && le16v(out[c].b + 17) == 0x0018 && le16v(out[c].b + 19) == 0x0028 && le16v(out[c].b + 21) == 0 && le16v(out[c].b + 23) == 0x01f4,
+              "LE Create Connection asks for 30 to 50 ms, latency 0, timeout 5 s (as Linux, but its 420 ms) (%04x-%04x)", c >= 0 ? le16v(out[c].b + 17) : 0, c >= 0 ? le16v(out[c].b + 19) : 0);
+        /* the link comes up with an interval of 50 ms */
+        unsigned mark = nout;
+        { uint8_t e[21] = { 0x3e, 19, 0x01, 0, 0x40, 0x00, 0x00, 1 }; memcpy(e + 8, ident, 6); e[14] = 0x28; e[18] = 0xf4; e[19] = 0x01; ev(e, 21); }
+        run(50);
+        int ci = -1; for (int i = 0; i < BT_MAXCONN; i++) if (H.conn[i].used) ci = i;
+        CHECK(ci >= 0 && H.conn[ci].l.ci == 0x28 && H.conn[ci].l.cto == 0x01f4, "the link's interval kept from LE Connection Complete (%u)", ci >= 0 ? H.conn[ci].l.ci : 0);
+        struct bt_conn *C = ci >= 0 ? &H.conn[ci] : &H.conn[0];
+        /* encrypted with its key: the GATT discovery starts, one ATT request goes out and is in flight */
+        uint16_t le0 = H.le_free;
+        { uint8_t e[6] = { 0x08, 4, 0x00, 0x40, 0x00, 0x01 }; ev(e, 6); }
+        run(20);
+        CHECK(C->sent == 1 && H.le_free == le0 - 1 && H.le_pkts == 8, "an ATT request in flight: one LE buffer taken (sent %u, free %u of %u)", C->sent, H.le_free, H.le_pkts);
+        /* the device asks for 7.5 to 15 ms (a keyboard's usual wish): accepted, 15 ms asked of the controller */
+        mark = nout;
+        { uint8_t a[] = { 0x02, 0x40, 0x20, 16, 0, 12, 0, 0x05, 0x00, 0x12, 0x07, 8, 0, 6, 0, 12, 0, 0, 0, 0xf4, 0x01 }; bt_rx(&H, a, sizeof a); }
+        run(20);
+        {
+            int u = find_op(0x2013, mark), r = -1;
+            for (unsigned i = mark; i < nout; i++) if (out[i].b[0] == 2 && out[i].b[7] == 0x05 && out[i].b[9] == 0x13) r = (int)i;
+            CHECK(r >= 0 && out[r].b[10] == 0x07 && out[r].b[13] == 0, "Connection Parameter Update Response: accepted, same identifier");
+            CHECK(u >= 0 && le16v(out[u].b + 6) == 12 && le16v(out[u].b + 8) == 12 && le16v(out[u].b + 12) == 0x01f4, "LE Connection Update 15-15 ms asked (%u-%u)", u >= 0 ? le16v(out[u].b + 6) : 0, u >= 0 ? le16v(out[u].b + 8) : 0);
+            CHECK(C->l.upd_asked == 1, "counted");
+        }
+        /* an invalid request (timeout 100 ms, latency 4 at up to 50 ms): refused, nothing asked of the controller */
+        mark = nout;
+        { uint8_t a[] = { 0x02, 0x40, 0x20, 16, 0, 12, 0, 0x05, 0x00, 0x12, 0x08, 8, 0, 6, 0, 40, 0, 4, 0, 10, 0 }; bt_rx(&H, a, sizeof a); }
+        run(20);
+        {
+            int r = -1;
+            for (unsigned i = mark; i < nout; i++) if (out[i].b[0] == 2 && out[i].b[7] == 0x05 && out[i].b[9] == 0x13) r = (int)i;
+            CHECK(r >= 0 && out[r].b[13] == 1 && find_op(0x2013, mark) < 0 && C->l.upd_refused == 1, "invalid parameters refused (result 1), no update");
+        }
+        /* the controller reports the update */
+        { uint8_t e[12] = { 0x3e, 10, 0x03, 0, 0x40, 0x00, 12, 0, 0, 0, 0xf4, 0x01 }; ev(e, 12); }
+        CHECK(C->l.ci == 12, "the interval from LE Connection Update Complete (%u)", C->l.ci);
+        /* a header that makes no sense (a byte lost): dropped, and the real event right after it still read */
+        uint32_t rs = H.rx_resyncs;
+        { uint8_t g[] = { 0x04, 0x99, 0x3e, 10, 0x03, 0, 0x40, 0x00, 24, 0, 0, 0, 0xf4, 0x01 }; bt_rx(&H, g, sizeof g); }
+        CHECK(H.rx_resyncs == rs + 1 && C->l.ci == 12, "event code 99: dropped, counted");
+        { uint8_t g[] = { 0x04, 0x0f, 0x07, 0x04, 0x3e, 10, 0x03, 0, 0x40, 0x00, 24, 0, 0, 0, 0xf4, 0x01 }; bt_rx(&H, g, sizeof g); }
+        CHECK(C->l.ci == 24, "a Command Status of the wrong length dropped and the LE event inside the bytes found (%u)", C->l.ci);
+        /* a packet cut by a UART error: dropped at the break, the next one read */
+        { uint8_t g[] = { 0x04, 0x3e, 10, 0x03, 0, 0x40 }; bt_rx(&H, g, sizeof g); bt_rx_break(&H);
+          uint8_t e[] = { 0x04, 0x3e, 10, 0x03, 0, 0x40, 0x00, 40, 0, 0, 0, 0xf4, 0x01 }; bt_rx(&H, e, sizeof e); }
+        CHECK(C->l.ci == 40 && H.rx_breaks == 1, "a cut packet dropped, the next taken (%u, breaks %u)", C->l.ci, H.rx_breaks);
+        /* an ACL header with broadcast flags: not a packet */
+        rs = H.rx_resyncs;
+        { uint8_t g[] = { 0x02, 0x40, 0xe0, 0x10, 0x00 }; bt_rx(&H, g, sizeof g); }
+        CHECK(H.rx_resyncs == rs + 1, "an ACL header with broadcast flags dropped");
+        /* the next request is queued behind no buffer: then the link goes. Its buffers come back, its queue is dropped */
+        H.le_free = 0;
+        unsigned aq = H.aq_tail - H.aq_head;
+        { uint8_t d[3] = { 0x0a, 0x10, 0x00 }; l2_send(&H, C, 4, d, 3); }
+        CHECK(H.aq_tail - H.aq_head == aq + 1, "a frame waits for a buffer");
+        uint16_t inflight = C->sent;
+        { uint8_t e[6] = { 0x05, 4, 0, 0x40, 0x00, 0x08 }; ev(e, 6); }
+        CHECK(inflight == 3 && H.aq_tail == H.aq_head && H.le_free == inflight, "the link gone: its waiting frame dropped, its %u in flight back (free %u)", inflight, H.le_free);
+        /* a Number Of Completed Packets for the gone link: nothing more (Linux: an unknown handle is skipped) */
+        { uint8_t e[7] = { 0x13, 5, 1, 0x40, 0x00, 1, 0 }; ev(e, 7); }
+        CHECK(H.le_free == inflight, "completed packets of a gone link not counted twice (%u)", H.le_free);
+        { uint8_t e[7] = { 0x13, 5, 1, 0x41, 0x00, 50, 0 }; ev(e, 7); }
+        CHECK(H.le_free <= H.le_pkts, "the pool never above the controller's count");
+        /* a Command Complete lost on the UART: the next commands still go, after 2 s */
+        run(2000);
+        mark = nout;
+        uint32_t to0 = H.cmd_timeouts;
+        drop_answers = 1;
+        bt_forget(&H, ident);                                    /* a command or two of its own (the lists rewritten later) */
+        uint8_t z = 0; cmd(&H, C_LE_RES_ENABLE, &z, 1); cmd(&H, C_LE_ACC_CLEAR, 0, 0);
+        run(500);
+        CHECK(H.credits == 0 && find_op(0x2010, mark) < 0, "the answer lost: the next command waits");
+        run(2000);
+        CHECK(H.cmd_timeouts == to0 + 1 && find_op(0x2010, mark) >= 0, "after 2 s the host takes the credit back and the queue goes on (timeouts %u)", H.cmd_timeouts);
+        /* an LE Rand answer is not taken for the LE Encrypt that is out */
+        H.aes_busy = 1; H.aes_op = C_LE_ENCRYPT; H.aes_handle = 0x77;
+        { uint8_t r[9] = { 0 }; cc(C_LE_RAND, r, 9); }
+        CHECK(H.aes_busy == 1, "a stray LE Rand answer left alone");
+        H.aes_busy = 0;
+    }
+    /* a direct connection (a pairing) scans 30 ms per 120 ms */
+    {
+        res_status = 0;
+        to_ready(0, 0);
+        unsigned mark = nout;
+        H.found[0].le = 1; memcpy(H.found[0].addr, rpa, 6); H.found[0].addr_type = 1; H.found[0].cod = 5u << 8 | 0x40; H.nfound = 1;
+        bt_pair(&H, rpa); run(50);
+        int c = -1; for (unsigned i = mark; i < nout; i++) if (op_of(i) == 0x200d && out[i].b[8] == 0) c = (int)i;
+        CHECK(c >= 0 && le16v(out[c].b + 4) == 0x00c0 && le16v(out[c].b + 6) == 0x0030 && le16v(out[c].b + 17) == 0x0018,
+              "the pairing's connection: scan 30 ms per 120 ms (Linux 60 per 60), 30-50 ms asked (%04x/%04x)", c >= 0 ? le16v(out[c].b + 4) : 0, c >= 0 ? le16v(out[c].b + 6) : 0);
+        struct bt_radio r; bt_radio_now(&H, &r);
+        CHECK(r.le_on && r.le_int == 0x00c0, "the heartbeat's radio line knows it");
+        bt_scan(&H); run(20);
+        int sp = last_op(0x200b);
+        CHECK(sp >= 0 && out[sp].b[4] == 1 && le16v(out[sp].b + 5) == 0x00c0 && le16v(out[sp].b + 7) == 0x0030, "a scan for new devices: the LE side 30 ms per 120 ms beside the inquiry");
     }
 
     printf("bt_test: %d checks, %d failed\n", checks, fails);

@@ -142,6 +142,7 @@ static void cmd_flush(struct bt_host *h)
         h->io->send(h->io->ctx, h->cmdq[i], h->cmdq_len[i]);
         h->cq_head++;
         h->credits--;
+        h->cmd_out_op = le16(h->cmdq[i] + 1); h->cmd_out_ms = now(h); h->cmd_waiting = 1;   /* its answer is due (bt_poll) */
     }
 }
 static void cmd(struct bt_host *h, uint16_t op, const uint8_t *p, unsigned n)
@@ -159,6 +160,7 @@ static void cmd_addr(struct bt_host *h, uint16_t op, const uint8_t a[6]) { cmd(h
 static void cmd_handle(struct bt_host *h, uint16_t op, uint16_t handle) { uint8_t p[2]; put16(p, handle); cmd(h, op, p, 2); }
 
 /* ---- ACL out ----------------------------------------------------------------- */
+static struct bt_conn *conn_of(struct bt_host *h, uint16_t handle);
 static void acl_flush(struct bt_host *h)
 {
     while (h->aq_head != h->aq_tail) {
@@ -168,7 +170,31 @@ static void acl_flush(struct bt_host *h)
         h->io->send(h->io->ctx, h->aclq[i], h->aclq_len[i]);
         h->aq_head++;
         (*pool)--;
+        struct bt_conn *c = conn_of(h, le16(h->aclq[i] + 1) & 0x0fff);
+        if (c) c->sent++;                               /* the controller holds it until Number Of Completed Packets */
     }
+}
+/* a link went: what the controller held of it is free again, and what waits for it here is thrown away (Linux's
+   hci_conn_del and its data queue). Until 25 November 2026 a link that went with packets in flight kept them from the
+   pool for good: a few such losses (a keyboard put into pairing mode while the host talked to it) and no ACL packet
+   left the host again, the next pairing's GATT discovery waiting for ever */
+static void acl_conn_gone(struct bt_host *h, struct bt_conn *c)
+{
+    uint16_t *pool = c->le && h->le_mtu ? &h->le_free : &h->acl_free, max = c->le && h->le_mtu ? h->le_pkts : h->acl_pkts;
+    *pool = (uint16_t)(*pool + c->sent);
+    if (max && *pool > max) *pool = max;
+    c->sent = 0;
+    unsigned keep = h->aq_head, n = 0;
+    for (unsigned j = h->aq_head; j != h->aq_tail; j++) {
+        unsigned i = j % BT_ACLQ;
+        if ((le16(h->aclq[i] + 1) & 0x0fff) == c->handle) { n++; continue; }
+        unsigned k = keep % BT_ACLQ;
+        if (k != i) { mcpy(h->aclq[k], h->aclq[i], h->aclq_len[i]); h->aclq_len[k] = h->aclq_len[i]; h->aclq_le[k] = h->aclq_le[i]; }
+        keep++;
+    }
+    h->aq_tail = keep;
+    (void)n;
+    acl_flush(h);
 }
 /* an L2CAP frame on cid: one ACL packet (ours are all short) */
 static void l2_send(struct bt_host *h, struct bt_conn *c, uint16_t cid, const uint8_t *d, unsigned n)
@@ -488,8 +514,8 @@ static void startup_answer(struct bt_host *h, uint16_t op, const uint8_t *ret, u
     /* the set-up after the firmware (step counts on) */
     if (h->state == BT_INIT) {
         if (op == C_BDADDR && n >= 7) mcpy(h->bdaddr, ret + 1, 6);
-        if (op == C_BUFFER_SIZE && n >= 8) { h->acl_mtu = le16(ret + 1); h->acl_free = le16(ret + 4); if (!h->acl_free) h->acl_free = 1; }
-        if (op == C_LE_BUFSIZE && n >= 4 && !st) { h->le_mtu = le16(ret + 1); h->le_free = ret[3]; if (!h->le_mtu || !h->le_free) h->le_mtu = h->le_free = 0; }
+        if (op == C_BUFFER_SIZE && n >= 8) { h->acl_mtu = le16(ret + 1); h->acl_free = le16(ret + 4); if (!h->acl_free) h->acl_free = 1; h->acl_pkts = h->acl_free; }
+        if (op == C_LE_BUFSIZE && n >= 4 && !st) { h->le_mtu = le16(ret + 1); h->le_free = ret[3]; if (!h->le_mtu || !h->le_free) h->le_mtu = h->le_free = 0; h->le_pkts = h->le_free; }
         if (op == C_LOCAL_VERSION && n >= 9) lg(h, "controller: HCI %u, revision %x, LMP %x, manufacturer %u", ret[1], le16(ret + 2), le16(ret + 6), le16(ret + 4));
         if (st && (op == C_BDADDR || op == C_BUFFER_SIZE)) { fail(h, "the chip did not answer its set-up"); return; }
         if (st) lg(h, "set-up command %x: status %u (going on)", op, st);
@@ -842,6 +868,7 @@ static void event(struct bt_host *h, const uint8_t *e, unsigned n)
     case 0x0e:                                          /* Command Complete */
         if (len < 3) return;
         h->credits = p[0];
+        h->cmd_waiting = 0;
         if ((le16(p + 1) == C_LE_SCAN_PARAM || le16(p + 1) == C_LE_SCAN_ENABLE || le16(p + 1) == C_INQUIRY_CANCEL) && len > 3 && p[3])
             lg(h, "command %x: status %u", le16(p + 1), p[3]);
         le_cc(h, le16(p + 1), p + 3, len - 3);
@@ -851,6 +878,7 @@ static void event(struct bt_host *h, const uint8_t *e, unsigned n)
     case 0x0f:                                          /* Command Status */
         if (len < 4) return;
         h->credits = p[1];
+        h->cmd_waiting = 0;
         if (!p[0] && le16(p + 2) == C_INQUIRY) lg(h, "inquiry running");
         if (p[0]) {
             uint16_t op = le16(p + 2);
@@ -866,8 +894,12 @@ static void event(struct bt_host *h, const uint8_t *e, unsigned n)
     case 0x13:                                          /* Number Of Completed Packets */
         for (unsigned i = 0; i < p[0] && 1 + 4 * i + 4 <= len; i++) {
             struct bt_conn *c = conn_of(h, le16(p + 1 + 4 * i) & 0x0fff);
-            uint16_t *pool = c && c->le && h->le_mtu ? &h->le_free : &h->acl_free;
-            *pool = (uint16_t)(*pool + le16(p + 1 + 4 * i + 2));
+            if (!c) continue;                           /* a link already gone: its packets went back to the pool then (Linux too) */
+            uint16_t n = le16(p + 1 + 4 * i + 2);
+            uint16_t *pool = c->le && h->le_mtu ? &h->le_free : &h->acl_free, max = c->le && h->le_mtu ? h->le_pkts : h->acl_pkts;
+            *pool = (uint16_t)(*pool + n);
+            if (max && *pool > max) *pool = max;        /* never more than the controller has */
+            c->sent = n < c->sent ? (uint16_t)(c->sent - n) : 0;
         }
         acl_flush(h);
         return;
@@ -959,6 +991,7 @@ static void event(struct bt_host *h, const uint8_t *e, unsigned n)
         lg(h, "%a: disconnected (%u: %s)", c->addr, p[3], bt_status_words(p[3]));
         { struct bt_key *k = key_of(h, c->addr); if (k) { k->err_ms = now(h); k->err_what = BT_KE_DISC; k->err_code = p[3]; } }
         if (c->le) le_gone(h, c);
+        acl_conn_gone(h, c);
         static const uint8_t up[8];
         int held = 0;
         for (int i = 0; i < 8; i++) held |= c->lastkb[i];
@@ -1082,7 +1115,40 @@ static void event(struct bt_host *h, const uint8_t *e, unsigned n)
     }
 }
 
-/* ---- the H4 receiver ------------------------------------------------------------ */
+/* ---- the H4 receiver ------------------------------------------------------------
+   The Pi 3B's UART to the chip has no flow control (its CTS and RTS are not wired: "we were short of pins", Raspberry
+   Pi's engineer in raspberrypi/firmware#1150, 2019), and this host reads it by polling: a byte the PL011's 16-byte
+   FIFO could not keep is gone. Linux says "Frame reassembly failed" and drops the packet; until 25 November 2026 this
+   receiver took whatever followed a lost byte as the next header, so one overrun could become an event of the wrong
+   length that swallowed the real one after it (a lost Command Complete stopped every command; a false Number Of
+   Completed Packets broke the ACL pool). Now a header must make sense (an event code the controller sends, the
+   lengths of the fixed events; an ACL packet's flags and length) or its bytes are searched again for a start, and a
+   UART error (bt_rx_break) drops the packet in hand. */
+static int ev_header_ok(uint8_t code, uint8_t len)
+{
+    if (code == 0xff) return 1;                         /* vendor */
+    if (!code || code > 0x58) return 0;
+    if (code == 0x0f) return len == 4;                  /* Command Status */
+    if (code == 0x0e) return len >= 3;                  /* Command Complete */
+    if (code == 0x13) return len >= 5 && (len - 1) % 4 == 0;   /* Number Of Completed Packets */
+    if (code == 0x05) return len == 4;                  /* Disconnection Complete */
+    if (code == 0x03) return len == 11;                 /* Connection Complete */
+    if (code == 0x3e) return len >= 2;                  /* LE Meta */
+    return 1;
+}
+static int acl_header_ok(const uint8_t *hd)
+{
+    uint16_t hf = le16(hd), len = le16(hd + 2);
+    if (hf >> 14) return 0;                             /* broadcast flags: none from a controller */
+    if (((hf >> 12) & 3) == 3) return 0;                /* packet boundary 3: not to a host */
+    if ((hf & 0x0fff) > 0x0eff) return 0;               /* handles are 0 to 0x0eff */
+    return len <= 1021;
+}
+void bt_rx_break(struct bt_host *h)
+{
+    if (h->rx_type) h->rx_breaks++;
+    h->rx_type = 0;
+}
 void bt_rx(struct bt_host *h, const uint8_t *p, unsigned n)
 {
     for (unsigned i = 0; i < n; i++) {
@@ -1095,10 +1161,23 @@ void bt_rx(struct bt_host *h, const uint8_t *p, unsigned n)
         if (h->rx_n < sizeof h->rx) h->rx[h->rx_n] = b;
         h->rx_n++;
         if (h->rx_n == h->rx_need) {
-            if (h->rx_type == 4 && h->rx_n == 2) { h->rx_need = 2u + h->rx[1]; if (h->rx_need > 2) continue; }
+            if (h->rx_type == 4 && h->rx_n == 2) {
+                if (!ev_header_ok(h->rx[0], h->rx[1])) {
+                    uint8_t again[2] = { h->rx[0], h->rx[1] };
+                    h->rx_type = 0; h->rx_resyncs++;
+                    bt_rx(h, again, 2);                 /* a start may be among them (two bytes: no deeper than this) */
+                    continue;
+                }
+                h->rx_need = 2u + h->rx[1]; if (h->rx_need > 2) continue;
+            }
             else if (h->rx_type == 2 && h->rx_n == 4) {
                 h->rx_need = 4u + le16(h->rx + 2);
-                if (h->rx_need > sizeof h->rx) { h->rx_type = 0; continue; }
+                if (!acl_header_ok(h->rx) || h->rx_need > sizeof h->rx) {
+                    uint8_t again[4] = { h->rx[0], h->rx[1], h->rx[2], h->rx[3] };
+                    h->rx_type = 0; h->rx_resyncs++;
+                    bt_rx(h, again, 4);
+                    continue;
+                }
                 if (h->rx_need > 4) continue;
             }
             if (h->rx_type == 4) event(h, h->rx, h->rx_n); else acl_in(h, h->rx, h->rx_n);
@@ -1172,6 +1251,16 @@ void bt_poll(struct bt_host *h)
         else if (h->step == S_RESET2_PAUSE && due(h, h->wait_until)) { h->state = BT_INIT; h->step = 0; setup_next(h); }
     }
     if (h->state != BT_READY) return;
+    if (h->cmd_waiting && h->credits <= 0 && due(h, h->cmd_out_ms + BT_CMD_TIMEOUT)) {
+        /* no Command Complete or Status for it: lost on the line (or the controller is gone). As Linux's hci_cmd_timeout:
+           the credit back, the queue goes on; the command itself is not sent again */
+        h->cmd_timeouts++;
+        lg(h, "command %x: no answer in %u s (lost on the UART?): going on (%u so far)", h->cmd_out_op, BT_CMD_TIMEOUT / 1000u, h->cmd_timeouts);
+        h->cmd_waiting = 0;
+        h->credits = 1;
+        if (h->aes_busy && (h->cmd_out_op == C_LE_ENCRYPT || h->cmd_out_op == C_LE_RAND)) h->aes_busy = 0;   /* SMP's timer ends that pairing */
+        cmd_flush(h);
+    }
     if (h->scanning && due(h, h->scan_end)) {
         h->scanning = 0;
         lg(h, "scan timed out without Inquiry Complete: %u inquiry, %u extended, %u LE reports", h->scan_ir, h->scan_eir, h->scan_le);
@@ -1218,7 +1307,10 @@ int bt_scan(struct bt_host *h)
     bg_stop(h);                                         /* the host's own LE scan for bonded devices: its parameters are not these */
     uint8_t p[7] = { 0x33, 0x8b, 0x9e, 0x08, 0x00 };   /* GIAC, 10.24 s, no limit */
     cmd(h, C_INQUIRY, p, 5);
-    p[0] = 1; put16(p + 1, 0x0060); put16(p + 3, 0x0030); p[5] = 0; p[6] = 0;   /* active (scan responses carry names), 60 ms / 30 ms */
+    /* active (scan responses carry names), 30 ms every 120 ms beside the inquiry: a device in pairing mode advertises every
+       20 to 30 ms, and the inquiry has the rest of the radio. Linux interleaves 5.12 s of LE scanning at 11.25/11.25 ms (all
+       of it) with 5.12 s of inquiry; until 25 November 2026 this was 30 ms every 60 ms, half the radio beside the inquiry */
+    p[0] = 1; put16(p + 1, 0x00c0); put16(p + 3, 0x0030); p[5] = 0; p[6] = 0;
     cmd(h, C_LE_SCAN_PARAM, p, 7);
     p[0] = 1; p[1] = 1;                                /* on, duplicates filtered */
     cmd(h, C_LE_SCAN_ENABLE, p, 2);

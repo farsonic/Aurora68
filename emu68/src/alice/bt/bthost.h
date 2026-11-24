@@ -77,6 +77,16 @@ enum { BT_TIER_FAST, BT_TIER_SLOW, BT_TIER_IDLE, BT_TIER_OFF };
 #define BT_HUSH_MS   10000u
 #define BT_HUSH_MAX  15000u
 #define BT_HUSH_GAP  5000u
+#define BT_CMD_TIMEOUT 2000u            /* Linux's HCI_CMD_TIMEOUT */
+/* LE connection parameters (docs/21, 25 November 2026): what the host asks for when it connects, Linux's defaults
+   (hci_core.c: le_conn_min_interval 0x0018, le_conn_max_interval 0x0028, latency 0); until then 7.5 to 15 ms, three to
+   six times the radio time of every link on the Pi 3B's shared antenna. The supervision timeout stays 5 s (Linux's is
+   420 ms): a link that the WiFi's share of the antenna starves for a moment is kept. A device's own request for shorter
+   intervals is taken (it knows what it needs), but never below BT_LE_FLOOR when its range reaches that far. */
+#define BT_LE_CI_MIN  0x0018u
+#define BT_LE_CI_MAX  0x0028u
+#define BT_LE_TIMEOUT 0x01f4u
+#define BT_LE_FLOOR   0x000cu           /* 15 ms */
 struct bt_radio {                       /* what the host has the controller do now, for the heartbeat (bt_radio_now) */
     int mode, tier;                     /* BT_SCAN_*, BT_TIER_* */
     uint32_t tier_ms;                   /* how long the tier has left before the next (0: for good) */
@@ -128,6 +138,9 @@ struct bt_le {
     uint8_t mouse_ok; uint8_t hmouse[40];   /* struct hid_mouse (btle.c), opaque here */
     struct bt_kbmap kbm;
     uint8_t lastbtn;
+    uint16_t ci, cl, cto;                /* the link's connection interval (1.25 ms), latency, supervision timeout (10 ms): what
+                                            the controller reports at the link's start and at each update (docs/21) */
+    uint16_t upd_asked, upd_refused;     /* the device's Connection Parameter Update Requests: taken, refused */
     uint8_t nlog;                        /* notifications logged on this link (the first few) */
     /* what the device presented, for the heartbeat (bt_pi.c): a bench has no scrollback */
     uint16_t svcs[3][2]; uint8_t nsvc, svci;   /* HID service instances (start, end), the one in use */
@@ -148,6 +161,8 @@ struct bt_conn {
     uint8_t acl[700];                   /* an L2CAP frame being put together */
     unsigned acl_n, acl_want;
     uint8_t lastkb[8];
+    uint16_t sent;                      /* ACL packets given to the controller and not yet completed (Number Of Completed
+                                           Packets): handed back to the pool when the link goes, as Linux's hci_conn_del does */
     int le;                             /* an LE link (fixed channels: ATT 4, SMP 6, LE signalling 5) */
     struct bt_le l;
 };
@@ -166,9 +181,14 @@ struct bt_host {
     int credits;                        /* HCI commands the controller takes now */
     uint16_t pending_op;                /* the command whose answer we wait for in the start-up, 0 none */
     uint8_t cmdq[BT_CMDQ][260]; uint16_t cmdq_len[BT_CMDQ]; unsigned cq_head, cq_tail;
-    uint16_t acl_mtu, acl_free;
+    uint16_t acl_mtu, acl_free, acl_pkts;   /* acl_pkts: the controller's ACL buffers (the pool never grows past it) */
     uint8_t aclq[BT_ACLQ][260]; uint16_t aclq_len[BT_ACLQ]; uint8_t aclq_le[BT_ACLQ]; unsigned aq_head, aq_tail;
-    uint16_t le_mtu, le_free;           /* the controller's LE buffers (0: LE shares acl_free) */
+    uint16_t le_mtu, le_free, le_pkts;  /* the controller's LE buffers (0: LE shares acl_free) */
+    /* a command whose Command Complete or Command Status never came (bytes lost on a UART without flow control, the
+       Pi 3B's): after BT_CMD_TIMEOUT the host takes the controller's credit back and goes on, as Linux's hci_cmd_timeout
+       does (docs/21); before 25 November 2026 one lost answer stopped every later command for good */
+    uint16_t cmd_out_op; uint32_t cmd_out_ms; int cmd_waiting; uint32_t cmd_timeouts;
+    uint32_t rx_resyncs, rx_breaks;     /* H4 headers that made no sense (dropped, the stream searched again); packets cut by a UART error */
     /* the H4 receiver */
     uint8_t rx[1100]; unsigned rx_n, rx_need; int rx_type;
     /* devices */
@@ -192,7 +212,7 @@ struct bt_host {
     uint32_t le_init_until;             /* 1: give up then; 0: not again before then */
     int le_cancelling;                  /* an LE Create Connection Cancel is out */
     int le_lists_dirty;                 /* the accept/resolving lists must be written again */
-    int aes_busy; uint16_t aes_handle;  /* an LE Encrypt / LE Rand of SMP's is out, for that link */
+    int aes_busy; uint16_t aes_handle, aes_op;   /* an LE Encrypt / LE Rand of SMP's is out, for that link (the answer must be that command's) */
     uint8_t rmap[1024]; unsigned rmap_n; /* a Report Map being read (one link at a time) */
     /* LE devices with a resolvable private address on a controller without the resolving list (Bluetooth 4.1, the
        Pi 3B's BCM43438): a passive scan of the host's own, each address resolved here with the device's IRK */
@@ -220,6 +240,7 @@ struct bt_host {
 /* fw/fwlen: the .hcd file (0: none - the controller's ROM firmware is used) */
 void bt_init(struct bt_host *h, const struct bt_io *io, const uint8_t *fw, unsigned fwlen);
 void bt_rx(struct bt_host *h, const uint8_t *p, unsigned n);       /* bytes from the controller */
+void bt_rx_break(struct bt_host *h);                               /* the UART lost bytes (overrun, framing): the packet in hand is cut */
 void bt_poll(struct bt_host *h);                                   /* timers; call often */
 /* a paired device known from before (cmdline.txt), before or after bt_init */
 int  bt_add_key(struct bt_host *h, const uint8_t addr[6], const uint8_t key[16], uint8_t type, uint32_t kind);
@@ -240,6 +261,9 @@ void bt_radio_now(struct bt_host *h, struct bt_radio *r);
 const char *bt_tier_word(int tier);
 /* the WiFi is getting its address (DHCP): no background scans for ms (bounded, bthost.h above) */
 void bt_hush(struct bt_host *h, uint32_t ms, const char *why);
+/* a Connection Parameter Update Request valid? The interval's lower end the host asks of the controller (btle.c) */
+int bt_le_params_ok(uint16_t mn, uint16_t mx, uint16_t lat, uint16_t to);
+uint16_t bt_le_min_floor(uint16_t mn, uint16_t mx);
 /* the words for an HCI status or disconnection reason (bthost.c) */
 const char *bt_status_words(uint8_t st);
 /* "AA:BB:CC:DD:EE:FF" (addr as the controller gives it: least significant byte first) */

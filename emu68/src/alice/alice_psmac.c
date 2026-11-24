@@ -1493,17 +1493,23 @@ void __attribute__((noreturn)) psmac_alice_core(void)
         /* every part of the turn timed: the longest of each over the heartbeat's five seconds goes
            into its line (psmac_loop_report), so a photograph of the log says what holds the loop */
         uint64_t t0 = in_now(), t1;
+        /* bt_pi_uart_pump between the parts (docs/21): the Pi 3B's Bluetooth UART has no flow control and a 16-byte FIFO,
+           1.4 ms at 115200 baud, and the parts of one turn add up to more; a register read when nothing waits */
         LOOP_AT("mailbox");
         psmac_mbox_poll();
+        bt_pi_uart_pump();
         t1 = in_now(); LOOP_T(0, t1 - t0); t0 = t1;
         LOOP_AT("card");
         { extern void psmac_card_poll(void); psmac_card_poll(); }        /* the Pi's own SD card: pairings, the disk image's changes (psmac_card.c) */
+        bt_pi_uart_pump();
         t1 = in_now(); LOOP_T(1, t1 - t0); t0 = t1;
         LOOP_AT("network");
         alice_net_poll();
+        bt_pi_uart_pump();
         t1 = in_now(); LOOP_T(2, t1 - t0); t0 = t1;
         LOOP_AT("USB");
         { extern void psmac_usb_poll(void); psmac_usb_poll(); }          /* USB keyboard and mouse (psmac_usb.c) */
+        bt_pi_uart_pump();
         t1 = in_now(); LOOP_T(3, t1 - t0); t0 = t1;
         LOOP_AT("input");
         in_attach_poll();

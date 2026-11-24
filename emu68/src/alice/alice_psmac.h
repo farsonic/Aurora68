@@ -82,6 +82,7 @@ void alice_net_reset(void);                     /* alice_net.c: the 68k was rese
 int  alice_fw_preload(const char *name, const uint8_t *data, uint32_t len);
 void alice_status_attach(void *page);           /* alice_status.c */
 void alice_net_poll(void);
+void bt_pi_uart_pump(void);                 /* bt/bt_pi.c: the Bluetooth UART's FIFO into its ring (docs/21), from any long step on core 3 */
 void psmac_alice_input_test(uint32_t seconds);  /* alice_psmac.c: scripted mouse and keys for the testbed */
 void psmac_input_put(uint32_t type, int32_t a, int32_t b, int32_t c);   /* alice_psmac.c: one event into the ring, as given (the remote) */
 int  psmac_input_attached(void);                /* .PiInput has opened and takes events */
