@@ -37,6 +37,16 @@
   Bluetooth is not ready, and after two minutes in any case. The heartbeat has `[BT]   UART:` and `[BT]   LE link`
   lines. Kernel and Aurora68 Menu Extras.
 
+- **The Apple II and PC windows no longer leave pictures on other windows** (docs/08 item 144, docs/20 "Drawn over
+  another window", 24 November 2026; the owner's SE: a Finder window dragged over a busy Apple II window kept a strip
+  of the Apple's screen). The card looks at the window's visible region again while it draws and gives up a picture
+  when the region changed; what it still drew over another window is repainted by the Mac (PaintBehind, from
+  Aurora68 Apple II 1.3 and Aurora68 PC 1.3, also in the background). The video decoder card is not changed yet.
+- **Disk icons:** a card image (and the Mac Exchange folder) shows as an SD card on the desktop, a USB stick as a USB
+  stick; Get Info's where says "SD card" or "USB drive" (PiDisk in the declaration ROMs, 24 November 2026).
+- **Compact Macs on real hardware:** testers run a Plus and a 512Ke. On the 512Ke the serial ports work. A hum from
+  the Plus's speaker came from its PicoPSU-style supply's -12 V rail, not from Aurora68 (docs/18, section 7).
+
 ## 0.16 — Bluetooth and WiFi together on the Pi 3B (24 November 2026)
 
 Since 0.15, in short: Bluetooth no longer crowds the Pi 3B's WiFi off the air (confirmed on the owner's SE: WiFi gets

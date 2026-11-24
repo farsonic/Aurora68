@@ -22,7 +22,10 @@ the card; "Disks and disk images: what works" (below) says which disks the Mac c
 **The Plus, 512Ke, 512K and 128K (new in 0.14).** The same kernel has boards for
 the other compact Macs: `mac.board=plus`, `512ke`, `512k` or `128k` in `cmdline.txt` in place of
 `mac.board=se`; everything else on the card is as for the SE. All four reach System 7.1's Finder in
-the testbed (docs/08 item 96); none has been tried on a real machine yet. What differs from the SE:
+the testbed (docs/08 item 96). On real machines, testers run a Plus and a 512Ke (24 November 2026): on the
+512Ke the serial ports work; a hum from the Plus's speaker came from its PicoPSU-style supply's noisy -12 V
+rail, not from Aurora68 (docs/18, section 7). The 512K and 128K have not been tried on real machines yet.
+What differs from the SE:
 - **Keyboard and mouse:** the Plus's own (and the 128K's and 512K's) are not ADB; the kernel turns
   them into ADB devices for the IIci ROM, beside USB and Bluetooth ones.
 - **Disks:** the Plus has SCSI (a BlueSCSI works as on the SE). The 512Ke, 512K and 128K have none:
