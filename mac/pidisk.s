@@ -538,11 +538,24 @@ d_control:
 	beq.s	ctl_info
 	moveq	#controlErr,%d0
 	bra	iodone
+| the drive's icon (24 November 2026): an SD card for the card's images and the Mac Exchange folder, a USB stick
+| for a removable unit; before, one box with "Pi" for every unit
 ctl_icon:
-	move.l	%a2,-(%sp)		| a1 (the DCE) must survive for IODone
-	lea	icon(%pc),%a2
-	move.l	%a2,csParam(%a0)
-	move.l	(%sp)+,%a2
+	movem.l	%d2/%a2-%a3,-(%sp)	| a1 (the DCE) must survive for IODone
+	move.l	dCtlStorage(%a1),%a2
+	move.l	%a2,%d2
+	beq.s	2f
+	move.w	ioVRefNum(%a0),%d0	| the drive number
+	bsr	find_dev
+	tst.l	%d2
+	blt.s	2f
+	tst.w	D_REMOV(%a3)
+	beq.s	2f
+	lea	icon_usb(%pc),%a2
+	bra.s	3f
+2:	lea	icon_sd(%pc),%a2
+3:	move.l	%a2,csParam(%a0)
+	movem.l	(%sp)+,%d2/%a2-%a3
 	bra.s	ctl_ok
 ctl_info:
 	move.l	#0x00000401,csParam(%a0)	| drive type 1 (fixed? ) bit 10 external? keep simple
@@ -683,18 +696,33 @@ iodone:
 1:	move.l	JIODone,-(%sp)
 	rts
 
-| ---- a 32x32 1-bit icon + mask (ICN#) for the Finder: a small box with "Pi" ----
+| ---- the drives' icons, 32x32 1-bit icon + mask (ICN#) each, then the Pascal string Get Info shows as where
+|      the disk is (Control 21 and 22). Drawn 24 November 2026 for the owner ("how about an SD card"): an SD card,
+|      its corner cut and its contacts along the top, the lock switch on the left and "SD" on it; a USB stick with
+|      its plug, a lanyard hole and "USB" ----
 	.even
-icon:
-	.long	0x00000000,0x7FFFFFFE,0x40000002,0x5FFFFFFA,0x50000012,0x53C78012,0x52248012,0x52248012
-	.long	0x53C68012,0x52048012,0x52040012,0x52078012,0x50000012,0x5FFFFFFA,0x40000002,0x40000002
-	.long	0x4FFFFFF2,0x48000012,0x48000012,0x48000012,0x48000012,0x4FFFFFF2,0x40000002,0x40000002
-	.long	0x40000002,0x40000002,0x7FFFFFFE,0x00000000,0x00000000,0x00000000,0x00000000,0x00000000
-	.long	0x00000000,0x7FFFFFFE,0x7FFFFFFE,0x7FFFFFFE,0x7FFFFFFE,0x7FFFFFFE,0x7FFFFFFE,0x7FFFFFFE
-	.long	0x7FFFFFFE,0x7FFFFFFE,0x7FFFFFFE,0x7FFFFFFE,0x7FFFFFFE,0x7FFFFFFE,0x7FFFFFFE,0x7FFFFFFE
-	.long	0x7FFFFFFE,0x7FFFFFFE,0x7FFFFFFE,0x7FFFFFFE,0x7FFFFFFE,0x7FFFFFFE,0x7FFFFFFE,0x7FFFFFFE
-	.long	0x7FFFFFFE,0x7FFFFFFE,0x7FFFFFFE,0x00000000,0x00000000,0x00000000,0x00000000,0x00000000
-	.byte	6
-	.ascii	"PiDisk"
+icon_sd:
+	.long	0x00000000,0x03FFFE00,0x02000300,0x02AAA180,0x02AAA0C0,0x02AAA060,0x02AAA020,0x02000020
+	.long	0x02000020,0x02000020,0x06000020,0x04000020,0x05000020,0x05000020,0x06000020,0x02000020
+	.long	0x023C3C20,0x02663620,0x02603320,0x023C3320,0x02063320,0x02663620,0x023C3C20,0x02000020
+	.long	0x02000020,0x02000020,0x02000020,0x02000020,0x03FFFFE0,0x00000000,0x00000000,0x00000000
+	.long	0x00000000,0x03FFFE00,0x03FFFF00,0x03FFFF80,0x03FFFFC0,0x03FFFFE0,0x03FFFFE0,0x03FFFFE0
+	.long	0x03FFFFE0,0x03FFFFE0,0x07FFFFE0,0x07FFFFE0,0x07FFFFE0,0x07FFFFE0,0x07FFFFE0,0x03FFFFE0
+	.long	0x03FFFFE0,0x03FFFFE0,0x03FFFFE0,0x03FFFFE0,0x03FFFFE0,0x03FFFFE0,0x03FFFFE0,0x03FFFFE0
+	.long	0x03FFFFE0,0x03FFFFE0,0x03FFFFE0,0x03FFFFE0,0x03FFFFE0,0x00000000,0x00000000,0x00000000
+	.byte	7
+	.ascii	"SD card"
+	.even
+icon_usb:
+	.long	0x00000000,0x00000000,0x00000000,0x00000000,0x00000000,0x00000000,0x00000000,0x00000000
+	.long	0x1FFFFE00,0x100003F8,0x10000208,0x100002C8,0x102BB2C8,0x172A2A08,0x152BB208,0x1728AA08
+	.long	0x103BB2C8,0x100002C8,0x10000208,0x100003F8,0x1FFFFE00,0x00000000,0x00000000,0x00000000
+	.long	0x00000000,0x00000000,0x00000000,0x00000000,0x00000000,0x00000000,0x00000000,0x00000000
+	.long	0x00000000,0x00000000,0x00000000,0x00000000,0x00000000,0x00000000,0x00000000,0x00000000
+	.long	0x1FFFFE00,0x1FFFFFF8,0x1FFFFFF8,0x1FFFFFF8,0x1FFFFFF8,0x1FFFFFF8,0x1FFFFFF8,0x1FFFFFF8
+	.long	0x1FFFFFF8,0x1FFFFFF8,0x1FFFFFF8,0x1FFFFFF8,0x1FFFFE00,0x00000000,0x00000000,0x00000000
+	.long	0x00000000,0x00000000,0x00000000,0x00000000,0x00000000,0x00000000,0x00000000,0x00000000
+	.byte	9
+	.ascii	"USB drive"
 	.even
 drvr_end:
