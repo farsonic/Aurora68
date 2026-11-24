@@ -135,67 +135,118 @@ release /BGACK and /BR and pulse /RESET with /HALT. The SE's 68000 then starts t
 keeps every line three-stated until the next power-on (or the next request). Nothing on the Mac side is needed.
 It is worth having from the first prototype: it tells a card fault from a board fault in one restart.
 
-## 5. Two ways to build it, and what changes in the software
+## 5. The variants: the Pi 3 boards owners already have, and the Compute Modules
 
-### A. A Pi 3-class board (3A+, Zero 2 W, 3B) with the classic PiStorm protocol
+One bus half serves every variant: the same CPLD (or FPGA), latches, arbitration, E input and sampling point of
+sections 2 to 4, reached through the same GPIO lines (GPIO 0 to 23 and GPCLK0 on GPIO 4, the classic PiStorm's
+protocol in `emu68/src/pistorm/ps_protocol.h`). What changes between variants is the computer half: a 40-pin
+header for a whole Pi, or a module connector with the card supplying what a module lacks. A sensible family is
+two boards sharing the bus half's layout: **Card P** (a header for an existing Pi 3) and **Card M** (a Compute
+Module socket).
 
-The card is the classic PiStorm moved onto a slot card: an EPM240 or EPM570 CPLD, the same latches, the same
-GPIO protocol (registers DATA, ADDR_LO, ADDR_HI, STATUS; GPIO 0 transaction in progress, GPCLK0 on GPIO 4;
-`emu68/src/pistorm/ps_protocol.h`), plus the arbitration of section 4, E as an input, and the sampling point of
-section 2.
+On every variant the kernel's work for the slot itself is the same and small:
+- `psmac_gpio.c`: a start-up step that waits for the card to report the grant (a status bit), logs it and times
+  out with a clear message; a `mac.slot=pds` option (or the card identifying itself in the status register) so
+  one kernel serves socket and slot cards.
+- Stock mode: one register write and a log line.
+- Nothing in the board layer (`psmac_board_se.c`), the drivers or the Mac side.
 
-Kernel changes:
-- `psmac_gpio.c`: a start-up step that waits for the card to report the grant (a status bit), logs it, and
-  times out with a clear message; and a `mac.slot=pds` (or similar) option so a socket card and a slot card can
-  share one kernel. If the card's protocol is otherwise unchanged, nothing else in the transport moves.
-- Stock mode: one more register write and a log line.
-- Nothing in the board layer (`psmac_board_se.c`), the Mac side, or the drivers.
+### 5.1 Card P: an existing Pi 3 on a header (3B, 3B+, 3A+, Zero 2 W)
 
-This is the quickest route and the one that can reuse the most, but it keeps the Pi 3's limits: 1 GB of memory,
-four Cortex-A53 cores at 1.2 GHz, WiFi on the 3A+/3B/Zero 2 W only, Ethernet only on the 3B (through its USB
-hub).
+The owner's own Pi plugs into a 40-pin header on the card, **the right way up**, components facing away from the
+logic board, with room for a heatsink. Nothing on the Pi changes, and the kernel, the card's files and the Mac side
+are today's. This is the variant to build first: it proves the arbitration, E and stock mode on real SEs with
+boards people already own, and every Pi 3-class board the socket route supports works the same way.
 
-### B. A Compute Module 4
+| Board | SoC, memory | Network today (README) | Notes for the slot card |
+|---|---|---|---|
+| Pi 3B | BCM2837, 1 GB | WiFi (BCM43438), Ethernet (LAN9514 on USB), Bluetooth | the owner's; the most tested; USB sockets and RJ45 face the card's edge, so they can line up with the rear cut-out if the card places the Pi so |
+| Pi 3B+ | BCM2837B0, 1 GB | WiFi (CYW43455), Ethernet (LAN7800 on USB), Bluetooth | faster clock and hotter; its heat spreader helps a heatsink |
+| Pi 3A+ | BCM2837B0, 512 MB | WiFi (CYW43455), Bluetooth; `eth=usb` for a USB adapter | draws least of the Pi 3s; 512 MB is enough (the Mac gets 128 MB; large images are served from the card) |
+| Zero 2 W | RP3A0 (BCM2710A1), 512 MB | WiFi (BCM43436), Bluetooth; `eth=usb` | smallest; one micro-USB for data; mini-HDMI |
 
-A CM4 on the card, with either the same CPLD protocol over its GPIO or an FPGA protocol like the PiStorm32-lite's.
-What it brings: four Cortex-A72 cores at 1.5 GHz (roughly twice the work per clock of the A53), up to 8 GB of
-memory (256 MB or more for the Mac stops being a question), Gigabit Ethernet on the module, WiFi and Bluetooth on
-the modules that have them, eMMC instead of a loose SD card, and room for the card's own USB and Ethernet at the
-SE's rear cut-out.
+What the card adds for a Pi on a header: the bus half, power from the slot to the header's 5 V pins (with the
+protection of section 6), and optionally a USB or HDMI extension to the rear cut-out. The Pi's own SD card stays
+the boot medium, so it must be reachable without taking the card out of the slot (place the Pi's card edge at
+the top of the card, or use an SD extension).
 
-What already works on that family (to be confirmed, not assumed):
-- Emu68 runs on the CM4: the PiStorm32-lite uses one, and Emu68 carries Pi 4 GPIO settings in
-  `ps_protocol.h` (`GPFSEL*_PI4`, `CLEAR_BITS_PI4`) and Efinix FPGA images (`efinix_firmware_ps16.h`,
-  `_ps32.h`; which boards the "ps16" image is for has not been checked here).
-- The network drivers came from Alice68, written for the BCM2711 in the first place: GENET for Ethernet, the
-  CYW43455 for WiFi (docs/07).
-- The CM4's own USB 2.0 port is a DWC2 controller, the same family as the Pi 3's, which `src/alice/usb` drives.
+### 5.2 Card M with a Compute Module 3+ (or CM3)
 
-What the kernel would need for a CM4 (each a piece of work, none done):
-- **The card's storage.** `psmac_card.c` drives the Pi 3's SDHOST controller directly (`SDH` at peripheral base
-  + 0x202000). The CM4's SD and eMMC are on its EMMC2 (SDHCI) controller: a new low-level driver under the same
-  FAT and image code (the large-image work of docs/08 item 142 sits above that layer and would not change).
-- **HDMI and its sound.** The second screen comes from the firmware's frame buffer (mailbox), which the Pi 4
-  family keeps; the HDMI sound and the mode switching (`psmac_hdmi.c`, `psmac_audio.c`) need checking line by line
-  against the Pi 4's HDMI blocks, which are not the Pi 3's.
-- **Bluetooth.** The UART and its pins differ (the Pi 3's arrangement is in docs/21); `docs/21` has the Pi 3 details the CM4 port would redo.
-- **Peripheral base and GPIO pulls.** Emu68's upstream code handles the BCM2711's base address; the project's
-  own files that poke registers directly need a review (`grep -n PERI emu68/src/psmac/*.c`).
-- **The bus transport.** With the CPLD protocol over GPIO, `psmac_gpio.c` with Emu68's Pi 4 GPIO settings. With
-  an FPGA protocol, a new back end beside `psmac_gpio.c` behind the same `xfer` interface.
-- **Power and temperature.** `psmac_power.c` reads GET_THROTTLED through the mailbox, which the CM4's firmware
-  answers the same way.
+The same SoC family as a Pi 3 (BCM2837B0 on the CM3+, BCM2837 on the CM3), on a 200-pin SO-DIMM module with no
+network, no USB hub and no HDMI connector of its own: the card supplies them. Emu68 and the kernel run on it as on
+a Pi 3; what differs is what the card wires up.
+- **Storage:** the CM3+ comes with 8, 16 or 32 GB of eMMC, or as the Lite with the SD interface brought out for
+  an SD socket on the card. Which of the SoC's two SD controllers the eMMC uses on these modules (the SDHOST the
+  kernel drives today, `psmac_card.c`, or the other one) must be checked against the module's datasheet before
+  assuming the card-image code works unchanged.
+- **Network:** none on the module. The card can carry a LAN9514 or LAN7800 on the module's USB (both already
+  driven, `psmac_usbnet.c`), and a WiFi/Bluetooth module on the SDIO and UART pins if wanted (a CYW43455 matches
+  the driver; its antenna needs a path out of the SE's case).
+- **USB:** one USB 2.0 port on the module (the DWC2 the kernel already drives); a hub on the card for more.
+- **HDMI:** the module brings HDMI out; the card adds the connector at the rear cut-out.
+- **GPIO:** the module exposes GPIO 0 to 45, so the bus half's lines are the same as on a Pi 3.
+- Kernel work beyond section 5's slot step: the storage check above, and device-tree differences (the kernel
+  reads the board's devices from the firmware's tree at start, as `psmac_usbnet.c` does for the wired port).
 
-### Which first
+This is the cheapest module variant: Pi 3 software, a flat card with the module lying on it, and a heatsink or a
+small fan over the SoC. It gains little in speed over a Pi 3B.
 
-A is a few days of kernel work once a card exists; B is weeks, most of it storage, HDMI sound and Bluetooth, and
-gives a much better machine. A sensible order: a Pi 3-class slot card to prove the arbitration, E and stock mode
-on real SEs, then a CM4 card with the same bus half.
+### 5.3 Card M with a Compute Module 4
+
+The CM4 (BCM2711) on its two 100-pin connectors, in its variants: 1, 2, 4 or 8 GB of memory; eMMC (8, 16 or
+32 GB) or Lite (an SD socket on the card); with or without WiFi and Bluetooth (CYW43455, with an antenna
+connector, which helps inside a metal-shielded SE). What it brings: four Cortex-A72 cores at 1.5 GHz (roughly
+twice the work per clock of the A53), memory to spare for the Mac and for disk images, Gigabit Ethernet from the
+module (the card adds the PHY's magnetics and RJ45 at the rear cut-out), and PCIe if ever wanted.
+
+What already exists for this family (to be confirmed on hardware, not assumed):
+- Emu68 runs on the CM4 (the PiStorm32-lite uses one), and carries Pi 4 GPIO settings in `ps_protocol.h`
+  (`GPFSEL*_PI4`, and `CLEAR_BITS_PI4`, which leaves GPIO 28 and 29, the Ethernet PHY's MDIO, alone) and Efinix
+  FPGA images (`efinix_firmware_ps16.h`, `_ps32.h`; which boards the "ps16" image is for has not been checked).
+- The network drivers came from Alice68, written for the BCM2711: GENET for Ethernet, the CYW43455 for WiFi
+  (docs/07). The README's firmware steps already cover the Pi 4 and CM4.
+- The CM4's own USB 2.0 port is a DWC2 controller, as on the Pi 3 (the Pi 4's USB 3 is a VL805 on PCIe, which a
+  CM4 card does not need).
+
+What the kernel needs for the CM4, each a piece of work and none done:
+- **Storage.** `psmac_card.c` drives the Pi 3's SDHOST directly (`SDH` at peripheral base + 0x202000). The CM4's
+  eMMC and SD are on its EMMC2 (SDHCI) controller: a new low-level driver under the same FAT and image code (the
+  large-image work of docs/08 item 142 sits above that layer).
+- **HDMI and its sound.** The second screen comes from the firmware's frame buffer (mailbox), which the BCM2711
+  keeps; the HDMI sound and mode handling (`psmac_hdmi.c`, `psmac_audio.c`) need a line-by-line check against the
+  BCM2711's HDMI blocks, which are not the Pi 3's.
+- **Bluetooth.** Different UART wiring; docs/21 has the Pi 3's arrangement the port redoes.
+- **Registers.** The project's own files that touch registers directly need a review for the BCM2711
+  (`grep -n PERI emu68/src/psmac/*.c`); Emu68's upstream code already handles its peripheral base.
+- **The bus transport.** With the CPLD protocol over GPIO: `psmac_gpio.c` with the Pi 4 GPIO settings. With an
+  FPGA protocol like the PiStorm32-lite's: a new back end beside `psmac_gpio.c` behind the same `xfer` interface.
+- `psmac_power.c` reads GET_THROTTLED through the mailbox, which the CM4's firmware answers the same way.
+
+### 5.4 Not a candidate: the Compute Module 5
+
+On the BCM2712 the GPIO pins sit behind the RP1 chip on PCIe, so each pin access is a PCIe transaction rather
+than a register write next to the CPU: a GPIO bus protocol like the PiStorm's would be far slower per 68000
+cycle. As far as we know Emu68 does not run on the Pi 5 family either (check upstream before ruling it out for
+good).
+
+### 5.5 Which first, and how much work
+
+| Variant | Kernel work beyond today | What it gives |
+|---|---|---|
+| Card P, an existing Pi 3 | the slot step (days, once a card exists) | today's Aurora68, cooler, nothing in the socket, stock mode |
+| Card M, CM3+ | the slot step; check the eMMC's controller; device-tree differences | the same, on a flat card with the module's eMMC |
+| Card M, CM4 | the slot step; EMMC2 storage driver; HDMI sound; Bluetooth wiring; register review (weeks) | twice the speed, memory to spare, Gigabit Ethernet, eMMC |
+
+A sensible order: Card P first, to prove sections 2 to 4 on real SEs with the Pis owners have; then Card M,
+with the CM4 as the target and the CM3+ as a cheap step on the way if the CM4 work is not yet done.
 
 ## 6. Physical and electrical
 
-- **Power.** A Pi 3B draws 0.5 to 0.8 A at 5 V (docs/12, "Power through the socket"); a CM4 with Ethernet and
-  WiFi in use draws more, several watts under load. How much the SE's slot and its analog board can supply has to
+- **Power.** A Pi 3B draws 0.5 to 0.8 A at 5 V (docs/12, "Power through the socket"); a 3B+ more, a 3A+ and a
+  Zero 2 W less; a CM3+ about what a 3A+ does plus whatever the card adds (Ethernet, a hub); a CM4 with Ethernet and
+  WiFi in use draws more, several watts under load. Feed the header's or module's 5 V through a fuse or current
+  limit and an ideal-diode or reverse-current block, so a Pi on the header that is also powered from its own USB
+  socket never back-feeds the SE. How much the SE's slot and its analog board can supply has to
   be taken from Apple's figures for the SE and checked against the owner's supply (several SEs now run on
   replacement supplies; the Plus tester's PicoPSU-style supply had a noisy -12 V rail, docs/18 section 7). Put a
   current measurement on the first prototype's 5 V.
@@ -226,7 +277,9 @@ sequence; that is optional.
 4. Which clock does the slot carry for the card's state machine (C8M, C16M)?
 5. The slot's power budget, on an original analog board and on replacement supplies.
 6. Physical: card size limits and the rear cut-out's position.
-7. For a CM4 card: the FPGA or the CPLD protocol, and which Emu68 back end it matches.
+7. For Card P: where the Pi's SD card and connectors end up relative to the rear cut-out.
+8. For a CM3+ card: which SD controller the module's eMMC is on.
+9. For a CM4 card: the FPGA or the CPLD protocol, and which Emu68 back end it matches.
 
 ## Sources
 
