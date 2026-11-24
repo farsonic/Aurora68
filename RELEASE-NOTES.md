@@ -2,8 +2,37 @@
 
 ## Next release (on main, not released yet)
 
+Nothing yet since 0.15.
+
+## 0.15 — a clock in the menu bar, no more stuck keys, Bluetooth before the Mac starts (24 November 2026)
+
+Since 0.14, in short (the entries below and docs/08 items 135-139 have the detail):
+
+- **Aurora68 Menu Extras**: a clock beside the Wi-Fi and Bluetooth icons, digital or analog, with macOS's options,
+  and the icons kept clear of a program's menus on the SE's 512-pixel menu bar. It replaces Aurora68 Wi-Fi &
+  Bluetooth and moves the old extension aside by itself.
+- **No more "key held down"**: releasing a modifier on a Bluetooth or USB keyboard left it down for the Mac, so clicks
+  became Shift- or Command-clicks. Each keyboard and mouse now keeps its own state, and one that goes away releases
+  what it held. The fix is in the declaration ROMs' input driver: replace the `*.declrom` files on the card.
+- **Bluetooth in Setup and Recovery**: pair, connect and forget keyboards and mice from the recovery page or
+  `aurora68.py recovery bt`, drive the recovery menu with a Bluetooth keyboard or mouse; keys held from power-on
+  (Shift for extensions off) now reach the Mac; Bluetooth is ready about three seconds sooner; on the Pi 3B a
+  paired LE mouse beside a connected LE keyboard is looked for by the Pi's own scan.
+- **Not in this release's kernel**: the Aurora68 PC Card and the new Aurora68 Apple II Card (below) are built only
+  with `-DPSMAC_PC=ON` / `-DPSMAC_A2=ON` and their emulation libraries, which are not published yet; their programs
+  are in the release and show "(no card)" with this kernel. The PC card's fixes from its first runs on a real SE are
+  in (below).
+
 Since 0.14:
 
+- **The PC card on a real SE** (docs/08 item 138, docs/19-pc-card.md, 24 November 2026). Its first runs on the owner's
+  SE found four faults, all fixed: after Aurora68 PC quit, the card went on drawing through the closed window's freed
+  region (the PC's screen over the Finder); with the SE's screen as main and HDMI beside it a window that straddled
+  the two was drawn on the SE alone; the PC's slices on the HDMI audio core made the sound crackle (it now gives
+  audio a turn at least every millisecond); and a disk the PC could not open said nothing (now a box over the
+  window and a log line say why; `cmdline.txt` saved with Windows line endings no longer spoils the last option).
+  Aurora68 PC 1.2 tells the card when its window goes, also when it is ended any other way; the Apple II card has
+  the same fixes.
 - **No more "key held down" after a Bluetooth or USB keyboard** (docs/08 item 139, 24 November 2026; the owner's SE
   after Aurora68 PC: every Finder click selected several icons). Shift, Command, Option or Control let go on a Pi
   keyboard stayed down in the Mac's KeyMap until the next key or click from the Pi, so the SE's own mouse's clicks were

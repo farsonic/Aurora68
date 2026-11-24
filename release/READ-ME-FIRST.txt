@@ -87,9 +87,9 @@ What is in the zip
                                             Extras (a clock, Wi-Fi and Bluetooth in the
                                             menu bar; it was Aurora68 Wi-Fi & Bluetooth,
                                             which it moves aside by itself), and a Read
-                                            Me. In 0.14 replace
-                                            all of them and every program: nearly
-                                            all changed since 0.13
+                                            Me. In 0.15 install Aurora68 Menu
+                                            Extras and replace the *.declrom files
+                                            on the card (the input driver changed)
                          Until 21 November 2026 the programs were PiPlay, PiDisplay, PiSlots,
                          PiLog, PiStatus, PiNet, PiWiFi, PiBlue, PiPing, PiColor, PiScreens and
                          PiDepth, the extensions PiDisk, PiMach, PiScrn, Sound PiStorm and
