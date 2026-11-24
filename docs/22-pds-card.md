@@ -18,8 +18,9 @@ PiStorm board, at 80 °C and frequency-capped on the owner's bench even out of t
 
 - **Nothing in the CPU socket.** The SE's slot carries the 68000's bus, so the card plugs in and the original
   68000 stays where it is. No socket adapter, no strain on the socket, nothing to lift on the logic board.
-- **Heat.** A card standing in the slot can carry its computer the right way up, with a heatsink and the SE's
-  fan blowing past it. In the socket the Pi's main chip faces the PiStorm board across a few millimetres.
+- **Heat.** A slot card lies flat above the logic board, under the SE's chassis (section 6, "Where the card sits"),
+  and can carry its computer components-up with a heatsink and a fan of its own. In the socket the Pi's main chip
+  faces the PiStorm board across a few millimetres.
 - **A port at the back.** The SE's case has a cut-out at the rear for a slot card: Ethernet and USB can come
   out of the case instead of through the case's gaps.
 - **A way back to a stock SE.** With the 68000 still fitted, the card can let go of the bus and let the SE start
@@ -242,7 +243,8 @@ On every variant the kernel's work for the slot itself is the same and small:
 ### 5.1 Card P: an existing Pi 3 on a header (3B, 3B+, 3A+, Zero 2 W)
 
 The owner's own Pi plugs into a 40-pin header on the card, **the right way up**, components facing away from the
-logic board, with room for a heatsink. Nothing on the Pi changes, and the kernel, the card's files and the Mac side
+logic board, at the card's rear end where the chassis leaves the most height (section 6, "Where the card sits"),
+with room for a heatsink. Nothing on the Pi changes, and the kernel, the card's files and the Mac side
 are today's. This is the variant to build first: it proves the arbitration, E and stock mode on real SEs with
 boards people already own, and every Pi 3-class board the socket route supports works the same way.
 
@@ -356,10 +358,10 @@ with the CM4 as the target and the CM3+ as a cheap step on the way if the CM4 wo
   - Keep the fan's current off the Pi's 5 V path: take it from the slot's 5 V before the Pi's protection (or from
     +12 V with a 12 V fan, quieter at low speed), with its own fuse.
 - **The rear panel.** The SE's back has an access cut-out for a slot card's connectors. Two ways to reach it, and the
-  note's recommendation is the first:
-  - **A short cable to a small panel board** screwed into the cut-out. It does not depend on where exactly the card
-    stands relative to the cut-out (which varies with the card's height and the SE's case), and it lets the card be
-    designed before anyone has measured a case. What goes over it: Ethernet (the magnetics and RJ45 on the panel
+  note's recommendation is the first, which is also Apple's (Figure 14-2, below):
+  - **A short cable to a small panel board** screwed into the cut-out. Apple's figure marks a "suggested position of
+    connector for cable to external port" on the card, near its rear end. It does not depend on where exactly the
+    card sits relative to the cut-out, and it lets the card be designed before anyone has measured a case. What goes over it: Ethernet (the magnetics and RJ45 on the panel
     board, the PHY's pairs over a short cable; for Gigabit on a CM4, a short twisted-pair cable rather than flat
     ribbon), USB 2.0 (short and fine), and HDMI only as a short panel-mount HDMI extension, not ribbon.
   - **Connectors on the card itself, lined up with the cut-out.** Neater and no cable, but only if the card's edge
@@ -367,6 +369,13 @@ with the CM4 as the target and the CM3+ as a cheap step on the way if the CM4 wo
     Drivers*) before choosing it. On Card P a Pi 3B placed with its USB and RJ45 edge towards the cut-out might
     manage it directly; the Pi's SD card must still be reachable.
   - Either way, a panel board can also carry a reset or stock-mode switch (section 4) and an activity LED.
+- **Where the card sits (Figure 14-2 of the *Guide*, sent by the owner on 24 November 2026: "An expansion card in the
+  Macintosh SE assembly").** The card lies **flat, parallel to the logic board**, plugged into the slot and running
+  towards the back under the SE's metal chassis (the frame that carries the drives); its height is the gap between
+  the logic board and the chassis. The owner adds that there is **more room towards the back of the chassis**. So:
+  put the tall parts (the Pi on its header or the module, its heatsink, the fan and the cable connector) at the
+  card's rear end, keep the bus half, which is low, near the slot, and check the remaining height over each part
+  against a real SE before the layout is fixed. A fan there blows along the card, under the chassis.
 - **Clearances.** The slot sits near the analog board and the CRT's neck: keep conductive parts, and anything a
   person might touch while the machine runs, away from the high-voltage side. Mechanical limits (card height,
   where the rear cut-out is) from Apple's card dimensions for the SE.
@@ -394,7 +403,8 @@ C16M; /HALT is wired to /RESET. Still open:
    /BGACK is held, or does it start its vector fetch? (Section 4.)
 3. Does E keep running from the 68000 while the bus is granted away, as we read the manual?
 4. The slot's power budget on each rail, on an original analog board and on replacement supplies.
-5. Physical: card size limits, the rear cut-out's position and size, and whether a card's edge can meet it
+5. Physical: the height under the chassis along the card (more at the back, the owner says), the rear cut-out's
+   position and size, and whether a card's edge can meet it
    (deciding between a panel board on a cable and connectors on the card, section 6).
 6. For Card P: where the Pi's SD card and connectors end up relative to the rear cut-out.
 7. For a CM3+ card: which SD controller the module's eMMC is on.
@@ -402,6 +412,9 @@ C16M; /HALT is wired to /RESET. Still open:
 
 ## Sources
 
+- Apple, *Guide to the Macintosh Family Hardware*, 2nd edition, Figure 14-2, "An expansion card in the Macintosh SE
+  assembly": the card flat above the logic board under the chassis, and the suggested connector for a cable to the
+  external port.
 - Chris Adams, "Mac SE port pinouts", The Mac SE Support Pages, May 1993: the SE's internal system expansion slot,
   pin by pin, with signal descriptions (section 3). Read from the mirror
   https://machut.net/mirrors/www.ccadams.org/se/pinouts.html (sent by the owner, 24 November 2026).
