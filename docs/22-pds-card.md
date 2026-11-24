@@ -71,16 +71,16 @@ mode as a separate state), bus snooping, DMA by the card into the SE's RAM beyon
 
 ## 3. The slot's signals
 
-**The SE's pinout (24 November 2026).** The owner found it on Chris Adams's "Mac SE Support Pages" ("Mac SE port
-pinouts", May 1993; the copy read is the mirror at https://machut.net/mirrors/www.ccadams.org/se/pinouts.html),
-under the heading "Macintosh SE Internal System Expansion Slot: Pinout Information", with a description of each
-signal. It is reproduced here as that page gives it: three columns of 32 rows, row 32 at the top. Which Euro-DIN
-row letter (a, b, c) each column is, and which end is pin 1, must be checked on the connector itself, and the whole
-table against Apple's own (*Guide to the Macintosh Family Hardware*, 2nd edition, chapter 14; *Designing Cards and
-Drivers*, 3rd edition, page 284, where Apple says its earlier figure was corrected) and a meter on a real board
-before a board is laid out.
+**The SE's pinout, confirmed by Apple (24 November 2026).** The owner found it first on Chris Adams's "Mac SE
+Support Pages" ("Mac SE port pinouts", May 1993; mirror at https://machut.net/mirrors/www.ccadams.org/se/pinouts.html,
+"Macintosh SE Internal System Expansion Slot"), then sent Apple's own book, *Designing Cards and Drivers for the
+Macintosh Family*, 3rd edition (1992): Figure 13-1, "Macintosh SE 68000 Direct Slot connector pinout" (page 284), and
+Table 13-1, each pin's signal, direction and loading (pages 285 to 287). The two agree pin for pin. Apple names the
+rows: **Adams's column 1 is row C, column 2 is row B, column 3 is row A.** Apple's figure is the connector (J13) "as
+viewed from above", with row C on the side marked "To I/O ports at rear of machine", row A on the side marked "Card
+edge", and pin 1 at the end towards the SIMMs. A meter on a real board is still the last check before a layout.
 
-| Row | Column 1 | Column 2 | Column 3 |
+| Pin | Row C (Adams col. 1) | Row B (col. 2) | Row A (col. 3) |
 |---|---|---|---|
 | 32 | -12V | -5V | +12V |
 | 31 | Spare | +12V | +12V |
@@ -115,10 +115,22 @@ before a board is laid out.
 | 2 | VMA/ | Ground | FC1 |
 | 1 | VPA/ | Ground | FC2 |
 
-(The page's table writes the external-DTACK pin "Ext.STK/" and its description "Ext.DTK/"; the description is the
-one that makes sense.)
+(Adams's table writes the external-DTACK pin "Ext.STK/"; Apple's figure and table say /EXT.DTK.)
 
-What the page says about the signals that matter for this card, and what follows from each:
+What Apple's Table 13-1 adds, pin by pin, that matters for the card:
+- **Pull-ups and directions:** /BR (C3) and /BGACK (C4) are inputs with 3.3 kOhm pull-ups on the logic board; /BG (C5)
+  is an output; /RESET (C12) is open collector with a 1 kOhm pull-up and "connected to /HALT, pin B-12"; /IPL0-2
+  (B18-B20) are open collector, 3.3 kOhm, and Apple names their sources: /IPL0 the VIA and the SCSI chip, /IPL1 the
+  SCC, /IPL2 the NMI switch; /BERR (B21) open collector, 3.3 kOhm; /EXT.DTK (B28) an input with a 3.3 kOhm pull-up.
+- **Drive:** the logic board's outputs can drive two 74LS inputs and 30 pF (C8M and C16M only one); Apple says cards
+  needing more, "or more than about 2 inches of trace length, should buffer these signals". So the card's bus
+  buffers sit within about 50 mm of the connector.
+- **Loads the card must drive** when it is bus master: A1-A23 and D0-D15 250 uA high / 1 mA low and 100 pF; /AS
+  200 uA / 3.2 mA and 50 pF; R/W 200 uA / 2 mA; /RESET 300 uA / 6 mA. 74LVC-class parts drive this easily.
+- **Rails** (with the budget in section 6): +5 V on B13-B17 and C13, +12 V on A31, A32, B30, B31, -5 V on B32,
+  -12 V on C32.
+
+What Adams's page and Apple's text say about the signals, and what follows from each:
 - **/BR, /BG and /BGACK are all on the slot** (column 1, rows 3, 5 and 4). Section 4's route works on the SE.
 - **"HALT/ ... Wired directly to RESET/"** (and the same under RESET/). On the SE the two are one net. Every reset
   of the board is therefore also a reset of the 68000, and /HALT cannot be held on its own. Section 4 takes this
@@ -154,24 +166,24 @@ incompatible with the 96-pin 68000 PDS found in the Macintosh SE and Macintosh P
 on a 32-bit bus. It also names where Apple's own tables for both slots are: the *Guide*'s chapter 14 (its Tables
 14-1, 14-3 and 14-5 to 14-7).
 
-What the card does with each group (directions are the card's when it holds the bus; positions are the
-page's column and row):
+What the card does with each group (directions are the card's when it holds the bus; positions are Apple's
+row and pin):
 
-| Group | Signals (column, row) | Card | Notes |
+| Group | Signals (row and pin) | Card | Notes |
 |---|---|---|---|
-| Address | A1-A23 (3, 4-26) | drives | three-stated until the bus is granted |
-| Data | D0-D15 (1, 14-29) | both | driven only on writes, after the bus is granted |
-| Strobes | /AS (1, 10), /UDS (1, 9), /LDS (1, 8), R/W (1, 7) | drives | three-stated until granted; R/W high when idle |
-| Cycle end | /DTACK (1, 6) | reads | from the gate array; sample data at the 68000's point (section 2, item 2) |
-| External DTACK | Ext.DTK/ (2, 28) | leaves alone | pulled up: the gate array keeps making DTACK/ |
-| RAM availability | PMCYC/ (1, 11) | may read | optional, to start RAM cycles when video is not using RAM |
-| 6800 cycles | /VPA (1, 1) in, /VMA (1, 2) out, E (3, 27) in | both | the VIA, in VPA space $E00000-$FFFFFF; E is the 68000's (section 4) |
-| Function codes | FC0-FC2 (3, 3 to 1) | drives | supervisor data (101) for everything; never 111 |
-| Interrupts | /IPL0-/IPL2 (2, 18-20) | reads | encoded, active low |
-| Arbitration | /BR (1, 3) out, /BG (1, 5) in, /BGACK (1, 4) out | both | section 4 |
-| Reset | /RESET (1, 12) and /HALT (2, 12), one net on the SE | both, open drain | section 4; never drive push-pull |
-| Error | /BERR (2, 21) | reads | the gate array's SCSI time-out; the card may also time out on its own |
-| Clocks | C8M (3, 28), C16M (3, 29) | reads | the card runs from C8M |
+| Address | A1-A23 (A4-26) | drives | three-stated until the bus is granted |
+| Data | D0-D15 (C14-29) | both | driven only on writes, after the bus is granted |
+| Strobes | /AS (C10), /UDS (C9), /LDS (C8), R/W (C7) | drives | three-stated until granted; R/W high when idle |
+| Cycle end | /DTACK (C6) | reads | from the gate array; sample data at the 68000's point (section 2, item 2) |
+| External DTACK | Ext.DTK/ (B28) | leaves alone | pulled up: the gate array keeps making DTACK/ |
+| RAM availability | PMCYC/ (C11) | may read | optional, to start RAM cycles when video is not using RAM |
+| 6800 cycles | /VPA (C1) in, /VMA (C2) out, E (A27) in | both | the VIA, in VPA space $E00000-$FFFFFF; E is the 68000's (section 4) |
+| Function codes | FC0-FC2 (A3 to (A1) | drives | supervisor data (101) for everything; never 111 |
+| Interrupts | /IPL0-/IPL2 (B18-20) | reads | encoded, active low |
+| Arbitration | /BR (C3) out, /BG (C5) in, /BGACK (C4) out | both | section 4 |
+| Reset | /RESET (C12) and /HALT (B12), one net on the SE | both, open drain | section 4; never drive push-pull |
+| Error | /BERR (B21) | reads | the gate array's SCSI time-out; the card may also time out on its own |
+| Clocks | C8M (A28), C16M (A29) | reads | the card runs from C8M |
 | Power | +5 V, +12 V, -12 V, -5 V, ground | takes | section 6 |
 
 Signals the classic PiStorm does not use today and a slot card must add: /BR, /BG, /BGACK (docs/18, section 4:
@@ -206,12 +218,32 @@ tri-state logic and testbenches are the nearest starting point.
   time; whether the 68000 grants the bus while still in reset, or only after its first cycles, is the same question
   as above.
 
-**E.** On the socket the CPLD makes E itself, because there is no 68000. On a slot card the SE's 68000 is still
-there, still clocked, and E is on the slot (section 3: "68000 E Clock"). As we read the manual, E stays a
-free-running output of the 68000 even while it has given the bus away (E is not among the lines it three-states).
-The SE's VIA is clocked by that E. So the card must follow the board's E for its /VMA cycles, not make its own; a
-second E source on the same line would fight the 68000's. Confirm on a scope (E keeps running with the bus granted
-away) before committing the CPLD.
+**E (confirmed by Apple).** On the socket the CPLD makes E itself, because there is no 68000. On a slot card
+the SE's 68000 is still there, and Apple's text answers the question directly: "After removing itself from the bus
+by tristate control, however, the MC68000 continues to generate its E clock but no longer provides /VMA. This means
+an expansion card coprocessor must correctly synchronize its VIA selection (using /VMA) and VIA accesses to the
+timing of the MC68000 E clock. The coprocessor can accept /VPA as its /DTACK, or provide its own." (*Designing Cards
+and Drivers*, 3rd edition, chapter 13, "Accessing I/O devices from an expansion card".) So the card follows the
+board's E (A27) for its /VMA cycles and never drives E. Apple's chapter calls exactly this arrangement, a card
+taking the bus with /BR, /BG and /BGACK, a "coprocessor" on the expansion card.
+
+**RAM cycles: the BBU's rules (same chapter, Figures 13-2 and 13-3).** The kernel writes the SE's screen and sound
+buffers in the board's RAM, so these apply:
+- The BBU runs a 16-state machine from C16M; a RAM cycle is eight states, S0 to S7, and video and sound fetches
+  take states S8 to SF of their own cycles. A processor RAM access that starts during a video or sound cycle is held
+  off (no /DTACK) until the next RAM slot.
+- A card should behave like a 68000: address in S1, /AS in S2, /DTACK received in S4. It can find S1 from /PMCYC
+  (C11), which "always falls in S1 of an eight-state processor cycle", with a falling-edge detector clocked by C16M.
+- **/AS must never fall between 20 ns into S3 and 20 ns into S4**: the BBU starts /RAS early on a RAM address, and a
+  late /AS gives a /RAS spike or a row/column change too soon, "causing RAM errors". The 68000 avoids this because
+  it asserts /AS only in even states, clocked by C8M; the card's state machine must keep the same discipline (C8M
+  lags C16M by up to 30 ns).
+- Address set-up 15 ns before /AS and 45 ns before S3, held through the first 5 ns of S7; write data valid from S6
+  through the first 30 ns of S7; read data valid from 15 ns into S7 until /CAS rises at the end of S0 or /AS rises.
+- Outside RAM, $000000 to $DFFFFF: /DTACK in S4 after /AS in S2 (in S0 of the next cycle if /AS came after S3).
+  $E00000 to $FFFFFF: /VPA right after /AS, then the 6800 cycle on E.
+This is also what docs/18 section 4 asks of a new CPLD: sample read data at the 68000's own point. The classic
+PiStorm's early sampling worked on the SE because the BBU's /DTACK timing hid it; a slot card should not rely on that.
 
 **Resets, in short.**
 - The kernel's board reset: /RESET pulled low for about 124 C8M clocks, open drain, /BGACK held throughout.
@@ -332,14 +364,28 @@ with the CM4 as the target and the CM3+ as a cheap step on the way if the CM4 wo
 
 ## 6. Physical and electrical
 
-- **Power.** A Pi 3B draws 0.5 to 0.8 A at 5 V (docs/12, "Power through the socket"); a 3B+ more, a 3A+ and a
-  Zero 2 W less; a CM3+ about what a 3A+ does plus whatever the card adds (Ethernet, a hub); a CM4 with Ethernet and
-  WiFi in use draws more, several watts under load. Feed the header's or module's 5 V through a fuse or current
-  limit and an ideal-diode or reverse-current block, so a Pi on the header that is also powered from its own USB
-  socket never back-feeds the SE. How much the SE's slot and its analog board can supply has to
-  be taken from Apple's figures for the SE and checked against the owner's supply (several SEs now run on
-  replacement supplies; the Plus tester's PicoPSU-style supply had a noisy -12 V rail, docs/18 section 7). Put a
-  current measurement on the first prototype's 5 V.
+- **Power: Apple's budget for the card** (*Designing Cards and Drivers*, 3rd edition, Table 13-3, page 298):
+
+  | Rail | +5 V | -5 V | +12 V | -12 V |
+  |---|---|---|---|---|
+  | Expansion card | 1.5 A | 0.1 A | 0.15 A (1.5 A surges up to 10 s) | 0.1 A |
+
+  and, "for thermal considerations, the total power of the expansion card should not exceed 7 W", because the card
+  sits in "the restricted space over the Macintosh SE logic board". Apple allows a further 750 mA at +5 V for a
+  peripheral outside the case, and budgets 1.5 A at +5 V and 0.9 A at +12 V for an internal SCSI disk.
+  What that means for each variant (draws are typical figures, to be measured on the prototype):
+  - **Pi 3A+, Zero 2 W, CM3+:** comfortably inside 7 W.
+  - **Pi 3B:** 0.5 to 0.8 A at 5 V (docs/12, "Power through the socket"), 2.5 to 4 W: inside, with room for a small
+    fan. **Pi 3B+:** more, still inside at the kernel's load but closer.
+  - **CM4:** at full load with Ethernet and WiFi a CM4 can reach the 7 W line by itself. A CM4 card should be
+    measured early; if it is over, cap the ARM clock (`arm_freq` in `config.txt`), or take part of the 5 V from the
+    internal disk's budget, which many SEs no longer use since a BlueSCSI draws far less than a 1980s hard disk
+    (take it from the disk power connector, not the slot, with its own fuse).
+  - A 5 V fan of 0.1 to 0.2 A fits in any of these; a 12 V fan takes from the 0.15 A at +12 V.
+  Feed the header's or module's 5 V through a fuse or current limit and an ideal-diode or reverse-current block, so a
+  Pi on the header that is also powered from its own USB socket never back-feeds the SE. Replacement supplies vary
+  (the Plus tester's PicoPSU-style supply had a noisy -12 V rail, docs/18 section 7): measure the first prototype's
+  5 V current and ripple in the owner's own machine.
 - **Heat.** Leave room for a heatsink on the SoC and a path for the SE's fan's air. The reason for the card is
   partly this (section 1).
 - **A fan header (the owner's suggestion, 24 November 2026).** A 2- or 3-pin header for a small 5 V fan (25 to 40 mm)
@@ -369,13 +415,31 @@ with the CM4 as the target and the CM3+ as a cheap step on the way if the CM4 wo
     Drivers*) before choosing it. On Card P a Pi 3B placed with its USB and RJ45 edge towards the cut-out might
     manage it directly; the Pi's SD card must still be reachable.
   - Either way, a panel board can also carry a reset or stock-mode switch (section 4) and an activity LED.
-- **Where the card sits (Figure 14-2 of the *Guide*, sent by the owner on 24 November 2026: "An expansion card in the
-  Macintosh SE assembly").** The card lies **flat, parallel to the logic board**, plugged into the slot and running
-  towards the back under the SE's metal chassis (the frame that carries the drives); its height is the gap between
-  the logic board and the chassis. The owner adds that there is **more room towards the back of the chassis**. So:
-  put the tall parts (the Pi on its header or the module, its heatsink, the fan and the cable connector) at the
-  card's rear end, keep the bus half, which is low, near the slot, and check the remaining height over each part
-  against a real SE before the layout is fixed. A fan there blows along the card, under the chassis.
+- **Where the card sits** (*Designing Cards and Drivers*, 3rd edition, Figures 17-1 to 17-3, pages 384 to 386; the
+  same drawing as the *Guide*'s Figure 14-2, which the owner sent). The card lies **flat, parallel to the logic
+  board**, under the SE's metal chassis, across the logic board's width between its rear and front edges (Figure
+  17-3, "Maximum outline expansion card"). Apple's numbers:
+  - **Outline:** at most 213.25 mm by 120.42 mm (8.396 by 4.741 inches), 1.60 mm thick, with a 16.00 mm strip along
+    one long edge marked "No components, traces only", two 3.86 mm mounting holes for the logic board's card supports
+    (Figure 17-5 shows the supports beside the reset switch), and 2.0 mm by 45 degree corner chamfers.
+  - **Height:** the side view, "Side view height restrictions" (Figure 17-2), gives a component height of **15.58 mm
+    (0.614 inch) at most at one end of the card, falling to 4.61 mm (0.181 inch) at the other**, because the chassis
+    above slopes. The owner adds that there is more room towards the back of the chassis. Put the tall parts (the Pi
+    on its header or the module, its heatsink, the fan, the cable connector) where the 15.58 mm is, keep the low bus
+    half where the 4.61 mm is, and check both against a real SE: a Pi 3B on a standard header plus a heatsink is
+    taller than 15.58 mm, so Card P needs a low-profile header, the Pi mounted beside rather than above the card's
+    parts, or the Pi's own height counted against the slope (open question 4).
+  - **The connector:** a 96-pin, three-row Euro-DIN plug with compliant (press-fit) pins if components go on the top
+    side (Figure 17-4; AMP was Apple's supplier; any standard mating connector fits).
+  - **Away from the slot:** Apple's drawing has the card's own 96-pin plug at one end (pins 1A, 1B, 1C marked near a
+    corner) and the "suggested position of connector for cable to external port" near the other.
+  A fan there blows along the card, under the chassis.
+- **The cable to the rear (Apple's design).** "Typically, a cable would be routed from the expansion card upward
+  through a cutout in the back of the chassis, and then to a connector on a connector card you provide" (chapter 17,
+  "External connections for the Macintosh SE"; Figures 17-7 and 17-8: a "preferred ribbon cable routing (shortest
+  possible)" and an alternate one, the connector card held by two M3 screws at the rear housing's exit). Apple
+  adds that a cable at least 220 mm long would also fit the SE/30 and the IIsi, and its Foldout 8 gives the connector
+  card's dimensions. This settles the rear-panel choice above: a connector card on a cable, as Apple intended.
 - **Clearances.** The slot sits near the analog board and the CRT's neck: keep conductive parts, and anything a
   person might touch while the machine runs, away from the high-voltage side. Mechanical limits (card height,
   where the rear cut-out is) from Apple's card dimensions for the SE.
@@ -394,21 +458,20 @@ sequence; that is optional.
 
 ## 8. Open questions (in the order they block)
 
-Answered on 24 November 2026 by the SE pinout of section 3: /BR, /BG and /BGACK are on the slot; so are E, C8M and
-C16M; /HALT is wired to /RESET. Still open:
+Answered on 24 November 2026: /BR, /BG and /BGACK are on the slot (C3, C5, C4); E, C8M and C16M are on it (A27-A29);
+/HALT is wired to /RESET; the pinout is Apple's own (Figure 13-1); E keeps running from the 68000 with the bus
+granted away (Apple's text); the card's power budget (1.5 A at +5 V, 7 W in all) and outline (213 by 120 mm, 15.58 to
+4.61 mm of height); a cable to a connector card for the rear port. Still open:
 
-1. The pinout itself against Apple's (the *Guide*'s chapter 14, *Designing Cards and Drivers* 3rd edition page 284)
-   and a meter: which Euro-DIN row letter is each column, and which end is pin 1.
-2. Does a 68000 coming out of reset (power-on, or a board reset, both of which reset it on the SE) wait while
+1. Does a 68000 coming out of reset (power-on, or a board reset, both of which reset it on the SE) wait while
    /BGACK is held, or does it start its vector fetch? (Section 4.)
-3. Does E keep running from the 68000 while the bus is granted away, as we read the manual?
-4. The slot's power budget on each rail, on an original analog board and on replacement supplies.
-5. Physical: the height under the chassis along the card (more at the back, the owner says), the rear cut-out's
-   position and size, and whether a card's edge can meet it
-   (deciding between a panel board on a cable and connectors on the card, section 6).
-6. For Card P: where the Pi's SD card and connectors end up relative to the rear cut-out.
-7. For a CM3+ card: which SD controller the module's eMMC is on.
-8. For a CM4 card: the FPGA or the CPLD protocol, and which Emu68 back end it matches.
+2. A meter on a real SE: the pinout, row letters and pin 1 as Apple's figure has them.
+3. Which end of the card has the 15.58 mm and which the 4.61 mm (Figure 17-2 against the owner's "more room towards
+   the back"), and how a Pi 3 on a header fits under it.
+4. A CM4 card's real draw against the 7 W limit.
+5. For Card P: where the Pi's SD card and connectors end up, reachable without taking the card out.
+6. For a CM3+ card: which SD controller the module's eMMC is on.
+7. For a CM4 card: the FPGA or the CPLD protocol, and which Emu68 back end it matches.
 
 ## Sources
 
@@ -418,9 +481,11 @@ C16M; /HALT is wired to /RESET. Still open:
 - Chris Adams, "Mac SE port pinouts", The Mac SE Support Pages, May 1993: the SE's internal system expansion slot,
   pin by pin, with signal descriptions (section 3). Read from the mirror
   https://machut.net/mirrors/www.ccadams.org/se/pinouts.html (sent by the owner, 24 November 2026).
-- Apple Computer, *Designing Cards and Drivers for the Macintosh Family*, 2nd and 3rd editions: the SE's 68000
-  direct slot pinout (corrected in the 3rd edition, page 284) and card dimensions. Scanned copy of the 2nd
-  edition: https://www.vintageapple.org/inside_o/pdf/Designing_Cards_and_Drivers_for_the_Macintosh_Family_2nd_Edition_1990.pdf
+- Apple Computer, *Designing Cards and Drivers for the Macintosh Family*, 3rd edition (1992), sent by the owner:
+  chapter 13 (Figure 13-1 the SE's slot pinout, page 284; Table 13-1 signals and loading, pages 285-287; coprocessor
+  bus takeover and E; Figures 13-2 and 13-3 RAM timing; the address map; Table 13-3 the power budget, page 298) and
+  chapter 17 (Figures 17-1 to 17-8: the card's outline and height, the connectors, the cable and connector card).
+  Scan: https://www.vintageapple.org/inside_o/pdf/Designing_Cards_and_Drivers_for_the_Macintosh_Family_3rd_Edition_1992.pdf
 - Apple, *Guide to the Macintosh Family Hardware*, 2nd edition: the SE's bus, BBU and VIA (docs/18 cites the
   pages it used); chapter 14, the signal tables of the 96-pin 68000 slot and the 120-pin 68030 slot.
 - AllPinouts, "Apple Macintosh Processor-Direct Slot (PDS)" (updated 29 June 2026): the 120-pin 68030 slot (SE/30,
