@@ -29,10 +29,15 @@
  *  6. Status: state, model, message, speed, load; mode, nat_w, nat_h (the picture's natural size, for the zoom box).
  *  7. Disks from the Mac (24 November 2026, below): the program's files described in its media slots and put in with
  *     A68A_C_MACINSERT; the card's requests for their bytes answered from every loop the program runs.
+ *  8. Repairs (24 November 2026, psmac_repair.h): when the card finds it drew outside the window's region as the
+ *     region is now (another window moved over it while a picture was drawn), it posts the rectangles at
+ *     A68A_OFF_REPAIR; the program has the Mac paint them again (PaintBehind) and writes the request's seq into
+ *     repair_done.
  */
 #ifndef PSMAC_A2_H
 #define PSMAC_A2_H
 #include <stdint.h>
+#include "psmac_repair.h"
 
 #define A68A_MAGIC        0x41363541u        /* 'A65A' (Aurora65's DESIGN, "The card in Aurora68") */
 #define A68A_VERSION      1u
@@ -40,6 +45,7 @@
 #define A68A_OFF_BLOCK    0x00000u
 #define A68A_OFF_MESSAGE  0x00100u
 #define A68A_OFF_INPUT    0x00400u           /* A68A_IN_SLOTS x struct a68a_in */
+#define A68A_OFF_REPAIR   0x00800u           /* struct a68_repair (psmac_repair.h): what the card asks the Mac to paint again */
 #define A68A_OFF_TEXT     0x01000u           /* 80 x 24 cells: the ASCII character in the low byte, A68A_ATTR_* in the high */
 #define A68A_OFF_DISKS    0x08000u           /* struct a68a_disks */
 #define A68A_OFF_ROM      0xFC000u
@@ -174,7 +180,8 @@ struct a68a_block {
     uint32_t front;                          /* 1: the program's window is the Mac's front window */
     uint32_t prog;                           /* A68A_PROG_* */
     uint32_t alive;                          /* + 1 at every turn of the program's event loop (A68A_PROG_LIVE) */
-    uint32_t pad1[9];
+    uint32_t repair_done;                    /* the last repair request (A68A_OFF_REPAIR's seq) the program had painted */
+    uint32_t pad1[8];
     /* the card again: 0x100 */
     char     message[128];                   /* what the Apple is doing, or why it stopped, in words (ASCII) */
 };
@@ -189,6 +196,8 @@ _Static_assert(__builtin_offsetof(struct a68a_block, in_head) == 0xCC, "a68a_blo
 _Static_assert(__builtin_offsetof(struct a68a_block, front) == 0xD0, "a68a_block front");
 _Static_assert(__builtin_offsetof(struct a68a_block, prog) == 0xD4 && __builtin_offsetof(struct a68a_block, alive) == 0xD8, "a68a_block prog");
 _Static_assert(__builtin_offsetof(struct a68a_block, message) == A68A_OFF_MESSAGE, "a68a_block message");
+_Static_assert(__builtin_offsetof(struct a68a_block, repair_done) == 0xDC, "a68a_block repair_done");
+_Static_assert(A68A_OFF_INPUT + A68A_IN_SLOTS * 16 <= A68A_OFF_REPAIR && A68A_OFF_REPAIR + sizeof(struct a68_repair) <= A68A_OFF_TEXT, "a68a repair");
 _Static_assert(sizeof(struct a68a_in) == 16, "a68a_in");
 
 #define A68A_ATTR_INVERSE   0x01             /* the cells' attributes (aurora65.h's A65_ATTR_*) */

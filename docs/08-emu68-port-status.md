@@ -6961,3 +6961,50 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    - *Not verified:* the owner's SE and SD card path, a real AppleShare volume (Lagoon) or floppy, Finder drag and drop
      itself (the agent's `open` sends the same event; the bundle's `'****'` reference is what lets the Finder accept a
      drop, and a Finder that knew the program before may need its desktop rebuilt to learn it), System 6.
+
+144. **The Apple's screen left inside a Finder window: drawing with a region the Mac had changed (24 November 2026).** The
+   owner's SE, on its 2560 x 1440 HDMI screen: the Apple II window open and busy at the BASIC prompt, the Finder in
+   front, a Finder window ("Utilities") dragged so that it covered part of the Apple's window; afterwards a rectangle of
+   the Apple's screen, four rows of its text, stood inside the Finder's window on its white content and stayed there.
+   docs/20 "Drawn over another window" is the long form, docs/19 the PC card's part.
+   - *Cause, read in the code.* Each card's `draw()` read the window's visRgn once a picture (`psmac_wclip_parts`) and
+     drew every rectangle of it afterwards. A picture on the HDMI screen is 1120 x 768 pixels at 32 bits, and the card's
+     core is given to the HDMI sound and to the other guest between turns; meanwhile the Mac, on core 0, moves the other
+     window and gives the Apple's its smaller region, and the picture goes on with the region it read. Nothing on the
+     Mac then has a reason to draw that part of the Finder's window again. The PC card has the same pattern, with the
+     sound's turn every 16 rows inside its pictures; the video decoder card (`psmac_video.c`) too, not changed yet.
+   - *Seen in QEMU only with help.* The solo board, System 7.1, the 1024 x 768 screen, Aurora65's test ROM and a boot
+     sector of our own printing for ever (`tools/a2card_print.s`): with the region read once a picture (`a2.guard=off`)
+     and 100 ms between the reading and the drawing (`a2.racedelay=100`, a testbed option made for this), a click
+     bringing the Finder's window in front of the Apple's left the Apple's rows inside it, to stay. Drags never raced:
+     QEMU's Mac takes over a second for a drag, no other program runs meanwhile, and the card stops drawing once
+     Aurora68 Apple II's loop has stood still a second (item 138's `alive`); the owner's quick drag on the SE ended
+     inside that second. `a2.alivems=10000` (testbed only) stands for the quick drag.
+   - *The cure, in two layers* (`psmac_wclip.c`, "the overdraw guard", used by both cards). The region's fingerprint
+     (master pointer, `rgnSize`, a checksum of its bytes) is read with its rectangles and again before every band of
+     16,384 pixels and at the picture's end: when it differs the picture is given up and drawn again whole with the new
+     region. Every band is noted before it is drawn; when the region or the window's place is seen to have changed (at
+     any turn of the core's loop), what was drawn in the last 200 ms, or by a picture that saw the change, less the
+     region the window has now, is posted as a repair request (`psmac_repair.h`, at `A68A_OFF_REPAIR` / `A68P_OFF_REPAIR`,
+     done word `repair_done` at $DC of the Mac's half). Aurora68 Apple II 1.3 and Aurora68 PC 1.3 carry it out at every
+     beat of every loop, in the background too (`mac/a68pc/repair.h`): the rectangles made global through their screen's
+     `gdRect`, less the window's own visRgn, inside GrayRgn, then PaintBehind from the root layer's first child (System 7
+     keeps each program's windows in a layer, as docs/13 "Windows" found), or WindowList on System 6.
+   - *Tested.* Host: `tools/a2card_test.sh` runs `cover-32`, `cover-8`, `cover-old-32` and `tools/pccard_test.sh` runs
+     `cover-32`, `cover-old-32`: the region rewritten in place to an L in the middle of a picture with a pretend Finder
+     window painted there, before a band's look (given up, nothing drawn over) and just after (the band drawn over, one
+     repair request for exactly that part, painted again by the pretend program, nothing left); with the guard off the
+     covered part stays the Apple's (96,095 of 96,320 pixels) or the PC's (130,320). QEMU with the cure, 1024 x 768
+     (`a2.racedelay=100 a2.alivems=10000`): drags of the Finder's window over the Apple's, clicks bringing each to the
+     front, the Finder's window over the Apple's top left, the Apple's window grown and zoomed back over the desktop: 31
+     pictures given up, 19 repair requests, all carried out, no leftover in any screenshot; so PaintBehind from the
+     layers' root repaints another program's windows and the desktop under System 7.1 with Aurora68 Apple II in the
+     background. At 512 x 342 with the looks between bands left out (`a2.guard=repair`, the second layer alone): 6
+     repair requests, all carried out, no leftover. And with no testbed option, as the owner runs it, at 512 x 342: 19
+     repair requests, 18 of them for pictures that looked unchanged throughout but ended within 200 ms of a change (the
+     price: the newly covered part of the other window drawn once more), all carried out, no leftover; some asked for
+     the whole window (its region read empty for a moment, apparently while the Process Manager brought a layer to the
+     front), and the program's DiffRgn with its own region made them right.
+     `make -C mac check` with `AURORA65_DIR` and `AURORA86_DIR`.
+   - *Not verified:* the owner's SE and a 32-bit screen in QEMU, System 6, the PC card in QEMU (host tests only), the
+     video decoder card (not changed).

@@ -26,10 +26,14 @@
  *  5. Status: state, message, mips_x10, load; mode, nat_w, nat_h (the picture's natural size, for the zoom box).
  *  6. While it runs: prog = A68P_PROG_LIVE and alive + 1 at every turn of its event loop (the card draws only while alive
  *     moves); before it quits: prog = A68P_PROG_GONE, visible 0, the region taken back, geom_seq + 1, A68P_C_NOWINDOW.
+ *  7. Repairs (24 November 2026, psmac_repair.h): rectangles the card drew outside the window's region as it is now
+ *     (another window moved over it during a picture), posted at A68P_OFF_REPAIR; the program has the Mac paint them
+ *     again (PaintBehind) and writes the request's seq into repair_done.
  */
 #ifndef PSMAC_PC_H
 #define PSMAC_PC_H
 #include <stdint.h>
+#include "psmac_repair.h"
 
 #define A68P_MAGIC        0x41363850u        /* 'A68P' */
 #define A68P_VERSION      1u
@@ -37,6 +41,7 @@
 #define A68P_OFF_BLOCK    0x00000u
 #define A68P_OFF_MESSAGE  0x00100u
 #define A68P_OFF_INPUT    0x00400u           /* A68P_IN_SLOTS x struct a68p_in */
+#define A68P_OFF_REPAIR   0x00800u           /* struct a68_repair (psmac_repair.h): what the card asks the Mac to paint again */
 #define A68P_OFF_TEXT     0x01000u           /* cols x rows cells: character in the low byte, attribute in the high */
 #define A68P_OFF_TINFO    0x04E00u           /* struct a68p_tinfo: the 16 colours and the text screen's numbers */
 #define A68P_OFF_FONT     0x05000u           /* 256 glyphs x 32 bytes, the PC's own (VGA plane 2) */
@@ -173,7 +178,8 @@ struct a68p_block {
                                                 psmac_guest.c gives the front window's machine the core first) */
     uint32_t prog;                           /* A68P_PROG_* */
     uint32_t alive;                          /* + 1 at every turn of the program's event loop (A68P_PROG_LIVE) */
-    uint32_t pad1[9];
+    uint32_t repair_done;                    /* the last repair request (A68P_OFF_REPAIR's seq) the program had painted */
+    uint32_t pad1[8];
     /* the card again: 0x100 */
     char     message[128];                   /* what the PC is doing, or why it stopped, in words (ASCII) */
 };
@@ -184,6 +190,8 @@ _Static_assert(__builtin_offsetof(struct a68p_block, front) == 0xD0, "a68p_block
 _Static_assert(__builtin_offsetof(struct a68p_block, prog) == 0xD4 && __builtin_offsetof(struct a68p_block, alive) == 0xD8, "a68p_block prog");
 _Static_assert(__builtin_offsetof(struct a68p_block, nodraw) == 0x64, "a68p_block nodraw");
 _Static_assert(__builtin_offsetof(struct a68p_block, message) == A68P_OFF_MESSAGE, "a68p_block message");
+_Static_assert(__builtin_offsetof(struct a68p_block, repair_done) == 0xDC, "a68p_block repair_done");
+_Static_assert(A68P_OFF_INPUT + A68P_IN_SLOTS * 16 <= A68P_OFF_REPAIR && A68P_OFF_REPAIR + sizeof(struct a68_repair) <= A68P_OFF_TEXT, "a68p repair");
 _Static_assert(sizeof(struct a68p_in) == 16, "a68p_in");
 
 struct a68p_tinfo {                          /* at A68P_OFF_TINFO */

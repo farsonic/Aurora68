@@ -233,3 +233,191 @@ int psmac_wclip_cursor_box(uint32_t screen, int32_t out[4])
     }
     return 0;
 }
+
+/* ---- the overdraw guard (24 November 2026) ---------------------------------------------------------------------
+   The owner's SE, the 2560 x 1440 HDMI screen: the Apple II window open and busy at the BASIC prompt, the Finder in
+   front, a Finder window ("Utilities") dragged over part of the Apple's window; afterwards a rectangle of the Apple's
+   screen, several rows of its text, stayed inside the Finder's window on top of its white content. Each card read
+   the visRgn once per picture and drew every rectangle of it afterwards; on a deep, large screen a picture takes
+   milliseconds, and its core can be given to the sound or the other guest between the reading and the drawing, while
+   the Mac, on core 0, finishes the drag: MoveWindow puts the Finder's window in its new place and gives the Apple's
+   window its smaller region. The picture then went on with the region it had read, over the Finder's window, and
+   nothing on the Mac had a reason to draw it again. The cure is in two layers (psmac_wclip.h): the region is looked
+   at again before every band of a picture, and what was drawn shortly before the region changed, outside the new
+   region, is handed to the program to have the Mac paint it again. */
+int psmac_wclip_sig(uint32_t rgn, uint32_t flags, struct psmac_wclip_sig *s)
+{
+    int ok;
+    uint32_t mp, size, v, sum = 0x9E3779B9u;
+    if (rgn & 3) return 0;
+    mp = psmac_wclip_rd32(rgn, &ok);
+    if (!ok) return 0;
+    if (flags & PSMAC_WCLIP_24BIT) mp &= 0x00FFFFFFu;
+    if ((mp & 1) || !rd16(mp, &size) || size < 10 || size > 8192 || (size & 1)) return 0;
+    for (uint32_t a = mp; a < mp + size; a += 2) {     /* the region's own bytes only: what follows it is another block's */
+        if (!rd16(a, &v)) return 0;
+        sum = (sum << 5 | sum >> 27) ^ v;
+    }
+    s->mp = mp; s->size = size; s->sum = sum;
+    return 1;
+}
+int psmac_wclip_parts_sig(int32_t out[PSMAC_WCLIP_MAX][4], uint32_t rgn, uint32_t flags, int32_t x0, int32_t y0,
+                          int32_t cx0, int32_t cy0, int32_t cx1, int32_t cy1, struct psmac_wclip_sig *sig)
+{
+    struct psmac_wclip_sig again;
+    if (!psmac_wclip_sig(rgn, flags, sig)) return -1;
+    int n = psmac_wclip_parts(out, rgn, flags, x0, y0, cx0, cy0, cx1, cy1);
+    if (n < 0 || !psmac_wclip_sig(rgn, flags, &again) || !psmac_wclip_sig_eq(sig, &again)) return -1;
+    return n;
+}
+int psmac_wclip_minus(int32_t a[][4], int n, int max, const int32_t b[][4], int nb)
+{
+    int32_t tmp[64][4];
+    if (max > 64) max = 64;
+    for (int j = 0; j < nb && n > 0; j++) {
+        int m = 0, over = 0;
+        for (int i = 0; i < n; i++) {
+            int32_t t = a[i][0], l = a[i][1], bo = a[i][2], r = a[i][3];
+            int32_t it = t > b[j][0] ? t : b[j][0], il = l > b[j][1] ? l : b[j][1];
+            int32_t ib = bo < b[j][2] ? bo : b[j][2], ir = r < b[j][3] ? r : b[j][3];
+            int32_t p[4][4];
+            int k = 0;
+            if (it >= ib || il >= ir) { p[k][0] = t; p[k][1] = l; p[k][2] = bo; p[k][3] = r; k++; }   /* untouched */
+            else {                                                  /* up to four pieces round the overlap */
+                if (t < it) { p[k][0] = t; p[k][1] = l; p[k][2] = it; p[k][3] = r; k++; }
+                if (ib < bo) { p[k][0] = ib; p[k][1] = l; p[k][2] = bo; p[k][3] = r; k++; }
+                if (l < il) { p[k][0] = it; p[k][1] = l; p[k][2] = ib; p[k][3] = il; k++; }
+                if (ir < r) { p[k][0] = it; p[k][1] = ir; p[k][2] = ib; p[k][3] = r; k++; }
+            }
+            for (int q = 0; q < k; q++) {
+                if (m == max) { over = 1; break; }
+                for (int c = 0; c < 4; c++) tmp[m][c] = p[q][c];
+                m++;
+            }
+            if (over) break;
+        }
+        if (over) {                                             /* too many pieces: the bounding box of what a held */
+            int32_t bb[4] = { a[0][0], a[0][1], a[0][2], a[0][3] };
+            for (int i = 1; i < n; i++) {
+                if (a[i][0] < bb[0]) bb[0] = a[i][0];
+                if (a[i][1] < bb[1]) bb[1] = a[i][1];
+                if (a[i][2] > bb[2]) bb[2] = a[i][2];
+                if (a[i][3] > bb[3]) bb[3] = a[i][3];
+            }
+            for (int c = 0; c < 4; c++) a[0][c] = bb[c];
+            return 1;
+        }
+        for (int i = 0; i < m; i++) for (int c = 0; c < 4; c++) a[i][c] = tmp[i][c];
+        n = m;
+    }
+    return n;
+}
+
+void psmac_wclip_guard_begin(struct psmac_wclip_guard *g, uint32_t rgn, uint32_t flags, const struct psmac_wclip_sig *s,
+                             uint32_t screen, int32_t x0, int32_t y0)
+{
+    /* the notes go on while the region and the place are the ones they were made with (psmac_wclip_guard_watch has
+       looked at any change before this picture); else they start again */
+    if (g->n && (g->rgn != rgn || g->flags != flags || !psmac_wclip_sig_eq(&g->sig, s) || g->screen != screen || g->x0 != x0 || g->y0 != y0)) {
+        g->n = 0;
+        g->suspect = 0;
+    }
+    g->rgn = rgn; g->flags = flags; g->sig = *s; g->screen = screen; g->x0 = x0; g->y0 = y0;
+}
+int psmac_wclip_guard_still(struct psmac_wclip_guard *g)
+{
+    struct psmac_wclip_sig now;
+    g->looks++;
+    return psmac_wclip_sig(g->rgn, g->flags, &now) && psmac_wclip_sig_eq(&now, &g->sig);
+}
+void psmac_wclip_guard_add(struct psmac_wclip_guard *g, int32_t t, int32_t l, int32_t b, int32_t r)
+{
+    if (t >= b || l >= r) return;
+    for (int i = 0; i < g->n; i++) {
+        int32_t *q = g->r[i];
+        if (t >= q[0] && l >= q[1] && b <= q[2] && r <= q[3]) return;          /* already noted */
+        if (q[1] == l && q[3] == r && t <= q[2] && b >= q[0]) {               /* the same columns, touching: one */
+            if (t < q[0]) q[0] = t;
+            if (b > q[2]) q[2] = b;
+            return;
+        }
+    }
+    if (g->n == PSMAC_WCLIP_DRAWN) {                                           /* full: the last grows to hold it */
+        int32_t *q = g->r[g->n - 1];
+        if (t < q[0]) q[0] = t;
+        if (l < q[1]) q[1] = l;
+        if (b > q[2]) q[2] = b;
+        if (r > q[3]) q[3] = r;
+        return;
+    }
+    g->r[g->n][0] = t; g->r[g->n][1] = l; g->r[g->n][2] = b; g->r[g->n][3] = r;
+    g->n++;
+}
+void psmac_wclip_guard_end(struct psmac_wclip_guard *g, uint64_t t, int changed)
+{
+    if (!g->n) return;
+    g->t_end = t;
+    if (changed) { g->suspect = 1; g->given_up++; }
+}
+int psmac_wclip_guard_watch(struct psmac_wclip_guard *g, uint32_t rgn, uint32_t flags, uint32_t screen, int32_t x0,
+                            int32_t y0, int32_t w, int32_t h, int32_t sw, int32_t sh, uint64_t now, uint64_t young,
+                            int32_t out[PSMAC_WCLIP_DRAWN][4])
+{
+    if (!g->n) return 0;
+    if ((!g->suspect && now - g->t_end > young) || now - g->t_end > 20 * young) {   /* drawn long before any change since */
+        g->n = 0; g->suspect = 0;
+        return 0;
+    }
+    struct psmac_wclip_sig s;
+    int moved = screen != g->screen || x0 != g->x0 || y0 != g->y0 || rgn != g->rgn || flags != g->flags;
+    if (!moved) {
+        if (!psmac_wclip_sig(rgn, flags, &s)) return -1;
+        if (psmac_wclip_sig_eq(&s, &g->sig)) return 0;                       /* the same region: nothing */
+    }
+    /* changed: what was drawn, less the region now (on its screen: none if the window went to another) */
+    int32_t vis[PSMAC_WCLIP_MAX][4];
+    int nv = 0;
+    if (rgn && screen == g->screen) {
+        int32_t cx0 = x0 > 0 ? x0 : 0, cy0 = y0 > 0 ? y0 : 0, cx1 = x0 + w < sw ? x0 + w : sw, cy1 = y0 + h < sh ? y0 + h : sh;
+        if (cx0 < cx1 && cy0 < cy1) {
+            if (!psmac_wclip_rgn_ok(rgn, flags, w, h)) return -1;
+            nv = psmac_wclip_parts_sig(vis, rgn, flags, x0, y0, cx0, cy0, cx1, cy1, &s);
+            if (nv < 0) return -1;
+        }
+    }
+    for (int i = 0; i < g->n; i++) for (int c = 0; c < 4; c++) out[i][c] = g->r[i][c];
+    int n = psmac_wclip_minus(out, g->n, PSMAC_WCLIP_DRAWN, (const int32_t (*)[4])vis, nv);
+    if (n && !g->suspect) g->late++;                                         /* a picture that looked unchanged throughout */
+    g->n = 0;
+    g->suspect = 0;
+    return n;
+}
+void psmac_wclip_repair_post(volatile struct a68_repair *rp, uint32_t done, uint32_t screen, int32_t r[][4], int n)
+{
+    if (n <= 0) return;
+    uint32_t seq = rp->seq & ~1u;
+    uint32_t k = done == seq ? 0 : rp->n;                                    /* added to one not carried out yet */
+    if (k > A68_REPAIR_MAX) k = 0;
+    rp->seq = seq + 1;                                                       /* odd: being written */
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    for (int i = 0; i < n; i++) {
+        volatile struct a68_repair_rect *q;
+        if (k < A68_REPAIR_MAX) q = &rp->r[k++];
+        else {                                                               /* full: the last grows to hold it */
+            q = &rp->r[A68_REPAIR_MAX - 1];
+            if (q->screen == (int32_t)screen) {
+                if (r[i][0] < q->top) q->top = (int16_t)r[i][0];
+                if (r[i][1] < q->left) q->left = (int16_t)r[i][1];
+                if (r[i][2] > q->bottom) q->bottom = (int16_t)r[i][2];
+                if (r[i][3] > q->right) q->right = (int16_t)r[i][3];
+                continue;
+            }
+        }
+        q->screen = (int32_t)screen;
+        q->top = (int16_t)r[i][0]; q->left = (int16_t)r[i][1]; q->bottom = (int16_t)r[i][2]; q->right = (int16_t)r[i][3];
+    }
+    rp->n = k;
+    rp->posted = rp->posted + 1;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    rp->seq = seq + 2;
+}

@@ -314,6 +314,25 @@ the main one at 0,0, the 2560 x 1440 HDMI screen to its right) five things went 
 
 ![after Command-Q: the desktop clean](img/pc-card-qemu-quit.png) ![why the disks are missing](img/pc-card-qemu-disk-note.png)
 
+## Drawn over another window (24 November 2026)
+
+On the owner's SE a Finder window dragged over the busy Apple II window kept a rectangle of the Apple's screen inside
+it (docs/20-apple-ii-card.md, "Drawn over another window", has it in full): a picture read the window's visRgn once and
+drew with it while the Mac moved the Finder's window over it. This card drew the same way, and its pictures last longer:
+on core 1 it gives the HDMI sound its turn every 16 rows of drawing (`pc_yield`), between the region's reading and the
+last row. The same cure, from the same code (`psmac_wclip.c`, "the overdraw guard"): the region's fingerprint looked at
+before every band of 16,384 pixels and at the picture's end, the picture given up when it changed; every band noted
+before it is drawn, and what was drawn in the 200 ms before a change, outside the new region, posted at
+`A68P_OFF_REPAIR` (`psmac_repair.h`) for **Aurora68 PC 1.3**, which has the Mac paint it again with PaintBehind from
+every loop it runs (`mac/a68pc/repair.h`, shared with Aurora68 Apple II; `repair_done` at $DC of the block says it was
+done). `pc.guard=off` and `pc.racedelay=MS` are the testbed's levers, as the Apple's.
+
+Tested on the host (`tools/pccard_test.sh`, runs `cover-32` and `cover-old-32`, at Libreboot's banner on a 1280 x 800
+32-bit screen): the window's region made smaller in the middle of a picture, before a band's look (the picture given
+up, nothing drawn over) and just after it (1,448 pixels of the pretend Finder window drawn over, one repair request for
+exactly them, painted again, nothing left); with `pc.guard=off`, 130,320 pixels of the covered part left the PC's. Not
+run in QEMU with the PC card (the Apple II card's QEMU runs exercised the shared code and the program's half, docs/20).
+
 ## Options
 
 | Option | What |
@@ -328,6 +347,8 @@ the main one at 0,0, the 2560 x 1440 HDMI screen to its right) five things went 
 | `pc.img1=PATH` ... `pc.img8=PATH` | testbed only: more images in the Disks menu (semihosting cannot list a host directory) |
 | `pc.testwin=S,L,T,R,B` | testbed only: the window's place set by the kernel (no program needed), the whole rectangle drawn |
 | `pc.textlog=1` | testbed only: every changed line of the PC's text screen into the log, `[PC] \| text` |
+| `pc.guard=off` | testbed only: the region read once a picture and no repairs, as before 24 November 2026 ("Drawn over another window") |
+| `pc.racedelay=MS` | testbed only: MS (up to 500) between a picture's look at the region and its first band |
 | `pc.yield=off`, `guest.yield=off` | testbed only: core 1 as it was before 23 November 2026 (no turns for the sound inside the PC's work, the firmware a megabyte a turn; `guest.yield=off` for the scheduler's and both guests'), to compare |
 
 ## What the owner copies to the SD card

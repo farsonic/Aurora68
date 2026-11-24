@@ -32,6 +32,8 @@
  * the file locked), @maceject:SLOT, @macquit (every disk ejected, the requests answered until the card let go of all,
  * then the program stops serving, as apple.c quits), @macdie (the program gone without ejecting: its ExitToShell patch);
  * WAIT_TEXT "#msN=S": media slot N in state S (A68A_MS_*).
+ * Drawn over another window (24 November 2026, A2CARD_PROG=1): @cover:1 and @cover:2, the window's region made smaller
+ * in the middle of a picture as the Mac does when another window is dropped over it (below, at cover_step).
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -97,7 +99,24 @@ static void visrgn(int32_t w, int32_t h)            /* a 32-bit zone's relocatab
     m32(HRGN, RBLK + 12);
     m16(RBLK + 12, 10); m16(RBLK + 14, 0); m16(RBLK + 16, 0); m16(RBLK + 18, (uint32_t)h); m16(RBLK + 20, (uint32_t)w);
 }
-int psmac_display_info(int i, uint32_t *w, uint32_t *h, uint32_t *d, uint32_t *b) { (void)i; (void)w; (void)h; (void)d; (void)b; return 0; }
+static uint32_t SW, SH, SD, RB;
+/* the region the window has once another window covers its content from x = cl, y = ct to its bottom right (window
+   coordinates): an L of inversion lines, rewritten in place in the same block, as the Window Manager does */
+static void visrgn_l(int32_t w, int32_t h, int32_t cl, int32_t ct)
+{
+    static const int n = 10 + 3 * 8 + 2;
+    m32(RBLK + 4, 12 + 64);
+    uint32_t a = RBLK + 12;
+    uint32_t v[] = { (uint32_t)n, 0, 0, (uint32_t)h, (uint32_t)w,
+                     0, 0, (uint32_t)w, 0x7FFF, (uint32_t)ct, (uint32_t)cl, (uint32_t)w, 0x7FFF, (uint32_t)h, 0, (uint32_t)cl, 0x7FFF, 0x7FFF };
+    for (unsigned i = 0; i < sizeof v / sizeof v[0]; i++, a += 2) m16(a, v[i]);
+}
+int psmac_display_info(int i, uint32_t *w, uint32_t *h, uint32_t *d, uint32_t *b)
+{
+    if (i || !mram) return 0;                          /* the pointer's box: none (no Mouse in the pretend memory's way) */
+    *w = SW; *h = SH; *d = SD; *b = 0x12345678u;       /* a base no GDevice has */
+    return 1;
+}
 /* the sound output's sixth source: the samples counted, and their toggles (the test ROM's beep) */
 static uint64_t snd_samples, snd_loud;
 int psmac_audio_guest_open(uint32_t rate) { (void)rate; return 1; }
@@ -109,7 +128,6 @@ extern struct psmac_guest psmac_pc_guest;
 #endif
 
 /* the Mac's screen: W x H at DEPTH, an 8-bit one with the 6 x 6 x 6 cube and greys */
-static uint32_t SW, SH, SD, RB;
 static uint8_t *scr;
 static uint32_t clut[256];
 int psmac_display_surface(int i, uint8_t **pix, uint32_t *w, uint32_t *h, uint32_t *rb, uint32_t *depth,
@@ -287,6 +305,86 @@ static uint32_t changed(int inside)
     }
     return n;
 }
+/* Drawn over another window (24 November 2026, A2CARD_PROG): @cover:1 and @cover:2 ask for a whole picture and, at
+   its second band (psmac_a2.c's BAND_HOOK), do what the Mac did on the owner's SE when a Finder window was dropped over
+   the busy Apple window: paint that window (FINDER) over the right half of the Apple's window below its first 40 lines,
+   and give the Apple's window its smaller, L-shaped region. 1: before the band's look at the region (the card must
+   see it and give the picture up); 2: just after it (the band lands on the Finder's window, and the card must ask for
+   it to be painted again: the pretend program does, painting FINDER, as the Finder would after PaintBehind). Then
+   1.5 s of turns, and every pixel there must be the Finder's. A2CARD_BUG=1 (with a2.guard=off) expects the leftover
+   (the hook's 3: after the region's one reading, before the picture is drawn). */
+#define FINDER 0x00123456u
+static int cover_mode, cover_calls, cover_done, cover_seen;
+static uint32_t cov_x0, cov_y0, cov_px_at_end, rep_done_n, rep_outside, rep_rects;
+static int covered(uint32_t x, uint32_t y) { return x >= cov_x0 && x < pwx + pww && y >= cov_y0 && y < pwy + pwh; }
+static uint32_t px_at(uint32_t x, uint32_t y) { return SD == 32 ? ((uint32_t *)(scr + y * RB))[x] & 0xFFFFFFu : scr[y * RB + x * SD / 8]; }
+static void px_set(uint32_t x, uint32_t y) { if (SD == 32) ((uint32_t *)(scr + y * RB))[x] = FINDER; else scr[y * RB + x * SD / 8] = 0x12; }
+static uint32_t not_finder(void)
+{
+    uint32_t n = 0, f = SD == 32 ? FINDER : 0x12;
+    for (uint32_t y = cov_y0; y < pwy + pwh; y++) for (uint32_t x = cov_x0; x < pwx + pww; x++) n += px_at(x, y) != f;
+    return n;
+}
+void a2_host_band(int after_look)
+{
+    if (!cover_mode || cover_done) {
+        if (after_look == 2 && cover_done && !cover_seen) { cover_seen = 1; cov_px_at_end = not_finder(); }   /* that picture's end */
+        return;
+    }
+    if (after_look == 3 && cover_mode == 2) cover_calls = 1;        /* a2.guard=off: the region read once, the picture drawn */
+    else if (after_look != (cover_mode == 1 ? 0 : 1)) return;
+    if (++cover_calls < 2) return;
+    cover_done = 1;
+    for (uint32_t y = cov_y0; y < pwy + pwh; y++) for (uint32_t x = cov_x0; x < pwx + pww; x++) px_set(x, y);
+    visrgn_l((int32_t)pww, (int32_t)pwh, (int32_t)(cov_x0 - pwx), (int32_t)(cov_y0 - pwy));
+}
+#ifdef WITH_PC
+void pc_host_band(int after_look) { (void)after_look; }   /* the PC card's hook (tools/pccard_test.c uses it) */
+#endif
+/* the program's turn: a repair request painted (the real one: PaintBehind with the rectangles, less its own region) */
+static void prog_repairs(void)
+{
+    if (!prog_on || stalled) return;
+    volatile struct a68_repair *rp = (volatile struct a68_repair *)(win + A68A_OFF_REPAIR);
+    uint32_t s1 = rp->seq;
+    if ((s1 & 1) || s1 == blk->repair_done) return;
+    struct a68_repair_rect r[A68_REPAIR_MAX];
+    uint32_t n = rp->n > A68_REPAIR_MAX ? A68_REPAIR_MAX : rp->n;
+    for (uint32_t i = 0; i < n; i++) r[i] = rp->r[i];
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    if (rp->seq != s1) return;
+    for (uint32_t i = 0; i < n; i++) {
+        rep_rects++;
+        for (int32_t y = r[i].top; y < r[i].bottom; y++) for (int32_t x = r[i].left; x < r[i].right; x++) {
+            if (x < 0 || y < 0 || (uint32_t)x >= SW || (uint32_t)y >= SH) continue;
+            if (!covered((uint32_t)x, (uint32_t)y)) rep_outside++;  /* the card asked for more than it drew outside its region */
+            else px_set((uint32_t)x, (uint32_t)y);
+        }
+    }
+    blk->repair_done = s1;
+    rep_done_n++;
+}
+static void cover_step(int mode)
+{
+    cover_mode = mode; cover_calls = cover_done = cover_seen = 0; cov_px_at_end = 0; rep_outside = 0;
+    cov_x0 = pwx + pww / 2; cov_y0 = pwy + 40;
+    uint32_t reps0 = rep_done_n;
+    desktop();
+    cmd(A68A_C_REDRAW, 0, 0);                          /* a whole picture (an update event) */
+    poll_for(1500);
+    cover_mode = 0;
+    uint32_t left = not_finder(), vis = 0, out = changed(0);
+    for (uint32_t y = pwy; y < pwy + pwh; y++) for (uint32_t x = pwx; x < pwx + pww; x++) vis += !covered(x, y) && px_at(x, y) != (SD == 32 ? 0x808080u : 0x80u);
+    int bug = getenv("A2CARD_BUG") != 0;
+    int ok = cover_done && out == 0 && vis > 0 && (bug ? left > 0 : left == 0 && rep_outside == 0 && (mode == 1 || cov_px_at_end > 0));
+    printf("a2card_test: @cover:%d: the region changed %s the band's look; at that picture's end %u pixels of the Finder's window drawn over, "
+           "%u repair request%s carried out (%u rectangles, %u pixels asked for outside the drawn-over part), afterwards %u left; "
+           "%u pixels drawn in the part still visible, %u outside the window: %s\n",
+           mode, mode == 1 ? "before" : "just after", cov_px_at_end, rep_done_n - reps0, rep_done_n - reps0 == 1 ? "" : "s", rep_rects, rep_outside, left,
+           vis, out,
+           !ok ? "FAIL" : bug ? "the leftover, as on the owner's SE (a2.guard=off)" : mode == 1 ? "the picture given up, nothing drawn over" : "drawn over, then painted again");
+    if (!ok) prog_fails++;
+}
 static void prog_step(const char *what)
 {
     if (!strcmp(what, "live")) {
@@ -346,6 +444,7 @@ static void type_step(void)
             if (n) mac_fails++;
             mach->magic = 0; mac_on = 0;
         } else if (!strcmp(a, "macdie")) { mac_on = 0; blk->prog = A68A_PROG_GONE; }
+        else if (!strncmp(a, "cover:", 6)) { cover_step(atoi(a + 6)); pending += strlen(pending); next_key_t = host_us(); return; }
         else if (!strcmp(a, "quit") || !strcmp(a, "stall") || !strcmp(a, "crash") || !strcmp(a, "free") || !strcmp(a, "live")) {
             prog_step(a); pending += strlen(pending); next_key_t = host_us(); return;
         }
@@ -403,7 +502,7 @@ static void more_opts(const char *env)
     for (char *w = strtok(buf[k], " "); w && nopts < 32; w = strtok(0, " ")) snprintf(opts[nopts++], 200, "%s", w);
     k++;
 }
-static void poll(void) { psmac_guest_poll(2); mac_serve(); }   /* the kernel's call (psmac_guest.c), the card a guest of core 2; the pretend Mac's loop */
+static void poll(void) { psmac_guest_poll(2); mac_serve(); prog_repairs(); }   /* the kernel's call (psmac_guest.c), the card a guest of core 2; the pretend Mac's loop */
 
 int main(int argc, char **argv)
 {

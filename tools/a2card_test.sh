@@ -108,6 +108,13 @@ unset A2CARD_OPTS
 export A2CARD_OPTS="a2.rom=$ROM2E a2.d1=$T/test.dsk"
 A2CARD_PROG=1 run prog-se 512x342x1 "$T/prog-se.pnm" 60 "5.25 DONE" '@stall' "5.25 DONE" '@live' "5.25 DONE" '@crash' "5.25 DONE" '@live' \
     "5.25 DONE" '@free' "5.25 DONE" '@live' "5.25 DONE" '@quit' "5.25 DONE" '@live' "5.25 DONE"
+# drawn over another window (24 November 2026, the owner's SE: a Finder window dropped over the busy Apple window kept a
+# rectangle of the Apple's screen): on a 32-bit screen at 560 x 384, the window's region made smaller in the middle of a
+# picture, before a band's look at it (the picture given up) and just after (the band drawn over, then painted again
+# at the card's request); then with a2.guard=off, the region read once a picture as before that day: the leftover
+A2CARD_PROG=1 run cover-32 1280x800x32 "$T/cover-32.pnm" 40 "5.25 DONE" '@cover:1' "5.25 DONE" '@live' "5.25 DONE" '@cover:2' "5.25 DONE" '@live' "5.25 DONE"
+A2CARD_PROG=1 run cover-8 1024x768x8 "$T/cover-8.pnm" 40 "5.25 DONE" '@cover:2' "5.25 DONE"
+A2CARD_OPTS="$A2CARD_OPTS a2.guard=off" A2CARD_BUG=1 A2CARD_PROG=1 run cover-old-32 1280x800x32 "$T/cover-old-32.pnm" 40 "5.25 DONE" '@cover:2' "5.25 DONE"
 # a change of model: the II+ from apple2plus.rom in the run's folder (a host path relative to it, as the card's root)
 cp "$ROM2" "$T/apple2plus.rom"
 export A2CARD_OPTS="a2.rom=$ROM2E a2.d1=$T/test.dsk"

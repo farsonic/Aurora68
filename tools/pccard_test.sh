@@ -33,7 +33,13 @@ export PCCARD_TWO=1 PCCARD_WIN=1,88,60
 run two-hdmi "$ROM" "$VGA" - 512x342x1 "$T/two-hdmi.pnm" 90 "Libreboot" '@quit' "Libreboot" '@live' "No bootable device"
 export PCCARD_WIN=0,15,40
 run two-se "$ROM" "$VGA" - 512x342x1 "$T/two-se.pnm" 90 "Libreboot" '@stall' "Libreboot" '@live' "No bootable device"
-unset PCCARD_PROG PCCARD_TWO PCCARD_WIN
+unset PCCARD_TWO PCCARD_WIN
+# drawn over another window (24 November 2026, docs/20 "Drawn over another window"): the window's region made smaller in
+# the middle of a picture on a 32-bit screen, before a band's look (given up) and just after (drawn over, then painted
+# again at the card's request); with pc.guard=off, as before that day: the leftover
+run cover-32 "$ROM" "$VGA" - 1280x800x32 "$T/cover-32.pnm" 90 "Libreboot" '@cover:1' "Libreboot" '@live' "Libreboot" '@cover:2' "Libreboot"
+PCCARD_OPTS="pc.guard=off" PCCARD_BUG=1 run cover-old-32 "$ROM" "$VGA" - 1280x800x32 "$T/cover-old-32.pnm" 90 "Libreboot" '@cover:2' "Libreboot"
+unset PCCARD_PROG
 if [ -f "$FD" ]; then
     # a copy: the card writes what the PC writes back into the image (docs/19-pc-card.md "Disks"), and FreeDOS's own
     # download stays as it came

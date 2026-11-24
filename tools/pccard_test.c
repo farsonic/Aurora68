@@ -68,7 +68,16 @@ int psmac_card_pc_write(int file, uint32_t off, const void *buf, uint32_t n) { (
 int psmac_card_pc_writable(void) { return 0; }
 int psmac_card_pc_list(void (*cb)(void *, const char *, uint32_t), void *ctx) { (void)cb; (void)ctx; return -1; }
 int psmac_sh_write(int64_t fd, const void *buf, uint64_t len) { return fwrite(buf, 1, len, fh[fd]) == len; }
-int psmac_display_info(int i, uint32_t *w, uint32_t *h, uint32_t *d, uint32_t *b) { (void)i; (void)w; (void)h; (void)d; (void)b; return 0; }
+static uint32_t SW, SH, SD, RB;
+static uint8_t *scr1;
+#define S1W 1024u
+#define S1H 768u
+int psmac_display_info(int i, uint32_t *w, uint32_t *h, uint32_t *d, uint32_t *b)
+{
+    if (i == 0 && SW) { *w = SW; *h = SH; *d = SD; *b = 0x12345678u; return 1; }   /* a base no GDevice has: no pointer's box */
+    if (i == 1 && scr1) { *w = S1W; *h = S1H; *d = 8; *b = 0x12345679u; return 1; }
+    return 0;
+}
 void psmac_guest_yield(void) { }
 
 /* the pretend Mac memory (PCCARD_PROG): aligned longs in the host's order, as the kernel reads the Mac's with one load */
@@ -91,12 +100,8 @@ static void visrgn(int32_t w, int32_t h)            /* a 32-bit zone's relocatab
 }
 
 /* the Mac's screen: W x H at DEPTH, an 8-bit one with the 6 x 6 x 6 cube and greys; with PCCARD_TWO a second one */
-static uint32_t SW, SH, SD, RB;
 static uint8_t *scr;
 static uint32_t clut[256];
-#define S1W 1024u
-#define S1H 768u
-static uint8_t *scr1;
 int psmac_display_surface(int i, uint8_t **pix, uint32_t *w, uint32_t *h, uint32_t *rb, uint32_t *depth,
                           const volatile uint32_t **c, uint32_t *seq, int *gray)
 {
@@ -180,17 +185,102 @@ static void give_place(void)
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
     blk->geom_seq = blk->geom_seq + 1;
 }
+/* Drawn over another window (24 November 2026, as tools/a2card_test.c's @cover): @cover:1 and @cover:2 ask for a whole
+   picture (screen 0, at 8 or 32 bits) and at its second band (psmac_pc.c's BAND_HOOK) paint a pretend Finder window
+   (FINDER) over the right half of the PC's window below its first 40 lines and give the window its smaller, L-shaped
+   region; 1 before the band's look at the region, 2 just after. The program's turns paint the repair requests FINDER
+   (as PaintBehind and the Finder's update would). Every pixel there must be the Finder's 1.5 s later. */
+#define FINDER 0x00123456u
+static int cover_mode, cover_calls, cover_done, cover_seen;
+static int32_t cov_x0, cov_y0;
+static uint32_t cov_px_at_end, rep_done_n, rep_outside, rep_rects;
+static int covered(int32_t x, int32_t y) { return x >= cov_x0 && x < wr && y >= cov_y0 && y < wb; }
+static uint32_t px_at(int32_t x, int32_t y) { return SD == 32 ? ((uint32_t *)(scr + (uint32_t)y * RB))[x] & 0xFFFFFFu : scr[(uint32_t)y * RB + (uint32_t)x * SD / 8]; }
+static void px_set(int32_t x, int32_t y) { if (SD == 32) ((uint32_t *)(scr + (uint32_t)y * RB))[x] = FINDER; else scr[(uint32_t)y * RB + (uint32_t)x * SD / 8] = 0x12; }
+static uint32_t not_finder(void)
+{
+    uint32_t n = 0, f = SD == 32 ? FINDER : 0x12;
+    for (int32_t y = cov_y0; y < wb; y++) for (int32_t x = cov_x0; x < wr; x++) n += px_at(x, y) != f;
+    return n;
+}
+static void visrgn_l(int32_t w, int32_t h, int32_t cl, int32_t ct)  /* the L the window keeps, rewritten in place */
+{
+    static const int n = 10 + 3 * 8 + 2;
+    m32(BLK + 4, 12 + 64);
+    uint32_t a = BLK + 12;
+    uint32_t v[] = { (uint32_t)n, 0, 0, (uint32_t)h, (uint32_t)w,
+                     0, 0, (uint32_t)w, 0x7FFF, (uint32_t)ct, (uint32_t)cl, (uint32_t)w, 0x7FFF, (uint32_t)h, 0, (uint32_t)cl, 0x7FFF, 0x7FFF };
+    for (unsigned i = 0; i < sizeof v / sizeof v[0]; i++, a += 2) m16(a, v[i]);
+}
+void pc_host_band(int after_look)
+{
+    if (!cover_mode || cover_done) {
+        if (after_look == 2 && cover_done && !cover_seen) { cover_seen = 1; cov_px_at_end = not_finder(); }
+        return;
+    }
+    if (after_look == 3 && cover_mode == 2) cover_calls = 1;        /* pc.guard=off: the region read once, the picture drawn */
+    else if (after_look != (cover_mode == 1 ? 0 : 1)) return;
+    if (++cover_calls < 2) return;
+    cover_done = 1;
+    for (int32_t y = cov_y0; y < wb; y++) for (int32_t x = cov_x0; x < wr; x++) px_set(x, y);
+    visrgn_l(wr - wl, wb - wt, cov_x0 - wl, cov_y0 - wt);
+}
+static void prog_repairs(void)                       /* the program's turn: a repair request painted */
+{
+    volatile struct a68_repair *rp = (volatile struct a68_repair *)(win + A68P_OFF_REPAIR);
+    uint32_t s1 = rp->seq;
+    if (!prog_on || (s1 & 1) || s1 == blk->repair_done) return;
+    struct a68_repair_rect r[A68_REPAIR_MAX];
+    uint32_t n = rp->n > A68_REPAIR_MAX ? A68_REPAIR_MAX : rp->n;
+    for (uint32_t i = 0; i < n; i++) r[i] = rp->r[i];
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    if (rp->seq != s1) return;
+    for (uint32_t i = 0; i < n; i++) {
+        rep_rects++;
+        for (int32_t y = r[i].top; y < r[i].bottom; y++) for (int32_t x = r[i].left; x < r[i].right; x++) {
+            if (r[i].screen || x < 0 || y < 0 || (uint32_t)x >= SW || (uint32_t)y >= SH) continue;
+            if (!covered(x, y)) rep_outside++;
+            else px_set(x, y);
+        }
+    }
+    blk->repair_done = s1;
+    rep_done_n++;
+}
 static void poll_for(uint32_t ms)                    /* the card's core, and the program's loop beside it */
 {
     uint64_t end = pc_host_now() + (uint64_t)ms * 1000u;
     while (pc_host_now() < end) {
         psmac_pc_poll(2);
+        prog_repairs();
         if (prog_on && !stalled && pc_host_now() >= beat_t) { blk->alive = blk->alive + 1; beat_t = pc_host_now() + 100000; }
     }
 }
 static int prog_fails;
+static void cover_step(int mode)
+{
+    cover_mode = mode; cover_calls = cover_done = cover_seen = 0; cov_px_at_end = 0; rep_outside = 0;
+    cov_x0 = wl + (wr - wl) / 2; cov_y0 = wt + 40;
+    uint32_t reps0 = rep_done_n;
+    desktop();
+    blk->cmd = A68P_C_REDRAW; blk->arg0 = blk->arg1 = 0;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    blk->cmd_seq = blk->cmd_seq + 1;
+    poll_for(1500);
+    cover_mode = 0;
+    uint32_t left = not_finder(), vis = 0, out = changed(0, 0, wl, wt, wr, wb);
+    for (int32_t y = wt; y < wb; y++) for (int32_t x = wl; x < wr; x++) vis += !covered(x, y) && px_at(x, y) != (SD == 32 ? 0x808080u : 0x80u);
+    int bug = getenv("PCCARD_BUG") != 0;
+    int ok = cover_done && out == 0 && vis > 0 && (bug ? left > 0 : left == 0 && rep_outside == 0 && (mode == 1 || cov_px_at_end > 0));
+    printf("pccard_test: @cover:%d: the region changed %s the band's look; at that picture's end %u pixels of the Finder's window drawn over, "
+           "%u repair request%s carried out (%u rectangles, %u pixels asked for outside the drawn-over part), afterwards %u left; "
+           "%u pixels drawn in the part still visible, %u outside the window: %s\n",
+           mode, mode == 1 ? "before" : "just after", cov_px_at_end, rep_done_n - reps0, rep_done_n - reps0 == 1 ? "" : "s", rep_rects, rep_outside, left,
+           vis, out, !ok ? "FAIL" : bug ? "the leftover (pc.guard=off)" : mode == 1 ? "the picture given up, nothing drawn over" : "drawn over, then painted again");
+    if (!ok) prog_fails++;
+}
 static void prog_step(const char *what)
 {
+    if (!strncmp(what, "@cover:", 7)) { cover_step(atoi(what + 7)); return; }
     if (!strcmp(what, "@live")) {
         stalled = 0; blk->alive = blk->alive + 1; give_place();
         poll_for(300); desktop(); poll_for(1200);         /* a redraw comes at once; then the cursor's blinks and the text */
@@ -229,7 +319,8 @@ static const char *pending; static uint64_t next_key_t;
 static void type_step(void)
 {
     if (!pending || !*pending || pc_host_now() < next_key_t) return;
-    if (!strcmp(pending, "@quit") || !strcmp(pending, "@stall") || !strcmp(pending, "@crash") || !strcmp(pending, "@free") || !strcmp(pending, "@live")) {
+    if (!strcmp(pending, "@quit") || !strcmp(pending, "@stall") || !strcmp(pending, "@crash") || !strcmp(pending, "@free") || !strcmp(pending, "@live") ||
+        !strncmp(pending, "@cover:", 7)) {
         prog_step(pending);
         pending += strlen(pending);
         next_key_t = pc_host_now();

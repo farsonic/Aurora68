@@ -446,7 +446,7 @@ APC_OBJ = $(B)/crt0.o $(B)/apc/toolbox_glue.o $(B)/apc/libc.o $(B)/apc/glue.o $(
 $(B)/a68pc.elf: $(APC_OBJ) c/app.ld
 	$(LD) -T c/app.ld --emit-relocs --no-warn-rwx-segments -z noexecstack -o $@ $(APC_OBJ) $(LIBGCC)
 $(B)/Aurora68-PC.bin: $(B)/a68pc.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py $(ICONS)
-	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 PC" --creator A68P --size 256 --icons pc --version 1.2 -o $@
+	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 PC" --creator A68P --size 256 --icons pc --version 1.3 -o $@
 
 # ---- Aurora68 Apple II: the Apple on the Aurora68 Apple II Card (slot $E) in a window (mac/a68apple,
 # docs/20-apple-ii-card.md); its Toolbox list is c/traps.txt and a68apple/traps.txt, its glue in build/aa2/; the
@@ -472,7 +472,7 @@ AA2_OBJ = $(B)/crt0.o $(B)/aa2/toolbox_glue.o $(B)/aa2/libc.o $(B)/aa2/glue.o $(
 $(B)/a68apple.elf: $(AA2_OBJ) c/app.ld
 	$(LD) -T c/app.ld --emit-relocs --no-warn-rwx-segments -z noexecstack -o $@ $(AA2_OBJ) $(LIBGCC)
 $(B)/Aurora68-AppleII.bin: $(B)/a68apple.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py $(ICONS)
-	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Apple II" --creator A68A --size 256 --icons apple2 --version 1.2 \
+	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Apple II" --creator A68A --size 256 --icons apple2 --version 1.3 \
 	    --size-flags 0x58C0 -o $@                  # 0x58C0: Aurora68's 0x5880 and isHighLevelEventAware (Open Documents: images dropped on it)
 
 # ---- PiScrn: the SE board's two screens arranged at the first boot, an INIT in C (mac/piscrn) ----
