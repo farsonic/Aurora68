@@ -46,6 +46,7 @@
 #include "psmac_pc.h"
 #include "screens.h"
 #include "place.h"
+#include "repair.h"
 
 short drv_open(void *pb), drv_control(void *pb), drv_status(void *pb);
 
@@ -102,7 +103,14 @@ static int card_open(void)
 }
 static void command(unsigned long c, unsigned long a0, unsigned long a1) { if (drv) ctl(100, (long)c, (long)a0, (long)a1); }
 /* alive: one more turn of an event loop (the card draws only while this moves, A68P_ALIVE_MS) */
-static void beat(void) { if (blk) blk->alive = blk->alive + 1; }
+static void beat(void)
+{
+	if (!blk) return;
+	blk->alive = blk->alive + 1;
+	/* Repairs (24 November 2026, Aurora68 PC 1.3; docs/19 "Drawn over another window"): any request of the card's to have
+	   the Mac paint again what it drew outside the window as the window is now (repair.h) */
+	if (drv) rp_take((volatile struct a68_repair *)(card + A68P_OFF_REPAIR), &blk->repair_done, win);
+}
 /* the window gone: nothing for the card to draw, its region handle taken back (it is freed with this program's heap).
    Plain stores, no driver call and no waiting: also run from the ExitToShell patch, where nothing else may be safe */
 static void gone(void)
@@ -382,7 +390,7 @@ static void about(void)
 	Rect b = { 90, 56, 200, 456 };
 	void *w = (void *)NewWindow(0, &b, pstr(pbuf, ""), 1, 1 /* dBoxProc */, (void *)-1, 0, 0);
 	SetPort(w);
-	MoveTo(16, 24); DrawString(pstr(pbuf, "Aurora68 PC 1.2"));
+	MoveTo(16, 24); DrawString(pstr(pbuf, "Aurora68 PC 1.3"));
 	MoveTo(16, 44); DrawString(pstr(pbuf, "A PC (Aurora86: Bochs and Libreboot) on the Aurora68"));
 	MoveTo(16, 60); DrawString(pstr(pbuf, "PC Card, in a window. Control-Option-Command-P moves"));
 	MoveTo(16, 76); DrawString(pstr(pbuf, "the keyboard and mouse between the Mac and the PC."));

@@ -29,11 +29,15 @@
  *    volume), the units' items, images dropped on the program's icon, the "Apple II Disks" folder beside the program as
  *    submenus; the card asks for their bytes and this program answers from every loop it runs (docs/20 "Disks from the
  *    Mac"). The program is high-level-event aware for that (SIZE flags 0x58C0, the Makefile).
+ *  - Repairs (24 November 2026, 1.3): a Finder window dragged over the busy Apple's window on the owner's SE kept a
+ *    rectangle of the Apple's screen; when the card finds it drew outside the window as the window is now, it asks, and
+ *    this program has the Mac paint that again (../a68pc/repair.h: PaintBehind), in the background too (beat()).
  * Human Interface Guidelines (1992); System 6 and 7.
  */
 #include "apple.h"
 #include "screens.h"
 #include "../a68pc/place.h"
+#include "../a68pc/repair.h"
 
 short drv_open(void *pb), drv_control(void *pb), drv_status(void *pb);
 
@@ -91,7 +95,14 @@ void command(unsigned long c, unsigned long a0, unsigned long a1) { if (drv) ctl
    program's freed visRgn handle, and this card was made after its pattern). alive + 1 at every turn of an event loop (the
    card draws only while it moves); at the end prog = A68A_PROG_GONE, the region taken back, A68A_C_NOWINDOW; and a patch
    on ExitToShell says GONE on any other way out (a crash the system survives, Force Quit), then puts the trap back */
-void beat(void) { if (blk) blk->alive = blk->alive + 1; }
+/* Repairs (24 November 2026, Aurora68 Apple II 1.3; docs/20 "Drawn over another window"): at every beat, any request of
+   the card's to have the Mac paint again what it drew outside the window as the window is now (repair.h) */
+void beat(void)
+{
+	if (!blk) return;
+	blk->alive = blk->alive + 1;
+	if (drv) rp_take((volatile struct a68_repair *)(card + A68A_OFF_REPAIR), &blk->repair_done, win);
+}
 static void gone(void)
 {
 	if (!blk) return;
@@ -333,7 +344,7 @@ static void about(void)
 	Rect b = { 90, 56, 200, 456 };
 	void *w = (void *)NewWindow(0, &b, pstr(pbuf, ""), 1, 1 /* dBoxProc */, (void *)-1, 0, 0);
 	SetPort(w);
-	MoveTo(16, 24); DrawString(pstr(pbuf, "Aurora68 Apple II 1.2"));
+	MoveTo(16, 24); DrawString(pstr(pbuf, "Aurora68 Apple II 1.3"));
 	MoveTo(16, 44); DrawString(pstr(pbuf, "An 8-bit Apple II (Aurora65) on the Aurora68 Apple II"));
 	MoveTo(16, 60); DrawString(pstr(pbuf, "Card, in a window. Command is Open-Apple, Option is"));
 	MoveTo(16, 76); DrawString(pstr(pbuf, "Solid-Apple; Control-Command-Delete is Control-Reset."));

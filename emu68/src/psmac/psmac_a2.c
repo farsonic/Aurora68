@@ -78,6 +78,7 @@ extern int psmac_audio_guest_open(uint32_t rate);                               
 extern uint32_t psmac_audio_guest_room(void);
 extern void psmac_audio_guest_push(const int16_t *s, uint32_t n);
 extern int psmac_board_se, psmac_board_solo;
+extern int psmac_display_info(int i, uint32_t *w, uint32_t *h, uint32_t *depth, uint32_t *base);
 
 #ifdef PSMAC_A2_HOST                         /* tools/a2card_test.c: this file on the host, with the host's Aurora65 library */
 uint64_t a2_host_now(void);
@@ -98,6 +99,11 @@ static inline uint64_t ms_ticks(uint32_t ms) { return (uint64_t)ms * hz() / 1000
                                         PC card's TEXT_INSET (a glyph's first column touched the frame and read as a cut-off
                                         letter there): 284 x 192 for 280, 484 x 192 for 80 columns */
 #define AGAIN_MS       100u          /* the pointer's old box drawn again this long after the first time (psmac_pc.c) */
+#define BAND_PX        16384u        /* pixels drawn between two looks at the window's region (24 November 2026, "drawn over
+                                        another window" below): a few hundred microseconds of drawing on a Pi 3 */
+#define REPAIR_MS      200u          /* what was drawn this long before the region was seen to change may have landed on
+                                        another window: the Mac paints it again (the change is seen within a turn of the
+                                        core's loop, a few milliseconds; a picture on the 2560 x 1440 screen takes ~15) */
 #define RUN_MAX_US     20000u        /* the most of the Apple's time one slice runs: a catch-up is spread out */
 #define BEHIND_MAX_US  50000u        /* further behind than this, the rest is dropped (Aurora65's DESIGN) */
 #define KEY_WAIT_MS    250u          /* a key not taken by the Apple in this time is replaced by the next, as the latch is */
@@ -1395,6 +1401,36 @@ static struct under under, again;     /* the pointer's box left undrawn (psmac_p
 static int32_t under_box[4];
 static uint64_t again_t;
 static uint32_t draw_us_sum, draws_n, draws_all, menu_skips, rgn_skips, rgn_bad;
+/* Drawn over another window (24 November 2026, the owner's SE on the 2560 x 1440 HDMI screen): a Finder window dragged
+   over the busy Apple II window kept a rectangle of the Apple's text inside it. The picture had read the window's visRgn
+   once and drew with it while the Mac moved the Finder's window over it (psmac_wclip.c, "the overdraw guard"). Now the
+   region is looked at before every band of BAND_PX pixels and the picture given up the moment it changed (drawn again
+   whole with the new one), and what was drawn shortly before a change, outside the new region, is posted at
+   A68A_OFF_REPAIR for Aurora68 Apple II to have the Mac paint again. Testbed only: a2.guard=off draws as before this
+   day, a2.guard=repair with the repairs alone (no looks between bands: the second layer seen at work); a2.racedelay=MS
+   waits that long between a picture's look at the region and its first band, which makes the Mac's changes land in the
+   middle of pictures (the bug, and the cure, in QEMU). */
+static struct psmac_wclip_guard gd;
+static int guard_off, repair_only;
+static uint32_t race_ms, repair_logs;
+/* a2.alivems=MS (testbed only, 24 November 2026): the program's loop may stand still this long before nothing is drawn
+   (A68A_ALIVE_MS by default). While another program drags a window the Mac runs no other program, so Aurora68 Apple II's
+   loop stands still; QEMU's Mac takes over a second for any drag, so the card had always stopped by the drop, while
+   the owner's quick drag on the SE ended inside the second and the card was still drawing. A longer wait in the
+   testbed is the SE's quick drag */
+static uint32_t alive_ms = A68A_ALIVE_MS;
+#ifdef PSMAC_A2_HOST
+void a2_host_band(int after_look);           /* tools/a2card_test.c: the region changed in the middle of a picture */
+#define BAND_HOOK(x) a2_host_band(x)
+#else
+#define BAND_HOOK(x) do { } while (0)
+#endif
+static void race_wait(void)
+{
+    if (!race_ms) return;
+    uint64_t t = now();
+    while (now() - t < ms_ticks(race_ms)) { }
+}
 
 static void under_add(struct under *h, int32_t x0, int32_t y0, int32_t x1, int32_t y1)
 {
@@ -1584,11 +1620,11 @@ static void watch_program(void)
     uint32_t p = blk->prog, a = blk->alive;
     uint64_t t = now();
     if (a != alive_seen || p != prog_seen) { alive_seen = a; prog_seen = p; alive_t = t; }
-    int st = p == A68A_PROG_LIVE && t - alive_t >= ms_ticks(A68A_ALIVE_MS);
+    int st = p == A68A_PROG_LIVE && t - alive_t >= ms_ticks(alive_ms);
     if (st && !stale) {
         blk->stalls = blk->stalls + 1;
         release_all();
-        kprintf("[A2] Aurora68 Apple II's event loop has not turned for %u ms: nothing drawn until it does\n", A68A_ALIVE_MS);
+        kprintf("[A2] Aurora68 Apple II's event loop has not turned for %u ms: nothing drawn until it does\n", alive_ms);
     }
     if (!st && stale) need_full = 1;
     stale = st;
@@ -1601,6 +1637,67 @@ static uint32_t nodraw(void)
     if (!g.visible) return A68A_ND_HIDDEN;
     if (blk->prog == A68A_PROG_LIVE && !g.rgn) return A68A_ND_NORGN;
     return A68A_ND_DRAWS;
+}
+/* what was drawn before the region changed, outside the new one: to the program, to have the Mac paint it again */
+static uint32_t repair_seen;
+static void overdraw_watch(void)
+{
+    uint32_t done = blk->repair_done;
+    if (done != repair_seen) {                                /* the program carried a request out */
+        repair_seen = done;
+        if (repair_logs < 40) kprintf("[A2] Aurora68 Apple II had the Mac paint it again (request %u)\n", done / 2);
+    }
+    if (guard_off || !gd.n) return;
+    if (nowin) { gd.n = 0; return; }                          /* the window is gone: nobody to ask */
+    uint32_t sw, sh, d, base;
+    if (!psmac_display_info((int)g.screen, &sw, &sh, &d, &base)) return;
+    int32_t out[PSMAC_WCLIP_DRAWN][4];
+    uint32_t vf = g.vflags & A68A_VF_24BIT ? PSMAC_WCLIP_24BIT : 0;
+    int n = psmac_wclip_guard_watch(&gd, g.rgn, vf, g.screen, g.l, g.t, g.r - g.l, g.b - g.t, (int32_t)sw, (int32_t)sh,
+                                    now(), ms_ticks(REPAIR_MS), out);
+    if (n <= 0) return;
+    psmac_wclip_repair_post((volatile struct a68_repair *)(win + A68A_OFF_REPAIR), blk->repair_done, gd.screen, out, n);
+    gd.repairs++; gd.repair_rects += (uint32_t)n;
+    if (repair_logs++ < 40) {
+        int32_t bb[4] = { out[0][0], out[0][1], out[0][2], out[0][3] };
+        for (int i = 1; i < n; i++) {
+            if (out[i][0] < bb[0]) bb[0] = out[i][0];
+            if (out[i][1] < bb[1]) bb[1] = out[i][1];
+            if (out[i][2] > bb[2]) bb[2] = out[i][2];
+            if (out[i][3] > bb[3]) bb[3] = out[i][3];
+        }
+        kprintf("[A2] the window's region changed under a picture: %d rectangle%s within %d,%d-%d,%d on screen %u for the Mac to paint again%s\n",
+                n, n == 1 ? "" : "s", bb[1], bb[0], bb[3], bb[2], gd.screen, blk->prog == A68A_PROG_LIVE ? "" : " (no program to ask)");
+    }
+}
+/* the region's rectangles, in bands, the region looked at before each: 0 when it changed (the picture given up) */
+static int draw_guarded(const struct a65_screen *s, int32_t rr[][4], int n, const struct psmac_wclip_sig *sig, uint32_t vf,
+                        const int32_t *cb)
+{
+    int changed = 0, first = 1;
+    /* the region changed since the last turn's look (the Mac runs on as this core reads): the notes made with the old one
+       are dealt with first; if they cannot be yet, this picture waits */
+    if (gd.n && !psmac_wclip_sig_eq(&gd.sig, sig)) overdraw_watch();
+    if (gd.n && !psmac_wclip_sig_eq(&gd.sig, sig)) return 0;
+    psmac_wclip_guard_begin(&gd, g.rgn, vf, sig, g.screen, g.l, g.t);
+    for (int k = 0; k < n && !changed; k++) {
+        int32_t t = rr[k][0], l = rr[k][1], b = rr[k][2], r = rr[k][3];
+        int32_t rows = (int32_t)(BAND_PX / (uint32_t)(r - l));
+        if (rows < 1) rows = 1;
+        for (int32_t y = t; y < b; y += rows) {
+            int32_t ye = y + rows < b ? y + rows : b;
+            BAND_HOOK(0);
+            if (!repair_only && !psmac_wclip_guard_still(&gd)) { changed = 1; break; }
+            psmac_wclip_guard_add(&gd, y, l, ye, r);          /* noted before it is drawn: a change from here on is repaired */
+            BAND_HOOK(1);
+            if (first) { race_wait(); first = 0; }
+            area_part(s, l, y, r, ye, cb);
+        }
+    }
+    BAND_HOOK(2);
+    if (!changed && !psmac_wclip_guard_still(&gd)) changed = 1;
+    psmac_wclip_guard_end(&gd, now(), changed);
+    return !changed;
 }
 static int redraw_req;
 static void draw(int force)
@@ -1661,9 +1758,19 @@ static void draw(int force)
                 mark(cx0 - g.l, cy0 - g.t, cx1 - g.l, cy1 - g.t);
                 return;
             }
-            int n = psmac_wclip_parts(rr, g.rgn, vf, g.l, g.t, cx0, cy0, cx1, cy1);
+            struct psmac_wclip_sig sig;
+            int n = psmac_wclip_parts_sig(rr, g.rgn, vf, g.l, g.t, cx0, cy0, cx1, cy1, &sig);
             if (n < 0) { rgn_skips++; mark(cx0 - g.l, cy0 - g.t, cx1 - g.l, cy1 - g.t); return; }
-            for (int k = 0; k < n; k++) area_part(s, rr[k][1], rr[k][0], rr[k][3], rr[k][2], cb);
+            if (guard_off) {                                    /* as before 24 November 2026 (testbed only) */
+                BAND_HOOK(3);
+                race_wait();
+                for (int k = 0; k < n; k++) area_part(s, rr[k][1], rr[k][0], rr[k][3], rr[k][2], cb);
+                BAND_HOOK(2);
+            } else if (!draw_guarded(s, rr, n, &sig, vf, cb)) {
+                need_full = 1;                                  /* the region changed: all of it again, with the new one */
+                overdraw_watch();
+                return;
+            }
         }
         DMB();
         if (under.on && cb) for (int k = 0; k < 4; k++) under_box[k] = cb[k];
@@ -1822,6 +1929,19 @@ static void test_options(void)
     }
     v = psmac_option("a2.textlog");
     textlog = v && v[0] == '1';
+    v = psmac_option("a2.guard");
+    guard_off = v && v[0] == 'o' && v[1] == 'f';
+    repair_only = v && v[0] == 'r';                           /* a2.guard=repair: no looks between bands, the repairs alone */
+    race_ms = num(psmac_option("a2.racedelay"), 0);
+    if (race_ms > 500) race_ms = 500;
+    alive_ms = num(psmac_option("a2.alivems"), A68A_ALIVE_MS);
+    if (alive_ms < 100) alive_ms = 100;
+    if (alive_ms != A68A_ALIVE_MS) kprintf("[A2] testbed: drawing stops when the program's loop stands still for %u ms (a2.alivems=)\n", alive_ms);
+    if (guard_off || repair_only || race_ms)
+        kprintf("[A2] testbed: %s; %u ms between a picture's look at the region and its first band\n",
+                guard_off ? "the region read once a picture, no repairs (a2.guard=off: as before 24 November 2026)" :
+                repair_only ? "the region looked at only before and after a picture, repairs posted (a2.guard=repair)" :
+                "the region looked at before every band, repairs posted", race_ms);
 }
 static void text_log(void)
 {
@@ -1914,6 +2034,7 @@ static int a2_service(void)
     command();
     geometry();
     watch_program();
+    overdraw_watch();
     mac_service();
     mac_watch();
     if (phase == P_START) {
@@ -1966,6 +2087,11 @@ void psmac_a2_report(void)
             blk->nodraw == A68A_ND_STALE ? "not drawing: the program's loop stands still" : blk->nodraw == A68A_ND_RGN ? "not drawing: the region is not a live one" : "not drawing: no region yet",
             blk->stalls, gone_n, keys_in, rd, wr, held_n, blk->disk_dirty, (uint32_t)(dropped_us / 1000u),
             rate_x16 / 16u, rate_x16 % 16u * 100u / 16u, slice_max_us, st == A68A_S_FAILED ? ": " : "", st == A68A_S_FAILED ? (const char *)blk->message : "");
+    if (gd.looks || gd.repairs)
+        kprintf("[A2]   the region: looked at %u times while drawing, %u pictures given up when it changed, %u repair requests (%u rectangles; %u after a picture that saw no change)%s\n",
+                gd.looks, gd.given_up, gd.repairs, gd.repair_rects, gd.late,
+                !gd.repairs ? "" : ((volatile struct a68_repair *)(win + A68A_OFF_REPAIR))->seq == blk->repair_done ?
+                ", every one carried out by the program" : ", the last not carried out by the program yet");
     uint32_t nm = 0, out = 0;
     for (uint32_t i = 0; i < nimg; i++) if (img[i].mac) nm++;
     for (uint32_t i = 0; i < A68A_REQS; i++) if (rq[i].busy) out++;

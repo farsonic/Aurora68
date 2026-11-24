@@ -81,6 +81,7 @@ extern int psmac_card_pc_writable(void);
 extern int psmac_card_pc_list(void (*cb)(void *ctx, const char *name, uint32_t size), void *ctx);
 extern int psmac_sh_write(int64_t fd, const void *buf, uint64_t len);
 extern int psmac_board_se, psmac_board_solo;
+extern int psmac_display_info(int i, uint32_t *w, uint32_t *h, uint32_t *depth, uint32_t *base);
 
 /* the C library's jump buffer as libaurora86's runtime keeps it (glibc's layout: 22 longs and a mask; room to spare) */
 typedef uint64_t a86_jmp_buf[48];
@@ -100,6 +101,7 @@ static inline uint64_t hz(void)  { uint64_t v; __asm__ volatile("mrs %0, CNTFRQ_
 #define WAIT() for (;;) __asm__ volatile("wfe")
 #endif
 static inline uint32_t us_since(uint64_t t) { return (uint32_t)((now() - t) * 1000000u / hz()); }
+static inline uint64_t ms_ticks(uint32_t ms) { return (uint64_t)ms * hz() / 1000u; }
 
 #define HEAP_FIXED_MB  104u          /* the PC's memory beyond its RAM: 95 MiB measured (Aurora86's harness, 16 MB of RAM:
                                         "the PC is built: 30 ms, 95 MiB of the heap in use" without the firmware), the
@@ -114,6 +116,9 @@ static inline uint32_t us_since(uint64_t t) { return (uint32_t)((now() - t) * 10
                                         misc-fixed's and the VGA's glyphs use their cell's first column (C, the box
                                         lines), which touched the window's one-pixel frame and read as a cut-off letter
                                         ("D-ROM not configured" in the first QEMU run, 23 November 2026) */
+#define BAND_PX        16384u        /* pixels drawn between two looks at the window's region (24 November 2026, psmac_a2.c's
+                                        "drawn over another window": the same weakness here) */
+#define REPAIR_MS      200u          /* drawn this long before the region was seen to change: the Mac paints it again */
 #define AGAIN_MS       100u          /* the pointer's old box drawn a second time this long after the first: the Mac puts
                                         back what was under its pointer at the VBL after Mouse ($830) moves, which can
                                         come after the card's picture of that place */
@@ -1000,6 +1005,29 @@ static void under_add(struct under *h, int32_t x0, int32_t y0, int32_t x1, int32
 }
 static uint32_t drawn_seq_text = ~0u, last_mode;
 static uint32_t draw_us_sum, draws_n, draws_all, menu_skips, rgn_skips, rgn_bad;
+/* Drawn over another window (24 November 2026). The Apple II card, which draws the way this card does, left a rectangle
+   of the Apple's screen inside a Finder window dragged over its window on the owner's SE (psmac_a2.c, docs/20 "Drawn
+   over another window"): a picture read the window's visRgn once and drew with it while the Mac moved another window
+   over it. This card had the same pattern, made longer by the sound's turns it takes every 16 rows on core 1. The same
+   cure (psmac_wclip.c, "the overdraw guard"): the region looked at before every band of BAND_PX pixels, the picture
+   given up when it changed, and what was drawn shortly before a change, outside the new region, posted at
+   A68P_OFF_REPAIR for Aurora68 PC to have the Mac paint again. pc.guard=off and pc.racedelay=MS: as a2.guard and
+   a2.racedelay (testbed only). */
+static struct psmac_wclip_guard gd;
+static int guard_off;
+static uint32_t race_ms, repair_logs;
+#ifdef PSMAC_PC_HOST
+void pc_host_band(int after_look);           /* tools/pccard_test.c: the region changed in the middle of a picture */
+#define BAND_HOOK(x) pc_host_band(x)
+#else
+#define BAND_HOOK(x) do { } while (0)
+#endif
+static void race_wait(void)
+{
+    if (!race_ms) return;
+    uint64_t t = now();
+    while (now() - t < ms_ticks(race_ms)) { }
+}
 /* The program's window, alive or not (23 November 2026). On the owner's SE Aurora68 PC had quit, and the card went on
    drawing at the window's last place through the visRgn handle it had been given: a handle in the heap of a program
    that had gone, freed memory read as a region, so the PC's screen came out over and under the Finder's windows, on
@@ -1240,6 +1268,67 @@ static void publish(const struct a86_screen *s)
     }
 }
 
+/* what was drawn before the region changed, outside the new one: to the program, to have the Mac paint it again */
+static uint32_t repair_seen;
+static void overdraw_watch(void)
+{
+    uint32_t done = blk->repair_done;
+    if (done != repair_seen) {                                /* the program carried a request out */
+        repair_seen = done;
+        if (repair_logs < 40) kprintf("[PC] Aurora68 PC had the Mac paint it again (request %u)\n", done / 2);
+    }
+    if (guard_off || !gd.n) return;
+    if (nowin) { gd.n = 0; return; }                          /* the window is gone: nobody to ask */
+    uint32_t sw, sh, d, base;
+    if (!psmac_display_info((int)g.screen, &sw, &sh, &d, &base)) return;
+    int32_t out[PSMAC_WCLIP_DRAWN][4];
+    uint32_t vf = g.vflags & A68P_VF_24BIT ? PSMAC_WCLIP_24BIT : 0;
+    int n = psmac_wclip_guard_watch(&gd, g.rgn, vf, g.screen, g.l, g.t, g.r - g.l, g.b - g.t, (int32_t)sw, (int32_t)sh,
+                                    now(), ms_ticks(REPAIR_MS), out);
+    if (n <= 0) return;
+    psmac_wclip_repair_post((volatile struct a68_repair *)(win + A68P_OFF_REPAIR), blk->repair_done, gd.screen, out, n);
+    gd.repairs++; gd.repair_rects += (uint32_t)n;
+    if (repair_logs++ < 40) {
+        int32_t bb[4] = { out[0][0], out[0][1], out[0][2], out[0][3] };
+        for (int i = 1; i < n; i++) {
+            if (out[i][0] < bb[0]) bb[0] = out[i][0];
+            if (out[i][1] < bb[1]) bb[1] = out[i][1];
+            if (out[i][2] > bb[2]) bb[2] = out[i][2];
+            if (out[i][3] > bb[3]) bb[3] = out[i][3];
+        }
+        kprintf("[PC] the window's region changed under a picture: %d rectangle%s within %d,%d-%d,%d on screen %u for the Mac to paint again%s\n",
+                n, n == 1 ? "" : "s", bb[1], bb[0], bb[3], bb[2], gd.screen, blk->prog == A68P_PROG_LIVE ? "" : " (no program to ask)");
+    }
+}
+/* the region's rectangles, in bands, the region looked at before each: 0 when it changed (the picture given up) */
+static int draw_guarded(const struct a86_screen *s, int32_t rr[][4], int n, const struct psmac_wclip_sig *sig, uint32_t vf,
+                        const int32_t *cb)
+{
+    int changed = 0, first = 1;
+    /* the region changed since the last turn's look (the Mac runs on as this core reads): the notes made with the old one
+       are dealt with first; if they cannot be yet, this picture waits */
+    if (gd.n && !psmac_wclip_sig_eq(&gd.sig, sig)) overdraw_watch();
+    if (gd.n && !psmac_wclip_sig_eq(&gd.sig, sig)) return 0;
+    psmac_wclip_guard_begin(&gd, g.rgn, vf, sig, g.screen, g.l, g.t);
+    for (int k = 0; k < n && !changed; k++) {
+        int32_t t = rr[k][0], l = rr[k][1], b = rr[k][2], r = rr[k][3];
+        int32_t rows = (int32_t)(BAND_PX / (uint32_t)(r - l));
+        if (rows < 1) rows = 1;
+        for (int32_t y = t; y < b; y += rows) {
+            int32_t ye = y + rows < b ? y + rows : b;
+            BAND_HOOK(0);
+            if (!psmac_wclip_guard_still(&gd)) { changed = 1; break; }
+            psmac_wclip_guard_add(&gd, y, l, ye, r);          /* noted before it is drawn: a change from here on is repaired */
+            BAND_HOOK(1);
+            if (first) { race_wait(); first = 0; }
+            area_part(s, l, y, r, ye, cb);
+        }
+    }
+    BAND_HOOK(2);
+    if (!changed && !psmac_wclip_guard_still(&gd)) changed = 1;
+    psmac_wclip_guard_end(&gd, now(), changed);
+    return !changed;
+}
 static void draw(int force)
 {
     uint64_t t0 = now();
@@ -1309,9 +1398,20 @@ static void draw(int force)
                 publish(s);
                 return;
             }
-            int n = psmac_wclip_parts(rr, g.rgn, vf, g.l, g.t, cx0, cy0, cx1, cy1);
+            struct psmac_wclip_sig sig;
+            int n = psmac_wclip_parts_sig(rr, g.rgn, vf, g.l, g.t, cx0, cy0, cx1, cy1, &sig);
             if (n < 0) { rgn_skips++; mark(cx0 - g.l, cy0 - g.t, cx1 - g.l, cy1 - g.t); return; }   /* not readable now: again next time */
-            for (int k = 0; k < n; k++) area_part(s, rr[k][1], rr[k][0], rr[k][3], rr[k][2], cb);
+            if (guard_off) {                                    /* as before 24 November 2026 (testbed only) */
+                BAND_HOOK(3);
+                race_wait();
+                for (int k = 0; k < n; k++) area_part(s, rr[k][1], rr[k][0], rr[k][3], rr[k][2], cb);
+                BAND_HOOK(2);
+            } else if (!draw_guarded(s, rr, n, &sig, vf, cb)) {
+                need_full = 1;                                  /* the region changed: all of it again, with the new one */
+                overdraw_watch();
+                publish(s);
+                return;
+            }
         }
         DMB();
         if (under.on && cb) for (int k = 0; k < 4; k++) under_box[k] = cb[k];
@@ -1406,6 +1506,15 @@ static void test_options(void)
     }
     v = psmac_option("pc.textlog");
     textlog = v && v[0] == '1';
+    v = psmac_option("pc.guard");
+    guard_off = v && v[0] == 'o' && v[1] == 'f';
+    race_ms = 0;
+    for (v = psmac_option("pc.racedelay"); v && *v >= '0' && *v <= '9'; v++) race_ms = race_ms * 10 + (uint32_t)(*v - '0');
+    if (race_ms > 500) race_ms = 500;
+    if (guard_off || race_ms)
+        kprintf("[PC] testbed: %s; %u ms between a picture's look at the region and its first band\n",
+                guard_off ? "the region read once a picture, no repairs (pc.guard=off: as before 24 November 2026)" :
+                "the region looked at before every band, repairs posted", race_ms);
 }
 static void text_log(void)
 {
@@ -1484,6 +1593,7 @@ static int pc_service(void)
     command();
     geometry();
     watch_program();
+    overdraw_watch();
     if (phase >= P_ROM && phase <= P_BUILD) { start_step(); return 1; }
     if (phase != P_RUN) { numbers(); return 0; }
     input();
@@ -1554,5 +1664,10 @@ void psmac_pc_report(void)
             menu_skips, rgn_skips, rgn_bad, n < 6 ? nd[n] : "?", blk->prog == A68P_PROG_LIVE ? "running" : blk->prog == A68P_PROG_GONE ? "gone" : "not seen",
             blk->stalls, gone_n, keys_in, mouse_in, rd, wr, held_n, dirty_n,
             st == A68P_S_FAILED ? ": " : "", st == A68P_S_FAILED ? (const char *)blk->message : "");
+    if (gd.looks || gd.repairs)
+        kprintf("[PC]   the region: looked at %u times while drawing, %u pictures given up when it changed, %u repair requests (%u rectangles; %u after a picture that saw no change)%s\n",
+                gd.looks, gd.given_up, gd.repairs, gd.repair_rects, gd.late,
+                !gd.repairs ? "" : ((volatile struct a68_repair *)(win + A68P_OFF_REPAIR))->seq == blk->repair_done ?
+                ", every one carried out by the program" : ", the last not carried out by the program yet");
     if (note[0]) kprintf("[PC]   disks: %s\n", note);             /* a line of its own: the log's lines have a length */
 }
