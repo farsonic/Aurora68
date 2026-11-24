@@ -104,6 +104,7 @@ struct blkdev { int64_t fd; uint32_t blocks, first; int writable; int ram; uint8
                 int present;                       /* USB: a disk the Mac may use is in the unit */
                 uint32_t media, umedia;            /* the count the Mac's driver sees (psmb_blkdev.media), and psmac_usbdisk.c's */
                 int view;                          /* the card's exchange folder as a locked HFS volume (psmac_card.c, issue #20) */
+                int card;                          /* a disk image served from the card (psmac_card.c): its handle + 1, 0 for none */
                 int said_read; };
 static struct blkdev bdev[PSMB_MAX_BLKDEV]; static int nbdev;
 static int nimg;                                   /* the disk images among them (not the USB sticks): the startup disk's business */
@@ -188,6 +189,22 @@ void psmac_mbox_add_disk(const char *name, uint8_t *data, uint32_t blocks)
     blk_add_ram(name, data, blocks);
     blk_publish();
     kprintf("[PSMAC:MBOX] block%d: %s, %u blocks (%u MiB), from the card\n", nbdev - 1, name, blocks, blocks / 2048);
+}
+/* a disk image served from the card as the Mac asks (psmac_card.c, 24 November 2026; core 3: this core, in the
+   card's pass): its blocks never in memory as a whole, so the partition map is read through the card's cache */
+void psmac_mbox_add_card_disk(const char *name, int handle, uint32_t blocks, int writable)
+{
+    if (nbdev >= PSMB_MAX_BLKDEV) { kprintf("[PSMAC:DISK] %s: all %d PiDisk units are in use: the Mac is not told about it\n", name, PSMB_MAX_BLKDEV); return; }
+    extern int psmac_card_img_io(int, int, uint32_t, uint32_t, void *, int);
+    struct blkdev *b = &bdev[nbdev];
+    *b = (struct blkdev){ 0 };
+    b->fd = -1; b->blocks = blocks; b->writable = writable; b->card = handle + 1;
+    int k = 0; while (name[k] && k < 47) { b->name[k] = name[k]; k++; } b->name[k] = 0;
+    uint32_t have = blocks < 64 ? blocks : 64, st, ct;
+    if (have && psmac_card_img_io(handle, 0, 0, have, sector_buf, 1) == (int)have && apm_hfs(sector_buf, have, blocks, &st, &ct)) { b->first = st; b->blocks = ct; }
+    nbdev++; nimg++;
+    blk_publish();
+    kprintf("[PSMAC:MBOX] block%d: %s, %u blocks (%u MiB), served from the card%s\n", nbdev - 1, name, b->blocks, b->blocks / 2048, writable ? "" : ", locked");
 }
 /* the card's exchange folder, once psmac_card.c has made its HFS volume (core 3: this core). Not one of the
    card's images, so not a startup disk; a fixed disk, locked */
@@ -315,6 +332,7 @@ static volatile uint32_t mbox_resets;
 void psmac_startup_reset(void)
 {
     __atomic_store_n(&mbox_resets, mbox_resets + 1, __ATOMIC_RELEASE);
+    { extern void psmac_card_flush_soon(const char *); psmac_card_flush_soon("the Mac restarts"); }   /* the card images' writes now (psmac_card.c) */
     startup_mode_get();
     for (int i = 0; i < 4; i++) startup_view[i] = startup_slot9[i];
     startup_last = -1;
@@ -608,6 +626,56 @@ static void usb_req_step(volatile uint8_t *c)
     if (e) usb_finish(c, e);
 }
 
+/* ---- a READ or WRITE on a disk image served from the card (24 November 2026): in the background, as a USB
+   stick's. Each turn of core 3's loop serves what the card's cache holds and at most one card operation
+   (psmac_card_img_io), moving the progress word, so PiDisk waits on and core 3's other services keep their
+   turns while the card works. ---- */
+static struct { int active, bdev, write; uint32_t lba, left, buf, done, req, resets; uint64_t t0; } cr;
+static void card_finish(volatile uint8_t *c, int32_t status)
+{
+    if (!status && !cr.write) { extern uint32_t psmac_icache_epoch; psmac_icache_epoch++; }
+    stats_cmds++; if (status) stats_err++;
+    wr32(c + 36, (uint32_t)status); wr32(c + 40, 0); wr32(c + 44, cr.done * 512);
+    __asm__ volatile("dmb ish" ::: "memory");
+    __atomic_store_n((volatile uint32_t *)(c + 4), cr.req, __ATOMIC_RELEASE);
+    cr.active = 0;
+}
+static void card_req_step(volatile uint8_t *c)
+{
+    extern int psmac_card_img_io(int, int, uint32_t, uint32_t, void *, int);
+    wr32(c + 48, rd32(c + 48) + 1);                       /* progress: the driver goes on waiting */
+    __asm__ volatile("dmb ish" ::: "memory");
+    if (rd32(c) != cr.req || __atomic_load_n(&mbox_resets, __ATOMIC_ACQUIRE) != cr.resets) {
+        /* the Mac gave up on it (a new command, or the 68k reset): nobody waits, and its memory is not touched again */
+        kprintf("[PSMAC:DISK] PiDisk unit %d: the Mac stopped waiting for its %s of the card's image; dropped\n", cr.bdev, cr.write ? "write" : "read");
+        cr.active = 0;
+        return;
+    }
+    const struct blkdev *b = &bdev[cr.bdev];
+    for (int turns = 0; turns < 64 && cr.left; turns++) {
+        uint32_t n = cr.left > sizeof(sector_buf) / 512 ? (uint32_t)(sizeof(sector_buf) / 512) : cr.left;
+        if (cr.write) { int e = mac_copy(cr.buf, sector_buf, NULL, n * 512, 0); if (e) { card_finish(c, e); return; } }
+        int k = psmac_card_img_io(b->card - 1, cr.write, b->first + cr.lba, n, sector_buf, 0);
+        if (k < 0) { card_finish(c, PSMB_E_IO); return; }
+        if (!cr.write && k) { int e = mac_copy(cr.buf, NULL, sector_buf, (uint32_t)k * 512, 1); if (e) { card_finish(c, e); return; } }
+        cr.done += (uint32_t)k; cr.left -= (uint32_t)k; cr.lba += (uint32_t)k; cr.buf += (uint32_t)k * 512;
+        if ((uint32_t)k < n) return;                      /* the card was used (or is another core's): the rest on the next turn */
+    }
+    if (!cr.left) card_finish(c, 0);
+}
+/* 1 when it goes on in the background (card_req_step answers it) */
+static int card_begin(volatile uint8_t *c, int bi, int write, uint32_t lba, uint32_t count, uint32_t buf, uint32_t req, int32_t *status)
+{
+    struct blkdev *b = &bdev[bi];
+    if ((uint64_t)lba + count > b->blocks) { *status = PSMB_E_RANGE; return 0; }
+    if (write && !b->writable) { *status = PSMB_E_RO; return 0; }
+    if (!count) { *status = 0; return 0; }
+    cr.active = 1; cr.bdev = bi; cr.write = write; cr.lba = lba; cr.left = count; cr.buf = buf; cr.done = 0; cr.req = req;
+    cr.resets = __atomic_load_n(&mbox_resets, __ATOMIC_ACQUIRE); cr.t0 = cnt_now();
+    card_req_step(c);
+    return cr.active;
+}
+
 /* ---- services ---- */
 static void svc_set(int idx, uint16_t type, uint32_t caps, const uint32_t *param)
 {
@@ -665,6 +733,13 @@ static int run_cmd(int idx, uint16_t type, volatile uint8_t *c, uint32_t req)   
             if (!status && cmd != PSMB_BLK_EJECT) xfer = a2 * 512;
             break;
         }
+        if (b->card && (cmd == PSMB_BLK_READ || cmd == PSMB_BLK_WRITE)) {
+            if (cmd == PSMB_BLK_READ) { static int first = 1; if (first) { first = 0; psmac_boot_mark("PiDisk: first block read (device %u, block %u), from the card", a0, a1); psmac_splash_status("Starting from the disk image on the SD card..."); } }
+            if (card_begin(c, (int)a0, cmd == PSMB_BLK_WRITE, a1, a2, buf, req, &status)) return 1;
+            if (!status) xfer = a2 * 512;
+            if (!status && cmd == PSMB_BLK_READ) { extern uint32_t psmac_icache_epoch; psmac_icache_epoch++; }
+            break;
+        }
         if (cmd == PSMB_BLK_READ)       { static int first = 1; if (first) { first = 0; psmac_boot_mark("PiDisk: first block read (device %u, block %u)", a0, a1); psmac_splash_status("Starting from the disk image on the SD card..."); }
                                           blk_cmd_busy = c; status = blk_xfer(0, b, a1, a2, buf); blk_cmd_busy = NULL; if (!status) { xfer = a2 * 512; extern uint32_t psmac_icache_epoch; psmac_icache_epoch++; } }
         else if (cmd == PSMB_BLK_WRITE) { blk_cmd_busy = c; status = blk_xfer(1, b, a1, a2, buf); blk_cmd_busy = NULL; if (!status) xfer = a2 * 512; }
@@ -701,7 +776,7 @@ void psmac_mbox_init(uintptr_t window_phys, uintptr_t ramp, uint32_t rams)
     {   /* disk images from the container: PiDisk volumes here, the solo board's SCSI disks there */
         extern int psmac_board_solo; extern int psmac_image_count(void); extern int psmac_image_get(int, const char **, uint8_t **, uint32_t *);
         extern int psmac_image_is_scsi(int);       /* the solo board's first image is its SCSI disk, the rest are PiDisk volumes */
-        for (int i = 0; i < psmac_image_count(); i++) { const char *nm; uint8_t *dp; uint32_t bl; if (!(psmac_board_solo && psmac_image_is_scsi(i)) && psmac_image_get(i, &nm, &dp, &bl)) blk_add_ram(nm, dp, bl); }
+        for (int i = 0; i < psmac_image_count(); i++) { const char *nm; uint8_t *dp; uint32_t bl; if (!(psmac_board_solo && psmac_image_is_scsi(i)) && psmac_image_get(i, &nm, &dp, &bl) && dp) blk_add_ram(nm, dp, bl); }
     }
     blk_publish();
     net_init();
@@ -738,6 +813,7 @@ int psmac_mbox_poll(void)
     for (int i = 0; i < 3; i++) {
         volatile uint8_t *c = win + PSMB_OFF_CMD + i * 64;
         if (i == 1 && ur.active) { usb_req_step(c); did = 1; continue; }   /* the block service waits for a USB disk */
+        if (i == 1 && cr.active) { card_req_step(c); did = 1; continue; }   /* ... or for the card, for an image served from it */
         uint32_t req = __atomic_load_n((volatile uint32_t *)c, __ATOMIC_ACQUIRE);
         uint32_t done = *(volatile uint32_t *)(c + 4);
         if (req == done) continue;
