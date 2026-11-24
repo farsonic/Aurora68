@@ -340,6 +340,33 @@ with the CM4 as the target and the CM3+ as a cheap step on the way if the CM4 wo
   current measurement on the first prototype's 5 V.
 - **Heat.** Leave room for a heatsink on the SoC and a path for the SE's fan's air. The reason for the card is
   partly this (section 1).
+- **A fan header (the owner's suggestion, 24 November 2026).** A 2- or 3-pin header for a small 5 V fan (25 to 40 mm)
+  blowing across the SoC, switched by a MOSFET so it can be slowed or stopped:
+  - **Who drives it.** On Card P every GPIO the Pi's header has is already used (GPIO 0 to 23 for the bus protocol,
+    24 to 27 for the CPLD's JTAG, docs/18 K2), so the fan's PWM comes from a spare CPLD pin, set through one more
+    protocol register; the fan's tachometer, if it has one, goes back the same way. On a Compute Module card a spare
+    module GPIO can drive it directly (the CM3+ brings out GPIO 28 to 45; on a CM4 count what is left after the bus).
+  - **What sets the speed.** The kernel already reads the SoC's temperature every few seconds for the status page
+    (`alice_psmac_status.c`, the mailbox's GET_TEMPERATURE) and the firmware's throttling bits (`psmac_power.c`). A
+    small loop there would set the duty: off below about 55 °C, rising to full at about 75 °C, before the firmware's
+    80 °C cap (the thresholds are guesses to tune on a real SE). The status page and `aurora68.py log` would show the
+    fan's duty and speed, and a `mac.fan=` option would force it on or off.
+  - **A fallback that needs no software:** a jumper that runs the fan at full speed straight from 5 V, for bring-up
+    and for anyone who prefers it.
+  - Keep the fan's current off the Pi's 5 V path: take it from the slot's 5 V before the Pi's protection (or from
+    +12 V with a 12 V fan, quieter at low speed), with its own fuse.
+- **The rear panel.** The SE's back has an access cut-out for a slot card's connectors. Two ways to reach it, and the
+  note's recommendation is the first:
+  - **A short cable to a small panel board** screwed into the cut-out. It does not depend on where exactly the card
+    stands relative to the cut-out (which varies with the card's height and the SE's case), and it lets the card be
+    designed before anyone has measured a case. What goes over it: Ethernet (the magnetics and RJ45 on the panel
+    board, the PHY's pairs over a short cable; for Gigabit on a CM4, a short twisted-pair cable rather than flat
+    ribbon), USB 2.0 (short and fine), and HDMI only as a short panel-mount HDMI extension, not ribbon.
+  - **Connectors on the card itself, lined up with the cut-out.** Neater and no cable, but only if the card's edge
+    really meets the cut-out: measure on a real SE (and in Apple's card dimensions for the SE in *Designing Cards and
+    Drivers*) before choosing it. On Card P a Pi 3B placed with its USB and RJ45 edge towards the cut-out might
+    manage it directly; the Pi's SD card must still be reachable.
+  - Either way, a panel board can also carry a reset or stock-mode switch (section 4) and an activity LED.
 - **Clearances.** The slot sits near the analog board and the CRT's neck: keep conductive parts, and anything a
   person might touch while the machine runs, away from the high-voltage side. Mechanical limits (card height,
   where the rear cut-out is) from Apple's card dimensions for the SE.
@@ -367,7 +394,8 @@ C16M; /HALT is wired to /RESET. Still open:
    /BGACK is held, or does it start its vector fetch? (Section 4.)
 3. Does E keep running from the 68000 while the bus is granted away, as we read the manual?
 4. The slot's power budget on each rail, on an original analog board and on replacement supplies.
-5. Physical: card size limits and the rear cut-out's position.
+5. Physical: card size limits, the rear cut-out's position and size, and whether a card's edge can meet it
+   (deciding between a panel board on a cable and connectors on the card, section 6).
 6. For Card P: where the Pi's SD card and connectors end up relative to the rear cut-out.
 7. For a CM3+ card: which SD controller the module's eMMC is on.
 8. For a CM4 card: the FPGA or the CPLD protocol, and which Emu68 back end it matches.
