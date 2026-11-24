@@ -76,6 +76,16 @@ against the SE's schematic and a meter on a real board. One warning from looking
 on pinout sites under "PPDS" is the **Macintosh Portable's** slot, not the SE's, although the two share the
 Euro-DIN connector and most signal names. Do not lay out a board from it.
 
+A second table, from AllPinouts ("Apple Macintosh Processor-Direct Slot (PDS)", sent by the owner on 24 November
+2026), is the **120-pin 68030 slot of the SE/30 and the II family**, not the SE's either: the page says so itself,
+and that it is "electrically and mechanically incompatible with the 96-pin 68000 PDS found in the Macintosh SE and
+Macintosh Portable". It is still useful in two ways. It names where the SE's own tables are: *Guide to the Macintosh
+Family Hardware*, 2nd edition, chapter 14, which documents both slots (its Tables 14-1, 14-3 and 14-5 to 14-7),
+so the SE's pinout can be taken from the Guide as well as from *Designing Cards and Drivers*. And for an SE/30
+card one day (section 1) it shows that slot carrying /BR (C10), /BG (B10), /BGACK (A10), /RESET (A12), /HALT (C12),
+/BERR (B12), the CPU clock (A38), C16M (C38), E (B38), +5 V, +12 V (C40), -12 V (A40) and -5 V (B40): the same
+arbitration route as section 4, on a 32-bit bus.
+
 What the card needs, by group (directions are the card's when it holds the bus):
 
 | Group | Signals | Card | Notes |
@@ -270,8 +280,8 @@ sequence; that is optional.
 
 ## 8. Open questions (in the order they block)
 
-1. Are /BR, /BG and /BGACK all on the SE's slot, and on which pins (Apple's corrected figure; the schematic; a
-   meter)?
+1. Are /BR, /BG and /BGACK all on the SE's slot, and on which pins (the Guide's chapter 14 and Apple's corrected
+   figure in *Designing Cards and Drivers*; the schematic; a meter)?
 2. Does the 68000 grant the bus before its first vector fetch after power-on, or must the card hold /HALT?
 3. Does E keep running from the 68000 while the bus is granted away, as we read the manual?
 4. Which clock does the slot carry for the card's state machine (C8M, C16M)?
@@ -287,7 +297,9 @@ sequence; that is optional.
   direct slot pinout (corrected in the 3rd edition, page 284) and card dimensions. Scanned copy of the 2nd
   edition: https://www.vintageapple.org/inside_o/pdf/Designing_Cards_and_Drivers_for_the_Macintosh_Family_2nd_Edition_1990.pdf
 - Apple, *Guide to the Macintosh Family Hardware*, 2nd edition: the SE's bus, BBU and VIA (docs/18 cites the
-  pages it used).
+  pages it used); chapter 14, the signal tables of the 96-pin 68000 slot and the 120-pin 68030 slot.
+- AllPinouts, "Apple Macintosh Processor-Direct Slot (PDS)" (updated 29 June 2026): the 120-pin 68030 slot (SE/30,
+  II family) with the IIfx's differences; not the SE's slot.
 - Motorola, *MC68000 User's Manual*: bus arbitration, the halt state, 6800 peripheral cycles.
 - Apple technote HW 12, "Macintosh Portable PDS Development": the Portable's slot, which shares the connector and
   most names with the SE's and is not the SE's.
