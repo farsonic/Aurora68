@@ -2,6 +2,15 @@
 
 ## Next release (on main, not released yet)
 
+Nothing yet since 0.16.
+
+## 0.16 — Bluetooth and WiFi together on the Pi 3B (24 November 2026)
+
+Since 0.15, in short: Bluetooth no longer crowds the Pi 3B's WiFi off the air (confirmed on the owner's SE: WiFi gets
+its address with Bluetooth on), `bt.scan=`, and `eth=off` documented for a Pi whose wired port is not used. A USB
+keyboard draws its power through the 68000 socket: if Aurora68 Status shows under-voltage, use the SE's own keyboard
+or a powered USB hub.
+
 - **Bluetooth leaves the WiFi its time** (docs/08 item 140, 24 November 2026; the owner's Pi 3B: "WiFi is connected
   but gets no IP address", and an address again with `bt=off`). On a Pi 3B the WiFi and Bluetooth share one antenna.
   0.15 kept a fast page scan on for good and, while a paired LE device was away, an LE scan for half the radio's time,

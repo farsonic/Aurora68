@@ -10,9 +10,9 @@ WiFi and Bluetooth through a NuBus card that exists only in software.
 Start with `docs/00-overview.md`: it tells the story of the project and points to the working
 documents for each part. The day-by-day record of what was found and fixed is `docs/08`.
 
-## Quick start (release 0.15)
+## Quick start (release 0.16)
 
-Release 0.15 runs on a real Macintosh SE: System 7.1 and System 6.0.8 start from the SE's own SCSI
+Release 0.16 runs on a real Macintosh SE: System 7.1 and System 6.0.8 start from the SE's own SCSI
 disk (or a BlueSCSI) or from a disk image on the SD card, with the SE's screen, keyboard, mouse and
 speaker, a second screen and stereo sound on HDMI, Ethernet and WiFi, USB and Bluetooth keyboards and
 mice, USB sticks, and a remote control. What has been checked on the hardware and what only in the

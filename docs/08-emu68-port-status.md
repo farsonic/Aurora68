@@ -6684,3 +6684,8 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      keyboard and mouse in the slow tier. If DHCP still fails, `bt.scan=off` takes every scan away (the connected
      keyboard's link stays), which separates the scans from the links; the LE keyboard's connection interval (7.5 to
      15 ms asked for in `le_create`) is the next thing to relax.
+   - *Confirmed on the owner's SE* (24 November 2026, the same day): with this kernel, `bt=off` taken out and `eth=off`
+     kept, Riptide got its address over the WiFi with Bluetooth on, and the Bluetooth keyboard worked ("ok, bluetooth
+     and wifi working"). The owner also found that unplugging the USB keyboard ended the under-voltage warnings: the
+     Pi feeds its USB ports from the 5 V it takes through the 68000 socket, so a USB keyboard (more so one with lights)
+     is a load the SE's supply feels; the SE's own keyboard and mouse, on the SE's ADB, are not.
