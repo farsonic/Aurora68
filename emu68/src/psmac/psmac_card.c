@@ -277,6 +277,9 @@ static int sd_read_multi(uint32_t lba, uint8_t *buf, uint32_t n)
     int err = 0;
     for (uint32_t i = 0; i < n * 128u; i++) {
         uint64_t t = cnt();
+        if (!(i & 127u)) pump();                                       /* a sector each 40 us or so: a run of 64 (a disk image's
+                                                                          32 KB slot, 2.6 ms at 25 MHz) outlasts the Bluetooth
+                                                                          UART's FIFO (docs/21), so its bytes between sectors */
         while (!EDM_FILL(r(SDEDM)) && !(r(SDHSTS) & 1u)) if (cnt() - t > frq() / 10) { err = -3; break; }
         if (err) break;
         p[i] = *(volatile uint32_t *)(uintptr_t)(SDH + SDDATA);
@@ -1100,8 +1103,8 @@ static int image_take(const char *name, const struct cfile *f)
     if (mode == 1) return image_take_card(name, f, "mac.imagemode=card");
     if (mode == 2 && (mb > IMG_RAM_AUTO_MB || mb + cache_mb_wanted() > left)) {
         static char why[96];
-        if (mb > IMG_RAM_AUTO_MB) sprintf(why, "larger than %u MB (mac.imagemode=auto)", IMG_RAM_AUTO_MB);
-        else sprintf(why, "%u MB of memory left for disk images (mac.imagemode=auto)", left);
+        if (mb > IMG_RAM_AUTO_MB) sprintf(why, "larger than %u MB, mac.imagemode=auto", IMG_RAM_AUTO_MB);
+        else sprintf(why, "%u MB of memory left for disk images, mac.imagemode=auto", left);
         return image_take_card(name, f, why);
     }
     uint8_t *ram = take_memory(f->size);
@@ -2301,13 +2304,14 @@ static int sd_write_multi(uint32_t lba, const uint8_t *buf, uint32_t n)
     int err = 0;
     for (uint32_t i = 0; i < n * 128u && !err; i++) {
         uint64_t t = cnt();
+        if (!(i & 127u)) pump();                                       /* as in sd_read_multi */
         while (EDM_FILL(r(SDEDM)) >= 15) if (cnt() - t > frq() / 10) { err = -3; break; }
         if (!err) *(volatile uint32_t *)(uintptr_t)(SDH + SDDATA) = p[i];
     }
     if (!err && fsm_wait(500000)) err = -4;                           /* the last block's CRC answered */
     if (sd_cmd(12, 0, CMD_BUSY, 0) && !err) err = -5;
     uint32_t t0 = ms();
-    while (!err) { int s = sd_status(); if (s == 4) break; if (s < 0 || ms() - t0 > 2000) err = -6; }
+    while (!err) { int s = sd_status(); if (s == 4) break; if (s < 0 || ms() - t0 > 2000) err = -6; pump(); }
     if (!err && (r(SDHSTS) & HSTS_ERRORS)) err = -7;
     if (err) { uint32_t h = r(SDHSTS); sd.last_hsts = h; w(SDHSTS, h & HSTS_CLEAR); sd.errors++; return err; }
     sd.writes += n;
