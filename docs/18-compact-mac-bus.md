@@ -479,7 +479,7 @@ Candidates **(all inference)**, with what tells them apart:
    (amplifier, supply).
 
 **Found (24 November 2026).** The tester's hum on the Plus came from the machine's PicoPSU-style replacement power
-supply, not from the kernel: the source was the supply. Candidates 1 to 5 above stay as
+supply, not from the kernel: noise on its -12 V rail (the tester's finding), which the sound circuit uses. Candidates 1 to 5 above stay as
 the record of what was considered; a compact Mac on a small DC-DC supply is worth checking first when a speaker hums.
 
 ## 8. Recommendations, ranked
