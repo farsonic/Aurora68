@@ -2,7 +2,20 @@
 
 ## Next release (on main, not released yet)
 
-Nothing yet since 0.15.
+- **Bluetooth leaves the WiFi its time** (docs/08 item 140, 24 November 2026; the owner's Pi 3B: "WiFi is connected
+  but gets no IP address", and an address again with `bt=off`). On a Pi 3B the WiFi and Bluetooth share one antenna.
+  0.15 kept a fast page scan on for good and, while a paired LE device was away, an LE scan for half the radio's time,
+  so with a mouse that never came back Bluetooth held about two thirds of it. Now the scans are fast only for a minute
+  after the start, a Connect or pairing, or a link that went down (a third of the radio at most, and the page scan only
+  while a Classic device is away), then slow (about 3 %), and after five more minutes with nothing heard the LE scan
+  only 10 s in every five minutes (Connect in Aurora68 Bluetooth looks at once). When the WiFi joins and whenever the
+  Mac asks for its address over it (DHCP), Bluetooth stops scanning for 10 s. `bt.scan=auto|fast|slow|off` chooses;
+  the heartbeat's `[BT]   radio:` line says what runs, and the WiFi's start logs the NVRAM's Bluetooth coexistence
+  mode. Kernel only.
+- **Which network card the Mac sees first** (docs/08 item 140): on a Pi 3B the wired port is slot 9's first card
+  (`.ENET` unit 0) whether or not a cable is in, as it has been since 0.12; programs that take the first card (MacTCP,
+  Aurora68 Network, a Riptide interface line without `card=wifi`) then use the dead port. `eth=off` takes it out, and
+  the WiFi becomes the only card. Riptide without an interface line, or with RiptidePrefs' own lines, opens both.
 
 ## 0.15 — a clock in the menu bar, no more stuck keys, Bluetooth before the Mac starts (24 November 2026)
 

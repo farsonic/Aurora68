@@ -6585,3 +6585,102 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      not in the solo board). A quick check for the owner: pressing and letting go Shift, Command, Option and Control on
      the SE's own keyboard clears a stuck KeyMap bit with the old driver (the ROM's driver sets and clears them), on the
      Bluetooth keyboard it does not (only a letter key or a click from it does); with the new driver neither is needed.
+
+140. **"WiFi is connected but gets no address": Bluetooth's share of the Pi 3B's radio, and which network card is the
+   first (24 November 2026).** The owner's SE with the trial-4 kernel (main at 7db1aab with the PC and Apple II cards):
+   Riptide said the WiFi was connected but got no IP address, and Aurora68 Network showed `Ethernet card: slot 9 sRsrcID
+   129, .ENET open refNum -57, Ethernet address ...`, the address of the Pi's wired LAN9514 (no cable, link down), not the WiFi's.
+   The question: is the WiFi working, and did enabling Bluetooth break it? Then: with `eth=off bt=off` after a power
+   cycle Riptide got its address over WiFi again, and with `eth=off` and Bluetooth on it did not: Bluetooth it is.
+   - *Suspect 1, the radio's time.* The Pi 3B's BCM43438 has one antenna for WiFi and Bluetooth. The WiFi firmware
+     divides the time with the Bluetooth core as the NVRAM says: RPi-Distro's `brcmfmac43430-sdio.txt` (the one
+     `get-firmware.sh` fetches) ends with "Improved Bluetooth coexistence parameters from Cypress", `btc_mode=1`,
+     `btc_params8=0x4e20`, `btc_params1=0x7530`; the kernel passes the NVRAM as it is (`fm_nvram` drops only comments)
+     and, like Linux's brcmfmac, sends no coexistence settings of its own (brcmfmac's `btcoex.c` writes `btc_params`
+     only around DHCP when Android's wpa_supplicant asks for it with BTCOEXMODE, for SCO audio; mainline never does by
+     itself). The WiFi start now logs `Bluetooth coexistence: btc_mode N` so that the owner's log shows it. Neither
+     the firmware download at 921600 baud nor the UART touches the WiFi side: the PL011's divisor is its own (the
+     48 MHz UART clock), GPFSEL3 is changed read-modify-write for GPIO 30-33 only under `psmac_gpfsel_lock` (the SDIO
+     lines are GPIO 34-39, ALT3, and are left), the pulls are clocked into GPIO 30 and 33 only. What Bluetooth asked of
+     the radio, though, had grown: since item 136 (23 November) page scan "fast connectable", 11.25 ms every 160 ms
+     interlaced (two windows: 14 %) for ever; since item 139 (7db1aab) the host's own passive LE scan, 30 ms every
+     60 ms (50 %, Linux's background scan), for every paired LE device that is away, restarted every 30 s, for ever
+     when a device never comes back (the owner's LE mouse). Together about two thirds of the antenna's time on
+     Bluetooth whenever the mouse was away; with time-division coexistence the WiFi then misses much of what the access
+     point sends once and does not repeat (a broadcast DHCP offer is not retried at the 802.11 level; association,
+     unicast and retried, still works). Not measurable in the testbed (QEMU has neither radio), so the change is
+     reasoned from the Core specification's and Linux's defaults and keeps every duty cycle bounded:
+     | tier | page scan | LE scan (the host's own, or the accept list's connection) | share |
+     |---|---|---|---|
+     | fast: 60 s after the start, a Connect or pairing, a link going down | 11.25 ms / 160 ms interlaced | 30 ms / 160 ms | 33 % |
+     | slow: after that | 11.25 ms / 1.28 s, standard (the default) | 30 ms / 1.28 s | 3.2 % |
+     | idle: five minutes more without a paired device heard advertising | as slow | none, but a 10 s sweep at 30 ms / 160 ms in every 5 minutes | 1.5 % (20 % during a sweep) |
+     | off (`bt.scan=off`) | none | none (a Connect looks for 60 s) | 0 |
+     | quiet, over any tier: the WiFi joined, or a DHCP request went out over it | none | none | 0 for 10 s |
+     The fast LE scan is 30 ms every 160 ms rather than Linux's every 60 ms: a device that wants to reconnect
+     advertises every 20 to 30 ms (HOGP's recommendation for its first 30 s), so any 30 ms window hears it and the
+     interval is the delay, 160 ms, as the fast page scan's. A device that is never heard (the owner's mouse) costs
+     the LE scan nothing after six minutes but the sweeps; once one hears it, it is connected at once and the slow tier
+     comes back; Connect in Aurora68 Bluetooth (or a pairing) gives a fast minute at any time, with any `bt.scan=`.
+     *The WiFi's moments* (Linux's brcmfmac has the same idea in `btcoex.c`, which gives the WiFi priority while DHCP
+     runs): when the WiFi's link comes up, and whenever the Mac (or the kernel's own stack) sends a DHCP request (UDP to
+     port 67) over the WiFi, `alice_net.c` calls `bt_pi_wifi_busy` and the host stops its page scan, its LE scan and
+     its start-up calls for 10 s (`bt_hush`); a second request within 5 s of the quiet's end is not quieted again, so
+     Bluetooth scans at least a third of the time even when DHCP never succeeds. Connected links go on. A link going down brings the fast minute back at most once
+     every three minutes, so a device whose link comes and goes keeps Bluetooth under 15 % on average; an advertisement
+     from a paired device that does not connect keeps the slow tier from going idle but never makes it fast. The page
+     scan runs only while a paired Classic device is away or a pairing goes on, as Linux's (no disconnected entry in its
+     accept list, no page scan): the owner's two LE devices need none, and it was on for ever. A scan for new devices
+     (Aurora68 Bluetooth's Scan) stays the user's, at full time for its 12 s. `bt.scan=auto|fast|slow|off` (Setup and
+     Recovery lists it): `fast` is 0.15's behaviour less the 50 % LE scan, `slow` never fast, `off` nothing in the
+     background. The log says each change (`[BT] radio (bt.scan=auto): slow scans: page scan 11.25 ms per 1.28 s, LE
+     scan 30 ms per 1.28 s`; `[BT] radio: no scans for 10 s (the Mac's DHCP over the WiFi)`), the heartbeat has a
+     line `[BT]   radio: bt.scan=auto, fast for 42 s more | page scan off | LE scan 30 ms per 160 ms | duty 18.7 %`
+     (in the idle tier "(the next LE sweep in 212 s)", during a quiet "quiet for the WiFi's DHCP 7 s more (DHCP quiets
+     3)"), and an away device's line says what is done for it (fast or slow page scan, the sweeps, the quiet).
+     Not done: writing `btc_params` to the WiFi firmware. The NVRAM's coexistence is what Linux runs with too, and
+     brcmfmac's DHCP boost (registers 66, 41 and 68 for SCO audio) is a synchronous firmware call the transmit path
+     cannot wait for; the quiet above removes Bluetooth's own share instead. The BT start-up itself was read for
+     timing: the firmware download, the resets and the set-up are a non-blocking state machine in CPU1's loop (the
+     WiFi's poll runs between its steps), the UART changes only its own divisor, and it uses no radio time; the only
+     radio use at the start is the fast minute and, for paired Classic devices, one page of each (now held off during
+     a quiet).
+     Accept-list connections (controllers with the resolving list, Bluetooth 4.2 and later) use the tier's LE parameters too
+     (they were 60/30 for as long as a device was away); a direct connection to one device keeps 60/30 for its few
+     seconds.
+   - *Suspect 2, the wired card first.* Not a change: the declaration ROMs on main list `$80` PiDisk, `$81`
+     `Network_EtherNet_PiStorm` (type 4/1/1/'PS'), `$82` PiInput, `$83` `Network_WiFi_PiStorm` (4/1/1/'PT'), `$84` the
+     video, in that order, in `psmac-se.declrom` (aurora68-se.declrom), `psmac-512x342.declrom`
+     (aurora68-512x342.declrom) and `psmac-se-2560x1440.declrom` alike, and so did 0.13's and 0.14's (read back with a
+     small parser of the format block and directory; 7db1aab rebuilt them for `.PiInput` only, and
+     `tools/mac/mkdeclrom.py` has changed since 0.13 only in names). Since item 49 (19 November, before 0.12) the kernel
+     keeps `$81` on every Pi with a wired port, the 3B's LAN9514 included, and takes it out only on a 3A+ or Zero 2 W or
+     with `eth=off` (`wired_ethernet_works`, `declrom_drop`), because the Slot Manager reads the ROM once, at the first
+     boot, before the USB bus or a cable is known. So on a 3B with or without a cable `.ENET` unit 0, the first
+     catNetwork/typeEtherNet sResource SGetTypeSRsrc returns, is the wired port. Aurora68 Network (`mac/pinet.s`) takes
+     exactly that first one and shows its address, so its line said nothing about the WiFi. Riptide (src/mac/net_mac.c,
+     main_mac.c): without an interface line it opens every card, en0 the wired and en1 the WiFi, DHCP on each, metrics
+     10 and 20, and follows the wired link's state (csLinkStatus 230): there the WiFi gets its address whatever the
+     wired port does. RiptidePrefs' first run writes `interface en0 device=.ENET unit=0 card=ethernet` and `interface
+     en1 device=.ENET unit=1 card=wifi`, the same. But an interface line that names no card (or only `unit=0`) opens
+     the first card, the dead wired port, and nothing else; Riptide's `select_card` does not look at the link. With
+     `eth=off` the WiFi is the only card and unit 0, which is the plain remedy (README's options say so now). Proposed
+     to Riptide, not changed here: a line naming no card should prefer a card whose driver reports its link up (or, at
+     least, log that the card it opened has no link while another has).
+   - *Tested.* `make -C mac check`. `tools/bt_test.c` 80 checks (35 new): with only LE devices paired no page scan is
+     switched on; with a Classic keyboard away the first minute has the 160 ms interlaced page scan and the LE scan at
+     30 ms per 160 ms (327 per mille in `bt_radio_now`), the next 1.28 s standard and 30 ms per 1.28 s (under 4 %), a
+     device heard keeps it slow, five minutes later idle: over 700 s the LE scan runs some 20 s, in sweeps at 30 ms per
+     160 ms, otherwise only the 1.28 s page scan (under 1 %); the keyboard connected turns the page scan off, its link
+     going down brings the fast minute back and switches it on, a second loss within three minutes does not; a Connect
+     does; a DHCP quiet stops the page scan and the LE scan for 10 s and the heartbeat's words say why, a second one
+     5 s after it is refused, a later one taken; `bt.scan=off` sends no page scan or LE scan until a Connect and stops
+     again a minute later; `bt.scan=fast` is fast after ten minutes. The kernel built with the PC and Apple II cards and
+     booted in QEMU (solo board, System 7.1, `bt=off wifi=off` as always there: the Finder at 29 s; QEMU has no radio,
+     so the tiers and the quiet are the host test's).
+   - *Not verified:* the owner's SE with this kernel: that the WiFi gets its address with Bluetooth on (the log's
+     `[BT] radio: no scans for 10 s (the Mac's DHCP over the WiFi)` should come right before it), what the heartbeat's
+     `[BT]   radio:` line says once the mouse has been away for six minutes, and the reconnection times of the real
+     keyboard and mouse in the slow tier. If DHCP still fails, `bt.scan=off` takes every scan away (the connected
+     keyboard's link stays), which separates the scans from the links; the LE keyboard's connection interval (7.5 to
+     15 ms asked for in `le_create`) is the next thing to relax.

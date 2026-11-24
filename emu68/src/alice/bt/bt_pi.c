@@ -334,6 +334,13 @@ static int word(const char *s, const char *w)
     return 0;
 }
 int bt_pi_wanted(void) { return !word(alice_bootargs(), "bt=off"); }
+/* alice_net.c: the WiFi joined, or the Mac (or the kernel) sent a DHCP request over it (CPU1, as bt_pi_poll). On the Pi 3B's shared antenna the
+   access point's answer, often a broadcast that is sent once, is lost while Bluetooth scans: the background scans stop
+   for a few seconds (bthost.c bt_hush, bounded there; docs/08 item 140) */
+void bt_pi_wifi_busy(const char *why)
+{
+    if (phase == 4 && bh.state == BT_READY) bt_hush(&bh, BT_HUSH_MS, why);
+}
 /* bt.pair=1: pair with any keyboard or mouse a scan finds; bt.pair=NAME: only one whose name holds NAME.
    For a bench with no pointer yet: there is no way to click "pair" in PiBlue without a mouse. */
 static int auto_pair; static char pair_name[32];
@@ -570,6 +577,33 @@ void bt_pi_report(void)
         if (auto_pair) k = put_str(t, k, " | bt.pair on");
     }
     t[k] = 0; kprintf("%s\n", t);
+    if (phase == 4 && bh.state == BT_READY) {
+        /* the radio's time Bluetooth takes now (docs/08 item 140: the Pi 3B's WiFi shares its antenna) */
+        struct bt_radio r;
+        bt_radio_now(&bh, &r);
+        static const char *const mode[] = { "auto", "fast", "slow", "off" };
+        k = put_str(t, 0, "[BT]   radio: bt.scan="); k = put_str(t, k, r.mode >= 0 && r.mode < 4 ? mode[r.mode] : "?");
+        k = put_str(t, k, ", "); k = put_str(t, k, bt_tier_word(r.tier));
+        if (r.tier_ms) { k = put_str(t, k, " for "); k = put_num(t, k, (r.tier_ms + 999u) / 1000u, 0); k = put_str(t, k, " s more"); }
+        if (r.tier == BT_TIER_IDLE) {
+            if (r.sweep) k = put_str(t, k, " (its LE sweep now)");
+            else { k = put_str(t, k, " (the next LE sweep in "); k = put_num(t, k, (r.sweep_in + 999u) / 1000u, 0); k = put_str(t, k, " s)"); }
+        }
+        if (r.hush_ms) { k = put_str(t, k, ", quiet for the WiFi's DHCP "); k = put_num(t, k, (r.hush_ms + 999u) / 1000u, 0); k = put_str(t, k, " s more"); }
+        if (bh.hush_n) { k = put_str(t, k, " (DHCP quiets "); k = put_num(t, k, bh.hush_n, 0); k = put_str(t, k, ")"); }
+        k = put_str(t, k, " | page scan ");
+        if (!r.page_on) k = put_str(t, k, "off");
+        else {
+            k = put_num(t, k, r.page_win * 625u / 1000u, 0); k = put_str(t, k, " ms per "); k = put_num(t, k, r.page_int * 625u / 1000u, 0);
+            k = put_str(t, k, r.page_interlaced ? " ms interlaced" : " ms");
+        }
+        k = put_str(t, k, " | LE scan ");
+        if (!r.le_on) k = put_str(t, k, "off");
+        else { k = put_num(t, k, r.le_win * 625u / 1000u, 0); k = put_str(t, k, " ms per "); k = put_num(t, k, r.le_int * 625u / 1000u, 0); k = put_str(t, k, " ms"); }
+        k = put_str(t, k, " | duty "); k = put_num(t, k, r.permille / 10u, 0); t[k++] = '.'; k = put_num(t, k, r.permille % 10u, 0); k = put_str(t, k, " %");
+        if (r.inquiry) k = put_str(t, k, " + a scan for new devices (all of it, 12 s)");
+        t[k] = 0; kprintf("%s\n", t);
+    }
     /* every paired device that is not connected: what the host does for it now, when it was last heard advertising and
        with what, and the last thing that went wrong with it (24 November 2026: the owner's LE mouse never came back and
        the log ring had lost the boot's lines; the heartbeat alone has to say it) */
@@ -669,6 +703,10 @@ void bt_pi_poll(void)
                 bio.fw_baud = v == 115200u ? 0 : v;
             }
         }
+        /* bt.scan=auto|fast|slow|off: how much of the radio Bluetooth takes while a paired device is away (bthost.h,
+           docs/08 item 140; on the Pi 3B the WiFi shares the antenna) */
+        bh.scan_mode = word(alice_bootargs(), "bt.scan=fast") ? BT_SCAN_FAST : word(alice_bootargs(), "bt.scan=slow") ? BT_SCAN_SLOW :
+                       word(alice_bootargs(), "bt.scan=off") ? BT_SCAN_OFF : BT_SCAN_AUTO;
     }
     switch (phase) {
     case 0:

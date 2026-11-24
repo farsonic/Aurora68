@@ -236,6 +236,112 @@ static void set_connected(struct bt_host *h, const uint8_t a[6], int on)
     if (k) k->flags = on ? k->flags | BTK_CONNECTED : k->flags & ~BTK_CONNECTED;
 }
 
+/* ---- the radio's time (bthost.h, docs/08 item 140) ------------------------------------------------- */
+const char *bt_tier_word(int tier) { return tier == BT_TIER_FAST ? "fast" : tier == BT_TIER_SLOW ? "slow" : tier == BT_TIER_IDLE ? "idle" : "off"; }
+/* the tier now, and (*left) how long it lasts */
+static int radio_tier_left(struct bt_host *h, uint32_t *left)
+{
+    uint32_t t = now(h), since = t - h->wake_ms, user = t - h->user_ms;
+    uint32_t heard = h->heard_any_ms ? t - h->heard_any_ms : 0xffffffffu;
+    uint32_t l = 0;
+    int tier;
+    if (h->scan_mode == BT_SCAN_FAST) tier = BT_TIER_FAST;
+    else if (h->scan_mode == BT_SCAN_OFF) {
+        tier = h->user_set && user < BT_FAST_MS ? BT_TIER_FAST : BT_TIER_OFF;
+        if (tier == BT_TIER_FAST) l = BT_FAST_MS - user;
+    } else if (h->scan_mode == BT_SCAN_AUTO && since < BT_FAST_MS) { tier = BT_TIER_FAST; l = BT_FAST_MS - since; }
+    else if (h->user_set && user < BT_FAST_MS) { tier = BT_TIER_FAST; l = BT_FAST_MS - user; }   /* bt.scan=slow: a Connect is still fast */
+    else {
+        /* slow, until BT_IDLE_MS have passed since the fast tier's end (or bt.scan=slow's start) and since a paired
+           device was last heard advertising */
+        uint32_t slow0 = h->scan_mode == BT_SCAN_AUTO ? since - BT_FAST_MS : since;
+        uint32_t q = slow0 < heard ? slow0 : heard;
+        tier = q < BT_IDLE_MS ? BT_TIER_SLOW : BT_TIER_IDLE;
+        if (tier == BT_TIER_SLOW) l = BT_IDLE_MS - q;
+    }
+    if (left) *left = l;
+    return tier;
+}
+static int radio_tier(struct bt_host *h) { return radio_tier_left(h, 0); }
+/* the WiFi's DHCP (bt_hush): no background scan at all while it lasts */
+static int hushed(struct bt_host *h) { return h->hush_set && !due(h, h->hush_until); }
+/* the idle tier's LE sweep: BT_SWEEP_MS in every BT_SWEEP_EVERY, by the clock (one odd gap when it wraps, 49 days) */
+static int sweep_now(struct bt_host *h) { return now(h) % BT_SWEEP_EVERY < BT_SWEEP_MS; }
+/* the LE scan's plan now: 0 none, else the parameters' tier (le_tier_params) */
+static int le_plan(struct bt_host *h)
+{
+    int tier = radio_tier(h);
+    if (hushed(h) || tier == BT_TIER_OFF) return 0;
+    if (tier == BT_TIER_IDLE) return sweep_now(h) ? 1 + BT_TIER_FAST : 0;
+    return 1 + tier;
+}
+/* a reason for the fast tier: user, a Connect or a pairing asked for (always); else a start or a link that went down,
+   at most once per BT_FAST_MS + BT_REWAKE_MS, so that a device whose link comes and goes keeps it bounded */
+static void radio_wake(struct bt_host *h, int user, const char *why)
+{
+    uint32_t t = now(h);
+    if (user) { h->user_ms = t; h->user_set = 1; h->wake_ms = t; h->wake_why = why; h->tier_said = -1; return; }
+    if (t - h->wake_ms < BT_FAST_MS + BT_REWAKE_MS) return;
+    h->wake_ms = t;
+    h->wake_why = why;
+}
+void bt_hush(struct bt_host *h, uint32_t ms, const char *why)
+{
+    if (h->state != BT_READY || hushed(h)) return;
+    if (h->hush_set && now(h) - h->hush_until < BT_HUSH_GAP) return;   /* scans at least a third of the time */
+    if (ms > BT_HUSH_MAX) ms = BT_HUSH_MAX;
+    h->hush_until = now(h) + ms;
+    h->hush_set = 1;
+    h->hush_n++;
+    lg(h, "radio: no scans for %u s (%s)", ms / 1000u, why);
+}
+static int classic_away(struct bt_host *h)          /* a paired Classic device not connected now */
+{
+    for (int i = 0; i < h->nkeys; i++) if (!(h->keys[i].flags & BTK_LE) && !conn_by_addr(h, h->keys[i].addr)) return 1;
+    return 0;
+}
+/* the page scan as the tier wants it: on only while a paired Classic device is away or a pairing goes on */
+static void page_scan_update(struct bt_host *h)
+{
+    int tier = radio_tier(h);
+    int want = (tier != BT_TIER_OFF && !hushed(h) && classic_away(h)) || h->pairing;
+    int fast = tier == BT_TIER_FAST || h->pairing;
+    if (want && (!h->ps_set || h->ps_fast != fast)) {
+        uint8_t p[4];
+        /* fast, as Linux's "fast connectable": 160 ms, interlaced, so a paired keyboard that wakes and calls is answered
+           in a tenth of a second (a key held at power-on, 23 November 2026); slow: 1.28 s, standard, the default */
+        put16(p, fast ? 0x0100 : 0x0800); put16(p + 2, 0x0012);
+        cmd(h, C_PAGE_SCAN_ACT, p, 4);
+        p[0] = fast ? 1 : 0;
+        cmd(h, C_PAGE_SCAN_TYPE, p, 1);
+        h->ps_set = 1; h->ps_fast = fast;
+    }
+    if (want != h->ps_on) {
+        uint8_t p = want ? 0x02 : 0x00;
+        cmd(h, C_SCAN_ENABLE, &p, 1);
+        h->ps_on = want;
+    }
+}
+static void le_radio_now(struct bt_host *h, struct bt_radio *r);   /* btle.c */
+void bt_radio_now(struct bt_host *h, struct bt_radio *r)
+{
+    mset(r, 0, sizeof *r);
+    r->mode = h->scan_mode;
+    r->tier = radio_tier_left(h, &r->tier_ms);
+    if (hushed(h)) r->hush_ms = h->hush_until - now(h);
+    r->sweep = r->tier == BT_TIER_IDLE && sweep_now(h);
+    if (r->tier == BT_TIER_IDLE) r->sweep_in = r->sweep ? 0 : BT_SWEEP_EVERY - now(h) % BT_SWEEP_EVERY;
+    if (h->state != BT_READY) return;
+    r->page_on = h->ps_on;
+    if (h->ps_on) { r->page_int = h->ps_fast ? 0x0100 : 0x0800; r->page_win = 0x0012; r->page_interlaced = h->ps_fast; }
+    r->inquiry = h->scanning;
+    le_radio_now(h, r);
+    unsigned pm = 0;
+    if (r->page_on && r->page_int) pm += (unsigned)r->page_win * (r->page_interlaced ? 2u : 1u) * 1000u / r->page_int;
+    if (r->le_on && r->le_int) pm += (unsigned)r->le_win * 1000u / r->le_int;
+    r->permille = pm;
+}
+
 /* ---- the start-up --------------------------------------------------------------- */
 enum { S_RESET, S_MINIDRIVER, S_MINI_WAIT, S_PATCH, S_LAUNCH_WAIT, S_RESET2, S_SETUP, S_DONE, S_RESET_PAUSE, S_RESET2_PAUSE, S_ROM_VER, S_ROM_NAME, S_BAUD };
 #define RESET_PAUSE  100                    /* ms after a reset's answer before the next command (Linux btbcm_reset) */
@@ -276,12 +382,8 @@ static void setup_next(struct bt_host *h)
     case 10: p[0] = 1; p[1] = 0; sync_cmd(h, C_LE_HOST, p, 2); break;            /* LE on: LE keyboards and mice too */
     case 11: sync_cmd(h, C_LE_BUFSIZE, 0, 0); break;
     case 12: mset(p, 0, 8); p[0] = 0x1f; sync_cmd(h, C_LE_EVMASK, p, 8); break;   /* connections, adverts, updates, features, LTK requests */
-    /* "Fast connectable", as Linux's: a page scan every 160 ms (the default is every 1.28 s) and interlaced, so a
-       paired keyboard that wakes and calls is answered in a tenth of a second rather than up to a second and a half,
-       which is what decides whether a key held at power-on reaches the Mac's start (23 November 2026, docs/08) */
-    case 13: put16(p, 0x0100); put16(p + 2, 0x0012); sync_cmd(h, C_PAGE_SCAN_ACT, p, 4); break;   /* 160 ms, 11.25 ms */
-    case 14: p[0] = 1; sync_cmd(h, C_PAGE_SCAN_TYPE, p, 1); break;                /* interlaced */
-    case 15: p[0] = 0x02; sync_cmd(h, C_SCAN_ENABLE, p, 1); break;               /* page scan: paired devices reconnect */
+    /* the page scan (paired devices reconnect) is the radio tier's (page_scan_update, from bt_poll): fast for the first
+       minute, as Linux's "fast connectable", then slow (docs/08 items 139, 140) */
     default:
         h->pending_op = 0;
         h->state = BT_READY;
@@ -289,6 +391,7 @@ static void setup_next(struct bt_host *h)
         lg(h, "ready: %a, %u paired", h->bdaddr, (uint32_t)h->nkeys);
         h->reconnect_at = now(h) + 300;
         h->reconnect_next = 0;
+        h->wake_ms = now(h); h->wake_why = "the start"; h->ps_on = h->ps_set = 0; h->tier_said = -1;
         break;
     }
 }
@@ -397,11 +500,12 @@ static void startup_answer(struct bt_host *h, uint16_t op, const uint8_t *ret, u
 void bt_init(struct bt_host *h, const struct bt_io *io, const uint8_t *fw, unsigned fwlen)
 {
     struct bt_key keep[BT_MAXKEY];
-    int nk = h->nkeys;
+    int nk = h->nkeys, mode = h->scan_mode;
     mcpy(keep, h->keys, sizeof keep);
     mset(h, 0, sizeof *h);
     mcpy(h->keys, keep, sizeof keep);
     h->nkeys = nk;
+    h->scan_mode = mode;
     for (int i = 0; i < nk; i++) { h->keys[i].flags &= ~BTK_CONNECTED; if (h->keys[i].flags & BTK_LE) h->le_lists_dirty = 1; }
     h->io = io;
     h->fw = fw; h->fwlen = fwlen;
@@ -868,6 +972,7 @@ static void event(struct bt_host *h, const uint8_t *e, unsigned n)
         if (c->pairing && h->pairing) { h->pairing = 0; say(h, "pairing did not finish"); }
         else say(h, "disconnected");
         c->used = 0;
+        if (key_of(h, c->addr)) radio_wake(h, 0, "a link went down");
         return;
     }
     case 0x17: {                                        /* Link Key Request */
@@ -1073,9 +1178,29 @@ void bt_poll(struct bt_host *h)
         if (!h->names_pending) say(h, h->nfound ? "scan done" : "scan done - nothing found (is the device in pairing mode?)");
     }
     if (!h->scanning && h->le_scanning) le_scan_stop(h);
+    {   /* the radio's tier: logged when it changes; the clock's distance kept short, so that it cannot wrap */
+        uint32_t t = now(h);
+        if (t - h->wake_ms > BT_FAST_MS + BT_REWAKE_MS + BT_IDLE_MS) h->wake_ms = t - (BT_FAST_MS + BT_REWAKE_MS + BT_IDLE_MS);
+        if (h->heard_any_ms && t - h->heard_any_ms > BT_IDLE_MS + 1000u) h->heard_any_ms = 0;
+        if (h->user_set && t - h->user_ms > BT_FAST_MS + 1000u) h->user_set = 0;
+        if (h->hush_set && due(h, h->hush_until + BT_HUSH_GAP + 1000u)) h->hush_set = 0;
+        if (h->hush_said != hushed(h)) { h->hush_said = hushed(h); if (!h->hush_said) lg(h, "radio: the scans again"); }
+        int tier = radio_tier(h);
+        if (tier != h->tier_said) {
+            const char *m = h->scan_mode == BT_SCAN_FAST ? "fast" : h->scan_mode == BT_SCAN_SLOW ? "slow" : h->scan_mode == BT_SCAN_OFF ? "off" : "auto";
+            if (tier == BT_TIER_FAST && h->scan_mode != BT_SCAN_FAST)
+                lg(h, "radio (bt.scan=%s): fast scans for %u s (%s): page scan 11.25 ms per 160 ms interlaced, LE scan 30 ms per 160 ms", m, BT_FAST_MS / 1000u, h->wake_why ? h->wake_why : "?");
+            else if (tier == BT_TIER_FAST) lg(h, "radio (bt.scan=fast): fast scans for good: page scan 11.25 ms per 160 ms interlaced, LE scan 30 ms per 160 ms");
+            else if (tier == BT_TIER_SLOW) lg(h, "radio (bt.scan=%s): slow scans: page scan 11.25 ms per 1.28 s, LE scan 30 ms per 1.28 s", m);
+            else if (tier == BT_TIER_IDLE) lg(h, "radio (bt.scan=%s): nothing paired heard for %u minutes: the LE scan only %u s in every %u (Connect looks at once)", m, BT_IDLE_MS / 60000u, BT_SWEEP_MS / 1000u, BT_SWEEP_EVERY / 1000u);
+            else lg(h, "radio (bt.scan=off): no page scan and no LE scan (Connect in Aurora68 Bluetooth looks for a minute)");
+            h->tier_said = tier;
+        }
+    }
+    page_scan_update(h);
     le_poll(h);
     /* paired devices: call each once after the start (they also call us); LE ones advertise (le_poll) */
-    if (!h->pairing && !h->scanning && !h->names_pending && !h->calling && h->reconnect_next < h->nkeys && due(h, h->reconnect_at)) {
+    if (!h->pairing && !h->scanning && !h->names_pending && !h->calling && !hushed(h) && h->reconnect_next < h->nkeys && due(h, h->reconnect_at)) {
         struct bt_key *k = &h->keys[h->reconnect_next++];
         if (!(k->flags & BTK_LE) && !conn_by_addr(h, k->addr)) { lg(h, "calling %a", k->addr); create_conn(h, k->addr); h->reconnect_at = now(h) + 6000; }
     }
@@ -1107,6 +1232,7 @@ int bt_pair(struct bt_host *h, const uint8_t a[6])
 {
     if (h->state != BT_READY) return -1;
     struct bt_found *lf = found_of(h, a);
+    radio_wake(h, 1, "a pairing");
     if (h->scanning) { cmd(h, C_INQUIRY_CANCEL, 0, 0); h->scanning = 0; }
     if (lf && lf->le) {                                 /* LE: connect, then SMP pairs it (btle.c) */
         struct bt_conn *lc = conn_by_addr(h, a);
@@ -1135,6 +1261,7 @@ int bt_connect(struct bt_host *h, const uint8_t a[6])
 {
     if (h->state != BT_READY || !key_of(h, a)) return -1;
     if (conn_by_addr(h, a)) return 0;
+    radio_wake(h, 1, "Connect");
     if (key_of(h, a)->flags & BTK_LE) { h->le_init_until = now(h); return 0; }   /* the accept list connects it when it advertises */
     h->reconnect_next = h->nkeys;                       /* the start-up's calls are over */
     create_conn(h, a);

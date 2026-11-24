@@ -161,11 +161,24 @@ static int le_keys_waiting(struct bt_host *h)       /* bonded LE devices not con
     return 0;
 }
 
+/* the LE scan's interval and window for a radio tier (bthost.h, docs/08 item 140), 0.625 ms units */
+static void le_tier_params(int tier, uint16_t *iv, uint16_t *win)
+{
+    /* fast: 30 ms every 160 ms. Linux's background scan is 30 ms every 60 ms, half the radio; a paired device that
+       wants to reconnect advertises every 20 to 30 ms (HOGP's recommendation for its first 30 s), so any 30 ms window
+       hears it and the interval is the delay: 160 ms, like the fast page scan, for 19 % rather than 50 % */
+    if (tier == BT_TIER_FAST) { *iv = 0x0100; *win = 0x0030; }
+    else if (tier == BT_TIER_SLOW) { *iv = 0x0800; *win = 0x0030; }    /* 1.28 s / 30 ms */
+    else { *iv = 0x1000; *win = 0x0024; }                              /* 2.56 s / 22.5 ms, Linux's SLOW2: a fallback only */
+}
+
 /* ---- the link ---------------------------------------------------------------------- */
 static void le_create(struct bt_host *h, int policy, uint8_t type, const uint8_t a[6])
 {
     uint8_t p[25];
-    put16(p, 0x0060); put16(p + 2, 0x0030);          /* scan 60 ms, window 30 ms */
+    uint16_t iv = 0x0060, win = 0x0030;              /* to one device: scan 60 ms, window 30 ms (it ends in seconds) */
+    if (policy) { h->init_tier = le_plan(h); le_tier_params(h->init_tier ? h->init_tier - 1 : BT_TIER_IDLE, &iv, &win); }   /* the accept list: it waits, the tier's */
+    put16(p, iv); put16(p + 2, win);
     p[4] = (uint8_t)policy;                          /* 0: this device, 1: the filter accept list */
     p[5] = type;
     if (a) mcpy(p + 6, a, 6); else mset(p + 6, 0, 6);
@@ -233,6 +246,7 @@ static int le_heard(struct bt_host *h, uint8_t evt, uint8_t atype, const uint8_t
     }
     if (ki < 0) return -1;
     struct bt_key *k = &h->keys[ki];
+    if (!conn_by_addr(h, k->addr)) h->heard_any_ms = now(h) ? now(h) : 1;   /* a paired device away is about: not idle yet */
     k->heard_ms = now(h); k->heard_n++; k->heard_evt = evt; k->heard_atype = atype; mcpy(k->heard_addr, a, 6);
     if (!k->name[0])
         for (unsigned i = 0; d && i + 1 < n; ) {
@@ -246,7 +260,10 @@ static int le_heard(struct bt_host *h, uint8_t evt, uint8_t atype, const uint8_t
 static void bg_start(struct bt_host *h)
 {
     uint8_t p[7];
-    p[0] = 0; put16(p + 1, 0x0060); put16(p + 3, 0x0030); p[5] = 0; p[6] = 0;   /* passive, 60 ms / 30 ms, as Linux's background scan */
+    uint16_t iv, win;
+    h->bg_tier = le_plan(h);
+    le_tier_params(h->bg_tier ? h->bg_tier - 1 : BT_TIER_IDLE, &iv, &win);
+    p[0] = 0; put16(p + 1, iv); put16(p + 3, win); p[5] = 0; p[6] = 0;        /* passive */
     cmd(h, C_LE_SCAN_PARAM, p, 7);
     p[0] = 1; p[1] = 1;                                                       /* on, duplicates filtered (each start of it sees each address once) */
     cmd(h, C_LE_SCAN_ENABLE, p, 2);
@@ -1109,10 +1126,14 @@ static void le_poll(struct bt_host *h)
         h->le_init_until = now(h) + 300;
     }
     int own_scan = h->no_resolv && le_irk_waiting(h);    /* the accept list cannot find them: the host's scan instead */
-    if (h->le_init == 2 && (h->le_lists_dirty || h->scanning || h->pairing || !le_keys_waiting(h) || own_scan)) le_cancel(h);
-    if (h->bg_scan && (h->scanning || h->pairing || !le_keys_waiting(h) || !own_scan)) bg_stop(h);
+    int plan = le_plan(h), off = !plan;
+    /* the waiting scans follow the radio's tier (docs/08 item 140): started again with its parameters when it changes,
+       stopped with bt.scan=off */
+    if (h->le_init == 2 && (h->le_lists_dirty || h->scanning || h->pairing || !le_keys_waiting(h) || own_scan || off || h->init_tier != plan)) le_cancel(h);
+    if (h->bg_scan && (h->scanning || h->pairing || !le_keys_waiting(h) || !own_scan || off)) bg_stop(h);
+    if (h->bg_scan && h->bg_tier != plan) { bg_stop(h); bg_start(h); }
     if (h->le_init || h->le_cancelling || h->scanning || h->pairing || !due(h, h->le_init_until)) return;
-    if (!le_keys_waiting(h)) return;
+    if (!le_keys_waiting(h) || off) return;
     if (h->le_lists_dirty) le_lists_write(h);
     if (own_scan) {
         if (!h->bg_scan) { bg_start(h); if (!h->bg_said) { h->bg_said = 1; lg(h, "scanning for bonded LE devices (the controller has no resolving list)"); } }
@@ -1128,6 +1149,14 @@ static void le_poll(struct bt_host *h)
     for (int i = 0; i < h->nkeys; i++) if ((h->keys[i].flags & BTK_LE) && !conn_by_addr(h, h->keys[i].addr)) h->keys[i].tries++;
 }
 
+/* the LE side of the radio's time now (bt_radio_now) */
+static void le_radio_now(struct bt_host *h, struct bt_radio *r)
+{
+    if (h->bg_scan && h->bg_tier) { r->le_on = 1; le_tier_params(h->bg_tier - 1, &r->le_int, &r->le_win); }
+    else if (h->le_init == 2 && h->init_tier) { r->le_on = 1; le_tier_params(h->init_tier - 1, &r->le_int, &r->le_win); }
+    else if (h->le_init == 1 || h->le_init == 3) { r->le_on = 1; r->le_int = 0x0060; r->le_win = 0x0030; }   /* a connection to one device, for seconds */
+}
+
 /* what the host is doing about paired device KEY while it is not connected, in a few words for the heartbeat
    (bt_pi.c); *ms: milliseconds until it tries again, when it waits */
 const char *bt_key_activity(struct bt_host *h, int key, uint32_t *ms)
@@ -1141,13 +1170,18 @@ const char *bt_key_activity(struct bt_host *h, int key, uint32_t *ms)
     if (h->scanning) return "idle: a scan for new devices is going on";
     if (!(k->flags & BTK_LE)) {
         if (h->calling && !mcmp(h->call_addr, k->addr, 6)) return "Classic: calling it now";
-        return "Classic: waiting for it to call (page scan on; a key pressed wakes it)";
+        if (!h->ps_on && hushed(h)) return "Classic: page scan off for a few seconds while the WiFi gets its address";
+        if (!h->ps_on) return "Classic: page scan off (bt.scan=off): it cannot call; Connect in Aurora68 Bluetooth calls it";
+        return h->ps_fast ? "Classic: waiting for it to call (page scan fast; a key pressed wakes it)" : "Classic: waiting for it to call (page scan slow, 1.28 s; a key pressed wakes it)";
     }
     if (h->le_cancelling) return "LE: a connection attempt is being cancelled";
     if (h->le_init == 3) return h->rpa_key == key ? "LE: connecting to it at the address it advertised" : "LE: connecting another device it heard";
     if (h->le_init == 2) return "LE: the controller's accept list is armed for it";
     if (h->le_init == 1) return !mcmp(h->call_addr, k->addr, 6) ? "LE: direct connection to it" : "LE: a direct connection to another device";
     if (h->bg_scan) return "LE: the host's own scan listens for it";
+    if (hushed(h)) return "LE: not looked for while the WiFi gets its address (a few seconds)";
+    if (radio_tier(h) == BT_TIER_OFF) return "LE: not looked for (bt.scan=off; Connect in Aurora68 Bluetooth looks for a minute)";
+    if (radio_tier(h) == BT_TIER_IDLE) return "LE: not heard for minutes: looked for 10 s in every 5 minutes (Connect in Aurora68 Bluetooth looks at once)";
     if (h->le_lists_dirty) return "LE: the accept list is about to be written";
     if (!due(h, h->le_init_until)) { *ms = h->le_init_until - now(h); return "LE: waiting before the next attempt"; }
     return "LE: idle, the next turn arms it";

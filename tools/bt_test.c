@@ -16,7 +16,12 @@
  *     and encrypts with its key; the heartbeat's words for it (bt_key_activity) and what was heard; the scan started
  *     afresh every 30 s while nothing is heard; a failed connection noted against the device;
  *   - the firmware sent at 921600 baud and the line back at 115200 after Launch_RAM; a refusal keeps 115200;
- *   - the page scan's "fast connectable" settings in the start-up.
+ *   - the radio's time (docs/08 item 140: WiFi got no address on the owner's Pi 3B with Bluetooth on): the page scan
+ *     only while a paired Classic device is away, "fast connectable" for the first minute and then the default 1.28 s;
+ *     the host's own LE scan 30 ms per 160 ms for that minute, then 30 ms per 1.28 s, then only a 10 s sweep in every five
+ *     minutes when nothing has been heard for five minutes; a link going down brings the fast minute back at most once
+ *     per three minutes; the WiFi joining or its DHCP quiets every scan for 10 s, at most two thirds of the time;
+ *     bt.scan=fast keeps it fast, bt.scan=off keeps the radio quiet until a Connect; the shares bt_radio_now reports.
  */
 #include <stdio.h>
 #include <stdint.h>
@@ -85,6 +90,8 @@ static void run(uint32_t ms) { for (uint32_t k = 0; k < ms; k += 10) { answer();
 static int find_op(uint16_t op, unsigned from) { for (unsigned i = from; i < nout; i++) if (op_of(i) == op) return (int)i; return -1; }
 static int count_op(uint16_t op, unsigned from) { int c = 0; for (unsigned i = from; i < nout; i++) if (op_of(i) == op) c++; return c; }
 static void reset_out(void) { nout = answered = 0; nbauds = 0; }
+static int last_op(uint16_t op) { int r = -1; for (unsigned i = 0; i < nout; i++) if (op_of(i) == op) r = (int)i; return r; }
+static unsigned le16v(const uint8_t *p) { return (unsigned)(p[0] | p[1] << 8); }
 
 /* the spec's IRK (D.7: ec0234a3 57c8ad05 341010a6 0a397d9b, most significant first) as SMP gives it */
 static uint8_t irk_lsb[16];
@@ -138,12 +145,7 @@ int main(int argc, char **argv)
     res_status = 0x01;
     to_ready(0, 0);
     CHECK(H.state == BT_READY, "the host is ready (state %d, step %d)", H.state, H.step);
-    {
-        int a = find_op(0x0c1c, 0), t = find_op(0x0c47, 0), s = find_op(0x0c1a, 0);
-        CHECK(a >= 0 && out[a].b[4] == 0x00 && out[a].b[5] == 0x01 && out[a].b[6] == 0x12, "page scan every 160 ms, 11.25 ms windows");
-        CHECK(t >= 0 && out[t].b[4] == 1, "page scan interlaced");
-        CHECK(s > t && t > a, "set before the page scan is switched on");
-    }
+    CHECK(find_op(0x0c1a, 0) < 0 && !H.ps_on, "only an LE device paired: no page scan (as Linux: nothing Classic to wake for)");
     CHECK(H.no_resolv == 1, "the missing resolving list is noticed");
     CHECK(H.bg_scan == 1, "the host's own scan runs for the bonded mouse");
     {
@@ -255,6 +257,138 @@ int main(int argc, char **argv)
     io.fw_baud = 0;
     to_ready(hcd, sizeof hcd);
     CHECK(find_op(0xfc18, 0) < 0 && nbauds == 0 && H.state == BT_READY, "without fw_baud: as before");
+
+    /* the radio's time (docs/08 item 140): a Classic keyboard and an LE mouse paired, both away, on the 4.1 controller */
+    {
+        static const uint8_t kb[6] = { 0x55, 0x44, 0x33, 0x22, 0x11, 0x00 };     /* 00:11:22:33:44:55 */
+        static const uint8_t lk[16] = { 9 };
+        res_status = 0x01;
+        reset_out();
+        memset(&H, 0, sizeof H);
+        bt_add_key(&H, kb, lk, 4, BTK_KEYBOARD);
+        bt_add_le_key(&H, ident, 1, ltk, 0x1234, rnd8, irk_lsb, BTK_MOUSE);
+        bt_init(&H, &io, 0, 0);
+        run(3000);
+        CHECK(H.state == BT_READY && H.scan_mode == BT_SCAN_AUTO, "ready, bt.scan=auto");
+        {
+            int a = find_op(0x0c1c, 0), t = find_op(0x0c47, 0), s = find_op(0x0c1a, 0);
+            CHECK(a >= 0 && out[a].b[4] == 0x00 && out[a].b[5] == 0x01 && out[a].b[6] == 0x12, "the first minute: page scan every 160 ms, 11.25 ms windows");
+            CHECK(t >= 0 && out[t].b[4] == 1, "page scan interlaced");
+            CHECK(s > t && t > a && out[s].b[4] == 0x02, "set before the page scan is switched on");
+            int sp = last_op(0x200b);
+            CHECK(sp >= 0 && le16v(out[sp].b + 5) == 0x0100 && le16v(out[sp].b + 7) == 0x0030, "the host's LE scan 30 ms every 160 ms");
+            struct bt_radio r; bt_radio_now(&H, &r);
+            CHECK(r.tier == BT_TIER_FAST && r.page_on && r.le_on && r.permille == 327, "fast: 14 %% page scan + 19 %% LE scan (%u per mille)", r.permille);
+            /* the Classic keyboard's start-up call is out; it does not answer */
+            int cc0 = find_op(0x0405, 0);
+            if (cc0 >= 0) { uint8_t e[13] = { 0x03, 11, 0x04, 0, 0 }; memcpy(e + 5, kb, 6); e[11] = 1; ev(e, 13); }
+        }
+        unsigned mark = nout;
+        run(60000);
+        {
+            int a = last_op(0x0c1c), t = last_op(0x0c47), sp = last_op(0x200b);
+            CHECK(a >= (int)mark && le16v(out[a].b + 4) == 0x0800 && out[a].b[6] == 0x12, "after a minute: page scan every 1.28 s");
+            CHECK(t >= (int)mark && out[t].b[4] == 0, "standard, not interlaced");
+            CHECK(sp >= (int)mark && le16v(out[sp].b + 5) == 0x0800 && le16v(out[sp].b + 7) == 0x0030 && H.bg_scan, "the LE scan 30 ms every 1.28 s");
+            struct bt_radio r; bt_radio_now(&H, &r);
+            CHECK(r.tier == BT_TIER_SLOW && r.permille < 40, "slow: under 4 %% of the radio (%u per mille)", r.permille);
+            uint32_t ms; CHECK(strstr(bt_key_activity(&H, 0, &ms), "page scan slow") != 0, "the heartbeat: the keyboard waits with a slow page scan");
+        }
+        /* the mouse is heard (it does not connect): no idle tier for five minutes after */
+        run(200000);
+        adv(0x02, 1, rpa);                                           /* ADV_SCAN_IND: heard, not connectable */
+        CHECK(H.heard_any_ms == t_ms && H.keys[1].heard_n == 1, "the mouse heard");
+        run(200000);
+        { struct bt_radio r; bt_radio_now(&H, &r); CHECK(r.tier == BT_TIER_SLOW, "a paired device heard 200 s ago: still slow (%s)", bt_tier_word(r.tier)); }
+        mark = nout;
+        run(110000);
+        {
+            struct bt_radio r; bt_radio_now(&H, &r);
+            CHECK(r.tier == BT_TIER_IDLE, "nothing heard for five minutes: idle (%s)", bt_tier_word(r.tier));
+            CHECK(last_op(0x0c1c) < (int)mark, "the page scan stays at 1.28 s");
+            /* the LE scan only in its sweep: 10 s in every 5 minutes, at the fast parameters */
+            int on = 0, off = 0, swept = 0; uint32_t on_ms = 0;
+            unsigned m2 = nout;
+            for (int i = 0; i < 700; i++) {                         /* 700 s, a second at a time */
+                run(1000);
+                if (H.bg_scan) { on++; on_ms += 1000; } else off++;
+                if (H.bg_scan && !swept) {
+                    int sp = last_op(0x200b);
+                    swept = sp >= (int)m2 && le16v(out[sp].b + 5) == 0x0100 && le16v(out[sp].b + 7) == 0x0030;
+                    bt_radio_now(&H, &r);
+                    CHECK(r.sweep && r.le_on && r.page_on && r.permille == 195, "a sweep: 19 %% LE + 0.9 %% page scan (%u per mille)", r.permille);
+                }
+                if (nout > MAXOUT - 40) { reset_out(); m2 = 0; }
+            }
+            CHECK(swept, "the sweep scans at 30 ms per 160 ms");
+            CHECK(on >= 18 && on <= 25 && off >= 670, "idle: the LE scan on about 20 s of 700 (%d on, %d off)", on, off);
+            bt_radio_now(&H, &r);
+            CHECK(r.tier == BT_TIER_IDLE, "still idle");
+            if (!r.sweep) CHECK(!r.le_on && r.permille < 10, "idle between sweeps: only the slow page scan (%u per mille)", r.permille);
+        }
+        /* the keyboard calls and connects, then its link goes: the fast minute again */
+        { uint8_t e[13] = { 0x03, 11, 0x00, 0x20, 0x00 }; memcpy(e + 5, kb, 6); e[11] = 1; ev(e, 13); run(100); }
+        { struct bt_radio r; bt_radio_now(&H, &r); CHECK(!r.page_on && !H.ps_on, "nothing Classic away: the page scan off"); }
+        mark = nout;
+        { uint8_t e[6] = { 0x05, 4, 0, 0x20, 0x00, 0x08 }; ev(e, 6); run(100); }
+        {
+            int a = last_op(0x0c1c), s = last_op(0x0c1a);
+            CHECK(a >= (int)mark && le16v(out[a].b + 4) == 0x0100 && s >= (int)mark && out[s].b[4] == 0x02, "a link went down: the fast page scan again, switched on");
+            struct bt_radio r; bt_radio_now(&H, &r); CHECK(r.tier == BT_TIER_FAST, "fast again");
+        }
+        /* it comes back and goes again within three minutes: slow this time (bounded) */
+        run(70000);
+        { uint8_t e[13] = { 0x03, 11, 0x00, 0x21, 0x00 }; memcpy(e + 5, kb, 6); e[11] = 1; ev(e, 13); run(100); }
+        { uint8_t e[6] = { 0x05, 4, 0, 0x21, 0x00, 0x08 }; ev(e, 6); run(100); }
+        { struct bt_radio r; bt_radio_now(&H, &r); CHECK(r.tier == BT_TIER_SLOW, "a second loss within three minutes: slow (%s)", bt_tier_word(r.tier)); }
+        /* a Connect asked for: fast at once */
+        bt_connect(&H, ident); run(100);
+        { struct bt_radio r; bt_radio_now(&H, &r); CHECK(r.tier == BT_TIER_FAST, "a Connect: fast"); }
+        /* the Mac's DHCP over the WiFi: no scans for 10 s, not again within the next 5 s */
+        {
+            CHECK(H.bg_scan && H.ps_on, "after the Connect: scans on");
+            bt_hush(&H, BT_HUSH_MS, "test"); run(100);
+            struct bt_radio r; bt_radio_now(&H, &r);
+            CHECK(!H.bg_scan && !H.ps_on && r.hush_ms > 9000 && r.permille == 0, "DHCP: no page scan, no LE scan (%u per mille)", r.permille);
+            uint32_t ms; CHECK(strstr(bt_key_activity(&H, 1, &ms), "WiFi") != 0, "the heartbeat says why");
+            run(10000);
+            CHECK(H.bg_scan && H.ps_on, "10 s later the scans again");
+            bt_hush(&H, BT_HUSH_MS, "test"); run(100);
+            CHECK(H.bg_scan && H.ps_on, "a second DHCP within 5 s of the first's end: not quiet again (scans at least a third of the time)");
+            run(10000);
+            bt_hush(&H, BT_HUSH_MS, "test"); run(100);
+            CHECK(!H.bg_scan && H.hush_n == 2, "after the gap, quiet again (%u)", H.hush_n);
+            run(10500);
+        }
+    }
+    /* bt.scan=off: no page scan and no LE scan, until a Connect; bt.scan=fast: fast for good */
+    {
+        static const uint8_t kb[6] = { 0x55, 0x44, 0x33, 0x22, 0x11, 0x00 };
+        static const uint8_t lk[16] = { 9 };
+        res_status = 0x01;
+        reset_out();
+        memset(&H, 0, sizeof H);
+        H.scan_mode = BT_SCAN_OFF;
+        bt_add_key(&H, kb, lk, 4, BTK_KEYBOARD);
+        bt_add_le_key(&H, ident, 1, ltk, 0x1234, rnd8, irk_lsb, BTK_MOUSE);
+        bt_init(&H, &io, 0, 0);
+        run(10000);
+        CHECK(H.state == BT_READY && H.scan_mode == BT_SCAN_OFF, "bt.scan=off kept by bt_init");
+        CHECK(find_op(0x0c1a, 0) < 0 && find_op(0x200b, 0) < 0 && !H.bg_scan, "off: no page scan, no LE scan");
+        { struct bt_radio r; bt_radio_now(&H, &r); CHECK(r.tier == BT_TIER_OFF && r.permille == 0, "off: nothing (%u per mille)", r.permille); }
+        bt_connect(&H, ident); run(100);
+        CHECK(H.bg_scan && find_op(0x0c1a, 0) >= 0, "a Connect: the scans for a minute");
+        run(61000);
+        CHECK(!H.bg_scan && !H.ps_on, "and off again after it");
+        reset_out();
+        memset(&H, 0, sizeof H);
+        H.scan_mode = BT_SCAN_FAST;
+        bt_add_key(&H, kb, lk, 4, BTK_KEYBOARD);
+        bt_add_le_key(&H, ident, 1, ltk, 0x1234, rnd8, irk_lsb, BTK_MOUSE);
+        bt_init(&H, &io, 0, 0);
+        run(600000);
+        { struct bt_radio r; bt_radio_now(&H, &r); CHECK(r.tier == BT_TIER_FAST && r.permille == 327, "bt.scan=fast: fast after ten minutes (%u per mille)", r.permille); }
+    }
 
     printf("bt_test: %d checks, %d failed\n", checks, fails);
     return fails != 0;

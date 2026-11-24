@@ -903,10 +903,14 @@ static void wstate(unsigned st, const char *msg)
     s[k] = 0;
     frf_post_wifi(s, st == AN_ST_CONNECTED || st == AN_ST_IDLE ? 1 : st == AN_ST_FAILED ? 2 : 0);
 }
+/* bt/bt_pi.c: the WiFi needs the shared antenna (the Pi 3B's BCM43438) for a few seconds: Bluetooth's background scans
+   stop meanwhile (docs/08 item 140) */
+extern void bt_pi_wifi_busy(const char *why) __attribute__((weak));
 static void link_set(int up)
 {
     volatile struct an_unit *u = U(0);
     if ((int)u->link == up) return;
+    if (up && bt_pi_wifi_busy) bt_pi_wifi_busy("the WiFi joined: its address next");
     u->link = (unsigned)up;
     u->speed_mbps = up ? (W.rate ? (unsigned)W.rate : 54u) : 0u;
     u->state_seq++;
@@ -1181,6 +1185,14 @@ static void poll_frames(void)
 }
 
 /* ---- transmit: the board's slots to the chip ---- */
+/* an IPv4 UDP datagram to port 67, a DHCP client's (the Mac getting or renewing its address over the WiFi) */
+static int is_dhcp_request(const uint8_t *f, uint32_t len)
+{
+    if (len < 14 + 20 + 8 || f[12] != 0x08 || f[13] != 0x00 || (f[14] >> 4) != 4 || f[23] != 17) return 0;
+    uint32_t ihl = (f[14] & 15u) * 4u;
+    if (ihl < 20 || 14 + ihl + 8 > len) return 0;
+    return f[14 + ihl + 2] == 0 && f[14 + ihl + 3] == 67;
+}
 static void tx_all(void)
 {
     volatile struct an_unit *u = U(0);
@@ -1196,6 +1208,7 @@ static void tx_all(void)
 #ifdef PSMAC
             psmac_ip_mac_tx(0, q, len);
 #endif
+            if (is_dhcp_request(q, len) && bt_pi_wifi_busy) bt_pi_wifi_busy("the Mac's DHCP over the WiFi");   /* Bluetooth quiet meanwhile (docs/08 item 140) */
             NETPROBE_TX(0, q, len, 0);
             unsigned n = sdpcm_frame(f, SDPCM_CHAN_DATA, W.txseq, len);
             int bad = chip_frame(&W.c, f, n, 1);
@@ -1215,6 +1228,7 @@ static void tx_all(void)
         uint8_t *f = W.txbuf, *q = f + SDPCM_HDRLEN + BCDC_DATA_HDR;
         uint32_t len = psmac_ip_tx_take(0, q, 1518);
         if (!len) break;
+        if (is_dhcp_request(q, len) && bt_pi_wifi_busy) bt_pi_wifi_busy("the kernel's DHCP over the WiFi");   /* the kernel's own address, the same */
         unsigned n = sdpcm_frame(f, SDPCM_CHAN_DATA, W.txseq, len);
         if (chip_frame(&W.c, f, n, 1)) tx_fail();
         else W.txseq++;
@@ -1366,6 +1380,12 @@ static int bringup(void)
     memset(W.caps, 0, sizeof W.caps);
     iov_get("cap", W.caps, sizeof W.caps - 1);
     wifi_log("firmware features: %s\n", W.caps);
+    {   /* Bluetooth coexistence (docs/08 item 140): on the Pi 3B's BCM43438 WiFi and Bluetooth share one antenna, and the
+           WiFi firmware divides its time as the NVRAM says (brcmfmac43430-sdio.txt: btc_mode=1, btc_params1 and 8, as
+           Linux leaves it: brcmfmac sends no coexistence settings of its own). Said here so that a log shows it. */
+        uint8_t b[4] = { 0, 0, 0, 0 };
+        if (!iov_get("btc_mode", b, 4)) wifi_log("Bluetooth coexistence: btc_mode %u (the NVRAM's; 0 none, 1 time sharing)\n", fm_le32(b));
+    }
     W.has_sae = 0;
     for (char *p = W.caps; *p; p++)
         if ((p == W.caps || p[-1] == ' ') && p[0] == 's' && p[1] == 'a' && p[2] == 'e' && (p[3] == ' ' || !p[3])) W.has_sae = 1;

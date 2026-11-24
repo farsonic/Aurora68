@@ -50,6 +50,44 @@ struct bt_key {
 };
 enum { BT_KE_NONE, BT_KE_CONN, BT_KE_REFUSED, BT_KE_NOANSWER, BT_KE_ENC, BT_KE_DISC, BT_KE_KEY };
 
+/* The radio's time (docs/08 item 140). On the Pi 3B the BCM43438 has one antenna for WiFi and Bluetooth, and the
+   WiFi firmware's coexistence (btc_mode=1 in brcmfmac43430-sdio.txt, time division) gives Bluetooth the antenna
+   whenever it scans. What the host leaves running while a paired device is away is therefore bounded:
+     fast   page scan 11.25 ms every 160 ms, interlaced (14 %: Linux's "fast connectable"), LE scan 30 ms every
+            160 ms (19 %; Linux's background scan, 30 ms every 60 ms, is 50 %, and was the host's until docs/08 item
+            140); for BT_FAST_MS after the start, a Connect or a pairing asked for, and a link going down (that last
+            at most once per BT_FAST_MS + BT_REWAKE_MS, so at most a third of the time)
+     slow   page scan 11.25 ms every 1.28 s, standard (0.9 %: the Core specification's and Linux's default), LE scan
+            30 ms every 1.28 s (2.3 %)
+     idle   after BT_IDLE_MS more with no paired device heard: no LE scan but a sweep of BT_SWEEP_MS (at the fast
+            parameters) in every BT_SWEEP_EVERY (0.6 % on average); page scan as slow
+     off    (bt.scan=off) no page scan and no LE scan at all, except for BT_FAST_MS after a Connect or a pairing
+   and over all of them, the WiFi's DHCP (bt_hush, from alice_net.c when the Mac sends a DHCP request over the WiFi):
+   no page scan and no LE scan for BT_HUSH_MS, at most once per BT_HUSH_MS + BT_HUSH_GAP (Linux's brcmfmac boosts the
+   WiFi during DHCP for the same reason, btcoex.c)
+   Page scan runs only while a paired Classic device is away or a pairing is going on, as Linux's (no disconnected
+   entry in its accept list, no page scan). A scan for new devices (bt_scan) is the user's and runs at full time. */
+enum { BT_SCAN_AUTO, BT_SCAN_FAST, BT_SCAN_SLOW, BT_SCAN_OFF };      /* bt.scan=auto|fast|slow|off (bt_pi.c) */
+enum { BT_TIER_FAST, BT_TIER_SLOW, BT_TIER_IDLE, BT_TIER_OFF };
+#define BT_FAST_MS   60000u
+#define BT_REWAKE_MS 120000u
+#define BT_IDLE_MS   300000u
+#define BT_SWEEP_MS  10000u
+#define BT_SWEEP_EVERY 300000u
+#define BT_HUSH_MS   10000u
+#define BT_HUSH_MAX  15000u
+#define BT_HUSH_GAP  5000u
+struct bt_radio {                       /* what the host has the controller do now, for the heartbeat (bt_radio_now) */
+    int mode, tier;                     /* BT_SCAN_*, BT_TIER_* */
+    uint32_t tier_ms;                   /* how long the tier has left before the next (0: for good) */
+    int page_on, page_interlaced; uint16_t page_int, page_win;     /* 0.625 ms units */
+    int le_on; uint16_t le_int, le_win; /* the host's own LE scan or the controller's accept list */
+    int inquiry;                        /* a scan for new devices (full time while it lasts) */
+    uint32_t hush_ms;                   /* the WiFi's DHCP: no scans for this long */
+    int sweep; uint32_t sweep_in;       /* idle: the LE sweep runs now; else the next in this many ms */
+    unsigned permille;                  /* page + LE scan's share of the radio, in thousandths (not the inquiry) */
+};
+
 struct bt_found { uint8_t addr[6]; uint32_t cod; int8_t rssi; uint8_t psr; uint16_t clkoff; char name[BT_NAME]; int named; uint8_t le, addr_type; };   /* le: a Bluetooth LE device; addr_type as advertised */
 
 struct bt_io {
@@ -167,6 +205,16 @@ struct bt_host {
                                            the kernel keeps each device's keys and buttons apart (alice_psmac.c, 24 November 2026) */
     int bg_restarts;                    /* the host's own scan started again so that its duplicate filter forgets (le_poll) */
     uint32_t bg_since;                  /* when it was started */
+    /* the radio's time (docs/08 item 140, above): bt.scan=, kept by bt_init */
+    int scan_mode;
+    uint32_t wake_ms;                   /* the last start of the fast tier (or of the slow one, with bt.scan=slow) */
+    const char *wake_why;               /* why, for the log */
+    uint32_t user_ms; int user_set;     /* the last Connect or pairing asked for */
+    uint32_t heard_any_ms;              /* a paired device last heard advertising (keeps the slow tier from going idle) */
+    int ps_on, ps_set, ps_fast;         /* the page scan as last written: on, its activity written, fast */
+    int bg_tier, init_tier;             /* the tier the host's LE scan, the accept list's connection, were started with */
+    int tier_said;                      /* the last tier logged */
+    uint32_t hush_until; int hush_set, hush_said; uint32_t hush_n;   /* bt_hush */
 };
 
 /* fw/fwlen: the .hcd file (0: none - the controller's ROM firmware is used) */
@@ -187,6 +235,11 @@ int  bt_rpa_match(const uint8_t irk[16], const uint8_t addr[6]);
 void bt_aes128(const uint8_t key[16], const uint8_t in[16], uint8_t out[16]);   /* FIPS-197 byte order */
 /* the heartbeat's words for what the host is doing about a paired device that is not connected (btle.c) */
 const char *bt_key_activity(struct bt_host *h, int key, uint32_t *ms);
+/* the radio's time now (bthost.c); the tier's name */
+void bt_radio_now(struct bt_host *h, struct bt_radio *r);
+const char *bt_tier_word(int tier);
+/* the WiFi is getting its address (DHCP): no background scans for ms (bounded, bthost.h above) */
+void bt_hush(struct bt_host *h, uint32_t ms, const char *why);
 /* the words for an HCI status or disconnection reason (bthost.c) */
 const char *bt_status_words(uint8_t st);
 /* "AA:BB:CC:DD:EE:FF" (addr as the controller gives it: least significant byte first) */
