@@ -18,6 +18,11 @@
  *                  image inside it is written back sector by sector at its own offset, so the
  *                  next boot loads what the Mac wrote. Only after the file's size and first
  *                  sector have been checked against the copy in memory.
+ *   *.img, *.hda, *.image, *.hfv, *.dsk
+ *                  disk images of their own in the root: read into memory in the background, or (since 24
+ *                  November 2026, for images too large for that, or mac.imagemode=card) served from the card
+ *                  as the Mac asks, through a cache; what the Mac writes goes back into the file's own
+ *                  clusters in place, never changing its size, its directory entry or the FAT.
  *   aurora68.log   the kernel's log, on the Mac's request (PiLog's Save to Card) and after a crash
  *                  record: made once the size of the ring, rewritten in place (below).
  *   cmdline.txt    edited only on the Mac's request (PSMB_INFO_SETOPT: the WiFi menu saves the
@@ -272,6 +277,9 @@ static int sd_read_multi(uint32_t lba, uint8_t *buf, uint32_t n)
     int err = 0;
     for (uint32_t i = 0; i < n * 128u; i++) {
         uint64_t t = cnt();
+        if (!(i & 127u)) pump();                                       /* a sector each 40 us or so: a run of 64 (a disk image's
+                                                                          32 KB slot, 2.6 ms at 25 MHz) outlasts the Bluetooth
+                                                                          UART's FIFO (docs/21), so its bytes between sectors */
         while (!EDM_FILL(r(SDEDM)) && !(r(SDHSTS) & 1u)) if (cnt() - t > frq() / 10) { err = -3; break; }
         if (err) break;
         p[i] = *(volatile uint32_t *)(uintptr_t)(SDH + SDDATA);
@@ -921,7 +929,7 @@ int psmac_card_options_state(void) { return opt_state; }
 #define LSLICE 4u                      /* card sectors read per pass of core 3's loop: about 170 us at
                                           25 MHz, well inside the 32-byte receive FIFO of the
                                           Bluetooth UART beside it (921600 baud, no flow control) */
-struct ext { uint32_t clus, n; };
+struct ext { uint32_t clus, n, first; };          /* first: the file's cluster number (0, 1 ...) where the extent begins */
 struct img {
     const uint8_t *ram; uint32_t off, len;       /* the image in memory; its offset in its file, its length */
     const uint8_t *file; uint32_t file_len;      /* the file it lives in, in memory: the container, or the image itself */
@@ -930,20 +938,25 @@ struct img {
     volatile uint32_t *loaded; uint32_t nload, nloaded;   /* LCHUNKs read from the card (images of their own) */
     volatile uint32_t *failed;                   /* LCHUNKs the card did not give: the Mac gets an I/O error for them */
     uint64_t load_t0; char name[48]; uint32_t written;
+    /* served from the card as the Mac asks (ram 0; "disk images served from the card", below) */
+    int card, wfail;                             /* on demand; a write to the card failed (the image is read only from then on) */
+    uint32_t last_end, ra_next, ra_end;          /* the sector after the last read; read-ahead: the next slot, the slot it stops before */
+    uint32_t rd_secs, wr_secs;                   /* the Mac's reads and writes, for the heartbeat */
 };
 static struct img imgs[4]; static int nimg;
 static const uint8_t *cont_ram; static uint32_t cont_len;
 static struct ext cont_ext[256]; static int cont_next;          /* the container file's extents */
 static volatile uint64_t last_dirty_t, first_dirty_t;
+static volatile int flush_now;                 /* the Mac restarts or shuts down: everything waiting goes now (psmac_card_flush_soon) */
 static volatile int scan_done;                 /* the card has been looked at for images (or there is none) */
 void psmac_card_container(const uint8_t *ram, uint32_t len) { cont_ram = ram; cont_len = len; }
 static struct img *img_new(const char *name, const uint8_t *ram, uint32_t len)
 {
     if (nimg >= 4) return 0;
     struct img *m = &imgs[nimg];
-    m->ram = ram; m->len = len; m->nbits = (len + CHUNK - 1) / CHUNK;
-    m->dirty = tlsf_malloc(tlsf, ((m->nbits + 31) / 32) * 4);
-    if (!m->dirty) return 0;
+    m->ram = ram; m->len = len; m->nbits = ram ? (len + CHUNK - 1) / CHUNK : 0;   /* served from the card: its cache keeps the changes */
+    m->dirty = m->nbits ? tlsf_malloc(tlsf, ((m->nbits + 31) / 32) * 4) : 0;
+    if (m->nbits && !m->dirty) return 0;
     for (uint32_t i = 0; i < (m->nbits + 31) / 32; i++) m->dirty[i] = 0;
     int k = 0; while (name[k] && k < 47) { m->name[k] = name[k]; k++; } m->name[k] = 0;
     return m;
@@ -964,7 +977,7 @@ void psmac_card_dirty(const void *p, uint32_t len)
     dirty_calls++; dirty_last = p;
     for (int i = 0; i < nimg; i++) {
         struct img *m = &imgs[i];
-        if (b < m->ram || b >= m->ram + m->len) continue;
+        if (!m->ram || b < m->ram || b >= m->ram + m->len) continue;
         uint32_t s = (uint32_t)(b - m->ram) / CHUNK, e = ((uint32_t)(b - m->ram) + len - 1) / CHUNK;
         for (uint32_t c = s; c <= e && c < m->nbits; c++) __atomic_fetch_or(&m->dirty[c / 32], 1u << (c % 32), __ATOMIC_RELEASE);
         uint64_t now = cnt();
@@ -974,28 +987,39 @@ void psmac_card_dirty(const void *p, uint32_t len)
     }
     dirty_miss++;
 }
+/* a file's extents (runs of consecutive clusters), at most max of them (ext may be 0 to count them):
+   how many, or -1 when there are more */
 static int file_extents(const struct cfile *f, struct ext *ext, int max)
 {
     int n = 0;
-    uint32_t c = f->clus, guard = 0;
+    uint32_t c = f->clus, guard = 0, k = 0, last = 0;
     while (c >= 2 && !eoc(c) && guard++ < fs.clusters) {
-        if (n && ext[n - 1].clus + ext[n - 1].n == c) ext[n - 1].n++;
-        else { if (n >= max) return -1; ext[n].clus = c; ext[n].n = 1; n++; }
+        if (n && last + 1 == c) { if (ext) ext[n - 1].n++; }
+        else { if (n >= max) return -1; if (ext) { ext[n].clus = c; ext[n].n = 1; ext[n].first = k; } n++; }
+        last = c; k++;
         c = fat_get(c);
     }
     return n;
 }
-/* the card sector holding byte off of an image's file, and how many sectors follow it in the same extent */
+/* the card sector holding byte off of an image's file, and how many sectors follow it in the same extent.
+   A file served from the card may be in thousands of pieces (a 1 GB image copied onto a card that was
+   full once): the extent is found by halves then */
 static uint32_t file_lba(const struct img *m, uint32_t off, uint32_t *run)
 {
     uint32_t cl = off / (fs.spc * 512u);
-    for (int i = 0; i < m->next; i++) {
-        if (cl < m->ext[i].n) {
+    int i = 0;
+    if (m->next > 8) {
+        int lo = 0, hi = m->next - 1;
+        while (lo < hi) { int mid = (lo + hi + 1) / 2; if (m->ext[mid].first <= cl) lo = mid; else hi = mid - 1; }
+        i = lo;
+    }
+    for (; i < m->next; i++) {
+        uint32_t c = cl - m->ext[i].first;
+        if (cl >= m->ext[i].first && c < m->ext[i].n) {
             uint32_t in = (off / 512u) % fs.spc;
-            if (run) *run = (m->ext[i].n - cl) * fs.spc - in;
-            return clus_lba(m->ext[i].clus + cl) + in;
+            if (run) *run = (m->ext[i].n - c) * fs.spc - in;
+            return clus_lba(m->ext[i].clus + c) + in;
         }
-        cl -= m->ext[i].n;
     }
     return 0;
 }
@@ -1042,15 +1066,52 @@ static int image_taken(const char *name)
     for (int i = 0; i < nimg; i++) if (name_eq(imgs[i].name, name)) return 1;
     return 0;
 }
+/* mac.imagemode=ram|card|auto: 0, 1, 2 (auto, the default) */
+#define IMG_RAM_AUTO_MB 256u       /* auto's largest image in memory: read in the background in 15 to 25 s on a Pi 3
+                                      (10 to 20 MB/s), and no more than a quarter of a 1 GB Pi's memory */
+static int image_mode(void)
+{
+    static int m = -1;
+    if (m < 0) {
+        const char *o = psmac_option("mac.imagemode");
+        m = !o ? 2 : o[0] == 'r' ? 0 : o[0] == 'c' ? 1 : 2;
+        if (o && o[0] != 'r' && o[0] != 'c' && o[0] != 'a') kprintf("[CARD] mac.imagemode=%s not understood: ram, card or auto; auto it is\n", o);
+    }
+    return m;
+}
+/* mac.imagecache=MB: the cache of the images served from the card, 16 MB by default, 1 to 128 */
+static uint32_t cache_mb_wanted(void)
+{
+    const char *o = psmac_option("mac.imagecache");
+    uint32_t v = 0;
+    if (o) while (*o >= '0' && *o <= '9') v = v * 10 + (uint32_t)(*o++ - '0');
+    if (!o) v = 16;
+    if (v < 1) v = 1;
+    if (v > 128) v = 128;
+    return v;
+}
+static int image_take_card(const char *name, const struct cfile *f, const char *why);
 static int image_take(const char *name, const struct cfile *f)
 {
     extern int psmac_board_solo;
     if (f->clus < 2 || f->size < 1024) return 0;
+    /* mac.imagemode= (24 November 2026, "disk images served from the card" below): ram, card, or auto (the
+       default): in memory when the image is at most IMG_RAM_AUTO_MB and leaves the cache's worth to spare,
+       as every image was before, else served from the card */
+    int mode = image_mode();
+    uint32_t left = memory_left_mb(), mb = (f->size + (1u << 20) - 1) >> 20;
+    if (mode == 1) return image_take_card(name, f, "mac.imagemode=card");
+    if (mode == 2 && (mb > IMG_RAM_AUTO_MB || mb + cache_mb_wanted() > left)) {
+        static char why[96];
+        if (mb > IMG_RAM_AUTO_MB) sprintf(why, "larger than %u MB, mac.imagemode=auto", IMG_RAM_AUTO_MB);
+        else sprintf(why, "%u MB of memory left for disk images, mac.imagemode=auto", left);
+        return image_take_card(name, f, why);
+    }
     uint8_t *ram = take_memory(f->size);
     if (!ram) {
-        kprintf("[CARD] MEMORY: %s (%u MB) is larger than the memory the Pi has left (%u MB for disk images): not loaded. "
-                "A smaller image, or a smaller mac.ram= (the Mac has %u MB)\n", name, f->size >> 20, memory_left_mb(), psmac_mac_ram_mb());
-        return 0;
+        kprintf("[CARD] MEMORY: %s (%u MB) is larger than the memory the Pi has left (%u MB for disk images): served from the card "
+                "instead (mac.imagemode=ram asked for memory; the Mac has %u MB)\n", name, f->size >> 20, left, psmac_mac_ram_mb());
+        return image_take_card(name, f, "it does not fit in memory");
     }
     struct img *m = img_new(name, ram, f->size);
     if (!m) return 0;
@@ -1292,7 +1353,7 @@ static void flush_poll(void)
     if (fl.img < 0 || fl.img >= nimg) {
         /* a new chunk: only once the Mac has been quiet a second, or five seconds after the first change */
         uint64_t now = cnt(), q = last_dirty_t, f0 = first_dirty_t;
-        if (!f0 || (now - q < frq() && now - f0 < 5 * frq())) return;
+        if (!f0 || (now - q < frq() && now - f0 < 5 * frq() && !flush_now)) return;
         for (int i = 0; i < nimg; i++) {
             struct img *m = &imgs[i];
             if (!m->ok) continue;
@@ -1381,6 +1442,345 @@ static int chunk_retry(struct img *m, uint32_t c)
     __atomic_fetch_and(&m->failed[c / 32], ~(1u << (c % 32)), __ATOMIC_RELEASE);
     kprintf("[CARD] %s: blocks %u-%u read from the card on a second try\n", m->name, c * (LCHUNK / 512u), (c + 1) * (LCHUNK / 512u) - 1);
     return 0;
+}
+
+/* ==== disk images served from the card as the Mac asks (24 November 2026) ======================
+   The owner's startup disk, a 95 MB image, was full ("let's make a larger image"), and an image in memory
+   can be only as large as what the Pi has left after the Mac's 128 MB, a 2560 by 1440 screen and the PC
+   and Apple II cards. An image served from the card can be as large as a FAT32 file (4 GB less a byte; HFS
+   itself stops at 2 GB under System 7.1): nothing of it is read before the Mac asks, as the PC card's disks
+   are read (psmac_card_pc_read, at the end of this file). mac.imagemode=ram|card|auto chooses (image_take).
+   - The file's clusters are listed once, as extents, when the image is found (card_start, core 3).
+   - A cache in the Pi's memory holds what was read and what the Mac wrote: slots of SLOT bytes (64 card
+     sectors; a cluster on most cards, FAT32 from 16 GB formats with 32 KB clusters), mac.imagecache=MB of
+     them (16 by default), the least recently used given up first. A slot knows which of its sectors it
+     holds (valid) and which the Mac changed since they were last written (dirty), so a write never reads
+     first.
+   - PiDisk's commands (psmac_mbox.c, core 3) go on in the background as a USB stick's do: each turn of the
+     service loop serves what the cache has and does at most one card operation, one slot read or written
+     back (in one command where the file's clusters follow one another, a few milliseconds on a Pi 3), and
+     the card lock is held only for that: the network, Bluetooth, the display, the PC card's own disk (read
+     under the same lock from its own core) and pairings.txt or aurora68.log keep their turns. The solo
+     board's SCSI disk (core 0) waits for each operation as a disk would, taking the lock for each.
+   - A read that goes on where the last one ended (a file read through, an application loading) is followed
+     by read-ahead, up to RA_SLOTS slots past it, one per pass of core 3's card turn.
+   - The Mac's writes stay in the cache and are written back as the PC card's are: CFLUSH_IDLE_MS after the
+     last write, CFLUSH_MAX_MS after the oldest unwritten one at most, and at once when the Mac restarts (its
+     RESET) or shuts down (the "switch off" and restart alerts, psmac_crash.c), a slot per pass. At most half
+     the cache may wait to be written: a write beyond that waits for a slot to be written first, so a long
+     copy goes at the card's speed and no more than 8 MB (of 16) are ever only in memory.
+   - Writes go into the file's own clusters, whole sectors in place: the file never changes size and no
+     directory entry or FAT sector is written, as for the images in memory.
+   - A read the card fails is an I/O error for the Mac (the next read of it tries the card again); a write
+     that fails stops the image's writes (an I/O error for each from then on; what waited stays in the
+     cache, so the Mac still reads what it wrote). With mac.card=ro the image is locked. */
+static int sd_write_run(uint32_t lba, const uint8_t *buf, uint32_t n);   /* the recovery's writer, below: CMD25, a run in one command */
+#define SLOT           32768u
+#define SLOT_SEC       (SLOT / 512u)
+#define RA_SLOTS       8u                 /* read-ahead: 256 KB past a sequential read */
+#define CFLUSH_IDLE_MS 2000u
+#define CFLUSH_MAX_MS  10000u
+struct cslot { uint64_t valid, dirty; uint32_t idx, lru; int16_t img, next; };
+static struct {
+    struct cslot *s; uint8_t *data; int16_t *hash;
+    uint32_t n, nhash, tick, ndirty, kb;
+    int tried;
+    uint64_t first_dirty_t, last_write_t, flush_t0;
+    uint32_t hits, misses, ra, flushed;            /* since the last heartbeat (psmac_card_report) */
+    uint64_t rd_ticks, rd_secs;                    /* the card's time and sectors for the slot reads, ever */
+} cc;
+static volatile int in_card_pass;                  /* core 3 is in psmac_card_poll's pass and holds the card lock */
+static uint8_t ctmp[SLOT] __attribute__((aligned(16)));   /* a slot read into one that already holds some of the Mac's sectors */
+static int cache_init(void)
+{
+    if (cc.n) return 1;
+    if (cc.tried) return 0;
+    cc.tried = 1;
+    uint32_t mb = cache_mb_wanted(), bytes = 0;
+    uint8_t *d = 0;
+    while (mb && !(d = take_memory(mb << 20))) mb /= 2;          /* from the pool the images in memory come from */
+    if (d) bytes = mb << 20;
+    else { bytes = 1u << 19; d = tlsf_malloc(tlsf, bytes); }     /* the last half megabyte: the kernel's heap */
+    if (!d) { kprintf("[CARD] no memory for the cache of the disk images served from the card\n"); return 0; }
+    uint32_t n = bytes / SLOT, nh = 1;
+    while (nh < 2 * n) nh <<= 1;
+    cc.s = tlsf_malloc(tlsf, n * sizeof *cc.s);
+    cc.hash = tlsf_malloc(tlsf, nh * sizeof *cc.hash);
+    if (!cc.s || !cc.hash) { kprintf("[CARD] no memory for the cache's list\n"); return 0; }
+    for (uint32_t i = 0; i < n; i++) { cc.s[i].img = -1; cc.s[i].next = -1; cc.s[i].valid = cc.s[i].dirty = 0; cc.s[i].lru = 0; }
+    for (uint32_t i = 0; i < nh; i++) cc.hash[i] = -1;
+    cc.data = d; cc.nhash = nh; cc.kb = bytes >> 10;
+    __atomic_store_n(&cc.n, n, __ATOMIC_RELEASE);
+    kprintf("[CARD] the cache of the disk images served from the card: %u KB (%u slots of %u KB)%s\n", cc.kb, n, SLOT >> 10,
+            mb == cache_mb_wanted() ? "" : ", less than mac.imagecache= asked: the memory left");
+    return 1;
+}
+static uint32_t hslot(int img, uint32_t idx) { return ((idx * 2654435761u) ^ ((uint32_t)img * 40503u)) & (cc.nhash - 1); }
+static int slot_find(int img, uint32_t idx)
+{
+    for (int i = cc.hash[hslot(img, idx)]; i >= 0; i = cc.s[i].next) if (cc.s[i].img == img && cc.s[i].idx == idx) return i;
+    return -1;
+}
+/* a slot for (img, idx): an empty one, else the least recently used with nothing waiting in it; -1 when all wait */
+static int slot_take(int img, uint32_t idx)
+{
+    int best = -1; uint32_t age = 0;
+    for (uint32_t i = 0; i < cc.n; i++) {
+        const struct cslot *s = &cc.s[i];
+        if (s->img < 0) { best = (int)i; break; }
+        if (s->dirty) continue;
+        uint32_t a = cc.tick - s->lru;
+        if (best < 0 || a > age) { best = (int)i; age = a; }
+    }
+    if (best < 0) return -1;
+    struct cslot *s = &cc.s[best];
+    if (s->img >= 0) {                                             /* out of its chain */
+        int16_t *pp = &cc.hash[hslot(s->img, s->idx)];
+        while (*pp >= 0 && *pp != best) pp = &cc.s[*pp].next;
+        if (*pp == best) *pp = s->next;
+    }
+    uint32_t h = hslot(img, idx);
+    s->img = (int16_t)img; s->idx = idx; s->valid = s->dirty = 0; s->lru = ++cc.tick;
+    s->next = cc.hash[h]; cc.hash[h] = (int16_t)best;
+    return best;
+}
+static uint32_t img_secs(const struct img *m) { return (m->len + 511u) / 512u; }
+static uint64_t slot_all(const struct img *m, uint32_t idx)       /* the valid bits of a slot that holds all its sectors */
+{
+    uint32_t k = img_secs(m) - idx * SLOT_SEC;
+    return k >= 64 ? ~0ull : (1ull << k) - 1;
+}
+/* the sectors of slot si it does not hold yet, read from the card (the whole slot in one command where the
+   file's clusters follow one another): 0, or -1 when the card failed (logged) */
+static int slot_fill(int si)
+{
+    struct cslot *s = &cc.s[si];
+    struct img *m = &imgs[s->img];
+    uint32_t first = s->idx * SLOT_SEC, end = first + SLOT_SEC;
+    if (end > img_secs(m)) end = img_secs(m);
+    uint8_t *data = cc.data + (uint64_t)si * SLOT, *dst = s->valid ? ctmp : data;
+    uint64_t t0 = cnt();
+    for (uint32_t q = first; q < end; ) {
+        uint32_t run = 0, lba = file_lba(m, q * 512u, &run), n = end - q;
+        if (n > run) n = run;
+        int e = lba && n ? -9 : -8;
+        for (int t = 0; t < 3 && e; t++) e = lba && n ? sd_read_multi(lba, dst + (q - first) * 512u, n) : -8;
+        if (!e && card_fail_now(q, n)) e = -7;
+        if (card_slow_us) udelay(card_slow_us * n);
+        if (e) {
+            kprintf("[CARD] %s: read error %d at sector %u (status %x): blocks %u-%u give the Mac an I/O error\n", m->name, e, q, sd.last_hsts, first, end - 1);
+            return -1;
+        }
+        q += n;
+    }
+    uint32_t k = end - first;
+    uint64_t all = slot_all(m, s->idx);
+    if (dst == ctmp)
+        for (uint32_t j = 0; j < k; j++)
+            if (!((s->valid >> j) & 1)) memcpy(data + j * 512u, ctmp + j * 512u, 512);
+    s->valid |= all;
+    cc.rd_ticks += cnt() - t0; cc.rd_secs += k;
+    return 0;
+}
+/* the dirty sectors of slot si written into the file: 0, or -1 when the card failed (the image's writes stop) */
+static int slot_flush(int si)
+{
+    struct cslot *s = &cc.s[si];
+    struct img *m = &imgs[s->img];
+    const uint8_t *data = cc.data + (uint64_t)si * SLOT;
+    uint32_t first = s->idx * SLOT_SEC;
+    while (s->dirty) {
+        uint32_t j = (uint32_t)__builtin_ctzll(s->dirty), k = j;
+        while (k < SLOT_SEC && ((s->dirty >> k) & 1)) k++;
+        for (uint32_t q = first + j; q < first + k; ) {
+            uint32_t run = 0, lba = file_lba(m, q * 512u, &run), n = first + k - q;
+            if (n > run) n = run;
+            int e = !lba || !n ? -8 : sd_write_run(lba, data + (q - first) * 512u, n);
+            if (e) {
+                m->wfail = 1;
+                kprintf("[CARD] %s: writing sectors %u-%u back failed (%d, status %x): its writes stop here, an I/O error for each from now on; "
+                        "what the Mac wrote and the card does not have stays in memory until the Pi stops\n", m->name, q, q + n - 1, e, sd.last_hsts);
+                return -1;
+            }
+            m->written += n;
+            q += n;
+        }
+        s->dirty &= ~((k - j >= 64 ? ~0ull : (1ull << (k - j)) - 1) << j);
+    }
+    cc.ndirty--;
+    cc.flushed++;
+    return 0;
+}
+/* one slot written back: the waiting one first in the file's order (a copy's sectors go out as a run); 0, or
+   -1 when nothing could be written */
+static int cflush_one(void)
+{
+    int best = -1;
+    for (uint32_t i = 0; i < cc.n; i++) {
+        const struct cslot *s = &cc.s[i];
+        if (!s->dirty || imgs[s->img].wfail) continue;
+        if (best < 0 || s->img < cc.s[best].img || (s->img == cc.s[best].img && s->idx < cc.s[best].idx)) best = (int)i;
+    }
+    if (best < 0) return -1;
+    if (!cc.flush_t0) cc.flush_t0 = cnt();
+    return slot_flush(best);
+}
+static uint32_t cimg_unwritten(void)
+{
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < cc.n; i++) if (cc.s[i].dirty && !imgs[cc.s[i].img].wfail) n++;
+    return n;
+}
+/* sectors [lba, lba + n) of image mi to or from buf: what the cache has, and on the way at most *budget card
+   operations. The sectors done from lba on, or -1 for an I/O error. The card lock is held. */
+static int img_rw(int mi, int write, uint32_t lba, uint32_t n, uint8_t *buf, int *budget)
+{
+    struct img *m = &imgs[mi];
+    uint32_t secs = img_secs(m), done = 0;
+    if (lba > secs || n > secs - lba) return -1;
+    while (done < n) {
+        if (write && (m->wfail || !m->ok)) return -1;
+        uint32_t q = lba + done, idx = q / SLOT_SEC, in = q % SLOT_SEC, k = SLOT_SEC - in;
+        if (k > n - done) k = n - done;
+        uint64_t mask = (k >= 64 ? ~0ull : (1ull << k) - 1) << in;
+        int si = slot_find(mi, idx);
+        uint8_t *data;
+        if (write) {
+            if ((si < 0 || !cc.s[si].dirty) && cc.ndirty >= cc.n / 2) {    /* half the cache waits: one slot written first */
+                if (*budget <= 0) break;
+                (*budget)--;
+                if (cflush_one() < 0 && !cimg_unwritten()) return -1;
+                continue;
+            }
+            if (si < 0 && (si = slot_take(mi, idx)) < 0) return -1;      /* (cannot be: half of them are free of writes) */
+            struct cslot *s = &cc.s[si];
+            data = cc.data + (uint64_t)si * SLOT + in * 512u;
+            memcpy(data, buf + done * 512u, k * 512u);
+            s->valid |= mask;
+            if (!s->dirty) { cc.ndirty++; if (!cc.first_dirty_t) cc.first_dirty_t = cnt(); }
+            s->dirty |= mask;
+            cc.last_write_t = cnt();
+            m->wr_secs += k;
+        } else {
+            if (si < 0 || (cc.s[si].valid & mask) != mask) {
+                if (*budget <= 0) break;
+                (*budget)--;
+                if (si < 0 && (si = slot_take(mi, idx)) < 0) { if (cflush_one() < 0) return -1; continue; }
+                cc.misses++;
+                if (slot_fill(si)) return -1;
+            } else cc.hits++;
+            data = cc.data + (uint64_t)si * SLOT + in * 512u;
+            memcpy(buf + done * 512u, data, k * 512u);
+            m->rd_secs += k;
+        }
+        cc.s[si].lru = ++cc.tick;
+        done += k;
+    }
+    if (!write && done) {
+        /* read-ahead behind a read that goes on where the last one ended */
+        uint32_t end = lba + done, nxt = (end - 1) / SLOT_SEC + 1;
+        if (lba == m->last_end) { if (m->ra_next < nxt || m->ra_next > nxt + RA_SLOTS) m->ra_next = nxt; m->ra_end = nxt + RA_SLOTS; }
+        else m->ra_end = m->ra_next;
+        m->last_end = end;
+    }
+    return (int)done;
+}
+/* core 3's card turn for these images: what is due to be written back, else a slot of read-ahead; 1 when the
+   card was used */
+static int cimg_poll(void)
+{
+    if (!cc.n) return 0;
+    if (cc.ndirty) {
+        uint64_t now = cnt(), hz = frq();
+        if (flush_now || now - cc.last_write_t >= hz * CFLUSH_IDLE_MS / 1000u || now - cc.first_dirty_t >= hz * CFLUSH_MAX_MS / 1000u) {
+            if (!cflush_one()) {
+                if (!cimg_unwritten()) {
+                    kprintf("[CARD] disk images: %u slot%s written back to the card (%u ms)\n", cc.flushed, cc.flushed == 1 ? "" : "s",
+                            (uint32_t)((cnt() - cc.flush_t0) * 1000u / hz));
+                    cc.flushed = 0; cc.flush_t0 = 0; cc.first_dirty_t = 0;
+                }
+                return 1;
+            }
+        }
+    }
+    for (int i = 0; i < nimg; i++) {
+        struct img *m = &imgs[i];
+        uint32_t nslots = (img_secs(m) + SLOT_SEC - 1) / SLOT_SEC;
+        if (!m->card) continue;
+        while (m->ra_next < m->ra_end && m->ra_next < nslots) {
+            uint32_t idx = m->ra_next++;
+            int si = slot_find(i, idx);
+            if (si >= 0 && cc.s[si].valid == slot_all(m, idx)) continue;
+            if (si < 0 && (si = slot_take(i, idx)) < 0) return 0;
+            cc.ra++;
+            if (slot_fill(si)) m->ra_end = m->ra_next;
+            return 1;
+        }
+    }
+    return 0;
+}
+/* For psmac_mbox.c (PiDisk, core 3) and psmac_board_solo.c (the solo board's SCSI disk, core 0): sectors
+   [lba, lba + n) of card image h. wait 0 (core 3): what can be done now, at most one card operation, and
+   nothing when another core holds the card; the caller comes back on its next turn. wait 1: all of it, the
+   card lock taken for each operation. The sectors done, or -1 for an I/O error. */
+int psmac_card_img_io(int h, int write, uint32_t lba, uint32_t n, void *buf, int wait)
+{
+    if (h < 0 || h >= __atomic_load_n(&nimg, __ATOMIC_ACQUIRE) || !imgs[h].card) return -1;
+    uint8_t *b = buf;
+    uint32_t done = 0;
+    while (done < n) {
+        int mine = on_core3() && in_card_pass;
+        if (!mine) {
+            if (!wait) { if (!spinlock_try_acquire(&card_lock)) return (int)done; }
+            else while (!spinlock_try_acquire(&card_lock)) { if (sd.state != 1) return -1; __asm__ volatile("yield"); }
+            if (on_core3()) card_lock_core3 = 1;
+        }
+        flush_finish();                                    /* a sector of an image in memory still being programmed */
+        int budget = 1;
+        int k = sd.state == 1 ? img_rw(h, write, lba + done, n - done, b + done * 512u, &budget) : -1;
+        if (!mine) { if (on_core3()) card_lock_core3 = 0; spinlock_release(&card_lock); }
+        if (k < 0) return -1;
+        done += (uint32_t)k;
+        if (!wait) break;
+    }
+    return (int)done;
+}
+/* the Mac restarts or shuts down: what waits goes to the card now, not after the quiet seconds */
+void psmac_card_flush_soon(const char *why)
+{
+    uint32_t w = cc.n ? cimg_unwritten() : 0;
+    if (!w && !first_dirty_t) return;
+    __atomic_store_n(&flush_now, 1, __ATOMIC_RELEASE);
+    kprintf("[CARD] %s: the disk images' changes go to the card now (%u KB waiting%s)\n", why, w * (SLOT >> 10), first_dirty_t ? ", and an image's in memory" : "");
+}
+static int image_take_card(const char *name, const struct cfile *f, const char *why)
+{
+    extern int psmac_board_solo;
+    if (!cache_init()) { kprintf("[CARD] %s: not offered (no cache)\n", name); return 0; }
+    struct ext *ext = tlsf_malloc(tlsf, 256 * sizeof(struct ext));
+    int k = ext ? file_extents(f, ext, 256) : -1;
+    if (k < 0) {                                           /* in many pieces: counted, then listed */
+        if (ext) tlsf_free(tlsf, ext);
+        k = file_extents(f, 0, 0x7fffffff);
+        ext = k > 0 ? tlsf_malloc(tlsf, (uint32_t)k * sizeof(struct ext)) : 0;
+        if (!ext || file_extents(f, ext, k) != k) { kprintf("[CARD] %s: no memory for its list of %d pieces: not offered\n", name, k); return 0; }
+    }
+    if (k <= 0) return 0;
+    struct img *m = img_new(name, 0, f->size);
+    if (!m) return 0;
+    m->ext = ext; m->next = k;
+    m->off = 0; m->file = 0; m->file_len = f->size; m->ok = !sd.ro; m->card = 1; m->wfail = 0;
+    m->last_end = 0xffffffffu; m->ra_next = m->ra_end = 0; m->rd_secs = m->wr_secs = 0;
+    int h = nimg;
+    __atomic_store_n(&nimg, nimg + 1, __ATOMIC_RELEASE);
+    kprintf("[CARD] disk image %s, %u MB in %d piece%s: served from the card as the Mac asks (%s)%s\n", name, f->size >> 20, k, k == 1 ? "" : "s", why,
+            m->ok ? ", changes written back to it" : ", locked (mac.card=ro)");
+    psmac_boot_mark("card: disk image %s found (%u MB), served from the card", name, f->size >> 20);
+    extern void psmac_image_add_card(const char *, int, uint32_t, int); extern int psmac_image_count(void), psmac_image_is_scsi(int);
+    extern void psmac_mbox_add_card_disk(const char *, int, uint32_t, int);
+    if (psmac_board_solo) psmac_image_add_card(m->name, h, f->size, m->ok);          /* the first is SCSI ID 0 */
+    if (!psmac_board_solo || !psmac_image_is_scsi(psmac_image_count() - 1)) psmac_mbox_add_card_disk(m->name, h, f->size / 512u, m->ok);
+    return 1;
 }
 
 /* ==== the exchange folder: a folder of the card as an HFS volume for the Mac (issue #20) =========
@@ -1497,9 +1897,9 @@ static void card_poll_locked(void);
 void psmac_card_poll(void)
 {
     if (!spinlock_try_acquire(&card_lock)) return;       /* core 0 is reading a chunk the Mac waits for */
-    card_lock_core3 = 1;
+    card_lock_core3 = 1; in_card_pass = 1;
     card_poll_locked();
-    card_lock_core3 = 0;
+    in_card_pass = 0; card_lock_core3 = 0;
     spinlock_release(&card_lock);
     /* mac.cardstall=S (testbed): once, as soon as an image is coming in, keep core 3 away from the
        card for S seconds, as the WiFi's turn did on the user's Pi; the Mac must still get its blocks */
@@ -1548,8 +1948,10 @@ static void card_poll_locked(void)
     static unsigned xturn;
     if (xv.state == 1 && (++xturn & 1)) { exchange_step(); return; }   /* the exchange folder, every other pass */
     if ((++turn & 1) && first_dirty_t) { flush_poll(); if (fl.busy) return; }
+    if (cimg_poll()) return;                           /* the images served from the card: their writes, their read-ahead */
     if (load_step()) return;
     flush_poll();
+    if (flush_now && !first_dirty_t && !fl.busy && !(cc.n && cimg_unwritten())) flush_now = 0;
 }
 /* the card's first look, on core 3's first pass: the card, its FAT, pairings.txt, the container, an image */
 static void card_start(void)
@@ -1721,7 +2123,7 @@ uint32_t psmac_card_cluster_bytes(void) { return sd.state == 1 ? fs.spc * 512u :
    programmed, no log or pairings (the Pi is about to restart, psmac_hdmi.c) */
 int psmac_card_idle(void)
 {
-    return !sf_pending && !first_dirty_t && !fl.busy && logf_state != 1 && !pair_dirty && opt_state != 1;
+    return !sf_pending && !first_dirty_t && !fl.busy && logf_state != 1 && !pair_dirty && opt_state != 1 && !(cc.n && cimg_unwritten());
 }
 
 /* ---- declaration ROMs in the card's root ------------------------------------------------------
@@ -1834,8 +2236,17 @@ void psmac_card_report(void)
         uint32_t d = 0; for (uint32_t w2 = 0; w2 < (imgs[i].nbits + 31) / 32; w2++) d += (uint32_t)__builtin_popcount(imgs[i].dirty[w2]);
         kprintf(" | %s: %u KB written, %u KB waiting%s", imgs[i].name, imgs[i].written / 2, d * (CHUNK / 1024), imgs[i].ok ? "" : ", writes off");
         if (imgs[i].loaded && imgs[i].nloaded < imgs[i].nload) kprintf(", %u%% read from the card", imgs[i].nloaded * 100u / imgs[i].nload);
+        if (imgs[i].card) kprintf(", served from the card: the Mac read %u KB, wrote %u KB", imgs[i].rd_secs / 2u, imgs[i].wr_secs / 2u);
     }
     kprintf("\n");
+    if (cc.n && (cc.hits || cc.misses || cc.ra || cimg_unwritten())) {           /* only when the images were used */
+        uint32_t ms_ = (uint32_t)(cc.rd_ticks * 1000u / frq()), w = cimg_unwritten(), used = 0;
+        for (uint32_t i = 0; i < cc.n; i++) if (cc.s[i].img >= 0) used++;
+        kprintf("[CARD]   cache: %u of %u slots in use, %u KB waiting to be written; since the last line %u hits, %u misses, %u read ahead; "
+                "card reads %u KB in %u ms (%u KB/s)\n", used, cc.n, w * (SLOT >> 10), cc.hits, cc.misses, cc.ra,
+                (uint32_t)(cc.rd_secs / 2u), ms_, ms_ ? (uint32_t)(cc.rd_secs * 500u / ms_) : 0);
+        cc.hits = cc.misses = cc.ra = 0;
+    }
 }
 
 /* ==== Aurora68 Setup and Recovery: the card's root as a file manager sees it (22 November 2026) ============
@@ -1873,7 +2284,10 @@ static void rerr(const char *s) { unsigned i = 0; for (; s[i] && i < sizeof rec_
    operations, so the FAT sector kept here is read again each time; in recovery nothing else writes */
 static void rec_lock(void)
 {
-    spinlock_acquire(&card_lock); card_lock_core3 = 1; flush_finish();
+    /* card_lock_core3 says that core 3 holds the lock (psmac_card_need takes it as its own then): set from the PC
+       or Apple II card's core it let core 3's PiDisk read a still-loading image's chunk beside that core's
+       read, two commands on the card at once (24 November 2026) */
+    spinlock_acquire(&card_lock); card_lock_core3 = on_core3(); flush_finish();
     if (!fw_dirty && !psmac_recovery_on()) fw_lba = 0xffffffffu;
 }
 static void rec_unlock(void) { card_lock_core3 = 0; spinlock_release(&card_lock); }
@@ -1890,13 +2304,14 @@ static int sd_write_multi(uint32_t lba, const uint8_t *buf, uint32_t n)
     int err = 0;
     for (uint32_t i = 0; i < n * 128u && !err; i++) {
         uint64_t t = cnt();
+        if (!(i & 127u)) pump();                                       /* as in sd_read_multi */
         while (EDM_FILL(r(SDEDM)) >= 15) if (cnt() - t > frq() / 10) { err = -3; break; }
         if (!err) *(volatile uint32_t *)(uintptr_t)(SDH + SDDATA) = p[i];
     }
     if (!err && fsm_wait(500000)) err = -4;                           /* the last block's CRC answered */
     if (sd_cmd(12, 0, CMD_BUSY, 0) && !err) err = -5;
     uint32_t t0 = ms();
-    while (!err) { int s = sd_status(); if (s == 4) break; if (s < 0 || ms() - t0 > 2000) err = -6; }
+    while (!err) { int s = sd_status(); if (s == 4) break; if (s < 0 || ms() - t0 > 2000) err = -6; pump(); }
     if (!err && (r(SDHSTS) & HSTS_ERRORS)) err = -7;
     if (err) { uint32_t h = r(SDHSTS); sd.last_hsts = h; w(SDHSTS, h & HSTS_CLEAR); sd.errors++; return err; }
     sd.writes += n;

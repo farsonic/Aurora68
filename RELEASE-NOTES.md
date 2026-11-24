@@ -2,7 +2,7 @@
 
 ## Next release (on main, not released yet)
 
-- **Apple II disks from the Mac** (docs/20 "Disks from the Mac", docs/08 item NNN, 24 November 2026; the owner keeps
+- **Apple II disks from the Mac** (docs/20 "Disks from the Mac", docs/08 item 143, 24 November 2026; the owner keeps
   folders of Apple II images on the Mac and the NAS, and the Apple II card offered only the SD card's root). Aurora68
   Apple II 1.2 puts images from any Mac volume (the startup disk, a SCSI disk, an AppleShare volume, a floppy) into the
   Apple's drives: Disks > Insert Disk... (Standard File, the image files only), the Disks menu's six units (empty:
@@ -13,6 +13,18 @@
   waiting for the Apple. Quitting writes everything back first; a program that dies takes its disks out of the Apple.
   The SD card's images work as before. Kernel (with the Apple II card) and Aurora68 Apple II; Aurora65 has a block card
   that can wait for its host.
+
+- **Disk images larger than the Pi's memory, and a larger startup disk with everything on it** (docs/08 item 142, 24
+  November 2026; the owner's 95 MB startup disk was full). A disk image on the card larger than 256 MB, or one that does
+  not fit in the memory the Pi has left, is no longer refused: it is served from the card as the Mac asks, through a
+  16 MB cache with read-ahead, and what the Mac writes goes back into the file 2 seconds after its last write (10 at
+  most), at once when the Mac restarts or says it may be switched off, never changing the file's size or the card's
+  FAT. Up to 4 GB (FAT32's limit; System 7.1's HFS stops at 2 GB). Images of 256 MB or less that fit are read into memory
+  as before, so nothing is slower for them. `mac.imagemode=ram|card|auto` and `mac.imagecache=MB` choose.
+  `tools/mac/hfsgrow.py` (Python 3 only) makes a larger copy of an HFS image: boot blocks, every file with both forks,
+  types, creators, Finder flags, dates, the blessed System Folder, the volume's name; a partition map and its driver are
+  kept. README "A larger startup disk" has the steps. Also fixed: while an image was still being read into memory, the
+  PC or Apple II card reading its own disk at the same moment could put two commands on the SD card at once. Kernel only.
 
 - **Bluetooth as Raspberry Pi OS runs it, and what a pairing could break** (docs/08 item 141, docs/21, 25 November
   2026; the owner's SE: pairing the LE keyboard again stopped the WiFi, then the machine seemed locked). LE links are

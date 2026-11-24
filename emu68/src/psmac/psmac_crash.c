@@ -246,6 +246,10 @@ void psmac_crash_poll(void)
     if (s == sys_seen) return;
     sys_seen = s;
     int16_t id = (int16_t)syserr.r[0];
+    if (id == 20000 || id == 20001) {                    /* dsShutDownOrRestart, dsSwitchOffOrRestart: "you may now switch off" */
+        extern void psmac_card_flush_soon(const char *);
+        psmac_card_flush_soon("the Mac has shut down");  /* the disk images' last writes on the card before the power goes (psmac_card.c) */
+    }
     if (id <= 0 || id == 40 || id >= 20000) return;     /* "Welcome to Macintosh", the shutdown and disk alerts */
     if (id == 30) {                                      /* dsReinsert: the disk-switch dialog, not a crash */
         kprintf("[PSMAC:DISK] the Mac asks for a disk that is offline (\"Please insert the disk\", system error 30): put the USB stick back in, or press Command-period\n");

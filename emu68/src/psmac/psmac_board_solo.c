@@ -454,7 +454,7 @@ static uint32_t iwm_access(uint32_t reg, int write, uint8_t d)
 }
 
 /* ==== disk images ============================================================================= */
-struct disk { char name[48]; uint8_t *ram; int64_t fd; uint32_t blocks; int writable, scsi; uint32_t reads, writes, cmds; };
+struct disk { char name[48]; uint8_t *ram; int64_t fd; uint32_t blocks; int writable, scsi; uint32_t reads, writes, cmds; int card; };   /* card: an image served from the card (psmac_card.c), its handle + 1 */
 static uint32_t sel_seen[7];                /* selections of each SCSI ID, with a disk there or not (the heartbeat) */
 static struct disk disks[7]; static int ndisk;
 static uint8_t sector_buf[64 * 1024] __attribute__((aligned(64)));
@@ -472,15 +472,30 @@ void psmac_image_add(const char *name, uint8_t *data, uint32_t len)
     if (disks_scsi < 0) { const char *o = psmac_option("mac.disks"); disks_scsi = o && o[0] == 's'; }
     struct disk *d = &disks[ndisk];
     int k = 0; while (name[k] && k < 47) { d->name[k] = name[k]; k++; } d->name[k] = 0;
-    d->ram = data; d->fd = -1; d->blocks = len / 512; d->writable = 1;
+    d->ram = data; d->fd = -1; d->card = 0; d->blocks = len / 512; d->writable = 1;
     d->scsi = !psmac_board_solo || disks_scsi || ndisk == 0;
     __atomic_store_n(&ndisk, ndisk + 1, __ATOMIC_RELEASE);   /* complete before it is seen: a disk image on the card arrives from core 3 (psmac_card.c) */
 }
+/* a disk image served from the card as the Mac asks (psmac_card.c, core 3, 24 November 2026): read and written
+   through the card's cache, a SCSI command's blocks waited for as a disk's are */
+void psmac_image_add_card(const char *name, int handle, uint32_t len, int writable)
+{
+    if (ndisk >= 7 || len < 1024) return;
+    if (disks_scsi < 0) { const char *o = psmac_option("mac.disks"); disks_scsi = o && o[0] == 's'; }
+    struct disk *d = &disks[ndisk];
+    int k = 0; while (name[k] && k < 47) { d->name[k] = name[k]; k++; } d->name[k] = 0;
+    d->ram = 0; d->fd = -1; d->card = handle + 1; d->blocks = len / 512; d->writable = writable;
+    d->scsi = !psmac_board_solo || disks_scsi || ndisk == 0;
+    __atomic_store_n(&ndisk, ndisk + 1, __ATOMIC_RELEASE);
+}
 int psmac_image_count(void) { return ndisk; }
+/* name and size of image i; data its memory (0 for a host file or an image served from the card); 1 when it is
+   one in memory, the only kind psmac_mbox_init serves itself */
 int psmac_image_get(int i, const char **name, uint8_t **data, uint32_t *blocks)
 {
-    if (i < 0 || i >= ndisk || !disks[i].ram) return 0;
-    *name = disks[i].name; *data = disks[i].ram; *blocks = disks[i].blocks; return 1;
+    if (i < 0 || i >= ndisk) return 0;
+    *name = disks[i].name; *data = disks[i].ram; *blocks = disks[i].blocks;
+    return disks[i].ram != 0;
 }
 static void disk_add_file(const char *path)
 {
@@ -491,12 +506,13 @@ static void disk_add_file(const char *path)
     struct disk *d = &disks[ndisk++];
     const char *base = path; for (const char *s = path; *s; s++) if (*s == '/') base = s + 1;
     int k = 0; while (base[k] && k < 47) { d->name[k] = base[k]; k++; } d->name[k] = 0;
-    d->ram = 0; d->fd = fd; d->blocks = (uint32_t)(psmac_sh_flen(fd) / 512); d->writable = writable; d->scsi = 1;
+    d->ram = 0; d->fd = fd; d->card = 0; d->blocks = (uint32_t)(psmac_sh_flen(fd) / 512); d->writable = writable; d->scsi = 1;
 }
 static int disk_read(struct disk *d, uint32_t lba, uint32_t n, uint8_t *buf)
 {
     d->reads += n;
     if (d->ram) { memcpy(buf, d->ram + (uint64_t)lba * 512, n * 512); return 1; }
+    if (d->card) { extern int psmac_card_img_io(int, int, uint32_t, uint32_t, void *, int); return psmac_card_img_io(d->card - 1, 0, lba, n, buf, 1) == (int)n; }
     if (psmac_sh_seek(d->fd, (uint64_t)lba * 512) < 0) return 0;
     return psmac_sh_read(d->fd, buf, n * 512);
 }
@@ -504,6 +520,7 @@ static int disk_write(struct disk *d, uint32_t lba, uint32_t n, const uint8_t *b
 {
     d->writes += n;
     if (d->ram) { if (d->ram + (uint64_t)lba * 512 != buf) memcpy(d->ram + (uint64_t)lba * 512, buf, n * 512); return 1; }
+    if (d->card) { extern int psmac_card_img_io(int, int, uint32_t, uint32_t, void *, int); return psmac_card_img_io(d->card - 1, 1, lba, n, (void *)buf, 1) == (int)n; }
     if (psmac_sh_seek(d->fd, (uint64_t)lba * 512) < 0) return 0;
     return psmac_sh_write(d->fd, buf, n * 512);
 }
