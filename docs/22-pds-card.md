@@ -4,8 +4,8 @@
 *24 November 2026.* SE owners running Aurora68 have been talking about a card for the SE's processor direct
 slot (PDS) in place of a PiStorm in the 68000's socket. This note is for whoever designs that card. It says what
 the Aurora68 kernel needs from the bus, what the card has to do with each of the slot's signals, what the
-software would change for a card built around a Pi 3-class board and for one built around a Compute Module 4,
-and what is still to be checked. Nothing here has been built or measured. Where a fact comes from a source it
+software would change for a card carrying an existing Pi 3 board (3B, 3B+, 3A+, Zero 2 W) and for one carrying
+a Compute Module (CM3+, CM4), and what is still to be checked. Nothing here has been built or measured. Where a fact comes from a source it
 is named; where it is our reading or a guess it says so.
 
 The original hardware plan already had a CM4 carrier in the PDS slot as the second route (docs/00, "Hardware
