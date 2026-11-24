@@ -52,8 +52,9 @@ transport. So the contract with the card is small:
    makes the IIci ROM's interrupts from them. It never runs an interrupt acknowledge cycle on the board: the SE's
    interrupts are autovectored and the kernel answers them itself. The card never needs to drive FC2-0 = 111.
 5. **The board's reset.** The IIci ROM's RESET instruction becomes a pulse on /RESET (about 124 68000 clocks, as
-   the instruction makes), which resets the board's chips and not the processor. The kernel also pulses it once
-   at its own start (`psmac_gpio.c`; the backstory of `psmac_hdmi.c`).
+   the instruction makes), which resets the board's chips. The kernel also pulses it once at its own start
+   (`psmac_gpio.c`; the backstory of `psmac_hdmi.c`). On the SE /RESET is wired to /HALT, so on a slot card the
+   pulse resets the parked 68000 as well (section 4).
 6. **Bounded waits.** Every wait on the card must end: the kernel's transport already gives up on a cycle that
    never completes and logs it (`txn_wait` in `psmac_gpio.c`), so that a Pi on the bench with no SE still starts.
    A card that asserts /BERR after a timeout, and reports it, would let the kernel tell a missing chip from a
@@ -69,39 +70,108 @@ mode as a separate state), bus snooping, DMA by the card into the SE's RAM beyon
 
 ## 3. The slot's signals
 
-**Pin numbers are not given here.** The authoritative pinout is Apple's figure "Macintosh SE 68000 Direct Slot"
-in *Designing Cards and Drivers for the Macintosh Family*; Apple's technote list notes that the figure was
-corrected in the third edition (page 284 there). Take the pin numbers from that corrected figure and check them
-against the SE's schematic and a meter on a real board. One warning from looking: a 96-pin table that circulates
-on pinout sites under "PPDS" is the **Macintosh Portable's** slot, not the SE's, although the two share the
-Euro-DIN connector and most signal names. Do not lay out a board from it.
+**The SE's pinout (24 November 2026).** The owner found it on Chris Adams's "Mac SE Support Pages" ("Mac SE port
+pinouts", May 1993; the copy read is the mirror at https://machut.net/mirrors/www.ccadams.org/se/pinouts.html),
+under the heading "Macintosh SE Internal System Expansion Slot: Pinout Information", with a description of each
+signal. It is reproduced here as that page gives it: three columns of 32 rows, row 32 at the top. Which Euro-DIN
+row letter (a, b, c) each column is, and which end is pin 1, must be checked on the connector itself, and the whole
+table against Apple's own (*Guide to the Macintosh Family Hardware*, 2nd edition, chapter 14; *Designing Cards and
+Drivers*, 3rd edition, page 284, where Apple says its earlier figure was corrected) and a meter on a real board
+before a board is laid out.
 
-A second table, from AllPinouts ("Apple Macintosh Processor-Direct Slot (PDS)", sent by the owner on 24 November
-2026), is the **120-pin 68030 slot of the SE/30 and the II family**, not the SE's either: the page says so itself,
-and that it is "electrically and mechanically incompatible with the 96-pin 68000 PDS found in the Macintosh SE and
-Macintosh Portable". It is still useful in two ways. It names where the SE's own tables are: *Guide to the Macintosh
-Family Hardware*, 2nd edition, chapter 14, which documents both slots (its Tables 14-1, 14-3 and 14-5 to 14-7),
-so the SE's pinout can be taken from the Guide as well as from *Designing Cards and Drivers*. And for an SE/30
-card one day (section 1) it shows that slot carrying /BR (C10), /BG (B10), /BGACK (A10), /RESET (A12), /HALT (C12),
-/BERR (B12), the CPU clock (A38), C16M (C38), E (B38), +5 V, +12 V (C40), -12 V (A40) and -5 V (B40): the same
-arbitration route as section 4, on a 32-bit bus.
-
-What the card needs, by group (directions are the card's when it holds the bus):
-
-| Group | Signals | Card | Notes |
+| Row | Column 1 | Column 2 | Column 3 |
 |---|---|---|---|
-| Address | A1-A23 | drives | three-stated until the bus is granted |
-| Data | D0-D15 | both | driven only on writes, after the bus is granted |
-| Strobes | /AS, /UDS, /LDS, R/W | drives | three-stated until granted; R/W high when idle |
-| Cycle end | /DTACK | reads | from the BBU; sample data at the 68000's point (section 2, item 2) |
-| 6800 cycles | /VPA in, /VMA out, E in (see section 4) | both | the VIA |
-| Function codes | FC0-FC2 | drives | supervisor data (101) for everything; never 111 |
-| Interrupts | /IPL0-/IPL2 | reads | encoded, active low |
-| Arbitration | /BR out, /BG in, /BGACK out | both | section 4; whether all three are on the SE's slot is the first thing to confirm |
-| Control | /RESET, /HALT | both, open drain | section 4; never drive them push-pull |
-| Error | /BERR | reads (and may drive) | the SE's glue may assert it; a card time-out may too |
-| Clocks | the 68000's clock (C8M, 7.8336 MHz) and C16M, if present | reads | the card's state machine runs from the 68000 clock as the CPLD does today |
-| Power | +5 V, ground, +12 V (and whatever else the figure shows) | takes | section 6 |
+| 32 | -12V | -5V | +12V |
+| 31 | Spare | +12V | +12V |
+| 30 | Ground | +12V | Ground |
+| 29 | D15 | Ground | C16M |
+| 28 | D14 | Ext.DTK/ | C8M |
+| 27 | D13 | Reserved | E |
+| 26 | D12 | Reserved | A23 |
+| 25 | D11 | Reserved | A22 |
+| 24 | D10 | Reserved | A21 |
+| 23 | D9 | Reserved | A20 |
+| 22 | D8 | Spare | A19 |
+| 21 | D7 | BERR/ | A18 |
+| 20 | D6 | IPL2/ | A17 |
+| 19 | D5 | IPL1/ | A16 |
+| 18 | D4 | IPL0/ | A15 |
+| 17 | D3 | +5V | A14 |
+| 16 | D2 | +5V | A13 |
+| 15 | D1 | +5V | A12 |
+| 14 | D0 | +5V | A11 |
+| 13 | +5V | +5V | A10 |
+| 12 | RESET/ | HALT/ | A9 |
+| 11 | PMCYC/ | Reserved | A8 |
+| 10 | AS/ | Reserved | A7 |
+| 9 | UDS/ | Ground | A6 |
+| 8 | LDS/ | Ground | A5 |
+| 7 | R/W/ | Ground | A4 |
+| 6 | DTACK/ | Ground | A3 |
+| 5 | BG/ | Ground | A2 |
+| 4 | BGACK/ | Ground | A1 |
+| 3 | BR/ | Ground | FC0 |
+| 2 | VMA/ | Ground | FC1 |
+| 1 | VPA/ | Ground | FC2 |
+
+(The page's table writes the external-DTACK pin "Ext.STK/" and its description "Ext.DTK/"; the description is the
+one that makes sense.)
+
+What the page says about the signals that matter for this card, and what follows from each:
+- **/BR, /BG and /BGACK are all on the slot** (column 1, rows 3, 5 and 4). Section 4's route works on the SE.
+- **"HALT/ ... Wired directly to RESET/"** (and the same under RESET/). On the SE the two are one net. Every reset
+  of the board is therefore also a reset of the 68000, and /HALT cannot be held on its own. Section 4 takes this
+  into account.
+- **E, C8M (7.8336 MHz, the 68000's clock, C16M divided by 2) and C16M (15.6672 MHz, the gate array's clock)** are on
+  the slot (column 3, rows 27 to 29). The card's state machine can run from C8M as the CPLD runs from the
+  68000's clock in the socket.
+- **DTACK/ "is not supplied for accesses to VPA space, is held off to separate 2 successive accesses to the SCC and
+  is held off during RAM access by video."** So the SE's gate array spaces SCC accesses itself (docs/18's K1 is
+  done by the hardware on the SE), and RAM cycles wait for the video fetches. The card must wait for DTACK/ on
+  every cycle outside VPA space.
+- **"For Macintosh SE, VPA space is $E0 0000 to $FF FFFF"**: the VIA and the other 6800-style accesses. There the
+  board answers /VPA instead of DTACK/, and the card runs a 6800 cycle (section 2, item 3).
+- **Ext.DTK/** (column 2, row 28): pulled low, it puts the gate array's DTACK/ into high impedance and makes the
+  card responsible for DTACK/. Aurora68's card should leave it alone (pulled up), so the board's own timing stays
+  in charge.
+- **PMCYC/** (column 1, row 11): "low when RAM is available for microprocessor accesses and is high during video
+  accesses". Not needed (DTACK/ already waits for video), but a card could use it to start RAM cycles at the right
+  moment and save wait states.
+- **BERR/** is "generated by gate array due to SCSI access timeout". The card must end the cycle on it and report
+  it to the kernel.
+- **Power on the slot:** +5 V (column 1 row 13, column 2 rows 13 to 17), +12 V (column 2 rows 30 and 31, column 3
+  rows 31 and 32), -12 V (column 1 row 32), -5 V (column 2 row 32), and ground. How much current each may supply is
+  not on the page (section 6).
+
+Two other tables are **not** the SE's and should not be used for it. The 96-pin table on pinout sites under "PPDS"
+is the **Macintosh Portable's** slot: the same connector and most of the same signal names, other pins. The
+AllPinouts table "Apple Macintosh Processor-Direct Slot (PDS)" (sent by the owner on 24 November 2026) is the
+**120-pin 68030 slot of the SE/30 and the II family**, which that page itself calls "electrically and mechanically
+incompatible with the 96-pin 68000 PDS found in the Macintosh SE and Macintosh Portable". For an SE/30 card one day
+(section 1), that table shows the same arbitration lines there: /BR (C10), /BG (B10), /BGACK (A10), /RESET (A12),
+/HALT (C12), /BERR (B12), the CPU clock (A38), C16M (C38), E (B38), +5 V, +12 V (C40), -12 V (A40) and -5 V (B40),
+on a 32-bit bus. It also names where Apple's own tables for both slots are: the *Guide*'s chapter 14 (its Tables
+14-1, 14-3 and 14-5 to 14-7).
+
+What the card does with each group (directions are the card's when it holds the bus; positions are the
+page's column and row):
+
+| Group | Signals (column, row) | Card | Notes |
+|---|---|---|---|
+| Address | A1-A23 (3, 4-26) | drives | three-stated until the bus is granted |
+| Data | D0-D15 (1, 14-29) | both | driven only on writes, after the bus is granted |
+| Strobes | /AS (1, 10), /UDS (1, 9), /LDS (1, 8), R/W (1, 7) | drives | three-stated until granted; R/W high when idle |
+| Cycle end | /DTACK (1, 6) | reads | from the gate array; sample data at the 68000's point (section 2, item 2) |
+| External DTACK | Ext.DTK/ (2, 28) | leaves alone | pulled up: the gate array keeps making DTACK/ |
+| RAM availability | PMCYC/ (1, 11) | may read | optional, to start RAM cycles when video is not using RAM |
+| 6800 cycles | /VPA (1, 1) in, /VMA (1, 2) out, E (3, 27) in | both | the VIA, in VPA space $E00000-$FFFFFF; E is the 68000's (section 4) |
+| Function codes | FC0-FC2 (3, 3 to 1) | drives | supervisor data (101) for everything; never 111 |
+| Interrupts | /IPL0-/IPL2 (2, 18-20) | reads | encoded, active low |
+| Arbitration | /BR (1, 3) out, /BG (1, 5) in, /BGACK (1, 4) out | both | section 4 |
+| Reset | /RESET (1, 12) and /HALT (2, 12), one net on the SE | both, open drain | section 4; never drive push-pull |
+| Error | /BERR (2, 21) | reads | the gate array's SCSI time-out; the card may also time out on its own |
+| Clocks | C8M (3, 28), C16M (3, 29) | reads | the card runs from C8M |
+| Power | +5 V, +12 V, -12 V, -5 V, ground | takes | section 6 |
 
 Signals the classic PiStorm does not use today and a slot card must add: /BR, /BG, /BGACK (docs/18, section 4:
 "/BR and /BGACK are inputs never read, /BG is never asserted"), and E as an input instead of an output.
@@ -119,31 +189,39 @@ tri-state logic and testbenches are the nearest starting point.
    Aurora68 runs, then releases /BR. While /BGACK is held the 68000 stays off the bus: its address, data, /AS,
    /UDS, /LDS and R/W are three-stated.
 
-What to check: whether the 68000 grants the bus while it is held in reset at power-on, or only once it has left
-reset (and so may fetch its first vectors from the SE's ROM before it sees the request). If the latter, the
-card holds /HALT with /RESET at power-on, keeps /HALT asserted until it has the grant, then lets /HALT go. A
-halted 68000 also three-states its bus (the manual's description of the halt state), so /HALT alone is the
-fallback if /BR and /BGACK turn out not to be on the slot, at the price of a processor that is halted rather
-than parked.
+**/HALT and /RESET are one net on the SE** (section 3). That has three consequences:
+- **No halting the 68000 on its own.** Holding /HALT would hold /RESET, and with it the whole board (the VIA, the
+  SCC, the SCSI chip) in reset. Bus arbitration is the only way to keep the 68000 off the bus, and fortunately
+  all three lines are on the slot.
+- **Every board reset is also a 68000 reset.** When the kernel resets the board (the IIci ROM's RESET instruction,
+  and once at the kernel's start), the card pulls /RESET low, which on the SE is /RESET and /HALT together: the
+  68000 resets too. The card must keep /BGACK asserted through the pulse and after it, so that the 68000, coming
+  out of reset, finds the bus taken and does not fetch its vectors. **To check:** that a 68000 coming out of reset
+  with /BGACK asserted really waits, rather than starting its vector fetch (the manual's reset and arbitration
+  sections, then a scope on a real SE). If it does not wait, the card has to keep /BR asserted across the reset as
+  well and take the bus back at the first /BG, before the 68000's first cycle completes, which needs care in the
+  CPLD.
+- **Power-on.** The SE's reset circuit holds /RESET and /HALT low at power-on. The card asserts /BR during that
+  time; whether the 68000 grants the bus while still in reset, or only after its first cycles, is the same question
+  as above.
 
 **E.** On the socket the CPLD makes E itself, because there is no 68000. On a slot card the SE's 68000 is still
-there, still clocked, and, as we read the manual, **E stays a free-running output of the 68000 even while it
-has given the bus away** (E is not among the lines it three-states). The SE's VIA is clocked by that E. So the
-card must follow the board's E for its /VMA cycles, not make its own; a second E source on the same line would
-fight the 68000's. Confirm on a scope before committing the CPLD to either.
+there, still clocked, and E is on the slot (section 3: "68000 E Clock"). As we read the manual, E stays a
+free-running output of the 68000 even while it has given the bus away (E is not among the lines it three-states).
+The SE's VIA is clocked by that E. So the card must follow the board's E for its /VMA cycles, not make its own; a
+second E source on the same line would fight the 68000's. Confirm on a scope (E keeps running with the bus granted
+away) before committing the CPLD.
 
-**Resets.**
-- The kernel's board reset (the RESET instruction, and once at start): /RESET alone, about 124 clocks, open
-  drain. A 68000 is reset only by /RESET and /HALT together, so the parked 68000 stays parked.
-- The SE's own reset (power-on, the programmer's switch): /RESET and /HALT together from the board. The card
-  sees it, resets its own state, and starts the bus request again; the kernel restarts the Mac as it does today
-  when the SE is reset under it.
-- The card must never hold /RESET or /HALT in a way the SE's power-on circuit cannot override.
+**Resets, in short.**
+- The kernel's board reset: /RESET pulled low for about 124 C8M clocks, open drain, /BGACK held throughout.
+- The SE's own reset (power-on, the programmer's switch): the card sees /RESET low, resets its own state, keeps or
+  re-asserts /BR, and the kernel restarts the Mac as it does today when the SE is reset under it.
+- The card must never hold /RESET in a way the SE's power-on circuit cannot override.
 
 **Stock mode.** A switch or a kernel request (a `mac.` option, or a menu in Aurora68's setup) makes the card
-release /BGACK and /BR and pulse /RESET with /HALT. The SE's 68000 then starts the SE's own ROM, and the card
-keeps every line three-stated until the next power-on (or the next request). Nothing on the Mac side is needed.
-It is worth having from the first prototype: it tells a card fault from a board fault in one restart.
+release /BGACK and /BR and pulse /RESET. The SE's 68000 then starts the SE's own ROM, and the card keeps every line
+three-stated until the next power-on (or the next request). Nothing on the Mac side is needed. It is worth having
+from the first prototype: it tells a card fault from a board fault in one restart.
 
 ## 5. The variants: the Pi 3 boards owners already have, and the Compute Modules
 
@@ -280,19 +358,25 @@ sequence; that is optional.
 
 ## 8. Open questions (in the order they block)
 
-1. Are /BR, /BG and /BGACK all on the SE's slot, and on which pins (the Guide's chapter 14 and Apple's corrected
-   figure in *Designing Cards and Drivers*; the schematic; a meter)?
-2. Does the 68000 grant the bus before its first vector fetch after power-on, or must the card hold /HALT?
+Answered on 24 November 2026 by the SE pinout of section 3: /BR, /BG and /BGACK are on the slot; so are E, C8M and
+C16M; /HALT is wired to /RESET. Still open:
+
+1. The pinout itself against Apple's (the *Guide*'s chapter 14, *Designing Cards and Drivers* 3rd edition page 284)
+   and a meter: which Euro-DIN row letter is each column, and which end is pin 1.
+2. Does a 68000 coming out of reset (power-on, or a board reset, both of which reset it on the SE) wait while
+   /BGACK is held, or does it start its vector fetch? (Section 4.)
 3. Does E keep running from the 68000 while the bus is granted away, as we read the manual?
-4. Which clock does the slot carry for the card's state machine (C8M, C16M)?
-5. The slot's power budget, on an original analog board and on replacement supplies.
-6. Physical: card size limits and the rear cut-out's position.
-7. For Card P: where the Pi's SD card and connectors end up relative to the rear cut-out.
-8. For a CM3+ card: which SD controller the module's eMMC is on.
-9. For a CM4 card: the FPGA or the CPLD protocol, and which Emu68 back end it matches.
+4. The slot's power budget on each rail, on an original analog board and on replacement supplies.
+5. Physical: card size limits and the rear cut-out's position.
+6. For Card P: where the Pi's SD card and connectors end up relative to the rear cut-out.
+7. For a CM3+ card: which SD controller the module's eMMC is on.
+8. For a CM4 card: the FPGA or the CPLD protocol, and which Emu68 back end it matches.
 
 ## Sources
 
+- Chris Adams, "Mac SE port pinouts", The Mac SE Support Pages, May 1993: the SE's internal system expansion slot,
+  pin by pin, with signal descriptions (section 3). Read from the mirror
+  https://machut.net/mirrors/www.ccadams.org/se/pinouts.html (sent by the owner, 24 November 2026).
 - Apple Computer, *Designing Cards and Drivers for the Macintosh Family*, 2nd and 3rd editions: the SE's 68000
   direct slot pinout (corrected in the 3rd edition, page 284) and card dimensions. Scanned copy of the 2nd
   edition: https://www.vintageapple.org/inside_o/pdf/Designing_Cards_and_Drivers_for_the_Macintosh_Family_2nd_Edition_1990.pdf
