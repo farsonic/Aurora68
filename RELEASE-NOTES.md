@@ -2,6 +2,18 @@
 
 ## Next release (on main, not released yet)
 
+- **Disk images larger than the Pi's memory, and a larger startup disk with everything on it** (docs/08 item 142, 24
+  November 2026; the owner's 95 MB startup disk was full). A disk image on the card larger than 256 MB, or one that does
+  not fit in the memory the Pi has left, is no longer refused: it is served from the card as the Mac asks, through a
+  16 MB cache with read-ahead, and what the Mac writes goes back into the file 2 seconds after its last write (10 at
+  most), at once when the Mac restarts or says it may be switched off, never changing the file's size or the card's
+  FAT. Up to 4 GB (FAT32's limit; System 7.1's HFS stops at 2 GB). Images of 256 MB or less that fit are read into memory
+  as before, so nothing is slower for them. `mac.imagemode=ram|card|auto` and `mac.imagecache=MB` choose.
+  `tools/mac/hfsgrow.py` (Python 3 only) makes a larger copy of an HFS image: boot blocks, every file with both forks,
+  types, creators, Finder flags, dates, the blessed System Folder, the volume's name; a partition map and its driver are
+  kept. README "A larger startup disk" has the steps. Also fixed: while an image was still being read into memory, the
+  PC or Apple II card reading its own disk at the same moment could put two commands on the SD card at once. Kernel only.
+
 - **Bluetooth as Raspberry Pi OS runs it, and what a pairing could break** (docs/08 item 141, docs/21, 25 November
   2026; the owner's SE: pairing the LE keyboard again stopped the WiFi, then the machine seemed locked). LE links are
   asked for at 30-50 ms as Linux does (they were 7.5-15 ms). A device's request for other parameters is checked as Linux

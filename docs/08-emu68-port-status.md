@@ -6783,3 +6783,131 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      WiFi survives the pairing, and whether the machine stays up. If the WiFi still drops during a pairing, `bt.scan=`
      does not reach it (a pairing is the user's); pairing with `wifi=off`, or over Ethernet, separates the two. The
      GPIO 43 and BD address lines say whether the firmware set the chip up as Raspberry Pi OS expects.
+
+142. **Disk images served from the SD card as the Mac asks, and a larger startup disk (24 November 2026).** The owner:
+   "Let's make a larger image." Their startup disk, `sys710pi.image` ("Mac Volume", 95 MB, the card's root, served by
+   PiDisk on the SE), had 224 KB free. A card image was read into the Pi's memory whole (item 54), so its size was
+   bounded by what the Pi had left after the Mac's 128 MB, the 2560 by 1440 frame buffer and the PC and Apple II cards;
+   the README said "about 96 MB with mac.ram=128".
+   - *Served from the card* (`psmac_card.c`, "disk images served from the card"). An image is now read into memory
+     only when `mac.imagemode=auto` (the default) finds it 256 MB or less with the cache's 16 MB to spare, or with
+     `mac.imagemode=ram` whenever it fits; anything else, and every image with `mac.imagemode=card`, is served from the
+     card as the Mac asks, as the PC card's disks are (item 133): the file's clusters listed once as extents (found by
+     halves when there are many: a large file copied onto a card that was once full is in thousands of pieces), a cache
+     of 32 KB slots in the Pi's memory (`mac.imagecache=16` MB, from the same pool the images in memory come from; each
+     slot knows which of its 64 sectors it holds and which the Mac changed, so a write never reads first), the least
+     recently used slot given up first. A read that continues where the last ended is followed by read-ahead, up to 8
+     slots (256 KB) past it, one slot per pass of core 3's card turn. The owner's current image (96 MB) stays in memory,
+     so nothing changes for it.
+   - *The service core's latency.* PiDisk's READ and WRITE on such an image go on in the background as a USB stick's
+     (item 75): each turn of core 3's loop serves what the cache holds and does at most one card operation, one slot
+     read or written back (64 sectors, one command where the clusters follow one another: 2.6 ms at 25 MHz on a Pi 3),
+     moving the command's progress word so the driver waits on (no Mac-side change: `mac/pidisk.s` already waits while
+     that word moves). The card lock is held for that operation only, so the PC or Apple II card's own disk reads (from
+     their core, under the same lock), `pairings.txt` and `aurora68.log` keep their turns. The Bluetooth UART pump
+     (item 141) runs between the sectors of every multi-sector read and write (`sd_read_multi`, `sd_write_multi`) and
+     in the multi-sector write's programming wait: a 64-sector run is longer than the PL011's 16 bytes at 921600 baud.
+     The solo board's SCSI disk (core 0) waits for each operation as a disk would, taking the lock for each.
+   - *Writing back*, as the PC card's disks (item 133): 2 s after the Mac's last write, 10 s after the oldest unwritten
+     one at most, and at once when the 68k executes RESET (a restart) or the Mac calls the "you may now switch off"
+     and restart alerts (`_SysError` 20000/20001, seen by `psmac_crash.c`); also for the images in memory, which until
+     now waited for their second of quiet then too. A slot per pass, the waiting slot first in file order, so a copy's
+     sectors go out as runs. At most half the cache may wait: a write beyond that waits for a slot to be written first,
+     so a long copy runs at the card's speed and at most 8 MB are only in memory. Writes go into the file's own clusters
+     in place: no size change, no directory entry or FAT sector written. A read the card fails is an I/O error (tried
+     again at the next read); a failed write stops the image's writes (an I/O error from then on, what waited kept in
+     the cache). With `mac.card=ro` the image is locked. `psmac_card_idle` (the Pi's restarts after a new HDMI mode,
+     Setup and Recovery) waits for the cache too. The heartbeat's `[CARD]   cache:` line: slots in use, KB waiting, hits,
+     misses, read-ahead, and the card's read speed for the slots.
+   - *Found on the way:* `rec_lock` (the recovery's file functions, which the PC and Apple II cards' file access uses
+     from their own core) set `card_lock_core3`, the flag by which core 3's PiDisk takes the lock as its own while an
+     image in memory is still loading (`psmac_card_need`). From the PC's core that flag let core 3 go on to the card
+     beside the PC's read: two commands on the card at once, possible on the owner's Pi during the first minute after
+     a start with the PC card reading its disk. It now says only what it means (`card_lock_core3 = on_core3()`).
+   - *A larger disk with everything on it: `tools/mac/hfsgrow.py`* (Python 3, standard library; no hfsutils, which the
+     owner's Mac does not have; the repository had no HFS reader in Python, `hfsput.py` calls hfsutils). It reads the
+     old volume (the master directory block, the extents overflow B-tree, the catalog B-tree's leaf chain, each fork by
+     its extents and overflow extents) and builds a new one from nothing: the boot blocks as they were; the catalog's
+     records in their order (the File Manager's own sort, so nothing is sorted), each file's forks given one contiguous
+     extent, packed into new 512-byte nodes with index levels and map nodes, the catalog four times what the records
+     need and at least 1/256 of the volume; an empty extents file; the volume's name, dates, attributes, next ID and
+     Finder information (the blessed folder is an ID, and every ID is kept). The allocation block is the smallest
+     multiple of 512 that keeps the volume under 65,535 blocks (8 KB at 500 MB, 16 KB at 1 GB). An Apple-partitioned
+     image (the release images carry the Iomega driver: block 0's 'ER', six partitions, HFS at block 491, then
+     `Iomega_backup` and `Iomega_DiskInfo`) keeps its map: partitions before the HFS one copied, the HFS partition grown
+     (`pmPartBlkCnt`, `pmDataCnt`), the ones after it moved to the new end, `sbBlkCount` set; `--bare` writes the volume
+     alone. Sparse where zero. It checks itself (`--verify`: every record but the allocation fields, both forks' SHA-256,
+     the boot blocks, the volume's counts and Finder information). One mistake on the way: a map node's record is the
+     node less 20 bytes (492, not 494), which hfsutils refused ("malformed b*-tree map node") on the first 500 MB image.
+     Not taken: the Mac-side route (an empty file initialized and filled in the Finder) needs boot blocks the Finder may
+     not write and an hour of copying on an SE; README describes it as the fallback.
+   - *Tested (host).* A copy of the testbed's System 7.1 image (`sys710pi.image`, 96 MB, Iomega partition map, 279
+     files, 56 folders, the Aurora68 Agent added) grown to 500 MB, 1 GB and 300 MB `--bare`: `--verify` all the same,
+     and independently `hls -laR` identical and `hcopy -m` (MacBinary: both forks, type, creator, dates) identical for
+     every file hfsutils could name (259; the 7 with non-ASCII names failed alike on both images, a quirk of the
+     script), `hvol` 1,038,254,080 bytes free at 1 GB. A fragmented volume (hfsutils filled an 8 MB disk with 100 KB
+     files, deleted every other one, then wrote 1.5 MB: four overflow extent records) grown to 64 MB: the file read
+     back identical through hfsutils.
+   - *Measured in the testbed* (QEMU's solo board, System 7.1 from the card image's SCSI disk, the 96 MB image with the
+     Agent on a 4 GB FAT32 card image with 32 KB clusters, `CARD=`, `mac.ram=16`; times through the remote control's
+     testbed channel, `mac.remotefile=`). RAM mode was timed once the whole image was in memory, as the owner's Pi has it
+     a few seconds after the start:
+     | | `mac.imagemode=ram` | `mac.imagemode=card` |
+     |---|---|---|
+     | the Finder running (`[BOOT] t=`) | 69.8 s (the loader still reading) | 64.9 s (5.4 MB read from the card by then) |
+     | the image in memory | 373.6 s, 96 MB at 269 KB/s | (never: 6.9 MB read in the whole session) |
+     | open MS Excel 4.0 (a 746 KB resource fork), until the Agent lists it | 5.6 s | 6.3 s |
+     | open SimpleText | 5.6 s | 5.7 s |
+     | pull Disinfectant, MacBinary 355 KB | 3.5 s | 4.1 s |
+     | pull Radical Castle, 356 KB | 3.3 s | 3.4 s |
+     | push 2,000,000 bytes | 16.4 s | 30.2 s |
+     | pull them back (identical) | 16.2 s | 17.8 s |
+     What these say about a Pi 3 needs QEMU's numbers beside them. QEMU's SD card reads at 270-300 KB/s and writes at
+     about 380 KB/s; a Pi 3's sdhost at 25 MHz in 4-bit mode moves 10 to 12 MB/s, 30 to 40 times more. Every launch
+     and copy above includes the testbed channel's own cost (pushes and pulls at about 120 KB/s, and a few seconds of
+     polling the Agent's program list), which dominates both columns. Card mode costs its reads: each slot not yet in
+     the cache is about 110 ms under QEMU (about 3 ms on a Pi 3), so MS Excel's launch read 0.7 s more. The push is
+     slower in card mode because the write-back ran during it (the 10 s rule), at about 85 ms a slot under QEMU on
+     core 3, each holding up the testbed channel; on a Pi 3 a slot is written in 3 to 10 ms. RAM mode's own cost under
+     QEMU is its loader, which held core 3's card turn for up to 22 ms a pass for six minutes (the service loop made
+     750 turns in 5 s, against 150,000 to 200,000 in card mode once the Finder was up). With the owner's 96 MB image
+     nothing changes: `auto` keeps it in memory.
+   - *Tested, the large images* (the same testbed): the copy grown to 1 GB as `G1G.IMG` (the SCSI disk, the startup
+     disk) and a 500 MB bare HFS volume "Data" (grown from a 20 MB `hformat` disk with two programs and a text file) as
+     `D500.IMG`, a PiDisk volume (the SE's path), both left to `auto`: "served from the card as the Mac asks (larger
+     than 256 MB)". The Finder at t=85 s; the Agent's `ls`: Mac Volume 990.1 MB free of 1018.7 MB, Data 497.4 of 497.5;
+     the disk's Finder window "28.6 MB in disk, 990.1 MB available". The Finder duplicated the Apps folder (11 items,
+     about 8 MB) while the Agent pushed 2,000,000 bytes onto each volume and made a folder on Data: afterwards 36.4 MB in
+     disk, 982.2 MB available; the card image read on the host held both files byte for byte (SHA-256), the copied
+     folder, consistent bitmap, counts and valences, the catalog's index and leaf chain agreeing.
+   - *The restart that did not come back, and its cause.* Then the remote control's restart: the ROM loaded the disk's
+     driver, read the catalog, and fell back to the question-mark disk; a cold start from the card did the same. The
+     controls: a restart of the original image served from the card, of the original image through semihosting, and a
+     cold start of an untouched 1 GB image marked as not unmounted cleanly all started. A SCSI trace
+     (`mac.solotrace=`) showed the start reading the boot blocks, the MDB, both B-tree headers, the bitmap, then every
+     catalog leaf in chain order, then node 1 of the extents overflow file, then starting over: the File Manager's check
+     of a volume that was not unmounted cleanly, which walks the catalog and every file's extents. During the copy the
+     Mac had put the pushed file in five pieces, and its fourth and fifth in the extents overflow file, whose tree had
+     been empty. My extents file was 2048 nodes, exactly what the header node's map record describes, with no map
+     node. With a record made by hand in an untouched 1 GB image (a fork split into four, the fourth in the overflow
+     tree, the volume marked unclean) the 2048-node volume did not start and the same volume with a 1024-node extents
+     file did. Apple's own images had 1530 nodes. hfsgrow now makes the extents file at most 1024 nodes (enough: every
+     fork starts in one piece) and never a B-tree of exactly 2048 nodes; the catalog keeps its map nodes from 2048 up
+     (8192 nodes at 1 GB), which the Mac's own B-tree code changed and the same check walked without complaint.
+   - *The same session again with the fixed tool* (a fresh 1 GB image, the same card layout): the Finder's duplicate of
+     Apps while the Agent pushed 2,000,000 bytes onto each volume; the pushed file came out in twelve pieces with four
+     records in the extents overflow file. The remote restart came back to the Finder (SCSI ID 0's selections went from
+     2732 to 3737, the other IDs from 3 to 6: one more start), the files and the copied folder there; then QEMU was
+     stopped (a power cut after the write-back) and started cold from the same card image: the Finder at t=61 s, both
+     2,000,000-byte files pulled back identical. On the host: the bitmap and every file's extents agree (2623 blocks),
+     the catalog's index and leaf chain agree (564 records in 144 leaves), and the 122 files of "Apps copy" match
+     "Apps" byte for byte except one or two bytes in each of nine resource forks, at offsets 61 to 79: the resource
+     fork's header area reserved for the system, where the Finder keeps the file's name, type, flags, position and its
+     folder's ID, which it set to the new folder's (MacDraw: $002F, Apps, became $01A7, Apps copy).
+   - *Kernel builds* (24 November 2026, from main at 27e8ebf with this item): without the cards, and with
+     `-DPSMAC_PC=ON -DPSMAC_A2=ON`. `make -C mac check` passes.
+   - *To do on the owner's SE:* grow `sys710pi.image` (README "A larger startup disk"), start from it, and send the
+     `[CARD] disk image ...: served from the card` line, a heartbeat's `[CARD]   cache:` line after copying a large file
+     in the Finder (its KB/s is the card's real speed for the slots), and the service loop's longest card turn in the
+     same heartbeat (`[PSMAC]   service loop: ... card N us`; expected a few milliseconds). Then a Shut Down, a few
+     seconds, the power off, and a start: what was copied is there.
