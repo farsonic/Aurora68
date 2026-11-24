@@ -42,7 +42,14 @@ struct bt_key {
     uint8_t addr[6]; uint8_t key[16]; uint8_t type; uint32_t flags; char name[BT_NAME];
     /* LE: addr is the identity address; addr_type 0 public, 1 random */
     uint8_t addr_type; uint16_t ediv; uint8_t rand[8]; uint8_t irk[16]; uint8_t has_irk;
+    /* what the host saw of it while it was away, for the heartbeat (bt_pi.c; 24 November 2026): the last advertisement
+       heard (when, its event type and address type, the address it used), and the last thing that went wrong */
+    uint32_t heard_ms, heard_n; uint8_t heard_evt, heard_atype, heard_addr[6];
+    uint32_t err_ms; uint8_t err_code; uint8_t err_what;   /* BT_KE_*, with the HCI status or reason */
+    uint32_t tries;                     /* connections the host asked for to it */
 };
+enum { BT_KE_NONE, BT_KE_CONN, BT_KE_REFUSED, BT_KE_NOANSWER, BT_KE_ENC, BT_KE_DISC, BT_KE_KEY };
+
 struct bt_found { uint8_t addr[6]; uint32_t cod; int8_t rssi; uint8_t psr; uint16_t clkoff; char name[BT_NAME]; int named; uint8_t le, addr_type; };   /* le: a Bluetooth LE device; addr_type as advertised */
 
 struct bt_io {
@@ -156,6 +163,10 @@ struct bt_host {
     int rpa_key; uint8_t rpa_addr[6];   /* the key whose device answered at rpa_addr: le_init 3 is connecting to it */
     /* the firmware download at fw_baud: 0 not used, 1 the line is at fw_baud now, 2 used and back at 115200 */
     int fast; uint32_t fw_t0;
+    int cur_conn;                       /* the link (index into conn[]) whose report the keyboard and mouse callbacks carry now:
+                                           the kernel keeps each device's keys and buttons apart (alice_psmac.c, 24 November 2026) */
+    int bg_restarts;                    /* the host's own scan started again so that its duplicate filter forgets (le_poll) */
+    uint32_t bg_since;                  /* when it was started */
 };
 
 /* fw/fwlen: the .hcd file (0: none - the controller's ROM firmware is used) */
@@ -174,6 +185,10 @@ int  bt_forget(struct bt_host *h, const uint8_t addr[6]);
 /* a resolvable private address made from this IRK (as SMP gives it, least significant octet first)? 1 yes (btle.c) */
 int  bt_rpa_match(const uint8_t irk[16], const uint8_t addr[6]);
 void bt_aes128(const uint8_t key[16], const uint8_t in[16], uint8_t out[16]);   /* FIPS-197 byte order */
+/* the heartbeat's words for what the host is doing about a paired device that is not connected (btle.c) */
+const char *bt_key_activity(struct bt_host *h, int key, uint32_t *ms);
+/* the words for an HCI status or disconnection reason (bthost.c) */
+const char *bt_status_words(uint8_t st);
 /* "AA:BB:CC:DD:EE:FF" (addr as the controller gives it: least significant byte first) */
 void bt_addr_str(const uint8_t addr[6], char out[18]);
 #endif

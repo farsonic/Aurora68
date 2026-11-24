@@ -217,7 +217,13 @@ static void io_kb(void *c, const uint8_t r[8])
 #ifdef PSMAC
     if (!first_key_marked) { int any = r[0]; for (int i = 2; i < 8; i++) any |= r[i]; if (any) { first_key_marked = 1; psmac_boot_mark("Bluetooth: the first key from a Bluetooth keyboard"); } }
 #endif
+#ifdef PSMAC
+    psmac_input_from(ALICE_SRC_BT0 + (bh.cur_conn & 3), bh.conn[bh.cur_conn & 3].addr);   /* this link's keys, kept apart (alice_psmac.c) */
+#endif
     if (frf_native_usb_keyboard_boot_report) frf_native_usb_keyboard_boot_report(r);
+#ifdef PSMAC
+    psmac_input_from(ALICE_SRC_USB, 0);
+#endif
 }
 static void io_mouse(void *c, int dx, int dy, int w, unsigned b)
 {
@@ -225,8 +231,14 @@ static void io_mouse(void *c, int dx, int dy, int w, unsigned b)
 #ifdef PSMAC
     if (!first_mouse_marked) { first_mouse_marked = 1; psmac_boot_mark("Bluetooth: the first report from a Bluetooth mouse"); }
 #endif
+#ifdef PSMAC
+    psmac_input_from(ALICE_SRC_BT0 + (bh.cur_conn & 3), bh.conn[bh.cur_conn & 3].addr);   /* this link's buttons, kept apart */
+#endif
     aga_virtual_mouse_update(dx, dy, b & 7u);
     if (pt_mouse_extra) pt_mouse_extra(w, 0, b);
+#ifdef PSMAC
+    psmac_input_from(ALICE_SRC_USB, 0);
+#endif
 }
 static void keys_log(void);
 static void keys_save(void);
@@ -250,6 +262,15 @@ extern const char *psmac_card_pairings(int *state) __attribute__((weak));
 extern void psmac_card_save_pairings(const char *text, uint32_t len) __attribute__((weak));
 static int card_saves(void) { int st = -1; if (psmac_card_pairings) psmac_card_pairings(&st); return st == 1 && psmac_card_save_pairings; }
 static unsigned key_word(char *t, unsigned n, const struct bt_key *k);
+/* a device in a few characters: its name, else "a mouse ..44:55" (the address's last two bytes), and its kind */
+static unsigned key_short(char *t, unsigned n, const struct bt_key *k)
+{
+    if (k->name[0]) { t[n++] = '"'; for (unsigned j = 0; k->name[j] && j < 24; j++) t[n++] = (k->name[j] >= ' ' && k->name[j] < 127) ? k->name[j] : '?'; t[n++] = '"'; t[n++] = ' '; }
+    n = put_str(t, n, (k->flags & (BTK_KEYBOARD | BTK_MOUSE)) == (BTK_KEYBOARD | BTK_MOUSE) ? "keyboard+mouse" : k->flags & BTK_KEYBOARD ? "keyboard" : k->flags & BTK_MOUSE ? "mouse" : "device");
+    n = put_str(t, n, k->flags & BTK_LE ? " LE .." : " ..");
+    t[n++] = hexd[k->addr[1] >> 4]; t[n++] = hexd[k->addr[1] & 15]; t[n++] = ':'; t[n++] = hexd[k->addr[0] >> 4]; t[n++] = hexd[k->addr[0] & 15];
+    return n;
+}
 static void keys_save(void)
 {
     if (!card_saves()) return;
@@ -372,6 +393,25 @@ static void auto_pair_poll(uint32_t now)
     }
 }
 static int hexv(char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1; }
+/* pairings.txt (keys_save) puts "# NAME" on the line before each bt.dev= word: the name comes back with the key
+   (24 November 2026; until then a device brought back from the card had no name in the log or the heartbeat) */
+static void key_name_from(const char *s, const char *p, const uint8_t a[6])
+{
+    struct bt_key *k = 0;
+    for (int i = 0; i < bh.nkeys; i++) { int same = 1; for (int j = 0; j < 6; j++) if (bh.keys[i].addr[j] != a[j]) same = 0; if (same) k = &bh.keys[i]; }
+    if (!k || k->name[0] || p == s) return;
+    const char *e = p - 1;                              /* the end of the line before */
+    while (e > s && (*e == '\r' || *e == '\n')) e--;
+    if (e <= s || p[-1] != '\n') return;
+    const char *b = e;
+    while (b > s && b[-1] != '\n') b--;
+    if (b[0] != '#' || b[1] != ' ' || b + 2 > e) return;
+    const char *q = b + 2;
+    if (q[0] == 'B' && q[1] == 'l' && q[2] == 'u') return; /* the file's own first line */
+    unsigned n = 0;
+    for (; q <= e && n < BT_NAME - 1; q++) k->name[n++] = *q;
+    k->name[n] = 0;
+}
 static void load_keys(const char *s)
 {
     for (const char *p = s; *p; p++) {
@@ -400,9 +440,11 @@ static void load_keys(const char *s)
                 for (int i = 0; i < 16 && has_irk; i++) { int h = hexv((char)r[25 + 2 * i]), l = hexv((char)r[26 + 2 * i]); if (h < 0 || l < 0) has_irk = 0; else irk[i] = (uint8_t)(h << 4 | l); }
             }
             bt_add_le_key(&bh, a, (uint8_t)t, k, (uint16_t)ediv, rand, has_irk ? irk : 0, kind << 1 & (BTK_KEYBOARD | BTK_MOUSE));
+            key_name_from(s, p, a);
             continue;
         }
         bt_add_key(&bh, a, k, 4, kind << 1 & (BTK_KEYBOARD | BTK_MOUSE));
+        key_name_from(s, p, a);
     }
 }
 
@@ -507,7 +549,7 @@ static void fr_log(const char *what)
 void bt_pi_report(void)
 {
     static const char *const ph[] = { "not started", "waiting for firmware", "powering", "powering", "running", "?", "?", "restarting", "FAILED", "off" };
-    char t[320]; unsigned k = put_str(t, 0, "[BT]   ");
+    char t[640]; unsigned k = put_str(t, 0, "[BT]   ");
     k = put_str(t, k, phase >= 0 && phase <= 9 ? ph[phase] : "?");
     if (phase == 4) {
         k = put_str(t, k, bh.state == BT_READY ? " ready" : bh.state == BT_FAILED ? " FAILED" : " starting");
@@ -517,10 +559,52 @@ void bt_pi_report(void)
         if (bh.scanning) k = put_str(t, k, " scanning");
         if (bh.pairing) k = put_str(t, k, " pairing");
         if (bh.passkey_shown) { k = put_str(t, k, " passkey "); k = put_num(t, k, bh.passkey, 0); }
-        for (int i = 0; i < bh.nkeys; i++) if (bh.keys[i].flags & BTK_CONNECTED) { k = put_str(t, k, " | connected: "); for (unsigned j = 0; bh.keys[i].name[j] && k < 190; j++) t[k++] = bh.keys[i].name[j]; }
+        /* each connected device by its name (from pairings.txt's comment line or its advertisement), else by its
+           address's last two bytes and its kind: until 24 November 2026 an LE device brought back from pairings.txt had
+           no name and the list read "connected: " */
+        int nc = 0;
+        for (int i = 0; i < bh.nkeys && k < 240; i++) if (bh.keys[i].flags & BTK_CONNECTED) {
+            k = put_str(t, k, nc++ ? ", " : " | connected: ");
+            k = key_short(t, k, &bh.keys[i]);
+        }
         if (auto_pair) k = put_str(t, k, " | bt.pair on");
     }
     t[k] = 0; kprintf("%s\n", t);
+    /* every paired device that is not connected: what the host does for it now, when it was last heard advertising and
+       with what, and the last thing that went wrong with it (24 November 2026: the owner's LE mouse never came back and
+       the log ring had lost the boot's lines; the heartbeat alone has to say it) */
+    if (phase == 4) for (int i = 0; i < bh.nkeys; i++) {
+        struct bt_key *ky = &bh.keys[i];
+        if (ky->flags & BTK_CONNECTED) continue;
+        uint32_t wait = 0, now = ms_now();
+        const char *act = bt_key_activity(&bh, i, &wait);
+        k = put_str(t, 0, "[BT]   away: "); k = key_short(t, k, ky);
+        if (ky->flags & BTK_LE) k = put_str(t, k, ky->addr_type ? ((ky->addr[5] & 0xc0) == 0xc0 ? ", static random address" : ", random address") : ", public address");
+        k = put_str(t, k, ky->flags & BTK_LE ? (ky->has_irk ? ", IRK" : ", no IRK") : "");
+        k = put_str(t, k, ": "); k = put_str(t, k, act);
+        if (wait) { k = put_str(t, k, " ("); k = put_num(t, k, wait, 0); k = put_str(t, k, " ms)"); }
+        if (ky->flags & BTK_LE) {
+            if (!ky->heard_n) k = put_str(t, k, bh.bg_scan || bh.scanning ? " | not heard advertising" : " | not heard advertising (no scan has listened)");
+            else {
+                static const char *const ev[] = { "ADV_IND", "ADV_DIRECT_IND", "ADV_SCAN_IND", "ADV_NONCONN_IND", "SCAN_RSP" };
+                static const char *const at[] = { "public", "random", "public identity", "random identity" };
+                k = put_str(t, k, " | heard "); k = put_num(t, k, (now - ky->heard_ms) / 1000u, 0); k = put_str(t, k, " s ago, ");
+                k = put_str(t, k, ky->heard_evt < 5 ? ev[ky->heard_evt] : "event ?"); k = put_str(t, k, " from a ");
+                k = put_str(t, k, ky->heard_atype < 4 ? at[ky->heard_atype] : "?"); k = put_str(t, k, " address ..");
+                t[k++] = hexd[ky->heard_addr[1] >> 4]; t[k++] = hexd[ky->heard_addr[1] & 15]; t[k++] = ':'; t[k++] = hexd[ky->heard_addr[0] >> 4]; t[k++] = hexd[ky->heard_addr[0] & 15];
+                k = put_str(t, k, ", "); k = put_num(t, k, ky->heard_n, 0); k = put_str(t, k, " times");
+            }
+            k = put_str(t, k, " | connects asked "); k = put_num(t, k, ky->tries, 0);
+        }
+        if (ky->err_what) {
+            static const char *const ew[] = { "", "connection failed", "connection refused", "no answer to the connection", "encryption could not start", "disconnected", "its key was refused" };
+            k = put_str(t, k, " | last: "); k = put_str(t, k, ky->err_what < 7 ? ew[ky->err_what] : "?");
+            if (ky->err_what != BT_KE_NOANSWER) { k = put_str(t, k, " ("); k = put_num(t, k, ky->err_code, 0); k = put_str(t, k, ": "); k = put_str(t, k, bt_status_words(ky->err_code)); k = put_str(t, k, ")"); }
+            k = put_str(t, k, " "); k = put_num(t, k, (now - ky->err_ms) / 1000u, 0); k = put_str(t, k, " s ago");
+        }
+        if (bh.bg_scan && bh.bg_restarts) { k = put_str(t, k, " | scan restarts "); k = put_num(t, k, (uint32_t)bh.bg_restarts, 0); }
+        t[k] = 0; kprintf("%s\n", t);
+    }
     if (phase == 4) for (int i = 0; i < BT_MAXCONN; i++) {      /* what each LE device presented */
         struct bt_conn *c = &bh.conn[i];
         if (!c->used || !c->le) continue;
@@ -633,6 +717,9 @@ void bt_pi_poll(void)
         bt_init(&bh, &bio, bh.fw, bh.fwlen);
         break;
     case 7:                                             /* BT_ON low again, for a fresh start */
+#ifdef PSMAC
+        for (int i = 0; i < 4; i++) psmac_input_gone(ALICE_SRC_BT0 + i);   /* the links are gone with the chip: what they held let go */
+#endif
         if ((int32_t)(now - phase_t) < 0) break;
         if (bt_on(0)) { phase_t = now + 250; break; }
         phase = 2; phase_t = now + 300;                 /* off long enough for the chip to really reset */

@@ -200,10 +200,48 @@ static void le_connect_direct(struct bt_host *h, const uint8_t a[6], uint8_t typ
    does what the controller cannot: a passive scan of its own while a bonded device is away, each connectable
    advertisement's address compared with the identity addresses and resolved with every IRK (bt_rpa_match), and a
    connection to the device at the address it used. The link is then the stored key's (le_conn_complete). */
-static int le_irk_waiting(struct bt_host *h)        /* a bonded LE device with an IRK, not connected now */
+/* (24 November 2026, docs/08 item 139: the owner's LE mouse, a static random address and no IRK, never came back while
+   the LE keyboard with an IRK was connected.) While the keyboard was away the host's own scan ran and would have found
+   the mouse too; once the keyboard was connected only the mouse waited, it had no IRK, and the controller's accept list
+   took over - on the BCM43438, with a link up already, an LE Create Connection to the accept list that nothing ever
+   answered (no failure, no event: the log had nothing about the mouse at all). On a controller without the resolving
+   list the host's own scan now serves every bonded LE device that is away, as Linux's background scan does: it hears
+   each advertisement (the heartbeat says when it last heard each device), connects directly to the address the device
+   used, and says why when that fails. A controller with the resolving list keeps the accept list. */
+static int le_irk_waiting(struct bt_host *h)        /* the own scan's turn: a bonded LE device not connected now, on a controller without the resolving list */
 {
-    for (int i = 0; i < h->nkeys; i++) if ((h->keys[i].flags & BTK_LE) && h->keys[i].has_irk && !conn_by_addr(h, h->keys[i].addr)) return 1;
-    return 0;
+    return le_keys_waiting(h);
+}
+static void key_err(struct bt_host *h, struct bt_key *k, uint8_t what, uint8_t code)
+{
+    if (!k) return;
+    k->err_ms = now(h); k->err_what = what; k->err_code = code;
+}
+static void waiting_err(struct bt_host *h, uint8_t what, uint8_t code)   /* the accept list's: every LE device away */
+{
+    for (int i = 0; i < h->nkeys; i++) if ((h->keys[i].flags & BTK_LE) && !conn_by_addr(h, h->keys[i].addr)) key_err(h, &h->keys[i], what, code);
+}
+/* an advertisement, whatever scan heard it: a bonded device's? Noted for the heartbeat, with its name if it has none */
+static int le_heard(struct bt_host *h, uint8_t evt, uint8_t atype, const uint8_t a[6], const uint8_t *d, unsigned n)
+{
+    int ki = -1;
+    for (int i = 0; i < h->nkeys && ki < 0; i++) {
+        struct bt_key *k = &h->keys[i];
+        if (!(k->flags & BTK_LE)) continue;
+        if (!mcmp(k->addr, a, 6) && (atype & 1) == k->addr_type) ki = i;
+        else if (k->has_irk && (atype & 1) && bt_rpa_match(k->irk, a)) ki = i;
+    }
+    if (ki < 0) return -1;
+    struct bt_key *k = &h->keys[ki];
+    k->heard_ms = now(h); k->heard_n++; k->heard_evt = evt; k->heard_atype = atype; mcpy(k->heard_addr, a, 6);
+    if (!k->name[0])
+        for (unsigned i = 0; d && i + 1 < n; ) {
+            unsigned l = d[i];
+            if (!l || i + 1 + l > n) break;
+            if (d[i + 1] == 0x08 || d[i + 1] == 0x09) { unsigned j = 0; for (; j + 1 < l && j < BT_NAME - 1; j++) k->name[j] = (char)d[i + 2 + j]; k->name[j] = 0; }
+            i += 1 + l;
+        }
+    return ki;
 }
 static void bg_start(struct bt_host *h)
 {
@@ -213,6 +251,7 @@ static void bg_start(struct bt_host *h)
     p[0] = 1; p[1] = 1;                                                       /* on, duplicates filtered (each start of it sees each address once) */
     cmd(h, C_LE_SCAN_ENABLE, p, 2);
     h->bg_scan = 1;
+    h->bg_since = now(h);
 }
 static void bg_stop(struct bt_host *h)
 {
@@ -237,6 +276,7 @@ static int le_bg_adv(struct bt_host *h, uint8_t evt, uint8_t atype, const uint8_
     if (ki < 0) return 0;
     bg_stop(h);
     h->rpa_key = ki; mcpy(h->rpa_addr, a, 6);
+    h->keys[ki].tries++;
     if (mcmp(h->keys[ki].addr, a, 6)) lg(h, "%a advertises as %a (resolved with its IRK): connecting", h->keys[ki].addr, a);
     else lg(h, "%a advertises: connecting", a);
     le_create(h, 0, atype & 1, a);
@@ -521,6 +561,7 @@ static void le_enc_change(struct bt_host *h, struct bt_conn *c, uint8_t status, 
         if (l->smp == SM_ENC) { smp_fail(h, c, 0, "encryption with the new key failed"); return; }
         if (l->rekey) {
             lg(h, "%a: its key was refused (%u): pair it again", c->addr, status);
+            key_err(h, key_of(h, c->addr), BT_KE_KEY, status);
             say(h, status == 0x06 ? "the device forgot the pairing - pair it again" : "encryption failed - pair it again");
             le_disconnect(h, c, 0x05);
         }
@@ -802,6 +843,7 @@ static void gatt_rsp(struct bt_host *h, struct bt_conn *c, const uint8_t *p, uns
 }
 static void kb_send(struct bt_host *h, struct bt_conn *c, const uint8_t r[8])
 {
+    h->cur_conn = (int)(c - h->conn);
     mcpy(c->lastkb, r, 8);
     if (h->io->keyboard) h->io->keyboard(h->io->ctx, r);
 }
@@ -809,6 +851,7 @@ static void le_notify(struct bt_host *h, struct bt_conn *c, uint16_t hd, const u
 {
     struct bt_le *l = &c->l;
     if (l->g != G_UP) return;
+    h->cur_conn = (int)(c - h->conn);                /* whose report this is, for the callbacks */
     l->nnotify++;
     if (l->nlog < 4) {                               /* the first few, as they came: what the device really sends */
         l->nlog++;
@@ -923,7 +966,10 @@ static void le_conn_complete(struct bt_host *h, const uint8_t *p, unsigned len, 
     h->le_init = 0;
     h->le_init_until = now(h) + 1000;
     if (st) {
-        lg(h, "LE connection failed (%u)", st);
+        lg(h, "LE connection failed (%u: %s)", st, bt_status_words(st));
+        if (was == 3) key_err(h, &h->keys[h->rpa_key], BT_KE_CONN, st);
+        else if (was == 2) waiting_err(h, BT_KE_CONN, st);
+        else key_err(h, key_of(h, a), BT_KE_CONN, st);
         if (was == 1 && h->pairing) { h->pairing = 0; say(h, "could not connect - is it in pairing mode?"); }
         h->le_init_until = now(h) + (was == 3 ? 300 : 5000);
         return;
@@ -969,6 +1015,7 @@ static void le_meta(struct bt_host *h, const uint8_t *p, unsigned len)
         for (unsigned r = 0; r < m && i + 10 <= len; r++) {
             unsigned dl = p[i + 8];
             if (i + 10 + dl > len) break;
+            le_heard(h, p[i], p[i + 1], p + i + 2, p + i + 9, dl);
             if (!le_bg_adv(h, p[i], p[i + 1], p + i + 2) && (h->scanning || h->le_scanning))
                 le_found(h, p + i + 2, p[i + 1], p + i + 9, dl, (int8_t)p[i + 9 + dl]);
             i += 10 + dl;
@@ -1021,20 +1068,21 @@ static void le_cstatus(struct bt_host *h, uint16_t op, uint8_t st)
         h->le_init = 0;
         h->le_init_until = now(h) + 5000;
         if (was == 1 && h->pairing) { h->pairing = 0; say(h, "could not reach the device"); }
-        lg(h, "LE connect refused (%u)", st);
+        lg(h, "LE connect refused (%u: %s)", st, bt_status_words(st));
+        if (was == 3) key_err(h, &h->keys[h->rpa_key], BT_KE_REFUSED, st);
+        else if (was == 2) waiting_err(h, BT_KE_REFUSED, st);
     } else if (op == C_LE_START_ENC) {
         for (int i = 0; i < BT_MAXCONN; i++) {
             struct bt_conn *c = &h->conn[i];
             if (!c->used || !c->le || c->encrypted) continue;
             if (c->l.smp == SM_ENC) smp_fail(h, c, 0x08, "encryption could not start");
-            else if (c->l.rekey) { lg(h, "%a: encryption could not start (%u)", c->addr, st); le_disconnect(h, c, 0x05); }
+            else if (c->l.rekey) { lg(h, "%a: encryption could not start (%u)", c->addr, st); key_err(h, key_of(h, c->addr), BT_KE_ENC, st); le_disconnect(h, c, 0x05); }
         }
     }
 }
 /* a link went down */
 static void le_gone(struct bt_host *h, struct bt_conn *c)
 {
-    if (c->l.lastbtn && h->io->mouse) h->io->mouse(h->io->ctx, 0, 0, 0, 0);
     if (h->aes_busy && h->aes_handle == c->handle) h->aes_busy = 0;
     if (h->passkey_shown && c->pairing) h->passkey_shown = 0;
     h->le_init_until = now(h) + 500;
@@ -1056,6 +1104,7 @@ static void le_poll(struct bt_host *h)
     }
     if (h->le_init == 3 && due(h, h->le_init_until)) {   /* the device the host's scan found did not answer */
         lg(h, "LE connect to %a: no answer", h->rpa_addr);
+        key_err(h, &h->keys[h->rpa_key], BT_KE_NOANSWER, 0);
         le_cancel(h);
         h->le_init_until = now(h) + 300;
     }
@@ -1066,9 +1115,40 @@ static void le_poll(struct bt_host *h)
     if (!le_keys_waiting(h)) return;
     if (h->le_lists_dirty) le_lists_write(h);
     if (own_scan) {
-        if (!h->bg_scan) { bg_start(h); if (!h->bg_said) { h->bg_said = 1; lg(h, "scanning for bonded LE devices that advertise with private addresses"); } }
+        if (!h->bg_scan) { bg_start(h); if (!h->bg_said) { h->bg_said = 1; lg(h, "scanning for bonded LE devices (the controller has no resolving list)"); } }
+        else if (due(h, h->bg_since + 30000)) {
+            /* the scan filters duplicates: each address is reported once per start, so one advertisement that came while
+               it could not be answered would be the only one heard. Every 30 s it starts afresh. */
+            bg_stop(h); bg_start(h); h->bg_restarts++;
+        }
         return;
     }
     le_create(h, 1, 0, 0);                           /* the controller connects whichever bonded device advertises */
     h->le_init = 2;
+    for (int i = 0; i < h->nkeys; i++) if ((h->keys[i].flags & BTK_LE) && !conn_by_addr(h, h->keys[i].addr)) h->keys[i].tries++;
+}
+
+/* what the host is doing about paired device KEY while it is not connected, in a few words for the heartbeat
+   (bt_pi.c); *ms: milliseconds until it tries again, when it waits */
+const char *bt_key_activity(struct bt_host *h, int key, uint32_t *ms)
+{
+    *ms = 0;
+    if (key < 0 || key >= h->nkeys) return "?";
+    struct bt_key *k = &h->keys[key];
+    if (conn_by_addr(h, k->addr)) return "connected";
+    if (h->state != BT_READY) return "idle: Bluetooth is not ready";
+    if (h->pairing) return "idle: a pairing is going on";
+    if (h->scanning) return "idle: a scan for new devices is going on";
+    if (!(k->flags & BTK_LE)) {
+        if (h->calling && !mcmp(h->call_addr, k->addr, 6)) return "Classic: calling it now";
+        return "Classic: waiting for it to call (page scan on; a key pressed wakes it)";
+    }
+    if (h->le_cancelling) return "LE: a connection attempt is being cancelled";
+    if (h->le_init == 3) return h->rpa_key == key ? "LE: connecting to it at the address it advertised" : "LE: connecting another device it heard";
+    if (h->le_init == 2) return "LE: the controller's accept list is armed for it";
+    if (h->le_init == 1) return !mcmp(h->call_addr, k->addr, 6) ? "LE: direct connection to it" : "LE: a direct connection to another device";
+    if (h->bg_scan) return "LE: the host's own scan listens for it";
+    if (h->le_lists_dirty) return "LE: the accept list is about to be written";
+    if (!due(h, h->le_init_until)) { *ms = h->le_init_until - now(h); return "LE: waiting before the next attempt"; }
+    return "LE: idle, the next turn arms it";
 }

@@ -178,6 +178,7 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	cc -std=c99 -Wall -Wextra -Werror -I ../emu68/src/alice -o $(B)/pistatus_test ../tools/pistatus_test.c pistatus/model.c
 	$(B)/pistatus_test
 	sh ../tools/pistatus_m68k.sh $(abspath $(B))
+	sh ../tools/piinput_m68k.sh $(abspath $(B))
 	cc -std=c99 -Wall -Wextra -Werror -I ../emu68/src/psmac -o $(B)/usb_hcint_test ../tools/usb_hcint_test.c ../emu68/src/psmac/usb_hcint.c
 	$(B)/usb_hcint_test
 	cc -std=c99 -Wall -Wextra -Werror -I ../emu68/src/psmac -o $(B)/edid_test ../tools/edid_test.c ../emu68/src/psmac/psmac_edid.c

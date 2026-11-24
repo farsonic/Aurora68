@@ -10,6 +10,11 @@
  *     advertises with a resolvable private address is found by the host's own scan, connected at that address and
  *     encrypted with its stored key (docs/08 item 136: "Bluetooth mouse stopped reconnecting on the Pi 3B");
  *     an address that does not resolve is left alone; a controller with the resolving list keeps the accept list;
+ *   - the owner's pair (24 November 2026, docs/08 item 139): an LE keyboard with an IRK connected and an LE mouse with
+ *     a static random address and no IRK away, on the 4.1 controller: the host's own scan goes on for the mouse (the
+ *     accept list, which the BCM43438 never answered with a link up, is not armed), hears its ADV_IND, connects to it
+ *     and encrypts with its key; the heartbeat's words for it (bt_key_activity) and what was heard; the scan started
+ *     afresh every 30 s while nothing is heard; a failed connection noted against the device;
  *   - the firmware sent at 921600 baud and the line back at 115200 after Launch_RAM; a refusal keeps 115200;
  *   - the page scan's "fast connectable" settings in the start-up.
  */
@@ -102,12 +107,13 @@ static void adv(uint8_t evt, uint8_t atype, const uint8_t a[6])
     memcpy(e + 6, a, 6); e[12] = 0; e[13] = (uint8_t)-60;
     ev(e, 14);
 }
-static void le_conn(uint8_t st, uint8_t atype, const uint8_t a[6])
+static void le_conn_h(uint8_t st, uint8_t atype, const uint8_t a[6], uint8_t handle)
 {
-    uint8_t e[21] = { 0x3e, 19, 0x01, st, 0x40, 0x00, 0x00, atype };
+    uint8_t e[21] = { 0x3e, 19, 0x01, st, handle, 0x00, 0x00, atype };
     memcpy(e + 8, a, 6);
     ev(e, 21);
 }
+static void le_conn(uint8_t st, uint8_t atype, const uint8_t a[6]) { le_conn_h(st, atype, a, 0x40); }
 
 int main(int argc, char **argv)
 {
@@ -175,6 +181,55 @@ int main(int argc, char **argv)
     /* a directed advertisement that gets no answer: cancelled, the scan again */
     mark = nout; adv(0x00, 1, rpa); run(5000);
     CHECK(find_op(0x200e, mark) >= 0 && H.bg_scan == 1, "a connection that is not answered in 4 s is cancelled and the scan resumes");
+
+    /* the owner's pair on the 4.1 controller: the keyboard (with an IRK) comes back, the mouse (static random, no IRK) is away */
+    {
+        static const uint8_t ltk2[16] = { 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1 };
+        static const uint8_t mouse[6] = { 0x55, 0x44, 0x33, 0x22, 0x11, 0xc4 };    /* C4:11:22:33:44:55: static random */
+        res_status = 0x01;
+        reset_out();
+        memset(&H, 0, sizeof H);
+        bt_add_le_key(&H, ident, 1, ltk, 0x1234, rnd8, irk_lsb, BTK_KEYBOARD);     /* the keyboard: identity C0:..., its IRK */
+        bt_add_le_key(&H, mouse, 1, ltk2, 0x4321, rnd8, 0, BTK_MOUSE);
+        bt_init(&H, &io, 0, 0);
+        run(3000);
+        CHECK(H.state == BT_READY && H.no_resolv && H.bg_scan, "two LE devices away: the host's own scan");
+        { uint32_t ms; CHECK(!strcmp(bt_key_activity(&H, 1, &ms), "LE: the host's own scan listens for it"), "the heartbeat: the scan listens for the mouse"); }
+        CHECK(H.keys[1].heard_n == 0, "the mouse not heard yet");
+        /* the keyboard advertises from a private address: connected */
+        mark = nout; adv(0x00, 1, rpa); run(50);
+        le_conn(0, 1, rpa); run(50);
+        CHECK(find_op(0x2019, mark) >= 0, "the keyboard connected and encrypted");
+        CHECK(H.keys[0].heard_n == 1 && H.keys[0].heard_evt == 0 && !memcmp(H.keys[0].heard_addr, rpa, 6), "the keyboard's advertisement noted, at its private address");
+        /* only the mouse is away now: until 24 November 2026 the accept list took over here (le_init 2) */
+        mark = nout; run(2000);
+        CHECK(H.bg_scan == 1 && H.le_init != 2, "the mouse alone away: the host's scan goes on, the accept list stays off (le_init %d, scan %d)", H.le_init, H.bg_scan);
+        CHECK(count_op(0x200d, mark) == 0, "no LE Create Connection to the accept list");
+        /* nothing heard for a while: the scan starts afresh, so that its duplicate filter forgets */
+        run(31000);
+        CHECK(H.bg_restarts >= 1 && H.bg_scan == 1, "the scan started again after 30 s (%d restarts)", H.bg_restarts);
+        /* the mouse wakes and advertises from its static address: connected directly, encrypted with its key */
+        uint32_t tries0 = H.keys[1].tries;
+        mark = nout; adv(0x00, 1, mouse); run(50);
+        {
+            int c = find_op(0x200d, mark);
+            CHECK(c >= 0 && out[c].b[8] == 0 && out[c].b[9] == 1 && !memcmp(out[c].b + 10, mouse, 6), "LE Create Connection to the mouse's address (policy %d)", c >= 0 ? out[c].b[8] : -1);
+            CHECK(H.keys[1].heard_n == 1 && H.keys[1].heard_atype == 1 && H.keys[1].tries == tries0 + 1, "the mouse heard once, one connection asked for");
+            uint32_t ms; CHECK(!strcmp(bt_key_activity(&H, 1, &ms), "LE: connecting to it at the address it advertised"), "the heartbeat: connecting to it");
+        }
+        /* the first try fails (the controller says why): noted against the mouse; the scan again, the second try links */
+        mark = nout; le_conn_h(0x3e, 1, mouse, 0x41); run(500);
+        CHECK(H.keys[1].err_what == BT_KE_CONN && H.keys[1].err_code == 0x3e, "the failed connection is the mouse's last error (%d, %d)", H.keys[1].err_what, H.keys[1].err_code);
+        CHECK(H.bg_scan == 1, "the scan again after the failure");
+        mark = nout; adv(0x00, 1, mouse); run(50); le_conn_h(0, 1, mouse, 0x41); run(50);
+        {
+            int e = find_op(0x2019, mark);
+            CHECK(e >= 0 && out[e].b[14] == 0x21 && out[e].b[15] == 0x43 && !memcmp(out[e].b + 16, ltk2, 16), "the mouse encrypted with its own key (EDIV 4321)");
+            int n = 0; for (int i = 0; i < BT_MAXCONN; i++) n += H.conn[i].used;
+            CHECK(n == 2, "two links up (%d)", n);
+            CHECK(!H.bg_scan, "nothing away: the scan stops");
+        }
+    }
 
     /* a 4.2 controller: its accept list and resolving list do the work */
     res_status = 0;

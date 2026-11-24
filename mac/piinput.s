@@ -66,6 +66,19 @@
 	.equ	IN_MACKEY,	5		| the remote control: a = Mac virtual key code, b = down/up, c = HID modifiers
 	.equ	IN_OPTIONS,	28		| long: the kernel's input options (alice_psmac.h ALICE_IN_OPT_*)
 	.equ	IN_OPT_NOEDGE,	0		| bit: mac.edgejump=off, the cursor does not jump between screens' edges
+	.equ	IN_OPT_RBCTRL,	1		| bit: mac.rightbutton=ctrl, the right button is a Control-click
+	.equ	IN_OPT_RBNONE,	2		| bit: mac.rightbutton=none, the right button is a plain click
+| ---- the feedback block after the ring (alice_psmac.h struct alice_input_fb, since 24 November 2026): what this
+| driver made of each event, for the kernel's mac.inputtrace and its heartbeat. Written here, only read by the kernel.
+	.equ	IN_FB,		1056		| offset from the ring: after its 64 events
+	.equ	FB_MAGIC,	0x41364946	| 'A6IF': written at Open (the kernel then stops keeping KeyMap itself)
+	.equ	FB_MODS,	4		| word: G_MODS
+	.equ	FB_BUTTONS,	6		| word: G_BUTTONS
+	.equ	FB_KMOWN,	8		| word: the modifier bits this driver set in KeyMap and will take out again
+	.equ	FB_BTNMODS,	10		| word: the modifiers the buttons held now add (right: Command)
+	.equ	FB_TAKEN,	12		| long: events taken
+	.equ	FB_RES,		16		| long per ring slot: what << 24 | MBState << 16 | modifiers word asked for
+	.equ	FB_KM,		272		| long per ring slot: the word at KeyMap+6 << 16 | owned bits, after the event
 
 | ---- Mac OS low memory and traps (Inside Macintosh, MPW SysEqu.a) ----
 	.equ	MMU32Bit,	0x0CB2
@@ -135,7 +148,11 @@
 	.equ	G_INHOOK,	G_ABS+1		| byte: inside crsr_hook
 	.equ	G_DO,		G_INHOOK+1	| byte: look for a crossing the ROM made, after its task
 	.equ	G_PAD,		G_DO+1
-	.equ	G_SIZE,		G_PAD+1
+	| the modifier keys in KeyMap (24 November 2026, keymap_modifiers) and the trace's feedback
+	.equ	G_KMOWN,	G_PAD+1		| word: modifier bits (event-record form) we set in KeyMap and must clear again
+	.equ	G_BTNMODS,	G_KMOWN+2	| word: modifiers added by the mouse buttons held (from the press to the release)
+	.equ	G_RES,		G_BTNMODS+2	| long: this event's result for the feedback block (post_event)
+	.equ	G_SIZE,		G_RES+4
 	.equ	_SIntInstall,	0xA075		| its own OS trap (Inside Macintosh V): A0 = SlotIntQElement, D0.w = slot
 	.equ	sIQType,	6
 	.equ	PI_SLOT,	9
@@ -254,6 +271,11 @@ d_open:
 	bne	open_fail		| the service core has not published a ring
 	move.l	IN_HEAD(%a0),IN_TAIL(%a0)	| start from now: drop what happened before boot
 	move.w	#0x8000,G_BUTTONS(%a2)	| "unknown" so the first report sets MBState
+	lea	IN_FB(%a0),%a1		| the feedback block: we are here (the kernel stops writing KeyMap itself)
+	clr.l	FB_MODS(%a1)
+	clr.l	FB_KMOWN(%a1)
+	clr.l	FB_TAKEN(%a1)
+	move.l	#FB_MAGIC,(%a1)
 	log	"PiInput: ring found"
 	| the keyboard layout: 'KCHR' 0 (U.S.) from the resource chain (the System file's or the
 	| ROM's), copied into a block of our own so its address can be used from interrupt level.
@@ -1068,7 +1090,7 @@ ev_key:
 	move.l	EV_C(%a4),%d0
 	bsr	hid_modifiers		| d0 = event modifiers from the HID byte -> G_MODS
 	move.l	EV_A(%a4),%d0
-	beq	ev_next			| modifiers-only report
+	beq	ev_mods			| modifiers-only report: KeyMap now (below)
 	cmp.l	#0xE8,%d0
 	bhs	ev_next
 	lea	usb_to_mac(%pc),%a0
@@ -1082,7 +1104,7 @@ key_code:				| d1 = the Mac virtual key code
 	tst.l	EV_B(%a4)
 	beq	ev_next
 	eor.w	#1,G_CAPS(%a2)
-	bra	ev_next
+	bra	ev_mods			| KeyMap's Caps Lock bit at once, as the ADB keyboard's
 1:	| KeyMap: code k is byte k >> 3, bit k & 7 (keymap_modifiers), which GetKeys hands to programs
 	move.w	%d1,%d2
 	lsr.w	#3,%d2			| byte index
@@ -1097,11 +1119,7 @@ key_code:				| d1 = the Mac virtual key code
 3:	| message = virtual code << 8 | character
 	move.w	%d1,%d4
 	lsl.w	#8,%d4			| d4 = code << 8
-	move.w	G_MODS(%a2),%d0
-	tst.w	G_CAPS(%a2)
-	beq.s	4f
-	or.w	#alphaLock,%d0
-4:	move.w	%d0,%d5			| d5 = event modifiers
+	bsr	cur_mods		| d5 = event modifiers
 	bsr	key_char		| d1 = code, d5 = modifiers -> d0.b = character (0 if none)
 	or.b	%d0,%d4
 	move.l	#0x00020000,%d0		| bits 16-23: ADB address 2, where Apple keyboards live
@@ -1145,33 +1163,86 @@ mouse_buttons:
 	move.l	EV_C(%a4),%d0
 	cmp.l	#-1,%d0			| "no button information" marker from the service core
 	beq	ev_next
-	move.w	%d0,%d1
-	cmp.w	G_BUTTONS(%a2),%d1
+	and.w	#7,%d0			| left, right, middle; the kernel sends no others
+	move.w	G_BUTTONS(%a2),%d1
+	move.w	%d0,G_BUTTONS(%a2)
+	cmp.w	%d0,%d1
 	beq	ev_next
-	move.w	%d1,G_BUTTONS(%a2)
-	| any button down -> MBState $00 and a mouseDown; all up -> $80 and a mouseUp.
-	| Right button adds Command, middle adds Option (Kensington-style), so two-button mice do
-	| something useful under a one-button system.
-	move.w	G_MODS(%a2),%d5
-	btst	#1,%d1
-	beq.s	1f
-	or.w	#cmdKey,%d5
-1:	btst	#2,%d1
-	beq.s	2f
-	or.w	#optionKey,%d5
-2:	moveq	#0,%d0
-	move.l	%d0,%a0			| message 0 for mouse events
-	and.w	#7,%d1
+	tst.w	%d1
+	bmi.s	1f			| 0x8000, "unknown": the first report says what MBState is
+	| The Mac's mouse has one button: a mouseDown when the first goes down, a mouseUp when the last comes up. Until
+	| 24 November 2026 every change of the bits posted one (left held, right pressed: a second mouseDown without a
+	| mouseUp between, with Command; right let go: a third), which the Finder took as fresh Command-clicks.
+	tst.w	%d0
+	sne	%d2
+	tst.w	%d1
+	sne	%d3
+	cmp.b	%d2,%d3
+	beq	ev_next			| still down, or still up: nothing new for the Mac
+1:	tst.w	%d0
+	beq.s	5f
+	| Down. Right button adds Command (mac.rightbutton=ctrl: Control; none: nothing), middle adds Option
+	| (Kensington-style), so two-button mice do something useful under a one-button system; the modifiers stay in
+	| KeyMap from the press to the release, as a held key would (G_BTNMODS, cur_mods).
+	moveq	#0,%d1
+	btst	#1,%d0
 	beq.s	3f
+	move.l	IN_OPTIONS(%a3),%d2
+	btst	#IN_OPT_RBNONE,%d2
+	bne.s	3f
+	move.w	#cmdKey,%d1
+	btst	#IN_OPT_RBCTRL,%d2
+	beq.s	3f
+	move.w	#controlKey,%d1
+3:	btst	#2,%d0
+	beq.s	4f
+	or.w	#optionKey,%d1
+4:	move.w	%d1,G_BTNMODS(%a2)
+	bsr	cur_mods
 	move.b	#0x00,MBState
 	moveq	#mouseDown,%d0
+	sub.l	%a0,%a0			| message 0 for mouse events
 	bsr	post_event
 	bra	ev_next
-3:	move.b	#0x80,MBState
+5:	clr.w	G_BTNMODS(%a2)		| up: the buttons' modifiers go with them
+	bsr	cur_mods
+	move.b	#0x80,MBState
 	or.w	#btnState,%d5
 	moveq	#mouseUp,%d0
+	sub.l	%a0,%a0
 	bsr	post_event
+	bra	ev_next
+
+| --- the modifier keys alone (a keyboard's report with only its modifier byte changed): KeyMap at once. Until 24
+| November 2026 only G_MODS changed here and KeyMap waited for the next event this driver posted: Shift (or Command,
+| Option, Control) let go after the letter it had been held for stayed down in KeyMap, which the ROM's _PostEvent reads
+| for every event, the SE's own mouse's included - "as if a key were held", every click a Shift- or Command-click;
+| Control-Option-Command-P, the PC window's capture key, left three of them down at once. ---
+ev_mods:
+	bsr	cur_mods
+	bsr	keymap_modifiers
+	moveq	#0,%d0
+	move.b	MBState,%d0
+	swap	%d0
+	move.w	%d5,%d0
+	move.l	%d0,G_RES(%a2)		| what 0: nothing posted, the modifiers word as KeyMap has it
 ev_next:
+	| the feedback: what this event did (G_RES, post_event), KeyMap's modifier word and the driver's state after it
+	move.l	%d6,%d0
+	and.l	#IN_SLOTS-1,%d0
+	lsl.l	#2,%d0
+	lea	IN_FB(%a3),%a0
+	move.l	G_RES(%a2),FB_RES(%a0,%d0.l)
+	move.w	KeyMap+6,%d1
+	swap	%d1
+	move.w	G_KMOWN(%a2),%d1
+	move.l	%d1,FB_KM(%a0,%d0.l)
+	move.w	G_MODS(%a2),FB_MODS(%a0)
+	move.w	G_BUTTONS(%a2),FB_BUTTONS(%a0)
+	move.w	G_KMOWN(%a2),FB_KMOWN(%a0)
+	move.w	G_BTNMODS(%a2),FB_BTNMODS(%a0)
+	addq.l	#1,FB_TAKEN(%a0)
+	clr.l	G_RES(%a2)
 	addq.l	#1,%d6
 	move.l	%d6,IN_TAIL(%a3)
 	addq.l	#1,(%sp)
@@ -1188,6 +1259,13 @@ vbl_done:
 post_event:
 	movem.l	%d1-%d2/%a1,-(%sp)
 	bsr	keymap_modifiers
+	moveq	#0,%d2			| the feedback: what << 24 | MBState << 16 | the modifiers word
+	move.b	%d0,%d2
+	lsl.w	#8,%d2
+	move.b	MBState,%d2
+	swap	%d2
+	move.w	%d5,%d2
+	move.l	%d2,G_RES(%a2)
 	move.l	%a0,%d1			| _PostEvent wants the event code in A0 and the message in D0
 	move.l	%d0,%a0			| (the first version had them the other way round: the cursor
 	move.l	%d1,%d0			| moved, no click or key ever arrived)
@@ -1195,12 +1273,15 @@ post_event:
 	movem.l	(%sp)+,%d1-%d2/%a1
 	rts
 
-| keymap_modifiers: set or clear the KeyMap bits of the five modifier keys from d5. Virtual codes:
+| keymap_modifiers: the KeyMap bits of the five modifier keys from d5 (a2 = globals). Virtual codes:
 | Command 0x37, Shift 0x38, Caps Lock 0x39, Option 0x3A, Control 0x3B (Inside Macintosh: Text).
 | Code k lives in byte k >> 3, bit k & 7 of KeyMap: the ROM's _PostEvent (IIci ROM 0xB406) takes the
 | event's modifier byte from the word at KeyMap+6 rotated left by one (Command, code 0x37, is bit 7
 | of byte 6; Shift to Control, 0x38-0x3B, bits 0-3 of byte 7). An earlier version used byte
 | (k >> 3) ^ 3, as if the map were little-endian longwords: no modifier reached an event.
+| Since 24 November 2026 only the bits this driver set are taken out again (G_KMOWN): KeyMap is shared with the ROM's
+| ADB keyboard driver (the SE's own keyboard) and, before this driver opens, with the kernel; a bit set by someone else
+| is theirs to clear, and before this every mouse click from the Pi took the SE keyboard's held Shift away.
 keymap_modifiers:
 	movem.l	%d0-%d4/%a0-%a1,-(%sp)
 	lea	KeyMap,%a0
@@ -1212,13 +1293,31 @@ keymap_modifiers:
 	lsr.w	#3,%d2
 	move.w	%d0,%d3
 	and.w	#7,%d3
+	move.w	%d1,%d0			| d0 = the bit
 	and.w	%d5,%d1
 	beq.s	2f
+	btst	%d3,(%a0,%d2.w)		| wanted: down already (by another keyboard, or by us)? then as it is
+	bne.s	3f
 	bset	%d3,(%a0,%d2.w)
+	or.w	%d0,G_KMOWN(%a2)	| ours to take out again
 	bra.s	3f
-2:	bclr	%d3,(%a0,%d2.w)
+2:	move.w	G_KMOWN(%a2),%d1	| not wanted: out only if we put it in
+	and.w	%d0,%d1
+	beq.s	3f
+	bclr	%d3,(%a0,%d2.w)
+	not.w	%d0
+	and.w	%d0,G_KMOWN(%a2)
 3:	dbf	%d4,1b
 	movem.l	(%sp)+,%d0-%d4/%a0-%a1
+	rts
+
+| cur_mods: d5 = the modifiers this driver holds now: the keyboards' (G_MODS), Caps Lock, the mouse buttons'
+cur_mods:
+	move.w	G_MODS(%a2),%d5
+	tst.w	G_CAPS(%a2)
+	beq.s	1f
+	or.w	#alphaLock,%d5
+1:	or.w	G_BTNMODS(%a2),%d5
 	rts
 mod_table:
 	.short	0x37,cmdKey, 0x38,shiftKey, 0x39,alphaLock, 0x3A,optionKey, 0x3B,controlKey

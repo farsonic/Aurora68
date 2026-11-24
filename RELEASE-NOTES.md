@@ -4,6 +4,24 @@
 
 Since 0.14:
 
+- **No more "key held down" after a Bluetooth or USB keyboard** (docs/08 item 139, 24 November 2026; the owner's SE
+  after Aurora68 PC: every Finder click selected several icons). Shift, Command, Option or Control let go on a Pi
+  keyboard stayed down in the Mac's KeyMap until the next key or click from the Pi, so the SE's own mouse's clicks were
+  Shift- or Command-clicks; Aurora68 PC's capture key, Control-Option-Command-P, left three of them down at once.
+  `.PiInput` now updates KeyMap the moment a modifier changes, takes out only what it put in (the SE keyboard's Shift
+  is no longer taken away by a click from a Bluetooth mouse), posts one mouseDown and one mouseUp however the buttons
+  change in between, and keeps the right button's Command from the press to the release. In the kernel each keyboard
+  and mouse has its own state (a USB mouse's report no longer lets go of a Bluetooth mouse's button), a device that
+  disconnects with a button or key down lets go of it (Classic Bluetooth mice did not), and the startup keys' KeyMap
+  bits are handed over cleanly when `.PiInput` opens. New: `mac.rightbutton=cmd|ctrl|none`, and `mac.inputtrace=N`
+  (Setup and Recovery's Diagnostics tab) with an `[INPUT]` heartbeat line. **Needs the new declaration ROM**
+  (`aurora68-se.declrom` / `aurora68-512x342.declrom`) as well as the new kernel.
+- **Bluetooth: a paired LE mouse beside a connected LE keyboard on the Pi 3B** (docs/08 item 139). On the 3B's
+  Bluetooth 4.1 chip the host's own scan now looks for every paired LE device that is away (it was only for those with
+  a private address; the others were left to the chip's accept list, which never connected the owner's mouse while the
+  keyboard was connected), and starts afresh every 30 s. The heartbeat names each connected device and says, for each
+  paired one that is not connected, what is being done for it, when it was last heard advertising and the last error.
+  Names come back from `pairings.txt`.
 - **Bluetooth keyboards and mice in Setup and Recovery, and startup keys from them** (README "Setup and Recovery",
   docs/08 item 136, 23 November 2026). Setup and Recovery shows Bluetooth's state, the devices connected and a
   keyboard's passkey on the screens, and pairs, connects and forgets from a new Bluetooth tab on the page, from the

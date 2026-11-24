@@ -6473,3 +6473,115 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      only the waits are measured), Setup and Recovery's own upload in QEMU, a crash that the system survives (Force Quit
      was), 24-bit mode and System 6 in QEMU (the host test covers the 24-bit block headers and the pointer's box), the
      Apple II program in QEMU (its host test only), the video decoder card's region check in QEMU.
+
+139. **"It's like I have some key held down": modifier keys left in KeyMap, the input's sources kept apart, and a
+   Bluetooth LE mouse beside an LE keyboard (24 November 2026).** The owner's SE (System 7.1), after Aurora68 PC and
+   perhaps without it: the Finder behaved as if the mouse button were held or every click had Command held, moving and
+   clicking left several icons selected. On the Pi: a Bluetooth LE keyboard that is also a pointer (paired as keyboard
+   and mouse, kind 7; its Report Map begins `05 01 09 06 a1 01 85 01`, the heartbeat said "map 247 mouse kbd report"),
+   a separate LE mouse (kind 6, a static random address, no IRK) that never came back after a start, and the SE's own
+   mouse. Item 138 had found no path from the PC card into the Mac's input; this round looked at the input itself.
+   - *The cause found: modifier keys let go on a Pi keyboard stayed down in KeyMap.* A keyboard report that changes only
+     the modifier byte reaches `.PiInput` as a key event with usage 0. The driver took the modifiers into its own word
+     (G_MODS) and did nothing else; KeyMap ($174), where the ROM's `_PostEvent` reads every event's modifiers (item 39),
+     was written only when the driver next posted an event of its own. Shift held for a capital and let go after the
+     letter, the way everyone types, left Shift in KeyMap; Command-Q left Command. Every later event the Pi did not post,
+     the SE's own mouse's clicks above all (the ROM's ADB driver), then carried Shift or Command: Shift-clicks in the
+     Finder, several icons selected, until a key or a click came from the Pi again. And Aurora68 PC's capture key,
+     Control-Option-Command-P on the Bluetooth keyboard, left all three down at once, which is why it showed after the
+     PC. Reproduced in the testbed (the solo board, System 7.1, the new kernel's `mac.inputmods=70` script through the
+     real report path, `mac.inputtrace=40`) with main's declaration ROM: the heartbeat after the three modifiers had been
+     let go read `Mac MBState 80 (up), KeyMap Command+Option+Control`, after Shift-H `KeyMap Shift`. With this round's
+     `.PiInput`, `KeyMap none` both times, every step traced (`#5 BT0 44:55 key 00 (modifiers alone) mods 0c -> nothing
+     posted ... KeyMap Command+Option, of them .PiInput's Command+Option`, and so on down to none).
+   - *What else was wrong in the same place.* (1) `.PiInput` wrote all five modifier bits of KeyMap from its own idea at
+     every event it posted, so a click with a Bluetooth mouse took away the Shift the SE's own keyboard was holding. Now
+     it sets a bit only when it is clear and remembers the bits it set (G_KMOWN), and clears only those: the SE
+     keyboard's bits are the ROM's. (2) Every change of the button bits posted an event: left held and right pressed
+     was a second mouseDown without a mouseUp, with Command; the right let go a third. Now one mouseDown when the first
+     button goes down and one mouseUp when the last comes up; the right button's Command (G_BTNMODS) stays in KeyMap from
+     the press to the release, also across keys typed meanwhile. (3) Caps Lock's KeyMap bit followed its toggle only at
+     the next posted event; now at once. (4) A mouse event's modifiers lacked Caps Lock.
+   - *The kernel: one state per source.* The ring carries one keyboard state and one set of buttons, and every USB and
+     Bluetooth device wrote them directly: a USB mouse's report with its button up let go of a Bluetooth mouse's held
+     one, two keyboards' modifier bytes overwrote each other, and a device that went away holding something left it. Now
+     `alice_psmac.c` keeps each source's last keyboard report and buttons (USB, the testbed's scripts, the four Bluetooth
+     links by index, the remote control) and puts their union into the ring (`alice_inmerge.h`, plain C so that the host
+     can test it); `psmac_input_gone` lets go of one source's alone: a Bluetooth link's Disconnection Complete (the LE
+     path had it for buttons; a Classic boot mouse that went with its button down left it down until this day), the
+     chip restarted, a USB enumeration (it released the keyboard, not the mouse). A keyboard's ErrorRollOver report
+     (every key 0x01) keeps the keys as they were. bthost.c says which link a report is from (`cur_conn`), bt_pi.c tells
+     the kernel. The Bluetooth report parsing was read for a keyboard byte landing in the buttons: a report-mode
+     notification goes by its Report Reference id to the keyboard (only ids the Report Map's Keyboard collection
+     declares) or to the mouse parser, which takes only the pointer's id, so a keyboard or consumer report is never a
+     mouse report; a fourth or fifth button is masked off (`b & 7`). Tested with a combination keyboard's map of the
+     owner's shape (`tools/bt_report_test.c`), not found to be a cause.
+   - *The startup keys (item 136).* The kernel keeps the keys held on the Pi's keyboards in KeyMap from the Mac's first
+     driver Open until `.PiInput` opens. It never wrote a released key (each 10 ms it clears what is no longer held), but
+     it stopped without taking its bits out: a Shift held from power-on and let go after `.PiInput` had opened stayed in
+     KeyMap, now for good, since `.PiInput` (rightly) leaves bits it did not set. Now the kernel takes its bits out when
+     it stops and `.PiInput` is given the keys again as before, setting them as its own. It stops on the ring's attached
+     word or, new, the feedback block's magic, which `.PiInput` writes at Open even when its slot interrupt could not be
+     installed (then attached never comes); and after two minutes of a talking Mac without `.PiInput` in any case.
+   - *Aurora68 PC.* Its capture path was read again: `warp` sets CrsrNew from CrsrCouple and touches nothing else,
+     HideCursor and ShowCursor pair up in `capture()`, a click goes to the PC only while captured and its mouseUp too;
+     nothing there writes KeyMap or MBState. The PC was the occasion (Control-Option-Command-P, much typing with Shift),
+     not the cause. A right-button click in its captured window is a Command-click and gives the mouse back to the Mac,
+     as documented; `mac.rightbutton=` changes that.
+   - *Right button = Command-click stays the default* (what Apple's multi-button drivers of the day did); new
+     `mac.rightbutton=ctrl` (a Control-click, System 7.5's contextual menus) and `none` (a plain click), the input ring's
+     options bits 1 and 2.
+   - *The trace.* `mac.inputtrace=N` (Setup and Recovery's Diagnostics tab arms it for one start): the first N events,
+     one line each once `.PiInput` has taken them: `[INPUT] #12 BT0 44:55 mouse 0,0 buttons 1 (all 1) -> mouseDown,
+     MBState 00, modifiers 0000 (none); KeyMap none, of them .PiInput's none`. The source is `USB`, `BT0`..`BT3` with the
+     link's address's last two bytes, `test` or `remote`; "all" is the union the Mac got. What `.PiInput` did comes from a
+     feedback block it now writes after the ring (alice_psmac.h `struct alice_input_fb`, offset 1056 of the input page):
+     per slot the event it posted, MBState and the modifiers word, KeyMap's modifier word after it and the bits it owns;
+     its G_MODS, G_BUTTONS, owned bits and the buttons' modifiers. The heartbeat's `[INPUT]` line has every source's
+     buttons and held modifiers and keys, `.PiInput`'s state and the Mac's own MBState ($172) and KeyMap modifier keys
+     ($17A, read from the Mac's memory, which is the Pi's); it comes at every heartbeat while the trace runs and by itself
+     whenever anything is held anywhere, so a photograph of the stuck state says where it sits.
+   - *Problem 2: the LE mouse that never came back.* The heartbeat had only `[BT]   running ready: keyboard connected |
+     paired 2 found 0 | connected: ` (an empty name: a device brought back from `pairings.txt` had none). Reading
+     btle.c's `le_poll`: on the 3B's 4.1 controller (no resolving list, item 136) the host's own passive scan ran only
+     while a device *with an IRK* was away. With the keyboard (IRK) connected and only the mouse (static address, no
+     IRK) away, the scan stopped and an LE Create Connection to the controller's accept list was left out instead,
+     with no timeout; the BCM43438, already central of one LE link, never answered it, and no line in the log said
+     anything about the mouse. The own scan, which matches static and identity addresses as well as private ones, now
+     serves every paired LE device that is away on such a controller (as Linux's background scan does); the accept list
+     stays for controllers with the resolving list. The scan filters duplicates, so it is started afresh every 30 s
+     while a device is away (one advertisement that came at a bad moment would otherwise be the only one heard). Other
+     suspects read: the accept list is cancelled before it is rewritten; ADV_DIRECT_IND is connectable and taken;
+     `le_init_until`'s backoffs (300 ms to 5 s) all expire (`due` is wrap-safe); a refused or failed connection is now
+     logged with its words (`LE connection failed (62: connection failed to be established)`).
+   - *The Bluetooth heartbeat.* Connected devices by name (now also read back from `pairings.txt`'s comment lines, or
+     taken from an advertisement), else kind and the address's last two bytes. And one line per paired device that is
+     not connected: `[BT]   away: "BT Mouse" mouse LE ..44:55, static random address, no IRK: LE: the host's own scan
+     listens for it | heard 12 s ago, ADV_IND from a random address ..44:55, 37 times | connects asked 3 | last:
+     connection failed (62: connection failed to be established) 25 s ago`. What it can say it is doing: the accept list
+     armed, the host's scan listening, connecting to the address it advertised, a direct connection, waiting N ms before
+     the next attempt, idle because of a pairing or a scan; Classic devices: waiting for it to call.
+   - *Tested.* `make -C mac check`, with three new tests. `tools/piinput_m68k.sh` (new): `.PiInput`'s own drain code
+     assembled from `mac/piinput.s` with its low memory moved into the test's and `_PostEvent` a routine that notes
+     what was posted, run on a 68020 under qemu-m68k, 30 checks: Shift and Control-Option-Command-P let go after their
+     key leave nothing in KeyMap (5 of the checks fail with this round's modifier change taken out), the SE keyboard's
+     Shift survives a Pi click and a Pi Shift pressed and let go, Caps Lock, one mouseDown and one mouseUp for left plus
+     right, the right button's Command held across a key and gone with the release, `mac.rightbutton=ctrl` and `none`,
+     the middle button's Option, a movement without buttons, the feedback block. `tools/bt_report_test.c` (new, 16
+     checks): a combination keyboard's Report Map of the owner's shape (keyboard report 1, a five-button pointer with
+     12-bit X and Y, wheel and AC Pan as report 2, consumer keys as report 3) through the host's own parsers and
+     `le_notify`: keys only from report 1, nothing from report 3, the pointer's buttons, movement and wheel from report 2,
+     the link's index with each; a link going down with buttons and keys held lets go of both, an LE link and a Classic
+     boot mouse. `tools/inmerge_test.c` (new, 12 checks): one source's button up does not let go of another's, a source
+     gone lets go of its own, two keyboards' modifiers and keys, ErrorRollOver. `tools/bt_test.c` (45 checks, 16 new):
+     the owner's pair on the 4.1 controller: the keyboard comes back by its private address, the mouse alone away keeps
+     the host's scan and no accept-list connection is made (7 checks fail with the old rule), the scan restarted after
+     30 s, the mouse's ADV_IND heard and connected at its static address, a failed try noted as its last error, the
+     second try encrypted with the mouse's own key, the scan stopped once nothing is away; the heartbeat's words. In
+     QEMU (solo board, System 7.1): `mac.inputmods=70 mac.inputtrace=40` with this round's and with main's declaration
+     ROM, as above. The kernel was built with the PC and Apple II cards (`-DPSMAC_PC=ON -DPSMAC_A2=ON`).
+   - *Not verified:* the owner's SE and Pi: the real Bluetooth keyboard and mouse, whether the BCM43438 connects the
+     mouse from the host's scan, the SE's own ADB keyboard and mouse together with `.PiInput` (the ROM's ADB driver is
+     not in the solo board). A quick check for the owner: pressing and letting go Shift, Command, Option and Control on
+     the SE's own keyboard clears a stuck KeyMap bit with the old driver (the ROM's driver sets and clears them), on the
+     Bluetooth keyboard it does not (only a letter key or a click from it does); with the new driver neither is needed.

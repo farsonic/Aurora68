@@ -26,11 +26,13 @@
  */
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdarg.h>
 #include "support.h"
 #include "psmac.h"
 #include "psmb.h"
 #include "alice_net.h"
 #include "alice_psmac.h"
+#include "alice_inmerge.h"
 #include "../psmac/psmac_ip.h"
 #include "wifi/fmac.h"
 #include "wifi/fmac_ap.h"
@@ -60,22 +62,89 @@ void aga_reboot(int tryboot) { (void)tryboot; kprintf("[PSMAC] reboot requested 
 
 /* ---- input ring: keyboard and mouse reports for the Mac side ------------------------------- */
 static volatile struct alice_input_ring *inr;
+static volatile struct alice_input_fb *infb;     /* .PiInput's feedback, right after the ring (alice_psmac.h) */
+_Static_assert(sizeof(struct alice_input_ring) == ALICE_IN_FB_OFF, "the feedback block follows the ring (mac/piinput.s IN_FB)");
+_Static_assert(ALICE_IN_FB_OFF + sizeof(struct alice_input_fb) <= 4096, "the input page is 4 KB");
 /* mac.altcmd=1: a PC keyboard's Alt is Command and its Windows key Option, by position (the key
    beside the space bar is Command on a Mac keyboard). Without it Apple's own mapping holds:
    Windows is Command, Alt is Option (mac/piinput.s hid_modifiers). Applied to the HID modifier
    byte of every key event, USB and Bluetooth alike. */
 static int in_altcmd = -1;
-/* one event into the ring as it is: the remote's (psmac_remote.c) come here directly, since its
-   Command is Command whatever keyboard the bench has */
-void psmac_input_put(uint32_t type, int32_t a, int32_t b, int32_t c)
+
+/* Sources (24 November 2026, docs/08 item 139: the owner's SE, "it's like I have some key held down"). The ring carries
+   one keyboard state and one set of mouse buttons, and until this day every keyboard and mouse wrote them directly: a
+   USB mouse's report with its button up let go of a Bluetooth mouse's button held at the same moment, and a device that
+   went away with a button down left nothing to let go of it. Now each source has its own (kb_src, btn_src), the ring
+   gets their OR, and psmac_input_gone lets go of one source's alone. Bluetooth says which link a report comes from
+   (bt_pi.c), USB is the default, the remote control marks its own. */
+static int in_src;                                  /* ALICE_SRC_*: whose report this is */
+static uint8_t in_src_addr[ALICE_NSRC][2];          /* a Bluetooth source's address, its last two bytes, for the log */
+static uint8_t kb_src[ALICE_NSRC][8];               /* each source's last keyboard report */
+static uint8_t btn_src[ALICE_NSRC];                 /* each source's mouse buttons */
+void psmac_input_from(int src, const uint8_t *addr)
+{
+    if (src < 0 || src >= ALICE_NSRC) src = ALICE_SRC_USB;
+    in_src = src;
+    if (addr) { in_src_addr[src][0] = addr[1]; in_src_addr[src][1] = addr[0]; }   /* least significant byte first, as HCI */
+}
+static uint32_t btn_all(void) { return inm_buttons(btn_src, ALICE_NSRC); }
+static const char *src_name(int s, char *t)          /* "USB", "BT1 44:55", "remote" */
+{
+    static const char hx[] = "0123456789ABCDEF";
+    if (s == ALICE_SRC_USB) return "USB";
+    if (s == ALICE_SRC_TEST) return "test";
+    if (s == ALICE_SRC_REMOTE) return "remote";
+    t[0] = 'B'; t[1] = 'T'; t[2] = (char)('0' + s - ALICE_SRC_BT0); t[3] = ' ';
+    t[4] = hx[in_src_addr[s][0] >> 4]; t[5] = hx[in_src_addr[s][0] & 15]; t[6] = ':'; t[7] = hx[in_src_addr[s][1] >> 4]; t[8] = hx[in_src_addr[s][1] & 15]; t[9] = 0;
+    return t;
+}
+
+/* mac.inputtrace=N: the first N events of the ring in the log, each with its source, what it carried and what .PiInput
+   made of it (the feedback block: what it posted, MBState, the modifiers, KeyMap's modifier keys after it). One line per
+   event, written once .PiInput has taken it (or after two seconds without). */
+struct in_tr { uint32_t seq; uint8_t used, src, sa0, sa1; uint32_t type; int32_t a, b, c, raw; uint64_t t; };
+static struct in_tr in_tr[ALICE_IN_SLOTS];
+static int in_tr_left = -1;                          /* -1: the option not read yet */
+static uint32_t in_tr_n;
+static int in_trace_on(void)
+{
+    if (in_tr_left < 0) {
+        extern const char *psmac_option(const char *); const char *o = psmac_option("mac.inputtrace");
+        int v = 0; for (; o && *o >= '0' && *o <= '9'; o++) v = v * 10 + (*o - '0');
+        in_tr_left = v > 100000 ? 100000 : v;
+        in_tr_n = (uint32_t)in_tr_left;
+        if (in_tr_left) kprintf("[INPUT] mac.inputtrace: the next %d input events in the log\n", in_tr_left);
+    }
+    return in_tr_n != 0;
+}
+/* one event into the ring as it is; raw: the source's own buttons, for the trace */
+static void ring_put(uint32_t type, int32_t a, int32_t b, int32_t c, int32_t raw)
 {
     if (!inr) return;
     uint32_t head = inr->head, tail = inr->tail;
     if (head - tail >= ALICE_IN_SLOTS) { inr->dropped++; return; }
     volatile struct alice_input_event *e = &inr->ev[head % ALICE_IN_SLOTS];
     e->type = type; e->a = a; e->b = b; e->c = c;
+    if (in_trace_on() && in_tr_left > 0) {
+        struct in_tr *r = &in_tr[head % ALICE_IN_SLOTS];
+        in_tr_left--;
+        r->seq = head; r->used = 1; r->src = (uint8_t)in_src; r->sa0 = in_src_addr[in_src][0]; r->sa1 = in_src_addr[in_src][1];
+        r->type = type; r->a = a; r->b = b; r->c = c; r->raw = raw;
+        __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(r->t));
+    }
     __asm__ volatile("dmb ish" ::: "memory");
     inr->head = head + 1;
+}
+/* the remote control's events (psmac_remote.c) come here directly, since its Command is Command whatever keyboard the
+   bench has; its absolute pointer's buttons are a source of their own like any mouse's */
+void psmac_input_put(uint32_t type, int32_t a, int32_t b, int32_t c)
+{
+    int was = in_src;
+    int32_t raw = c;
+    in_src = ALICE_SRC_REMOTE;
+    if (type == ALICE_IN_MOUSEABS && c != -1) { btn_src[ALICE_SRC_REMOTE] = (uint8_t)(c & 7); c = (int32_t)btn_all(); }
+    ring_put(type, a, b, c, raw);
+    in_src = was;
 }
 int psmac_input_attached(void) { return inr && inr->attached; }
 uint32_t psmac_input_backlog(void) { return inr && inr->attached ? inr->head - inr->tail : 0; }   /* events .PiInput has not taken yet */
@@ -89,10 +158,107 @@ static void in_put(uint32_t type, int32_t a, int32_t b, int32_t c)
             c = (int32_t)m;
         }
     }
-    psmac_input_put(type, a, b, c);
+    ring_put(type, a, b, c, c);
 }
 static inline uint64_t in_now(void) { uint64_t v; __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(v)); return v; }
 static inline uint64_t in_hz(void)  { uint64_t v; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(v)); return v; }
+/* a bounded sprintf for the trace's lines (the kernel's own printf, into a buffer that cannot overflow) */
+struct in_fmtb { char *p; unsigned n, cap; };
+static void in_fmt_putc(void *d, char c) { struct in_fmtb *b = d; if (b->n + 1 < b->cap) { b->p[b->n++] = c; b->p[b->n] = 0; } }
+static unsigned in_fmt(char *t, unsigned cap, const char *fmt, ...)
+{
+    struct in_fmtb b = { t, 0, cap };
+    if (cap) t[0] = 0;
+    va_list v; va_start(v, fmt); vkprintf_pc(in_fmt_putc, &b, fmt, v); va_end(v);
+    return b.n;
+}
+
+/* the modifier keys as words: from event-record bits (Inside Macintosh I), and from KeyMap's word at +6 (Command is
+   code 0x37: byte 6 bit 7; Shift, Caps Lock, Option, Control 0x38-0x3B: byte 7 bits 0-3) */
+static void mods_words(uint32_t m, char *t)
+{
+    unsigned k = 0;
+    static const struct { uint32_t bit; const char *w; } n[] = { { 0x100, "Command" }, { 0x200, "Shift" }, { 0x400, "CapsLock" }, { 0x800, "Option" }, { 0x1000, "Control" } };
+    for (unsigned i = 0; i < 5; i++) if (m & n[i].bit) { if (k) t[k++] = '+'; for (const char *w = n[i].w; *w; w++) t[k++] = *w; }
+    if (!k) { t[k++] = 'n'; t[k++] = 'o'; t[k++] = 'n'; t[k++] = 'e'; }
+    t[k] = 0;
+}
+static uint32_t km_mods(uint32_t w)                 /* KeyMap+6 word -> event-record bits */
+{
+    return (w & 0x8000u ? 0x100u : 0) | (w & 1u ? 0x200u : 0) | (w & 2u ? 0x400u : 0) | (w & 4u ? 0x800u : 0) | (w & 8u ? 0x1000u : 0);
+}
+static void in_trace_poll(void)
+{
+    if (!inr || !in_tr_n) return;
+    uint32_t tail = inr->tail;
+    uint64_t now = in_now(), late = in_hz() * 2;
+    int fb = infb && infb->magic == ALICE_IN_FB_MAGIC;
+    for (unsigned i = 0; i < ALICE_IN_SLOTS; i++) {
+        struct in_tr *r = &in_tr[i];
+        if (!r->used) continue;
+        int taken = (int32_t)(tail - r->seq) > 0;
+        if (!taken && now - r->t < late) continue;
+        r->used = 0;
+        char sn[12], what[64], res[160], m1[48], m2[48], m3[48];
+        const char *src;
+        { uint8_t s0 = in_src_addr[r->src][0], s1 = in_src_addr[r->src][1]; in_src_addr[r->src][0] = r->sa0; in_src_addr[r->src][1] = r->sa1; src = src_name(r->src, sn); in_src_addr[r->src][0] = s0; in_src_addr[r->src][1] = s1; }
+        if (r->type == ALICE_IN_MOUSE)
+            in_fmt(what, sizeof what, "mouse %d,%d buttons %x (all %x)", r->a, r->b, r->raw == -1 ? 0xffu : (uint32_t)r->raw, r->c == -1 ? 0xffu : (uint32_t)r->c);
+        else if (r->type == ALICE_IN_KEY)
+            in_fmt(what, sizeof what, "key %02x %s mods %02x", (uint32_t)r->a, !r->a ? "(modifiers alone)" : r->b == 2 ? "repeat" : r->b ? "down" : "up", (uint32_t)r->c);
+        else if (r->type == ALICE_IN_MOUSEABS)
+            in_fmt(what, sizeof what, "point %d,%d buttons %x (all %x)", r->a, r->b, (uint32_t)r->raw & 0xffu, (uint32_t)r->c & 0xffu);
+        else if (r->type == ALICE_IN_MACKEY)
+            in_fmt(what, sizeof what, "Mac key %02x %s mods %02x", (uint32_t)r->a, r->b ? "down" : "up", (uint32_t)r->c);
+        else in_fmt(what, sizeof what, "event %u (%d,%d,%d)", r->type, r->a, r->b, r->c);
+        if (!taken) in_fmt(res, sizeof res, "not taken by .PiInput after 2 s (attached %u)", inr->attached);
+        else if (!fb) in_fmt(res, sizeof res, "taken (an older .PiInput: no feedback)");
+        else {
+            uint32_t v = infb->res[i], k = infb->km[i];
+            static const char *const wn[] = { "nothing posted", "mouseDown", "mouseUp", "keyDown", "keyUp", "autoKey" };
+            mods_words(v & 0xffffu, m1); mods_words(km_mods(k >> 16), m2); mods_words(k & 0xffffu, m3);
+            in_fmt(res, sizeof res, "%s, MBState %02x, modifiers %04x (%s); KeyMap %s, of them .PiInput's %s",
+                       (v >> 24) < 6 ? wn[v >> 24] : "?", (v >> 16) & 0xffu, v & 0xffffu, m1, m2, m3);
+        }
+        kprintf("[INPUT] #%u %s %s -> %s\n", r->seq, src, what, res);
+        if (in_tr_left == 0) { int left = 0; for (unsigned j = 0; j < ALICE_IN_SLOTS; j++) left |= in_tr[j].used; if (!left) { kprintf("[INPUT] mac.inputtrace: %u events traced, the trace ends\n", in_tr_n); in_tr_n = 0; return; } }
+    }
+}
+/* the heartbeat's [INPUT] line (psmac_slot_irq_report): every source's buttons and modifier keys, .PiInput's state and
+   the Mac's own (MBState at $172, KeyMap's modifier keys at $17A); every heartbeat while mac.inputtrace is on, else only
+   while something is held, which is the state the owner photographs */
+void psmac_input_report(void)
+{
+    if (!inr) return;
+    extern int psmac_boot_mac_talking(void);
+    extern uint8_t *psmac_mac_ram_ptr(void);
+    int talking = psmac_boot_mac_talking();
+    uint32_t mb = 0x80, kmw = 0;
+    if (talking) { volatile uint8_t *ram = psmac_mac_ram_ptr(); mb = ram[0x172]; kmw = (uint32_t)ram[0x17a] << 8 | ram[0x17b]; }
+    int fb = infb && infb->magic == ALICE_IN_FB_MAGIC;
+    uint32_t any = btn_all() | (fb ? infb->mods | infb->kmown | infb->btnmods : 0) | km_mods(kmw) | (talking && mb != 0x80);
+    for (int s = 0; s < ALICE_NSRC; s++) for (int i = 0; i < 8; i++) any |= kb_src[s][i];
+    in_trace_on();
+    if (!any && !in_tr_n && in_tr_left <= 0) return;
+    char t[400], sn[12], m1[48], m2[48], m3[48]; unsigned k = 0;
+    k += in_fmt(t + k, sizeof t - k, "[INPUT] buttons");
+    for (int s = 0; s < ALICE_NSRC; s++) if (btn_src[s] || s == ALICE_SRC_USB) k += in_fmt(t + k, sizeof t - k, " %s %x", src_name(s, sn), btn_src[s]);
+    k += in_fmt(t + k, sizeof t - k, " -> %x | keyboards", btn_all());
+    int kn = 0;
+    for (int s = 0; s < ALICE_NSRC; s++) {
+        int held = 0; for (int i = 2; i < 8; i++) held += kb_src[s][i] != 0;
+        if (kb_src[s][0] || held) { k += in_fmt(t + k, sizeof t - k, " %s mods %02x keys %d", src_name(s, sn), kb_src[s][0], held); kn++; }
+    }
+    if (!kn) k += in_fmt(t + k, sizeof t - k, " nothing held");
+    if (fb) {
+        mods_words(infb->mods, m1); mods_words(infb->kmown, m2); mods_words(infb->btnmods, m3);
+        k += in_fmt(t + k, sizeof t - k, " | .PiInput buttons %04x mods %s, its in KeyMap %s, the buttons' %s, %u taken",
+                        infb->buttons, m1, m2, m3, infb->taken);
+    } else k += in_fmt(t + k, sizeof t - k, " | .PiInput %s", inr->attached ? "attached (no feedback: an older one)" : "not open");
+    if (talking) { mods_words(km_mods(kmw), m1); k += in_fmt(t + k, sizeof t - k, " | Mac MBState %02x (%s), KeyMap %s", mb, mb & 0x80 ? "up" : "DOWN", m1); }
+    if (in_tr_n) k += in_fmt(t + k, sizeof t - k, " | trace %d to come", in_tr_left);
+    kprintf("%s\n", t);
+}
 
 /* Key repeat. An ADB keyboard repeats keys itself and the Mac's Event Manager turns the repeated
    downs into autoKey events; USB and Bluetooth keyboards only report state changes, so the repeat
@@ -123,8 +289,8 @@ static void in_repeat_poll(void)
 }
 
 /* a USB boot-protocol keyboard report (modifiers, reserved, 6 usages): diff against the last one */
-static uint8_t kb_last[8];                       /* the keys held now (in_attach_poll gives them to .PiInput when it opens) */
-void frf_native_usb_keyboard_boot_report(const uint8_t report[8])
+static uint8_t kb_last[8];                       /* the keys held now, all sources together (in_attach_poll gives them to .PiInput when it opens) */
+static void kb_apply(const uint8_t report[8])
 {
     uint8_t *last = kb_last;
     for (int i = 2; i < 8; i++) {                    /* released: in last, not in report */
@@ -140,7 +306,30 @@ void frf_native_usb_keyboard_boot_report(const uint8_t report[8])
     if (report[0] != last[0]) in_put(ALICE_IN_KEY, 0, 0, report[0]);   /* modifiers alone */
     for (int i = 0; i < 8; i++) last[i] = report[i];
 }
-void frf_native_usb_keyboard_force_release(void) { static const uint8_t none[8]; frf_native_usb_keyboard_boot_report(none); }
+/* every source's keyboard together: the modifiers OR'd, the keys held by any (six at most, as a boot report has) */
+static void kb_merge_apply(void)
+{
+    uint8_t m[8];
+    inm_kb_merge((const uint8_t (*)[8])kb_src, ALICE_NSRC, m);
+    kb_apply(m);
+}
+void frf_native_usb_keyboard_boot_report(const uint8_t report[8])
+{
+    inm_kb_set(kb_src[in_src], report);             /* this source's (ErrorRollOver keeps its keys: alice_inmerge.h) */
+    kb_merge_apply();
+}
+/* a source gone (a Bluetooth link down, a USB enumeration): its keys and buttons let go, the others' kept */
+void psmac_input_gone(int src)
+{
+    if (src < 0 || src >= ALICE_NSRC) return;
+    int was = in_src, any = 0;
+    in_src = src;
+    for (int i = 0; i < 8; i++) { any |= kb_src[src][i]; kb_src[src][i] = 0; }
+    if (any) kb_merge_apply();
+    if (btn_src[src]) { btn_src[src] = 0; in_put(ALICE_IN_MOUSE, 0, 0, (int32_t)btn_all()); }
+    in_src = was;
+}
+void frf_native_usb_keyboard_force_release(void) { psmac_input_gone(ALICE_SRC_USB); }
 int  frf_native_usb_reboot_requested(void) { return 0; }
 int  frf_native_usb_amiga_reset_requested(void) { return 0; }
 /* a mouse (USB, Bluetooth, the testbed's scripts): in Setup and Recovery it moves through the keyboard menu (psmac_recovery_mouse) */
@@ -148,7 +337,9 @@ extern int psmac_recovery_mouse(int dx, int dy, unsigned buttons, int wheel);
 void aga_virtual_mouse_update(int dx, int dy, unsigned buttons)
 {
     if (psmac_recovery_mouse(dx, dy, buttons, 0)) return;
-    if (dx || dy || buttons != 0xffffffffu) in_put(ALICE_IN_MOUSE, dx, dy, (int32_t)buttons);
+    int32_t c = -1;
+    if (buttons != 0xffffffffu) { btn_src[in_src] = (uint8_t)(buttons & 7u); c = (int32_t)btn_all(); }
+    if (dx || dy || buttons != 0xffffffffu) ring_put(ALICE_IN_MOUSE, dx, dy, c, buttons == 0xffffffffu ? -1 : (int32_t)(buttons & 7u));
 }
 void pt_mouse_extra(int wheel, int pan, unsigned buttons) { (void)buttons; if (wheel && psmac_recovery_mouse(0, 0, 0xffffffffu, wheel)) return; if (wheel || pan) in_put(ALICE_IN_WHEEL, wheel, pan, 0); }
 
@@ -173,17 +364,29 @@ static const uint8_t adb_to_hid_tab[0x36] = {
 };
 static void in_keymap_poll(void)
 {
-    static int done; static uint8_t ours[16]; static uint64_t next; static int said;
+    static int done; static uint8_t ours[16]; static uint64_t next, first; static int said;
     extern int psmac_boot_mac_talking(void);
     extern uint8_t *psmac_mac_ram_ptr(void);
     if (done) return;
-    if (inr && inr->attached) {                                  /* .PiInput has it now: what is held it was given (in_attach_poll) */
+    /* .PiInput has it now (the ring's attached word, or since 24 November 2026 its feedback block's magic, written at
+       its Open whether or not its slot interrupt could be installed); or two minutes have gone by since the Mac began
+       to talk (a start without .PiInput, which should never keep KeyMap from the kernel for ever) */
+    int taken = inr && (inr->attached || (infb && infb->magic == ALICE_IN_FB_MAGIC));
+    uint64_t t = in_now();
+    if (taken || (first && t - first > in_hz() * 120)) {
         done = 1;
-        if (said) kprintf("[PSMAC] KeyMap: .PiInput has the keyboards now\n");
+        /* Our bits out of KeyMap first: .PiInput is given the keys held again (in_attach_poll, just after this) and sets
+           them itself, as its own, so that it takes them out when they are let go. Until this day the kernel's bits
+           stayed: a Shift held from power-on and let go after .PiInput had opened stayed down in KeyMap for good. */
+        if (psmac_boot_mac_talking()) {
+            volatile uint8_t *km = psmac_mac_ram_ptr() + 0x174;
+            for (int i = 0; i < 16; i++) if (ours[i]) km[i] = km[i] & (uint8_t)~ours[i];
+        }
+        if (said) kprintf("[PSMAC] KeyMap: %s now, the kernel's bits taken out\n", taken ? ".PiInput has the keyboards" : "no .PiInput after two minutes: the kernel stops keeping it");
         return;
     }
-    uint64_t t = in_now();
     if (t < next || !psmac_boot_mac_talking()) return;
+    if (!first) first = t;
     next = t + in_hz() / 100;
     uint8_t want[16] = { 0 };
     uint32_t m = kb_last[0];
@@ -213,6 +416,7 @@ static void in_attach_poll(void)
 {
     static int was;
     in_keymap_poll();
+    in_trace_poll();
     int now_ = inr && inr->attached;
     if (now_ && !was) {
         extern void psmac_boot_mark(const char *fmt, ...);
@@ -481,6 +685,34 @@ static void in_testbed_poll(void)
         }
         intest_next = now + in_hz() * gap_ms / 1000; return;
     }
+    if (intest_kind == 7) {
+        /* mac.inputmods=SECONDS (24 November 2026, docs/08 item 139): the owner's "some key held down", through the
+           real report path with sources. A Bluetooth keyboard with a pointer (link 0, 00:11:22:33:44:55): Control-
+           Option-Command-P as Aurora68 PC's capture key is typed (P let go first, then the modifiers one by one), then
+           a Shift-H; its pointer presses the left button while a USB mouse reports its own button up; a second
+           Bluetooth mouse (link 1) presses the right button and its link goes down. With mac.inputtrace= each event's
+           line says what .PiInput did and KeyMap's modifier keys after it, and the six-second pauses after the modifiers are
+           let go put a heartbeat's [INPUT] line there: nothing may be left in KeyMap (with .PiInput before this day,
+           Command+Option+Control and then Shift were). */
+        static const uint8_t bt_a[6] = { 0x55, 0x44, 0x33, 0x22, 0x11, 0x00 }, bt_b[6] = { 0x66, 0x55, 0x44, 0x33, 0x22, 0x11 };
+        static const struct { uint8_t src, kind, mods, key; int8_t b; uint16_t gap; } ms[] = {
+            { 0, 0, 0x01, 0, 0, 120 }, { 0, 0, 0x05, 0, 0, 120 }, { 0, 0, 0x0d, 0, 0, 120 },   /* Control, Option, Command */
+            { 0, 0, 0x0d, 0x13, 0, 120 }, { 0, 0, 0x0d, 0, 0, 120 },                            /* P down, up */
+            { 0, 0, 0x0c, 0, 0, 120 }, { 0, 0, 0x08, 0, 0, 120 }, { 0, 0, 0x00, 0, 0, 6000 },  /* let go one by one; a heartbeat */
+            { 0, 0, 0x02, 0, 0, 120 }, { 0, 0, 0x02, 0x0b, 0, 120 }, { 0, 0, 0x02, 0, 0, 120 }, { 0, 0, 0x00, 0, 0, 6000 },  /* Shift-H; a heartbeat */
+            { 0, 1, 0, 0, 1, 200 }, { 2, 1, 0, 0, 0, 200 }, { 0, 1, 0, 0, 0, 600 },             /* BT pointer down, USB up, BT up */
+            { 1, 1, 0, 0, 2, 300 }, { 1, 2, 0, 0, 0, 600 },                                     /* BT mouse 2 right down; its link goes */
+        };
+        int s = intest_step++;
+        if (s >= (int)(sizeof ms / sizeof ms[0])) { intest_at = 0; kprintf("[PSMAC] input modifier script done\n"); return; }
+        int src = ms[s].src == 2 ? ALICE_SRC_USB : ALICE_SRC_BT0 + ms[s].src;
+        psmac_input_from(src, ms[s].src == 2 ? 0 : ms[s].src ? bt_b : bt_a);
+        if (ms[s].kind == 0) { uint8_t r[8] = { ms[s].mods, 0, ms[s].key }; frf_native_usb_keyboard_boot_report(r); }
+        else if (ms[s].kind == 1) aga_virtual_mouse_update(0, 0, (unsigned)ms[s].b);
+        else psmac_input_gone(src);
+        psmac_input_from(ALICE_SRC_USB, 0);
+        intest_next = now + in_hz() * ms[s].gap / 1000; return;
+    }
     if (intest_kind == 3) {                                                 /* mac.inputright=: walk the mouse onto the second screen */
         int s = intest_step++;
         if (s < 60) { aga_virtual_mouse_update(30, 4, 0); intest_next = now + in_hz() * 50 / 1000; }
@@ -516,6 +748,7 @@ void psmac_alice_input_click(uint32_t seconds, const int *pts, int n)
 }
 void psmac_alice_input_drag(uint32_t seconds)  { intest_at = seconds; intest_kind = 4; }   /* the cursor walks right, onto the second screen (docs/10) */
 void psmac_alice_input_edge(uint32_t seconds)  { intest_at = seconds; intest_kind = 6; }   /* the edge jump between the screens (docs/10) */
+void psmac_alice_input_mods(uint32_t seconds)  { intest_at = seconds; intest_kind = 7; }   /* the stuck-modifier script (docs/08 item 139) */
 
 void psmac_loop_report(void);
 /* heartbeat line for psmac_bus.c: the interrupt line and what holds it */
@@ -533,6 +766,7 @@ void psmac_slot_irq_report(void)
     kprintf("[PSMAC]   slot-9 line %u (SIER %02x IER %02x) | net irq %u drv %08x | input attached %u head %u tail %u\n",
             st >> 16, (st >> 8) & 0xff, st & 0xff, nh ? nh->irq : 0, nh ? nh->amiga_ver : 0,
             inr ? inr->attached : 0, inr ? inr->head : 0, inr ? inr->tail : 0);
+    psmac_input_report();
 }
 
 /* ---- testbed WiFi: unit 0 as a simulated radio ------------------------------------------------ */
@@ -1100,12 +1334,21 @@ void psmac_alice_init(uint8_t *win)
     alice_status_attach(win + ALICE_STATUS_WINDOW_OFF);
     inr = (volatile struct alice_input_ring *)(win + ALICE_INPUT_WINDOW_OFF);
     for (uint32_t i = 0; i < sizeof(struct alice_input_ring) / 4; i++) ((volatile uint32_t *)inr)[i] = 0;
+    infb = (volatile struct alice_input_fb *)((volatile uint8_t *)inr + ALICE_IN_FB_OFF);
+    for (uint32_t i = 0; i < sizeof(struct alice_input_fb) / 4; i++) ((volatile uint32_t *)infb)[i] = 0;
     inr->magic = ALICE_IN_MAGIC; inr->version = 1; inr->slots = ALICE_IN_SLOTS;
     /* mac.edgejump=off: the cursor stops at a screen's edge where the neighbour does not touch it, as the ROM
        has it; on, the default, .PiInput takes it onto the neighbour at the same proportion (docs/10, "The edge jump") */
     { extern int psmac_bootarg_val(const char *key, char *out, unsigned max); char o[8];
       if (psmac_bootarg_val("mac.edgejump", o, sizeof o) && (o[0] == '0' || ((o[0] | 32) == 'o' && (o[1] | 32) == 'f')))
           inr->options |= ALICE_IN_OPT_NOEDGE; }
+    /* mac.rightbutton=cmd|ctrl|none (24 November 2026): what a mouse's right button adds to its click; cmd, the default,
+       is the Command-click Apple's own two-button drivers of the day made of it (docs/09, .PiInput) */
+    { extern int psmac_bootarg_val(const char *key, char *out, unsigned max); char o[8];
+      if (psmac_bootarg_val("mac.rightbutton", o, sizeof o)) {
+          if ((o[0] | 32) == 'c' && (o[1] | 32) == 't') inr->options |= ALICE_IN_OPT_RBCTRL;
+          else if ((o[0] | 32) == 'n' || (o[0] | 32) == 'o' || o[0] == '0') inr->options |= ALICE_IN_OPT_RBNONE;
+      } }
     __asm__ volatile("dmb ish" ::: "memory");
     alice_ready = 1;
 }

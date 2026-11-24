@@ -46,6 +46,36 @@ static void lg(struct bt_host *h, const char *fmt, ...)
 }
 static void say(struct bt_host *h, const char *s) { unsigned i = 0; for (; s[i] && i + 1 < sizeof h->status; i++) h->status[i] = s[i]; h->status[i] = 0; }
 
+/* the HCI statuses and disconnection reasons a keyboard or mouse brings (Core Vol 1 Part F) */
+const char *bt_status_words(uint8_t st)
+{
+    switch (st) {
+    case 0x00: return "ok";
+    case 0x02: return "unknown connection";
+    case 0x04: return "page timeout";
+    case 0x05: return "authentication failure";
+    case 0x06: return "key missing (the device forgot the pairing)";
+    case 0x07: return "out of memory";
+    case 0x08: return "connection timeout (out of range, switched off)";
+    case 0x09: return "too many connections";
+    case 0x0b: return "connection already exists";
+    case 0x0c: return "command disallowed";
+    case 0x0d: return "no resources";
+    case 0x12: return "invalid parameters";
+    case 0x13: return "the device ended it";
+    case 0x14: return "the device ended it (low resources)";
+    case 0x15: return "the device ended it (powering off)";
+    case 0x16: return "we ended it";
+    case 0x1a: return "unsupported feature";
+    case 0x1f: return "unspecified error";
+    case 0x22: return "LL response timeout";
+    case 0x28: return "instant passed";
+    case 0x3b: return "unacceptable connection parameters";
+    case 0x3d: return "MIC failure (wrong key)";
+    case 0x3e: return "connection failed to be established";
+    default: return "?";
+    }
+}
 void bt_addr_str(const uint8_t a[6], char o[18])
 {
     static const char hx[] = "0123456789ABCDEF";
@@ -463,12 +493,14 @@ static void hid_in(struct bt_host *h, struct bt_conn *c, const uint8_t *p, unsig
 {
     if (n < 2 || p[0] != 0xa1) return;                  /* DATA | Input */
     struct bt_key *k = key_of(h, c->addr);
+    h->cur_conn = (int)(c - h->conn);                   /* whose report this is, for the callbacks */
     if (p[1] == 0x01 && n >= 10) {                      /* boot keyboard */
         if (k) k->flags |= BTK_KEYBOARD;
         mcpy(c->lastkb, p + 2, 8);
         if (h->io->keyboard) h->io->keyboard(h->io->ctx, p + 2);
     } else if (p[1] == 0x02 && n >= 5) {                /* boot mouse (+ a wheel byte some send) */
         if (k) k->flags |= BTK_MOUSE;
+        c->l.lastbtn = p[2];                            /* let go of at the disconnection, as an LE mouse's */
         if (h->io->mouse) h->io->mouse(h->io->ctx, (int8_t)p[3], (int8_t)p[4], n >= 6 ? (int8_t)p[5] : 0, p[2]);
     }
 }
@@ -793,7 +825,8 @@ static void event(struct bt_host *h, const uint8_t *e, unsigned n)
         int ours = h->calling && !mcmp(h->call_addr, p + 3, 6);
         if (ours) h->calling = 0;
         if (p[0]) {
-            lg(h, "%a: no connection (%u)", p + 3, p[0]);
+            lg(h, "%a: no connection (%u: %s)", p + 3, p[0], bt_status_words(p[0]));
+            { struct bt_key *k = key_of(h, p + 3); if (k) { k->err_ms = now(h); k->err_what = BT_KE_CONN; k->err_code = p[0]; } }
             if (h->pairing && !mcmp(h->pair_addr, p + 3, 6)) { h->pairing = 0; say(h, "could not connect - is it in pairing mode?"); }
             h->reconnect_at = now(h) + 200;
             return;
@@ -819,12 +852,18 @@ static void event(struct bt_host *h, const uint8_t *e, unsigned n)
         if (len < 4) return;
         struct bt_conn *c = conn_of(h, le16(p + 1) & 0x0fff);
         if (!c) return;
-        lg(h, "%a: disconnected (%u)", c->addr, p[3]);
+        lg(h, "%a: disconnected (%u: %s)", c->addr, p[3], bt_status_words(p[3]));
+        { struct bt_key *k = key_of(h, c->addr); if (k) { k->err_ms = now(h); k->err_what = BT_KE_DISC; k->err_code = p[3]; } }
         if (c->le) le_gone(h, c);
         static const uint8_t up[8];
         int held = 0;
         for (int i = 0; i < 8; i++) held |= c->lastkb[i];
+        h->cur_conn = (int)(c - h->conn);
         if (held && h->io->keyboard) h->io->keyboard(h->io->ctx, up);    /* nothing stays pressed */
+        /* nor any button: a link that went with a button down (a mouse switched off, out of range, its battery) left it
+           down on the Mac until 24 November 2026 for a Classic mouse; an LE one had this in le_gone */
+        if (c->l.lastbtn && h->io->mouse) h->io->mouse(h->io->ctx, 0, 0, 0, 0);
+        c->l.lastbtn = 0;
         set_connected(h, c->addr, 0);
         if (c->pairing && h->pairing) { h->pairing = 0; say(h, "pairing did not finish"); }
         else say(h, "disconnected");

@@ -57,6 +57,25 @@ struct alice_input_ring {
     struct alice_input_event ev[ALICE_IN_SLOTS];
 };
 #define ALICE_IN_OPT_NOEDGE     1u              /* mac.edgejump=off: .PiInput's cursor does not jump between screens' edges (docs/10) */
+#define ALICE_IN_OPT_RBCTRL     2u              /* mac.rightbutton=ctrl: the right button is a Control-click (24 November 2026) */
+#define ALICE_IN_OPT_RBNONE     4u              /* mac.rightbutton=none: the right button is a plain click (default cmd: a Command-click) */
+/* .PiInput's feedback (24 November 2026, docs/08 item 139): right after the ring, what the driver made of each event,
+   for mac.inputtrace and the heartbeat's [INPUT] line. Written by the Mac (mac/piinput.s IN_FB), read by the kernel. */
+#define ALICE_IN_FB_OFF         1056u           /* from the ring's start: sizeof (struct alice_input_ring) */
+#define ALICE_IN_FB_MAGIC       0x41364946u     /* 'A6IF': .PiInput has opened (from then on the kernel leaves KeyMap alone) */
+struct alice_input_fb {
+    uint32_t magic;
+    uint16_t mods, buttons;                     /* .PiInput's G_MODS (event-record modifier bits) and G_BUTTONS (0x8000: none yet) */
+    uint16_t kmown, btnmods;                    /* the modifier bits it set in KeyMap and will clear; those the buttons held add */
+    uint32_t taken;                             /* events taken */
+    uint32_t res[ALICE_IN_SLOTS];               /* per ring slot: what posted << 24 (0 none) | MBState << 16 | modifiers word */
+    uint32_t km[ALICE_IN_SLOTS];                /* per ring slot: the word at KeyMap+6 << 16 | kmown, after the event */
+};
+/* where an event came from (24 November 2026): each source's mouse buttons and keyboard state are kept apart and OR'd,
+   and a source that goes away (a Bluetooth link down, a USB enumeration) lets go of what it held */
+enum { ALICE_SRC_USB, ALICE_SRC_TEST, ALICE_SRC_BT0, ALICE_SRC_BT3 = ALICE_SRC_BT0 + 3, ALICE_SRC_REMOTE, ALICE_NSRC };
+void psmac_input_from(int src, const uint8_t *addr);   /* the next reports are this source's (addr: a Bluetooth device's, or 0) */
+void psmac_input_gone(int src);                 /* that source's keys and buttons let go */
 
 void alice_net_attach(void *base);              /* alice_net.c: use this memory as the board */
 void alice_net_reset(void);                     /* alice_net.c: the 68k was reset */
