@@ -106,7 +106,13 @@ static inline void w(uint32_t o, uint32_t v) { wr32le(SDH + o, v); }
 static inline uint64_t cnt(void) { uint64_t v; __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(v)); return v; }
 static inline uint64_t frq(void) { uint64_t v; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(v)); return v; }
 static uint32_t ms(void) { return (uint32_t)(cnt() / (frq() / 1000u)); }
-static void udelay(uint32_t us) { uint64_t e = cnt() + frq() * us / 1000000u; while (cnt() < e) ; }
+/* The Bluetooth UART beside the card (bt_pi.c bt_pi_uart_pump): its 16-byte FIFO fills in 1.4 ms and the Pi 3B's chip
+   cannot be held back, so every wait here that can last longer takes its bytes in meanwhile (docs/21, 25 November 2026:
+   a pairing writes pairings.txt at the very moment the keyboard's GATT discovery talks most). One register read when
+   nothing waits. */
+extern void bt_pi_uart_pump(void) __attribute__((weak));
+static inline void pump(void) { if (bt_pi_uart_pump) bt_pi_uart_pump(); }
+static void udelay(uint32_t us) { uint64_t e = cnt() + frq() * us / 1000000u; while (cnt() < e) pump(); }
 
 /* ==== the controller and the card ============================================================ */
 static struct {
@@ -126,7 +132,7 @@ static int sd_cmd(uint32_t idx, uint32_t arg, uint32_t flags, uint32_t *rsp)
     w(SDCMD, (idx & 0x3fu) | flags | CMD_NEW);
     t = cnt();
     uint64_t lim = (flags & CMD_BUSY) ? frq() : frq() / 10;
-    while (r(SDCMD) & CMD_NEW) if (cnt() - t > lim) { sd.errors++; w(SDCMD, 0); return -2; }
+    while (r(SDCMD) & CMD_NEW) { if (cnt() - t > lim) { sd.errors++; w(SDCMD, 0); return -2; } pump(); }
     if (r(SDCMD) & CMD_FAIL) {
         h = r(SDHSTS); sd.last_hsts = h;
         w(SDHSTS, h & HSTS_CLEAR);
@@ -241,7 +247,7 @@ static int sd_status(void)
 static int fsm_wait(uint32_t us)
 {
     uint64_t t = cnt(), lim = frq() * us / 1000000u;
-    for (;;) { uint32_t f = EDM_FSM(r(SDEDM)); if (f == FSM_DATA || f == FSM_IDENT) return 0; if (cnt() - t > lim) return -1; }
+    for (;;) { uint32_t f = EDM_FSM(r(SDEDM)); if (f == FSM_DATA || f == FSM_IDENT) return 0; if (cnt() - t > lim) return -1; pump(); }
 }
 static int sd_read(uint32_t lba, uint8_t *buf)
 {
@@ -312,7 +318,7 @@ static int sd_write(uint32_t lba, const uint8_t *buf)                 /* the sma
 {
     if (sd_write_start(lba, buf)) return -1;
     uint32_t t = ms();
-    for (;;) { int k = sd_write_poll(); if (k == 1) return 0; if (k < 0 || ms() - t > 1000) return -2; }
+    for (;;) { int k = sd_write_poll(); if (k == 1) return 0; if (k < 0 || ms() - t > 1000) return -2; pump(); }
 }
 
 /* ==== FAT ===================================================================================== */

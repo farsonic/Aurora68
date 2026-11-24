@@ -395,6 +395,7 @@ static void an_yield(void)
     }
 #endif
     in_wifi = 0;
+    { extern void bt_pi_uart_pump(void); bt_pi_uart_pump(); }   /* the Bluetooth UART beside it, at every yield of the WiFi (docs/21) */
     an_switch(&ctx_wifi, &ctx_main);
     in_wifi = 1;
 #ifdef PSMAC

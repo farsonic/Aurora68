@@ -176,16 +176,21 @@ static void le_tier_params(int tier, uint16_t *iv, uint16_t *win)
 static void le_create(struct bt_host *h, int policy, uint8_t type, const uint8_t a[6])
 {
     uint8_t p[25];
-    uint16_t iv = 0x0060, win = 0x0030;              /* to one device: scan 60 ms, window 30 ms (it ends in seconds) */
+    /* to one device (a pairing, or a device the host's scan heard): 30 ms every 120 ms. Linux scans 60 ms in every 60 ms
+       for it (le_scan_int_connect/window_connect), the whole radio, and an LE connection attempt was what took the WiFi
+       away on Raspberry Pi OS too (raspberrypi/linux#1444, "Bluetooth LE connection attempt disables Wifi on RPi3",
+       2016; Cypress's advice there: shorter windows). A device that wants to connect advertises every 20 to 30 ms, so
+       a 30 ms window hears it; until 25 November 2026 60/30, half the radio for up to 15 s of a pairing */
+    uint16_t iv = 0x00c0, win = 0x0030;
     if (policy) { h->init_tier = le_plan(h); le_tier_params(h->init_tier ? h->init_tier - 1 : BT_TIER_IDLE, &iv, &win); }   /* the accept list: it waits, the tier's */
     put16(p, iv); put16(p + 2, win);
     p[4] = (uint8_t)policy;                          /* 0: this device, 1: the filter accept list */
     p[5] = type;
     if (a) mcpy(p + 6, a, 6); else mset(p + 6, 0, 6);
     p[12] = 0;                                       /* our public address */
-    put16(p + 13, 0x0006); put16(p + 15, 0x000c);    /* 7.5 to 15 ms: what keyboards ask for */
+    put16(p + 13, BT_LE_CI_MIN); put16(p + 15, BT_LE_CI_MAX);   /* 30 to 50 ms, Linux's (bthost.h); a device asks for less itself */
     put16(p + 17, 0);                                /* no latency */
-    put16(p + 19, 0x01f4);                           /* supervision 5 s */
+    put16(p + 19, BT_LE_TIMEOUT);                    /* supervision 5 s */
     put16(p + 21, 0); put16(p + 23, 0);
     cmd(h, C_LE_CREATE, p, 25);
 }
@@ -335,10 +340,10 @@ static void aes(struct bt_host *h, struct bt_conn *c, const uint8_t key[16], con
 {
     uint8_t p[32];
     mcpy(p, key, 16); mcpy(p + 16, pt, 16);          /* HCI: least significant octet first, as SMP's values */
-    h->aes_busy = 1; h->aes_handle = c->handle;
+    h->aes_busy = 1; h->aes_handle = c->handle; h->aes_op = C_LE_ENCRYPT;
     cmd(h, C_LE_ENCRYPT, p, 32);
 }
-static void rnd(struct bt_host *h, struct bt_conn *c) { h->aes_busy = 1; h->aes_handle = c->handle; cmd(h, C_LE_RAND, 0, 0); }
+static void rnd(struct bt_host *h, struct bt_conn *c) { h->aes_busy = 1; h->aes_handle = c->handle; h->aes_op = C_LE_RAND; cmd(h, C_LE_RAND, 0, 0); }
 
 static const char *smp_reason(uint8_t r)
 {
@@ -939,6 +944,22 @@ static void att_in(struct bt_host *h, struct bt_conn *c, const uint8_t *p, unsig
         return;
     }
 }
+/* a device's Connection Parameter Update Request: valid? (Linux's hci_check_conn_params, Core Vol 6 Part B 4.5.1)
+   min and max in 1.25 ms, the timeout in 10 ms */
+int bt_le_params_ok(uint16_t mn, uint16_t mx, uint16_t lat, uint16_t to)
+{
+    if (mn > mx || mn < 6 || mx > 3200 || to < 10 || to > 3200) return 0;
+    if (mx >= (uint32_t)to * 8u) return 0;                     /* the timeout must outlast two intervals */
+    uint32_t max_lat = (uint32_t)to * 4u / mx - 1u;
+    return lat <= 499 && lat <= max_lat;
+}
+/* the interval's lower end asked of the controller: the device's, but not under BT_LE_FLOOR (15 ms) when its range
+   allows it - the controller picks within min..max, and on the Pi 3B every halving of the interval doubles the link's
+   share of the antenna. A device that wants 7.5 ms and nothing longer gets 7.5 ms */
+uint16_t bt_le_min_floor(uint16_t mn, uint16_t mx)
+{
+    return mn < BT_LE_FLOOR && mx >= BT_LE_FLOOR ? (uint16_t)BT_LE_FLOOR : mn;
+}
 /* LE signalling: the device asks for other connection parameters */
 static void lesig_in(struct bt_host *h, struct bt_conn *c, const uint8_t *p, unsigned n)
 {
@@ -946,13 +967,22 @@ static void lesig_in(struct bt_host *h, struct bt_conn *c, const uint8_t *p, uns
     uint8_t code = p[0], id = p[1];
     unsigned len = le16(p + 2);
     if (len + 4 > n) return;
-    if (code == 0x12 && len >= 8) {                  /* Connection Parameter Update Request: yes */
-        uint8_t r[6] = { 0x13, id, 2, 0, 0, 0 };
+    if (code == 0x12 && len >= 8) {                  /* Connection Parameter Update Request */
+        uint16_t mn = le16(p + 4), mx = le16(p + 6), lat = le16(p + 8), to = le16(p + 10);
+        int ok = bt_le_params_ok(mn, mx, lat, to);
+        uint8_t r[6] = { 0x13, id, 2, 0, (uint8_t)(ok ? 0 : 1), 0 };   /* result 0 accepted, 1 rejected */
         l2_send(h, c, CID_LESIG, r, 6);
+        if (!ok) {
+            c->l.upd_refused++;
+            lg(h, "%a: connection parameters %u-%u (x1.25 ms), latency %u, timeout %u0 ms refused: not valid", c->addr, mn, mx, lat, to);
+            return;
+        }
+        c->l.upd_asked++;
+        uint16_t use = bt_le_min_floor(mn, mx);
         uint8_t q[14];
-        put16(q, c->handle); mcpy(q + 2, p + 4, 8); put16(q + 10, 0); put16(q + 12, 0);
+        put16(q, c->handle); put16(q + 2, use); put16(q + 4, mx); put16(q + 6, lat); put16(q + 8, to); put16(q + 10, 0); put16(q + 12, 0);
         cmd(h, C_LE_CONN_UPDATE, q, 14);
-        lg(h, "%a: connection interval %u-%u (x1.25 ms), latency %u", c->addr, le16(p + 4), le16(p + 6), le16(p + 8));
+        lg(h, "%a: asks for connection interval %u-%u (x1.25 ms), latency %u, timeout %u0 ms: %u-%u asked of the controller", c->addr, mn, mx, lat, to, use, mx);
         return;
     }
     if (code == 0x01 || code == 0x13 || code == 0x15 || code == 0x07) return;   /* replies to nothing of ours */
@@ -1007,7 +1037,11 @@ static void le_conn_complete(struct bt_host *h, const uint8_t *p, unsigned len, 
         if (mcmp(p + 18, zero, 6)) mcpy(c->l.ra, p + 18, 6);
     }
     c->pairing = h->pairing && !mcmp(h->pair_addr, a, 6);
-    lg(h, "%a: LE link up (handle %x, address type %u)", c->addr, hd, ptype);
+    {   /* the parameters the link runs with: after the addresses (and, enhanced, the two private ones) */
+        const uint8_t *q = p + (enhanced ? 24 : 12);
+        if (q + 6 <= p + len) { c->l.ci = le16(q); c->l.cl = le16(q + 2); c->l.cto = le16(q + 4); }
+    }
+    lg(h, "%a: LE link up (handle %x, address type %u, interval %u x1.25 ms, latency %u, timeout %u0 ms)", c->addr, hd, ptype, c->l.ci, c->l.cl, c->l.cto);
     struct bt_key *k = key_of(h, a);
     for (int i = 0; !k && ptype == 1 && i < h->nkeys; i++)  /* a private address the host resolved (le_bg_adv) */
         if ((h->keys[i].flags & BTK_LE) && h->keys[i].has_irk && bt_rpa_match(h->keys[i].irk, a)) {
@@ -1026,6 +1060,15 @@ static void le_meta(struct bt_host *h, const uint8_t *p, unsigned len)
     switch (p[0]) {
     case 0x01: le_conn_complete(h, p, len, 0); return;
     case 0x0a: le_conn_complete(h, p, len, 1); return;
+    case 0x03: {                                     /* LE Connection Update Complete: what the link runs with now */
+        if (len < 10) return;
+        struct bt_conn *c = conn_of(h, le16(p + 2) & 0x0fff);
+        if (!c) return;
+        if (p[1]) { lg(h, "%a: connection update refused (%u: %s)", c->addr, p[1], bt_status_words(p[1])); return; }
+        c->l.ci = le16(p + 4); c->l.cl = le16(p + 6); c->l.cto = le16(p + 8);
+        lg(h, "%a: connection interval now %u x1.25 ms, latency %u, timeout %u0 ms", c->addr, c->l.ci, c->l.cl, c->l.cto);
+        return;
+    }
     case 0x02: {                                     /* advertising reports, one after another */
         if (len < 2) return;
         unsigned m = p[1], i = 2;
@@ -1063,7 +1106,7 @@ static void le_no_resolv(struct bt_host *h, uint16_t op, uint8_t st)
 static void le_cc(struct bt_host *h, uint16_t op, const uint8_t *ret, unsigned n)
 {
     if (op == C_LE_ENCRYPT || op == C_LE_RAND) {
-        if (!h->aes_busy) return;
+        if (!h->aes_busy || op != h->aes_op) return;   /* an answer to an earlier link's request (it went meanwhile) is not this one's */
         h->aes_busy = 0;
         struct bt_conn *c = conn_of(h, h->aes_handle);
         if (!c || !c->le) return;
@@ -1154,7 +1197,7 @@ static void le_radio_now(struct bt_host *h, struct bt_radio *r)
 {
     if (h->bg_scan && h->bg_tier) { r->le_on = 1; le_tier_params(h->bg_tier - 1, &r->le_int, &r->le_win); }
     else if (h->le_init == 2 && h->init_tier) { r->le_on = 1; le_tier_params(h->init_tier - 1, &r->le_int, &r->le_win); }
-    else if (h->le_init == 1 || h->le_init == 3) { r->le_on = 1; r->le_int = 0x0060; r->le_win = 0x0030; }   /* a connection to one device, for seconds */
+    else if (h->le_init == 1 || h->le_init == 3) { r->le_on = 1; r->le_int = 0x00c0; r->le_win = 0x0030; }   /* a connection to one device, for seconds (le_create) */
 }
 
 /* what the host is doing about paired device KEY while it is not connected, in a few words for the heartbeat

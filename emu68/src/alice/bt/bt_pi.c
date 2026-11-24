@@ -82,7 +82,34 @@ static uint32_t phase_t, wait_since;
 static char shown[64];
 static int shown_col = -1;
 static int keys_loaded, uart_done, retried, fail_logged;
-static uint32_t rx_total, rx_errors;
+static uint32_t rx_total, rx_errors, rx_overruns, rx_ring_full;
+
+/* ---- the receive side: the PL011's FIFO into a ring, from anywhere on the way (25 November 2026, docs/21) ---------
+   The 3B's chip has no RTS to hold back (raspberrypi/firmware#1150: "The 3B doesn't have the flow control signals hooked
+   up to the BT modem"), and the PL011 keeps 16 bytes: at 115200 baud 1.4 ms of the chip's talk. Raspberry Pi OS reads
+   it from the UART's interrupt; this kernel polls, once per turn of core 3's loop, and a turn that writes the card (a
+   pairing's pairings.txt, up to a second of the card's programming time), serves a long WiFi step or a big PiDisk
+   request is longer than that. So the bytes are taken into this ring by bt_pi_uart_pump, which costs one register
+   read when nothing waits and is called between the parts of core 3's turn and inside the card's waits as well as
+   here; bt_pi_poll hands the ring to the host. Each entry keeps the PL011's error bits, so that a lost byte (overrun)
+   drops the packet it broke (bt_rx_break) instead of becoming a false header. The pump may be called from another
+   core (the card code runs on core 0 once): one at a time, by pump_lock; the ring has one reader, core 3. */
+static uint16_t rxr[4096];
+static volatile uint32_t rxr_h, rxr_t;
+static volatile int pump_lock, pump_ready;
+void bt_pi_uart_pump(void)
+{
+    if (!pump_ready || __atomic_exchange_n(&pump_lock, 1, __ATOMIC_ACQUIRE)) return;
+    uint32_t t = rxr_t;
+    for (int n = 0; n < 64 && !(rd(UART0 + U_FR) & FR_RXFE); n++) {
+        uint32_t v = rd(UART0 + U_DR);
+        if (t - rxr_h >= sizeof rxr / sizeof rxr[0]) { rx_ring_full++; continue; }
+        rxr[t % (sizeof rxr / sizeof rxr[0])] = (uint16_t)(v & 0xfffu);
+        t++;
+    }
+    __atomic_store_n(&rxr_t, t, __ATOMIC_RELEASE);
+    __atomic_store_n(&pump_lock, 0, __ATOMIC_RELEASE);
+}
 
 static void blog(const char *s)
 {
@@ -577,6 +604,30 @@ void bt_pi_report(void)
         if (auto_pair) k = put_str(t, k, " | bt.pair on");
     }
     t[k] = 0; kprintf("%s\n", t);
+    if (phase == 4) {
+        /* the line to the chip (docs/21): what was lost on it and what the host did about it; all 0 is a clean line */
+        k = put_str(t, 0, "[BT]   UART: in "); k = put_num(t, k, rx_total, 0);
+        k = put_str(t, k, ", errors "); k = put_num(t, k, rx_errors, 0); k = put_str(t, k, " (overruns "); k = put_num(t, k, rx_overruns, 0);
+        k = put_str(t, k, "), ring full "); k = put_num(t, k, rx_ring_full, 0);
+        k = put_str(t, k, " | HCI: packets cut "); k = put_num(t, k, bh.rx_breaks, 0);
+        k = put_str(t, k, ", headers dropped "); k = put_num(t, k, bh.rx_resyncs, 0);
+        k = put_str(t, k, ", commands unanswered "); k = put_num(t, k, bh.cmd_timeouts, 0);
+        k = put_str(t, k, " | ACL free "); k = put_num(t, k, bh.acl_free, 0); t[k++] = '/'; k = put_num(t, k, bh.acl_pkts, 0);
+        k = put_str(t, k, ", LE "); k = put_num(t, k, bh.le_free, 0); t[k++] = '/'; k = put_num(t, k, bh.le_pkts, 0);
+        k = put_str(t, k, ", queued "); k = put_num(t, k, bh.aq_tail - bh.aq_head, 0); k = put_str(t, k, " ACL "); k = put_num(t, k, bh.cq_tail - bh.cq_head, 0); k = put_str(t, k, " commands");
+        t[k] = 0; kprintf("%s\n", t);
+        for (int i = 0; i < BT_MAXCONN; i++) {             /* each LE link's parameters: its share of the antenna */
+            struct bt_conn *c = &bh.conn[i];
+            if (!c->used || !c->le || !c->l.ci) continue;
+            k = put_str(t, 0, "[BT]   LE link ..");
+            t[k++] = hexd[c->addr[1] >> 4]; t[k++] = hexd[c->addr[1] & 15]; t[k++] = ':'; t[k++] = hexd[c->addr[0] >> 4]; t[k++] = hexd[c->addr[0] & 15];
+            k = put_str(t, k, ": interval "); k = put_num(t, k, c->l.ci * 125u / 100u, 0); t[k++] = '.'; k = put_num(t, k, (c->l.ci * 125u / 10u) % 10u, 0);
+            k = put_str(t, k, " ms, latency "); k = put_num(t, k, c->l.cl, 0);
+            k = put_str(t, k, ", timeout "); k = put_num(t, k, c->l.cto * 10u, 0); k = put_str(t, k, " ms | updates asked ");
+            k = put_num(t, k, c->l.upd_asked, 0); k = put_str(t, k, ", refused "); k = put_num(t, k, c->l.upd_refused, 0);
+            t[k] = 0; kprintf("%s\n", t);
+        }
+    }
     if (phase == 4 && bh.state == BT_READY) {
         /* the radio's time Bluetooth takes now (docs/08 item 140: the Pi 3B's WiFi shares its antenna) */
         struct bt_radio r;
@@ -743,6 +794,9 @@ void bt_pi_poll(void)
         break;
     case 3:
         if ((int32_t)(now - phase_t) < 250) break;      /* the chip boots its ROM */
+        pump_ready = 0;
+        while (__atomic_load_n(&pump_lock, __ATOMIC_ACQUIRE)) ;
+        rxr_h = rxr_t = 0;
         cts_note("[BT] chip on: CTS ");
         uart_flush(CR_ON);                              /* nothing stale from an earlier try */
         cts_last = -1; cts_changes = 0; t_init = now;
@@ -755,6 +809,7 @@ void bt_pi_poll(void)
         bt_init(&bh, &bio, bh.fw, bh.fwlen);
         break;
     case 7:                                             /* BT_ON low again, for a fresh start */
+        pump_ready = 0;
 #ifdef PSMAC
         for (int i = 0; i < 4; i++) psmac_input_gone(ALICE_SRC_BT0 + i);   /* the links are gone with the chip: what they held let go */
 #endif
@@ -795,13 +850,23 @@ void bt_pi_poll(void)
             break;
         }
         uint8_t buf[64];
-        for (int rounds = 0; rounds < 8; rounds++) {
+        pump_ready = 1;
+        for (int rounds = 0; rounds < 16; rounds++) {
+            bt_pi_uart_pump();
             unsigned n = 0;
-            while (n < sizeof buf && !(rd(UART0 + U_FR) & FR_RXFE)) {
-                uint32_t v = rd(UART0 + U_DR);
-                if (v & 0xf00u) rx_errors++;               /* framing, parity, break, overrun */
+            uint32_t h = rxr_h, t = __atomic_load_n(&rxr_t, __ATOMIC_ACQUIRE);
+            while (n < sizeof buf && h != t) {
+                uint16_t v = rxr[h % (sizeof rxr / sizeof rxr[0])]; h++;
+                if (v & 0xf00u) {                           /* framing, parity, break, overrun: what came before is cut */
+                    rx_errors++;
+                    if (v & 0x800u) rx_overruns++;
+                    if (n) { bt_rx(&bh, buf, n); rx_total += n; n = 0; }
+                    bt_rx_break(&bh);
+                    if (v & 0x700u) continue;               /* a byte with a framing, parity or break error is not one */
+                }
                 buf[n++] = (uint8_t)v;
             }
+            __atomic_store_n(&rxr_h, h, __ATOMIC_RELEASE);
             rx_total += n;
             if (!n) break;
             bt_rx(&bh, buf, n);
@@ -809,6 +874,23 @@ void bt_pi_poll(void)
         bt_poll(&bh);
         auto_pair_poll(now);
         tx_drain();
+        {   /* once ready: two things Raspberry Pi OS sets up that this kernel leaves as the firmware left them (docs/21) */
+            static int said;
+            if (bh.state == BT_READY && !said) {
+                said = 1;
+                int aa = 1; for (int i = 0; i < 6; i++) if (bh.bdaddr[i] != 0xaa) aa = 0;
+                if (aa) blog("[BT] the controller's address is the BCM43430A1's unconfigured one (AA:AA:...): Raspberry Pi OS writes one made "
+                             "from the board's serial number (bthelper, Write BD ADDR fc01); left as it is, so that existing pairings stay valid");
+                if (!alice_pi_is_2711()) {
+                    uint32_t f4 = rd(GPIO + 0x10), fn = (f4 >> 9) & 7u;    /* GPFSEL4: GPIO 43 */
+                    static const char *const fsel[] = { "input", "output", "ALT5", "ALT4", "ALT0 (GPCLK2)", "ALT1", "ALT2", "ALT3" };
+                    char t[120]; unsigned k = put_str(t, 0, "[BT] GPIO 43 is ");
+                    k = put_str(t, k, fsel[fn]);
+                    k = put_str(t, k, fn == 4 ? ", as Raspberry Pi OS's device tree sets it beside the Bluetooth UART (bt_pins)" : ": Raspberry Pi OS's device tree has ALT0 (GPCLK2) here (bt_pins); not changed");
+                    t[k] = 0; blog(t);
+                }
+            }
+        }
 #ifdef PSMAC
         {   /* the boot timeline: ready, and each paired device as it connects */
             static int ready_marked; static uint32_t was_connected;
