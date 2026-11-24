@@ -90,6 +90,7 @@ Boot takes about four minutes in the testbed; a Pi 4 will do it in seconds.
 | docs/08 | Emu68 port status: every bug found and fixed, in order |
 | docs/09 | The Mac side: drivers, declaration ROM, tools, test application |
 | docs/10 | The second display from the VideoCore |
+| docs/22 | A card for the SE's processor direct slot: a design note (24 November 2026) |
 
 ## Hardware plan (unchanged from day one, decision pending)
 The classic PiStorm board with a Pi Zero 2 W or 3A+ fits the SE's socket (Frimples'
@@ -98,3 +99,4 @@ Bluetooth only. Gigabit Ethernet and the Pi 4-class drivers in Alice68 need a CM
 PDS slot, which also puts an RJ45 at the SE's rear cut-out. The software is written for both; the
 network and USB drivers taken from Alice68 are Pi 4 code and the differences for a Pi 3-class board
 are listed in docs/07.
+*24 November 2026:* docs/22 is the design note for the slot card, from what the socket route taught.
