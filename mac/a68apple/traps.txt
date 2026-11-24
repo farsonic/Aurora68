@@ -21,3 +21,9 @@ A816/0A08 w AEPutPtr(void *list:l, long i:l, long type:l, const void *data:l, lo
 A816/0610 w AEPutParamDesc(void *event:l, long key:l, const void *desc:l)
 A816/0B14 w AECreateAppleEvent(long cls:l, long id:l, const void *target:l, int returnID:w, long transaction:l, void *event:l)
 A816/0D17 w AESend(const void *event:l, void *reply:l, long mode:l, int priority:w, long timeout:l, void *idle:l, void *filter:l)
+# Show Apple II Disks Folder: System 7.1's Finder takes no 'aevt' 'odoc' (docs/08 item 90), so the Finder event the Apple
+# menu uses, 'FNDR' 'sope' (open the selection: the folder's parent as the direct object, the folder in 'fsel'), with
+# aliases (the Alias Manager), then the Finder brought to the front (the Process Manager: its selector goes on the stack,
+# not in D0, so its three calls are in glue.s)
+A823/0002 w NewAlias(const void *from:l, const void *target:l, void ***alias:l)
+A816/0609 w AEPutDesc(void *list:l, long i:l, const void *desc:l)

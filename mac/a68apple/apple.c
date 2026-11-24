@@ -385,7 +385,7 @@ static void mouse_down(EventRecord *ev)
 	}
 	if (captured) capture(0);
 	switch (part) {
-	case inMenuBar: fix_menus(); disks_menu(); do_menu(MenuSelect(pt_long(ev->where))); break;
+	case inMenuBar: fix_menus(); disks_menu(); { long mi = MenuSelect(pt_long(ev->where)); beat(); do_menu(mi); } break;
 	case inSysWindow: SystemClick(ev, w); break;
 	case inDrag:
 		hidden_by_us = 1; tell_place(0);

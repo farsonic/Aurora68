@@ -29,6 +29,8 @@ void sf_filter_stub(void), sf_dfilter_stub(void), ae_handler_stub(void);
 short fm_HOpen(void *pb), fm_Read(void *pb), fm_Write(void *pb), fm_Close(void *pb), fm_GetEOF(void *pb), fm_FlushFile(void *pb),
       fm_DirCreate(void *pb), fm_GetFCBInfo(void *pb), fm_GetCatInfo(void *pb);
 short a2_gestalt(long selector, long *response);
+void a2_hlock(void **h), a2_disposehandle(void **h);
+short GetNextProcess(unsigned long *psn), GetProcessInformation(const unsigned long *psn, void *info), SetFrontProcess(const unsigned long *psn);
 
 /* the File Manager's parameter blocks (HParamBlockRec, CInfoPBRec), by offset (Inside Macintosh: Files) */
 #define PB_SIZE    108
@@ -476,7 +478,10 @@ static void fe_chosen(short menu, short item)
 		return;
 	}
 }
-/* Show Apple II Disks Folder: made if it is not there, then opened in the Finder (an Open Documents event to it) */
+/* Show Apple II Disks Folder: made if it is not there, then opened in the Finder. System 7.1's Finder takes no 'aevt'
+   'odoc' (docs/08 item 90: Aurora68 Menu Extras met it), so the event the Apple menu sends it, 'FNDR' 'sope' (open the
+   selection: the folder's parent as the direct object, the folder as the selection, both aliases), then the Finder is
+   brought to the front to show the window */
 static void show_folder(void)
 {
 	if (!app_known) return;
@@ -489,27 +494,45 @@ static void show_folder(void)
 		folder_scan();
 	}
 	if (!ae_ok) return;
-	struct { long type; void *h; } target = { 0, 0 }, ev = { 0, 0 }, reply = { 0, 0 }, list = { 0, 0 };
+	typedef struct { long type; void *h; } AEDesc;
+	typedef struct { short vref; long dir; unsigned char name[64]; } FSSpec;
+	AEDesc target = { 0, 0 }, ev = { 0, 0 }, reply = { 0, 0 }, list = { 0, 0 }, parent = { 0, 0 }, item = { 0, 0 };
+	FSSpec fol, par;
+	memset(&fol, 0, sizeof fol); memset(&par, 0, sizeof par);
+	fol.vref = app_vref; fol.dir = app_dir;
+	memcpy(fol.name, folder_name, sizeof folder_name);
+	unsigned char pb[PB_SIZE];                          /* the program's folder as its own parent's item */
+	memset(pb, 0, sizeof pb);
+	P(pb, PB_NAME) = par.name; W(pb, PB_VREF) = app_vref; W(pb, PB_MISC) = -1; L(pb, PB_DIRID) = app_dir;
+	if (fm_GetCatInfo(pb)) return;
+	par.vref = app_vref; par.dir = L(pb, 100);          /* ioDrParID */
 	long finder = TYPE('M', 'A', 'C', 'S');
-	struct { short vref; long dir; unsigned char name[64]; } fss;
-	memset(&fss, 0, sizeof fss);
-	fss.vref = app_vref; fss.dir = app_dir;
-	memcpy(fss.name, folder_name, sizeof folder_name);
-	if (AECreateDesc(TYPE('s', 'i', 'g', 'n'), &finder, 4, &target)) return;
-	if (!AECreateAppleEvent(TYPE('m', 'i', 's', 'c'), TYPE('a', 'c', 't', 'v'), &target, -1, 0, &ev)) {   /* the Finder in front */
-		AESend(&ev, &reply, 0x11 /* kAENoReply | kAENeverInteract */, 0, -1, 0, 0);
-		AEDisposeDesc(&ev);
+	short e = AECreateDesc(TYPE('s', 'i', 'g', 'n'), &finder, 4, &target);
+	if (!e) e = AECreateAppleEvent(TYPE('F', 'N', 'D', 'R'), TYPE('s', 'o', 'p', 'e'), &target, -1, 0, &ev);
+	FSSpec *specs[2] = { &par, &fol };
+	AEDesc *descs[2] = { &parent, &item };
+	for (int i = 0; i < 2 && !e; i++) {
+		void **a = 0;
+		e = NewAlias(0, specs[i], &a);
+		if (!e) { a2_hlock(a); e = AECreateDesc(TYPE('a', 'l', 'i', 's'), *a, *(unsigned short *)((char *)*a + 4), descs[i]); a2_disposehandle(a); }
 	}
-	if (!AECreateAppleEvent(TYPE('a', 'e', 'v', 't'), TYPE('o', 'd', 'o', 'c'), &target, -1, 0, &ev)) {
-		if (!AECreateList(0, 0, 0, &list)) {
-			AEPutPtr(&list, 1, TYPE('f', 's', 's', ' '), &fss, (long)sizeof fss);
-			AEPutParamDesc(&ev, TYPE('-', '-', '-', '-'), &list);
-			AESend(&ev, &reply, 0x11, 0, -1, 0, 0);
-			AEDisposeDesc(&list);
+	if (!e) e = AECreateList(0, 0, 0, &list);
+	if (!e) e = AEPutDesc(&list, 0, &item);
+	if (!e) e = AEPutParamDesc(&ev, TYPE('-', '-', '-', '-'), &parent);
+	if (!e) e = AEPutParamDesc(&ev, TYPE('f', 's', 'e', 'l'), &list);
+	if (!e) e = AESend(&ev, &reply, 0x21 /* kAENoReply | kAECanInteract */, 0, -1, 0, 0);
+	if (!e) {                                           /* the Finder to the front, to show the window it opens */
+		struct { long length; unsigned char *name; unsigned long psn[2]; unsigned long type, signature, mode; void *location;
+		         unsigned long size, freemem, launcher[2], launch, active; void *spec; } info;
+		unsigned long psn[2] = { 0, 0 };
+		while (!GetNextProcess(psn)) {
+			memset(&info, 0, sizeof info);
+			info.length = sizeof info;
+			if (!GetProcessInformation(psn, &info) && info.signature == (unsigned long)TYPE('M', 'A', 'C', 'S')) { SetFrontProcess(psn); break; }
 		}
-		AEDisposeDesc(&ev);
 	}
-	AEDisposeDesc(&target);
+	AEDesc *all[] = { &target, &ev, &reply, &list, &parent, &item };
+	for (unsigned i = 0; i < sizeof all / sizeof all[0]; i++) if (all[i]->h) AEDisposeDesc(all[i]);
 }
 
 /* ---- the Disks menu ------------------------------------------------------------------------------------------ */

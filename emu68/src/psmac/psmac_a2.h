@@ -226,8 +226,9 @@ _Static_assert(sizeof(struct a68a_disks) <= 0x1000, "a68a_disks");
     - The program says what it holds in ms[] of the card's half: A68A_MS_NONE once the card has let go of a slot (the
       program closes that file), so the files close only after their last writes.
     - When the program stops answering (magic cleared, A68A_PROG_GONE, or its loop standing still A68A_MAC_DEAD_MS with
-      requests out), the card takes its disks out of the Apple at once ("disk removed": the block card answers "no
-      device", the drive is empty); what was not yet written back is lost, and the log says how much. */
+      a request out as long: it is taken back once its loop moves), the card takes its disks out of the Apple at once
+      ("disk removed": the block card answers "no device", the drive is empty); what was not yet written back is lost,
+      and the log says how much. */
 #define A68A_C_MACINSERT  13u                /* arg0 = the program's media slot (filled in first), arg1 = unit, or A68A_UNIT_AUTO */
 #define A68A_C_MACEJECT   14u                /* arg0 = a media slot, or A68A_UNIT_AUTO: every disk of the Mac's (the program quits) */
 #define A68A_OFF_MAC      0x09000u           /* struct a68a_mac: the program's */
@@ -239,7 +240,7 @@ _Static_assert(sizeof(struct a68a_disks) <= 0x1000, "a68a_disks");
 #define A68A_MAC_MAGIC    0x4D414332u        /* 'MAC2' */
 #define A68A_MAC_MEM_MAX  (1536u << 10)      /* larger images are read on demand (a WOZ is under 1 MB, 800K .2mg 819,264) */
 #define A68A_MAC_CHUNK    0x4000u            /* 32 blocks: a hard disk image's piece read at once */
-#define A68A_MAC_DEAD_MS  20000u
+#define A68A_MAC_DEAD_MS  60000u           /* a request out this long, and the program's loop as still: it stopped */
 #define A68A_MF_RO        1u                 /* media flags: the file or its volume is locked: never written */
 #define A68A_R_READ       1u                 /* requests */
 #define A68A_R_WRITE      2u

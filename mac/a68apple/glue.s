@@ -40,6 +40,56 @@
 	hfscall	fm_GetFCBInfo, 8
 	hfscall	fm_GetCatInfo, 9
 
+| the Memory Manager's handles (register-based): void a2_hlock(void **h), void a2_disposehandle(void **h)
+	.globl	a2_hlock
+a2_hlock:
+	move.l	4(%sp),%a0
+	.short	0xA029				| _HLock
+	rts
+	.globl	a2_disposehandle
+a2_disposehandle:
+	move.l	4(%sp),%a0
+	.short	0xA023				| _DisposeHandle
+	rts
+
+| the Process Manager (_OSDispatch $A88F): the routine's selector is the last word pushed, after the arguments (a
+| first try with the selector in D0, as the other dispatchers take it, crashed the program: bad F-line instruction)
+| short GetNextProcess(PSN *psn), short GetProcessInformation(const PSN *psn, void *info), short SetFrontProcess(const PSN *psn)
+	.globl	GetNextProcess
+GetNextProcess:
+	move.l	%d2,-(%sp)
+	clr.w	-(%sp)				| the result; psn at 10(sp)
+	move.l	10(%sp),-(%sp)
+	move.w	#0x0038,-(%sp)
+	.short	0xA88F
+	move.w	(%sp)+,%d0
+	ext.l	%d0
+	move.l	(%sp)+,%d2
+	rts
+	.globl	GetProcessInformation
+GetProcessInformation:
+	move.l	%d2,-(%sp)
+	clr.w	-(%sp)				| psn at 10(sp), info at 14
+	move.l	10(%sp),-(%sp)			| psn (then info at 18)
+	move.l	18(%sp),-(%sp)
+	move.w	#0x003A,-(%sp)
+	.short	0xA88F
+	move.w	(%sp)+,%d0
+	ext.l	%d0
+	move.l	(%sp)+,%d2
+	rts
+	.globl	SetFrontProcess
+SetFrontProcess:
+	move.l	%d2,-(%sp)
+	clr.w	-(%sp)
+	move.l	10(%sp),-(%sp)
+	move.w	#0x003B,-(%sp)
+	.short	0xA88F
+	move.w	(%sp)+,%d0
+	ext.l	%d0
+	move.l	(%sp)+,%d2
+	rts
+
 | short a2_gestalt(long selector, long *response): Gestalt ($A1AD), the selector in D0, the answer in A0
 	.globl	a2_gestalt
 a2_gestalt:

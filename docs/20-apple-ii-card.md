@@ -238,7 +238,8 @@ through Lagoon, a floppy) and serves them to the card, which keeps the SD card's
   finds its Fonts folder: not the default folder, which Standard File moves): its images and its folders, four levels
   deep, as hierarchical submenus of Disks > Apple II Disks; an image chosen goes in as with Insert Disk, one in a drive
   (checked) comes out. The folder is looked at again when the program comes to the front and with Look for Disks
-  Again. **Show Apple II Disks Folder** opens it in the Finder (an Open Documents event to the Finder; System 7), and is
+  Again. **Show Apple II Disks Folder** opens it in the Finder ('FNDR' 'sope', the event the Apple menu sends: System 7.1's
+  Finder takes no 'aevt' 'odoc'; then the Finder brought to the front; System 7), and is
   **Make an Apple II Disks Folder** while there is none.
 
 Files are opened by volume, folder ID and name (HOpen), never by a path, so any depth works (a Pascal path stops at 255
@@ -281,7 +282,8 @@ copies once it has cleared the ring, keeps a new run of the program from answeri
   `A68A_C_MACEJECT` (14) for every slot: the card takes each disk out of the Apple, sends its last changes, and lets go;
   the program answers until every file is let go (15 s at most), closes them, and clears its magic. When the program
   goes any other way (its ExitToShell patch says `A68A_PROG_GONE`, the magic is cleared with disks in, or its loop stands
-  still for 20 s with requests out), the card takes its disks out at once: **disk removed**, the drive empty, the block
+  still for a minute with a request out as long: then the program is taken back once its loop moves again), the card
+  takes its disks out at once: **disk removed**, the drive empty, the block
   card's waiting read answering $28 (no device); what had not reached the Mac is lost, and the log says how many sectors.
 - **The SD card's images** are untouched by all this: the list, `a2.d1=` and so on, their write-back. A Mac's disk and
   an SD card's can be in the units side by side; the Disks menu lists the card's below the units, as before.
@@ -301,6 +303,20 @@ locked .hdv in HD2 never written (its checksum the same). `mac-hdread`: an 8 MB 
 (`tools/a2card_hdread.s`) reads 2048 blocks in a row (64 pieces; 32 reads waited for the Mac, the read-ahead had the
 others) and checks each, then writes 96 and reads them back: about 2 s with the cold start, and all 96 in the Mac's file
 after the quit. `mac-gone`: the program gone without ejecting: the disk taken out of the Apple ("disk removed").
+
+**Tested in QEMU** (the solo board, System 7.1, the kernel with both cards, Aurora65's test ROM; the program driven through
+the testbed's remote control, docs/13; docs/08 item 143 has what was found on the way): at 512 x 342, the program launched
+by opening an image of its creator (the agent's `open`, which launches it with the document as the Finder would) and the
+image booted from drive 1; the Disks menu; Insert Disk... up two folders and down two to an 800K .2mg on the startup
+disk, into HD1, Restart Cold, "WRITE+READ OK", ejected, its block found in the Mac's file; Disks > Apple II Disks > Hard
+Disks > Read.hdv (8 MB, read on demand) into HD1, "HD READ 2048 OK" and "HD WRITE 96 OK"; an image opened while the
+program ran going into drive 1; Quit writing back, the 96 blocks in the Mac's file. At 640 x 480: the folder's Games >
+Hello.dsk booted from drive 1; Show Apple II Disks Folder; Drive 2: Insert Disk... into drive 2.
+![dropped on the program, 512 x 342](img/a2-mac-dropped-se.png) ![Insert Disk...](img/a2-mac-insert-se.png)
+![an 800K .2mg from the Mac, booted](img/a2-mac-block-se.png) ![the folder's submenus](img/a2-mac-folder-se.png)
+![a hard disk on demand](img/a2-mac-hd-se.png) ![the Disks menu](img/a2-mac-disks-se.png)
+![the folder at 640 x 480](img/a2-mac-folder-640.png) ![Show Apple II Disks Folder](img/a2-mac-show-folder-640.png)
+![Drive 2: Insert Disk...](img/a2-mac-unit-640.png) ![two units](img/a2-mac-disks-640.png)
 
 ## How it was tested (23 November 2026)
 

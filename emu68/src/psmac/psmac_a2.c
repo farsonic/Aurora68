@@ -760,7 +760,7 @@ static void disks_from_options(void)
       dirty bits per block, so an answer arriving after a write never covers it) and back to the file on the same
       schedule. Only clean pieces are ever dropped for others.
    When the program stops answering (it quits without ejecting, its ExitToShell patch says GONE, its loop stands still
-   A68A_MAC_DEAD_MS with requests out), the card takes its disks out of the Apple at once ("disk removed"): what had not
+   A68A_MAC_DEAD_MS with a request out as long: a held menu stops the loop too, so not sooner), the card takes its disks out of the Apple at once ("disk removed"): what had not
    reached the Mac is lost, and the log says how much. */
 #define MAC_MEM    1
 #define MAC_HD     2
@@ -777,9 +777,11 @@ static void disks_from_options(void)
 struct mcache { int32_t img; uint32_t chunk, state, valid, dirty, used; uint8_t *data; };
 static struct mcache *mcache;
 static uint32_t mc_clock;
-static struct { int busy; int32_t img; uint32_t kind, off, len; int32_t ce; } rq[A68A_REQS];
+static struct { int busy; int32_t img; uint32_t kind, off, len; int32_t ce; uint64_t t; } rq[A68A_REQS];
 static uint32_t mac_ses, mac_ses_ok;     /* the program's session the ring belongs to */
 static uint32_t mac_ses_dead;            /* a session the card gave up on (the program gone): not taken again */
+static uint32_t mac_stale_alive;         /* given up for standing still: the same session again once alive moves */
+static int mac_stale;
 static uint32_t mac_answers, mac_waits, mac_lost, mac_wfail;
 static uint64_t mac_rd_bytes, mac_wr_bytes;
 
@@ -794,7 +796,7 @@ static void mac_post(int i, uint32_t op, int32_t k, uint32_t kind, uint32_t off,
 {
     struct a2img *m = &img[k];
     volatile struct a68a_mreq *r = &macc->req[i];
-    rq[i].busy = 1; rq[i].img = k; rq[i].kind = kind; rq[i].off = off; rq[i].len = len; rq[i].ce = ce;
+    rq[i].busy = 1; rq[i].img = k; rq[i].kind = kind; rq[i].off = off; rq[i].len = len; rq[i].ce = ce; rq[i].t = now();
     r->op = op; r->slot = m->mslot; r->id = m->mid; r->off = off; r->len = len;
     m->inflight++;
     DMB();
@@ -1149,7 +1151,8 @@ static void mac_service(void)
 {
     if (!macc) return;
     if (mac->magic == A68A_MAC_MAGIC && (!mac_ses_ok || mac->session != mac_ses) && mac->session != mac_ses_dead &&
-        blk->prog != A68A_PROG_GONE) {                    /* the program (again): a clean ring */
+        blk->prog != A68A_PROG_GONE && !(mac_stale && mac->session == mac_ses && blk->alive == mac_stale_alive)) {
+        mac_stale = 0;                                    /* the program (again, or moving again): a clean ring */
         mac_drop_all("Aurora68 Apple II started again");
         for (uint32_t s2 = 0; s2 < A68A_MEDIA; s2++) { macc->ms[s2].state = 0; macc->ms[s2].id = 0; macc->ms[s2].unit = 0; macc->ms[s2].done = 0; }
         mac_ses = mac->session; mac_ses_ok = 1;
@@ -1893,14 +1896,16 @@ static int a2_core(void)
 static void mac_watch(void)
 {
     if (!mac_ses_ok) return;
-    int out = 0;
-    for (uint32_t i = 0; i < A68A_REQS; i++) if (rq[i].busy) out = 1;
+    int out = 0;                                          /* a request out for A68A_MAC_DEAD_MS, and the loop as still as long */
+    for (uint32_t i = 0; i < A68A_REQS; i++) if (rq[i].busy && now() - rq[i].t >= ms_ticks(A68A_MAC_DEAD_MS)) out = 1;
     const char *why = mac->magic != A68A_MAC_MAGIC ? "Aurora68 Apple II stopped serving its disks" :
                       blk->prog == A68A_PROG_GONE ? "Aurora68 Apple II is gone" :
-                      out && blk->prog == A68A_PROG_LIVE && now() - alive_t >= ms_ticks(A68A_MAC_DEAD_MS) ? "Aurora68 Apple II has not answered for 20 s" : 0;
+                      out && blk->prog == A68A_PROG_LIVE && now() - alive_t >= ms_ticks(A68A_MAC_DEAD_MS) ? "Aurora68 Apple II has not answered for a minute" : 0;
     if (!why) return;
     mac_drop_all(why);
-    mac_ses_dead = mac->magic == A68A_MAC_MAGIC ? mac_ses : 0;
+    mac_stale = mac->magic == A68A_MAC_MAGIC && blk->prog == A68A_PROG_LIVE;
+    mac_stale_alive = blk->alive;
+    mac_ses_dead = mac->magic == A68A_MAC_MAGIC && !mac_stale ? mac_ses : 0;
     mac_ses_ok = 0;
     macc->session = 0;
 }
