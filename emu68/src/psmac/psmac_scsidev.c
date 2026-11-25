@@ -882,14 +882,23 @@ void psmac_scsidev_write(uint32_t reg, uint8_t d)
    (DMA mode, start DMA initiator receive, wait for DRQ in the bus and status register, then one read of the pseudo-DMA
    window); until 27 November 2026 only data in was answered, the status read $FF with no ACK, and A/UX retried the
    same command for ever with the target held in the status phase (docs/23 section 15). */
+/* a pseudo-DMA access with no byte to take or give: logged the first eight times, with where the target was (a driver
+   that moves more bytes than the phase has, or a model that dropped REQ, either of which shifts the data) */
+static void underflow(int write)
+{
+    if (++t.underflows > 8) return;
+    kprintf("[SCSI] pseudo-DMA %s with nothing to %s (#%u): target %s, REQ %d, byte %u of %u, command $%02x, ID %d\n",
+            write ? "write" : "read", write ? "take" : "give", t.underflows, phase_name(t.phase), t.req, t.buf_pos, t.buf_len,
+            t.cdb[0], t.id);
+}
 uint8_t psmac_scsidev_pdma_read(void)
 {
-    if (!(t.req && (t.phase == PH_DATAIN || t.phase == PH_STATUS || t.phase == PH_MSGIN))) { t.underflows++; return 0xff; }
+    if (!(t.req && (t.phase == PH_DATAIN || t.phase == PH_STATUS || t.phase == PH_MSGIN))) { underflow(0); return 0xff; }
     uint8_t v = cur_data(); ack_byte(); advance(); return v;
 }
 void psmac_scsidev_pdma_write(uint8_t d)
 {
-    if (!(t.req && (t.phase == PH_DATAOUT || t.phase == PH_CMD || t.phase == PH_MSGOUT))) { t.underflows++; return; }
+    if (!(t.req && (t.phase == PH_DATAOUT || t.phase == PH_CMD || t.phase == PH_MSGOUT))) { underflow(1); return; }
     n.odr = d; ack_byte(); advance();
 }
 void psmac_scsidev_reset(void)
