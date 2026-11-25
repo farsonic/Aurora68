@@ -877,9 +877,14 @@ void psmac_scsidev_write(uint32_t reg, uint8_t d)
     default: if (n.mr & 0x02) n.dma = 1; break; /* start DMA initiator receive */
     }
 }
+/* A pseudo-DMA read takes the byte of whichever input phase the target is in, as the 5380's DMA handshake does once
+   the phase matches TCR: data in, and also status and message in. A/UX 3's SCSI driver reads the status byte that way
+   (DMA mode, start DMA initiator receive, wait for DRQ in the bus and status register, then one read of the pseudo-DMA
+   window); until 27 November 2026 only data in was answered, the status read $FF with no ACK, and A/UX retried the
+   same command for ever with the target held in the status phase (docs/23 section 15). */
 uint8_t psmac_scsidev_pdma_read(void)
 {
-    if (!(t.req && t.phase == PH_DATAIN)) { t.underflows++; return 0xff; }
+    if (!(t.req && (t.phase == PH_DATAIN || t.phase == PH_STATUS || t.phase == PH_MSGIN))) { t.underflows++; return 0xff; }
     uint8_t v = cur_data(); ack_byte(); advance(); return v;
 }
 void psmac_scsidev_pdma_write(uint8_t d)
