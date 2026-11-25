@@ -214,7 +214,10 @@ told the VANDAL was a "Gemini Integra".
   Jasmine, Rodime 45 and 70, Western Digital, OMTI and Adaptec controllers, the HD-20).
 - **The video board** ("ExSys SE Video" 1.3, April 1995) loads one of eight Xilinx FPGA configurations and a dot
   clock between 50.35 and 100.5 MHz for each of 25 monitors (Apple's Two-Page and Portrait, Radius, Sigma Designs,
-  Lapis, Samsung, Triam and generic ECL, TTL, analog and composite settings), from 'MONS' and 'XLNX' resources.
+  Lapis, Samsung, Triam, Ehman, Generation Systems and Mirror, and generic "DPD" and "FPD" settings, TTL, analog and
+  composite), from 'MONS' and 'XLNX' resources. (Corrected 25 November 2026: an earlier text here listed "ECL"
+  settings, which no 'MONS' entry names, and left out Ehman, Generation Systems and Mirror.) How its INIT adds the
+  screen to the desktop is in "External screens on the compact Macs", below.
 
 The same software lived on after Total Systems. **MicroMac Technology** of Aliso Viejo, California, sold the
 **Performer** (called the "Universal" until February 1995), a 16 MHz 68030 with an optional 25 MHz 68882 for the
@@ -648,3 +651,354 @@ every access in the loops reaches the wire. What carries over from 1987:
   VIA access becomes 1,000 a millisecond, 40 % too many. Working in nanoseconds there would cost nothing.
 - **The drives reachable.** One internal drive (VIA port A bit 4 driven low on the SE, `via_data`, docs/08 item 93)
   and the external one; the SE's second internal drive is outside what the IIci ROM knows.
+
+## External screens on the compact Macs, 1986-1995
+
+*Written 25 November 2026, from the compact ROMs in rom/original (the 64K ROM of the 128K and 512K, the Plus's three,
+the SE's), disassembled; from three products' software, unpacked and disassembled as in the parts above (Total
+Systems' "ExSys SE Video" 1.3, the "Mobius Display" panel and patches, Novy's RailGun 5.42 with its ImagePro code);
+from Apple's Designing Cards and Drivers, third edition (1992), and Apple's technical notes; and from the period's
+magazines, read online. Addresses in the compact ROMs are the 68000's ($40xxxx); offsets in a resource are from its
+start. None of the vendors' software is in this repository.*
+
+### The screen as Apple built it
+
+The compact Mac has one screen and the ROM knows it. The picture is 512 by 342 pixels at one bit, 64 bytes a row,
+21,888 bytes, scanned out of main RAM by the logic board's video circuit: on the SE "the video display ... reads the
+information for the display from one of two screen buffers" (*Designing Cards and Drivers*, p. 275), the second one
+chosen by VIA port A bit 6. Every ROM puts the main buffer $5900 bytes below the top of RAM: the 64K ROM finds the
+top by testing for a mirror at $1FFFC and $7FFFC, puts the sound buffer $300 below it and BufPtr $5600 below that
+($4002DE-$400302), and the Plus ROM subtracts $5900 in one step ($4003A0). So the screen is at $1A700 on a 128K, $7A700
+on a 512K, $FA700 on a 1 MB Plus (the three figures Apple's own compatibility note gives, "Compatibility: Why & How",
+OV 4: https://developer.apple.com/library/archive/technotes/ov/ov_04.html) and $3FA700 with 4 MB.
+
+**The low-memory globals.** At start-up each ROM sets ScrnBase ($824) from BufPtr (64K ROM $40035E, Plus $40046C,
+SE $4005CA), and the Plus and SE set ScreenRow ($106), the screen's row bytes, to 64 ($400472, $4005D0) and the
+screen's resolution to 72 by 72 dots an inch ($102, $400478, $4005DC). **The 64K ROM has no ScreenRow**: nothing in it
+reads or writes $106. CrsrPin ($834), the rectangle the pointer is kept in, is written as constants: (1,2)-(340,510)
+in the 64K ROM ($400374), (0,0)-(342,512) in the Plus's ($400490) and the SE's ($400606).
+
+**How QuickDraw learns the screen.** InitGraf fills screenBits, the QuickDraw global every program is told to use:
+- In the 64K ROM ($405870) it takes the base from the vector JScrnAddr ($80C, through $40B26E), the bottom and right
+  from JScrnSize ($810, $40B274), and computes rowBytes as the width divided by eight ($4058BE): a wider screen
+  needs only a new ScrnSize, a screen whose rows are padded cannot be described.
+- In the Plus ROM ($4087E6 in v3) and the SE ROM ($412F1C) it calls a trap new in the 128K ROM, **_ScrnBitMap**
+  ($A833), whose ROM version returns ScrnBase, ScreenRow and the rectangle (0,0)-(342,512) as constants (Plus $401E72,
+  SE $418FA4). ScrnSize itself returns 342 and 512 (64K $400EF2, Plus $401E62, SE $418F94), ScrnAddr returns ScrnBase
+  ($400EEA, $401E5A, $418F8C).
+
+So from the Plus on, three things describe the main screen, ScrnBase, ScreenRow and the answer of _ScrnBitMap, and a
+vendor who changes all three changes what every later InitGraf sees. The trap's address lives in the toolbox dispatch
+table, at $C00 + 4 x (trap & $1FF) on the Plus ($401F6E) and $E00 + 4 x (trap & $1FF) on the SE ($402CF2).
+
+**The cursor is drawn by the ROM, into ScrnBase, with the screen's size built in.** At start-up the ROM fills eight
+vectors at $800-$81C from a table (SE: $418DBC), JHideCursor, JShowCursor, JShieldCursor, JScrnAddr, JScrnSize,
+JInitCrsr, JSetCrsr and JCrsrObscure, and puts its cursor task in JCrsrTask ($8EE; SE $418FB8). The SE's ShowCursor
+($418E2C) keeps the cursor's left edge at most 480 ($418E78) and its top at most 326, clipping to 342 rows
+($418E9E, $418EA4), and steps through the screen 64 bytes a row (`moveq #64,d5` at $418EC4; HideCursor restores the
+saved bits with the same 64 at $418E02); ShieldCursor compares with 496 ($418F0A). The 64K ROM has the same constants
+($400E1E, $400E3E, $400E84) and so has the Plus's ($401D72, $401D92, $401DD8).
+
+**And it is drawn at the built-in screen's retrace.** The VIA's CA1 interrupt is the video circuit's vertical blanking.
+Its handler (SE $402BE4) counts Ticks, calls JCrsrTask ($402C14), which moves and redraws the pointer, then runs the VBL
+queue ($402C1E); the 64K ROM calls JCrsrTask at $400C58, the Plus at $401B46. Everything that runs "sixty times a
+second" on these machines runs at the internal screen's beam, about 60.15 times a second (15.6672 MHz over 704 dot
+clocks a line and 370 lines: our arithmetic from the clock the opening part gives, not a measured figure).
+
+**What the ROM and the System assumed, and what broke on a bigger screen:**
+- a size of 512 by 342 in _ScrnBitMap, ScrnSize and CrsrPin, and in programs that copied the numbers;
+- 64 bytes a row in the cursor routines (and, in the 64K ROM, rows exactly as wide as the screen);
+- a screen at one address, with one ScrnBase and one screenBits: no list of screens anywhere, and so no way to say
+  that the desktop is larger than the main screen. The Window Manager's gray region, window dragging and growing in
+  programs were all bounded by screenBits.bounds, as Apple told programmers to bound them (OV 4: "All references to
+  rectangles that need to be related to the screen (like the drag and grow areas of windows) should use
+  screenBits.bounds");
+- one vertical-blanking interrupt, the internal screen's, for the cursor and every VBL task.
+
+Apple's notes of 1986 say what it expected of programs, and show it already had large screens in mind. OV 4: "Never
+hard code the numbers 512 and 342 for screen dimensions", "Don't assume that rowBytes is equal to the width of the
+screen", "Do not assume that the screen size is 21,888 bytes long", "When in doubt, ask QuickDraw", ScrnBase and
+ScreenRow for code that runs before InitGraf, and, of the alternate buffer, "Since there is no ROM call to flip pages,
+it is necessary to go play with the right bit in the VIA chip". "Large-Screen Display Compatibility" (OV 7, 1 November
+1986: https://developer.apple.com/library/archive/technotes/ov/ov_07.html) begins "A number of third-party developers
+have announced large-screen display peripherals for Macintosh" and corrects Radius's advice to detect its display by
+reading $C00008: read the machine ID at ROMBase + 8 first.
+
+### What the vendors built, 1986-1995
+
+**Radius Full Page Display (1986, the 512Ke and the Plus; the SE from 1987).** Macworld's news column of October 1986,
+"The Two-Headed Macintosh" (p. 67, https://archive.org/details/MacWorld_8610_October_1986), is the first account:
+640 by 864 at nearly the Mac's 72 dpi, and "allows you to use the Mac screen at the same time". "The display is
+controlled by a digital board designed by [Burrell] Smith that fits on the Mac's digital board. It contains a 68000
+microprocessor, which replaces the Mac's 68000, as well as 128K of RAM, and firmware. FPD doesn't require any software
+to run. The routines that control the monitor's user interface are encoded on the FPD board and were written by Andy
+Hertzfeld ... The most clever part of Hertzfeld's contribution is the capability to move and even straddle windows
+between the two screens." Its control panel set the cursor size, the mouse speed, a screen saver and 16-point menus;
+it "requires the new Macintosh ROM" (the 128K ROM); "programs that make assumptions about the screen size, such as
+MacPaint and certain games, may not work perfectly", and it did not work with Switcher. A 2025 compilation of Radius
+material (by Maurice Valkema, on TinkerDifferent:
+https://tinkerdifferent.com/attachments/early-mac-external-monitor-radius-inc-pdf.29031/) adds from InfoWorld
+(16 February 1987) that the board was first installed at Radius's factory, with "permanent changes to your Macintosh's
+motherboard", and a clip-on version from March 1987; Radius's card list (an SE card on the processor direct slot in
+1987, others for the SE/30, Classic and LC to 1991); the brochure's line that the logic board "senses the connection
+and re-establishes the combined two-screen display area" when the monitor's cable is plugged in again; and a
+RadiusWare note that its "Classic / SE / Plus Display CDEV v.4.1" needs "the version 4.4 ROM upgrade for System 7.0
+compatibility": the screen code stayed in a ROM on the card. Macworld's roundup of May 1989 (Bruce F. Webster,
+"Evaluating Monochrome and Gray-Scale Monitors", around pp. 140-150,
+https://archive.org/details/MacWorld_8905_May_1989) describes the SE and Plus versions: "You can use just the Radius
+FPD, just the Mac screen, or both; you decide which is on the left side and which is on the right; you can align the two
+screens". No Radius software has been read here. **Our reading:** a board that replaced the processor, with firmware,
+on a 128K ROM that has ScreenRow and _ScrnBitMap, is the most a vendor could do in 1986; that the firmware worked by
+patching the ROM's screen globals and drawing as the products below do is likely but not shown.
+
+**E-Machines' Big Picture (1987).** A comp.sys.mac post of 10 September 1987 from someone who had installed several,
+mostly in SEs (https://utzoo.superglobalmegacorp.com/usenet/news058f1/b78/comp/sys/mac/5898.txt), lists the software
+that came with it: patches for Switcher and MacsBug, a screen-dump utility, a desktop-picture INIT, a display-mode
+switcher, a zoom-box INIT. Macworld 1989 has boards for "the Mac II, SE, Plus, and 512KE", and a grey-scale Z21 IQ for
+the Mac II and a monochrome Z21 SE for the SE; the Z21 IQ's features "require the new 32-bit QuickDraw routines. Since
+Apple has not announced these routines yet, E-Machines provides them for you". Accelerators carried a port for it: the
+survey of the opening part lists MacMemory's TurboMax and Total Systems' TSI 020 with a "connector for the Big Picture
+monitor" or an "expansion port for E-Machines monitor".
+
+**MegaGraphics (Micrographic Images) MegaScreen (1986-1989, the Plus, the 512Ke, the SE).** A modern study of an SE
+board (github.com/quorten/megascreen) finds a TI TMS34061 display controller, 128 KB of dual-ported video RAM, and no
+ROM: "The Macintosh drivers are fully responsible for loading the necessary firmware", through a "MegaScreen Manager"
+at start-up; its first driver, MegaBoot, could not use the internal screen and the MegaScreen at once. By 1989
+Macworld: "you can set menu bar and cursor sizes, select a screen, and set the relative positioning of the image on
+the MegaScreen SE and Mac displays", and MegaZoom showed the SE's picture doubled on the big monitor.
+
+**The rest of the SE's monitors in 1989** (the same roundup): IDT Systems' Mirage I for the SE: "The video board makes
+no use of the SE's screen, which keeps its Welcome to Macintosh box up. The accompanying software (an INIT) allows you
+to select either the Mirage screen or the Mac screen at start-up, but you can't use both at once" (pp. 145-146).
+Sigma Designs' PageView: "Unlike some of the other full-page displays, however, the PageView models do let you use
+the Mac screen at the same time." Sigma's L View (formerly LaserView, 1664 by 1200) let its user choose "between
+monochrome and four shades of gray"; whether on the SE as well as the Mac II the text does not say. Webster's choice
+for the SE was the MegaScreen SE. Mobius advertised MultiScreen in the same issue ("manufactured under license from
+Beck-Tech"): "it uses the SE's built-in screen as extra workspace".
+
+**Accelerators with video.** The survey of the opening part lists, among others: the Radius Accelerator SE (1987,
+with the Full Page Display), Nemonix's NXMACE-VXL-SE and Spark International's GAC20 SE ("a combination accelerator
+and video interface for large-screen monochrome monitors"), RasterOps' ClearVue SE ("video interface for two-page
+monitor or Apple Portrait Display"), the Mobius Speedscreen SE, Novy's ImagePro (the Quik30 "with the addition of
+support for an external video display"), Applied Engineering's TransWarp SE with its VideoX monochrome option, the
+NewLife 25SE, Harris's Performer 2 SE, the MicroMac Performer and the Extreme Systems VANDAL/SE ("Supports many Dual
+and Full page monitors"). TidBITS of 16 April 1990 (https://tidbits.com/1990/04/16/se-monitor-accelerator/) gives the
+reason for the pairing and its cost: Mobius's 16 MHz 68000 card with a 15-inch one-bit full-page monitor at 78 Hz, $695,
+against Radius's display and Sigma's SilverView, which had no acceleration; and a larger display takes back part of
+the speed the accelerator gives.
+
+**Mobius Display 2.5 (smal productions, 1991-1992).** The panel that came with the Mobius 030 and its video card
+("Mobius Display Systems Video ... select video parameters for the Mobius video card") is a licensed product: its
+'SVDM' resource reads "Quickdraw Patches. Loader, Patches, and Cdev Copyright 1991 by smal productions ... This Version
+Licensed to Mobius Technologies", its patches "Version 2.0 Extended screen support", its build stamp Monday 30 March
+1992. Its pop-up offers "Internal screen only", "External screen only" and "Both screens"; "Drag monitors and menu bar
+to rearrange them"; "Holding down the option key in both screens mode shows the Mac screen by drawing a miniature
+Mac". 'VPRM' resources describe "Mobius One Page SE" (870 by 640), "Mobius Two Page Display SE" (826 by 1024) and the
+same two for the Classic, each with the SE's own screen as $3FA700 and $5580 bytes, the 4 MB place. The code shows two
+mechanisms, one for each mode:
+- *One screen, moved* ('PTCH' -4046). A table at its head names the vectors and the trap it takes over and the
+  routine for each: JScrnSize ($810), _ScrnBitMap ($A833), JHideCursor, JShieldCursor, JShowCursor, JInitCrsr,
+  JSetCrsr and JCrsrObscure, at $22A-$410. Its ScrnSize and _ScrnBitMap answer the size kept in its header ($3E,
+  $42), and its cursor routines step by ScreenRow ($288), not by 64. The INIT moves ScrnBase and ScreenRow with
+  interrupts masked ($3E6-$3F4), sets the long at $C24 to height x row bytes (on our reading ScreenBytes) and the
+  bottom and right of CrsrPin ($3FE-$412).
+- *Both screens* ('PTCH' -4047). The ROM's own vectors stay, and sixteen traps are taken with _GetTrapAddress and
+  _SetTrapAddress ($1D8-$436): every QuickDraw bottleneck (StdText, StdLine, StdRect, StdRRect, StdOval, StdArc,
+  StdPoly, StdRgn, StdBits, StdTxMeas), ClipRect, ScrollRect, InitWindows, DragWindow, DragGrayRgn and
+  DragTheRgn.
+'mach' is $FFFF0000, every machine; the old-style traps it uses exist on the Plus and the SE alike.
+
+**Novy RailGun 5.42 and the ImagePro (1992-1993, the Plus, the SE and the Classic).** The README's history is mostly
+about the large screen alone ("If your ImagePro large-screen system has been configured without your original internal
+screen", the "headless mac"; "hold down the SHIFT key, the OPTION key, and a letter key that corresponds to your
+particular monitor") until 2 April 1993: "Added ALPHA version of DualScreen", with "Fixed SE mouse scaling problem that
+was byproduct of new ImagePro DualScreen feature", and on 27 April "DualScreen has been upgraded to BETA status"; the
+control panel's alert says "This version of DualScreen is in BETA testing and may not operate correctly". The INIT
+(RailGunInit's 'INIT' 1) shows the single-screen mechanism complete in one routine ($10E0-$11BE): ScrnBase and
+ScreenRow from its own record ($10FA, $1100), all eight vectors $800-$81C and JCrsrTask replaced ($1110-$1150), its own
+ScrnAddr, ScrnSize and _ScrnBitMap ($EA0, $EA8, $EB8) answering the big screen's size, the trap written straight into
+the dispatch table at $CCC on the Plus or $ECC on the SE ($1184, $118E: $C00 or $E00 + 4 x $33), and CrsrPin set to
+(0,0) and the new height and width ($11AC-$11B6). The mouse's acceleration comes from a 'mcky' resource chosen by
+parameter RAM ($1156-$1174), which is what the README's "mouse scaling" entries are about.
+
+**Total Systems / Extreme Systems "ExSys SE Video" 1.3 (April 1995), for the VANDAL/SE.** The control panel
+('cdev' -4064, "Drag monitors and menu bar to arrange desktop:", "(c)1992 Extreme Systems") and its INIT ('INIT' 1,
+5,808 bytes), whose code carries "Copyright (c) 1991, 1992 Ames & Associates" and "Copyright (c) 1991, 1992 Engineering
+Solutions" (the survey names Engineering Solutions Inc. as co-designer of Total Systems' Mercury 030; the 'ESI ' owner
+resource is "(c)1992 Engineering Solutions Inc."). A 'cnfg' resource (template 'TMPL' 128) keeps, for each screen,
+Enable, Main, Setting and Area, then the external screen's clock and Xilinx resource IDs, base address and row bytes; the
+default is the internal screen main at (0,0)-(342,512) and a Full Page Display at (0,512)-(870,1152), to its right.
+Read in full, the INIT is the most complete record of how a second screen was added to a compact Mac:
+- *Conditions.* It checksums itself, gives up if the mouse button is down ($172, at $42), and if ROM85 ($28E) has both
+  high bits clear ($62-$6A), that is on a machine with Color QuickDraw; it copies itself into the system heap and runs
+  there. Nothing is done unless the external screen is enabled ($DC-$E2).
+- *The card.* Only with a 68030 (CPUFlag 3) does it touch the hardware, and then carefully: if _DebugUtil exists
+  (virtual memory) it enters supervisor mode with selector 8, masks interrupts, sets SFC and DFC to function code 1 and
+  points the transparent-translation register TT0 at $00FF8710 (every address, function code 1 only, cache inhibited),
+  reaches the card with MOVES, and puts TT0 back ($1A4-$210, $154C-$15CC, $15D0-$16AE). So only its own accesses go
+  past the MMU and the cache. It shifts 22 bits into a clock synthesiser at $800000, one bit a write ($15A4-$15B8),
+  resets the Xilinx part at $600000 and sends it the chosen 'XLNX' file from byte 236, two bits a write, to $600002
+  ($1626-$1698), and reads $740000. The frame buffer is at $70xx00 by the 'MONS' entry, 256 bytes a row for every
+  monitor (the 'MONS' "Row Offset" and the 'cnfg' "RowBytes" are $0100 throughout). All of it lies in the space the
+  *Designing Cards and Drivers* gives as free on the SE ($600000-$8FFFFF, Figure 13-4, p. 297). The base address is
+  first passed through trap $A15C with selector 137 when that trap exists ($152C); what supplies that call was not
+  followed. It then fills the card's memory with ones and paints the external screen grey ($194-$1A0), as the ROM
+  paints its own at start-up.
+- *The main screen moves.* The two screens' records (base, row bytes, rectangle) are kept side by side ($129A, $12A8);
+  if the internal screen is not main they are swapped, both rectangles are moved so that the main screen's top left is
+  (0,0) ($23A-$256), which is Color QuickDraw's rule too, then ScrnBase and ScreenRow are written from the main record
+  ($25E, $262), CrsrPin set to its rectangle ($274), and _ScrnBitMap replaced by a routine that returns the main
+  record ($C28), so every program's screenBits is the main screen, whichever it is.
+- *External screen only.* If the internal screen is not enabled, that is all: the SE's own screen is filled with
+  ones, black, the cursor routines (below) and a shutdown procedure go in, and the card's screen is simply the Mac's
+  screen ($28C-$2D4).
+- *Both screens: a private multi-screen layer.* The desktop's rectangle is the union of the two ($2E8). Eight QuickDraw
+  bottlenecks are wrapped by writing their trap-table entries directly: StdLine, StdRect, StdRRect, StdOval, StdPoly,
+  StdRgn and StdBits at once ($3FA-$484), and StdText once, from the first InitGraf after start-up that finds an
+  application's name in CurApName ($910; $BFA-$C22). The address is
+  $C00 + 4 x the trap's number, plus $200 when the ROM's version byte is above 1 ($F6-$108), so the Plus's table and
+  the SE's alike. Each wrapper looks at the current port ($C3C): a port whose bitmap is not the screen (base not
+  ScrnBase, or rowBytes negative, a colour port) goes straight to Apple's routine. A screen port is drawn **once for
+  each screen**: the port's portBits is pointed at that screen's frame, row bytes and rectangle, its portRect cut to
+  that screen, the pen's place saved and restored, Apple's routine called if the drawing meets that screen (SectRect at
+  $D28), and the port put back ($C56-$DEA). CopyBits is wrapped for a copy from elsewhere onto the screen ($10E0), and
+  ScrollRect replaced by one of its own built on CopyBits and regions ($9D4). The Window Manager is told about the
+  larger desktop: InitWindows makes GrayRgn the union of both screens with rounded corners and the menu bar taken out
+  ($B2E-$BF4); DragWindow gets the whole desktop as its limit ($ADC); GrowWindow does with the Command key held
+  ($AF6); PaintBehind runs with the Window Manager port's rectangle widened to the desktop ($A9A).
+- *The cursor.* Six of the eight vectors (all but JScrnAddr and JScrnSize) and JCrsrTask are replaced ($4E6-$51E).
+  The new ShowCursor and HideCursor ($8E2, $884) are the ROM's with its constants turned into fields of "the screen the cursor is on" (a pointer at
+  offset 108 of its globals): base, row bytes, width less 32, height less 16 ($8FA-$9C6). The new cursor task ($5F8)
+  is the ROM's acceleration and pinning, with one addition ($75A-$7F0): a point outside CrsrPin that lies inside the
+  other screen hides the cursor, makes that screen the cursor's, and sets CrsrPin to its rectangle. There is no VBL task
+  and no interrupt from the card: the cursor on the external monitor is redrawn at the SE's own retrace, through
+  JCrsrTask.
+- *Unfinished.* The panel offers the internal screen "Standard (512 x 342)", "2x Zoom (256 x 171)", "4x Zoom" and
+  "8x Zoom", but the INIT clears the setting before it uses it ($2F0), and a non-zero one would end the INIT without
+  installing anything ($2F2-$308).
+- *Monochrome only.* Nothing in 'MONS' or 'cnfg' gives a depth, and the wrappers handle BitMap ports only.
+
+**Apple's position.** The Mac II (March 1987) brought Color QuickDraw, the GDevice and the Slot Manager: "Color
+QuickDraw maps the (0,0) origin point of the global coordinate plane to the main screen's upper-left corner, and other
+screens are positioned adjacent to the main screen"; the Monitors control panel keeps the arrangement in 'scrn' 0,
+which InitGraf follows "if ... it matches the hardware; if not, then QuickDraw uses only the video device for the
+startup screen" (*Inside Macintosh: Imaging With QuickDraw*, "Graphics Devices":
+https://developer.apple.com/library/archive/documentation/mac/QuickDraw/QuickDraw-271.html); and "(Basic QuickDraw
+does not create GDevice records, nor does basic QuickDraw support multiple screens.)" Color QuickDraw itself never came
+to the 68000 machines: "The Color QuickDraw routines were written in 68020 assembly ... Models such as the Macintosh SE,
+Macintosh Classic, and PowerBook 100 can use only Classic QuickDraw" (Technical Note QD 515:
+https://developer.apple.com/library/archive/technotes/qd/qd_515.html). 32-Bit QuickDraw followed as an INIT for direct
+colour (*Designing Cards and Drivers*, p. 147). For the compact machines Apple's only written answer found is a Q&A of
+22 October 1991, "Adding video device to slotless Macintosh desktop"
+(https://developer.apple.com/library/archive/technotes/hw/hw_555.html): a developer asks whether to "add my region to
+the region whose handle is in GrayRgn and patch the QuickDraw bottlenecks to divert drawing to my VRAM", and Apple
+answers that "for the Macintosh Plus, SE, Classic, and Portable, your idea of how to add your video device to the
+system is right on". That is exactly what ExSys and smal productions had done.
+
+**What *Designing Cards and Drivers* (third edition, 1992) says.** Of SE video cards and screens without the Slot
+Manager, nothing: its SE chapter is electrical (the 96-pin slot, its timing, its power), and its video chapters assume
+NuBus and the Slot Manager; card vendors "who supply drivers should use initialization ('INIT') resources to install
+them during startup" (p. 193). What it does say bears on Aurora68: the information on the SE's screen "is always taken
+from the Macintosh RAM, regardless of any other RAM in the system", so a coprocessor with RAM of its own "needs to
+access the Macintosh SE RAM at least to update the information on the screen", and "the video uses one out of every
+four possible RAM accesses" during a line (p. 291); "Any address space not used by the Macintosh SE hardware is
+available for use by an expansion card" (p. 296), which in Figure 13-4 (p. 297) leaves $600000-$8FFFFF; and the SE
+"does not support the connection of more than one expansion card" (p. 296).
+
+| | Main screen | Second screen | Installed by | Cursor | Drawing |
+|---|---|---|---|---|---|
+| Radius FPD (1986-) | either | yes, windows straddle | firmware on the card (ROM 4.4 for System 7) | its own, sizes | not read |
+| E-Machines Big Picture (1987-) | | "display-mode switcher" | disk software | | not read |
+| MegaScreen (1986-1989) | either | not at first, later yes | driver loads the card's firmware | sizes | not read |
+| IDT Mirage I (1989) | the Mirage | no | INIT | | not read |
+| Sigma PageView (1989) | | yes | | | not read |
+| Mobius Display 2.5 (1991-1992) | either | yes | INIT and 'PTCH' resources | ROM's vectors replaced (one screen); both-screen code not followed | QuickDraw bottlenecks, Window Manager |
+| Novy ImagePro (1992-1993) | the big screen | DualScreen beta, April 1993 | INIT | all vectors and JCrsrTask | ScrnBase, ScreenRow, _ScrnBitMap |
+| ExSys SE Video 1.3 (1995) | either | yes, arranged in the panel | INIT, trap table written directly | all vectors and JCrsrTask, per screen, at the SE's VBL | bottlenecks drawn once per screen |
+
+### What the record shows
+
+1. **Two mechanisms, from the start.** *Replace the main screen*: move ScrnBase and ScreenRow, answer _ScrnBitMap and
+   ScrnSize with the new size, replace the cursor routines whose 512, 342 and 64 are built in, widen CrsrPin (Novy;
+   Mobius's "External screen only"; ExSys without the internal screen; IDT's Mirage). *Add a second screen*: the same,
+   plus a private multi-screen layer: GrayRgn widened, the QuickDraw bottlenecks drawing once per screen, the Window
+   Manager's limits widened, and a cursor that knows which screen it is on (ExSys; Mobius's "Both screens"; Radius's
+   and MegaGraphics' panels, whose code was not read). Apple confirmed the second recipe in 1991.
+2. **The 128K ROM made the first possible from software.** ScreenRow and _ScrnBitMap exist from the Plus on; the 64K
+   ROM computes rowBytes from the width and has no screen trap, and Radius's display "requires the new Macintosh ROM".
+   Every second-screen product read here is for the Plus and the SE, some for the Classic too (ExSys computes the trap
+   table's address for the Plus and the SE alike).
+3. **The cursor was the hard part, and nobody gave the second screen a retrace of its own.** All three products read
+   here replace the ROM's cursor routines, which are the only ROM code with the screen's geometry built in; the cursor
+   then runs where the ROM ran it, from the internal screen's vertical blanking (JCrsrTask). Where the cursor crossed
+   from one screen to the other is a rule in the cursor task: ExSys moves it only when the point lies inside the other
+   screen, the same rule the IIci ROM follows (docs/10, "The edge jump").
+4. **Programs that ask QuickDraw were fine; programs that did not were not.** Apple's notes of 1986 and every review
+   say the same: MacPaint, games, programs with 512 and 342 inside, programs writing to the screen's address, page
+   flipping. Under a private layer, screenBits stayed the main screen's, so a program that sized windows by it never
+   saw the second screen, which is why the layers widened DragWindow's limit themselves.
+5. **No grey, no colour on the SE.** Without Color QuickDraw there was no place for depth in the Toolbox; the layers
+   read here handle one-bit BitMaps only. Grey arrived with Color QuickDraw, on the Mac II and the SE/30 (Micron's
+   Xceed gave even the SE/30's own screen greys: https://lowendmac.com/video/pds/micron.html).
+6. **The best of the period's products were accelerators.** A 68000 at 7.8 MHz drawing a two-page screen twice was
+   slow, and a card with its own processor and memory was the answer; that is why so many accelerators carried video,
+   and why Radius's first board replaced the processor.
+
+### What it means for Aurora68
+
+Aurora68 is on the other side of 1987. The IIci ROM brings Color QuickDraw, GDevices and the Slot Manager, the 68040
+it is given runs them, and both screens are NuBus cards that exist in the Pi (docs/10, "Two screens on the SE"):
+- *Slot 9's video sResource $84 is the SE's own screen*: 512 by 342, mode 128, one bit, its frame in the slot window
+  at $F9980000 (21,888 of 32 KiB). It is a GDevice like any card's, made by the ROM's own screen set-up through the
+  card's driver. The kernel compares the frame with what the SE has, 342 rows of 64 bytes, and sends only the rows
+  that changed into the SE's buffer at the top of its RAM less $5900 (`psmac_se_mark`, `psmac_se_fb_base`,
+  psmac_board_se.c), sixty times a second (`psmac_display_poll`, psmac_display.c). That is *Designing Cards and
+  Drivers*' p. 291 obeyed: the SE shows only what is in its own RAM.
+- *Slot $A is the HDMI screen*: any size the monitor takes, one bit to millions, a declaration ROM and a driver.
+- *Aurora68 Screen Setup writes the 'scrn' resource* that Monitors would, so the ROM activates both (docs/10), and
+  Monitors arranges them.
+
+So everything the vendors had to build, the layer of patches, the widened GrayRgn, the per-screen cursor, is Apple's
+own code here, and none of it needs patching. The old record still says what to watch:
+- **What old software expects holds while the SE's screen is main.** ScrnBase is then the card's frame, ScreenRow and
+  screenBits.rowBytes 64, screenBits.bounds (0,0)-(342,512): every number of 1986 but the address, and the address is
+  the one software was told to ask for. A program that draws through ScrnBase or screenBits draws on the SE's glass.
+  When the HDMI screen is main (the owner's usual arrangement, docs/09 "Every program on the SE's own screen"),
+  ScrnBase is the HDMI frame at its depth and row bytes (10,240 at 2560 by 1440 in millions), and a one-bit program
+  that writes the screen itself fails as it failed on a colour Mac II. **Recommendation:** say so in docs/09: for an
+  old game, drag the menu bar to the SE's screen in Monitors (or set HDMI to one bit).
+- **Fixed addresses and page flipping do not reach the SE.** A program that writes $FA700 or $3FA700 writes the Mac's
+  memory, which is Pi RAM; only the card's frame is sent to the SE's buffer **(inference from the board layer, not
+  tried)**. The SE's alternate buffer cannot be shown: the board layer forces VIA port A bit 6 to 1, the main buffer
+  (`via_data`, psmac_board_se.c), so a game that flips pages through the VIA, as OV 4 describes, keeps showing the
+  main buffer. Both were already broken on every Mac II. MicroMac's CD306 start-up ROM (above) writes its error screens
+  at $3FA700, right only on a 4 MB machine; such code runs before any Aurora68 software and does not concern it.
+- **Cursor and VBL timing.** On the compact Macs the cursor moved at the internal screen's retrace, and so did every
+  VBL task. Under Aurora68 both screens' VBLs, and with them the ROM's cursor task for the screen the pointer is on,
+  come from the kernel's 60 Hz tick on the Pi's counter (`psmac_display_poll`), which is not locked to the SE's beam:
+  the two drift apart by about one frame every seven seconds (60.15 against 60 a second, our arithmetic). A row sent
+  while the beam passes it can show half old and half new for one frame; with only changed rows sent, that is at worst
+  a cursor torn now and then **(inference, not seen)**. **Recommendation, low priority:** take screen 0's tick from
+  the SE's own vertical blanking edge, which the sound code already times itself by (`snd_service`, the opening
+  part), and send the changed rows from the top straight after it.
+- **Old screen software must stay off Aurora68's disks.** ExSys's INIT stops on a Color QuickDraw machine by its own
+  test of ROM85 ($62); the others were not tested that way, and each patches the trap table and the cursor vectors
+  that the IIci ROM uses differently. None of their cards can be fitted with a PiStorm in the socket anyway, and the
+  slot is Card P's (docs/22).
+- **The SE's screen stays one bit.** That is the SE's hardware; the HDMI screen is where colour lives, by Color
+  QuickDraw and the Slot Manager rather than by a private layer, which is the whole difference from 1995.
+- **Card P's HDMI at the rear.** The vendors' cables went where the case let them: Radius's Plus board used the
+  security slot (https://32by32.com/radius-full-page-display/), its SE card an internal cable to the back, and Radius's
+  own Q&A blamed a loose one for its control panel refusing to open (the Valkema compilation, "Full Page Displays
+  64/68KHz Q&A"). docs/22 already takes HDMI to the rear cut-out as a short panel-mount extension (section 6, "The
+  rear panel"); the lesson is to make it one that cannot work loose. Radius and MegaGraphics also fell back to the
+  internal screen alone when no monitor answered. **Recommendation:** check what Aurora68 does when the HDMI monitor is
+  absent or off at start (whether slot $A's card is still served, and windows can open on a screen nobody sees); that
+  was not tested here.
+
+**Not found or not verified.** No software of Radius, E-Machines, MegaGraphics, Sigma Designs, SuperMac or IDT was read,
+so their mechanisms are as the magazines describe them; Novy's DualScreen code was not followed (only its single-screen
+installer); whether any SE product offered grey through the Mac's own software is not established (Sigma's L View
+offered four greys, the text does not say on which machine); Apple's notes give no number for a note on multiple screens
+on the Plus and SE beyond the 1991 Q&A; Macworld's "Two-Headed Macintosh" is read from archive.org's text of the issue,
+not from the page itself.

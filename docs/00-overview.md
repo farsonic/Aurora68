@@ -80,7 +80,7 @@ Boot takes about four minutes in the testbed; a Pi 4 will do it in seconds.
 | | |
 |---|---|
 | docs/01 | The SE ROM, read with a disassembler: why it cannot be the 32-bit ROM |
-| docs/02 | Prior art: PiStorm, Emu68, Frimples' SE socket adapter, MODE32, ROMinator |
+| docs/02 | Prior art: PiStorm, Emu68, Frimples' SE socket adapter, MODE32, ROMinator; the compact Macs' accelerators of 1987-1995 and how they handled sound, the floppy and external screens |
 | docs/03 | The IIci ROM as donor: its memory map, MMU use, slot probing, the timing calibration |
 | docs/04 | The emulation testbed: QEMU and MAME, how the two are joined |
 | docs/05 | The bridge protocol between Emu68 and the MAME motherboard |
