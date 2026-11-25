@@ -744,7 +744,8 @@ $C00008:
   (4.1 also at $78), and the Mac's own ROM jumps there: the Plus ROM looks for it at $F80000, $F80080 and $F80088
   ($400042, $400368, $400628: at power-on, after memory sizing, and before interrupts are opened), the SE ROM at
   $F80080 ($4000B8) and $F80000 ($401BF0). So the card answers at $F80000, Apple's test space, as well as at $C00000
-  (inference), and its code is run by the Mac's one 68000, the card's. The hooks clear the card's frame ($C40000) and
+  (inference), and its code is run by the Mac's own 68000 (on the 1986 Plus board, the 68000 the card carried in
+  place of the Mac's; the SE board sits in the slot beside the SE's); there is no second processor. The hooks clear the card's frame ($C40000) and
   fit the card into the boot ($C001D8, $C00222, $C00302 in 4.1); a second Radius ROM at $C80000 ("RA", $0400) is
   looked for and chained ($C00204).
 - *Two screens, either main.* 4.1 has a routine that makes the big screen main (ScrnBase, ScreenRow and CrsrPin from
