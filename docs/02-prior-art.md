@@ -732,29 +732,45 @@ reading $C00008: read the machine ID at ROMBase + 8 first.
 ### What the vendors built, 1986-1995
 
 **Radius Full Page Display (1986, the 512Ke and the Plus; the SE from 1987).** Macworld's news column of October 1986,
-"The Two-Headed Macintosh" (p. 67, https://archive.org/details/MacWorld_8610_October_1986), is the first account:
-640 by 864 at nearly the Mac's 72 dpi, and "allows you to use the Mac screen at the same time". "The display is
-controlled by a digital board designed by [Burrell] Smith that fits on the Mac's digital board. It contains a 68000
-microprocessor, which replaces the Mac's 68000, as well as 128K of RAM, and firmware. FPD doesn't require any software
-to run. The routines that control the monitor's user interface are encoded on the FPD board and were written by Andy
-Hertzfeld ... The most clever part of Hertzfeld's contribution is the capability to move and even straddle windows
-between the two screens." Its control panel set the cursor size, the mouse speed, a screen saver and 16-point menus;
-it "requires the new Macintosh ROM" (the 128K ROM); "programs that make assumptions about the screen size, such as
-MacPaint and certain games, may not work perfectly", and it did not work with Switcher. A 2025 compilation of Radius
-material (by Maurice Valkema, on TinkerDifferent:
-https://tinkerdifferent.com/attachments/early-mac-external-monitor-radius-inc-pdf.29031/) adds from InfoWorld
-(16 February 1987) that the board was first installed at Radius's factory, with "permanent changes to your Macintosh's
-motherboard", and a clip-on version from March 1987; Radius's card list (an SE card on the processor direct slot in
-1987, others for the SE/30, Classic and LC to 1991); the brochure's line that the logic board "senses the connection
-and re-establishes the combined two-screen display area" when the monitor's cable is plugged in again; and a
-RadiusWare note that its "Classic / SE / Plus Display CDEV v.4.1" needs "the version 4.4 ROM upgrade for System 7.0
-compatibility": the screen code stayed in a ROM on the card. Macworld's roundup of May 1989 (Bruce F. Webster,
-"Evaluating Monochrome and Gray-Scale Monitors", around pp. 140-150,
-https://archive.org/details/MacWorld_8905_May_1989) describes the SE and Plus versions: "You can use just the Radius
-FPD, just the Mac screen, or both; you decide which is on the left side and which is on the right; you can align the two
-screens". No Radius software has been read here. **Our reading:** a board that replaced the processor, with firmware,
-on a 128K ROM that has ScreenRow and _ScrnBitMap, is the most a vendor could do in 1986; that the firmware worked by
-patching the ROM's screen globals and drawing as the products below do is likely but not shown.
+"The Two-Headed Macintosh" (p. 67, https://archive.org/details/MacWorld_8610_October_1986): 640 by 864, "allows you to
+use the Mac screen at the same time", a board with "a 68000 microprocessor, which replaces the Mac's 68000, as well as
+128K of RAM, and firmware. FPD doesn't require any software to run. The routines ... are encoded on the FPD board and
+were written by Andy Hertzfeld". The owner supplied two of the card's ROMs on 25 November 2026, SE board ROMs by the
+disk's Read Me (the Plus board had its own, v3.0), though their code has Plus paths too: "Radius Multi-Page Display
+V4.1F" ("A05-11-89", "Andy Hertzfeld, T Cohn, N Moss", 25 KB of code) and V4.4F ("D07-09-91", 504 bytes of code), with
+Radius's disk of September 1991. Read at $C00000, where the code is linked and where OV 7's test finds "RA" at
+$C00008:
+- *How it runs.* The ROM opens with Apple's test-ROM signature, $55AAAA55 and an address, at offsets 0, $80 and $88
+  (4.1 also at $78), and the Mac's own ROM jumps there: the Plus ROM looks for it at $F80000, $F80080 and $F80088
+  ($400042, $400368, $400628: at power-on, after memory sizing, and before interrupts are opened), the SE ROM at
+  $F80080 ($4000B8) and $F80000 ($401BF0). So the card answers at $F80000, Apple's test space, as well as at $C00000
+  (inference), and its code is run by the Mac's one 68000, the card's. The hooks clear the card's frame ($C40000) and
+  fit the card into the boot ($C001D8, $C00222, $C00302 in 4.1); a second Radius ROM at $C80000 ("RA", $0400) is
+  looked for and chained ($C00204).
+- *Two screens, either main.* 4.1 has a routine that makes the big screen main (ScrnBase, ScreenRow and CrsrPin from
+  the card's variables at $C5F142-$C5F14C, $C01B34) and one that gives it back to the Mac (ScreenRow 64, CrsrPin
+  342 by 512, $C01B5C); 27 traps are patched from a table at $C00872 ($C00826): nine QuickDraw bottlenecks, CopyBits,
+  CopyMask, ScrollRect, _ScrnBitMap, InitWindows, PaintBehind, DragWindow, GrowWindow, MenuSelect and PopUpMenuSelect
+  (the tear-off menus), GetNextEvent, PlotIcon, SysError, four Resource Manager traps, and _GetTrapAddress, which
+  answers with the saved original whenever the true address is inside the card's ROM ($C008E0). "Multi-Page" is the
+  page sizes, not a count of screens: the cursor code knows widths of 640, 1024 and 1152 ($C00188).
+- *Cursor and VBL: each screen at its own retrace.* All eight vectors $800-$81C are replaced from a table at $C01C60
+  ($C007EC-$C0080A). The card has an interrupt of its own on the level-2 autovector, $68 ($C00794): the handler
+  ($C00122) passes anything that is not the card (bit 15 of $C20000) to the old one, the SCC's, and otherwise counts
+  the card's frames, reads its registers ($C30000, $C10000, $C20000) and runs the cursor task when the pointer is on
+  the big screen; the ROM's JCrsrTask, at the Mac's VBL, is pointed at a filter that runs it only when the pointer is
+  on the Mac's screen ($C00176). A cursor update that finds CrsrBusy set is retried 4 ms later by a Time Manager task
+  ($C007CC, $C025B0).
+- *What 4.4 changed for System 7.* The ROM keeps only its boot hooks ($C00090-$C001F2). Everything else moved to the
+  System Folder: "Classic/SE/+ Display" 4.1 ("When operating on a Macintosh SE: this version of software requires
+  FPD-SE ROM 4.4 or TPD-SE ROM 4.4", the disk's Read Me) has an 'INIT' 0 that reads the card's header at $C00000
+  (version $0200 or $0300 at +$0A, revision letter at +$0C, model letter at +$6E) and loads the matching 'Init'
+  ("4.4F", "4.4T", "4.4C", "4.4P", "4.4L", "4.4E", about 24 KB each), which copies a ROM image (the same header,
+  "D07-09-91") into the system heap and runs it. Its patch table is 4.1's without the _GetTrapAddress patch. Our
+  reading: in RAM the layer can be updated with the System, and with its patches no longer at ROM addresses the lie
+  to _GetTrapAddress was no longer needed (inference). The Read Me adds that tear-off menus did not work under
+  System 7.
+So Macworld's "doesn't require any software" was true of the 4.1-era ROM and not of 4.4.
 
 **E-Machines' Big Picture (1987).** A comp.sys.mac post of 10 September 1987 from someone who had installed several,
 mostly in SEs (https://utzoo.superglobalmegacorp.com/usenet/news058f1/b78/comp/sys/mac/5898.txt), lists the software
@@ -912,7 +928,7 @@ available for use by an expansion card" (p. 296), which in Figure 13-4 (p. 297) 
 
 | | Main screen | Second screen | Installed by | Cursor | Drawing |
 |---|---|---|---|---|---|
-| Radius FPD (1986-) | either | yes, windows straddle | firmware on the card (ROM 4.4 for System 7) | its own, sizes | not read |
+| Radius FPD (1986-1991) | either | yes, windows straddle | card ROM run from Apple's test-ROM hooks; from ROM 4.4 (1991) an INIT | all vectors; at the retrace of the screen it is on (card interrupt, level 2) | bottlenecks, Window Manager, menus (27 traps) |
 | E-Machines Big Picture (1987-) | | "display-mode switcher" | disk software | | not read |
 | MegaScreen (1986-1989) | either | not at first, later yes | driver loads the card's firmware | sizes | not read |
 | IDT Mirage I (1989) | the Mirage | no | INIT | | not read |
@@ -927,15 +943,19 @@ available for use by an expansion card" (p. 296), which in Figure 13-4 (p. 297) 
    ScrnSize with the new size, replace the cursor routines whose 512, 342 and 64 are built in, widen CrsrPin (Novy;
    Mobius's "External screen only"; ExSys without the internal screen; IDT's Mirage). *Add a second screen*: the same,
    plus a private multi-screen layer: GrayRgn widened, the QuickDraw bottlenecks drawing once per screen, the Window
-   Manager's limits widened, and a cursor that knows which screen it is on (ExSys; Mobius's "Both screens"; Radius's
-   and MegaGraphics' panels, whose code was not read). Apple confirmed the second recipe in 1991.
+   Manager's limits widened, and a cursor that knows which screen it is on (Radius's ROM from 1986, read in its 1989
+   version; ExSys; Mobius's "Both screens"; MegaGraphics, whose code was not read). Apple confirmed the second recipe
+   in 1991.
 2. **The 128K ROM made the first possible from software.** ScreenRow and _ScrnBitMap exist from the Plus on; the 64K
    ROM computes rowBytes from the width and has no screen trap, and Radius's display "requires the new Macintosh ROM".
    Every second-screen product read here is for the Plus and the SE, some for the Classic too (ExSys computes the trap
    table's address for the Plus and the SE alike).
-3. **The cursor was the hard part, and nobody gave the second screen a retrace of its own.** All three products read
-   here replace the ROM's cursor routines, which are the only ROM code with the screen's geometry built in; the cursor
-   then runs where the ROM ran it, from the internal screen's vertical blanking (JCrsrTask). Where the cursor crossed
+3. **The cursor was the hard part, and only Radius gave the second screen a retrace of its own.** Every product read
+   here replaces the ROM's cursor routines, which are the only ROM code with the screen's geometry built in. ExSys,
+   Mobius and Novy then run the cursor where the ROM ran it, from the internal screen's vertical blanking (JCrsrTask);
+   Radius's card raises its own level-2 interrupt and draws the cursor at the retrace of whichever screen it is on
+   ($C00122, $C00176), and keeps its screen code in a ROM the Mac's own ROM jumps into through Apple's test-ROM hooks,
+   until System 7 moved it to the disk (ROM 4.4, 1991). Where the cursor crossed
    from one screen to the other is a rule in the cursor task: ExSys moves it only when the point lies inside the other
    screen, the same rule the IIci ROM follows (docs/10, "The edge jump").
 4. **Programs that ask QuickDraw were fine; programs that did not were not.** Apple's notes of 1986 and every review
@@ -1001,7 +1021,10 @@ own code here, and none of it needs patching. The old record still says what to 
   absent or off at start (whether slot $A's card is still served, and windows can open on a screen nobody sees); that
   was not tested here.
 
-**Not found or not verified.** No software of Radius, E-Machines, MegaGraphics, Sigma Designs, SuperMac or IDT was read,
+**Not found or not verified.** For Radius: the Plus board's ROM (3.0) and the 1986 original were not available, so
+the Plus path is read from the SE board's ROM, whose hooks also serve the Plus ROM; whether the card decodes its ROM at
+both $F80000 and $C00000 is inferred from the hooks' addresses; the second ROM at $C80000 is unidentified; the 4.4
+'Init' images were compared with 4.1 by their patch tables only. Otherwise: No software of E-Machines, MegaGraphics, Sigma Designs, SuperMac or IDT was read,
 so their mechanisms are as the magazines describe them; Novy's DualScreen code was not followed (only its single-screen
 installer); whether any SE product offered grey through the Mac's own software is not established (Sigma's L View
 offered four greys, the text does not say on which machine); Apple's notes give no number for a note on multiple screens
