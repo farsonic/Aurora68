@@ -1077,10 +1077,16 @@ void psmac_se_set_level(unsigned raw)         /* psmac_bus.c, after each cycle o
    on both; its level 2 is the SCC (the IIci's level 4; the 5380's interrupt is kept off); the
    IIci's level 2, the RBV, is this file's own. Bit 2, the interrupt switch, is an edge, handled by
    interrupt_switch above, not a level. */
+/* mac.sccirq=off (26 November 2026, docs/23 section 14): the SE's SCC interrupt kept from the 68k. A/UX 3.1.1's
+   standalone shell, checking the disks under A/UX Startup, took the SE's level 2 (the IIci's 4) about 800,000 times a
+   second on the owner's SE without one access to the SCC, so the line never fell and nothing else ran. A diagnostic:
+   with it nothing that waits for the serial ports' interrupts works (AppleTalk on LocalTalk, a modem). */
+static int scc_irq_off;
 unsigned psmac_se_ipl(unsigned raw)
 {
     if (psmac_board_solo) return psmac_solo_ipl();
     unsigned ipl = 0;
+    if (scc_irq_off) raw &= ~2u;
     if (raw & 2) ipl = 4;
     else if (raw & 1) ipl = 1;
     if (psmac_se_rbv_irq() && ipl < 2) ipl = 2;
@@ -1784,6 +1790,11 @@ void psmac_se_options(const char *args)
         int v = 0;
         for (tok += 15; *tok >= '0' && *tok <= '9'; tok++) v = v * 10 + (*tok - '0');
         if (v >= 1 && v <= 1000) scsi_wait_ms = v;
+    }
+    if ((tok = find_token(args, "mac.sccirq="))) {
+        tok += 11;
+        scc_irq_off = tok[0] == 'o' && tok[1] == 'f';
+        if (scc_irq_off) kprintf("[PSMAC:SE] mac.sccirq=off: the SCC's interrupt (the IIci's level 4) is kept from the 68k (a diagnostic: no serial-port interrupts)\n");
     }
     if ((tok = find_token(args, "mac.sefloat="))) { tok += 12; scsi_float_sim = tok[0] == '1'; }   /* the testbed: the 5380 read as on an unterminated bus */
     if ((tok = find_token(args, "mac.seram="))) {   /* 1, 2, 2.5 or 4: the SE's address arithmetic takes the top of what is fitted */

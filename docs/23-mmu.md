@@ -991,3 +991,29 @@ the probe read gives `80` with the bad x12 in place and System 7.1 reaches the F
 **Still to be seen on the real SE.** That it now starts; then, for A/UX, the list of section 12.8. The emulated
 accesses (5.5 million in that boot, most of them the SCSI chip's and the VIA's pages) are the option's cost here as on
 the other boards; on the SE every one of them is a bus cycle over the GPIO anyway.
+
+## 14. A/UX on the real SE: as far as "Checking..." (26 November 2026)
+
+With section 13's fix the SE started System 7.1 with `mac.mmu=full`, and the Memory control panel offered Virtual
+Memory, which it does only for a 68030 MMU. Then A/UX 3.1.1 (the Workgroup Server 95 edition, a prebuilt 1 GB disk
+served as a virtual SCSI disk at ID 0, `scsi.disk=AUX.dsk:0`), in four steps:
+
+- **Started from System 7.1, A/UX Startup said "No SCSI disk port" (IN-8).** Its machine check (Gestalt `'mach'`)
+  refuses machine types 1 to 5, 10, 17 and 19, the compact Macs among them, and Aurora68 Machine (`mac/pimach.s`)
+  answers 5, the SE. With the extension moved out of the Extensions folder the answer was the ROM's 11, the IIci,
+  and the FPU and PMMU checks (Gestalt `'fpu '`, `'mmu '`) passed as well.
+- **Then "Standalone program space is too small" (IN-2).** A/UX Startup puts its standalone shell in the first
+  1.5 MB of memory (it compares against $17FC00 and $1A0000), which it has only when A/UX's own small System
+  launches it at start-up; under System 7.1 with Aurora68's extensions the system heap is above that.
+- **Started from A/UX's own Mac OS** (Startup Disk set to its volume, and `mac.boot=scsi` so the kernel does not
+  try the card's image first), A/UX Startup came up by itself, showed its copyright window and "Checking...".
+- **There the Mac stopped**, the pointer frozen. The log: the 68k in a loop at $548C8-$548F2 in the standalone
+  shell (low memory, its data at $11001622-$11001628), SR $2700/$2400, no bus cycle at all (+0 a beat, no SCC,
+  VIA or SCSI access), the soft TLB with 4 spaces, user and supervisor apart; and level 4 taken 4,117,802 times
+  in five seconds, every one "taken again at once". Level 4 is the SE's SCC (its level 2, `psmac_se_ipl`). So the
+  SCC holds its interrupt and the shell's handler returns without touching it: a livelock. On a IIci the SCC
+  would have nothing pending at that moment; on the SE something is (which is not yet known), or the handler's
+  access to the SCC goes somewhere other than the chip.
+- **`mac.sccirq=off`** (this commit) keeps the SCC's line from the 68k, a diagnostic to see whether the check
+  goes on without it. Next, if it does: which of the SCC's sources is pending (RR3, `mac.setrace=N,SCC`), and
+  whether A/UX's own driver reaches the chip through its page tables.
