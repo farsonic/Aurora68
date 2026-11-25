@@ -50,3 +50,22 @@ switches the cache through CACR, and patches SANE (PACK 4 and 5, "PowerMath"), _
 machines sound comes from the ASC with its own FIFO, which a faster processor or a cache does not disturb, so
 whatever DayStar's sound reputation rests on, it is not in this file. The SE accelerator that handled sound well
 is still to be found.
+
+A third, **Dove Computer's MaraThon Racer 030 for the Plus and SE** ("MaraThon® Racer® 030 Plus/SE INIT/CDEV v2.3"),
+said to be the one that handled sound well, holds no sound code either. What it does:
+- **Re-times the ROM's delay loops when the cache changes.** The control panel writes the low-memory timing constants
+  at $D00 (TimeDBRA, then TimeSCCDB at $D02) as one long: $0A3C/$0147 with the 68030's caches on, $01EC/$00E7 with them
+  off. That is 2,620 or 492 DBRA loops per millisecond, against the 68000's few hundred. Apple's ROM and drivers time
+  short waits (the SCC's access spacing among them) from these, so they stay right at any speed. Aurora68 does the
+  same job differently: its ROM patch gives the IIci ROM the real bus figures from the mailbox (docs/06-rom-patches,
+  docs/08 item 14).
+- **Runs the floppy driver with the caches off.** 'PROC' 130 copies the .Sony driver (unit 4, refnum -5, found
+  through UTableBase at $11C) and wraps its five entry points. Each call saves CACR, turns off and clears both caches
+  (bits 8 and 0 cleared, 11 and 3 set), waits for the request to finish (ioResult no longer positive) and puts
+  CACR back. The IWM's software timing is the reason.
+- **Card and maths.** 'INIT' 71, "Mercury Cache Enable", finds the card through a MOVES read at $EC398000 with
+  SFC 3 and measures the loop speed against Ticks; 'PROC' 131 points SANE (PACK 4 and 5) at the 68882 and fixes
+  _SysEnvirons' FPU field. Holding a key at startup ("KEYDOWN") skips it.
+So none of the three accelerators carries special sound code beyond Extreme Systems' replacement driver. If the Racer
+sounded better, the reason is in its hardware or in leaving Apple's own Sound Driver alone with correct timing
+constants, not in a sound patch.
