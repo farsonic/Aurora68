@@ -473,6 +473,32 @@ granted away (Apple's text); the card's power budget (1.5 A at +5 V, 7 W in all)
 6. For a CM3+ card: which SD controller the module's eMMC is on.
 7. For a CM4 card: the FPGA or the CPLD protocol, and which Emu68 back end it matches.
 
+## 9. A first design: Card P in KiCad (24 November 2026)
+
+`hardware/pds-card/` holds a first draft of Card P (section 5.1) as a KiCad 8 project, generated from a Python
+description (`tools/design.py`) and checked by script, not yet by KiCad's ERC and DRC, not reviewed and not built;
+its README is the long form. In short:
+
+- **Circuit:** the PiStorm Rev B's, at the owner's wish (as simple and as close to the PiStorm as possible): an EPM240
+  (or EPM570 in the same footprint), four 74LVC16373 latches, two CBTD3384 bus switches, the LM1117-class 3.3 V
+  regulator, every PiStorm signal on the PiStorm's own CPLD pin, the Pi's GPIO 0-27 as in `ps_protocol.h`. Added: a
+  polyfuse and an LM66100 ideal diode on the 5 V, the fan header with its MOSFET, jumper and fuse, a 10-way FFC to a
+  rear connector card (USB from the 3A+, 5 V, the stock switch, an LED), an activity LED and a stock jumper.
+- **CPLD logic** (`rtl/aurora68_pds.v`, MIT, from the PiStorm's): arbitration held across resets and safe whichever
+  answer open question 1 gets, 6800 cycles on the board's E, /AS only in S2 (optionally on /PMCYC), read data latched
+  at S6/S7, /BERR reported, stock mode, fan PWM and tachometer, status bits in REG_STATUS bits 0-12 and new settings
+  in writes with bit 15 set (`PROTOCOL.md`): the kernel's transport is unchanged. Simulated with Icarus Verilog
+  against a behavioural SE (154 checks); not synthesised.
+- **Height (open question 3, our reading):** Figure 17-2's side view is drawn from the side of the machine, so the
+  limit falls from 15.58 mm at the card's **front** edge to 4.61 mm at its **rear** edge, across the card's 110 mm
+  depth, not along its length. The tall parts are along the front edge. To be measured in a real SE.
+- **The Pi 3A+** sits components-down on a 6.0 mm socket over the card's left half (a Pi on a header cannot plug in
+  the right way up), header along the front edge: its back is at 9.9 mm, 0.08 mm under the limit at its rear edge.
+  The Zero 2 W fits too; **the 3B and 3B+ do not**: their 16 mm USB stacks point at the card. The card keeps their
+  footprint clear for bench use on a riser.
+- **Open question 5:** the 3A+'s microSD slot is at the card's left, under the chassis: reachable only with the card
+  out, as with any card in this slot.
+
 ## Sources
 
 - Apple, *Guide to the Macintosh Family Hardware*, 2nd edition, Figure 14-2, "An expansion card in the Macintosh SE
@@ -499,4 +525,5 @@ granted away (Apple's text); the card's power budget (1.5 A at +5 V, 7 W in all)
 - Forum discussion of a slot card for the SE: TinkerDifferent, "PiStorm on the Macintosh SE"
   (https://tinkerdifferent.com/threads/pistorm-on-the-macintosh-se.2085/page-2).
 - In this repository: docs/00 (the original plan), docs/07 (the Alice68 drivers), docs/12 (transport, power),
-  docs/18 (the compact Macs' bus and the PiStorm's cycle), docs/21 (Bluetooth on the Pi 3).
+  docs/18 (the compact Macs' bus and the PiStorm's cycle), docs/21 (Bluetooth on the Pi 3), `hardware/pds-card/`
+  (the first Card P design, section 9).

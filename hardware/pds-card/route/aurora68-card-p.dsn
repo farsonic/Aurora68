@@ -1,0 +1,1525 @@
+(pcb "aurora68-card-p.dsn"
+	(parser
+		(string_quote ")
+		(space_in_quoted_tokens on)
+		(host_cad "Aurora68 gen_kicad")
+		(host_version "1")
+	)
+	(resolution um 10)
+	(unit um)
+	(structure
+		(layer F.Cu
+			(type signal)
+			(property
+				(index 0)
+			)
+		)
+		(layer B.Cu
+			(type signal)
+			(property
+				(index 1)
+			)
+		)
+		(boundary
+			(path pcb 0 30000 -33000 32000 -31000 241250 -31000 243250 -33000 243250 -128420 241250 -130420 227290 -130420 225290 -128420 225290 -120110 32000 -120110 30000 -118110 30000 -33000)
+		)
+		(keepout ""
+			(circle signal 3250 234390 -35410)
+		)
+		(keepout ""
+			(circle signal 3250 234390 -125410)
+		)
+		(keepout ""
+			(circle signal 3150 45500 -67400)
+		)
+		(keepout ""
+			(circle signal 3150 103500 -67400)
+		)
+		(keepout ""
+			(circle signal 3150 45500 -116400)
+		)
+		(keepout ""
+			(circle signal 3150 103500 -116400)
+		)
+		(keepout ""
+			(circle signal 3150 45500 -93400)
+		)
+		(keepout ""
+			(circle signal 3150 103500 -93400)
+		)
+		(keepout ""
+			(circle signal 4260 33430 -44850)
+		)
+		(keepout ""
+			(circle signal 4260 33430 -95020)
+		)
+		(via "Via[0-1]_600:300_um")
+		(rule
+			(width 150)
+			(clearance 150)
+			(clearance 100
+				(type smd_smd)
+			)
+		)
+	)
+	(placement
+		(component "IMG_J1"
+			(place "J1" 234090 -80410 front 0)
+		)
+		(component "IMG_U6"
+			(place "U6" 225000 -82000 front 0)
+		)
+		(component "IMG_U7"
+			(place "U7" 225000 -114000 front 0)
+		)
+		(component "IMG_C5"
+			(place "C5" 225000 -87500 front 0)
+		)
+		(component "IMG_C6"
+			(place "C6" 225000 -108500 front 0)
+		)
+		(component "IMG_R3"
+			(place "R3" 226500 -55000 front 0)
+		)
+		(component "IMG_R4"
+			(place "R4" 206000 -40000 front 0)
+		)
+		(component "IMG_R5"
+			(place "R5" 206000 -42500 front 0)
+		)
+		(component "IMG_U1"
+			(place "U1" 180000 -82000 front 0)
+		)
+		(component "IMG_U2"
+			(place "U2" 214000 -105000 front 0)
+		)
+		(component "IMG_U3"
+			(place "U3" 214000 -87000 front 0)
+		)
+		(component "IMG_U4"
+			(place "U4" 214000 -60000 front 0)
+		)
+		(component "IMG_U5"
+			(place "U5" 202000 -60000 front 0)
+		)
+		(component "IMG_C1"
+			(place "C1" 208500 -105000 front 0)
+		)
+		(component "IMG_C2"
+			(place "C2" 208500 -87000 front 0)
+		)
+		(component "IMG_C3"
+			(place "C3" 208500 -60000 front 0)
+		)
+		(component "IMG_C4"
+			(place "C4" 196500 -60000 front 0)
+		)
+		(component "IMG_C7"
+			(place "C7" 170000 -72000 front 0)
+		)
+		(component "IMG_C8"
+			(place "C8" 170000 -92000 front 0)
+		)
+		(component "IMG_C9"
+			(place "C9" 190000 -72000 front 0)
+		)
+		(component "IMG_C10"
+			(place "C10" 190000 -92000 front 0)
+		)
+		(component "IMG_C11"
+			(place "C11" 175000 -69000 front 0)
+		)
+		(component "IMG_C12"
+			(place "C12" 185000 -95000 front 0)
+		)
+		(component "IMG_R1"
+			(place "R1" 167000 -87000 front 0)
+		)
+		(component "IMG_R2"
+			(place "R2" 167000 -83000 front 0)
+		)
+		(component "IMG_J2"
+			(place "J2" 50370 -115130 front 0)
+		)
+		(component "IMG_H3"
+			(place "H3" 45500 -67400 front 0)
+		)
+		(component "IMG_H4"
+			(place "H4" 103500 -67400 front 0)
+		)
+		(component "IMG_H5"
+			(place "H5" 45500 -116400 front 0)
+		)
+		(component "IMG_H6"
+			(place "H6" 103500 -116400 front 0)
+		)
+		(component "IMG_H7"
+			(place "H7" 45500 -93400 front 0)
+		)
+		(component "IMG_H8"
+			(place "H8" 103500 -93400 front 0)
+		)
+		(component "IMG_F1"
+			(place "F1" 196000 -116000 front 0)
+		)
+		(component "IMG_U9"
+			(place "U9" 189000 -116000 front 0)
+		)
+		(component "IMG_C13"
+			(place "C13" 191500 -111500 front 0)
+		)
+		(component "IMG_C14"
+			(place "C14" 184500 -111500 front 0)
+		)
+		(component "IMG_U8"
+			(place "U8" 176000 -114000 front 0)
+		)
+		(component "IMG_C15"
+			(place "C15" 169000 -110000 front 0)
+		)
+		(component "IMG_C16"
+			(place "C16" 169000 -117000 front 0)
+		)
+		(component "IMG_F2"
+			(place "F2" 196000 -111000 front 0)
+		)
+		(component "IMG_F3"
+			(place "F3" 196000 -106000 front 0)
+		)
+		(component "IMG_J3"
+			(place "J3" 142000 -116000 front 0)
+		)
+		(component "IMG_Q1"
+			(place "Q1" 149000 -109000 front 0)
+		)
+		(component "IMG_R8"
+			(place "R8" 153000 -106500 front 0)
+		)
+		(component "IMG_R9"
+			(place "R9" 153000 -111500 front 0)
+		)
+		(component "IMG_D1"
+			(place "D1" 143000 -102000 front 0)
+		)
+		(component "IMG_JP1"
+			(place "JP1" 137000 -102000 front 0)
+		)
+		(component "IMG_R6"
+			(place "R6" 149000 -100000 front 0)
+		)
+		(component "IMG_J6"
+			(place "J6" 157000 -117000 front 0)
+		)
+		(component "IMG_R7"
+			(place "R7" 159000 -106500 front 0)
+		)
+		(component "IMG_D2"
+			(place "D2" 163000 -118000 front 0)
+		)
+		(component "IMG_R10"
+			(place "R10" 163000 -113500 front 0)
+		)
+		(component "IMG_R11"
+			(place "R11" 160000 -40000 front 0)
+		)
+		(component "IMG_J5"
+			(place "J5" 138000 -92000 front 0)
+		)
+		(component "IMG_J4"
+			(place "J4" 148000 -36500 front 0)
+		)
+		(component "IMG_H1"
+			(place "H1" 33430 -44850 front 0)
+		)
+		(component "IMG_H2"
+			(place "H2" 33430 -95020 front 0)
+		)
+	)
+	(library
+		(image "IMG_J1"
+			(pin "Rect[A]Pad_1600x1600_um" "A1" 2540 -39370)
+			(pin "Round[A]Pad_1600_um" "A2" 2540 -36830)
+			(pin "Round[A]Pad_1600_um" "A3" 2540 -34290)
+			(pin "Round[A]Pad_1600_um" "A4" 2540 -31750)
+			(pin "Round[A]Pad_1600_um" "A5" 2540 -29210)
+			(pin "Round[A]Pad_1600_um" "A6" 2540 -26670)
+			(pin "Round[A]Pad_1600_um" "A7" 2540 -24130)
+			(pin "Round[A]Pad_1600_um" "A8" 2540 -21590)
+			(pin "Round[A]Pad_1600_um" "A9" 2540 -19050)
+			(pin "Round[A]Pad_1600_um" "A10" 2540 -16510)
+			(pin "Round[A]Pad_1600_um" "A11" 2540 -13970)
+			(pin "Round[A]Pad_1600_um" "A12" 2540 -11430)
+			(pin "Round[A]Pad_1600_um" "A13" 2540 -8890)
+			(pin "Round[A]Pad_1600_um" "A14" 2540 -6350)
+			(pin "Round[A]Pad_1600_um" "A15" 2540 -3810)
+			(pin "Round[A]Pad_1600_um" "A16" 2540 -1270)
+			(pin "Round[A]Pad_1600_um" "A17" 2540 1270)
+			(pin "Round[A]Pad_1600_um" "A18" 2540 3810)
+			(pin "Round[A]Pad_1600_um" "A19" 2540 6350)
+			(pin "Round[A]Pad_1600_um" "A20" 2540 8890)
+			(pin "Round[A]Pad_1600_um" "A21" 2540 11430)
+			(pin "Round[A]Pad_1600_um" "A22" 2540 13970)
+			(pin "Round[A]Pad_1600_um" "A23" 2540 16510)
+			(pin "Round[A]Pad_1600_um" "A24" 2540 19050)
+			(pin "Round[A]Pad_1600_um" "A25" 2540 21590)
+			(pin "Round[A]Pad_1600_um" "A26" 2540 24130)
+			(pin "Round[A]Pad_1600_um" "A27" 2540 26670)
+			(pin "Round[A]Pad_1600_um" "A28" 2540 29210)
+			(pin "Round[A]Pad_1600_um" "A29" 2540 31750)
+			(pin "Round[A]Pad_1600_um" "A30" 2540 34290)
+			(pin "Round[A]Pad_1600_um" "A31" 2540 36830)
+			(pin "Round[A]Pad_1600_um" "A32" 2540 39370)
+			(pin "Round[A]Pad_1600_um" "B1" 0 -39370)
+			(pin "Round[A]Pad_1600_um" "B2" 0 -36830)
+			(pin "Round[A]Pad_1600_um" "B3" 0 -34290)
+			(pin "Round[A]Pad_1600_um" "B4" 0 -31750)
+			(pin "Round[A]Pad_1600_um" "B5" 0 -29210)
+			(pin "Round[A]Pad_1600_um" "B6" 0 -26670)
+			(pin "Round[A]Pad_1600_um" "B7" 0 -24130)
+			(pin "Round[A]Pad_1600_um" "B8" 0 -21590)
+			(pin "Round[A]Pad_1600_um" "B9" 0 -19050)
+			(pin "Round[A]Pad_1600_um" "B10" 0 -16510)
+			(pin "Round[A]Pad_1600_um" "B11" 0 -13970)
+			(pin "Round[A]Pad_1600_um" "B12" 0 -11430)
+			(pin "Round[A]Pad_1600_um" "B13" 0 -8890)
+			(pin "Round[A]Pad_1600_um" "B14" 0 -6350)
+			(pin "Round[A]Pad_1600_um" "B15" 0 -3810)
+			(pin "Round[A]Pad_1600_um" "B16" 0 -1270)
+			(pin "Round[A]Pad_1600_um" "B17" 0 1270)
+			(pin "Round[A]Pad_1600_um" "B18" 0 3810)
+			(pin "Round[A]Pad_1600_um" "B19" 0 6350)
+			(pin "Round[A]Pad_1600_um" "B20" 0 8890)
+			(pin "Round[A]Pad_1600_um" "B21" 0 11430)
+			(pin "Round[A]Pad_1600_um" "B22" 0 13970)
+			(pin "Round[A]Pad_1600_um" "B23" 0 16510)
+			(pin "Round[A]Pad_1600_um" "B24" 0 19050)
+			(pin "Round[A]Pad_1600_um" "B25" 0 21590)
+			(pin "Round[A]Pad_1600_um" "B26" 0 24130)
+			(pin "Round[A]Pad_1600_um" "B27" 0 26670)
+			(pin "Round[A]Pad_1600_um" "B28" 0 29210)
+			(pin "Round[A]Pad_1600_um" "B29" 0 31750)
+			(pin "Round[A]Pad_1600_um" "B30" 0 34290)
+			(pin "Round[A]Pad_1600_um" "B31" 0 36830)
+			(pin "Round[A]Pad_1600_um" "B32" 0 39370)
+			(pin "Round[A]Pad_1600_um" "C1" -2540 -39370)
+			(pin "Round[A]Pad_1600_um" "C2" -2540 -36830)
+			(pin "Round[A]Pad_1600_um" "C3" -2540 -34290)
+			(pin "Round[A]Pad_1600_um" "C4" -2540 -31750)
+			(pin "Round[A]Pad_1600_um" "C5" -2540 -29210)
+			(pin "Round[A]Pad_1600_um" "C6" -2540 -26670)
+			(pin "Round[A]Pad_1600_um" "C7" -2540 -24130)
+			(pin "Round[A]Pad_1600_um" "C8" -2540 -21590)
+			(pin "Round[A]Pad_1600_um" "C9" -2540 -19050)
+			(pin "Round[A]Pad_1600_um" "C10" -2540 -16510)
+			(pin "Round[A]Pad_1600_um" "C11" -2540 -13970)
+			(pin "Round[A]Pad_1600_um" "C12" -2540 -11430)
+			(pin "Round[A]Pad_1600_um" "C13" -2540 -8890)
+			(pin "Round[A]Pad_1600_um" "C14" -2540 -6350)
+			(pin "Round[A]Pad_1600_um" "C15" -2540 -3810)
+			(pin "Round[A]Pad_1600_um" "C16" -2540 -1270)
+			(pin "Round[A]Pad_1600_um" "C17" -2540 1270)
+			(pin "Round[A]Pad_1600_um" "C18" -2540 3810)
+			(pin "Round[A]Pad_1600_um" "C19" -2540 6350)
+			(pin "Round[A]Pad_1600_um" "C20" -2540 8890)
+			(pin "Round[A]Pad_1600_um" "C21" -2540 11430)
+			(pin "Round[A]Pad_1600_um" "C22" -2540 13970)
+			(pin "Round[A]Pad_1600_um" "C23" -2540 16510)
+			(pin "Round[A]Pad_1600_um" "C24" -2540 19050)
+			(pin "Round[A]Pad_1600_um" "C25" -2540 21590)
+			(pin "Round[A]Pad_1600_um" "C26" -2540 24130)
+			(pin "Round[A]Pad_1600_um" "C27" -2540 26670)
+			(pin "Round[A]Pad_1600_um" "C28" -2540 29210)
+			(pin "Round[A]Pad_1600_um" "C29" -2540 31750)
+			(pin "Round[A]Pad_1600_um" "C30" -2540 34290)
+			(pin "Round[A]Pad_1600_um" "C31" -2540 36830)
+			(pin "Round[A]Pad_1600_um" "C32" -2540 39370)
+		)
+		(image "IMG_U6"
+			(pin "Rect[T]Pad_400x1475_um" "1" -3575 -2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "2" -2925 -2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "3" -2275 -2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "4" -1625 -2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "5" -975 -2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "6" -325 -2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "7" 325 -2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "8" 975 -2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "9" 1625 -2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "10" 2275 -2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "11" 2925 -2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "12" 3575 -2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "13" 3575 2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "14" 2925 2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "15" 2275 2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "16" 1625 2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "17" 975 2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "18" 325 2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "19" -325 2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "20" -975 2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "21" -1625 2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "22" -2275 2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "23" -2925 2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "24" -3575 2862.5)
+		)
+		(image "IMG_U7"
+			(pin "Rect[T]Pad_400x1475_um" "1" -3575 -2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "2" -2925 -2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "3" -2275 -2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "4" -1625 -2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "5" -975 -2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "6" -325 -2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "7" 325 -2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "8" 975 -2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "9" 1625 -2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "10" 2275 -2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "11" 2925 -2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "12" 3575 -2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "13" 3575 2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "14" 2925 2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "15" 2275 2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "16" 1625 2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "17" 975 2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "18" 325 2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "19" -325 2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "20" -975 2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "21" -1625 2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "22" -2275 2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "23" -2925 2862.5)
+			(pin "Rect[T]Pad_400x1475_um" "24" -3575 2862.5)
+		)
+		(image "IMG_C5"
+			(pin "Rect[T]Pad_900x950_um" "1" -775 0)
+			(pin "Rect[T]Pad_900x950_um" "2" 775 0)
+		)
+		(image "IMG_C6"
+			(pin "Rect[T]Pad_900x950_um" "1" -775 0)
+			(pin "Rect[T]Pad_900x950_um" "2" 775 0)
+		)
+		(image "IMG_R3"
+			(pin "Rect[T]Pad_950x800_um" "1" 0 -825)
+			(pin "Rect[T]Pad_950x800_um" "2" 0 825)
+		)
+		(image "IMG_R4"
+			(pin "Rect[T]Pad_800x950_um" "1" -825 0)
+			(pin "Rect[T]Pad_800x950_um" "2" 825 0)
+		)
+		(image "IMG_R5"
+			(pin "Rect[T]Pad_800x950_um" "1" -825 0)
+			(pin "Rect[T]Pad_800x950_um" "2" 825 0)
+		)
+		(image "IMG_U1"
+			(pin "Rect[T]Pad_1475x300_um" "1" -7662.5 6000)
+			(pin "Rect[T]Pad_1475x300_um" "2" -7662.5 5500)
+			(pin "Rect[T]Pad_1475x300_um" "3" -7662.5 5000)
+			(pin "Rect[T]Pad_1475x300_um" "4" -7662.5 4500)
+			(pin "Rect[T]Pad_1475x300_um" "5" -7662.5 4000)
+			(pin "Rect[T]Pad_1475x300_um" "6" -7662.5 3500)
+			(pin "Rect[T]Pad_1475x300_um" "7" -7662.5 3000)
+			(pin "Rect[T]Pad_1475x300_um" "8" -7662.5 2500)
+			(pin "Rect[T]Pad_1475x300_um" "9" -7662.5 2000)
+			(pin "Rect[T]Pad_1475x300_um" "10" -7662.5 1500)
+			(pin "Rect[T]Pad_1475x300_um" "11" -7662.5 1000)
+			(pin "Rect[T]Pad_1475x300_um" "12" -7662.5 500)
+			(pin "Rect[T]Pad_1475x300_um" "13" -7662.5 0)
+			(pin "Rect[T]Pad_1475x300_um" "14" -7662.5 -500)
+			(pin "Rect[T]Pad_1475x300_um" "15" -7662.5 -1000)
+			(pin "Rect[T]Pad_1475x300_um" "16" -7662.5 -1500)
+			(pin "Rect[T]Pad_1475x300_um" "17" -7662.5 -2000)
+			(pin "Rect[T]Pad_1475x300_um" "18" -7662.5 -2500)
+			(pin "Rect[T]Pad_1475x300_um" "19" -7662.5 -3000)
+			(pin "Rect[T]Pad_1475x300_um" "20" -7662.5 -3500)
+			(pin "Rect[T]Pad_1475x300_um" "21" -7662.5 -4000)
+			(pin "Rect[T]Pad_1475x300_um" "22" -7662.5 -4500)
+			(pin "Rect[T]Pad_1475x300_um" "23" -7662.5 -5000)
+			(pin "Rect[T]Pad_1475x300_um" "24" -7662.5 -5500)
+			(pin "Rect[T]Pad_1475x300_um" "25" -7662.5 -6000)
+			(pin "Rect[T]Pad_300x1475_um" "26" -6000 -7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "27" -5500 -7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "28" -5000 -7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "29" -4500 -7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "30" -4000 -7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "31" -3500 -7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "32" -3000 -7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "33" -2500 -7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "34" -2000 -7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "35" -1500 -7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "36" -1000 -7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "37" -500 -7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "38" 0 -7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "39" 500 -7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "40" 1000 -7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "41" 1500 -7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "42" 2000 -7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "43" 2500 -7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "44" 3000 -7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "45" 3500 -7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "46" 4000 -7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "47" 4500 -7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "48" 5000 -7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "49" 5500 -7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "50" 6000 -7662.5)
+			(pin "Rect[T]Pad_1475x300_um" "51" 7662.5 -6000)
+			(pin "Rect[T]Pad_1475x300_um" "52" 7662.5 -5500)
+			(pin "Rect[T]Pad_1475x300_um" "53" 7662.5 -5000)
+			(pin "Rect[T]Pad_1475x300_um" "54" 7662.5 -4500)
+			(pin "Rect[T]Pad_1475x300_um" "55" 7662.5 -4000)
+			(pin "Rect[T]Pad_1475x300_um" "56" 7662.5 -3500)
+			(pin "Rect[T]Pad_1475x300_um" "57" 7662.5 -3000)
+			(pin "Rect[T]Pad_1475x300_um" "58" 7662.5 -2500)
+			(pin "Rect[T]Pad_1475x300_um" "59" 7662.5 -2000)
+			(pin "Rect[T]Pad_1475x300_um" "60" 7662.5 -1500)
+			(pin "Rect[T]Pad_1475x300_um" "61" 7662.5 -1000)
+			(pin "Rect[T]Pad_1475x300_um" "62" 7662.5 -500)
+			(pin "Rect[T]Pad_1475x300_um" "63" 7662.5 0)
+			(pin "Rect[T]Pad_1475x300_um" "64" 7662.5 500)
+			(pin "Rect[T]Pad_1475x300_um" "65" 7662.5 1000)
+			(pin "Rect[T]Pad_1475x300_um" "66" 7662.5 1500)
+			(pin "Rect[T]Pad_1475x300_um" "67" 7662.5 2000)
+			(pin "Rect[T]Pad_1475x300_um" "68" 7662.5 2500)
+			(pin "Rect[T]Pad_1475x300_um" "69" 7662.5 3000)
+			(pin "Rect[T]Pad_1475x300_um" "70" 7662.5 3500)
+			(pin "Rect[T]Pad_1475x300_um" "71" 7662.5 4000)
+			(pin "Rect[T]Pad_1475x300_um" "72" 7662.5 4500)
+			(pin "Rect[T]Pad_1475x300_um" "73" 7662.5 5000)
+			(pin "Rect[T]Pad_1475x300_um" "74" 7662.5 5500)
+			(pin "Rect[T]Pad_1475x300_um" "75" 7662.5 6000)
+			(pin "Rect[T]Pad_300x1475_um" "76" 6000 7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "77" 5500 7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "78" 5000 7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "79" 4500 7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "80" 4000 7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "81" 3500 7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "82" 3000 7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "83" 2500 7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "84" 2000 7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "85" 1500 7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "86" 1000 7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "87" 500 7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "88" 0 7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "89" -500 7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "90" -1000 7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "91" -1500 7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "92" -2000 7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "93" -2500 7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "94" -3000 7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "95" -3500 7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "96" -4000 7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "97" -4500 7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "98" -5000 7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "99" -5500 7662.5)
+			(pin "Rect[T]Pad_300x1475_um" "100" -6000 7662.5)
+		)
+		(image "IMG_U2"
+			(pin "Rect[T]Pad_1475x300_um" "1" 3712.5 -5750)
+			(pin "Rect[T]Pad_1475x300_um" "2" 3712.5 -5250)
+			(pin "Rect[T]Pad_1475x300_um" "3" 3712.5 -4750)
+			(pin "Rect[T]Pad_1475x300_um" "4" 3712.5 -4250)
+			(pin "Rect[T]Pad_1475x300_um" "5" 3712.5 -3750)
+			(pin "Rect[T]Pad_1475x300_um" "6" 3712.5 -3250)
+			(pin "Rect[T]Pad_1475x300_um" "7" 3712.5 -2750)
+			(pin "Rect[T]Pad_1475x300_um" "8" 3712.5 -2250)
+			(pin "Rect[T]Pad_1475x300_um" "9" 3712.5 -1750)
+			(pin "Rect[T]Pad_1475x300_um" "10" 3712.5 -1250)
+			(pin "Rect[T]Pad_1475x300_um" "11" 3712.5 -750)
+			(pin "Rect[T]Pad_1475x300_um" "12" 3712.5 -250)
+			(pin "Rect[T]Pad_1475x300_um" "13" 3712.5 250)
+			(pin "Rect[T]Pad_1475x300_um" "14" 3712.5 750)
+			(pin "Rect[T]Pad_1475x300_um" "15" 3712.5 1250)
+			(pin "Rect[T]Pad_1475x300_um" "16" 3712.5 1750)
+			(pin "Rect[T]Pad_1475x300_um" "17" 3712.5 2250)
+			(pin "Rect[T]Pad_1475x300_um" "18" 3712.5 2750)
+			(pin "Rect[T]Pad_1475x300_um" "19" 3712.5 3250)
+			(pin "Rect[T]Pad_1475x300_um" "20" 3712.5 3750)
+			(pin "Rect[T]Pad_1475x300_um" "21" 3712.5 4250)
+			(pin "Rect[T]Pad_1475x300_um" "22" 3712.5 4750)
+			(pin "Rect[T]Pad_1475x300_um" "23" 3712.5 5250)
+			(pin "Rect[T]Pad_1475x300_um" "24" 3712.5 5750)
+			(pin "Rect[T]Pad_1475x300_um" "25" -3712.5 5750)
+			(pin "Rect[T]Pad_1475x300_um" "26" -3712.5 5250)
+			(pin "Rect[T]Pad_1475x300_um" "27" -3712.5 4750)
+			(pin "Rect[T]Pad_1475x300_um" "28" -3712.5 4250)
+			(pin "Rect[T]Pad_1475x300_um" "29" -3712.5 3750)
+			(pin "Rect[T]Pad_1475x300_um" "30" -3712.5 3250)
+			(pin "Rect[T]Pad_1475x300_um" "31" -3712.5 2750)
+			(pin "Rect[T]Pad_1475x300_um" "32" -3712.5 2250)
+			(pin "Rect[T]Pad_1475x300_um" "33" -3712.5 1750)
+			(pin "Rect[T]Pad_1475x300_um" "34" -3712.5 1250)
+			(pin "Rect[T]Pad_1475x300_um" "35" -3712.5 750)
+			(pin "Rect[T]Pad_1475x300_um" "36" -3712.5 250)
+			(pin "Rect[T]Pad_1475x300_um" "37" -3712.5 -250)
+			(pin "Rect[T]Pad_1475x300_um" "38" -3712.5 -750)
+			(pin "Rect[T]Pad_1475x300_um" "39" -3712.5 -1250)
+			(pin "Rect[T]Pad_1475x300_um" "40" -3712.5 -1750)
+			(pin "Rect[T]Pad_1475x300_um" "41" -3712.5 -2250)
+			(pin "Rect[T]Pad_1475x300_um" "42" -3712.5 -2750)
+			(pin "Rect[T]Pad_1475x300_um" "43" -3712.5 -3250)
+			(pin "Rect[T]Pad_1475x300_um" "44" -3712.5 -3750)
+			(pin "Rect[T]Pad_1475x300_um" "45" -3712.5 -4250)
+			(pin "Rect[T]Pad_1475x300_um" "46" -3712.5 -4750)
+			(pin "Rect[T]Pad_1475x300_um" "47" -3712.5 -5250)
+			(pin "Rect[T]Pad_1475x300_um" "48" -3712.5 -5750)
+		)
+		(image "IMG_U3"
+			(pin "Rect[T]Pad_1475x300_um" "1" 3712.5 -5750)
+			(pin "Rect[T]Pad_1475x300_um" "2" 3712.5 -5250)
+			(pin "Rect[T]Pad_1475x300_um" "3" 3712.5 -4750)
+			(pin "Rect[T]Pad_1475x300_um" "4" 3712.5 -4250)
+			(pin "Rect[T]Pad_1475x300_um" "5" 3712.5 -3750)
+			(pin "Rect[T]Pad_1475x300_um" "6" 3712.5 -3250)
+			(pin "Rect[T]Pad_1475x300_um" "7" 3712.5 -2750)
+			(pin "Rect[T]Pad_1475x300_um" "8" 3712.5 -2250)
+			(pin "Rect[T]Pad_1475x300_um" "9" 3712.5 -1750)
+			(pin "Rect[T]Pad_1475x300_um" "10" 3712.5 -1250)
+			(pin "Rect[T]Pad_1475x300_um" "11" 3712.5 -750)
+			(pin "Rect[T]Pad_1475x300_um" "12" 3712.5 -250)
+			(pin "Rect[T]Pad_1475x300_um" "13" 3712.5 250)
+			(pin "Rect[T]Pad_1475x300_um" "14" 3712.5 750)
+			(pin "Rect[T]Pad_1475x300_um" "15" 3712.5 1250)
+			(pin "Rect[T]Pad_1475x300_um" "16" 3712.5 1750)
+			(pin "Rect[T]Pad_1475x300_um" "17" 3712.5 2250)
+			(pin "Rect[T]Pad_1475x300_um" "18" 3712.5 2750)
+			(pin "Rect[T]Pad_1475x300_um" "19" 3712.5 3250)
+			(pin "Rect[T]Pad_1475x300_um" "20" 3712.5 3750)
+			(pin "Rect[T]Pad_1475x300_um" "21" 3712.5 4250)
+			(pin "Rect[T]Pad_1475x300_um" "22" 3712.5 4750)
+			(pin "Rect[T]Pad_1475x300_um" "23" 3712.5 5250)
+			(pin "Rect[T]Pad_1475x300_um" "24" 3712.5 5750)
+			(pin "Rect[T]Pad_1475x300_um" "25" -3712.5 5750)
+			(pin "Rect[T]Pad_1475x300_um" "26" -3712.5 5250)
+			(pin "Rect[T]Pad_1475x300_um" "27" -3712.5 4750)
+			(pin "Rect[T]Pad_1475x300_um" "28" -3712.5 4250)
+			(pin "Rect[T]Pad_1475x300_um" "29" -3712.5 3750)
+			(pin "Rect[T]Pad_1475x300_um" "30" -3712.5 3250)
+			(pin "Rect[T]Pad_1475x300_um" "31" -3712.5 2750)
+			(pin "Rect[T]Pad_1475x300_um" "32" -3712.5 2250)
+			(pin "Rect[T]Pad_1475x300_um" "33" -3712.5 1750)
+			(pin "Rect[T]Pad_1475x300_um" "34" -3712.5 1250)
+			(pin "Rect[T]Pad_1475x300_um" "35" -3712.5 750)
+			(pin "Rect[T]Pad_1475x300_um" "36" -3712.5 250)
+			(pin "Rect[T]Pad_1475x300_um" "37" -3712.5 -250)
+			(pin "Rect[T]Pad_1475x300_um" "38" -3712.5 -750)
+			(pin "Rect[T]Pad_1475x300_um" "39" -3712.5 -1250)
+			(pin "Rect[T]Pad_1475x300_um" "40" -3712.5 -1750)
+			(pin "Rect[T]Pad_1475x300_um" "41" -3712.5 -2250)
+			(pin "Rect[T]Pad_1475x300_um" "42" -3712.5 -2750)
+			(pin "Rect[T]Pad_1475x300_um" "43" -3712.5 -3250)
+			(pin "Rect[T]Pad_1475x300_um" "44" -3712.5 -3750)
+			(pin "Rect[T]Pad_1475x300_um" "45" -3712.5 -4250)
+			(pin "Rect[T]Pad_1475x300_um" "46" -3712.5 -4750)
+			(pin "Rect[T]Pad_1475x300_um" "47" -3712.5 -5250)
+			(pin "Rect[T]Pad_1475x300_um" "48" -3712.5 -5750)
+		)
+		(image "IMG_U4"
+			(pin "Rect[T]Pad_1475x300_um" "1" 3712.5 -5750)
+			(pin "Rect[T]Pad_1475x300_um" "2" 3712.5 -5250)
+			(pin "Rect[T]Pad_1475x300_um" "3" 3712.5 -4750)
+			(pin "Rect[T]Pad_1475x300_um" "4" 3712.5 -4250)
+			(pin "Rect[T]Pad_1475x300_um" "5" 3712.5 -3750)
+			(pin "Rect[T]Pad_1475x300_um" "6" 3712.5 -3250)
+			(pin "Rect[T]Pad_1475x300_um" "7" 3712.5 -2750)
+			(pin "Rect[T]Pad_1475x300_um" "8" 3712.5 -2250)
+			(pin "Rect[T]Pad_1475x300_um" "9" 3712.5 -1750)
+			(pin "Rect[T]Pad_1475x300_um" "10" 3712.5 -1250)
+			(pin "Rect[T]Pad_1475x300_um" "11" 3712.5 -750)
+			(pin "Rect[T]Pad_1475x300_um" "12" 3712.5 -250)
+			(pin "Rect[T]Pad_1475x300_um" "13" 3712.5 250)
+			(pin "Rect[T]Pad_1475x300_um" "14" 3712.5 750)
+			(pin "Rect[T]Pad_1475x300_um" "15" 3712.5 1250)
+			(pin "Rect[T]Pad_1475x300_um" "16" 3712.5 1750)
+			(pin "Rect[T]Pad_1475x300_um" "17" 3712.5 2250)
+			(pin "Rect[T]Pad_1475x300_um" "18" 3712.5 2750)
+			(pin "Rect[T]Pad_1475x300_um" "19" 3712.5 3250)
+			(pin "Rect[T]Pad_1475x300_um" "20" 3712.5 3750)
+			(pin "Rect[T]Pad_1475x300_um" "21" 3712.5 4250)
+			(pin "Rect[T]Pad_1475x300_um" "22" 3712.5 4750)
+			(pin "Rect[T]Pad_1475x300_um" "23" 3712.5 5250)
+			(pin "Rect[T]Pad_1475x300_um" "24" 3712.5 5750)
+			(pin "Rect[T]Pad_1475x300_um" "25" -3712.5 5750)
+			(pin "Rect[T]Pad_1475x300_um" "26" -3712.5 5250)
+			(pin "Rect[T]Pad_1475x300_um" "27" -3712.5 4750)
+			(pin "Rect[T]Pad_1475x300_um" "28" -3712.5 4250)
+			(pin "Rect[T]Pad_1475x300_um" "29" -3712.5 3750)
+			(pin "Rect[T]Pad_1475x300_um" "30" -3712.5 3250)
+			(pin "Rect[T]Pad_1475x300_um" "31" -3712.5 2750)
+			(pin "Rect[T]Pad_1475x300_um" "32" -3712.5 2250)
+			(pin "Rect[T]Pad_1475x300_um" "33" -3712.5 1750)
+			(pin "Rect[T]Pad_1475x300_um" "34" -3712.5 1250)
+			(pin "Rect[T]Pad_1475x300_um" "35" -3712.5 750)
+			(pin "Rect[T]Pad_1475x300_um" "36" -3712.5 250)
+			(pin "Rect[T]Pad_1475x300_um" "37" -3712.5 -250)
+			(pin "Rect[T]Pad_1475x300_um" "38" -3712.5 -750)
+			(pin "Rect[T]Pad_1475x300_um" "39" -3712.5 -1250)
+			(pin "Rect[T]Pad_1475x300_um" "40" -3712.5 -1750)
+			(pin "Rect[T]Pad_1475x300_um" "41" -3712.5 -2250)
+			(pin "Rect[T]Pad_1475x300_um" "42" -3712.5 -2750)
+			(pin "Rect[T]Pad_1475x300_um" "43" -3712.5 -3250)
+			(pin "Rect[T]Pad_1475x300_um" "44" -3712.5 -3750)
+			(pin "Rect[T]Pad_1475x300_um" "45" -3712.5 -4250)
+			(pin "Rect[T]Pad_1475x300_um" "46" -3712.5 -4750)
+			(pin "Rect[T]Pad_1475x300_um" "47" -3712.5 -5250)
+			(pin "Rect[T]Pad_1475x300_um" "48" -3712.5 -5750)
+		)
+		(image "IMG_U5"
+			(pin "Rect[T]Pad_1475x300_um" "1" -3712.5 5750)
+			(pin "Rect[T]Pad_1475x300_um" "2" -3712.5 5250)
+			(pin "Rect[T]Pad_1475x300_um" "3" -3712.5 4750)
+			(pin "Rect[T]Pad_1475x300_um" "4" -3712.5 4250)
+			(pin "Rect[T]Pad_1475x300_um" "5" -3712.5 3750)
+			(pin "Rect[T]Pad_1475x300_um" "6" -3712.5 3250)
+			(pin "Rect[T]Pad_1475x300_um" "7" -3712.5 2750)
+			(pin "Rect[T]Pad_1475x300_um" "8" -3712.5 2250)
+			(pin "Rect[T]Pad_1475x300_um" "9" -3712.5 1750)
+			(pin "Rect[T]Pad_1475x300_um" "10" -3712.5 1250)
+			(pin "Rect[T]Pad_1475x300_um" "11" -3712.5 750)
+			(pin "Rect[T]Pad_1475x300_um" "12" -3712.5 250)
+			(pin "Rect[T]Pad_1475x300_um" "13" -3712.5 -250)
+			(pin "Rect[T]Pad_1475x300_um" "14" -3712.5 -750)
+			(pin "Rect[T]Pad_1475x300_um" "15" -3712.5 -1250)
+			(pin "Rect[T]Pad_1475x300_um" "16" -3712.5 -1750)
+			(pin "Rect[T]Pad_1475x300_um" "17" -3712.5 -2250)
+			(pin "Rect[T]Pad_1475x300_um" "18" -3712.5 -2750)
+			(pin "Rect[T]Pad_1475x300_um" "19" -3712.5 -3250)
+			(pin "Rect[T]Pad_1475x300_um" "20" -3712.5 -3750)
+			(pin "Rect[T]Pad_1475x300_um" "21" -3712.5 -4250)
+			(pin "Rect[T]Pad_1475x300_um" "22" -3712.5 -4750)
+			(pin "Rect[T]Pad_1475x300_um" "23" -3712.5 -5250)
+			(pin "Rect[T]Pad_1475x300_um" "24" -3712.5 -5750)
+			(pin "Rect[T]Pad_1475x300_um" "25" 3712.5 -5750)
+			(pin "Rect[T]Pad_1475x300_um" "26" 3712.5 -5250)
+			(pin "Rect[T]Pad_1475x300_um" "27" 3712.5 -4750)
+			(pin "Rect[T]Pad_1475x300_um" "28" 3712.5 -4250)
+			(pin "Rect[T]Pad_1475x300_um" "29" 3712.5 -3750)
+			(pin "Rect[T]Pad_1475x300_um" "30" 3712.5 -3250)
+			(pin "Rect[T]Pad_1475x300_um" "31" 3712.5 -2750)
+			(pin "Rect[T]Pad_1475x300_um" "32" 3712.5 -2250)
+			(pin "Rect[T]Pad_1475x300_um" "33" 3712.5 -1750)
+			(pin "Rect[T]Pad_1475x300_um" "34" 3712.5 -1250)
+			(pin "Rect[T]Pad_1475x300_um" "35" 3712.5 -750)
+			(pin "Rect[T]Pad_1475x300_um" "36" 3712.5 -250)
+			(pin "Rect[T]Pad_1475x300_um" "37" 3712.5 250)
+			(pin "Rect[T]Pad_1475x300_um" "38" 3712.5 750)
+			(pin "Rect[T]Pad_1475x300_um" "39" 3712.5 1250)
+			(pin "Rect[T]Pad_1475x300_um" "40" 3712.5 1750)
+			(pin "Rect[T]Pad_1475x300_um" "41" 3712.5 2250)
+			(pin "Rect[T]Pad_1475x300_um" "42" 3712.5 2750)
+			(pin "Rect[T]Pad_1475x300_um" "43" 3712.5 3250)
+			(pin "Rect[T]Pad_1475x300_um" "44" 3712.5 3750)
+			(pin "Rect[T]Pad_1475x300_um" "45" 3712.5 4250)
+			(pin "Rect[T]Pad_1475x300_um" "46" 3712.5 4750)
+			(pin "Rect[T]Pad_1475x300_um" "47" 3712.5 5250)
+			(pin "Rect[T]Pad_1475x300_um" "48" 3712.5 5750)
+		)
+		(image "IMG_C1"
+			(pin "Rect[T]Pad_950x900_um" "1" 0 -775)
+			(pin "Rect[T]Pad_950x900_um" "2" 0 775)
+		)
+		(image "IMG_C2"
+			(pin "Rect[T]Pad_950x900_um" "1" 0 -775)
+			(pin "Rect[T]Pad_950x900_um" "2" 0 775)
+		)
+		(image "IMG_C3"
+			(pin "Rect[T]Pad_950x900_um" "1" 0 -775)
+			(pin "Rect[T]Pad_950x900_um" "2" 0 775)
+		)
+		(image "IMG_C4"
+			(pin "Rect[T]Pad_950x900_um" "1" 0 -775)
+			(pin "Rect[T]Pad_950x900_um" "2" 0 775)
+		)
+		(image "IMG_C7"
+			(pin "Rect[T]Pad_950x900_um" "1" 0 -775)
+			(pin "Rect[T]Pad_950x900_um" "2" 0 775)
+		)
+		(image "IMG_C8"
+			(pin "Rect[T]Pad_950x900_um" "1" 0 -775)
+			(pin "Rect[T]Pad_950x900_um" "2" 0 775)
+		)
+		(image "IMG_C9"
+			(pin "Rect[T]Pad_950x900_um" "1" 0 -775)
+			(pin "Rect[T]Pad_950x900_um" "2" 0 775)
+		)
+		(image "IMG_C10"
+			(pin "Rect[T]Pad_950x900_um" "1" 0 -775)
+			(pin "Rect[T]Pad_950x900_um" "2" 0 775)
+		)
+		(image "IMG_C11"
+			(pin "Rect[T]Pad_950x900_um" "1" 0 -775)
+			(pin "Rect[T]Pad_950x900_um" "2" 0 775)
+		)
+		(image "IMG_C12"
+			(pin "Rect[T]Pad_950x900_um" "1" 0 -775)
+			(pin "Rect[T]Pad_950x900_um" "2" 0 775)
+		)
+		(image "IMG_R1"
+			(pin "Rect[T]Pad_950x800_um" "1" 0 -825)
+			(pin "Rect[T]Pad_950x800_um" "2" 0 825)
+		)
+		(image "IMG_R2"
+			(pin "Rect[T]Pad_950x800_um" "1" 0 -825)
+			(pin "Rect[T]Pad_950x800_um" "2" 0 825)
+		)
+		(image "IMG_J2"
+			(pin "Rect[A]Pad_1700x1700_um" "1" 0 0)
+			(pin "Round[A]Pad_1700_um" "2" 0 -2540)
+			(pin "Round[A]Pad_1700_um" "3" 2540 0)
+			(pin "Round[A]Pad_1700_um" "4" 2540 -2540)
+			(pin "Round[A]Pad_1700_um" "5" 5080 0)
+			(pin "Round[A]Pad_1700_um" "6" 5080 -2540)
+			(pin "Round[A]Pad_1700_um" "7" 7620 0)
+			(pin "Round[A]Pad_1700_um" "8" 7620 -2540)
+			(pin "Round[A]Pad_1700_um" "9" 10160 0)
+			(pin "Round[A]Pad_1700_um" "10" 10160 -2540)
+			(pin "Round[A]Pad_1700_um" "11" 12700 0)
+			(pin "Round[A]Pad_1700_um" "12" 12700 -2540)
+			(pin "Round[A]Pad_1700_um" "13" 15240 0)
+			(pin "Round[A]Pad_1700_um" "14" 15240 -2540)
+			(pin "Round[A]Pad_1700_um" "15" 17780 0)
+			(pin "Round[A]Pad_1700_um" "16" 17780 -2540)
+			(pin "Round[A]Pad_1700_um" "17" 20320 0)
+			(pin "Round[A]Pad_1700_um" "18" 20320 -2540)
+			(pin "Round[A]Pad_1700_um" "19" 22860 0)
+			(pin "Round[A]Pad_1700_um" "20" 22860 -2540)
+			(pin "Round[A]Pad_1700_um" "21" 25400 0)
+			(pin "Round[A]Pad_1700_um" "22" 25400 -2540)
+			(pin "Round[A]Pad_1700_um" "23" 27940 0)
+			(pin "Round[A]Pad_1700_um" "24" 27940 -2540)
+			(pin "Round[A]Pad_1700_um" "25" 30480 0)
+			(pin "Round[A]Pad_1700_um" "26" 30480 -2540)
+			(pin "Round[A]Pad_1700_um" "27" 33020 0)
+			(pin "Round[A]Pad_1700_um" "28" 33020 -2540)
+			(pin "Round[A]Pad_1700_um" "29" 35560 0)
+			(pin "Round[A]Pad_1700_um" "30" 35560 -2540)
+			(pin "Round[A]Pad_1700_um" "31" 38100 0)
+			(pin "Round[A]Pad_1700_um" "32" 38100 -2540)
+			(pin "Round[A]Pad_1700_um" "33" 40640 0)
+			(pin "Round[A]Pad_1700_um" "34" 40640 -2540)
+			(pin "Round[A]Pad_1700_um" "35" 43180 0)
+			(pin "Round[A]Pad_1700_um" "36" 43180 -2540)
+			(pin "Round[A]Pad_1700_um" "37" 45720 0)
+			(pin "Round[A]Pad_1700_um" "38" 45720 -2540)
+			(pin "Round[A]Pad_1700_um" "39" 48260 0)
+			(pin "Round[A]Pad_1700_um" "40" 48260 -2540)
+		)
+		(image "IMG_H3")
+		(image "IMG_H4")
+		(image "IMG_H5")
+		(image "IMG_H6")
+		(image "IMG_H7")
+		(image "IMG_H8")
+		(image "IMG_F1"
+			(pin "Rect[T]Pad_1125x3400_um" "1" -2137.5 0)
+			(pin "Rect[T]Pad_1125x3400_um" "2" 2137.5 0)
+		)
+		(image "IMG_U9"
+			(pin "Rect[T]Pad_1025x350_um" "1" -837.5 650)
+			(pin "Rect[T]Pad_1025x350_um" "2" -837.5 0)
+			(pin "Rect[T]Pad_1025x350_um" "3" -837.5 -650)
+			(pin "Rect[T]Pad_1025x350_um" "4" 837.5 -650)
+			(pin "Rect[T]Pad_1025x350_um" "5" 837.5 0)
+			(pin "Rect[T]Pad_1025x350_um" "6" 837.5 650)
+		)
+		(image "IMG_C13"
+			(pin "Rect[T]Pad_1000x1450_um" "1" -950 0)
+			(pin "Rect[T]Pad_1000x1450_um" "2" 950 0)
+		)
+		(image "IMG_C14"
+			(pin "Rect[T]Pad_1000x1450_um" "1" -950 0)
+			(pin "Rect[T]Pad_1000x1450_um" "2" 950 0)
+		)
+		(image "IMG_U8"
+			(pin "Rect[T]Pad_2000x1500_um" "1" -3150 2300)
+			(pin "Rect[T]Pad_2000x1500_um" "2" -3150 0)
+			(pin "Rect[T]Pad_2000x3800_um" "2@1" 3150 0)
+			(pin "Rect[T]Pad_2000x1500_um" "3" -3150 -2300)
+		)
+		(image "IMG_C15"
+			(pin "Rect[T]Pad_1450x1000_um" "1" 0 -950)
+			(pin "Rect[T]Pad_1450x1000_um" "2" 0 950)
+		)
+		(image "IMG_C16"
+			(pin "Rect[T]Pad_1450x1000_um" "1" 0 -950)
+			(pin "Rect[T]Pad_1450x1000_um" "2" 0 950)
+		)
+		(image "IMG_F2"
+			(pin "Rect[T]Pad_1250x1750_um" "1" -1400 0)
+			(pin "Rect[T]Pad_1250x1750_um" "2" 1400 0)
+		)
+		(image "IMG_F3"
+			(pin "Rect[T]Pad_1125x3400_um" "1" -2137.5 0)
+			(pin "Rect[T]Pad_1125x3400_um" "2" 2137.5 0)
+		)
+		(image "IMG_J3"
+			(pin "Rect[A]Pad_1700x1700_um" "1" 0 0)
+			(pin "Round[A]Pad_1700_um" "2" 2540 0)
+			(pin "Round[A]Pad_1700_um" "3" 5080 0)
+		)
+		(image "IMG_Q1"
+			(pin "Rect[T]Pad_1475x600_um" "1" -937.5 950)
+			(pin "Rect[T]Pad_1475x600_um" "2" -937.5 -950)
+			(pin "Rect[T]Pad_1475x600_um" "3" 937.5 0)
+		)
+		(image "IMG_R8"
+			(pin "Rect[T]Pad_800x950_um" "1" -825 0)
+			(pin "Rect[T]Pad_800x950_um" "2" 825 0)
+		)
+		(image "IMG_R9"
+			(pin "Rect[T]Pad_800x950_um" "1" -825 0)
+			(pin "Rect[T]Pad_800x950_um" "2" 825 0)
+		)
+		(image "IMG_D1"
+			(pin "Rect[T]Pad_900x1200_um" "1" -1650 0)
+			(pin "Rect[T]Pad_900x1200_um" "2" 1650 0)
+		)
+		(image "IMG_JP1"
+			(pin "Rect[A]Pad_1700x1700_um" "1" 0 0)
+			(pin "Round[A]Pad_1700_um" "2" 2540 0)
+		)
+		(image "IMG_R6"
+			(pin "Rect[T]Pad_800x950_um" "1" -825 0)
+			(pin "Rect[T]Pad_800x950_um" "2" 825 0)
+		)
+		(image "IMG_J6"
+			(pin "Rect[A]Pad_1700x1700_um" "1" 0 0)
+			(pin "Round[A]Pad_1700_um" "2" 2540 0)
+		)
+		(image "IMG_R7"
+			(pin "Rect[T]Pad_800x950_um" "1" -825 0)
+			(pin "Rect[T]Pad_800x950_um" "2" 825 0)
+		)
+		(image "IMG_D2"
+			(pin "Rect[T]Pad_875x950_um" "1" 787.5 0)
+			(pin "Rect[T]Pad_875x950_um" "2" -787.5 0)
+		)
+		(image "IMG_R10"
+			(pin "Rect[T]Pad_800x950_um" "1" -825 0)
+			(pin "Rect[T]Pad_800x950_um" "2" 825 0)
+		)
+		(image "IMG_R11"
+			(pin "Rect[T]Pad_800x950_um" "1" -825 0)
+			(pin "Rect[T]Pad_800x950_um" "2" 825 0)
+		)
+		(image "IMG_J5"
+			(pin "Rect[A]Pad_1700x1700_um" "1" 0 0)
+			(pin "Round[A]Pad_1700_um" "2" 2540 0)
+			(pin "Round[A]Pad_1700_um" "3" 5080 0)
+			(pin "Round[A]Pad_1700_um" "4" 7620 0)
+		)
+		(image "IMG_J4"
+			(pin "Rect[T]Pad_610x2000_um" "1" 4500 -1800)
+			(pin "Rect[T]Pad_610x2000_um" "2" 3500 -1800)
+			(pin "Rect[T]Pad_610x2000_um" "3" 2500 -1800)
+			(pin "Rect[T]Pad_610x2000_um" "4" 1500 -1800)
+			(pin "Rect[T]Pad_610x2000_um" "5" 500 -1800)
+			(pin "Rect[T]Pad_610x2000_um" "6" -500 -1800)
+			(pin "Rect[T]Pad_610x2000_um" "7" -1500 -1800)
+			(pin "Rect[T]Pad_610x2000_um" "8" -2500 -1800)
+			(pin "Rect[T]Pad_610x2000_um" "9" -3500 -1800)
+			(pin "Rect[T]Pad_610x2000_um" "10" -4500 -1800)
+			(pin "Rect[T]Pad_2680x3600_um" "MP" 7490 1000)
+			(pin "Rect[T]Pad_2680x3600_um" "MP@1" -7490 1000)
+		)
+		(image "IMG_H1")
+		(image "IMG_H2")
+		(padstack "Rect[A]Pad_1600x1600_um"
+			(shape
+				(rect F.Cu -800 -800 800 800)
+			)
+			(shape
+				(rect B.Cu -800 -800 800 800)
+			)
+			(attach off)
+		)
+		(padstack "Round[A]Pad_1600_um"
+			(shape
+				(circle F.Cu 1600)
+			)
+			(shape
+				(circle B.Cu 1600)
+			)
+			(attach off)
+		)
+		(padstack "Rect[T]Pad_400x1475_um"
+			(shape
+				(rect F.Cu -200 -737.5 200 737.5)
+			)
+			(attach off)
+		)
+		(padstack "Rect[T]Pad_900x950_um"
+			(shape
+				(rect F.Cu -450 -475 450 475)
+			)
+			(attach off)
+		)
+		(padstack "Rect[T]Pad_950x800_um"
+			(shape
+				(rect F.Cu -475 -400 475 400)
+			)
+			(attach off)
+		)
+		(padstack "Rect[T]Pad_800x950_um"
+			(shape
+				(rect F.Cu -400 -475 400 475)
+			)
+			(attach off)
+		)
+		(padstack "Rect[T]Pad_1475x300_um"
+			(shape
+				(rect F.Cu -737.5 -150 737.5 150)
+			)
+			(attach off)
+		)
+		(padstack "Rect[T]Pad_300x1475_um"
+			(shape
+				(rect F.Cu -150 -737.5 150 737.5)
+			)
+			(attach off)
+		)
+		(padstack "Rect[T]Pad_950x900_um"
+			(shape
+				(rect F.Cu -475 -450 475 450)
+			)
+			(attach off)
+		)
+		(padstack "Rect[A]Pad_1700x1700_um"
+			(shape
+				(rect F.Cu -850 -850 850 850)
+			)
+			(shape
+				(rect B.Cu -850 -850 850 850)
+			)
+			(attach off)
+		)
+		(padstack "Round[A]Pad_1700_um"
+			(shape
+				(circle F.Cu 1700)
+			)
+			(shape
+				(circle B.Cu 1700)
+			)
+			(attach off)
+		)
+		(padstack "Rect[T]Pad_1125x3400_um"
+			(shape
+				(rect F.Cu -562.5 -1700 562.5 1700)
+			)
+			(attach off)
+		)
+		(padstack "Rect[T]Pad_1025x350_um"
+			(shape
+				(rect F.Cu -512.5 -175 512.5 175)
+			)
+			(attach off)
+		)
+		(padstack "Rect[T]Pad_1000x1450_um"
+			(shape
+				(rect F.Cu -500 -725 500 725)
+			)
+			(attach off)
+		)
+		(padstack "Rect[T]Pad_2000x1500_um"
+			(shape
+				(rect F.Cu -1000 -750 1000 750)
+			)
+			(attach off)
+		)
+		(padstack "Rect[T]Pad_2000x3800_um"
+			(shape
+				(rect F.Cu -1000 -1900 1000 1900)
+			)
+			(attach off)
+		)
+		(padstack "Rect[T]Pad_1450x1000_um"
+			(shape
+				(rect F.Cu -725 -500 725 500)
+			)
+			(attach off)
+		)
+		(padstack "Rect[T]Pad_1250x1750_um"
+			(shape
+				(rect F.Cu -625 -875 625 875)
+			)
+			(attach off)
+		)
+		(padstack "Rect[T]Pad_1475x600_um"
+			(shape
+				(rect F.Cu -737.5 -300 737.5 300)
+			)
+			(attach off)
+		)
+		(padstack "Rect[T]Pad_900x1200_um"
+			(shape
+				(rect F.Cu -450 -600 450 600)
+			)
+			(attach off)
+		)
+		(padstack "Rect[T]Pad_875x950_um"
+			(shape
+				(rect F.Cu -437.5 -475 437.5 475)
+			)
+			(attach off)
+		)
+		(padstack "Rect[T]Pad_610x2000_um"
+			(shape
+				(rect F.Cu -305 -1000 305 1000)
+			)
+			(attach off)
+		)
+		(padstack "Rect[T]Pad_2680x3600_um"
+			(shape
+				(rect F.Cu -1340 -1800 1340 1800)
+			)
+			(attach off)
+		)
+		(padstack "Via[0-1]_600:300_um"
+			(shape
+				(circle F.Cu 600)
+			)
+			(shape
+				(circle B.Cu 600)
+			)
+			(attach off)
+		)
+	)
+	(network
+		(net "+3V3"
+			(pins U1-9 U1-13 U1-31 U1-39 U1-45 U1-59 U1-63 U1-80 U1-88 U1-94 U2-7 U2-18 U2-31 U2-42 U3-7 U3-18 U3-31 U3-42 U4-7 U4-18 U4-31 U4-42 U5-7 U5-18 U5-31 U5-42 C1-1 C2-1 C3-1 C4-1 C7-1 C8-1 C9-1 C10-1 C11-1 C12-1 R1-1 R2-1 U8-2 U8-2@1 C16-1 R6-1 R7-1)
+		)
+		(net "+5V_SLOT"
+			(pins J1-B13 J1-B14 J1-B15 J1-B16 J1-B17 J1-C13 R4-1 F1-1 F2-1 F3-1)
+		)
+		(net "5V_F"
+			(pins F1-2 U9-1 C13-1)
+		)
+		(net "5V_FAN"
+			(pins F2-2 J3-2 D1-1)
+		)
+		(net "5V_PANEL"
+			(pins F3-2 J4-5 J4-6)
+		)
+		(net "5V_PI"
+			(pins U6-24 U7-24 C5-1 C6-1 J2-2 J2-4 U9-6 C14-1 U8-3 C15-1)
+		)
+		(net "FAN_G"
+			(pins Q1-1 R8-2 R9-1)
+		)
+		(net "FAN_GND_SW"
+			(pins J3-1 Q1-3 D1-2 JP1-1)
+		)
+		(net "FAN_PWM"
+			(pins U1-78 R8-1)
+		)
+		(net "FAN_TACH"
+			(pins U1-81 J3-3 R6-2)
+		)
+		(net "GND"
+			(pins J1-A30 J1-B1 J1-B2 J1-B3 J1-B4 J1-B5 J1-B6 J1-B7 J1-B8 J1-B9 J1-B29 J1-C30 U6-1 U6-12 U6-13 U7-1 U7-12 U7-13 C5-2 C6-2 R5-2 U1-10 U1-11 U1-32 U1-37 U1-46 U1-60 U1-65 U1-79 U1-90 U1-93 U2-4 U2-10 U2-15 U2-21 U2-28 U2-34 U2-39 U2-45 U3-4 U3-10 U3-15 U3-21 U3-28 U3-34 U3-39 U3-45 U4-4 U4-10 U4-15 U4-21 U4-28 U4-34 U4-39 U4-45 U5-4 U5-10 U5-15 U5-21 U5-28 U5-34 U5-39 U5-45 C1-2 C2-2 C3-2 C4-2 C7-2 C8-2 C9-2 C10-2 C11-2 C12-2 J2-6 J2-9 J2-14 J2-20 J2-25 J2-30 J2-34 J2-39 U9-2 U9-3 C13-2 C14-2 U8-1 C15-2 C16-2 Q1-2 R9-2 JP1-2 J6-2 D2-1 J5-4 J4-1 J4-4 J4-7 J4-10 J4-MP J4-MP@1)
+		)
+		(net "JTAG_TCK"
+			(pins U1-24 J2-37)
+		)
+		(net "JTAG_TDI"
+			(pins U1-23 R2-2 J2-13)
+		)
+		(net "JTAG_TDO"
+			(pins U1-25 J2-22)
+		)
+		(net "JTAG_TMS"
+			(pins U1-22 R1-2 J2-18)
+		)
+		(net "LED_A"
+			(pins D2-2 R10-2)
+		)
+		(net "LED_ACT"
+			(pins U1-83 R10-1 R11-1)
+		)
+		(net "LED_PANEL"
+			(pins R11-2 J4-9)
+		)
+		(net "LTCH_A_0"
+			(pins U1-44 U2-48)
+		)
+		(net "LTCH_A_16"
+			(pins U1-47 U3-48)
+		)
+		(net "LTCH_A_24"
+			(pins U1-48 U3-25)
+		)
+		(net "LTCH_A_8"
+			(pins U1-42 U2-25)
+		)
+		(net "LTCH_A_OE_n"
+			(pins U1-43 U2-1 U2-24 U3-1 U3-24)
+		)
+		(net "LTCH_D_RD_L"
+			(pins U1-49 U5-48)
+		)
+		(net "LTCH_D_RD_OE_n"
+			(pins U1-38 U5-1 U5-24)
+		)
+		(net "LTCH_D_RD_U"
+			(pins U1-50 U5-25)
+		)
+		(net "LTCH_D_WR_L"
+			(pins U1-40 U4-48)
+		)
+		(net "LTCH_D_WR_OE_n"
+			(pins U1-41 U4-1 U4-24)
+		)
+		(net "LTCH_D_WR_U"
+			(pins U1-36 U4-25)
+		)
+		(net "M68K_AS_n"
+			(pins U6-19 U1-72)
+		)
+		(net "M68K_BERR_n"
+			(pins U6-10 U1-55)
+		)
+		(net "M68K_BGACK_n"
+			(pins U7-9 U1-70)
+		)
+		(net "M68K_BG_n"
+			(pins U7-6 U1-71)
+		)
+		(net "M68K_BR_n"
+			(pins U7-10 U1-69)
+		)
+		(net "M68K_CLK"
+			(pins R3-2 U1-62)
+		)
+		(net "M68K_DTACK_n"
+			(pins U7-5 U1-76)
+		)
+		(net "M68K_E"
+			(pins U6-2 U1-53)
+		)
+		(net "M68K_FC0"
+			(pins U7-19 U1-66)
+		)
+		(net "M68K_FC1"
+			(pins U7-20 U1-64)
+		)
+		(net "M68K_FC2"
+			(pins U7-23 U1-57)
+		)
+		(net "M68K_IPL_n0"
+			(pins U6-5 U1-56)
+		)
+		(net "M68K_IPL_n1"
+			(pins U6-6 U1-58)
+		)
+		(net "M68K_IPL_n2"
+			(pins U6-9 U1-61)
+		)
+		(net "M68K_LDS_n"
+			(pins U6-23 U1-74)
+		)
+		(net "M68K_PMCYC_n"
+			(pins U6-16 U1-68)
+		)
+		(net "M68K_RESET_n"
+			(pins U6-15 U1-67)
+		)
+		(net "M68K_RW"
+			(pins U7-2 U1-75)
+		)
+		(net "M68K_UDS_n"
+			(pins U6-20 U1-73)
+		)
+		(net "M68K_VMA_n"
+			(pins U7-15 U1-52)
+		)
+		(net "M68K_VPA_n"
+			(pins U7-16 U1-54)
+		)
+		(net "PI_A0"
+			(pins U1-27 J2-3)
+		)
+		(net "PI_A1"
+			(pins U1-28 J2-5)
+		)
+		(net "PI_CLK"
+			(pins U1-12 J2-7)
+		)
+		(net "PI_D0"
+			(pins U1-2 U2-47 U3-47 U4-47 U5-2 J2-24)
+		)
+		(net "PI_D1"
+			(pins U1-3 U2-46 U3-46 U4-46 U5-3 J2-21)
+		)
+		(net "PI_D10"
+			(pins U1-20 U2-33 U3-33 U4-33 U5-16 J2-12)
+		)
+		(net "PI_D11"
+			(pins U1-8 U2-32 U3-32 U4-32 U5-17 J2-35)
+		)
+		(net "PI_D12"
+			(pins U1-15 U2-30 U3-30 U4-30 U5-19 J2-38)
+		)
+		(net "PI_D13"
+			(pins U1-14 U2-29 U3-29 U4-29 U5-20 J2-40)
+		)
+		(net "PI_D14"
+			(pins U1-19 U2-27 U3-27 U4-27 U5-22 J2-15)
+		)
+		(net "PI_D15"
+			(pins U1-18 U2-26 U3-26 U4-26 U5-23 J2-16)
+		)
+		(net "PI_D2"
+			(pins U1-4 U2-44 U3-44 U4-44 U5-5 J2-19)
+		)
+		(net "PI_D3"
+			(pins U1-5 U2-43 U3-43 U4-43 U5-6 J2-23)
+		)
+		(net "PI_D4"
+			(pins U1-6 U2-41 U3-41 U4-41 U5-8 J2-32)
+		)
+		(net "PI_D5"
+			(pins U1-7 U2-40 U3-40 U4-40 U5-9 J2-33)
+		)
+		(net "PI_D6"
+			(pins U1-26 U2-38 U3-38 U4-38 U5-11 J2-8)
+		)
+		(net "PI_D7"
+			(pins U1-21 U2-37 U3-37 U4-37 U5-12 J2-10)
+		)
+		(net "PI_D8"
+			(pins U1-17 U2-36 U3-36 U4-36 U5-13 J2-36)
+		)
+		(net "PI_D9"
+			(pins U1-16 U2-35 U3-35 U4-35 U5-14 J2-11)
+		)
+		(net "PI_IPL_ZERO"
+			(pins U1-33 J2-28)
+		)
+		(net "PI_RD"
+			(pins U1-35 J2-31)
+		)
+		(net "PI_RESET"
+			(pins U1-34 J2-29)
+		)
+		(net "PI_TXN_IN_PROGRESS"
+			(pins U1-30 J2-27)
+		)
+		(net "PI_WR"
+			(pins U1-29 J2-26)
+		)
+		(net "SE_A1"
+			(pins J1-A4 U2-3)
+		)
+		(net "SE_A10"
+			(pins J1-A13 U2-16)
+		)
+		(net "SE_A11"
+			(pins J1-A14 U2-17)
+		)
+		(net "SE_A12"
+			(pins J1-A15 U2-19)
+		)
+		(net "SE_A13"
+			(pins J1-A16 U2-20)
+		)
+		(net "SE_A14"
+			(pins J1-A17 U2-22)
+		)
+		(net "SE_A15"
+			(pins J1-A18 U2-23)
+		)
+		(net "SE_A16"
+			(pins J1-A19 U3-2)
+		)
+		(net "SE_A17"
+			(pins J1-A20 U3-3)
+		)
+		(net "SE_A18"
+			(pins J1-A21 U3-5)
+		)
+		(net "SE_A19"
+			(pins J1-A22 U3-6)
+		)
+		(net "SE_A2"
+			(pins J1-A5 U2-5)
+		)
+		(net "SE_A20"
+			(pins J1-A23 U3-8)
+		)
+		(net "SE_A21"
+			(pins J1-A24 U3-9)
+		)
+		(net "SE_A22"
+			(pins J1-A25 U3-11)
+		)
+		(net "SE_A23"
+			(pins J1-A26 U3-12)
+		)
+		(net "SE_A3"
+			(pins J1-A6 U2-6)
+		)
+		(net "SE_A4"
+			(pins J1-A7 U2-8)
+		)
+		(net "SE_A5"
+			(pins J1-A8 U2-9)
+		)
+		(net "SE_A6"
+			(pins J1-A9 U2-11)
+		)
+		(net "SE_A7"
+			(pins J1-A10 U2-12)
+		)
+		(net "SE_A8"
+			(pins J1-A11 U2-13)
+		)
+		(net "SE_A9"
+			(pins J1-A12 U2-14)
+		)
+		(net "SE_AS_n"
+			(pins J1-C10 U6-18)
+		)
+		(net "SE_BERR_n"
+			(pins J1-B21 U6-11)
+		)
+		(net "SE_BGACK_n"
+			(pins J1-C4 U7-8)
+		)
+		(net "SE_BG_n"
+			(pins J1-C5 U7-7)
+		)
+		(net "SE_BR_n"
+			(pins J1-C3 U7-11)
+		)
+		(net "SE_C8M"
+			(pins J1-A28 R3-1)
+		)
+		(net "SE_D0"
+			(pins J1-C14 U4-2 U5-47)
+		)
+		(net "SE_D1"
+			(pins J1-C15 U4-3 U5-46)
+		)
+		(net "SE_D10"
+			(pins J1-C24 U4-16 U5-33)
+		)
+		(net "SE_D11"
+			(pins J1-C25 U4-17 U5-32)
+		)
+		(net "SE_D12"
+			(pins J1-C26 U4-19 U5-30)
+		)
+		(net "SE_D13"
+			(pins J1-C27 U4-20 U5-29)
+		)
+		(net "SE_D14"
+			(pins J1-C28 U4-22 U5-27)
+		)
+		(net "SE_D15"
+			(pins J1-C29 U4-23 U5-26)
+		)
+		(net "SE_D2"
+			(pins J1-C16 U4-5 U5-44)
+		)
+		(net "SE_D3"
+			(pins J1-C17 U4-6 U5-43)
+		)
+		(net "SE_D4"
+			(pins J1-C18 U4-8 U5-41)
+		)
+		(net "SE_D5"
+			(pins J1-C19 U4-9 U5-40)
+		)
+		(net "SE_D6"
+			(pins J1-C20 U4-11 U5-38)
+		)
+		(net "SE_D7"
+			(pins J1-C21 U4-12 U5-37)
+		)
+		(net "SE_D8"
+			(pins J1-C22 U4-13 U5-36)
+		)
+		(net "SE_D9"
+			(pins J1-C23 U4-14 U5-35)
+		)
+		(net "SE_DTACK_n"
+			(pins J1-C6 U7-4)
+		)
+		(net "SE_E"
+			(pins J1-A27 U6-3)
+		)
+		(net "SE_FC0"
+			(pins J1-A3 U7-18)
+		)
+		(net "SE_FC1"
+			(pins J1-A2 U7-21)
+		)
+		(net "SE_FC2"
+			(pins J1-A1 U7-22)
+		)
+		(net "SE_IPL0_n"
+			(pins J1-B18 U6-4)
+		)
+		(net "SE_IPL1_n"
+			(pins J1-B19 U6-7)
+		)
+		(net "SE_IPL2_n"
+			(pins J1-B20 U6-8)
+		)
+		(net "SE_LDS_n"
+			(pins J1-C8 U6-22)
+		)
+		(net "SE_PMCYC_n"
+			(pins J1-C11 U6-17)
+		)
+		(net "SE_RESET_n"
+			(pins J1-C12 U6-14)
+		)
+		(net "SE_RW"
+			(pins J1-C7 U7-3)
+		)
+		(net "SE_UDS_n"
+			(pins J1-C9 U6-21)
+		)
+		(net "SE_VMA_n"
+			(pins J1-C2 U7-14)
+		)
+		(net "SE_VPA_n"
+			(pins J1-C1 U7-17)
+		)
+		(net "SLOT_PWR"
+			(pins R4-2 R5-1 U1-77)
+		)
+		(net "STOCK_SW_n"
+			(pins U1-82 J6-1 R7-2 J4-8)
+		)
+		(net "USB_DM"
+			(pins J5-2 J4-2)
+		)
+		(net "USB_DP"
+			(pins J5-3 J4-3)
+		)
+		(class "Power" "+5V_SLOT" "5V_F" "5V_FAN" "5V_PANEL" "FAN_GND_SW" "5V_PI"
+			(circuit
+				(use_via "Via[0-1]_600:300_um")
+			)
+			(rule
+				(width 600)
+				(clearance 200)
+			)
+		)
+		(class "Supply" "GND" "+3V3"
+			(circuit
+				(use_via "Via[0-1]_600:300_um")
+			)
+			(rule
+				(width 250)
+				(clearance 150)
+			)
+		)
+		(class "kicad_default" "" "FAN_G" "FAN_PWM" "FAN_TACH" "JTAG_TCK" "JTAG_TDI" "JTAG_TDO" "JTAG_TMS" "LED_A" "LED_ACT" "LED_PANEL" "LTCH_A_0" "LTCH_A_16" "LTCH_A_24" "LTCH_A_8" "LTCH_A_OE_n" "LTCH_D_RD_L" "LTCH_D_RD_OE_n" "LTCH_D_RD_U" "LTCH_D_WR_L" "LTCH_D_WR_OE_n" "LTCH_D_WR_U" "M68K_AS_n" "M68K_BERR_n" "M68K_BGACK_n" "M68K_BG_n" "M68K_BR_n" "M68K_CLK" "M68K_DTACK_n" "M68K_E" "M68K_FC0" "M68K_FC1" "M68K_FC2" "M68K_IPL_n0" "M68K_IPL_n1" "M68K_IPL_n2" "M68K_LDS_n" "M68K_PMCYC_n" "M68K_RESET_n" "M68K_RW" "M68K_UDS_n" "M68K_VMA_n" "M68K_VPA_n" "PI_A0" "PI_A1" "PI_CLK" "PI_D0" "PI_D1" "PI_D10" "PI_D11" "PI_D12" "PI_D13" "PI_D14" "PI_D15" "PI_D2" "PI_D3" "PI_D4" "PI_D5" "PI_D6" "PI_D7" "PI_D8" "PI_D9" "PI_IPL_ZERO" "PI_RD" "PI_RESET" "PI_TXN_IN_PROGRESS" "PI_WR" "SE_A1" "SE_A10" "SE_A11" "SE_A12" "SE_A13" "SE_A14" "SE_A15" "SE_A16" "SE_A17" "SE_A18" "SE_A19" "SE_A2" "SE_A20" "SE_A21" "SE_A22" "SE_A23" "SE_A3" "SE_A4" "SE_A5" "SE_A6" "SE_A7" "SE_A8" "SE_A9" "SE_AS_n" "SE_BERR_n" "SE_BGACK_n" "SE_BG_n" "SE_BR_n" "SE_C8M" "SE_D0" "SE_D1" "SE_D10" "SE_D11" "SE_D12" "SE_D13" "SE_D14" "SE_D15" "SE_D2" "SE_D3" "SE_D4" "SE_D5" "SE_D6" "SE_D7" "SE_D8" "SE_D9" "SE_DTACK_n" "SE_E" "SE_FC0" "SE_FC1" "SE_FC2" "SE_IPL0_n" "SE_IPL1_n" "SE_IPL2_n" "SE_LDS_n" "SE_PMCYC_n" "SE_RESET_n" "SE_RW" "SE_UDS_n" "SE_VMA_n" "SE_VPA_n" "SLOT_PWR" "STOCK_SW_n" "USB_DM" "USB_DP"
+			(circuit
+				(use_via "Via[0-1]_600:300_um")
+			)
+			(rule
+				(width 150)
+				(clearance 150)
+			)
+		)
+	)
+	(wiring)
+)

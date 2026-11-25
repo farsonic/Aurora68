@@ -1,0 +1,178 @@
+{
+  "board": {
+    "design_settings": {
+      "defaults": {
+        "board_outline_line_width": 0.1,
+        "copper_line_width": 0.2,
+        "silk_line_width": 0.15
+      },
+      "rules": {
+        "min_clearance": 0.15,
+        "min_track_width": 0.15,
+        "min_via_diameter": 0.6,
+        "min_through_hole_diameter": 0.3,
+        "min_hole_to_hole": 0.25,
+        "min_copper_edge_clearance": 0.3,
+        "min_silk_clearance": 0.0,
+        "allow_blind_buried_vias": false,
+        "allow_microvias": false
+      },
+      "track_widths": [
+        0.0,
+        0.2,
+        0.3,
+        0.5,
+        0.8,
+        1.0
+      ],
+      "via_dimensions": [
+        {
+          "diameter": 0.0,
+          "drill": 0.0
+        },
+        {
+          "diameter": 0.6,
+          "drill": 0.3
+        },
+        {
+          "diameter": 0.8,
+          "drill": 0.4
+        }
+      ]
+    },
+    "layer_presets": [],
+    "viewports": []
+  },
+  "boards": [],
+  "libraries": {
+    "pinned_footprint_libs": [],
+    "pinned_symbol_libs": []
+  },
+  "meta": {
+    "filename": "aurora68-card-p.kicad_pro",
+    "version": 1
+  },
+  "net_settings": {
+    "classes": [
+      {
+        "name": "Default",
+        "clearance": 0.15,
+        "track_width": 0.15,
+        "via_diameter": 0.6,
+        "via_drill": 0.3,
+        "diff_pair_gap": 0.25,
+        "diff_pair_width": 0.2,
+        "wire_width": 6,
+        "bus_width": 12,
+        "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "schematic_color": "rgba(0, 0, 0, 0.000)"
+      },
+      {
+        "name": "Supply",
+        "clearance": 0.15,
+        "track_width": 0.25,
+        "via_diameter": 0.6,
+        "via_drill": 0.3,
+        "diff_pair_gap": 0.25,
+        "diff_pair_width": 0.2,
+        "wire_width": 6,
+        "bus_width": 12,
+        "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "schematic_color": "rgba(0, 0, 0, 0.000)"
+      },
+      {
+        "name": "Power",
+        "clearance": 0.2,
+        "track_width": 0.6,
+        "via_diameter": 0.6,
+        "via_drill": 0.3,
+        "diff_pair_gap": 0.25,
+        "diff_pair_width": 0.2,
+        "wire_width": 6,
+        "bus_width": 12,
+        "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "schematic_color": "rgba(0, 0, 0, 0.000)"
+      }
+    ],
+    "meta": {
+      "version": 3
+    },
+    "netclass_patterns": [
+      {
+        "netclass": "Supply",
+        "pattern": "GND"
+      },
+      {
+        "netclass": "Supply",
+        "pattern": "+3V3"
+      },
+      {
+        "netclass": "Power",
+        "pattern": "5V_PI"
+      },
+      {
+        "netclass": "Power",
+        "pattern": "+5V_SLOT"
+      },
+      {
+        "netclass": "Power",
+        "pattern": "5V_F"
+      },
+      {
+        "netclass": "Power",
+        "pattern": "5V_FAN"
+      },
+      {
+        "netclass": "Power",
+        "pattern": "5V_PANEL"
+      },
+      {
+        "netclass": "Power",
+        "pattern": "FAN_GND_SW"
+      }
+    ]
+  },
+  "pcbnew": {
+    "page_layout_descr_file": ""
+  },
+  "schematic": {
+    "legacy_lib_dir": "",
+    "legacy_lib_list": []
+  },
+  "sheets": [
+    [
+      "23865fb0-541d-5699-a2fc-51c653160383",
+      "Root"
+    ],
+    [
+      "2746cfbd-7882-5c14-a708-821b4763d27c",
+      "Slot plug and bus switches"
+    ],
+    [
+      "e34c9636-e6a1-581d-ac64-a9fe7d935dbc",
+      "CPLD and latches"
+    ],
+    [
+      "ab04a2e6-aebe-5979-b53b-6077e7879c78",
+      "Raspberry Pi socket"
+    ],
+    [
+      "b55a57c0-d99f-54f6-93d2-b24abd317047",
+      "Power and protection"
+    ],
+    [
+      "9d88f375-aeb2-5651-a026-15ea1356b8d2",
+      "Fan, LED, stock switch, rear cable"
+    ]
+  ],
+  "text_variables": {}
+}

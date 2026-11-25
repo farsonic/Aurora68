@@ -1,0 +1,277 @@
+(kicad_sch
+	(version 20231120)
+	(generator "eeschema")
+	(generator_version "8.0")
+	(uuid "23865fb0-541d-5699-a2fc-51c653160383")
+	(paper "A3")
+	(title_block
+		(title "Aurora68 Card P (Macintosh SE PDS, Raspberry Pi 3A+)")
+		(date "2026-11-24")
+		(rev "P0.1 (draft)")
+		(company "Aurora68")
+		(comment 1 "Draft for review: not checked by ERC/DRC in KiCad, not built")
+		(comment 2 "Derived in part from the PiStorm Rev B (MIT); see README.md for credits and licences")
+	)
+	(lib_symbols)
+	(sheet
+		(at 30 50)
+		(size 100 45)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "2746cfbd-7882-5c14-a708-821b4763d27c")
+		(property "Sheetname" "Slot plug and bus switches"
+			(at 30 49.3 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "slot.kicad_sch"
+			(at 30 95.6 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "aurora68-card-p"
+				(path "/23865fb0-541d-5699-a2fc-51c653160383"
+					(page "2")
+				)
+			)
+		)
+	)
+	(text "J1, the CBTD3384 switches, C8M, the SE power sense"
+		(exclude_from_sim no)
+		(at 33 72 0)
+		(effects
+			(font
+				(size 1.5 1.5)
+			)
+			(justify left bottom)
+		)
+		(uuid "6f973b3c-b2f8-5052-8151-0d1f81c0dc12")
+	)
+	(sheet
+		(at 150 50)
+		(size 100 45)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "e34c9636-e6a1-581d-ac64-a9fe7d935dbc")
+		(property "Sheetname" "CPLD and latches"
+			(at 150 49.3 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "cpld.kicad_sch"
+			(at 150 95.6 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "aurora68-card-p"
+				(path "/23865fb0-541d-5699-a2fc-51c653160383"
+					(page "3")
+				)
+			)
+		)
+	)
+	(text "the EPM240, the four 74LVC16373, JTAG pull-ups, decoupling"
+		(exclude_from_sim no)
+		(at 153 72 0)
+		(effects
+			(font
+				(size 1.5 1.5)
+			)
+			(justify left bottom)
+		)
+		(uuid "c2b3d67a-8638-560d-a89d-821233e8c7d0")
+	)
+	(sheet
+		(at 270 50)
+		(size 100 45)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "ab04a2e6-aebe-5979-b53b-6077e7879c78")
+		(property "Sheetname" "Raspberry Pi socket"
+			(at 270 49.3 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "pi.kicad_sch"
+			(at 270 95.6 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "aurora68-card-p"
+				(path "/23865fb0-541d-5699-a2fc-51c653160383"
+					(page "4")
+				)
+			)
+		)
+	)
+	(text "the 2x20 socket for the Pi turned components-down, its standoffs"
+		(exclude_from_sim no)
+		(at 273 72 0)
+		(effects
+			(font
+				(size 1.5 1.5)
+			)
+			(justify left bottom)
+		)
+		(uuid "dbb46cf5-527d-55c2-ba8b-cb019c3b078c")
+	)
+	(sheet
+		(at 30 120)
+		(size 100 45)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "b55a57c0-d99f-54f6-93d2-b24abd317047")
+		(property "Sheetname" "Power and protection"
+			(at 30 119.3 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "power.kicad_sch"
+			(at 30 165.6 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "aurora68-card-p"
+				(path "/23865fb0-541d-5699-a2fc-51c653160383"
+					(page "5")
+				)
+			)
+		)
+	)
+	(text "polyfuses, the ideal diode, the 3.3 V regulator"
+		(exclude_from_sim no)
+		(at 33 142 0)
+		(effects
+			(font
+				(size 1.5 1.5)
+			)
+			(justify left bottom)
+		)
+		(uuid "ec08a275-28b2-5bac-9f98-6cd94ce008d1")
+	)
+	(sheet
+		(at 150 120)
+		(size 100 45)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "9d88f375-aeb2-5651-a026-15ea1356b8d2")
+		(property "Sheetname" "Fan, LED, stock switch, rear cable"
+			(at 150 119.3 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "panel.kicad_sch"
+			(at 150 165.6 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "aurora68-card-p"
+				(path "/23865fb0-541d-5699-a2fc-51c653160383"
+					(page "6")
+				)
+			)
+		)
+	)
+	(text "the fan header and MOSFET, the activity LED, the stock jumper, USB from the Pi, the FFC to the rear connector card, Apple's card supports"
+		(exclude_from_sim no)
+		(at 153 142 0)
+		(effects
+			(font
+				(size 1.5 1.5)
+			)
+			(justify left bottom)
+		)
+		(uuid "a0a2721e-3316-52d4-a0ca-77eb67d73134")
+	)
+	(text "Connectivity between sheets is by global labels. The slot plug J1 is on the card's underside; its pin names come from se-pds-pinout.csv (Apple, Designing Cards and Drivers, 3rd ed., Table 13-1); tools/check_pinout.py checks every pin."
+		(exclude_from_sim no)
+		(at 30 200 0)
+		(effects
+			(font
+				(size 1.5 1.5)
+			)
+			(justify left bottom)
+		)
+		(uuid "99396fed-0c69-5a23-a7d9-16aaa375c4e4")
+	)
+	(sheet_instances
+		(path "/"
+			(page "1")
+		)
+	)
+)

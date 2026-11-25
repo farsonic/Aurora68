@@ -1,0 +1,7 @@
+# KiCad's per-user and cache files, and fetch_kicad_lib.py's download cache
+.kicad-cache/
+*-backups/
+fp-info-cache
+*.kicad_prl
+*.lck
+__pycache__/

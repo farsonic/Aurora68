@@ -1,0 +1,32 @@
+References,Qty,Value,Footprint,Description,MPN / requirement,LCSC,Assembly,Height_mm,Note
+C1 C2 C3 C4 C5 C6 C7 C8 C9 C10 C11 C12,12,100n,C_0603_1608Metric,Capacitor,,C14663,SMD (top),0.90,"CPLD VCCIO/VCCINT decoupling (PiStorm C7-C10, C13, C14); latch decoupling (PiStorm C1-C4)"
+C13,1,10u,C_0805_2012Metric,Capacitor,,C15850,SMD (top),1.45,
+C14 C15 C16,3,22u,C_0805_2012Metric,Capacitor,,C45783,SMD (top),1.45,PiStorm C11; PiStorm C12
+D1,1,B5819W,D_SOD-123,Schottky diode,,C8598,SMD (top),1.35,fan flyback
+D2,1,green,LED_0603_1608Metric,LED,,,SMD (top),0.80,activity
+F1,1,1.1A hold,Fuse_1812_4532Metric,Resettable fuse (PTC),"PTC 1812, 1.1 A hold, 2.2 A trip, 6 V or more (e.g. Bourns MF-MSMF110-2)",,SMD (top),1.80,
+F2,1,0.35A hold,Fuse_1206_3216Metric,Resettable fuse (PTC),"PTC 1206, 0.35 A hold, 6 V or more",,SMD (top),1.30,
+F3,1,0.75A hold,Fuse_1812_4532Metric,Resettable fuse (PTC),"PTC 1812, 0.75 A hold (Apple allows 750 mA at +5 V for a peripheral outside the case)",,SMD (top),1.80,
+H1 H2,2,Apple card support 3.86 mm,Aurora68_AppleCardSupport_3.86mm,"Mounting hole, no connection",,,none (drilled hole),0.00,
+H3 H4 H5 H6,4,M2.5 standoff 8.5 mm,Aurora68_PiStandoff_M2.5,"Mounting hole, no connection",,,none (drilled hole),0.00,
+H7 H8,2,M2.5 standoff 8.5 mm (Zero 2 W),Aurora68_PiStandoff_M2.5,"Mounting hole, no connection",,,none (drilled hole),0.00,
+J1,1,DIN 41612 C 96 male straight press-fit,Aurora68_DIN41612_C_3x32_Male_Straight_PressFit_Bottom,"The Macintosh SE's 96-pin processor direct slot, the card's plug (pin names from se-pds-pinout.csv)","DIN 41612 type C, 3x32 (a+b+c), male, straight, press-fit (e.g. ERNI 024393 / Harting 09 03 296 68xx; verify)",,through-hole,1.50,
+J2,1,Pi socket 2x20 6.0 mm,Aurora68_PiSocket_2x20_Inverted,2x20 socket for a Raspberry Pi 3A+ / Zero 2 W turned components-down (pin names as on the Pi),"2x20 female socket, 2.54 mm, 6.0 mm body, open-bottom contacts accepting 6.0 mm pins (choose; README)",,through-hole,6.00,
+J3,1,Fan,PinHeader_1x03_P2.54mm_Horizontal,Header 1x03,,,through-hole,3.80,"1 GND (switched), 2 +5 V, 3 tachometer"
+J4,1,Rear connector card,TE_1-84952-0_1x10-1MP_P1.0mm_Horizontal,"FFC/FPC connector, 10 positions, 1.0 mm, with mounting pads","TE 1-84952-0 (FFC 1.0 mm, 10 positions, ZIF)",,SMD (top),2.60,
+J5,1,USB from Pi,PinHeader_1x04_P2.54mm_Horizontal,Header 1x04,,,through-hole,3.80,"a short USB-A plug pigtail from the Pi 3A+'s USB socket, which faces it; pin 1 (VBUS) deliberately not connected"
+J6,1,Stock mode,PinHeader_1x02_P2.54mm_Horizontal,Header 1x02,,,through-hole,3.80,closed: stock SE (jumper or a switch on a cable)
+JP1,1,Fan full speed,PinHeader_1x02_P2.54mm_Vertical,Header 1x02,,,through-hole,8.50,"shunt fitted: fan always on, no software needed"
+Q1,1,AO3400A,SOT-23,"N-channel MOSFET 30 V 5.7 A, SOT-23 (G S D)",,C20917,SMD (top),1.25,
+R1 R2,2,4.7k,R_0603_1608Metric,Resistor,,C23162,SMD (top),0.55,TDI pull-up (PiStorm R1); TMS pull-up (PiStorm R2)
+R3,1,22,R_0603_1608Metric,Resistor,,C23345,SMD (top),0.55,"C8M into the CPLD, as the PiStorm's 68000 clock (its R3)"
+R4 R6 R7,3,10k,R_0603_1608Metric,Resistor,,C25804,SMD (top),0.55,SE power sense: 5 V -> 3.0 V
+R5,1,15k,R_0603_1608Metric,Resistor,,C22809,SMD (top),0.55,
+R8,1,100,R_0603_1608Metric,Resistor,,C22775,SMD (top),0.55,
+R9,1,100k,R_0603_1608Metric,Resistor,,C25803,SMD (top),0.55,
+R10 R11,2,330,R_0603_1608Metric,Resistor,,C23138,SMD (top),0.55,"the connector card's LED, over the cable"
+U1,1,EPM240T100C5N,TQFP-100_14x14mm_P0.5mm,"Altera/Intel MAX II CPLD, TQFP-100: EPM240T100C5N, or EPM570T100C5N (pins 37, 39, 88, 90 are its GNDINT/VCCINT; an EPM240 leaves them as unused I/O, so the PiStorm-style footprint takes both)","EPM240T100C5N (or EPM570T100C5N, LCSC C40067, if the fitter needs more than 240 LEs)",,SMD (top),1.60,
+U2 U3 U4 U5,4,74LVC16373,TSSOP-48_6.1x12.5mm_P0.5mm,"16-bit transparent D-type latch, 3-state, 5 V tolerant (74LVC16373A)",SN74LVC16373ADGGR,,SMD (top),1.20,
+U6 U7,2,SN74CBTD3384PW,TSSOP-24_4.4x7.8mm_P0.65mm,10-bit FET bus switch with level shifting (as the PiStorm Rev B),SN74CBTD3384PWR,C7155,SMD (top),1.20,
+U8,1,AMS1117-3.3,SOT-223-3_TabPin2,"1 A 3.3 V LDO, SOT-223 (the PiStorm uses an LM1117-3.3 in the same place)",,C6186,SMD (top),1.80,PiStorm U8 (LM1117-3.3)
+U9,1,LM66100,SOT-363_SC-70-6,"Ideal diode, 1.5 A, 5.5 V, reverse-current blocking",LM66100DCKR,,SMD (top),1.10,ideal diode: a Pi powered from its own USB never feeds the SE

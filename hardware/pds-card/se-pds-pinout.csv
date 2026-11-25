@@ -1,0 +1,97 @@
+row,pin,signal,direction,notes
+A,1,FC2,Output (Input),Function code; drive 40 uA/0.4 mA 30 pF; load 100 uA/100 uA 50 pF
+A,2,FC1,Output (Input),Function code; drive 40 uA/0.4 mA 30 pF; load 100 uA/100 uA 50 pF
+A,3,FC0,Output (Input),Function code; drive 40 uA/0.4 mA 30 pF; load 100 uA/100 uA 50 pF
+A,4,A1,In/Out,Address; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+A,5,A2,In/Out,Address; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+A,6,A3,In/Out,Address; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+A,7,A4,In/Out,Address; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+A,8,A5,In/Out,Address; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+A,9,A6,In/Out,Address; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+A,10,A7,In/Out,Address; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+A,11,A8,In/Out,Address; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+A,12,A9,In/Out,Address; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+A,13,A10,In/Out,Address; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+A,14,A11,In/Out,Address; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+A,15,A12,In/Out,Address; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+A,16,A13,In/Out,Address; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+A,17,A14,In/Out,Address; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+A,18,A15,In/Out,Address; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+A,19,A16,In/Out,Address; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+A,20,A17,In/Out,Address; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+A,21,A18,In/Out,Address; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+A,22,A19,In/Out,Address; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+A,23,A20,In/Out,Address; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+A,24,A21,In/Out,Address; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+A,25,A22,In/Out,Address; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+A,26,A23,In/Out,Address; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+A,27,E,Output,"E clock (from the 68000, also while the bus is granted away); drive 40 uA/0.4 mA 30 pF"
+A,28,C8M,Output,7.8336 MHz 68000 clock; drive 20 uA/0.2 mA 20 pF (one LS load)
+A,29,C16M,Output,15.6672 MHz gate array and IWM clock; drive 20 uA/0.2 mA 20 pF (one LS load)
+A,30,GND,Ground,Logic ground
+A,31,+12V,Power,+12 V; 150 mA total from all +12V pins
+A,32,+12V,Power,+12 V; 150 mA total from all +12V pins
+B,1,GND,Ground,Logic ground
+B,2,GND,Ground,Logic ground
+B,3,GND,Ground,Logic ground
+B,4,GND,Ground,Logic ground
+B,5,GND,Ground,Logic ground
+B,6,GND,Ground,Logic ground
+B,7,GND,Ground,Logic ground
+B,8,GND,Ground,Logic ground
+B,9,GND,Ground,Logic ground
+B,10,Reserved,Reserved,For future Apple use; do not connect
+B,11,Reserved,Reserved,For future Apple use; do not connect
+B,12,/HALT,In/Out,"68000 halt; load 300 uA/6 mA 50 pF; connected to /RESET, pin C-12"
+B,13,+5V,Power,+5 V; 1.5 A total from all +5V pins
+B,14,+5V,Power,+5 V; 1.5 A total from all +5V pins
+B,15,+5V,Power,+5 V; 1.5 A total from all +5V pins
+B,16,+5V,Power,+5 V; 1.5 A total from all +5V pins
+B,17,+5V,Power,+5 V; 1.5 A total from all +5V pins
+B,18,/IPL0,In/Out,"Interrupt level 0 (VIA, SCSI IRQ); open collector, 3.3 kOhm pull-up; load 100 uA/2 mA 50 pF"
+B,19,/IPL1,In/Out,"Interrupt level 1 (SCC); open collector, 3.3 kOhm pull-up; load 100 uA/2 mA 50 pF"
+B,20,/IPL2,In/Out,"Interrupt level 2 (NMI switch); open collector, 3.3 kOhm pull-up; load 100 uA/2 mA 50 pF"
+B,21,/BERR,In/Out,"Bus error (gate array: /AS low > ~250 ms); open collector, 3.3 kOhm pull-up"
+B,22,Spare,NC,Not connected
+B,23,Reserved,Reserved,For future Apple use; do not connect
+B,24,Reserved,Reserved,For future Apple use; do not connect
+B,25,Reserved,Reserved,For future Apple use; do not connect
+B,26,Reserved,Reserved,For future Apple use; do not connect
+B,27,Reserved,Reserved,For future Apple use; do not connect
+B,28,/EXT.DTK,Input,Low tri-states the gate array /DTACK; 3.3 kOhm pull-up; load 100 uA/2 mA 50 pF
+B,29,GND,Ground,Logic ground
+B,30,+12V,Power,+12 V; 150 mA total from all +12V pins
+B,31,+12V,Power,+12 V; 150 mA total from all +12V pins
+B,32,-5V,Power,-5 V; 100 mA
+C,1,/VPA,Output,Valid peripheral address ($E00000-$FFFFFF); drive 40 uA/0.4 mA 30 pF
+C,2,/VMA,Output (Input),Valid memory address; drive 40 uA/0.4 mA 30 pF; load 100 uA/100 uA 50 pF
+C,3,/BR,Input,Bus request; 3.3 kOhm pull-up; load 100 uA/2 mA 50 pF
+C,4,/BGACK,Input,Bus grant acknowledge; 3.3 kOhm pull-up; load 100 uA/2 mA 50 pF
+C,5,/BG,Output,Bus grant; drive 40 uA/0.4 mA 30 pF
+C,6,/DTACK,In/Out,Data transfer acknowledge; 3.3 kOhm pull-up; load 100 uA/2 mA 50 pF; drive 40 uA/0.4 mA 30 pF
+C,7,R/W,Output (Input),Read/write; drive 40 uA/0.4 mA 30 pF; load 200 uA/2 mA 50 pF
+C,8,/LDS,Output (Input),Lower data strobe; drive 40 uA/0.4 mA 30 pF; load 100 uA/1 mA 50 pF
+C,9,/UDS,Output (Input),Upper data strobe; drive 40 uA/0.4 mA 30 pF; load 100 uA/1 mA 50 pF
+C,10,/AS,Output (Input),Address strobe; drive 40 uA/0.4 mA 30 pF; load 200 uA/3.2 mA 50 pF; 3.3 kOhm pull-up
+C,11,/PMCYC,Output,Processor memory cycle; high during video access to RAM; drive 40 uA/0.4 mA 30 pF
+C,12,/RESET,In/Out,"System reset; open collector, 1 kOhm pull-up; connected to /HALT, pin B-12; load 300 uA/6 mA 50 pF"
+C,13,+5V,Power,+5 V; 1.5 A total from all +5V pins
+C,14,D0,In/Out,Data; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+C,15,D1,In/Out,Data; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+C,16,D2,In/Out,Data; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+C,17,D3,In/Out,Data; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+C,18,D4,In/Out,Data; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+C,19,D5,In/Out,Data; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+C,20,D6,In/Out,Data; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+C,21,D7,In/Out,Data; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+C,22,D8,In/Out,Data; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+C,23,D9,In/Out,Data; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+C,24,D10,In/Out,Data; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+C,25,D11,In/Out,Data; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+C,26,D12,In/Out,Data; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+C,27,D13,In/Out,Data; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+C,28,D14,In/Out,Data; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+C,29,D15,In/Out,Data; load 250 uA/1 mA 100 pF; drive 40 uA/0.4 mA 30 pF
+C,30,GND,Ground,Logic ground
+C,31,Spare,NC,Not connected
+C,32,-12V,Power,-12 V; 100 mA

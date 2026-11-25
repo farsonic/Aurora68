@@ -1,0 +1,31 @@
+INFO kiutils board: 57 footprints, 139 nets, 38 graphic items, 12 zones, 3156 tracks/vias
+PASS 1. every file parses (sexpr and kiutils 1.4.8): 30 files
+PASS 2. slot plug: every pin against se-pds-pinout.csv, docs/22, the schematic and the board: slot pinout: 386 checks, 0 failures (96 pins; CSV, docs/22, schematic, board)
+PASS 2b. the schematic reads back cleanly (no unconnected, unflagged pins; no wire with two names)
+PASS 3. schematic and board nets agree, pad by pad: 579 pins; 
+PASS 4. every net has at least two connections: 138 nets; single: 
+PASS 5a. no output-to-output conflicts (push-pull or power outputs sharing a net)
+PASS 5b. the card meets the slot only through three-state latch outputs, the CBTD switches or inputs
+PASS 6a. CPLD I/O count: 61 used of 80 (EPM240) / 76 (EPM570): none on pins 37/39/88/90
+PASS 6b. RTL ports = qsf pins = schematic nets (61 ports)
+INFO 6c. CPLD logic size: yosys 0.71 (generic 4-input LUT mapping, 24 Nov 2026): 154 LUTs, 122 flip-flops; a MAX II logic element is one LUT and one flip-flop, so 154 to about 230 LEs of the EPM240's 240. Quartus has the last word (rtl/README.md)
+PASS 7a. every IC's power pins are connected
+PASS 7b. every IC has a capacitor from each supply to GND within 12 mm
+PASS 8a. the outline is inside Apple's maximum (213.25 x 120.42, body 110.11, tab from x = 195.29): board 213.25 x 99.42 mm (x 0.00-213.25, y 21.00-120.42)
+PASS 8b. outline closed, five 2.0 mm x 45 degree chamfers: 11 edges, 5 chamfers
+PASS 8c. board thickness 1.60 mm (Apple: 1.60)
+PASS 8d. Apple's two 3.86 mm card-support holes at x = 3.43, 50.17 apart; the plug's 2.85 mm fixing holes 90.0 apart: (3.43, 34.85) found; (3.43, 85.02) found
+PASS 8e. nothing in Apple's 16.00 mm rear strip (the card starts at 21.0 mm)
+PASS 9d. the Pi 3A+, its overhanging sockets and its microSD card stay over the card: x 9.5-79.0, y 51.9-109.9 (card body: x 0-213.25, y 21.0-110.11)
+PASS 9a. heights within Figure 17-2 (4.61 mm at the rear edge rising to 15.58 at the front), 51 items: smallest margin 0.08 mm; 
+INFO 9b. the Pi 3A+ turned components-down: gap 8.5 mm (socket 6.0 + its header body 2.5), board 1.4, back at 9.9 mm: its parts towards the card: USB-A 7.0 (1.5 mm clear), HDMI 6.5 (2.0 mm clear), audio 6.0 (2.5 mm clear), camera 5.5 (3.0 mm clear), display 5.5 (3.0 mm clear), header 8.5 (0.0 mm clear), micro-USB 3.0 (5.5 mm clear), SoC + heatsink 7.4 (1.1 mm clear)
+W    9c. 3B/3B+ USB-A pairs in this mounting: 16.0 mm tall below the Pi's board, the gap is 8.5 mm: it would hit the card by 7.5 mm, so a 3B/3B+ does not fit this card in the SE (bench use on a 8 mm riser only; README)
+W    9c. 3B/3B+ RJ45 in this mounting: 13.5 mm tall below the Pi's board, the gap is 8.5 mm: it would hit the card by 5.0 mm, so a 3B/3B+ does not fit this card in the SE (bench use on a 6 mm riser only; README)
+PASS 10a. no courtyard in the Pi 3B/3B+ USB/Ethernet keep-out (x 76.5-101.1, y 52.9-110.1)
+PASS 10b. nothing but the socket and standoffs under the Pi 3A+
+PASS 10c. nothing on Apple's card supports
+PASS 11. every slot signal meets its latch, switch or resistor within 50 mm of the plug pin: farthest 41.1 mm (straight line; route lengths are longer)
+PASS 12a. two copper layers: F.Cu, B.Cu
+PASS 12b. tracks >= 0.15 mm, vias >= 0.6 mm with >= 0.3 mm drills: 2842 segments, 314 vias
+W    12c. routing: 122 of 138 nets fully connected by tracks (ground pours not counted), 20 connections open: SE_FC1, GND, SE_IPL0_n, SE_D4, SE_D6, SE_D10, SE_D12, M68K_BERR_n, 5V_PI, M68K_FC1, PI_D13, PI_D12, PI_D9, PI_D8, PI_D7, PI_D6
+24 checks, 0 failed, 3 warnings
