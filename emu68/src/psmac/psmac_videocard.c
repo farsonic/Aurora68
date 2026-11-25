@@ -94,6 +94,17 @@ static uint32_t num(const char **p)
     if (**p == ',') (*p)++;
     return n;
 }
+/* the overdraw guard's testbed levers (25 November 2026, docs/16 "Drawn over another window", docs/08 item 146), as the
+   Apple II card's a2.guard= and a2.racedelay=: video.guard=off (the region read once a picture, no repairs, as before
+   that day), video.guard=repair (no looks between bands, the repairs alone); video.racedelay=MS waits that long between a
+   picture's reading of the region and its first band, so that the Mac's changes land in the middle of pictures */
+static void guard_options(void)
+{
+    const char *v = psmac_option("video.guard"), *p = psmac_option("video.racedelay");
+    int mode = v && v[0] == 'o' && v[1] == 'f' ? 1 : v && v[0] == 'r' ? 2 : 0;
+    uint32_t ms = p && p[0] >= '0' && p[0] <= '9' ? num(&p) : 0;
+    psmac_video_guard_config(mode, ms);
+}
 static void test_options(void)
 {
     const char *v = psmac_option("mac.videotest");
@@ -249,6 +260,7 @@ void psmac_videocard_init(void)
     buffer_options();
     psmac_video_init(win, screens);
     arm_flush_cache((uintptr_t)win, 4096);
+    guard_options();
     test_options();
     kprintf("[VIDEO] the video decoder card in slot $%X: window $%08X (24-bit $%06X), ROM %u bytes at the slot's top; %u screen%s to draw on\n",
             PSMB_VID_SLOT, PSMB_VID_WIN_PHYS, PSMB_VID_SLOT << 20, (uint32_t)sizeof psmac_video_declrom, screens, screens == 1 ? "" : "s");

@@ -977,7 +977,7 @@ void say_error(const char *text)
 }
 static void about(void)
 {
-	message_box("Aurora68 Play 1.8.1 for the Aurora68 card.\r"
+	message_box("Aurora68 Play 1.8.2 for the Aurora68 card.\r"
 	            "Plays MP3, FLAC, Ogg Vorbis and Apple Lossless (.m4a) files, AIFF and WAV files that are not compressed, "
 	            "internet radio (plain http:// MP3 streams through MacTCP or Riptide), and the music and music videos of an "
 	            "Aurora68 music server, which it finds on the network by itself: Library > Show Library. The Pi decodes them "

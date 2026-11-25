@@ -47,11 +47,20 @@
  * toggles Fill Screen and whichever size the window had. The strip shows the time. And the card is handed the window's
  * visible region (tell_place): it draws where the window shows, whatever is in front, also while another program is
  * the front one (see tell_place for what still stops it).
+ *
+ * Aurora68 Play 1.8.2 (25 November 2026, docs/08 item 146, docs/16 "Drawn over another window"): repairs. The Apple II
+ * card's window on the owner's SE kept a rectangle of the Apple's screen inside a Finder window dragged over it, the
+ * card having drawn with the region it had read just before the Mac changed it; the video card drew its pictures the
+ * same way. It now looks at the region between bands, and when it finds it drew outside the window as the window is
+ * now, it asks; vc_poll has the Mac paint that again (../a68pc/repair.h: PaintBehind, the Apple II and PC programs'
+ * code), at every turn of the event loop, in the background too.
  */
 #include "toolbox.h"
 #include "psmac_video.h"
 #include "proto.h"
 #include "vcard.h"
+#include "../a68pc/place.h"
+#include "../a68pc/repair.h"
 
 short mac_PBControl(void *pb), mac_PBStatus(void *pb);
 void pi_log(const char *text);
@@ -630,6 +639,9 @@ void vc_poll(int foreground)
 {
 	fg = foreground;                                   /* 1.8: only for a card without the region */
 	if (!blk) return;
+	/* 1.8.2: the card's requests to have the Mac paint again what it drew outside the video window as it is now
+	   (repair.h; a card older than its block's version 4 has none) */
+	if (blk->version >= 4) rp_take((volatile struct a68_repair *)(card + A68V_OFF_REPAIR), &blk->repair_done, vw);
 	tell_place(0);
 	if (!started) return;
 	{   /* the numbers: the ring's level while playing, and how long it was dry after the first picture */

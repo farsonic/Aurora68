@@ -1003,7 +1003,7 @@ static void lib_refresh(void)
 /* the device's part of the player: an id kept in the preferences and the Mac's name */
 void lib_device(const char *id, const char *name)
 {
-	dv_init(&dev, id, name, "1.8.1", "classic");
+	dv_init(&dev, id, name, "1.8.2", "classic");
 	dev.client = cl;                             /* videos=1: a video sent here comes as a V line */
 	dev.video = vc_present() && srv_mpeg1;       /* 1.6: with the video decoder card it shows them (the announce's video=1) */
 	dev_ready = id[0] != 0;

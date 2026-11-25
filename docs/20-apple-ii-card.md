@@ -499,7 +499,8 @@ keep copies elsewhere, and use Apple II > Power Off before switching the Pi off.
 - **Drawn over another window** (24 November 2026): not run on the owner's SE or on a deep (32-bit) screen in QEMU (the
   host test's runs are 8 and 32 bits); System 6 not run (the program starts PaintBehind from WindowList there). The
   video decoder card (`psmac_video.c`, Aurora68 Play and Aurora68 Video) has the same pattern, the region read once a
-  picture, and is not changed yet. Read from how the Window Manager drags, not seen: during a drag of under a second the
+  picture, and is not changed yet. (Changed on 25 November 2026 with this card's guard and repairs: docs/16 "Drawn over
+  another window", docs/08 item 146.) Read from how the Window Manager drags, not seen: during a drag of under a second the
   card goes on drawing and may draw over the dragged window's gray outline where it crosses the Apple's window; the
   Window Manager takes the outline away by drawing it once more, which can leave an inverted line in the Apple's picture
   until those rows change.

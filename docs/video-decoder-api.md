@@ -119,6 +119,34 @@ pulled down (the Mac's `TheMenu`, $A26, is not 0), because a program in the back
 tracks a menu and cannot say so itself. The heartbeat's video line says how many pictures were left out under a
 menu or for a region that could not be read, and how many parts the last region had.
 
+### Repair requests (block version 4, 25 November 2026)
+docs/08 item 146, docs/16 "Drawn over another window"; Aurora68 Play 1.8.2 and Aurora68 Video 1.2 carry them out.
+The card reads the region before a picture and again before every band of 16,384 pixels; a band begun just before
+the Mac moves another window over the program's can still land on that window. When the card finds that it drew
+outside the region the window has now, it posts the rectangles in the card's window at **$800** (`A68V_OFF_REPAIR`),
+the Apple II and PC cards' layout (`emu68/src/psmac/psmac_repair.h`):
+
+| Offset | Field | |
+|---|---|---|
+| $800 | seq | even when the request is complete, odd while the card writes it; + 2 for every request or addition to one |
+| $804 | n | rectangles that follow, at most 16 |
+| $808 | posted | requests posted since the card started (for the log) |
+| $810 | r[16] | 12 bytes each: the screen (a long, as in Control 112), then top, left, bottom, right (words) in that screen's own pixels |
+
+and the program answers in its half of the stream block:
+
+| Offset | Field | |
+|---|---|---|
+| $DC | repair_done | the last `seq` the program had painted |
+
+A program copies `n` and the rectangles while `seq` is even and the same before and after, has the Mac paint them
+again, then writes `seq` into `repair_done`; a request not carried out yet is added to by the card, not replaced. The
+programs here do it with `mac/a68pc/repair.h`'s `rp_take` at every turn of their event loop, in the background too: the
+rectangles made global through their screen's `gdRect`, less the program's own window's visRgn, inside GrayRgn, then
+PaintBehind from the frontmost window of all. A program that hands over no region gets no requests; one that ignores
+them is no worse off than before version 4. A card older than version 4 has zeros there (`seq` 0, which a fresh
+`repair_done` of 0 already matches): check the version anyway.
+
 ## The frame request
 Big-endian longs (the 68k's order), 128 bytes; the driver copies bytes 8 to 127 into a free slot of the
 card and back.

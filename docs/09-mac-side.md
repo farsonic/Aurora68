@@ -1273,6 +1273,15 @@ traffic; docs/08 item 127 has the runs):
   screen. The size box, Double Size and Fill Screen on the owner's HDMI screen, and Video Quality's choices, are for
   the SE.
 
+### Aurora68 Play 1.8.2 and Aurora68 Video 1.2: repairs (25 November 2026)
+The video decoder card now looks at the video window's region between bands of a picture, as the Apple II and PC cards
+do since the day before (docs/16 "Drawn over another window", docs/08 item 146), and when it finds that it drew over a
+window that had just been moved in front of the video's, it asks the program to have the Mac paint that part again.
+Both programs do it at every turn of their event loop, in the background too, with Aurora68 Apple II's and PC's own code
+(`mac/a68pc/repair.h`: PaintBehind, the windows there given update events and the desktop repainted). Nothing changes in
+how they are used. With a kernel8.img older than this (the card's block version 3) there are no requests and nothing is
+done; an older Play or Video with the new kernel simply leaves the requests unanswered, as before.
+
 ## The WiFi in the testbed: a radio that exists only in software
 QEMU's raspi3b has no WiFi chip (no SDIO function, no firmware to load), so the real driver in
 `alice_net.c` can only report "off" there, and until 16 November the WiFi unit, Aurora68 Wi-Fi and the

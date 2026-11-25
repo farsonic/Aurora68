@@ -49,6 +49,7 @@ static int32_t pl_overlap(const struct pl_rect *a, const struct pl_rect *b)
 }
 /* the window's content c (global coordinates) as the card's place; the screen's gdRect into *sr. 0, or -1 when no
    screen is known (no device list: the place is then c itself on screen 0) */
+__attribute__((unused))        /* Aurora68 Play and Aurora68 Video include this file for repair.h alone (25 November 2026) */
 static int pl_place_of(const struct pl_rect *c, struct pl_place *out, struct pl_rect *sr)
 {
 	uint32_t gdh = PL_RD32(0x8A8), best = 0, tl = 0;          /* DeviceList */

@@ -42,6 +42,12 @@
   of the Apple's screen). The card looks at the window's visible region again while it draws and gives up a picture
   when the region changed; what it still drew over another window is repainted by the Mac (PaintBehind, from
   Aurora68 Apple II 1.3 and Aurora68 PC 1.3, also in the background). The video decoder card is not changed yet.
+- **Films and music videos no longer leave pictures on other windows either** (docs/08 item 146, docs/16 "Drawn over
+  another window", 25 November 2026). The video decoder card drew each picture with the window's region as it was when
+  the picture began, as the Apple II and PC cards did; it now looks at the region between bands of a picture, gives the
+  picture up and draws it again when the region changed, and asks Aurora68 Play 1.8.2 and Aurora68 Video 1.2 to have
+  the Mac repaint what it still drew over another window (also in the background). Kernel, Aurora68 Play and Aurora68
+  Video; an older Play or Video with the new kernel draws as before.
 - **Disk icons:** a card image (and the Mac Exchange folder) shows as an SD card on the desktop, a USB stick as a USB
   stick; Get Info's where says "SD card" or "USB drive" (PiDisk in the declaration ROMs, 24 November 2026).
 - **Compact Macs on real hardware:** testers run a Plus and a 512Ke. On the 512Ke the serial ports work. A hum from

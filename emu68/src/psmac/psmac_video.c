@@ -66,6 +66,11 @@
  * region (the block's vis_rgn): the card then reads the region at every picture and draws only where the window
  * shows, so a video behind another program's window, or partly under one, goes on where it can be seen; and no
  * picture is drawn while a menu is down (the menu bar's saved bits, MBSaveLoc), whichever program pulled it down.
+ * Since 25 November 2026 (docs/08 item 146, docs/16 "Drawn over another window") the region is looked at again before
+ * every band of BAND_PX pixels and at the picture's end, and the picture given up (drawn again with the new region at
+ * the next turn) the moment it changed; and what was drawn shortly before a change, outside the new region, is posted
+ * at A68V_OFF_REPAIR for the program to have the Mac paint again: the Apple II card's cure for a Finder window left
+ * with a rectangle of the Apple's screen on the owner's SE (docs/08 item 144, psmac_wclip.c "the overdraw guard").
  */
 #include <stdint.h>
 #include "support.h"
@@ -99,6 +104,13 @@ static inline uint32_t ms_of(uint64_t ticks) { return (uint32_t)(ticks * 1000u /
 #define LEAD        0.4                       /* seconds of sound decoded ahead of the clock */
 #define DROP_LATE   2.0                       /* frames late before a picture may go undrawn ... */
 #define DROP_GAP_MS 80u                       /* ... if the last one was drawn less than this ago */
+#define BAND_PX     16384u                    /* pixels drawn between two looks at the window's region (psmac_a2.c's): a few
+                                                 hundred microseconds of drawing on a Pi 3, a sixth of a 320 x 240 picture */
+#define REPAIR_MS   200u                      /* what was drawn this long before the region was seen to change may have landed
+                                                 on another window: the Mac paints it again (psmac_a2.c's) */
+#define VIS_ANY     16384                     /* the window's size as the guard's region check is given it: the card knows the
+                                                 picture's rectangle, not the window's content (the strip below the picture is
+                                                 in the visRgn too), so the region is held only to start at the window's 0,0 */
 
 static volatile struct a68v_block *blk;
 static uint8_t *ring;
@@ -149,6 +161,27 @@ static struct { uint32_t seq; uint32_t screen; int32_t t, l, b, r; uint32_t visi
 static uint32_t menu_skips, rgn_skips, rgn_parts;   /* pictures not drawn under a menu, or for a region that could not
                                                        be read; the parts of the last region drawn (the heartbeat's) */
 static struct { uint64_t busy, t0, dec, dec_max, draw; uint32_t ndec, ndraw; } st;   /* the last second's numbers */
+static uint8_t *winp;                         /* the card's window: the repair request at A68V_OFF_REPAIR */
+/* Drawn over another window (25 November 2026, docs/16 "Drawn over another window"). The Apple II card's window on the
+   owner's SE kept a rectangle of the Apple's screen inside a Finder window dragged over it (docs/08 item 144): the card
+   had read the window's visRgn once a picture and drew all of it while the Mac, on core 0, moved the Finder's window
+   over it. This card did the same with every film's picture (draw_clip below), and a picture of the HDMI screen's
+   Fill Screen is a megapixel and more. The shared guard (psmac_wclip.c) is used as the Apple II card uses it: the
+   region looked at before every band, the picture given up when it changed (redraw: the last picture drawn again with
+   the new region at the next turn, also a paused film's), every band noted, and what was drawn shortly before a change
+   outside the new region posted for the program. Testbed only (psmac_video_guard_config): video.guard=off draws as
+   before this day, video.guard=repair with the repairs alone; video.racedelay=MS waits that long between a picture's
+   reading of the region and its first band */
+static struct psmac_wclip_guard gd;
+static int guard_mode;                        /* 0 the guard, 1 off, 2 the repairs alone */
+static uint32_t race_ms, repair_logs, repair_seen, redraws;
+static int redraw;                            /* a picture was given up: the last one drawn again at the next turn */
+#ifdef PSMAC_VIDEO_HOST
+void pv_host_band(int after_look);            /* tools/vbuf_test.c: the region changed in the middle of a picture */
+#define BAND_HOOK(x) pv_host_band(x)
+#else
+#define BAND_HOOK(x) do { } while (0)
+#endif
 
 static void say(const char *s)
 {
@@ -601,6 +634,80 @@ static void draw_around(const plm_frame_t *f, const struct pv_surface *s, int32_
     under_add(&under, t, l, b, r);                                             /* drawn once the pointer has moved on */
 }
 
+static void race_wait(void)
+{
+    if (!race_ms) return;
+    uint64_t t = now();
+    while (now() - t < (uint64_t)race_ms * hz() / 1000u) { }
+}
+/* what was drawn before the region changed, outside the new one: to the program, to have the Mac paint it again. At
+   every turn (psmac_video_poll), and before a picture that finds the region changed since the last */
+static void overdraw_watch(void)
+{
+    uint32_t done = blk->repair_done;
+    if (done != repair_seen) {                                /* the program carried a request out */
+        repair_seen = done;
+        if (repair_logs < 40) kprintf("[VIDEO] the program had the Mac paint it again (request %u)\n", done / 2);
+    }
+    if (guard_mode == 1 || !gd.n) return;
+    struct pv_surface s;
+    if (!psmac_video_surface(g.screen, &s)) return;
+    int32_t out[PSMAC_WCLIP_DRAWN][4];
+    uint32_t vf = g.vflags & A68V_VF_24BIT ? PSMAC_WCLIP_24BIT : 0;
+    int n = psmac_wclip_guard_watch(&gd, g.rgn, vf, g.screen, g.l, g.t, VIS_ANY, VIS_ANY, (int32_t)s.width, (int32_t)s.height,
+                                    now(), (uint64_t)REPAIR_MS * hz() / 1000u, out);
+    if (n <= 0) return;
+    psmac_wclip_repair_post((volatile struct a68_repair *)(winp + A68V_OFF_REPAIR), blk->repair_done, gd.screen, out, n);
+    gd.repairs++; gd.repair_rects += (uint32_t)n;
+    if (repair_logs++ < 40) {
+        int32_t bb[4] = { out[0][0], out[0][1], out[0][2], out[0][3] };
+        for (int i = 1; i < n; i++) {
+            if (out[i][0] < bb[0]) bb[0] = out[i][0];
+            if (out[i][1] < bb[1]) bb[1] = out[i][1];
+            if (out[i][2] > bb[2]) bb[2] = out[i][2];
+            if (out[i][3] > bb[3]) bb[3] = out[i][3];
+        }
+        kprintf("[VIDEO] the window's region changed under a picture: %d rectangle%s within %d,%d-%d,%d on screen %u for the Mac to paint again\n",
+                n, n == 1 ? "" : "s", bb[1], bb[0], bb[3], bb[2], gd.screen);
+    }
+}
+/* the notes were made with this region at this place */
+static int gd_same(const struct psmac_wclip_sig *sig, uint32_t vf)
+{
+    return psmac_wclip_sig_eq(&gd.sig, sig) && gd.rgn == g.rgn && gd.flags == vf && gd.screen == g.screen && gd.x0 == g.l && gd.y0 == g.t;
+}
+/* the region's rectangles (rr, n of them, read with the fingerprint sig), in bands, the region looked at before each:
+   0 when it changed (the picture given up) */
+static int draw_guarded(const plm_frame_t *f, const struct pv_surface *s, int32_t x0, int32_t y0, int32_t rw, int32_t rh,
+                        int32_t rr[][4], int n, const struct psmac_wclip_sig *sig, uint32_t vf, const int32_t *cb)
+{
+    int changed = 0, first = 1;
+    /* the region (or the window's place: a window moved keeps the same region in its own coordinates) changed since the
+       last turn's look (the Mac runs on as this core reads): the notes made with the old one are dealt with first; if
+       they cannot be yet, this picture waits */
+    if (gd.n && !gd_same(sig, vf)) overdraw_watch();
+    if (gd.n && !gd_same(sig, vf)) return 0;
+    psmac_wclip_guard_begin(&gd, g.rgn, vf, sig, g.screen, g.l, g.t);
+    for (int k = 0; k < n && !changed; k++) {
+        int32_t t = rr[k][0], l = rr[k][1], b = rr[k][2], r = rr[k][3];
+        int32_t rows = (int32_t)(BAND_PX / (uint32_t)(r - l));
+        if (rows < 1) rows = 1;
+        for (int32_t y = t; y < b; y += rows) {
+            int32_t ye = y + rows < b ? y + rows : b;
+            BAND_HOOK(0);
+            if (guard_mode != 2 && !psmac_wclip_guard_still(&gd)) { changed = 1; break; }
+            psmac_wclip_guard_add(&gd, y, l, ye, r);          /* noted before it is drawn: a change from here on is repaired */
+            BAND_HOOK(1);
+            if (first) { race_wait(); first = 0; }
+            draw_around(f, s, x0, y0, rw, rh, l, y, r, ye, cb);
+        }
+    }
+    BAND_HOOK(2);
+    if (!changed && !psmac_wclip_guard_still(&gd)) changed = 1;
+    psmac_wclip_guard_end(&gd, now(), changed);
+    return !changed;
+}
+
 /* the picture into its window; clip (top, left, bottom, right on the screen), when given, limits it to that part */
 static void draw_clip(const plm_frame_t *f, const int32_t *clip)
 {
@@ -635,12 +742,28 @@ static void draw_clip(const plm_frame_t *f, const int32_t *clip)
         /* a live region only (23 November 2026, psmac_wclip_rgn_ok): a program that crashed or quit without STOP leaves
            the card a handle into freed memory, and a paused or starved film's last picture is drawn again when the
            pointer moves; the PC card drew anywhere on the owner's desktop that way */
-        if (!psmac_wclip_rgn_ok(g.rgn, g.vflags & A68V_VF_24BIT ? PSMAC_WCLIP_24BIT : 0, 0, 0)) { rgn_skips++; return; }
-        int n = vis_parts(rr, x0, y0, cx0, cy0, cx1, cy1);
-        if (n < 0) { rgn_skips++; return; }   /* the region could not be read (moving in the Mac's heap): not this picture */
-        rgn_parts = (uint32_t)n;
-        for (int k = 0; k < n; k++)
-            draw_around(f, &s, x0, y0, rw, rh, rr[k][1], rr[k][0], rr[k][3], rr[k][2], cb);
+        uint32_t vf = g.vflags & A68V_VF_24BIT ? PSMAC_WCLIP_24BIT : 0;
+        if (!psmac_wclip_rgn_ok(g.rgn, vf, 0, 0)) { rgn_skips++; return; }
+        if (guard_mode == 1) {                /* as before 25 November 2026 (testbed only): read once, then drawn */
+            int n = vis_parts(rr, x0, y0, cx0, cy0, cx1, cy1);
+            if (n < 0) { rgn_skips++; return; }   /* the region could not be read (moving in the Mac's heap): not this picture */
+            rgn_parts = (uint32_t)n;
+            BAND_HOOK(3);
+            race_wait();
+            for (int k = 0; k < n; k++)
+                draw_around(f, &s, x0, y0, rw, rh, rr[k][1], rr[k][0], rr[k][3], rr[k][2], cb);
+            BAND_HOOK(2);
+        } else {
+            struct psmac_wclip_sig sig;
+            int n = psmac_wclip_parts_sig(rr, g.rgn, vf, x0, y0, cx0, cy0, cx1, cy1, &sig);
+            if (n < 0) { rgn_skips++; return; }
+            rgn_parts = (uint32_t)n;
+            if (!draw_guarded(f, &s, x0, y0, rw, rh, rr, n, &sig, vf, cb)) {
+                redraw = 1;                   /* the region changed: the picture again, whole, with the new one */
+                overdraw_watch();
+                return;
+            }
+        }
     }
     DMB();
     if (under.on && cb) for (int k = 0; k < 4; k++) under_box[k] = cb[k];
@@ -684,6 +807,7 @@ static void geometry(void)
     if (blk->geom_seq != s1) return;          /* changing while read: next time */
     g.seq = s1; g.screen = screen; g.visible = vis; g.t = t; g.l = l; g.b = b; g.r = r;
     g.rgn = rgn; g.vflags = vflags;
+    overdraw_watch();                         /* drawn at the old place or with the old region, just before: repaired */
     /* the window moved, was uncovered or brought back while no new picture is coming (paused, ended, dry): the
        last picture drawn again, so the program never has to paint the picture area itself (22 November 2026) */
     if (vis && v.on && v.have_last && (v.paused || v.stalled || v.ended_v)) draw(&v.last);
@@ -857,6 +981,11 @@ int psmac_video_poll(void)
     psmac_video_test_poll(blk, ring);
     command();
     geometry();
+    overdraw_watch();
+    if (redraw) {                             /* a picture given up when the region changed: drawn again with the new one */
+        redraw = 0;
+        if (g.visible && v.on && v.have_last) { redraws++; draw(&v.last); }
+    }
     pointer_moved();
     if (v.sound && blk->volume) psmac_audio_video_volume(blk->volume);
     int did = 0;
@@ -919,6 +1048,9 @@ void psmac_video_init(uint8_t *win, uint32_t screens)
     fq_reset();
     blk = (volatile struct a68v_block *)(win + A68V_OFF_BLOCK);
     ring = win + A68V_OFF_RING;
+    winp = win;
+    for (uint32_t i = 0; i < sizeof(struct a68_repair) / 4; i++) ((volatile uint32_t *)(win + A68V_OFF_REPAIR))[i] = 0;
+    gd.n = 0; repair_seen = 0; redraw = 0;
     nscreens = screens;
     for (uint32_t i = 0; i < sizeof(struct a68v_block) / 4; i++) ((volatile uint32_t *)blk)[i] = 0;
     blk->win_size = A68V_WIN_SIZE; blk->ring_off = A68V_OFF_RING; blk->ring_size = A68V_RING_SIZE;
@@ -930,6 +1062,16 @@ void psmac_video_init(uint8_t *win, uint32_t screens)
     psmac_vframes_init(win);
     DMB();
     blk->version = A68V_VERSION; blk->magic = A68V_MAGIC;
+}
+
+void psmac_video_guard_config(int mode, uint32_t ms)
+{
+    guard_mode = mode; race_ms = ms > 500 ? 500 : ms;
+    if (mode || race_ms)
+        kprintf("[VIDEO] testbed: %s; %u ms between a picture's reading of the region and its first band\n",
+                mode == 1 ? "the region read once a picture, no repairs (video.guard=off: as before 25 November 2026)" :
+                mode == 2 ? "the region looked at only before and after a picture, repairs posted (video.guard=repair)" :
+                "the region looked at before every band, repairs posted", race_ms);
 }
 
 void psmac_video_report(void)
@@ -950,4 +1092,10 @@ void psmac_video_report(void)
             blk->buffered >> 10, blk->buffer_ms / 1000, blk->buffer_ms / 100 % 10, blk->buffer_pct, blk->buffer_target_ms / 1000,
             blk->buffer_target_ms / 100 % 10, blk->rebuffer_ms / 1000, blk->rebuffer_ms / 100 % 10, g.screen, g.l, g.t, g.r, g.b, g.visible ? "" : " (hidden)",
             g.rgn ? "region parts" : "no region", rgn_parts, menu_skips, rgn_skips, blk->sound ? "on" : "off");
+    if (gd.looks || gd.repairs)
+        kprintf("[PSMAC]   video: the region looked at %u times while drawing, %u pictures given up when it changed (%u drawn again), "
+                "%u repair requests (%u rectangles; %u after a picture that saw no change)%s\n",
+                gd.looks, gd.given_up, redraws, gd.repairs, gd.repair_rects, gd.late,
+                !gd.repairs ? "" : ((volatile struct a68_repair *)(winp + A68V_OFF_REPAIR))->seq == blk->repair_done ?
+                ", every one carried out by the program" : ", the last not carried out by the program yet");
 }

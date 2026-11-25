@@ -7052,3 +7052,36 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    - *Not verified:* anything on hardware; KiCad's ERC and DRC; a Quartus fit; a real SE's chassis height, its J13 with a
      meter, and a 68000 coming out of reset with /BGACK held; the Pi socket part (open-bottom, 6.0 mm) and the stack's
      real tolerances against the 0.08 mm margin.
+146. **The video decoder card's pictures and another window: the Apple II card's guard copied (25 November 2026).**
+   Item 144 left one card with the pattern it cured: the video decoder card (`psmac_video.c`) read the window's visRgn
+   once a picture (`vis_parts`) and drew every rectangle of it afterwards (`draw_around`), on core 1 between the sound's
+   turns, while the Mac on core 0 may move another window over the film. Not reported on the owner's SE; read in the
+   code. docs/16 "Drawn over another window" is the long form.
+   - *The two layers, as item 144 has them.* `draw_clip` reads the rectangles with the region's fingerprint and draws them
+     in bands of 16,384 pixels, the fingerprint looked at before each and at the picture's end; a changed region gives
+     the picture up, and the last picture is drawn again whole with the new region at the next turn (also a paused
+     film's, which `geometry()` draws when its window moves, and the pointer's old box). Every band is noted; at every
+     turn what was drawn in the last 200 ms outside the region as it is now is posted as a repair request at
+     `A68V_OFF_REPAIR` ($800 of the card's window, free between the block's end at $180 and the frame decoder's header
+     at $1000), the program's `repair_done` at $DC as on the other cards; the block is version 4. Aurora68 Play 1.8.2
+     and Aurora68 Video 1.2 carry requests out at every turn with `mac/a68pc/repair.h` as it is: they are built with the
+     same C kit as Aurora68 PC and Apple II, and `place.h`'s screen numbering is this card's (slot $A the HDMI screen).
+     Their Toolbox lists gained the ten region traps; `place.h`'s `pl_place_of`, unused by these two, is marked so.
+   - *What this card needed beyond item 144.* The region is larger than the picture (the strip below it is in the
+     window's visRgn, and the card knows only the picture's rectangle), so the guard's "inside its window" check is given
+     a size of 16,384 (`VIS_ANY`); with the picture's size every region would have been refused and the watch asked
+     again for ever. And a moved window keeps its region in its own coordinates, so the watch also runs as soon as
+     `geometry()` reads a new place, and before a picture that finds the place changed: what was drawn at the old place
+     just before a move is repaired rather than forgotten (the Apple II card's notes start again quietly then).
+   - *Levers* (testbed only): `video.guard=off` (as before this day), `video.guard=repair` (the repairs alone),
+     `video.racedelay=MS`.
+   - *Tested* on the host only: `tools/vbuf_test.sh` gained `cover1`, `cover2`, `cover-repair`, `cover-paused` and
+     `cover-old`, the region rewritten in place to an L and a pretend Finder window painted at a picture's second band.
+     Before the band's look the picture is given up (nothing on the Finder's window); just after it the band lands there
+     (8,160 pixels), one request for exactly that, painted by the pretend program, nothing left; with the repairs alone
+     23,840 pixels drawn over and repaired; a paused film's redraw given up and drawn again at once, the L holding exactly
+     the paused picture; with `video.guard=off` all 25,600 covered pixels keep the film. Every scenario plays the whole
+     film. `make -C mac check` passes; the kernel builds without warnings of its own.
+   - *Not verified:* QEMU (the run docs/16 describes needs the IIci ROM and a System 7.1 image, which were not at hand),
+     the owner's SE, System 6. QuickTime's frame decoder path (`psmac_vframes.c`) is not changed: it draws while the
+     68k waits for its request, inside the clip rectangle QuickTime gives, so the Mac changes no window meanwhile.

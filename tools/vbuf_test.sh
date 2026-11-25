@@ -22,7 +22,7 @@ ffmpeg -v error -y -f lavfi -i "testsrc2=size=320x240:rate=25:duration=20" -f la
     -c:a mp2 -b:a 128k -ar 44100 -ac 2 -f mpeg -muxdelay 0.5 "$T/film.mpg"
 N=$(ffprobe -v error -select_streams v -count_frames -show_entries stream=nb_read_frames -of csv=p=0 "$T/film.mpg" | tr -dc 0-9)
 fail=0
-for sc in steady bursty outage outage-timer pause stop bursty-old outage-old; do
+for sc in steady bursty outage outage-timer pause stop bursty-old outage-old cover1 cover2 cover-repair cover-paused cover-old; do
     if "$T/vbuf_test" "$T/film.mpg" "$N" $sc > "$T/$sc.log"; then grep '^vbuf_test' "$T/$sc.log"
     else cat "$T/$sc.log"; echo "vbuf_test: $sc: FAILED"; fail=1; fi
 done

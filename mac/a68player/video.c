@@ -31,10 +31,18 @@
  * demultiplexer finds the next pack header itself), and started again. The length in time is estimated from
  * the bytes the card has taken against its position, so the times shown are approximate until the film has
  * played a few seconds. Human Interface Guidelines (1992); the window fits 512 x 342.
+ *
+ * Repairs (25 November 2026, 1.2; docs/16 "Drawn over another window", docs/08 item 146): when the card finds that a
+ * picture of the film landed outside the window as the window is now (a Finder window dragged over the playing film
+ * while the card drew), it asks, and this program has the Mac paint that again (../a68pc/repair.h: PaintBehind), at
+ * every turn of its loop, in the background too. The Apple II and PC programs' code, shared: the card's screens are
+ * numbered as theirs (slot $A the HDMI screen, anything else the first), so place.h's mapping holds for this card too.
  */
 #include "toolbox.h"
 #include "psmac_video.h"
 #include "screens.h"
+#include "../a68pc/place.h"
+#include "../a68pc/repair.h"
 
 short mac_PBRead(ParamBlock *pb), mac_PBGetEOF(ParamBlock *pb);
 short drv_open(void *pb), drv_control(void *pb), drv_status(void *pb), mac_SetFPos(ParamBlock *pb);
@@ -392,7 +400,7 @@ static void do_menu(long mi)
 	short menu = (short)(mi >> 16), item = (short)mi;
 	switch (menu) {
 	case M_APPLE:
-		if (item == 1) { say("Aurora68 Video 1.1, for the video decoder card"); SetPort(win); InvalRect(PORT_RECT(win)); }
+		if (item == 1) { say("Aurora68 Video 1.2, for the video decoder card"); SetPort(win); InvalRect(PORT_RECT(win)); }
 		else { GetItem(m_apple, item, pbuf); OpenDeskAcc(pbuf); SetPort(win); }
 		break;
 	case M_FILE:
@@ -512,6 +520,9 @@ int main(void)
 			break;
 		}
 		if (!drv) continue;
+		/* 1.2: the card's requests to have the Mac paint again what it drew outside the window as it is now (repair.h);
+		   a card older than its block's version 4 has none (its repair area reads as zeros, seq 0 = done) */
+		if (blk->version >= 4) rp_take((volatile struct a68_repair *)(card + A68V_OFF_REPAIR), &blk->repair_done, win);
 		feed();
 		tell_place(0);
 		if (playing) {

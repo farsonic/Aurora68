@@ -308,7 +308,7 @@ $(B)/pp/core/%.o: $(CORE)/%.c $(CORE_H)
 	$(CC) $(PP_CFLAGS) -Os -ffunction-sections -fdata-sections -c -o $@ $<
 # music videos on the Aurora68 Video Decoder card (23 November 2026, docs/08 item 114): its driver, its ring for the
 # receive chain, the video window; the card's block from the kernel's psmac_video.h
-$(B)/pp/vcard.o: piplay/vcard.c piplay/vcard.h $(PP_H) ../emu68/src/psmac/psmac_video.h
+$(B)/pp/vcard.o: piplay/vcard.c piplay/vcard.h a68pc/place.h a68pc/repair.h ../emu68/src/psmac/psmac_repair.h $(PP_H) ../emu68/src/psmac/psmac_video.h
 	$(CC) $(PP_CFLAGS) -I../emu68/src/psmac -c -o $@ $<
 PP_OBJ = $(B)/crt0.o $(B)/pp/toolbox_glue.o $(B)/pp/libc.o $(B)/pp/fs.o $(B)/pp/net.o $(B)/pp/piplay.o $(B)/pp/radio.o \
          $(B)/pp/library.o $(B)/pp/fetch.o $(B)/pp/media.o $(B)/pp/vcard.o $(PP_CORE)
@@ -318,7 +318,7 @@ $(B)/piplay.elf: $(PP_OBJ) c/app.ld
 # documents, its preferences and '****', icons: tools/mac/mkicons.py): files dropped on its icon reach it
 # as the application's files (AppParmHandle)
 $(B)/Aurora68-Play.bin: $(B)/piplay.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py $(ICONS)
-	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Play" --creator PIPY --size 640 --icons play --version 1.8.1 -o $@
+	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Play" --creator PIPY --size 640 --icons play --version 1.8.2 -o $@
 
 # ---- the menu bar's extras, the clock, the WiFi and Bluetooth menus: an INIT in C (mac/wifimenu, tools/mac/elf2init.py).
 # "Aurora68 Menu Extras" since the clock came on 23 November 2026, "Aurora68 Wi-Fi & Bluetooth" before (the extension
@@ -416,14 +416,14 @@ $(B)/av/fs.o: piplay/fs.s
 	$(AS) -o $@ $<
 $(B)/av/libc.o: c/libc.c c/toolbox.h $(B)/av/toolbox_gen.h
 	$(CC) $(subst -I$(B),-I$(B)/av,$(CFLAGS)) -c -o $@ $<
-$(B)/av/video.o: a68player/video.c c/screens.h c/toolbox.h $(B)/av/toolbox_gen.h ../emu68/src/psmac/psmac_video.h
+$(B)/av/video.o: a68player/video.c a68pc/place.h a68pc/repair.h ../emu68/src/psmac/psmac_repair.h c/screens.h c/toolbox.h $(B)/av/toolbox_gen.h ../emu68/src/psmac/psmac_video.h
 	$(CC) $(subst -I$(B),-I$(B)/av,$(CFLAGS)) -I../emu68/src/psmac -c -o $@ $<
 AV_OBJ = $(B)/crt0.o $(B)/av/toolbox_glue.o $(B)/av/libc.o $(B)/av/glue.o $(B)/av/fs.o $(B)/av/video.o
 $(B)/a68player.elf: $(AV_OBJ) c/app.ld
 	$(LD) -T c/app.ld --emit-relocs --no-warn-rwx-segments -z noexecstack -o $@ $(AV_OBJ) $(LIBGCC)
 # the bundle (tools/mac/mkicons.py, 'video'): MPEG files ('MPEG', 'MPG ') open in it from the Finder
 $(B)/Aurora68-Video.bin: $(B)/a68player.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py $(ICONS)
-	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Video" --creator A68V --size 256 --icons video --version 1.1 -o $@
+	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 Video" --creator A68V --size 256 --icons video --version 1.2 -o $@
 
 # ---- Aurora68 PC: the PC on the Aurora68 PC Card (slot $D) in a window (mac/a68pc, docs/19-pc-card.md); its Toolbox
 # list is c/traps.txt and a68pc/traps.txt, its glue in build/apc/; the driver's calls from Aurora68 Video's glue.s

@@ -454,6 +454,97 @@ catches the card up after a jump, which QuickTime 2.5 does not do. docs/08 item 
   period (only FFmpeg's), films longer than a few minutes, and System 6 (the import needs the Alias and Folder
   Managers of System 7).
 
+## Drawn over another window (25 November 2026)
+docs/08 item 146; the Apple II card's cure (docs/20 "Drawn over another window", docs/08 item 144) applied to this card.
+
+**The pattern.** On 24 November the owner's SE kept a rectangle of the Apple II card's screen inside a Finder window
+dragged over the busy Apple II window: the card had read the window's visRgn once a picture and drew all of it while
+the Mac, on core 0, moved the Finder's window over it and gave the Apple's window a smaller region. This card's
+`draw_clip` did the same with every film's picture: `vis_parts` once, then `draw_around` for each rectangle. The
+pictures are larger than the Apple's on the HDMI screen (Fill Screen on the owner's 2560 x 1440 screen is well over a
+megapixel at 32 bits), and core 1 gives the sound its turns between them. Not seen on the owner's machine yet; read in
+the code, the same race.
+
+**The cure, as the Apple II card has it** (`psmac_wclip.c`, "the overdraw guard"; `psmac_video.c`, `draw_guarded` and
+`overdraw_watch`):
+1. *The region looked at again.* `draw_clip` reads the rectangles with the region's fingerprint
+   (`psmac_wclip_parts_sig`) and draws them in bands of 16,384 pixels (51 rows of a 320-pixel picture), the fingerprint
+   looked at before each (`psmac_wclip_guard_still`) and once more at the picture's end. When it changed the picture is
+   given up, and at the next turn of the card's loop the last picture (`v.last`) is drawn again, whole, with the region
+   the window has now. That is the same for a film that plays (its next picture would come anyway, but not before tens
+   of milliseconds) and for the redraws that need no new picture: a paused, ended or starved film's last picture drawn
+   again when its window moved (`geometry()`), and the pointer's old box (`draw_clip`'s `clip`, `pointer_moved`), whose
+   bands are the box's part of each rectangle.
+2. *What was drawn anyway, painted again.* Every band is noted before it is drawn (`psmac_wclip_guard_add`). At every
+   turn, and as soon as the program gives the card a new place, `psmac_wclip_guard_watch` compares the region and the
+   window's place with those the notes were drawn with; what was drawn in the last 200 ms outside the region as it is
+   now goes to the program as a repair request at `A68V_OFF_REPAIR` ($800 of the card's window, between the block, which
+   ends at $180, and the frame decoder's header at $1000; `_Static_assert`s in `psmac_video.h` hold the layout), and
+   the program's `repair_done` at $DC of the block's Mac half says it was carried out (docs/video-decoder-api.md "Repair
+   requests"). The block's version is 4. Aurora68 Play 1.8.2 (`vc_poll`) and Aurora68 Video 1.2 (its event loop) carry
+   requests out at every turn, in the background too, with the Apple II and PC programs' own code, `mac/a68pc/repair.h`
+   (`rp_take`: the rectangles made global through their screen's `gdRect`, less the program's window's visRgn, inside
+   GrayRgn, then PaintBehind from the frontmost window of all). The programs are in the same C kit as those two
+   (`mac/c`, a Toolbox list of their own), so the header is included as it is; the region traps it needs are added to
+   `piplay/traps.txt` and `a68player/traps.txt`. `place.h`'s screen mapping, which `rp_screen` uses, numbers the screens
+   as this card does (slot $A's GDevice the HDMI screen, `A68V_SCREEN_HDMI`; anything else the first), the same test
+   both programs' own `screen_of` make.
+
+**Two differences from the Apple II card.**
+- *The region is larger than the picture.* The card knows the picture's rectangle (Control 112), not the window's
+  content, and both programs' windows have a strip below the picture (the controls, the time) that is in the visRgn
+  too. The guard's check that a region lies inside its window (`psmac_wclip_rgn_ok` with a size) would have refused
+  every region, and the watch would have asked again for ever; this card gives the check a size of 16,384 both ways
+  (`VIS_ANY`), so only "the region starts at the window's 0,0" is held, as `draw_clip`'s own check (no size) holds
+  nothing more. The region's rectangles are cut to the screen, and what was drawn lies inside the picture, so the
+  difference is right.
+- *A window that moved keeps its region.* A visRgn is in the window's own coordinates, so moving a window that nothing
+  covers changes its place and not its fingerprint. The Apple II card's notes start again quietly when a picture
+  finds the place changed (`psmac_wclip_guard_begin`); here the watch is also run in `geometry()` as soon as a new place
+  is read, and a picture that finds the place (not only the region) changed since the notes runs it first, so what
+  was drawn at the old place just before the move is repaired, not forgotten.
+
+**Testbed levers** (`psmac_videocard.c`, `psmac_video_guard_config`): `video.guard=off` reads the region once a picture
+and posts no repairs, as before this day; `video.guard=repair` leaves out the looks between bands (the second layer
+alone); `video.racedelay=MS` (at most 500) waits that long between a picture's reading of the region and its first
+band, so that the Mac's changes land in the middle of pictures. The heartbeat's second video line counts the looks,
+the pictures given up and drawn again, the repair requests and whether the program carried the last one out; the
+log says `[VIDEO] the window's region changed under a picture: ...` for each request (the first 40) and
+`[VIDEO] the program had the Mac paint it again (request N)` when the program answers.
+
+**Tested on the host** (`tools/vbuf_test.sh`, in `make -C mac check`; `psmac_video.c` itself against a simulated clock,
+network and mixer, now with a pretend Mac memory holding the window's region: the picture 320 x 200 at the screen's
+top, the region 30 lines taller for the strip). In the middle of a picture, at its second band, the test does what
+the Mac did on the owner's SE: paints a pretend Finder window over the picture's right half below its first 40 lines
+(25,600 pixels) and rewrites the region in place to an L. The film then plays on 1.5 s and the screen is looked at;
+every scenario also plays the whole film (500 pictures decoded and shown, no gap in the sound).
+- `cover1`, the change before the second band's look: the picture given up, nothing of it on the Finder's window at
+  its end; one repair request (the first band's 11 covered rows, drawn before the Finder's window came: harmless,
+  the Finder's window painted once more), carried out; afterwards nothing of the film there, and the 38,400 pixels
+  of the L the film's.
+- `cover2`, just after the look: the second band lands on the Finder's window (8,160 pixels: its 51 rows, 160 wide),
+  the third band's look gives the picture up; one request for exactly that, painted by the pretend program; nothing
+  left.
+- `cover-repair` (`video.guard=repair`): the whole rest of the picture drawn over (23,840 pixels), the change seen at
+  its end, one request, nothing left.
+- `cover-paused`: the film paused, its picture kept, the screen cleared and the window given a new place (a geometry
+  change): the last picture drawn again, given up at its second band, and drawn again with the L at once; the L
+  holds exactly the paused picture, the Finder's window nothing of it.
+- `cover-old` (`video.guard=off`): the covered part keeps all 25,600 pixels of the film: the leftover, as on the
+  owner's SE.
+
+**In QEMU: not run yet.** The run docs/20 describes for the Apple II card needs the IIci ROM and a System 7.1 image,
+which are Apple's and not in the repository, and the container this was done in had neither. The run to make: the
+solo board, System 7.1 on the 1024 x 768 screen, a film playing in Aurora68 Video 1.2 (and a music video in Play 1.8.2),
+the Finder in front, a Finder window clicked to the front over the film's window and dragged over it, with
+```
+SHOT=10 tools/run-solo.sh 600 video.guard=off video.racedelay=100
+```
+(the leftover expected inside the Finder's window, as `a2.guard=off a2.racedelay=100` showed it for the Apple), then the
+same with `video.racedelay=100` alone (no leftover expected; the heartbeat's `pictures given up` and `repair requests`
+lines, every request carried out) and with no option at all. Unlike the Apple II card this card does not stop drawing
+when its program's loop stands still, so a drag in QEMU should race without anything like `a2.alivems=`.
+
 ## Modern formats: a study (22 November 2026)
 The owner's third item: H.264 video ('avc1') and AAC sound ('mp4a') in .mp4 and .mov files from a camera or
 a phone. QuickTime 2.5 reads the MPEG-4 file format's atoms as a QuickTime movie (they are the same

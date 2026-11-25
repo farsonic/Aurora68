@@ -29,18 +29,26 @@
  *  6. Pause and resume are commands. A seek is STOP (the ring is emptied: tail becomes head), then the
  *     new stream's bytes, then START.
  *  7. The window moves, resizes, is covered or uncovered: the new rectangle and visible, geom_seq + 1.
+ *  8. Repairs (25 November 2026, version 4, psmac_repair.h; docs/16 "Drawn over another window"): when the card finds
+ *     that it drew outside the window's region as the region is now (another window moved over it while a picture
+ *     was drawn), it posts the rectangles at A68V_OFF_REPAIR; the program has the Mac paint them again (PaintBehind,
+ *     mac/a68pc/repair.h) and writes the request's seq into repair_done.
  * The card reads head only once it has stood for 50 us (the 68k's stores come from the JIT on core 0
  * with no barrier between the bytes and the head; psmac_audio.c, STR_HEAD_LAG).
  */
 #ifndef PSMAC_VIDEO_H
 #define PSMAC_VIDEO_H
 #include <stdint.h>
+#include "psmac_repair.h"
 
 #define A68V_MAGIC        0x41363856u        /* 'A68V' */
-#define A68V_VERSION      3u                 /* 2: buffer_ms ... buffer_target_ms at 0x68; 3: the window's region (vis_rgn)
-                                                and no picture under a menu (23 November 2026) */
+#define A68V_VERSION      4u                 /* 2: buffer_ms ... buffer_target_ms at 0x68; 3: the window's region (vis_rgn)
+                                                and no picture under a menu (23 November 2026); 4: the repair request at
+                                                A68V_OFF_REPAIR and repair_done (25 November 2026) */
 #define A68V_WIN_SIZE     0x00100000u        /* 1 MiB: the block, and the ring in the top half */
 #define A68V_OFF_BLOCK    0x00000u
+#define A68V_OFF_REPAIR   0x00800u           /* struct a68_repair (psmac_repair.h): what the card asks the Mac to paint again;
+                                                the block ends at $180, the frame decoder's header begins at A68V_OFF_FRAMES */
 #define A68V_OFF_RING     0x80000u
 #define A68V_RING_SIZE    0x80000u           /* 512 KiB, a power of two: 7 s of 320 x 240, 3.5 s of 512 x 342 */
 
@@ -113,7 +121,10 @@ struct a68v_block {
        leaves the tag stale, and the whole rectangle is drawn as before. vis_flags: A68V_VF_24BIT, the program runs
        in 24-bit mode (the master pointer's high byte is the Memory Manager's flags) */
     uint32_t clip_tag, vis_rgn, vis_flags;
-    uint32_t pad1[17];
+    uint32_t pad1[8];
+    uint32_t repair_done;                    /* the last repair request (A68V_OFF_REPAIR's seq) the program had painted: at
+                                                $DC, where the Apple II and PC cards keep theirs (version 4) */
+    uint32_t pad2[8];
     /* the card again: 0x100 */
     char     message[128];                   /* the last error, or what it is doing, in words (ASCII) */
 };
@@ -122,6 +133,9 @@ _Static_assert(__builtin_offsetof(struct a68v_block, cmd_seq) == 0x80, "a68v_blo
 _Static_assert(__builtin_offsetof(struct a68v_block, buffered) == 0x58, "a68v_block buffered");
 _Static_assert(__builtin_offsetof(struct a68v_block, buffer_ms) == 0x68, "a68v_block buffer_ms");
 _Static_assert(__builtin_offsetof(struct a68v_block, buffer_target_ms) == 0x7C, "a68v_block buffer_target_ms");
+_Static_assert(__builtin_offsetof(struct a68v_block, vis_flags) == 0xB8, "a68v_block vis_flags");
+_Static_assert(__builtin_offsetof(struct a68v_block, repair_done) == 0xDC, "a68v_block repair_done");
+_Static_assert(__builtin_offsetof(struct a68v_block, message) == 0x100, "a68v_block message");
 
 /* ---- the frame decoder (psmac_vframes.c, 22 November 2026, GitHub issue #13, docs/08 item 110) ----------
    The second half of the card, beside the stream: one compressed picture at a time, as QuickTime's
@@ -193,6 +207,8 @@ struct a68v_freq {                           /* 128 bytes: the Mac fills, adds o
 _Static_assert(sizeof(struct a68v_fhdr) == 256, "a68v_fhdr");
 _Static_assert(sizeof(struct a68v_freq) == 128, "a68v_freq");
 _Static_assert(__builtin_offsetof(struct a68v_freq, ctab) == 92, "a68v_freq ctab");
+_Static_assert(A68V_OFF_BLOCK + sizeof(struct a68v_block) <= A68V_OFF_REPAIR && A68V_OFF_REPAIR + sizeof(struct a68_repair) <= A68V_OFF_FRAMES,
+               "a68v repair: between the block and the frame decoder's header");
 void psmac_vframes_init(uint8_t *win);
 int  psmac_vframes_poll(void);
 void psmac_vframes_reset(void);
@@ -204,6 +220,11 @@ void psmac_video_config(uint32_t buffer_bytes, uint32_t start_ms, uint32_t rebuf
 int  psmac_video_poll(void);                            /* one slice of work; 1 if it did something */
 void psmac_video_reset(void);                           /* the computer was reset: stop (from any core) */
 void psmac_video_report(void);                          /* the heartbeat's line */
+/* the overdraw guard's testbed levers (psmac_videocard.c: video.guard=, video.racedelay=; 25 November 2026): mode 0 the
+   guard (the region looked at before every band, repairs posted), 1 off (the region read once a picture, no repairs: as
+   before that day), 2 the repairs alone (no looks between bands); race_ms waited between a picture's reading of the
+   region and its first band */
+void psmac_video_guard_config(int mode, uint32_t race_ms);
 
 /* ---- what the host provides ------------------------------------------------------------------- */
 /* A screen to draw on, as the computer's own frame buffer: base in the kernel's view, the size and row
