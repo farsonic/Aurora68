@@ -72,7 +72,7 @@ $(B)/Aurora68-FPUTest.bin: $(B)/fputest.bin.raw ../tools/mac/mkinit.py ../tools/
 mmutest: $(B)/mmutest.rom
 $(B)/mmutest.rom: mmutest.s
 	@mkdir -p $(B)
-	m68k-linux-gnu-as -m68030 -o $(B)/mmutest.o $<
+	m68k-linux-gnu-as -m68030 -m68881 -o $(B)/mmutest.o $<
 	$(OBJCOPY) -O binary -j .text $(B)/mmutest.o $@
 
 # System 7's Virtual Memory from an application under mac.mmu=full (docs/23-mmu.md, phase 2; not in the release):

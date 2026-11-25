@@ -533,7 +533,7 @@ System 7.1 (the test image's copy), `mac.ram=8`, `mac.mmu=full`, VM on with 32 M
 
 ### 11.6 The test ROM
 
-`mac/mmutest.s` gained six cases (12 to 17), run after phase 1's eleven and skipped when no bus error has been taken
+`mac/mmutest.s` gained seven cases (12 to 18), run after phase 1's eleven and skipped when no bus error has been taken
 by then (without the option), so that the stock kernel still reaches the benchmark:
 
 12. PTEST at level 7: a valid page gives MMUSR `$0003` (three levels) and A3 the level C descriptor's address; an
@@ -546,9 +546,12 @@ by then (without the option), so that the stock kernel still reaches the benchma
 16. TT0 over a page the tables mark invalid: no fault, PTEST level 0 says T; TT0 off: it faults.
 17. `PMOVE 0x10(A0),TT1` with the operand's page invalid: the bus error comes from the PMOVE (its PC, the operand's
     address), which then runs again.
+18. `FMOVE.L (A0),FP0` with the operand's page invalid: the exact FPU's guard (11.4) delivers the bus error from the
+    FMOVE, which then runs again and loads the value.
 
 Case 1 now expects format `$B` (a read) and case 2 `$A` (a write). `ROM=mac/build/mmutest.rom tools/run-solo.sh 45
-mac.mmu=full`: **`MMU test: 82 passed, 0 failed, 117 bus errors taken`**. The first version of the logger lost the
+mac.mmu=full`: **`MMU test: 86 passed, 0 failed, 118 bus errors taken`** (82 and 117 before case 18; the stock kernel:
+`16 passed, 35 failed, 0 bus errors taken`, then the benchmark). The first version of the logger lost the
 summary line: the tests now end in under two seconds, before the kernel's mailbox service is up (phase 1's
 remaps of 130 ms each had hidden that), so it waits for the answer.
 

@@ -491,6 +491,19 @@ t17:	pmove	0x10(%a0),%tt1			| the handler maps the page; the PMOVE runs again an
 	clr.l	V_TT
 	pmove	V_TT,%tt1
 
+	| ---- T18: an FPU operand on an invalid page: the exact FPU's helper (the default) delivers the bus error ----
+	move.l	#1818,WIN+0x6A000+0x20
+	inval	0x6A
+	clr.l	V_COUNT
+	lea	WIN+0x6A000+0x20,%a0
+	fmove.l	#0,%fp0
+t18:	fmove.l	(%a0),%fp0			| the handler maps the page; the FMOVE runs again
+	fmove.l	%fp0,%d2
+	want	n_t18, %d2, 1818
+	want	n_t18c, V_COUNT, 1
+	wantpc	n_t18pc, t18
+	want	n_t18a, V_ADDR, WIN+0x6A000+0x20
+
 p2skip:
 
 	| ---- the result ----
@@ -718,6 +731,10 @@ n_t16c:	.asciz	"t16count"
 n_t16t:	.asciz	"t16mmusr"
 n_t16o:	.asciz	"t16off"
 n_t16oc: .asciz	"t16offcount"
+n_t18:	.asciz	"t18"
+n_t18c:	.asciz	"t18count"
+n_t18pc: .asciz	"t18pc"
+n_t18a:	.asciz	"t18addr"
 n_t17c:	.asciz	"t17count"
 n_t17pc: .asciz	"t17pc"
 n_t17a:	.asciz	"t17addr"
