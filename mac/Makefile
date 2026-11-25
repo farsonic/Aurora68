@@ -65,6 +65,16 @@ fputest-speed:
 $(B)/Aurora68-FPUTest.bin: $(B)/fputest.bin.raw ../tools/mac/mkinit.py ../tools/mac/rsrc.py $(ICONS)
 	$(PY) ../tools/mac/mkinit.py --init $(B)/fputest.bin.raw --name "Aurora68 FPU Test" --icons machine -o $@
 
+# the 68030 MMU's page faults under mac.mmu=full (docs/23-mmu.md; not in the release): make mmutest, then
+#   ROM=mac/build/mmutest.rom tools/run-solo.sh 45 mac.mmu=full     -> "[MAC] MMU test: 50 passed, 0 failed, ..."
+# a bare test ROM: no Apple software involved
+.PHONY: mmutest
+mmutest: $(B)/mmutest.rom
+$(B)/mmutest.rom: mmutest.s
+	@mkdir -p $(B)
+	m68k-linux-gnu-as -m68030 -o $(B)/mmutest.o $<
+	$(OBJCOPY) -O binary -j .text $(B)/mmutest.o $@
+
 # the same extension answering another machine type (for experiments): make pimach-variant MACH=11
 pimach-variant: pimach.s
 	@mkdir -p $(B)

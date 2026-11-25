@@ -46,6 +46,15 @@ static struct M68KLocalState *local_state;
 
 int32_t _pc_rel = 0;
 
+#ifdef PSMAC
+/* Aurora68, mac.mmu=full: the translator's fault table (psmac/psmac_mmufault.c, docs/23-mmu.md) */
+extern int psmac_mmu_full;
+void psmac_mmu_jit_begin(void);
+void psmac_mmu_jit_insn(struct TranslatorContext *ctx, uint16_t *pc);
+uint32_t psmac_mmu_jit_reserve_words(uint32_t depth);
+uint32_t psmac_mmu_jit_finish(void *dst);
+#endif
+
 void EMIT_GetOffsetPC(struct TranslatorContext *ctx, int8_t *offset)
 {
     // Calculate new PC relative offset
@@ -324,6 +333,10 @@ static inline uintptr_t M68K_Translate(uint16_t *M68kCodePtr, uint32_t *arm_star
     }
 
     M68K_ResetReturnStack();
+#ifdef PSMAC
+    if (unlikely(psmac_mmu_full))
+        psmac_mmu_jit_begin();
+#endif
 
     if (debug) {
         uint32_t hash_calc = (hash >> EMU68_HASHSHIFT) & EMU68_HASHMASK;
@@ -409,6 +422,13 @@ static inline uintptr_t M68K_Translate(uint16_t *M68kCodePtr, uint32_t *arm_star
         local_state[insn_count].mls_ARMOffset = ctx.tc_CodePtr - ctx.tc_CodeStart;
         local_state[insn_count].mls_M68kPtr = ctx.tc_M68kCodePtr;
         local_state[insn_count].mls_PCRel = _pc_rel;
+#ifdef PSMAC
+        /* Aurora68, mac.mmu=full (psmac/psmac_mmufault.c): where this instruction's code starts, its address, the
+           condition codes' temporary, and a copy of the address registers it may change, so that a guest page
+           fault inside it can be restarted. Nothing is emitted or recorded without the option. */
+        if (unlikely(psmac_mmu_full))
+            psmac_mmu_jit_insn(&ctx, ctx.tc_M68kCodePtr);
+#endif
 
         insn_consumed = EmitINSN(&ctx);
 
@@ -1004,10 +1024,22 @@ struct M68KTranslationUnit *M68K_GetTranslationUnit(uint16_t *m68kcodeptr)
         }
     } while(unit == NULL);
 
+#ifdef PSMAC
+    /* mac.mmu=full: the end of the allocation is kept for the fault table, which goes right behind the code */
+    const uint32_t ft_words = unlikely(psmac_mmu_full) ? psmac_mmu_jit_reserve_words((uint32_t)icnt + 1) : 0;
+    uintptr_t line_length = M68K_Translate(m68kcodeptr, &unit->mt_ARMCode[0], &unit->mt_ARMCode[((uint32_t)icnt + 1) * 64 - ft_words]);
+    uintptr_t arm_insn_count = line_length/4 - 1;
+    uint32_t ft_bytes = 0;
+    if (unlikely(psmac_mmu_full)) {
+        ft_bytes = psmac_mmu_jit_finish(&unit->mt_ARMCode[line_length / 4]);
+    }
+    uintptr_t unit_length = (line_length + ft_bytes + 63 + sizeof(struct M68KTranslationUnit)) & ~63;
+#else
     uintptr_t line_length = M68K_Translate(m68kcodeptr, &unit->mt_ARMCode[0], &unit->mt_ARMCode[((uint32_t)icnt + 1) * 64]);
     uintptr_t arm_insn_count = line_length/4 - 1;
 
     uintptr_t unit_length = (line_length + 63 + sizeof(struct M68KTranslationUnit)) & ~63;
+#endif
 
     //kprintf("unit length: %ld, initial alloc: %ld\n", unit_length, initial_alloc);
     if (initial_alloc < unit_length) {
@@ -1017,6 +1049,10 @@ struct M68KTranslationUnit *M68K_GetTranslationUnit(uint16_t *m68kcodeptr)
 
     /* Trim the unit to calculated unit length */
     unit = tlsf_realloc(jit_tlsf, unit, unit_length);
+#ifdef PSMAC
+    if (unlikely(psmac_mmu_full))
+        unit->mt_LocalState = (void *)&unit->mt_ARMCode[line_length / 4];   /* the fault table, after the realloc */
+#endif
 
     /* Set-up entry point */
     unit->mt_ARMEntryPoint = &unit->mt_ARMCode[0];

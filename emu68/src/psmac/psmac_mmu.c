@@ -19,6 +19,10 @@
  * (the ROM relies on the translation of its MMU record surviving the CRP load); PFLUSH re-walks the
  * tables so an OS that edits them in place (System 7 VM, A/UX) is picked up.
  * Not supported: page sizes below 4 KiB, supervisor root pointer (SRE), function-code lookup (FCL).
+ *
+ * mac.mmu=full (25 November 2026, experimental, docs/23-mmu.md): an access by translated code to a logical
+ * page the guest's tables mark invalid becomes a 68030 bus error (psmac_mmufault.c) instead of the shim's
+ * $BAD0BAD0 read and ignored write. Without the option nothing here behaves differently.
  */
 #include <stdint.h>
 #include <stdbool.h>
@@ -50,12 +54,17 @@ void mmu_low4g_clone(const uint64_t from[4]);
 int psmac_watch_traps;
 
 static struct { uint32_t tc, tt0, tt1, srp_hi, srp_lo, crp_hi, crp_lo; uint16_t mmusr; } mmu;
+/* mac.mmu=full: guest page faults are delivered (psmac_mmufault.c, the translator's fault table,
+   EMIT_RTE's access-fault frames). Read at translation time and in the abort handler only. */
+int psmac_mmu_full;
 static uintptr_t ram_phys, rom_phys; static uint32_t ram_size;
 static uint32_t *l2p;          /* per 4 KiB logical page of the CURRENT set: physical page | flags (base region only) */
 static int fill_enabled;       /* walk mode: 1 = fill l2p, 0 = hash the descriptors only */
 static int translate_on;       /* TC.E of the current set */
 static uint32_t is_bits;       /* TC.IS of the current set */
 static uint32_t rebuilds;
+static int quiet_apply;        /* mac.mmu=full: the remap after a page-fault handler's PFLUSH logs only the summary */
+static uint32_t pflush_remaps, pflush_us;
 static int crp_dirty;          /* CRP changed while translating; rebuild pending until TC load or PFLUSH */
 static uint64_t last_install;  /* counter value of the last TC/CRP switch (the PFLUSHA right after it is implied) */
 
@@ -255,7 +264,8 @@ static void apply_l2p(void)
             i = j;
         }
     }
-    kprintf("[PSMAC:MMU]   applied %u mapping runs (IS=%u, %u aliases)\n", runs, is_bits, aliases);
+    if (!quiet_apply)
+        kprintf("[PSMAC:MMU]   applied %u mapping runs (IS=%u, %u aliases)\n", runs, is_bits, aliases);
 }
 
 /* ---- identity map (MMU disabled) ---- */
@@ -469,12 +479,24 @@ static void pflush(int after_tc)
     fill_enabled = 0;
     if (!walk_current(&w)) return;
     if (w.hash == cur->hash && w.fills == cur->fills) return;
-    kprintf("[PSMAC:MMU] PFLUSH: tables changed in place, remapping set TC=%08x CRP=%08x:%08x\n", cur->tc, cur->crp_hi, cur->crp_lo);
+    uint64_t t0 = cnt_now();
+    if (!psmac_mmu_full)
+        kprintf("[PSMAC:MMU] PFLUSH: tables changed in place, remapping set TC=%08x CRP=%08x:%08x\n", cur->tc, cur->crp_hi, cur->crp_lo);
     unmap_set(cur);
     l2p = set_l2p(cur, w.npages);
     fill_enabled = 1; walk_current(&w);
+    quiet_apply = psmac_mmu_full;
     apply_l2p(); cur->hash = w.hash; cur->fills = w.fills;
+    quiet_apply = 0;
     mmu_low4g_get(cur->l1);
+    if (psmac_mmu_full) {
+        /* a guest's page-fault handler flushes after every descriptor it validates: count them and the
+           time they cost (the whole set is re-walked and remapped, docs/23-mmu.md "phase 2") */
+        pflush_remaps++; pflush_us += (uint32_t)((cnt_now() - t0) * 1000000 / cnt_frq());
+        if (pflush_remaps <= 2 || (pflush_remaps & 63) == 0)
+            kprintf("[PSMAC:MMU] PFLUSH remap #%u: tables changed in place, set TC=%08x CRP=%08x:%08x (%u us, %u us on average)\n",
+                    pflush_remaps, cur->tc, cur->crp_hi, cur->crp_lo, (uint32_t)((cnt_now() - t0) * 1000000 / cnt_frq()), pflush_us / pflush_remaps);
+    }
 }
 
 /* ---- public ---- */
@@ -488,10 +510,34 @@ void psmac_mmu_init(uintptr_t ramp, uint32_t rams, uintptr_t romp)
         for (uint32_t k = 0; k < PAGES_4K / 32; k++) sets[i].bits[k] = 0;
         sets[i].used = 0;
     }
+    {   extern const char *psmac_option(const char *key);
+        const char *o = psmac_option("mac.mmu");
+        psmac_mmu_full = o && o[0] == 'f' && o[1] == 'u' && o[2] == 'l' && o[3] == 'l' && !o[4];
+        /* mac.mmu=nosnap: the same without the translator's copies of the address registers, a diagnostic
+           that shows which restarts need them (docs/23-mmu.md, "the spike") */
+        if (o && o[0] == 'n' && o[1] == 'o' && o[2] == 's' && o[3] == 'n' && o[4] == 'a' && o[5] == 'p' && !o[6])
+            psmac_mmu_full = 2;
+        if (psmac_mmu_full)
+            kprintf("[PSMAC:MMU] mac.mmu=%s: guest page faults become 68030 bus errors (experimental, docs/23-mmu.md)\n", o);
+    }
     mmu_low4g_get(pristine);
     kprintf("[PSMAC:MMU] pristine low-4G subtree: %016llx %016llx %016llx %016llx\n", pristine[0], pristine[1], pristine[2], pristine[3]);
     mmu.tc = 0;
     rebuild();   /* identity set */
+}
+
+/* mac.mmu=full (psmac_mmufault.c): 1 when the guest translates, and the kernel's own pointer to the Mac RAM
+   behind a logical address (for building a bus-error frame from the abort handler), 0 if the page is
+   invalid or not RAM */
+int psmac_mmu_translating(void) { return translate_on && l2p; }
+uint8_t *psmac_mmu_ram_ptr(uint32_t logical)
+{
+    int valid;
+    uint32_t p = psmac_mmu_l2p(logical, &valid);
+    if (!valid) return 0;
+    p = norm_phys(p);
+    if (p >= ram_size) return 0;
+    return (uint8_t *)(KERNEL_ALIAS + ram_phys + p);
 }
 
 /* logical -> physical for the abort handler; returns 0 and *valid=0 for unmapped pages */

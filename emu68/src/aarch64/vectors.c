@@ -2252,6 +2252,15 @@ void SYSHandler(uint32_t vector, uint64_t *ctx)
 #endif
         int writeFault = (esr & (1 << 6)) != 0;
 
+#ifdef PSMAC
+        /* Aurora68, mac.mmu=full (psmac/psmac_mmufault.c): a translated access to a page the guest's tables mark
+           invalid becomes a 68k bus error; anything else is emulated as before */
+        extern int psmac_mmu_full;
+        extern int psmac_mmu_fault(uint64_t *ctx, uint64_t elr, uint64_t esr, uint64_t far);
+        if (unlikely(psmac_mmu_full) && psmac_mmu_fault(ctx, elr, esr, far))
+            handled = 1;
+        else
+#endif
         handled = writeFault ? SYSPageFaultWriteHandler(vector, ctx, elr, spsr, esr, far) : SYSPageFaultReadHandler(vector, ctx, elr, spsr, esr, far);
     }
     else if ((vector & 0x1ff) == 0x00 && (esr & 0xf8000000) == 0x80000000)

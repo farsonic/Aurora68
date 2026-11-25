@@ -305,6 +305,7 @@ if (${VARIANT} IN_LIST SUPPORTED_VARIANTS)
                 list(APPEND BASE_FILES
                     src/psmac/psmac_bus.c
                     src/psmac/psmac_mmu.c
+                    src/psmac/psmac_mmufault.c
                     src/psmac/psmac_mbox.c
                     src/psmac/psmac_display.c
                     src/psmac/psmac_splash.c
@@ -370,6 +371,10 @@ if (${VARIANT} IN_LIST SUPPORTED_VARIANTS)
                     src/alice/usb/frf_usb_native_hid.c
                 )
                 include_directories(src/alice)
+                # mac.mmu=full's abort side reads and writes the 68k registers held in x19-x29, as vectors.c does
+                set_source_files_properties(src/psmac/psmac_mmufault.c PROPERTIES COMPILE_FLAGS
+                     "-ffixed-x19 -ffixed-x20 -ffixed-x21 -ffixed-x22 -ffixed-x23 -ffixed-x24 -ffixed-x25 -ffixed-x26 \
+                      -ffixed-x27 -ffixed-x28 -ffixed-x29")
                 # The Aurora68 PC Card (slot $D, docs/19-pc-card.md): a PC from Aurora86's libaurora86.a, which this tree
                 # does not contain. Off by default, so that the normal kernel and CI need nothing from Aurora86:
                 #   -DPSMAC_PC=ON -DAURORA86_DIR=/path/to/aurora86 (its scripts/build-p2.sh made build/p2/aarch64be/)
