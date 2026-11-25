@@ -169,6 +169,108 @@
 				)
 			)
 		)
+		(symbol "aurora68:R"
+			(pin_names
+				(offset 0.508)
+			)
+			(exclude_from_sim no)
+			(in_bom yes)
+			(on_board yes)
+			(property "Reference" "R"
+				(at 0 2.54 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Value" "R"
+				(at 0 -2.54 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Footprint" ""
+				(at 0 -5.08 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "Datasheet" ""
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "Description" "Resistor"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(symbol "R_0_1"
+				(rectangle
+					(start -5.08 1.016)
+					(end 5.08 -1.016)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type background)
+					)
+				)
+			)
+			(symbol "R_1_1"
+				(pin passive line
+					(at -7.62 0 0)
+					(length 2.54)
+					(name "1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at 7.62 0 180)
+					(length 2.54)
+					(name "2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+			)
+		)
 		(symbol "aurora68:RPI_GPIO_SOCKET_2x20"
 			(pin_names
 				(offset 1.016)
@@ -957,6 +1059,155 @@
 		)
 	)
 	(symbol
+		(lib_id "aurora68:R")
+		(at 68.58 111.76 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(uuid "279af259-6398-52af-acca-4aa777c5fd05")
+		(property "Reference" "R12"
+			(at 68.58 107.95 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "22"
+			(at 68.58 115.57 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "aurora68:R_0603_1608Metric"
+			(at 68.58 118.11 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" ""
+			(at 68.58 111.76 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Resistor"
+			(at 68.58 111.76 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "LCSC" "C23345"
+			(at 68.58 111.76 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Height_mm" "0.55"
+			(at 68.58 111.76 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Note" "GPCLK0 (200 MHz) series resistor at the source, beside the Pi's pin 7 (fit 0 ohm for the PiStorm's direct wire)"
+			(at 68.58 111.76 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "84d28947-8065-54f8-8147-feb0962621ae")
+		)
+		(pin "2"
+			(uuid "91e97273-7fe3-5a95-a5d6-dd2af9d49ceb")
+		)
+		(instances
+			(project "aurora68-card-p"
+				(path "/23865fb0-541d-5699-a2fc-51c653160383/ab04a2e6-aebe-5979-b53b-6077e7879c78"
+					(reference "R12")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(wire
+		(pts
+			(xy 60.96 111.76)
+			(xy 58.42 111.76)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "64ecfbe8-d5d6-56b1-8ff5-26930086ee4e")
+	)
+	(label "PI_CLK_GPIO"
+		(at 58.42 111.76 180)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right bottom)
+		)
+		(uuid "6a065327-571b-5481-a48b-4f36349b8b69")
+	)
+	(wire
+		(pts
+			(xy 76.2 111.76)
+			(xy 78.74 111.76)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "71d4f492-4b7f-5192-8dfc-73f8dba27338")
+	)
+	(global_label "PI_CLK"
+		(shape bidirectional)
+		(at 78.74 111.76 0)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "b844b6cc-5421-5cc1-bdd4-8ab22757c678")
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 78.74 111.76 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+				(hide yes)
+			)
+		)
+	)
+	(symbol
 		(lib_id "aurora68:RPI_GPIO_SOCKET_2x20")
 		(at 86.36 73.66 0)
 		(unit 1)
@@ -1236,27 +1487,16 @@
 		)
 		(uuid "8cfe873c-7f81-546b-b05a-79910cd79073")
 	)
-	(global_label "PI_CLK"
-		(shape bidirectional)
+	(label "PI_CLK_GPIO"
 		(at 66.04 55.88 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
 			)
-			(justify right)
+			(justify right bottom)
 		)
-		(uuid "dccebb75-8ad1-5af7-b20c-dbc6760cae60")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 66.04 55.88 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-				(hide yes)
-			)
-		)
+		(uuid "9bfd6336-60bd-54fc-b562-51c7efeec49b")
 	)
 	(wire
 		(pts
@@ -2419,7 +2659,7 @@
 	)
 	(symbol
 		(lib_id "aurora68:MountingHole")
-		(at 55.88 111.76 0)
+		(at 55.88 127 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom no)
@@ -2427,76 +2667,6 @@
 		(dnp no)
 		(uuid "1732fba3-7335-5d30-a25f-6ddcc70b5b34")
 		(property "Reference" "H3"
-			(at 55.88 107.95 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "M2.5 standoff 8.5 mm"
-			(at 55.88 115.57 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "aurora68:Aurora68_PiStandoff_M2.5"
-			(at 55.88 118.11 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" ""
-			(at 55.88 111.76 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "Mounting hole, no connection"
-			(at 55.88 111.76 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Height_mm" "0.00"
-			(at 55.88 111.76 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(instances
-			(project "aurora68-card-p"
-				(path "/23865fb0-541d-5699-a2fc-51c653160383/ab04a2e6-aebe-5979-b53b-6077e7879c78"
-					(reference "H3")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "aurora68:MountingHole")
-		(at 55.88 127 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom no)
-		(on_board yes)
-		(dnp no)
-		(uuid "888dac16-701e-5f81-a281-39581e78fe8d")
-		(property "Reference" "H4"
 			(at 55.88 123.19 0)
 			(effects
 				(font
@@ -2551,7 +2721,7 @@
 		(instances
 			(project "aurora68-card-p"
 				(path "/23865fb0-541d-5699-a2fc-51c653160383/ab04a2e6-aebe-5979-b53b-6077e7879c78"
-					(reference "H4")
+					(reference "H3")
 					(unit 1)
 				)
 			)
@@ -2565,8 +2735,8 @@
 		(in_bom no)
 		(on_board yes)
 		(dnp no)
-		(uuid "7249dbfa-90d2-5ae1-a6ec-1ad6512a55b5")
-		(property "Reference" "H5"
+		(uuid "888dac16-701e-5f81-a281-39581e78fe8d")
+		(property "Reference" "H4"
 			(at 55.88 138.43 0)
 			(effects
 				(font
@@ -2621,7 +2791,7 @@
 		(instances
 			(project "aurora68-card-p"
 				(path "/23865fb0-541d-5699-a2fc-51c653160383/ab04a2e6-aebe-5979-b53b-6077e7879c78"
-					(reference "H5")
+					(reference "H4")
 					(unit 1)
 				)
 			)
@@ -2635,8 +2805,8 @@
 		(in_bom no)
 		(on_board yes)
 		(dnp no)
-		(uuid "1b8e0204-9b4f-55f0-b366-8e5459ee72b8")
-		(property "Reference" "H6"
+		(uuid "7249dbfa-90d2-5ae1-a6ec-1ad6512a55b5")
+		(property "Reference" "H5"
 			(at 55.88 153.67 0)
 			(effects
 				(font
@@ -2691,7 +2861,7 @@
 		(instances
 			(project "aurora68-card-p"
 				(path "/23865fb0-541d-5699-a2fc-51c653160383/ab04a2e6-aebe-5979-b53b-6077e7879c78"
-					(reference "H6")
+					(reference "H5")
 					(unit 1)
 				)
 			)
@@ -2705,8 +2875,8 @@
 		(in_bom no)
 		(on_board yes)
 		(dnp no)
-		(uuid "73bb235c-67e4-5094-abae-4cdac8e4ae7b")
-		(property "Reference" "H7"
+		(uuid "1b8e0204-9b4f-55f0-b366-8e5459ee72b8")
+		(property "Reference" "H6"
 			(at 55.88 168.91 0)
 			(effects
 				(font
@@ -2714,7 +2884,7 @@
 				)
 			)
 		)
-		(property "Value" "M2.5 standoff 8.5 mm (Zero 2 W)"
+		(property "Value" "M2.5 standoff 8.5 mm"
 			(at 55.88 176.53 0)
 			(effects
 				(font
@@ -2761,7 +2931,7 @@
 		(instances
 			(project "aurora68-card-p"
 				(path "/23865fb0-541d-5699-a2fc-51c653160383/ab04a2e6-aebe-5979-b53b-6077e7879c78"
-					(reference "H7")
+					(reference "H6")
 					(unit 1)
 				)
 			)
@@ -2775,8 +2945,8 @@
 		(in_bom no)
 		(on_board yes)
 		(dnp no)
-		(uuid "0764cc61-bc79-5887-b35c-3cee330ecfcf")
-		(property "Reference" "H8"
+		(uuid "73bb235c-67e4-5094-abae-4cdac8e4ae7b")
+		(property "Reference" "H7"
 			(at 55.88 184.15 0)
 			(effects
 				(font
@@ -2821,6 +2991,76 @@
 		)
 		(property "Height_mm" "0.00"
 			(at 55.88 187.96 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(instances
+			(project "aurora68-card-p"
+				(path "/23865fb0-541d-5699-a2fc-51c653160383/ab04a2e6-aebe-5979-b53b-6077e7879c78"
+					(reference "H7")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "aurora68:MountingHole")
+		(at 55.88 203.2 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board yes)
+		(dnp no)
+		(uuid "0764cc61-bc79-5887-b35c-3cee330ecfcf")
+		(property "Reference" "H8"
+			(at 55.88 199.39 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "M2.5 standoff 8.5 mm (Zero 2 W)"
+			(at 55.88 207.01 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "aurora68:Aurora68_PiStandoff_M2.5"
+			(at 55.88 209.55 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" ""
+			(at 55.88 203.2 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Mounting hole, no connection"
+			(at 55.88 203.2 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Height_mm" "0.00"
+			(at 55.88 203.2 0)
 			(effects
 				(font
 					(size 1.27 1.27)

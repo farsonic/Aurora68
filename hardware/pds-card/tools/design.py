@@ -102,14 +102,19 @@ PI_HOLES_Z2W = [pi_xy(u, v) for u, v in ((3.5, 29.5), (61.5, 29.5))]      # the 
 PI_HOLE_D = 2.75
 # the Pi's parts that face the card (components down) and their heights above the Pi's board (drawing)
 PI_TOP_PARTS = [  # name, u0, u1, v0, v1, height
-    ('USB-A', 50.0, 67.0, 24.5, 38.5, 7.0), ('HDMI', 24.5, 39.5, -1.0, 11.5, 6.5),
+    ('USB-A', 52.5, 67.0, 24.5, 38.5, 7.0),     # the drawing's USB-A body: u 53.1-65.9, v 24.2-37.8 ('HDMI', 24.5, 39.5, -1.0, 11.5, 6.5),
     ('audio', 50.0, 57.0, -2.0, 12.0, 6.0), ('camera', 42.0, 48.0, 0.0, 22.0, 5.5),
     ('display', 1.0, 6.0, 15.0, 37.0, 5.5), ('header', 7.0, 58.0, 50.0, 55.0, 8.5),
     ('micro-USB', 6.5, 14.5, -1.0, 4.5, 3.0), ('SoC + heatsink', 20.5, 34.0, 24.2, 38.3, 7.4)]
 # the Pi's own underside (now facing up): the microSD socket and its card, at the u = 0 end
 PI_UNDERSIDE = [('microSD socket and card', -2.5, 15.0, 20.0, 36.0, 1.6)]
 # the 3B / 3B+ beyond the 3A+'s 65 mm: their USB pairs and RJ45 at u = 65..87 (drawing: Z 16.0 and 13.5)
-PI3B_EXT = [('3B/3B+ USB-A pairs', 65.0, 87.1, 2.5, 37.0, 16.0), ('3B/3B+ RJ45', 65.0, 87.1, 39.0, 55.0, 13.5)]
+# (Raspberry Pi's 3B+ drawing, measured: the USB pairs at u 69.3-87.8, v 22.4-53.9, the RJ45 at u 65.8-87.4, v 2.1-17.8;
+# both stand 2.4-2.8 mm past the board's 85 mm edge)
+PI3B_EXT = [('3B/3B+ USB-A pairs', 69.3, 87.8, 22.4, 53.9, 16.0), ('3B/3B+ RJ45', 65.8, 87.4, 2.1, 17.8, 13.5)]
+PI3B_PORT_END = 87.8                  # the ports' mouths
+PI3B_PLUG_ZONE = 40.0                 # room in front of them for a USB-A plug or an RJ45 plug with its strain relief
+KEEP_MARGIN = 2.0
 PI3B_ALLOWANCE = 0.42                 # the owner accepts the 3B's USB stack 0.42 mm over Apple's 15.58 mm
 
 # --------------------------------------------------------------------------------------------------------
@@ -283,6 +288,7 @@ def pi_socket_nets():
     nets = {}
     for g, pin in GPIO_PIN.items():
         nets[str(pin)] = GPIO_NET[g]
+    nets[str(GPIO_PIN[4])] = 'PI_CLK_GPIO'             # GPCLK0 reaches the CPLD through R12, 22 ohm at the Pi's pin
     for p in (2, 4): nets[str(p)] = '5V_PI'
     for p in (6, 9, 14, 20, 25, 30, 34, 39): nets[str(p)] = 'GND'
     for p in (1, 17): nets[str(p)] = None            # the Pi's 3.3 V is not used (the card has its own, as the PiStorm)
@@ -357,7 +363,10 @@ def build():
         cp[str(pin)] = 'GND'
     for pin in range(1, 101):
         cp.setdefault(str(pin), None)
-    add(Part('U1', 'EPM240_570_T100', 'EPM240T100C5N', 'TQFP-100_14x14mm_P0.5mm', 'cpld', (150.0, 72.0), cp,
+    # beside the Pi's header, under the Pi (components down 8.5 mm above), in the pocket between the keep-outs
+    # under its SoC and its USB socket: Pi-to-CPLD traces of about 25 mm, as on the PiStorm where the Pi sits over
+    # the CPLD (PLACEMENT in the README)
+    add(Part('U1', 'EPM240_570_T100', 'EPM240T100C5N', 'TQFP-100_14x14mm_P0.5mm', 'cpld', U1_AT, cp,
              mpn='EPM240T100C5N (or EPM570T100C5N, LCSC C40067, if the fitter needs more than 240 LEs)'))
     def latch(ref, at, rot, d1, d2, q1, q2, le1, le2, oe1, oe2):
         nets = {}
@@ -386,16 +395,19 @@ def build():
     for ref, at in (('C1', (178.5, 95.0)), ('C2', (178.5, 77.0)), ('C3', (178.5, 50.0)), ('C4', (166.5, 50.0))):
         add(Part(ref, 'C', '100n', 'C_0603_1608Metric', 'cpld', at, {'1': '+3V3', '2': 'GND'}, rot=90, lcsc='C14663',
                  note='latch decoupling (PiStorm C1-C4)'))
-    for ref, at in (('C7', (140.0, 62.0)), ('C8', (140.0, 82.0)), ('C9', (160.0, 62.0)), ('C10', (160.0, 82.0)),
-                    ('C11', (145.0, 59.0)), ('C12', (155.0, 85.0))):
-        add(Part(ref, 'C', '100n', 'C_0603_1608Metric', 'cpld', at, {'1': '+3V3', '2': 'GND'}, rot=90, lcsc='C14663',
+    for ref, at, r in (('C7', (52.0, 84.0), 0), ('C8', (59.5, 84.0), 0), ('C9', (44.5, 97.2), 90), ('C10', (44.5, 100.9), 90),
+                       ('C11', (66.0, 96.0), 90), ('C12', (66.0, 100.5), 90)):
+        add(Part(ref, 'C', '100n', 'C_0603_1608Metric', 'cpld', at, {'1': '+3V3', '2': 'GND'}, rot=r, lcsc='C14663',
                  note='CPLD VCCIO/VCCINT decoupling (PiStorm C7-C10, C13, C14)'))
-    add(Part('R1', 'R', '4.7k', 'R_0603_1608Metric', 'cpld', (137.0, 77.0), {'1': '+3V3', '2': 'JTAG_TMS'}, rot=90, lcsc='C23162',
+    add(Part('R1', 'R', '4.7k', 'R_0603_1608Metric', 'cpld', (41.0, 97.2), {'1': '+3V3', '2': 'JTAG_TMS'}, rot=90, lcsc='C23162',
              note='TMS pull-up (PiStorm R2)'))
-    add(Part('R2', 'R', '4.7k', 'R_0603_1608Metric', 'cpld', (137.0, 73.0), {'1': '+3V3', '2': 'JTAG_TDI'}, rot=90, lcsc='C23162',
+    add(Part('R2', 'R', '4.7k', 'R_0603_1608Metric', 'cpld', (41.0, 100.9), {'1': '+3V3', '2': 'JTAG_TDI'}, rot=90, lcsc='C23162',
              note='TDI pull-up (PiStorm R1)'))
 
     # ---- the Pi ----
+    x7, y7 = pi_header_pin(GPIO_PIN[4])
+    add(Part('R12', 'R', '22', 'R_0603_1608Metric', 'pi', (x7, y7 - 3.6), {'1': 'PI_CLK_GPIO', '2': 'PI_CLK'}, rot=90,
+             lcsc='C23345', note='GPCLK0 (200 MHz) series resistor at the source, beside the Pi\'s pin 7 (fit 0 ohm for the PiStorm\'s direct wire)'))
     add(Part('J2', 'RPI_GPIO_SOCKET_2x20', 'Pi socket 2x20 6.0 mm', 'Aurora68_PiSocket_2x20_Inverted', 'pi',
              pi_header_pin(1), pi_socket_nets(),
              mpn='2x20 female socket, 2.54 mm, 6.0 mm body, open-bottom contacts accepting 6.0 mm pins (choose; README)'))
@@ -411,11 +423,11 @@ def build():
              note='ideal diode: a Pi powered from its own USB never feeds the SE'))
     add(Part('C13', 'C', '10u', 'C_0805_2012Metric', 'power', (161.5, 101.5), {'1': '5V_F', '2': 'GND'}, lcsc='C15850'))
     add(Part('C14', 'C', '22u', 'C_0805_2012Metric', 'power', (154.5, 101.5), {'1': '5V_PI', '2': 'GND'}, lcsc='C45783'))
-    add(Part('U8', 'AMS1117-3.3', 'AMS1117-3.3', 'SOT-223-3_TabPin2', 'power', (146.0, 104.0),
+    add(Part('U8', 'AMS1117-3.3', 'AMS1117-3.3', 'SOT-223-3_TabPin2', 'power', (147.5, 104.0),
              {'1': 'GND', '2': '+3V3', '3': '5V_PI'}, lcsc='C6186', note='PiStorm U8 (LM1117-3.3)'))
-    add(Part('C15', 'C', '22u', 'C_0805_2012Metric', 'power', (139.0, 100.0), {'1': '5V_PI', '2': 'GND'}, rot=90, lcsc='C45783',
+    add(Part('C15', 'C', '22u', 'C_0805_2012Metric', 'power', (151.0, 98.0), {'1': '5V_PI', '2': 'GND'}, rot=0, lcsc='C45783',
              note='PiStorm C11'))
-    add(Part('C16', 'C', '22u', 'C_0805_2012Metric', 'power', (139.0, 107.0), {'1': '+3V3', '2': 'GND'}, rot=90, lcsc='C45783',
+    add(Part('C16', 'C', '22u', 'C_0805_2012Metric', 'power', (152.5, 108.5), {'1': '+3V3', '2': 'GND'}, rot=0, lcsc='C45783',
              note='PiStorm C12'))
     add(Part('F2', 'Polyfuse', '0.35A hold', 'Fuse_1206_3216Metric', 'power', (166.0, 101.0), {'1': '+5V_SLOT', '2': '5V_FAN'},
              mpn='PTC 1206, 0.35 A hold, 6 V or more'))
@@ -423,26 +435,26 @@ def build():
              mpn='PTC 1812, 0.75 A hold (Apple allows 750 mA at +5 V for a peripheral outside the case)'))
 
     # ---- fan, LED, stock switch, USB in, the cable to the rear connector card ----
-    add(Part('J3', 'Conn_01x03', 'Fan', 'PinHeader_1x03_P2.54mm_Horizontal', 'panel', (112.0, 106.0),
+    add(Part('J3', 'Conn_01x03', 'Fan', 'PinHeader_1x03_P2.54mm_Horizontal', 'panel', (84.0, 48.0),
              {'1': 'FAN_GND_SW', '2': '5V_FAN', '3': 'FAN_TACH'}, rot=90, note='1 GND (switched), 2 +5 V, 3 tachometer'))
-    add(Part('Q1', 'AO3400A', 'AO3400A', 'SOT-23', 'panel', (119.0, 99.0), {'1': 'FAN_G', '2': 'GND', '3': 'FAN_GND_SW'},
+    add(Part('Q1', 'AO3400A', 'AO3400A', 'SOT-23', 'panel', (101.0, 45.0), {'1': 'FAN_G', '2': 'GND', '3': 'FAN_GND_SW'},
              lcsc='C20917'))
-    add(Part('R8', 'R', '100', 'R_0603_1608Metric', 'panel', (123.0, 96.5), {'1': 'FAN_PWM', '2': 'FAN_G'}, lcsc='C22775'))
-    add(Part('R9', 'R', '100k', 'R_0603_1608Metric', 'panel', (123.0, 101.5), {'1': 'FAN_G', '2': 'GND'}, lcsc='C25803'))
-    add(Part('D1', 'D_Schottky', 'B5819W', 'D_SOD-123', 'panel', (113.0, 92.0), {'1': '5V_FAN', '2': 'FAN_GND_SW'},
+    add(Part('R8', 'R', '100', 'R_0603_1608Metric', 'panel', (104.5, 42.5), {'1': 'FAN_PWM', '2': 'FAN_G'}, lcsc='C22775'))
+    add(Part('R9', 'R', '100k', 'R_0603_1608Metric', 'panel', (104.5, 47.5), {'1': 'FAN_G', '2': 'GND'}, lcsc='C25803'))
+    add(Part('D1', 'D_Schottky', 'B5819W', 'D_SOD-123', 'panel', (96.0, 40.0), {'1': '5V_FAN', '2': 'FAN_GND_SW'},
              lcsc='C8598', note='fan flyback'))
-    add(Part('JP1', 'Conn_01x02', 'Fan full speed', 'PinHeader_1x02_P2.54mm_Vertical', 'panel', (107.0, 92.0),
+    add(Part('JP1', 'Conn_01x02', 'Fan full speed', 'PinHeader_1x02_P2.54mm_Vertical', 'panel', (94.0, 47.5),
              {'1': 'FAN_GND_SW', '2': 'GND'}, rot=90, note='shunt fitted: fan always on, no software needed'))
-    add(Part('R6', 'R', '10k', 'R_0603_1608Metric', 'panel', (119.0, 90.0), {'1': '+3V3', '2': 'FAN_TACH'}, lcsc='C25804'))
-    add(Part('J6', 'Conn_01x02', 'Stock mode', 'PinHeader_1x02_P2.54mm_Horizontal', 'panel', (127.0, 107.0),
+    add(Part('R6', 'R', '10k', 'R_0603_1608Metric', 'panel', (88.0, 35.0), {'1': '+3V3', '2': 'FAN_TACH'}, lcsc='C25804'))
+    add(Part('J6', 'Conn_01x02', 'Stock mode', 'PinHeader_1x02_P2.54mm_Horizontal', 'panel', (112.0, 48.0),
              {'1': 'STOCK_SW_n', '2': 'GND'}, rot=90, note='closed: stock SE (jumper or a switch on a cable)'))
-    add(Part('R7', 'R', '10k', 'R_0603_1608Metric', 'panel', (129.0, 96.5), {'1': '+3V3', '2': 'STOCK_SW_n'}, lcsc='C25804'))
-    add(Part('D2', 'LED', 'green', 'LED_0603_1608Metric', 'panel', (133.0, 108.0), {'1': 'GND', '2': 'LED_A'}, rot=180,
+    add(Part('R7', 'R', '10k', 'R_0603_1608Metric', 'panel', (118.0, 46.0), {'1': '+3V3', '2': 'STOCK_SW_n'}, lcsc='C25804'))
+    add(Part('D2', 'LED', 'green', 'LED_0603_1608Metric', 'panel', (130.0, 33.0), {'1': 'GND', '2': 'LED_A'}, rot=180,
              note='activity'))
-    add(Part('R10', 'R', '330', 'R_0603_1608Metric', 'panel', (133.0, 103.5), {'1': 'LED_ACT', '2': 'LED_A'}, lcsc='C23138'))
+    add(Part('R10', 'R', '330', 'R_0603_1608Metric', 'panel', (130.0, 36.5), {'1': 'LED_ACT', '2': 'LED_A'}, lcsc='C23138'))
     add(Part('R11', 'R', '330', 'R_0603_1608Metric', 'panel', (130.0, 30.0), {'1': 'LED_ACT', '2': 'LED_PANEL'}, lcsc='C23138',
              note='the connector card\'s LED, over the cable'))
-    add(Part('J5', 'Conn_01x04', 'USB from Pi', 'PinHeader_1x04_P2.54mm_Horizontal', 'panel', (108.0, 82.0),
+    add(Part('J5', 'Conn_01x04', 'USB from Pi', 'PinHeader_1x04_P2.54mm_Horizontal', 'panel', (64.0, 48.0),
              {'1': None, '2': 'USB_DM', '3': 'USB_DP', '4': 'GND'}, rot=90,
              note='a short USB-A plug pigtail from the Pi 3A+\'s USB socket, which faces it; pin 1 (VBUS) deliberately not connected'))
     add(Part('J4', 'FFC_01x10_MP', 'Rear connector card', 'TE_1-84952-0_1x10-1MP_P1.0mm_Horizontal', 'panel', (118.0, 26.5),
@@ -454,6 +466,8 @@ def build():
         add(Part('H%d' % i, 'MountingHole', 'Apple card support 3.86 mm', 'Aurora68_AppleCardSupport_3.86mm', 'panel', (x, y), {}))
     return P
 
+
+U1_AT = (55.25, 94.4)                 # the CPLD, rotation 0: its pins 1-35 (the Pi's) face the header
 
 SHEETS = [  # file, title, what is on it
     ('slot', 'Slot plug and bus switches', 'J1, the CBTD3384 switches, C8M, the SE power sense'),
@@ -472,9 +486,14 @@ def keepouts():
     # under the Pi 3A+ (its USB, HDMI, audio, camera and display connectors hang 5.5-7 mm towards the card);
     # the socket's own strip is left out
     k.append((min(xs), min(ys), max(xs), max(ys), 'PI_3AP_UNDER', 'footprints'))
-    # the 3B/3B+'s footprint beyond the 3A+'s, with its USB and RJ45, plus 2 mm (bench use only, see README)
-    x3 = [pi_xy(u, 0)[0] for u in (65, 87.1)]
-    k.append((min(x3) - 0.5, min(ys) - 1.0, max(x3) + 2.0, min(max(ys) + 2.0, APPLE_BODY_H), 'PI3B_EXT', 'footprints'))
+    # the 3B/3B+ beyond the 3A+: its board, its USB and RJ45 with their overhang, and 40 mm in front of their mouths
+    # for the plugs, all with 2 mm margin, to the card's front edge: no footprints at all (bench use only, see README)
+    # (its left edge: the 3B's board starts at x = 77 and its RJ45 at 77.8; the zone starts at 76.3, 0.7 mm short of the
+    # board and 1.5 mm short of the RJ45, because the Pi's right-hand standoffs, which a 3B uses too, end at 76.25)
+    x0 = max(pi_xy(65.0, 0)[0] - KEEP_MARGIN, PI_HOLES_3AP[1][0] + 5.5 / 2 + 0.05)
+    k.append((x0, min(ys) - KEEP_MARGIN, pi_xy(PI3B_PORT_END + PI3B_PLUG_ZONE, 0)[0] + KEEP_MARGIN, APPLE_BODY_H, 'PI3B_EXT', 'footprints'))
+    # over the board and the ports themselves (not the plug zone) no vias either: the sockets' shells could press there
+    k.append((x0, min(ys) - KEEP_MARGIN, pi_xy(PI3B_PORT_END, 0)[0] + KEEP_MARGIN, APPLE_BODY_H, 'PI3B_PORTS', 'vias'))
     for (x, y) in APPLE_HOLES:
         k.append((x - 4.5, y - 4.5, x + 4.5, y + 4.5, 'APPLE_SUPPORT', 'footprints'))
     return k

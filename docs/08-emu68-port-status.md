@@ -7052,3 +7052,17 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    - *Not verified:* anything on hardware; KiCad's ERC and DRC; a Quartus fit; a real SE's chassis height, its J13 with a
      meter, and a 68000 coming out of reset with /BGACK held; the Pi socket part (open-bottom, 6.0 mm) and the stack's
      real tolerances against the 0.08 mm margin.
+   - *Placement rework (25 November 2026).* The owner, from `img/board.png`: the Pi's header was some 95 mm from the
+     CPLD, every GPIO and the 200 MHz GPCLK0 crossing most of a 2-layer board, where on the PiStorm the Pi sits over
+     the CPLD. The EPM240 moved under the Pi, beside its header, into the one pocket the keep-outs under the Pi's own
+     parts leave for a TQFP-100 (the USB keep-out narrowed to the drawing's u = 53.1 to make room); GPCLK0 got a 22 ohm
+     resistor at the Pi's pin (R12, the rework's only schematic change) and is routed by hand before the router runs,
+     26.8 mm, with a check that fails past 30 mm; the other Pi-to-CPLD lines are 4.5-43 mm routed, 20 of 23 under 34.
+     What it costs is now in the README: the PI_D bus and the latch strobes, which carry the Pi's fast transfers and
+     not 68000-speed signals as first assumed, run 20-26 cm to the latches by the plug, and the switch side up to 18 cm
+     onto the SE's own lines. Then, from the 3D viewer, the owner wanted every header out of where a 3B's USB and RJ45
+     stand: the keep-out now covers the 3B's board, its ports with their 2.8 mm overhang and 40 mm of plug room,
+     x 76.3-141.8, and the fan, USB, stock and jumper headers went to the rear middle, pins pointing away from the Pi.
+     3D models went into the board (KiCad's where they exist, a box model of the 3A+ components-down and of the plug
+     made by `tools/vrml.py`). Freerouting, with a via keep-out over the 3B's ports, left 2 of 139 nets open (SE_E,
+     LTCH_D_WR_U); it rejected a bottom-layer cost setting, so 41 % of the track is on the bottom.

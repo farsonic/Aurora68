@@ -236,6 +236,7 @@ def din_plug(board_side=True):
     fp.append(fp_line(m * 4.2, 39.37 + 1.6, m * 4.2, 39.37 - 1.6, F + '.SilkS', 0.15))
     fp.append(fp_text('A1', m * 4.8, 42.0, F + '.SilkS', 1.0))
     fp.append(fp_text('row A (logic board edge)', m * 0.0, -44.0, F + '.Fab', 0.8))
+    fp.append(model(MODELS + 'Aurora68_DIN41612_C_3x32_Male_Straight.wrl'))   # a symmetric body: no orientation to get wrong
     if board_side:                      # on the underside: texts on the back layers, mirrored
         for c in fp:
             if isinstance(c, list) and c and c[0] == 'property':
@@ -268,16 +269,41 @@ def pi_socket():
     fp.append(fp_rect(x0 - 0.12, y0 - 0.12, x1b + 0.12, y1b + 0.12, 'F.SilkS', 0.12))
     fp.append(fp_line(1.6, 1.6, 1.6, -0.2, 'F.SilkS', 0.15))
     fp.append(fp_text('Pi pin 1', 4.0, 2.8, 'F.SilkS', 0.8))
+    # KiCad's 2x20 socket model (8.5 mm), turned so its odd pins run along x as here, and scaled to the 6.0 mm body;
+    # then the Pi itself, components down, from tools/vrml.py
+    fp.append(model(KMODELS + 'Connector_PinSocket_2.54mm.3dshapes/PinSocket_2x20_P2.54mm_Vertical.step',
+                    scale=(1, 1, round(D.SOCKET_H / 8.5, 4)), rotate=(0, 0, 90)))
+    fp.append(model(MODELS + 'Aurora68_RPi3Aplus_ComponentsDown.wrl'))
     return fp
 
 
-def npth_hole(name, d, keep, descr):
+def npth_hole(name, d, keep, descr, mdl=None):
     fp = fp_header(name, descr, 'mounting hole', 'exclude_from_pos_files exclude_from_bom')
+    if mdl:
+        fp.append(mdl)
     fp.append(S('pad', '', Sym('np_thru_hole'), Sym('circle'), S('at', 0, 0), S('size', d, d), S('drill', d),
                 S('layers', '*.Cu', '*.Mask')))
     fp.append(fp_circle(0, 0, keep / 2.0, 'F.CrtYd'))
     fp.append(fp_circle(0, 0, keep / 2.0, 'F.Fab', 0.1))
     return fp
+
+
+MODELS = '${KIPRJMOD}/lib/aurora68.3dshapes/'
+KMODELS = '${KICAD8_3DMODEL_DIR}/'
+
+
+def model(path, offset=(0, 0, 0), scale=(1, 1, 1), rotate=(0, 0, 0)):
+    return S('model', path, S('offset', S('xyz', *offset)), S('scale', S('xyz', *scale)), S('rotate', S('xyz', *rotate)))
+
+
+def write_models():
+    """Simple VRML models made here (KiCad's VRML unit is 0.1 inch): the slot plug's body (KiCad has no straight
+    male 3x32 type C model) and the Pi 3A+ turned components-down, attached to the Pi socket's footprint so the
+    stack can be seen in KiCad's 3D viewer."""
+    import vrml
+    os.makedirs(os.path.join(ROOT, 'lib', 'aurora68.3dshapes'), exist_ok=True)
+    vrml.write_plug(os.path.join(ROOT, 'lib', 'aurora68.3dshapes', 'Aurora68_DIN41612_C_3x32_Male_Straight.wrl'))
+    vrml.write_pi3aplus(os.path.join(ROOT, 'lib', 'aurora68.3dshapes', 'Aurora68_RPi3Aplus_ComponentsDown.wrl'))
 
 
 def write_footprints():
@@ -288,10 +314,12 @@ def write_footprints():
                                                       "Hole for the Macintosh SE logic board's expansion card supports, 3.86 mm "
                                                       "(Designing Cards and Drivers, 3rd ed., Figures 17-1 and 17-5)"),
         'Aurora68_PiStandoff_M2.5': npth_hole('Aurora68_PiStandoff_M2.5', D.PI_HOLE_D, 5.5,
-                                              'M2.5 hole for a Raspberry Pi standoff (8.5 mm), 5.5 mm keep-out for the standoff'),
+                                              'M2.5 hole for a Raspberry Pi standoff (8.5 mm), 5.5 mm keep-out for the standoff',
+                                              model(KMODELS + 'Mounting_Wuerth.3dshapes/Mounting_Wuerth_WA-SMSI-M2.5_H8.5mm_9774085151.step')),
     }
     for name, fp in out.items():
         sexpr.save(os.path.join(geom.PRETTY, name + '.kicad_mod'), fp)
+    write_models()
 
 
 # ========================================================================================================
@@ -501,7 +529,7 @@ def place_footprint(p, netno, path):
         if not isinstance(c, list):
             continue
         k = c[0]
-        if k in ('version', 'generator', 'generator_version', 'layer', 'model'):
+        if k in ('version', 'generator', 'generator_version', 'layer'):
             continue
         if k == 'property':
             c = [x for x in c]
@@ -643,10 +671,12 @@ def write_board(parts, root_uuid, sheet_uuid):
     for (x0, y0, x1, y1, name, what) in D.keepouts():
         if name == 'PI3B_EXT':
             pcb.append(gr_rect(x0, y0, x1, y1, 'F.SilkS', 0.15, 'pi3b'))
-            pcb.append(gr_text('Pi 3B/3B+ USB/Ethernet', x0 + 1, y0 + 4, 'F.SilkS', 1.0))
-            pcb.append(gr_text('keep clear: no parts', x0 + 1, y0 + 6, 'F.SilkS', 1.0))
-            pcb.append(gr_text('(3B/3B+ bench use only)', x0 + 1, y0 + 8, 'F.SilkS', 0.9))
-            pcb.append(rule_area(name, rect_pts(x0, y0, x1, y1), footprints=True, pads=False))  # tracks, tented vias, pour allowed
+            pcb.append(gr_text('Pi 3B/3B+ USB/Ethernet and their plugs:', x0 + 1, y0 + 4, 'F.SilkS', 1.0))
+            pcb.append(gr_text('keep clear, no parts (3B/3B+ bench use only)', x0 + 1, y0 + 6, 'F.SilkS', 1.0))
+            # no footprints or pads anywhere in it; tracks, vias and the pour may pass (vias: see PI3B_PORTS)
+            pcb.append(rule_area(name, rect_pts(x0, y0, x1, y1), footprints=True, pads=False))
+        elif name == 'PI3B_PORTS':
+            pcb.append(rule_area(name, rect_pts(x0, y0, x1, y1), footprints=False, vias=False))   # no vias under the ports
         elif name == 'APPLE_SUPPORT':
             cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
             r = (x1 - x0) / 2

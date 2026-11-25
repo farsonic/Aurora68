@@ -19,7 +19,7 @@ J6,1,Stock mode,PinHeader_1x02_P2.54mm_Horizontal,Header 1x02,,,through-hole,3.8
 JP1,1,Fan full speed,PinHeader_1x02_P2.54mm_Vertical,Header 1x02,,,through-hole,8.50,"shunt fitted: fan always on, no software needed"
 Q1,1,AO3400A,SOT-23,"N-channel MOSFET 30 V 5.7 A, SOT-23 (G S D)",,C20917,SMD (top),1.25,
 R1 R2,2,4.7k,R_0603_1608Metric,Resistor,,C23162,SMD (top),0.55,TDI pull-up (PiStorm R1); TMS pull-up (PiStorm R2)
-R3,1,22,R_0603_1608Metric,Resistor,,C23345,SMD (top),0.55,"C8M into the CPLD, as the PiStorm's 68000 clock (its R3)"
+R3 R12,2,22,R_0603_1608Metric,Resistor,,C23345,SMD (top),0.55,"C8M into the CPLD, as the PiStorm's 68000 clock (its R3); GPCLK0 (200 MHz) series resistor at the source, beside the Pi's pin 7 (fit 0 ohm for the PiStorm's direct wire)"
 R4 R6 R7,3,10k,R_0603_1608Metric,Resistor,,C25804,SMD (top),0.55,SE power sense: 5 V -> 3.0 V
 R5,1,15k,R_0603_1608Metric,Resistor,,C22809,SMD (top),0.55,
 R8,1,100,R_0603_1608Metric,Resistor,,C22775,SMD (top),0.55,

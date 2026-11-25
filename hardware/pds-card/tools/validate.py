@@ -308,8 +308,19 @@ def check_heights(parts, fps):
 
 
 # 10 ------------------------------------------------------------------------------------------------------
-def check_keepouts(fps):
+PI_OWN_PARTS = 2.0      # the Pi's own small parts on its components side (now facing the card), allowed for
+UNDER_PI_MAX = D.PI_GAP - PI_OWN_PARTS - 0.5     # a card part under the Pi: 6.0 mm at most
+
+
+def check_keepouts(fps, parts, pcb):
     areas = D.keepouts()
+    hmap = {p.ref: p.height for p in parts}
+    partboxes = []
+    for name, u0, u1, v0, v1, h in D.PI_TOP_PARTS:
+        if name == 'header':
+            continue
+        xa, ya = D.pi_xy(u0, v0); xb, yb = D.pi_xy(u1, v1)
+        partboxes.append((name, (min(xa, xb), min(ya, yb), max(xa, xb), max(ya, yb))))
     crts = {}
     for ref, X, Y, ang, side, fp in fps:
         if side != 'F':
@@ -318,7 +329,7 @@ def check_keepouts(fps):
         if c:
             bx = geom.box_to_board(c, X, Y, ang)
             crts[ref] = (bx[0] - OX, bx[1] - OY, bx[2] - OX, bx[3] - OY)
-    hits3b, hitsunder, hitsapple = [], [], []
+    hits3b, hitsunder, hitsapple, under = [], [], [], []
     for (x0, y0, x1, y1, name, what) in areas:
         for ref, b in crts.items():
             if not geom.boxes_overlap(b, (x0, y0, x1, y1)):
@@ -326,14 +337,163 @@ def check_keepouts(fps):
             if name == 'PI3B_EXT':
                 hits3b.append(ref)
             elif name == 'PI_3AP_UNDER' and not (ref == 'J2' or ref in ('H3', 'H4', 'H5', 'H6', 'H7', 'H8')):
-                hitsunder.append(ref)
+                # a low part may sit under the Pi, clear of the keep-outs under the Pi's own taller parts
+                over = [pn for pn, pb in partboxes if geom.boxes_overlap(b, pb)]
+                if over or hmap.get(ref, 99) > UNDER_PI_MAX:
+                    hitsunder.append('%s (%s)' % (ref, ', '.join(over) if over else '%.1f mm tall' % hmap.get(ref, 99)))
+                else:
+                    under.append(ref)
             elif name == 'APPLE_SUPPORT' and ref not in ('H1', 'H2'):
                 hitsapple.append(ref)
     k3 = [a for a in areas if a[4] == 'PI3B_EXT'][0]
-    check('10a. no courtyard in the Pi 3B/3B+ USB/Ethernet keep-out (x %.1f-%.1f, y %.1f-%.1f)' % (k3[0], k3[2], k3[1], k3[3]),
+    kp = [a for a in areas if a[4] == 'PI3B_PORTS'][0]
+    check('10a. no courtyard in the Pi 3B/3B+ keep-out: its board, USB and RJ45 with their overhang and a %.0f mm plug zone, '
+          '+%.0f mm (x %.1f-%.1f, y %.1f-%.1f)' % (D.PI3B_PLUG_ZONE, D.KEEP_MARGIN, k3[0], k3[2], k3[1], k3[3]),
           not hits3b, ', '.join(hits3b))
-    check('10b. nothing but the socket and standoffs under the Pi 3A+', not hitsunder, ', '.join(hitsunder))
+    check('10b. under the Pi 3A+: only parts of %.1f mm or less, clear of the keep-outs under its USB, HDMI, audio, camera, '
+          'display and SoC' % UNDER_PI_MAX, not hitsunder,
+          ('; '.join(hitsunder) + '; ' if hitsunder else '') + 'under the Pi: J2, H3-H8, ' + ', '.join(sorted(under)))
+    vias3b = []
+    for v in sexpr.find_all(pcb, 'via'):
+        at = sexpr.find(v, 'at')
+        x, y = at[1] - OX, at[2] - OY
+        if kp[0] <= x <= kp[2] and kp[1] <= y <= kp[3]:
+            vias3b.append('(%.1f, %.1f)' % (x, y))
+    check('10d. no vias over the Pi 3B/3B+\'s board and ports (x %.1f-%.1f, y %.1f-%.1f)' % (kp[0], kp[2], kp[1], kp[3]), not vias3b, '%d: %s' % (len(vias3b), ' '.join(vias3b[:8])))
     check('10c. nothing on Apple\'s card supports', not hitsapple, ', '.join(hitsapple))
+
+
+# 12d ------------------------------------------------------------------------------------------------------
+def track_graph(pcb):
+    """Per net: an adjacency map of points joined by tracks (segment ends, T junctions, vias), lengths in mm."""
+    netname = {s[1]: s[2] for s in sexpr.find_all(pcb, 'net')}
+    segs = {}
+    for sg in sexpr.find_all(pcb, 'segment'):
+        n = netname[sexpr.find(sg, 'net')[1]]
+        a, b = sexpr.find(sg, 'start'), sexpr.find(sg, 'end')
+        segs.setdefault(n, []).append(((round(a[1], 3), round(a[2], 3)), (round(b[1], 3), round(b[2], 3))))
+    graphs = {}
+    for n, sl in segs.items():
+        g = {}
+        pts = {q for ab in sl for q in ab}
+        for a, b in sl:
+            # split a segment where another segment's end lies on it
+            on = [a, b] + [q for q in pts if q not in (a, b) and _on_seg(q, a, b)]
+            on.sort(key=lambda q: math.hypot(q[0] - a[0], q[1] - a[1]))
+            for p, q in zip(on, on[1:]):
+                d = math.hypot(q[0] - p[0], q[1] - p[1])
+                g.setdefault(p, {})[q] = d
+                g.setdefault(q, {})[p] = d
+        graphs[n] = g
+    return graphs
+
+
+def _on_seg(q, a, b):
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    L2 = dx * dx + dy * dy
+    if L2 == 0:
+        return False
+    t = ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / L2
+    if t <= 0 or t >= 1:
+        return False
+    return math.hypot(q[0] - a[0] - t * dx, q[1] - a[1] - t * dy) < 0.01
+
+
+def routed_length(graph, pa, pb, ra=0.8, rb=0.8):
+    """Shortest track path from a pad at pa to a pad at pb (Dijkstra), or None."""
+    import heapq
+    if not graph:
+        return None
+    starts = [q for q in graph if math.hypot(q[0] - pa[0], q[1] - pa[1]) <= ra]
+    goals = {q for q in graph if math.hypot(q[0] - pb[0], q[1] - pb[1]) <= rb}
+    if not starts or not goals:
+        return None
+    dist = {q: math.hypot(q[0] - pa[0], q[1] - pa[1]) for q in starts}
+    h = [(d, q) for q, d in dist.items()]
+    heapq.heapify(h)
+    while h:
+        d, q = heapq.heappop(h)
+        if d > dist.get(q, 1e9):
+            continue
+        if q in goals:
+            return d + math.hypot(q[0] - pb[0], q[1] - pb[1])
+        for r, w in graph[q].items():
+            nd = d + w
+            if nd < dist.get(r, 1e9):
+                dist[r] = nd
+                heapq.heappush(h, (nd, r))
+    return None
+
+
+def check_lengths(pcb, nets):
+    """Pi-to-CPLD nets (fail if GPCLK0 is over 30 mm), and the longest CPLD-to-latch and CPLD-to-switch nets.
+    Routed track lengths where the tracks join the two pads; the straight line (marked ~) where they do not."""
+    pcb_, pads, fps = netlist.board_netlist()
+    graphs = track_graph(pcb)
+    routed = bool(sexpr.find_all(pcb, 'segment'))
+    def length(net, a, b):
+        pa, pb = pads[a][0][1:], pads[b][0][1:]
+        L = routed_length(graphs.get(net), pa, pb) if routed else None
+        return (L, False) if L is not None else (math.hypot(pa[0] - pb[0], pa[1] - pb[1]), True)
+    rows = []
+    power = {'GND', '+3V3', '5V_PI', '+5V_SLOT'}
+    nets = {n: ps for n, ps in nets.items() if n not in power}
+    for net, ps in sorted(nets.items()):
+        j2 = [p for p in ps if p[0] == 'J2']
+        u1 = [p for p in ps if p[0] == 'U1']
+        if j2 and u1:
+            L, est = length(net, j2[0], u1[0])
+            rows.append((net, L, est))
+    # the clock: J2 pin 7 -> R12 -> U1 pin 12
+    a, est_a = length('PI_CLK_GPIO', ('J2', '7'), ('R12', '1'))
+    b, est_b = length('PI_CLK', ('R12', '2'), ('U1', '12'))
+    clk = a + b + 1.6
+    rows.append(('PI_CLK (GPCLK0, J2.7-R12-U1.12)', clk, est_a or est_b))
+    rows.sort(key=lambda r: -r[1])
+    fmt = lambda r: '%s %s%.1f' % (r[0], '~' if r[2] else '', r[1])
+    check('12d. Pi-to-CPLD nets: GPCLK0 %s%.1f mm (30 at most), longest %s mm; %s' % ('~' if rows[[r[0] for r in rows].index(
+        'PI_CLK (GPCLK0, J2.7-R12-U1.12)')][2] else '', clk, fmt(rows[0]), 'routed lengths' if routed else 'straight lines (unrouted)'),
+          clk <= 30.0, ', '.join(fmt(r) for r in rows))
+    lat, sw, slot = [], [], []
+    for net, ps in nets.items():
+        u1 = [p for p in ps if p[0] == 'U1']
+        if not u1:
+            continue
+        for p in ps:
+            if p[0] in ('U2', 'U3', 'U4', 'U5'):
+                L, est = length(net, u1[0], p)
+                lat.append((net + ' U1-' + p[0], L, est))
+            if p[0] in ('U6', 'U7'):
+                L, est = length(net, u1[0], p)
+                sw.append((net, L, est))
+    lat.sort(key=lambda r: -r[1]); sw.sort(key=lambda r: -r[1])
+    info('12e. CPLD to latches (68000-speed control and data, about 8 MHz)', 'longest %s mm; %d connections' % (fmt(lat[0]), len(lat)))
+    # the bottom layer as a ground plane: how much signal copper it carries, and what crosses under GPCLK0
+    netname = {x[1]: x[2] for x in sexpr.find_all(pcb, 'net')}
+    lens = {'F.Cu': 0.0, 'B.Cu': 0.0}
+    bsegs = []
+    for sg in sexpr.find_all(pcb, 'segment'):
+        a_, b_ = sexpr.find(sg, 'start'), sexpr.find(sg, 'end')
+        lay = sexpr.find(sg, 'layer')[1]
+        L = math.hypot(b_[1] - a_[1], b_[2] - a_[2])
+        lens[lay] = lens.get(lay, 0.0) + L
+        if lay == 'B.Cu':
+            bsegs.append(((a_[1], a_[2]), (b_[1], b_[2]), netname[sexpr.find(sg, 'net')[1]]))
+    if routed:
+        import route
+        clk = route.clock_path(pcb)[1][1]
+        def cross(p1, p2, p3, p4):
+            def o(a, b, c):
+                return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+            return o(p1, p2, p3) * o(p1, p2, p4) < 0 and o(p3, p4, p1) * o(p3, p4, p2) < 0
+        under = sorted({n for a_, b_, n in bsegs for c1, c2 in zip(clk, clk[1:]) if cross(a_, b_, c1, c2)})
+        tot = lens['F.Cu'] + lens['B.Cu']
+        info('12g. copper use', 'top %.0f mm, bottom %.0f mm of tracks (%.0f %% on the bottom), %d vias; bottom tracks crossing '
+             'under GPCLK0: %d (%s)' % (lens['F.Cu'], lens['B.Cu'], 100.0 * lens['B.Cu'] / tot if tot else 0,
+                                         len(sexpr.find_all(pcb, 'via')), len(under), ', '.join(under)))
+    info('12f. CPLD to bus switches', 'longest %s mm. The CBTD3384 is a switch, not a buffer, so each such line adds its '
+         'length (and the CPLD pin) to the SE\'s own line: see README "Placement"' % fmt(sw[0]))
+    return rows, lat, sw
 
 
 # 11 ------------------------------------------------------------------------------------------------------
@@ -457,7 +617,8 @@ def main():
     check_power(parts, pins, pads)
     check_outline(pcb, pads, fps)
     rows = check_heights(parts, fps)
-    check_keepouts(fps)
+    check_keepouts(fps, parts, pcb)
+    check_lengths(pcb, nets)
     check_buffers(nets, pads)
     check_rules(pcb, nets)
     nf = 0

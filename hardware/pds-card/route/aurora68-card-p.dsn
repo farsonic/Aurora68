@@ -53,6 +53,9 @@
 		(keepout ""
 			(circle signal 4260 33430 -95020)
 		)
+		(via_keepout ""
+			(polygon signal 0 106300 -61900 131800 -61900 131800 -120110 106300 -120110 106300 -61900)
+		)
 		(via "Via[0-1]_600:300_um")
 		(rule
 			(width 150)
@@ -88,7 +91,7 @@
 			(place "R5" 206000 -42500 front 0)
 		)
 		(component "IMG_U1"
-			(place "U1" 180000 -82000 front 0)
+			(place "U1" 85250 -104400 front 0)
 		)
 		(component "IMG_U2"
 			(place "U2" 214000 -105000 front 0)
@@ -115,28 +118,31 @@
 			(place "C4" 196500 -60000 front 0)
 		)
 		(component "IMG_C7"
-			(place "C7" 170000 -72000 front 0)
+			(place "C7" 82000 -94000 front 0)
 		)
 		(component "IMG_C8"
-			(place "C8" 170000 -92000 front 0)
+			(place "C8" 89500 -94000 front 0)
 		)
 		(component "IMG_C9"
-			(place "C9" 190000 -72000 front 0)
+			(place "C9" 74500 -107200 front 0)
 		)
 		(component "IMG_C10"
-			(place "C10" 190000 -92000 front 0)
+			(place "C10" 74500 -110900 front 0)
 		)
 		(component "IMG_C11"
-			(place "C11" 175000 -69000 front 0)
+			(place "C11" 96000 -106000 front 0)
 		)
 		(component "IMG_C12"
-			(place "C12" 185000 -95000 front 0)
+			(place "C12" 96000 -110500 front 0)
 		)
 		(component "IMG_R1"
-			(place "R1" 167000 -87000 front 0)
+			(place "R1" 71000 -107200 front 0)
 		)
 		(component "IMG_R2"
-			(place "R2" 167000 -83000 front 0)
+			(place "R2" 71000 -110900 front 0)
+		)
+		(component "IMG_R12"
+			(place "R12" 57990 -111530 front 0)
 		)
 		(component "IMG_J2"
 			(place "J2" 50370 -115130 front 0)
@@ -172,13 +178,13 @@
 			(place "C14" 184500 -111500 front 0)
 		)
 		(component "IMG_U8"
-			(place "U8" 176000 -114000 front 0)
+			(place "U8" 177500 -114000 front 0)
 		)
 		(component "IMG_C15"
-			(place "C15" 169000 -110000 front 0)
+			(place "C15" 181000 -108000 front 0)
 		)
 		(component "IMG_C16"
-			(place "C16" 169000 -117000 front 0)
+			(place "C16" 182500 -118500 front 0)
 		)
 		(component "IMG_F2"
 			(place "F2" 196000 -111000 front 0)
@@ -187,43 +193,43 @@
 			(place "F3" 196000 -106000 front 0)
 		)
 		(component "IMG_J3"
-			(place "J3" 142000 -116000 front 0)
+			(place "J3" 114000 -58000 front 0)
 		)
 		(component "IMG_Q1"
-			(place "Q1" 149000 -109000 front 0)
+			(place "Q1" 131000 -55000 front 0)
 		)
 		(component "IMG_R8"
-			(place "R8" 153000 -106500 front 0)
+			(place "R8" 134500 -52500 front 0)
 		)
 		(component "IMG_R9"
-			(place "R9" 153000 -111500 front 0)
+			(place "R9" 134500 -57500 front 0)
 		)
 		(component "IMG_D1"
-			(place "D1" 143000 -102000 front 0)
+			(place "D1" 126000 -50000 front 0)
 		)
 		(component "IMG_JP1"
-			(place "JP1" 137000 -102000 front 0)
+			(place "JP1" 124000 -57500 front 0)
 		)
 		(component "IMG_R6"
-			(place "R6" 149000 -100000 front 0)
+			(place "R6" 118000 -45000 front 0)
 		)
 		(component "IMG_J6"
-			(place "J6" 157000 -117000 front 0)
+			(place "J6" 142000 -58000 front 0)
 		)
 		(component "IMG_R7"
-			(place "R7" 159000 -106500 front 0)
+			(place "R7" 148000 -56000 front 0)
 		)
 		(component "IMG_D2"
-			(place "D2" 163000 -118000 front 0)
+			(place "D2" 160000 -43000 front 0)
 		)
 		(component "IMG_R10"
-			(place "R10" 163000 -113500 front 0)
+			(place "R10" 160000 -46500 front 0)
 		)
 		(component "IMG_R11"
 			(place "R11" 160000 -40000 front 0)
 		)
 		(component "IMG_J5"
-			(place "J5" 138000 -92000 front 0)
+			(place "J5" 94000 -58000 front 0)
 		)
 		(component "IMG_J4"
 			(place "J4" 148000 -36500 front 0)
@@ -725,12 +731,12 @@
 			(pin "Rect[T]Pad_950x900_um" "2" 0 775)
 		)
 		(image "IMG_C7"
-			(pin "Rect[T]Pad_950x900_um" "1" 0 -775)
-			(pin "Rect[T]Pad_950x900_um" "2" 0 775)
+			(pin "Rect[T]Pad_900x950_um" "1" -775 0)
+			(pin "Rect[T]Pad_900x950_um" "2" 775 0)
 		)
 		(image "IMG_C8"
-			(pin "Rect[T]Pad_950x900_um" "1" 0 -775)
-			(pin "Rect[T]Pad_950x900_um" "2" 0 775)
+			(pin "Rect[T]Pad_900x950_um" "1" -775 0)
+			(pin "Rect[T]Pad_900x950_um" "2" 775 0)
 		)
 		(image "IMG_C9"
 			(pin "Rect[T]Pad_950x900_um" "1" 0 -775)
@@ -753,6 +759,10 @@
 			(pin "Rect[T]Pad_950x800_um" "2" 0 825)
 		)
 		(image "IMG_R2"
+			(pin "Rect[T]Pad_950x800_um" "1" 0 -825)
+			(pin "Rect[T]Pad_950x800_um" "2" 0 825)
+		)
+		(image "IMG_R12"
 			(pin "Rect[T]Pad_950x800_um" "1" 0 -825)
 			(pin "Rect[T]Pad_950x800_um" "2" 0 825)
 		)
@@ -831,12 +841,12 @@
 			(pin "Rect[T]Pad_2000x1500_um" "3" -3150 -2300)
 		)
 		(image "IMG_C15"
-			(pin "Rect[T]Pad_1450x1000_um" "1" 0 -950)
-			(pin "Rect[T]Pad_1450x1000_um" "2" 0 950)
+			(pin "Rect[T]Pad_1000x1450_um" "1" -950 0)
+			(pin "Rect[T]Pad_1000x1450_um" "2" 950 0)
 		)
 		(image "IMG_C16"
-			(pin "Rect[T]Pad_1450x1000_um" "1" 0 -950)
-			(pin "Rect[T]Pad_1450x1000_um" "2" 0 950)
+			(pin "Rect[T]Pad_1000x1450_um" "1" -950 0)
+			(pin "Rect[T]Pad_1000x1450_um" "2" 950 0)
 		)
 		(image "IMG_F2"
 			(pin "Rect[T]Pad_1250x1750_um" "1" -1400 0)
@@ -1023,12 +1033,6 @@
 		(padstack "Rect[T]Pad_2000x3800_um"
 			(shape
 				(rect F.Cu -1000 -1900 1000 1900)
-			)
-			(attach off)
-		)
-		(padstack "Rect[T]Pad_1450x1000_um"
-			(shape
-				(rect F.Cu -725 -500 725 500)
 			)
 			(attach off)
 		)
@@ -1236,7 +1240,10 @@
 			(pins U1-28 J2-5)
 		)
 		(net "PI_CLK"
-			(pins U1-12 J2-7)
+			(pins U1-12 R12-2)
+		)
+		(net "PI_CLK_GPIO"
+			(pins R12-1 J2-7)
 		)
 		(net "PI_D0"
 			(pins U1-2 U2-47 U3-47 U4-47 U5-2 J2-24)
@@ -1511,7 +1518,7 @@
 				(clearance 150)
 			)
 		)
-		(class "kicad_default" "" "FAN_G" "FAN_PWM" "FAN_TACH" "JTAG_TCK" "JTAG_TDI" "JTAG_TDO" "JTAG_TMS" "LED_A" "LED_ACT" "LED_PANEL" "LTCH_A_0" "LTCH_A_16" "LTCH_A_24" "LTCH_A_8" "LTCH_A_OE_n" "LTCH_D_RD_L" "LTCH_D_RD_OE_n" "LTCH_D_RD_U" "LTCH_D_WR_L" "LTCH_D_WR_OE_n" "LTCH_D_WR_U" "M68K_AS_n" "M68K_BERR_n" "M68K_BGACK_n" "M68K_BG_n" "M68K_BR_n" "M68K_CLK" "M68K_DTACK_n" "M68K_E" "M68K_FC0" "M68K_FC1" "M68K_FC2" "M68K_IPL_n0" "M68K_IPL_n1" "M68K_IPL_n2" "M68K_LDS_n" "M68K_PMCYC_n" "M68K_RESET_n" "M68K_RW" "M68K_UDS_n" "M68K_VMA_n" "M68K_VPA_n" "PI_A0" "PI_A1" "PI_CLK" "PI_D0" "PI_D1" "PI_D10" "PI_D11" "PI_D12" "PI_D13" "PI_D14" "PI_D15" "PI_D2" "PI_D3" "PI_D4" "PI_D5" "PI_D6" "PI_D7" "PI_D8" "PI_D9" "PI_IPL_ZERO" "PI_RD" "PI_RESET" "PI_TXN_IN_PROGRESS" "PI_WR" "SE_A1" "SE_A10" "SE_A11" "SE_A12" "SE_A13" "SE_A14" "SE_A15" "SE_A16" "SE_A17" "SE_A18" "SE_A19" "SE_A2" "SE_A20" "SE_A21" "SE_A22" "SE_A23" "SE_A3" "SE_A4" "SE_A5" "SE_A6" "SE_A7" "SE_A8" "SE_A9" "SE_AS_n" "SE_BERR_n" "SE_BGACK_n" "SE_BG_n" "SE_BR_n" "SE_C8M" "SE_D0" "SE_D1" "SE_D10" "SE_D11" "SE_D12" "SE_D13" "SE_D14" "SE_D15" "SE_D2" "SE_D3" "SE_D4" "SE_D5" "SE_D6" "SE_D7" "SE_D8" "SE_D9" "SE_DTACK_n" "SE_E" "SE_FC0" "SE_FC1" "SE_FC2" "SE_IPL0_n" "SE_IPL1_n" "SE_IPL2_n" "SE_LDS_n" "SE_PMCYC_n" "SE_RESET_n" "SE_RW" "SE_UDS_n" "SE_VMA_n" "SE_VPA_n" "SLOT_PWR" "STOCK_SW_n" "USB_DM" "USB_DP"
+		(class "kicad_default" "" "FAN_G" "FAN_PWM" "FAN_TACH" "JTAG_TCK" "JTAG_TDI" "JTAG_TDO" "JTAG_TMS" "LED_A" "LED_ACT" "LED_PANEL" "LTCH_A_0" "LTCH_A_16" "LTCH_A_24" "LTCH_A_8" "LTCH_A_OE_n" "LTCH_D_RD_L" "LTCH_D_RD_OE_n" "LTCH_D_RD_U" "LTCH_D_WR_L" "LTCH_D_WR_OE_n" "LTCH_D_WR_U" "M68K_AS_n" "M68K_BERR_n" "M68K_BGACK_n" "M68K_BG_n" "M68K_BR_n" "M68K_CLK" "M68K_DTACK_n" "M68K_E" "M68K_FC0" "M68K_FC1" "M68K_FC2" "M68K_IPL_n0" "M68K_IPL_n1" "M68K_IPL_n2" "M68K_LDS_n" "M68K_PMCYC_n" "M68K_RESET_n" "M68K_RW" "M68K_UDS_n" "M68K_VMA_n" "M68K_VPA_n" "PI_A0" "PI_A1" "PI_CLK" "PI_CLK_GPIO" "PI_D0" "PI_D1" "PI_D10" "PI_D11" "PI_D12" "PI_D13" "PI_D14" "PI_D15" "PI_D2" "PI_D3" "PI_D4" "PI_D5" "PI_D6" "PI_D7" "PI_D8" "PI_D9" "PI_IPL_ZERO" "PI_RD" "PI_RESET" "PI_TXN_IN_PROGRESS" "PI_WR" "SE_A1" "SE_A10" "SE_A11" "SE_A12" "SE_A13" "SE_A14" "SE_A15" "SE_A16" "SE_A17" "SE_A18" "SE_A19" "SE_A2" "SE_A20" "SE_A21" "SE_A22" "SE_A23" "SE_A3" "SE_A4" "SE_A5" "SE_A6" "SE_A7" "SE_A8" "SE_A9" "SE_AS_n" "SE_BERR_n" "SE_BGACK_n" "SE_BG_n" "SE_BR_n" "SE_C8M" "SE_D0" "SE_D1" "SE_D10" "SE_D11" "SE_D12" "SE_D13" "SE_D14" "SE_D15" "SE_D2" "SE_D3" "SE_D4" "SE_D5" "SE_D6" "SE_D7" "SE_D8" "SE_D9" "SE_DTACK_n" "SE_E" "SE_FC0" "SE_FC1" "SE_FC2" "SE_IPL0_n" "SE_IPL1_n" "SE_IPL2_n" "SE_LDS_n" "SE_PMCYC_n" "SE_RESET_n" "SE_RW" "SE_UDS_n" "SE_VMA_n" "SE_VPA_n" "SLOT_PWR" "STOCK_SW_n" "USB_DM" "USB_DP"
 			(circuit
 				(use_via "Via[0-1]_600:300_um")
 			)
@@ -1521,5 +1528,16 @@
 			)
 		)
 	)
-	(wiring)
+	(wiring
+		(wire
+			(path F.Cu 250 57990 -115130 57990 -112355)
+			(net "PI_CLK_GPIO")
+			(type fix)
+		)
+		(wire
+			(path F.Cu 250 57990 -110705 64795 -103900 77587.5 -103900)
+			(net "PI_CLK")
+			(type fix)
+		)
+	)
 )

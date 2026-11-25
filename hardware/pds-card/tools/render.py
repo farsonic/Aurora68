@@ -180,6 +180,38 @@ def render_board():
     c.save(os.path.join(IMG, 'board.png'), os.path.join(IMG, 'board.svg'))
 
 
+def render_models():
+    """The board from above with the generated 3D models' boxes drawn where KiCad would put them (the Pi 3A+ on its
+    socket, the plug's body), to check them against the keep-outs: img/board-models.png."""
+    import re
+    render_board()
+    from gen_kicad import OX, OY
+    im = Image.open(os.path.join(IMG, 'board.png')).convert('RGB')
+    d = ImageDraw.Draw(im, 'RGBA')
+    pad, sc = 8.0, 6.0
+    P = lambda x, y: ((x - (OX - pad)) * sc, (y - (OY - pad)) * sc)
+    pcb = sexpr.load(os.path.join(ROOT, PROJECT + '.kicad_pcb'))
+    for fp in sexpr.find_all(pcb, 'footprint'):
+        at = sexpr.find(fp, 'at')
+        X, Y = float(at[1]), float(at[2])
+        for m in sexpr.find_all(fp, 'model'):
+            path = m[1]
+            if 'aurora68.3dshapes' not in path:
+                continue
+            f = os.path.join(ROOT, 'lib', 'aurora68.3dshapes', os.path.basename(path))
+            for t in re.finditer(r'translation ([-\d.]+) ([-\d.]+) ([-\d.]+).*?diffuseColor ([\d.]+) ([\d.]+) ([\d.]+).*?size ([\d.]+) ([\d.]+) ([\d.]+)',
+                                 open(f).read()):
+                cx, cy, cz, r, g, b, sx, sy, sz = [float(v) for v in t.groups()]
+                x0, x1 = X + (cx - sx / 2) * 2.54, X + (cx + sx / 2) * 2.54
+                y0, y1 = Y - (cy + sy / 2) * 2.54, Y - (cy - sy / 2) * 2.54
+                d.rectangle([P(x0, y0), P(x1, y1)], outline=(int(r * 255), int(g * 255), int(b * 255)), width=3,
+                            fill=(int(r * 255), int(g * 255), int(b * 255), 60))
+    d.text((20, im.size[1] - 40), 'The generated 3D models (tools/vrml.py) drawn from above: the Pi 3A+ components-down on its '
+           'socket and the plug body under J1. The red Pi 3B/3B+ zone stays clear of parts.', fill=(0, 0, 0), font=load_font(13))
+    im.save(os.path.join(IMG, 'board-models.png'), optimize=True)
+    render_board()
+
+
 def render_sheet(fname):
     sch = sexpr.load(os.path.join(ROOT, fname))
     paper = sexpr.find(sch, 'paper')[1]
@@ -262,7 +294,7 @@ def render_sheet(fname):
 
 def main():
     os.makedirs(IMG, exist_ok=True)
-    render_board()
+    render_models()
     for f in [PROJECT + '.kicad_sch'] + ['%s.kicad_sch' % s for s, _, _ in D.SHEETS]:
         render_sheet(f)
     print('pictures in', IMG)
