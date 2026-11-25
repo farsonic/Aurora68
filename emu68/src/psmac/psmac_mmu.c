@@ -713,9 +713,15 @@ static void pwalk(uint32_t la, int fc, int flags, int maxlevel, struct pwalk *r)
             ddt = 1;
         }
         if (ddt == 1) {                         /* a page descriptor, maybe early termination */
+            /* the 030 takes from the address field only the bits above the page (or the early-terminated span):
+               the ones below are free, and System 7's VM keeps a flag of its own in bit 8 of a 4 KiB page's
+               descriptor (ptch 42, $1ED8) */
             uint32_t base = (dsize == 8 ? d1 : d0) & 0xffffff00u;
+            uint32_t ps = (tc >> 20) & 15, sb = 32 - used;
+            if (sb < ps) sb = ps;                     /* (a level that ends below the page size is malformed) */
+            uint32_t lowmask = sb >= 32 ? 0xffffffffu : ((1u << sb) - 1);
             r->span_bits = (uint8_t)(32 - used);
-            r->pa = base + (used == 0 ? la : (used >= 32 ? 0 : (la & ((1u << (32 - used)) - 1))));
+            r->pa = (base & ~lowmask) | (la & lowmask);
             if (flags & PW_UPDATE) {
                 uint32_t nd = d0 | 8u;
                 if ((flags & PW_WRITE) && !r->wp && !(r->s && !super)) nd |= 0x10u;
@@ -750,6 +756,15 @@ static inline int l2pc_get(uint32_t la, uint32_t *pa)
     if (!(e & 1) || (uint32_t)(e >> 32) != (la & ~0xfffu)) return 0;
     *pa = ((uint32_t)e & ~0xfffu) | (la & 0xfffu);
     return 1;
+}
+
+/* where the emulated accesses go (the heartbeat shows the busiest pages): 256 slots by logical page */
+static struct { uint32_t la, pa, n, w; } emu_hist[256];
+static void emu_note(uint32_t la, uint32_t pa, int write)
+{
+    unsigned i = (la >> 12) & 255;
+    if (emu_hist[i].la != (la & ~0xfffu)) { emu_hist[i].la = la & ~0xfffu; emu_hist[i].pa = pa & ~0xfffu; emu_hist[i].n = 0; emu_hist[i].w = 0; }
+    emu_hist[i].n++; emu_hist[i].w += write;
 }
 
 static inline int in_pi_win(uint32_t la)
@@ -792,7 +807,7 @@ int psmac_mmu_access(uint32_t la, int fc, int write, uint16_t *mmusr)
     {   /* the slots' I/O, and writes to the frame buffer and the ROM, are emulated on every access: once their page
            has been walked (U set, M too for a write) the cache answers */
         uint32_t pa;
-        if (l2pc_get(la, &pa) && (!pi_phys(pa & ~0xfffu) || (write && ro_phys(pa & ~0xfffu)))) { fs.emulated++; return 0; }
+        if (l2pc_get(la, &pa) && (!pi_phys(pa & ~0xfffu) || (write && ro_phys(pa & ~0xfffu)))) { fs.emulated++; emu_note(la, pa, write); return 0; }
     }
     if (tt_match(mmu.tt0, la, fc, write) || tt_match(mmu.tt1, la, fc, write)) {
         fs.tt_hits++;
@@ -810,7 +825,7 @@ int psmac_mmu_access(uint32_t la, int fc, int write, uint16_t *mmusr)
     if (r.span_bits < 12) { fs.emulated++; return 0; }          /* a page below 4 KiB: every access emulated */
     l2pc_put(la, r.pa);
     uint32_t pa4 = r.pa & ~0xfffu;
-    if (!pi_phys(pa4) || (write && ro_phys(pa4))) { fs.emulated++; return 0; }
+    if (!pi_phys(pa4) || (write && ro_phys(pa4))) { fs.emulated++; emu_note(la, r.pa, write); return 0; }
     int writable = !r.wp && r.m;
     if (write) fs.m_faults += bit_get(cur->bits, la >> 12);      /* mapped read-only until now: the first write */
     /* the chunk around la that the same descriptor covers, at most 32 KiB, in one go */
@@ -1028,6 +1043,8 @@ uint32_t psmac_pmmu_exec(uint32_t ea, uint32_t op, uint64_t *regs, uint32_t sr, 
                 if ((ext >> 8) & 1) *r68(regs, 8 + an) = r.desc;
             }
             mmu.mmusr = ms;
+            if (fs.ptest <= 16 || (fs.ptest & 1023) == 0)
+                kprintf("[PSMAC:MMU] PTEST #%u at %08x: %08x fc %d level %d -> MMUSR %04x\n", fs.ptest, pc, ea, fc, level, ms);
         } else if (((ext >> 10) & 7) == 0) {   /* PLOADR / PLOADW: a table search as the access would make it */
             fs.pload++;
             uint16_t ms;
@@ -1111,14 +1128,31 @@ uint32_t psmac_pmmu_exec(uint32_t ea, uint32_t op, uint64_t *regs, uint32_t sr, 
 }
 
 /* the soft TLB's numbers, for the heartbeat (psmac_bus.c) */
+volatile uint32_t psmac_priv_user;      /* M68k_ExceptionEntry.c: privilege violations from user mode (VM's emulation) */
+void psmac_mmu_fault_counts(uint32_t *delivered, uint32_t *helper, uint32_t *fetch, uint32_t *lazy, uint32_t *missed);
 void psmac_mmu_full_stats(void)
 {
     if (!psmac_mmu_full) return;
+    uint32_t d, h, f, l, m;
+    psmac_mmu_fault_counts(&d, &h, &f, &l, &m);
+    kprintf("[PSMAC:MMU]   faults: %u bus errors delivered (%u data, %u operand, %u fetch), %u not delivered, %u lazy maps; "
+            "%u privilege violations from user mode\n", d + h + f, d, h, f, m, l, psmac_priv_user);
     kprintf("[PSMAC:MMU]   soft TLB: %u walks, %u maps (%u pages), %u first writes (M), %u emulated, %u TT, %u bus errors; "
             "PFLUSH %u all %u fc %u ea (%u pages kept, %u dropped, %u us), PLOAD %u, PTEST %u, PMOVE %u, %u switches, %u code-cache checks\n",
             fs.walks, fs.maps, fs.mapped_pages, fs.m_faults, fs.emulated, fs.tt_hits, fs.buserrs,
             fs.pflush_all, fs.pflush_fc, fs.pflush_ea, fs.pflush_kept, fs.pflush_dropped,
             (uint32_t)(fs.flush_ticks * 1000000 / cnt_frq()), fs.pload, fs.ptest, fs.pmove, fs.switches, fs.epoch_bumps);
+    kprintf("[PSMAC:MMU]   busiest emulated pages since the last report:");
+    for (int k = 0; k < 6; k++) {
+        int m = -1;
+        for (int i = 0; i < 256; i++)
+            if (emu_hist[i].n && (m < 0 || emu_hist[i].n > emu_hist[m].n)) m = i;
+        if (m < 0) break;
+        kprintf(" %08x->%08x %u (%u w)", emu_hist[m].la, emu_hist[m].pa, emu_hist[m].n, emu_hist[m].w);
+        emu_hist[m].n = 0;
+    }
+    for (int i = 0; i < 256; i++) emu_hist[i].n = 0;
+    kprintf("\n");
 }
 
 /* psmac_mmu_l2p with the option: the cache the fault path filled, else a walk that changes nothing (it serves
@@ -1132,4 +1166,18 @@ static uint32_t full_l2p(uint32_t logical, int *valid)
     pwalk(logical, 5, 0, 99, &r);
     *valid = r.valid;
     return r.valid ? r.pa : logical;
+}
+
+/* a diagnostic for the fault path (psmac_mmufault.c): every descriptor the search for la meets */
+void psmac_mmu_debug_walk(uint32_t la, int fc)
+{
+    struct pwalk r;
+    pwalk(la, fc, 0, 99, &r);
+    kprintf("[PSMAC:MMU]   walk of %08x fc %d: TC %08x CRP %08x:%08x TT %08x %08x -> %s pa %08x MMUSR %04x, last descriptor at %08x = %08x",
+            la, fc, mmu.tc, mmu.crp_hi, mmu.crp_lo, mmu.tt0, mmu.tt1, r.valid ? "valid" : "invalid", r.pa, r.mmusr, r.desc,
+            r.desc && desc_in_ram(r.desc) ? *desc_at(r.desc) : 0);
+    {   extern uint64_t mmu_low4g_entry(uintptr_t virt);
+        uint32_t pa;
+        kprintf(", ARM entry %016llx, mapped bit %d, cache %s\n", (unsigned long long)mmu_low4g_entry(la & ~0xfffu),
+                cur ? bit_get(cur->bits, la >> 12) : -1, l2pc_get(la, &pa) ? "hit" : "miss"); }
 }

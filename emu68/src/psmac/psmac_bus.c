@@ -796,6 +796,7 @@ void psmac_service_core(void)
                     kprintf("[PSMAC]   JIT: %u M instructions in 5 s (%u MIPS), %u blocks translated, %u in the cache, %u of %u KB free\n",
                             (uint32_t)((insn - insn_last) / 1000000u), (uint32_t)((insn - insn_last) / 5000000u), miss - miss_last,
                             m->JIT_UNIT_COUNT, m->JIT_CACHE_FREE >> 10, m->JIT_CACHE_TOTAL >> 10);
+                    { extern void psmac_mmu_full_stats(void); psmac_mmu_full_stats(); }
                     jit_steady = miss - miss_last < 50 && insn - insn_last > 50000000u;   /* running, not loading */
                     insn_last = insn; miss_last = miss;
                 }

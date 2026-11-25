@@ -15,6 +15,8 @@
 #include <globals.h>
 
 #ifdef PSMAC
+extern int psmac_mmu_full;                  /* psmac/psmac_mmu.c */
+extern volatile uint32_t psmac_priv_user;   /* privilege violations from user mode under mac.mmu=full */
 struct psmac_crash_args { uint32_t vec, pc, sr, ea, fault, usp, isp, regs[16]; };   /* psmac/psmac_crash.c */
 #endif
 
@@ -49,6 +51,12 @@ uint32_t M68K_Exception(uint32_t M68k_SR, uint32_t type_and_format, uint32_t, ui
                of Gestalt's callers or of a program looking for an FPU, not a crash: counted, not recorded */
             extern volatile uint32_t psmac_fpu_traps, psmac_fpu_trap_pc;
             psmac_fpu_traps++; psmac_fpu_trap_pc = M68k_PC;
+            record = 0;
+        }
+        else if (vec == 0x20 && psmac_mmu_full && !(M68k_SR & SR_S)) {
+            /* mac.mmu=full (docs/23-mmu.md): System 7's Virtual Memory runs the Mac in user mode and emulates every
+               privileged instruction it meets there, so these are its ordinary work, thousands a second: counted */
+            psmac_priv_user++;
             record = 0;
         }
         else

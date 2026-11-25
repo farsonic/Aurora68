@@ -5051,6 +5051,18 @@ static uint32_t EMIT_FPU_exact(struct TranslatorContext *ctx)
     );
 
     uint32_t *skip = ctx->tc_CodePtr++;
+    uint32_t *bus = NULL;
+    {   /* mac.mmu=full (psmac_fpu.c's guard): bit 31 says a bus error was delivered for an operand, the new SR in the
+           low half, the PC already the handler's: straight out of the block. Not emitted without the option. */
+        extern int psmac_mmu_full;
+        if (unlikely(psmac_mmu_full)) {
+            EMIT(ctx,
+                tbz(ret, 31, 3),
+                bfxil(sr, ret, 0, 16)
+            );
+            bus = ctx->tc_CodePtr++;
+        }
+    }
     uint32_t val = (uintptr_t)M68K_Exception;
     EMIT(ctx,
         stp64_preindex(31, sr, ret, -16),         /* w0 = SR, w1 = type and format, whichever registers held them */
@@ -5067,6 +5079,8 @@ static uint32_t EMIT_FPU_exact(struct TranslatorContext *ctx)
         ldr64_offset(31, 30, 8),
         add64_immed(31, 31, 16)
     );
+    if (bus)
+        *bus = b_cc(A64_CC_AL, ctx->tc_CodePtr - bus);
     *skip = cbz(ret, ctx->tc_CodePtr - skip);
     RA_FreeARMRegister(ctx, ret);
 

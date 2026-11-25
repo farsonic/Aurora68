@@ -343,6 +343,28 @@ uint32_t psmac_mmu_fetch_fault(uint32_t pc, uint32_t addr, uint64_t *regs, uint3
     return deliver_from_save_area(regs, &b, "fetch") & 0xffff;
 }
 
+void psmac_mmu_fault_counts(uint32_t *d, uint32_t *h, uint32_t *f, uint32_t *l, uint32_t *m)
+{
+    *d = delivered; *h = helper_faults; *f = fetch_faults; *l = lazy_maps; *m = not_delivered;
+}
+
+/* The guard of a C helper that touches 68k memory as it works (the exact FPU, psmac_fpu.c): armed around the
+   helper, an access to a page the guest's tables refuse returns from the abort to the landing below instead of
+   reading $BAD0BAD0, and the landing jumps back into the helper's guard, which restores its state and calls
+   psmac_mmu_helper_fault. */
+struct psmac_hguard { void *jb[5]; volatile int armed; uint32_t addr; int write; } psmac_hguard;
+void psmac_helper_fault_landing(void)
+{
+    psmac_hguard.armed = 0;
+    __builtin_longjmp(psmac_hguard.jb, 1);
+}
+uint32_t psmac_mmu_helper_fault(uint64_t *regs, uint32_t sr, uint32_t pc)
+{
+    struct bframe b = { sr, pc, psmac_hguard.addr, psmac_hguard.write, 4, (sr & SR_S) ? 5 : 1, 0 };
+    helper_faults++;
+    return (1u << 31) | (deliver_from_save_area(regs, &b, "helper") & 0xffff);
+}
+
 /* SFC and DFC for the PMMU instructions' function-code operand (psmac_mmu.c) */
 int psmac_m68k_fcreg(int dfc) { return (dfc ? __m68k_state->DFC : __m68k_state->SFC) & 7; }
 
@@ -422,7 +444,15 @@ int psmac_mmu_fault(uint64_t *ctx, uint64_t elr, uint64_t esr, uint64_t far)
     int r = psmac_mmu_access(la, user ? 1 : 5, write, &mmusr);
     if (r > 0) { lazy_maps++; return 1; }
     if (r == 0) return 0;
-    if (!e) return miss(la, elr, why);
+    if (!e) {
+        if (psmac_hguard.armed) {                          /* a guarded helper: back into its guard */
+            psmac_hguard.armed = 0; psmac_hguard.addr = la; psmac_hguard.write = write;
+            uint64_t land = (uint64_t)(uintptr_t)psmac_helper_fault_landing;
+            __asm__ volatile("msr ELR_EL1, %0" :: "r"(land));
+            return 1;
+        }
+        return miss(la, elr, why);
+    }
 
     /* the 68k state at the instruction's start */
     uint32_t a[8];
@@ -442,6 +472,15 @@ int psmac_mmu_fault(uint64_t *ctx, uint64_t elr, uint64_t esr, uint64_t far)
     struct bframe b = { sr_int, e->pc, la, write, (int)size, user ? 1 : 5, 0 };
     uint32_t f, vec; uint16_t ssw;
     if (!push_frame(ssp, &b, &f, &vec, &ssw)) return miss(la, elr, "the supervisor stack or the vectors are not mapped (double bus fault)");
+    {   /* the same address faulting again and again: what the tables say (a diagnostic, docs/23 section 11) */
+        static uint32_t last_la, same;
+        if (la == last_la) same++; else { last_la = la; same = 0; }
+        if (same == 3 || same == 100) {
+            void psmac_mmu_debug_walk(uint32_t la, int fc);
+            kprintf("[PSMAC:MMU] %u bus errors in a row at %08x (PC %08x, %s, MMUSR %04x)\n", same + 1, la, e->pc, write ? "write" : "read", mmusr);
+            psmac_mmu_debug_walk(la, user ? 1 : 5);
+        }
+    }
 
     /* commit: registers, FPSR/FPCR the block had not stored yet, SR, stacks, PC; the abort returns into the JIT loop */
     if (e->fpsr != 0xff) setFPSR((uint32_t)ctx[e->fpsr]);
