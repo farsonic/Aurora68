@@ -213,7 +213,9 @@ tri-state logic and testbenches are the nearest starting point.
   with /BGACK asserted really waits, rather than starting its vector fetch (the manual's reset and arbitration
   sections, then a scope on a real SE). If it does not wait, the card has to keep /BR asserted across the reset as
   well and take the bus back at the first /BG, before the 68000's first cycle completes, which needs care in the
-  CPLD.
+  CPLD. (A precedent, section 10: the MicroMac Performer, a shipped 68030 card for this slot, never asserts /BGACK at
+  all; it holds /BR from the start of every reset for as long as it runs, and drives the bus one or two C8M clocks
+  after /RESET rises.)
 - **Power-on.** The SE's reset circuit holds /RESET and /HALT low at power-on. The card asserts /BR during that
   time; whether the 68000 grants the bus while still in reset, or only after its first cycles, is the same question
   as above.
@@ -464,7 +466,10 @@ granted away (Apple's text); the card's power budget (1.5 A at +5 V, 7 W in all)
 4.61 mm of height); a cable to a connector card for the rear port. Still open:
 
 1. Does a 68000 coming out of reset (power-on, or a board reset, both of which reset it on the SE) wait while
-   /BGACK is held, or does it start its vector fetch? (Section 4.)
+   /BGACK is held, or does it start its vector fetch? (Section 4.) *A precedent, not a measurement (section 10):* the
+   MicroMac Performer keeps /BR asserted through and after every reset, never asserts /BGACK and never waits for /BG,
+   and works; so a 68000 leaving reset with /BR asserted stays off the bus in practice. Aurora68's card should keep
+   /BR asserted for as long as it owns the bus. Still to scope on an SE: the time from /RESET rising to /BG.
 2. A meter on a real SE: the pinout, row letters and pin 1 as Apple's figure has them.
 3. Which end of the card has the 15.58 mm and which the 4.61 mm (Figure 17-2 against the owner's "more room towards
    the back"), and how a Pi 3 on a header fits under it.
@@ -499,6 +504,229 @@ its README is the long form. In short:
 - **Open question 5:** the 3A+'s microSD slot is at the card's left, under the chassis: reachable only with the card
   out, as with any card in this slot.
 
+## 10. A working precedent: the MicroMac Performer (25 November 2026)
+
+*Read from reverse-engineered design files; nothing here was built or measured.* The MicroMac Performer, a 68030
+accelerator of the 1990s for the Plus, the Classic and the SE (docs/02), did what this note plans: it took the bus
+from the logic board's own 68000 and kept it, and on the SE it sat in this slot. It shipped and sold, and its
+clones run today. Three public repositories hold it:
+
+- **Bolle's recreation** (68kMLA; github.com/TheRealBolle/Performer-SE-PL-CL, Eagle 9.6, 17 November 2022): the
+  schematic "MM Performer.sch" redrawn from a real board, one universal PCB with a 68000 piggyback socket (Plus), a
+  PLCC clip (Classic) and the slot connector J1 (SE), and the five GAL16V8 fuse maps dumped from the original (U3 to
+  U7). Today's MacEffects "Performer PDS" is reported on the forums to be built from these files.
+- **alxlab-zone66x/Performer-SE-PL-CL**: the same converted to KiCad, plus four **SE-only** boards ("Performer SE
+  v1.0/v1.1, socket pga/plcc": J1 only, no U7).
+- **luRaichu/polyphloisboisterous030** (Polyphloisboisterous '030, Rev. 1 December 2025): a smaller board for the
+  Plus only, piggybacked on the 68000, no FPU (docs/02).
+
+The fuse maps are the same bit for bit in all three, and the GALs' pins sit on the same nets on every board. All
+three READMEs say their PCB files are **CC BY-NC-SA** (not for commercial use); none has a licence file, and the fuse
+maps are dumps of a commercial product with no licence stated. Nothing of theirs is copied into Aurora68: the
+pin-to-net readings and short equation excerpts below are our own.
+
+**How it was read.** MAME's jedutil (0.264, `reference/mame`) decoded the fuse maps (`jedutil -view U4.jed GAL16V8`,
+after giving the files the STX, ETX and transmission checksum the tool requires). Each GAL pin's net was read from
+the pads of the KiCad boards (the Polyphloisboisterous, alxlab's universal board and its "Performer SE v1.1
+socket-plcc"), and the Eagle schematic was used for its notes. Below, a name with "/" is an active-low net, "=0" and
+"=1" are pin levels, and `next(X)` is a register after its clock edge; registered outputs power up high (the GAL's
+power-up reset). To see the timing, the equations were run cycle by cycle in a small model (the 68030 on C16M, a
+board answering /DTACK in S4 or later and /VPA in $E00000-$FFFFFF, E six C8M clocks low and four high); it is not in
+the repository, and the statements that rest on it say "in the model".
+
+### 10.1 The card around the GALs
+
+- **One clock, no buffers.** The 68030's clock CLK_30 is the board's C16M, passed through U6 (pin 19 = pin 2): the
+  card runs at 15.6672 MHz, synchronous with the SE. The only oscillator (QG1) clocks the optional 68882 (on the SE
+  boards; forum owners of today's clone say its "25 MHz" and "33 MHz" crystals change the FPU's speed only). The
+  68030's A0-A23, FC0-2, R/W and /IPL0-2 go straight to the slot, its D16-D31 to the slot's D0-D15 (a 16-bit port on
+  the 68030's upper half, as dynamic bus sizing wants), A24-A31 nowhere: there are no bus buffers on the card.
+- **Pulled up (4.7 kOhm) and otherwise unused:** the 68030's own /BR, /BGACK and /HALT, /STERM and /CBACK (no
+  synchronous or burst cycles), /MMUDIS, /DSACK0 (only the 68882 drives it); and /EXT.DTK.
+- **Slot pins used:** A1-A26 (FC2-FC0, A1-A23), A27 E, A28 C8M, A29 C16M, C1 /VPA, C2 /VMA, C3 /BR, C6 /DTACK, C7-C10
+  R/W, /LDS, /UDS, /AS, C12 /RESET, C14-C29 data, B18-B20 /IPL0-2, B28 /EXT.DTK, +5 V. **Not connected:** C4 /BGACK,
+  C5 /BG, B12 /HALT, B21 /BERR, C11 /PMCYC, the +12 V, -12 V and -5 V.
+
+| GAL | Mode, clock | Inputs (pin: net) | Outputs (pin: net) |
+|---|---|---|---|
+| U3 | combinational | 1-5: A23-A19, 6-8: FC0-FC2, 9: /DTACK, 11: P3.B10, 13: /EXT.DTK | 12: /SCC.RW.DEC, 15: /DTACK_SYS+EX, 16: /CIIN, 17: /AVEC, 18: /FPUCS, 19: NOFC |
+| U4 | registered, pin 1 SM_CLK16 (C16M inverted), /OE pin 11 = N$7 | 2: NOFC, 3: C8M, 4: /AS_30, 5: /DTACK_SYS+EX, 6: /VPA, 7: E, 8: R/W, 9: /RESET_30, 13: P2.A17, 19: N$1 | 12: /DSACK1, 16: /VMA, 18: /AS_00; 14, 15, 17 state bits |
+| U5 | registered, pin 1 C8M, /OE grounded | 2: /AS_00, 3: SIZ1, 4: SIZ0, 5: R/W, 6: /IPL2, 7: /CIIN, 8: A22, 9: A0, 12: /RESET_00 | 13: /RESET_30, 16: /BR_00, 17: N$7, 18: /UDS, 19: /LDS; 14 state bit |
+| U6 | registered, pin 1 C8M, /OE grounded | 2: C16M, 3: E, 4: /AS_00, 5: /AS_30, 6: /FPUCS, 7: FPUSENSE, 8: /RESET_30, 9: /SCC.RW.DEC | 12: N$1, 13: /BERR_30, 14: /CDIS (68030 pin H12), 18: SM_CLK16, 19: CLK_30; 15, 16 state bits |
+| U7 | combinational (Plus and Classic only) | 3: C8M | 13: C16M; 14-16 a delay chain looped back to 4-6 |
+
+"_00" nets are the logic board's (the 68000's), "_30" the 68030's.
+
+### 10.2 What each GAL does
+
+**U3: address and cycle-type decode.** Read from the equations:
+```
+/SCC.RW.DEC = 0  when A23=1, A22=0, A20=1                       the SCC ($9xxxxx read, $Bxxxxx write)
+/CIIN       = 0  when A23=1, or A22=1 and (A21=1 or A20=1)       cache-inhibit $500000-$FFFFFF
+/AVEC       = 0  when A23-A19 all 1 and FC2-0 = 111              interrupt acknowledge, autovectored on the card
+/FPUCS      = 0  when A23-A19 all 0 and FC2-0 = 111              coprocessor space: the 68882
+NOFC        = 0  when FC2-0 is not 111                           (gated by /EXT.DTK and P3.B10, see below)
+/DTACK_SYS+EX = 0 when /DTACK=0 and (/EXT.DTK=1 or P3.B10=0)
+```
+So only RAM ($000000-$3FFFFF) and ROM ($400000-$4FFFFF) are cacheable; the SE's chips are not. The screen and sound
+buffers are RAM and cached, which the 68030's write-through data cache allows. Only cycles with NOFC=0 go to the board:
+an interrupt acknowledge is ended on the card by /AVEC and never reaches the board, as in Aurora68's kernel (section
+2, item 4). With the pull-ups on /EXT.DTK (R16) and P3.B10 (R9), /DTACK_SYS+EX is the board's /DTACK unchanged and
+NOFC depends on FC alone. The card never drives /EXT.DTK. *Inferred:* P2.A17 and P3.B10 are named after connectors
+of the original board, and the Eagle schematic marks U5 pin 15 "nc - RAMCARD", so these unused inputs probably served
+an optional memory card that could take over a cycle (P2.A17=0 disables U4's /AS_00 and /DSACK1).
+
+**U4: the bus-cycle state machine.** Clocked on C16M's falling edges (SM_CLK16 is C16M inverted by U6), with C8M as
+an input that tells it which half of C8M it is in. Its outputs to the board, /AS_00 and /VMA, are three-stated unless
+N$7=0 (the card owns the bus), and every term needs /RESET_30=1 (a 68030 reset puts it back to idle). The excerpts:
+```
+next(/AS_00)=0 when /AS_30=0, NOFC=0, C8M=1, /DTACK_SYS+EX=1, N$1=0, P2.A17=1 and idle (state bits and /VMA high)
+next(/VMA)=0   when /AS_00=0, /VPA=0, E=0, C8M=1, NOFC=0 and idle           (the 6800 cycle; one of six terms)
+/DSACK1 = 0    when /AS_30=0 and Q17=0     (driven only while NOFC=0, /RESET_30=1, P2.A17=1)
+```
+In plain words, read from the equations and timed in the model:
+- **/AS on the 68000's grid.** /AS_00 falls only at a C16M falling edge in C8M's high half: half a C16M period (32
+  ns) plus the GAL's delay after the C8M rising edge that starts an even state. A 68030 cycle that starts in C8M's
+  low half waits one C16M clock. So the board's cycle begins in S2, where a 68000 asserts /AS (MC68000 manual, Figure
+  5-35), and /AS never falls near the S3/S4 boundary that the BBU forbids (section 4). It also waits for the previous
+  cycle's /DTACK to go away, and for N$1 (U6). /UDS and /LDS follow /AS_00 through U5, so on writes they come with /AS
+  rather than in S4 as a 68000's do.
+- **/DTACK** is sampled at every C16M falling edge. When it is seen, Q17 asserts /DSACK1 (a 16-bit port); the 68030
+  takes it at its next falling edge and latches read data one C16M clock later, and /AS_00 rises at that edge. In the
+  model, with /DTACK in S4, /AS_00 is low from the middle of S2 to the middle of S7: the card latches read data a
+  quarter of a C8M clock **after** the 68000's own point (the falling edge entering S7), not before it as the classic
+  PiStorm does (docs/18). Back-to-back cycles come every four C8M clocks, the 68000's own rate: the card gains its
+  speed from its caches, not from the board.
+- **6800 cycles.** /VPA (the board's, for $E00000-$FFFFFF) and E low give /VMA; the state bits then count through E's
+  high phase. A read ends at the last C16M falling edge before E falls; a write one clock later, so that /AS_00 and
+  /VMA rise after E has fallen (in the model, about 1.5 C16M clocks after). E is only sampled; the card never drives
+  it. In the model /VMA can be asserted as little as one C16M half-period before E rises, when /VPA arrives late in E's
+  low phase. /VMA is also one of U4's state bits and goes low for one C16M clock in ordinary cycles too: harmless where
+  the VIA is selected by address and /VPA (inferred, not checked against the SE's schematic).
+
+**U5: arbitration, the 68030's reset, byte strobes.** Clocked on C8M's rising edges:
+```
+next(N$7)=0    when /RESET_00=1 and /BR_00=0 and (N$7=0 or Q14=1)
+next(/BR_00)=0 when N$7=0, or Q14=1 and /BR_00=0, or Q14=1 and /RESET_00=0, or Q14=0 and /IPL2=1
+next(Q14)=0    when the card runs (N$7=0, /BR_00=0, /RESET_00=1) and (Q14=0 or a cycle with /AS_00=0 and A22=1),
+               or N$7=1, /IPL2=0 and two of: /RESET_00=0, Q14=0, /BR_00=0
+/RESET_30 = 0  (driven) whenever N$7=1
+/UDS = 0 when /AS_00=0 and (A0=0 or a cacheable read)                   } driven only
+/LDS = 0 when /AS_00=0 and (SIZ0=0 or SIZ1=1 or A0=1 or a cacheable read) } while N$7=0
+```
+The three state bits (Q14, /BR_00, N$7) take these values (read from the equations by enumerating every input):
+
+| Q14 /BR_00 N$7 | State | Left by |
+|---|---|---|
+| 1 1 1 | power-up, or disabled: no request, 68030 in reset, card three-stated | /RESET_00=0 only, to "request" |
+| 1 0 1 | request: /BR asserted, 68030 in reset | /RESET_00=1: "running"; /RESET_00=0 with /IPL2=0: "disabling" |
+| 1 0 0 | running: the card owns the bus, the 68030 runs | first cycle with A22=1 (the ROM): "running, ROM seen"; /RESET_00=0: "request" |
+| 0 0 0 | running, ROM seen | /RESET_00=0: "request" |
+| 0 1 1 (via 0 0 1) | disabling: /BR released, 68030 in reset | /RESET_00=1 with /IPL2 still 0: "disabled" (1 1 1); /IPL2=1 first: back to "request" |
+
+In plain words:
+- **/BR is asserted from the first C8M edge of any reset and is never released while the card runs**
+  (`next(/BR_00)=0 when N$7=0`). The card never asserts /BGACK (C4 is not connected, the board's 3.3 kOhm pull-up keeps
+  it negated) and never looks at /BG (C5 not connected).
+- **It takes the bus one or two C8M clocks after /RESET rises,** at the first C8M rising edge at which U5 sees
+  /RESET_00 high: N$7 falls, U4's strobes and U5's /UDS and /LDS are enabled, and /RESET_30 is let go. It does not
+  wait for /BG. The 68030 then needs a few clocks of its own before its first cycle.
+- **It is two-wire arbitration on a three-wire 68000.** Motorola's state diagram for the three-wire processors (MC68000
+  user's manual, Figure 5-18 (a)) keeps the processor with BG asserted and its bus three-stated for as long as BR is
+  asserted, whether or not BGACK ever comes, and section 5.2.1 says that "when no acknowledge is received before the
+  bus request signal is negated, the processor continues the use of the bus": that is, only once BR goes away. The
+  Performer relies on that, and on a 68000 that leaves reset with BR already asserted granting the bus before its
+  first vector fetch (or at least not fighting the card's first cycle). The equations do not check it; that the
+  product and its clones work is the evidence.
+- **/RESET_00 and /RESET_30 are kept apart.** The card only reads the board's /RESET (C12) and leaves /HALT (B12)
+  unconnected; it drives neither. /RESET_30 is the 68030's own: U5 holds it low whenever the card does not own the bus,
+  and the 68030's RESET instruction pulls only /RESET_30, which idles U4 and U6. Read from the nets: a RESET
+  instruction on the card does not reach the board's chips.
+- **The disable switch.** The README's "hold Interrupt after the boot chime then quickly press Reset. After the second
+  chime release Interrupt" is this table: /IPL2 is the programmer's switch's interrupt line. With /IPL2 held low through
+  a few C8M clocks of reset, the card releases /BR and keeps the 68030 in reset; if /IPL2 is still low when the
+  reset ends, the card goes to 1 1 1 and stays three-stated, and the SE's own 68000 starts its own ROM (the second
+  chime). Only the next reset (the switch again, or power-on) brings the card back. Letting go of Interrupt before
+  Reset aborts it. ("Quickly", our guess: an interrupt held without the reset lands the running Mac in its debugger.)
+  Q14 records the card's first cycle to $400000-$7FFFFF; we found no input sequence in which it changes where the
+  table ends up.
+
+**U6: clocks, SCC spacing, the FPU and the caches.** Clocked on C8M's rising edges, except the clock buffers:
+```
+CLK_30   = C16M                                   the 68030's clock (pin 19)
+SM_CLK16 = C16M inverted                          U4's clock (pin 18)
+next(/CDIS)=0 when /RESET_30=0, or /CDIS=0 and not (/FPUCS=0 and /AS_30=0)
+/BERR_30 = 0 (driven) when /AS_30=0, /FPUCS=0, FPUSENSE=1 and /CDIS=1
+N$1 (with Q15, Q16): set at the end of a board cycle that had /SCC.RW.DEC=0, cleared by counting E
+```
+- **SCC recovery.** After any board cycle to the SCC, N$1 goes high when the cycle ends and holds off the start of the
+  next board cycle, of any kind, until E has run through about one and a half periods (16 to 21 C8M clocks, 2.0 to 2.7
+  microseconds, in the two E phases modelled). That is the SCC's recovery time, made with E as the time base, for the
+  Plus, where no logic spaces SCC accesses; on the SE the gate array does it too (section 3), so there it only costs
+  time.
+- **No 68882:** FPUSENSE has a pull-up and the 68882's SENSE pin pulls it low; an access to coprocessor space with the
+  socket empty gets /BERR_30, and the 68030 turns that into the F-line exception software uses to find no FPU.
+- **The caches** are vetoed in hardware (/CDIS low) from every 68030 reset until the first cycle in coprocessor space,
+  and then allowed until the next reset, whatever CACR says. So the SE's ROM boots uncached, and the caches can work
+  only once something has touched the FPU's space. *Inferred:* the card's software (GemStart) or the system's FPU test
+  does that; not checked in GemStart's code.
+
+**U7: a C16M for the Plus.** `C16M = C8M xor (C8M delayed by four GAL delays)`, the delay made by three outputs looped
+back to inputs (pins 16 to 4, 15 to 5, 14 to 6) and a fourth output: a pulse on each C8M edge, a 15.67 MHz clock locked
+to C8M with a duty cycle set by gate delays. The Plus's 68000 socket has no C16M. The SE's slot has one (A29), so the SE
+boards leave U7 out (the universal board's SJ2 links the slot's C16M instead; Bolle: "U7 is only needed for operation
+in Macintosh Plus and Classic").
+
+### 10.3 What it tells Aurora68's card (a precedent, not a measurement)
+
+1. **The 68000 after reset (open question 1).** The Performer never asserts /BGACK and never releases /BR: it asserts
+   /BR at the start of every reset, holds it for as long as it runs, and drives the bus one or two C8M clocks after
+   /RESET rises without waiting for /BG. A shipped product and today's clones therefore show a 68000 coming out of
+   reset with /BR asserted staying off the bus, which is what section 4 needs. Two things follow for Aurora68's card:
+   keep **/BR asserted for as long as the card owns the bus**, not only until /BGACK is asserted as in section 4's step
+   3 (asserting /BGACK as well does no harm, and section 9's logic already holds the arbitration across resets); and,
+   as cheap insurance the Performer does not take, wait for /BG after a reset before driving the strobes. Still to be
+   measured on an SE: the time from /RESET rising to /BG.
+2. **C8M and E.** The whole card runs on C16M, the 68030 included; C8M is an input that gives the phase, so that /AS
+   falls only in C8M's high half (S2) and never near S3/S4. /DTACK is sampled at every C16M falling edge and read data
+   is latched in the middle of S7, a little after a 68000. E is sampled on C16M's falling edges: /VMA when /VPA and E
+   low, the end of the cycle counted against E's fall. For Aurora68's CPLD: clocking from C16M (A29) with C8M as a
+   phase input gives section 4's S-states directly; /PMCYC is not needed (the Performer leaves it unconnected); and
+   /VMA's lead before E rises is worth checking against the 6522's set-up times rather than copying the Performer's
+   first-sample rule.
+3. **/DTACK, not /EXT.DTK.** The Performer ends board cycles on the board's /DTACK (C6). It only reads /EXT.DTK (B28),
+   with its own pull-up, and never drives it, as section 3 plans.
+4. **The shared /RESET and /HALT.** The Performer avoids the problem rather than solving it: it reads /RESET, leaves
+   /HALT unconnected, never resets the board (its 68030's RESET instruction stays on the card), and survives every SE
+   reset by requesting the bus during it. Aurora68 does reset the board (section 2, item 5), and that resets the 68000
+   too; the precedent says that holding /BR through such a pulse is enough to keep the 68000 off the bus after it.
+5. **Stock mode.** The Performer has one (the disable switch above): /BR released, everything three-stated, its
+   processor held in reset, until the next reset. Section 4's stock mode keeps the card off until the next power-on or
+   request; either works electrically.
+6. **Differences to keep in mind.** The Performer does not connect /BERR (B21), so the gate array's SCSI time-out never
+   reaches it; Aurora68 plans to report it (section 2, item 6). It has no bus buffers, which section 3's loading table
+   and Apple's two-inch rule argue against for a bigger card.
+
+### 10.4 The Plus piggyback and the SE slot boards
+
+| | Polyphloisboisterous '030 (Plus) | Performer SE (slot) |
+|---|---|---|
+| Connection | a 64-pin socket soldered on top of the 68000 (IC1) | J1, a DIN 41612 3x32 in the slot |
+| C16M | made by U7 from C8M | the slot's (A29); no U7 |
+| 68000 pins left open | BG, BGACK, HALT, BERR | /BG, /BGACK, /HALT, /BERR, /PMCYC |
+| FPU | none | optional 68882 with its own oscillator, or on CLK_30 (SJ1) |
+| GALs | U3-U7, the same fuse maps | U3-U6, the same fuse maps |
+
+The arbitration, reset, cycle and E logic is the same: on the Plus /BR_00 goes to the 68000's pin 13 directly; in the
+SE it goes to the slot's C3. The universal Performer board carries all three connectors at once.
+
+**Whose design.** The files carry no maker's mark (the fuse maps' signature bytes are empty; the schematic is titled
+"MM Performer"). The Polyphloisboisterous README calls the board "logically identical" to Total Systems' Mercury, and
+the Performer's software is Total Systems' GemStart (docs/02); Steve's Blog says the Performer was Dove's MaraThon
+Racer under another name. docs/02 found one link between the two names: the MaraThon Racer's software includes an INIT
+called "Mercury Cache Enable". Its probe (a MOVES read at $EC398000 in function code 3) would be an ordinary RAM cycle
+on these GALs, so the hardware neither confirms nor rules out which lineage is right.
+
 ## Sources
 
 - Apple, *Guide to the Macintosh Family Hardware*, 2nd edition, Figure 14-2, "An expansion card in the Macintosh SE
@@ -522,6 +750,18 @@ its README is the long form. In short:
 - `reference/MacSE-PiStorm-DirectSocket` (Frimples): arbitration RTL and testbenches for the socket.
 - The PiStorm (captain-amygdala/pistorm) and Emu68's `src/pistorm/` (the classic protocol, Pi 4 GPIO settings,
   the Efinix images).
+- The MicroMac Performer's reverse-engineered design (section 10), all three with PCB files under CC BY-NC-SA and the
+  same five dumped GAL16V8 fuse maps: Bolle, github.com/TheRealBolle/Performer-SE-PL-CL (Eagle schematic "MM
+  Performer.sch", universal Plus/Classic/SE board, 17 November 2022); alxlab-zone66x,
+  github.com/alxlab-zone66x/Performer-SE-PL-CL (the KiCad conversion and the SE-only boards); luRaichu,
+  github.com/luRaichu/polyphloisboisterous030 (Polyphloisboisterous '030, the Plus version, Rev. 1 December 2025).
+  Read on 25 November 2026; decoded with MAME's jedutil.
+- Motorola, *MC68000 8-/16-/32-Bit Microprocessors User's Manual* (the copy in the Polyphloisboisterous repository):
+  5.2 bus arbitration (Figures 5-15 to 5-24, the three- and two-wire state diagrams in Figure 5-18), 5.5 reset,
+  Figure 5-35 the synchronous read cycle.
+- TinkerDifferent, "Blazing fast Mac: the Performer PDS 68030 accelerator by MacEffects"
+  (https://tinkerdifferent.com/threads/blazing-fast-mac-the-performer-pds-68030-accelerator-by-maceffects.3902/page-2):
+  owners' reports that the clone's 25 and 33 MHz crystals clock only the FPU, and that it is built from Bolle's files.
 - Forum discussion of a slot card for the SE: TinkerDifferent, "PiStorm on the Macintosh SE"
   (https://tinkerdifferent.com/threads/pistorm-on-the-macintosh-se.2085/page-2).
 - In this repository: docs/00 (the original plan), docs/07 (the Alice68 drivers), docs/12 (transport, power),
