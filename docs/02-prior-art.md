@@ -244,6 +244,11 @@ for a faster writer) and, for the System 7 Sound Manager's 'snth' synthesizers, 
 Sound Patches"; a GemStart version or system that leaves either out leaves Apple's 68000 placement in charge. That is
 a reading of the code, not a test on that board. It also records a disable switch the hardware itself provides: hold
 the Interrupt switch after the chime and press Reset, and the board stays out of the way until the next start.
+A second Plus board followed from the same files: hkzlab's **MiniPerformer+** (github.com/hkzlab/MiniPerformerPlus,
+Rev. 2, 2026), "a remix of the Micromac Performer reversed by Bolle", built for a Plus clone. It is a 16 MHz 68030 with
+an optional 68882, plugged into the 68000's socket with the 68000 riding on top, and Bolle's GAL files. Its README gives
+the same Interrupt-and-Reset way out and the same warning: "like the original Performer, using this accelerator could
+get You audio distorsion in some software".
 
 ### MicroMac CD306 start-up ROM 3.1 (1993)
 

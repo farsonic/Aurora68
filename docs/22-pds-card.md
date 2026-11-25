@@ -509,7 +509,7 @@ its README is the long form. In short:
 *Read from reverse-engineered design files; nothing here was built or measured.* The MicroMac Performer, a 68030
 accelerator of the 1990s for the Plus, the Classic and the SE (docs/02), did what this note plans: it took the bus
 from the logic board's own 68000 and kept it, and on the SE it sat in this slot. It shipped and sold, and its
-clones run today. Three public repositories hold it:
+clones run today. Three public repositories hold it, and a fourth builds on them:
 
 - **Bolle's recreation** (68kMLA; github.com/TheRealBolle/Performer-SE-PL-CL, Eagle 9.6, 17 November 2022): the
   schematic "MM Performer.sch" redrawn from a real board, one universal PCB with a 68000 piggyback socket (Plus), a
@@ -519,10 +519,20 @@ clones run today. Three public repositories hold it:
   v1.0/v1.1, socket pga/plcc": J1 only, no U7).
 - **luRaichu/polyphloisboisterous030** (Polyphloisboisterous '030, Rev. 1 December 2025): a smaller board for the
   Plus only, piggybacked on the 68000, no FPU (docs/02).
+- **hkzlab/MiniPerformerPlus** (MiniPerformer+, Rev. 2, README of 6 July 2026), "a remix of the Micromac Performer
+  reversed by Bolle, resized for installation on the Macintosh Plus clone I am using": a 16 MHz 68030 in a PGA
+  socket, an optional PLCC 68882 on its own oscillator, four PLCC GALs on the underside (U3 to U6) and U7 in DIP.
+  It plugs into the logic board's 68000 socket on machined pins and carries the 68000 in a socket on top. Its
+  schematic has the Performer's nets (/BR_00 to the 68000, /BGACK_30, /RESET_00 and /RESET_30 apart, /HALT_30,
+  /DTACK_SYS, /CIIN, /STERM, /DSACK0-1). It carries no fuse maps of its own: "the JED files can be found in Bolle's
+  repository". Its README gives the same way out, "after the chime sound, hold the interrupt button, and push reset
+  after that ... The accelerator will be disabled until the next boot", and the same caveat, "like the original
+  Performer, using this accelerator could get You audio distorsion in some software". Its licence file is CC
+  BY-NC-SA 4.0.
 
 The fuse maps are the same bit for bit in all three, and the GALs' pins sit on the same nets on every board. All
-three READMEs say their PCB files are **CC BY-NC-SA** (not for commercial use); none has a licence file, and the fuse
-maps are dumps of a commercial product with no licence stated. Nothing of theirs is copied into Aurora68: the
+three READMEs say their PCB files are **CC BY-NC-SA** (not for commercial use); none has a licence file (MiniPerformer+
+has one, CC BY-NC-SA 4.0), and the fuse maps are dumps of a commercial product with no licence stated. Nothing of theirs is copied into Aurora68: the
 pin-to-net readings and short equation excerpts below are our own.
 
 **How it was read.** MAME's jedutil (0.264, `reference/mame`) decoded the fuse maps (`jedutil -view U4.jed GAL16V8`,
