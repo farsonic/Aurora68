@@ -40,5 +40,13 @@ StuffIt archive. The software is not in this repository (it is someone else's); 
   timings for each of 25 monitors (Apple Two-Page and Portrait, Radius, Sigma Designs, Lapis, Samsung, Triam and
   generic ECL, TTL, analog and composite settings).
 
-A second accelerator's software, one the owner remembers working well with sound, is to come; its Sound Driver is
-the thing to compare with this one.
+The second archive, said to come with an accelerator that solved the sound problems, is **DayStar Digital's Power
+Central 1.3** (December 1992), the control panel of DayStar's cache cards: its product list names PowerCache,
+PowerCard, FastCache, Equalizer LC, PowerMath LC and FastCache Quadra, cards for 68030 and 68040 Macs (the II family,
+the SE/30, the LC, the Quadra), not for the SE's 68000. It has no Sound Driver and no sound patch. Its INIT finds
+the card by probing $F8000000 under a bus-error handler with a 68040 transparent-translation register (DTT1)
+opened for the probe, measures the processor's speed against the VIA's timer 2 for the "Processor: nn MHz" line,
+switches the cache through CACR, and patches SANE (PACK 4 and 5, "PowerMath"), _SysEnvirons and _Gestalt. On those
+machines sound comes from the ASC with its own FIFO, which a faster processor or a cache does not disturb, so
+whatever DayStar's sound reputation rests on, it is not in this file. The SE accelerator that handled sound well
+is still to be found.
