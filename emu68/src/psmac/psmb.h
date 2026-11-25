@@ -35,6 +35,7 @@
 #define PSMB_OFF_HEADER      0x0000
 #define PSMB_OFF_CALIB       0x0080          /* 4 x { u16 low-memory address, u16 value }: the ROM's timing
                                                calibration results, supplied by the Pi (rom/patches/iici.json) */
+#define PSMB_OFF_FLOPPY      0x0090          /* struct psmb_floppy: the 400K drive's speed (below) */
 #define PSMB_OFF_SERVICES    0x0100          /* PSMB_MAX_SERVICES x struct psmb_service */
 #define PSMB_OFF_CMD         0x1000          /* PSMB_MAX_SERVICES x struct psmb_cmd (one slot each) */
 #define PSMB_OFF_BLKDEV      0x2000          /* PSMB_MAX_BLKDEV x struct psmb_blkdev */
@@ -47,6 +48,25 @@
 #define PSMB_BOUNCE_SIZE     0x80000
 #define PSMB_OFF_DISPLAY2    0x59000         /* struct psmb_display of the SE board's HDMI screen (below, "Two screens") */
 /* 0x52000 and 0x5A000: the Aurora68 Agent's transfer buffer and request block (below, PSMB_OFF_AGENTBUF, PSMB_OFF_AGENT) */
+
+/* ---- the 400K drive's speed (25 November 2026, docs/08 item 146) ------------------------------------
+   The 400K single-sided drive of the 128K and 512K turns at the speed the Mac's sound buffer tells it: the
+   low byte of each of its 370 words is a pulse width (the disk-speed PWM), and the 64K ROM's Sony driver
+   wrote them for the zone of every track it sought to (SetSpeed). The IIci ROM's driver has no speed
+   control left, so the ROM patch (rom/patches/iici.json, "flop:") makes its seek wrapper ($4086D4B0) tell
+   the kernel the track here, and the kernel writes the low bytes (psmac_board_se.c, "the 400K drive's
+   speed"). The stub reaches this block at $900090 in 24-bit mode and $F9000090 in 32-bit mode and does
+   nothing unless `want` holds PSMB_FLOPPY_WANT, which the kernel writes only on a board whose drive needs
+   it. Big-endian, written by both sides as below. */
+struct psmb_floppy {          /* 16 bytes */
+    uint16_t want;            /* kernel: PSMB_FLOPPY_WANT while it sets the drive's speed, else 0 */
+    uint16_t track;           /* stub: the track the last seek asked for (the wrapper's d6) */
+    uint16_t seeks;           /* stub: one more for every seek; the kernel acts when it changes */
+    int16_t  zone;            /* stub: the zone (track / 16) of the last seek; the kernel starts it at the zone it wrote first */
+    uint16_t wait;            /* kernel: the speed-change wait per zone moved, in 100 us (the stub puts it in SonyVars+20) */
+    uint16_t pad[3];
+};
+#define PSMB_FLOPPY_WANT     0x5350u         /* 'SP' */
 
 /* ---- the kernel's log (mac/pilog.c) ------------------------------------------------------------
    Every character of the kernel's log (kprintf: the UART and the HDMI console get the same text)

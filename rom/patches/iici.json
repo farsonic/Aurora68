@@ -15,7 +15,8 @@
     "Source: see docs/06-rom-patches.md.",
     "Second stub (16 Nov, later): the Pi supplies the calibration results. At JIT speed the CPU loop (TimeDBRA) overflows and the bus loops (TimeSCSIDB/TimeVIADB/TimeSCCDB) measure the bridge latency, which can leave absurd timeout counts (a saturated TimeSCSIDB made a SCSI wait last 48 minutes). The stub looks the loop's low-memory address up in a table at the slot-9 window + 0x80 (psmb.h PSMB_OFF_CALIB: 4 x {address.w, value.w}) that the kernel fills from its own measurements, and falls back to saturation when the window is absent or the entry is 0.",
     "Boot time (19 Nov 2026, docs/08 item 50): the cold-start RAM test and the startup chime are cut short. The RAM test (moving inversions over every memory chunk, $408446BC, called from StartTest at $408436BE) tests the Pi's own RAM, which cannot fail as SIMMs do, and took most of the ROM's own start; sizing is a separate routine ($408431C0, d7 = 17) and runs as before, the warm-start path (Restart) never ran the test at all, and no later test reads what it leaves in memory. The chime's length is the outer count of its wavetable loop (30000 steps of 14 VIA reads each); nothing plays the ASC on an SE or a bare Pi, so it was half a second to a second of silence. The SCSI Manager's selection timeout ($62 of its globals, 250 ms, set at $40809554) is 10 ms: every empty SCSI ID cost the full timeout at each scan, twice per boot, about three seconds with one disk; a target must answer its selection within 200 microseconds (the SCSI standard's selection abort time), so 10 ms is fifty times that.",
-    "Memory Manager, a freed or bad pointer in 32-bit mode (21 Nov 2026, docs/08 item 78): the dispatchers for the calls that take a pointer ($4080DC2E, through $1EE4: DisposPtr and three others) or a handle ($4080DC6E, through $1EEC) check the block in the current layout ($1EFC bit 0: 32-bit) and, if that check fails, check it again in the other layout, with the address masked to 24 bits. With more than 16 MB that masked address is another block of RAM, and a uniform fill there ($55 on the user's SE) passes the 24-bit check by coincidence: the dispatcher then jumps through the fill to $FFFFFFFF (Speedometer 3.23 disposing a pointer twice). In 32-bit mode (MMU32Bit $CB2 set) a pointer or handle whose high byte is not zero cannot belong to a 24-bit zone, so its 24-bit retry is skipped and the 32-bit check's error (-111, -113) is returned, as a Mac with 16 MB or less always does. 24-bit mode and pointers below 16 MB retry exactly as before."
+    "Memory Manager, a freed or bad pointer in 32-bit mode (21 Nov 2026, docs/08 item 78): the dispatchers for the calls that take a pointer ($4080DC2E, through $1EE4: DisposPtr and three others) or a handle ($4080DC6E, through $1EEC) check the block in the current layout ($1EFC bit 0: 32-bit) and, if that check fails, check it again in the other layout, with the address masked to 24 bits. With more than 16 MB that masked address is another block of RAM, and a uniform fill there ($55 on the user's SE) passes the 24-bit check by coincidence: the dispatcher then jumps through the fill to $FFFFFFFF (Speedometer 3.23 disposing a pointer twice). In 32-bit mode (MMU32Bit $CB2 set) a pointer or handle whose high byte is not zero cannot belong to a 24-bit zone, so its 24-bit retry is skipped and the 32-bit check's error (-111, -113) is returned, as a Mac with 16 MB or less always does. 24-bit mode and pointers below 16 MB retry exactly as before.",
+    "The 400K drive's speed (25 Nov 2026, docs/08 item 146): the IIci ROM's Sony driver has dropped the 400K drive's speed control (FigTrkSpd $4086D7F0 and SetSpeed $4086CB60 are stubs), and on the 128K and 512K that drive takes its speed from the low bytes of the sound buffer, which nothing writes. Every seek of the driver goes through a 10-byte wrapper at $4086D4B0 (bclr #11,d6; move.l JSeek,-(sp); rts: the SE ROM's $4350DE with its call of SetSpeed taken out; called from $4086CC98, $4086CCA8, $4086D144 and $4086EA68), so the wrapper jumps to a stub in the zero padding at 0x62AC0 that does what it did and, when the Pi's window says the kernel wants it (psmb.h struct psmb_floppy, 'SP' at window+$90), puts the track there, counts the seek, and for a seek into another zone (16 tracks) sets the driver's own speed-change wait (SonyVars+20, which Seek still waits out for a 400K drive at $4086D512) to the kernel's wait per zone times the zones moved, at most the driver's longest (SonyVars+56, 400 ms). The kernel writes the drive's pulse widths into the low bytes (psmac_board_se.c). Without the window, or with 'SP' absent (every board but the 128K and 512K unless mac.floppyspeed=on), the stub only does the wrapper's two instructions."
   ],
   "symbols": {
     "calib_store": "0x40800850",
@@ -26,7 +27,8 @@
     "mm_hdl_retry": "0x4080dc7e",
     "mm_fail": "0x4080dde0",
     "mm_ptr_stub": "0x40862a40",
-    "mm_hdl_stub": "0x40862a80"
+    "mm_hdl_stub": "0x40862a80",
+    "flop_stub": "0x40862ac0"
   },
   "patches": [
     {
@@ -150,6 +152,56 @@
         "9:      jmp     mm_fail:l"
       ],
       "max_len": 56
+    },
+    {
+      "name": "flop: the seek wrapper at $4086D4B0 goes through a stub (the 400K drive's speed)",
+      "at": "0x6d4b0",
+      "expect": "0886 000b 2f38 0236 4e75",
+      "asm": [
+        "        jmp     flop_stub:l     | was: bclr #11,d6; move.l JSeek,-(sp); rts"
+      ],
+      "max_len": 10
+    },
+    {
+      "name": "flop: stub in the zero padding at 0x62AC0: the track to the Pi's window, the driver's speed-change wait for a new zone",
+      "at": "0x62ac0",
+      "expect": "0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000",
+      "asm": [
+        "        bclr    #11,%d6         | the wrapper's own first instruction",
+        "        movem.l %d0-%d1/%a0,-(%sp)",
+        "        movea.l #0x900000,%a0   | the Pi's window: 24-bit mode ...",
+        "        tst.b   0xcb2:w         | MMU32Bit",
+        "        beq.s   1f",
+        "        movea.l #psmb_window,%a0 | ... or 32-bit mode",
+        "1:      cmp.l   #0x50534D42,(%a0) | 'PSMB': is the Pi's window there?",
+        "        bne.s   9f",
+        "        lea     0x90(%a0),%a0   | struct psmb_floppy",
+        "        cmp.w   #0x5350,(%a0)   | 'SP': the kernel sets the 400K drive's speed on this board",
+        "        bne.s   9f",
+        "        move.w  %d6,2(%a0)      | the track asked for",
+        "        addq.w  #1,4(%a0)       | one more seek: the kernel writes the speed of its zone",
+        "        moveq   #0,%d0",
+        "        move.b  %d6,%d0",
+        "        lsr.w   #4,%d0          | the zone, 16 tracks each",
+        "        move.w  6(%a0),%d1      | the zone of the last seek",
+        "        move.w  %d0,6(%a0)",
+        "        sub.w   %d0,%d1",
+        "        beq.s   9f              | the same zone: the speed stays",
+        "        bpl.s   2f",
+        "        neg.w   %d1",
+        "2:      mulu.w  8(%a0),%d1      | zones moved x the kernel's wait per zone (100 us units)",
+        "        movea.l 0x134:w,%a0     | SonyVars",
+        "        cmp.w   56(%a0),%d1     | no longer than the driver's longest speed wait",
+        "        bls.s   3f",
+        "        move.w  56(%a0),%d1",
+        "3:      cmp.w   20(%a0),%d1     | a longer wait already due stands",
+        "        bls.s   9f",
+        "        move.w  %d1,20(%a0)     | Seek waits it out for a 400K drive ($4086D512)",
+        "9:      movem.l (%sp)+,%d0-%d1/%a0",
+        "        move.l  0x236:w,-(%sp)  | the wrapper's own: on to Seek through JSeek",
+        "        rts"
+      ],
+      "max_len": 112
     }
   ]
 }

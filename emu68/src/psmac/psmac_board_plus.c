@@ -60,6 +60,7 @@ int psmac_board_orig;                       /* mac.board=128k, 512k, 512ke: 1, 2
 
 uint32_t psmac_wire_read(uint32_t addr, int size);
 void psmac_wire_write(uint32_t addr, int size, uint32_t data, int posted);
+void psmac_serve_waiting(void);             /* psmac_bus.c: the Mac's request, if one waits, between two of ours */
 void psmac_se_plus_lock(void);              /* psmac_board_se.c: the level lock ... */
 void psmac_se_plus_unlock(void);            /* ... and its release, with the interrupt level brought up to date */
 
@@ -408,7 +409,12 @@ static void mouse_poll(uint64_t now)
     }
     if (__atomic_load_n(&scc_pending, __ATOMIC_ACQUIRE)) { ms.skipped++; return; }
     ms.polls++;
-    uint8_t x1 = (psmac_wire_read(PLUS_SCC_A_RD, 1) >> 3) & 1, y1 = (psmac_wire_read(PLUS_SCC_B_RD, 1) >> 3) & 1;
+    /* the Mac's own requests between the three reads (25 November 2026, docs/08 item 146): an IWM access waits
+       one of them at most, as behind the speaker's bytes */
+    uint8_t x1 = (psmac_wire_read(PLUS_SCC_A_RD, 1) >> 3) & 1;
+    psmac_serve_waiting();
+    uint8_t y1 = (psmac_wire_read(PLUS_SCC_B_RD, 1) >> 3) & 1;
+    psmac_serve_waiting();
     uint8_t pb = (uint8_t)psmac_wire_read(PLUS_VIA(0), 1);
     uint8_t rx = (uint8_t)(x1 << 1 | ((pb >> 4) & 1)), ry = (uint8_t)(y1 << 1 | ((pb >> 5) & 1));
     int button = !(pb & 0x08), dx = 0, dy = 0;
@@ -600,7 +606,7 @@ static void kb_service(uint64_t now)
            20 bus reads: the time for a real keyboard, the reads for the testbed, whose clock moves
            only with bus traffic. */
         { uint64_t until = cnt_now() + us_ticks(300); int reads = 0;
-          while (cnt_now() < until || reads < 20) { psmac_wire_read(PLUS_VIA(13), 1); reads++; } }
+          while (cnt_now() < until || reads < 20) { psmac_wire_read(PLUS_VIA(13), 1); reads++; psmac_serve_waiting(); } }   /* the Mac's requests between them (the IWM's) */
         kb_acr(0x0c);                                        /* shift in under the keyboard's clock: the line is let go, the keyboard answers */
         psmac_wire_read(PLUS_VIA(10), 1);                    /* reading the shift register clears its flag and starts the count */
         kb_pcr_set(0x00);                                    /* the request over: CB2 an input under the PCR again */
@@ -640,8 +646,14 @@ static void kb_service(uint64_t now)
 void psmac_plus_service(void)
 {
     if (!psmac_board_plus) return;
+    extern int psmac_se_floppy_busy(void);
+    psmac_errand(PSMAC_ERR_PLUS);
     uint64_t now = cnt_now();
-    kb_service(now);
+    /* While the floppy is in use a new exchange with the keyboard waits (one under way is finished): an
+       exchange holds the wire for 300 us and more (KB_EDGE). The mouse is polled as always, its three
+       reads with the Mac's requests between them: a poll put off is a quadrature edge lost, and the
+       pointer would jump (docs/08 item 146). */
+    if (kb.st != KB_IDLE || !psmac_se_floppy_busy()) kb_service(now);
     mouse_poll(now);
 }
 

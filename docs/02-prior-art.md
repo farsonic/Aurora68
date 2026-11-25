@@ -378,9 +378,10 @@ not by the speed of the processor. Between sounds the kernel holds the buffer at
 ## Floppy read and write on the accelerated compact Macs
 
 *Written 25 November 2026, from the same software, read against the SE ROM ($0276) and the IIci ROM in rom/original,
-both disassembled. The 64K ROM of the 128K and 512K and the 128K ROM of the 512Ke and Plus are not there: what is said
-of those machines' drivers is inferred from the SE ROM's code, which carries their drives' support, from docs/18 and
-from the accelerators' own checks, and is marked so.*
+both disassembled. The 64K ROM of the 128K and 512K and the 128K ROM of the 512Ke and Plus were not there when this
+was first written, and what it said of those machines' drivers was inferred from the SE ROM's code; the owner
+supplied them the same day (the sound part above), and those passages have been read in them and corrected (marked
+"read in the 64K and Plus ROMs").*
 
 ### The problem as Apple built it
 
@@ -406,7 +407,9 @@ through IWMBase ($1E0, $DFE1FF on these machines, a register every $200), the VI
 - **The search limits.** Only one is counted in loop passes: RdAddr gives the drive **128 passes** ($435B06,
   `moveq #127,d2`) to deliver three nibbles of any kind, else -66 noNybErr. Each pass reads the VIA as well as the
   IWM, so on a 68000 it lasts a few microseconds and 128 of them some hundreds, against the 48 us that three nibbles
-  need **(inference: our estimate of the cycle counts)**. The rest are counted in **nibbles received**, whatever the
+  need **(inference: our estimate of the cycle counts)**. (Read in the 64K and Plus ROMs: the three Plus ROMs give
+  the same 128 passes ($418C24); the 64K ROM's RdAddr ($4020B4) gives **49**, `moveq #48,d2`, with the same 1,500
+  nibbles for the address mark.) The rest are counted in **nibbles received**, whatever the
   processor: the address mark must come within 1,500 nibbles (1,468 for the self-regulating drive, $435B2E), else -67
   noAdrMkErr; the data mark within 49 nibbles of the address field ($435BD0), else -71 noDtaMkErr.
 - **Short waits made of instructions.** The step strobe is `tst.b` of phase 3 high, two NOPs, `tst.b` of phase 3
@@ -434,8 +437,18 @@ through IWMBase ($1E0, $DFE1FF on these machines, a register every $200), the VI
   control: MakeSpdTbl only waits 800 ms. Even so the ROM writes the PWM bytes once on such a machine, on the first
   SetSpeed, while the current speed at $138 still holds the -1 the start-up code ($40023C) put there. Which machine
   does what: the 128K and 512K have the 400K drive and need all of this; the 512Ke and Plus brought the 800K drive,
-  which sets its own speed (the three generations above); the SE ROM still carries the whole 400K path. That the
-  64K and Plus ROMs do the same is **inferred** from the SE ROM, not read.
+  which sets its own speed (the three generations above); the SE ROM still carries the whole 400K path. Read in the
+  64K and Plus ROMs: the three Plus ROMs carry the same driver, byte for byte from $417D2E to $41B000, laid out as the SE's
+  (fifteen vectors to $222 and three to $B40 from $417DC6, the sense-15 flag at $417E64), with SetSpeed at $41864C
+  the SE's but for three bytes of branch offsets and the targets at $4189D0. The 64K ROM has the older driver: twelve vectors ($222-$24E, copied at $401710: no AdrDisk or SetSpeed
+  vector), the speed set by a routine at $401BBE that the seek wrapper at $401C86 calls, speeds 0-399 counted from the
+  shift-register state $0B where the SE and Plus count 0-440 from $1E (the same pulses, the numbers eleven apart), the
+  buffer written at $7FD01 (the 512K's main sound buffer, which a 128K's RAM repeats) and through $312, MakeSpdTbl
+  ($401E82) setting the trial speeds 128 and 256 and FigTrkSpd ($401F18) timing 15 tachometer pulses, a quarter
+  turn, against timer 2, ReSeek ($40195C) measuring again after 14,400 ticks, and the same ten target words
+  ($401E68) and 32 timing parameters ($4016C0) as the SE's. It has no flag for a drive that sets its own speed: it knew
+  the 400K drive alone. The targets, as tachometer counts, are the windows 385.6-401.4, 420.8-437.9, 462.9-481.8,
+  514.3-535.3 and 578.5-602.2 rpm for tracks 0-15, 16-31, 32-47, 48-63 and 64-79.
 - **Interrupts.** Prime raises the mask to level 1 at once (`ori #$0100,sr` at $434A12: no VIA interrupts, the VBL
   included, for the whole call), and SetUpPoll ($435ACC) raises it to level 3 for each sector's I/O. AppleTalk
   bytes arriving at the SCC meanwhile are not lost: inside every loop above, `tst.b (a5) ; bmi` reads VIA port A at
@@ -445,8 +458,10 @@ through IWMBase ($1E0, $DFE1FF on these machines, a register every $200), the VI
 - **The drives.** The driver numbers up to five positions ($434F3A): two internal ones told apart by VIA port A bit 4
   (both on the IWM's ENABLE1; the routine behind $B40, $435316), the external one on ENABLE2, and two more on the
   external port, reached by the phase-line sequence at $43537E (HD-20s, on our reading). The SE can carry the second
-  internal drive; the 128K, 512K, 512Ke and Plus use port A bit 4 for the ROM overlay, and their ROMs, not read,
-  presumably know one internal and one external drive. The ExSys SE release notes add the last
+  internal drive; the 128K, 512K, 512Ke and Plus use port A bit 4 for the ROM overlay. Read in the 64K and Plus ROMs:
+  the 64K ROM's Open makes two drive queue entries, the internal drive and the external one ($4016FA-$40170A); the
+  Plus ROMs number the positions as the SE's do with one fewer before the external port's chain (`cmpi.w #3` at
+  $417E2C against the SE's `#4` at $43478E): no second internal drive. The ExSys SE release notes add the last
   variant: "The Macintosh SE has two ROM versions currently sold. The HD version allows a high density floppy drive
   to be used" (the SE FDHD, whose SWIM replaces the IWM; that ROM is not in rom/original).
 
@@ -656,6 +671,24 @@ every access in the loops reaches the wire. What carries over from 1987:
   VIA access becomes 1,000 a millisecond, 40 % too many. Working in nanoseconds there would cost nothing.
 - **The drives reachable.** One internal drive (VIA port A bit 4 driven low on the SE, `via_data`, docs/08 item 93)
   and the external one; the SE's second internal drive is outside what the IIci ROM knows.
+
+**What was done (25 November 2026, docs/08 item 146).** Both kernel jobs, on every compact board. The read window: after
+a read of the IWM's data register that returns a byte, the Mac's next IWM access waits until 2 us after it
+(`mac.iwmgap=`, psmac_board_se.c), on the 68k's core, not on the service core that carries the wire; the heartbeat's
+`[PSMAC:IWM]` lines give the spacing of the reads on the wire, the guard's waits, the stalls of more than 10 us in
+front of an IWM access with the errand that caused each, and the driver's own count of failed reads and its last error
+(SonyVars+250, DskErr). The deadline: while the floppy is in use (an IWM access within 5 ms) the screen rows, their
+check, the heartbeat and a new keyboard exchange on the Plus wait; the speaker's halves and the Plus's mouse poll go on
+between the Mac's cycles, since putting them off would underrun or lose the mouse's edges (the driver polls the IWM
+without a pause for a whole revolution). The 400K speed: a ROM patch on the seek wrapper the IIci driver kept
+($4086D4B0, through which every seek reaches Seek at $4086D4BA) gives the kernel the track through the card's window,
+and the kernel writes the zone's pulse widths into the sound buffer's low bytes, from a fixed table: the middles of the
+64K ROM's own windows (above) on the drive's speed line as MAME models it, not the tachometer, which only the driver's
+IWM lines can read. Doing it found one more thing the IIci ROM brings to these boards: it sets the IWM's mode to $17,
+the SE ROM's value for an IWM clocked at 16 MHz, where the 64K and Plus ROMs set $1F for theirs at 7.8 MHz; on the
+128K-to-Plus boards that mode reads 4 us cells and no floppy can be read at any speed, so the board layer writes $1F
+there and shows the ROM its $17. In the testbed's 512K, with both, the bytes the driver reads from a 400K disk are
+disk bytes with address and data marks among them; without the speed, half of them are not.
 
 ## External screens on the compact Macs, 1986-1995
 

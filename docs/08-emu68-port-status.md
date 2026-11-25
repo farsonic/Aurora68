@@ -7052,3 +7052,142 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    - *Not verified:* anything on hardware; KiCad's ERC and DRC; a Quartus fit; a real SE's chassis height, its J13 with a
      meter, and a 68000 coming out of reset with /BGACK held; the Pi socket part (open-bottom, 6.0 mm) and the stack's
      real tolerances against the 0.08 mm margin.
+146. **The floppy on the compact boards: a guard on the IWM's read window, the floppy's own figures on the wire,
+   and the 400K drive's speed (25 November 2026).** docs/02's floppy part ("What it means for Aurora68") named three
+   things a fast processor on the SE's bus puts at risk and two kernel jobs for them; the owner said yes to both.
+   - *The read guard* (psmac_board_se.c, `iwm_access`). In the IWM's asynchronous mode a read that finds a byte
+     (bit 7 set) clears the data register 14 of the chip's clocks later, about 1.8 us (MAME's iwm.cpp,
+     `m_async_update`); a second read before then returns the same nibble. The IIci ROM's RdData has a few
+     instructions between two reads ($4086E2C2-$4086E2D0): only the wire separates them. Now, after a read of the
+     data register that returned bit 7 set, the Mac's next IWM access (any register) waits until `mac.iwmgap=`
+     ns after that read came back, 2000 by default, 0 for none. The wait is on core 0, the 68k's, before it
+     posts the request; the service core that carries the wire is not held and goes on with its errands, and
+     the gap is measured from the reply, so on the wire it is at least as long. The board layer follows the
+     IWM's eight state lines as the Mac's accesses set them (register n sets line n / 2 to n & 1), so it knows
+     a data-register read (Q6 and Q7 low) and the motor (ENABLE). The IWM's accesses of every compact board go
+     through the one function: `se`, `plus`, `512ke`, `512k`, `128k`.
+   - *The figures* (`[PSMAC:IWM]` at each heartbeat in which the IWM was used): accesses, data-register reads and
+     how many returned a byte; the spacing between data-register reads (reply to reply, those under 100 us
+     apart: the driver's loops, not its pauses), overall and after a byte, the spacing the guard is about; a
+     read's time from posted to answered (min, average, max); the guard's waits, total and longest. A second
+     line: the Sony driver's own count of failed reads and writes (SonyVars+250, raised at $4086D36C before each
+     retry), its last error (DskErr, $142, which the IIci driver writes only when a call fails), the seeks the
+     ROM's stub counted and the 400K speed's writes. A third, from psmac_bus.c: the requests to the IWM that
+     waited more than 10 us for the service core, of how many, how many in the middle of a sector (a byte read
+     within 100 us before), and under which errand: each errand names itself as it starts (`psmac_errand`) and
+     the last 16 changes are kept with their times, so the one that was running when the request was posted is
+     found (the service loop, the heartbeat, the speaker's halves, its VIA lines and VBL poll, screen rows, the
+     screen check, the Plus's keyboard and mouse, the interrupt poll, the 400K speed, the PC and Apple II cards).
+     `slot.posted_at` is now taken for every request, not only with `mac.buswait=1`.
+   - *Errands while the floppy is in use* (an IWM access within the last 5 ms). The screen's rows and their check
+     wait (they have no deadline; rows stay marked), as does the heartbeat, by one period at most (its reports
+     hold the wire for tens of microseconds), and a new exchange with the Plus's keyboard (an exchange holds the
+     wire 300 us and more; its hold loop now lets the Mac's requests in between its reads). The Plus's mouse is
+     polled as before, its three reads with the Mac's requests between them: a poll put off is a quadrature edge
+     lost. The speaker's halves are written as before, one byte at a time between the Mac's cycles: putting them
+     off for the floppy would underrun, since the driver polls the IWM without a pause for a whole revolution
+     while it reads (about 150 ms, eighteen halves), and an IWM access waits at most one of the speaker's byte
+     writes, a microsecond or two on the GPIO, against the 16 us a GCR byte lasts; the guard's own 2 us are
+     exactly when the service core is free for those bytes. `mac.iwmsound=N` writes a half only when no IWM
+     access came in the last N us, for the case where the stall line names the speaker (the half is then
+     repeated: a crackle while the floppy reads; counted as "put off").
+   - *The 400K drive's speed, read in the 64K ROM* (rom/original, supplied this morning; docs/02's floppy part
+     corrected). The single-sided drive turns at the speed of a pulse-width signal the Mac makes from the low byte
+     of each sound-buffer word. The 64K ROM's driver sets it at every seek: the wrapper at $401C86 calls a routine
+     at $401BBE that takes the zone (track / 16), a speed 0-399 from the drive's table, and writes 370 low bytes,
+     each a state of a 6-bit shift register (s >> 1 | ((s ^ s >> 1) & 1) << 5 steps it; each step shortens the
+     pulse by one), two neighbouring states mixed in tens, so that the average pulse is (speed + 11) / 10 steps.
+     The table is measured: MakeSpdTbl ($401E82) sets the trial speeds 128 and 256, FigTrkSpd ($401F18) times
+     15 tachometer pulses (a quarter turn) against VIA timer 2 four times at each, and the zones are interpolated
+     toward ten target words at $401E68, the same in the 128K, 512K, Plus and SE ROMs; as rpm (15 pulses at 60 a
+     turn, the timer at 783.36 kHz) they are the windows 385.6-401.4, 420.8-437.9, 462.9-481.8, 514.3-535.3 and
+     578.5-602.2 for tracks 0-15 ... 64-79, Apple's 394, 429, 472, 525 and 590 rpm within +-2 %. ReSeek
+     ($40195C) measures again after four minutes. The SE's and the Plus's SetSpeed count 0-440 from another state
+     (the same pulses, eleven apart).
+   - *The table here.* The middle of each window through the drive's speed line as MAME's mac128 and macplus models
+     have it (342.5 rpm at 9.4 % duty, 702.5 at 91 %, the duty (10 x pulse - 11) / 419), which is also what
+     Apple's own interpolation gives on that line (88 for zone 0 from its 128 and 256): speeds 88, 122, 163, 212
+     and 275, which that line turns back into 393.7, 429.5, 472.7, 524.2 and 590.6 rpm. Not Apple's measurement:
+     the tachometer is a sense line read through the IWM, whose lines the IIci ROM's driver owns; timing a
+     quarter turn would mean moving them between the driver's accesses and putting them back, a second driver
+     inside the first, and the testbed's line is fixed, so it could not be tried there. `mac.floppyspeed=+N` or
+     `-N` moves every zone by N (about 1.05 rpm a unit), as Apple's per-drive correction did (the word at +$16 of
+     the drive's record, added to every zone).
+   - *The ROM patch* (rom/patches/iici.json "flop:", docs/06 section 2c). The IIci driver kept the SE's seek
+     wrapper ($4086D4B0: `bclr #11,d6; move.l JSeek,-(sp); rts`, called before every sector's I/O from ReSeek
+     at $4086D144, and at $4086CC98, $4086CCA8 and $4086EA68) and dropped its call of SetSpeed; Seek itself is
+     $4086D4BA (vector $236), and patching the wrapper rather than Seek keeps a System patch of JSeek in the path.
+     The wrapper jumps to a 112-byte stub in the zero padding at 0x62AC0: the wrapper's `bclr`; the window
+     ($900000 in 24-bit mode, $F9000000 with MMU32Bit set); if it says 'PSMB' and `struct psmb_floppy` (window
+     +$90, psmb.h) says 'SP', the track goes there and a seek is counted, and for a seek into another zone the
+     kernel's wait per zone (`mac.floppywait=`, 1500: 150 ms) times the zones moved, at most SonyVars+56 (400
+     ms), goes into SonyVars+20, which Seek still waits out for a 400K drive ($4086D512) and which SetSpeed used
+     to fill (32 x the change of speed, 150-400 ms). The kernel writes 'SP' only on `mac.board=128k` and `512k`,
+     or with `mac.floppyspeed=on`: elsewhere the stub does the wrapper's two instructions and one read of the
+     window. Checksum 36AC1C28 -> 36BA4653; the delta (psmac_rom_delta.h) also brings an image patched with the
+     previous set up to date (checked).
+   - *The kernel* (`spd_service`, `spd_write`): the service core looks at the stub's seek count on every turn and,
+     when the track's zone differs from the one written, writes the 370 low bytes (byte writes to the odd
+     addresses of the main sound buffer, the Mac's requests between them; with `mac.sesound=off`, where the ROM's
+     PA3 may pick the alternate buffer, that one too); zone 0 is written before the 68k starts. Each write is
+     logged with the track, zone, speed, the two states and their mix, and the rpm on the drive's line.
+   - *An external 400K drive on the SE, Plus or 512Ke.* Their internal drives are 800K drives that set their own
+     speed (MAME applies the line to the 400K drive alone), but an M0130 on the external port takes it from the
+     same low bytes. `mac.floppyspeed=on` turns the same code on there; it costs the 370 writes per change of zone
+     and nothing for an 800K drive, whose Seek ignores SonyVars+20.
+   - *The IWM's mode on the 128K, 512K, 512Ke and Plus* (found by the testbed's first runs; `iwm_access`). The IWM
+     counts bit cells in its own clock, and its mode register says how: bit 3 fast (2 us cells at the rated clock)
+     or slow (4 us, the Apple II's 5.25" drives), bit 4 a clock of 8 or 7 MHz. The SE clocks its IWM at 15.6672 MHz,
+     and the SE ROM ($4352A4) and the IIci ROM ($4086D676) write $17, slow at "8 MHz", which at twice the rated clock
+     is 2 us cells; the 128K, 512K, 512Ke and Plus clock theirs at 7.8336 MHz, and the 64K and Plus ROMs write $1F,
+     fast ($401DC2, $418898). MAME clocks the two machines' IWMs the same way (macse_ps at C7M x 2, macplus_ps at
+     C7M). With the IIci ROM's $17 the IWM of those four boards looks for 4 us cells in a 2 us stream, and no floppy
+     can be read at any speed: on these boards nothing had tried one yet. Now on them a write of the mode register
+     (Q6 and Q7 high, the motor line low) goes to the chip with bit 3 set when bit 4 is set and bit 3 clear, and a
+     status read that shows the translated mode gives the ROM its own back, which it compares with $17 before every
+     I/O ($4086D670). Logged once; `mac.iwmmode=keep` leaves the mode alone.
+   - *In the testbed* (mac512k_ps, System 7.1 from the card's image, 32 MiB, `mac.sesound=off mac.audio=off`
+     for a short chime, a 409,600-byte HFS floppy made with a copy of tools/mac/hfsgrow.py, since hfsutils will
+     not make a volume under 800K; MAME's floppy device `:fdc:0:35sd` and mame/floppy.lua's time divisor 64,
+     with a tap that turns the low bytes into rpm by MAME's own formula and counts the bytes the Mac read):
+     the bytes the driver read from the disk at the Start Manager's look for a startup disk, the
+     driver's figures, and the rpm. MAME's machine clears its RAM at start, so without the kernel's bytes the drive
+     turns at 301.0 rpm (low bytes 0); the kernel's zone 0 gave 393.7 rpm and the eject's seek to track 79 zone 4,
+     590.6 rpm, both read back in MAME as written. The first runs read nothing either way, and that found the IWM's
+     mode (above): with the speed right and the ROM's mode, 13,598 bytes read, 81 % of them $FF, not one $D5 or $AA,
+     no address mark. Then, the same image and options, with the mode put right:
+
+     | | bytes read | not disk bytes | $D5 | $AA | $FF | address marks | data marks |
+     |---|---|---|---|---|---|---|---|
+     | speed set (393.7 rpm) | 24,834 | 70 (0.3 %) | 75 | 110 | 2,891 (12 %) | 4 | 2 |
+     | `mac.floppyspeed=off` (301 rpm) | 27,655 | 12,466 (45 %) | 0 | 27 | 3,038 | 0 | 0 |
+     | speed set, divisor 1024 | 15,624 | 20 | 43 | 80 | 1,624 | 15 | 10 |
+
+     So MAME does model the dependency: at the wrong speed half of what the IWM frames is not a disk byte and no
+     mark comes. In none of the runs did a read succeed: each time the driver counted 18 failed reads and the
+     Start Manager ejected the disk (DskErr -67, no address mark, or -69, a bad address field), as on the SE's 800K
+     drive in item 93. The bytes that reach the Mac have holes: of the 15 address fields after a mark in the last
+     run, one came whole (track 0, sector 8, side 0, format $02, its checksum right) and the others had lost bytes
+     (`96 FF FF AA AD`: the track, then the next data mark). The bridged reads took 0.5-2 ms of wall clock on
+     average and up to 15-20 ms (a machine shared with another job that held two of the four cores), 8-30 us of
+     emulated time at a divisor of 64, around and above the 16 us a byte lasts. The guard never waited at 2000 ns (no two
+     reads came that close); with `mac.iwmgap=3000000`, a gap the testbed's reads do come inside, it waited 527 to 574 times in each five seconds of
+     reading, 1.1 s in all (the longest 12 ms: the gap plus QEMU's own pauses of the 68k's core), and the bytes
+     came as before (25,967 read, 41 not disk bytes, $D5 86 times).
+     The stall line names the Plus's keyboard and mouse most often in this testbed (its poll is three bridged
+     reads, 8,000 times a second) and the longest stalls, 1.5-36 ms, are QEMU's scheduling; on the GPIO those
+     reads are a few microseconds. A file written and read back from the Finder, the remote control's file tools
+     and checksums on the host were not reached: the disk never mounted, here as in item 93.
+   - *What to look for on the SE* (any compact board, while a floppy is read or written): the `[PSMAC:IWM]` line's
+     "after a nibble" minimum (with `mac.iwmgap=0` it is the wire's own spacing: under 1800 ns means the guard is
+     needed, and with the default it should read 2000 or a little more), the read's average and maximum on the
+     wire, the guard's waits (at most one for each byte read, some 60,000 a second while the drive delivers; none
+     at all if the wire's reads are already 2 us apart), and the stall line: any stall in the middle of a sector is a byte
+     at risk, and the errand it names is the one to look at; "0 of N" is the goal. The second line's failed reads
+     should stay at 0 for a good disk. On a 128K or 512K, the speed line at each change of zone, and failed reads
+     that stay at 0 on tracks 64-79 as on 0-15; `mac.floppyspeed=+5` or `-5` if they do not.
+   - *Not verified:* anything on hardware. The guard and the figures are for the owner's SE: what the GPIO's
+     reads of the IWM cost, whether two of them come inside 1.8 us, and the stalls in front of IWM accesses.
+     Whether Apple's speeds on the drive's datasheet line suit real 400K drives (Apple measured each one) is for
+     a 512K or 128K, if a tester has one; a file read and written on a floppy, which the testbed cannot do
+     (item 93).

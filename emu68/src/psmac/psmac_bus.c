@@ -511,7 +511,8 @@ static void xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, uint32_
     if (!service_running) { bridge_xfer(op, size, flags, addr, data, r); return; }
     while (__atomic_test_and_set(&slot_lock, __ATOMIC_ACQUIRE)) __asm__ volatile("yield");
     slot.op = op; slot.size = size; slot.flags = flags; slot.addr = addr; slot.data = data;
-    if (buswait_on) { slot.posted_at = cnt_now(); slot.wire_at = wire_cycles; }
+    slot.posted_at = cnt_now();                  /* for mac.buswait and the IWM's stalls (serve_request) */
+    if (buswait_on) slot.wire_at = wire_cycles;
     __atomic_store_n(&slot.state, SLOT_REQ, __ATOMIC_RELEASE);
     __asm__ volatile("sev");
     { uint64_t t0 = cnt_now(), warn = t0 + cnt_frq() * 3; int warned = 0;
@@ -599,11 +600,67 @@ static void bw_report(void)
     for (int i = 0; i < 2; i++) for (int j = 0; j < 2; j++) bw_win[i][j] = (struct bw_set){ 0 };
 }
 
+/* ---------------- the stalls in front of the IWM's accesses ----------------
+   (25 November 2026, docs/08 item 146.) A GCR byte lasts 16 us; the driver must take each one before the
+   next (reading) or hand it over before the chip runs dry (writing). A request of the Mac's to the IWM
+   that waits more than 10 us for the service core is counted here, filed under the errand that was
+   running when it was posted: each errand names itself as it starts (psmac_errand), and the last 16
+   changes are kept with their times, enough to find the one in front of any wait. Counted separately
+   when the driver was in the middle of a sector (a nibble read within 100 us before, psmac_board_se.c);
+   printed with the [PSMAC:IWM] line. Under QEMU most of the microseconds are QEMU's own scheduling and
+   a bridged cycle is 45-450 us, so here every wait behind any cycle is a stall; on the GPIO a cycle is
+   a microsecond or two, and a stall is an errand that does not let the Mac's requests in. */
+static const char *const errand_name[PSMAC_ERR_N] = { "the service loop", "the heartbeat", "the speaker's halves", "the speaker's VIA lines and VBL poll",
+                                                      "screen rows", "the screen check", "the Plus's keyboard and mouse", "the interrupt poll",
+                                                      "the 400K drive's speed", "the PC and Apple II cards" };
+static struct { uint64_t t; uint8_t e; } errand_ring[16];
+static uint32_t errand_n;
+static uint8_t errand_now;
+void psmac_errand(int e)
+{
+    if (e == errand_now || e < 0 || e >= PSMAC_ERR_N) return;
+    errand_ring[errand_n++ & 15].t = cnt_now(); errand_ring[(errand_n - 1) & 15].e = (uint8_t)e;
+    errand_now = (uint8_t)e;
+}
+static uint8_t errand_at(uint64_t t)              /* the errand running at t */
+{
+    uint32_t n = errand_n < 16 ? errand_n : 16;
+    for (uint32_t k = 1; k <= n; k++) if (errand_ring[(errand_n - k) & 15].t <= t) return errand_ring[(errand_n - k) & 15].e;
+    return n ? errand_ring[(errand_n - n) & 15].e : PSMAC_ERR_LOOP;
+}
+static struct { uint32_t served, stalls[PSMAC_ERR_N], sector[PSMAC_ERR_N], longest_ns; uint8_t longest_e; } iwm_st, iwm_st_last;
+int psmac_se_iwm_stream(uint64_t t), psmac_se_floppy_busy(void);   /* psmac_board_se.c */
+static void iwm_stall_note(void)
+{
+    uint64_t now = cnt_now(), w = now - slot.posted_at;
+    iwm_st.served++;
+    if (w * 100000u < cnt_frq()) return;          /* under 10 us */
+    uint32_t ns = (uint32_t)(w * 1000000000ull / cnt_frq() > 0xffffffffull ? 0xffffffffu : w * 1000000000ull / cnt_frq());
+    uint8_t e = errand_at(slot.posted_at);
+    iwm_st.stalls[e]++;
+    if (psmac_se_iwm_stream(slot.posted_at)) iwm_st.sector[e]++;
+    if (ns > iwm_st.longest_ns) { iwm_st.longest_ns = ns; iwm_st.longest_e = e; }
+}
+static void iwm_stall_report(void)
+{
+    if (iwm_st.served == iwm_st_last.served) return;
+    uint32_t all = 0, sect = 0;
+    for (int e = 0; e < PSMAC_ERR_N; e++) { all += iwm_st.stalls[e] - iwm_st_last.stalls[e]; sect += iwm_st.sector[e] - iwm_st_last.sector[e]; }
+    kprintf("[PSMAC:IWM]   stalls over 10 us in front of an IWM access: %u of %u (%u in the middle of a sector)%s", all, iwm_st.served - iwm_st_last.served, sect, all ? ":" : "");
+    for (int e = 0; e < PSMAC_ERR_N; e++) {
+        uint32_t n = iwm_st.stalls[e] - iwm_st_last.stalls[e], m = iwm_st.sector[e] - iwm_st_last.sector[e];
+        if (n) kprintf(" %s %u (%u)", errand_name[e], n, m);
+    }
+    kprintf(" | the longest since the start %u.%u us, behind %s\n", iwm_st.longest_ns / 1000, iwm_st.longest_ns % 1000 / 100, errand_name[iwm_st.longest_e]);
+    iwm_st_last = iwm_st;
+}
+
 /* The 68k's request, carried out (the service core only). */
 static uint32_t scsi_reads;                /* reads of the SCSI chip: the JIT re-checks RAM blocks after them (the service loop) */
 static void serve_request(void)
 {
     if (buswait_on) bw_note();
+    if (psmac_board_se && !psmac_board_solo && dev_class(slot.addr) == 4) iwm_stall_note();
     xfer_count++; last_addr = slot.addr; dev_cnt[dev_class(slot.addr)]++;
     /* the SE's speaker drives four bits of its VIA: every write of the Mac's to the VIA gets them as it goes out (psmac_board_se.c) */
     if (psmac_board_se && (slot.op == PSMAC_OP_WRITE || slot.op == PSMAC_OP_RESET_ACK)) slot.data = psmac_se_wire_write(slot.op == PSMAC_OP_RESET_ACK, slot.addr, slot.data);
@@ -714,8 +771,12 @@ void psmac_service_core(void)
             if (turn_served) psmac_bus_busy_ticks += tn - turn_t0;
             turn_t0 = tn; turn_served = 0;
         }
+        psmac_errand(PSMAC_ERR_LOOP);
         con_drain();                              /* the serial log (con_putc), first: the bus's turns below may continue */
-        if (cnt_now() > next_hb) {
+        /* the heartbeat waits while the floppy is in use (an IWM access within 5 ms), by one period at most:
+           its reports hold the wire for tens of microseconds without the Mac's requests (docs/08 item 146) */
+        if (cnt_now() > next_hb && !(psmac_se_floppy_busy() && cnt_now() < next_hb + hb_period)) {
+            psmac_errand(PSMAC_ERR_HEARTBEAT);
             svc_phase = 3;
             kprintf("[PSMAC] heartbeat: %u bus xfers (+%u, %u berr), last %08x, ipl %d%s | via %u scc %u scsi %u asc %u swim %u rbv %u fb %u other %u | PC %08x SR %04x\n", xfer_count, xfer_count - hb_last, bus_errors, last_addr, last_ipl, transport_none ? " (solo)" : transport_dead ? " TRANSPORT DEAD" : "",
                 dev_cnt[0], dev_cnt[1], dev_cnt[2], dev_cnt[3], dev_cnt[4], dev_cnt[5], dev_cnt[6], dev_cnt[7],
@@ -823,6 +884,7 @@ void psmac_service_core(void)
                 w->again = 0; w->deepest = 0;
             }
             psmac_se_report();
+            if (psmac_board_se && !psmac_board_solo) iwm_stall_report();
             bw_report();
             { extern void alice_net_report(void); alice_net_report(); }
             { extern void psmac_ip_report(void); psmac_ip_report(); }
@@ -850,6 +912,7 @@ void psmac_service_core(void)
             psmac_mbox_heartbeat();
             if (no_declrom) kprintf("[PSMAC] *** NO DECLARATION ROM in the container: slot 9 is empty (no Pi screen, PiDisk or input) ***\n");
             hb_last = xfer_count; next_hb = cnt_now() + hb_period;
+            psmac_errand(PSMAC_ERR_LOOP);
         }
         { extern void psmac_loop_watch(void); psmac_loop_watch(); }   /* core 3 stopped for 2 s: where (alice_psmac.c) */
         if (__m68k_state) {
@@ -888,6 +951,7 @@ void psmac_service_core(void)
             continue;
         }
         if (!transport_dead && !transport_none && cnt_now() > next_poll) {
+            psmac_errand(PSMAC_ERR_POLL);
             bridge_xfer(PSMAC_OP_POLL, 0, 0, 0, 0, NULL);
             next_poll = cnt_now() + period;
         }
@@ -895,11 +959,13 @@ void psmac_service_core(void)
           if (psmac_recovery_on()) psmac_buscheck_request_poll();   /* Setup and Recovery's Diagnostics tab: a bus check or a JTAG read asked for (docs/08 item 122) */
           if (psmac_buscheck_holding()) psmac_buscheck_service();   /* mac.buscheck: the board is the check's, the Mac never starts (psmac_buscheck.c) */
           else {
+              psmac_errand(PSMAC_ERR_LOOP);
               psmac_se_service();                   /* the SE's screen, a few rows at a time */
               { extern void psmac_plus_service(void); psmac_plus_service(); }   /* the Plus's keyboard and mouse (psmac_board_plus.c) */
           } }
         psmac_bridge_flush();                     /* the testbed's gathered posted writes, now that there is nothing else to do */
 #if defined(PSMAC_PC) || defined(PSMAC_A2)
+        psmac_errand(PSMAC_ERR_GUEST);
         { extern int psmac_guest_poll(int core); psmac_guest_poll(2); }   /* the guests' turn (the PC card, the Apple II card), where they run on this core (psmac_guest.c) */
 #endif
         __asm__ volatile("yield");
