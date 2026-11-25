@@ -6,7 +6,7 @@
 	(paper "A3")
 	(title_block
 		(title "Aurora68 Card P: Slot plug and bus switches")
-		(date "2026-11-24")
+		(date "2026-11-25")
 		(rev "P0.1 (draft)")
 		(company "Aurora68")
 		(comment 1 "Draft for review: not checked by ERC/DRC in KiCad, not built")
@@ -4737,27 +4737,9 @@
 		)
 		(uuid "02047421-599a-5f0c-832e-70d9aeb8b04c")
 	)
-	(wire
-		(pts
-			(xy 83.82 114.3)
-			(xy 86.36 114.3)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "46f2121e-d7f7-5a3c-b447-fb17f59e0069")
-	)
-	(label "SE_PMCYC_n"
-		(at 86.36 114.3 0)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left bottom)
-		)
-		(uuid "1272f3fc-ccbd-5293-9f71-c887972f6aba")
+	(no_connect
+		(at 83.82 114.3)
+		(uuid "86f9597b-e29e-5f70-af22-9cc0f8770659")
 	)
 	(wire
 		(pts
@@ -5774,27 +5756,9 @@
 		)
 		(uuid "f373d518-dfa1-50e6-8c74-78622159b825")
 	)
-	(wire
-		(pts
-			(xy 60.96 205.74)
-			(xy 58.42 205.74)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "1d49f48e-6a78-519e-ac8b-dd66f81200a0")
-	)
-	(label "SE_PMCYC_n"
-		(at 58.42 205.74 180)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right bottom)
-		)
-		(uuid "06143043-70aa-5bb7-a376-9d0b4782edab")
+	(no_connect
+		(at 60.96 205.74)
+		(uuid "5647c4d6-ea75-5057-bc3e-73aaf3ba06e2")
 	)
 	(wire
 		(pts
@@ -6093,38 +6057,9 @@
 			)
 		)
 	)
-	(wire
-		(pts
-			(xy 76.2 198.12)
-			(xy 78.74 198.12)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "d9970696-1f4d-5177-8dbb-d4b7a019fe9f")
-	)
-	(global_label "M68K_PMCYC_n"
-		(shape bidirectional)
-		(at 78.74 198.12 0)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left)
-		)
-		(uuid "58082a93-26d7-5e56-8ab2-426894577cd6")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 78.74 198.12 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-				(hide yes)
-			)
-		)
+	(no_connect
+		(at 76.2 198.12)
+		(uuid "dc8c0fb4-bfd4-570a-82a6-68f1e73b223c")
 	)
 	(wire
 		(pts

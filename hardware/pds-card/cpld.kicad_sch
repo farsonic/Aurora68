@@ -6,7 +6,7 @@
 	(paper "A2")
 	(title_block
 		(title "Aurora68 Card P: CPLD and latches")
-		(date "2026-11-24")
+		(date "2026-11-25")
 		(rev "P0.1 (draft)")
 		(company "Aurora68")
 		(comment 1 "Draft for review: not checked by ERC/DRC in KiCad, not built")
@@ -5516,38 +5516,9 @@
 			)
 		)
 	)
-	(wire
-		(pts
-			(xy 109.22 91.44)
-			(xy 111.76 91.44)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "7d0f2222-50bd-5f74-b1f3-fe3d1ea4bf1c")
-	)
-	(global_label "M68K_PMCYC_n"
-		(shape bidirectional)
-		(at 111.76 91.44 0)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left)
-		)
-		(uuid "0146ebf9-21e9-5482-87fb-930733d7e606")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 111.76 91.44 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-				(hide yes)
-			)
-		)
+	(no_connect
+		(at 109.22 91.44)
+		(uuid "534ff23c-e3d7-5948-bcfa-bca794e95833")
 	)
 	(wire
 		(pts
@@ -5978,38 +5949,9 @@
 			)
 		)
 	)
-	(wire
-		(pts
-			(xy 109.22 127)
-			(xy 111.76 127)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "c2e552e6-2652-5d76-aeb2-b7ffdb99aec4")
-	)
-	(global_label "STOCK_SW_n"
-		(shape bidirectional)
-		(at 111.76 127 0)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left)
-		)
-		(uuid "eab2bb35-b033-567a-86c5-1f31e0e73c11")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 111.76 127 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-				(hide yes)
-			)
-		)
+	(no_connect
+		(at 109.22 127)
+		(uuid "63c07d37-4d55-5873-8f00-caa10cb6ce34")
 	)
 	(wire
 		(pts

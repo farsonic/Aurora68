@@ -6,7 +6,7 @@
 	(paper "A3")
 	(title_block
 		(title "Aurora68 Card P (Macintosh SE PDS, Raspberry Pi 3A+)")
-		(date "2026-11-24")
+		(date "2026-11-25")
 		(rev "P0.1 (draft)")
 		(company "Aurora68")
 		(comment 1 "Draft for review: not checked by ERC/DRC in KiCad, not built")
@@ -221,7 +221,7 @@
 			(color 0 0 0 0)
 		)
 		(uuid "9d88f375-aeb2-5651-a026-15ea1356b8d2")
-		(property "Sheetname" "Fan, LED, stock switch, rear cable"
+		(property "Sheetname" "Fan, LED, rear cable"
 			(at 150 119.3 0)
 			(effects
 				(font
@@ -247,7 +247,7 @@
 			)
 		)
 	)
-	(text "the fan header and MOSFET, the activity LED, the stock jumper, USB from the Pi, the FFC to the rear connector card, Apple's card supports"
+	(text "the fan (JST-SH, Raspberry Pi 5 pinout), the activity LED, USB from the Pi, the FFC to the rear connector card, Apple's card supports"
 		(exclude_from_sim no)
 		(at 153 142 0)
 		(effects

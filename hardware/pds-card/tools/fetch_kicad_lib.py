@@ -38,6 +38,7 @@ FOOTPRINTS = [
     'Connector_PinHeader_2.54mm/PinHeader_1x03_P2.54mm_Horizontal',
     'Connector_PinHeader_2.54mm/PinHeader_1x04_P2.54mm_Horizontal',
     'Connector_FFC-FPC/TE_1-84952-0_1x10-1MP_P1.0mm_Horizontal',
+    'Connector_JST/JST_SH_SM04B-SRSS-TB_1x04-1MP_P1.00mm_Horizontal',
 ]
 SYMBOLS = ['CPLD_Altera/EPM570T100', 'Connector/Raspberry_Pi_2_3', 'Power_Management/LM66100DCK']
 

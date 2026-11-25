@@ -1,14 +1,14 @@
-INFO kiutils board: 57 footprints, 139 nets, 38 graphic items, 12 zones, 3156 tracks/vias
-PASS 1. every file parses (sexpr and kiutils 1.4.8): 30 files
+INFO kiutils board: 54 footprints, 136 nets, 37 graphic items, 15 zones, 2789 tracks/vias
+PASS 1. every file parses (sexpr and kiutils 1.4.8): 32 files
 PASS 2. slot plug: every pin against se-pds-pinout.csv, docs/22, the schematic and the board: slot pinout: 386 checks, 0 failures (96 pins; CSV, docs/22, schematic, board)
 PASS 2b. the schematic reads back cleanly (no unconnected, unflagged pins; no wire with two names)
-PASS 3. schematic and board nets agree, pad by pad: 579 pins; 
-PASS 4. every net has at least two connections: 138 nets; single: 
+PASS 3. schematic and board nets agree, pad by pad: 573 pins; 
+PASS 4. every net has at least two connections: 135 nets; single: 
 PASS 5a. no output-to-output conflicts (push-pull or power outputs sharing a net)
 PASS 5b. the card meets the slot only through three-state latch outputs, the CBTD switches or inputs
-PASS 6a. CPLD I/O count: 61 used of 80 (EPM240) / 76 (EPM570): none on pins 37/39/88/90
-PASS 6b. RTL ports = qsf pins = schematic nets (61 ports)
-INFO 6c. CPLD logic size: yosys 0.71 (generic 4-input LUT mapping, 24 Nov 2026): 154 LUTs, 122 flip-flops; a MAX II logic element is one LUT and one flip-flop, so 154 to about 230 LEs of the EPM240's 240. Quartus has the last word (rtl/README.md)
+PASS 6a. CPLD I/O count: 59 used of 80 (EPM240) / 76 (EPM570): none on pins 37/39/88/90
+PASS 6b. RTL ports = qsf pins = schematic nets (59 ports)
+INFO 6c. CPLD logic size: yosys 0.71 (generic 4-input LUT mapping, 25 Nov 2026): 145 LUTs, 117 flip-flops; a MAX II logic element is one LUT and one flip-flop, so 145 to about 220 LEs of the EPM240's 240. Quartus has the last word (rtl/README.md)
 PASS 7a. every IC's power pins are connected
 PASS 7b. every IC has a capacitor from each supply to GND within 12 mm
 PASS 8a. the outline is inside Apple's maximum (213.25 x 120.42, body 110.11, tab from x = 195.29): board 213.25 x 99.42 mm (x 0.00-213.25, y 21.00-120.42)
@@ -16,16 +16,29 @@ PASS 8b. outline closed, five 2.0 mm x 45 degree chamfers: 11 edges, 5 chamfers
 PASS 8c. board thickness 1.60 mm (Apple: 1.60)
 PASS 8d. Apple's two 3.86 mm card-support holes at x = 3.43, 50.17 apart; the plug's 2.85 mm fixing holes 90.0 apart: (3.43, 34.85) found; (3.43, 85.02) found
 PASS 8e. nothing in Apple's 16.00 mm rear strip (the card starts at 21.0 mm)
-PASS 9d. the Pi 3A+, its overhanging sockets and its microSD card stay over the card: x 9.5-79.0, y 51.9-109.9 (card body: x 0-213.25, y 21.0-110.11)
-PASS 9a. heights within Figure 17-2 (4.61 mm at the rear edge rising to 15.58 at the front), 51 items: smallest margin 0.08 mm; 
+PASS 9d. the Pi 3A+'s board stays over the card: x 133.7-198.7, y 53.2-109.2
+W    9e. parts of the Pi standing past the card's edge: HDMI 0.5 mm, audio 1.6 mm, micro-USB 0.2 mm beyond the front edge (Apple's outline): the price of the Pi beside J1 with the 3B's ports pointing away from it (README, "Placement")
+PASS 9a. heights within Figure 17-2 (4.61 mm at the rear edge rising to 15.58 at the front), 48 items: smallest margin 0.01 mm; 
 INFO 9b. the Pi 3A+ turned components-down: gap 8.5 mm (socket 6.0 + its header body 2.5), board 1.4, back at 9.9 mm: its parts towards the card: USB-A 7.0 (1.5 mm clear), HDMI 6.5 (2.0 mm clear), audio 6.0 (2.5 mm clear), camera 5.5 (3.0 mm clear), display 5.5 (3.0 mm clear), header 8.5 (0.0 mm clear), micro-USB 3.0 (5.5 mm clear), SoC + heatsink 7.4 (1.1 mm clear)
 W    9c. 3B/3B+ USB-A pairs in this mounting: 16.0 mm tall below the Pi's board, the gap is 8.5 mm: it would hit the card by 7.5 mm, so a 3B/3B+ does not fit this card in the SE (bench use on a 8 mm riser only; README)
 W    9c. 3B/3B+ RJ45 in this mounting: 13.5 mm tall below the Pi's board, the gap is 8.5 mm: it would hit the card by 5.0 mm, so a 3B/3B+ does not fit this card in the SE (bench use on a 6 mm riser only; README)
-PASS 10a. no courtyard in the Pi 3B/3B+ USB/Ethernet keep-out (x 76.5-101.1, y 52.9-110.1)
-PASS 10b. nothing but the socket and standoffs under the Pi 3A+
+PASS 10a. no courtyard in the Pi 3B/3B+ keep-out: its board, USB and RJ45 with their overhang and a 40 mm plug zone, +2 mm (x 68.9-134.4, y 51.2-110.1), less the optional fan's notch
+PASS 10e. the fan M1: 30 x 30 x 7.5 mm (worst case) at x 77.8-108.2, y 52.2-82.8: clear of the Pi, its keep-outs and the USB plug (3.4 mm), nothing under it, height 7.5 of 9.82, outlet facing the Pi, J3 12 mm from its lead
+INFO 10f. the fan's air: outlet y 52.5-77.5 (25 mm) at x = 108.0, 25.7 mm from the Pi's edge; the open channel under the Pi between its header (and standoff H6) and its USB socket is y 59.5-70.7: 11.2 mm of the outlet faces it. The SoC (y 70.9-85.0) is behind the USB socket from this side: the air passes over the CPLD and along the SoC's rear face and top, not straight through it (README, "The fan")
+PASS 10b. under the Pi 3A+: only parts of 6.0 mm or less, clear of the keep-outs under its USB, HDMI, audio, camera, display and SoC: under the Pi: J2, H3-H8, C1, C10, C11, C12, C5, C6, C7, C8, C9, R1, R12, R2, U1, U2, U6, U7
+PASS 10d. no vias over the Pi 3B/3B+'s board and ports (x 108.9-134.4, y 51.2-110.1): 0: 
 PASS 10c. nothing on Apple's card supports
-PASS 11. every slot signal meets its latch, switch or resistor within 50 mm of the plug pin: farthest 41.1 mm (straight line; route lengths are longer)
-PASS 12a. two copper layers: F.Cu, B.Cu
-PASS 12b. tracks >= 0.15 mm, vias >= 0.6 mm with >= 0.3 mm drills: 2842 segments, 314 vias
-W    12c. routing: 122 of 138 nets fully connected by tracks (ground pours not counted), 20 connections open: SE_FC1, GND, SE_IPL0_n, SE_D4, SE_D6, SE_D10, SE_D12, M68K_BERR_n, 5V_PI, M68K_FC1, PI_D13, PI_D12, PI_D9, PI_D8, PI_D7, PI_D6
-24 checks, 0 failed, 3 warnings
+PASS 12d. Pi-to-CPLD nets: GPCLK0 24.8 mm (30 at most), longest PI_D13 63.5 mm; routed lengths: PI_D13 63.5, PI_D7 48.2, PI_A0 45.2, PI_D10 37.1, PI_A1 32.5, PI_D5 28.8, PI_D12 26.9, PI_D11 26.3, JTAG_TMS 25.6, PI_D9 25.3, PI_CLK (GPCLK0, J2.7-R12-U1.12) 24.8, PI_D6 24.6, PI_D8 22.7, PI_D0 21.6, PI_D15 21.3, JTAG_TCK 20.7, PI_D4 ~20.1, PI_D2 19.6, PI_D3 17.4, PI_D1 17.3, JTAG_TDI 14.8, PI_D14 14.6, PI_RD 9.5, JTAG_TDO 8.9, PI_IPL_ZERO 6.9, PI_WR 6.6, PI_RESET 4.6, PI_TXN_IN_PROGRESS 4.4
+INFO 12e. CPLD to latches (the latch strobes and the Pi's data bus: Pi speed): longest PI_D13 U1-U3 112.2 mm; 80 connections
+FAIL 12h. the Pi's data bus from its socket to the latches (aim: about 50 mm or less): longest PI_D12 J2-U3 86.8 mm; over 50: PI_D12 J2-U3 86.8, PI_D12 J2-U4 85.8, PI_D11 J2-U3 75.7, PI_D13 J2-U3 68.1, PI_D3 J2-U3 66.9, PI_D8 J2-U2 65.8, PI_D11 J2-U4 65.6, PI_D13 J2-U4 64.5, PI_D2 J2-U3 58.7, PI_D12 J2-U2 54.7, PI_D13 J2-U2 53.7
+FAIL 11b. every slot signal reaches its latch, switch or resistor within 50 mm of copper (Apple's 2 inches): longest SE_D0 82.7 mm; over: SE_E 64.4, SE_D0 82.7
+FAIL 12i. the SE's lines through the switches: 117 mm and 30.3 pF at most (Apple: 30 pF); C8M 95 mm, 16.7 pF (Apple: 20 pF): estimate: 0.071 pF/mm of 0.15 mm track (83 ohm microstrip over the plane 0.21 mm below), 12 pF for the switch, 10 pF for the CPLD pin; SE_E 117 mm 30.3 pF, SE_BERR_n 92 mm 28.6 pF, SE_IPL2_n 91 mm 28.5 pF, SE_VPA_n 90 mm 28.4 pF, SE_FC2 86 mm 28.1 pF, SE_IPL0_n 84 mm 28.0 pF, SE_FC1 83 mm 27.9 pF, SE_IPL1_n 83 mm 27.9 pF, SE_FC0 81 mm 27.8 pF, SE_VMA_n 80 mm 27.7 pF, SE_BR_n 76 mm 27.4 pF, SE_AS_n 71 mm 27.1 pF, SE_DTACK_n 70 mm 26.9 pF, SE_BGACK_n 68 mm 26.9 pF, SE_BG_n 67 mm 26.8 pF, SE_RW 65 mm 26.6 pF, SE_LDS_n 64 mm 26.5 pF, SE_UDS_n 64 mm 26.5 pF, SE_RESET_n 60 mm 26.3 pF
+PASS 12g. tracks on L1 and L4 only (L1 2938 mm, L4 2649 mm; L2 and L3 planes), 737 vias; the clocks (PI_CLK_GPIO, PI_CLK, SE_C8M, M68K_CLK) on L1 only, over L2's ground
+INFO 12f. CPLD to bus switches: longest M68K_BERR_n 53.1 mm. The CBTD3384 is a switch, not a buffer, so each such line adds its length (and the CPLD pin) to the SE's own line: see README "Placement"
+PASS 11. every slot signal meets its latch, switch or resistor within 50 mm of the plug pin: farthest 44.8 mm (straight line; route lengths are longer)
+PASS 12a. four copper layers, L1 F.Cu signals, L2 In1.Cu GND plane, L3 In2.Cu +3.3 V plane, L4 B.Cu signals; stackup 1.606 mm (JLC04161H-7628): F.Cu, In1.Cu, In2.Cu, B.Cu
+PASS 12b. tracks >= 0.15 mm, vias 0.6 mm with 0.3 mm drills, all through vias (no blind or buried), none in a pad: 2052 segments, 737 vias
+PASS 12k. copper clearance (our own check, not KiCad's DRC): tracks, vias and pads of different nets >= 0.15 mm on each layer; closest 0.152 mm: 0: 
+PASS 12j. ground vias within 2.5 mm of all 26 ground pads of the decoupling capacitors and the CPLD; J1's ground pins through-hole on L2
+W    12c. routing: 110 of 135 nets fully connected by tracks and, for GND and +3.3 V, their planes through vias and through-hole pads (the outer pours not counted), 40 connections open: SE_D1, SE_D2, SE_D3, SE_D4, SE_D5, SE_D6, SE_D7, SE_D9, SE_D10, SE_D11, SE_D12, SE_D13, SE_D14, SE_D15, PI_D3, PI_D4, PI_D5, PI_D9, PI_D8, PI_D15, PI_D14, PI_D10, PI_D6, LTCH_D_WR_L, LTCH_A_16
+33 checks, 3 failed, 4 warnings

@@ -5,22 +5,22 @@
 	(uuid "9d88f375-aeb2-5651-a026-15ea1356b8d2")
 	(paper "A3")
 	(title_block
-		(title "Aurora68 Card P: Fan, LED, stock switch, rear cable")
-		(date "2026-11-24")
+		(title "Aurora68 Card P: Fan, LED, rear cable")
+		(date "2026-11-25")
 		(rev "P0.1 (draft)")
 		(company "Aurora68")
 		(comment 1 "Draft for review: not checked by ERC/DRC in KiCad, not built")
 		(comment 2 "Macintosh SE processor direct slot card for a Raspberry Pi 3A+ (README.md)")
 	)
 	(lib_symbols
-		(symbol "aurora68:AO3400A"
+		(symbol "aurora68:BAT54C"
 			(pin_names
 				(offset 1.016)
 			)
 			(exclude_from_sim no)
 			(in_bom yes)
 			(on_board yes)
-			(property "Reference" "Q"
+			(property "Reference" "D"
 				(at 0 5.08 0)
 				(effects
 					(font
@@ -28,7 +28,7 @@
 					)
 				)
 			)
-			(property "Value" "AO3400A"
+			(property "Value" "BAT54C"
 				(at 0 -2.54 0)
 				(effects
 					(font
@@ -54,7 +54,7 @@
 					(hide yes)
 				)
 			)
-			(property "Description" "N-channel MOSFET 30 V 5.7 A, SOT-23 (G S D)"
+			(property "Description" "Dual Schottky diode, common cathode, SOT-23 (1 A1, 2 A2, 3 K)"
 				(at 0 0 0)
 				(effects
 					(font
@@ -63,7 +63,7 @@
 					(hide yes)
 				)
 			)
-			(symbol "AO3400A_0_1"
+			(symbol "BAT54C_0_1"
 				(rectangle
 					(start -5.08 3.81)
 					(end 5.08 -1.27)
@@ -76,11 +76,11 @@
 					)
 				)
 			)
-			(symbol "AO3400A_1_1"
-				(pin input line
+			(symbol "BAT54C_1_1"
+				(pin passive line
 					(at -7.62 2.54 0)
 					(length 2.54)
-					(name "G"
+					(name "A1"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -88,6 +88,24 @@
 						)
 					)
 					(number "1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -7.62 0 0)
+					(length 2.54)
+					(name "A2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "2"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -98,247 +116,7 @@
 				(pin passive line
 					(at 7.62 2.54 180)
 					(length 2.54)
-					(name "D"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "3"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at 7.62 0 180)
-					(length 2.54)
-					(name "S"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "2"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-			)
-		)
-		(symbol "aurora68:Conn_01x02"
-			(pin_names
-				(offset 1.016)
-			)
-			(exclude_from_sim no)
-			(in_bom yes)
-			(on_board yes)
-			(property "Reference" "J"
-				(at 0 5.08 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Value" "Conn_01x02"
-				(at 0 -2.54 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Footprint" ""
-				(at 0 -5.08 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(hide yes)
-				)
-			)
-			(property "Datasheet" ""
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(hide yes)
-				)
-			)
-			(property "Description" "Header 1x02"
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(hide yes)
-				)
-			)
-			(symbol "Conn_01x02_0_1"
-				(rectangle
-					(start -5.08 3.81)
-					(end 5.08 -1.27)
-					(stroke
-						(width 0.254)
-						(type default)
-					)
-					(fill
-						(type background)
-					)
-				)
-			)
-			(symbol "Conn_01x02_1_1"
-				(pin passive line
-					(at -7.62 2.54 0)
-					(length 2.54)
-					(name "Pin_1"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "1"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -7.62 0 0)
-					(length 2.54)
-					(name "Pin_2"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "2"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-			)
-		)
-		(symbol "aurora68:Conn_01x03"
-			(pin_names
-				(offset 1.016)
-			)
-			(exclude_from_sim no)
-			(in_bom yes)
-			(on_board yes)
-			(property "Reference" "J"
-				(at 0 5.08 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Value" "Conn_01x03"
-				(at 0 -5.08 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Footprint" ""
-				(at 0 -7.62 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(hide yes)
-				)
-			)
-			(property "Datasheet" ""
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(hide yes)
-				)
-			)
-			(property "Description" "Header 1x03"
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(hide yes)
-				)
-			)
-			(symbol "Conn_01x03_0_1"
-				(rectangle
-					(start -5.08 3.81)
-					(end 5.08 -3.81)
-					(stroke
-						(width 0.254)
-						(type default)
-					)
-					(fill
-						(type background)
-					)
-				)
-			)
-			(symbol "Conn_01x03_1_1"
-				(pin passive line
-					(at -7.62 2.54 0)
-					(length 2.54)
-					(name "Pin_1"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "1"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -7.62 0 0)
-					(length 2.54)
-					(name "Pin_2"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "2"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -7.62 -2.54 0)
-					(length 2.54)
-					(name "Pin_3"
+					(name "K"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -493,23 +271,23 @@
 				)
 			)
 		)
-		(symbol "aurora68:D_Schottky"
+		(symbol "aurora68:Conn_01x04_MP"
 			(pin_names
-				(offset 0.508)
+				(offset 1.016)
 			)
 			(exclude_from_sim no)
 			(in_bom yes)
 			(on_board yes)
-			(property "Reference" "D"
-				(at 0 2.54 0)
+			(property "Reference" "J"
+				(at 0 7.62 0)
 				(effects
 					(font
 						(size 1.27 1.27)
 					)
 				)
 			)
-			(property "Value" "D_Schottky"
-				(at 0 -2.54 0)
+			(property "Value" "Conn_01x04_MP"
+				(at 0 -7.62 0)
 				(effects
 					(font
 						(size 1.27 1.27)
@@ -517,7 +295,7 @@
 				)
 			)
 			(property "Footprint" ""
-				(at 0 -5.08 0)
+				(at 0 -10.16 0)
 				(effects
 					(font
 						(size 1.27 1.27)
@@ -534,7 +312,7 @@
 					(hide yes)
 				)
 			)
-			(property "Description" "Schottky diode"
+			(property "Description" "Connector, 4 positions, 1.0 mm (JST-SH), with mounting pads"
 				(at 0 0 0)
 				(effects
 					(font
@@ -543,10 +321,10 @@
 					(hide yes)
 				)
 			)
-			(symbol "D_Schottky_0_1"
+			(symbol "Conn_01x04_MP_0_1"
 				(rectangle
-					(start -5.08 1.016)
-					(end 5.08 -1.016)
+					(start -5.08 6.35)
+					(end 5.08 -6.35)
 					(stroke
 						(width 0.254)
 						(type default)
@@ -556,11 +334,11 @@
 					)
 				)
 			)
-			(symbol "D_Schottky_1_1"
+			(symbol "Conn_01x04_MP_1_1"
 				(pin passive line
-					(at -7.62 0 0)
+					(at -7.62 5.08 0)
 					(length 2.54)
-					(name "K"
+					(name "Pin_1"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -576,9 +354,9 @@
 					)
 				)
 				(pin passive line
-					(at 7.62 0 180)
+					(at -7.62 2.54 0)
 					(length 2.54)
-					(name "A"
+					(name "Pin_2"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -586,6 +364,60 @@
 						)
 					)
 					(number "2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -7.62 0 0)
+					(length 2.54)
+					(name "Pin_3"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "3"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -7.62 -2.54 0)
+					(length 2.54)
+					(name "Pin_4"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "4"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -7.62 -5.08 0)
+					(length 2.54)
+					(name "MP"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "MP"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -858,6 +690,71 @@
 					)
 				)
 			)
+		)
+		(symbol "aurora68:Fan_Blower_30mm"
+			(pin_names
+				(offset 1.016)
+			)
+			(exclude_from_sim no)
+			(in_bom yes)
+			(on_board yes)
+			(property "Reference" "M"
+				(at 0 2.54 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Value" "Fan_Blower_30mm"
+				(at 0 -2.54 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Footprint" ""
+				(at 0 -5.08 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "Datasheet" ""
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "Description" "30 mm 5 V blower fan, held by three M2 screws; its lead plugs into J3"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(symbol "Fan_Blower_30mm_0_1"
+				(rectangle
+					(start -5.08 1.27)
+					(end 5.08 -1.27)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type background)
+					)
+				)
+			)
+			(symbol "Fan_Blower_30mm_1_1")
 		)
 		(symbol "aurora68:LED"
 			(pin_names
@@ -1221,8 +1118,8 @@
 		)
 	)
 	(symbol
-		(lib_id "aurora68:Conn_01x03")
-		(at 68.58 114.3 0)
+		(lib_id "aurora68:Conn_01x04_MP")
+		(at 66.04 93.98 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -1230,23 +1127,23 @@
 		(dnp no)
 		(uuid "0dfa874f-bc8e-5a8e-9dcc-ff1f54974747")
 		(property "Reference" "J3"
-			(at 68.58 107.95 0)
+			(at 66.04 85.09 0)
 			(effects
 				(font
 					(size 1.27 1.27)
 				)
 			)
 		)
-		(property "Value" "Fan"
-			(at 68.58 120.65 0)
+		(property "Value" "Fan (JST-SH 4)"
+			(at 66.04 102.87 0)
 			(effects
 				(font
 					(size 1.27 1.27)
 				)
 			)
 		)
-		(property "Footprint" "aurora68:PinHeader_1x03_P2.54mm_Horizontal"
-			(at 68.58 123.19 0)
+		(property "Footprint" "aurora68:JST_SH_SM04B-SRSS-TB_1x04-1MP_P1.00mm_Horizontal"
+			(at 66.04 105.41 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1255,7 +1152,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 68.58 114.3 0)
+			(at 66.04 93.98 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1263,8 +1160,8 @@
 				(hide yes)
 			)
 		)
-		(property "Description" "Header 1x03"
-			(at 68.58 114.3 0)
+		(property "Description" "Connector, 4 positions, 1.0 mm (JST-SH), with mounting pads"
+			(at 66.04 93.98 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1272,8 +1169,8 @@
 				(hide yes)
 			)
 		)
-		(property "Height_mm" "3.80"
-			(at 68.58 114.3 0)
+		(property "MPN" "JST SM04B-SRSS-TB(LF)(SN)"
+			(at 66.04 93.98 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1281,8 +1178,26 @@
 				(hide yes)
 			)
 		)
-		(property "Note" "1 GND (switched), 2 +5 V, 3 tachometer"
-			(at 68.58 114.3 0)
+		(property "LCSC" "C160390"
+			(at 66.04 93.98 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Height_mm" "3.00"
+			(at 66.04 93.98 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Note" "the Raspberry Pi 5 FAN pinout: 1 +5 V, 2 PWM, 3 GND, 4 tachometer (LCSC number to confirm)"
+			(at 66.04 93.98 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1299,6 +1214,12 @@
 		(pin "3"
 			(uuid "21d38918-11cd-5da1-88ef-d6bebc065a34")
 		)
+		(pin "4"
+			(uuid "f9f738d6-bcbe-5ec3-bc82-e7d0cabc828f")
+		)
+		(pin "MP"
+			(uuid "fc9a9136-26e2-5d0d-b886-625fbd5006ef")
+		)
 		(instances
 			(project "aurora68-card-p"
 				(path "/23865fb0-541d-5699-a2fc-51c653160383/9d88f375-aeb2-5651-a026-15ea1356b8d2"
@@ -1310,8 +1231,8 @@
 	)
 	(wire
 		(pts
-			(xy 60.96 111.76)
-			(xy 58.42 111.76)
+			(xy 58.42 88.9)
+			(xy 55.88 88.9)
 		)
 		(stroke
 			(width 0)
@@ -1319,31 +1240,9 @@
 		)
 		(uuid "20aedad4-a761-51d5-9c3d-aff6ccfad882")
 	)
-	(label "FAN_GND_SW"
-		(at 58.42 111.76 180)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right bottom)
-		)
-		(uuid "b8c1f4fa-ee96-5d3e-801d-6b4a26667596")
-	)
-	(wire
-		(pts
-			(xy 60.96 114.3)
-			(xy 58.42 114.3)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "4edd794e-5b24-5efe-aba2-6c53a0eb40e8")
-	)
 	(global_label "5V_FAN"
 		(shape passive)
-		(at 58.42 114.3 180)
+		(at 55.88 88.9 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -1351,9 +1250,9 @@
 			)
 			(justify right)
 		)
-		(uuid "7469ea33-e088-5495-a63b-91510da76980")
+		(uuid "f91953c3-32af-5984-9226-6338d8b0c25a")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 58.42 114.3 0)
+			(at 55.88 88.9 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1365,8 +1264,30 @@
 	)
 	(wire
 		(pts
-			(xy 60.96 116.84)
-			(xy 58.42 116.84)
+			(xy 58.42 91.44)
+			(xy 55.88 91.44)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "4edd794e-5b24-5efe-aba2-6c53a0eb40e8")
+	)
+	(label "FAN_PWM_C"
+		(at 55.88 91.44 180)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right bottom)
+		)
+		(uuid "c2be0f41-678a-5b0f-9d34-5410ad23055e")
+	)
+	(wire
+		(pts
+			(xy 58.42 93.98)
+			(xy 55.88 93.98)
 		)
 		(stroke
 			(width 0)
@@ -1374,9 +1295,9 @@
 		)
 		(uuid "f4a124b6-92b0-5f7f-9fb7-2748de95d6d2")
 	)
-	(global_label "FAN_TACH"
-		(shape bidirectional)
-		(at 58.42 116.84 180)
+	(global_label "GND"
+		(shape passive)
+		(at 55.88 93.98 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -1386,290 +1307,7 @@
 		)
 		(uuid "aac6d041-0b82-5792-be92-b271ea4f0396")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 58.42 116.84 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-				(hide yes)
-			)
-		)
-	)
-	(symbol
-		(lib_id "aurora68:AO3400A")
-		(at 63.5 134.62 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(uuid "2a30928f-e5df-525a-b7ef-29b033359fb3")
-		(property "Reference" "Q1"
-			(at 63.5 128.27 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "AO3400A"
-			(at 63.5 138.43 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "aurora68:SOT-23"
-			(at 63.5 140.97 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" ""
-			(at 63.5 134.62 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "N-channel MOSFET 30 V 5.7 A, SOT-23 (G S D)"
-			(at 63.5 134.62 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "LCSC" "C20917"
-			(at 63.5 134.62 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Height_mm" "1.25"
-			(at 63.5 134.62 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "1"
-			(uuid "1e0cbec2-5d23-57eb-ac5f-31a319d29692")
-		)
-		(pin "3"
-			(uuid "78650d9e-a61b-54d5-9cc5-677c7d8a875c")
-		)
-		(pin "2"
-			(uuid "8e408ab7-363b-5cac-aa03-92de8ba1ab27")
-		)
-		(instances
-			(project "aurora68-card-p"
-				(path "/23865fb0-541d-5699-a2fc-51c653160383/9d88f375-aeb2-5651-a026-15ea1356b8d2"
-					(reference "Q1")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(wire
-		(pts
-			(xy 55.88 132.08)
-			(xy 53.34 132.08)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "284ca220-473a-5dbe-948c-451c461642e1")
-	)
-	(label "FAN_G"
-		(at 53.34 132.08 180)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right bottom)
-		)
-		(uuid "fbc41aad-edfa-5d7a-b6d6-f3186533364a")
-	)
-	(wire
-		(pts
-			(xy 71.12 132.08)
-			(xy 73.66 132.08)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "a0bbb1ab-29cd-545a-a144-33bc2fe41e3c")
-	)
-	(label "FAN_GND_SW"
-		(at 73.66 132.08 0)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left bottom)
-		)
-		(uuid "39b292e0-e4e4-50b2-b8ea-c78d684054ad")
-	)
-	(wire
-		(pts
-			(xy 71.12 134.62)
-			(xy 73.66 134.62)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "9d6c903f-f715-5e5d-a041-ee82029b1aa8")
-	)
-	(global_label "GND"
-		(shape passive)
-		(at 73.66 134.62 0)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left)
-		)
-		(uuid "e8fcbcbe-2310-5aa0-ada9-3566146b7c8d")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 73.66 134.62 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-				(hide yes)
-			)
-		)
-	)
-	(symbol
-		(lib_id "aurora68:R")
-		(at 124.46 93.98 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(uuid "bd6d8f75-129c-5aa2-ad06-d56eeace226e")
-		(property "Reference" "R8"
-			(at 124.46 90.17 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "100"
-			(at 124.46 97.79 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "aurora68:R_0603_1608Metric"
-			(at 124.46 100.33 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" ""
-			(at 124.46 93.98 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "Resistor"
-			(at 124.46 93.98 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "LCSC" "C22775"
-			(at 124.46 93.98 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Height_mm" "0.55"
-			(at 124.46 93.98 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "1"
-			(uuid "24df4996-a679-5625-a7d8-8433e3d792ed")
-		)
-		(pin "2"
-			(uuid "b4c1b23d-d3b0-5bb0-9790-27f32748ba68")
-		)
-		(instances
-			(project "aurora68-card-p"
-				(path "/23865fb0-541d-5699-a2fc-51c653160383/9d88f375-aeb2-5651-a026-15ea1356b8d2"
-					(reference "R8")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(wire
-		(pts
-			(xy 116.84 93.98)
-			(xy 114.3 93.98)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "b8af21a8-a796-50c0-9e0a-7150b4cf3229")
-	)
-	(global_label "FAN_PWM"
-		(shape bidirectional)
-		(at 114.3 93.98 180)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right)
-		)
-		(uuid "982b035d-62b4-5f0d-9276-b3d3264cdbe8")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 114.3 93.98 0)
+			(at 55.88 93.98 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1681,705 +1319,18 @@
 	)
 	(wire
 		(pts
-			(xy 132.08 93.98)
-			(xy 134.62 93.98)
+			(xy 58.42 96.52)
+			(xy 55.88 96.52)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "eff06dba-b806-53f2-bedf-ecad927022e1")
-	)
-	(label "FAN_G"
-		(at 134.62 93.98 0)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left bottom)
-		)
-		(uuid "e5bed4f6-85a2-5ff5-ae80-302ed8f93f31")
-	)
-	(symbol
-		(lib_id "aurora68:R")
-		(at 121.92 109.22 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(uuid "7ea5ac8f-061f-52dd-b34d-f721e0bf3c72")
-		(property "Reference" "R9"
-			(at 121.92 105.41 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "100k"
-			(at 121.92 113.03 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "aurora68:R_0603_1608Metric"
-			(at 121.92 115.57 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" ""
-			(at 121.92 109.22 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "Resistor"
-			(at 121.92 109.22 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "LCSC" "C25803"
-			(at 121.92 109.22 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Height_mm" "0.55"
-			(at 121.92 109.22 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "1"
-			(uuid "f9220937-5efd-5216-a33a-a7eea248b8f5")
-		)
-		(pin "2"
-			(uuid "a5155537-3b3d-505d-a00f-26d2b9c9b63b")
-		)
-		(instances
-			(project "aurora68-card-p"
-				(path "/23865fb0-541d-5699-a2fc-51c653160383/9d88f375-aeb2-5651-a026-15ea1356b8d2"
-					(reference "R9")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(wire
-		(pts
-			(xy 114.3 109.22)
-			(xy 111.76 109.22)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "5489af9c-b30e-5b6e-adf3-f1a1f63ed3c1")
-	)
-	(label "FAN_G"
-		(at 111.76 109.22 180)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right bottom)
-		)
-		(uuid "a2097217-5c40-50df-9270-9b7d14d2ef43")
-	)
-	(wire
-		(pts
-			(xy 129.54 109.22)
-			(xy 132.08 109.22)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "3cf0006d-1fd2-53f2-8dc2-fe02216fe80f")
-	)
-	(global_label "GND"
-		(shape passive)
-		(at 132.08 109.22 0)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left)
-		)
-		(uuid "9921d86c-5e26-507f-a6bf-8be569fb171d")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 132.08 109.22 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-				(hide yes)
-			)
-		)
-	)
-	(symbol
-		(lib_id "aurora68:D_Schottky")
-		(at 63.5 149.86 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(uuid "1245d09a-fe7a-546f-a98e-042ac84da51f")
-		(property "Reference" "D1"
-			(at 63.5 146.05 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "B5819W"
-			(at 63.5 153.67 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "aurora68:D_SOD-123"
-			(at 63.5 156.21 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" ""
-			(at 63.5 149.86 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "Schottky diode"
-			(at 63.5 149.86 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "LCSC" "C8598"
-			(at 63.5 149.86 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Height_mm" "1.35"
-			(at 63.5 149.86 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Note" "fan flyback"
-			(at 63.5 149.86 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "1"
-			(uuid "b5adc9bd-0ce3-5e32-8c97-fbfec2f55e7e")
-		)
-		(pin "2"
-			(uuid "b480b100-fc0d-53e2-96f5-c9600c92be83")
-		)
-		(instances
-			(project "aurora68-card-p"
-				(path "/23865fb0-541d-5699-a2fc-51c653160383/9d88f375-aeb2-5651-a026-15ea1356b8d2"
-					(reference "D1")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(wire
-		(pts
-			(xy 55.88 149.86)
-			(xy 53.34 149.86)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "a374a7e6-a9f4-5ae7-86b8-95d8a8671edf")
-	)
-	(global_label "5V_FAN"
-		(shape passive)
-		(at 53.34 149.86 180)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right)
-		)
-		(uuid "27e71a66-ca0f-5e45-8c60-b94cdb52a736")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 53.34 149.86 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-				(hide yes)
-			)
-		)
-	)
-	(wire
-		(pts
-			(xy 71.12 149.86)
-			(xy 73.66 149.86)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "a3fdf8c4-20e9-5fc8-b49c-7a3cc2e8c2d1")
-	)
-	(label "FAN_GND_SW"
-		(at 73.66 149.86 0)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left bottom)
-		)
-		(uuid "a7bd365a-6896-5a1b-9b0b-4473b62dc936")
-	)
-	(symbol
-		(lib_id "aurora68:Conn_01x02")
-		(at 68.58 200.66 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(uuid "48a6bd80-8758-56de-bbd4-5ef40f95beb3")
-		(property "Reference" "JP1"
-			(at 68.58 194.31 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "Fan full speed"
-			(at 68.58 204.47 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "aurora68:PinHeader_1x02_P2.54mm_Vertical"
-			(at 68.58 207.01 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" ""
-			(at 68.58 200.66 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "Header 1x02"
-			(at 68.58 200.66 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Height_mm" "8.50"
-			(at 68.58 200.66 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Note" "shunt fitted: fan always on, no software needed"
-			(at 68.58 200.66 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "1"
-			(uuid "9ea761e4-295c-5840-98a2-3b7ccf2eb2fe")
-		)
-		(pin "2"
-			(uuid "72dce36d-0f55-5ded-a1f5-8b433725c2a0")
-		)
-		(instances
-			(project "aurora68-card-p"
-				(path "/23865fb0-541d-5699-a2fc-51c653160383/9d88f375-aeb2-5651-a026-15ea1356b8d2"
-					(reference "JP1")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(wire
-		(pts
-			(xy 60.96 198.12)
-			(xy 58.42 198.12)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "66cfdded-aa80-5a2a-b745-41848c5c746e")
-	)
-	(label "FAN_GND_SW"
-		(at 58.42 198.12 180)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right bottom)
-		)
-		(uuid "8511c804-d2d9-5a4e-9c0f-8b0ad8b283c5")
-	)
-	(wire
-		(pts
-			(xy 60.96 200.66)
-			(xy 58.42 200.66)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "4e0145f7-512d-5d2d-bfc4-a43449862c98")
-	)
-	(global_label "GND"
-		(shape passive)
-		(at 58.42 200.66 180)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right)
-		)
-		(uuid "3aed3f0c-927c-582b-8ac7-d13bb73de793")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 58.42 200.66 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-				(hide yes)
-			)
-		)
-	)
-	(symbol
-		(lib_id "aurora68:R")
-		(at 119.38 63.5 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(uuid "48f50030-4064-5cf0-95d3-611abf1412f6")
-		(property "Reference" "R6"
-			(at 119.38 59.69 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "10k"
-			(at 119.38 67.31 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "aurora68:R_0603_1608Metric"
-			(at 119.38 69.85 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" ""
-			(at 119.38 63.5 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "Resistor"
-			(at 119.38 63.5 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "LCSC" "C25804"
-			(at 119.38 63.5 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Height_mm" "0.55"
-			(at 119.38 63.5 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "1"
-			(uuid "14350868-378d-59b2-b2dc-8e95a453a571")
-		)
-		(pin "2"
-			(uuid "9f4fc1d8-9822-5057-b255-1fea0db55ba0")
-		)
-		(instances
-			(project "aurora68-card-p"
-				(path "/23865fb0-541d-5699-a2fc-51c653160383/9d88f375-aeb2-5651-a026-15ea1356b8d2"
-					(reference "R6")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(wire
-		(pts
-			(xy 111.76 63.5)
-			(xy 109.22 63.5)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "0f883521-d493-5d58-9255-7003a81d7bb1")
-	)
-	(global_label "+3V3"
-		(shape passive)
-		(at 109.22 63.5 180)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right)
-		)
-		(uuid "848d475c-184c-5522-9b8d-ca3518506929")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 109.22 63.5 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-				(hide yes)
-			)
-		)
-	)
-	(wire
-		(pts
-			(xy 127 63.5)
-			(xy 129.54 63.5)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "d5e0073a-e47f-5783-a654-b025a235da26")
+		(uuid "d59ed001-a128-5e27-988f-f352b322562d")
 	)
 	(global_label "FAN_TACH"
 		(shape bidirectional)
-		(at 129.54 63.5 0)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left)
-		)
-		(uuid "9ee83850-ce19-5cbd-b49e-e6e44dd8b8fe")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 129.54 63.5 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-				(hide yes)
-			)
-		)
-	)
-	(symbol
-		(lib_id "aurora68:Conn_01x02")
-		(at 68.58 182.88 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(uuid "1d1ae16d-fa83-5b88-b982-74d752240793")
-		(property "Reference" "J6"
-			(at 68.58 176.53 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "Stock mode"
-			(at 68.58 186.69 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "aurora68:PinHeader_1x02_P2.54mm_Horizontal"
-			(at 68.58 189.23 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" ""
-			(at 68.58 182.88 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "Header 1x02"
-			(at 68.58 182.88 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Height_mm" "3.80"
-			(at 68.58 182.88 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Note" "closed: stock SE (jumper or a switch on a cable)"
-			(at 68.58 182.88 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "1"
-			(uuid "fcbada39-00f4-5415-8f62-96215f781a4d")
-		)
-		(pin "2"
-			(uuid "ad3768a6-1d27-5acb-aa71-03aa487de57c")
-		)
-		(instances
-			(project "aurora68-card-p"
-				(path "/23865fb0-541d-5699-a2fc-51c653160383/9d88f375-aeb2-5651-a026-15ea1356b8d2"
-					(reference "J6")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(wire
-		(pts
-			(xy 60.96 180.34)
-			(xy 58.42 180.34)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "dbe50e7e-41c4-5928-b17b-a2fba0690f8d")
-	)
-	(global_label "STOCK_SW_n"
-		(shape bidirectional)
-		(at 58.42 180.34 180)
+		(at 55.88 96.52 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -2387,9 +1338,9 @@
 			)
 			(justify right)
 		)
-		(uuid "2b0ebd41-fab6-5ddc-87c3-ddefdc126918")
+		(uuid "e5f0547e-8f32-5b98-a7d9-810248b6aaba")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 58.42 180.34 0)
+			(at 55.88 96.52 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -2401,18 +1352,18 @@
 	)
 	(wire
 		(pts
-			(xy 60.96 182.88)
-			(xy 58.42 182.88)
+			(xy 58.42 99.06)
+			(xy 55.88 99.06)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "4474ceb8-a667-505f-b0fa-94502242bdd9")
+		(uuid "d40769f5-a335-589f-b608-de5b55fcfe9e")
 	)
 	(global_label "GND"
 		(shape passive)
-		(at 58.42 182.88 180)
+		(at 55.88 99.06 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -2420,9 +1371,9 @@
 			)
 			(justify right)
 		)
-		(uuid "fb7dbc4c-2eea-5105-9979-d9f4361bcf5e")
+		(uuid "709bbd40-bb0a-501f-ad13-348f8f076dd3")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 58.42 182.88 0)
+			(at 55.88 99.06 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -2431,297 +1382,6 @@
 				(hide yes)
 			)
 		)
-	)
-	(symbol
-		(lib_id "aurora68:R")
-		(at 119.38 78.74 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(uuid "38d3b4cd-d946-5e49-a9d6-42b51736f709")
-		(property "Reference" "R7"
-			(at 119.38 74.93 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "10k"
-			(at 119.38 82.55 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "aurora68:R_0603_1608Metric"
-			(at 119.38 85.09 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" ""
-			(at 119.38 78.74 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "Resistor"
-			(at 119.38 78.74 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "LCSC" "C25804"
-			(at 119.38 78.74 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Height_mm" "0.55"
-			(at 119.38 78.74 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "1"
-			(uuid "7debed8d-0e0a-58c8-a8a7-d0dedc844a80")
-		)
-		(pin "2"
-			(uuid "5c17963e-56f4-5a61-8661-976f528c44ef")
-		)
-		(instances
-			(project "aurora68-card-p"
-				(path "/23865fb0-541d-5699-a2fc-51c653160383/9d88f375-aeb2-5651-a026-15ea1356b8d2"
-					(reference "R7")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(wire
-		(pts
-			(xy 111.76 78.74)
-			(xy 109.22 78.74)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "17076654-7e5c-59cf-b178-aa0fe75e9989")
-	)
-	(global_label "+3V3"
-		(shape passive)
-		(at 109.22 78.74 180)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right)
-		)
-		(uuid "a9f7ce32-34d7-555c-9168-72cb990c76d4")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 109.22 78.74 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-				(hide yes)
-			)
-		)
-	)
-	(wire
-		(pts
-			(xy 127 78.74)
-			(xy 129.54 78.74)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "179dd2d1-6ecf-5f30-a927-52b6034030ef")
-	)
-	(global_label "STOCK_SW_n"
-		(shape bidirectional)
-		(at 129.54 78.74 0)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left)
-		)
-		(uuid "ffef913d-93cc-5546-a1ba-0864aa253263")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 129.54 78.74 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-				(hide yes)
-			)
-		)
-	)
-	(symbol
-		(lib_id "aurora68:LED")
-		(at 60.96 165.1 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(uuid "25ccc3f0-e101-56ea-892c-171fb5e386e7")
-		(property "Reference" "D2"
-			(at 60.96 161.29 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "green"
-			(at 60.96 168.91 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "aurora68:LED_0603_1608Metric"
-			(at 60.96 171.45 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" ""
-			(at 60.96 165.1 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "LED"
-			(at 60.96 165.1 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Height_mm" "0.80"
-			(at 60.96 165.1 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Note" "activity"
-			(at 60.96 165.1 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "1"
-			(uuid "30ff343e-7335-51a3-aa04-1353a290dd6a")
-		)
-		(pin "2"
-			(uuid "27575eb8-f8f2-5c1f-be50-efcb70d82884")
-		)
-		(instances
-			(project "aurora68-card-p"
-				(path "/23865fb0-541d-5699-a2fc-51c653160383/9d88f375-aeb2-5651-a026-15ea1356b8d2"
-					(reference "D2")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(wire
-		(pts
-			(xy 53.34 165.1)
-			(xy 50.8 165.1)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "b426757c-b644-5652-a15e-84bad47debee")
-	)
-	(global_label "GND"
-		(shape passive)
-		(at 50.8 165.1 180)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right)
-		)
-		(uuid "ad044981-6c51-552b-8511-e01be7e92f1f")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 50.8 165.1 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-				(hide yes)
-			)
-		)
-	)
-	(wire
-		(pts
-			(xy 68.58 165.1)
-			(xy 71.12 165.1)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "553c0d66-605a-5846-9fa1-bde3a9ac7f8a")
-	)
-	(label "LED_A"
-		(at 71.12 165.1 0)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left bottom)
-		)
-		(uuid "7cd14583-3e1e-55c2-bcd3-7d738f028b0f")
 	)
 	(symbol
 		(lib_id "aurora68:R")
@@ -2731,8 +1391,8 @@
 		(in_bom yes)
 		(on_board yes)
 		(dnp no)
-		(uuid "e3940d85-9c4b-5b67-afba-d867bf6488ae")
-		(property "Reference" "R10"
+		(uuid "bd6d8f75-129c-5aa2-ad06-d56eeace226e")
+		(property "Reference" "R8"
 			(at 63.5 212.09 0)
 			(effects
 				(font
@@ -2740,7 +1400,7 @@
 				)
 			)
 		)
-		(property "Value" "330"
+		(property "Value" "100"
 			(at 63.5 219.71 0)
 			(effects
 				(font
@@ -2775,7 +1435,7 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC" "C23138"
+		(property "LCSC" "C22775"
 			(at 63.5 215.9 0)
 			(effects
 				(font
@@ -2786,6 +1446,728 @@
 		)
 		(property "Height_mm" "0.55"
 			(at 63.5 215.9 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Note" "fan PWM from the CPLD, series"
+			(at 63.5 215.9 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "24df4996-a679-5625-a7d8-8433e3d792ed")
+		)
+		(pin "2"
+			(uuid "b4c1b23d-d3b0-5bb0-9790-27f32748ba68")
+		)
+		(instances
+			(project "aurora68-card-p"
+				(path "/23865fb0-541d-5699-a2fc-51c653160383/9d88f375-aeb2-5651-a026-15ea1356b8d2"
+					(reference "R8")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(wire
+		(pts
+			(xy 55.88 215.9)
+			(xy 53.34 215.9)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "b8af21a8-a796-50c0-9e0a-7150b4cf3229")
+	)
+	(global_label "FAN_PWM"
+		(shape bidirectional)
+		(at 53.34 215.9 180)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "982b035d-62b4-5f0d-9276-b3d3264cdbe8")
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 53.34 215.9 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify right)
+				(hide yes)
+			)
+		)
+	)
+	(wire
+		(pts
+			(xy 71.12 215.9)
+			(xy 73.66 215.9)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "eff06dba-b806-53f2-bedf-ecad927022e1")
+	)
+	(label "FAN_PWM_C"
+		(at 73.66 215.9 0)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left bottom)
+		)
+		(uuid "e5bed4f6-85a2-5ff5-ae80-302ed8f93f31")
+	)
+	(symbol
+		(lib_id "aurora68:BAT54C")
+		(at 66.04 139.7 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(uuid "1245d09a-fe7a-546f-a98e-042ac84da51f")
+		(property "Reference" "D1"
+			(at 66.04 133.35 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "BAT54C"
+			(at 66.04 143.51 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "aurora68:SOT-23"
+			(at 66.04 146.05 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" ""
+			(at 66.04 139.7 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Dual Schottky diode, common cathode, SOT-23 (1 A1, 2 A2, 3 K)"
+			(at 66.04 139.7 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "BAT54C (common cathode)"
+			(at 66.04 139.7 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Height_mm" "1.25"
+			(at 66.04 139.7 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Note" "clamps the fan's PWM and TACH to 3.3 V (LCSC number to choose)"
+			(at 66.04 139.7 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "b5adc9bd-0ce3-5e32-8c97-fbfec2f55e7e")
+		)
+		(pin "2"
+			(uuid "b480b100-fc0d-53e2-96f5-c9600c92be83")
+		)
+		(pin "3"
+			(uuid "0750d121-154f-5605-a227-84356efdb941")
+		)
+		(instances
+			(project "aurora68-card-p"
+				(path "/23865fb0-541d-5699-a2fc-51c653160383/9d88f375-aeb2-5651-a026-15ea1356b8d2"
+					(reference "D1")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(wire
+		(pts
+			(xy 58.42 137.16)
+			(xy 55.88 137.16)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "a374a7e6-a9f4-5ae7-86b8-95d8a8671edf")
+	)
+	(label "FAN_PWM_C"
+		(at 55.88 137.16 180)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right bottom)
+		)
+		(uuid "dee6d378-d644-5db2-bc0e-41c8cfbadb60")
+	)
+	(wire
+		(pts
+			(xy 58.42 139.7)
+			(xy 55.88 139.7)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "a3fdf8c4-20e9-5fc8-b49c-7a3cc2e8c2d1")
+	)
+	(global_label "FAN_TACH"
+		(shape bidirectional)
+		(at 55.88 139.7 180)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "a00bd910-7221-5f19-9136-a9b6dd09f22e")
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 55.88 139.7 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify right)
+				(hide yes)
+			)
+		)
+	)
+	(wire
+		(pts
+			(xy 73.66 137.16)
+			(xy 76.2 137.16)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "a82813bc-23a0-518e-8e42-4ff075492747")
+	)
+	(global_label "+3V3"
+		(shape passive)
+		(at 76.2 137.16 0)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "c0a2b486-017d-5ff6-9399-e9e2d89913bc")
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 76.2 137.16 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+				(hide yes)
+			)
+		)
+	)
+	(symbol
+		(lib_id "aurora68:R")
+		(at 60.96 200.66 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(uuid "48f50030-4064-5cf0-95d3-611abf1412f6")
+		(property "Reference" "R6"
+			(at 60.96 196.85 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "10k"
+			(at 60.96 204.47 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "aurora68:R_0603_1608Metric"
+			(at 60.96 207.01 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" ""
+			(at 60.96 200.66 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Resistor"
+			(at 60.96 200.66 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "LCSC" "C25804"
+			(at 60.96 200.66 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Height_mm" "0.55"
+			(at 60.96 200.66 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Note" "tachometer pull-up"
+			(at 60.96 200.66 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "14350868-378d-59b2-b2dc-8e95a453a571")
+		)
+		(pin "2"
+			(uuid "9f4fc1d8-9822-5057-b255-1fea0db55ba0")
+		)
+		(instances
+			(project "aurora68-card-p"
+				(path "/23865fb0-541d-5699-a2fc-51c653160383/9d88f375-aeb2-5651-a026-15ea1356b8d2"
+					(reference "R6")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(wire
+		(pts
+			(xy 53.34 200.66)
+			(xy 50.8 200.66)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "0f883521-d493-5d58-9255-7003a81d7bb1")
+	)
+	(global_label "+3V3"
+		(shape passive)
+		(at 50.8 200.66 180)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "848d475c-184c-5522-9b8d-ca3518506929")
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 50.8 200.66 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify right)
+				(hide yes)
+			)
+		)
+	)
+	(wire
+		(pts
+			(xy 68.58 200.66)
+			(xy 71.12 200.66)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "d5e0073a-e47f-5783-a654-b025a235da26")
+	)
+	(global_label "FAN_TACH"
+		(shape bidirectional)
+		(at 71.12 200.66 0)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "9ee83850-ce19-5cbd-b49e-e6e44dd8b8fe")
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 71.12 200.66 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+				(hide yes)
+			)
+		)
+	)
+	(symbol
+		(lib_id "aurora68:Fan_Blower_30mm")
+		(at 116.84 78.74 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(uuid "9d3d85d8-e205-53a3-bf8b-454f03db7ced")
+		(property "Reference" "M1"
+			(at 116.84 74.93 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "30x30x7 5 V blower (optional)"
+			(at 116.84 82.55 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "aurora68:Aurora68_Fan_Blower_30x30_3xM2"
+			(at 116.84 85.09 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" ""
+			(at 116.84 78.74 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "30 mm 5 V blower fan, held by three M2 screws; its lead plugs into J3"
+			(at 116.84 78.74 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MPN" "30 x 30 x 7 mm 5 V blower, about 0.2 A, PWM and tachometer, JST-SH 4-pin lead of 60 mm or more (the owner's; Raspberry Pi 5 fan pinout); three M2 screws or plastic pins"
+			(at 116.84 78.74 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Height_mm" "7.50"
+			(at 116.84 78.74 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Note" "optional, fitted by hand; outlet towards the Pi; remove it to use a 3B/3B+ on the bench"
+			(at 116.84 78.74 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(instances
+			(project "aurora68-card-p"
+				(path "/23865fb0-541d-5699-a2fc-51c653160383/9d88f375-aeb2-5651-a026-15ea1356b8d2"
+					(reference "M1")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "aurora68:LED")
+		(at 60.96 154.94 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(uuid "25ccc3f0-e101-56ea-892c-171fb5e386e7")
+		(property "Reference" "D2"
+			(at 60.96 151.13 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "green"
+			(at 60.96 158.75 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "aurora68:LED_0603_1608Metric"
+			(at 60.96 161.29 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" ""
+			(at 60.96 154.94 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "LED"
+			(at 60.96 154.94 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Height_mm" "0.80"
+			(at 60.96 154.94 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Note" "activity"
+			(at 60.96 154.94 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "30ff343e-7335-51a3-aa04-1353a290dd6a")
+		)
+		(pin "2"
+			(uuid "27575eb8-f8f2-5c1f-be50-efcb70d82884")
+		)
+		(instances
+			(project "aurora68-card-p"
+				(path "/23865fb0-541d-5699-a2fc-51c653160383/9d88f375-aeb2-5651-a026-15ea1356b8d2"
+					(reference "D2")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(wire
+		(pts
+			(xy 53.34 154.94)
+			(xy 50.8 154.94)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "b426757c-b644-5652-a15e-84bad47debee")
+	)
+	(global_label "GND"
+		(shape passive)
+		(at 50.8 154.94 180)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "ad044981-6c51-552b-8511-e01be7e92f1f")
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 50.8 154.94 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify right)
+				(hide yes)
+			)
+		)
+	)
+	(wire
+		(pts
+			(xy 68.58 154.94)
+			(xy 71.12 154.94)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "553c0d66-605a-5846-9fa1-bde3a9ac7f8a")
+	)
+	(label "LED_A"
+		(at 71.12 154.94 0)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left bottom)
+		)
+		(uuid "7cd14583-3e1e-55c2-bcd3-7d738f028b0f")
+	)
+	(symbol
+		(lib_id "aurora68:R")
+		(at 63.5 170.18 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(uuid "e3940d85-9c4b-5b67-afba-d867bf6488ae")
+		(property "Reference" "R10"
+			(at 63.5 166.37 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "330"
+			(at 63.5 173.99 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "aurora68:R_0603_1608Metric"
+			(at 63.5 176.53 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" ""
+			(at 63.5 170.18 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Resistor"
+			(at 63.5 170.18 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "LCSC" "C23138"
+			(at 63.5 170.18 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Height_mm" "0.55"
+			(at 63.5 170.18 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -2810,8 +2192,8 @@
 	)
 	(wire
 		(pts
-			(xy 55.88 215.9)
-			(xy 53.34 215.9)
+			(xy 55.88 170.18)
+			(xy 53.34 170.18)
 		)
 		(stroke
 			(width 0)
@@ -2821,7 +2203,7 @@
 	)
 	(global_label "LED_ACT"
 		(shape bidirectional)
-		(at 53.34 215.9 180)
+		(at 53.34 170.18 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -2831,7 +2213,7 @@
 		)
 		(uuid "d15da751-70d8-53d7-8490-2bbc5354e772")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 53.34 215.9 0)
+			(at 53.34 170.18 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -2843,8 +2225,8 @@
 	)
 	(wire
 		(pts
-			(xy 71.12 215.9)
-			(xy 73.66 215.9)
+			(xy 71.12 170.18)
+			(xy 73.66 170.18)
 		)
 		(stroke
 			(width 0)
@@ -2853,7 +2235,7 @@
 		(uuid "78038911-8309-5d86-8086-5d61f724469a")
 	)
 	(label "LED_A"
-		(at 73.66 215.9 0)
+		(at 73.66 170.18 0)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -2865,7 +2247,7 @@
 	)
 	(symbol
 		(lib_id "aurora68:R")
-		(at 124.46 48.26 0)
+		(at 63.5 185.42 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -2873,7 +2255,7 @@
 		(dnp no)
 		(uuid "f8833b2a-cd7a-5739-ac9b-4b2bbcee6543")
 		(property "Reference" "R11"
-			(at 124.46 44.45 0)
+			(at 63.5 181.61 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -2881,7 +2263,7 @@
 			)
 		)
 		(property "Value" "330"
-			(at 124.46 52.07 0)
+			(at 63.5 189.23 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -2889,7 +2271,7 @@
 			)
 		)
 		(property "Footprint" "aurora68:R_0603_1608Metric"
-			(at 124.46 54.61 0)
+			(at 63.5 191.77 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -2898,7 +2280,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 124.46 48.26 0)
+			(at 63.5 185.42 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -2907,7 +2289,7 @@
 			)
 		)
 		(property "Description" "Resistor"
-			(at 124.46 48.26 0)
+			(at 63.5 185.42 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -2916,7 +2298,7 @@
 			)
 		)
 		(property "LCSC" "C23138"
-			(at 124.46 48.26 0)
+			(at 63.5 185.42 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -2925,7 +2307,7 @@
 			)
 		)
 		(property "Height_mm" "0.55"
-			(at 124.46 48.26 0)
+			(at 63.5 185.42 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -2934,7 +2316,7 @@
 			)
 		)
 		(property "Note" "the connector card's LED, over the cable"
-			(at 124.46 48.26 0)
+			(at 63.5 185.42 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -2959,8 +2341,8 @@
 	)
 	(wire
 		(pts
-			(xy 116.84 48.26)
-			(xy 114.3 48.26)
+			(xy 55.88 185.42)
+			(xy 53.34 185.42)
 		)
 		(stroke
 			(width 0)
@@ -2970,7 +2352,7 @@
 	)
 	(global_label "LED_ACT"
 		(shape bidirectional)
-		(at 114.3 48.26 180)
+		(at 53.34 185.42 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -2980,7 +2362,7 @@
 		)
 		(uuid "97acea42-6abc-513c-a0a0-1982f5e340c5")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 114.3 48.26 0)
+			(at 53.34 185.42 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -2992,8 +2374,8 @@
 	)
 	(wire
 		(pts
-			(xy 132.08 48.26)
-			(xy 134.62 48.26)
+			(xy 71.12 185.42)
+			(xy 73.66 185.42)
 		)
 		(stroke
 			(width 0)
@@ -3002,7 +2384,7 @@
 		(uuid "dfabb5ac-1792-57ab-a3c7-cc25810f03f9")
 	)
 	(label "LED_PANEL"
-		(at 134.62 48.26 0)
+		(at 73.66 185.42 0)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -3014,7 +2396,7 @@
 	)
 	(symbol
 		(lib_id "aurora68:Conn_01x04")
-		(at 63.5 93.98 0)
+		(at 63.5 119.38 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -3022,7 +2404,7 @@
 		(dnp no)
 		(uuid "9e1d3794-64cc-5aad-aab2-d19cd6585eac")
 		(property "Reference" "J5"
-			(at 63.5 85.09 0)
+			(at 63.5 110.49 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3030,7 +2412,7 @@
 			)
 		)
 		(property "Value" "USB from Pi"
-			(at 63.5 100.33 0)
+			(at 63.5 125.73 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3038,7 +2420,7 @@
 			)
 		)
 		(property "Footprint" "aurora68:PinHeader_1x04_P2.54mm_Horizontal"
-			(at 63.5 102.87 0)
+			(at 63.5 128.27 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3047,7 +2429,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 63.5 93.98 0)
+			(at 63.5 119.38 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3056,7 +2438,7 @@
 			)
 		)
 		(property "Description" "Header 1x04"
-			(at 63.5 93.98 0)
+			(at 63.5 119.38 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3065,7 +2447,7 @@
 			)
 		)
 		(property "Height_mm" "3.80"
-			(at 63.5 93.98 0)
+			(at 63.5 119.38 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3073,8 +2455,8 @@
 				(hide yes)
 			)
 		)
-		(property "Note" "a short USB-A plug pigtail from the Pi 3A+'s USB socket, which faces it; pin 1 (VBUS) deliberately not connected"
-			(at 63.5 93.98 0)
+		(property "Note" "a short pigtail from the Pi 3A+'s USB socket, which faces it, with a right-angle USB-A plug whose cable leaves towards the rear (the fan is beside it); pin 1 (VBUS) deliberately not connected"
+			(at 63.5 119.38 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3104,13 +2486,13 @@
 		)
 	)
 	(no_connect
-		(at 55.88 88.9)
+		(at 55.88 114.3)
 		(uuid "cb09b751-5516-5bd7-9006-7d351608ea9b")
 	)
 	(wire
 		(pts
-			(xy 55.88 91.44)
-			(xy 53.34 91.44)
+			(xy 55.88 116.84)
+			(xy 53.34 116.84)
 		)
 		(stroke
 			(width 0)
@@ -3119,7 +2501,7 @@
 		(uuid "c19935e2-33a4-513d-963c-2571c83ee3ce")
 	)
 	(label "USB_DM"
-		(at 53.34 91.44 180)
+		(at 53.34 116.84 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -3131,8 +2513,8 @@
 	)
 	(wire
 		(pts
-			(xy 55.88 93.98)
-			(xy 53.34 93.98)
+			(xy 55.88 119.38)
+			(xy 53.34 119.38)
 		)
 		(stroke
 			(width 0)
@@ -3141,7 +2523,7 @@
 		(uuid "adc7db7a-ef1d-536f-931e-55a148f7943e")
 	)
 	(label "USB_DP"
-		(at 53.34 93.98 180)
+		(at 53.34 119.38 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -3153,8 +2535,8 @@
 	)
 	(wire
 		(pts
-			(xy 55.88 96.52)
-			(xy 53.34 96.52)
+			(xy 55.88 121.92)
+			(xy 53.34 121.92)
 		)
 		(stroke
 			(width 0)
@@ -3164,7 +2546,7 @@
 	)
 	(global_label "GND"
 		(shape passive)
-		(at 53.34 96.52 180)
+		(at 53.34 121.92 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -3174,7 +2556,7 @@
 		)
 		(uuid "4eb1f404-fd4b-506f-ba0a-d10c8f0c0c1f")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 53.34 96.52 0)
+			(at 53.34 121.92 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3186,7 +2568,7 @@
 	)
 	(symbol
 		(lib_id "aurora68:FFC_01x10_MP")
-		(at 68.58 60.96 0)
+		(at 66.04 60.96 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -3194,7 +2576,7 @@
 		(dnp no)
 		(uuid "d17fca8d-8cfd-5611-bef4-857de503656a")
 		(property "Reference" "J4"
-			(at 68.58 44.45 0)
+			(at 66.04 44.45 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3202,7 +2584,7 @@
 			)
 		)
 		(property "Value" "Rear connector card"
-			(at 68.58 77.47 0)
+			(at 66.04 77.47 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3210,7 +2592,7 @@
 			)
 		)
 		(property "Footprint" "aurora68:TE_1-84952-0_1x10-1MP_P1.0mm_Horizontal"
-			(at 68.58 80.01 0)
+			(at 66.04 80.01 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3219,7 +2601,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 68.58 60.96 0)
+			(at 66.04 60.96 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3228,7 +2610,7 @@
 			)
 		)
 		(property "Description" "FFC/FPC connector, 10 positions, 1.0 mm, with mounting pads"
-			(at 68.58 60.96 0)
+			(at 66.04 60.96 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3237,7 +2619,7 @@
 			)
 		)
 		(property "MPN" "TE 1-84952-0 (FFC 1.0 mm, 10 positions, ZIF)"
-			(at 68.58 60.96 0)
+			(at 66.04 60.96 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3246,7 +2628,7 @@
 			)
 		)
 		(property "Height_mm" "2.60"
-			(at 68.58 60.96 0)
+			(at 66.04 60.96 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3298,8 +2680,8 @@
 	)
 	(wire
 		(pts
-			(xy 60.96 48.26)
 			(xy 58.42 48.26)
+			(xy 55.88 48.26)
 		)
 		(stroke
 			(width 0)
@@ -3309,7 +2691,7 @@
 	)
 	(global_label "GND"
 		(shape passive)
-		(at 58.42 48.26 180)
+		(at 55.88 48.26 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -3319,7 +2701,7 @@
 		)
 		(uuid "8f827d39-32b2-5cfd-947e-74de79d22f0e")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 58.42 48.26 0)
+			(at 55.88 48.26 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3331,8 +2713,8 @@
 	)
 	(wire
 		(pts
-			(xy 60.96 50.8)
 			(xy 58.42 50.8)
+			(xy 55.88 50.8)
 		)
 		(stroke
 			(width 0)
@@ -3341,7 +2723,7 @@
 		(uuid "4387b9e1-edd1-5f16-ad55-66d334970a87")
 	)
 	(label "USB_DM"
-		(at 58.42 50.8 180)
+		(at 55.88 50.8 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -3353,8 +2735,8 @@
 	)
 	(wire
 		(pts
-			(xy 60.96 53.34)
 			(xy 58.42 53.34)
+			(xy 55.88 53.34)
 		)
 		(stroke
 			(width 0)
@@ -3363,7 +2745,7 @@
 		(uuid "1164afc9-5c58-58e1-a896-fd9530621259")
 	)
 	(label "USB_DP"
-		(at 58.42 53.34 180)
+		(at 55.88 53.34 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -3375,8 +2757,8 @@
 	)
 	(wire
 		(pts
-			(xy 60.96 55.88)
 			(xy 58.42 55.88)
+			(xy 55.88 55.88)
 		)
 		(stroke
 			(width 0)
@@ -3386,7 +2768,7 @@
 	)
 	(global_label "GND"
 		(shape passive)
-		(at 58.42 55.88 180)
+		(at 55.88 55.88 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -3396,7 +2778,7 @@
 		)
 		(uuid "bcceb14a-f8bc-51a5-8afa-efb4bf4d35d8")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 58.42 55.88 0)
+			(at 55.88 55.88 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3408,8 +2790,8 @@
 	)
 	(wire
 		(pts
-			(xy 60.96 58.42)
 			(xy 58.42 58.42)
+			(xy 55.88 58.42)
 		)
 		(stroke
 			(width 0)
@@ -3419,7 +2801,7 @@
 	)
 	(global_label "5V_PANEL"
 		(shape passive)
-		(at 58.42 58.42 180)
+		(at 55.88 58.42 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -3429,7 +2811,7 @@
 		)
 		(uuid "f536974e-09d1-5d64-b30d-6d1428e212ad")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 58.42 58.42 0)
+			(at 55.88 58.42 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3441,8 +2823,8 @@
 	)
 	(wire
 		(pts
-			(xy 60.96 60.96)
 			(xy 58.42 60.96)
+			(xy 55.88 60.96)
 		)
 		(stroke
 			(width 0)
@@ -3452,7 +2834,7 @@
 	)
 	(global_label "5V_PANEL"
 		(shape passive)
-		(at 58.42 60.96 180)
+		(at 55.88 60.96 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -3462,7 +2844,7 @@
 		)
 		(uuid "174915e8-b20e-58f1-8564-243efa817f0c")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 58.42 60.96 0)
+			(at 55.88 60.96 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3474,8 +2856,8 @@
 	)
 	(wire
 		(pts
-			(xy 60.96 63.5)
 			(xy 58.42 63.5)
+			(xy 55.88 63.5)
 		)
 		(stroke
 			(width 0)
@@ -3485,7 +2867,7 @@
 	)
 	(global_label "GND"
 		(shape passive)
-		(at 58.42 63.5 180)
+		(at 55.88 63.5 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -3495,7 +2877,7 @@
 		)
 		(uuid "83133c3c-a158-59fd-9d02-fa43f0064d69")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 58.42 63.5 0)
+			(at 55.88 63.5 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3505,43 +2887,14 @@
 			)
 		)
 	)
-	(wire
-		(pts
-			(xy 60.96 66.04)
-			(xy 58.42 66.04)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "1fddb2d7-30c4-5285-a6f8-6a66c14ca094")
-	)
-	(global_label "STOCK_SW_n"
-		(shape bidirectional)
-		(at 58.42 66.04 180)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right)
-		)
-		(uuid "7927c3a2-ef13-51ea-b943-753710d89199")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 58.42 66.04 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-				(hide yes)
-			)
-		)
+	(no_connect
+		(at 58.42 66.04)
+		(uuid "c733494e-2b84-5bb7-9c60-18c6efef0163")
 	)
 	(wire
 		(pts
-			(xy 60.96 68.58)
 			(xy 58.42 68.58)
+			(xy 55.88 68.58)
 		)
 		(stroke
 			(width 0)
@@ -3550,7 +2903,7 @@
 		(uuid "0547e8df-6003-5c9a-811c-3aea81b565aa")
 	)
 	(label "LED_PANEL"
-		(at 58.42 68.58 180)
+		(at 55.88 68.58 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -3562,8 +2915,8 @@
 	)
 	(wire
 		(pts
-			(xy 60.96 71.12)
 			(xy 58.42 71.12)
+			(xy 55.88 71.12)
 		)
 		(stroke
 			(width 0)
@@ -3573,7 +2926,7 @@
 	)
 	(global_label "GND"
 		(shape passive)
-		(at 58.42 71.12 180)
+		(at 55.88 71.12 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -3583,7 +2936,7 @@
 		)
 		(uuid "e6664c4f-653f-5d34-9b37-f031008d6616")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 58.42 71.12 0)
+			(at 55.88 71.12 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3595,8 +2948,8 @@
 	)
 	(wire
 		(pts
-			(xy 60.96 73.66)
 			(xy 58.42 73.66)
+			(xy 55.88 73.66)
 		)
 		(stroke
 			(width 0)
@@ -3606,7 +2959,7 @@
 	)
 	(global_label "GND"
 		(shape passive)
-		(at 58.42 73.66 180)
+		(at 55.88 73.66 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -3616,7 +2969,7 @@
 		)
 		(uuid "25e64f9e-f11f-54c1-b043-1816843dbab8")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 58.42 73.66 0)
+			(at 55.88 73.66 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3628,7 +2981,7 @@
 	)
 	(symbol
 		(lib_id "aurora68:MountingHole")
-		(at 116.84 124.46 0)
+		(at 116.84 48.26 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom no)
@@ -3636,7 +2989,7 @@
 		(dnp no)
 		(uuid "b52c7ea3-5a5f-5cb7-839c-675b10799bb4")
 		(property "Reference" "H1"
-			(at 116.84 120.65 0)
+			(at 116.84 44.45 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3644,7 +2997,7 @@
 			)
 		)
 		(property "Value" "Apple card support 3.86 mm"
-			(at 116.84 128.27 0)
+			(at 116.84 52.07 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3652,7 +3005,7 @@
 			)
 		)
 		(property "Footprint" "aurora68:Aurora68_AppleCardSupport_3.86mm"
-			(at 116.84 130.81 0)
+			(at 116.84 54.61 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3661,7 +3014,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 116.84 124.46 0)
+			(at 116.84 48.26 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3670,7 +3023,7 @@
 			)
 		)
 		(property "Description" "Mounting hole, no connection"
-			(at 116.84 124.46 0)
+			(at 116.84 48.26 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3679,7 +3032,7 @@
 			)
 		)
 		(property "Height_mm" "0.00"
-			(at 116.84 124.46 0)
+			(at 116.84 48.26 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3698,7 +3051,7 @@
 	)
 	(symbol
 		(lib_id "aurora68:MountingHole")
-		(at 116.84 139.7 0)
+		(at 116.84 63.5 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom no)
@@ -3706,7 +3059,7 @@
 		(dnp no)
 		(uuid "ecd35568-e817-5dff-830d-3d2d757248de")
 		(property "Reference" "H2"
-			(at 116.84 135.89 0)
+			(at 116.84 59.69 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3714,7 +3067,7 @@
 			)
 		)
 		(property "Value" "Apple card support 3.86 mm"
-			(at 116.84 143.51 0)
+			(at 116.84 67.31 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3722,7 +3075,7 @@
 			)
 		)
 		(property "Footprint" "aurora68:Aurora68_AppleCardSupport_3.86mm"
-			(at 116.84 146.05 0)
+			(at 116.84 69.85 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3731,7 +3084,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 116.84 139.7 0)
+			(at 116.84 63.5 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3740,7 +3093,7 @@
 			)
 		)
 		(property "Description" "Mounting hole, no connection"
-			(at 116.84 139.7 0)
+			(at 116.84 63.5 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3749,7 +3102,7 @@
 			)
 		)
 		(property "Height_mm" "0.00"
-			(at 116.84 139.7 0)
+			(at 116.84 63.5 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3766,7 +3119,7 @@
 			)
 		)
 	)
-	(text "Card P, Fan, LED, stock switch, rear cable: the fan header and MOSFET, the activity LED, the stock jumper, USB from the Pi, the FFC to the rear connector card, Apple's card supports. Generated by tools/gen_kicad.py from tools/design.py; edit those, not this file."
+	(text "Card P, Fan, LED, rear cable: the fan (JST-SH, Raspberry Pi 5 pinout), the activity LED, USB from the Pi, the FFC to the rear connector card, Apple's card supports. Generated by tools/gen_kicad.py from tools/design.py; edit those, not this file."
 		(exclude_from_sim no)
 		(at 20 20 0)
 		(effects

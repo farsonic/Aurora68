@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
 # Card P's CPLD: the Pi-side protocol
 
-*24 November 2026.* Card P's CPLD (`rtl/aurora68_pds.v`) speaks the classic PiStorm's protocol unchanged, so the
+*24 November 2026; arbitration and stock mode changed 25 November 2026 (below).* Card P's CPLD (`rtl/aurora68_pds.v`) speaks the classic PiStorm's protocol unchanged, so the
 kernel's transport (`emu68/src/psmac/psmac_gpio.c`) and Emu68's `ps_classic_protocol.c` drive it as they drive a
 PiStorm in the 68000's socket. What the slot card adds sits where the classic CPLD has nothing: bits 0-12 of the
 status register on reads (the classic CPLD returns zeros there) and status-register writes with bit 15 set (which
@@ -36,8 +36,8 @@ what `rtl/tb/tb_card.v` checks in simulation.
 | Bit 15 | Bits 14-12 | Bits 11-0 | Meaning |
 |---|---|---|---|
 | 0 | | bit 1, bit 0 | **classic.** Bit 1 = 0 holds the board's /RESET low (the power-up state, as on the PiStorm); bit 1 = 1 releases it. Bit 0 = 1 (INIT) puts the bus-cycle machine back to its start. `psmac_gpio.c` writes 1, 0, then 0 and 2 for each reset pulse. |
-| 1 | 000 | bit 0 STOCK, bit 1 PMCYC | **control.** STOCK = 1: release /BR and /BGACK, three-state everything, pulse /RESET (2.1 ms), let the SE run its own ROM on its own 68000. STOCK = 0: request the bus again (/BR), take it at the next /BG. PMCYC = 1: start RAM cycles ($000000-$3FFFFF) at a /PMCYC falling edge (docs/22 section 4); 0 (power-up): at the next C8M edge, waiting for /DTACK as a 68000 does. |
-| 1 | 001 | bits 3-0 | **fan duty**, 0 (off) to 15 (full). 30.6 kHz PWM. Power-up: 15, full speed, which needs no clock: the fan runs before the Pi has started. |
+| 1 | 000 | bit 0 STOCK | **control.** STOCK = 1: release /BR and /BGACK, three-state everything, pulse /RESET (2.1 ms), let the SE run its own ROM on its own 68000. STOCK = 0: request the bus again (/BR), take it at the next /BG. Bit 1 (until 25 November the /PMCYC alignment) is ignored: /PMCYC is no longer connected. |
+| 1 | 001 | bits 3-0 | **fan duty**, 0 (off) to 15 (full): the share of each 30.6 kHz period the FAN_PWM pin is high. It drives the fan's PWM input directly (J3 pin 2, Raspberry Pi 5 pinout), where high is full speed on a standard 4-wire fan. Power-up: 15, the pin held high, which needs no clock: the fan runs before the Pi has started (and while the CPLD is blank, the fan's own pull-up does the same). A fan that ran slower as the duty rose would want `15 - duty`: the tachometer tells the kernel which. |
 | 1 | other | | ignored (room for later) |
 
 ### REG_STATUS reads
@@ -46,13 +46,33 @@ what `rtl/tb/tb_card.v` checks in simulation.
 |---|---|---|
 | 15-13 | IPL | the board's interrupt level (classic) |
 | 12 | CARD_PDS | always 1 on Card P; 0 on a socket PiStorm. A kernel can tell the two apart by it (docs/22 section 5: `mac.slot=pds` or the card identifying itself) |
-| 11 | GRANTED | the card holds the bus (/BGACK asserted, outputs enabled). Bus cycles wait until it is set |
-| 10 | STOCK | stock mode (the jumper, the switch, or a STOCK write) |
+| 11 | GRANTED | the card holds the bus (/BR and /BGACK asserted, outputs enabled). Bus cycles wait until it is set |
+| 10 | STOCK | stock mode (the Interrupt switch held through a reset, or a STOCK write) |
 | 9 | BERR | the last bus cycle ended with /BERR (the SE's gate array asserts it after about 250 ms with no answer) instead of /DTACK |
 | 8 | RESET_LINE | the board's /RESET (and /HALT) line is low now |
 | 7-2 | TACH | fan tachometer: a free-running count of falling edges, modulo 64. Read twice and divide the difference by the time between (most fans give two pulses a turn) |
-| 1 | STOCK_SW | the stock jumper or switch is closed (debounced) |
+| 1 | STOCK_SW | stock mode was entered from the Interrupt switch held through a reset; the next reset clears it |
 | 0 | SE_POWER | the SE's +5 V is present at the slot |
+
+## Arbitration, resets and stock mode (25 November 2026)
+
+After the MicroMac Performer, a shipped 68030 card that took the bus from this slot (docs/22 section 10):
+
+- **/BR is asserted from power-up and held for as long as the card owns the bus**, through every reset (the
+  kernel's reset pulses and the SE's own). A 68000 stays off the bus while BR is asserted (MC68000 manual 5.2.1,
+  Figure 5-18 (a)); the Performer relied on exactly that. As insurance it did not take, the card waits after
+  power-up and after every reset for /BG and an idle bus before it asserts /BGACK (held with /BR) and drives
+  anything; GRANTED (bit 11) is set then. During a reset it lets go of /BGACK and keeps /BR.
+- **Stock mode without a switch on the card**, as on the Performer: hold the programmer's **Interrupt** switch
+  through a **Reset** (press Interrupt, press and release Reset, then release Interrupt). After four C8M clocks of
+  reset with Interrupt held the card lets go of /BR and of its own hold on /RESET; if Interrupt is still held when
+  the reset ends, it stays off the bus, three-stated, and the SE's own 68000 boots its ROM, until the next reset.
+  Letting go of Interrupt before Reset cancels. This logic runs on C8M, not on the Pi's clock, so it works before
+  the Pi has started or with no Pi fitted: with no Pi the card holds /RESET from power-up, and holding Interrupt
+  alone is then enough. The kernel's STOCK write stays.
+- **/PMCYC is not used**, and the cycle machine still runs on the Pi's 200 MHz clock, sampling C8M as the PiStorm
+  samples its 68000 clock: /AS falls just after a C8M rising edge (S2, C8M high) and the read latch closes just
+  after the falling edge entering S7, the 68000's own point (the Performer, clocked from C16M, latches mid-S7).
 
 ## What the kernel would do with it (not written yet)
 

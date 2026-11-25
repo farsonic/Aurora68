@@ -792,4 +792,15 @@
 			)
 		)
 	)
+	(model "${KIPRJMOD}/lib/aurora68.3dshapes/Aurora68_DIN41612_C_3x32_Male_Straight.wrl"
+		(offset
+			(xyz 0 0 0)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz 0 0 0)
+		)
+	)
 )

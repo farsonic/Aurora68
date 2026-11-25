@@ -116,6 +116,10 @@
         "pattern": "+3V3"
       },
       {
+        "netclass": "Supply",
+        "pattern": "5V_FAN"
+      },
+      {
         "netclass": "Power",
         "pattern": "5V_PI"
       },
@@ -129,15 +133,7 @@
       },
       {
         "netclass": "Power",
-        "pattern": "5V_FAN"
-      },
-      {
-        "netclass": "Power",
         "pattern": "5V_PANEL"
-      },
-      {
-        "netclass": "Power",
-        "pattern": "FAN_GND_SW"
       }
     ]
   },
@@ -171,7 +167,7 @@
     ],
     [
       "9d88f375-aeb2-5651-a026-15ea1356b8d2",
-      "Fan, LED, stock switch, rear cable"
+      "Fan, LED, rear cable"
     ]
   ],
   "text_variables": {}
