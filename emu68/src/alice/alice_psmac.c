@@ -967,6 +967,191 @@ static void wsim_ap_start(volatile struct an_unit *u, uint32_t seq)
 }
 static const char *wsim_script_ssid(void) { return wsim_nets[0].ssid; }
 static const char *wsim_script_pass(void) { return wsim_nets[0].pass; }
+/* ---- testbed WiFi, the other way round: a simulated firmware below the real driver (mac.wifisimfw=1) ----------
+   mac.wifisim= above replaces the whole driver, so what alice_net.c decides - which access point, when to scan again,
+   what a lost link means - never runs in the testbed. mac.wifisimfw=1 (25 November 2026, docs/08 item 147) keeps the
+   real driver and puts a small FullMAC firmware under it instead of the chip: it answers alice_net.c's commands
+   (ctl: WLC_* and iovars, psmac_wfw_ctl) and sends the events a BCM43430 would (psmac_wfw_event), escan results as the
+   firmware's own bss_info records, so fm_escan_parse reads them. Its world is the owner's office as the log of
+   25 November showed it: the SSID of wifi.ssid= on five BSSIDs (one at -43 dBm on channel 1 that cannot be joined,
+   status 3, as the log's), three neighbours, a first scan that the firmware aborts after two results; and a script
+   for the connections that follow, one per connection, counted from its start:
+     1st  after 5 s the firmware's own join attempt fails (E_SET_SSID status 1) and it leaves (E_DISASSOC 11, reason 8),
+          as on the SE every few seconds;
+     2nd  after 4 s the firmware roams (E_ROAM) to another BSSID; 6 s later that access point disassociates us (E_DISASSOC_IND
+          12, reason 8: a steering AP);
+     3rd  after 5 s the first pattern again (the second time: wifi.roam=auto turns the firmware's roaming off);
+     4th  and later: no trouble.
+   mac.wifisimfw=2 is the world without the script (connections stay). No frames are carried: the Mac sees a link
+   but no traffic (mac.wifisim= is the one for MacTCP). The password is not checked. */
+static int wfw_mode = -1;
+static char wfw_ssid[36];
+int psmac_wfw_on(void)
+{
+    if (wfw_mode < 0) {
+        const char *o = psmac_option("mac.wifisimfw");
+        wfw_mode = o && (o[0] == '1' || o[0] == '2') ? o[0] - '0' : 0;
+        extern int psmac_bootarg_val(const char *key, char *out, unsigned max);
+        if (wfw_mode && !psmac_bootarg_val("wifi.ssid", wfw_ssid, sizeof wfw_ssid)) { wfw_ssid[0] = 'O'; wfw_ssid[1] = 'f'; wfw_ssid[2] = 'f'; wfw_ssid[3] = 'i'; wfw_ssid[4] = 'c'; wfw_ssid[5] = 'e'; wfw_ssid[6] = 0; }
+    }
+    return wfw_mode > 0;
+}
+struct wfw_ap { const char *ssid; uint8_t last; int rssi; uint8_t ch; uint8_t join_status; };
+static struct wfw_ap wfw_aps[8] = {
+    { 0, 0xa1, -68, 1, 0 }, { 0, 0xa2, -43, 1, 3 }, { 0, 0xa3, -60, 6, 0 }, { 0, 0xa4, -78, 11, 0 }, { 0, 0xa5, -64, 11, 0 },
+    { "Neighbour-5G", 0xb1, -55, 6, 0 }, { "DIRECT-printer", 0xb2, -70, 11, 0 }, { "Cafe guest", 0xb3, -82, 1, 0 },
+};
+struct wfw_ev { uint32_t due, type, status, reason, flags; int ap; uint16_t sync; };
+static struct wfw_ev wfw_q[48]; static unsigned wfw_nq;
+static int wfw_assoc = -1, wfw_scans, wfw_conns, wfw_roam_off;
+static uint8_t wfw_evbuf[72 + 12 + 128 + 24];
+static uint32_t wfw_ms(void) { return (uint32_t)(in_now() / (in_hz() / 1000u)); }
+static void wfw_bssid(int ap, uint8_t *o) { o[0] = 0x02; o[1] = 0xa6; o[2] = 0x8e; o[3] = 0x00; o[4] = 0x00; o[5] = wfw_aps[ap].last; }
+static void wfw_post(uint32_t in_ms, uint32_t type, uint32_t status, uint32_t reason, uint32_t flags, int ap, uint16_t sync)
+{
+    if (wfw_nq >= sizeof wfw_q / sizeof wfw_q[0]) return;
+    struct wfw_ev *e = &wfw_q[wfw_nq++];
+    e->due = wfw_ms() + in_ms; e->type = type; e->status = status; e->reason = reason; e->flags = flags; e->ap = ap; e->sync = sync;
+}
+static int wfw_str(const uint8_t *a, const char *b) { unsigned i = 0; for (; b[i]; i++) if (a[i] != (uint8_t)b[i]) return 0; return a[i] == 0; }
+/* drop the queued events of TYPE, or (but 0) every one but TYPE's */
+static void wfw_drop_queue(uint32_t type, int but)
+{
+    unsigned k = 0;
+    for (unsigned i = 0; i < wfw_nq; i++) if (but ? wfw_q[i].type == type : wfw_q[i].type != type) wfw_q[k++] = wfw_q[i];
+    wfw_nq = k;
+}
+static void wfw_put_le32(uint8_t *p, uint32_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24); }
+/* a join to AP (or, by name only, the firmware's choice): the events a BCM43430 sends for it */
+static void wfw_join(int ap)
+{
+    if (ap < 0) {                                   /* by name only: the strongest the firmware can join */
+        for (int i = 0; i < 5; i++) if (!wfw_aps[i].join_status && (ap < 0 || wfw_aps[i].rssi > wfw_aps[ap].rssi)) ap = i;
+        kprintf("[WIFI-FW] join by name: the firmware takes ..%02x\n", wfw_aps[ap].last);
+    }
+    if (wfw_aps[ap].join_status) {
+        kprintf("[WIFI-FW] join ..%02x: E_SET_SSID status %u\n", wfw_aps[ap].last, wfw_aps[ap].join_status);
+        wfw_post(300, E_SET_SSID, wfw_aps[ap].join_status, 0, 0, ap, 0);
+        return;
+    }
+    wfw_assoc = ap;
+    wfw_conns++;
+    kprintf("[WIFI-FW] join ..%02x (connection %d%s)\n", wfw_aps[ap].last, wfw_conns, wfw_roam_off ? ", roam_off 1" : "");
+    wfw_post(50, E_AUTH, 0, 0, 0, ap, 0);
+    wfw_post(80, E_ASSOC, 0, 0, 0, ap, 0);
+    wfw_post(100, E_LINK, 0, 0, E_FLAG_LINK, ap, 0);
+    wfw_post(100, E_SET_SSID, 0, 0, 0, ap, 0);
+    wfw_post(400, E_PSK_SUP, E_STATUS_FWSUP_COMPLETED, 0, 0, ap, 0);
+    if (wfw_mode != 1) return;
+    if (wfw_conns == 1 || wfw_conns == 3) {         /* the firmware's own attempt, then it leaves (the owner's log) */
+        wfw_post(5400, E_SET_SSID, 1, 0, 0, ap, 0);
+        wfw_post(5420, E_DISASSOC, 0, 8, 0, ap, 0);
+        wfw_post(5430, E_LINK, 0, 2, 0, ap, 0);
+    } else if (wfw_conns == 2) {                    /* a roam, then the new access point steers us off */
+        int to = ap == 0 ? 2 : 0;
+        wfw_post(4400, E_ROAM_START, 0, 8, 0, ap, 0);
+        wfw_post(4500, E_REASSOC, 0, 0, 0, to, 0);
+        wfw_post(4510, E_ROAM, 0, 8, 0, to, 0);
+        wfw_post(4800, E_PSK_SUP, E_STATUS_FWSUP_COMPLETED, 0, 0, to, 0);
+        wfw_post(10500, E_DISASSOC_IND, 0, 8, 0, to, 0);
+        wfw_post(10510, E_LINK, 0, 2, 0, to, 0);
+    }
+}
+int32_t psmac_wfw_ctl(uint32_t cmd, int set, uint8_t *buf, unsigned len, unsigned outmax)
+{
+    (void)len;
+    switch (cmd) {
+    case WLC_GET_VERSION: if (outmax >= 4) wfw_put_le32(buf, 2); return 0;
+    case WLC_GET_BSSID: for (unsigned i = 0; i < 6 && i < outmax; i++) buf[i] = 0; if (wfw_assoc >= 0) wfw_bssid(wfw_assoc, buf); return 0;
+    case WLC_GET_RSSI: if (outmax >= 4) wfw_put_le32(buf, (uint32_t)(wfw_assoc >= 0 ? wfw_aps[wfw_assoc].rssi + 1 : 0)); return 0;
+    case WLC_GET_RATE: if (outmax >= 4) wfw_put_le32(buf, 144); return 0;
+    case WLC_GET_CHANNEL: if (outmax >= 12) { wfw_put_le32(buf, wfw_assoc >= 0 ? wfw_aps[wfw_assoc].ch : 0); wfw_put_le32(buf + 4, 0); wfw_put_le32(buf + 8, 0); } return 0;
+    case 85: if (outmax >= 4) wfw_put_le32(buf, 0); return 0;                         /* WLC_GET_PM */
+    case WLC_DISASSOC:
+        wfw_drop_queue(E_ESCAN_RESULT, 1);          /* what was to come of that connection is gone */
+        if (wfw_assoc >= 0) { wfw_post(5, E_LINK, 0, 2, 0, wfw_assoc, 0); kprintf("[WIFI-FW] WLC_DISASSOC: left ..%02x\n", wfw_aps[wfw_assoc].last); }
+        wfw_assoc = -1;
+        return 0;
+    case WLC_GET_VAR: {
+        static const char caps[] = "ap sta wme 802.11d 802.11h rm cqa cac ampdu ampdu_tx ampdu_rx amsdurx radio_pwrsave p2p mchan wnm bsstrans mfp ndoe (simulated)";
+        static const char ver[] = "wl0: 7.45.241 (simulated firmware, mac.wifisimfw)";
+        const char *src = 0; unsigned n = 0; uint8_t v4[4] = { 0, 0, 0, 0 };
+        if (wfw_str(buf, "cur_etheraddr")) { static const uint8_t m[6] = { 0x02, 0x50, 0x53, 0x57, 0x46, 0x57 }; src = (const char *)m; n = 6; }
+        else if (wfw_str(buf, "cap")) { src = caps; n = sizeof caps; }
+        else if (wfw_str(buf, "ver")) { src = ver; n = sizeof ver; }
+        else if (wfw_str(buf, "btc_mode")) { v4[0] = 1; src = (const char *)v4; n = 4; }
+        else if (wfw_str(buf, "bcn_timeout")) { v4[0] = 8; src = (const char *)v4; n = 4; }
+        for (unsigned i = 0; i < outmax; i++) buf[i] = i < n ? (uint8_t)src[i] : 0;
+        return 0;
+    }
+    case WLC_SET_VAR:
+        if (!set) return 0;
+        if (wfw_str(buf, "escan")) {
+            const uint8_t *p = buf + 6;                 /* after "escan\0" */
+            uint16_t sync = (uint16_t)(p[6] | p[7] << 8);
+            uint32_t dwell = (uint32_t)p[8 + 48] | (uint32_t)p[8 + 49] << 8 | (uint32_t)p[8 + 50] << 16 | (uint32_t)p[8 + 51] << 24;
+            wfw_scans++;
+            wfw_drop_queue(E_ESCAN_RESULT, 0);
+            if (wfw_scans == 1) {                       /* the first: aborted after two results (the owner's 1-2 networks) */
+                kprintf("[WIFI-FW] escan %u: aborted after two results\n", sync);
+                wfw_post(120, E_ESCAN_RESULT, E_STATUS_PARTIAL, 0, 0, 0, sync);
+                wfw_post(160, E_ESCAN_RESULT, E_STATUS_PARTIAL, 0, 0, 5, sync);
+                wfw_post(200, E_ESCAN_RESULT, E_STATUS_ABORT, 0, 0, -1, sync);
+            } else {
+                kprintf("[WIFI-FW] escan %u: all eight, dwell %s\n", sync, dwell == 0xffffffffu ? "the firmware's" : "80 ms");
+                for (int i = 0; i < 8; i++) wfw_post(60u + 60u * (unsigned)i, E_ESCAN_RESULT, E_STATUS_PARTIAL, 0, 0, i, sync);
+                wfw_post(560 + (dwell == 0xffffffffu ? 0 : 500), E_ESCAN_RESULT, E_STATUS_SUCCESS, 0, 0, -1, sync);
+            }
+        } else if (wfw_str(buf, "join")) {
+            const uint8_t *jp = buf + 5;                /* after "join\0": the SSID, then the BSSID at 56 */
+            int ap = -1;
+            if (!(jp[56] == 0xff && jp[57] == 0xff)) for (int i = 0; i < 5; i++) if (jp[61] == wfw_aps[i].last) ap = i;
+            wfw_join(ap);
+        } else if (wfw_str(buf, "roam_off")) {
+            wfw_roam_off = buf[9];
+        }
+        return 0;
+    default:
+        return 0;
+    }
+}
+int psmac_wfw_event(struct fm_event *e)
+{
+    uint32_t now = wfw_ms();
+    int k = -1;
+    for (unsigned i = 0; i < wfw_nq; i++) if ((int32_t)(now - wfw_q[i].due) >= 0 && (k < 0 || (int32_t)(wfw_q[i].due - wfw_q[k].due) < 0)) k = (int)i;
+    if (k < 0) return 0;
+    struct wfw_ev v = wfw_q[k];
+    for (unsigned i = (unsigned)k; i + 1 < wfw_nq; i++) wfw_q[i] = wfw_q[i + 1];
+    wfw_nq--;
+    for (unsigned i = 0; i < sizeof *e; i++) ((uint8_t *)e)[i] = 0;
+    e->type = v.type; e->status = v.status; e->reason = v.reason; e->flags = v.flags;
+    if (v.ap >= 0) wfw_bssid(v.ap, e->addr);
+    if (v.type == E_ROAM && !v.status) { wfw_assoc = v.ap; kprintf("[WIFI-FW] roamed to ..%02x\n", wfw_aps[v.ap].last); }
+    if ((v.type == E_LINK && !(v.flags & E_FLAG_LINK)) || v.type == E_DISASSOC_IND) wfw_assoc = -1;
+    if (v.type == E_ESCAN_RESULT && v.status == E_STATUS_PARTIAL && v.ap >= 0) {
+        uint8_t *d = wfw_evbuf;
+        for (unsigned i = 0; i < sizeof wfw_evbuf; i++) d[i] = 0;
+        const struct wfw_ap *a = &wfw_aps[v.ap];
+        const char *ss = a->ssid ? a->ssid : wfw_ssid;
+        unsigned sl = 0; while (ss[sl] && sl < 32) sl++;
+        static const uint8_t rsn[22] = { 48, 20, 1, 0, 0x00, 0x0f, 0xac, 4, 1, 0, 0x00, 0x0f, 0xac, 4, 1, 0, 0x00, 0x0f, 0xac, 2, 0, 0 };
+        unsigned blen = 128 + sizeof rsn;
+        wfw_put_le32(d, 12 + blen); wfw_put_le32(d + 4, 109); d[8] = (uint8_t)v.sync; d[9] = (uint8_t)(v.sync >> 8); d[10] = 1;
+        uint8_t *bi = d + 12;
+        wfw_put_le32(bi, 109); wfw_put_le32(bi + 4, blen);
+        wfw_bssid(v.ap, bi + 8);
+        bi[14] = 100; bi[16] = 0x11;                    /* beacon period; ESS + privacy */
+        bi[18] = (uint8_t)sl; for (unsigned i = 0; i < sl; i++) bi[19 + i] = (uint8_t)ss[i];
+        bi[72] = a->ch; bi[73] = 0x10;                  /* chanspec: 2.4 GHz, 20 MHz (d11ac) */
+        bi[78] = (uint8_t)(a->rssi & 0xff); bi[79] = (uint8_t)((a->rssi >> 8) & 0xff);
+        bi[88] = a->ch;
+        bi[116] = 128; wfw_put_le32(bi + 120, sizeof rsn);
+        for (unsigned i = 0; i < sizeof rsn; i++) bi[128 + i] = rsn[i];
+        e->data = d; e->datalen = 12 + blen;
+    }
+    return 1;
+}
 /* ---- testbed Bluetooth: a simulated host (mac.btsim=1) ------------------------------------------
    QEMU's raspi3b has no Bluetooth chip, so the board's Bluetooth block (alice_net.h struct an_bt)
    only ever said "off" there. For the Mac programs that drive it (PiBlue, the Bluetooth menu of

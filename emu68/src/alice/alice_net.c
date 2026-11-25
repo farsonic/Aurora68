@@ -838,6 +838,17 @@ static struct {
     int      nscan;
     struct fm_bss cur;
     int      rssi, rate;
+    /* choosing and keeping an access point among several of one SSID (docs/08 item 147, 25 November 2026) */
+    struct fm_pick pick;                    /* the kicked list, what was seen, failed pinned joins (wifi/fmac.c) */
+    int      pinned;                        /* the join going on names a BSSID */
+    int      scan_pass;                     /* 0 the first pass of a scan, 1 the one more (longer dwell, merged) */
+    int32_t  scan_status;                   /* the escan's final status (E_STATUS_*), -1 no end yet or in 10 s, < -1 refused */
+    int      quick;                         /* tries again at once (no backoff) left after a lost connection */
+    int      aps_logged;                    /* the first scan for a join logged every access point of the SSID */
+    int      roam_mode, roam_off_now, roam_applied;   /* wifi.roam= 0 auto, 1 on, 2 off; auto turned it off; what the firmware has */
+    int      fw_drops;                      /* links lost just after a join or roam attempt of the firmware's own */
+    uint32_t fw_attempt_at, fw_drop_t0, connected_at;
+    int      ev_roamed, need_disassoc, drop_by_ap, drop_ev, drop_reason;
     uint32_t sdclock;
     char     caps[256], fwver[96];
     uint8_t  mac[6];
@@ -855,6 +866,7 @@ static struct {
     unsigned ap_channel, ap_flags;
     uint32_t iover;                         /* WLC_GET_VERSION: 1 is the older 802.11n chanspec encoding */
     int      ev_ap_link, ev_ap_ssid;        /* E_LINK up (1) or down (-1); E_SET_SSID's status + 1 */
+    int      sim;                           /* mac.wifisimfw=1: a simulated firmware below this driver (alice_psmac.c, testbed) */
 #endif
 } W;
 
@@ -945,8 +957,19 @@ static int wait_credit(void)
     }
     return 0;
 }
+#ifdef PSMAC
+/* mac.wifisimfw=1 (the testbed, docs/08 item 147): QEMU has no WiFi chip, so a simulated FullMAC firmware in
+   alice_psmac.c answers the commands and sends the events, and everything above the chip - the scans, the choice of
+   access point, the joins, roaming, the losses - runs as it does on a Pi */
+int psmac_wfw_on(void);
+int32_t psmac_wfw_ctl(uint32_t cmd, int set, uint8_t *buf, unsigned len, unsigned outmax);
+int psmac_wfw_event(struct fm_event *e);
+#endif
 static int32_t ctl(uint32_t cmd, int set, void *buf, unsigned len, unsigned outmax)
 {
+#ifdef PSMAC
+    if (W.sim) { if (!W.chip_up) return -100; wifi_where("firmware command %u (simulated)", cmd); return psmac_wfw_ctl(cmd, set, buf, len, outmax); }
+#endif
     if (!W.chip_up) return -100;
     unsigned plen = set || len > outmax ? len : outmax;
     if (plen > CTLMAX) return -101;
@@ -1003,7 +1026,27 @@ static void scan_add(void *ctx, const struct fm_bss *b)
     if (!b->ssid_len) return;
     for (int i = 0; i < W.nscan; i++)
         if (!mcmp(W.scan[i].bssid, b->bssid, 6)) { if (b->rssi > W.scan[i].rssi) W.scan[i] = *b; return; }
-    if (W.nscan < AN_SCAN_MAX) W.scan[W.nscan++] = *b;
+    if (W.nscan < AN_SCAN_MAX) { W.scan[W.nscan++] = *b; return; }
+    /* full (an office has more than AN_SCAN_MAX BSSIDs in range): the weakest other network's place, for one of the SSID
+       wanted or a stronger one; until 25 November 2026 the first 36 heard were kept, whatever they were */
+    unsigned sl = strlen(W.ssid);
+    int want = sl && b->ssid_len == sl && !mcmp(b->ssid, W.ssid, sl), weak = -1;
+    for (int i = 0; i < W.nscan; i++) {
+        int theirs = sl && W.scan[i].ssid_len == sl && !mcmp(W.scan[i].ssid, W.ssid, sl);
+        if (theirs) continue;
+        if (weak < 0 || W.scan[i].rssi < W.scan[weak].rssi) weak = i;
+    }
+    if (weak >= 0 && (want || b->rssi > W.scan[weak].rssi)) W.scan[weak] = *b;
+}
+/* "..cc:dd:ee": the last three octets of a BSSID, enough to tell an office's access points apart in the log */
+static const char *b3(const uint8_t *b)
+{
+    static char t[4][12]; static unsigned r;
+    char *o = t[r++ & 3];
+    static const char hx[] = "0123456789abcdef";
+    o[0] = o[1] = '.';
+    for (int i = 0; i < 3; i++) { o[2 + 3 * i] = hx[b[3 + i] >> 4]; o[3 + 3 * i] = hx[b[3 + i] & 15]; o[4 + 3 * i] = i < 2 ? ':' : 0; }
+    return o;
 }
 #ifdef PSMAC
 static void ap_event(const struct fm_event *e);
@@ -1016,10 +1059,34 @@ static void event(const struct fm_event *e)
     switch (e->type) {
     case E_ESCAN_RESULT:
         if (e->status == E_STATUS_PARTIAL) fm_escan_parse(e->data, e->datalen, scan_add, 0);
-        else W.scan_done = 1;
+        else { W.scan_done = 1; W.scan_status = (int32_t)e->status; }   /* aborted or cut short too: the status says (conn_tick) */
         break;
     case E_SET_SSID:
-        if (e->status != E_STATUS_SUCCESS) { W.ev_setssid_fail = 1; wifi_log("join failed (status %u)\n", e->status); }
+        /* While connected, a join's end is not ours: the firmware's own attempt (a roam, or an 802.11v transition it
+           made). On the owner's SE (25 November 2026) "join failed (status 1)" came seconds after every connection,
+           just before the firmware left the access point (event 11, reason 8): it is noted, not counted as our join. */
+        if (U(0)->state == AN_ST_CONNECTED) {
+            if (e->status != E_STATUS_SUCCESS) {
+                W.fw_attempt_at = now_ms();
+                wifi_log("the firmware's own join attempt failed while connected (status %u: %s, %s): not counted as ours\n", e->status, fm_status_word(e->status), b3(e->addr));
+            } else wifi_log("the firmware joined %s on its own\n", b3(e->addr));
+        } else if (e->status != E_STATUS_SUCCESS) { W.ev_setssid_fail = 1; wifi_log("join failed (status %u: %s)\n", e->status, fm_status_word(e->status)); }
+        break;
+    case E_ROAM:
+        /* the firmware roamed between the network's access points (Linux's brcmf_notify_roaming_status): the link stays
+           up; conn_tick reads the new BSSID. A link-down event before it was the old access point's. */
+        if (e->status == E_STATUS_SUCCESS) { W.ev_roamed = 1; W.ev_link_down = 0; wifi_log("the firmware roamed (reason %u) to %s\n", e->reason, b3(e->addr)); }
+        else { W.fw_attempt_at = now_ms(); wifi_log("the firmware's roam attempt ended: status %u (%s), reason %u\n", e->status, fm_status_word(e->status), e->reason); }
+        break;
+    case E_ROAM_START: case E_JOIN_START: case E_ASSOC_START: case E_ROAM_PREP:
+        if (U(0)->state == AN_ST_CONNECTED) {         /* while joining these are ours: only the firmware's own are said */
+            W.fw_attempt_at = now_ms();
+            wifi_log("the firmware starts a %s of its own while connected (event %u, reason %u, %s)\n",
+                     e->type == E_ROAM_START || e->type == E_ROAM_PREP ? "roam" : e->type == E_JOIN_START ? "join" : "association", e->type, e->reason, b3(e->addr));
+        }
+        break;
+    case E_BCNLOST:
+        wifi_log("beacons lost from %s (event 31): the access point not heard for a while\n", b3(e->addr));
         break;
     case E_LINK:
         if (e->flags & E_FLAG_LINK) { W.ev_link_up = 1; wifi_log("link up\n"); }
@@ -1035,7 +1102,12 @@ static void event(const struct fm_event *e)
         if (e->type != E_AUTH && e->status == E_STATUS_SUCCESS) W.ev_assoc_ok = 1;
         break;
     case E_DEAUTH: case E_DEAUTH_IND: case E_DISASSOC: case E_DISASSOC_IND:
-        wifi_log("disconnected by the network (event %u, reason %u)\n", e->type, e->reason);
+        /* 6 and 12 are the access point's frames; 5 and 11 our own side's (the firmware left: a roam or join of its own,
+           or our WLC_DISASSOC) - until 25 November 2026 both were "disconnected by the network" */
+        W.drop_by_ap = e->type == E_DEAUTH_IND || e->type == E_DISASSOC_IND;
+        W.drop_ev = (int)e->type; W.drop_reason = (int)e->reason;
+        wifi_log("%s %s %s (event %u, reason %u: %s)\n", e->type == E_DEAUTH || e->type == E_DEAUTH_IND ? "deauthenticated" : "disassociated",
+                 W.drop_by_ap ? "by the access point" : "by our side, from", b3(e->addr), e->type, e->reason, fm_reason_word(e->reason));
         W.ev_link_down = 1;
         break;
     default:
@@ -1164,6 +1236,9 @@ static void rx_all(void)
 static void poll_frames(void)
 {
     if (!W.chip_up) return;
+#ifdef PSMAC
+    if (W.sim) { struct fm_event e; U(0)->polls++; while (psmac_wfw_event(&e)) event(&e); return; }
+#endif
     uint32_t is, mb, wk = W.c.wakes;
     U(0)->polls++;
     if (chip_irq_ack(&W.c, &is, &mb)) {
@@ -1201,6 +1276,13 @@ static int is_dhcp_request(const uint8_t *f, uint32_t len)
 static void tx_all(void)
 {
     volatile struct an_unit *u = U(0);
+#ifdef PSMAC
+    if (W.sim) {                                    /* the simulated firmware carries no frames: sent into the air */
+        while (u->tx_tail != u->tx_head) { if (u->link) u->tx_pkts++; else u->tx_err++; u->tx_tail++; }
+        an_irq();
+        return;
+    }
+#endif
     while (u->tx_tail != u->tx_head) {
         if (!sdpcm_credit(W.txseq, W.maxseq) || W.fcstate || (W.flowctl & 1)) break;
         __asm__ volatile("dmb ish" ::: "memory");
@@ -1271,6 +1353,39 @@ static void wifi_filter_apply(void)
     cmd_int(10, (wifi_filter_want & AN_FILT_PROMISC) ? 1 : 0);                 /* 10: WLC_SET_PROMISC */
     iov_int("allmulti", (wifi_filter_want & AN_FILT_ALLMULTI) ? 1 : 0);
 }
+/* a word in the firmware's "cap" list */
+static int cap_has(const char *w)
+{
+    unsigned n = strlen(w);
+    for (char *p = W.caps; *p; p++)
+        if ((p == W.caps || p[-1] == ' ') && !mcmp(p, w, n) && (p[n] == ' ' || !p[n])) return 1;
+    return 0;
+}
+/* Roaming between the access points of one SSID (docs/08 item 147). Linux's brcmfmac leaves it to the firmware unless
+   roamoff=1 (brcmf_dongle_roam: roam_off 0, WLC_SET_ROAM_TRIGGER -75 dBm, WLC_SET_ROAM_DELTA 20 dB, for all bands), and so
+   does this by default, handling E_ROAM. wifi.roam=off sets roam_off 1 (the kernel moves itself, on a loss, with the kicked
+   list); wifi.roam=auto (the default) turns it off for the session when the firmware's own attempts twice came just before
+   the link was lost. Set before WLC_UP at the start, and before a join (not associated) when it changes. */
+static void roam_apply(void)
+{
+    static const char *const mw[] = { "auto", "on", "off" };
+    int off = W.roam_mode == 2 || W.roam_off_now;
+    int32_t e = iov_int("roam_off", off ? 1u : 0u);
+    W.roam_applied = off;
+    if (off) {
+        wifi_log("roaming: off in the firmware (roam_off 1%s; %s): the kernel moves between access points when the link is lost\n", e ? " REFUSED" : "",
+                 W.roam_mode == 2 ? "wifi.roam=off" : "turned off for this session by wifi.roam=auto");
+        return;
+    }
+    uint8_t b[8];
+    fm_put32(b, (uint32_t)-75); fm_put32(b + 4, 3);       /* WL_ROAM_TRIGGER_LEVEL, BRCM_BAND_ALL */
+    int32_t e1 = ctl(WLC_SET_ROAM_TRIGGER, 1, b, 8, 0);
+    fm_put32(b, 20); fm_put32(b + 4, 3);                   /* WL_ROAM_DELTA */
+    int32_t e2 = ctl(WLC_SET_ROAM_DELTA, 1, b, 8, 0);
+    wifi_log("roaming: the firmware's own, between the network's access points (roam_off 0%s, trigger -75 dBm%s, delta 20 dB%s; wifi.roam=%s)\n",
+             e ? " REFUSED" : "", e1 ? " REFUSED" : "", e2 ? " REFUSED" : "", mw[W.roam_mode >= 0 && W.roam_mode < 3 ? W.roam_mode : 0]);
+}
+static int fw_setup(const struct fwfile *clm);
 static int bringup(void)
 {
     static const char *const s43455[] = { "cyfmac43455-sdio", "cyfmac43455-sdio-standard", "brcmfmac43455-sdio.raspberrypi,4-model-b", "brcmfmac43455-sdio", 0 };
@@ -1290,6 +1405,14 @@ static int bringup(void)
     }
     W.chip_up = 0;
     scan_reset();
+#ifdef PSMAC
+    if (W.sim) {
+        u->chip = W.c.id = 0xa9a6; u->chiprev = W.c.rev = 1; u->sdmhz = 25;
+        W.chip_up = 1;
+        wifi_log("the simulated firmware (mac.wifisimfw=1): no chip, no SDIO\n");
+        return fw_setup(0);
+    }
+#endif
     wifi_where("pins and power");
     sdh_pins(alice_pi_is_2711());
     wl_on(0);
@@ -1356,6 +1479,12 @@ static int bringup(void)
     tlsf_free(tlsf, nvimg);
     if (e) { wstate(AN_ST_FAILED, "the firmware did not start"); return -5; }
     W.chip_up = 1;
+    return fw_setup(clm);
+}
+/* the firmware is running: its settings, as Linux's brcmf_c_preinit_dcmds and brcmf_config_dongle */
+static int fw_setup(const struct fwfile *clm)
+{
+    volatile struct an_unit *u = U(0);
     W.txseq = 0xff; W.maxseq = 0; W.rxskip = 0;
     wifi_where("firmware setup");
     iov_int("bus:txglom", 0);
@@ -1402,20 +1531,35 @@ static int bringup(void)
     if (wifi_filter_set) { wifi_filter_apply(); wifi_log("receive filter as the Mac asked before the chip was up: %s\n", (wifi_filter_want & AN_FILT_PROMISC) ? "promiscuous" : (wifi_filter_want & AN_FILT_ALLMULTI) ? "all multicast" : "unicast and broadcast"); }
     uint8_t mask[EVENT_MASK_LEN];
     memset(mask, 0, sizeof mask);
-    static const uint8_t evs[] = { E_SET_SSID, E_LINK, E_AUTH, E_ASSOC, E_DEAUTH, E_DEAUTH_IND, E_DISASSOC, E_DISASSOC_IND, E_PSK_SUP, E_ESCAN_RESULT, E_IF };
+    static const uint8_t evs[] = { E_SET_SSID, E_LINK, E_AUTH, E_ASSOC, E_REASSOC, E_DEAUTH, E_DEAUTH_IND, E_DISASSOC, E_DISASSOC_IND, E_PSK_SUP, E_ESCAN_RESULT, E_IF,
+                                   E_ROAM, E_BCNLOST, E_ROAM_PREP, E_JOIN_START, E_ROAM_START, E_ASSOC_START };   /* the firmware's own moves: docs/08 item 147 */
     for (unsigned i = 0; i < sizeof evs; i++) fm_event_mask_set(mask, evs[i]);
     iov_set("event_msgs", mask, sizeof mask);
     cmd_int(WLC_SET_SCAN_CHANNEL_TIME, 40);
     cmd_int(WLC_SET_SCAN_UNASSOC_TIME, 40);
     cmd_int(WLC_SET_SCAN_PASSIVE_TIME, 120);
+    roam_apply();
+    {   /* what the firmware does about 802.11v (BSS transition: an access point steering us to another) and 802.11k, said
+           for a log from a real chip; nothing is changed (docs/08 item 147) */
+        uint8_t b[4] = { 0, 0, 0, 0 }, t[4] = { 0, 0, 0, 0 };
+        int32_t e = iov_get("wnm", b, 4), et = iov_get("bcn_timeout", t, 4);
+        wifi_log("802.11v/k: the firmware lists%s%s%s%s; wnm %s%x (left as it is); bcn_timeout %u\n", cap_has("wnm") ? " wnm" : "", cap_has("bsstrans") ? " bsstrans" : "",
+                 cap_has("rm") ? " rm" : "", !cap_has("wnm") && !cap_has("bsstrans") && !cap_has("rm") ? " none of wnm, bsstrans, rm" : "", e ? "not readable " : "0x", e ? 0u : fm_le32(b), et ? 0u : fm_le32(t));
+    }
     cmd_int(WLC_SET_PM, (U(0)->cfg_flags & AN_WC_POWERSAVE) ? 2 : 0);      /* 2: PM_FAST */
     iov_int("arp_ol", 0); iov_int("arpoe", 0); iov_int("ndoe", 0); iov_int("toe", 0);
     cmd_int(WLC_UP, 0);
     cmd_int(WLC_SET_INFRA, 1);
     cmd_int(WLC_SET_AP, 0);
+#ifdef PSMAC
+    if (!W.sim) {
+#endif
     W.host_c0 = __builtin_bswap32(W.h.regs[0x28 / 4]) & 0x06u;          /* CONTROL0: 4-bit bus, high speed */
     W.host_c1 = __builtin_bswap32(W.h.regs[0x2c / 4]) & 0xffe5u;        /* CONTROL1: divider, clock on, internal clock */
     W.host_hz = W.h.sd_hz;
+#ifdef PSMAC
+    }
+#endif
     wstate(AN_ST_IDLE, W.ssid[0] ? "ready" : "ready - no network yet (Alice68-WiFi JOIN, or wifi.ssid= in cmdline.txt)");
     return 0;
 }
@@ -1432,27 +1576,52 @@ static void chip_off(void)
     if (W.chip_up) cmd_int(WLC_DOWN, 0);
     W.chip_up = 0;
     link_set(0);
+#ifdef PSMAC
+    if (W.sim) return;
+#endif
     wl_on(0);
 }
 
 /* ---- connecting ---- */
-static void scan_start(void)
+/* pass 0: a fresh scan (the table emptied), the firmware's dwell (40 ms per channel, as Linux); pass 1: one more,
+   merged into the table, listening 80 ms on each channel (docs/08 item 147: on the owner's SE a join's scan heard one or
+   two networks in an office) */
+static void scan_start(int pass)
 {
     uint8_t p[80];
-    W.nscan = 0;
+    if (!pass) W.nscan = 0;
+    W.scan_pass = pass;
     W.scan_done = 0;
+    W.scan_status = -1;
     W.scan_t0 = now_ms();
-    unsigned n = fm_escan_params(p, ++W.scan_sync);
+    unsigned n = fm_escan_params_dwell(p, ++W.scan_sync, pass ? 80u : 0u);
     int32_t e = iov_set("escan", p, n);
-    if (e) { wifi_log("scan refused (%d)\n", e); W.scan_done = 1; }
+    if (e) { wifi_log("scan refused (%d)\n", e); W.scan_done = 1; W.scan_status = e < -1 ? e : -2; }
     W.scan_busy = 1;
 }
 static void retry(const char *why)
 {
     link_set(0);
+    if (W.quick > 0) {                              /* just lost a connection: the next access point at once (docs/08 item 147) */
+        W.quick--;
+        W.retry_at = now_ms() + 300;
+        wstate(AN_ST_RETRY, why);
+        wifi_log("trying again at once (%d more quick tries)\n", W.quick);
+        return;
+    }
     W.backoff = W.backoff ? (W.backoff * 2 > 30000 ? 30000 : W.backoff * 2) : 2000;
     W.retry_at = now_ms() + W.backoff;
     wstate(AN_ST_RETRY, why);
+}
+/* a join of ours that did not work: counted against pinned joins, and the BSSID skipped for a minute where another is near */
+static void join_failed(const char *why)
+{
+    fm_pick_result(&W.pick, W.pinned, 0);
+    if (W.pinned) {
+        fm_pick_kick(&W.pick, W.cur.bssid, now_ms(), FM_KICK_FAIL_MS, FM_KICK_FAILED);
+        wifi_log("%s could not be joined: skipped for %u s while another is heard (%d failed in a row)\n", b3(W.cur.bssid), FM_KICK_FAIL_MS / 1000u, W.pick.pinned_fails);
+    }
+    retry(why);
 }
 static int hex64(const char *s)
 {
@@ -1462,7 +1631,9 @@ static int hex64(const char *s)
     }
     return 1;
 }
-static void join(const struct fm_bss *b)
+/* b: the access point (0: none seen); pin: name its BSSID and channel in the join, else the SSID only (the firmware
+   chooses), with b's security */
+static void join(const struct fm_bss *b, int pin)
 {
     struct fm_bss any;
     if (!b) {
@@ -1470,8 +1641,10 @@ static void join(const struct fm_bss *b)
         any.security = W.pass[0] ? SEC_WPA2 : SEC_OPEN;
         any.group_cipher = any.pairwise = 4;
         b = &any;
+        pin = 0;
     }
     W.cur = *b;
+    W.pinned = pin;
     int open = !W.pass[0];
     int sae = !open && (b->security & SEC_WPA3) && !(b->security & (SEC_WPA2 | SEC_WPA)) && W.has_sae;
     if (!open && (b->security & (SEC_OPEN | SEC_WEP)) && !(b->security & (SEC_WPA | SEC_WPA2 | SEC_WPA3))) {
@@ -1488,6 +1661,7 @@ static void join(const struct fm_bss *b)
         auth = sae ? WPA3_AUTH_SAE_PSK : (b->security & (SEC_WPA2 | SEC_WPA3)) ? WPA2_AUTH_PSK : WPA_AUTH_PSK;
     }
     cmd_int(WLC_DISASSOC, 0);
+    if (W.roam_applied != (W.roam_mode == 2 || W.roam_off_now)) roam_apply();   /* not associated now */
     iov_int("wsec", wsec);
     iov_int("wpa_auth", auth);
     iov_int("auth", sae ? 3 : 0);
@@ -1525,7 +1699,7 @@ static void join(const struct fm_bss *b)
         iov_int("sup_wpa", 0);
     uint8_t jp[80];
     unsigned sl = strlen(W.ssid);
-    int known = b != &any;
+    int known = pin;
     unsigned n = fm_join_params(jp, W.ssid, sl, known ? b->bssid : 0, known ? b->chanspec : 0);
     if (iov_set("join", jp, n)) {
         n = fm_ssid_params(jp, W.ssid, sl, known ? b->bssid : 0);
@@ -1539,21 +1713,75 @@ static void join(const struct fm_bss *b)
     for (const char *p = W.ssid; *p && i < 90; ) m[i++] = *p++;
     m[i] = 0;
     wstate(AN_ST_JOINING, m);
-    wifi_log("channel %u, %s\n", b->channel, open ? "open" : sae ? "WPA3-SAE" : (b->security & (SEC_WPA2 | SEC_WPA3)) ? "WPA2-PSK" : "WPA-PSK");
+    if (pin) wifi_log("%s, channel %u, %s\n", b3(b->bssid), b->channel, open ? "open" : sae ? "WPA3-SAE" : (b->security & (SEC_WPA2 | SEC_WPA3)) ? "WPA2-PSK" : "WPA-PSK");
+    else wifi_log("by name only: the firmware chooses the access point, %s\n", open ? "open" : sae ? "WPA3-SAE" : (b->security & (SEC_WPA2 | SEC_WPA3)) ? "WPA2-PSK" : "WPA-PSK");
 }
-static void connect_info(void)
+/* the link's figures for the board; 1 if the BSSID is not the one we had (a roam, or the firmware's choice), its
+   channel then from the scan or the firmware */
+static int connect_info(void)
 {
     uint32_t v;
     volatile struct an_unit *u = U(0);
+    int moved = 0;
     if (!cmd_get_int(WLC_GET_RSSI, &v)) W.rssi = (int32_t)v;
     if (!cmd_get_int(WLC_GET_RATE, &v)) W.rate = (int)(v / 2);
     uint8_t b[8];
-    if (!ctl(WLC_GET_BSSID, 0, b, 6, 6)) memcpy(W.cur.bssid, b, 6);
+    if (!ctl(WLC_GET_BSSID, 0, b, 6, 6) && (b[0] | b[1] | b[2] | b[3] | b[4] | b[5]) && mcmp(W.cur.bssid, b, 6)) {
+        memcpy(W.cur.bssid, b, 6);
+        moved = 1;
+        int found = 0;
+        for (int i = 0; i < W.nscan && !found; i++) if (!mcmp(W.scan[i].bssid, b, 6)) { W.cur.channel = W.scan[i].channel; W.cur.chanspec = W.scan[i].chanspec; found = 1; }
+        uint8_t ci[12];
+        if (!found && !ctl(WLC_GET_CHANNEL, 0, ci, 12, 12) && fm_le32(ci) && fm_le32(ci) < 200) W.cur.channel = (uint8_t)fm_le32(ci);   /* hw_channel */
+    }
     u->rssi = W.rssi; u->speed_mbps = (unsigned)W.rate; u->channel = W.cur.channel; u->security = W.cur.security;
     for (int i = 0; i < 6; i++) u->bssid[i] = W.cur.bssid[i];
     unsigned i = 0;
     for (; W.ssid[i] && i < 35; i++) u->ssid[i] = W.ssid[i];
     u->ssid[i] = 0;
+    return moved;
+}
+/* the access points of the SSID in the scan, strongest first: one line each the first time, then one line in all */
+static void scan_log_aps(uint32_t now)
+{
+    int idx[AN_SCAN_MAX], m = 0;
+    unsigned sl = strlen(W.ssid);
+    for (int i = 0; i < W.nscan; i++)
+        if (W.scan[i].ssid_len == sl && !mcmp(W.scan[i].ssid, W.ssid, sl)) {
+            int j = m++;
+            while (j > 0 && W.scan[idx[j - 1]].rssi < W.scan[i].rssi) { idx[j] = idx[j - 1]; j--; }
+            idx[j] = i;
+        }
+    if (!m) return;
+    if (!W.aps_logged) {
+        W.aps_logged = 1;
+        for (int j = 0; j < m; j++) {
+            const struct fm_bss *b = &W.scan[idx[j]];
+            const struct fm_kick *k = fm_pick_kicked(&W.pick, b->bssid, now);
+            wifi_log("  AP %s: channel %u, %d dBm, %s%s\n", b3(b->bssid), b->channel, b->rssi,
+                     (b->security & SEC_WPA3) && !(b->security & SEC_WPA2) ? "WPA3" : (b->security & SEC_WPA2) ? ((b->security & SEC_WPA3) ? "WPA2/WPA3" : "WPA2") :
+                     (b->security & SEC_WPA) ? "WPA" : (b->security & SEC_WEP) ? "WEP" : "open", k ? " (skipped for now)" : "");
+        }
+        return;
+    }
+    char t[160]; unsigned n = 0; int anyk = 0;
+    for (int j = 0; j < m && j < 6; j++) {
+        const struct fm_bss *b = &W.scan[idx[j]];
+        const char *id = b3(b->bssid);
+        if (n) { t[n++] = ','; t[n++] = ' '; }
+        while (*id) t[n++] = *id++;
+        t[n++] = ' '; t[n++] = 'c'; t[n++] = 'h';
+        if (b->channel >= 100) t[n++] = (char)('0' + b->channel / 100);
+        if (b->channel >= 10) t[n++] = (char)('0' + b->channel / 10 % 10);
+        t[n++] = (char)('0' + b->channel % 10);
+        t[n++] = ' '; t[n++] = '-';
+        int r = b->rssi < 0 ? -b->rssi : b->rssi;
+        if (r >= 100) t[n++] = (char)('0' + r / 100);
+        t[n++] = (char)('0' + r / 10 % 10); t[n++] = (char)('0' + r % 10);
+        if (fm_pick_kicked(&W.pick, b->bssid, now)) { t[n++] = '*'; anyk = 1; }
+    }
+    t[n] = 0;
+    wifi_log("  %d APs: %s%s%s\n", m, t, m > 6 ? ", ..." : "", anyk ? " (* skipped for now)" : "");
 }
 static void scan_publish(void)
 {
@@ -1579,28 +1807,75 @@ static void cmd_finish(uint32_t seq, int result)
     u->cmd_done = seq;
     an_irq();
 }
+/* the words for why a kicked BSSID is skipped */
+static const char *kick_word(int why) { return why == FM_KICK_FAILED ? "could not be joined" : why == FM_KICK_BY_AP ? "disconnected us" : "lost the link"; }
+/* a join's scan is over: choose (wifi/fmac.c fm_pick_choose, docs/08 item 147) and join */
+static void choose_and_join(uint32_t now)
+{
+    unsigned sl = strlen(W.ssid);
+    int why, best, m = 0;
+    for (int i = 0; i < W.nscan; i++) if (W.scan[i].ssid_len == sl && !mcmp(W.scan[i].ssid, W.ssid, sl)) m++;
+    scan_log_aps(now);
+    int k = fm_pick_choose(&W.pick, W.scan, W.nscan, W.ssid, sl, now, &why, &best);
+    if (k == FM_PICK_RESCAN) {
+        const struct fm_seen *bs = fm_pick_better_seen(&W.pick, W.scan[best].bssid, W.pick.minrssi - 1, now);
+        wifi_log("the best heard now is %s at %d dBm, under %d dBm, but %s was %d dBm %u s ago: scanning again\n", b3(W.scan[best].bssid), W.scan[best].rssi,
+                 W.pick.minrssi, bs ? b3(bs->bssid) : "?", bs ? bs->rssi : 0, bs ? (now - bs->at) / 1000u : 0u);
+        W.scan_for_join = 1;
+        scan_start(0);
+        wstate(AN_ST_SCANNING, 0);
+        return;
+    }
+    if (k >= 0) {
+        const struct fm_bss *b = &W.scan[k];
+        if (why == FM_WHY_SKIPPED_KICKED) {
+            const struct fm_kick *kk = fm_pick_kicked(&W.pick, W.scan[best].bssid, now);
+            wifi_log("choosing %s: channel %u, %d dBm (%s at %d dBm %s: skipped %u s more)\n", b3(b->bssid), b->channel, b->rssi, b3(W.scan[best].bssid), W.scan[best].rssi,
+                     kk ? kick_word(kk->why) : "?", kk ? (kk->until - now) / 1000u : 0u);
+        } else if (why == FM_WHY_KICKED_ANYWAY) {
+            const struct fm_kick *kk = fm_pick_kicked(&W.pick, b->bssid, now);
+            wifi_log("choosing %s: channel %u, %d dBm, though it %s: no other within %u dB\n", b3(b->bssid), b->channel, b->rssi, kk ? kick_word(kk->why) : "?", FM_KICK_DB);
+        } else
+            wifi_log("choosing %s: channel %u, %d dBm (the strongest of %d%s)\n", b3(b->bssid), b->channel, b->rssi, m, why == FM_WHY_WEAK_ONLY ? ", weak: nothing better heard in a minute" : "");
+        join(b, 1);
+        return;
+    }
+    /* by name only: the firmware's own choice */
+    if (why == FM_WHY_NOT_SEEN) wifi_log("\"%s\" not seen in the scan: joining by name only\n", W.ssid);
+    else if (why == FM_WHY_FALLBACK) wifi_log("%d joins with an access point named failed in a row: by name only, the firmware chooses\n", W.pick.pinned_fails);
+    else wifi_log("only access points under %d dBm heard, twice more, while a better one was seen: by name only, the firmware chooses\n", W.pick.minrssi);
+    join(best >= 0 ? &W.scan[best] : 0, 0);
+}
 static void conn_tick(void)
 {
     uint32_t now = now_ms();
     if (!W.chip_up) return;
     if (W.scan_busy && (W.scan_done || (int32_t)(now - W.scan_t0) > 10000)) {
+        int32_t st = W.scan_done ? W.scan_status : -1;
+        unsigned sl = strlen(W.ssid);
+        int m = 0;
+        for (int i = 0; i < W.nscan; i++) if (sl && W.scan[i].ssid_len == sl && !mcmp(W.scan[i].ssid, W.ssid, sl)) m++;
+        /* the escan's end, said: until 25 November 2026 an aborted or cut-short scan looked like a finished one */
+        char sw[48]; unsigned q = 0;
+        const char *w = st >= 0 ? fm_status_word((uint32_t)st) : st == -1 ? "no end in 10 s" : "refused";
+        while (*w && q < 30) sw[q++] = *w++;
+        if (st > 0) { const char *x = " (status "; while (*x) sw[q++] = *x++; if (st >= 10) sw[q++] = (char)('0' + st / 10 % 10); sw[q++] = (char)('0' + st % 10); sw[q++] = ')'; }
+        sw[q] = 0;
+        if (sl && (W.scan_for_join || W.want)) wifi_log("scan: %d networks, %d of them \"%s\" (%s, %u ms%s)\n", W.nscan, m, W.ssid, sw, now - W.scan_t0, W.scan_pass ? ", second pass" : "");
+        else wifi_log("scan: %d networks (%s, %u ms%s)\n", W.nscan, sw, now - W.scan_t0, W.scan_pass ? ", second pass" : "");
+        /* one more pass, merged, when the scan did not end cleanly or a join's scan heard fewer than three of the SSID */
+        if (!W.scan_pass && (st != E_STATUS_SUCCESS || (W.scan_for_join && W.want && m < 3))) {
+            wifi_log("scanning once more, 80 ms on each channel (%s)\n", st != E_STATUS_SUCCESS ? "the scan did not end cleanly" : "fewer than three access points of the network heard");
+            scan_start(1);
+            return;
+        }
         W.scan_busy = 0;
-        wifi_log("scan: %d networks\n", W.nscan);
         scan_publish();
         if (W.scan_cmd) { W.scan_cmd = 0; cmd_finish(W.scan_cmd_seq, 0); }
         if (W.scan_for_join) {
             W.scan_for_join = 0;
-            const struct fm_bss *best = 0;
-            for (int i = 0; i < W.nscan; i++)
-                if (W.scan[i].ssid_len == strlen(W.ssid) && !mcmp(W.scan[i].ssid, W.ssid, W.scan[i].ssid_len) &&
-                    (!best || W.scan[i].rssi > best->rssi))
-                    best = &W.scan[i];
             if (!W.want) { wifi_log("scan done; no longer asked to join\n"); }
-            else {
-                if (!best) wifi_log("\"%s\" not seen in the scan\n", W.ssid);
-                else wifi_log("\"%s\": %d dBm, channel %u, security %x\n", W.ssid, best->rssi, best->channel, best->security);
-                join(best);
-            }
+            else choose_and_join(now);
         }
     }
 #ifdef PSMAC
@@ -1613,18 +1888,25 @@ static void conn_tick(void)
     unsigned st = U(0)->state;
     switch (st) {
     case AN_ST_IDLE:
-        if (W.want && W.ssid[0] && !W.scan_busy) { W.scan_for_join = 1; scan_start(); wstate(AN_ST_SCANNING, 0); }
+        if (W.want && W.ssid[0] && !W.scan_busy) { W.scan_for_join = 1; scan_start(0); wstate(AN_ST_SCANNING, 0); }
         break;
     case AN_ST_RETRY:
-        if ((int32_t)(now - W.retry_at) >= 0 && !W.scan_busy && W.want) { W.scan_for_join = 1; scan_start(); wstate(AN_ST_SCANNING, 0); }
+        if ((int32_t)(now - W.retry_at) >= 0 && !W.scan_busy && W.want) {
+            /* after a lost link the firmware may still be trying to get back on its own; its scans cut ours short
+               (docs/08 item 147): stopped first */
+            if (W.need_disassoc) { W.need_disassoc = 0; cmd_int(WLC_DISASSOC, 0); }
+            W.scan_for_join = 1; scan_start(0); wstate(AN_ST_SCANNING, 0);
+        }
         break;
     case AN_ST_JOINING:
-        if (W.ev_setssid_fail) { retry("could not join the network"); break; }
+        if (W.ev_setssid_fail) { join_failed("could not join the network"); break; }
         if (W.ev_link_down && (int32_t)(now - W.join_t0) < 1000) W.ev_link_down = 0;
-        if (W.ev_link_down) { retry(W.ev_assoc_ok && !W.keyed ? "the WPA handshake failed: is the password right?" : "the network refused us"); break; }
+        if (W.ev_link_down) { join_failed(W.ev_assoc_ok && !W.keyed ? "the WPA handshake failed: is the password right?" : "the network refused us"); break; }
         if (W.ev_keyed) W.keyed = 1;
         if (W.ev_link_up && W.keyed) {
-            W.backoff = 0;
+            fm_pick_result(&W.pick, W.pinned, 1);
+            W.connected_at = now;                   /* the backoff is cleared once the link has lasted 30 s */
+            W.ev_roamed = 0;
             connect_info();
             W.info_at = now + 5000;
             char m[96]; unsigned i = 0;
@@ -1633,7 +1915,7 @@ static void conn_tick(void)
             m[i] = 0;
             link_set(1);
             wstate(AN_ST_CONNECTED, m);
-            wifi_log("channel %u, %d dBm, %d Mbit/s\n", W.cur.channel, W.rssi, W.rate);
+            wifi_log("%s, channel %u, %d dBm, %d Mbit/s\n", b3(W.cur.bssid), W.cur.channel, W.rssi, W.rate);
 #ifdef PSMAC
             /* The power-save mode is set before the join, but the firmware may take up its own on
                associating (Linux sets it again after every connect). With PM_FAST the radio dozes
@@ -1649,13 +1931,45 @@ static void conn_tick(void)
             }
 #endif
         } else if ((int32_t)(now - W.join_t0) > 20000)
-            retry(W.ev_link_up || W.ev_assoc_ok ? "associated, but the WPA handshake did not finish: is the password right?" : "the network did not answer");
+            join_failed(W.ev_link_up || W.ev_assoc_ok ? "associated, but the WPA handshake did not finish: is the password right?" : "the network did not answer");
         break;
     case AN_ST_CONNECTED:
-        if (W.ev_link_down) { W.ev_link_down = 0; retry("connection lost"); break; }
-        if ((int32_t)(now - W.info_at) >= 0) {
+        if (W.ev_link_down) {
+            /* lost: that access point skipped for a while where another is near, the next one at once (docs/08 item 147) */
+            W.ev_link_down = 0;
+            uint32_t up = now - W.connected_at;
+            fm_pick_kick(&W.pick, W.cur.bssid, now, FM_KICK_MS, W.drop_by_ap ? FM_KICK_BY_AP : FM_KICK_LOST);
+            int fw = W.fw_attempt_at && now - W.fw_attempt_at < 5000u;
+            wifi_log("lost %s after %u s (%s%s): skipped for %u s where another is within %u dB\n", b3(W.cur.bssid), up / 1000u,
+                     W.drop_by_ap ? "the access point disconnected us" : W.drop_ev ? "our side left it" : "the link went down",
+                     fw ? ", just after a join or roam attempt of the firmware's own" : "", FM_KICK_MS / 1000u, FM_KICK_DB);
+            if (fw && W.roam_mode == 0 && !W.roam_off_now) {
+                if (!W.fw_drops || now - W.fw_drop_t0 > 600000u) { W.fw_drops = 0; W.fw_drop_t0 = now; }
+                if (++W.fw_drops >= 2) {
+                    W.roam_off_now = 1;
+                    wifi_log("firmware roaming off for this session: twice in %u s its own attempt came just before the link was lost (wifi.roam=on keeps it)\n", (now - W.fw_drop_t0) / 1000u);
+                }
+            }
+            W.drop_by_ap = W.drop_ev = 0;
+            W.fw_attempt_at = 0;
+            W.need_disassoc = 1;
+            W.quick = up >= 30000u ? 3 : 1;         /* a link that lasted: three quick tries; one that did not: one */
+            retry("connection lost");
+            break;
+        }
+        if (W.backoff && now - W.connected_at > 30000u) W.backoff = 0;
+        if (W.ev_roamed || (int32_t)(now - W.info_at) >= 0) {
+            uint8_t was[6];
+            memcpy(was, W.cur.bssid, 6);
+            int roamed = W.ev_roamed;
+            W.ev_roamed = 0;
             W.info_at = now + 5000;
-            connect_info();
+            if (connect_info()) {
+                /* the firmware moved to another access point of the network: the link stays up */
+                wifi_log("roamed to %s: channel %u, %d dBm (from %s%s); the link stays up\n", b3(W.cur.bssid), W.cur.channel, W.rssi, b3(was), roamed ? "" : ", seen in the link's figures");
+                U(0)->state_seq++;
+                an_irq();
+            }
             U(0)->speed_mbps = W.rate ? (unsigned)W.rate : 54u;
         }
         break;
@@ -1851,7 +2165,7 @@ static void commands(void)
     case AN_CMD_SCAN:
         if (!W.chip_up) { cmd_finish(seq, -1); break; }
         W.scan_cmd = 1; W.scan_cmd_seq = seq;
-        if (!W.scan_busy) scan_start();
+        if (!W.scan_busy) scan_start(0);
         break;
     case AN_CMD_DISCONNECT:
 #ifdef PSMAC
@@ -1956,6 +2270,19 @@ static void wifi_thread(void)
     if (bootarg_val("wifi.sdclock", v, sizeof v)) { uint32_t n = 0; for (char *p = v; *p >= '0' && *p <= '9'; p++) n = n * 10 + (uint32_t)(*p - '0'); if (n >= 400000 && n <= 50000000) W.sdclock = n; }
     if (bootarg_val("wifi.ssid", v, sizeof v)) { unsigned i = 0; for (; v[i] && i < 32; i++) W.ssid[i] = v[i]; W.ssid[i] = 0; W.want = W.ssid[0] != 0; }
     if (bootarg_val("wifi.psk", v, sizeof v)) { unsigned i = 0; for (; v[i] && i < 64; i++) W.pass[i] = v[i]; W.pass[i] = 0; }
+    /* wifi.roam=auto|on|off and wifi.minrssi=DBM (docs/08 item 147): the firmware's own roaming, and the weakest access
+       point chosen while a better one was seen in the last minute (-80 dBm) */
+    W.roam_mode = 0;
+    if (bootarg_val("wifi.roam", v, sizeof v)) W.roam_mode = ieq(v, "on") ? 1 : ieq(v, "off") ? 2 : 0;
+    {
+        int mr = -80;
+        if (bootarg_val("wifi.minrssi", v, sizeof v)) {
+            int n = 0; const char *q = v[0] == '-' ? v + 1 : v;
+            for (; *q >= '0' && *q <= '9'; q++) n = n * 10 + (*q - '0');
+            if (n >= 40 && n <= 100) mr = -n;
+        }
+        fm_pick_init(&W.pick, mr);
+    }
 #ifdef PSMAC
     /* Two letters, A to Z (ISO 3166). "XX" is the placeholder of the instructions, not a country: the
        user's SE had it on 21 November 2026. It never reached the chip (the WiFi stopped earlier), but
@@ -1973,16 +2300,22 @@ static void wifi_thread(void)
 #endif
     W.start_req = 1;                                /* as soon as the firmware is there */
 #ifdef PSMAC
+    W.sim = psmac_wfw_on();
+    if (W.sim) kprintf("[WIFI] mac.wifisimfw=1: the real driver above a simulated firmware (testbed)\n");
     /* the container was read at boot (psmac_bus.c), before this thread starts: with no WiFi
        firmware in it nothing will ever arrive, so say once what to add */
-    if (!fw_have_wifi())
+    if (!W.sim && !fw_have_wifi())
         kprintf("[WIFI] the container has no WiFi firmware: add cyfmac43430-sdio.bin, brcmfmac43430-sdio.txt and cyfmac43430-sdio.clm_blob (Pi 3B) with make-container.py\n");
 #endif
     wstate(AN_ST_NOFW, FW_WAITING);
     uint32_t seen_gen = 0;
     for (;;) {
         /* off, or no firmware yet: commands only */
+#ifdef PSMAC
+        while (!(W.start_req && !W.off_req && (nfw || W.sim))) {
+#else
         while (!(W.start_req && !W.off_req && nfw)) {
+#endif
             if (seen_gen != fw_gen) { seen_gen = fw_gen; if (u->state == AN_ST_NOFW || u->state == AN_ST_FAILED) W.start_req = 1; continue; }
             commands();
             if (W.off_req && u->state != AN_ST_OFF) { chip_off(); wstate(AN_ST_OFF, "switched off"); }
@@ -2001,7 +2334,11 @@ static void wifi_thread(void)
         while (W.chip_up && !W.off_req) {
             /* Another driver in AmigaOS (WiFiPi.device, say) resetting the same SD host
                shows as changed bus or clock settings: say so, and take the chip back. */
+#ifdef PSMAC
+            uint32_t c0 = W.sim ? W.host_c0 : __builtin_bswap32(W.h.regs[0x28 / 4]) & 0x06u, c1 = W.sim ? W.host_c1 : __builtin_bswap32(W.h.regs[0x2c / 4]) & 0xffe5u;
+#else
             uint32_t c0 = __builtin_bswap32(W.h.regs[0x28 / 4]) & 0x06u, c1 = __builtin_bswap32(W.h.regs[0x2c / 4]) & 0xffe5u;
+#endif
             if (W.h.sd_hz != W.host_hz) { W.host_hz = W.h.sd_hz; W.host_c1 = c1; }    /* our own slow-down after errors */
             if (c0 != W.host_c0 || c1 != W.host_c1) {
                 wifi_log("the WiFi controller was reset by someone else (CONTROL0 %x, CONTROL1 %x)\n", c0, c1);

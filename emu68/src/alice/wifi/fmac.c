@@ -116,7 +116,8 @@ int fm_event_parse(const uint8_t *f, unsigned len, struct fm_event *e)
 }
 
 /* ---- scanning ------------------------------------------------------------- */
-unsigned fm_escan_params(uint8_t *b, uint16_t sync_id)
+unsigned fm_escan_params(uint8_t *b, uint16_t sync_id) { return fm_escan_params_dwell(b, sync_id, 0); }
+unsigned fm_escan_params_dwell(uint8_t *b, uint16_t sync_id, uint32_t active_ms)
 {
     memset(b, 0, 72);
     fm_put32(b, 1);                 /* escan version */
@@ -127,7 +128,7 @@ unsigned fm_escan_params(uint8_t *b, uint16_t sync_id)
     p[42] = 2;                      /* bss type: any */
     p[43] = 0;                      /* active scan */
     fm_put32(p + 44, 0xffffffffu);  /* nprobes: default */
-    fm_put32(p + 48, 0xffffffffu);  /* active time */
+    fm_put32(p + 48, active_ms ? active_ms : 0xffffffffu);  /* active time per channel, ms */
     fm_put32(p + 52, 0xffffffffu);  /* passive time */
     fm_put32(p + 56, 0xffffffffu);  /* home time */
     fm_put32(p + 60, 0);            /* all channels, one (wildcard) SSID */
@@ -458,4 +459,133 @@ int fm_hex_pmk(const char *s, uint8_t pmk[32])
     for (int i = 0; i < 64; i++) if (hexval(s[i]) < 0) return -1;
     for (int i = 0; i < 32; i++) pmk[i] = (uint8_t)(hexval(s[2 * i]) << 4 | hexval(s[2 * i + 1]));
     return 0;
+}
+
+/* ---- words for the log ------------------------------------------------------ */
+const char *fm_status_word(uint32_t st)
+{
+    switch (st) {
+    case E_STATUS_SUCCESS: return "complete";
+    case E_STATUS_FAIL: return "failed";
+    case E_STATUS_TIMEOUT: return "timed out";
+    case E_STATUS_NO_NETWORKS: return "no networks";
+    case E_STATUS_ABORT: return "aborted";
+    case 5: return "no acknowledgement";
+    case 6: return "unsolicited";
+    case 7: return "attempt";
+    case E_STATUS_PARTIAL: return "partial";
+    case E_STATUS_NEWSCAN: return "a new scan took its place";
+    default: return "?";
+    }
+}
+const char *fm_reason_word(uint32_t r)
+{
+    switch (r) {
+    case 1: return "unspecified";
+    case 2: return "authentication no longer valid";
+    case 3: return "leaving (deauthenticated)";
+    case 4: return "inactivity";
+    case 5: return "the access point is full";
+    case 6: case 7: return "frame from a station not joined";
+    case 8: return "leaving the BSS";
+    case 9: return "not authenticated";
+    case 12: return "BSS transition (802.11v)";
+    case 14: return "MIC failure";
+    case 15: return "4-way handshake timed out";
+    case 23: return "802.1X authentication failed";
+    case 34: return "too many frames unacknowledged";
+    default: return "?";
+    }
+}
+
+/* ---- choosing an access point (fmac.h) -------------------------------------- */
+static int same6(const uint8_t *a, const uint8_t *b) { for (int i = 0; i < 6; i++) if (a[i] != b[i]) return 0; return 1; }
+static int later(uint32_t t, uint32_t now) { return (int32_t)(t - now) > 0; }
+void fm_pick_init(struct fm_pick *p, int minrssi)
+{
+    memset(p, 0, sizeof *p);
+    p->minrssi = minrssi;
+}
+void fm_pick_seen(struct fm_pick *p, const struct fm_bss *b, uint32_t now)
+{
+    int k = -1, old = 0;
+    for (int i = 0; i < FM_SEEN_MAX && k < 0; i++) if (p->seen[i].at && same6(p->seen[i].bssid, b->bssid)) k = i;
+    for (int i = 0; i < FM_SEEN_MAX && k < 0; i++) if (!p->seen[i].at) k = i;
+    if (k < 0) {
+        for (int i = 1; i < FM_SEEN_MAX; i++) if ((int32_t)(p->seen[i].at - p->seen[old].at) < 0) old = i;
+        k = old;
+    }
+    cpy(p->seen[k].bssid, b->bssid, 6);
+    p->seen[k].rssi = b->rssi;
+    p->seen[k].channel = b->channel;
+    p->seen[k].at = now ? now : 1;
+}
+void fm_pick_kick(struct fm_pick *p, const uint8_t bssid[6], uint32_t now, uint32_t ms, int why)
+{
+    int k = -1, old = 0;
+    for (int i = 0; i < FM_KICK_MAX && k < 0; i++) if (p->kick[i].why && same6(p->kick[i].bssid, bssid)) k = i;
+    for (int i = 0; i < FM_KICK_MAX && k < 0; i++) if (!p->kick[i].why || !later(p->kick[i].until, now)) k = i;
+    if (k < 0) {
+        for (int i = 1; i < FM_KICK_MAX; i++) if ((int32_t)(p->kick[i].until - p->kick[old].until) < 0) old = i;
+        k = old;
+    }
+    cpy(p->kick[k].bssid, bssid, 6);
+    p->kick[k].why = (uint8_t)why;
+    p->kick[k].until = now + ms;
+}
+const struct fm_kick *fm_pick_kicked(const struct fm_pick *p, const uint8_t bssid[6], uint32_t now)
+{
+    for (int i = 0; i < FM_KICK_MAX; i++)
+        if (p->kick[i].why && later(p->kick[i].until, now) && same6(p->kick[i].bssid, bssid)) return &p->kick[i];
+    return 0;
+}
+const struct fm_seen *fm_pick_better_seen(const struct fm_pick *p, const uint8_t bssid[6], int rssi, uint32_t now)
+{
+    const struct fm_seen *b = 0;
+    for (int i = 0; i < FM_SEEN_MAX; i++) {
+        const struct fm_seen *s = &p->seen[i];
+        if (!s->at || now - s->at > FM_SEEN_MS || same6(s->bssid, bssid) || s->rssi <= rssi) continue;
+        if (!b || s->rssi > b->rssi) b = s;
+    }
+    return b;
+}
+int fm_pick_choose(struct fm_pick *p, const struct fm_bss *scan, int n, const char *ssid, unsigned sl, uint32_t now, int *why, int *best)
+{
+    int s = -1, nk = -1;
+    for (int i = 0; i < n; i++) {
+        const struct fm_bss *b = &scan[i];
+        if (b->ssid_len != sl) continue;
+        unsigned j = 0;
+        while (j < sl && b->ssid[j] == ssid[j]) j++;
+        if (j != sl) continue;
+        fm_pick_seen(p, b, now);
+        if (s < 0 || b->rssi > scan[s].rssi) s = i;
+        if (!fm_pick_kicked(p, b->bssid, now) && (nk < 0 || b->rssi > scan[nk].rssi)) nk = i;
+    }
+    *best = s;
+    if (p->pinned_fails >= FM_PINNED_MAX) { *why = FM_WHY_FALLBACK; return FM_PICK_ANY; }
+    if (s < 0) { *why = FM_WHY_NOT_SEEN; return FM_PICK_ANY; }
+    int k;
+    /* a BSSID that could not be joined at all is no use however strong: any other heard above minrssi instead; one
+       that disconnected us (it may have been steering us, or the radio was busy) only when another is within FM_KICK_DB */
+    const struct fm_kick *sk = fm_pick_kicked(p, scan[s].bssid, now);
+    if (nk == s) { k = s; *why = FM_WHY_STRONGEST; }
+    else if (nk >= 0 && (scan[nk].rssi >= scan[s].rssi - FM_KICK_DB || (sk && sk->why == FM_KICK_FAILED && scan[nk].rssi >= p->minrssi))) { k = nk; *why = FM_WHY_SKIPPED_KICKED; }
+    else { k = s; *why = FM_WHY_KICKED_ANYWAY; }
+    if (scan[k].rssi < p->minrssi) {
+        if (fm_pick_better_seen(p, scan[k].bssid, p->minrssi - 1, now)) {
+            if (p->weak_rescans < FM_WEAK_RESCANS) { p->weak_rescans++; *why = FM_WHY_WEAK_RESCAN; return FM_PICK_RESCAN; }
+            p->weak_rescans = 0;
+            *why = FM_WHY_WEAK_ANY;
+            return FM_PICK_ANY;
+        }
+        if (*why == FM_WHY_STRONGEST) *why = FM_WHY_WEAK_ONLY;
+    }
+    p->weak_rescans = 0;
+    return k;
+}
+void fm_pick_result(struct fm_pick *p, int pinned, int ok)
+{
+    if (ok || !pinned) p->pinned_fails = 0;
+    else p->pinned_fails++;
 }

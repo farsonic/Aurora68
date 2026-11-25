@@ -76,6 +76,8 @@ const uint8_t *bcdc_data(const uint8_t *p, unsigned len, unsigned *outlen);
 #define WLC_GET_BSSID       23
 #define WLC_SET_SSID        26
 #define WLC_GET_CHANNEL     29
+#define WLC_SET_ROAM_TRIGGER 55
+#define WLC_SET_ROAM_DELTA  57
 #define WLC_DISASSOC        52
 #define WLC_SET_PM          86
 #define WLC_SET_AP          118
@@ -113,12 +115,21 @@ const uint8_t *bcdc_data(const uint8_t *p, unsigned len, unsigned *outlen);
 #define E_LINK              16
 #define E_ROAM              19
 #define E_BCNLOST           31
+#define E_ROAM_PREP         32
+#define E_JOIN_START        36
+#define E_ROAM_START        37
+#define E_ASSOC_START       38
 #define E_PSK_SUP           46
 #define E_IF                54
 #define E_ESCAN_RESULT      69
 #define E_MAX               192           /* bits in the event mask */
 #define EVENT_MASK_LEN      (E_MAX / 8)
 #define E_STATUS_SUCCESS    0
+#define E_STATUS_FAIL       1
+#define E_STATUS_TIMEOUT    2
+#define E_STATUS_NO_NETWORKS 3
+#define E_STATUS_ABORT      4
+#define E_STATUS_NEWSCAN    9
 #define E_STATUS_PARTIAL    8
 #define E_STATUS_FWSUP_COMPLETED 6
 #define E_FLAG_LINK         0x01
@@ -151,6 +162,12 @@ struct fm_bss {
 };
 /* escan parameters for "escan" (start a scan of all channels); returns length */
 unsigned fm_escan_params(uint8_t *buf, uint16_t sync_id);
+/* the same with an active dwell per channel of active_ms (0: the firmware's, WLC_SET_SCAN_CHANNEL_TIME) */
+unsigned fm_escan_params_dwell(uint8_t *buf, uint16_t sync_id, uint32_t active_ms);
+/* the words for an E_ESCAN_RESULT's (or E_SET_SSID's) final status */
+const char *fm_status_word(uint32_t status);
+/* the words for an 802.11 reason code (deauthentication, disassociation) */
+const char *fm_reason_word(uint32_t reason);
 /* One E_ESCAN_RESULT payload: calls fn for each BSS in it. Returns the BSS count, <0 if corrupt. */
 int fm_escan_parse(const uint8_t *data, unsigned len, void (*fn)(void *ctx, const struct fm_bss *b), void *ctx);
 /* the information elements of one bss_info record -> security fields of b */
@@ -178,6 +195,46 @@ unsigned fm_pmk_hex(uint8_t *buf, const uint8_t pmk[32]);
 int fm_hex_pmk(const char *s, uint8_t pmk[32]);
 /* "country" value for a two-letter ISO code. Returns its length (12). */
 unsigned fm_country(uint8_t *buf, const char *cc);
+
+/* ---- choosing an access point: one SSID, several BSSIDs ------------------ */
+/* (25 November 2026, Aurora68's docs/08 item 147: an office with five access points on one SSID, a station thrown off
+   every few seconds.) The strongest BSSID of the SSID is chosen; one that disconnected us is skipped for a while
+   ("kicked") when another within FM_KICK_DB is there, one that we could not join when any other above minrssi is; after FM_PINNED_MAX failed joins in a row
+   with a BSSID pinned the firmware is left to choose (an SSID-only join); and nothing under minrssi is chosen while a
+   better one was seen in the last FM_SEEN_MS - the scan is done again instead, twice, and then the firmware chooses. */
+#define FM_KICK_MAX     8
+#define FM_SEEN_MAX     16
+#define FM_KICK_DB      10
+#define FM_PINNED_MAX   3
+#define FM_SEEN_MS      60000u
+#define FM_WEAK_RESCANS 2
+#define FM_KICK_MS      90000u      /* it disconnected us */
+#define FM_KICK_FAIL_MS 60000u      /* we could not join it */
+enum { FM_KICK_FAILED = 1, FM_KICK_BY_AP, FM_KICK_LOST };
+struct fm_kick { uint8_t bssid[6]; uint8_t why; uint32_t until; };
+struct fm_seen { uint8_t bssid[6]; int16_t rssi; uint8_t channel; uint32_t at; };
+struct fm_pick {
+    struct fm_kick kick[FM_KICK_MAX];
+    struct fm_seen seen[FM_SEEN_MAX];
+    int pinned_fails;               /* failed joins in a row with a BSSID pinned */
+    int weak_rescans;               /* scans done again because the best was under minrssi */
+    int minrssi;                    /* dBm (-80) */
+};
+/* fm_pick_choose's answers: an index into the scan, or one of these */
+enum { FM_PICK_ANY = -1, FM_PICK_RESCAN = -2 };
+/* and why (*why) */
+enum { FM_WHY_STRONGEST, FM_WHY_SKIPPED_KICKED, FM_WHY_KICKED_ANYWAY, FM_WHY_NOT_SEEN, FM_WHY_FALLBACK, FM_WHY_WEAK_RESCAN, FM_WHY_WEAK_ANY, FM_WHY_WEAK_ONLY };
+void fm_pick_init(struct fm_pick *p, int minrssi);
+void fm_pick_seen(struct fm_pick *p, const struct fm_bss *b, uint32_t now);
+void fm_pick_kick(struct fm_pick *p, const uint8_t bssid[6], uint32_t now, uint32_t ms, int why);
+/* kicked now? its fm_kick (0: no) */
+const struct fm_kick *fm_pick_kicked(const struct fm_pick *p, const uint8_t bssid[6], uint32_t now);
+/* the candidates of ssid in scan[0..n): records them as seen, returns the choice; *best is the strongest (or -1) */
+int fm_pick_choose(struct fm_pick *p, const struct fm_bss *scan, int n, const char *ssid, unsigned ssid_len, uint32_t now, int *why, int *best);
+/* a join's outcome: pinned (a BSSID given) or not, ok */
+void fm_pick_result(struct fm_pick *p, int pinned, int ok);
+/* the strongest BSSID seen within FM_SEEN_MS other than bssid (0: none) */
+const struct fm_seen *fm_pick_better_seen(const struct fm_pick *p, const uint8_t bssid[6], int rssi, uint32_t now);
 
 /* ---- NVRAM ---------------------------------------------------------------- */
 /* The .txt NVRAM file -> the image the chip wants: comments and line breaks
