@@ -10,3 +10,35 @@
 - matthewmrichter/moofport — open-source 68k `.ENET0` Ethernet driver (DaynaPORT emulation on BlueSCSI v2 WiFi): reference implementation of the MacTCP/OT Ethernet driver API for our `.ENET` mailbox driver.
 - erichelgeson/BlueSCSI-Toolbox — 68k utility apps; BlueSCSI image conventions (plain HFS or APM images named `HDn_512.hda`) worth mirroring in `sesd`.
 - No open-source generic Apple_Driver (SCSI disk driver) found; we will write one (also used by `sesd` to make any image bootable on real SCSI / MAME).
+
+## SE accelerators of the time (read 25 November 2026)
+
+The owner sent the software of an early SE accelerator, **Extreme Systems' VANDAL/SE** (a 50 MHz 68030 card for
+the SE's processor direct slot, with up to 16 MB and a video board for large external monitors), as a BinHex'd
+StuffIt archive. The software is not in this repository (it is someone else's); what it shows is:
+
+- **The control panel "ExSys SE" 1.1a2 (October 1992) is Total Systems' "GemStart"** (the credits in its STR# 128
+  name Total Systems of Eugene, Oregon, and Glenn L. Austin; its help strings speak of "the Mercury and Gemini
+  accelerators"), rebadged. Compact Virtual 3.00/3.01 is told the VANDAL is a "Gemini Integra". Its switches: FPU
+  for SANE ("QuickSANE"), the 68030's instruction and data caches, the startup icon, and "copy ROM to 32-bit RAM at
+  startup". Its INIT and 'DPch' patch _ReadXPRam/_WriteXPRam ($A051/$A052) and _SysEnvirons ($A090), and look up
+  _Unimplemented to test for traps; its code also comes in 'Rpck' resources marked "PACK ... 1991, TOTAL SYSTEMS".
+- **It carries its own Sound Driver, DRVR 3 ".Sound"** (1,068 bytes), replacing the SE ROM's for the faster CPU.
+  What its code does at the hardware: the volume into VIA port A bits 0-2 at $EFFFFE with interrupts masked; the
+  sound enabled by clearing VIA port B bit 7 ($EFE1FE) when a sound starts; the **square-wave synthesizer by the
+  VIA's timer 1 toggling PB7** (ACR bits 7-6 set to $C0, the count into T1C-L/T1C-H at VIA+$800/$A00; ACR's top
+  bits cleared again at the end); and **silence by filling the whole sound buffer (SoundBase, $266) with the
+  buffer's current first byte**, the level the speaker is resting at, with MOVEP across the 370 words. That last
+  is what Aurora68's kernel does between sounds (`snd_quiet` in psmac_board_se.c, docs/08); the T1/PB7 square wave
+  is docs/18 section 7's candidate 2 for the compact Macs' whine, used deliberately here.
+- **Its release notes list the same troubles Aurora68 has met:** the SE's "Sound Manager may occasionally fail" with
+  an "extended or repeating sound"; the 68030 at 50 MHz "tends to generate heat", with crashes after long use until
+  the SE is ventilated; and old SCSI disks "too slow to respond to data accesses" from the faster CPU (Syquest,
+  Jasmine, Rodime 45/70, Western Digital, OMTI and Adaptec controllers, the HD-20).
+- **The video board ("ExSys SE Video" 1.3, April 1995)** loads one of eight Xilinx FPGA configurations ('XLNX'
+  resources, about 8.3 KB each, encoded) and a dot clock (50.35 to 100.5 MHz) per monitor, with a 'MONS' resource of
+  timings for each of 25 monitors (Apple Two-Page and Portrait, Radius, Sigma Designs, Lapis, Samsung, Triam and
+  generic ECL, TTL, analog and composite settings).
+
+A second accelerator's software, one the owner remembers working well with sound, is to come; its Sound Driver is
+the thing to compare with this one.
