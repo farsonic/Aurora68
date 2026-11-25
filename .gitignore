@@ -144,3 +144,6 @@ mac/build/guest_test.log
 mac/build/a68apple.elf
 mac/build/a68apple_traps.txt
 mac/build/aa2/
+# Aurora68 IO Test (make -C mac iotest, docs/12): its intermediates; the application itself is committed
+mac/build/iotest.elf
+mac/build/it/
