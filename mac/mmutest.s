@@ -22,9 +22,10 @@
 | result in the kernel log:
 |     [MAC] MMU test: 127 passed, 0 failed, 122 bus errors taken
 | (50 cases after phase 1, 86 after phase 2: T12-T18, the PMMU's other instructions; 127 after phase 3, 26 November
-| 2026: T19-T24, two processes with their own CRPs and the same pages on other frames, data and code, a loop of
+| 2026: T19-T24 and T26, two processes with their own CRPs and the same pages on other frames, data and code, a loop of
 | 4000 context switches, SRE with the supervisor's own tables, MOVES across the spaces and into CPU space, PFLUSH by
-| function code and mask, an exception's frame pushed through the supervisor's tables; docs/23-mmu.md section 12).
+| function code and mask, an exception's frame pushed through the supervisor's tables, code run from a page that
+| faults on its fetch; docs/23-mmu.md section 12).
 | mmutest-halt.rom ends with T25 instead of the benchmark: an exception whose frame cannot be pushed, after which the
 | kernel must log the 68030's double bus fault and stop running the 68k.
 | Without mac.mmu=full the bus errors are never delivered (the shim reads $BAD0BAD0 and drops writes), so the
@@ -758,6 +759,25 @@ t23s:	move.l	WIN+0xC3000,%d3			| supervisor: a bus error, mapped one to one in t
 	movec	%d0,%sfc
 	movec	%d0,%dfc
 
+	| ---- T26: code on a page the tables refuse: the fetch faults, the handler maps the page, the code runs ----
+	move.l	#0x203C2626,WIN+0xC6000		| "move.l #$26262626,d0; rts", written as data, never run before
+	move.l	#0x26264E75,WIN+0xC6004
+	inval	0xC6
+	clr.l	V_COUNT
+	moveq	#0,%d0
+	jsr	WIN+0xC6000
+	move.l	%d0,R0
+	want	n_t26, R0, 0x26262626
+	want	n_t26c, V_COUNT, 1
+	moveq	#0,%d0
+	move.w	V_FMT,%d0
+	want	n_t26f, %d0, 0xB008		| the long frame
+	moveq	#0,%d0
+	move.w	V_SSW,%d0
+	want	n_t26s, %d0, 0x5006		| FB, RB, supervisor program
+	want	n_t26a, V_ADDR, WIN+0xC6000	| the stage B address
+	want	n_t26pc, V_PC, WIN+0xC6000
+
 p2skip:
 
 	| ---- the result ----
@@ -835,7 +855,10 @@ berr:	movem.l	%d0-%d1/%a0,-(%sp)
 	move.w	12+10(%sp),V_SSW
 	move.l	12+2(%sp),V_PC
 	move.l	12+16(%sp),%d0
-	move.l	%d0,V_ADDR
+	btst	#0,12+10(%sp)			| DF clear: an instruction fetch, whose address is the stage B address (T26)
+	bne.s	5f
+	move.l	12+36(%sp),%d0
+5:	move.l	%d0,V_ADDR
 	moveq	#7,%d1
 	and.w	12+10(%sp),%d1
 	cmp.w	#7,%d1
@@ -1057,6 +1080,12 @@ n_t23bpc: .asciz "t23bpc"
 n_t24sp: .asciz	"t24sp"
 n_t24f:	.asciz	"t24frame"
 n_t24c:	.asciz	"t24count"
+n_t26:	.asciz	"t26"
+n_t26c:	.asciz	"t26count"
+n_t26f:	.asciz	"t26fmt"
+n_t26s:	.asciz	"t26ssw"
+n_t26a:	.asciz	"t26addr"
+n_t26pc: .asciz	"t26pc"
 s_t20:	.asciz	"MMU test: context-switch loop (4000 PMOVEs to CRP) starts"
 s_t20e:	.asciz	"MMU test: context-switch loop done"
 s_halt:	.asciz	"MMU test: T25, an exception whose frame cannot be pushed: the 68030 should halt now"

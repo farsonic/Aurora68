@@ -1120,8 +1120,19 @@ struct M68KTranslationUnit *M68K_GetTranslationUnit(uint16_t *m68kcodeptr)
     unit->mt_M68kAddress = (uint32_t)(uintptr_t)orig_m68kcodeptr;
     unit->mt_M68kLow = (uint32_t)(uintptr_t)m68k_low;
     unit->mt_M68kHigh = (uint32_t)(uintptr_t)m68k_high;
+#ifdef PSMAC
+    /* mac.mmu=full: a block that is only an instruction fetch's bus error has no code that can be read */
+    extern int psmac_mmu_stub;
+    if (unlikely(psmac_mmu_stub)) {
+        unit->mt_Fingerprint = 0;
+        unit->mt_CRC32 = 0;
+    } else {
+#endif
     unit->mt_Fingerprint = cache_read_32(ICACHE, unit->mt_M68kAddress) ^ cache_read_32(ICACHE, unit->mt_M68kAddress + 4);
     unit->mt_CRC32 = CalcCRC32(m68k_low, m68k_high);
+#ifdef PSMAC
+    }
+#endif
 #ifdef PSMAC
     { extern uint32_t psmac_icache_epoch; unit->mt_VerEpoch = psmac_icache_epoch; }
     __asm__ volatile("mrs %0, TTBR0_EL1" : "=r"(unit->mt_PsmacSpace));

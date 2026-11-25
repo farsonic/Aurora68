@@ -9,7 +9,10 @@ translated code and restarting the instruction. All of it is experimental and be
 `mac.mmu=full`; without it the kernel behaves exactly as before (section 8 measures that). Where something comes
 from the code it names the file and the function; where it is our reading or a guess, it says *inference*.
 Section 11 is phase 2 (25 and 26 November): the complete 68030 PMMU on a soft TLB, and System 7.1's Virtual Memory
-running on it, on the solo board and in the MAME full stack.
+running on it, on the solo board and in the MAME full stack. Section 12 is phase 3 (26 November): address spaces with
+ASIDs, separate user and supervisor views, MOVES, the code cache keyed by space, the double bus fault: what A/UX needs
+before it can be tried. Sections 1 to 10 are phase 1's record and are kept as written; where a later phase found a
+statement wrong or overtook it, a bracketed note says so.
 
 ## 1. What was read
 
@@ -40,7 +43,9 @@ function-code lookup and pages below 4 KiB are not supported (the file's own hea
 TC `$80F08900`, CRP `$7FFF0002:$00FFF9E0`: 32 KiB pages, TIA 8, TIB 9, mapping RAM one to one and
 `$40000000-$FFFFFFFF` one to one (any solo-board log, "switch #3").
 
-**The faults.** The JIT runs at EL0. A translated load or store to a page that is not mapped takes an ARM data
+**The faults.** The JIT runs at EL0. [Phase 3: wrong. Translated code runs at EL1: `MainLoop` is called from the
+kernel's boot path in `start.c` with no drop to EL0, and the abort dumps show EL1 (ESR class `$25`, a data abort from
+the same level). Section 12 relies on it: a block writes TTBR0_EL1 itself.] A translated load or store to a page that is not mapped takes an ARM data
 abort into `SYSHandler` (`vectors.c`), which decodes the ARM instruction, performs it through
 `psmac_bus_read`/`psmac_bus_write` and returns to the next ARM instruction (`elr += 4`). Those translate the
 address with the shim's table: a page the guest's tables mark invalid reads `$BAD0BAD0` and ignores writes
@@ -166,7 +171,8 @@ memory instead of the handler's data input buffer (*inference*: neither VM nor A
 watched). An instruction whose own condition codes were computed before its faulting access recomputes them on the
 restart, from the same inputs; ADDX's X survives because its loads come before its arithmetic (test 7 below).
 
-**What the spike does not cover yet**, each found by reading and listed for phase 2:
+**What the spike does not cover yet**, each found by reading and listed for phase 2 [phase 2 did the first four,
+section 11.4; `M68K_Exception`'s frame push was left for phase 3, section 12.5]:
 - faults inside C helpers called from blocks: the exact FPU (`psmac_fpu_exec` reads and writes memory), `PMOVE`'s
   memory operand, `M68K_Exception`'s frame push. They are recognised (x30 is not the loop) and fall back to the old
   behaviour with a log line. The fix is to probe the pages before the helper touches them;
@@ -208,6 +214,7 @@ page must cost microseconds, not a tenth of a second. The abort itself is cheap:
   (`mmu_low4g_set`). With an address space per process (A/UX) the better shape is one level-1 table per set tagged
   with an ASID and a write of TTBR0, which needs no TLB flush; the JIT runs at EL0, so the switch is a trap to EL1
   (an SVC, a few hundred cycles). Cost of a context switch then: the trap, and the TLB refills of a cold process.
+  [Phase 3 built it (section 12), without the trap: the JIT runs at EL1 and writes TTBR0 directly.]
 - *Do we watch the guest's tables?* No: a 68030's ATC holds stale translations until a flush, so correct software
   flushes after every edit. One risk is software that forgot a flush and got away with it because the 68030's ATC
   holds only 22 entries; an ARM mapping holds a stale page indefinitely. If that turns up, flushing everything every
@@ -225,6 +232,8 @@ address lands (`psmac_mmu_l2p`).
   changes the physical frame behind a logical page should also drop the blocks whose range touches that page
   (the LRU already has `LRU_InvalidateByM68kAddress`), and blocks should end at a page boundary so that a page's
   blocks are its own and a block never runs from a valid page into an invalid one.
+- [Phase 3 (section 12.4): blocks carry the address space they were translated in, the TTBR0 value, and match only
+  there; the first form below, a space tag beside the address, is what was built.]
 - *Several address spaces (A/UX):* the same logical address holds different code in different processes. The key
   must say which space: `mt_Key` is the pair (epoch, 68k address), and making the epoch half carry a space tag (the
   set's number, or the CRP's root) keeps the lookup as it is while separating the spaces. Shared text at the same

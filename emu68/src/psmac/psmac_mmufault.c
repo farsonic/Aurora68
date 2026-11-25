@@ -91,7 +91,8 @@ static uint8_t snap_mask(const uint16_t *pc)
     return m;
 }
 
-void psmac_mmu_jit_begin(void) { ft_n = 0; }
+int psmac_mmu_stub;                              /* the block being translated is an instruction fetch's bus error */
+void psmac_mmu_jit_begin(void) { ft_n = 0; psmac_mmu_stub = 0; }
 
 /* At the start of each instruction's code (M68k_Translator.c, before EmitINSN): note where it is and save the
    address registers it may change. Only called with mac.mmu=full. */
@@ -221,9 +222,14 @@ int psmac_mmu_jit_fetch(struct TranslatorContext *ctx, uint16_t *in_code, uint16
     int fc = (getSR() & SR_S) ? 6 : 2;          /* supervisor or user program: the mode the block will run in */
     if (insn_count && page != ((uint32_t)(uintptr_t)block_start & ~0xfffu))
         return 1;
+    if (!insn_count) {
+        void psmac_mmu_check_code_space(uint32_t pc, int super);
+        psmac_mmu_check_code_space(pc, fc == 6);
+    }
     if (!psmac_mmu_probe(pc, 2, fc, 0, &bad)) {
         if (insn_count) return 1;
         emit_fetch_fault(ctx, pc, pc);
+        psmac_mmu_stub = 1;
         return 2;
     }
     if ((pc & 0xfffu) > 0x1000u - 22u && !psmac_mmu_probe(page + 0x1000u, 2, fc, 0, &bad)) {
@@ -234,6 +240,7 @@ int psmac_mmu_jit_fetch(struct TranslatorContext *ctx, uint16_t *in_code, uint16
         if (M68K_GetINSNLength(buf) > n) {
             if (insn_count) return 1;
             emit_fetch_fault(ctx, pc, page + 0x1000u);
+            psmac_mmu_stub = 1;
             return 2;
         }
     }

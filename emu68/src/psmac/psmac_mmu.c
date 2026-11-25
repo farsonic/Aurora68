@@ -642,7 +642,7 @@ static struct {
     uint32_t walks, maps, mapped_pages, m_faults, emulated, tt_hits, buserrs;
     uint32_t pflush_all, pflush_fc, pflush_ea, pflush_kept, pflush_dropped, pload, ptest, pmove, switches, epoch_bumps;
     uint32_t spaces, evictions, moves;
-    uint64_t flush_ticks;
+    uint64_t flush_ticks, switch_ticks;
 } fs;                                           /* the soft TLB's counters (psmac_mmu_full_stats) */
 
 static inline int desc_in_ram(uint32_t p) { p = norm_phys(p); return ram_size >= 4 && p <= ram_size - 4; }
@@ -1074,6 +1074,7 @@ static void views_update(int super, int fd)
     l2pc_flush();
     psmac_views.ttbr[0] = u->ttbr; psmac_views.ttbr[1] = s->ttbr; psmac_views.split = (uint32_t)split;
     space_install(super ? s : u);
+    fs.switch_ticks += cnt_now() - t0;
     if (f0 || f1 || fs.switches <= 8 || (fs.switches & 1023) == 0) {
         kprintf("[PSMAC:MMU] switch #%u: TC=%08x CRP=%08x:%08x", rebuilds, tc, mmu.crp_hi, mmu.crp_lo);
         if (tc & TC_SRE) kprintf(" SRE SRP=%08x:%08x", mmu.srp_hi, mmu.srp_lo);
@@ -1425,11 +1426,12 @@ void psmac_mmu_full_stats(void)
             "%u privilege violations from user mode\n", d + h + f, d, h, f, m, l, psmac_priv_user);
     kprintf("[PSMAC:MMU]   soft TLB: %u walks, %u maps (%u pages), %u first writes (M), %u emulated, %u TT, %u bus errors; "
             "PFLUSH %u all %u fc %u ea (%u pages kept, %u dropped, %u us), PLOAD %u, PTEST %u, PMOVE %u, MOVES %u, %u switches, "
-            "%u code-cache checks; spaces: %u in use (%s), %u made, %u reused\n",
+            "%u code-cache checks; spaces: %u in use (%s), %u made, %u reused, %u us a switch on average\n",
             fs.walks, fs.maps, fs.mapped_pages, fs.m_faults, fs.emulated, fs.tt_hits, fs.buserrs,
             fs.pflush_all, fs.pflush_fc, fs.pflush_ea, fs.pflush_kept, fs.pflush_dropped,
             (uint32_t)(fs.flush_ticks * 1000000 / cnt_frq()), fs.pload, fs.ptest, fs.pmove, fs.moves, fs.switches, fs.epoch_bumps,
-            nsp, split_now ? "user and supervisor views apart" : "one view", fs.spaces, fs.evictions);
+            nsp, split_now ? "user and supervisor views apart" : "one view", fs.spaces, fs.evictions,
+            fs.switches ? (uint32_t)(fs.switch_ticks * 1000000 / cnt_frq() / fs.switches) : 0);
     kprintf("[PSMAC:MMU]   busiest emulated pages since the last report:");
     for (int k = 0; k < 6; k++) {
         int mx = -1;
@@ -1481,6 +1483,31 @@ static void spaces_init(void)
 {
     for (int i = 0; i < NSPACES; i++) { spaces[i].idx = (uint8_t)i; spaces[i].asid = (uint8_t)(i + 1); }
     views_update(1, 1);
+}
+
+/* The translator reads a block's code through the data view (the ARM mapping), while a 68030 fetches it at the
+   program function code (2 or 6). They can differ only with TC.FCL or a TT register that compares FC0/FC1: then the
+   two searches are compared once per block and a difference is logged (the first eight), a sign that the program
+   space is not what the translated code was read from (docs/23-mmu.md section 12.8). */
+void psmac_mmu_check_code_space(uint32_t pc, int super)
+{
+    if (!translate_on) return;
+    int fcl = (mmu.tc & TC_FCL) != 0;
+    int tts = ((mmu.tt0 & 0x8000u) && (mmu.tt0 & 3u) != 3u) || ((mmu.tt1 & 0x8000u) && (mmu.tt1 & 3u) != 3u);
+    if (!fcl && !tts) return;
+    static uint32_t told;
+    if (told >= 8) return;
+    int fp = super ? 6 : 2, fd = super ? 5 : 1;
+    uint32_t pp, pd;
+    int vp = tt_match(mmu.tt0, pc, fp, 0) || tt_match(mmu.tt1, pc, fp, 0), vd = tt_match(mmu.tt0, pc, fd, 0) || tt_match(mmu.tt1, pc, fd, 0);
+    struct pwalk r;
+    if (vp) pp = pc; else { pwalk(pc, fp, 0, 99, &r); pp = r.valid ? r.pa : ~0u; }
+    if (vd) pd = pc; else { pwalk(pc, fd, 0, 99, &r); pd = r.valid ? r.pa : ~0u; }
+    if (pp != pd) {
+        told++;
+        kprintf("[PSMAC:MMU] code at %08x: the program space gives %08x, the data space %08x; the block is read from the data "
+                "space (FCL or a TT register tells them apart, docs/23-mmu.md section 12.8)\n", pc, pp, pd);
+    }
 }
 
 /* 1 when the fault path has work to do: with the option, from the first space on (translation off included, whose
