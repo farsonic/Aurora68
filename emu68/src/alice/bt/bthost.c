@@ -526,12 +526,15 @@ static void startup_answer(struct bt_host *h, uint16_t op, const uint8_t *ret, u
 void bt_init(struct bt_host *h, const struct bt_io *io, const uint8_t *fw, unsigned fwlen)
 {
     struct bt_key keep[BT_MAXKEY];
-    int nk = h->nkeys, mode = h->scan_mode;
+    int nk = h->nkeys, mode = h->scan_mode, fl_given = h->le_floor_given, wifi = h->wifi_inuse;
+    uint16_t fl = h->le_floor;
     mcpy(keep, h->keys, sizeof keep);
     mset(h, 0, sizeof *h);
     mcpy(h->keys, keep, sizeof keep);
     h->nkeys = nk;
     h->scan_mode = mode;
+    h->le_floor = fl_given ? fl : (uint16_t)BT_LE_FLOOR; h->le_floor_given = fl_given;   /* bt.lefloor= (docs/08 item 147) */
+    h->wifi_inuse = wifi;
     for (int i = 0; i < nk; i++) { h->keys[i].flags &= ~BTK_CONNECTED; if (h->keys[i].flags & BTK_LE) h->le_lists_dirty = 1; }
     h->io = io;
     h->fw = fw; h->fwlen = fwlen;

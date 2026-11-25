@@ -200,6 +200,7 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	sh ../tools/cmdline_test.sh $(abspath $(B))
 	sh ../tools/diag_test.sh $(abspath $(B))
 	sh ../tools/apnet_test.sh $(abspath $(B))
+	sh ../tools/wifi_pick_test.sh $(abspath $(B))
 	sh ../tools/vcodec_test.sh $(abspath $(B))
 	sh ../tools/mpg1_test.sh $(abspath $(B))
 	sh ../tools/vbuf_test.sh $(abspath $(B))

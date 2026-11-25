@@ -29,7 +29,12 @@
  *     no longer stops every later command (2 s, Linux's HCI_CMD_TIMEOUT); ACL packets in flight handed back when their
  *     link goes and its queued ones dropped, the pool never above the controller's count; an H4 header that makes no
  *     sense dropped and the stream searched again, a packet cut by a UART error dropped; an LE Rand answer not taken
- *     for an LE Encrypt.
+ *     for an LE Encrypt;
+ *   - the floor while the WiFi is in use (25 November 2026, docs/08 item 147: the owner's WiFi kept being dropped with two LE
+ *     HID links at 7.5 ms, and stayed up with bt=off): a request for 7.5-7.5 ms refused (L2CAP result 1) while the WiFi is
+ *     in use and taken when it is not; a range that reaches the floor raised to it; a link under the floor asked up to
+ *     15 ms twice at most, its latency cut where the timeout cannot cover it; 22.5 ms with two links; a device that goes
+ *     after each refusal given its way after three; bt.lefloor=0 the old behaviour.
  */
 #include <stdio.h>
 #include <stdint.h>
@@ -131,6 +136,31 @@ static void le_conn_h(uint8_t st, uint8_t atype, const uint8_t a[6], uint8_t han
     ev(e, 21);
 }
 static void le_conn(uint8_t st, uint8_t atype, const uint8_t a[6]) { le_conn_h(st, atype, a, 0x40); }
+/* an L2CAP frame from the device on link HANDLE, channel CID */
+static void dev_l2(uint16_t handle, uint16_t cid, const uint8_t *d, unsigned n)
+{
+    uint8_t b[300] = { 2, (uint8_t)handle, (uint8_t)(0x20 | handle >> 8), (uint8_t)(n + 4), (uint8_t)((n + 4) >> 8), (uint8_t)n, (uint8_t)(n >> 8), (uint8_t)cid, (uint8_t)(cid >> 8) };
+    memcpy(b + 9, d, n);
+    bt_rx(&H, b, n + 9);
+}
+/* the device's Connection Parameter Update Request (LE signalling, identifier ID) */
+static void cpur(uint16_t handle, uint8_t id, uint16_t mn, uint16_t mx, uint16_t lat, uint16_t to)
+{
+    uint8_t d[12] = { 0x12, id, 8, 0, (uint8_t)mn, (uint8_t)(mn >> 8), (uint8_t)mx, (uint8_t)(mx >> 8), (uint8_t)lat, (uint8_t)(lat >> 8), (uint8_t)to, (uint8_t)(to >> 8) };
+    dev_l2(handle, 5, d, 12);
+}
+/* the host's Connection Parameter Update Response with identifier ID after MARK: its result, -1 none */
+static int cpur_result(uint8_t id, unsigned mark)
+{
+    for (unsigned i = mark; i < nout; i++)
+        if (out[i].b[0] == 2 && out[i].n >= 15 && out[i].b[7] == 5 && out[i].b[9] == 0x13 && out[i].b[10] == id) return out[i].b[13] | out[i].b[14] << 8;
+    return -1;
+}
+static void conn_update_complete(uint16_t handle, uint16_t ci, uint16_t lat, uint16_t to)
+{
+    uint8_t e[12] = { 0x3e, 10, 0x03, 0, (uint8_t)handle, (uint8_t)(handle >> 8), (uint8_t)ci, (uint8_t)(ci >> 8), (uint8_t)lat, (uint8_t)(lat >> 8), (uint8_t)to, (uint8_t)(to >> 8) };
+    ev(e, 12);
+}
 
 int main(int argc, char **argv)
 {
@@ -507,6 +537,91 @@ int main(int argc, char **argv)
         bt_scan(&H); run(20);
         int sp = last_op(0x200b);
         CHECK(sp >= 0 && out[sp].b[4] == 1 && le16v(out[sp].b + 5) == 0x00c0 && le16v(out[sp].b + 7) == 0x0030, "a scan for new devices: the LE side 30 ms per 120 ms beside the inquiry");
+    }
+
+    /* ---- 25 November 2026: the floor while the WiFi is in use (docs/08 item 147). The owner's SE: two LE HID devices
+       asked for 7.5 ms and nothing longer after a restart and were given it; the access points then dropped the WiFi
+       station, and with bt=off it stayed up. ---- */
+    {
+        CHECK(bt_le_floor_now(12, 1) == 12 && bt_le_floor_now(12, 2) == 18 && bt_le_floor_now(0, 2) == 0, "the floor: 15 ms, 22.5 ms with two LE links, none with bt.lefloor=0");
+        CHECK(bt_le_floor_refuse(12, 1, 6, 0) && bt_le_floor_refuse(12, 1, 11, 2), "7.5-7.5 and 7.5-13.75 refused while the WiFi is in use");
+        CHECK(!bt_le_floor_refuse(12, 1, 12, 0) && !bt_le_floor_refuse(12, 0, 6, 0) && !bt_le_floor_refuse(0, 1, 6, 0) && !bt_le_floor_refuse(12, 1, 6, 3),
+              "taken: a range that reaches the floor, the WiFi not in use, no floor, a device that went three times when refused");
+        res_status = 0;
+        to_ready(0, 0);
+        CHECK(H.le_floor == BT_LE_FLOOR, "the floor is 15 ms by default (%u)", H.le_floor);
+        H.wifi_inuse = 1;
+        /* the link comes up at 50 ms (what the host asks for), latency 0, timeout 5 s */
+        { uint8_t e[21] = { 0x3e, 19, 0x01, 0, 0x40, 0x00, 0x00, 1 }; memcpy(e + 8, ident, 6); e[14] = 0x28; e[18] = 0xf4; e[19] = 0x01; ev(e, 21); }
+        run(100);
+        int ci = -1; for (int i = 0; i < BT_MAXCONN; i++) if (H.conn[i].used) ci = i;
+        CHECK(ci >= 0 && H.conn[ci].l.ci == 0x28, "the link at 50 ms");
+        unsigned mark = nout;
+        cpur(0x40, 7, 6, 6, 30, 300); run(50);
+        CHECK(cpur_result(7, mark) == 1 && find_op(0x2013, mark) < 0, "7.5-7.5 ms while the WiFi is in use: refused (result %d), no LE Connection Update", cpur_result(7, mark));
+        CHECK(ci >= 0 && H.conn[ci].l.upd_floored == 1 && H.conn[ci].l.ci == 0x28 && H.le_floored == 1, "counted; the link stays at 50 ms");
+        mark = nout;
+        cpur(0x40, 8, 6, 24, 30, 300); run(50);
+        int u = find_op(0x2013, mark);
+        CHECK(cpur_result(8, mark) == 0 && u >= 0 && le16v(out[u].b + 6) == 12 && le16v(out[u].b + 8) == 24, "7.5-30 ms: taken, 15-30 ms asked of the controller");
+        H.wifi_inuse = 0;
+        mark = nout;
+        cpur(0x40, 9, 6, 6, 30, 300); run(50);
+        u = find_op(0x2013, mark);
+        CHECK(cpur_result(9, mark) == 0 && u >= 0 && le16v(out[u].b + 6) == 6 && le16v(out[u].b + 8) == 6, "the WiFi not in use: 7.5 ms taken as before");
+        conn_update_complete(0x40, 6, 30, 300); run(50);
+        CHECK(ci >= 0 && H.conn[ci].l.ci == 6, "the link at 7.5 ms");
+        /* the WiFi starts: the link is asked up to the floor, twice at most */
+        H.wifi_inuse = 1;
+        mark = nout;
+        run(4000);
+        u = find_op(0x2013, mark);
+        CHECK(u >= 0 && le16v(out[u].b + 6) == 12 && le16v(out[u].b + 8) == 12 && le16v(out[u].b + 10) == 30 && le16v(out[u].b + 12) == 300,
+              "a link under the floor while the WiFi is in use: LE Connection Update to 15 ms, its latency and timeout kept");
+        run(12000);
+        CHECK(count_op(0x2013, mark) == 2, "no answer: asked twice, no more (%d)", count_op(0x2013, mark));
+        conn_update_complete(0x40, 12, 30, 300); run(50);
+        CHECK(ci >= 0 && H.conn[ci].l.ci == 12, "at 15 ms");
+        /* a latency that the timeout cannot cover at the floor is cut */
+        conn_update_complete(0x40, 6, 60, 100); H.conn[ci].l.raise_tries = 0; H.conn[ci].l.raise_at = 0;
+        mark = nout; run(200);
+        u = find_op(0x2013, mark);
+        CHECK(u >= 0 && le16v(out[u].b + 10) == 32, "latency 60 with a 1 s timeout at 15 ms: cut to 32 (%u)", u >= 0 ? le16v(out[u].b + 10) : 0);
+        /* a device that goes after each refusal: three times, then it is given its way */
+        int drops_ok = 1;
+        for (int round = 0; round < 3; round++) {
+            mark = nout;
+            cpur(0x40, (uint8_t)(20 + round), 6, 6, 30, 300); run(50);
+            if (cpur_result((uint8_t)(20 + round), mark) != 1) drops_ok = 0;
+            run(2000);
+            { uint8_t e[6] = { 0x05, 4, 0, 0x40, 0x00, 0x13 }; ev(e, 6); }
+            run(100);
+            { uint8_t e[21] = { 0x3e, 19, 0x01, 0, 0x40, 0x00, 0x00, 1 }; memcpy(e + 8, ident, 6); e[14] = 0x28; e[18] = 0xf4; e[19] = 0x01; ev(e, 21); }
+            run(100);
+        }
+        struct bt_key *kk = 0; for (int i = 0; i < H.nkeys; i++) if (!memcmp(H.keys[i].addr, ident, 6)) kk = &H.keys[i];
+        CHECK(drops_ok && kk && kk->floor_drops == 3 && H.le_floor_drops == 3, "refused three times, and it went three times (%u)", kk ? kk->floor_drops : 0);
+        mark = nout;
+        cpur(0x40, 30, 6, 6, 30, 300); run(50);
+        u = find_op(0x2013, mark);
+        CHECK(cpur_result(30, mark) == 0 && u >= 0 && le16v(out[u].b + 6) == 6, "then 7.5 ms is taken even with the WiFi in use");
+        /* a device that went once long after its refusal is not counted */
+        /* bt.lefloor=0: the old behaviour */
+        reset_out();
+        memset(&H, 0, sizeof H);
+        H.le_floor = 0; H.le_floor_given = 1; H.wifi_inuse = 1;
+        bt_add_le_key(&H, ident, 1, ltk, 0x1234, rnd8, irk_lsb, BTK_MOUSE);
+        bt_init(&H, &io, 0, 0);
+        run(3000);
+        CHECK(H.le_floor == 0 && H.wifi_inuse == 1, "bt.lefloor=0 and the WiFi's state kept by bt_init");
+        { uint8_t e[21] = { 0x3e, 19, 0x01, 0, 0x40, 0x00, 0x00, 1 }; memcpy(e + 8, ident, 6); e[14] = 0x28; e[18] = 0xf4; e[19] = 0x01; ev(e, 21); }
+        run(100);
+        mark = nout;
+        cpur(0x40, 40, 6, 6, 30, 300); run(50);
+        u = find_op(0x2013, mark);
+        CHECK(cpur_result(40, mark) == 0 && u >= 0 && le16v(out[u].b + 6) == 6, "bt.lefloor=0: 7.5 ms taken while the WiFi is in use, as before");
+        run(5000);
+        CHECK(count_op(0x2013, mark) == 1, "and no update of ours");
     }
 
     printf("bt_test: %d checks, %d failed\n", checks, fails);

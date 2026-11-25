@@ -47,6 +47,7 @@ struct bt_key {
     uint32_t heard_ms, heard_n; uint8_t heard_evt, heard_atype, heard_addr[6];
     uint32_t err_ms; uint8_t err_code; uint8_t err_what;   /* BT_KE_*, with the HCI status or reason */
     uint32_t tries;                     /* connections the host asked for to it */
+    uint8_t floor_drops;                /* it went within BT_LE_DROP_MS of a refusal under the floor (docs/08 item 147) */
 };
 enum { BT_KE_NONE, BT_KE_CONN, BT_KE_REFUSED, BT_KE_NOANSWER, BT_KE_ENC, BT_KE_DISC, BT_KE_KEY };
 
@@ -87,6 +88,20 @@ enum { BT_TIER_FAST, BT_TIER_SLOW, BT_TIER_IDLE, BT_TIER_OFF };
 #define BT_LE_CI_MAX  0x0028u
 #define BT_LE_TIMEOUT 0x01f4u
 #define BT_LE_FLOOR   0x000cu           /* 15 ms */
+/* The floor that holds while the WiFi is in use (docs/08 item 147, 25 November 2026). On the owner's SE two LE HID devices
+   each asked, after a restart, for 7.5 ms and nothing longer, and were given it (BT_LE_FLOOR above only raised a range
+   that reached 15 ms): the central transmits at every connection event whatever the peripheral latency, and two links
+   at 7.5 ms took so much of the Pi 3B's shared antenna that the access points dropped the WiFi station; with bt=off the
+   WiFi stayed up. Now, while the WiFi is scanning, joining or connected (bt_pi.c bt_pi_wifi_use, from alice_net.c), a
+   request whose longest interval is under the floor is refused (L2CAP result 1, as Linux's l2cap_conn_param_update_req
+   refuses one outside its bounds): the link keeps what it was connected with (30 to 50 ms). A link that already runs
+   under the floor is asked up to it (LE Connection Update, twice at most). With two or more LE links up the floor is half
+   as long again (15 ms: 22.5 ms). A device that disconnects within BT_LE_DROP_MS of a refusal BT_LE_FLOOR_DROPS times is
+   given what it asks for from then on (a keyboard that works beats one that keeps leaving), and with the WiFi off
+   every valid request is taken as before. bt.lefloor=MS sets the floor (bt_pi.c); bt.lefloor=0 is the old behaviour. */
+#define BT_LE_FLOOR_DROPS 3u
+#define BT_LE_DROP_MS     10000u
+#define BT_LE_RAISE_TRIES 2u
 struct bt_radio {                       /* what the host has the controller do now, for the heartbeat (bt_radio_now) */
     int mode, tier;                     /* BT_SCAN_*, BT_TIER_* */
     uint32_t tier_ms;                   /* how long the tier has left before the next (0: for good) */
@@ -141,6 +156,9 @@ struct bt_le {
     uint16_t ci, cl, cto;                /* the link's connection interval (1.25 ms), latency, supervision timeout (10 ms): what
                                             the controller reports at the link's start and at each update (docs/21) */
     uint16_t upd_asked, upd_refused;     /* the device's Connection Parameter Update Requests: taken, refused */
+    uint16_t upd_floored;                /* refused because the WiFi is in use and they were under the floor (docs/08 item 147) */
+    uint32_t up_ms, floored_ms;          /* when the link came up; the last such refusal (0: none) */
+    uint8_t raise_tries; uint32_t raise_at;   /* LE Connection Updates of ours up to the floor, and when the next may go */
     uint8_t nlog;                        /* notifications logged on this link (the first few) */
     /* what the device presented, for the heartbeat (bt_pi.c): a bench has no scrollback */
     uint16_t svcs[3][2]; uint8_t nsvc, svci;   /* HID service instances (start, end), the one in use */
@@ -235,6 +253,10 @@ struct bt_host {
     int bg_tier, init_tier;             /* the tier the host's LE scan, the accept list's connection, were started with */
     int tier_said;                      /* the last tier logged */
     uint32_t hush_until; int hush_set, hush_said; uint32_t hush_n;   /* bt_hush */
+    /* the LE interval floor while the WiFi is in use (above): kept by bt_init, like scan_mode */
+    uint16_t le_floor; int le_floor_given;   /* 1.25 ms units, 0 none (bt.lefloor=0); given: bt.lefloor= was read */
+    volatile int wifi_inuse;            /* the WiFi scans, joins or is connected (bt_pi_wifi_use) */
+    uint32_t le_floored, le_floor_drops; /* requests refused under the floor, devices that went after one: for the heartbeat */
 };
 
 /* fw/fwlen: the .hcd file (0: none - the controller's ROM firmware is used) */
@@ -264,6 +286,10 @@ void bt_hush(struct bt_host *h, uint32_t ms, const char *why);
 /* a Connection Parameter Update Request valid? The interval's lower end the host asks of the controller (btle.c) */
 int bt_le_params_ok(uint16_t mn, uint16_t mx, uint16_t lat, uint16_t to);
 uint16_t bt_le_min_floor(uint16_t mn, uint16_t mx);
+/* the floor in force (1.25 ms units): bt.lefloor's, half as long again with two or more LE links up; 0 none */
+uint16_t bt_le_floor_now(uint16_t floor, unsigned le_links);
+/* a valid request whose longest interval is mx: refuse it (1) or take it (0)? (docs/08 item 147) */
+int bt_le_floor_refuse(uint16_t floor_now, int wifi_inuse, uint16_t mx, unsigned drops);
 /* the words for an HCI status or disconnection reason (bthost.c) */
 const char *bt_status_words(uint8_t st);
 /* "AA:BB:CC:DD:EE:FF" (addr as the controller gives it: least significant byte first) */
