@@ -1017,3 +1017,7 @@ served as a virtual SCSI disk at ID 0, `scsi.disk=AUX.dsk:0`), in four steps:
 - **`mac.sccirq=off`** (this commit) keeps the SCC's line from the 68k, a diagnostic to see whether the check
   goes on without it. Next, if it does: which of the SCC's sources is pending (RR3, `mac.setrace=N,SCC`), and
   whether A/UX's own driver reaches the chip through its page tables.
+- **`mac.sccirq=off` stopped the Mac OS itself** (A/UX's System 7.0.1, the same morning): "Welcome to Macintosh", the
+  68k at $4080C098 in the ROM after 160,000 SCC accesses in one beat, then no bus cycle at all, waiting for the
+  interrupt that was kept away. So **`mac.sccirq=aux`** keeps the line away only while the MMU's user and supervisor
+  views are apart (`psmac_mmu_views_apart`): A/UX's own tables, which the Mac OS never sets up.

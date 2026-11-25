@@ -1514,4 +1514,7 @@ void psmac_mmu_check_code_space(uint32_t pc, int super)
 
 /* 1 when the fault path has work to do: with the option, from the first space on (translation off included, whose
    identity is mapped page by page too) */
+/* the guest's user and supervisor views kept apart (SRE with its own SRP, FCL, ...): A/UX's tables, never the Mac OS's;
+   psmac_board_se.c's mac.sccirq=aux asks (docs/23 section 14) */
+int psmac_mmu_views_apart(void) { return split_now; }
 int psmac_mmu_translating(void) { return (psmac_mmu_full && view[0]) || (translate_on && l2p); }

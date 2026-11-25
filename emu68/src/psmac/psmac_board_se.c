@@ -1080,13 +1080,16 @@ void psmac_se_set_level(unsigned raw)         /* psmac_bus.c, after each cycle o
 /* mac.sccirq=off (26 November 2026, docs/23 section 14): the SE's SCC interrupt kept from the 68k. A/UX 3.1.1's
    standalone shell, checking the disks under A/UX Startup, took the SE's level 2 (the IIci's 4) about 800,000 times a
    second on the owner's SE without one access to the SCC, so the line never fell and nothing else ran. A diagnostic:
-   with it nothing that waits for the serial ports' interrupts works (AppleTalk on LocalTalk, a modem). */
-static int scc_irq_off;
+   with it nothing that waits for the serial ports' interrupts works (AppleTalk on LocalTalk, a modem). Mac OS itself
+   stopped at "Welcome to Macintosh" with it, so mac.sccirq=aux keeps the line away only while the guest's user and
+   supervisor views are apart (psmac_mmu_views_apart: A/UX's own tables, which the Mac OS never sets up). */
+static int scc_irq_off;                          /* 1 off, 2 aux */
+int psmac_mmu_views_apart(void);
 unsigned psmac_se_ipl(unsigned raw)
 {
     if (psmac_board_solo) return psmac_solo_ipl();
     unsigned ipl = 0;
-    if (scc_irq_off) raw &= ~2u;
+    if (scc_irq_off == 1 || (scc_irq_off == 2 && psmac_mmu_views_apart())) raw &= ~2u;
     if (raw & 2) ipl = 4;
     else if (raw & 1) ipl = 1;
     if (psmac_se_rbv_irq() && ipl < 2) ipl = 2;
@@ -1793,8 +1796,9 @@ void psmac_se_options(const char *args)
     }
     if ((tok = find_token(args, "mac.sccirq="))) {
         tok += 11;
-        scc_irq_off = tok[0] == 'o' && tok[1] == 'f';
-        if (scc_irq_off) kprintf("[PSMAC:SE] mac.sccirq=off: the SCC's interrupt (the IIci's level 4) is kept from the 68k (a diagnostic: no serial-port interrupts)\n");
+        scc_irq_off = tok[0] == 'o' && tok[1] == 'f' ? 1 : tok[0] == 'a' && tok[1] == 'u' ? 2 : 0;
+        if (scc_irq_off == 1) kprintf("[PSMAC:SE] mac.sccirq=off: the SCC's interrupt (the IIci's level 4) is kept from the 68k (a diagnostic: no serial-port interrupts)\n");
+        if (scc_irq_off == 2) kprintf("[PSMAC:SE] mac.sccirq=aux: the SCC's interrupt (the IIci's level 4) is kept from the 68k while the MMU's user and supervisor views are apart (A/UX's tables)\n");
     }
     if ((tok = find_token(args, "mac.sefloat="))) { tok += 12; scsi_float_sim = tok[0] == '1'; }   /* the testbed: the 5380 read as on an unterminated bus */
     if ((tok = find_token(args, "mac.seram="))) {   /* 1, 2, 2.5 or 4: the SE's address arithmetic takes the top of what is fitted */
