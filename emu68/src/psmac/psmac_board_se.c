@@ -70,6 +70,7 @@ uint32_t psmac_se_fb_base(void) { return se_ram_size() - 0x5900; }   /* the main
 uint32_t psmac_wire_read(uint32_t addr, int size);
 void psmac_wire_write(uint32_t addr, int size, uint32_t data, int posted);
 void psmac_serve_waiting(void);                  /* the 68k's request, if one is waiting: between the cycles of a long errand */
+uint32_t psmac_mac_rd32(uint32_t logical, int *ok);   /* a long of the Mac's memory, wherever its map puts it (the Sony driver's figures) */
 
 /* ---- the chips the SE does not have: a pseudo-VIA (RBV), an ASC, a VDAC ------------------- */
 static uint8_t rbv_regs[256], rbv_ifr, rbv_ier;   /* MAME's rbv.cpp is the model: IFR/IER with the bit-7 set/clear convention */
@@ -764,6 +765,115 @@ static int plus_wait_drq(void)
     return 0;
 }
 
+/* ---- the IWM: a guard on its read window, and the floppy's figures --------------------------------
+   (25 November 2026, docs/08 item 146; docs/02, "Floppy read and write on the accelerated compact Macs".)
+   The IIci ROM's Sony driver reads the IWM's data register in loops with nothing but a few instructions
+   between two reads (RdData, $4086E2C2-$4086E2D0): only the wire separates them. In the asynchronous
+   mode the driver puts the chip in, a read that finds a byte (bit 7 set) clears the register 14 of the
+   chip's clocks later, about 1.8 us at 7.8336 MHz (MAME's iwm.cpp, m_async_update), and until then a
+   second read returns the same nibble: a checksum error or a bad address field, and a retry. On a
+   68000 the shortest path between two reads is some five microseconds; on the GPIO a read may cost one.
+   So after a read of the data register that returned bit 7 set, the next IWM access, whatever it is, is
+   held until mac.iwmgap= nanoseconds (2000 by default, 0 turns it off) after that read came back. The
+   wait is core 0's (the 68k's core, which posts the request): the service core carrying the wire is not
+   held at all and goes on with its own errands in the meantime, and the time is measured from the reply,
+   so the gap on the wire is at least the gap here. At most 2 us of the 16 us a GCR byte lasts.
+   The board layer follows the IWM's eight state lines as the Mac's accesses set them (register n at
+   $DFE1FF + n x $200 sets line n / 2 to n & 1: CA0, CA1, CA2, LSTRB, ENABLE, SELECT, Q6, Q7): a read
+   with Q6 and Q7 low is a read of the data register, and ENABLE is the drive's motor as the driver asked
+   for it. Every board with the IWM goes through here: se, plus, 512ke, 512k and 128k.
+   The figures (core 0 counts them for ever, the heartbeat prints the differences while the floppy is
+   in use, [PSMAC:IWM]): data-register reads and how many returned a nibble; the spacing between two
+   reads of the data register (reply to reply, counted when under 100 us apart: the driver's loops, not
+   its pauses), overall and after a nibble, which is the spacing the guard is about; the time a read
+   takes, posted to answered; and the guard's waits. psmac_bus.c adds the stalls in front of IWM accesses
+   (the service core's own work that a request of the Mac's waited for). */
+static uint32_t iwm_gap_ns = 2000;               /* mac.iwmgap=NS */
+static uint64_t iwm_gap_ticks, iwm_100us;        /* in the counter's ticks (set at the first access) */
+static uint8_t iwm_lines;                        /* bit n: the IWM's line n, as the Mac's accesses left it */
+static uint64_t iwm_hold;                        /* core 0: no IWM access before this */
+static volatile uint64_t iwm_last_t, iwm_nib_t;  /* core 0 writes them, the service core reads: the last IWM access, the last nibble read */
+static uint64_t iwm_data_t; static int iwm_data_nib;   /* the last data-register read, and whether it returned a nibble */
+static struct { uint32_t acc, reads, nibs, waits, sp_n, spn_n; uint64_t wait_t, sp_t, spn_t, rt_t; } iwm_c;   /* for ever (core 0) */
+static uint32_t iwm_wait_max, iwm_sp_min, iwm_spn_min, iwm_rt_min, iwm_rt_max;   /* this heartbeat's extremes, in ticks (core 0) */
+static volatile int iwm_win_reset = 1;           /* the heartbeat asks core 0 to start the extremes again */
+#define IWM_DATA(lines) (((lines) & 0xc0) == 0)  /* Q6 and Q7 low: a read is of the data register */
+/* The IWM's clock (25 November 2026, found while testing the 400K drive's speed, docs/08 item 146). The IWM
+   counts its bit cells in its own clock, and its mode register says which: bit 3 fast (2 us cells at the
+   rated clock) or slow (4 us, the Apple II's 5.25" drives), bit 4 the clock, 8 MHz or 7. The SE gives its
+   IWM a 15.6672 MHz clock, and the SE ROM ($4352A4) and the IIci ROM ($4086D676) write mode $17: slow, "8
+   MHz", which at twice the rated clock is 2 us cells. The 128K, 512K, 512Ke and Plus clock theirs at
+   7.8336 MHz, and their ROMs write $1F, fast ($401DC2 in the 64K ROM, $418898 in the Plus ROMs). With the
+   IIci ROM's $17 their IWM looks for 4 us cells in a 2 us stream and frames noise: in the testbed's 512K
+   (MAME clocks the macplus_ps IWM at C7M, the SE's at twice that) 81 % of the bytes read were $FF and not
+   one address mark came in 13,597, with the drive at the right speed. So on those boards a write of the
+   mode register (Q6 and Q7 high, the motor line low) goes to the chip with bit 3 set when bit 4 is set and
+   bit 3 clear, slow at 16 MHz being fast at 8, and a read of the status register (Q6 high, Q7 low) that
+   shows the translated mode gives the ROM back its own, which it compares with $17 ($4086D670) before
+   every I/O. mac.iwmmode=keep leaves the mode as the ROM writes it. */
+static uint8_t iwm_mode_mac = 0xff, iwm_mode_wire;   /* the mode the Mac wrote (low five bits), and what went to the chip */
+static uint32_t iwm_mode_writes;
+static int iwm_mode_keep;                         /* mac.iwmmode=keep */
+static uint32_t iwm_access(uint32_t addr, uint32_t reg, uint32_t se, int size, int write, uint32_t data, int posted)
+{
+    if (!iwm_100us) { iwm_100us = asc_hz() / 10000; iwm_gap_ticks = (uint64_t)iwm_gap_ns * asc_hz() / 1000000000u; }
+    if (iwm_win_reset) { iwm_win_reset = 0; iwm_wait_max = iwm_rt_max = 0; iwm_sp_min = iwm_spn_min = iwm_rt_min = 0xffffffffu; }
+    uint64_t t0 = asc_now();
+    if (iwm_hold > t0) {                         /* the guard: the last read found a nibble too recently */
+        uint64_t w0 = t0;
+        while ((t0 = asc_now()) < iwm_hold) __asm__ volatile("yield");
+        uint32_t w = (uint32_t)(t0 - w0);
+        iwm_c.waits++; iwm_c.wait_t += w; if (w > iwm_wait_max) iwm_wait_max = w;
+    }
+    iwm_hold = 0;
+    iwm_c.acc++;
+    if (reg & 1) iwm_lines |= (uint8_t)(1u << (reg >> 1)); else iwm_lines &= (uint8_t)~(1u << (reg >> 1));
+    if (write && psmac_board_plus && !iwm_mode_keep && (iwm_lines & 0xd0) == 0xc0) {   /* the mode register, on a 7.8336 MHz IWM */
+        uint8_t m = (uint8_t)data;
+        iwm_mode_mac = m & 0x1f;
+        if ((m & 0x18) == 0x10) m |= 0x08;
+        iwm_mode_wire = m & 0x1f;
+        if (!iwm_mode_writes++ && iwm_mode_wire != iwm_mode_mac)
+            kprintf("[PSMAC:IWM] the IWM's mode: the ROM wrote $%02x (2 us cells for an IWM clocked at 16 MHz, the SE's); this board's runs at 7.8336 MHz, "
+                    "so $%02x goes to the chip and the status register gives the ROM its own back (mac.iwmmode=keep to leave it)\n", iwm_mode_mac, iwm_mode_wire);
+        data = m;
+    }
+    if (write) { trace("IWM", 1, addr, se, size, data & 0xff); psmac_wire_write(se, 1, data & 0xff, posted); iwm_last_t = asc_now(); return 0; }
+    uint32_t r = psmac_wire_read(se, 1) & 0xff;
+    uint64_t t1 = asc_now();
+    iwm_last_t = t1;
+    if (iwm_mode_mac != 0xff && (iwm_lines & 0xc0) == 0x40 && (r & 0x1f) == iwm_mode_wire) r = (r & 0xe0) | iwm_mode_mac;   /* the status register: the ROM's mode */
+    trace("IWM", 0, addr, se, size, r);
+    if (IWM_DATA(iwm_lines)) {
+        uint32_t rt = (uint32_t)(t1 - t0);
+        iwm_c.reads++; iwm_c.rt_t += rt; if (rt < iwm_rt_min) iwm_rt_min = rt; if (rt > iwm_rt_max) iwm_rt_max = rt;
+        if (iwm_data_t && t1 - iwm_data_t < iwm_100us) {
+            uint32_t sp = (uint32_t)(t1 - iwm_data_t);
+            iwm_c.sp_n++; iwm_c.sp_t += sp; if (sp < iwm_sp_min) iwm_sp_min = sp;
+            if (iwm_data_nib) { iwm_c.spn_n++; iwm_c.spn_t += sp; if (sp < iwm_spn_min) iwm_spn_min = sp; }
+        }
+        iwm_data_t = t1; iwm_data_nib = (r & 0x80) != 0;
+        if (r & 0x80) { iwm_c.nibs++; iwm_nib_t = t1; if (iwm_gap_ticks) iwm_hold = t1 + iwm_gap_ticks; }
+    }
+    return r;
+}
+/* the service core: the floppy is in use (an IWM access within the last 5 ms): errands without a
+   deadline wait (the screen's rows and their check, the Plus's keyboard and mouse, the heartbeat) */
+int psmac_se_floppy_busy(void)
+{
+    if (!psmac_board_se || psmac_board_solo) return 0;
+    uint64_t t = iwm_last_t, now = asc_now();
+    return t && (now < t || now - t < asc_hz() / 200);   /* (t is core 0's, a moment newer than now at times) */
+}
+/* the service core: was a nibble read within 100 us before t (the driver in the middle of a sector)? */
+int psmac_se_iwm_stream(uint64_t t)
+{
+    uint64_t n = iwm_nib_t;
+    if (!n || !iwm_100us) return 0;
+    return t < n || t - n < iwm_100us;
+}
+static uint32_t ticks_ns(uint64_t t) { uint64_t ns = t * 1000000000u / asc_hz(); return ns > 0xffffffffu ? 0xffffffffu : (uint32_t)ns; }
+
 /* ---- translation ----------------------------------------------------------------------------
    One IIci-side access of the given size, read or written. Returns 1 when answered (locally or
    on the SE's bus), with the read value in *val. The caller handles addresses this file declines. */
@@ -866,9 +976,8 @@ int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t 
     if (off >= 0x16000 && off < 0x18000) {
         /* SWIM on the IIci, IWM on the SE: register n at +n*0x200, odd addresses on the SE */
         uint32_t reg = (off >> 9) & 15, se = 0xDFE1FFu + (reg << 9);
-        if (write) { trace("IWM", 1, addr, se, size, data & 0xff); psmac_wire_write(se, 1, data & 0xff, posted); return 1; }
-        r = psmac_wire_read(se, 1) & 0xff;
-        trace("IWM", 0, addr, se, size, r);
+        r = iwm_access(addr, reg, se, size, write, data, posted);   /* the guard and the figures (above) */
+        if (write) return 1;
         *val = size == 1 ? r : r << 8 | r;
         return 1;
     }
@@ -1028,7 +1137,9 @@ static struct {
     uint32_t flush_seen, wt_seen, phase[4];
     uint8_t w_ora, w_ddra, w_orb, w_ddrb;        /* the VIA's registers as last written on the wire (service core) */
     uint32_t edges, own_clears, halves, late, held, starts, underruns, played, half_us_max, quiets;
+    uint32_t iwm_deferred, iwm_halves;           /* mac.iwmsound=N: halves put off for the floppy; halves written while it was in use */
 } snd = { .half = -1 };
+static uint32_t snd_iwm_quiet_us;               /* mac.iwmsound=N: a half only when no IWM access came in the last N us (0: between the Mac's cycles, as always) */
 
 /* the next sample, at the SE's rate */
 static uint32_t be24(uint32_t off) { return (uint32_t)asc_regs[off] << 16 | (uint32_t)asc_regs[off + 1] << 8 | asc_regs[off + 2]; }
@@ -1134,6 +1245,7 @@ static uint32_t snd_beam(uint64_t now)
    sound whatever the switch lets through. 370 bytes, the Mac's own requests served between them. */
 static void snd_quiet(uint8_t level)
 {
+    psmac_errand(PSMAC_ERR_SOUND);
     uint32_t dst = snd_base();
     for (uint32_t i = 0; i < SND_WORDS; i++) {
         psmac_wire_write(dst + 2 * i, 1, level, 1);
@@ -1144,6 +1256,7 @@ static void snd_quiet(uint8_t level)
 static void snd_service(void)
 {
     if (snd_off) return;
+    psmac_errand(PSMAC_ERR_SOUNDLINES);
     uint64_t now = asc_now(), hz = asc_hz();
     if (!snd.period) { snd.period = hz * 704u * 370u / 15667200u; snd_quiet(0x80); }   /* the SE's frame: 704 dots by 370 lines at 15.6672 MHz, 60.15 Hz; the buffer silent from the start */
     if (snd.flush_seen != snd_flush) { snd.flush_seen = snd_flush; for (int ch = 0; ch < 2; ch++) snd_tail[ch] = __atomic_load_n(&snd_head[ch], __ATOMIC_ACQUIRE); }
@@ -1164,8 +1277,14 @@ static void snd_service(void)
            emulated time runs in bursts against the wall clock: 53 s of chime in its recording against
            69 s of the Pi's timer). Past two frames without an edge (the Mac holding CA1) it runs free. */
         if (half != snd.half && snd.edge_halves >= 2 && now - snd.edge_t < 2 * snd.period) { if (snd.edge_halves == 2) { snd.held++; snd.edge_halves = 3; } half = snd.half; }
+        if (half != snd.half && snd_iwm_quiet_us && iwm_last_t && (now < iwm_last_t || now - iwm_last_t < hz / 1000000u * snd_iwm_quiet_us)) {
+            snd.iwm_deferred++;                  /* mac.iwmsound=N: the floppy first; the speaker plays the old half again */
+            half = snd.half;
+        }
         if (half != snd.half) {
             /* the SE has just moved into this half: the other one gets the next samples */
+            psmac_errand(PSMAC_ERR_SOUND);
+            if (psmac_se_floppy_busy()) snd.iwm_halves++;
             if (snd.half >= 0 && (pos % SND_HALF) > SND_HALF / 2) snd.late++;   /* noticed late: less than a quarter frame to write it in */
             snd.half = half;
             uint32_t dst = snd_base() + 2 * (half ? 0 : SND_HALF);
@@ -1193,6 +1312,131 @@ void psmac_se_sound(void) { if (psmac_board_se && !psmac_board_solo) snd_service
 /* mac.buswait's figures (psmac_bus.c) are filed by this: a sound is playing and its halves are being written */
 int psmac_se_speaker_busy(void) { return psmac_board_se && !psmac_board_solo && !snd_off && snd.active; }
 
+/* ---- the 400K drive's speed ------------------------------------------------------------------
+   (25 November 2026, docs/08 item 146.) The 400K single-sided drive (the 128K's and the 512K's, and the
+   external M0130 on any of these machines) has no speed control of its own: it turns at the speed a
+   pulse-width signal tells it, and the Mac makes that signal from the low byte of each word of the
+   sound buffer, one word a scan line, as the speaker takes the high byte. The disk is written in five
+   zones of 16 tracks, 12 to 8 sectors a track, each at its own speed, so the speed must change with
+   the track. The 64K ROM's Sony driver did it in SetSpeed (the 512K ROM's $401BBE, reached on every
+   seek through the wrapper at $401C86), the SE's and the Plus's still carry it ($435012); the IIci
+   ROM's has dropped it (SetSpeed $4086CB60 an rts, FigTrkSpd $4086D7F0 `moveq #-1`), and the kernel
+   wrote only the high bytes. So the IIci ROM's seek wrapper ($4086D4B0) now tells the kernel the track
+   through the window (psmb.h struct psmb_floppy, rom/patches/iici.json "flop:"), and the service core
+   writes the 370 low bytes for that track's zone, between the Mac's own cycles as the speaker's halves
+   go: byte writes to the odd addresses, the high bytes never touched.
+   - What a byte means, read in the 64K ROM: it is a state of a 6-bit shift register (each state steps
+     to the next by s >> 1 | ((s ^ s >> 1) & 1) << 5) whose place in the sequence is the pulse's length;
+     each step from a state shortens the pulse by one. Apple wrote a speed v (0-399) as the state of
+     length 41 - (399 - v) / 10 and the next one, mixed in tens by the remainder, which makes the
+     average length (v + 11) / 10. Here the state for a length is found by stepping from the state of
+     length 63 ($20), not taken from a table.
+   - The speeds. The 64K ROM measured them: MakeSpdTbl ($401E82) set two trial speeds, 128 and 256,
+     timed 15 tachometer pulses (a quarter turn) four times at each against VIA timer 2 (FigTrkSpd,
+     $401F18) and interpolated toward a target per zone at $401E68, ten words that are the same in the
+     128K, 512K, SE and Plus ROMs: in rpm 385.6-401.4 (tracks 0-15), 420.8-437.9 (16-31), 462.9-481.8
+     (32-47), 514.3-535.3 (48-63) and 578.5-602.2 (64-79), with the middle of each the speed sought;
+     ReSeek ($40195C) measured again when four minutes had passed. Here the speeds are a fixed table:
+     the middle of each of Apple's windows, 393.5, 429.3, 472.3, 524.8 and 590.3 rpm, through the
+     drive's speed line as MAME's mac128 and macplus models have it (342.5 rpm at a duty of 9.4 %,
+     702.5 at 91 %, the duty (10 x length - 11) / 419): speeds 88, 122, 163, 212 and 275, which that line
+     turns back into 393.7, 429.5, 472.7, 524.2 and 590.6 rpm.
+   - Why not Apple's measurement. The tachometer is one of the drive's sense lines, read through the
+     IWM with its state lines set to select it; under Aurora68 the IIci ROM's driver owns the IWM and
+     its lines, and the kernel would have to move them between the driver's accesses and put them back
+     to time a quarter turn (25-40 ms), with the motor on. That is a second driver inside the first.
+     Apple's windows are +-2 % of the speed sought; whether real drives sit inside them on this table is
+     what the owner's 512K, if there is one, will show (the read errors in the [PSMAC:IWM] line).
+     mac.floppyspeed=+N or -N moves every zone by N (one unit is about 1.05 rpm on the drive's line),
+     as Apple's per-drive correction did (the drive record's word at +$16, added to every zone).
+   - The drive needs time to change speed. Apple's SetSpeed asked Seek to wait 32 x the change of
+     speed in units of 100 us, at least 150 ms and at most 400 ms (SonyVars+54, +56), and the IIci
+     driver's Seek still waits out SonyVars+20 for a 400K drive ($4086D512): the ROM patch's stub puts
+     mac.floppywait= (100 us units, 1500 by default: 150 ms) times the zones moved there, at most the
+     driver's 400 ms.
+   On mac.board=128k and 512k this is on; on the SE, the Plus and the 512Ke, whose internal drives are
+   800K drives that set their own speed (MAME applies the line to the 400K drive alone),
+   mac.floppyspeed=on turns it on for a 400K drive on the external port. mac.floppyspeed=off never
+   writes the low bytes. */
+static int spd_mode = -1;                        /* mac.floppyspeed: -1 the board decides, 0 off, 1 on */
+static int spd_trim;                             /* mac.floppyspeed=+N/-N */
+static uint32_t spd_wait = 1500;                 /* mac.floppywait=: per zone moved, 100 us units */
+static const uint16_t spd_zone_speed[5] = { 88, 122, 163, 212, 275 };   /* above: Apple's windows' middles through the drive's line */
+static const uint16_t spd_zone_rpm10[5] = { 3935, 4293, 4723, 5248, 5903 };   /* the same, in tenths of an rpm, for the log */
+static int spd_zone = -1;                        /* the zone the low bytes hold */
+static uint16_t spd_seeks_seen;
+static uint32_t spd_writes, spd_logged, spd_seeks, spd_us_max;
+static int spd_on(void)
+{
+    if (!psmac_board_se || psmac_board_solo || spd_mode == 0) return 0;
+    return spd_mode == 1 || psmac_board_orig == 1 || psmac_board_orig == 2;
+}
+/* psmac_mbox.c, as it makes the window: the block the ROM's stub reads */
+void psmac_se_floppy_window(volatile uint8_t *f)
+{
+    volatile uint16_t *w = (volatile uint16_t *)f;   /* big-endian, as the 68k reads it (the kernel is big-endian) */
+    w[0] = spd_on() ? PSMB_FLOPPY_WANT : 0;
+    w[1] = 0; w[2] = 0; w[3] = 0;                     /* the zone of the first seek is compared with 0, the zone written at the start */
+    w[4] = (uint16_t)spd_wait;
+}
+static int spd_state(int len)                    /* the shift register's state whose pulse is len long (1-63; 0 is state 0) */
+{
+    if (len <= 0) return 0;
+    int s = 0x20;                                /* length 63 */
+    for (int k = 63; k > len; k--) s = (s >> 1) | (((s ^ (s >> 1)) & 1) << 5);
+    return s;
+}
+static void spd_write(int zone, uint32_t track)
+{
+    int v = spd_zone_speed[zone] + spd_trim;
+    if (v < 0) v = 0;
+    if (v > 399) v = 399;
+    uint32_t l10 = (uint32_t)v + 11, lo = l10 / 10, frac = l10 % 10;   /* ten times the average length */
+    uint8_t b_lo = (uint8_t)spd_state((int)lo), b_hi = (uint8_t)spd_state((int)lo + 1);
+    uint64_t t0 = asc_now();
+    if (spd_zone >= 0) psmac_errand(PSMAC_ERR_SPEED);   /* (the first, before the 68k starts, is no one's stall) */
+    for (int pass = 0; pass < (snd_off ? 2 : 1); pass++) {
+        /* the main buffer; with mac.sesound=off the ROM's PA3 may choose the alternate one, $5C00 below, so both */
+        uint32_t dst = snd_base() - (pass ? 0x5c00u : 0) + 1;
+        for (uint32_t i = 0; i < SND_WORDS; i++) {
+            int hi = (i % 10 + 1) * frac / 10 != (i % 10) * frac / 10;   /* frac of every ten, spread */
+            psmac_wire_write(dst + 2 * i, 1, hi ? b_hi : b_lo, 1);
+            psmac_serve_waiting();
+        }
+    }
+    uint32_t us = (uint32_t)((asc_now() - t0) * 1000000u / asc_hz());
+    if (us > spd_us_max) spd_us_max = us;
+    spd_writes++;
+    /* the drive's line (MAME's): rpm = (duty - 0.094) x 360 / 0.816 + 342.5, duty = v / 419 */
+    int rpm10 = (int)(((int64_t)v * 10000 / 419 - 940) * 3600 / 8160) + 3425;
+    if (spd_logged < 40 || !(spd_writes % 100)) {
+        spd_logged++;
+        kprintf("[PSMAC:IWM] 400K drive speed: track %u, zone %d (tracks %d-%d): speed %d (%d%+d), pulse states $%02x and $%02x, %u in ten of the second; "
+                "%u.%u rpm on the drive's line (Apple's %u.%u); %u low bytes written in %u us\n",
+                track, zone, 16 * zone, 16 * zone + 15, v, spd_zone_speed[zone], spd_trim, b_lo, b_hi, frac,
+                rpm10 / 10, rpm10 % 10, spd_zone_rpm10[zone] / 10, spd_zone_rpm10[zone] % 10, SND_WORDS * (snd_off ? 2 : 1), us);
+    }
+    spd_zone = zone;
+}
+/* the service core: a seek the stub has counted since the last look, at the start the first zone */
+static void spd_service(void)
+{
+    if (!spd_on()) return;
+    extern uint8_t *psmac_mbox_window(void);
+    uint8_t *win = psmac_mbox_window();
+    if (spd_zone < 0) { spd_write(0, 0); if (win) spd_seeks_seen = *(volatile uint16_t *)(win + PSMB_OFF_FLOPPY + 4); return; }
+    if (!win) return;
+    volatile uint16_t *f = (volatile uint16_t *)(win + PSMB_OFF_FLOPPY);
+    uint16_t seeks = f[2];
+    if (seeks == spd_seeks_seen) return;
+    spd_seeks += (uint16_t)(seeks - spd_seeks_seen);
+    spd_seeks_seen = seeks;
+    uint32_t track = f[1] & 0xff;
+    int zone = (int)(track >> 4);
+    if (zone > 4) zone = 4;
+    if (zone != spd_zone) spd_write(zone, track);
+}
+
 /* ---- the SE's screen -------------------------------------------------------------------------
    The slot-9 card's frame (psmac_display.c) is 512 by 342 here, one bit a pixel, 64 bytes a row,
    exactly the SE's own layout. Core 3 marks the rows that changed since the last copy; the
@@ -1204,7 +1448,7 @@ int psmac_se_speaker_busy(void) { return psmac_board_se && !psmac_board_solo && 
 static uint8_t shadow[SE_ROWS * SE_ROWBYTES];
 static volatile uint32_t dirty[(SE_ROWS + 31) / 32];
 static volatile int shadow_valid;
-static uint32_t rows_sent, frames_marked, se_lines_bad;   /* se_lines_bad: address lines that failed the test at the start (bit n = An) */
+static uint32_t rows_sent, frames_marked, se_lines_bad, rows_deferred;   /* se_lines_bad: address lines that failed the test at the start (bit n = An) */
 
 /* core 3: compare the card's frame with what the SE has and mark the rows that differ */
 void psmac_se_mark(const uint8_t *frame, uint32_t width, uint32_t height, uint32_t rowbytes, uint32_t depth)
@@ -1313,13 +1557,19 @@ void psmac_se_service(void)
     if (psmac_board_solo) { psmac_solo_service(); return; }
     if (!psmac_board_se) return;
     snd_service();                                /* the speaker first: its halves have deadlines, the rows do not */
+    spd_service();                                /* the 400K drive's speed, when a seek has asked for another zone */
+    psmac_errand(PSMAC_ERR_LOOP);
+    /* While the floppy is in use (an IWM access within 5 ms) the rows and their check wait: they have no
+       deadline, and the driver's next nibble does (docs/08 item 146). Changed rows stay marked. */
+    { static int held; if (psmac_se_floppy_busy()) { if (!held) { held = 1; rows_deferred++; } return; } held = 0; }
+    psmac_errand(PSMAC_ERR_ROWS);
     for (int n = 0; n < 4; n++) {
         int y = -1;
         for (uint32_t w = 0; w < (SE_ROWS + 31) / 32 && y < 0; w++) {
             uint32_t bits = dirty[w];
             if (bits) { int b = __builtin_ctz(bits); __atomic_fetch_and(&dirty[w], ~(1u << b), __ATOMIC_ACQUIRE); y = w * 32 + b; }
         }
-        if (y < 0) { if (!n) se_verify_row(); return; }
+        if (y < 0) { if (!n) { psmac_errand(PSMAC_ERR_CHECK); se_verify_row(); } return; }
         const uint16_t *src = (const uint16_t *)(shadow + y * SE_ROWBYTES);
         uint32_t dst = psmac_se_fb_base() + y * SE_ROWBYTES;
         for (int i = 0; i < SE_ROWBYTES / 2; i++) {
@@ -1455,6 +1705,7 @@ void psmac_se_start(void)
                  "volume on VIA PA0-2, PB7 low only while a sound plays (mac.sesound=off to leave the speaker alone)\n", snd_base());
     scsi_probe();
     rtc_probe();
+    spd_service();                                /* the 400K drive's speed for tracks 0-15, before the 68k starts (on the 128K and 512K) */
     __asm__ volatile("dmb ish" ::: "memory");
     se_ready = 1;
 }
@@ -1538,12 +1789,64 @@ void psmac_se_options(const char *args)
         if (kb == 1024 || kb == 2048 || kb == 2560 || kb == 4096) { se_ram_kb = kb; se_ram_opt = 1; }
     }
     if ((tok = find_token(args, "mac.sesound="))) { tok += 12; snd_off = tok[0] == 'o' && tok[1] == 'f'; }
+    /* the floppy (docs/08 item 146): the IWM's read guard in ns (0 off); a speaker half only when no IWM access
+       came in the last N us (0: between the Mac's cycles); the 400K drive's speed (on, off, +N/-N); its wait */
+    if ((tok = find_token(args, "mac.iwmgap="))) { uint32_t v = 0; for (tok += 11; *tok >= '0' && *tok <= '9'; tok++) v = v * 10 + (uint32_t)(*tok - '0'); if (v <= 10000000) iwm_gap_ns = v; }   /* up to 10 ms: the testbed's reads are a millisecond apart */
+    if ((tok = find_token(args, "mac.iwmsound="))) { uint32_t v = 0; for (tok += 13; *tok >= '0' && *tok <= '9'; tok++) v = v * 10 + (uint32_t)(*tok - '0'); if (v <= 100000) snd_iwm_quiet_us = v; }
+    if ((tok = find_token(args, "mac.floppyspeed="))) {
+        tok += 16;
+        if (tok[0] == 'o' && tok[1] == 'n') spd_mode = 1;
+        else if (tok[0] == 'o' && tok[1] == 'f') spd_mode = 0;
+        else if (tok[0] == '+' || tok[0] == '-') {
+            int sign = tok[0] == '-' ? -1 : 1, v = 0;
+            for (tok++; *tok >= '0' && *tok <= '9'; tok++) v = v * 10 + (*tok - '0');
+            if (v <= 100) spd_trim = sign * v;
+        }
+    }
+    if ((tok = find_token(args, "mac.iwmmode="))) { tok += 12; iwm_mode_keep = tok[0] == 'k'; }
+    if ((tok = find_token(args, "mac.floppywait="))) { uint32_t v = 0; for (tok += 15; *tok >= '0' && *tok <= '9'; tok++) v = v * 10 + (uint32_t)(*tok - '0'); if (v <= 4000) spd_wait = v; }
+}
+
+/* the heartbeat, while the floppy is in use: the IWM's figures of the last five seconds (iwm_access), the
+   driver's own error count and last error, the 400K drive's speed */
+static void iwm_report(void)
+{
+    static struct { uint32_t acc, reads, nibs, waits, sp_n, spn_n; uint64_t wait_t, sp_t, spn_t, rt_t; } last;
+    static uint32_t errs_last;
+    uint32_t acc = iwm_c.acc - last.acc;
+    if (!acc) return;
+    uint32_t reads = iwm_c.reads - last.reads, nibs = iwm_c.nibs - last.nibs, waits = iwm_c.waits - last.waits;
+    uint32_t sp_n = iwm_c.sp_n - last.sp_n, spn_n = iwm_c.spn_n - last.spn_n;
+    uint64_t sp_t = iwm_c.sp_t - last.sp_t, spn_t = iwm_c.spn_t - last.spn_t, rt_t = iwm_c.rt_t - last.rt_t, wait_t = iwm_c.wait_t - last.wait_t;
+    uint32_t sp_min = iwm_sp_min, spn_min = iwm_spn_min, rt_min = iwm_rt_min, rt_max = iwm_rt_max, wait_max = iwm_wait_max;
+    __builtin_memcpy(&last, &iwm_c, sizeof last);
+    iwm_win_reset = 1;
+    kprintf("[PSMAC:IWM] %u IWM accesses in 5 s (motor %s), %u data-register reads, %u of them a nibble | data reads under 100 us apart: %u, min %u avg %u ns; "
+            "after a nibble: %u, min %u avg %u ns | a read on the wire, posted to answered: min %u avg %u max %u ns | the guard (mac.iwmgap=%u ns): %u waits, %u us in all, the longest %u ns\n",
+            acc, iwm_lines & 0x10 ? "on" : "off", reads, nibs,
+            sp_n, sp_n ? ticks_ns(sp_min) : 0, sp_n ? ticks_ns(sp_t / sp_n) : 0,
+            spn_n, spn_n ? ticks_ns(spn_min) : 0, spn_n ? ticks_ns(spn_t / spn_n) : 0,
+            reads ? ticks_ns(rt_min) : 0, reads ? ticks_ns(rt_t / reads) : 0, reads ? ticks_ns(rt_max) : 0,
+            iwm_gap_ns, waits, ticks_ns(wait_t) / 1000, waits ? ticks_ns(wait_max) : 0);
+    /* the driver's own count of failed reads and writes (SonyVars+250, raised at $4086D36C before each retry)
+       and its last error (DskErr, $142: the IIci driver writes it only when a call fails) */
+    int ok1 = 0, ok2 = 0, ok3 = 0; uint32_t sv = psmac_mac_rd32(0x134, &ok1);
+    uint32_t e = ok1 && sv ? psmac_mac_rd32(sv + 248, &ok2) & 0xffff : 0, de = psmac_mac_rd32(0x140, &ok3) & 0xffff;
+    if (ok1 && sv && ok2) {
+        kprintf("[PSMAC:IWM]   the Sony driver: %u failed reads or writes so far (+%u in 5 s, each one retried), the last error (DskErr) %d; %u seeks seen by the ROM's stub",
+                e, e >= errs_last ? e - errs_last : e, ok3 ? (int16_t)de : 0, spd_seeks);   /* (before the driver's Open the word is not its count yet) */
+        if (spd_on()) kprintf(", the 400K drive's speed written %u times (zone %d now, the longest write %u us; mac.floppyspeed trim %+d)", spd_writes, spd_zone, spd_us_max, spd_trim);
+        if (rows_deferred || snd.iwm_halves || snd.iwm_deferred) kprintf(" | screen rows held for the floppy %u times, speaker halves written while it was in use %u, put off %u", rows_deferred, snd.iwm_halves, snd.iwm_deferred);
+        kprintf("\n");
+        errs_last = e;
+    }
 }
 
 void psmac_se_report(void)
 {
     if (psmac_board_solo) { psmac_solo_report(); return; }
     if (!psmac_board_se) return;
+    iwm_report();
     kprintf("[PSMAC:SE] rows sent %u%s, rows checked %u (%u with %u words wrong, written again%s), rows rewritten blind %u, frames compared %u, local reads %u writes %u, RBV IFR %02x IER %02x SIER %02x | clock chip: %s, %u bytes read (%u of them $FF from the chip), %u written\n",
             rows_sent, se_lines_bad ? " (an address line failed its test at the start)" : "", verify_rows, verify_rows_bad, verify_words_bad, verify_on ? "" : "; check stopped: reads in doubt", blind_rows, frames_marked, local_reads, local_writes, rbv_ifr, rbv_ier, rbv_regs[0x12],
             xp.serve ? "not answering, the board layer answers" : "answering", xp.reads, xp.reads_ff, xp.writes);

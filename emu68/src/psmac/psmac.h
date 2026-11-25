@@ -90,4 +90,12 @@ void     psmac_redact(const char *in, char *out, uint32_t cap);    /* psmac_card
 void     psmac_splash_status(const char *fmt, ...);
 void     psmac_splash_alert(int kind, const char *fmt, ...);
 
+/* What the service core is doing besides the Mac's own requests (25 November 2026, docs/08 item 146):
+   each errand says so as it starts (psmac_errand), and a request of the Mac's to the IWM that waited more
+   than 10 us is filed under the errand that was running when it was posted (psmac_bus.c, the
+   [PSMAC:IWM] stalls). */
+enum { PSMAC_ERR_LOOP, PSMAC_ERR_HEARTBEAT, PSMAC_ERR_SOUND, PSMAC_ERR_SOUNDLINES, PSMAC_ERR_ROWS, PSMAC_ERR_CHECK,
+       PSMAC_ERR_PLUS, PSMAC_ERR_POLL, PSMAC_ERR_SPEED, PSMAC_ERR_GUEST, PSMAC_ERR_N };
+void psmac_errand(int e);                  /* the service core only */
+
 #endif

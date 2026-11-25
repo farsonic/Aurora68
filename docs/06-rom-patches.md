@@ -140,7 +140,7 @@ ROM ... patched in memory, checksum word ... (verified)"). `tools/mkcontainer.py
 delta when it packs a stock ROM, so a container it made holds the patched image of its day; since
 21 November 2026 the kernel also brings such an image up to date: the delta is a superset of every
 earlier patch set (checked against each version of `iici.json` in the history: 368FAA5C, 369A8139,
-369A5A97), so it is written over any 512 KiB ROM that is not already the current one, and kept
+369A5A97, and since 25 November 2026 36AC1C28), so it is written over any 512 KiB ROM that is not already the current one, and kept
 only if the result's sum is the current checksum; anything else is copied back as it came. After
 changing `iici.json`: `make -C rom check && make -C rom iici && python3 tools/mkdelta.py`, then
 rebuild the kernel.
@@ -198,6 +198,32 @@ and every call whose first check passes, which is every legitimate one. The erro
 what the 32-bit check found (memWZErr -111 for a free block, memAZErr -113 for a block whose zone
 does not check), the kind of error a Mac with 16 MB or less returns for the same call: there the
 retry looks at the same address in the other layout and fails too. Checksum 369A5A97 -> 36AC1C28.
+
+## 2c. The 400K drive's speed through the seek wrapper (25 November 2026, docs/08 item 146)
+
+The 400K single-sided drive of the 128K and 512K turns at the speed the Mac writes into the low bytes of
+the sound buffer, one zone of 16 tracks at a time; the SE ROM's Sony driver does it in SetSpeed
+($435012), called from a wrapper that every seek goes through ($4350DE: `bclr #11,d6; bsr SetSpeed;
+move.l JSeek,-(sp); rts`). The IIci ROM's driver kept the wrapper and dropped the call:
+
+```
+4086d4b0  bclr #11,d6 ; move.l $236,-(sp) ; rts     called from $4086CC98, $4086CCA8 (eject), $4086D144 (ReSeek,
+                                                    before every sector's I/O) and $4086EA68; Seek is $4086D4BA
+```
+
+Seek still waits out SonyVars+20 for a drive without the 800K's ready line ($4086D512: `move.w 20(a1),d0;
+moveq #0,d2; bsr $4086D54A`), the speed-change wait SetSpeed used to put there. The patch (two items in
+`iici.json`, "flop:") sends the wrapper to a stub in the zero padding at 0x62AC0:
+
+| Offset | VMA | Old | New |
+|---|---|---|---|
+| 0x6D4B0 | 0x4086D4B0 | `0886 000B 2F38 0236 4E75` | `4EF9 4086 2AC0` `jmp` the stub, NOPs |
+| 0x62AC0 | 0x40862AC0 | 112 x `00` | the wrapper's `bclr #11,d6`; the window at $900000 (24-bit) or $F9000000 (MMU32Bit $CB2 set); if it says 'PSMB' and its word at +$90 says 'SP': the track to +$92, one more seek counted at +$94, and when the zone (track / 16) differs from the one at +$96, that wait (+$98, 100 us units) times the zones moved, at most SonyVars+56 (400 ms), into SonyVars+20 unless a longer one is due; then `move.l JSeek,-(sp); rts` |
+
+The kernel writes 'SP' only on a board whose drive needs it (`mac.board=128k`, `512k`, or `mac.floppyspeed=on`;
+psmb.h `struct psmb_floppy`), so on every other board, the IIci testbed and the solo board included, the stub
+does the wrapper's two instructions and reads the window once. Checksum 36AC1C28 -> 36BA4653 (the kernel's
+startup chime and SCSI-timeout adjustments, psmac_board_se.c, then change it further in memory, as before).
 
 ## 3. Patch set `se.json`: the same for the SE ROM B2E362A8
 

@@ -801,8 +801,11 @@ void psmac_mbox_init(uintptr_t window_phys, uintptr_t ramp, uint32_t rams)
     { extern int psmac_board_se, psmac_board_solo, psmac_board_plus, psmac_board_orig;   /* which logic board the Mac is in (psmb.h, struct psmb_header.board) */
       static const uint32_t orig[] = { PSMB_BOARD_PLUS, PSMB_BOARD_128K, PSMB_BOARD_512K, PSMB_BOARD_512KE };
       wr32(h + 56, psmac_board_plus ? orig[psmac_board_orig & 3] : psmac_board_solo ? PSMB_BOARD_SOLO : psmac_board_se ? PSMB_BOARD_SE : PSMB_BOARD_IICI); }
+    { extern void psmac_se_floppy_window(volatile uint8_t *); psmac_se_floppy_window(win + PSMB_OFF_FLOPPY); }   /* the 400K drive's speed: the ROM's seek stub reads it (psmac_board_se.c) */
     kprintf("[PSMAC:MBOX] window at Mac 0x%08x (Pi %p): %d block device(s), net %s\n", PSMB_WIN_PHYS, (void *)win_phys, nbdev, net_up ? "up" : "off");
 }
+
+uint8_t *psmac_mbox_window(void) { return win; }   /* the window's kernel alias, 0 before psmac_mbox_init (psmac_board_se.c: the 400K drive's speed) */
 
 /* called from the service core loop; returns 1 if work was done */
 int psmac_mbox_poll(void)
