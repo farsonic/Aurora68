@@ -1082,17 +1082,24 @@ void psmac_se_set_level(unsigned raw)         /* psmac_bus.c, after each cycle o
    second on the owner's SE without one access to the SCC, so the line never fell and nothing else ran. A diagnostic:
    with it nothing that waits for the serial ports' interrupts works (AppleTalk on LocalTalk, a modem). Mac OS itself
    stopped at "Welcome to Macintosh" with it, so mac.sccirq=aux keeps the line away only while the guest's user and
-   supervisor views are apart (psmac_mmu_views_apart: A/UX's own tables, which the Mac OS never sets up). */
+   supervisor views are apart (psmac_mmu_views_apart: A/UX's own tables, which the Mac OS never sets up), and with it
+   the slot interrupt as well (psmac_se_ipl). */
 static int scc_irq_off;                          /* 1 off, 2 aux */
 int psmac_mmu_views_apart(void);
 unsigned psmac_se_ipl(unsigned raw)
 {
     if (psmac_board_solo) return psmac_solo_ipl();
     unsigned ipl = 0;
-    if (scc_irq_off == 1 || (scc_irq_off == 2 && psmac_mmu_views_apart())) raw &= ~2u;
+    int aux = scc_irq_off == 2 && psmac_mmu_views_apart();
+    if (scc_irq_off == 1 || aux) raw &= ~2u;
     if (raw & 2) ipl = 4;
     else if (raw & 1) ipl = 1;
-    if (psmac_se_rbv_irq() && ipl < 2) ipl = 2;
+    /* aux: the slot interrupt (RBV IFR bit 1) kept away too. With the SCC's line gone, A/UX's standalone shell stopped
+       the same way on level 2: Aurora68's own NuBus cards (the network board's interrupt, the screens' VBL) stay
+       asserted, no A/UX driver acknowledges them, its handler only raises the mask, and level 1, the VIA's clock it
+       waits for, is never taken (26 November 2026, docs/23 section 14). The RBV's other sources (SCSI) still count. */
+    if (aux) { rbv_recalc(); if ((rbv_ifr & rbv_ier & 0x7d) && ipl < 2) ipl = 2; }
+    else if (psmac_se_rbv_irq() && ipl < 2) ipl = 2;
     if (psmac_plus_irq() && ipl < 1) ipl = 1;    /* the Plus: the ADB transceiver's shift-register interrupt, the VIA's level */
     return ipl;
 }
@@ -1798,7 +1805,7 @@ void psmac_se_options(const char *args)
         tok += 11;
         scc_irq_off = tok[0] == 'o' && tok[1] == 'f' ? 1 : tok[0] == 'a' && tok[1] == 'u' ? 2 : 0;
         if (scc_irq_off == 1) kprintf("[PSMAC:SE] mac.sccirq=off: the SCC's interrupt (the IIci's level 4) is kept from the 68k (a diagnostic: no serial-port interrupts)\n");
-        if (scc_irq_off == 2) kprintf("[PSMAC:SE] mac.sccirq=aux: the SCC's interrupt (the IIci's level 4) is kept from the 68k while the MMU's user and supervisor views are apart (A/UX's tables)\n");
+        if (scc_irq_off == 2) kprintf("[PSMAC:SE] mac.sccirq=aux: the SCC's interrupt (the IIci's level 4) is kept from the 68k, and the slot interrupt (RBV bit 1) too, while the MMU's user and supervisor views are apart (A/UX's tables)\n");
     }
     if ((tok = find_token(args, "mac.sefloat="))) { tok += 12; scsi_float_sim = tok[0] == '1'; }   /* the testbed: the 5380 read as on an unterminated bus */
     if ((tok = find_token(args, "mac.seram="))) {   /* 1, 2, 2.5 or 4: the SE's address arithmetic takes the top of what is fitted */

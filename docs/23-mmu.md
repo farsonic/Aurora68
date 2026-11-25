@@ -1021,3 +1021,11 @@ served as a virtual SCSI disk at ID 0, `scsi.disk=AUX.dsk:0`), in four steps:
   68k at $4080C098 in the ROM after 160,000 SCC accesses in one beat, then no bus cycle at all, waiting for the
   interrupt that was kept away. So **`mac.sccirq=aux`** keeps the line away only while the MMU's user and supervisor
   views are apart (`psmac_mmu_views_apart`): A/UX's own tables, which the Mac OS never sets up.
+- **With `aux` the shell got to "Checking..." again and stopped on level 2 instead** (the next run, a fresh copy of
+  the disk): no SCC interrupt any more, but level 2 taken 4.1 million times in five seconds, every one "taken again
+  at once", RBV IFR $02 IER $02 (the slot interrupt), the slot-9 line held by the network board, the HDMI screen's
+  VBL pending; level 1 not taken at all. The shell's idle loop is `STOP #$2000`, and its handler for these levels
+  is `ORI.W #$0700,(SP); RTE` (code at $548C8): it raises the mask and returns, acknowledging nothing, and goes back
+  to STOP. On a IIci nothing would be asserted then; here Aurora68's NuBus cards are, and they starve level 1, the
+  VIA's clock the shell waits for (the system-error code at $AF0 stayed 0: no system error). `aux` now keeps the slot
+  interrupt away too (RBV bit 1 out of the level, the RBV's other sources such as the SCSI chip's still in it).

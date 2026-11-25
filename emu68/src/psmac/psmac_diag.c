@@ -101,7 +101,7 @@ const struct pdg_opt pdg_opts[] = {
     { "mac.exchange", PDG_G_STORAGE, 0, A, "*", "Mac Exchange", "The card's folder shown as a locked disk (Mac Exchange by default); off for none." },
     { "mac.sescsi", PDG_G_STORAGE, 0, PDG_SE, "auto|real|empty", 0,
       "The SE's SCSI bus: auto looks before the Mac starts; real always the SE's chip; empty answers as a bus with nothing on it." },
-    { "mac.sccirq", PDG_G_DEBUG, 0, PDG_SE, "on|off|aux", 0, "off: the SE's SCC interrupt (the IIci's level 4) kept from the 68k; aux: only while A/UX's own MMU tables are in use. Diagnostics for A/UX's start-up." },
+    { "mac.sccirq", PDG_G_DEBUG, 0, PDG_SE, "on|off|aux", 0, "off: the SE's SCC interrupt (the IIci's level 4) kept from the 68k; aux: that and the slot interrupt, only while A/UX's own MMU tables are in use. Diagnostics for A/UX's start-up." },
     { "mac.sescsiwait", PDG_G_STORAGE, 0, PDG_SE, "#", "250", "The SE's SCSI selection timeout in milliseconds, 1 to 1000 (default 250)." },
     { "scsi.cd", PDG_G_STORAGE, 0, PDG_COMPACT | PDG_SOLO, "*", "AUX30.iso:3",
       "A virtual SCSI CD-ROM drive (an AppleCD 300) at SCSI ID 3, or the ID after the colon, holding a CD image file in the card's root (.iso, .cdr, .toast; empty: no CD)." },
