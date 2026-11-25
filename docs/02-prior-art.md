@@ -297,3 +297,282 @@ psmac_board_se.c; the hardware is at word 342 at the VBL edge, `SND_VBL_WORD`). 
 to its end: what matters is where the writer stands relative to the playback position, so place it by the beam,
 not by the speed of the processor. Between sounds the kernel holds the buffer at the speaker's resting level
 (`snd_quiet`), as Total Systems' driver and both of Apple's routines do.
+
+## Floppy read and write on the accelerated compact Macs
+
+*Written 25 November 2026, from the same software, read against the SE ROM ($0276) and the IIci ROM in rom/original,
+both disassembled. The 64K ROM of the 128K and 512K and the 128K ROM of the 512Ke and Plus are not there: what is said
+of those machines' drivers is inferred from the SE ROM's code, which carries their drives' support, from docs/18 and
+from the accelerators' own checks, and is marked so.*
+
+### The problem as Apple built it
+
+The opening of this history says that the Sony driver "counts instructions". Read closely, the SE ROM's driver
+counts surprisingly little. The IWM shifts the bits itself, from its own clock; the driver's part is to take each
+byte (a GCR "nibble", one every 16 us, docs/08 item 93) before the next one replaces it, and on a write to hand over
+each byte before the chip runs dry. Every long delay goes through a timer. What does depend on the 68000 is a short
+list, and most of it is the read and write loops themselves.
+
+The driver is ROM resource DRVR ".Sony" at $434680 (Open $4346EE, Prime $434A12, Control $43487C, Status
+$4349BE, Close $434698). At Open it copies fifteen routine addresses from a table at $43469C into the low-memory
+vectors $222-$25A (FigTrkSpd, DiskPrime, RdAddr, RdData, WrData, Seek, SetUpPoll, Recal, Control, WakeUp, ReSeek,
+MakeSpdTbl, AdrDisk, SetSpeed and the nibble table, in Inside Macintosh's order) and three more into $B40, and
+32 bytes of timing parameters from $4346C0 into its variables (SonyVars, $134, from offset 42). The IWM is reached
+through IWMBase ($1E0, $DFE1FF on these machines, a register every $200), the VIA through VIA ($1D4).
+
+- **The handshakes.** Reading, the driver spins on the data register (IWMBase+$1800 with Q6 and Q7 low) until bit 7
+  is set, `move.b (a4),d5 ; bpl` (RdAddr $435B04, RdData $435BCC); the chip is put in mode $17 at $435268 (latch
+  mode and asynchronous handshake among its bits, by MAME's iwm.cpp; up to $20000 tries, else -77 initIWMErr). Writing
+  (WrData $435E24), it spins on bit 7 of the handshake register before each byte and looks at the underrun bit only
+  once, at the end: bit 6 clear at $435F5A is -74 wrUnderrun. An underrun anywhere in the sector is latched and
+  reported after it.
+- **The search limits.** Only one is counted in loop passes: RdAddr gives the drive **128 passes** ($435B06,
+  `moveq #127,d2`) to deliver three nibbles of any kind, else -66 noNybErr. Each pass reads the VIA as well as the
+  IWM, so on a 68000 it lasts a few microseconds and 128 of them some hundreds, against the 48 us that three nibbles
+  need **(inference: our estimate of the cycle counts)**. The rest are counted in **nibbles received**, whatever the
+  processor: the address mark must come within 1,500 nibbles (1,468 for the self-regulating drive, $435B2E), else -67
+  noAdrMkErr; the data mark within 49 nibbles of the address field ($435BD0), else -71 noDtaMkErr.
+- **Short waits made of instructions.** The step strobe is `tst.b` of phase 3 high, two NOPs, `tst.b` of phase 3
+  low ($434FE6-$434FEE). After each step the 800K drive's step line is polled up to **81 passes** with no timer
+  ($435158), and on running out the driver simply goes on. The sequence that addresses devices chained on the
+  external port (HD-20s, on our reading) spaces its phase-line changes with `move.l (sp),(sp)` ($435398-$4353BA).
+- **The long waits are all timed by the Time Manager.** WakeUp ($4351A0) saves the driver's registers, puts its
+  return address in $124, primes a Time Manager task through the trap table entry of _PrimeTime ($568, at $4351EE)
+  for the delay given in units of 100 us, and returns to the caller; the task ($4351FA) resumes the driver later. A
+  disk request therefore finishes in interrupt time, after the call that started it has returned. From the
+  parameter table: 30 ms settle after a seek, 150-400 ms after a speed change (32 units for each unit of speed),
+  400 ms motor on, 12 ms a step (half for the 800K drive in Recal), 10 ms between sectors, 750 ms to eject a 400K
+  disk. The 800K drive is not waited on blindly: its READY line is read every millisecond, up to 1,001 times
+  ($435178-$435198); a 400K drive gets the fixed waits. A VBL task every 30 ticks ($435542) turns the motor off.
+  **Neither TimeDBRA nor TimeSCCDB appears anywhere in the driver.**
+- **The 400K drive's speed.** SetSpeed ($435012) takes the zone (track / 16) and writes the drive's PWM into the
+  **low bytes** of the sound buffer: 370 bytes, two apart, through the pointers at $B0A and $312, which the start-up
+  code ($40024A) sets both to SoundBase + 1. Each byte is a state of a 6-bit shift-register sequence (its place in
+  the sequence is the pulse length), dithered between two neighbouring states by a pattern table at $4350D2. The
+  table of speeds is measured, not fixed: MakeSpdTbl ($4353DE) sets two trial speeds, waits 400 ms for each, and
+  FigTrkSpd ($435484) times the tachometer (drive sense line 14) against **VIA timer 2** (T2C at VIA+$1000/$1200,
+  the flag at VIA+$1A00), with interrupts masked; the five zones are interpolated toward targets at $4353C4. ReSeek
+  ($434C80) measures again when more than 14,400 ticks (four minutes) have passed. A drive whose sense line 15
+  reads high at Open (the flag at offset 13 of its record, which we take to be the 800K drive's) gets no speed
+  control: MakeSpdTbl only waits 800 ms. Even so the ROM writes the PWM bytes once on such a machine, on the first
+  SetSpeed, while the current speed at $138 still holds the -1 the start-up code ($40023C) put there. Which machine
+  does what: the 128K and 512K have the 400K drive and need all of this; the 512Ke and Plus brought the 800K drive,
+  which sets its own speed (the three generations above); the SE ROM still carries the whole 400K path. That the
+  64K and Plus ROMs do the same is **inferred** from the SE ROM, not read.
+- **Interrupts.** Prime raises the mask to level 1 at once (`ori #$0100,sr` at $434A12: no VIA interrupts, the VBL
+  included, for the whole call), and SetUpPoll ($435ACC) raises it to level 3 for each sector's I/O. AppleTalk
+  bytes arriving at the SCC meanwhile are not lost: inside every loop above, `tst.b (a5) ; bmi` reads VIA port A at
+  $EFFFFE (bit 7, the SCC's wait/request line) and, when a byte waits, `move.b (a6),-(sp)` takes it from the SCC's
+  data register at $9FFFFE onto the stack; the poll procedure at $13E replays them afterwards ($434EAA). Sense reads
+  and strobes mask to level 3 as well ($434FC8, $434FE2).
+- **The drives.** The driver numbers up to five positions ($434F3A): two internal ones told apart by VIA port A bit 4
+  (both on the IWM's ENABLE1; the routine behind $B40, $435316), the external one on ENABLE2, and two more on the
+  external port, reached by the phase-line sequence at $43537E (HD-20s, on our reading). The SE can carry the second
+  internal drive; the 128K, 512K, 512Ke and Plus use port A bit 4 for the ROM overlay, and their ROMs, not read,
+  presumably know one internal and one external drive. The ExSys SE release notes add the last
+  variant: "The Macintosh SE has two ROM versions currently sold. The HD version allows a high density floppy drive
+  to be used" (the SE FDHD, whose SWIM replaces the IWM; that ROM is not in rom/original).
+
+So a faster processor endangers this driver in fewer places than the folk memory suggests: the 128-pass search, the
+81-pass step poll, the strobe width and the external port's spacers. And one more that is not in the driver's code at
+all: the time between two reads of the IWM. In the IWM's asynchronous mode a read that finds bit 7 set clears the data
+register
+**14 clocks later** (MAME's iwm.cpp, `m_async_update = m_last_sync + 14`; about 1.8 us at 7.8336 MHz), and until then
+a second read returns the same nibble. On a 68000 the shortest path through RdData between two reads of the
+register ($435C12-$435C20) is some forty clocks, five microseconds; a cached 68030 fetches those instructions in a
+fraction of that, and the second read can come inside the window. Nothing in the driver would notice: the same
+nibble taken twice is a checksum error (-72 badDCksum) or a bad address field (-69, -70), and a retry.
+**(inference: MAME's model of the IWM and our count of the loop; the chip's specification was not to hand.)** A
+68030's data cache, unless the card inhibits it for the I/O space, would also hand the polling loops the same byte
+for ever.
+
+### What each accelerator did about it
+
+In date order, as the sound part above. Every wrapper below finds the driver the same way, through the unit table:
+UTableBase ($11C) + 16 is unit 4, refnum -5, and its DCE's first long is the driver.
+
+- **GCC HyperCharger 020 (1987-1988): nothing.** No resource of HyperCharger 2.0 or of its INIT touches the unit
+  table, IWMBase or the Sony vectors. The 68020 has an instruction cache and no data cache, so the IWM's registers
+  are never cached. Whether its loops ever came inside the IWM's read window is not known.
+- **Dove MaraThon Racer 030 (Plus/SE): every call with the caches off, until it is finished.** 'PROC' 130 copies
+  the driver's header (from the ROM, or from its handle when dCtlFlags bit 6 says the driver is in RAM) into a
+  block of its own and points the DCE at it. Each of the five entry points saves CACR, clears its enable bits (EI,
+  ED) and sets the clear bits (CI, CD), calls Apple's routine, then **waits while ioResult is positive** (`tst.w
+  16(a1) ; bgt`, at $11A) and gives back only the two enable bits it took away (`andi.l #$101`). Waiting on
+  ioResult is what makes it work with WakeUp: the request is not over when Apple's routine returns. There is no
+  machine check in 'PROC' 130. Dove's other answer, a TimeDBRA and TimeSCCDB for each cache state (the Dove section
+  above), does not concern the floppy, which uses neither.
+- **Applied Engineering Warp 030 (1991-1993): two patches, of two strengths.** Both replace the DCE's driver
+  pointer with a header of their own (and assume the driver is in ROM: no dCtlFlags test).
+  - **"Sony"** ('init' 4, 218 bytes, the driver named ".AESony") passes Open, Prime, Status and Close straight
+    through and turns the on-chip caches off (CACR without EI and ED, then the clear bits $0808 on the way back) only
+    for **Control csCode 6, the format call**.
+  - **"Sound/Sony 1340"** ('init' 8, 10 and 12) wraps Prime and Status (caches off for at least 64 ticks) and Control
+    csCodes 5, 6 and 7, verify, format and eject (at least 120 ticks); every other Control call passes through. For an
+    asynchronous call (ioTrap bit 10) it **puts its own completion routine** in ioCompletion, keeps the caller's in
+    the parameter block's offset 18, and counts the requests outstanding, so the caches stay off until the last one
+    has completed. Off means CACR 0 and the card's external cache off too, by MOVES byte writes with DFC set to 0 to
+    addresses 0 and 2 ($2C2). A VBL task every tick counts down, and once the floppy is idle and SoundActive ($27E) is
+    clear it turns the external cache on (addresses 0 and 3, or 0, 2 and 1, or 0, 3 and 1: the only difference
+    between the three variants, presumably three cards) and restores CACR. The patches have no ROM test of their own;
+    AE's INIT and control panel compare the ROM version with $0075 and $0276 (INIT -4064 at $13E8 and $13F0), which
+    code they choose by it was not followed.
+- **Total Systems GemStart 2.1, ExSys SE 1.1a2, MicroMac Performer 2.2.1 (1991-1995): a wrapper that is not installed
+  on the SE, and a shutdown procedure for the SE alone.** 'ptch' 131 (392 bytes) and 'ptch' 129 (284 bytes) are byte
+  for byte the same in all three. Neither the control panel, the 'DPch' (_ReadXPRam, _WriteXPRam, _SysEnvirons), the
+  'DMgr' (by its strings, a loader for MacsBug), the other 'ptch' resources nor Performer's new 'ptch' 136 (SE ROM
+  only, Resource Manager work) touches the floppy; the 'Rpck' resources, by their IDs the packed SANE packages 4 and
+  5, were not unpacked.
+  - **'ptch' 131** asks Gestalt for 'TotS' (the card's own selector: a type in the low byte, which must be below 4)
+    and for 'mach', and **returns without installing on machine type 5, the SE**. Elsewhere (the Plus, the 512Ke, the
+    Classic) it copies the header (ROM or RAM driver alike) and wraps all five entry points: CACR without EI and ED
+    and, when the 'TotS' value has type 1 or 3 and bit 22 (which 'ptch' 129 also takes as "the MMU is on"), **the
+    MMU switched off** (`pmove` of 0 into TC, the old TC kept) for the call; both come back when Apple's routine
+    returns ($15E). It does not wait for
+    ioResult, so the end of an asynchronous request runs with them on again. **Our reading of the TC switch:** with
+    "copy ROM to 32-bit RAM" the ROM's code runs from the card's RAM through the MMU; with the MMU off the Sony
+    driver runs from the logic board's ROM, at the logic board's speed, as Apple wrote it to.
+  - **'ptch' 129** installs a shutdown procedure (_ShutDown, sdInstall). On the SE it runs, with interrupts masked to
+    level 3, the IWM-to-ISM switch ($57, $17, $57, $57 to the mode register) and the phase-register test ($F5, $F6,
+    $F7) that finds a **SWIM**, and if one answers writes $F8 to its mode-clear register: the same sequence, byte for
+    byte, as the IIci ROM's probe at $4086EA88 (below), which the SE ROM ($0276) does not contain. On the other
+    machines its procedure writes $7F to the VIA's interrupt-enable register. Why the SE FDHD's SWIM needed resetting
+    at shutdown under GemStart is not stated anywhere in the files.
+- **Novy RailGun and Quik30, Mobius 030 (1992-1993): the data cache off, the instruction cache by machine, until it is
+  finished.** Every Novy file read carries the same 198-byte ".Sony" wrapper (Quik30Init 4.99 and the "Mobius 030"
+  control panel with the header at $F4A and the installer at $1010, the "Mobius 7.01 Fix", RailGun 5.42's INIT in
+  'CCOD' -2013, RailGunCdev and Patch701). Each entry point saves CACR and the parameter block, writes CACR without EI
+  and ED, with the clear bits, and **ORed with a mask set at installation: 1 (the instruction cache left on) when bit
+  2 of the byte at $B22 is set**, the bit by which Novy's Sound Driver tells the SE from the Plus, and 0 otherwise. So
+  on the SE only the data cache is off; on the Plus and 512Ke both. After Apple's routine it **waits while ioResult is
+  positive** ($FE4), as Dove's does, and restores CACR. It assumes the driver is in ROM.
+- **DayStar PowerCache (Power Central 2.0, 1993): a checkbox whose code is elsewhere.** Its "Classic/SE PowerCache
+  Startup Configuration" dialog (DITL 131, "Classic Configuration") offers "Map ROM to RAM", "Protect ROM", **"Patch
+  Floppy Driver"**, "Sound Patch #1" to "#4" and "System patch #1", kept as bits of a word in parameter RAM at $FE-$FF
+  (_ReadXPRam and _WriteXPRam with $000200FE, control panel $2470 and $2482). No code in Power Central's INIT,
+  control panel or MMU resources touches the unit table, the Sony vectors or IWMBase, and the INIT never reads that
+  word. Where the patch was applied is not in these files; the adapter board, with memory of its own, may well have
+  had firmware of its own **(inference)**. Two corrections to the DayStar entry above follow from the same files: the
+  SE/Classic adapter **did** have sound patches, four of them, of unknown content; and 'mmuc' 0 is not the SE's table.
+  The INIT loads it only when Gestalt 'mach' is 6, the Mac II ($276-$296; Power Central 1.3 the same at $238), and its
+  descriptors are $00000019, $10000019 ... $F0000059: sixteen 256 MB pages under a TC of $80F04D00 (TIA 4, TIB 13,
+  32 KB pages), cacheable below $50000000 and cache-inhibited from it, the Mac II's 32-bit I/O space. How the SE
+  adapter kept the IWM out of its cache is not shown by the software.
+- **DiiMOCache 2.2 (1994): nothing.** No floppy code.
+
+| | Calls wrapped | Caches during the call | Until | Machine paths |
+|---|---|---|---|---|
+| GCC HyperCharger 020 | none | (68020: no data cache) | | |
+| Dove MaraThon Racer 030 | all five | both off | ioResult no longer positive | none |
+| AE "Sony" | Control 6 (format) | both off | the call returns | none of its own |
+| AE "Sound/Sony 1340" | Prime, Status, Control 5/6/7 | both off, and the card's | 64 or 120 ticks, and the last completion | none of its own |
+| GemStart / ExSys SE / Performer 'ptch' 131 | all five | both off, and the MMU off (when the ROM is remapped, on our reading) | the call returns | not on the SE ('mach' 5) |
+| GemStart / ExSys SE / Performer 'ptch' 129 | (a shutdown procedure) | | | SWIM reset on the SE only |
+| Novy RailGun / Quik30 / Mobius | all five | data off; instruction off on the Plus/512Ke, on on the SE | ioResult no longer positive | $B22 bit 2 |
+| DayStar Power Central 2.0 | "Patch Floppy Driver", code not found | | | Classic/SE adapter |
+| DiiMOCache 2.2 | none | | | |
+
+### What the IIci ROM changed
+
+The IIci ROM's ".Sony" (a ROM resource at $4086C3E0, 16 KB to $40870550) is the SE's driver grown up, and Aurora68
+runs it against the SE's IWM. Its entry points choose between two drivers by bit 0 of the byte at $DD1, which is
+clear on the IIci (on our reading the bit that says a SWIM IOP is present, as on the IIfx); the IIci's own are Open
+$4086CA38, Prime $4086CE94, Control $4086CBBA, Status $4086CD78 and Close $4086C9DC. Its timing parameters at
+$4086CA0A are the SE's 32 bytes unchanged, and its vectors at $222-$25A point at routines that are, for GCR, mostly
+the SE's. What Apple changed is precisely the list above:
+- the no-nibbles search runs **576 passes** ($4086E18E, `move.w #575,d2`), and in RdAddr every wait for a nibble is
+  preceded by `move.b (a5),(a5)` ($4086E1A0 and seven more), a read **and a write back** of VIA port A where the SE
+  only read it: each pass and each nibble of the address field now costs two VIA accesses, which are paced by the
+  VIA's own slow clock, not by the processor;
+- the step strobe's two NOPs became the same VIA read and write ($4086D482-$4086D48C);
+- after the 81-pass step poll comes a wait of TimeDBRA / 64 turns of a `dbf` on itself, about 16 us
+  ($4086D530-$4086D536), the driver's first use of the calibrated constant;
+- the IWM mode loop allows $80000 tries ($4086D652); sector I/O and register access mask interrupts to **level 7**
+  ($4086E154, $4086D45C) instead of 3;
+- the **400K speed control is gone**: FigTrkSpd ($4086D7F0) is `moveq #-1,d0 ; rts`, MakeSpdTbl ($4086D7E2) waits
+  800 ms, SetSpeed ($4086CB60) is an `rts`, and nothing in the driver touches $B0A, $312 or the sound buffer. The
+  400K drive's fixed waits (drives without the offset-13 flag) are still there;
+- a **SWIM probe** at Open ($4086EA88: the $57/$17/$57/$57 switch, then $F5/$F6/$F7 through the ISM's phase register)
+  sets SonyVars+312 when a SWIM answers, and the MFM paths it enables use TimeVIADB ($CEA: 18,808 x TimeVIADB /
+  65,536 VIA polls, about 0.29 ms, at $4086EFF2) and TimeDBRA (3/4 ms at $4086F0A0, and at $4086F7C6). An IWM fails
+  the probe and the driver keeps to the IWM paths, as the testbed showed (docs/08 item 93).
+
+Unchanged: RdData's and WrData's loops (data mark within 49 nibbles at $4086E280, the underrun bit tested once at
+$4086E616), the address-mark limits of 1,500 and 1,468 nibbles ($4086E1B8), and WakeUp through _PrimeTime
+($4086D5C0). In RdData there is still nothing but a few instructions between two reads of the data register
+($4086E2C2-$4086E2D0).
+
+### What the record shows
+
+The accelerators handled the floppy in four ways:
+1. **Run Apple's driver with the caches off, until the request is really finished** (Dove; Novy, with the
+   instruction cache left on for the SE; Applied Engineering's Sound/Sony, which also stops the card's own cache
+   and follows asynchronous requests to their completion). Waiting for ioResult, or for the completion routine,
+   matters because the Sony driver returns before it is done (WakeUp).
+2. **Run it with the caches off for the call alone** (GemStart's 'ptch' 131, Applied Engineering's simpler "Sony"
+   for formatting only), and in GemStart's case from the logic board's ROM with the MMU off.
+3. **Leave it alone** (GCC with a 68020 and no data cache; DiiMO), or patch it by means not in the software (DayStar).
+4. **Look after the chip, not the driver**: GemStart's shutdown procedure resets an SE FDHD's SWIM.
+
+None of them changes a search limit or a timing constant of the driver: there was hardly any to change. What all the
+wrappers have in common is that Apple's code runs uncached, which both keeps the IWM's registers out of a data cache
+and puts time back between two bus accesses; on our reading the second is the dependency the driver never states, the
+time between two reads of the IWM. Apple's own changes in the IIci ROM point the same way: VIA accesses in the loops
+where the processor's speed had mattered, timed by a chip instead of by instructions. Nobody touched the 400K drive's
+speed: every product read here was for the 512Ke, the Plus, the SE and the Classic, whose internal drives regulate
+themselves, and the SE ROM's speed control kept working beneath them.
+
+### What it means for Aurora68
+
+Under Aurora68 the SE ROM's driver never runs; the IIci ROM's does, at JIT speed, and every IWM access is a cycle on
+the SE's bus through the GPIO (psmac_board_se.c, the IWM window at $16000-$18000 of the IIci's I/O space, register n
+to $DFE1FF + n x $200; `mac.board=se`, `plus`, `512ke`, `512k` and `128k` share it). There is no cache to turn off:
+every access in the loops reaches the wire. What carries over from 1987:
+- **The search limits hold.** Every limit the IIci driver counts in passes is paced by accesses to the real IWM and
+  VIA, which are as slow on the PiStorm as on a 68000 or slower: 576 passes of a VIA read, a VIA write and an IWM read
+  are milliseconds, against 48 us for three nibbles; the 81-pass step poll is of the same order as the SE's own
+  **(inference)**. The long waits are the Time Manager's, which counts on a timer of the SE's real VIA, clocked at
+  783 kHz as the IIci's is. The waits counted in TimeDBRA turns last what they should because the kernel measures
+  TimeDBRA for self-looping `dbf`s (psmac_mbox.c `dbf_turns_per_ms`, with `mac.dbfslow`, docs/08 items 14, 27 and 50);
+  with `mac.dbfslow=0` the 16 us after a step would vanish, which the step poll's own bus time makes harmless
+  **(inference)**.
+- **The read window is the open question.** In RdData two reads of the data register are separated only by the wire:
+  the instructions between them take nanoseconds. If a read on the GPIO costs about a microsecond (docs/08 items 71
+  and 93 put a byte write at a microsecond or two; psmac_bus.c a status register read of the PiStorm at one), the
+  second read can come within the IWM's 14 clocks and take the same nibble twice; at two microseconds it cannot. The
+  testbed cannot show it either way, its bridged cycles being 45-450 us apart (docs/08 item 93). **Recommendation:**
+  measure on the SE how far apart two back-to-back IWM reads are on the wire; if under 2 us, let the board layer hold
+  an IWM read until 2 us after a read of the data register that returned bit 7 set (a timestamp and a spin on the Pi's
+  counter in the IWM window). The cost is at most 2 us a nibble against the 16 us it has. This is the PiStorm's
+  version of what Dove and Novy did with CACR.
+- **The deadline is per byte.** A nibble must be taken within 16 us of the last and, writing, handed over within the
+  same time, or the sector is lost (a checksum error, retried) or the write underruns (-74, seen only at the end).
+  The service core's own errands in front of a Mac cycle were up to 174 cycles before docs/08 item 93's fix and are
+  at most one in front of an IWM access since (`psmac_serve_waiting`, psmac_bus.c); that figure is in cycles, from
+  the testbed. On the SE, `mac.buswait=1` reports the longest wait in microseconds in front of an IWM access (docs/12,
+  "The floppy and the modem port"): anything over about 10 us there is a lost nibble. The heartbeat and the screen
+  rows are the errands to watch **(inference: their microseconds on the GPIO are not measured)**. docs/18's H1, the
+  CPLD taking read data early, applies to IWM reads on the 128K-to-Plus boards ("floppy reads on a Plus will need
+  it").
+- **The 400K drive has no speed control under Aurora68.** On `mac.board=128k` and `512k` (and a 400K drive on the
+  external port of any board) the IIci driver writes no PWM, and the kernel writes only the high bytes of the sound
+  buffer (`snd_service`, `snd_quiet`), so the drive turns at whatever speed the low bytes happen to hold. MAME's model
+  in the testbed (`macplus_ps_state::pwm_push`, reference/mame-psmac.patch) maps the PWM's duty cycle linearly onto
+  the speed (342.5 rpm at 9.4 %, 702.5 rpm at 91 %), and low bytes of zero, by the same formula, onto about 301 rpm; a
+  fixed speed can suit at most one of the five zones. README's "Their floppy drives (400K on the 128K and 512K) have
+  not been tried yet" stands, with this as the expected result **(inference, not run)**. **Recommendation:** have the
+  kernel write the PWM into the odd bytes, between the Mac's cycles as the speaker does (`psmac_serve_waiting`), for
+  the zone of the track the driver seeks to. The track is best told by the driver itself: a ROM patch on the IIci
+  driver's Seek (vector $236, $4086D4BA) calling the kernel through the mailbox, rather than the kernel guessing from
+  the IWM's phase lines. The speeds would be the kernel's own, calibrated against the drive's tachometer as the SE ROM
+  did, or measured once on the testbed's model; Apple's code is not to be copied.
+- **The VIA write-backs reach the SE.** The IIci RdAddr's `move.b (a5),(a5)` is a write of port A on every pass. With
+  the speaker on, `psmac_se_wire_write` replaces bits 0-3 with the speaker's; with `mac.sesound=off` the write puts
+  back what `via_read_fix` returned, bits 0-2 set, so the volume lines go to 7 while an address field is read
+  **(inference from the code; harmless while the speaker is off)**.
+- **The SE FDHD.** Its SWIM will answer the IIci driver's probe, and the driver would then run the SuperDrive, MFM
+  included, through the same register window. Not tried. Its MFM write path is the one user of TimeVIADB, which the
+  kernel supplies as 1000 / the bridge's measured latency in whole microseconds (`psmac_mbox_set_calib`): a 1.4 us
+  VIA access becomes 1,000 a millisecond, 40 % too many. Working in nanoseconds there would cost nothing.
+- **The drives reachable.** One internal drive (VIA port A bit 4 driven low on the SE, `via_data`, docs/08 item 93)
+  and the external one; the SE's second internal drive is outside what the IIci ROM knows.
