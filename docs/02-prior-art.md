@@ -33,7 +33,7 @@ was chosen for a 68000.
 A faster processor broke each of these, and an industry grew up to sell faster processors anyway. The Plus's
 68000 was soldered or socketed on the logic board, so its accelerators clipped over the chip or replaced it from a
 socket; the SE had Apple's 96-pin processor direct slot, which Apple itself documented for "a coprocessor" taking
-the bus (docs/22). The six products below are the ones whose software has been read here: their control panels,
+the bus (docs/22). The products below are the ones whose software has been read here: their control panels,
 INITs and patches, unpacked from BinHex and StuffIt archives, and one from an 800K Disk Copy image, then listed
 resource by resource and disassembled. None of that software is in this repository; it is the work of companies
 long gone, and is described, not copied.
@@ -109,8 +109,13 @@ MHz 68030 card for the SE's processor direct slot, the VANDAL/SE, with up to 16 
 monitors, and shipped GemStart under its own name: "ExSys SE" 1.1a2 (October 1992). Connectix's Compact Virtual was
 told the VANDAL was a "Gemini Integra".
 
-- **Sound: a new Sound Driver.** The control panel carries its own DRVR 3 ".Sound" (1,068 bytes) in place of the SE
-  ROM's. It sets the volume through VIA port A bits 0-2 at $EFFFFE with interrupts masked, enables the speaker by
+- **Sound: a new Sound Driver, with GCC's placement.** The control panel carries its own DRVR 3 ".Sound" (1,068
+  bytes) in place of the SE ROM's; GemStart 2.1 ("(c) 1991, TOTAL SYSTEMS", sent separately with a note of its own)
+  carries the same code byte for byte but for one padding byte. Its four-tone synthesizer starts writing at
+  SoundBase+64 (word 32) for 338 words and wraps for 32, and its freeform synthesizer starts at a word offset kept in
+  the driver itself, 16 in both copies read: **the same two numbers as GCC's patch**, against Apple's 185 and 32.
+  The note that came with GemStart says what it was for: "It also works with Novy Quik30 accelerators, and fixes the
+  distorted sound problem that otherwise accompanies the Novy boards." The driver also sets the volume through VIA port A bits 0-2 at $EFFFFE with interrupts masked, enables the speaker by
   clearing VIA port B bit 7 at $EFE1FE when a sound starts, makes square waves with the VIA's timer 1 toggling PB7
   (ACR bits 7-6 set to $C0, the count in T1C-L and T1C-H at VIA+$800 and +$A00), and between sounds fills the whole
   buffer with the level the speaker is resting at, with MOVEP across the 370 words.
@@ -123,6 +128,28 @@ told the VANDAL was a "Gemini Integra".
 - **The video board** ("ExSys SE Video" 1.3, April 1995) loads one of eight Xilinx FPGA configurations and a dot
   clock between 50.35 and 100.5 MHz for each of 25 monitors (Apple's Two-Page and Portrait, Radius, Sigma Designs,
   Lapis, Samsung, Triam and generic ECL, TTL, analog and composite settings), from 'MONS' and 'XLNX' resources.
+
+### Novy Systems RailGun and Quik30, also sold as the Mobius 030 (1992-1993)
+
+Novy Systems made the RailGun and Quik30 68030 accelerators for the Plus, the 512Ke and the SE, with the ImagePro
+board for large monitors. Its support software, "RailGun v5.42, (c) Novy Systems Inc. 1993", has a long version
+history in its README (1992-1993): monitor after monitor for the ImagePro, 40 and 50 MHz boards, a DualScreen mode,
+"Patched the operating system to support PLUS extended keyboards at 50Mhz", and "Fixed sound crash with System 7 and
+512KE when using SysBeep with autopop bit set. This happens in Microsoft Word 5.1." Mobius Technologies sold the
+same board as the Mobius 030: its "Mobius 030" control panel and "MobiusInit" are Novy's own Quik30Init 4.99 ("(c)
+Novy Systems Inc. 1992") under another name, beside a "Mobius Display" panel for the video card ("(c) smal
+productions 1992") and a small "Mobius 7.01 Fix".
+
+- **Options**, from its 'XOPT' resources: CACHE, SOUND, SANE, COPY (the ROM into RAM), RAMD (a RAM disk, DRVR 11
+  ".RamDisk") and ATALK.
+- **Its Sound Driver is only a relay.** DRVR 3 ".Sound020" is 136 bytes: each entry point jumps straight into the
+  ROM's own Sound Driver, the Plus ROM's ($4179DA, $417A7A, $417B58, $4179F4) or the SE ROM's ($436CAA, $436D4C,
+  $436E2A, $436CC4), chosen by bit 2 of HWCfgFlags ($B22). So the ROM's synthesizers, with Apple's placement in the
+  buffer, run at the card's speed, which fits the "distorted sound" that GemStart's note says Novy owners heard.
+- **"Mobius Sound", the fix that came later.** The Mobius set also has an INIT called "Generic Sound Patches",
+  "Copyright 1992, Glenn L. Austin", the author of Total Systems' GemStart. It patches _SysBeep and _GetResource,
+  catches the Sound Manager loading its 'snth' synthesizer resources on the Plus (ROM $0075) and the SE (ROM $0276),
+  and supplies synthesizers of its own that write the buffer in halves of 185 words and in runs of 150 and 337.
 
 ### DayStar Digital PowerCache (1990-1993)
 
@@ -149,11 +176,13 @@ panel and a SANE patch. It switches the caches, patches _SysEnvirons and SANE, a
 ### What the record shows
 
 The compact Macs' sound was handled in three ways, and not at all by the rest:
-1. **Re-tune Apple's synthesizers for the faster writer** (GCC, 1987-1988): the same code, started at a different
-   place in the buffer.
-2. **Replace Apple's Sound Driver** (Total Systems, 1991-1992).
-3. **Slow the processor down while Apple's driver plays** (Applied Engineering, 1991-1993).
-4. **Leave it alone** (Dove, DayStar, DiiMO), with the rest of the machine kept honest: timing constants per cache
+1. **Move where the synthesizers start writing in the buffer, for a faster writer.** GCC patched Apple's routines in
+   1987-1988; Total Systems shipped a whole driver in 1991 with the same two numbers (four-tone from word 32,
+   freeform from word 16, against Apple's 185 and 32); Glenn L. Austin's later "Generic Sound Patches" did the same
+   job for the Sound Manager's synthesizers. Novy's own relay into the ROM, with Apple's placement left as it was,
+   is the case the fix was written for: "the distorted sound problem that otherwise accompanies the Novy boards".
+2. **Slow the processor down while Apple's driver plays** (Applied Engineering, 1991-1993).
+3. **Leave it alone** (Dove, DayStar, DiiMO), with the rest of the machine kept honest: timing constants per cache
    state (Dove), the floppy driver run with the caches off (Dove, Applied Engineering), the I/O space never cached
    (DayStar).
 
