@@ -368,6 +368,21 @@ void bt_pi_wifi_busy(const char *why)
 {
     if (phase == 4 && bh.state == BT_READY) bt_hush(&bh, BT_HUSH_MS, why);
 }
+/* alice_net.c: the WiFi is in use (scanning, joining, connected, trying again) or not. While it is, an LE device's
+   request for an interval under the floor is refused and a link under it is asked up (bthost.h, docs/08 item 147).
+   One word, written here and read by the host on the same core's turn: kept by bt_init */
+void bt_pi_wifi_use(int on)
+{
+    if (bh.wifi_inuse != on) {
+        bh.wifi_inuse = on;
+        if (phase == 4 && bh.le_floor) {
+            char t[96]; unsigned k = put_str(t, 0, on ? "[BT] the WiFi is in use: LE intervals under " : "[BT] the WiFi is not in use: LE intervals under ");
+            k = put_num(t, k, bh.le_floor * 125u / 100u, 0);
+            if ((bh.le_floor * 125u / 10u) % 10u) { t[k++] = '.'; k = put_num(t, k, (bh.le_floor * 125u / 10u) % 10u, 0); }
+            k = put_str(t, k, on ? " ms refused" : " ms taken again"); t[k] = 0; blog(t);
+        }
+    }
+}
 /* bt.pair=1: pair with any keyboard or mouse a scan finds; bt.pair=NAME: only one whose name holds NAME.
    For a bench with no pointer yet: there is no way to click "pair" in PiBlue without a mouse. */
 static int auto_pair; static char pair_name[32];
@@ -616,6 +631,8 @@ void bt_pi_report(void)
         k = put_str(t, k, ", LE "); k = put_num(t, k, bh.le_free, 0); t[k++] = '/'; k = put_num(t, k, bh.le_pkts, 0);
         k = put_str(t, k, ", queued "); k = put_num(t, k, bh.aq_tail - bh.aq_head, 0); k = put_str(t, k, " ACL "); k = put_num(t, k, bh.cq_tail - bh.cq_head, 0); k = put_str(t, k, " commands");
         t[k] = 0; kprintf("%s\n", t);
+        unsigned nle = 0;
+        for (int i = 0; i < BT_MAXCONN; i++) if (bh.conn[i].used && bh.conn[i].le) nle++;
         for (int i = 0; i < BT_MAXCONN; i++) {             /* each LE link's parameters: its share of the antenna */
             struct bt_conn *c = &bh.conn[i];
             if (!c->used || !c->le || !c->l.ci) continue;
@@ -625,6 +642,20 @@ void bt_pi_report(void)
             k = put_str(t, k, " ms, latency "); k = put_num(t, k, c->l.cl, 0);
             k = put_str(t, k, ", timeout "); k = put_num(t, k, c->l.cto * 10u, 0); k = put_str(t, k, " ms | updates asked ");
             k = put_num(t, k, c->l.upd_asked, 0); k = put_str(t, k, ", refused "); k = put_num(t, k, c->l.upd_refused, 0);
+            {   /* the floor (docs/08 item 147): what holds now, and the requests it refused */
+                uint16_t fl = bt_le_floor_now(bh.le_floor, nle);
+                if (!fl) k = put_str(t, k, " | no floor (bt.lefloor=0)");
+                else {
+                    k = put_str(t, k, " | floor "); k = put_num(t, k, fl * 125u / 100u, 0);
+                    if ((fl * 125u / 10u) % 10u) { t[k++] = '.'; k = put_num(t, k, (fl * 125u / 10u) % 10u, 0); }
+                    k = put_str(t, k, bh.wifi_inuse ? " ms (the WiFi in use)" : " ms (the WiFi not in use: not held)");
+                    if (c->l.upd_floored) { k = put_str(t, k, ", under it refused "); k = put_num(t, k, c->l.upd_floored, 0); }
+                    if (c->l.ci < fl && bh.wifi_inuse) k = put_str(t, k, ", UNDER IT");
+                    struct bt_key *fk = 0;
+                    for (int j = 0; j < bh.nkeys && !fk; j++) if (!__builtin_memcmp(bh.keys[j].addr, c->addr, 6)) fk = &bh.keys[j];
+                    if (fk && fk->floor_drops) { k = put_str(t, k, ", went when refused "); k = put_num(t, k, fk->floor_drops, 0); }
+                }
+            }
             t[k] = 0; kprintf("%s\n", t);
         }
     }
@@ -758,6 +789,19 @@ void bt_pi_poll(void)
            docs/08 item 140; on the Pi 3B the WiFi shares the antenna) */
         bh.scan_mode = word(alice_bootargs(), "bt.scan=fast") ? BT_SCAN_FAST : word(alice_bootargs(), "bt.scan=slow") ? BT_SCAN_SLOW :
                        word(alice_bootargs(), "bt.scan=off") ? BT_SCAN_OFF : BT_SCAN_AUTO;
+        {   /* bt.lefloor=MS: the shortest LE connection interval while the WiFi is in use (bthost.h, docs/08 item 147); 0: none
+               (the behaviour before 25 November 2026); default 15 ms. Rounded down to 1.25 ms steps, 7.5 to 100 ms. */
+            const char *a = alice_bootargs();
+            for (const char *q = a; *q; q++) {
+                if ((q != a && q[-1] != ' ') || q[0] != 'b' || q[1] != 't' || q[2] != '.' || q[3] != 'l' || q[4] != 'e' || q[5] != 'f' || q[6] != 'l' || q[7] != 'o' || q[8] != 'o' || q[9] != 'r' || q[10] != '=') continue;
+                uint32_t v = 0, frac = 0; const char *d = q + 11;
+                for (; *d >= '0' && *d <= '9'; d++) v = v * 10 + (uint32_t)(*d - '0');
+                if (*d == '.' && d[1] >= '0' && d[1] <= '9') frac = (uint32_t)(d[1] - '0');
+                uint32_t u = (v * 100u + frac * 10u) / 125u;            /* 1.25 ms units */
+                bh.le_floor = !v && !frac ? 0 : (uint16_t)(u < 6u ? 6u : u > 80u ? 80u : u);
+                bh.le_floor_given = 1;
+            }
+        }
     }
     switch (phase) {
     case 0:

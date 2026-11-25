@@ -886,9 +886,13 @@ void alice_net_report(void)
     kprintf("[WIFI]   %s: %s (chip %x rev %u, SD %u MHz)\n", st < 9 ? names[st] : "?", (const char *)u->msg, u->chip, u->chiprev, u->sdmhz);
 }
 
+/* bt/bt_pi.c: the WiFi is in use (scanning, joining, connected, trying again): Bluetooth holds its LE interval floor
+   meanwhile (docs/08 item 147) */
+extern void bt_pi_wifi_use(int on) __attribute__((weak));
 static void wstate(unsigned st, const char *msg)
 {
     volatile struct an_unit *u = U(0);
+    if (bt_pi_wifi_use) bt_pi_wifi_use(st >= AN_ST_SCANNING && st <= AN_ST_RETRY);
     if (msg) {
         unsigned i = 0;
         for (; msg[i] && i < 95; i++) u->msg[i] = msg[i];

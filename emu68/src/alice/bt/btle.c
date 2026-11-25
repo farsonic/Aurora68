@@ -960,6 +960,37 @@ uint16_t bt_le_min_floor(uint16_t mn, uint16_t mx)
 {
     return mn < BT_LE_FLOOR && mx >= BT_LE_FLOOR ? (uint16_t)BT_LE_FLOOR : mn;
 }
+/* The floor while the WiFi is in use (bthost.h, docs/08 item 147): bt.lefloor's, half as long again with two or more LE
+   links up (each one is a transmission of ours at every connection event) */
+uint16_t bt_le_floor_now(uint16_t floor, unsigned le_links)
+{
+    return le_links >= 2 ? (uint16_t)(floor + floor / 2u) : floor;
+}
+/* Refuse a valid request whose longest interval is under the floor, while the WiFi is in use, unless the device has gone
+   after such a refusal BT_LE_FLOOR_DROPS times. Refusing (L2CAP result 1) rather than taking it and asking the controller
+   for the floor at once: the Core specification (Vol 3 Part A 4.20) lets the central refuse and leaves the link as it
+   was, and Linux refuses every request outside its bounds the same way, so HID devices meet it daily; a device that was
+   told yes and then given something else asks again, or takes the change for an error. */
+int bt_le_floor_refuse(uint16_t floor_now, int wifi_inuse, uint16_t mx, unsigned drops)
+{
+    return floor_now && wifi_inuse && mx < floor_now && drops < BT_LE_FLOOR_DROPS;
+}
+static unsigned le_links_up(struct bt_host *h)
+{
+    unsigned n = 0;
+    for (int i = 0; i < BT_MAXCONN; i++) if (h->conn[i].used && h->conn[i].le) n++;
+    return n;
+}
+/* "7.5" for 6 (1.25 ms units) */
+static void ms_str(uint16_t u, char out[12])
+{
+    unsigned v = u * 125u, k = 0, w = v / 100u;
+    char t[8]; unsigned m = 0;
+    do { t[m++] = (char)('0' + w % 10u); w /= 10u; } while (w && m < 7);
+    while (m) out[k++] = t[--m];
+    if ((v / 10u) % 10u) { out[k++] = '.'; out[k++] = (char)('0' + (v / 10u) % 10u); }
+    out[k] = 0;
+}
 /* LE signalling: the device asks for other connection parameters */
 static void lesig_in(struct bt_host *h, struct bt_conn *c, const uint8_t *p, unsigned n)
 {
@@ -970,15 +1001,31 @@ static void lesig_in(struct bt_host *h, struct bt_conn *c, const uint8_t *p, uns
     if (code == 0x12 && len >= 8) {                  /* Connection Parameter Update Request */
         uint16_t mn = le16(p + 4), mx = le16(p + 6), lat = le16(p + 8), to = le16(p + 10);
         int ok = bt_le_params_ok(mn, mx, lat, to);
-        uint8_t r[6] = { 0x13, id, 2, 0, (uint8_t)(ok ? 0 : 1), 0 };   /* result 0 accepted, 1 rejected */
+        struct bt_key *k = key_of(h, c->addr);
+        uint16_t fl = bt_le_floor_now(h->le_floor, le_links_up(h));
+        int under = ok && bt_le_floor_refuse(fl, h->wifi_inuse, mx, k ? k->floor_drops : 0);
+        uint8_t r[6] = { 0x13, id, 2, 0, (uint8_t)(ok && !under ? 0 : 1), 0 };   /* result 0 accepted, 1 rejected */
         l2_send(h, c, CID_LESIG, r, 6);
         if (!ok) {
             c->l.upd_refused++;
             lg(h, "%a: connection parameters %u-%u (x1.25 ms), latency %u, timeout %u0 ms refused: not valid", c->addr, mn, mx, lat, to);
             return;
         }
+        char a1[12], a2[12], a3[12], a4[12];
+        ms_str(mn, a1); ms_str(mx, a2); ms_str(fl, a3); ms_str(c->l.ci, a4);
+        if (under) {
+            c->l.upd_floored++; h->le_floored++;
+            c->l.floored_ms = now(h) ? now(h) : 1;
+            if (c->l.upd_floored <= 3 || c->l.upd_floored % 10 == 0)    /* a device that keeps asking: not every time */
+                lg(h, "%a: asks for connection interval %s-%s ms: refused, the WiFi is in use (floor %s ms); it stays at %s ms (%u so far)",
+                   c->addr, a1, a2, a3, a4, c->l.upd_floored);
+            return;
+        }
         c->l.upd_asked++;
-        uint16_t use = bt_le_min_floor(mn, mx);
+        if (h->le_floor && h->wifi_inuse && mx < fl && k)
+            lg(h, "%a: asks for connection interval %s-%s ms under the floor (%s ms): taken, it went %u times when refused", c->addr, a1, a2, a3, k->floor_drops);
+        /* the lower end raised where the range allows: to the floor in force while the WiFi is in use, else to 15 ms as before */
+        uint16_t use = h->le_floor && h->wifi_inuse && mn < fl && mx >= fl ? fl : bt_le_min_floor(mn, mx);
         uint8_t q[14];
         put16(q, c->handle); put16(q + 2, use); put16(q + 4, mx); put16(q + 6, lat); put16(q + 8, to); put16(q + 10, 0); put16(q + 12, 0);
         cmd(h, C_LE_CONN_UPDATE, q, 14);
@@ -1041,6 +1088,7 @@ static void le_conn_complete(struct bt_host *h, const uint8_t *p, unsigned len, 
         const uint8_t *q = p + (enhanced ? 24 : 12);
         if (q + 6 <= p + len) { c->l.ci = le16(q); c->l.cl = le16(q + 2); c->l.cto = le16(q + 4); }
     }
+    c->l.up_ms = now(h);
     lg(h, "%a: LE link up (handle %x, address type %u, interval %u x1.25 ms, latency %u, timeout %u0 ms)", c->addr, hd, ptype, c->l.ci, c->l.cl, c->l.cto);
     struct bt_key *k = key_of(h, a);
     for (int i = 0; !k && ptype == 1 && i < h->nkeys; i++)  /* a private address the host resolved (le_bg_adv) */
@@ -1066,7 +1114,14 @@ static void le_meta(struct bt_host *h, const uint8_t *p, unsigned len)
         if (!c) return;
         if (p[1]) { lg(h, "%a: connection update refused (%u: %s)", c->addr, p[1], bt_status_words(p[1])); return; }
         c->l.ci = le16(p + 4); c->l.cl = le16(p + 6); c->l.cto = le16(p + 8);
-        lg(h, "%a: connection interval now %u x1.25 ms, latency %u, timeout %u0 ms", c->addr, c->l.ci, c->l.cl, c->l.cto);
+        {
+            char a[12], f[12];
+            uint16_t fl = bt_le_floor_now(h->le_floor, le_links_up(h));
+            ms_str(c->l.ci, a); ms_str(fl, f);
+            lg(h, "%a: connection interval now %s ms (%u x1.25 ms), latency %u, timeout %u0 ms%s%s%s", c->addr, a, c->l.ci, c->l.cl, c->l.cto,
+               fl && h->wifi_inuse ? (c->l.ci < fl ? " - under the floor of " : " (floor ") : "", fl && h->wifi_inuse ? f : "",
+               fl && h->wifi_inuse ? (c->l.ci < fl ? " ms while the WiFi is in use" : " ms while the WiFi is in use)") : "");
+        }
         return;
     }
     case 0x02: {                                     /* advertising reports, one after another */
@@ -1143,6 +1198,13 @@ static void le_cstatus(struct bt_host *h, uint16_t op, uint8_t st)
 /* a link went down */
 static void le_gone(struct bt_host *h, struct bt_conn *c)
 {
+    if (c->l.floored_ms && now(h) - c->l.floored_ms < BT_LE_DROP_MS) {   /* it went soon after a refusal under the floor */
+        struct bt_key *k = key_of(h, c->addr);
+        h->le_floor_drops++;
+        if (k && k->floor_drops < 255) k->floor_drops++;
+        lg(h, "%a: went %u s after its interval was refused (%u of %u: then it is given what it asks for)", c->addr,
+           (now(h) - c->l.floored_ms) / 1000u, k ? k->floor_drops : 0, BT_LE_FLOOR_DROPS);
+    }
     if (h->aes_busy && h->aes_handle == c->handle) h->aes_busy = 0;
     if (h->passkey_shown && c->pairing) h->passkey_shown = 0;
     h->le_init_until = now(h) + 500;
@@ -1156,11 +1218,34 @@ static void le_poll(struct bt_host *h)
         h->le_init_until = now(h) + 2000;
         if (h->pairing) { h->pairing = 0; say(h, "the device did not answer - is it in pairing mode?"); }
     }
+    uint16_t fl = bt_le_floor_now(h->le_floor, le_links_up(h));
     for (int i = 0; i < BT_MAXCONN; i++) {
         struct bt_conn *c = &h->conn[i];
         if (!c->used || !c->le) continue;
         uint8_t s = c->l.smp;
         if (s != SM_IDLE && s != SM_DONE && s != SM_FAILED && due(h, c->l.smp_until)) smp_fail(h, c, 0x08, "pairing timed out");
+        /* a link already under the floor while the WiFi is in use (one made before the WiFi started, or a device that
+           was given its interval): asked up to the floor, BT_LE_RAISE_TRIES times at most, once it has been up 3 s
+           (pairing and encryption first). Not a device that has gone when refused (it is given its way, bthost.h). */
+        struct bt_key *k = key_of(h, c->addr);
+        if (fl && h->wifi_inuse && c->l.ci && c->l.ci < fl && c->l.raise_tries < BT_LE_RAISE_TRIES && (!k || k->floor_drops < BT_LE_FLOOR_DROPS) &&
+            (s == SM_IDLE || s == SM_DONE) && now(h) - c->l.up_ms >= 3000u && (!c->l.raise_at || due(h, c->l.raise_at))) {
+            uint16_t to = c->l.cto, lat = c->l.cl;
+            if (!bt_le_params_ok(fl, fl, lat, to)) {                    /* the latency the timeout can no longer cover */
+                uint32_t ml = (uint32_t)to * 4u / fl;
+                lat = ml > 1u ? (uint16_t)(ml - 1u > 499u ? 499u : ml - 1u) : 0;
+            }
+            c->l.raise_tries++;
+            c->l.raise_at = now(h) + 5000u;
+            if (bt_le_params_ok(fl, fl, lat, to)) {
+                uint8_t q[14];
+                put16(q, c->handle); put16(q + 2, fl); put16(q + 4, fl); put16(q + 6, lat); put16(q + 8, to); put16(q + 10, 0); put16(q + 12, 0);
+                cmd(h, C_LE_CONN_UPDATE, q, 14);
+                char a[12], f[12]; ms_str(c->l.ci, a); ms_str(fl, f);
+                lg(h, "%a: connection interval %s ms is under the floor while the WiFi is in use: asking for %s ms, latency %u (try %u of %u)",
+                   c->addr, a, f, lat, c->l.raise_tries, BT_LE_RAISE_TRIES);
+            }
+        }
     }
     if (h->le_init == 3 && due(h, h->le_init_until)) {   /* the device the host's scan found did not answer */
         lg(h, "LE connect to %a: no answer", h->rpa_addr);
