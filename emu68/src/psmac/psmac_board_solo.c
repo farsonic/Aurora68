@@ -17,7 +17,9 @@
  *   IWM     a floppy controller with no drive: every sense line reads "nothing here"
  *   SCSI    an NCR 5380 as the initiator sees it, with the pseudo-DMA windows, and a direct-access
  *           target behind it for each disk image: INQUIRY, READ/WRITE 6 and 10, READ CAPACITY,
- *           MODE SENSE with Apple's page $30, REQUEST SENSE, the rest answered as good
+ *           MODE SENSE with Apple's page $30, REQUEST SENSE, the rest answered as good. Since 25 November
+ *           2026 the 5380 and the targets are psmac_scsidev.c's, shared with the SE board's virtual SCSI
+ *           devices (scsi.cd=, scsi.disk=; docs/08 item 148); this file keeps the images' list
  *
  * Selected with mac.board=solo (which implies the SE layer's address translation and the second
  * screen as the main screen). Disk images come from the container (*.img, *.hda, *.image, *.hfv)
@@ -31,6 +33,7 @@
 #include "psmac.h"
 #include "psmb.h"
 #include "psmac_pram_default.h"
+#include "psmac_scsidev.h"
 
 int psmac_board_solo;                       /* mac.board=solo */
 extern int psmac_board_se;
@@ -454,18 +457,25 @@ static uint32_t iwm_access(uint32_t reg, int write, uint8_t d)
 }
 
 /* ==== disk images ============================================================================= */
-struct disk { char name[48]; uint8_t *ram; int64_t fd; uint32_t blocks; int writable, scsi; uint32_t reads, writes, cmds; int card; };   /* card: an image served from the card (psmac_card.c), its handle + 1 */
-static uint32_t sel_seen[7];                /* selections of each SCSI ID, with a disk there or not (the heartbeat) */
+/* the images' list: the Mac's disks, a SCSI target each (psmac_scsidev.c) or a PiDisk volume */
+struct disk { char name[48]; uint8_t *ram; int64_t fd; uint32_t blocks; int writable, scsi; int card; };   /* card: an image served from the card (psmac_card.c), its handle + 1 */
 static struct disk disks[7]; static int ndisk;
-static uint8_t sector_buf[64 * 1024] __attribute__((aligned(64)));
 
 /* The first disk image is SCSI ID 0, the startup disk. Further images are PiDisk volumes (the
    slot-9 card's own disk driver, psmac_mbox.c), which mount themselves after the Finder starts:
    as SCSI disks they need their own driver from their own driver partition, and the one on the
    user's images, Iomega's Zip driver, loads, reads its partition map and never mounts a second
-   drive (19 November, docs/08 item 52). mac.disks=scsi makes every image a SCSI disk as before. */
+   drive (19 November, docs/08 item 52). mac.disks=scsi makes every image a SCSI disk as before.
+   An ID a virtual device holds (scsi.cd=, scsi.disk=, psmac_scsidev.c) is not given to an image: that
+   image is a PiDisk volume instead. */
 static int disks_scsi = -1;
 int psmac_image_is_scsi(int i) { return i >= 0 && i < ndisk && disks[i].scsi; }
+static void disk_publish(struct disk *d, int id)
+{
+    if (!d->scsi) return;
+    if (psmac_scsidev_id_taken(id)) { d->scsi = 0; kprintf("[PSMAC:SOLO] disk image %s: SCSI ID %d is a virtual device's (scsi.cd=, scsi.disk=): a PiDisk volume instead\n", d->name, id); return; }
+    psmac_scsidev_add_image(id, d->name, d->ram, d->fd, d->card, (uint64_t)d->blocks * 512u, d->writable);
+}
 void psmac_image_add(const char *name, uint8_t *data, uint32_t len)
 {
     if (ndisk >= 7 || len < 1024) return;
@@ -474,6 +484,7 @@ void psmac_image_add(const char *name, uint8_t *data, uint32_t len)
     int k = 0; while (name[k] && k < 47) { d->name[k] = name[k]; k++; } d->name[k] = 0;
     d->ram = data; d->fd = -1; d->card = 0; d->blocks = len / 512; d->writable = 1;
     d->scsi = !psmac_board_solo || disks_scsi || ndisk == 0;
+    if (psmac_board_solo) disk_publish(d, ndisk);
     __atomic_store_n(&ndisk, ndisk + 1, __ATOMIC_RELEASE);   /* complete before it is seen: a disk image on the card arrives from core 3 (psmac_card.c) */
 }
 /* a disk image served from the card as the Mac asks (psmac_card.c, core 3, 24 November 2026): read and written
@@ -486,6 +497,7 @@ void psmac_image_add_card(const char *name, int handle, uint32_t len, int writab
     int k = 0; while (name[k] && k < 47) { d->name[k] = name[k]; k++; } d->name[k] = 0;
     d->ram = 0; d->fd = -1; d->card = handle + 1; d->blocks = len / 512; d->writable = writable;
     d->scsi = !psmac_board_solo || disks_scsi || ndisk == 0;
+    if (psmac_board_solo) disk_publish(d, ndisk);
     __atomic_store_n(&ndisk, ndisk + 1, __ATOMIC_RELEASE);
 }
 int psmac_image_count(void) { return ndisk; }
@@ -503,298 +515,12 @@ static void disk_add_file(const char *path)
     int64_t fd = psmac_sh_open(path, 3); int writable = 1;
     if (fd < 0) { fd = psmac_sh_open(path, 1); writable = 0; }
     if (fd < 0) { kprintf("[PSMAC:SOLO] cannot open disk image %s\n", path); return; }
-    struct disk *d = &disks[ndisk++];
+    struct disk *d = &disks[ndisk];
     const char *base = path; for (const char *s = path; *s; s++) if (*s == '/') base = s + 1;
     int k = 0; while (base[k] && k < 47) { d->name[k] = base[k]; k++; } d->name[k] = 0;
     d->ram = 0; d->fd = fd; d->card = 0; d->blocks = (uint32_t)(psmac_sh_flen(fd) / 512); d->writable = writable; d->scsi = 1;
-}
-static int disk_read(struct disk *d, uint32_t lba, uint32_t n, uint8_t *buf)
-{
-    d->reads += n;
-    if (d->ram) { memcpy(buf, d->ram + (uint64_t)lba * 512, n * 512); return 1; }
-    if (d->card) { extern int psmac_card_img_io(int, int, uint32_t, uint32_t, void *, int); return psmac_card_img_io(d->card - 1, 0, lba, n, buf, 1) == (int)n; }
-    if (psmac_sh_seek(d->fd, (uint64_t)lba * 512) < 0) return 0;
-    return psmac_sh_read(d->fd, buf, n * 512);
-}
-static int disk_write(struct disk *d, uint32_t lba, uint32_t n, const uint8_t *buf)
-{
-    d->writes += n;
-    if (d->ram) { if (d->ram + (uint64_t)lba * 512 != buf) memcpy(d->ram + (uint64_t)lba * 512, buf, n * 512); return 1; }
-    if (d->card) { extern int psmac_card_img_io(int, int, uint32_t, uint32_t, void *, int); return psmac_card_img_io(d->card - 1, 1, lba, n, (void *)buf, 1) == (int)n; }
-    if (psmac_sh_seek(d->fd, (uint64_t)lba * 512) < 0) return 0;
-    return psmac_sh_write(d->fd, buf, n * 512);
-}
-
-/* ==== the SCSI bus: an NCR 5380 and one target at a time ====================================== */
-enum { PH_DATAOUT = 0, PH_DATAIN = 1, PH_CMD = 2, PH_STATUS = 3, PH_MSGOUT = 6, PH_MSGIN = 7, PH_FREE = 8 };
-static struct {
-    uint8_t odr, icr, mr, tcr, ser;
-    int dma, dma_dir, irq, busy_err, aip, ack;
-} n;
-static struct {
-    int phase, req;
-    struct disk *d; int id;
-    uint8_t cdb[16]; int cdb_n, cdb_len;
-    uint8_t *buf; uint32_t buf_len, buf_pos;   /* the data phase's current chunk */
-    uint32_t left, lba;                        /* bytes still to move after this chunk, next block */
-    int chunked;                               /* chunks through sector_buf (file images) */
-    uint8_t *wr_ram; uint32_t wr_len;          /* a WRITE straight into a RAM image: marked for the card when its data is in */
-    uint8_t status, msgin, sense_key, asc;
-    uint8_t small[256];
-    uint32_t cmds, mismatches, underflows;
-    struct { uint8_t cdb[10], status; uint32_t n; } ring[12]; uint32_t ring_n;
-} t;
-static const char *phase_name(int p) { static const char *const nm[] = { "data out", "data in", "command", "status", "?", "?", "message out", "message in", "free" }; return nm[p & 15]; }
-
-static void target_free(void)
-{
-    if (t.phase != PH_FREE && n.dma) { n.irq = 1; n.dma = 0; t.mismatches++; }
-    t.phase = PH_FREE; t.req = 0; t.d = 0;
-    if (n.mr & 0x04) { n.busy_err = 1; n.irq = 1; }
-}
-static void set_phase(int p)
-{
-    if (p == PH_STATUS && t.ring_n) t.ring[(t.ring_n - 1) % 12].status = t.status;
-    if (t.phase == PH_DATAIN && p == PH_STATUS) {
-        /* A read has put new bytes in the Mac's memory, perhaps code over code the JIT has
-           translated. The bus layer tells the translator so for every SCSI read that goes over the
-           wire (psmac_bus.c, psmac_icache_epoch: RAM blocks are checked again on their next entry);
-           this chip never goes over the wire, so it says so itself, once per transfer. Without it
-           a code resource read from the disk where other code had run was executed as the old
-           translation, as long as nothing else cleared the cache in between (docs/08 item 53). */
-        extern uint32_t psmac_icache_epoch;
-        psmac_icache_epoch++;
-    }
-    if (p != t.phase && n.dma) { n.irq = 1; n.dma = 0; t.mismatches++; }   /* a phase change ends a DMA transfer with an interrupt */
-    t.phase = p; t.req = 1;
-}
-static void check_condition(uint8_t key, uint8_t asc) { t.status = 2; t.sense_key = key; t.asc = asc; }
-static void data_in_small(uint32_t len, uint32_t alloc)
-{
-    if (alloc && alloc < len) len = alloc;
-    t.buf = t.small; t.buf_len = len; t.buf_pos = 0; t.left = 0; t.chunked = 0;
-    if (len) set_phase(PH_DATAIN); else set_phase(PH_STATUS);
-}
-static void next_chunk(int write)
-{
-    struct disk *d = t.d;
-    uint32_t n_blk = t.left / 512; if (n_blk > sizeof(sector_buf) / 512) n_blk = sizeof(sector_buf) / 512;
-    if (!write && !disk_read(d, t.lba, n_blk, sector_buf)) { check_condition(4, 0x11); set_phase(PH_STATUS); return; }
-    t.buf = sector_buf; t.buf_len = n_blk * 512; t.buf_pos = 0; t.left -= n_blk * 512;
-    t.lba += n_blk;
-}
-static void execute(void)
-{
-    struct disk *d = t.d;
-    uint8_t op = t.cdb[0];
-    uint32_t lba = 0, cnt = 0;
-    t.status = 0; t.cmds++; t.wr_ram = 0; d->cmds++;
-    { unsigned k = t.ring_n++ % 12; for (int i = 0; i < 10; i++) t.ring[k].cdb[i] = t.cdb[i]; t.ring[k].n = t.cmds; }
-    TRACE("SCSI %d: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n", t.id, t.cdb[0], t.cdb[1], t.cdb[2], t.cdb[3], t.cdb[4], t.cdb[5], t.cdb[6], t.cdb[7], t.cdb[8], t.cdb[9]);
-    if ((t.cdb[1] >> 5) && op != 0x12 && op != 0x03) { check_condition(5, 0x25); set_phase(PH_STATUS); return; }
-    for (int i = 0; i < 64; i++) t.small[i] = 0;
-    switch (op) {
-    case 0x00: case 0x01: case 0x0b: case 0x2b: case 0x16: case 0x17: case 0x1b: case 0x1e: case 0x2f: case 0x35: case 0x04:
-        set_phase(PH_STATUS); return;
-    case 0x03: {                                /* REQUEST SENSE */
-        t.small[0] = 0x70; t.small[2] = t.sense_key; t.small[7] = 10; t.small[12] = t.asc;
-        t.sense_key = 0; t.asc = 0;
-        data_in_small(18, t.cdb[4]); return; }
-    case 0x12: {                                /* INQUIRY */
-        static const char vendor[] = "AURORA68", product[] = "PiDisk SCSI     ", rev[] = "0.4 ";
-        t.small[0] = (t.cdb[1] >> 5) ? 0x7f : 0x00; t.small[2] = 0x02; t.small[3] = 0x02; t.small[4] = 31;
-        for (int i = 0; i < 8; i++) t.small[8 + i] = vendor[i];
-        for (int i = 0; i < 16; i++) t.small[16 + i] = product[i];
-        for (int i = 0; i < 4; i++) t.small[32 + i] = rev[i];
-        data_in_small(36, t.cdb[4]); return; }
-    case 0x25: {                                /* READ CAPACITY */
-        uint32_t last = d->blocks - 1;
-        t.small[0] = last >> 24; t.small[1] = last >> 16; t.small[2] = last >> 8; t.small[3] = last;
-        t.small[6] = 2; t.small[7] = 0;
-        data_in_small(8, 0); return; }
-    case 0x1a: {                                /* MODE SENSE(6) */
-        int page = t.cdb[2] & 0x3f, dbd = t.cdb[1] & 0x08; uint32_t p = 4;
-        if (!dbd) { t.small[3] = 8; uint32_t b = d->blocks > 0xffffff ? 0 : d->blocks; t.small[5] = b >> 16; t.small[6] = b >> 8; t.small[7] = b; t.small[10] = 2; p = 12; }
-        if (!d->writable) t.small[2] = 0x80;
-        int any = 0;
-        if (page == 1 || page == 0x3f) { t.small[p] = 0x01; t.small[p + 1] = 10; p += 12; any = 1; }
-        if (page == 3 || page == 0x3f) { t.small[p] = 0x03; t.small[p + 1] = 22; t.small[p + 10] = 0; t.small[p + 11] = 32; t.small[p + 12] = 2; t.small[p + 13] = 0; t.small[p + 20] = 0x40; p += 24; any = 1; }
-        if (page == 4 || page == 0x3f) { uint32_t cyl = d->blocks / (16 * 32); t.small[p] = 0x04; t.small[p + 1] = 22; t.small[p + 2] = cyl >> 16; t.small[p + 3] = cyl >> 8; t.small[p + 4] = cyl; t.small[p + 5] = 16; t.small[p + 20] = 0x1c; t.small[p + 21] = 0x20; p += 24; any = 1; }
-        if (page == 8 || page == 0x3f) { t.small[p] = 0x08; t.small[p + 1] = 18; p += 20; any = 1; }
-        if (page == 0x30 || page == 0x3f) { static const char apple[] = "APPLE COMPUTER, INC."; t.small[p] = 0x30; t.small[p + 1] = 22; for (int i = 0; i < 20; i++) t.small[p + 2 + i] = apple[i]; p += 24; any = 1; }
-        if (!any && page != 0) { check_condition(5, 0x24); set_phase(PH_STATUS); return; }
-        t.small[0] = p - 1;
-        data_in_small(p, t.cdb[4]); return; }
-    case 0x06: {                                /* Iomega's "non-sense" (vendor unique), as a Zip drive answers it */
-        /* The Iomega driver on users' images (the full image's Apple_Driver, Zip 4.2, patched to take
-           any disk by tools/iomega_patch.py) asks every drive for page 2 of it, 22 bytes, and later 63,
-           and reads the disk's protection mode from byte 21 (0 none, 2 write-protected, 3 and 5 with a
-           password ...) and a flag from byte 62. A CHECK CONDITION here left a second disk's drive
-           without its disk-inserted event, so its volume never mounted (docs/08 item 52). All zeros:
-           a disk in place, not protected. Drivers that send no vendor commands (Apple's HD SC Setup
-           driver) never see it. */
-        for (unsigned i = 0; i < sizeof t.small; i++) t.small[i] = 0;
-        data_in_small(t.cdb[4] ? t.cdb[4] : 255, 0); return; }
-    case 0x15: {                                /* MODE SELECT: taken and forgotten */
-        uint32_t len = t.cdb[4];
-        if (!len) { set_phase(PH_STATUS); return; }
-        t.buf = t.small; t.buf_len = len > 255 ? 255 : len; t.buf_pos = 0; t.left = 0; t.chunked = 0; set_phase(PH_DATAOUT); return; }
-    case 0x08: case 0x0a:                       /* READ(6), WRITE(6) */
-        lba = ((t.cdb[1] & 0x1f) << 16) | (t.cdb[2] << 8) | t.cdb[3]; cnt = t.cdb[4] ? t.cdb[4] : 256; break;
-    case 0x28: case 0x2a:                       /* READ(10), WRITE(10) */
-        lba = ((uint32_t)t.cdb[2] << 24) | (t.cdb[3] << 16) | (t.cdb[4] << 8) | t.cdb[5]; cnt = (t.cdb[7] << 8) | t.cdb[8]; break;
-    default:
-        TRACE("SCSI %d: command %02x not supported\n", t.id, op);
-        check_condition(5, 0x20); set_phase(PH_STATUS); return;
-    }
-    /* a transfer */
-    if ((uint64_t)lba + cnt > d->blocks) { check_condition(5, 0x21); set_phase(PH_STATUS); return; }
-    if (!cnt) { set_phase(PH_STATUS); return; }
-    int write = (op == 0x0a || op == 0x2a);
-    if (write && !d->writable) { check_condition(7, 0x27); set_phase(PH_STATUS); return; }
-    { static int first = 1; if (first && !write) { first = 0; psmac_boot_mark("SCSI: first read, ID %d block %u (%u blocks): the disk's driver or boot blocks", t.id, lba, cnt); psmac_splash_status("Starting from the disk..."); } }
-    if (d->ram) {                               /* an image still coming in from the card; blocks it did not give: a medium error */
-        extern int psmac_card_need(const void *, uint32_t);
-        if (psmac_card_need(d->ram + (uint64_t)lba * 512, cnt * 512)) { check_condition(3, write ? 0x0c : 0x11); set_phase(PH_STATUS); return; }
-    }
-    if (d->ram) { t.buf = d->ram + (uint64_t)lba * 512; t.buf_len = cnt * 512; t.buf_pos = 0; t.left = 0; t.chunked = 0; if (write) { d->writes += cnt; t.wr_ram = t.buf; t.wr_len = cnt * 512; } else d->reads += cnt; }
-    else { t.left = cnt * 512; t.lba = lba; t.chunked = 1; if (write) { uint32_t nb = cnt > sizeof(sector_buf) / 512 ? sizeof(sector_buf) / 512 : cnt; t.buf = sector_buf; t.buf_len = nb * 512; t.buf_pos = 0; t.left -= nb * 512; } else next_chunk(0); if (t.phase == PH_STATUS) return; }
-    set_phase(write ? PH_DATAOUT : PH_DATAIN);
-}
-/* the byte on the bus, as the initiator reads it */
-static uint8_t cur_data(void)
-{
-    if (t.phase == PH_DATAIN && t.buf_pos < t.buf_len) return t.buf[t.buf_pos];
-    if (t.phase == PH_STATUS) return t.status;
-    if (t.phase == PH_MSGIN) return t.msgin;
-    if ((n.icr & 0x01) || (n.mr & 0x01)) return n.odr;
-    return 0;
-}
-/* the initiator's ACK: the byte is taken or given, REQ drops */
-static void ack_byte(void)
-{
-    if (!t.req) return;
-    switch (t.phase) {
-    case PH_CMD:
-        if (t.cdb_n < 16) t.cdb[t.cdb_n] = n.odr;
-        if (t.cdb_n == 0) { uint8_t g = n.odr >> 5; t.cdb_len = g == 0 ? 6 : (g == 1 || g == 2) ? 10 : g == 5 ? 12 : 6; }
-        t.cdb_n++;
-        break;
-    case PH_MSGOUT: break;
-    case PH_DATAOUT: if (t.buf_pos < t.buf_len) t.buf[t.buf_pos++] = n.odr; break;
-    case PH_DATAIN:  if (t.buf_pos < t.buf_len) t.buf_pos++; break;
-    default: break;
-    }
-    t.req = 0;
-}
-/* ACK released: the target moves on */
-static void advance(void)
-{
-    switch (t.phase) {
-    case PH_CMD:
-        if (t.cdb_n < t.cdb_len) t.req = 1; else execute();
-        break;
-    case PH_MSGOUT:
-        if (n.icr & 0x02) t.req = 1; else { t.cdb_n = 0; t.cdb_len = 6; set_phase(PH_CMD); }
-        break;
-    case PH_DATAIN:
-        if (t.buf_pos < t.buf_len) t.req = 1;
-        else if (t.left) { next_chunk(0); if (t.phase == PH_DATAIN) t.req = 1; }
-        else set_phase(PH_STATUS);
-        break;
-    case PH_DATAOUT:
-        if (t.buf_pos < t.buf_len) t.req = 1;
-        else {
-            if (t.chunked) {
-                uint32_t nb = t.buf_len / 512;
-                if (!disk_write(t.d, t.lba, nb, sector_buf)) { check_condition(4, 0x03); set_phase(PH_STATUS); break; }
-                t.lba += nb;
-                if (t.left) { nb = t.left / 512; if (nb > sizeof(sector_buf) / 512) nb = sizeof(sector_buf) / 512; t.buf_len = nb * 512; t.buf_pos = 0; t.left -= nb * 512; t.req = 1; break; }
-            }
-            if (t.wr_ram) { extern void psmac_card_dirty(const void *, uint32_t); psmac_card_dirty(t.wr_ram, t.wr_len); t.wr_ram = 0; }
-            set_phase(PH_STATUS);
-        }
-        break;
-    case PH_STATUS: t.msgin = 0; set_phase(PH_MSGIN); break;
-    case PH_MSGIN:  target_free(); break;
-    default: break;
-    }
-}
-static void try_select(void)
-{
-    if (t.phase != PH_FREE || !(n.icr & 0x04) || (n.icr & 0x08) || !(n.icr & 0x01) || (n.icr & 0x80)) return;
-    for (int i = 0; i < 7; i++) if (n.odr & (1u << i)) sel_seen[i]++;
-    { static int first = 1; if (first && !ndisk) { extern void psmac_card_scan_wait(void); psmac_card_scan_wait(); } first = 0; }   /* no disk yet: a disk image on the card? wait for the card's first look */
-    int nd = __atomic_load_n(&ndisk, __ATOMIC_ACQUIRE);
-    for (int i = 0; i < nd; i++) {
-        if (!(n.odr & (1u << i)) || !disks[i].scsi) continue;
-        t.d = &disks[i]; t.id = i; t.cdb_n = 0; t.cdb_len = 6; t.status = 0;
-        n.aip = 0;
-        if (n.icr & 0x02) set_phase(PH_MSGOUT); else set_phase(PH_CMD);
-        return;
-    }
-}
-static int phase_match(void) { return t.phase != PH_FREE && (n.tcr & 7) == (t.phase & 7); }
-static uint32_t scsi_read(uint32_t reg)
-{
-    switch (reg) {
-    case 0: return cur_data();
-    case 1: return (n.icr & 0x9f) | (n.aip ? 0x40 : 0);
-    case 2: return n.mr;
-    case 3: return n.tcr;
-    case 4: {
-        uint32_t v = 0;
-        if (n.icr & 0x80) v |= 0x80;
-        if (t.phase != PH_FREE || (n.icr & 0x08)) v |= 0x40;
-        if (t.req) v |= 0x20;
-        if (t.phase != PH_FREE) v |= (t.phase & 7) << 2;
-        if (n.icr & 0x04) v |= 0x02;
-        return v; }
-    case 5: {
-        uint32_t v = 0;
-        if (n.dma && t.req && phase_match()) v |= 0x40;
-        if (n.irq) v |= 0x10;
-        if (phase_match()) v |= 0x08;
-        if (n.busy_err) v |= 0x04;
-        if (n.icr & 0x02) v |= 0x02;
-        if (n.icr & 0x10) v |= 0x01;
-        return v; }
-    case 6: return cur_data();
-    case 7: n.irq = 0; n.busy_err = 0; return 0;
-    }
-    return 0;
-}
-static void scsi_write(uint32_t reg, uint8_t d)
-{
-    switch (reg) {
-    case 0: n.odr = d; break;
-    case 1: {
-        uint8_t was = n.icr;
-        n.icr = d & 0x9f;
-        if (d & 0x80) { if (!(was & 0x80)) { target_free(); n.irq = 1; } break; }
-        try_select();
-        int ack = (n.icr & 0x10) != 0, was_ack = (was & 0x10) != 0;
-        if (ack && !was_ack && !n.dma) ack_byte();
-        if (!ack && was_ack && !n.dma) advance();
-        break; }
-    case 2: n.mr = d; if (d & 0x01) n.aip = 1; if (!(d & 0x02)) n.dma = 0; break;
-    case 3: n.tcr = d & 0x0f; break;
-    case 4: n.ser = d; break;
-    case 5: if (n.mr & 0x02) { n.dma = 1; n.dma_dir = 1; } break;
-    case 6: break;
-    case 7: if (n.mr & 0x02) { n.dma = 1; n.dma_dir = 0; } break;
-    }
-}
-/* one byte through a pseudo-DMA window */
-static uint8_t pdma_read(void)
-{
-    if (!(t.req && t.phase == PH_DATAIN)) { t.underflows++; return 0xff; }
-    uint8_t v = cur_data(); ack_byte(); advance(); return v;
-}
-static void pdma_write(uint8_t d)
-{
-    if (!(t.req && (t.phase == PH_DATAOUT || t.phase == PH_CMD || t.phase == PH_MSGOUT))) { t.underflows++; return; }
-    n.odr = d; ack_byte(); advance();
+    disk_publish(d, ndisk);
+    ndisk++;
 }
 
 /* ==== the bus layer's entry: the four chips the SE layer would forward ======================== */
@@ -833,10 +559,10 @@ int psmac_solo_access(uint32_t addr, int size, int write, uint32_t data, uint32_
         if (write) scc_write(off & 6, data & 0xff); else r = scc_read(off & 6);
     } else if (off >= 0x10000 && off < 0x12000) {
         uint32_t reg = (off >> 4) & 7;
-        if (write) scsi_write(reg, data & 0xff); else r = scsi_read(reg);
+        if (write) psmac_scsidev_write(reg, data & 0xff); else r = psmac_scsidev_read(reg);
     } else if ((off >= 0x12000 && off < 0x14000) || (off >= 0x6000 && off < 0x8000)) {
-        if (write) { for (int i = 0; i < size; i++) pdma_write((data >> (8 * (size - 1 - i))) & 0xff); }
-        else { for (int i = 0; i < size; i++) r = (r << 8) | pdma_read(); }
+        if (write) { for (int i = 0; i < size; i++) psmac_scsidev_pdma_write((data >> (8 * (size - 1 - i))) & 0xff); }
+        else { for (int i = 0; i < size; i++) r = (r << 8) | psmac_scsidev_pdma_read(); }
         set_level();
         unlock();
         *val = r;
@@ -855,7 +581,7 @@ int psmac_solo_access(uint32_t addr, int size, int write, uint32_t data, uint32_
 /* the 5380's interrupt line, for the RBV's flag bit 3 (psmac_board_se.c): the ROM's SCSI Manager
    enables that bit and waits for the level-2 interrupt at the end of every transfer; without it
    each command completed on a timeout and System 7 took a second per block (docs/08, item 35) */
-int psmac_solo_scsi_irq(void) { return n.irq; }
+int psmac_solo_scsi_irq(void) { return psmac_scsidev_irq(); }
 
 /* the level the board drives: the VIA on 1, the RBV (psmac_board_se.c) on 2, the SCC on 4 */
 unsigned psmac_solo_ipl(void)
@@ -882,8 +608,7 @@ void psmac_solo_reset(void)
     for (int c = 0; c < 2; c++) { for (int i = 0; i < 16; i++) scc.wr[c][i] = 0; scc.ptr[c] = 0; scc.eom[c] = 1; scc.txbusy[c] = 0; }
     scc.ip = 0;
     iwm.lines = 0;
-    n.odr = n.icr = n.mr = n.tcr = n.ser = 0; n.dma = n.irq = n.busy_err = n.aip = n.ack = 0;
-    t.phase = PH_FREE; t.req = 0; t.d = 0;
+    psmac_scsidev_reset();
     unlock();
 }
 void psmac_solo_init(void)
@@ -894,6 +619,7 @@ void psmac_solo_init(void)
     pram_loaded = 0;                         /* pram.bin from the card at the chip's first command */
     pram_overrides();
     rtc.enb = 1;
+    psmac_scsidev_init(1);                   /* the virtual SCSI devices first: the IDs they hold are not given to an image */
     static const char *const keys[] = { "mac.scsi0", "mac.scsi1", "mac.scsi2", "mac.scsi3", "mac.scsi4", "mac.scsi5", "mac.scsi6" };
     for (int i = 0; i < 7; i++) { const char *p = psmac_option(keys[i]); if (p) disk_add_file(p); }
     psmac_solo_reset();
@@ -938,23 +664,12 @@ void psmac_solo_options(const char *args)
 void psmac_solo_report(void)
 {
     if (!psmac_board_solo) return;
-    kprintf("[PSMAC:SOLO] VIA IFR %02x IER %02x ACR %02x T1 %s T2 %s, %u VBLs | ADB state %d %u cmds | RTC %u cmds secs %08x | SCSI %s req %d, %u cmds, %u phase irqs, %u underflows\n",
-            via.ifr, via.ier, via.acr, via.t1_run ? "on" : "off", via.t2_run ? "on" : "off", via.vbls, adb.state, adb.cmds, rtc.cmds, rtc.seconds,
-            phase_name(t.phase), t.req, t.cmds, t.mismatches, t.underflows);
+    kprintf("[PSMAC:SOLO] VIA IFR %02x IER %02x ACR %02x T1 %s T2 %s, %u VBLs | ADB state %d %u cmds | RTC %u cmds secs %08x\n",
+            via.ifr, via.ier, via.acr, via.t1_run ? "on" : "off", via.t2_run ? "on" : "off", via.vbls, adb.state, adb.cmds, rtc.cmds, rtc.seconds);
     /* every disk, and how often each ID was selected: a second disk the Mac never shows (the user's
-       RiptideFix.img, 19 November) was invisible here when only disk 0 was counted */
-    kprintf("[PSMAC:SOLO]   SCSI selections by ID 0-6: %u %u %u %u %u %u %u", sel_seen[0], sel_seen[1], sel_seen[2], sel_seen[3], sel_seen[4], sel_seen[5], sel_seen[6]);
-    for (int i = 0; i < ndisk; i++) kprintf(" | ID %d %s: %u cmds, %u blocks read, %u written", i, disks[i].name, disks[i].cmds, disks[i].reads, disks[i].writes);
-    kprintf("\n");
+       RiptideFix.img, 19 November) was invisible here when only disk 0 was counted (psmac_scsidev.c's lines) */
+    psmac_scsidev_report();
     kprintf("[PSMAC:SOLO]   SCC: %u writes, %u interrupts, pending %02x; A (modem) WR1 %02x WR3 %02x WR4 %02x WR5 %02x WR9 %02x WR10 %02x WR11 %02x WR12 %02x WR14 %02x WR15 %02x | B (printer) WR1 %02x WR3 %02x WR4 %02x WR5 %02x WR10 %02x WR11 %02x WR12 %02x WR14 %02x WR15 %02x\n",
             scc.writes, scc.irqs, scc.ip, scc.wr[1][1], scc.wr[1][3], scc.wr[1][4], scc.wr[1][5], scc.wr[1][9], scc.wr[1][10], scc.wr[1][11], scc.wr[1][12], scc.wr[1][14], scc.wr[1][15],
             scc.wr[0][1], scc.wr[0][3], scc.wr[0][4], scc.wr[0][5], scc.wr[0][10], scc.wr[0][11], scc.wr[0][12], scc.wr[0][14], scc.wr[0][15]);
-    static uint32_t shown;
-    if (t.ring_n != shown) {
-        shown = t.ring_n;
-        kprintf("[PSMAC:SOLO]   last SCSI commands (n: cdb -> status):");
-        unsigned first = t.ring_n > 12 ? t.ring_n - 12 : 0;
-        for (unsigned i = first; i < t.ring_n; i++) { unsigned k = i % 12; kprintf(" %u:%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x->%x", t.ring[k].n, t.ring[k].cdb[0], t.ring[k].cdb[1], t.ring[k].cdb[2], t.ring[k].cdb[3], t.ring[k].cdb[4], t.ring[k].cdb[5], t.ring[k].cdb[6], t.ring[k].cdb[7], t.ring[k].cdb[8], t.ring[k].cdb[9], t.ring[k].status); }
-        kprintf("\n");
-    }
 }

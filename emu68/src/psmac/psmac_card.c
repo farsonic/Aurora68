@@ -35,6 +35,11 @@
  *                  kernel's own, which config.txt reads through its "include aurora68-display.txt" line.
  *                  Made with long names when absent, written in their first cluster, read back.
  *                  config.txt itself is only read.
+ *   scsi.cd= and scsi.disk= files
+ *                  (25 November 2026, docs/08 item 148): the images of the virtual SCSI devices (psmac_scsidev.c), a
+ *                  CD-ROM's (.iso, .cdr, .toast) and hard disks', always served from the card as the Mac asks, through
+ *                  the same cache; the disks' writes go back in place. They are not the Mac's PiDisk volumes. The CD
+ *                  can be changed while the Mac runs (the remote control): the new file takes the old one's place.
  *   Mac Exchange/  a folder (mac.exchange=NAME for another, =off for none) whose files the Mac sees as a
  *                  locked HFS volume, read only (21 November 2026, issue #20; exchange_* below): made by
  *                  psmac_hfsview.c from what psmac_fatfs.c reads, a step per pass of core 3, its files'
@@ -61,6 +66,7 @@
 #include "psmac_fatfs.h"
 #include "psmac_hfsview.h"
 #include "psmac_recovery.h"
+#include "psmac_scsidev.h"
 
 extern const char *psmac_option(const char *key);
 extern int alice_pi_is_2711(void);
@@ -450,9 +456,16 @@ static int a2_owns(const char *s)
     return 0;
 }
 #endif
+/* a file a virtual SCSI device (scsi.cd=, scsi.disk=, psmac_scsidev.c) is to have: not one of the Mac's PiDisk volumes too */
+static int scsi_owns(const char *s)
+{
+    for (int i = 0; i < 8; i++) { int w; const char *n = psmac_scsidev_card_want(i, &w); if (n && name_eq(n, s)) return 1; }
+    return 0;
+}
 static int is_image_name(const char *s, uint32_t size)
 {
     if (size < (1u << 20) || (s[0] == '.' && s[1] == '_')) return 0;
+    if (scsi_owns(s)) return 0;
 #ifdef PSMAC_PC
     if (pc_owns(s)) return 0;
 #endif
@@ -943,7 +956,7 @@ struct img {
     uint32_t last_end, ra_next, ra_end;          /* the sector after the last read; read-ahead: the next slot, the slot it stops before */
     uint32_t rd_secs, wr_secs;                   /* the Mac's reads and writes, for the heartbeat */
 };
-static struct img imgs[4]; static int nimg;
+static struct img imgs[8]; static int nimg;            /* up to four of the Mac's own, and the virtual SCSI devices' */
 static const uint8_t *cont_ram; static uint32_t cont_len;
 static struct ext cont_ext[256]; static int cont_next;          /* the container file's extents */
 static volatile uint64_t last_dirty_t, first_dirty_t;
@@ -952,7 +965,7 @@ static volatile int scan_done;                 /* the card has been looked at fo
 void psmac_card_container(const uint8_t *ram, uint32_t len) { cont_ram = ram; cont_len = len; }
 static struct img *img_new(const char *name, const uint8_t *ram, uint32_t len)
 {
-    if (nimg >= 4) return 0;
+    if (nimg >= 8) return 0;
     struct img *m = &imgs[nimg];
     m->ram = ram; m->len = len; m->nbits = ram ? (len + CHUNK - 1) / CHUNK : 0;   /* served from the card: its cache keeps the changes */
     m->dirty = m->nbits ? tlsf_malloc(tlsf, ((m->nbits + 31) / 32) * 4) : 0;
@@ -1753,21 +1766,30 @@ void psmac_card_flush_soon(const char *why)
     __atomic_store_n(&flush_now, 1, __ATOMIC_RELEASE);
     kprintf("[CARD] %s: the disk images' changes go to the card now (%u KB waiting%s)\n", why, w * (SLOT >> 10), first_dirty_t ? ", and an image's in memory" : "");
 }
-static int image_take_card(const char *name, const struct cfile *f, const char *why)
+/* a file's extents in memory of their own (a file served from the card); their number, 0 or less when none */
+static int card_extents(const char *name, const struct cfile *f, struct ext **out)
 {
-    extern int psmac_board_solo;
-    if (!cache_init()) { kprintf("[CARD] %s: not offered (no cache)\n", name); return 0; }
     struct ext *ext = tlsf_malloc(tlsf, 256 * sizeof(struct ext));
     int k = ext ? file_extents(f, ext, 256) : -1;
     if (k < 0) {                                           /* in many pieces: counted, then listed */
         if (ext) tlsf_free(tlsf, ext);
         k = file_extents(f, 0, 0x7fffffff);
         ext = k > 0 ? tlsf_malloc(tlsf, (uint32_t)k * sizeof(struct ext)) : 0;
-        if (!ext || file_extents(f, ext, k) != k) { kprintf("[CARD] %s: no memory for its list of %d pieces: not offered\n", name, k); return 0; }
+        if (!ext || file_extents(f, ext, k) != k) { kprintf("[CARD] %s: no memory for its list of %d pieces: not offered\n", name, k); if (ext) tlsf_free(tlsf, ext); return 0; }
     }
+    if (k <= 0 && ext) tlsf_free(tlsf, ext);
+    *out = k > 0 ? ext : 0;
+    return k;
+}
+static int image_take_card(const char *name, const struct cfile *f, const char *why)
+{
+    extern int psmac_board_solo;
+    if (!cache_init()) { kprintf("[CARD] %s: not offered (no cache)\n", name); return 0; }
+    struct ext *ext = 0;
+    int k = card_extents(name, f, &ext);
     if (k <= 0) return 0;
     struct img *m = img_new(name, 0, f->size);
-    if (!m) return 0;
+    if (!m) { tlsf_free(tlsf, ext); return 0; }
     m->ext = ext; m->next = k;
     m->off = 0; m->file = 0; m->file_len = f->size; m->ok = !sd.ro; m->card = 1; m->wfail = 0;
     m->last_end = 0xffffffffu; m->ra_next = m->ra_end = 0; m->rd_secs = m->wr_secs = 0;
@@ -1780,6 +1802,78 @@ static int image_take_card(const char *name, const struct cfile *f, const char *
     extern void psmac_mbox_add_card_disk(const char *, int, uint32_t, int);
     if (psmac_board_solo) psmac_image_add_card(m->name, h, f->size, m->ok);          /* the first is SCSI ID 0 */
     if (!psmac_board_solo || !psmac_image_is_scsi(psmac_image_count() - 1)) psmac_mbox_add_card_disk(m->name, h, f->size / 512u, m->ok);
+    return 1;
+}
+
+/* ---- the virtual SCSI devices' files (psmac_scsidev.c; docs/08 item 148) ----
+   scsi.cd= and scsi.disk= name files in the card's root. Each is served from the card as the Mac asks (never read
+   whole: an A/UX CD is 600 MB and more), through the cache above, and not offered as a PiDisk volume; a CD is never
+   written. A CD changed through the remote control takes the old one's place in imgs[]: its extents replaced, the
+   cache's slots of it emptied (a CD has nothing waiting to be written), so a session can change CDs any number of
+   times. scsi_img[i]: the image of the device at SCSI ID i, or -1. */
+static int scsi_img[8] = { -1, -1, -1, -1, -1, -1, -1, -1 };
+static int scsi_serve(const char *name, const struct cfile *f, int writable)
+{
+    if (!cache_init()) { kprintf("[CARD] %s: not served (no cache)\n", name); return -1; }
+    struct ext *ext = 0;
+    int k = card_extents(name, f, &ext);
+    if (k <= 0) return -1;
+    struct img *m = img_new(name, 0, f->size);
+    if (!m) { tlsf_free(tlsf, ext); kprintf("[CARD] %s: no room for another image (8 at most)\n", name); return -1; }
+    m->ext = ext; m->next = k;
+    m->off = 0; m->file = 0; m->file_len = f->size; m->ok = writable && !sd.ro; m->card = 1; m->wfail = 0;
+    m->last_end = 0xffffffffu; m->ra_next = m->ra_end = 0; m->rd_secs = m->wr_secs = 0;
+    int h = nimg;
+    __atomic_store_n(&nimg, nimg + 1, __ATOMIC_RELEASE);
+    kprintf("[CARD] SCSI device's image %s, %u MB in %d piece%s: served from the card as the Mac asks%s\n", name, f->size >> 20, k, k == 1 ? "" : "s",
+            !writable ? ", read only" : m->ok ? ", changes written back to it" : ", locked (mac.card=ro)");
+    return h;
+}
+static void scsi_scan(void)
+{
+    extern int psmac_board_solo;
+    psmac_scsidev_init(psmac_board_solo);
+    for (int i = 0; i < 8; i++) {
+        int w = 0; const char *nm = psmac_scsidev_card_want(i, &w);
+        if (!nm) continue;
+        struct cfile f;
+        int h = file_find(nm, &f) || f.size < 2048 ? -1 : scsi_serve(nm, &f, w);
+        if (h < 0) { psmac_scsidev_card_missing(i); continue; }
+        scsi_img[i] = h;
+        psmac_scsidev_card_ready(i, h, f.size, imgs[h].ok);
+    }
+}
+/* no card, or one that could not be read: the devices that wanted a file from it are told so */
+static void scsi_unfound(void)
+{
+    for (int i = 0; i < 8; i++) { int w; if (psmac_scsidev_card_want(i, &w)) psmac_scsidev_card_missing(i); }
+}
+/* a CD change the remote control asked for (psmac_scsidev_cd_request): one per pass; 1 when the card was used */
+static int scsi_change_step(void)
+{
+    int i; char name[128];
+    if (!psmac_scsidev_card_change(&i, name, sizeof name)) return 0;
+    struct cfile f;
+    if (file_find(name, &f) || f.size < 2048) { psmac_scsidev_card_missing(i); return 1; }
+    int h = scsi_img[i];
+    if (h < 0) {
+        h = scsi_serve(name, &f, 0);
+        if (h < 0) { psmac_scsidev_card_missing(i); return 1; }
+        scsi_img[i] = h;
+    } else {
+        struct img *m = &imgs[h];
+        struct ext *ext = 0;
+        int k = card_extents(name, &f, &ext);
+        if (k <= 0) { psmac_scsidev_card_missing(i); return 1; }
+        for (uint32_t si = 0; si < cc.n; si++) if (cc.s[si].img == h) { cc.s[si].valid = 0; cc.s[si].dirty = 0; }   /* the old CD's sectors */
+        struct ext *old = m->ext;
+        m->ext = ext; m->next = k; m->len = f.size; m->file_len = f.size; m->ok = 0;
+        m->last_end = 0xffffffffu; m->ra_next = m->ra_end = 0;
+        int j = 0; while (name[j] && j < 47) { m->name[j] = name[j]; j++; } m->name[j] = 0;
+        if (old) tlsf_free(tlsf, old);
+        kprintf("[CARD] the CD %s, %u MB in %d piece%s, in place of the last (served from the card)\n", name, f.size >> 20, k, k == 1 ? "" : "s");
+    }
+    psmac_scsidev_card_ready(i, h, f.size, 0);
     return 1;
 }
 
@@ -1922,6 +2016,7 @@ static void card_poll_locked(void)
            before the call (as at first), a card with no early look (a testbed run whose initrd is a bare
            ROM) was never initialised or mounted: "FAT16 at sector 0, 0-byte clusters", no disk image */
         card_start();
+        scsi_unfound();                                /* the virtual SCSI devices' files the card did not have (or no card) */
         early_done = 2;
         __atomic_store_n(&scan_done, 1, __ATOMIC_RELEASE);
         return;
@@ -1930,6 +2025,7 @@ static void card_poll_locked(void)
     if (fl.busy) { flush_poll(); return; }             /* a sector is being programmed: nothing else touches the card */
     if (boot_jobs()) return;
     if (psmac_recovery_on()) return;                   /* a recovery start: the card is the recovery's alone (psmac_recovery.c) */
+    if (scsi_change_step()) return;                    /* a new CD for the virtual CD-ROM drive */
     if (__atomic_load_n(&pair_dirty, __ATOMIC_ACQUIRE) && !sd.ro) { pair_dirty = 0; pairings_write(); return; }
     if (__atomic_load_n(&opt_state, __ATOMIC_ACQUIRE) == 1 && !sd.ro) { cmdline_apply(); return; }
     { extern int psmac_solo_pram_take(uint8_t out[260]), psmac_se_pram_take(uint8_t out[260]); static uint8_t p[260];
@@ -1987,6 +2083,7 @@ static void card_start(void)
     }
     container_check();
     image_scan();
+    scsi_scan();                                       /* the virtual SCSI devices' files (scsi.cd=, scsi.disk=) */
     exchange_start();
     psmac_boot_mark("card: mounted, pairings read, disk images found");
     fl.img = -1;

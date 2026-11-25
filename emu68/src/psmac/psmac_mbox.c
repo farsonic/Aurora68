@@ -306,7 +306,14 @@ static int blk_xfer(int write, struct blkdev *b, uint32_t lba, uint32_t count, u
                          disks: the image starts the Mac when the usual startup disk is not there;
      image               the card's image first, the SCSI disks after it;
      scsi                parameter RAM as it is, the image only if it names the card (the Startup Disk
-                         control panel): the kernel changes nothing.
+                         control panel): the kernel changes nothing;
+     cd                  the virtual CD-ROM drive (scsi.cd=, psmac_scsidev.c; 25 November 2026, docs/08 item
+                         148): the view is then ff ff ff (df less the CD's ID), the record of a SCSI drive, so
+                         the Start Manager loads the SCSI drivers and starts from the CD's driver first (no boot
+                         record runs at state 0); the other disks after it. The view comes down once the Finder
+                         runs (and is up again at each RESET), so a Mac started from the CD to install a System
+                         (A/UX) starts from it again after its installer restarts it: take the option out when
+                         the installation is done.
    A floppy with a System is taken first in every case, as on any Mac. */
 static const uint8_t startup_slot9[4] = { 0, 0, 9, 0x80 };   /* sdExtDevID, sdPartition, sdSlotNum, sdSRsrcID */
 static uint8_t startup_real[4] = { 0xff, 0xff, 0xff, 0xdf };   /* the parameter RAM's own bytes, as last read */
@@ -314,15 +321,24 @@ static uint8_t startup_known;                                  /* bit i: startup
 static uint8_t startup_view[4];                                /* bytes the Mac wrote while the view is up */
 static int startup_last = -1;                                  /* the byte the Mac wrote last, until its next access to $78-$7B */
 static volatile int startup_window = 1;                        /* the view is up: from each RESET until the boot record asks */
-static int startup_mode = -1;                                  /* 0 auto, 1 image, 2 scsi */
+static int startup_mode = -1;                                  /* 0 auto, 1 image, 2 scsi, 3 cd */
+static uint8_t startup_rec[4] = { 0, 0, 9, 0x80 };             /* what the view shows: slot 9, or the CD-ROM's SCSI record (mac.boot=cd) */
+static int startup_cd = -1;                                    /* the CD-ROM drive's SCSI ID, mac.boot=cd */
 static int startup_said;
 static int startup_mode_get(void)
 {
     if (startup_mode < 0) {
         const char *o = psmac_option("mac.boot");
-        startup_mode = !o ? 0 : o[0] == 'i' ? 1 : o[0] == 's' ? 2 : 0;
-        if (o && o[0] != 'i' && o[0] != 's' && o[0] != 'a') kprintf("[PSMAC:MBOX] mac.boot=%s not understood: auto, image or scsi; auto it is\n", o);
-        for (int i = 0; i < 4; i++) startup_view[i] = startup_slot9[i];
+        startup_mode = !o ? 0 : o[0] == 'i' ? 1 : o[0] == 's' ? 2 : o[0] == 'c' ? 3 : 0;
+        if (o && o[0] != 'i' && o[0] != 's' && o[0] != 'a' && o[0] != 'c') kprintf("[PSMAC:MBOX] mac.boot=%s not understood: auto, image, scsi or cd; auto it is\n", o);
+        for (int i = 0; i < 4; i++) startup_rec[i] = startup_slot9[i];
+        if (startup_mode == 3) {
+            extern int psmac_scsidev_cd_id(void);
+            startup_cd = psmac_scsidev_cd_id();
+            if (startup_cd < 0) { startup_mode = 0; kprintf("[PSMAC:MBOX] mac.boot=cd: no virtual CD-ROM drive (scsi.cd=NAME[:ID]): auto it is\n"); }
+            else { startup_rec[0] = startup_rec[1] = startup_rec[2] = 0xff; startup_rec[3] = (uint8_t)(0xdf - startup_cd); }
+        }
+        for (int i = 0; i < 4; i++) startup_view[i] = startup_rec[i];
     }
     return startup_mode;
 }
@@ -334,7 +350,7 @@ void psmac_startup_reset(void)
     __atomic_store_n(&mbox_resets, mbox_resets + 1, __ATOMIC_RELEASE);
     { extern void psmac_card_flush_soon(const char *); psmac_card_flush_soon("the Mac restarts"); }   /* the card images' writes now (psmac_card.c) */
     startup_mode_get();
-    for (int i = 0; i < 4; i++) startup_view[i] = startup_slot9[i];
+    for (int i = 0; i < 4; i++) startup_view[i] = startup_rec[i];
     startup_last = -1;
     startup_said = 0;
     __atomic_store_n(&startup_window, 1, __ATOMIC_RELEASE);
@@ -346,7 +362,16 @@ void psmac_startup_reset(void)
    psmac_startup_write: the Mac wrote a byte there; 1 when it went into the view, and must go no
    further. psmac_startup_real: the parameter RAM's byte, if read this session (for the SE's chip,
    whose writes the board layer can only rewrite, not hold back). */
-int psmac_startup_card(void) { return startup_window && startup_mode_get() != 2 && nimg > 0; }
+int psmac_startup_card(void)
+{
+    int m = startup_mode_get();
+    if (m == 3 && startup_window) {             /* mac.boot=cd: up from each RESET until the Finder runs */
+        extern int psmac_boot_settled(void);
+        if (psmac_boot_settled()) __atomic_store_n(&startup_window, 0, __ATOMIC_RELEASE);
+        return startup_window;
+    }
+    return startup_window && m != 2 && nimg > 0;
+}
 void psmac_startup_seen(int addr, uint8_t real)
 {
     int i = addr - 0x78;
@@ -354,6 +379,10 @@ void psmac_startup_seen(int addr, uint8_t real)
     startup_real[i] = real; startup_known |= (uint8_t)(1u << i);
     if (i == 3 && !startup_said && psmac_startup_card()) {
         startup_said = 1;
+        if (startup_mode == 3)
+            kprintf("[PSMAC:MBOX] startup disk: parameter RAM $78-$7B %02x %02x %02x %02x, shown to the Mac as ff ff ff %02x, the virtual CD-ROM at SCSI ID %d, until the Finder runs (mac.boot=cd)\n",
+                    startup_real[0], startup_real[1], startup_real[2], startup_real[3], startup_rec[3], startup_cd);
+        else
         kprintf("[PSMAC:MBOX] startup disk: parameter RAM $78-$7B %02x %02x %02x %02x, shown to the Mac as 00 00 09 80, slot 9's PiDisk, until its boot record asks (mac.boot=%s)\n",
                 startup_real[0], startup_real[1], startup_real[2], startup_real[3], startup_mode == 1 ? "image" : "auto");
     }
@@ -362,7 +391,7 @@ uint8_t psmac_startup_view(int addr)
 {
     int i = (addr - 0x78) & 3, last = startup_last;
     startup_last = -1;
-    return last == i ? startup_view[i] : startup_slot9[i];
+    return last == i ? startup_view[i] : startup_rec[i];
 }
 uint8_t psmac_startup_read(int addr, uint8_t real)
 {
@@ -391,7 +420,8 @@ static uint32_t startup_first(void)
     const char *why;
     uint32_t r = 0;
     int16_t ref = (int16_t)(startup_real[2] << 8 | startup_real[3]);
-    if (startup_mode_get() != 0) why = startup_mode == 1 ? "the card's image first (mac.boot=image)" : "the card's image (the parameter RAM names it)";
+    if (startup_mode_get() == 3) { r = (uint16_t)(0xffdf - startup_cd); why = "the virtual CD-ROM first (mac.boot=cd), then the card's image"; }
+    else if (startup_mode != 0) why = startup_mode == 1 ? "the card's image first (mac.boot=image)" : "the card's image (the parameter RAM names it)";
     else if (startup_real[2] == 9 && startup_real[3] == 0x80) why = "the card's image first (the parameter RAM names it)";
     else if (ref < 0) { r = (uint16_t)ref; why = "the SCSI disk the parameter RAM names first, then the card's image (mac.boot=auto)"; }
     else { r = 0xffdf; why = "SCSI ID 0 first (the parameter RAM names none), then the card's image (mac.boot=auto)"; }
