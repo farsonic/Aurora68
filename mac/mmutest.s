@@ -137,7 +137,7 @@ t1:	move.l	(%a0),%d2
 	wantpc	n_t1pc, t1
 	moveq	#0,%d0
 	move.w	V_FMT,%d0
-	want	n_t1f, %d0, 0xA008
+	want	n_t1f, %d0, 0xB008		| a read: the long frame (phase 2; phase 1 gave $A)
 	moveq	#0,%d0
 	move.w	V_SSW,%d0
 	want	n_t1s, %d0, 0x0145		| DF, read, long, supervisor data
@@ -154,6 +154,9 @@ t2:	move.l	%d1,(%a0)
 	moveq	#0,%d0
 	move.w	V_SSW,%d0
 	want	n_t2s, %d0, 0x0105		| DF, write, long, supervisor data
+	moveq	#0,%d0
+	move.w	V_FMT,%d0
+	want	n_t2f, %d0, 0xA008		| a write: the short frame
 
 	| ---- T3: MOVE (An)+,(Am)+, the second access faulting after the first moved An ----
 	move.l	#0x33333333,WIN+0x3000+0x100
@@ -518,8 +521,8 @@ do_log:	movem.l	%d0-%d1/%a0,-(%sp)
 	move.l	(%a0),%d0
 	addq.l	#1,%d0
 	move.l	%d0,(%a0)
-	move.l	#50000000,%d1
-3:	cmp.l	4(%a0),%d0
+	moveq	#0,%d1				| wait for the answer (2^32 turns): since the soft TLB
+3:	cmp.l	4(%a0),%d0			| the tests end before the kernel's mailbox service starts
 	beq.s	4f
 	subq.l	#1,%d1
 	bne.s	3b
@@ -542,6 +545,7 @@ n_t1s:	.asciz	"t1ssw"
 n_t1a:	.asciz	"t1addr"
 n_t2:	.asciz	"t2"
 n_t2c:	.asciz	"t2count"
+n_t2f:	.asciz	"t2fmt"
 n_t2s:	.asciz	"t2ssw"
 n_t3:	.asciz	"t3"
 n_t3a0:	.asciz	"t3a0"

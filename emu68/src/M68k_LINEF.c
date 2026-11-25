@@ -5084,11 +5084,105 @@ static uint32_t EMIT_FPU_exact(struct TranslatorContext *ctx)
 }
 #endif
 
+#ifdef PSMAC
+/* Aurora68, mac.mmu=full (docs/23-mmu.md, phase 2): every 68030 MMU instruction (PMOVE to and from TC, SRP, CRP,
+   TT0, TT1 and MMUSR, PTEST, PLOAD, all the PFLUSH forms) becomes a call to psmac_pmmu_exec (psmac/psmac_mmu.c)
+   with the effective address, computed here for the control modes, and every AArch64 register saved on the stack
+   as the C side's register file, as EMIT_FPU_exact does. In user mode the instruction is a privilege violation
+   (System 7's Virtual Memory runs the Mac in user mode and emulates the PTEST, PMOVE and PFLUSH it meets there).
+   The C side leaves x18 at the next instruction, or at the bus-error handler with a new SR when the operand's
+   page faulted; the block ends after the instruction either way (the mapping may have changed under it).
+   Without the option none of this is reached: the instructions take the shim's paths below, as before. */
+static uint32_t EMIT_PMMU_full(struct TranslatorContext *ctx, uint16_t opcode, uint16_t opcode2)
+{
+    extern uint32_t psmac_pmmu_exec(uint32_t ea, uint32_t op, uint64_t *regs, uint32_t sr, uint32_t lenflags);
+    union { uint64_t u64; uint16_t u16[4]; } u;
+    u.u64 = (uintptr_t)psmac_pmmu_exec;
+    uint8_t mode = (opcode >> 3) & 7;
+    uint8_t ext_count = 1;
+    uint8_t ea = 0xff;
+    int top = opcode2 >> 13;
+    int after_tc = 0;
+
+    EMIT_FlushPC(ctx);
+    uint8_t sr = RA_ModifyCC(ctx);
+    uint8_t ret = RA_AllocARMRegister(ctx);
+
+    uint32_t *to_super = ctx->tc_CodePtr++;
+    EMIT_Exception(ctx, VECTOR_PRIVILEGE_VIOLATION, 0);
+    uint32_t *priv_exit = ctx->tc_CodePtr++;
+    *to_super = tbnz(sr, SRB_S, ctx->tc_CodePtr - to_super);
+
+    if (top == 1 && ((opcode2 >> 10) & 7) == 1) {
+        const uint16_t *p = ctx->tc_M68kCodePtr;
+        after_tc = (cache_read_16(ICACHE, (uintptr_t)&p[-1]) == 0x4000 && (cache_read_16(ICACHE, (uintptr_t)&p[-2]) & 0xfff8) == 0xf010) ||
+                   (cache_read_16(ICACHE, (uintptr_t)&p[-2]) == 0x4000 && (cache_read_16(ICACHE, (uintptr_t)&p[-3]) & 0xfff8) == 0xf028);
+    }
+    /* the effective address: the control modes here, the register and (An)+/-(An) forms on the C side. As in
+       EMIT_FPU, the code pointer moves past the opcode first and the extension word counts as one */
+    ctx->tc_M68kCodePtr++;
+    if (mode == 2 || mode == 5 || mode == 6 || mode == 7)
+        EMIT_LoadFromEffectiveAddress(ctx, 0, &ea, opcode & 0x3f, &ext_count, 1, NULL);
+
+    EMIT(ctx, stp64_preindex(31, 0, 1, -256));
+    for (int i = 2; i < 30; i += 2)
+        EMIT(ctx, stp64(31, i, i + 1, i * 8));
+    EMIT(ctx, str64_offset(31, 30, 240));
+    if (ea != 0xff)
+        EMIT(ctx, mov_reg(0, ea));
+    else
+        EMIT(ctx, mov_immed_u16(0, 0, 0));
+    EMIT(ctx,
+        mov_reg(3, sr),
+        mov_immed_u16(1, opcode2, 0),
+        movk_immed_u16(1, opcode, 1),
+        add64_immed(2, 31, 0),
+        mov_immed_u16(4, 2 * (ext_count + 1), 0),
+        movk_immed_u16(4, after_tc, 1),
+        mov64_immed_u16(5, u.u16[3], 0),
+        movk64_immed_u16(5, u.u16[2], 1),
+        movk64_immed_u16(5, u.u16[1], 2),
+        movk64_immed_u16(5, u.u16[0], 3),
+        blr(5),
+        str64_offset(31, 0, ret * 8)
+    );
+    for (int i = 2; i < 30; i += 2)
+        EMIT(ctx, ldp64(31, i, i + 1, i * 8));
+    EMIT(ctx,
+        ldr64_offset(31, 30, 240),
+        ldp64_postindex(31, 0, 1, 256)
+    );
+    if (ea != 0xff)
+        RA_FreeARMRegister(ctx, ea);
+
+    /* a bus error from the operand: the new SR (x18 is already the handler's address) */
+    EMIT(ctx,
+        cbz(ret, 2),
+        bfxil(sr, ret, 0, 16)
+    );
+    *priv_exit = b_cc(A64_CC_AL, ctx->tc_CodePtr - priv_exit);
+    RA_FreeARMRegister(ctx, ret);
+
+    /* every path ends the block here: x18 is the next instruction's address, the privilege violation's handler
+       or the bus error's, and _pc_rel is 0 */
+    ctx->tc_M68kCodePtr += ext_count;
+    EMIT(ctx, INSN_TO_LE(0xffffffff));
+    return 1;
+}
+#endif
+
 uint32_t EMIT_lineF(struct TranslatorContext *ctx)
 {
     uint32_t insn_consumed = 1;
     uint16_t opcode = cache_read_16(ICACHE, (uintptr_t)&ctx->tc_M68kCodePtr[0]);
     uint16_t opcode2 = cache_read_16(ICACHE, (uintptr_t)&ctx->tc_M68kCodePtr[1]);
+#ifdef PSMAC
+    {   extern int psmac_mmu_full;
+        if (unlikely(psmac_mmu_full) && (opcode & 0xffc0) == 0xf000 && (opcode2 >> 13) <= 4 &&
+            ((opcode2 >> 13) != 1 || ((opcode2 >> 10) & 7) == 0 || ((opcode2 >> 10) & 7) == 1 || ((opcode2 >> 10) & 7) == 4 || ((opcode2 >> 10) & 7) == 6))
+            return EMIT_PMMU_full(ctx, opcode, opcode2);
+    }
+#endif
 
     /* Check destination coprocessor - if it is FPU go to separate function */
     if (globals.fpu_disable == false && (opcode & 0x0e00) == 0x0200)

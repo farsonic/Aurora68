@@ -935,6 +935,68 @@ void mmu_low4g_set(const uint64_t in[4])
     spinlock_release(&mmu_lock);
 }
 
+/*
+    Aurora68, mac.mmu=full (psmac/psmac_mmu.c, docs/23-mmu.md, phase 2): one 4 KiB page of the installed
+    low-4G subtree at a time, for the soft TLB that maps the 68k's pages on their first use and drops them
+    when the 68k flushes its ATC. phys == ~0 removes the page. A page that was not mapped needs no TLB
+    maintenance (an entry that faults is never cached); one that was is invalidated by its address alone
+    (TLBI VAAE1IS, every ASID) when tlbi is set, or by the caller's mmu_low4g_flush() after a batch. Nothing
+    is merged into blocks or tidied away: the tables of a set live as long as the set. Returns 1 when a
+    valid entry was replaced or removed.
+*/
+int mmu_low4g_page(uintptr_t virt, uintptr_t phys, uint32_t attr_low, int tlbi)
+{
+    int was = 0;
+    virt &= ~(SZ_4K - 1);
+    spinlock_acquire(&mmu_lock);
+    uint64_t *e1 = &mmu_root(virt)->mp_entries[L1_IDX(virt)];
+    if (phys == ~(uintptr_t)0 && (*e1 & DESC_TYPE_MASK) != DESC_TABLE && !(*e1 & 1)) {
+        spinlock_release(&mmu_lock);
+        return 0;
+    }
+    struct mmu_page *l2 = ensure_table(e1, 1, virt);
+    uint64_t *e2 = &l2->mp_entries[L2_IDX(virt)];
+    if (phys == ~(uintptr_t)0 && !(*e2 & 1)) {
+        spinlock_release(&mmu_lock);
+        return 0;
+    }
+    struct mmu_page *l3 = ensure_table(e2, 2, virt);
+    uint64_t *e3 = &l3->mp_entries[L3_IDX(virt)];
+    uint64_t nd = (phys == ~(uintptr_t)0) ? 0 : ((phys & DESC_OA_MASK) | make_attrs(attr_low, 0) | DESC_PAGE);
+    was = (*e3 & 1) != 0;
+    if (was && *e3 != nd) {
+        *e3 = 0;                                   /* break ... */
+        if (tlbi)
+            __asm__ volatile(
+                "dsb ishst              \n"
+                "tlbi vaae1is, %0       \n"
+                "dsb ish                \n"
+                "isb                    \n" : : "r"((virt >> 12) & 0xfffffffffffull) : "memory");
+    }
+    *e3 = nd;                                      /* ... before make */
+    mmu_publish();
+    spinlock_release(&mmu_lock);
+    return was;
+}
+
+/* the L3 descriptor of a 4 KiB page of the installed subtree (0 if none: not mapped, or inside a block) */
+uint64_t mmu_low4g_entry(uintptr_t virt)
+{
+    uint64_t d = mmu_root(virt)->mp_entries[L1_IDX(virt)];
+    if ((d & DESC_TYPE_MASK) != DESC_TABLE) return 0;
+    d = desc_to_table(d)->mp_entries[L2_IDX(virt)];
+    if ((d & DESC_TYPE_MASK) != DESC_TABLE) return 0;
+    return desc_to_table(d)->mp_entries[L3_IDX(virt)];
+}
+
+/* the whole-TLB flush that ends a batch of mmu_low4g_page(..., 0) calls */
+void mmu_low4g_flush(void)
+{
+    spinlock_acquire(&mmu_lock);
+    mmu_tlb_flush_all();
+    spinlock_release(&mmu_lock);
+}
+
 /* Re-create, in the installed subtree, every mapping of the subtree described by from[] (used to
    give a fresh Mac map the Pi peripheral windows that live inside the first 4 GiB). */
 void mmu_low4g_clone(const uint64_t from[4])

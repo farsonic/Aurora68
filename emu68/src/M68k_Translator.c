@@ -53,6 +53,7 @@ void psmac_mmu_jit_begin(void);
 void psmac_mmu_jit_insn(struct TranslatorContext *ctx, uint16_t *pc);
 uint32_t psmac_mmu_jit_reserve_words(uint32_t depth);
 uint32_t psmac_mmu_jit_finish(void *dst);
+int psmac_mmu_jit_fetch(struct TranslatorContext *ctx, uint16_t *in_code, uint16_t *block_start, int insn_count);
 #endif
 
 void EMIT_GetOffsetPC(struct TranslatorContext *ctx, int8_t *offset)
@@ -388,6 +389,17 @@ static inline uintptr_t M68K_Translate(uint16_t *M68kCodePtr, uint32_t *arm_star
         uint16_t * const in_code = ctx.tc_M68kCodePtr;
         uint32_t * const out_code = ctx.tc_CodePtr;
 #ifdef PSMAC
+        /* Aurora68, mac.mmu=full (psmac/psmac_mmufault.c): a block stays inside one 4 KiB page, and an instruction
+           whose fetch the guest's tables do not allow ends it, or becomes the bus error the 68030 would take */
+        if (unlikely(psmac_mmu_full)) {
+            int f = psmac_mmu_jit_fetch(&ctx, in_code, orig_m68kcodeptr, insn_count);
+            if (f == 1)
+                break;
+            if (f == 2) {
+                insn_count++;
+                break;
+            }
+        }
         if (insn_count && in_code == smc_stop)
             break;
         if ((in_code[0] & 0xf1ff) == 0x41fa || in_code[0] == 0x487a) {
