@@ -565,7 +565,23 @@ int psmac_mmu_fault(uint64_t *ctx, uint64_t elr, uint64_t esr, uint64_t far)
     if ((insn & 0x3a000000u) == 0x38000000u) size = 1u << (insn >> 30);      /* LDR/STR, any addressing */
     struct bframe b = { sr_int, e->pc, la, write, (int)size, user ? 1 : 5, 0 };
     uint32_t f, vec; uint16_t ssw;
-    if (!push_frame(ssp, &b, &f, &vec, &ssw)) return miss(la, elr, "the supervisor stack or the vectors are not mapped (double bus fault)");
+    if (!push_frame(ssp, &b, &f, &vec, &ssw)) {
+        /* The bus error's own frame cannot be stacked (or its vector read): a 68030 halts here, a double bus fault, as in
+           the guard's case above. Until 27 November 2026 this was a "not delivered" line and the access was emulated,
+           $BAD0BAD0 for a read and a write dropped: A/UX's kernel on the MAME SE, its stack run into an unmapped page,
+           went on with those values, used one as a pointer, and core 0 died in the abort handler with the console lock
+           held, so the log stopped mid-line (docs/23 section 15). Halting keeps the heartbeat and the diagnostics. */
+        not_delivered++;
+        kprintf("[PSMAC:MMU] double bus fault: %s %08x by the instruction at %08x refused (MMUSR %04x), and its bus error's frame "
+                "could not be stacked at %08x (SR %04x, VBR %08x): the 68030 halts\n", write ? "write" : "read", la, e->pc, mmusr,
+                ssp, sr_int, __m68k_state->VBR);
+        void psmac_mmu_debug_walk(uint32_t la, int fc);
+        psmac_mmu_debug_walk(la, user ? 1 : 5);
+        if ((ssp & ~0xfffu) != (la & ~0xfffu)) psmac_mmu_debug_walk(ssp - 8, 5);
+        uint64_t halt = (uint64_t)(uintptr_t)psmac_mmu_halt;
+        __asm__ volatile("msr ELR_EL1, %0" :: "r"(halt));
+        return 1;
+    }
     {   /* the same address faulting again and again: what the tables say (a diagnostic, docs/23 section 11) */
         static uint32_t last_la, same;
         if (la == last_la) same++; else { last_la = la; same = 0; }

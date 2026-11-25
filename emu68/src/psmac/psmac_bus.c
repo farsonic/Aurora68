@@ -167,6 +167,11 @@ void psmac_gpio_init(void); uint32_t psmac_gpio_read(uint32_t, int); void psmac_
 unsigned psmac_gpio_ipl(void); void psmac_gpio_pulse_reset(void); uint32_t psmac_gpio_timeouts(void); int psmac_gpio_reset_asserted(void);
 static uint32_t peek_addr, peek_len;
 static uint32_t pctrail_at;             /* mac.pctrail=N: dump the 68k PC ring at the Nth heartbeat (a loop that is not a stall) */
+/* mac.ramdump=BEAT[+EVERY[-LAST]],MB,PATH (the testbed, semihosting): the Mac's physical memory, its first MB megabytes,
+   written to the host file PATH at heartbeat BEAT and every EVERY beats after, until beat LAST (the same file again, or one
+   per beat when PATH has a '#', which becomes the beat's number): a guest that runs its own
+   code from memory (A/UX's standalone programs, docs/23 section 15) can then be disassembled on the host */
+static uint32_t ramdump_at, ramdump_every, ramdump_last, ramdump_mb; static char ramdump_path[160];
 static uint32_t pcwatch;                /* mac.pcwatch=HEX: dump the ring the first time the sampled PC lands in that 256-byte page */
 uint32_t psmac_dbf_slow = 1;            /* mac.dbfslow=N: device reads per turn of a self-looping dbf (M68k_LINE5.c) */    /* mac.peek=: Mac memory dumped at each heartbeat (debugging) */
 static int64_t sh_req = -1, sh_rep = -1;
@@ -319,6 +324,17 @@ static void psmac_read_options(void)
     if ((tok = find_token(args, "mac.pcwatch="))) { tok += 12; uint32_t a = 0; while (1) { char c = *tok; uint32_t d; if (c >= '0' && c <= '9') d = c - '0'; else if (c >= 'a' && c <= 'f') d = c - 'a' + 10; else if (c >= 'A' && c <= 'F') d = c - 'A' + 10; else if (c == 'x' || c == 'X') { tok++; continue; } else break; a = a * 16 + d; tok++; } pcwatch = a; }
     if ((tok = find_token(args, "mac.watchtraps="))) { extern int psmac_watch_traps; psmac_watch_traps = tok[15] == '1'; }   /* report odd stores into the trap tables (psmac_mmu.c) */
     if ((tok = find_token(args, "mac.pctrail="))) { tok += 12; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); pctrail_at = n; }
+    if ((tok = find_token(args, "mac.ramdump="))) {     /* mac.ramdump=BEAT[+EVERY[-LAST]],MB,PATH (above) */
+        tok += 12; uint32_t n = 0, e = 0, mb = 0; int k = 0;
+        while (*tok >= '0' && *tok <= '9') n = n * 10 + (uint32_t)(*tok++ - '0');
+        if (*tok == '+') { tok++; while (*tok >= '0' && *tok <= '9') e = e * 10 + (uint32_t)(*tok++ - '0'); }
+        if (*tok == '-') { tok++; uint32_t l = 0; while (*tok >= '0' && *tok <= '9') l = l * 10 + (uint32_t)(*tok++ - '0'); ramdump_last = l; }
+        if (*tok == ',') { tok++; while (*tok >= '0' && *tok <= '9') mb = mb * 10 + (uint32_t)(*tok++ - '0'); }
+        if (*tok == ',') { tok++; while (*tok && *tok != ' ' && k < (int)sizeof ramdump_path - 1) ramdump_path[k++] = *tok++; }
+        ramdump_path[k] = 0;
+        if (n && mb && k) { ramdump_at = n; ramdump_every = e; ramdump_mb = mb; }
+        else kprintf("[PSMAC] mac.ramdump=BEAT[+EVERY[-LAST]],MB,PATH: not understood\n");
+    }
     if ((tok = find_token(args, "mac.peek="))) {        /* mac.peek=HEXADDR,LEN: dump Mac memory at each heartbeat (debugging) */
         tok += 9; uint32_t a = 0, n = 0;
         while (1) { char c = *tok; uint32_t d; if (c >= '0' && c <= '9') d = c - '0'; else if (c >= 'a' && c <= 'f') d = c - 'a' + 10; else if (c >= 'A' && c <= 'F') d = c - 'A' + 10; else if (c == 'x' || c == 'X') { tok++; continue; } else break; a = a * 16 + d; tok++; }
@@ -790,7 +806,7 @@ void psmac_service_core(void)
                 struct M68KState *m = __m68k_state;
                 static int jit_steady;
                 kprintf("[PSMAC]   D0-7 %08x %08x %08x %08x %08x %08x %08x %08x\n", BE32(m->D[0].u32), BE32(m->D[1].u32), BE32(m->D[2].u32), BE32(m->D[3].u32), BE32(m->D[4].u32), BE32(m->D[5].u32), BE32(m->D[6].u32), BE32(m->D[7].u32));
-                kprintf("[PSMAC]   A0-7 %08x %08x %08x %08x %08x %08x %08x %08x ISP %08x\n", BE32(m->A[0].u32), BE32(m->A[1].u32), BE32(m->A[2].u32), BE32(m->A[3].u32), BE32(m->A[4].u32), BE32(m->A[5].u32), BE32(m->A[6].u32), BE32(m->A[7].u32), BE32(m->ISP.u32));
+                kprintf("[PSMAC]   A0-7 %08x %08x %08x %08x %08x %08x %08x %08x ISP %08x USP %08x VBR %08x\n", BE32(m->A[0].u32), BE32(m->A[1].u32), BE32(m->A[2].u32), BE32(m->A[3].u32), BE32(m->A[4].u32), BE32(m->A[5].u32), BE32(m->A[6].u32), BE32(m->A[7].u32), BE32(m->ISP.u32), BE32(m->USP.u32), m->VBR);
                 {   /* the JIT's own counters (22 November 2026, Photoshop's slow start): instructions run and
                        blocks translated in the last 5 s; many translations a second is a cache thrashing,
                        few instructions with no translations is slow code (the FPU's, say) */
@@ -912,7 +928,23 @@ void psmac_service_core(void)
                 kprintf("\n");
             }
             if (xfer_count == hb_last && !stall_dumped) { stall_dumped = 1; pcring_dump(); }
-            { static uint32_t hb_n; if (++hb_n == pctrail_at) pcring_dump(); }
+            { static uint32_t hb_n; if (++hb_n == pctrail_at) pcring_dump();
+              if (ramdump_at && (hb_n == ramdump_at || (ramdump_every && hb_n > ramdump_at && (!ramdump_last || hb_n <= ramdump_last) && (hb_n - ramdump_at) % ramdump_every == 0))) {
+                  uint32_t len = ramdump_mb << 20; if (len > ram_size) len = ram_size;
+                  char pth[176]; int j = 0;               /* a '#' in PATH becomes the beat's number: one file per dump */
+                  for (const char *q = ramdump_path; *q && j < (int)sizeof pth - 12; q++) {
+                      if (*q != '#') { pth[j++] = *q; continue; }
+                      char nb[12]; int k = 0; uint32_t v = hb_n; do { nb[k++] = (char)('0' + v % 10); v /= 10; } while (v);
+                      while (k) pth[j++] = nb[--k];
+                  }
+                  pth[j] = 0;
+                  int64_t fd = use_semihost ? sh_open(pth, 5) : -1;      /* "wb" */
+                  if (fd >= 0) {
+                      int okw = sh_write(fd, (const void *)(KERNEL_ALIAS + ram_phys), len);
+                      uint64_t pc1[1] = { shw((uint64_t)fd) }; semihost(0x02, pc1);
+                      kprintf("[PSMAC] mac.ramdump: %u KB of the Mac's memory written to %s at beat %u%s\n", len >> 10, pth, hb_n, okw ? "" : " (the write failed)");
+                  } else kprintf("[PSMAC] mac.ramdump: cannot open %s\n", pth);
+              } }
             psmac_mbox_heartbeat();
             if (no_declrom) kprintf("[PSMAC] *** NO DECLARATION ROM in the container: slot 9 is empty (no Pi screen, PiDisk or input) ***\n");
             hb_last = xfer_count; next_hb = cnt_now() + hb_period;
