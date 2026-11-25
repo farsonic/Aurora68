@@ -22,7 +22,9 @@
  *
  * mac.mmu=full (25 November 2026, experimental, docs/23-mmu.md): an access by translated code to a logical
  * page the guest's tables mark invalid becomes a 68030 bus error (psmac_mmufault.c) instead of the shim's
- * $BAD0BAD0 read and ignored write. Without the option nothing here behaves differently.
+ * $BAD0BAD0 read and ignored write. Since phase 2 (26 November, docs/23 section 11) the option replaces the
+ * whole-table shadowing with the complete 68030 PMMU and a soft TLB, at the end of this file; System 7.1's
+ * Virtual Memory runs on it. Without the option nothing here behaves differently.
  */
 #include <stdint.h>
 #include <stdbool.h>
