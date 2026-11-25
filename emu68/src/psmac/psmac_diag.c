@@ -90,8 +90,8 @@ const struct pdg_opt pdg_opts[] = {
       "A test sound at start: N seconds of 440 Hz left and 660 Hz right; card, the Aurora68 Sound extension's test through the card." },
 
     /* ---- Storage ---- */
-    { "mac.boot", PDG_G_STORAGE, 0, PDG_SE | PDG_PLUS, "auto|image|scsi", 0,
-      "The startup disk: auto (SCSI as parameter RAM says, then the card's image), image (the card's image first), or scsi." },
+    { "mac.boot", PDG_G_STORAGE, 0, PDG_COMPACT | PDG_SOLO, "auto|image|scsi|cd", 0,
+      "The startup disk: auto (SCSI as parameter RAM says, then the card's image), image (the card's image first), scsi, or cd (the virtual CD-ROM, scsi.cd=, until the Finder runs)." },
     { "mac.card", PDG_G_STORAGE, 0, A, "off|ro", 0, "The Pi's own SD card: ro reads only (nothing saved), off leaves it alone." },
     { "mac.container", PDG_G_STORAGE, 0, A, "*", "aurora68.cpio", "The container's name on the card, when it is not aurora68.cpio." },
     { "mac.image", PDG_G_STORAGE, 0, A, "*", "System.hda,Apps.img", "The disk images on the card, by name (comma between them); off for none." },
@@ -102,6 +102,15 @@ const struct pdg_opt pdg_opts[] = {
     { "mac.sescsi", PDG_G_STORAGE, 0, PDG_SE, "auto|real|empty", 0,
       "The SE's SCSI bus: auto looks before the Mac starts; real always the SE's chip; empty answers as a bus with nothing on it." },
     { "mac.sescsiwait", PDG_G_STORAGE, 0, PDG_SE, "#", "250", "The SE's SCSI selection timeout in milliseconds, 1 to 1000 (default 250)." },
+    { "scsi.cd", PDG_G_STORAGE, 0, PDG_COMPACT | PDG_SOLO, "*", "AUX30.iso:3",
+      "A virtual SCSI CD-ROM drive (an AppleCD 300) at SCSI ID 3, or the ID after the colon, holding a CD image file in the card's root (.iso, .cdr, .toast; empty: no CD)." },
+    { "scsi.disk", PDG_G_STORAGE, 0, PDG_COMPACT | PDG_SOLO, "*", "AUX.hda:4",
+      "A virtual SCSI hard disk at the ID after the colon (0 to 6, not a real device's), from an image file in the card's root, written back; several with commas." },
+    { "scsi.cdblock", PDG_G_STORAGE, 0, PDG_COMPACT | PDG_SOLO, "512|2048", 0,
+      "The CD-ROM drive's block size at start: 512 (the default, as Apple's drives, so a CD can start the Mac) or 2048." },
+    { "scsi.cdvendor", PDG_G_STORAGE, 0, PDG_COMPACT | PDG_SOLO, "*", "SONY", "The CD-ROM drive's vendor name in INQUIRY (SONY by default)." },
+    { "scsi.cdproduct", PDG_G_STORAGE, 0, PDG_COMPACT | PDG_SOLO, "*", "CD-ROM CDU-8003A", "The CD-ROM drive's product name in INQUIRY (CD-ROM CDU-8003A, the AppleCD 300, by default)." },
+    { "scsi.probe", PDG_G_STORAGE, 0, PDG_COMPACT, "off", 0, "off: a virtual SCSI ID is not first tried on the real bus (by default a real device that answers it wins)." },
     { "mac.cardrom", PDG_G_STORAGE, 0, A, "off", 0, "off: the declaration ROMs in the card's root are not offered, only the container's." },
 
     /* ---- Network ---- */

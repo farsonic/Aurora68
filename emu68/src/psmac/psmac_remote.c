@@ -43,6 +43,7 @@
  */
 #include <stdint.h>
 #include "support.h"
+#include "psmac_scsidev.h"
 #include "psmac.h"
 #include "psmb.h"
 #include "../alice/alice_psmac.h"
@@ -1471,6 +1472,34 @@ static void handle(int c)
         return;
     }
     if (post && !__builtin_strcmp(path, "/restart")) { control(h, query(q, "how", v, sizeof v)); return; }
+    /* the virtual SCSI devices (psmac_scsidev.c, docs/08 item 148): GET /scsi lists them; POST /scsi/cd?name=FILE[&id=N]
+       puts another CD in the drive (a file in the card's root, or a host file in the testbed), ?eject=1 takes it out; &force=1
+       even while the Mac holds it (PREVENT MEDIUM REMOVAL: a real drive's paperclip hole) */
+    if (get && !__builtin_strcmp(path, "/scsi")) { static char b[2048]; psmac_scsidev_json(b, sizeof b); respond(h, 200, "OK", "application/json", b); return; }
+    if (post && !__builtin_strcmp(path, "/scsi/cd")) {
+        static char nm[400]; char id[8]; nm[0] = 0;              /* a testbed's host path, %2F for every '/' */
+        int ej = query(q, "eject", id, sizeof id) && id[0] == '1';
+        if (!ej && !query(q, "name", nm, sizeof nm)) { respond_json_error(h, 400, "Bad Request", "name=FILE or eject=1"); return; }
+        { unsigned i = 0, o = 0;                                  /* %XX in the name */
+          for (; nm[i]; i++) {
+              int hi = -1, lo = -1;
+              if (nm[i] == '%' && nm[i + 1] && nm[i + 2]) {
+                  char a = nm[i + 1], b = nm[i + 2];
+                  hi = a >= '0' && a <= '9' ? a - '0' : (a | 0x20) >= 'a' && (a | 0x20) <= 'f' ? (a | 0x20) - 'a' + 10 : -1;
+                  lo = b >= '0' && b <= '9' ? b - '0' : (b | 0x20) >= 'a' && (b | 0x20) <= 'f' ? (b | 0x20) - 'a' + 10 : -1;
+              }
+              if (hi >= 0 && lo >= 0) { nm[o++] = (char)(hi << 4 | lo); i += 2; } else nm[o++] = nm[i];
+          }
+          nm[o] = 0; }
+        int unit = query(q, "id", id, sizeof id) && id[0] >= '0' && id[0] <= '6' ? id[0] - '0' : -1;
+        char fo[4]; int force = query(q, "force", fo, sizeof fo) && fo[0] == '1';
+        int e = psmac_scsidev_cd_request(ej ? "" : nm, unit, force);
+        if (e == -1) { respond_json_error(h, 404, "Not Found", "no virtual CD-ROM drive (scsi.cd=NAME[:ID] in cmdline.txt)"); return; }
+        if (e == -2) { respond_json_error(h, 409, "Conflict", "the Mac holds the CD (PREVENT MEDIUM REMOVAL): put it away on the Mac first, or force=1"); return; }
+        if (e < 0) { respond_json_error(h, 404, "Not Found", "the file cannot be opened"); return; }
+        static char b[2048]; psmac_scsidev_json(b, sizeof b); respond(h, 200, "OK", "application/json", b);
+        return;
+    }
     if (get && !__builtin_strcmp(path, "/files/progress")) {        /* beside a transfer, on another connection (psmac_files.c) */
         static char b[2000]; psmac_files_progress_json(b, sizeof b);
         respond(h, 200, "OK", "application/json", b);
@@ -1485,7 +1514,7 @@ static void handle(int c)
         respond_json_error(h, code, code == 404 ? "Not Found" : code == 411 ? "Length Required" : code == 503 ? "Service Unavailable" : "Bad Request", msg);
         return;
     }
-    if (get || post) { respond_json_error(h, 404, "Not Found", "GET /, /screen.png, /screenshot, /windows, /state, /log, /files/..., /apps; POST /input, /restart"); return; }
+    if (get || post) { respond_json_error(h, 404, "Not Found", "GET /, /screen.png, /screenshot, /windows, /state, /log, /files/..., /apps, /scsi; POST /input, /restart, /scsi/cd"); return; }
     respond_json_error(h, 405, "Method Not Allowed", "GET, POST, or PUT /files/data");
 }
 

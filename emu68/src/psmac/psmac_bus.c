@@ -226,14 +226,16 @@ int64_t psmac_sh_seek(int64_t fd, uint64_t pos) { uint64_t p[2] = { shw((uint64_
 int64_t psmac_sh_flen(int64_t fd) { uint64_t p[1] = { shw((uint64_t)fd) }; return semihost(0x0C, p); }
 int     psmac_sh_available(void) { return (use_semihost && !transport_dead) || sh_files; }
 uint32_t psmac_mac_ram_mb(void) { return ram_size >> 20; }
-/* value of "key=" in the boot arguments, copied into a static buffer (space-terminated); NULL if absent */
-const char *psmac_option(const char *key)
+/* value of "key=" in the boot arguments, copied into a static buffer (space-terminated); NULL if absent.
+   psmac_option_nth: the nth (from 0) of a key given more than once (scsi.disk=, psmac_scsidev.c) */
+const char *psmac_option_nth(const char *key, int nth)
 {
     static char val[8][128]; static int slot;
     const char *args = psmac_bootargs();
     size_t kl = strlen(key);
     for (const char *s = args; s && *s; s++) {
         if ((s == args || (unsigned char)s[-1] <= ' ') && strncmp(s, key, kl) == 0 && s[kl] == '=') {
+            if (nth-- > 0) continue;
             char *out = val[slot = (slot + 1) & 7]; int n = 0;
             /* a value ends at any white space or control character (23 November 2026): a cmdline.txt with Windows line
                ends can hand the kernel a CR after its last word, and pc.disk0=freedos.img as the last word would have
@@ -244,6 +246,7 @@ const char *psmac_option(const char *key)
     }
     return NULL;
 }
+const char *psmac_option(const char *key) { return psmac_option_nth(key, 0); }
 
 static int semihost_init(void)
 {

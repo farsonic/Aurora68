@@ -195,6 +195,8 @@ on the Mac, "Files and applications", below),
 | `GET /screenshot?window=ID\|title=TEXT\|screen=N\|rect=l,t,r,b[&content=1][&scale=2]` | a PNG of one window, one screen or a rectangle of the desktop, composed from the screens it is on; `scale` here doubles ("Windows", below) |
 | `GET /state` | JSON (below) |
 | `POST /restart[?how=mac\|nmi\|pi\|recovery]` | restart the Mac (default), the programmer's interrupt, reboot the Pi, or reboot it into Aurora68 Setup and Recovery (recovery.txt, docs/08 item 106) |
+| `GET /scsi` | the virtual SCSI devices (`scsi.cd=`, `scsi.disk=`; docs/08 item 148): ID, type, file, size, block size, the CD drive's state, counts |
+| `POST /scsi/cd?name=FILE[&id=N][&force=1]`, `POST /scsi/cd?eject=1[&id=N][&force=1]` | another CD in the virtual CD-ROM drive (a file in the card's root; in the testbed a host path), or none; 409 while the Mac holds the CD (PREVENT MEDIUM REMOVAL) unless `force=1`. `tools/aurora68.py cd NAME`, `cd --eject`, `scsi` |
 | `GET /files/list`, `/files/info`, `/files/data`, `PUT /files/data`, `POST /files/mkdir`, `/files/delete`, `/files/rename`, `GET /apps`, `POST /apps/open`, `/apps/quit` | files and programs on the Mac, through the Aurora68 Agent ("Files and applications", below) |
 
 Events: `{"type": "move", "x": X, "y": Y}`; `"down"` and `"up"` (x, y optional); `"click"` with

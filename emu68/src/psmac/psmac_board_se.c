@@ -29,6 +29,7 @@
 #include "psmac.h"
 #include "psmb.h"
 #include "psmac_pram_default.h"
+#include "psmac_scsidev.h"
 
 int psmac_board_se;                         /* mac.board=se (also set by mac.board=solo, psmac_board_solo.c, and mac.board=plus) */
 extern int psmac_board_solo;
@@ -107,6 +108,7 @@ static void rbv_recalc(void)
     if (slot_line() && (rbv_regs[0x12] & 0x01)) ifr |= 0x02;          /* any slot interrupt, gated by the slot enable register */
     else ifr &= ~0x02;
     if (psmac_board_solo) { if (psmac_solo_scsi_irq()) ifr |= 0x08; else ifr &= ~0x08; }   /* the 5380's interrupt, level-sensitive */
+    else if (psmac_scsidev_irq()) ifr |= 0x08;   /* a virtual SCSI device's connection, answered here (psmac_scsidev.c): its 5380's line, as the solo board's */
     else ifr &= ~0x08;
     /* On the SE the 5380's interrupt never reaches this file (port B bit 6 keeps it off the SE's
        bus, above), so the flag is 0 whatever the ROM wrote. Until 20 November 2026 it kept the 1
@@ -669,11 +671,13 @@ static void rtc_probe(void)
    the SE is on in any case. mac.sefloat=1 (testbed) makes the real chip's registers read as on a
    floating bus: every line asserted (registers 0, 4, 5 and 6), and in the ICR arbitration always in
    progress and always lost (bits 6 and 5), which sends the ROM round the retry at $408076FA that has
-   no timeout: MAME's bus is clean, and this is the likeliest way a floating one gives the hang. */
+   no timeout: MAME's bus is clean, and this is the likeliest way a floating one gives the hang.
+   Since 25 November 2026 the empty bus is psmac_scsidev.c's 5380 (the solo board's, with no target), and the
+   virtual SCSI devices (scsi.cd=, scsi.disk=, docs/08 item 148) sit on it, or beside the real devices on a real
+   bus: a selection of a virtual ID is answered there, everything else goes to the SE's chip as before. */
 static int scsi_mode = 0;                       /* mac.sescsi: 0 auto, 1 real, 2 empty */
 static int scsi_wait_ms = 250;                  /* mac.sescsiwait: the SCSI Manager's selection timeout on the SE's bus */
 static int scsi_empty, scsi_float_sim, scsi_probed;
-static struct { uint8_t odr, icr, mr, tcr; int aip, irq; uint32_t selections; } se5380;
 static uint32_t scsi_float_fix(uint32_t reg, uint32_t r)
 {
     if (!scsi_float_sim) return r;
@@ -683,33 +687,18 @@ static uint32_t scsi_float_fix(uint32_t reg, uint32_t r)
     if (reg == 1) return r | 0x60;                 /* the bus seen free a moment ("arbitration in progress"), then lost to a floating SEL */
     return r;
 }
-static uint32_t scsi_empty_read(uint32_t reg)
+/* the SE's 5380 for psmac_scsidev.c: what it gives back to the real chip after a virtual device's connection */
+static uint32_t scsi_wire_rd(uint32_t reg) { return scsi_float_fix(reg & 7, psmac_wire_read(SE_SCSI_RD + ((reg & 7) << 4), 1) & 0xff); }
+static void scsi_wire_wr(uint32_t reg, uint8_t v) { psmac_wire_write(SE_SCSI_WR + ((reg & 7) << 4), 1, v, 0); }
+static const struct psmac_scsi_wire se_scsi_wire = { scsi_wire_rd, scsi_wire_wr };
+/* the level the JIT sees, after an access answered by psmac_scsidev.c changed its 5380's interrupt line */
+static void scsi_level(void)
 {
-    switch (reg) {
-    case 0: case 6: return (se5380.icr & 0x01) || (se5380.mr & 0x01) ? se5380.odr : 0;   /* the data lines: only what we drive */
-    case 1: return (se5380.icr & 0x9f) | (se5380.aip ? 0x40 : 0);                       /* never "lost arbitration" */
-    case 2: return se5380.mr;
-    case 3: return se5380.tcr;
-    case 4: return (se5380.icr & 0x80 ? 0x80 : 0) | (se5380.icr & 0x08 ? 0x40 : 0) | (se5380.icr & 0x04 ? 0x02 : 0);   /* RST, BSY, SEL: ours alone */
-    case 5: return (se5380.irq ? 0x10 : 0) | (se5380.icr & 0x02 ? 0x02 : 0) | (se5380.icr & 0x10 ? 0x01 : 0);         /* no REQ, no phase match */
-    case 7: se5380.irq = 0; return 0;
-    }
-    return 0;
-}
-static void scsi_empty_write(uint32_t reg, uint8_t d)
-{
-    switch (reg) {
-    case 0: se5380.odr = d; break;
-    case 1: {
-        uint8_t was = se5380.icr;
-        se5380.icr = d & 0x9f;
-        if ((d & 0x80) && !(was & 0x80)) se5380.irq = 1;                               /* a bus reset interrupts */
-        if ((d & 0x04) && !(was & 0x04)) se5380.selections++;
-        break; }
-    case 2: se5380.mr = d; if (d & 0x01) se5380.aip = 1; break;                        /* the bus is free at once */
-    case 3: se5380.tcr = d & 0x0f; break;
-    default: break;                                                                     /* the DMA starts: nothing will ever ask for a byte */
-    }
+    static int last;
+    int now = psmac_scsidev_irq();
+    if (now == last) return;
+    last = now;
+    level_lock(); store_level(se_wire_ipl); level_unlock();
 }
 /* the probe: 1 if the bus floats (BSY or SEL asserted at every read), with the last two readings */
 static int scsi_bus_floats(uint8_t *csbs, uint8_t *bas)
@@ -728,8 +717,8 @@ static int scsi_bus_floats(uint8_t *csbs, uint8_t *bas)
 }
 static void scsi_probe(void)
 {
-    if (scsi_mode == 1) { if (!scsi_probed) kprintf("[PSMAC:SE] SCSI: the SE's 5380 as it is (mac.sescsi=real)\n"); scsi_probed = 1; scsi_empty = 0; return; }
-    if (scsi_mode == 2) { if (!scsi_probed) kprintf("[PSMAC:SE] SCSI: answered here as an empty bus (mac.sescsi=empty); the SE's 5380 is not used\n"); scsi_probed = 1; scsi_empty = 1; return; }
+    if (scsi_mode == 1) { if (!scsi_probed) kprintf("[PSMAC:SE] SCSI: the SE's 5380 as it is (mac.sescsi=real)\n"); scsi_probed = 1; scsi_empty = 0; psmac_scsidev_bus_empty(0); return; }
+    if (scsi_mode == 2) { if (!scsi_probed) kprintf("[PSMAC:SE] SCSI: answered here as an empty bus (mac.sescsi=empty); the SE's 5380 is not used\n"); scsi_probed = 1; scsi_empty = 1; psmac_scsidev_bus_empty(1); return; }
     uint8_t csbs = 0, bas = 0;
     int floats = scsi_bus_floats(&csbs, &bas);
     if (scsi_probed && floats == scsi_empty) return;
@@ -741,7 +730,7 @@ static void scsi_probe(void)
         kprintf("[PSMAC:SE] SCSI: the SE's SCSI bus is terminated and free (bus status $%02x, bus and status $%02x): the SE's 5380 is used%s\n",
                 csbs, bas, scsi_probed ? " again" : "");
     scsi_probed = 1; scsi_empty = floats;
-    se5380.odr = se5380.icr = se5380.mr = se5380.tcr = 0; se5380.aip = se5380.irq = 0;
+    psmac_scsidev_bus_empty(scsi_empty);
 }
 
 /* The Plus's pseudo-DMA (22 November 2026, psmac_board_plus.c): the SE's BBU holds DTACK on the DMA
@@ -940,12 +929,19 @@ int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t 
         /* the 5380's registers: reg*16 on both */
         uint32_t reg = (off >> 4) & 7;
         { static int first = 1; if (first && write && reg == 1 && (data & 0x04)) { first = 0; psmac_boot_mark(scsi_empty ? "SCSI: first selection (the empty bus answered here)" : "SCSI: first selection on the SE's 5380"); } }
-        if (scsi_empty) {
-            if (write) { trace("SCSI", 1, addr, SE_SCSI_WR + (reg << 4), size, data & 0xff); scsi_empty_write(reg, data & 0xff); local_writes++; }
-            else { r = scsi_empty_read(reg); trace("SCSI", 0, addr, SE_SCSI_RD + (reg << 4), size, r); *val = size == 1 ? r : r << 8 | r; local_reads++; }
+        /* the empty bus, or a virtual SCSI device's connection: answered by psmac_scsidev.c, which also sees every write
+           of the Mac's to the real chip, to know when a selection is for one of its IDs */
+        if (write) {
+            trace("SCSI", 1, addr, SE_SCSI_WR + (reg << 4), size, data & 0xff);
+            if (psmac_scsidev_bus_write(reg, data & 0xff)) { local_writes++; scsi_level(); return 1; }
+            psmac_wire_write(SE_SCSI_WR + (reg << 4), 1, data & 0xff, posted);
             return 1;
         }
-        if (write) { trace("SCSI", 1, addr, SE_SCSI_WR + (reg << 4), size, data & 0xff); psmac_wire_write(SE_SCSI_WR + (reg << 4), 1, data & 0xff, posted); return 1; }
+        if (psmac_scsidev_local()) {
+            r = psmac_scsidev_read(reg); trace("SCSI", 0, addr, SE_SCSI_RD + (reg << 4), size, r); *val = size == 1 ? r : r << 8 | r; local_reads++;
+            scsi_level();
+            return 1;
+        }
         r = scsi_float_fix(reg, psmac_wire_read(SE_SCSI_RD + (reg << 4), 1) & 0xff);
         trace("SCSI", 0, addr, SE_SCSI_RD + (reg << 4), size, r);
         *val = size == 1 ? r : r << 8 | r;
@@ -954,7 +950,12 @@ int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t 
     if ((off >= 0x12000 && off < 0x14000) || (off >= 0x6000 && off < 0x8000)) {
         /* pseudo-DMA, plain (0x12000) or with the DRQ handshake (0x6000): the SE has one window
            and its glue does the waiting. A byte per bus cycle; longs and words are several. */
-        if (scsi_empty) { if (!write) *val = size == 1 ? 0xffu : size == 2 ? 0xffffu : 0xffffffffu; return 1; }
+        if (psmac_scsidev_local()) {         /* answered here: the empty bus ($FF, as before), or a virtual device's data */
+            if (write) { for (int i = 0; i < size; i++) psmac_scsidev_pdma_write((data >> (8 * (size - 1 - i))) & 0xff); }
+            else { r = 0; for (int i = 0; i < size; i++) r = r << 8 | psmac_scsidev_pdma_read(); *val = r; }
+            scsi_level();
+            return 1;
+        }
         if (write) {
             trace("SCSI", 1, addr, SE_SCSI_PDMA_WR, size, data);
             for (int i = 0; i < size; i++) {
@@ -1703,6 +1704,8 @@ void psmac_se_start(void)
     if (snd_off) kprintf("[PSMAC:SE] sound: mac.sesound=off, the ASC's samples are not played (the SE's speaker stays as the ROM leaves it)\n");
     else kprintf("[PSMAC:SE] sound: the ASC's samples go to the SE's speaker through its sound buffer at $%06x, 370 a frame, written in halves after the SE's own VBL; "
                  "volume on VIA PA0-2, PB7 low only while a sound plays (mac.sesound=off to leave the speaker alone)\n", snd_base());
+    psmac_scsidev_init(0);                        /* the virtual SCSI devices (scsi.cd=, scsi.disk=): the IDs they answer */
+    psmac_scsidev_bus(&se_scsi_wire, 0);
     scsi_probe();
     rtc_probe();
     spd_service();                                /* the 400K drive's speed for tracks 0-15, before the 68k starts (on the 128K and 512K) */
@@ -1717,8 +1720,8 @@ void psmac_se_after_reset(void)
     via_ddra = via_ddrb = via_ora = via_orb = via_ier = 0;
     if (psmac_board_plus) { level_lock(); psmac_plus_reset(); store_level(se_wire_ipl); level_unlock(); }
     se_overlay_off();
-    if (scsi_mode == 0) scsi_probe();             /* the reset line has reset the 5380 too: a dozen cycles to look again */
-    se5380.odr = se5380.icr = se5380.mr = se5380.tcr = 0; se5380.aip = se5380.irq = 0;
+    psmac_scsidev_reset();                        /* the reset line has reset the 5380 too, and the virtual targets with it */
+    if (scsi_mode == 0) scsi_probe();             /* a dozen cycles to look again */
 }
 /* core 0, just before it releases the 68k: at most a second, so a service core that never comes
    up cannot hold the boot for ever (its absence is logged elsewhere) */
@@ -1850,7 +1853,7 @@ void psmac_se_report(void)
     kprintf("[PSMAC:SE] rows sent %u%s, rows checked %u (%u with %u words wrong, written again%s), rows rewritten blind %u, frames compared %u, local reads %u writes %u, RBV IFR %02x IER %02x SIER %02x | clock chip: %s, %u bytes read (%u of them $FF from the chip), %u written\n",
             rows_sent, se_lines_bad ? " (an address line failed its test at the start)" : "", verify_rows, verify_rows_bad, verify_words_bad, verify_on ? "" : "; check stopped: reads in doubt", blind_rows, frames_marked, local_reads, local_writes, rbv_ifr, rbv_ier, rbv_regs[0x12],
             xp.serve ? "not answering, the board layer answers" : "answering", xp.reads, xp.reads_ff, xp.writes);
-    if (scsi_empty) kprintf("[PSMAC:SE]   SCSI: the empty bus answered here, %u selections (none answered)\n", se5380.selections);
+    if (scsi_empty || psmac_scsidev_configured()) psmac_scsidev_report();   /* the empty bus answered here, the virtual SCSI devices */
     if (psmac_board_plus) {
         psmac_plus_report();
         if (plus_drq_waits || plus_drq_timeouts) kprintf("[PSMAC:PLUS]   SCSI pseudo-DMA: %u bytes waited for DRQ (%u polls beyond the first), %u gave up\n", plus_drq_bytes, plus_drq_waits, plus_drq_timeouts);

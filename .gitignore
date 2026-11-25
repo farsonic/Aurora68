@@ -147,4 +147,10 @@ mac/build/aa2/
 # Aurora68 IO Test (make -C mac iotest, docs/12): its intermediates; the application itself is committed
 mac/build/iotest.elf
 mac/build/it/
+# Aurora68 SCSI Test (make -C mac scsitest, docs/08 item 148): its intermediates; the application itself is committed.
+# The virtual SCSI devices' native test (tools/scsidev_test.c)
+mac/build/scsitest.elf
+mac/build/st/
+mac/build/scsidev_test
+mac/build/scsidev_test.log
 mac/build/wifi_pick_test

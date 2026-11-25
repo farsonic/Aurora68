@@ -141,6 +141,7 @@ is concerned: System 6 and 7 read nothing else.
 | **Disk images on the SD card**: files in the card's root ending in `.img`, `.hda`, `.image`, `.hfv` or `.dsk`, 1 MB or more, up to four (or the ones `mac.image=` names) | **Bare HFS** (`hformat`, Basilisk II and Mini vMac disks) **or Apple-partitioned** (the first `Apple_HFS` partition is used). They appear as disks (PiDisk volumes); one holding a System can be the startup disk (`mac.boot=`, below). | Up to 256 MB, an image is read into the Pi's memory in the background when it fits there (as every image was before); a larger one, or one that does not fit, is **served from the card as the Mac asks**, through a 16 MB cache, so its size is limited only by FAT32 (4 GB) and HFS (2 GB under System 7.1) (new after 0.16, `mac.imagemode=`, below; the log says which: `read in the background` or `served from the card`). What the Mac writes goes back into the file. Keep them out of the container: the firmware reads the container before anything starts. A larger startup disk with your files on it: "A larger startup disk", below. |
 | **USB sticks** in the Pi's sockets, plugged in any time | A stick formatted **FAT32 or exFAT** on a modern Mac or a PC: its files appear as a **locked** disk; Mac files keep their resource forks, type and creator from the `._` files macOS writes (new in 0.12, docs/09 "USB flash drives"). HFS disk images in such a stick's root mount as disks of their own, writable. A stick holding **HFS** itself mounts writable as it is. | Up to 2 GB and 32,000 files per view. Writing from the Mac to a FAT/exFAT stick's own files is not done yet (issue #20). Eject with Put Away, then wait for "safe to unplug" in Aurora68 Log. |
 | **The "Mac Exchange" folder** on the SD card | Its files as a locked disk, the same way as a FAT/exFAT stick (new in 0.12). | Put files there from any computer. `mac.exchange=off` turns it off, `mac.exchange=NAME` uses another folder. |
+| **Virtual SCSI devices**: a CD-ROM drive (`scsi.cd=`) and hard disks (`scsi.disk=`) from image files in the card's root (new 25 November 2026, below) | A CD image of 2048-byte sectors (`.iso`, `.cdr`, a `.toast` that is a plain image; an Apple hybrid CD with a partition map and HFS or A/UX partitions) as an AppleCD 300 at SCSI ID 3; a disk image of any size up to 4 GB as a SCSI hard disk, written back. They are real SCSI devices on the Mac's SCSI bus, answered by the kernel, for systems that drive the SCSI chip themselves (A/UX) and for SCSI tools (HD SC Setup). A CD can be the startup disk (`mac.boot=cd`). | A CD needs a CD-ROM driver on the Mac (Apple CD-ROM in the Extensions, or the CD's own on a startable CD); the image's Iomega driver, which the release's images carry, mounts an HFS CD as a locked disk by itself. Change the CD while the Mac runs with `tools/aurora68.py cd NAME` (the remote control). Their IDs must be free on the SE's bus: a real device that answers an ID wins it, and the log says so (`[SCSI] WARNING`). |
 | **The floppy drive** | The machine's own drive, reached through the IWM: 800K on the SE, the Plus and the 512Ke, 400K on the 128K and 512K, whose speed the kernel sets zone by zone (`mac.floppyspeed=`); a floppy with a System is the startup disk, as on any Mac. | 0.12 selects the SE's internal drive (before, the kernel left it unselected: docs/08 item 93). Since 25 November 2026 a guard spaces the reads of the IWM (`mac.iwmgap=`) and the heartbeat's `[PSMAC:IWM]` lines measure the floppy on the wire (docs/08 item 146). Not yet verified on real hardware; Aurora68 IO Test and docs/12 have the steps (issue #9). |
 
 **System versions.** Tested: **System 7.1** (also 7.1.2 from the owner's BlueSCSI) and **System 6.0.8**.
@@ -149,13 +150,61 @@ On); System 6 is 24-bit and sees 8 MB at most.
 
 **What does not work:** HFS Plus ("Mac OS Extended") and APFS disks (System 7 cannot read them; use FAT32 or
 exFAT to move files between a modern Mac and the SE); Disk Copy 4.2 floppy images (they carry an 84-byte
-header: convert them to a raw image first); compressed or packaged images (`.dmg`, `.sit`, `.toast`); CD-ROM
-images (issue #15).
+header: convert them to a raw image first); compressed or packaged images (`.dmg`, `.sit`, a `.toast` in
+Toast's own format rather than a plain image); CD images as PiDisk volumes (they are served as a SCSI CD-ROM
+drive instead: "Virtual SCSI devices", below; issue #15).
 
 **The startup disk.** A floppy with a System is taken first, as on any Mac. Then, with `mac.boot=auto` (the
 default), the SCSI disk the parameter RAM names (the Startup Disk control panel), then a disk image on the
 card, then the other SCSI disks: the card's image starts the Mac when the usual startup disk is not there.
-`mac.boot=image` puts the card's image first; `mac.boot=scsi` leaves the parameter RAM's choice alone.
+`mac.boot=image` puts the card's image first; `mac.boot=scsi` leaves the parameter RAM's choice alone; `mac.boot=cd`
+starts from the virtual CD-ROM drive (`scsi.cd=`, below) until the option is taken out.
+
+### Virtual SCSI devices: a CD-ROM drive and hard disks (for A/UX)
+New 25 November 2026 (docs/08 item 148). The kernel can put SCSI devices of its own on the Mac's SCSI bus, served
+from image files in the SD card's root: a **CD-ROM drive** and **hard disks**. They are for software that drives the
+Mac's SCSI chip itself and so cannot use the card's PiDisk volumes: **A/UX** above all, whose installer boots from
+its CD and installs onto a SCSI disk it partitions itself, and Apple's **HD SC Setup**. They work on every board:
+the SE and the Plus beside the real devices on their SCSI bus (the kernel answers a connection to a virtual ID
+itself and leaves every other one to the real chip), the 512Ke, 512K and 128K, which have no SCSI of their own,
+and the solo board.
+```
+scsi.cd=AUX30.iso                 a CD-ROM drive at SCSI ID 3 with AUX30.iso in it (scsi.cd=NAME:ID for another ID)
+scsi.disk=AUX.hda:4               a hard disk at ID 4 from AUX.hda (more: scsi.disk=B.hda:5, or A.hda:4,B.hda:5)
+mac.boot=cd                       start from the CD (while installing; take it out afterwards)
+```
+- **The CD-ROM drive** says it is an AppleCD 300 (`SONY CD-ROM CDU-8003A 1.9a`), which Apple's CD-ROM driver and
+  A/UX accept (`scsi.cdvendor=`, `scsi.cdproduct=`, `scsi.cdrev=` change it). Its images are plain files of
+  2048-byte sectors: `.iso`, `.cdr`, a `.toast` that is a plain image (Toast's own format is not), Apple's hybrid CDs
+  with a partition map and HFS or A/UX partitions. It is read only, and like Apple's drives it starts in 512-byte
+  blocks, so the Mac's ROM can start from a CD's driver partition, and switches to 2048 when the driver asks
+  (`scsi.cdblock=2048` starts there). A CD is read from the card as the Mac asks, never whole. On the Mac's desktop
+  it needs a CD-ROM driver: Apple CD-ROM in the Extensions folder (System 7.1 does not install it on its own), or
+  the CD's own when the Mac starts from the CD. The Iomega driver that the release's disk images carry also mounts
+  an HFS CD, as a locked disk, by itself.
+- **Changing the CD** while the Mac runs: `tools/aurora68.py cd NAME` (the remote control, README "Remote
+  control"; NAME a file in the card's root), `tools/aurora68.py cd --eject`, `tools/aurora68.py scsi` to see what is
+  where. Put the CD away on the Mac first (the Mac holds a CD it has mounted); `--force` takes it out regardless.
+  The Mac then sees what it sees with a real drive: no CD, then a new one ("medium changed").
+- **A hard disk** for A/UX starts as a blank file: `python3 tools/mac/mkblank.py AUX.hda 2G` (or
+  `dd if=/dev/zero of=AUX.hda bs=1M count=0 seek=2048`), copied to the card's root. A/UX's installer (its HD SC Setup)
+  partitions and initializes it; what is written goes back into the file. 2 GB is as much as A/UX 3 and HD SC Setup
+  use; FAT32 allows 4 GB less a byte. The disk answers MODE SENSE with Apple's page that HD SC Setup looks for.
+- **IDs.** 7 is the Mac's. On the SE and the Plus a virtual device must not share an ID with a real one (an
+  internal disk is usually 0, a BlueSCSI's disks are the IDs in their file names): the first time the Mac selects a
+  virtual ID, the kernel lets that selection go to the real bus, and if a real device answers, the virtual one is
+  turned off for the session with a warning in the log and on the HDMI screen (`[SCSI] WARNING: a real device on
+  the SCSI bus answers ID 6 ...`). `scsi.probe=off` leaves that check out. On the solo board the card's disk images
+  are IDs 0, 1, ... and a virtual device's ID is taken from them.
+- **Starting from the CD:** `mac.boot=cd` shows the Mac's ROM the CD-ROM drive as its startup device from each start
+  until the Finder runs; a CD whose driver partition has a driver the ROM can load (A/UX's, a System CD's) then starts
+  the Mac. Holding C at start, as on some Macs, does not do it with the IIci ROM. Take the option out once the
+  installation is done, or the Mac goes on starting from the CD.
+- **What the log says:** `[SCSI] ID 3: CD-ROM AUX30.iso, 640 MB, served from the card`; at each heartbeat a line per
+  device with its commands and sectors; every command a device does not know, once (`[SCSI] ID 3 (CD-ROM): command
+  $xx ... not supported`): send those lines if something does not work.
+- **Not yet tried with A/UX itself** (the testbed has no A/UX): docs/08 item 148 lists what A/UX's installer and
+  kernel will need and what to look for in the log.
 
 ### config.txt
 ```ini
@@ -236,7 +285,7 @@ One line, options separated by spaces, no comments:
 | `mac.imagemode=auto` | how a disk image on the card is served (new after 0.16, docs/08 item 142): `auto` (the default) in the Pi's memory when it is 256 MB or less and leaves the cache's 16 MB to spare, read in the background as before, else from the card; `ram` in memory whenever it fits (a larger one is served from the card all the same, and the log says so); `card` always from the card as the Mac asks: nothing is read before the Mac wants it, a 16 MB cache keeps what was read, a read that goes on where the last ended is followed by 256 KB of read-ahead, and what the Mac writes is written back into the file 2 seconds after its last write (10 seconds after the oldest at most), at once when the Mac restarts or shows "you may now switch off", never changing the file's size, its directory entry or the FAT. Wait for that message and a few seconds more before switching off. The heartbeat's `[CARD]   cache:` line says what it read and what waits |
 | `mac.imagecache=16` | the cache of the images served from the card, in MB (1 to 128): taken from the memory left after the Mac's (as an image in memory is), halved until it fits |
 | `mac.image=NAME` | the disk images on the card, files of their own beside the container: by default every file in the card's root ending in `.hda`, `.img`, `.image`, `.hfv` or `.dsk` (not `kernel*.img`), in the order they were copied there, up to four; `mac.image=A.hda,B.img` names them, `mac.image=off` takes none. Used only when the container has no disk image (below, "Booting fast") |
-| `mac.boot=auto` | the startup disk when a disk image on the card (`mac.image=`) holds a System: `auto` (the default) the SCSI disk the parameter RAM names (ID 0 unless the Startup Disk control panel chose another) first, then the card's image, then the other SCSI disks, so the image starts the Mac when there is no SCSI disk with a System, as in an SE with nothing attached; `image` the card's image first, the SCSI disks after it; `scsi` the parameter RAM as it is, so the image starts the Mac only if Startup Disk chose it. A floppy with a System is always taken first. The image must be bootable as a disk would be (a System Folder the Mac has started from, with its boot blocks; an Apple-partitioned `.hda` is served as its HFS partition). The kernel's log says which (`startup disk: ...`, `[MAC] PiDisk boot: ...`). docs/08 item 67 |
+| `mac.boot=auto` | the startup disk when a disk image on the card (`mac.image=`) holds a System: `auto` (the default) the SCSI disk the parameter RAM names (ID 0 unless the Startup Disk control panel chose another) first, then the card's image, then the other SCSI disks, so the image starts the Mac when there is no SCSI disk with a System, as in an SE with nothing attached; `image` the card's image first, the SCSI disks after it; `scsi` the parameter RAM as it is, so the image starts the Mac only if Startup Disk chose it; `cd` the virtual CD-ROM drive (`scsi.cd=`) from each start until the Finder runs, for installing a System from a CD (new 25 November 2026, docs/08 item 148). A floppy with a System is always taken first. The image must be bootable as a disk would be (a System Folder the Mac has started from, with its boot blocks; an Apple-partitioned `.hda` is served as its HFS partition). The kernel's log says which (`startup disk: ...`, `[MAC] PiDisk boot: ...`). docs/08 item 67 |
 | `mac.usbdisk=on` | USB flash drives plugged into the Pi: `on` (the default) a stick holding HFS (bare, or an Apple-partitioned one's HFS partition) appears on the Mac's desktop while the Mac runs and ejects from the Finder; sticks formatted FAT, exFAT or HFS Plus are left on the Pi and the log says what they hold; `all` offers every stick (the Finder will offer to initialize one it cannot read: how to make an HFS stick on the Mac); `off` leaves sticks alone. Needs the new declaration ROM in the container. docs/09 "USB flash drives", docs/08 item 75 |
 | `mac.usbview=off` | for a FAT32 or exFAT stick, offer only the HFS disk images in its root, not its own files as a locked disk (new in 0.12) |
 | `mac.exchange=NAME` / `mac.exchange=off` | the folder in the SD card's root shown as a locked disk: `Mac Exchange` by default (new in 0.12) |
@@ -302,6 +351,13 @@ One line, options separated by spaces, no comments:
 | `mac.screencheck=on` | the compact Mac's screen as the kernel writes it: `on` read back and repaired, `blind` written again every few seconds without reading (the default on the Plus-era boards, whose reads were in doubt, docs/08 item 96), `off` written once |
 | `mac.plusmouse=N`, `mac.plusdebounce=0`, `mac.plusjitter=0`, `mac.pluskbd=off` | the Plus's (and 128K's, 512K's, 512Ke's) own mouse and keyboard, which the kernel reads itself: the mouse's lines read N times a second (0 turns it off), taken without debouncing, read at a fixed rate; `mac.pluskbd=off` leaves the keyboard unread (USB and Bluetooth keyboards only). docs/08 item 96 |
 | `mac.sestream=on` | on the compact Macs, Aurora68 Play's music on the Mac's own speaker too (off by default: in MAME's SE a beep during music hung the Mac while the stream fed the speaker, docs/09) |
+| `scsi.cd=NAME[:ID]` | a virtual SCSI CD-ROM drive (an AppleCD 300) at SCSI ID 3, or ID, with the CD image NAME from the card's root in it (`empty`: no CD); more drives with more `scsi.cd=` (new 25 November 2026, "Virtual SCSI devices", above; docs/08 item 148) |
+| `scsi.disk=NAME:ID` | a virtual SCSI hard disk at ID from the image NAME in the card's root, written back; any number of them, or several separated by commas (`tools/mac/mkblank.py` makes a blank one) |
+| `scsi.cdvendor=SONY` `scsi.cdproduct=CD-ROM_CDU-8003A` `scsi.cdrev=1.9a` | the CD-ROM drive's INQUIRY names (8, 16 and 4 characters; no spaces in cmdline.txt) |
+| `scsi.hdvendor=AURORA68` `scsi.hdproduct=Virtual_Disk` | the virtual hard disks' INQUIRY names |
+| `scsi.cdblock=512` | the CD-ROM drive's logical block size at start and after a reset: 512 (as Apple's drives, so a CD can start the Mac) or 2048 |
+| `scsi.probe=off` | on the SE and the Plus: a virtual ID's first selection is not tried on the real bus first (by default a real device that answers the ID keeps it, and the virtual device is turned off) |
+| `scsi.trace=N` | the first N SCSI commands of the virtual devices (and of the solo board's disks) in the log |
 | `mac.sescsiwait=250` | on `mac.board=se`, the SCSI Manager's selection timeout in milliseconds, 1 to 1000 (default 250) |
 | `mac.altcmd=1` | a USB or Bluetooth PC keyboard's Alt and Windows keys swapped, so that the key beside the space bar is Command |
 | `mac.rightbutton=cmd\|ctrl\|none` | what a USB or Bluetooth mouse's right button adds to its click: `cmd` (the default) a Command-click, as Apple's own two-button drivers of the day made it (in Aurora68 PC's window a Command-click gives the mouse back to the Mac); `ctrl` a Control-click; `none` a plain click. The middle button is always an Option-click (docs/08 item 139) |

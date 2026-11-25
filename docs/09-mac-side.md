@@ -161,6 +161,20 @@ flags). The far end of the line in the testbed is `tools/iotest_host.py` with MA
 called `printer`, which is SCC channel A, the Mac's modem port. Its own glue (`iotest/glue.s`) carries the
 register-based File Manager, Device Manager and Sound Manager calls.
 
+## Aurora68 SCSI Test: the virtual SCSI devices (25 November 2026)
+
+`mac/scsitest/` (`make -C mac scsitest`, `build/Aurora68-SCSITest.bin`; a test program, not in the release's
+layout), written for docs/08 item 148. Put it in Startup Items. Through the ROM's SCSI Manager (`_SCSIDispatch`:
+SCSIGet, SCSISelect, SCSICmd, SCSIRead and SCSIRBlind, SCSIWrite and SCSIWBlind, SCSIComplete; its own glue,
+`scsitest/glue.s`) it sends INQUIRY to IDs 0 to 6 and READ CAPACITY to every device; a CD-ROM drive gets TEST UNIT
+READY (REQUEST SENSE after a CHECK CONDITION), READ(10) of 32 KB at 512-byte blocks (polled), MODE SENSE, MODE SELECT
+to 2048, the same 32 KB again (blind), frame 16 (an ISO 9660 volume's descriptor), READ TOC and MODE SELECT back to
+512; a disk whose INQUIRY says "Virtual Disk" (never a real one) gets MODE SENSE of Apple's page $30 and 64 blocks
+written at block 1000 (byte i = ((i·37 + 11) xor (i >> 8)) & 255) and read back. A number in its name ("Aurora68
+SCSI Test 45") makes it do this three times that many seconds apart, so a CD changed through the remote control in
+between shows. Every result is a `[MAC] SCSI Test:` line with CRC-32s to compare with the image files. A SCSI Manager
+"error 5" after MODE SENSE is the drive sending fewer bytes than the 255 asked for.
+
 ## Workflow in the testbed
 ```
 make -C mac                                        # drivers, extension, app, declaration ROM
