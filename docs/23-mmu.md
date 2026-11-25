@@ -11,7 +11,8 @@ from the code it names the file and the function; where it is our reading or a g
 Section 11 is phase 2 (25 and 26 November): the complete 68030 PMMU on a soft TLB, and System 7.1's Virtual Memory
 running on it, on the solo board and in the MAME full stack. Section 12 is phase 3 (26 November): address spaces with
 ASIDs, separate user and supervisor views, MOVES, the code cache keyed by space, the double bus fault: what A/UX needs
-before it can be tried. Sections 1 to 10 are phase 1's record and are kept as written; where a later phase found a
+before it can be tried. Section 13 (27 November) is the first try on the real SE, which stopped before the 68k
+started, and its fix. Sections 1 to 10 are phase 1's record and are kept as written; where a later phase found a
 statement wrong or overtook it, a bracketed note says so.
 
 ## 1. What was read
@@ -927,3 +928,66 @@ SR changes are the 68k's as before.
   space, the ROM's 32-bit tables (TC `$80F05750`, CRP `$7FFF0003:$007FFCC0`, long descriptors, one space for both modes)
   with RBV video's low memory, 232 lazy maps, no bus error, nothing undelivered. VM was not run there this time.
 - 24-bit mode, with or without VM (the test image runs in 32-bit mode).
+
+## 13. The first try on the real SE: core 0 died before the 68k started (27 November 2026)
+
+**What the owner saw.** The full kernel of phase 3 (`6b7bad4`, with the PC and Apple II cards) on the real SE board
+(`mac.board=se`), `mac.mmu=full`, 128 MB, first with an A/UX disk as a virtual SCSI disk at ID 0 and then with nothing
+but the option and the usual System 7.1 image from the card: the SE's screen showed its own uninitialised video RAM
+(eight bands of fine repeating structure, a diagonal edge between lighter and darker halves) and never changed. The
+saved log said why: every heartbeat had 0 bus transfers and PC `00000000`, and on core 0, just after the start-up's
+diagnostic lines `[PSMAC] map 00000000 -> phys 0xffffffffffffffff` (and eight more like it),
+
+```
+[JIT:SYS] Unhandled page fault: opcode b85dc022, read from 0x74a1cba2fd7a2769
+[JIT:SYS] Exception with vector 0200 on CPU0. ELR=0xffffff80000b50c8, ... FAR=0x74a1cba2fd7a2769
+```
+
+**Where.** Against the build's `Emu68.elf`, ELR is `psmac_mmu_fault` + `$88`, the first load of `locate()` (inlined),
+which reads the running block's unit from x12; x3, the abort's own ELR passed in, is `psmac_setup_memory` + `$1E64`, the
+`ldrb` of `[PSMAC] EL1 probe read of 50f01c00`: the kernel's own read of the VIA through the 68k's address space,
+before the 68k starts, which every board makes and which has always been an abort that the bus code answers. Phase 3
+made two things true at that moment that were not before: translation off is a space too, so `psmac_mmu_translating()`
+is true from the first space on (phase 2's test was `translate_on`, false until the ROM's first TC load), and the abort
+therefore went through `locate()`. `locate()` took x12 for the running block's entry whenever its tag bit (bit 36, the
+JIT arena's read-only alias) was set and the ELR was above it. In the kernel's own C x12 is whatever the compiler left
+there: on the real Pi `0x74a1cbb2fd7a278d`, bit 36 set, and the "unit" read below it was at a wild address. Core 0 took
+an unhandled abort inside the abort handler and stopped. The `map ... -> phys 0xffffffffffffffff` lines are not the
+fault: `mmu_virt2phys` asks the ARM tables of the identity space, which the option maps on demand, so nothing is mapped
+yet (the stock path prints Pi addresses there).
+
+**Why the testbeds missed it.** Under QEMU the same probe read met an x12 without the tag bit (or below the ELR), so
+`locate()` gave up at once and the access was emulated: `EL1 probe read of 50f01c00 -> 80` in every run of phases 2
+and 3, the solo board, the MAME IIci and, this morning, the MAME SE. It is no SE matter: any board on a Pi with such a
+register value at that instruction dies the same way, and the Plus, 128K, 512K and 512Ke boards run the same start-up.
+
+**The MAME SE first** (`MACHINE=macse_ps`, `mac.board=se`, the 512x342 declaration ROM, a copy of the System 7.1 CHD at
+ID 6, `PSMAC_RAM=128`, `mac.mmu=full`, the owner's kernel): no fault; the chime, then "Welcome to Macintosh" and the
+INITs at 240 s, the end of that run. It did not reproduce the hardware, which is what pointed at a difference in state
+rather than in the board's code.
+
+**Reproduced in QEMU.** A scratch build (not committed) set x12 to the owner's value in the probe read's own asm
+statement. On the solo board with `mac.mmu=full`: `Unhandled page fault: opcode b85dc022, read from
+0x74a1cba2fd7a2769`, the owner's opcode and address, at the same point of the start. The phase 2 kernel cannot take
+this path at that moment (its `psmac_mmu_translating` is `translate_on && ...`, in the interim build's code as in
+`c9538d0`), which puts the cause in phase 3.
+
+**The fix** (`psmac_mmufault.c`, `locate()`): x12 is believed only if the faulting instruction is itself translated
+code, in the JIT arena's read-only alias, and the entry lies there as well; otherwise the abort is "not translated
+code" and goes on as before (mapped, emulated, or a guarded helper's landing). The same scratch build with the fix:
+the probe read gives `80` with the bad x12 in place and System 7.1 reaches the Finder at 40.6 s on the solo board.
+
+**Tests** (the fixed branch):
+- `make -C mac check`: passes.
+- `mmutest` on the solo board, `mac.ram=8`: with the option `137 passed, 0 failed, 123 bus errors taken`, none
+  undelivered (so blocks' faults are still found by `locate()`); without it `16 passed, 35 failed, 0 bus errors
+  taken` and the benchmark (366 to 425 MIPS in QEMU). Without the option `psmac_mmu_fault` is never called, so the
+  stock path is unchanged.
+- The owner's full kernel rebuilt from the branch (PC and Apple II cards), on the MAME SE, `PSMAC_RAM=128`,
+  `mac.mmu=full`: the ROM's 32-bit tables (TC `$80F06B00`, CRP `$7FFF0002:$07FFFCC0`, one space for both modes), the
+  SE's screen rows sent and read back right, the Finder at 282 s (the full stack's SE without the option: about 290
+  s), no bus error, nothing undelivered.
+
+**Still to be seen on the real SE.** That it now starts; then, for A/UX, the list of section 12.8. The emulated
+accesses (5.5 million in that boot, most of them the SCSI chip's and the VIA's pages) are the option's cost here as on
+the other boards; on the SE every one of them is a bus cycle over the GPIO anyway.
