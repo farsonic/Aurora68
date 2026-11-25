@@ -544,6 +544,22 @@ uint8_t *psmac_mmu_ram_ptr(uint32_t logical)
     return (uint8_t *)(KERNEL_ALIAS + ram_phys + p);
 }
 
+/* The same at a given function code, whichever view TTBR0 holds: an exception's frame and its vector are supervisor
+   data even when the fault came from user mode with the views apart (psmac_mmufault.c's push_frame). Until 27 November
+   2026 the frame of a bus error from user mode was looked for in the user's view: A/UX's init, its first page of text
+   not yet there, could not be given its page fault (docs/23 section 15). */
+static uint32_t full_l2p_fc(uint32_t logical, int fc, int *valid);
+uint8_t *psmac_mmu_ram_ptr_fc(uint32_t logical, int fc)
+{
+    if (!(psmac_mmu_full && translate_on)) return psmac_mmu_ram_ptr(logical);
+    int valid;
+    uint32_t p = full_l2p_fc(logical, fc, &valid);
+    if (!valid) return 0;
+    p = norm_phys(p);
+    if (p >= ram_size) return 0;
+    return (uint8_t *)(KERNEL_ALIAS + ram_phys + p);
+}
+
 /* logical -> physical for the abort handler; returns 0 and *valid=0 for unmapped pages */
 static uint32_t full_l2p(uint32_t logical, int *valid);
 uint32_t psmac_mmu_l2p(uint32_t logical, int *valid)
@@ -1453,9 +1469,12 @@ void psmac_mmu_full_stats(void)
    user access's translation in the cache under the user view, which a user access finds by its own walk. */
 static uint32_t full_l2p(uint32_t logical, int *valid)
 {
-    uint32_t pa;
     int v = psmac_mmu_cur_view();
-    int fc = v == 0 ? 1 : 5;
+    return full_l2p_fc(logical, v == 0 ? 1 : 5, valid);
+}
+static uint32_t full_l2p_fc(uint32_t logical, int fc, int *valid)
+{
+    uint32_t pa;
     struct space *sp = space_for_fc(fc);
     if (sp && l2pc_get(sp, logical, &pa)) { *valid = 1; return pa; }
     if (tt_match(mmu.tt0, logical, fc, 0) || tt_match(mmu.tt1, logical, fc, 0)) { *valid = 1; return logical; }

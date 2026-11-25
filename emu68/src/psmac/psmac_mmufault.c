@@ -46,6 +46,7 @@
 extern int psmac_mmu_full;
 int psmac_mmu_translating(void);
 uint8_t *psmac_mmu_ram_ptr(uint32_t logical);
+uint8_t *psmac_mmu_ram_ptr_fc(uint32_t logical, int fc);
 extern struct M68KState *__m68k_state;
 
 /* One per translated 68k instruction (or fused group). arm = 0xffff marks the header, whose pc is the count. */
@@ -257,20 +258,22 @@ static uint64_t el1_ticks;
 static inline uint64_t cnt_now(void) { uint64_t v; __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(v)); return v; }
 static inline uint64_t cnt_frq(void) { uint64_t v; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(v)); return v; }
 
+/* the frame and the vector: supervisor data (FC 5), whichever view is installed when the fault is taken */
 static int put16(uint32_t a, uint16_t v)
 {
-    uint8_t *p = psmac_mmu_ram_ptr(a);
+    uint8_t *p = psmac_mmu_ram_ptr_fc(a, 5);
     if (!p) return 0;
     *(volatile uint16_t *)p = v;
     return 1;
 }
 static int put32(uint32_t a, uint32_t v) { return put16(a, v >> 16) && put16(a + 2, v & 0xffff); }
-static uint16_t get16(uint32_t a, int *ok)
+static uint16_t get16_fc(uint32_t a, int fc, int *ok)
 {
-    uint8_t *p = psmac_mmu_ram_ptr(a);
+    uint8_t *p = psmac_mmu_ram_ptr_fc(a, fc);
     if (!p) { *ok = 0; return 0; }
     return *(volatile uint16_t *)p;
 }
+static uint16_t get16(uint32_t a, int *ok) { return get16_fc(a, 5, ok); }
 
 static inline uint16_t swap_vc(uint16_t sr) { return ((sr & 3) == 1 || (sr & 3) == 2) ? (sr ^ 3) : sr; }
 
@@ -299,7 +302,8 @@ static int push_frame(uint32_t ssp, const struct bframe *b, uint32_t *fa, uint32
     if (b->ifetch) ssw = SSW_FB | SSW_RB | (uint16_t)(b->fc & 7);
     else ssw = SSW_DF | (b->write ? 0 : SSW_RW) | (b->size == 1 ? 0x10 : b->size == 2 ? 0x20 : 0) | (uint16_t)(b->fc & 7);
     int ok = 1;
-    uint16_t stage_c = get16(b->pc + 2, &ok), stage_b = ok ? get16(b->pc + 4, &ok) : 0;
+    int pfc = (b->sr & SR_S) ? 6 : 2;              /* the instruction's words, in its own mode's space */
+    uint16_t stage_c = get16_fc(b->pc + 2, pfc, &ok), stage_b = ok ? get16_fc(b->pc + 4, pfc, &ok) : 0;
     if (!ok) stage_c = stage_b = 0;
     int w = put16(f + 0, swap_vc((uint16_t)b->sr)) && put32(f + 2, b->pc) && put16(f + 6, (fmt_b ? 0xB000 : 0xA000) | 0x008) &&
             put16(f + 8, 0) && put16(f + 10, ssw) && put16(f + 12, stage_c) && put16(f + 14, stage_b) &&
@@ -318,6 +322,7 @@ static int push_frame(uint32_t ssp, const struct bframe *b, uint32_t *fa, uint32
     return 1;
 }
 
+static void psmac_mmu_halt(void) __attribute__((noreturn));
 static int miss(uint32_t la, uint64_t elr, const char *why)
 {
     not_delivered++;
@@ -354,8 +359,14 @@ static uint32_t deliver_from_save_area(uint64_t *regs, const struct bframe *b, c
     if (user) ssp = (b->sr & SR_M) ? getMSP() : getISP();
     uint32_t f, vec; uint16_t ssw;
     if (!push_frame(ssp, b, &f, &vec, &ssw)) {
-        miss(b->addr, 0, "the supervisor stack or the vectors are not mapped (double bus fault)");
-        return b->sr | 0x10000;
+        /* a 68030 halts (double bus fault); until 27 November 2026 the instruction was tried again for ever */
+        not_delivered++;
+        kprintf("[PSMAC:MMU] double bus fault: the %s bus error of the instruction at %08x (%08x) could not be stacked at %08x "
+                "(SR %04x, VBR %08x): the 68030 halts\n", how, b->pc, b->addr, ssp, b->sr, __m68k_state->VBR);
+        void psmac_mmu_debug_walk(uint32_t la, int fc);
+        psmac_mmu_debug_walk(ssp - 8, 5);
+        psmac_mmu_debug_walk(__m68k_state->VBR + 8, 5);
+        psmac_mmu_halt();
     }
     if (user) setUSP(a7);
     *sa_reg(regs, 15) = f;
