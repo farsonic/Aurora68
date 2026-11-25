@@ -62,6 +62,7 @@ Which machines the software read here was written for, from its own checks and n
 | Dove MaraThon Racer 030 | Plus and SE ("Plus/SE INIT/CDEV") | |
 | Applied Engineering Warp 030 | Plus and SE | compares the ROM version with $0075 and $0276; HWCfgFlags ($B22) bit 4 |
 | Total Systems GemStart / ExSys SE | SE ("made for the Total Systems Gemini accelerators for the Macintosh SE") | |
+| MicroMac Performer (GemStart licensed, 1995) | Plus and Classic (Killy-clip), SE (slot) | |
 | Novy RailGun / Quik30, Mobius 030 | Plus, 512Ke and SE (README) | ".Sound020" jumps into the Plus ROM ($4179DA...) or the SE ROM ($436CAA...) by HWCfgFlags bit 2 |
 | Glenn L. Austin, "Generic Sound Patches" | Plus and SE | compares the ROM version with $0075 and $0276 |
 | DayStar PowerCache (Power Central 2.0) | SE and Classic adapters, besides the II family | |
@@ -161,6 +162,17 @@ told the VANDAL was a "Gemini Integra".
 - **The video board** ("ExSys SE Video" 1.3, April 1995) loads one of eight Xilinx FPGA configurations and a dot
   clock between 50.35 and 100.5 MHz for each of 25 monitors (Apple's Two-Page and Portrait, Radius, Sigma Designs,
   Lapis, Samsung, Triam and generic ECL, TTL, analog and composite settings), from 'MONS' and 'XLNX' resources.
+
+The same software lived on after Total Systems. **MicroMac Technology** of Aliso Viejo, California, sold the
+**Performer** (called the "Universal" until February 1995), a 16 MHz 68030 with an optional 25 MHz 68882 for the
+Plus and the Classic, clipped over the 68000 with a "Killy-clip", and for the SE in the processor direct slot. Its
+control panel, "MM Performer 2.2.1 ... Licensed by MicroMac" (February 1995, creator 'TotS'), is GemStart again: its
+credits read "Written by Glenn L. Austin @TS", its control panel, 'DPch' and 'DMgr' are byte for byte GemStart 2.1's,
+and its DRVR 3 ".Sound" is the same 1,068 bytes, with the same four-tone and freeform placement. Its notes tell owners
+to choose "Mercury 030" in Compact Virtual, which suggests the board is Total Systems' Mercury under licence, and its
+SE installation steps include "Connect the audio cable" without saying more. Its release notes also record the
+caveats of the age: software that wants "a 68030 processor" but not "a Compact Mac with an 030 accelerator", because
+"some other resources are located in the ROMs for original 020/030 Macs which the compact Mac doesn't have".
 
 ### Novy Systems RailGun and Quik30, also sold as the Mobius 030 (1992-1993)
 
