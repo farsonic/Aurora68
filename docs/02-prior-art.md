@@ -38,6 +38,39 @@ INITs and patches, unpacked from BinHex and StuffIt archives, and one from an 80
 resource by resource and disassembled. None of that software is in this repository; it is the work of companies
 long gone, and is described, not copied.
 
+### The three generations of compact Mac
+
+The same sound hardware runs through three generations, and the accelerators had to tell them apart:
+- **The original Macintosh, 128K and 512K (1984):** the 64K ROM (version word $0069 at ROMBase+8) and a 400K
+  single-sided drive. That drive takes its speed from the **low byte** of each word of the same 370-word buffer whose
+  high bytes drive the speaker (the disk-speed PWM), so on these machines the sound buffer is shared between the
+  speaker and the floppy.
+- **The 512Ke and the Plus (1986):** the 128K ROM ($0075) with the 800K drive, which on Apple's account sets its own
+  speed (the *Guide*; not re-checked here against a schematic).
+- **The SE (1987):** the 256K ROM ($0276), the processor direct slot, and a second internal drive bay.
+
+All the synthesizers read here, Apple's included, write the samples as **bytes into the high byte of each word**
+(MOVE.B or MOVEP at even addresses, two bytes apart), leaving the low bytes alone. On a 400K machine that is what keeps
+the drive's speed intact while sound plays. Aurora68's kernel does the same (byte writes in `snd_service` and
+`snd_quiet`, psmac_board_se.c, shared by mac.board=128k, 512k, 512ke, plus and se).
+
+Which machines the software read here was written for, from its own checks and notes:
+
+| Product | Machines | How it tells them apart |
+|---|---|---|
+| GCC HyperCharger 020 | Plus and SE | its sound patch runs only on the SE ROM ($0276) |
+| Dove MaraThon Racer 030 | Plus and SE ("Plus/SE INIT/CDEV") | |
+| Applied Engineering Warp 030 | Plus and SE | compares the ROM version with $0075 and $0276; HWCfgFlags ($B22) bit 4 |
+| Total Systems GemStart / ExSys SE | SE ("made for the Total Systems Gemini accelerators for the Macintosh SE") | |
+| Novy RailGun / Quik30, Mobius 030 | Plus, 512Ke and SE (README) | ".Sound020" jumps into the Plus ROM ($4179DA...) or the SE ROM ($436CAA...) by HWCfgFlags bit 2 |
+| Glenn L. Austin, "Generic Sound Patches" | Plus and SE | compares the ROM version with $0075 and $0276 |
+| DayStar PowerCache (Power Central 2.0) | SE and Classic adapters, besides the II family | |
+| DiiMOCache 2.2 | not stated in the files | |
+
+None of it is for the 128K and 512K with the 64K ROM. Those machines had accelerators of their own, but no software
+for them has been read here, and the 64K ROM is not in rom/original to compare against, so the original Macintosh
+appears in this history only through the hardware it shares with its successors.
+
 ### GCC HyperCharger 020 (1987-1988)
 
 GCC (General Computer Corporation of Massachusetts, the company behind the arcade Ms. Pac-Man and, for the Mac, the
