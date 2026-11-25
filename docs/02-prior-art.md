@@ -174,6 +174,24 @@ SE installation steps include "Connect the audio cable" without saying more. Its
 caveats of the age: software that wants "a 68030 processor" but not "a Compact Mac with an 030 accelerator", because
 "some other resources are located in the ROMs for original 020/030 Macs which the compact Mac doesn't have".
 
+**The Performer's second life (2025-2026).** The board itself has been reverse-engineered by members of the 68kMLA
+forums (credited as Bolle and Trash80toHP_Mini, who worked out the Mercury 030 and the Performer), converted to KiCad
+as "Performer-SE-PL-CL" (github.com/alxlab-zone66x), its five GAL16V8 chips dumped, and rebuilt as an open board for
+the Plus, **Polyphloisboisterous '030** (github.com/luRaichu/polyphloisboisterous030, Rev. 0 November 2025, Rev. 1
+December 2025; PCB files under CC BY-NC-SA). It is a 16 MHz 68030 with no FPU, piggybacked on the Plus's own 68000
+through a DIP socket soldered on top of it, five GALs in PLCC sockets and through-hole-friendly parts, "50% smaller and
+77% cheaper to manufacture over the original Performer". Its schematic names the signals of the arrangement this
+history keeps coming back to: /BR_00 to the logic board's 68000 and /BGACK_30 from the card (the card takes the bus
+rather than replacing the processor), /RESET_00 and /RESET_30 kept apart, C8M and C16M from the board, E, /VMA and
+/VPA, /EXT.DTK, and the 68030's dynamic bus sizing (/DSACK0, /DSACK1) and /STERM. Its README tells the owner to install
+**GemStart** ("identify your accelerator as a 'Total Systems Mercury'") and notes that "these accelerators affect the
+Macintosh's Sound Manager. Audio playback may be garbled or cut in and out rapidly. I don't know why." The software
+read above suggests why: the fix lived in GemStart's own Sound Driver (the Sound Driver's VBL synthesizers, placed
+for a faster writer) and, for the System 7 Sound Manager's 'snth' synthesizers, in Glenn L. Austin's separate "Generic
+Sound Patches"; a GemStart version or system that leaves either out leaves Apple's 68000 placement in charge. That is
+a reading of the code, not a test on that board. It also records a disable switch the hardware itself provides: hold
+the Interrupt switch after the chime and press Reset, and the board stays out of the way until the next start.
+
 ### Novy Systems RailGun and Quik30, also sold as the Mobius 030 (1992-1993)
 
 Novy Systems made the RailGun and Quik30 68030 accelerators for the Plus, the 512Ke and the SE, with the ImagePro
