@@ -18,23 +18,25 @@
  * Pi's GPCLK0 on GPIO 4, the latch strobes; so the kernel's transport (emu68/src/psmac/psmac_gpio.c)
  * runs unchanged. What is new (docs/22 sections 2 to 4 and docs/18 section 8, C2):
  *
- *  - Bus arbitration. The SE's own 68000 stays in its socket. /BR is asserted from power-up (an open-drain
- *    output enabled by a register's power-up value, so no clock is needed), the card takes the bus with
- *    /BGACK at the first idle moment after /BG, and keeps it, across resets too. On the SE /RESET and /HALT
- *    are one net, so every reset of the board resets the 68000 as well: the card re-asserts /BR during every
- *    reset and, after it, watches /AS for 16 C8M clocks before it drives the bus again. A 68000 that honours
- *    /BGACK stays off the bus; one that does not starts a cycle, finds /BR asserted, grants the bus after
- *    that cycle, and the card takes it again. Either way nothing drives the bus twice (docs/22 section 4,
- *    open question 1).
+ *  - Bus arbitration, as the MicroMac Performer did it from this slot (docs/22 section 10): /BR is asserted
+ *    from power-up (an open-drain output enabled by a register's power-up value, so no clock is needed) and
+ *    stays asserted for as long as the card owns the bus, through every reset too; a 68000 stays off the bus
+ *    while BR is asserted (MC68000 manual, 5.2.1 and Figure 5-18 (a)). As insurance the Performer did not
+ *    take, the card also waits for /BG and an idle bus after every reset and then asserts /BGACK, which it
+ *    holds with /BR. On the SE /RESET and /HALT are one net, so every reset of the board (the kernel's or the
+ *    SE's) resets the 68000 too: the card lets go of /BGACK for the reset, keeps /BR, and after it takes the
+ *    bus again exactly as at power-up. A 68000 that ran a cycle first would only delay the grant: the card
+ *    drives nothing before /BG (docs/22 section 4, open question 1).
  *  - 6800 cycles against the board's E. The 68000 keeps generating E with the bus granted away (Apple,
  *    Designing Cards and Drivers, 3rd ed., ch. 13), so E is an input here (on the PiStorm's E pin): /VMA is
  *    asserted while E is low with two or more C8M clocks before E rises, the read latch is open while E is
  *    high and closes on the last C8M rising edge before E falls (447 ns after E rose, after the VIA's data is
  *    valid and before E's fall, so the VIA's 10 ns data hold is never in question), and the cycle ends after
  *    E falls.
- *  - RAM-safe /AS. /AS falls only on a C8M rising edge (the start of S2), never in S3 or S4, as the BBU
- *    requires (ch. 13, Figures 13-2 and 13-3); optionally a RAM cycle waits for /PMCYC's fall, which "always
- *    falls in S1" of a processor RAM slot (/PMCYC is on the PiStorm's /HALT pin: on the SE /HALT is /RESET).
+ *  - RAM-safe /AS. /AS falls only on a C8M rising edge (the start of S2, C8M high), never in S3 or S4, as the
+ *    BBU requires (ch. 13, Figures 13-2 and 13-3). The C8M edges are found by sampling C8M at 200 MHz, as the
+ *    PiStorm samples its 68000 clock: the same S-state grid the Performer gets by running from C16M with C8M
+ *    as a phase input, without a second clock domain. /PMCYC is not needed and not connected.
  *  - Read data sampled where a 68000 samples it. /DTACK, /BERR and /VPA are looked at on C8M falling edges only
  *    (the end of S4 and of each wait state); after /DTACK the read latch stays transparent for one more C8M
  *    clock and closes on the falling edge entering S7, and PI_TXN_IN_PROGRESS drops only after it closed.
@@ -42,9 +44,12 @@
  *    latches (74LVC16373), not edge-triggered ones: see README "Departures from the PiStorm".
  *  - /BERR ends a cycle and is reported. The card has no time-out of its own: the SE's gate array asserts
  *    /BERR whenever /AS stays low for about 250 ms (Apple, Table 13-2), and the kernel gives up at 300 ms.
- *  - Stock mode: the card lets go of /BR and /BGACK, three-states everything and pulses /RESET, so the SE
- *    starts its own ROM on its own 68000. From a jumper or switch (works with no Pi at all: the override is
- *    combinational) or from the kernel.
+ *  - Stock mode: the card lets go of /BR and /BGACK and three-states everything, so the SE starts its own ROM
+ *    on its own 68000. Entered as on the Performer, with no switch on the card: hold the programmer's
+ *    Interrupt switch (/IPL2) through a reset (four C8M clocks of it); the card then lets go of /BR and of its
+ *    own hold on /RESET at once, and if Interrupt is still held when the reset ends it stays off until the
+ *    next reset. Letting go of Interrupt first cancels. This part runs on C8M, not on the Pi's clock, so it
+ *    works with no Pi at all. Or from the kernel, which pulses /RESET itself.
  *  - A fan PWM (16 steps, full speed from power-up until the kernel says otherwise), a tachometer counter
  *    and an activity LED.
  *  - Status bits for the kernel in REG_STATUS bits 0-12, which the classic CPLD returns as zero; settings
@@ -108,16 +113,14 @@ module aurora68_pds #(
     output          M68K_VMA_n,
     input   [2:0]   M68K_IPL_n,
     inout           M68K_RESET_n,       // open drain; read back (on the SE it is also /HALT)
-    input           M68K_PMCYC_n,       // on the PiStorm's /HALT pin
     inout           M68K_BR_n,          // open drain
     inout           M68K_BGACK_n,       // open drain; read back
     input           M68K_BG_n,
 
     // ---- the rest of the card ----
     input           SLOT_PWR,           // high when the SE's +5 V is present (a divider from the slot's +5 V)
-    output          FAN_PWM,            // high: fan MOSFET on
+    output          FAN_PWM,            // to the fan's PWM input (JST-SH pin 2, through 100 ohm): high is full speed
     input           FAN_TACH,           // open collector from the fan, pulled up on the card
-    input           STOCK_SW_n,         // low: the stock-mode jumper or switch is closed
     output          LED_ACT             // high: LED on
   );
 
@@ -133,14 +136,14 @@ module aurora68_pds #(
   // as on the classic PiStorm (its edges time the cycle); the others two.
   // ------------------------------------------------------------------------------------------
   reg [2:0] c8m_sync = 3'b000;
-  reg [1:0] e_sync = 2'b00, pmcyc_sync = 2'b11, dtack_sync = 2'b11, vpa_sync = 2'b11, berr_sync = 2'b11;
+  reg [1:0] e_sync = 2'b00, dtack_sync = 2'b11, vpa_sync = 2'b11, berr_sync = 2'b11;
   reg [1:0] bg_sync = 2'b11, bgack_sync = 2'b11, as_sync = 2'b11, reset_sync = 2'b00, pwr_sync = 2'b00;
-  reg [1:0] tach_sync = 2'b11, sw_sync = 2'b11;
-  reg       e_last = 1'b0, pmcyc_last = 1'b1, tach_last = 1'b1;
+  reg [1:0] tach_sync = 2'b11, swst_sync = 2'b00;
+  reg       sw_hold = 1'b0, sw_stock = 1'b0;    // the Interrupt-switch stock mode, in C8M's domain (below)
+  reg       e_last = 1'b0, tach_last = 1'b1;
   always @(posedge c200m) begin
     c8m_sync   <= {c8m_sync[1:0], M68K_CLK};
     e_sync     <= {e_sync[0], M68K_E};
-    pmcyc_sync <= {pmcyc_sync[0], M68K_PMCYC_n};
     dtack_sync <= {dtack_sync[0], M68K_DTACK_n};
     vpa_sync   <= {vpa_sync[0], M68K_VPA_n};
     berr_sync  <= {berr_sync[0], M68K_BERR_n};
@@ -150,9 +153,8 @@ module aurora68_pds #(
     reset_sync <= {reset_sync[0], M68K_RESET_n};
     pwr_sync   <= {pwr_sync[0], SLOT_PWR};
     tach_sync  <= {tach_sync[0], FAN_TACH};
-    sw_sync    <= {sw_sync[0], STOCK_SW_n};
+    swst_sync  <= {swst_sync[0], sw_stock};
     e_last     <= e_sync[1];
-    pmcyc_last <= pmcyc_sync[1];
     tach_last  <= tach_sync[1];
   end
   wire c8m_rising  = !c8m_sync[2] &&  c8m_sync[1];
@@ -160,7 +162,6 @@ module aurora68_pds #(
   wire e_s = e_sync[1];
   wire e_rising  = e_s && !e_last;
   wire e_falling = !e_s && e_last;
-  wire pmcyc_fall = !pmcyc_sync[1] && pmcyc_last;
   wire dtack_s = !dtack_sync[1];          // active high from here on
   wire vpa_s   = !vpa_sync[1];
   wire berr_s  = !berr_sync[1];
@@ -187,8 +188,7 @@ module aurora68_pds #(
   // INIT, acts as a strobe); writes with bit 15 set are the slot card's own (PROTOCOL.md).
   // ------------------------------------------------------------------------------------------
   reg       status_cl = 1'b0;             // power-up: the board held in reset, as the classic CPLD does
-  reg       stock_req = 1'b0;             // ext 0 bit 0
-  reg       pmcyc_align = 1'b0;           // ext 0 bit 1
+  reg       stock_req = 1'b0;             // ext 0 bit 0 (bit 1, once /PMCYC alignment, is no longer used)
   reg [3:0] fan_duty = 4'hF;              // ext 1: full speed until the kernel says otherwise
   wire init_strobe = wr_rising && PI_A == REG_STATUS && !PI_D[15] && PI_D[0];
 
@@ -198,7 +198,6 @@ module aurora68_pds #(
         status_cl <= PI_D[1];
       else if (PI_D[14:12] == 3'd0) begin
         stock_req <= PI_D[0];
-        pmcyc_align <= PI_D[1];
       end else if (PI_D[14:12] == 3'd1)
         fan_duty <= PI_D[3:0];
     end
@@ -252,33 +251,49 @@ module aurora68_pds #(
   always @(posedge c200m)
     if (!tach_sync[1] && tach_last) tach_cnt <= tach_cnt + 6'd1;
 
-  // the stock switch: entered on its first synchronised sample (the combinational override below has
-  // already let go of the lines, so the state machine must not think it still owns the bus), left only
-  // once it has read open on three ticks in a row (about 100 us)
-  reg [2:0] sw_hist = 3'b111;
-  reg       sw_closed = 1'b0;
-  always @(posedge c200m) begin
-    if (tick) begin
-      sw_hist <= {sw_hist[1:0], sw_sync[1]};
-      if (sw_hist == 3'b111) sw_closed <= 1'b0;
+  // ------------------------------------------------------------------------------------------
+  // Stock mode from the programmer's Interrupt switch held through a reset (the Performer's way). Clocked by
+  // C8M, which runs whenever the SE is on, so it works before the Pi has started or with no Pi at all.
+  //   sw_hold:  /RESET low and /IPL2 low for four C8M clocks: let go of /BR and of our hold on /RESET now
+  //   sw_stock: the reset ended with Interrupt still held: stay off the bus until the next reset
+  // Interrupt let go before the reset ends: cancelled. Every reset begins by clearing sw_stock.
+  // ------------------------------------------------------------------------------------------
+  reg [2:0] rst_c8 = 3'b000;              // /RESET synchronised to C8M, and its last value
+  reg [1:0] ipl2_c8 = 2'b11;
+  reg [2:0] hold_cnt = 3'd0;
+  always @(posedge M68K_CLK) begin
+    rst_c8  <= {rst_c8[1:0], M68K_RESET_n};
+    ipl2_c8 <= {ipl2_c8[0], M68K_IPL_n[2]};
+    if (rst_c8[2] && !rst_c8[1])          // a reset begins: the card is back
+      sw_stock <= 1'b0;
+    if (!rst_c8[2] && rst_c8[1]) begin    // a reset ends
+      if (sw_hold) sw_stock <= 1'b1;
+      sw_hold <= 1'b0;
+      hold_cnt <= 3'd0;
+    end else if (ipl2_c8[1]) begin        // Interrupt not held: nothing armed
+      sw_hold <= 1'b0;
+      hold_cnt <= 3'd0;
+    end else if (!rst_c8[1]) begin        // in a reset with Interrupt held
+      if (hold_cnt == 3'd4) sw_hold <= 1'b1;
+      else hold_cnt <= hold_cnt + 3'd1;
     end
-    if (!sw_sync[1]) sw_closed <= 1'b1;
   end
-  wire stock_raw = !STOCK_SW_n;           // the switch as it is, for the combinational overrides
+  wire sw_off = sw_hold || sw_stock;      // for the combinational overrides
+  wire sw_stock_s = swst_sync[1];
 
   // ------------------------------------------------------------------------------------------
   // Arbitration
   // ------------------------------------------------------------------------------------------
-  localparam A_REQ = 3'd0, A_TAKE = 3'd1, A_OWN = 3'd2, A_RST = 3'd3, A_WATCH = 3'd4, A_STOCK = 3'd5;
+  localparam A_REQ = 3'd0, A_TAKE = 3'd1, A_OWN = 3'd2, A_RST = 3'd3, A_STOCK = 3'd5;
   reg [2:0]  arb = A_REQ;
-  reg        br_assert = 1'b1;            // power-up: /BR asserted (no clock needed)
+  reg        br_assert = 1'b1;            // power-up: /BR asserted (no clock needed); held while the card owns the bus
   reg        bgack_assert = 1'b0;
   reg        own_ok = 1'b0;               // the bus may be driven
   reg [4:0]  arb_cnt = 5'd0;
   reg [STOCK_BITS-1:0] stock_cnt = {STOCK_BITS{1'b0}};
   reg        stock_pulse = 1'b0;
   wire       stock_mode = (arb == A_STOCK);
-  wire       want_stock = stock_req || sw_closed;
+  wire       want_stock = stock_req || sw_stock_s;
   wire       bus_idle = !as_seen && !dtack_s && !(bgack_seen && !bgack_assert);
 
   always @(posedge c200m) begin
@@ -287,10 +302,10 @@ module aurora68_pds #(
       br_assert <= 1'b0;
       bgack_assert <= 1'b0;
       own_ok <= 1'b0;
-      stock_pulse <= 1'b1;
+      stock_pulse <= stock_req && !sw_stock_s;  // from the kernel: reset the SE; from the switch: it just was
       stock_cnt <= {STOCK_BITS{1'b0}};
     end else case (arb)
-      A_REQ: begin                        // /BR held; take the bus at the first idle moment after /BG
+      A_REQ: begin                        // /BR held; after power-up or a reset, take the bus at /BG on an idle bus
         br_assert <= 1'b1;
         own_ok <= 1'b0;
         if (bg_s && bus_idle && !board_reset && slot_pwr_s) begin
@@ -299,39 +314,27 @@ module aurora68_pds #(
           arb <= A_TAKE;
         end
       end
-      A_TAKE: begin                       // /BGACK on; a C8M clock later /BR off and the bus is ours
+      A_TAKE: begin                       // /BGACK on (and /BR still); a C8M clock later the bus is ours
         if (c8m_rising) arb_cnt <= arb_cnt + 5'd1;
-        if (arb_cnt == 5'd2) begin
-          br_assert <= 1'b0;
+        if (board_reset || !slot_pwr_s)
+          arb <= A_RST;
+        else if (arb_cnt == 5'd2) begin
           own_ok <= 1'b1;
           arb <= A_OWN;
         end
       end
-      A_OWN: begin
+      A_OWN: begin                        // /BR and /BGACK both held for as long as the card owns the bus
+        br_assert <= 1'b1;
         if (board_reset || !slot_pwr_s) begin   // a reset (ours or the SE's) resets the 68000 too
           own_ok <= 1'b0;
-          br_assert <= 1'b1;
           arb <= A_RST;
         end
       end
-      A_RST: begin                        // /BGACK and /BR held through the reset, nothing driven
+      A_RST: begin                        // /BR held through the reset, /BGACK let go, nothing driven
         own_ok <= 1'b0;
         br_assert <= 1'b1;
-        arb_cnt <= 5'd0;
-        if (!board_reset && slot_pwr_s) arb <= A_WATCH;
-      end
-      A_WATCH: begin                      // does the 68000 stay off the bus? 16 C8M clocks of quiet /AS
-        if (board_reset)
-          arb <= A_RST;
-        else if (as_seen)
-          arb <= A_REQ;                   // it did not: /BR is still asserted, take the bus at its /BG
-        else begin
-          if (c8m_rising) arb_cnt <= arb_cnt + 5'd1;
-          if (arb_cnt == 5'd16) begin
-            arb_cnt <= 5'd0;
-            arb <= A_TAKE;
-          end
-        end
+        bgack_assert <= 1'b0;
+        if (!board_reset && slot_pwr_s) arb <= A_REQ;
       end
       A_STOCK: begin                      // the SE's own 68000 runs; every line three-stated
         br_assert <= 1'b0;
@@ -342,25 +345,25 @@ module aurora68_pds #(
           if (tick && &stock_cnt) stock_pulse <= 1'b0;
         end else if (!want_stock) begin
           br_assert <= 1'b1;              // back to Aurora68: request the bus again
-          arb <= A_REQ;
+          arb <= board_reset ? A_RST : A_REQ;
         end
       end
       default: arb <= A_REQ;
     endcase
   end
 
-  // open-drain drivers with combinational overrides that need no clock (no SE power, the stock switch)
+  // open-drain drivers with combinational overrides that need no Pi clock (no SE power, Interrupt through a reset)
   wire reset_req = stock_mode ? stock_pulse : !status_cl;
-  wire drv_br    = br_assert && SLOT_PWR && !stock_raw && !stock_mode;
-  wire drv_bgack = bgack_assert && SLOT_PWR && !stock_raw;
-  wire drv_reset = reset_req && SLOT_PWR && (!stock_raw || stock_pulse);
+  wire drv_br    = br_assert && SLOT_PWR && !sw_off && !stock_mode;
+  wire drv_bgack = bgack_assert && SLOT_PWR && !sw_off;
+  wire drv_reset = reset_req && SLOT_PWR && !sw_off;
   assign M68K_BR_n    = drv_br    ? 1'b0 : 1'bz;
   assign M68K_BGACK_n = drv_bgack ? 1'b0 : 1'bz;
   assign M68K_RESET_n = drv_reset ? 1'b0 : 1'bz;
-  wire bus_enable = own_ok && slot_pwr_s && SLOT_PWR && !stock_raw;
+  wire bus_enable = own_ok && slot_pwr_s && SLOT_PWR && !sw_off;
 
   always @(posedge c200m)
-    PI_RESET <= (reset_req && !stock_mode) ? 1'b1 : !board_reset;   // classic: "free" while we pull it
+    PI_RESET <= (reset_req && !stock_mode && !sw_stock_s) ? 1'b1 : !board_reset;   // classic: "free" while we pull it
 
   // ------------------------------------------------------------------------------------------
   // The 68000 bus cycle
@@ -369,9 +372,7 @@ module aurora68_pds #(
              S_S0 = 4'd6, S_VPA = 4'd7, S_VPA_E = 4'd8, S_VPA_H = 4'd9, S_VPA_F = 4'd10;
   reg [3:0]  state = S_IDLE;
   reg        op_req = 1'b0, op_rw = 1'b1, op_uds_n = 1'b1, op_lds_n = 1'b1, a0 = 1'b0;
-  reg        op_ram = 1'b0;               // A23 = A22 = 0: the SE's RAM ($000000-$3FFFFF)
   reg        a_oe = 1'b0, d_wr_oe = 1'b0;
-  reg        pmcyc_seen = 1'b0;
   reg        last_berr = 1'b0;
   reg [2:0]  e_low_cnt = 3'd7;            // C8M falling edges since E fell (7: not known yet)
   reg [1:0]  e_hi_cnt = 2'd0;             // C8M rising edges since E rose, within a 6800 cycle
@@ -404,7 +405,6 @@ module aurora68_pds #(
           op_rw <= PI_D[9];
           op_uds_n <= PI_D[8] ? a0 : 1'b0;
           op_lds_n <= PI_D[8] ? !a0 : 1'b0;
-          op_ram <= PI_D[7:6] == 2'b00;
         end
         default: ;
       endcase
@@ -422,7 +422,6 @@ module aurora68_pds #(
     end else case (state)
       S_IDLE: begin                       // S0, waiting for the Pi and for the bus
         rw_r <= 1'b1;
-        pmcyc_seen <= 1'b0;
         if (op_req && own_ok && c8m_falling) begin    // the falling edge that begins S1
           a_oe <= 1'b1;                   // address valid a half clock before /AS (docs/18 C2)
           rw_r <= op_rw;
@@ -431,9 +430,8 @@ module aurora68_pds #(
         end
       end
       S_S1: begin
-        if (pmcyc_fall) pmcyc_seen <= 1'b1;
-        if (c8m_rising && (!pmcyc_align || !op_ram || pmcyc_seen || pmcyc_fall)) begin
-          as_r <= 1'b0;                   // S2: /AS only ever falls here, on a C8M rising edge
+        if (c8m_rising) begin
+          as_r <= 1'b0;                   // S2: /AS only ever falls here, on a C8M rising edge (C8M high)
           uds_r <= op_rw ? op_uds_n : 1'b1;
           lds_r <= op_rw ? op_lds_n : 1'b1;
           d_wr_oe <= !op_rw;
@@ -531,7 +529,7 @@ module aurora68_pds #(
   reg [15:0] data_out;                  // (no power-up value: bit 12, the identity, is a constant)
   always @(posedge c200m) begin
     if (rd_rising && PI_A == REG_STATUS)
-      data_out <= {ipl, 1'b1, own_ok, stock_mode, last_berr, board_reset, tach_cnt, sw_closed, slot_pwr_s};
+      data_out <= {ipl, 1'b1, own_ok, stock_mode, last_berr, board_reset, tach_cnt, sw_stock_s, slot_pwr_s};
   end
   assign PI_D = (PI_A == REG_STATUS && PI_RD) ? data_out : 16'bz;
 

@@ -23,7 +23,7 @@ import netlist
 
 ROOT = D.ROOT
 REPO = os.path.dirname(os.path.dirname(ROOT))
-UNUSED = {'+12V', '-5V', '-12V', 'Reserved', 'Spare', 'C16M', '/HALT', '/EXT.DTK'}
+UNUSED = {'+12V', '-5V', '-12V', 'Reserved', 'Spare', 'C16M', '/HALT', '/EXT.DTK', '/PMCYC'}   # /PMCYC: not needed (docs/22 section 10)
 
 
 def docs22_table():

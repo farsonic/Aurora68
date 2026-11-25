@@ -1052,14 +1052,14 @@
 			)
 		)
 	)
-	(symbol "AO3400A"
+	(symbol "BAT54C"
 		(pin_names
 			(offset 1.016)
 		)
 		(exclude_from_sim no)
 		(in_bom yes)
 		(on_board yes)
-		(property "Reference" "Q"
+		(property "Reference" "D"
 			(at 0 5.08 0)
 			(effects
 				(font
@@ -1067,7 +1067,7 @@
 				)
 			)
 		)
-		(property "Value" "AO3400A"
+		(property "Value" "BAT54C"
 			(at 0 -2.54 0)
 			(effects
 				(font
@@ -1093,7 +1093,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" "N-channel MOSFET 30 V 5.7 A, SOT-23 (G S D)"
+		(property "Description" "Dual Schottky diode, common cathode, SOT-23 (1 A1, 2 A2, 3 K)"
 			(at 0 0 0)
 			(effects
 				(font
@@ -1102,7 +1102,7 @@
 				(hide yes)
 			)
 		)
-		(symbol "AO3400A_0_1"
+		(symbol "BAT54C_0_1"
 			(rectangle
 				(start -5.08 3.81)
 				(end 5.08 -1.27)
@@ -1115,11 +1115,11 @@
 				)
 			)
 		)
-		(symbol "AO3400A_1_1"
-			(pin input line
+		(symbol "BAT54C_1_1"
+			(pin passive line
 				(at -7.62 2.54 0)
 				(length 2.54)
-				(name "G"
+				(name "A1"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1135,16 +1135,16 @@
 				)
 			)
 			(pin passive line
-				(at 7.62 2.54 180)
+				(at -7.62 0 0)
 				(length 2.54)
-				(name "D"
+				(name "A2"
 					(effects
 						(font
 							(size 1.27 1.27)
 						)
 					)
 				)
-				(number "3"
+				(number "2"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1153,16 +1153,16 @@
 				)
 			)
 			(pin passive line
-				(at 7.62 0 180)
+				(at 7.62 2.54 180)
 				(length 2.54)
-				(name "S"
+				(name "K"
 					(effects
 						(font
 							(size 1.27 1.27)
 						)
 					)
 				)
-				(number "2"
+				(number "3"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1265,228 +1265,6 @@
 					)
 				)
 				(number "2"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-			)
-		)
-	)
-	(symbol "Conn_01x02"
-		(pin_names
-			(offset 1.016)
-		)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(property "Reference" "J"
-			(at 0 5.08 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "Conn_01x02"
-			(at 0 -2.54 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 0 -5.08 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" ""
-			(at 0 0 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "Header 1x02"
-			(at 0 0 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(symbol "Conn_01x02_0_1"
-			(rectangle
-				(start -5.08 3.81)
-				(end 5.08 -1.27)
-				(stroke
-					(width 0.254)
-					(type default)
-				)
-				(fill
-					(type background)
-				)
-			)
-		)
-		(symbol "Conn_01x02_1_1"
-			(pin passive line
-				(at -7.62 2.54 0)
-				(length 2.54)
-				(name "Pin_1"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-				(number "1"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-			)
-			(pin passive line
-				(at -7.62 0 0)
-				(length 2.54)
-				(name "Pin_2"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-				(number "2"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-			)
-		)
-	)
-	(symbol "Conn_01x03"
-		(pin_names
-			(offset 1.016)
-		)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(property "Reference" "J"
-			(at 0 5.08 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "Conn_01x03"
-			(at 0 -5.08 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 0 -7.62 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" ""
-			(at 0 0 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "Header 1x03"
-			(at 0 0 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(symbol "Conn_01x03_0_1"
-			(rectangle
-				(start -5.08 3.81)
-				(end 5.08 -3.81)
-				(stroke
-					(width 0.254)
-					(type default)
-				)
-				(fill
-					(type background)
-				)
-			)
-		)
-		(symbol "Conn_01x03_1_1"
-			(pin passive line
-				(at -7.62 2.54 0)
-				(length 2.54)
-				(name "Pin_1"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-				(number "1"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-			)
-			(pin passive line
-				(at -7.62 0 0)
-				(length 2.54)
-				(name "Pin_2"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-				(number "2"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-			)
-			(pin passive line
-				(at -7.62 -2.54 0)
-				(length 2.54)
-				(name "Pin_3"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-				(number "3"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1634,23 +1412,23 @@
 			)
 		)
 	)
-	(symbol "D_Schottky"
+	(symbol "Conn_01x04_MP"
 		(pin_names
-			(offset 0.508)
+			(offset 1.016)
 		)
 		(exclude_from_sim no)
 		(in_bom yes)
 		(on_board yes)
-		(property "Reference" "D"
-			(at 0 2.54 0)
+		(property "Reference" "J"
+			(at 0 7.62 0)
 			(effects
 				(font
 					(size 1.27 1.27)
 				)
 			)
 		)
-		(property "Value" "D_Schottky"
-			(at 0 -2.54 0)
+		(property "Value" "Conn_01x04_MP"
+			(at 0 -7.62 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1658,7 +1436,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 0 -5.08 0)
+			(at 0 -10.16 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1675,7 +1453,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" "Schottky diode"
+		(property "Description" "Connector, 4 positions, 1.0 mm (JST-SH), with mounting pads"
 			(at 0 0 0)
 			(effects
 				(font
@@ -1684,10 +1462,10 @@
 				(hide yes)
 			)
 		)
-		(symbol "D_Schottky_0_1"
+		(symbol "Conn_01x04_MP_0_1"
 			(rectangle
-				(start -5.08 1.016)
-				(end 5.08 -1.016)
+				(start -5.08 6.35)
+				(end 5.08 -6.35)
 				(stroke
 					(width 0.254)
 					(type default)
@@ -1697,11 +1475,11 @@
 				)
 			)
 		)
-		(symbol "D_Schottky_1_1"
+		(symbol "Conn_01x04_MP_1_1"
 			(pin passive line
-				(at -7.62 0 0)
+				(at -7.62 5.08 0)
 				(length 2.54)
-				(name "K"
+				(name "Pin_1"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1717,9 +1495,9 @@
 				)
 			)
 			(pin passive line
-				(at 7.62 0 180)
+				(at -7.62 2.54 0)
 				(length 2.54)
-				(name "A"
+				(name "Pin_2"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1727,6 +1505,60 @@
 					)
 				)
 				(number "2"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at -7.62 0 0)
+				(length 2.54)
+				(name "Pin_3"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "3"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at -7.62 -2.54 0)
+				(length 2.54)
+				(name "Pin_4"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "4"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at -7.62 -5.08 0)
+				(length 2.54)
+				(name "MP"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "MP"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -3865,6 +3697,71 @@
 				)
 			)
 		)
+	)
+	(symbol "Fan_Blower_30mm"
+		(pin_names
+			(offset 1.016)
+		)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(property "Reference" "M"
+			(at 0 2.54 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "Fan_Blower_30mm"
+			(at 0 -2.54 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 0 -5.08 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" ""
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "30 mm 5 V blower fan, held by three M2 screws; its lead plugs into J3"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(symbol "Fan_Blower_30mm_0_1"
+			(rectangle
+				(start -5.08 1.27)
+				(end 5.08 -1.27)
+				(stroke
+					(width 0.254)
+					(type default)
+				)
+				(fill
+					(type background)
+				)
+			)
+		)
+		(symbol "Fan_Blower_30mm_1_1")
 	)
 	(symbol "LED"
 		(pin_names

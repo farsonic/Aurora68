@@ -7066,3 +7066,24 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      3D models went into the board (KiCad's where they exist, a box model of the 3A+ components-down and of the plug
      made by `tools/vrml.py`). Freerouting, with a via keep-out over the 3B's ports, left 2 of 139 nets open (SE_E,
      LTCH_D_WR_U); it rejected a bottom-layer cost setting, so 41 % of the track is on the bottom.
+   - *The Pi beside the plug, a fan, the Performer's arbitration, four layers (pds-card-3, 25 November 2026).* The
+     Pi 3A+ moved beside J1, turned over about its short axis so that a 3B's ports and their 40 mm plug room reach away
+     from the plug (the 3B keep-out moved to x 68.9-134.4); the CPLD, the latch U2 and both CBTD switches went under it,
+     between its header and J1, and U3-U5 behind the header. The price: with the slope met at the Pi's rear edge (0.01
+     mm margin), its audio jack, HDMI and micro-USB sockets stand 1.6, 0.5 and 0.2 mm past Apple's outline at the front
+     (warning 9e; the alternative was the Pi's back 0.15 mm over the slope). The owner's 30 mm blower followed, on a
+     JST-SH header wired as the Raspberry Pi 5's FAN connector (checked against Raspberry Pi's documentation: 1 +5 V,
+     2 PWM, 3 GND, 4 tachometer), PWM straight from the CPLD, the MOSFET, flyback diode and full-speed jumper gone; it
+     lies left of the Pi on three M2 screws, in a notch of the 3B zone (off for a 3B on the bench), outlet towards the
+     Pi. The SoC turns out to sit behind the Pi's USB socket from the only open side, so the air reaches it along its
+     rear face, not across it, and the USB pigtail needs a right-angle plug. Then docs/22 section 10's reading of the
+     MicroMac Performer: the card holds /BR for as long as it owns the bus (with /BGACK after /BG as insurance), stock
+     mode is the Interrupt switch held through a reset (in a small C8M clock domain, so it works with no Pi; the stock
+     jumper went), /PMCYC is dropped. The cycle machine stays on the Pi's 200 MHz clock, which gives the same S2 /AS
+     and S7 latch point the Performer gets from C16M without a second clock domain on the Pi's side. Icarus Verilog:
+     1608 checks pass, four broken copies fail; yosys 145 LUTs, 117 flip-flops. Routing on two layers stopped at about
+     50 open connections; the owner chose four (JLC04161H-7628: signals, ground, 3.3 V, signals), with the planes'
+     fan-out and GPCLK0 placed before the router and ground stitching after: 110 of 135 nets
+     complete, 40 connections open (mostly the data latches' slot side and the Pi's bus to them), no clearance under
+     0.15 mm by the validator's own check, which also found and fixed the hand-routed GPCLK0 clipping R1's pad. Not yet: KiCad's DRC, a
+     person's routing of the rest.

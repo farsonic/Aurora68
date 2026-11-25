@@ -12,6 +12,8 @@ placed on the bottom side KiCad turns the model over itself.
                            (USB, HDMI, audio, camera, display connectors, SoC, its own header) as boxes with Raspberry
                            Pi's drawing's sizes and heights, the microSD socket on its upper side. Not Raspberry Pi's
                            own STEP model, which is not redistributed here.
+    write_fan(path)        the owner's 30 mm blower as a box (30 x 30 x 7 mm) with its outlet face marked, in the fan
+                           footprint's frame (origin at the body's centre)
 """
 
 import os
@@ -62,4 +64,16 @@ def write_pi3aplus(path):
         boxes.append(uv(u0, v0, u1, v1, g - h, g, colours.get(name, (0.5, 0.5, 0.5))))
     for name, u0, u1, v0, v1, h in D.PI_UNDERSIDE:
         boxes.append(uv(u0, v0, u1, v1, top, top + h, (0.7, 0.7, 0.72)))
+    write(path, boxes)
+
+
+def write_fan(path):
+    h = D.FAN_SIZE / 2
+    cx, cy = D.FAN_AT
+    ox, oy0, oy1 = D.fan_outlet()
+    boxes = [box(-h, -h, 0.0, h, h, D.FAN_T, (0.12, 0.12, 0.13)),                                  # the body
+             box(-9.0, -9.0, D.FAN_T, 9.0, 9.0, D.FAN_T + 0.05, (0.35, 0.35, 0.38)),               # the inlet
+             box(h - 0.3, oy0 - cy + 0.5, 1.0, h + 0.05, oy1 - cy, D.FAN_T - 1.0, (0.85, 0.2, 0.15))]   # the outlet
+    for (x, y) in D.fan_holes():
+        boxes.append(box(x - cx - 1.6, y - cy - 1.6, D.FAN_T, x - cx + 1.6, y - cy + 1.6, D.FAN_T + 0.6, (0.7, 0.7, 0.72)))
     write(path, boxes)

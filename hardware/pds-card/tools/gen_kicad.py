@@ -33,7 +33,7 @@ ROOT = D.ROOT
 PROJECT = 'aurora68-card-p'
 NS = uuid.UUID('6f1c0b52-4c2a-4f0e-9d1a-a1b2c3d4e5f6')
 OX, OY = 30.0, 10.0                   # Apple's (0, 0) on the board's page
-DATE = '2026-11-24'
+DATE = '2026-11-25'
 REV = 'P0.1 (draft)'
 GRID = 2.54
 
@@ -96,8 +96,8 @@ def symbol_sides(name, pins):
         return [by['1'], by['3'], by['2']], [by['6'], by['5'], by['4']]
     if name == 'AMS1117-3.3':
         return [by['3'], by['1']], [by['2']]
-    if name == 'AO3400A':
-        return [by['1']], [by['3'], by['2']]
+    if name == 'BAT54C':
+        return [by['1'], by['2']], [by['3']]
     if name in ('R', 'C', 'Polyfuse', 'LED', 'D_Schottky'):
         return [pins[0]], [pins[1]]
     if name == 'PWR_FLAG':
@@ -277,6 +277,46 @@ def pi_socket():
     return fp
 
 
+def fan_blower():
+    """The owner's 30 mm blower, flat on the card: three non-plated 2.2 mm holes for M2 screws or plastic pins, the
+    body's outline, its outlet and its lead on the silkscreen. Origin at the body's centre, drawn as it sits on the
+    card (design.fan_xy: the drawing's Y along +x, its X along +y), so the footprint is placed at rotation 0."""
+    fp = fp_header('Aurora68_Fan_Blower_30x30_3xM2',
+                   '30 x 30 x 7 mm 5 V blower (the owner\'s; Raspberry Pi 5 fan pinout on its JST-SH lead), held by three M2 '
+                   'screws or plastic pins through its 2.1 mm holes: 24.9 mm apart along one edge and 23.1 mm up from one '
+                   'end of it, none at the fourth corner. Hole-to-edge offsets of %.2f mm are ASSUMED (the drawing gives none): '
+                   'measure the fan. Outlet: the edge opposite the 24.9 mm pair, facing +x (the Pi). Lead: leaves the -y edge beside the '
+                   'hole at the pair\'s -x end. Tracks may pass under the body; no parts.' % D.FAN_EDGE,
+                   'fan blower 30mm', 'exclude_from_pos_files')
+    cx, cy = D.FAN_AT
+    h = D.FAN_SIZE / 2
+    for (x, y) in D.fan_holes():
+        fp.append(S('pad', '', Sym('np_thru_hole'), Sym('circle'), S('at', round(x - cx, 3), round(y - cy, 3)),
+                    S('size', D.FAN_HOLE_D, D.FAN_HOLE_D), S('drill', D.FAN_HOLE_D), S('layers', '*.Cu', '*.Mask')))
+        fp.append(fp_circle(round(x - cx, 3), round(y - cy, 3), 2.0, 'F.SilkS', 0.12))
+    fp.append(fp_rect(-h, -h, h, h, 'F.Fab', 0.1))
+    fp.append(fp_rect(-h - 0.25, -h - 0.25, h + 0.25, h + 0.25, 'F.CrtYd', 0.05))
+    # the outline on the silkscreen, the outlet edge drawn thick with arrows, the lead's exit marked
+    ox, oy0, oy1 = D.fan_outlet()
+    fp.append(fp_line(-h, -h, -h, h, 'F.SilkS', 0.12))
+    fp.append(fp_line(-h, h, h, h, 'F.SilkS', 0.12))
+    fp.append(fp_line(-h, -h, h, -h, 'F.SilkS', 0.12))
+    fp.append(fp_line(h, oy1 - cy, h, h, 'F.SilkS', 0.12))
+    fp.append(fp_line(h, oy0 - cy, h, oy1 - cy, 'F.SilkS', 0.4))
+    for yy in (oy0 - cy + 5, (oy0 + oy1) / 2 - cy, oy1 - cy - 5):
+        fp.append(fp_line(h - 6, yy, h - 1, yy, 'F.SilkS', 0.15))
+        fp.append(fp_line(h - 2.5, yy - 1.2, h - 1, yy, 'F.SilkS', 0.15))
+        fp.append(fp_line(h - 2.5, yy + 1.2, h - 1, yy, 'F.SilkS', 0.15))
+    lx, ly = D.fan_lead_exit()
+    fp.append(fp_line(lx - cx, ly - cy, lx - cx, ly - cy - 2.5, 'F.SilkS', 0.15))
+    fp.append(fp_text('FAN M1 (optional): outlet to the Pi', -h + 2, -2.0, 'F.SilkS', 1.0))
+    fp.append(fp_text('remove for a Pi 3B/3B+', -h + 2, 0.2, 'F.SilkS', 1.0))
+    fp.append(fp_text('lead', lx - cx + 2.5, ly - cy + 1.8, 'F.SilkS', 0.8))
+    fp.append(fp_text('hole offsets 2.55 ASSUMED', -h + 2, 3.5, 'F.Fab', 0.8))
+    fp.append(model(MODELS + 'Aurora68_Fan_Blower_30x30x7.wrl'))
+    return fp
+
+
 def npth_hole(name, d, keep, descr, mdl=None):
     fp = fp_header(name, descr, 'mounting hole', 'exclude_from_pos_files exclude_from_bom')
     if mdl:
@@ -304,6 +344,7 @@ def write_models():
     os.makedirs(os.path.join(ROOT, 'lib', 'aurora68.3dshapes'), exist_ok=True)
     vrml.write_plug(os.path.join(ROOT, 'lib', 'aurora68.3dshapes', 'Aurora68_DIN41612_C_3x32_Male_Straight.wrl'))
     vrml.write_pi3aplus(os.path.join(ROOT, 'lib', 'aurora68.3dshapes', 'Aurora68_RPi3Aplus_ComponentsDown.wrl'))
+    vrml.write_fan(os.path.join(ROOT, 'lib', 'aurora68.3dshapes', 'Aurora68_Fan_Blower_30x30x7.wrl'))
 
 
 def write_footprints():
@@ -313,6 +354,7 @@ def write_footprints():
         'Aurora68_AppleCardSupport_3.86mm': npth_hole('Aurora68_AppleCardSupport_3.86mm', D.APPLE_HOLE_D, 8.0,
                                                       "Hole for the Macintosh SE logic board's expansion card supports, 3.86 mm "
                                                       "(Designing Cards and Drivers, 3rd ed., Figures 17-1 and 17-5)"),
+        'Aurora68_Fan_Blower_30x30_3xM2': fan_blower(),
         'Aurora68_PiStandoff_M2.5': npth_hole('Aurora68_PiStandoff_M2.5', D.PI_HOLE_D, 5.5,
                                               'M2.5 hole for a Raspberry Pi standoff (8.5 mm), 5.5 mm keep-out for the standoff',
                                               model(KMODELS + 'Mounting_Wuerth.3dshapes/Mounting_Wuerth_WA-SMSI-M2.5_H8.5mm_9774085151.step')),
@@ -496,7 +538,7 @@ def write_schematics(parts):
 # ========================================================================================================
 # Board
 # ========================================================================================================
-LAYERS = [(0, 'F.Cu', 'signal'), (31, 'B.Cu', 'signal'), (32, 'B.Adhes', 'user', 'B.Adhesive'),
+LAYERS = [(0, 'F.Cu', 'signal'), (1, 'In1.Cu', 'power'), (2, 'In2.Cu', 'power'), (31, 'B.Cu', 'signal'), (32, 'B.Adhes', 'user', 'B.Adhesive'),
           (33, 'F.Adhes', 'user', 'F.Adhesive'), (34, 'B.Paste', 'user'), (35, 'F.Paste', 'user'),
           (36, 'B.SilkS', 'user', 'B.Silkscreen'), (37, 'F.SilkS', 'user', 'F.Silkscreen'), (38, 'B.Mask', 'user'),
           (39, 'F.Mask', 'user'), (40, 'Dwgs.User', 'user', 'User.Drawings'), (41, 'Cmts.User', 'user', 'User.Comments'),
@@ -628,12 +670,23 @@ def write_board(parts, root_uuid, sheet_uuid):
             S('general', S('thickness', D.APPLE_THICKNESS), S('legacy_teardrops', Sym('no'))), S('paper', 'A3'),
             S('title_block', S('title', 'Aurora68 Card P (Macintosh SE PDS, Raspberry Pi 3A+)'), S('date', DATE), S('rev', REV),
               S('company', 'Aurora68'), S('comment', 1, 'Draft for review: DRC not run in KiCad; not built'),
-              S('comment', 2, '2 layers, 1.6 mm FR-4, HASL; 0.15 mm track/space minimum, 0.3 mm drills minimum')))
+              S('comment', 2, '4 layers, 1.6 mm (JLC04161H-7628): L1 signals, L2 GND, L3 +3.3 V, L4 signals; HASL'),
+              S('comment', 3, '0.15 mm track/space minimum, vias 0.6/0.3 mm, through vias only, no via-in-pad, tented')))
     layers = S('layers')
     for l in LAYERS:
         layers.append([l[0], l[1], Sym(l[2])] + ([l[3]] if len(l) > 3 else []))
     pcb.append(layers)
-    pcb.append(S('setup', S('pad_to_mask_clearance', 0), S('allow_soldermask_bridges_in_footprints', Sym('no')),
+    stack = S('stackup', S('layer', 'F.SilkS', S('type', 'Top Silk Screen')), S('layer', 'F.Paste', S('type', 'Top Solder Paste')))
+    for name, kind, t, mat, er in D.STACKUP:
+        L = S('layer', name, S('type', kind), S('thickness', t))
+        if mat:
+            L += [S('material', mat), S('epsilon_r', er), S('loss_tangent', 0.02)]
+        elif 'Mask' in name:
+            L += [S('epsilon_r', er), S('loss_tangent', 0)]
+        stack.append(L)
+    stack += [S('layer', 'B.Paste', S('type', 'Bottom Solder Paste')), S('layer', 'B.SilkS', S('type', 'Bottom Silk Screen')),
+              S('copper_finish', 'HAL lead-free'), S('dielectric_constraints', Sym('no'))]
+    pcb.append(S('setup', stack, S('pad_to_mask_clearance', 0), S('allow_soldermask_bridges_in_footprints', Sym('no')),
                  S('aux_axis_origin', *B(0, 0)), S('grid_origin', *B(0, 0))))
     pcb.append(S('net', 0, ''))
     for n, i in sorted(netno.items(), key=lambda kv: kv[1]):
@@ -670,11 +723,14 @@ def write_board(parts, root_uuid, sheet_uuid):
     pcb.append(gr_rect(xa, yz, xb, yb, 'F.Fab', 0.1, 'z2w'))
     for (x0, y0, x1, y1, name, what) in D.keepouts():
         if name == 'PI3B_EXT':
-            pcb.append(gr_rect(x0, y0, x1, y1, 'F.SilkS', 0.15, 'pi3b'))
-            pcb.append(gr_text('Pi 3B/3B+ USB/Ethernet and their plugs:', x0 + 1, y0 + 4, 'F.SilkS', 1.0))
-            pcb.append(gr_text('keep clear, no parts (3B/3B+ bench use only)', x0 + 1, y0 + 6, 'F.SilkS', 1.0))
-            # no footprints or pads anywhere in it; tracks, vias and the pour may pass (vias: see PI3B_PORTS)
-            pcb.append(rule_area(name, rect_pts(x0, y0, x1, y1), footprints=True, pads=False))
+            # no footprints or pads anywhere in it, except in the notch the optional fan M1 stands in (to be taken
+            # off for a 3B on the bench); tracks, vias and the pour may pass (vias: see PI3B_PORTS)
+            n0, n1, n2, n3 = D.fan_notch()
+            pts = [(x0, y0), (n0, y0), (n0, n3), (n2, n3), (n2, y0), (x1, y0), (x1, y1), (x0, y1)]
+            pcb.append(gr_poly(pts, 'F.SilkS', 0.15))
+            pcb.append(gr_text('Pi 3B/3B+ USB/Ethernet and their plugs:', x0 + 1, n3 + 4, 'F.SilkS', 1.0))
+            pcb.append(gr_text('keep clear, no parts (3B/3B+ bench use only; fan M1 off)', x0 + 1, n3 + 6, 'F.SilkS', 1.0))
+            pcb.append(rule_area(name, pts, footprints=True, pads=False))
         elif name == 'PI3B_PORTS':
             pcb.append(rule_area(name, rect_pts(x0, y0, x1, y1), footprints=False, vias=False))   # no vias under the ports
         elif name == 'APPLE_SUPPORT':
@@ -693,9 +749,10 @@ def write_board(parts, root_uuid, sheet_uuid):
     # ground: both layers
     zone_pts = [(1.0, D.CARD_REAR_Y + 1.0), (D.APPLE_W - 1.0, D.CARD_REAR_Y + 1.0), (D.APPLE_W - 1.0, D.APPLE_H - 1.0),
                 (D.APPLE_TAB_X + 1.0, D.APPLE_H - 1.0), (D.APPLE_TAB_X + 1.0, D.APPLE_BODY_H - 1.0), (1.0, D.APPLE_BODY_H - 1.0)]
-    for layer in ('B.Cu', 'F.Cu'):
-        pcb.append(S('zone', S('net', netno['GND']), S('net_name', 'GND'), S('layer', layer), S('uuid', uid('gndzone', layer)),
-                     S('name', 'GND_' + layer[0]), S('hatch', Sym('edge'), 0.5), S('priority', 0 if layer == 'F.Cu' else 1),
+    for layer, net in (('In1.Cu', 'GND'), ('In2.Cu', '+3V3'), ('B.Cu', 'GND'), ('F.Cu', 'GND')):
+        pcb.append(S('zone', S('net', netno[net]), S('net_name', net), S('layer', layer), S('uuid', uid('gndzone', layer)),
+                     S('name', ('GND_' if net == 'GND' else 'P3V3_') + layer.replace('.Cu', '')), S('hatch', Sym('edge'), 0.5),
+                     S('priority', 0),
                      S('connect_pads', S('clearance', 0.3)), S('min_thickness', 0.25), S('filled_areas_thickness', Sym('no')),
                      S('fill', S('thermal_gap', 0.5), S('thermal_bridge_width', 0.5)),
                      S('polygon', S('pts', *[S('xy', *B(x, y)) for x, y in zone_pts]))))
@@ -734,9 +791,9 @@ def write_project():
                  "microvia_diameter": 0.3, "microvia_drill": 0.1, "pcb_color": "rgba(0, 0, 0, 0.000)",
                  "schematic_color": "rgba(0, 0, 0, 0.000)"}],
             "meta": {"version": 3},
-            "netclass_patterns": [{"netclass": "Supply", "pattern": p} for p in ("GND", "+3V3")] +
+            "netclass_patterns": [{"netclass": "Supply", "pattern": p} for p in ("GND", "+3V3", "5V_FAN")] +
                                  [{"netclass": "Power", "pattern": p} for p in
-                                  ("5V_PI", "+5V_SLOT", "5V_F", "5V_FAN", "5V_PANEL", "FAN_GND_SW")]},
+                                  ("5V_PI", "+5V_SLOT", "5V_F", "5V_PANEL")]},
         "pcbnew": {"page_layout_descr_file": ""},
         "schematic": {"legacy_lib_dir": "", "legacy_lib_list": []},
         "sheets": [[uid('root'), "Root"]] + [[uid('sheet', sh), title] for sh, title, _ in D.SHEETS],
@@ -765,6 +822,7 @@ def write_bom(parts):
     for (value, fp, mpn, lcsc), ps in groups.items():
         refs = sorted((p.ref for p in ps), key=refkey)
         kind = 'none (drilled hole)' if ps[0].sym == 'MountingHole' else \
+            'optional, fitted by hand (M2 screws)' if ps[0].sym == 'Fan_Blower_30mm' else \
             'through-hole' if any(s in fp for s in ('PinHeader', 'PiSocket', 'DIN41612')) else 'SMD (top)'
         rows.append({'References': ' '.join(refs), 'Qty': len(refs), 'Value': value, 'Footprint': fp,
                      'Description': D.SYMBOLS[ps[0].sym][2], 'MPN / requirement': mpn, 'LCSC': lcsc,
@@ -777,6 +835,29 @@ def write_bom(parts):
         for r in rows:
             w.writerow(r)
     return rows
+
+
+def write_fab_notes():
+    """fab-notes.md: what to tell the board house, from the same data as the board file."""
+    L = ['<!-- SPDX-License-Identifier: MPL-2.0 -->', '# Card P: fabrication notes (written by tools/gen_kicad.py)', '',
+         '*%s, rev %s.* A draft: KiCad\'s DRC has not been run on it (README).' % (DATE, REV), '',
+         '- **Layers:** 4. **Thickness:** 1.6 mm. **Stackup:** JLCPCB JLC04161H-7628 (or the board house\'s standard '
+         '1.6 mm 4-layer with 7628 prepreg):', '',
+         '| Layer | Use | Thickness (mm) | Material |', '|---|---|---|---|']
+    use = {'F.Cu': 'L1: signals, components (top)', 'In1.Cu': 'L2: ground plane (GND), solid',
+           'In2.Cu': 'L3: +3.3 V plane', 'B.Cu': 'L4: signals, the slot plug J1 from this side'}
+    for name, kind, t, mat, er in D.STACKUP:
+        L.append('| %s | %s | %.4g | %s |' % (name, use.get(name, kind), t, (mat + ', er %.1f' % er) if mat else
+                                               ('copper, %s oz' % ('1' if t > 0.03 else '0.5') if kind == 'copper' else 'solder mask')))
+    L += ['', '- **Finish:** HASL lead-free. Green solder mask both sides, white silkscreen on the top.',
+          '- **Rules:** 0.15 mm minimum track and space; vias 0.6 mm pad, 0.3 mm drill, through vias only (no blind or '
+          'buried vias), no via-in-pad, vias tented. Smallest plated hole 0.3 mm; non-plated holes 2.2, 2.75, 2.85 and 3.86 mm.',
+          '- **No impedance control** (a 0.15 mm track on L1 over L2 is about 83 ohm).',
+          '- **Outline:** 213.25 x 99.42 mm with the slot plug\'s tab, five 2.0 mm x 45 degree chamfers (Edge.Cuts).',
+          '- **Assembly:** SMD on the top side only (`bom.csv`, "SMD (top)"); by hand: the press-fit 96-pin plug J1 from the '
+          'bottom, the Pi socket J2, the header J5; the blower M1 (optional) on three M2 screws.', '']
+    with open(os.path.join(ROOT, 'fab-notes.md'), 'w') as f:
+        f.write('\n'.join(L))
 
 
 def write_qsf():
@@ -804,7 +885,10 @@ def write_qsf():
     with open(os.path.join(ROOT, 'rtl', 'aurora68_pds.sdc'), 'w') as f:
         f.write('# SPDX-License-Identifier: MIT\n# The Pi\'s GPCLK0, 200 MHz; every slot input is synchronised to it.\n'
                 'create_clock -name PI_CLK -period 5.000 [get_ports PI_CLK]\n'
-                'set_false_path -from [get_ports {M68K_* SLOT_PWR FAN_TACH STOCK_SW_n PI_RD PI_WR PI_A*}]\n')
+                '# C8M (7.8336 MHz) clocks the small Interrupt-switch stock-mode logic, which must work with no Pi\n'
+                'create_clock -name C8M -period 127.655 [get_ports M68K_CLK]\n'
+                'set_clock_groups -asynchronous -group {PI_CLK} -group {C8M}\n'
+                'set_false_path -from [get_ports {M68K_* SLOT_PWR FAN_TACH PI_RD PI_WR PI_A*}]\n')
 
 
 def main():
@@ -816,6 +900,7 @@ def main():
     write_project()
     rows = write_bom(parts)
     write_qsf()
+    write_fab_notes()
     print('%d parts, %d BOM lines, %d nets' % (len(parts), len(rows), len(net_table(parts))))
 
 

@@ -6,7 +6,7 @@
 	(paper "A3")
 	(title_block
 		(title "Aurora68 Card P: Power and protection")
-		(date "2026-11-24")
+		(date "2026-11-25")
 		(rev "P0.1 (draft)")
 		(company "Aurora68")
 		(comment 1 "Draft for review: not checked by ERC/DRC in KiCad, not built")
