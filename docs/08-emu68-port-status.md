@@ -6783,6 +6783,9 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      WiFi survives the pairing, and whether the machine stays up. If the WiFi still drops during a pairing, `bt.scan=`
      does not reach it (a pairing is the user's); pairing with `wifi=off`, or over Ethernet, separates the two. The
      GPIO 43 and BD address lines say whether the firmware set the chip up as Raspberry Pi OS expects.
+   - *On the owner's SE (25 November 2026), with the 0.17 kernel.* The LE keyboard and mouse connected with the WiFi
+     up and a ping running, and both came back by themselves after being switched off and on. The log and the ping's
+     figures are still to come.
 
 142. **Disk images served from the SD card as the Mac asks, and a larger startup disk (24 November 2026).** The owner:
    "Let's make a larger image." Their startup disk, `sys710pi.image` ("Mac Volume", 95 MB, the card's root, served by
@@ -6911,6 +6914,10 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      in the Finder (its KB/s is the card's real speed for the slots), and the service loop's longest card turn in the
      same heartbeat (`[PSMAC]   service loop: ... card N us`; expected a few milliseconds). Then a Shut Down, a few
      seconds, the power off, and a start: what was copied is there.
+   - *On the owner's SE (25 November 2026).* hfsgrow.py made a 1 GB copy of the 95 MB startup disk (608 forks, 93 MB;
+     475 files and 89 folders compared, "all the same"; the partition map kept, 16 KB allocation blocks, 919 MB free).
+     The SE started from it, served from the card: 40,569 card reads and 0 errors to the Finder, the Mac reading 2.2 MB,
+     the cache 1,007 hits to 70 misses, the card at 10.7 MB/s. A large Finder copy is still to be logged.
 
 143. **Apple II disks from the Mac (24 November 2026).** The owner keeps folders of Apple II disk images on the Mac and
    the NAS and wanted them in the Apple II window "on the Mac side"; the Apple II card (item 137) offered only the images

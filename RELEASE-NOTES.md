@@ -2,6 +2,18 @@
 
 ## Next release (on main, not released yet)
 
+Nothing yet since 0.17.
+
+## 0.17 — larger disks, Apple II disks from the Mac, the floppy's figures (25 November 2026)
+
+Since 0.16, in short: disk images larger than the Pi's memory, served from the SD card, and `hfsgrow.py` to move a
+startup disk to a larger image (confirmed on the owner's SE: a 1 GB copy of the 95 MB startup disk, all 475 files
+compared, starts the Mac, served from the card with no errors); Apple II disks from any Mac volume; Bluetooth set up as
+Raspberry Pi OS does it (confirmed: the keyboard and the mouse connect with the WiFi up, and come back by themselves
+after being switched off); no more Apple II or PC pictures left on other windows; SD card and USB stick disk icons;
+and the floppy: a guard on the IWM's read timing and its figures in the log, not yet tried on a real drive. Copy the
+new `*.declrom` files to the card (PiDisk's icons) and install the new Aurora68 Disk if you use it.
+
 - **Apple II disks from the Mac** (docs/20 "Disks from the Mac", docs/08 item 143, 24 November 2026; the owner keeps
   folders of Apple II images on the Mac and the NAS, and the Apple II card offered only the SD card's root). Aurora68
   Apple II 1.2 puts images from any Mac volume (the startup disk, a SCSI disk, an AppleShare volume, a floppy) into the
@@ -46,6 +58,15 @@
   stick; Get Info's where says "SD card" or "USB drive" (PiDisk in the declaration ROMs, 24 November 2026).
 - **Compact Macs on real hardware:** testers run a Plus and a 512Ke. On the 512Ke the serial ports work. A hum from
   the Plus's speaker came from its PicoPSU-style supply's -12 V rail, not from Aurora68 (docs/18, section 7).
+- **The floppy on the compact boards** (docs/08 item 146, 25 November 2026). A read of the IWM that finds a byte is
+  kept at least 2 us (`mac.iwmgap=`) from the next access, so a fast 68k cannot read the same byte twice; while the
+  floppy is in use the heartbeat prints a `[PSMAC:IWM]` line (reads, their spacing, the guard's waits, stalls and the
+  job behind each, the Sony driver's failed reads and last error), and the screen's rows and other errands wait while
+  the floppy is busy. On the Plus, 512Ke, 512K and 128K the IWM's mode is translated for their 7.8 MHz clock (the IIci
+  ROM writes the SE's), without which no floppy could be read there; on the 128K and 512K the 400K drive's speed is set
+  for each zone from the 64K ROM's own table (a ROM patch on Seek, `mac.floppyspeed=`). Tried only in MAME, where the
+  drive's bytes decode but no read completed through the testbed's slow bridge; the owner's SE is next. Kernel only;
+  `Aurora68 IO Test` (in mac/build) is the test.
 
 ## 0.16 — Bluetooth and WiFi together on the Pi 3B (24 November 2026)
 
