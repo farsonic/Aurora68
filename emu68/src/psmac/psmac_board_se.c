@@ -125,10 +125,27 @@ static void rbv_recalc(void)
 /* the level-2 interrupt the RBV would raise: any enabled flag */
 int psmac_se_rbv_irq(void) { rbv_recalc(); return (rbv_ifr & rbv_ier & 0x7f) != 0; }
 
-static uint32_t rbv_read(uint32_t off)
+/* The register an offset names (27 November 2026, docs/23 section 15). The RBV's registers are $00-$13 and the chip
+   decodes the low address lines for them, so software written for both the VIA2 and the RBV uses offsets that name
+   the right register on either: $1A03 is the VIA's register 13 (IFR, A9-A12) and the RBV's $03, $1C13 the VIA's 14 (IER)
+   and the RBV's $13, and $1E02 the VIA's 15 (port A, the Mac II's slot interrupts) and the RBV's $02 (SIFR). Linux's
+   mac_via.h names rIFR $1A03 and rIER $1C13 for that reason, and A/UX 3's kernel reads the slot flags at $1E02. Until
+   now an offset at $100 or above was read as a VIA register number only (13 the IFR, 14 the IER, MAME's rbv.cpp does
+   the same), so $1E02 read 0: every slot "interrupting", A/UX called slot 9's handler with nothing pending and
+   panicked ("no slot 10 interrupt handler" ... "Polling routine didn't handle interrupt"). Offsets whose low five bits
+   are zero keep the VIA reading ($1A00 the IFR, $1C00 the IER), which is how the IIci ROM reaches some of them. */
+static uint32_t rbv_regno(uint32_t off)
 {
     uint32_t reg = off & 0x1fff;
-    if (reg >= 0x100) { reg >>= 9; if (reg == 13) { rbv_recalc(); return rbv_ifr | ((rbv_ifr & rbv_ier & 0x7f) ? 0x80 : 0); } if (reg == 14) return rbv_ier; return 0; }
+    if (reg < 0x100) return reg;
+    if (reg & 0x1f) return reg & 0x1f;
+    reg >>= 9;
+    return reg == 13 ? 0x03 : reg == 14 ? 0x13 : 0x100;   /* 0x100: no register (reads 0, writes dropped) */
+}
+static uint32_t rbv_read(uint32_t off)
+{
+    uint32_t reg = rbv_regno(off);
+    if (reg >= 0x100) return 0;
     switch (reg) {
     case 0x02: return (rbv_regs[2] & 0x7f) | (slot_line() ? 0 : 0x01) | 0x3e;   /* slot IFR: slots A-E idle (1), slot 9 ours */
     case 0x03: rbv_recalc(); return rbv_ifr | ((rbv_ifr & rbv_ier & 0x7f) ? 0x80 : 0);
@@ -140,8 +157,9 @@ static uint32_t rbv_read(uint32_t off)
 }
 static void rbv_write(uint32_t off, uint8_t data)
 {
-    uint32_t reg = off & 0x1fff;
-    if (reg >= 0x100) { reg >>= 9; if (reg == 13) { if (data & 0x80) rbv_ifr |= data & 0x7f; else rbv_ifr &= ~(data & 0x7f); } else if (reg == 14) { if (data & 0x80) rbv_ier |= data & 0x7f; else rbv_ier &= ~(data & 0x7f); } return; }
+    uint32_t reg = rbv_regno(off);
+    if (reg >= 0x100) return;
+    if ((off & 0x1fff) >= 0x100 && reg == 0x13) { if (data & 0x80) rbv_ier |= data & 0x7f; else rbv_ier &= ~(data & 0x7f); return; }   /* as before at $1C00/$1C13: without the POST's $FF quirk below */
     switch (reg) {
     case 0x02: rbv_regs[2] |= data & 0x40; break;
     case 0x03: if (data & 0x80) rbv_ifr |= data & 0x7f; else rbv_ifr &= ~(data & 0x7f); break;

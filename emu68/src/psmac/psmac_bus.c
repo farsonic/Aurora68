@@ -1039,6 +1039,7 @@ static inline int rbv_reg(uint32_t addr)              /* pseudo-VIA register ind
     if ((addr & 0xff0fe000u) != 0x50026000u) return -1;
     uint32_t off = addr & 0x1fff;
     if (off < 0x100) return (int)off;
+    if (off & 0x1f) return (int)(off & 0x1f);    /* the RBV decodes the low lines: $1E02 is the SIFR, $1A03 the IFR, $1C13 the IER (psmac_board_se.c, rbv_regno) */
     switch (off >> 9) { case 13: return 0x03; case 14: return 0x13; default: return -1; }
 }
 static uint32_t rbv_merge_read(uint32_t addr, int size, uint32_t data)
