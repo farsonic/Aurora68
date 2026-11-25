@@ -147,3 +147,4 @@ mac/build/aa2/
 # Aurora68 IO Test (make -C mac iotest, docs/12): its intermediates; the application itself is committed
 mac/build/iotest.elf
 mac/build/it/
+mac/build/wifi_pick_test
