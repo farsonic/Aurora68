@@ -892,6 +892,7 @@ static void sp_unmap4k(struct space *s, uint32_t la, int tlbi)
 static void space_install(struct space *s)
 {
     mmu_space_install(s->ttbr);
+    psmac_views.cur = s->ttbr;
     if (!spaces_on) {
         /* the first one: from here on core 0 never runs on mmu_user_L1 again, whose entries for the 68k's space
            (the stock identity set, global) leave the TLB now, with the kernel's alias of them */

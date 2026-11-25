@@ -20,12 +20,13 @@
 |     ROM=mac/build/mmutest.rom tools/run-solo.sh 60 mac.mmu=full
 | (run-solo.sh still names the usual disk image and declaration ROM; this program reads neither) and read the
 | result in the kernel log:
-|     [MAC] MMU test: 127 passed, 0 failed, 122 bus errors taken
-| (50 cases after phase 1, 86 after phase 2: T12-T18, the PMMU's other instructions; 127 after phase 3, 26 November
-| 2026: T19-T24 and T26, two processes with their own CRPs and the same pages on other frames, data and code, a loop of
-| 4000 context switches, SRE with the supervisor's own tables, MOVES across the spaces and into CPU space, PFLUSH by
-| function code and mask, an exception's frame pushed through the supervisor's tables, code run from a page that
-| faults on its fetch; docs/23-mmu.md section 12).
+|     [MAC] MMU test: 137 passed, 0 failed, 123 bus errors taken
+| (50 cases after phase 1, 86 after phase 2: T12-T18, the PMMU's other instructions; 137 after phase 3, 26 November
+| 2026: T19-T24, T26 and T27, two processes with their own CRPs and the same pages on other frames, data and code,
+| a loop of 4000 context switches, SRE with the supervisor's own tables (user mode entered by ANDI, RTE and MOVE to
+| SR), MOVES across the spaces and into CPU space, PFLUSH by function code and mask, an exception's frame pushed
+| through the supervisor's tables, code run from a page that faults on its fetch, and 48 roots for the kernel's 32
+| spaces; docs/23-mmu.md section 12).
 | mmutest-halt.rom ends with T25 instead of the benchmark: an exception whose frame cannot be pushed, after which the
 | kernel must log the 68030's double bus fault and stop running the 68k.
 | Without mac.mmu=full the bus errors are never delivered (the shim reads $BAD0BAD0 and drops writes), so the
@@ -64,6 +65,7 @@
 	.equ	ROOT2,	0x00066000		| process B's CRP
 	.equ	ROOT3,	0x00066010		| the SRP
 	.equ	TCSRE,	0x00066020		| TC with SRE
+	.equ	ROOT4,	0x00066030		| T27's root pointers
 	.equ	MSG,	0x00063000		| a log line
 	.equ	FAILS,	0x00063100		| the failure list (names and values)
 	.equ	SSP,	0x00070000
@@ -635,10 +637,27 @@ t18:	fmove.l	(%a0),%fp0			| the handler maps the page; the FMOVE runs again
 	andi.w	#0xDFFF,%sr
 	move.l	WIN+0xC2000,%d4			| user
 	trap	#0
+	moveq	#0,%d5				| into user mode by RTE (a frame of format 0 with S clear), as a kernel returns
+	clr.w	-(%sp)
+	pea	1f(%pc)
+	clr.w	-(%sp)
+	rte
+1:	move.l	WIN+0xC2000,%d5
+	trap	#0
+	moveq	#0,%d6				| and by MOVE to SR
+	move.w	#0x0000,%sr
+	move.l	WIN+0xC2000,%d6
+	trap	#0
 	move.l	%d2,R0
 	move.l	%d4,R0+4
+	move.l	%d5,R0+8
+	move.l	%d6,R0+12
 	want	n_t21s, R0, 0x5555AA21
 	want	n_t21u, R0+4, 0x55550021
+	want	n_t21r, R0+8, 0x55550021
+	want	n_t21m, R0+12, 0x55550021
+	move.l	WIN+0xC2000,%d2			| supervisor again
+	want	n_t21s2, %d2, 0x5555AA21
 	want	n_t21c, V_COUNT, 0
 
 	| ---- T22: MOVES: the user's space from supervisor mode, SFC/DFC 5, CPU space, a refused user page ----
@@ -777,6 +796,24 @@ t23s:	move.l	WIN+0xC3000,%d3			| supervisor: a bus error, mapped one to one in t
 	want	n_t26s, %d0, 0x5006		| FB, RB, supervisor program
 	want	n_t26a, V_ADDR, WIN+0xC6000	| the stage B address
 	want	n_t26pc, V_PC, WIN+0xC6000
+
+	| ---- T27: 48 root pointers, more than the 32 spaces the kernel keeps: the least recently used ones are emptied
+	|      and reused, with their translated blocks (the same tables each time, the limit field telling the roots apart)
+	move.l	#0x00100002,%d1			| limit 16 and up: all 16 level A entries stay inside it
+	moveq	#0,%d6
+	move.w	#47,%d7
+1:	move.l	%d1,ROOT4
+	move.l	#TBLA,ROOT4+4
+	lea	ROOT4,%a0
+	pmove	(%a0),%crp
+	add.l	WIN+0xC0000,%d6			| process A's page C0 (frame D0)
+	jsr	WIN+0xC1000			| and its code (frame D1)
+	add.l	%d0,%d6
+	add.l	#0x00010000,%d1
+	dbra	%d7,1b
+	lea	ROOT,%a0
+	pmove	(%a0),%crp
+	want	n_t27, %d6, 0x1DFE22B0		| 48 x ($AAAA0019 + $A0A0A0A0), modulo 2^32
 
 p2skip:
 
@@ -1053,6 +1090,9 @@ n_t20c:	.asciz	"t20count"
 n_t21s:	.asciz	"t21super"
 n_t21u:	.asciz	"t21user"
 n_t21c:	.asciz	"t21count"
+n_t21r:	.asciz	"t21rte"
+n_t21m:	.asciz	"t21movesr"
+n_t21s2: .asciz	"t21super2"
 n_t22r:	.asciz	"t22read"
 n_t22s:	.asciz	"t22sfc5"
 n_t22w:	.asciz	"t22write"
@@ -1086,6 +1126,7 @@ n_t26f:	.asciz	"t26fmt"
 n_t26s:	.asciz	"t26ssw"
 n_t26a:	.asciz	"t26addr"
 n_t26pc: .asciz	"t26pc"
+n_t27:	.asciz	"t27sum"
 s_t20:	.asciz	"MMU test: context-switch loop (4000 PMOVEs to CRP) starts"
 s_t20e:	.asciz	"MMU test: context-switch loop done"
 s_halt:	.asciz	"MMU test: T25, an exception whose frame cannot be pushed: the 68030 should halt now"

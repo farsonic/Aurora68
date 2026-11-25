@@ -139,7 +139,7 @@ uint32_t psmac_mmu_jit_finish(void *dst)
 
 /* mac.mmu=full, phase 3 (docs/23-mmu.md section 12): where translated code has just changed the SR (RTE, MOVE, ANDI and
    EORI to SR, STOP; each of them ends its block), the view for the new S bit goes into TTBR0_EL1 when the configuration
-   has a user and a supervisor space apart (psmac_views.split, psmac.h). Ten instructions, six of them when the views
+   has a user and a supervisor space apart (psmac_views.split, psmac.h). Eleven instructions, six of them when the views
    are one; with the option only. sr: the register holding the new SR. */
 void psmac_mmu_emit_view(struct TranslatorContext *ctx, uint8_t sr)
 {
@@ -152,11 +152,12 @@ void psmac_mmu_emit_view(struct TranslatorContext *ctx, uint8_t sr)
         movk64_immed_u16(t1, u.u16[1], 2),
         movk64_immed_u16(t1, u.u16[0], 3),
         ldr_offset(t1, t2, offsetof(struct psmac_mmu_views, split)),
-        cbz(t2, 5),
+        cbz(t2, 6),
         ubfx(t2, sr, SRB_S, 1),
         ldr64_regoffset(t1, t2, t2, UXTW, 1),
         I32(0xd5182000 | t2),                   /* msr TTBR0_EL1, x(t2) */
-        I32(0xd5033fdf)                         /* isb */
+        I32(0xd5033fdf),                        /* isb */
+        str64_offset(t1, t2, offsetof(struct psmac_mmu_views, cur))
     );
     RA_FreeARMRegister(ctx, t2);
     RA_FreeARMRegister(ctx, t1);

@@ -53,15 +53,17 @@ extern struct psmac_irqwatch psmac_irqwatch;
    68030 configuration, as TTBR0_EL1 values; split is 0 while both modes share one space. The translated code
    switches between them where it changes the S bit (psmac_mmu_emit_view), the C side with psmac_view_for. guard is
    set while ProcessIRQ or M68K_Exception push a frame or fetch a vector, so that a fault there is the 68030's double
-   bus fault (psmac_mmufault.c) and a supervisor access whatever the SR still says. Inline, without a call: both of
+   bus fault (psmac_mmufault.c) and a supervisor access whatever the SR still says. cur is what TTBR0_EL1 holds, kept
+   with every write of it, for the code cache's lookups (a load is cheaper than an MRS, under QEMU much cheaper). Inline, without a call: both of
    those are compiled with the 68k's registers fixed and may not call ordinary C. */
-struct psmac_mmu_views { uint64_t ttbr[2]; uint32_t split; volatile uint32_t guard; };
+struct psmac_mmu_views { uint64_t ttbr[2]; uint32_t split; volatile uint32_t guard; uint64_t cur; };
 extern struct psmac_mmu_views psmac_views;
 static inline void psmac_view_for(uint32_t sr)
 {
     if (psmac_views.split) {
         uint64_t t = psmac_views.ttbr[(sr >> 13) & 1];
         __asm__ volatile("msr TTBR0_EL1, %0\n\tisb" : : "r"(t) : "memory");
+        psmac_views.cur = t;
     }
 }
 

@@ -172,14 +172,14 @@ static_assert((EMU68_LRU_WAY_COUNT * sizeof(struct Entry)) % 64 == 0,
 /* mac.mmu=full (docs/23-mmu.md section 12): a block belongs to the address space it was translated in, and the same
    68k address in another space is another block. The space is the value of TTBR0_EL1 (the root pointer's L1 table and
    its ASID, psmac_mmu.c); a space emptied for reuse takes its blocks with it (psmac_jit_purge_space). Without the
-   option every block matches, as before. Only reached once the address has matched. */
+   option every block matches, as before. Only reached once the address has matched. TTBR0's value is read from
+   psmac_views.cur (psmac.h), which every write of TTBR0 keeps up to date: an MRS per lookup cost the option a sixth of
+   mmutest's benchmark loop under QEMU. */
 static inline int psmac_unit_space_ok(const struct M68KTranslationUnit *u)
 {
     extern int psmac_mmu_full;
     if (likely(!psmac_mmu_full)) return 1;
-    uint64_t t;
-    __asm__ volatile("mrs %0, TTBR0_EL1" : "=r"(t));
-    return u->mt_PsmacSpace == t;
+    return u->mt_PsmacSpace == psmac_views.cur;
 }
 #define PSMAC_SPACE_OK(u) psmac_unit_space_ok(u)
 #else

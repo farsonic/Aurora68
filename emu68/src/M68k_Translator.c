@@ -47,6 +47,7 @@ static struct M68KLocalState *local_state;
 int32_t _pc_rel = 0;
 
 #ifdef PSMAC
+#include "psmac/psmac.h"
 /* Aurora68, mac.mmu=full: the translator's fault table (psmac/psmac_mmufault.c, docs/23-mmu.md) */
 extern int psmac_mmu_full;
 void psmac_mmu_jit_begin(void);
@@ -1135,7 +1136,7 @@ struct M68KTranslationUnit *M68K_GetTranslationUnit(uint16_t *m68kcodeptr)
 #endif
 #ifdef PSMAC
     { extern uint32_t psmac_icache_epoch; unit->mt_VerEpoch = psmac_icache_epoch; }
-    __asm__ volatile("mrs %0, TTBR0_EL1" : "=r"(unit->mt_PsmacSpace));
+    { extern int psmac_mmu_full; if (unlikely(psmac_mmu_full)) unit->mt_PsmacSpace = psmac_views.cur; else unit->mt_PsmacSpace = 0; }
 #endif
     unit->mt_PrologueSize = prologue_size;
     unit->mt_EpilogueSize = epilogue_size;
