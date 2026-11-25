@@ -16,6 +16,9 @@
 | copied into a block in the system heap.
 | Everything else the ROM says about itself (processor, ROM version, slots) is left as it is:
 | a program that asks for the processor still hears 68030, which is what the kernel presents.
+| A/UX Startup, and any program in the short lists by the selector function (real_app), gets the
+| ROM's own answers instead (25 November 2026, docs/08 item 150): it starts A/UX, which drives the
+| real hardware, and refuses the compact Macs' machine types.
 | On the Plus board (mac.board=plus, 22 November 2026) the answers are the Plus's instead: Gestalt
 | 4, gestaltMacPlus, and SysEnvirons' envMacPlus, 2; on the original Macintosh (mac.board=128k,
 | 512k: gestaltClassic 1, envMac -1; 512ke: gestaltMac512KE 3, env512KE 1). The INIT reads which board it is on from the
@@ -94,6 +97,7 @@ init_start:
 	.short	_ReplaceGestalt	| A0 = the new function, D0 = the selector; returns A0 = the old one
 	tst.w	%d0
 	bne.s	bad
+	move.l	%a0,mach_old-sel_start(%a2)	| the ROM's own: what the programs in real_names get
 	| SysEnvirons too: the System 6 Finder's "About the Finder" and programs older than the
 	| Gestalt Manager ask it, and it answers from the ROM's box table. A tail patch: the old
 	| routine runs, then an answer of "IIci" in the record's machineType word becomes "SE".
@@ -507,12 +511,104 @@ bad_text:	.ascii	"A68 Machine: ReplaceGestalt or Gestalt failed"
 	.even
 
 | the selector function: FUNCTION (selector: OSType; VAR response: LongInt): OSErr, Pascal
-| stack: 4(sp) response pointer, 8(sp) selector, 12(sp) the result word
+| stack: 4(sp) response pointer, 8(sp) selector, 12(sp) the result word.
+| A program that must know the real machine (real_app) gets the ROM's own function, with the
+| caller's arguments as they are; every other one the SE's (or the board's) answer.
 sel_start:
-	move.l	4(%sp),%a0
+	bsr.s	real_app		| D0 = 1: the current application is one of them
+	tst.w	%d0
+	beq.s	1f
+	move.l	mach_old(%pc),%d0
+	beq.s	1f
+	move.l	%d0,-(%sp)
+	rts				| into the ROM's 'mach' function
+1:	move.l	4(%sp),%a0
 	move.l	mach_val(%pc),(%a0)
 	clr.w	12(%sp)			| noErr
 	rtd	#8
+
+| A/UX Startup (25 November 2026, docs/08 item 150) refuses to run on machine types 1-5, 10, 17 and
+| 19 ("No SCSI disk port", IN-8): it starts A/UX, which drives the real hardware and must know it.
+| So the programs below get the ROM's answer (the IIci, 11) from Gestalt and SysEnvirons. Which
+| program is asking is the current application: Gestalt has no caller argument, and the selector
+| function runs in the caller's context. Two cheap tests, memory reads only (no trap: Gestalt may
+| be called from anywhere, and a selector function must not move memory):
+|   - its name, CurApName ($910): the Segment Loader sets it at the launch and the Process Manager
+|     (MultiFinder under System 6) swaps it with the rest of an application's low memory, so it is
+|     the asking program's own. Compared as a prefix: "A/UX Startup" matches its later versions too;
+|   - its creator, for a copy that was renamed: an application's file holds its signature
+|     resource (type = creator, ID 0, the Finder's bundle convention; A/UX Startup has 'SASH').
+|     The resource map of the current application's file (CurApRefNum, $900) is found in the chain
+|     from TopMapHndl ($A50), and its type list is searched for the creators below. Asking the
+|     Process Manager for the process's signature would be exact, but it is a trap call, not
+|     allowed at interrupt time, and absent under System 6.
+| Both run only on a Gestalt('mach') or SysEnvirons call, which programs make a few times at most.
+| real_app: D0 = 1 for one of them, else 0; uses D0-D1/A0-A1 only.
+	.equ	CurApRefNum,	0x0900
+	.equ	CurApName,	0x0910
+	.equ	TopMapHndl,	0x0A50
+real_app:
+	lea	real_names(%pc),%a1
+1:	moveq	#0,%d0
+	move.b	(%a1)+,%d0		| a name's length; 0 ends the list
+	beq.s	5f
+	lea	CurApName,%a0
+	cmp.b	(%a0)+,%d0
+	bhi.s	3f			| the application's name is shorter
+	subq.w	#1,%d0
+2:	cmpm.b	(%a0)+,(%a1)+
+	dbne	%d0,2b
+	beq.s	9f			| every byte equal: a match
+3:	add.w	%d0,%a1			| the rest of this name (after a mismatch D0 counts the bytes left)
+	bra.s	1b
+5:	| the creators: the current application's resource map, from the chain's top
+	move.l	TopMapHndl,%a0
+	moveq	#31,%d1			| at most 32 maps (a broken chain must not hang the caller)
+6:	move.l	%a0,%d0
+	beq.s	8f
+	move.l	(%a0),%d0		| the map's master pointer
+	tst.b	0x0CB2			| MMU32Bit: in 24-bit mode the top byte holds the handle's flags
+	bne.s	7f
+	and.l	#0x00FFFFFF,%d0
+7:	tst.l	%d0			| purged: no map there
+	beq.s	8f
+	move.l	%d0,%a0
+	move.w	20(%a0),%d0		| the map's file
+	cmp.w	CurApRefNum,%d0
+	beq.s	10f
+	move.l	16(%a0),%a0		| the next map's handle
+	dbf	%d1,6b
+8:	moveq	#0,%d0
+	rts
+9:	moveq	#1,%d0
+	rts
+10:	moveq	#0,%d0
+	move.w	24(%a0),%d0		| the type list's offset in the map
+	add.l	%d0,%a0
+	move.w	(%a0)+,%d1		| types - 1 ($FFFF: none)
+	cmp.w	#127,%d1		| a damaged map: not searched further
+	bhi.s	8b
+11:	move.l	(%a0),%d0		| a type: one of the creators?
+	lea	real_creators(%pc),%a1
+12:	tst.l	(%a1)
+	beq.s	13f
+	cmp.l	(%a1)+,%d0
+	beq.s	9b
+	bra.s	12b
+13:	addq.l	#8,%a0			| type, count - 1, reference list offset
+	dbf	%d1,11b
+	bra.s	8b
+| the programs that get the real machine type: name prefixes (Pascal strings, a 0 at the end) and
+| creators (0 at the end)
+real_names:
+	.byte	12
+	.ascii	"A/UX Startup"
+	.byte	0
+	.even
+real_creators:
+	.ascii	"SASH"			| A/UX Startup
+	.long	0
+
 | the SysEnvirons patch: A0 = the record, D0.w = the version asked for; returns D0 = error.
 | The old routine's address is kept right behind it (filled in by the INIT).
 env_patch:
@@ -522,9 +618,15 @@ env_patch:
 	move.l	(%sp)+,%a0
 	cmp.w	#envMacIIci,2(%a0)	| machineType
 	bne.s	1f
+	movem.l	%d0/%a0,-(%sp)
+	bsr	real_app		| A/UX Startup and the like: the ROM's answer stays
+	tst.w	%d0
+	movem.l	(%sp)+,%d0/%a0		| (movem leaves the flags alone)
+	bne.s	1f
 	move.w	env_val(%pc),2(%a0)
 1:	rts
 env_old:	.long	0
+mach_old:	.long	0		| the ROM's 'mach' function (ReplaceGestalt's answer)
 mach_val:	.long	gestaltMacSE		| the answers, set by the INIT for the board it is on
 env_val:	.word	envSE
 sel_end:

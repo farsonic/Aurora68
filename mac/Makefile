@@ -95,6 +95,17 @@ DisposeTest: $(B)/DisposeTest.bin
 $(B)/DisposeTest.bin: $(B)/disptest.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py $(ICONS)
 	$(PY) ../tools/mac/mkapp.py --code $(B)/disptest.bin.raw --name DisposeTest --creator PIDT -o $@
 
+# Mach Test: what Gestalt 'mach' and SysEnvirons answer a program, under the three names Aurora68 Machine tells apart
+# (mac/machtest.s, docs/08 item 150). A test, not part of `all`: make machtest
+.PHONY: machtest
+machtest: $(B)/MachTest.bin $(B)/MachTest-AUX.bin $(B)/MachTest-SASH.bin
+$(B)/MachTest.bin: $(B)/machtest.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
+	$(PY) ../tools/mac/mkapp.py --code $(B)/machtest.bin.raw --name "Mach Test" --creator PIMT --owner -o $@
+$(B)/MachTest-AUX.bin: $(B)/machtest.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
+	$(PY) ../tools/mac/mkapp.py --code $(B)/machtest.bin.raw --name "A/UX Startup" --creator SASH -o $@
+$(B)/MachTest-SASH.bin: $(B)/machtest.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
+	$(PY) ../tools/mac/mkapp.py --code $(B)/machtest.bin.raw --name "Renamed Startup" --creator SASH --owner -o $@
+
 # PiPing's peer: the address it pings (the testbed's host peer by default; make PEER=192.168.0.1 for a real gateway)
 PEER ?= 192.168.68.1
 PEER_HEX = $(shell printf '0x%02x%02x%02x%02x' $(subst ., ,$(PEER)))

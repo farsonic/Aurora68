@@ -8,7 +8,7 @@ jump table entry pointing at offset 0 of CODE 1. CODE 1: 4-byte segment header (
 offset 0, 1 entry) followed by the code, which must be position independent and start with its
 entry point. SIZE -1: flags (multi-finder aware, background null events off), 256 KiB preferred
 and minimum. --icons KEY adds the Finder's bundle and the program's icon family from mkicons.py
-(since 21 November 2026; without it the Finder shows a generic icon).
+(since 21 November 2026; without it the Finder shows a generic icon). --owner adds the signature resource alone.
 """
 import argparse, os, struct, sys
 sys.path.insert(0, os.path.dirname(__file__))
@@ -19,6 +19,8 @@ ap.add_argument('--code', required=True); ap.add_argument('--name', required=Tru
 ap.add_argument('--creator', default='PSMC'); ap.add_argument('-o', required=True)
 ap.add_argument('--icons', help="the program's key in mkicons.py: bundle, file references, icons")
 ap.add_argument('--version', default='1.0', help="the signature resource's text: NAME VERSION")
+ap.add_argument('--owner', action='store_true', help="the signature resource (type = creator, ID 0) without the icons "
+                "(--icons adds it anyway): Aurora68 Machine's test, mac/machtest.s, finds a program by it")
 a = ap.parse_args()
 code = open(a.code, 'rb').read()
 code1 = struct.pack('>HH', 0, 1) + code
@@ -35,5 +37,8 @@ flags = 0
 if a.icons:
     from mkicons import add_bundle
     flags = add_bundle(rf, a.icons, creator, f"{a.name} {a.version}")
+elif a.owner:
+    sig = f"{a.name} {a.version}".encode('mac_roman')
+    rf.add(creator, 0, bytes([len(sig)]) + sig)
 open(a.o, 'wb').write(macbinary(a.name, b'APPL', creator, b'', rf.build(), finder_flags=flags))
 print(f"{a.o}: CODE 1 {len(code1)} bytes")
