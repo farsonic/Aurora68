@@ -625,6 +625,8 @@ PLOADs. The read passes did not finish in the run's 25 minutes: every page goes 
 
 ### 11.9 What is left for phase 3 (A/UX)
 
+[Phase 3 (section 12) did the first six of these; pages below 4 KiB are still emulated access by access.]
+
 - **SRE, the supervisor root, and S.** The walk and PTEST honour them, and a set's key includes SRP when SRE is set,
   but the ARM mapping is one view for both modes: a page mapped during a supervisor access stays reachable from user
   mode. Phase 3 needs two views per set (user and supervisor ARM tables) switched wherever the 68k's S bit changes:
@@ -653,3 +655,275 @@ PLOADs. The read passes did not finish in the run's 25 minutes: every page goes 
 - A guest that edits descriptors without flushing keeps its old mapping as long as the soft TLB does, which can be far
   longer than the 030's 22-entry ATC; VM flushes after every edit, so nothing showed it.
 - 24-bit addressing with VM was not tried (the test image runs in 32-bit mode; PRAM `$8A` = 5).
+
+## 12. Phase 3: the groundwork A/UX needs (26 November 2026)
+
+The owner will try A/UX 3 install images in the morning (`mac.mmu=full scsi.cd=... scsi.disk=...:4 mac.boot=cd`, with
+the virtual SCSI devices of docs/08 item 148, merged from `main` into this branch first). There is no A/UX here, so
+this phase built what section 11.9 listed from the 68030's manual and the code, and tested it with synthetic cases
+only: `mac/mmutest.s`, the System 7.1 test image (Virtual Memory off and on) on the solo board. Everything is still
+behind `mac.mmu=full`; the identity stays a 68030's (CPUFlag 3, Gestalt `'mmu '` 3, MMUType 4).
+
+### 12.1 Address spaces and ASIDs
+
+Phase 2's sets (six, each four level-1 descriptors swapped into the shared user L1 table with two full TLB flushes)
+are gone from the option's path. Each 68030 translation the soft TLB keeps is now an *address space*: its own L1
+table and ASID (`aarch64/mmu.c`, `mmu_space_new`, `_page`, `_entry`, `_reset`, `_flush_asid`, `_install`), keyed by TC,
+a root pointer and a mode (section 12.2). Entries 0 to 3 of a space's L1 point at its own L2 tables (4 to 7 repeat them,
+the 4-8 GiB alias of a 68k address computation that carries), the rest is the user L1 of the moment, and the Pi's
+windows inside the first 4 GiB are copied in from the pristine subtree. The 68k's pages are mapped non-global
+(`MMU_NG`), so the TLB keeps every space's translations apart, and a switch is one write of TTBR0_EL1 with the space's
+ASID and an ISB, no TLB maintenance. Thirty-two spaces are kept (ASIDs 1 to 32; the kernel's own mmu_user_L1 is ASID 0
+and core 0 never runs on it again after the first space); a new root takes the least recently used space, which is
+emptied (its L3 tables back to the pool, a TLB flush, the code cache's blocks of it dropped, 12.4). Translation off is
+a space too, the identity mapped page by page like any other, so core 0 is on spaces from the start. Each space keeps
+a bitmap of the pages it maps and, new, a summary bitmap of the bitmap's non-zero words, so a flush visits only what is
+mapped: VM's PFLUSHA, 860 µs in phase 2, takes 140 to 225 µs (12.7).
+
+The kernel's alias of the first 4 GiB in TTBR1 (L1 entries 508-511, for a 68k address computation that wraps below
+zero) holds global entries and could only ever show one space: it is emptied when the first space is installed
+(`mmu_space_leave_alias`), and an access through it faults and is checked by the walk and emulated
+(`psmac_mmu_ram_access` for memory, `psmac_bus.c`). The other cores keep mmu_user_L1 and see the stock identity set
+in it; none of them dereferences 68k logical addresses (they translate with `psmac_mmu_l2p`).
+
+**A context switch.** `PMOVE` to CRP flushes the 68030's ATC and the new root is searched at once: the new root's space
+is installed at the PMOVE. A space that comes back keeps the pages it maps if its tables still say what the mappings
+say (the revalidation of phase 2's PFLUSH: the same frame, U still set, M for a writable page, no WP), because the
+real chip would search the tables again after the flush and a guest may have edited a sleeping process's tables
+without a flush, which a 68030 allows. That costs a walk per descriptor span mapped, not a walk of the whole tree.
+`PMOVEFD` to CRP keeps the ATC: the old translations go on until the next TC load or PFLUSH, which is what the IIci
+ROM's SwapMMUMode counts on (`ploadr 8(a0); pmovefd (a0),crp; pmove 8(a0),tc`, ROM `$40804BFC`; phases 1 and 2
+deferred every CRP load that way, which a process switch would not survive: mmutest's T19 read process B's page
+under A's root on the phase 2 kernel).
+
+### 12.2 User and supervisor views
+
+A configuration (TC, CRP, SRP, TT0, TT1) has a user view and a supervisor view. They are one space unless the two
+modes can see different memory: TC.SRE with an SRP other than the CRP, TC.FCL, an enabled TT register that compares
+FC2, or a long descriptor's S bit met by a walk. Then they are two spaces, the user's keyed by the CRP and the
+supervisor's by the SRP (or the CRP again, with mode 2 in the key), and the 68k's S bit picks the one in TTBR0:
+
+- translated code switches where it changes S: RTE, MOVE to SR, ANDI and EORI to SR, STOP (`psmac_mmu_emit_view`,
+  eleven AArch64 instructions after the stack swap, six when the views are one, the last of them keeping
+  `psmac_views.cur` equal to TTBR0; each of these instructions already ends
+  its block). ORI cannot clear S. With the option only;
+- the C side switches with `psmac_view_for` (`psmac.h`, inline: `M68k_ExceptionEntry.c` and `ExecutionLoop.c` are
+  compiled with the 68k's registers fixed and may not call ordinary C): `M68K_Exception` and `ProcessIRQ` install the
+  supervisor's view *before* they push the frame, the bus-error delivery after it, the remote restart at its SR `$2700`.
+
+The fault path takes the access's function code from the view TTBR0 holds when the views are apart, from the SR when
+they are one, and supervisor while an exception's frame is pushed. A supervisor page met while the modes share a space
+is not mapped (user mode could reach it through the mapping): it is emulated, the first time is logged, and the next
+flush or switch gives the modes a space each. `PFLUSH #fc,#mask` and `PFLUSH #fc,#mask,<ea>` flush the views whose
+function codes match (user 1 and 2, supervisor 5 and 6; with one view, any of the four); `PLOAD` maps into its
+function code's view and `PTEST` at level 0 looks there. The mailbox's and the diagnostics' translations
+(`psmac_mmu_l2p`, also from other cores) use the view core 0's TTBR0 holds, and the supervisor's from another core.
+
+### 12.3 MOVES
+
+`MOVES` was the upstream emitter's plain access through the current mapping. Under the option it becomes a call
+(`EMIT_MOVES_full`, `M68k_LINE0.c`, built like `EMIT_PMMU_full`) to `psmac_moves_exec` (`psmac_mmu.c`): the address
+is searched at SFC's function code (a read) or DFC's (a write), with U and M set as the access would, WP, S and invalid
+pages refused, and the bytes go to the physical page (Pi RAM, or the bus for I/O), whichever view is installed. FC 7,
+CPU space, where nothing on a Macintosh answers a data cycle, is a bus error, as is a refused page; the SSW carries the
+function code. All sizes and memory modes, `(An)+` and `-(An)` with A7's byte step, the register written back as the
+68030 does when it is also the base. MOVEC of SFC and DFC was already there (`EMIT_MOVEC`). MOVES is a C call and a
+walk per access, about a microsecond in QEMU: A/UX's copyin and copyout will pay that per long word moved.
+
+### 12.4 The code cache, keyed by space
+
+A translated block now carries the address space it was translated in (`mt_PsmacSpace`, the value of TTBR0_EL1 at
+translation, `M68k.h`), and the JIT loop's lookups (`FindUnitNoLRU`, the one the Macintosh runs, and `FindUnitQuick`'s
+keyed search) accept it only in that space (`PSMAC_SPACE_OK`, `ExecutionLoop.c`: one load of `psmac_views.cur` once
+the address has matched, and nothing without the option; an `mrs` of TTBR0 there was the first version); the address-keyed quick cache is bypassed under the option. So the same
+logical address in two processes is two blocks, and shared text is translated once per process. A space emptied for
+another root drops its blocks (`psmac_jit_purge_space`, `M68k_Translator.c`), never the running one's. Writes to code
+are what they were: the Mac's (and A/UX's) instruction-cache clears through CACR bump `psmac_icache_epoch`, after which
+each block is checked by its checksum, and a PFLUSH that finds a page on a new frame bumps it too.
+
+Two corrections to phase 2 on the way. A block that is an instruction fetch's bus error and nothing else (the first
+instruction's page refused at translation) kept answering to its address after the handler had made the page valid,
+so the handler's RTE would have found the fault again for ever; it no longer answers once delivered. Its fingerprint
+and checksum were read from the refused page (three "not delivered" lines per fetch fault): not any more. And the fetch
+probe used FC 6 for every block; it uses the mode the block will run in.
+
+Not done: a block's code is read through the data view, while a 68030 fetches it at FC 2 or 6. The two differ only with
+TC.FCL or a TT register comparing FC0/FC1; then the translator compares both searches for each block's first
+instruction and logs a difference (`code at ...: the program space gives ..., the data space ...`, the first eight).
+
+### 12.5 The double bus fault
+
+`M68K_Exception`'s frame push and vector fetch, and `ProcessIRQ`'s, run under a guard (`psmac_views.guard`). A page
+that is only not yet mapped is mapped as before and the push goes on; a page the tables refuse is what a 68030 calls a
+double bus fault, and it halts: the log says `[PSMAC:MMU] double bus fault: write 001c57f8 refused (MMUSR 0403) while an
+exception's frame was pushed or its vector read (SR ..., A7 ..., VBR ...): the 68030 halts`, the walk of the address
+follows, then `the 68030 is halted (double bus fault); restart the machine`, and core 0 stops running the 68k (the
+heartbeat goes on, its JIT line at 0 MIPS). Before, the push wrote into nothing and the RTE took whatever was there.
+
+### 12.6 The test ROM
+
+`mac/mmutest.s` gained these cases, after phase 2's (all need the option, and are skipped without it as T12-T18 are):
+
+19. Two processes: a second tree (`mktree`), process A mapping logical pages `$C0` (data) and `$C1` (code) to frames
+    `$D0`/`$D1`, process B to `$D2`/`$D3`, each code page "move.l #id,d0; rts". PMOVE to B's CRP, read and call, to A's,
+    read and call, to B's again (its space kept), a write in B's page: each sees its own data, runs its own code, and
+    the write lands in B's frame only. No cache clear in between, so a block found by address alone would run A's code
+    under B.
+20. 4000 PMOVEs to CRP, alternating, with a read and a call in each process: the sum is checked, the kernel reports the
+    switches and their average time.
+21. SRE: a third tree as the SRP, page `$C2` on frame `$D5` for the supervisor and `$D4` for the user; the supervisor
+    reads its frame, user mode (entered by ANDI to SR, by an RTE of a format 0 frame, and by MOVE to SR) the user's.
+22. MOVES with SFC/DFC 1 reads and writes the user's page from supervisor mode, SFC 5 the supervisor's; SFC 7 is a bus
+    error with SSW `$0147` from the MOVES (the handler sets SFC to 1 and the MOVES runs again); a user page the tables
+    refuse is a bus error with SSW `$0141` and the page's address.
+23. With both modes' entries of page `$C3` in their spaces and both descriptors made invalid, `PFLUSH #1,#4` flushes the
+    user's only (the supervisor's stale entry still answers, as on a 68030; the user's access faults), and
+    `PFLUSH #4,#4` the supervisor's only, the other way round.
+24. With SRE, page `$C4` valid in the SRP's tables and invalid in the CRP's, the supervisor stack moved onto it: a TRAP
+    from user mode pushes its frame there (format 0, vector 32 read back), no bus error.
+25. (`mmutest-halt.rom`, at the end instead of the benchmark) the supervisor stack on a page invalid in every table, and
+    a TRAP from user mode: the double bus fault of 12.5.
+26. Code on a page the tables refuse, never run before: the fetch is a bus error (format `$B`, SSW `$5006`: FB, RB,
+    supervisor program; the page's address in the stage B address at `+36`), the handler maps the page and the code runs.
+27. 48 roots, more than the kernel's 32 spaces (the same tables, the root pointer's limit field telling them apart):
+    the least recently used spaces are emptied and reused, with their blocks, and every process still reads its page and
+    runs its code.
+
+The handler validates a user fault in the CRP's level C table and a supervisor fault in the SRP's (by the SSW's FC2),
+takes a fetch fault's address from the stage B address when DF is clear, and treats FC 7 as said in T22.
+
+**Results** (solo board in QEMU, `mac.ram=8`, the final kernel): `ROM=mac/build/mmutest.rom tools/run-solo.sh 60
+mac.mmu=full` gives **`MMU test: 137 passed, 0 failed, 123 bus errors taken`** (86 before this phase), with no "not
+delivered" line. The kernel's own figures for it: 4057 switches, 32 spaces in use at the end, 54 made and 22 reused (T27),
+7 MOVES, **57 µs a switch on average** in QEMU, nearly all of it the revalidation of about sixty mapped pages (about a
+microsecond a page); the switch itself is a TTBR0 write. `mmutest-halt.rom`: the 137 again, then
+
+```
+[MAC] MMU test: T25, an exception whose frame cannot be pushed: the 68030 should halt now
+[PSMAC:MMU] double bus fault: write 001c57f8 refused (MMUSR 0403) while an exception's frame was pushed or its vector read (SR 0004, A7 001c5800, VBR 00060000): the 68030 halts
+[PSMAC:MMU] the 68030 is halted (double bus fault); restart the machine
+```
+
+and the heartbeat's JIT line at 0 MIPS from then on. Without the option the new cases are skipped and the result is
+phase 2's, `16 passed, 35 failed, 0 bus errors taken`, then the benchmark.
+
+**The negative control** is the interim kernel built at the start of this phase (phase 2's code with `main` merged,
+`aux-kbuild-interim`): with T24 the run never reports (T24's frame push went into nothing, `fault at 001c47f8 ... not
+delivered as a bus error: not in the running block`, three times, and the 68k was lost after the RTE); with T24 taken
+out of a scratch copy of the test, `101 passed, 23 failed`, the first of the failures `t19a=BBBB0019
+t19acode=B0B0B0B0 t19writea=19191919 t20sum=F0F0E4A0 t21user=5555AA21 t22read=5555AA21` (process A saw B's page and
+ran B's code, the user saw the supervisor's page, MOVES ignored its function code). T26 on an earlier kernel of this
+phase, before the fetch fault's block was kept from reading its page, passed with three "not delivered" lines.
+
+### 12.7 Phase 2's results, again
+
+**System 7.1's Virtual Memory** (solo board, a fresh copy of the test image, `mac.ram=8`, 32 MB of VM on "Mac Volume",
+Aurora68 VM Test in Startup Items). Phase 2 had switched VM on in the Memory control panel; this time the image was
+prepared on the host: the System file's `'vm  '` resource 0 written with `tools/mac/rsrcadd.py` and a 32 MB file
+`VM Storage` (type `ZSYS`, creator `MACS`) put in the volume's root with hfsutils. The resource's layout, from VM's own
+reading of it (`ptch` 42, `$4F42`-`$4FCC`): byte 3 bit 0 set for on (with it clear, bit 1 makes VM call a routine with the volume's name and clear
+the bit, *inference*: the storage file's removal),
+bytes 4-7 the size in bytes, byte 9 onward the volume's name as a Pascal string, 37 bytes in all
+(`00000001 02000000 00 0A "Mac Volume"`). VM took it at the next start without a word.
+
+| kernel | Finder | pass 1 (write) | pass 2 (read forwards) | pass 3 (read backwards) | mismatches | bus errors | PFLUSHA, time each |
+|---|---|---|---|---|---|---|---|
+| phase 2 (`runs/vm8`, section 11.5) | 47.2 s | 11,625 | 15,319 | 10,372 | 0 | 16,239 | 33,410, 860 µs |
+| phase 3, first build | 48.2 s | 12,051 | 15,201 | 9,650 | 0 | 16,219 | 33,364, 165 µs |
+| phase 3, final kernel | 50.7 s | 10,555 | 14,033 | 9,909 | 0 | 16,238 | 33,404, 138 µs |
+| phase 3, final kernel, again | 67.5 s * | 10,941 | 18,236 | 10,326 | 0 | 16,239 | 33,405, 224 µs |
+
+(ticks; * the host was converting a disk image for MAME during that boot, which slowed QEMU). Every bus error
+delivered, none refused, VM's three spaces (the identity, the ROM's 32-bit tables, VM's own) made once and never
+switched again; the sum is the one written in every pass. The flush is five times cheaper than phase 2's because a
+space now keeps a summary of its bitmap and a flush visits only the words that map something.
+
+**The stock path.** Without the option nothing new is emitted, and the C paths test the flag once
+(`M68K_Exception`, `ProcessIRQ`, `psmac_bus_read`/`_write`, the code cache's lookup after an address has matched).
+mmutest's benchmark loop, median MIPS of the 5-second samples after the first two, main's kernel (`8a4e5a0`, the full
+build with the PC and Apple II cards) and this branch's final kernel, alternated:
+
+| kernel | option | test result | run 1 | run 2 |
+|---|---|---|---|---|
+| main | none | 16 passed, 35 failed, 0 bus errors | 376.5 | 402.5 |
+| branch | none | the same | 384 | 402 |
+| branch | `mac.mmu=full` | 137 passed, 0 failed, 123 bus errors | 327 | 336 |
+
+An earlier set of the same, with the first final build: main 342.5 and 374.5, the branch 378.5 and 397.5, with the
+option 301. The phase 2 kernel with this test (T24 taken out) gave 306 with the option on the same afternoon, so the
+option's cost in this loop (its NEON copies before every `(An)+` and the stack instructions, blocks ending at page
+boundaries) is phase 2's, not this phase's; section 11.7's 348 for it came from another session's QEMU.
+
+System 7.1 to the Finder (a fresh copy of the test image, VM off, seconds from power-on), the kernels alternated, two
+sets:
+
+| kernel | option | runs |
+|---|---|---|
+| main | none | 36.0, 35.2, 33.7, 37.7 |
+| branch | none | 39.4, 37.1, 35.2, 37.2 |
+| branch | `mac.mmu=full` | 46.0, 46.5, 44.5, 45.7 |
+
+The branch without the option is inside main's spread; with it the boot is as phase 2's (47.0 and 47.6 in section
+11.7), the cost of the emulated accesses noted there.
+
+### 12.8 What A/UX should find, and what is missing
+
+**What it should find.** A 68030 PMMU as the manual describes it, phase 2's and this phase's: tables of any shape the
+68030 takes (short and long descriptors, early termination, limits, indirect descriptors, FCL, page sizes 256 bytes to
+32 KiB), TT0/TT1, SRE with its own root, the S bit, WP, U and M kept in the descriptors, PTEST, PLOAD, every PFLUSH,
+PMOVE to and from every register with and without FD, MOVES in either direction and any function code, bus errors with
+the 68030's frames ($A for a write, $B for a read and a fetch) and their restart, a process switch that costs a TTBR0
+write and the revalidation of what the process had mapped, and a halt on a double bus fault. Its own vectors, VBR and
+SR changes are the 68k's as before.
+
+**What is missing or different.**
+- *Restart, not continuation.* As since phase 1 (section 4): an RTE of a fault frame runs the instruction again. A
+  handler that completes a cycle itself and clears DF (or RB, for a fetch) sees it run again. Whether A/UX's does is
+  not known; VM's does not.
+- *The program space* (12.4): blocks are read through the data view; a difference is logged.
+- *The ATC's size.* The spaces keep every translation until a flush or a switch revalidates it; a guest that edits a
+  descriptor of the running process and does not flush keeps the old mapping longer than a 68030's 22-entry ATC would.
+- *Pages below 4 KiB* are emulated access by access (A/UX's are 4 KiB on a 68030, *inference*).
+- *MOVES's cost* (12.3), and a context switch's: about 55 µs in QEMU for a process with a few dozen pages mapped
+  (T20), more with more pages mapped; not measured on a Cortex-A53.
+- *Interrupts from user mode with the views apart* go through `ProcessIRQ`'s switch, which no test exercises (the test
+  ROM takes no interrupts); exceptions from user mode do (T21-T24).
+- *The chips.* A/UX drives the hardware itself; on the solo board that is the kernel's stand-ins for the VIAs, the SCC,
+  the 5380 (now with the virtual devices of item 148) and the RBV, written for Mac OS's use of them. That is the first
+  risk, and none of it is an MMU matter.
+- The `'mmu '` 3, 68030 and 68882 identity is unchanged, as is everything without the option.
+
+**What to look for in the log** (`mac.mmu=full scsi.cd=... scsi.disk=...:4 mac.boot=cd`):
+- `[PSMAC:MMU] switch #N: TC=... CRP=...` with `SRE SRP=...` and `-> user space N (ASID n, new), supervisor space M`
+  is A/UX installing its tables (the first ones `new`, a process switch `cached`). A `TC=... is not a valid
+  configuration` line means the 68030 would have taken an MMU configuration exception (vector 56), which is not raised.
+- `[PSMAC:MMU] bus error #N (data read|data write|operand|fetch|helper): PC ... SSW ...` are page faults delivered, the
+  first six and every 1024th; A/UX's paging makes many. `... not delivered as a bus error: ...` means a fault that
+  could not become one (a C helper the guard does not cover); the access read `$BAD0BAD0` or was dropped. Report it.
+- `[PSMAC:MMU] N bus errors in a row at ...` with the walk after it: the same access faulting again and again (a
+  handler that does not fix what the frame names, or a disagreement about the tables).
+- `[PSMAC:MMU] double bus fault: ...` then `the 68030 is halted`: what a real IIci would do (a stuck machine); the walk
+  line says which page was refused.
+- `[PSMAC:MMU] MOVES #N at ...: read|write ... fc F size S` (the first eight, then every 4096th): the kernel reaching
+  user space. `[PSMAC:MMU] PTEST #N` and the PMOVE lines (the first 64, then every 1024th) show the MMU instructions
+  with their PCs.
+- `[PSMAC:MMU] a long descriptor's S bit at ...`: the modes are given a space each from the next flush.
+- `[PSMAC:MMU] code at ...: the program space gives ...`: 12.4.
+- `[PSMAC:MMU]   space N (ASID n) reused` and `N translated blocks of the space dropped`: more than 32 roots in use.
+- The heartbeat's two `[PSMAC:MMU]` lines every five seconds: bus errors (data, operand, fetch), lazy maps, privilege
+  violations from user mode, walks, maps, PFLUSH by kind with the pages kept and dropped, PLOAD, PTEST, PMOVE, MOVES,
+  switches, spaces in use, `user and supervisor views apart` or `one view`, and the average switch in µs.
+- Unrelated to the MMU but likely: the SCSI lines of item 148 (`[SCSI] ID 3 (CD-ROM): command $xx ... not
+  supported`), and the crash record of an unexpected exception (`psmac_crash.c`).
+
+### 12.9 What is not settled
+
+- A/UX itself: everything above is from the manual and synthetic tests.
+- Real hardware: TTBR0 writes and ASID-tagged entries on a Cortex-A53 behave as the architecture says (QEMU agrees);
+  not seen on the chip. The cost of a switch and of a MOVES there.
+- The MAME full stack, the reference: with the final kernel and the option, MAME's IIci (the patched ROM, `mac.ram=8`, the
+  System 7.1 image as an uncompressed CHD, a private PRAM in 32-bit mode) reached **the Finder at 322 s** (MAME's own
+  screen shows it; section 11.8 had 253 s on another afternoon, and the full stack's time is the bridge's): the identity
+  space, the ROM's 32-bit tables (TC `$80F05750`, CRP `$7FFF0003:$007FFCC0`, long descriptors, one space for both modes)
+  with RBV video's low memory, 232 lazy maps, no bus error, nothing undelivered. VM was not run there this time.
+- 24-bit mode, with or without VM (the test image runs in 32-bit mode).

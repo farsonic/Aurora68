@@ -820,12 +820,13 @@ static inline int sp_get(const struct space *s, uint32_t i) { return (s->bits[i 
 /* the space that holds a function code's translations */
 static inline struct space *space_for_fc(int fc) { return view[(split_now && (fc & 4)) ? 1 : 0]; }
 
-/* the view TTBR0 holds now: 1 supervisor, 0 user, -1 when the views are one space (then the SR says) */
+/* the view TTBR0 holds now: 1 supervisor, 0 user, -1 when the views are one space (then the SR says). Another core
+   (the mailbox's translations) runs on mmu_user_L1: the supervisor's view for it */
 int psmac_mmu_cur_view(void)
 {
     if (!split_now) return -1;
     uint64_t t; __asm__ volatile("mrs %0, TTBR0_EL1" : "=r"(t));
-    return t == psmac_views.ttbr[1] ? 1 : 0;
+    return t == psmac_views.ttbr[0] ? 0 : 1;
 }
 
 static int tt_splits(uint32_t tt) { return (tt & 0x8000u) && !(tt & 4u); }   /* enabled, FC2 compared */
