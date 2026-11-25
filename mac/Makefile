@@ -75,6 +75,13 @@ $(B)/mmutest.rom: mmutest.s
 	m68k-linux-gnu-as -m68030 -o $(B)/mmutest.o $<
 	$(OBJCOPY) -O binary -j .text $(B)/mmutest.o $@
 
+# System 7's Virtual Memory from an application under mac.mmu=full (docs/23-mmu.md, phase 2; not in the release):
+# make vmtest, then put build/Aurora68-VMTest.bin on a test image with VM on; it allocates 24 MB in a 26 MB partition
+.PHONY: vmtest
+vmtest: $(B)/Aurora68-VMTest.bin
+$(B)/Aurora68-VMTest.bin: $(B)/vmtest.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
+	$(PY) ../tools/mac/mkapp.py --code $(B)/vmtest.bin.raw --name "Aurora68 VM Test" --creator A68V --size 26624 -o $@
+
 # the same extension answering another machine type (for experiments): make pimach-variant MACH=11
 pimach-variant: pimach.s
 	@mkdir -p $(B)

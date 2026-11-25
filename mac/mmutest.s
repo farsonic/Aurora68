@@ -41,6 +41,8 @@
 	.equ	PASS,	0x00062018
 	.equ	FAIL,	0x0006201C
 	.equ	FPTR,	0x00062020		| end of the failure list
+	.equ	V_MMUSR, 0x00062030		| PTEST's result (PMOVE MMUSR)
+	.equ	V_TT,	0x00062034		| a TT register's value for PMOVE
 	.equ	R0,	0x00062200		| results saved right after an instruction
 	.equ	MSG,	0x00063000		| a log line
 	.equ	FAILS,	0x00063100		| the failure list (names and values)
@@ -340,6 +342,157 @@ t10b:	movea.l	(%a0),%a2
 	want	n_t11c, V_COUNT, 100
 	want	n_t11, WIN+0x40000, 4		| page 0x40 was touched 4 times (pages 0x40-0x5F, 100 passes)
 
+	| ======== phase 2 (26 November 2026): the PMMU's other instructions and bits ========
+	| (without mac.mmu=full no bus error has been taken by now, and these use PMOVE forms the old shim never had:
+	|  they are skipped, so that the stock kernel reaches the benchmark below as before)
+	tst.l	V_TOTAL
+	beq	p2skip
+
+	| ---- T12: PTEST and MMUSR (B L S W I M T N), and the address of the last descriptor ----
+	move.l	#WIN+0x60000+1,TBLC+0x60*4	| valid, U and M clear
+	pflusha
+	lea	WIN+0x60000,%a0
+	ptestr	#5,(%a0),#7,%a3
+	pmove	%psr,V_MMUSR
+	moveq	#0,%d0
+	move.w	V_MMUSR,%d0
+	want	n_t12v, %d0, 0x0003		| valid: three levels (A, B, C), nothing else
+	want	n_t12va, %a3, TBLC+0x60*4	| A3: the level C descriptor
+	clr.l	TBLC+0x61*4			| invalid
+	pflusha
+	lea	WIN+0x61000,%a0
+	ptestr	#5,(%a0),#7,%a3
+	pmove	%psr,V_MMUSR
+	moveq	#0,%d0
+	move.w	V_MMUSR,%d0
+	want	n_t12i, %d0, 0x0403		| I, three levels
+	move.l	#WIN+0x62000+0x15,TBLC+0x62*4	| WP and M
+	pflusha
+	lea	WIN+0x62000,%a0
+	ptestw	#5,(%a0),#7,%a3
+	pmove	%psr,V_MMUSR
+	moveq	#0,%d0
+	move.w	V_MMUSR,%d0
+	want	n_t12w, %d0, 0x0A03		| W and M, three levels
+	ptestr	#5,(%a0),#1,%a3
+	pmove	%psr,V_MMUSR
+	moveq	#0,%d0
+	move.w	V_MMUSR,%d0
+	want	n_t12l, %d0, 0x0001		| level 1 only: one level, the search not finished
+	want	n_t12la, %a3, TBLA		| A3: the level A descriptor
+
+	| ---- T13: U and M, as a 68030 sets them in the descriptors ----
+	move.l	#WIN+0x63000+1,TBLC+0x63*4	| U and M clear
+	pflusha
+	tst.l	WIN+0x63000			| a read sets U only
+	move.l	TBLC+0x63*4,%d0
+	and.l	#0x18,%d0
+	want	n_t13r, %d0, 0x08
+	move.l	#0x13131313,WIN+0x63000+4	| the first write sets M
+	move.l	TBLC+0x63*4,%d0
+	and.l	#0x18,%d0
+	want	n_t13w, %d0, 0x18
+	want	n_t13d, WIN+0x63000+4, 0x13131313
+	move.l	#WIN+0x63000+0x11,TBLC+0x63*4	| the guest clears U and flushes: the next read sets it again
+	pflusha
+	tst.l	WIN+0x63000
+	move.l	TBLC+0x63*4,%d0
+	and.l	#0x18,%d0
+	want	n_t13u, %d0, 0x18
+	move.l	#WIN+0x63000+0x09,TBLC+0x63*4	| ... and M: the next write sets it again
+	pflusha
+	tst.l	WIN+0x63000
+	move.l	#0x31313131,WIN+0x63000+8
+	move.l	TBLC+0x63*4,%d0
+	and.l	#0x18,%d0
+	want	n_t13m, %d0, 0x18
+	move.l	#WIN+0x64000+1,TBLC+0x64*4	| PLOADR sets U, PLOADW U and M, without an access
+	pflusha
+	lea	WIN+0x64000,%a0
+	ploadr	#5,(%a0)
+	move.l	TBLC+0x64*4,%d0
+	and.l	#0x18,%d0
+	want	n_t13pr, %d0, 0x08
+	ploadw	#5,(%a0)
+	move.l	TBLC+0x64*4,%d0
+	and.l	#0x18,%d0
+	want	n_t13pw, %d0, 0x18
+
+	| ---- T14: a write to a write-protected page is a bus error; a read is not ----
+	move.l	#0x14141414,WIN+0x65000+8
+	move.l	#WIN+0x65000+5,TBLC+0x65*4	| valid, WP
+	pflusha
+	clr.l	V_COUNT
+	move.l	WIN+0x65000+8,%d2
+	want	n_t14r, %d2, 0x14141414
+	want	n_t14c0, V_COUNT, 0
+	lea	WIN+0x65000+8,%a0
+	move.l	#0x41414141,%d1
+t14:	move.l	%d1,(%a0)			| the handler maps the page again without WP
+	want	n_t14, WIN+0x65000+8, 0x41414141
+	want	n_t14c, V_COUNT, 1
+	wantpc	n_t14pc, t14
+	moveq	#0,%d0
+	move.w	V_SSW,%d0
+	want	n_t14s, %d0, 0x0105		| DF, write, long, supervisor data
+
+	| ---- T15: PFLUSH by address and by function code drop what they name ----
+	move.l	#0x15151515,WIN+0x66000
+	tst.l	WIN+0x66000			| in the ATC now
+	clr.l	TBLC+0x66*4			| invalid in the tables
+	lea	WIN+0x66000,%a0
+	pflush	#0,#0,(%a0)			| any function code, this page
+	clr.l	V_COUNT
+	move.l	WIN+0x66000,%d2
+	want	n_t15a, %d2, 0x15151515
+	want	n_t15ac, V_COUNT, 1
+	move.l	#0x51515151,WIN+0x67000
+	tst.l	WIN+0x67000
+	clr.l	TBLC+0x67*4
+	pflush	#5,#7				| supervisor data
+	clr.l	V_COUNT
+	move.l	WIN+0x67000,%d2
+	want	n_t15f, %d2, 0x51515151
+	want	n_t15fc, V_COUNT, 1
+
+	| ---- T16: TT0, a transparent window over the tables ----
+	clr.l	TBLC+0x68*4			| page 0x68 invalid in the tables
+	pflusha
+	move.l	#0x00008107,V_TT		| logical $00xxxxxx one to one: enabled, reads and writes, every FC
+	pmove	V_TT,%tt0
+	clr.l	V_COUNT
+	move.l	#0x16161616,WIN+0x68000
+	move.l	WIN+0x68000,%d2
+	want	n_t16, %d2, 0x16161616
+	want	n_t16c, V_COUNT, 0
+	lea	WIN+0x68000,%a0
+	ptestr	#5,(%a0),#0
+	pmove	%psr,V_MMUSR
+	moveq	#0,%d0
+	move.w	V_MMUSR,%d0
+	want	n_t16t, %d0, 0x0040		| PTEST level 0: T
+	clr.l	V_TT
+	pmove	V_TT,%tt0			| off: the tables say invalid again
+	move.l	WIN+0x68000,%d2
+	want	n_t16o, %d2, 0x16161616
+	want	n_t16oc, V_COUNT, 1
+
+	| ---- T17: a PMOVE whose operand's page is invalid: the bus error comes from the instruction ----
+	move.l	#0x00008107,WIN+0x69000+0x10	| the operand, then its page invalid
+	clr.l	TBLC+0x69*4
+	pflusha
+	clr.l	V_COUNT
+	lea	WIN+0x69000,%a0
+t17:	pmove	0x10(%a0),%tt1			| the handler maps the page; the PMOVE runs again and loads TT1
+	pmove	%tt1,V_TT
+	want	n_t17c, V_COUNT, 1
+	wantpc	n_t17pc, t17
+	want	n_t17a, V_ADDR, WIN+0x69000+0x10
+	clr.l	V_TT
+	pmove	V_TT,%tt1
+
+p2skip:
+
 	| ---- the result ----
 	lea	MSG,%a1
 	lea	s_res(%pc),%a0
@@ -537,6 +690,37 @@ s_bench: .asciz	"MMU test: benchmark loop running (heartbeat JIT line)"
 s_stray: .asciz	"MMU test: bus error outside the test window at "
 s_unexp: .asciz	"MMU test: unexpected exception, format/vector "
 s_at:	.asciz	" at PC "
+n_t12v:	.asciz	"t12valid"
+n_t12va: .asciz	"t12an"
+n_t12i:	.asciz	"t12invalid"
+n_t12w:	.asciz	"t12wp"
+n_t12l:	.asciz	"t12level1"
+n_t12la: .asciz	"t12an1"
+n_t13r:	.asciz	"t13read"
+n_t13w:	.asciz	"t13write"
+n_t13d:	.asciz	"t13data"
+n_t13u:	.asciz	"t13u"
+n_t13m:	.asciz	"t13m"
+n_t13pr: .asciz	"t13ploadr"
+n_t13pw: .asciz	"t13ploadw"
+n_t14r:	.asciz	"t14read"
+n_t14c0: .asciz	"t14readcount"
+n_t14:	.asciz	"t14"
+n_t14c:	.asciz	"t14count"
+n_t14pc: .asciz	"t14pc"
+n_t14s:	.asciz	"t14ssw"
+n_t15a:	.asciz	"t15addr"
+n_t15ac: .asciz	"t15addrcount"
+n_t15f:	.asciz	"t15fc"
+n_t15fc: .asciz	"t15fccount"
+n_t16:	.asciz	"t16"
+n_t16c:	.asciz	"t16count"
+n_t16t:	.asciz	"t16mmusr"
+n_t16o:	.asciz	"t16off"
+n_t16oc: .asciz	"t16offcount"
+n_t17c:	.asciz	"t17count"
+n_t17pc: .asciz	"t17pc"
+n_t17a:	.asciz	"t17addr"
 n_t1:	.asciz	"t1"
 n_t1c:	.asciz	"t1count"
 n_t1pc:	.asciz	"t1pc"
