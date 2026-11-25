@@ -51,6 +51,17 @@ machines sound comes from the ASC with its own FIFO, which a faster processor or
 whatever DayStar's sound reputation rests on, it is not in this file. The SE accelerator that handled sound well
 is still to be found.
 
+DayStar's next disk, **Power Central 2.0 (Disk Release 7, 19 March 1993)**, sent the same day as an 800K Disk Copy
+image, corrects the picture: by then DayStar also sold a **PowerCache for the SE and the Classic** (an adapter board,
+"P33 or P34" marked, with memory of its own; 68040 support had moved to a separate QuadControl). Its 'mmuc'
+resource 0 is the 68030 MMU set-up for those machines: a 24-bit table of sixteen 1 MB pages, $00000019 to
+$00400019 (RAM and ROM, cacheable) and $00500059 upwards (cache-inhibit bit set: the SCSI chip, the SCC, the IWM and
+the VIA). That is the whole of its SE-specific treatment of the hardware: the I/O space is never cached, RAM and ROM
+are. Again no Sound Driver and no sound patch: the SE's sound worked under it because the sound buffer is ordinary
+RAM, which the 68030's write-through data cache writes straight to, and the VIA is uncached. Emu68 treats the Mac's
+I/O the same way in Aurora68 (accesses to the board are never cached). Its notes add a "Disk Spinup" parameter-RAM
+setting (0 to 31 seconds of waiting for SCSI disks at power-up) and PowerDemo 5.4 with SE and Classic support.
+
 A third, **Dove Computer's MaraThon Racer 030 for the Plus and SE** ("MaraThon® Racer® 030 Plus/SE INIT/CDEV v2.3"),
 said to be the one that handled sound well, holds no sound code either. What it does:
 - **Re-times the ROM's delay loops when the cache changes.** The control panel writes the low-memory timing constants
@@ -66,6 +77,6 @@ said to be the one that handled sound well, holds no sound code either. What it 
 - **Card and maths.** 'INIT' 71, "Mercury Cache Enable", finds the card through a MOVES read at $EC398000 with
   SFC 3 and measures the loop speed against Ticks; 'PROC' 131 points SANE (PACK 4 and 5) at the 68882 and fixes
   _SysEnvirons' FPU field. Holding a key at startup ("KEYDOWN") skips it.
-So none of the three accelerators carries special sound code beyond Extreme Systems' replacement driver. If the Racer
+So none of these accelerators carries special sound code beyond Extreme Systems' replacement driver. If the Racer
 sounded better, the reason is in its hardware or in leaving Apple's own Sound Driver alone with correct timing
 constants, not in a sound patch.
