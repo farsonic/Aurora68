@@ -20,7 +20,8 @@
 
 The Macintosh Plus (1986) and SE (1987) run a 68000 at 7.8336 MHz, half the 15.6672 MHz clock that also paces
 the screen. Apple wrote their system for exactly that processor, and in several places it is timed by it. The
-floppy controller, the IWM, has no clock of its own for the bit stream: the Sony driver counts instructions. Short
+floppy controller, the IWM, hands over its bytes as fast as the driver reads them, and the Sony driver leans on
+the 68000's pace in a few places (the floppy part below says exactly where). Short
 delays elsewhere (the gap the SCC serial chip needs between two accesses, for one) are DBRA loops sized by two
 low-memory constants, TimeDBRA and TimeSCCDB at $D00 and $D02, that the ROM measures at start-up. And sound has no
 chip at all: the SE's video circuitry fetches one word of a 370-word buffer at the top of RAM on every scan line,
@@ -263,11 +264,15 @@ FastCache, Equalizer LC, PowerMath LC and FastCache Quadra, all for the II famil
 Quadra. Power Central 2.0, on "Disk Release 7" (19 March 1993), adds a **PowerCache for the SE and the Classic**: an
 adapter board, "P33 or P34" marked, with memory of its own.
 
-- **The SE's hardware: never cache the I/O.** Its 'mmuc' resource 0 is the 68030 MMU set-up for those machines: a
-  24-bit table of sixteen 1 MB pages, $00000019 to $00400019 cacheable (RAM and ROM) and $00500059 upwards with the
-  cache-inhibit bit set (the SCSI chip, the SCC, the IWM, the VIA).
-- **Sound: nothing.** No Sound Driver and no sound patch. The sound buffer is ordinary RAM, which the 68030's
-  write-through data cache writes straight to, and the VIA is uncached.
+- **Its MMU table is the Mac II's, not the SE's.** 'mmuc' resource 0 is loaded only when Gestalt 'mach' is 6 (the
+  Mac II; Power Central 2.0's INIT at $276-$296, 1.3's at $238): sixteen 256 MB pages under a TC of $80F04D00,
+  $X0000019, cache-inhibited from $50000000, the Mac II's 32-bit I/O space. (An earlier reading here took it for a
+  24-bit SE table of 1 MB pages; the floppy part below corrects it.)
+- **The SE/Classic adapter's options.** Power Central 2.0's "Classic/SE PowerCache Startup Configuration" dialog
+  (DITL 131) offers "Sound Patch #1" to "#4", "Patch Floppy Driver", "Map ROM to RAM", "Protect ROM" and "System
+  patch #1", kept as bits of a word in parameter RAM at $FE-$FF. No code in the INIT, the control panel or the
+  'mmuc' resources applies them; they may be carried out by the adapter's own firmware (inference). So the SE
+  PowerCache did have sound and floppy patches, of unknown content, and they are not in the files read here.
 - **The rest.** Card detection by probing $F8000000 under a bus-error handler; a speed measurement against the VIA's
   timer 2 for the "Processor: nn MHz" line; PowerMath (SANE through the 68882) in a normal and an "enhanced" form;
   a hidden configuration dialog; a "Disk Spinup" parameter-RAM setting of 0 to 31 seconds.
@@ -286,9 +291,9 @@ The compact Macs' sound was handled in three ways, and not at all by the rest:
    job for the Sound Manager's synthesizers. Novy's own relay into the ROM, with Apple's placement left as it was,
    is the case the fix was written for: "the distorted sound problem that otherwise accompanies the Novy boards".
 2. **Slow the processor down while Apple's driver plays** (Applied Engineering, 1991-1993).
-3. **Leave it alone** (Dove, DayStar, DiiMO), with the rest of the machine kept honest: timing constants per cache
-   state (Dove), the floppy driver run with the caches off (Dove, Applied Engineering), the I/O space never cached
-   (DayStar).
+3. **Leave it alone** (Dove, DiiMO), with the rest of the machine kept honest: timing constants per cache state
+   (Dove), the floppy driver run with the caches off (Dove, Applied Engineering). DayStar's SE adapter offered four
+   "Sound Patch" options, whose code is not in its control panel or INIT and may be in the adapter's firmware.
 
 Aurora68 needs none of them, because Apple's SE Sound Driver never runs under it. The IIci ROM's Sound Manager
 writes to an ASC that the kernel emulates, and the kernel fills the SE's buffer itself: half a buffer at a time,
