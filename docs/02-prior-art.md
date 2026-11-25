@@ -72,6 +72,47 @@ None of it is for the 128K and 512K with the 64K ROM. Those machines had acceler
 for them has been read here, and the 64K ROM is not in rom/original to compare against, so the original Macintosh
 appears in this history only through the hardware it shares with its successors.
 
+### Who made what: a tangled family
+
+The software above often carries one company's name and another's code, and a survey of the period's magazines
+explains much of it: Steve Taylor's "68k Accelerators, FPUs and other CPUs" (Steve's Blog, savagetaylor.com,
+published June 2022, updated August 2026; the owner sent it as a PDF on 25 November 2026), which lists over a hundred
+products with their sources in MacWorld, MacUser, MacWeek, BYTE and others. What follows is taken from it and is
+second-hand; where it meets the software read here, that is said.
+
+- **The first accelerators.** The earliest the survey finds are Human Touch Computer Products' Three to One Touch
+  Board (MacWorld, January 1986: a new 68000 at 12 MHz and up to 3.5 MB) and GCC's HyperDrive 2000 (March 1986: a
+  20 MB disk, 1.5 MB of RAM, a 12 MHz 68000 and a 68881), followed that August by reviews of products from Novy,
+  Quesse and Levco.
+- **For the original 128K and 512K** the survey lists, among others, Levco's MonsterMac (10 MHz, with a fan, 256K of
+  PROM and SCSI, needing changes to case and board), MacMemory's TurboMax (10 MHz, up to 4 MB, its own fan and power
+  supply, a difficult installation with soldering), the Three to One Touch Board, the HyperDrive 2000, MacProducts'
+  RailGun 020, and Total Systems' **Mercury 030 for the 128K, 512K, Plus and SE**. Its note: accelerators for the
+  512Ke and Plus can often be used on a 128K or 512K that has Apple's 800K drive kit and its 128K ROM upgrade.
+- **Novy Systems** (Edgewater, Florida; earlier System Technology Corporation) built boards under other names: its
+  Mac20MX was sold as Total Systems' Gemini 020, "manufactured for Total Systems Integration of Eugene Oregon, by Novy
+  Systems", and as MacProducts' RailGun 020; its Quik30 was sold as MacProducts USA's RailGun (Pro) 030. That is why
+  the RailGun software read here is Novy's own (section on Novy, below).
+- **Total Systems Integration**'s Mercury 030 was "designed by Quesse Computer Co Inc, and Engineering Solutions Inc.";
+  its Gemini Integra (33/50 MHz) was "also sold by Extreme Systems as the Vandal SE" (MacWorld, June 1993), which
+  fits the VANDAL's control panel being GemStart under another name.
+- **MicroMac Technology** "has incorporated accelerators originally developed by such firms as DiiMO, Dove, Harris,
+  and Mobius into its product line" (MacUser, July 1997). The survey says the Dove MaraThon Racer 030 (Plus, SE,
+  Classic) was rebranded as the MicroMac Performer when Dove stopped making accelerators; the Performer's own
+  software, read below, is Total Systems' GemStart with advice to choose "Mercury 030", and the modern rebuild of the
+  board calls it logically identical to the Mercury. The record is not settled here.
+- **DiiMO Technologies** (Austin, Texas; formerly Teknovation) sold a cache card first developed by Logica Research as
+  the LogiCache, later sold by MicroMac.
+- **Applied Engineering** bought SiClone Sales & Engineering, another accelerator maker, in the autumn of 1991, and
+  sold TransWarp boards for the SE (16 to 40 MHz, with video and Ethernet options), the Classic and the LC.
+- **The end.** System 7.5 changed the Memory Manager in ways most of these boards could not follow; with the move to
+  PowerPC, that ended the market. The survey quotes DayStar's website of January 1998: its 030/040/601 upgrades "are
+  only certified through System 7.5.1", and DayStar stopped making them in the autumn of 1996.
+- **Today.** Several of these boards have been reverse-engineered and remade by members of the 68kMLA forum. The
+  survey names Bolle's 25/33 MHz 68030 for the SE, sold by MacEffects as a clone of "the MicroMac Performer SE / Dove
+  Marathon Racer SE", with its design files on GitHub; ZigZagJoe's remakes of SE/30 cards; and luRaichu's Plus board
+  (below).
+
 ### GCC HyperCharger 020 (1987-1988)
 
 GCC (General Computer Corporation of Massachusetts, the company behind the arcade Ms. Pac-Man and, for the Mac, the
