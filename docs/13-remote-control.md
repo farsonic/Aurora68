@@ -97,6 +97,32 @@ sharing the Mac's address as well, taking only TCP port 8068 to it. The trade-of
 mode: the Mac cannot use port 8068 itself, and the remote is reachable only while the Mac has an
 address.
 
+*The shared address without the Mac's help* (25 November 2026, docs/08 item 149). On the owner's WiFi
+(a mesh of five access points) a MacBook's ARP entry for the Mac stayed "(incomplete)" while a static
+entry (`arp -s`) made ping and the remote work at once, and under a system with no TCP/IP of its own
+(A/UX's Mac OS) nothing answered ARP and the kernel did not even know the address. Since then, in the
+shared mode:
+- **ARP**: the kernel answers a request for the shared address itself, with the shared MAC address (the
+  Mac's stack, if it runs, sends the same answer; two identical answers do no harm).
+- **The address from the card**: the Mac's last WiFi address is kept in `macip.txt` in the card's root
+  (one line, written only when the Mac starts using another). At the next start, if nothing has been heard
+  from the Mac yet, the kernel sends two ARP probes for it a second apart (RFC 5227: sender address 0) and,
+  when no other device answers, takes it, announces it with a gratuitous ARP and an mDNS answer, and answers
+  ARP and port 8068 on it. If another device answers a probe, or later sends from that address before the
+  Mac has, the address is given up (`another device ... has the Mac's last WiFi address`) and the kernel
+  waits for the Mac's own. As soon as the Mac sends from an address, that is the one used (and saved).
+- **Ping**: an echo request to the shared address waits half a second for the Mac's own reply (the kernel
+  sees the Mac's frames go out); if none goes out, the kernel answers. So with Riptide running there are no
+  duplicate replies, and with no stack, or a Mac that has hung, ping still answers, 500 ms late, which also
+  shows who answered.
+- **The heartbeat's line** says what arrived: `broadcasts N, ARP requests N, for the Mac's address N:
+  answered by the kernel N, by the Mac N | pings N: the Mac answered N, the kernel N`. "ARP requests" counts
+  every request the WiFi delivered (other devices' too: broadcasts do arrive); "for the Mac's address" those
+  a laptop sends when it looks for the Mac. On a network where a laptop cannot resolve the Mac's address,
+  0 there while the laptop asks means the requests never reached the Pi (the access point or the mesh); a
+  count that grows with the kernel's answers means they did and the answers were lost on the way back. The
+  first request is also logged on its own (`the first ARP request for the Mac's address ... arrived`).
+
 The interface is the wired one while its link is up, else the WiFi (`remote.link=wired|wifi`
 fixes one). The HTTP server listens on port 80 and on 8068 of its own address.
 

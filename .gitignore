@@ -154,3 +154,6 @@ mac/build/st/
 mac/build/scsidev_test
 mac/build/scsidev_test.log
 mac/build/wifi_pick_test
+# the remote control IPv4 host test (tools/ip_test.sh) and Mach Test's code (make -C mac machtest; the three programs are committed)
+mac/build/ip_test
+mac/build/machtest.bin.raw

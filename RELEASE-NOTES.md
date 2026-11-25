@@ -2,6 +2,19 @@
 
 ## Next release (on main, not released yet)
 
+- **The remote control on the WiFi, found by ARP, with or without TCP/IP on the Mac** (docs/08 item 149, docs/13
+  "Addresses", 25 November 2026; the owner's MacBook could not resolve the Mac's address on a mesh WiFi, and under
+  A/UX's Mac OS the kernel had no address at all). In the shared mode (the WiFi's default) the kernel answers ARP for
+  the Mac's address itself, keeps the Mac's last WiFi address in `macip.txt` on the card and answers on it from the
+  start (after two ARP probes, given up if another device has it), announces it with a gratuitous ARP, and answers a
+  ping the Mac has not answered within half a second. The heartbeat's `[REMOTE]` line now says how many ARP requests
+  arrived, how many were for the Mac's address and who answered them (before, it counted 0 in this mode whatever
+  happened). Kernel only.
+- **A/UX Startup runs with Aurora68 Machine installed** (docs/08 item 150, 25 November 2026; it said "No SCSI disk
+  port", IN-8, because the extension answered "Macintosh SE"). A/UX Startup (by its name, or its creator `SASH` for a
+  renamed copy) gets the ROM's own answers from Gestalt `'mach'` (11) and SysEnvirons (9); every other program still
+  hears Macintosh SE. Aurora68 Machine only.
+
 - **WiFi with Bluetooth on, in an office with several access points on one network** (docs/08 item 147, 25 November
   2026; the owner's SE was thrown off every few seconds, and stayed connected with `bt=off`). Bluetooth: two LE
   keyboards and mice had asked for a 7.5 ms connection interval and got it, which on the Pi 3B's shared antenna left

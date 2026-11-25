@@ -10,7 +10,8 @@
 #                  the kernel's FAT/exFAT reader and its HFS view: tools/fatfs_test.sh, tools/hfsview_test.sh;
 #                  Aurora68 Recovery's cmdline.txt word editor: tools/cmdline_test.sh; its options table, one-shot
 #                  debug start and report bundle's scrubbing, and the page's header: tools/diag_test.sh; its access point's DHCP server, DNS
-#                  answerer and the firmware's SoftAP sequence: tools/apnet_test.sh; the bus check's verdicts
+#                  answerer and the firmware's SoftAP sequence: tools/apnet_test.sh; the remote control's IPv4 on the shared
+#                  WiFi address (ARP answers and probes, the card's remembered address, pings): tools/ip_test.sh; the bus check's verdicts
 #                  against a simulated board with faults: tools/buscheck_test.c; MPEG-1 in QuickTime, the import's indexer
 #                  and the card's MPEG-1 and MP2 decoders against FFmpeg: tools/mpg1_test.sh; the HDMI splash drawn at every
 #                  screen size, and its logo's header against docs/img/aurora68-logo.svg: tools/splash_test.sh; Aurora68 Status's
@@ -116,6 +117,17 @@ $(B)/Aurora68-Colour.bin: $(B)/picolor.bin.raw ../tools/mac/mkapp.py ../tools/ma
 DisposeTest: $(B)/DisposeTest.bin
 $(B)/DisposeTest.bin: $(B)/disptest.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py $(ICONS)
 	$(PY) ../tools/mac/mkapp.py --code $(B)/disptest.bin.raw --name DisposeTest --creator PIDT -o $@
+
+# Mach Test: what Gestalt 'mach' and SysEnvirons answer a program, under the three names Aurora68 Machine tells apart
+# (mac/machtest.s, docs/08 item 150). A test, not part of `all`: make machtest
+.PHONY: machtest
+machtest: $(B)/MachTest.bin $(B)/MachTest-AUX.bin $(B)/MachTest-SASH.bin
+$(B)/MachTest.bin: $(B)/machtest.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
+	$(PY) ../tools/mac/mkapp.py --code $(B)/machtest.bin.raw --name "Mach Test" --creator PIMT --owner -o $@
+$(B)/MachTest-AUX.bin: $(B)/machtest.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
+	$(PY) ../tools/mac/mkapp.py --code $(B)/machtest.bin.raw --name "A/UX Startup" --creator SASH -o $@
+$(B)/MachTest-SASH.bin: $(B)/machtest.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
+	$(PY) ../tools/mac/mkapp.py --code $(B)/machtest.bin.raw --name "Renamed Startup" --creator SASH --owner -o $@
 
 # PiPing's peer: the address it pings (the testbed's host peer by default; make PEER=192.168.0.1 for a real gateway)
 PEER ?= 192.168.68.1
@@ -225,6 +237,7 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	sh ../tools/cmdline_test.sh $(abspath $(B))
 	sh ../tools/diag_test.sh $(abspath $(B))
 	sh ../tools/apnet_test.sh $(abspath $(B))
+	sh ../tools/ip_test.sh $(abspath $(B))
 	sh ../tools/wifi_pick_test.sh $(abspath $(B))
 	sh ../tools/vcodec_test.sh $(abspath $(B))
 	sh ../tools/mpg1_test.sh $(abspath $(B))

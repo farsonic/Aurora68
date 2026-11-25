@@ -7511,3 +7511,117 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      switching off. (7) A/UX itself on Aurora68: the MMU (the other branch) and a 68040 the A/UX version accepts.
    - *Kernel builds* (25 November 2026, the branch `scsi-devices` from main at 5bba1fd): the plain psmac kernel and the
      owner's full one (`-DPSMAC_PC=ON -DPSMAC_A2=ON` with Aurora86 and Aurora65). `make -C mac check` passes.
+
+149. **The remote control's shared WiFi address: ARP answered by the kernel, the Mac's address kept on the card
+   (25 November 2026).** The owner tested A/UX on the real SE today, with the remote on over the WiFi in the default
+   shared mode (`remote.wifi=shared`: the kernel uses the Mac's MAC and IP address and takes TCP port 8068, item 86).
+   Two things went wrong:
+   - *A MacBook on the same SSID* (a mesh of five access points, no client isolation) *could not resolve the Mac's
+     address*: `arp -n` showed "(incomplete)", ping and the remote failed, while the Mac's own traffic out (a radio
+     stream, pings to other hosts) worked. With a static entry on the MacBook (`arp -s IP MAC`) ping (answered by
+     Riptide) and `curl http://IP:8068/` (the kernel) both worked at once, so unicast both ways was fine and only ARP
+     resolution failed. Whether the broadcast request reached the Mac and Riptide's answer was lost, or the request
+     never arrived, could not be told: in the shared mode `classify()` left ARP to the Mac (it returned 0), so the
+     heartbeat's `ARP asks 0 answered 0` was true whatever happened, and misleading.
+   - *Under a system without Riptide* (A/UX's own Mac OS) nobody answered ARP at all, and the kernel did not even know
+     the address: it took it from the Mac's own frames (`I.mac_ip[0]`), so the remote was unreachable even with a
+     static ARP entry.
+   What changed (`emu68/src/psmac/psmac_ip.c`, `psmac_card.c`):
+   - *ARP.* In the shared mode a request for the shared address is now also the kernel's: it answers with the shared
+     MAC address, the same answer the Mac's stack gives (two identical answers do no harm), and the request still goes
+     to the Mac. Another device's ARP from that address is seen too (a conflict, below).
+   - *The address from the card.* `macip.txt` in the card's root keeps the Mac's last WiFi address (one line, a comment
+     line before it; made in one cluster like `pram.bin`, written only when the address the Mac sends from changes,
+     never with `mac.card=ro`). At the next start, in the shared mode with nothing heard from the Mac yet, the kernel
+     sends two ARP probes for it a second apart (RFC 5227's probe: sender address 0, so no cache learns anything) and,
+     if no other device answers, takes it: a gratuitous ARP and an mDNS answer announce it, and ARP, port 8068 and
+     pings are answered on it. A device that answers a probe, probes for the same address, or later sends from it
+     before the Mac has, has it: the kernel gives it up (`another device (MAC) has the Mac's last WiFi address ...`)
+     and waits for the Mac's own. As soon as the Mac sends from an address, that one is used (and written to the card
+     if it is new). A link that comes up again probes the card's address again (it may be another network). The point
+     of the probes: a DHCP lease may have moved on while the Mac was off, and a gratuitous ARP for another device's
+     address would take its traffic.
+   - *Ping.* An echo request to the shared address waits half a second for the Mac's own reply, which the kernel sees
+     going out (`psmac_ip_mac_tx` matches the identifier and sequence number); if none goes out, the kernel answers.
+     With Riptide there are no duplicate replies; with no stack, or with the Mac hung (when the remote matters most),
+     ping still answers, 500 ms late, which also shows who answered. The alternatives were worse: answering at once
+     gives every ping a duplicate under Riptide, and answering "when the Mac has been quiet for a while" fails both
+     ways (an idle Riptide is quiet for minutes; a hung Mac's last frame may be recent). One request waits at a time.
+   - *The heartbeat's line* in the shared mode: `broadcasts N, ARP requests N, for the Mac's address N: answered by the
+     kernel N, by the Mac N | pings N: the Mac answered N, the kernel N`. "ARP requests" counts every request the WiFi
+     delivered (other devices' too); "for the Mac's address" the ones a laptop sends when it looks for the Mac; "by the
+     Mac" the stack's ARP answers seen going out. The first request for the address is logged on its own
+     (`the first ARP request for the Mac's address A arrived (from B): the kernel answers it`). Broadcast and ARP
+     counts alone reprint the line at most once a minute, so a busy network does not bury the log. On the wired port
+     the line says `ARP requests N, for this address N, answered N`.
+   - *Tested natively* (`tools/ip_test.sh`, in `make -C mac check`; `tools/ip_test.c` builds `psmac_ip.c` on the host
+     with `-DPSMAC_IP_HOST` and drives it through the drivers' calls with a clock of its own): the shared mode with the
+     Mac's stack (the address followed, announced, ARP answered from the shared MAC, a ping the Mac answers left to it,
+     one it does not answered after 500 ms, SYN-ACK on 8068 and not on 80, the heartbeat's counts); the card's address
+     with a silent Mac (two probes, nothing answered meanwhile, then the announcement, ARP, 8068 and ping; the same
+     address from the Mac not written again, a new one written and followed); a writable card with no file yet (the
+     first address written once); a probe answered by another device (not used); the address claimed later by
+     another device's gratuitous ARP (given up, then the Mac's own taken); the wired port unchanged.
+   - *Tested in the solo-board testbed* (QEMU, the simulated WiFi with `mac.wifisim=` joined at boot, System 7.1 with
+     Riptide set to DHCP on the WiFi card, a 32 MB FAT16 card image as `CARD=`). `tools/pinet.py` has a new
+     `PINET_ARPASK=1`: the peer behaves as the MacBook, asking for the Mac's address by broadcast ARP every five seconds,
+     logging each answer, pinging the address once it has one, and (with `PINET_KERNEL=18069 PINET_KERNEL_TO=8068
+     PINET_KERNEL_IP=192.168.69.2`) taking the kernel's MAC only from an ARP answer, so `curl` reaches the remote only
+     when ARP resolution works. Four runs, one card image throughout:
+     (1) and (2), Riptide on the Mac: its DHCP got 192.168.69.2, the kernel followed it (`the Mac's WiFi address is
+     now 192.168.69.2`) and answered ARP beside Riptide; the heartbeat at the end of (2) said `ARP requests 14, for the
+     Mac's address 7: answered by the kernel 7, by the Mac 7 | pings 34: the Mac answered 34, the kernel 0`, and the
+     peer counted 34 echo replies in 3 to 26 ms, none a duplicate; the remote answered `/state` 16 times and
+     `/screen.png` through the MAC address ARP had given. Run (1) found that a card with no `macip.txt` yet was taken
+     for no card at all (the card's "no file" and "no card" were one state), so nothing was written; with that fixed
+     (`psmac_card_writable`, and the native case for it), run (2) wrote it: `[CARD] macip.txt: 192.168.69.2 saved`, and
+     the file on the image reads the comment line and `192.168.69.2`. (3) Riptide moved to the System Folder's top
+     level, where System 7 still loads it: at the start `the card remembers the Mac's last WiFi address`, two probes,
+     `the Mac's WiFi address is now 192.168.69.2 (the card's, the Mac not heard from yet)`, the first ARP requests and
+     five pings answered by the kernel (501 to 509 ms); once Riptide had its lease its own replies came back in 3 to 22
+     ms and the kernel answered no more (`the Mac answered 26, the kernel 5`). (4) Riptide out of the System Folder, no
+     TCP/IP on the Mac at all: the same start, ARP answered by the kernel alone (`by the Mac 0`), 29 pings answered by
+     the kernel at 501 to 509 ms, and the remote's `/state` answered 20 times from 25 seconds after the Pi's start,
+     before the Finder was up, and `/screen.png` at the end.
+   - *What to look for on the real SE*: the heartbeat's `[REMOTE]` line while the MacBook runs `ping` to the Mac's
+     address with its ARP entry deleted (`sudo arp -d IP`). `for the Mac's address 0` while the MacBook asks: the
+     requests never reach the Pi (the mesh or the access point drops or does not forward them, e.g. an AP of the mesh
+     other than the Mac's); a count that grows, `answered by the kernel` growing with it, yet "(incomplete)" on the
+     MacBook: the answers are lost on the way back; `by the Mac 0` with Riptide running: Riptide does not answer.
+     Then the same under A/UX's Mac OS: `the card remembers the Mac's last WiFi address` at the start, then `the Mac's
+     WiFi address is now A (the card's, the Mac not heard from yet)`, and the remote at `http://A:8068/`.
+
+150. **A/UX Startup and Aurora68 Machine: the real machine type for the programs that need it (25 November 2026).**
+   On the owner's System 7.1, A/UX Startup (creator `SASH`) said "No SCSI disk port" (IN-8) and stopped until Aurora68
+   Machine was taken out of the Extensions folder (docs/23 section 14, on the `mmu-experimental` branch): its machine
+   check asks Gestalt `'mach'` and refuses types 1 to 5, 10, 17 and 19, the compact Macs among them, and the extension
+   answers 5, the SE. A/UX drives the hardware itself, so the program is right to want the truth. Aurora68 Machine
+   (`mac/pimach.s`) now keeps the ROM's own `'mach'` function (`_ReplaceGestalt` returns it) and passes the call to it,
+   with the caller's arguments untouched, when the current application is one that must know the real machine; its
+   SysEnvirons tail patch leaves the ROM's `envMacIIci` (9) for the same programs. Which program is asking: Gestalt has
+   no caller argument, but a selector function runs in the caller's context, so it is the current application, tested
+   two ways, both memory reads only (Gestalt may be called from anywhere, and a selector function must not move
+   memory or call traps that are not safe at interrupt time):
+   - its name in CurApName ($910), which the Segment Loader sets at the launch and the Process Manager (MultiFinder under
+     System 6) swaps with the rest of an application's low memory: a prefix of one of the names in `real_names`
+     ("A/UX Startup", so its later versions match too);
+   - its creator, for a copy that was renamed: an application's file holds its signature resource (type = creator,
+     ID 0, the Finder's bundle convention; A/UX Startup has `SASH` resources). The resource map of the current
+     application's file (CurApRefNum, $900) is found in the chain from TopMapHndl ($A50) (at most 32 maps, the master
+     pointer's flags masked in 24-bit mode, a purged map skipped) and its type list searched for the creators in
+     `real_creators` (`SASH`). Asking the Process Manager for the process's signature would be exact, but it is a trap,
+     not for interrupt time, and not there under System 6.
+   Both tests run only on a Gestalt `'mach'` or SysEnvirons call, which a program makes a few times at most, and cost a
+   few dozen instructions. Another program that needs the real type is one line in either list.
+   - *Test program* (`mac/machtest.s`, `make -C mac machtest`, not part of `all`): logs `Mach Test (NAME): Gestalt mach N,
+     SysEnvirons machineType M` through the INFO service and quits, built as "A/UX Startup" (creator `SASH`), "Renamed
+     Startup" (creator `SASH` with its signature resource: `mkapp.py --owner`, new) and "Mach Test" (creator `PIMT`).
+   - *Tested in the solo-board testbed* (System 7.1, the three in Startup Items, the new Aurora68 Machine in Extensions):
+     `[MAC] Mach Test (A/UX Startup): Gestalt mach 11, SysEnvirons machineType 9`, `[MAC] Mach Test (Renamed Startup):
+     Gestalt mach 11, SysEnvirons machineType 9`, `[MAC] Mach Test (Mach Test): Gestalt mach 5, SysEnvirons machineType
+     3`; the extension's own start-up line still `A68 Machine: Gestalt mach now 5`; the same in all four runs of item 149.
+     About This Macintosh (opened by `mac.inputabout=`, photographed through the remote over the shared WiFi) says
+     Macintosh SE, System Software 7.1.
+   - *On the real SE*: A/UX Startup started from System 7.1 should now pass the machine check and go on to its next one
+     (under System 7.1 that is "Standalone program space is too small", IN-2, docs/23: started from A/UX's own small
+     Mac OS it is not met). About This Macintosh still says Macintosh SE.

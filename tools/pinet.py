@@ -56,6 +56,13 @@ replies to .rx. Two modes:
                             seconds until it has one), takes it as its own, asks the kernel's DNS for a
                             phone's captive-portal check names, and logs every answer; PINET_KERNEL then
                             reaches the page from the leased address (PINET_KERNEL_IP=192.168.4.1).
+                            PINET_ARPASK=A.B.C.D (=1: the Mac's 192.168.N.2) (25 November 2026, docs/08
+                            item 149): the peer is a laptop looking for that address, as the owner's MacBook
+                            does: a broadcast ARP request every five seconds until it is answered (then
+                            every thirty), each answer logged with the MAC it names, and once it has one an
+                            ICMP echo to the address every five seconds, the answer's delay logged; with
+                            PINET_KERNEL the kernel's MAC is then taken only from such an answer (not from
+                            a gratuitous ARP), so a connection works only when ARP resolution does.
   pinet.py <base> tap tapN  bridge frames to a Linux TAP device (needs CAP_NET_ADMIN)
 
 Usage in the testbed: tools/run-fullstack.sh 400 mac.net=/tmp/psmac-net   (and run this helper).
@@ -369,7 +376,13 @@ def peer(frame):
     if etype == 0x0800 and len(frame) >= 34 and frame[26:30] != bytes(4): mac_ip4 = frame[26:30]
     if etype == 0x0806 and len(frame) >= 42:                 # ARP
         op = struct.unpack('>H', frame[20:22])[0]; sha, spa, tpa = frame[22:28], frame[28:32], frame[38:42]
-        if spa == kernel['ip'] and op in (1, 2):
+        if ARPASK and op == 2 and spa == ARPASK and tpa == PEER_IP:
+            arpask['answers'] += 1
+            new = arpask['mac'] != sha
+            arpask['mac'] = sha
+            if spa == kernel['ip']: kernel['mac'] = sha
+            return f"ARP answer: {'.'.join(map(str, spa))} is at {sha.hex(':')} (answer {arpask['answers']}{', new' if new else ''})"
+        if spa == kernel['ip'] and op in (1, 2) and not ARPASK:
             kernel['mac'] = sha                                  # its gratuitous ARP, or an answer
         if op == 1 and tpa == PEER_IP:
             arp = struct.pack('>HHBBH', 1, 0x0800, 6, 4, 2) + PEER_MAC + PEER_IP + sha + spa
@@ -386,6 +399,10 @@ def peer(frame):
                 return udp_relay(src, sip, sport_, dport_, frame[14 + ihl + 8:14 + ihl + ulen_])
         if dip != PEER_IP and dip != b'\xff\xff\xff\xff' and not internet: return 'IP not for us'
         payload = frame[14 + ihl:]
+        if proto == 1 and payload[0] == 0 and ARPASK and sip == ARPASK and len(payload) >= 8:   # an answer to arpask_due's ping
+            seq = struct.unpack('>H', payload[6:8])[0]
+            t0 = arpask['pings'].pop(seq, None)
+            return f"ICMP echo reply from {'.'.join(map(str, sip))} seq {seq}" + (f" after {(time.time() - t0) * 1000:.0f} ms" if t0 else " (again: a duplicate)")
         if proto == 1 and payload[0] == 8:                   # ICMP echo
             icmp = b'\x00\x00' + b'\x00\x00' + payload[4:]
             icmp = icmp[:2] + struct.pack('>H', csum(icmp)) + icmp[4:]
@@ -992,6 +1009,30 @@ def kernel_due():
         elif now - k['opened'] > 120:
             kseg(k, 0x14); k['sock'].close(); del kclients[port]; print(f'peer: kernel TCP {port}: given up after two minutes', flush=True)
 
+# PINET_ARPASK (above): a laptop's ARP requests and pings for an address on the Mac's network
+_aa = os.environ.get('PINET_ARPASK', '')
+ARPASK = bytes([192, 168, NET, 2]) if _aa == '1' else bytes(int(x) for x in _aa.split('.')) if _aa else None
+arpask = {'next': 0.0, 'asked': 0, 'answers': 0, 'mac': None, 'ping_next': 0.0, 'seq': 0, 'pings': {}}
+def arpask_due():
+    if not ARPASK: return
+    now = time.time()
+    if now >= arpask['next']:
+        arpask['next'] = now + (30.0 if arpask['mac'] else 5.0)
+        arpask['asked'] += 1
+        arp = struct.pack('>HHBBH', 1, 0x0800, 6, 4, 1) + PEER_MAC + PEER_IP + bytes(6) + ARPASK
+        send(b'\xff' * 6 + PEER_MAC + b'\x08\x06' + arp + bytes(18))
+        print(f"peer: ARP request {arpask['asked']} for {'.'.join(map(str, ARPASK))} (answers so far {arpask['answers']})", flush=True)
+    if arpask['mac'] and now >= arpask['ping_next']:
+        arpask['ping_next'] = now + 5.0
+        arpask['seq'] = (arpask['seq'] + 1) & 0xffff
+        arpask['pings'][arpask['seq']] = now
+        icmp = struct.pack('>BBHHH', 8, 0, 0, 0x4152, arpask['seq']) + bytes(range(32))
+        icmp = icmp[:2] + struct.pack('>H', csum(icmp)) + icmp[4:]
+        send4(arpask['mac'], ARPASK, 1, icmp)
+        for q, t0 in list(arpask['pings'].items()):
+            if now - t0 > 4.0:
+                del arpask['pings'][q]; print(f"peer: ping seq {q} to {'.'.join(map(str, ARPASK))}: no answer", flush=True)
+
 tap = None
 if mode == 'tap':
     TUNSETIFF = 0x400454ca; IFF_TAP = 0x0002; IFF_NO_PI = 0x1000
@@ -1026,6 +1067,7 @@ while True:
         udp_due()
         kernel_due()
         apclient_due()
+        arpask_due()
     if tap is not None:
         try:
             while True:
