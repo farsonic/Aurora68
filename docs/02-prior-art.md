@@ -64,6 +64,7 @@ Which machines the software read here was written for, from its own checks and n
 | Applied Engineering Warp 030 | Plus and SE | compares the ROM version with $0075 and $0276; HWCfgFlags ($B22) bit 4 |
 | Total Systems GemStart / ExSys SE | SE ("made for the Total Systems Gemini accelerators for the Macintosh SE") | |
 | MicroMac Performer (GemStart licensed, 1995) | Plus and Classic (Killy-clip), SE (slot) | |
+| MicroMac CD306 start-up ROM 3.1 (1993) | Plus (v1 to v3), SE, SE FDHD, Classic | the Mac ROM's checksum, read through the card |
 | Novy RailGun / Quik30, Mobius 030 | Plus, 512Ke and SE (README) | ".Sound020" jumps into the Plus ROM ($4179DA...) or the SE ROM ($436CAA...) by HWCfgFlags bit 2 |
 | Glenn L. Austin, "Generic Sound Patches" | Plus and SE | compares the ROM version with $0075 and $0276 |
 | DayStar PowerCache (Power Central 2.0) | SE and Classic adapters, besides the II family | |
@@ -244,6 +245,58 @@ Sound Patches"; a GemStart version or system that leaves either out leaves Apple
 a reading of the code, not a test on that board. It also records a disable switch the hardware itself provides: hold
 the Interrupt switch after the chime and press Reset, and the board stays out of the way until the next start.
 
+### MicroMac CD306 start-up ROM 3.1 (1993)
+
+The card's firmware survives for one MicroMac board: a 32 KB start-up ROM (dumped twice over in a 64 KB file, named
+by its owner for the MicroMac MultiSpeed) whose header reads "NewLife Computer Corp.", "MicroMac Technology", "CD306
+Accelerator Start Up ROM", "Version 3.1", "14 July 1993", and, at $100, "BENJAMIN". The 68030 starts from it at
+$F80200 (reset vector $00F80200, stack $003EFFF0); about 10 KB is code. Read in full, it shows how a 68030 card of
+1993 took over a compact Mac without any software on the disk:
+
+- **It sets the card up through a private function code.** Before touching the Mac, the ROM sets DFC to 3, a
+  function code the 68030 never uses for itself, and writes card registers with MOVES at $03000000, $04000010,
+  $05000010, $06000010 and $07000000, the setting carried in the address rather than the data. The settings come
+  from three words in the ROM at $180, $190 and $1A0 ($0009, $0010, $0014); on our reading these are the speed and
+  wait-state choices that gave the board its name (inference).
+- **It tests the card and draws its own error screens.** Walking-bit tests of the card's registers and RAM, with
+  the SE's screen at $3FA700 painted black and a code drawn on it for each failure, before the Mac's ROM runs.
+- **It copies the Mac's ROM into its own RAM, patches the copy, and boots from it.** The ROM checks the Mac ROM's
+  checksum through the card's window at $04400000, copies 128 KB (Plus) or 256 KB (SE, Classic) of it from $400000
+  into card RAM, verifies the copy, and recognises five ROMs by checksum: the Plus v1 ($4D1EEEE1) and v3
+  ($4D1F8172), the SE ($B2E362A8), the SE FDHD ($B306E171) and the Classic ($A49F9914). Any other 128 KB ROM, in
+  practice the Plus v2, is treated like the v1. It then clears both caches, turns on the instruction and data caches
+  with burst fill and write allocate (CACR $3919), and jumps to the copy's reset vector.
+- **On the Plus it upgrades the ROM to v3 first.** On a v1 copy it makes the two one-byte changes Apple made in the
+  v2 (at $1A4A a BEQ to BRA, at $7D44 a BEQ to BPL); on a v1 or v2 copy it writes Apple's v3 change (the SCSIReset
+  moved out of the boot's SCSI routine at $7D40 into a new routine at $1FFC0, called from $8AC before it) and
+  stamps the copy with the v3 checksum. Each
+  of these is byte for byte what the v2 and v3 ROMs have (compared against the three Plus ROMs).
+- **Then it fixes what a fast processor breaks on the Plus: the SCSI Manager.** Ten routines of the Plus ROM's
+  SCSI Manager ($417294 to $417566) and the boot code's SCSI read at $7DCC are pointed at replacements in the card
+  ROM ($F8259C to $F82878). Apple's versions time the 5380's reset and settle delays and its handshake timeouts with
+  counted DBRA loops written for a 7.8 MHz 68000; the card's are the same routines with NOPs in the loops and new
+  counts, one timeout raised in place (the $00017528 at $4173AE becomes $000507AC), and a blind read that gives up
+  with an error when the target leaves the data phase instead of waiting forever. The SE and Classic get none of this: their ROMs calibrate their SCSI timing at start-up
+  (TimeSCSIDB, inference), so their loops scale with the processor by themselves.
+- **It tells the system what it is.** The ROM's processor test is replaced so that CPUFlag reads 3, a 68030 (Plus:
+  `moveq #3,d1` at $590 and its MOVEC removed; SE and Classic: `moveq #3,d1; move.b d1,d7; rts` at $3EE); on the
+  Plus, HWCfgFlags is set unconditionally ($3F0); it gets bit 3 always and bit 4 when
+  a 68882 answers a probe through the F-line vector (Plus $C0 becomes $C8 or $D8; SE and Classic $C400 becomes $CC00
+  or $DC00), the bit Applied Engineering's software also tests. The ROM's own checksum test is disabled (Plus $D9A,
+  SE and Classic $26EA), since the copy no longer matches, and the Plus ROM's probe for a test ROM at $F80000 (at
+  $F6CA) is pointed at $400000, because the card's own ROM sits at exactly that address.
+- **The rest, on the Plus only.** A start-up hook at $66 that quietens the 5380 and the VIA before the ROM's own
+  start-up, and a hook on system error 12 (unimplemented trap, $806) that saves every register just past the end of
+  the screen buffer ($3FFC80), writes them in hex at the bottom of the screen, and then hands over to the ROM's
+  system error.
+
+**Nothing in it touches sound or the floppy.** No patch lands in the Sound Driver, the Sony driver or the IWM's
+address space, no code reads SoundBase or the sound buffer, and the data cache is left on for good. Whatever kept
+sound and floppy right on this board was either in its hardware (the I/O space kept out of the cache, inference) or
+in MicroMac's software on the disk, the GemStart-derived Performer control panel being the one read here. The ROM is
+also the earliest example in this history of the method Aurora68 uses: the Mac's ROM copied into the accelerator's
+memory and patched there, never changed in its socket.
+
 ### Novy Systems RailGun and Quik30, also sold as the Mobius 030 (1992-1993)
 
 Novy Systems made the RailGun and Quik30 68030 accelerators for the Plus, the 512Ke and the SE, with the ImagePro
@@ -301,7 +354,8 @@ The compact Macs' sound was handled in three ways, and not at all by the rest:
    job for the Sound Manager's synthesizers. Novy's own relay into the ROM, with Apple's placement left as it was,
    is the case the fix was written for: "the distorted sound problem that otherwise accompanies the Novy boards".
 2. **Slow the processor down while Apple's driver plays** (Applied Engineering, 1991-1993).
-3. **Leave it alone** (Dove, DiiMO), with the rest of the machine kept honest: timing constants per cache state
+3. **Leave it alone** (Dove, DiiMO, and the MicroMac CD306's start-up ROM, which patches the Plus's SCSI Manager
+   but nothing of sound), with the rest of the machine kept honest: timing constants per cache state
    (Dove), the floppy driver run with the caches off (Dove, Applied Engineering). DayStar's SE adapter offered four
    "Sound Patch" options, whose code is not in its control panel or INIT and may be in the adapter's firmware.
 
@@ -474,6 +528,8 @@ UTableBase ($11C) + 16 is unit 4, refnum -5, and its DCE's first long is the dri
   32 KB pages), cacheable below $50000000 and cache-inhibited from it, the Mac II's 32-bit I/O space. How the SE
   adapter kept the IWM out of its cache is not shown by the software.
 - **DiiMOCache 2.2 (1994): nothing.** No floppy code.
+- **MicroMac CD306 start-up ROM 3.1 (1993): nothing.** It patches the Mac's ROM in card RAM before boot (see
+  above), but none of the patches is in the Sony driver, and it turns the data cache on and leaves it on.
 
 | | Calls wrapped | Caches during the call | Until | Machine paths |
 |---|---|---|---|---|
@@ -486,6 +542,7 @@ UTableBase ($11C) + 16 is unit 4, refnum -5, and its DCE's first long is the dri
 | Novy RailGun / Quik30 / Mobius | all five | data off; instruction off on the Plus/512Ke, on on the SE | ioResult no longer positive | $B22 bit 2 |
 | DayStar Power Central 2.0 | "Patch Floppy Driver", code not found | | | Classic/SE adapter |
 | DiiMOCache 2.2 | none | | | |
+| MicroMac CD306 ROM 3.1 | none (data cache on throughout) | | | |
 
 ### What the IIci ROM changed
 
