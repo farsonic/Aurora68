@@ -5105,7 +5105,7 @@ static uint32_t EMIT_FPU_exact(struct TranslatorContext *ctx)
    as the C side's register file, as EMIT_FPU_exact does. In user mode the instruction is a privilege violation
    (System 7's Virtual Memory runs the Mac in user mode and emulates the PTEST, PMOVE and PFLUSH it meets there).
    The C side leaves x18 at the next instruction, or at the bus-error handler with a new SR when the operand's
-   page faulted; the block ends after the instruction either way (the mapping may have changed under it).
+   page faulted; the block goes on after the instruction (below, the ROM's TC switch needs it) and leaves it on a fault.
    Without the option none of this is reached: the instructions take the shim's paths below, as before. */
 static uint32_t EMIT_PMMU_full(struct TranslatorContext *ctx, uint16_t opcode, uint16_t opcode2)
 {
@@ -5169,18 +5169,25 @@ static uint32_t EMIT_PMMU_full(struct TranslatorContext *ctx, uint16_t opcode, u
     if (ea != 0xff)
         RA_FreeARMRegister(ctx, ea);
 
-    /* a bus error from the operand: the new SR (x18 is already the handler's address) */
+    /* a bus error from the operand: the new SR, then out of the block (x18 is already the handler's address) */
     EMIT(ctx,
-        cbz(ret, 2),
+        cbz(ret, 3),
         bfxil(sr, ret, 0, 16)
     );
+    uint32_t *fault_exit = ctx->tc_CodePtr++;
+    uint32_t *skip = ctx->tc_CodePtr++;
     *priv_exit = b_cc(A64_CC_AL, ctx->tc_CodePtr - priv_exit);
+    *fault_exit = b_cc(A64_CC_AL, ctx->tc_CodePtr - fault_exit);
+    *skip = b_cc(A64_CC_AL, ctx->tc_CodePtr - skip);
+    EMIT(ctx, (uint32_t)(uintptr_t)skip, 1, 0, INSN_TO_LE(0xfffffffe));
     RA_FreeARMRegister(ctx, ret);
 
-    /* every path ends the block here: x18 is the next instruction's address, the privilege violation's handler
-       or the bus error's, and _pc_rel is 0 */
+    /* The normal path goes on in the block: x18 is the next instruction's address and _pc_rel is 0. It must: the
+       instructions after a PMOVE to TC were fetched under the old tables, which is what a 68030's instruction cache
+       gives the IIci ROM, whose switch runs "pmove (a3),tc; jmp (a5)" twice so that the JMP is in the cache before
+       the PMOVE takes its address away (ROM $40804376-$40804390). Ending the block there made the JMP be fetched
+       again through the new tables: on MAME's IIci that address is RAM, and the 68k ran off into it. */
     ctx->tc_M68kCodePtr += ext_count;
-    EMIT(ctx, INSN_TO_LE(0xffffffff));
     return 1;
 }
 #endif

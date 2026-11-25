@@ -713,15 +713,19 @@ static void pwalk(uint32_t la, int fc, int flags, int maxlevel, struct pwalk *r)
             ddt = 1;
         }
         if (ddt == 1) {                         /* a page descriptor, maybe early termination */
-            /* the 030 takes from the address field only the bits above the page (or the early-terminated span):
-               the ones below are free, and System 7's VM keeps a flag of its own in bit 8 of a 4 KiB page's
-               descriptor (ptch 42, $1ED8) */
+            /* The 030 takes from the address field only the bits above the page size: the ones below are free, and
+               System 7's VM keeps a flag of its own in bit 8 of a 4 KiB page's descriptor (ptch 42, $1ED8). The rest
+               of the logical address within the descriptor's span is added, not concatenated: an early-terminated
+               descriptor's base need only be page-aligned, and the IIci ROM's tables on a machine with RBV video map
+               low memory through one whose base sits above the frame buffer (MAME's IIci: logical 0 is not physical
+               0). The first version of this (26 November, for VM's flag) concatenated and sent MAME's IIci's low
+               memory into the frame buffer. */
             uint32_t base = (dsize == 8 ? d1 : d0) & 0xffffff00u;
             uint32_t ps = (tc >> 20) & 15, sb = 32 - used;
-            if (sb < ps) sb = ps;                     /* (a level that ends below the page size is malformed) */
+            uint32_t pmask = (1u << ps) - 1;
             uint32_t lowmask = sb >= 32 ? 0xffffffffu : ((1u << sb) - 1);
             r->span_bits = (uint8_t)(32 - used);
-            r->pa = (base & ~lowmask) | (la & lowmask);
+            r->pa = (base & ~pmask) + (la & lowmask);
             if (flags & PW_UPDATE) {
                 uint32_t nd = d0 | 8u;
                 if ((flags & PW_WRITE) && !r->wp && !(r->s && !super)) nd |= 0x10u;
