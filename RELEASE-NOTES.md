@@ -2,7 +2,15 @@
 
 ## Next release (on main, not released yet)
 
-Nothing yet since 0.17.
+- **WiFi with Bluetooth on, in an office with several access points on one network** (docs/08 item 147, 25 November
+  2026; the owner's SE was thrown off every few seconds, and stayed connected with `bt=off`). Bluetooth: two LE
+  keyboards and mice had asked for a 7.5 ms connection interval and got it, which on the Pi 3B's shared antenna left
+  the WiFi too little time; now, while the WiFi is in use, a request under 15 ms (22.5 ms with two LE devices) is
+  refused and a link under it is moved up to it (`bt.lefloor=`, 0 for the old way). WiFi: an aborted scan is noticed
+  and scanned again; the strongest access point of the network is chosen, one that disconnected us or could not be
+  joined is passed over for a minute or so, and after a lost link the next is joined at once; the firmware's own
+  roaming is followed (`roamed to ...`) and turned off for the session when its attempts drop the link
+  (`wifi.roam=auto|on|off`, `wifi.minrssi=`). Kernel only.
 
 ## 0.17 — larger disks, Apple II disks from the Mac, the floppy's figures (25 November 2026)
 

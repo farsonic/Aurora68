@@ -7234,3 +7234,134 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      Whether Apple's speeds on the drive's datasheet line suit real 400K drives (Apple measured each one) is for
      a 512K or 128K, if a tester has one; a file read and written on a floppy, which the testbed cannot do
      (item 93).
+
+147. **Thrown off the WiFi every few seconds: two LE links at 7.5 ms on the shared antenna, and one SSID on five
+   access points (25 November 2026).** The owner: since a restart this morning the SE keeps losing the WiFi in the
+   office, whose network (the owner's office SSID) is served by about five access points; "we need to connect to the
+   strongest, but when booting that might change its BSSID". It had worked in the morning with the same Bluetooth
+   devices. Later the same day: "with bt=off wifi came back up". The saved log (499 lines) showed one cycle about five
+   times: a scan that found one or two networks in all (an office with five access points and neighbours), the SSID at
+   -68 dBm on channel 1, a join that went through (authentication, association, link up, WPA handshake, connected,
+   PM 0), and 1 to 15 s later `join failed (status 1)`, `disconnected by the network (event 11, reason 8)`, `link down
+   (reason 2)`, a retry. Once an access point at -43 dBm on channel 1 answered the join with status 3; once the kernel
+   joined one at -78 dBm on channel 11 (-81 once connected). Bluetooth's own scans were off (duty 0.0 %); its two LE
+   links, the keyboard's and the mouse's, ran at 7.5 ms intervals with latencies of 30 and 60, "updates asked 1,
+   refused 0" on each.
+   - *What the log says that it did not say in words.* Event 11 is E_DISASSOC, not E_DISASSOC_IND (12): the
+     firmware reporting that *our* side left the access point, with 802.11 reason 8, "leaving the BSS", the reason a
+     station gives as it goes; an access point that throws a station off sends DISASSOC_IND or DEAUTH_IND (6). Before
+     it, every time, an E_SET_SSID with status 1 (failed), though the kernel had started no join (no "joining" line):
+     the firmware's own attempt to join or move, failing, and the firmware then leaving the access point it was on.
+     Until today both kinds were logged as "disconnected by the network". The firmware's own moves themselves (E_ROAM,
+     the start events) were not in the event mask, nor E_REASSOC, which the code handled.
+   - *Bluetooth, the likelier cause.* After the restart both LE devices sent an L2CAP Connection Parameter Update
+     Request for 7.5 ms and nothing longer. `bt_le_min_floor` (item 141) raised only a range that reached 15 ms, so
+     7.5-7.5 was asked of the controller as it was. Latency 30 or 60 lets the *peripheral* skip events; the central
+     transmits at every one of them, two links each every 7.5 ms, on the antenna the BCM43438 shares with the WiFi
+     (btc_mode 1, time sharing). In the morning the links presumably ran at the 30 to 50 ms the host asks for when it
+     connects (item 141), and the WiFi held. The update came by L2CAP and not by the link layer's Connection Parameters
+     Request procedure because the host's LE event mask (0x1f) leaves out the Remote Connection Parameter Request
+     event: the controller then refuses that procedure itself, and the device falls back to L2CAP (the Core
+     specification, Vol 4 Part E 7.7.65.6 and Vol 6 Part B 5.1.7; an inference from the mask, not seen on the air).
+     Now (bthost.h, btle.c): while the WiFi is in use (scanning, joining, connected or about to try again: alice_net.c
+     tells bt_pi.c at each state change, `bt_pi_wifi_use`), a request whose longest interval is under the floor is
+     answered with result 1, rejected, and the link keeps what it has. The floor is `bt.lefloor=` (15 ms by default),
+     half as long again with two or more LE links up (22.5 ms). Refusing rather than accepting and then asking the
+     controller for the floor: the Core specification (Vol 3 Part A 4.20) lets the central refuse and leaves the
+     link unchanged, and Linux's `l2cap_conn_param_update_req` refuses every request outside its bounds the same way
+     (a maximum above the connection's `le_conn_max_interval`), so HID devices meet refusals every day; a device told
+     yes and then given something else asks again or takes it for an error. A device may ask again (each is refused,
+     the first three logged, then every tenth) or disconnect: one that goes within 10 s of a refusal is counted
+     against its pairing, and after three such departures it is given what it asks for (a keyboard that works beats one
+     that keeps leaving; the log says so). A link already under the floor while the WiFi is in use (made before the
+     WiFi started, or given its way) is asked up to it with LE Connection Update, min = max = the floor, its latency
+     cut where the supervision timeout could no longer cover it, three seconds after it came up and at most twice.
+     With the WiFi off every valid request is taken as before; `bt.lefloor=0` is the old behaviour throughout. New
+     lines: `asks for connection interval 7.5-7.5 ms: refused, the WiFi is in use (floor 15 ms); it stays at 50 ms (1
+     so far)`, `connection interval 7.5 ms is under the floor while the WiFi is in use: asking for 15 ms, latency 30
+     (try 1 of 2)`, `connection interval now 15 ms (12 x1.25 ms), latency 30, timeout 3000 ms (floor 15 ms while the
+     WiFi is in use)`, `went 2 s after its interval was refused (1 of 3: then it is given what it asks for)`, and on
+     the heartbeat's `LE link` lines ` | floor 15 ms (the WiFi in use)`, with `under it refused N` and `UNDER IT` when
+     they apply. tools/bt_test.c tests all of it against its scripted controller (its run: 125 checks in all, 0
+     failed); the testbed has no
+     Bluetooth controller. Generic: right for Alice68 as well.
+   - *The scans.* The escan's parameters are Linux's (active, all channels, the firmware's dwell: 40 ms per channel
+     active and unassociated, 120 ms passive, as `brcmf_dongle_scantime`); nothing there explains one network in an
+     office. What could: the escan's final event was taken as the end whatever its status, and the status was not
+     logged, so an aborted scan (status 4, ABORT, or 9, a new scan in its place) looked like a finished one with
+     whatever had arrived. Who would abort it is not established without the chip; the suspects are the firmware's
+     own attempts to get back to the network after a loss (its roaming is on by default) and the Bluetooth links'
+     share of the antenna, which cuts every channel's 40 ms into pieces. Now the end says what it was: `scan: 8
+     networks, 5 of them "SSID" (complete, 560 ms)` or `(aborted (status 4), 200 ms)` or `(no end in 10 s, ...)`.
+     A scan that did not end cleanly, or a join's scan that heard fewer than three BSSIDs of the SSID, is followed by
+     one more pass, merged into the table, with an 80 ms active dwell per channel. Before the scan that follows a
+     lost link the kernel now sends WLC_DISASSOC, which stops the firmware's own attempts. A full table (36 BSSIDs)
+     used to keep the first 36 heard; now one of the SSID wanted, or a stronger network, takes the weakest other's
+     place. The first join scan logs every access point of the SSID (`  AP ..cc:dd:ee: channel 1, -68 dBm, WPA2`:
+     the last three octets only), later ones one line (`  5 APs: ..cc:dd:ee ch1 -68, ..ff:00:11 ch6 -72*, ...`, the
+     star for one passed over for now).
+   - *The choice* (wifi/fmac.c `fm_pick_*`, host-independent, tools/wifi_pick_test.c). The strongest BSSID of the
+     SSID. One that disconnected us is skipped for 90 s while another within 10 dB of the strongest is heard; one
+     that could not be joined (the -43 dBm one's status 3) for 60 s while any other above `wifi.minrssi` is heard: a
+     BSSID that cannot be joined is no use however strong, and with the 10 dB rule alone the testbed showed the
+     kernel choosing it again and again. After three failed joins in a row with a BSSID named, the join is by name
+     only and the firmware chooses; its outcome starts the count again. Nothing under `wifi.minrssi=` (-80 dBm) is
+     chosen while a better one was heard in the last minute: the scan is done again, twice, then by name only. The
+     log says why: `choosing ..cc:dd:ee: channel 6, -60 dBm (..ff:00:11 at -43 dBm could not be joined: skipped 57 s
+     more)`, `... (the strongest of 5)`, `... though it disconnected us: no other within 10 dB`, `3 joins with an
+     access point named failed in a row: by name only, the firmware chooses`. A join's E_SET_SSID failure while
+     connected is the firmware's (`the firmware's own join attempt failed while connected (status 1: failed,
+     ..cc:dd:ee): not counted as ours`) and counts for nothing; ours while joining count. Disconnections now say whose
+     side: `disassociated by our side, from ..cc:dd:ee (event 11, reason 8: leaving the BSS)`, `disassociated by the
+     access point ..cc:dd:ee (event 12, ...)`, and the loss `lost ..cc:dd:ee after 5 s (our side left it, just after a
+     join or roam attempt of the firmware's own): skipped for 90 s where another is within 10 dB`.
+   - *Roaming.* Linux's brcmfmac leaves roaming to the firmware unless `roamoff=1`: `brcmf_dongle_roam` sets
+     `roam_off` 0, WLC_SET_ROAM_TRIGGER -75 dBm and WLC_SET_ROAM_DELTA 20 dB for all bands, and handles E_ROAM
+     (`brcmf_notify_roaming_status`: on success the new BSSID is read and the link stays). The kernel now does the
+     same, except `bcn_timeout`, left as the firmware has it and logged (Linux sets a shorter one with roaming on, a
+     few beacons, which with Bluetooth taking the antenna would give up on an access point sooner). E_ROAM, E_REASSOC, beacon loss (31), E_ROAM_PREP (32),
+     JOIN_START, ROAM_START and ASSOC_START (36-38) are in the event mask; the start events are logged only while
+     connected, when they are the firmware's own. On E_ROAM the link stays up, the BSSID, channel and RSSI are read
+     (`roamed to ..cc:dd:ee: channel 1, -67 dBm (from ..ff:00:11); the link stays up`); a BSSID that changes in the
+     5-second figures without an E_ROAM is reported the same way. Whether "join failed (status 1)" on the SE was a
+     roam attempt cannot be told from that log, which had none of these events; the next one will. Because it came
+     just before every loss, `wifi.roam=auto` (the default) turns the firmware's roaming off for the session (roam_off
+     1, set before the next join, when not associated) once two losses within ten minutes each came within 5 s of a
+     join or roam attempt of the firmware's own: `firmware roaming off for this session: twice in 17 s its own attempt
+     came just before the link was lost (wifi.roam=on keeps it)`. `wifi.roam=on` keeps it on, `off` never has it.
+   - *802.11v/k.* The bringup logs what the firmware lists (`wnm`, `bsstrans`, `rm` in its `cap` string) and the
+     `wnm` iovar's value, and changes nothing: `802.11v/k: the firmware lists wnm bsstrans rm; wnm 0x0 (left as it
+     is); bcn_timeout 8` (the testbed's simulated values). Upstream brcmfmac sets no `wnm` either. If the APs steer with
+     BSS Transition Management requests, a firmware that answers them itself would do it through its own roaming; with
+     roaming off nothing answers them, and a steering AP eventually disassociates the station, which then shows as
+     event 12 and is handled as a kick. Whether 7.45.241 for the 43430 lists or enables wnm, and whether enabling it
+     is safe with the firmware's supplicant, needs the real chip's log line.
+   - *Reconnecting.* After a lost connection the next try is at once (300 ms, no backoff): three quick tries after a
+     link that lasted 30 s or more, one after a shorter one (so an access point that drops us every few seconds does
+     not make the kernel hammer the network without pause; the backoff is cleared once a link has lasted 30 s).
+     `trying again at once (2 more quick tries)`.
+   - *The testbed.* QEMU has no WiFi chip, and `mac.wifisim=` replaces the whole driver, so none of the above ran
+     there. `mac.wifisimfw=1` (alice_psmac.c) keeps the real driver and puts a small FullMAC firmware under it: it
+     answers the commands and iovars and sends the events, escan results as bss_info records with an RSN element so
+     that fm_escan_parse reads them. Its world: five BSSIDs of `wifi.ssid=` (-43 dBm on channel 1 refusing every join
+     with status 3, -60 on 6, -64 on 11, -68 on 1, -78 on 11) and three neighbours; the first scan aborted after two
+     results; then one script per connection: the firmware's own join failing and its leaving (the SE's pattern), a
+     roam followed 6 s later by the new access point disassociating us, the first pattern again, then quiet. The run
+     (solo board, 150 s, `mac.wifisimfw=1 wifi.ssid=Office`): the aborted scan noticed and scanned again (8 networks, 5
+     of them, second pass); the -43 dBm one chosen, refused, passed over; the -60 dBm one joined; dropped after the
+     firmware's attempt, the -64 dBm one joined at once; the roam followed (`roamed to ..00:00:a1 ... the link stays
+     up`); kicked by that access point (event 12), the -64 one again; dropped a second time after a firmware attempt,
+     and roaming turned off for the session (`roaming: off in the firmware (roam_off 1; turned off for this session by
+     wifi.roam=auto)` before the next join); the -78 dBm one joined, the only one not passed over, and kept. With the
+     10 dB rule alone the first run joined the -43 dBm one three times in a row before the firmware was given the
+     choice; hence the rule for one that cannot be joined.
+   - *What to look for in the SE's log.* `[BT] ...: asks for connection interval 7.5-7.5 ms: refused, the WiFi is in
+     use (floor 15 ms)` once the WiFi is up, the heartbeat's `[BT]   LE link` lines at 15 ms or more (`floor 22.5 ms
+     (the WiFi in use)` with two devices), and the WiFi staying connected with Bluetooth on; then the `scan:` lines'
+     ends (complete or aborted), the `  AP` lines (are all five there?), `choosing`, and whether the firmware's own
+     `starts a roam of its own`, `roamed to`, `the firmware's own join attempt failed` and `disassociated by our side
+     / by the access point` lines come before a loss.
+   - *Not verified:* anything on the chip. Whether the BCM43438's controller and the owner's keyboard and mouse take
+     the refusal quietly; whether 15 ms (22.5 with two) is enough for the WiFi or the floor must be higher; what
+     aborted the scans; whether 7.45.241 sends E_ROAM, ROAM_START and the rest for its own moves and whether its
+     roam_off, roam trigger and delta are taken while up; what it does with BSS Transition requests.
