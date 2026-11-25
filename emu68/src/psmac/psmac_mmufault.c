@@ -41,6 +41,7 @@
 #include "RegisterAllocator.h"
 #include "cache.h"
 #include "psmac.h"
+#include "globals.h"
 
 extern int psmac_mmu_full;
 int psmac_mmu_translating(void);
@@ -430,12 +431,27 @@ static uint32_t snap_lane(int n)
     return v;
 }
 
+/* Is a an address of translated code? Blocks run from the JIT arena's read-only alias (start.c: the arena's
+   virtual base with bit 36 set; its size is a device-tree property below 4 GiB, and the PowerPC arena's alias
+   would be 8 GiB further up). */
+static inline int in_jit_code(uint64_t a)
+{
+    uint64_t lo = (uint64_t)(uintptr_t)globals.m68k_jit_virt_base | 0x0000001000000000ull;
+    return globals.m68k_jit_virt_base && a >= lo && a - lo < 0x100000000ull;
+}
+
 /* The running block and its fault-table entry for the faulting ARM instruction; NULL and *why when the abort
-   did not come from a block's own code (a C helper, the translator, the code cache's checksum) */
+   did not come from a block's own code (a C helper, the translator, the code cache's checksum, the kernel's own C).
+   x12 holds the running block's entry only while translated code runs: anywhere else it is whatever the C code left
+   in it. So the faulting instruction must itself be translated code before x12 is believed. Until 27 November 2026
+   only x12's tag bit was tested; on the real SE the kernel's own probe read of the VIA in psmac_setup_memory (an
+   abort on 68k space before the 68k has started) met an x12 of 0x74a1cbb2fd7a278d, tag bit set, and the unit
+   "found" there was read at a wild address: core 0 died before the ROM's first instruction (docs/23 section 13). */
 static const struct psmac_fault_entry *locate(uint64_t *ctx, uint64_t elr, uint64_t *lr_out, const char **why)
 {
     uint64_t entry = ctx[12];
-    if (!(entry & 0x0000001000000000ull) || elr < entry) { *why = "not in the running block"; return NULL; }
+    if (!in_jit_code(elr)) { *why = "not translated code"; return NULL; }
+    if (!(entry & 0x0000001000000000ull) || !in_jit_code(entry) || elr < entry) { *why = "not in the running block"; return NULL; }
     struct M68KTranslationUnit *u = (void *)((entry & ~0x0000001000000000ull) - offsetof(struct M68KTranslationUnit, mt_ARMCode));
     if (elr >= entry + 4ull * u->mt_ARMInsnCnt) { *why = "not in the running block"; return NULL; }
     const struct psmac_fault_entry *t = (const void *)u->mt_LocalState;
