@@ -136,6 +136,31 @@ uint32_t psmac_mmu_jit_finish(void *dst)
 }
 
 
+/* mac.mmu=full, phase 3 (docs/23-mmu.md section 12): where translated code has just changed the SR (RTE, MOVE, ANDI and
+   EORI to SR, STOP; each of them ends its block), the view for the new S bit goes into TTBR0_EL1 when the configuration
+   has a user and a supervisor space apart (psmac_views.split, psmac.h). Ten instructions, six of them when the views
+   are one; with the option only. sr: the register holding the new SR. */
+void psmac_mmu_emit_view(struct TranslatorContext *ctx, uint8_t sr)
+{
+    union { uint64_t u64; uint16_t u16[4]; } u;
+    u.u64 = (uintptr_t)&psmac_views;
+    uint8_t t1 = RA_AllocARMRegister(ctx), t2 = RA_AllocARMRegister(ctx);
+    EMIT(ctx,
+        mov64_immed_u16(t1, u.u16[3], 0),
+        movk64_immed_u16(t1, u.u16[2], 1),
+        movk64_immed_u16(t1, u.u16[1], 2),
+        movk64_immed_u16(t1, u.u16[0], 3),
+        ldr_offset(t1, t2, offsetof(struct psmac_mmu_views, split)),
+        cbz(t2, 5),
+        ubfx(t2, sr, SRB_S, 1),
+        ldr64_regoffset(t1, t2, t2, UXTW, 1),
+        I32(0xd5182000 | t2),                   /* msr TTBR0_EL1, x(t2) */
+        I32(0xd5033fdf)                         /* isb */
+    );
+    RA_FreeARMRegister(ctx, t2);
+    RA_FreeARMRegister(ctx, t1);
+}
+
 /* the 68k's SR, stack pointers, FPSR and FPCR in their NEON homes (M68k.h); RegisterMapping.h's accessors come
    with global register variables this file cannot have */
 static inline uint32_t getSR(void) { uint32_t v; __asm__ volatile("umov %w0, " REG_SR_ASM : "=r"(v)); return v; }
@@ -193,14 +218,15 @@ int psmac_mmu_jit_fetch(struct TranslatorContext *ctx, uint16_t *in_code, uint16
     if (!psmac_mmu_translating())
         return 0;
     uint32_t pc = (uint32_t)(uintptr_t)in_code, page = pc & ~0xfffu, bad;
+    int fc = (getSR() & SR_S) ? 6 : 2;          /* supervisor or user program: the mode the block will run in */
     if (insn_count && page != ((uint32_t)(uintptr_t)block_start & ~0xfffu))
         return 1;
-    if (!psmac_mmu_probe(pc, 2, 6, 0, &bad)) {
+    if (!psmac_mmu_probe(pc, 2, fc, 0, &bad)) {
         if (insn_count) return 1;
         emit_fetch_fault(ctx, pc, pc);
         return 2;
     }
-    if ((pc & 0xfffu) > 0x1000u - 22u && !psmac_mmu_probe(page + 0x1000u, 2, 6, 0, &bad)) {
+    if ((pc & 0xfffu) > 0x1000u - 22u && !psmac_mmu_probe(page + 0x1000u, 2, fc, 0, &bad)) {
         uint16_t buf[12];
         int n = (int)((0x1000u - (pc & 0xfffu)) / 2);
         for (int i = 0; i < 12; i++)
@@ -325,6 +351,7 @@ static uint32_t deliver_from_save_area(uint64_t *regs, const struct bframe *b, c
     if (user) setUSP(a7);
     *sa_reg(regs, 15) = f;
     regs[18] = vec;
+    psmac_view_for(SR_S);                       /* the handler runs in the supervisor's view */
     log_delivery(how, b->pc, b->write, b->addr, ssw, user, vec);
     return ((b->sr | SR_S) & ~(SR_T0 | SR_T1)) | 0x10000;
 }
@@ -340,6 +367,15 @@ uint32_t psmac_mmu_fetch_fault(uint32_t pc, uint32_t addr, uint64_t *regs, uint3
 {
     struct bframe b = { sr, pc, addr, 0, 2, (sr & SR_S) ? 6 : 2, 1 };
     fetch_faults++;
+    {   /* This block is the fault and nothing else, made while the page could not be fetched. Once the handler has made
+           it valid and returned, the same address must be translated again, not found here: the unit (x12, the running
+           block) no longer answers to its address. It is not freed while it runs; the cache's LRU takes it later. */
+        uint64_t entry = regs[12];
+        if (entry & 0x0000001000000000ull) {
+            struct M68KTranslationUnit *u = (void *)((entry & ~0x0000001000000000ull) - offsetof(struct M68KTranslationUnit, mt_ARMCode));
+            if (u->mt_M68kAddress == pc) u->mt_M68kAddress = 0xffffffffu;
+        }
+    }
     return deliver_from_save_area(regs, &b, "fetch") & 0xffff;
 }
 
@@ -419,6 +455,18 @@ static const struct psmac_fault_entry *locate(uint64_t *ctx, uint64_t elr, uint6
 }
 
 int psmac_mmu_access(uint32_t la, int fc, int write, uint16_t *mmusr);
+int psmac_mmu_cur_view(void);
+
+/* A 68030 that takes a bus error while it stacks an exception's frame or reads its vector stops (HALT) until it is
+   reset. Here core 0 stops running the 68k; the heartbeat goes on, and its JIT line stays at zero. */
+static void psmac_mmu_halt(void)
+{
+    for (uint32_t n = 0; ; n++) {
+        if ((n & 0xffff) == 0)
+            kprintf("[PSMAC:MMU] the 68030 is halted (double bus fault); restart the machine\n");
+        for (volatile uint32_t d = 0; d < 20000000u; d++) { }
+    }
+}
 
 /* Returns 1 when the abort was dealt with here: the page was mapped (the ARM instruction runs again), or the
    access became a 68k bus error (ELR and the registers changed). 0 lets the caller emulate the access as
@@ -426,7 +474,10 @@ int psmac_mmu_access(uint32_t la, int fc, int write, uint16_t *mmusr);
 int psmac_mmu_fault(uint64_t *ctx, uint64_t elr, uint64_t esr, uint64_t far)
 {
     uint64_t t0 = cnt_now();
-    if ((far >> 32) == 1 || (far >> 32) == 0xffffffffull) far &= 0xffffffffull;
+    /* the kernel's alias of the 68k's space below zero (TTBR1, a 68k address computation that wrapped) is empty while
+       spaces are in use (mmu_space_leave_alias): such an access is checked here and emulated (psmac_bus.c) */
+    int top_alias = (far >> 32) == 0xffffffffull;
+    if ((far >> 32) == 1 || top_alias) far &= 0xffffffffull;
     if (far >> 32) return 0;
     uint32_t la = (uint32_t)far;
     if (!psmac_mmu_translating()) return 0;
@@ -437,13 +488,32 @@ int psmac_mmu_fault(uint64_t *ctx, uint64_t elr, uint64_t esr, uint64_t far)
     uint32_t sr_int = getSR();
     if (e && e->cc != 0xff)
         sr_int = (uint32_t)ctx[e->cc] & 0xffff;            /* condition codes still in the block's temporary */
-    int user = !(sr_int & SR_S);
+    /* The mode of the access: the view TTBR0 holds when the user and supervisor views are apart (the S bit and the view
+       agree everywhere but in an exception's entry, which installs the supervisor's view before it pushes); else the SR's,
+       and supervisor while an exception's frame is being pushed (the SR still has the old mode then). */
+    int view_now = psmac_mmu_cur_view(), user;
+    if (psmac_views.guard) user = 0;
+    else if (view_now >= 0) user = view_now == 0;
+    else user = !(sr_int & SR_S);
 
     /* the soft TLB first: a valid page is mapped and the access runs again, wherever it came from */
     uint16_t mmusr = 0;
     int r = psmac_mmu_access(la, user ? 1 : 5, write, &mmusr);
-    if (r > 0) { lazy_maps++; return 1; }
-    if (r == 0) return 0;
+    if (r > 0 && !top_alias) { lazy_maps++; return 1; }
+    if (r >= 0) return 0;
+    if (!e && psmac_views.guard) {
+        /* the frame of an exception, or its vector, on a page the tables refuse: a 68030 halts (a double bus fault) */
+        psmac_views.guard = 0;
+        uint32_t a7; __asm__ volatile("mov %w0, w29" : "=r"(a7));
+        kprintf("[PSMAC:MMU] double bus fault: %s %08x refused (MMUSR %04x) while an exception's frame was pushed or its vector "
+                "read (SR %04x, A7 %08x, VBR %08x): the 68030 halts\n", write ? "write" : "read", la, mmusr, sr_int,
+                a7, __m68k_state->VBR);
+        void psmac_mmu_debug_walk(uint32_t la, int fc);
+        psmac_mmu_debug_walk(la, 5);
+        uint64_t halt = (uint64_t)(uintptr_t)psmac_mmu_halt;
+        __asm__ volatile("msr ELR_EL1, %0" :: "r"(halt));
+        return 1;
+    }
     if (!e) {
         if (psmac_hguard.armed) {                          /* a guarded helper: back into its guard */
             psmac_hguard.armed = 0; psmac_hguard.addr = la; psmac_hguard.write = write;
@@ -491,6 +561,7 @@ int psmac_mmu_fault(uint64_t *ctx, uint64_t elr, uint64_t esr, uint64_t far)
     __asm__ volatile("mov w29, %w0" :: "r"(f));
     if (user) setUSP(usp);
     setSR((sr_int | SR_S) & ~(SR_T0 | SR_T1));
+    psmac_view_for(SR_S);                       /* the handler runs in the supervisor's view */
     ctx[18] = vec;
     __asm__ volatile("msr ELR_EL1, %0" :: "r"(lr));
 

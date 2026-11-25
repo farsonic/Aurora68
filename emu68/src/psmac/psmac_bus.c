@@ -1126,6 +1126,12 @@ int psmac_bus_write(uint64_t value, uint64_t value2, int size, uint64_t far)
       if (trace_left) { trace_left--; kprintf("[PSMAC:BUS] W%d %08x (phys %08x%s) <- %08x\n", size, (uint32_t)far, phys, valid ? "" : " INVALID", (uint32_t)value); }
       if (!valid) return 1;   /* unmapped logical page: write ignored (would be a bus error) */
       far = phys; }
+    {   /* mac.mmu=full: memory the abort path emulates (the kernel's alias below zero, a supervisor page both modes share,
+           psmac_mmu.c) is the Pi's copy, not the motherboard's */
+        extern int psmac_mmu_full;
+        extern int psmac_mmu_ram_access(uint32_t pa, int size, uint64_t *v, uint64_t *v2, int write);
+        if (unlikely(psmac_mmu_full) && psmac_mmu_ram_access((uint32_t)far, size, &value, &value2, 1)) return 1;
+    }
 
     extern int psmac_watch_traps;
     if (psmac_watch_traps && (far & ~0xfffull) == 0x50000) {
@@ -1200,6 +1206,10 @@ int psmac_bus_read(uint64_t *value, uint64_t *value2, int size, uint64_t far)
       if (trace_left) { trace_left--; kprintf("[PSMAC:BUS] R%d %08x (phys %08x%s)\n", size, (uint32_t)far, phys, valid ? "" : " INVALID"); }
       if (!valid) { *value = 0xBAD0BAD0BAD0BAD0ull; if (value2) *value2 = *value; return 1; }
       far = phys; }
+    {   extern int psmac_mmu_full;
+        extern int psmac_mmu_ram_access(uint32_t pa, int size, uint64_t *v, uint64_t *v2, int write);
+        if (unlikely(psmac_mmu_full) && psmac_mmu_ram_access((uint32_t)far, size, value, value2, 0)) return 1;
+    }
 
     {
         switch (size) {

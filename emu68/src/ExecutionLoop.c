@@ -168,6 +168,24 @@ static_assert((EMU68_LRU_WAY_COUNT * sizeof(struct Entry)) % 64 == 0,
 #define ALLOC_MASK (((1ULL << EMU68_LRU_WAY_COUNT) - 1) << (sizeof(LRU.alloc[0]) * 8 - EMU68_LRU_WAY_COUNT))
 #define ALLOC_TOP_BIT (1ULL << (sizeof(LRU.alloc[0]) * 8 - 1))
 
+#ifdef PSMAC
+/* mac.mmu=full (docs/23-mmu.md section 12): a block belongs to the address space it was translated in, and the same
+   68k address in another space is another block. The space is the value of TTBR0_EL1 (the root pointer's L1 table and
+   its ASID, psmac_mmu.c); a space emptied for reuse takes its blocks with it (psmac_jit_purge_space). Without the
+   option every block matches, as before. Only reached once the address has matched. */
+static inline int psmac_unit_space_ok(const struct M68KTranslationUnit *u)
+{
+    extern int psmac_mmu_full;
+    if (likely(!psmac_mmu_full)) return 1;
+    uint64_t t;
+    __asm__ volatile("mrs %0, TTBR0_EL1" : "=r"(t));
+    return u->mt_PsmacSpace == t;
+}
+#define PSMAC_SPACE_OK(u) psmac_unit_space_ok(u)
+#else
+#define PSMAC_SPACE_OK(u) 1
+#endif
+
 static uint32_t* LRU_FindBlock(struct LRU *lru, uint32_t address)
 {
     const uint32_t set = ADDR_2_SET(address);
@@ -263,7 +281,12 @@ static uint32_t* FindUnitQuick(struct LRU *lru, struct List *icache, struct M68K
     struct M68KTranslationUnit *candidateUnit = NULL;
 
 #if EMU68_USE_LRU
+#ifdef PSMAC
+    extern int psmac_mmu_full;                  /* the address-keyed quick cache knows no spaces: not with the option */
+    uint32_t *code = likely(!psmac_mmu_full) ? LRU_FindBlock(lru, PC) : NULL;
+#else
     uint32_t *code = LRU_FindBlock(lru, PC);
+#endif
 
     if (likely(code != NULL)) {
         return code;
@@ -296,7 +319,7 @@ static uint32_t* FindUnitQuick(struct LRU *lru, struct List *icache, struct M68K
     ForeachNode(bucket, un.node)
     {
         /* Check if unit is found */
-        if (un.unit->mt_Key == key)
+        if (un.unit->mt_Key == key && PSMAC_SPACE_OK(un.unit))
         {
             /* Tell CPU we are going to execute the code soon, give it time to prefetch eventually */
             asm volatile ("prfm plil1keep, [%0]"::"r"(un.unit->mt_ARMEntryPoint));
@@ -311,7 +334,7 @@ static uint32_t* FindUnitQuick(struct LRU *lru, struct List *icache, struct M68K
             LRU_InsertBlock(lru, un.unit);
 #endif
             return (void*)un.unit->mt_ARMEntryPoint;
-        } else if (un.unit->mt_M68kAddress == u.mt_M68kAddress) {
+        } else if (un.unit->mt_M68kAddress == u.mt_M68kAddress && PSMAC_SPACE_OK(un.unit)) {
             /* 
                 The code from current epoch was not found, but there is a code with right entry point 
                 from previous epoch. Remember it for later.
@@ -343,6 +366,7 @@ static uint32_t* FindUnitQuick(struct LRU *lru, struct List *icache, struct M68K
     return NULL;
 }
 
+
 static inline struct M68KTranslationUnit *FindUnitNoLRU(struct List *icache)
 {
     union {
@@ -358,7 +382,7 @@ static inline struct M68KTranslationUnit *FindUnitNoLRU(struct List *icache)
     ForeachNode(bucket, un.node)
     {
         /* Check if unit is found */
-        if (un.unit->mt_M68kAddress == PC)
+        if (un.unit->mt_M68kAddress == PC && PSMAC_SPACE_OK(un.unit))
         {
             /* Tell CPU we are going to execute the code soon, give it time to prefetch eventually */
             asm volatile ("prfm plil1keep, [%0]"::"r"(un.unit->mt_ARMEntryPoint));
@@ -429,6 +453,7 @@ void ProcessIRQ(struct M68KState *ctx)
             __asm__ volatile("mov %w0, "REG_ISP_ASM:"=r"(A7));
         }
         setSR(0x2700);
+        psmac_view_for(0x2700);                 /* mac.mmu=full: the supervisor's view (psmac.h) */
         ctx->VBR = 0;
         PC = psmac_restart_pc();
         return;
@@ -549,6 +574,16 @@ void ProcessIRQ(struct M68KState *ctx)
         SR &= ~SR_IPL;
         SR |= ((level & 7) << SRB_IPL);
 
+#ifdef PSMAC
+        /* mac.mmu=full: the frame through the supervisor's view; a fault in the push or the vector read is a double bus
+           fault (psmac_mmufault.c, docs/23-mmu.md section 12) */
+        extern int psmac_mmu_full;
+        if (unlikely(psmac_mmu_full))
+        {
+            psmac_view_for(SR_S);
+            psmac_views.guard = 1;
+        }
+#endif
         /* Push exception frame */
         __asm__ volatile("strh %w1, [%0, #-8]!":"+r"(A7):"r"(SRcopy));
         __asm__ volatile("str %w1, [%0, #2]": :"r"(A7),"r"(PC));
@@ -562,6 +597,9 @@ void ProcessIRQ(struct M68KState *ctx)
 
         /* Load PC */
         __asm__ volatile("ldr %w0, [%1, %2]":"=r"(PC):"r"(vbr),"r"(vector)); 
+#ifdef PSMAC
+        psmac_views.guard = 0;
+#endif
     }
 }
 

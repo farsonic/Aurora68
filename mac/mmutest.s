@@ -17,10 +17,16 @@
 | It needs no Apple software: the kernel loads any ROM image (psmac_bus.c), and this one is a few KiB that the
 | kernel repeats over the ROM's 512 KiB. Run it with
 |     make -C mac mmutest
-|     ROM=mac/build/mmutest.rom tools/run-solo.sh 45 mac.mmu=full
+|     ROM=mac/build/mmutest.rom tools/run-solo.sh 60 mac.mmu=full
 | (run-solo.sh still names the usual disk image and declaration ROM; this program reads neither) and read the
 | result in the kernel log:
-|     [MAC] MMU test: 50 passed, 0 failed, 112 bus errors taken
+|     [MAC] MMU test: 127 passed, 0 failed, 122 bus errors taken
+| (50 cases after phase 1, 86 after phase 2: T12-T18, the PMMU's other instructions; 127 after phase 3, 26 November
+| 2026: T19-T24, two processes with their own CRPs and the same pages on other frames, data and code, a loop of
+| 4000 context switches, SRE with the supervisor's own tables, MOVES across the spaces and into CPU space, PFLUSH by
+| function code and mask, an exception's frame pushed through the supervisor's tables; docs/23-mmu.md section 12).
+| mmutest-halt.rom ends with T25 instead of the benchmark: an exception whose frame cannot be pushed, after which the
+| kernel must log the 68030's double bus fault and stop running the 68k.
 | Without mac.mmu=full the bus errors are never delivered (the shim reads $BAD0BAD0 and drops writes), so the
 | tests fail; that run shows the stock behaviour. After the tests the program stays in a benchmark loop
 | (copy, arithmetic, MOVEM, BSR/RTS) whose speed the heartbeat reports ("JIT: N M instructions in 5 s"),
@@ -43,7 +49,20 @@
 	.equ	FPTR,	0x00062020		| end of the failure list
 	.equ	V_MMUSR, 0x00062030		| PTEST's result (PMOVE MMUSR)
 	.equ	V_TT,	0x00062034		| a TT register's value for PMOVE
+	.equ	V_CTAB,	0x00062040		| the level C table the handler validates a user fault in
+	.equ	V_STAB,	0x00062044		| ... and a supervisor fault in (TBLC3 while SRE is on)
+	.equ	V_SAVESP, 0x00062048		| the supervisor stack while T24 uses another
+	.equ	V_FC7,	0x0006204C		| bus errors in CPU space (MOVES with FC 7)
 	.equ	R0,	0x00062200		| results saved right after an instruction
+	.equ	TBLA2,	0x00064000		| phase 3: process B's tables (A, B, C as the first tree's)
+	.equ	TBLB2,	0x00064100
+	.equ	TBLC2,	0x00064800
+	.equ	TBLA3,	0x00065000		| the supervisor's tables (SRP, with TC.SRE)
+	.equ	TBLB3,	0x00065100
+	.equ	TBLC3,	0x00065800
+	.equ	ROOT2,	0x00066000		| process B's CRP
+	.equ	ROOT3,	0x00066010		| the SRP
+	.equ	TCSRE,	0x00066020		| TC with SRE
 	.equ	MSG,	0x00063000		| a log line
 	.equ	FAILS,	0x00063100		| the failure list (names and values)
 	.equ	SSP,	0x00070000
@@ -97,6 +116,9 @@ start:	move.w	#0x2700,%sr
 	clr.l	FAIL
 	move.l	#FAILS,FPTR
 	clr.b	FAILS
+	move.l	#TBLC,V_CTAB
+	move.l	#TBLC,V_STAB
+	clr.l	V_FC7
 
 	| the tables: everything one to one; level A entry 0 -> table B, B entry 1 -> table C
 	lea	TBLA,%a0
@@ -504,6 +526,238 @@ t18:	fmove.l	(%a0),%fp0			| the handler maps the page; the FMOVE runs again
 	wantpc	n_t18pc, t18
 	want	n_t18a, V_ADDR, WIN+0x6A000+0x20
 
+	| ======== phase 3 (26 November 2026): address spaces, SRE, MOVES, PFLUSH by function code ========
+
+	| ---- T19: two processes, two CRPs, the same logical pages on different frames, data and code ----
+	lea	TBLA2,%a2
+	lea	TBLB2,%a3
+	lea	TBLC2,%a4
+	bsr	mktree
+	move.l	#0xAAAA0019,WIN+0xD0000		| the frames, written one to one first
+	move.l	#0xBBBB0019,WIN+0xD2000
+	move.l	#0x203CA0A0,WIN+0xD1000		| "move.l #$A0A0A0A0,d0; rts"
+	move.l	#0xA0A04E75,WIN+0xD1004
+	move.l	#0x203CB0B0,WIN+0xD3000		| "move.l #$B0B0B0B0,d0; rts"
+	move.l	#0xB0B04E75,WIN+0xD3004
+	move.l	#WIN+0xD0000+1,TBLC+0xC0*4	| process A: page C0 -> D0, C1 -> D1
+	move.l	#WIN+0xD1000+1,TBLC+0xC1*4
+	move.l	#WIN+0xD2000+1,TBLC2+0xC0*4	| process B: page C0 -> D2, C1 -> D3
+	move.l	#WIN+0xD3000+1,TBLC2+0xC1*4
+	lea	ROOT2,%a0
+	move.l	#0x7FFF0002,(%a0)
+	move.l	#TBLA2,4(%a0)
+	pflusha
+	clr.l	V_COUNT
+	lea	ROOT2,%a0
+	pmove	(%a0),%crp			| process B
+	move.l	WIN+0xC0000,%d2
+	jsr	WIN+0xC1000
+	move.l	%d0,%d3
+	lea	ROOT,%a0
+	pmove	(%a0),%crp			| process A
+	move.l	WIN+0xC0000,%d4
+	jsr	WIN+0xC1000
+	move.l	%d0,%d5
+	lea	ROOT2,%a0
+	pmove	(%a0),%crp			| B again (its space is kept)
+	move.l	WIN+0xC0000,%d6
+	jsr	WIN+0xC1000
+	move.l	%d0,%d7
+	move.l	#0x19191919,WIN+0xC0000		| a write in B's page C0 (frame D2)
+	lea	ROOT,%a0
+	pmove	(%a0),%crp
+	movem.l	%d2-%d7,R0
+	want	n_t19b, R0, 0xBBBB0019
+	want	n_t19bc, R0+4, 0xB0B0B0B0
+	want	n_t19a, R0+8, 0xAAAA0019
+	want	n_t19ac, R0+12, 0xA0A0A0A0
+	want	n_t19b2, R0+16, 0xBBBB0019
+	want	n_t19bc2, R0+20, 0xB0B0B0B0
+	want	n_t19w, WIN+0xD2000, 0x19191919	| B's frame changed ...
+	want	n_t19wa, WIN+0xC0000, 0xAAAA0019	| ... A's page did not
+	want	n_t19c, V_COUNT, 0
+
+	| ---- T20: a context-switch loop, 2000 round trips (the kernel's switch counter and times show the cost) ----
+	lea	s_t20(%pc),%a0
+	lea	MSG,%a1
+	bsr	puts
+	lea	MSG,%a1
+	bsr	do_log
+	lea	ROOT,%a2
+	lea	ROOT2,%a3
+	moveq	#0,%d6
+	move.w	#1999,%d7
+1:	pmove	(%a3),%crp
+	add.l	WIN+0xC0000,%d6
+	jsr	WIN+0xC1000
+	add.l	%d0,%d6
+	pmove	(%a2),%crp
+	add.l	WIN+0xC0000,%d6
+	jsr	WIN+0xC1000
+	add.l	%d0,%d6
+	dbra	%d7,1b
+	lea	s_t20e(%pc),%a0
+	lea	MSG,%a1
+	bsr	puts
+	lea	MSG,%a1
+	bsr	do_log
+	want	n_t20, %d6, 0xAF8017A0		| 2000 x ($19191919 + $B0B0B0B0 + $AAAA0019 + $A0A0A0A0), modulo 2^32
+	want	n_t20c, V_COUNT, 0
+
+	| ---- T21: SRE: the supervisor's own root, the same page on another frame in each mode ----
+	move.l	#0xC2C2C2C2,WIN+0xC2000		| frames written one to one first
+	move.l	#0xC3C3C3C3,WIN+0xC3000
+	move.l	#0x55550021,WIN+0xD4000
+	move.l	#0x5555AA21,WIN+0xD5000
+	clr.l	WIN+0xD4004
+	clr.l	WIN+0xD5004
+	move.l	#0x33330023,WIN+0xD6000
+	move.l	#0x3333AA23,WIN+0xD7000
+	lea	TBLA3,%a2
+	lea	TBLB3,%a3
+	lea	TBLC3,%a4
+	bsr	mktree
+	move.l	#WIN+0xD4000+1,TBLC+0xC2*4	| user (CRP): page C2 -> D4
+	move.l	#WIN+0xD5000+1,TBLC3+0xC2*4	| supervisor (SRP): page C2 -> D5
+	clr.l	TBLC+0xC4*4			| page C4: the supervisor's only (T24)
+	lea	ROOT3,%a0
+	move.l	#0x7FFF0002,(%a0)
+	move.l	#TBLA3,4(%a0)
+	pmove	(%a0),%srp
+	move.l	#TBLC3,V_STAB
+	move.l	#0x82C04880,TCSRE		| the same TC with SRE
+	lea	TCSRE,%a0
+	pmove	(%a0),%tc
+	clr.l	V_COUNT
+	move.l	WIN+0xC2000,%d2			| supervisor
+	moveq	#0,%d4
+	andi.w	#0xDFFF,%sr
+	move.l	WIN+0xC2000,%d4			| user
+	trap	#0
+	move.l	%d2,R0
+	move.l	%d4,R0+4
+	want	n_t21s, R0, 0x5555AA21
+	want	n_t21u, R0+4, 0x55550021
+	want	n_t21c, V_COUNT, 0
+
+	| ---- T22: MOVES: the user's space from supervisor mode, SFC/DFC 5, CPU space, a refused user page ----
+	moveq	#1,%d0
+	movec	%d0,%sfc
+	movec	%d0,%dfc
+	lea	WIN+0xC2000,%a0
+	moves.l	(%a0),%d2			| the user's page C2 (frame D4)
+	move.l	#0x22222222,%d1
+	moves.l	%d1,4(%a0)			| into it
+	moveq	#5,%d0
+	movec	%d0,%sfc
+	moves.l	(%a0),%d3			| the supervisor's (frame D5)
+	movem.l	%d2-%d3,R0
+	want	n_t22r, R0, 0x55550021
+	want	n_t22s, R0+4, 0x5555AA21
+	want	n_t22w, WIN+0xD4004, 0x22222222	| the user's frame got it ...
+	want	n_t22ws, WIN+0xC2004, 0		| ... the supervisor's page (D5) did not
+	clr.l	V_COUNT
+	moveq	#7,%d0
+	movec	%d0,%sfc
+	lea	WIN+0xC2000,%a0
+t22c:	moves.l	(%a0),%d2			| CPU space: a bus error; the handler sets SFC to 1 and the MOVES runs again
+	move.l	%d2,R0
+	want	n_t22c, R0, 0x55550021
+	want	n_t22cc, V_COUNT, 1
+	want	n_t22c7, V_FC7, 1
+	moveq	#0,%d0
+	move.w	V_SSW,%d0
+	want	n_t22cs, %d0, 0x0147		| DF, read, long, FC 7
+	wantpc	n_t22cpc, t22c
+	clr.l	TBLC+0xC2*4			| the user's page C2 invalid
+	pflusha
+	clr.l	V_COUNT
+	moveq	#1,%d0
+	movec	%d0,%sfc
+	lea	WIN+0xC2000,%a0
+t22i:	moves.l	(%a0),%d2			| a bus error with FC 1; the handler maps C2 one to one in the user's tables
+	move.l	%d2,R0
+	want	n_t22i, R0, 0xC2C2C2C2
+	want	n_t22ic, V_COUNT, 1
+	moveq	#0,%d0
+	move.w	V_SSW,%d0
+	want	n_t22is, %d0, 0x0141		| DF, read, long, user data
+	want	n_t22ia, V_ADDR, WIN+0xC2000
+
+	| ---- T23: PFLUSH by function code and mask flushes one mode's space and leaves the other's ----
+	move.l	#WIN+0xD6000+1,TBLC+0xC3*4	| page C3: user -> D6, supervisor -> D7
+	move.l	#WIN+0xD7000+1,TBLC3+0xC3*4
+	pflusha
+	move.l	WIN+0xC3000,%d2			| both in their ATC (the spaces' mappings)
+	andi.w	#0xDFFF,%sr
+	move.l	WIN+0xC3000,%d4
+	trap	#0
+	clr.l	TBLC+0xC3*4			| both invalid in the tables, nothing flushed yet
+	clr.l	TBLC3+0xC3*4
+	pflush	#1,#4				| the user's entries only (FC2 clear)
+	clr.l	V_COUNT
+	move.l	WIN+0xC3000,%d3			| supervisor: the old entry still answers
+	andi.w	#0xDFFF,%sr
+t23u:	move.l	WIN+0xC3000,%d5			| user: flushed and invalid, a bus error (mapped one to one by the handler)
+	trap	#0
+	movem.l	%d2-%d5,R0
+	want	n_t23s, R0, 0x3333AA23
+	want	n_t23u, R0+8, 0x33330023
+	want	n_t23s2, R0+4, 0x3333AA23
+	want	n_t23u2, R0+12, 0xC3C3C3C3
+	want	n_t23uc, V_COUNT, 1
+	moveq	#0,%d0
+	move.w	V_SSW,%d0
+	want	n_t23us, %d0, 0x0141
+	move.l	#WIN+0xD6000+1,TBLC+0xC3*4	| again, the other way round
+	move.l	#WIN+0xD7000+1,TBLC3+0xC3*4
+	pflusha
+	move.l	WIN+0xC3000,%d2
+	andi.w	#0xDFFF,%sr
+	move.l	WIN+0xC3000,%d4
+	trap	#0
+	clr.l	TBLC+0xC3*4
+	clr.l	TBLC3+0xC3*4
+	pflush	#4,#4				| the supervisor's entries only
+	clr.l	V_COUNT
+	andi.w	#0xDFFF,%sr
+	move.l	WIN+0xC3000,%d5			| user: the old entry still answers
+	trap	#0
+t23s:	move.l	WIN+0xC3000,%d3			| supervisor: a bus error, mapped one to one in the supervisor's tables
+	movem.l	%d2-%d5,R0
+	want	n_t23bs, R0+4, 0xC3C3C3C3
+	want	n_t23bu, R0+12, 0x33330023
+	want	n_t23bc, V_COUNT, 1
+	moveq	#0,%d0
+	move.w	V_SSW,%d0
+	want	n_t23bss, %d0, 0x0145
+	wantpc	n_t23bpc, t23s
+
+	| ---- T24: an exception from user mode pushes its frame through the supervisor's tables ----
+	| (page C4 is valid in the SRP's tables only: a push that searched the CRP's would fault, a double bus fault)
+	move.l	%sp,V_SAVESP
+	lea	WIN+0xC4800,%sp			| the supervisor stack on page C4
+	pflusha
+	clr.l	V_COUNT
+	andi.w	#0xDFFF,%sr
+	trap	#0				| the frame: $C47F8-$C47FF
+	move.l	%sp,%d2
+	move.l	V_SAVESP,%sp
+	move.l	%d2,R0
+	want	n_t24sp, R0, WIN+0xC4800
+	moveq	#0,%d0
+	move.w	WIN+0xC47F8+6,%d0
+	want	n_t24f, %d0, 0x0080		| format 0, vector 32 (TRAP #0)
+	want	n_t24c, V_COUNT, 0
+
+	| back to one root for both modes
+	lea	ROOT+8,%a0
+	pmove	(%a0),%tc
+	move.l	#TBLC,V_STAB
+	moveq	#1,%d0
+	movec	%d0,%sfc
+	movec	%d0,%dfc
+
 p2skip:
 
 	| ---- the result ----
@@ -528,7 +782,26 @@ p2skip:
 	beq.s	7f
 	lea	FAILS,%a1
 	bsr	do_log
-7:	lea	MSG,%a1
+7:
+	.ifdef	HALTTEST
+	| ---- T25 (make mmutest-halt): an exception whose frame cannot be pushed: a 68030 halts ----
+	lea	MSG,%a1
+	lea	s_halt(%pc),%a0
+	bsr	puts
+	lea	MSG,%a1
+	bsr	do_log
+	clr.l	TBLC+0xC5*4			| page C5 invalid
+	pflusha
+	lea	WIN+0xC5800,%sp
+	andi.w	#0xDFFF,%sr
+	trap	#0				| the push faults: double bus fault
+	lea	MSG,%a1
+	lea	s_nohalt(%pc),%a0
+	bsr	puts
+	lea	MSG,%a1
+	bsr	do_log
+	.endif
+	lea	MSG,%a1
 	lea	s_bench(%pc),%a0
 	bsr	puts
 	lea	MSG,%a1
@@ -563,15 +836,28 @@ berr:	movem.l	%d0-%d1/%a0,-(%sp)
 	move.l	12+2(%sp),V_PC
 	move.l	12+16(%sp),%d0
 	move.l	%d0,V_ADDR
-	move.l	%d0,%d1
+	moveq	#7,%d1
+	and.w	12+10(%sp),%d1
+	cmp.w	#7,%d1
+	bne.s	3f
+	addq.l	#1,V_FC7			| CPU space (T22): SFC back to user data, and the MOVES again
+	moveq	#1,%d1
+	movec	%d1,%sfc
+	addq.l	#1,V_COUNT
+	movem.l	(%sp)+,%d0-%d1/%a0
+	rte
+3:	move.l	%d0,%d1
 	sub.l	#WIN,%d1
 	cmp.l	#0x00100000,%d1
 	bcc.s	1f				| not in the window: nothing this handler can map
 	lsr.l	#8,%d1
 	lsr.l	#4,%d1
 	lsl.l	#2,%d1
-	lea	TBLC,%a0
-	and.l	#0xFFFFF000,%d0
+	move.l	V_CTAB,%a0			| the user's tables or the supervisor's (SRE, T21-T24) by the SSW's FC
+	btst	#2,12+11(%sp)
+	beq.s	4f
+	move.l	V_STAB,%a0
+4:	and.l	#0xFFFFF000,%d0
 	addq.l	#1,%d0				| DT 1: valid again
 	move.l	%d0,(%a0,%d1.l)
 	pflusha
@@ -606,6 +892,33 @@ unexpected:
 	bsr	do_log
 1:	stop	#0x2700
 	bra.s	1b
+
+| a2/a3/a4 = level A/B/C tables: a tree like the first (everything one to one, table C for the window)
+mktree:	movem.l	%d0-%d1/%a0-%a1,-(%sp)
+	lea	TBLA,%a0
+	move.l	%a2,%a1
+	moveq	#15,%d1
+1:	move.l	(%a0)+,(%a1)+
+	dbra	%d1,1b
+	move.l	%a3,%d0
+	addq.l	#2,%d0
+	move.l	%d0,(%a2)
+	lea	TBLB,%a0
+	move.l	%a3,%a1
+	move.w	#255,%d1
+2:	move.l	(%a0)+,(%a1)+
+	dbra	%d1,2b
+	move.l	%a4,%d0
+	addq.l	#2,%d0
+	move.l	%d0,4(%a3)
+	move.l	%a4,%a1
+	move.l	#WIN+1,%d0
+	move.w	#255,%d1
+3:	move.l	%d0,(%a1)+
+	add.l	#0x1000,%d0
+	dbra	%d1,3b
+	movem.l	(%sp)+,%d0-%d1/%a0-%a1
+	rts
 
 | d0 = test page index: mark it invalid in table C and flush
 invalidate:
@@ -703,6 +1016,51 @@ s_bench: .asciz	"MMU test: benchmark loop running (heartbeat JIT line)"
 s_stray: .asciz	"MMU test: bus error outside the test window at "
 s_unexp: .asciz	"MMU test: unexpected exception, format/vector "
 s_at:	.asciz	" at PC "
+n_t19b:	.asciz	"t19b"
+n_t19bc: .asciz	"t19bcode"
+n_t19a:	.asciz	"t19a"
+n_t19ac: .asciz	"t19acode"
+n_t19b2: .asciz	"t19b2"
+n_t19bc2: .asciz "t19bcode2"
+n_t19w:	.asciz	"t19write"
+n_t19wa: .asciz	"t19writea"
+n_t19c:	.asciz	"t19count"
+n_t20:	.asciz	"t20sum"
+n_t20c:	.asciz	"t20count"
+n_t21s:	.asciz	"t21super"
+n_t21u:	.asciz	"t21user"
+n_t21c:	.asciz	"t21count"
+n_t22r:	.asciz	"t22read"
+n_t22s:	.asciz	"t22sfc5"
+n_t22w:	.asciz	"t22write"
+n_t22ws: .asciz	"t22writesuper"
+n_t22c:	.asciz	"t22fc7"
+n_t22cc: .asciz	"t22fc7count"
+n_t22c7: .asciz	"t22fc7seen"
+n_t22cs: .asciz	"t22fc7ssw"
+n_t22cpc: .asciz "t22fc7pc"
+n_t22i:	.asciz	"t22invalid"
+n_t22ic: .asciz	"t22invcount"
+n_t22is: .asciz	"t22invssw"
+n_t22ia: .asciz	"t22invaddr"
+n_t23s:	.asciz	"t23super"
+n_t23u:	.asciz	"t23user"
+n_t23s2: .asciz	"t23superkept"
+n_t23u2: .asciz	"t23userflushed"
+n_t23uc: .asciz	"t23count"
+n_t23us: .asciz	"t23ssw"
+n_t23bs: .asciz	"t23superflushed"
+n_t23bu: .asciz	"t23userkept"
+n_t23bc: .asciz	"t23bcount"
+n_t23bss: .asciz "t23bssw"
+n_t23bpc: .asciz "t23bpc"
+n_t24sp: .asciz	"t24sp"
+n_t24f:	.asciz	"t24frame"
+n_t24c:	.asciz	"t24count"
+s_t20:	.asciz	"MMU test: context-switch loop (4000 PMOVEs to CRP) starts"
+s_t20e:	.asciz	"MMU test: context-switch loop done"
+s_halt:	.asciz	"MMU test: T25, an exception whose frame cannot be pushed: the 68030 should halt now"
+s_nohalt: .asciz "MMU test: T25 FAILED, the 68030 did not halt"
 n_t12v:	.asciz	"t12valid"
 n_t12va: .asciz	"t12an"
 n_t12i:	.asciz	"t12invalid"

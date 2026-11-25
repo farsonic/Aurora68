@@ -65,15 +65,21 @@ fputest-speed:
 $(B)/Aurora68-FPUTest.bin: $(B)/fputest.bin.raw ../tools/mac/mkinit.py ../tools/mac/rsrc.py $(ICONS)
 	$(PY) ../tools/mac/mkinit.py --init $(B)/fputest.bin.raw --name "Aurora68 FPU Test" --icons machine -o $@
 
-# the 68030 MMU's page faults under mac.mmu=full (docs/23-mmu.md; not in the release): make mmutest, then
-#   ROM=mac/build/mmutest.rom tools/run-solo.sh 45 mac.mmu=full     -> "[MAC] MMU test: 50 passed, 0 failed, ..."
-# a bare test ROM: no Apple software involved
+# the 68030 MMU under mac.mmu=full (docs/23-mmu.md; not in the release): make mmutest, then
+#   ROM=mac/build/mmutest.rom tools/run-solo.sh 60 mac.mmu=full     -> "[MAC] MMU test: N passed, 0 failed, ..."
+# (the count grows with the cases; section 12 of docs/23 gives the current one). mmutest-halt.rom adds T25 at the
+# end, an exception whose frame cannot be pushed: the log must show the double bus fault and the 68030 halted.
+# Bare test ROMs: no Apple software involved
 .PHONY: mmutest
-mmutest: $(B)/mmutest.rom
+mmutest: $(B)/mmutest.rom $(B)/mmutest-halt.rom
 $(B)/mmutest.rom: mmutest.s
 	@mkdir -p $(B)
 	m68k-linux-gnu-as -m68030 -m68881 -o $(B)/mmutest.o $<
 	$(OBJCOPY) -O binary -j .text $(B)/mmutest.o $@
+$(B)/mmutest-halt.rom: mmutest.s
+	@mkdir -p $(B)
+	m68k-linux-gnu-as -m68030 -m68881 --defsym HALTTEST=1 -o $(B)/mmutest-halt.o $<
+	$(OBJCOPY) -O binary -j .text $(B)/mmutest-halt.o $@
 
 # System 7's Virtual Memory from an application under mac.mmu=full (docs/23-mmu.md, phase 2; not in the release):
 # make vmtest, then put build/Aurora68-VMTest.bin on a test image with VM on; it allocates 24 MB in a 26 MB partition

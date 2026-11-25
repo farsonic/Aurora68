@@ -1218,6 +1218,15 @@ static uint32_t EMIT_MOVEfromCCR(struct TranslatorContext *ctx, uint16_t opcode)
     return 1;
 }
 
+#ifdef PSMAC
+/* mac.mmu=full, phase 3 (psmac/psmac_mmufault.c): after an S-bit change, the view for the new mode */
+extern int psmac_mmu_full;
+void psmac_mmu_emit_view(struct TranslatorContext *ctx, uint8_t sr);
+#define PSMAC_EMIT_VIEW(ctx, sr) do { if (unlikely(psmac_mmu_full)) psmac_mmu_emit_view((ctx), (sr)); } while (0)
+#else
+#define PSMAC_EMIT_VIEW(ctx, sr) do { } while (0)
+#endif
+
 static uint32_t EMIT_MOVEtoSR(struct TranslatorContext *ctx, uint16_t opcode)
 {
     uint8_t cc = RA_ModifyCC(ctx);
@@ -1300,6 +1309,7 @@ static uint32_t EMIT_MOVEtoSR(struct TranslatorContext *ctx, uint16_t opcode)
         msr_imm(3, 6, 7)  // Mask interrupts
     );
 
+    PSMAC_EMIT_VIEW(ctx, cc);
     *tmpptr = b(ctx->tc_CodePtr - tmpptr);
 
     EMIT(ctx, INSN_TO_LE(0xffffffff));
@@ -1733,6 +1743,7 @@ static uint32_t EMIT_STOP(struct TranslatorContext *ctx, uint16_t opcode)
         msr_imm(3, 6, 7)  // Mask interrupts
     );
 
+    PSMAC_EMIT_VIEW(ctx, cc);
     uint8_t timereg = RA_AllocARMRegister(ctx);
     uint8_t tmpreg = RA_AllocARMRegister(ctx);
     uint8_t ctxReg = RA_GetCTX(ctx);
@@ -1939,6 +1950,7 @@ static uint32_t EMIT_RTE(struct TranslatorContext *ctx, uint16_t opcode)
         msr_imm(3, 6, 7)  // Mask interrupts
     );
 
+    PSMAC_EMIT_VIEW(ctx, cc);
     *branch_privilege = b(ctx->tc_CodePtr - branch_privilege);
     *branch_format = b(ctx->tc_CodePtr - branch_format);
 

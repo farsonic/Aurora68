@@ -152,6 +152,9 @@ struct M68KTranslationUnit
     uint64_t        mt_UseCount;
     uint64_t        mt_FetchCount;
     struct M68KLocalState *  mt_LocalState;
+#ifdef PSMAC
+    uint64_t        mt_PsmacSpace;      /* PSMAC, mac.mmu=full: TTBR0 at translation, the address space the block belongs to */
+#endif
     
     uint32_t        mt_ARMCode[] __attribute__((aligned(64)));
 };

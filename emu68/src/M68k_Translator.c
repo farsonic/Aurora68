@@ -965,6 +965,31 @@ struct M68KTranslationUnit *M68K_VerifyUnitCRC32(struct M68KTranslationUnit *uni
     return unit;
 }
 
+#ifdef PSMAC
+/* mac.mmu=full (psmac/psmac_mmu.c, docs/23-mmu.md section 12): an address space is being emptied for another root
+   pointer, and its TTBR0 value (L1 table and ASID) will name the new one: the blocks translated in it go. Never the
+   running block's space (the soft TLB empties only spaces that are not installed). */
+void psmac_jit_purge_space(uint64_t ttbr)
+{
+    uint32_t n = 0;
+    for (int h = 0; h < EMU68_HASHSIZE; h++) {
+        struct Node *node, *next;
+        ForeachNodeSafe(&ICache[h], node, next) {
+            struct M68KTranslationUnit *u = (struct M68KTranslationUnit *)node;
+            if (u->mt_PsmacSpace != ttbr) continue;
+            LRU_InvalidateByM68kAddress(u->mt_M68kAddress);
+            REMOVE(&u->mt_LRUNode);
+            REMOVE(&u->mt_HashNode);
+            tlsf_free(jit_tlsf, u);
+            __m68k_state->JIT_UNIT_COUNT--;
+            n++;
+        }
+    }
+    __m68k_state->JIT_CACHE_FREE = tlsf_get_free_size(jit_tlsf);
+    if (n) kprintf("[PSMAC:MMU]   %u translated blocks of the space dropped\n", n);
+}
+#endif
+
 /*
     Get M68K code unit from the instruction cache. Return NULL if code was not found and needs to be
     translated first.
@@ -1099,6 +1124,7 @@ struct M68KTranslationUnit *M68K_GetTranslationUnit(uint16_t *m68kcodeptr)
     unit->mt_CRC32 = CalcCRC32(m68k_low, m68k_high);
 #ifdef PSMAC
     { extern uint32_t psmac_icache_epoch; unit->mt_VerEpoch = psmac_icache_epoch; }
+    __asm__ volatile("mrs %0, TTBR0_EL1" : "=r"(unit->mt_PsmacSpace));
 #endif
     unit->mt_PrologueSize = prologue_size;
     unit->mt_EpilogueSize = epilogue_size;
