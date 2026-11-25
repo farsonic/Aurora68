@@ -284,6 +284,13 @@ class Remote:
     def restart(self, how='mac'):
         return self._json('POST', '/restart?how=' + how)
 
+    def scsi(self):
+        return self._json('GET', '/scsi')
+
+    def cd(self, name=None, unit=None, eject=False, force=False):
+        q = '/scsi/cd?' + ('eject=1' if eject else 'name=' + urllib.parse.quote(name, safe=''))
+        return self._json('POST', q + (f'&id={int(unit)}' if unit is not None else '') + ('&force=1' if force else ''))
+
     # ---- files and programs, through the Aurora68 Agent on the Mac (docs/13, "Files and applications") ----
     def _files(self, method, path, upload=None, size=0, sink=None, on_sent=None, on_received=None):
         """a /files or /apps request; one file job runs at a time, so a busy answer is tried again"""
@@ -953,6 +960,10 @@ def main():
     p = sub.add_parser('log', help='the kernel\'s log'); p.add_argument('--since', type=int); p.add_argument('--tags'); p.add_argument('--follow', action='store_true'); p.add_argument('--records', action='store_true')
     p = sub.add_parser('restart', help='restart the Mac (or nmi, pi; recovery: the Pi restarts into Aurora68 Setup and Recovery)'); p.add_argument('how', nargs='?', default='mac', choices=('mac', 'nmi', 'pi', 'recovery'))
     p = sub.add_parser('input', help='raw input events as JSON'); p.add_argument('json')
+    sub.add_parser('scsi', help='the virtual SCSI devices (scsi.cd=, scsi.disk=): IDs, files, the CD drive\'s state')
+    p = sub.add_parser('cd', help='another CD in the virtual CD-ROM drive: a file in the card\'s root (--eject takes it out)')
+    p.add_argument('name', nargs='?'); p.add_argument('--eject', action='store_true'); p.add_argument('--id', type=int)
+    p.add_argument('--force', action='store_true', help='even while the Mac holds the CD (put it away on the Mac first if you can)')
     p = sub.add_parser('ls', help='a folder on the Mac (no PATH: its disks)'); p.add_argument('path', nargs='?', default=''); p.add_argument('--json', action='store_true')
     p = sub.add_parser('info', help='one file or folder on the Mac'); p.add_argument('path'); p.add_argument('--json', action='store_true')
     p = sub.add_parser('pull', help='a file from the Mac (--macbinary: forks and type)'); p.add_argument('path'); p.add_argument('local', nargs='?')
@@ -1019,6 +1030,15 @@ def main():
         print(r.input(json.loads(a.json)))
     elif a.cmd == 'restart':
         print(r.restart(a.how))
+    elif a.cmd in ('scsi', 'cd'):
+        if a.cmd == 'cd' and not a.eject and not a.name:
+            raise SystemExit('cd NAME, or cd --eject')
+        res = r.scsi() if a.cmd == 'scsi' else r.cd(a.name, a.id, a.eject, a.force)
+        for d in res.get('devices', []):
+            what = 'CD-ROM' if d['type'] == 'cdrom' else 'disk'
+            state = (', CD in' if d.get('medium') else ', no CD') if d['type'] == 'cdrom' else (', written back' if d['writable'] else ', read only')
+            print(f"ID {d['id']}  {what:6}  {d['name'] or '(none)'}  {d['bytes'] >> 20} MB, {d['block']}-byte blocks{state}"
+                  f"{'  OFF: a real device has this ID' if d['off'] else ''}  ({d['commands']} commands)")
     elif a.cmd == 'ls':
         res = r.ls(a.path)
         print(json.dumps(res, indent=2, ensure_ascii=False)) if a.json else ls_table(res)

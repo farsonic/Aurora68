@@ -17,7 +17,7 @@
 #                  numbers and its status-page offsets against alice_status.h, on the host and as a 68020 program:
 #                  tools/pistatus_test.c, tools/pistatus_m68k.sh; the PC card and the Apple II card with their libraries where
 #                  AURORA86_DIR / AURORA65_DIR say where: tools/pccard_test.sh, tools/a2card_test.sh; the guest scheduler's
-#                  rule: tools/guest_test.c)
+#                  rule: tools/guest_test.c; the virtual SCSI devices' 5380 and commands: tools/scsidev_test.c)
 #   make install IMG=path/to/volume.img [PART=n]   the extensions into the System Folder of an HFS image, the programs into its Aurora68 folder
 AS      = m68k-linux-gnu-as -m68020
 OBJCOPY = m68k-linux-gnu-objcopy
@@ -183,6 +183,8 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	$(B)/usb_hcint_test
 	cc -std=c99 -Wall -Wextra -Werror -I ../emu68/src/psmac -o $(B)/edid_test ../tools/edid_test.c ../emu68/src/psmac/psmac_edid.c
 	$(B)/edid_test > $(B)/edid_test.log && tail -1 $(B)/edid_test.log
+	cc -std=c99 -O1 -Wall -Wextra -Werror -DPSMAC_SCSIDEV_HOST -I ../emu68/src/psmac -o $(B)/scsidev_test ../tools/scsidev_test.c ../emu68/src/psmac/psmac_scsidev.c
+	for m in solo se empty; do $(B)/scsidev_test $$m q > $(B)/scsidev_test.log || { cat $(B)/scsidev_test.log; exit 1; }; tail -1 $(B)/scsidev_test.log; done
 	cc -std=c99 -O1 -Wall -Wextra -Werror -I ../emu68/src/psmac -o $(B)/buscheck_test ../tools/buscheck_test.c ../emu68/src/psmac/psmac_buscheck_core.c
 	$(B)/buscheck_test > $(B)/buscheck_test.log && tail -1 $(B)/buscheck_test.log
 	cc -std=c99 -Wall -Wextra -Werror -I $(CORE)/include -o $(B)/icy_test ../tools/icy_test.c $(CORE)/icy.c
@@ -259,6 +261,20 @@ $(B)/iotest.elf: $(C_KIT) $(B)/it/glue.o $(B)/it/iotest.o c/app.ld
 	$(LD) -T c/app.ld --emit-relocs --no-warn-rwx-segments -z noexecstack -o $@ $(C_KIT) $(B)/it/glue.o $(B)/it/iotest.o $(LIBGCC)
 $(B)/Aurora68-IOTest.bin: $(B)/iotest.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py
 	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 IO Test" --creator A68T --size 1024 -o $@
+
+# ---- Aurora68 SCSI Test: the virtual SCSI devices (scsi.cd=, scsi.disk=) through the SCSI Manager, reported in the Pi's
+# log (mac/scsitest, docs/08 item 148). A test program, not in "all" nor in the release: make scsitest.
+scsitest: $(B)/Aurora68-SCSITest.bin
+$(B)/st/glue.o: scsitest/glue.s
+	@mkdir -p $(B)/st
+	$(AS) -o $@ $<
+$(B)/st/scsitest.o: scsitest/scsitest.c c/toolbox.h $(B)/toolbox_gen.h
+	@mkdir -p $(B)/st
+	$(CC) $(CFLAGS) -c -o $@ $<
+$(B)/scsitest.elf: $(C_KIT) $(B)/st/glue.o $(B)/st/scsitest.o c/app.ld
+	$(LD) -T c/app.ld --emit-relocs --no-warn-rwx-segments -z noexecstack -o $@ $(C_KIT) $(B)/st/glue.o $(B)/st/scsitest.o $(LIBGCC)
+$(B)/Aurora68-SCSITest.bin: $(B)/scsitest.elf ../tools/mac/elf2app.py ../tools/mac/rsrc.py
+	$(PY) ../tools/mac/elf2app.py $< --name "Aurora68 SCSI Test" --creator A68S --size 512 -o $@
 
 # ---- PiPlay: MP3, AIFF and WAV on the sound card's stream channel, an application in C (mac/piplay) ----
 # its Toolbox list is c/traps.txt and piplay/traps.txt together, its glue in build/pp/, so that the other
