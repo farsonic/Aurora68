@@ -7365,3 +7365,149 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      the refusal quietly; whether 15 ms (22.5 with two) is enough for the WiFi or the floor must be higher; what
      aborted the scans; whether 7.45.241 sends E_ROAM, ROAM_START and the rest for its own moves and whether its
      roam_off, roam trigger and delta are taken while up; what it does with BSS Transition requests.
+
+148. **Virtual SCSI devices: a CD-ROM drive and hard disks on the Mac's own SCSI bus, for A/UX (25 November 2026).**
+   The owner will install A/UX 3.x tomorrow, from CD images (.iso, .cdr, .toast). A/UX's kernel drives the NCR 5380
+   itself and cannot use PiDisk (a Mac OS driver over the mailbox), so its installation CD and the disk it installs onto
+   must be SCSI devices. The owner asked for "ISO support": devices served from image files on the SD card and answered
+   by the kernel on the Mac's SCSI bus, on the solo board and on the SE family, where every other SCSI connection goes
+   to the real chip. (The MMU A/UX also needs is the separate `mmu-experimental` work.)
+   - *One 5380, shared* (`emu68/src/psmac/psmac_scsidev.c`, new, with `psmac_scsidev.h`). The solo board's 5380 and
+     its direct-access target (item 35) moved there unchanged in their bus behaviour (the registers, the REQ/ACK
+     handshake, the pseudo-DMA windows, DRQ in the bus and status register, the interrupt on a phase change during
+     DMA, on a bus reset and on a lost BSY), with targets of two kinds behind it: hard disks (type 0; the solo
+     board's card images are now such targets) and CD-ROM drives (type 5, removable). The SE board's "empty bus"
+     (item 70: no terminator, `mac.sescsi=empty`, the 128K and 512K) was a 5380 with no target answered in
+     `psmac_board_se.c`; it is this 5380 now, with whatever virtual devices there are on it. Each target keeps its own
+     sense data, its logical block size, PREVENT MEDIUM REMOVAL and a UNIT ATTENTION; IDENTIFY's LUN (A/UX selects
+     with ATN), ABORT and BUS DEVICE RESET in the message out phase are understood; a LUN other than 0 is not there.
+   - *The diversion on a real bus* (`psmac_scsidev_bus_write`, called by `psmac_board_se.c` for every write of the
+     Mac's to the 5380). The Mac's writes are shadowed (data, initiator command, mode, target command) while they go
+     to the real chip. The IIci ROM selects as the 5380's data sheet says: arbitration won, SEL and BSY asserted, the
+     IDs on the data lines, then BSY released (MAME's `ncr5380.cpp` takes the selection at that write too). When that
+     write selects an ID a virtual device owns, it is kept off the real bus: the real chip's initiator command and mode
+     registers are cleared (SEL, BSY, the data lines released: the bus free, so no real device ever saw a selection,
+     BSY having been asserted until then), and from then on the registers, the pseudo-DMA windows and the RBV's SCSI
+     interrupt flag are answered by the model. After the target's COMMAND COMPLETE the bus is free; the Mac's accesses
+     stay with the model until it starts something the real bus must see: an arbitration (mode register bit 0), a
+     reset, or a selection of a real ID without arbitration. The real chip is then given the registers the Mac last
+     wrote (data, target command, initiator command without ACK, BSY or RST, mode without arbitration) and everything
+     goes to it again, the write that started it included. So the real bus has only whole connections with real
+     targets, and every arbitration of the Mac's happens on it. A reset the Mac puts on the real bus resets the
+     virtual targets too (their block size, PREVENT).
+   - *The IDs.* A virtual device must not share an ID with a real one. The first selection of each virtual ID in a
+     session is let through to the real bus as the Mac made it; if BSY comes back within 20 ms and 2,000 reads (the
+     testbed's MAME bus advances only as it is read), a real device has the ID: the virtual device is turned off for
+     the session (`[SCSI] WARNING: a real device on the SCSI bus answers ID 6 ...`, also in amber on the HDMI splash)
+     and the connection is the real device's. Otherwise the real bus is let go and the model answers, as for every
+     later selection. `scsi.probe=off` skips the check. ID 7 is the Mac's. On the solo board the card's disk images are
+     IDs 0, 1, ... by their order and a virtual device's ID is taken from them (that image becomes a PiDisk volume).
+   - *The CD-ROM drive.* INQUIRY says `SONY    CD-ROM CDU-8003A1.9a`, the AppleCD 300 with Apple's firmware, which
+     Apple's CD-ROM driver and A/UX accept (`scsi.cdvendor=`, `scsi.cdproduct=`, `scsi.cdrev=`; `_` for a space).
+     Like Apple's drives it starts in 512-byte logical blocks and returns to them at every reset, so the ROM can read a
+     CD's block 0 and its driver partition, and MODE SELECT's block descriptor switches it to 2048 and back (any other
+     size: ILLEGAL REQUEST, invalid field in the parameter list); `scsi.cdblock=2048` starts at 2048. Commands: TEST
+     UNIT READY, REQUEST SENSE, INQUIRY (and its page 0), READ CAPACITY, READ(6), (10) and (12), MODE SENSE(6) and (10)
+     (pages 1, 2, $0D, $0E and Apple's $30; current, changeable and default values), MODE SELECT(6) and (10), READ TOC
+     (formats 0 and 1, LBA and MSF; one data track and the lead-out), READ HEADER, READ SUB-CHANNEL, START STOP UNIT
+     (eject, and load the same CD again), PREVENT ALLOW MEDIUM REMOVAL, SEEK, REZERO, VERIFY, RESERVE, RELEASE, SEND
+     DIAGNOSTIC, and Apple's own $C0 (eject), $C1 (READ TOC, BCD addresses), $C2, $CC (audio status) and the audio
+     controls, as MAME's Apple CD-ROM (`src/devices/bus/nscsi/cd.cpp`, from Apple's CDSC driver) answers them. The
+     audio play commands answer ILLEGAL MODE FOR THIS TRACK; anything else CHECK CONDITION, ILLEGAL REQUEST, and the
+     command is logged once (`[SCSI] ID 3 (CD-ROM): command $xx ... not supported`). With no CD: NOT READY, MEDIUM NOT
+     PRESENT; after a new one: UNIT ATTENTION, medium changed, once.
+   - *The hard disk*: READ and WRITE (6) and (10), WRITE AND VERIFY, VERIFY (with BytChk the data is taken), READ
+     CAPACITY, MODE SENSE pages 1, 2, 3, 4 (16 heads, 32 sectors), 8, $0A and $30, MODE SELECT (512-byte blocks only),
+     FORMAT UNIT (logged, no work; a defect list taken and dropped), REASSIGN BLOCKS, READ DEFECT DATA (an empty
+     list), SYNCHRONIZE CACHE, SEEK, REZERO, START STOP, RESERVE, RELEASE, SEND and RECEIVE DIAGNOSTIC, READ and WRITE
+     BUFFER, and Iomega's $06 (item 52). INQUIRY `AURORA68 Virtual Disk 1.0` (`scsi.hdvendor=`, `scsi.hdproduct=`).
+     Apple's page $30, which HD SC Setup looks for, is now `$B0 $16 "APPLE COMPUTER, INC   "`, as MAME's hard disk
+     (which runs Apple's own setup programs) answers it; the solo board's disks had answered "APPLE COMPUTER, INC."
+     with a full stop under page code $30 since item 35.
+   - *The images.* `scsi.cd=NAME[:ID]` (ID 3 by default; `empty` for a drive with no CD; more drives with more of
+     them) and `scsi.disk=NAME:ID` (any number, or several with commas) name files in the card's root
+     (`psmac_card.c`, `scsi_scan`): each is served from the card as the Mac asks through the cache of item 142, never
+     read whole (an A/UX CD is 600 MB and more), the disks' writes written back into the file in place as for the
+     other card images; they are not offered as PiDisk volumes as well (`scsi_owns`), and `imgs[]` has room for eight.
+     A name with a `/` is a host file through semihosting (the testbed). A missing disk file means no disk at that ID;
+     a missing CD file, a drive with no CD. `psmac_option_nth` (`psmac_bus.c`) reads an option given more than once.
+   - *Changing the CD* while the Mac runs: `POST /scsi/cd?name=FILE[&id=N][&force=1]` and `?eject=1`, `GET /scsi`
+     (docs/13); `tools/aurora68.py cd NAME | --eject [--force]`, `aurora68.py scsi`. The drive is NOT READY at once;
+     core 3's next card pass finds the file and puts it in the old CD's place in `imgs[]` (its extents replaced, the
+     cache's slots of it emptied: a session can change CDs any number of times), and the next command gets UNIT
+     ATTENTION. While the Mac holds the CD (PREVENT MEDIUM REMOVAL) the request is refused with 409 unless `force=1`,
+     a real drive's paperclip hole. Not done: Aurora68 Disk's menu for it (next).
+   - *Starting from the CD*: `mac.boot=cd` (`psmac_mbox.c`). The startup-device view of item 67 shows the Mac
+     `ff ff ff dc` (SCSI ID 3's driver; `df` less the CD's ID) from each start until the Finder runs, so the Start
+     Manager loads the SCSI drivers and tries the CD's first; no boot record runs at state 0, and PiDisk still opens at
+     state 1, so the card's images mount. The window comes down once the Finder runs, so the Startup Disk control
+     panel sees and sets the real parameter RAM; at the next RESET it is up again (an installer that restarts the Mac
+     starts from the CD again: the option is taken out when the installation is done).
+   - *Found on the way: the Iomega driver and a CD.* The testbed's System 7.1 carries the Iomega Driver extension,
+     patched to take any disk (item 52), as the release's images do. It found the HFS test CD (a removable drive with a
+     partition map), mounted it as a writable volume, and retried the write of its master directory block for ever
+     after ILLEGAL REQUEST: the Mac went no further than the Finder's start. A real CD-ROM answers a write with ILLEGAL
+     REQUEST too, but a driver that does not know CDs takes that for a passing error. So the CD is write-protected
+     wherever such a driver looks: DATA PROTECT for a write (the File Manager's "locked disk"), the write-protect bit in
+     MODE SENSE, and Iomega's $06 answered as a write-protected Zip disk. With that the HFS CD mounts on the desktop,
+     locked, through the Iomega driver, without Apple's CD-ROM driver. The same driver offers to initialize the ISO
+     9660 CD and a blank disk ("This is not a Macintosh disk"); Eject answers it.
+   - *Tests, native* (`tools/scsidev_test.c`, in `make -C mac check`; three runs over the same file: `solo`, `se`,
+     `empty`; 274, 319 and 164 checks). The harness drives the 5380 as the SCSI Manager does (arbitration, selection
+     with and without ATN, REQ/ACK by register and by pseudo-DMA) against a CD image and disks in memory, on the card
+     (a stub of `psmac_card_img_io`) and in host files: every CD command above at 512 and at 2048, the block size
+     refused at 2352, READ TOC in LBA, MSF and Apple's BCD, eject held by PREVENT, a CD changed (UNIT ATTENTION, then
+     the new CD's blocks), a bus reset (512 again), LUN 1 absent, IDENTIFY; the disk's pages, a 200-block write read
+     back, FORMAT UNIT with a defect list, VERIFY with data, a 700-byte MODE SELECT, reads past the end. The `se` run
+     has a fake real 5380 with real targets at IDs 6 and 4 behind the kernel: the real disk at 6 answers between
+     virtual connections, ID 3's selection reaches the real bus once (the check) and never again over 200 commands,
+     every arbitration goes to the real chip, and the virtual disk asked for at ID 4 is turned off because the real
+     device answers. The `empty` run never touches the real chip.
+   - *Tests, the solo board in QEMU* (System 7.1 from the testbed image at ID 0; virtual devices as host files, then
+     on a 64 MB FAT32 card image, `CARD=`; Aurora68 SCSI Test, `mac/scsitest`, in Startup Items: a 68k program that
+     talks to every ID through the SCSI Manager, `_SCSIDispatch`, polled and blind, three passes 45 s apart). An ISO
+     9660 CD at ID 3, an HFS CD with an Apple partition map at ID 5 (both made with `tools/mac/mkcd.py`) and a 40 MB
+     blank disk at ID 4: INQUIRY `SONY CD-ROM CDU-8003A 1.9a`, READ CAPACITY 676 blocks of 512, then 169 of 2048 after
+     MODE SELECT; the first 32 KB read at 512 (polled) and at 2048 (blind) with the same CRC-32, which is the files'
+     own (011ffca6, 8594bb1f); the ISO's volume descriptor in frame 16 ("CD001", AURORA68_TEST, 169 sectors); READ TOC's
+     lead-out at 169; back to 512. The disk: page $30, 64 blocks written blind at block 1000 and read back polled,
+     the same CRC-32, and the image file holds the pattern. The HFS CD mounted on the desktop ("A68 Test CD",
+     `docs/img/scsi-cd-desktop-solo.png`). From the card: the CD changed by name through the remote control between two
+     passes (`--force`: the Iomega driver held it), the next pass got UNIT ATTENTION (key 6, ASC $28) and the new CD's
+     CRC; ejected, NOT READY (key 2, ASC $3A); the disk's writes went back into `aux8.hda` on the card image ("2 slots
+     written back"), which the host read back with the pattern in place.
+   - *Starting from a virtual CD* (solo, a blank disk at ID 0, `mac.boot=cd`). A System 7.0.1 disk image with an
+     Apple partition map and a driver, padded to 2048-byte sectors (`mkcd.py pad`), at ID 3: the ROM read the CD's
+     block 0, loaded the driver from its driver partition at 512-byte blocks and read the System, which stopped with
+     "This startup disk was created with Minimal software and will not work on this Macintosh model" (an install for
+     another model). The testbed's System 7.1 image as the CD (read only, straight from `images/`, its SHA-256 the same
+     afterwards): the Finder at t=34.7 s, 2,290 sectors read, none written (`docs/img/scsi-cd-boot-solo.png`).
+   - *The SE board in the MAME full stack* (`MACHINE=macse_ps`, System 7.1 on MAME's SCSI disk at ID 6, a copy of the
+     test image with the SCSI Test; the virtual ISO CD at 3, the HFS CD at 5, a 40 MB disk at 4, and a virtual disk
+     asked for at 6 on purpose). The log: `a real device on the SCSI bus answers ID 6: the virtual disk ... is turned
+     off`, then IDs 5, 4 and 3 "no real device answers it ... answers here"; the SE started from MAME's disk at ID 6
+     (the Finder at t=291 s, as usual for the MAME SE). The SCSI Test, in all three passes: IDs 3, 4 and 5 as on the
+     solo board, the same CRCs, the disk's pattern in the file afterwards, and ID 6 `SEAGATE ST225N`, 196,608 blocks:
+     the real disk answering through the real chip between the virtual connections. The HFS CD mounted beside the
+     real disk (`docs/img/scsi-cd-desktop-se.png`). Ejected through the remote control, ID 3 was NOT READY in the next
+     passes. (The CD change by host path failed there because the remote control's 96-byte buffer cut the URL-encoded
+     path; it is 400 bytes now, and the change worked on the solo board from the card.)
+   - *Tools*: `tools/mac/mkblank.py NAME SIZE` (a blank disk image, sparse on the host: A/UX's installer partitions
+     it), `tools/mac/mkcd.py iso|hfs|pad` (test CDs made from nothing: an ISO 9660 writer, an Apple-partitioned HFS CD
+     through hfsutils, a disk image padded to whole CD sectors).
+   - *What A/UX will need that could not be tried without A/UX* (the owner's first session tomorrow): (1) A/UX's own
+     CD driver accepting the drive: it has the AppleCD 300's names and Apple's vendor commands; any command it sends
+     that is not answered is logged once, with its bytes. (2) A/UX's block size: its kernel may read the CD's A/UX
+     partitions at 512 or switch to 2048 with MODE SELECT; both work, and the log says each switch. (3) A/UX's HD SC
+     Setup and installer on the blank disk: page $30, FORMAT UNIT (instant), the partition map and driver written like
+     any data; if it refuses the disk, `scsi.hdvendor=`/`scsi.hdproduct=` can give it the names of a drive Apple sold
+     (e.g. `scsi.hdvendor=QUANTUM scsi.hdproduct=FIREBALL1`). (4) Interrupts: A/UX may wait for the 5380's interrupt
+     (the RBV's flag, raised for a virtual device's connection on a phase change during DMA, a bus reset or a lost
+     BSY, as on the solo board) or poll; the DRQ line is not wired to the RBV, as in MAME's IIci, where A/UX runs.
+     (5) Disconnection: a virtual target never disconnects; a real device that disconnects and reselects while the Mac's
+     accesses are still with the model (after a virtual connection, before the next arbitration) is seen only at
+     that arbitration. (6) Writes: what A/UX writes reaches the card 2 s after its last write and 10 s after the oldest
+     at most; A/UX's shutdown does not go through the Mac's "you may now switch off", so wait 15 s after it before
+     switching off. (7) A/UX itself on Aurora68: the MMU (the other branch) and a 68040 the A/UX version accepts.
+   - *Kernel builds* (25 November 2026, the branch `scsi-devices` from main at 5bba1fd): the plain psmac kernel and the
+     owner's full one (`-DPSMAC_PC=ON -DPSMAC_A2=ON` with Aurora86 and Aurora65). `make -C mac check` passes.
