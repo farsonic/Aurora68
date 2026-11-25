@@ -69,9 +69,19 @@ Which machines the software read here was written for, from its own checks and n
 | DayStar PowerCache (Power Central 2.0) | SE and Classic adapters, besides the II family | |
 | DiiMOCache 2.2 | not stated in the files | |
 
-None of it is for the 128K and 512K with the 64K ROM. Those machines had accelerators of their own, but no software
-for them has been read here, and the 64K ROM is not in rom/original to compare against, so the original Macintosh
-appears in this history only through the hardware it shares with its successors.
+None of it is for the 128K and 512K with the 64K ROM; those machines had accelerators of their own, but no software
+for them has been read here.
+
+**Apple's own placement, in every compact ROM.** The owner supplied the 64K ROM (the 128K's of January 1984,
+checksum $28BA61CE, and the 512K's of October 1984, $28BA4E50, both version $0069) and the Plus's three ROMs (v1
+$4D1EEEE1, v2 $4D1EEAE1, v3 $4D1F8172, version $0075) on 25 November 2026; their checksums verify, and they are
+kept in rom/original, outside the repository's history. Read beside the SE ROM, all six carry the same two Sound
+Driver synthesizers with the same placement: the four-tone routine (at $403646 in the 64K ROM, $417B7A in all three
+Plus ROMs, $436E4C in the SE's) starts writing at SoundBase+370 bytes, word 185, and the freeform routine (at
+$403712, $417CA2 and $436FA2) at SoundBase+64, word 32. So the placement GCC and Total Systems moved to words 32 and
+16 was Apple's on every compact Mac from the first, and their fix applied to all of them. Novy's ".Sound020" relay
+jumps into the Plus ROM at $4179DA to $417B58, the same Sound Driver a few hundred bytes before those routines.
+
 
 ### Who made what: a tangled family
 
