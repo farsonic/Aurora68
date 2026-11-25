@@ -80,3 +80,29 @@ said to be the one that handled sound well, holds no sound code either. What it 
 So none of these accelerators carries special sound code beyond Extreme Systems' replacement driver. If the Racer
 sounded better, the reason is in its hardware or in leaving Apple's own Sound Driver alone with correct timing
 constants, not in a sound patch.
+
+**Applied Engineering's Warp 030** (control panel "Warp 030 v1.5", (c) AE Research 1991-1993; with 'AECA' and
+'USER' resources, a SANE-for-68882 'Icod' and Omega SANE for FPU and non-FPU machines) is the one that **does carry
+sound code**, and it confirms the old advice that "there was usually a control panel or INIT that would modify the
+sound code to get the timing correct". It has fourteen small 'init' patches, installed by machine: "Gestalt",
+"Gestalt 68000", "HWPriv", "Sony", "ATalk", "Shutdown", "Sound 1300" and three variants of "Sound/Sony 1340" (the
+numbers are the file's names for its variants; what they stand for is not stated). What the sound ones do:
+- **"Sound 1300"** (158 bytes) copies itself into the system heap and installs a VBL task (_VInstall) that runs
+  every tick and watches the low-memory byte SoundActive ($27E). When a sound starts it saves the 68030's CACR and
+  writes 0: **both on-chip caches off for as long as a sound plays**. When the sound ends it puts the saved value
+  back with the clear bits ($0808) set. So Apple's own Sound Driver, written for a 68000, runs at something close to
+  the speed it was timed for.
+- **"Sound/Sony 1340"** (812-820 bytes) does the same for sound and for the floppy driver (the .Sony DCE through
+  UTableBase): it watches both, and while either is busy it turns off the on-chip caches and also the card's own
+  external cache. It writes that through MOVES in a separate function-code space, with values like $78 and $40 and a
+  comparison against $19.
+- **"Sony"** wraps the floppy driver with the caches off as Dove did; **"HWPriv"** handles the cache-flushing calls;
+  **"ATalk"** looks at AppleTalk's state in low memory (SCC-timed LocalTalk); the control panel's help also warns
+  that "some drivers use timing variables calculated with [the instruction cache] turned on".
+
+So the accelerator software of the time handled the compact Macs' sound in one of two ways: replace Apple's Sound
+Driver with one written for the fast processor (Extreme Systems / Total Systems), or slow the processor down while
+Apple's driver plays (Applied Engineering). Aurora68 needs neither, because Apple's SE Sound Driver never runs under it:
+the IIci ROM's Sound Manager writes to an ASC that the kernel emulates, and the kernel fills the SE's PWM buffer
+itself, two halves a frame, timed from the SE's own vertical blanking (`snd_service` in psmac_board_se.c), not from
+the 68k side's speed.
