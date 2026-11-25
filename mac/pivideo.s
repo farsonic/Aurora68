@@ -14,7 +14,7 @@
 | colour table and the depth live in the display block at window + $58000 (psmb.h, struct
 | psmb_display), and the Pi converts the picture to its VideoCore frame buffer sixty times a
 | second (emu68/src/psmac/psmac_display.c) and raises the slot interrupt at each tick while the
-| driver asks for it. That interrupt is the card's VBL: the handler below calls _DoVBLTask for
+| driver asks for it. That interrupt is the card's VBL: the handler below calls DoVBLTask for
 | slot 9, which runs QuickDraw's cursor task and whatever SlotVInstall queued for this screen.
 |
 | Modes 128 to 133 are 1, 2, 4, 8, 16 and 32 bits; the depth, pitch and frame buffer address of each
@@ -79,7 +79,8 @@
 	.equ	_NewPtrSysClear, 0xA71E
 	.equ	_SIntInstall,	0xA075
 	.equ	_SIntRemove,	0xA076
-	.equ	_DoVBLTask,	0xA072		| D0.w = slot: the Vertical Retrace Manager runs that slot's VBL queue
+	.equ	JVBLTask,	0x0D28		| low memory: the Vertical Retrace Manager's DoVBLTask (D0.w = slot runs that
+						| slot's VBL queue), called through this vector rather than as trap $A072
 
 | video driver control codes (Video.h)
 	.equ	cscReset,	0
@@ -196,7 +197,7 @@ d_open:
 1:	move.l	#1,D_VBL_ENABLE(%a3)	| a video card's Open turns its VBL interrupts on (Designing Cards and
 	move.w	#1,G_INT(%a2)		| Drivers); cscSetInterrupt is how the system turns them off later. Without
 					| this the cursor never appears on the second screen: QuickDraw draws it
-					| from the screen's slot VBL task, which only _DoVBLTask from our handler runs.
+					| from the screen's slot VBL task, which only DoVBLTask from our handler runs.
 					| Only once the handler is in: a tick before it raised slot 9's line with
 					| nobody to lower it (20 November 2026, docs/10)
 	move.l	#DISP_ENABLED,D_FLAGS(%a3)	| the Pi starts converting frames
@@ -564,7 +565,11 @@ slot_int:
 	bne.s	2f
 	log	"first VBL interrupt"
 2:	moveq	#VBL_SLOT,%d0
-	.short	_DoVBLTask
+	move.l	JVBLTask,%a0		| DoVBLTask through its low-memory vector, as Apple's own video drivers call it
+	jsr	(%a0)			| (Designing Cards and Drivers' sample driver), not as trap $A072: A/UX runs a
+					| card's driver in its kernel and refuses that trap there ("Attempt to use
+					| unsupported A-line trap: A072", then a panic at the first VBL; 27 November 2026,
+					| docs/23 section 15), and the vector is the faster path under Mac OS too
 	moveq	#1,%d0
 	bra.s	3f
 1:	moveq	#0,%d0
