@@ -44,6 +44,9 @@
  *                  locked HFS volume, read only (21 November 2026, issue #20; exchange_* below): made by
  *                  psmac_hfsview.c from what psmac_fatfs.c reads, a step per pass of core 3, its files'
  *                  blocks read from the card when the Mac asks for them.
+ *   macip.txt      the Mac's last IPv4 address on the WiFi (25 November 2026, docs/08 item 149): one line, written
+ *                  in its first cluster when the address changes, so that the remote control's shared mode
+ *                  (psmac_ip.c) has an address to answer on before, or without, a frame from the Mac.
  *   *.declrom      read, never written: a declaration ROM in the root is offered to psmac_bus.c
  *                  before the 68k starts, beside the container's, and wins a tie (20 November
  *                  2026, docs/10 "Declaration ROMs from the card"): a new Mac-side driver is then a
@@ -678,6 +681,79 @@ const uint8_t *psmac_card_pram(int *state, uint32_t *len)
     *state = sd.state < 0 ? -1 : __atomic_load_n(&pram_state, __ATOMIC_ACQUIRE);
     *len = pram_len;
     return *state == 1 ? pram_text : 0;
+}
+
+/* ==== macip.txt: the Mac's last address on the WiFi =========================================
+   The remote control on the WiFi shares the Mac's IP address by default (psmac_ip.c, docs/13), and the kernel
+   learnt it only from the Mac's own frames: under a system with no TCP/IP (A/UX's Mac OS) it never had one, and
+   until the Mac's stack spoke nothing answered for it. macip.txt in the card's root (25 November 2026, docs/08
+   item 149) keeps the address the Mac last used on the WiFi: one line, "A.B.C.D", which psmac_ip.c reads at the
+   start (after two ARP probes it answers on that address until the Mac speaks) and hands back when the Mac uses
+   another. Lines starting with # are comments. Made in one cluster the first time; written only when the address
+   changes, never during the card's first look; mac.card=ro reads it only. */
+static uint8_t macip_ip[4]; static int macip_state;            /* 0 pending, 1 read (an address), -1 none */
+static uint8_t macip_new[4]; static volatile int macip_dirty;
+static struct cfile macip_file; static int macip_have;
+static void macip_load(void)
+{
+    macip_have = file_find("macip.txt", &macip_file) == 0;
+    int ok = 0;
+    if (macip_have && macip_file.clus >= 2 && macip_file.size && !sd_read(clus_lba(macip_file.clus), sec)) {
+        uint32_t n = macip_file.size < 512 ? macip_file.size : 512, i = 0;
+        while (i < n && !ok) {
+            if (sec[i] == '#') { while (i < n && sec[i] != '\n') i++; i++; continue; }
+            while (i < n && (sec[i] == ' ' || sec[i] == '\t' || sec[i] == '\r' || sec[i] == '\n')) i++;
+            uint8_t a[4]; int k = 0;
+            for (; k < 4 && i < n; k++) {
+                uint32_t v = 0, d = 0;
+                while (i < n && sec[i] >= '0' && sec[i] <= '9' && d < 4) { v = v * 10 + (uint32_t)(sec[i++] - '0'); d++; }
+                if (!d || v > 255) break;
+                a[k] = (uint8_t)v;
+                if (k < 3) { if (i >= n || sec[i] != '.') break; i++; }
+            }
+            if (k == 4 && a[0] && a[0] < 224) { for (int j = 0; j < 4; j++) macip_ip[j] = a[j]; ok = 1; }
+            else break;
+        }
+    }
+    __atomic_store_n(&macip_state, ok ? 1 : -1, __ATOMIC_RELEASE);
+    if (ok) kprintf("[CARD] macip.txt: the Mac's last WiFi address, %d.%d.%d.%d\n", macip_ip[0], macip_ip[1], macip_ip[2], macip_ip[3]);
+    else kprintf("[CARD] macip.txt: %s\n", macip_have ? "no address in it" : "not on the card yet");
+}
+static void macip_write(void)
+{
+    uint8_t a[4];
+    for (int j = 0; j < 4; j++) a[j] = macip_new[j];
+    if (macip_state == 1 && a[0] == macip_ip[0] && a[1] == macip_ip[1] && a[2] == macip_ip[2] && a[3] == macip_ip[3]) return;   /* no change */
+    if (!macip_have) {
+        if (file_create("MACIP", "TXT", &macip_file)) { kprintf("[CARD] could not create macip.txt (root directory full?)\n"); return; }
+        macip_have = 1;
+    }
+    char t[96];
+    sprintf(t, "# the Mac's last WiFi address (the remote control, docs/13)\n%d.%d.%d.%d\n", a[0], a[1], a[2], a[3]);
+    uint32_t n = 0; while (t[n]) n++;
+    for (uint32_t j = 0; j < 512; j++) sec[j] = j < n ? (uint8_t)t[j] : 0;
+    if (sd_write(clus_lba(macip_file.clus), sec)) { kprintf("[CARD] macip.txt: write failed\n"); return; }
+    if (macip_file.size != n) {
+        if (sd_read(macip_file.dir_lba, sec)) return;
+        put32(sec + macip_file.dir_off + 28, n);
+        if (sd_write(macip_file.dir_lba, sec)) return;
+        macip_file.size = n;
+    }
+    for (int j = 0; j < 4; j++) macip_ip[j] = a[j];
+    __atomic_store_n(&macip_state, 1, __ATOMIC_RELEASE);
+    kprintf("[CARD] macip.txt: %d.%d.%d.%d saved\n", a[0], a[1], a[2], a[3]);
+}
+/* psmac_ip.c: macip.txt as the card had it at start (state 0 pending, 1 an address, -1 none or no card) */
+const uint8_t *psmac_card_macip(int *state)
+{
+    *state = sd.state < 0 ? -1 : __atomic_load_n(&macip_state, __ATOMIC_ACQUIRE);
+    return *state == 1 ? macip_ip : 0;
+}
+void psmac_card_save_macip(const uint8_t ip[4])
+{
+    if (sd.state < 0 || sd.ro) return;                         /* nothing to write to (mac.card=ro: read only) */
+    for (int j = 0; j < 4; j++) macip_new[j] = ip[j];
+    __atomic_store_n(&macip_dirty, 1, __ATOMIC_RELEASE);
 }
 
 /* ==== aurora68.log: the kernel's log, for the user to hand on =================================
@@ -2028,6 +2104,7 @@ static void card_poll_locked(void)
     if (scsi_change_step()) return;                    /* a new CD for the virtual CD-ROM drive */
     if (__atomic_load_n(&pair_dirty, __ATOMIC_ACQUIRE) && !sd.ro) { pair_dirty = 0; pairings_write(); return; }
     if (__atomic_load_n(&opt_state, __ATOMIC_ACQUIRE) == 1 && !sd.ro) { cmdline_apply(); return; }
+    if (__atomic_load_n(&macip_dirty, __ATOMIC_ACQUIRE) && !sd.ro) { macip_dirty = 0; macip_write(); return; }
     { extern int psmac_solo_pram_take(uint8_t out[260]), psmac_se_pram_take(uint8_t out[260]); static uint8_t p[260];
       if (!sd.ro && (psmac_solo_pram_take(p) || psmac_se_pram_take(p))) { pram_write(p); return; } }
     if (__atomic_load_n(&sf_pending, __ATOMIC_ACQUIRE) && !sd.ro) { sfile_step(); return; }
@@ -2073,6 +2150,7 @@ static void card_start(void)
       if (logsave_s && !sd.ro) kprintf("[CARD] the log goes into aurora68.log every %u s (mac.logsave=%u; 0 stops it)\n", logsave_s, logsave_s); }
     pairings_load();
     pram_load();
+    macip_load();
     if (psmac_recovery_on()) {
         /* Aurora68 Setup and Recovery: no disk image loaded, nothing of the Mac's written, and aurora68.log left as
            the last start wrote it, since the recovery page shows it */
@@ -2220,7 +2298,7 @@ uint32_t psmac_card_cluster_bytes(void) { return sd.state == 1 ? fs.spc * 512u :
    programmed, no log or pairings (the Pi is about to restart, psmac_hdmi.c) */
 int psmac_card_idle(void)
 {
-    return !sf_pending && !first_dirty_t && !fl.busy && logf_state != 1 && !pair_dirty && opt_state != 1 && !(cc.n && cimg_unwritten());
+    return !sf_pending && !first_dirty_t && !fl.busy && logf_state != 1 && !pair_dirty && !macip_dirty && opt_state != 1 && !(cc.n && cimg_unwritten());
 }
 
 /* ---- declaration ROMs in the card's root ------------------------------------------------------

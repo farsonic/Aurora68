@@ -28,14 +28,30 @@
  * its guests: a DHCP server and a DNS answerer (psmac_apnet.c) on ports 67 and 53. Replies still go back to
  * the Ethernet address a request came from, so nothing new is needed for ARP.
  *
+ * The shared address on its own (25 November 2026, docs/08 item 149). On the owner's WiFi (a mesh of five
+ * access points) a MacBook could not resolve the Mac's address by ARP, while a static ARP entry made ping and
+ * the remote work at once; and under a system with no TCP/IP of its own (A/UX's Mac OS) nobody answered ARP
+ * and the kernel did not even know the address, since it learnt it only from the Mac's frames. So in the
+ * shared mode the kernel now answers ARP requests for the shared address itself (with the shared MAC: the
+ * same answer the Mac's stack gives), keeps the Mac's last WiFi address on the card (macip.txt, psmac_card.c)
+ * to answer on from the start, before or without a frame from the Mac (two ARP probes first, RFC 5227, and
+ * given up if another device answers for it), announces it by a gratuitous ARP, answers a ping the Mac has
+ * not answered within half a second, and counts what arrives (ARP requests in all and for the address, the
+ * kernel's and the Mac's answers) so that the heartbeat tells an access point that drops the requests from
+ * a stack that does not answer them.
+ *
  * Everything runs on core 3. The drivers' receive hook copies a frame into a small queue and the
  * service loop's poll does the work, so the hook costs a driver a few comparisons and a copy, and
  * the WiFi's coroutine never runs stack code. The kernel's frames wait in a queue that the drivers
  * empty when the Mac's transmit ring is empty: the Mac's frames always go first.
  */
 #include <stdint.h>
+#ifdef PSMAC_IP_HOST
+#include "ip_test_host.h"                                /* tools/ip_test.c: the clock, kprintf and sprintf of the host test */
+#else
 #include "support.h"
 #include "psmac.h"
+#endif
 #include "../alice/alice_net.h"
 #include "psmac_ip.h"
 #include "psmac_apnet.h"
@@ -43,11 +59,19 @@
 const char *psmac_option(const char *key);              /* psmac_bus.c */
 void sprintf(char *buf, const char *format, ...);        /* support.c */
 extern volatile uint8_t *alice_net_board(void);          /* alice_net.c */
+const uint8_t *psmac_card_macip(int *state);             /* psmac_card.c: macip.txt as the card had it (state 0 pending, 1 read, -1 none) */
+void psmac_card_save_macip(const uint8_t ip[4]);         /* ... and a new address for it */
+int psmac_card_writable(void);                           /* ... which it writes */
 
 int psmac_ip_active;
 
+#ifdef PSMAC_IP_HOST
+static inline uint64_t now_ticks(void) { return ip_test_ticks; }
+static inline uint64_t tick_hz(void) { return 1000000u; }
+#else
 static inline uint64_t now_ticks(void) { uint64_t v; __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(v)); return v; }
 static inline uint64_t tick_hz(void) { uint64_t v; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(v)); return v; }
+#endif
 static uint32_t now_ms(void) { return (uint32_t)(now_ticks() / (tick_hz() / 1000u)); }
 
 static inline uint16_t get16(const volatile uint8_t *p) { return (uint16_t)(p[0] << 8 | p[1]); }
@@ -74,9 +98,21 @@ static struct {
     uint8_t own_hw[6]; int own_hw_set;      /* remote.mac= */
     uint8_t hw[6], ip[4], mask[4], gw[4];
     uint8_t mac_ip[2][4];                   /* the Mac's own address on each unit, learnt from its frames */
+    int mac_seen[2];                        /* ... and it did come from the Mac's frames (not from the card) */
     uint32_t rx, tx, rx_dropped, tx_dropped;
     uint32_t sent;                          /* frames the driver took from the queue (tx counts those queued) */
-    uint32_t arp_asks, arp_answers, pings, syns, resets;   /* for the heartbeat's line (psmac_ip_report) */
+    /* for the heartbeat's line (psmac_ip_report): ARP requests seen on the link in all and for the kernel's
+       address (the Mac's in the shared mode), answered by the kernel and by the Mac (its frames seen going
+       out), devices claiming the address; pings to the address, answered by the kernel and by the Mac */
+    uint32_t bcasts, arp_seen, arp_asks, arp_answers, mac_arp_answers, arp_conflicts;
+    uint32_t pings, ping_kernel, ping_mac, syns, resets;
+    int arp_logged;                         /* the first request for the shared address said in the log */
+    /* the Mac's last WiFi address on the card (macip.txt): 0 not looked yet, 1 looked */
+    int card_looked, card_none, card_have, card_bad;   /* ... no card to write; an address there; given up (another device has it) */
+    uint8_t card_ip[4];                     /* what the card has (or has been asked to keep) */
+    int probe;                              /* ARP probes for card_ip sent (1, 2), 3 adopted; 0 none */
+    uint32_t probe_at;
+    int ip_from_card;                       /* the shared address is the card's: the Mac has not sent from it yet */
     uint32_t next_check;
     int ll_ok, ll;                          /* a link-local address when DHCP does not answer (Aurora68 Setup and Recovery); in use */
     int ap, relink, want_link_before;       /* the WiFi is an access point (Setup and Recovery): a fixed address, servers for its guests */
@@ -276,9 +312,23 @@ static int classify(int unit, const volatile uint8_t *f, uint32_t len, int unica
 {
     if (unit != I.unit || len < 14) return 0;
     uint16_t type = get16(f + 12);
+    if (f[0] & 1) I.bcasts++;
     if (type == 0x0806 && len >= 42) {                       /* ARP: a request for us is ours; a reply to us, too */
-        if (I.shared == 2) return 0;
-        if (get16(f + 20) == 1) return eq(f + 38, I.ip, 4) && !eq(I.ip, zero4, 4) ? 1 : 0;
+        int op = get16(f + 20);
+        if (op == 1) I.arp_seen++;
+        if (I.shared == 2) {
+            /* the shared address (or the card's, while it is probed): a request for it is answered by the kernel
+               and goes to the Mac as well; another device sending from it is a conflict the kernel must see */
+            const volatile uint8_t *a = !eq(I.ip, zero4, 4) ? I.ip : I.probe == 1 || I.probe == 2 ? I.card_ip : 0;
+            if (!a) return 0;
+            if (op == 1 && eq(f + 38, a, 4)) { if (a == I.ip) I.arp_asks++; return 1; }
+            return eq(f + 28, a, 4) && !eq(f + 22, I.hw, 6) ? 1 : 0;
+        }
+        if (op == 1) {
+            if (!eq(f + 38, I.ip, 4) || eq(I.ip, zero4, 4)) return 0;
+            I.arp_asks++;
+            return 1;
+        }
         return unicast_to_us && eq(f + 38, I.ip, 4) ? 2 : 0;
     }
     if (type != 0x0800 || len < 34 || (f[14] >> 4) != 4) return unicast_to_us && !I.shared ? 2 : 0;
@@ -293,7 +343,9 @@ static int classify(int unit, const volatile uint8_t *f, uint32_t len, int unica
         if (I.ap && (dport == 67 || dport == 53)) return 2;  /* the access point's guests: DHCP (broadcast) and DNS (to any server) */
     }
     if (I.shared == 2) {                                     /* the Mac's address: only TCP to our port */
-        if (proto == 6 && eq(dst, I.ip, 4) && !eq(I.ip, zero4, 4) && get16(l4 + 2) == REMOTE_PORT_ALT) return 2;
+        if (eq(I.ip, zero4, 4) || !eq(dst, I.ip, 4)) return 0;
+        if (proto == 6 && get16(l4 + 2) == REMOTE_PORT_ALT) return 2;
+        if (proto == 1 && l4[0] == 8) return 1;              /* an echo request: the Mac's first, the kernel's if it is not answered */
         return 0;
     }
     if (ip_is_mine(dst)) return 2;
@@ -320,15 +372,33 @@ int psmac_ip_rx(int unit, const volatile uint8_t *f, uint32_t len, const volatil
     return psmac_ip_promisc(unit) ? IPK_DROP : IPK_TO_MAC;
 }
 
-/* the Mac's own frames: its address on that unit */
+/* a ping to the shared address, waiting for the Mac's own answer (icmp_in, psmac_ip_poll) */
+#define PING_WAIT_MS 500
+static struct { int on; uint32_t at, len; uint8_t f[FRAME_MAX]; } PW;
+
+/* the Mac's own frames: its address on that unit; in the shared mode, its answers to ARP and to a ping */
 void psmac_ip_mac_tx(int unit, const volatile uint8_t *f, uint32_t len)
 {
     if (!psmac_ip_active || (unit & ~1) || len < 34) return;
     const volatile uint8_t *src = 0;
-    if (get16(f + 12) == 0x0800) src = f + 26;
-    else if (get16(f + 12) == 0x0806 && len >= 42) src = f + 28;
-    if (src && (src[0] | src[1] | src[2] | src[3]) && src[0] != 169)
+    uint16_t type = get16(f + 12);
+    if (type == 0x0800) src = f + 26;
+    else if (type == 0x0806 && len >= 42) src = f + 28;
+    if (src && (src[0] | src[1] | src[2] | src[3]) && src[0] != 169) {
         cpy(I.mac_ip[unit], src, 4);
+        I.mac_seen[unit] = 1;
+        if (unit == I.unit && eq(src, I.ip, 4)) I.ip_from_card = 0;   /* the card's address is the Mac's own after all */
+    }
+    if (unit != I.unit || I.shared != 2 || eq(I.ip, zero4, 4)) return;
+    if (type == 0x0806 && len >= 42 && get16(f + 20) == 2 && eq(f + 28, I.ip, 4)) I.mac_arp_answers++;
+    /* an echo reply (type 0) to the waiting ping's sender with its identifier and sequence number: the Mac answered */
+    if (type == 0x0800 && PW.on && f[23] == 1 && eq(f + 26, I.ip, 4)) {
+        uint32_t ihl = (f[14] & 15) * 4u, wihl = (PW.f[14] & 15) * 4u;
+        if (14 + ihl + 8 <= len && f[14 + ihl] == 0 && eq(f + 30, PW.f + 26, 4) && eq(f + 14 + ihl + 4, PW.f + 14 + wihl + 4, 4)) {
+            PW.on = 0;
+            I.ping_mac++;
+        }
+    }
 }
 
 /* ---- ARP and ICMP ---- */
@@ -341,19 +411,59 @@ static void arp_send(int op, const uint8_t *dst_hw, const uint8_t *tha, const ui
     cpy(f + 22, I.hw, 6); cpy(f + 28, I.ip, 4); cpy(f + 32, tha, 6); cpy(f + 38, tpa, 4);
     tx_commit(42);
 }
+/* an ARP probe for the card's address (RFC 5227 2.1.1: sender address 0, so no cache learns anything from it) */
+static void arp_probe(const uint8_t *ip)
+{
+    uint8_t *f = tx_begin();
+    if (!f) return;
+    cpy(f, bcast_hw, 6); cpy(f + 6, I.hw, 6); put16(f + 12, 0x0806);
+    put16(f + 14, 1); put16(f + 16, 0x0800); f[18] = 6; f[19] = 4; put16(f + 20, 1);
+    cpy(f + 22, I.hw, 6); cpy(f + 28, zero4, 4); cpy(f + 32, zero4, 4); f[36] = f[37] = 0; cpy(f + 38, ip, 4);
+    tx_commit(42);
+}
+static void card_give_up(const uint8_t *f, const char *when)
+{
+    I.card_bad = 1; I.probe = 0;
+    kprintf("[REMOTE] another device (%02x:%02x:%02x:%02x:%02x:%02x) has the Mac's last WiFi address %d.%d.%d.%d %s: the kernel does not use it, and waits for the Mac's own\n",
+            f[22], f[23], f[24], f[25], f[26], f[27], I.card_ip[0], I.card_ip[1], I.card_ip[2], I.card_ip[3], when);
+}
 static void arp_in(const uint8_t *f, uint32_t len)
 {
     if (len < 42 || get16(f + 14) != 1 || get16(f + 16) != 0x0800) return;
-    if (get16(f + 20) == 1 && eq(f + 38, I.ip, 4) && !eq(I.ip, zero4, 4)) {
-        I.arp_asks++;
+    int op = get16(f + 20);
+    if (I.shared == 2 && !eq(f + 22, I.hw, 6)) {
+        /* another device's frame for the card's address while it is probed: it is that device's (it sends from it,
+           or probes for it at the same time, RFC 5227 2.1.1); the address in use: count it, and if it came only from
+           the card, give it up */
+        if ((I.probe == 1 || I.probe == 2) && (eq(f + 28, I.card_ip, 4) || (op == 1 && eq(f + 28, zero4, 4) && eq(f + 38, I.card_ip, 4)))) {
+            card_give_up(f, "(it answered the kernel's probe)");
+            return;
+        }
+        if (!eq(I.ip, zero4, 4) && eq(f + 28, I.ip, 4)) {
+            I.arp_conflicts++;
+            if (I.ip_from_card) {
+                card_give_up(f, "(the card's address, which the Mac has not used since)");
+                for (int i = 0; i < 4; i++) I.mac_ip[0][i] = I.ip[i] = 0;
+                I.ip_from_card = 0;
+            } else if (I.arp_conflicts == 1)
+                kprintf("[REMOTE] another device (%02x:%02x:%02x:%02x:%02x:%02x) sends from the Mac's address %d.%d.%d.%d: an address conflict on the network\n",
+                        f[22], f[23], f[24], f[25], f[26], f[27], I.ip[0], I.ip[1], I.ip[2], I.ip[3]);
+            return;
+        }
+    }
+    if (op == 1 && eq(f + 38, I.ip, 4) && !eq(I.ip, zero4, 4)) {
         arp_send(2, f + 22, f + 22, f + 28);
         I.arp_answers++;
+        if (I.shared == 2 && !I.arp_logged) {
+            I.arp_logged = 1;
+            kprintf("[REMOTE] the first ARP request for the Mac's address %d.%d.%d.%d arrived (from %d.%d.%d.%d): the kernel answers it with the shared MAC address\n",
+                    I.ip[0], I.ip[1], I.ip[2], I.ip[3], f[28], f[29], f[30], f[31]);
+        }
     }
 }
-static void icmp_in(const uint8_t *f, const uint8_t *ip, const uint8_t *p, uint32_t n)
+/* an echo reply to the request in the frame f (ip its IP header, p its ICMP message of n bytes) */
+static void icmp_reply(const uint8_t *f, const uint8_t *ip, const uint8_t *p, uint32_t n)
 {
-    if (n < 8 || p[0] != 8 || !ip_is_mine(ip + 16) || I.shared == 2 || n > FRAME_MAX - 34) return;
-    I.pings++;
     uint8_t *o = tx_begin();
     if (!o) return;
     uint8_t *q = ip_header(o, f + 6, I.ip, ip + 12, 1, n, 64);
@@ -361,6 +471,36 @@ static void icmp_in(const uint8_t *f, const uint8_t *ip, const uint8_t *p, uint3
     q[0] = 0; put16(q + 2, 0);
     put16(q + 2, fold(sum16(q, n, 0)));
     tx_commit(34 + n);
+    I.ping_kernel++;
+}
+/* In the shared mode the address is the Mac's, and so is the ping: Riptide answers it, and a second answer from the
+   kernel would show as a duplicate. With no TCP/IP on the Mac (or the Mac hung, which is when the remote matters most)
+   nobody would. So the request waits: if the Mac's own echo reply goes out within PING_WAIT_MS (psmac_ip_mac_tx
+   matches it), that is the answer; otherwise the kernel answers (psmac_ip_poll), half a second late, which also
+   tells whoever pings which of the two answered. One request waits at a time; another meanwhile is left to the Mac. */
+static void icmp_in(const uint8_t *f, uint32_t flen, const uint8_t *ip, const uint8_t *p, uint32_t n)
+{
+    if (n < 8 || p[0] != 8 || !ip_is_mine(ip + 16) || n > FRAME_MAX - 34) return;
+    I.pings++;
+    if (I.shared == 2) {
+        if (PW.on || flen > FRAME_MAX) return;
+        cpy(PW.f, f, flen); PW.len = flen; PW.at = now_ms() + PING_WAIT_MS; PW.on = 1;
+        return;
+    }
+    icmp_reply(f, ip, p, n);
+}
+static void ping_wait_poll(void)
+{
+    if (!PW.on || (int32_t)(now_ms() - PW.at) < 0) return;
+    PW.on = 0;
+    const uint8_t *ip = PW.f + 14;
+    uint32_t ihl = (ip[0] & 15) * 4u, tot = get16(ip + 2);
+    if (I.shared != 2 || !eq(ip + 16, I.ip, 4) || tot < ihl + 8 || 14 + tot > PW.len) return;
+    icmp_reply(PW.f, ip, ip + ihl, tot - ihl);
+    static int said;
+    if (!said++)
+        kprintf("[REMOTE] a ping to the Mac's address %d.%d.%d.%d had no answer from the Mac within %u ms: the kernel answers such pings (docs/13)\n",
+                I.ip[0], I.ip[1], I.ip[2], I.ip[3], PING_WAIT_MS);
 }
 
 /* ---- UDP out ---- */
@@ -423,13 +563,27 @@ static void bound(const char *how)
     announce();
 }
 /* WiFi: the router gave us the Mac's own address (it keys leases by MAC address), or none at all */
+/* the shared address is new: a gratuitous ARP (the same pair the Mac's stack announces, so harmless beside it, and the
+   only announcement when the Mac has no stack) and the mDNS name's answer */
+static void shared_announce(void)
+{
+    if (eq(I.ip, zero4, 4)) return;
+    arp_send(1, bcast_hw, (const uint8_t *)"\0\0\0\0\0\0", I.ip);
+    announce();
+}
 static void go_shared(const char *why)
 {
     if (I.shared == 2) return;
     I.shared = 2; D.state = D_OFF;
     cpy(I.ip, I.mac_ip[0], 4); for (int i = 0; i < 4; i++) I.gw[i] = I.mask[i] = 0;
-    kprintf("[REMOTE] %s: the kernel shares the Mac's address on the WiFi and takes TCP port %u: http://%d.%d.%d.%d:%u/\n",
-            why, REMOTE_PORT_ALT, I.ip[0], I.ip[1], I.ip[2], I.ip[3], REMOTE_PORT_ALT);
+    I.ip_from_card = !eq(I.ip, zero4, 4) && !I.mac_seen[0];
+    if (eq(I.ip, zero4, 4))
+        kprintf("[REMOTE] %s: the kernel shares the Mac's address on the WiFi and takes TCP port %u; the address is not known yet (the Mac's first frame, or the one the card remembers)\n",
+                why, REMOTE_PORT_ALT);
+    else
+        kprintf("[REMOTE] %s: the kernel shares the Mac's address on the WiFi and takes TCP port %u: http://%d.%d.%d.%d:%u/\n",
+                why, REMOTE_PORT_ALT, I.ip[0], I.ip[1], I.ip[2], I.ip[3], REMOTE_PORT_ALT);
+    shared_announce();
 }
 static void dhcp_in(const uint8_t *p, uint32_t n)
 {
@@ -820,7 +974,7 @@ static void ip_in(const uint8_t *f, uint32_t len)
     if (get16(ip + 6) & 0x3fff) return;                      /* fragments: nothing of ours is ever that big */
     const uint8_t *p = ip + ihl; uint32_t n = tot - ihl;
     switch (ip[9]) {
-    case 1: icmp_in(f, ip, p, n); break;
+    case 1: icmp_in(f, len, ip, p, n); break;
     case 6: if (I.shared == 2 ? eq(ip + 16, I.ip, 4) : ip_is_mine(ip + 16)) tcp_in(f, ip, p, n); break;
     case 17:
         if (n < 8) break;
@@ -850,6 +1004,10 @@ static void use_link(int u)
     txq_tail = txq_head; rxq_tail = rxq_head;
     for (int i = 0; i < 4; i++) I.ip[i] = I.mask[i] = I.gw[i] = 0;
     I.ll = 0;
+    PW.on = 0; I.arp_logged = 0;
+    /* an address taken from the card is probed again on the new link (it may be another network) */
+    if (I.ip_from_card) { for (int i = 0; i < 4; i++) I.mac_ip[0][i] = 0; I.ip_from_card = 0; }
+    I.probe = 0;
     D.state = D_OFF;
     I.unit = u;
     if (u < 0) { kprintf("[REMOTE] no network link: waiting for one\n"); return; }
@@ -873,6 +1031,39 @@ static void use_link(int u)
     dhcp_start();
 }
 
+/* The Mac's last WiFi address on the card (macip.txt; psmac_card.c reads and writes it). Looked at once the card has
+   been read; kept up to date when the Mac sends from another address (written only then); and, in the shared mode on
+   the WiFi with nothing heard from the Mac yet, taken as the address to answer on once two ARP probes a second apart
+   have had no answer from another device (RFC 5227's probe, shortened: the address was the Mac's on this network
+   last time, and the kernel gives it up the moment another device claims it, arp_in). Twice a second. */
+static void card_poll(uint32_t t)
+{
+    if (!I.card_looked) {
+        int st; const uint8_t *p = psmac_card_macip(&st);
+        if (st == 0) return;
+        I.card_looked = 1; I.card_none = !psmac_card_writable();   /* no card, mac.card=off or =ro: nothing is written */
+        if (st == 1 && p && !eq(p, zero4, 4)) {
+            cpy(I.card_ip, p, 4); I.card_have = 1;
+            kprintf("[REMOTE] the card remembers the Mac's last WiFi address, %d.%d.%d.%d (macip.txt)\n", p[0], p[1], p[2], p[3]);
+        }
+    }
+    /* the Mac's own address, when it is not what the card has: kept for the next start */
+    if (I.mac_seen[0] && !eq(I.mac_ip[0], zero4, 4) && (!I.card_have || !eq(I.mac_ip[0], I.card_ip, 4))) {
+        cpy(I.card_ip, I.mac_ip[0], 4); I.card_have = 1; I.card_bad = 0;
+        if (!I.card_none) psmac_card_save_macip(I.card_ip);
+        if (!I.card_none) kprintf("[REMOTE] the Mac's WiFi address %d.%d.%d.%d goes onto the card for the next start (macip.txt)\n", I.card_ip[0], I.card_ip[1], I.card_ip[2], I.card_ip[3]);
+    }
+    if (I.shared != 2 || I.unit != 0 || !I.card_have || I.card_bad || I.mac_seen[0] || !eq(I.mac_ip[0], zero4, 4)) { if (I.probe != 3) I.probe = 0; return; }
+    if (I.probe == 0) { arp_probe(I.card_ip); I.probe = 1; I.probe_at = t + 1000; return; }
+    if ((int32_t)(t - I.probe_at) < 0) return;
+    if (I.probe == 1) { arp_probe(I.card_ip); I.probe = 2; I.probe_at = t + 1000; return; }
+    if (I.probe == 2) {
+        I.probe = 3;
+        cpy(I.mac_ip[0], I.card_ip, 4);                      /* the follow below takes it, and announces it */
+        kprintf("[REMOTE] no frame from the Mac yet and no other device answered two ARP probes: the kernel answers on the address the card remembers\n");
+    }
+}
+
 void psmac_ip_poll(void)
 {
     if (!psmac_ip_active) return;
@@ -884,12 +1075,20 @@ void psmac_ip_poll(void)
         else if (I.want_link == 0) want = wi ? 0 : -1;
         else want = w ? 1 : wi ? 0 : -1;
         if (want != I.unit || I.relink) { I.relink = 0; use_link(want); }
-        if (I.shared == 2 && !eq(I.ip, I.mac_ip[0], 4)) {   /* the Mac's address moved: follow it */
+        card_poll(t);
+        if (I.shared == 2 && !eq(I.ip, I.mac_ip[0], 4)) {   /* the Mac's address moved (or came from the card): follow it */
             cpy(I.ip, I.mac_ip[0], 4);
-            kprintf("[REMOTE] the Mac's WiFi address is now %d.%d.%d.%d: http://%d.%d.%d.%d:%u/\n", I.ip[0], I.ip[1], I.ip[2], I.ip[3], I.ip[0], I.ip[1], I.ip[2], I.ip[3], REMOTE_PORT_ALT);
+            I.ip_from_card = !eq(I.ip, zero4, 4) && !I.mac_seen[0];
+            I.arp_logged = 0; PW.on = 0;
+            if (!eq(I.ip, zero4, 4)) {
+                kprintf("[REMOTE] the Mac's WiFi address is now %d.%d.%d.%d%s: http://%d.%d.%d.%d:%u/\n", I.ip[0], I.ip[1], I.ip[2], I.ip[3],
+                        I.ip_from_card ? " (the card's, the Mac not heard from yet)" : "", I.ip[0], I.ip[1], I.ip[2], I.ip[3], REMOTE_PORT_ALT);
+                shared_announce();
+            }
         }
         if (I.shared == 1 && D.state == D_BOUND && eq(I.ip, I.mac_ip[0], 4)) go_shared("the Mac took the kernel's address too");
     }
+    ping_wait_poll();
     for (int guard = 0; guard < RXQ && rxq_tail != rxq_head; guard++) {
         uint32_t k = rxq_tail % RXQ;
         const uint8_t *f = rxq[k].data;
@@ -924,21 +1123,42 @@ void psmac_ip_info(struct ipk_info *o)
 /* one line for the kernel's heartbeat (psmac_bus.c): the remote control's address and what came and
    went, printed only when something changed so Aurora68 Log is not buried. It keeps the address in
    the log after the start-up lines have scrolled away, and shows where a connection stops: ARP asked
-   and answered, pings answered, SYNs seen, frames queued against frames the driver actually sent */
+   and answered, pings answered, SYNs seen, frames queued against frames the driver actually sent.
+   In the shared mode (25 November 2026) the ARP part says what arrived and who answered: requests seen on
+   the WiFi in all (broadcasts reach the Pi at all) and for the Mac's address (the one a laptop sends when it
+   looks for the Mac), the kernel's answers and the Mac's own (its stack's frames going out), and the pings,
+   answered by the Mac or by the kernel. Until then the line counted only requests the kernel itself
+   answered, which in that mode was none: "ARP asks 0" said nothing about the network. */
 void psmac_ip_report(void)
 {
     if (!psmac_ip_active) return;
-    static uint32_t last[11]; static int last_unit = -2, last_shared = -1;
-    uint32_t now[11] = { I.rx, I.tx, I.sent, I.rx_dropped + I.tx_dropped, I.arp_asks, I.pings, I.syns, I.resets, get32(I.ip), AP.acks, AP.dns_queries };
+    enum { N = 16 };
+    static uint32_t last[N]; static int last_unit = -2, last_shared = -1;
+    uint32_t now[N] = { I.rx, I.tx, I.sent, I.rx_dropped + I.tx_dropped, I.arp_asks, I.pings, I.syns, I.resets, get32(I.ip), AP.acks, AP.dns_queries,
+                        I.arp_answers, I.mac_arp_answers, I.arp_conflicts, I.ping_kernel, I.ping_mac };
     int same = I.unit == last_unit && I.shared == last_shared;
-    for (int i = 0; i < 11; i++) { if (now[i] != last[i]) same = 0; last[i] = now[i]; }
+    for (int i = 0; i < N; i++) { if (now[i] != last[i]) same = 0; last[i] = now[i]; }
+    /* the broadcasts and other devices' ARP requests alone (a home network has some all the time): once a minute */
+    static uint32_t last_seen, last_print;
+    uint32_t t = now_ms();
+    if (same && I.arp_seen + I.bcasts != last_seen && t - last_print >= 60000u) same = 0;
     last_unit = I.unit; last_shared = I.shared;
     if (same) return;
+    last_seen = I.arp_seen + I.bcasts; last_print = t;
     if (I.unit < 0) { kprintf("[REMOTE]   no network link\n"); return; }
-    kprintf("[REMOTE]   %d.%d.%d.%d on %s (%s): in %u, out %u queued %u sent, %u dropped | ARP asks %u answered %u, pings %u, SYNs %u, resets %u\n",
+    if (I.shared == 2) {
+        kprintf("[REMOTE]   %d.%d.%d.%d on %s (the Mac's MAC and IP, port 8068%s): in %u, out %u queued %u sent, %u dropped | broadcasts %u, ARP requests %u, "
+                "for the Mac's address %u: answered by the kernel %u, by the Mac %u%s | pings %u: the Mac answered %u, the kernel %u | SYNs %u, resets %u\n",
+                I.ip[0], I.ip[1], I.ip[2], I.ip[3], link_name(I.unit),
+                eq(I.ip, zero4, 4) ? "; the address not known yet" : I.ip_from_card ? "; the address from the card" : "",
+                I.rx, I.tx, I.sent, I.rx_dropped + I.tx_dropped, I.bcasts, I.arp_seen, I.arp_asks, I.arp_answers, I.mac_arp_answers,
+                I.arp_conflicts ? " (and claimed by another device)" : "", I.pings, I.ping_mac, I.ping_kernel, I.syns, I.resets);
+        return;
+    }
+    kprintf("[REMOTE]   %d.%d.%d.%d on %s (%s): in %u, out %u queued %u sent, %u dropped | ARP requests %u, for this address %u, answered %u, pings %u, SYNs %u, resets %u\n",
             I.ip[0], I.ip[1], I.ip[2], I.ip[3], link_name(I.unit),
-            I.shared == 2 ? "the Mac's MAC and IP, port 8068" : I.shared ? "the Mac's MAC, its own IP" : "its own MAC and IP",
-            I.rx, I.tx, I.sent, I.rx_dropped + I.tx_dropped, I.arp_asks, I.arp_answers, I.pings, I.syns, I.resets);
+            I.shared ? "the Mac's MAC, its own IP" : "its own MAC and IP",
+            I.rx, I.tx, I.sent, I.rx_dropped + I.tx_dropped, I.arp_seen, I.arp_asks, I.arp_answers, I.pings, I.syns, I.resets);
     if (I.ap) kprintf("[REMOTE]   access point: %d device%s with a lease; DHCP %u discovers, %u offers, %u acks, %u naks; DNS %u queries, %u answered with an address\n",
                       apn_clients(&AP, now_ms() / 1000u), apn_clients(&AP, now_ms() / 1000u) == 1 ? "" : "s", AP.discovers, AP.offers, AP.acks, AP.naks, AP.dns_queries, AP.dns_answers);
 }
