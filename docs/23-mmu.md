@@ -1352,3 +1352,46 @@ the SE board, the solo board and the Plus: A/UX's kernel stack and page tables a
 written through the same mapping. The MAME SE: A/UX to init as before, emulated accesses 8.7 million to init where they
 were 130 million; System 7.1 on the solo board at the Finder in 24.9 s (36 s) and 31.7 s with mac.mmu=full (45 s);
 System 7.1 on the MAME SE at the Finder in 268 s.
+
+## 19. The cause: a page's second address in the TLB (26 November 2026)
+
+Test kernel 16 (the low 320 KiB ordinary memory on the SE board) changed nothing on the SE: the root entry was still
+0 at the first fault. So the path the write took was not the fault; the read was. Three things, put together:
+
+1. **The read is not at the address it seems to be.** The kernel's `MOVE.L D0,([-16,A6])` at $10023154 (and the
+   `([-16,A6])` operands before it) is a 68020 memory-indirect operand with a word base displacement. M68k_EA.c
+   translates its pointer fetch as `ldr w_bd, [x_A6, w_bd, UXTW]` with w_bd = $FFFFFFF0: the 32-bit displacement is
+   zero-extended, so the ARM address is A6 + $FFFFFFF0 = $1_12FFFF14, in the shadow of the first 4 GiB that Emu68
+   keeps at +4 GiB for exactly this sum (L1 entries 4-7 point at the tables of entries 0-3; mirror_page upstream,
+   mmu_space_new here). `MOVE.L A0,-16(A6)` at $100230CC, an ordinary d16(An), is `stur w, [x_A6, #-16]`: $12FFFF14.
+   One descriptor, two addresses, two TLB entries.
+2. **A/UX moves that page under the kernel's feet, one page at a time.** The u-area and kernel stack of the running
+   process are always at $12FFF000; a context switch rewrites that page's descriptor and flushes that page alone. The
+   MAME SE, with a line at every map and unmap of $12FFF000: mapped on $15A000 (process 0), then "unmap, this page's
+   address only", mapped on $4C000 (process 1) just before switch #8, and from there on unmapped and mapped again at
+   every switch ($4E000, $4F000, ... $2269000, $4C000 ...).
+3. **That unmap flushed one of the two addresses.** mmu_space_page invalidated the page with `TLBI VAE1IS` at its own
+   address ($12FFF000); nothing invalidated $1_12FFF000. A real Cortex-A53 keeps that entry (its TLB holds 512), so
+   the kernel of process 1 read `([-16,A6])` from process 0's stack page: whatever was in that slot there (0 in one
+   run, something else in the next), never the $4D000 it had just stored through the other address. QEMU drops its
+   whole TLB whenever a write to TTBR0 changes the ASID, which the two views do at every change of mode, and its TLB
+   is small: it never had the stale entry, and the MAME SE went on.
+
+It accounts for what was seen: the pointer stored right ($4CF14 <- $4D000) and read wrong; `12(A6)` read right in the
+same block; the wrong value different from run to run; no difference whether the stack's writes were emulated or direct
+(section 18's change); the same every boot on the Pi and never in QEMU. One observation does not fit and is not
+explained: test kernel 10's `mac.mmutlb=flush` drops every TLB entry at each of these changes and should have cured
+it, and the panic was reported with it. That boot's log does not show the option's line (the card's log keeps the last
+64 KB), so whether it was on the command line is not known.
+
+The fix (aarch64/mmu.c, tlbi_page_everywhere): a page replaced or removed is invalidated at its own address, at
++4 GiB, and at the kernel's alias of it at the top (which mac.mmu=full has emptied, and the older PFLUSH path
+has not). The same omission was in mmu_low4g_page, the path of the mode without the option.
+
+And a check the hardware alone can fail (psmac_mmu.c, alias_selfcheck), at the start with mac.mmu=full: a scratch
+page is moved from one page of RAM to another and read at +4 GiB, once with the flush as it was and once as it is, and
+the log says which page each read saw: "[PSMAC:MMU] TLB self-check: ...". QEMU: "new" and "new". A Pi is expected
+to say "OLD" and "new"; if it says "new" to both, this section is wrong about the cause.
+
+System 7 with virtual memory on moves pages and flushes them one at a time too; the same stale reads were waiting
+there.

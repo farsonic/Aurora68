@@ -936,6 +936,36 @@ void mmu_low4g_set(const uint64_t in[4])
     spinlock_release(&mmu_lock);
 }
 
+/* The TLB entries of one 4 KiB page of the 68k's space (26 November 2026, docs/23 section 19). The first 4 GiB appear
+   three times: at their own addresses, again at +4 GiB (L1 entries 4-7 point at the same tables, mirror_page and
+   mmu_space_new: the translator's `ldr w, [x_base, w_disp, UXTW]` with a negative displacement lands there, as a
+   68020 memory-indirect operand with a negative base displacement does) and, outside mac.mmu=full's spaces, at the
+   top of the kernel's half (L1 entries 508-511). One descriptor, three addresses, three TLB entries. Until now a page
+   replaced or removed was invalidated at its own address alone, so on a real core the +4 GiB entry went on naming
+   the old page; QEMU, which drops its whole TLB whenever TTBR0's ASID changes, never kept one. A/UX swaps each
+   process's u-area and kernel stack in at one address ($12FFF000) with a PFLUSH of that page, and its kernel then read
+   a pointer from its stack through `([-16,A6])`: the owner's Pi read the previous process's stack there, the new
+   process's page table entry went astray and A/UX panicked. asid_field: the ASID in bits 63-48, or ~0 for every ASID. */
+int mmu_tlbi_low_only;                       /* the hardware self-check alone (psmac_mmu.c): the flush as it was */
+static inline void tlbi_page_everywhere(uint64_t asid_field, uintptr_t virt)
+{
+    uint64_t p = (virt >> 12) & 0xfffffull;
+    if (asid_field == ~0ull) {
+        __asm__ volatile("dsb ishst\n\ttlbi vaae1is, %0" : : "r"(p) : "memory");
+        if (!mmu_tlbi_low_only) {
+            __asm__ volatile("tlbi vaae1is, %0" : : "r"(p | (1ull << 20)) : "memory");
+            __asm__ volatile("tlbi vaae1is, %0" : : "r"(p | (0xffffffull << 20)) : "memory");
+        }
+    } else {
+        __asm__ volatile("dsb ishst\n\ttlbi vae1is, %0" : : "r"(asid_field | p) : "memory");
+        if (!mmu_tlbi_low_only) {
+            __asm__ volatile("tlbi vae1is, %0" : : "r"(asid_field | p | (1ull << 20)) : "memory");
+            __asm__ volatile("tlbi vaae1is, %0" : : "r"(p | (0xffffffull << 20)) : "memory");
+        }
+    }
+    __asm__ volatile("dsb ish\n\tisb" ::: "memory");
+}
+
 /*
     Aurora68, mac.mmu=full (psmac/psmac_mmu.c, docs/23-mmu.md, phase 2): one 4 KiB page of the installed
     low-4G subtree at a time, for the soft TLB that maps the 68k's pages on their first use and drops them
@@ -968,11 +998,7 @@ int mmu_low4g_page(uintptr_t virt, uintptr_t phys, uint32_t attr_low, int tlbi)
     if (was && *e3 != nd) {
         *e3 = 0;                                   /* break ... */
         if (tlbi)
-            __asm__ volatile(
-                "dsb ishst              \n"
-                "tlbi vaae1is, %0       \n"
-                "dsb ish                \n"
-                "isb                    \n" : : "r"((virt >> 12) & 0xfffffffffffull) : "memory");
+            tlbi_page_everywhere(~0ull, virt);     /* its own address and its two aliases */
     }
     *e3 = nd;                                      /* ... before make */
     mmu_publish();
@@ -1129,11 +1155,7 @@ int mmu_space_page(void *l1v, unsigned asid, uintptr_t virt, uintptr_t phys, uin
     if (was && *e3 != nd) {
         *e3 = 0;                                   /* break ... */
         if (tlbi)
-            __asm__ volatile(
-                "dsb ishst              \n"
-                "tlbi vae1is, %0        \n"
-                "dsb ish                \n"
-                "isb                    \n" : : "r"(((uint64_t)(asid & 0xff) << 48) | ((virt >> 12) & 0xfffffffffffull)) : "memory");
+            tlbi_page_everywhere((uint64_t)(asid & 0xff) << 48, virt);   /* its own address and the +4 GiB shadow */
     }
     *e3 = nd;                                      /* ... before make */
     mmu_publish();

@@ -509,6 +509,7 @@ static void pflush(int after_tc)
 }
 
 static void spaces_init(void);             /* mac.mmu=full (the end of this file) */
+static void alias_selfcheck(void);
 
 /* ---- public ---- */
 void psmac_mmu_init(uintptr_t ramp, uint32_t rams, uintptr_t romp)
@@ -535,7 +536,7 @@ void psmac_mmu_init(uintptr_t ramp, uint32_t rams, uintptr_t romp)
     kprintf("[PSMAC:MMU] pristine low-4G subtree: %016llx %016llx %016llx %016llx\n", pristine[0], pristine[1], pristine[2], pristine[3]);
     mmu.tc = 0;
     rebuild();   /* identity set (with mac.mmu=full, what the other cores keep seeing in mmu_user_L1) */
-    if (psmac_mmu_full) spaces_init();
+    if (psmac_mmu_full) { spaces_init(); alias_selfcheck(); }
 }
 
 /* mac.mmu=full (psmac_mmufault.c): 1 when the guest translates, and the kernel's own pointer to the Mac RAM
@@ -1550,3 +1551,36 @@ void psmac_mmu_check_code_space(uint32_t pc, int super)
    psmac_board_se.c's mac.sccirq=aux asks (docs/23 section 14) */
 int psmac_mmu_views_apart(void) { return split_now; }
 int psmac_mmu_translating(void) { return (psmac_mmu_full && view[0]) || (translate_on && l2p); }
+
+/* A check the hardware alone can fail (26 November 2026, docs/23 section 19; aarch64/mmu.c, tlbi_page_everywhere). A
+   scratch address of the supervisor's space is mapped on one page of the Mac's RAM, read at its own address and at
+   +4 GiB (two TLB entries of one descriptor), moved to a second page, and read again at +4 GiB: first with the flush as
+   it was until today (the page's own address alone), then with the flush as it is. A real core answers "the old page"
+   to the first and "the new page" to the second; QEMU "the new page" to both when its TLB happens to have dropped the
+   entry. One line in the log, at the start, so that a log from a Pi says by itself what its TLB keeps. */
+static void alias_selfcheck(void)
+{
+    extern int mmu_tlbi_low_only;
+    struct space *s = view[1];
+    if (!s || ram_size < 0x400000u) return;
+    const uint32_t V = 0x7e000000u;                       /* nothing of the Mac's or the Pi's is there at the start */
+    const uint32_t PA = 0x00200000u, PB = 0x00201000u;    /* two pages of RAM the ROM has not touched yet */
+    volatile uint32_t *ka = (volatile uint32_t *)(KERNEL_ALIAS + ram_phys + PA), *kb = (volatile uint32_t *)(KERNEL_ALIAS + ram_phys + PB);
+    volatile uint32_t *low = (volatile uint32_t *)(uintptr_t)V, *high = (volatile uint32_t *)((uintptr_t)V + 0x100000000ull);
+    uint32_t sa = *ka, sb = *kb, r[2];
+    *ka = 0xa0a0a0a0u; *kb = 0xb0b0b0b0u;
+    for (int pass = 0; pass < 2; pass++) {
+        mmu_space_page(s->l1, s->asid, V, ram_phys + PA, RW_ATTR_NG, 1);
+        volatile uint32_t t = *low; t = *high; (void)t;   /* both entries into the TLB */
+        mmu_tlbi_low_only = pass == 0;
+        mmu_space_page(s->l1, s->asid, V, ram_phys + PB, RW_ATTR_NG, 1);
+        mmu_tlbi_low_only = 0;
+        r[pass] = *high;
+        mmu_space_page(s->l1, s->asid, V, ~(uintptr_t)0, 0, 1);
+    }
+    *ka = sa; *kb = sb;
+    kprintf("[PSMAC:MMU] TLB self-check: a page moved, then read at +4 GiB: the %s page after a flush of its own address alone "
+            "(%s), the %s page after the flush of both (%s)\n",
+            r[0] == 0xb0b0b0b0u ? "new" : r[0] == 0xa0a0a0a0u ? "OLD" : "?", r[0] == 0xb0b0b0b0u ? "this TLB had dropped the entry, as QEMU's does" : "a real TLB keeps it: the fault of docs/23 section 19",
+            r[1] == 0xb0b0b0b0u ? "new" : r[1] == 0xa0a0a0a0u ? "OLD" : "?", r[1] == 0xb0b0b0b0u ? "right" : "WRONG: the flush does not reach the alias");
+}
