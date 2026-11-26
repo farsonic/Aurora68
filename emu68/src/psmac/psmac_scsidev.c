@@ -891,13 +891,30 @@ static void underflow(int write)
             write ? "write" : "read", write ? "take" : "give", t.underflows, phase_name(t.phase), t.req, t.buf_pos, t.buf_len,
             t.cdb[0], t.id);
 }
+/* The pseudo-DMA window moves a byte only in DMA mode (MR bit 1 and a start DMA write, until a phase change or MR
+   ends it): the 5380's DACK does nothing else. Outside it a write only loads the output data register and a read
+   returns the bus. A/UX 3's SCSI driver writes the window once before it starts a transfer, in both directions; taken
+   as data, that byte went to the disk in front of the sector, and the root file system's superblock, which A/UX
+   rewrites at mount, came back one byte late ("BAD SUPER BLOCK: MAGIC NUMBER WRONG" at the next start; 27 November
+   2026, docs/23 section 15). The Mac OS SCSI Manager sets DMA mode first, as the 5380's data sheet asks. */
+static uint32_t pdma_outside;
+static void outside_dma(int write, uint8_t v)
+{
+    if (++pdma_outside > 4) return;
+    kprintf("[SCSI] pseudo-DMA %s outside DMA mode (#%u): %s, target %s, MR $%02x, command $%02x: not a transfer\n",
+            write ? "write" : "read", pdma_outside, write ? "the output data register loaded" : "the bus read", phase_name(t.phase),
+            n.mr, t.cdb[0]);
+    (void)v;
+}
 uint8_t psmac_scsidev_pdma_read(void)
 {
+    if (!n.dma) { uint8_t v = cur_data(); outside_dma(0, v); return v; }
     if (!(t.req && (t.phase == PH_DATAIN || t.phase == PH_STATUS || t.phase == PH_MSGIN))) { underflow(0); return 0xff; }
     uint8_t v = cur_data(); ack_byte(); advance(); return v;
 }
 void psmac_scsidev_pdma_write(uint8_t d)
 {
+    if (!n.dma) { n.odr = d; outside_dma(1, d); return; }
     if (!(t.req && (t.phase == PH_DATAOUT || t.phase == PH_CMD || t.phase == PH_MSGOUT))) { underflow(1); return; }
     n.odr = d; ack_byte(); advance();
 }
