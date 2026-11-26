@@ -473,7 +473,7 @@ static void gpio_xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, ui
         ipl = 0;
     } else timeouts = 0;
     last_ipl = ipl; last_flags = 0;
-    if (psmac_board_se) psmac_se_set_level(ipl); else if (__m68k_state) __m68k_state->INTF.IPL = ipl;   /* the SE board adds its RBV, under its lock (psmac_board_se.c) */
+    if (psmac_board_se) psmac_se_set_level(ipl); else if (__m68k_state) PSMAC_STORE_IPL(__m68k_state, ipl);   /* the SE board adds its RBV, under its lock (psmac_board_se.c) */
     if (r) { r->status = status; r->ipl = ipl; r->flags = 0; r->data = value; }
 }
 
@@ -532,7 +532,7 @@ static void bridge_xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, 
     }
     svc_phase = 0;
     last_ipl = rep[1]; last_flags = rep[2];
-    if (psmac_board_se) psmac_se_set_level(rep[1]); else if (__m68k_state) __m68k_state->INTF.IPL = rep[1];
+    if (psmac_board_se) psmac_se_set_level(rep[1]); else if (__m68k_state) PSMAC_STORE_IPL(__m68k_state, rep[1]);
     if (r) { r->status = rep[0]; r->ipl = rep[1]; r->flags = rep[2]; r->data = rep[4] | (rep[5] << 8) | (rep[6] << 16) | ((uint32_t)rep[7] << 24); }
     if (rep[0]) { bus_errors++; if (bus_errors <= 8) kprintf("[PSMAC] bridge reported bus error #%u on op %u size %u addr %08x (68k PC %08x)\n", bus_errors, op, size, addr, __m68k_state ? BE32((uint32_t)(uintptr_t)__m68k_state->PC) : 0); }
 }
@@ -834,6 +834,16 @@ void psmac_service_core(void)
                     kprintf("[PSMAC]   JIT: %u M instructions in 5 s (%u MIPS), %u blocks translated, %u in the cache, %u of %u KB free\n",
                             (uint32_t)((insn - insn_last) / 1000000u), (uint32_t)((insn - insn_last) / 5000000u), miss - miss_last,
                             m->JIT_UNIT_COUNT, m->JIT_CACHE_FREE >> 10, m->JIT_CACHE_TOTAL >> 10);
+                    {   /* the 68k's time in STOP (the translated code's WFE, M68k_LINE4.c), counted when it wakes, and the
+                           interrupt word it waits on: a level asserted with no instruction run is a 68k nobody woke
+                           (27 November 2026, docs/23 section 20) */
+                        static uint64_t idle_last; uint64_t idle = m->IDLE_TIME;
+                        if (idle != idle_last || (insn == insn_last && m->INT64))
+                            kprintf("[PSMAC]   68k in STOP for %u ms of the last 5 s; interrupt word %016llx (level %u)%s\n",
+                                    (uint32_t)((idle - idle_last) * 1000u / cnt_frq()), (unsigned long long)m->INT64, m->INTF.IPL,
+                                    insn == insn_last && m->INT64 ? ": asserted, and no instruction run: the 68k was not woken" : "");
+                        idle_last = idle;
+                    }
                     { extern void psmac_mmu_full_stats(void); psmac_mmu_full_stats(); }
                     jit_steady = miss - miss_last < 50 && insn - insn_last > 50000000u;   /* running, not loading */
                     insn_last = insn; miss_last = miss;

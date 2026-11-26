@@ -1041,7 +1041,7 @@ static void irq_guard(void);
 static void store_level(unsigned raw)        /* the caller holds the lock */
 {
     irq_guard();
-    if (__m68k_state) __m68k_state->INTF.IPL = psmac_se_ipl(raw);
+    if (__m68k_state) PSMAC_STORE_IPL(__m68k_state, psmac_se_ipl(raw));
 }
 /* the Plus's keyboard and mouse on the service core (psmac_board_plus.c) take the same lock */
 void psmac_se_plus_lock(void) { level_lock(); }

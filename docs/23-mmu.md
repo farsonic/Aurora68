@@ -1395,3 +1395,30 @@ to say "OLD" and "new"; if it says "new" to both, this section is wrong about th
 
 System 7 with virtual memory on moves pages and flushes them one at a time too; the same stale reads were waiting
 there.
+
+## 20. Past the panic on the SE; asleep in STOP with nobody to wake it (27 November 2026)
+
+Test kernel 17 (section 19's flush) on the owner's SE: no panic. The log at the end: 350 bus errors delivered, the
+first four the MAME SE's own (#2 `PC 0005571a w fffffffc`, #3 a fetch at $A8 from user mode), 544 PFLUSHA and 490
+PFLUSH by address, 17,908 MOVES, 139 switches, 12 spaces: A/UX's first processes ran. The MAME SE at the same counts
+(333 delivered, 539/504, 17,774 MOVES, 170 switches) is idle for about ninety seconds, taking the clock's and the
+VBL's interrupts, and then goes on. The SE stopped there: no instruction run, no bus cycle, no interrupt taken in
+any heartbeat, the PC sample $54912 and SR $270D of the last block, the return address on the stack $10028A44. The
+SE's screen blank (the MAME SE shows init's lines only later).
+
+$10028A16 is the kernel's swtch: with no process to run it calls the standalone shell's idle routine ($548E0), which
+is `MOVE.W #1,$5AFA0; STOP #$2000` in a loop until a flag is set ($548D4-$54918). The translated STOP (M68k_LINE4.c,
+EMIT_STOP) sleeps in a WFE until the context's interrupt word is not zero. A WFE sleeps until an event; upstream's
+housekeeper sends one (SEV) with each level it stores (pistorm/ps_protocol.c), and this fork's stores of the level
+(psmac_board_se.c store_level, psmac_board_solo.c, psmac_bus.c) sent none. QEMU treats WFE as a no-op. On the Pi a
+stopped 68k woke when something else happened to send an event (the bus layer's own SEV, the USB core's) or an ARM
+interrupt was pending; with the clock's level asserted ("ipl 1") and the slot's too (RBV IFR $12, IER $0A), A/UX slept.
+Mac OS never executes STOP, so nothing before A/UX depended on it. That the same loop woke earlier in this boot (the
+shell's waits before the kernel) is not explained in detail: every bus cycle of the 68k's sends the SEV that sets its
+own event register, which lets one WFE through.
+
+The changes: PSMAC_STORE_IPL (psmac.h) sends an event when a level that is not zero and not the one before is stored,
+on the SE, solo and bridged boards, and M68kReportInterrupt with it; core 0's timer event stream is on from the 68k's
+start (CNTKCTL_EL1, bit 13: 0.85 ms), so a stopped 68k looks at its interrupt word that often whatever else happens;
+and the heartbeat says how long the 68k was in STOP and, if a level is asserted with no instruction run, that it was
+not woken.

@@ -1972,6 +1972,14 @@ __asm__ volatile(
         psmac_recovery_phase2();
         if (psmac_recovery_on()) psmac_recovery_park();
     }
+    {   /* this core's timer event stream (27 November 2026, docs/23 section 20, psmac.h PSMAC_STORE_IPL): a 68k stopped in
+           the translated code's WFE looks at its interrupt word at least every 0.85 ms (bit 13 of the 19.2 MHz counter),
+           whoever forgot to send it an event */
+        uint64_t k;
+        __asm__ volatile("mrs %0, CNTKCTL_EL1" : "=r"(k));
+        k = (k & ~0xf0ull) | 13u << 4 | 1u << 2;                /* EVNTI = 13, EVNTEN */
+        __asm__ volatile("msr CNTKCTL_EL1, %0; isb" :: "r"(k));
+    }
     psmac_boot_mark("68k released: the ROM's first instruction");
     psmac_splash_status("Starting the Macintosh...");
 #endif

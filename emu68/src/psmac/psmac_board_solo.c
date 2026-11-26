@@ -539,7 +539,7 @@ extern struct M68KState *__m68k_state;
 unsigned psmac_solo_ipl(void);
 static void set_level(void)                 /* the caller holds the lock */
 {
-    if (__m68k_state) __m68k_state->INTF.IPL = psmac_solo_ipl();
+    if (__m68k_state) PSMAC_STORE_IPL(__m68k_state, psmac_solo_ipl());
 }
 void psmac_solo_level_now(void)             /* for the RBV in psmac_board_se.c */
 {

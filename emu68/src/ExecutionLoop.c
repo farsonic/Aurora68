@@ -886,4 +886,7 @@ void M68kReportInterrupt(int irq)
     /* TODO - add more types (we have 8 slots in total) here */
     if (irq == 1) ctx->INTF.ARM = 1;
     else if (irq == 2) ctx->INTF.ARM_err = 1;
+#ifdef PSMAC
+    __asm__ volatile("dsb ishst; sev" ::: "memory");    /* a 68k stopped in its WFE (psmac.h, PSMAC_STORE_IPL) */
+#endif
 }

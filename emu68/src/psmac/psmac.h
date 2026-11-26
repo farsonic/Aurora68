@@ -41,6 +41,20 @@ struct psmac_reply { uint8_t status, ipl, flags; uint32_t data; };
    straight back into the handler, nothing in between), and the same level taken at the same PC
    with the stack lower by the same stride each time (a handler lowered the mask and took its own
    interrupt again, docs/08 item 48), whose depth in bytes is kept. */
+/* The 68k's interrupt level as another core stores it (27 November 2026, docs/23 section 20). A 68k that has executed STOP
+   sleeps in the translated code's WFE until the context's interrupt word is not zero (M68k_LINE4.c, EMIT_STOP), and a
+   WFE sleeps until an event. Upstream's housekeeper sends one (SEV) with every level it stores; this fork's stores did
+   not, so on a real Pi a stopped 68k woke only by accident (an SEV some other part sent, a pending ARM interrupt): QEMU
+   treats WFE as a no-op and never showed it. Mac OS does not use STOP; A/UX's idle loop is one, and on the owner's SE,
+   past its first processes, A/UX slept in it with the clock's interrupt asserted and nothing to wake it. An event is
+   sent when the stored level is not zero and differs from the one before. (Core 0's own timer event stream, set on at
+   the 68k's start, is the second line: at most 0.85 ms.) */
+#define PSMAC_STORE_IPL(st, v) do { \
+        unsigned psmac_new_ipl_ = (v), psmac_old_ipl_ = (st)->INTF.IPL; \
+        (st)->INTF.IPL = (uint8_t)psmac_new_ipl_; \
+        if (psmac_new_ipl_ && psmac_new_ipl_ != psmac_old_ipl_) __asm__ volatile("dsb ishst; sev" ::: "memory"); \
+    } while (0)
+
 struct psmac_irqwatch {
     uint32_t taken[8];                 /* by level */
     uint32_t again;                    /* taken again at once: same level, PC and stack */
