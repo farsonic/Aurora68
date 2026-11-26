@@ -545,7 +545,7 @@ uint8_t *psmac_mmu_ram_ptr(uint32_t logical)
 }
 
 /* The same at a given function code, whichever view TTBR0 holds: an exception's frame and its vector are supervisor
-   data even when the fault came from user mode with the views apart (psmac_mmufault.c's push_frame). Until 27 November
+   data even when the fault came from user mode with the views apart (psmac_mmufault.c's push_frame). Until 26 November
    2026 the frame of a bus error from user mode was looked for in the user's view: A/UX's init, its first page of text
    not yet there, could not be given its page fault (docs/23 section 15). */
 static uint32_t full_l2p_fc(uint32_t logical, int fc, int *valid);

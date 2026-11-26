@@ -125,7 +125,7 @@ static void rbv_recalc(void)
 /* the level-2 interrupt the RBV would raise: any enabled flag */
 int psmac_se_rbv_irq(void) { rbv_recalc(); return (rbv_ifr & rbv_ier & 0x7f) != 0; }
 
-/* The register an offset names (27 November 2026, docs/23 section 15). The RBV's registers are $00-$13 and the chip
+/* The register an offset names (26 November 2026, docs/23 section 15). The RBV's registers are $00-$13 and the chip
    decodes the low address lines for them, so software written for both the VIA2 and the RBV uses offsets that name
    the right register on either: $1A03 is the VIA's register 13 (IFR, A9-A12) and the RBV's $03, $1C13 the VIA's 14 (IER)
    and the RBV's $13, and $1E02 the VIA's 15 (port A, the Mac II's slot interrupts) and the RBV's $02 (SIFR). Linux's
@@ -1100,7 +1100,7 @@ void psmac_se_set_level(unsigned raw)         /* psmac_bus.c, after each cycle o
    the SCC. A diagnostic: with it nothing that waits for the serial ports' interrupts works (AppleTalk on LocalTalk, a
    modem), and Mac OS itself stops at "Welcome to Macintosh", so mac.sccirq=aux keeps the line away only while the
    guest's user and supervisor views are apart (psmac_mmu_views_apart: A/UX's own tables, which Mac OS never sets up).
-   Until 27 November aux kept the slot interrupt away as well; the level-2 storm that was for came from the RBV's
+   Until 26 November aux kept the slot interrupt away as well; the level-2 storm that was for came from the RBV's
    slot flags read at $1E02 (rbv_regno above, docs/23 section 15), and A/UX needs its slot interrupts (the screen's
    VBL), so aux is the SCC's line alone again. */
 static int scc_irq_off;                          /* 1 off, 2 aux */
@@ -1746,7 +1746,7 @@ void psmac_se_start(void)
 void psmac_se_after_reset(void)
 {
     if (!psmac_board_se) return;
-    /* The chips this file answers for the IIci, reset as the 68030's RESET resets a IIci's RBV and ASC (27 November
+    /* The chips this file answers for the IIci, reset as the 68030's RESET resets a IIci's RBV and ASC (26 November
        2026, docs/23 section 15): no interrupt enabled or flagged, no slot enabled, the sound chip off. They used to keep
        what the last session left: after A/UX 3 rebooted the SE (its autoconfig's new kernel), the IFR still had the
        sound bit the ROM's $90 writes set and the Mac OS that started next enabled it, so level 2 was asserted with

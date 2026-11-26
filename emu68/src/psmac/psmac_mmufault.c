@@ -359,7 +359,7 @@ static uint32_t deliver_from_save_area(uint64_t *regs, const struct bframe *b, c
     if (user) ssp = (b->sr & SR_M) ? getMSP() : getISP();
     uint32_t f, vec; uint16_t ssw;
     if (!push_frame(ssp, b, &f, &vec, &ssw)) {
-        /* a 68030 halts (double bus fault); until 27 November 2026 the instruction was tried again for ever */
+        /* a 68030 halts (double bus fault); until 26 November 2026 the instruction was tried again for ever */
         not_delivered++;
         kprintf("[PSMAC:MMU] double bus fault: the %s bus error of the instruction at %08x (%08x) could not be stacked at %08x "
                 "(SR %04x, VBR %08x): the 68030 halts\n", how, b->pc, b->addr, ssp, b->sr, __m68k_state->VBR);
@@ -578,7 +578,7 @@ int psmac_mmu_fault(uint64_t *ctx, uint64_t elr, uint64_t esr, uint64_t far)
     uint32_t f, vec; uint16_t ssw;
     if (!push_frame(ssp, &b, &f, &vec, &ssw)) {
         /* The bus error's own frame cannot be stacked (or its vector read): a 68030 halts here, a double bus fault, as in
-           the guard's case above. Until 27 November 2026 this was a "not delivered" line and the access was emulated,
+           the guard's case above. Until 26 November 2026 this was a "not delivered" line and the access was emulated,
            $BAD0BAD0 for a read and a write dropped: A/UX's kernel on the MAME SE, its stack run into an unmapped page,
            went on with those values, used one as a pointer, and core 0 died in the abort handler with the console lock
            held, so the log stopped mid-line (docs/23 section 15). Halting keeps the heartbeat and the diagnostics. */

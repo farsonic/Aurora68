@@ -26,7 +26,7 @@
 | a loop of 4000 context switches, SRE with the supervisor's own tables (user mode entered by ANDI, RTE and MOVE to
 | SR), MOVES across the spaces and into CPU space, PFLUSH by function code and mask, an exception's frame pushed
 | through the supervisor's tables, code run from a page that faults on its fetch, and 48 roots for the kernel's 32
-| spaces; docs/23-mmu.md section 12; 141 with T28, 27 November 2026: bus errors from user mode, data and fetch, whose
+| spaces; docs/23-mmu.md section 12; 141 with T28, 26 November 2026: bus errors from user mode, data and fetch, whose
 | frames go through the supervisor's tables, docs/23 section 15).
 | mmutest-halt.rom ends with T25 instead of the benchmark: an exception whose frame cannot be pushed, after which the
 | kernel must log the 68030's double bus fault and stop running the 68k.
@@ -774,7 +774,7 @@ t23s:	move.l	WIN+0xC3000,%d3			| supervisor: a bus error, mapped one to one in t
 	| ---- T28: bus errors from user mode with the views apart: their frames through the supervisor's tables ----
 	| (the supervisor stack on page C4 again, valid in the SRP's tables only; page C5's data and page C7's code made
 	| invalid in the CRP's. A/UX's init takes its first page of text this way: a fetch fault in user mode whose frame
-	| the kernel looked for in the user's view, a double bus fault, until 27 November 2026, docs/23 section 15)
+	| the kernel looked for in the user's view, a double bus fault, until 26 November 2026, docs/23 section 15)
 	move.l	#0x28282828,WIN+0xC5000
 	move.l	#0x203C2727,WIN+0xC7000		| "move.l #$27272727,d0; rts", never run before
 	move.l	#0x27274E75,WIN+0xC7004

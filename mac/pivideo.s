@@ -568,7 +568,7 @@ slot_int:
 	move.l	JVBLTask,%a0		| DoVBLTask through its low-memory vector, as Apple's own video drivers call it
 	jsr	(%a0)			| (Designing Cards and Drivers' sample driver), not as trap $A072: A/UX runs a
 					| card's driver in its kernel and refuses that trap there ("Attempt to use
-					| unsupported A-line trap: A072", then a panic at the first VBL; 27 November 2026,
+					| unsupported A-line trap: A072", then a panic at the first VBL; 26 November 2026,
 					| docs/23 section 15), and the vector is the faster path under Mac OS too
 	moveq	#1,%d0
 	bra.s	3f

@@ -2387,7 +2387,7 @@ void SYSHandler(uint32_t vector, uint64_t *ctx)
             /* The 68k code around an instruction the translator refused (an illegal one): read here, in the exception
                handler, through whatever the 68k's MMU maps. With mac.mmu=full the page before it may be one the guest's
                tables refuse, and the read then faulted inside this handler: core 0 died on a user program's illegal
-               instruction under A/UX instead of giving it the illegal instruction exception (27 November 2026,
+               instruction under A/UX instead of giving it the illegal instruction exception (26 November 2026,
                docs/23 section 15). The dump is left out there; the exception still follows. */
             { extern int psmac_mmu_full; if (psmac_mmu_full) len = 0; }
 #endif

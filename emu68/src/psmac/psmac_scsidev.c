@@ -880,7 +880,7 @@ void psmac_scsidev_write(uint32_t reg, uint8_t d)
 /* A pseudo-DMA read takes the byte of whichever input phase the target is in, as the 5380's DMA handshake does once
    the phase matches TCR: data in, and also status and message in. A/UX 3's SCSI driver reads the status byte that way
    (DMA mode, start DMA initiator receive, wait for DRQ in the bus and status register, then one read of the pseudo-DMA
-   window); until 27 November 2026 only data in was answered, the status read $FF with no ACK, and A/UX retried the
+   window); until 26 November 2026 only data in was answered, the status read $FF with no ACK, and A/UX retried the
    same command for ever with the target held in the status phase (docs/23 section 15). */
 /* a pseudo-DMA access with no byte to take or give: logged the first eight times, with where the target was (a driver
    that moves more bytes than the phase has, or a model that dropped REQ, either of which shifts the data) */
@@ -895,7 +895,7 @@ static void underflow(int write)
    ends it): the 5380's DACK does nothing else. Outside it a write only loads the output data register and a read
    returns the bus. A/UX 3's SCSI driver writes the window once before it starts a transfer, in both directions; taken
    as data, that byte went to the disk in front of the sector, and the root file system's superblock, which A/UX
-   rewrites at mount, came back one byte late ("BAD SUPER BLOCK: MAGIC NUMBER WRONG" at the next start; 27 November
+   rewrites at mount, came back one byte late ("BAD SUPER BLOCK: MAGIC NUMBER WRONG" at the next start; 26 November
    2026, docs/23 section 15). The Mac OS SCSI Manager sets DMA mode first, as the 5380's data sheet asks. */
 static uint32_t pdma_outside;
 static void outside_dma(int write, uint8_t v)
