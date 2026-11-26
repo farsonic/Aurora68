@@ -574,6 +574,22 @@ int psmac_mmu_fault(uint64_t *ctx, uint64_t elr, uint64_t esr, uint64_t far)
     uint32_t la = (uint32_t)far;
     if (!psmac_mmu_translating()) return 0;
     int write = (esr >> 6) & 1;
+    {   /* a write to the first bytes of memory under A/UX's tables (26 November 2026, docs/23 section 18): on the owner's SE
+           the kernel's MOVE.L D0,([-16,A6]) at $10023146 wrote its root table entry to 0, the pointer it read from its stack
+           being 0 where the MAME SE reads $4D000. The ARM store, its base register, A6 and what the stack holds by the
+           kernel's own walk, and the walk's view of that stack page (ARM entry, cache) */
+        extern int psmac_mmu_views_apart(void);
+        static uint32_t low_writes;
+        if (write && la < 0x10 && psmac_mmu_views_apart() && ++low_writes <= 4) {
+            uint32_t psmac_mac_rd32(uint32_t logical, int *ok);
+            uint32_t a6 = (uint32_t)ctx[28], ins = *(volatile uint32_t *)elr; int rn = (int)((ins >> 5) & 31), ok;
+            uint32_t v = psmac_mac_rd32(a6 - 16, &ok);
+            kprintf("[PSMAC:MMU] low write #%u to %08x: ARM %p insn %08x base x%d = %016llx; A6 %08x, [A6-16] by the walk %08x%s\n",
+                    low_writes, la, (void *)elr, ins, rn, rn < 31 ? (unsigned long long)ctx[rn] : 0ull, a6, v, ok ? "" : "?");
+            void psmac_mmu_debug_walk(uint32_t la, int fc);
+            psmac_mmu_debug_walk((a6 - 16) & ~3u, 5);
+        }
+    }
 
     const char *why = NULL; uint64_t lr = 0;
     const struct psmac_fault_entry *e = locate(ctx, elr, &lr, &why);

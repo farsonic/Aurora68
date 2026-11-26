@@ -1321,3 +1321,11 @@ block at $10023146 writes the root entry with `MOVE.L D0,([-16,A6])` ($4D000 <- 
 the next level from $100231C6 ($4D400 <- $0004D202), all before the MOVES that faults. The SE's PC trail passes
 $10023146 and $55FE6 but not $100231C6, and its root entry is 0. The kernel's stack is in the same low $50000 ($4CEE0),
 so its pushes go through the emulated path as well.
+
+Test kernel 13 on the SE, `mac.watchpage=4d000 mac.watchpc=10023146`: the same clearing of the three table pages, the
+same push of the return address ($4CEE0 <- $10023146), and then `W4 00000000 <- 0004d402 from the block at 10023146`
+where the MAME SE has `W4 0004d000 <- 0004d402`. The kernel's `MOVE.L D0,([-16,A6])` took 0 for the pointer at A6-16,
+a slot of its own stack (the page at $4C000, below $50000, read through the ARM mapping and written through the
+emulated path). The root table entry went to address 0, and the shell's walk found none. Next: at a write to the first
+bytes of memory under A/UX's tables, the ARM store, its base register, A6, the slot's value by the walk and the walk's
+view of that stack page are logged.
