@@ -1210,3 +1210,60 @@ SCC stops it earlier as in section 14; if it does, the log with `mac.setrace=200
 - the "Checking..." of a disk A/UX did not unmount cleanly: in MAME that check reads the root file system through the
   Mac OS SCSI Manager at about 20 KB/s and was not waited for (40,000 sectors read after twenty minutes); on the SE the
   virtual disk is served without the bridge.
+
+## 16. The real SE at "Launching...": interrupts nobody clears, and the storm guard (26 November 2026)
+
+Test kernel 6 (section 15's) on the owner's SE, from System 7.1 on the card with A/UX Startup launched from it, A/UX's
+disk at ID 0, `mac.mmu=full mac.ram=64`. A/UX Startup passed its checks (Aurora68 Machine's machine type, main's
+change) and put up "Welcome to The Apple Workgroup Server 95 / Launching..." with the bar at about a fifth, and stopped.
+The saved log (`mac.logsave=10`):
+
+- **First boot, no `mac.sccirq`.** The 68k in A/UX Startup's standalone shell (PC $548CA-$54912, its own tables on:
+  switch #7, `TC=82C07760` with SRE, the views apart), level 4 (the SE's SCC) taken 4,125,649 times in 5 s, every one
+  "taken again at once", level 1 none, no SCSI command since. The shell's loop is `STOP #$2000`, then a test of a flag
+  the clock's handler sets ($11001626); its interrupt handler is `ORI.W #$0700,(SP); RTE` at $548C8 (section 14): it
+  touches no chip. A source that stays asserted gets the 68k back after every RTE, and the clock below it never does.
+  This is section 14's storm again, which the MAME SE never showed (15.3), and leaving `mac.sccirq=aux` out of the
+  command line had been our mistake.
+- **Second boot, `mac.sccirq=aux`.** Level 4 gone; level 2 instead, 4,125,669 entries in 5 s, level 1 none. The RBV's
+  IFR $02 and IER $02 (the slot interrupt), SIER $3F; the card's slot-9 line 1 with the network board's interrupt up
+  (`net irq 1`, left from the Mac OS session's Ethernet driver; WiFi traffic for the shared address keeps arriving) and
+  the HDMI screen's VBL pending (the shell opens the card's video drivers itself right after the switch, "PiHDMI: VBL
+  handler installed", but its handler is the ORI/RTE above, so the driver's never runs). Section 15's RBV decoding fix
+  was not the issue here: the flags were read right, and nobody read them.
+
+Two changes, both only while the views are apart (A/UX's tables; Mac OS never splits them):
+
+1. **The hand-over** (`psmac_card_handoff`, alice_psmac.c). The first time the views come apart after a RESET the
+   network board and .PiInput's ring are dropped, as a RESET drops them (psmac_card_reset): the Mac OS session that
+   opened them is over and neither the shell nor the A/UX kernel has a handler for them. They come back when a driver
+   opens them. The screens are left alone.
+2. **The storm guard** (`mac.irqguard=on`, the default; psmac_board_se.c, irq_guard). A level is kept from the 68k
+   for 20 ms when the interrupt watch (ExecutionLoop.c) sees it taken 20,000 times in a row at the same PC and stack
+   (a handler that returned with its source still asserted and nothing else done: the SE's pattern, about 5 ms of
+   such a storm), or 4 times in a row at the same PC, each entry deeper on the stack than the last (a handler that
+   lowers the mask with its source still up and takes itself again). Then the level comes back and is judged again.
+   Normal running takes a level again at once a few dozen times in 5 s, never 20,000 in a row. A first version gave
+   the level back at the next access to its chip (the RBV, the SCC); the MAME SE showed the shell reading the RBV
+   right after the switch, so a guard keyed on accesses could be cleared on every turn, and time it is.
+   `mac.slotstorm=1` (testbed) holds the slot line up for 60 s from 3 s after the switch.
+
+### 16.1 What the MAME SE showed
+
+- `mac.slotstorm=1` with the line held from the very moment of the switch (run 19): the handler of that moment
+  (code at $1004xxxx, the shell's environment) lowers the mask and takes itself again, 24 frames, 3,564 bytes, until
+  the stack runs out: a double bus fault at $100460E2. Not the SE's pattern (there the entries were "again at once",
+  nested 0 bytes deep), so the test was moved 3 s later and the nesting rule added.
+- 3 s after the switch (run 20): the guard held level 2 four times ("taken inside its own handler again and again at
+  PC $548E0") and the stack still ran out after them, at $1004848A: in that phase, in the emulator, the shell's
+  handler nests faster than 20 ms windows let it unwind. So the guard is a second line; the first is to have no
+  source up: the hand-over above for the network board and the input ring, and `mac.hdmi=log` on the SE, which
+  leaves out the HDMI screen's card and its VBL (psmac_bus.c: the second card exists only with `mac.hdmi=screen`).
+- Without the test option (run 21, `mac.ram=64`): A/UX as section 15, the kernel, init and /etc/rc with its "Memory
+  fault", the guard never firing, the hand-over logged once at the switch.
+
+### 16.2 What the owner can run
+
+Section 15.5's line with `mac.sccirq=aux` kept (the SE's SCC) and `mac.hdmi=log` added, a fresh copy of the disk, and
+A/UX's own Mac OS as the startup disk if it can be had (System 7.1 from the card launches A/UX Startup too, now).
+If the slot storm comes back regardless, the log's `irqguard` lines say which level and which handler.

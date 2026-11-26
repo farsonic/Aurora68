@@ -99,7 +99,8 @@ static void trace(const char *what, int write, uint32_t addr, uint32_t se, int s
 
 /* the slot-9 line of the Pi's card (psmac_bus.c raises it): bit 0 of the slot IFR, 0 = asserted */
 extern uint32_t psmac_slot_irq_state(void);
-static int slot_line(void) { return (psmac_slot_irq_state() >> 16) & 1; }
+static int slot_storm;                       /* mac.slotstorm=1 (testbed): the slot line held up for 60 s from 3 s after A/UX's switch of tables (irq_guard) */
+static int slot_line(void) { return slot_storm == 2 || ((psmac_slot_irq_state() >> 16) & 1); }
 
 int psmac_solo_scsi_irq(void);
 static void rbv_recalc(void)
@@ -1036,8 +1037,10 @@ static volatile uint8_t se_level_lock;
 static inline void level_lock(void) { while (__atomic_test_and_set(&se_level_lock, __ATOMIC_ACQUIRE)) __asm__ volatile("yield"); }
 static inline void level_unlock(void) { __atomic_clear(&se_level_lock, __ATOMIC_RELEASE); }
 extern struct M68KState *__m68k_state;
+static void irq_guard(void);
 static void store_level(unsigned raw)        /* the caller holds the lock */
 {
+    irq_guard();
     if (__m68k_state) __m68k_state->INTF.IPL = psmac_se_ipl(raw);
 }
 /* the Plus's keyboard and mouse on the service core (psmac_board_plus.c) take the same lock */
@@ -1105,14 +1108,63 @@ void psmac_se_set_level(unsigned raw)         /* psmac_bus.c, after each cycle o
    VBL), so aux is the SCC's line alone again. */
 static int scc_irq_off;                          /* 1 off, 2 aux */
 int psmac_mmu_views_apart(void);
+/* The storm guard, mac.irqguard=on|off (26 November 2026, docs/23 section 16). A/UX Startup's standalone shell, which
+   loads the A/UX kernel, takes every interrupt with `ORI.W #$0700,(SP); RTE` and clears nothing: it only wants to be
+   woken from its STOP #$2000, and it waits for the VIA's clock tick. On the owner's SE a source that stayed asserted
+   got the 68k back at once after every RTE, and the clock below it never got a turn: first the SE's SCC (the IIci's
+   level 4, 4.1 million entries in 5 s, level 1 none), then, with mac.sccirq=aux, the slot interrupt (the HDMI
+   screen's VBL pending, the network board's line still up from the Mac OS session; 4.1 million entries of level 2).
+   The MAME SE never showed either. The guard keeps a level away from the 68k for GUARD_MS once it has been taken
+   GUARD_N times in a row at the same PC and stack (the interrupt watch's run, ExecutionLoop.c): a handler that
+   returned with its source still asserted and nothing else done, about 5 ms of such a storm. Then the level comes
+   back and is judged again. Normal running takes a level again at once a few dozen times in 5 s, never 20,000 times
+   in a row. The MAME SE, given a slot line held up at the very moment of the switch (mac.slotstorm), showed the other
+   form: the handler of that moment lowers the mask with its source still asserted and takes itself again, 24 frames
+   deep until the stack ran out (a double bus fault at $100460E2); GUARD_NEST entries like that also count. Only while
+   the MMU's views are apart (A/UX's tables; Mac OS never splits them). */
+#define GUARD_N  20000u
+#define GUARD_MS 20u
+#define GUARD_NEST 4u                            /* or taken GUARD_NEST times in a row inside its own handler, deeper each time, at the same PC */
+static int guard_on = 1;
+static uint8_t guard_mask;                       /* bit 2: level 2 kept away, bit 4: level 4 */
+static uint64_t guard_until;
+static uint32_t guard_holds[8];
+static int guard_handoff;                        /* the views have been apart since the last RESET: psmac_card_handoff done */
+static uint64_t storm_until;
+void psmac_card_handoff(void);
+static inline uint64_t g_now(void) { uint64_t v; __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(v)); return v; }
+static inline uint64_t g_hz(void)  { uint64_t v; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(v)); return v; }
+static void irq_guard(void)                      /* under the level lock (store_level) */
+{
+    if (psmac_board_solo || !psmac_mmu_views_apart()) { guard_mask = 0; return; }
+    uint64_t now = g_now();
+    if (!guard_handoff) {
+        guard_handoff = 1; psmac_card_handoff();
+        if (slot_storm == 1) { slot_storm = 4; storm_until = now + g_hz() * 3; }
+    }
+    if (slot_storm == 4 && now >= storm_until) { slot_storm = 2; storm_until = now + g_hz() * 60; kprintf("[PSMAC:SE] mac.slotstorm: the slot line held up for 60 s\n"); }
+    if (slot_storm == 2 && now >= storm_until) { slot_storm = 3; kprintf("[PSMAC:SE] mac.slotstorm: the slot line let go\n"); }
+    if (!guard_on) { guard_mask = 0; return; }
+    if (guard_mask && now >= guard_until) guard_mask = 0;
+    struct psmac_irqwatch *w = &psmac_irqwatch;
+    uint32_t lv = w->last_level;
+    if (!guard_mask && (w->run >= GUARD_N || w->nest >= GUARD_NEST) && (lv == 2 || lv == 4)) {
+        int nested = w->nest >= GUARD_NEST;
+        guard_mask = (uint8_t)(1u << lv); guard_until = now + g_hz() * GUARD_MS / 1000u; w->run = 0; w->nest = 0;
+        if (guard_holds[lv]++ < 4)
+            kprintf("[PSMAC:SE] irqguard: level %u %s at PC %08x with its source still asserted (RBV IFR %02x IER %02x); kept away %u ms at a time\n",
+                    lv, nested ? "taken inside its own handler again and again" : "taken 20,000 times in a row", w->last_pc, rbv_ifr, rbv_ier, GUARD_MS);
+    }
+}
 unsigned psmac_se_ipl(unsigned raw)
 {
     if (psmac_board_solo) return psmac_solo_ipl();
     unsigned ipl = 0;
     if (scc_irq_off == 1 || (scc_irq_off == 2 && psmac_mmu_views_apart())) raw &= ~2u;
+    if (guard_mask & 16) raw &= ~2u;             /* the guard holds the SE's level 2, the IIci's 4 */
     if (raw & 2) ipl = 4;
     else if (raw & 1) ipl = 1;
-    if (psmac_se_rbv_irq() && ipl < 2) ipl = 2;
+    if (!(guard_mask & 4) && psmac_se_rbv_irq() && ipl < 2) ipl = 2;
     if (psmac_plus_irq() && ipl < 1) ipl = 1;    /* the Plus: the ADB transceiver's shift-register interrupt, the VIA's level */
     return ipl;
 }
@@ -1586,6 +1638,7 @@ void psmac_se_service(void)
 {
     if (psmac_board_solo) { psmac_solo_service(); return; }
     if (!psmac_board_se) return;
+    if (psmac_mmu_views_apart()) { level_lock(); store_level(se_wire_ipl); level_unlock(); }   /* the storm guard's clock (irq_guard): judged on every turn, not only on bus cycles */
     snd_service();                                /* the speaker first: its halves have deadlines, the rows do not */
     spd_service();                                /* the 400K drive's speed, when a seek has asked for another zone */
     psmac_errand(PSMAC_ERR_LOOP);
@@ -1753,6 +1806,7 @@ void psmac_se_after_reset(void)
        nothing to clear it and the Mac never came up. */
     level_lock();
     rbv_ifr = 0; rbv_ier = 0; rbv_regs[0x12] = 0; rbv_regs[0x02] = 0;
+    guard_mask = 0; guard_handoff = 0;
     asc_regs[0x801] = 0; asc_regs[0x802] = 0; asc_regs[0x803] = 0;
     asc_level[0] = asc_level[1] = 0;
     __atomic_store_n(&snd_flush, snd_flush + 1, __ATOMIC_RELEASE);
@@ -1833,6 +1887,12 @@ void psmac_se_options(const char *args)
         if (scc_irq_off == 1) kprintf("[PSMAC:SE] mac.sccirq=off: the SCC's interrupt (the IIci's level 4) is kept from the 68k (a diagnostic: no serial-port interrupts)\n");
         if (scc_irq_off == 2) kprintf("[PSMAC:SE] mac.sccirq=aux: the SCC's interrupt (the IIci's level 4) is kept from the 68k while the MMU's user and supervisor views are apart (A/UX's tables; a diagnostic: A/UX's serial ports get no interrupts)\n");
     }
+    if ((tok = find_token(args, "mac.slotstorm="))) slot_storm = tok[14] == '1';
+    if ((tok = find_token(args, "mac.irqguard="))) {
+        tok += 13;
+        guard_on = !(tok[0] == 'o' && tok[1] == 'f') && tok[0] != '0';
+        if (!guard_on) kprintf("[PSMAC:SE] mac.irqguard=off: an interrupt nobody clears is not kept away under A/UX's tables\n");
+    }
     if ((tok = find_token(args, "mac.sefloat="))) { tok += 12; scsi_float_sim = tok[0] == '1'; }   /* the testbed: the 5380 read as on an unterminated bus */
     if ((tok = find_token(args, "mac.seram="))) {   /* 1, 2, 2.5 or 4: the SE's address arithmetic takes the top of what is fitted */
         tok += 10; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0');
@@ -1895,6 +1955,8 @@ static void iwm_report(void)
 
 void psmac_se_report(void)
 {
+    if (guard_holds[2] || guard_holds[4])
+        kprintf("[PSMAC:SE] irqguard: level 2 held %u times, level 4 %u times so far%s\n", guard_holds[2], guard_holds[4], guard_mask ? " (holding now)" : "");
     if (psmac_board_solo) { psmac_solo_report(); return; }
     if (!psmac_board_se) return;
     iwm_report();

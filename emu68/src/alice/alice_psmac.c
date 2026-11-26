@@ -1565,6 +1565,26 @@ void psmac_card_reset(void)
     kprintf("[PSMAC] 68k RESET: the card's interrupt sources are off until their drivers open\n");
 }
 
+/* A/UX's tables come on (psmac_board_se.c, irq_guard, 26 November 2026, docs/23 section 16): the Mac OS session that
+   opened the network board and .PiInput is over, as after a RESET, though A/UX Startup issues none: its standalone
+   shell and then the A/UX kernel take the vectors, and neither has a handler for those sources. On the owner's SE the
+   network board's line stayed up from the Mac OS session (WiFi traffic for the shared address), so the slot interrupt
+   was asserted with nothing in A/UX to clear it. The board and the input ring drop here and come back when a driver
+   opens them again; the screens are left alone, because the shell opens the card's video drivers itself right after
+   the switch. */
+void psmac_card_handoff(void)
+{
+    extern volatile uint8_t *alice_net_board(void);
+    if (!alice_ready) return;
+    volatile struct an_hdr *nh = (volatile struct an_hdr *)alice_net_board();
+    if (nh) { nh->amiga_ver = 0; nh->irq = 0; }
+    alice_net_reset();
+    if (inr) { inr->attached = 0; inr->tail = inr->head; }
+    { extern void psmac_remote_mac_reset(void); psmac_remote_mac_reset(); }
+    __asm__ volatile("dmb ish" ::: "memory");
+    kprintf("[PSMAC] A/UX's tables on: the network board and the input ring are off until their drivers open\n");
+}
+
 int psmac_slot_line_now(void)
 {
     extern volatile uint8_t *alice_net_board(void); extern int psmac_display_irq(void);

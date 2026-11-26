@@ -46,6 +46,8 @@ struct psmac_irqwatch {
     uint32_t again;                    /* taken again at once: same level, PC and stack */
     uint32_t deepest, deepest_pc;      /* the deepest run of nested entries, in bytes of stack, and where */
     uint32_t last_level, last_pc, last_sp, run_sp, stride;
+    uint32_t run;                      /* entries taken again at once in a row (psmac_board_se.c's storm guard) */
+    uint32_t nest;                     /* entries in a row at the same PC, each deeper than the last: a handler taking itself again (the same) */
 };
 extern struct psmac_irqwatch psmac_irqwatch;
 

@@ -544,7 +544,10 @@ void ProcessIRQ(struct M68KState *ctx)
             struct psmac_irqwatch *w = &psmac_irqwatch;
             w->taken[level & 7]++;
             if ((uint32_t)level == w->last_level && PC == w->last_pc && A7 == w->last_sp)
+            {
                 w->again++;
+                w->run++;
+            }
             else if ((uint32_t)level == w->last_level && PC == w->last_pc && A7 < w->last_sp)
             {
                 /* deeper by the same stride as the entry before: a handler that took itself again */
@@ -560,6 +563,12 @@ void ProcessIRQ(struct M68KState *ctx)
             }
             else
                 w->stride = 0;
+            if ((uint32_t)level != w->last_level || PC != w->last_pc || A7 != w->last_sp)
+                w->run = 0;
+            if ((uint32_t)level == w->last_level && PC == w->last_pc && A7 < w->last_sp)
+                w->nest++;
+            else
+                w->nest = 0;
             w->last_level = level; w->last_pc = PC; w->last_sp = A7;
         }
 #endif
