@@ -185,10 +185,17 @@ static inline uintptr_t pi_phys(uint32_t p)
     return 0;
 }
 /* Mac physical pages that must be read-only for the 68k: ROM, declaration ROM, write-through
-   frame buffer and the (debug) watched low-memory page */
+   frame buffer and the (debug) watched low-memory page.
+   The write-through frame buffer is the IIci's (its RBV scans the first 320 KiB of bank A on the motherboard, so every
+   write there is mirrored out, psmac_bus.c). The SE board has no RBV video and never mirrored those writes (its
+   screens are the card's), so since 26 November 2026 that memory is ordinary RAM there (docs/23 section 18): A/UX keeps
+   its kernel stack and a new process's page tables in it ($4C000, $4D000), every write went through the abort path,
+   and on the owner's Pi a slot of the kernel's stack read back other than what had just been written through that
+   path ($4CF14: $4D000 written, something else read), so the root table entry went astray and A/UX panicked. */
+extern int psmac_board_se;
 static inline int ro_phys(uint32_t p)
 {
-    return (p < PSMAC_FB_SIZE) || (p >= 0x40000000u && p < 0x50000000u) || (psmac_watch_traps && p == WATCH_PHYS_PAGE) ||
+    return (p < PSMAC_FB_SIZE && !psmac_board_se) || (p >= 0x40000000u && p < 0x50000000u) || (psmac_watch_traps && p == WATCH_PHYS_PAGE) ||
            (p >= PSMB_DECLROM_PHYS && p < PSMB_DECLROM_PHYS + PSMB_DECLROM_SIZE) ||
            (slot2_rom_phys && p >= PSMB_DECLROM2_PHYS && p < PSMB_DECLROM2_PHYS + PSMB_DECLROM2_SIZE) ||
            (vid_rom_phys && p >= PSMB_VID_ROM_PHYS && p < PSMB_VID_ROM_PHYS + PSMB_VID_ROM_SIZE)

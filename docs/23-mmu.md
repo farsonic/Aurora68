@@ -1337,3 +1337,18 @@ pointer is $55FAC's result, stored at A6-16 by `MOVE.L A0,-16(A6)` at $100230CC,
 memory-indirect operands at $100230D4, $100230EC and $10023154. The MAME SE with `mac.watchpc=100230ca,10023146`
 (up to four blocks now): $4CF14 <- $0004D000 (the slot, in the kernel's stack page $4C000), then $4D000 <- $0004D402.
 The "low write" check now takes only the kernel's frames (A6 $12xxxxxx).
+
+Test kernel 15 on the SE: `W4 0004cf14 <- 0004d000 from the block at 100230ca`, exactly as the MAME SE, and then no
+emulated write from the block at $10023146 at all and no "low write": the pointer the kernel read back from $4CF14
+was neither $4D000 nor below $10, and the root entry went to some ordinary page. So on the Pi a stack slot read through
+the ARM mapping was not what had just been written to it through the abort path (KERNEL_ALIAS + the Pi's copy), where
+QEMU, which models no caches and keeps no TLB across a TTBR change, always agreed. Which of the two views was stale is
+not settled; both are cacheable inner-shareable aliases of one physical page, so the suspicion falls on a translation
+the Pi kept (a stale ARM mapping of the stack's logical page) rather than on the caches.
+
+The write-through frame buffer exists for the IIci, whose RBV scans the first 320 KiB of bank A; the SE board never
+mirrored those writes (psmac_bus_write, `m = !psmac_board_se`). So ro_phys no longer keeps that memory read-only on
+the SE board, the solo board and the Plus: A/UX's kernel stack and page tables are now ordinary memory, read and
+written through the same mapping. The MAME SE: A/UX to init as before, emulated accesses 8.7 million to init where they
+were 130 million; System 7.1 on the solo board at the Finder in 24.9 s (36 s) and 31.7 s with mac.mmu=full (45 s);
+System 7.1 on the MAME SE at the Finder in 268 s.
