@@ -218,8 +218,9 @@ with the console lock held (docs/08 item 21 explains the one time that happened)
   enums in PascalCase. Function names keep the form Emu68's C code has (`psmac_snake_case`), not the
   guide's camelCase. Comments are short, in the guide's `//` form: what the code does and why, a line or
   two, with a pointer to the document that has the story (`docs/23 section 19`). The dated history of what
-  was tried and found belongs in `docs/`, not in the code. Existing files are being brought to this in
-  stages; a file that is touched for any other reason is left in the guide's style where it was changed.
+  was tried and found belongs in `docs/`, not in the code. On hold (the owner, 27 November 2026) until
+  A/UX runs: until then no file is restyled and new code matches the file it is in. After that the
+  existing files are brought to the guide in stages.
 - The Macintosh side (`mac/`, assembly) and the tools keep their own conventions: a backstory at the
   top of every file, a reason beside every constant that was found rather than designed. The documents
   are written like a historian's record: what was tried, what it showed, what was concluded, with
