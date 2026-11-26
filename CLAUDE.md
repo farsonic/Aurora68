@@ -210,9 +210,20 @@ with the console lock held (docs/08 item 21 explains the one time that happened)
   13 one and change the version). Nothing else is version-sensitive.
 
 ## Conventions
-- Code is written to be read: a backstory at the top of every file, a reason beside every
-  constant that was found rather than designed. The documents are written like a historian's
-  record: what was tried, what it showed, what was concluded, with dates. Keep that up.
+- The kernel's code (everything under `emu68/`) follows Emu68's own guide, `emu68/CODING_STYLE.md`
+  (the owner's decision, 27 November 2026): 4 spaces, never tabs; braces on every `if`, `else`, `for`,
+  `while` and `do`, also around one statement; one statement to a line; lines of at most 120 columns;
+  K&R braces for control statements, the opening brace of a function on its own line; variables and
+  parameters in snake_case, macros, constants and enum values in SCREAMING_SNAKE_CASE, structs and
+  enums in PascalCase. Function names keep the form Emu68's C code has (`psmac_snake_case`), not the
+  guide's camelCase. Comments are short, in the guide's `//` form: what the code does and why, a line or
+  two, with a pointer to the document that has the story (`docs/23 section 19`). The dated history of what
+  was tried and found belongs in `docs/`, not in the code. Existing files are being brought to this in
+  stages; a file that is touched for any other reason is left in the guide's style where it was changed.
+- The Macintosh side (`mac/`, assembly) and the tools keep their own conventions: a backstory at the
+  top of every file, a reason beside every constant that was found rather than designed. The documents
+  are written like a historian's record: what was tried, what it showed, what was concluded, with
+  dates. Keep that up.
 - The kernel presents a 68040 and the MAME testbed stays the reference environment even once
   hardware exists; both are the user's standing decisions.
 - Never commit ROM images, Apple system software, disk images, firmware blobs, or the
