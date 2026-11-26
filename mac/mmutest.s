@@ -20,7 +20,7 @@
 |     ROM=mac/build/mmutest.rom tools/run-solo.sh 60 mac.mmu=full
 | (run-solo.sh still names the usual disk image and declaration ROM; this program reads neither) and read the
 | result in the kernel log:
-|     [MAC] MMU test: 137 passed, 0 failed, 123 bus errors taken
+|     [MAC] MMU test: 157 passed, 0 failed, 127 bus errors taken
 | (50 cases after phase 1, 86 after phase 2: T12-T18, the PMMU's other instructions; 137 after phase 3, 26 November
 | 2026: T19-T24, T26 and T27, two processes with their own CRPs and the same pages on other frames, data and code,
 | a loop of 4000 context switches, SRE with the supervisor's own tables (user mode entered by ANDI, RTE and MOVE to
@@ -28,7 +28,8 @@
 | through the supervisor's tables, code run from a page that faults on its fetch, and 48 roots for the kernel's 32
 | spaces; docs/23-mmu.md section 12; 141 with T28, 26 November 2026: bus errors from user mode, data and fetch, whose
 | frames go through the supervisor's tables; 143 with T29, the same day: code replaced on a page that went invalid in
-| between, docs/23 section 15).
+| between, docs/23 section 15; 157 with T30 and T31, 27 November 2026: an instruction across a valid and a refused
+| page, and pages where the kernel kept the Pi's own windows, docs/23 section 21).
 | mmutest-halt.rom ends with T25 instead of the benchmark: an exception whose frame cannot be pushed, after which the
 | kernel must log the 68030's double bus fault and stop running the 68k.
 | Without mac.mmu=full the bus errors are never delivered (the shim reads $BAD0BAD0 and drops writes), so the
@@ -68,6 +69,10 @@
 	.equ	ROOT3,	0x00066010		| the SRP
 	.equ	TCSRE,	0x00066020		| TC with SRE
 	.equ	ROOT4,	0x00066030		| T27's root pointers
+	.equ	TBLB5,	0x00067000		| T31: level B and C for $3FFxxxxx and $401xxxxx (the Pi's windows)
+	.equ	TBLC5,	0x00067400
+	.equ	TBLB6,	0x00067800
+	.equ	TBLC6,	0x00067C00
 	.equ	MSG,	0x00063000		| a log line
 	.equ	FAILS,	0x00063100		| the failure list (names and values)
 	.equ	SSP,	0x00070000
@@ -865,6 +870,114 @@ t23s:	move.l	WIN+0xC3000,%d3			| supervisor: a bus error, mapped one to one in t
 	want	n_t29a, R0, 0x29292929
 	want	n_t29b, R0+4, 0x30303030
 
+	| ---- T30: an instruction whose first word ends a valid page and whose other words are on a page the tables
+	|      refuse (27 November 2026, docs/23 section 21): the fetch of those words is a bus error (format $B, FB and
+	|      RB, the refused page's address as the stage B address, the instruction's own PC), the handler maps the
+	|      page, and the instruction runs with its real words. Twice: an immediate, and a full-format extension word
+	|      (without it the instruction's very length is unknown). The kernel's check of such an instruction's length
+	|      once read a copy of its first word at the copy's own address in the kernel, cut to 32 bits: some address in
+	|      the 68k's low memory ($7FBC8 in the kernel of that day). Under A/UX that was the running program's text or
+	|      a hole; here it is this machine's unused memory, $1000-$5FFFF and $70000-$8FFFF, which is filled with
+	|      one-word instructions (NOP) first, so that a kernel making that mistake finds a length of one word, sees no
+	|      crossing, and translates the refused page's words as the $BAD0BAD0 of an empty bus.
+	lea	0x1000,%a0
+	move.l	#0x4E714E71,%d0
+	move.l	#(0x60000-0x1000)/4-1,%d1
+1:	move.l	%d0,(%a0)+
+	subq.l	#1,%d1
+	bcc.s	1b
+	lea	0x70000,%a0
+	move.l	#(0x90000-0x70000)/4-1,%d1
+1:	move.l	%d0,(%a0)+
+	subq.l	#1,%d1
+	bcc.s	1b
+	move.w	#0x203C,WIN+0xCAFFE		| page CA's last word: "move.l #$30303131,d0" ...
+	move.l	#0x30303131,WIN+0xCB000		| ... its immediate on page CB, then "rts"
+	move.w	#0x4E75,WIN+0xCB004
+	inval	0xCB
+	clr.l	V_COUNT
+	moveq	#0,%d0
+	jsr	WIN+0xCAFFE
+	move.l	%d0,R0
+	want	n_t30, R0, 0x30303131
+	want	n_t30c, V_COUNT, 1
+	moveq	#0,%d0
+	move.w	V_FMT,%d0
+	want	n_t30f, %d0, 0xB008
+	moveq	#0,%d0
+	move.w	V_SSW,%d0
+	want	n_t30s, %d0, 0x5006
+	want	n_t30a, V_ADDR, WIN+0xCB000	| the stage B address: the refused page
+	want	n_t30pc, V_PC, WIN+0xCAFFE	| the instruction, not the page
+	move.w	#0x2030,WIN+0xCCFFE		| page CC's last word: "move.l ([$10,a0]),d0" ...
+	move.l	#0x01610010,WIN+0xCD000		| ... its full extension word and base displacement on page CD, "rts"
+	move.w	#0x4E75,WIN+0xCD004
+	move.l	#WIN+0xCE100,WIN+0xCE010
+	move.l	#0x30303232,WIN+0xCE100
+	inval	0xCD
+	clr.l	V_COUNT
+	moveq	#0,%d0
+	lea	WIN+0xCE000,%a0
+	jsr	WIN+0xCCFFE
+	move.l	%d0,R0
+	want	n_t30x, R0, 0x30303232
+	want	n_t30xc, V_COUNT, 1
+	want	n_t30xa, V_ADDR, WIN+0xCD000
+	want	n_t30xpc, V_PC, WIN+0xCCFFE
+
+	| ---- T31: logical pages where the kernel keeps the Pi's own windows inside the 68k's 4 GiB ($3F000000-$3FFFFFFF,
+	|      the peripherals; $40000000-$401FFFFF, the interrupt controller): the tables map $3FFFF000 and $40110000
+	|      onto frames of RAM, and what is written through them must be in those frames, and the other way round
+	|      (27 November 2026, docs/23 section 21: A/UX puts the stack of a program of its Macintosh environment just
+	|      below $40000000, and the 68k's reads and writes there went to the Pi's window, past the tables)
+	lea	TBLB5,%a0			| $30000000-$3FFFFFFF megabyte by megabyte, one to one ...
+	move.l	#0x30000001,%d0
+	move.w	#255,%d1
+1:	move.l	%d0,(%a0)+
+	add.l	#0x00100000,%d0
+	dbra	%d1,1b
+	move.l	#TBLC5+2,TBLB5+0xFF*4		| ... but its last megabyte page by page ...
+	lea	TBLC5,%a0
+	move.l	#0x3FF00001,%d0
+	move.w	#255,%d1
+1:	move.l	%d0,(%a0)+
+	add.l	#0x1000,%d0
+	dbra	%d1,1b
+	move.l	#WIN+0xD2000+1,TBLC5+0xFF*4	| ... and $3FFFF000 on frame D2
+	lea	TBLB6,%a0			| $40000000-$4FFFFFFF the same (this program runs there, one to one)
+	move.l	#0x40000001,%d0
+	move.w	#255,%d1
+1:	move.l	%d0,(%a0)+
+	add.l	#0x00100000,%d0
+	dbra	%d1,1b
+	move.l	#TBLC6+2,TBLB6+1*4
+	lea	TBLC6,%a0
+	move.l	#0x40100001,%d0
+	move.w	#255,%d1
+1:	move.l	%d0,(%a0)+
+	add.l	#0x1000,%d0
+	dbra	%d1,1b
+	move.l	#WIN+0xD3000+1,TBLC6+0x10*4	| $40110000 on frame D3
+	clr.l	WIN+0xD2FF0
+	clr.l	WIN+0xD3010
+	move.l	#0x31313232,WIN+0xD2FF4
+	move.l	#0x31313434,WIN+0xD3014
+	move.l	#TBLB5+2,TBLA+3*4
+	move.l	#TBLB6+2,TBLA+4*4
+	pflusha
+	move.l	#0x31313131,0x3FFFFFF0		| written through the logical page ...
+	move.l	0x3FFFFFF4,%d2			| ... and read through it
+	move.l	#0x31313333,0x40110010
+	move.l	0x40110014,%d3
+	move.l	#0x30000001,TBLA+3*4		| the tables as they were
+	move.l	#0x40000001,TBLA+4*4
+	pflusha
+	movem.l	%d2-%d3,R0
+	want	n_t31w, WIN+0xD2FF0, 0x31313131
+	want	n_t31r, R0, 0x31313232
+	want	n_t31w2, WIN+0xD3010, 0x31313333
+	want	n_t31r2, R0+4, 0x31313434
+
 p2skip:
 
 	| ---- the result ----
@@ -1176,6 +1289,20 @@ n_t28sp: .asciz	"t28sp"
 n_t28c:	.asciz	"t28count"
 n_t29a:	.asciz	"t29old"
 n_t29b:	.asciz	"t29new"
+n_t30:	.asciz	"t30"
+n_t30c:	.asciz	"t30count"
+n_t30f:	.asciz	"t30fmt"
+n_t30s:	.asciz	"t30ssw"
+n_t30a:	.asciz	"t30addr"
+n_t30pc: .asciz	"t30pc"
+n_t30x:	.asciz	"t30x"
+n_t30xc: .asciz	"t30xcount"
+n_t30xa: .asciz	"t30xaddr"
+n_t30xpc: .asciz "t30xpc"
+n_t31w:	.asciz	"t31write"
+n_t31r:	.asciz	"t31read"
+n_t31w2: .asciz	"t31write2"
+n_t31r2: .asciz	"t31read2"
 n_t26:	.asciz	"t26"
 n_t26c:	.asciz	"t26count"
 n_t26f:	.asciz	"t26fmt"

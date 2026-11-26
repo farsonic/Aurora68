@@ -13,7 +13,9 @@ running on it, on the solo board and in the MAME full stack. Section 12 is phase
 ASIDs, separate user and supervisor views, MOVES, the code cache keyed by space, the double bus fault: what A/UX needs
 before it can be tried. Section 13 (27 November) is the first try on the real SE, which stopped before the 68k
 started, and its fix. Section 14 (26 November) is A/UX on the real SE as far as "Checking...", section 15 (26 November) A/UX
-in the MAME SE as far as init, the ten faults on the way and their fixes. Sections 1 to 10 are phase 1's record and are kept as written; where a later phase found a
+in the MAME SE as far as init, the ten faults on the way and their fixes. Sections 16 to 20 (26 and 27 November) are the
+real SE's own faults on the way into A/UX's kernel, and section 21 (27 November) the two faults that kept A/UX's user
+programs from running in the MAME SE; with them mended A/UX 3.1.1 reaches its Finder there. Sections 1 to 10 are phase 1's record and are kept as written; where a later phase found a
 statement wrong or overtook it, a bracketed note says so.
 
 ## 1. What was read
@@ -1145,7 +1147,8 @@ cores (read from the disk image with a reader for A/UX's BSD file system) hold a
 in chown (`PEA -28(A6)`, after a call of `strcmp` in libc_s at $47F05564), a write to $000001E0, SSW $0101, with A1 and
 A7 both $1E0: the user stack pointer has taken a string pointer's value. getty's core holds the same frame and nearly
 the same data segment, which no getty can produce, so the u-area and data the kernel dumped for it were chown's frames.
-Not found. Two candidates were followed and ruled out as the cause (both fixed anyway): the code cache's epoch (item 10)
+Not found. [Found on 27 November, section 21: an instruction lying across two pages, translated with $BAD0 for the
+words on the page not yet in memory.] Two candidates were followed and ruled out as the cause (both fixed anyway): the code cache's epoch (item 10)
 and the memory table below; the same crash at the same PC comes with 64 MB.
 
 **A/UX's memory table on 128 MB** is wrong as well. The kernel prints
@@ -1204,7 +1207,7 @@ the startup disk and the Aurora68 Machine of main (it gives A/UX Startup the ROM
 A/UX Startup, the kernel's messages, init, and then what the MAME SE showed (the "Memory fault" crashes), unless the SE's
 SCC stops it earlier as in section 14; if it does, the log with `mac.setrace=200,SCC` is what to send. Not settled:
 
-- the user programs' "Memory fault" (15.2), and with it the login and A/UX's Finder;
+- the user programs' "Memory fault" (15.2), and with it the login and A/UX's Finder; [settled in section 21]
 - A/UX's 192 MB on 128 MB (15.2);
 - the level-4 storm of the real SE (15.3);
 - the "Checking..." of a disk A/UX did not unmount cleanly: in MAME that check reads the root file system through the
@@ -1422,3 +1425,180 @@ on the SE, solo and bridged boards, and M68kReportInterrupt with it; core 0's ti
 start (CNTKCTL_EL1, bit 13: 0.85 ms), so a stopped 68k looks at its interrupt word that often whatever else happens;
 and the heartbeat says how long the 68k was in STOP and, if a level is asserted with no instruction run, that it was
 not woken.
+
+## 21. A/UX to its Finder: an instruction across two pages, and the Pi's windows in the 68k's space (27 November 2026)
+
+Section 15 left A/UX in the MAME SE at init with user programs dying of "Memory fault"; sections 16 to 20 were the
+real SE's own faults, none of which shows in QEMU. This section is the Memory fault, found in the MAME SE
+(`PSMAC_RAM=64`, `mac.mmu=full`, a fresh copy of the disk for every run), and a second fault behind it. With both
+mended A/UX 3.1.1 starts its Macintosh environment and reaches its Finder.
+
+### 21.1 Where a program died, and with what
+
+**A trace of user mode.** `mac.usertrace=PATH` (new, the testbed only) keeps a ring of the last 131,072 blocks the 68k
+entered in user mode (PC, SR, A7, A6, A0, A1, D0, D1 at each block's start; the JIT loop stores them, nothing is
+called) and the bus errors delivered among them. The first time a user program's write below $1000 is refused, or any
+access of its at $BAD0xxxx, the 68k stands still while another core writes the ring to PATH and the Mac's memory to
+PATH.ram; the log gets the registers and the MMU's (TC, CRP, SRP), which is what a table walker on the host needs. The
+heartbeat's MMU report also says which ARM instructions the faults "not delivered" came from and who called them.
+
+**Run 50, the kernel as section 20 left it.** `/etc/rc: 107 Memory fault - core dumped` as before, and the trace did
+not fire: no write below $1000. The core, read from the disk image, is chown's (`/bin/chown adm /etc/wtmp`), and the
+frame at the top of its kernel stack ($12FFFFA2) is a format $B bus error: **PC $1FFE, SSW $0141 (a data read in user
+mode), fault address $BAD0BAD0**; D0 and A0 $004030E5, A6 $FFFFFB34, USP $FFFFFB18. This is not the frame section 15.2
+described (PC $2DC2, a write to $1E0), which was not seen again. $BAD0BAD0 is what the abort path answers for a read
+of an empty bus: the program had been given that value as an address. The instruction at $1FFE is
+`MOVE.L $004030F0,$004030F8` (`23F9 0040 30F0 0040 30F8`), in malloc's first call: ten bytes, the opcode in the last
+word of page $1000 and both addresses on page $2000. Run 50's 1,381 "not delivered" faults by the time of the crash
+were all reads by `cache_read_64` (1,003), `cache_read_32` (217) and `cache_read_16` (161): the code cache's checksum
+and fingerprint, and the translator.
+
+### 21.2 The first cause: the length of an instruction, read from the wrong place
+
+A translated block stays inside one 4 KiB page, and an instruction that runs from a valid page into one the tables
+refuse must take the fetch's bus error instead of being translated (`psmac_mmu_jit_fetch`, section 12.4). To know
+whether it runs over, the check copied the words left in the page to an array on the kernel's stack, zeros after
+them, and asked `M68K_GetINSNLength` for the length of that. But the length decoders read their instruction through
+`cache_read_16`, by its **32-bit 68k address**: the array's address, cut to 32 bits, is some address in the 68k's own
+space ($0007FBC8 in this kernel). The decoder never saw the copy. Under A/UX it read the running program's text at
+$7FBC8 or, for a small program, a hole: $BAD0, `CMPA.W (A0),A5`, one word. One word fits in what is left of any page,
+so no crossing was seen, the translator went on, read the instruction's remaining words from the refused page
+(another "not delivered" read, $BAD0BAD0 each) and compiled `MOVE.L $BAD0BAD0,$BAD0BAD0`.
+
+The log of run 51, with the old answer computed beside the new one:
+
+```
+[PSMAC:MMU] fetch check at 00001ffe (opcode 23f9, 1 words left in its page): the copy at 0xffffff800007fbc8 read as bad0 said 1 words, the instruction itself 5
+```
+
+eight such lines in that boot: $1FFE four times (chown's instruction, by its opcode), $8FFC and $AFFE twice each in
+other programs. An objdump of the binaries shows who is exposed: chown has four instructions across a page boundary
+($FFC, $1FFE, $2FFA, $6FFE), getty five ($1FFE, $2FFE, $3FFE, $5FFE, $8FFC), the shared C library `libc1_s` two.
+Which of them goes wrong depends on which pages are in memory when the block is first translated, which is the same
+on every boot of the same disk: hence chown, pid 107, every time. System 7's Virtual Memory did not show it: there the
+68k's low memory is ordinary RAM, and what lay at that address was not a one-word instruction when it mattered
+(*inference*; it was not looked for). mmutest's T26 has its whole instruction on the refused page.
+
+**The fix.** The decoders are given the instruction where it is. A word they need from the refused page is an ARM
+abort like any other; while the check runs (`fetch_probe`), `psmac_mmu_fault` notes it instead of counting a fault
+"not delivered", and the check then says "runs over" if a word was refused or the length exceeds the page.
+
+### 21.3 The second cause: the Pi's own windows inside the 68k's 4 GiB
+
+Run 51 (the first fix): no Memory fault from `/etc/rc`, and init went on to start A/UX's Macintosh environment, whose
+programs then died. The trace fired in `/mac/bin/CommandShell -u`: a byte written to address 0 by `strcpy` in the
+shared library ($47F059FC) after three `brk` calls had come back with EINVAL; the last core on the disk was
+`/mac/bin/startmac`'s, `getopt` reading `argv[1]` as 0. Both programs have their stack just below $40000000
+(A7 $3FFFFBB4, where an ordinary A/UX program's is just below $00000000 of the next lap, $FFFFFxxx). In the RAM dump
+the stack page the tables name for $3FFFF000 (frame $02477000) holds what the kernel had put there, the arguments and
+the environment, and **nothing a user instruction had written**: zeros where the trace shows return addresses and
+frame pointers in use, and those values are nowhere in the Mac's 64 MB. So the program's own stack accesses did not go
+where the 68030's tables say, while the kernel's (MOVES, through the tables) did: `brk` read its argument from the
+kernel's view of the stack, 0, hence EINVAL.
+
+Upstream Emu68 maps the Pi's peripherals inside the first 4 GiB "so that they can be accessed from m68k"; this fork
+keeps that window at $3F000000 (docs/08 item 21) and the address spaces of section 12 copied it, and everything else
+the kernel had mapped below 4 GiB, into every space. The log now lists what that was:
+
+```
+[PSMAC:MMU] the Pi's windows in the first 4 GiB, which the 68k's address spaces leave out:
+[MMU]   35000000-35ffffff: blocks at 35000000, attributes 74c
+[MMU]   3c000000-3fffffff: blocks at 3c000000, attributes 74c
+[MMU]   40000000-401fffff: pages, table at 3bffc000, attributes 000
+[MMU]   dea00000-debfffff: pages, table at 3bff9000, attributes 000
+```
+
+(the VideoCore's frame buffer memory, 16 MiB; the VideoCore's memory and, from $3F000000, the peripherals; the
+interrupt controller; the page of Emu68's debug port). The
+peripherals are mapped without access from EL0 (`PERIPH_EL0`), which docs/08 took to keep the 68k out; but translated
+code runs at EL1, the kernel's own level (its blocks write TTBR0_EL1 themselves, section 12.2), so that bit keeps
+nobody out. A 68k access to $3F000000-$3FFFFFFF went straight to the Pi's peripheral space, past the 68030's tables;
+`sp_map4k` refused to map a 68k page there, and `mmu_space_page` refused to replace a block. Under QEMU the unassigned
+part of that space behaves as memory (*inference*, from a stack that worked for the program that used it); on a Pi it
+is the peripherals' bus. Mac OS has nothing at those logical addresses. A/UX's Macintosh environment has the stack of
+every one of its programs there.
+
+mmutest's new T31 (the tables map $3FFFF000 and $40110000 onto frames of RAM; a long written through each, a long
+read through each) on the kernel with the first fix only: `155 passed, 2 failed`, `t31write=00000000
+t31read=00000000`: the write through $3FFFFFF0 never reached its frame and the read saw none of it. ($40110000
+passed: that window is a table with one page in it, not blocks, so the access aborted and the abort path emulated it
+through the 68030's tables.)
+
+**The fix.** With `mac.mmu=full` a space carries none of the Pi's windows (`no_windows`, psmac_mmu.c): the whole
+4 GiB is the 68k's, and a page at $3FFFF000 is walked and mapped like any other. The kernel's own code does not need
+the windows there: the fork's drivers have used the peripherals' mapping in the kernel's half (`PSMAC_PERIPH_HI`)
+since docs/08 item 21, and the VideoCore's memory through `KERNEL_ALIAS`. One user was left on the 68k's core:
+upstream's firmware mailbox in support_rpi.c, which `psmac_vc_setup` calls when the Mac's screen is set up (four
+accesses to $3F00B880-$3F00B8A0 in the first run without the windows, served by the abort path); its base is now a
+variable that moves to the kernel's mapping when the first space is installed. Two nets for what may be left: the
+abort path serves the kernel's own access to the peripherals' low window through the kernel's mapping
+(`periph_own`, psmac_bus.c), and the first four accesses by kernel code to where the windows were are logged with
+their caller (`the kernel's code at ... where the Pi's windows were`). None in the runs below. Without the option
+nothing changes: the stock path's sets keep the windows, and a 68k access to $3F000000 still reaches the Pi.
+
+### 21.4 How far A/UX gets now
+
+Run 52 (both fixes), from a fresh disk: A/UX Startup, the kernel, init, and then no text console at all: `startmac -o
+minimal` takes the screen for A/UX's own start-up dialog, "Welcome to The Apple Workgroup Server 95 / Starting
+background processes..." with its progress bar and Messages button (screenshot 52 of the run, about 520 s), the
+Macintosh environment starts (the desktop pattern, extensions' icons along the bottom, 590 to 650 s), no login dialog
+is shown (this disk logs in as root by itself: startmac's environment in run 51's core has `LOGNAME=root`), and
+**the A/UX Finder's desktop is complete at about 740 s**: the menu
+bar (File, Edit, View, Label, Special), the "/" disk, "Macintosh HD" and the Trash, unchanged to the end of the run at
+1,150 s. No core file on the disk afterwards. The kernel's counts at the end: 4,753 bus errors delivered (3,442 data,
+672 operand, 639 fetch), 192,567 privileged instructions trapped from user mode (the Macintosh environment runs Mac OS
+in user mode and A/UX emulates what it may not do), 3.4 million MOVES, 17,306 context switches over 27 address
+spaces, none reused. The trace fired once, at `startmac`'s first write to address 0, which A/UX answered by giving the
+program its page there (the Macintosh environment's low memory): that trigger is a crash only in an ordinary A/UX
+program.
+
+The 1,398 faults "not delivered" of that run, by the ARM instruction and its caller: 1,338 are the code cache's
+checksum and fingerprint (`CalcCRC32`, and one read beside it), 60 the evidence line above, taken out since. The
+checksum's are of a block checked again after its page has gone, and of a new block whose range runs into a refused
+page: 86 of them were called for a new block, at $10004528-$1000453C (*inference*: the translator follows a jump to
+see where the block ends, and the checksum's range then reaches the target on the next page; such a checksum is of
+$BAD0s and fails when the page comes, which costs a translation and nothing else). None is an access of the
+program's.
+
+**getty.** The getty that section 15 saw dying is the console's: inittab's `co` line respawns `/etc/loginrc`, which
+runs `/etc/macgetty` and falls back to `/etc/getty console co_9600`; the two serial gettys (`tty0`, `tty1`) are `off`
+in this disk's inittab. No getty's core was caught in these runs (run 50's core was still chown's at 700 s), so its
+frame was not compared with chown's; getty has five instructions across a page boundary and its fault came, like
+chown's, with nothing but paging going on. With the fixes no getty dies and nothing touches a serial device.
+
+### 21.5 Tests (the final kernel of this section)
+
+- mmutest, solo board, `mac.ram=8`, `mac.mmu=full`: **157 passed, 0 failed, 127 bus errors taken**, none undelivered
+  (143 before; T30, ten checks: an instruction whose first word ends a valid page with its immediate, or its
+  full-format extension word, on a refused one: a fetch fault with the refused page as the stage B address and the
+  instruction's own PC, then the right result; T31, four checks, above). Without the option `16 passed, 35 failed, 0
+  bus errors taken` and the benchmark at 415-428 MIPS, as before (392-402 with the option).
+- The negative controls. T31 on the kernel before its fix: above. T30 on a kernel with the old length check put
+  back: the test never reports; the 68k runs `MOVE.L #$BAD0BAD0,D0` and whatever follows and ends in `unexpected
+  exception, format/vector 00000028 at PC 001D0000`. (T30 first fills the machine's unused memory with NOPs, so
+  that the old check finds a one-word instruction at its copy's address whatever the kernel's stack is.)
+- System 7.1 on the solo board (a copy of the test image): the Finder at 23.8 s without the option, 27.0 s with it,
+  no fault undelivered, no access by the kernel's code where the windows were.
+- A/UX in the MAME SE with the final kernel, `mac.mmu=full` alone (run 53, 960 s, a fresh disk): the same course,
+  the Finder's desktop complete at about 700 s (the same picture as run 52's, byte for byte) and unchanged to the end;
+  no core file on the disk; 4,753 bus errors delivered (3,441 data, 673 operand, 639 fetch), 135,496 privileged
+  instructions trapped from user mode, 2.7 million MOVES, 12,741 switches over 28 spaces; 1,335 faults "not
+  delivered", every one the checksum's or the fingerprint's; no access by the kernel's code where the windows were.
+- `tools/diag_test.sh` (the options table, with `mac.usertrace`): 7,075 checks, 0 failed.
+
+### 21.6 What is not settled
+
+- The real SE. Both faults are the emulator's own and do not depend on the hardware, but what a Pi's peripheral space
+  did with a 68k program's stack was never seen there (A/UX on the SE had not got that far), and whether any kernel
+  code on the 68k's core still reaches for a low window on real hardware (a driver QEMU does not exercise) will show
+  in the log line named above.
+- The frame section 15.2 read in chown's core (PC $2DC2, a write to $1E0) was not reproduced; chown has a second
+  instruction across a page boundary at $2FFA, in the function that frame was in, and a block compiled with $BAD0
+  words in other places would fail in other ways (*inference*).
+- The translator's other reads ahead of what it translates (a second MOVE to fuse with, the condition codes'
+  scan of section 15.1 item 6) still meet refused pages and read $BAD0; each was looked at and none of them changes
+  what is emitted for the instruction in hand, but the "not delivered" count is not zero and a new one would hide
+  among the checksum's.
+- A/UX's memory table on 128 MB (15.2), the SE's level-4 storm (15.3), and everything past the Finder's desktop:
+  no program was started, nothing was typed (the testbed has no input for A/UX yet), networking and the serial
+  ports were not touched.

@@ -87,6 +87,10 @@ uint64_t psmac_fault_elr;   /* set by the abort dispatcher: who faulted? */
    accesses here; Mac (JIT-generated) code faulting on the same window is forwarded to the bridge. */
 static inline int emu68_own_fault(void) { return (psmac_fault_elr >> 32) == 0xffffff80ull; }   /* Emu68 text; JIT code is at 0xffffffe0... */
 static inline int in_periph_window(uint64_t a) { return a >= PERIPH_LOW && a < 0x40000000ull; }
+/* where the kernel's own access to the low window is made: with mac.mmu=full the 68k's spaces have no such window
+   (psmac_mmu.c, docs/23 section 21), so through the kernel's own mapping of the same registers */
+extern int psmac_mmu_full;
+static inline uintptr_t periph_own(uint64_t a) { return psmac_mmu_full ? (uintptr_t)(PERIPH_VA + (a - PERIPH_LOW)) : (uintptr_t)a; }
 static volatile uint32_t dev_cnt[8]; /* VIA1, SCC, SCSI, ASC, SWIM, RBV, FB, other */
 extern int psmac_board_se, psmac_board_solo;
 /* On the SE board the wire carries the SE's own addresses (psmac_board_se.c translated them), so
@@ -172,6 +176,7 @@ static uint32_t pctrail_at;             /* mac.pctrail=N: dump the 68k PC ring a
    per beat when PATH has a '#', which becomes the beat's number): a guest that runs its own
    code from memory (A/UX's standalone programs, docs/23 section 15) can then be disassembled on the host */
 static uint32_t ramdump_at, ramdump_every, ramdump_last, ramdump_mb; static char ramdump_path[160];
+static char utrace_path[160];           // mac.usertrace=PATH (psmac.h)
 static uint32_t pcwatch;                /* mac.pcwatch=HEX: dump the ring the first time the sampled PC lands in that 256-byte page */
 uint32_t psmac_dbf_slow = 1;            /* mac.dbfslow=N: device reads per turn of a self-looping dbf (M68k_LINE5.c) */    /* mac.peek=: Mac memory dumped at each heartbeat (debugging) */
 static int64_t sh_req = -1, sh_rep = -1;
@@ -252,6 +257,40 @@ const char *psmac_option_nth(const char *key, int nth)
     return NULL;
 }
 const char *psmac_option(const char *key) { return psmac_option_nth(key, 0); }
+
+// mac.usertrace= (psmac.h, docs/23 section 21): the ring (with a header: 'UTRC', entries written, ring size) to PATH,
+// or the Mac's memory to PATH.ram
+static void utrace_write(const char* path, int ring)
+{
+    char pth[176];
+    int j = 0;
+    for (const char* q = path; *q; q++) {
+        pth[j++] = *q;
+    }
+    if (!ring) {
+        pth[j++] = '.';
+        pth[j++] = 'r';
+        pth[j++] = 'a';
+        pth[j++] = 'm';
+    }
+    pth[j] = 0;
+    int64_t fd = use_semihost ? sh_open(pth, 5) : -1;
+    if (fd < 0) {
+        kprintf("[PSMAC] mac.usertrace: cannot open %s\n", pth);
+        return;
+    }
+    int ok;
+    if (ring) {
+        uint32_t hdr[8] = { 0x55545243u, psmac_utrace.n, PSMAC_UTRACE_N, 0, 0, 0, 0, 0 };
+        ok = sh_write(fd, hdr, sizeof hdr) && sh_write(fd, psmac_utrace.buf, PSMAC_UTRACE_N * 32u);
+    } else {
+        ok = sh_write(fd, (const void*)(KERNEL_ALIAS + ram_phys), ram_size);
+    }
+    uint64_t close_arg[1] = { shw((uint64_t)fd) };
+    semihost(0x02, close_arg);
+    kprintf("[PSMAC] mac.usertrace: %s written to %s%s\n", ring ? "the ring" : "the Mac's memory", pth,
+            ok ? "" : " (the write failed)");
+}
 
 static int semihost_init(void)
 {
@@ -353,6 +392,27 @@ static void psmac_read_options(void)
         ramdump_path[k] = 0;
         if (n && mb && k) { ramdump_at = n; ramdump_every = e; ramdump_mb = mb; }
         else kprintf("[PSMAC] mac.ramdump=BEAT[+EVERY[-LAST]],MB,PATH: not understood\n");
+    }
+    if ((tok = find_token(args, "mac.usertrace="))) {
+        // mac.usertrace=PATH (psmac.h, docs/23 section 21): the ring is made here
+        extern void* tlsf;
+        void* tlsf_malloc(void*, size_t);
+        int k = 0;
+        for (tok += 14; *tok && *tok != ' ' && k < (int)sizeof utrace_path - 5; tok++) {
+            utrace_path[k++] = *tok;
+        }
+        utrace_path[k] = 0;
+        uint32_t* ring = k ? tlsf_malloc(tlsf, PSMAC_UTRACE_N * 32u) : NULL;
+        if (ring) {
+            for (uint32_t i = 0; i < PSMAC_UTRACE_N * 8u; i++) {
+                ring[i] = 0;
+            }
+            psmac_utrace.buf = ring;
+        }
+        kprintf("[PSMAC] mac.usertrace=%s: %s\n", utrace_path,
+                ring ? "the last 131072 user-mode blocks kept, written at a user program's first refused write below "
+                       "$1000 or access at $BAD0xxxx"
+                     : "no memory for the ring");
     }
     if ((tok = find_token(args, "mac.peek="))) {        /* mac.peek=HEXADDR,LEN: dump Mac memory at each heartbeat (debugging) */
         tok += 9; uint32_t a = 0, n = 0;
@@ -979,6 +1039,12 @@ void psmac_service_core(void)
             hb_last = xfer_count; next_hb = cnt_now() + hb_period;
             psmac_errand(PSMAC_ERR_LOOP);
         }
+        if (psmac_utrace.dump) {
+            // mac.usertrace= (psmac.h, docs/23 section 21): the ring, then the Mac's memory in PATH.ram
+            utrace_write(utrace_path, 1);
+            utrace_write(utrace_path, 0);
+            psmac_utrace.dump = 0;
+        }
         { extern void psmac_loop_watch(void); psmac_loop_watch(); }   /* core 3 stopped for 2 s: where (alice_psmac.c) */
         if (__m68k_state) {
             uint32_t pc = BE32((uint32_t)(uintptr_t)__m68k_state->PC);
@@ -1182,7 +1248,7 @@ int psmac_bus_write(uint64_t value, uint64_t value2, int size, uint64_t far)
     if ((far >> 32) == 1 || (far >> 32) == 0xffffffff) far &= 0xffffffff;
     if (far >> 32) return 0;
     if (in_periph_window(far) && emu68_own_fault()) {
-        volatile uint8_t *p = (volatile uint8_t *)far;
+        volatile uint8_t *p = (volatile uint8_t *)periph_own(far);
         switch (size) { case 1: *p = value; break; case 2: *(volatile uint16_t *)p = value; break; case 4: *(volatile uint32_t *)p = value; break; default: *(volatile uint64_t *)p = value; break; }
         return 1;
     }
@@ -1280,7 +1346,7 @@ int psmac_bus_read(uint64_t *value, uint64_t *value2, int size, uint64_t far)
     if ((far >> 32) == 1 || (far >> 32) == 0xffffffff) far &= 0xffffffff;
     if (far >> 32) return 0;
     if (in_periph_window(far) && emu68_own_fault()) {
-        volatile uint8_t *p = (volatile uint8_t *)far;
+        volatile uint8_t *p = (volatile uint8_t *)periph_own(far);
         switch (size) { case 1: *value = *p; break; case 2: *value = *(volatile uint16_t *)p; break; case 4: *value = *(volatile uint32_t *)p; break; default: *value = *(volatile uint64_t *)p; break; }
         return 1;
     }

@@ -201,6 +201,10 @@ const struct pdg_opt pdg_opts[] = {
     { "mac.pcwatch", PDG_G_DEBUG, PDG_F_ONCE, A, "%", "4080a000", "The 68k's recent PCs in the log when its PC first reaches the page of HEXADDRESS." },
     { "mac.pctrail", PDG_G_DEBUG, PDG_F_ONCE, A, "#", "60", "The 68k's recent PCs in the log N seconds after the start." },
     { "mac.ramdump", PDG_G_DEBUG, PDG_F_ONCE, A, "*", "60+12-400,8,/tmp/ram-#.bin", "The testbed only (semihosting): the Mac's first MB megabytes of memory written to a host file at heartbeat BEAT, then every EVERY beats until LAST (BEAT[+EVERY[-LAST]],MB,PATH; a # in PATH is the beat's number)." },
+    { "mac.usertrace", PDG_G_DEBUG, PDG_F_ONCE, A, "*", "/tmp/utrace.bin",
+      "The testbed only (semihosting), with mac.mmu=full: the last 131072 blocks run in user mode and the bus "
+      "errors among them, written to PATH (the Mac's memory to PATH.ram) the first time a user program's write "
+      "below $1000 or access at $BAD0xxxx is refused." },
     { "mac.watchtraps", PDG_G_DEBUG, PDG_F_ONCE, A, "1|0", 0, "1: odd writes into the OS trap tables reported (costs a trap on every write to low memory)." },
     { "mac.dbg", PDG_G_DEBUG, 0, A, "%,%", "40800000,40800100", "The JIT's translation of blocks between two hex addresses in the log." },
     { "mac.dbfslow", PDG_G_DEBUG, 0, A, "0|1|2|3|4|5|6|7|8", 0, "Device reads per turn of a self-timing DBF loop (1 by default; 0 makes such loops free)." },

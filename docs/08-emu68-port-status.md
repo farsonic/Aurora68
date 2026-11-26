@@ -45,6 +45,9 @@ A QEMU monitor is on `/tmp/qemu-mon.sock` (`tools/qemu-mon.py "info registers"`)
 - Pi peripherals (0xF2000000..) are mapped EL1-only in this fork; Emu68's own EL0 helpers that
   fault there are served by the abort handler (origin decided by ELR in Emu68 text vs JIT code);
   Mac accesses to that window are forwarded to the bridge like any slot space.
+  [27 November 2026: translated code runs at EL1, so the 68k does reach that window (now at
+  0x3F000000); with `mac.mmu=full` the window is no longer in the 68k's address spaces at all,
+  docs/23 section 21.]
 - MAME side changes made this session: immediate replies (the one-slice deferral cost ~1 ms per
   access), wall-clock credit consumed on every iteration (otherwise emulated time froze under
   load: SCC transmits and VIA timers never fired), FIFO transport mode (`PSMAC_BRIDGE_FIFO=req:rep`).

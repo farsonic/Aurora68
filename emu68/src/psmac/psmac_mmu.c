@@ -887,19 +887,19 @@ static void emu_note(uint32_t la, uint32_t pa, int write)
     emu_hist[i].n++; emu_hist[i].w += write;
 }
 
-static inline int in_pi_win(uint32_t la)
-{
-    for (unsigned k = 0; k < sizeof(pi_win) / sizeof(pi_win[0]); k++)
-        if (la >= pi_win[k].lo && la < pi_win[k].hi) return 1;
-    return 0;
-}
+/* The spaces carry none of the Pi's windows (docs/23 section 21): translated code runs at the kernel's own exception
+   level, so a window mapped in a space is memory the 68k reaches past its tables, and A/UX's Macintosh environment
+   keeps its programs' stacks at $3FFFFxxx, where the Pi's peripherals are. The kernel's own code reaches the
+   peripherals and the VideoCore's memory through its mappings in the kernel's half (PSMAC_PERIPH_HI, KERNEL_ALIAS). */
+static const uint64_t no_windows[4];
+void mmu_low4g_describe(const uint64_t l1[4]);
 
 /* Map one 4 KiB logical page of a space; 0 if its physical page is not memory the ARM can map */
 static int sp_map4k(struct space *s, uint32_t la, uint32_t pa, int writable, int tlbi)
 {
     la &= ~0xfffu; pa &= ~0xfffu;
     uintptr_t pi = pi_phys(pa);
-    if (!pi || in_pi_win(la)) return 0;
+    if (!pi) return 0;
     if (ro_phys(pa)) writable = 0;
     mmu_space_page(s->l1, s->asid, la, pi, writable ? RW_ATTR_NG : RO_ATTR_NG, tlbi);
     sp_set(s, la >> 12);
@@ -922,6 +922,7 @@ static void space_install(struct space *s)
         /* the first one: from here on core 0 never runs on mmu_user_L1 again, whose entries for the 68k's space
            (the stock identity set, global) leave the TLB now, with the kernel's alias of them */
         spaces_on = 1;
+        { extern uintptr_t psmac_periph_base; psmac_periph_base = (uintptr_t)PSMAC_PERIPH_HI; }   /* support_rpi.c: the mailbox */
         mmu_space_leave_alias();
         kprintf("[PSMAC:MMU] address spaces on: TTBR0 %016llx (ASID %u); the kernel's alias of the 68k's first 4 GiB is "
                 "emptied, accesses through it are emulated\n", (unsigned long long)s->ttbr, s->asid);
@@ -946,7 +947,7 @@ static struct space *space_get(uint32_t tc, uint32_t rhi, uint32_t rlo, int mode
         if (fs.evictions <= 8 || (fs.evictions & 255) == 0)
             kprintf("[PSMAC:MMU]   space %u (ASID %u) reused: TC=%08x root %08x:%08x %s, %u pages, %u evictions so far\n", s->idx, s->asid,
                     s->tc, s->rhi, s->rlo, s->mode == 1 ? "user" : s->mode == 2 ? "supervisor" : "both modes", s->mapped, fs.evictions);
-        mmu_space_reset(s->l1, pristine);
+        mmu_space_reset(s->l1, no_windows);
         for (uint32_t k = 0; k < PAGES_4K / 32; k++) s->bits[k] = 0;
         for (uint32_t k = 0; k < SUM_WORDS; k++) s->sum[k] = 0;
         s->mapped = 0;
@@ -958,7 +959,7 @@ static struct space *space_get(uint32_t tc, uint32_t rhi, uint32_t rlo, int mode
         if (!s->bits || !s->sum) { kprintf("[PSMAC:MMU] out of memory for space %u\n", s->idx); while (1) __asm__ volatile("wfi"); }
         for (uint32_t k = 0; k < PAGES_4K / 32; k++) s->bits[k] = 0;
         for (uint32_t k = 0; k < SUM_WORDS; k++) s->sum[k] = 0;
-        s->l1 = mmu_space_new(pristine);
+        s->l1 = mmu_space_new(no_windows);
         s->ttbr = mmu_space_ttbr(s->l1, s->asid);
         s->mapped = 0;
     }
@@ -1456,6 +1457,10 @@ void psmac_mmu_full_stats(void)
     kprintf("[PSMAC:MMU]   faults: %u bus errors delivered (%u data, %u operand, %u fetch), %u not delivered, %u lazy maps; "
             "%u privilege violations from user mode\n", d + h + f, d, h, f, m, l, psmac_priv_user);
     { extern void psmac_mmu_first_faults(void); psmac_mmu_first_faults(); }
+    {
+        extern void psmac_mmu_miss_report(void);
+        psmac_mmu_miss_report();
+    }
     kprintf("[PSMAC:MMU]   soft TLB: %u walks, %u maps (%u pages), %u first writes (M), %u emulated, %u TT, %u bus errors; "
             "PFLUSH %u all %u fc %u ea (%u pages kept, %u dropped, %u us), PLOAD %u, PTEST %u, PMOVE %u, MOVES %u, %u switches, "
             "%u code-cache checks; spaces: %u in use (%s), %u made, %u reused, %u us a switch on average\n",
@@ -1499,6 +1504,12 @@ static uint32_t full_l2p_fc(uint32_t logical, int fc, int *valid)
 }
 
 /* a diagnostic for the fault path (psmac_mmufault.c): every descriptor the search for la meets */
+// the MMU's registers in the log, for a table walker on the host (mac.usertrace, docs/23 section 21)
+void psmac_mmu_debug_regs(void)
+{
+    kprintf("[PSMAC:MMU]   TC %08x CRP %08x:%08x SRP %08x:%08x TT0 %08x TT1 %08x\n", mmu.tc, mmu.crp_hi, mmu.crp_lo,
+            mmu.srp_hi, mmu.srp_lo, mmu.tt0, mmu.tt1);
+}
 void psmac_mmu_debug_walk(uint32_t la, int fc)
 {
     struct pwalk r;
@@ -1517,6 +1528,8 @@ void psmac_mmu_debug_walk(uint32_t la, int fc)
 static void spaces_init(void)
 {
     for (int i = 0; i < NSPACES; i++) { spaces[i].idx = (uint8_t)i; spaces[i].asid = (uint8_t)(i + 1); }
+    kprintf("[PSMAC:MMU] the Pi's windows in the first 4 GiB, which the 68k's address spaces leave out:\n");
+    mmu_low4g_describe(pristine);
     views_update(1, 1);
 }
 

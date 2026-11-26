@@ -818,6 +818,24 @@ void JITLoopWithCRC32()
 
         M68K_LoadContext(ctx);
 
+#ifdef PSMAC
+        // mac.usertrace= (psmac.h, docs/23 section 21): the user-mode block about to run. Stores only, no call.
+        if (unlikely(psmac_utrace.buf != NULL)) {
+            uint32_t sr_now = getSR();
+            if ((sr_now & SR_S) == 0) {
+                uint32_t* e = psmac_utrace.buf + 8 * (psmac_utrace.n++ & (PSMAC_UTRACE_N - 1));
+                e[0] = PC;
+                e[1] = sr_now;
+                e[2] = A7;
+                e[3] = A6;
+                e[4] = A0;
+                e[5] = A1;
+                e[6] = D0;
+                e[7] = D1;
+            }
+        }
+#endif
+
         /* Call the code */
         ARMCode();
 

@@ -94,6 +94,7 @@ static uint8_t snap_mask(const uint16_t *pc)
 }
 
 int psmac_mmu_stub;                              /* the block being translated is an instruction fetch's bus error */
+static volatile int fetch_probe;                 /* psmac_mmu_jit_fetch is decoding a length: 2 once a word was refused */
 void psmac_mmu_jit_begin(void) { ft_n = 0; psmac_mmu_stub = 0; }
 
 /* At the start of each instruction's code (M68k_Translator.c, before EmitINSN): note where it is and save the
@@ -252,11 +253,16 @@ int psmac_mmu_jit_fetch(struct TranslatorContext *ctx, uint16_t *in_code, uint16
         return 2;
     }
     if ((pc & 0xfffu) > 0x1000u - 22u && !psmac_mmu_probe(page + 0x1000u, 2, fc, 0, &bad)) {
-        uint16_t buf[12];
+        /* Does the instruction run into the page the tables refuse? The length decoders read 68k memory by its 32-bit
+           address (cache_read_16), so they are given the instruction where it is, never a copy in the kernel's own
+           memory: a word they need from the refused page is an abort, which psmac_mmu_fault notes in fetch_probe
+           (docs/23 section 21). */
         int n = (int)((0x1000u - (pc & 0xfffu)) / 2);
-        for (int i = 0; i < 12; i++)
-            buf[i] = i < n ? cache_read_16(ICACHE, (uintptr_t)(in_code + i)) : 0;
-        if (M68K_GetINSNLength(buf) > n) {
+        fetch_probe = 1;
+        int len = M68K_GetINSNLength(in_code);
+        int beyond = fetch_probe == 2;
+        fetch_probe = 0;
+        if (beyond || len > n) {
             if (insn_count) return 1;
             emit_fetch_fault(ctx, pc, page + 0x1000u);
             psmac_mmu_stub = 1;
@@ -338,13 +344,86 @@ static int push_frame(uint32_t ssp, const struct bframe *b, uint32_t *fa, uint32
     return 1;
 }
 
+// mac.usertrace= (psmac.h, docs/23 section 21): a bus error among the traced blocks. Word 1 has bit 31 set (no SR
+// has), the kind in bits 24-27 (1 data, 2 fetch, 3 a helper's operand) and the SSW.
+struct psmac_utrace psmac_utrace;
+static void utrace_event(int kind, uint32_t pc, uint16_t ssw, uint32_t usp, uint32_t la, uint32_t sr, uint32_t a6,
+                         uint32_t frame)
+{
+    if (!psmac_utrace.buf) {
+        return;
+    }
+    uint32_t* e = psmac_utrace.buf + 8 * (psmac_utrace.n++ & (PSMAC_UTRACE_N - 1));
+    e[0] = pc;
+    e[1] = 0x80000000u | ((uint32_t)kind << 24) | ssw;
+    e[2] = usp;
+    e[3] = la;
+    e[4] = sr;
+    e[5] = a6;
+    e[6] = frame;
+    e[7] = 0;
+}
+
+// The trace's moment, once (a user program's write below $1000 or any access at $BAD0xxxx refused): the registers
+// go to the log, the other core writes the ring and the Mac's memory (psmac_bus.c), and the 68k waits for it here.
+static void utrace_fire(uint32_t pc, uint32_t la, uint32_t sr, const uint32_t* a, const uint64_t* ctx)
+{
+    void psmac_mmu_debug_regs(void);
+    if (!psmac_utrace.buf || psmac_utrace.fired) {
+        return;
+    }
+    psmac_utrace.fired = 1;
+    kprintf("[PSMAC:MMU] mac.usertrace: user access to %08x refused at PC %08x SR %04x, block entry %u\n", la, pc, sr,
+            psmac_utrace.n);
+    kprintf("[PSMAC:MMU]   D0-7 %08x %08x %08x %08x %08x %08x %08x %08x\n", (uint32_t)ctx[19], (uint32_t)ctx[20],
+            (uint32_t)ctx[21], (uint32_t)ctx[22], (uint32_t)ctx[23], (uint32_t)ctx[24], (uint32_t)ctx[25],
+            (uint32_t)ctx[26]);
+    kprintf("[PSMAC:MMU]   A0-7 %08x %08x %08x %08x %08x %08x %08x %08x (at the instruction's start)\n", a[0], a[1],
+            a[2], a[3], a[4], a[5], a[6], a[7]);
+    psmac_mmu_debug_regs();
+    psmac_utrace.dump = 1;
+    for (uint32_t n = 0; psmac_utrace.dump && n < 600; n++) {
+        for (volatile uint32_t d = 0; d < 20000000u && psmac_utrace.dump; d++) {}
+    }
+}
+
 static void psmac_mmu_halt(void) __attribute__((noreturn));
+#define MISS_SITES 16
+static struct {
+    uint64_t elr;
+    uint64_t lr;
+    uint32_t n;
+    uint32_t la;
+} miss_site[MISS_SITES];
+static uint64_t miss_lr;                         /* x30 at the abort: who called the reader */
 static int miss(uint32_t la, uint64_t elr, const char *why)
 {
     not_delivered++;
     if (not_delivered <= 8 || (not_delivered & 1023) == 0)
         kprintf("[PSMAC:MMU] fault at %08x (ARM %p) not delivered as a bus error: %s (%u so far)\n", la, (void *)elr, why, not_delivered);
+    // which ARM instructions they were, for the heartbeat's report (docs/23 section 21)
+    for (int i = 0; i < MISS_SITES; i++) {
+        if ((miss_site[i].elr == elr && miss_site[i].lr == miss_lr) || !miss_site[i].n) {
+            miss_site[i].elr = elr;
+            miss_site[i].lr = miss_lr;
+            miss_site[i].n++;
+            miss_site[i].la = la;
+            break;
+        }
+    }
     return 0;
+}
+
+void psmac_mmu_miss_report(void)
+{
+    if (!miss_site[0].n) {
+        return;
+    }
+    kprintf("[PSMAC:MMU]   not delivered, by ARM instruction and its caller (count, last address):");
+    for (int i = 0; i < MISS_SITES && miss_site[i].n; i++) {
+        kprintf(" %p from %p %u %08x;", (void*)miss_site[i].elr, (void*)miss_site[i].lr, miss_site[i].n, miss_site[i].la);
+    }
+    kprintf("\n");
 }
 
 /* The first bus errors delivered, repeated at every heartbeat (psmac_mmu_first_faults, psmac_mmu.c's report): on the
@@ -430,6 +509,7 @@ static uint32_t deliver_from_save_area(uint64_t *regs, const struct bframe *b, c
     regs[18] = vec;
     psmac_view_for(SR_S);                       /* the handler runs in the supervisor's view */
     log_delivery(how, b->pc, b->write, b->addr, ssw, user, vec);
+    utrace_event(b->ifetch ? 2 : 3, b->pc, ssw, a7, b->addr, b->sr, *sa_reg(regs, 14), f);
     return ((b->sr | SR_S) & ~(SR_T0 | SR_T1)) | 0x10000;
 }
 
@@ -593,6 +673,14 @@ int psmac_mmu_fault(uint64_t *ctx, uint64_t elr, uint64_t esr, uint64_t far)
 
     const char *why = NULL; uint64_t lr = 0;
     const struct psmac_fault_entry *e = locate(ctx, elr, &lr, &why);
+    {   /* where the Pi's windows were (psmac_mmu.c, no_windows): the kernel's own code there acts for the 68k (a
+           helper's operand, the code cache's checksum) and goes through the 68k's tables like any access; a driver
+           still using the low window would show here (docs/23 section 21) */
+        static uint32_t said;
+        if (!e && la >= 0x3c000000u && la < 0x40200000u && !in_jit_code(elr) && said < 4 && ++said)
+            kprintf("[PSMAC:MMU] the kernel's code at %p (called from %p) %s %08x, where the Pi's windows were: through the 68k's tables\n",
+                    (void *)elr, (void *)ctx[19], write ? "writes" : "reads", la);
+    }
     uint32_t sr_int = getSR();
     if (e && e->cc != 0xff)
         sr_int = (uint32_t)ctx[e->cc] & 0xffff;            /* condition codes still in the block's temporary */
@@ -631,12 +719,14 @@ int psmac_mmu_fault(uint64_t *ctx, uint64_t elr, uint64_t esr, uint64_t far)
         return 1;
     }
     if (!e) {
+        if (fetch_probe) { fetch_probe = 2; return 0; }    /* the translator's length check met the refused page */
         if (psmac_hguard.armed) {                          /* a guarded helper: back into its guard */
             psmac_hguard.armed = 0; psmac_hguard.addr = la; psmac_hguard.write = write;
             uint64_t land = (uint64_t)(uintptr_t)psmac_helper_fault_landing;
             __asm__ volatile("msr ELR_EL1, %0" :: "r"(land));
             return 1;
         }
+        miss_lr = ctx[19];
         return miss(la, elr, why);
     }
 
@@ -700,5 +790,9 @@ int psmac_mmu_fault(uint64_t *ctx, uint64_t elr, uint64_t esr, uint64_t far)
     delivered++;
     el1_ticks += cnt_now() - t0;
     log_delivery(write ? "data write" : "data read", e->pc, write, la, ssw, user, vec);
+    utrace_event(1, e->pc, ssw, user ? usp : ssp, la, sr_int, a[6], f);
+    if (user && ((write && la < 0x1000u) || (la >> 16) == 0xbad0u)) {
+        utrace_fire(e->pc, la, sr_int, a, ctx);
+    }
     return 1;
 }

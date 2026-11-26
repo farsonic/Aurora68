@@ -1071,6 +1071,27 @@ static struct mmu_page *space_l2_of(const uint64_t pristine[4], int i)
     return ((d & DESC_TYPE_MASK) == DESC_TABLE) ? desc_to_table(d) : NULL;
 }
 
+/* the valid level 2 entries of a low-4-GiB subtree, in the log: the Pi's windows that the spaces leave out
+   (psmac_mmu.c, docs/23 section 21) */
+void mmu_low4g_describe(const uint64_t l1[4])
+{
+    for (int i = 0; i < 4; i++) {
+        struct mmu_page *p = space_l2_of(l1, i);
+        for (int j = 0; p && j < 512; j++) {
+            uint64_t e = p->mp_entries[j];
+            int k = j;
+            if (!(e & 1)) continue;
+            while (k + 1 < 512 && (p->mp_entries[k + 1] & 1) && (p->mp_entries[k + 1] & DESC_TYPE_MASK) == (e & DESC_TYPE_MASK) &&
+                   ((e & DESC_TYPE_MASK) == DESC_TABLE || (p->mp_entries[k + 1] & DESC_OA_MASK) == (e & DESC_OA_MASK) + ((uint64_t)(k + 1 - j) << 21)))
+                k++;
+            kprintf("[MMU]   %08x-%08x: %s%08x, attributes %03x\n", (uint32_t)(((uint32_t)i << 30) | ((uint32_t)j << 21)),
+                    (uint32_t)((((uint32_t)i << 30) | ((uint32_t)(k + 1) << 21)) - 1), (e & DESC_TYPE_MASK) == DESC_TABLE ? "pages, table at " : "blocks at ",
+                    (uint32_t)(e & DESC_OA_MASK), (uint32_t)(e & 0xffc));
+            j = k;
+        }
+    }
+}
+
 void *mmu_space_new(const uint64_t pristine[4])
 {
     spinlock_acquire(&mmu_lock);

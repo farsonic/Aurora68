@@ -83,6 +83,19 @@ static inline void psmac_view_for(uint32_t sr)
     }
 }
 
+// mac.usertrace=PATH (the testbed, with mac.mmu=full; docs/23 section 21): a ring of the last PSMAC_UTRACE_N
+// blocks entered in user mode (PC, SR, A7, A6, A0, A1, D0, D1) and the bus errors among them, written to the
+// host with the Mac's memory (PATH.ram) the first time a user program's write below $1000, or any access of
+// its at $BAD0xxxx (a pointer read from an empty bus), is refused. The 68k waits meanwhile.
+#define PSMAC_UTRACE_N 131072u
+struct psmac_utrace {
+    uint32_t* buf;
+    uint32_t n;
+    volatile uint32_t dump;
+    uint32_t fired;
+};
+extern struct psmac_utrace psmac_utrace;
+
 void     psmac_setup_memory(void *rom, uint32_t rom_size);
 int      psmac_bus_write(uint64_t value, uint64_t value2, int size, uint64_t far);
 int      psmac_bus_read(uint64_t *value, uint64_t *value2, int size, uint64_t far);
