@@ -331,9 +331,28 @@ static int miss(uint32_t la, uint64_t elr, const char *why)
     return 0;
 }
 
+/* The first bus errors delivered, repeated at every heartbeat (psmac_mmu_first_faults, psmac_mmu.c's report): on the
+   owner's SE (26 November 2026, docs/23 section 17) A/UX's kernel panicked after its first bus error, and the line that
+   reported it had long left the 64 KB of the log aurora68.log keeps. */
+static struct { uint32_t pc, la, vec; uint16_t ssw; uint8_t write, user; char how; } first_faults[4];
+static uint32_t first_n;
+void psmac_mmu_first_faults(void)
+{
+    if (!first_n) return;
+    kprintf("[PSMAC:MMU]   the first bus errors:");
+    for (uint32_t k = 0; k < first_n && k < 4; k++)
+        kprintf(" #%u %c PC %08x %c %08x SSW %04x %s -> %08x%s", k + 1, first_faults[k].how, first_faults[k].pc, first_faults[k].write ? 'w' : 'r',
+                first_faults[k].la, first_faults[k].ssw, first_faults[k].user ? "user" : "sup", first_faults[k].vec, k + 1 < first_n && k < 3 ? ";" : "");
+    kprintf("\n");
+}
 static void log_delivery(const char *how, uint32_t pc, int write, uint32_t la, uint16_t ssw, int user, uint32_t vec)
 {
     uint32_t n = delivered + helper_faults + fetch_faults;
+    if (first_n < 4) {
+        first_faults[first_n].pc = pc; first_faults[first_n].la = la; first_faults[first_n].vec = vec; first_faults[first_n].ssw = ssw;
+        first_faults[first_n].write = (uint8_t)write; first_faults[first_n].user = (uint8_t)user; first_faults[first_n].how = how[0];
+        first_n++;
+    }
     if (n <= 6 || (n & 1023) == 0)
         kprintf("[PSMAC:MMU] bus error #%u (%s): PC %08x %s %08x (SSW %04x, %s) -> handler %08x; %u lazy maps, %u ns on average in the abort\n",
                 n, how, pc, write ? "write" : "read", la, ssw, user ? "user" : "supervisor", vec, lazy_maps,

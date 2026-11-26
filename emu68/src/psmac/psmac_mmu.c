@@ -1445,6 +1445,7 @@ void psmac_mmu_full_stats(void)
     for (int i = 0; i < NSPACES; i++) nsp += spaces[i].used;
     kprintf("[PSMAC:MMU]   faults: %u bus errors delivered (%u data, %u operand, %u fetch), %u not delivered, %u lazy maps; "
             "%u privilege violations from user mode\n", d + h + f, d, h, f, m, l, psmac_priv_user);
+    { extern void psmac_mmu_first_faults(void); psmac_mmu_first_faults(); }
     kprintf("[PSMAC:MMU]   soft TLB: %u walks, %u maps (%u pages), %u first writes (M), %u emulated, %u TT, %u bus errors; "
             "PFLUSH %u all %u fc %u ea (%u pages kept, %u dropped, %u us), PLOAD %u, PTEST %u, PMOVE %u, MOVES %u, %u switches, "
             "%u code-cache checks; spaces: %u in use (%s), %u made, %u reused, %u us a switch on average\n",

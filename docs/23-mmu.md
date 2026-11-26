@@ -1267,3 +1267,18 @@ Two changes, both only while the views are apart (A/UX's tables; Mac OS never sp
 Section 15.5's line with `mac.sccirq=aux` kept (the SE's SCC) and `mac.hdmi=log` added, a fresh copy of the disk, and
 A/UX's own Mac OS as the startup disk if it can be had (System 7.1 from the card launches A/UX Startup too, now).
 If the slot storm comes back regardless, the log's `irqguard` lines say which level and which handler.
+
+## 17. The real SE in A/UX's kernel: a panic after the first bus error (26 November 2026)
+
+With section 16's kernel, `mac.hdmi=log` and the declaration ROMs rebuilt on 25 November copied to the card (the
+SE's card still had ROMs from before PiVideo's JVBLTask change, so the first try panicked with "Unsupported kernel
+A-line trap: A072" as the MAME SE had before 8576784), the owner's SE went past "Launching..." into A/UX's kernel and
+stopped with "trap type 11 / pc = 0x12FFF30C sr = 0x2000 up->u_procp = 0x1BC91E pid = 1 exec = 'sched'" and "Double
+panic: unexpected kernel trap". The PC is in the kernel stack's region ($12FFFxxx; the heartbeat's D3 held the same
+value and A2 $12FFF000). The log (aurora68.log, the last 64 KB) said one bus error had been delivered, an operand
+fault, and nothing after; the line naming it had left the 64 KB, behind the SCSI trace (`scsi.trace=1300`) and the
+stalled machine's PC trail. The MAME SE takes its first two bus errors at the same stage, operand faults from the
+standalone shell's PC $5571A writing $00000030 and $FFFFFFFC (memory probes, handler $54C08), and goes on.
+
+The first four bus errors delivered are now repeated in every heartbeat's MMU report ("the first bus errors: #1 o
+PC ... w ... SSW ... sup -> handler"), so the next log names the SE's.
