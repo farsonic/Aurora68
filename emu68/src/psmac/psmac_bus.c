@@ -1161,7 +1161,13 @@ int psmac_bus_write(uint64_t value, uint64_t value2, int size, uint64_t far)
     }
     { int valid; uint32_t phys = psmac_mmu_l2p((uint32_t)far, &valid);
       if (trace_left) { trace_left--; kprintf("[PSMAC:BUS] W%d %08x (phys %08x%s) <- %08x\n", size, (uint32_t)far, phys, valid ? "" : " INVALID", (uint32_t)value); }
-      if (!valid) return 1;   /* unmapped logical page: write ignored (would be a bus error) */
+      if (!valid) {           /* unmapped logical page: write ignored (would be a bus error) */
+          extern int psmac_mmu_full; static uint32_t dropped;
+          if (psmac_mmu_full && ++dropped <= 8)
+              kprintf("[PSMAC:MMU] write dropped #%u: W%d %08x <- %08x, no translation in the view TTBR0 holds (68k PC %08x)\n",
+                      dropped, size, (uint32_t)far, (uint32_t)value, (uint32_t)psmac_fault_pc);
+          return 1;
+      }
       far = phys; }
     {   /* mac.mmu=full: memory the abort path emulates (the kernel's alias below zero, a supervisor page both modes share,
            psmac_mmu.c) is the Pi's copy, not the motherboard's */

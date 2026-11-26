@@ -1303,3 +1303,13 @@ every TTBR change and so hides a missing TLBI, which a real core, keeping each A
 space's descriptors, each install of a space, each PFLUSH and each view switch the translated code makes. On the MAME
 SE it changes nothing (the MOVES is retried as before). If the SE passes this point with it, the missing TLBI is the
 cause and the next step is to find which change lacks one.
+
+The line with the owner's SE (test kernel 11): `u_procp 001bc91e, saved USP 00000000, root 0004d000, root[0] 00000000`,
+the MAME SE's `root[0] 0004d40a, next 0004d20a`. The same process and the same root table at $4D000, but on the Pi the
+table's first entry is still zero when the shell walks it: a write of A/UX's (the entry, which the MAME SE has by
+then) is not in the Pi's copy of $4D000. That page lies in the bottom $50000 the board keeps read-only for the
+IIci's frame buffer (ro_phys), so every write to it is emulated (psmac_bus_write) and translated with the view TTBR0
+holds (psmac_mmu_cur_view); a write whose logical page has no translation in that view is dropped without a word.
+Two checks are now logged (the first eight of each): an abort where the SR's S bit and the view in TTBR0 disagree
+outside an exception's entry ("view mismatch"), and a write dropped for want of a translation ("write dropped").
+The MAME SE shows neither up to init.

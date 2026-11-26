@@ -575,6 +575,14 @@ int psmac_mmu_fault(uint64_t *ctx, uint64_t elr, uint64_t esr, uint64_t far)
        agree everywhere but in an exception's entry, which installs the supervisor's view before it pushes); else the SR's,
        and supervisor while an exception's frame is being pushed (the SR still has the old mode then). */
     int view_now = psmac_mmu_cur_view(), user;
+    {   /* the S bit and the view TTBR0 holds disagree outside an exception's entry (26 November 2026, docs/23 section 18):
+           the access went through the other mode's tables; the owner's SE lost a table entry A/UX wrote */
+        static uint32_t mismatches;
+        int s_now = (getSR() & SR_S) != 0;
+        if (view_now >= 0 && !psmac_views.guard && s_now != (view_now == 1) && ++mismatches <= 8)
+            kprintf("[PSMAC:MMU] view mismatch #%u: SR %04x (%s) but TTBR0 holds the %s view, %s %08x (ARM %p)\n", mismatches, getSR(),
+                    s_now ? "supervisor" : "user", view_now ? "supervisor's" : "user's", write ? "write" : "read", la, (void *)elr);
+    }
     if (psmac_views.guard) user = 0;
     else if (view_now >= 0) user = view_now == 0;
     else user = !(sr_int & SR_S);
