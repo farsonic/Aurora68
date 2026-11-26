@@ -12,7 +12,8 @@ Section 11 is phase 2 (25 and 26 November): the complete 68030 PMMU on a soft TL
 running on it, on the solo board and in the MAME full stack. Section 12 is phase 3 (26 November): address spaces with
 ASIDs, separate user and supervisor views, MOVES, the code cache keyed by space, the double bus fault: what A/UX needs
 before it can be tried. Section 13 (27 November) is the first try on the real SE, which stopped before the 68k
-started, and its fix. Sections 1 to 10 are phase 1's record and are kept as written; where a later phase found a
+started, and its fix. Section 14 (26 November) is A/UX on the real SE as far as "Checking...", section 15 (26 November) A/UX
+in the MAME SE as far as init, the ten faults on the way and their fixes. Sections 1 to 10 are phase 1's record and are kept as written; where a later phase found a
 statement wrong or overtook it, a bracketed note says so.
 
 ## 1. What was read
@@ -1029,3 +1030,183 @@ served as a virtual SCSI disk at ID 0, `scsi.disk=AUX.dsk:0`), in four steps:
   to STOP. On a IIci nothing would be asserted then; here Aurora68's NuBus cards are, and they starve level 1, the
   VIA's clock the shell waits for (the system-error code at $AF0 stayed 0: no system error). `aux` now keeps the slot
   interrupt away too (RBV bit 1 out of the level, the RBV's other sources such as the SCSI chip's still in it).
+
+## 15. A/UX in the MAME SE: past "Checking..." to init, and what stopped it on the way (26 November 2026)
+
+The owner's A/UX 3.1.1 disk (the Workgroup Server 95 edition, prebuilt for Shoebill; its partition map in section 14)
+was served from a host file as a virtual SCSI disk at ID 0 in the MAME SE full stack (`MACHINE=macse_ps`, `HD=none`,
+`mac.board=se`, the 512x342 declaration ROM, `PSMAC_RAM=128`, `mac.mmu=full`, `mac.boot=scsi`, MAME's SE PRAM as found
+and restored after each run). Every run started from a fresh copy of the disk unless said otherwise (A/UX writes to it,
+and some of the bugs below damaged it). A/UX's own Mac OS (7.0.1) started, launched A/UX Startup, and A/UX Startup
+launched the kernel: in MAME the disk was clean, so the "Checking..." of section 14 passed in a moment. What followed
+was a chain of faults, each found from the kernel's message buffer or a register dump in a RAM image of the Mac, each
+fixed in the kernel, the board layer or the Mac-side driver, and each in a way that makes the SE board more like a IIci
+for any software that drives the hardware itself.
+
+**How the guest was read.** `mac.ramdump=BEAT[+EVERY[-LAST]],MB,PATH` (new, the testbed only) writes the Mac's physical
+memory to a host file at a heartbeat; the heartbeat's register line now has USP and VBR. The A/UX kernel loads at
+physical $5C000 (logical $10000000, its data at $11000000), and its message buffer (`msgbuf`, logical $120199F4 under the
+standalone loader's tables) holds what the console printed; a 68030 table walker and a reader for A/UX's BSD file
+system on the disk image (both host scripts, not committed) gave the rest. A/UX's low memory at $54000-$5C000 is not
+the "standalone shell" section 14 took it for but A/UX Startup's and the kernel's shared low-level code (`locore`: the
+interrupt entry at $54B5E, `spl` at $54884, the idle loop at $548D4 that section 14 saw, and the stub at $548CA,
+`MOVE #$2700,SR; ORI.W #$0700,(SP); RTE`, which the kernel puts in all six autovectors while its drivers initialise and
+takes out again before it enables interrupts).
+
+### 15.1 What was wrong, in the order A/UX met it
+
+1. **"Attempt to use unsupported A-line trap: A072", then "panic: Unsupported kernel A-line trap".** A/UX opens the slot
+   card's video driver from the declaration ROM (`PiVideo: open` in the log, a second time, under A/UX's tables) and
+   runs its slot interrupt handler in the kernel. `mac/pivideo.s` called the Vertical Retrace Manager as trap $A072
+   (`_DoVBLTask`), which A/UX does not emulate in the kernel. Apple's own video drivers call it through the low-memory
+   vector `JVBLTask` ($D28); PiVideo does that now. The panic re-enabled interrupts, the next VBL panicked again ("Double
+   panic", nine levels deep), the kernel stack ran off its page, and:
+2. **A double bus fault that was not one.** A translated instruction's page fault whose own frame cannot be stacked was
+   "not delivered" and emulated ($BAD0BAD0 for a read): the kernel went on with those values, used one as a pointer,
+   and core 0 died in the abort handler with the console lock held, so the log stopped mid-line. Such a fault now halts
+   the 68k as the guard's case of section 12.5 does, with the walks of the address and of the stack.
+3. **"no slot 10 interrupt handler" ... "panic: Polling routine didn't handle interrupt".** A/UX's level-2 handler reads
+   the RBV's IFR at $1A03 and IER at $1C13 and the slot flags at **$1E02**: offsets that name the right register on a VIA2
+   (registers 13, 14 and 15 by A9-A12) and on the RBV, which decodes the low address lines (Linux's `mac_via.h` names
+   rIFR $1A03 and rIER $1C13 for the same reason). `psmac_board_se.c` read an offset of $100 or more as a VIA register
+   number only (13 the IFR, 14 the IER, as MAME's `rbv.cpp` does), so $1E02 read 0: every slot interrupting. A/UX called
+   slot 9's handler with nothing pending and panicked. `rbv_regno` now takes the low five bits when they are not zero,
+   and keeps the VIA reading for $1A00/$1C00, which the IIci ROM uses; the IIci testbed's slot-9 merge (`psmac_bus.c`)
+   decodes the same way. Section 14's level-2 storm on the real SE was most likely this (*inference*: an unclaimed slot
+   interrupt, the SIFR read as all slots asserted), not a card that cannot be quietened.
+4. **The SCSI scan never finished.** A/UX's SCSI driver ("I/O Acceleration") reads the status byte by pseudo-DMA: DMA
+   mode, start DMA initiator receive, wait for DRQ in the bus and status register, one read of the window. The virtual
+   devices answered the window in the data-in phase only; the status read $FF without an ACK, the target stayed in the
+   status phase and the driver retried the same command for ever. The window now takes status and message bytes too.
+   (The scan of IDs 1-6 with no device takes about two minutes each in the testbed: A/UX polls BSY 100,000 times, and
+   each poll is a bridge cycle to MAME's real 5380. On the SE it is a fraction of a second.)
+5. **A/UX's init could not be given its page faults.** The first user program took a fetch fault on its first page of
+   text, and its frame could not be stacked: `push_frame` wrote the frame and read the vector through whichever view
+   TTBR0 held, and a fault from user mode is taken before the supervisor's view is installed, so with the views apart
+   the supervisor stack ($12FFxxxx) and the vectors were looked for in the user's tables. The frame and the vector are
+   now always supervisor data (`psmac_mmu_ram_ptr_fc`), the stage C and B words the faulting mode's program space.
+   mmutest T28 is the case (a data and a fetch fault from user mode, the supervisor stack on a page only the SRP's tables
+   map): 141 passed on this kernel, and the previous kernel never reports.
+6. **Live condition codes judged dead.** With init paging its text in, the log had 531 "not delivered" reads from
+   `cache_read_16`: the translator's condition-code lookahead (`M68K_GetSRMask`) reads the instructions after the one it
+   translates, following branches and jumps, and met pages A/UX had not loaded yet. The abort handler answered
+   $BAD0BAD0, and $BAD0 is `CMPA.W (A0),A5`, which sets every flag and reads none, so the flags of the instruction being
+   translated were left out. The scan now stops, keeping what it has not seen overwritten, at an instruction on another
+   4 KiB page (or one that could run into the next). Only with the option; the reads of the code cache's checksum of a
+   block whose page has gone (`cache_read_32`/`_64`, a few thousand per boot) remain, and are harmless: they only fail
+   the checksum.
+7. **The disk.** After the first A/UX boot the next one said, from A/UX Startup, "/dev/default: BAD SUPER BLOCK: MAGIC
+   NUMBER WRONG": the root file system's superblock (at its fourth kilobyte, written back by A/UX at mount) was one byte
+   late on the disk. A/UX's SCSI driver writes the pseudo-DMA window once before it starts a transfer, in either
+   direction ("pseudo-DMA write outside DMA mode ... MR $02" in the new log lines: DMA mode set, no start DMA yet), and the
+   model took that byte as data. A 5380 moves a byte through DACK only once a start DMA register has been written; the
+   window now loads the output data register outside DMA mode (and reads the bus), as the chip does. scsidev_test has a
+   write and a read with such a byte; the superblock after a mount now differs from the pristine one in 15 bytes (its
+   time and clean flag), the magic where it belongs.
+8. **The reboot.** On its first boot A/UX restarted the Mac by itself (a RESET instruction, then the ROM; its
+   autoconfiguration building a kernel for the machine, *inference* from the `newunix` A/UX Startup later looked for).
+   The Mac OS that came up next stopped with level 2 asserted for ever: the RBV's IFR still had the sound bit that
+   A/UX's and the ROM's $90 writes to $1A03 had set, and the new session enabled it. The RBV and the ASC, which
+   `psmac_board_se.c` answers for the IIci, are now reset by the 68k's RESET as a IIci's are.
+9. **An illegal instruction killed core 0.** A user program reached an illegal opcode (`$37E0`, a MOVE to a PC-relative
+   destination); the translator's path for it dumps the 68k code around it from the exception handler, through the 68k's
+   MMU, and the page before it was one A/UX had not mapped: the read faulted inside the handler. The dump is left out
+   with the option; the program gets its illegal instruction exception.
+
+10. **Old code after an exec.** A flush that drops a page because its descriptor is no longer valid did not bump the
+    code cache's epoch (a page found on a new frame did). A process's text replaced in place (an exec, the new pages
+    paged in on demand, no instruction-cache clear, which a 68030's 256-byte cache never needs there) could run the old
+    process's translated blocks. mmutest T29 (code on a page made invalid, flushed, then valid on another frame, no cache
+    clear): 143 passed; without the change T29 ran the old code (`t29new=29292929`).
+
+### 15.2 How far A/UX gets now
+
+With all of the above, from a fresh copy of the disk in the MAME SE (about ten minutes to the kernel, five more to
+init): A/UX Startup, the kernel, the SCSI scan, init:
+
+```
+Running on mc68030
+mc68882 Floating Point Coprocessor ID 1
+Onboard SCC serial driver.
+mc68030 caching enabled
+...
+fd:  floppy driver ver 2.00; IWM chip, d1 is 800K (2 head), d0 is 800K (2 head)
+I/O Acceleration:  version g21,  maxba=16,  maxwb=16
+SCSI bus 1, id 0: DISK: AURORA68Virtual Disk    1.0
+```
+
+then init on the screen (verbose): `/etc/rc`, errdemon, startmsg, cron, catsearchd, `telinit v`. Thousands of
+processes run (8,600 context switches, 157 address spaces made, 125 reused, 25,000 page faults delivered in one run).
+
+**What stops it there: user programs die with "Memory fault".** `/etc/rc`'s `chown adm /etc/wtmp` (pid 107, on every
+boot) dumps core; later `/etc/loginrc`'s `macgetty` gives way to `getty`, which dumps core too, and init respawns it
+without end, so the console never shows a login (thousands of processes, the screen unchanged for twenty minutes). The
+cores (read from the disk image with a reader for A/UX's BSD file system) hold a format $A bus error frame: PC $2DC2
+in chown (`PEA -28(A6)`, after a call of `strcmp` in libc_s at $47F05564), a write to $000001E0, SSW $0101, with A1 and
+A7 both $1E0: the user stack pointer has taken a string pointer's value. getty's core holds the same frame and nearly
+the same data segment, which no getty can produce, so the u-area and data the kernel dumped for it were chown's frames.
+Not found. Two candidates were followed and ruled out as the cause (both fixed anyway): the code cache's epoch (item 10)
+and the memory table below; the same crash at the same PC comes with 64 MB.
+
+**A/UX's memory table on 128 MB** is wrong as well. The kernel prints
+
+```
+total memory size: 201326592 bytes
+available  memory: 96227328 bytes
+```
+
+192 MB on a 128 MB Mac. A/UX's physical memory table (locore, $5B0C4 count, 16-byte entries from $5B0C8) is
+`{0, $2EC000, $08000000}` and `{$04000000, $04000000, $08000000}`: the first chunk is all 128 MB and the second is bank
+B again, so the frames from 64 to 128 MB are on A/UX's free list twice. The ROM's own RAM table at the top of memory is
+right (`WLSC`, then `{0, $04000000}`, `{$04000000, $04000000}`). A/UX Startup builds its table from `GetPhysical`
+(`_MemoryDispatch`) over the logical RAM, merging adjacent runs (its CODE 4, $3D0C and $3B32), and adds ranges from other
+queries ($39D6, $3C0E); which of those adds bank B a second time was not settled. With `mac.ram=64` (bank A only) the
+table is one chunk and the kernel says 64 MB, so that is the setting to use until this is understood; the
+"Memory fault" crashes are the same with it.
+
+### 15.3 What the owner's SE showed, read again
+
+- *Level 2 on the real SE* (section 14, with `mac.sccirq=aux`): item 3 above. The slot masking `aux` had grown is taken
+  out again (`mac.sccirq=aux` keeps the SCC's line alone, only while the views are apart; `off` as before), since A/UX
+  needs its slot interrupts for the screen's VBL.
+- *"PC $54912, SR $270D", "no interrupts at all"*: the kernel in locore's idle loop with every autovector on the masking
+  stub, which is where its driver initialisation waits; in MAME the same PC and SR appear for a beat at a time on every
+  boot. With items 1-4 the kernel no longer stops in that phase in MAME.
+- *Level 4 on the real SE, 4.1 million a second, no SCC access*: not reproduced. MAME's SE raises no SCC interrupt (no
+  device on either port), and A/UX touches the SCC about 570 times while its driver initialises and not again (both
+  serial gettys are off in this edition's inittab). The stub above is the level-4 handler at that moment, so a pending
+  SCC interrupt would be taken without end until the kernel's own handler is in. What the SE's SCC has pending then
+  (an external/status change on a port's handshake or carrier input, which the SE wires differently from a IIci) needs the
+  hardware: the new kernel's log with `mac.setrace=200,SCC` around A/UX Startup's launch, and the irq watch's line.
+- *"bad clist count"* in the peek: a message string among locore's constants at $5B03A, present on every boot, not an
+  error A/UX raised.
+
+### 15.4 Tests (the final kernel of this section)
+
+- `make -C mac check`: passes (scsidev_test 283, 328 and 164 checks; the four new ones fail on the previous code);
+  main merged into the branch first (the shared WiFi ARP fix, Aurora68 Machine's machine type for A/UX Startup).
+- mmutest, solo board, `mac.ram=8`: with `mac.mmu=full` **143 passed, 0 failed, 125 bus errors taken**, none
+  undelivered (T28 and T29 new); without the option `16 passed, 35 failed, 0 bus errors taken` and the benchmark at
+  363-381 MIPS, as before.
+- System 7.1 on the solo board: the Finder at 36.3 s without the option, 45.7 s with it (section 12.7: 33.7-37.7 and
+  44.5-46.5).
+- System 7.1 on the MAME SE (`PSMAC_RAM=128`, a copy of the test CHD at ID 6): the Finder at 253.8 s without the
+  option and 265.4 s with it (section 13: about 290 and 282 s), no fault, nothing undelivered, level 2 taken about 60
+  times a second (the screens' VBL), nothing taken again without cause.
+- A/UX's own System 7.0.1 on the MAME SE, from the virtual disk, with the option: the Finder at about 157 s, then A/UX
+  Startup, in every run above.
+- The owner's full kernel (`-DPSMAC_PC=ON -DPSMAC_A2=ON`, Aurora86 and Aurora65) built from the branch.
+
+### 15.5 What the owner can run, and what is not settled
+
+`mac.board=se mac.mmu=full mac.ram=64 scsi.disk=AUX.dsk:0 mac.boot=scsi` (no `mac.sccirq`), with A/UX's own Mac OS as
+the startup disk and the Aurora68 Machine of main (it gives A/UX Startup the ROM's machine type). Expected on the SE:
+A/UX Startup, the kernel's messages, init, and then what the MAME SE showed (the "Memory fault" crashes), unless the SE's
+SCC stops it earlier as in section 14; if it does, the log with `mac.setrace=200,SCC` is what to send. Not settled:
+
+- the user programs' "Memory fault" (15.2), and with it the login and A/UX's Finder;
+- A/UX's 192 MB on 128 MB (15.2);
+- the level-4 storm of the real SE (15.3);
+- the "Checking..." of a disk A/UX did not unmount cleanly: in MAME that check reads the root file system through the
+  Mac OS SCSI Manager at about 20 KB/s and was not waited for (40,000 sectors read after twenty minutes); on the SE the
+  virtual disk is served without the bridge.
