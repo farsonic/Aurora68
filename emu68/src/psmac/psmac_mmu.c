@@ -980,7 +980,10 @@ static int reval_page(struct space *s, int fc, uint32_t la, struct pwalk *r, uin
             r->pa -= la - *span_lo;                 /* pa of the span's start, below */
         } else { *span_lo = 1; *span_hi = 0; }
     }
-    if (!r->valid || r->span_bits < 12) return 0;
+    /* A page that is no longer valid may come back with other contents and no instruction-cache clear in between (A/UX's
+       exec replaces a process's text in place, its pages paged in again on demand): the code cache must check its blocks
+       before it runs them again, as it does for a page on a new frame (26 November 2026, docs/23 section 15) */
+    if (!r->valid || r->span_bits < 12) { psmac_icache_epoch++; fs.epoch_bumps++; return 0; }
     if (r->s && (!(fc & 4) || !split_now)) return 0;
     uint32_t pa = r->pa + (la - *span_lo);
     if (pi_phys(pa & ~0xfffu) != had) { psmac_icache_epoch++; fs.epoch_bumps++; return 0; }

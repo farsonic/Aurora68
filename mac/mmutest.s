@@ -27,7 +27,8 @@
 | SR), MOVES across the spaces and into CPU space, PFLUSH by function code and mask, an exception's frame pushed
 | through the supervisor's tables, code run from a page that faults on its fetch, and 48 roots for the kernel's 32
 | spaces; docs/23-mmu.md section 12; 141 with T28, 26 November 2026: bus errors from user mode, data and fetch, whose
-| frames go through the supervisor's tables, docs/23 section 15).
+| frames go through the supervisor's tables; 143 with T29, the same day: code replaced on a page that went invalid in
+| between, docs/23 section 15).
 | mmutest-halt.rom ends with T25 instead of the benchmark: an exception whose frame cannot be pushed, after which the
 | kernel must log the 68030's double bus fault and stop running the 68k.
 | Without mac.mmu=full the bus errors are never delivered (the shim reads $BAD0BAD0 and drops writes), so the
@@ -843,6 +844,27 @@ t23s:	move.l	WIN+0xC3000,%d3			| supervisor: a bus error, mapped one to one in t
 	pmove	(%a0),%crp
 	want	n_t27, %d6, 0x1DFE22B0		| 48 x ($AAAA0019 + $A0A0A0A0), modulo 2^32
 
+	| ---- T29: code replaced on a page that went invalid in between, with no instruction-cache clear: a process's
+	|      exec, whose new text is paged in where the old was (26 November 2026, docs/23 section 15). A 68030's
+	|      256-byte cache would long have lost the old lines; the kernel's code cache must not run its old block
+	move.l	#0x203C2929,WIN+0xD8000		| frame D8: "move.l #$29292929,d0; rts"
+	move.l	#0x29294E75,WIN+0xD8004
+	move.l	#0x203C3030,WIN+0xD9000		| frame D9: "move.l #$30303030,d0; rts"
+	move.l	#0x30304E75,WIN+0xD9004
+	move.l	#WIN+0xD8000+1,TBLC+0xC8*4	| page C8 on frame D8
+	pflusha
+	moveq	#0,%d0
+	jsr	WIN+0xC8000
+	move.l	%d0,R0
+	clr.l	TBLC+0xC8*4			| invalid, and flushed
+	pflusha
+	move.l	#WIN+0xD9000+1,TBLC+0xC8*4	| valid again on frame D9: no flush needed (nothing cached), no cache clear
+	moveq	#0,%d0
+	jsr	WIN+0xC8000
+	move.l	%d0,R0+4
+	want	n_t29a, R0, 0x29292929
+	want	n_t29b, R0+4, 0x30303030
+
 p2skip:
 
 	| ---- the result ----
@@ -1152,6 +1174,8 @@ n_t28f:	.asciz	"t28fetch"
 n_t28d:	.asciz	"t28data"
 n_t28sp: .asciz	"t28sp"
 n_t28c:	.asciz	"t28count"
+n_t29a:	.asciz	"t29old"
+n_t29b:	.asciz	"t29new"
 n_t26:	.asciz	"t26"
 n_t26c:	.asciz	"t26count"
 n_t26f:	.asciz	"t26fmt"
