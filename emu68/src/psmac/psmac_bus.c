@@ -322,10 +322,15 @@ static void psmac_read_options(void)
     { extern void psmac_console_mode(int); psmac_console_mode(psmac_hdmi_mode == 2 ? 2 : con_mode); }   /* psmac_display.c, "the splash" */
     if ((tok = find_token(args, "mac.dbfslow="))) { tok += 12; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); psmac_dbf_slow = n > 8 ? 8 : n; }
     if ((tok = find_token(args, "mac.pcwatch="))) { tok += 12; uint32_t a = 0; while (1) { char c = *tok; uint32_t d; if (c >= '0' && c <= '9') d = c - '0'; else if (c >= 'a' && c <= 'f') d = c - 'a' + 10; else if (c >= 'A' && c <= 'F') d = c - 'A' + 10; else if (c == 'x' || c == 'X') { tok++; continue; } else break; a = a * 16 + d; tok++; } pcwatch = a; }
-    if ((tok = find_token(args, "mac.watchpc="))) {     /* mac.watchpc=HEX: the emulated writes of the translated block that starts there */
-        uint32_t a = 0; for (tok += 12; (*tok >= '0' && *tok <= '9') || ((*tok | 32) >= 'a' && (*tok | 32) <= 'f'); tok++) a = a * 16 + (uint32_t)(*tok <= '9' ? *tok - '0' : (*tok | 32) - 'a' + 10);
-        extern uint32_t psmac_watch_pc; psmac_watch_pc = a;
-        kprintf("[PSMAC] mac.watchpc=%x: the emulated writes of the block there are logged (the first 32)\n", a);
+    if ((tok = find_token(args, "mac.watchpc="))) {     /* mac.watchpc=HEX[,HEX...]: the emulated writes of up to four translated blocks */
+        extern uint32_t psmac_watch_pcs[4]; tok += 12;
+        for (int k = 0; k < 4; k++) {
+            uint32_t a = 0; for (; (*tok >= '0' && *tok <= '9') || ((*tok | 32) >= 'a' && (*tok | 32) <= 'f'); tok++) a = a * 16 + (uint32_t)(*tok <= '9' ? *tok - '0' : (*tok | 32) - 'a' + 10);
+            psmac_watch_pcs[k] = a;
+            kprintf("[PSMAC] mac.watchpc: the emulated writes of the block at %x are logged\n", a);
+            if (*tok != ',') break;
+            tok++;
+        }
     }
     if ((tok = find_token(args, "mac.watchpage="))) {   /* mac.watchpage=HEX: the emulated writes to one physical page logged */
         uint32_t a = 0; for (tok += 14; (*tok >= '0' && *tok <= '9') || ((*tok | 32) >= 'a' && (*tok | 32) <= 'f'); tok++) a = a * 16 + (uint32_t)(*tok <= '9' ? *tok - '0' : (*tok | 32) - 'a' + 10);
@@ -1160,7 +1165,7 @@ void psmac_wire_write(uint32_t addr, int size, uint32_t data, int posted)
 static uint32_t trace_left = 400;
 void psmac_trace(uint32_t n) { trace_left = n; }
 uint32_t psmac_watch_page;               /* mac.watchpage= (psmac_bus_write) */
-uint32_t psmac_watch_pc;                 /* mac.watchpc= (psmac_bus_write) */
+uint32_t psmac_watch_pcs[4];             /* mac.watchpc= (psmac_bus_write), up to four blocks */
 uint64_t psmac_fault_pc, psmac_fault_a7;   /* JIT's 68k PC (block granularity) and A7 at the fault */
 int psmac_bus_write(uint64_t value, uint64_t value2, int size, uint64_t far)
 {
@@ -1218,9 +1223,10 @@ int psmac_bus_write(uint64_t value, uint64_t value2, int size, uint64_t far)
     {   /* mac.watchpage=HEX (26 November 2026, docs/23 section 18): every emulated write to one physical page, the first 96 */
         extern uint32_t psmac_watch_page; static uint32_t seen;
         extern int psmac_mmu_views_apart(void);   /* from A/UX's switch of tables on: Mac OS writes the page too, byte by byte */
-        extern uint32_t psmac_watch_pc; static uint32_t seen_pc;
-        if (psmac_watch_pc && (uint32_t)psmac_fault_pc == psmac_watch_pc && seen_pc++ < 32)
-            kprintf("[PSMAC:WATCHPC] W%d %08x <- %08x from the block at %08x\n", size, (uint32_t)far, (uint32_t)value, psmac_watch_pc);
+        extern uint32_t psmac_watch_pcs[4]; static uint32_t seen_pc;
+        uint32_t fpc = (uint32_t)psmac_fault_pc;
+        if (psmac_watch_pcs[0] && (fpc == psmac_watch_pcs[0] || fpc == psmac_watch_pcs[1] || fpc == psmac_watch_pcs[2] || fpc == psmac_watch_pcs[3]) && seen_pc++ < 48)
+            kprintf("[PSMAC:WATCHPC] W%d %08x <- %08x from the block at %08x\n", size, (uint32_t)far, (uint32_t)value, fpc);
         if (psmac_watch_page && ((uint32_t)far & ~0xfffu) == psmac_watch_page && psmac_mmu_views_apart() &&
             (((uint32_t)far & 0x1f0u) == 0 || (uint32_t)value != 0) && seen++ < 96)   /* the first 16 bytes of each 512, or a value other than zero */
             kprintf("[PSMAC:WATCHPAGE] W%d %08x <- %08x%s (68k PC %08x)\n", size, (uint32_t)far, (uint32_t)value,

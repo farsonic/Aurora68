@@ -1329,3 +1329,11 @@ a slot of its own stack (the page at $4C000, below $50000, read through the ARM 
 emulated path). The root table entry went to address 0, and the shell's walk found none. Next: at a write to the first
 bytes of memory under A/UX's tables, the ARM store, its base register, A6, the slot's value by the walk and the walk's
 view of that stack page are logged.
+
+Test kernel 14's "low write" lines on the SE were the shell's own writes of its vectors at 0-$C (A6 $7FE20), which used
+the four; the kernel's store was not among them and, this time, not among the watched block's emulated writes either
+(its pointer then fell outside the low $50000). The kernel's code ($1002302x-$100231FA, from the MAME RAM dump): the
+pointer is $55FAC's result, stored at A6-16 by `MOVE.L A0,-16(A6)` at $100230CC, tested at $100230E6 and used by
+memory-indirect operands at $100230D4, $100230EC and $10023154. The MAME SE with `mac.watchpc=100230ca,10023146`
+(up to four blocks now): $4CF14 <- $0004D000 (the slot, in the kernel's stack page $4C000), then $4D000 <- $0004D402.
+The "low write" check now takes only the kernel's frames (A6 $12xxxxxx).

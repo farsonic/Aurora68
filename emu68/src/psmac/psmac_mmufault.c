@@ -580,7 +580,7 @@ int psmac_mmu_fault(uint64_t *ctx, uint64_t elr, uint64_t esr, uint64_t far)
            kernel's own walk, and the walk's view of that stack page (ARM entry, cache) */
         extern int psmac_mmu_views_apart(void);
         static uint32_t low_writes;
-        if (write && la < 0x10 && psmac_mmu_views_apart() && ++low_writes <= 4) {
+        if (write && la < 0x10 && psmac_mmu_views_apart() && ((uint32_t)ctx[28] >> 24) == 0x12 && ++low_writes <= 4) {   /* the kernel's frames (A6 $12xxxxxx), not the shell's vectors */
             uint32_t psmac_mac_rd32(uint32_t logical, int *ok);
             uint32_t a6 = (uint32_t)ctx[28], ins = *(volatile uint32_t *)elr; int rn = (int)((ins >> 5) & 31), ok;
             uint32_t v = psmac_mac_rd32(a6 - 16, &ok);
