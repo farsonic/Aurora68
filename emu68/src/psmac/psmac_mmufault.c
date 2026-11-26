@@ -364,6 +364,19 @@ void psmac_mmu_first_faults(void)
 static void log_delivery(const char *how, uint32_t pc, int write, uint32_t la, uint16_t ssw, int user, uint32_t vec)
 {
     uint32_t n = delivered + helper_faults + fetch_faults;
+    if (n == 1) {
+        /* A/UX Startup's page fault handler ($59850, docs/23 section 18): what it reads to bring in the first fault's page.
+           u.u_procp at $12FFF000, the saved user SP at $12FFF534, the proc's table root at +66 and that root's first
+           entries, and the walk ($56062) for the fault address; the owner's SE takes the failure path where QEMU does not */
+        uint32_t psmac_mac_rd32(uint32_t logical, int *ok);
+        int ok1, ok2, ok3, ok4, ok5;
+        uint32_t procp = psmac_mac_rd32(0x12fff000u, &ok1), usp = psmac_mac_rd32(0x12fff534u, &ok2);
+        uint32_t root = ok1 ? psmac_mac_rd32(procp + 66, &ok3) : 0; if (!ok1) ok3 = 0;
+        uint32_t e1 = ok3 ? psmac_mac_rd32(root + ((la >> 25) << 2), &ok4) : 0; if (!ok3) ok4 = 0;
+        uint32_t e2 = (ok4 && (e1 & 2)) ? psmac_mac_rd32((e1 & ~0x1ffu) + (((la >> 18) & 0x7f) << 2), &ok5) : 0; if (!(ok4 && (e1 & 2))) ok5 = 0;
+        kprintf("[PSMAC:MMU] first fault, A/UX's view: u_procp %08x%s, saved USP %08x%s, root %08x%s, root[%u] %08x%s, next %08x%s\n",
+                procp, ok1 ? "" : "?", usp, ok2 ? "" : "?", root, ok3 ? "" : "?", la >> 25, e1, ok4 ? "" : "?", e2, ok5 ? "" : "?");
+    }
     if (first_n < 4) {
         first_faults[first_n].pc = pc; first_faults[first_n].la = la; first_faults[first_n].vec = vec; first_faults[first_n].ssw = ssw;
         first_faults[first_n].write = (uint8_t)write; first_faults[first_n].user = (uint8_t)user; first_faults[first_n].how = how[0];
