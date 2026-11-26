@@ -1012,6 +1012,7 @@ static void space_flush(struct space *s, int fc)
         }
     }
     if (dropped) mmu_space_flush_asid(s->asid);
+    { void mmu_tlb_paranoid(void); mmu_tlb_paranoid(); }
     l2pc_flush();
     fs.pflush_kept += kept; fs.pflush_dropped += dropped;
     fs.flush_ticks += cnt_now() - t0;
@@ -1028,6 +1029,7 @@ static void space_flush_page(struct space *s, int fc, uint32_t ea)
         if (reval_page(s, fc, la, &r, &lo, &hi)) { fs.pflush_kept++; continue; }
         sp_unmap4k(s, la, 1); fs.pflush_dropped++;
     }
+    { void mmu_tlb_paranoid(void); mmu_tlb_paranoid(); }
     l2pc_flush();
 }
 /* the views a PFLUSH's function code and mask name (an entry's FC matches when (FC & mask) == (fc & mask)) */

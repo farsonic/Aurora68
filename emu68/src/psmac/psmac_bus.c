@@ -322,6 +322,10 @@ static void psmac_read_options(void)
     { extern void psmac_console_mode(int); psmac_console_mode(psmac_hdmi_mode == 2 ? 2 : con_mode); }   /* psmac_display.c, "the splash" */
     if ((tok = find_token(args, "mac.dbfslow="))) { tok += 12; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); psmac_dbf_slow = n > 8 ? 8 : n; }
     if ((tok = find_token(args, "mac.pcwatch="))) { tok += 12; uint32_t a = 0; while (1) { char c = *tok; uint32_t d; if (c >= '0' && c <= '9') d = c - '0'; else if (c >= 'a' && c <= 'f') d = c - 'a' + 10; else if (c >= 'A' && c <= 'F') d = c - 'A' + 10; else if (c == 'x' || c == 'X') { tok++; continue; } else break; a = a * 16 + d; tok++; } pcwatch = a; }
+    if ((tok = find_token(args, "mac.mmutlb="))) {   /* mac.mmutlb=flush (aarch64/mmu.c, a diagnostic) */
+        extern int psmac_tlb_paranoid; psmac_tlb_paranoid = tok[11] == 'f';
+        if (psmac_tlb_paranoid) kprintf("[PSMAC] mac.mmutlb=flush: the whole TLB dropped at every change of the MMU's spaces (slow; a diagnostic)\n");
+    }
     if ((tok = find_token(args, "mac.watchtraps="))) { extern int psmac_watch_traps; psmac_watch_traps = tok[15] == '1'; }   /* report odd stores into the trap tables (psmac_mmu.c) */
     if ((tok = find_token(args, "mac.pctrail="))) { tok += 12; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); pctrail_at = n; }
     if ((tok = find_token(args, "mac.ramdump="))) {     /* mac.ramdump=BEAT[+EVERY[-LAST]],MB,PATH (above) */

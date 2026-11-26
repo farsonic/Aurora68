@@ -1282,3 +1282,24 @@ standalone shell's PC $5571A writing $00000030 and $FFFFFFFC (memory probes, han
 
 The first four bus errors delivered are now repeated in every heartbeat's MMU report ("the first bus errors: #1 o
 PC ... w ... SSW ... sup -> handler"), so the next log names the SE's.
+
+## 18. The SE's first bus error, followed: the page table A/UX Startup could not find (26 November 2026)
+
+The next SE log named it: `#1 o PC 0005571a w 00000030 SSW 0101 sup -> 00054c08`, the same as the MAME SE's: a MOVES
+of the standalone shell writing $30 in the new process (init's arguments), a page not there yet. The crash record then
+showed an F-line at $12FFF30C, the 68k having run zero words from $12FFF20C up to there. The shell's bus error handler,
+disassembled from a MAME RAM dump (`mac.ramdump=70,4,...`, the beat before the fault), is at $54C08: a supervisor
+frame goes to $54C52, which calls $59850 (the page fault handler) and resumes with RTE when it returns 0, or takes the
+error path at $54CF6 otherwise. $59850 checks the SSW (DF, FC 1 or 2), finds the region of the fault address and calls
+$5A866 to bring the page in; $5A866 first walks the process's 68030 tables in software ($56062: the root from the proc
+structure, three levels, `BFEXTU` on the address) for the page's descriptor. The PC trails tell the two machines apart
+there: the MAME SE goes $5998E-$599AA-$599B4-$59B10 (page in, return 0, RTE, the MOVES again: "MOVES #2 at 0005571a"),
+the real SE $5A898-$5A8C4-$5A8DA-$5A974 ($56062 found no table: "no page", the error path, $54CF6, the kernel's trap
+code and the panic). Same code, so different data: the tables the shell reads are not what the kernel wrote, on the
+Pi only. The likeliest cause is a stale translation in the Cortex-A53's TLB: QEMU's softmmu flushes its whole TLB at
+every TTBR change and so hides a missing TLBI, which a real core, keeping each ASID's entries, does not.
+
+`mac.mmutlb=flush` (aarch64/mmu.c `mmu_tlb_paranoid`, a diagnostic) drops every TLB entry after each change to a
+space's descriptors, each install of a space, each PFLUSH and each view switch the translated code makes. On the MAME
+SE it changes nothing (the MOVES is retried as before). If the SE passes this point with it, the missing TLBI is the
+cause and the next step is to find which change lacks one.

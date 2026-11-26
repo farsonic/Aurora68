@@ -102,6 +102,7 @@ const struct pdg_opt pdg_opts[] = {
     { "mac.sescsi", PDG_G_STORAGE, 0, PDG_SE, "auto|real|empty", 0,
       "The SE's SCSI bus: auto looks before the Mac starts; real always the SE's chip; empty answers as a bus with nothing on it." },
     { "mac.sccirq", PDG_G_DEBUG, 0, PDG_SE, "on|off|aux", 0, "off: the SE's SCC interrupt (the IIci's level 4) kept from the 68k; aux: the same, only while A/UX's own MMU tables are in use. Diagnostics for A/UX's start-up (its serial ports get no interrupts with either)." },
+    { "mac.mmutlb", PDG_G_DEBUG, PDG_F_ONCE, A, "flush", 0, "flush: with mac.mmu=full, the Pi's whole TLB dropped after every change of the emulated MMU's spaces, as QEMU in effect does (slow; a diagnostic for differences between QEMU and a real Pi)." },
     { "mac.irqguard", PDG_G_DEBUG, 0, PDG_SE, "on|off", "on", "on: while A/UX's own MMU tables are in use, an interrupt taken 20,000 times in a row with no access to its chip (the RBV, the SCC) is kept from the 68k until the next access; A/UX Startup's shell clears none." },
     { "mac.slotstorm", PDG_G_DEBUG, 0, PDG_SE, "1", 0, "Testbed: the slot interrupt held up from A/UX's switch of tables until the next access to the RBV, as on the owner's SE." },
     { "mac.sescsiwait", PDG_G_STORAGE, 0, PDG_SE, "#", "250", "The SE's SCSI selection timeout in milliseconds, 1 to 1000 (default 250)." },

@@ -70,6 +70,7 @@ static inline struct mmu_page *mmu_root(uintptr_t virt)
 }
 
 /* Make table stores visible to the table walker before anything links to them */
+void mmu_tlb_paranoid(void);                     /* mac.mmutlb=flush (below, psmac) */
 static inline void mmu_publish(void)
 {
     __asm__ volatile("dsb ishst" ::: "memory");
@@ -975,6 +976,7 @@ int mmu_low4g_page(uintptr_t virt, uintptr_t phys, uint32_t attr_low, int tlbi)
     }
     *e3 = nd;                                      /* ... before make */
     mmu_publish();
+    mmu_tlb_paranoid();
     spinlock_release(&mmu_lock);
     return was;
 }
@@ -1090,6 +1092,15 @@ void mmu_space_reset(void *l1v, const uint64_t pristine[4])
 /* one 4 KiB page of a space, installed or not (phys == ~0 removes it). An entry replaced or removed is invalidated
    for this ASID alone (TLBI VAE1IS) when tlbi is set, else by the caller's mmu_space_flush_asid after a batch.
    Returns 1 when a valid entry was replaced or removed. */
+/* mac.mmutlb=flush (26 November 2026, docs/23 section 18, a diagnostic): every TLB entry of every ASID dropped after each
+   change to a space's descriptors, each install of a space and each PFLUSH, as QEMU's softmmu in effect does (it flushes
+   its whole TLB at a TTBR change). A/UX failed on the owner's Pi where the same kernel goes on under QEMU. */
+int psmac_tlb_paranoid;
+void mmu_tlb_paranoid(void)
+{
+    if (psmac_tlb_paranoid)
+        __asm__ volatile("dsb ishst\n\ttlbi vmalle1is\n\tdsb ish\n\tisb" ::: "memory");
+}
 int mmu_space_page(void *l1v, unsigned asid, uintptr_t virt, uintptr_t phys, uint32_t attr_low, int tlbi)
 {
     struct mmu_page *l1 = l1v;
@@ -1126,6 +1137,7 @@ int mmu_space_page(void *l1v, unsigned asid, uintptr_t virt, uintptr_t phys, uin
     }
     *e3 = nd;                                      /* ... before make */
     mmu_publish();
+    mmu_tlb_paranoid();
     spinlock_release(&mmu_lock);
     return was;
 }
@@ -1155,6 +1167,7 @@ void mmu_space_flush_asid(unsigned asid)
 void mmu_space_install(uint64_t ttbr)
 {
     __asm__ volatile("msr TTBR0_EL1, %0\n\tisb" : : "r"(ttbr) : "memory");
+    mmu_tlb_paranoid();
 }
 
 /* The kernel's alias of the first 4 GiB in TTBR1 (L1 entries 508..511, l1_slots) holds global entries, which

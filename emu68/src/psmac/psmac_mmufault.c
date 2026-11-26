@@ -148,19 +148,35 @@ void psmac_mmu_emit_view(struct TranslatorContext *ctx, uint8_t sr)
     union { uint64_t u64; uint16_t u16[4]; } u;
     u.u64 = (uintptr_t)&psmac_views;
     uint8_t t1 = RA_AllocARMRegister(ctx), t2 = RA_AllocARMRegister(ctx);
+    extern int psmac_tlb_paranoid;
     EMIT(ctx,
         mov64_immed_u16(t1, u.u16[3], 0),
         movk64_immed_u16(t1, u.u16[2], 1),
         movk64_immed_u16(t1, u.u16[1], 2),
         movk64_immed_u16(t1, u.u16[0], 3),
-        ldr_offset(t1, t2, offsetof(struct psmac_mmu_views, split)),
-        cbz(t2, 6),
-        ubfx(t2, sr, SRB_S, 1),
-        ldr64_regoffset(t1, t2, t2, UXTW, 1),
-        I32(0xd5182000 | t2),                   /* msr TTBR0_EL1, x(t2) */
-        I32(0xd5033fdf),                        /* isb */
-        str64_offset(t1, t2, offsetof(struct psmac_mmu_views, cur))
+        ldr_offset(t1, t2, offsetof(struct psmac_mmu_views, split))
     );
+    if (psmac_tlb_paranoid)                     /* mac.mmutlb=flush (aarch64/mmu.c): the whole TLB after the switch too */
+        EMIT(ctx,
+            cbz(t2, 9),
+            ubfx(t2, sr, SRB_S, 1),
+            ldr64_regoffset(t1, t2, t2, UXTW, 1),
+            I32(0xd5182000 | t2),               /* msr TTBR0_EL1, x(t2) */
+            I32(0xd5033fdf),                    /* isb */
+            I32(0xd508871f),                    /* tlbi vmalle1 */
+            I32(0xd503379f),                    /* dsb nsh */
+            I32(0xd5033fdf),                    /* isb */
+            str64_offset(t1, t2, offsetof(struct psmac_mmu_views, cur))
+        );
+    else
+        EMIT(ctx,
+            cbz(t2, 6),
+            ubfx(t2, sr, SRB_S, 1),
+            ldr64_regoffset(t1, t2, t2, UXTW, 1),
+            I32(0xd5182000 | t2),               /* msr TTBR0_EL1, x(t2) */
+            I32(0xd5033fdf),                    /* isb */
+            str64_offset(t1, t2, offsetof(struct psmac_mmu_views, cur))
+        );
     RA_FreeARMRegister(ctx, t2);
     RA_FreeARMRegister(ctx, t1);
 }
