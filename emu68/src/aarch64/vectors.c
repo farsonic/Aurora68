@@ -2383,6 +2383,14 @@ void SYSHandler(uint32_t vector, uint64_t *ctx)
         {
             uint16_t *from = (uint16_t*)(intptr_t)(*(uint32_t *)elr);
             uint32_t len = (*(uint32_t *)(elr + 4)) / 2;
+#ifdef PSMAC
+            /* The 68k code around an instruction the translator refused (an illegal one): read here, in the exception
+               handler, through whatever the 68k's MMU maps. With mac.mmu=full the page before it may be one the guest's
+               tables refuse, and the read then faulted inside this handler: core 0 died on a user program's illegal
+               instruction under A/UX instead of giving it the illegal instruction exception (27 November 2026,
+               docs/23 section 15). The dump is left out there; the exception still follows. */
+            { extern int psmac_mmu_full; if (psmac_mmu_full) len = 0; }
+#endif
 
             kprintf("[SYS:JIT] RAM dump from 0x%08x, len 0x%x\n[SYS:JIT]   ", from, len);
 
