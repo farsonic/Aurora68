@@ -1602,3 +1602,25 @@ chown's, with nothing but paging going on. With the fixes no getty dies and noth
 - A/UX's memory table on 128 MB (15.2), the SE's level-4 storm (15.3), and everything past the Finder's desktop:
   no program was started, nothing was typed (the testbed has no input for A/UX yet), networking and the serial
   ports were not touched.
+
+## 22. The SE at A/UX's boot dialog: the SCC's interrupt masked, and the clock hidden behind it (27 November 2026)
+
+Test kernel 19 (section 21's two fixes) on the owner's SE: no "Memory fault"; A/UX's own dialog, "Welcome to The
+Apple Workgroup Server 95 / Initializing device drivers...", the bar at three quarters, and there it stayed. The log's
+heartbeats, all alike: the 68k in STOP for the whole five seconds, level 2 taken 301 times (the screen's VBL, from
+the RBV this side answers), level 1 not once, no cycle on the wire, and the wire's level reading 2. By then 2,811
+bus errors delivered, 918 switches, 311,125 MOVES: A/UX's Macintosh environment was starting.
+
+On an SE the wire's level is not two independent lines. The VIA asks at level 1 and the SCC at level 2, and while
+the SCC asks the level reads 2 whatever the VIA does (the Plus's and the SE's interrupt logic gates the VIA's line
+with the SCC's; Guide to the Macintosh Family Hardware). The logs agree: in 268 heartbeats from this SE the wire
+said 0, 1 or 2, never 3. So psmac_se_ipl, which reads bit 1 as the SCC and bit 0 as the VIA, sees no VIA at all
+while the SCC asks. `mac.sccirq=aux` (section 14) kept the SCC's level from the 68k under A/UX's tables: once A/UX's
+own serial driver had enabled the chip's interrupts, nobody took them, the line stayed up, the VIA's 60 Hz never
+showed, and A/UX slept in its idle loop without a clock. The MAME SE runs without the option and A/UX serves its SCC.
+
+So the option had become the fault it was a diagnostic for. `aux` now masks nothing (the option's line in the log
+says so), and what it was for, an SCC asking with no taker during the standalone shell's stage, is the storm guard's:
+when the guard trips on level 4 (20,000 entries in a row with nothing done), the service core takes the SCC's master
+interrupt enable away (WR9 = 0, after a read of the control register to reset its pointer), so the line drops and the
+VIA shows again; a driver that programs the chip sets it back. One line in the log, the first four times.

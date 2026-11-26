@@ -1122,6 +1122,21 @@ int psmac_mmu_views_apart(void);
    form: the handler of that moment lowers the mask with its source still asserted and takes itself again, 24 frames
    deep until the stack ran out (a double bus fault at $100460E2); GUARD_NEST entries like that also count. Only while
    the MMU's views are apart (A/UX's tables; Mac OS never splits them). */
+// The SE's SCC and its VIA share the interrupt lines: while the SCC asks, the wire says 2 whatever the VIA does
+// (docs/23 section 22), so an SCC nobody serves stops the clock too. When the guard trips on level 4 the SCC's
+// master interrupt enable is taken away (WR9 = 0) until a driver programs the chip again.
+static volatile int scc_quiet_wanted;
+static uint32_t scc_quiets;
+static void scc_quiet(void)                      // the service core, outside the level lock and any bus cycle
+{
+    (void)psmac_wire_read(0x9FFFF8u + 2, 1);     // a read of channel A's control register: the next write is a pointer
+    psmac_wire_write(0xBFFFF9u + 2, 1, 9, 0);    // WR9 ...
+    psmac_wire_write(0xBFFFF9u + 2, 1, 0, 0);    // ... master interrupt enable off, no reset
+    if (scc_quiets++ < 4) {
+        kprintf("[PSMAC:SE] irqguard: the SCC's interrupt had no taker; its master interrupt enable is off until "
+                "a driver sets it again (the VIA's level is hidden behind the SCC's on this board)\n");
+    }
+}
 #define GUARD_N  20000u
 #define GUARD_MS 20u
 #define GUARD_NEST 4u                            /* or taken GUARD_NEST times in a row inside its own handler, deeper each time, at the same PC */
@@ -1150,6 +1165,9 @@ static void irq_guard(void)                      /* under the level lock (store_
     uint32_t lv = w->last_level;
     if (!guard_mask && (w->run >= GUARD_N || w->nest >= GUARD_NEST) && (lv == 2 || lv == 4)) {
         int nested = w->nest >= GUARD_NEST;
+        if (lv == 4) {
+            scc_quiet_wanted = 1;                // the service core does it (psmac_se_service, scc_quiet)
+        }
         guard_mask = (uint8_t)(1u << lv); guard_until = now + g_hz() * GUARD_MS / 1000u; w->run = 0; w->nest = 0;
         if (guard_holds[lv]++ < 4)
             kprintf("[PSMAC:SE] irqguard: level %u %s at PC %08x with its source still asserted (RBV IFR %02x IER %02x); kept away %u ms at a time\n",
@@ -1160,7 +1178,7 @@ unsigned psmac_se_ipl(unsigned raw)
 {
     if (psmac_board_solo) return psmac_solo_ipl();
     unsigned ipl = 0;
-    if (scc_irq_off == 1 || (scc_irq_off == 2 && psmac_mmu_views_apart())) raw &= ~2u;
+    if (scc_irq_off == 1) raw &= ~2u;            // aux (2) masks nothing any more: docs/23 section 22
     if (guard_mask & 16) raw &= ~2u;             /* the guard holds the SE's level 2, the IIci's 4 */
     if (raw & 2) ipl = 4;
     else if (raw & 1) ipl = 1;
@@ -1639,6 +1657,10 @@ void psmac_se_service(void)
     if (psmac_board_solo) { psmac_solo_service(); return; }
     if (!psmac_board_se) return;
     if (psmac_mmu_views_apart()) { level_lock(); store_level(se_wire_ipl); level_unlock(); }   /* the storm guard's clock (irq_guard): judged on every turn, not only on bus cycles */
+    if (scc_quiet_wanted) {
+        scc_quiet_wanted = 0;
+        scc_quiet();
+    }
     snd_service();                                /* the speaker first: its halves have deadlines, the rows do not */
     spd_service();                                /* the 400K drive's speed, when a seek has asked for another zone */
     psmac_errand(PSMAC_ERR_LOOP);
@@ -1885,7 +1907,10 @@ void psmac_se_options(const char *args)
         tok += 11;
         scc_irq_off = tok[0] == 'o' && tok[1] == 'f' ? 1 : tok[0] == 'a' && tok[1] == 'u' ? 2 : 0;
         if (scc_irq_off == 1) kprintf("[PSMAC:SE] mac.sccirq=off: the SCC's interrupt (the IIci's level 4) is kept from the 68k (a diagnostic: no serial-port interrupts)\n");
-        if (scc_irq_off == 2) kprintf("[PSMAC:SE] mac.sccirq=aux: the SCC's interrupt (the IIci's level 4) is kept from the 68k while the MMU's user and supervisor views are apart (A/UX's tables; a diagnostic: A/UX's serial ports get no interrupts)\n");
+        if (scc_irq_off == 2) {
+            kprintf("[PSMAC:SE] mac.sccirq=aux: no longer masks anything (27 November 2026): A/UX's own SCC driver needs "
+                    "the interrupt, and the storm guard quiets an SCC nobody serves; the option can be taken out\n");
+        }
     }
     if ((tok = find_token(args, "mac.slotstorm="))) slot_storm = tok[14] == '1';
     if ((tok = find_token(args, "mac.irqguard="))) {
