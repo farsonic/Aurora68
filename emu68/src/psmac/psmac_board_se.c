@@ -1750,7 +1750,20 @@ void psmac_se_start(void)
    (via_ddra, for port A bit 4), and one access to $400000 puts RAM back at 0 */
 void psmac_se_after_reset(void)
 {
-    if (!psmac_board_se || psmac_board_solo) return;
+    if (!psmac_board_se) return;
+    /* The chips this file answers for the IIci, reset as the 68030's RESET resets a IIci's RBV and ASC (27 November
+       2026, docs/23 section 15): no interrupt enabled or flagged, no slot enabled, the sound chip off. They used to keep
+       what the last session left: after A/UX 3 rebooted the SE (its autoconfig's new kernel), the IFR still had the
+       sound bit the ROM's $90 writes set and the Mac OS that started next enabled it, so level 2 was asserted with
+       nothing to clear it and the Mac never came up. */
+    level_lock();
+    rbv_ifr = 0; rbv_ier = 0; rbv_regs[0x12] = 0; rbv_regs[0x02] = 0;
+    asc_regs[0x801] = 0; asc_regs[0x802] = 0; asc_regs[0x803] = 0;
+    asc_level[0] = asc_level[1] = 0;
+    __atomic_store_n(&snd_flush, snd_flush + 1, __ATOMIC_RELEASE);
+    if (!psmac_board_solo) store_level(se_wire_ipl);
+    level_unlock();
+    if (psmac_board_solo) { psmac_solo_level_now(); return; }
     via_ddra = via_ddrb = via_ora = via_orb = via_ier = 0;
     if (psmac_board_plus) { level_lock(); psmac_plus_reset(); store_level(se_wire_ipl); level_unlock(); }
     se_overlay_off();
