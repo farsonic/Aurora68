@@ -1313,3 +1313,11 @@ holds (psmac_mmu_cur_view); a write whose logical page has no translation in tha
 Two checks are now logged (the first eight of each): an abort where the SR's S bit and the view in TTBR0 disagree
 outside an exception's entry ("view mismatch"), and a write dropped for want of a translation ("write dropped").
 The MAME SE shows neither up to init.
+
+Test kernel 12 on the SE showed neither a view mismatch nor a dropped write. The MAME SE, with `mac.watchpage=4d000`
+(the emulated writes to that physical page, from A/UX's switch on) and `mac.watchpc=10023146` (the emulated writes of
+the translated block at that PC): after switch #8 the shell clears the table pages ($561C6/$561D2), then the kernel's
+block at $10023146 writes the root entry with `MOVE.L D0,([-16,A6])` ($4D000 <- $0004D402), walks with $55FE6 and fills
+the next level from $100231C6 ($4D400 <- $0004D202), all before the MOVES that faults. The SE's PC trail passes
+$10023146 and $55FE6 but not $100231C6, and its root entry is 0. The kernel's stack is in the same low $50000 ($4CEE0),
+so its pushes go through the emulated path as well.

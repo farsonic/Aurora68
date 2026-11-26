@@ -376,6 +376,15 @@ static void log_delivery(const char *how, uint32_t pc, int write, uint32_t la, u
         uint32_t e2 = (ok4 && (e1 & 2)) ? psmac_mac_rd32((e1 & ~0x1ffu) + (((la >> 18) & 0x7f) << 2), &ok5) : 0; if (!(ok4 && (e1 & 2))) ok5 = 0;
         kprintf("[PSMAC:MMU] first fault, A/UX's view: u_procp %08x%s, saved USP %08x%s, root %08x%s, root[%u] %08x%s, next %08x%s\n",
                 procp, ok1 ? "" : "?", usp, ok2 ? "" : "?", root, ok3 ? "" : "?", la >> 25, e1, ok4 ? "" : "?", e2, ok5 ? "" : "?");
+        if (ok3) {
+            kprintf("[PSMAC:MMU]   root page %08x:", root);
+            for (uint32_t k = 0; k < 8; k++) { int ok; uint32_t v = psmac_mac_rd32(root + 4 * k, &ok); kprintf(" %08x%s", v, ok ? "" : "?"); }
+            kprintf("\n[PSMAC:MMU]   at +$200:");
+            for (uint32_t k = 0; k < 4; k++) { int ok; uint32_t v = psmac_mac_rd32(root + 0x200 + 4 * k, &ok); kprintf(" %08x%s", v, ok ? "" : "?"); }
+            kprintf(" | at +$400:");
+            for (uint32_t k = 0; k < 4; k++) { int ok; uint32_t v = psmac_mac_rd32(root + 0x400 + 4 * k, &ok); kprintf(" %08x%s", v, ok ? "" : "?"); }
+            kprintf("\n");
+        }
     }
     if (first_n < 4) {
         first_faults[first_n].pc = pc; first_faults[first_n].la = la; first_faults[first_n].vec = vec; first_faults[first_n].ssw = ssw;
