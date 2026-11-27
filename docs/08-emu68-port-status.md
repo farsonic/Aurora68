@@ -7719,7 +7719,7 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      in `.PiInput` (item 139): the modifier key goes down on the virtual keyboard, the button follows when the host has read
      the key, and the key comes up after the button. Both answer register 3 with a random address nibble, obey
      Listen register 3 (handler $00: address and the service request enable; $FE; a handler they have), SendReset and
-     Flush. `mac.adbspeed=N` scales the mouse's counts (percent): the host adds its own acceleration to an ADB
+     Flush. `mac.adbspeed=N` scales the mouse's counts (percent, 50 by default): the host adds its own acceleration to an ADB
      mouse's counts, which `.PiInput`'s pointer never had. The remote control's keys are typed; its pointer (absolute
      points) has no way through an ADB mouse and is dropped with one line in the log.
    - *When they exist: `mac.adb=auto|virtual|off`.* `auto`, the default: from A/UX's switch of tables (the hand-over
@@ -7755,13 +7755,16 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      the SE's VIA and transceiver with a real keyboard and mouse behind it and a model of the ROM's ADB Manager as
      read above (commands, the data states, the poll and idle, resolution, the transceiver's byte in place of a
      command), each scene with a transceiver that keeps its line low after a time-out (MAME's) and with one that
-     lowers it for a service request only. 52 checks: four devices at four addresses after resolution; Shift-A as
+     lowers it for a service request only. 86 checks: four devices at four addresses after resolution; Shift-A as
      Shift down, A down, A up, Shift up; 200 counts over several reports; the right button as Command down, button
      down, button up, Command up; Caps Lock; a real and a virtual mouse moving at once, every report of both
      arriving once; a real report clocked in in the middle of a virtual event, sixty times, delivered afterwards
      every time; an event a deaf host never takes, taken back with the real interrupt enable restored and offered
-     again; a driver that reads the shift register before the line; RESET in the middle. In every scene the
-     transceiver model counts the data states entered from idle with no event of its own: none.
+     again; a driver that reads the shift register before the line; `mac.adbspeed=50`; RESET in the middle; and a
+     host that asks addresses 2 and 3 in turn and sorts out nothing, as A/UX does, with real devices at 2 and 3 and
+     without: the virtual keyboard's keys and the virtual mouse's counts in its own Talks, the real devices' reports
+     each once, no event raised in between. In every scene the transceiver model counts the data states entered
+     from idle with no event of its own: none.
    - *System 7.1 on the MAME SE, `mac.adb=virtual`* (runs 70 to 72; `mac.adbtrace=1500 mac.inputadb=560`). The ROM's
      resolution, from the trace: `talk 2f (address 2 register 3): a real device answers, the virtual one there has
      collided`, the same at 3, `listen to 2 register 3: 0f fe`, then `talk 2f ... nobody on the real bus; the virtual
@@ -7780,3 +7783,13 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      counter between polls and the pointer went astray, and a key held for eight frames was gone before the
      model's service request (one clock a frame, eight to an interrupt) had been seen; `se_input.lua` now moves one
      count a frame and holds a key for a second.
+   - *A/UX, and the real SE*: docs/23 section 23. A/UX's side talks to addresses 2 and 3 only and sorts out no
+     collisions (item 4 of the multiplexer above came from that trace); on the owner's SE, with the kernel of
+     commit `be999f5`, a Bluetooth keyboard and mouse work under A/UX. The mouse was "a bit fast": the default is
+     now half its counts (`mac.adbspeed=50`).
+   - *Not verified.* The real transceiver's part beyond that one session: what its line does at each byte, a real
+     device's byte arriving in the middle of a virtual event (the host test's model of it is the ROM's reading, not
+     the chip's), two real and two virtual devices under the ROM's resolution on real hardware (`mac.adb=virtual`
+     under Mac OS), a USB keyboard and mouse through this path, and A/UX's Finder driven end to end in the emulator.
+     The counters line names what only the real SE can produce: commands the transceiver pre-empted, events lost to
+     a new command or never taken, events put off for the real transceiver.

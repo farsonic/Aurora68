@@ -263,7 +263,7 @@ static void start(int mame_like)
     rk.addr = 2; rk.handler = 2; rk.has = 0; rm.addr = 3; rm.handler = 1; rm.has = 0;
     tr.st = 3; tr.mame_like = mame_like; rv.orb = 0x30;
     v_orb = v_ddrb = v_ier = 0; rx_n = 0; stuck = 0; devmap = 0; host_deaf = 0; sr_first = 0;
-    adb_mode = 0; psmac_adb_options("mac.adb=virtual");
+    adb_mode = 0; psmac_adb_options("mac.adb=virtual mac.adbspeed=100");
     g_write(2, 0x30); g_write(0, 0x30); g_write(14, 0x84);
     talk(0x00, b);                           /* SendReset */
     for (int a = 0; a < 16; a++) if (talk((uint8_t)(a << 4 | 0x0f), b)) devmap |= 1 << a;
@@ -384,6 +384,14 @@ static void scene(int mame_like)
       OK(n == 0, "an empty address stays empty");
       sr_first = 0; host_deaf = 0; poll(); host_run(100000); }
 
+    /* mac.adbspeed: half the counts, none lost to rounding */
+    rx_n = 0; ms_speed = 50; ms_fx = ms_fy = 0;
+    for (int i = 0; i < 101; i++) psmac_adb_input(ALICE_IN_MOUSE, 1, -1, -1);
+    host_run(200000);
+    { int dx = 0, dy = 0;
+      for (int i = 0; i < rx_n; i++) if (rx[i].addr == ms.d.addr) { dx += s7(rx[i].b[1]); dy += s7(rx[i].b[0]); }
+      OK(dx == 50 && dy == -50, "mac.adbspeed=50: 101 counts become 50"); }
+    ms_speed = 100;
     /* the 68k's RESET in the middle of everything */
     psmac_adb_input(ALICE_IN_MOUSE, 5, 5, -1);
     for (int t = 0; t < 40000 && !isolated(); t += 50) host_run(50);
@@ -404,7 +412,7 @@ static void scene_aux(int mame_like, int with_real)
     rk.addr = with_real ? 2 : -1; rk.handler = 2; rk.has = 0; rm.addr = with_real ? 3 : -1; rm.handler = 1; rm.has = 0;
     tr.st = 3; tr.mame_like = mame_like; rv.orb = 0x30; rv.ier = 4;
     v_orb = 0x30; v_ddrb = 0x30; v_ier = 4; rx_n = 0; stuck = 0; host_deaf = 0; sr_first = 0;
-    adb_mode = 0; psmac_adb_options("mac.board=se"); psmac_adb_handoff();
+    adb_mode = 0; psmac_adb_options("mac.board=se mac.adbspeed=100"); psmac_adb_handoff();
     talk(0x00, b);
     for (int a = 2; a <= 3; a++) {
         n = talk((uint8_t)(a << 4 | 0x0f), b);

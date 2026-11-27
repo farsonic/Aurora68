@@ -59,7 +59,7 @@ const struct pdg_opt pdg_opts[] = {
     { "mac.rightbutton", PDG_G_MACHINE, 0, A, "cmd|ctrl|none", 0, "What a USB or Bluetooth mouse's right button adds to its click: cmd, a Command-click (the default); ctrl, a Control-click; none, a plain click." },
     { "mac.adb", PDG_G_MACHINE, 0, PDG_SE, "auto|virtual|off", 0,
       "USB and Bluetooth keyboards and mice as ADB devices beside the SE's own, for a system without .PiInput: auto, once A/UX has started (the default); virtual, always (a test); off, never." },
-    { "mac.adbspeed", PDG_G_MACHINE, 0, PDG_SE, "#", "50", "The virtual ADB mouse's speed in percent of the USB or Bluetooth mouse's own counts (100 by default; the Mac adds its own acceleration)." },
+    { "mac.adbspeed", PDG_G_MACHINE, 0, PDG_SE, "#", "50", "The virtual ADB mouse's speed in percent of the USB or Bluetooth mouse's own counts (50 by default; the Mac adds its own acceleration)." },
     { "usb", PDG_G_MACHINE, 0, A, "off|pio", 0, "The Pi's USB: off leaves it alone; pio moves data without DMA, for a device that misbehaves." },
     { "mac.pluskbd", PDG_G_MACHINE, 0, PF, "off|on", 0, "off: the Plus's (128K's, 512K's) own keyboard is not read, only USB and Bluetooth ones." },
     { "mac.plusmouse", PDG_G_MACHINE, 0, PF, "#", "2000", "The Plus mouse's lines read this many times a second (0: the mouse off)." },

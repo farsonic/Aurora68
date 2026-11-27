@@ -1624,3 +1624,92 @@ says so), and what it was for, an SCC asking with no taker during the standalone
 when the guard trips on level 4 (20,000 entries in a row with nothing done), the service core takes the SCC's master
 interrupt enable away (WR9 = 0, after a read of the control register to reset its pointer), so the line drops and the
 VIA shows again; a driver that programs the chip sets it back. One line in the log, the first four times.
+
+## 23. Keyboards and mice for A/UX: the Pi's as ADB devices (27 November 2026)
+
+A/UX at its Finder on the owner's SE (section 22) could be looked at and not used with the Pi's keyboards and mice:
+they reach Mac OS through `.PiInput`, and A/UX reads keyboard and mouse from ADB with a driver of its own (21.6: "the
+testbed has no input for A/UX yet"). The answer is on the SE board, not in A/UX: the kernel puts a virtual ADB
+keyboard and a virtual ADB mouse on the SE's own bus, fed from what would have gone into `.PiInput`'s ring
+(`emu68/src/psmac/psmac_adb.c`, `mac.adb=auto|virtual|off`; the design, the transceiver's protocol as the IIci ROM
+drives it and the tests under System 7.1 are docs/08 item 151). With the default, `auto`, the two devices appear at
+the hand-over of section 16, when A/UX's tables come on, and go at the 68k's next RESET. This section is what A/UX
+turned out to do on ADB, and what that changed.
+
+### 23.1 What A/UX's side sends
+
+From the multiplexer's trace on the MAME SE (`mac.adbtrace=3000`, runs 73a and 73b, a fresh disk each; MAME's own ADB
+keyboard and mouse stand for the SE's real ones). Within five seconds of the switch of tables:
+
+    00  SendReset                       (then state 2)
+    2f  Talk register 3, address 2      a real device answers
+    21  Flush, address 2                (then state 2)
+    2b  Listen register 3, address 2    22 01
+    2e  Talk register 2, address 2
+    2c  Talk register 0, address 2
+    3f, 31, 3b (23 01), 3c              the same for address 3
+
+and from then on Talk register 0 of address 3 and of address 2 in turn, each with its data states after the command
+(state 1; the IIci ROM instead goes idle at once and lets the transceiver's autopoll bring the data), 4,970 commands
+by 885 s of the run. No other address is ever asked, and nothing is ever moved: no Listen register 3 with handler
+$FE, the "move if you saw no collision" with which the IIci ROM puts a second keyboard at an address of its own.
+The Listen's `22 01` and `23 01` ask for handler 1 and leave the address alone. This is A/UX Startup's standalone
+shell at first; no second SendReset was seen later in these runs, so whether the kernel has an ADB start of its own
+was not told apart (*not settled*; both runs ended before the Finder, below).
+
+So under A/UX a keyboard is whatever answers at 2 and a mouse whatever answers at 3, and two keyboards on one bus
+stay at 2 together. For real ADB devices that means collisions whenever both speak; for a virtual device beside a
+real one it is harmless, because the virtual one only ever speaks when the real one did not. What it changed in the
+multiplexer (the first version, written against the ROM's resolution, waited to be found alone at an address):
+
+- a device is the host's from the first Talk to its address, whoever answered (`the host talks to the virtual
+  keyboard at address 2, handler 2, an address a real device answers at too: they share it`);
+- a Talk register 0 the real device leaves unanswered is answered by the virtual one at that address: the 68k reads
+  its two bytes on the real transceiver's clock (docs/08 item 151, the substitution);
+- no event is raised in the idle state for a device the host asks by itself: in run 73b, before that rule, 56 such
+  events were raised while A/UX happened to be idle and each was overtaken by A/UX's next Talk, none was ever taken.
+  They did no harm in the testbed and are a shift register interrupt A/UX has no use for, so they are not raised;
+- at the second byte of a virtual answer the transceiver's line reads high. MAME's transceiver model holds it low
+  for all three bytes of a time-out, the ROM takes a low line at the second byte for another device's service
+  request, and what A/UX makes of it is not known; a virtual answer must not depend on it.
+
+Run 73b's script fired early (865 s, A/UX still starting: the script's first test for "the Finder's menu bar" took
+A/UX's grey start-up screen for one; it now wants two white rows above the titles) and so showed this much: 73
+reports of the virtual mouse taken by A/UX in its own Talks (`talk 3c (address 3 register 0): nobody on the real bus;
+the virtual device answers ec ec`), a service request shown at address 2 while the mouse had data (`talk 2c ...: no
+data ff ff, with a service request`), nothing dropped, MAME's own mouse answering once in between. A pointer moving
+on A/UX's desktop was not reached in the emulator: at the testbed host's speed that night A/UX's Finder comes after
+some 1,300 s, two runs went on the script's start, and the third was waiting for the emulator when the owner's
+result came.
+
+### 23.2 On the real SE
+
+Test kernel of 27 November (commit `be999f5`, the default `mac.adb=auto`), the owner's SE with the SE's own ADB
+keyboard and mouse plugged in: **under A/UX the Bluetooth keyboard and the Bluetooth mouse both work**; the one
+complaint, "the mouse is a bit fast". No log from that session yet, and the USB keyboard and mouse and the SE's own
+pair beside them were not reported on. So the part no emulator could show is shown where it matters: the SE's
+transceiver chip clocks the two further bytes of a Talk nobody answered while the 68k is given the virtual device's
+bytes, as it does for the IIci ROM, and A/UX's driver takes them.
+
+### 23.3 The mouse's speed
+
+`.PiInput` moves the pointer a pixel a count and nothing else touches it. An ADB mouse's counts go through the
+host's mouse scaling (the Mouse control panel's setting, and A/UX's Macintosh environment has one), which multiplies
+fast movements by up to several times: sixteen counts that reached a busy System 7.1 in one tick moved the pointer
+96 pixels (docs/08 item 151). And the counts themselves are of another scale: Apple's ADB mice give 100 counts an
+inch (the later ones 200), a mouse of today 800 to 1,600. By that arithmetic a mouse of today should be cut to a
+tenth or a quarter to feel like Apple's own. But the owner's hand is used to `.PiInput`'s pixel a count on this very
+screen, and against that the ADB path was "a bit fast", not ten times: what is new is the host's acceleration alone.
+So the default is half the counts, `mac.adbspeed=50`, the hundredths carried to the next report so that slow
+movements lose nothing; `mac.adbspeed=100` is every count, 25 or 10 the feel of Apple's mice. The owner will try
+values on the SE; the default follows what they report.
+
+### 23.4 What is not settled
+
+- A/UX's Finder driven by the virtual devices in the emulator (pointer, menus, keys): not run to the end, for the
+  reasons above; the host test (`tools/adb_test.sh`: a host that polls 2 and 3 as A/UX does, with and without real
+  devices there) and the real SE stand for it.
+- The log of the real SE's session, which says how A/UX's kernel proper asks (the counters line: Talks answered,
+  events of the real devices' own, commands the transceiver pre-empted), the USB keyboard and mouse, the SE's own
+  keyboard and mouse used at the same moment as the virtual ones, and modifiers and the right button under A/UX.
+- The remote control's pointer under A/UX: absolute points have no way through an ADB mouse and are dropped.

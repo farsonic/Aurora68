@@ -77,7 +77,9 @@ static struct {
     uint8_t btn_mods;                       /* the modifier the right or middle button holds (M_*) */
 } ms;
 static uint8_t rb_mod = M_CMD;              /* mac.rightbutton=: the right button's modifier */
-static int32_t ms_speed = 100, ms_fx, ms_fy; /* mac.adbspeed=: the mouse's counts in percent; the hundredths not yet a count */
+/* mac.adbspeed=: the mouse's counts in percent, and the hundredths not yet a count. Half by default: the host puts its
+   own acceleration on an ADB mouse's counts, which .PiInput's pointer (a count a pixel) never had (docs/23 section 23) */
+static int32_t ms_speed = 50, ms_fx, ms_fy;
 static struct { uint32_t keys, reports, dropped, nohost, abs, srqs, autopolls, subst, real, collisions, kick_lost, kick_cancel, listens, held;
                 uint32_t preempt, real_srq, take_us_max, xfer_us_max, real_events; } ct;   /* the last four: what the real SE's transceiver and host do (docs/23 section 23) */
 static uint32_t lcg = 0x2545f491u;
@@ -554,11 +556,11 @@ static void appear(const char *why, int running)
     mx.st = lines_state(); mx.phase = PH_REAL; mx.vflag = 0; mx.vdue_on = 0; mx.ier_off = 0; mx.sr_held = 0;
     mx.cmd_known = 0; mx.last_valid = 0; mx.listening = 0; mx.real_busy = 0; mx.srq_run = 0;
     mx.idle_since = cnt_now(); mx.next_kick = 0;
-    kb.d.seen = ms.d.seen = 0; kb.d.polled = ms.d.polled = 0; kb.hid_mods = 0; kb.caps = 0; ms.buttons = 0; ms.button = 0; ms.btn_mods = 0;
+    kb.d.seen = ms.d.seen = 0; kb.d.polled = ms.d.polled = 0; kb.hid_mods = 0; kb.caps = 0; ms.buttons = 0; ms.button = 0; ms.btn_mods = 0; ms_fx = ms_fy = 0;
     devices_reset();
     mx.on = 1;
     kprintf("[PSMAC:ADB] a virtual ADB keyboard (address 2, handler 2) and mouse (address 3, handler 1) on the SE's ADB bus, beside its own: %s; "
-            "the Pi's keyboards and mice go to them, not to .PiInput\n", why);
+            "the Pi's keyboards and mice go to them, not to .PiInput (the mouse at %d%% of its counts: mac.adbspeed)\n", why, (int)ms_speed);
 }
 void psmac_adb_handoff(void) { if (adb_mode == 0) appear("A/UX's tables are on (mac.adb=auto)", 1); }
 /* the 68k's RESET (the level lock held): the SE's VIA is reset with it */

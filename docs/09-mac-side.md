@@ -1547,8 +1547,9 @@ started without the card's drivers). `mac.adb=off`: never. The SE board only.
 
 What differs from `.PiInput` for the person at the keyboard:
 - the mouse's counts are an ADB mouse's, so the host applies its own mouse speed and acceleration to them (the Mouse
-  control panel; A/UX's Macintosh environment has the same). A modern mouse sends many more counts an inch than
-  Apple's 100: `mac.adbspeed=N` scales them, in percent (`mac.adbspeed=30` for a third);
+  control panel; A/UX's Macintosh environment has the same). `mac.adbspeed=N` scales the counts, in percent; the
+  default is 50 (docs/23 section 23 says why; `mac.adbspeed=100` for every count, 25 or 10 for the feel of one of
+  Apple's own mice);
 - keys repeat by the host's own settings (the Keyboard control panel), not at the Pi side's fixed rate;
 - Caps Lock is the locking key of an Apple keyboard: one press down, the next press up;
 - the right button is a Command-click and the middle one an Option-click as before (`mac.rightbutton=ctrl|none`), made
