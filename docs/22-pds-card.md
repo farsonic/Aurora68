@@ -821,6 +821,19 @@ E lead (A27 to DIP 20) must stay off while it is fitted, because that firmware d
   report.
 - *Margins.* Nothing was measured with a scope or a logic analyser.
 
+**Aurora68's own kernel on the slot (a log passed on by the owner, 27 November 2026).** A second log from a PiStorm
+on an SE's slot is Aurora68's kernel, not another emulator: the last 64 KiB only (`mac.logsave`), so its start, the bus
+check and which CPLD image was used are not in it. What it shows, over about 80 seconds: System 7.1.6 served from an
+image on the card (the SE's SCSI bus answered as empty, 79 selections, none answered), the IIci ROM's Mac with the
+SE's screen and a 640x480 HDMI second screen in 256 colours, sound played through the HDMI card, the SE's clock chip
+answering, the floppy driver without a failed read, `.PiInput` attached, 0 bus errors, about 248 MIPS, and slot and
+VBL interrupts at their usual rates. For the last 50 seconds the 68k sat in one loop of an application (code named
+`...ackStart` beside `audio_handle`): it waits for a flag a sound completion should clear, while the HDMI card's
+sound frame count had stopped and did not move for the whole log; interrupts went on being taken, so the Mac was not
+frozen, the program was. Whether that is the slot, the program or the sound card is not known from a log tail.
+Wanted next from that bench: a log from power-on (the bus check and the hand-over lines), which CPLD image, and
+what was running when it stopped.
+
 ## Sources
 
 - "Macintosh SE PiStorm PDS and onboard E-clock feasibility test", final engineering report, 26 November 2026, and a
