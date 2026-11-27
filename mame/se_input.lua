@@ -6,8 +6,10 @@
 -- (mac.adb, docs/08 item 151): this script moves MAME's mouse into the corner and onto the File menu, holds
 -- the button there, lets go, and types an M on MAME's keyboard, with a snapshot after each step and one
 -- every 600 frames, as shots.lua. SE_INPUT_START= is the frame it starts at (about 65 a second of the host's
--- time in the testbed). With SE_INPUT_WAIT=N the frames count from the Nth time menu titles show to the right of
--- the Apple after 50 s without any (act.lua's rule: 1 is the Finder of the Mac OS that starts, 2 A/UX's).
+-- time in the testbed). With SE_INPUT_WAIT=1 the frames count from the moment a menu bar with titles has stood
+-- for 4800 frames (rows 1 and 2 white from x 40 to 440, and 60 to 800 dark pixels at x 40-250, y 5-13): the Mac OS
+-- that starts A/UX shows its Finder's bar for a few seconds only, A/UX's grey start-up screen is no bar at all,
+-- and A/UX's Finder stays.
 -- One count a frame: the ports are 8-bit counters the transceiver's model reads when the host polls, and a host
 -- busy with other devices polls seldom (250 frames at 3 counts wrapped the counter, and the pointer went astray).
 -- A key is held for a second: the model takes eight frames to signal a service request, and a key let go by
@@ -15,20 +17,20 @@
 local machine = manager.machine
 local frames, snaps = 0, 0
 local start = tonumber(os.getenv("SE_INPUT_START") or "25000")
-local wait_n, seen, gap, base = tonumber(os.getenv("SE_INPUT_WAIT") or "0"), 0, 0, nil
+local wait_n, seen, base = tonumber(os.getenv("SE_INPUT_WAIT") or "0"), 0, nil
 local function menus_up()
   local scr = machine.screens[":screen"]
   if not scr then for _, s2 in pairs(machine.screens) do scr = s2 end end
   if not scr then return false end
-  local ok, n = pcall(function()
-    local first, c = scr:pixel(300, 9), 0
-    for x = 40, 250, 2 do for y = 5, 13, 2 do if scr:pixel(x, y) ~= first then c = c + 1 end end end
-    return c
+  local ok, res = pcall(function()
+    local white = scr:pixel(300, 1)
+    for x = 40, 440, 2 do if scr:pixel(x, 1) ~= white or scr:pixel(x, 2) ~= white then return false end end
+    local c = 0
+    for x = 40, 250 do for y = 5, 13 do if scr:pixel(x, y) ~= white then c = c + 1 end end end
+    return c >= 60 and c <= 800
   end)
-  return ok and n > 20
+  return ok and res
 end
-local mx, my = 0, 0
-local button, mouse_x, mouse_y
 local function port_field(tagpart, name)
   for tag, port in pairs(machine.ioport.ports) do
     if tag:find(tagpart, 1, true) then
@@ -84,13 +86,9 @@ se_input_sub = emu.add_machine_frame_notifier(function()   -- a global: a local 
   if frames % 600 == 0 then snap("periodic") end
   if wait_n > 0 and not base and frames % 120 == 0 then
     if menus_up() then
-      if gap >= 3000 then
-        seen = seen + 1
-        print(string.format("[se_input] menu titles at frame %d (appearance %d)", frames, seen))
-        if seen == wait_n then base = frames end
-      end
-      gap = 0
-    else gap = gap + 120 end
+      seen = seen + 1
+      if seen == 40 then base = frames; print(string.format("[se_input] a menu bar with titles for 4800 frames, at frame %d", frames)) end
+    else seen = 0 end
   end
   local t = frames - start - (base or 0)
   if wait_n > 0 and not base then t = -1 end

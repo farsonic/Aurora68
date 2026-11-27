@@ -288,7 +288,7 @@ static void scene(int mame_like)
 #define OK(c, what) do { snprintf(t, sizeof t, "%s: %s", m, what); ok(c, t); } while (0)
     /* address resolution: a real keyboard and mouse at 2 and 3, the virtual ones there too */
     start(mame_like);
-    OK(kb.d.seen && ms.d.seen, "the host found both virtual devices");
+    OK(kb.d.seen && ms.d.seen, "the host talked to both virtual devices");
     OK(kb.d.addr != rk.addr && kb.d.addr != rm.addr && ms.d.addr != rk.addr && ms.d.addr != rm.addr && kb.d.addr != ms.d.addr && rk.addr != rm.addr, "four devices at four addresses");
     OK((devmap & (1 << kb.d.addr)) && (devmap & (1 << ms.d.addr)) && (devmap & (1 << rk.addr)) && (devmap & (1 << rm.addr)), "all four in the host's table");
     OK(ct.collisions >= 2, "the virtual devices collided with the real ones");
@@ -392,11 +392,56 @@ static void scene(int mame_like)
 #undef OK
 }
 
+/* A host as A/UX 3.1.1 showed itself in the testbed (docs/23 section 23): SendReset, Talk register 3, Flush and Listen
+   register 3 at addresses 2 and 3 and nowhere else, no collisions sorted out, then Talk register 0 of 2 and of 3 in
+   turn, each with its data states. The virtual devices share 2 and 3 with the real ones, or are alone there. */
+static void scene_aux(int mame_like, int with_real)
+{
+    char t[240]; uint8_t b[8]; int n;
+#define OK(c, what) do { snprintf(t, sizeof t, "a host that polls 2 and 3 (%s, %s): %s", mame_like ? "MAME's transceiver" : "a transceiver that keeps its line", with_real ? "real devices there too" : "no real devices", what); ok(c, t); } while (0)
+    memset(&rv, 0, sizeof rv); memset(&tr, 0, sizeof tr); memset(&mx, 0, sizeof mx); memset(&ct, 0, sizeof ct);
+    memset(&kb, 0, sizeof kb); memset(&ms, 0, sizeof ms);
+    rk.addr = with_real ? 2 : -1; rk.handler = 2; rk.has = 0; rm.addr = with_real ? 3 : -1; rm.handler = 1; rm.has = 0;
+    tr.st = 3; tr.mame_like = mame_like; rv.orb = 0x30; rv.ier = 4;
+    v_orb = 0x30; v_ddrb = 0x30; v_ier = 4; rx_n = 0; stuck = 0; host_deaf = 0; sr_first = 0;
+    adb_mode = 0; psmac_adb_options("mac.board=se"); psmac_adb_handoff();
+    talk(0x00, b);
+    for (int a = 2; a <= 3; a++) {
+        n = talk((uint8_t)(a << 4 | 0x0f), b);
+        OK(n >= 2, "Talk register 3 answered");
+        send_cmd((uint8_t)(a << 4 | 0x01));                      /* Flush, and state 2 after it, as that host does */
+        (void)g_read(10); g_write(0, g_read(0) ^ 0x20); wait_irq(); sr_int();
+        listen((uint8_t)(a << 4 | 0x0b), (uint8_t)(0x20 | a), 0x01);
+    }
+    OK(kb.d.seen && ms.d.seen && kb.d.addr == 2 && ms.d.addr == 3 && kb.d.handler == 2, "both virtual devices the host's, where they were");
+    if (with_real) OK(rk.addr == 2 && rm.addr == 3, "the real ones too");
+    psmac_adb_input(ALICE_IN_KEY, 0x04, 1, 0x02); psmac_adb_input(ALICE_IN_KEY, 0x04, 0, 0x02); psmac_adb_input(ALICE_IN_KEY, 0, 0, 0);
+    psmac_adb_input(ALICE_IN_MOUSE, 150, 0, -1);
+    int real_k = 0, real_m = 0, vk = 0, vsum = 0, rsum = 0; uint8_t got[8];
+    for (int i = 0; i < 60; i++) {
+        if (with_real && i == 3) { rk.has = 1; rk.d[0] = 0x31; rk.d[1] = 0xff; }
+        if (with_real && i == 5) { rm.has = 1; rm.d[0] = 0x80; rm.d[1] = 0x85; }
+        n = talk(0x2c, b);
+        if (n >= 2) { if (b[0] == 0x31) real_k++; else for (int k = 0; k < 2; k++) if (b[k] != 0xff && vk < 8) got[vk++] = b[k]; }
+        n = talk(0x3c, b);
+        if (n >= 2) { if (b[1] == 0x85) { real_m++; rsum += 5; } else vsum += s7(b[1]); }
+        advance(8000);
+    }
+    OK(vk == 4 && got[0] == 0x38 && got[1] == 0x00 && got[2] == 0x80 && got[3] == 0xb8, "Shift-A from the virtual keyboard at address 2");
+    OK(vsum == 150, "150 counts from the virtual mouse at address 3");
+    if (with_real) OK(real_k == 1 && real_m == 1 && !rk.has && !rm.has, "the real keyboard's key and the real mouse's report, each once");
+    if (!quiet) printf("aux: unexpected %u stuck %d dropped %u nohost %u lost %u\n", tr.unexpected, stuck, ct.dropped, ct.nohost, ct.kick_lost);
+    OK(!tr.unexpected && !stuck && !ct.dropped, "nothing a transceiver should not see, nothing dropped");
+    OK(!ct.kick_lost && !ct.srqs && !ct.autopolls && ct.subst >= 4, "a host that polls is answered in its own Talks, never interrupted in between");
+#undef OK
+}
+
 int main(int argc, char **argv)
 {
     quiet = !(argc > 1 && argv[1][0] == 'v');
     scene(1);
     scene(0);
+    for (int k = 0; k < 4; k++) scene_aux(k & 1, k >> 1);
     /* mac.adb=off and auto: nothing exists until the hand-over */
     memset(&mx, 0, sizeof mx); adb_mode = 0; psmac_adb_options("mac.adb=off"); psmac_adb_handoff();
     ok(!psmac_adb_on() && !psmac_adb_takes_input(), "mac.adb=off: never");

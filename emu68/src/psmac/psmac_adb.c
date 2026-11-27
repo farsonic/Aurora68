@@ -60,7 +60,8 @@ static uint32_t trace_left;                 /* mac.adbtrace=N */
 #define KEYQ 64
 enum { M_CTRL = 1, M_SHIFT = 2, M_OPT = 4, M_CMD = 8, M_RCTRL = 16, M_RSHIFT = 32, M_ROPT = 64 };
 static const uint8_t mod_code[7] = { 0x36, 0x38, 0x3a, 0x37, 0x7d, 0x7b, 0x7c };
-struct vdev { int addr, handler; uint8_t srq_en, collided, seen; uint32_t answers; };
+struct vdev { int addr, handler; uint8_t srq_en, collided, seen; uint32_t answers;
+              uint64_t polled; };           /* the host's last Talk register 0 here that had its data states: it polls by itself */
 static struct {
     struct vdev d;
     uint8_t q[KEYQ]; int qh, qt;            /* ADB key codes, bit 7 = released */
@@ -131,6 +132,8 @@ static void devices_reset(void)             /* SendReset, or the 68k's RESET: ev
 }
 static struct vdev *dev_at(int addr) { return addr == kb.d.addr ? &kb.d : addr == ms.d.addr ? &ms.d : 0; }
 static int dev_pending(struct vdev *d) { return d->seen && (d == &kb.d ? kb_has_data() : ms_has_data()); }
+/* worth an event in the idle state: not for a host that asks the device itself every few milliseconds (A/UX) */
+static int dev_announce(struct vdev *d, uint64_t now) { return dev_pending(d) && (!d->polled || now - d->polled > us_ticks(500000)); }
 /* a device other than the one at addr wants the host: the service request */
 static int srq_wanted(int addr)
 {
@@ -145,10 +148,6 @@ static int dev_talk(int addr, int reg, uint8_t *b)
         lcg = lcg * 1664525u + 1013904223u;
         b[0] = (uint8_t)(0x40 | (d->srq_en ? 0x20 : 0) | ((lcg >> 24) & 15)); b[1] = (uint8_t)d->handler;
         d->collided = 0;
-        if (!d->seen) {
-            d->seen = 1;
-            kprintf("[PSMAC:ADB] the host found the virtual %s at address %d, handler %d\n", d == &kb.d ? "keyboard" : "mouse", d->addr, d->handler);
-        }
     } else if (d == &kb.d && reg == 0 && kb_has_data()) {
         b[0] = kb.q[kb.qt]; kb.qt = (kb.qt + 1) % KEYQ; ct.keys++;
         if (kb_has_data()) { b[1] = kb.q[kb.qt]; kb.qt = (kb.qt + 1) % KEYQ; ct.keys++; }
@@ -237,6 +236,7 @@ static struct {
     uint64_t idle_since, kick_at, next_kick;
     uint32_t srq_run;                       /* service requests in a row with no virtual device read */
     uint32_t cmds;
+    int trace_quiet; uint8_t traced[256];   /* mac.adbtrace: a command seen eight times is no longer worth a line */
 } mx;
 
 static int lines_state(void) { return (((mx.orb & mx.ddrb) | ~mx.ddrb) >> 4) & 3; }
@@ -259,22 +259,34 @@ static void cmd_latch(uint8_t c)
     mx.cmd = c; mx.cmd_known = 1; mx.cmds++;
     if (((c >> 2) & 3) == 2) { mx.listening = 1; mx.listen_addr = c >> 4; mx.listen_reg = c & 3; mx.listen_n = 0; mx.listen_first0 = 0; mx.listen_tail = 0; }
 }
+/* The host has talked to a virtual device's address: from now on the device is the host's to read, alone there or
+   beside a real device that answers at the same address (a host that sorts out no collisions, as A/UX: docs/23
+   section 23; the real one's answer then goes first, and the virtual one answers when the real one is silent) */
+static void dev_found(struct vdev *d, int shared)
+{
+    if (d->seen) return;
+    d->seen = 1;
+    kprintf("[PSMAC:ADB] the host talks to the virtual %s at address %d, handler %d%s\n", d == &kb.d ? "keyboard" : "mouse", d->addr, d->handler,
+            shared ? ", an address a real device answers at too: they share it" : "");
+}
 /* the real bus has spoken for the Talk that is out: pb3 = the transceiver's line, 1 = a device answers */
 static void decide(int pb3)
 {
     int addr = mx.cmd >> 4, reg = mx.cmd & 3;
+    struct vdev *d = dev_at(addr);
     if (mx.phase != PH_WATCH) return;
+    if (d) dev_found(d, pb3);
+    if (d && reg == 0) d->polled = cnt_now() | 1;
     if (pb3) {
-        struct vdev *d = dev_at(addr);
         mx.phase = PH_REAL; ct.real++;
         if (d && reg == 3) { d->collided = 1; ct.collisions++; }
-        TRACE("talk %02x (address %d register %d): a real device answers%s\n", mx.cmd, addr, reg, d && reg == 3 ? ", the virtual one there has collided" : "");
+        if (!mx.trace_quiet) TRACE("talk %02x (address %d register %d): a real device answers%s\n", mx.cmd, addr, reg, d && reg == 3 ? ", the virtual one there has collided" : "");
         return;
     }
     mx.n = dev_talk(addr, reg, mx.buf);
     mx.srq = srq_wanted(addr);
     mx.bi = 0;
-    if (!mx.n && !mx.srq) { mx.phase = PH_REAL; TRACE("talk %02x (address %d register %d): nobody, and nothing to say here\n", mx.cmd, addr, reg); return; }
+    if (!mx.n && !mx.srq) { mx.phase = PH_REAL; if (!mx.trace_quiet) TRACE("talk %02x (address %d register %d): nobody, and nothing to say here\n", mx.cmd, addr, reg); return; }
     mx.phase = PH_SUBST;
     if (mx.n) { ct.subst++; mx.srq_run = 0; }
     TRACE("talk %02x (address %d register %d): nobody on the real bus; %s %02x %02x%s\n", mx.cmd, addr, reg, mx.n ? "the virtual device answers" : "no data",
@@ -285,7 +297,8 @@ static int virt_pb3(int real)
 {
     if (mx.phase == PH_KICK) return mx.kick == KICK_AUTOPOLL;
     if (mx.phase == PH_VXFER && mx.kick == KICK_SRQ) return 0;
-    if (mx.bi == 1) return mx.srq ? 0 : mx.phase == PH_SUBST ? real : mx.bi < mx.n;
+    (void)real;
+    if (mx.bi == 1) return mx.srq ? 0 : mx.bi < mx.n;       /* the second byte: low for a service request of ours, never the real line's time-out */
     return mx.bi < mx.n;
 }
 static void byte_due(void) { mx.vflag = 0; mx.vdue = cnt_now() + us_ticks(BYTE_US); mx.vdue_on = 1; }
@@ -321,9 +334,10 @@ static int state_change(int old, int s)
             int addr = mx.cmd >> 4, kind = (mx.cmd >> 2) & 3;
             static const char *const kn[4] = { "reset/flush", "?", "listen", "talk" };
             mx.last_cmd = mx.cmd; mx.last_valid = 1;
-            TRACE("command %02x (%s, address %d, register %d), then state %d\n", mx.cmd, kn[kind], addr, mx.cmd & 3, s);
+            mx.trace_quiet = mx.traced[mx.cmd] >= 8;
+            if (!mx.trace_quiet) { mx.traced[mx.cmd]++; TRACE("command %02x (%s, address %d, register %d), then state %d\n", mx.cmd, kn[kind], addr, mx.cmd & 3, s); }
             if (kind == 3) { if (s != 3 && dev_at(addr)) { mx.phase = PH_WATCH; mx.bi = 0; } }
-            else if (kind == 0 && (mx.cmd & 15) == 0) { devices_reset(); TRACE("SendReset\n"); }
+            else if (kind == 0 && (mx.cmd & 15) == 0) { devices_reset(); for (int i = 0; i < 256; i++) mx.traced[i] = 0; TRACE("SendReset\n"); }
             else if (kind == 0 && (mx.cmd & 15) == 1) { if (addr == kb.d.addr) kb.qh = kb.qt = 0; if (addr == ms.d.addr) ms.dx = ms.dy = 0; }
         } else mx.listening = 0;
         if (s == 3) { listen_finish(); mx.idle_since = now; }
@@ -344,7 +358,7 @@ static int state_change(int old, int s)
             TRACE("the 68k takes our event: %s for address %d: %02x %02x%s\n", mx.kick == KICK_AUTOPOLL ? "the autopoll" : "a service request", mx.kick_addr,
                   mx.n ? mx.buf[0] : 0xff, mx.n ? mx.buf[1] : 0xff, mx.srq ? ", with a service request" : "");
             byte_due();
-        } else { mx.real_busy = 1; ct.real_events++; TRACE("an event of the real transceiver's (the last command %02x)\n", mx.last_cmd); }
+        } else { mx.real_busy = 1; ct.real_events++; if (ct.real_events <= 16) TRACE("an event of the real transceiver's (the last command %02x)\n", mx.last_cmd); }
     } else {                                /* between the two data states */
         if (mx.phase == PH_SUBST) mx.bi++;
         else if (mx.phase == PH_VXFER) { mx.bi++; byte_due(); }
@@ -472,7 +486,7 @@ void psmac_adb_service(void)
     }
     if (mx.phase != PH_REAL || mx.st != 3 || !(mx.ier & 4) || mx.real_busy || now < mx.next_kick) return;
     if (now - mx.idle_since < us_ticks(IDLE_US)) return;
-    if (!dev_pending(&kb.d) && !dev_pending(&ms.d)) return;
+    if (!dev_announce(&kb.d, now) && !dev_announce(&ms.d, now)) return;
     if (psmac_se_floppy_busy()) return;
     /* the real transceiver must have nothing for the 68k: its interrupt off first, then a look at its flag */
     psmac_wire_write(SE_VIA_REG(14), 1, 0x04, 0);
@@ -482,9 +496,9 @@ void psmac_adb_service(void)
     if (mx.phase == PH_REAL && mx.st == 3 && (mx.ier & 4) && !mx.real_busy && !(ifr & 4)) {
         int la = mx.last_cmd >> 4;
         struct vdev *d = mx.last_valid && (mx.last_cmd & 15) == 0x0c ? dev_at(la) : 0;
-        if (d && dev_pending(d)) { mx.kick = KICK_AUTOPOLL; mx.kick_addr = la; ok = 1; }
-        else if ((kb.d.srq_en && dev_pending(&kb.d)) || (ms.d.srq_en && dev_pending(&ms.d))) {
-            mx.kick = KICK_SRQ; mx.kick_addr = dev_pending(&kb.d) ? kb.d.addr : ms.d.addr; ok = 1;
+        if (d && dev_announce(d, now)) { mx.kick = KICK_AUTOPOLL; mx.kick_addr = la; ok = 1; }
+        else if ((kb.d.srq_en && dev_announce(&kb.d, now)) || (ms.d.srq_en && dev_announce(&ms.d, now))) {
+            mx.kick = KICK_SRQ; mx.kick_addr = dev_announce(&kb.d, now) ? kb.d.addr : ms.d.addr; ok = 1;
             /* a host that never comes round to the device: asked less often */
             if (mx.srq_run >= 32) { mx.srq_run = 16; mx.next_kick = now + us_ticks(250000); ok = 0; }
         }
@@ -540,7 +554,7 @@ static void appear(const char *why, int running)
     mx.st = lines_state(); mx.phase = PH_REAL; mx.vflag = 0; mx.vdue_on = 0; mx.ier_off = 0; mx.sr_held = 0;
     mx.cmd_known = 0; mx.last_valid = 0; mx.listening = 0; mx.real_busy = 0; mx.srq_run = 0;
     mx.idle_since = cnt_now(); mx.next_kick = 0;
-    kb.d.seen = ms.d.seen = 0; kb.hid_mods = 0; kb.caps = 0; ms.buttons = 0; ms.button = 0; ms.btn_mods = 0;
+    kb.d.seen = ms.d.seen = 0; kb.d.polled = ms.d.polled = 0; kb.hid_mods = 0; kb.caps = 0; ms.buttons = 0; ms.button = 0; ms.btn_mods = 0;
     devices_reset();
     mx.on = 1;
     kprintf("[PSMAC:ADB] a virtual ADB keyboard (address 2, handler 2) and mouse (address 3, handler 1) on the SE's ADB bus, beside its own: %s; "

@@ -1570,15 +1570,17 @@ static void spd_service(void)
 #define SE_ROWBYTES 64
 static uint8_t shadow[SE_ROWS * SE_ROWBYTES];
 static volatile uint32_t dirty[(SE_ROWS + 31) / 32];
-/* menu titles on the SE's screen, to the right of the Apple (x 40-250, y 5-13, as mame/act.lua looks): the Finder is up.
-   For the testbed's scripts (mac.inputadb=N,menus) */
+/* A menu bar with titles on the SE's screen: rows 1 and 2 white from x 40 to 440, and between 60 and 800 black pixels
+   where the titles are (x 40-250, y 5-13; the Finder's five have about 480, a grey desktop there 949). For the
+   testbed's scripts (mac.inputadb=N,menus) */
 int psmac_se_menu_titles(void)
 {
-    int n = 0, ref = (shadow[9 * SE_ROWBYTES + (300 >> 3)] >> (7 - (300 & 7))) & 1;
-    for (int y = 5; y <= 13; y += 2) {
-        for (int x = 40; x <= 250; x += 2) n += ((shadow[y * SE_ROWBYTES + (x >> 3)] >> (7 - (x & 7))) & 1) != ref;
+    int n = 0;
+    for (int x = 40 >> 3; x < 440 >> 3; x++) if (shadow[1 * SE_ROWBYTES + x] | shadow[2 * SE_ROWBYTES + x]) return 0;
+    for (int y = 5; y <= 13; y++) {
+        for (int x = 40; x <= 250; x++) n += (shadow[y * SE_ROWBYTES + (x >> 3)] >> (7 - (x & 7))) & 1;
     }
-    return n > 20;
+    return n >= 60 && n <= 800;
 }
 static volatile int shadow_valid;
 static uint32_t rows_sent, frames_marked, se_lines_bad, rows_deferred;   /* se_lines_bad: address lines that failed the test at the start (bit n = An) */

@@ -1533,8 +1533,10 @@ keyboard. Both apply to USB and Bluetooth keyboards.
 `.PiInput` is a Mac OS driver, and a system that brings its own kernel never opens it: A/UX 3 reads keyboard and
 mouse from ADB itself. For such a system the SE board's kernel presents the Pi's keyboards and mice as two ADB
 devices on the SE's own bus, a keyboard (default address 2, handler 2, an Apple Extended Keyboard) and a mouse
-(address 3, handler 1), beside the SE's real keyboard and mouse, which go on working: the host's ADB driver finds
-four devices, sorts out their addresses as it does for two keyboards on one bus, and reads them all
+(address 3, handler 1), beside the SE's real keyboard and mouse, which go on working. A host that sorts out
+collisions (the IIci ROM's ADB Manager) finds four devices at four addresses; A/UX talks to addresses 2 and 3 only,
+and there the virtual keyboard shares 2 with the real one and the virtual mouse 3: each answers when the real one
+has nothing to say
 (`emu68/src/psmac/psmac_adb.c`; the design and the transceiver's protocol are in docs/08 item 151, A/UX's side in
 docs/23 section 23). Nothing is installed on the guest's side.
 
@@ -1554,8 +1556,8 @@ What differs from `.PiInput` for the person at the keyboard:
 - no edge jump between screens (that is `.PiInput`'s cursor task), no wheel, and the remote control (docs/13) can type
   but not point: an ADB mouse cannot be told where to be.
 
-In the log: `[PSMAC:ADB] a virtual ADB keyboard ... and mouse ... on the SE's ADB bus` when they appear, `the host found
-the virtual keyboard at address N, handler 2` (and the mouse) when the host's driver has found each, and a
+In the log: `[PSMAC:ADB] a virtual ADB keyboard ... and mouse ... on the SE's ADB bus` when they appear, `the host talks to
+the virtual keyboard at address N, handler 2` (and the mouse) when the host's driver first asks each, and a
 `[PSMAC:ADB]` counters line with the SE board's heartbeat lines. `mac.adbtrace=N` puts the first N steps in the log.
 
 In the testbed `mac.inputadb=SECONDS` plays a session for the virtual devices (it moves the mouse one count at a

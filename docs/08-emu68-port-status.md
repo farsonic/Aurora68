@@ -7673,7 +7673,9 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
         its bytes as for an empty address, since the ROM takes three interrupts for a Talk nobody answers, so every
         interrupt of that transaction is the real chip's; only what the 68k reads is changed: the two bytes from the
         shift register and the line in port B (high for the two bytes, low at the third interrupt; at the second, low
-        if the other virtual device has data, else what the real transceiver says, a real device's service request).
+        only if the other virtual device has data. What the real transceiver's line says at the second byte is not
+        passed on: MAME's model keeps it low for the whole of a time-out, which would mark every virtual answer
+        with a service request, and a real device that asked for service goes on asking).
      3. The 68k idle and a virtual device with data: the kernel does what the transceiver would. Its own shift
         register flag (IFR bit 2 as the 68k reads it, level 1 in `psmac_se_ipl`) is raised; when the 68k leaves the
         idle state for state 1, it gets the device's two bytes if its last command was that device's Talk register 0
@@ -7688,10 +7690,16 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
         and the transceiver's byte cross (the line low at the command's interrupt), or interrupts at once.
         Before raising its flag the service core turns the real interrupt off and reads the real IFR: a real byte
         already there goes first. An event is announced only after the 68k has been idle for 2 ms (the real
-        transceiver's own Talk on the bus is over), never while the floppy is in use, and not before the host has
-        found the device (a Talk register 3 answered by it). An event the 68k does not look at within half a second
-        (interrupts off, a host with no ADB handler: A/UX Startup's shell, docs/23 section 16) is taken back and
-        tried again two seconds later.
+        transceiver's own Talk on the bus is over), never while the floppy is in use, not before the host has
+        talked to the device's address, and not for a device the host asks by itself (a Talk register 0 with its
+        data states within the last half second: A/UX, below, which is answered under 2 and never needs an event).
+        An event the 68k does not look at within half a second (interrupts off, a host with no handler for it) is
+        taken back and tried again two seconds later.
+     4. A host that sorts out no collisions (A/UX 3.1.1, docs/23 section 23: it talks to addresses 2 and 3 and to no
+        other, and moves nothing) leaves a virtual device at the address of a real one for good. That works: the
+        real device's answer goes first, the virtual one answers the Talks the real one leaves unanswered, and the
+        host sees one keyboard at 2 and one mouse at 3 that are each two. A device counts as the host's from the
+        first Talk to its address, whoever answered it.
      Why two ways of answering. An earlier plan answered idle events by substitution too, letting the 68k's state
      changes reach the real transceiver; but then the real transceiver sees states 1, 2, 1 with no command and no
      autopoll answer of its own, which a host never does, and what the PIC does then nobody here knows. As built it
@@ -7725,8 +7733,9 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      from the M0110's bytes and the quadrature lines with their own quirks (the keypad's shifted arrows), have no
      collisions, no handler 3 and no second button, and the Plus has no testbed run in this round to show that a
      shared file breaks nothing. The device code here is that file's, grown; folding the Plus onto it is a later tidy-up.
-   - *The log.* `[PSMAC:ADB]` lines: one when the devices appear and one when they go; one when the host first finds
-     each ("the host found the virtual keyboard at address 2, handler 2"); in the heartbeat, with the SE board's
+   - *The log.* `[PSMAC:ADB]` lines: one when the devices appear and one when they go; one when the host first talks
+     to each ("the host talks to the virtual keyboard at address 2, handler 2", with "an address a real device
+     answers at too: they share it" where that is so); in the heartbeat, with the SE board's
      lines, where they are now, keys and mouse reports delivered, events dropped (and dropped before the host found
      the devices), service requests, autopolls, the host's own Talks answered, Talks real devices answered and
      collisions, events of the real devices' own, and what only a real SE can say: events lost to a new command,
@@ -7736,9 +7745,9 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      each Listen to a virtual device, each event taken, each event of the real transceiver's).
    - *The scripts.* `mac.inputadb=SECONDS` (testbed) plays the Pi's side: the mouse into the corner and, one count
      every 120 ms, onto the Apple menu, a click, the button held with the menu open, down to the first item and let
-     go, then Command-W, a T, and a right-button click. `mac.inputadb=N,menus` starts it N seconds after the host has
-     found both devices and menu titles have stood on the SE's screen for 30 s (the Finder, however slow the
-     testbed's host is that day: this night it ran at 0.6 of its usual speed). `mame/se_input.lua` (`MAME_SCRIPT=`,
+     go, then Command-W, a T, and a right-button click. `mac.inputadb=N,menus` starts it N seconds after this: the host
+     has talked to both devices, the SE's screen has been without menu titles for 50 s and then with them for 30 s
+     (A/UX's Finder, however slow the testbed's host is that day: this night it ran at 0.6 of its usual speed). `mame/se_input.lua` (`MAME_SCRIPT=`,
      `SE_INPUT_START=frame`, `SE_INPUT_WAIT=N` for the Nth appearance of menu titles) plays the SE's own side with
      MAME's ADB mouse and keyboard (ports `:macadb:MOUSE0` the button, `MOUSE1` and `MOUSE2` the counters,
      `KEY0`-`KEY5`): onto File, the button held, an M typed.
@@ -7755,8 +7764,8 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      transceiver model counts the data states entered from idle with no event of its own: none.
    - *System 7.1 on the MAME SE, `mac.adb=virtual`* (runs 70 to 72; `mac.adbtrace=1500 mac.inputadb=560`). The ROM's
      resolution, from the trace: `talk 2f (address 2 register 3): a real device answers, the virtual one there has
-     collided`, the same at 3, `listen to 2 register 3: 0f fe`, `the host found the virtual keyboard at address 2,
-     handler 2` (`talk 2f ... nobody on the real bus; the virtual device answers 62 02`), the mouse likewise at 3,
+     collided`, the same at 3, `listen to 2 register 3: 0f fe`, then `talk 2f ... nobody on the real bus; the virtual
+     device answers 62 02` (the keyboard, alone at 2 now), the mouse likewise at 3,
      then the fifty rounds to address 13 and back. So the virtual devices end at 2 and 3 and MAME's at 15 and 14,
      four entries in the ROM's table, and the System's keyboard and mouse drivers serve all four. The script: the
      pointer walks to the menu bar; the click quits the test image's startup program ("Click or press a key to

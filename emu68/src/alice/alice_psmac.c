@@ -630,17 +630,22 @@ static void in_testbed_poll(void)
     if (!intest_at) return;
     uint64_t now = in_now();
     if (intest_kind == 8 && adb_menus == 1) {
-        /* not N seconds after the start but N after the host has found the virtual devices and menu titles have stood
-           on the SE's screen for 30 s: A/UX's Finder, however slow the testbed's host is that day */
+        /* not N seconds after the start but N after this: the host has talked to the virtual devices, the SE's screen
+           has then been without a menu bar's titles for 50 s (A/UX starting; the Mac OS that started it may still
+           show its own for a while) and with them for 30 s: A/UX's Finder, however slow the testbed's host is that
+           day. (A first version took any pixels where the titles are: the grey screen A/UX starts with set it off.) */
         extern int psmac_se_menu_titles(void), psmac_adb_found(void);
-        static uint64_t since, look;
+        static uint64_t since, look, bare; static int was_bare;
         if (now < look) return;
         look = now + in_hz() / 2;
-        if (!psmac_adb_found() || !psmac_se_menu_titles()) { since = 0; return; }
+        if (!psmac_adb_found()) { since = bare = 0; return; }
+        if (!psmac_se_menu_titles()) { since = 0; if (!bare) bare = now; if (now - bare >= in_hz() * 50) was_bare = 1; return; }
+        bare = 0;
+        if (!was_bare) return;
         if (!since) since = now;
         if (now - since < in_hz() * 30) return;
         adb_menus = 2; intest_next = now + in_hz() * intest_at;
-        kprintf("[PSMAC] input ADB script: the virtual devices found and menu titles on the SE's screen for 30 s; the script starts in %u s\n", intest_at);
+        kprintf("[PSMAC] input ADB script: the host has the virtual devices and menu titles are back on the SE's screen for 30 s; the script starts in %u s\n", intest_at);
         return;
     }
     if (!intest_next) intest_next = now + in_hz() * intest_at;
