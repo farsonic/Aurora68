@@ -5,8 +5,9 @@
 slot (PDS) in place of a PiStorm in the 68000's socket. This note is for whoever designs that card. It says what
 the Aurora68 kernel needs from the bus, what the card has to do with each of the slot's signals, what the
 software would change for a card carrying an existing Pi 3 board (3B, 3B+, 3A+, Zero 2 W) and for one carrying
-a Compute Module (CM3+, CM4), and what is still to be checked. Nothing here has been built or measured. Where a fact comes from a source it
-is named; where it is our reading or a guess it says so.
+a Compute Module (CM3+, CM4), and what is still to be checked. Nothing in sections 1 to 10 has been built or
+measured; section 11 (27 November 2026) is the first report of the route working on a real SE, with a PiStorm on
+jumper leads. Where a fact comes from a source it is named; where it is our reading or a guess it says so.
 
 The original hardware plan already had a CM4 carrier in the PDS slot as the second route (docs/00, "Hardware
 plan"). What changed since is that the socket route works (release 0.16 runs on a real SE, a Plus and a 512Ke),
@@ -470,7 +471,11 @@ granted away (Apple's text); the card's power budget (1.5 A at +5 V, 7 W in all)
    MicroMac Performer keeps /BR asserted through and after every reset, never asserts /BGACK and never waits for /BG,
    and works; so a 68000 leaving reset with /BR asserted stays off the bus in practice. Aurora68's card should keep
    /BR asserted for as long as it owns the bus. Still to scope on an SE: the time from /RESET rising to /BG.
-2. A meter on a real SE: the pinout, row letters and pin 1 as Apple's figure has them.
+   *A first measurement (section 11):* with /BR tied to ground for good, a real SE's 68000 granted the bus and stayed
+   off it through a System 7.1 boot. Whether the board was reset under it during that run is not in the report.
+2. A meter on a real SE: the pinout, row letters and pin 1 as Apple's figure has them. *Seven pins are now confirmed
+   by use (section 11): E A27, C8M A28, /VPA C1, /VMA C2, /BR C3, /BGACK C4, /BG C5. The address, data and strobe
+   pins were used too, but the report does not list them.*
 3. Which end of the card has the 15.58 mm and which the 4.61 mm (Figure 17-2 against the owner's "more room towards
    the back"), and how a Pi 3 on a header fits under it.
 4. A CM4 card's real draw against the 7 W limit.
@@ -737,8 +742,89 @@ Racer under another name. docs/02 found one link between the two names: the Mara
 called "Mercury Cache Enable". Its probe (a MOVES read at $EC398000 in function code 3) would be an ordinary RAM cycle
 on these GALs, so the hardware neither confirms nor rules out which lineage is right.
 
+## 11. The route proved: a Rev B PiStorm on the slot by jumper leads (26 November 2026)
+
+On 27 November 2026 the owner passed on a photograph and a written report ("Macintosh SE PiStorm PDS and onboard
+E-clock feasibility test", dated 26 November 2026) from a second bench, not the owner's own SE: a classic Rev B
+PiStorm with a Pi Zero 2 W, on a breadboard, wired to an SE's processor direct slot with the board's 68000 still in
+its socket. It booted System 7.1 to the Finder and worked the SE's own VIA, mouse and keyboard. This is the first
+time anything in this note has met hardware. What follows is the report's content, then what it settles here and what
+it does not. Names, addresses and paths in the report belong to that bench and are left out.
+
+**The arrangement.** The photograph shows a logic board marked 820-0250-A (1988) with an MC68000P8 in its socket, a
+bundle of jumper leads from the 96-pin slot connector to a PiStorm standing in a breadboard, and the Pi Zero 2 W on
+the PiStorm with an HDMI cable. The report's table, with the PiStorm's 68000-footprint pin for each signal:
+
+| Signal | Slot pin | PiStorm | Role in the test |
+|---|---|---|---|
+| E | A27 | DIP 20 (CPLD pin 53) | an input in the test firmware: the board's 68000 makes E |
+| C8M | A28 | DIP 15 | the clock |
+| /VPA | C1 | DIP 21 | marks a 6800-style access |
+| /VMA | C2 | DIP 19 | the CPLD times it against the incoming E |
+| /BG | C5 | DIP 11 | the 68000's grant |
+| /BGACK | C4 | DIP 12 | open drain, held by the CPLD |
+| /BR | C3 | tied to ground at the 68000's pin 13 | asserted for the whole test |
+
+The slot pins are the ones section 3 has from Apple's figure. /BR was not driven by the CPLD at all: a wire held it
+low. The test CPLD image ("experimental", for the EPM240, 153 of 240 logic elements) waited for /BG and an idle bus,
+then asserted /BGACK and enabled its drivers. For an access the board answers with /VPA it asserted /VMA while E was
+low, took read data while E was high and ended the cycle after E fell; other cycles ended on /DTACK as on the
+socket. The Pi gave the CPLD its usual 100 MHz clock.
+
+**What was shown, in the report's order.**
+- *Simulation and fit:* 15,984 checks over ten starting phases of E, none failing; the shortest /VMA lead before E's
+  rising edge in the model was 221 ns.
+- *A probe program on the Pi, 33 bus cycles:* the SE ROM's first words read back as `B306 E171`; six values written
+  to the VIA's timer 1 low latch at $EFEDFE and read back, the VIA's DDRB and IER read between them unchanged, the
+  latch put back.
+- *System 7.1 to the Finder:* with a Linux-hosted emulator on the Pi (not Aurora68's kernel) and a System 7.1 disk
+  image served by it. The Finder's tick counter advanced by 61 in about one second.
+- *The SE's own keyboard and mouse:* two entries in the ADB device table (keyboard at address 2, mouse at 3); with no
+  other source of input, the pointer moved and the button's presses and releases were seen in the guest. The keyboard
+  was confirmed by the person at the machine, not by a captured key event.
+
+**What had to change for the boot.** The probe program gave the Pi's register-select, data and write lines time to
+settle; the first emulator run used shorter GPIO strobes and stopped before the Finder with the CPLD's busy flag
+asserted during a read of the VIA's interrupt flags at $EFFBFE. Ordering and settling time around the host's write
+strobe, and a bound on the wait for a cycle's end, got the same disk to the Finder. The report is plain that this is
+working timing on one breadboard, with no measured set-up and hold margins.
+
+**What the report leaves open.** A later session stopped on a 32-bit memory read at $007F58B8 with Speedometer 3.23 in
+front; a restart cleared it and the cause was not found. Speed, floppy and SCSI reliability and other SE boards were
+outside the test. Afterwards the bench's ordinary socket firmware was put back on the CPLD, with the note that the
+E lead (A27 to DIP 20) must stay off while it is fitted, because that firmware drives E.
+
+**What it settles for this note.**
+1. *The route itself.* A card that takes the bus by /BR, /BG and /BGACK and follows the board's E for its /VMA
+   cycles runs a compact Mac's system software on a real SE, as Apple's chapter says it should (section 4) and as the
+   Performer does with a 68030 (section 10).
+2. *E as an input (section 4, "E (confirmed by Apple)").* Confirmed in practice: the 68000, off the bus, kept making
+   E, and a VIA cycle timed against it works. A firmware that drives E must not be connected to A27.
+3. *Open question 1, in part.* /BR held low for good keeps a real SE's 68000 off the bus from power-on through a
+   boot. That is the Performer's practice (section 10.3, item 1) and what `rtl/aurora68_pds.v` does besides holding
+   /BGACK. Not shown: a board reset pulsed by the card while it owns the bus, which Aurora68's kernel does at its
+   start and at the ROM's RESET instruction.
+4. *Open question 2, in part.* Seven of the slot's pins are confirmed by use (the table above).
+5. *The EPM240 is enough* for arbitration plus external-E cycles (153 of 240 elements), which section 9 assumed.
+6. *The Zero 2 W* is a workable Pi for the route (section 5.1).
+
+**What it does not show, and what would.**
+- *Aurora68 itself on the slot.* The run used another emulator and, from the ROM words, the SE's own ROM. Aurora68's
+  kernel talks to the CPLD through the same PiStorm host protocol, so with that test image on the CPLD the kernel
+  should start as it does on the socket (`mac.board=se`); the first thing to look at in its log is the bus check at
+  start and whether the kernel's board reset leaves the 68000 quiet. *Not tried.*
+- *The kernel's strobes on long leads.* The report's first failure was host-side strobe timing. Aurora68's transport
+  (`ps_protocol`) has its own strobe lengths, tuned on the socket; on a breadboard they may need the same slack. A
+  card with short traces should not.
+- *Read data sampled at the 68000's own point, /AS only in S2, /BERR, stock mode and the reset handling* (sections 4
+  and 9) are in `rtl/aurora68_pds.v`, which is still only simulated; whether the test image has them is not in the
+  report.
+- *Margins.* Nothing was measured with a scope or a logic analyser.
+
 ## Sources
 
+- "Macintosh SE PiStorm PDS and onboard E-clock feasibility test", final engineering report, 26 November 2026, and a
+  photograph of the bench, passed on by the owner on 27 November 2026 (section 11). Not in the repository.
 - Apple, *Guide to the Macintosh Family Hardware*, 2nd edition, Figure 14-2, "An expansion card in the Macintosh SE
   assembly": the card flat above the logic board under the chassis, and the suggested connector for a cable to the
   external port.
