@@ -56,7 +56,7 @@ new `*.declrom` files to the card (PiDisk's icons) and install the new Aurora68 
   as before, so nothing is slower for them. `mac.imagemode=ram|card|auto` and `mac.imagecache=MB` choose.
   `tools/mac/hfsgrow.py` (Python 3 only) makes a larger copy of an HFS image: boot blocks, every file with both forks,
   types, creators, Finder flags, dates, the blessed System Folder, the volume's name; a partition map and its driver are
-  kept. README "A larger startup disk" has the steps. Also fixed: while an image was still being read into memory, the
+  kept. docs/guide.md "A larger startup disk" has the steps. Also fixed: while an image was still being read into memory, the
   PC or Apple II card reading its own disk at the same moment could put two commands on the SD card at once. Kernel only.
 
 - **Bluetooth as Raspberry Pi OS runs it, and what a pairing could break** (docs/08 item 141, docs/21, 25 November
@@ -158,7 +158,7 @@ Since 0.14:
   keyboard was connected), and starts afresh every 30 s. The heartbeat names each connected device and says, for each
   paired one that is not connected, what is being done for it, when it was last heard advertising and the last error.
   Names come back from `pairings.txt`.
-- **Bluetooth keyboards and mice in Setup and Recovery, and startup keys from them** (README "Setup and Recovery",
+- **Bluetooth keyboards and mice in Setup and Recovery, and startup keys from them** (docs/guide.md "Setup and Recovery",
   docs/08 item 136, 23 November 2026). Setup and Recovery shows Bluetooth's state, the devices connected and a
   keyboard's passkey on the screens, and pairs, connects and forgets from a new Bluetooth tab on the page, from the
   keyboard menu or with `aurora68.py recovery bt`; pairings go into `pairings.txt` for the next start. A paired
@@ -437,7 +437,7 @@ Since 0.13 (docs/08 items 96 and 103):
   Plus by pseudo-DMA, no SCSI on the others (their System from a disk image on the card), and the 128K's and
   512K's 20-byte clock chip with the rest of parameter RAM in `pram.bin`. All four reach System 7.1's Finder in
   the testbed; **none has been tried on a real machine.** The 68000 on these boards is usually soldered in.
-  Setting up: README "The Plus, 512Ke, 512K and 128K", READ-ME-FIRST the same.
+  Setting up: docs/guide.md "The Plus, 512Ke, 512K and 128K", READ-ME-FIRST the same.
 - **A first start from blank parameter RAM** (any board, the SE included) now starts from the card's image: the
   IIci ROM writes its default startup disk while it checks parameter RAM, and the kernel no longer takes that
   for the Mac's choice.
@@ -480,7 +480,7 @@ Since 0.13 (docs/08 items 96 and 103):
     window (AVKit, full screen), in the queue with the songs, and on other players (the SE gets the sound).
   - **Aurora68 Play 1.5 (classic):** videos in the Library marked "Video:", playing their sound like a track; an
     artist with videos alone opens on them. The picture on the SE waits for the video card's program (docs/16).
-- **Aurora68 Setup and Recovery** (docs/08 item 106, README "Setup and Recovery"): when the Mac does not reach the Finder three
+- **Aurora68 Setup and Recovery** (docs/08 item 106, docs/guide.md "Setup and Recovery"): when the Mac does not reach the Finder three
   starts in a row, when the programmer's interrupt switch (or Esc on a USB keyboard) is held at power-on, when
   `recovery.txt` is on the card (`aurora68.py restart recovery`) or with `mac.recovery=1`, the Pi starts without
   the Mac and serves its SD card: a page for a phone or laptop (the PIN shown on the Mac's screen; files, uploads
@@ -489,7 +489,7 @@ Since 0.13 (docs/08 items 96 and 103):
   is kept as kernel8.old for "Roll back". With no network, a USB keyboard on the Pi sets the WiFi and a few options
   from a menu on the screen. Tested in the testbeds only; it cannot help a kernel that stops before it reads the
   card (keep a microSD extension cable in mind for that).
-- **Setup and Recovery's Display tab** (docs/08 item 111, README "Setup and Recovery"): the HDMI monitor's EDID as
+- **Setup and Recovery's Display tab** (docs/08 item 111, docs/guide.md "Setup and Recovery"): the HDMI monitor's EDID as
   tiles (maker, model, a shortened serial number, size, the panel's own resolution, HDMI or DVI and its sound), the
   mode in force, the kernel's suggestion with its reason and **Use the suggestion**, and every mode judged against
   the Pi 3's pixel clock (usable; too fast with a reduced-blanking alternative; too fast; the wrong shape), with

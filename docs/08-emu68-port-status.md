@@ -4361,7 +4361,7 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      network, says on the Mac's own screen and on HDMI where to find it, and takes a keyboard for what it needs to get
      onto a network. The same evening the owner added the WiFi settings and the common options as forms, a way in
      when the WiFi settings are wrong or absent, and a keyboard menu on the recovery screen.
-   - *Getting in* (`emu68/src/psmac/psmac_recovery.c`, core 0 before the 68k would start; README "Recovery"):
+   - *Getting in* (`emu68/src/psmac/psmac_recovery.c`, core 0 before the 68k would start; docs/guide.md "Recovery"):
      the boot counter (`boot.txt` in the card's root: starts in a row that did not reach the Finder, incremented
      before the 68k starts, back to 00 when CurApName says Finder; at `mac.bootcount=` (3) the next start is a
      recovery start); the programmer's interrupt switch held as the 68k would be released (the raw level's bit 2 on
@@ -4675,7 +4675,7 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      is for: READ-ME-FIRST's "If your Mac misbehaves: the bus check" says what to do and what to photograph.
 109. **Music videos in the music server and both Aurora68 Plays (22 November).** The owner's library on the NAS also
      holds music videos, in the same folders as the albums, and they asked for them in the server and in both Plays.
-   - *The server* (`tools/music-server`, README "Music videos"). The scan finds `.mp4 .m4v .mov .mkv .webm .avi .mpg
+   - *The server* (`tools/music-server`, docs/guide.md "Music videos"). The scan finds `.mp4 .m4v .mov .mkv .webm .avi .mpg
      .mpeg .ts` files beside the songs, kept apart from the folders' songs (a folder of videos alone is no station,
      and the stations file did not change). The catalogue attaches each to its album when it sits in an album's
      folder or in a `Videos` folder inside one, to its artist in an artist's folder (one whose albums are folders
@@ -6909,7 +6909,7 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      folder's ID, which it set to the new folder's (MacDraw: $002F, Apps, became $01A7, Apps copy).
    - *Kernel builds* (24 November 2026, from main at 27e8ebf with this item): without the cards, and with
      `-DPSMAC_PC=ON -DPSMAC_A2=ON`. `make -C mac check` passes.
-   - *To do on the owner's SE:* grow `sys710pi.image` (README "A larger startup disk"), start from it, and send the
+   - *To do on the owner's SE:* grow `sys710pi.image` (docs/guide.md "A larger startup disk"), start from it, and send the
      `[CARD] disk image ...: served from the card` line, a heartbeat's `[CARD]   cache:` line after copying a large file
      in the Finder (its KB/s is the card's real speed for the slots), and the service loop's longest card turn in the
      same heartbeat (`[PSMAC]   service loop: ... card N us`; expected a few milliseconds). Then a Shut Down, a few
