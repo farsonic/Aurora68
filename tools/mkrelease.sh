@@ -32,12 +32,14 @@ for f in mac/build/psmac-*x*.declrom; do cp "$f" "$OUT/aurora68-${f#mac/build/ps
 # the programs in their folders (21 November 2026: Mac/Aurora68/Aurora68 Play, Display, Network, System,
 # Extensions (to install); docs/09 "The programs and their folders"), as MacBinary files
 python3 tools/mac/aurora68-layout.py stage "$OUT/Mac" --build mac/build
-# an HFS disk image (2 MB) with the same folders on it, for emulators and Disk Copy. hfsutils keeps its
+# an HFS disk image (4 MB) with the same folders on it, in the card's root: the kernel mounts it beside the
+# user's own startup disk as the volume "Aurora68" (it has no System, and images named Aurora68* are taken
+# after the user's, psmac_card.c image_scan). Emulators and Disk Copy open it too. hfsutils keeps its
 # current volume in $HOME/.hcwd, shared by every hfsutils process of the user: a HOME of our own
-IMG="$OUT/Mac/Aurora68-Utilities.img"
-dd if=/dev/zero of="$IMG" bs=1k count=2048 status=none
+IMG="$OUT/Aurora68-Apps.img"
+dd if=/dev/zero of="$IMG" bs=1k count=4096 status=none
 HFSHOME=$(mktemp -d)
-HOME=$HFSHOME hformat -l "Aurora68 $V" "$IMG" > /dev/null
+HOME=$HFSHOME hformat -l "Aurora68" "$IMG" > /dev/null
 HOME=$HFSHOME hcopy -t release/READ-ME-FIRST.txt ":Read Me"
 HOME=$HFSHOME humount
 rm -f "$HFSHOME/.hcwd"; rmdir "$HFSHOME"
@@ -54,6 +56,6 @@ cp emu68/LICENSE "$OUT/LICENSES/Emu68-and-Aurora68-MPL-2.0.txt"
 cp emu68/src/alice/../../COPYING "$OUT/LICENSES/Alice68-modules-GPL-2.0.txt" 2>/dev/null || \
   curl -sSf https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt -o "$OUT/LICENSES/Alice68-modules-GPL-2.0.txt" 2>/dev/null || \
   echo "The Alice68 service modules (emu68/src/alice) are GPL-2.0-only; see https://www.gnu.org/licenses/old-licenses/gpl-2.0.html" > "$OUT/LICENSES/Alice68-modules-GPL-2.0.txt"
-(cd "$OUT" && { sha256sum kernel8.img *.declrom *.txt *.py *.sh; find Mac -type f -print0 | sort -z | xargs -0 sha256sum; } > SHA256SUMS)
+(cd "$OUT" && { sha256sum kernel8.img *.declrom *.txt *.py *.sh Aurora68-Apps.img; find Mac -type f -print0 | sort -z | xargs -0 sha256sum; } > SHA256SUMS)
 (cd dist && zip -qr "Aurora68-$V.zip" "Aurora68-$V")
 ls -la "dist/Aurora68-$V.zip"; unzip -l "dist/Aurora68-$V.zip" | tail -1

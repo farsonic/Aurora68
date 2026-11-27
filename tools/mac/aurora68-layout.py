@@ -5,7 +5,7 @@
     aurora68-layout.py stage OUTDIR [--build mac/build]
         the release's layout as folders of MacBinary files (the release zip's Mac/ folder)
     aurora68-layout.py disk IMAGE [--part N] [--build mac/build]
-        the same layout onto an HFS volume that is not a startup disk (Aurora68-Utilities.img)
+        the same layout onto an HFS volume that is not a startup disk (Aurora68-Apps.img, the release's programs disk)
     aurora68-layout.py install IMAGE [--part N] [--build mac/build] [--music FILE ...]
                        [--films FILE ...] [--films-creator CODE] [--remove-old] [--rebuild-desktop] [--startup-log]
         onto a System 7 (or 6) startup disk: the extensions into the System Folder's Extensions

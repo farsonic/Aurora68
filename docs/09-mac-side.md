@@ -79,7 +79,8 @@ there is one list (log: `radio: "PiPlay Stations" renamed "Aurora68 Play Station
 its depth from its own name as before, after the "68" of "Aurora68": "Aurora68 Depth 16", "Aurora68 Depth HDMI
 32", and still "PiDepth 16" for a copy renamed in the old way.
 
-**The folders.** On the release (its `Mac/` folder and the disk image Aurora68-Utilities.img) and on a disk the
+**The folders.** On the release (its `Mac/` folder and the disk image Aurora68-Apps.img in the card's root, mounted as
+the disk "Aurora68"; Aurora68-Utilities.img in `Mac/` until 27 November 2026) and on a disk the
 helper installs (`docs/img/system71-aurora68-folders.png`: the Display, Network, System and Music folders in the
 Finder on a colour screen; `docs/img/se-aurora68-folders.png`: the same on the SE's one-bit screen):
 

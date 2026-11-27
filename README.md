@@ -35,7 +35,8 @@ card that exists only in software.
    ```
 
 The Mac starts from its own SCSI disk (or a BlueSCSI), a floppy, or a disk image (`.img`, `.hda`, `.dsk`) in the
-card's root. The Aurora68 programs are in the release's `Mac` folder; the drivers need no installing.
+card's root. The Aurora68 programs come on `Aurora68-Apps.img`, which the Mac mounts as the disk "Aurora68" beside
+your startup disk; the drivers need no installing.
 `READ-ME-FIRST.txt` in the zip says what the first start should look like.
 
 ## More

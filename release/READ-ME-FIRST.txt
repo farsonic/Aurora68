@@ -66,8 +66,10 @@ What is in the zip
                          (new in 0.3; 0.1 and 0.2 did not, which left System 7.1 to an occasional
                          zero divide at boot). Python 3 is all it needs; rompatch.py and
                          patches/iici.json are the source of that delta, for the record
-  Mac/                   the Macintosh-side programs, in the folder Aurora68, as MacBinary files
-                         and on Aurora68-Utilities.img (an HFS disk image with the same folders):
+  Aurora68-Apps.img      the Aurora68 programs on an HFS disk image (4 MB). Leave it in the card's
+                         root: the Mac mounts it as the disk "Aurora68" beside your startup disk
+                         (it is never the startup disk itself). The same folders as Mac/:
+  Mac/                   the Macintosh-side programs, in the folder Aurora68, as MacBinary files:
                            Aurora68 Play/   Aurora68 Play (MP3, AIFF and WAV files and internet
                                             radio on the sound card: the Pi decodes them) and
                                             Music, a folder for your sound files
@@ -704,7 +706,10 @@ On the Macintosh
 The drivers need no installation: they are in the declaration ROM. From Mac/Aurora68/Extensions (to
 install)/, put the extensions you want into the System Folder (System 6) or drop them on the closed
 System Folder (System 7 puts them into Extensions); copy the Aurora68 folder anywhere.
-Aurora68-Utilities.img is an HFS disk image with all of them in the same folders. With hfsutils on a
+Aurora68-Apps.img in the card's root holds all of them in the same folders and appears on the
+desktop as the disk "Aurora68": run the programs from it, or copy them to your own disk. It counts
+as one of the four disk images the kernel mounts, and with mac.image= it must be named there too
+(mac.image=MyMac.hda,Aurora68-Apps.img). With hfsutils on a
 PC, tools/mac/aurora68-layout.py (in the source) installs the whole set onto a Mac disk image.
 
 Versions

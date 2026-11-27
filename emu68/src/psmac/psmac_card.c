@@ -413,7 +413,16 @@ static int root_walk(int (*f)(uint32_t lba, void *ctx), void *ctx)
     }
     return 0;
 }
-struct find_ctx { const char *name; struct cfile *out; char lfn[128]; int lfn_ok; char found[48]; };
+struct find_ctx { const char *name; struct cfile *out; char lfn[128]; int lfn_ok; char found[48]; int pass; };
+/* the release's own image (Aurora68-Apps.img, the Aurora68 programs) and any other whose name begins
+   "Aurora68": taken after the user's images (image_scan's pass 2), so never SCSI ID 0 on the solo board
+   and never ahead of a System disk in the drive queue */
+static int aurora_image(const char *s)
+{
+    static const char p[] = "aurora68";
+    for (int i = 0; p[i]; i++) { char c = s[i]; if (c >= 'A' && c <= 'Z') c += 32; if (c != p[i]) return 0; }
+    return 1;
+}
 /* a disk image on the card by its name: what the container's own images end in (psmac_bus.c), less
    the Pi's own kernel*.img, macOS's ._ shadow files and anything under a megabyte */
 static int ends_ci(const char *s, const char *suf)
@@ -499,7 +508,8 @@ static int find_sector(uint32_t lba, void *vctx)
         if (e[8] != ' ') { sn[n++] = '.'; for (int k = 8; k < 11 && e[k] != ' '; k++) sn[n++] = (char)e[k]; }
         sn[n] = 0;
         const char *shown = x->lfn_ok ? x->lfn : sn;
-        int hit = x->name ? name_eq(sn, x->name) || (x->lfn_ok && name_eq(x->lfn, x->name)) : is_image_name(shown, le32(e + 28)) && !image_taken(shown);
+        int hit = x->name ? name_eq(sn, x->name) || (x->lfn_ok && name_eq(x->lfn, x->name)) : is_image_name(shown, le32(e + 28)) && !image_taken(shown)
+                  && (x->pass != 1 || !aurora_image(shown)) && (x->pass != 2 || aurora_image(shown));
         if (hit && !x->name) { unsigned k = 0; while (shown[k] && k < sizeof x->found - 1) { x->found[k] = shown[k]; k++; } x->found[k] = 0; }
         x->lfn_ok = 0;
         if (hit) {
@@ -513,7 +523,7 @@ static int find_sector(uint32_t lba, void *vctx)
 }
 static int file_find(const char *name, struct cfile *f)
 {
-    struct find_ctx x; x.name = name; x.out = f; x.lfn_ok = 0;
+    struct find_ctx x; x.name = name; x.out = f; x.lfn_ok = 0; x.pass = 0;
     return root_walk(find_sector, &x) == 1 ? 0 : -1;
 }
 struct free_ctx { uint32_t lba, off; };
@@ -1149,7 +1159,8 @@ static uint8_t *take_memory(uint32_t len)
 }
 /* at mount: images of their own, when the container brought none. Every disk image file in the
    card's root in directory order (the order they were copied there: the first is SCSI ID 0 on the
-   solo board), or the names in mac.image=NAME[,NAME...], up to four */
+   solo board), those named Aurora68* last (the release's Aurora68-Apps.img), or the names in
+   mac.image=NAME[,NAME...], up to four */
 static int image_taken(const char *name)
 {
     for (int i = 0; i < nimg; i++) if (name_eq(imgs[i].name, name)) return 1;
@@ -1229,7 +1240,7 @@ static void image_scan(void)
     if (nimg) return;
     const char *opt = psmac_option("mac.image");
     if (opt && name_eq(opt, "off")) return;
-    struct cfile f; struct find_ctx x; x.out = &f; x.lfn_ok = 0;
+    struct cfile f; struct find_ctx x; x.out = &f; x.lfn_ok = 0; x.pass = 0;
     if (opt) {
         char list[128]; unsigned n = 0;
         while (opt[n] && n < sizeof list - 1) { list[n] = opt[n]; n++; }
@@ -1244,9 +1255,11 @@ static void image_scan(void)
         }
         return;
     }
-    while (nimg < 4) {
-        x.name = 0; x.found[0] = 0; x.lfn_ok = 0;
-        if (root_walk(find_sector, &x) != 1 || !image_take(x.found, &f)) break;
+    for (int pass = 1; pass <= 2; pass++) {             /* the user's images, then the Aurora68 programs' (aurora_image) */
+        while (nimg < 4) {
+            x.name = 0; x.found[0] = 0; x.lfn_ok = 0; x.pass = pass;
+            if (root_walk(find_sector, &x) != 1 || !image_take(x.found, &f)) break;
+        }
     }
 }
 

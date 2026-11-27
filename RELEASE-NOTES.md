@@ -2,6 +2,13 @@
 
 ## Next release (on main, not released yet)
 
+- **The Aurora68 programs on a disk of their own, mounted beside yours** (27 November 2026). The release's HFS image
+  of the programs is now `Aurora68-Apps.img` in the card's root (4 MB, the volume "Aurora68"; it was
+  `Mac/Aurora68-Utilities.img`, which nothing mounted). The kernel takes disk images named `Aurora68*` after the
+  user's own, so it is never SCSI ID 0 on the solo board or ahead of a System disk; it counts as one of the four
+  images, and a `mac.image=` list must name it. Tested on the solo board in QEMU from an SD card image with
+  `Aurora68-Apps.img` copied before `sys710pi.image`: the System disk was SCSI ID 0, System 7.1 reached the Finder
+  and the disk "Aurora68" was on the desktop beside it (`docs/img/apps-disk-beside-startup.png`). Kernel and release.
 - **The remote control on the WiFi, found by ARP, with or without TCP/IP on the Mac** (docs/08 item 149, docs/13
   "Addresses", 25 November 2026; the owner's MacBook could not resolve the Mac's address on a mesh WiFi, and under
   A/UX's Mac OS the kernel had no address at all). In the shared mode (the WiFi's default) the kernel answers ARP for
