@@ -76,6 +76,11 @@ cards). The steps the owner was given:
 
 ## 3. Other things known and open
 
+- **Two network cards, by the owner's choice for now (27 November 2026).** Mac OS uses the Pi's own card in slot $9
+  (`.ENET`, MacTCP, Riptide, the WiFi menu); A/UX uses the board ID 8 card in slot $D (`ae6`). Under Mac OS the slot
+  $D card shows as an unused Apple Ethernet card. Offered and left for later: hiding it from Mac OS, or one card for
+  both (our `.ENET` in the slot $D card's ROM, the slot $9 network service retired).
+
 - **A bus error in A/UX's Macintosh environment at start, in the testbed only so far.** Two runs stopped about 13
   emulated minutes in with `[CRASH] System error 1 (bus error) called at PC 002f99fa in "A/UX Startup"`; the read
   that fails is a data read in user mode at PC $2FCE8E through a handle holding $08F90007. Intermittent, cause not
