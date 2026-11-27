@@ -9,6 +9,8 @@ usually odd for a reason that is written there), `docs/09-mac-side.md` the Macin
 `docs/07` the mailbox and the Alice68 boards, `docs/10` the second display, `docs/12` the hardware
 bring-up plan (classic PiStorm, Pi 3, the SE), `docs/06` the MAME
 bridge and the ROM patches.
+The A/UX work (the emulated 68030 MMU, input and networking under A/UX) lives on branches, not yet on
+`main`: `docs/25-aux-handover.md` says which, where each stands and how to take it over.
 
 ## What this is
 A Raspberry Pi in a Macintosh SE's 68000 socket (a PiStorm) runs Emu68, presents a 68040, boots
