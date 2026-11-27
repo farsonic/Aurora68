@@ -111,7 +111,8 @@ struct psmb_display {
                                                 Open before VBLs are wanted: 0 (drivers before 27 November 2026) or 9
                                                 slot 9's line, $A-$E that slot's own bit of the RBV's slot register
                                                 (the SE board's HDMI card: A/UX takes one handler a slot, docs/26) */
-    uint32_t pad;
+    uint32_t aux;                            /* Pi: not 0 while A/UX's tables are on (the driver then asks the calling
+                                                Macintosh environment for its addressing mode, docs/26) */
     uint32_t clut[256];                      /* Mac: 0x00RRGGBB per index */
     /* version 2: direct modes and other resolutions (docs/10). Modes 128+i, i = 0..5: 1, 2, 4, 8, 16, 32
        bits. The Pi fills in where each mode's frame buffer is (a 68k address: the window's top 512 KiB
@@ -180,14 +181,17 @@ static inline uint32_t psmb_rowbytes(uint32_t w, uint32_t depth) { return ((w * 
 /* The HDMI card's frames in slot $A's own space (27 November 2026, docs/26). A/UX files a video card under the slot
    its frame address lies in, so the HDMI card's pixels at slot 9's addresses made A/UX take it for slot 9's card (and
    draw the SE screen's pointer into the HDMI frame). With a driver that knows (PSMB_HDMI_OWN_MARK after its name) the
-   same Pi memory is given slot $A addresses too: the window's frame half (offsets $80000-$FFFFF) at $FAA80000, slot
-   $A's 24-bit megabyte in 32-bit form, and at $FA080000, its other form; the big region's first 9 MiB at $FA100000,
-   between the two. A frame larger than that stays at $90000000 (32-bit Mac OS only; A/UX maps a card's 16 MiB). */
+   same Pi memory is given slot $A addresses: the big region at $FA000000, as much of it as fits below the ROM (16 MiB
+   less 16 KiB: millions at 2560x1440 is 14.06 MiB), which A/UX maps for the card's Macintosh environment in 32-bit
+   mode; and the small modes a 24-bit Mac reaches at $FAA88000, in slot $A's 24-bit megabyte ($FAA00000, 32-bit form,
+   as $F9900000 is slot 9's). That megabyte is the window's frame half (offsets $80000-$FFFFF) while the big region is
+   at most 10 MiB; a larger big region covers it, and the small modes then use the big region's memory at offset
+   $A88000 (it is 11 MiB or more then). A frame over 16 MiB less 16 KiB stays at $90000000 (32-bit Mac OS only). */
 #define PSMB_HDMI_OWN_MARK   "A68:HDMI frames in slot A"
-#define PSMB_SLOT2_MB_PHYS   0xFAA00000u     /* slot $A's 24-bit megabyte, 32-bit form (as $F9900000 is slot 9's) */
-#define PSMB_SLOT2_MINOR_PHYS 0xFA000000u    /* ... and the other form of the same megabyte */
-#define PSMB_FB_BIG2_PHYS    0xFA100000u     /* the big region's first PSMB_FB_BIG2_MAX bytes, in slot $A */
-#define PSMB_FB_BIG2_MAX     0x00900000u
+#define PSMB_SLOT2_SPACE     0xFA000000u     /* slot $A's 16 MiB */
+#define PSMB_SLOT2_MB_PHYS   0xFAA00000u     /* slot $A's 24-bit megabyte, 32-bit form */
+#define PSMB_FB_BIG2_PHYS    0xFA000000u     /* the big region's slot $A address ... */
+#define PSMB_FB_BIG2_MAX     0x00FFC000u     /* ... for at most this much (the ROM is at $FAFFC000) */
 
 /* ---- the sound card (20 November 2026, docs/09 "Sound through HDMI") ------------------------------
    One more function of slot 9's card: 16-bit stereo at 44.1 kHz, played by the Pi through HDMI or the

@@ -129,7 +129,8 @@ static const uint8_t *mode_frame(const struct screen *s, int mi) { return big_ba
 static uint32_t mode_limit(const struct screen *s, int mi)
 {
     uint32_t b = s->disp->mode_base[mi];
-    return b == PSMB_FB_BIG2_PHYS ? PSMB_FB_BIG2_MAX : b == PSMB_FB_BIG_PHYS ? psmac_fb_big_size() : s->win_size;
+    uint32_t big = psmac_fb_big_size();
+    return b == PSMB_FB_BIG2_PHYS ? (big < PSMB_FB_BIG2_MAX ? big : PSMB_FB_BIG2_MAX) : b == PSMB_FB_BIG_PHYS ? big : s->win_size;
 }
 
 /* A screen's display block: its size, the six modes' places and pitches, a colour table for a card
@@ -148,9 +149,9 @@ uint32_t psmac_display_mode_base(uint32_t w, uint32_t h, uint32_t depth, uint32_
     if (rb > PSMB_ROWBYTES_MAX || (one_bit_only && depth > 1)) return 0;
     if (depth <= 8 && bytes <= win_size) return win_mac;
     if (one_bit_only || bytes > psmac_fb_big_size()) return 0;
-    /* a screen whose window frames are in slot $A's space (the HDMI card with a driver that knows, docs/26) gets the
-       big region's slot $A addresses too, for as much as is mapped there */
-    if ((win_mac & 0xff000000u) == PSMB_SLOT2_MINOR_PHYS && bytes <= PSMB_FB_BIG2_MAX) return PSMB_FB_BIG2_PHYS;
+    /* a screen whose small modes are in slot $A's space (the HDMI card with a driver that knows, docs/26) gets the
+       big region's slot $A address too, for as much as is mapped there (psmb.h, PSMB_FB_BIG2_PHYS) */
+    if ((win_mac & 0xff000000u) == PSMB_SLOT2_SPACE && bytes <= PSMB_FB_BIG2_MAX) return PSMB_FB_BIG2_PHYS;
     return PSMB_FB_BIG_PHYS;                                                       /* $90000000: 32-bit addressing only */
 }
 static void screen_init(struct screen *s, uint8_t *win, uint32_t block_off, uint32_t frame_off, uint32_t frame_size,
@@ -160,7 +161,17 @@ static void screen_init(struct screen *s, uint8_t *win, uint32_t block_off, uint
     s->disp = d; s->win = win + frame_off; s->win_size = frame_size;
     s->block_off = block_off; s->frame_off = frame_off; s->one_bit = one_bit_only;
     s->win_mac = PSMB_WIN_PHYS + 0x900000u + frame_off;                 /* $F99xxxxx: the 24-bit megabyte in 32-bit form */
-    if (s == &scr[1] && psmac_hdmi_own_space) s->win_mac = PSMB_SLOT2_MB_PHYS + frame_off;   /* $FAA88000: slot $A's own (docs/26) */
+    if (s == &scr[1] && psmac_hdmi_own_space) {
+        s->win_mac = PSMB_SLOT2_MB_PHYS + frame_off;                  /* $FAA88000: slot $A's own (docs/26) */
+        /* a big region over 10 MiB covers slot $A's 24-bit megabyte at $FA000000 (psmac_mmu.c): the small modes are
+           then in the big region's memory, at the same offset */
+        uint32_t big = psmac_fb_big_size(), at = PSMB_SLOT2_MB_PHYS - PSMB_FB_BIG2_PHYS + frame_off;
+        if (big > PSMB_SLOT2_MB_PHYS - PSMB_FB_BIG2_PHYS) {
+            s->win = frame_big + at;
+            s->win_size = big - at < frame_size ? big - at : frame_size;
+            frame_size = s->win_size;
+        }
+    }
     s->clut_seen = ~0u;
     for (uint32_t i = 0; i < sizeof(struct psmb_display) / 4; i++) ((volatile uint32_t *)d)[i] = 0;
     d->width = w; d->height = h; d->depth = 1;
@@ -263,7 +274,7 @@ void psmac_display_init(uint8_t *win)
     if (nscr == 2)
         kprintf("[PSMAC:DISP] two screens: the SE's 512x342, 1 bit, at $%08x (its own video RAM); HDMI %ux%u: indexed modes that fit at $%08x, the rest in the big region at $%08x (%u MiB)%s; VideoCore %ux%u x%u pitch %u at %p%s\n",
                 scr[0].win_mac, w1, h1, scr[1].win_mac, psmac_hdmi_own_space ? PSMB_FB_BIG2_PHYS : PSMB_FB_BIG_PHYS, psmac_fb_big_size() >> 20,
-                psmac_hdmi_own_space ? " for frames up to 9 MiB, else at $90000000: slot $A's own addresses" : "", vc_w, vc_h, vc_bpp, vc_pitch, framebuffer,
+                psmac_hdmi_own_space ? " for frames up to 16 MiB less 16 KiB, else at $90000000: slot $A's own addresses" : "", vc_w, vc_h, vc_bpp, vc_pitch, framebuffer,
                 vc_boot ? ": the firmware's own buffer, kept (mac.vcdepth=32 asks for a new 32-bit one)" : "");
     else
         kprintf("[PSMAC:DISP] %s %ux%u: indexed modes in the window at $%08x%s; VideoCore %ux%u x%u pitch %u at %p%s\n",
@@ -857,6 +868,7 @@ void psmac_display_report(void)
    (and grey-fills 288 KB of a 1920 by 1200 screen in between), had its first tick raise slot 9's
    line with nobody to take it but the input driver's catch-all, which cannot lower it, and the
    restarted Mac spent the rest of its life in its level-2 interrupt (PiScrn's restart, docs/10). */
+static void display_aux(int on);
 void psmac_display_bus_reset(void)
 {
     if (splash_mac_on()) psmac_splash_status("Restarting the Macintosh...");   /* the splash until the driver opens again */
@@ -864,6 +876,7 @@ void psmac_display_bus_reset(void)
         scr[i].disp->vbl_enable = 0; scr[i].disp->vbl_pending = 0; scr[i].disp->flags = 0; scr[i].disp->irq_slot = 0;
     }
     __asm__ volatile("dmb ish" ::: "memory");
+    display_aux(0);                                                /* after A/UX: the HDMI card's modes back for Mac OS (below) */
 }
 /* The slot a screen's VBL is raised on (27 November 2026, docs/26): the slot its driver installed its handler on, as
    the driver wrote it in the block. Slot 9 for the SE's screen and for an HDMI driver from before that day, which put
@@ -900,9 +913,41 @@ unsigned psmac_display_slot_irq(void)
 /* A/UX's tables came on (psmac_card_handoff): a driver of the HDMI screen that took slot 9's interrupt cannot open under
    A/UX's kernel beside the SE screen's (one handler a slot, docs/26); say so once, since the fix is a newer declaration
    ROM, not this kernel */
+/* The modes A/UX's Macintosh environment can draw into (27 November 2026, docs/26). A/UX maps a video card's own slot
+   space into that environment, 1 MiB of it in 24-bit mode (the default, startmac24) and the 16 MiB in 32-bit mode,
+   never the super slot space. The owner's Monitors under A/UX chose millions for the HDMI screen at 2560x1440, a frame
+   then at $90000000, and the environment crashed and was restarted for ever. Now that frame is at $FA000000; while
+   A/UX's tables are on the drivers are told (aux), so that they ask the calling environment's addressing mode and
+   refuse what it cannot reach, and a mode left at $90000000 (a frame over 16 MiB) leaves the HDMI card's live
+   declaration ROM and its block's table. The 68k's RESET gives everything back for Mac OS. */
+static int aux_modes;
+static void display_aux(int on)
+{
+    extern int psmac_declrom_aux(int on, uint32_t w, uint32_t h);
+    if (aux_modes == on) return;
+    aux_modes = on;
+    for (int i = 0; vcs && i < nscr; i++) scr[i].disp->aux = on;   /* the drivers ask the caller's addressing mode (pivideo.s, reach) */
+    __asm__ volatile("dmb ish" ::: "memory");
+    if (nscr < 2 || !psmac_hdmi_own_space) return;
+    struct screen *s = &scr[1];
+    volatile struct psmb_display *d = s->disp;
+    int k = psmac_declrom_aux(on, d->width, d->height), kept = 0, gone = 0;
+    for (int i = 0; i < 6; i++) {
+        uint32_t base = psmac_display_mode_base(d->width, d->height, 1u << i, s->win_mac, s->win_size, 0);
+        if (on && base == PSMB_FB_BIG_PHYS) { base = 0; gone++; }
+        d->mode_base[i] = base;
+        if (base) kept++;
+    }
+    __asm__ volatile("dmb ish" ::: "memory");
+    if (gone || !on)
+        kprintf("[PSMAC:DISP] the HDMI screen %s: %d depth%s at %ux%u (the ROM's list: %d)\n",
+                on ? "under A/UX leaves out the modes at $90000000, which A/UX does not map" : "offers all its modes again",
+                kept, kept == 1 ? "" : "s", d->width, d->height, k);
+}
 void psmac_display_handoff(void)
 {
     static int said;
+    display_aux(1);
     if (said || nscr < 2) return;
     volatile struct psmb_display *d = scr[1].disp;
     if (!(d->flags & PSMB_DISP_ENABLED) || screen_irq_slot(d) != 9) return;

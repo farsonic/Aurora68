@@ -1656,6 +1656,7 @@ static void declrom_crc(uint8_t *top)
     for (uint8_t *p = top - length; p < top; p++) crc = ((crc << 1) | (crc >> 31)) + *p;
     *(uint32_t *)(fb + 8) = BE32(crc);
 }
+static int declrom_aux_reach;                  /* A/UX's tables are on: slot $A's modes outside its own megabyte leave the list (docs/26) */
 static int declrom_resize(uint8_t *top, uint8_t rid, uint32_t slot, uint32_t w, uint32_t h, uint32_t win_mac, uint32_t win_size)
 {
     extern uint32_t psmac_display_mode_base(uint32_t w, uint32_t h, uint32_t depth, uint32_t win_mac, uint32_t win_size, int one_bit_only);
@@ -1679,6 +1680,7 @@ static int declrom_resize(uint8_t *top, uint8_t rid, uint32_t slot, uint32_t w, 
         if (BE16(*(uint16_t *)(b + 32)) != depth) continue;    /* vpPixelSize (VPBlock offset 32): not a mode this file has as the rule says */
         if (!i) { oh = BE16(*(uint16_t *)(b + 10)) - BE16(*(uint16_t *)(b + 6)); ow = BE16(*(uint16_t *)(b + 12)) - BE16(*(uint16_t *)(b + 8)); }
         uint32_t base = psmac_display_mode_base(w, h, depth, win_mac, win_size, 0);
+        if (declrom_aux_reach && slot == PSMB_SLOT2 && base == PSMB_FB_BIG_PHYS) base = 0;   /* A/UX does not map $90000000 */
         if (!base) { list_drop(m); continue; }
         *(uint32_t *)b = BE32(base - devbase);          /* vpBaseOffset: wraps round to the right address in 32 bits */
         *(uint16_t *)(b + 4) = BE16((uint16_t)psmb_rowbytes(w, depth));
@@ -1811,6 +1813,17 @@ int psmac_declrom_rescreen(uint32_t w, uint32_t h)
     memcpy(lo, rescreen_copy, rescreen_len);
     int k = declrom_resize(rescreen_top, rescreen_rid, rescreen_slot, w, h, rescreen_win, rescreen_winsize);
     arm_flush_cache((uintptr_t)lo, rescreen_len);
+    return k;
+}
+/* A/UX's tables on (on = 1) or the 68k's RESET after them (on = 0), for the HDMI card with its frames in slot $A
+   (display_aux in psmac_display.c, docs/26): the live ROM again from the file's copy, without (or again with) the
+   modes at $90000000, which A/UX never maps for its Macintosh environment, so that its Monitors does not offer them */
+int psmac_declrom_aux(int on, uint32_t w, uint32_t h)
+{
+    if (!rescreen_len || !rescreen_top || rescreen_slot != PSMB_SLOT2) return 0;
+    declrom_aux_reach = on;
+    int k = psmac_declrom_rescreen(w, h);
+    declrom_aux_reach = 0;
     return k;
 }
 static void rescreen_keep(uint8_t *top, uint32_t len, uint8_t rid, uint8_t slot, uint32_t win, uint32_t winsize)
@@ -2078,7 +2091,7 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
                 }
                 { extern void psmac_mmu_set_hdmi_own(int); psmac_mmu_set_hdmi_own(psmac_hdmi_own_space); }
                 kprintf("[PSMAC] declaration ROM: the HDMI card's frames at %s\n", psmac_hdmi_own_space ?
-                        "slot $A's own addresses ($FAA88000, $FA100000), its driver knows them" :
+                        "slot $A's own addresses ($FAA88000, $FA000000), its driver knows them" :
                         "slot 9's addresses (a driver from before 27 November 2026; A/UX takes this card for slot 9's)");
             }
             uint32_t win2 = (psmac_hdmi_own_space ? PSMB_SLOT2_MB_PHYS : PSMB_WIN_PHYS + 0x900000u) + PSMB_OFF_BOUNCE2;

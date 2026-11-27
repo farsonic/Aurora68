@@ -145,9 +145,9 @@ def add_video(rom, rid, video, drhw, hwdev, W, H, win, win_size, one_bit_only=Fa
         in_window = depth <= 8 and rowbytes * H <= win_size
         if not in_window and (one_bit_only or rowbytes * H > BIG_SIZE):
             sys.exit(f"mkdeclrom: {W} x {H} at {depth} bits needs {rowbytes * H} bytes, the big region has {BIG_SIZE}")
-        # the HDMI card's frames in slot $A's own space (psmb.h PSMB_FB_BIG2_PHYS, docs/26): the big region's first
-        # 9 MiB at $FA100000 when the window part is in slot $A too
-        big = 0xFA100000 if (win & 0xFF000000) == 0xFA000000 and rowbytes * H <= 0x900000 else BIG
+        # the HDMI card's frames in slot $A's own space (psmb.h PSMB_FB_BIG2_PHYS, docs/26): the big region at
+        # $FA000000, for frames up to 16 MiB less 16 KiB, when the small modes are in slot $A too
+        big = 0xFA000000 if (win & 0xFF000000) == 0xFA000000 and rowbytes * H <= 0xFFC000 else BIG
         base_off = ((win if in_window else big) - devbase) & 0xffffffff
         vp = struct.pack('>IHhhhhHHIIIHHHHI', base_off, rowbytes, 0, 0, H, W, 0, 0, 0, 0x00480000, 0x00480000,
                          16 if direct else 0, depth, 3 if direct else 1, (5 if depth == 16 else 8) if direct else depth, 0)
