@@ -1,6 +1,6 @@
 # Aurora68 release notes
 
-## Next release (on main, not released yet)
+## 0.18 — the Aurora68 programs on a disk of their own, the remote control found by ARP, WiFi beside Bluetooth (27 November 2026)
 
 - **The Aurora68 programs on a disk of their own, mounted beside yours** (27 November 2026). The release's HFS image
   of the programs is now `Aurora68-Apps.img` in the card's root (4 MB, the volume "Aurora68"; it was

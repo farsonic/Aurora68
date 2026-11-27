@@ -1,5 +1,5 @@
-Aurora68 0.4 - a Macintosh SE build that also boots System 7 on a Pi alone
-==================================================
+Aurora68 - read me first (the version is in RELEASE-NOTES.md)
+==============================================================
 
 What this is
 ------------
