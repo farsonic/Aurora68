@@ -16,7 +16,7 @@ SE, sections 12 to 23) and, on branch `aux-net`, `docs/24-aux-network.md` (the n
 | Networking under A/UX over the Pi's WiFi: a virtual card of the kind A/UX's own `ae6` driver drives (`mac.auxnet=on`) | **works on the owner's real SE** (test kernel 22, 27 November 2026): `/etc/etheraddr` shows the Pi's WiFi address, `newconfig` linked `ae6`, `ae0` came up and another machine on the WiFi network pings A/UX (about 4 ms once ARP is done); with `route add default ROUTER 1` A/UX pings a public address on the internet, five of five answered. Not yet seen in the testbed; default route, DNS and the merge with the input work still to do | branch `aux-net` (from b863149), `docs/24-aux-network.md` there |
 | The HDMI screen under A/UX | not started; switching the HDMI screen on locked the SE up under A/UX, so the owner runs with `mac.hdmi=log` | |
 
-None of this is merged into `main`. `main` has the tools (`tools/aux/`, `mame/act.lua`) and this note.
+`aux-net` now also holds the input work (merged from `mmu-experimental` at 85e575a, without conflicts): its head is test kernel 23, input and network together, sent to the owner on 27 November 2026; the HDMI work continues on `aux-hdmi`, branched from it. None of this is merged into `main`. `main` has the tools (`tools/aux/`, `mame/act.lua`) and this note.
 
 **The owner's order of work (27 November 2026):** Bluetooth, WiFi and USB under A/UX first; then the HDMI screen
 under A/UX. On hold by the owner's word: restyling the kernel to `emu68/CODING_STYLE.md` (CLAUDE.md, Conventions),
@@ -61,7 +61,7 @@ cards). The steps the owner was given:
    (`mac.net=` and `tools/pinet.py`, CLAUDE.md). The kernel has to be relinked without typing: do what `newconfig`
    does from an rc script on a private copy of the image (`tools/aux/mknetimage.py` on `aux-net` writes that script
    into the image; docs/24 says how far it got). The chip model also has a host test, `tools/aux/etalk_test.sh`.
-3. Merge `aux-net` and `mmu-experimental` into one kernel with input and network. Both touch
+3. Done (27 November 2026, test kernel 23): `aux-net` merged with `mmu-experimental`; the slot rule for `pc=on` is in docs/24 section 4. What follows is the note written before it, kept for the reasoning. Merge `aux-net` and `mmu-experimental` into one kernel with input and network. Both touch
    `psmac_board_se.c`, `psmac_bus.c`, `psmac_diag.c`, `alice_psmac.c`, `emu68/CMakeLists.txt` and
    `tools/diag_test.c`, each with small hooks; the bulk is in files of their own (`psmac_adb.c`, `psmac_etalk.c`).
    Build it the way the owner's kernels are built (the PC and Apple II cards compiled in, docs/19 and docs/20):
