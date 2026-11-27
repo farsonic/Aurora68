@@ -180,13 +180,14 @@ static int scrn_matches(const unsigned char *p, long len, const struct screen *s
 }
 
 /* the HDMI screen's deepest mode whose pixels this addressing mode reaches: all of them with 32-bit
-   addressing, else those in the slot's 24-bit megabyte ($F99xxxxx, the window), not the big region */
+   addressing, else those in a slot's 24-bit megabyte, not the big region: $F99xxxxx (slot 9's window), or
+   $FAAxxxxx, where the HDMI card's own small modes are since 27 November 2026 (docs/26) */
 static short best_mode(void)
 {
 	if (rd32(DISP2) != DISP_MAGIC) return 128;
 	for (int i = 5; i > 0; i--) {
 		unsigned long base = rd32(DISP2 + DISP_MODE_BASE + 4 * (unsigned long)i);
-		if (base && (LM_MMU32BIT || (base >> 20) == 0xF99)) return (short)(128 + i);
+		if (base && (LM_MMU32BIT || (base >> 20) == 0xF99 || (base >> 20) == 0xFAA)) return (short)(128 + i);
 	}
 	return 128;
 }
