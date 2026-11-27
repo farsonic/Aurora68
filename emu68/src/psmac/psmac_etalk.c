@@ -89,6 +89,10 @@ extern uint32_t psmac_pccard_size(void);
 extern uint32_t psmac_a2card_size(void);
 #endif
 
+#ifdef __aarch64__
+#define ETALK_BARRIER() __asm__ volatile("dmb ish" ::: "memory")
+#define ETALK_YIELD() __asm__ volatile("yield")
+
 static inline uint64_t etalk_now(void)
 {
     uint64_t v;
@@ -102,11 +106,26 @@ static inline uint64_t etalk_hz(void)
     __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(v));
     return v;
 }
+#else
+// the host's test of the chip (tools/aux/etalk_test.sh): one thread, no clock
+#define ETALK_BARRIER() ((void)0)
+#define ETALK_YIELD() ((void)0)
+
+static inline uint64_t etalk_now(void)
+{
+    return 0;
+}
+
+static inline uint64_t etalk_hz(void)
+{
+    return 1;
+}
+#endif
 
 static inline void etalk_lock(void)
 {
     while (__atomic_test_and_set(&et.lock, __ATOMIC_ACQUIRE)) {
-        __asm__ volatile("yield");
+        ETALK_YIELD();
     }
 }
 
@@ -308,7 +327,7 @@ static int etalk_send(void)
     }
     s->len = len;
     s->flags = 0;
-    __asm__ volatile("dmb ish" ::: "memory");
+    ETALK_BARRIER();
     u->tx_head = head + 1;
     et.tx++;
     return 1;
@@ -563,7 +582,7 @@ static int etalk_store(const volatile uint8_t *frame, uint32_t len, int group)
         }
     }
     c->rsr = head[0];
-    __asm__ volatile("dmb ish" ::: "memory");
+    ETALK_BARRIER();
     c->curr = (uint8_t)next;
     c->isr |= ISR_PRX;
     et.rx++;
@@ -580,7 +599,7 @@ static int etalk_command(volatile struct an_unit *u, uint32_t cmd, uint32_t arg)
     u->arg[2] = (uint8_t)(arg >> 8);
     u->arg[3] = (uint8_t)arg;
     u->cmd = cmd;
-    __asm__ volatile("dmb ish" ::: "memory");
+    ETALK_BARRIER();
     u->cmd_seq = u->cmd_seq + 1;
     return 1;
 }
@@ -667,7 +686,7 @@ void psmac_etalk_poll(void)
                 et.rx_held++;
                 break;
             }
-            __asm__ volatile("dmb ish" ::: "memory");
+            ETALK_BARRIER();
             u->rx_tail = tail + 1;
         }
     }

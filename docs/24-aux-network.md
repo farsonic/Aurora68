@@ -119,3 +119,152 @@ itself; on the testbed's IIci board the slot register is the motherboard's and t
 
 Not done: the IIci board; AppleTalk over the card was not tried (the multicast filter is implemented, the
 driver's multicast calls were not exercised); the tally counters read 0.
+
+### 4.1 Where the pieces are, and the log's lines
+
+| Piece | Where |
+|---|---|
+| the card | `emu68/src/psmac/psmac_etalk.c`; its ROM `psmac_etalk_declrom.h`, made by `python3 tools/mac/mkauxnetdeclrom.py -o emu68/src/psmac/psmac_etalk_declrom.h` (`tools/mac/declrom.py` gained `below()`, an entry that points below the image) |
+| memory map | `psmac_mmu.c`: `pi_phys` asks `psmac_etalk_phys`, `ro_phys` asks `psmac_etalk_ro` |
+| register accesses, set-up | `psmac_bus.c`: `psmac_io_read` and `psmac_io_write` ask `psmac_etalk_access` first; `psmac_etalk_init` beside the video card's |
+| interrupt | `psmac_board_se.c`: `rbv_recalc` and the slot register's read use `psmac_etalk_slot_irq` |
+| service loop, resets | `alice_psmac.c`: `psmac_etalk_poll` after `alice_net_poll`; `psmac_etalk_reset` in `psmac_card_reset` and `psmac_card_handoff` |
+| options | `mac.auxnet=on|off|a|c|d|e`, `mac.auxnettrace=N` (the first N register accesses by name); both in `psmac_diag.c`'s table and README's |
+| host test | `tools/aux/etalk_test.sh`: the chip model driven as ae6 drives it, against a stand-in for the board (44,539 checks) |
+
+The kernel log, all with `[AUXNET]`: at start `the A/UX network card in slot $D: board ID 8, a DP8390 at $fd0e0000,
+64 KiB of buffer at $fd0d0000, ROM 204 bytes at the slot's top`; when the board has an address `Ethernet address
+..., the network board's WiFi (or wired port), in the card's ROM`; when ae6 runs `the driver started the chip:
+address ..., ring pages 06 to fe, receive configuration 0c; frames through the WiFi`, `the network board's WiFi
+gives its frames to A/UX's driver now`, `the first frame from A/UX's driver went to the network board`, `the
+first frame for A/UX's driver is in the card's ring`, and every 30 s while the counts move `N sent (N lost), N
+received (N not for the driver, N waits for room); ISR .. IMR .., ring at .., boundary ..`. `the driver stopped
+the chip` and `the chip is reset` say what they say. A line that begins `the driver's address ... is not one of
+the network board's` means the ROM's cell and the driver disagree.
+
+## 5. The first run, and a fault that is not the card's
+
+**Run 1** (27 November, the MAME SE, `mac.mmu=full mac.ram=64 mac.auxnet=on mac.auxnettrace=300`, a copy of the
+image with the testbed's `/etc/sysinitrc` of section 7). The card's two start lines came (slot $D, and the
+testbed bridge's address in the ROM). The Mac OS on A/UX's disk reached its Finder with the card in the slot,
+A/UX Startup launched, the kernel logged "A/UX's tables on", A/UX's kernel booted and init started the Macintosh
+environment (the menu bar and the watch cursor on the screen). At 13 minutes everything stood still, the log
+ending in the middle of nothing. Nothing had touched the chip: no register trace line.
+
+The log's last lines had not been sent. Read out of the kernel's console ring through QEMU's monitor, they were
+
+```
+[CRASH] System error 1 (bus error) called at PC 002f99fa in "A/UX Startup", A5 03f90cf4 (crash record 1 of at most 8)
+[JIT:SYS] Unhandled page fault: opcode b8626800, read from 0xffffff9100ffffff
+[JIT:SYS] Exception with vector 0200 on CPU2. ELR=..., ESR=0x0000000096000010, FAR=0xffffff9100ffffff
+[PSMAC] bridge stall: waiting on op 1 size 1 addr 00effbfe ...
+```
+
+and a run of the evening before (26 November, test kernel 20, no card, `mac.usertrace` on) ends with the same
+two first lines: the same PC, the same A5, the same address. Two things, neither the card's:
+
+1. **A system error in A/UX's Macintosh environment.** The crash record (read from the kernel's memory) holds the
+   bus error's frame on the Mac environment's stack: format `$B`, PC `$002FCE8E`, SSW `$0141` (a data read in
+   user mode), fault address `$08F90007`, A0 the same. The code is the System file's (the copy in
+   `/mac/sys/Startup System Folder/System`, found by searching the image for the handler's bytes): a Process
+   Manager routine, the one after `ChangeIconicTitle` by its debugger names, which takes a handle from offset 102
+   of a process's record and reads through it to set a menu item's text (`_SetItem`). The handle is `$08F90007`:
+   not an address the process has. Why that record holds it is not known. *Inference:* a race in the start of the
+   Macintosh environment that the emulator loses when the host is slow (both runs were made with another
+   emulator-heavy job on the machine, and runs 52, 53, 60 and the others before and after reached the Finder with
+   the same disk); it was not looked into further here.
+2. **The kernel's own fault on top of it.** The crash recorder prints its block from the bus core, and reads the
+   68k's memory for it through `mac_rd32` (`psmac_bus.c`), whose bound check was `ph + 4 > ram_size`: for a
+   physical address in the last four bytes of the 4 GiB the sum wraps, the check passes, and the read is far
+   outside the Pi's memory. The core that serves the Mac's bus cycles and sends the log died there, with its last
+   lines unsent, and the 68k waited for it for ever. Fixed: `ph >= ram_size` is tested first. With that a system
+   error in the Macintosh environment gets its block in the log and the machine goes on.
+
+## 6. What a person does, once
+
+With the kernel and `mac.auxnet=on` on the command line (and a WiFi network joined as before, or the cable in),
+in A/UX's CommandShell as root. The questions are quoted from `/etc/newconfig`, `/etc/startup.d/ae6` and
+`/etc/sethost`; section 8 says how far a run has shown them.
+
+1. `/etc/etheraddr` prints the card's Ethernet address, the Pi's. Nothing printed: the Slot Manager does not
+   show the card, and nothing below will work.
+2. `cp /unix /unix.old`, then `newconfig -v`. It prints "Making backup copies...", "Building a new kernel (this
+   may take several minutes)", autoconfig's lines (with `-v`: "Found board ID 8 in slot 13"), "Restoring kernel
+   parameters", "Checking for any installation information", then asks:
+   - ` 1 ae Ethernet card(s) installed`, `ae0: Would you like to configure this interface for IP? [y/n, default=y]`
+   - `Please enter a host name (it must be unique):` (lower case letters, digits and dashes), then
+     `Please enter a NIS domain name [none]:` (Return)
+   - `ae0: Please enter an Internet address:` a free fixed address of the network, outside what its DHCP server
+     hands out
+   - `ae0: Please enter a netmask [none]:` for example 255.255.255.0
+   - it shows the address, the netmask and the broadcast address it worked out, and asks `OK? [y/n, default=y]`
+   and ends with "To avoid kernel/device inconsistancies, reboot immediately."
+3. Restart A/UX. From then on `/etc/startup` runs ae6's script at every start, which sets `ae0` from
+   `/etc/NETADDRS`. `ifconfig ae0`, `netstat -in`, `/usr/etc/ping HOST 56 3`, `telnet HOST`.
+
+The address is kept in `/etc/NETADDRS` (one line: `ae0`, a tab, the address, the broadcast address, the
+netmask), the name in `/etc/HOSTNAME` and both in `/etc/hosts`; edit them and restart to change it, or use
+`ifconfig ae0 ADDRESS netmask MASK` for the session. Nothing sets a default route or a name server: `/usr/etc/route
+add default ROUTER 1` (by hand, or as a line at the end of `/etc/sysinitrc`, below "Add local code below this
+line"), and `/etc/resolv.conf`. `newconfig bnet` instead of plain `newconfig` also switches on inetd (telnet and
+ftp into the SE), routed, sendmail, portmap and syslogd, and asks about NIS.
+
+## 7. The testbed, from nothing
+
+The A/UX image is the owner's and is not in the repository: ask for it again (`AUX.zip`, holding
+`AUX_3_1_1GB.dsk`, 1,048,576,000 bytes; sector 96 starts the root file system). Keep one copy as it came, for
+reading, and give A/UX another to write to; `conv=sparse` and `cp --sparse=always` keep each near 200 MB on the
+host. What was read from it, all with `ufscat.py IMAGE 96 PATH`: `/etc/master.d/*`, `/etc/master`, `/etc/startup`,
+`/etc/startup.d/ae6`, `/etc/sysinitrc`, `/etc/inittab`, `/etc/newconfig`, `/etc/newunix`, `/etc/install.d/bnet` and
+`install`, `/etc/sethost` (scripts, read as they are); `/etc/boot.d/ae6` (taken apart with `tools/aux/coffdis.py`),
+`/unix` (`coffsyms.py`, `unixdis.sh`: `slotmanager`, `slotintr`, `via2intr`, the slot tables in its data),
+`/etc/autoconfig` and `/etc/etheraddr` (no symbols: objdump on their text, the strings' addresses as landmarks),
+and the Mac environment's System file for section 5.
+
+A/UX in the testbed has no keyboard, so what a person would type is put where A/UX runs it anyway.
+`tools/aux/mknetimage.py` makes a `/etc/sysinitrc` that, at its end, runs `newconfig -v` once with the answers of
+section 6 on its standard input and restarts A/UX, and on every later start tests the network in the background;
+`tools/aux/ufspatch.py` writes it over the image's own. The tool allocates nothing: it rewrites the fragments the
+file has and its length, which is why the new script drops the old one's comments (2,924 bytes become about
+2,300, in room for 3,072). A/UX itself then creates the result files, which are read off the image afterwards:
+`/auxnet.boot` (a line per start and autoconfig's results), `/auxnet.newconfig` (the transcript) and
+`/auxnet.log` (etheraddr, ifconfig, netstat, ping, arp, telnet). A run that was stopped leaves the file system
+unclean, and A/UX then wants to check it at the next start: begin each run from a fresh copy, or from a copy a
+finished run left.
+
+`tools/aux/run-aux-net.sh SECS LOGDIR KERNEL DISK mac.auxnet=on` is the run: the MAME SE (`tools/run-fullstack.sh`,
+`MACHINE=macse_ps`), the image as a virtual SCSI disk at ID 0, `mac.mmu=full`, 64 MiB, `mac.net=/tmp/psmac-net`
+and `tools/pinet.py /tmp/psmac-net peer` as the other end of the wire (192.168.68.1: it answers ARP, ping, TCP
+echo on port 7 and HTTP, and logs every frame). A/UX needs 12 to 20 minutes to its Finder there, and the run
+with newconfig is two starts. When a run stands still, QEMU's monitor still answers (`tools/qemu-mon.py "info
+registers -a"` for where each core is; `memsave` of `con_ring` for log lines that were never sent).
+
+Without A/UX: `sh tools/aux/etalk_test.sh` (a second), and `tools/diag_test.sh` for the options table.
+
+## 8. What is proven, and what is not (27 November, end of run 1)
+
+Proven:
+- by reading the code: sections 2 and 3;
+- by `tools/aux/etalk_test.sh`: the chip model against the driver's sequence as read, the ring's arithmetic, the
+  interrupt's bit, the board's command box;
+- by run 1: the Mac ROM's Slot Manager and the Mac OS on A/UX's disk start with the card in slot $D, A/UX Startup
+  launches, A/UX's kernel boots and starts its Macintosh environment; the address reaches the ROM's cell.
+
+Not proven yet:
+- that autoconfig finds the card and links ae6 (run 1 stopped before `/etc/sysinitrc` got there);
+- newconfig's questions as section 6 lists them;
+- ae6 on this chip: probe, start, the interrupt, a frame each way; ping, TCP;
+- anything on the real SE, the WiFi under A/UX above all (the unit's choice, the address, the board left
+  without a Mac driver);
+- System 7.1 from the card's own image with the option on and off.
+
+## 9. Next, in order
+
+1. Run 2: the same as run 1 with the `mac_rd32` fix, to the end of section 7's script; read the three files and
+   `pinet.log`.
+2. Whatever ae6 then shows the model lacks (its messages are in the kernel's `printf` strings: "spurious
+   interrupt", "can't get ethernet address", "timeout").
+3. The System 7.1 regression (`mac.auxnet` off, then on) and the options test.
+4. The owner's SE over WiFi: `etheraddr`, `newconfig`, ping to the router; the log's `[AUXNET]` lines.
+5. Then: the IIci board's slot register, AppleTalk over the card (`elap` is in the kernel), a default route and
+   resolver set by the same hand that sets the address.
