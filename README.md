@@ -1,5 +1,7 @@
 # Aurora68
 
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-support%20Aurora68-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/farsonic)
+
 A Raspberry Pi on a PiStorm in a compact Macintosh's 68000 socket. It runs Emu68 and boots Apple's Macintosh
 IIci ROM, so the SE becomes a 68040-class Mac with up to 128 MB of memory, while its own screen, keyboard, mouse,
 floppy and SCSI keep working. On top it adds a colour second screen and stereo sound over HDMI, disk images on the
