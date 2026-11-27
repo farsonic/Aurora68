@@ -107,6 +107,7 @@ const struct pdg_opt pdg_opts[] = {
     { "mac.mmutlb", PDG_G_DEBUG, PDG_F_ONCE, A, "flush", 0, "flush: with mac.mmu=full, the Pi's whole TLB dropped after every change of the emulated MMU's spaces, as QEMU in effect does (slow; a diagnostic for differences between QEMU and a real Pi)." },
     { "mac.irqguard", PDG_G_DEBUG, 0, PDG_SE, "on|off", "on", "on: while A/UX's own MMU tables are in use, an interrupt taken 20,000 times in a row with no access to its chip (the RBV, the SCC) is kept from the 68k until the next access; A/UX Startup's shell clears none." },
     { "mac.slotstorm", PDG_G_DEBUG, 0, PDG_SE, "1", 0, "Testbed: the slot interrupt held up from A/UX's switch of tables until the next access to the RBV, as on the owner's SE." },
+    { "mac.auxnettrace", PDG_G_DEBUG, 0, PDG_COMPACT | PDG_SOLO, "#", "200", "The first N accesses to the A/UX network card's DP8390 registers in the log, by name (mac.auxnet)." },
     { "mac.sescsiwait", PDG_G_STORAGE, 0, PDG_SE, "#", "250", "The SE's SCSI selection timeout in milliseconds, 1 to 1000 (default 250)." },
     { "scsi.cd", PDG_G_STORAGE, 0, PDG_COMPACT | PDG_SOLO, "*", "AUX30.iso:3",
       "A virtual SCSI CD-ROM drive (an AppleCD 300) at SCSI ID 3, or the ID after the colon, holding a CD image file in the card's root (.iso, .cdr, .toast; empty: no CD)." },
@@ -146,6 +147,8 @@ const struct pdg_opt pdg_opts[] = {
     { "recovery.ap", PDG_G_NETWORK, 0, A, "on|off", 0, "on: Setup and Recovery starts at once as a WiFi access point for a phone (the bench's way; the button is the usual one)." },
     { "recovery.apsec", PDG_G_NETWORK, 0, A, "wpa2|open", 0, "The access point's security: open, or WPA2 even when the firmware does not say it can." },
     { "recovery.apchannel", PDG_G_NETWORK, 0, A, "1|2|3|4|5|6|7|8|9|10|11|12|13", 0, "The access point's channel (6, allowed everywhere, by default)." },
+    { "mac.auxnet", PDG_G_NETWORK, 0, PDG_COMPACT | PDG_SOLO, "on|off|a|c|d|e", 0,
+      "on: an Ethernet card for A/UX in a free slot (D, else E), which A/UX's own driver ae6 runs over the Pi's network; a letter names the slot. Mac OS uses the cards in slot 9 as before." },
 
     /* ---- Video card ---- */
     { "mac.video", PDG_G_VIDEO, 0, A, "off|on", 0, "off: no Aurora68 Video Decoder card in slot $C (QuickTime then decodes everything itself)." },

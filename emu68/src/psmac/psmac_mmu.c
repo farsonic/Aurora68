@@ -182,6 +182,7 @@ static inline uintptr_t pi_phys(uint32_t p)
     /* the second display's big frame buffer, in the slot's super slot space ($90000000): the ROM's
        32-bit tables map $40000000-$FBAFFFFF one to one, so logical and physical agree there */
     if (slot_fb_phys && p >= PSMB_FB_BIG_PHYS && p < PSMB_FB_BIG_PHYS + slot_fb_size) return slot_fb_phys + (p - PSMB_FB_BIG_PHYS);
+    if (p >= 0xF0000000u) { extern uintptr_t psmac_etalk_phys(uint32_t); return psmac_etalk_phys(p); }   /* the A/UX network card's buffer and ROM (psmac_etalk.c, mac.auxnet=) */
     return 0;
 }
 /* Mac physical pages that must be read-only for the 68k: ROM, declaration ROM, write-through
@@ -193,12 +194,14 @@ static inline uintptr_t pi_phys(uint32_t p)
    and on the owner's Pi a slot of the kernel's stack read back other than what had just been written through that
    path ($4CF14: $4D000 written, something else read), so the root table entry went astray and A/UX panicked. */
 extern int psmac_board_se;
+extern int psmac_etalk_ro(uint32_t p);
 static inline int ro_phys(uint32_t p)
 {
     return (p < PSMAC_FB_SIZE && !psmac_board_se) || (p >= 0x40000000u && p < 0x50000000u) || (psmac_watch_traps && p == WATCH_PHYS_PAGE) ||
            (p >= PSMB_DECLROM_PHYS && p < PSMB_DECLROM_PHYS + PSMB_DECLROM_SIZE) ||
            (slot2_rom_phys && p >= PSMB_DECLROM2_PHYS && p < PSMB_DECLROM2_PHYS + PSMB_DECLROM2_SIZE) ||
-           (vid_rom_phys && p >= PSMB_VID_ROM_PHYS && p < PSMB_VID_ROM_PHYS + PSMB_VID_ROM_SIZE)
+           (vid_rom_phys && p >= PSMB_VID_ROM_PHYS && p < PSMB_VID_ROM_PHYS + PSMB_VID_ROM_SIZE) ||
+           psmac_etalk_ro(p)                                    /* the A/UX network card's ROM (psmac_etalk.c) */
 #ifdef PSMAC_PC
            || (pc_rom_phys && p >= PSMB_PC_ROM_PHYS && p < PSMB_PC_ROM_PHYS + PSMB_PC_ROM_SIZE)
 #endif

@@ -1561,6 +1561,7 @@ void psmac_card_reset(void)
     { extern void psmac_remote_mac_reset(void); psmac_remote_mac_reset(); }   /* the remote's input queue and records (psmac_remote.c) */
     { extern void psmac_audio_mac_reset(void); psmac_audio_mac_reset(); }     /* PiPlay's stream stops (psmac_audio.c) */
     { extern void psmac_video_reset(void); psmac_video_reset(); }             /* and the video card's (psmac_video.c) */
+    { extern void psmac_etalk_reset(void); psmac_etalk_reset(); }             /* the A/UX network card's chip (psmac_etalk.c) */
     __asm__ volatile("dmb ish" ::: "memory");
     kprintf("[PSMAC] 68k RESET: the card's interrupt sources are off until their drivers open\n");
 }
@@ -1581,6 +1582,7 @@ void psmac_card_handoff(void)
     alice_net_reset();
     if (inr) { inr->attached = 0; inr->tail = inr->head; }
     { extern void psmac_remote_mac_reset(void); psmac_remote_mac_reset(); }
+    { extern void psmac_etalk_reset(void); psmac_etalk_reset(); }             /* the A/UX network card's chip, until ae6 starts it (psmac_etalk.c) */
     __asm__ volatile("dmb ish" ::: "memory");
     kprintf("[PSMAC] A/UX's tables on: the network board and the input ring are off until their drivers open\n");
 }
@@ -1710,6 +1712,7 @@ void __attribute__((noreturn)) psmac_alice_core(void)
         t1 = in_now(); LOOP_T(1, t1 - t0); t0 = t1;
         LOOP_AT("network");
         alice_net_poll();
+        { extern void psmac_etalk_poll(void); psmac_etalk_poll(); }      /* the A/UX network card: its DP8390's frames to and from the board (psmac_etalk.c) */
         bt_pi_uart_pump();
         t1 = in_now(); LOOP_T(2, t1 - t0); t0 = t1;
         LOOP_AT("USB");

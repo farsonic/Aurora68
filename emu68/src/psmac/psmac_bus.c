@@ -799,7 +799,7 @@ static void pcring_dump(void)
 static uint32_t mac_rd32(uint32_t logical, int *ok)
 {
     int valid; uint32_t ph = psmac_mmu_l2p(logical, &valid);
-    if (!valid || ph + 4 > ram_size) { *ok = 0; return 0; }
+    if (!valid || ph >= ram_size || ph + 4 > ram_size) { *ok = 0; return 0; }   /* ph >= ram_size: an address in the last four bytes of the 4 GiB wrapped the sum, and the read then killed the core that made it (docs/24 section 5) */
     *ok = 1; return *(const uint32_t *)(KERNEL_ALIAS + ram_phys + ph);
 }
 /* for the crash record (psmac_crash.c): RAM or the ROM, wherever the 68k's map puts them */
@@ -1161,12 +1161,14 @@ static void rbv_snoop_write(uint32_t addr, int size, uint32_t data)
 uint32_t psmac_io_read(uint32_t addr, int size)
 {
     struct psmac_reply r;
+    { extern int psmac_etalk_access(uint32_t, int, int, uint32_t, uint32_t *); uint32_t v = 0; if (addr >= 0xF0000000u && psmac_etalk_access(addr, size, 0, 0, &v)) return v; }   /* the A/UX network card (psmac_etalk.c) */
     if (psmac_board_se) { uint32_t v = 0; if (psmac_se_access(addr, size, 0, 0, &v, 0)) return v; }
     xfer(PSMAC_OP_READ, size, 0, addr, 0, &r);
     return rbv_merge_read(addr, size, r.data);
 }
 void psmac_io_write(uint32_t addr, int size, uint32_t data, int posted)
 {
+    { extern int psmac_etalk_access(uint32_t, int, int, uint32_t, uint32_t *); uint32_t v; if (addr >= 0xF0000000u && psmac_etalk_access(addr, size, 1, data, &v)) return; }
     if (psmac_board_se) { uint32_t v; if (psmac_se_access(addr, size, 1, data, &v, posted)) return; }
     rbv_snoop_write(addr, size, data);
     xfer(PSMAC_OP_WRITE, size, posted ? PSMAC_FLAG_POSTED : 0, addr, data, NULL);
@@ -2080,6 +2082,7 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
     { extern void psmac_recovery_phase1(void); psmac_recovery_phase1(); }   /* Aurora68 Setup and Recovery: asked for, or three starts without the Finder? */
     psmac_mbox_init(win_phys, ram_phys, ram_size);
     { extern void psmac_videocard_init(void); if (vid_size) psmac_videocard_init(); }   /* its ROM and block, once the screens are known */
+    { extern void psmac_etalk_init(void); psmac_etalk_init(); }                         /* mac.auxnet=: the A/UX network card's ROM and chip (psmac_etalk.c) */
 #ifdef PSMAC_PC
     { extern void psmac_pccard_init(void); if (pc_size) psmac_pccard_init(); }         /* the PC card's, likewise */
 #endif

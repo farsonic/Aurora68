@@ -103,10 +103,11 @@ static int slot_storm;                       /* mac.slotstorm=1 (testbed): the s
 static int slot_line(void) { return slot_storm == 2 || ((psmac_slot_irq_state() >> 16) & 1); }
 
 int psmac_solo_scsi_irq(void);
+unsigned psmac_etalk_slot_irq(void);         /* psmac_etalk.c: the A/UX network card's bit of the slot register, while its DP8390 asks */
 static void rbv_recalc(void)
 {
     uint8_t ifr = rbv_ifr & 0x7f;
-    if (slot_line() && (rbv_regs[0x12] & 0x01)) ifr |= 0x02;          /* any slot interrupt, gated by the slot enable register */
+    if ((slot_line() && (rbv_regs[0x12] & 0x01)) || (psmac_etalk_slot_irq() & rbv_regs[0x12])) ifr |= 0x02;   /* any slot interrupt, gated by the slot enable register; the A/UX network card's slot too (psmac_etalk.c) */
     else ifr &= ~0x02;
     if (psmac_board_solo) { if (psmac_solo_scsi_irq()) ifr |= 0x08; else ifr &= ~0x08; }   /* the 5380's interrupt, level-sensitive */
     else if (psmac_scsidev_irq()) ifr |= 0x08;   /* a virtual SCSI device's connection, answered here (psmac_scsidev.c): its 5380's line, as the solo board's */
@@ -148,7 +149,7 @@ static uint32_t rbv_read(uint32_t off)
     uint32_t reg = rbv_regno(off);
     if (reg >= 0x100) return 0;
     switch (reg) {
-    case 0x02: return (rbv_regs[2] & 0x7f) | (slot_line() ? 0 : 0x01) | 0x3e;   /* slot IFR: slots A-E idle (1), slot 9 ours */
+    case 0x02: return (rbv_regs[2] & 0x7f) | (slot_line() ? 0 : 0x01) | (0x3e & ~psmac_etalk_slot_irq());   /* slot IFR: slots A-E idle (1) but the A/UX network card's while it asks, slot 9 ours */
     case 0x03: rbv_recalc(); return rbv_ifr | ((rbv_ifr & rbv_ier & 0x7f) ? 0x80 : 0);
     case 0x10: return (rbv_regs[0x10] & ~0x38) | (7 << 3);          /* monitor sense 7: no monitor on the built-in video */
     case 0x12: return rbv_regs[0x12] & 0x7f;
