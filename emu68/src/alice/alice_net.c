@@ -534,6 +534,15 @@ int alice_fw_preload(const char *name, const uint8_t *data, uint32_t len)
     kprintf("[WIFI] firmware file %s: %u bytes (preloaded)\n", f->name, len);
     return 0;
 }
+/* 1 if a file of that name is in the table already (psmac_card.c: the card's wifi-firmware folder adds only
+   what the container did not bring) */
+int alice_fw_have(const char *name)
+{
+    for (int f = 0; f < nfw; f++)
+        if (fw[f].p && ieq(fw[f].name, name))
+            return 1;
+    return 0;
+}
 #endif
 static const struct fwfile *fw_find(const char *const *stems, const char *suffix)
 {
