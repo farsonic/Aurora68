@@ -209,7 +209,10 @@ with the console lock held (docs/08 item 21 explains the one time that happened)
   `third_party/Emu68/src/frf_usb/native/` (frf_dwc2*, frf_usb_native_hid*), also verbatim: the Pi 3's
   USB keyboard and mouse, with `src/psmac/psmac_usb.c` as its glue (docs/08 item 40).
 - **Toolchains.** A newer aarch64 GCC needs a matching `emu68/toolchains/*.cmake` (copy the
-  13 one and change the version). Nothing else is version-sensitive.
+  13 one and change the version). **Stay on the 13 series for now:** a kernel built with a newer GCC
+  failed on real hardware (an SE with a PiStorm on its slot, 27 November 2026; the same source built
+  with an older GCC worked; the newer version and the cause are not known yet, docs/22 section 11).
+  Before moving the compiler, compare the two builds on hardware, not only in QEMU.
 
 ## Conventions
 - The kernel's code (everything under `emu68/`) follows Emu68's own guide, `emu68/CODING_STYLE.md`

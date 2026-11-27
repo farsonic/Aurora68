@@ -834,6 +834,14 @@ frozen, the program was. Whether that is the slot, the program or the sound card
 Wanted next from that bench: a log from power-on (the bus check and the hand-over lines), which CPLD image, and
 what was running when it stopped.
 
+*Later the same day (the owner, relaying that bench):* it works. Two things had stood in the way. A kernel built with a
+newer GCC than the 13 series failed in a way nobody pinned down; the same source built with the older GCC ran (which
+GCC, and how it failed, are still to be asked). And `mac.console=hdmi` (the kernel's log on the HDMI screen for the
+whole run) stopped the boot on that bench; without it the Mac started. On the owner's socket-mounted SE that option
+was used for weeks without trouble (docs/08 items 60-65), so why it matters on the slot is open: possibly timing, the
+log being drawn by the core that serves the bus while the slot's longer cycles run. Both are worth a log from that
+bench.
+
 ## Sources
 
 - "Macintosh SE PiStorm PDS and onboard E-clock feasibility test", final engineering report, 26 November 2026, and a
