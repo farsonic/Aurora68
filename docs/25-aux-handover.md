@@ -58,7 +58,8 @@ cards). The steps the owner was given:
    there in minutes, in the testbed in 20 to 40.
 2. In the testbed: a run where the relinked kernel attaches `ae0` and exchanges ARP or a ping with the host peer
    (`mac.net=` and `tools/pinet.py`, CLAUDE.md). The kernel has to be relinked without typing: do what `newconfig`
-   does from an rc script on a private copy of the image (docs/24 says how far that got).
+   does from an rc script on a private copy of the image (`tools/aux/mknetimage.py` on `aux-net` writes that script
+   into the image; docs/24 says how far it got). The chip model also has a host test, `tools/aux/etalk_test.sh`.
 3. Merge `aux-net` and `mmu-experimental` into one kernel with input and network. Both touch
    `psmac_board_se.c`, `psmac_bus.c`, `psmac_diag.c`, `alice_psmac.c`, `emu68/CMakeLists.txt` and
    `tools/diag_test.c`, each with small hooks; the bulk is in files of their own (`psmac_adb.c`, `psmac_etalk.c`).
