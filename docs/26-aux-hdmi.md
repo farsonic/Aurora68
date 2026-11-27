@@ -161,12 +161,14 @@ with 16 MB (32-bit addressing on) and the HDMI at 2560x1440 (QEMU's VideoCore st
   with millions for the HDMI, and after the restart the environment crashed and restarted over and over (section 3,
   item 3). The way out: `mac.hdmi=log` (the arrangement names two screens, so with one it is not used), then
   `/mac/bin/mac32` before going back to `mac.hdmi=screen`.
-- Test kernel 26 (fd9049f and 55bd631, with the new `aurora68-se.declrom` and Aurora68 Screen Setup): not yet reported.
+- Test kernel 26 (fd9049f and 55bd631, with the new `aurora68-se.declrom` and Aurora68 Screen Setup): **two
+  screens under A/UX on the owner's real SE** (27 November 2026): A/UX's Macintosh environment runs with the SE's
+  screen and the HDMI monitor (2560x1440) side by side. The depth used and the addressing mode were not reported.
 
 ## 6. What is not settled
 
-- The HDMI screen as an active screen of A/UX's Macintosh environment, in either addressing mode: never seen
-  running. In particular what the Mac ROM's 'scrn' loader in a 24-bit environment does when the driver refuses the
+- The HDMI screen as an active screen of A/UX's Macintosh environment works on the owner's SE (section 5); which
+  depths and which addressing mode were tried is not yet known. In particular what the Mac ROM's 'scrn' loader in a 24-bit environment does when the driver refuses the
   saved depth (paramErr) is not known; if it builds the screen from that mode anyway, the environment will still
   fail, and the answer is `mac32` or a smaller saved depth.
 - The pointer on the HDMI screen under A/UX: A/UX's kernel draws it (section 1) on the card it finds by the main
