@@ -163,12 +163,15 @@ with 16 MB (32-bit addressing on) and the HDMI at 2560x1440 (QEMU's VideoCore st
   `/mac/bin/mac32` before going back to `mac.hdmi=screen`.
 - Test kernel 26 (fd9049f and 55bd631, with the new `aurora68-se.declrom` and Aurora68 Screen Setup): **two
   screens under A/UX on the owner's real SE** (27 November 2026): A/UX's Macintosh environment runs with the SE's
-  screen and the HDMI monitor (2560x1440) side by side. The depth used and the addressing mode were not reported.
+  screen and the HDMI monitor (2560x1440) side by side, the pointer moving between them, with Bluetooth input and
+  the WiFi network working at the same time. In A/UX's default 24-bit mode the HDMI was black and white, as
+  expected; after `/mac/bin/mac32` the saved log of a two-hour A/UX session on the Pi 3B shows the HDMI card at
+  2560x1440, depth 32 (millions), rowbytes 10240, its VBL served, the VideoCore at about 30 frames a second.
 
 ## 6. What is not settled
 
-- The HDMI screen as an active screen of A/UX's Macintosh environment works on the owner's SE (section 5); which
-  depths and which addressing mode were tried is not yet known. In particular what the Mac ROM's 'scrn' loader in a 24-bit environment does when the driver refuses the
+- The HDMI screen as an active screen of A/UX's Macintosh environment works on the owner's SE (section 5), in
+  millions after `mac32`. In particular what the Mac ROM's 'scrn' loader in a 24-bit environment does when the driver refuses the
   saved depth (paramErr) is not known; if it builds the screen from that mode anyway, the environment will still
   fail, and the answer is `mac32` or a smaller saved depth.
 - The pointer on the HDMI screen under A/UX: A/UX's kernel draws it (section 1) on the card it finds by the main
