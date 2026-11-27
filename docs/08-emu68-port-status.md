@@ -7787,6 +7787,14 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
      collisions (item 4 of the multiplexer above came from that trace); on the owner's SE, with the kernel of
      commit `be999f5`, a Bluetooth keyboard and mouse work under A/UX. The mouse was "a bit fast": the default is
      now half its counts (`mac.adbspeed=50`).
+   - *No regression* (the final kernel, default options; the testbed's host ran at about 0.6 of its usual speed
+     this night, 19,500 bus cycles in five seconds of the ROM's chime against 33,000, so times are compared with
+     this night's). System 7.1 on the MAME SE (run 74): `.PiInput` opened at 317 s, the Finder at 404 s (418 to 428
+     s in this night's runs with `mac.adb=virtual`; 268 s on the faster host), not one `[PSMAC:ADB]` line, the
+     input ring attached. System 7.1 on the solo board: the Finder at 37.0 s, with `mac.mmu=full` at 43.0 s (23.8
+     and 27.0 s on the faster host: the same ratio), `.PiInput` attached. mmutest on the solo board with
+     `mac.mmu=full`: 157 passed, 0 failed, 127 bus errors taken. `make -C mac check` with `tools/adb_test.sh` and
+     `tools/diag_test.sh` (7,437 checks, `mac.adb`, `mac.adbspeed` and `mac.adbtrace` in the options table).
    - *Not verified.* The real transceiver's part beyond that one session: what its line does at each byte, a real
      device's byte arriving in the middle of a virtual event (the host test's model of it is the ROM's reading, not
      the chip's), two real and two virtual devices under the ROM's resolution on real hardware (`mac.adb=virtual`
