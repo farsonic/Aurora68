@@ -123,6 +123,10 @@ void psmac_mmu_set_fb(uintptr_t f, uint32_t size) { slot_fb_phys = f; slot_fb_si
    board, and mac.hdmi=mirror or log, where slot $A stays empty for the Slot Manager) */
 static uintptr_t slot2_rom_phys;
 void psmac_mmu_set_slot2(uintptr_t d) { slot2_rom_phys = d; }
+/* the HDMI card's frames at slot $A addresses as well (psmb.h, PSMB_SLOT2_MB_PHYS; docs/26): the window's frame half
+   at $FAA80000 and $FA080000, the big region's first 9 MiB at $FA100000 */
+static int hdmi_own;
+void psmac_mmu_set_hdmi_own(int on) { hdmi_own = on; }
 /* slot $C, the video card (psmb.h, psmac_videocard.c): its 1 MiB window twice (32-bit and 24-bit
    form) and its ROM page; 0 with mac.video=off */
 static uintptr_t vid_win_phys, vid_rom_phys;
@@ -166,6 +170,13 @@ static inline uintptr_t pi_phys(uint32_t p)
     if (slot_win_phys && p >= PSMB_WIN_PHYS + 0x900000u && p < PSMB_WIN_PHYS + 0x900000u + PSMB_WIN_SIZE) return slot_win_phys + (p - PSMB_WIN_PHYS - 0x900000u);
     if (slot_declrom_phys && p >= PSMB_DECLROM_PHYS && p < PSMB_DECLROM_PHYS + PSMB_DECLROM_SIZE) return slot_declrom_phys + (p - PSMB_DECLROM_PHYS);
     if (slot2_rom_phys && p >= PSMB_DECLROM2_PHYS && p < PSMB_DECLROM2_PHYS + PSMB_DECLROM2_SIZE) return slot2_rom_phys + (p - PSMB_DECLROM2_PHYS);
+    if (hdmi_own && slot_win_phys && (p & 0xff000000u) == PSMB_SLOT2_MINOR_PHYS) {
+        uint32_t o = p & 0xfffffu;
+        if ((p & 0xfff00000u) == PSMB_SLOT2_MB_PHYS || (p & 0xfff00000u) == PSMB_SLOT2_MINOR_PHYS)
+            return o >= PSMB_OFF_BOUNCE ? slot_win_phys + o : 0;
+        if (slot_fb_phys && p >= PSMB_FB_BIG2_PHYS && p - PSMB_FB_BIG2_PHYS < PSMB_FB_BIG2_MAX && p - PSMB_FB_BIG2_PHYS < slot_fb_size)
+            return slot_fb_phys + (p - PSMB_FB_BIG2_PHYS);
+    }
     if (vid_win_phys && p >= PSMB_VID_WIN_PHYS && p < PSMB_VID_WIN_PHYS + VID_WIN_SIZE) return vid_win_phys + (p - PSMB_VID_WIN_PHYS);
     if (vid_win_phys && p >= PSMB_VID_WIN24_PHYS && p < PSMB_VID_WIN24_PHYS + VID_WIN_SIZE) return vid_win_phys + (p - PSMB_VID_WIN24_PHYS);
     if (vid_rom_phys && p >= PSMB_VID_ROM_PHYS && p < PSMB_VID_ROM_PHYS + PSMB_VID_ROM_SIZE) return vid_rom_phys + (p - PSMB_VID_ROM_PHYS);
@@ -298,6 +309,13 @@ static void build_identity(void)
     if (slot2_rom_phys)
         for (uint32_t p = 0; p < PSMB_DECLROM2_SIZE; p += 4096) l2p[(PSMB_DECLROM2_PHYS + p) >> 12] = (PSMB_DECLROM2_PHYS + p) | L2P_VALID | L2P_WP;
     for (uint32_t p = 0; p < slot_fb_size; p += 4096) l2p[(PSMB_FB_BIG_PHYS + p) >> 12] = (PSMB_FB_BIG_PHYS + p) | L2P_VALID;   /* the big frame buffer */
+    if (hdmi_own) {                                                                                       /* ... and the HDMI card's slot $A addresses */
+        for (uint32_t p = PSMB_OFF_BOUNCE; p < 0x100000u; p += 4096) {
+            l2p[(PSMB_SLOT2_MB_PHYS + p) >> 12] = (PSMB_SLOT2_MB_PHYS + p) | L2P_VALID;
+            l2p[(PSMB_SLOT2_MINOR_PHYS + p) >> 12] = (PSMB_SLOT2_MINOR_PHYS + p) | L2P_VALID;
+        }
+        for (uint32_t p = 0; p < slot_fb_size && p < PSMB_FB_BIG2_MAX; p += 4096) l2p[(PSMB_FB_BIG2_PHYS + p) >> 12] = (PSMB_FB_BIG2_PHYS + p) | L2P_VALID;
+    }
     if (vid_win_phys) {                                                                                   /* the video card, slot $C */
         for (uint32_t p = 0; p < VID_WIN_SIZE; p += 4096) l2p[(PSMB_VID_WIN_PHYS + p) >> 12] = (PSMB_VID_WIN_PHYS + p) | L2P_VALID;
         for (uint32_t p = 0; p < VID_WIN_SIZE; p += 4096) l2p[(PSMB_VID_WIN24_PHYS + p) >> 12] = (PSMB_VID_WIN24_PHYS + p) | L2P_VALID;

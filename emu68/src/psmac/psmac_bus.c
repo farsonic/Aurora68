@@ -63,6 +63,7 @@ uint32_t psmac_fb_big_size(void) { return fb_big_size; }
    VideoCore's own size, with a declaration ROM psmac-se-WxH; 0 mirror: the SE's picture, as before
    20 November; 2 log: the kernel's log for the whole run (mac.console=hdmi says the same, on every board) */
 int psmac_hdmi_mode = 1;
+int psmac_hdmi_own_space;                    /* the HDMI card's frames at slot $A addresses: its driver carries PSMB_HDMI_OWN_MARK (docs/26) */
 extern int psmac_board_se, psmac_board_solo;
 /* the first screen's size (0: the VideoCore's): the SE's own on the SE board, else mac.screen */
 void psmac_screen_size(uint32_t *w, uint32_t *h)
@@ -2065,13 +2066,28 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
             else if (psmac_board_se && !psmac_board_solo && psmac_hdmi_mode == 1 && !no_declrom)
                 kprintf("[PSMAC] declaration ROM: one screen, the SE's; HDMI mirrors it (a psmac-se-WxH declaration ROM gives HDMI a screen of its own)\n");
             if (!two) slot2_rom = 0;
+            /* A driver that knows its frames may be in its own slot's space (it carries the mark) gets them there, so
+               that A/UX, which files a video card under the slot of its frame address, tells the two cards apart; an
+               older one keeps slot 9's addresses, which it alone takes as 24-bit reachable (docs/26) */
+            if (two) {
+                static const char mark[] = PSMB_HDMI_OWN_MARK;
+                for (uint32_t i = 0; i + sizeof mark - 1 <= slot2_len && !psmac_hdmi_own_space; i++) {
+                    uint32_t k = 0;
+                    while (k < sizeof mark - 1 && slot2_rom[i + k] == (uint8_t)mark[k]) k++;
+                    if (k == sizeof mark - 1) psmac_hdmi_own_space = 1;
+                }
+                { extern void psmac_mmu_set_hdmi_own(int); psmac_mmu_set_hdmi_own(psmac_hdmi_own_space); }
+                kprintf("[PSMAC] declaration ROM: the HDMI card's frames at %s\n", psmac_hdmi_own_space ?
+                        "slot $A's own addresses ($FAA88000, $FA100000), its driver knows them" :
+                        "slot 9's addresses (a driver from before 27 November 2026; A/UX takes this card for slot 9's)");
+            }
+            uint32_t win2 = (psmac_hdmi_own_space ? PSMB_SLOT2_MB_PHYS : PSMB_WIN_PHYS + 0x900000u) + PSMB_OFF_BOUNCE2;
             /* the screens' sizes into the ROM (declrom_resize): the HDMI card's for the HDMI size, a
                one-screen card's for its screen (the SE's 512 x 342 on the SE board, where it is the
                SE's; mac.screen or the firmware's size elsewhere). The SE file's own slot-9 screen is
                the SE's one bit and stays as it is. */
-            if (two) rescreen_keep((uint8_t *)slot2_rom + slot2_len, slot2_len, 0x80, PSMB_SLOT2, PSMB_WIN_PHYS + 0x900000u + PSMB_OFF_BOUNCE2, PSMB_BOUNCE2_SIZE);
-            if (two && !declrom_resize((uint8_t *)slot2_rom + slot2_len, 0x80, PSMB_SLOT2, screen_w, screen_h,
-                                       PSMB_WIN_PHYS + 0x900000u + PSMB_OFF_BOUNCE2, PSMB_BOUNCE2_SIZE))
+            if (two) rescreen_keep((uint8_t *)slot2_rom + slot2_len, slot2_len, 0x80, PSMB_SLOT2, win2, PSMB_BOUNCE2_SIZE);
+            if (two && !declrom_resize((uint8_t *)slot2_rom + slot2_len, 0x80, PSMB_SLOT2, screen_w, screen_h, win2, PSMB_BOUNCE2_SIZE))
                 kprintf("[PSMAC] declaration ROM: slot $A's video sResource not found; its screen stays as the file has it\n");
             if (!se_card && !no_declrom) {
                 uint32_t w0 = psmac_board_se && !psmac_board_solo ? 512 : screen_w, h0 = psmac_board_se && !psmac_board_solo ? 342 : screen_h;

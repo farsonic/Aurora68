@@ -55,6 +55,7 @@ extern uint32_t psmac_fb_big_size(void);
 extern void psmac_screen_size(uint32_t *w, uint32_t *h);
 extern void psmac_hdmi_size(uint32_t *w, uint32_t *h);
 extern int psmac_board_se, psmac_board_solo;
+extern int psmac_hdmi_own_space;             /* psmac_bus.c: the HDMI card's frames at slot $A addresses (docs/26) */
 
 #define KERNEL_ALIAS 0xffffff9000000000ull
 
@@ -121,9 +122,15 @@ static int mode_index(uint32_t depth)
 {
     return depth == 1 ? 0 : depth == 2 ? 1 : depth == 4 ? 2 : depth == 8 ? 3 : depth == 16 ? 4 : depth == 32 ? 5 : -1;
 }
-/* the Mac's pixels of mode 128+mi: the screen's part of the window, or the big region */
-static const uint8_t *mode_frame(const struct screen *s, int mi) { return s->disp->mode_base[mi] == PSMB_FB_BIG_PHYS ? frame_big : s->win; }
-static uint32_t mode_limit(const struct screen *s, int mi) { return s->disp->mode_base[mi] == PSMB_FB_BIG_PHYS ? psmac_fb_big_size() : s->win_size; }
+/* the Mac's pixels of mode 128+mi: the screen's part of the window, or the big region (at $90000000, or in slot $A
+   for the HDMI card's, docs/26) */
+static int big_base(uint32_t b) { return b == PSMB_FB_BIG_PHYS || b == PSMB_FB_BIG2_PHYS; }
+static const uint8_t *mode_frame(const struct screen *s, int mi) { return big_base(s->disp->mode_base[mi]) ? frame_big : s->win; }
+static uint32_t mode_limit(const struct screen *s, int mi)
+{
+    uint32_t b = s->disp->mode_base[mi];
+    return b == PSMB_FB_BIG2_PHYS ? PSMB_FB_BIG2_MAX : b == PSMB_FB_BIG_PHYS ? psmac_fb_big_size() : s->win_size;
+}
 
 /* A screen's display block: its size, the six modes' places and pitches, a colour table for a card
    just switched on. tools/mac/mkdeclrom.py applies the same placement rule to each mode's
@@ -140,8 +147,11 @@ uint32_t psmac_display_mode_base(uint32_t w, uint32_t h, uint32_t depth, uint32_
     uint32_t rb = psmb_rowbytes(w, depth), bytes = rb * h;
     if (rb > PSMB_ROWBYTES_MAX || (one_bit_only && depth > 1)) return 0;
     if (depth <= 8 && bytes <= win_size) return win_mac;
-    if (!one_bit_only && bytes <= psmac_fb_big_size()) return PSMB_FB_BIG_PHYS;   /* $90000000: 32-bit addressing only */
-    return 0;
+    if (one_bit_only || bytes > psmac_fb_big_size()) return 0;
+    /* a screen whose window frames are in slot $A's space (the HDMI card with a driver that knows, docs/26) gets the
+       big region's slot $A addresses too, for as much as is mapped there */
+    if ((win_mac & 0xff000000u) == PSMB_SLOT2_MINOR_PHYS && bytes <= PSMB_FB_BIG2_MAX) return PSMB_FB_BIG2_PHYS;
+    return PSMB_FB_BIG_PHYS;                                                       /* $90000000: 32-bit addressing only */
 }
 static void screen_init(struct screen *s, uint8_t *win, uint32_t block_off, uint32_t frame_off, uint32_t frame_size,
                         uint32_t w, uint32_t h, int one_bit_only)
@@ -150,6 +160,7 @@ static void screen_init(struct screen *s, uint8_t *win, uint32_t block_off, uint
     s->disp = d; s->win = win + frame_off; s->win_size = frame_size;
     s->block_off = block_off; s->frame_off = frame_off; s->one_bit = one_bit_only;
     s->win_mac = PSMB_WIN_PHYS + 0x900000u + frame_off;                 /* $F99xxxxx: the 24-bit megabyte in 32-bit form */
+    if (s == &scr[1] && psmac_hdmi_own_space) s->win_mac = PSMB_SLOT2_MB_PHYS + frame_off;   /* $FAA88000: slot $A's own (docs/26) */
     s->clut_seen = ~0u;
     for (uint32_t i = 0; i < sizeof(struct psmb_display) / 4; i++) ((volatile uint32_t *)d)[i] = 0;
     d->width = w; d->height = h; d->depth = 1;
@@ -250,8 +261,9 @@ void psmac_display_init(uint8_t *win)
     if (nscr == 2) screen_init(&scr[1], win, PSMB_OFF_DISPLAY2, PSMB_OFF_BOUNCE2, PSMB_BOUNCE2_SIZE, w1, h1, 0);
     vcs = nscr == 2 ? &scr[1] : &scr[0];
     if (nscr == 2)
-        kprintf("[PSMAC:DISP] two screens: the SE's 512x342, 1 bit, at $%08x (its own video RAM); HDMI %ux%u: indexed modes that fit at $%08x, the rest in the big region at $%08x (%u MiB); VideoCore %ux%u x%u pitch %u at %p%s\n",
-                scr[0].win_mac, w1, h1, scr[1].win_mac, PSMB_FB_BIG_PHYS, psmac_fb_big_size() >> 20, vc_w, vc_h, vc_bpp, vc_pitch, framebuffer,
+        kprintf("[PSMAC:DISP] two screens: the SE's 512x342, 1 bit, at $%08x (its own video RAM); HDMI %ux%u: indexed modes that fit at $%08x, the rest in the big region at $%08x (%u MiB)%s; VideoCore %ux%u x%u pitch %u at %p%s\n",
+                scr[0].win_mac, w1, h1, scr[1].win_mac, psmac_hdmi_own_space ? PSMB_FB_BIG2_PHYS : PSMB_FB_BIG_PHYS, psmac_fb_big_size() >> 20,
+                psmac_hdmi_own_space ? " for frames up to 9 MiB, else at $90000000: slot $A's own addresses" : "", vc_w, vc_h, vc_bpp, vc_pitch, framebuffer,
                 vc_boot ? ": the firmware's own buffer, kept (mac.vcdepth=32 asks for a new 32-bit one)" : "");
     else
         kprintf("[PSMAC:DISP] %s %ux%u: indexed modes in the window at $%08x%s; VideoCore %ux%u x%u pitch %u at %p%s\n",

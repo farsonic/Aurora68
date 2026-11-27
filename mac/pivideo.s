@@ -36,6 +36,13 @@
 | card's slot, $A, and tells the Pi so in its display block (irq_slot, written before VBLs are wanted);
 | the Pi then raises slot $A's bit of the RBV's slot register for its ticks instead of slot 9's line, as
 | a real card in slot $A would. A driver from before writes nothing there and keeps slot 9.
+|
+| Its frames in its own slot's space (27 November 2026, docs/26). A/UX files each video card under the
+| slot its frame address lies in; the HDMI card's pixels were at slot 9's addresses ($F9988000,
+| $90000000), so A/UX took the HDMI card for slot 9's and drew the SE screen's pointer into the HDMI
+| frame. The kernel now gives this card's modes addresses in slot $A ($FAA88000 for the window's,
+| $FA100000 for the big region's, the same Pi memory) when this driver carries the marker after its
+| name, which says it takes slot $A's megabyte as reachable in 24-bit mode.
 
 	.text
 	.globl	drvr_start
@@ -140,6 +147,8 @@ drvr_start:
 	.ifdef	SCREEN2
 	.byte	21
 	.ascii	".Display_Video_PiHDMI"
+	.even
+	.ascii	"A68:HDMI frames in slot A"	| for the kernel: this driver knows its own slot's space (below)
 	.else
 	.byte	22
 	.ascii	".Display_Video_PiStorm"
@@ -302,7 +311,12 @@ c_setmode:
 	bne.s	1f
 	and.l	#0xFFF00000,%d2		| in 24-bit mode only the slot's megabyte is reachable: a mode in the big
 	cmp.l	#0xF9900000,%d2		| region ($90000000) would put QuickDraw's pixels on the exception vectors
-	bne	c_param			| (Monitors offers every mode the card has; 20 November 2026)
+	beq.s	1f			| (Monitors offers every mode the card has; 20 November 2026)
+	.ifdef	SCREEN2
+	cmp.l	#0xFAA00000,%d2		| the HDMI card's own megabyte, where the kernel puts its frames since
+	beq.s	1f			| 27 November 2026 (docs/26)
+	.endif
+	bra	c_param
 1:	move.w	csMode(%a1),G_MODE(%a2)
 	moveq	#1,%d2
 	lsl.w	%d1,%d2			| depth 1, 2, 4, 8, 16, 32
@@ -503,7 +517,12 @@ gray_fill:
 	move.l	%d4,%d0			| 24-bit mode reaches only the slot's own megabyte ($F99xxxxx is $9xxxxx);
 	and.l	#0xFFF00000,%d0		| the big region at $90000000 would come out as $000000, the
 	cmp.l	#0xF9900000,%d0		| exception vectors, so a direct mode is left alone until the
-	bne	9f			| Mac is in 32-bit mode
+	beq.s	5f			| Mac is in 32-bit mode
+	.ifdef	SCREEN2
+	cmp.l	#0xFAA00000,%d0		| (the HDMI card's own megabyte, docs/26)
+	beq.s	5f
+	.endif
+	bra	9f
 5:	move.l	%d4,%a0			| the frame buffer
 	move.l	D_DEPTH(%a1),%d0
 	move.b	#0x88,%d1		| 1 bit: 10001000 / 00100010, a 25% grey: told apart from the desktop's

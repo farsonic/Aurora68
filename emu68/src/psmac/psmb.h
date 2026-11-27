@@ -177,6 +177,17 @@ static inline uint32_t psmb_rowbytes(uint32_t w, uint32_t depth) { return ((w * 
 #define PSMB_DECLROM2_SIZE   0x4000u
 #define PSMB_DECLROM2_PHYS   0xFAFFC000u     /* ... and where the Mac reads it: the top of slot $A's space */
 #define PSMB_HW_SCREEN2      0x5048u         /* the HDMI screen's drHw, 'PH' (the SE's is 'PV', 0x5056) */
+/* The HDMI card's frames in slot $A's own space (27 November 2026, docs/26). A/UX files a video card under the slot
+   its frame address lies in, so the HDMI card's pixels at slot 9's addresses made A/UX take it for slot 9's card (and
+   draw the SE screen's pointer into the HDMI frame). With a driver that knows (PSMB_HDMI_OWN_MARK after its name) the
+   same Pi memory is given slot $A addresses too: the window's frame half (offsets $80000-$FFFFF) at $FAA80000, slot
+   $A's 24-bit megabyte in 32-bit form, and at $FA080000, its other form; the big region's first 9 MiB at $FA100000,
+   between the two. A frame larger than that stays at $90000000 (32-bit Mac OS only; A/UX maps a card's 16 MiB). */
+#define PSMB_HDMI_OWN_MARK   "A68:HDMI frames in slot A"
+#define PSMB_SLOT2_MB_PHYS   0xFAA00000u     /* slot $A's 24-bit megabyte, 32-bit form (as $F9900000 is slot 9's) */
+#define PSMB_SLOT2_MINOR_PHYS 0xFA000000u    /* ... and the other form of the same megabyte */
+#define PSMB_FB_BIG2_PHYS    0xFA100000u     /* the big region's first PSMB_FB_BIG2_MAX bytes, in slot $A */
+#define PSMB_FB_BIG2_MAX     0x00900000u
 
 /* ---- the sound card (20 November 2026, docs/09 "Sound through HDMI") ------------------------------
    One more function of slot 9's card: 16-bit stereo at 44.1 kHz, played by the Pi through HDMI or the

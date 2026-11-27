@@ -145,7 +145,10 @@ def add_video(rom, rid, video, drhw, hwdev, W, H, win, win_size, one_bit_only=Fa
         in_window = depth <= 8 and rowbytes * H <= win_size
         if not in_window and (one_bit_only or rowbytes * H > BIG_SIZE):
             sys.exit(f"mkdeclrom: {W} x {H} at {depth} bits needs {rowbytes * H} bytes, the big region has {BIG_SIZE}")
-        base_off = ((win if in_window else BIG) - devbase) & 0xffffffff
+        # the HDMI card's frames in slot $A's own space (psmb.h PSMB_FB_BIG2_PHYS, docs/26): the big region's first
+        # 9 MiB at $FA100000 when the window part is in slot $A too
+        big = 0xFA100000 if (win & 0xFF000000) == 0xFA000000 and rowbytes * H <= 0x900000 else BIG
+        base_off = ((win if in_window else big) - devbase) & 0xffffffff
         vp = struct.pack('>IHhhhhHHIIIHHHHI', base_off, rowbytes, 0, 0, H, W, 0, 0, 0, 0x00480000, 0x00480000,
                          16 if direct else 0, depth, 3 if direct else 1, (5 if depth == 16 else 8) if direct else depth, 0)
         m.longblock(1, vp)                      # mVidParams
@@ -178,7 +181,9 @@ if a.se:
     v2 = type(b2)(0)
     v2.cstring(1, 'Aurora68 project'); v2.cstring(3, '0.1'); v2.cstring(4, 'PSMAC-HDMI')
     b2.sublist(36, v2)
-    add_video(rom2, 0x80, video, 0x5048, 1, W, H, WIN + SE_FRAME, WIN_SIZE - SE_FRAME, devbase=0xFAA80000)
+    # its frames at slot $A's own addresses (27 November 2026, docs/26): the window's part at $FAA88000, the same Pi memory
+    # as $F9988000 (psmb.h PSMB_SLOT2_MB_PHYS), since A/UX files a video card under the slot of its frame address
+    add_video(rom2, 0x80, video, 0x5048, 1, W, H, 0xFAA80000 + SE_FRAME, WIN_SIZE - SE_FRAME, devbase=0xFAA80000)
 elif a.video:
     video = open(a.video, 'rb').read()
     add_video(rom, 0x84, video, 0x5056, 5, W, H, WIN, WIN_SIZE)
