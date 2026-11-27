@@ -28,6 +28,14 @@
 | psmb.h), its VBL queue that of slot $A, and "PiHDMI:" in front of its log lines. The slot $A card
 | is a declaration ROM and nothing more: the driver reaches the window at slot 9's addresses and
 | takes slot 9's interrupt, where each handler claims only its own block's tick.
+|
+| Its own slot's interrupt (27 November 2026, docs/26). A/UX's kernel opens every video card's driver
+| itself and keeps one slot interrupt handler per slot: the HDMI driver's SIntInstall on slot 9, beside
+| the SE screen driver's, ended in "panic: Multiple interrupt handlers for slot 9", which is what locked
+| the SE up under A/UX with the HDMI screen on. So the HDMI driver now installs its handler on its own
+| card's slot, $A, and tells the Pi so in its display block (irq_slot, written before VBLs are wanted);
+| the Pi then raises slot $A's bit of the RBV's slot register for its ticks instead of slot 9's line, as
+| a real card in slot $A would. A driver from before writes nothing there and keeps slot 9.
 
 	.text
 	.globl	drvr_start
@@ -51,6 +59,7 @@
 	.equ	D_FLAGS,	32
 	.equ	D_VBL_ENABLE,	36
 	.equ	D_VBL_PENDING,	40
+	.equ	D_IRQ_SLOT,	56		| the slot our handler is on, for the Pi (psmb.h irq_slot; 0 in drivers before it)
 	.equ	D_CLUT_SEQ,	48
 	.equ	D_CLUT,		64
 	.equ	D_MODE_BASE,	1088		| 8 longs: the frame buffer's 68k address per mode 128+i (0: none)
@@ -60,10 +69,11 @@
 	.equ	DISP_ENABLED,	1
 	.equ	DISP_GRAY,	2
 
-	.equ	SLOT,		9		| the slot whose interrupt the Pi raises (both screens' cards)
 	.ifdef	SCREEN2
+	.equ	SLOT,		10		| the slot whose interrupt our handler is on and the Pi raises: the card's own, $A
 	.equ	VBL_SLOT,	10		| the slot whose VBL queue this screen's ticks run: its card's, $A
 	.else
+	.equ	SLOT,		9
 	.equ	VBL_SLOT,	9
 	.endif
 	.equ	ioTrap,		6
@@ -194,7 +204,8 @@ d_open:
 	tst.w	%d0
 	bne.s	1f
 	log	"VBL handler installed"
-1:	move.l	#1,D_VBL_ENABLE(%a3)	| a video card's Open turns its VBL interrupts on (Designing Cards and
+1:	move.l	#SLOT,D_IRQ_SLOT(%a3)	| the slot the Pi is to raise for our ticks: before they are wanted
+	move.l	#1,D_VBL_ENABLE(%a3)	| a video card's Open turns its VBL interrupts on (Designing Cards and
 	move.w	#1,G_INT(%a2)		| Drivers); cscSetInterrupt is how the system turns them off later. Without
 					| this the cursor never appears on the second screen: QuickDraw draws it
 					| from the screen's slot VBL task, which only DoVBLTask from our handler runs.
@@ -225,6 +236,7 @@ d_close:
 	move.l	%a2,%a0
 	clr.l	D_FLAGS(%a1)
 	clr.l	D_VBL_ENABLE(%a1)
+	clr.l	D_IRQ_SLOT(%a1)
 	lea	G_SIQ(%a0),%a0
 	moveq	#SLOT,%d0
 	.short	_SIntRemove

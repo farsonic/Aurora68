@@ -1639,6 +1639,7 @@ void psmac_card_handoff(void)
     { extern void psmac_etalk_reset(void); psmac_etalk_reset(); }             /* the A/UX network card's chip, until ae6 starts it (psmac_etalk.c) */
     __asm__ volatile("dmb ish" ::: "memory");
     kprintf("[PSMAC] A/UX's tables on: the network board and the input ring are off until their drivers open\n");
+    { extern void psmac_display_handoff(void); psmac_display_handoff(); }   /* an HDMI driver on slot 9 cannot open under A/UX (docs/26) */
     { extern void psmac_adb_handoff(void); psmac_adb_handoff(); }   /* mac.adb=auto: the Pi's keyboards and mice as ADB devices from here (psmac_adb.c) */
 }
 

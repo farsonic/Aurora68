@@ -107,7 +107,11 @@ struct psmb_display {
     uint32_t vbl_count;                      /* Pi: ticks since boot */
     uint32_t clut_seq;                       /* Mac: +1 after changing clut[] */
     uint32_t frames;                         /* Pi: frames converted */
-    uint32_t pad[2];
+    uint32_t irq_slot;                       /* Mac: the slot whose interrupt the driver's handler is on, written at
+                                                Open before VBLs are wanted: 0 (drivers before 27 November 2026) or 9
+                                                slot 9's line, $A-$E that slot's own bit of the RBV's slot register
+                                                (the SE board's HDMI card: A/UX takes one handler a slot, docs/26) */
+    uint32_t pad;
     uint32_t clut[256];                      /* Mac: 0x00RRGGBB per index */
     /* version 2: direct modes and other resolutions (docs/10). Modes 128+i, i = 0..5: 1, 2, 4, 8, 16, 32
        bits. The Pi fills in where each mode's frame buffer is (a 68k address: the window's top 512 KiB

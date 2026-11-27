@@ -848,17 +848,56 @@ void psmac_display_report(void)
 void psmac_display_bus_reset(void)
 {
     if (splash_mac_on()) psmac_splash_status("Restarting the Macintosh...");   /* the splash until the driver opens again */
-    for (int i = 0; vcs && i < nscr; i++) { scr[i].disp->vbl_enable = 0; scr[i].disp->vbl_pending = 0; scr[i].disp->flags = 0; }
+    for (int i = 0; vcs && i < nscr; i++) {
+        scr[i].disp->vbl_enable = 0; scr[i].disp->vbl_pending = 0; scr[i].disp->flags = 0; scr[i].disp->irq_slot = 0;
+    }
     __asm__ volatile("dmb ish" ::: "memory");
 }
-/* the slot interrupt line's share: a screen's VBL is pending and its driver is there to take it */
+/* The slot a screen's VBL is raised on (27 November 2026, docs/26): the slot its driver installed its handler on, as
+   the driver wrote it in the block. Slot 9 for the SE's screen and for an HDMI driver from before that day, which put
+   its handler on slot 9 beside the SE screen's; slot $A for the HDMI card's driver since, on its own card's slot, as a
+   NuBus card's would be. A/UX keeps one slot interrupt handler per slot and panics at a second ("Multiple interrupt
+   handlers for slot 9"), which is what locked the SE up under A/UX with the HDMI screen on. Own slots only on the SE
+   board layer, whose RBV this kernel answers (psmac_board_se.c); anywhere else, slot 9. */
+static int screen_irq_slot(volatile struct psmb_display *d)
+{
+    uint32_t s = d->irq_slot;
+    return s >= 0xa && s <= 0xe && psmac_board_se ? (int)s : 9;
+}
+/* the slot interrupt line's share: a screen's VBL is pending and its driver is there to take it on slot 9 */
 int psmac_display_irq(void)
 {
     for (int i = 0; vcs && i < nscr; i++) {
         volatile struct psmb_display *d = scr[i].disp;
-        if ((d->flags & PSMB_DISP_ENABLED) && d->vbl_enable && d->vbl_pending) return 1;
+        if ((d->flags & PSMB_DISP_ENABLED) && d->vbl_enable && d->vbl_pending && screen_irq_slot(d) == 9) return 1;
     }
     return 0;
+}
+/* the RBV's slot register bits of screens whose drivers take their VBL on their own card's slot: bit 1 slot $A ...
+   bit 5 slot $E, set while that screen's VBL is pending (psmac_board_se.c, as psmac_etalk_slot_irq) */
+unsigned psmac_display_slot_irq(void)
+{
+    unsigned bits = 0;
+    for (int i = 0; vcs && i < nscr; i++) {
+        volatile struct psmb_display *d = scr[i].disp;
+        int s = screen_irq_slot(d);
+        if (s != 9 && (d->flags & PSMB_DISP_ENABLED) && d->vbl_enable && d->vbl_pending) bits |= 1u << (s - 9);
+    }
+    return bits;
+}
+/* A/UX's tables came on (psmac_card_handoff): a driver of the HDMI screen that took slot 9's interrupt cannot open under
+   A/UX's kernel beside the SE screen's (one handler a slot, docs/26); say so once, since the fix is a newer declaration
+   ROM, not this kernel */
+void psmac_display_handoff(void)
+{
+    static int said;
+    if (said || nscr < 2) return;
+    volatile struct psmb_display *d = scr[1].disp;
+    if (!(d->flags & PSMB_DISP_ENABLED) || screen_irq_slot(d) != 9) return;
+    said = 1;
+    kprintf("[PSMAC] the HDMI screen's driver takes slot 9's interrupt (a declaration ROM from before 27 November 2026): "
+            "A/UX allows one handler a slot and will stop with \"Multiple interrupt handlers for slot 9\"; "
+            "a newer aurora68-se.declrom puts it on slot $A (or use mac.hdmi=log)\n");
 }
 
 /* screen i's pixels for the video card (psmac_videocard.c, docs/16): the frame buffer of the mode in use
