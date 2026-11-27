@@ -151,7 +151,7 @@ const struct pdg_opt pdg_opts[] = {
     { "recovery.apsec", PDG_G_NETWORK, 0, A, "wpa2|open", 0, "The access point's security: open, or WPA2 even when the firmware does not say it can." },
     { "recovery.apchannel", PDG_G_NETWORK, 0, A, "1|2|3|4|5|6|7|8|9|10|11|12|13", 0, "The access point's channel (6, allowed everywhere, by default)." },
     { "mac.auxnet", PDG_G_NETWORK, 0, PDG_COMPACT | PDG_SOLO, "on|off|a|c|d|e", 0,
-      "on: an Ethernet card for A/UX in a free slot (D, else E), which A/UX's own driver ae6 runs over the Pi's network; a letter names the slot. Mac OS uses the cards in slot 9 as before." },
+      "on: an Ethernet card for A/UX in the first free slot of D, A, C and E (D unless pc=on has it), which A/UX's own driver ae6 runs over the Pi's network; a letter names the slot. Mac OS uses the cards in slot 9 as before." },
 
     /* ---- Video card ---- */
     { "mac.video", PDG_G_VIDEO, 0, A, "off|on", 0, "off: no Aurora68 Video Decoder card in slot $C (QuickTime then decodes everything itself)." },

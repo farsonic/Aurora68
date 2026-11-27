@@ -19,7 +19,8 @@
 #                  tools/pistatus_test.c, tools/pistatus_m68k.sh; the PC card and the Apple II card with their libraries where
 #                  AURORA86_DIR / AURORA65_DIR say where: tools/pccard_test.sh, tools/a2card_test.sh; the guest scheduler's
 #                  rule: tools/guest_test.c; the virtual SCSI devices' 5380 and commands: tools/scsidev_test.c; the SE board's
-#                  virtual ADB keyboard and mouse against a model of the transceiver and of the ROM's ADB Manager: tools/adb_test.sh)
+#                  virtual ADB keyboard and mouse against a model of the transceiver and of the ROM's ADB Manager: tools/adb_test.sh;
+#                  the A/UX network card's DP8390 driven as A/UX's ae6 driver drives it: tools/aux/etalk_test.sh)
 #   make install IMG=path/to/volume.img [PART=n]   the extensions into the System Folder of an HFS image, the programs into its Aurora68 folder
 AS      = m68k-linux-gnu-as -m68020
 OBJCOPY = m68k-linux-gnu-objcopy
@@ -251,6 +252,7 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	sh ../tools/bt_test.sh $(abspath $(B))
 	sh ../tools/splash_test.sh $(abspath $(B))
 	sh ../tools/adb_test.sh $(abspath $(B))
+	sh ../tools/aux/etalk_test.sh $(abspath $(B))
 
 disasm: $(B)/pidisk.o
 	m68k-linux-gnu-objdump -d $(B)/pidisk.o | head -200

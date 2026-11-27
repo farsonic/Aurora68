@@ -164,8 +164,15 @@ static int etalk_slot(void)
     const char *o = psmac_option("mac.auxnet");
     int slot = 0;
     if (o && (o[0] | 32) == 'o' && (o[1] | 32) == 'n') {
-        // D before E: A/UX's autoconfig asks the Slot Manager about slots 9 to D itself (docs/24)
-        slot = !etalk_slot_taken(0xD) ? 0xD : !etalk_slot_taken(0xE) ? 0xE : -2;
+        // The first free of D, A, C, E. D first: the owner's A/UX was linked with the card there. E last:
+        // A/UX's autoconfig asks the Slot Manager about slots 9 to D itself (docs/24 sections 2 and 4).
+        static const uint8_t order[4] = { 0xD, 0xA, 0xC, 0xE };
+        slot = -2;
+        for (int i = 0; i < 4 && slot < 0; i++) {
+            if (!etalk_slot_taken(order[i])) {
+                slot = order[i];
+            }
+        }
     } else if (o && o[0] && !o[1] && ((o[0] | 32) == 'a' || ((o[0] | 32) >= 'c' && (o[0] | 32) <= 'e'))) {
         slot = (o[0] | 32) - 'a' + 10;
         if (etalk_slot_taken(slot)) {
@@ -754,4 +761,8 @@ void psmac_etalk_init(void)
             "ROM %u bytes at the slot's top%s\n", et.slot, et.base + ETALK_REG_OFF, et.base + ETALK_RAM_OFF,
             (uint32_t)sizeof(psmac_etalk_declrom),
             et.ram_pi ? "" : " (its memory is not mapped: every access is emulated)");
+    if (et.slot != 0xD && etalk_slot_taken(0xD)) {
+        kprintf("[AUXNET] slot $D is the PC card's (pc=on): an A/UX kernel linked with the card in another slot must "
+                "be linked again (newconfig)\n");
+    }
 }

@@ -87,8 +87,13 @@ From the module's code (its symbols name the functions: `ae6_probe`, `ae6_map`, 
 
 ## 4. The card
 
-`mac.auxnet=on` (new; off by default) puts it in slot $D, or $E when another of the Pi's cards has $D; a letter
-(`a`, `c`, `d`, `e`) names the slot. It is for the SE, Plus and solo boards, whose RBV this kernel answers
+`mac.auxnet=on` (new; off by default) puts it in the first free slot of $D, $A, $C and $E; a letter (`a`, `c`,
+`d`, `e`) names the slot. $D is free unless the kernel was built with the PC card and `pc=on` is given: then the
+PC card keeps $D, where its ROM and driver expect it, and the network card takes $A, which on the SE is free
+unless `mac.hdmi=screen` puts the HDMI screen's card there; $C is the video decoder's unless `mac.video=off`, $E
+the Apple II card's with `a2=on`, and $E comes last because autoconfig's own loop does not ask about it (section
+2). So both cards can be had at once, and a default start keeps the slot the owner's A/UX kernel was linked for.
+A/UX's kernel records the card's slot: after a move, `newconfig` once more. It is for the SE, Plus and solo boards, whose RBV this kernel answers
 itself; on the testbed's IIci board the slot register is the motherboard's and the card is left out.
 
 - **The ROM** (`tools/mac/mkauxnetdeclrom.py`, compiled in as `psmac_etalk_declrom.h`, 204 bytes): a board
@@ -258,7 +263,29 @@ Not proven yet:
   without a Mac driver);
 - System 7.1 from the card's own image with the option on and off.
 
-## 9. Next, in order
+## 9. The owner's SE: ae0 over the WiFi (27 November 2026)
+
+The kernel of section 4 as it stood after run 1 (test kernel 22: the card, the `mac_rd32` fix, none of the
+keyboard work yet) on the owner's Macintosh SE, `mac.auxnet=on` added to the command line, the WiFi joined as
+before, no Ethernet cable. The owner had a keyboard in CommandShell as root and did section 6 by hand; reported
+through the coordinator, without the kernel's log so far:
+
+- `/etc/etheraddr` printed the Pi's WiFi Ethernet address: the Mac ROM's Slot Manager shows the card, A/UX's
+  system call reaches it, the network sResource and its entry `$80` are found and the six bytes are read from
+  the cell below the ROM image, where the kernel had put the WiFi chip's address after the Mac had started.
+- `cp /unix /unix.old`, `newconfig -v`: autoconfig built a kernel with ae6, the questions were answered, A/UX
+  was restarted.
+- After the restart `ae0` is up, and another machine on the same WiFi network pings A/UX: every echo answered,
+  ttl 255, the first after about a second (the ARP exchange), then 30 ms falling to 4 ms.
+
+So on hardware the whole chain holds, in both directions and with the interrupt: autoconfig's slot scan and its
+`id 8` match, ae6's probe and start on this chip model, a broadcast ARP request received through the WiFi, the
+reply and the echo replies sent, each received frame announced through slot $D's bit of the RBV and
+acknowledged. Not looked at there yet: the `[AUXNET]` lines of the log, TCP (telnet, ftp), a long transfer, the
+cable instead of the WiFi, a start with the keyboard kernel, and A/UX's address beside the kernel's own
+(`remote=on`).
+
+## 10. Next, in order
 
 1. Run 2: the same as run 1 with the `mac_rd32` fix, to the end of section 7's script; read the three files and
    `pinet.log`.
