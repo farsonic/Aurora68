@@ -40,6 +40,10 @@ int psmac_plus_via_write(uint32_t reg, uint32_t *data); int psmac_plus_via_local
 uint32_t psmac_plus_via_read(uint32_t reg, uint32_t r); void psmac_plus_tick(void); int psmac_plus_irq(void);
 void psmac_plus_reset(void); void psmac_plus_options(const char *); void psmac_plus_report(void);
 uint32_t psmac_plus_scc_write(uint32_t ch, uint32_t data); void psmac_plus_scc_written(void); void psmac_plus_scc_read(uint32_t ch);
+/* the Pi's keyboards and mice as ADB devices beside the SE's own (psmac_adb.c, docs/08 item 151) */
+int psmac_adb_on(void), psmac_adb_irq(void); void psmac_adb_tick(void), psmac_adb_service(void), psmac_adb_reset(void), psmac_adb_report(void);
+int psmac_adb_via_write(uint32_t reg, uint8_t d, uint32_t *wire, uint8_t *pre); int psmac_adb_via_read_pre(uint32_t reg, uint32_t *val);
+void psmac_adb_via_feed(uint32_t reg, uint32_t r); uint32_t psmac_adb_via_read_post(uint32_t reg, uint32_t r); void psmac_adb_options(const char *);
 #define PB6 (psmac_board_plus ? 0u : 0x40u)   /* VIA port B bit 6: driven high on the SE (its SCSI interrupt enable), an input on the Plus (H4) */
 int psmac_solo_access(uint32_t addr, int size, int write, uint32_t data, uint32_t *val);
 int psmac_buscheck_wanted(void), psmac_buscheck_boot(void), psmac_buscheck_will_hold(void);   /* mac.buscheck= (psmac_buscheck.c) */
@@ -908,6 +912,12 @@ int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t 
             if (psmac_board_plus) {                  /* the shift register and ADB's lines are answered here (psmac_board_plus.c) */
                 level_lock(); int local = psmac_plus_via_write(reg, &wd); store_level(se_wire_ipl); level_unlock();
                 if (local) { trace("VIA", 1, addr, se, size, data & 0xff); local_writes++; return 1; }
+            } else if (psmac_adb_on()) {             /* the virtual ADB devices: what the real transceiver is not to see */
+                uint8_t pre = 0;
+                level_lock(); int f = psmac_adb_via_write(reg, (uint8_t)data, &wd, &pre); store_level(se_wire_ipl); level_unlock();
+                if (f & 2) psmac_wire_write(SE_VIA + (10 << 9), 1, pre, 0);     /* a command byte held back while the transceiver was left idle */
+                if (f & 4) psmac_wire_write(SE_VIA + (14 << 9), 1, 0x84, 0);    /* its shift register interrupt on again */
+                if (f & 1) { trace("VIA", 1, addr, se, size, data & 0xff); local_writes++; return 1; }
             }
             trace("VIA", 1, addr, se, size, wd);
             psmac_wire_write(se, 1, wd, posted);
@@ -918,8 +928,19 @@ int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t 
             level_lock(); int local = psmac_plus_via_local(reg, &v); if (local) store_level(se_wire_ipl); level_unlock();
             if (local) { trace("VIA", 0, addr, se, size, v); local_reads++; *val = size == 1 ? v : size == 2 ? v << 8 | v : v << 24 | v << 16 | v << 8 | v; return 1; }
         }
+        int adb = !psmac_board_plus && psmac_adb_on();
+        if (adb) {
+            uint32_t v = 0;
+            level_lock(); int f = psmac_adb_via_read_pre(reg, &v); if (f & 1) store_level(se_wire_ipl); level_unlock();
+            if (f & 1) { trace("VIA", 0, addr, se, size, v); local_reads++; *val = size == 1 ? v : size == 2 ? v << 8 | v : v << 24 | v << 16 | v << 8 | v; return 1; }
+            if (f & 6) {                             /* what the real bus said to a Talk: its flag, its line */
+                uint32_t x = psmac_wire_read(SE_VIA + ((f & 2 ? 13u : 0u) << 9), 1) & 0xff;
+                level_lock(); psmac_adb_via_feed(f & 2 ? 13 : 0, x); level_unlock();
+            }
+        }
         r = via_read_fix(reg, psmac_wire_read(se, 1) & 0xff);
         if (reg == 0) r = xp_read(r);
+        if (adb) { level_lock(); r = psmac_adb_via_read_post(reg, r); store_level(se_wire_ipl); level_unlock(); }
         if (psmac_board_plus) {
             if (reg == 3) r = via_ddra;              /* the ROM's own: the wire's has PA4 out and PA7 in whatever it wrote */
             level_lock(); r = psmac_plus_via_read(reg, r); store_level(se_wire_ipl); level_unlock();
@@ -1043,6 +1064,7 @@ static void store_level(unsigned raw)        /* the caller holds the lock */
     irq_guard();
     if (__m68k_state) PSMAC_STORE_IPL(__m68k_state, psmac_se_ipl(raw));
 }
+void psmac_se_via_guest(uint8_t *orb, uint8_t *ddrb, uint8_t *ier) { *orb = via_orb; *ddrb = via_ddrb; *ier = via_ier; }   /* psmac_adb.c */
 /* the Plus's keyboard and mouse on the service core (psmac_board_plus.c) take the same lock */
 void psmac_se_plus_lock(void) { level_lock(); }
 void psmac_se_plus_unlock(void) { store_level(se_wire_ipl); level_unlock(); }
@@ -1091,7 +1113,7 @@ int psmac_se_switch_held(void)
 void psmac_se_set_level(unsigned raw)         /* psmac_bus.c, after each cycle on the wire and each poll */
 {
     interrupt_switch(raw);
-    level_lock(); se_wire_ipl = raw; psmac_plus_tick(); store_level(raw); level_unlock();
+    level_lock(); se_wire_ipl = raw; psmac_plus_tick(); psmac_adb_tick(); store_level(raw); level_unlock();
 }
 
 /* The interrupt level the SE drives, read as the IIci ROM expects it: the SE's level 1 is the VIA
@@ -1184,6 +1206,7 @@ unsigned psmac_se_ipl(unsigned raw)
     else if (raw & 1) ipl = 1;
     if (!(guard_mask & 4) && psmac_se_rbv_irq() && ipl < 2) ipl = 2;
     if (psmac_plus_irq() && ipl < 1) ipl = 1;    /* the Plus: the ADB transceiver's shift-register interrupt, the VIA's level */
+    if (psmac_adb_irq() && ipl < 1) ipl = 1;     /* the virtual ADB devices' shift-register interrupt, raised here (psmac_adb.c) */
     return ipl;
 }
 
@@ -1547,6 +1570,16 @@ static void spd_service(void)
 #define SE_ROWBYTES 64
 static uint8_t shadow[SE_ROWS * SE_ROWBYTES];
 static volatile uint32_t dirty[(SE_ROWS + 31) / 32];
+/* menu titles on the SE's screen, to the right of the Apple (x 40-250, y 5-13, as mame/act.lua looks): the Finder is up.
+   For the testbed's scripts (mac.inputadb=N,menus) */
+int psmac_se_menu_titles(void)
+{
+    int n = 0, ref = (shadow[9 * SE_ROWBYTES + (300 >> 3)] >> (7 - (300 & 7))) & 1;
+    for (int y = 5; y <= 13; y += 2) {
+        for (int x = 40; x <= 250; x += 2) n += ((shadow[y * SE_ROWBYTES + (x >> 3)] >> (7 - (x & 7))) & 1) != ref;
+    }
+    return n > 20;
+}
 static volatile int shadow_valid;
 static uint32_t rows_sent, frames_marked, se_lines_bad, rows_deferred;   /* se_lines_bad: address lines that failed the test at the start (bit n = An) */
 
@@ -1661,6 +1694,7 @@ void psmac_se_service(void)
         scc_quiet_wanted = 0;
         scc_quiet();
     }
+    psmac_adb_service();                          /* a virtual ADB device with something for an idle host (psmac_adb.c) */
     snd_service();                                /* the speaker first: its halves have deadlines, the rows do not */
     spd_service();                                /* the 400K drive's speed, when a seek has asked for another zone */
     psmac_errand(PSMAC_ERR_LOOP);
@@ -1829,6 +1863,7 @@ void psmac_se_after_reset(void)
     level_lock();
     rbv_ifr = 0; rbv_ier = 0; rbv_regs[0x12] = 0; rbv_regs[0x02] = 0;
     guard_mask = 0; guard_handoff = 0;
+    psmac_adb_reset();
     asc_regs[0x801] = 0; asc_regs[0x802] = 0; asc_regs[0x803] = 0;
     asc_level[0] = asc_level[1] = 0;
     __atomic_store_n(&snd_flush, snd_flush + 1, __ATOMIC_RELEASE);
@@ -1877,6 +1912,7 @@ void psmac_se_options(const char *args)
     }
     psmac_solo_options(args);
     psmac_plus_options(args);
+    psmac_adb_options(args);
     if ((tok = find_token(args, "mac.setrace="))) {
         tok += 12; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); se_trace_left = n;
         if (*tok == ',') { tok++; for (int i = 0; i < 4 && *tok && *tok != ' '; i++, tok++) se_trace_dev[i] = (*tok >= 'a' && *tok <= 'z') ? *tok - 32 : *tok; }
@@ -1989,6 +2025,7 @@ void psmac_se_report(void)
             rows_sent, se_lines_bad ? " (an address line failed its test at the start)" : "", verify_rows, verify_rows_bad, verify_words_bad, verify_on ? "" : "; check stopped: reads in doubt", blind_rows, frames_marked, local_reads, local_writes, rbv_ifr, rbv_ier, rbv_regs[0x12],
             xp.serve ? "not answering, the board layer answers" : "answering", xp.reads, xp.reads_ff, xp.writes);
     if (scsi_empty || psmac_scsidev_configured()) psmac_scsidev_report();   /* the empty bus answered here, the virtual SCSI devices */
+    psmac_adb_report();
     if (psmac_board_plus) {
         psmac_plus_report();
         if (plus_drq_waits || plus_drq_timeouts) kprintf("[PSMAC:PLUS]   SCSI pseudo-DMA: %u bytes waited for DRQ (%u polls beyond the first), %u gave up\n", plus_drq_bytes, plus_drq_waits, plus_drq_timeouts);

@@ -118,8 +118,10 @@ static int in_trace_on(void)
     return in_tr_n != 0;
 }
 /* one event into the ring as it is; raw: the source's own buttons, for the trace */
+extern int psmac_adb_takes_input(void); extern void psmac_adb_input(uint32_t type, int32_t a, int32_t b, int32_t c);
 static void ring_put(uint32_t type, int32_t a, int32_t b, int32_t c, int32_t raw)
 {
+    if (psmac_adb_takes_input()) { psmac_adb_input(type, a, b, c); return; }   /* the virtual ADB keyboard and mouse have them (psmac_adb.c) */
     if (!inr) return;
     uint32_t head = inr->head, tail = inr->tail;
     if (head - tail >= ALICE_IN_SLOTS) { inr->dropped++; return; }
@@ -367,7 +369,7 @@ static void in_keymap_poll(void)
     static int done; static uint8_t ours[16]; static uint64_t next, first; static int said;
     extern int psmac_boot_mac_talking(void);
     extern uint8_t *psmac_mac_ram_ptr(void);
-    if (done) return;
+    if (done || psmac_adb_takes_input()) return;
     /* .PiInput has it now (the ring's attached word, or since 24 November 2026 its feedback block's magic, written at
        its Open whether or not its slot interrupt could be installed); or two minutes have gone by since the Mac began
        to talk (a start without .PiInput, which should never keep KeyMap from the kernel for ever) */
@@ -622,10 +624,25 @@ static void in_wifi_step(void)
     if (src) { unsigned i = 0; for (; src[i] && i < 64; i++) type_line[i] = src[i]; type_line[i++] = '\r'; type_line[i] = 0; type_str = type_line; gap_ms = 10; }
     intest_next = in_now() + in_hz() * gap_ms / 1000;
 }
+static int adb_menus;                                /* mac.inputadb=N,menus: 1 waiting for the Finder's menu bar, 2 seen */
 static void in_testbed_poll(void)
 {
     if (!intest_at) return;
     uint64_t now = in_now();
+    if (intest_kind == 8 && adb_menus == 1) {
+        /* not N seconds after the start but N after the host has found the virtual devices and menu titles have stood
+           on the SE's screen for 30 s: A/UX's Finder, however slow the testbed's host is that day */
+        extern int psmac_se_menu_titles(void), psmac_adb_found(void);
+        static uint64_t since, look;
+        if (now < look) return;
+        look = now + in_hz() / 2;
+        if (!psmac_adb_found() || !psmac_se_menu_titles()) { since = 0; return; }
+        if (!since) since = now;
+        if (now - since < in_hz() * 30) return;
+        adb_menus = 2; intest_next = now + in_hz() * intest_at;
+        kprintf("[PSMAC] input ADB script: the virtual devices found and menu titles on the SE's screen for 30 s; the script starts in %u s\n", intest_at);
+        return;
+    }
     if (!intest_next) intest_next = now + in_hz() * intest_at;
     if (now < intest_next) return;
     if (intest_kind == 1) { in_about_step(intest_step++); return; }
@@ -713,6 +730,37 @@ static void in_testbed_poll(void)
         psmac_input_from(ALICE_SRC_USB, 0);
         intest_next = now + in_hz() * ms[s].gap / 1000; return;
     }
+    if (intest_kind == 8) {
+        /* mac.inputadb=SECONDS (27 November 2026, docs/08 item 151): for the virtual ADB keyboard and mouse (psmac_adb.c),
+           where the host scales the mouse's counts itself (sixteen counts that reached a busy Mac in one tick moved its
+           pointer 96 pixels): into the corner, then one count every 120 ms onto the Apple menu; a click; the button
+           held with the menu open, down to its first item and let go (About This Macintosh); then Command-W, a T (the
+           Finder selects the Trash), and a right-button click where the pointer is. Each stage waits thirteen
+           seconds, so that a MAME snapshot (every ten) shows it. */
+        static const struct { int16_t n, dx, dy; uint8_t btn, key, mods; uint16_t gap; const char *what; } as[] = {
+            { 80, -20, -20, 0, 0, 0, 30, 0 },
+            { 1, 0, 0, 0, 0, 0, 3000, 0 },
+            { 16, 1, 0, 0, 0, 0, 120, 0 }, { 8, 0, 1, 0, 0, 0, 120, "the pointer on the Apple menu" },
+            { 1, 0, 0, 0, 0, 0, 13000, 0 },
+            { 1, 0, 0, 1, 0, 0, 300, 0 }, { 1, 0, 0, 0, 0, 0, 13000, "a click (a startup program waiting for one quits)" },
+            { 1, 0, 0, 1, 0, 0, 13000, "the button down: the Apple menu open" },
+            { 20, 0, 1, 1, 0, 0, 120, "dragged to the first item" },
+            { 1, 0, 0, 1, 0, 0, 1000, 0 }, { 1, 0, 0, 0, 0, 0, 13000, "the button up: About This Macintosh" },
+            { 1, 0, 0, 0, 0x1a, 0x08, 100, 0 }, { 1, 0, 0, 0, 0, 0x08, 100, 0 }, { 1, 0, 0, 0, 0, 0, 13000, "Command-W typed: the window closed" },
+            { 1, 0, 0, 0, 0x17, 0, 100, 0 }, { 1, 0, 0, 0, 0, 0, 13000, "T typed: the Trash selected" },
+            { 1, 0, 0, 2, 0, 0, 400, 0 }, { 1, 0, 0, 0, 0, 0, 5000, "a right-button click (a Command-click)" },
+        };
+        static int phase, k;
+        if (phase >= (int)(sizeof as / sizeof as[0])) { intest_at = 0; kprintf("[PSMAC] input ADB script done\n"); return; }
+        if (as[phase].key || as[phase].mods || (phase && (as[phase - 1].key || as[phase - 1].mods))) {
+            uint8_t r[8] = { as[phase].mods, 0, as[phase].key }; frf_native_usb_keyboard_boot_report(r);
+        } else aga_virtual_mouse_update(as[phase].dx, as[phase].dy, as[phase].btn);
+        if (++k >= as[phase].n) {
+            if (as[phase].what) kprintf("[PSMAC] input ADB script: %s\n", as[phase].what);
+            k = 0; phase++;
+        }
+        intest_next = now + in_hz() * as[k ? phase : phase - 1].gap / 1000; return;
+    }
     if (intest_kind == 3) {                                                 /* mac.inputright=: walk the mouse onto the second screen */
         int s = intest_step++;
         if (s < 60) { aga_virtual_mouse_update(30, 4, 0); intest_next = now + in_hz() * 50 / 1000; }
@@ -748,7 +796,8 @@ void psmac_alice_input_click(uint32_t seconds, const int *pts, int n)
 }
 void psmac_alice_input_drag(uint32_t seconds)  { intest_at = seconds; intest_kind = 4; }   /* the cursor walks right, onto the second screen (docs/10) */
 void psmac_alice_input_edge(uint32_t seconds)  { intest_at = seconds; intest_kind = 6; }   /* the edge jump between the screens (docs/10) */
-void psmac_alice_input_mods(uint32_t seconds)  { intest_at = seconds; intest_kind = 7; }   /* the stuck-modifier script (docs/08 item 139) */
+void psmac_alice_input_mods(uint32_t seconds)  { intest_at = seconds; intest_kind = 7; }
+void psmac_alice_input_adb(uint32_t seconds, int menus) { intest_at = seconds ? seconds : 1; intest_kind = 8; adb_menus = menus; }   /* the virtual ADB devices' script (docs/08 item 151) */   /* the stuck-modifier script (docs/08 item 139) */
 
 void psmac_loop_report(void);
 /* heartbeat line for psmac_bus.c: the interrupt line and what holds it */
@@ -1583,6 +1632,7 @@ void psmac_card_handoff(void)
     { extern void psmac_remote_mac_reset(void); psmac_remote_mac_reset(); }
     __asm__ volatile("dmb ish" ::: "memory");
     kprintf("[PSMAC] A/UX's tables on: the network board and the input ring are off until their drivers open\n");
+    { extern void psmac_adb_handoff(void); psmac_adb_handoff(); }   /* mac.adb=auto: the Pi's keyboards and mice as ADB devices from here (psmac_adb.c) */
 }
 
 int psmac_slot_line_now(void)

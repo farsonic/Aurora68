@@ -56,7 +56,7 @@ int main(void)
     static const char *const testbed[] = { "mac.remotefile", "mac.wifisim", "mac.switchsim", "mac.hdmisim", "mac.resetsim", "mac.recoverypin",
                                            "mac.recoveryscreen", "mac.wifisimap", "mac.edidtest", "mac.cardearly", "mac.busfault", "mac.selinefault",
                                            "mac.cardslow", "mac.cardstall", "mac.cardfail", "mac.cardtest", "mac.deaduart", "mac.audiodump", "mac.videotest",
-                                           "mac.semihost", "mac.declrom", "mac.disk0", "mac.net", "mac.btsim", "mac.mboxstress", "mac.netdown", "mac.inputtest",
+                                           "mac.semihost", "mac.declrom", "mac.disk0", "mac.net", "mac.btsim", "mac.mboxstress", "mac.netdown", "mac.inputtest", "mac.inputadb",
                                            "mac.rtcsim", "mac.sepa4", "mac.sefloat", "mac.vcslow", "mac.bridge" };
     for (unsigned i = 0; i < sizeof testbed / sizeof testbed[0]; i++) { char t[100]; snprintf(t, sizeof t, "%s (testbed only) not offered", testbed[i]); ok(!pdg_find(testbed[i]), t); }
 
@@ -90,6 +90,7 @@ int main(void)
     for (int b = 1; b <= PDG_128K; b <<= 1) { char t[80]; snprintf(t, sizeof t, "the bus check and JTAG on %s", pdg_board_word(b)); ok(board_has("mac.buscheck", b) && board_has("mac.jtag", b) && board_has("mac.screencheck", b), t); }
     ok(!board_has("mac.buscheck", PDG_SOLO) && !board_has("mac.buscheck", PDG_IICI) && !board_has("mac.bustrace", PDG_SOLO), "no bus check, JTAG or bus trace on the solo board or the IIci");
     ok(board_has("mac.plustrace", PDG_PLUS) && board_has("mac.plustrace", PDG_512KE) && board_has("mac.plustrace", PDG_128K) && !board_has("mac.plustrace", PDG_SE), "the Plus family's ADB trace, not the SE's");
+    ok(board_has("mac.adb", PDG_SE) && !board_has("mac.adb", PDG_PLUS) && !board_has("mac.adb", PDG_SOLO) && board_has("mac.adbtrace", PDG_SE), "the SE's virtual ADB devices");
     ok(board_has("mac.sescsi", PDG_SE) && !board_has("mac.sescsi", PDG_PLUS) && board_has("mac.scsitrace", PDG_SE) && !board_has("mac.scsitrace", PDG_512K), "the SE's SCSI; no SCSI trace on the 512K");
     ok(board_has("mac.solotrace", PDG_SOLO) && !board_has("mac.solotrace", PDG_SE) && board_has("mac.logsave", PDG_SOLO), "the solo board's trace and log save");
 

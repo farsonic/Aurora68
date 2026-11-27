@@ -7628,3 +7628,146 @@ WiFi first; docs/12 orders the bring-up and supersedes the hardware items below.
    - *On the real SE*: A/UX Startup started from System 7.1 should now pass the machine check and go on to its next one
      (under System 7.1 that is "Standalone program space is too small", IN-2, docs/23: started from A/UX's own small
      Mac OS it is not met). About This Macintosh still says Macintosh SE.
+151. **USB and Bluetooth keyboards and mice as ADB devices on the SE's own bus, for A/UX (27 November 2026).** A/UX
+   3.1.1 reaches its Finder on the owner's SE (docs/23 section 22) and nothing can be typed or pointed at with the Pi's
+   keyboards and mice: they reach the Mac through `.PiInput`, a Mac OS driver (docs/09), and A/UX's kernel reads
+   keyboard and mouse from ADB with its own driver. On the SE board ADB is the SE's own: the IIci ROM's ADB Manager
+   and A/UX drive the SE's transceiver through the SE's VIA, which this board layer passes through (docs/12). So the
+   kernel now puts two devices of its own on that bus, a keyboard and a mouse fed from what would have gone into
+   `.PiInput`'s ring, beside the SE's real ones and with no driver on the guest's side (`emu68/src/psmac/psmac_adb.c`,
+   new; hooks in the VIA path, the interrupt level, the service loop and the RESET of `psmac_board_se.c`, and in
+   `ring_put` and `psmac_card_handoff` of `alice_psmac.c`).
+   - *The transceiver's protocol, read from the IIci ROM* ($4080A5AA to $4080A74E, the ADB Manager's VIA half; the
+     shift register interrupt's handler at $4080A700 tests port B bit 3 and resumes a coroutine). Port B bits 4-5 are
+     the state: 0 a command, 1 and 2 the data bytes ("even" and "odd"), 3 idle; bit 3 is the transceiver's line, low
+     when asserted; every byte in either direction ends with a shift register interrupt, which the transceiver clocks.
+     A command: ACR to shift out, the byte into the shift register, state 0, the interrupt. If the line is low at that
+     interrupt the transceiver had a byte of its own and did not send the command; the ROM reads the transceiver's
+     data instead ($4080A614). A Talk's data: state 1, interrupt (line low: nobody answered), the byte read, state 2,
+     interrupt (line low: some other device asks for service), the byte read, state 1, interrupt, and so on until the
+     line is low (the end; at least three interrupts, also when nobody answered). A Listen's bytes go out the same
+     way, each written before the state changes. The ROM never returns to idle after data: the next command follows
+     from state 1 or 2. Its polling is one command, Talk register 0 of the poll address, and then state 3 at once
+     ($4080A5F6): in the idle state the transceiver repeats that Talk by itself (the autopoll) and, when the device
+     answers or another asks for service, clocks one byte in; the ROM throws that byte away, goes to state 1 and
+     reads as above; after a service request it moves the poll address to the next device in its table and sends the
+     next Talk. Address resolution at start ($4080A8F8): SendReset, Talk register 3 to all sixteen addresses, then
+     fifty rounds in which every device found is moved to the highest free address (Listen register 3 with handler
+     $FE, "move if you saw no collision") and back, with a Talk register 3 at the old address in between to find a
+     second device there.
+   - *What stands for the SE's transceiver in the testbed.* MAME's own SE runs the transceiver's PIC from its ROM
+     (`adbmodem.cpp`); the bridged SE (`macse_ps`, reference/mame-psmac.patch) has no such ROM in its set and uses
+     MAME's model of the transceiver instead (`macadb.cpp` with `set_mcu_mode(false)`, the IIci machine's), with a
+     keyboard at 2 and a mouse at 3 inside it. That model answers every state change with eight clocks and the line
+     low when it has nothing, signals a service request with a single clock a frame, and drops a report it had ready
+     when a command arrives first. So the testbed shows the logic of what follows and nothing of a real
+     transceiver's timing.
+   - *The multiplexer.* Every command the 68k sends goes to the real bus. What is added:
+     1. A Talk to an address where a virtual device is, is watched: at the first data byte the real chip's flag and
+        line say whether a real device answered (the 68k's own reads of the IFR and of port B are used; if it reads
+        the shift register first, one read of port B is made for it). A real answer passes through untouched, and
+        for register 3 the virtual device at that address has "collided", as a real device that lost the bus would
+        have: it ignores the next Listen register 3 with handler $FE, the real device moves away, and the next Talk
+        register 3 finds the virtual one alone.
+     2. Nobody answered: the virtual device does, if it has something to say. The real transceiver goes on clocking
+        its bytes as for an empty address, since the ROM takes three interrupts for a Talk nobody answers, so every
+        interrupt of that transaction is the real chip's; only what the 68k reads is changed: the two bytes from the
+        shift register and the line in port B (high for the two bytes, low at the third interrupt; at the second, low
+        if the other virtual device has data, else what the real transceiver says, a real device's service request).
+     3. The 68k idle and a virtual device with data: the kernel does what the transceiver would. Its own shift
+        register flag (IFR bit 2 as the 68k reads it, level 1 in `psmac_se_ipl`) is raised; when the 68k leaves the
+        idle state for state 1, it gets the device's two bytes if its last command was that device's Talk register 0
+        (the autopoll's answer), else a time-out with a service request, after which the host asks around until it
+        reaches the device. These interrupts are the kernel's own, 300 us after each state change, and for the whole
+        event the real transceiver is left where it is, idle: the state lines the wire sees stay at 3, the shift
+        register is answered here, the ROM's flag-clearing writes do not reach the real flag, and the real chip's
+        shift register interrupt is off (IER written $04, the 68k reads back its own value). A byte the real
+        transceiver clocks in meanwhile sets the real flag and waits. The event ends with the 68k's next command
+        (the byte it wrote into the shift register meanwhile is written to the real one first, then IER $84, then the
+        state lines) or its return to idle; a real byte that waited is then met as the ROM meets it when a command
+        and the transceiver's byte cross (the line low at the command's interrupt), or interrupts at once.
+        Before raising its flag the service core turns the real interrupt off and reads the real IFR: a real byte
+        already there goes first. An event is announced only after the 68k has been idle for 2 ms (the real
+        transceiver's own Talk on the bus is over), never while the floppy is in use, and not before the host has
+        found the device (a Talk register 3 answered by it). An event the 68k does not look at within half a second
+        (interrupts off, a host with no ADB handler: A/UX Startup's shell, docs/23 section 16) is taken back and
+        tried again two seconds later.
+     Why two ways of answering. An earlier plan answered idle events by substitution too, letting the 68k's state
+     changes reach the real transceiver; but then the real transceiver sees states 1, 2, 1 with no command and no
+     autopoll answer of its own, which a host never does, and what the PIC does then nobody here knows. As built it
+     never sees anything the IIci ROM alone would not show it: commands, the data states after them, and idle.
+     The other way round, answering whole Talks here without the real bus, would be simpler still and was not done:
+     a real device may be at any address at any time, and the real ones must win.
+   - *The two devices.* The keyboard: default address 2, handler 2 (the Apple Extended Keyboard, whose KMAP the ROM
+     and A/UX have; handler 3 is accepted, and then the right-hand Shift, Option and Control have their own codes),
+     register 0 two key transitions (or one and $FF), register 2 the modifier bits and the LEDs the host set. USB HID
+     usages become ADB key codes with `.PiInput`'s table (ADB's own codes for the arrows, $3B-$3E, and Control, $36;
+     the power key left out); the modifier byte of each report becomes transitions of the modifier keys; Caps Lock,
+     which a USB keyboard presses and releases each time, is the locking key an ADB keyboard has: down at one press,
+     up at the next; the Pi side's key repeat (made for `.PiInput`) is dropped, an ADB host repeats keys itself. The mouse:
+     default address 3, handler 1 (100 counts an inch; 2 is accepted, 4, the extended protocol, refused), register 0
+     the button and seven bits each of dy and dx, larger movements over as many reports as they need. The right
+     button is a Command-click (`mac.rightbutton=ctrl`: Control, `none`: plain) and the middle one an Option-click as
+     in `.PiInput` (item 139): the modifier key goes down on the virtual keyboard, the button follows when the host has read
+     the key, and the key comes up after the button. Both answer register 3 with a random address nibble, obey
+     Listen register 3 (handler $00: address and the service request enable; $FE; a handler they have), SendReset and
+     Flush. `mac.adbspeed=N` scales the mouse's counts (percent): the host adds its own acceleration to an ADB
+     mouse's counts, which `.PiInput`'s pointer never had. The remote control's keys are typed; its pointer (absolute
+     points) has no way through an ADB mouse and is dropped with one line in the log.
+   - *When they exist: `mac.adb=auto|virtual|off`.* `auto`, the default: from A/UX's switch of tables (the hand-over
+     of docs/23 section 16, which also takes the ring from `.PiInput`) to the 68k's next RESET. Until then nothing of
+     this file runs: the VIA path tests one flag, and Mac OS with `.PiInput` is as it was. `virtual`: from the start,
+     under any system, and the ring's events go to the devices and not to `.PiInput` (a test, and for a system
+     without the card's drivers). `off`: never. The SE board only; the Plus's and the solo board's transceivers are
+     models of their own.
+   - *Not shared with the Plus board.* `psmac_board_plus.c` has a keyboard and a mouse behind a transceiver model
+     too (item 96), and the first thought was one device file for both. They are kept apart: the Plus's are fed
+     from the M0110's bytes and the quadrature lines with their own quirks (the keypad's shifted arrows), have no
+     collisions, no handler 3 and no second button, and the Plus has no testbed run in this round to show that a
+     shared file breaks nothing. The device code here is that file's, grown; folding the Plus onto it is a later tidy-up.
+   - *The log.* `[PSMAC:ADB]` lines: one when the devices appear and one when they go; one when the host first finds
+     each ("the host found the virtual keyboard at address 2, handler 2"); in the heartbeat, with the SE board's
+     lines, where they are now, keys and mouse reports delivered, events dropped (and dropped before the host found
+     the devices), service requests, autopolls, the host's own Talks answered, Talks real devices answered and
+     collisions, events of the real devices' own, and what only a real SE can say: events lost to a new command,
+     events never taken, events put off because the real transceiver had a byte, commands the transceiver
+     pre-empted, real service requests seen beside a virtual answer, and the longest time the 68k took to take an
+     event and to finish one. `mac.adbtrace=N` logs the first N steps (each command, each watched Talk and who answered,
+     each Listen to a virtual device, each event taken, each event of the real transceiver's).
+   - *The scripts.* `mac.inputadb=SECONDS` (testbed) plays the Pi's side: the mouse into the corner and, one count
+     every 120 ms, onto the Apple menu, a click, the button held with the menu open, down to the first item and let
+     go, then Command-W, a T, and a right-button click. `mac.inputadb=N,menus` starts it N seconds after the host has
+     found both devices and menu titles have stood on the SE's screen for 30 s (the Finder, however slow the
+     testbed's host is that day: this night it ran at 0.6 of its usual speed). `mame/se_input.lua` (`MAME_SCRIPT=`,
+     `SE_INPUT_START=frame`, `SE_INPUT_WAIT=N` for the Nth appearance of menu titles) plays the SE's own side with
+     MAME's ADB mouse and keyboard (ports `:macadb:MOUSE0` the button, `MOUSE1` and `MOUSE2` the counters,
+     `KEY0`-`KEY5`): onto File, the button held, an M typed.
+   - *On the host* (`tools/adb_test.sh`, in `make -C mac check`; `tools/adb_test.c`): `psmac_adb.c` between a model of
+     the SE's VIA and transceiver with a real keyboard and mouse behind it and a model of the ROM's ADB Manager as
+     read above (commands, the data states, the poll and idle, resolution, the transceiver's byte in place of a
+     command), each scene with a transceiver that keeps its line low after a time-out (MAME's) and with one that
+     lowers it for a service request only. 52 checks: four devices at four addresses after resolution; Shift-A as
+     Shift down, A down, A up, Shift up; 200 counts over several reports; the right button as Command down, button
+     down, button up, Command up; Caps Lock; a real and a virtual mouse moving at once, every report of both
+     arriving once; a real report clocked in in the middle of a virtual event, sixty times, delivered afterwards
+     every time; an event a deaf host never takes, taken back with the real interrupt enable restored and offered
+     again; a driver that reads the shift register before the line; RESET in the middle. In every scene the
+     transceiver model counts the data states entered from idle with no event of its own: none.
+   - *System 7.1 on the MAME SE, `mac.adb=virtual`* (runs 70 to 72; `mac.adbtrace=1500 mac.inputadb=560`). The ROM's
+     resolution, from the trace: `talk 2f (address 2 register 3): a real device answers, the virtual one there has
+     collided`, the same at 3, `listen to 2 register 3: 0f fe`, `the host found the virtual keyboard at address 2,
+     handler 2` (`talk 2f ... nobody on the real bus; the virtual device answers 62 02`), the mouse likewise at 3,
+     then the fifty rounds to address 13 and back. So the virtual devices end at 2 and 3 and MAME's at 15 and 14,
+     four entries in the ROM's table, and the System's keyboard and mouse drivers serve all four. The script: the
+     pointer walks to the menu bar; the click quits the test image's startup program ("Click or press a key to
+     quit"); the Apple menu opens under the held button and the drag to its first item opens About This Macintosh
+     (`docs/img/adb-virtual-about-se71.png`: Macintosh SE, System Software 7.1); Command-W closes it; T selects the
+     Trash. The counters at the end: 8 keys and 130 mouse reports delivered, none dropped, 6 service requests, 137
+     autopolls, no event lost or left; MAME's own mouse, moved by the Lua script, sent 97 events through the same
+     path and moved the pointer. Two things the runs taught. The host scales an ADB mouse's counts: in run 71
+     sixteen counts sent while the Mac was busy starting a program arrived in one tick and moved the pointer 96
+     pixels, so the script now sends a count every 120 ms. And MAME's mouse ports are 8-bit counters its
+     transceiver model reads only when the host polls that mouse: three counts a frame for 250 frames wrapped the
+     counter between polls and the pointer went astray, and a key held for eight frames was gone before the
+     model's service request (one clock a frame, eight to an interrupt) had been seen; `se_input.lua` now moves one
+     count a frame and holds a key for a second.
