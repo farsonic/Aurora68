@@ -890,12 +890,20 @@ void alice_net_report(void)
         if (last_msg[i] != u->msg[i]) same = 0;
         if (!u->msg[i]) break;
     }
-    if (same) return;
+    /* unchanged: again once a minute while the WiFi is not connected, so a saved log (a tail of
+       64 KB) still says why (the first real 3A+, 27 November 2026, left no [WIFI] line at all) */
+    static unsigned quiet;
+    if (same && (st == 5 || ++quiet < 12)) return;
+    quiet = 0;
     last_st = st; last_chip = u->chip; last_mhz = u->sdmhz;
     for (unsigned i = 0; i < sizeof last_msg; i++)
         last_msg[i] = u->msg[i];
 #endif
+#ifdef PSMAC
+    kprintf("[WIFI]   %s: %s (chip %x rev %u, SD %u MHz; Pi board %06x)\n", st < 9 ? names[st] : "?", (const char *)u->msg, u->chip, u->chiprev, u->sdmhz, alice_pi_board_rev());
+#else
     kprintf("[WIFI]   %s: %s (chip %x rev %u, SD %u MHz)\n", st < 9 ? names[st] : "?", (const char *)u->msg, u->chip, u->chiprev, u->sdmhz);
+#endif
 }
 
 /* bt/bt_pi.c: the WiFi is in use (scanning, joining, connected, trying again): Bluetooth holds its LE interval floor

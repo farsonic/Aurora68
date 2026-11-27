@@ -1289,7 +1289,7 @@ uint32_t psmac_moves_exec(uint32_t ea, uint32_t op, uint64_t *regs, uint32_t sr,
         if (reg == 8 + rn && mode == 4) val -= step;
     }
     fs.moves++;
-    if (fs.moves <= 8 || (fs.moves & 4095) == 0)
+    if (fs.moves <= 8)                                       /* every 4096th filled the saved log under A/UX: the heartbeat counts them */
         kprintf("[PSMAC:MMU] MOVES #%u at %08x: %s %08x fc %d size %d\n", fs.moves, pc, write ? "write" : "read", a, fc, size);
     uint32_t pa[2]; int n = 1;
     if (fc == 7 || fc_translate(a, fc, write, &pa[0]) < 0) {

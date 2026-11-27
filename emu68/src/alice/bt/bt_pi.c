@@ -164,12 +164,21 @@ static void uart_init(void)
     if (psmac_console_miniuart) psmac_console_miniuart();    /* one PL011 on a Pi 3: the log leaves it first */
     int t = alice_pi_board_type();
     int flow = alice_pi_is_2711() || t == 0x0c || t == 0x12;
-    CR_ON = flow ? CR_FLOW : CR_NOFLOW;
-    blog(flow ? "[BT] UART: TX, RX, CTS and RTS (GPIO 30-33)" : "[BT] UART: TX and RX only (GPIO 32, 33): this board has no CTS/RTS to the chip");
+    /* The 3B+ (0x0d) and 3A+ (0x0e) wire GPIO 30/31 to the chip's RTS/CTS. Left alone, GPIO 31
+       (our RTS, the chip's CTS) sits high, as an input pulled up or as ALT3 with the PL011's RTS
+       off, and the chip never answers: the first real 3A+ (27 November 2026) logged "the chip
+       does not answer (command 0c03)" with nothing received. Here GPIO 30-33 go to ALT3 and our
+       RTS is asserted (RTSEn: held while there is room); the chip's CTS is not obeyed, as on
+       Raspberry Pi's own "noflow" set-up for these boards. */
+    int rts = t == 0x0d || t == 0x0e;
+    CR_ON = flow ? CR_FLOW : rts ? (CR_NOFLOW | (1u << 11) | (1u << 14)) : CR_NOFLOW;
+    blog(flow ? "[BT] UART: TX, RX, CTS and RTS (GPIO 30-33)"
+         : rts ? "[BT] UART: TX, RX and our RTS asserted (GPIO 30-33; the chip's CTS line not obeyed): a 3B+ or 3A+"
+         : "[BT] UART: TX and RX only (GPIO 32, 33): this board has no CTS/RTS to the chip");
     extern spinlock_t psmac_gpfsel_lock;
     spinlock_acquire(&psmac_gpfsel_lock);
     uint32_t f = rd(GPIO + 0x0c);                       /* GPFSEL3: GPIO 30-33 (or 32-33) to ALT3 (UART0 CTS RTS TXD RXD) */
-    if (flow) f = (f & ~0xfffu) | 07777u;
+    if (flow || rts) f = (f & ~0xfffu) | 07777u;
     else f = (f & ~(077u << 6)) | (077u << 6);
     wr(GPIO + 0x0c, f);
     uint32_t f1 = rd(GPIO + 0x04);                      /* GPIO 15 an input: UART0's RX comes from GPIO 33 only */
