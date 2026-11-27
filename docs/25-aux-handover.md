@@ -12,8 +12,8 @@ SE, sections 12 to 23) and, on branch `aux-net`, `docs/24-aux-network.md` (the n
 | What | State | Where |
 |---|---|---|
 | A/UX 3.1.1 (the owner's own disk image, the Apple Workgroup Server 95 edition) to its Finder and CommandShell on the owner's real SE | works (test kernel 20) | branch `mmu-experimental`, commit b863149 |
-| Bluetooth and USB keyboards and mice under A/UX, as two virtual ADB devices beside the SE's own (`mac.adb=auto`, the default) | Bluetooth keyboard and mouse work on the real SE (test kernel 21); USB and the SE's own devices beside them not yet reported; the pointer was "a bit fast", so the default is now half the counts (`mac.adbspeed=50`) | `mmu-experimental`, commits c7b5307, be999f5, 77a047c; docs/23 section 23 |
-| Networking under A/UX over the Pi's WiFi: a virtual card of the kind A/UX's own `ae6` driver drives (`mac.auxnet=on`) | written; the card shows in slot $D in the testbed and the boot goes on with it; **A/UX's driver has not yet run against it anywhere**; test kernel 22 is with the owner | branch `aux-net` (from b863149), `docs/24-aux-network.md` there |
+| Bluetooth and USB keyboards and mice under A/UX, as two virtual ADB devices beside the SE's own (`mac.adb=auto`, the default) | Bluetooth keyboard and mouse work on the real SE (test kernel 21); USB and the SE's own devices beside them not yet reported; the pointer was "a bit fast", so the default is now half the counts (`mac.adbspeed=50`) | `mmu-experimental`, commits c7b5307, be999f5, 77a047c, 85e575a (regression: System 7.1 on the SE and solo boards and the MMU test ROM unchanged); docs/23 section 23, docs/08 item 151 |
+| Networking under A/UX over the Pi's WiFi: a virtual card of the kind A/UX's own `ae6` driver drives (`mac.auxnet=on`) | **works on the owner's real SE** (test kernel 22, 27 November 2026): `/etc/etheraddr` shows the Pi's WiFi address, `newconfig` linked `ae6`, `ae0` came up and another machine on the WiFi network pings A/UX (about 4 ms once ARP is done). Not yet seen in the testbed; default route, DNS and the merge with the input work still to do | branch `aux-net` (from b863149), `docs/24-aux-network.md` there |
 | The HDMI screen under A/UX | not started; switching the HDMI screen on locked the SE up under A/UX, so the owner runs with `mac.hdmi=log` | |
 
 None of this is merged into `main`. `main` has the tools (`tools/aux/`, `mame/act.lua`) and this note.
@@ -33,7 +33,7 @@ such a card: a declaration ROM of our own with board ID 8, a register-level DP83
 and the frames passed to and from the Pi's network board (WiFi or USB Ethernet). The details the driver depends on
 are in `docs/24-aux-network.md` on `aux-net`.
 
-**With the owner now: test kernel 22** (`aux-net` at the time, no ADB work in it, built without the PC and Apple II
+**Tested by the owner: test kernel 22** (`aux-net` at the time, no ADB work in it, built without the PC and Apple II
 cards). The steps the owner was given:
 1. cmdline: the A/UX line plus `mac.auxnet=on mac.auxnettrace=300`.
 2. In A/UX as root: `/etc/etheraddr` must print the Pi's Ethernet address (if not, A/UX does not see the card).
@@ -54,8 +54,9 @@ cards). The steps the owner was given:
   address must differ from the kernel's own (`remote=on` shares that Ethernet address).
 
 **Next steps, in order.**
-1. Take the owner's result of test kernel 22 and fix what it shows. The real SE is the faster test: A/UX boots
-   there in minutes, in the testbed in 20 to 40.
+1. Done on 27 November 2026: test kernel 22 on the real SE gave `ae0` and answered pings. Still wanted from the owner:
+   the `aurora68.log` of that session (the card's counters), the default route and DNS in use. The real SE is the
+   faster test: A/UX boots there in minutes, in the testbed in 20 to 40.
 2. In the testbed: a run where the relinked kernel attaches `ae0` and exchanges ARP or a ping with the host peer
    (`mac.net=` and `tools/pinet.py`, CLAUDE.md). The kernel has to be relinked without typing: do what `newconfig`
    does from an rc script on a private copy of the image (`tools/aux/mknetimage.py` on `aux-net` writes that script
