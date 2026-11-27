@@ -13,7 +13,7 @@ SE, sections 12 to 23) and, on branch `aux-net`, `docs/24-aux-network.md` (the n
 |---|---|---|
 | A/UX 3.1.1 (the owner's own disk image, the Apple Workgroup Server 95 edition) to its Finder and CommandShell on the owner's real SE | works (test kernel 20) | branch `mmu-experimental`, commit b863149 |
 | Bluetooth and USB keyboards and mice under A/UX, as two virtual ADB devices beside the SE's own (`mac.adb=auto`, the default) | Bluetooth keyboard and mouse work on the real SE (test kernel 21); USB and the SE's own devices beside them not yet reported; the pointer was "a bit fast", so the default is now half the counts (`mac.adbspeed=50`) | `mmu-experimental`, commits c7b5307, be999f5, 77a047c, 85e575a (regression: System 7.1 on the SE and solo boards and the MMU test ROM unchanged); docs/23 section 23, docs/08 item 151 |
-| Networking under A/UX over the Pi's WiFi: a virtual card of the kind A/UX's own `ae6` driver drives (`mac.auxnet=on`) | **works on the owner's real SE** (test kernel 22, 27 November 2026): `/etc/etheraddr` shows the Pi's WiFi address, `newconfig` linked `ae6`, `ae0` came up and another machine on the WiFi network pings A/UX (about 4 ms once ARP is done). Not yet seen in the testbed; default route, DNS and the merge with the input work still to do | branch `aux-net` (from b863149), `docs/24-aux-network.md` there |
+| Networking under A/UX over the Pi's WiFi: a virtual card of the kind A/UX's own `ae6` driver drives (`mac.auxnet=on`) | **works on the owner's real SE** (test kernel 22, 27 November 2026): `/etc/etheraddr` shows the Pi's WiFi address, `newconfig` linked `ae6`, `ae0` came up and another machine on the WiFi network pings A/UX (about 4 ms once ARP is done); with `route add default ROUTER 1` A/UX pings a public address on the internet, five of five answered. Not yet seen in the testbed; default route, DNS and the merge with the input work still to do | branch `aux-net` (from b863149), `docs/24-aux-network.md` there |
 | The HDMI screen under A/UX | not started; switching the HDMI screen on locked the SE up under A/UX, so the owner runs with `mac.hdmi=log` | |
 
 None of this is merged into `main`. `main` has the tools (`tools/aux/`, `mame/act.lua`) and this note.
@@ -55,7 +55,7 @@ cards). The steps the owner was given:
 
 **Next steps, in order.**
 1. Done on 27 November 2026: test kernel 22 on the real SE gave `ae0` and answered pings. Still wanted from the owner:
-   the `aurora68.log` of that session (the card's counters), the default route and DNS in use. The real SE is the
+   the `aurora68.log` of that session (the card's counters) and DNS. The default route by hand works (CommandShell, 27 November 2026); A/UX's ping prints 0 ms for answers faster than its clock's tick, which is not a measurement. The real SE is the
    faster test: A/UX boots there in minutes, in the testbed in 20 to 40.
 2. In the testbed: a run where the relinked kernel attaches `ae0` and exchanges ARP or a ping with the host peer
    (`mac.net=` and `tools/pinet.py`, CLAUDE.md). The kernel has to be relinked without typing: do what `newconfig`
