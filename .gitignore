@@ -88,6 +88,7 @@ macos/Aurora68Play/.build/
 mac/build/cmdline_test
 mac/build/apnet_test
 mac/build/diag_test
+mac/build/adb_test
 mac/build/bt_test
 # .PiInput's 68020 test (tools/piinput_m68k.sh), the Bluetooth report routing and input merge tests (tools/bt_test.sh)
 mac/build/bt_report_test

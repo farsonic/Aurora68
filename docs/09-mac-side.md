@@ -13,7 +13,7 @@ and their folders"); the table gives each one's name before that once, the sourc
 | Aurora68 Disk extension (until 21 November 2026 PiDisk) | `mac/pidisk_init.s` + the DRVR | `Aurora68-Disk.bin` (MacBinary, type `INIT`) | System 6/7 extension: installs the DRVR from its own resource fork (`_DrvrInstall`), opens it, mounts every drive it added (`_MountVol`). Used until the declaration ROM path loads the driver from ROM. |
 | Aurora68 Machine extension (until 21 November 2026 PiMach) | `mac/pimach.s` | `Aurora68-Machine.bin` (MacBinary, type `INIT`) | Tells the Mac it is a Macintosh SE. The IIci ROM's Gestalt Manager answers the `'mach'` selector with 11 (gestaltMacIIci), so About This Macintosh, the Finder and every program that asks see a IIci. This INIT copies a short selector function into the system heap and installs it with `_ReplaceGestalt` ($A5AD) for `'mach'`; it answers 5, gestaltMacSE, except to A/UX Startup (by its name or its creator `SASH`), which gets the ROM's 11 (docs/08 item 150; "Saying Macintosh SE" below). Nothing else changes: the ROM's own view of its hardware is left alone (changing the ROM's box table would change its decisions about the IIci hardware it drives), the processor still reads 68030. Goes in the System Folder (System 6) or Extensions (System 7); `docs/img/system71-about-se.png`. |
 | `.Network_EtherNet_PiStorm` | `mac/enet.s` | `enet.bin.raw` | Apple `.ENET`-interface Ethernet driver over the NET service: EAttachPH/EDetachPH, ERead (default handler: queued parameter blocks completed from a VBL task), EWrite (WDS gather, source address inserted, 60-byte padding), EGetInfo (address + 3 counters), EAddMulti/EDelMulti, ESetGeneral, ERdCancel; real protocol handlers are called with the A3/A4/D1 convention and ReadPacket/ReadRest. Receives from the slot-9 interrupt (`SIntInstall`, docs/07) with the VBL task as a safety net. |
-| `.PiInput` | `mac/piinput.s` | `piinput.bin.raw` | Keyboards and mice attached to the Pi (USB on a Pi 3, Bluetooth) become Macintosh input. A VBL task drains the input ring the service core fills (`alice_psmac.h`), translates USB HID usages into Apple virtual key codes and, through `_KeyTranslate` and the Script Manager's current KCHR, into characters, keeps `KeyMap` and the modifier bits current, moves the cursor through `RawMouse`/`MTemp`/`CrsrNew`, and posts keyDown/keyUp/autoKey and mouseDown/mouseUp. Right and middle buttons become Command- and Option-clicks (`mac.rightbutton=ctrl` or `none` for a Control-click or a plain one); since 24 November 2026 a modifier key's change goes into KeyMap at once, only the KeyMap bits it set are taken out again (the SE's own keyboard shares KeyMap), one mouseDown and one mouseUp frame a press of any buttons, and a feedback block after the ring tells the kernel what each event became (`mac.inputtrace=`, docs/08 item 139). Runs from the slot-9 interrupt (`SIntInstall`) with the VBL task as a safety net. Opened at start from the declaration ROM. Since 23 November 2026 it also puts a cursor task in front of the ROM's (`JCrsrTask`, $8EE) for the edge jump: a pointer pushed against the side of a screen where another screen lies goes onto it at the same proportion along the edge, for every mouse, the SE's own included (docs/10, "The edge jump"; `mac.edgejump=off`). |
+| `.PiInput` | `mac/piinput.s` | `piinput.bin.raw` | Keyboards and mice attached to the Pi (USB on a Pi 3, Bluetooth) become Macintosh input. A VBL task drains the input ring the service core fills (`alice_psmac.h`), translates USB HID usages into Apple virtual key codes and, through `_KeyTranslate` and the Script Manager's current KCHR, into characters, keeps `KeyMap` and the modifier bits current, moves the cursor through `RawMouse`/`MTemp`/`CrsrNew`, and posts keyDown/keyUp/autoKey and mouseDown/mouseUp. Right and middle buttons become Command- and Option-clicks (`mac.rightbutton=ctrl` or `none` for a Control-click or a plain one); since 24 November 2026 a modifier key's change goes into KeyMap at once, only the KeyMap bits it set are taken out again (the SE's own keyboard shares KeyMap), one mouseDown and one mouseUp frame a press of any buttons, and a feedback block after the ring tells the kernel what each event became (`mac.inputtrace=`, docs/08 item 139). Runs from the slot-9 interrupt (`SIntInstall`) with the VBL task as a safety net. Opened at start from the declaration ROM. Since 23 November 2026 it also puts a cursor task in front of the ROM's (`JCrsrTask`, $8EE) for the edge jump: a pointer pushed against the side of a screen where another screen lies goes onto it at the same proportion along the edge, for every mouse, the SE's own included (docs/10, "The edge jump"; `mac.edgejump=off`). A system that does not open it (A/UX) gets the same keyboards and mice as ADB devices on the SE board instead (`mac.adb=`, below, "Without `.PiInput`"). |
 | `.Network_WiFi_PiStorm` | `mac/enet.s` assembled with `WIFI` | `enet_wifi.bin.raw` | The same driver for unit 0 of the network board, the WiFi chip, as a second network sResource (0x83) in slot 9: MacTCP and EtherTalk list two Ethernet cards and the user picks. In the testbed the unit is a simulated radio when `mac.wifisim=` is given (below); Aurora68 Wi-Fi joins a network on hardware. |
 | `.Display_Video_PiStorm` | `mac/pivideo.s` | `pivideo.bin.raw` | The second display (docs/10): Apple's video driver interface over the display block in the slot window (psmb.h). Control: cscReset, cscSetMode (modes 128-133: 1/2/4/8 bits indexed, 16/32 bits direct, at the screen size the Pi publishes), cscSetEntries and cscDirectSetEntries (the colour table), cscGrayPage, cscSetGray, cscSetInterrupt; Status: cscGetMode, cscGetEntries, cscGetPageCnt, cscGetPageBase, cscGetGray, cscGetInterrupt, cscGetDefaultMode. The frame buffer is the window's top 512 KiB ($980000 in 24-bit mode, $F9080000 in 32-bit); the Pi converts it to the VideoCore frame buffer sixty times a second and raises the slot interrupt as the card's VBL, which the driver's handler turns into `_DoVBLTask` for slot 9. Opened at boot by the Start Manager like any video card; `tools/vcshot.py` photographs the Pi's screen in the testbed. |
 | PiDisk boot record | `mac/pidisk_boot.s` | `pidisk_boot.bin.raw` | The sBootRecord (ID 6) of PiDisk's sResource, an sExec block the Slot Manager copies into the heap and runs: opens `.PiDisk` with OpenSlot (fMulti, an SEBlock naming slot 9 and sResource $80, as the ROM opens a slot driver itself), and when the Start Manager is looking for a startup disk (seBootState 0) asks the Pi which disk goes first (`PSMB_BLK_BOOT`) and returns that driver's reference number in seRefNum: how a disk image on the card becomes the startup disk (docs/08 item 67, `mac.boot=`). Logs `PiDisk boot: ...`. |
@@ -1528,6 +1528,42 @@ instead of DMA). docs/08 item 40 has the design.
 PC keyboards: by default the Windows key is Command and Alt is Option (Apple's own mapping for PC
 keyboards). `mac.altcmd=1` swaps them, so the key beside the space bar is Command as on a Mac
 keyboard. Both apply to USB and Bluetooth keyboards.
+
+### Without `.PiInput`: the same keyboards and mice as ADB devices on the SE (27 November 2026)
+`.PiInput` is a Mac OS driver, and a system that brings its own kernel never opens it: A/UX 3 reads keyboard and
+mouse from ADB itself. For such a system the SE board's kernel presents the Pi's keyboards and mice as two ADB
+devices on the SE's own bus, a keyboard (default address 2, handler 2, an Apple Extended Keyboard) and a mouse
+(address 3, handler 1), beside the SE's real keyboard and mouse, which go on working. A host that sorts out
+collisions (the IIci ROM's ADB Manager) finds four devices at four addresses; A/UX talks to addresses 2 and 3 only,
+and there the virtual keyboard shares 2 with the real one and the virtual mouse 3: each answers when the real one
+has nothing to say
+(`emu68/src/psmac/psmac_adb.c`; the design and the transceiver's protocol are in docs/08 item 151, A/UX's side in
+docs/23 section 23). Nothing is installed on the guest's side.
+
+`mac.adb=auto` (the default) makes the two devices from the moment A/UX switches to its own tables until the next
+restart; Mac OS with `.PiInput` is untouched by it. `mac.adb=virtual` makes them from power-on under any system, and
+the events then go to them and not to `.PiInput` (a test; also the way to have the Pi's keyboards under a system
+started without the card's drivers). `mac.adb=off`: never. The SE board only.
+
+What differs from `.PiInput` for the person at the keyboard:
+- the mouse's counts are an ADB mouse's, so the host applies its own mouse speed and acceleration to them (the Mouse
+  control panel; A/UX's Macintosh environment has the same). `mac.adbspeed=N` scales the counts, in percent; the
+  default is 50 (docs/23 section 23 says why; `mac.adbspeed=100` for every count, 25 or 10 for the feel of one of
+  Apple's own mice);
+- keys repeat by the host's own settings (the Keyboard control panel), not at the Pi side's fixed rate;
+- Caps Lock is the locking key of an Apple keyboard: one press down, the next press up;
+- the right button is a Command-click and the middle one an Option-click as before (`mac.rightbutton=ctrl|none`), made
+  with the virtual keyboard's modifier keys; `mac.altcmd=1` applies as before;
+- no edge jump between screens (that is `.PiInput`'s cursor task), no wheel, and the remote control (docs/13) can type
+  but not point: an ADB mouse cannot be told where to be.
+
+In the log: `[PSMAC:ADB] a virtual ADB keyboard ... and mouse ... on the SE's ADB bus` when they appear, `the host talks to
+the virtual keyboard at address N, handler 2` (and the mouse) when the host's driver first asks each, and a
+`[PSMAC:ADB]` counters line with the SE board's heartbeat lines. `mac.adbtrace=N` puts the first N steps in the log.
+
+In the testbed `mac.inputadb=SECONDS` plays a session for the virtual devices (it moves the mouse one count at a
+time: the host scales what it gets), and `MAME_SCRIPT=mame/se_input.lua` moves MAME's own ADB mouse and types on its
+keyboard, which stand for the SE's real ones.
 
 ## USB flash drives (20 November 2026)
 A USB stick plugged into the Pi appears on the Mac's desktop as a disk, while the Mac runs, and is

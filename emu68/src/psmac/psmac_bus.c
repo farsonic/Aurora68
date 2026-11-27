@@ -434,6 +434,7 @@ static void psmac_read_options(void)
         }
         extern void psmac_alice_input_click(uint32_t, const int *, int); psmac_alice_input_click(secs, pts, n);
     }
+    if ((tok = find_token(args, "mac.inputadb="))) { tok += 13; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_adb(uint32_t, int); psmac_alice_input_adb(n, tok[0] == ',' && tok[1] == 'm'); }
     if ((tok = find_token(args, "mac.inputdrag="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_drag(uint32_t); psmac_alice_input_drag(n); }
     if ((tok = find_token(args, "mac.inputmods="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_mods(uint32_t); psmac_alice_input_mods(n); }
     if ((tok = find_token(args, "mac.inputedge="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_edge(uint32_t); psmac_alice_input_edge(n); }
