@@ -9,8 +9,10 @@ usually odd for a reason that is written there), `docs/09-mac-side.md` the Macin
 `docs/07` the mailbox and the Alice68 boards, `docs/10` the second display, `docs/12` the hardware
 bring-up plan (classic PiStorm, Pi 3, the SE), `docs/06` the MAME
 bridge and the ROM patches.
-The A/UX work (the emulated 68030 MMU, input and networking under A/UX) lives on branches, not yet on
-`main`: `docs/25-aux-handover.md` says which, where each stands and how to take it over.
+A/UX 3.1.1 runs on the SE with `mac.mmu=full` (the emulated 68030 MMU, keyboards and mice as ADB devices, a
+network card for A/UX's `ae6` driver, the HDMI screen): on `main` since 28 November 2026, experimental.
+`docs/23-mmu.md` is its record, `docs/24` the network card, `docs/26` the HDMI screen, and
+`docs/25-aux-handover.md` says where each part stands and how the test set-up is made.
 
 ## What this is
 A Raspberry Pi in a Macintosh SE's 68000 socket (a PiStorm) runs Emu68, presents a 68040, boots

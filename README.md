@@ -10,7 +10,8 @@ card that exists only in software.
 
 - **Macs:** the SE; the Plus, 512Ke, 512K and 128K with `mac.board=plus|512ke|512k|128k`.
 - **Systems:** System 7.1 and System 6.0.8 tested. A/UX 3.1.1 runs on a real SE with the experimental 68030 MMU
-  (branches, see `docs/25-aux-handover.md`).
+  (`mac.mmu=full`), with Bluetooth and USB input, networking over the Pi's WiFi and the HDMI screen: see
+  `docs/25-aux-handover.md`.
 - **Hardware:** a classic PiStorm (the DIP-64 Amiga board) with a Raspberry Pi 3A+ or Zero 2 W (they fit), or a
   3B/3B+ (overhangs), and a microSD card with a FAT32 first partition.
 - **You supply:** your own Macintosh IIci ROM (368CADFE, 512 KB) and Mac system software. Nothing of Apple's is

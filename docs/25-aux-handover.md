@@ -7,6 +7,14 @@ branch holds what, what is with the owner for testing, what to do next and in wh
 set-up back. The long record is `docs/23-mmu.md` (the emulated 68030 MMU and A/UX's road to its Finder on the real
 SE, sections 12 to 23) and, on branch `aux-net`, `docs/24-aux-network.md` (the network card). Read `CLAUDE.md` first.
 
+**28 November 2026: everything below is on `main`, in release 0.19.** The branches `mmu-experimental`, `aux-net` and
+`aux-hdmi` were merged that day (they stay as they were, for the record; new work goes on `main` or on a branch
+from it). Since the table below was written: the "divide by zero" in A/UX's Macintosh environment was found and
+fixed (a word read across two VIA registers, docs/23 section 24); a Pi 3A+ runs it, with its WiFi and Bluetooth
+firmware read from the card's `wifi-firmware/` folder and its Bluetooth UART set up for the 3A+'s wiring (on the
+owner's 3A+ the WiFi joins and the Bluetooth chip starts; a keyboard connected there has not been reported yet);
+and Bluetooth pairings move with the card between Pis (`bt.local=` in `pairings.txt`).
+
 ## 1. What runs today
 
 | What | State | Where |

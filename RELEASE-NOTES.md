@@ -1,9 +1,38 @@
 # Aurora68 release notes
 
-## Next release (0.19, on main, not released yet)
+## 0.19 — A/UX 3.1.1 on the SE (experimental), the Pi 3A+, pairings that move with the card (28 November 2026)
 
-- **A word or long read that runs from one VIA register into the next** (28 November 2026, docs/23 section 24 on the
-  A/UX branches). On the SE, Plus and solo boards the kernel answered such an access with the first register's byte
+- **A/UX 3.1.1 on a real Macintosh SE, experimental** (docs/23 to docs/26; the branches `mmu-experimental`, `aux-net`
+  and `aux-hdmi`, merged on 28 November 2026). With `mac.mmu=full` the kernel gives the Mac a complete 68030 MMU
+  (every table shape, PTEST, PLOAD, PFLUSH, PMOVE, MOVES, the 68030's bus error frames), on which A/UX 3.1.1 starts
+  from a disk image served as a SCSI disk (`scsi.disk=AUX.dsk:0 mac.boot=scsi mac.ram=64`) and System 7.1's Virtual
+  Memory runs. Under A/UX, on the owner's SE with a Pi 3B:
+  - *Keyboards and mice:* the Pi's Bluetooth and USB devices appear as two ADB devices beside the SE's own
+    (`mac.adb=auto`, the default; `mac.adbspeed=` for the pointer). Bluetooth checked on the SE; USB not yet reported.
+  - *Networking over the Pi's WiFi:* `mac.auxnet=on` adds a NuBus Ethernet card of the kind A/UX's own `ae6` driver
+    drives (slot $D). After `newconfig` and the addresses in `/etc/NETADDRS`, A/UX pings, reaches the internet and
+    takes telnet sessions. No DHCP: A/UX 3.1.1 has none (docs/24).
+  - *The HDMI monitor as a second screen:* the HDMI card sits in slot $A with its own interrupt and its frames at
+    slot $A's addresses; 2560 x 1440 in millions once A/UX's Macintosh environment runs in 32-bit mode
+    (`/mac/bin/mac32`), black and white in its 24-bit default (docs/26). Needs this release's `aurora68-se.declrom`.
+  Without `mac.mmu=full` nothing behaves differently from 0.18. Known limits: docs/23 section 12.8 and docs/25.
+- **The Raspberry Pi 3A+ on real hardware** (27 and 28 November 2026; before, in QEMU only). Three things kept the
+  first one from working. Its firmware loads the 3B+'s device tree (`bcm2710-rpi-3-b-plus.dtb`: `get-firmware.sh`
+  fetches it). Its WiFi and Bluetooth firmware (the 43455 set) was only looked for in the container, and a container
+  made for a 3B has none: the kernel now also reads the files of the board's own chip from the card's
+  `wifi-firmware/` folder or its root (`[CARD] N WiFi/Bluetooth firmware files read from the card`). Its Bluetooth
+  chip's flow-control lines are wired to the Pi, unlike the 3B's, and were left idle, so the chip never answered:
+  the kernel tries three set-ups of them in turn and keeps the one that answers. On the owner's 3A+ the WiFi joins
+  and the Bluetooth chip starts; a keyboard connected there has not been reported yet. Kernel only.
+- **Bluetooth pairings that move with the card.** A paired keyboard looks for the Bluetooth address it was paired
+  with, and every Pi's chip has its own. The address is now recorded in `pairings.txt` the first time a paired
+  device connects (`bt.local=`), and any Pi the card is put into gives its chip that address at start (Broadcom's
+  own command for it). Checked on the owner's 3B (`address from the card`); the 3A+ with the 3B's pairings is still
+  to be reported. Kernel only.
+- **The WiFi's state in a saved log.** While the WiFi is not connected its `[WIFI]` line comes again every minute,
+  with the Pi's board code, so a log saved later still says why; under A/UX the `MOVES` trace no longer fills the log.
+- **A word or long read that runs from one VIA register into the next** (28 November 2026, docs/23 section 24).
+  On the SE, Plus and solo boards the kernel answered such an access with the first register's byte
   for every byte; a 68030 makes one byte cycle per byte, each at its own register. A/UX's kernel times its delay
   loops that way (`MOVE.W $11FF(A1)`: timer 2's low byte at $11FF, its high byte at $1200), got the low byte twice,
   and stored a TimeDBRA of 75 to 92 on most starts of the owner's SE; AppleTalk in A/UX's Macintosh environment
@@ -11,7 +40,7 @@
   time (`[PSMAC:SE] a 2-byte read at 50f011ff runs across VIA registers 8 and 9` in the log). Mac OS itself was not
   seen to make one. Three earlier tries at this bomb (a floor under TimeDBRA, a raise in the Mac's memory, a timer
   read every eighth turn of a delay loop) were built on a wrong reading of the cause and are taken out again.
-  Checked on the owner's SE with the A/UX branch's kernel: TimeDBRA 8,598 under A/UX, three starts in a row without
+  Checked on the owner's SE: TimeDBRA 8,598 under A/UX, three starts in a row without
   the bomb; and in the testbed (A/UX in MAME's SE, System 7.1 on the solo board). Kernel only.
 
 ## 0.18 — the Aurora68 programs on a disk of their own, the remote control found by ARP, WiFi beside Bluetooth (27 November 2026)

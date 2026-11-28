@@ -701,6 +701,18 @@ not talking to the CPLD: seating, orientation, or the board's firmware. If the S
 stays blank while the heartbeats show bus traffic, send the log: that is the SE's real timing
 meeting a translation that has only met MAME's. Every finding goes into docs/08 on GitHub.
 
+A/UX 3.1.1 (experimental, new in 0.19)
+--------------------------------------
+A/UX 3.1.1 starts on the SE from your own A/UX disk image in the card's root, served as a SCSI disk.
+In cmdline.txt (one line; AUX.dsk is your image's name):
+  enable_cache mac.board=se mac.mmu=full mac.ram=64 scsi.disk=AUX.dsk:0 mac.boot=scsi mac.auxnet=on
+mac.mmu=full gives the Mac the 68030 MMU A/UX needs. Bluetooth and USB keyboards and mice work under
+A/UX as ADB devices. mac.auxnet=on adds a network card for A/UX's own ae6 driver over the Pi's WiFi
+(run newconfig once, then set the addresses by hand: A/UX has no DHCP). The HDMI monitor is a second
+screen; for colour run /mac/bin/mac32 once in CommandShell. If the Mac desktop does not come up with
+the HDMI screen, start once with mac.hdmi=log. The steps and what is known not to work:
+docs/25-aux-handover.md, docs/24-aux-network.md and docs/26-aux-hdmi.md on GitHub.
+
 On the Macintosh
 ----------------
 The drivers need no installation: they are in the declaration ROM. From Mac/Aurora68/Extensions (to
