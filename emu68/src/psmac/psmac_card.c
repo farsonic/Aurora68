@@ -2000,6 +2000,93 @@ static int card_fx_read(void *ctx, uint32_t lba, uint32_t n, uint8_t *buf)
     if (!mine) { card_lock_core3 = 0; spinlock_release(&card_lock); }
     return e ? -1 : 0;
 }
+/* ==== WiFi and Bluetooth firmware from the card =================================================
+   The firmware came only from the container, so a card whose container was made for a Pi 3B (the 43430 set)
+   left a 3A+ without WiFi ("firmware missing: put cyfmac43455-sdio-standard.bin in the container", the first
+   real 3A+, 27 November 2026) although get-firmware.sh had put the 43455 set into the card's wifi-firmware/
+   folder. Now the files of this board's chip family that the container did not bring are read from that
+   folder, or from the card's root, at mount; the WiFi tries again when files come (alice_net.c, fw_gen). */
+static int fw_ascii(const struct fx_dirent *e, char *out, unsigned max)
+{
+    if (e->nlen <= 0 || (unsigned)e->nlen >= max) return 0;
+    for (int i = 0; i < e->nlen; i++) { if (e->name[i] >= 128) return 0; out[i] = (char)e->name[i]; }
+    out[e->nlen] = 0;
+    return 1;
+}
+static int fw_has(const char *s, const char *sub)
+{
+    for (; *s; s++) {
+        int i = 0;
+        while (sub[i] && lower(s[i]) == lower(sub[i])) i++;
+        if (!sub[i]) return 1;
+    }
+    return 0;
+}
+static int fw_wanted(const char *n)
+{
+    extern int alice_pi_board_type(void);
+    if (!ends_ci(n, ".bin") && !ends_ci(n, ".txt") && !ends_ci(n, ".clm_blob") && !ends_ci(n, ".hcd")) return 0;
+    if (!fw_has(n, "4343") && !fw_has(n, "4345")) return 0;            /* brcmfmac/cyfmac 43430, 43436, 43455; BCM4343x, BCM4345Cx */
+    switch (alice_pi_board_type()) {
+    case 0x08: return fw_has(n, "43430") || fw_has(n, "4343A1");      /* 3B: BCM43438 (files named 43430), BCM43430A1.hcd */
+    case 0x12: return fw_has(n, "43436") || fw_has(n, "43430");       /* Zero 2 W: 43436 or 43436s, the 43430's clm_blob, BCM43430B0 */
+    case 0x0d: case 0x0e: case 0x11: case 0x13: case 0x14:
+        return fw_has(n, "4345");                                       /* 3B+, 3A+, 4, 400, CM4: BCM43455, BCM4345C0/C5 */
+    default: return 1;
+    }
+}
+struct fw_rd { struct fx_vol *v; uint8_t *buf; uint32_t at, len; int err; };
+static int fw_run(void *arg, uint32_t c, uint32_t n)
+{
+    struct fw_rd *r = arg;
+    uint32_t bytes = n * r->v->spc * 512u, take = r->len - r->at;
+    if (take > bytes) take = bytes;
+    uint32_t secs = (take + 511u) / 512u, whole = take / 512u;
+    if (whole && card_fx_read(0, fx_clus_lba(r->v, c), whole, r->buf + r->at)) { r->err = 1; return -1; }
+    if (secs > whole) {                                                 /* the last part sector, through the volume's own buffer */
+        if (card_fx_read(0, fx_clus_lba(r->v, c) + whole, 1, r->v->sec)) { r->err = 1; return -1; }
+        memcpy(r->buf + r->at + whole * 512u, r->v->sec, take - whole * 512u);
+    }
+    r->at += take;
+    return r->at >= r->len ? -1 : 0;                                    /* -1 stops the walk once the file is in */
+}
+static void fw_scan_dir(struct fx_vol *v, struct fx_dir *d, struct fx_dirent *e, const struct fx_dirent *dir, int *got)
+{
+    extern int alice_fw_preload(const char *, const uint8_t *, uint32_t);
+    extern int alice_fw_have(const char *);
+    char n[64];
+    fx_dir_open(d, v, dir);
+    while (fx_dir_next(d, e) == 1) {
+        if ((e->attr & FX_ATTR_DIR) || !fw_ascii(e, n, sizeof n) || n[0] == '.' || !fw_wanted(n) || alice_fw_have(n)) continue;
+        if (!e->size || e->size > (2u << 20)) continue;
+        struct fw_rd r = { v, xv_mem((uint32_t)e->size), 0, (uint32_t)e->size, 0 };
+        if (!r.buf) { kprintf("[CARD] firmware %s: no memory for it\n", n); continue; }
+        uint32_t nc;
+        fx_runs(v, e->clus, e->size, e->contig, fw_run, &r, &nc);
+        if (!r.err && r.at == r.len && !alice_fw_preload(n, r.buf, r.len)) (*got)++;
+        else kprintf("[CARD] firmware %s: could not be read from the card\n", n);
+        xv_free(r.buf);
+    }
+}
+static void wifi_fw_from_card(void)
+{
+    struct fx_vol *v = xv_mem(sizeof *v);
+    struct fx_dir *d = xv_mem(sizeof *d);
+    struct fx_dirent *e = xv_mem(sizeof *e), *folder = xv_mem(sizeof *folder);
+    int got = 0, have_folder = 0;
+    if (!v || !d || !e || !folder || fx_mount(v, card_fx_read, 0, fs.part)) goto out;
+    fx_dir_open(d, v, 0);
+    while (!have_folder && fx_dir_next(d, e) == 1) {
+        char n[64];
+        if ((e->attr & FX_ATTR_DIR) && fw_ascii(e, n, sizeof n) && name_eq(n, "wifi-firmware")) { *folder = *e; have_folder = 1; }
+    }
+    if (have_folder) fw_scan_dir(v, d, e, folder, &got);
+    fw_scan_dir(v, d, e, 0, &got);                                      /* files copied loose into the root */
+    if (got) kprintf("[CARD] %d WiFi/Bluetooth firmware file%s read from the card (%s), beside the container's\n", got, got == 1 ? "" : "s",
+                     have_folder ? "wifi-firmware/ and the root" : "the root");
+out:
+    xv_free(v); xv_free(d); xv_free(e); xv_free(folder);
+}
 static void exchange_start(void)
 {
     const char *name = psmac_option("mac.exchange"), *given = name;
@@ -2175,6 +2262,7 @@ static void card_start(void)
     container_check();
     image_scan();
     scsi_scan();                                       /* the virtual SCSI devices' files (scsi.cd=, scsi.disk=) */
+    wifi_fw_from_card();                               /* firmware the container did not bring (a 3A+ card made for a 3B) */
     exchange_start();
     psmac_boot_mark("card: mounted, pairings read, disk images found");
     fl.img = -1;

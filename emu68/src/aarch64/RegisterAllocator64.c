@@ -176,6 +176,13 @@ void RA_FlushCTX(struct TranslatorContext *ctx)
     reg_CTX = 0xff;
 }
 
+#ifdef PSMAC
+/* Aurora68, mac.mmu=full (psmac/psmac_mmufault.c): which temporaries hold a modified FPSR and FPCR at this point
+   of a block, so that a page fault delivered in the middle of the block keeps what earlier instructions set */
+uint8_t RA_PsmacFPSRTemp(void) { return (reg_FPSR != 0xff && mod_FPSR) ? reg_FPSR : 0xff; }
+uint8_t RA_PsmacFPCRTemp(void) { return (reg_FPCR != 0xff && mod_FPCR) ? reg_FPCR : 0xff; }
+#endif
+
 uint8_t RA_GetFPCR(struct TranslatorContext *ctx)
 {
     if (reg_FPCR == 0xff)

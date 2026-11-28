@@ -534,6 +534,15 @@ int alice_fw_preload(const char *name, const uint8_t *data, uint32_t len)
     kprintf("[WIFI] firmware file %s: %u bytes (preloaded)\n", f->name, len);
     return 0;
 }
+/* 1 if a file of that name is in the table already (psmac_card.c: the card's wifi-firmware folder adds only
+   what the container did not bring) */
+int alice_fw_have(const char *name)
+{
+    for (int f = 0; f < nfw; f++)
+        if (fw[f].p && ieq(fw[f].name, name))
+            return 1;
+    return 0;
+}
 #endif
 static const struct fwfile *fw_find(const char *const *stems, const char *suffix)
 {
@@ -890,12 +899,20 @@ void alice_net_report(void)
         if (last_msg[i] != u->msg[i]) same = 0;
         if (!u->msg[i]) break;
     }
-    if (same) return;
+    /* unchanged: again once a minute while the WiFi is not connected, so a saved log (a tail of
+       64 KB) still says why (the first real 3A+, 27 November 2026, left no [WIFI] line at all) */
+    static unsigned quiet;
+    if (same && (st == 5 || ++quiet < 12)) return;
+    quiet = 0;
     last_st = st; last_chip = u->chip; last_mhz = u->sdmhz;
     for (unsigned i = 0; i < sizeof last_msg; i++)
         last_msg[i] = u->msg[i];
 #endif
+#ifdef PSMAC
+    kprintf("[WIFI]   %s: %s (chip %x rev %u, SD %u MHz; Pi board %06x)\n", st < 9 ? names[st] : "?", (const char *)u->msg, u->chip, u->chiprev, u->sdmhz, alice_pi_board_rev());
+#else
     kprintf("[WIFI]   %s: %s (chip %x rev %u, SD %u MHz)\n", st < 9 ? names[st] : "?", (const char *)u->msg, u->chip, u->chiprev, u->sdmhz);
+#endif
 }
 
 /* bt/bt_pi.c: the WiFi is in use (scanning, joining, connected, trying again): Bluetooth holds its LE interval floor

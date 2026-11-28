@@ -63,6 +63,7 @@ uint32_t psmac_fb_big_size(void) { return fb_big_size; }
    VideoCore's own size, with a declaration ROM psmac-se-WxH; 0 mirror: the SE's picture, as before
    20 November; 2 log: the kernel's log for the whole run (mac.console=hdmi says the same, on every board) */
 int psmac_hdmi_mode = 1;
+int psmac_hdmi_own_space;                    /* the HDMI card's frames at slot $A addresses: its driver carries PSMB_HDMI_OWN_MARK (docs/26) */
 extern int psmac_board_se, psmac_board_solo;
 /* the first screen's size (0: the VideoCore's): the SE's own on the SE board, else mac.screen */
 void psmac_screen_size(uint32_t *w, uint32_t *h)
@@ -87,6 +88,10 @@ uint64_t psmac_fault_elr;   /* set by the abort dispatcher: who faulted? */
    accesses here; Mac (JIT-generated) code faulting on the same window is forwarded to the bridge. */
 static inline int emu68_own_fault(void) { return (psmac_fault_elr >> 32) == 0xffffff80ull; }   /* Emu68 text; JIT code is at 0xffffffe0... */
 static inline int in_periph_window(uint64_t a) { return a >= PERIPH_LOW && a < 0x40000000ull; }
+/* where the kernel's own access to the low window is made: with mac.mmu=full the 68k's spaces have no such window
+   (psmac_mmu.c, docs/23 section 21), so through the kernel's own mapping of the same registers */
+extern int psmac_mmu_full;
+static inline uintptr_t periph_own(uint64_t a) { return psmac_mmu_full ? (uintptr_t)(PERIPH_VA + (a - PERIPH_LOW)) : (uintptr_t)a; }
 static volatile uint32_t dev_cnt[8]; /* VIA1, SCC, SCSI, ASC, SWIM, RBV, FB, other */
 extern int psmac_board_se, psmac_board_solo;
 /* On the SE board the wire carries the SE's own addresses (psmac_board_se.c translated them), so
@@ -167,6 +172,12 @@ void psmac_gpio_init(void); uint32_t psmac_gpio_read(uint32_t, int); void psmac_
 unsigned psmac_gpio_ipl(void); void psmac_gpio_pulse_reset(void); uint32_t psmac_gpio_timeouts(void); int psmac_gpio_reset_asserted(void);
 static uint32_t peek_addr, peek_len;
 static uint32_t pctrail_at;             /* mac.pctrail=N: dump the 68k PC ring at the Nth heartbeat (a loop that is not a stall) */
+/* mac.ramdump=BEAT[+EVERY[-LAST]],MB,PATH (the testbed, semihosting): the Mac's physical memory, its first MB megabytes,
+   written to the host file PATH at heartbeat BEAT and every EVERY beats after, until beat LAST (the same file again, or one
+   per beat when PATH has a '#', which becomes the beat's number): a guest that runs its own
+   code from memory (A/UX's standalone programs, docs/23 section 15) can then be disassembled on the host */
+static uint32_t ramdump_at, ramdump_every, ramdump_last, ramdump_mb; static char ramdump_path[160];
+static char utrace_path[160];           // mac.usertrace=PATH (psmac.h)
 static uint32_t pcwatch;                /* mac.pcwatch=HEX: dump the ring the first time the sampled PC lands in that 256-byte page */
 uint32_t psmac_dbf_slow = 1;            /* mac.dbfslow=N: device reads per turn of a self-looping dbf (M68k_LINE5.c) */    /* mac.peek=: Mac memory dumped at each heartbeat (debugging) */
 static int64_t sh_req = -1, sh_rep = -1;
@@ -248,6 +259,40 @@ const char *psmac_option_nth(const char *key, int nth)
 }
 const char *psmac_option(const char *key) { return psmac_option_nth(key, 0); }
 
+// mac.usertrace= (psmac.h, docs/23 section 21): the ring (with a header: 'UTRC', entries written, ring size) to PATH,
+// or the Mac's memory to PATH.ram
+static void utrace_write(const char* path, int ring)
+{
+    char pth[176];
+    int j = 0;
+    for (const char* q = path; *q; q++) {
+        pth[j++] = *q;
+    }
+    if (!ring) {
+        pth[j++] = '.';
+        pth[j++] = 'r';
+        pth[j++] = 'a';
+        pth[j++] = 'm';
+    }
+    pth[j] = 0;
+    int64_t fd = use_semihost ? sh_open(pth, 5) : -1;
+    if (fd < 0) {
+        kprintf("[PSMAC] mac.usertrace: cannot open %s\n", pth);
+        return;
+    }
+    int ok;
+    if (ring) {
+        uint32_t hdr[8] = { 0x55545243u, psmac_utrace.n, PSMAC_UTRACE_N, 0, 0, 0, 0, 0 };
+        ok = sh_write(fd, hdr, sizeof hdr) && sh_write(fd, psmac_utrace.buf, PSMAC_UTRACE_N * 32u);
+    } else {
+        ok = sh_write(fd, (const void*)(KERNEL_ALIAS + ram_phys), ram_size);
+    }
+    uint64_t close_arg[1] = { shw((uint64_t)fd) };
+    semihost(0x02, close_arg);
+    kprintf("[PSMAC] mac.usertrace: %s written to %s%s\n", ring ? "the ring" : "the Mac's memory", pth,
+            ok ? "" : " (the write failed)");
+}
+
 static int semihost_init(void)
 {
     static const char hello[] = "[PSMAC] semihosting SYS_WRITE0 probe OK\n";
@@ -317,8 +362,59 @@ static void psmac_read_options(void)
     { extern void psmac_console_mode(int); psmac_console_mode(psmac_hdmi_mode == 2 ? 2 : con_mode); }   /* psmac_display.c, "the splash" */
     if ((tok = find_token(args, "mac.dbfslow="))) { tok += 12; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); psmac_dbf_slow = n > 8 ? 8 : n; }
     if ((tok = find_token(args, "mac.pcwatch="))) { tok += 12; uint32_t a = 0; while (1) { char c = *tok; uint32_t d; if (c >= '0' && c <= '9') d = c - '0'; else if (c >= 'a' && c <= 'f') d = c - 'a' + 10; else if (c >= 'A' && c <= 'F') d = c - 'A' + 10; else if (c == 'x' || c == 'X') { tok++; continue; } else break; a = a * 16 + d; tok++; } pcwatch = a; }
+    if ((tok = find_token(args, "mac.watchpc="))) {     /* mac.watchpc=HEX[,HEX...]: the emulated writes of up to four translated blocks */
+        extern uint32_t psmac_watch_pcs[4]; tok += 12;
+        for (int k = 0; k < 4; k++) {
+            uint32_t a = 0; for (; (*tok >= '0' && *tok <= '9') || ((*tok | 32) >= 'a' && (*tok | 32) <= 'f'); tok++) a = a * 16 + (uint32_t)(*tok <= '9' ? *tok - '0' : (*tok | 32) - 'a' + 10);
+            psmac_watch_pcs[k] = a;
+            kprintf("[PSMAC] mac.watchpc: the emulated writes of the block at %x are logged\n", a);
+            if (*tok != ',') break;
+            tok++;
+        }
+    }
+    if ((tok = find_token(args, "mac.watchpage="))) {   /* mac.watchpage=HEX: the emulated writes to one physical page logged */
+        uint32_t a = 0; for (tok += 14; (*tok >= '0' && *tok <= '9') || ((*tok | 32) >= 'a' && (*tok | 32) <= 'f'); tok++) a = a * 16 + (uint32_t)(*tok <= '9' ? *tok - '0' : (*tok | 32) - 'a' + 10);
+        extern uint32_t psmac_watch_page; psmac_watch_page = a & ~0xfffu;
+        kprintf("[PSMAC] mac.watchpage=%x: the emulated writes to that physical page are logged (the first 96)\n", psmac_watch_page);
+    }
+    if ((tok = find_token(args, "mac.mmutlb="))) {   /* mac.mmutlb=flush (aarch64/mmu.c, a diagnostic) */
+        extern int psmac_tlb_paranoid; psmac_tlb_paranoid = tok[11] == 'f';
+        if (psmac_tlb_paranoid) kprintf("[PSMAC] mac.mmutlb=flush: the whole TLB dropped at every change of the MMU's spaces (slow; a diagnostic)\n");
+    }
     if ((tok = find_token(args, "mac.watchtraps="))) { extern int psmac_watch_traps; psmac_watch_traps = tok[15] == '1'; }   /* report odd stores into the trap tables (psmac_mmu.c) */
     if ((tok = find_token(args, "mac.pctrail="))) { tok += 12; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); pctrail_at = n; }
+    if ((tok = find_token(args, "mac.ramdump="))) {     /* mac.ramdump=BEAT[+EVERY[-LAST]],MB,PATH (above) */
+        tok += 12; uint32_t n = 0, e = 0, mb = 0; int k = 0;
+        while (*tok >= '0' && *tok <= '9') n = n * 10 + (uint32_t)(*tok++ - '0');
+        if (*tok == '+') { tok++; while (*tok >= '0' && *tok <= '9') e = e * 10 + (uint32_t)(*tok++ - '0'); }
+        if (*tok == '-') { tok++; uint32_t l = 0; while (*tok >= '0' && *tok <= '9') l = l * 10 + (uint32_t)(*tok++ - '0'); ramdump_last = l; }
+        if (*tok == ',') { tok++; while (*tok >= '0' && *tok <= '9') mb = mb * 10 + (uint32_t)(*tok++ - '0'); }
+        if (*tok == ',') { tok++; while (*tok && *tok != ' ' && k < (int)sizeof ramdump_path - 1) ramdump_path[k++] = *tok++; }
+        ramdump_path[k] = 0;
+        if (n && mb && k) { ramdump_at = n; ramdump_every = e; ramdump_mb = mb; }
+        else kprintf("[PSMAC] mac.ramdump=BEAT[+EVERY[-LAST]],MB,PATH: not understood\n");
+    }
+    if ((tok = find_token(args, "mac.usertrace="))) {
+        // mac.usertrace=PATH (psmac.h, docs/23 section 21): the ring is made here
+        extern void* tlsf;
+        void* tlsf_malloc(void*, size_t);
+        int k = 0;
+        for (tok += 14; *tok && *tok != ' ' && k < (int)sizeof utrace_path - 5; tok++) {
+            utrace_path[k++] = *tok;
+        }
+        utrace_path[k] = 0;
+        uint32_t* ring = k ? tlsf_malloc(tlsf, PSMAC_UTRACE_N * 32u) : NULL;
+        if (ring) {
+            for (uint32_t i = 0; i < PSMAC_UTRACE_N * 8u; i++) {
+                ring[i] = 0;
+            }
+            psmac_utrace.buf = ring;
+        }
+        kprintf("[PSMAC] mac.usertrace=%s: %s\n", utrace_path,
+                ring ? "the last 131072 user-mode blocks kept, written at a user program's first refused write below "
+                       "$1000 or access at $BAD0xxxx"
+                     : "no memory for the ring");
+    }
     if ((tok = find_token(args, "mac.peek="))) {        /* mac.peek=HEXADDR,LEN: dump Mac memory at each heartbeat (debugging) */
         tok += 9; uint32_t a = 0, n = 0;
         while (1) { char c = *tok; uint32_t d; if (c >= '0' && c <= '9') d = c - '0'; else if (c >= 'a' && c <= 'f') d = c - 'a' + 10; else if (c >= 'A' && c <= 'F') d = c - 'A' + 10; else if (c == 'x' || c == 'X') { tok++; continue; } else break; a = a * 16 + d; tok++; }
@@ -339,6 +435,7 @@ static void psmac_read_options(void)
         }
         extern void psmac_alice_input_click(uint32_t, const int *, int); psmac_alice_input_click(secs, pts, n);
     }
+    if ((tok = find_token(args, "mac.inputadb="))) { tok += 13; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_adb(uint32_t, int); psmac_alice_input_adb(n, tok[0] == ',' && tok[1] == 'm'); }
     if ((tok = find_token(args, "mac.inputdrag="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_drag(uint32_t); psmac_alice_input_drag(n); }
     if ((tok = find_token(args, "mac.inputmods="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_mods(uint32_t); psmac_alice_input_mods(n); }
     if ((tok = find_token(args, "mac.inputedge="))) { tok += 14; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); extern void psmac_alice_input_edge(uint32_t); psmac_alice_input_edge(n); }
@@ -438,7 +535,7 @@ static void gpio_xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, ui
         ipl = 0;
     } else timeouts = 0;
     last_ipl = ipl; last_flags = 0;
-    if (psmac_board_se) psmac_se_set_level(ipl); else if (__m68k_state) __m68k_state->INTF.IPL = ipl;   /* the SE board adds its RBV, under its lock (psmac_board_se.c) */
+    if (psmac_board_se) psmac_se_set_level(ipl); else if (__m68k_state) PSMAC_STORE_IPL(__m68k_state, ipl);   /* the SE board adds its RBV, under its lock (psmac_board_se.c) */
     if (r) { r->status = status; r->ipl = ipl; r->flags = 0; r->data = value; }
 }
 
@@ -497,7 +594,7 @@ static void bridge_xfer(uint8_t op, uint8_t size, uint8_t flags, uint32_t addr, 
     }
     svc_phase = 0;
     last_ipl = rep[1]; last_flags = rep[2];
-    if (psmac_board_se) psmac_se_set_level(rep[1]); else if (__m68k_state) __m68k_state->INTF.IPL = rep[1];
+    if (psmac_board_se) psmac_se_set_level(rep[1]); else if (__m68k_state) PSMAC_STORE_IPL(__m68k_state, rep[1]);
     if (r) { r->status = rep[0]; r->ipl = rep[1]; r->flags = rep[2]; r->data = rep[4] | (rep[5] << 8) | (rep[6] << 16) | ((uint32_t)rep[7] << 24); }
     if (rep[0]) { bus_errors++; if (bus_errors <= 8) kprintf("[PSMAC] bridge reported bus error #%u on op %u size %u addr %08x (68k PC %08x)\n", bus_errors, op, size, addr, __m68k_state ? BE32((uint32_t)(uintptr_t)__m68k_state->PC) : 0); }
 }
@@ -704,7 +801,7 @@ static void pcring_dump(void)
 static uint32_t mac_rd32(uint32_t logical, int *ok)
 {
     int valid; uint32_t ph = psmac_mmu_l2p(logical, &valid);
-    if (!valid || ph + 4 > ram_size) { *ok = 0; return 0; }
+    if (!valid || ph >= ram_size || ph + 4 > ram_size) { *ok = 0; return 0; }   /* ph >= ram_size: an address in the last four bytes of the 4 GiB wrapped the sum, and the read then killed the core that made it (docs/24 section 5) */
     *ok = 1; return *(const uint32_t *)(KERNEL_ALIAS + ram_phys + ph);
 }
 /* for the crash record (psmac_crash.c): RAM or the ROM, wherever the 68k's map puts them */
@@ -790,7 +887,7 @@ void psmac_service_core(void)
                 struct M68KState *m = __m68k_state;
                 static int jit_steady;
                 kprintf("[PSMAC]   D0-7 %08x %08x %08x %08x %08x %08x %08x %08x\n", BE32(m->D[0].u32), BE32(m->D[1].u32), BE32(m->D[2].u32), BE32(m->D[3].u32), BE32(m->D[4].u32), BE32(m->D[5].u32), BE32(m->D[6].u32), BE32(m->D[7].u32));
-                kprintf("[PSMAC]   A0-7 %08x %08x %08x %08x %08x %08x %08x %08x ISP %08x\n", BE32(m->A[0].u32), BE32(m->A[1].u32), BE32(m->A[2].u32), BE32(m->A[3].u32), BE32(m->A[4].u32), BE32(m->A[5].u32), BE32(m->A[6].u32), BE32(m->A[7].u32), BE32(m->ISP.u32));
+                kprintf("[PSMAC]   A0-7 %08x %08x %08x %08x %08x %08x %08x %08x ISP %08x USP %08x VBR %08x\n", BE32(m->A[0].u32), BE32(m->A[1].u32), BE32(m->A[2].u32), BE32(m->A[3].u32), BE32(m->A[4].u32), BE32(m->A[5].u32), BE32(m->A[6].u32), BE32(m->A[7].u32), BE32(m->ISP.u32), BE32(m->USP.u32), m->VBR);
                 {   /* the JIT's own counters (22 November 2026, Photoshop's slow start): instructions run and
                        blocks translated in the last 5 s; many translations a second is a cache thrashing,
                        few instructions with no translations is slow code (the FPU's, say) */
@@ -799,6 +896,17 @@ void psmac_service_core(void)
                     kprintf("[PSMAC]   JIT: %u M instructions in 5 s (%u MIPS), %u blocks translated, %u in the cache, %u of %u KB free\n",
                             (uint32_t)((insn - insn_last) / 1000000u), (uint32_t)((insn - insn_last) / 5000000u), miss - miss_last,
                             m->JIT_UNIT_COUNT, m->JIT_CACHE_FREE >> 10, m->JIT_CACHE_TOTAL >> 10);
+                    {   /* the 68k's time in STOP (the translated code's WFE, M68k_LINE4.c), counted when it wakes, and the
+                           interrupt word it waits on: a level asserted with no instruction run is a 68k nobody woke
+                           (27 November 2026, docs/23 section 20) */
+                        static uint64_t idle_last; uint64_t idle = m->IDLE_TIME;
+                        if (idle != idle_last || (insn == insn_last && m->INT64))
+                            kprintf("[PSMAC]   68k in STOP for %u ms of the last 5 s; interrupt word %016llx (level %u)%s\n",
+                                    (uint32_t)((idle - idle_last) * 1000u / cnt_frq()), (unsigned long long)m->INT64, m->INTF.IPL,
+                                    insn == insn_last && m->INT64 ? ": asserted, and no instruction run: the 68k was not woken" : "");
+                        idle_last = idle;
+                    }
+                    { extern void psmac_mmu_full_stats(void); psmac_mmu_full_stats(); }
                     jit_steady = miss - miss_last < 50 && insn - insn_last > 50000000u;   /* running, not loading */
                     insn_last = insn; miss_last = miss;
                 }
@@ -911,11 +1019,33 @@ void psmac_service_core(void)
                 kprintf("\n");
             }
             if (xfer_count == hb_last && !stall_dumped) { stall_dumped = 1; pcring_dump(); }
-            { static uint32_t hb_n; if (++hb_n == pctrail_at) pcring_dump(); }
+            { static uint32_t hb_n; if (++hb_n == pctrail_at) pcring_dump();
+              if (ramdump_at && (hb_n == ramdump_at || (ramdump_every && hb_n > ramdump_at && (!ramdump_last || hb_n <= ramdump_last) && (hb_n - ramdump_at) % ramdump_every == 0))) {
+                  uint32_t len = ramdump_mb << 20; if (len > ram_size) len = ram_size;
+                  char pth[176]; int j = 0;               /* a '#' in PATH becomes the beat's number: one file per dump */
+                  for (const char *q = ramdump_path; *q && j < (int)sizeof pth - 12; q++) {
+                      if (*q != '#') { pth[j++] = *q; continue; }
+                      char nb[12]; int k = 0; uint32_t v = hb_n; do { nb[k++] = (char)('0' + v % 10); v /= 10; } while (v);
+                      while (k) pth[j++] = nb[--k];
+                  }
+                  pth[j] = 0;
+                  int64_t fd = use_semihost ? sh_open(pth, 5) : -1;      /* "wb" */
+                  if (fd >= 0) {
+                      int okw = sh_write(fd, (const void *)(KERNEL_ALIAS + ram_phys), len);
+                      uint64_t pc1[1] = { shw((uint64_t)fd) }; semihost(0x02, pc1);
+                      kprintf("[PSMAC] mac.ramdump: %u KB of the Mac's memory written to %s at beat %u%s\n", len >> 10, pth, hb_n, okw ? "" : " (the write failed)");
+                  } else kprintf("[PSMAC] mac.ramdump: cannot open %s\n", pth);
+              } }
             psmac_mbox_heartbeat();
             if (no_declrom) kprintf("[PSMAC] *** NO DECLARATION ROM in the container: slot 9 is empty (no Pi screen, PiDisk or input) ***\n");
             hb_last = xfer_count; next_hb = cnt_now() + hb_period;
             psmac_errand(PSMAC_ERR_LOOP);
+        }
+        if (psmac_utrace.dump) {
+            // mac.usertrace= (psmac.h, docs/23 section 21): the ring, then the Mac's memory in PATH.ram
+            utrace_write(utrace_path, 1);
+            utrace_write(utrace_path, 0);
+            psmac_utrace.dump = 0;
         }
         { extern void psmac_loop_watch(void); psmac_loop_watch(); }   /* core 3 stopped for 2 s: where (alice_psmac.c) */
         if (__m68k_state) {
@@ -1006,6 +1136,7 @@ static inline int rbv_reg(uint32_t addr)              /* pseudo-VIA register ind
     if ((addr & 0xff0fe000u) != 0x50026000u) return -1;
     uint32_t off = addr & 0x1fff;
     if (off < 0x100) return (int)off;
+    if (off & 0x1f) return (int)(off & 0x1f);    /* the RBV decodes the low lines: $1E02 is the SIFR, $1A03 the IFR, $1C13 the IER (psmac_board_se.c, rbv_regno) */
     switch (off >> 9) { case 13: return 0x03; case 14: return 0x13; default: return -1; }
 }
 static uint32_t rbv_merge_read(uint32_t addr, int size, uint32_t data)
@@ -1032,12 +1163,14 @@ static void rbv_snoop_write(uint32_t addr, int size, uint32_t data)
 uint32_t psmac_io_read(uint32_t addr, int size)
 {
     struct psmac_reply r;
+    { extern int psmac_etalk_access(uint32_t, int, int, uint32_t, uint32_t *); uint32_t v = 0; if (addr >= 0xF0000000u && psmac_etalk_access(addr, size, 0, 0, &v)) return v; }   /* the A/UX network card (psmac_etalk.c) */
     if (psmac_board_se) { uint32_t v = 0; if (psmac_se_access(addr, size, 0, 0, &v, 0)) return v; }
     xfer(PSMAC_OP_READ, size, 0, addr, 0, &r);
     return rbv_merge_read(addr, size, r.data);
 }
 void psmac_io_write(uint32_t addr, int size, uint32_t data, int posted)
 {
+    { extern int psmac_etalk_access(uint32_t, int, int, uint32_t, uint32_t *); uint32_t v; if (addr >= 0xF0000000u && psmac_etalk_access(addr, size, 1, data, &v)) return; }
     if (psmac_board_se) { uint32_t v; if (psmac_se_access(addr, size, 1, data, &v, posted)) return; }
     rbv_snoop_write(addr, size, data);
     xfer(PSMAC_OP_WRITE, size, posted ? PSMAC_FLAG_POSTED : 0, addr, data, NULL);
@@ -1111,20 +1244,34 @@ void psmac_wire_write(uint32_t addr, int size, uint32_t data, int posted)
 /* Called from the data abort handler for every access the ARM MMU did not satisfy. Return 1 = handled. */
 static uint32_t trace_left = 400;
 void psmac_trace(uint32_t n) { trace_left = n; }
+uint32_t psmac_watch_page;               /* mac.watchpage= (psmac_bus_write) */
+uint32_t psmac_watch_pcs[4];             /* mac.watchpc= (psmac_bus_write), up to four blocks */
 uint64_t psmac_fault_pc, psmac_fault_a7;   /* JIT's 68k PC (block granularity) and A7 at the fault */
 int psmac_bus_write(uint64_t value, uint64_t value2, int size, uint64_t far)
 {
     if ((far >> 32) == 1 || (far >> 32) == 0xffffffff) far &= 0xffffffff;
     if (far >> 32) return 0;
     if (in_periph_window(far) && emu68_own_fault()) {
-        volatile uint8_t *p = (volatile uint8_t *)far;
+        volatile uint8_t *p = (volatile uint8_t *)periph_own(far);
         switch (size) { case 1: *p = value; break; case 2: *(volatile uint16_t *)p = value; break; case 4: *(volatile uint32_t *)p = value; break; default: *(volatile uint64_t *)p = value; break; }
         return 1;
     }
     { int valid; uint32_t phys = psmac_mmu_l2p((uint32_t)far, &valid);
       if (trace_left) { trace_left--; kprintf("[PSMAC:BUS] W%d %08x (phys %08x%s) <- %08x\n", size, (uint32_t)far, phys, valid ? "" : " INVALID", (uint32_t)value); }
-      if (!valid) return 1;   /* unmapped logical page: write ignored (would be a bus error) */
+      if (!valid) {           /* unmapped logical page: write ignored (would be a bus error) */
+          extern int psmac_mmu_full; static uint32_t dropped;
+          if (psmac_mmu_full && ++dropped <= 8)
+              kprintf("[PSMAC:MMU] write dropped #%u: W%d %08x <- %08x, no translation in the view TTBR0 holds (68k PC %08x)\n",
+                      dropped, size, (uint32_t)far, (uint32_t)value, (uint32_t)psmac_fault_pc);
+          return 1;
+      }
       far = phys; }
+    {   /* mac.mmu=full: memory the abort path emulates (the kernel's alias below zero, a supervisor page both modes share,
+           psmac_mmu.c) is the Pi's copy, not the motherboard's */
+        extern int psmac_mmu_full;
+        extern int psmac_mmu_ram_access(uint32_t pa, int size, uint64_t *v, uint64_t *v2, int write);
+        if (unlikely(psmac_mmu_full) && psmac_mmu_ram_access((uint32_t)far, size, &value, &value2, 1)) return 1;
+    }
 
     extern int psmac_watch_traps;
     if (psmac_watch_traps && (far & ~0xfffull) == 0x50000) {
@@ -1152,6 +1299,18 @@ int psmac_bus_write(uint64_t value, uint64_t value2, int size, uint64_t far)
             default: return 0;
         }
         return 1;
+    }
+    {   /* mac.watchpage=HEX (26 November 2026, docs/23 section 18): every emulated write to one physical page, the first 96 */
+        extern uint32_t psmac_watch_page; static uint32_t seen;
+        extern int psmac_mmu_views_apart(void);   /* from A/UX's switch of tables on: Mac OS writes the page too, byte by byte */
+        extern uint32_t psmac_watch_pcs[4]; static uint32_t seen_pc;
+        uint32_t fpc = (uint32_t)psmac_fault_pc;
+        if (psmac_watch_pcs[0] && (fpc == psmac_watch_pcs[0] || fpc == psmac_watch_pcs[1] || fpc == psmac_watch_pcs[2] || fpc == psmac_watch_pcs[3]) && seen_pc++ < 48)
+            kprintf("[PSMAC:WATCHPC] W%d %08x <- %08x from the block at %08x\n", size, (uint32_t)far, (uint32_t)value, fpc);
+        if (psmac_watch_page && ((uint32_t)far & ~0xfffu) == psmac_watch_page && psmac_mmu_views_apart() &&
+            (((uint32_t)far & 0x1f0u) == 0 || (uint32_t)value != 0) && seen++ < 96)   /* the first 16 bytes of each 512, or a value other than zero */
+            kprintf("[PSMAC:WATCHPAGE] W%d %08x <- %08x%s (68k PC %08x)\n", size, (uint32_t)far, (uint32_t)value,
+                    far < PSMAC_FB_SIZE ? "" : " (not the low 320 KB: to the motherboard)", (uint32_t)psmac_fault_pc);
     }
     if (far < PSMAC_FB_SIZE) {
         /* write-through frame buffer: local copy + mirror to the motherboard (the IIci's RBV scans
@@ -1191,7 +1350,7 @@ int psmac_bus_read(uint64_t *value, uint64_t *value2, int size, uint64_t far)
     if ((far >> 32) == 1 || (far >> 32) == 0xffffffff) far &= 0xffffffff;
     if (far >> 32) return 0;
     if (in_periph_window(far) && emu68_own_fault()) {
-        volatile uint8_t *p = (volatile uint8_t *)far;
+        volatile uint8_t *p = (volatile uint8_t *)periph_own(far);
         switch (size) { case 1: *value = *p; break; case 2: *value = *(volatile uint16_t *)p; break; case 4: *value = *(volatile uint32_t *)p; break; default: *value = *(volatile uint64_t *)p; break; }
         return 1;
     }
@@ -1199,6 +1358,10 @@ int psmac_bus_read(uint64_t *value, uint64_t *value2, int size, uint64_t far)
       if (trace_left) { trace_left--; kprintf("[PSMAC:BUS] R%d %08x (phys %08x%s)\n", size, (uint32_t)far, phys, valid ? "" : " INVALID"); }
       if (!valid) { *value = 0xBAD0BAD0BAD0BAD0ull; if (value2) *value2 = *value; return 1; }
       far = phys; }
+    {   extern int psmac_mmu_full;
+        extern int psmac_mmu_ram_access(uint32_t pa, int size, uint64_t *v, uint64_t *v2, int write);
+        if (unlikely(psmac_mmu_full) && psmac_mmu_ram_access((uint32_t)far, size, value, value2, 0)) return 1;
+    }
 
     {
         switch (size) {
@@ -1493,6 +1656,7 @@ static void declrom_crc(uint8_t *top)
     for (uint8_t *p = top - length; p < top; p++) crc = ((crc << 1) | (crc >> 31)) + *p;
     *(uint32_t *)(fb + 8) = BE32(crc);
 }
+static int declrom_aux_reach;                  /* A/UX's tables are on: slot $A's modes outside its own megabyte leave the list (docs/26) */
 static int declrom_resize(uint8_t *top, uint8_t rid, uint32_t slot, uint32_t w, uint32_t h, uint32_t win_mac, uint32_t win_size)
 {
     extern uint32_t psmac_display_mode_base(uint32_t w, uint32_t h, uint32_t depth, uint32_t win_mac, uint32_t win_size, int one_bit_only);
@@ -1516,6 +1680,7 @@ static int declrom_resize(uint8_t *top, uint8_t rid, uint32_t slot, uint32_t w, 
         if (BE16(*(uint16_t *)(b + 32)) != depth) continue;    /* vpPixelSize (VPBlock offset 32): not a mode this file has as the rule says */
         if (!i) { oh = BE16(*(uint16_t *)(b + 10)) - BE16(*(uint16_t *)(b + 6)); ow = BE16(*(uint16_t *)(b + 12)) - BE16(*(uint16_t *)(b + 8)); }
         uint32_t base = psmac_display_mode_base(w, h, depth, win_mac, win_size, 0);
+        if (declrom_aux_reach && slot == PSMB_SLOT2 && base == PSMB_FB_BIG_PHYS) base = 0;   /* A/UX does not map $90000000 */
         if (!base) { list_drop(m); continue; }
         *(uint32_t *)b = BE32(base - devbase);          /* vpBaseOffset: wraps round to the right address in 32 bits */
         *(uint16_t *)(b + 4) = BE16((uint16_t)psmb_rowbytes(w, depth));
@@ -1648,6 +1813,17 @@ int psmac_declrom_rescreen(uint32_t w, uint32_t h)
     memcpy(lo, rescreen_copy, rescreen_len);
     int k = declrom_resize(rescreen_top, rescreen_rid, rescreen_slot, w, h, rescreen_win, rescreen_winsize);
     arm_flush_cache((uintptr_t)lo, rescreen_len);
+    return k;
+}
+/* A/UX's tables on (on = 1) or the 68k's RESET after them (on = 0), for the HDMI card with its frames in slot $A
+   (display_aux in psmac_display.c, docs/26): the live ROM again from the file's copy, without (or again with) the
+   modes at $90000000, which A/UX never maps for its Macintosh environment, so that its Monitors does not offer them */
+int psmac_declrom_aux(int on, uint32_t w, uint32_t h)
+{
+    if (!rescreen_len || !rescreen_top || rescreen_slot != PSMB_SLOT2) return 0;
+    declrom_aux_reach = on;
+    int k = psmac_declrom_rescreen(w, h);
+    declrom_aux_reach = 0;
     return k;
 }
 static void rescreen_keep(uint8_t *top, uint32_t len, uint8_t rid, uint8_t slot, uint32_t win, uint32_t winsize)
@@ -1903,13 +2079,28 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
             else if (psmac_board_se && !psmac_board_solo && psmac_hdmi_mode == 1 && !no_declrom)
                 kprintf("[PSMAC] declaration ROM: one screen, the SE's; HDMI mirrors it (a psmac-se-WxH declaration ROM gives HDMI a screen of its own)\n");
             if (!two) slot2_rom = 0;
+            /* A driver that knows its frames may be in its own slot's space (it carries the mark) gets them there, so
+               that A/UX, which files a video card under the slot of its frame address, tells the two cards apart; an
+               older one keeps slot 9's addresses, which it alone takes as 24-bit reachable (docs/26) */
+            if (two) {
+                static const char mark[] = PSMB_HDMI_OWN_MARK;
+                for (uint32_t i = 0; i + sizeof mark - 1 <= slot2_len && !psmac_hdmi_own_space; i++) {
+                    uint32_t k = 0;
+                    while (k < sizeof mark - 1 && slot2_rom[i + k] == (uint8_t)mark[k]) k++;
+                    if (k == sizeof mark - 1) psmac_hdmi_own_space = 1;
+                }
+                { extern void psmac_mmu_set_hdmi_own(int); psmac_mmu_set_hdmi_own(psmac_hdmi_own_space); }
+                kprintf("[PSMAC] declaration ROM: the HDMI card's frames at %s\n", psmac_hdmi_own_space ?
+                        "slot $A's own addresses ($FAA88000, $FA000000), its driver knows them" :
+                        "slot 9's addresses (a driver from before 27 November 2026; A/UX takes this card for slot 9's)");
+            }
+            uint32_t win2 = (psmac_hdmi_own_space ? PSMB_SLOT2_MB_PHYS : PSMB_WIN_PHYS + 0x900000u) + PSMB_OFF_BOUNCE2;
             /* the screens' sizes into the ROM (declrom_resize): the HDMI card's for the HDMI size, a
                one-screen card's for its screen (the SE's 512 x 342 on the SE board, where it is the
                SE's; mac.screen or the firmware's size elsewhere). The SE file's own slot-9 screen is
                the SE's one bit and stays as it is. */
-            if (two) rescreen_keep((uint8_t *)slot2_rom + slot2_len, slot2_len, 0x80, PSMB_SLOT2, PSMB_WIN_PHYS + 0x900000u + PSMB_OFF_BOUNCE2, PSMB_BOUNCE2_SIZE);
-            if (two && !declrom_resize((uint8_t *)slot2_rom + slot2_len, 0x80, PSMB_SLOT2, screen_w, screen_h,
-                                       PSMB_WIN_PHYS + 0x900000u + PSMB_OFF_BOUNCE2, PSMB_BOUNCE2_SIZE))
+            if (two) rescreen_keep((uint8_t *)slot2_rom + slot2_len, slot2_len, 0x80, PSMB_SLOT2, win2, PSMB_BOUNCE2_SIZE);
+            if (two && !declrom_resize((uint8_t *)slot2_rom + slot2_len, 0x80, PSMB_SLOT2, screen_w, screen_h, win2, PSMB_BOUNCE2_SIZE))
                 kprintf("[PSMAC] declaration ROM: slot $A's video sResource not found; its screen stays as the file has it\n");
             if (!se_card && !no_declrom) {
                 uint32_t w0 = psmac_board_se && !psmac_board_solo ? 512 : screen_w, h0 = psmac_board_se && !psmac_board_solo ? 342 : screen_h;
@@ -1921,6 +2112,7 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
     { extern void psmac_recovery_phase1(void); psmac_recovery_phase1(); }   /* Aurora68 Setup and Recovery: asked for, or three starts without the Finder? */
     psmac_mbox_init(win_phys, ram_phys, ram_size);
     { extern void psmac_videocard_init(void); if (vid_size) psmac_videocard_init(); }   /* its ROM and block, once the screens are known */
+    { extern void psmac_etalk_init(void); psmac_etalk_init(); }                         /* mac.auxnet=: the A/UX network card's ROM and chip (psmac_etalk.c) */
 #ifdef PSMAC_PC
     { extern void psmac_pccard_init(void); if (pc_size) psmac_pccard_init(); }         /* the PC card's, likewise */
 #endif

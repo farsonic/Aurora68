@@ -70,6 +70,7 @@ static inline struct mmu_page *mmu_root(uintptr_t virt)
 }
 
 /* Make table stores visible to the table walker before anything links to them */
+void mmu_tlb_paranoid(void);                     /* mac.mmutlb=flush (below, psmac) */
 static inline void mmu_publish(void)
 {
     __asm__ volatile("dsb ishst" ::: "memory");
@@ -935,6 +936,95 @@ void mmu_low4g_set(const uint64_t in[4])
     spinlock_release(&mmu_lock);
 }
 
+/* The TLB entries of one 4 KiB page of the 68k's space (26 November 2026, docs/23 section 19). The first 4 GiB appear
+   three times: at their own addresses, again at +4 GiB (L1 entries 4-7 point at the same tables, mirror_page and
+   mmu_space_new: the translator's `ldr w, [x_base, w_disp, UXTW]` with a negative displacement lands there, as a
+   68020 memory-indirect operand with a negative base displacement does) and, outside mac.mmu=full's spaces, at the
+   top of the kernel's half (L1 entries 508-511). One descriptor, three addresses, three TLB entries. Until now a page
+   replaced or removed was invalidated at its own address alone, so on a real core the +4 GiB entry went on naming
+   the old page; QEMU, which drops its whole TLB whenever TTBR0's ASID changes, never kept one. A/UX swaps each
+   process's u-area and kernel stack in at one address ($12FFF000) with a PFLUSH of that page, and its kernel then read
+   a pointer from its stack through `([-16,A6])`: the owner's Pi read the previous process's stack there, the new
+   process's page table entry went astray and A/UX panicked. asid_field: the ASID in bits 63-48, or ~0 for every ASID. */
+int mmu_tlbi_low_only;                       /* the hardware self-check alone (psmac_mmu.c): the flush as it was */
+static inline void tlbi_page_everywhere(uint64_t asid_field, uintptr_t virt)
+{
+    uint64_t p = (virt >> 12) & 0xfffffull;
+    if (asid_field == ~0ull) {
+        __asm__ volatile("dsb ishst\n\ttlbi vaae1is, %0" : : "r"(p) : "memory");
+        if (!mmu_tlbi_low_only) {
+            __asm__ volatile("tlbi vaae1is, %0" : : "r"(p | (1ull << 20)) : "memory");
+            __asm__ volatile("tlbi vaae1is, %0" : : "r"(p | (0xffffffull << 20)) : "memory");
+        }
+    } else {
+        __asm__ volatile("dsb ishst\n\ttlbi vae1is, %0" : : "r"(asid_field | p) : "memory");
+        if (!mmu_tlbi_low_only) {
+            __asm__ volatile("tlbi vae1is, %0" : : "r"(asid_field | p | (1ull << 20)) : "memory");
+            __asm__ volatile("tlbi vaae1is, %0" : : "r"(p | (0xffffffull << 20)) : "memory");
+        }
+    }
+    __asm__ volatile("dsb ish\n\tisb" ::: "memory");
+}
+
+/*
+    Aurora68, mac.mmu=full (psmac/psmac_mmu.c, docs/23-mmu.md, phase 2): one 4 KiB page of the installed
+    low-4G subtree at a time, for the soft TLB that maps the 68k's pages on their first use and drops them
+    when the 68k flushes its ATC. phys == ~0 removes the page. A page that was not mapped needs no TLB
+    maintenance (an entry that faults is never cached); one that was is invalidated by its address alone
+    (TLBI VAAE1IS, every ASID) when tlbi is set, or by the caller's mmu_low4g_flush() after a batch. Nothing
+    is merged into blocks or tidied away: the tables of a set live as long as the set. Returns 1 when a
+    valid entry was replaced or removed.
+*/
+int mmu_low4g_page(uintptr_t virt, uintptr_t phys, uint32_t attr_low, int tlbi)
+{
+    int was = 0;
+    virt &= ~(SZ_4K - 1);
+    spinlock_acquire(&mmu_lock);
+    uint64_t *e1 = &mmu_root(virt)->mp_entries[L1_IDX(virt)];
+    if (phys == ~(uintptr_t)0 && (*e1 & DESC_TYPE_MASK) != DESC_TABLE && !(*e1 & 1)) {
+        spinlock_release(&mmu_lock);
+        return 0;
+    }
+    struct mmu_page *l2 = ensure_table(e1, 1, virt);
+    uint64_t *e2 = &l2->mp_entries[L2_IDX(virt)];
+    if (phys == ~(uintptr_t)0 && !(*e2 & 1)) {
+        spinlock_release(&mmu_lock);
+        return 0;
+    }
+    struct mmu_page *l3 = ensure_table(e2, 2, virt);
+    uint64_t *e3 = &l3->mp_entries[L3_IDX(virt)];
+    uint64_t nd = (phys == ~(uintptr_t)0) ? 0 : ((phys & DESC_OA_MASK) | make_attrs(attr_low, 0) | DESC_PAGE);
+    was = (*e3 & 1) != 0;
+    if (was && *e3 != nd) {
+        *e3 = 0;                                   /* break ... */
+        if (tlbi)
+            tlbi_page_everywhere(~0ull, virt);     /* its own address and its two aliases */
+    }
+    *e3 = nd;                                      /* ... before make */
+    mmu_publish();
+    mmu_tlb_paranoid();
+    spinlock_release(&mmu_lock);
+    return was;
+}
+
+/* the L3 descriptor of a 4 KiB page of the installed subtree (0 if none: not mapped, or inside a block) */
+uint64_t mmu_low4g_entry(uintptr_t virt)
+{
+    uint64_t d = mmu_root(virt)->mp_entries[L1_IDX(virt)];
+    if ((d & DESC_TYPE_MASK) != DESC_TABLE) return 0;
+    d = desc_to_table(d)->mp_entries[L2_IDX(virt)];
+    if ((d & DESC_TYPE_MASK) != DESC_TABLE) return 0;
+    return desc_to_table(d)->mp_entries[L3_IDX(virt)];
+}
+
+/* the whole-TLB flush that ends a batch of mmu_low4g_page(..., 0) calls */
+void mmu_low4g_flush(void)
+{
+    spinlock_acquire(&mmu_lock);
+    mmu_tlb_flush_all();
+    spinlock_release(&mmu_lock);
+}
+
 /* Re-create, in the installed subtree, every mapping of the subtree described by from[] (used to
    give a fresh Mac map the Pi peripheral windows that live inside the first 4 GiB). */
 void mmu_low4g_clone(const uint64_t from[4])
@@ -964,5 +1054,176 @@ void mmu_low4g_clone(const uint64_t from[4])
             }
         }
     }
+}
+/*
+    Aurora68, mac.mmu=full, phase 3 (docs/23-mmu.md section 12): address spaces. Each 68030 configuration the soft
+    TLB keeps (a root pointer, user or supervisor view) gets an L1 table of its own and an ASID: entries 0..3 point
+    to the space's own L2 tables (4..7 repeat them, the 4..8 GiB alias), the rest is the user L1 of the moment, and
+    the Pi windows inside the first 4 GiB are copied in from the pristine subtree. A switch is a write of TTBR0_EL1
+    with the space's ASID and needs no TLB maintenance; the 68k's pages are mapped non-global (MMU_NG), so the TLB
+    keeps every space's translations apart. These functions never touch mmu_user_L1 or the kernel's alias of the
+    first 4 GiB in TTBR1 (mmu_space_leave_alias takes that one away while spaces are in use: its entries are global
+    and could only show one space).
+*/
+static struct mmu_page *space_l2_of(const uint64_t pristine[4], int i)
+{
+    uint64_t d = pristine[i];
+    return ((d & DESC_TYPE_MASK) == DESC_TABLE) ? desc_to_table(d) : NULL;
+}
+
+/* the valid level 2 entries of a low-4-GiB subtree, in the log: the Pi's windows that the spaces leave out
+   (psmac_mmu.c, docs/23 section 21) */
+void mmu_low4g_describe(const uint64_t l1[4])
+{
+    for (int i = 0; i < 4; i++) {
+        struct mmu_page *p = space_l2_of(l1, i);
+        for (int j = 0; p && j < 512; j++) {
+            uint64_t e = p->mp_entries[j];
+            int k = j;
+            if (!(e & 1)) continue;
+            while (k + 1 < 512 && (p->mp_entries[k + 1] & 1) && (p->mp_entries[k + 1] & DESC_TYPE_MASK) == (e & DESC_TYPE_MASK) &&
+                   ((e & DESC_TYPE_MASK) == DESC_TABLE || (p->mp_entries[k + 1] & DESC_OA_MASK) == (e & DESC_OA_MASK) + ((uint64_t)(k + 1 - j) << 21)))
+                k++;
+            kprintf("[MMU]   %08x-%08x: %s%08x, attributes %03x\n", (uint32_t)(((uint32_t)i << 30) | ((uint32_t)j << 21)),
+                    (uint32_t)((((uint32_t)i << 30) | ((uint32_t)(k + 1) << 21)) - 1), (e & DESC_TYPE_MASK) == DESC_TABLE ? "pages, table at " : "blocks at ",
+                    (uint32_t)(e & DESC_OA_MASK), (uint32_t)(e & 0xffc));
+            j = k;
+        }
+    }
+}
+
+void *mmu_space_new(const uint64_t pristine[4])
+{
+    spinlock_acquire(&mmu_lock);
+    struct mmu_page *l1 = get_4k_page();
+    for (int i = 0; i < 512; i++)
+        l1->mp_entries[i] = i < 8 ? 0 : mmu_user_L1.mp_entries[i];
+    for (int i = 0; i < 4; i++) {
+        struct mmu_page *l2 = get_4k_page(), *p = space_l2_of(pristine, i);
+        for (int j = 0; j < 512; j++)
+            l2->mp_entries[j] = p ? p->mp_entries[j] : 0;
+        l1->mp_entries[i] = l1->mp_entries[i + 4] = table_to_desc(l2);
+    }
+    mmu_publish();
+    spinlock_release(&mmu_lock);
+    return l1;
+}
+
+/* the value of TTBR0_EL1 for a space */
+uint64_t mmu_space_ttbr(void *l1, unsigned asid)
+{
+    return ((uintptr_t)l1 - PHYS_VIRT_OFFSET) | ((uint64_t)(asid & 0xff) << 48);
+}
+
+/* empty a space again (every 68k page unmapped, the Pi windows kept), for reuse under another ASID or key; the
+   L3 tables go back to the pool after a TLB flush of every ASID (rare: a space is reset when it is evicted) */
+void mmu_space_reset(void *l1v, const uint64_t pristine[4])
+{
+    struct mmu_page *l1 = l1v;
+    spinlock_acquire(&mmu_lock);
+    for (int i = 0; i < 4; i++) {
+        struct mmu_page *l2 = desc_to_table(l1->mp_entries[i]), *p = space_l2_of(pristine, i);
+        for (int j = 0; j < 512; j++) {
+            uint64_t e = l2->mp_entries[j], q = p ? p->mp_entries[j] : 0;
+            if (e == q) continue;
+            l2->mp_entries[j] = q;
+            if ((e & DESC_TYPE_MASK) == DESC_TABLE && (!p || (q & DESC_TYPE_MASK) != DESC_TABLE || desc_to_table(q) != desc_to_table(e)))
+                retire_table(desc_to_table(e));
+        }
+    }
+    mmu_publish();
+    mmu_commit();
+    spinlock_release(&mmu_lock);
+}
+
+/* one 4 KiB page of a space, installed or not (phys == ~0 removes it). An entry replaced or removed is invalidated
+   for this ASID alone (TLBI VAE1IS) when tlbi is set, else by the caller's mmu_space_flush_asid after a batch.
+   Returns 1 when a valid entry was replaced or removed. */
+/* mac.mmutlb=flush (26 November 2026, docs/23 section 18, a diagnostic): every TLB entry of every ASID dropped after each
+   change to a space's descriptors, each install of a space and each PFLUSH, as QEMU's softmmu in effect does (it flushes
+   its whole TLB at a TTBR change). A/UX failed on the owner's Pi where the same kernel goes on under QEMU. */
+int psmac_tlb_paranoid;
+void mmu_tlb_paranoid(void)
+{
+    if (psmac_tlb_paranoid)
+        __asm__ volatile("dsb ishst\n\ttlbi vmalle1is\n\tdsb ish\n\tisb" ::: "memory");
+}
+int mmu_space_page(void *l1v, unsigned asid, uintptr_t virt, uintptr_t phys, uint32_t attr_low, int tlbi)
+{
+    struct mmu_page *l1 = l1v;
+    int was;
+    virt &= ~(SZ_4K - 1);
+    spinlock_acquire(&mmu_lock);
+    uint64_t *e1 = &l1->mp_entries[L1_IDX(virt)];
+    if ((*e1 & DESC_TYPE_MASK) != DESC_TABLE) {
+        spinlock_release(&mmu_lock);
+        return 0;
+    }
+    struct mmu_page *l2 = desc_to_table(*e1);
+    uint64_t *e2 = &l2->mp_entries[L2_IDX(virt)];
+    if (phys == ~(uintptr_t)0 && (*e2 & DESC_TYPE_MASK) != DESC_TABLE) {
+        spinlock_release(&mmu_lock);
+        return 0;
+    }
+    if ((*e2 & 1) && (*e2 & DESC_TYPE_MASK) != DESC_TABLE) {     /* a block (the Pi windows): never the 68k's */
+        spinlock_release(&mmu_lock);
+        return 0;
+    }
+    struct mmu_page *l3 = ensure_table(e2, 2, virt);
+    uint64_t *e3 = &l3->mp_entries[L3_IDX(virt)];
+    uint64_t nd = (phys == ~(uintptr_t)0) ? 0 : ((phys & DESC_OA_MASK) | make_attrs(attr_low, 0) | DESC_PAGE);
+    was = (*e3 & 1) != 0;
+    if (was && *e3 != nd) {
+        *e3 = 0;                                   /* break ... */
+        if (tlbi)
+            tlbi_page_everywhere((uint64_t)(asid & 0xff) << 48, virt);   /* its own address and the +4 GiB shadow */
+    }
+    *e3 = nd;                                      /* ... before make */
+    mmu_publish();
+    mmu_tlb_paranoid();
+    spinlock_release(&mmu_lock);
+    return was;
+}
+
+/* the L3 descriptor of a 4 KiB page of a space (0 if none) */
+uint64_t mmu_space_entry(void *l1v, uintptr_t virt)
+{
+    struct mmu_page *l1 = l1v;
+    uint64_t d = l1->mp_entries[L1_IDX(virt)];
+    if ((d & DESC_TYPE_MASK) != DESC_TABLE) return 0;
+    d = desc_to_table(d)->mp_entries[L2_IDX(virt)];
+    if ((d & DESC_TYPE_MASK) != DESC_TABLE) return 0;
+    return desc_to_table(d)->mp_entries[L3_IDX(virt)];
+}
+
+/* every translation of one ASID (a PFLUSHA of the spaces in use, a space's reuse) */
+void mmu_space_flush_asid(unsigned asid)
+{
+    __asm__ volatile(
+        "dsb ishst              \n"
+        "tlbi aside1is, %0      \n"
+        "dsb ish                \n"
+        "isb                    \n" : : "r"((uint64_t)(asid & 0xff) << 48) : "memory");
+}
+
+/* switch this core to a space: no TLB maintenance, the ASID keeps the spaces apart */
+void mmu_space_install(uint64_t ttbr)
+{
+    __asm__ volatile("msr TTBR0_EL1, %0\n\tisb" : : "r"(ttbr) : "memory");
+    mmu_tlb_paranoid();
+}
+
+/* The kernel's alias of the first 4 GiB in TTBR1 (L1 entries 508..511, l1_slots) holds global entries, which
+   would show the shared subtree whatever space is installed: while spaces are in use it is emptied, and an access
+   through it (a 68k address computation that wrapped below zero) faults and is emulated (psmac_mmufault.c). */
+void mmu_space_leave_alias(void)
+{
+    spinlock_acquire(&mmu_lock);
+    struct mmu_page *k = mmu_root(~0ULL);
+    for (int i = 0; i < 4; i++)
+        k->mp_entries[508 + i] = 0;
+    mmu_publish();
+    mmu_tlb_flush_all();
+    spinlock_release(&mmu_lock);
 }
 #endif

@@ -41,13 +41,60 @@ struct psmac_reply { uint8_t status, ipl, flags; uint32_t data; };
    straight back into the handler, nothing in between), and the same level taken at the same PC
    with the stack lower by the same stride each time (a handler lowered the mask and took its own
    interrupt again, docs/08 item 48), whose depth in bytes is kept. */
+/* The 68k's interrupt level as another core stores it (27 November 2026, docs/23 section 20). A 68k that has executed STOP
+   sleeps in the translated code's WFE until the context's interrupt word is not zero (M68k_LINE4.c, EMIT_STOP), and a
+   WFE sleeps until an event. Upstream's housekeeper sends one (SEV) with every level it stores; this fork's stores did
+   not, so on a real Pi a stopped 68k woke only by accident (an SEV some other part sent, a pending ARM interrupt): QEMU
+   treats WFE as a no-op and never showed it. Mac OS does not use STOP; A/UX's idle loop is one, and on the owner's SE,
+   past its first processes, A/UX slept in it with the clock's interrupt asserted and nothing to wake it. An event is
+   sent when the stored level is not zero and differs from the one before. (Core 0's own timer event stream, set on at
+   the 68k's start, is the second line: at most 0.85 ms.) */
+#define PSMAC_STORE_IPL(st, v) do { \
+        unsigned psmac_new_ipl_ = (v), psmac_old_ipl_ = (st)->INTF.IPL; \
+        (st)->INTF.IPL = (uint8_t)psmac_new_ipl_; \
+        if (psmac_new_ipl_ && psmac_new_ipl_ != psmac_old_ipl_) __asm__ volatile("dsb ishst; sev" ::: "memory"); \
+    } while (0)
+
 struct psmac_irqwatch {
     uint32_t taken[8];                 /* by level */
     uint32_t again;                    /* taken again at once: same level, PC and stack */
     uint32_t deepest, deepest_pc;      /* the deepest run of nested entries, in bytes of stack, and where */
     uint32_t last_level, last_pc, last_sp, run_sp, stride;
+    uint32_t run;                      /* entries taken again at once in a row (psmac_board_se.c's storm guard) */
+    uint32_t nest;                     /* entries in a row at the same PC, each deeper than the last: a handler taking itself again (the same) */
 };
 extern struct psmac_irqwatch psmac_irqwatch;
+
+/* mac.mmu=full, phase 3 (psmac_mmu.c, docs/23-mmu.md section 12): the user and supervisor views of the current
+   68030 configuration, as TTBR0_EL1 values; split is 0 while both modes share one space. The translated code
+   switches between them where it changes the S bit (psmac_mmu_emit_view), the C side with psmac_view_for. guard is
+   set while ProcessIRQ or M68K_Exception push a frame or fetch a vector, so that a fault there is the 68030's double
+   bus fault (psmac_mmufault.c) and a supervisor access whatever the SR still says. cur is what TTBR0_EL1 holds, kept
+   with every write of it, for the code cache's lookups (a load is cheaper than an MRS, under QEMU much cheaper). Inline, without a call: both of
+   those are compiled with the 68k's registers fixed and may not call ordinary C. */
+struct psmac_mmu_views { uint64_t ttbr[2]; uint32_t split; volatile uint32_t guard; uint64_t cur; };
+extern struct psmac_mmu_views psmac_views;
+static inline void psmac_view_for(uint32_t sr)
+{
+    if (psmac_views.split) {
+        uint64_t t = psmac_views.ttbr[(sr >> 13) & 1];
+        __asm__ volatile("msr TTBR0_EL1, %0\n\tisb" : : "r"(t) : "memory");
+        psmac_views.cur = t;
+    }
+}
+
+// mac.usertrace=PATH (the testbed, with mac.mmu=full; docs/23 section 21): a ring of the last PSMAC_UTRACE_N
+// blocks entered in user mode (PC, SR, A7, A6, A0, A1, D0, D1) and the bus errors among them, written to the
+// host with the Mac's memory (PATH.ram) the first time a user program's write below $1000, or any access of
+// its at $BAD0xxxx (a pointer read from an empty bus), is refused. The 68k waits meanwhile.
+#define PSMAC_UTRACE_N 131072u
+struct psmac_utrace {
+    uint32_t* buf;
+    uint32_t n;
+    volatile uint32_t dump;
+    uint32_t fired;
+};
+extern struct psmac_utrace psmac_utrace;
 
 void     psmac_setup_memory(void *rom, uint32_t rom_size);
 int      psmac_bus_write(uint64_t value, uint64_t value2, int size, uint64_t far);

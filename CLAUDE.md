@@ -145,7 +145,8 @@ and QEMU (one run at a time: the bridge socket, MAME's nvram and snapshot direct
 and two runs side by side corrupt each other's results silently), writes `emu68.log` and `mame.log` to `$LOGDIR` (default `/tmp/psmac-logs`), and MAME
 takes a screenshot every ten seconds into `mame/snapFS/maciici_ps/`. `PSMAC_RAM` (MiB, default 16)
 is the Mac's memory. Useful kernel options (all in `docs/09`): `mac.inputtest=`, `mac.inputabout=`,
-`mac.inputwifi=`, `mac.inputdrag=` (scripted mouse and keyboard, there is no real input in QEMU),
+`mac.inputwifi=`, `mac.inputdrag=` (scripted mouse and keyboard, there is no real input in QEMU; `mac.inputadb=`
+the same for the SE board's virtual ADB keyboard and mouse, `mac.adb=`, docs/08 item 151),
 `mac.wifisim=SSID:PASSWORD` with `mac.wifinet=BASE` (a simulated WiFi radio), `mac.peek=ADDR,LEN`
 (dump Mac memory at each heartbeat), `mac.scsitrace=`, `mac.screen=WxH` (a larger second screen;
 the kernel rewrites any declaration ROM's screen for it, docs/10 "Any size"; the 'scrn' resource's

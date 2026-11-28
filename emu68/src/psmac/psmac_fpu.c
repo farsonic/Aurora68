@@ -869,7 +869,45 @@ static uint32_t fault(uint64_t *regs, uint32_t pc, uint32_t v)
     return v;
 }
 
+#ifndef PSMAC_FPU_HOST
+static uint32_t fpu_exec(uint64_t *regs, uint32_t sr);
+
+/* mac.mmu=full (docs/23-mmu.md, phase 2): an operand on a page the guest's tables refuse must be the 68030's bus
+   error, with the instruction restarted after the handler's RTE, as the translated code's faults are. This helper
+   changes registers and the FPU's state as it goes, so the guard keeps a copy of both: a fault lands back here
+   (psmac_mmu_fault sends the abort to psmac_helper_fault_landing, which jumps to the setjmp below), the copy is
+   put back and the bus error delivered from the instruction's start. The return value then has bit 31 set and the
+   new SR in its low half (EMIT_FPU_exact). Without the option, or while the guest does not translate, nothing of
+   this runs. */
+struct psmac_hguard { void *jb[5]; volatile int armed; uint32_t addr; int write; };
+extern struct psmac_hguard psmac_hguard;
+extern int psmac_mmu_full;
+int psmac_mmu_translating(void);
+uint32_t psmac_mmu_helper_fault(uint64_t *regs, uint32_t sr, uint32_t pc);
 uint32_t psmac_fpu_exec(uint64_t *regs, uint32_t sr)
+{
+    if (__builtin_expect(!psmac_mmu_full, 1) || !psmac_mmu_translating())
+        return fpu_exec(regs, sr);
+    static uint64_t saved_regs[31];
+    static struct psmac_fpu_state saved_fpu;
+    for (int i = 0; i < 31; i++)
+        saved_regs[i] = regs[i];
+    saved_fpu = psmac_fpu;
+    if (__builtin_setjmp(psmac_hguard.jb)) {
+        for (int i = 0; i < 31; i++)
+            regs[i] = saved_regs[i];
+        psmac_fpu = saved_fpu;
+        return psmac_mmu_helper_fault(regs, sr, (uint32_t)regs[PSMAC_FPU_X_PC]);
+    }
+    psmac_hguard.armed = 1;
+    uint32_t r = fpu_exec(regs, sr);
+    psmac_hguard.armed = 0;
+    return r;
+}
+static uint32_t fpu_exec(uint64_t *regs, uint32_t sr)
+#else
+uint32_t psmac_fpu_exec(uint64_t *regs, uint32_t sr)
+#endif
 {
     struct ctx c = { .r = regs, .pc = (uint32_t)regs[PSMAC_FPU_X_PC], .sr = sr, .bad = false };
     uint16_t op = RD16(c.pc);

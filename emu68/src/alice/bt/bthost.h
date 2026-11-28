@@ -192,6 +192,7 @@ struct bt_host {
     int state;
     char why[64];                       /* BT_FAILED: why */
     uint8_t bdaddr[6];
+    uint8_t want_addr[6]; int want_addr_set;  /* bt.local= (pairings.txt): the address the chip is given after its own is read, HCI order */
     /* the controller */
     const uint8_t *fw; unsigned fwlen, fwpos, fwrec;
     int step;                           /* where the start-up is */

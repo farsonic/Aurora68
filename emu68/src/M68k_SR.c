@@ -890,10 +890,35 @@ static SR_Check SRCheck[16] = {
 
 extern struct M68KState *__m68k_state;
 
+#ifdef PSMAC
+/* Aurora68, mac.mmu=full (docs/23-mmu.md section 15): the scan below reads the instructions after the one being
+   translated, following branches and jumps wherever they go. Under the guest's own MMU those can be on a page its
+   tables refuse (a process's text not yet paged in), which the abort handler answers with $BAD0BAD0: $BAD0 decodes
+   as CMPA.W (A0),A5, which sets every flag and reads none, so the flags of the instruction being translated were
+   judged dead and not computed. A/UX's init, paging its text in, took 531 such reads in one boot. The scan stops,
+   keeping the flags it has not seen overwritten, at the first instruction on another 4 KiB page than the one it
+   started on (or one that could run into the next page), as translated blocks themselves do. */
+extern int psmac_mmu_full;
+int psmac_mmu_translating(void);
+static uintptr_t scan_page;
+static inline int scan_off(const uint16_t *p)
+{
+    if (__builtin_expect(!psmac_mmu_full, 1) || !psmac_mmu_translating()) return 0;
+    uintptr_t a = (uintptr_t)p;
+    return (a & ~(uintptr_t)0xfff) != scan_page || ((a + 22) & ~(uintptr_t)0xfff) != scan_page;
+}
+#define SCAN_OFF(p) scan_off(p)
+#else
+#define SCAN_OFF(p) 0
+#endif
+
 /* Get the mask of status flags changed by the instruction specified by the opcode */
 uint8_t M68K_GetSRMask(uint16_t *insn_stream)
 {
     uint16_t opcode = cache_read_16(ICACHE, (uint32_t)(uintptr_t)insn_stream);
+#ifdef PSMAC
+    scan_page = (uintptr_t)insn_stream & ~(uintptr_t)0xfff;
+#endif
     uint32_t scan_depth = 0;
     uint32_t max_scan_depth = (__m68k_state->JIT_CONTROL2 >> JC2B_CCR_SCAN_DEPTH) & JC2_CCR_SCAN_MASK;
     uint8_t mask = 0;
@@ -1003,6 +1028,9 @@ uint8_t M68K_GetSRMask(uint16_t *insn_stream)
                 {
                     scan_depth++;
 
+                    if (SCAN_OFF(insn_stream))
+                        break;
+
                     /* If instruction is a branch break the scan */
                     if (M68K_IsBranch(insn_stream))
                         break;
@@ -1039,6 +1067,9 @@ uint8_t M68K_GetSRMask(uint16_t *insn_stream)
                 while(mask2 && scan_depth < max_scan_depth)
                 {
                     scan_depth++;
+
+                    if (SCAN_OFF(insn_stream_2))
+                        break;
 
                     /* If instruction is a branch break the scan */
                     if (M68K_IsBranch(insn_stream_2))
@@ -1095,6 +1126,9 @@ uint8_t M68K_GetSRMask(uint16_t *insn_stream)
                 {
                     scan_depth++;
 
+                    if (SCAN_OFF(insn_stream))
+                        break;
+
                     /* If instruction is a branch break the scan */
                     if (M68K_IsBranch(insn_stream))
                         break;
@@ -1129,6 +1163,9 @@ uint8_t M68K_GetSRMask(uint16_t *insn_stream)
                 while (mask2 && scan_depth < max_scan_depth)
                 {
                     scan_depth++;
+
+                    if (SCAN_OFF(insn_stream_2))
+                        break;
 
                     /* If instruction is a branch break the scan */
                     if (M68K_IsBranch(insn_stream_2))
@@ -1173,6 +1210,9 @@ uint8_t M68K_GetSRMask(uint16_t *insn_stream)
             insn_stream += M68K_GetINSNLength(insn_stream);
         }
         
+        if (SCAN_OFF(insn_stream))
+            break;
+
         /* Get opcode */
         opcode = cache_read_16(ICACHE, (uint32_t)(uintptr_t)insn_stream);
         D(kprintf("[JIT]   %02d: opcode=%04x @ %08x ", scan_depth, opcode, insn_stream));

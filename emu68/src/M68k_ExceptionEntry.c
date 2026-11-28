@@ -15,7 +15,10 @@
 #include <globals.h>
 
 #ifdef PSMAC
+extern int psmac_mmu_full;                  /* psmac/psmac_mmu.c */
+extern volatile uint32_t psmac_priv_user;   /* privilege violations from user mode under mac.mmu=full */
 struct psmac_crash_args { uint32_t vec, pc, sr, ea, fault, usp, isp, regs[16]; };   /* psmac/psmac_crash.c */
+#include "psmac/psmac.h"                    /* psmac_view_for, psmac_views: mac.mmu=full's user and supervisor views */
 #endif
 
 static inline struct M68KState *getCTX()
@@ -49,6 +52,12 @@ uint32_t M68K_Exception(uint32_t M68k_SR, uint32_t type_and_format, uint32_t, ui
                of Gestalt's callers or of a program looking for an FPU, not a crash: counted, not recorded */
             extern volatile uint32_t psmac_fpu_traps, psmac_fpu_trap_pc;
             psmac_fpu_traps++; psmac_fpu_trap_pc = M68k_PC;
+            record = 0;
+        }
+        else if (vec == 0x20 && psmac_mmu_full && !(M68k_SR & SR_S)) {
+            /* mac.mmu=full (docs/23-mmu.md): System 7's Virtual Memory runs the Mac in user mode and emulates every
+               privileged instruction it meets there, so these are its ordinary work, thousands a second: counted */
+            psmac_priv_user++;
             record = 0;
         }
         else
@@ -88,6 +97,16 @@ uint32_t M68K_Exception(uint32_t M68k_SR, uint32_t type_and_format, uint32_t, ui
                 "add sp, sp, #160"
                 : : "r"(&a) : "memory", "cc");
         }
+    }
+#endif
+
+#ifdef PSMAC
+    /* mac.mmu=full (docs/23-mmu.md section 12): the frame goes onto the supervisor stack through the supervisor's view,
+       and a fault while it is pushed or the vector read is the 68030's double bus fault (psmac_mmufault.c), not a bus
+       error and not a write into nothing */
+    if (unlikely(psmac_mmu_full)) {
+        psmac_view_for(SR_S);
+        psmac_views.guard = 1;
     }
 #endif
 
@@ -137,6 +156,9 @@ uint32_t M68K_Exception(uint32_t M68k_SR, uint32_t type_and_format, uint32_t, ui
 
     uint32_t vbr = getCTX()->VBR + (type_and_format & 0x0fff);
     M68k_PC = *(uint32_t *)(uintptr_t)vbr;
+#ifdef PSMAC
+    psmac_views.guard = 0;
+#endif
 
     __asm__ volatile("": :"r"(M68k_PC));
 

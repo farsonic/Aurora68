@@ -18,7 +18,9 @@
 #                  numbers and its status-page offsets against alice_status.h, on the host and as a 68020 program:
 #                  tools/pistatus_test.c, tools/pistatus_m68k.sh; the PC card and the Apple II card with their libraries where
 #                  AURORA86_DIR / AURORA65_DIR say where: tools/pccard_test.sh, tools/a2card_test.sh; the guest scheduler's
-#                  rule: tools/guest_test.c; the virtual SCSI devices' 5380 and commands: tools/scsidev_test.c)
+#                  rule: tools/guest_test.c; the virtual SCSI devices' 5380 and commands: tools/scsidev_test.c; the SE board's
+#                  virtual ADB keyboard and mouse against a model of the transceiver and of the ROM's ADB Manager: tools/adb_test.sh;
+#                  the A/UX network card's DP8390 driven as A/UX's ae6 driver drives it: tools/aux/etalk_test.sh)
 #   make install IMG=path/to/volume.img [PART=n]   the extensions into the System Folder of an HFS image, the programs into its Aurora68 folder
 AS      = m68k-linux-gnu-as -m68020
 OBJCOPY = m68k-linux-gnu-objcopy
@@ -65,6 +67,29 @@ fputest-speed:
 	$(PY) ../tools/mac/mkinit.py --init $(B)/fputest-speed.bin.raw --name "Aurora68 FPU Test" --icons machine -o $(B)/Aurora68-FPUTest-speed.bin
 $(B)/Aurora68-FPUTest.bin: $(B)/fputest.bin.raw ../tools/mac/mkinit.py ../tools/mac/rsrc.py $(ICONS)
 	$(PY) ../tools/mac/mkinit.py --init $(B)/fputest.bin.raw --name "Aurora68 FPU Test" --icons machine -o $@
+
+# the 68030 MMU under mac.mmu=full (docs/23-mmu.md; not in the release): make mmutest, then
+#   ROM=mac/build/mmutest.rom tools/run-solo.sh 60 mac.mmu=full     -> "[MAC] MMU test: N passed, 0 failed, ..."
+# (the count grows with the cases; section 12 of docs/23 gives the current one). mmutest-halt.rom adds T25 at the
+# end, an exception whose frame cannot be pushed: the log must show the double bus fault and the 68030 halted.
+# Bare test ROMs: no Apple software involved
+.PHONY: mmutest
+mmutest: $(B)/mmutest.rom $(B)/mmutest-halt.rom
+$(B)/mmutest.rom: mmutest.s
+	@mkdir -p $(B)
+	m68k-linux-gnu-as -m68030 -m68881 -o $(B)/mmutest.o $<
+	$(OBJCOPY) -O binary -j .text $(B)/mmutest.o $@
+$(B)/mmutest-halt.rom: mmutest.s
+	@mkdir -p $(B)
+	m68k-linux-gnu-as -m68030 -m68881 --defsym HALTTEST=1 -o $(B)/mmutest-halt.o $<
+	$(OBJCOPY) -O binary -j .text $(B)/mmutest-halt.o $@
+
+# System 7's Virtual Memory from an application under mac.mmu=full (docs/23-mmu.md, phase 2; not in the release):
+# make vmtest, then put build/Aurora68-VMTest.bin on a test image with VM on; it allocates 24 MB in a 26 MB partition
+.PHONY: vmtest
+vmtest: $(B)/Aurora68-VMTest.bin
+$(B)/Aurora68-VMTest.bin: $(B)/vmtest.bin.raw ../tools/mac/mkapp.py ../tools/mac/rsrc.py
+	$(PY) ../tools/mac/mkapp.py --code $(B)/vmtest.bin.raw --name "Aurora68 VM Test" --creator A68V --size 26624 -o $@
 
 # the same extension answering another machine type (for experiments): make pimach-variant MACH=11
 pimach-variant: pimach.s
@@ -226,6 +251,8 @@ check: ../tools/mac/an_offsets.c ../tools/mac/check_offsets.py ../emu68/src/alic
 	sh ../tools/a2card_test.sh $(abspath $(B))
 	sh ../tools/bt_test.sh $(abspath $(B))
 	sh ../tools/splash_test.sh $(abspath $(B))
+	sh ../tools/adb_test.sh $(abspath $(B))
+	sh ../tools/aux/etalk_test.sh $(abspath $(B))
 
 disasm: $(B)/pidisk.o
 	m68k-linux-gnu-objdump -d $(B)/pidisk.o | head -200

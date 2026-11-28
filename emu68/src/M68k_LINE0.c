@@ -819,6 +819,15 @@ uint32_t EMIT_ORI_TO_CCR(struct TranslatorContext *ctx, uint16_t opcode)
     return 1;
 }
 
+#ifdef PSMAC
+/* mac.mmu=full, phase 3 (psmac/psmac_mmufault.c): after an S-bit change, the view for the new mode */
+extern int psmac_mmu_full;
+void psmac_mmu_emit_view(struct TranslatorContext *ctx, uint8_t sr);
+#define PSMAC_EMIT_VIEW(ctx, sr) do { if (unlikely(psmac_mmu_full)) psmac_mmu_emit_view((ctx), (sr)); } while (0)
+#else
+#define PSMAC_EMIT_VIEW(ctx, sr) do { } while (0)
+#endif
+
 uint32_t EMIT_ORI_TO_SR(struct TranslatorContext *ctx, uint16_t opcode)
 {
     (void)opcode;
@@ -1337,6 +1346,7 @@ uint32_t EMIT_ANDI_TO_SR(struct TranslatorContext *ctx, uint16_t opcode)
         msr_imm(3, 6, 7)  // Mask interrupts
     );
 
+    PSMAC_EMIT_VIEW(ctx, cc);
     *tmp = b(ctx->tc_CodePtr - tmp);
 
     EMIT(ctx, INSN_TO_LE(0xffffffff));
@@ -1713,6 +1723,7 @@ uint32_t EMIT_EORI_TO_SR(struct TranslatorContext *ctx, uint16_t opcode)
     );
 
 
+    PSMAC_EMIT_VIEW(ctx, cc);
     *tmp = b(ctx->tc_CodePtr - tmp);
 
     EMIT(ctx, INSN_TO_LE(0xffffffff));
@@ -2990,8 +3001,89 @@ uint32_t EMIT_MOVEP(struct TranslatorContext *ctx, uint16_t opcode)
     return 1;
 }
 
+#ifdef PSMAC
+/* Aurora68, mac.mmu=full, phase 3 (docs/23-mmu.md section 12): MOVES reaches the address space SFC or DFC names, which
+   under A/UX and the BSDs is the user's while the kernel runs in its own (SRE). The access goes through a call to
+   psmac_moves_exec (psmac/psmac_mmu.c), which translates it with the 68030's table search at that function code, makes
+   it on the physical page, and delivers a bus error for a page the tables refuse and for CPU space (FC 7). Built like
+   EMIT_PMMU_full (M68k_LINEF.c): the address for the control modes computed here, every AArch64 register saved as the
+   C side's register file, x18 at the next instruction or the bus-error handler afterwards. */
+static uint32_t EMIT_MOVES_full(struct TranslatorContext *ctx, uint16_t opcode)
+{
+    extern uint32_t psmac_moves_exec(uint32_t ea, uint32_t op, uint64_t *regs, uint32_t sr, uint32_t len);
+    union { uint64_t u64; uint16_t u16[4]; } u;
+    u.u64 = (uintptr_t)psmac_moves_exec;
+    uint16_t opcode2 = cache_read_16(ICACHE, (uintptr_t)ctx->tc_M68kCodePtr);
+    uint8_t mode = (opcode >> 3) & 7;
+    uint8_t ext_count = 1;
+    uint8_t ea = 0xff;
+
+    EMIT_FlushPC(ctx);
+    uint8_t sr = RA_ModifyCC(ctx);
+    uint8_t ret = RA_AllocARMRegister(ctx);
+
+    uint32_t *to_super = ctx->tc_CodePtr++;
+    EMIT_Exception(ctx, VECTOR_PRIVILEGE_VIOLATION, 0);
+    uint32_t *priv_exit = ctx->tc_CodePtr++;
+    *to_super = tbnz(sr, SRB_S, ctx->tc_CodePtr - to_super);
+
+    if (mode == 2 || mode == 5 || mode == 6 || mode == 7)
+        EMIT_LoadFromEffectiveAddress(ctx, 0, &ea, opcode & 0x3f, &ext_count, 1, NULL);
+
+    EMIT(ctx, stp64_preindex(31, 0, 1, -256));
+    for (int i = 2; i < 30; i += 2)
+        EMIT(ctx, stp64(31, i, i + 1, i * 8));
+    EMIT(ctx, str64_offset(31, 30, 240));
+    if (ea != 0xff)
+        EMIT(ctx, mov_reg(0, ea));
+    else
+        EMIT(ctx, mov_immed_u16(0, 0, 0));
+    EMIT(ctx,
+        mov_reg(3, sr),
+        mov_immed_u16(1, opcode2, 0),
+        movk_immed_u16(1, opcode, 1),
+        add64_immed(2, 31, 0),
+        mov_immed_u16(4, 2 * (ext_count + 1), 0),
+        mov64_immed_u16(5, u.u16[3], 0),
+        movk64_immed_u16(5, u.u16[2], 1),
+        movk64_immed_u16(5, u.u16[1], 2),
+        movk64_immed_u16(5, u.u16[0], 3),
+        blr(5),
+        str64_offset(31, 0, ret * 8)
+    );
+    for (int i = 2; i < 30; i += 2)
+        EMIT(ctx, ldp64(31, i, i + 1, i * 8));
+    EMIT(ctx,
+        ldr64_offset(31, 30, 240),
+        ldp64_postindex(31, 0, 1, 256)
+    );
+    if (ea != 0xff)
+        RA_FreeARMRegister(ctx, ea);
+
+    /* a bus error: the new SR, then out of the block (x18 is already the handler's address) */
+    EMIT(ctx,
+        cbz(ret, 3),
+        bfxil(sr, ret, 0, 16)
+    );
+    uint32_t *fault_exit = ctx->tc_CodePtr++;
+    uint32_t *skip = ctx->tc_CodePtr++;
+    *priv_exit = b_cc(A64_CC_AL, ctx->tc_CodePtr - priv_exit);
+    *fault_exit = b_cc(A64_CC_AL, ctx->tc_CodePtr - fault_exit);
+    *skip = b_cc(A64_CC_AL, ctx->tc_CodePtr - skip);
+    EMIT(ctx, (uint32_t)(uintptr_t)skip, 1, 0, INSN_TO_LE(0xfffffffe));
+    RA_FreeARMRegister(ctx, ret);
+
+    ctx->tc_M68kCodePtr += ext_count;
+    return 1;
+}
+#endif
+
 uint32_t EMIT_MOVES(struct TranslatorContext *ctx, uint16_t opcode)
 {
+#ifdef PSMAC
+    if (unlikely(psmac_mmu_full))
+        return EMIT_MOVES_full(ctx, opcode);
+#endif
     uint8_t cc = RA_GetCC(ctx);
     uint8_t size = (opcode >> 6) & 3;
     uint16_t opcode2 = cache_read_16(ICACHE, (uintptr_t)ctx->tc_M68kCodePtr);

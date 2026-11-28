@@ -2252,6 +2252,15 @@ void SYSHandler(uint32_t vector, uint64_t *ctx)
 #endif
         int writeFault = (esr & (1 << 6)) != 0;
 
+#ifdef PSMAC
+        /* Aurora68, mac.mmu=full (psmac/psmac_mmufault.c): a translated access to a page the guest's tables mark
+           invalid becomes a 68k bus error; anything else is emulated as before */
+        extern int psmac_mmu_full;
+        extern int psmac_mmu_fault(uint64_t *ctx, uint64_t elr, uint64_t esr, uint64_t far);
+        if (unlikely(psmac_mmu_full) && psmac_mmu_fault(ctx, elr, esr, far))
+            handled = 1;
+        else
+#endif
         handled = writeFault ? SYSPageFaultWriteHandler(vector, ctx, elr, spsr, esr, far) : SYSPageFaultReadHandler(vector, ctx, elr, spsr, esr, far);
     }
     else if ((vector & 0x1ff) == 0x00 && (esr & 0xf8000000) == 0x80000000)
@@ -2374,6 +2383,14 @@ void SYSHandler(uint32_t vector, uint64_t *ctx)
         {
             uint16_t *from = (uint16_t*)(intptr_t)(*(uint32_t *)elr);
             uint32_t len = (*(uint32_t *)(elr + 4)) / 2;
+#ifdef PSMAC
+            /* The 68k code around an instruction the translator refused (an illegal one): read here, in the exception
+               handler, through whatever the 68k's MMU maps. With mac.mmu=full the page before it may be one the guest's
+               tables refuse, and the read then faulted inside this handler: core 0 died on a user program's illegal
+               instruction under A/UX instead of giving it the illegal instruction exception (26 November 2026,
+               docs/23 section 15). The dump is left out there; the exception still follows. */
+            { extern int psmac_mmu_full; if (psmac_mmu_full) len = 0; }
+#endif
 
             kprintf("[SYS:JIT] RAM dump from 0x%08x, len 0x%x\n[SYS:JIT]   ", from, len);
 

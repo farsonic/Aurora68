@@ -1218,6 +1218,15 @@ static uint32_t EMIT_MOVEfromCCR(struct TranslatorContext *ctx, uint16_t opcode)
     return 1;
 }
 
+#ifdef PSMAC
+/* mac.mmu=full, phase 3 (psmac/psmac_mmufault.c): after an S-bit change, the view for the new mode */
+extern int psmac_mmu_full;
+void psmac_mmu_emit_view(struct TranslatorContext *ctx, uint8_t sr);
+#define PSMAC_EMIT_VIEW(ctx, sr) do { if (unlikely(psmac_mmu_full)) psmac_mmu_emit_view((ctx), (sr)); } while (0)
+#else
+#define PSMAC_EMIT_VIEW(ctx, sr) do { } while (0)
+#endif
+
 static uint32_t EMIT_MOVEtoSR(struct TranslatorContext *ctx, uint16_t opcode)
 {
     uint8_t cc = RA_ModifyCC(ctx);
@@ -1300,6 +1309,7 @@ static uint32_t EMIT_MOVEtoSR(struct TranslatorContext *ctx, uint16_t opcode)
         msr_imm(3, 6, 7)  // Mask interrupts
     );
 
+    PSMAC_EMIT_VIEW(ctx, cc);
     *tmpptr = b(ctx->tc_CodePtr - tmpptr);
 
     EMIT(ctx, INSN_TO_LE(0xffffffff));
@@ -1733,6 +1743,7 @@ static uint32_t EMIT_STOP(struct TranslatorContext *ctx, uint16_t opcode)
         msr_imm(3, 6, 7)  // Mask interrupts
     );
 
+    PSMAC_EMIT_VIEW(ctx, cc);
     uint8_t timereg = RA_AllocARMRegister(ctx);
     uint8_t tmpreg = RA_AllocARMRegister(ctx);
     uint8_t ctxReg = RA_GetCTX(ctx);
@@ -1785,6 +1796,9 @@ static uint32_t EMIT_STOP(struct TranslatorContext *ctx, uint16_t opcode)
     return 1;
 }
 
+#ifdef PSMAC
+extern int psmac_mmu_full;       /* psmac/psmac_mmu.c: mac.mmu=full */
+#endif
 static uint32_t EMIT_RTE(struct TranslatorContext *ctx, uint16_t opcode)
 {
     (void)opcode;
@@ -1815,6 +1829,48 @@ static uint32_t EMIT_RTE(struct TranslatorContext *ctx, uint16_t opcode)
         lsr(tmp, tmp, 12)
     );
 
+#ifdef PSMAC
+    /* Aurora68, mac.mmu=full (psmac/psmac_mmufault.c, docs/23-mmu.md): the access-fault frames come back too,
+       the 68040's format $7 (60 bytes) and the 68030's $A (32) and $B (92). The instruction restarts at the
+       frame's PC; a handler that cleared DF and completed the cycle itself sees it run again (a restart, not
+       the 68030's continuation). Without the option the code below is the upstream one, byte for byte. */
+    if (unlikely(psmac_mmu_full))
+    {
+        static const uint8_t fmts[5] = { 0, 2, 7, 0xa, 0xb };
+        static const uint8_t skip[5] = { 0, 4, 52, 24, 84 };
+        uint32_t *ok[5];
+
+        for (int i = 0; i < 5; i++)
+        {
+            EMIT(ctx, cmp_immed(tmp, fmts[i]));
+            ok[i] = ctx->tc_CodePtr++;
+        }
+
+        EMIT_Exception(ctx, VECTOR_FORMAT_ERROR, 0);
+
+        branch_format = ctx->tc_CodePtr++;
+
+        for (int i = 0; i < 5; i++)
+            *ok[i] = b_cc(A64_CC_EQ, ctx->tc_CodePtr - ok[i]);
+
+        EMIT(ctx,
+            ldrh_offset_postindex(sp, changed, 2),
+            rbit(orig, changed),
+            bfxil(changed, orig, 30, 2),
+            ldr_offset_postindex(sp, REG_PC, 6)
+        );
+        for (int i = 1; i < 5; i++)
+        {
+            EMIT(ctx,
+                cmp_immed(tmp, fmts[i]),
+                b_cc(A64_CC_NE, 2),
+                add_immed(sp, sp, skip[i])
+            );
+        }
+    }
+    else
+    {
+#endif
     // Is format valid?
     EMIT(ctx, cmp_immed(tmp, 2));
     tmpptr = ctx->tc_CodePtr;
@@ -1848,6 +1904,9 @@ static uint32_t EMIT_RTE(struct TranslatorContext *ctx, uint16_t opcode)
         b_cc(A64_CC_NE, 2),
         add_immed(sp, sp, 4)
     );
+#ifdef PSMAC
+    }
+#endif
 
     cc = RA_ModifyCC(ctx);
 
@@ -1891,6 +1950,7 @@ static uint32_t EMIT_RTE(struct TranslatorContext *ctx, uint16_t opcode)
         msr_imm(3, 6, 7)  // Mask interrupts
     );
 
+    PSMAC_EMIT_VIEW(ctx, cc);
     *branch_privilege = b(ctx->tc_CodePtr - branch_privilege);
     *branch_format = b(ctx->tc_CodePtr - branch_format);
 

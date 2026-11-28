@@ -44,6 +44,8 @@ class SResource:
     def sexec(self, eid, code, cpu=2):        # sExecBlock: size, revision 2, CPU id, reserved, code offset (4 = right after), code
         body = struct.pack('>BBHI', 2, cpu, 0, 4) + bytes(code)
         self.block(eid, struct.pack('>I', len(body) + 4) + body)
+    def below(self, eid, n):                  # entry points n bytes below the image's first byte: outside the ROM's length and its CRC
+        self.entries.append((eid, 'at', -n))  # (an Ethernet card's address cell, tools/mac/mkauxnetdeclrom.py)
 
 class DeclROM:
     def __init__(self, byte_lanes=0x0F, revision=1, fmt=1):
@@ -60,6 +62,8 @@ class DeclROM:
                 placed.append((eid, 'off', len(out))); out += payload
             elif kind == 'list':
                 off = self._emit_list(out, payload); placed.append((eid, 'off', off))
+            elif kind == 'at':
+                placed.append((eid, 'off', payload))
             else:
                 placed.append((eid, 'word', payload))
         while len(out) % 4: out.append(0)

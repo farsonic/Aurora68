@@ -40,6 +40,10 @@ int psmac_plus_via_write(uint32_t reg, uint32_t *data); int psmac_plus_via_local
 uint32_t psmac_plus_via_read(uint32_t reg, uint32_t r); void psmac_plus_tick(void); int psmac_plus_irq(void);
 void psmac_plus_reset(void); void psmac_plus_options(const char *); void psmac_plus_report(void);
 uint32_t psmac_plus_scc_write(uint32_t ch, uint32_t data); void psmac_plus_scc_written(void); void psmac_plus_scc_read(uint32_t ch);
+/* the Pi's keyboards and mice as ADB devices beside the SE's own (psmac_adb.c, docs/08 item 151) */
+int psmac_adb_on(void), psmac_adb_irq(void); void psmac_adb_tick(void), psmac_adb_service(void), psmac_adb_reset(void), psmac_adb_report(void);
+int psmac_adb_via_write(uint32_t reg, uint8_t d, uint32_t *wire, uint8_t *pre); int psmac_adb_via_read_pre(uint32_t reg, uint32_t *val);
+void psmac_adb_via_feed(uint32_t reg, uint32_t r); uint32_t psmac_adb_via_read_post(uint32_t reg, uint32_t r); void psmac_adb_options(const char *);
 #define PB6 (psmac_board_plus ? 0u : 0x40u)   /* VIA port B bit 6: driven high on the SE (its SCSI interrupt enable), an input on the Plus (H4) */
 int psmac_solo_access(uint32_t addr, int size, int write, uint32_t data, uint32_t *val);
 int psmac_buscheck_wanted(void), psmac_buscheck_boot(void), psmac_buscheck_will_hold(void);   /* mac.buscheck= (psmac_buscheck.c) */
@@ -99,13 +103,17 @@ static void trace(const char *what, int write, uint32_t addr, uint32_t se, int s
 
 /* the slot-9 line of the Pi's card (psmac_bus.c raises it): bit 0 of the slot IFR, 0 = asserted */
 extern uint32_t psmac_slot_irq_state(void);
-static int slot_line(void) { return (psmac_slot_irq_state() >> 16) & 1; }
+static int slot_storm;                       /* mac.slotstorm=1 (testbed): the slot line held up for 60 s from 3 s after A/UX's switch of tables (irq_guard) */
+static int slot_line(void) { return slot_storm == 2 || ((psmac_slot_irq_state() >> 16) & 1); }
 
 int psmac_solo_scsi_irq(void);
+unsigned psmac_etalk_slot_irq(void);         /* psmac_etalk.c: the A/UX network card's bit of the slot register, while its DP8390 asks */
+unsigned psmac_display_slot_irq(void);       /* psmac_display.c: the HDMI screen's card's bit ($A), while its VBL is pending (docs/26) */
+static unsigned own_slot_irq(void) { return psmac_etalk_slot_irq() | psmac_display_slot_irq(); }   /* the cards on slots of their own */
 static void rbv_recalc(void)
 {
     uint8_t ifr = rbv_ifr & 0x7f;
-    if (slot_line() && (rbv_regs[0x12] & 0x01)) ifr |= 0x02;          /* any slot interrupt, gated by the slot enable register */
+    if ((slot_line() && (rbv_regs[0x12] & 0x01)) || (own_slot_irq() & rbv_regs[0x12])) ifr |= 0x02;   /* any slot interrupt, gated by the slot enable register; the A/UX network card's and the HDMI card's slots too */
     else ifr &= ~0x02;
     if (psmac_board_solo) { if (psmac_solo_scsi_irq()) ifr |= 0x08; else ifr &= ~0x08; }   /* the 5380's interrupt, level-sensitive */
     else if (psmac_scsidev_irq()) ifr |= 0x08;   /* a virtual SCSI device's connection, answered here (psmac_scsidev.c): its 5380's line, as the solo board's */
@@ -125,12 +133,29 @@ static void rbv_recalc(void)
 /* the level-2 interrupt the RBV would raise: any enabled flag */
 int psmac_se_rbv_irq(void) { rbv_recalc(); return (rbv_ifr & rbv_ier & 0x7f) != 0; }
 
-static uint32_t rbv_read(uint32_t off)
+/* The register an offset names (26 November 2026, docs/23 section 15). The RBV's registers are $00-$13 and the chip
+   decodes the low address lines for them, so software written for both the VIA2 and the RBV uses offsets that name
+   the right register on either: $1A03 is the VIA's register 13 (IFR, A9-A12) and the RBV's $03, $1C13 the VIA's 14 (IER)
+   and the RBV's $13, and $1E02 the VIA's 15 (port A, the Mac II's slot interrupts) and the RBV's $02 (SIFR). Linux's
+   mac_via.h names rIFR $1A03 and rIER $1C13 for that reason, and A/UX 3's kernel reads the slot flags at $1E02. Until
+   now an offset at $100 or above was read as a VIA register number only (13 the IFR, 14 the IER, MAME's rbv.cpp does
+   the same), so $1E02 read 0: every slot "interrupting", A/UX called slot 9's handler with nothing pending and
+   panicked ("no slot 10 interrupt handler" ... "Polling routine didn't handle interrupt"). Offsets whose low five bits
+   are zero keep the VIA reading ($1A00 the IFR, $1C00 the IER), which is how the IIci ROM reaches some of them. */
+static uint32_t rbv_regno(uint32_t off)
 {
     uint32_t reg = off & 0x1fff;
-    if (reg >= 0x100) { reg >>= 9; if (reg == 13) { rbv_recalc(); return rbv_ifr | ((rbv_ifr & rbv_ier & 0x7f) ? 0x80 : 0); } if (reg == 14) return rbv_ier; return 0; }
+    if (reg < 0x100) return reg;
+    if (reg & 0x1f) return reg & 0x1f;
+    reg >>= 9;
+    return reg == 13 ? 0x03 : reg == 14 ? 0x13 : 0x100;   /* 0x100: no register (reads 0, writes dropped) */
+}
+static uint32_t rbv_read(uint32_t off)
+{
+    uint32_t reg = rbv_regno(off);
+    if (reg >= 0x100) return 0;
     switch (reg) {
-    case 0x02: return (rbv_regs[2] & 0x7f) | (slot_line() ? 0 : 0x01) | 0x3e;   /* slot IFR: slots A-E idle (1), slot 9 ours */
+    case 0x02: return (rbv_regs[2] & 0x7f) | (slot_line() ? 0 : 0x01) | (0x3e & ~own_slot_irq());   /* slot IFR: slots A-E idle (1) but the A/UX network card's and the HDMI card's while they ask, slot 9 ours */
     case 0x03: rbv_recalc(); return rbv_ifr | ((rbv_ifr & rbv_ier & 0x7f) ? 0x80 : 0);
     case 0x10: return (rbv_regs[0x10] & ~0x38) | (7 << 3);          /* monitor sense 7: no monitor on the built-in video */
     case 0x12: return rbv_regs[0x12] & 0x7f;
@@ -140,8 +165,9 @@ static uint32_t rbv_read(uint32_t off)
 }
 static void rbv_write(uint32_t off, uint8_t data)
 {
-    uint32_t reg = off & 0x1fff;
-    if (reg >= 0x100) { reg >>= 9; if (reg == 13) { if (data & 0x80) rbv_ifr |= data & 0x7f; else rbv_ifr &= ~(data & 0x7f); } else if (reg == 14) { if (data & 0x80) rbv_ier |= data & 0x7f; else rbv_ier &= ~(data & 0x7f); } return; }
+    uint32_t reg = rbv_regno(off);
+    if (reg >= 0x100) return;
+    if ((off & 0x1fff) >= 0x100 && reg == 0x13) { if (data & 0x80) rbv_ier |= data & 0x7f; else rbv_ier &= ~(data & 0x7f); return; }   /* as before at $1C00/$1C13: without the POST's $FF quirk below */
     switch (reg) {
     case 0x02: rbv_regs[2] |= data & 0x40; break;
     case 0x03: if (data & 0x80) rbv_ifr |= data & 0x7f; else rbv_ifr &= ~(data & 0x7f); break;
@@ -911,6 +937,12 @@ int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t 
             if (psmac_board_plus) {                  /* the shift register and ADB's lines are answered here (psmac_board_plus.c) */
                 level_lock(); int local = psmac_plus_via_write(reg, &wd); store_level(se_wire_ipl); level_unlock();
                 if (local) { trace("VIA", 1, addr, se, size, data & 0xff); local_writes++; return 1; }
+            } else if (psmac_adb_on()) {             /* the virtual ADB devices: what the real transceiver is not to see */
+                uint8_t pre = 0;
+                level_lock(); int f = psmac_adb_via_write(reg, (uint8_t)data, &wd, &pre); store_level(se_wire_ipl); level_unlock();
+                if (f & 2) psmac_wire_write(SE_VIA + (10 << 9), 1, pre, 0);     /* a command byte held back while the transceiver was left idle */
+                if (f & 4) psmac_wire_write(SE_VIA + (14 << 9), 1, 0x84, 0);    /* its shift register interrupt on again */
+                if (f & 1) { trace("VIA", 1, addr, se, size, data & 0xff); local_writes++; return 1; }
             }
             trace("VIA", 1, addr, se, size, wd);
             psmac_wire_write(se, 1, wd, posted);
@@ -921,8 +953,19 @@ int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t 
             level_lock(); int local = psmac_plus_via_local(reg, &v); if (local) store_level(se_wire_ipl); level_unlock();
             if (local) { trace("VIA", 0, addr, se, size, v); local_reads++; *val = size == 1 ? v : size == 2 ? v << 8 | v : v << 24 | v << 16 | v << 8 | v; return 1; }
         }
+        int adb = !psmac_board_plus && psmac_adb_on();
+        if (adb) {
+            uint32_t v = 0;
+            level_lock(); int f = psmac_adb_via_read_pre(reg, &v); if (f & 1) store_level(se_wire_ipl); level_unlock();
+            if (f & 1) { trace("VIA", 0, addr, se, size, v); local_reads++; *val = size == 1 ? v : size == 2 ? v << 8 | v : v << 24 | v << 16 | v << 8 | v; return 1; }
+            if (f & 6) {                             /* what the real bus said to a Talk: its flag, its line */
+                uint32_t x = psmac_wire_read(SE_VIA + ((f & 2 ? 13u : 0u) << 9), 1) & 0xff;
+                level_lock(); psmac_adb_via_feed(f & 2 ? 13 : 0, x); level_unlock();
+            }
+        }
         r = via_read_fix(reg, psmac_wire_read(se, 1) & 0xff);
         if (reg == 0) r = xp_read(r);
+        if (adb) { level_lock(); r = psmac_adb_via_read_post(reg, r); store_level(se_wire_ipl); level_unlock(); }
         if (psmac_board_plus) {
             if (reg == 3) r = via_ddra;              /* the ROM's own: the wire's has PA4 out and PA7 in whatever it wrote */
             level_lock(); r = psmac_plus_via_read(reg, r); store_level(se_wire_ipl); level_unlock();
@@ -1040,10 +1083,13 @@ static volatile uint8_t se_level_lock;
 static inline void level_lock(void) { while (__atomic_test_and_set(&se_level_lock, __ATOMIC_ACQUIRE)) __asm__ volatile("yield"); }
 static inline void level_unlock(void) { __atomic_clear(&se_level_lock, __ATOMIC_RELEASE); }
 extern struct M68KState *__m68k_state;
+static void irq_guard(void);
 static void store_level(unsigned raw)        /* the caller holds the lock */
 {
-    if (__m68k_state) __m68k_state->INTF.IPL = psmac_se_ipl(raw);
+    irq_guard();
+    if (__m68k_state) PSMAC_STORE_IPL(__m68k_state, psmac_se_ipl(raw));
 }
+void psmac_se_via_guest(uint8_t *orb, uint8_t *ddrb, uint8_t *ier) { *orb = via_orb; *ddrb = via_ddrb; *ier = via_ier; }   /* psmac_adb.c */
 /* the Plus's keyboard and mouse on the service core (psmac_board_plus.c) take the same lock */
 void psmac_se_plus_lock(void) { level_lock(); }
 void psmac_se_plus_unlock(void) { store_level(se_wire_ipl); level_unlock(); }
@@ -1092,21 +1138,100 @@ int psmac_se_switch_held(void)
 void psmac_se_set_level(unsigned raw)         /* psmac_bus.c, after each cycle on the wire and each poll */
 {
     interrupt_switch(raw);
-    level_lock(); se_wire_ipl = raw; psmac_plus_tick(); store_level(raw); level_unlock();
+    level_lock(); se_wire_ipl = raw; psmac_plus_tick(); psmac_adb_tick(); store_level(raw); level_unlock();
 }
 
 /* The interrupt level the SE drives, read as the IIci ROM expects it: the SE's level 1 is the VIA
    on both; its level 2 is the SCC (the IIci's level 4; the 5380's interrupt is kept off); the
    IIci's level 2, the RBV, is this file's own. Bit 2, the interrupt switch, is an edge, handled by
    interrupt_switch above, not a level. */
+/* mac.sccirq=off (26 November 2026, docs/23 section 14): the SE's SCC interrupt kept from the 68k. A/UX 3.1.1's
+   start-up on the owner's SE took the SE's level 2 (the IIci's 4) about 800,000 times a second without one access to
+   the SCC. A diagnostic: with it nothing that waits for the serial ports' interrupts works (AppleTalk on LocalTalk, a
+   modem), and Mac OS itself stops at "Welcome to Macintosh", so mac.sccirq=aux keeps the line away only while the
+   guest's user and supervisor views are apart (psmac_mmu_views_apart: A/UX's own tables, which Mac OS never sets up).
+   Until 26 November aux kept the slot interrupt away as well; the level-2 storm that was for came from the RBV's
+   slot flags read at $1E02 (rbv_regno above, docs/23 section 15), and A/UX needs its slot interrupts (the screen's
+   VBL), so aux is the SCC's line alone again. */
+static int scc_irq_off;                          /* 1 off, 2 aux */
+int psmac_mmu_views_apart(void);
+/* The storm guard, mac.irqguard=on|off (26 November 2026, docs/23 section 16). A/UX Startup's standalone shell, which
+   loads the A/UX kernel, takes every interrupt with `ORI.W #$0700,(SP); RTE` and clears nothing: it only wants to be
+   woken from its STOP #$2000, and it waits for the VIA's clock tick. On the owner's SE a source that stayed asserted
+   got the 68k back at once after every RTE, and the clock below it never got a turn: first the SE's SCC (the IIci's
+   level 4, 4.1 million entries in 5 s, level 1 none), then, with mac.sccirq=aux, the slot interrupt (the HDMI
+   screen's VBL pending, the network board's line still up from the Mac OS session; 4.1 million entries of level 2).
+   The MAME SE never showed either. The guard keeps a level away from the 68k for GUARD_MS once it has been taken
+   GUARD_N times in a row at the same PC and stack (the interrupt watch's run, ExecutionLoop.c): a handler that
+   returned with its source still asserted and nothing else done, about 5 ms of such a storm. Then the level comes
+   back and is judged again. Normal running takes a level again at once a few dozen times in 5 s, never 20,000 times
+   in a row. The MAME SE, given a slot line held up at the very moment of the switch (mac.slotstorm), showed the other
+   form: the handler of that moment lowers the mask with its source still asserted and takes itself again, 24 frames
+   deep until the stack ran out (a double bus fault at $100460E2); GUARD_NEST entries like that also count. Only while
+   the MMU's views are apart (A/UX's tables; Mac OS never splits them). */
+// The SE's SCC and its VIA share the interrupt lines: while the SCC asks, the wire says 2 whatever the VIA does
+// (docs/23 section 22), so an SCC nobody serves stops the clock too. When the guard trips on level 4 the SCC's
+// master interrupt enable is taken away (WR9 = 0) until a driver programs the chip again.
+static volatile int scc_quiet_wanted;
+static uint32_t scc_quiets;
+static void scc_quiet(void)                      // the service core, outside the level lock and any bus cycle
+{
+    (void)psmac_wire_read(0x9FFFF8u + 2, 1);     // a read of channel A's control register: the next write is a pointer
+    psmac_wire_write(0xBFFFF9u + 2, 1, 9, 0);    // WR9 ...
+    psmac_wire_write(0xBFFFF9u + 2, 1, 0, 0);    // ... master interrupt enable off, no reset
+    if (scc_quiets++ < 4) {
+        kprintf("[PSMAC:SE] irqguard: the SCC's interrupt had no taker; its master interrupt enable is off until "
+                "a driver sets it again (the VIA's level is hidden behind the SCC's on this board)\n");
+    }
+}
+#define GUARD_N  20000u
+#define GUARD_MS 20u
+#define GUARD_NEST 4u                            /* or taken GUARD_NEST times in a row inside its own handler, deeper each time, at the same PC */
+static int guard_on = 1;
+static uint8_t guard_mask;                       /* bit 2: level 2 kept away, bit 4: level 4 */
+static uint64_t guard_until;
+static uint32_t guard_holds[8];
+static int guard_handoff;                        /* the views have been apart since the last RESET: psmac_card_handoff done */
+static uint64_t storm_until;
+void psmac_card_handoff(void);
+static inline uint64_t g_now(void) { uint64_t v; __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(v)); return v; }
+static inline uint64_t g_hz(void)  { uint64_t v; __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(v)); return v; }
+static void irq_guard(void)                      /* under the level lock (store_level) */
+{
+    if (psmac_board_solo || !psmac_mmu_views_apart()) { guard_mask = 0; return; }
+    uint64_t now = g_now();
+    if (!guard_handoff) {
+        guard_handoff = 1; psmac_card_handoff();
+        if (slot_storm == 1) { slot_storm = 4; storm_until = now + g_hz() * 3; }
+    }
+    if (slot_storm == 4 && now >= storm_until) { slot_storm = 2; storm_until = now + g_hz() * 60; kprintf("[PSMAC:SE] mac.slotstorm: the slot line held up for 60 s\n"); }
+    if (slot_storm == 2 && now >= storm_until) { slot_storm = 3; kprintf("[PSMAC:SE] mac.slotstorm: the slot line let go\n"); }
+    if (!guard_on) { guard_mask = 0; return; }
+    if (guard_mask && now >= guard_until) guard_mask = 0;
+    struct psmac_irqwatch *w = &psmac_irqwatch;
+    uint32_t lv = w->last_level;
+    if (!guard_mask && (w->run >= GUARD_N || w->nest >= GUARD_NEST) && (lv == 2 || lv == 4)) {
+        int nested = w->nest >= GUARD_NEST;
+        if (lv == 4) {
+            scc_quiet_wanted = 1;                // the service core does it (psmac_se_service, scc_quiet)
+        }
+        guard_mask = (uint8_t)(1u << lv); guard_until = now + g_hz() * GUARD_MS / 1000u; w->run = 0; w->nest = 0;
+        if (guard_holds[lv]++ < 4)
+            kprintf("[PSMAC:SE] irqguard: level %u %s at PC %08x with its source still asserted (RBV IFR %02x IER %02x); kept away %u ms at a time\n",
+                    lv, nested ? "taken inside its own handler again and again" : "taken 20,000 times in a row", w->last_pc, rbv_ifr, rbv_ier, GUARD_MS);
+    }
+}
 unsigned psmac_se_ipl(unsigned raw)
 {
     if (psmac_board_solo) return psmac_solo_ipl();
     unsigned ipl = 0;
+    if (scc_irq_off == 1) raw &= ~2u;            // aux (2) masks nothing any more: docs/23 section 22
+    if (guard_mask & 16) raw &= ~2u;             /* the guard holds the SE's level 2, the IIci's 4 */
     if (raw & 2) ipl = 4;
     else if (raw & 1) ipl = 1;
-    if (psmac_se_rbv_irq() && ipl < 2) ipl = 2;
+    if (!(guard_mask & 4) && psmac_se_rbv_irq() && ipl < 2) ipl = 2;
     if (psmac_plus_irq() && ipl < 1) ipl = 1;    /* the Plus: the ADB transceiver's shift-register interrupt, the VIA's level */
+    if (psmac_adb_irq() && ipl < 1) ipl = 1;     /* the virtual ADB devices' shift-register interrupt, raised here (psmac_adb.c) */
     return ipl;
 }
 
@@ -1470,6 +1595,18 @@ static void spd_service(void)
 #define SE_ROWBYTES 64
 static uint8_t shadow[SE_ROWS * SE_ROWBYTES];
 static volatile uint32_t dirty[(SE_ROWS + 31) / 32];
+/* A menu bar with titles on the SE's screen: rows 1 and 2 white from x 40 to 440, and between 60 and 800 black pixels
+   where the titles are (x 40-250, y 5-13; the Finder's five have about 480, a grey desktop there 949). For the
+   testbed's scripts (mac.inputadb=N,menus) */
+int psmac_se_menu_titles(void)
+{
+    int n = 0;
+    for (int x = 40 >> 3; x < 440 >> 3; x++) if (shadow[1 * SE_ROWBYTES + x] | shadow[2 * SE_ROWBYTES + x]) return 0;
+    for (int y = 5; y <= 13; y++) {
+        for (int x = 40; x <= 250; x++) n += (shadow[y * SE_ROWBYTES + (x >> 3)] >> (7 - (x & 7))) & 1;
+    }
+    return n >= 60 && n <= 800;
+}
 static volatile int shadow_valid;
 static uint32_t rows_sent, frames_marked, se_lines_bad, rows_deferred;   /* se_lines_bad: address lines that failed the test at the start (bit n = An) */
 
@@ -1579,6 +1716,12 @@ void psmac_se_service(void)
 {
     if (psmac_board_solo) { psmac_solo_service(); return; }
     if (!psmac_board_se) return;
+    if (psmac_mmu_views_apart()) { level_lock(); store_level(se_wire_ipl); level_unlock(); }   /* the storm guard's clock (irq_guard): judged on every turn, not only on bus cycles */
+    if (scc_quiet_wanted) {
+        scc_quiet_wanted = 0;
+        scc_quiet();
+    }
+    psmac_adb_service();                          /* a virtual ADB device with something for an idle host (psmac_adb.c) */
     snd_service();                                /* the speaker first: its halves have deadlines, the rows do not */
     spd_service();                                /* the 400K drive's speed, when a seek has asked for another zone */
     psmac_errand(PSMAC_ERR_LOOP);
@@ -1738,7 +1881,22 @@ void psmac_se_start(void)
    (via_ddra, for port A bit 4), and one access to $400000 puts RAM back at 0 */
 void psmac_se_after_reset(void)
 {
-    if (!psmac_board_se || psmac_board_solo) return;
+    if (!psmac_board_se) return;
+    /* The chips this file answers for the IIci, reset as the 68030's RESET resets a IIci's RBV and ASC (26 November
+       2026, docs/23 section 15): no interrupt enabled or flagged, no slot enabled, the sound chip off. They used to keep
+       what the last session left: after A/UX 3 rebooted the SE (its autoconfig's new kernel), the IFR still had the
+       sound bit the ROM's $90 writes set and the Mac OS that started next enabled it, so level 2 was asserted with
+       nothing to clear it and the Mac never came up. */
+    level_lock();
+    rbv_ifr = 0; rbv_ier = 0; rbv_regs[0x12] = 0; rbv_regs[0x02] = 0;
+    guard_mask = 0; guard_handoff = 0;
+    psmac_adb_reset();
+    asc_regs[0x801] = 0; asc_regs[0x802] = 0; asc_regs[0x803] = 0;
+    asc_level[0] = asc_level[1] = 0;
+    __atomic_store_n(&snd_flush, snd_flush + 1, __ATOMIC_RELEASE);
+    if (!psmac_board_solo) store_level(se_wire_ipl);
+    level_unlock();
+    if (psmac_board_solo) { psmac_solo_level_now(); return; }
     via_ddra = via_ddrb = via_ora = via_orb = via_ier = 0;
     if (psmac_board_plus) { level_lock(); psmac_plus_reset(); store_level(se_wire_ipl); level_unlock(); }
     se_overlay_off();
@@ -1781,6 +1939,7 @@ void psmac_se_options(const char *args)
     }
     psmac_solo_options(args);
     psmac_plus_options(args);
+    psmac_adb_options(args);
     if ((tok = find_token(args, "mac.setrace="))) {
         tok += 12; uint32_t n = 0; while (*tok >= '0' && *tok <= '9') n = n * 10 + (*tok++ - '0'); se_trace_left = n;
         if (*tok == ',') { tok++; for (int i = 0; i < 4 && *tok && *tok != ' '; i++, tok++) se_trace_dev[i] = (*tok >= 'a' && *tok <= 'z') ? *tok - 32 : *tok; }
@@ -1806,6 +1965,21 @@ void psmac_se_options(const char *args)
         int v = 0;
         for (tok += 15; *tok >= '0' && *tok <= '9'; tok++) v = v * 10 + (*tok - '0');
         if (v >= 1 && v <= 1000) scsi_wait_ms = v;
+    }
+    if ((tok = find_token(args, "mac.sccirq="))) {
+        tok += 11;
+        scc_irq_off = tok[0] == 'o' && tok[1] == 'f' ? 1 : tok[0] == 'a' && tok[1] == 'u' ? 2 : 0;
+        if (scc_irq_off == 1) kprintf("[PSMAC:SE] mac.sccirq=off: the SCC's interrupt (the IIci's level 4) is kept from the 68k (a diagnostic: no serial-port interrupts)\n");
+        if (scc_irq_off == 2) {
+            kprintf("[PSMAC:SE] mac.sccirq=aux: no longer masks anything (27 November 2026): A/UX's own SCC driver needs "
+                    "the interrupt, and the storm guard quiets an SCC nobody serves; the option can be taken out\n");
+        }
+    }
+    if ((tok = find_token(args, "mac.slotstorm="))) slot_storm = tok[14] == '1';
+    if ((tok = find_token(args, "mac.irqguard="))) {
+        tok += 13;
+        guard_on = !(tok[0] == 'o' && tok[1] == 'f') && tok[0] != '0';
+        if (!guard_on) kprintf("[PSMAC:SE] mac.irqguard=off: an interrupt nobody clears is not kept away under A/UX's tables\n");
     }
     if ((tok = find_token(args, "mac.sefloat="))) { tok += 12; scsi_float_sim = tok[0] == '1'; }   /* the testbed: the 5380 read as on an unterminated bus */
     if ((tok = find_token(args, "mac.seram="))) {   /* 1, 2, 2.5 or 4: the SE's address arithmetic takes the top of what is fitted */
@@ -1869,6 +2043,8 @@ static void iwm_report(void)
 
 void psmac_se_report(void)
 {
+    if (guard_holds[2] || guard_holds[4])
+        kprintf("[PSMAC:SE] irqguard: level 2 held %u times, level 4 %u times so far%s\n", guard_holds[2], guard_holds[4], guard_mask ? " (holding now)" : "");
     if (psmac_board_solo) { psmac_solo_report(); return; }
     if (!psmac_board_se) return;
     iwm_report();
@@ -1876,6 +2052,7 @@ void psmac_se_report(void)
             rows_sent, se_lines_bad ? " (an address line failed its test at the start)" : "", verify_rows, verify_rows_bad, verify_words_bad, verify_on ? "" : "; check stopped: reads in doubt", blind_rows, frames_marked, local_reads, local_writes, rbv_ifr, rbv_ier, rbv_regs[0x12],
             xp.serve ? "not answering, the board layer answers" : "answering", xp.reads, xp.reads_ff, xp.writes);
     if (scsi_empty || psmac_scsidev_configured()) psmac_scsidev_report();   /* the empty bus answered here, the virtual SCSI devices */
+    psmac_adb_report();
     if (psmac_board_plus) {
         psmac_plus_report();
         if (plus_drq_waits || plus_drq_timeouts) kprintf("[PSMAC:PLUS]   SCSI pseudo-DMA: %u bytes waited for DRQ (%u polls beyond the first), %u gave up\n", plus_drq_bytes, plus_drq_waits, plus_drq_timeouts);

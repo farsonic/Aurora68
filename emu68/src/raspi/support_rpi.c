@@ -130,7 +130,11 @@ static inline void putByte(void *io_base, char chr)
 
 #undef ARM_PERIIOBASE
 #ifdef PSMAC
-#define ARM_PERIIOBASE 0x3f000000
+/* The peripherals' base for the firmware mailbox below: their low window (0x3F000000) until mac.mmu=full's address
+   spaces leave it out, then the kernel's own mapping, PSMAC_PERIPH_HI (psmac_mmu.c space_install, docs/23 section 21:
+   psmac_vc_setup calls the mailbox on the 68k's core). */
+uintptr_t psmac_periph_base = 0x3f000000;
+#define ARM_PERIIOBASE psmac_periph_base
 #else
 #define ARM_PERIIOBASE 0xf2000000
 #endif

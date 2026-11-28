@@ -106,14 +106,20 @@ static int cmd(int id, const uint8_t *cdb, int len, uint8_t *in, int inmax, cons
     for (int i = 0; i < len; i++) put_byte(cdb[i], 2);
     int got = 0;
     if (wait_req() && phase() == 1) {
-        if (dma) { wr(3, 1); wr(2, 0x02); wr(7, 0); while (got < inmax && (bus_rd(5) & 0x40)) in[got++] = psmac_scsidev_pdma_read(); wr(2, 0); }
+        if (dma) { wr(3, 1); if (dma == 3) psmac_scsidev_pdma_write(0x5a); wr(2, 0x02); wr(7, 0); while (got < inmax && (bus_rd(5) & 0x40)) in[got++] = psmac_scsidev_pdma_read(); wr(2, 0); }
         else while (wait_req() && phase() == 1) { int v = get_byte(1); if (got < inmax) in[got] = (uint8_t)v; got++; }
     } else if (wait_req() && phase() == 0) {
-        if (dma) { wr(3, 0); wr(2, 0x02); wr(5, 0); for (int i = 0; i < outlen && (bus_rd(5) & 0x40); i++) psmac_scsidev_pdma_write(out[i]); wr(2, 0); }
+        if (dma) { wr(3, 0); if (dma == 3) psmac_scsidev_pdma_write(0x5a); wr(2, 0x02); wr(5, 0); for (int i = 0; i < outlen && (bus_rd(5) & 0x40); i++) psmac_scsidev_pdma_write(out[i]); wr(2, 0); }
         else { int i = 0; while (wait_req() && phase() == 0) put_byte(i < outlen ? out[i++] : 0, 0); }
     }
+    if (dma == 2) {                            /* status and message by pseudo-DMA too, as A/UX 3's driver reads the status */
+        last_status = last_msg = 0xee;
+        if (wait_req() && phase() == 3) { wr(3, 3); wr(2, 0x02); wr(7, 0); if ((bus_rd(5) & 0x48) == 0x48) last_status = psmac_scsidev_pdma_read(); wr(2, 0); }
+        if (wait_req() && phase() == 7) { wr(3, 7); wr(2, 0x02); wr(7, 0); if ((bus_rd(5) & 0x48) == 0x48) last_msg = psmac_scsidev_pdma_read(); wr(2, 0); }
+    } else {
     if (wait_req() && phase() == 3) last_status = (uint8_t)get_byte(3); else last_status = 0xee;
     if (wait_req() && phase() == 7) last_msg = (uint8_t)get_byte(7); else last_msg = 0xee;
+    }
     OK(!(bus_rd(4) & 0x40), "bus free after the command %02x (bus status %02x)", cdb[0], bus_rd(4));
     return got;
 }
@@ -322,6 +328,24 @@ static void test_disk(int id, int dma, uint8_t *img, uint32_t secs)
     memset(c, 0, sizeof c); c[0] = 0x08; c[3] = 100; c[4] = 128;
     n = cmd(id, c, 6, b, sizeof b, 0, 0, dma);
     OK(n == 128 * 512 && !memcmp(b, w, 128 * 512), "READ(6) 128 blocks back");
+    if (dma) {                                 /* the status and the message read by pseudo-DMA (A/UX 3) */
+        memset(c, 0, sizeof c); c[0] = 0x08; c[3] = 100; c[4] = 2;
+        n = cmd(id, c, 6, b, sizeof b, 0, 0, 2);
+        OK(n == 2 * 512 && !memcmp(b, w, 2 * 512) && last_status == 0 && last_msg == 0, "READ(6) with status %02x and message %02x by pseudo-DMA", last_status, last_msg);
+        memset(c, 0, sizeof c); c[0] = 0x1a; c[2] = 0x2e; c[4] = 255;
+        cmd(id, c, 6, b, sizeof b, 0, 0, 2);
+        OK(last_status == 2 && last_msg == 0, "CHECK CONDITION by pseudo-DMA: status %02x message %02x", last_status, last_msg);
+        sense_key(id, 0);
+        /* a write of the window before DMA mode is on (A/UX 3 does it once per transfer): not a data byte */
+        static uint8_t k[512];
+        for (unsigned i = 0; i < sizeof k; i++) k[i] = (uint8_t)(i * 7 + 3);
+        memset(c, 0, sizeof c); c[0] = 0x0a; c[2] = 1; c[3] = 0x2c; c[4] = 1;
+        cmd(id, c, 6, 0, 0, k, sizeof k, 3);
+        OK(last_status == 0 && (!img || !memcmp(img + 300 * 512, k, 512)), "WRITE(6) with a window write before DMA mode: the block unshifted");
+        memset(c, 0, sizeof c); c[0] = 0x08; c[2] = 1; c[3] = 0x2c; c[4] = 1;
+        n = cmd(id, c, 6, b, sizeof b, 0, 0, 3);
+        OK(n == 512 && !memcmp(b, k, 512) && last_status == 0, "READ(6) with a window write before DMA mode: the block back");
+    }
     /* FORMAT UNIT with a defect list header and two defects: taken and dropped, the blocks kept */
     uint8_t fl[12] = { 0, 0x10, 0, 8, 0, 0, 0, 1, 0, 0, 0, 2 };
     memset(c, 0, sizeof c); c[0] = 0x04; c[1] = 0x10;

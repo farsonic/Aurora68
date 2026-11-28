@@ -32,6 +32,9 @@ extern void frf_native_usb_keyboard_boot_report(const uint8_t report[8]) __attri
 extern void aga_virtual_mouse_update(int dx, int dy, unsigned buttons);
 extern void pt_mouse_extra(int wheel, int pan, unsigned buttons) __attribute__((weak));
 extern int alice_pi_board_type(void);                    /* alice_net.c: revision code bits 4-11 */
+#ifdef PSMAC
+extern uint32_t alice_pi_board_rev(void);               /* alice_net.c: the whole revision code */
+#endif
 extern int alice_pi_is_2711(void);
 extern void psmac_console_miniuart(void) __attribute__((weak));   /* psmac_bus.c: the log leaves the PL011 */
 
@@ -82,6 +85,15 @@ static uint32_t phase_t, wait_since;
 static char shown[64];
 static int shown_col = -1;
 static int keys_loaded, uart_done, retried, fail_logged;
+/* the 3B+ and 3A+: the UART's set-ups tried in turn while the chip stays silent (nothing received at all), and
+   the mailbox's last answer to BT_ON; the heartbeat's FAILED line carries them, so a saved log (its last 64 KB)
+   still says what was tried (the first real 3A+, 27 November 2026, stayed silent with the RTS set-up) */
+static int uart_alt, bton_rc = -99;
+/* bt.local=AABBCCDDEEFF in pairings.txt (or cmdline.txt): the address the pairings were made with. Recorded the
+   first time a paired device connects, then given to the chip at every start (bthost.c, Broadcom's Write_BD_ADDR),
+   so a card moved from a Pi 3B to a 3A+ keeps its keyboards and mice (the chips' own addresses differ by board:
+   the owner's Keychron, paired on the 3B, was never heard on the 3A+, 28 November 2026). HCI order, LSB first. */
+static uint8_t local_addr[6]; static int local_known;
 static uint32_t rx_total, rx_errors, rx_overruns, rx_ring_full;
 
 /* ---- the receive side: the PL011's FIFO into a ring, from anywhere on the way (25 November 2026, docs/21) ---------
@@ -150,7 +162,7 @@ static void uart_flush(uint32_t cr)
 static int bt_on(int on)
 {
     int t = alice_pi_board_type(), pin = t == 0x0c ? 45 : t == 0x12 ? 42 : 0;
-    if (!pin) return alice_mbox(0x00038041u, 128u + 0u, on ? 1u : 0u, 0);
+    if (!pin) return bton_rc = alice_mbox(0x00038041u, 128u + 0u, on ? 1u : 0u, 0);
     extern spinlock_t psmac_gpfsel_lock;
     spinlock_acquire(&psmac_gpfsel_lock);
     uint32_t f = rd(GPIO + 0x10);                                       /* GPFSEL4: GPIO 40-49 */
@@ -164,12 +176,31 @@ static void uart_init(void)
     if (psmac_console_miniuart) psmac_console_miniuart();    /* one PL011 on a Pi 3: the log leaves it first */
     int t = alice_pi_board_type();
     int flow = alice_pi_is_2711() || t == 0x0c || t == 0x12;
-    CR_ON = flow ? CR_FLOW : CR_NOFLOW;
-    blog(flow ? "[BT] UART: TX, RX, CTS and RTS (GPIO 30-33)" : "[BT] UART: TX and RX only (GPIO 32, 33): this board has no CTS/RTS to the chip");
+    /* The 3B+ (0x0d) and 3A+ (0x0e) wire GPIO 30/31 to the chip's RTS/CTS. Left alone, GPIO 31
+       (our RTS, the chip's CTS) sits high, as an input pulled up or as ALT3 with the PL011's RTS
+       off, and the chip never answers: the first real 3A+ (27 November 2026) logged "the chip
+       does not answer (command 0c03)" with nothing received. Here GPIO 30-33 go to ALT3 and our
+       RTS is asserted (RTSEn: held while there is room); the chip's CTS is not obeyed, as on
+       Raspberry Pi's own "noflow" set-up for these boards. */
+    int rts = t == 0x0d || t == 0x0e;
+    /* uart_alt on these boards: 0 our RTS asserted, the chip's CTS not obeyed; 1 full CTS/RTS flow control;
+       2 TX and RX only, GPIO 31 a plain output held low (the chip's CTS: clear to send), GPIO 30 an input */
+    if (rts && uart_alt == 1) { flow = 1; rts = 0; }
+    int rts_gpio = rts && uart_alt == 2;
+    if (rts_gpio) rts = 0;
+    CR_ON = flow ? CR_FLOW : rts ? (CR_NOFLOW | (1u << 11) | (1u << 14)) : CR_NOFLOW;
+    blog(flow ? "[BT] UART: TX, RX, CTS and RTS (GPIO 30-33)"
+         : rts ? "[BT] UART: TX, RX and our RTS asserted (GPIO 30-33; the chip's CTS line not obeyed): a 3B+ or 3A+"
+         : rts_gpio ? "[BT] UART: TX and RX (GPIO 32, 33), GPIO 31 held low as the chip's CTS: a 3B+ or 3A+, third set-up"
+         : "[BT] UART: TX and RX only (GPIO 32, 33): this board has no CTS/RTS to the chip");
     extern spinlock_t psmac_gpfsel_lock;
     spinlock_acquire(&psmac_gpfsel_lock);
     uint32_t f = rd(GPIO + 0x0c);                       /* GPFSEL3: GPIO 30-33 (or 32-33) to ALT3 (UART0 CTS RTS TXD RXD) */
-    if (flow) f = (f & ~0xfffu) | 07777u;
+    if (flow || rts) f = (f & ~0xfffu) | 07777u;
+    else if (rts_gpio) {
+        wr(GPIO + 0x28, 1u << 31);                      /* GPCLR0: GPIO 31 low before it becomes an output */
+        f = (f & ~0xfffu) | 07710u;                     /* 33, 32 ALT3; 31 an output (001); 30 an input */
+    }
     else f = (f & ~(077u << 6)) | (077u << 6);
     wr(GPIO + 0x0c, f);
     uint32_t f1 = rd(GPIO + 0x04);                      /* GPIO 15 an input: UART0's RX comes from GPIO 33 only */
@@ -303,6 +334,10 @@ static void keys_save(void)
     if (!card_saves()) return;
     static char txt[4096]; unsigned n = 0;
     n = put_str(txt, 0, "# Bluetooth pairings, written by the Aurora68 kernel (one bt.dev= per line; delete a line to forget)\n");
+    if (local_known) {
+        n = put_str(txt, n, "# the address these pairings were made with: every Pi's Bluetooth takes it, so the card can move between Pis\n");
+        n = put_str(txt, n, "bt.local="); n = put_hex(txt, n, local_addr, 6, 1); txt[n++] = '\n';
+    }
     for (int i = 0; i < bh.nkeys && n < sizeof txt - 300; i++) {
         const struct bt_key *k = &bh.keys[i];
         txt[n++] = '#'; txt[n++] = ' '; for (int j = 0; k->name[j] && j < 39; j++) txt[n++] = (k->name[j] >= ' ' && k->name[j] < 127) ? k->name[j] : '?';
@@ -442,6 +477,24 @@ static void auto_pair_poll(uint32_t now)
     }
 }
 static int hexv(char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1; }
+/* bt.local=AABBCCDDEEFF (written most significant byte first, like bt.dev=) */
+static void local_from(const char *s)
+{
+    static const char w[] = "bt.local=";
+    for (const char *q = s; q && *q; q++) {
+        if (q != s && q[-1] != ' ' && q[-1] != '\n') continue;
+        int i = 0;
+        while (w[i] && q[i] == w[i]) i++;
+        if (w[i]) continue;
+        uint8_t a[6]; int ok = 1;
+        for (int b = 0; b < 6 && ok; b++) {
+            int hi = hexv(q[i + 2 * b]), lo = hi < 0 ? -1 : hexv(q[i + 2 * b + 1]);
+            if (hi < 0 || lo < 0) ok = 0;
+            else a[5 - b] = (uint8_t)(hi << 4 | lo);
+        }
+        if (ok) { for (int b = 0; b < 6; b++) local_addr[b] = a[b]; local_known = 1; }
+    }
+}
 /* pairings.txt (keys_save) puts "# NAME" on the line before each bt.dev= word: the name comes back with the key
    (24 November 2026; until then a device brought back from the card had no name in the log or the heartbeat) */
 static void key_name_from(const char *s, const char *p, const uint8_t a[6])
@@ -617,6 +670,23 @@ void bt_pi_report(void)
             k = key_short(t, k, &bh.keys[i]);
         }
         if (auto_pair) k = put_str(t, k, " | bt.pair on");
+        {
+            int bt = alice_pi_board_type();
+            if (bh.state != BT_FAILED && (bt == 0x0d || bt == 0x0e)) { k = put_str(t, k, " | UART set-up "); k = put_num(t, k, (uint32_t)uart_alt + 1, 0); }
+        }
+        if (local_known) k = put_str(t, k, bh.want_addr_set ? " | address from the card" : " | address recorded on the card");
+        if (bh.state == BT_FAILED) {                    /* what was tried, for a log that has lost the start-up lines */
+            uint32_t fr = rd(UART0 + U_FR), cr = rd(UART0 + U_CR), fs3 = rd(GPIO + 0x0c);
+#ifdef PSMAC
+            k = put_str(t, k, " | Pi board "); k = put_num(t, k, alice_pi_board_rev(), 1);
+#endif
+            k = put_str(t, k, ", UART set-up "); k = put_num(t, k, (uint32_t)uart_alt + 1, 0); k = put_str(t, k, " of 3");
+            k = put_str(t, k, ", in "); k = put_num(t, k, rx_total, 0); k = put_str(t, k, " out "); k = put_num(t, k, tx_sent, 0);
+            k = put_str(t, k, ", FR "); k = put_num(t, k, fr, 1); k = put_str(t, k, " CR "); k = put_num(t, k, cr, 1);
+            k = put_str(t, k, " GPFSEL3 "); k = put_num(t, k, fs3, 1);
+            k = put_str(t, k, ", BT_ON mailbox "); k = put_str(t, k, bton_rc == 0 ? "ok" : bton_rc == -99 ? "not used" : "FAILED");
+            k = put_str(t, k, ", "); k = put_num(t, k, uart_hz / 1000u, 0); k = put_str(t, k, " kHz");
+        }
     }
     t[k] = 0; kprintf("%s\n", t);
     if (phase == 4) {
@@ -775,6 +845,9 @@ void bt_pi_poll(void)
         if (st == 0 && now - card_wait < 10000) return;
         keys_loaded = 1;
         load_keys(alice_bootargs());
+        local_from(alice_bootargs());
+        if (txt && txt[0]) local_from(txt);                    /* the card's, newer, wins */
+        if (local_known) { for (int b = 0; b < 6; b++) bh.want_addr[b] = local_addr[b]; bh.want_addr_set = 1; }
         if (txt && txt[0]) { int before = bh.nkeys; load_keys(txt); char t[64]; unsigned k = put_str(t, 0, "[BT] pairings.txt on the card: "); k = put_num(t, k, (uint32_t)bh.nkeys - (uint32_t)before, 0); k = put_str(t, k, " more device(s)"); t[k] = 0; blog(t); }
         pair_option();
         {   /* bt.fwbaud=N: the firmware download's speed (0 or 115200: at the line's own speed) */
@@ -837,7 +910,7 @@ void bt_pi_poll(void)
         phase = 3; phase_t = now;
         break;
     case 3:
-        if ((int32_t)(now - phase_t) < 250) break;      /* the chip boots its ROM */
+        if ((int32_t)(now - phase_t) < (uart_alt ? 1000 : 250)) break;   /* the chip boots its ROM (longer on the later set-ups) */
         pump_ready = 0;
         while (__atomic_load_n(&pump_lock, __ATOMIC_ACQUIRE)) ;
         rxr_h = rxr_t = 0;
@@ -873,6 +946,19 @@ void bt_pi_poll(void)
                 cts_changes++;
             }
             cts_last = c;
+        }
+        {
+            int bt = alice_pi_board_type();
+            if (bh.state == BT_FAILED && rx_total == 0 && (bt == 0x0d || bt == 0x0e) && uart_alt < 2) {   /* a 3B+/3A+ chip silent: the next UART set-up */
+                uart_alt++;
+                fail_logged = 0;
+                blog(uart_alt == 1 ? "[BT] nothing at all from the chip: trying again with full CTS/RTS flow control"
+                                   : "[BT] still nothing from the chip: trying again with GPIO 31 held low as its CTS");
+                uart_init();
+                phase = 7; phase_t = now;
+                post("starting again (another UART set-up)", 0);
+                break;
+            }
         }
         if (bh.state == BT_FAILED && bh.fw && bh.fast == 1 && !slow_retried) {   /* it failed at the higher speed: at 115200, once */
             slow_retried = 1;
@@ -948,6 +1034,16 @@ void bt_pi_poll(void)
             was_connected = conn;
         }
 #endif
+        if (bh.state == BT_READY && !local_known) {   /* the first paired device to connect: these pairings belong to this address */
+            for (int i = 0; i < bh.nkeys; i++) {
+                if (!(bh.keys[i].flags & BTK_CONNECTED)) continue;
+                for (int b = 0; b < 6; b++) local_addr[b] = bh.bdaddr[b];
+                local_known = 1;
+                blog("[BT] a paired device connected: this Pi's Bluetooth address goes into pairings.txt (bt.local=), for any Pi the card moves to");
+                keys_save();
+                break;
+            }
+        }
         int col = bh.state == BT_READY ? 1 : bh.state == BT_FAILED ? 2 : 0;
         if (bh.state == BT_FAILED && !fail_logged) {
             fail_logged = 1;

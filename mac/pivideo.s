@@ -14,7 +14,7 @@
 | colour table and the depth live in the display block at window + $58000 (psmb.h, struct
 | psmb_display), and the Pi converts the picture to its VideoCore frame buffer sixty times a
 | second (emu68/src/psmac/psmac_display.c) and raises the slot interrupt at each tick while the
-| driver asks for it. That interrupt is the card's VBL: the handler below calls _DoVBLTask for
+| driver asks for it. That interrupt is the card's VBL: the handler below calls DoVBLTask for
 | slot 9, which runs QuickDraw's cursor task and whatever SlotVInstall queued for this screen.
 |
 | Modes 128 to 133 are 1, 2, 4, 8, 16 and 32 bits; the depth, pitch and frame buffer address of each
@@ -28,6 +28,22 @@
 | psmb.h), its VBL queue that of slot $A, and "PiHDMI:" in front of its log lines. The slot $A card
 | is a declaration ROM and nothing more: the driver reaches the window at slot 9's addresses and
 | takes slot 9's interrupt, where each handler claims only its own block's tick.
+|
+| Its own slot's interrupt (27 November 2026, docs/26). A/UX's kernel opens every video card's driver
+| itself and keeps one slot interrupt handler per slot: the HDMI driver's SIntInstall on slot 9, beside
+| the SE screen driver's, ended in "panic: Multiple interrupt handlers for slot 9", which is what locked
+| the SE up under A/UX with the HDMI screen on. So the HDMI driver now installs its handler on its own
+| card's slot, $A, and tells the Pi so in its display block (irq_slot, written before VBLs are wanted);
+| the Pi then raises slot $A's bit of the RBV's slot register for its ticks instead of slot 9's line, as
+| a real card in slot $A would. A driver from before writes nothing there and keeps slot 9.
+|
+| Its frames in its own slot's space (27 November 2026, docs/26). A/UX files each video card under the
+| slot its frame address lies in; the HDMI card's pixels were at slot 9's addresses ($F9988000,
+| $90000000), so A/UX took the HDMI card for slot 9's and drew the SE screen's pointer into the HDMI
+| frame. The kernel now gives this card's modes addresses in slot $A ($FAA88000 for the small ones,
+| $FA000000 for the big region's, the same Pi memory) when this driver carries the marker after its
+| name, which says it takes slot $A's megabyte as reachable in 24-bit mode; and under A/UX the driver
+| refuses a mode the calling Macintosh environment cannot reach (reach, below).
 
 	.text
 	.globl	drvr_start
@@ -51,6 +67,8 @@
 	.equ	D_FLAGS,	32
 	.equ	D_VBL_ENABLE,	36
 	.equ	D_VBL_PENDING,	40
+	.equ	D_IRQ_SLOT,	56		| the slot our handler is on, for the Pi (psmb.h irq_slot; 0 in drivers before it)
+	.equ	D_AUX,		60		| Pi: not 0 while A/UX's tables are on (psmb.h aux, docs/26)
 	.equ	D_CLUT_SEQ,	48
 	.equ	D_CLUT,		64
 	.equ	D_MODE_BASE,	1088		| 8 longs: the frame buffer's 68k address per mode 128+i (0: none)
@@ -60,10 +78,11 @@
 	.equ	DISP_ENABLED,	1
 	.equ	DISP_GRAY,	2
 
-	.equ	SLOT,		9		| the slot whose interrupt the Pi raises (both screens' cards)
 	.ifdef	SCREEN2
+	.equ	SLOT,		10		| the slot whose interrupt our handler is on and the Pi raises: the card's own, $A
 	.equ	VBL_SLOT,	10		| the slot whose VBL queue this screen's ticks run: its card's, $A
 	.else
+	.equ	SLOT,		9
 	.equ	VBL_SLOT,	9
 	.endif
 	.equ	ioTrap,		6
@@ -79,7 +98,8 @@
 	.equ	_NewPtrSysClear, 0xA71E
 	.equ	_SIntInstall,	0xA075
 	.equ	_SIntRemove,	0xA076
-	.equ	_DoVBLTask,	0xA072		| D0.w = slot: the Vertical Retrace Manager runs that slot's VBL queue
+	.equ	JVBLTask,	0x0D28		| low memory: the Vertical Retrace Manager's DoVBLTask (D0.w = slot runs that
+						| slot's VBL queue), called through this vector rather than as trap $A072
 
 | video driver control codes (Video.h)
 	.equ	cscReset,	0
@@ -129,6 +149,8 @@ drvr_start:
 	.ifdef	SCREEN2
 	.byte	21
 	.ascii	".Display_Video_PiHDMI"
+	.even
+	.ascii	"A68:HDMI frames in slot A"	| for the kernel: this driver knows its own slot's space (below)
 	.else
 	.byte	22
 	.ascii	".Display_Video_PiStorm"
@@ -193,10 +215,14 @@ d_open:
 	tst.w	%d0
 	bne.s	1f
 	log	"VBL handler installed"
-1:	move.l	#1,D_VBL_ENABLE(%a3)	| a video card's Open turns its VBL interrupts on (Designing Cards and
+1:
+	.ifdef	SCREEN2
+	move.l	#SLOT,D_IRQ_SLOT(%a3)	| the slot the Pi is to raise for our ticks: before they are wanted
+	.endif
+	move.l	#1,D_VBL_ENABLE(%a3)	| a video card's Open turns its VBL interrupts on (Designing Cards and
 	move.w	#1,G_INT(%a2)		| Drivers); cscSetInterrupt is how the system turns them off later. Without
 					| this the cursor never appears on the second screen: QuickDraw draws it
-					| from the screen's slot VBL task, which only _DoVBLTask from our handler runs.
+					| from the screen's slot VBL task, which only DoVBLTask from our handler runs.
 					| Only once the handler is in: a tick before it raised slot 9's line with
 					| nobody to lower it (20 November 2026, docs/10)
 	move.l	#DISP_ENABLED,D_FLAGS(%a3)	| the Pi starts converting frames
@@ -224,6 +250,9 @@ d_close:
 	move.l	%a2,%a0
 	clr.l	D_FLAGS(%a1)
 	clr.l	D_VBL_ENABLE(%a1)
+	.ifdef	SCREEN2
+	clr.l	D_IRQ_SLOT(%a1)
+	.endif
 	lea	G_SIQ(%a0),%a0
 	moveq	#SLOT,%d0
 	.short	_SIntRemove
@@ -285,12 +314,19 @@ c_setmode:
 	lea	D_MODE_BASE(%a0),%a3
 	move.l	(%a3,%d1.w*4),%d2
 	beq	c_param			| no such mode at this screen size
+	.ifdef	SCREEN2
+	move.l	%d2,%d0
+	bsr	reach			| a mode whose pixels the caller cannot reach is refused (Monitors offers every
+	bne	c_param			| mode the card has; 20 November 2026; A/UX, 27 November 2026)
+	.else				| (the one-screen and SE screen drivers as they were, byte for byte)
 	tst.b	MMU32Bit
 	bne.s	1f
 	and.l	#0xFFF00000,%d2		| in 24-bit mode only the slot's megabyte is reachable: a mode in the big
 	cmp.l	#0xF9900000,%d2		| region ($90000000) would put QuickDraw's pixels on the exception vectors
 	bne	c_param			| (Monitors offers every mode the card has; 20 November 2026)
-1:	move.w	csMode(%a1),G_MODE(%a2)
+1:
+	.endif
+	move.w	csMode(%a1),G_MODE(%a2)
 	moveq	#1,%d2
 	lsl.w	%d1,%d2			| depth 1, 2, 4, 8, 16, 32
 	move.l	%d2,D_DEPTH(%a0)
@@ -485,13 +521,21 @@ gray_fill:
 	lea	D_MODE_BASE(%a1),%a0
 	move.l	(%a0,%d0.w*4),%d4
 	beq	9f
+	.ifdef	SCREEN2
+	move.l	%d4,%d0			| a frame the Mac cannot reach now is left alone: the big region at $90000000
+	move.l	%a1,%a0			| in 24-bit mode would come out as $000000, the exception vectors
+	bsr	reach
+	bne	9f
+	.else
 	tst.b	MMU32Bit
 	bne.s	5f
 	move.l	%d4,%d0			| 24-bit mode reaches only the slot's own megabyte ($F99xxxxx is $9xxxxx);
 	and.l	#0xFFF00000,%d0		| the big region at $90000000 would come out as $000000, the
 	cmp.l	#0xF9900000,%d0		| exception vectors, so a direct mode is left alone until the
 	bne	9f			| Mac is in 32-bit mode
-5:	move.l	%d4,%a0			| the frame buffer
+5:
+	.endif
+	move.l	%d4,%a0			| the frame buffer
 	move.l	D_DEPTH(%a1),%d0
 	move.b	#0x88,%d1		| 1 bit: 10001000 / 00100010, a 25% grey: told apart from the desktop's
 	move.b	#0x22,%d2		| 50% pattern in a picture of the Pi's screen (the real cards used 50%)
@@ -564,12 +608,64 @@ slot_int:
 	bne.s	2f
 	log	"first VBL interrupt"
 2:	moveq	#VBL_SLOT,%d0
-	.short	_DoVBLTask
+	move.l	JVBLTask,%a0		| DoVBLTask through its low-memory vector, as Apple's own video drivers call it
+	jsr	(%a0)			| (Designing Cards and Drivers' sample driver), not as trap $A072: A/UX runs a
+					| card's driver in its kernel and refuses that trap there ("Attempt to use
+					| unsupported A-line trap: A072", then a panic at the first VBL; 26 November 2026,
+					| docs/23 section 15), and the vector is the faster path under Mac OS too
 	moveq	#1,%d0
 	bra.s	3f
 1:	moveq	#0,%d0
 3:	movem.l	(%sp)+,%d1-%d2/%a0-%a2
 	rts
+
+| reach: d0 = a mode's frame address, a0 = the display block -> Z set (d0 = 0) if the Mac that asked can draw there.
+| A frame in the card's own megabyte ($F99xxxxx, the HDMI card's $FAAxxxxx) is reachable in either addressing mode;
+| anything else only in 32-bit mode. Under A/UX (27 November 2026, docs/26) this driver runs in A/UX's kernel, whose
+| low memory is not the Macintosh environment's, and the Pi says so in the block (D_AUX): then the addressing mode
+| is the calling environment's own MMU32Bit, read from its address space with MOVES (user data), and in 32-bit mode
+| only the card's own 16 MiB is reachable, which is what A/UX maps for it ($90000000, the super slot space, is not).
+| A refusal is paramErr, the Monitors control panel then keeps the depth it had.
+	.ifdef	SCREEN2
+reach:
+	movem.l	%d1/%a1,-(%sp)
+	move.l	%d0,%d1
+	and.l	#0xFFF00000,%d1
+	cmp.l	#0xF9900000,%d1
+	beq.s	8f
+	.ifdef	SCREEN2
+	cmp.l	#0xFAA00000,%d1
+	beq.s	8f
+	.endif
+	tst.l	D_AUX(%a0)
+	bne.s	2f
+	tst.b	MMU32Bit		| Mac OS: its own low memory says
+	beq.s	9f
+	bra.s	8f
+2:	movec	%sfc,%a1		| A/UX: the calling Macintosh environment's MMU32Bit
+	moveq	#1,%d1
+	movec	%d1,%sfc
+	move.l	%a1,-(%sp)
+	lea	MMU32Bit,%a1
+	moves.b	(%a1),%d1
+	move.l	(%sp)+,%a1
+	movec	%a1,%sfc
+	tst.b	%d1
+	beq.s	9f
+	and.l	#0xFF000000,%d0		| and then only the card's own slot space
+	.ifdef	SCREEN2
+	cmp.l	#0xFA000000,%d0
+	.else
+	cmp.l	#0xF9000000,%d0
+	.endif
+	bne.s	9f
+8:	moveq	#0,%d0
+	movem.l	(%sp)+,%d1/%a1
+	rts
+9:	moveq	#1,%d0
+	movem.l	(%sp)+,%d1/%a1
+	rts
+	.endif
 
 | trace: d0.w = csCode, d1.b = 'c' or 's' -> the log line "PiVideo: c NN mode M" (M: 24 or 32-bit
 | addressing at the time). The first 48 calls only; it tells how the system drives a video card.
