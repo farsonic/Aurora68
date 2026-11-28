@@ -1713,3 +1713,59 @@ values on the SE; the default follows what they report.
   events of the real devices' own, commands the transceiver pre-empted), the USB keyboard and mouse, the SE's own
   keyboard and mouse used at the same moment as the virtual ones, and modifiers and the right button under A/UX.
 - The remote control's pointer under A/UX: absolute points have no way through an ADB mouse and are dropped.
+
+## 24. "Divide by zero" in A/UX's Macintosh environment: timer 2's low byte read twice (28 November 2026)
+
+**What the owner saw.** On most starts of the SE, some minutes in, the bomb dialog "Sorry, a system error occurred.
+divide by zero"; on other starts A/UX came up as before. It came with a Pi 3B and with a 3A+.
+
+**The crash record.** `zero divide (vector 014) at PC 00305146 in "A/UX Startup"`, D1 = $00530000, $004E0000,
+$004B0000 on three starts, and the heartbeat's `timing globals: TimeDBRA 0053` (then 004e, 004b; 005c on a start
+that came up), where the same line before A/UX's tables had the kernel's own table value. The code at the PC is
+AppleTalk's start-up in the System file of A/UX's Macintosh environment (`/mac/sys/System Folder/System`): for
+ROMs from version $76 it takes TimeDBRA ($D00), divides it by 100 and divides its table of delays by the result.
+Below 100 the divisor is zero. The name "A/UX Startup" in the record is stale low memory: by then A/UX's kernel
+had been running for minutes (the log's user spaces), and the code was a process of A/UX.
+
+**Three wrong answers first.** The cause was taken to be the kernel's own measurement of the delay loop for the
+ROM's calibration table ("a timer read takes 10 us on a real Pi"; it takes about 0.1 us, and the table's value on
+the owner's Pi 3B was 10,129), and then a second measurement by "A/UX's start-up System". Test kernels 31, 32 and
+33 put a floor of 200 under the table's value, raised a smaller value in the Mac's low memory every 10 ms, and
+made a delay loop read the timer only every eighth turn. None of them changed what the owner saw, because none of
+them was where the 75 came from; the last also cut the delays the ROM counts in TimeDBRA turns to two fifths.
+All three are reverted.
+
+**Where the 75 came from.** A/UX's kernel carries its own copy of the ROM's calibration, `SetUpTimeK` (in the
+`pstart` section at $55CE4, by its symbol), and runs it when it starts; the ROM's copy is patched to take the
+Pi's table (docs/06), A/UX's is not. It times `dbf d0,*` (4,096 turns, doubled until the run lasts 1,170 timer
+ticks) against VIA timer 2, read before and after with `MOVE.W $11FF(A1),Dn`: a word at an odd address, whose
+first byte is timer 2's low byte (register 8, $1000-$11FF) and whose second is its high byte (register 9, $1200).
+Then TimeDBRA = turns x 783 / ticks, and the same for `btst #0,(a0) ; dbf` at the SCC into TimeSCCDB ($D02).
+The board layer (`psmac_se_access`, and `psmac_solo_access` on the solo board) took the register from the
+access's first address and gave that one byte for the whole word: low byte, low byte. So the routine's "ticks"
+were 257 x (the low byte's change), the run's real length modulo 256 ticks, and TimeDBRA came out as
+12,479 / (ticks mod 256): with a run of some 400 ticks on a Pi 3B, 75 to 92, and 100 or more only when the run
+happened to end early in a cycle of the low byte. Every value in the owner's logs is one this formula gives
+(83: a change of 149 or 150; 78: 158 or 159; 92: 135; 75: 165 or 166; TimeSCCDB's 15, 38, 59 and 12 likewise).
+The testbed had it too and nobody had looked: `run3` of docs/24, A/UX in MAME's SE, has `TimeDBRA 005a` after
+A/UX's tables. The word write that starts the timer (`MOVE.W #$F03C,$11FF(A1)`) lost its second byte the same
+way; the timer was running anyway, from the byte write before it.
+
+**The change** (`psmac_board_se.c`): a word or long in the VIA's space that runs from one register into the next
+is served a byte at a time, each byte at its own register, as a 68030 does on an 8-bit port. The log says so the
+first two times: `[PSMAC:SE] a 2-byte read at 50f011ff runs across VIA registers 8 and 9: served a byte at a
+time`. Accesses within one register are as before.
+
+**What A/UX should now measure.** With one timer read per turn of a delay loop (about 100 to 130 ns on a Pi 3B)
+the routine settles at 16,384 turns and a TimeDBRA near 8,000, as on a fast 68030. The routine cannot count
+past 32,768 turns: a machine on which those take less than 1,170 ticks (45 ns a turn) would leave it doubling
+zero for ever, with interrupts off. A Pi 3 is a factor of two or more away from that; a faster Pi would need
+`mac.dbfslow=2` or more under A/UX (*inference*, not tried).
+
+**In the testbed** (A/UX in MAME's SE, the branch's `psmac-se.declrom`, 16 minutes): the log has the word write and
+the word read at $50F011FF served a byte at a time when A/UX's kernel starts; TimeDBRA after A/UX's tables is $0144
+(324) beside the kernel's own table value of $020F (527) for the same loop, where `run3` had $005A beside $011C;
+A/UX went on to 37 user spaces and its idle loop, no fault. (A first run with `main`'s `psmac-512x342.declrom`
+stopped in A/UX's kernel with "Unsupported kernel A-line trap: A072": that driver's interrupt handler calls
+_DoVBLTask, which A/UX's kernel does not take. The branch's driver is the one to use under A/UX.) On the solo
+board System 7.1 reaches the Finder as before. The owner's SE has test kernel 34; its result is not in yet.
