@@ -157,7 +157,7 @@ void psmac_linux_read(void)
     // the ELF in the upper half of the Mac's RAM, below the quarter kept for an initramfs: its segments go low
     uint32_t q = lx.ram_size / 4;
     lx.elf_off = q * 2;
-    int32_t got = read_file(name, lx.elf_off, q);
+    int32_t got = read_file(name, lx.elf_off, q - KERNEL_PAGE);   // a page apart from the initramfs's quarter
     if (got < 64) {
         kprintf("[LINUX] mac.linux=%s: the file could not be read (%s, at most %u KiB): the IIci ROM starts as usual\n", name,
                 has_slash(name) ? "a host file" : "the card's root", q >> 10);
@@ -408,11 +408,8 @@ void psmac_linux_place(void)
     bi_put32(&b, BI_MAC_MEMSIZE, lx.ram_size >> 20);
     bi_put32(&b, BI_MAC_CPUID, MAC_MODEL_IICI << 2 | 2);   // only read when the model is missing: (cpuid >> 2) & 63
     bi_put32(&b, BI_MAC_ROMBASE, PSMAC_ROM_BASE);
-    uint8_t last[4] = { 0, 0, 0, 0 };
     if (b.used + 4 <= b.cap) {
-        for (int i = 0; i < 4; i++) {
-            b.at[b.used + i] = last[i];
-        }
+        memset(b.at + b.used, 0, 4);            // BI_LAST
         b.used += 4;
     }
     lx.bi_len = b.used;
@@ -450,8 +447,10 @@ int psmac_linux_release(void)
         return 0;
     }
     if (!psmac_board_solo) {
+        extern void psmac_adb_linux(void);
         psmac_io_write(IICI_VIA1 + 3 * 0x200, 1, 0x2f, 0);
         psmac_io_write(IICI_VIA1 + 15 * 0x200, 1, 0x08, 0);
+        psmac_adb_linux();                      // the Pi's keyboards and mice as ADB devices before Linux scans the bus
     }
     psmac_boot_mark("68k released: Linux's first instruction ($%08x)", lx.entry);
     return 1;

@@ -563,6 +563,9 @@ static void appear(const char *why, int running)
             "the Pi's keyboards and mice go to them, not to .PiInput (the mouse at %d%% of its counts: mac.adbspeed)\n", why, (int)ms_speed);
 }
 void psmac_adb_handoff(void) { if (adb_mode == 0) appear("A/UX's tables are on (mac.adb=auto)", 1); }
+/* Linux started directly (psmac_linux.c, docs/27), before the 68k's first instruction: the devices there from the start,
+   so that Linux's first scan of the bus finds them beside the SE's own and gives every one an address of its own */
+void psmac_adb_linux(void) { if (adb_mode == 0) appear("Linux is started (mac.linux=, mac.adb=auto)", 0); }
 /* the 68k's RESET (the level lock held): the SE's VIA is reset with it */
 void psmac_adb_reset(void)
 {

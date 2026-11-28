@@ -1376,7 +1376,12 @@ uint32_t psmac_pmmu_exec(uint32_t ea, uint32_t op, uint64_t *regs, uint32_t sr, 
             if (translate_on && view[0]) psmac_mmu_access(ea, fc, !((ext >> 9) & 1), &ms);
         } else {
             int m = (ext >> 10) & 7, mask = (ext >> 5) & 7;
-            if (crp_dirty) { crp_dirty = 0; kprintf("[PSMAC:MMU] PFLUSH applies deferred CRP change\n"); views_update(super, 0); }
+            if (crp_dirty) {   /* Linux's 68030 context switch is PMOVEFD to CRP, then PFLUSH #0,#4: said the first eight times */
+                static uint32_t said;
+                crp_dirty = 0;
+                if (++said <= 8 || (said & 4095) == 0) kprintf("[PSMAC:MMU] PFLUSH applies deferred CRP change (#%u)\n", said);
+                views_update(super, 0);
+            }
             else if (view[0] && translate_on) {
                 if (s_seen && !split_now && need_split()) views_update(super, 0);   /* an S bit was met: a space for each mode */
                 else if (m == 1) {              /* PFLUSHA */
