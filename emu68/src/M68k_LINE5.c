@@ -738,12 +738,22 @@ uint32_t EMIT_DBcc(struct TranslatorContext *ctx, uint16_t opcode)
            runs such a loop in a few ARM instructions per turn, and in the testbed the measured
            time came out as exactly zero often enough to bomb the boot with a zero divide (docs/08,
            item 27). One device read per turn, the system timer's counter, costs about what the
-           68000 took per turn and keeps every such loop's duration real. mac.dbfslow=N (0 off). */
+           68000 took per turn and keeps every such loop's duration real. mac.dbfslow=N (0 off).
+           Since 28 November 2026 the read comes every 8th turn (the counter's low three bits zero), and
+           psmac_mbox.c's measurement counts 8 turns per read. On a real Pi 3 one read takes about 10 us, eight
+           times a 68000's dbf turn on the SE (1.3 us), so TimeDBRA came out 78 to 103, whoever measured it, and
+           AppleTalk's start-up divides by TimeDBRA / 100: the owner's SE bombed with a zero divide now and then,
+           also with the kernel's table at 200, because A/UX's start-up System measures it again. A turn now costs
+           about what the SE's own 68000 took, never less, and TimeDBRA is some 650 to 850. */
         extern uint32_t psmac_dbf_slow;
         if (m68k_condition == M_CC_F && branch_offset == 0 && psmac_dbf_slow)
         {
             uint8_t ra = RA_AllocARMRegister(ctx);
             uint8_t rv = RA_AllocARMRegister(ctx);
+            EMIT(ctx,
+                tst_immed(counter_reg, 3, 0),                   /* the counter's low three bits: a read every 8th turn */
+                b_cc(A64_CC_NE, 4 + psmac_dbf_slow)             /* over the address and the reads */
+            );
             EMIT(ctx,
                 I32(0xd2800000 | (0x3004 << 5) | ra),           /* movz xa, #0x3004: the system timer's CLO */
                 I32(0xf2c00000 | (0xffe8 << 5) | ra),           /* movk xa, #0xffe8, lsl 32: the peripherals' high alias (PSMAC_PERIPH_HI) */

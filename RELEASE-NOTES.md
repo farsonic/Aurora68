@@ -1,5 +1,18 @@
 # Aurora68 release notes
 
+## 0.19 — no more "divide by zero" when AppleTalk starts (28 November 2026)
+
+- **The zero divide at start-up, in A/UX Startup and wherever AppleTalk opens** (28 November 2026; the owner's SE bombed
+  now and then on a Pi 3B, twice in a row at times). AppleTalk's start-up code (in A/UX's Mac System, and in System 7's
+  for ROMs from version 118) divides by `TimeDBRA / 100`, the delay-loop turns per millisecond, which every real Mac has
+  in the thousands. Each turn of a delay loop read the Pi's system timer so that delays last what the ROM means, and on
+  a real Pi 3 one read takes about 10 us, eight times what the SE's own 68000 took per turn: TimeDBRA came out 78 to
+  103, whoever measured it (the ROM, or A/UX's start-up System, which measures it again), and below 100 the division is
+  by zero (the crash record: `divu.w d1,d2` with D1 = $004E0000). Now a delay loop reads the timer every eighth turn: a
+  turn costs about what the SE's 68000 took, never less, delays still last what was asked, and TimeDBRA is some 650 to
+  850. Beside it, the kernel never gives the ROM less than 200 and raises a smaller value it finds in the Mac's memory
+  while Mac OS runs (`[PSMAC] TimeDBRA N raised to 200`). Kernel only.
+
 ## 0.18 — the Aurora68 programs on a disk of their own, the remote control found by ARP, WiFi beside Bluetooth (27 November 2026)
 
 - **The Aurora68 programs on a disk of their own, mounted beside yours** (27 November 2026). The release's HFS image
