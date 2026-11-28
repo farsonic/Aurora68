@@ -1617,6 +1617,7 @@ void psmac_card_reset(void)
     { extern void psmac_video_reset(void); psmac_video_reset(); }             /* and the video card's (psmac_video.c) */
     { extern void psmac_etalk_reset(void); psmac_etalk_reset(); }             /* the A/UX network card's chip (psmac_etalk.c) */
     __asm__ volatile("dmb ish" ::: "memory");
+    { extern volatile int psmac_aux_tables; psmac_aux_tables = 0; }   /* Mac OS again: TimeDBRA's floor on (psmac_bus.c) */
     kprintf("[PSMAC] 68k RESET: the card's interrupt sources are off until their drivers open\n");
 }
 
@@ -1638,6 +1639,7 @@ void psmac_card_handoff(void)
     { extern void psmac_remote_mac_reset(void); psmac_remote_mac_reset(); }
     { extern void psmac_etalk_reset(void); psmac_etalk_reset(); }             /* the A/UX network card's chip, until ae6 starts it (psmac_etalk.c) */
     __asm__ volatile("dmb ish" ::: "memory");
+    { extern volatile int psmac_aux_tables; psmac_aux_tables = 1; }   /* TimeDBRA's floor off: logical $D00 is A/UX's now (psmac_bus.c) */
     kprintf("[PSMAC] A/UX's tables on: the network board and the input ring are off until their drivers open\n");
     { extern void psmac_display_handoff(void); psmac_display_handoff(); }   /* an HDMI driver on slot 9 cannot open under A/UX (docs/26) */
     { extern void psmac_adb_handoff(void); psmac_adb_handoff(); }   /* mac.adb=auto: the Pi's keyboards and mice as ADB devices from here (psmac_adb.c) */
