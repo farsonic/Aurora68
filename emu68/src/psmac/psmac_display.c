@@ -947,6 +947,8 @@ static void display_aux(int on)
 void psmac_display_handoff(void)
 {
     static int said;
+    extern int psmac_linux_wanted(void);
+    if (psmac_linux_wanted()) return;          /* Linux (docs/27): its screen's mode stays where psmac_display_linux put it */
     display_aux(1);
     if (said || nscr < 2) return;
     volatile struct psmb_display *d = scr[1].disp;

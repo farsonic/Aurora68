@@ -781,7 +781,15 @@ void psmac_card_save_macip(const uint8_t ip[4])
 static volatile int logf_req;                  /* asked; 2: after a crash record; 3: on its own (mac.logsave) */
 static volatile int logf_state;                /* 0 nothing asked, 1 being written, 2 saved, 3 failed */
 static uint8_t *logf_buf; static uint32_t logf_len, logf_done, logf_clus, logf_ci;
-static struct cfile logf_file; static int logf_have;
+/* Two files go this way since 28 November 2026: aurora68.log (the ring) and linuxcon.log, Linux's console as it went
+   to the SCC (psmac_linux.c, docs/27), so that Linux's boot messages are not pushed out of the ring's 64 KiB.
+   logf_which says which one the steps below are writing. */
+static int logf_which;
+static struct cfile logf_files[2]; static int logf_haves[2];
+#define logf_file (logf_files[logf_which])
+#define logf_have (logf_haves[logf_which])
+static const char *const logf_names[2] = { "aurora68.log", "linuxcon.log" };
+#define LOGF_CAP (2u * PSMB_LOG_SIZE + 8192u)    /* the ring's copy, or Linux's console (psmac_linux.c keeps 128 KiB) */
 static int secret_name(const char *s, uint32_t n)
 {
     uint32_t b = n;
@@ -842,7 +850,7 @@ int psmac_card_save_log(int after_crash)
 }
 int psmac_card_log_state(void) { return logf_state; }
 static int logf_phase;
-static void logf_fail(const char *why) { kprintf("[CARD] aurora68.log: %s\n", why); logf_phase = 0; logf_state = 3; }
+static void logf_fail(const char *why) { kprintf("[CARD] %s: %s\n", logf_names[logf_which], why); logf_phase = 0; logf_state = 3; }
 /* One step per pass of core 3: 0 the snapshot; 1 the file found or made (its directory entry and
    first cluster, as file_create does for pairings.txt), its chain walked; 2 one more cluster on the
    chain, until it holds the text; 3 one sector of the text; 4 the size in the directory entry. */
@@ -856,28 +864,37 @@ static uint32_t logsave_s, logsave_last, logf_saves; static int logf_quiet;
 static void logf_step(void)
 {
     extern uint32_t psmac_log_copy(uint8_t *out, uint32_t max);
+    extern uint32_t psmac_linux_console_copy(uint8_t *out, uint32_t max);
     static uint8_t *raw;
+    static uint32_t con_saves;
     if (logf_req) {                                    /* a new request, or one during a save: from the start */
         int why = logf_req;
         logf_req = 0;
-        if (!logf_buf) logf_buf = tlsf_malloc(tlsf, PSMB_LOG_SIZE + 8192);
-        if (!raw) raw = tlsf_malloc(tlsf, PSMB_LOG_SIZE);
+        logf_which = why == 4;                         /* 4: Linux's console (psmac_linux.c) */
+        if (!logf_buf) logf_buf = tlsf_malloc(tlsf, LOGF_CAP);
+        if (!raw) raw = tlsf_malloc(tlsf, 2 * PSMB_LOG_SIZE);
         if (!logf_buf || !raw) { logf_fail("no memory for the copy"); return; }
-        uint32_t n = psmac_log_copy(raw, PSMB_LOG_SIZE), s = 0;
-        if (n == PSMB_LOG_SIZE) { while (s < n && raw[s] != '\n') s++; if (s < n) s++; }   /* the oldest line is cut: from the next */
-        const char *hd = why == 2 ? "Aurora68 kernel log, saved after a crash record\n"
+        uint32_t n, s = 0;
+        if (logf_which) n = psmac_linux_console_copy(raw, 2 * PSMB_LOG_SIZE);
+        else {
+            n = psmac_log_copy(raw, PSMB_LOG_SIZE);
+            if (n == PSMB_LOG_SIZE) { while (s < n && raw[s] != '\n') s++; if (s < n) s++; }   /* the oldest line is cut: from the next */
+        }
+        const char *hd = why == 4 ? "Aurora68: Linux's console, what Linux sent to the SCC's channel A (the modem port)\n"
+                       : why == 2 ? "Aurora68 kernel log, saved after a crash record\n"
                        : why == 3 ? "Aurora68 kernel log, saved on its own (mac.logsave)\n" : "Aurora68 kernel log, saved from the Mac\n";
-        logf_quiet = why == 3 && logf_saves > 0;       /* a timed save says so the first time only */
+        logf_quiet = (why == 3 && logf_saves > 0) || (why == 4 && con_saves > 0);   /* a timed save says so the first time only */
+        if (why == 4) con_saves++;
         uint32_t h = 0; while (hd[h]) { logf_buf[h] = (uint8_t)hd[h]; h++; }
-        logf_len = h + log_redact(raw + s, n - s, logf_buf + h, PSMB_LOG_SIZE + 8192 - h);
+        logf_len = h + log_redact(raw + s, n - s, logf_buf + h, LOGF_CAP - h);
         logf_phase = 1;
         return;
     }
     if (logf_phase == 1) {
         if (!logf_have) {
-            if (file_find("aurora68.log", &logf_file) == 0) logf_have = 1;
-            else if (file_create("AURORA68", "LOG", &logf_file)) { logf_fail("could not create it (root directory or card full?)"); return; }
-            else { logf_have = 1; kprintf("[CARD] aurora68.log created\n"); }
+            if (file_find(logf_names[logf_which], &logf_file) == 0) logf_have = 1;
+            else if (file_create(logf_which ? "LINUXCON" : "AURORA68", "LOG", &logf_file)) { logf_fail("could not create it (root directory or card full?)"); return; }
+            else { logf_have = 1; kprintf("[CARD] %s created\n", logf_names[logf_which]); }
         }
         if (logf_file.clus < 2) {                      /* an empty file made elsewhere: no cluster yet */
             uint32_t c = clus_alloc();
@@ -921,6 +938,10 @@ static void logf_step(void)
     logf_file.size = logf_len;
     logf_phase = 0;
     logf_state = 2;
+    if (logf_which) {
+        if (!logf_quiet) kprintf("[CARD] linuxcon.log: %u bytes of Linux's console written (again whenever it has grown, at most every 10 s)\n", logf_len);
+        return;
+    }
     if (!logf_quiet) kprintf("[CARD] aurora68.log: %u bytes of the log written%s\n", logf_len, logsave_s ? " (and again every mac.logsave period)" : "");
     logf_saves++;
 }
@@ -2215,6 +2236,8 @@ static void card_poll_locked(void)
         __atomic_store_n(&logf_state, 1, __ATOMIC_RELEASE);
         return;
     }
+    { extern int psmac_linux_console_due(void);       /* Linux's console into linuxcon.log (psmac_linux.c, docs/27) */
+      if (!sd.ro && psmac_linux_console_due()) { logf_req = 4; __atomic_store_n(&logf_state, 1, __ATOMIC_RELEASE); return; } }
     /* a disk image still coming in from the card, and the Mac's changes going back: every other pass
        each, so writes made while a large image loads are on the card long before it is complete */
     static unsigned turn;

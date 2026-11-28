@@ -9,6 +9,9 @@
  * the transceiver's own byte in place of a command). The transceiver counts what a real one should never be
  * shown: the data states entered from idle with no event of its own. Each scene runs twice: with a transceiver
  * that keeps its line low after a time-out (MAME's model) and with one that lowers it for a service request only.
+ * Two more hosts: one that polls addresses 2 and 3 as A/UX does, and Linux's via-macii (28 November 2026, docs/27),
+ * against a transceiver whose autopoll event in the idle state has its line low and the command as its first byte,
+ * as Linux reads a real one.
  */
 #include <stdio.h>
 #include <string.h>
@@ -31,6 +34,7 @@ struct rdev { int addr, handler, has; uint8_t d[2]; };
 static struct rdev rk, rm;
 static struct {
     int st, mame_like;
+    int hw;                                  /* a real transceiver's idle event: the line low, the autopolled command first (Linux, docs/27) */
     uint8_t data[8]; int n, pos, line_low, srq;
     int listening, laddr, lreg, ln; uint8_t lb[8];
     int pending;                             /* a byte clocked in the idle state: its data waits for state 1 */
@@ -59,11 +63,11 @@ static void tr_state(int s)
         tr.cmds++; tr.last_cmd = c; tr.line_low = 0; tr.n = tr.pos = 0; tr.listening = 0; tr.srq = 0;
         if (kind == 3) { tr.n = real_talk(addr, c & 3, tr.data); tr.srq = real_srq(addr); }
         else if (kind == 2) { tr.listening = 1; tr.laddr = addr; tr.lreg = c & 3; tr.ln = 0; }
-        else if ((c & 15) == 0) { rk.addr = 2; rm.addr = 3; }
+        else if ((c & 15) == 0) { if (rk.addr >= 0) rk.addr = 2; if (rm.addr >= 0) rm.addr = 3; }   /* SendReset: the devices there back home */
         rv.ifr |= 4;
     } else if (s == 3) {
         tr.line_low = 0; tr.next_poll = clk + 11000;
-        if (old == 0 && !tr.listening && (tr.n || tr.srq)) { tr.pos = 0; tr.pending = 1; tr.events++; rv.sr = 0; rv.ifr |= 4; }   /* the Talk's answer, as an event */
+        if (old == 0 && !tr.listening && (tr.n || tr.srq)) { tr.pos = 0; tr.pending = 1; tr.events++; rv.sr = tr.hw ? tr.last_cmd : 0; tr.line_low = tr.hw; rv.ifr |= 4; }   /* the Talk's answer, as an event */
     } else {
         if (tr.pending) tr.pending = 0;      /* the data of its own event */
         else if (old == 3) tr.unexpected++;  /* the data states out of idle, and nothing to give */
@@ -87,7 +91,7 @@ static void tr_time(void)
     int n = real_talk(addr, 0, tr.data), srq = real_srq(addr);
     if (!n && !srq) return;
     tr.n = n; tr.pos = 0; tr.srq = srq; tr.pending = 1; tr.events++;
-    rv.sr = 0; rv.ifr |= 4;
+    rv.sr = tr.hw ? tr.last_cmd : 0; tr.line_low = tr.hw; rv.ifr |= 4;
 }
 static void wire_write(uint32_t reg, uint8_t v)
 {
@@ -444,12 +448,192 @@ static void scene_aux(int mame_like, int with_real)
 #undef OK
 }
 
+/* ---- a host as Linux's via-macii (drivers/macintosh/via-macii.c, 6.18) and its bus scan (drivers/macintosh/adb.c) ----
+   The interrupt handler's three states as the driver has them; requests one at a time, each sent when the driver is
+   idle; the transceiver's autopoll in the idle state answers the last Talk register 0. Delivered key codes are kept
+   with the time they arrived, so a key whose release comes late (Linux repeats a key held 250 ms) shows. 28 November
+   2026, docs/27: on the owner's SE the virtual devices' events were never taken and the real keyboard's keys repeated. */
+static struct { int state; uint8_t req[4]; int req_n, req_reply, have_req, data_index;
+                uint8_t reply[16]; int reply_len, reading_reply, bus_timeout, srq_asserted;
+                uint8_t last_cmd, last_talk_cmd, last_poll_cmd; unsigned autopoll; int done; uint8_t rbuf[16]; int rlen; } lx;
+static struct { uint64_t t; int addr; uint8_t b[2]; } lin[512];
+static int lin_n;
+static void lx_queue_poll(void)
+{
+    if (!lx.autopoll || lx.have_req) return;
+    int a = (lx.last_poll_cmd >> 4) & 15;
+    if ((lx.srq_asserted && lx.last_cmd == lx.last_poll_cmd) || !(lx.autopoll & (1u << a))) {
+        unsigned higher = lx.autopoll & ~((2u << a) - 1);
+        unsigned m = higher ? higher : lx.autopoll;
+        a = __builtin_ctz(m);
+    }
+    uint8_t c = (uint8_t)(a << 4 | 0x0c);
+    if (c == lx.last_cmd) return;
+    lx.req[0] = c; lx.req_n = 1; lx.req_reply = 0; lx.have_req = 2;          /* 2: a poll, no one waits for it */
+}
+static void lx_start(void)
+{
+    g_write(11, g_read(11) | 0x10); g_write(10, lx.req[0]); g_write(0, (uint8_t)(g_read(0) & ~0x30));
+    lx.state = 1; lx.data_index = 1; lx.bus_timeout = 0; lx.srq_asserted = 0;
+}
+static void lx_finish_req(void) { if (lx.have_req == 1) lx.done = 1; lx.have_req = 0; }
+static void lx_interrupt(void)
+{
+    uint8_t x;
+    (void)g_read(13); (void)g_read(14);                                      /* via1_irq's dispatch */
+    uint8_t status = g_read(0) & 0x38;
+    switch (lx.state) {
+    case 0:                                                                  /* idle */
+        lx.reading_reply = 0; lx.bus_timeout = 0; lx.srq_asserted = 0;
+        x = g_read(10);
+        if (!(status & 8)) { lx.state = 2; lx.reply[0] = x; lx.reply_len = 1; }
+        else { lx.reply_len = 0; break; }
+        g_write(0, (uint8_t)((g_read(0) & ~0x30) | 0x10));
+        break;
+    case 1:                                                                  /* sending */
+        if (status == (0x00 | 8)) {
+            lx.last_cmd = lx.req[0];
+            if ((lx.last_cmd & 0x0c) == 0x0c) { lx.last_talk_cmd = lx.last_cmd; if ((lx.last_cmd & 3) == 0) lx.last_poll_cmd = lx.last_cmd; }
+        }
+        if (status == 0x00) {                                                /* the transceiver's own reply instead */
+            lx.state = 2; lx.reading_reply = 0; lx.reply[0] = lx.last_talk_cmd; lx.reply_len = 1;
+            g_write(11, g_read(11) & ~0x10); x = g_read(10);
+        } else if (lx.data_index >= lx.req_n) {
+            if (lx.req_reply || (lx.req[0] & 0x0c) == 0x0c) {
+                lx.state = 2; lx.reading_reply = lx.req_reply; lx.reply[0] = lx.req[0]; lx.reply_len = 1;
+                g_write(11, g_read(11) & ~0x10); x = g_read(10);
+                if (!lx.req_reply) lx_finish_req();
+            } else { lx.state = 0; lx_finish_req(); break; }
+        } else g_write(10, lx.req[lx.data_index++]);
+        if ((g_read(0) & 0x30) == 0x00) g_write(0, (uint8_t)((g_read(0) & ~0x30) | 0x10));
+        else g_write(0, (uint8_t)(g_read(0) ^ 0x30));
+        break;
+    case 2:                                                                  /* reading */
+        x = g_read(10);
+        if (!(status & 8)) {
+            if (status == 0x10 && lx.reply_len == 1) lx.bus_timeout = 1;
+            else if (status == 0x20 && lx.reply_len == 2) lx.srq_asserted = 1;
+            else {
+                lx.state = 0;
+                if (lx.bus_timeout) lx.reply_len = 0;
+                if (lx.reading_reply) { memcpy(lx.rbuf, lx.reply, sizeof lx.rbuf); lx.rlen = lx.reply_len; lx_finish_req(); }
+                else if (lx.reply_len == 3 && lx.autopoll && lx.reply[0] == lx.last_poll_cmd && lin_n < 512) {
+                    lin[lin_n].t = clk; lin[lin_n].addr = lx.reply[0] >> 4; lin[lin_n].b[0] = lx.reply[1]; lin[lin_n].b[1] = lx.reply[2]; lin_n++;
+                }
+                break;
+            }
+        }
+        if (lx.reply_len < 16) lx.reply[lx.reply_len++] = x;
+        g_write(0, (uint8_t)(g_read(0) ^ 0x30));
+        break;
+    }
+    if (lx.state == 0) {
+        if (!lx.have_req) lx_queue_poll();
+        if (lx.have_req) lx_start();
+        if (lx.state == 0) { g_write(11, g_read(11) & ~0x10); x = g_read(10); g_write(0, (uint8_t)((g_read(0) & ~0x30) | 0x30)); }
+    }
+}
+static void lx_run(uint32_t us)
+{
+    for (uint32_t t = 0; t < us; t += 50) {
+        if (irq()) lx_interrupt();
+        advance(50);
+    }
+}
+/* one request, waited for as ADBREQ_SYNC does: the reply's length (the command byte counted) */
+static int lx_req(int reply, int n, uint8_t c0, uint8_t c1, uint8_t c2)
+{
+    for (int t = 0; t < 400000 && lx.have_req; t += 50) lx_run(50);
+    lx.req[0] = c0; lx.req[1] = c1; lx.req[2] = c2; lx.req_n = n; lx.req_reply = reply; lx.have_req = 1; lx.done = 0; lx.rlen = 0;
+    if (lx.state == 0) lx_start();
+    for (int t = 0; t < 400000 && !lx.done; t += 50) lx_run(50);
+    if (!lx.done) stuck++;
+    return lx.rlen;
+}
+static void scene_linux(int with_real)
+{
+    char t[240];
+#define OK(c, what) do { snprintf(t, sizeof t, "Linux's via-macii (%s): %s", with_real ? "real keyboard and mouse too" : "no real devices", what); ok(c, t); } while (0)
+    memset(&rv, 0, sizeof rv); memset(&tr, 0, sizeof tr); memset(&mx, 0, sizeof mx); memset(&ct, 0, sizeof ct);
+    memset(&kb, 0, sizeof kb); memset(&ms, 0, sizeof ms); memset(&lx, 0, sizeof lx);
+    rk.addr = with_real ? 2 : -1; rk.handler = 2; rk.has = 0; rm.addr = with_real ? 3 : -1; rm.handler = 1; rm.has = 0;
+    tr.st = 3; tr.hw = 1; rv.orb = 0x30;
+    v_orb = v_ddrb = v_ier = 0; stuck = 0; lin_n = 0;
+    adb_mode = 0; psmac_adb_options("mac.board=se mac.adbspeed=100"); psmac_adb_linux();     /* before the 68k's first instruction */
+    g_write(2, 0x30); g_write(0, 0x30); g_write(11, 0x0c); g_write(14, 0x84);
+    /* adb_scan_bus: SendReset, Talk register 3 everywhere, then each device found moved to the highest free address */
+    unsigned found = 0;
+    lx_req(0, 1, 0x00, 0, 0);
+    for (int a = 1; a < 16; a++) if (lx_req(1, 1, (uint8_t)(a << 4 | 0x0f), 0, 0) > 1) found |= 1u << a;
+    int high = 15;
+    while (high > 0 && (found & (1u << high))) high--;
+    for (int a = 1; a < 16 && high > 0; a++) {
+        if (!(found & (1u << a))) continue;
+        for (;;) {
+            lx_req(0, 3, (uint8_t)(a << 4 | 0x0b), (uint8_t)(high | 0x60), 0xfe);
+            if (lx_req(1, 1, (uint8_t)(high << 4 | 0x0f), 0, 0) <= 1) break;
+            if (lx_req(1, 1, (uint8_t)(a << 4 | 0x0f), 0, 0) > 1) {
+                found |= 1u << high;
+                while (high > 0 && (found & (1u << high))) high--;
+                if (high <= 0) break;
+                continue;
+            }
+            lx_req(0, 3, (uint8_t)(high << 4 | 0x0b), (uint8_t)(a | 0x60), 0xfe);
+            break;
+        }
+    }
+    if (!quiet) printf("linux scan: found %04x, kb at %d, mouse at %d, real %d %d\n", found, kb.d.addr, ms.d.addr, rk.addr, rm.addr);
+    OK(kb.d.seen && ms.d.seen && __builtin_popcount(found) == (with_real ? 4 : 2), "the scan finds every device at an address of its own");
+    lx.autopoll = found;
+    lx_queue_poll(); if (lx.have_req && lx.state == 0) lx_start();
+    lx_run(200000);
+    /* typing on the Pi's keyboard: each key down for 80 ms, 200 ms apart, as mac.inputtype= does */
+    lin_n = 0;
+    static const uint8_t word[] = { 0x15, 0x12, 0x12, 0x17 };               /* r o o t */
+    for (int k = 0; k < 4; k++) {
+        psmac_adb_input(ALICE_IN_KEY, word[k], 1, 0); lx_run(80000);
+        psmac_adb_input(ALICE_IN_KEY, word[k], 0, 0); lx_run(200000);
+    }
+    lx_run(300000);
+    {   uint64_t down_at[128] = { 0 }; int downs = 0, ups = 0, late = 0;
+        for (int i = 0; i < lin_n; i++) {
+            if (lin[i].addr != kb.d.addr) continue;
+            for (int k = 0; k < 2; k++) {
+                uint8_t c = lin[i].b[k];
+                if (c == 0xff) continue;
+                if (!(c & 0x80)) { downs++; down_at[c & 0x7f] = lin[i].t; }
+                else { ups++; if (lin[i].t - down_at[c & 0x7f] > 200000) late++; }
+            }
+        }
+        if (!quiet) printf("linux: %d downs %d ups %d late; autopolls %u srqs %u lost %u cancelled %u\n", downs, ups, late, ct.autopolls, ct.srqs, ct.kick_lost, ct.kick_cancel);
+        OK(downs == 4 && ups == 4, "r o o t from the virtual keyboard: four keys down and up");
+        OK(!late, "every key's release within 200 ms of its press (no repeat by the host)");
+        OK(!ct.kick_cancel, "no event of ours left untaken"); }
+    if (with_real) {                                                          /* the real keyboard's keys, with the virtual mouse moving */
+        lin_n = 0;
+        int got = 0;
+        for (int k = 0; k < 6; k++) {
+            psmac_adb_input(ALICE_IN_MOUSE, 3, 0, -1);
+            rk.has = 1; rk.d[0] = 0x0f; rk.d[1] = 0xff; lx_run(80000);
+            rk.has = 1; rk.d[0] = 0x8f; rk.d[1] = 0xff; lx_run(200000);
+        }
+        lx_run(300000);
+        for (int i = 0; i < lin_n; i++) if (lin[i].addr == rk.addr) got++;
+        if (!quiet) printf("linux real: %d of 12 from the real keyboard, has %d\n", got, rk.has);
+        OK(got == 12 && !rk.has, "the real keyboard's twelve transitions all arrive beside the virtual mouse");
+    }
+    OK(!tr.unexpected && !stuck, "nothing a transceiver should not see, no interrupt missing");
+#undef OK
+}
+
 int main(int argc, char **argv)
 {
     quiet = !(argc > 1 && argv[1][0] == 'v');
     scene(1);
     scene(0);
     for (int k = 0; k < 4; k++) scene_aux(k & 1, k >> 1);
+    scene_linux(0);
+    scene_linux(1);
     /* mac.adb=off and auto: nothing exists until the hand-over */
     memset(&mx, 0, sizeof mx); adb_mode = 0; psmac_adb_options("mac.adb=off"); psmac_adb_handoff();
     ok(!psmac_adb_on() && !psmac_adb_takes_input(), "mac.adb=off: never");

@@ -648,6 +648,34 @@ static void etalk_address(volatile uint8_t *board)
             et.mac[0], et.mac[1], et.mac[2], et.mac[3], et.mac[4], et.mac[5], pick ? "wired port" : "WiFi");
 }
 
+// psmac_linux.c, as the 68k is released into Linux: the unit the card would give its frames to now (-1: no address
+// yet, -2: no card), *settled when that is the one to stay with (the wired port with its link, or the WiFi), and its
+// address into the ROM's cell at once. Linux's mac8390 reads the cell once, at its probe, seconds after the start,
+// where A/UX reads it minutes after the Mac's ROM has run: with the WiFi's chip not up yet the cell held the wired
+// port's address, which the access point drops (docs/27).
+int psmac_etalk_settle(int *settled, uint8_t mac[6])
+{
+    *settled = 0;
+    if (et.slot <= 0) {
+        return -2;
+    }
+    volatile uint8_t *board = alice_net_board();
+    if (!board) {
+        return -1;
+    }
+    int pick = etalk_pick(board);
+    etalk_address(board);
+    int same = pick >= 0;
+    for (int i = 0; i < 6; i++) {
+        mac[i] = et.mac[i];
+        same &= pick >= 0 && etalk_unit(board, pick)->mac[i] == et.mac[i];
+    }
+    if (same && (pick == 0 || (pick == 1 && etalk_unit(board, 1)->link))) {
+        *settled = 1;
+    }
+    return same ? pick : -1;
+}
+
 // alice_psmac.c, core 3's service loop, after the network board's own turn
 void psmac_etalk_poll(void)
 {

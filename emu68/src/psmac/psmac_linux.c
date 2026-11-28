@@ -79,6 +79,18 @@ struct LinuxBoot {
 };
 static struct LinuxBoot lx;
 
+static uint64_t lx_ticks(void)
+{
+    uint64_t v;
+    __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r"(v));
+    return v;
+}
+static uint64_t lx_hz(void)
+{
+    uint64_t v;
+    __asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(v));
+    return v & 0xffffffffu;
+}
 static uint32_t be32_at(const uint8_t *p)
 {
     return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
@@ -435,6 +447,40 @@ void psmac_linux_place(void)
     lx.state = 2;
 }
 
+// The A/UX network card's address before Linux starts (psmac_etalk_settle): a WiFi that is to be joined (wifi.ssid=,
+// or the testbed's mac.wifisim=) is waited for up to 20 s, unless the wired port has its link; without one, whatever
+// the board has within 5 s. The WiFi's own address is the one an access point lets through, and shared mode
+// (remote.wifi=shared) expects the Mac to send with it (docs/24, docs/27).
+static void linux_net_settle(void)
+{
+    extern int psmac_etalk_settle(int *settled, uint8_t mac[6]);
+    const char *w = psmac_option("wifi");
+    int wifi_off = w && w[0] == 'o' && w[1] == 'f';
+    int want_wifi = !wifi_off && (psmac_option("wifi.ssid") || psmac_option("mac.wifisim"));
+    uint64_t t0 = lx_ticks(), limit = (want_wifi ? 20u : 5u) * lx_hz();
+    int settled = 0, pick;
+    uint8_t mac[6];
+    for (;;) {
+        pick = psmac_etalk_settle(&settled, mac);
+        if (pick == -2) {
+            return;
+        }
+        if ((pick >= 0 && (settled || !want_wifi)) || lx_ticks() - t0 >= limit) {
+            break;
+        }
+        for (volatile uint32_t d = 0; d < 200000u; d++) {
+        }
+    }
+    uint32_t ms = (uint32_t)((lx_ticks() - t0) * 1000u / lx_hz());
+    if (pick < 0) {
+        kprintf("[LINUX] network card: the network board has no address after %u ms; Linux starts without one\n", ms);
+        return;
+    }
+    kprintf("[LINUX] network card: address %02x:%02x:%02x:%02x:%02x:%02x, the network board's %s%s (%u ms)\n", mac[0],
+            mac[1], mac[2], mac[3], mac[4], mac[5], pick ? "wired port" : "WiFi",
+            settled ? "" : (want_wifi ? ": the WiFi did not give its address in time" : ": no link"), ms);
+}
+
 // core 0, as the 68k is released (start.c, after the board is ready): what the IIci ROM would have left in the
 // chips that Linux takes as it finds them. Linux sets up both VIAs' interrupts and timers, port B's clock chip
 // and ADB lines, the RBV and the SCC itself (arch/m68k/mac/via.c, drivers/macintosh/via-macii.c); port A's data
@@ -452,6 +498,11 @@ int psmac_linux_release(void)
         psmac_io_write(IICI_VIA1 + 15 * 0x200, 1, 0x08, 0);
         psmac_adb_linux();                      // the Pi's keyboards and mice as ADB devices before Linux scans the bus
     }
+    // the network: what A/UX's hand-over does (the network board's units left to the A/UX card, slot 9's input ring
+    // off), and the card's address the one its frames will go out with, which Linux reads once, at its probe
+    extern void psmac_card_handoff(void);
+    psmac_card_handoff();
+    linux_net_settle();
     psmac_boot_mark("68k released: Linux's first instruction ($%08x)", lx.entry);
     return 1;
 }
@@ -463,8 +514,84 @@ int psmac_linux_release(void)
 static char scc_line[2][132];
 static uint32_t scc_len[2];
 static int scc_log = -1;
+
+// Linux's console for linuxcon.log on the card (psmac_card.c): channel A's bytes, the first CON_HEAD of them kept for
+// good (the boot) and the rest in a ring of CON_RING, so that the boot messages survive however long Linux runs. The
+// card's writer copies it out when it has grown, at most every ten seconds (28 November 2026, docs/27).
+#define CON_HEAD 0x10000u
+#define CON_RING 0x10000u
+static uint8_t con_head[CON_HEAD], con_ring[CON_RING];
+static volatile uint32_t con_n;                 // bytes Linux has sent for ever
+static uint32_t con_saved_n;
+static uint64_t con_saved_at;
+static void console_put(uint8_t c)
+{
+    uint32_t n = con_n;
+    if (n < CON_HEAD) {
+        con_head[n] = c;
+    } else {
+        con_ring[(n - CON_HEAD) % CON_RING] = c;
+    }
+    __atomic_store_n(&con_n, n + 1, __ATOMIC_RELEASE);
+}
+// core 3, the card's writer: the console as text (head, a line saying what was left out, the ring), its length
+uint32_t psmac_linux_console_copy(uint8_t *out, uint32_t max)
+{
+    uint32_t n = __atomic_load_n(&con_n, __ATOMIC_ACQUIRE), o = 0;
+    con_saved_n = n;
+    con_saved_at = lx_ticks();
+    for (uint32_t i = 0; i < n && i < CON_HEAD && o < max; i++) {
+        out[o++] = con_head[i];
+    }
+    if (n <= CON_HEAD) {
+        return o;
+    }
+    uint32_t from = CON_HEAD;
+    if (n - CON_HEAD > CON_RING) {
+        from = n - CON_RING;
+        char note[96];
+        uint32_t skipped = from - CON_HEAD, k = 0;
+        const char *t1 = "\n[... ";
+        while (*t1 && k < sizeof note) {
+            note[k++] = *t1++;
+        }
+        char digits[12];
+        int d = 0;
+        do {
+            digits[d++] = (char)('0' + skipped % 10);
+            skipped /= 10;
+        } while (skipped && d < 11);
+        while (d && k < sizeof note) {
+            note[k++] = digits[--d];
+        }
+        const char *t2 = " bytes of Linux's console left out here ...]\n";
+        while (*t2 && k < sizeof note) {
+            note[k++] = *t2++;
+        }
+        for (uint32_t i = 0; i < k && o < max; i++) {
+            out[o++] = (uint8_t)note[i];
+        }
+    }
+    for (uint32_t i = from; i < n && o < max; i++) {
+        out[o++] = con_ring[(i - CON_HEAD) % CON_RING];
+    }
+    return o;
+}
+// core 3: the console has grown since its last save and ten seconds have passed (two for the first save)
+int psmac_linux_console_due(void)
+{
+    uint32_t n = __atomic_load_n(&con_n, __ATOMIC_ACQUIRE);
+    if (lx.state != 2 || n == con_saved_n) {
+        return 0;
+    }
+    return lx_ticks() - con_saved_at >= (con_saved_n ? 10u : 2u) * lx_hz();
+}
+
 void psmac_linux_scc(int channel_a, uint8_t c)
 {
+    if (channel_a && lx.state == 2) {
+        console_put(c);
+    }
     if (scc_log < 0) {
         const char *o = psmac_option("mac.scclog");
         scc_log = o ? (o[0] == 'o' && o[1] == 'n') : lx.state > 0;

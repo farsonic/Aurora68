@@ -211,7 +211,67 @@ ext4 image, booted on the solo board (128 MiB) with `init=` a script that runs `
   because Linux's switch also clears the 68030's caches through CACR (`FLUSH_I_AND_D`), which bumps the code cache's
   epoch. The 68k averaged 3 to 5 MIPS. Each is a place to win speed back; none was changed.
 
-## 7. Open
+## 7. The owner's SE, test 1: Debian to its login prompt, and three faults (28 November 2026)
+
+The owner built `debian.img` on the MacBook with `tools/linux/build-debian-image.sh` under OrbStack (the whole
+script, debootstrap's second stage included) and started it on the SE with test 1 and `scsi.disk=debian.img:0`
+(the SE has no internal disk), `mac.auxnet=on` and the WiFi, no cable: Debian came up to "Debian GNU/Linux forky/sid
+aurora68 tty1" and its login prompt. Three faults, from a photograph and the saved `aurora68.log` (its last 64 KiB,
+in which Linux's own boot lines had already scrolled out):
+
+**1. The keyboards.** The SE's own ADB keyboard typed "roottttttttt"; USB and Bluetooth keyboards nothing. The ADB
+line at the end: `delivered 12 keys ... dropped 115 ... 0 service requests, 0 autopolls ... never taken 19 ... 75
+commands`. Read against Linux's driver (`drivers/macintosh/via-macii.c`): Linux sends Talk register 0 to one device
+and leaves the rest to the transceiver's autopoll in the idle state; an autopoll answer is a shift register interrupt
+*with the line low*, its first byte the autopolled command, and a line high there is a time-out, after which Linux stays
+idle. The IIci ROM looks at neither (it throws the byte away and goes to state 1: `$4080A5FC`), and MAME's transceiver
+model, which the multiplexer was written against, keeps the line high and gives a byte of nothing. So every event the
+kernel raised for a virtual device was, for Linux, a time-out: it was never taken, the virtual device's keys stayed in
+its queue until it overflowed, and for each such event the real transceiver was held idle with its interrupt off until
+the event was taken back, two seconds later (19 times in the log). The real keyboard's key-ups waited behind those
+holds, and Linux repeated the keys (it repeats a key held 250 ms). Changed in `psmac_adb.c`:
+- an event of ours in the idle state has the line low and the autopolled command in the shift register, as the
+  transceiver Linux was written against gives it (and as the owner's real keyboard's own events evidently came:
+  Linux took them);
+- a device the host has talked to is announced after a tenth of a second of the host's silence, not half a second;
+- on the real SE (the GPIO transport, not MAME's model, which holds the line low for a whole time-out) a real
+  device's service request at the second byte of a virtual answer is passed on, so the host goes round to it.
+
+A host model of Linux's driver was added to `tools/adb_test.c` (the interrupt handler's three states, the bus scan
+with "move if no collision", the poll that only follows service requests), with a transceiver whose idle event is
+low with the command first. With the old `psmac_adb.c` it shows the owner's fault: the four keys of "root" typed on the
+virtual keyboard never arrive, and 6 of 12 key transitions of a real keyboard beside a moving virtual mouse are lost.
+With the new one: all four keys down and up, every release within 200 ms of its press, no event left untaken, all
+twelve real transitions (97 checks, 0 failed; the ROM's and A/UX's scenes unchanged).
+
+In the MAME SE the same could not be shown: there Linux types nothing from MAME's own keyboard either (its model's idle
+events are time-outs to Linux), its line low for whole time-outs makes Linux go round the four devices about twenty
+times a second (6,566 commands in a run, where the owner's SE made 75 in a whole session), and between those commands
+no event of the kernel's is raised. A test option was added for such runs, `mac.inputtype=SECONDS,WORD` (WORD and
+Return typed on the Pi's keyboard through the USB report path).
+
+**2. The network.** Under A/UX the card's address cell holds the WiFi chip's address by the time A/UX reads it,
+minutes after power-on. Linux's `mac8390` reads it once, at its probe, seconds after the start, before the WiFi's
+firmware has given its address: the cell held the wired port's (eth=on, no cable), Linux sent with it, and an access
+point lets through only the station's own address. Now, as the 68k is released into Linux, the kernel does A/UX's
+hand-over at once (the network board's units left to the A/UX card, slot 9's input ring off; `psmac_card_handoff`),
+and when a WiFi is to be joined (`wifi.ssid=`, or `mac.wifisim=` in the testbed) waits up to 20 s for its address,
+unless the wired port has its link, and puts it into the cell before Linux starts (`psmac_etalk_settle`; the log says
+`[LINUX] network card: address ..., the network board's WiFi (N ms)`). In the testbed, the solo board with the simulated
+radio (`mac.wifisim=`, `mac.wifinet=` and `tools/pinet.py` as the far end), `remote=on remote.wifi=shared`: `mac8390
+slot.D: MAC 02:50:53:57:49:46` (the radio's), `the driver started the chip ... frames through the WiFi`, `udhcpc: lease
+of 192.168.68.2`, 3 of 3 pings answered, 17 frames sent and 11 received through the card. Whether the owner's access
+point gives Linux an address beside the kernel's own in the shared mode is for the SE to show. The A/UX hand-over's
+later call, at Linux's first user process, resets the card's chip once more, before any interface is up; and the
+display's part of it (A/UX's screen modes) is skipped under Linux.
+
+**3. Linux's console on the card.** Everything Linux sends to the SCC's channel A (the serial console) is kept in the
+kernel, the first 64 KiB for good and the last 64 KiB in a ring, and written to `linuxcon.log` in the card's root by the
+card's writer whenever it has grown, at most every ten seconds (with a line saying how much was left out between the
+two parts if it ever is). Tried with an SD card image in the testbed (`CARD=`): `[CARD] linuxcon.log created`, then
+the whole console from head.S's `ABCFGHIJK` to busybox's prompt (8,109 bytes).
+
+## 8. Open
 
 - The second stage's speed, and the disk's: every pseudo-DMA access of the 5380 is an abort (section 6); not measured
   on a Pi. The stop of section 6's first try.
@@ -229,8 +289,10 @@ ext4 image, booted on the solo board (128 MiB) with `init=` a script that runs `
   screen. The console's colours are right.
 - Restart: Linux's `reboot` jumps into the IIci ROM, which starts Mac OS; `mac.linux=` takes effect at the next start
   of the Pi.
-- Not tried on the real SE, nor with a USB or Bluetooth keyboard as an ADB device under Linux, nor the WiFi path for
-  the network card (the testbed used the wired port's semihosted network).
+- On the real SE since test 1: Debian to its login prompt (section 7). Test 2's keyboard and network changes are
+  shown in the host model and the testbed only; the SE's own keyboard beside the Pi's, and DHCP over the owner's access
+  point in the shared mode, are for the owner to report.
+- Typing under Linux in the MAME SE: MAME's transceiver model is not the one Linux's driver expects (section 7).
 - The root device's name depends on the SCSI IDs: Linux names disks in ID order, so with the SE's own disk at ID 0 the
   Debian disk is `sdb`. A partition table and `root=PARTUUID=` would not care; the owner asked for ext4 on the whole
   disk.

@@ -53,6 +53,12 @@ static uint64_t us_ticks(uint32_t us) { return (cnt_frq() * us) / 1000000u; }
                                                transceiver's own Talk on the bus is over by then */
 
 static int adb_mode;                        /* mac.adb=: 0 auto, 1 virtual, 2 off */
+static int real_srq_pass;                   /* a real device's service request shown beside a virtual answer (the real SE only) */
+#ifdef PSMAC_ADB_HOST
+static int psmac_bus_uses_gpio(void) { return 0; }
+#else
+int psmac_bus_uses_gpio(void);
+#endif
 static uint32_t trace_left;                 /* mac.adbtrace=N */
 #define TRACE(...) do { if (trace_left) { trace_left--; kprintf("[PSMAC:ADB] " __VA_ARGS__); } } while (0)
 
@@ -134,8 +140,10 @@ static void devices_reset(void)             /* SendReset, or the 68k's RESET: ev
 }
 static struct vdev *dev_at(int addr) { return addr == kb.d.addr ? &kb.d : addr == ms.d.addr ? &ms.d : 0; }
 static int dev_pending(struct vdev *d) { return d->seen && (d == &kb.d ? kb_has_data() : ms_has_data()); }
-/* worth an event in the idle state: not for a host that asks the device itself every few milliseconds (A/UX) */
-static int dev_announce(struct vdev *d, uint64_t now) { return dev_pending(d) && (!d->polled || now - d->polled > us_ticks(500000)); }
+/* worth an event in the idle state: not for a host that asks the device itself every few milliseconds (A/UX). A tenth
+   of a second since its last Talk (half a second until 28 November 2026: Linux talks to a device once and leaves the
+   rest to the autopoll, and a key's release half a second late made Linux repeat the key, docs/27) */
+static int dev_announce(struct vdev *d, uint64_t now) { return dev_pending(d) && (!d->polled || now - d->polled > us_ticks(100000)); }
 /* a device other than the one at addr wants the host: the service request */
 static int srq_wanted(int addr)
 {
@@ -295,12 +303,17 @@ static void decide(int pb3)
           mx.n ? mx.buf[0] : 0xff, mx.n ? mx.buf[1] : 0xff, mx.srq ? ", with a service request" : "");
 }
 /* the transceiver's line as the 68k reads it during a substitution or one of our own events; real = the wire's */
-static int virt_pb3(int real)
+/* At an event of ours in the idle state the line is low and the shift register holds the autopolled command, as the
+   transceiver gives them (Linux's via-macii reads an autopoll answer only then, its first byte the command; the IIci
+   ROM looks at neither: $4080A5FC). Until 28 November 2026 an autopoll answer had the line high, which Linux takes
+   for a time-out: it stayed idle, the event was never taken and the real transceiver stayed held for two seconds
+   each time (docs/27). rsrq: a real device's service request at the second byte, passed on (the real SE only) */
+static int virt_pb3(int real, int rsrq)
 {
-    if (mx.phase == PH_KICK) return mx.kick == KICK_AUTOPOLL;
+    if (mx.phase == PH_KICK) return 0;
     if (mx.phase == PH_VXFER && mx.kick == KICK_SRQ) return 0;
     (void)real;
-    if (mx.bi == 1) return mx.srq ? 0 : mx.bi < mx.n;       /* the second byte: low for a service request of ours, never the real line's time-out */
+    if (mx.bi == 1) return (mx.srq || rsrq) ? 0 : mx.bi < mx.n;   /* the second byte: low for a service request, never the real line's time-out */
     return mx.bi < mx.n;
 }
 static void byte_due(void) { mx.vflag = 0; mx.vdue = cnt_now() + us_ticks(BYTE_US); mx.vdue_on = 1; }
@@ -413,7 +426,7 @@ int psmac_adb_via_write(uint32_t reg, uint8_t d, uint32_t *wire, uint8_t *pre)
 int psmac_adb_via_read_pre(uint32_t reg, uint32_t *val)
 {
     if (reg == 10 && isolated()) {
-        *val = mx.phase == PH_VXFER && mx.bi < mx.n ? mx.buf[mx.bi] : mx.phase == PH_KICK ? 0x00 : 0xff;
+        *val = mx.phase == PH_VXFER && mx.bi < mx.n ? mx.buf[mx.bi] : mx.phase == PH_KICK ? mx.last_cmd : 0xff;
         if (mx.vflag && mx.phase == PH_KICK) mx.kick_seen = 1;
         mx.vflag = 0;
         return ADBR_LOCAL;
@@ -435,7 +448,10 @@ uint32_t psmac_adb_via_read_post(uint32_t reg, uint32_t r)
         if (mx.st == 0 && mx.flag_seen && !(r & 8) && !mx.preempted) { mx.preempted = 1; ct.preempt++; }   /* the transceiver had a byte of its own: the command was not sent */
         if (mx.phase == PH_SUBST && mx.bi == 1 && !(r & 8) && mx.flag_seen == 1) { mx.flag_seen = 2; ct.real_srq++; }   /* a real device's service request beside our answer */
         if (mx.phase == PH_WATCH && mx.flag_seen) decide((r >> 3) & 1);
-        if (mx.phase == PH_SUBST || isolated()) r = (r & ~8u) | (virt_pb3((r >> 3) & 1) ? 8u : 0);
+        if (mx.phase == PH_SUBST || isolated()) {
+            int rsrq = real_srq_pass && mx.phase == PH_SUBST && mx.bi == 1 && !(r & 8) && mx.flag_seen == 2;
+            r = (r & ~8u) | (virt_pb3((r >> 3) & 1, rsrq) ? 8u : 0);
+        }
         if (isolated()) r = (r & ~0x30u) | (((mx.orb & mx.ddrb) | ~mx.ddrb) & 0x30);
         return r;
     case 10:
@@ -556,6 +572,7 @@ static void appear(const char *why, int running)
     mx.st = lines_state(); mx.phase = PH_REAL; mx.vflag = 0; mx.vdue_on = 0; mx.ier_off = 0; mx.sr_held = 0;
     mx.cmd_known = 0; mx.last_valid = 0; mx.listening = 0; mx.real_busy = 0; mx.srq_run = 0;
     mx.idle_since = cnt_now(); mx.next_kick = 0;
+    real_srq_pass = psmac_bus_uses_gpio();      /* MAME's transceiver model holds the line low for a whole time-out */
     kb.d.seen = ms.d.seen = 0; kb.d.polled = ms.d.polled = 0; kb.hid_mods = 0; kb.caps = 0; ms.buttons = 0; ms.button = 0; ms.btn_mods = 0; ms_fx = ms_fy = 0;
     devices_reset();
     mx.on = 1;

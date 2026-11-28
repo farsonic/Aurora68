@@ -565,6 +565,7 @@ int psmac_eth_testbed_poll(volatile struct an_unit *u)
    types a few letters, with the whole thing visible in the MAME screenshots. On hardware the
    option is simply not given. */
 static uint32_t intest_at, intest_kind; static int intest_step; static uint64_t intest_next;
+static char type_word[64]; static uint32_t type_len;                  /* mac.inputtype= */
 static int click_pt[8][3], click_n, click_i, click_phase;   /* mac.inputclick=: x, y, Option */
 /* mac.inputabout=SECONDS: a second script, for the Finder: the mouse walks to the Apple menu,
    presses, moves down to the first item and releases, which under System 6 and 7 opens the
@@ -766,6 +767,27 @@ static void in_testbed_poll(void)
         }
         intest_next = now + in_hz() * as[k ? phase : phase - 1].gap / 1000; return;
     }
+    if (intest_kind == 9) {
+        /* mac.inputtype=SECONDS,WORD (28 November 2026, docs/27): WORD and Return typed on the Pi's keyboard (the USB
+           report path, so the virtual ADB keyboard under Linux or A/UX), each key held 80 ms with 200 ms between keys;
+           a '_' in WORD is a space. For counting what the host makes of every key, once. */
+        int k = intest_step / 2, down = !(intest_step & 1);
+        char ch = type_word[k];
+        uint8_t u = 0;
+        if (k > (int)type_len) { intest_at = 0; kprintf("[PSMAC] input type script done: \"%s\" and Return typed\n", type_word); return; }
+        if (k == (int)type_len) u = 0x28;
+        else if (ch >= 'a' && ch <= 'z') u = (uint8_t)(0x04 + ch - 'a');
+        else if (ch >= '1' && ch <= '9') u = (uint8_t)(0x1e + ch - '1');
+        else if (ch == '0') u = 0x27;
+        else if (ch == '_') u = 0x2c;
+        else if (ch == '.') u = 0x37;
+        else if (ch == '-') u = 0x2d;
+        else if (ch == '/') u = 0x38;
+        uint8_t r[8] = { 0, 0, (uint8_t)(down ? u : 0) };
+        frf_native_usb_keyboard_boot_report(r);
+        intest_step++;
+        intest_next = now + in_hz() * (down ? 80u : 200u) / 1000u; return;
+    }
     if (intest_kind == 3) {                                                 /* mac.inputright=: walk the mouse onto the second screen */
         int s = intest_step++;
         if (s < 60) { aga_virtual_mouse_update(30, 4, 0); intest_next = now + in_hz() * 50 / 1000; }
@@ -802,6 +824,16 @@ void psmac_alice_input_click(uint32_t seconds, const int *pts, int n)
 void psmac_alice_input_drag(uint32_t seconds)  { intest_at = seconds; intest_kind = 4; }   /* the cursor walks right, onto the second screen (docs/10) */
 void psmac_alice_input_edge(uint32_t seconds)  { intest_at = seconds; intest_kind = 6; }   /* the edge jump between the screens (docs/10) */
 void psmac_alice_input_mods(uint32_t seconds)  { intest_at = seconds; intest_kind = 7; }
+void psmac_alice_input_type(uint32_t seconds, const char *word)   /* mac.inputtype= (docs/27) */
+{
+    type_len = 0;
+    while (word[type_len] > ' ' && type_len < sizeof type_word - 1) {
+        type_word[type_len] = word[type_len];
+        type_len++;
+    }
+    type_word[type_len] = 0;
+    intest_at = seconds ? seconds : 1; intest_kind = 9; intest_step = 0;
+}
 void psmac_alice_input_adb(uint32_t seconds, int menus) { intest_at = seconds ? seconds : 1; intest_kind = 8; adb_menus = menus; }   /* the virtual ADB devices' script (docs/08 item 151) */   /* the stuck-modifier script (docs/08 item 139) */
 
 void psmac_loop_report(void);
