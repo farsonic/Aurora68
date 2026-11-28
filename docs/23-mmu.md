@@ -1768,4 +1768,9 @@ the word read at $50F011FF served a byte at a time when A/UX's kernel starts; Ti
 A/UX went on to 37 user spaces and its idle loop, no fault. (A first run with `main`'s `psmac-512x342.declrom`
 stopped in A/UX's kernel with "Unsupported kernel A-line trap: A072": that driver's interrupt handler calls
 _DoVBLTask, which A/UX's kernel does not take. The branch's driver is the one to use under A/UX.) On the solo
-board System 7.1 reaches the Finder as before. The owner's SE has test kernel 34; its result is not in yet.
+board System 7.1 reaches the Finder as before.
+
+**On the owner's SE** (test kernel 34, a Pi 3B, 28 November 2026): three starts in a row without the bomb, where most
+starts had it. The log of one, with A/UX up, its network card in use and the HDMI screen in millions:
+`timing globals: TimeDBRA 2196 TimeSCCDB 0125` (8,598 and 293), the figure foretold above for a Pi 3B, and not one
+the faulty read could give (it gave at most 2,495, and 75 to 92 here).
