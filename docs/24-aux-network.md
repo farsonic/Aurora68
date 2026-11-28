@@ -45,11 +45,16 @@ of it is in the repository).
   a warning. Slot $E is in the table but not in that loop (the loop ends before 14), so whether a card there is
   seen depends on what the kernel's table says; the card below therefore prefers slot $D.
 - **`/etc/sysinitrc`** runs `autoconfig -t0 -a -o /unix -S /etc/startup -M /etc/master` at every start, then
-  `/etc/startup`, the script autoconfig wrote, which calls each linked driver's `/etc/startup.d` script.
+  `/etc/startup`, the script autoconfig wrote, which calls each linked driver's `/etc/startup.d` script. That
+  start-up call does not link a driver for a card that is new: in run 3 (section 5), with the card in the slot
+  and a kernel without ae6, it came back with status 0 in half a minute and A/UX went on as before. (Its code can
+  write `/nextunix`, put up "The kernel was inconsistent with the hardware configuration. The system will be
+  rebooted to use a reconfigured kernel." and restart; when it does that was not found out.)
 - **`/etc/newconfig [-v] [modules]`** is what a person runs: it saves `/etc/inittab`, `passwd` and `group`,
   calls `newunix` with the module names (each runs its `/etc/install.d` script; none is needed for ae6, whose
   files are already in `/etc/boot.d`, `master.d` and `startup.d`), then `autoconfig -u -v -I` into temporary
-  files, `kconfig` to keep the kernel's tuned parameters, the new startup script with `-i` (the drivers'
+  files (it links the base kernel `/etc/config.d/newunix` with the chosen modules of `/etc/boot.d`, then runs
+  each module's `/etc/init.d` script), `kconfig` to keep the kernel's tuned parameters, the new startup script with `-i` (the drivers'
   questions), and only then moves the kernel to `/unix` and the scripts to `/etc/startup` and `/etc/master`.
   `newconfig bnet` would in addition switch on portmap, routed, sendmail, inetd and syslogd in `/etc/inittab`
   and ask about NIS; plain `newconfig` leaves `/etc/inittab` alone.
@@ -147,7 +152,7 @@ received (N not for the driver, N waits for room); ISR .. IMR .., ring at .., bo
 the chip` and `the chip is reset` say what they say. A line that begins `the driver's address ... is not one of
 the network board's` means the ROM's cell and the driver disagree.
 
-## 5. The first run, and a fault that is not the card's
+## 5. The emulator runs, and a fault that is not the card's
 
 **Run 1** (27 November, the MAME SE, `mac.mmu=full mac.ram=64 mac.auxnet=on mac.auxnettrace=300`, a copy of the
 image with the testbed's `/etc/sysinitrc` of section 7). The card's two start lines came (slot $D, and the
@@ -184,6 +189,36 @@ two first lines: the same PC, the same A5, the same address. Two things, neither
    outside the Pi's memory. The core that serves the Mac's bus cycles and sends the log died there, with its last
    lines unsent, and the 68k waited for it for ever. Fixed: `ph >= ram_size` is tested first. With that a system
    error in the Macintosh environment gets its block in the log and the machine goes on.
+
+**Run 2** was withdrawn half a minute after its start (the coordinator's word from the owner's SE had arrived,
+section 9, and the one emulator was wanted for the merged kernel).
+
+**Run 3** (the merged kernel of section 10, full configuration, the same options and image as run 1). The same
+system error came at the same place, eight times over (the Macintosh environment is started again and fails
+again), each with its block in the log now: registers, the code at the PC, the bus error's frame on the stack.
+The kernel went on, and so did A/UX's Unix side, with its text console on the screen where the start-up dialog
+would have been. So the error is not chance: every run of this branch has it and the keyboard work's runs of the
+same night do not. What this branch's runs have that those lack is the testbed's network (`mac.net=` and
+`tools/pinet.py`, which makes the service core's turn longer, 10 to 200 ms in the heartbeat's "network" figure),
+the card, and the changed `/etc/sysinitrc`; the earlier run that had it had none of the three but
+`mac.usertrace`, which also slows the 68k. *Inference:* timing, not the card; the owner's SE, with the card,
+starts its Finder. It should be run down before the emulator is trusted for A/UX's Macintosh side again.
+
+What the run showed of the network, from the files A/UX wrote (section 7):
+
+- `/auxnet.boot`: `boot Thu Nov 26 18:35:45 PST 2026`, `autoconfig 0`: the start-up autoconfig, as said in
+  section 2.
+- `/auxnet.newconfig`, newconfig's own words: "Opening kernel /etc/config.d/newunix", the nineteen master
+  files, then "Searching for hardware devices", "Found board ID 20563 in slot 9" and "Found board ID 16726 in
+  slot 12", each with "Warning cannot find driver(s)" (the Pi's main card, `$5053`, and the video decoder,
+  `$4156`), and **"Found board ID 8 in slot 13 Version 0.0"** with no warning; the link, `ld ... /etc/boot.d/at_atp
+  ddp elap llap adsp ae6 at_sig bnet devscsi line scn sin snd tc toolbox ufs`; "Setting up network devices",
+  "Setting up slot vectors", "Closing the kernel and putting it in place", and the modules' `/etc/init.d`
+  scripts one by one.
+
+There the run's 55 minutes ended: 17 minutes to A/UX's system initialisation on that night's host, then half an
+hour of newconfig, with the driver's questions, the restart and the test still to come. In the emulator,
+therefore, the card is found by autoconfig and ae6 is linked against it; ae6 itself has not run there.
 
 ## 6. What a person does, once
 
@@ -240,28 +275,34 @@ finished run left.
 `tools/aux/run-aux-net.sh SECS LOGDIR KERNEL DISK mac.auxnet=on` is the run: the MAME SE (`tools/run-fullstack.sh`,
 `MACHINE=macse_ps`), the image as a virtual SCSI disk at ID 0, `mac.mmu=full`, 64 MiB, `mac.net=/tmp/psmac-net`
 and `tools/pinet.py /tmp/psmac-net peer` as the other end of the wire (192.168.68.1: it answers ARP, ping, TCP
-echo on port 7 and HTTP, and logs every frame). A/UX needs 12 to 20 minutes to its Finder there, and the run
-with newconfig is two starts. When a run stands still, QEMU's monitor still answers (`tools/qemu-mon.py "info
+echo on port 7 and HTTP, and logs every frame). A/UX needs 12 to 20 minutes to its system initialisation
+there, newconfig more than half an hour, and the run with newconfig is two starts: give it two hours
+(`SECS` 7200; run 3's 3,300 were not enough), or stop it when A/UX has restarted after newconfig (the log's
+second "68k RESET" line; the file system is clean then) and start a second run from the image it left. When a run stands still, QEMU's monitor still answers (`tools/qemu-mon.py "info
 registers -a"` for where each core is; `memsave` of `con_ring` for log lines that were never sent).
 
 Without A/UX: `sh tools/aux/etalk_test.sh` (a second), and `tools/diag_test.sh` for the options table.
 
-## 8. What is proven, and what is not (27 November, end of run 1)
+## 8. What is proven, and what is not (27 November 2026, after run 3 and the owner's test)
 
 Proven:
 - by reading the code: sections 2 and 3;
 - by `tools/aux/etalk_test.sh`: the chip model against the driver's sequence as read, the ring's arithmetic, the
   interrupt's bit, the board's command box;
-- by run 1: the Mac ROM's Slot Manager and the Mac OS on A/UX's disk start with the card in slot $D, A/UX Startup
-  launches, A/UX's kernel boots and starts its Macintosh environment; the address reaches the ROM's cell.
+- in the emulator (runs 1 and 3): the Mac ROM's Slot Manager and the Mac OS on A/UX's disk start with the card
+  in slot $D, A/UX Startup launches, A/UX's kernel boots; the address reaches the ROM's cell; autoconfig finds
+  board ID 8 in slot 13 and links ae6; System 7.1 from the SE's disk starts with the card in the slot and
+  without it (section 10);
+- on the owner's SE (section 9): the address read by `/etc/etheraddr`, newconfig's kernel, `ae0` up over the
+  WiFi, ARP and ping answered both ways, the slot interrupt.
 
 Not proven yet:
-- that autoconfig finds the card and links ae6 (run 1 stopped before `/etc/sysinitrc` got there);
-- newconfig's questions as section 6 lists them;
-- ae6 on this chip: probe, start, the interrupt, a frame each way; ping, TCP;
-- anything on the real SE, the WiFi under A/UX above all (the unit's choice, the address, the board left
-  without a Mac driver);
-- System 7.1 from the card's own image with the option on and off.
+- ae6 running in the emulator (run 3 ended before the restart), so the testbed has no regression for it but
+  the host test;
+- newconfig's questions word for word as section 6 lists them (they are the scripts' text; the owner answered
+  them, no transcript came back);
+- on the SE: the log's `[AUXNET]` lines, TCP, a long transfer, the wired port, the merged kernel;
+- AppleTalk over the card; the card in a slot other than $D (with `pc=on`); the IIci board.
 
 ## 9. The owner's SE: ae0 over the WiFi (27 November 2026)
 
@@ -285,13 +326,29 @@ acknowledged. Not looked at there yet: the `[AUXNET]` lines of the log, TCP (tel
 cable instead of the WiFi, a start with the keyboard kernel, and A/UX's address beside the kernel's own
 (`remote=on`).
 
-## 10. Next, in order
+## 10. The merge with the keyboard work, and what comes next (27 November 2026)
 
-1. Run 2: the same as run 1 with the `mac_rd32` fix, to the end of section 7's script; read the three files and
-   `pinet.log`.
-2. Whatever ae6 then shows the model lacks (its messages are in the kernel's `printf` strings: "spurious
-   interrupt", "can't get ethernet address", "timeout").
-3. The System 7.1 regression (`mac.auxnet` off, then on) and the options test.
-4. The owner's SE over WiFi: `etheraddr`, `newconfig`, ping to the router; the log's `[AUXNET]` lines.
-5. Then: the IIci board's slot register, AppleTalk over the card (`elap` is in the kernel), a default route and
-   resolver set by the same hand that sets the address.
+The branch was merged with `mmu-experimental` as it stood with the virtual ADB keyboard and mouse (docs/08 item
+151); the two meet in single lines of five files and nothing had to be chosen. The owner's kernels are the full
+configuration (`-DPSMAC_PC=ON -DPSMAC_A2=ON` with their libraries), and there the PC card can ask for slot $D:
+hence the slot order of section 4. On the merged tree: the kernel builds without a warning in both
+configurations, `make -C mac check` passes with the chip model's test in it (44,539 checks), `tools/diag_test.sh`
+7,689 checks, `tools/adb_test.sh` 86.
+
+System 7.1 from the SE's SCSI disk in the MAME SE, the merged kernel in its full configuration, 520 s each: the
+Finder's desktop and the image's startup program, once without the option and once with `mac.auxnet=on` (the
+card's line in the log, slot $D), the last screens the same to the byte, no system error, no unserviceable slot
+interrupt. (Two boots of 330 s before them had only got to "Welcome to Macintosh" and .PiInput's first
+interrupt: that night's host ran the testbed at about 0.6 of its usual speed, docs/08 item 151.) The A/UX boot
+with the merged kernel is run 3 of section 5.
+
+Next, in order:
+
+1. The system error of section 5 in the emulator's Macintosh environment: which of `mac.net=`, the card and the
+   changed `/etc/sysinitrc` brings it (three short runs), then why.
+2. A full emulator run of section 7's script (two hours, or in two parts), so that ae6 against the card is a
+   test anyone can repeat: the three files and `pinet.log`.
+3. From the owner's SE: the kernel's log with the `[AUXNET]` lines, telnet or ftp, a default route, and the
+   merged kernel with the Pi's keyboard.
+4. Then: the IIci board's slot register, AppleTalk over the card (`elap` is in the kernel), a default route and
+   a resolver set by the same hand that sets the address.
