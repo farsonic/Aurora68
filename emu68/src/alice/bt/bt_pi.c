@@ -92,7 +92,7 @@ static int uart_alt, bton_rc = -99;
 /* bt.local=AABBCCDDEEFF in pairings.txt (or cmdline.txt): the address the pairings were made with. Recorded the
    first time a paired device connects, then given to the chip at every start (bthost.c, Broadcom's Write_BD_ADDR),
    so a card moved from a Pi 3B to a 3A+ keeps its keyboards and mice (the chips' own addresses differ by board:
-   the owner's Keychron, paired on the 3B, was never heard on the 3A+, 28 November 2026). HCI order, LSB first. */
+   the owner's keyboard, paired on the 3B, was never heard on the 3A+, 28 November 2026). HCI order, LSB first. */
 static uint8_t local_addr[6]; static int local_known;
 static uint32_t rx_total, rx_errors, rx_overruns, rx_ring_full;
 
