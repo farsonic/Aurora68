@@ -203,7 +203,9 @@ void psmac_recovery_phase1(void)
     if (!card) return;
     if (flag_len >= 0) psmac_card_boot_flag_drop();
     if (rec_on) { if (count > 0) psmac_card_boot_write(0); }
-    else if (boot_limit) {
+    else if (boot_limit && (o = psmac_option("mac.linux")) && o[0]) {
+        kprintf("[RECOVERY] boot counter: not counted, Linux is started (mac.linux=); no Finder will put it back to 0\n");
+    } else if (boot_limit) {
         int n = count < 0 ? 1 : count + 1;
         psmac_card_boot_write(n);
         boot_count = n;                                          /* what the Finder puts back to 0 */

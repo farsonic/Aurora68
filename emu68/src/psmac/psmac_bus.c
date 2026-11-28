@@ -2110,6 +2110,7 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
             psmac_display_layout(se_card, two); }
     }
     { extern void psmac_recovery_phase1(void); psmac_recovery_phase1(); }   /* Aurora68 Setup and Recovery: asked for, or three starts without the Finder? */
+    { extern void psmac_linux_read(void); psmac_linux_read(); }         /* mac.linux=: the kernel's files into the Mac's RAM, while core 0 has the card (psmac_linux.c) */
     psmac_mbox_init(win_phys, ram_phys, ram_size);
     { extern void psmac_videocard_init(void); if (vid_size) psmac_videocard_init(); }   /* its ROM and block, once the screens are known */
     { extern void psmac_etalk_init(void); psmac_etalk_init(); }                         /* mac.auxnet=: the A/UX network card's ROM and chip (psmac_etalk.c) */
@@ -2131,6 +2132,7 @@ void psmac_setup_memory(void *rom, uint32_t rom_sz)
     memcpy((void *)(KERNEL_ALIAS + ram_phys), romk, 8);
     arm_flush_cache(KERNEL_ALIAS + ram_phys, 4096);
     arm_flush_cache(KERNEL_ALIAS + rom_phys, PSMAC_ROM_SIZE);
+    { extern void psmac_linux_place(void); psmac_linux_place(); }       /* mac.linux=: Linux's vectors there instead (psmac_linux.c, docs/27) */
 
     globals.zorro_disable = true;
     {

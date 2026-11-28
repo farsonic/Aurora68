@@ -323,6 +323,7 @@ enum { DOUT_STORE, DOUT_MODESEL6, DOUT_MODESEL10, DOUT_FORMAT, DOUT_REASSIGN, DO
 static struct {
     uint8_t odr, icr, mr, tcr, ser;
     int dma, irq, busy_err, aip;
+    int latched;                                /* Linux's last byte of a DMA receive read from the input register (below) */
 } n;
 static struct {
     int phase, req;
@@ -827,6 +828,23 @@ static void try_select(void)
     }
 }
 static int phase_match(void) { return t.phase != PH_FREE && (n.tcr & 7) == (t.phase & 7); }
+/* The last byte of a DMA receive, as Linux's NCR5380 driver takes it (28 November 2026, docs/27): with FLAG_DMA_FIXUP it
+   moves one byte fewer through the pseudo-DMA window, waits for DRQ, then for REQ to go false, reads the byte from the
+   input data register and leaves DMA mode. On the chip, in DMA receive mode a REQ of the matching input phase is
+   answered with ACK at once (the byte latched, DRQ up), so the target has dropped REQ; leaving DMA mode drops ACK and
+   the byte is done. Until then this model kept REQ up and Linux gave up with "PDMA fixup: !REQ timeout" and polled every
+   byte from then on. Only while Linux is started (mac.linux=): Mac OS and A/UX were never seen to look at REQ there,
+   and A/UX's disk is one of these devices on the owner's SE, which this cannot be tried against here. */
+#ifdef PSMAC_SCSIDEV_HOST
+static int psmac_linux_wanted(void) { return 0; }    /* the native test (tools/scsidev_test.c) is Mac OS's and A/UX's use */
+#else
+extern int psmac_linux_wanted(void);
+#endif
+static int dma_latched(void)
+{
+    return n.dma && t.req && phase_match() && (t.phase == PH_DATAIN || t.phase == PH_STATUS || t.phase == PH_MSGIN) &&
+           psmac_linux_wanted();
+}
 uint32_t psmac_scsidev_read(uint32_t reg)
 {
     switch (reg & 7) {
@@ -838,7 +856,7 @@ uint32_t psmac_scsidev_read(uint32_t reg)
         uint32_t v = 0;
         if (n.icr & 0x80) v |= 0x80;
         if (t.phase != PH_FREE || (n.icr & 0x08)) v |= 0x40;
-        if (t.req) v |= 0x20;
+        if (t.req && !dma_latched()) v |= 0x20;
         if (t.phase != PH_FREE) v |= (uint32_t)(t.phase & 7) << 2;
         if (n.icr & 0x04) v |= 0x02;
         return v; }
@@ -851,7 +869,7 @@ uint32_t psmac_scsidev_read(uint32_t reg)
         if (n.icr & 0x02) v |= 0x02;
         if (n.icr & 0x10) v |= 0x01;
         return v; }
-    case 6: return cur_data();
+    case 6: if (dma_latched()) n.latched = 1; return cur_data();
     default: n.irq = 0; n.busy_err = 0; return 0;
     }
 }
@@ -869,7 +887,10 @@ void psmac_scsidev_write(uint32_t reg, uint8_t d)
         if (ack && !was_ack && !n.dma) ack_byte();
         if (!ack && was_ack && !n.dma) advance();
         break; }
-    case 2: n.mr = d; if (d & 0x01) n.aip = 1; if (!(d & 0x02)) n.dma = 0; break;   /* arbitration: the bus is free at once */
+    case 2:
+        if (!(d & 0x02) && n.latched && dma_latched()) { ack_byte(); advance(); }   /* ACK dropped: the latched byte is done */
+        n.latched = 0;
+        n.mr = d; if (d & 0x01) n.aip = 1; if (!(d & 0x02)) n.dma = 0; break;   /* arbitration: the bus is free at once */
     case 3: n.tcr = d & 0x0f; break;
     case 4: n.ser = d; break;
     case 5: if (n.mr & 0x02) n.dma = 1; break;  /* start DMA send */
@@ -910,6 +931,7 @@ uint8_t psmac_scsidev_pdma_read(void)
 {
     if (!n.dma) { uint8_t v = cur_data(); outside_dma(0, v); return v; }
     if (!(t.req && (t.phase == PH_DATAIN || t.phase == PH_STATUS || t.phase == PH_MSGIN))) { underflow(0); return 0xff; }
+    n.latched = 0;
     uint8_t v = cur_data(); ack_byte(); advance(); return v;
 }
 void psmac_scsidev_pdma_write(uint8_t d)

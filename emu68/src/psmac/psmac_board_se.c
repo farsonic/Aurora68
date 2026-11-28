@@ -980,6 +980,7 @@ int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t 
         uint32_t ch = off & 6;
         if (write) {
             if (psmac_board_plus) data = psmac_plus_scc_write(ch, data & 0xff);   /* the register pointer followed, WR15's DCD enable kept off (the Plus's mouse) */
+            if (ch & 4) { extern void psmac_linux_scc(int, uint8_t); psmac_linux_scc(ch == 6, (uint8_t)data); }   /* the data registers into the log too (psmac_linux.c) */
             trace("SCC", 1, addr, 0xBFFFF9u + ch, size, data & 0xff); psmac_wire_write(0xBFFFF9u + ch, 1, data & 0xff, posted);
             if (psmac_board_plus) psmac_plus_scc_written();
             return 1;

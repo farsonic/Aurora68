@@ -46,6 +46,7 @@ int64_t psmac_sh_flen(int64_t fd);
 int     psmac_sh_available(void);
 const char *psmac_option(const char *key);
 int psmac_se_rbv_irq(void);
+void psmac_linux_scc(int channel_a, uint8_t c);  /* psmac_linux.c: what is sent, a line at a time into the log */
 
 static inline uint64_t cnt_now(void) { uint64_t v; __asm__ volatile("mrs %0, CNTVCT_EL0":"=r"(v)); return v; }
 static inline uint64_t cnt_frq(void) { uint64_t v; __asm__ volatile("mrs %0, CNTFRQ_EL0":"=r"(v)); return v; }
@@ -415,7 +416,8 @@ static void scc_write(uint32_t off, uint8_t d)
 {
     int ch = (off & 2) ? 1 : 0;
     scc.writes++;
-    if (off & 4) {                              /* data: sent nowhere, at once */
+    if (off & 4) {                              /* data: sent nowhere, at once (and into the log for Linux's console, psmac_linux.c) */
+        psmac_linux_scc(ch, d);
         scc.txbusy[ch] = 1;
         scc.txt[ch] = scc_now();
         if (scc.wr[ch][1] & 0x02)

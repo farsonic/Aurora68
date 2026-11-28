@@ -2213,6 +2213,12 @@ static uint32_t EMIT_MOVEC(struct TranslatorContext *ctx, uint16_t opcode)
 
                 RA_FreeARMRegister(ctx, tmp);
                 break;
+#ifdef PSMAC
+            case 0x802: // CAAR: the 68030's cache address register, for CACR's clear-entry bits; the entry's address is not
+                        // needed (CEI clears the code cache's view whole, check_cacr), so the write goes nowhere. Linux
+                        // writes it around a signal frame (push_cache) and died of an illegal instruction (docs/27)
+                break;
+#endif
             case 0x803: // MSP
                 sp = RA_MapM68kRegister(ctx, 15);
                 RA_SetDirtyM68kRegister(ctx, 15);
@@ -2409,6 +2415,11 @@ static uint32_t EMIT_MOVEC(struct TranslatorContext *ctx, uint16_t opcode)
             case 0x002: // CACR
                 EMIT(ctx, mov_simd_to_reg(reg, REG_CACR));
                 break;
+#ifdef PSMAC
+            case 0x802: // CAAR: read as zero (the write above keeps nothing)
+                EMIT(ctx, mov_reg(reg, 31));
+                break;
+#endif
             case 0x803: // MSP
                 sp = RA_MapM68kRegister(ctx, 15);
                 tmp = RA_AllocARMRegister(ctx);

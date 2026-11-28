@@ -203,13 +203,25 @@ static int etalk_slot(void)
     return slot;
 }
 
+// The card decodes A0-A19 for its buffer and its chip (28 November 2026, docs/27): the same megabyte answers in each of
+// the slot's sixteen, the ROM's page aside. A/UX's ae6 addresses them from the slot's base ($Fs0D0000); Linux's mac8390
+// from base | slot << 20 ($FsSD0000, "how the Apple driver does it"), which reached nothing before and the driver said
+// "Don't know how to access card memory".
+static uint32_t etalk_decode(uint32_t off)
+{
+    if (off >= ETALK_ROM_OFF) {
+        return off;
+    }
+    return off & 0x000fffffu;
+}
+
 // psmac_mmu.c: the Pi's memory behind a 68k physical page of the card (its buffer or its ROM), 0 for any other
 uintptr_t psmac_etalk_phys(uint32_t p)
 {
     if ((p >> 28) != 0xF || !etalk_slot() || (p & 0xff000000u) != et.base || !et.ram_pi) {
         return 0;
     }
-    uint32_t off = p & 0x00ffffffu;
+    uint32_t off = etalk_decode(p & 0x00ffffffu);
     if (off >= ETALK_RAM_OFF && off < ETALK_RAM_OFF + ETALK_RAM_SIZE) {
         return et.ram_pi + (off - ETALK_RAM_OFF);
     }
@@ -476,7 +488,7 @@ int psmac_etalk_access(uint32_t addr, int size, int write, uint32_t data, uint32
     if ((addr >> 28) != 0xF || et.slot <= 0 || (addr & 0xff000000u) != et.base) {
         return 0;
     }
-    uint32_t off = addr & 0x00ffffffu, v = 0;
+    uint32_t off = etalk_decode(addr & 0x00ffffffu), v = 0;
     if (off >= ETALK_REG_OFF && off < ETALK_REG_OFF + ETALK_REG_SIZE) {
         etalk_lock();
         for (int i = 0; i < size; i++) {

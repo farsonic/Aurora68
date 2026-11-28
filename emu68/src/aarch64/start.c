@@ -1980,7 +1980,12 @@ __asm__ volatile(
         k = (k & ~0xf0ull) | 13u << 4 | 1u << 2;                /* EVNTI = 13, EVNTEN */
         __asm__ volatile("msr CNTKCTL_EL1, %0; isb" :: "r"(k));
     }
-    psmac_boot_mark("68k released: the ROM's first instruction");
+    {   /* mac.linux= (psmac_linux.c, docs/27): the vectors at 0 are Linux's; the chips as the ROM would leave them */
+        extern int psmac_linux_release(void);
+        if (!psmac_linux_release()) {
+            psmac_boot_mark("68k released: the ROM's first instruction");
+        }
+    }
     psmac_splash_status("Starting the Macintosh...");
 #endif
 #ifndef PISTORM_ANY_MODEL

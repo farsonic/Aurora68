@@ -988,6 +988,49 @@ int psmac_display_info(int i, uint32_t *w, uint32_t *h, uint32_t *depth, uint32_
     return 1;
 }
 
+/* Linux started directly (mac.linux=, psmac_linux.c, docs/27): no Mac OS driver opens the card, so the kernel switches
+   a screen on as the driver would, at one bit on the SE's screen and at eight on an HDMI screen that has the mode, with
+   the Linux console's sixteen colours in the table. want_hdmi picks the HDMI screen where there are two (the SE board's
+   slot $A card); on the other boards the card's one screen is the HDMI screen. 0 if there is no such screen. */
+int psmac_display_linux(int want_hdmi, uint32_t *w, uint32_t *h, uint32_t *depth, uint32_t *rowbytes, uint32_t *base)
+{
+    static const uint8_t con_r[16] = { 0x00, 0xaa, 0x00, 0xaa, 0x00, 0xaa, 0x00, 0xaa, 0x55, 0xff, 0x55, 0xff, 0x55, 0xff, 0x55, 0xff };
+    static const uint8_t con_g[16] = { 0x00, 0x00, 0xaa, 0x55, 0x00, 0x00, 0xaa, 0xaa, 0x55, 0x55, 0xff, 0xff, 0x55, 0x55, 0xff, 0xff };
+    static const uint8_t con_b[16] = { 0x00, 0x00, 0x00, 0x00, 0xaa, 0xaa, 0xaa, 0xaa, 0x55, 0x55, 0x55, 0x55, 0xff, 0xff, 0xff, 0xff };
+    int i = (want_hdmi && nscr == 2) ? 1 : 0;
+    if (nscr < 1 || !scr[i].disp) return 0;
+    if (want_hdmi && nscr < 2 && se_card) return 0;           /* the SE card without its HDMI screen (mac.hdmi=log or mirror) */
+    struct screen *s = &scr[i];
+    volatile struct psmb_display *d = s->disp;
+    uint32_t dep = 1;
+    if (!s->one_bit && d->mode_base[3] && d->mode_rowbytes[3] * d->height <= mode_limit(s, 3)) dep = 8;
+    int mi = mode_index(dep);
+    if (!d->mode_base[mi]) return 0;
+    d->depth = dep;
+    d->rowbytes = d->mode_rowbytes[mi];
+    if (dep == 1) {
+        d->clut[0] = 0xffffffu;                               /* the Mac's one-bit order, which is Linux's MONO01: 1 is black */
+        d->clut[1] = 0;
+    } else {
+        for (int k = 0; k < 256; k++) {
+            uint32_t g = (uint32_t)k;
+            d->clut[k] = k < 16 ? (uint32_t)con_r[k] << 16 | (uint32_t)con_g[k] << 8 | con_b[k] : g << 16 | g << 8 | g;
+        }
+    }
+    uint8_t *f = (uint8_t *)mode_frame(s, mi);
+    uint32_t n = d->rowbytes * d->height;
+    for (uint32_t k = 0; k + 8 <= n; k += 8) {
+        *(uint64_t *)(f + k) = 0;
+    }
+    d->vbl_enable = 0;
+    d->clut_seq++;
+    __asm__ volatile("dmb ish" ::: "memory");
+    d->flags = PSMB_DISP_ENABLED;
+    __asm__ volatile("dmb ish" ::: "memory");
+    *w = d->width; *h = d->height; *depth = dep; *rowbytes = d->rowbytes; *base = d->mode_base[mi];
+    return 1;
+}
+
 /* ---- the remote's screenshot (psmac_remote.c, docs/13) ---------------------------------------
    The picture as the Mac drew it, not as the VideoCore scans it out: the frame buffer of the mode
    in use, at its depth, through the colour table, so a screenshot is right whatever the HDMI side
