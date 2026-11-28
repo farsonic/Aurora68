@@ -133,6 +133,17 @@ heartbeats to init). MAME's screen of the SE shows the penguin and the kernel's 
 appearing only when Linux's first user process gave the modes separate views (the A/UX hand-over), after Linux's bus
 scan.
 
+**The network card on the MAME SE, with the ADB devices at the release** (the final kernel, `tools/aux/run-aux-net.sh`
+with `mac.auxnet=on` and `tools/pinet.py` as the peer, 420 s): `[PSMAC:ADB] a virtual ADB keyboard ... Linux is
+started`, and Linux found two keyboards and two mice (`input0`-`input3`: MAME's and the Pi's, each given its own
+address by Linux's scan); `mac8390 slot.D: Aurora68 Ethernet for A/UX (type apple)`, `udhcpc: lease of 192.168.68.2
+obtained from 192.168.68.1`, and 3 of 3 pings answered (334, 23, 68 ms over the bridge).
+
+**Regression** (the final kernel): `make -C mac check` passes, with `diag_test.sh` (7689 checks), `adb_test.sh` (86),
+`aux/etalk_test.sh` (44539, the A/UX network card's chip model after the address decoding change) and the 5380
+model's host test (solo, se, empty; the Linux-only REQ change is off there, as for Mac OS); System 7.1 on the solo
+board without `mac.linux=` reaches the Finder at 21.9 s.
+
 ## 5. The build script (`tools/linux/`)
 
 `build-debian-image.sh [OUTPUT]` runs on the Mac with nothing but a Docker-compatible engine: OrbStack's `docker`
