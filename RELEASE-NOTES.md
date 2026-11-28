@@ -11,7 +11,8 @@
   time (`[PSMAC:SE] a 2-byte read at 50f011ff runs across VIA registers 8 and 9` in the log). Mac OS itself was not
   seen to make one. Three earlier tries at this bomb (a floor under TimeDBRA, a raise in the Mac's memory, a timer
   read every eighth turn of a delay loop) were built on a wrong reading of the cause and are taken out again.
-  Kernel only.
+  Checked on the owner's SE with the A/UX branch's kernel: TimeDBRA 8,598 under A/UX, three starts in a row without
+  the bomb; and in the testbed (A/UX in MAME's SE, System 7.1 on the solo board). Kernel only.
 
 ## 0.18 — the Aurora68 programs on a disk of their own, the remote control found by ARP, WiFi beside Bluetooth (27 November 2026)
 
