@@ -707,25 +707,6 @@ static uint32_t mac_rd32(uint32_t logical, int *ok)
     if (!valid || ph + 4 > ram_size) { *ok = 0; return 0; }
     *ok = 1; return *(const uint32_t *)(KERNEL_ALIAS + ram_phys + ph);
 }
-/* TimeDBRA ($D00) never below 200 while Mac OS runs (28 November 2026). AppleTalk's start-up divides by
-   TimeDBRA / 100 (A/UX's System; the owner's SE bombed with a zero divide in A/UX Startup at 78 and 83). The
-   kernel's calibration table already floors it (psmac_mbox.c), but a ROM patched by an early make-container.py
-   measures it itself and never reads the table, and such a ROM is copied as it came (the delta cannot bring it up
-   to date). So the stored value is raised here, whatever the ROM. Not once A/UX's tables are on: logical $D00 is
-   then A/UX's kernel, not the Macintosh environment's low memory. */
-volatile int psmac_aux_tables;              /* alice_psmac.c: 1 from A/UX's tables to the next 68k RESET */
-static void timedbra_floor(void)
-{
-    static uint32_t raised;
-    if (psmac_aux_tables) return;
-    int valid; uint32_t ph = psmac_mmu_l2p(0xd00, &valid);
-    if (!valid || ph + 2 > ram_size) return;
-    volatile uint16_t *p = (volatile uint16_t *)(KERNEL_ALIAS + ram_phys + ph);
-    uint16_t v = *p;                                      /* big-endian like the 68k */
-    if (v == 0 || v >= 200) return;                       /* 0: before the ROM's calibration */
-    *p = 200;
-    if (raised++ < 4) kprintf("[PSMAC] TimeDBRA %u raised to 200 (AppleTalk divides by TimeDBRA / 100; the ROM measured it itself)\n", v);
-}
 /* for the crash record (psmac_crash.c): RAM or the ROM, wherever the 68k's map puts them */
 uint32_t psmac_mac_rd32(uint32_t logical, int *ok)
 {
@@ -795,11 +776,6 @@ void psmac_service_core(void)
         }
         psmac_errand(PSMAC_ERR_LOOP);
         con_drain();                              /* the serial log (con_putc), first: the bus's turns below may continue */
-        {   /* TimeDBRA's floor, every 10 ms (timedbra_floor) */
-            static uint64_t next_floor;
-            uint64_t tn = cnt_now();
-            if (tn > next_floor) { next_floor = tn + cnt_frq() / 100; timedbra_floor(); }
-        }
         /* the heartbeat waits while the floppy is in use (an IWM access within 5 ms), by one period at most:
            its reports hold the wire for tens of microseconds without the Mac's requests (docs/08 item 146) */
         if (cnt_now() > next_hb && !(psmac_se_floppy_busy() && cnt_now() < next_hb + hb_period)) {

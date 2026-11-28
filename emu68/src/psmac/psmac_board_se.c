@@ -873,8 +873,30 @@ int psmac_se_access(uint32_t addr, int size, int write, uint32_t data, uint32_t 
         if (!write) { *val = 0xffffffffu; local_reads++; } else local_writes++;
         return 1;
     }
-    if (psmac_board_solo && psmac_solo_access(addr, size, write, data, val)) return 1;   /* the four chips, modelled */
     uint32_t off = addr & 0x000fffffu;          /* the IIci decoder ignores A20-A23 in the I/O block */
+    if (size > 1 && (off < 0x2000 || (off >= 0x40000 && off < 0x42000)) && (off & 0x1ff) + (uint32_t)size > 0x200) {
+        /* A word or long that runs from one VIA register into the next: one byte cycle per byte, each at its own
+           register, as the 68030 makes them on an 8-bit port. Until 28 November 2026 the first register's byte
+           was given for all of them. A/UX's kernel times its delay loops with MOVE.W $11FF(A1) (SetUpTimeK:
+           timer 2's low byte at $11FF, its high byte at $1200) and got the low byte twice, so its TimeDBRA was
+           12479 / (the loop's time in timer ticks, modulo 256): 75 to 92 on the owner's SE on most starts, and
+           AppleTalk in A/UX's Macintosh environment divides by TimeDBRA / 100 (a zero divide, docs/23). */
+        static uint32_t said;
+        uint32_t v = 0;
+        for (int i = 0; i < size; i++) {
+            uint32_t b = 0;
+            psmac_se_access(addr + (uint32_t)i, 1, write, write ? (data >> (8 * (size - 1 - i))) & 0xff : 0, &b, posted);
+            v = v << 8 | (b & 0xff);
+        }
+        if (!write) *val = v;
+        if (said < 2) {
+            said++;
+            kprintf("[PSMAC:SE] a %d-byte %s at %08x runs across VIA registers %u and %u: served a byte at a time (%08x)\n",
+                    size, write ? "write" : "read", addr, (off >> 9) & 15, ((off + (uint32_t)size - 1) >> 9) & 15, write ? data : v);
+        }
+        return 1;
+    }
+    if (psmac_board_solo && psmac_solo_access(addr, size, write, data, val)) return 1;   /* the four chips, modelled */
     uint32_t r = 0;
     if (off < 0x2000 || (off >= 0x40000 && off < 0x42000)) {
         /* VIA1: register n at +n*0x200 on both machines */
