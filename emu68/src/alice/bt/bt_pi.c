@@ -889,8 +889,15 @@ void bt_pi_poll(void)
         int which = -1;
         for (int i = 0; stems[i] && !fw; i++) { const char *one[2] = { stems[i], 0 }; fw = alice_fw_get(one, ".hcd", &len); if (fw) which = i; }
         if (!fw && !(alice_fw_offered() && now - wait_since > 3000) && now - wait_since < 30000) break;
-        if (!fw) blog("[BT] no BCM4345C0.hcd in the WIFI folder: the chip's own (older) firmware is used");
-        else { char t[64]; unsigned k = put_str(t, 0, "[BT] firmware from the WIFI folder: "); k = put_str(t, k, stems[which]); k = put_str(t, k, ".hcd"); t[k] = 0; blog(t); }
+        {   /* said once: this case runs every turn until the mailbox takes BT_ON, and the line filled 500 of a saved log's
+               830 lines on a Pi 3A+ (28 November 2026) */
+            static int fw_said;
+            if (!fw_said) {
+                fw_said = 1;
+                if (!fw) blog("[BT] no BCM4345C0.hcd in the WIFI folder: the chip's own (older) firmware is used");
+                else { char t[64]; unsigned k = put_str(t, 0, "[BT] firmware from the WIFI folder: "); k = put_str(t, k, stems[which]); k = put_str(t, k, ".hcd"); t[k] = 0; blog(t); }
+            }
+        }
         bh.fw = fw; bh.fwlen = fw ? len : 0;
         if (!uart_done) { uart_init(); uart_done = 1; }
         if ((int32_t)(now - phase_t) < 250) break;      /* a mailbox try at most 4 times a second */
