@@ -883,7 +883,12 @@ static uint32_t dbf_turns_per_ms(void)
     uint64_t dt = cnt_now() - t0;
     (void)sink;
     uint64_t per_ms = dt ? (uint64_t)4096 * (cnt_frq() / 1000) / (dt * psmac_dbf_slow) : 0x7fff;
-    if (per_ms < 64) per_ms = 64;
+    /* Never below 200: AppleTalk's start-up (A/UX's System, and System 7's with ROMs from version 118) divides by
+       TimeDBRA / 100. On a real Pi 3 one timer read takes about 10 us, so the measurement gave 83 to 103, and
+       at 83 the owner's SE bombed with a zero divide in A/UX Startup (28 November 2026). A larger figure only
+       makes the delays the ROM counts in TimeDBRA turns longer than asked (up to 2.4 times on a Pi 3B), never
+       shorter; the loops themselves are unchanged. */
+    if (per_ms < 200) per_ms = 200;
     if (per_ms > 0x7fff) per_ms = 0x7fff;
     return (uint32_t)per_ms;
 }
