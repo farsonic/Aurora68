@@ -22,13 +22,12 @@
   made for a 3B has none: the kernel now also reads the files of the board's own chip from the card's
   `wifi-firmware/` folder or its root (`[CARD] N WiFi/Bluetooth firmware files read from the card`). Its Bluetooth
   chip's flow-control lines are wired to the Pi, unlike the 3B's, and were left idle, so the chip never answered:
-  the kernel tries three set-ups of them in turn and keeps the one that answers. On the owner's 3A+ the WiFi joins
-  and the Bluetooth chip starts; a keyboard connected there has not been reported yet. Kernel only.
+  the kernel tries three set-ups of them in turn and keeps the one that answers. On the owner's 3A+ with 0.19, A/UX
+  runs with the WiFi and a Bluetooth keyboard and mouse (28 November 2026). Kernel only.
 - **Bluetooth pairings that move with the card.** A paired keyboard looks for the Bluetooth address it was paired
   with, and every Pi's chip has its own. The address is now recorded in `pairings.txt` the first time a paired
   device connects (`bt.local=`), and any Pi the card is put into gives its chip that address at start (Broadcom's
-  own command for it). Checked on the owner's 3B (`address from the card`); the 3A+ with the 3B's pairings is still
-  to be reported. Kernel only.
+  own command for it). Checked on the owner's SE: pairings made on the 3B worked on the 3A+ with 0.19. Kernel only.
 - **The WiFi's state in a saved log.** While the WiFi is not connected its `[WIFI]` line comes again every minute,
   with the Pi's board code, so a log saved later still says why; under A/UX the `MOVES` trace no longer fills the log.
 - **A word or long read that runs from one VIA register into the next** (28 November 2026, docs/23 section 24).

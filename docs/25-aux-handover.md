@@ -11,8 +11,8 @@ SE, sections 12 to 23) and, on branch `aux-net`, `docs/24-aux-network.md` (the n
 `aux-hdmi` were merged that day (they stay as they were, for the record; new work goes on `main` or on a branch
 from it). Since the table below was written: the "divide by zero" in A/UX's Macintosh environment was found and
 fixed (a word read across two VIA registers, docs/23 section 24); a Pi 3A+ runs it, with its WiFi and Bluetooth
-firmware read from the card's `wifi-firmware/` folder and its Bluetooth UART set up for the 3A+'s wiring (on the
-owner's 3A+ the WiFi joins and the Bluetooth chip starts; a keyboard connected there has not been reported yet);
+firmware read from the card's `wifi-firmware/` folder and its Bluetooth UART set up for the 3A+'s wiring (release 0.19
+on the owner's 3A+: A/UX with the WiFi and a Bluetooth keyboard and mouse, the pairings made on the 3B);
 and Bluetooth pairings move with the card between Pis (`bt.local=` in `pairings.txt`).
 
 ## 1. What runs today

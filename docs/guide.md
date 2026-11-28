@@ -625,7 +625,7 @@ takes a Zero 2 W, 3A+, 3B or 3B+; a Pi 4 needs a different board. The board is l
 
 The 3A+ has no device tree of its own: its firmware loads `bcm2710-rpi-3-b-plus.dtb`, and the
 kernel tells it from a 3B+ by the board's revision code. The 3A+ is the one tested in QEMU
-(`raspi3ap`), and since 28 November 2026 on the owner's SE (its WiFi joins and its Bluetooth chip starts; the
+(`raspi3ap`), and since 28 November 2026 on the owner's SE (Mac OS and A/UX with its WiFi and Bluetooth; the
 kernel reads its firmware from the card's `wifi-firmware/` folder when the container has none: RELEASE-NOTES, 0.19); QEMU has no Zero 2 W, which was checked by reading only. `docs/12-hardware-bringup.md`
 is the plan and what is known about the fit, the CPLD firmware (stock first; Frimples'
 DirectSocket E-clock build if the VIA needs it), and what a Pi 3 changes against the Pi 4 the
