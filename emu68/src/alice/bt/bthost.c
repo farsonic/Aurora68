@@ -131,6 +131,7 @@ void bt_addr_str(const uint8_t a[6], char o[18])
 #define C_LOCAL_VERSION  OP(4, 0x01)
 #define C_BUFFER_SIZE    OP(4, 0x05)
 #define C_BDADDR         OP(4, 0x09)
+#define C_WRITE_BDADDR   OP(0x3f, 0x001)  /* Broadcom's vendor command: the controller's public address, at once (Linux btbcm_set_bdaddr) */
 #define C_BCM_MINIDRIVER 0xfc2e
 #define C_BCM_BAUD       0xfc18                  /* Update UART Baud Rate (Linux btbcm_set_baudrate) */
 #define C_BCM_LAUNCH     0xfc4e
@@ -397,17 +398,24 @@ static void setup_next(struct bt_host *h)
     switch (h->step++) {
     case 0: sync_cmd(h, C_LOCAL_VERSION, 0, 0); break;
     case 1: sync_cmd(h, C_BDADDR, 0, 0); break;
-    case 2: sync_cmd(h, C_BUFFER_SIZE, 0, 0); break;
-    case 3: sync_cmd(h, C_EVENT_MASK, ev_mask, 8); break;
-    case 4: p[0] = 1; sync_cmd(h, C_SSP_MODE, p, 1); break;
-    case 5: p[0] = 2; sync_cmd(h, C_INQUIRY_MODE, p, 1); break;                 /* results with RSSI and names */
-    case 6: p[0] = 0x04; p[1] = 0x01; p[2] = 0x00; sync_cmd(h, C_CLASS, p, 3); break;  /* computer, desktop */
-    case 7: mset(p, 0, 248); mcpy(p, name, sizeof name); sync_cmd(h, C_LOCAL_NAME, p, 248); break;
-    case 8: put16(p, 0x2000); sync_cmd(h, C_PAGE_TIMEOUT, p, 2); break;          /* 5.12 s */
-    case 9: put16(p, 0x0005); sync_cmd(h, C_LINK_POLICY, p, 2); break;           /* role switch, sniff */
-    case 10: p[0] = 1; p[1] = 0; sync_cmd(h, C_LE_HOST, p, 2); break;            /* LE on: LE keyboards and mice too */
-    case 11: sync_cmd(h, C_LE_BUFSIZE, 0, 0); break;
-    case 12: mset(p, 0, 8); p[0] = 0x1f; sync_cmd(h, C_LE_EVMASK, p, 8); break;   /* connections, adverts, updates, features, LTK requests */
+    case 2: {   /* the card's address (bt.local=), so pairings made on one Pi work on another: the chip's own differs by board */
+        int same = 1;
+        for (int i = 0; i < 6; i++) if (h->want_addr[i] != h->bdaddr[i]) same = 0;
+        if (h->want_addr_set && !same) { sync_cmd(h, C_WRITE_BDADDR, h->want_addr, 6); break; }
+        setup_next(h);
+        break;
+    }
+    case 3: sync_cmd(h, C_BUFFER_SIZE, 0, 0); break;
+    case 4: sync_cmd(h, C_EVENT_MASK, ev_mask, 8); break;
+    case 5: p[0] = 1; sync_cmd(h, C_SSP_MODE, p, 1); break;
+    case 6: p[0] = 2; sync_cmd(h, C_INQUIRY_MODE, p, 1); break;                 /* results with RSSI and names */
+    case 7: p[0] = 0x04; p[1] = 0x01; p[2] = 0x00; sync_cmd(h, C_CLASS, p, 3); break;  /* computer, desktop */
+    case 8: mset(p, 0, 248); mcpy(p, name, sizeof name); sync_cmd(h, C_LOCAL_NAME, p, 248); break;
+    case 9: put16(p, 0x2000); sync_cmd(h, C_PAGE_TIMEOUT, p, 2); break;          /* 5.12 s */
+    case 10: put16(p, 0x0005); sync_cmd(h, C_LINK_POLICY, p, 2); break;          /* role switch, sniff */
+    case 11: p[0] = 1; p[1] = 0; sync_cmd(h, C_LE_HOST, p, 2); break;            /* LE on: LE keyboards and mice too */
+    case 12: sync_cmd(h, C_LE_BUFSIZE, 0, 0); break;
+    case 13: mset(p, 0, 8); p[0] = 0x1f; sync_cmd(h, C_LE_EVMASK, p, 8); break;   /* connections, adverts, updates, features, LTK requests */
     /* the page scan (paired devices reconnect) is the radio tier's (page_scan_update, from bt_poll): fast for the first
        minute, as Linux's "fast connectable", then slow (docs/08 items 139, 140) */
     default:
@@ -514,6 +522,12 @@ static void startup_answer(struct bt_host *h, uint16_t op, const uint8_t *ret, u
     /* the set-up after the firmware (step counts on) */
     if (h->state == BT_INIT) {
         if (op == C_BDADDR && n >= 7) mcpy(h->bdaddr, ret + 1, 6);
+        if (op == C_WRITE_BDADDR) {
+            if (!st) { lg(h, "address %a from the card (bt.local=), in place of the chip's own %a", h->want_addr, h->bdaddr); mcpy(h->bdaddr, h->want_addr, 6); }
+            else lg(h, "the chip refused the card's address (status %u): its own %a stays", st, h->bdaddr);
+            setup_next(h);
+            return;
+        }
         if (op == C_BUFFER_SIZE && n >= 8) { h->acl_mtu = le16(ret + 1); h->acl_free = le16(ret + 4); if (!h->acl_free) h->acl_free = 1; h->acl_pkts = h->acl_free; }
         if (op == C_LE_BUFSIZE && n >= 4 && !st) { h->le_mtu = le16(ret + 1); h->le_free = ret[3]; if (!h->le_mtu || !h->le_free) h->le_mtu = h->le_free = 0; h->le_pkts = h->le_free; }
         if (op == C_LOCAL_VERSION && n >= 9) lg(h, "controller: HCI %u, revision %x, LMP %x, manufacturer %u", ret[1], le16(ret + 2), le16(ret + 6), le16(ret + 4));
@@ -526,11 +540,14 @@ static void startup_answer(struct bt_host *h, uint16_t op, const uint8_t *ret, u
 void bt_init(struct bt_host *h, const struct bt_io *io, const uint8_t *fw, unsigned fwlen)
 {
     struct bt_key keep[BT_MAXKEY];
-    int nk = h->nkeys, mode = h->scan_mode, fl_given = h->le_floor_given, wifi = h->wifi_inuse;
+    int nk = h->nkeys, mode = h->scan_mode, fl_given = h->le_floor_given, wifi = h->wifi_inuse, wa_set = h->want_addr_set;
     uint16_t fl = h->le_floor;
+    uint8_t wa[6];
+    mcpy(wa, h->want_addr, 6);
     mcpy(keep, h->keys, sizeof keep);
     mset(h, 0, sizeof *h);
     mcpy(h->keys, keep, sizeof keep);
+    mcpy(h->want_addr, wa, 6); h->want_addr_set = wa_set;
     h->nkeys = nk;
     h->scan_mode = mode;
     h->le_floor = fl_given ? fl : (uint16_t)BT_LE_FLOOR; h->le_floor_given = fl_given;   /* bt.lefloor= (docs/08 item 147) */

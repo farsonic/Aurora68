@@ -89,6 +89,11 @@ static int keys_loaded, uart_done, retried, fail_logged;
    the mailbox's last answer to BT_ON; the heartbeat's FAILED line carries them, so a saved log (its last 64 KB)
    still says what was tried (the first real 3A+, 27 November 2026, stayed silent with the RTS set-up) */
 static int uart_alt, bton_rc = -99;
+/* bt.local=AABBCCDDEEFF in pairings.txt (or cmdline.txt): the address the pairings were made with. Recorded the
+   first time a paired device connects, then given to the chip at every start (bthost.c, Broadcom's Write_BD_ADDR),
+   so a card moved from a Pi 3B to a 3A+ keeps its keyboards and mice (the chips' own addresses differ by board:
+   the owner's Keychron, paired on the 3B, was never heard on the 3A+, 28 November 2026). HCI order, LSB first. */
+static uint8_t local_addr[6]; static int local_known;
 static uint32_t rx_total, rx_errors, rx_overruns, rx_ring_full;
 
 /* ---- the receive side: the PL011's FIFO into a ring, from anywhere on the way (25 November 2026, docs/21) ---------
@@ -329,6 +334,10 @@ static void keys_save(void)
     if (!card_saves()) return;
     static char txt[4096]; unsigned n = 0;
     n = put_str(txt, 0, "# Bluetooth pairings, written by the Aurora68 kernel (one bt.dev= per line; delete a line to forget)\n");
+    if (local_known) {
+        n = put_str(txt, n, "# the address these pairings were made with: every Pi's Bluetooth takes it, so the card can move between Pis\n");
+        n = put_str(txt, n, "bt.local="); n = put_hex(txt, n, local_addr, 6, 1); txt[n++] = '\n';
+    }
     for (int i = 0; i < bh.nkeys && n < sizeof txt - 300; i++) {
         const struct bt_key *k = &bh.keys[i];
         txt[n++] = '#'; txt[n++] = ' '; for (int j = 0; k->name[j] && j < 39; j++) txt[n++] = (k->name[j] >= ' ' && k->name[j] < 127) ? k->name[j] : '?';
@@ -468,6 +477,24 @@ static void auto_pair_poll(uint32_t now)
     }
 }
 static int hexv(char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1; }
+/* bt.local=AABBCCDDEEFF (written most significant byte first, like bt.dev=) */
+static void local_from(const char *s)
+{
+    static const char w[] = "bt.local=";
+    for (const char *q = s; q && *q; q++) {
+        if (q != s && q[-1] != ' ' && q[-1] != '\n') continue;
+        int i = 0;
+        while (w[i] && q[i] == w[i]) i++;
+        if (w[i]) continue;
+        uint8_t a[6]; int ok = 1;
+        for (int b = 0; b < 6 && ok; b++) {
+            int hi = hexv(q[i + 2 * b]), lo = hi < 0 ? -1 : hexv(q[i + 2 * b + 1]);
+            if (hi < 0 || lo < 0) ok = 0;
+            else a[5 - b] = (uint8_t)(hi << 4 | lo);
+        }
+        if (ok) { for (int b = 0; b < 6; b++) local_addr[b] = a[b]; local_known = 1; }
+    }
+}
 /* pairings.txt (keys_save) puts "# NAME" on the line before each bt.dev= word: the name comes back with the key
    (24 November 2026; until then a device brought back from the card had no name in the log or the heartbeat) */
 static void key_name_from(const char *s, const char *p, const uint8_t a[6])
@@ -643,6 +670,11 @@ void bt_pi_report(void)
             k = key_short(t, k, &bh.keys[i]);
         }
         if (auto_pair) k = put_str(t, k, " | bt.pair on");
+        {
+            int bt = alice_pi_board_type();
+            if (bh.state != BT_FAILED && (bt == 0x0d || bt == 0x0e)) { k = put_str(t, k, " | UART set-up "); k = put_num(t, k, (uint32_t)uart_alt + 1, 0); }
+        }
+        if (local_known) k = put_str(t, k, bh.want_addr_set ? " | address from the card" : " | address recorded on the card");
         if (bh.state == BT_FAILED) {                    /* what was tried, for a log that has lost the start-up lines */
             uint32_t fr = rd(UART0 + U_FR), cr = rd(UART0 + U_CR), fs3 = rd(GPIO + 0x0c);
 #ifdef PSMAC
@@ -813,6 +845,9 @@ void bt_pi_poll(void)
         if (st == 0 && now - card_wait < 10000) return;
         keys_loaded = 1;
         load_keys(alice_bootargs());
+        local_from(alice_bootargs());
+        if (txt && txt[0]) local_from(txt);                    /* the card's, newer, wins */
+        if (local_known) { for (int b = 0; b < 6; b++) bh.want_addr[b] = local_addr[b]; bh.want_addr_set = 1; }
         if (txt && txt[0]) { int before = bh.nkeys; load_keys(txt); char t[64]; unsigned k = put_str(t, 0, "[BT] pairings.txt on the card: "); k = put_num(t, k, (uint32_t)bh.nkeys - (uint32_t)before, 0); k = put_str(t, k, " more device(s)"); t[k] = 0; blog(t); }
         pair_option();
         {   /* bt.fwbaud=N: the firmware download's speed (0 or 115200: at the line's own speed) */
@@ -999,6 +1034,16 @@ void bt_pi_poll(void)
             was_connected = conn;
         }
 #endif
+        if (bh.state == BT_READY && !local_known) {   /* the first paired device to connect: these pairings belong to this address */
+            for (int i = 0; i < bh.nkeys; i++) {
+                if (!(bh.keys[i].flags & BTK_CONNECTED)) continue;
+                for (int b = 0; b < 6; b++) local_addr[b] = bh.bdaddr[b];
+                local_known = 1;
+                blog("[BT] a paired device connected: this Pi's Bluetooth address goes into pairings.txt (bt.local=), for any Pi the card moves to");
+                keys_save();
+                break;
+            }
+        }
         int col = bh.state == BT_READY ? 1 : bh.state == BT_FAILED ? 2 : 0;
         if (bh.state == BT_FAILED && !fail_logged) {
             fail_logged = 1;
