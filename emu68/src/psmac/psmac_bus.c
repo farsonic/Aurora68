@@ -814,6 +814,13 @@ volatile int psmac_aux_tables;              /* alice_psmac.c: 1 from A/UX's tabl
 static void timedbra_floor(void)
 {
     static uint32_t raised;
+    extern int psmac_mmu_translating(void);
+    if (psmac_aux_tables && !psmac_mmu_translating()) {
+        /* translation off: the ROM is starting again. A reboot from A/UX comes back here without a 68k RESET, and
+           the floor stayed off for the next Mac OS session (the owner's SE bombed after a reboot, 28 November 2026) */
+        psmac_aux_tables = 0;
+        kprintf("[PSMAC] the 68k's translation is off: A/UX's tables are gone, TimeDBRA's floor is on again\n");
+    }
     if (psmac_aux_tables) return;
     int valid; uint32_t ph = psmac_mmu_l2p(0xd00, &valid);
     if (!valid || ph + 2 > ram_size) return;
