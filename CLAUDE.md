@@ -13,6 +13,9 @@ A/UX 3.1.1 runs on the SE with `mac.mmu=full` (the emulated 68030 MMU, keyboards
 network card for A/UX's `ae6` driver, the HDMI screen): on `main` since 28 November 2026, experimental.
 `docs/23-mmu.md` is its record, `docs/24` the network card, `docs/26` the HDMI screen, and
 `docs/25-aux-handover.md` says where each part stands and how the test set-up is made.
+Debian m68k Linux starts directly, without Mac OS, with `mac.linux=vmlinux` (and `mac.mmu=full`; branch `linux`,
+28 November 2026): `docs/27-linux.md` is its record, and `tools/linux/` builds the kernel and a Debian disk image on a
+Mac with OrbStack or Docker Desktop (`build-debian-image.sh`, the kernel's configuration `aurora68.config`).
 
 ## What this is
 A Raspberry Pi in a Macintosh SE's 68000 socket (a PiStorm) runs Emu68, presents a 68040, boots
